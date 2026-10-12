@@ -4,16 +4,18 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "check": "vp check",
-    "fix": "vp check --fix",
+    "build": "pnpm --dir apps/rr-fixture run build && pnpm --dir apps/demo run build",
+    "check": "oxfmt --config oxfmt.config.ts --disable-nested-config --check . && oxlint --config oxlint.config.ts --disable-nested-config --type-aware --type-check .",
+    "fix": "oxfmt --config oxfmt.config.ts --disable-nested-config --write . && oxlint --config oxlint.config.ts --disable-nested-config --type-aware --type-check --fix .",
     "test": "vp test",
     "test:unit": "vp test run --project unit",
     "test:invariants": "vitest run --project invariants",
     "verify:snapshot": "node scripts/verify-source-integrity.mjs",
     "verify:toolchain": "node scripts/verify-toolchain.mjs",
-    "typecheck": "pnpm -r exec tsc --noEmit && pnpm exec tsc --noEmit",
-    "knip": "knip",
-    "knip:production": "knip --production"
+    "typecheck": "pnpm --filter @astilba/cache --filter @astilba/harness --filter @astilba/demo --filter @astilba/rr-fixture -r exec tsc --noEmit && pnpm exec tsc --noEmit && pnpm -C packages/cache exec tsc -p test/integration/tsconfig.json --noEmit",
+    "knip": "pnpm --dir ../.. exec knip --workspace products/cache --workspace products/cache/packages/cache --workspace products/cache/packages/harness --workspace products/cache/apps/demo --workspace products/cache/apps/rr-fixture",
+    "knip:production": "pnpm knip --production",
+    "verify": "pnpm verify:snapshot && pnpm verify:toolchain && pnpm check && pnpm typecheck && pnpm exec vitest run && pnpm exec vp test run --project unit --coverage && pnpm --dir packages/cache run lint:publish && pnpm knip && pnpm knip:production && pnpm build && node scripts/boot-smoke.mjs && node scripts/module-scope-boot.mjs && node scripts/demo-boot-witness.mjs && node scripts/demo-typed-routes.mjs"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "0.18.3",
@@ -28,15 +30,14 @@
     "oxlint-tsgolint": "7.0.2001",
     "typescript": "6.0.3",
     "ultracite": "7.9.2",
-    "vite": "catalog:",
-    "vite-plus": "catalog:",
-    "vitest": "catalog:",
+    "vite": "npm:@voidzero-dev/vite-plus-core@0.3.0",
+    "vite-plus": "0.3.0",
+    "vitest": "4.1.11",
     "wrangler": "4.109.0",
     "yaml": "2.9.0"
   },
   "engines": {
     "node": ">=22.18.0",
     "pnpm": ">=11.0.0"
-  },
-  "packageManager": "pnpm@11.10.0"
+  }
 }

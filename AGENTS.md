@@ -7,10 +7,13 @@ This isolated pnpm workspace combines public source snapshots. Read `docs/archit
 - `apps/ui-showcase` and `fixtures/ui-astro` consume workspace UI source.
 - `apps/docs` and `apps/site` own the docs and apex applications; read `apps/docs/AGENTS.md` and `PRODUCT.md`.
 - `fixtures/registry/env` is an independent registry consumer workspace. It must retain its own lock, pnpm version and public package pins.
+- `products/cache` contains only the approved sanitized, unreleased snapshot. Its five workspaces share the root install; read its scoped guide before editing.
 
-Use Node 24.18.1 and pnpm 11.17.0 for root development. Install root and registry fixtures separately with frozen locks. `pnpm verify:ui`, `pnpm verify:env` and `pnpm verify:web` are scoped source gates; `pnpm verify` runs all three. Root CI adds the complete Env/Windows/runtime matrix and Linux browser contracts. Follow the inventory for archive and exact consumer pins.
+Use Node 24.18.1 and pnpm 11.17.0 for root development. Install root and registry fixtures separately with frozen locks. `pnpm verify:ui`, `pnpm verify:env`, `pnpm verify:web` and `pnpm verify:cache` are scoped source gates; `pnpm verify` runs all four. Root CI adds the complete Env/Windows/runtime matrix, Linux browser contracts, and Cache's separate correctness, integration, boot, and mutation lanes. Follow the inventory for archive and exact consumer pins.
 
-Cache and Handbook are outside this checkout. Do not import private source or history. The root, apps, fixtures and tooling stay private; only Env, tokens and UI are publishable packages. Web apps retain registry dependencies; relocation does not authorize adopting workspace HEAD. Release and deployment authority remains with the original repositories. Keep imported workflows inert and root CI free of publishing and production credentials.
+Handbook and private Cache history remain outside this checkout. Import only the approved sanitized Cache snapshot, never private source documents or Git ancestry. The root, Cache, apps, fixtures and tooling stay private; only Env, tokens and UI are publishable packages. Web apps retain registry dependencies; relocation does not authorize adopting workspace HEAD. Release and deployment authority remains with the original repositories. Keep archived workflow copies inert and root CI free of publishing and production credentials.
+
+Cache's source-integrity guard protects 210 executable-source fingerprints, including all existing test assertions and names. Run it after tooling changes. The root UI/control-file policy and the separate product policies must not be mixed through nested-config discovery; each verification lane checks its own canonical policy. Do not run the dirty-route witness concurrently with Cache typechecks.
 
 ## Ground rules
 

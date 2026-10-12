@@ -77,13 +77,17 @@ type PortableObjectShapeValue<
   TProperties extends readonly PortableObjectPropertyDescriptor[],
 > = Simplify<
   {
-    readonly [TProperty in TProperties[number] as TProperty["required"] extends true
-      ? TProperty["name"]
-      : never]: PortableShapeValue<TProperty["shape"]>;
+    readonly [
+      TProperty in TProperties[number] as TProperty["required"] extends true
+        ? TProperty["name"]
+        : never
+    ]: PortableShapeValue<TProperty["shape"]>;
   } & {
-    readonly [TProperty in TProperties[number] as TProperty["required"] extends false
-      ? TProperty["name"]
-      : never]?: PortableShapeValue<TProperty["shape"]>;
+    readonly [
+      TProperty in TProperties[number] as TProperty["required"] extends false
+        ? TProperty["name"]
+        : never
+    ]?: PortableShapeValue<TProperty["shape"]>;
   }
 >;
 

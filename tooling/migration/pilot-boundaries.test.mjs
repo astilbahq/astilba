@@ -3,6 +3,8 @@ import { readdir, readFile, realpath } from "node:fs/promises";
 import nodePath from "node:path";
 import { describe, it } from "node:test";
 
+import { parse } from "yaml";
+
 const { resolve } = nodePath;
 const root = resolve(import.meta.dirname, "../..");
 const readJson = async (path) =>
@@ -25,6 +27,11 @@ describe("pilot boundaries", () => {
       "apps/site",
       "apps/ui-showcase",
       "fixtures/ui-astro",
+      "products/cache",
+      "products/cache/packages/cache",
+      "products/cache/packages/harness",
+      "products/cache/apps/demo",
+      "products/cache/apps/rr-fixture",
     ]);
     const manifests = await Promise.all(
       paths.map((path) => readJson(`${path}/package.json`))
@@ -70,6 +77,60 @@ describe("pilot boundaries", () => {
     );
     const docsManifest = await readJson("apps/docs/package.json");
     assert.equal(docsManifest.dependencies["@astilba/env"], "0.3.0");
+  });
+
+  it("runs Cache under one root install and the active workflow census", async () => {
+    const cache = await readJson("products/cache/package.json");
+    assert.equal(cache.packageManager, undefined);
+    assert.match(cache.scripts.check, /--type-aware --type-check/u);
+    const wrangler = await readJson(
+      "products/cache/packages/cache/node_modules/wrangler/package.json"
+    );
+    assert.equal(wrangler.version, "4.109.0");
+    const paths = await readdir(resolve(root, "products/cache"));
+    assert.equal(paths.includes("pnpm-lock.yaml"), false);
+    assert.equal(paths.includes("pnpm-workspace.yaml"), false);
+    const manifest = await readJson("package.json");
+    assert.match(manifest.scripts.verify, /pnpm verify:cache/u);
+    const workflow = parse(
+      await readFile(resolve(root, ".github/workflows/cache.yml"), "utf-8")
+    );
+    const census = parse(
+      await readFile(
+        resolve(root, "products/cache/.github/workflows/ci.yml"),
+        "utf-8"
+      )
+    );
+    assert.deepEqual(workflow, census);
+    const lanes = Object.keys(workflow.jobs)
+      .filter((name) => name !== "required")
+      .toSorted();
+    const expectedLanes = [
+      "check",
+      "invariants",
+      "sacred-unwritable-by-tools",
+      "conformance",
+      "integration",
+      "worker-types-drift",
+      "bun",
+      "knip",
+      "build-smoke",
+      "boot-smoke",
+      "module-scope-boot",
+      "demo",
+      "demo-boot-witness",
+    ].toSorted();
+    assert.deepEqual(lanes, expectedLanes);
+    assert.deepEqual(workflow.jobs.required.needs.toSorted(), expectedLanes);
+    assert.equal(workflow.defaults.run["working-directory"], "products/cache");
+    const source = await readFile(
+      resolve(root, ".github/workflows/cache.yml"),
+      "utf-8"
+    );
+    const planted = parse(
+      `${source}\n  planted-ungated-lane:\n    runs-on: ubuntu-latest\n`
+    );
+    assert.ok(Object.hasOwn(planted.jobs, "planted-ungated-lane"));
   });
 
   it("keeps imported workflows inert and the active pilot free of publishers", async () => {

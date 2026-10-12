@@ -1,0 +1,47 @@
+name: Cache mutation ratchet
+on:
+  schedule:
+    - cron: 27 6 * * 1
+  workflow_dispatch: null
+permissions:
+  contents: read
+concurrency:
+  group: mutation-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  mutation:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          persist-credentials: false
+      - uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb
+        with:
+          node-version: "24"
+          cache: true
+      - run: corepack enable
+      - run: pnpm install --frozen-lockfile
+        working-directory: .
+      - name: mutation ratchet (sacred suite is the kill oracle)
+        run: |
+          set -o pipefail
+          pnpm -C packages/cache test:mutation 2>&1 | tee mutation.log
+      - name: append the score to the job summary
+        if: always()
+        run: |
+          {
+            echo "### Stryker mutation ratchet"
+            echo ""
+            echo "Kill oracle: the sacred invariant + scenario suite. Mutant set: kernel core"
+            echo "(\`src/adapters/**\` excluded — unreachable from a fakes-only oracle)."
+            echo ""
+            echo '```'
+            grep -E "^(All files|-|[[:space:]]+[a-z.-]+\.ts|[[:space:]]+[a-z]+)" mutation.log | tail -20 || echo "no score table (the run failed before reporting)"
+            echo '```'
+            echo ""
+            echo "A ratchet, never a threshold. Raise \`thresholds.break\` deliberately; never lower it."
+          } >> "$GITHUB_STEP_SUMMARY"
+defaults:
+  run:
+    working-directory: products/cache

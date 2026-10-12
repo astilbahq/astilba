@@ -12,6 +12,8 @@ styled-system/
 test-results/
 worker-configuration.d.ts
 !apps/docs/worker-configuration.d.ts
+!products/cache/apps/demo/worker-configuration.d.ts
+!products/cache/packages/cache/test/integration/worker-configuration.d.ts
 .artifacts/
 .next/
 .vite/

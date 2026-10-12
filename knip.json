@@ -1,6 +1,10 @@
 {
   "$schema": "https://unpkg.com/knip@6/schema.json",
-  "ignore": ["fixtures/registry/**"],
+  "ignore": [
+    "fixtures/registry/**",
+    "products/cache/**/test/integration/*.d.ts",
+    "products/cache/apps/demo/worker-configuration.d.ts"
+  ],
   "workspaces": {
     ".": {
       "entry": ["scripts/serve-showcase.mjs!", "tooling/migration/*.mjs!"],
@@ -87,6 +91,40 @@
         "test/**/*.ts!",
         "worker/**/*.ts!"
       ]
+    },
+    "products/cache": {
+      "entry": ["scripts/*.mjs"],
+      "project": ["scripts/*.mjs"],
+      "ignoreBinaries": ["react-router"],
+      "ignoreDependencies": [
+        "eslint-plugin-github",
+        "eslint-plugin-sonarjs",
+        "miniflare"
+      ]
+    },
+    "products/cache/packages/cache": {
+      "entry": [
+        "scripts/*.mjs",
+        "test/**/*.test.ts",
+        "test/integration/worker.ts",
+        "test/boot/worker.ts"
+      ],
+      "project": ["src/**/*.ts!", "test/**/*.ts", "scripts/*.mjs"],
+      "ignoreDependencies": ["cloudflare"]
+    },
+    "products/cache/packages/harness": {
+      "entry": ["src/**/*.test.ts"],
+      "project": ["src/**/*.ts!", "!src/fc-setup.ts!"],
+      "ignoreDependencies": []
+    },
+    "products/cache/apps/rr-fixture": {
+      "ignoreDependencies": ["@react-router/node"]
+    },
+    "products/cache/apps/demo": {
+      "entry": ["**/*.test.ts"],
+      "project": ["**/*.{ts,tsx}"],
+      "ignoreDependencies": ["@react-router/node", "cloudflare"]
     }
-  }
+  },
+  "tags": ["-testExport"]
 }

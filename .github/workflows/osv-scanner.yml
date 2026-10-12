@@ -26,4 +26,4 @@ jobs:
       - name: Scan repository lockfiles
         uses: docker://ghcr.io/google/osv-scanner:v2.4.0@sha256:5116601dedc01c1c580eb92371883ec052fc4c13c3fbc109d621a63ac416d475
         with:
-          args: scan source --recursive .
+          args: scan source -L pnpm-lock.yaml -L fixtures/registry/env/pnpm-lock.yaml

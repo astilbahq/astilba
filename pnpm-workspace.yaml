@@ -6,6 +6,11 @@ packages:
   - apps/site
   - apps/ui-showcase
   - fixtures/ui-astro
+  - products/cache
+  - products/cache/packages/cache
+  - products/cache/packages/harness
+  - products/cache/apps/demo
+  - products/cache/apps/rr-fixture
 linkWorkspacePackages: false
 allowBuilds:
   esbuild: true
@@ -14,7 +19,13 @@ allowBuilds:
 minimumReleaseAge: 4320
 engineStrict: true
 overrides:
-  vite: 8.1.5
+  "@astilba/ui>vite": 8.1.5
+  "@astilba/showcase>vite": 8.1.5
+  "@astilba/env>vite": 8.1.5
+  "@astilba/demo>vite": 8.1.4
+  "@astilba/rr-fixture>vite": 8.1.4
+  "@react-router/dev>vite": 8.1.4
+  "@cloudflare/vite-plugin@1.43.1>vite": 8.1.4
   vitest: 4.1.11
   "@vitest/spy@4.1.10": 4.1.11
   "@vitest/utils@4.1.10": 4.1.11
@@ -38,3 +49,11 @@ overrides:
   sharp@<0.35.5: 0.35.5
   undici@>=7.0.0 <7.29.1: 7.29.1
   smol-toml@>=1.0.0 <1.9.0: 1.9.0
+  fast-uri@3.1.7: 3.1.8
+  "typed-rest-client>qs": 6.16.0
+  baseline-browser-mapping@2.10.42: 2.11.0
+  js-yaml@4.3.0: 4.3.2
+  nanoid@3.3.15: 3.3.18
+  source-map-js@1.2.1: 1.2.2
+  "@cloudflare/vitest-pool-workers@0.18.3>miniflare": 4.20260708.0
+  "miniflare@4.20260708.0>workerd": 1.20260708.1

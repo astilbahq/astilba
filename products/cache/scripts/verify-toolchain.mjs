@@ -8,8 +8,9 @@ import YAML from "yaml";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const require = createRequire(resolve(root, "package.json"));
 const read = (path) => JSON.parse(readFileSync(path, "utf8"));
-const workspace = YAML.parse(readFileSync(resolve(root, "pnpm-workspace.yaml"), "utf8"));
-const expected = workspace.catalog.vitest;
+const workspaceRoot = resolve(root, "../..");
+const workspace = YAML.parse(readFileSync(resolve(workspaceRoot, "pnpm-workspace.yaml"), "utf8"));
+const expected = workspace.overrides.vitest;
 const direct = realpathSync(require.resolve("vitest/package.json"));
 const owner = require.resolve("vite-plus/package.json");
 assert.equal(read(owner).dependencies.vitest, expected, "Vite+ must declare the matching Vitest runner");
@@ -19,7 +20,7 @@ assert.equal(direct, fromRuntime, "Vite+ and direct tests must share one Vitest 
 assert.equal(read(direct).version, expected);
 assert.equal(read(require.resolve("@vitest/coverage-istanbul/package.json")).version, expected);
 
-const lock = YAML.parse(readFileSync(resolve(root, "pnpm-lock.yaml"), "utf8"));
+const lock = YAML.parse(readFileSync(resolve(workspaceRoot, "pnpm-lock.yaml"), "utf8"));
 const cohort = Object.keys(lock.packages).filter((key) => /^(@vitest\/|vitest@)/u.test(key));
 assert.ok(cohort.length >= 10, "Missing Vitest cohort in lockfile");
 for (const key of cohort) {

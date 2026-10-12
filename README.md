@@ -1,6 +1,6 @@
 # Astilba monorepo pilot
 
-A local pilot combining the public Env, tokens/UI, docs and apex source trees. Cache and Handbook stay separate. Existing repositories remain responsible for package releases and production deployments.
+A local pilot combining the public Env, tokens/UI, docs and apex source trees with the approved sanitized, unreleased Cache snapshot. Handbook remains private and outside the pilot. Existing repositories remain responsible for package releases and production deployments.
 
 ## Development
 
@@ -14,7 +14,7 @@ pnpm --dir apps/docs test:browser:install
 pnpm verify
 ```
 
-Scoped commands are `pnpm verify:ui`, `pnpm verify:env` and `pnpm verify:web`. Env archive, registry adoption and exact-runtime consumer lanes have separate commands and runtime pins. Root CI retains the original Linux and Windows matrices; local source checks alone do not establish complete parity.
+Scoped commands are `pnpm verify:ui`, `pnpm verify:env`, `pnpm verify:web` and `pnpm verify:cache`. Cache's workspaces live under `products/cache` and share the root install. Env archive, registry adoption and exact-runtime consumer lanes have separate commands and runtime pins. Root CI retains the original Linux and Windows matrices and Cache's separate lanes; local source checks alone do not establish complete parity.
 
 - [Verification inventory](docs/architecture/verification-inventory.md) maps every source workflow and required status to the pilot.
 - [Pilot validation](docs/architecture/pilot-validation.md) records results and remaining acceptance conditions.

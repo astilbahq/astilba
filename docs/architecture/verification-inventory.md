@@ -1,6 +1,6 @@
 # Astilba verification inventory
 
-The pilot combines the public Env, UI, and web sources while retaining their verification contracts. Cache and Handbook remain outside this checkout. Package publication and production deployment continue from the original repositories.
+The pilot combines the public Env, UI, and web sources with the approved sanitized, unreleased Cache snapshot, retaining their verification contracts. Handbook and private Cache ancestry remain outside this checkout. Package publication and production deployment continue from the original repositories.
 
 ## Source baseline
 
@@ -9,8 +9,21 @@ The pilot combines the public Env, UI, and web sources while retaining their ver
 | `astilbahq/env` | `97ca4db767b13db3f9e84c104b17f04b9d86370b` | Independently released `@astilba/env` 0.3.0 |
 | `astilbahq/ui` | `e295ce4aa79278ae0d865a88435f6539542808fe` | Tokens and React UI, both at source version 0.6.0, showcase and Astro fixture |
 | `astilbahq/docs` | `69101c58b1494689a3ec48ebd3e059f5d33ce729` | Separately deployed docs and apex applications |
+| Approved sanitized Cache snapshot | `6f09d653a4f12e477ed9652c5432ff2d306a861d` | Unreleased Cache, harness, and local Workers fixtures; files only, no private ancestry |
 
-`verification-inventory.json` contains every package script and workflow job from these commits, including commands, matrices, working directories, Action pins, artifact parameters, permissions, and release jobs. The sibling `*-branch-rules.json` files capture the live main branch rules on 12 October 2026. Workflow presence and required merge status are distinct records.
+`verification-inventory.json` contains every package script and workflow job from the original Env, UI and web baselines, including commands, matrices, working directories, Action pins, artifact parameters, permissions, and release jobs. The sibling `*-branch-rules.json` files capture the live main branch rules on 12 October 2026. Workflow presence and required merge status are distinct records.
+
+The original JSON inventory covers Env, UI and web sources. Cache's approved source and active workflow mapping are recorded in `cache-integration-inventory.json`; its pristine standalone lock/policy and workflow copies are retained under `tooling/migration` as inactive provenance.
+
+## Cache gates
+
+All five Cache workspaces live under `products/cache` and share the root lock and pnpm 11.17.0. No private reference document or Git ancestry is needed by public CI. Cache remains private and unreleased; its immutable E31 authority pin is retained.
+
+`pnpm verify:cache` runs the 210-file executable-source integrity guard, resolved Vitest-cohort guard, the canonical formatter/linter policy with compiler and type-aware checks, direct typechecks, all 723 tests, unit coverage, packaging/import-graph checks, both Knip modes, both app builds, three local Worker boot witnesses, and the generated-route positive/negative witness. Do not run that final witness concurrently with Cache typechecks.
+
+The root Cache workflow retains thirteen separate lanes: check, invariants, sacred-unwritable-by-tools, conformance, integration, worker-types-drift, Bun, Knip, build-smoke, boot-smoke, module-scope-boot, demo, and demo-boot-witness. Boundary tests assert this independent list and equality with the local workflow census. The frozen census's negative controls remain intact. The original aggregate waits for integration but excludes its result; integration must still be adjudicated separately. Root local verification includes it and fails on any failing test.
+
+The scheduled mutation workflow retains its sacred kill oracle, adapter exclusion, and score floor of 55. Generated integration types use the Cache package's explicit Wrangler 4.109.0 dependency; they must not silently pick up the root's different Wrangler version. Bun remains pinned to 1.3.14.
 
 ## Env gates
 
@@ -76,14 +89,19 @@ Trusted publishers remain bound to the original repository and workflow identiti
 | `pnpm verify:ui` | UI base, browser, Astro build and showcase deployment dry-run |
 | `pnpm verify:env` | Env lint/format, Knip, tools, containment, both TypeScript compilers, unit tests, build, TSDoc and package gates |
 | `pnpm verify:web` | Both apps' source/build/browser gates and released Env surfaces |
-| `pnpm verify` | The preceding source gates; does not claim Windows or full runtime-matrix acceptance |
+| `pnpm verify:cache` | Cache integrity, correctness, coverage, packaging, app builds, boot witnesses and typed-route controls |
+| `pnpm verify` | All four product source gates plus boundaries; does not claim Windows or full runtime-matrix acceptance |
 | `pnpm verify:env:archive` | Committed clean pilot source, one exact Env archive and manifest verification |
 | `pnpm verify:env:consumers` | npm/pnpm/Bun, Workers, portable equivalence, deterministic generation, Vite and all eight Next consumers; run with the baseline Node/npm/pnpm/Bun pins on PATH |
 | `pnpm verify:registry` | Independent published Env adoption examples |
 | `pnpm verify:registry:lint` | Original Env formatting and syntax-lint rules for the relocated examples, including generated-byte exemptions; source TypeScript checking stays in the Env gate |
 | `.github/workflows/env-package-matrix.yml` | Full original Env archive matrix, including all eight Node/TypeScript lanes and Windows minimum-runtime consumer |
 | `.github/workflows/pilot.yml` | Both original UI Node lanes, Ubuntu screenshot contract, Docs/apex verification and Linux/Windows registry examples |
+| `.github/workflows/cache.yml` | Original Cache lanes adapted to the root install, with active workflow census and fixed hosted runners |
+| `.github/workflows/cache-mutation.yml` | Original Cache mutation ratchet, isolated from product releases and deployments |
 
-The pilot pins development pnpm 11.17.0 and Node 24.18.1. Consumer pins remain independent. The root age gate is 4320 minutes, build permissions are the union of existing approved esbuild/sharp/workerd permissions, and security overrides retain the original protections. Original source locks and policies are retained under `tooling/migration/install-baselines`. Registry fixture locks and package pins are unchanged. Web apps continue to install released UI/tokens 0.5.0 and Env 0.3.0.
+The pilot pins development pnpm 11.17.0 and Node 24.18.1 across thirteen workspaces. Env and Cache use Vite+ 0.3.0 and matching Vitest/coverage 4.1.11, with Oxfmt 0.64.0 and Oxlint 1.79.0. Their Ultracite rule policies remain product-specific. Consumer pins remain independent. The root age gate is 4320 minutes, build permissions are the union of existing approved esbuild/sharp/workerd permissions, and security overrides retain the original protections. Original source locks and policies are retained under `tooling/migration/install-baselines`. Registry fixture locks and package pins are unchanged. Web apps continue to install released UI/tokens 0.5.0 and Env 0.3.0.
+
+Security CI scans the two executable installation graphs: the root lock and independent registry-fixture lock. Archived baseline locks are provenance, not executable installs. No advisory suppression is added.
 
 Snapshot imports let the pilot run without deciding the destination repository's history strategy. Docs sitemap dates depend on Git history; the pilot's import commit is not a production history migration. Preserving original dates and source links remains a cutover acceptance condition. No affected-only execution or remote caching is enabled.

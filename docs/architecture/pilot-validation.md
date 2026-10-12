@@ -2,13 +2,13 @@
 
 The local pilot passes the complete root source verification command and the public package consumer gates available on this Mac. It is ready for migration review, with Linux and Windows CI execution and repository-bound security enforcement still required before a cutover decision.
 
-The branch is `codex/monorepo-pilot` in a clean isolated checkout. Source baselines and the complete CI inventory are recorded in `verification-inventory.md` and its JSON companions. Cache and Handbook are outside the pilot. Existing repositories, npm trust, release tags, domains and production deployments retain their current authority.
+The branch is `codex/monorepo-pilot` in an isolated checkout. Source baselines and the CI inventory are recorded in `verification-inventory.md` and its JSON companions. The approved sanitized Cache snapshot is integrated under `products/cache`; Handbook and private Cache ancestry remain excluded. Existing repositories, npm trust, release tags, domains and production deployments retain their current authority.
 
 ## Verification results
 
 | Check | Result on 12 October 2026 |
 | --- | --- |
-| Root and independent registry frozen installs | Passed with pnpm 11.17.0 and 11.10.0 respectively |
+| Root and independent registry frozen installs | Passed with pnpm 11.17.0 across thirteen workspaces and 11.10.0 for the independent registry fixture |
 | Root `pnpm verify` | Passed, including package/app source checks, both TypeScript compilers, Knip, packing, Astro fixture, browser checks and three deployment dry-runs |
 | UI minimum runtime | `verify:base` passed under Node 22.18.0; current development checks passed under Node 24.18.1 |
 | Unit and boundary checks | Env 322, tokens 2, UI 43, showcase 7, Docs 120, apex 4; 34 dependency-security tests and 3 pilot boundary tests passed |
@@ -23,10 +23,27 @@ The branch is `codex/monorepo-pilot` in a clean isolated checkout. Source baseli
 | Registry adoption | Independent public 0.3.0 archive/integrity/release binding, generated output and all four application examples passed |
 | Relocated fixture lint | Original Env formatting and syntax-lint policy passed, with the generated-byte exemptions preserved |
 | Active workflow validation | Actionlint and publisher/credential boundary tests passed |
+| Integrated Cache | All 723 tests, 300-test coverage lane, packaging/import graph, both Knip modes, app builds, three local boot witnesses and typed-route controls passed |
+| Cache minimum runtime and Bun | 553 invariant/unit/conformance tests passed under Node 22.18.0; six Bun 1.3.14 smoke tests passed |
+| Cache preservation | All 210 executable fingerprints and existing sacred file bytes preserved; live autofixer canary passed |
+| Generated Cache Worker types | Original bytes retained with explicit Cache Wrangler 4.109.0 resolution |
+| Active installation security | OSV 2.4.0 reported zero advisories across 1,817 package records in both active locks |
 
 The consumer-tested archive has SHA-256 `493975a90d19f23c6a5ba943165ad4d655e87dbae61e92ae5899c2770768d032`. Archive manifests bind the complete clean checkout commit/tree and the nested Env package metadata. Later source commits require a fresh manifest; an existing artifact directory cannot be overwritten. Use a new direct child of `.artifacts` through `ASTILBA_ENV_ARTIFACT_DIR` for another candidate.
 
-All 77 Env `src` files, 48 original UI package files and 96 Docs `src` files retain their baseline bytes. Original registry fixture inputs, generated Env output, manifests and lock are preserved; two scoped lint adapters use the canonical Env policy. Next builds refresh the tracked ambient declaration file, as in the original repository; the baseline declaration is retained in this pilot.
+The 48 original UI package files and 96 Docs `src` files retain their baseline bytes. Two of Env's 77 source files received formatting-only changes under Oxfmt 0.64.0; normalized executable source matches the preceding pilot. Original registry fixture inputs, generated Env output, manifests and lock are preserved; scoped lint adapters use canonical product policies. Next builds refresh the tracked ambient declaration file, as in the original repository; the baseline declaration is retained in this pilot.
+
+The pre-Cache archive hash above is historical evidence, not the integrated candidate's identity. Repack from the integrated clean commit before consumer verification; `cache-integration-validation.md` records the fresh candidate's results.
+
+## Cache integration
+
+Env and Cache share Vite+ 0.3.0 and matching Vitest/coverage 4.1.11. Root development remains Node 24.18.1 and pnpm 11.17.0; registry consumer pins, the 4320-minute age gate, and build permissions are unchanged. Cache's original local locks and workflows remain inactive provenance, while the root lock owns all five Cache workspaces.
+
+Native formatter/linter adapters prevent nested discovery from evaluating application build configs during correctness checks. They retain the existing Ultracite policies and explicitly run Cache's compiler and type-aware passes. No Cache test assertion, test name, runtime source, or mutation-score floor changed.
+
+The active Cache workflow and local census are checked for equality, an independent thirteen-lane inventory, and planted-job detection. CodeRabbit's missing-independent-lane-list finding was fixed. Its remaining lockfile finding is contradicted by the included regenerated lock and successful frozen install; the integration commit includes that lock.
+
+The tracked-source secret scan reports only Cache's unchanged static fake API key. Generated local Next encryption/preview material is ignored and absent from the tracked-source export. No scanner suppression was added.
 
 ## Migration fixes
 

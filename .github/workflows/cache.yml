@@ -1,0 +1,337 @@
+name: Cache verification
+defaults:
+  run:
+    working-directory: products/cache
+on:
+  push:
+    branches:
+      - main
+  pull_request: null
+  workflow_dispatch: null
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        node:
+          - "22"
+          - "24"
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          persist-credentials: false
+      - uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb
+        with:
+          node-version: ${{ matrix.node }}
+          cache: true
+      - run: corepack enable
+      - run: pnpm install --frozen-lockfile
+        working-directory: .
+      - name: grep-guard (no ambient time/randomness in the kernel; PLATFORM-noted in adapters)
+        run: |
+          if git grep -nE 'Date\.now\(|Math\.random\(|setTimeout\(|setInterval\(|performance\.now\(' -- packages/cache/src ':(exclude)packages/cache/src/adapters'; then
+            echo "::error::ambient time/randomness found in kernel (non-adapter) src"
+            exit 1
+          fi
+          fail=0
+          for f in $(git ls-files 'packages/cache/src/adapters/**/*.ts'); do
+            awk '
+              /PLATFORM:/ { last=NR }
+              /Date\.now\(|Math\.random\(|setTimeout\(|setInterval\(|performance\.now\(/ {
+                if (last == 0 || NR - last > 3) { printf "%s:%d: ambient platform call without a nearby // PLATFORM: note\n", FILENAME, NR; bad=1 }
+              }
+              END { exit bad }
+            ' "$f" || fail=1
+          done
+          if [ "$fail" -ne 0 ]; then
+            echo "::error::an adapter ambient-time use lacks a // PLATFORM: justification (ground rule 5)"
+            exit 1
+          fi
+      - name: grep-guard (no quoted design prose in tracked comments)
+        run: |
+          fail=0
+          if git grep -niE '^[[:space:]]*(//|\*).*(the errata|errata.?s|the spec|the design).*"' -- ':!*.json'; then
+            echo "::error::a comment attributes to the design docs next to a quote — paraphrase it (numbers-only cites only)"
+            fail=1
+          fi
+          if git grep -nE '^[[:space:]]*(//|\*)[^"]*"[^"]*$' -- ':!*.json' | grep -vE '"[^"]*"'; then
+            echo "::error::a comment opens a multi-line quoted span — likely copied design prose"
+            fail=1
+          fi
+          exit "$fail"
+      - name: binary tripwire (no NUL byte in any tracked file)
+        run: node scripts/assert-no-nul-bytes.mjs
+      - name: snapshot integrity (comments-only migration)
+        run: pnpm verify:snapshot
+      - name: resolved Vitest cohort (direct and Vite+ share one instance)
+        run: pnpm verify:toolchain
+      - run: pnpm check
+      - run: pnpm typecheck
+      - run: pnpm exec tsc --noEmit
+      - run: pnpm -C packages/cache exec tsc -p test/integration/tsconfig.json --noEmit
+      - run: vp test run --project unit --coverage
+      - run: pnpm -C packages/cache lint:publish
+  invariants:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          persist-credentials: false
+      - uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb
+        with:
+          node-version: "24"
+          cache: true
+      - run: corepack enable
+      - run: pnpm install --frozen-lockfile
+        working-directory: .
+      - name: invariants (sacred suite)
+        run: pnpm vitest run --project invariants --reporter=verbose --reporter=json --outputFile.json=invariants-report.json
+      - name: append pass/fail count to the job summary
+        if: always()
+        run: node scripts/invariant-summary.mjs invariants-report.json >> "$GITHUB_STEP_SUMMARY"
+  sacred-unwritable-by-tools:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          persist-credentials: false
+      - uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb
+        with:
+          node-version: "24"
+          cache: true
+      - run: corepack enable
+      - run: pnpm install --frozen-lockfile
+        working-directory: .
+      - name: prove the lint autofixer runs, then require it left sacred untouched
+        run: |
+          probe=packages/cache/test/unit/__autofix_liveness_probe.test.ts
+          trap 'rm -f "$probe"' EXIT
+          printf 'import { expect, it } from "vitest";\nit("autofix liveness probe", () => {\n  expect(1).toStrictEqual(1);\n});\n' > "$probe"
+          pnpm fix || true
+          if ! grep -q 'toBe(1)' "$probe"; then
+            echo "::error::the lint autofixer did not rewrite the seeded probe (toStrictEqual→toBe) — the assertion-rewriting pass did not run, so the sacred check below would pass vacuously. Fix the fixer invocation before trusting this gate."
+            exit 1
+          fi
+          if ! git diff --exit-code -- packages/cache/test/invariants packages/cache/test/scenarios; then
+            echo "::error::an autofix rewrote a sacred test. Sacred is append-only for tools too: a fixer's diff here is an unauthorized amendment. Repeal the offending rule if it contradicts signed law, or fence it — never accept the rewrite."
+            exit 1
+          fi
+          echo "lint autofixer proven live; sacred lane untouched"
+  conformance:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          persist-credentials: false
+      - uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb
+        with:
+          node-version: "24"
+          cache: true
+      - run: corepack enable
+      - run: pnpm install --frozen-lockfile
+        working-directory: .
+      - name: conformance (driver contracts)
+        run: pnpm vitest run --project conformance
+  integration:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          persist-credentials: false
+      - uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb
+        with:
+          node-version: "24"
+          cache: true
+      - run: corepack enable
+      - run: pnpm install --frozen-lockfile
+        working-directory: .
+      - name: integration (workerd durable-object lane, verified 2-CPU shape)
+        run: |
+          set -euo pipefail
+          command -v taskset >/dev/null 2>&1 || {
+            echo "::error::taskset absent — the 2-vCPU budget cannot be enforced on this host"; exit 1; }
+          [ "$(nproc)" -ge 2 ] || {
+            echo "::error::host reports $(nproc) CPU(s); the 2-vCPU budget shape does not apply"; exit 1; }
+          allowed="$(awk '/^Cpus_allowed_list:/{print $2}' /proc/self/status)"
+          cpus="$(printf '%s\n' "$allowed" | tr ',' '\n' | while read -r r; do
+                    [ -n "$r" ] || continue
+                    case "$r" in *-*) seq "${r%-*}" "${r#*-}" ;; *) printf '%s\n' "$r" ;; esac
+                  done | head -2 | paste -sd, -)"
+          [ "$(printf '%s\n' "$cpus" | tr ',' '\n' | grep -c .)" = "2" ] || {
+            echo "::error::could not select 2 CPUs from the allowed set '$allowed'"; exit 1; }
+          budget="$(taskset -c "$cpus" nproc)"
+          [ "$budget" = "2" ] || {
+            echo "::error::CPU budget NOT in effect (taskset -c $cpus nproc reported $budget, expected 2)"; exit 1; }
+          echo "CPU budget verified in effect: CPUs [$cpus] of allowed set [$allowed] ($(nproc) visible)"
+          taskset -c "$cpus" pnpm vitest run --project integration --disable-console-intercept
+  worker-types-drift:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          persist-credentials: false
+      - uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb
+        with:
+          node-version: "24"
+          cache: true
+      - run: corepack enable
+      - run: pnpm install --frozen-lockfile
+        working-directory: .
+      - name: worker-configuration.d.ts drift guard
+        run: |
+          pnpm -C packages/cache run types:integration
+          git diff --exit-code -- packages/cache/test/integration/worker-configuration.d.ts
+  bun:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          persist-credentials: false
+      - uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb
+        with:
+          node-version: "24"
+          cache: true
+      - run: pnpm install --frozen-lockfile
+        working-directory: .
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version: 1.3.14
+      - run: bun test packages/cache/test/bun-smoke
+  knip:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          persist-credentials: false
+      - uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb
+        with:
+          node-version: "24"
+          cache: true
+      - run: corepack enable
+      - run: pnpm install --frozen-lockfile
+        working-directory: .
+      - run: pnpm knip
+      - run: pnpm knip:production
+  build-smoke:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          persist-credentials: false
+      - uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb
+        with:
+          node-version: "24"
+          cache: true
+      - run: corepack enable
+      - run: pnpm install --frozen-lockfile
+        working-directory: .
+      - name: build-smoke (react-router build under real Vite 8)
+        run: pnpm -C apps/rr-fixture run build
+  boot-smoke:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          persist-credentials: false
+      - uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb
+        with:
+          node-version: "24"
+          cache: true
+      - run: corepack enable
+      - run: pnpm install --frozen-lockfile
+        working-directory: .
+      - run: pnpm -C apps/rr-fixture run build
+      - name: boot-smoke (workerd boots the fixture and serves one request)
+        run: node scripts/boot-smoke.mjs
+  module-scope-boot:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          persist-credentials: false
+      - uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb
+        with:
+          node-version: "24"
+          cache: true
+      - run: corepack enable
+      - run: pnpm install --frozen-lockfile
+        working-directory: .
+      - name: module-scope-boot (a module-scope factory boots on workerd and survives a request boundary)
+        run: node scripts/module-scope-boot.mjs
+  demo:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          persist-credentials: false
+      - uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb
+        with:
+          node-version: "24"
+          cache: true
+      - run: corepack enable
+      - run: pnpm install --frozen-lockfile
+        working-directory: .
+      - name: typed routes are generated and load-bearing (dirty-tree check)
+        run: node scripts/demo-typed-routes.mjs
+      - name: demo machinery (wrappers · scenes · narration)
+        run: pnpm vitest run --project demo
+      - name: demo build (react-router build under real Vite 8, real bindings)
+        run: pnpm -C apps/demo run build
+      - name: worker-configuration.d.ts drift guard
+        run: |
+          (cd apps/demo && pnpm exec wrangler types)
+          git diff --exit-code -- apps/demo/worker-configuration.d.ts
+  demo-boot-witness:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          persist-credentials: false
+      - uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb
+        with:
+          node-version: "24"
+          cache: true
+      - run: corepack enable
+      - run: pnpm install --frozen-lockfile
+        working-directory: .
+      - run: pnpm -C apps/demo run build
+      - name: demo-boot-witness (the composed demo establishes its bus channel on workerd)
+        run: node scripts/demo-boot-witness.mjs
+  required:
+    name: CI / required
+    if: ${{ always() }}
+    needs:
+      - check
+      - invariants
+      - sacred-unwritable-by-tools
+      - conformance
+      - integration
+      - worker-types-drift
+      - bun
+      - knip
+      - build-smoke
+      - boot-smoke
+      - module-scope-boot
+      - demo
+      - demo-boot-witness
+    runs-on: ubuntu-24.04
+    steps:
+      - name: require every CI lane to pass
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          echo "::notice::integration finished with $(jq -r '.integration.result // "absent"' <<<"$RESULTS") — adjudicate per ground rule 14"
+          if ! jq -e 'del(.integration) | all(.[]; .result == "success")' <<<"$RESULTS" >/dev/null; then
+            jq -r 'del(.integration) | to_entries[] | select(.value.result != "success") | "\(.key) finished with \(.value.result)"' <<<"$RESULTS" |
+              while IFS= read -r failure; do
+                echo "::error::$failure"
+              done
+            exit 1
+          fi

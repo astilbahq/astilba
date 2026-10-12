@@ -8,6 +8,7 @@ export default defineConfig({
     "**/dist/**",
     "**/styled-system/**",
     "packages/env/**",
+    "products/cache/**",
     "apps/docs/**",
     "apps/site/**",
     "fixtures/registry/**",
