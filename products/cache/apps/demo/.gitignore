@@ -1,0 +1,12 @@
+# RR/Vite build output + the generated route types. `.react-router/types` is REGENERATED, never
+# committed: `prepare` runs `react-router typegen` on every install, so a fresh clone has them
+# before anything typechecks, and `react-router build` regenerates them again. They are ignored
+# here rather than committed because a committed overlay is a hand-maintained overlay — it drifts
+# from `routes.ts` silently, and the day it drifts it is still green.
+/build/
+/.react-router/
+# @cloudflare/vite-plugin output.
+/dist/
+# Local dev secrets — never committed (CI needs no cloud credentials; every scene runs on Miniflare).
+.dev.vars
+.wrangler/

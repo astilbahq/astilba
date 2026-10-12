@@ -1,0 +1,23 @@
+{
+  "extends": "../../../../tsconfig.base.json",
+  "compilerOptions": {
+    "lib": [
+      "esnext"
+    ],
+    "types": [
+      "node"
+    ],
+    "skipLibCheck": true,
+    "declaration": false,
+    "isolatedDeclarations": false,
+    "noEmit": true
+  },
+  "include": [
+    "worker-configuration.d.ts",
+    "env.d.ts",
+    "worker.ts",
+    "*.test.ts",
+    "../../src/adapters/cloudflare/**/*.ts",
+    "../boot/**/*.ts"
+  ]
+}

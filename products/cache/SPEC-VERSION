@@ -1,0 +1,4 @@
+astilbahq/handbook@0ad6eeee202f55f023d3b7bdef10dd2b6eb226cd — products/cache/spec/design-v0.3.md + errata-001.md
+
+# Snapshot authority through E31. Maintainers check this immutable reference privately.
+# Public CI uses the checked-in API and tests; it never fetches private reference material.

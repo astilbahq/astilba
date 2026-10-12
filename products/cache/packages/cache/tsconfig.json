@@ -1,0 +1,16 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "types": ["node"]
+  },
+  "include": ["src/**/*.ts", "test/**/*.ts"],
+  "exclude": [
+    "test/bun-smoke/**",
+    "src/adapters/cloudflare/**",
+    "test/integration/**",
+    "test/boot/**",
+    "dist",
+    "node_modules"
+  ]
+}

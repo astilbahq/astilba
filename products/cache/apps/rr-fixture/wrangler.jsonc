@@ -1,0 +1,20 @@
+{
+  // Fixture wrangler config (C4-a-2). Authored FRESH (the integration lane's wrangler.jsonc
+  // deliberately omits compat flags — nodejs_als is a C4 concern). Consumed by
+  // @cloudflare/vite-plugin during `react-router build`. NO cloud credentials; the build is local.
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "astilba-cache-rr-fixture",
+  "main": "./workers/app.ts",
+  "compatibility_date": "2026-07-08",
+  // nodejs_compat — the flag this library actually needs to boot on Workers. The narrower
+  // nodejs_als covers the RR middleware's AsyncLocalStorage request frame (node:async_hooks) and
+  // nothing else; it does NOT supply node:crypto, which `@astilba/cache` imports statically in the
+  // one shared chunk every door pulls in. Under nodejs_als alone the library cannot be IMPORTED, so
+  // the Worker never boots. nodejs_compat supplies both (it includes ALS).
+  //
+  // The fixture teaches by being copied, so it sets the flag that boots. `build-smoke` could not
+  // catch the old setting: a build leaves `node:` specifiers as unresolved externals, so compiling
+  // says nothing about whether the isolate can resolve them. `boot-smoke` starts workerd and serves
+  // one request — the gate that cannot pass without this flag.
+  "compatibility_flags": ["nodejs_compat"]
+}

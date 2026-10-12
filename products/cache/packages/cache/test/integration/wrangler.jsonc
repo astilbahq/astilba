@@ -1,0 +1,35 @@
+{
+  // Test-scoped wrangler config for the C1-b integration lane. Consumed ONLY by
+  // @cloudflare/vitest-pool-workers (poolOptions.workers.wrangler.configPath in the
+  // root vite.config.ts) to spin up a local workerd/miniflare isolate that binds the
+  // placeholder Coordinator Durable Object. It is NOT part of the published package
+  // (files: ["dist"]) and never runs a deploy. No app config lives here — apps/*
+  // wrangler configs (probe/demo) arrive in later clusters.
+  "name": "astilba-cache-integration",
+  "main": "worker.ts",
+  // Compatibility date only; NO compat flags. nodejs_als (the adapter's ALS frames)
+  // is a C4 concern — an unneeded flag here is drift surface.
+  "compatibility_date": "2026-07-08",
+  "durable_objects": {
+    "bindings": [{ "name": "COORDINATOR", "class_name": "Coordinator" }],
+  },
+  // SQLite-backed DO storage (the current default class for new Durable Objects).
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Coordinator"] }],
+  // The §4.2 replication mirror: the Coordinator writes `__delta:<seq>` batches, `__snap:<seq>`
+  // checkpoints, and the `__state` pointer here (the WRITER side, C1/C2-b). The reader driver
+  // (cloudflareKV) is C2. Local-only id — pool-workers/Miniflare backs it with an in-memory namespace.
+  // `CACHE_KV` is the createWorkersCache / E22-quickstart L2 binding (§2/E22); it is bound to the SAME
+  // local `id` as REGISTRY_KV so the cache's L2 and the registry mirror share one namespace — the real
+  // deployment shape (entries and `__reg:*` mirror keys coexist, different prefixes, no collision), and
+  // it lets the reader resync off the mirror it can now see through either binding.
+  "kv_namespaces": [
+    { "binding": "REGISTRY_KV", "id": "registry-mirror-local" },
+    { "binding": "CACHE_KV", "id": "registry-mirror-local" },
+  ],
+  // Snapshot cadence for the integration lane (§4.2). Set to 5 batches so the transcript's
+  // cadence-crossing case trips it deterministically at seq 5; the other transcript cases
+  // (≤4 flushes) stay below it, so their `__state.snapBatch` remains 0 — untouched. Must stay
+  // strictly ABOVE the max flush count of any non-cadence transcript case. Interval is left at
+  // the machine default (6h), unreachable under the tests' tiny wall-clock deltas.
+  "vars": { "REGISTRY_SNAPSHOT_EVERY_BATCHES": "5" },
+}

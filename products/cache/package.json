@@ -1,0 +1,42 @@
+{
+  "name": "astilba-cache-workspace",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "vp check",
+    "fix": "vp check --fix",
+    "test": "vp test",
+    "test:unit": "vp test run --project unit",
+    "test:invariants": "vitest run --project invariants",
+    "verify:snapshot": "node scripts/verify-source-integrity.mjs",
+    "verify:toolchain": "node scripts/verify-toolchain.mjs",
+    "typecheck": "pnpm -r exec tsc --noEmit && pnpm exec tsc --noEmit",
+    "knip": "knip",
+    "knip:production": "knip --production"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "0.18.3",
+    "@types/node": "24.13.2",
+    "@vitest/coverage-istanbul": "4.1.11",
+    "eslint-plugin-github": "6.0.0",
+    "eslint-plugin-sonarjs": "4.1.0",
+    "knip": "6.24.0",
+    "miniflare": "4.20260708.0",
+    "oxfmt": "0.64.0",
+    "oxlint": "1.79.0",
+    "oxlint-tsgolint": "7.0.2001",
+    "typescript": "6.0.3",
+    "ultracite": "7.9.2",
+    "vite": "catalog:",
+    "vite-plus": "catalog:",
+    "vitest": "catalog:",
+    "wrangler": "4.109.0",
+    "yaml": "2.9.0"
+  },
+  "engines": {
+    "node": ">=22.18.0",
+    "pnpm": ">=11.0.0"
+  },
+  "packageManager": "pnpm@11.10.0"
+}

@@ -1,0 +1,18 @@
+{
+  // The E28 module-scope boot witness (§2/E22 (i) placement). Consumed ONLY by
+  // `scripts/module-scope-boot.mjs`, which starts workerd (`wrangler dev`) against it and issues two
+  // requests. Local-only: Miniflare backs the KV namespace and the Durable Object in memory, so this
+  // lane needs no cloud credentials and never deploys.
+  "$schema": "../../../../node_modules/wrangler/config-schema.json",
+  "name": "astilba-cache-boot-witness",
+  "main": "worker.ts",
+  "compatibility_date": "2026-07-08",
+  // nodejs_compat — the kernel hashes via node:crypto (§7), so this is the flag that makes the
+  // library importable at all. nodejs_als on its own supplies no crypto: the Worker would not boot.
+  "compatibility_flags": ["nodejs_compat"],
+  "durable_objects": {
+    "bindings": [{ "name": "COORDINATOR", "class_name": "Coordinator" }],
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Coordinator"] }],
+  "kv_namespaces": [{ "binding": "CACHE_KV", "id": "boot-witness-local" }],
+}

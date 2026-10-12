@@ -1,0 +1,42 @@
+{
+  "$schema": "https://unpkg.com/knip@6/schema.json",
+  "workspaces": {
+    ".": {
+      "entry": ["scripts/*.mjs"],
+      "project": ["scripts/*.mjs"],
+      "ignoreBinaries": ["react-router"]
+    },
+    "packages/cache": {
+      "entry": [
+        "scripts/*.mjs",
+        "test/**/*.test.ts",
+        "test/integration/worker.ts",
+        "test/boot/worker.ts"
+      ],
+      "project": ["src/**/*.ts!", "test/**/*.ts", "scripts/*.mjs"]
+    },
+    "packages/harness": {
+      "entry": ["src/**/*.test.ts"],
+      "project": ["src/**/*.ts!", "!src/fc-setup.ts!"]
+    },
+    "apps/rr-fixture": {
+      "ignoreDependencies": ["@react-router/node"]
+    },
+    "apps/demo": {
+      "entry": ["**/*.test.ts"],
+      "project": ["**/*.{ts,tsx}"],
+      "ignoreDependencies": ["@react-router/node"]
+    }
+  },
+  "ignore": [
+    "**/test/integration/*.d.ts",
+    "apps/demo/worker-configuration.d.ts"
+  ],
+  "tags": ["-testExport"],
+  "ignoreDependencies": [
+    "eslint-plugin-github",
+    "eslint-plugin-sonarjs",
+    "miniflare",
+    "cloudflare"
+  ]
+}

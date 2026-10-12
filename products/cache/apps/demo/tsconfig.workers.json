@@ -1,0 +1,13 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "lib": ["esnext"],
+    "types": ["node", "vite/client"]
+  },
+  "include": [
+    "worker-configuration.d.ts",
+    ".react-router/types/+server-build.d.ts",
+    "workers",
+    "chaos"
+  ]
+}

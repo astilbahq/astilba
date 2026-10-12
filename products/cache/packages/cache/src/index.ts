@@ -1,0 +1,98 @@
+// Public API of @astilba/cache — the spec §2 export surface. Kernel phase: every
+// value export is a stub that throws NotImplementedError; every type is the
+// spec-verbatim shape the invariant suite compiles against.
+
+export {
+  type Cache,
+  type CacheConfig,
+  type CacheDefaults,
+  type CacheEntry,
+  type ChannelState,
+  createCache,
+  type DeleteSelector,
+  type EntryFactoryCtx,
+  type ExplainDependencyScope,
+  type ExplainedDependency,
+  type ExplainIdentity,
+  type Explanation,
+  type ExplainReaderState,
+  type ExplainScope,
+  type ExplainTtl,
+  type ExplainVerdict,
+  type ExpireSelector,
+  type FactoryCtx,
+  type GetOptions,
+  type GetOrSetEntryOptions,
+  type GetOrSetOptions,
+  type GracedInfo,
+  type L3Budget,
+  type L3Emission,
+  type L3Ineligibility,
+  type MatchedHint,
+  type OriginLoadGuard,
+  type PurgeResult,
+  type RenderCollector,
+  type RequestContext,
+  type Scope,
+  type Tier,
+  type UnknownPolicy,
+} from "./cache";
+export {
+  type Bus,
+  type BusEvent,
+  type BusFrame,
+  type CasOrder,
+  type CasRecord,
+  type CasStore,
+  type Cdn,
+  type CdnMode,
+  type Clock,
+  type Codec,
+  isStoreWriteError,
+  type Lock,
+  type LockHandle,
+  memory,
+  type MemoryOptions,
+  type ReadKind,
+  type Registry,
+  type RegistryAck,
+  type Rng,
+  type Store,
+  type StoreMetadata,
+  type StoreValue,
+  type StoreWriteError,
+  type StoreWriteOptions,
+  type Subscription,
+  type TagChange,
+} from "./drivers";
+export { type Duration, duration, type DurationUnit } from "./duration";
+export {
+  CacheTimeoutError,
+  type CacheTimeoutSource,
+  FactorySettledError,
+  FencedError,
+  HttpError,
+  InvalidDurationError,
+  InvalidTagError,
+  NotImplementedError,
+  RegistryUnavailableError,
+  UnknownTagError,
+} from "./errors";
+export { type Envelope, type EnvelopeEnc, type EnvelopeKind } from "./envelope";
+export { httpError, isRetriableHttp } from "./http";
+export {
+  type Consistency,
+  type TagKnowledge,
+  type Validity,
+  type Watermark,
+} from "./knowledge";
+export { compound, globalTag, t, type Tag, type TagPart } from "./tags";
+export {
+  type SinkErrorHook,
+  type StrongDegradedReason,
+  TELEMETRY_EVENTS,
+  type TelemetryConfig,
+  type TelemetryEvent,
+  type TelemetryEventName,
+  type TelemetrySink,
+} from "./telemetry";
