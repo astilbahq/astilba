@@ -52,10 +52,14 @@ describe("pilot boundaries", () => {
             const installed = await realpath(
               resolve(root, packagePath, "node_modules", name)
             );
-            assert.equal(
-              installed.includes(`${resolve(root, "node_modules/.pnpm")}/`),
-              true
+            const storeRelative = nodePath.relative(
+              resolve(root, "node_modules/.pnpm"),
+              installed
             );
+            assert.notEqual(storeRelative, "");
+            assert.notEqual(storeRelative, "..");
+            assert.equal(storeRelative.startsWith(`..${nodePath.sep}`), false);
+            assert.equal(nodePath.isAbsolute(storeRelative), false);
             const installedManifest = await readJson(
               `${packagePath}/node_modules/${name}/package.json`
             );

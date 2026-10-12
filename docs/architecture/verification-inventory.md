@@ -80,6 +80,7 @@ Trusted publishers remain bound to the original repository and workflow identiti
 | `pnpm verify:env:archive` | Committed clean pilot source, one exact Env archive and manifest verification |
 | `pnpm verify:env:consumers` | npm/pnpm/Bun, Workers, portable equivalence, deterministic generation, Vite and all eight Next consumers; run with the baseline Node/npm/pnpm/Bun pins on PATH |
 | `pnpm verify:registry` | Independent published Env adoption examples |
+| `pnpm verify:registry:lint` | Original Env formatting and syntax-lint rules for the relocated examples, including generated-byte exemptions; source TypeScript checking stays in the Env gate |
 | `.github/workflows/env-package-matrix.yml` | Full original Env archive matrix, including all eight Node/TypeScript lanes and Windows minimum-runtime consumer |
 | `.github/workflows/pilot.yml` | Both original UI Node lanes, Ubuntu screenshot contract, Docs/apex verification and Linux/Windows registry examples |
 

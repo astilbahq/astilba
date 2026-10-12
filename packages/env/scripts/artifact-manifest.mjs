@@ -235,11 +235,13 @@ export const captureSource = async (root) => {
   }
   const packagePath = resolve(root, "package.json");
   const gitRoot = git(["rev-parse", "--show-toplevel"], root);
-  const committedMetadata = await canonicalStrictDescendant(
-    gitRoot,
-    packagePath
-  );
-  const committedPath = committedMetadata.relative.split(sep).join("/");
+  await canonicalStrictDescendant(gitRoot, packagePath);
+  const committedPath = relative(
+    await realpath(gitRoot),
+    resolve(await realpath(root), "package.json")
+  )
+    .split(sep)
+    .join("/");
   const currentPackage = await readFile(packagePath);
   const committedPackage = spawnSync(
     // oxlint-disable-next-line sonarjs/no-os-command-from-path -- Git supplies the committed package bytes.

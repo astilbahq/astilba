@@ -83,6 +83,28 @@ describe("monorepo roots", () => {
       await expect(captureSource(nested)).rejects.toThrow(
         "clean committed checkout"
       );
+      await rm(resolve(nested, "package.json"));
+      await writeFile(
+        resolve(root, "shared-package.json"),
+        '{"name":"@astilba/env","version":"0.3.0"}\n'
+      );
+      await symlink(
+        "../../shared-package.json",
+        resolve(nested, "package.json")
+      );
+      git("add", ".");
+      git(
+        "-c",
+        "user.name=Fixture",
+        "-c",
+        "user.email=fixture@example.invalid",
+        "commit",
+        "-m",
+        "symlink fixture"
+      );
+      await expect(captureSource(nested)).rejects.toThrow(
+        "not the committed source"
+      );
     } finally {
       await rm(root, { recursive: true, force: true });
     }

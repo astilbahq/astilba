@@ -18,3 +18,4 @@ worker-configuration.d.ts
 .wrangler/
 *.tgz
 *.tsbuildinfo
+.impeccable/*.cache.json
