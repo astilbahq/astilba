@@ -1,40 +1,35 @@
-# Astilba UI
+# Astilba monorepo pilot
 
-Astilba's public interface foundation and design system.
-
-The repository contains two intentionally small packages:
-
-- `@astilba/tokens` — semantic CSS variables and a Panda CSS preset.
-- `@astilba/ui` — accessible React controls built with native semantics, Base UI where behaviour warrants it, and static CSS.
-
-Both packages are public. The private showcase app is a visual test harness, not a separate documentation product. They are designed first for Astilba's own products while remaining available to other consumers that want the same interface contract.
-
-## Packages
-
-```sh
-pnpm add @astilba/tokens
-pnpm add @astilba/ui @astilba/tokens
-```
-
-See the package guides for the supported entrypoints and integration examples:
-
-- [`@astilba/tokens`](packages/tokens/README.md)
-- [`@astilba/ui`](packages/ui/README.md)
+A local pilot combining the public Env, tokens/UI, docs and apex source trees. Cache and Handbook stay separate. Existing repositories remain responsible for package releases and production deployments.
 
 ## Development
 
+Use Node 24.18.1 and pnpm 11.17.0 for root development.
+
 ```sh
-pnpm install
+corepack pnpm install --frozen-lockfile
+corepack pnpm@11.10.0 --dir fixtures/registry/env install --frozen-lockfile
+pnpm test:browser:install
+pnpm --dir apps/docs test:browser:install
 pnpm verify
-pnpm dev
 ```
 
-`pnpm verify` includes the unit, package, Astro server-rendering, and real-browser contracts. Install Chromium once with `pnpm test:browser:install` when running the browser suite locally.
+Scoped commands are `pnpm verify:ui`, `pnpm verify:env` and `pnpm verify:web`. Env archive, registry adoption and exact-runtime consumer lanes have separate commands and runtime pins. Root CI retains the original Linux and Windows matrices; local source checks alone do not establish complete parity.
 
-Visual baselines are platform-qualified because browser text rendering differs across operating systems. Update a baseline on its native operating system with `pnpm test:browser:update`, then review the resulting images before committing them.
+- [Verification inventory](docs/architecture/verification-inventory.md) maps every source workflow and required status to the pilot.
+- [Pilot validation](docs/architecture/pilot-validation.md) records results and remaining acceptance conditions.
+- [Agent guidance](AGENTS.md) routes work to package-specific instructions.
 
-Agent instructions are canonical in `AGENTS.md`; `CLAUDE.md` is a symbolic link. Checkouts require symbolic-link support. On Windows, enable Developer Mode or use an elevated shell and configure Git to preserve symbolic links before cloning.
+## Workspace
 
-Temporary toolchain exceptions are recorded in [`docs/typechecking-exceptions.md`](docs/typechecking-exceptions.md).
+```text
+packages/     env, tokens, ui
+apps/         docs, site, ui-showcase
+fixtures/     ui-astro; registry/env (independent installation)
+tooling/      migration commands and original install/workflow references
+docs/         architecture and UI operational guidance
+```
 
-Release operators should follow the [release process](docs/releasing.md).
+Docs and apex continue to consume released UI/tokens 0.5.0 and Env 0.3.0. UI source remains version 0.6.0. Registry fixtures retain their public pins and independent lock. Tokens and UI keep coordinated versions; Env remains independently versioned.
+
+Snapshot imports are a pilot technique. Destination naming, production history migration, npm publisher cutover and deployment switching remain separate decisions. No publisher or production deployment is active in this checkout.

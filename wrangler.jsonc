@@ -4,7 +4,7 @@
   "compatibility_date": "2026-07-27",
   "workers_dev": false,
   "assets": {
-    "directory": "./apps/showcase/dist",
+    "directory": "./apps/ui-showcase/dist",
   },
   "routes": [
     {

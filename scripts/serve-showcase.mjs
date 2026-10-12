@@ -7,7 +7,7 @@ if (!Number.isSafeInteger(port) || port < 1 || port > 65_535) {
   throw new RangeError("The showcase port must be an integer from 1 to 65535.");
 }
 
-const root = path.resolve(import.meta.dirname, "../apps/showcase/dist");
+const root = path.resolve(import.meta.dirname, "../apps/ui-showcase/dist");
 const contentTypes = new Map([
   [".css", "text/css; charset=utf-8"],
   [".html", "text/html; charset=utf-8"],

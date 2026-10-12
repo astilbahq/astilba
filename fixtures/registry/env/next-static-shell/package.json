@@ -1,0 +1,26 @@
+{
+  "name": "@astilba/env-example-next-static-shell",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "next build --webpack",
+    "dev": "cross-env NEXT_APP_NAME=Env-static-shell NEXT_LABEL=local-label next dev --webpack",
+    "env:check": "cross-env NEXT_APP_NAME=Env-static-shell astilba-env generate --check",
+    "env:generate": "cross-env NEXT_APP_NAME=Env-static-shell astilba-env generate",
+    "start": "next start",
+    "start:example": "cross-env NEXT_LABEL=local-label next start"
+  },
+  "dependencies": {
+    "@astilba/env": "0.3.0",
+    "next": "16.3.8",
+    "react": "19.2.8",
+    "react-dom": "19.2.8"
+  },
+  "devDependencies": {
+    "@types/node": "26.1.2",
+    "@types/react": "19.2.18",
+    "@types/react-dom": "19.2.3",
+    "cross-env": "10.1.0",
+    "typescript": "6.0.3"
+  }
+}

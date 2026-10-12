@@ -1,0 +1,27 @@
+---
+import { Icon } from "@astrojs/starlight/components";
+import { docsSidebarStyles as styles } from "./DocsSidebar.styles";
+
+const searchLabel = Astro.locals.t("search.label");
+const controlKey = Astro.locals.t("search.ctrlKey");
+---
+
+<button
+  aria-haspopup="dialog"
+  aria-keyshortcuts="Control+K"
+  aria-label={searchLabel}
+  class={styles.searchTrigger}
+  data-search-trigger-proxy
+  data-sidebar-search-trigger
+  disabled
+  title={searchLabel}
+  type="button"
+>
+  <span aria-hidden="true" class={styles.searchIcon}>
+    <Icon name="magnifier" size="0.875rem" />
+  </span>
+  <span class={styles.searchLabel}>{searchLabel}</span>
+  <kbd aria-hidden="true" class={styles.searchShortcut}>
+    <kbd data-search-shortcut-modifier>{controlKey}</kbd><kbd>K</kbd>
+  </kbd>
+</button>

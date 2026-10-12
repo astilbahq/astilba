@@ -1,0 +1,55 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "astilba-docs",
+  "main": "worker/index.ts",
+  "compatibility_date": "2026-07-14",
+  "upload_source_maps": true,
+  "workers_dev": false,
+  "assets": {
+    "directory": "./dist",
+    "binding": "ASSETS",
+    "html_handling": "force-trailing-slash",
+    "not_found_handling": "404-page",
+    "run_worker_first": [
+      "/docs/*",
+      "!/docs/_astro/*",
+      "!/docs/_llms-txt/*",
+      "!/docs/_mcp/*",
+      "!/docs/_security/*",
+      "!/docs/favicon.svg",
+      "!/docs/llms*.txt",
+      "!/docs/pagefind/*",
+      "!/docs/robots.txt",
+      "!/docs/sitemap.xml",
+      "!/docs/sitemap-*.xml",
+    ],
+  },
+  "ratelimits": [
+    {
+      "name": "MCP_RATE_LIMITER",
+      "namespace_id": "91005",
+      "simple": {
+        "limit": 60,
+        "period": 60,
+      },
+    },
+  ],
+  "observability": {
+    "enabled": true,
+    "logs": {
+      "enabled": true,
+      "head_sampling_rate": 0.1,
+      "invocation_logs": true,
+    },
+    "traces": {
+      "enabled": true,
+      "head_sampling_rate": 0.01,
+    },
+  },
+  "routes": [
+    {
+      "pattern": "astilba.com/docs/*",
+      "zone_name": "astilba.com",
+    },
+  ],
+}

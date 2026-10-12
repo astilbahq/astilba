@@ -1,0 +1,25 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["github>astilbahq/docs:renovate-default"],
+  "packageRules": [
+    {
+      "matchPackageNames": [
+        "vite-plus",
+        "@voidzero-dev/vite-plus-core",
+        "vitest",
+        "@vitest/**",
+        "oxlint",
+        "oxlint-tsgolint",
+        "oxfmt",
+        "ultracite"
+      ],
+      "groupName": "verification toolchain",
+      "automerge": false
+    },
+    {
+      "matchPackageNames": ["typescript", "typescript-7", "vite", "workerd"],
+      "groupName": "consumer matrix pins",
+      "automerge": false
+    }
+  ]
+}

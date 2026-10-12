@@ -1,0 +1,10 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "compatibility_date": "2026-07-29",
+  "compatibility_flags": [],
+  "main": "src/worker.ts",
+  "name": "astilba-env-public-example",
+  "vars": {
+    "WORKER_ENABLED": "true",
+  },
+}

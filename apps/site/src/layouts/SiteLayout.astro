@@ -1,0 +1,49 @@
+---
+import "@astilba/tokens/css";
+import "@astilba/ui/styles.css";
+import "@fontsource-variable/geist/index.css";
+import "@fontsource-variable/inter/index.css";
+import "@fontsource-variable/jetbrains-mono/index.css";
+import "../styles/global.css";
+
+import PublicFooter from "../components/PublicFooter.astro";
+import PublicHeader from "../components/PublicHeader.astro";
+
+interface Props {
+  current?: "cache" | "env" | "home";
+  description: string;
+  title: string;
+}
+
+const { current = "home", description, title } = Astro.props;
+const canonical = new URL(Astro.url.pathname, Astro.site ?? Astro.url);
+---
+
+<!doctype html>
+<html data-theme="dark" lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta content="width=device-width" name="viewport" />
+    <meta content={description} name="description" />
+    <meta content="#121212" name="theme-color" />
+    <meta content="summary" name="twitter:card" />
+    <meta content={description} property="og:description" />
+    <meta content={title} property="og:title" />
+    <meta content="website" property="og:type" />
+    <meta content={canonical.href} property="og:url" />
+    <link href={canonical.href} rel="canonical" />
+    <link href="/docs/favicon.svg" rel="icon" type="image/svg+xml" />
+    <link href="/llms.txt" rel="describedby" type="text/plain" />
+    <link href="/sitemap.xml" rel="sitemap" type="application/xml" />
+    <script is:inline src="/site.js"></script>
+    <title>{title}</title>
+  </head>
+  <body>
+    <a class="skip-link" href="#main-content">Skip to content</a>
+    <PublicHeader current={current} />
+    <main id="main-content">
+      <slot />
+    </main>
+    <PublicFooter />
+  </body>
+</html>

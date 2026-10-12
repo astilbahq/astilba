@@ -1,13 +1,31 @@
 packages:
-  - apps/*
-  - packages/*
-  - tests/integrations/*
+  - packages/env
+  - packages/tokens
+  - packages/ui
+  - apps/docs
+  - apps/site
+  - apps/ui-showcase
+  - fixtures/ui-astro
+linkWorkspacePackages: false
 allowBuilds:
   esbuild: true
+  sharp: true
   workerd: true
 minimumReleaseAge: 4320
 engineStrict: true
 overrides:
+  vite: 8.1.5
+  vitest: 4.1.11
+  "@vitest/spy@4.1.10": 4.1.11
+  "@vitest/utils@4.1.10": 4.1.11
+  "@vitest/expect@4.1.10": 4.1.11
+  "@vitest/mocker@4.1.10": 4.1.11
+  "@vitest/runner@4.1.10": 4.1.11
+  "@vitest/browser@4.1.10": 4.1.11
+  "@vitest/snapshot@4.1.10": 4.1.11
+  "@vitest/pretty-format@4.1.10": 4.1.11
+  "@vitest/browser-preview@4.1.10": 4.1.11
+  "@expressive-code/core@0.44.2>postcss-nested": 7.0.2
   # unifont 0.7.5 requires Node 22.19 through Undici 8.
   unifont@0.7.5: 0.7.4
   # GHSA-vfj7-8cjw-p6xm: upstream has no fixed release.
@@ -19,3 +37,4 @@ overrides:
   postcss-selector-parser@>=7.0.0 <7.1.6: 7.1.6
   sharp@<0.35.5: 0.35.5
   undici@>=7.0.0 <7.29.1: 7.29.1
+  smol-toml@>=1.0.0 <1.9.0: 1.9.0

@@ -1,0 +1,108 @@
+{
+  "name": "@astilba/env",
+  "version": "0.3.0",
+  "description": "Local-first configuration contracts with deterministic generation, public and server projections, and build-once browser delivery.",
+  "keywords": [
+    "cli",
+    "configuration",
+    "environment",
+    "typescript",
+    "vite"
+  ],
+  "homepage": "https://github.com/astilbahq/env#readme",
+  "bugs": {
+    "url": "https://github.com/astilbahq/env/issues"
+  },
+  "license": "MIT",
+  "author": "Astilba contributors",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/astilbahq/env.git"
+  },
+  "funding": "https://github.com/sponsors/astilbahq",
+  "bin": {
+    "astilba-env": "./dist/cli/astilba-env.js"
+  },
+  "files": [
+    "dist",
+    "LICENSE",
+    "README.md"
+  ],
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "workerd": null,
+      "node": "./dist/index.js"
+    },
+    "./browser": {
+      "types": "./dist/browser/index.d.ts",
+      "workerd": null,
+      "browser": "./dist/browser/index.js",
+      "default": "./dist/browser/index.js"
+    },
+    "./runtime": {
+      "types": "./dist/runtime/index.d.ts",
+      "workerd": "./dist/runtime/workerd.js",
+      "node": "./dist/runtime/index.js"
+    },
+    "./vite": {
+      "types": "./dist/vite/index.d.ts",
+      "workerd": null,
+      "node": "./dist/vite/index.js"
+    }
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "scripts": {
+    "build": "vp pack",
+    "check": "vp check",
+    "fix": "vp check --fix",
+    "generate:check": "astilba-env generate --check",
+    "knip": "pnpm --dir ../.. exec knip --workspace packages/env",
+    "pack:artifact": "node scripts/pack-artifact.mjs",
+    "test": "vp test",
+    "test:run": "vitest run",
+    "typecheck": "node node_modules/typescript/bin/tsc --noEmit -p tsconfig.json",
+    "typecheck:ts7": "node node_modules/typescript-7/bin/tsc --noEmit -p tsconfig.json",
+    "verify:consumers": "node scripts/verify-consumer.mjs",
+    "verify:artifact": "node scripts/verify-artifact.mjs",
+    "verify:filesystem-containment": "node scripts/verify-filesystem-containment.mjs",
+    "verify:tools": "node scripts/verify-tools.mjs",
+    "verify": "pnpm verify:tools && pnpm verify:filesystem-containment && pnpm typecheck && pnpm typecheck:ts7 && pnpm test:run && pnpm build && node scripts/verify-public-tsdoc.mjs && node scripts/verify-package.mjs"
+  },
+  "devDependencies": {
+    "@arethetypeswrong/cli": "0.18.4",
+    "@types/node": "26.1.2",
+    "@vitest/coverage-istanbul": "4.1.11",
+    "esbuild": "0.28.1",
+    "jsonc-parser": "3.3.1",
+    "knip": "6.29.0",
+    "oxfmt": "0.61.0",
+    "oxlint": "1.73.0",
+    "oxlint-tsgolint": "7.0.2001",
+    "publint": "0.3.21",
+    "typescript": "6.0.3",
+    "typescript-7": "npm:typescript@7.0.2",
+    "ultracite": "7.9.4",
+    "vite": "8.1.5",
+    "vite-plus": "0.2.5",
+    "vitest": "4.1.11",
+    "workerd": "1.20260724.1"
+  },
+  "peerDependencies": {
+    "vite": ">=8.1.5 <9.0.0"
+  },
+  "peerDependenciesMeta": {
+    "vite": {
+      "optional": true
+    }
+  },
+  "engines": {
+    "node": ">=22.14.0 <23.0.0 || >=24.0.0 <25.0.0 || >=26.0.0 <27.0.0"
+  },
+  "packageManager": "pnpm@11.17.0"
+}

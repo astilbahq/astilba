@@ -1,0 +1,39 @@
+---
+import { LinkButton } from "@astilba/ui/link-button";
+import { css } from "../../styled-system/css";
+import AgentSetupCopy from "./AgentSetupCopy.astro";
+import { DocsIcon } from "./DocsIcon";
+
+interface Props {
+  label: string;
+  primaryHref: string;
+  primaryLabel: string;
+}
+
+const { label, primaryHref, primaryLabel } = Astro.props;
+
+const rootClass = css({
+  display: "flex",
+  flexWrap: "wrap",
+  alignItems: "center",
+  gap: "0.5rem",
+  marginBlockStart: "1.5rem",
+});
+const iconClass = css({
+  display: "block",
+  flex: "0 0 auto",
+});
+---
+
+<div aria-label={label} class={rootClass} role="group">
+  <LinkButton appearance="primary" href={primaryHref} size="large">
+    {primaryLabel}
+    <DocsIcon
+      className={iconClass}
+      name="right-arrow"
+      size={14}
+      strokeWidth={1.25}
+    />
+  </LinkButton>
+  <AgentSetupCopy />
+</div>

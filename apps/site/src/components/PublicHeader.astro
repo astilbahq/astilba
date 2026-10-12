@@ -1,0 +1,99 @@
+---
+import { IconButton } from "@astilba/ui/icon-button";
+import BrandMark from "./BrandMark.astro";
+
+interface Props {
+  current?: "cache" | "env" | "home";
+}
+
+const { current = "home" } = Astro.props;
+const links = [
+  { href: "/env/", label: "Env", key: "env" },
+  { href: "/cache/", label: "Cache", key: "cache" },
+  { href: "/docs/", label: "Docs", key: "docs" },
+  { href: "https://github.com/astilbahq", label: "GitHub", key: "github" },
+] as const;
+---
+
+<header class="site-header">
+  <div class="site-header__inner">
+    <a
+      aria-label="Astilba home"
+      class="brand-lockup"
+      data-design-system-easter-egg
+      href="/"
+    >
+      <BrandMark class="brand-lockup__mark" />
+      <span class="brand-lockup__name">Astilba</span>
+    </a>
+
+    <nav aria-label="Primary" class="desktop-nav">
+      {links.map((link) => (
+        <a
+          aria-current={current === link.key ? "page" : undefined}
+          href={link.href}
+          rel={link.key === "github" ? "noopener" : undefined}
+        >
+          {link.label}
+        </a>
+      ))}
+    </nav>
+
+    <div class="header-actions">
+      <IconButton
+        className="site-header__icon-button"
+        data-theme-toggle
+        label="Toggle color theme"
+        size="large"
+        title="Toggle color theme"
+      >
+        <svg aria-hidden="true" class="theme-icon theme-icon--sun" viewBox="0 0 24 24">
+          <circle cx="12" cy="12" r="3.5"></circle>
+          <path d="M12 2v2.2M12 19.8V22M4.9 4.9l1.6 1.6M17.5 17.5l1.6 1.6M2 12h2.2M19.8 12H22M4.9 19.1l1.6-1.6M17.5 6.5l1.6-1.6"></path>
+        </svg>
+        <svg aria-hidden="true" class="theme-icon theme-icon--moon" viewBox="0 0 24 24">
+          <path d="M20.4 15.2A8.7 8.7 0 0 1 8.8 3.6 8.7 8.7 0 1 0 20.4 15.2Z"></path>
+        </svg>
+      </IconButton>
+      <IconButton
+        aria-haspopup="dialog"
+        className="site-header__icon-button mobile-menu-button"
+        data-mobile-menu-open
+        label="Open navigation"
+        size="large"
+      >
+        <svg aria-hidden="true" viewBox="0 0 24 24">
+          <path d="M4 7h16M4 12h16M4 17h16"></path>
+        </svg>
+      </IconButton>
+    </div>
+  </div>
+</header>
+
+<dialog aria-label="Navigation" class="mobile-menu" data-mobile-menu>
+  <div class="mobile-menu__topline">
+    <span>Navigate</span>
+    <IconButton
+      className="site-header__icon-button"
+      data-mobile-menu-close
+      label="Close navigation"
+      size="large"
+    >
+      <svg aria-hidden="true" viewBox="0 0 24 24">
+        <path d="m6 6 12 12M18 6 6 18"></path>
+      </svg>
+    </IconButton>
+  </div>
+  <nav aria-label="Mobile">
+    {links.map((link) => (
+      <a
+        aria-current={current === link.key ? "page" : undefined}
+        href={link.href}
+        rel={link.key === "github" ? "noopener" : undefined}
+      >
+        <span>{link.label}</span>
+        <span aria-hidden="true">↗</span>
+      </a>
+    ))}
+  </nav>
+</dialog>

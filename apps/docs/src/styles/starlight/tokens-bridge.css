@@ -1,0 +1,113 @@
+@layer astilba.starlight {
+  :root {
+    color-scheme: dark;
+    --astilba-signal: var(--astilba-colors-signal);
+
+    /* Adapt Astilba's Panda tokens to Starlight's public theme contract. */
+    --sl-color-white: var(--astilba-colors-ink-strong);
+    --sl-color-gray-1: var(--astilba-colors-ink-control);
+    --sl-color-gray-2: var(--astilba-colors-ink-secondary);
+    --sl-color-gray-3: var(--astilba-colors-ink-muted);
+    --sl-color-gray-4: var(--astilba-colors-border-guide);
+    --sl-color-gray-5: var(--astilba-colors-border-structure);
+    --sl-color-gray-6: var(--astilba-colors-surface-recessed);
+    --sl-color-gray-7: var(--astilba-colors-surface-quiet);
+    --sl-color-black: var(--astilba-colors-canvas);
+
+    --sl-color-accent-low: var(--astilba-colors-accent-low);
+    --sl-color-accent: var(--astilba-colors-accent);
+    --sl-color-accent-high: var(--astilba-colors-accent-high);
+    --sl-color-text: var(--astilba-colors-ink-default);
+    --sl-color-text-accent: var(--astilba-colors-ink-strong);
+    --sl-color-text-invert: var(--astilba-colors-ink-inverse);
+    --sl-color-bg: var(--astilba-colors-canvas);
+    --sl-color-bg-nav: var(--astilba-colors-canvas);
+    --sl-color-bg-sidebar: var(--astilba-colors-canvas);
+    --sl-color-bg-inline-code: var(--astilba-colors-surface-inline-code);
+    --sl-color-bg-accent: var(--astilba-colors-surface-banner);
+    --sl-color-banner-text: var(--astilba-colors-ink-on-banner);
+    --sl-color-hairline-light: var(--astilba-colors-border-strong);
+    --sl-color-hairline: var(--astilba-colors-border);
+    --sl-color-hairline-shade: var(--astilba-colors-border-subtle);
+
+    --sl-font: var(--astilba-fonts-body);
+    --astilba-font-heading: var(--astilba-fonts-heading);
+    --sl-font-mono: var(--astilba-fonts-mono);
+    --sl-text-body: 1rem;
+    --sl-text-body-sm: 0.8125rem;
+    --sl-text-code: 0.8125rem;
+    --sl-text-code-sm: 0.8125rem;
+    --sl-text-h1: 1.75rem;
+    --sl-text-h2: 1.5rem;
+    --sl-text-h3: 1.25rem;
+    --sl-text-h4: 1.125rem;
+    --sl-text-h5: 1rem;
+    --sl-text-h6: 0.875rem;
+    --sl-line-height: 1.72;
+    --sl-line-height-headings: 1.35;
+
+    --sl-nav-height: 3rem;
+    --sl-nav-pad-x: 1rem;
+    --sl-nav-pad-y: 0.5rem;
+    --sl-nav-gap: 0.75rem;
+    --sl-mobile-toc-height: 2.5rem;
+    --sl-sidebar-width: 17.5rem;
+    --sl-sidebar-pad-x: 1rem;
+    --sl-content-width: 48rem;
+    --sl-content-pad-x: 1rem;
+    --sl-content-gap-y: 1.25rem;
+    --sl-menu-button-size: 2rem;
+    --astilba-page-pad-block-start: 3.5rem;
+
+    --sl-shadow-sm: var(--astilba-shadows-none);
+    --sl-shadow-md: var(--astilba-shadows-none);
+    --sl-shadow-lg: var(--astilba-shadows-overlay);
+  }
+
+  :root,
+  ::backdrop {
+    --sl-color-backdrop-overlay: var(--astilba-colors-surface-scrim);
+  }
+
+  :root[data-theme="light"] {
+    color-scheme: light;
+  }
+
+  site-search dialog {
+    --sl-color-black: var(--astilba-colors-surface-elevated);
+  }
+
+  .starlight-aside--note {
+    --sl-color-asides-border: var(--astilba-colors-callout-note-accent);
+    --sl-color-asides-text-accent: var(--astilba-colors-callout-note-foreground);
+  }
+
+  .starlight-aside--tip {
+    --sl-color-asides-border: var(--astilba-colors-callout-tip-accent);
+    --sl-color-asides-text-accent: var(--astilba-colors-callout-tip-foreground);
+  }
+
+  .starlight-aside--caution {
+    --sl-color-asides-border: var(--astilba-colors-callout-caution-accent);
+    --sl-color-asides-text-accent: var(--astilba-colors-callout-caution-foreground);
+  }
+
+  .starlight-aside--danger {
+    --sl-color-asides-border: var(--astilba-colors-callout-danger-accent);
+    --sl-color-asides-text-accent: var(--astilba-colors-callout-danger-foreground);
+  }
+
+  @media (min-width: 50rem) {
+    :root {
+      --sl-nav-height: 2.75rem;
+      --sl-nav-pad-y: 0.375rem;
+      --sl-content-pad-x: 2rem;
+    }
+  }
+
+  @media (min-width: 72rem) {
+    :root {
+      --sl-mobile-toc-height: 0rem;
+    }
+  }
+}

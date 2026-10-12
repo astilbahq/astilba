@@ -1,12 +1,13 @@
 {
   "$schema": "https://unpkg.com/knip@6/schema.json",
+  "ignore": ["fixtures/registry/**"],
   "workspaces": {
     ".": {
-      "entry": ["scripts/serve-showcase.mjs!"]
-    },
-    "apps/showcase": {
-      "entry": ["tests/**/*.test.tsx!"],
-      "project": ["src/**/*.{ts,tsx}!", "tests/**/*.tsx!", "*.config.ts!"]
+      "entry": ["scripts/serve-showcase.mjs!", "tooling/migration/*.mjs!"],
+      "playwright": {
+        "config": [],
+        "entry": ["playwright.config.ts!", "tests/e2e/**/*.ts!"]
+      }
     },
     "packages/tokens": {
       "entry": ["src/index.ts!", "src/panda.ts!", "tests/**/*.test.ts!"],
@@ -17,9 +18,75 @@
       "ignoreDependencies": ["@astilba/tokens"],
       "project": ["src/**/*.{ts,tsx}!", "tests/**/*.tsx!", "*.config.ts!"]
     },
-    "tests/integrations/astro": {
+    "apps/ui-showcase": {
+      "entry": ["tests/**/*.test.tsx!"],
+      "project": ["src/**/*.{ts,tsx}!", "tests/**/*.tsx!", "*.config.ts!"]
+    },
+    "fixtures/ui-astro": {
       "entry": ["src/pages/**/*.astro!", "tests/**/*.mjs!"],
       "project": ["src/**/*.astro!", "tests/**/*.mjs!", "*.config.ts!"]
+    },
+    "packages/env": {
+      "entry": [
+        "src/index.ts",
+        "src/browser/index.ts",
+        "src/cli/astilba-env.ts",
+        "src/cli/compile.ts",
+        "src/runtime/index.ts",
+        "src/runtime/workerd.ts",
+        "src/vite/index.ts",
+        "src/**/*.test.ts",
+        "test/**/*.ts",
+        "scripts/*.mjs"
+      ],
+      "project": ["src/**/*.ts", "test/**/*.ts", "scripts/**/*.mjs"],
+      "ignoreDependencies": ["@arethetypeswrong/cli", "publint", "workerd"],
+      "ignoreBinaries": ["astilba-env"]
+    },
+    "apps/docs": {
+      "playwright": {
+        "config": [],
+        "entry": ["playwright.config.ts!", "tests/e2e/**/*.ts!"]
+      },
+      "entry": [
+        "scripts/**/*.mjs!",
+        "src/docs/route-middleware.ts!",
+        "src/pages/**/*.{astro,ts}!",
+        "src/components/{Head,Header,MobileMenuToggle,PageTitle,Sidebar,VersionBanner}.astro!",
+        "tests/**/*.test.ts!"
+      ],
+      "project": [
+        "*.config.{cjs,js,mjs,ts}!",
+        "scripts/**/*.mjs!",
+        "src/**/*.{astro,ts,tsx}!",
+        "tests/**/*.ts!",
+        "worker/**/*.ts!"
+      ],
+      "ignoreDependencies": [
+        "@fontsource-variable/geist",
+        "@fontsource-variable/inter",
+        "@fontsource-variable/jetbrains-mono"
+      ]
+    },
+    "apps/site": {
+      "playwright": {
+        "config": [],
+        "entry": ["playwright.config.ts!", "test/browser/**/*.ts!"]
+      },
+      "entry": [
+        "public/site.js!",
+        "scripts/**/*.mjs!",
+        "src/pages/**/*.{astro,ts}!",
+        "test/**/*.test.ts!",
+        "worker/**/*.ts!"
+      ],
+      "project": [
+        "*.config.ts!",
+        "scripts/**/*.mjs!",
+        "src/**/*.{astro,ts}!",
+        "test/**/*.ts!",
+        "worker/**/*.ts!"
+      ]
     }
   }
 }

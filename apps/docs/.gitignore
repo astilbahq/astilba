@@ -1,0 +1,11 @@
+.DS_Store
+.astro/
+dist/
+node_modules/
+playwright-report/
+test-results/
+.wrangler/
+
+## Panda
+styled-system
+styled-system-studio

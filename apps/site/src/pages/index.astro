@@ -1,0 +1,156 @@
+---
+import { LinkButton } from "@astilba/ui/link-button";
+import BrandMark from "../components/BrandMark.astro";
+import ExecutionProof from "../components/ExecutionProof.astro";
+import GuaranteeRows from "../components/GuaranteeRows.astro";
+import SiteLayout from "../layouts/SiteLayout.astro";
+
+const envGuarantees = [
+  {
+    guarantee: "Every value belongs to a declared lifecycle.",
+    boundary:
+      "Build, deployment, and request values are resolved where they become available.",
+  },
+  {
+    guarantee: "Browser exposure is an explicit projection.",
+    boundary:
+      "Generated browser modules contain no private names, bindings, values, or full-contract metadata.",
+  },
+  {
+    guarantee: "Runtime browser configuration stays inert.",
+    boundary:
+      "The application owns a same-origin JSON endpoint and its cache, trust, and failure policy.",
+  },
+] as const;
+
+const cacheGuarantees = [
+  {
+    guarantee: "Uncertain invalidation knowledge never becomes false freshness.",
+    boundary: "Cache may perform extra origin work while distributed state reconverges.",
+  },
+  {
+    guarantee: "Identity is part of storage safety.",
+    boundary: "Principal-derived values stay local unless the application declares a shareable scope.",
+  },
+  {
+    guarantee: "Portability is a capability boundary.",
+    boundary: "The raw constructor requires storage, a clock, and a random source from the runtime.",
+  },
+] as const;
+---
+
+<SiteLayout
+  description="Astilba builds portable infrastructure tools and libraries with explicit correctness boundaries."
+  title="Astilba; portable infrastructure, explicit boundaries"
+>
+  <section aria-labelledby="home-heading" class="hero section-shell">
+    <div class="hero__copy">
+      <p class="eyebrow">Portable infrastructure · TypeScript</p>
+      <h1 id="home-heading">Infrastructure that tells you where its guarantees end.</h1>
+      <p class="hero__lede">
+        Astilba builds portable infrastructure tools and libraries with explicit correctness
+        boundaries. The documentation says what works, what it costs, and what remains
+        incomplete.
+      </p>
+      <div class="action-row">
+        <LinkButton
+          appearance="primary"
+          className="action"
+          href="/docs/env/quickstart/"
+          size="large"
+        >
+          Configure a Node application
+          <span aria-hidden="true">→</span>
+        </LinkButton>
+        <LinkButton
+          appearance="outline"
+          className="action"
+          href="https://github.com/astilbahq/docs"
+          rel="noopener"
+          size="large"
+        >
+          View docs source
+          <span aria-hidden="true">↗</span>
+        </LinkButton>
+      </div>
+      <p class="release-line">
+        <span class="status-dot" aria-hidden="true"></span>
+        <span><code>@astilba/env</code> 0.3.0 is a public alpha · Cache remains a development preview</span>
+      </p>
+    </div>
+
+    <div class="hero__proof">
+      <BrandMark class="hero__mark" />
+      <ExecutionProof />
+    </div>
+  </section>
+
+  <section aria-labelledby="env-heading" class="section-shell ruled-section">
+    <div class="section-heading">
+      <div>
+        <p class="eyebrow">01 · Public alpha</p>
+        <h2 id="env-heading">Env</h2>
+      </div>
+      <span class="lifecycle-badge">0.3.0 public alpha</span>
+    </div>
+    <p class="section-intro">
+      A local-first TypeScript configuration contract compiler with explicit
+      lifecycles and physically separated browser and server projections.
+    </p>
+    <GuaranteeRows rows={[...envGuarantees]} />
+    <div class="section-actions">
+      <a href="/env/">Explore Env <span aria-hidden="true">→</span></a>
+      <a href="/docs/env/migrate-from-next-dynamic-env/">Migrate from next-dynamic-env <span aria-hidden="true">→</span></a>
+    </div>
+  </section>
+
+  <section aria-labelledby="cache-heading" class="section-shell ruled-section">
+    <div class="section-heading">
+      <div>
+        <p class="eyebrow">02 · Development preview</p>
+        <h2 id="cache-heading">Cache</h2>
+      </div>
+      <span class="lifecycle-badge">Unreleased preview</span>
+    </div>
+    <p class="section-intro">
+      A server-side TypeScript cache for applications that need explicit invalidation,
+      classified stale-on-error resilience, privacy-aware sharing, and portable runtime
+      adapters.
+    </p>
+    <GuaranteeRows rows={[...cacheGuarantees]} />
+    <div class="section-actions">
+      <a href="/cache/">Explore Cache <span aria-hidden="true">→</span></a>
+      <a href="/docs/cache/api-status/">Implementation status <span aria-hidden="true">→</span></a>
+    </div>
+  </section>
+
+  <section aria-labelledby="docs-heading" class="section-shell ruled-section docs-formats">
+    <div class="section-heading section-heading--compact">
+      <div>
+        <p class="eyebrow">03 · One public corpus</p>
+        <h2 id="docs-heading">For people and agents</h2>
+      </div>
+    </div>
+    <p class="section-intro">
+      The same public documentation is available as readable pages, authored Markdown,
+      and a bounded read-only MCP service.
+    </p>
+    <div class="format-list">
+      <a href="/docs/">
+        <span class="format-list__label">HTML</span>
+        <span>Browse the documentation</span>
+        <span aria-hidden="true">↗</span>
+      </a>
+      <a href="/docs/env/overview.md">
+        <span class="format-list__label">Markdown</span>
+        <span>Read a product page as Markdown</span>
+        <span aria-hidden="true">↗</span>
+      </a>
+      <a href="/docs/agents/mcp/">
+        <span class="format-list__label">MCP</span>
+        <span>Search the public corpus</span>
+        <span aria-hidden="true">↗</span>
+      </a>
+    </div>
+  </section>
+</SiteLayout>

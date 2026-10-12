@@ -1,0 +1,70 @@
+---
+import { findDocsContext, getDocumentTitle } from "../docs/catalog";
+import { API_CATALOG_PATH } from "../docs/agent-discovery";
+import { withDocsBase } from "../docs/urls";
+
+const route = Astro.locals.starlightRoute;
+const { entry } = route;
+const documentTitle = getDocumentTitle({
+  context: findDocsContext(Astro.url.pathname),
+  isHome: entry.id === "" || entry.id === "index",
+  pageTitle: entry.data.title,
+  siteTitle: route.siteTitle,
+});
+const head = route.head.map((item) => {
+  if (item.tag === "title") {
+    return { ...item, content: documentTitle };
+  }
+
+  if (item.tag === "meta" && item.attrs?.property === "og:title") {
+    return {
+      ...item,
+      attrs: { ...item.attrs, content: documentTitle },
+    };
+  }
+
+  return item;
+});
+const isDocumentationPage =
+  entry.id !== "404" && !entry.id.endsWith("/404");
+const baseUrl = Astro.site ?? Astro.url;
+const markdownUrl = isDocumentationPage
+  ? new URL(withDocsBase(entry.id ? `/${entry.id}.md` : "/index.md"), baseUrl)
+  : undefined;
+const llmsUrl = isDocumentationPage && Astro.site
+  ? new URL(withDocsBase("/llms.txt"), Astro.site)
+  : undefined;
+const apiCatalogUrl = isDocumentationPage && Astro.site
+  ? new URL(API_CATALOG_PATH, Astro.site)
+  : undefined;
+---
+
+{head.map(({ tag: Tag, attrs, content }) => <Tag {...attrs} set:html={content} />)}
+{
+  markdownUrl && (
+    <link
+      href={markdownUrl}
+      rel="alternate"
+      title={`${entry.data.title} as Markdown`}
+      type="text/markdown"
+    />
+  )
+}
+{
+  llmsUrl && (
+    <link href={llmsUrl} rel="describedby" type="text/plain" />
+  )
+}
+{
+  apiCatalogUrl && (
+    <link
+      href={apiCatalogUrl}
+      rel="api-catalog"
+      type="application/linkset+json"
+    />
+  )
+}
+
+<script>
+  import "../scripts/register-webmcp";
+</script>

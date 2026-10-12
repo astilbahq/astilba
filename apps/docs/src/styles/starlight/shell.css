@@ -1,0 +1,250 @@
+@layer astilba.starlight {
+  html {
+    --astilba-theme-color-properties:
+      --astilba-colors-signal,
+      --astilba-colors-ink-strong,
+      --astilba-colors-ink-default,
+      --astilba-colors-ink-muted,
+      --astilba-colors-ink-subtle,
+      --astilba-colors-ink-faint,
+      --astilba-colors-ink-control,
+      --astilba-colors-ink-secondary,
+      --astilba-colors-ink-on-banner,
+      --astilba-colors-ink-inverse,
+      --astilba-colors-ink-on-primary,
+      --astilba-colors-canvas,
+      --astilba-colors-accent,
+      --astilba-colors-accent-low,
+      --astilba-colors-accent-high,
+      --astilba-colors-border-strong,
+      --astilba-colors-border,
+      --astilba-colors-border-subtle,
+      --astilba-colors-border-guide,
+      --astilba-colors-border-structure,
+      --astilba-colors-border-chrome,
+      --astilba-colors-border-control,
+      --astilba-colors-border-overlay,
+      --astilba-colors-surface-elevated,
+      --astilba-colors-surface-quiet,
+      --astilba-colors-surface-recessed,
+      --astilba-colors-surface-banner,
+      --astilba-colors-surface-subtle,
+      --astilba-colors-surface-hover,
+      --astilba-colors-surface-highlight,
+      --astilba-colors-surface-selected,
+      --astilba-colors-surface-pressed,
+      --astilba-colors-surface-action-primary,
+      --astilba-colors-surface-action-primary-hover,
+      --astilba-colors-surface-copy,
+      --astilba-colors-surface-copy-hover,
+      --astilba-colors-surface-copy-pressed,
+      --astilba-colors-surface-chrome,
+      --astilba-colors-surface-inline-code,
+      --astilba-colors-surface-code-block,
+      --astilba-colors-surface-kbd,
+      --astilba-colors-surface-selection,
+      --astilba-colors-surface-scrim,
+      --astilba-colors-link,
+      --astilba-colors-link-hover,
+      --astilba-colors-callout-note-accent,
+      --astilba-colors-callout-note-foreground,
+      --astilba-colors-callout-tip-accent,
+      --astilba-colors-callout-tip-foreground,
+      --astilba-colors-callout-caution-accent,
+      --astilba-colors-callout-caution-foreground,
+      --astilba-colors-callout-danger-accent,
+      --astilba-colors-callout-danger-foreground;
+
+    scrollbar-gutter: stable;
+  }
+
+  body {
+    font-feature-settings: "ss01" 1;
+    text-rendering: optimizeLegibility;
+  }
+
+  :is(h1, h2, h3, h4, h5, h6) {
+    font-family: var(--astilba-font-heading), var(--sl-font), sans-serif;
+    font-feature-settings: normal;
+  }
+
+  kbd {
+    font-family: var(--sl-font-mono), ui-monospace, monospace;
+  }
+
+  :is(code, kbd) {
+    font-feature-settings: "liga" 0, "calt" 0;
+    font-variant-ligatures: none;
+  }
+
+  ::selection {
+    background: var(--astilba-colors-surface-selection);
+    color: var(--astilba-colors-ink-strong);
+  }
+
+  :root[data-theme-transitioning="view"]::view-transition-old(root),
+  :root[data-theme-transitioning="view"]::view-transition-new(root) {
+    animation-duration: var(--astilba-durations-icon-swap);
+    animation-timing-function: var(--astilba-easings-in-out);
+  }
+
+  :root[data-theme-transitioning="css"] {
+    transition-property: var(--astilba-theme-color-properties);
+    transition-duration: var(--astilba-durations-icon-swap);
+    transition-timing-function: var(--astilba-easings-in-out);
+  }
+
+  :focus-visible {
+    outline-color: var(--astilba-signal);
+    outline-width: 0.125rem;
+    outline-offset: 0.125rem;
+  }
+
+  /* Compact, border-led application chrome. */
+  body > .page > header {
+    background: var(--astilba-colors-surface-chrome);
+    border-block-end-color: var(--astilba-colors-border-chrome);
+    -webkit-backdrop-filter: blur(var(--astilba-blurs-chrome));
+    backdrop-filter: blur(var(--astilba-blurs-chrome));
+  }
+
+  :root[data-theme="light"] #starlight__sidebar,
+  :root[data-theme="light"] mobile-starlight-toc nav {
+    background-color: var(--astilba-colors-surface-chrome);
+    -webkit-backdrop-filter: blur(var(--astilba-blurs-chrome));
+    backdrop-filter: blur(var(--astilba-blurs-chrome));
+  }
+
+  header .site-title {
+    gap: 0.5rem;
+    padding-inline: 0.125em;
+    color: var(--sl-color-white);
+    cursor: pointer;
+    font-size: 0.875rem;
+    font-weight: var(--astilba-font-weights-brand);
+    line-height: 1rem;
+  }
+
+  header .site-title img {
+    inline-size: auto;
+    block-size: 1rem;
+  }
+
+  site-search > button[data-open-modal] {
+    border-radius: 0;
+    box-shadow: none;
+  }
+
+  site-search > button[data-open-modal] > kbd {
+    background: var(--astilba-colors-surface-kbd);
+  }
+
+  site-search dialog {
+    transform: scale(0.96);
+    transform-origin: center;
+    opacity: 0;
+    pointer-events: none;
+    border: 0;
+    border-radius: var(--astilba-radii-elevated);
+    background: var(--astilba-colors-surface-elevated);
+    box-shadow: var(--astilba-shadows-elevated);
+    transition:
+      transform var(--astilba-durations-modal-close) var(--astilba-easings-out-quint),
+      opacity var(--astilba-durations-modal-close) var(--astilba-easings-out-quint),
+      display var(--astilba-durations-modal-close) allow-discrete,
+      overlay var(--astilba-durations-modal-close) allow-discrete;
+  }
+
+  site-search dialog[open] {
+    transform: scale(1);
+    opacity: 1;
+    pointer-events: auto;
+    transition:
+      transform var(--astilba-durations-modal-open) var(--astilba-easings-out-quint),
+      opacity var(--astilba-durations-modal-open) var(--astilba-easings-out-quint),
+      display var(--astilba-durations-modal-open) allow-discrete,
+      overlay var(--astilba-durations-modal-open) allow-discrete;
+  }
+
+  @starting-style {
+    site-search dialog[open] {
+      transform: scale(0.96);
+      opacity: 0;
+    }
+  }
+
+  site-search dialog::backdrop {
+    background-color: transparent;
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+    transition: background-color var(--astilba-durations-modal-close)
+      var(--astilba-easings-out-quint);
+  }
+
+  site-search dialog[open]::backdrop {
+    background-color: var(--sl-color-backdrop-overlay);
+    transition-duration: var(--astilba-durations-modal-open);
+  }
+
+  @starting-style {
+    site-search dialog[open]::backdrop {
+      background-color: transparent;
+    }
+  }
+
+  #starlight__search {
+    --pagefind-ui-border-radius: 0;
+    --pagefind-ui-scale: 0.9;
+  }
+
+  #starlight__search .pagefind-ui__search-input::placeholder {
+    color: var(--astilba-colors-ink-muted);
+    opacity: 1;
+  }
+
+  @media (max-width: 49.999rem) {
+    body > .page > header {
+      padding-inline-end: calc(
+        var(--sl-nav-pad-x) + var(--sl-menu-button-size) + 0.125rem
+      );
+    }
+  }
+
+  @media (min-width: 50rem) {
+    body > .page > header::after {
+      position: absolute;
+      inset-block: 0;
+      inset-inline-start: calc(var(--sl-sidebar-width) - 1px);
+      border-inline-start: 1px solid var(--astilba-colors-border-chrome);
+      content: "";
+    }
+
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    :root[data-theme-transitioning="view"]::view-transition-old(root),
+    :root[data-theme-transitioning="view"]::view-transition-new(root) {
+      animation-duration: var(--astilba-durations-instant) !important;
+    }
+
+    :root[data-theme-transitioning="css"] {
+      transition-duration: var(--astilba-durations-instant) !important;
+    }
+
+    site-search dialog,
+    site-search dialog::backdrop {
+      transition: none !important;
+    }
+
+    site-search dialog {
+      transform: none;
+    }
+
+    *,
+    *::before,
+    *::after {
+      scroll-behavior: auto !important;
+      transition-duration: var(--astilba-durations-instant) !important;
+    }
+  }
+}

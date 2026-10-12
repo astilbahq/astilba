@@ -1,0 +1,17 @@
+{
+  "name": "@astilba/env-examples",
+  "private": true,
+  "scripts": {
+    "env:check": "pnpm -r run env:check",
+    "env:generate": "pnpm -r run env:generate",
+    "verify:all": "node scripts/verify-adoption.mjs all",
+    "verify:next": "node scripts/verify-adoption.mjs next",
+    "verify:node": "node scripts/verify-adoption.mjs node",
+    "verify:vite": "node scripts/verify-adoption.mjs vite",
+    "verify:windows": "node scripts/verify-adoption.mjs windows"
+  },
+  "devDependencies": {
+    "yaml": "2.9.0"
+  },
+  "packageManager": "pnpm@11.10.0"
+}

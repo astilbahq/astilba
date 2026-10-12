@@ -1,0 +1,120 @@
+---
+import {
+  collectDocsSidebarGroupIds,
+  createDocsSidebarContext,
+  createDocsSidebarEntries,
+  createSiteSidebarEntries,
+  getDocsSidebarHash,
+} from "../docs/sidebar-model";
+import DocsSidebar from "./DocsSidebar";
+import SidebarSearch from "./SidebarSearch.astro";
+
+const { sidebar } = Astro.locals.starlightRoute;
+const entries = [
+  ...createDocsSidebarEntries(sidebar),
+  ...createSiteSidebarEntries(Astro.url.pathname),
+];
+const context = createDocsSidebarContext(Astro.url.pathname);
+const sidebarHash = getDocsSidebarHash(entries);
+const groupIds = collectDocsSidebarGroupIds(entries, () => true);
+const activeGroupIds = collectDocsSidebarGroupIds(
+  entries,
+  (entry) => entry.containsCurrent
+);
+---
+
+<script
+  aria-hidden="true"
+  data-active-group-ids={JSON.stringify(activeGroupIds)}
+  data-group-ids={JSON.stringify(groupIds)}
+  data-sidebar-hash={sidebarHash}
+  is:inline
+>
+  (() => {
+    try {
+      if (!matchMedia("(min-width: 50em)").matches) {
+        return;
+      }
+
+      const script = document.currentScript;
+      if (!(script instanceof HTMLScriptElement)) {
+        return;
+      }
+
+      const groupIds = JSON.parse(script.dataset.groupIds || "[]");
+      const activeGroupIds = JSON.parse(
+        script.dataset.activeGroupIds || "[]"
+      );
+      const state = JSON.parse(
+        sessionStorage.getItem("astilba-docs-sidebar-state-v1") || "null"
+      );
+
+      if (
+        !Array.isArray(groupIds) ||
+        !Array.isArray(activeGroupIds) ||
+        !state ||
+        state.hash !== script.dataset.sidebarHash ||
+        !Array.isArray(state.open) ||
+        typeof state.scroll !== "number"
+      ) {
+        return;
+      }
+
+      const validGroupIds = new Set(groupIds);
+      const openGroupIds = new Set([
+        ...state.open.filter((id) => validGroupIds.has(id)),
+        ...activeGroupIds.filter((id) => validGroupIds.has(id)),
+      ]);
+      const closedGroupIds = groupIds.filter((id) => !openGroupIds.has(id));
+
+      if (closedGroupIds.length > 0) {
+        const style = document.createElement("style");
+        style.id = "astilba-docs-sidebar-bootstrap-style";
+        style.textContent = closedGroupIds
+          .map((id) => {
+            const group = `[data-docs-sidebar-root][data-restoring] [data-docs-sidebar-group="${id}"]`;
+            return `${group}>[data-docs-sidebar-panel]{display:none!important}${group}>[data-docs-sidebar-trigger] svg{transform:none!important}`;
+          })
+          .join("");
+        document.head.append(style);
+
+        window.setTimeout(() => style.remove(), 4000);
+      }
+
+      const scroller = document.getElementById("starlight__sidebar");
+      if (scroller && Number.isFinite(state.scroll)) {
+        scroller.dataset.docsSidebarScrollRestore = String(
+          Math.max(0, state.scroll)
+        );
+      }
+    } catch {
+      // Sidebar persistence is a progressive enhancement.
+    }
+  })();
+</script>
+
+<SidebarSearch />
+<DocsSidebar {context} {entries} {sidebarHash} client:load />
+
+<script is:inline aria-hidden="true">
+  (() => {
+    const scroller = document.getElementById("starlight__sidebar");
+    const navigation = document.querySelector(
+      "#starlight__sidebar [data-docs-sidebar-scroll]"
+    );
+    const storedScroll = scroller?.dataset.docsSidebarScrollRestore;
+    if (
+      !scroller ||
+      !(navigation instanceof HTMLElement) ||
+      storedScroll === undefined
+    ) {
+      return;
+    }
+
+    const scroll = Number(storedScroll);
+    if (Number.isFinite(scroll)) {
+      navigation.scrollTop = scroll;
+    }
+    delete scroller.dataset.docsSidebarScrollRestore;
+  })();
+</script>

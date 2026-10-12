@@ -1,0 +1,29 @@
+---
+interface Row {
+  boundary: string;
+  guarantee: string;
+}
+
+interface Props {
+  rows: Row[];
+}
+
+const { rows } = Astro.props;
+---
+
+<table class="guarantee-table">
+  <thead class="guarantee-table__head">
+    <tr>
+      <th scope="col">Guarantee</th>
+      <th scope="col">Boundary made visible</th>
+    </tr>
+  </thead>
+  <tbody>
+    {rows.map((row) => (
+      <tr class="guarantee-row">
+        <td>{row.guarantee}</td>
+        <td>{row.boundary}</td>
+      </tr>
+    ))}
+  </tbody>
+</table>

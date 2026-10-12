@@ -1,0 +1,14 @@
+{
+  "name": "@astilba/env-example-node-service",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node --experimental-strip-types --input-type=module --eval \"process.env.SERVICE_API_ORIGIN='https://service.example'; process.env.SERVICE_NAME='public-service'; await import('./src/server.ts')\"",
+    "env:check": "astilba-env generate --check",
+    "env:generate": "astilba-env generate",
+    "start": "node --experimental-strip-types src/server.ts"
+  },
+  "dependencies": {
+    "@astilba/env": "0.3.0"
+  }
+}

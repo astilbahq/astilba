@@ -1,0 +1,89 @@
+@layer astilba.starlight {
+  /* Flat navigation rail with full-width, neutral active states. */
+  #starlight__sidebar {
+    border-color: var(--astilba-colors-border-chrome);
+    overflow-block: hidden;
+  }
+
+  #starlight__sidebar .sidebar-content {
+    gap: 0;
+    min-block-size: 0;
+    overflow: hidden;
+  }
+
+  /* Better Auth-style restrained table of contents. */
+  #starlight__on-this-page {
+    margin-block-end: 0.75rem;
+    color: var(--sl-color-gray-2);
+    font-size: 0.875rem;
+    font-weight: var(--astilba-font-weights-medium);
+  }
+
+  starlight-toc nav > ul {
+    border-inline-start: 1px solid var(--sl-color-hairline-light);
+  }
+
+  starlight-toc a {
+    margin-inline-start: -1px;
+    padding-block: 0.35rem;
+    padding-inline: 0.75rem;
+    padding-inline-start: calc(0.75rem * var(--depth) + 0.75rem);
+    border-inline-start: 1px solid transparent;
+    border-radius: 0;
+    color: var(--astilba-colors-ink-muted);
+    font-size: 0.8125rem;
+    line-height: 1.35;
+  }
+
+  starlight-toc a:hover {
+    color: var(--sl-color-text);
+  }
+
+  starlight-toc a[aria-current="true"] {
+    border-inline-start-color: var(--sl-color-text);
+    color: var(--sl-color-text);
+  }
+
+  /* Mobile keeps Starlight behavior but adopts the same square, compact chrome. */
+  mobile-starlight-toc .toggle {
+    border: 0;
+    border-radius: 0;
+    padding: 0;
+    background: transparent;
+  }
+
+  mobile-starlight-toc .dropdown {
+    border-radius: 0;
+    box-shadow: none;
+  }
+
+  body[data-mobile-menu-expanded] {
+    overflow: hidden;
+  }
+
+  @media (min-width: 50rem) {
+    body[data-mobile-menu-expanded] {
+      overflow: auto;
+    }
+
+    #starlight__sidebar {
+      scrollbar-gutter: auto;
+    }
+
+    #starlight__sidebar .sidebar-content {
+      padding-block: 0;
+      padding-inline: 0;
+    }
+  }
+
+  @media (min-width: 72rem) {
+    .right-sidebar {
+      border-inline-start: 0;
+    }
+
+    .right-sidebar-panel {
+      padding-block-start: var(--astilba-page-pad-block-start);
+      padding-inline-start: var(--astilba-spacing-toc-inset);
+    }
+  }
+}

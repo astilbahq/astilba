@@ -1,0 +1,3 @@
+/* Starlight remains the shell; Astilba's nested layers always follow it. */
+@layer starlight, astilba;
+@layer astilba.reset, astilba.base, astilba.tokens, astilba.starlight, astilba.recipes, astilba.utilities;

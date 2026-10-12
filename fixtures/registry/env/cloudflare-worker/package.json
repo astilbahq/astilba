@@ -1,0 +1,17 @@
+{
+  "name": "@astilba/env-example-cloudflare-worker",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev --local --port 8787",
+    "env:check": "astilba-env generate --check",
+    "env:generate": "astilba-env generate",
+    "start": "wrangler dev --local --port 8787"
+  },
+  "dependencies": {
+    "@astilba/env": "0.3.0"
+  },
+  "devDependencies": {
+    "wrangler": "4.115.0"
+  }
+}

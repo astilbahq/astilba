@@ -1,0 +1,164 @@
+---
+import { css } from "../../styled-system/css";
+
+const { dir, pagination } = Astro.locals.starlightRoute;
+const { prev, next } = pagination;
+const isRtl = dir === "rtl";
+
+const paginationClass = css({
+  display: "grid",
+  gridTemplateColumns: "repeat(auto-fill, minmax(min(18rem, 100%), 1fr))",
+  gap: "0.75rem",
+});
+
+const linkClass = css({
+  display: "flex",
+  inlineSize: "100%",
+  alignItems: "end",
+  justifyContent: "flex-start",
+  gap: "0.75rem",
+  border: 0,
+  borderRadius: 0,
+  paddingBlock: "0.875rem",
+  paddingInline: "1rem",
+  background: "transparent",
+  color: "ink.muted",
+  cursor: "pointer",
+  fontFamily: "body",
+  fontSize: "0.6875rem",
+  letterSpacing: 0,
+  overflowWrap: "anywhere",
+  textDecoration: "none",
+  textTransform: "none",
+  boxShadow: "none",
+  _hover: {
+    background: "surface.hover",
+    color: "ink.strong",
+  },
+  _focusVisible: {
+    background: "surface.hover",
+    color: "ink.strong",
+    outlineColor: "signal",
+    outlineOffset: "-0.125rem",
+    outlineStyle: "solid",
+    outlineWidth: "0.125rem",
+  },
+  _active: {
+    background: "surface.pressed",
+  },
+  "&[rel='next']": {
+    flexDirection: "row-reverse",
+    justifyContent: "end",
+    textAlign: "end",
+  },
+  "&[rel='next']:only-child": {
+    gridColumn: "-2 / -1",
+  },
+});
+
+const copyClass = css({
+  minInlineSize: 0,
+});
+
+const previousCopyClass = css({
+  textAlign: "end",
+});
+
+const nextCopyClass = css({
+  textAlign: "start",
+});
+
+const titleClass = css({
+  color: "ink.strong",
+  fontFamily: "body",
+  fontSize: "1rem",
+  fontWeight: "regular",
+  letterSpacing: 0,
+  lineClamp: 1,
+  lineHeight: "var(--sl-line-height-headings)",
+  textTransform: "none",
+});
+
+const arrowClass = css({
+  flexShrink: 0,
+  inlineSize: "1.125rem",
+  blockSize: "0.625rem",
+  marginBlockEnd: "0.375rem",
+});
+
+const leftArrowClass = css({
+  transform: "scaleX(-1)",
+});
+---
+
+<div
+  class:list={["pagination-links", "print:hidden", paginationClass]}
+  dir={dir}
+>
+  {
+    prev && (
+      <a class={linkClass} href={prev.href} rel="prev">
+        <svg
+          aria-hidden="true"
+          class:list={[
+            "pagination-arrow",
+            arrowClass,
+            !isRtl && leftArrowClass,
+          ]}
+          data-direction={isRtl ? "right" : "left"}
+          fill="none"
+          height="10"
+          viewBox="0 0 18 10"
+          width="18"
+        >
+          <path
+            d="M.75 5h16.5M13 0.75 17.25 5 13 9.25"
+            stroke="currentColor"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            stroke-width="1"
+            vector-effect="non-scaling-stroke"
+          />
+        </svg>
+        <span class:list={[copyClass, previousCopyClass]}>
+          {Astro.locals.t("page.previousLink")}
+          <br />
+          <span class:list={["link-title", titleClass]}>{prev.label}</span>
+        </span>
+      </a>
+    )
+  }
+  {
+    next && (
+      <a class={linkClass} href={next.href} rel="next">
+        <svg
+          aria-hidden="true"
+          class:list={[
+            "pagination-arrow",
+            arrowClass,
+            isRtl && leftArrowClass,
+          ]}
+          data-direction={isRtl ? "left" : "right"}
+          fill="none"
+          height="10"
+          viewBox="0 0 18 10"
+          width="18"
+        >
+          <path
+            d="M.75 5h16.5M13 0.75 17.25 5 13 9.25"
+            stroke="currentColor"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            stroke-width="1"
+            vector-effect="non-scaling-stroke"
+          />
+        </svg>
+        <span class:list={[copyClass, nextCopyClass]}>
+          {Astro.locals.t("page.nextLink")}
+          <br />
+          <span class:list={["link-title", titleClass]}>{next.label}</span>
+        </span>
+      </a>
+    )
+  }
+</div>

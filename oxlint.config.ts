@@ -7,5 +7,11 @@ export default defineConfig({
     ...(core.ignorePatterns ?? []),
     "**/dist/**",
     "**/styled-system/**",
+    "packages/env/**",
+    "apps/docs/**",
+    "apps/site/**",
+    "fixtures/registry/**",
+    "tooling/migration/install-baselines/**",
+    "tooling/migration/workflows/**",
   ],
 });

@@ -1,0 +1,63 @@
+---
+import { css } from "../../styled-system/css";
+import {
+  docsProducts,
+  getDefaultPage,
+  getDefaultVersion,
+  getPageHref,
+} from "../docs/catalog";
+import LandingActions from "./LandingActions.astro";
+
+interface Props {
+  productId: string;
+}
+
+const { productId } = Astro.props;
+const product = docsProducts.find(({ id }) => id === productId);
+
+if (!product) {
+  throw new Error(`Unknown product home: ${productId}.`);
+}
+
+const version = getDefaultVersion(product);
+const overview = getDefaultPage(product, version);
+const releaseNoteClass = css({
+  display: "flex",
+  maxInlineSize: "62ch",
+  alignItems: "baseline",
+  gap: "0.625rem",
+  marginBlock: "2.5rem 0",
+  color: "ink.muted",
+  fontSize: "0.875rem",
+  lineHeight: 1.55,
+  textWrap: "pretty",
+  _narrow: {
+    alignItems: "flex-start",
+    flexDirection: "column",
+  },
+});
+const statusClass = css({
+  flex: "0 0 auto",
+  borderRadius: "badge",
+  paddingBlock: "0.1875rem",
+  paddingInline: "0.4375rem",
+  background: "accent.low",
+  color: "accent.high",
+  fontSize: "0.6875rem",
+  fontWeight: "medium",
+  lineHeight: 1.25,
+});
+---
+
+<div class="not-content">
+  <LandingActions
+    label={`${product.label} quick start`}
+    primaryHref={getPageHref(version, overview)}
+    primaryLabel="Read the docs"
+  />
+
+  <p class={releaseNoteClass}>
+    {product.status && <span class={statusClass}>{product.status.text}</span>}
+    <span>{product.availabilityNote}</span>
+  </p>
+</div>

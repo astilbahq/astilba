@@ -1,0 +1,51 @@
+/docs/*
+  Content-Signal: ai-train=yes, search=yes, ai-input=yes
+  Permissions-Policy: accelerometer=(), ambient-light-sensor=(), autoplay=(), bluetooth=(), camera=(), clipboard-read=(self), clipboard-write=(self), display-capture=(), encrypted-media=(), fullscreen=(), gamepad=(), geolocation=(), gyroscope=(), hid=(), magnetometer=(), microphone=(), midi=(), payment=(), picture-in-picture=(), publickey-credentials-create=(), publickey-credentials-get=(), screen-wake-lock=(), serial=(), tools=(self), usb=(), web-share=(), xr-spatial-tracking=()
+  Referrer-Policy: strict-origin-when-cross-origin
+  Strict-Transport-Security: max-age=31536000
+
+/docs/_astro/*
+  Cache-Control: public, max-age=31536000, immutable
+
+/docs/agent-setup/prompt.md
+  Access-Control-Allow-Origin: *
+  Cache-Control: public, max-age=3600
+  X-Content-Type-Options: nosniff
+  X-Robots-Tag: noindex
+
+/docs/.well-known/agent-skills/*
+  Access-Control-Allow-Origin: *
+  Cache-Control: public, max-age=3600
+  X-Content-Type-Options: nosniff
+
+/docs/.well-known/agent-skills/index.json
+  Content-Type: application/json; charset=utf-8
+
+/docs/.well-known/api-catalog
+  Access-Control-Allow-Origin: *
+  Cache-Control: public, max-age=3600
+  Content-Type: application/linkset+json; profile="https://www.rfc-editor.org/info/rfc9727"
+  Link: </docs/.well-known/api-catalog>; rel="api-catalog"; type="application/linkset+json"
+  X-Content-Type-Options: nosniff
+
+/docs/.well-known/mcp/*
+  Access-Control-Allow-Origin: *
+  Cache-Control: public, max-age=3600
+  X-Content-Type-Options: nosniff
+
+/docs/.well-known/mcp/catalog.json
+  Content-Type: application/json; charset=utf-8
+
+/docs/.well-known/mcp/server-card.json
+  Content-Type: application/json; charset=utf-8
+
+/docs/mcp/server-card
+  Access-Control-Allow-Origin: *
+  Cache-Control: public, max-age=3600
+  Content-Type: application/mcp-server-card+json
+  X-Content-Type-Options: nosniff
+
+/docs/_mcp/docs.json
+  Cache-Control: public, max-age=3600
+  Content-Type: application/json; charset=utf-8
+  X-Content-Type-Options: nosniff

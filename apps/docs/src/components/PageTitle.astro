@@ -1,0 +1,78 @@
+---
+import { css } from "../../styled-system/css";
+import { findDocsContext } from "../docs/catalog";
+import { findSiteDocsPage } from "../docs/site-pages";
+import { getDocsSourceUrl } from "../docs/source";
+import { withDocsBase } from "../docs/urls";
+import { PageActions } from "./PageActions";
+
+const { entry } = Astro.locals.starlightRoute;
+const { title, description } = entry.data;
+const isHome = entry.id === "" || entry.id === "index";
+const docsContext = findDocsContext(Astro.url.pathname);
+const sitePage = findSiteDocsPage(entry.id);
+const isProductHome = sitePage?.presentation === "product-home";
+const sourceUrl = getDocsSourceUrl(entry.filePath, entry.id);
+const markdownPath =
+  sitePage?.markdownPath ?? withDocsBase(`/${entry.id}.md`);
+const showPageActions = Boolean(
+  docsContext ||
+    (sitePage && sitePage.id !== "index" && !isProductHome)
+);
+const isLanding = isHome || isProductHome;
+
+const titleClass = css({
+  margin: 0,
+  color: "ink.strong",
+  fontSize: "var(--sl-text-h1)",
+  fontWeight: "semibold",
+  letterSpacing: "-0.02em",
+  lineHeight: 1.5,
+  textWrap: "balance",
+});
+
+const homeTitleClass = css({
+  maxInlineSize: "16ch",
+  margin: 0,
+  color: "ink.strong",
+  fontSize: "3.5rem",
+  fontWeight: "medium",
+  letterSpacing: "-0.035em",
+  lineHeight: 1.08,
+  textWrap: "balance",
+});
+
+const descriptionClass = css({
+  maxInlineSize: "68ch",
+  marginBlockStart: "0.25rem",
+  color: "ink.muted",
+  fontSize: "1.125rem",
+  lineHeight: 1.55,
+  textWrap: "pretty",
+});
+const homeDescriptionClass = css({
+  maxInlineSize: "58ch",
+  marginBlockStart: "0.875rem",
+  fontSize: "1.125rem",
+});
+---
+
+<h1 class={isLanding ? homeTitleClass : titleClass} id="_top">
+  <span>{title}</span>
+</h1>
+{
+  description && (
+    <p class:list={[descriptionClass, isLanding && homeDescriptionClass]}>
+      {description}
+    </p>
+  )
+}
+{
+  showPageActions && (
+    <PageActions
+      client:load
+      markdownPath={markdownPath}
+      sourceUrl={sourceUrl}
+    />
+  )
+}

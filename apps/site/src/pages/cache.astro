@@ -1,0 +1,140 @@
+---
+import { LinkButton } from "@astilba/ui/link-button";
+import ExecutionProof from "../components/ExecutionProof.astro";
+import GuaranteeRows from "../components/GuaranteeRows.astro";
+import SiteLayout from "../layouts/SiteLayout.astro";
+
+const guarantees = [
+  {
+    guarantee: "Soft and hard invalidation have different meanings.",
+    boundary: "Soft expiry may refresh or serve eligible stale data; hard deletion makes older values unreadable.",
+  },
+  {
+    guarantee: "Origin failures are classified before stale data is reused.",
+    boundary: "Transient failures may qualify; facts such as 403, 404, and 410 remain visible.",
+  },
+  {
+    guarantee: "Strong reads pay for live authority.",
+    boundary: "When coordinated invalidation is configured, a strong read checks the Registry before serving or filling.",
+  },
+  {
+    guarantee: "Private dependencies make the rendered response private.",
+    boundary: "Response cache tags are emitted only when every managed dependency has readable public scope.",
+  },
+] as const;
+---
+
+<SiteLayout
+  current="cache"
+  description="Astilba Cache is an unreleased server-side TypeScript cache preview with explicit invalidation, resilience, privacy, and runtime boundaries."
+  title="Astilba Cache — Server-side caching with explicit boundaries"
+>
+  <section aria-labelledby="cache-title" class="product-hero section-shell">
+    <div>
+      <p class="eyebrow">Astilba Cache · Development preview</p>
+      <h1 id="cache-title">Cache expensive server work without hiding the hard parts.</h1>
+      <p class="hero__lede">
+        Explicit invalidation, classified stale-on-error behavior, privacy-aware storage
+        scopes, and a portable capability boundary for TypeScript runtimes.
+      </p>
+      <div class="action-row">
+        <LinkButton
+          appearance="primary"
+          className="action"
+          href="/docs/cache/overview/"
+          size="large"
+        >
+          Read the preview <span aria-hidden="true">↗</span>
+        </LinkButton>
+        <LinkButton
+          appearance="outline"
+          className="action"
+          href="/docs/cache/api-status/"
+          size="large"
+        >
+          Implementation status <span aria-hidden="true">↗</span>
+        </LinkButton>
+      </div>
+      <p class="release-line">
+        <span class="status-dot" aria-hidden="true"></span>
+        <span>No npm package · Cache source is private · no supported production setup</span>
+      </p>
+    </div>
+  </section>
+
+  <section aria-labelledby="fit-heading" class="section-shell ruled-section">
+    <div class="section-heading section-heading--compact">
+      <div>
+        <p class="eyebrow">01 · Fit</p>
+        <h2 id="fit-heading">A server cache, deliberately</h2>
+      </div>
+    </div>
+    <div class="fit-grid">
+      <div>
+        <h3>Fits</h3>
+        <ul>
+          <li>Database queries and upstream API responses</li>
+          <li>Related-value invalidation after mutations</li>
+          <li>User or tenant data with explicit sharing rules</li>
+          <li>A portable kernel tested on Node, Bun, and workerd</li>
+        </ul>
+      </div>
+      <div>
+        <h3>Does not fit</h3>
+        <ul>
+          <li>Browser request caching or component state</li>
+          <li>A source of truth for application data</li>
+          <li>A supported production cache today</li>
+          <li>Implicit sharing when identity affects the value</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section aria-labelledby="proof-heading" class="section-shell ruled-section proof-section">
+    <div class="section-heading section-heading--compact">
+      <div>
+        <p class="eyebrow">02 · Smallest honest path</p>
+        <h2 id="proof-heading">A miss, one load, then a hit</h2>
+      </div>
+    </div>
+    <p class="section-intro">
+      The reviewed private source can exercise the portable kernel with a bounded
+      in-memory store. Timing policy and production release gates remain incomplete.
+    </p>
+    <ExecutionProof expanded />
+  </section>
+
+  <section aria-labelledby="guarantees-heading" class="section-shell ruled-section">
+    <div class="section-heading section-heading--compact">
+      <div>
+        <p class="eyebrow">03 · Guarantees and costs</p>
+        <h2 id="guarantees-heading">The boundary is part of the API</h2>
+      </div>
+    </div>
+    <GuaranteeRows rows={[...guarantees]} />
+  </section>
+
+  <section aria-labelledby="status-heading" class="section-shell ruled-section release-status">
+    <div class="section-heading">
+      <div>
+        <p class="eyebrow">04 · Release state</p>
+        <h2 id="status-heading">Implemented is not the same as released</h2>
+      </div>
+      <span class="lifecycle-badge">Unreleased preview</span>
+    </div>
+    <div class="status-grid">
+      <p><span>Correctness kernel</span><strong>Implemented</strong></p>
+      <p><span>Driver contracts</span><strong>Implemented</strong></p>
+      <p><span>Cloudflare path</span><strong>Source preview</strong></p>
+      <p><span>React Router path</span><strong>Source preview</strong></p>
+      <p><span>Local chaos demo</span><strong>Source-only evidence app</strong></p>
+      <p><span>Elapsed TTL and grace</span><strong>Incomplete</strong></p>
+      <p><span>Public package</span><strong>Not released</strong></p>
+    </div>
+    <div class="section-actions">
+      <a href="/docs/cache/api-status/">Read the complete implementation ledger <span aria-hidden="true">→</span></a>
+      <a href="https://github.com/astilbahq/docs" rel="noopener">Inspect the docs source <span aria-hidden="true">↗</span></a>
+    </div>
+  </section>
+</SiteLayout>

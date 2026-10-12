@@ -1,0 +1,30 @@
+---
+import { LinkButton } from "@astilba/ui/link-button";
+import SiteLayout from "../layouts/SiteLayout.astro";
+---
+
+<SiteLayout description="The requested Astilba page does not exist." title="Page not found — Astilba">
+  <section class="not-found section-shell">
+    <p class="eyebrow">404 · No route</p>
+    <h1>This path has no guarantee.</h1>
+    <p>The page may have moved, or it may never have existed.</p>
+    <div class="action-row">
+      <LinkButton
+        appearance="primary"
+        className="action"
+        href="/"
+        size="large"
+      >
+        Return home
+      </LinkButton>
+      <LinkButton
+        appearance="outline"
+        className="action"
+        href="/docs/"
+        size="large"
+      >
+        Open documentation
+      </LinkButton>
+    </div>
+  </section>
+</SiteLayout>

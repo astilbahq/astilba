@@ -1,0 +1,139 @@
+---
+import { Icon } from "@astrojs/starlight/components";
+import { Button } from "@astilba/ui/button";
+import Search from "virtual:starlight/components/Search";
+import { css, cx } from "../../styled-system/css";
+
+const rootClass = css({ display: "contents" });
+const mobileTriggerClass = css({
+  display: { base: "inline-flex", desktop: "none" },
+});
+const nativeSearchClass = css({
+  "& > button[data-open-modal]": {
+    display: { base: "none", desktop: "flex" },
+  },
+});
+const sidebarNativeSearchClass = css({
+  "& > button[data-open-modal]": {
+    desktop: {
+      display: "none",
+    },
+  },
+});
+
+const searchLabel = Astro.locals.t("search.label");
+const { hasSidebar } = Astro.locals.starlightRoute;
+---
+
+<astilba-header-search class={rootClass}>
+  <Button
+    aria-haspopup="dialog"
+    aria-keyshortcuts="Control+K"
+    aria-label={searchLabel}
+    className={mobileTriggerClass}
+    data-mobile-search-trigger
+    data-search-trigger-proxy
+    disabled
+    iconOnly
+    title={searchLabel}
+  >
+    <Icon name="magnifier" size="1rem" />
+  </Button>
+  <Search
+    class={cx(nativeSearchClass, hasSidebar && sidebarNativeSearchClass)}
+  />
+</astilba-header-search>
+
+<script>
+  const elementName = "astilba-header-search";
+  const proxySelector = "button[data-search-trigger-proxy]";
+
+  class AstilbaHeaderSearch extends HTMLElement {
+    private activeProxy: HTMLButtonElement | null = null;
+    private dialog: HTMLDialogElement | null = null;
+    private nativeTrigger: HTMLButtonElement | null = null;
+    private proxyTriggers: HTMLButtonElement[] = [];
+
+    private readonly handleClick = (event: MouseEvent): void => {
+      event.stopPropagation();
+      if (event.currentTarget instanceof HTMLButtonElement) {
+        this.activeProxy = event.currentTarget;
+      }
+      this.nativeTrigger?.click();
+    };
+
+    private readonly handleDialogClose = (): void => {
+      this.activeProxy?.focus();
+      this.activeProxy = null;
+    };
+
+    connectedCallback(): void {
+      if (this.proxyTriggers.length > 0) {
+        return;
+      }
+
+      this.proxyTriggers = Array.from(
+        document.querySelectorAll<HTMLButtonElement>(proxySelector)
+      );
+      for (const trigger of this.proxyTriggers) {
+        trigger.addEventListener("click", this.handleClick);
+      }
+      void this.connectNativeSearch();
+    }
+
+    disconnectedCallback(): void {
+      for (const trigger of this.proxyTriggers) {
+        trigger.removeEventListener("click", this.handleClick);
+      }
+      this.dialog?.removeEventListener("close", this.handleDialogClose);
+      this.activeProxy = null;
+      this.dialog = null;
+      this.proxyTriggers = [];
+      this.nativeTrigger = null;
+    }
+
+    private async connectNativeSearch(): Promise<void> {
+      await customElements.whenDefined("site-search");
+
+      if (!this.isConnected) {
+        return;
+      }
+
+      const nativeTrigger = this.querySelector(
+        "site-search > button[data-open-modal]"
+      );
+
+      if (!(nativeTrigger instanceof HTMLButtonElement)) {
+        return;
+      }
+
+      this.nativeTrigger = nativeTrigger;
+      this.dialog = this.querySelector<HTMLDialogElement>(
+        "site-search dialog"
+      );
+      this.dialog?.addEventListener("close", this.handleDialogClose);
+      const keyShortcuts = nativeTrigger.getAttribute("aria-keyshortcuts");
+
+      for (const trigger of this.proxyTriggers) {
+        const isDisabled = nativeTrigger.disabled;
+        trigger.disabled = isDisabled;
+        trigger.toggleAttribute("data-disabled", isDisabled);
+
+        if (keyShortcuts) {
+          trigger.setAttribute("aria-keyshortcuts", keyShortcuts);
+        }
+
+        const modifier = trigger.querySelector(
+          "[data-search-shortcut-modifier]"
+        );
+        if (modifier && keyShortcuts?.startsWith("Meta+")) {
+          modifier.textContent = "⌘";
+        }
+      }
+    }
+  }
+
+  if (!customElements.get(elementName)) {
+    customElements.define(elementName, AstilbaHeaderSearch);
+  }
+</script>

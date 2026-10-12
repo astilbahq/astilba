@@ -1,0 +1,2895 @@
+[
+  {
+    "repository": "astilbahq/env",
+    "commit": "97ca4db767b13db3f9e84c104b17f04b9d86370b",
+    "packages": [
+      {
+        "path": "examples/cloudflare-worker/package.json",
+        "name": "@astilba/env-example-cloudflare-worker",
+        "version": null,
+        "private": true,
+        "engines": null,
+        "packageManager": null,
+        "scripts": {
+          "dev": "wrangler dev --local --port 8787",
+          "env:check": "astilba-env generate --check",
+          "env:generate": "astilba-env generate",
+          "start": "wrangler dev --local --port 8787"
+        },
+        "dependencies": {
+          "@astilba/env": "0.3.0"
+        },
+        "peerDependencies": null
+      },
+      {
+        "path": "examples/next-static-shell/package.json",
+        "name": "@astilba/env-example-next-static-shell",
+        "version": null,
+        "private": true,
+        "engines": null,
+        "packageManager": null,
+        "scripts": {
+          "build": "next build --webpack",
+          "dev": "cross-env NEXT_APP_NAME=Env-static-shell NEXT_LABEL=local-label next dev --webpack",
+          "env:check": "cross-env NEXT_APP_NAME=Env-static-shell astilba-env generate --check",
+          "env:generate": "cross-env NEXT_APP_NAME=Env-static-shell astilba-env generate",
+          "start": "next start",
+          "start:example": "cross-env NEXT_LABEL=local-label next start"
+        },
+        "dependencies": {
+          "@astilba/env": "0.3.0",
+          "next": "16.3.8",
+          "react": "19.2.8",
+          "react-dom": "19.2.8"
+        },
+        "peerDependencies": null
+      },
+      {
+        "path": "examples/node-service/package.json",
+        "name": "@astilba/env-example-node-service",
+        "version": null,
+        "private": true,
+        "engines": null,
+        "packageManager": null,
+        "scripts": {
+          "dev": "node --experimental-strip-types --input-type=module --eval \"process.env.SERVICE_API_ORIGIN='https://service.example'; process.env.SERVICE_NAME='public-service'; await import('./src/server.ts')\"",
+          "env:check": "astilba-env generate --check",
+          "env:generate": "astilba-env generate",
+          "start": "node --experimental-strip-types src/server.ts"
+        },
+        "dependencies": {
+          "@astilba/env": "0.3.0"
+        },
+        "peerDependencies": null
+      },
+      {
+        "path": "examples/package.json",
+        "name": "@astilba/env-examples",
+        "version": null,
+        "private": true,
+        "engines": null,
+        "packageManager": "pnpm@11.10.0",
+        "scripts": {
+          "env:check": "pnpm -r run env:check",
+          "env:generate": "pnpm -r run env:generate",
+          "verify:all": "node scripts/verify-adoption.mjs all",
+          "verify:next": "node scripts/verify-adoption.mjs next",
+          "verify:node": "node scripts/verify-adoption.mjs node",
+          "verify:vite": "node scripts/verify-adoption.mjs vite",
+          "verify:windows": "node scripts/verify-adoption.mjs windows"
+        },
+        "dependencies": null,
+        "peerDependencies": null
+      },
+      {
+        "path": "examples/vite/package.json",
+        "name": "@astilba/env-example-vite",
+        "version": null,
+        "private": true,
+        "engines": null,
+        "packageManager": null,
+        "scripts": {
+          "build": "vite build",
+          "env:check": "cross-env VITE_APP_NAME=Env-Vite-shell astilba-env generate --check",
+          "env:generate": "cross-env VITE_APP_NAME=Env-Vite-shell astilba-env generate",
+          "start": "node --experimental-strip-types server.ts",
+          "start:example": "cross-env VITE_LABEL=local-label node --experimental-strip-types server.ts"
+        },
+        "dependencies": {
+          "@astilba/env": "0.3.0"
+        },
+        "peerDependencies": null
+      },
+      {
+        "path": "package.json",
+        "name": "@astilba/env",
+        "version": "0.3.0",
+        "private": null,
+        "engines": {
+          "node": ">=22.14.0 <23.0.0 || >=24.0.0 <25.0.0 || >=26.0.0 <27.0.0"
+        },
+        "packageManager": "pnpm@11.10.0",
+        "scripts": {
+          "build": "vp pack",
+          "check": "vp check",
+          "fix": "vp check --fix",
+          "generate:check": "astilba-env generate --check",
+          "knip": "knip",
+          "pack:artifact": "node scripts/pack-artifact.mjs",
+          "test": "vp test",
+          "test:run": "vitest run",
+          "typecheck": "node node_modules/typescript/bin/tsc --noEmit -p tsconfig.json",
+          "typecheck:ts7": "node node_modules/typescript-7/bin/tsc --noEmit -p tsconfig.json",
+          "verify:consumers": "node scripts/verify-consumer.mjs",
+          "verify:artifact": "node scripts/verify-artifact.mjs",
+          "verify:filesystem-containment": "node scripts/verify-filesystem-containment.mjs",
+          "verify:tools": "node scripts/verify-tools.mjs",
+          "verify": "pnpm verify:tools && pnpm verify:filesystem-containment && pnpm typecheck && pnpm typecheck:ts7 && pnpm test:run && pnpm build && node scripts/verify-public-tsdoc.mjs && node scripts/verify-package.mjs"
+        },
+        "dependencies": null,
+        "peerDependencies": {
+          "vite": ">=8.1.5 <9.0.0"
+        }
+      }
+    ],
+    "workflows": [
+      {
+        "path": ".github/workflows/adoption-examples.yml",
+        "name": "Adoption examples",
+        "triggers": {
+          "pull_request": null,
+          "push": {
+            "branches": [
+              "main"
+            ]
+          }
+        },
+        "jobs": [
+          {
+            "id": "examples",
+            "name": "Linux public examples",
+            "runtime": "ubuntu-latest",
+            "needs": null,
+            "matrix": null,
+            "environment": null,
+            "permissions": null,
+            "reusable": null,
+            "steps": [
+              {
+                "name": null,
+                "run": null,
+                "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+                "directory": null,
+                "condition": null,
+                "with": {
+                  "persist-credentials": false
+                }
+              },
+              {
+                "name": null,
+                "run": null,
+                "uses": "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020",
+                "directory": null,
+                "condition": null,
+                "with": {
+                  "node-version": "24.18.1"
+                }
+              },
+              {
+                "name": null,
+                "run": null,
+                "uses": "pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271",
+                "directory": null,
+                "condition": null,
+                "with": {
+                  "version": "11.10.0"
+                }
+              },
+              {
+                "name": null,
+                "run": "pnpm install --frozen-lockfile",
+                "uses": null,
+                "directory": "examples",
+                "condition": null,
+                "with": null
+              },
+              {
+                "name": null,
+                "run": "pnpm verify:all",
+                "uses": null,
+                "directory": "examples",
+                "condition": null,
+                "with": null
+              }
+            ]
+          },
+          {
+            "id": "windows",
+            "name": "Windows Node and Vite artifact gate",
+            "runtime": "windows-latest",
+            "needs": null,
+            "matrix": null,
+            "environment": null,
+            "permissions": null,
+            "reusable": null,
+            "steps": [
+              {
+                "name": null,
+                "run": null,
+                "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+                "directory": null,
+                "condition": null,
+                "with": {
+                  "persist-credentials": false
+                }
+              },
+              {
+                "name": null,
+                "run": null,
+                "uses": "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020",
+                "directory": null,
+                "condition": null,
+                "with": {
+                  "node-version": "24.18.1"
+                }
+              },
+              {
+                "name": null,
+                "run": null,
+                "uses": "pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271",
+                "directory": null,
+                "condition": null,
+                "with": {
+                  "version": "11.10.0"
+                }
+              },
+              {
+                "name": null,
+                "run": "pnpm install --frozen-lockfile",
+                "uses": null,
+                "directory": "examples",
+                "condition": null,
+                "with": null
+              },
+              {
+                "name": null,
+                "run": "pnpm verify:windows",
+                "uses": null,
+                "directory": "examples",
+                "condition": null,
+                "with": null
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "path": ".github/workflows/osv-scanner.yml",
+        "name": "OSV-Scanner",
+        "triggers": {
+          "pull_request": null,
+          "schedule": [
+            {
+              "cron": "14 5 * * 1"
+            }
+          ],
+          "workflow_dispatch": null
+        },
+        "jobs": [
+          {
+            "id": "osv-scan",
+            "name": null,
+            "runtime": "ubuntu-latest",
+            "needs": null,
+            "matrix": null,
+            "environment": null,
+            "permissions": null,
+            "reusable": null,
+            "steps": [
+              {
+                "name": "Check out repository",
+                "run": null,
+                "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+                "directory": null,
+                "condition": null,
+                "with": {
+                  "persist-credentials": false
+                }
+              },
+              {
+                "name": "Scan repository lockfiles",
+                "run": null,
+                "uses": "docker://ghcr.io/google/osv-scanner:v2.4.0@sha256:5116601dedc01c1c580eb92371883ec052fc4c13c3fbc109d621a63ac416d475",
+                "directory": null,
+                "condition": null,
+                "with": {
+                  "args": "scan source --recursive ."
+                }
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "path": ".github/workflows/package-matrix.yml",
+        "name": "Package matrix",
+        "triggers": {
+          "pull_request": null,
+          "push": {
+            "branches": [
+              "main"
+            ]
+          },
+          "workflow_call": null
+        },
+        "jobs": [
+          {
+            "id": "pack",
+            "name": "Pack exact archive",
+            "runtime": "ubuntu-latest",
+            "needs": null,
+            "matrix": null,
+            "environment": null,
+            "permissions": null,
+            "reusable": null,
+            "steps": [
+              {
+                "name": null,
+                "run": null,
+                "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+                "directory": null,
+                "condition": null,
+                "with": {
+                  "persist-credentials": false
+                }
+              },
+              {
+                "name": null,
+                "run": null,
+                "uses": "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020",
+                "directory": null,
+                "condition": null,
+                "with": {
+                  "node-version": "24.18.1"
+                }
+              },
+              {
+                "name": null,
+                "run": null,
+                "uses": "pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271",
+                "directory": null,
+                "condition": null,
+                "with": {
+                  "version": "11.10.0"
+                }
+              },
+              {
+                "name": null,
+                "run": "pnpm install --frozen-lockfile",
+                "uses": null,
+                "directory": null,
+                "condition": null,
+                "with": null
+              },
+              {
+                "name": null,
+                "run": "pnpm install --frozen-lockfile",
+                "uses": null,
+                "directory": "examples",
+                "condition": null,
+                "with": null
+              },
+              {
+                "name": null,
+                "run": "pnpm check",
+                "uses": null,
+                "directory": null,
+                "condition": null,
+                "with": null
+              },
+              {
+                "name": null,
+                "run": "pnpm knip",
+                "uses": null,
+                "directory": null,
+                "condition": null,
+                "with": null
+              },
+              {
+                "name": null,
+                "run": "pnpm verify",
+                "uses": null,
+                "directory": null,
+                "condition": null,
+                "with": null
+              },
+              {
+                "name": null,
+                "run": "pnpm pack:artifact",
+                "uses": null,
+                "directory": null,
+                "condition": null,
+                "with": null
+              },
+              {
+                "name": null,
+                "run": "pnpm verify:artifact",
+                "uses": null,
+                "directory": null,
+                "condition": null,
+                "with": null
+              },
+              {
+                "name": null,
+                "run": null,
+                "uses": "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+                "directory": null,
+                "condition": null,
+                "with": {
+                  "name": "astilba-env-archive",
+                  "path": ".artifacts/local",
+                  "include-hidden-files": true,
+                  "if-no-files-found": "error",
+                  "compression-level": 0
+                }
+              }
+            ]
+          },
+          {
+            "id": "consumers",
+            "name": "Clean ${{ matrix.manager }} consumer",
+            "runtime": "ubuntu-latest",
+            "needs": "pack",
+            "matrix": {
+              "manager": [
+                "npm",
+                "pnpm"
+              ]
+            },
+            "environment": null,
+            "permissions": null,
+            "reusable": null,
+            "steps": [
+              {
+                "name": null,
+                "run": null,
+                "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+                "directory": null,
+                "condition": null,
+                "with": {
+                  "persist-credentials": false
+                }
+              },
+              {
+                "name": null,
+                "run": null,
+                "uses": "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020",
+                "directory": null,
+                "condition": null,
+                "with": {
+                  "node-version": "24.18.1"
+                }
+              },
+              {
+                "name": null,
+                "run": null,
+                "uses": "pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271",
+                "directory": null,
+                "condition": null,
+                "with": {
+                  "version": "11.10.0"
+                }
+              },
+              {
+                "name": null,
+                "run": null,
+                "uses": "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
+                "directory": null,
+                "condition": null,
+                "with": {
+                  "name": "astilba-env-archive",
+                  "path": ".artifacts/local"
+                }
+              },
+              {
+                "name": null,
+                "run": "pnpm install --frozen-lockfile",
+                "uses": null,
+                "directory": null,
+                "condition": null,
+                "with": null
+              },
+              {
+                "name": null,
+                "run": "node scripts/verify-consumer.mjs ${{ matrix.manager }}",
+                "uses": null,
+                "directory": null,
+                "condition": null,
+                "with": null
+              }
+            ]
+          },
+          {
+            "id": "cloudflare-workers",
+            "name": "Cloudflare Workers archive admission",
+            "runtime": "ubuntu-latest",
+            "needs": "pack",
+            "matrix": null,
+            "environment": null,
+            "permissions": null,
+            "reusable": null,
+            "steps": [
+              {
+                "name": null,
+                "run": null,
+                "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+                "directory": null,
+                "condition": null,
+                "with": {
+                  "persist-credentials": false
+                }
+              },
+              {
+                "name": null,
+                "run": null,
+                "uses": "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020",
+                "directory": null,
+                "condition": null,
+                "with": {
+                  "node-version": "24.18.1"
+                }
+              },
+              {
+                "name": null,
+                "run": null,
+                "uses": "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
+                "directory": null,
+                "condition": null,
+                "with": {
+                  "name": "astilba-env-archive",
+                  "path": ".artifacts/local"
+                }
+              },
+              {
+                "name": null,
+                "run": "node scripts/verify-workers-consumer.mjs",
+                "uses": null,
+                "directory": null,
+                "condition": null,
+                "with": null
+              }
+            ]
+          },
+          {
+            "id": "node-typescript",
+            "name": "Node ${{ matrix.node }} / TypeScript ${{ matrix.typescript }}",
+            "runtime": "ubuntu-latest",
+            "needs": "pack",
+            "matrix": {
+              "node": [
+                "22.14.0",
+                "22.23.2",
+                "24.18.1",
+                "26.5.1"
+              ],
+              "typescript": [
+                "6.0.3",
+                "7.0.2"
+              ]
+            },
+            "environment": null,
+            "permissions": null,
+            "reusable": null,
+            "steps": [
+              {
+                "name": null,
+                "run": null,
+                "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+                "directory": null,
+                "condition": null,
+                "with": {
+                  "persist-credentials": false
+                }
+              },
+              {
+                "name": null,
+                "run": null,
+                "uses": "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020",
+                "directory": null,
+                "condition": null,
+                "with": {
+                  "node-version": "${{ matrix.node }}"
+                }
+              },
+              {
+                "name": null,
+                "run": null,
+                "uses": "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
+                "directory": null,
+                "condition": null,
+                "with": {
+                  "name": "astilba-env-archive",
+                  "path": ".artifacts/local"
+                }
+              },
+              {
+                "name": null,
+                "run": "node scripts/verify-node-consumer.mjs ${{ matrix.node }} ${{ matrix.typescript }}",
+                "uses": null,
+                "directory": null,
+                "condition": null,
+                "with": null
+              }
+            ]
+          },
+          {
+            "id": "portable",
+            "name": "Bun and workerd portable equivalence",
+            "runtime": "ubuntu-latest",
+            "needs": "pack",
+            "matrix": null,
+            "environment": null,
+            "permissions": null,
+            "reusable": null,
+            "steps": [
+              {
+                "name": null,
+                "run": null,
+                "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+                "directory": null,
+                "condition": null,
+                "with": {
+                  "persist-credentials": false
+                }
+              },
+              {
+                "name": null,
+                "run": null,
+                "uses": "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020",
+                "directory": null,
+                "condition": null,
+                "with": {
+                  "node-version": "24.18.1"
+                }
+              },
+              {
+                "name": null,
+                "run": null,
+                "uses": "pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271",
+                "directory": null,
+                "condition": null,
+                "with": {
+                  "version": "11.10.0"
+                }
+              },
+              {
+                "name": null,
+                "run": null,
+                "uses": "oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6",
+                "directory": null,
+                "condition": null,
+                "with": {
+                  "bun-version": "1.3.14"
+                }
+              },
+              {
+                "name": null,
+                "run": null,
+                "uses": "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
+                "directory": null,
+                "condition": null,
+                "with": {
+                  "name": "astilba-env-archive",
+                  "path": ".artifacts/local"
+                }
+              },
+              {
+                "name": null,
+                "run": "pnpm install --frozen-lockfile",
+                "uses": null,
+                "directory": null,
+                "condition": null,
+                "with": null
+              },
+              {
+                "name": null,
+                "run": "node scripts/verify-consumer.mjs bun",
+                "uses": null,
+                "directory": null,
+                "condition": null,
+                "with": null
+              },
+              {
+                "name": null,
+                "run": "node scripts/verify-portable-equivalence.mjs",
+                "uses": null,
+                "directory": null,
+                "condition": null,
+                "with": null
+              }
+            ]
+          },
+          {
+            "id": "generation-and-vite",
+            "name": "Deterministic generation and Vite",
+            "runtime": "ubuntu-latest",
+            "needs": "pack",
+            "matrix": null,
+            "environment": null,
+            "permissions": null,
+            "reusable": null,
+            "steps": [
+              {
+                "name": null,
+                "run": null,
+                "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+                "directory": null,
+                "condition": null,
+                "with": {
+                  "persist-credentials": false
+                }
+              },
+              {
+                "name": null,
+                "run": null,
+                "uses": "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020",
+                "directory": null,
+                "condition": null,
+                "with": {
+                  "node-version": "24.18.1"
+                }
+              },
+              {
+                "name": null,
+                "run": null,
+                "uses": "pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271",
+                "directory": null,
+                "condition": null,
+                "with": {
+                  "version": "11.10.0"
+                }
+              },
+              {
+                "name": null,
+                "run": null,
+                "uses": "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
+                "directory": null,
+                "condition": null,
+                "with": {
+                  "name": "astilba-env-archive",
+                  "path": ".artifacts/local"
+                }
+              },
+              {
+                "name": null,
+                "run": "pnpm install --frozen-lockfile",
+                "uses": null,
+                "directory": null,
+                "condition": null,
+                "with": null
+              },
+              {
+                "name": null,
+                "run": "node scripts/verify-deterministic-generation.mjs",
+                "uses": null,
+                "directory": null,
+                "condition": null,
+                "with": null
+              },
+              {
+                "name": null,
+                "run": "node scripts/verify-vite-consumer.mjs",
+                "uses": null,
+                "directory": null,
+                "condition": null,
+                "with": null
+              }
+            ]
+          },
+          {
+            "id": "next",
+            "name": "Next ${{ matrix.next }} / ${{ matrix.mode }}",
+            "runtime": "ubuntu-latest",
+            "needs": "pack",
+            "matrix": {
+              "next": [
+                "15.5.22",
+                "16.2.12"
+              ],
+              "mode": [
+                "app-static",
+                "app-request",
+                "pages-static",
+                "pages-request"
+              ]
+            },
+            "environment": null,
+            "permissions": null,
+            "reusable": null,
+            "steps": [
+              {
+                "name": null,
+                "run": null,
+                "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+                "directory": null,
+                "condition": null,
+                "with": {
+                  "persist-credentials": false
+                }
+              },
+              {
+                "name": null,
+                "run": null,
+                "uses": "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020",
+                "directory": null,
+                "condition": null,
+                "with": {
+                  "node-version": "24.18.1"
+                }
+              },
+              {
+                "name": null,
+                "run": null,
+                "uses": "pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271",
+                "directory": null,
+                "condition": null,
+                "with": {
+                  "version": "11.10.0"
+                }
+              },
+              {
+                "name": null,
+                "run": null,
+                "uses": "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
+                "directory": null,
+                "condition": null,
+                "with": {
+                  "name": "astilba-env-archive",
+                  "path": ".artifacts/local"
+                }
+              },
+              {
+                "name": null,
+                "run": "pnpm install --frozen-lockfile",
+                "uses": null,
+                "directory": null,
+                "condition": null,
+                "with": null
+              },
+              {
+                "name": null,
+                "run": "node scripts/verify-next-consumer.mjs ${{ matrix.next }} ${{ matrix.mode }}",
+                "uses": null,
+                "directory": null,
+                "condition": null,
+                "with": null
+              }
+            ]
+          },
+          {
+            "id": "windows-consumer",
+            "name": "Windows archive consumer",
+            "runtime": "windows-latest",
+            "needs": "pack",
+            "matrix": null,
+            "environment": null,
+            "permissions": null,
+            "reusable": null,
+            "steps": [
+              {
+                "name": null,
+                "run": null,
+                "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+                "directory": null,
+                "condition": null,
+                "with": {
+                  "persist-credentials": false
+                }
+              },
+              {
+                "name": null,
+                "run": null,
+                "uses": "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020",
+                "directory": null,
+                "condition": null,
+                "with": {
+                  "node-version": "22.14.0"
+                }
+              },
+              {
+                "name": null,
+                "run": null,
+                "uses": "pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271",
+                "directory": null,
+                "condition": null,
+                "with": {
+                  "version": "11.10.0"
+                }
+              },
+              {
+                "name": null,
+                "run": null,
+                "uses": "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
+                "directory": null,
+                "condition": null,
+                "with": {
+                  "name": "astilba-env-archive",
+                  "path": ".artifacts/local"
+                }
+              },
+              {
+                "name": null,
+                "run": "pnpm install --frozen-lockfile",
+                "uses": null,
+                "directory": null,
+                "condition": null,
+                "with": null
+              },
+              {
+                "name": null,
+                "run": "node scripts/verify-consumer.mjs npm",
+                "uses": null,
+                "directory": null,
+                "condition": null,
+                "with": null
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "path": ".github/workflows/release.yml",
+        "name": "Publish package",
+        "triggers": {
+          "push": {
+            "tags": [
+              "v*"
+            ]
+          }
+        },
+        "jobs": [
+          {
+            "id": "release-identity",
+            "name": "Verify release identity",
+            "runtime": "ubuntu-latest",
+            "needs": null,
+            "matrix": null,
+            "environment": null,
+            "permissions": null,
+            "reusable": null,
+            "steps": [
+              {
+                "name": null,
+                "run": null,
+                "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+                "directory": null,
+                "condition": null,
+                "with": {
+                  "fetch-depth": 0,
+                  "persist-credentials": false
+                }
+              },
+              {
+                "name": null,
+                "run": "set -euo pipefail\ngit fetch --no-tags origin main:refs/remotes/origin/main\ntest \"$(git rev-parse HEAD)\" = \"$(git rev-parse origin/main)\"\ntest \"$(git rev-parse \"${GITHUB_REF_NAME}^{commit}\")\" = \"$(git rev-parse HEAD)\"\ntest \"$GITHUB_REF_NAME\" = \"v$(node -p \"JSON.parse(require('node:fs').readFileSync('package.json', 'utf8')).version\")\"\ntest -z \"$(git status --porcelain=v1 --untracked-files=all)\"\n",
+                "uses": null,
+                "directory": null,
+                "condition": null,
+                "with": null
+              }
+            ]
+          },
+          {
+            "id": "package-matrix",
+            "name": "Verify complete package matrix",
+            "runtime": null,
+            "needs": "release-identity",
+            "matrix": null,
+            "environment": null,
+            "permissions": null,
+            "reusable": "./.github/workflows/package-matrix.yml",
+            "steps": []
+          },
+          {
+            "id": "publish",
+            "name": "Publish exact verified archive",
+            "runtime": "ubuntu-latest",
+            "needs": "package-matrix",
+            "matrix": null,
+            "environment": "npm",
+            "permissions": {
+              "contents": "read",
+              "id-token": "write"
+            },
+            "reusable": null,
+            "steps": [
+              {
+                "name": null,
+                "run": null,
+                "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+                "directory": null,
+                "condition": null,
+                "with": {
+                  "persist-credentials": false
+                }
+              },
+              {
+                "name": null,
+                "run": null,
+                "uses": "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020",
+                "directory": null,
+                "condition": null,
+                "with": {
+                  "node-version": "24.18.1",
+                  "package-manager-cache": false,
+                  "registry-url": "https://registry.npmjs.org"
+                }
+              },
+              {
+                "name": "Verify trusted-publishing runtime",
+                "run": "test \"$(node --version)\" = \"v24.18.1\"\ntest \"$(npm --version)\" = \"11.16.0\"\n",
+                "uses": null,
+                "directory": null,
+                "condition": null,
+                "with": null
+              },
+              {
+                "name": null,
+                "run": null,
+                "uses": "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
+                "directory": null,
+                "condition": null,
+                "with": {
+                  "name": "astilba-env-archive",
+                  "path": ".artifacts/release"
+                }
+              },
+              {
+                "name": "Verify transferred artifact",
+                "run": "node scripts/verify-artifact.mjs",
+                "uses": null,
+                "directory": null,
+                "condition": null,
+                "with": null
+              },
+              {
+                "name": "Publish verified archive with provenance",
+                "run": "set -euo pipefail\narchive=\"$(node -p \"JSON.parse(require('node:fs').readFileSync('.artifacts/release/manifest.json', 'utf8')).archive.name\")\"\nnpm publish \".artifacts/release/$archive\" --access public --provenance\n",
+                "uses": null,
+                "directory": null,
+                "condition": null,
+                "with": null
+              }
+            ]
+          },
+          {
+            "id": "verify-registry",
+            "name": "Verify registry archive and attestations",
+            "runtime": "ubuntu-latest",
+            "needs": "publish",
+            "matrix": null,
+            "environment": null,
+            "permissions": {
+              "contents": "read"
+            },
+            "reusable": null,
+            "steps": [
+              {
+                "name": null,
+                "run": null,
+                "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+                "directory": null,
+                "condition": null,
+                "with": {
+                  "persist-credentials": false
+                }
+              },
+              {
+                "name": null,
+                "run": null,
+                "uses": "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020",
+                "directory": null,
+                "condition": null,
+                "with": {
+                  "node-version": "24.18.1",
+                  "package-manager-cache": false
+                }
+              },
+              {
+                "name": "Verify registry runtime",
+                "run": "test \"$(node --version)\" = \"v24.18.1\"\ntest \"$(npm --version)\" = \"11.16.0\"\n",
+                "uses": null,
+                "directory": null,
+                "condition": null,
+                "with": null
+              },
+              {
+                "name": null,
+                "run": null,
+                "uses": "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
+                "directory": null,
+                "condition": null,
+                "with": {
+                  "name": "astilba-env-archive",
+                  "path": ".artifacts/release"
+                }
+              },
+              {
+                "name": "Verify transferred artifact",
+                "run": "node scripts/verify-artifact.mjs",
+                "uses": null,
+                "directory": null,
+                "condition": null,
+                "with": null
+              },
+              {
+                "name": "Verify registry archive and attestations",
+                "run": "set -euo pipefail\npackage=\"$(node -p \"JSON.parse(require('node:fs').readFileSync('.artifacts/release/manifest.json', 'utf8')).package.name\")\"\nversion=\"$(node -p \"JSON.parse(require('node:fs').readFileSync('.artifacts/release/manifest.json', 'utf8')).package.version\")\"\nexpected=\"$(node -p \"JSON.parse(require('node:fs').readFileSync('.artifacts/release/manifest.json', 'utf8')).archive.sha256\")\"\n\nmkdir registry-artifact\nname=\"\"\nfor attempt in $(seq 1 120); do\n  if name=\"$(npm pack \"$package@$version\" --ignore-scripts --pack-destination registry-artifact 2>/dev/null)\"; then\n    break\n  fi\n  name=\"\"\n  if [ \"$attempt\" -lt 120 ]; then\n    sleep 5\n  fi\ndone\nif [ -z \"$name\" ]; then\n  echo \"Registry package did not become available within 10 minutes.\" >&2\n  exit 1\nfi\ntest \"$(sha256sum \"registry-artifact/$name\" | cut -d ' ' -f 1)\" = \"$expected\"\ntest \"$(npm view \"$package@$version\" version 2>/dev/null)\" = \"$version\"\n\nmkdir registry-consumer\n(\n  cd registry-consumer\n  npm init --yes >/dev/null\n)\nnpm install --prefix registry-consumer --ignore-scripts --no-audit --no-fund \"$package@$version\" >/dev/null\n\nattestation_verified=false\nfor attempt in $(seq 1 120); do\n  if npm audit signatures --prefix registry-consumer --json --include-attestations > \"$RUNNER_TEMP/registry-attestations.json\" 2>/dev/null &&\n    node scripts/verify-registry-attestations.mjs \"$RUNNER_TEMP/registry-attestations.json\" \"$package\" \"$version\" >/dev/null 2>&1; then\n    attestation_verified=true\n    break\n  fi\n  if [ \"$attempt\" -lt 120 ]; then\n    sleep 5\n  fi\ndone\nif [ \"$attestation_verified\" != true ]; then\n  echo \"Registry attestations did not become verifiable within 10 minutes.\" >&2\n  exit 1\nfi\n",
+                "uses": null,
+                "directory": null,
+                "condition": null,
+                "with": null
+              }
+            ]
+          },
+          {
+            "id": "create-release",
+            "name": "Create GitHub release after npm",
+            "runtime": "ubuntu-latest",
+            "needs": "verify-registry",
+            "matrix": null,
+            "environment": null,
+            "permissions": {
+              "contents": "write"
+            },
+            "reusable": null,
+            "steps": [
+              {
+                "name": null,
+                "run": null,
+                "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+                "directory": null,
+                "condition": null,
+                "with": {
+                  "persist-credentials": false
+                }
+              },
+              {
+                "name": null,
+                "run": null,
+                "uses": "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020",
+                "directory": null,
+                "condition": null,
+                "with": {
+                  "node-version": "24.18.1",
+                  "package-manager-cache": false
+                }
+              },
+              {
+                "name": null,
+                "run": null,
+                "uses": "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
+                "directory": null,
+                "condition": null,
+                "with": {
+                  "name": "astilba-env-archive",
+                  "path": ".artifacts/release"
+                }
+              },
+              {
+                "name": "Verify transferred artifact",
+                "run": "node scripts/verify-artifact.mjs",
+                "uses": null,
+                "directory": null,
+                "condition": null,
+                "with": null
+              },
+              {
+                "name": "Ensure exact GitHub release",
+                "run": "set -euo pipefail\nartifact_dir=\".artifacts/release\"\nlookup_headers=\"$RUNNER_TEMP/release-lookup.headers\"\nrelease_before=\"$RUNNER_TEMP/release-before.json\"\nrelease_after=\"$RUNNER_TEMP/release-after.json\"\nrelease_plan=\"$RUNNER_TEMP/release-plan.json\"\ndownloaded_dir=\"$RUNNER_TEMP/downloaded-release-assets\"\narchive=\"$(node -p \"JSON.parse(require('node:fs').readFileSync('.artifacts/release/manifest.json', 'utf8')).archive.name\")\"\n\nrelease_exists=false\nif gh api --include --silent \"repos/$GH_REPO/releases/tags/$GITHUB_REF_NAME\" > \"$lookup_headers\" 2>/dev/null; then\n  release_exists=true\nelse\n  lookup_status=\"$(grep -E '^HTTP/[0-9.]+ [0-9]{3}([[:space:]]|$)' \"$lookup_headers\" | tail -n 1 || true)\"\n  if ! grep -Eq '^HTTP/[0-9.]+ 404([[:space:]]|$)' <<< \"$lookup_status\"; then\n    echo \"GitHub release lookup failed without a confirmed 404; refusing creation.\" >&2\n    exit 1\n  fi\nfi\n\nif [ \"$release_exists\" = false ]; then\n  if ! gh release create \"$GITHUB_REF_NAME\" \\\n    --verify-tag \\\n    --generate-notes \\\n    --title \"$GITHUB_REF_NAME\" \\\n    \"$artifact_dir/$archive\" \\\n    \"$artifact_dir/manifest.json\"; then\n    echo \"Release creation was not acknowledged; verifying current release state.\" >&2\n  fi\nfi\n\nif ! gh api \"repos/$GH_REPO/releases/tags/$GITHUB_REF_NAME\" > \"$release_before\" 2>/dev/null; then\n  echo \"No verifiable GitHub release exists; manual correction is required before retry.\" >&2\n  exit 1\nfi\nif ! node scripts/github-release.mjs plan \\\n  \"$release_before\" \\\n  \"$GITHUB_REF_NAME\" \\\n  \"$artifact_dir\" > \"$release_plan\" 2>/dev/null; then\n  echo \"GitHub release state or assets are incomplete or mismatched; manual correction is required before retry.\" >&2\n  exit 1\nfi\n\nmkdir \"$downloaded_dir\"\nfor asset_index in 0 1; do\n  asset_id=\"$(node -p \"JSON.parse(require('node:fs').readFileSync(process.argv[1], 'utf8')).assets[$asset_index].id\" \"$release_plan\")\"\n  asset_name=\"$(node -p \"JSON.parse(require('node:fs').readFileSync(process.argv[1], 'utf8')).assets[$asset_index].name\" \"$release_plan\")\"\n  gh api \\\n    -H \"Accept: application/octet-stream\" \\\n    \"repos/$GH_REPO/releases/assets/$asset_id\" > \"$downloaded_dir/$asset_name\"\ndone\n\ngh api \"repos/$GH_REPO/releases/tags/$GITHUB_REF_NAME\" > \"$release_after\"\nnode scripts/github-release.mjs verify \\\n  \"$release_before\" \\\n  \"$release_after\" \\\n  \"$GITHUB_REF_NAME\" \\\n  \"$artifact_dir\" \\\n  \"$downloaded_dir\"\n",
+                "uses": null,
+                "directory": null,
+                "condition": null,
+                "with": null
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "repository": "astilbahq/ui",
+    "commit": "e295ce4aa79278ae0d865a88435f6539542808fe",
+    "packages": [
+      {
+        "path": "apps/showcase/package.json",
+        "name": "@astilba/showcase",
+        "version": "0.0.0",
+        "private": true,
+        "engines": null,
+        "packageManager": null,
+        "scripts": {
+          "build": "vite build && node scripts/verify-built-showcase.mjs",
+          "dev": "vite",
+          "test": "vitest run",
+          "typecheck": "tsc --noEmit"
+        },
+        "dependencies": {
+          "@astilba/tokens": "workspace:*",
+          "@astilba/ui": "workspace:*",
+          "@fontsource-variable/geist": "5.3.0",
+          "@fontsource-variable/inter": "5.3.0",
+          "@fontsource-variable/jetbrains-mono": "5.3.0",
+          "lucide-react": "1.25.0",
+          "react": "19.2.8",
+          "react-dom": "19.2.8"
+        },
+        "peerDependencies": null
+      },
+      {
+        "path": "package.json",
+        "name": "astilba-ui-workspace",
+        "version": "0.0.0",
+        "private": true,
+        "engines": {
+          "node": "^22.18.0 || >=24.0.0",
+          "pnpm": ">=11.10.0"
+        },
+        "packageManager": "pnpm@11.10.0",
+        "scripts": {
+          "build": "pnpm --filter @astilba/tokens build && pnpm --filter @astilba/ui build && pnpm --filter @astilba/showcase build && pnpm --filter @astilba/integration-astro build",
+          "check": "ultracite check",
+          "deploy": "wrangler deploy",
+          "deploy:dry-run": "pnpm --filter @astilba/showcase build && wrangler deploy --dry-run",
+          "dev": "pnpm --filter @astilba/tokens build && pnpm --filter @astilba/ui build && pnpm --filter @astilba/showcase dev",
+          "fix": "ultracite fix",
+          "knip": "knip",
+          "pack:check": "pnpm --filter @astilba/tokens pack:check && pnpm --filter @astilba/ui pack:check",
+          "smoke:production": "node scripts/smoke-production.mjs",
+          "test": "pnpm test:dependency-security && pnpm --recursive test",
+          "test:astro": "pnpm --filter @astilba/tokens build && pnpm --filter @astilba/ui build && pnpm --filter @astilba/integration-astro test",
+          "test:browser": "pnpm build && pnpm test:browser:run",
+          "test:browser:install": "playwright install chromium",
+          "test:browser:install:ci": "playwright install --with-deps chromium",
+          "test:browser:run": "playwright test",
+          "test:browser:update": "pnpm build && playwright test --update-snapshots",
+          "typecheck": "pnpm --recursive typecheck",
+          "verify": "pnpm verify:base && pnpm test:browser && pnpm deploy:dry-run",
+          "verify:base": "pnpm check && pnpm typecheck && pnpm test && pnpm knip && pnpm pack:check",
+          "verify:release-version": "tsx scripts/verify-release-version.ts",
+          "test:dependency-security": "node --test scripts/dependency-security.test.mjs"
+        },
+        "dependencies": null,
+        "peerDependencies": null
+      },
+      {
+        "path": "packages/tokens/package.json",
+        "name": "@astilba/tokens",
+        "version": "0.6.0",
+        "private": null,
+        "engines": null,
+        "packageManager": null,
+        "scripts": {
+          "build": "tsc -p tsconfig.build.json && tsx scripts/build-css.ts",
+          "pack:check": "pnpm build && publint && attw --pack --profile esm-only --exclude-entrypoints ./css ./styles.css",
+          "test": "pnpm build && vitest run",
+          "typecheck": "tsc --noEmit"
+        },
+        "dependencies": null,
+        "peerDependencies": null
+      },
+      {
+        "path": "packages/ui/package.json",
+        "name": "@astilba/ui",
+        "version": "0.6.0",
+        "private": null,
+        "engines": null,
+        "packageManager": null,
+        "scripts": {
+          "build": "panda codegen && vite build && panda cssgen --splitting && tsx scripts/build-css.ts && tsc -p tsconfig.build.json",
+          "pack:check": "pnpm build && publint && attw --pack --profile esm-only --exclude-entrypoints ./styles.css",
+          "test": "pnpm build && vitest run",
+          "test:watch": "panda codegen && vitest",
+          "typecheck": "panda codegen && tsc --noEmit"
+        },
+        "dependencies": {
+          "@astilba/tokens": "workspace:*",
+          "@base-ui/react": "1.6.0"
+        },
+        "peerDependencies": {
+          "react": ">=19.2.0 <20",
+          "react-dom": ">=19.2.0 <20"
+        }
+      },
+      {
+        "path": "tests/integrations/astro/package.json",
+        "name": "@astilba/integration-astro",
+        "version": "0.0.0",
+        "private": true,
+        "engines": null,
+        "packageManager": null,
+        "scripts": {
+          "build": "astro build",
+          "test": "astro check && astro build && node tests/verify-output.mjs"
+        },
+        "dependencies": {
+          "@astilba/tokens": "workspace:*",
+          "@astilba/ui": "workspace:*",
+          "@astrojs/react": "6.0.1",
+          "astro": "7.2.8",
+          "react": "19.2.8",
+          "react-dom": "19.2.8"
+        },
+        "peerDependencies": null
+      }
+    ],
+    "workflows": [
+      {
+        "path": ".github/workflows/actionlint.yml",
+        "name": "Actionlint",
+        "triggers": {
+          "pull_request": null
+        },
+        "jobs": [
+          {
+            "id": "actionlint",
+            "name": null,
+            "runtime": "ubuntu-latest",
+            "needs": null,
+            "matrix": null,
+            "environment": null,
+            "permissions": null,
+            "reusable": null,
+            "steps": [
+              {
+                "name": "Check out repository",
+                "run": null,
+                "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+                "directory": null,
+                "condition": null,
+                "with": {
+                  "persist-credentials": false
+                }
+              },
+              {
+                "name": "Lint workflows",
+                "run": null,
+                "uses": "docker://docker.io/rhysd/actionlint:1.7.12@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667",
+                "directory": null,
+                "condition": null,
+                "with": {
+                  "args": "-color"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "path": ".github/workflows/codeql.yml",
+        "name": "CodeQL",
+        "triggers": {
+          "pull_request": {
+            "branches": [
+              "main"
+            ]
+          },
+          "push": {
+            "branches": [
+              "main"
+            ]
+          },
+          "schedule": [
+            {
+              "cron": "43 5 * * 3"
+            }
+          ],
+          "workflow_dispatch": null
+        },
+        "jobs": [
+          {
+            "id": "analyze",
+            "name": "CodeQL (${{ matrix.language }})",
+            "runtime": "ubuntu-latest",
+            "needs": null,
+            "matrix": {
+              "language": [
+                "actions",
+                "javascript-typescript"
+              ]
+            },
+            "environment": null,
+            "permissions": {
+              "actions": "read",
+              "contents": "read",
+              "security-events": "write"
+            },
+            "reusable": null,
+            "steps": [
+              {
+                "name": "Check out repository",
+                "run": null,
+                "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+                "directory": null,
+                "condition": null,
+                "with": {
+                  "persist-credentials": false
+                }
+              },
+              {
+                "name": "Initialize CodeQL",
+                "run": null,
+                "uses": "github/codeql-action/init@99df26d4f13ea111d4ec1a7dddef6063f76b97e9",
+                "directory": null,
+                "condition": null,
+                "with": {
+                  "build-mode": "none",
+                  "languages": "${{ matrix.language }}"
+                }
+              },
+              {
+                "name": "Analyze",
+                "run": null,
+                "uses": "github/codeql-action/analyze@99df26d4f13ea111d4ec1a7dddef6063f76b97e9",
+                "directory": null,
+                "condition": null,
+                "with": {
+                  "category": "/language:${{ matrix.language }}"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "path": ".github/workflows/dependency-review.yml",
+        "name": "Dependency review",
+        "triggers": {
+          "pull_request": {
+            "branches": [
+              "main"
+            ]
+          }
+        },
+        "jobs": [
+          {
+            "id": "dependency-review",
+            "name": null,
+            "runtime": "ubuntu-latest",
+            "needs": null,
+            "matrix": null,
+            "environment": null,
+            "permissions": {
+              "contents": "read",
+              "pull-requests": "write"
+            },
+            "reusable": null,
+            "steps": [
+              {
+                "name": "Check out repository",
+                "run": null,
+                "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+                "directory": null,
+                "condition": null,
+                "with": {
+                  "persist-credentials": false
+                }
+              },
+              {
+                "name": "Review dependency changes",
+                "run": null,
+                "uses": "actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294",
+                "directory": null,
+                "condition": null,
+                "with": {
+                  "comment-summary-in-pr": "always",
+                  "fail-on-severity": "high"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "path": ".github/workflows/osv-scanner.yml",
+        "name": "OSV-Scanner",
+        "triggers": {
+          "pull_request": null,
+          "schedule": [
+            {
+              "cron": "14 5 * * 1"
+            }
+          ],
+          "workflow_dispatch": null
+        },
+        "jobs": [
+          {
+            "id": "osv-scan",
+            "name": null,
+            "runtime": "ubuntu-latest",
+            "needs": null,
+            "matrix": null,
+            "environment": null,
+            "permissions": null,
+            "reusable": null,
+            "steps": [
+              {
+                "name": "Check out repository",
+                "run": null,
+                "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+                "directory": null,
+                "condition": null,
+                "with": {
+                  "persist-credentials": false
+                }
+              },
+              {
+                "name": "Scan repository lockfiles",
+                "run": null,
+                "uses": "docker://ghcr.io/google/osv-scanner:v2.4.0@sha256:5116601dedc01c1c580eb92371883ec052fc4c13c3fbc109d621a63ac416d475",
+                "directory": null,
+                "condition": null,
+                "with": {
+                  "args": "scan source --recursive ."
+                }
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "path": ".github/workflows/pr-title.yml",
+        "name": "PR title",
+        "triggers": {
+          "pull_request": {
+            "types": [
+              "opened",
+              "edited",
+              "synchronize",
+              "reopened"
+            ]
+          }
+        },
+        "jobs": [
+          {
+            "id": "validate",
+            "name": "PR title",
+            "runtime": "ubuntu-latest",
+            "needs": null,
+            "matrix": null,
+            "environment": null,
+            "permissions": null,
+            "reusable": null,
+            "steps": [
+              {
+                "name": "Validate Conventional Commit title",
+                "run": null,
+                "uses": "amannn/action-semantic-pull-request@48f256284bd46cdaab1048c3721360e808335d50",
+                "directory": null,
+                "condition": null,
+                "with": null
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "path": ".github/workflows/release.yml",
+        "name": "Release",
+        "triggers": {
+          "release": {
+            "types": [
+              "published"
+            ]
+          }
+        },
+        "jobs": [
+          {
+            "id": "verify-packages",
+            "name": "Verify release packages",
+            "runtime": "ubuntu-latest",
+            "needs": null,
+            "matrix": null,
+            "environment": null,
+            "permissions": null,
+            "reusable": null,
+            "steps": [
+              {
+                "name": "Check out release",
+                "run": null,
+                "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+                "directory": null,
+                "condition": null,
+                "with": {
+                  "fetch-depth": 0,
+                  "persist-credentials": false,
+                  "ref": "${{ github.sha }}"
+                }
+              },
+              {
+                "name": "Confirm release commit is on main",
+                "run": "release_commit=\"$(git rev-parse 'HEAD^{commit}')\"\nif ! git merge-base --is-ancestor \"$release_commit\" origin/main; then\n  echo \"The release commit must be part of the main branch.\" >&2\n  exit 1\nfi\n",
+                "uses": null,
+                "directory": null,
+                "condition": null,
+                "with": null
+              },
+              {
+                "name": "Install pnpm",
+                "run": null,
+                "uses": "pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271",
+                "directory": null,
+                "condition": null,
+                "with": null
+              },
+              {
+                "name": "Set up Node.js",
+                "run": null,
+                "uses": "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020",
+                "directory": null,
+                "condition": null,
+                "with": {
+                  "node-version-file": ".node-version",
+                  "package-manager-cache": false
+                }
+              },
+              {
+                "name": "Install dependencies",
+                "run": "pnpm install --frozen-lockfile",
+                "uses": null,
+                "directory": null,
+                "condition": null,
+                "with": null
+              },
+              {
+                "name": "Verify release version",
+                "run": "pnpm verify:release-version",
+                "uses": null,
+                "directory": null,
+                "condition": null,
+                "with": null
+              },
+              {
+                "name": "Install browser",
+                "run": "pnpm test:browser:install:ci",
+                "uses": null,
+                "directory": null,
+                "condition": null,
+                "with": null
+              },
+              {
+                "name": "Verify repository",
+                "run": "pnpm verify",
+                "uses": null,
+                "directory": null,
+                "condition": null,
+                "with": null
+              },
+              {
+                "name": "Pack release artifacts",
+                "run": "artifact_directory=\"$RUNNER_TEMP/release-artifact\"\nmkdir -p \"$artifact_directory\"\npnpm --filter @astilba/tokens pack --pack-destination \"$artifact_directory\"\npnpm --filter @astilba/ui pack --pack-destination \"$artifact_directory\"\n\nmapfile -t tarballs < <(find \"$artifact_directory\" -maxdepth 1 -type f -name 'astilba-*.tgz' | sort)\nif [[ \"${#tarballs[@]}\" -ne 2 ]]; then\n  echo \"Expected exactly two Astilba package tarballs.\" >&2\n  exit 1\nfi\n\n(\n  cd \"$artifact_directory\"\n  sha256sum \"$(basename \"${tarballs[0]}\")\" \"$(basename \"${tarballs[1]}\")\" > SHA256SUMS\n)\n",
+                "uses": null,
+                "directory": null,
+                "condition": null,
+                "with": null
+              },
+              {
+                "name": "Upload immutable release artifacts",
+                "run": null,
+                "uses": "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+                "directory": null,
+                "condition": null,
+                "with": {
+                  "compression-level": 0,
+                  "if-no-files-found": "error",
+                  "name": "astilba-ui-release",
+                  "path": "${{ runner.temp }}/release-artifact/astilba-*.tgz\n${{ runner.temp }}/release-artifact/SHA256SUMS\n",
+                  "retention-days": 1
+                }
+              }
+            ]
+          },
+          {
+            "id": "publish",
+            "name": "Publish npm packages",
+            "runtime": "ubuntu-latest",
+            "needs": "verify-packages",
+            "matrix": null,
+            "environment": "npm",
+            "permissions": {
+              "contents": "read",
+              "id-token": "write"
+            },
+            "reusable": null,
+            "steps": [
+              {
+                "name": "Download verified release artifacts",
+                "run": null,
+                "uses": "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
+                "directory": null,
+                "condition": null,
+                "with": {
+                  "name": "astilba-ui-release",
+                  "path": "${{ runner.temp }}/release-artifact"
+                }
+              },
+              {
+                "name": "Set up Node.js",
+                "run": null,
+                "uses": "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020",
+                "directory": null,
+                "condition": null,
+                "with": {
+                  "node-version": "24.18.0",
+                  "package-manager-cache": false,
+                  "registry-url": "https://registry.npmjs.org"
+                }
+              },
+              {
+                "name": "Verify release artifact checksums",
+                "run": "sha256sum --check SHA256SUMS",
+                "uses": null,
+                "directory": "${{ runner.temp }}/release-artifact",
+                "condition": null,
+                "with": null
+              },
+              {
+                "name": "Publish verified artifacts",
+                "run": "artifact_directory=\"$RUNNER_TEMP/release-artifact\"\nmapfile -t tokens_tarballs < <(find \"$artifact_directory\" -maxdepth 1 -type f -name 'astilba-tokens-*.tgz')\nmapfile -t ui_tarballs < <(find \"$artifact_directory\" -maxdepth 1 -type f -name 'astilba-ui-*.tgz')\n\nif [[ \"${#tokens_tarballs[@]}\" -ne 1 || \"${#ui_tarballs[@]}\" -ne 1 ]]; then\n  echo \"Expected exactly one tarball for each release package.\" >&2\n  exit 1\nfi\n\nnpm publish \"${tokens_tarballs[0]}\" --access public --provenance\nnpm publish \"${ui_tarballs[0]}\" --access public --provenance\n",
+                "uses": null,
+                "directory": null,
+                "condition": null,
+                "with": null
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "path": ".github/workflows/verification.yml",
+        "name": "Verification",
+        "triggers": {
+          "pull_request": null,
+          "push": {
+            "branches": [
+              "main"
+            ]
+          }
+        },
+        "jobs": [
+          {
+            "id": "verify",
+            "name": "Verify (Node ${{ matrix.node.label }})",
+            "runtime": "ubuntu-latest",
+            "needs": null,
+            "matrix": {
+              "node": [
+                {
+                  "label": "minimum",
+                  "version": "22.18.0"
+                },
+                {
+                  "label": "current",
+                  "version": "24.18.0"
+                }
+              ]
+            },
+            "environment": null,
+            "permissions": null,
+            "reusable": null,
+            "steps": [
+              {
+                "name": "Check out repository",
+                "run": null,
+                "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+                "directory": null,
+                "condition": null,
+                "with": {
+                  "persist-credentials": false
+                }
+              },
+              {
+                "name": "Install pnpm",
+                "run": null,
+                "uses": "pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271",
+                "directory": null,
+                "condition": null,
+                "with": null
+              },
+              {
+                "name": "Set up Node.js",
+                "run": null,
+                "uses": "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020",
+                "directory": null,
+                "condition": null,
+                "with": {
+                  "cache": "pnpm",
+                  "node-version": "${{ matrix.node.version }}"
+                }
+              },
+              {
+                "name": "Install dependencies",
+                "run": "pnpm install --frozen-lockfile",
+                "uses": null,
+                "directory": null,
+                "condition": null,
+                "with": null
+              },
+              {
+                "name": "Verify",
+                "run": "pnpm verify:base",
+                "uses": null,
+                "directory": null,
+                "condition": null,
+                "with": null
+              }
+            ]
+          },
+          {
+            "id": "browser",
+            "name": "Browser contract",
+            "runtime": "ubuntu-24.04",
+            "needs": null,
+            "matrix": null,
+            "environment": null,
+            "permissions": null,
+            "reusable": null,
+            "steps": [
+              {
+                "name": "Check out repository",
+                "run": null,
+                "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+                "directory": null,
+                "condition": null,
+                "with": {
+                  "persist-credentials": false
+                }
+              },
+              {
+                "name": "Install pnpm",
+                "run": null,
+                "uses": "pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271",
+                "directory": null,
+                "condition": null,
+                "with": null
+              },
+              {
+                "name": "Set up Node.js",
+                "run": null,
+                "uses": "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020",
+                "directory": null,
+                "condition": null,
+                "with": {
+                  "cache": "pnpm",
+                  "node-version": "24.18.0"
+                }
+              },
+              {
+                "name": "Install dependencies",
+                "run": "pnpm install --frozen-lockfile",
+                "uses": null,
+                "directory": null,
+                "condition": null,
+                "with": null
+              },
+              {
+                "name": "Install browser",
+                "run": "pnpm test:browser:install:ci",
+                "uses": null,
+                "directory": null,
+                "condition": null,
+                "with": null
+              },
+              {
+                "name": "Test browser contract",
+                "run": "pnpm test:browser",
+                "uses": null,
+                "directory": null,
+                "condition": null,
+                "with": null
+              },
+              {
+                "name": "Validate showcase deployment",
+                "run": "pnpm deploy:dry-run",
+                "uses": null,
+                "directory": null,
+                "condition": null,
+                "with": null
+              },
+              {
+                "name": "Upload verified showcase artifact",
+                "run": null,
+                "uses": "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+                "directory": null,
+                "condition": "github.event_name == 'push' && github.ref == 'refs/heads/main'",
+                "with": {
+                  "name": "showcase-production-dist-${{ github.sha }}",
+                  "path": "apps/showcase/dist/",
+                  "if-no-files-found": "error",
+                  "include-hidden-files": true,
+                  "retention-days": 7
+                }
+              },
+              {
+                "name": "Upload browser diagnostics",
+                "run": null,
+                "uses": "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+                "directory": null,
+                "condition": "failure()",
+                "with": {
+                  "name": "browser-diagnostics",
+                  "path": "playwright-report/\ntest-results/\n",
+                  "retention-days": 7
+                }
+              }
+            ]
+          },
+          {
+            "id": "deploy",
+            "name": "Deploy showcase",
+            "runtime": "ubuntu-latest",
+            "needs": [
+              "verify",
+              "browser"
+            ],
+            "matrix": null,
+            "environment": {
+              "name": "production",
+              "url": "https://ui.astilba.com/"
+            },
+            "permissions": null,
+            "reusable": null,
+            "steps": [
+              {
+                "name": "Check out verified revision",
+                "run": null,
+                "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+                "directory": null,
+                "condition": null,
+                "with": {
+                  "persist-credentials": false
+                }
+              },
+              {
+                "name": "Download verified showcase artifact",
+                "run": null,
+                "uses": "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
+                "directory": null,
+                "condition": null,
+                "with": {
+                  "artifact-ids": "${{ needs.browser.outputs.showcase_artifact_id }}",
+                  "path": "apps/showcase/dist",
+                  "digest-mismatch": "error"
+                }
+              },
+              {
+                "name": "Confirm artifact provenance",
+                "run": "if [[ ! \"$SHOWCASE_ARTIFACT_DIGEST\" =~ ^[0-9a-f]{64}$ ]]; then\n  echo \"::error::The verified showcase artifact is missing its SHA-256 digest.\"\n  exit 1\nfi\n\nif [[ ! -f apps/showcase/dist/index.html || ! -f apps/showcase/dist/_headers || ! -f apps/showcase/dist/robots.txt ]]; then\n  echo \"::error::The verified showcase artifact is incomplete.\"\n  exit 1\nfi\n\nmapfile -t scripts < <(find apps/showcase/dist/assets -maxdepth 1 -type f -name '*.js')\nmapfile -t styles < <(find apps/showcase/dist/assets -maxdepth 1 -type f -name '*.css')\nif [[ \"${#scripts[@]}\" -lt 1 || \"${#styles[@]}\" -lt 1 ]]; then\n  echo \"::error::The verified showcase artifact is missing compiled assets.\"\n  exit 1\nfi\n\necho \"Deploying verified showcase artifact sha256:$SHOWCASE_ARTIFACT_DIGEST\"\n",
+                "uses": null,
+                "directory": null,
+                "condition": null,
+                "with": null
+              },
+              {
+                "name": "Install pnpm",
+                "run": null,
+                "uses": "pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271",
+                "directory": null,
+                "condition": null,
+                "with": null
+              },
+              {
+                "name": "Set up Node.js",
+                "run": null,
+                "uses": "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020",
+                "directory": null,
+                "condition": null,
+                "with": {
+                  "node-version": "24.18.0",
+                  "cache": "pnpm"
+                }
+              },
+              {
+                "name": "Install dependencies",
+                "run": "pnpm install --frozen-lockfile --ignore-scripts",
+                "uses": null,
+                "directory": null,
+                "condition": null,
+                "with": null
+              },
+              {
+                "name": "Reject a stale main revision",
+                "run": "read -r current_main_sha current_main_ref < <(\n  git ls-remote --exit-code origin refs/heads/main\n)\n\nif [[ \"$current_main_ref\" != \"refs/heads/main\" || \"$current_main_sha\" != \"$VERIFIED_SHA\" ]]; then\n  echo \"::error::Refusing to deploy $VERIFIED_SHA because origin/main is $current_main_sha.\"\n  exit 1\nfi\n",
+                "uses": null,
+                "directory": null,
+                "condition": null,
+                "with": null
+              },
+              {
+                "name": "Deploy verified showcase",
+                "run": "pnpm deploy",
+                "uses": null,
+                "directory": null,
+                "condition": null,
+                "with": null
+              },
+              {
+                "name": "Smoke-test showcase",
+                "run": "pnpm smoke:production",
+                "uses": null,
+                "directory": null,
+                "condition": null,
+                "with": null
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "path": ".github/workflows/zizmor.yml",
+        "name": "Zizmor",
+        "triggers": {
+          "pull_request": null
+        },
+        "jobs": [
+          {
+            "id": "zizmor",
+            "name": null,
+            "runtime": "ubuntu-latest",
+            "needs": null,
+            "matrix": null,
+            "environment": null,
+            "permissions": null,
+            "reusable": null,
+            "steps": [
+              {
+                "name": "Check out repository",
+                "run": null,
+                "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+                "directory": null,
+                "condition": null,
+                "with": {
+                  "persist-credentials": false
+                }
+              },
+              {
+                "name": "Audit workflows",
+                "run": null,
+                "uses": "zizmorcore/zizmor-action@6fc4b006235f201fdab3722e17240ab420d580e5",
+                "directory": null,
+                "condition": null,
+                "with": {
+                  "advanced-security": false,
+                  "min-severity": "medium",
+                  "online-audits": false,
+                  "token": "offline",
+                  "version": "1.26.1"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "repository": "astilbahq/docs",
+    "commit": "69101c58b1494689a3ec48ebd3e059f5d33ce729",
+    "packages": [
+      {
+        "path": "package.json",
+        "name": "@astilba/docs",
+        "version": "0.0.0",
+        "private": true,
+        "engines": {
+          "node": "^22.18.0 || ^24.0.0 || ^26.0.0"
+        },
+        "packageManager": "pnpm@11.17.0",
+        "scripts": {
+          "build": "node scripts/clean-dist.mjs && astro build && node scripts/generate-agent-skills-index.mjs && node scripts/generate-mcp-corpus.mjs && node scripts/generate-agent-discovery.mjs && node scripts/generate-agent-headers.mjs && node scripts/verify-agent-artifacts.mjs",
+          "build:production": "cross-env ASTILBA_DOCS_SITE=https://astilba.com pnpm build",
+          "check": "wrangler types --check && astro check",
+          "deploy": "pnpm build:production && wrangler deploy",
+          "deploy:dry-run": "pnpm build:production && wrangler deploy --dry-run",
+          "dev": "astro dev",
+          "env:check": "astilba-env generate --check",
+          "env:generate": "astilba-env generate",
+          "env:release:check": "node scripts/verify-env-release.mjs",
+          "knip": "knip",
+          "lint": "ultracite check",
+          "lint:fix": "ultracite fix",
+          "panda:codegen": "panda codegen",
+          "prepare": "panda codegen",
+          "preview": "astro preview",
+          "smoke:production": "node scripts/smoke-production.mjs",
+          "smoke:all": "pnpm smoke:site && pnpm smoke:production",
+          "smoke:site": "pnpm --dir site smoke:production",
+          "test": "pnpm test:dependency-security && vitest run",
+          "test:browser": "pnpm build:production && playwright test",
+          "test:browser:install": "playwright install chromium",
+          "test:browser:install:ci": "playwright install --with-deps chromium",
+          "test:browser:run": "playwright test",
+          "test:watch": "vitest",
+          "typecheck": "pnpm check",
+          "verify": "pnpm env:release:check && pnpm env:check && pnpm panda:codegen && pnpm lint && pnpm check && pnpm test && pnpm knip && pnpm deploy:dry-run && pnpm test:browser:run && pnpm verify:site",
+          "verify:site": "pnpm --dir site check && pnpm --dir site test && pnpm --dir site deploy:dry-run && pnpm --dir site test:browser",
+          "verify:agent-artifacts": "node scripts/verify-agent-artifacts.mjs",
+          "worker:types": "wrangler types",
+          "test:dependency-security": "node --test scripts/dependency-security.test.mjs"
+        },
+        "dependencies": {
+          "@astilba/env": "0.3.0",
+          "@astilba/tokens": "0.5.0",
+          "@astilba/ui": "0.5.0",
+          "@astrojs/react": "6.0.1",
+          "@astrojs/starlight": "0.41.4",
+          "@fontsource-variable/geist": "5.3.0",
+          "@fontsource-variable/inter": "5.3.0",
+          "@fontsource-variable/jetbrains-mono": "5.3.0",
+          "@modelcontextprotocol/sdk": "1.31.0",
+          "astro": "7.2.8",
+          "lucide-react": "1.26.0",
+          "react": "19.2.8",
+          "react-dom": "19.2.8",
+          "sharp": "0.35.5",
+          "starlight-links-validator": "0.25.2",
+          "starlight-llms-txt": "0.11.0",
+          "zod": "4.4.3"
+        },
+        "peerDependencies": null
+      },
+      {
+        "path": "site/package.json",
+        "name": "@astilba/site",
+        "version": "0.0.0",
+        "private": true,
+        "engines": {
+          "node": "^22.18.0 || ^24.0.0 || ^26.0.0"
+        },
+        "packageManager": null,
+        "scripts": {
+          "build": "astro build && node scripts/verify-built-site.mjs",
+          "build:production": "cross-env ASTILBA_SITE=https://astilba.com pnpm build",
+          "check": "astro check && tsc --noEmit",
+          "deploy": "pnpm build:production && wrangler deploy",
+          "deploy:dry-run": "pnpm build:production && wrangler deploy --dry-run",
+          "dev": "astro dev",
+          "preview": "astro preview",
+          "smoke:production": "node scripts/smoke-production.mjs",
+          "test": "vitest run",
+          "test:browser": "playwright test"
+        },
+        "dependencies": {
+          "@astilba/tokens": "0.5.0",
+          "@astilba/ui": "0.5.0",
+          "@astrojs/react": "6.0.1",
+          "@fontsource-variable/geist": "5.3.0",
+          "@fontsource-variable/inter": "5.3.0",
+          "@fontsource-variable/jetbrains-mono": "5.3.0",
+          "astro": "7.2.8",
+          "react": "19.2.8",
+          "react-dom": "19.2.8"
+        },
+        "peerDependencies": null
+      }
+    ],
+    "workflows": [
+      {
+        "path": ".github/workflows/actionlint.yml",
+        "name": "Actionlint",
+        "triggers": {
+          "pull_request": null
+        },
+        "jobs": [
+          {
+            "id": "actionlint",
+            "name": null,
+            "runtime": "ubuntu-latest",
+            "needs": null,
+            "matrix": null,
+            "environment": null,
+            "permissions": null,
+            "reusable": null,
+            "steps": [
+              {
+                "name": "Check out repository",
+                "run": null,
+                "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+                "directory": null,
+                "condition": null,
+                "with": {
+                  "persist-credentials": false
+                }
+              },
+              {
+                "name": "Lint workflows",
+                "run": null,
+                "uses": "docker://docker.io/rhysd/actionlint:1.7.12@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667",
+                "directory": null,
+                "condition": null,
+                "with": {
+                  "args": "-color"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "path": ".github/workflows/codeql.yml",
+        "name": "CodeQL",
+        "triggers": {
+          "pull_request": {
+            "branches": [
+              "main"
+            ]
+          },
+          "push": {
+            "branches": [
+              "main"
+            ]
+          },
+          "schedule": [
+            {
+              "cron": "43 5 * * 3"
+            }
+          ],
+          "workflow_dispatch": null
+        },
+        "jobs": [
+          {
+            "id": "analyze",
+            "name": "CodeQL (${{ matrix.language }})",
+            "runtime": "ubuntu-latest",
+            "needs": null,
+            "matrix": {
+              "include": [
+                {
+                  "language": "actions",
+                  "build-mode": "none"
+                },
+                {
+                  "language": "javascript-typescript",
+                  "build-mode": "none"
+                }
+              ]
+            },
+            "environment": null,
+            "permissions": {
+              "actions": "read",
+              "contents": "read",
+              "security-events": "write"
+            },
+            "reusable": null,
+            "steps": [
+              {
+                "name": "Check out repository",
+                "run": null,
+                "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+                "directory": null,
+                "condition": null,
+                "with": {
+                  "persist-credentials": false
+                }
+              },
+              {
+                "name": "Initialize CodeQL",
+                "run": null,
+                "uses": "github/codeql-action/init@e4fba868fa4b1b91e1fdab776edc8cfbe6e9fb81",
+                "directory": null,
+                "condition": null,
+                "with": {
+                  "build-mode": "${{ matrix.build-mode }}",
+                  "languages": "${{ matrix.language }}"
+                }
+              },
+              {
+                "name": "Analyze",
+                "run": null,
+                "uses": "github/codeql-action/analyze@e4fba868fa4b1b91e1fdab776edc8cfbe6e9fb81",
+                "directory": null,
+                "condition": null,
+                "with": {
+                  "category": "/language:${{ matrix.language }}"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "path": ".github/workflows/dependency-review.yml",
+        "name": "Dependency review",
+        "triggers": {
+          "pull_request": {
+            "branches": [
+              "main"
+            ]
+          }
+        },
+        "jobs": [
+          {
+            "id": "dependency-review",
+            "name": null,
+            "runtime": "ubuntu-latest",
+            "needs": null,
+            "matrix": null,
+            "environment": null,
+            "permissions": null,
+            "reusable": null,
+            "steps": [
+              {
+                "name": "Check out repository",
+                "run": null,
+                "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+                "directory": null,
+                "condition": null,
+                "with": {
+                  "fetch-depth": 0,
+                  "persist-credentials": false
+                }
+              },
+              {
+                "name": "Detect dependency baseline",
+                "run": "if git cat-file -e \"${BASE_SHA}:pnpm-lock.yaml\"; then\n  echo \"available=true\" >> \"$GITHUB_OUTPUT\"\nelse\n  echo \"available=false\" >> \"$GITHUB_OUTPUT\"\n  echo \"::notice::Dependency review starts after the default branch contains pnpm-lock.yaml.\"\nfi\n",
+                "uses": null,
+                "directory": null,
+                "condition": null,
+                "with": null
+              },
+              {
+                "name": "Review dependency changes",
+                "run": null,
+                "uses": "actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294",
+                "directory": null,
+                "condition": "steps.baseline.outputs.available == 'true'",
+                "with": {
+                  "fail-on-severity": "high",
+                  "comment-summary-in-pr": "never"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "path": ".github/workflows/osv-scanner.yml",
+        "name": "OSV-Scanner",
+        "triggers": {
+          "pull_request": null,
+          "schedule": [
+            {
+              "cron": "14 5 * * 1"
+            }
+          ],
+          "workflow_dispatch": null
+        },
+        "jobs": [
+          {
+            "id": "osv-scan",
+            "name": null,
+            "runtime": "ubuntu-latest",
+            "needs": null,
+            "matrix": null,
+            "environment": null,
+            "permissions": null,
+            "reusable": null,
+            "steps": [
+              {
+                "name": "Check out repository",
+                "run": null,
+                "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+                "directory": null,
+                "condition": null,
+                "with": {
+                  "persist-credentials": false
+                }
+              },
+              {
+                "name": "Scan complete lockfile",
+                "run": null,
+                "uses": "docker://ghcr.io/google/osv-scanner:v2.4.0@sha256:5116601dedc01c1c580eb92371883ec052fc4c13c3fbc109d621a63ac416d475",
+                "directory": null,
+                "condition": null,
+                "with": {
+                  "args": "scan source -L pnpm-lock.yaml"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "path": ".github/workflows/pr-title.yml",
+        "name": "PR Title",
+        "triggers": {
+          "pull_request": {
+            "types": [
+              "opened",
+              "edited",
+              "synchronize",
+              "reopened"
+            ]
+          }
+        },
+        "jobs": [
+          {
+            "id": "validate",
+            "name": null,
+            "runtime": "ubuntu-latest",
+            "needs": null,
+            "matrix": null,
+            "environment": null,
+            "permissions": null,
+            "reusable": null,
+            "steps": [
+              {
+                "name": "Validate title",
+                "run": null,
+                "uses": "amannn/action-semantic-pull-request@48f256284bd46cdaab1048c3721360e808335d50",
+                "directory": null,
+                "condition": null,
+                "with": null
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "path": ".github/workflows/production-smoke.yml",
+        "name": "Production smoke",
+        "triggers": {
+          "schedule": [
+            {
+              "cron": "17 * * * *"
+            }
+          ],
+          "workflow_dispatch": null
+        },
+        "jobs": [
+          {
+            "id": "smoke",
+            "name": null,
+            "runtime": "ubuntu-latest",
+            "needs": null,
+            "matrix": null,
+            "environment": null,
+            "permissions": null,
+            "reusable": null,
+            "steps": [
+              {
+                "name": "Check out repository",
+                "run": null,
+                "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+                "directory": null,
+                "condition": null,
+                "with": {
+                  "persist-credentials": false
+                }
+              },
+              {
+                "name": "Set up Node.js",
+                "run": null,
+                "uses": "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020",
+                "directory": null,
+                "condition": null,
+                "with": {
+                  "node-version": "24.18.0"
+                }
+              },
+              {
+                "name": "Smoke-test production",
+                "run": "node site/scripts/smoke-production.mjs\nnode scripts/smoke-production.mjs\n",
+                "uses": null,
+                "directory": null,
+                "condition": null,
+                "with": null
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "path": ".github/workflows/verification.yml",
+        "name": "Verification",
+        "triggers": {
+          "pull_request": null,
+          "push": {
+            "branches": [
+              "main"
+            ]
+          }
+        },
+        "jobs": [
+          {
+            "id": "docs",
+            "name": null,
+            "runtime": "ubuntu-latest",
+            "needs": null,
+            "matrix": null,
+            "environment": null,
+            "permissions": null,
+            "reusable": null,
+            "steps": [
+              {
+                "name": "Check out repository",
+                "run": null,
+                "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+                "directory": null,
+                "condition": null,
+                "with": {
+                  "fetch-depth": 0,
+                  "persist-credentials": false
+                }
+              },
+              {
+                "name": "Install pnpm",
+                "run": null,
+                "uses": "pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271",
+                "directory": null,
+                "condition": null,
+                "with": null
+              },
+              {
+                "name": "Set up Node.js",
+                "run": null,
+                "uses": "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020",
+                "directory": null,
+                "condition": null,
+                "with": {
+                  "node-version": "24.18.0",
+                  "cache": "pnpm"
+                }
+              },
+              {
+                "name": "Install dependencies",
+                "run": "pnpm install --frozen-lockfile",
+                "uses": null,
+                "directory": null,
+                "condition": null,
+                "with": null
+              },
+              {
+                "name": "Check generated Env output",
+                "run": "pnpm env:check",
+                "uses": null,
+                "directory": null,
+                "condition": null,
+                "with": null
+              },
+              {
+                "name": "Generate Panda bindings",
+                "run": "pnpm panda:codegen",
+                "uses": null,
+                "directory": null,
+                "condition": null,
+                "with": null
+              },
+              {
+                "name": "Lint and check formatting",
+                "run": "pnpm lint",
+                "uses": null,
+                "directory": null,
+                "condition": null,
+                "with": null
+              },
+              {
+                "name": "Check Astro and TypeScript",
+                "run": "pnpm check",
+                "uses": null,
+                "directory": null,
+                "condition": null,
+                "with": null
+              },
+              {
+                "name": "Run unit tests",
+                "run": "pnpm test",
+                "uses": null,
+                "directory": null,
+                "condition": null,
+                "with": null
+              },
+              {
+                "name": "Check apex Astro and TypeScript",
+                "run": "pnpm --dir site check",
+                "uses": null,
+                "directory": null,
+                "condition": null,
+                "with": null
+              },
+              {
+                "name": "Run apex unit tests",
+                "run": "pnpm --dir site test",
+                "uses": null,
+                "directory": null,
+                "condition": null,
+                "with": null
+              },
+              {
+                "name": "Find unused code and dependencies",
+                "run": "pnpm knip",
+                "uses": null,
+                "directory": null,
+                "condition": null,
+                "with": null
+              },
+              {
+                "name": "Build and validate docs deployment",
+                "run": "pnpm deploy:dry-run",
+                "uses": null,
+                "directory": null,
+                "condition": null,
+                "with": null
+              },
+              {
+                "name": "Build and validate apex deployment",
+                "run": "pnpm --dir site deploy:dry-run",
+                "uses": null,
+                "directory": null,
+                "condition": null,
+                "with": null
+              },
+              {
+                "name": "Cache Playwright browser",
+                "run": null,
+                "uses": "actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9",
+                "directory": null,
+                "condition": null,
+                "with": {
+                  "path": "~/.cache/ms-playwright",
+                  "key": "playwright-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}"
+                }
+              },
+              {
+                "name": "Install Chromium",
+                "run": "pnpm test:browser:install:ci",
+                "uses": null,
+                "directory": null,
+                "condition": null,
+                "with": null
+              },
+              {
+                "name": "Run docs browser and accessibility tests",
+                "run": "pnpm test:browser:run",
+                "uses": null,
+                "directory": null,
+                "condition": null,
+                "with": null
+              },
+              {
+                "name": "Run apex browser and accessibility tests",
+                "run": "pnpm --dir site test:browser",
+                "uses": null,
+                "directory": null,
+                "condition": null,
+                "with": null
+              },
+              {
+                "name": "Upload verified docs artifact",
+                "run": null,
+                "uses": "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+                "directory": null,
+                "condition": "github.event_name == 'push' && github.ref == 'refs/heads/main'",
+                "with": {
+                  "name": "docs-production-dist-${{ github.sha }}",
+                  "path": "dist/",
+                  "if-no-files-found": "error",
+                  "include-hidden-files": true,
+                  "retention-days": 7
+                }
+              },
+              {
+                "name": "Upload verified apex artifact",
+                "run": null,
+                "uses": "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+                "directory": null,
+                "condition": "github.event_name == 'push' && github.ref == 'refs/heads/main'",
+                "with": {
+                  "name": "site-production-dist-${{ github.sha }}",
+                  "path": "site/dist/",
+                  "if-no-files-found": "error",
+                  "include-hidden-files": true,
+                  "retention-days": 7
+                }
+              },
+              {
+                "name": "Upload Playwright report",
+                "run": null,
+                "uses": "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+                "directory": null,
+                "condition": "failure()",
+                "with": {
+                  "name": "playwright-report",
+                  "path": "playwright-report/\nsite/playwright-report/\n",
+                  "retention-days": 7
+                }
+              }
+            ]
+          },
+          {
+            "id": "deploy",
+            "name": "Deploy production",
+            "runtime": "ubuntu-latest",
+            "needs": "docs",
+            "matrix": null,
+            "environment": {
+              "name": "production",
+              "url": "https://astilba.com/"
+            },
+            "permissions": null,
+            "reusable": null,
+            "steps": [
+              {
+                "name": "Check out verified revision",
+                "run": null,
+                "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+                "directory": null,
+                "condition": null,
+                "with": {
+                  "persist-credentials": false
+                }
+              },
+              {
+                "name": "Download verified docs artifact",
+                "run": null,
+                "uses": "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
+                "directory": null,
+                "condition": null,
+                "with": {
+                  "artifact-ids": "${{ needs.docs.outputs.docs_artifact_id }}",
+                  "path": "dist",
+                  "digest-mismatch": "error"
+                }
+              },
+              {
+                "name": "Download verified apex artifact",
+                "run": null,
+                "uses": "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
+                "directory": null,
+                "condition": null,
+                "with": {
+                  "artifact-ids": "${{ needs.docs.outputs.site_artifact_id }}",
+                  "path": "site/dist",
+                  "digest-mismatch": "error"
+                }
+              },
+              {
+                "name": "Confirm artifact provenance",
+                "run": "if [[ ! \"$DOCS_ARTIFACT_DIGEST\" =~ ^[0-9a-f]{64}$ || ! \"$SITE_ARTIFACT_DIGEST\" =~ ^[0-9a-f]{64}$ ]]; then\n  echo \"::error::A verified production artifact is missing its SHA-256 digest.\"\n  exit 1\nfi\n\nif [[ ! -f dist/_headers || ! -f dist/docs/index.html || ! -f dist/docs/env/overview/index.html || ! -f dist/docs/env/overview.md || ! -f dist/docs/_llms-txt/astilba-env.txt || ! -f dist/docs/.well-known/agent-skills/astilba-env-docs/SKILL.md || ! -f dist/docs/sitemap.xml ]]; then\n  echo \"::error::The verified docs artifact is incomplete.\"\n  exit 1\nfi\n\nif [[ ! -f site/dist/index.html || ! -f site/dist/env/index.html || ! -f site/dist/cache/index.html || ! -f site/dist/llms.txt || ! -f site/dist/.well-known/agent-skills/index.json || ! -f site/dist/_headers || ! -f site/dist/sitemap-site.xml || ! -f site/dist/sitemap.xml ]]; then\n  echo \"::error::The verified apex artifact is incomplete.\"\n  exit 1\nfi\n\necho \"Deploying verified docs artifact sha256:$DOCS_ARTIFACT_DIGEST\"\necho \"Deploying verified apex artifact sha256:$SITE_ARTIFACT_DIGEST\"\n",
+                "uses": null,
+                "directory": null,
+                "condition": null,
+                "with": null
+              },
+              {
+                "name": "Install pnpm",
+                "run": null,
+                "uses": "pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271",
+                "directory": null,
+                "condition": null,
+                "with": null
+              },
+              {
+                "name": "Set up Node.js",
+                "run": null,
+                "uses": "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020",
+                "directory": null,
+                "condition": null,
+                "with": {
+                  "node-version": "24.18.0",
+                  "cache": "pnpm"
+                }
+              },
+              {
+                "name": "Install dependencies",
+                "run": "pnpm install --frozen-lockfile --ignore-scripts",
+                "uses": null,
+                "directory": null,
+                "condition": null,
+                "with": null
+              },
+              {
+                "name": "Verify documented Env release surfaces",
+                "run": "pnpm env:release:check",
+                "uses": null,
+                "directory": null,
+                "condition": null,
+                "with": null
+              },
+              {
+                "name": "Require the documented Env release on npm",
+                "run": "ASTILBA_ENV_VERSION=\"$(\n  node -p 'require(\"./package.json\").dependencies[\"@astilba/env\"]'\n)\"\n\nif ! resolved_version=\"$(\n  npm view \"$ASTILBA_ENV_PACKAGE@$ASTILBA_ENV_VERSION\" version\n)\"; then\n  echo \"::error::$ASTILBA_ENV_PACKAGE@$ASTILBA_ENV_VERSION is not available from the public npm registry.\"\n  exit 1\nfi\n\nif [[ \"$resolved_version\" != \"$ASTILBA_ENV_VERSION\" ]]; then\n  echo \"::error::Expected $ASTILBA_ENV_PACKAGE@$ASTILBA_ENV_VERSION, but npm resolved version $resolved_version.\"\n  exit 1\nfi\n\necho \"Confirmed $ASTILBA_ENV_PACKAGE@$resolved_version on the public npm registry.\"\n",
+                "uses": null,
+                "directory": null,
+                "condition": null,
+                "with": null
+              },
+              {
+                "name": "Reject a stale main revision",
+                "run": "read -r current_main_sha current_main_ref < <(\n  git ls-remote --exit-code origin refs/heads/main\n)\n\nif [[ \"$current_main_ref\" != \"refs/heads/main\" || \"$current_main_sha\" != \"$VERIFIED_SHA\" ]]; then\n  echo \"::error::Refusing to deploy $VERIFIED_SHA because origin/main is $current_main_sha.\"\n  exit 1\nfi\n",
+                "uses": null,
+                "directory": null,
+                "condition": null,
+                "with": null
+              },
+              {
+                "name": "Deploy verified apex site",
+                "run": "pnpm exec wrangler deploy",
+                "uses": null,
+                "directory": "site",
+                "condition": null,
+                "with": null
+              },
+              {
+                "name": "Smoke-test apex site",
+                "run": "pnpm smoke:site",
+                "uses": null,
+                "directory": null,
+                "condition": null,
+                "with": null
+              },
+              {
+                "name": "Deploy verified docs site",
+                "run": "pnpm exec wrangler deploy",
+                "uses": null,
+                "directory": null,
+                "condition": null,
+                "with": null
+              },
+              {
+                "name": "Smoke-test complete public web",
+                "run": "pnpm smoke:all",
+                "uses": null,
+                "directory": null,
+                "condition": null,
+                "with": null
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "path": ".github/workflows/zizmor.yml",
+        "name": "Zizmor",
+        "triggers": {
+          "pull_request": null
+        },
+        "jobs": [
+          {
+            "id": "zizmor",
+            "name": null,
+            "runtime": "ubuntu-latest",
+            "needs": null,
+            "matrix": null,
+            "environment": null,
+            "permissions": null,
+            "reusable": null,
+            "steps": [
+              {
+                "name": "Check out repository",
+                "run": null,
+                "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+                "directory": null,
+                "condition": null,
+                "with": {
+                  "persist-credentials": false
+                }
+              },
+              {
+                "name": "Audit workflows",
+                "run": null,
+                "uses": "docker://ghcr.io/zizmorcore/zizmor:1.28.0@sha256:8e6b3e4fb74d1aa5d23e83ea369f386c66eced0d1fb944d32cd8b2aac100b00d",
+                "directory": null,
+                "condition": null,
+                "with": {
+                  "args": "--persona=regular --no-online-audits --min-severity=medium ."
+                }
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+]

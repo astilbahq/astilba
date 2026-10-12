@@ -1,0 +1,19 @@
+{
+  "name": "@astilba/env-example-vite",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "vite build",
+    "env:check": "cross-env VITE_APP_NAME=Env-Vite-shell astilba-env generate --check",
+    "env:generate": "cross-env VITE_APP_NAME=Env-Vite-shell astilba-env generate",
+    "start": "node --experimental-strip-types server.ts",
+    "start:example": "cross-env VITE_LABEL=local-label node --experimental-strip-types server.ts"
+  },
+  "dependencies": {
+    "@astilba/env": "0.3.0"
+  },
+  "devDependencies": {
+    "cross-env": "10.1.0",
+    "vite": "8.1.5"
+  }
+}

@@ -1,0 +1,72 @@
+---
+import DefaultBanner from "@astrojs/starlight/components/Banner.astro";
+import { Icon } from "@astrojs/starlight/components";
+import { css } from "../../styled-system/css";
+import {
+  findDocsContext,
+  getDefaultVersion,
+  getVersionPageHref,
+} from "../docs/catalog";
+
+const context = findDocsContext(Astro.url.pathname);
+const currentVersion = context?.version;
+const defaultVersion = context ? getDefaultVersion(context.product) : undefined;
+const isOutdated =
+  context && defaultVersion
+    ? currentVersion?.id !== defaultVersion.id &&
+      (currentVersion?.lifecycle === "archived" ||
+        currentVersion?.lifecycle === "maintained")
+    : false;
+const latestHref =
+  context && defaultVersion
+    ? getVersionPageHref(context.product, defaultVersion, context.page.key)
+    : undefined;
+
+const noticeClass = css({
+  display: "flex",
+  minBlockSize: "2.75rem",
+  alignItems: "center",
+  gap: "0.625rem",
+  borderBlockEndWidth: "1px",
+  borderBlockEndStyle: "solid",
+  borderBlockEndColor: "border.subtle",
+  paddingBlock: "0.625rem",
+  paddingInline: "var(--sl-content-pad-x)",
+  background: "surface.subtle",
+  color: "ink.default",
+  fontSize: "0.8125rem",
+  lineHeight: 1.4,
+  _narrow: {
+    alignItems: "flex-start",
+    flexWrap: "wrap",
+  },
+});
+const iconClass = css({ flex: "0 0 auto" });
+const linkClass = css({
+  marginInlineStart: "auto",
+  color: "ink.strong",
+  fontWeight: "medium",
+  whiteSpace: "nowrap",
+  _narrow: {
+    inlineSize: "100%",
+    marginInlineStart: "1.625rem",
+  },
+});
+---
+
+<DefaultBanner />
+
+{
+  isOutdated && context && defaultVersion && latestHref && (
+    <aside class={noticeClass} aria-label="Documentation version notice" data-pagefind-ignore>
+      <Icon class={iconClass} name="information" size="1rem" />
+      <span>
+        You are reading {context.product.label} {context.version.label}. {" "}
+        {context.version.lifecycle === "archived"
+          ? "This version is archived."
+          : "A newer version is available."}
+      </span>
+      <a class={linkClass} href={latestHref}>View {defaultVersion.label}</a>
+    </aside>
+  )
+}

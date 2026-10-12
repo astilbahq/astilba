@@ -1,0 +1,163 @@
+---
+import { Icon } from "@astrojs/starlight/components";
+import { Button } from "@astilba/ui/button";
+import { css } from "../../styled-system/css";
+
+const hostClass = css({
+  position: "fixed",
+  insetBlockStart:
+    "calc((var(--sl-nav-height) - var(--sl-menu-button-size)) / 2)",
+  insetInlineEnd: "var(--sl-nav-pad-x)",
+  zIndex: "var(--sl-z-index-navbar)",
+  display: { base: "block", desktop: "none" },
+  inlineSize: "var(--sl-menu-button-size)",
+  blockSize: "var(--sl-menu-button-size)",
+  _print: {
+    display: "none",
+  },
+});
+const buttonClass = css({
+  minInlineSize: "var(--sl-menu-button-size)",
+  inlineSize: "var(--sl-menu-button-size)",
+  blockSize: "var(--sl-menu-button-size)",
+});
+const iconSwapClass = css({
+  position: "relative",
+  display: "inline-grid",
+  placeItems: "center",
+});
+const iconClass = css({
+  gridArea: "1 / 1",
+  display: "inline-grid",
+  placeItems: "center",
+  transformOrigin: "center",
+  transitionProperty: "opacity, filter, transform",
+  transitionDuration: "iconSwap",
+  transitionTimingFunction: "inOut",
+  pointerEvents: "none",
+  _reducedMotion: {
+    transition: "none",
+  },
+});
+const openIconClass = css({
+  opacity: 1,
+  filter: "blur(0)",
+  transform: "scale(1)",
+  _groupExpanded: {
+    opacity: 0,
+    filter: "blur(var(--astilba-blurs-icon-swap))",
+    transform: "scale(0.25)",
+  },
+});
+const closeIconClass = css({
+  opacity: 0,
+  filter: "blur(var(--astilba-blurs-icon-swap))",
+  transform: "scale(0.25)",
+  _groupExpanded: {
+    opacity: 1,
+    filter: "blur(0)",
+    transform: "scale(1)",
+  },
+});
+---
+
+<starlight-menu-button
+  aria-expanded="false"
+  class:list={[hostClass, "group print:hidden"]}
+>
+  <Button
+    aria-controls="starlight__sidebar"
+    aria-expanded="false"
+    aria-label={Astro.locals.t("menuButton.accessibleLabel")}
+    className={buttonClass}
+    iconOnly
+  >
+    <span aria-hidden="true" class={iconSwapClass}>
+      <span class:list={[iconClass, openIconClass]}>
+        <Icon name="bars" size="1rem" />
+      </span>
+      <span class:list={[iconClass, closeIconClass]}>
+        <Icon name="close" size="1rem" />
+      </span>
+    </span>
+  </Button>
+</starlight-menu-button>
+
+<script>
+  const elementName = "starlight-menu-button";
+
+  class AstilbaMobileMenuToggle extends HTMLElement {
+    private button: HTMLButtonElement | null = null;
+    private parentNavigation: HTMLElement | null = null;
+    private viewport: MediaQueryList | null = null;
+
+    private readonly handleClick = (): void => {
+      this.setExpanded(this.getAttribute("aria-expanded") !== "true");
+    };
+
+    private readonly handleKeyup = (event: KeyboardEvent): void => {
+      if (event.code !== "Escape") {
+        return;
+      }
+
+      this.setExpanded(false);
+      this.button?.focus();
+    };
+
+    private readonly handleViewportChange = (): void => {
+      this.setExpanded(false);
+    };
+
+    connectedCallback(): void {
+      if (this.button) {
+        return;
+      }
+
+      const button = this.querySelector("button");
+
+      if (!(button instanceof HTMLButtonElement)) {
+        return;
+      }
+
+      this.button = button;
+      this.button.addEventListener("click", this.handleClick);
+
+      const parentNavigation = this.closest("nav");
+
+      if (parentNavigation instanceof HTMLElement) {
+        this.parentNavigation = parentNavigation;
+        this.parentNavigation.addEventListener("keyup", this.handleKeyup);
+      }
+
+      this.viewport = window.matchMedia("(min-width: 50em)");
+      this.viewport.addEventListener("change", this.handleViewportChange);
+      this.setExpanded(this.getAttribute("aria-expanded") === "true");
+    }
+
+    disconnectedCallback(): void {
+      this.setExpanded(false);
+      this.button?.removeEventListener("click", this.handleClick);
+      this.parentNavigation?.removeEventListener("keyup", this.handleKeyup);
+      this.viewport?.removeEventListener("change", this.handleViewportChange);
+      this.button = null;
+      this.parentNavigation = null;
+      this.viewport = null;
+    }
+
+    private setExpanded(expanded: boolean): void {
+      this.setAttribute("aria-expanded", String(expanded));
+      this.button?.setAttribute("aria-expanded", String(expanded));
+      document.body.toggleAttribute("data-mobile-menu-expanded", expanded);
+
+      for (const element of document.querySelectorAll<HTMLElement>(
+        ".main-frame, .sl-skip-link"
+      )) {
+        element.toggleAttribute("inert", expanded);
+      }
+    }
+  }
+
+  if (!customElements.get(elementName)) {
+    customElements.define(elementName, AstilbaMobileMenuToggle);
+  }
+</script>

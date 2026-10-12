@@ -1,0 +1,35 @@
+---
+interface Props {
+  expanded?: boolean;
+}
+
+const { expanded = false } = Astro.props;
+const steps = [
+  { action: "Read product:sku-123", number: "01", result: "MISS" },
+  { action: "Run loadProduct()", number: "02", result: "ORIGIN" },
+  { action: "Store encoded result", number: "03", result: "WRITE" },
+  { action: "Read product:sku-123", number: "04", result: "HIT" },
+] as const;
+---
+
+<figure class:list={["execution-proof", { "execution-proof--expanded": expanded }]}> 
+  <figcaption>
+    <span>Local execution</span>
+    <span class="execution-proof__scope">one process · memory store</span>
+  </figcaption>
+  <ol aria-label="Cache execution sequence" class="execution-proof__steps">
+    {steps.map((step) => (
+      <li>
+        <span aria-hidden="true" class="execution-proof__number">{step.number}</span>
+        <span class="execution-proof__action">{step.action}</span>
+        <span class={`execution-proof__result execution-proof__result--${step.result.toLowerCase()}`}>
+          {step.result}
+        </span>
+      </li>
+    ))}
+  </ol>
+  <div class="execution-proof__summary">
+    <span><strong>2</strong> reads</span>
+    <span><strong>1</strong> origin load</span>
+  </div>
+</figure>

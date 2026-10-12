@@ -1,0 +1,68 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["github>astilbahq/docs:renovate-default"],
+  "lockFileMaintenance": {
+    "enabled": true,
+    "schedule": ["before 5am on monday"],
+    "automerge": false
+  },
+  "packageRules": [
+    {
+      "description": "Group safe non-major runtime dependencies while keeping their merge manually reviewed.",
+      "groupName": "routine runtime dependencies",
+      "groupSlug": "routine-runtime-dependencies",
+      "matchManagers": ["npm"],
+      "matchDepTypes": ["dependencies"],
+      "matchUpdateTypes": ["minor", "patch", "pin", "digest"],
+      "matchCurrentVersion": "!/^0/",
+      "automerge": false
+    },
+    {
+      "description": "Keep Astro and Starlight changes together for one documentation-shell review.",
+      "groupName": "Astro and Starlight",
+      "matchPackageNames": ["astro", "@astrojs/**", "starlight-*"]
+    },
+    {
+      "description": "Keep Panda packages on one versioned toolchain.",
+      "groupName": "Panda CSS",
+      "matchPackageNames": ["@pandacss/**"]
+    },
+    {
+      "description": "Review browser and static-analysis tooling together.",
+      "groupName": "verification tooling",
+      "matchPackageNames": [
+        "@axe-core/playwright",
+        "@playwright/test",
+        "knip",
+        "oxfmt",
+        "oxlint",
+        "ultracite",
+        "vitest"
+      ]
+    },
+    {
+      "description": "Require a maintainer merge for security-sensitive build tooling.",
+      "matchPackageNames": ["parse5", "wrangler"],
+      "automerge": false
+    },
+    {
+      "description": "Hold TypeScript on version 6 until Astro supports the TypeScript 7 programmatic API.",
+      "matchManagers": ["npm"],
+      "matchPackageNames": ["typescript"],
+      "allowedVersions": "<7"
+    },
+    {
+      "description": "Skip pnpm 11.12.0 because its self-update path breaks pnpm/action-setup.",
+      "matchManagers": ["npm"],
+      "matchDepTypes": ["packageManager"],
+      "matchPackageNames": ["pnpm"],
+      "allowedVersions": "!/^11\\.12\\.0$/"
+    },
+    {
+      "description": "Review changes to the Braces security backport.",
+      "matchPackageNames": ["braces", "@dieub/braces-depth-guard"],
+      "groupName": "Braces security backport",
+      "automerge": false
+    }
+  ]
+}

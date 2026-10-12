@@ -1,0 +1,283 @@
+---
+import { Icon } from "@astrojs/starlight/components";
+import { Button } from "@astilba/ui/button";
+import { css } from "../../styled-system/css";
+
+const rootClass = css({ display: "block" });
+const iconSwapClass = css({
+  position: "relative",
+  display: "inline-grid",
+  placeItems: "center",
+});
+const iconClass = css({
+  gridArea: "1 / 1",
+  display: "inline-grid",
+  placeItems: "center",
+  opacity: 0,
+  filter: "blur(var(--astilba-blurs-icon-swap))",
+  transform: "scale(0.25)",
+  transitionProperty: "opacity, filter, transform",
+  transitionDuration: "iconSwap",
+  transitionTimingFunction: "inOut",
+  pointerEvents: "none",
+  _reducedMotion: {
+    transition: "none",
+  },
+});
+const lightIconClass = css({
+  _dark: {
+    opacity: 1,
+    filter: "blur(0)",
+    transform: "scale(1)",
+  },
+});
+const darkIconClass = css({
+  _light: {
+    opacity: 1,
+    filter: "blur(0)",
+    transform: "scale(1)",
+  },
+});
+---
+
+<astilba-theme-toggle class={rootClass}>
+  <Button
+    aria-label="Toggle color theme"
+    data-theme-toggle-button
+    iconOnly
+    title="Toggle color theme"
+  >
+    <span aria-hidden="true" class={iconSwapClass}>
+      <span class:list={[iconClass, lightIconClass]}>
+        <Icon name="sun" size="1rem" />
+      </span>
+      <span class:list={[iconClass, darkIconClass]}>
+        <Icon name="moon" size="1rem" />
+      </span>
+    </span>
+  </Button>
+</astilba-theme-toggle>
+
+<script>
+  type Theme = "dark" | "light";
+
+  const storageKey = "starlight-theme";
+  const themeToggleName = "astilba-theme-toggle";
+
+  const getCurrentTheme = (): Theme =>
+    document.documentElement.dataset.theme === "light" ? "light" : "dark";
+
+  const getNextTheme = (theme: Theme): Theme =>
+    theme === "light" ? "dark" : "light";
+
+  const getActionLabel = (theme: Theme): string =>
+    `Switch to ${getNextTheme(theme)} theme`;
+
+  const storeTheme = (theme: Theme): void => {
+    try {
+      localStorage.setItem(storageKey, theme);
+    } catch {
+      // Theme switching still works when storage is unavailable.
+    }
+  };
+
+  const readCssDuration = (name: string, fallback: number): number => {
+    const raw = getComputedStyle(document.documentElement)
+      .getPropertyValue(name)
+      .trim();
+    const value = Number.parseFloat(raw);
+
+    if (!Number.isFinite(value)) {
+      return fallback;
+    }
+
+    return raw.endsWith("s") && !raw.endsWith("ms") ? value * 1000 : value;
+  };
+
+  const registerThemeColorProperties = (): boolean => {
+    if (typeof CSS.registerProperty !== "function") {
+      return false;
+    }
+
+    const properties = getComputedStyle(document.documentElement)
+      .getPropertyValue("--astilba-theme-color-properties")
+      .split(",")
+      .map((property) => property.trim())
+      .filter((property) => property.startsWith("--"));
+
+    if (properties.length === 0) {
+      return false;
+    }
+
+    for (const name of properties) {
+      try {
+        CSS.registerProperty({
+          name,
+          syntax: "<color>",
+          inherits: true,
+          initialValue: "transparent",
+        });
+      } catch (error) {
+        if (
+          error instanceof DOMException &&
+          error.name === "InvalidModificationError"
+        ) {
+          continue;
+        }
+
+        return false;
+      }
+    }
+
+    return true;
+  };
+
+  class AstilbaThemeToggle extends HTMLElement {
+    private cssTransitionEnd?: (event: TransitionEvent) => void;
+    private cssTransitionRun = 0;
+    private cssTransitionTimeout?: number;
+    private themeTransition?: ViewTransition;
+
+    connectedCallback(): void {
+      if (this.dataset.ready !== undefined) {
+        this.sync();
+        return;
+      }
+
+      const button = this.querySelector("[data-theme-toggle-button]");
+
+      if (!(button instanceof HTMLButtonElement)) {
+        return;
+      }
+
+      this.dataset.ready = "";
+      this.sync();
+      button.addEventListener("click", () => {
+        const nextTheme = getNextTheme(getCurrentTheme());
+        this.setTheme(nextTheme);
+      });
+    }
+
+    setTheme(theme: Theme): void {
+      const root = document.documentElement;
+      const updateTheme = (): void => {
+        root.dataset.theme = theme;
+        storeTheme(theme);
+        this.sync();
+      };
+      const prefersReducedMotion = window.matchMedia(
+        "(prefers-reduced-motion: reduce)"
+      ).matches;
+
+      if (prefersReducedMotion) {
+        this.themeTransition?.skipTransition();
+        this.themeTransition = undefined;
+        this.cancelCssTransition(root);
+        updateTheme();
+        return;
+      }
+
+      if (typeof document.startViewTransition !== "function") {
+        if (!registerThemeColorProperties()) {
+          updateTheme();
+          return;
+        }
+
+        const run = this.cssTransitionRun + 1;
+        this.cssTransitionRun = run;
+        this.clearCssTransitionWatchers(root);
+        root.dataset.themeTransitioning = "css";
+        const duration = readCssDuration(
+          "--astilba-durations-icon-swap",
+          250
+        );
+        void getComputedStyle(root).getPropertyValue(
+          "--astilba-colors-canvas"
+        );
+
+        const finish = (): void => {
+          if (this.cssTransitionRun !== run) {
+            return;
+          }
+
+          this.clearCssTransitionWatchers(root);
+          if (root.dataset.themeTransitioning === "css") {
+            delete root.dataset.themeTransitioning;
+          }
+        };
+        const onTransitionEnd = (event: TransitionEvent): void => {
+          if (
+            event.target === root &&
+            event.propertyName === "--astilba-colors-canvas"
+          ) {
+            finish();
+          }
+        };
+
+        this.cssTransitionEnd = onTransitionEnd;
+        root.addEventListener("transitionend", onTransitionEnd);
+        updateTheme();
+        this.cssTransitionTimeout = window.setTimeout(finish, duration + 50);
+        return;
+      }
+
+      this.cancelCssTransition(root);
+      this.themeTransition?.skipTransition();
+      root.dataset.themeTransitioning = "view";
+
+      const transition = document.startViewTransition(updateTheme);
+      this.themeTransition = transition;
+
+      const finish = (): void => {
+        if (this.themeTransition !== transition) {
+          return;
+        }
+
+        if (root.dataset.themeTransitioning === "view") {
+          delete root.dataset.themeTransitioning;
+        }
+
+        this.themeTransition = undefined;
+      };
+
+      void transition.finished.then(finish, finish);
+    }
+
+    private cancelCssTransition(root: HTMLElement): void {
+      this.cssTransitionRun += 1;
+      this.clearCssTransitionWatchers(root);
+
+      if (root.dataset.themeTransitioning === "css") {
+        delete root.dataset.themeTransitioning;
+      }
+    }
+
+    private clearCssTransitionWatchers(root: HTMLElement): void {
+      if (this.cssTransitionEnd) {
+        root.removeEventListener("transitionend", this.cssTransitionEnd);
+        this.cssTransitionEnd = undefined;
+      }
+
+      if (this.cssTransitionTimeout !== undefined) {
+        window.clearTimeout(this.cssTransitionTimeout);
+        this.cssTransitionTimeout = undefined;
+      }
+    }
+
+    sync(): void {
+      const button = this.querySelector("[data-theme-toggle-button]");
+
+      if (!(button instanceof HTMLButtonElement)) {
+        return;
+      }
+
+      const label = getActionLabel(getCurrentTheme());
+      button.setAttribute("aria-label", label);
+      button.title = label;
+    }
+  }
+
+  if (!customElements.get(themeToggleName)) {
+    customElements.define(themeToggleName, AstilbaThemeToggle);
+  }
+</script>

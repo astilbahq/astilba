@@ -1,0 +1,10 @@
+{
+  "archive": {
+    "integrity": "sha512-Pzhyq15LCuBC5wDj0QKNH6jKtjNVOD1TZcmHAmMFYcvUOETkj8NmAbEUQzScoRd8apCvY+zlZShvuYdPwfDazg==",
+    "tarball": "https://registry.npmjs.org/@astilba/env/-/env-0.1.0.tgz"
+  },
+  "generatedPath": ".astilba/env/workerDeployment.server.ts",
+  "package": "@astilba/env@0.1.0",
+  "sha256": "8e55ef7cf12958bb2764a0dc9e7c2565695d483040a6dda1e4d11fbc133182ec",
+  "size": 19462
+}

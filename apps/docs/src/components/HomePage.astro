@@ -1,0 +1,237 @@
+---
+import { css } from "../../styled-system/css";
+import {
+  docsProducts,
+  getProductHomeHref,
+} from "../docs/catalog";
+import { DocsIcon } from "./DocsIcon";
+import LandingActions from "./LandingActions.astro";
+
+const products = docsProducts.map((product) => ({
+  ...product,
+  href: getProductHomeHref(product),
+}));
+const featuredProduct = products[0];
+
+const rootClass = css({
+  display: "block",
+});
+const actionIconClass = css({
+  display: "block",
+  flex: "0 0 auto",
+});
+const sectionClass = css({
+  marginBlockStart: "4rem",
+});
+const sectionHeadingClass = css({
+  margin: 0,
+  color: "ink.strong",
+  fontFamily: "heading",
+  fontSize: "1.5rem",
+  fontWeight: "medium",
+  letterSpacing: "-0.015em",
+  lineHeight: 1.25,
+  textWrap: "balance",
+});
+const sectionDescriptionClass = css({
+  maxInlineSize: "62ch",
+  marginBlock: "0.625rem 0",
+  color: "ink.muted",
+  fontSize: "0.9375rem",
+  lineHeight: 1.6,
+  textWrap: "pretty",
+});
+const productGridClass = css({
+  display: "grid",
+  gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 20rem), 1fr))",
+  gap: "0.75rem",
+  marginBlockStart: "1.5rem",
+});
+const productCardClass = css({
+  display: "flex",
+  minInlineSize: 0,
+  blockSize: "100%",
+  flexDirection: "column",
+  borderWidth: "1px",
+  borderStyle: "solid",
+  borderColor: "border.chrome",
+  borderRadius: 0,
+  padding: "1.5rem",
+  background: "surface.subtle",
+  color: "inherit",
+  textDecoration: "none",
+  transitionProperty: "border-color, background-color",
+  transitionDuration: "control",
+  transitionTimingFunction: "outExpo",
+  _hover: {
+    borderColor: "border.guide",
+    background: "surface.hover",
+    color: "inherit",
+  },
+  _focusVisible: {
+    outlineColor: "signal",
+    outlineOffset: "-0.125rem",
+    outlineStyle: "solid",
+    outlineWidth: "0.125rem",
+  },
+  _reducedMotion: {
+    transitionDuration: "instant",
+  },
+});
+const productHeaderClass = css({
+  display: "flex",
+  minInlineSize: 0,
+  alignItems: "center",
+  justifyContent: "space-between",
+  gap: "1rem",
+});
+const productIdentityClass = css({
+  display: "flex",
+  minInlineSize: 0,
+  alignItems: "center",
+  gap: "0.625rem",
+});
+const productIconClass = css({
+  display: "inline-grid",
+  flex: "0 0 auto",
+  color: "ink.strong",
+  placeItems: "center",
+});
+const productNameClass = css({
+  minInlineSize: 0,
+  margin: 0,
+  color: "ink.strong",
+  fontFamily: "heading",
+  fontSize: "1.125rem",
+  fontWeight: "medium",
+  letterSpacing: "-0.01em",
+  lineHeight: 1.25,
+});
+const statusClass = css({
+  flex: "0 0 auto",
+  borderRadius: "badge",
+  paddingBlock: "0.1875rem",
+  paddingInline: "0.4375rem",
+  background: "accent.low",
+  color: "accent.high",
+  fontSize: "0.6875rem",
+  fontWeight: "medium",
+  lineHeight: 1.25,
+});
+const productDescriptionClass = css({
+  maxInlineSize: "62ch",
+  marginBlock: "1.125rem 0",
+  color: "ink.strong",
+  fontSize: "0.9375rem",
+  lineHeight: 1.6,
+  textWrap: "pretty",
+});
+const availabilityClass = css({
+  maxInlineSize: "62ch",
+  marginBlock: "0.625rem 0",
+  color: "ink.muted",
+  fontSize: "0.8125rem",
+  lineHeight: 1.55,
+  textWrap: "pretty",
+});
+const productFooterClass = css({
+  display: "flex",
+  alignItems: "center",
+  gap: "0.5rem",
+  marginBlockStart: "auto",
+  paddingBlockStart: "1.5rem",
+  color: "ink.strong",
+  fontSize: "0.8125rem",
+  fontWeight: "medium",
+  lineHeight: 1,
+});
+const agentNoteClass = css({
+  borderBlockStartWidth: "1px",
+  borderBlockStartStyle: "solid",
+  borderBlockStartColor: "border.chrome",
+  marginBlockStart: "3rem",
+  paddingBlockStart: "1rem",
+  color: "ink.muted",
+  fontSize: "0.875rem",
+  lineHeight: 1.55,
+});
+const textLinkClass = css({
+  color: "ink.strong",
+  fontWeight: "medium",
+  textDecorationColor: "currentColor",
+  textDecorationLine: "underline",
+  textDecorationThickness: "1px",
+  textUnderlineOffset: "4px",
+  _hover: {
+    color: "signal",
+  },
+});
+---
+
+<div class:list={[rootClass, "not-content"]}>
+  {
+    featuredProduct && (
+      <LandingActions
+        label="Documentation quick start"
+        primaryHref={featuredProduct.href}
+        primaryLabel="Read the docs"
+      />
+    )
+  }
+
+  <section aria-labelledby="products-heading" class={sectionClass}>
+    <h2 class={sectionHeadingClass} id="products-heading">Products</h2>
+    <p class={sectionDescriptionClass}>
+      Start with the product that matches the infrastructure boundary you need.
+    </p>
+
+    <div class={productGridClass}>
+      {
+        products.map((product) => (
+          <article>
+            <a
+              aria-labelledby={`product-${product.id}-title`}
+              class={productCardClass}
+              href={product.href}
+            >
+              <div class={productHeaderClass}>
+                <div class={productIdentityClass}>
+                  <span aria-hidden="true" class={productIconClass}>
+                    <DocsIcon name={product.icon} size={18} strokeWidth={1.25} />
+                  </span>
+                  <h3
+                    class={productNameClass}
+                    id={`product-${product.id}-title`}
+                  >
+                    {product.label}
+                  </h3>
+                </div>
+                {product.status && (
+                  <span class={statusClass}>{product.status.text}</span>
+                )}
+              </div>
+
+              <p class={productDescriptionClass}>{product.description}</p>
+              <p class={availabilityClass}>{product.availabilityNote}</p>
+
+              <span class={productFooterClass}>
+                <span>Read the docs</span>
+                <DocsIcon
+                  className={actionIconClass}
+                  name="right-arrow"
+                  size={14}
+                  strokeWidth={1.25}
+                />
+              </span>
+            </a>
+          </article>
+        ))
+      }
+    </div>
+  </section>
+
+  <p class={agentNoteClass}>
+    Working with an agent? The public <a class={textLinkClass} href="/docs/agents/mcp/">MCP server</a>
+    {" "}searches and reads the same published Markdown corpus without credentials.
+  </p>
+</div>

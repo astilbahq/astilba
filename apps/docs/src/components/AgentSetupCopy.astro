@@ -1,0 +1,262 @@
+---
+import { Button } from "@astilba/ui/button";
+import { css } from "../../styled-system/css";
+import { AGENT_SETUP_COPY_TEXT } from "../docs/agent-setup";
+import { PageActionBrandIcon } from "./PageActionBrandIcon";
+
+const rootClass = css({
+  display: "inline-flex",
+  "& [data-agent-setup-button]": {
+    cursor: "copy",
+  },
+});
+const buttonClass = css({
+  minInlineSize: "12.5rem",
+  justifyContent: "flex-start",
+});
+const buttonContentClass = css({
+  display: "inline-flex",
+  alignItems: "center",
+  gap: "0.75rem",
+});
+const agentIconsClass = css({
+  display: "inline-flex",
+  flex: "0 0 auto",
+  alignItems: "center",
+  gap: "0.1875rem",
+  color: "ink.muted",
+});
+const agentIconItemClass = css({
+  display: "inline-grid",
+  placeItems: "center",
+  transformOrigin: "center",
+  '&[data-agent-icon-index="1"]': {
+    animationDelay: "80ms",
+  },
+  '&[data-agent-icon-index="2"]': {
+    animationDelay: "160ms",
+  },
+  "[data-agent-setup-button]:is(:hover, :focus-visible) &": {
+    animationDuration: "agentIconWave",
+    animationFillMode: "both",
+    animationIterationCount: 1,
+    animationName: "agentIconWave",
+    animationTimingFunction: "outQuint",
+    willChange: "transform",
+  },
+  _reducedMotion: {
+    animation: "none",
+  },
+});
+const agentIconClass = css({
+  display: "block",
+  inlineSize: "0.875rem",
+  blockSize: "0.875rem",
+});
+const labelClass = css({
+  display: "inline-grid",
+  textAlign: "start",
+});
+const labelTextClass = css({
+  gridArea: "1 / 1",
+  transitionDuration: "fast",
+  transitionProperty: "opacity, visibility",
+  transitionTimingFunction: "inOut",
+  _reducedMotion: {
+    transition: "none",
+  },
+});
+const copyLabelClass = css({
+  opacity: 1,
+  visibility: "visible",
+  ':is([data-agent-setup-button][data-copy-state="copied"], [data-agent-setup-button][data-copy-state="error"]) &':
+    {
+      opacity: 0,
+      visibility: "hidden",
+    },
+});
+const copiedLabelClass = css({
+  opacity: 0,
+  visibility: "hidden",
+  '[data-agent-setup-button][data-copy-state="copied"] &': {
+    opacity: 1,
+    visibility: "visible",
+  },
+});
+const errorLabelClass = css({
+  opacity: 0,
+  visibility: "hidden",
+  '[data-agent-setup-button][data-copy-state="error"] &': {
+    opacity: 1,
+    visibility: "visible",
+  },
+});
+const statusClass = css({
+  position: "absolute",
+  inlineSize: "1px",
+  blockSize: "1px",
+  padding: 0,
+  margin: "-1px",
+  overflow: "hidden",
+  clip: "rect(0, 0, 0, 0)",
+  whiteSpace: "nowrap",
+  border: 0,
+});
+---
+
+<astilba-agent-setup-copy
+  class={rootClass}
+  data-copy-value={AGENT_SETUP_COPY_TEXT}
+  data-pagefind-ignore
+>
+  <Button
+    appearance="outline"
+    aria-label="Copy agent setup"
+    className={buttonClass}
+    data-agent-setup-button
+    size="large"
+    title="Copy agent setup prompt"
+  >
+    <span class={buttonContentClass} data-agent-setup-content>
+      <span
+        aria-hidden="true"
+        class={agentIconsClass}
+        data-agent-icon-group
+      >
+        <span
+          class={agentIconItemClass}
+          data-agent-brand-icon="chatgpt"
+          data-agent-icon-index="0"
+        >
+          <PageActionBrandIcon
+            className={agentIconClass}
+            destination="chatgpt"
+            size={14}
+          />
+        </span>
+        <span
+          class={agentIconItemClass}
+          data-agent-brand-icon="claude"
+          data-agent-icon-index="1"
+        >
+          <PageActionBrandIcon
+            className={agentIconClass}
+            destination="claude"
+            size={14}
+          />
+        </span>
+        <span
+          class={agentIconItemClass}
+          data-agent-brand-icon="cursor"
+          data-agent-icon-index="2"
+        >
+          <PageActionBrandIcon
+            className={agentIconClass}
+            destination="cursor"
+            size={14}
+          />
+        </span>
+      </span>
+      <span aria-hidden="true" class={labelClass}>
+        <span
+          class:list={[labelTextClass, copyLabelClass]}
+          data-agent-setup-label="copy"
+        >
+          Copy agent setup
+        </span>
+        <span
+          class:list={[labelTextClass, copiedLabelClass]}
+          data-agent-setup-label="copied"
+        >
+          Copied!
+        </span>
+        <span
+          class:list={[labelTextClass, errorLabelClass]}
+          data-agent-setup-label="error"
+        >
+          Copy failed
+        </span>
+      </span>
+    </span>
+  </Button>
+  <span aria-live="polite" class={statusClass} data-agent-setup-status role="status"></span>
+</astilba-agent-setup-copy>
+
+<script>
+  type CopyState = "copied" | "error" | "idle";
+
+  const elementName = "astilba-agent-setup-copy";
+
+  class AstilbaAgentSetupCopy extends HTMLElement {
+    private resetTimer?: number;
+
+    connectedCallback(): void {
+      if (this.dataset.ready !== undefined) {
+        return;
+      }
+
+      const button = this.querySelector("[data-agent-setup-button]");
+
+      if (!(button instanceof HTMLButtonElement)) {
+        return;
+      }
+
+      this.dataset.ready = "";
+      button.addEventListener("click", () => {
+        void this.copyPrompt();
+      });
+    }
+
+    disconnectedCallback(): void {
+      if (this.resetTimer !== undefined) {
+        window.clearTimeout(this.resetTimer);
+        this.resetTimer = undefined;
+      }
+    }
+
+    private async copyPrompt(): Promise<void> {
+      const value = this.dataset.copyValue;
+
+      if (!value) {
+        this.showFeedback("error", "Agent setup prompt could not be copied.");
+        return;
+      }
+
+      try {
+        if (!navigator.clipboard?.writeText) {
+          throw new Error("The Clipboard API is unavailable.");
+        }
+
+        await navigator.clipboard.writeText(value);
+        this.showFeedback("copied", "Agent setup prompt copied.");
+      } catch {
+        this.showFeedback("error", "Agent setup prompt could not be copied.");
+      }
+    }
+
+    private showFeedback(state: Exclude<CopyState, "idle">, message: string): void {
+      const button = this.querySelector("[data-agent-setup-button]");
+      const status = this.querySelector("[data-agent-setup-status]");
+
+      if (!(button instanceof HTMLButtonElement) || !(status instanceof HTMLElement)) {
+        return;
+      }
+
+      if (this.resetTimer !== undefined) {
+        window.clearTimeout(this.resetTimer);
+      }
+
+      button.dataset.copyState = state;
+      status.textContent = message;
+      this.resetTimer = window.setTimeout(() => {
+        button.dataset.copyState = "idle";
+        status.textContent = "";
+        this.resetTimer = undefined;
+      }, 2000);
+    }
+  }
+
+  if (!customElements.get(elementName)) {
+    customElements.define(elementName, AstilbaAgentSetupCopy);
+  }
+</script>

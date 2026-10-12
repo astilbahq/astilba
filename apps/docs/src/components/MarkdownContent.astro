@@ -1,0 +1,56 @@
+---
+import "@astrojs/starlight/style/markdown.css";
+import { findSiteDocsPage } from "../docs/site-pages";
+import HeadingAnchorCopy from "./HeadingAnchorCopy";
+import HomePage from "./HomePage.astro";
+import ProductHomePage from "./ProductHomePage.astro";
+
+const { entry } = Astro.locals.starlightRoute;
+const isHome = entry.id === "" || entry.id === "index";
+const sitePage = findSiteDocsPage(entry.id);
+const productHomeId = sitePage?.presentation === "product-home"
+  ? sitePage.productId
+  : undefined;
+const copyCodeLabel = Astro.locals.t("expressiveCode.copyButtonTooltip");
+---
+
+<div class="sl-markdown-content" data-copy-code-label={copyCodeLabel}>
+  {
+    isHome
+      ? <HomePage />
+      : productHomeId
+        ? <ProductHomePage productId={productHomeId} />
+        : <slot />
+  }
+</div>
+<HeadingAnchorCopy client:load />
+
+<script>
+  const enhanceCodeCopyButtons = () => {
+    const buttons = document.querySelectorAll<HTMLButtonElement>(
+      ".expressive-code .copy > button"
+    );
+
+    for (const button of buttons) {
+      const copy = button.parentElement;
+
+      if (!copy) {
+        continue;
+      }
+
+      const content = button.closest<HTMLElement>(".sl-markdown-content");
+      const label = content?.dataset.copyCodeLabel;
+
+      if (!label) {
+        continue;
+      }
+
+      copy.dataset.copyTooltip = label;
+      button.setAttribute("aria-label", label);
+      button.removeAttribute("title");
+    }
+  };
+
+  enhanceCodeCopyButtons();
+  document.addEventListener("astro:page-load", enhanceCodeCopyButtons);
+</script>

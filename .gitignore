@@ -11,3 +11,10 @@ playwright-report/
 styled-system/
 test-results/
 worker-configuration.d.ts
+!apps/docs/worker-configuration.d.ts
+.artifacts/
+.next/
+.vite/
+.wrangler/
+*.tgz
+*.tsbuildinfo

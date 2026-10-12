@@ -1,0 +1,17 @@
+---
+import darkMark from "../../../docs/src/assets/astilba-logomark-dark.svg";
+import lightMark from "../../../docs/src/assets/astilba-logomark-light.svg";
+
+interface Props {
+  class?: string;
+  decorative?: boolean;
+}
+
+const { class: className, decorative = true } = Astro.props;
+const alt = decorative ? "" : "Astilba";
+---
+
+<span class:list={["brand-mark", className]}>
+  <img alt={alt} class="brand-mark__image brand-mark__image--dark" src={lightMark.src} />
+  <img alt={alt} class="brand-mark__image brand-mark__image--light" src={darkMark.src} />
+</span>

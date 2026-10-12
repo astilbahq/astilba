@@ -1,0 +1,135 @@
+---
+import config from "virtual:starlight/user-config";
+import SiteTitle from "virtual:starlight/components/SiteTitle";
+import { Icon } from "@astrojs/starlight/components";
+import { LinkButton } from "@astilba/ui/link-button";
+import { css } from "../../styled-system/css";
+import { findDocsProductContext, getProductHomeHref } from "../docs/catalog";
+import ThemeToggle from "./ThemeToggle.astro";
+import HeaderSearch from "./HeaderSearch.astro";
+
+const shouldRenderSearch =
+  config.pagefind ||
+  config.components.Search !== "@astrojs/starlight/components/Search.astro";
+const productContext = findDocsProductContext(Astro.url.pathname);
+const productHref = productContext
+  ? getProductHomeHref(productContext.product)
+  : undefined;
+const normalizePathname = (pathname: string): string =>
+  pathname.replace(/\/+$/, "") || "/";
+
+const headerClass = css({
+  display: "flex",
+  blockSize: "100%",
+  alignItems: "center",
+  justifyContent: "space-between",
+  gap: "var(--sl-nav-gap)",
+});
+
+const titleWrapperClass = css({
+  display: "flex",
+  minInlineSize: 0,
+  alignItems: "center",
+  gap: 0,
+  margin: "-0.25rem",
+  padding: "0.25rem",
+  overflow: "clip",
+});
+const productLinkClass = css({
+  flex: "0 0 auto",
+  paddingInline: "0.125em",
+  color: "ink.muted",
+  cursor: "pointer",
+  fontSize: "0.875rem",
+  fontWeight: "brand",
+  lineHeight: "1rem",
+  textDecoration: "none",
+});
+const actionsClass = css({
+  display: "flex",
+  flex: "0 0 auto",
+  alignItems: "center",
+  gap: "0.125rem",
+  marginInlineStart: "auto",
+});
+const actionIconClass = css({
+  flex: "0 0 auto",
+});
+const actionLabelClass = css({
+  _narrow: {
+    position: "absolute",
+    inlineSize: "1px",
+    blockSize: "1px",
+    padding: 0,
+    margin: "-1px",
+    overflow: "hidden",
+    clip: "rect(0, 0, 0, 0)",
+    whiteSpace: "nowrap",
+    border: 0,
+  },
+});
+const githubHref =
+  productContext?.product.repositoryUrl ??
+  config.social?.find(({ icon }) => icon === "github")?.href ??
+  "https://github.com/astilbahq";
+const githubLabel = productContext
+  ? `Astilba ${productContext.product.label} on GitHub`
+  : "Astilba on GitHub";
+const sponsorHref = "https://github.com/sponsors/astilbahq";
+---
+
+<div class={headerClass}>
+  <div class:list={[titleWrapperClass, "sl-flex"]}>
+    <SiteTitle />
+    {
+      productContext && productHref && (
+        <a
+          aria-current={
+            normalizePathname(Astro.url.pathname) ===
+            normalizePathname(productHref)
+              ? "page"
+              : undefined
+          }
+          class={productLinkClass}
+          href={productHref}
+        >
+          {productContext.product.label}
+        </a>
+      )
+    }
+  </div>
+  <div aria-label="Site actions" class:list={[actionsClass, "print:hidden"]} role="group">
+    {shouldRenderSearch && <HeaderSearch />}
+    <LinkButton
+      aria-label={githubLabel}
+      href={githubHref}
+      rel={productContext ? undefined : "me"}
+      title={githubLabel}
+    >
+      <Icon
+        class={actionIconClass}
+        name="github"
+        size="1rem"
+      />
+    </LinkButton>
+    <LinkButton
+      aria-label="Sponsor Astilba on GitHub"
+      href={sponsorHref}
+      title="Sponsor Astilba"
+    >
+      <Icon
+        class={actionIconClass}
+        name="heart"
+        size="1rem"
+      />
+      <span class={actionLabelClass}>Sponsor</span>
+    </LinkButton>
+    <ThemeToggle />
+  </div>
+</div>
+
+<script>
+  import { installDesignSystemEasterEgg } from "../scripts/design-system-easter-egg";
+
+  installDesignSystemEasterEgg();
+</script>

@@ -1,0 +1,67 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    ":dependencyDashboard",
+    ":semanticCommits",
+    ":pinDevDependencies",
+    "group:monorepos"
+  ],
+  "timezone": "Europe/London",
+  "schedule": ["before 7am every weekday"],
+  "rangeStrategy": "pin",
+  "minimumReleaseAge": "3 days",
+  "platformAutomerge": false,
+  "automergeType": "pr",
+  "automergeStrategy": "squash",
+  "rebaseWhen": "behind-base-branch",
+  "prConcurrentLimit": 3,
+  "prHourlyLimit": 2,
+  "labels": ["dependencies"],
+  "lockFileMaintenance": {
+    "enabled": true,
+    "schedule": ["before 5am on monday"],
+    "automerge": true
+  },
+  "vulnerabilityAlerts": {
+    "enabled": true,
+    "labels": ["dependencies", "security"]
+  },
+  "packageRules": [
+    {
+      "matchDepTypes": ["engines"],
+      "enabled": false
+    },
+    {
+      "matchManagers": ["npm"],
+      "matchDepTypes": ["devDependencies"],
+      "matchUpdateTypes": ["minor", "patch", "pin", "digest"],
+      "matchCurrentVersion": "!/^0/",
+      "groupName": "routine development dependencies",
+      "automerge": true
+    },
+    {
+      "matchManagers": ["npm"],
+      "matchDepTypes": ["dependencies"],
+      "matchUpdateTypes": ["minor", "patch", "pin", "digest"],
+      "matchCurrentVersion": "!/^0/",
+      "groupName": "routine runtime dependencies",
+      "automerge": true
+    },
+    {
+      "matchManagers": ["github-actions"],
+      "matchUpdateTypes": ["minor", "patch", "pin", "digest"],
+      "groupName": "GitHub Actions",
+      "automerge": true
+    },
+    {
+      "matchUpdateTypes": ["major"],
+      "automerge": false
+    },
+    {
+      "matchManagers": ["npm"],
+      "matchCurrentVersion": "/^0\\./",
+      "automerge": false
+    }
+  ]
+}

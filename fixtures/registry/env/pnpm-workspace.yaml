@@ -1,0 +1,17 @@
+packages:
+  - node-service
+  - cloudflare-worker
+  - next-static-shell
+  - vite
+overrides:
+  sharp@<0.35.5: 0.35.5
+  source-map-js@>=1.0.0 <1.2.2: 1.2.2
+  undici@>=7.0.0 <7.29.1: 7.29.1
+nodeLinker: hoisted
+minimumReleaseAge: 1440
+minimumReleaseAgeExclude:
+  - "@astilba/env"
+allowBuilds:
+  esbuild: true
+  sharp: false
+  workerd: true
