@@ -192,6 +192,8 @@ jobs:
       - run: node scripts/verify-next-consumer.mjs ${{ matrix.next }} ${{ matrix.mode }}
 
   windows-consumer:
+    # The verifier imports only Node built-ins; root development needs Node 22.18.
+    # Keep archive admission independent at the published Node 22.14 minimum.
     name: Windows archive consumer
     needs: pack
     runs-on: windows-latest

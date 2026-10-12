@@ -3,7 +3,9 @@ import path from "node:path";
 
 const cwd = path.resolve(import.meta.dirname, "../../packages/env");
 const lanes = [
-  ["scripts/verify-consumer.mjs", "npm", "pnpm", "bun"],
+  ["scripts/verify-consumer.mjs", "npm"],
+  ["scripts/verify-consumer.mjs", "pnpm"],
+  ["scripts/verify-consumer.mjs", "bun"],
   ["scripts/verify-workers-consumer.mjs"],
   ["scripts/verify-portable-equivalence.mjs"],
   ["scripts/verify-deterministic-generation.mjs"],
