@@ -22,7 +22,7 @@ const skills = await Promise.all(
   skillDefinitions.map(async ({ description, name }) => {
     const skillPath = resolve(
       process.cwd(),
-      `../public/.well-known/agent-skills/${name}/SKILL.md`
+      `../docs/public/.well-known/agent-skills/${name}/SKILL.md`
     );
     const skill = await readFile(skillPath);
 
