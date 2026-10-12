@@ -50,6 +50,14 @@ jobs:
       - run: pnpm test:browser:install:ci
       - run: pnpm test:browser
       - run: pnpm deploy:dry-run
+      - if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: ui-browser-diagnostics
+          path: |
+            playwright-report/
+            test-results/
+          retention-days: 7
 
   web:
     name: Docs and apex verification
@@ -67,6 +75,16 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm --dir apps/docs test:browser:install:ci
       - run: pnpm verify:web
+      - if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: web-browser-diagnostics
+          path: |
+            apps/docs/playwright-report/
+            apps/docs/test-results/
+            apps/site/playwright-report/
+            apps/site/test-results/
+          retention-days: 7
 
   registry:
     name: Registry examples on ${{ matrix.os }}
