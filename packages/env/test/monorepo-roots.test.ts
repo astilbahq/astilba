@@ -7,7 +7,7 @@ import {
   symlink,
   writeFile,
 } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { devNull, tmpdir } from "node:os";
 import { resolve } from "node:path";
 
 import { describe, expect, it } from "vitest";
@@ -50,7 +50,30 @@ describe("monorepo roots", () => {
     const root = await mkdtemp(resolve(tmpdir(), "env-source-root-"));
     const nested = resolve(root, "packages/env");
     const git = (...arguments_: string[]) =>
-      execFileSync("git", ["-C", root, ...arguments_], { stdio: "pipe" });
+      execFileSync(
+        "git",
+        [
+          "-C",
+          root,
+          "-c",
+          "commit.gpgsign=false",
+          "-c",
+          `core.hooksPath=${devNull}`,
+          "-c",
+          "user.name=Fixture",
+          "-c",
+          "user.email=fixture@example.invalid",
+          ...arguments_,
+        ],
+        {
+          env: {
+            ...process.env,
+            GIT_CONFIG_GLOBAL: devNull,
+            GIT_CONFIG_NOSYSTEM: "1",
+          },
+          stdio: "pipe",
+        }
+      );
     try {
       await mkdir(nested, { recursive: true });
       await writeFile(
@@ -63,15 +86,7 @@ describe("monorepo roots", () => {
       );
       git("init");
       git("add", ".");
-      git(
-        "-c",
-        "user.name=Fixture",
-        "-c",
-        "user.email=fixture@example.invalid",
-        "commit",
-        "-m",
-        "fixture"
-      );
+      git("commit", "-m", "fixture");
       expect((await captureSource(nested)).package).toStrictEqual({
         name: "@astilba/env",
         version: "0.3.0",
@@ -93,15 +108,7 @@ describe("monorepo roots", () => {
         resolve(nested, "package.json")
       );
       git("add", ".");
-      git(
-        "-c",
-        "user.name=Fixture",
-        "-c",
-        "user.email=fixture@example.invalid",
-        "commit",
-        "-m",
-        "symlink fixture"
-      );
+      git("commit", "-m", "symlink fixture");
       await expect(captureSource(nested)).rejects.toThrow(
         "not the committed source"
       );
