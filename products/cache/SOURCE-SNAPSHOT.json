@@ -2,6 +2,20 @@
   "sourceRevision": "726e1b0c9b451f93bb903836fd56df9d33a79403",
   "parserVersion": "6.0.3",
   "normalization": "TypeScript printer with comments removed",
+  "approvedAmendments": [
+    {
+      "date": "2026-10-12",
+      "authorization": "Maintainer-approved equivalent linear-time duration parser and new regression tests",
+      "securityFinding": "CodeQL js/polynomial-redos; astilbahq/astilba alert 1",
+      "file": "packages/cache/src/cache.ts",
+      "previousExecutableSha256": "055c14d4f821e432556433e5872b33ddde9f6f8641f9874ad53fa319aff42f19",
+      "executableSha256": "edd4996c638ecb8689f149f2ccc148ce5d69388ed7c9f6e9d7a8c8c482dfc4a6",
+      "addedRegressionFiles": [
+        "packages/cache/test/unit/duration-parser.test.ts",
+        "packages/cache/test/unit/fixtures/duration-input.ts"
+      ]
+    }
+  ],
   "files": [
     {
       "file": "apps/demo/app/bounds.ts",
@@ -197,7 +211,7 @@
     },
     {
       "file": "packages/cache/src/cache.ts",
-      "executableSha256": "055c14d4f821e432556433e5872b33ddde9f6f8641f9874ad53fa319aff42f19"
+      "executableSha256": "edd4996c638ecb8689f149f2ccc148ce5d69388ed7c9f6e9d7a8c8c482dfc4a6"
     },
     {
       "file": "packages/cache/src/drivers.ts",
@@ -606,6 +620,14 @@
     {
       "file": "packages/cache/test/unit/do-bus-redial.test.ts",
       "executableSha256": "87af028b90b4dc6209a239d5537aeb708efffbf301e5ed0a5a37f58ba3f44c39"
+    },
+    {
+      "file": "packages/cache/test/unit/duration-parser.test.ts",
+      "executableSha256": "35f5075a3a87f54b3f2ff9a4c95e851753b37fcc9c4cdaaf0532bf240bcaf317"
+    },
+    {
+      "file": "packages/cache/test/unit/fixtures/duration-input.ts",
+      "executableSha256": "e04e3d485cdbdcec9e7af13c0416cfb8ebf96b1af2d18b340c5d7bb7789f929c"
     },
     {
       "file": "packages/cache/test/unit/e24-fill-tags.test.ts",

@@ -13,7 +13,7 @@ Use Node 24.18.1 and pnpm 11.17.0 for root development. Install root and registr
 
 Handbook and private Cache history remain outside this checkout. Import only the approved sanitized Cache snapshot, never private source documents or Git ancestry. The root, Cache, apps, fixtures and tooling stay private; only Env, tokens and UI are publishable packages. Web apps retain registry dependencies; relocation does not authorize adopting workspace HEAD. Release and deployment authority remains with the original repositories. Keep archived workflow copies inert and root CI free of publishing and production credentials.
 
-Cache's source-integrity guard protects 210 executable-source fingerprints, including all existing test assertions and names. Run it after tooling changes. The root UI/control-file policy and the separate product policies must not be mixed through nested-config discovery; each verification lane checks its own canonical policy. Do not run the dirty-route witness concurrently with Cache typechecks.
+Cache's source-integrity guard protects the pinned executable-source fingerprints in `products/cache/SOURCE-SNAPSHOT.json`, including all existing test assertions and names. The manifest records the explicitly approved duration-parser security amendment; other source and test changes still require maintainer approval. Run the guard after tooling changes. The root UI/control-file policy and the separate product policies must not be mixed through nested-config discovery; each verification lane checks its own canonical policy. Do not run the dirty-route witness concurrently with Cache typechecks.
 
 ## Ground rules
 
