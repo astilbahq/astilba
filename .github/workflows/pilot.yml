@@ -79,7 +79,7 @@ jobs:
       - run: pnpm --dir apps/docs test:browser:install:ci
       - run: pnpm verify:web
         env:
-          WRANGLER_LOG_PATH: ${{ github.workspace }}/.ci/wrangler
+          WRANGLER_LOG_PATH: ${{ github.workspace }}/ci-wrangler-logs
           WRANGLER_LOG_SANITIZE: "true"
       - if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -90,7 +90,7 @@ jobs:
             apps/docs/test-results/
             apps/site/playwright-report/
             apps/site/test-results/
-            .ci/wrangler/
+            ci-wrangler-logs/
           retention-days: 7
 
   registry:
