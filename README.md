@@ -1,6 +1,8 @@
-# Astilba monorepo pilot
+# Astilba
 
-A local pilot combining the public Env, tokens/UI, docs and apex source trees with the approved sanitized, unreleased Cache snapshot. Handbook remains private and outside the pilot. Existing repositories remain responsible for package releases and production deployments.
+The development monorepo for Env, tokens/UI, docs, apex and the approved sanitized, unreleased Cache snapshot. Submit new source changes and issues to `astilbahq/astilba`. Existing repositories remain responsible for package releases and production deployments, remain unarchived, and retain their history. Handbook remains private and outside this repository.
+
+The [development cutover](docs/architecture/development-cutover.md) defines that split of authority and the remaining release, deployment and history work.
 
 ## Development
 
@@ -26,10 +28,11 @@ Scoped commands are `pnpm verify:ui`, `pnpm verify:env`, `pnpm verify:web` and `
 packages/     env, tokens, ui
 apps/         docs, site, ui-showcase
 fixtures/     ui-astro; registry/env (independent installation)
+products/     sanitized, unreleased Cache and its local evidence fixtures
 tooling/      migration commands and original install/workflow references
 docs/         architecture and UI operational guidance
 ```
 
 Docs and apex continue to consume released UI/tokens 0.5.0 and Env 0.3.0. UI source remains version 0.6.0. Registry fixtures retain their public pins and independent lock. Tokens and UI keep coordinated versions; Env remains independently versioned.
 
-Snapshot imports are a pilot technique. Destination naming, production history migration, npm publisher cutover and deployment switching remain separate decisions. No publisher or production deployment is active in this checkout.
+Snapshot imports exclude private Cache ancestry. Original content-date preservation, npm publisher cutover and deployment switching remain separate decisions. Publishable package metadata still identifies the original release repositories; do not switch it ahead of publisher cutover. No publisher or production deployment is active in this checkout.

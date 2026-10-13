@@ -1,6 +1,6 @@
 # Astilba pilot validation
 
-The local pilot passes the complete root source verification command and the public package consumer gates available on this Mac. It is ready for migration review, with Linux and Windows CI execution and repository-bound security enforcement still required before a cutover decision.
+This document records the local pilot evidence from 12 October 2026. Hosted Linux/Windows execution, refreshed security checks and repository protection have since completed; [development cutover](development-cutover.md) records the current source boundary and the separately deferred release, deployment and history work. The dated table below remains historical evidence, not current gate counts.
 
 The branch is `codex/monorepo-pilot` in an isolated checkout. Source baselines and the CI inventory are recorded in `verification-inventory.md` and its JSON companions. The approved sanitized Cache snapshot is integrated under `products/cache`; Handbook and private Cache ancestry remain excluded. Existing repositories, npm trust, release tags, domains and production deployments retain their current authority.
 
@@ -59,9 +59,8 @@ The UI disabled-menu unit assertion intermittently failed in both the pilot and 
 
 ## Remaining acceptance conditions
 
-- Execute the prepared workflows on GitHub-hosted Linux and Windows runners, including the original Ubuntu screenshot baselines and both Windows consumer lanes.
-- Run fresh OSV, CodeQL, dependency review and Zizmor checks and configure the destination repository's required statuses and security rules. The inventory captures the existing rules without changing them.
-- Choose the destination repository and history strategy. Snapshot imports make the local pilot runnable, but Docs sitemap timestamps currently reflect the import commit; original content dates and source links need an explicit production migration strategy.
+- Hosted Linux/Windows workflows, Ubuntu screenshot baselines, security checks and destination protection are complete. The destination is `astilbahq/astilba`; the integrated Cache validation retains every existing assertion and the 55% mutation floor.
+- Resolve the production history strategy. Snapshot imports make development runnable, but Docs sitemap timestamps currently reflect the import commit; original content dates and source links need an explicit production migration strategy.
 - Validate release identities, namespaced future tags, trusted publishing, exact-artifact transfer and each deployment route before switching their authorities. No publisher, production secret, release or deployment is active in the pilot.
 
 Affected-only execution, remote caching, Turbo adoption and source-repository archival are deferred until verification parity and a separate cutover decision.

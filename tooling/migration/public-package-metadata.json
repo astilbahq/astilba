@@ -1,0 +1,119 @@
+{
+  "@astilba/tokens": {
+    "name": "@astilba/tokens",
+    "version": "0.6.0",
+    "description": "Astilba's framework-neutral design tokens and Panda preset.",
+    "homepage": "https://github.com/astilbahq/ui/tree/main/packages/tokens#readme",
+    "bugs": {
+      "url": "https://github.com/astilbahq/ui/issues"
+    },
+    "license": "MIT",
+    "repository": {
+      "type": "git",
+      "url": "git+https://github.com/astilbahq/ui.git",
+      "directory": "packages/tokens"
+    },
+    "files": ["dist"],
+    "type": "module",
+    "sideEffects": ["./dist/tokens.css"],
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "import": "./dist/index.js"
+      },
+      "./css": "./dist/tokens.css",
+      "./panda": {
+        "types": "./dist/panda.d.ts",
+        "import": "./dist/panda.js"
+      },
+      "./styles.css": "./dist/tokens.css",
+      "./package.json": "./package.json"
+    },
+    "publishConfig": {
+      "access": "public",
+      "provenance": true
+    }
+  },
+  "@astilba/ui": {
+    "name": "@astilba/ui",
+    "version": "0.6.0",
+    "description": "Accessible React components for Astilba products.",
+    "homepage": "https://github.com/astilbahq/ui/tree/main/packages/ui#readme",
+    "bugs": {
+      "url": "https://github.com/astilbahq/ui/issues"
+    },
+    "license": "MIT",
+    "repository": {
+      "type": "git",
+      "url": "git+https://github.com/astilbahq/ui.git",
+      "directory": "packages/ui"
+    },
+    "files": ["dist"],
+    "type": "module",
+    "sideEffects": ["./dist/styles.css"],
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "import": "./dist/index.js"
+      },
+      "./button": {
+        "types": "./dist/button.d.ts",
+        "import": "./dist/button.js"
+      },
+      "./collapsible": {
+        "types": "./dist/collapsible.d.ts",
+        "import": "./dist/collapsible.js"
+      },
+      "./field": {
+        "types": "./dist/field.d.ts",
+        "import": "./dist/field.js"
+      },
+      "./icon-button": {
+        "types": "./dist/icon-button.d.ts",
+        "import": "./dist/icon-button.js"
+      },
+      "./input": {
+        "types": "./dist/input.d.ts",
+        "import": "./dist/input.js"
+      },
+      "./link-button": {
+        "types": "./dist/link-button.d.ts",
+        "import": "./dist/link-button.js"
+      },
+      "./menu": {
+        "types": "./dist/menu.d.ts",
+        "import": "./dist/menu.js"
+      },
+      "./scroll-area": {
+        "types": "./dist/scroll-area.d.ts",
+        "import": "./dist/scroll-area.js"
+      },
+      "./tabs": {
+        "types": "./dist/tabs.d.ts",
+        "import": "./dist/tabs.js"
+      },
+      "./tooltip": {
+        "types": "./dist/tooltip.d.ts",
+        "import": "./dist/tooltip.js"
+      },
+      "./textarea": {
+        "types": "./dist/textarea.d.ts",
+        "import": "./dist/textarea.js"
+      },
+      "./styles.css": "./dist/styles.css",
+      "./package.json": "./package.json"
+    },
+    "publishConfig": {
+      "access": "public",
+      "provenance": true
+    },
+    "dependencies": {
+      "@astilba/tokens": "workspace:*",
+      "@base-ui/react": "1.6.0"
+    },
+    "peerDependencies": {
+      "react": ">=19.2.0 <20",
+      "react-dom": ">=19.2.0 <20"
+    }
+  }
+}

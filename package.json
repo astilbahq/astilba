@@ -1,16 +1,16 @@
 {
-  "name": "astilba-monorepo-pilot",
+  "name": "astilba",
   "version": "0.0.0",
   "private": true,
-  "description": "Astilba's interface foundation and design system.",
-  "homepage": "https://github.com/astilbahq/ui#readme",
+  "description": "Astilba's development monorepo for Env, UI, web applications and unreleased Cache.",
+  "homepage": "https://github.com/astilbahq/astilba#readme",
   "bugs": {
-    "url": "https://github.com/astilbahq/ui/issues"
+    "url": "https://github.com/astilbahq/astilba/issues"
   },
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/astilbahq/ui.git"
+    "url": "git+https://github.com/astilbahq/astilba.git"
   },
   "type": "module",
   "scripts": {
