@@ -94,6 +94,21 @@ for (const product of ["env", "ui"]) {
     }
     const active = await readdir(resolve(root, ".github/workflows"));
     assert.equal(active.includes(identity.workflow), false);
+    assert.equal(
+      workflow.jobs["verify-registry"].env.RELEASE_COMMIT,
+      `\${{ github.sha }}`
+    );
+    const auditRuns = workflow.jobs["verify-registry"].steps
+      .map((step) => step.run ?? "")
+      .join("\n");
+    const artifactPath =
+      product === "env" ? "packages/env/.artifacts/release" : ".artifacts/ui";
+    assert.equal(
+      auditRuns.includes(
+        `${product} "$RELEASE_TAG" "$RELEASE_COMMIT" ${artifactPath}`
+      ),
+      true
+    );
     if (product === "env") {
       assert.deepEqual(workflow.on.push.tags, ["env/v*"]);
       assert.equal(

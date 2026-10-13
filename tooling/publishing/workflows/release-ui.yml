@@ -103,6 +103,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     env:
+      RELEASE_COMMIT: ${{ github.sha }}
       RELEASE_TAG: ${{ github.event.release.tag_name }}
       MANIFEST_SHA256: ${{ needs.verify-packages.outputs.manifest-sha256 }}
       NPM_CONFIG_REGISTRY: https://registry.npmjs.org
@@ -150,7 +151,7 @@ jobs:
           verified=false
           for attempt in $(seq 1 120); do
             if npm audit signatures --prefix registry-consumer --json --include-attestations > "$RUNNER_TEMP/ui-attestations.json" 2>/dev/null &&
-              node tooling/publishing/registry-audit.mjs "$RUNNER_TEMP/ui-attestations.json" ui "$RELEASE_TAG" >/dev/null 2>&1; then
+              node tooling/publishing/registry-audit.mjs "$RUNNER_TEMP/ui-attestations.json" ui "$RELEASE_TAG" "$RELEASE_COMMIT" .artifacts/ui >/dev/null 2>&1; then
               verified=true
               break
             fi

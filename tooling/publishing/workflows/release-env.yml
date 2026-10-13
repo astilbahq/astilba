@@ -78,6 +78,7 @@ jobs:
 
   verify-registry:
     env:
+      RELEASE_COMMIT: ${{ github.sha }}
       RELEASE_TAG: ${{ github.ref_name }}
     name: Verify registry archive and attestations
     needs: publish
@@ -143,7 +144,7 @@ jobs:
           attestation_verified=false
           for attempt in $(seq 1 120); do
             if npm audit signatures --prefix registry-consumer --json --include-attestations > "$RUNNER_TEMP/registry-attestations.json" 2>/dev/null &&
-              node tooling/publishing/registry-audit.mjs "$RUNNER_TEMP/registry-attestations.json" env "$RELEASE_TAG" >/dev/null 2>&1; then
+              node tooling/publishing/registry-audit.mjs "$RUNNER_TEMP/registry-attestations.json" env "$RELEASE_TAG" "$RELEASE_COMMIT" packages/env/.artifacts/release >/dev/null 2>&1; then
               attestation_verified=true
               break
             fi
