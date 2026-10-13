@@ -11,6 +11,42 @@ const readJson = async (path) =>
   JSON.parse(await readFile(resolve(root, path), "utf-8"));
 
 describe("pilot boundaries", () => {
+  it("routes private development metadata without changing publisher identities", async () => {
+    const manifest = await readJson("package.json");
+    assert.equal(manifest.name, "astilba");
+    assert.equal(manifest.private, true);
+    assert.equal(
+      manifest.repository.url,
+      "git+https://github.com/astilbahq/astilba.git"
+    );
+    assert.equal(
+      manifest.bugs.url,
+      "https://github.com/astilbahq/astilba/issues"
+    );
+    assert.equal(
+      manifest.homepage,
+      "https://github.com/astilbahq/astilba#readme"
+    );
+    await Promise.all(
+      [
+        ["packages/env", "env"],
+        ["packages/tokens", "ui"],
+        ["packages/ui", "ui"],
+      ].map(async ([path, repository]) => {
+        const published = await readJson(`${path}/package.json`);
+        assert.equal(
+          published.repository.url,
+          `git+https://github.com/astilbahq/${repository}.git`
+        );
+      })
+    );
+    const security = await readFile(resolve(root, "SECURITY.md"), "utf-8");
+    assert.match(
+      security,
+      /https:\/\/github\.com\/astilbahq\/astilba\/security\/advisories\/new/u
+    );
+  });
+
   it("keeps the public package allowlist and every other workspace private", async () => {
     const workspace = await readFile(
       resolve(root, "pnpm-workspace.yaml"),

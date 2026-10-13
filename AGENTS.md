@@ -1,6 +1,6 @@
-# Astilba monorepo pilot
+# Astilba development monorepo
 
-This isolated pnpm workspace combines public source snapshots. Read `docs/architecture/verification-inventory.md` for the complete gate inventory and `docs/architecture/pilot-validation.md` for validation results.
+This pnpm workspace is the destination for new Astilba source development. Read `docs/architecture/development-cutover.md` for development versus release authority, `docs/architecture/verification-inventory.md` for the complete gate inventory, and `docs/architecture/pilot-validation.md` for historical validation results. Open new source PRs and issues in `astilbahq/astilba`; do not merge old-repository PRs or transfer their private history as an incidental migration step.
 
 - `packages/env` owns Env; its scoped guide covers source, artifact and consumer identities.
 - `packages/tokens` and `packages/ui` own the interface foundation; read their guides and root `PRODUCT.md` and `DESIGN.md`.
