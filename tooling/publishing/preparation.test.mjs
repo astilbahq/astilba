@@ -118,6 +118,18 @@ for (const product of ["env", "ui"]) {
       assert.equal(workflow.jobs["create-release"].needs, "verify-registry");
     } else {
       assert.deepEqual(workflow.on.release.types, ["published"]);
+      assert.equal(workflow.jobs["verify-registry"]["timeout-minutes"], 40);
+      assert.equal(
+        entry.if,
+        [
+          "github.repository == 'astilbahq/astilba'",
+          "vars.UI_PUBLISHER_ENABLED == 'true'",
+          "github.event.release.prerelease == false",
+          "startsWith(github.event.release.tag_name, 'ui/v')",
+        ].join(" && ")
+      );
+      assert.equal(workflow.jobs.publish.needs, "verify-packages");
+      assert.equal(workflow.jobs.publish.if, undefined);
       assert.equal(commands[0].includes("$tokens"), true);
       assert.equal(commands[1].includes("$ui"), true);
       assert.equal(

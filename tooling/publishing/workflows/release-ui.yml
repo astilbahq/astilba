@@ -13,7 +13,7 @@ concurrency:
 
 jobs:
   verify-packages:
-    if: github.repository == 'astilbahq/astilba' && vars.UI_PUBLISHER_ENABLED == 'true' && startsWith(github.event.release.tag_name, 'ui/v')
+    if: github.repository == 'astilbahq/astilba' && vars.UI_PUBLISHER_ENABLED == 'true' && github.event.release.prerelease == false && startsWith(github.event.release.tag_name, 'ui/v')
     name: Verify and pack coordinated UI packages
     runs-on: ubuntu-latest
     timeout-minutes: 40
@@ -101,7 +101,7 @@ jobs:
     name: Verify both registry archives and attestations
     needs: [verify-packages, publish]
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 40
     env:
       RELEASE_COMMIT: ${{ github.sha }}
       RELEASE_TAG: ${{ github.event.release.tag_name }}
