@@ -60,6 +60,14 @@
         "packages/cache/test/integration/manual-alarm-clock.ts",
         "packages/cache/test/integration/manual-alarm-clock.test.ts"
       ]
+    },
+    {
+      "date": "2026-10-13",
+      "authorization": "Maintainer-approved single deletion assertion in the new L1 oracle test, including verification, commit and push",
+      "file": "packages/cache/test/scenarios/l1-residency.test.ts",
+      "previousExecutableSha256": "ed52ae2e5602d956d02caef1a7e8d6bee4ae758b6e709b2b453885edaa4df53d",
+      "executableSha256": "4732307ca8bfd212301afb3793df62f13f81412629db7bd37e343b585c2fed57",
+      "effect": "Assert absence immediately after deletion, before a pressure write can mask a no-op deletion; retain every existing assertion and test name"
     }
   ],
   "files": [
@@ -921,7 +929,7 @@
     },
     {
       "file": "packages/cache/test/scenarios/l1-residency.test.ts",
-      "executableSha256": "ed52ae2e5602d956d02caef1a7e8d6bee4ae758b6e709b2b453885edaa4df53d"
+      "executableSha256": "4732307ca8bfd212301afb3793df62f13f81412629db7bd37e343b585c2fed57"
     },
     {
       "file": "packages/cache/test/integration/registry-alarm-delivery.test.ts",

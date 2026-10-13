@@ -51,6 +51,7 @@ describe("bounded L1 residency on an injected logical clock (§8, E13, MI12)", (
     await store.set("c", "y");
     await expect(store.get("b")).resolves.toStrictEqual({ value: "abc" });
     await store.delete("a");
+    await expect(store.get("a")).resolves.toBeUndefined();
     await store.delete("missing");
     await store.set("d", "z");
     await expect(
