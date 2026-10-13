@@ -7,7 +7,11 @@
   ],
   "workspaces": {
     ".": {
-      "entry": ["scripts/serve-showcase.mjs!", "tooling/migration/*.mjs!"],
+      "entry": [
+        "scripts/serve-showcase.mjs!",
+        "tooling/migration/*.mjs!",
+        "tooling/publishing/*.mjs!"
+      ],
       "playwright": {
         "config": [],
         "entry": ["playwright.config.ts!", "tests/e2e/**/*.ts!"]

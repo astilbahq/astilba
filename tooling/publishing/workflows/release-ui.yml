@@ -1,0 +1,160 @@
+name: UI publisher (prepared template)
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-ui-${{ github.event.release.tag_name }}
+  cancel-in-progress: false
+
+jobs:
+  verify-packages:
+    if: github.repository == 'astilbahq/astilba' && vars.UI_PUBLISHER_ENABLED == 'true' && github.event.release.prerelease == false && startsWith(github.event.release.tag_name, 'ui/v')
+    name: Verify and pack coordinated UI packages
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    outputs:
+      manifest-sha256: ${{ steps.pack.outputs.manifest-sha256 }}
+    env:
+      RELEASE_TAG: ${{ github.event.release.tag_name }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.sha }}
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24.18.1
+          package-manager-cache: false
+      - name: Verify namespaced current-main publisher identity
+        run: node tooling/publishing/identity.mjs ui "$RELEASE_TAG"
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test:browser:install:ci
+      - name: Preserve the complete UI verification contract
+        run: pnpm verify:boundaries && pnpm verify:publisher && pnpm verify:ui
+      - name: Pack once and bind exact artifacts to this source
+        id: pack
+        run: |
+          set -euo pipefail
+          node tooling/publishing/ui-artifacts.mjs pack .artifacts/ui > "$RUNNER_TEMP/ui-pack.json"
+          digest="$(node -p "JSON.parse(require('node:fs').readFileSync(process.argv[1], 'utf8')).manifestSha256" "$RUNNER_TEMP/ui-pack.json")"
+          echo "manifest-sha256=$digest" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: astilba-ui-release
+          path: .artifacts/ui/
+          include-hidden-files: true
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    name: Publish exact verified archives in dependency order
+    needs: verify-packages
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: npm-ui
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      RELEASE_TAG: ${{ github.event.release.tag_name }}
+      MANIFEST_SHA256: ${{ needs.verify-packages.outputs.manifest-sha256 }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.sha }}
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24.18.1
+          package-manager-cache: false
+      - name: Verify trusted-publishing runtime
+        run: |
+          test "$(node --version)" = "v24.18.1"
+          test "$(npm --version)" = "11.16.0"
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: astilba-ui-release
+          path: .artifacts/ui
+      - name: Verify transferred bytes and recheck current-main identity
+        run: |
+          node tooling/publishing/ui-artifacts.mjs verify .artifacts/ui "$MANIFEST_SHA256"
+          node tooling/publishing/identity.mjs ui "$RELEASE_TAG"
+      - name: Publish tokens before UI without rebuilding or lifecycle scripts
+        run: |
+          set -euo pipefail
+          test -z "${NODE_AUTH_TOKEN:-}${NPM_TOKEN:-}"
+          tokens="$(node -p "JSON.parse(require('node:fs').readFileSync('.artifacts/ui/manifest.json', 'utf8')).packages[0].archive.name")"
+          ui="$(node -p "JSON.parse(require('node:fs').readFileSync('.artifacts/ui/manifest.json', 'utf8')).packages[1].archive.name")"
+          npm publish ".artifacts/ui/$tokens" --access public --provenance --ignore-scripts --registry=https://registry.npmjs.org
+          npm publish ".artifacts/ui/$ui" --access public --provenance --ignore-scripts --registry=https://registry.npmjs.org
+
+  verify-registry:
+    name: Verify both registry archives and attestations
+    needs: [verify-packages, publish]
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      RELEASE_COMMIT: ${{ github.sha }}
+      RELEASE_TAG: ${{ github.event.release.tag_name }}
+      MANIFEST_SHA256: ${{ needs.verify-packages.outputs.manifest-sha256 }}
+      NPM_CONFIG_REGISTRY: https://registry.npmjs.org
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.sha }}
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24.18.1
+          package-manager-cache: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: astilba-ui-release
+          path: .artifacts/ui
+      - name: Verify immutable transfer
+        run: node tooling/publishing/ui-artifacts.mjs verify .artifacts/ui "$MANIFEST_SHA256"
+      - name: Verify registry bytes, clean consumer and attestations
+        run: |
+          set -euo pipefail
+          test "$(node --version)" = "v24.18.1"
+          test "$(npm --version)" = "11.16.0"
+          version="$(node -p "JSON.parse(require('node:fs').readFileSync('.artifacts/ui/manifest.json', 'utf8')).version")"
+          mkdir registry-artifact registry-consumer
+          for index in 0 1; do
+            package="$(node -p "JSON.parse(require('node:fs').readFileSync('.artifacts/ui/manifest.json', 'utf8')).packages[$index].name")"
+            expected="$(node -p "JSON.parse(require('node:fs').readFileSync('.artifacts/ui/manifest.json', 'utf8')).packages[$index].archive.sha256")"
+            name=""
+            for attempt in $(seq 1 120); do
+              if name="$(npm pack "$package@$version" --ignore-scripts --pack-destination registry-artifact 2>/dev/null)"; then
+                break
+              fi
+              name=""
+              if [ "$attempt" -lt 120 ]; then sleep 5; fi
+            done
+            test -n "$name"
+            test "$(sha256sum "registry-artifact/$name" | cut -d ' ' -f 1)" = "$expected"
+            test "$(npm view "$package@$version" version)" = "$version"
+          done
+          (cd registry-consumer && npm init --yes >/dev/null)
+          npm install --prefix registry-consumer --ignore-scripts --no-audit --no-fund "@astilba/tokens@$version" "@astilba/ui@$version" react@19.2.8 react-dom@19.2.8 >/dev/null
+          npm ls --prefix registry-consumer --all >/dev/null
+          verified=false
+          for attempt in $(seq 1 120); do
+            if npm audit signatures --prefix registry-consumer --json --include-attestations > "$RUNNER_TEMP/ui-attestations.json" 2>/dev/null &&
+              node tooling/publishing/registry-audit.mjs "$RUNNER_TEMP/ui-attestations.json" ui "$RELEASE_TAG" "$RELEASE_COMMIT" .artifacts/ui >/dev/null 2>&1; then
+              verified=true
+              break
+            fi
+            if [ "$attempt" -lt 120 ]; then sleep 5; fi
+          done
+          test "$verified" = true

@@ -35,6 +35,7 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
       - run: pnpm verify:boundaries
+      - run: pnpm verify:publisher
       - run: pnpm verify:base
 
   ui-browser:
