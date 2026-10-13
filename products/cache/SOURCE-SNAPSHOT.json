@@ -30,6 +30,14 @@
       "addedDiagnosticFiles": [
         "packages/cache/test/integration/alarm-failure-diagnostics.ts",
         "packages/cache/test/integration/registry-alarm-delivery.test.ts"
+      ],
+      "typecheckAmendments": [
+        {
+          "file": "packages/cache/test/integration/tsconfig.json",
+          "previousExecutableSha256": "5019ef8169b55304a682b76fb0d9afc79857ff15daa020d9df9b2edb3a454615",
+          "executableSha256": "71d8d5e38fada54648b5d3bbbfb8613bbcdccab5e44866025780544e6b240c97",
+          "effect": "Include the failure-only diagnostic setup in the existing Workers TypeScript program; preserve every previous compiler option and include pattern"
+        }
       ]
     }
   ],
@@ -901,6 +909,10 @@
     {
       "file": "packages/cache/test/integration/alarm-failure-diagnostics.ts",
       "executableSha256": "6a3be783ce43a55f5d73436b227700520bfb655ef2a94fcd358531841be2a147"
+    },
+    {
+      "file": "packages/cache/test/integration/tsconfig.json",
+      "executableSha256": "71d8d5e38fada54648b5d3bbbfb8613bbcdccab5e44866025780544e6b240c97"
     }
   ]
 }
