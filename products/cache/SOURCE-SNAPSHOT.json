@@ -14,6 +14,23 @@
         "packages/cache/test/unit/duration-parser.test.ts",
         "packages/cache/test/unit/fixtures/duration-input.ts"
       ]
+    },
+    {
+      "date": "2026-10-13",
+      "authorization": "Maintainer-approved Cache validation: investigate alarm scheduling and add mutation-oracle coverage, preserving existing assertions and the 55 floor",
+      "file": "packages/cache/test/integration/vitest.config.ts",
+      "previousExecutableSha256": "7d052258143ad239e0375a9b683a633c22c5e77122d1a78eeaf8e79054bb3014",
+      "executableSha256": "172c89c5c0ef67a1eaae6b35ebe0be598535a404fa2255f44014ef62e558690c",
+      "effect": "Enable read-only diagnostics after a failed integration test; no retries or assertion changes",
+      "addedOracleFiles": [
+        "packages/cache/test/invariants/alarm-arbitration.test.ts",
+        "packages/cache/test/invariants/store-failure-shapes.test.ts",
+        "packages/cache/test/scenarios/l1-residency.test.ts"
+      ],
+      "addedDiagnosticFiles": [
+        "packages/cache/test/integration/alarm-failure-diagnostics.ts",
+        "packages/cache/test/integration/registry-alarm-delivery.test.ts"
+      ]
     }
   ],
   "files": [
@@ -475,7 +492,7 @@
     },
     {
       "file": "packages/cache/test/integration/vitest.config.ts",
-      "executableSha256": "7d052258143ad239e0375a9b683a633c22c5e77122d1a78eeaf8e79054bb3014"
+      "executableSha256": "172c89c5c0ef67a1eaae6b35ebe0be598535a404fa2255f44014ef62e558690c"
     },
     {
       "file": "packages/cache/test/integration/worker.ts",
@@ -864,6 +881,26 @@
     {
       "file": "vite.config.ts",
       "executableSha256": "0c5e0b0177161f6cdce4d617238571b4992a71122e44a4c5ae59d48f2ae689b5"
+    },
+    {
+      "file": "packages/cache/test/invariants/store-failure-shapes.test.ts",
+      "executableSha256": "b766af35f82ff9f874be4072238fee85904bcff0f57ca413ec5b5a4da8f918a7"
+    },
+    {
+      "file": "packages/cache/test/invariants/alarm-arbitration.test.ts",
+      "executableSha256": "d07aabd1b35e436536a2813428efab88455c42f0b46eea47cbd510c53cd02658"
+    },
+    {
+      "file": "packages/cache/test/scenarios/l1-residency.test.ts",
+      "executableSha256": "ed52ae2e5602d956d02caef1a7e8d6bee4ae758b6e709b2b453885edaa4df53d"
+    },
+    {
+      "file": "packages/cache/test/integration/registry-alarm-delivery.test.ts",
+      "executableSha256": "40a83c4eb3acd45cde0d357b25720873f9adda775e399c95d83903509036d12b"
+    },
+    {
+      "file": "packages/cache/test/integration/alarm-failure-diagnostics.ts",
+      "executableSha256": "6a3be783ce43a55f5d73436b227700520bfb655ef2a94fcd358531841be2a147"
     }
   ]
 }
