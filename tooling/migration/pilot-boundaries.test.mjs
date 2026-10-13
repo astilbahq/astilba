@@ -45,6 +45,40 @@ describe("pilot boundaries", () => {
       security,
       /https:\/\/github\.com\/astilbahq\/astilba\/security\/advisories\/new/u
     );
+    const issueChooser = parse(
+      await readFile(
+        resolve(root, ".github/ISSUE_TEMPLATE/config.yml"),
+        "utf-8"
+      )
+    );
+    assert.equal(
+      issueChooser.contact_links.find(
+        (link) => link.name === "Report a security vulnerability"
+      )?.url,
+      "https://github.com/astilbahq/astilba/security/advisories/new"
+    );
+  });
+
+  it("preserves public package metadata during the development-only cutover", async () => {
+    // Update this reviewed baseline only alongside an approved public-contract change.
+    const expected = await readJson(
+      "tooling/migration/public-package-metadata.json"
+    );
+    assert.deepEqual(Object.keys(expected).toSorted(), [
+      "@astilba/tokens",
+      "@astilba/ui",
+    ]);
+    await Promise.all(
+      ["packages/tokens", "packages/ui"].map(async (packagePath) => {
+        const published = await readJson(`${packagePath}/package.json`);
+        const metadata = Object.fromEntries(
+          Object.entries(published).filter(
+            ([key]) => !["scripts", "devDependencies"].includes(key)
+          )
+        );
+        assert.deepEqual(metadata, expected[published.name]);
+      })
+    );
   });
 
   it("keeps the public package allowlist and every other workspace private", async () => {
