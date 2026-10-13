@@ -2,6 +2,74 @@
   "sourceRevision": "726e1b0c9b451f93bb903836fd56df9d33a79403",
   "parserVersion": "6.0.3",
   "normalization": "TypeScript printer with comments removed",
+  "approvedAmendments": [
+    {
+      "date": "2026-10-12",
+      "authorization": "Maintainer-approved equivalent linear-time duration parser and new regression tests",
+      "securityFinding": "CodeQL js/polynomial-redos; astilbahq/astilba alert 1",
+      "file": "packages/cache/src/cache.ts",
+      "previousExecutableSha256": "055c14d4f821e432556433e5872b33ddde9f6f8641f9874ad53fa319aff42f19",
+      "executableSha256": "edd4996c638ecb8689f149f2ccc148ce5d69388ed7c9f6e9d7a8c8c482dfc4a6",
+      "addedRegressionFiles": [
+        "packages/cache/test/unit/duration-parser.test.ts",
+        "packages/cache/test/unit/fixtures/duration-input.ts"
+      ]
+    },
+    {
+      "date": "2026-10-13",
+      "authorization": "Maintainer-approved Cache validation: investigate alarm scheduling and add mutation-oracle coverage, preserving existing assertions and the 55 floor",
+      "file": "packages/cache/test/integration/vitest.config.ts",
+      "previousExecutableSha256": "7d052258143ad239e0375a9b683a633c22c5e77122d1a78eeaf8e79054bb3014",
+      "executableSha256": "172c89c5c0ef67a1eaae6b35ebe0be598535a404fa2255f44014ef62e558690c",
+      "effect": "Enable read-only diagnostics after a failed integration test; no retries or assertion changes",
+      "addedOracleFiles": [
+        "packages/cache/test/invariants/alarm-arbitration.test.ts",
+        "packages/cache/test/invariants/store-failure-shapes.test.ts",
+        "packages/cache/test/scenarios/l1-residency.test.ts"
+      ],
+      "addedDiagnosticFiles": [
+        "packages/cache/test/integration/alarm-failure-diagnostics.ts",
+        "packages/cache/test/integration/registry-alarm-delivery.test.ts"
+      ],
+      "typecheckAmendments": [
+        {
+          "file": "packages/cache/test/integration/tsconfig.json",
+          "previousExecutableSha256": "5019ef8169b55304a682b76fb0d9afc79857ff15daa020d9df9b2edb3a454615",
+          "executableSha256": "71d8d5e38fada54648b5d3bbbfb8613bbcdccab5e44866025780544e6b240c97",
+          "effect": "Include the failure-only diagnostic setup in the existing Workers TypeScript program; preserve every previous compiler option and include pattern"
+        }
+      ]
+    },
+    {
+      "date": "2026-10-13",
+      "authorization": "Maintainer-approved deterministic alarm-test race fix, preserving existing assertions and the 55 floor",
+      "effect": "Use a Date-only future clock for explicitly selected manual-alarm integration suites; retain native timers, real automatic-delivery witnesses, every existing assertion and the original manual alarm helper",
+      "files": [
+        {
+          "file": "packages/cache/test/integration/vitest.config.ts",
+          "previousExecutableSha256": "172c89c5c0ef67a1eaae6b35ebe0be598535a404fa2255f44014ef62e558690c",
+          "executableSha256": "2cfebfa5b8d39c1bd0a8fc3e6840fc7d3eb52f0cfa9835254af4609407bee4be"
+        },
+        {
+          "file": "packages/cache/test/integration/tsconfig.json",
+          "previousExecutableSha256": "71d8d5e38fada54648b5d3bbbfb8613bbcdccab5e44866025780544e6b240c97",
+          "executableSha256": "c2dc5a18aeabcce6eee34f41d4ba89344c5a06769f0e567fd024a004bc830401"
+        }
+      ],
+      "addedControlFiles": [
+        "packages/cache/test/integration/manual-alarm-clock.ts",
+        "packages/cache/test/integration/manual-alarm-clock.test.ts"
+      ]
+    },
+    {
+      "date": "2026-10-13",
+      "authorization": "Maintainer-approved single deletion assertion in the new L1 oracle test, including verification, commit and push",
+      "file": "packages/cache/test/scenarios/l1-residency.test.ts",
+      "previousExecutableSha256": "ed52ae2e5602d956d02caef1a7e8d6bee4ae758b6e709b2b453885edaa4df53d",
+      "executableSha256": "4732307ca8bfd212301afb3793df62f13f81412629db7bd37e343b585c2fed57",
+      "effect": "Assert absence immediately after deletion, before a pressure write can mask a no-op deletion; retain every existing assertion and test name"
+    }
+  ],
   "files": [
     {
       "file": "apps/demo/app/bounds.ts",
@@ -197,7 +265,7 @@
     },
     {
       "file": "packages/cache/src/cache.ts",
-      "executableSha256": "055c14d4f821e432556433e5872b33ddde9f6f8641f9874ad53fa319aff42f19"
+      "executableSha256": "edd4996c638ecb8689f149f2ccc148ce5d69388ed7c9f6e9d7a8c8c482dfc4a6"
     },
     {
       "file": "packages/cache/src/drivers.ts",
@@ -461,7 +529,7 @@
     },
     {
       "file": "packages/cache/test/integration/vitest.config.ts",
-      "executableSha256": "7d052258143ad239e0375a9b683a633c22c5e77122d1a78eeaf8e79054bb3014"
+      "executableSha256": "2cfebfa5b8d39c1bd0a8fc3e6840fc7d3eb52f0cfa9835254af4609407bee4be"
     },
     {
       "file": "packages/cache/test/integration/worker.ts",
@@ -606,6 +674,14 @@
     {
       "file": "packages/cache/test/unit/do-bus-redial.test.ts",
       "executableSha256": "87af028b90b4dc6209a239d5537aeb708efffbf301e5ed0a5a37f58ba3f44c39"
+    },
+    {
+      "file": "packages/cache/test/unit/duration-parser.test.ts",
+      "executableSha256": "35f5075a3a87f54b3f2ff9a4c95e851753b37fcc9c4cdaaf0532bf240bcaf317"
+    },
+    {
+      "file": "packages/cache/test/unit/fixtures/duration-input.ts",
+      "executableSha256": "e04e3d485cdbdcec9e7af13c0416cfb8ebf96b1af2d18b340c5d7bb7789f929c"
     },
     {
       "file": "packages/cache/test/unit/e24-fill-tags.test.ts",
@@ -842,6 +918,38 @@
     {
       "file": "vite.config.ts",
       "executableSha256": "0c5e0b0177161f6cdce4d617238571b4992a71122e44a4c5ae59d48f2ae689b5"
+    },
+    {
+      "file": "packages/cache/test/invariants/store-failure-shapes.test.ts",
+      "executableSha256": "b766af35f82ff9f874be4072238fee85904bcff0f57ca413ec5b5a4da8f918a7"
+    },
+    {
+      "file": "packages/cache/test/invariants/alarm-arbitration.test.ts",
+      "executableSha256": "d07aabd1b35e436536a2813428efab88455c42f0b46eea47cbd510c53cd02658"
+    },
+    {
+      "file": "packages/cache/test/scenarios/l1-residency.test.ts",
+      "executableSha256": "4732307ca8bfd212301afb3793df62f13f81412629db7bd37e343b585c2fed57"
+    },
+    {
+      "file": "packages/cache/test/integration/registry-alarm-delivery.test.ts",
+      "executableSha256": "40a83c4eb3acd45cde0d357b25720873f9adda775e399c95d83903509036d12b"
+    },
+    {
+      "file": "packages/cache/test/integration/alarm-failure-diagnostics.ts",
+      "executableSha256": "6a3be783ce43a55f5d73436b227700520bfb655ef2a94fcd358531841be2a147"
+    },
+    {
+      "file": "packages/cache/test/integration/tsconfig.json",
+      "executableSha256": "c2dc5a18aeabcce6eee34f41d4ba89344c5a06769f0e567fd024a004bc830401"
+    },
+    {
+      "file": "packages/cache/test/integration/manual-alarm-clock.ts",
+      "executableSha256": "86223ab28d32509f22941fa2af2912d5a58de299d23ceb8a09d919c30667e43c"
+    },
+    {
+      "file": "packages/cache/test/integration/manual-alarm-clock.test.ts",
+      "executableSha256": "889368f890fec53b1701e9a09ce61c12b09991ea325da0653a8e1274430c3da2"
     }
   ]
 }

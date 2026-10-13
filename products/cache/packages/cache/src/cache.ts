@@ -3640,9 +3640,12 @@ function isDurationUnit(unit: string | undefined): unit is DurationUnit {
  * deferred; the retention lease (§4.5) and the reader's E5 heartbeat cadence (§4.2) need
  * only a coarse ms value, so this parses the `<number><unit>` shape. */
 function durationMs(duration: Duration): number {
-  const match = /^(?<value>[0-9]*\.?[0-9]+)(?<unit>ms|s|m|h|d)$/u.exec(
-    duration
-  );
+  // Separate integer-first and leading-dot forms: a missing unit must not
+  // repartition one digit run between overlapping quantifiers.
+  const match =
+    /^(?<value>[0-9]+(?:\.[0-9]+)?|\.[0-9]+)(?<unit>ms|s|m|h|d)$/u.exec(
+      duration
+    );
   const value = Number(match?.groups?.value ?? "0");
   const rawUnit = match?.groups?.unit;
   // The factor table is the shared `DURATION_UNIT_MS` grammar source (duration.ts) — one

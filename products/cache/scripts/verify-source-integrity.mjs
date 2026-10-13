@@ -46,4 +46,4 @@ for (const { file, executableSha256 } of manifest.files) {
   assert.equal(digest(current), executableSha256, `Source changed: ${file}`);
 }
 
-console.log(`Preserved executable source in ${manifest.files.length} files.`);
+console.log(`Verified pinned executable source in ${manifest.files.length} files.`);

@@ -13,6 +13,8 @@
     "noEmit": true
   },
   "include": [
+    "alarm-failure-diagnostics.ts",
+    "manual-alarm-clock.ts",
     "worker-configuration.d.ts",
     "env.d.ts",
     "worker.ts",

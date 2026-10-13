@@ -1,4 +1,5 @@
 import { cloudflareTest } from "@cloudflare/vitest-pool-workers";
+import { fileURLToPath } from "node:url";
 import { defineConfig } from "vitest/config";
 
 // The C1-b integration lane (rule 12): the fourth test project, run on real workerd
@@ -51,6 +52,10 @@ export default defineConfig({
     hookTimeout: 30_000,
     include: ["**/*.test.ts"],
     name: "integration",
+    setupFiles: [
+      fileURLToPath(new URL("./alarm-failure-diagnostics.ts", import.meta.url)),
+      fileURLToPath(new URL("./manual-alarm-clock.ts", import.meta.url)),
+    ],
     testTimeout: 30_000,
   },
 });

@@ -1,8 +1,8 @@
-name: Mutation ratchet
+name: Cache mutation ratchet
 on:
   schedule:
-    - cron: "27 6 * * 1"
-  workflow_dispatch:
+    - cron: 27 6 * * 1
+  workflow_dispatch: null
 permissions:
   contents: read
 concurrency:
@@ -11,7 +11,7 @@ concurrency:
 jobs:
   mutation:
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
         with:
@@ -21,7 +21,8 @@ jobs:
           node-version: "24"
           cache: true
       - run: corepack enable
-      - run: vp install --frozen-lockfile
+      - run: pnpm install --frozen-lockfile
+        working-directory: .
       - name: mutation ratchet (sacred suite is the kill oracle)
         run: |
           set -o pipefail
@@ -29,6 +30,7 @@ jobs:
       - name: append the score to the job summary
         if: always()
         run: |
+          set -o pipefail
           {
             echo "### Stryker mutation ratchet"
             echo ""
@@ -41,3 +43,15 @@ jobs:
             echo ""
             echo "A ratchet, never a threshold. Raise \`thresholds.break\` deliberately; never lower it."
           } >> "$GITHUB_STEP_SUMMARY"
+      - name: retain mutation evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: cache-mutation-${{ github.sha }}-${{ github.run_attempt }}
+          path: |
+            products/cache/mutation.log
+            products/cache/packages/cache/reports/mutation/
+          retention-days: 7
+defaults:
+  run:
+    working-directory: products/cache
