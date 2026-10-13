@@ -52,7 +52,10 @@ export default defineConfig({
     hookTimeout: 30_000,
     include: ["**/*.test.ts"],
     name: "integration",
-    setupFiles: [fileURLToPath(new URL("./alarm-failure-diagnostics.ts", import.meta.url))],
+    setupFiles: [
+      fileURLToPath(new URL("./alarm-failure-diagnostics.ts", import.meta.url)),
+      fileURLToPath(new URL("./manual-alarm-clock.ts", import.meta.url)),
+    ],
     testTimeout: 30_000,
   },
 });

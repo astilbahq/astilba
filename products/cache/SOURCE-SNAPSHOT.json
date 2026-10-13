@@ -39,6 +39,27 @@
           "effect": "Include the failure-only diagnostic setup in the existing Workers TypeScript program; preserve every previous compiler option and include pattern"
         }
       ]
+    },
+    {
+      "date": "2026-10-13",
+      "authorization": "Maintainer-approved deterministic alarm-test race fix, preserving existing assertions and the 55 floor",
+      "effect": "Use a Date-only future clock for explicitly selected manual-alarm integration suites; retain native timers, real automatic-delivery witnesses, every existing assertion and the original manual alarm helper",
+      "files": [
+        {
+          "file": "packages/cache/test/integration/vitest.config.ts",
+          "previousExecutableSha256": "172c89c5c0ef67a1eaae6b35ebe0be598535a404fa2255f44014ef62e558690c",
+          "executableSha256": "2cfebfa5b8d39c1bd0a8fc3e6840fc7d3eb52f0cfa9835254af4609407bee4be"
+        },
+        {
+          "file": "packages/cache/test/integration/tsconfig.json",
+          "previousExecutableSha256": "71d8d5e38fada54648b5d3bbbfb8613bbcdccab5e44866025780544e6b240c97",
+          "executableSha256": "c2dc5a18aeabcce6eee34f41d4ba89344c5a06769f0e567fd024a004bc830401"
+        }
+      ],
+      "addedControlFiles": [
+        "packages/cache/test/integration/manual-alarm-clock.ts",
+        "packages/cache/test/integration/manual-alarm-clock.test.ts"
+      ]
     }
   ],
   "files": [
@@ -500,7 +521,7 @@
     },
     {
       "file": "packages/cache/test/integration/vitest.config.ts",
-      "executableSha256": "172c89c5c0ef67a1eaae6b35ebe0be598535a404fa2255f44014ef62e558690c"
+      "executableSha256": "2cfebfa5b8d39c1bd0a8fc3e6840fc7d3eb52f0cfa9835254af4609407bee4be"
     },
     {
       "file": "packages/cache/test/integration/worker.ts",
@@ -912,7 +933,15 @@
     },
     {
       "file": "packages/cache/test/integration/tsconfig.json",
-      "executableSha256": "71d8d5e38fada54648b5d3bbbfb8613bbcdccab5e44866025780544e6b240c97"
+      "executableSha256": "c2dc5a18aeabcce6eee34f41d4ba89344c5a06769f0e567fd024a004bc830401"
+    },
+    {
+      "file": "packages/cache/test/integration/manual-alarm-clock.ts",
+      "executableSha256": "86223ab28d32509f22941fa2af2912d5a58de299d23ceb8a09d919c30667e43c"
+    },
+    {
+      "file": "packages/cache/test/integration/manual-alarm-clock.test.ts",
+      "executableSha256": "889368f890fec53b1701e9a09ce61c12b09991ea325da0653a8e1274430c3da2"
     }
   ]
 }
