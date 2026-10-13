@@ -1,5 +1,7 @@
 # Releasing
 
+This guide describes the existing `astilbahq/ui` publisher, not an active monorepo publisher. The prepared Env/UI migration is documented in [Publisher cutover](./publisher-cutover.md); its namespaced templates are inactive and require separate first-release approval. Existing releases and deployments remain unchanged.
+
 `@astilba/tokens` and `@astilba/ui` currently share a version and release together. A release is built from a tag whose commit is already on `main`; the release workflow verifies the repository, packs both packages once, records their checksums, and publishes those exact artifacts in dependency order.
 
 ## Release a version

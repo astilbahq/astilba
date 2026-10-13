@@ -1,0 +1,248 @@
+name: Env publisher (prepared template)
+
+on:
+  push:
+    tags:
+      - "env/v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-env-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release-identity:
+    if: github.repository == 'astilbahq/astilba' && vars.ENV_PUBLISHER_ENABLED == 'true' && github.ref_type == 'tag'
+    name: Verify release identity
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24.18.1
+          package-manager-cache: false
+      - name: Verify namespaced current-main publisher identity
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: node tooling/publishing/identity.mjs env "$RELEASE_TAG"
+
+  package-matrix:
+    name: Verify complete package matrix
+    needs: release-identity
+    uses: ./.github/workflows/env-package-matrix.yml
+
+  publish:
+    env:
+      RELEASE_TAG: ${{ github.ref_name }}
+    name: Publish exact verified archive
+    needs: package-matrix
+    runs-on: ubuntu-latest
+    environment: npm-env
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24.18.1
+          package-manager-cache: false
+      - name: Verify trusted-publishing runtime
+        run: |
+          test "$(node --version)" = "v24.18.1"
+          test "$(npm --version)" = "11.16.0"
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: astilba-env-archive
+          path: packages/env/.artifacts/release
+      - name: Verify transferred artifact
+        env:
+          ASTILBA_ENV_ARTIFACT_DIR: .artifacts/release
+        run: node packages/env/scripts/verify-artifact.mjs
+      - name: Recheck identity after the complete matrix
+        run: node tooling/publishing/identity.mjs env "$RELEASE_TAG"
+      - name: Publish verified archive with provenance
+        run: |
+          set -euo pipefail
+          archive="$(node -p "JSON.parse(require('node:fs').readFileSync('packages/env/.artifacts/release/manifest.json', 'utf8')).archive.name")"
+          test -z "${NODE_AUTH_TOKEN:-}${NPM_TOKEN:-}"
+          npm publish "packages/env/.artifacts/release/$archive" --access public --provenance --ignore-scripts --registry=https://registry.npmjs.org
+
+  verify-registry:
+    env:
+      RELEASE_TAG: ${{ github.ref_name }}
+    name: Verify registry archive and attestations
+    needs: publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24.18.1
+          package-manager-cache: false
+      - name: Verify registry runtime
+        run: |
+          test "$(node --version)" = "v24.18.1"
+          test "$(npm --version)" = "11.16.0"
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: astilba-env-archive
+          path: packages/env/.artifacts/release
+      - name: Verify transferred artifact
+        env:
+          ASTILBA_ENV_ARTIFACT_DIR: .artifacts/release
+        run: node packages/env/scripts/verify-artifact.mjs
+      - name: Verify registry archive and attestations
+        env:
+          NPM_CONFIG_REGISTRY: https://registry.npmjs.org
+        run: |
+          set -euo pipefail
+          package="$(node -p "JSON.parse(require('node:fs').readFileSync('packages/env/.artifacts/release/manifest.json', 'utf8')).package.name")"
+          version="$(node -p "JSON.parse(require('node:fs').readFileSync('packages/env/.artifacts/release/manifest.json', 'utf8')).package.version")"
+          expected="$(node -p "JSON.parse(require('node:fs').readFileSync('packages/env/.artifacts/release/manifest.json', 'utf8')).archive.sha256")"
+
+          mkdir registry-artifact
+          name=""
+          for attempt in $(seq 1 120); do
+            if name="$(npm pack "$package@$version" --ignore-scripts --pack-destination registry-artifact 2>/dev/null)"; then
+              break
+            fi
+            name=""
+            if [ "$attempt" -lt 120 ]; then
+              sleep 5
+            fi
+          done
+          if [ -z "$name" ]; then
+            echo "Registry package did not become available within 10 minutes." >&2
+            exit 1
+          fi
+          test "$(sha256sum "registry-artifact/$name" | cut -d ' ' -f 1)" = "$expected"
+          test "$(npm view "$package@$version" version 2>/dev/null)" = "$version"
+
+          mkdir registry-consumer
+          (
+            cd registry-consumer
+            npm init --yes >/dev/null
+          )
+          npm install --prefix registry-consumer --ignore-scripts --no-audit --no-fund "$package@$version" >/dev/null
+
+          attestation_verified=false
+          for attempt in $(seq 1 120); do
+            if npm audit signatures --prefix registry-consumer --json --include-attestations > "$RUNNER_TEMP/registry-attestations.json" 2>/dev/null &&
+              node tooling/publishing/registry-audit.mjs "$RUNNER_TEMP/registry-attestations.json" env "$RELEASE_TAG" >/dev/null 2>&1; then
+              attestation_verified=true
+              break
+            fi
+            if [ "$attempt" -lt 120 ]; then
+              sleep 5
+            fi
+          done
+          if [ "$attestation_verified" != true ]; then
+            echo "Registry attestations did not become verifiable within 10 minutes." >&2
+            exit 1
+          fi
+
+  create-release:
+    env:
+      RELEASE_TAG: ${{ github.ref_name }}
+    name: Create GitHub release after npm
+    needs: verify-registry
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24.18.1
+          package-manager-cache: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: astilba-env-archive
+          path: packages/env/.artifacts/release
+      - name: Verify transferred artifact
+        env:
+          ASTILBA_ENV_ARTIFACT_DIR: .artifacts/release
+        run: node packages/env/scripts/verify-artifact.mjs
+      - name: Ensure exact GitHub release
+        env:
+          GH_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag_encoded="$(node -p 'encodeURIComponent(process.env.RELEASE_TAG)')"
+          artifact_dir="packages/env/.artifacts/release"
+          lookup_headers="$RUNNER_TEMP/release-lookup.headers"
+          release_before="$RUNNER_TEMP/release-before.json"
+          release_after="$RUNNER_TEMP/release-after.json"
+          release_plan="$RUNNER_TEMP/release-plan.json"
+          downloaded_dir="$RUNNER_TEMP/downloaded-release-assets"
+          archive="$(node -p "JSON.parse(require('node:fs').readFileSync('packages/env/.artifacts/release/manifest.json', 'utf8')).archive.name")"
+
+          release_exists=false
+          if gh api --include --silent "repos/$GH_REPO/releases/tags/$tag_encoded" > "$lookup_headers" 2>/dev/null; then
+            release_exists=true
+          else
+            lookup_status="$(grep -E '^HTTP/[0-9.]+ [0-9]{3}([[:space:]]|$)' "$lookup_headers" | tail -n 1 || true)"
+            if ! grep -Eq '^HTTP/[0-9.]+ 404([[:space:]]|$)' <<< "$lookup_status"; then
+              echo "GitHub release lookup failed without a confirmed 404; refusing creation." >&2
+              exit 1
+            fi
+          fi
+
+          if [ "$release_exists" = false ]; then
+            if ! gh release create "$GITHUB_REF_NAME" \
+              --verify-tag \
+              --generate-notes \
+              --title "$GITHUB_REF_NAME" \
+              "$artifact_dir/$archive" \
+              "$artifact_dir/manifest.json"; then
+              echo "Release creation was not acknowledged; verifying current release state." >&2
+            fi
+          fi
+
+          if ! gh api "repos/$GH_REPO/releases/tags/$tag_encoded" > "$release_before" 2>/dev/null; then
+            echo "No verifiable GitHub release exists; manual correction is required before retry." >&2
+            exit 1
+          fi
+          if ! node tooling/publishing/env-github-release.mjs plan \
+            "$release_before" \
+            "$GITHUB_REF_NAME" \
+            "$artifact_dir" > "$release_plan" 2>/dev/null; then
+            echo "GitHub release state or assets are incomplete or mismatched; manual correction is required before retry." >&2
+            exit 1
+          fi
+
+          mkdir "$downloaded_dir"
+          for asset_index in 0 1; do
+            asset_id="$(node -p "JSON.parse(require('node:fs').readFileSync(process.argv[1], 'utf8')).assets[$asset_index].id" "$release_plan")"
+            asset_name="$(node -p "JSON.parse(require('node:fs').readFileSync(process.argv[1], 'utf8')).assets[$asset_index].name" "$release_plan")"
+            gh api \
+              -H "Accept: application/octet-stream" \
+              "repos/$GH_REPO/releases/assets/$asset_id" > "$downloaded_dir/$asset_name"
+          done
+
+          gh api "repos/$GH_REPO/releases/tags/$tag_encoded" > "$release_after"
+          node tooling/publishing/env-github-release.mjs verify \
+            "$release_before" \
+            "$release_after" \
+            "$GITHUB_REF_NAME" \
+            "$artifact_dir" \
+            "$downloaded_dir"

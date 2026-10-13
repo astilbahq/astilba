@@ -23,6 +23,7 @@ jobs:
       - name: Audit workflows
         uses: zizmorcore/zizmor-action@6fc4b006235f201fdab3722e17240ab420d580e5 # v0.6.1
         with:
+          inputs: . tooling/publishing/workflows/release-env.yml tooling/publishing/workflows/release-ui.yml
           advanced-security: false
           min-severity: medium
           online-audits: false

@@ -1,0 +1,24 @@
+{
+  "phase": "prepared-not-activated",
+  "provider": "github",
+  "repository": "astilbahq/astilba",
+  "bindings": [
+    {
+      "package": "@astilba/env",
+      "workflow": "release-env.yml",
+      "environment": "npm-env"
+    },
+    {
+      "package": "@astilba/tokens",
+      "workflow": "release-ui.yml",
+      "environment": "npm-ui"
+    },
+    {
+      "package": "@astilba/ui",
+      "workflow": "release-ui.yml",
+      "environment": "npm-ui"
+    }
+  ],
+  "allowPublish": true,
+  "allowStagePublish": false
+}
