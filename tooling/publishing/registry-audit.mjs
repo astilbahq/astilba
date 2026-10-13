@@ -55,7 +55,7 @@ const verifySubject = (statement, expected) => {
     !isDeepStrictEqual(statement.subject, [
       {
         digest: { sha512: expected.sha512 },
-        name: `pkg:npm/${expected.name.replace("@", "%40")}@${expected.version}`,
+        name: `pkg:npm/${expected.name.replaceAll("@", "%40")}@${expected.version}`,
       },
     ])
   ) {

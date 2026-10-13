@@ -28,7 +28,7 @@ const attestation = (statement) => ({
 const subjectFor = (identity) => [
   {
     digest: { sha512: identity.sha512 },
-    name: `pkg:npm/${identity.name.replace("@", "%40")}@${identity.version}`,
+    name: `pkg:npm/${identity.name.replaceAll("@", "%40")}@${identity.version}`,
   },
 ];
 const provenanceFor = (identity, product) => ({
