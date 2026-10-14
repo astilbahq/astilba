@@ -17,7 +17,7 @@ Cache's source-integrity guard protects the pinned executable-source fingerprint
 
 ## Ground rules
 
-Env's installed `release-env.yml` remains disabled by the absent `ENV_PUBLISHER_ENABLED` variable. Read `docs/publisher-cutover.md` before release work; preparing or merging this workflow does not authorize enabling it, changing npm trust or creating tags/releases. Verification CI remains free of publishing and production credentials. UI remains an inactive template and Cache #94 remains excluded.
+The installed `release-env.yml` and `release-ui.yml` remain disabled by absent `ENV_PUBLISHER_ENABLED` and `UI_PUBLISHER_ENABLED` variables. Read `docs/publisher-cutover.md` and `docs/ui-activation.md` before release work; preparing or merging a workflow does not authorize enabling it, changing npm trust or creating tags/releases. Env 0.3.1 completed its separately approved publication; its old npm binding is retired. UI publishing still belongs to the original repository until its separately approved handover. Verification CI remains free of publishing and production credentials; deployments and Cache #94 remain excluded.
 
 1. Run `pnpm verify` before proposing a commit.
 2. Add or update tests for observable behaviour.

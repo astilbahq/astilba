@@ -111,10 +111,37 @@ for (const product of ["env", "ui"]) {
         );
       }
     } else {
-      assert.throws(
-        () => verifyIdentity(options),
-        /metadata is not activated/u
-      );
+      assert.equal(verifyIdentity(options).version, "0.6.0");
+      for (const tag of ["ui/v0.5.0", "v0.6.0", "env/v0.6.0"]) {
+        assert.throws(() => verifyIdentity({ ...options, tag }));
+      }
+      for (const [index, entry] of cutover.products.ui.packages.entries()) {
+        assert.deepEqual(manifests[index].repository, {
+          directory: entry.directory,
+          type: "git",
+          url: "git+https://github.com/astilbahq/astilba.git",
+        });
+        for (const repository of [
+          {
+            directory: entry.directory,
+            type: "git",
+            url: "git+https://github.com/astilbahq/ui.git",
+          },
+          { ...manifests[index].repository, directory: "packages/env" },
+          {
+            ...manifests[index].repository,
+            directory: index === 0 ? "packages/ui" : "packages/tokens",
+          },
+          { ...manifests[index].repository, directory: undefined },
+        ]) {
+          const altered = [...manifests];
+          altered[index] = { ...manifests[index], repository };
+          assert.throws(
+            () => verifyIdentity({ ...options, manifests: altered }),
+            /metadata is not activated/u
+          );
+        }
+      }
     }
   });
 }
