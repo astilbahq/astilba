@@ -36,7 +36,6 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json && tsx scripts/build-css.ts",
     "pack:check": "pnpm build && publint && attw --pack --profile esm-only --exclude-entrypoints ./css ./styles.css",
-    "prepare": "pnpm build",
     "test": "pnpm build && vitest run",
     "typecheck": "tsc --noEmit"
   },

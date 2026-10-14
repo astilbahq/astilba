@@ -4,7 +4,7 @@
 
 The migration keeps the existing 0.6.0 source versions, exports, peer ranges, components and CSS. It removes UI publishing configuration, the monorepo `release-ui.yml`, its prepared trust entries and the obsolete legacy version-check command. Publisher identity and release packing explicitly reject retired UI. The remaining UI artifact and attestation readers are offline verification tools, not publishing authority. Package-output, consumer, browser, accessibility and unchanged screenshot gates still run.
 
-Tokens builds during its workspace `prepare` lifecycle before Docs generates Panda bindings. `pnpm verify:web` also builds tokens and UI in dependency order, so the hosted web lane works from a clean checkout without a preceding UI job. Root frozen installs use pnpm 11.17.0; Env application and independent fixture registry pins remain unchanged.
+Docs' `prepare` command builds workspace tokens, then UI, then Panda bindings, without adding lifecycle hooks to token/UI archives. Package-local Docs/site commands therefore resolve compiled UI exports after a clean root install, without requiring a preceding root verification job. `pnpm verify:web` also builds tokens and UI in dependency order for the hosted web lane. Root frozen installs use pnpm 11.17.0; Env application and independent fixture registry pins remain unchanged.
 
 ## Preserve the legacy deployment path
 

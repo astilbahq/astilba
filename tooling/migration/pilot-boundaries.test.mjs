@@ -147,6 +147,14 @@ describe("pilot boundaries", () => {
     );
     const docsManifest = await readJson("apps/docs/package.json");
     assert.equal(docsManifest.dependencies["@astilba/env"], "0.3.0");
+    assert.equal(
+      docsManifest.scripts.prepare,
+      "pnpm --filter @astilba/tokens build && pnpm --filter @astilba/ui build && panda codegen"
+    );
+    const tokensManifest = await readJson("packages/tokens/package.json");
+    assert.equal(tokensManifest.scripts.prepare, undefined);
+    const uiManifest = await readJson("packages/ui/package.json");
+    assert.equal(uiManifest.scripts.prepare, undefined);
     const installedEnv = await readJson(
       "apps/docs/node_modules/@astilba/env/package.json"
     );
