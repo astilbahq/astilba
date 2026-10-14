@@ -101,7 +101,7 @@ The [examples workspace](./examples) contains small, independent Node, Cloudflar
 
 ## Security
 
-Please report vulnerabilities through the [security policy](https://github.com/astilbahq/env/security/policy). Do not include secrets or configuration values in a public issue.
+Please report vulnerabilities through the [security policy](https://github.com/astilbahq/astilba/security/policy). Do not include secrets or configuration values in a public issue.
 
 ## Licence
 

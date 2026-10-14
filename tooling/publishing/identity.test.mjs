@@ -77,7 +77,7 @@ for (const product of ["env", "ui"]) {
     assert.throws(() => verifyIdentity({ ...fixture(product), manifests: [] }));
   });
 
-  test(`${product} cannot publish the still-legacy metadata in this preparation`, async () => {
+  test(`${product} enforces its reviewed package metadata state`, async () => {
     const manifests = await Promise.all(
       cutover.products[product].packages.map(async ({ directory }) =>
         JSON.parse(await readFile(`${root}/${directory}/package.json`, "utf-8"))
@@ -86,7 +86,33 @@ for (const product of ["env", "ui"]) {
     const options = fixture(product);
     options.tag = `${product}/v${manifests[0].version}`;
     options.manifests = manifests;
-    assert.throws(() => verifyIdentity(options), /metadata is not activated/u);
+    if (product === "env") {
+      assert.equal(verifyIdentity(options).version, "0.3.0");
+      assert.deepEqual(manifests[0].repository, {
+        directory: "packages/env",
+        type: "git",
+        url: "git+https://github.com/astilbahq/astilba.git",
+      });
+      for (const repository of [
+        { type: "git", url: "git+https://github.com/astilbahq/env.git" },
+        { ...manifests[0].repository, directory: "packages/ui" },
+        { ...manifests[0].repository, directory: undefined },
+      ]) {
+        assert.throws(
+          () =>
+            verifyIdentity({
+              ...options,
+              manifests: [{ ...manifests[0], repository }],
+            }),
+          /metadata is not activated/u
+        );
+      }
+    } else {
+      assert.throws(
+        () => verifyIdentity(options),
+        /metadata is not activated/u
+      );
+    }
   });
 }
 

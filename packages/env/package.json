@@ -9,15 +9,16 @@
     "typescript",
     "vite"
   ],
-  "homepage": "https://github.com/astilbahq/env#readme",
+  "homepage": "https://github.com/astilbahq/astilba/tree/main/packages/env#readme",
   "bugs": {
-    "url": "https://github.com/astilbahq/env/issues"
+    "url": "https://github.com/astilbahq/astilba/issues"
   },
   "license": "MIT",
   "author": "Astilba contributors",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/astilbahq/env.git"
+    "url": "git+https://github.com/astilbahq/astilba.git",
+    "directory": "packages/env"
   },
   "funding": "https://github.com/sponsors/astilbahq",
   "bin": {

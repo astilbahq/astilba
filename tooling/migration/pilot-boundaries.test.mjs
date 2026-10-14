@@ -11,7 +11,7 @@ const readJson = async (path) =>
   JSON.parse(await readFile(resolve(root, path), "utf-8"));
 
 describe("pilot boundaries", () => {
-  it("routes private development metadata without changing publisher identities", async () => {
+  it("routes Env metadata to the monorepo while preserving UI publisher identities", async () => {
     const manifest = await readJson("package.json");
     assert.equal(manifest.name, "astilba");
     assert.equal(manifest.private, true);
@@ -29,7 +29,7 @@ describe("pilot boundaries", () => {
     );
     await Promise.all(
       [
-        ["packages/env", "env"],
+        ["packages/env", "astilba"],
         ["packages/tokens", "ui"],
         ["packages/ui", "ui"],
       ].map(async ([path, repository]) => {
@@ -203,7 +203,7 @@ describe("pilot boundaries", () => {
     assert.ok(Object.hasOwn(planted.jobs, "planted-ungated-lane"));
   });
 
-  it("keeps imported workflows inert and the active pilot free of publishers", async () => {
+  it("keeps imported workflows inert and verification free of publishers", async () => {
     const files = await readdir(resolve(root, ".github/workflows"));
     await Promise.all(
       files.map(async (file) => {
@@ -211,6 +211,16 @@ describe("pilot boundaries", () => {
           resolve(root, ".github/workflows", file),
           "utf-8"
         );
+        if (file === "release-env.yml") {
+          const workflow = parse(source);
+          assert.equal(
+            workflow.jobs["release-identity"].if,
+            "github.repository == 'astilbahq/astilba' && vars.ENV_PUBLISHER_ENABLED == 'true' && github.ref_type == 'tag'"
+          );
+          assert.deepEqual(workflow.on, { push: { tags: ["env/v*"] } });
+          assert.doesNotMatch(source, /wrangler deploy|secrets\./u);
+          return;
+        }
         assert.doesNotMatch(
           source,
           /npm publish|wrangler deploy(?! --dry-run)|id-token: write|environment:|secrets\./u

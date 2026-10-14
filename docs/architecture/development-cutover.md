@@ -12,7 +12,7 @@
 | Docs and apex | `apps/docs`, `apps/site` | Existing Docs production workflows and smoke checks |
 | Cache | `products/cache`, approved sanitized snapshot only | Unreleased and non-publishable; no production cutover |
 
-Public package names, versions, repository metadata, registry fixture pins and npm provenance remain unchanged. The private root package identifies this development repository. Existing `v*` tags and releases remain immutable in their original repositories; future namespaced tags and new trusted-publisher identities require a separate release decision.
+Public package names, versions, registry fixture pins and published npm provenance remain unchanged. Env's local repository/homepage/issues metadata now identifies the monorepo and `packages/env` for its installed-but-disabled publisher; tokens/UI metadata remains unchanged. The private root package identifies this development repository. Existing `v*` tags and releases remain immutable in their original repositories; future namespaced tags and new trusted-publisher identities require a separate first-release decision. See [Publisher cutover](../publisher-cutover.md).
 
 Handbook and private Cache Git ancestry remain excluded. Cache's checked-in authority pin and maintainer-only ancestry/scoped-tree checks remain in force. Unmerged private Cache work is not included merely because it exists in the old repository; it needs its own authority reconciliation, publication review and verified source change.
 
@@ -44,7 +44,7 @@ Private-repository PR details and the complete dated inventory remain in maintai
 
 1. Merge this development guidance only after its fresh checks and required reviews complete. Announce the development source boundary; assess any old-repository PR submitted afterward as legacy work rather than a second source of truth.
 2. Prepare migration notices for the old repositories and migrate useful issues deliberately. Do not close legacy PRs or disable their automation without approval; old production workflows remain live.
-3. Separately approve publisher migration, exact-artifact/provenance acceptance and future tag naming before changing publishable package metadata or npm trust.
+3. Env's publisher PR prepares local metadata and a disabled workflow only. Separately approve protected release controls, authenticated npm trust configuration and exact-artifact/provenance acceptance before enabling publication. UI preparation and deployment switching remain separate cutovers.
 4. Preserve original Docs content dates and source attribution before production cutover; snapshot import dates are not original content dates. Test deployment artifact identity, routes, smoke checks and rollback before switching production authority.
 5. Archive old repositories only after those cutovers and outstanding-work decisions are accepted. Preserve historical tags, releases and the private reference needed by Cache's authority gate.
 

@@ -1,4 +1,4 @@
-name: Env publisher (prepared template)
+name: Env publisher (disabled until release approval)
 
 on:
   push:
