@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { hash, validateUiManifest } from "./ui-artifacts.mjs";
+import { hash, packUiArtifacts, validateUiManifest } from "./ui-artifacts.mjs";
 
 const fixture = () => ({
   format: "astilba.ui.release-artifacts/v1",
@@ -64,4 +64,11 @@ test("UI transfer manifest rejects unrelated packages, paths, versions and hashe
 
 test("UI manifest digest changes for every altered byte", () => {
   assert.notEqual(hash("verified bytes"), hash("Verified bytes"));
+});
+
+test("retired UI rejects release packing before accessing an artifact directory", async () => {
+  await assert.rejects(
+    packUiArtifacts(".artifacts/retired-ui"),
+    /packing is retired/u
+  );
 });

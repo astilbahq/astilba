@@ -2,10 +2,12 @@
 
 Accessible React controls for Astilba products, built with native semantics, Base UI where behaviour warrants it, and statically extracted Panda CSS.
 
-## Installation
+## Workspace use
+
+This is a private package for Astilba's monorepo; no new npm releases are planned. Existing registry versions remain available only while the legacy deployment path is preserved. See [UI retirement](../../docs/ui-retirement.md).
 
 ```sh
-pnpm add @astilba/ui @astilba/tokens
+pnpm --filter <app> add @astilba/ui@workspace:* @astilba/tokens@workspace:*
 ```
 
 React and React DOM are peer dependencies.

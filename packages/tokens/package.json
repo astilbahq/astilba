@@ -1,6 +1,7 @@
 {
   "name": "@astilba/tokens",
   "version": "0.6.0",
+  "private": true,
   "description": "Astilba's framework-neutral design tokens and Panda preset.",
   "homepage": "https://github.com/astilbahq/astilba/tree/main/packages/tokens#readme",
   "bugs": {
@@ -32,13 +33,10 @@
     "./styles.css": "./dist/tokens.css",
     "./package.json": "./package.json"
   },
-  "publishConfig": {
-    "access": "public",
-    "provenance": true
-  },
   "scripts": {
     "build": "tsc -p tsconfig.build.json && tsx scripts/build-css.ts",
     "pack:check": "pnpm build && publint && attw --pack --profile esm-only --exclude-entrypoints ./css ./styles.css",
+    "prepare": "pnpm build",
     "test": "pnpm build && vitest run",
     "typecheck": "tsc --noEmit"
   },

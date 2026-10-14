@@ -40,9 +40,8 @@
     "verify:env:archive": "pnpm --dir packages/env pack:artifact && pnpm --dir packages/env verify:artifact",
     "verify:env:consumers": "node tooling/migration/verify-env-consumers.mjs",
     "verify:registry": "corepack pnpm@11.10.0 --dir fixtures/registry/env verify:all",
-    "verify:web": "pnpm --dir apps/docs verify",
+    "verify:web": "pnpm --filter @astilba/tokens build && pnpm --filter @astilba/ui build && pnpm --dir apps/docs verify",
     "verify:base": "pnpm check && pnpm typecheck && pnpm test && pnpm knip && pnpm pack:check",
-    "verify:release-version": "tsx scripts/verify-release-version.ts",
     "test:dependency-security": "node --test scripts/dependency-security.test.mjs"
   },
   "devDependencies": {

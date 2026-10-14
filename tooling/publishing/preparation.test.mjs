@@ -13,10 +13,10 @@ const trust = JSON.parse(
   await read("tooling/publishing/trusted-publishers.json")
 );
 
-test("prepared npm identities contain only Env and coordinated tokens/UI", () => {
+test("prepared npm identities retain only Env trust and retired UI metadata", () => {
   assert.equal(cutover.phase, "publishing-disabled");
   assert.equal(cutover.products.env.phase, "workflow-installed-disabled");
-  assert.equal(cutover.products.ui.phase, "workflow-installed-disabled");
+  assert.equal(cutover.products.ui.phase, "retired-workspace-only");
   assert.equal(trust.phase, "prepared-not-activated");
   assert.equal(trust.repository, cutover.repository);
   assert.equal(trust.provider, "github");
@@ -24,18 +24,20 @@ test("prepared npm identities contain only Env and coordinated tokens/UI", () =>
   assert.equal(trust.allowStagePublish, false);
   assert.deepEqual(
     trust.bindings,
-    Object.values(cutover.products).flatMap((product) =>
-      product.packages.map(({ name }) => ({
-        environment: product.environment,
-        package: name,
-        workflow: product.workflow,
-      }))
-    )
+    Object.values(cutover.products)
+      .filter((product) => product.phase !== "retired-workspace-only")
+      .flatMap((product) =>
+        product.packages.map(({ name }) => ({
+          environment: product.environment,
+          package: name,
+          workflow: product.workflow,
+        }))
+      )
   );
   assert.deepEqual(Object.keys(cutover.products), ["env", "ui"]);
 });
 
-for (const product of ["env", "ui"]) {
+for (const product of ["env"]) {
   test(`${product} publisher stays gated and narrowly permissioned`, async () => {
     const identity = cutover.products[product];
     const source = await read(`.github/workflows/${identity.workflow}`);
@@ -150,48 +152,11 @@ for (const product of ["env", "ui"]) {
         "./.github/workflows/env-package-matrix.yml"
       );
       assert.equal(workflow.jobs["create-release"].needs, "verify-registry");
-    } else {
-      assert.deepEqual(Object.keys(workflow.on), ["release"]);
-      assert.deepEqual(workflow.on.release.types, ["published"]);
-      assert.deepEqual(Object.keys(workflow.jobs), [
-        "verify-packages",
-        "publish",
-        "verify-registry",
-      ]);
-      assert.equal(workflow.jobs["verify-registry"]["timeout-minutes"], 40);
-      assert.equal(
-        entry.if,
-        [
-          "github.repository == 'astilbahq/astilba'",
-          "vars.UI_PUBLISHER_ENABLED == 'true'",
-          "github.event.release.prerelease == false",
-          "startsWith(github.event.release.tag_name, 'ui/v')",
-        ].join(" && ")
-      );
-      assert.equal(workflow.jobs.publish.needs, "verify-packages");
-      assert.equal(workflow.jobs.publish.if, undefined);
-      assert.deepEqual(workflow.jobs["verify-registry"].needs, [
-        "verify-packages",
-        "publish",
-      ]);
-      assert.equal(workflow.jobs["verify-registry"].if, undefined);
-      assert.equal(commands[0].includes("$tokens"), true);
-      assert.equal(commands[1].includes("$ui"), true);
-      assert.equal(
-        workflow.jobs.publish.env.MANIFEST_SHA256,
-        `\${{ needs.verify-packages.outputs.manifest-sha256 }}`
-      );
-      assert.equal(
-        publishRuns.includes(
-          'ui-artifacts.mjs verify .artifacts/ui "$MANIFEST_SHA256"'
-        ),
-        true
-      );
     }
   });
 }
 
-test("existing hosted gates audit both installed disabled publishers", async () => {
+test("existing hosted gates audit Env and enforce UI retirement", async () => {
   const actionlint = await read(".github/workflows/actionlint.yml");
   const zizmor = await read(".github/workflows/zizmor.yml");
   const audit = parse(zizmor).jobs.zizmor.steps.find((step) =>
@@ -209,4 +174,18 @@ test("existing hosted gates audit both installed disabled publishers", async () 
   );
   const pilot = await read(".github/workflows/pilot.yml");
   assert.equal(pilot.includes("pnpm verify:publisher"), true);
+});
+
+test("retired UI has no workflow, enable variable or prepared trust binding", async () => {
+  assert.equal(cutover.products.ui.enableVariable, undefined);
+  await assert.rejects(read(".github/workflows/release-ui.yml"), {
+    code: "ENOENT",
+  });
+  await assert.rejects(read("tooling/publishing/workflows/release-ui.yml"), {
+    code: "ENOENT",
+  });
+  assert.deepEqual(
+    trust.bindings.map((binding) => binding.package),
+    ["@astilba/env"]
+  );
 });

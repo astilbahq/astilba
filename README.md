@@ -1,6 +1,6 @@
 # Astilba
 
-The development monorepo for Env, tokens/UI, docs, apex and the approved sanitized, unreleased Cache snapshot. Submit new source changes and issues to `astilbahq/astilba`. Env 0.3.1 is released from this repository; UI publishing and production deployments remain with their original repositories. Old repositories remain unarchived and retain their history. Handbook remains private and outside this repository.
+The development monorepo for Env, tokens/UI, docs, apex and the approved sanitized, unreleased Cache snapshot. Submit new source changes and issues to `astilbahq/astilba`. Env 0.3.1 is released from this repository; UI/tokens are private workspace packages with no new npm releases; production deployments remain with their original repositories. Old repositories remain unarchived and retain their history. Handbook remains private and outside this repository.
 
 The [development cutover](docs/architecture/development-cutover.md) defines that split of authority and the remaining release, deployment and history work.
 
@@ -33,6 +33,6 @@ tooling/      migration commands and original install/workflow references
 docs/         architecture and UI operational guidance
 ```
 
-Docs and apex continue to consume released UI/tokens 0.5.0 and Env 0.3.0. UI source remains version 0.6.0; Env 0.3.1 completed its separately approved publication. Registry fixtures retain their public pins and independent lock. Tokens and UI keep coordinated versions; Env remains independently versioned.
+Monorepo Docs and apex consume workspace UI/tokens 0.6.0 while retaining released Env 0.3.0. The old Docs deployment repository still consumes UI/tokens 0.5.0; those registry versions remain available. Env 0.3.1 completed its separately approved publication. Registry fixtures retain their public pins and independent lock. Tokens and UI keep matching source versions; Env remains independently versioned.
 
-Snapshot imports exclude private Cache ancestry. Original content-date preservation, UI npm publisher cutover and deployment switching remain separate decisions. Env and UI metadata identifies this monorepo; both installed release workflows are disabled by absent enable variables. UI's [activation preparation](docs/ui-activation.md) does not enable publishing or change npm trust. See [Publisher cutover](docs/publisher-cutover.md) for the separate first-release approval gates.
+Snapshot imports exclude private Cache ancestry. Original content-date preservation and deployment switching remain separate decisions. Env's installed publisher stays disabled; the monorepo UI publisher is retired. [UI retirement](docs/ui-retirement.md) records workspace consumption and the legacy deployment prerequisites before permanent npm removal. Registry packages and old deployment controls remain untouched; see [Publisher controls](docs/publisher-cutover.md).
