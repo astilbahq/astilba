@@ -2,10 +2,12 @@
 
 Framework-neutral semantic tokens for Astilba interfaces.
 
-## Installation
+## Workspace use
+
+This is a private package for Astilba's monorepo; no new npm releases are planned. Existing registry versions remain available only while the legacy deployment path is preserved. See [UI retirement](../../docs/ui-retirement.md).
 
 ```sh
-pnpm add @astilba/tokens
+pnpm --filter <app> add @astilba/tokens@workspace:*
 ```
 
 ## Static CSS

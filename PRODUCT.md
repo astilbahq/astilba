@@ -8,7 +8,7 @@ web
 
 ## Users
 
-Astilba product developers use these packages to build consistent public interfaces without recreating theme, control, and accessibility behaviour in each repository. External React and Panda CSS consumers may also use the public packages when the Astilba interface contract suits their product.
+Astilba product developers use these packages to build consistent public interfaces without recreating theme, control, and accessibility behaviour in each application. These private workspace packages serve Astilba's monorepo applications; no new npm releases are planned.
 
 ## Product Purpose
 
@@ -24,12 +24,12 @@ The packages are developed in a pnpm monorepo and consumed by Astilba's Astro an
 
 ## Capabilities and Constraints
 
-- `@astilba/tokens` remains framework-neutral and publishes static CSS plus a Panda CSS preset.
-- `@astilba/ui` publishes ESM-only React components, static CSS, and focused component entry points.
+- `@astilba/tokens` remains framework-neutral and provides local static CSS plus a Panda CSS preset.
+- `@astilba/ui` provides local ESM-only React components, static CSS, and focused component entry points.
 - React and React DOM compatibility is defined by the package peer dependencies.
 - Components do not provide a global reset, typography system, application layout, router, or client-side state architecture.
 - Links that look like buttons remain anchors rather than being passed through the Base UI Button primitive.
-- Package releases are verified from immutable artifacts and published with provenance.
+- Workspace builds retain package-output, declaration, consumer and accessibility checks without npm publication.
 
 ## Brand Commitments
 
@@ -39,8 +39,8 @@ The packages express Astilba's compact, border-led, nearly monochrome interface 
 
 - `packages/tokens/tests/` verifies the static token contract.
 - `packages/ui/tests/` verifies component behaviour, accessibility, compiled CSS, package output, and consumer bundling.
-- `apps/showcase/` is the private visual and accessibility harness.
-- `docs/releasing.md` records the trusted release process.
+- `apps/ui-showcase/` is the private visual and accessibility harness.
+- `docs/ui-retirement.md` records workspace ownership and the separately gated legacy registry retirement.
 
 ## Product Principles
 

@@ -81,4 +81,4 @@ paths.
 - `pnpm build` produces the docs assets and Pagefind index; `pnpm --dir ../site build:production`
   produces the apex assets and global discovery files.
 - Production remains in the original Docs repository. The imported workflows are inert references; pilot CI only verifies the apps.
-- Keep dependency versions exact.
+- Keep external dependency versions exact. UI and tokens use `workspace:*`; Env remains the released 0.3.0 registry dependency. Root `pnpm verify:web` builds workspace tokens and UI before the web gates. Read `../../docs/ui-retirement.md`; this migration does not alter or authorize old-repository deployment.

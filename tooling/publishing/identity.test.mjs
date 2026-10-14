@@ -7,6 +7,7 @@ import {
   publisherMetadata,
   releaseVersion,
   root,
+  verifyCheckoutIdentity,
   verifyIdentity,
 } from "./identity.mjs";
 
@@ -25,7 +26,7 @@ const fixture = (product) => ({
   tagCommit: "a".repeat(40),
 });
 
-for (const product of ["env", "ui"]) {
+for (const product of ["env"]) {
   test(`${product} accepts only its exact stable namespace and main identity`, () => {
     assert.equal(verifyIdentity(fixture(product)).version, "1.2.3");
     for (const field of ["commit", "currentMain", "tagCommit"]) {
@@ -110,38 +111,6 @@ for (const product of ["env", "ui"]) {
           /metadata is not activated/u
         );
       }
-    } else {
-      assert.equal(verifyIdentity(options).version, "0.6.0");
-      for (const tag of ["ui/v0.5.0", "v0.6.0", "env/v0.6.0"]) {
-        assert.throws(() => verifyIdentity({ ...options, tag }));
-      }
-      for (const [index, entry] of cutover.products.ui.packages.entries()) {
-        assert.deepEqual(manifests[index].repository, {
-          directory: entry.directory,
-          type: "git",
-          url: "git+https://github.com/astilbahq/astilba.git",
-        });
-        for (const repository of [
-          {
-            directory: entry.directory,
-            type: "git",
-            url: "git+https://github.com/astilbahq/ui.git",
-          },
-          { ...manifests[index].repository, directory: "packages/env" },
-          {
-            ...manifests[index].repository,
-            directory: index === 0 ? "packages/ui" : "packages/tokens",
-          },
-          { ...manifests[index].repository, directory: undefined },
-        ]) {
-          const altered = [...manifests];
-          altered[index] = { ...manifests[index], repository };
-          assert.throws(
-            () => verifyIdentity({ ...options, manifests: altered }),
-            /metadata is not activated/u
-          );
-        }
-      }
     }
   });
 }
@@ -149,4 +118,20 @@ for (const product of ["env", "ui"]) {
 test("Cache never acquires a namespace, package set or trust binding", () => {
   assert.deepEqual(Object.keys(cutover.products).toSorted(), ["env", "ui"]);
   assert.throws(() => releaseVersion("cache", "cache/v1.2.3"));
+});
+
+test("retired UI rejects publisher identity even with synthetic public metadata", async () => {
+  assert.equal(cutover.products.ui.phase, "retired-workspace-only");
+  await Promise.all(
+    ["ui/v0.6.0", "ui/v1.2.3"].map(async (tag) => {
+      assert.throws(
+        () => verifyIdentity({ ...fixture("ui"), tag }),
+        /publisher is retired/u
+      );
+      await assert.rejects(
+        verifyCheckoutIdentity("ui", tag),
+        /publisher is retired/u
+      );
+    })
+  );
 });
