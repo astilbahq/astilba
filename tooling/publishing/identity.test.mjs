@@ -87,7 +87,10 @@ for (const product of ["env", "ui"]) {
     options.tag = `${product}/v${manifests[0].version}`;
     options.manifests = manifests;
     if (product === "env") {
-      assert.equal(verifyIdentity(options).version, "0.3.0");
+      assert.equal(verifyIdentity(options).version, "0.3.1");
+      assert.throws(() => verifyIdentity({ ...options, tag: "env/v0.3.0" }));
+      assert.throws(() => verifyIdentity({ ...options, tag: "v0.3.1" }));
+      assert.throws(() => verifyIdentity({ ...options, tag: "ui/v0.3.1" }));
       assert.deepEqual(manifests[0].repository, {
         directory: "packages/env",
         type: "git",

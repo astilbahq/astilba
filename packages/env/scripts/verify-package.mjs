@@ -159,7 +159,7 @@ const expectedDistFiles = sortedStrings([
 if (
   !isRecord(packageJson) ||
   packageJson.name !== "@astilba/env" ||
-  packageJson.version !== "0.3.0" ||
+  packageJson.version !== "0.3.1" ||
   Object.hasOwn(packageJson, "private") ||
   packageJson.license !== "MIT" ||
   packageJson.homepage !==
