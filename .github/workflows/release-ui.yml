@@ -1,4 +1,4 @@
-name: UI publisher (prepared template)
+name: UI publisher (disabled until release approval)
 
 on:
   release:

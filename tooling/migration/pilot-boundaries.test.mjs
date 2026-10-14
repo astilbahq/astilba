@@ -11,7 +11,7 @@ const readJson = async (path) =>
   JSON.parse(await readFile(resolve(root, path), "utf-8"));
 
 describe("pilot boundaries", () => {
-  it("routes Env metadata to the monorepo while preserving UI publisher identities", async () => {
+  it("routes all public package metadata to the monorepo", async () => {
     const manifest = await readJson("package.json");
     assert.equal(manifest.name, "astilba");
     assert.equal(manifest.private, true);
@@ -30,8 +30,8 @@ describe("pilot boundaries", () => {
     await Promise.all(
       [
         ["packages/env", "astilba"],
-        ["packages/tokens", "ui"],
-        ["packages/ui", "ui"],
+        ["packages/tokens", "astilba"],
+        ["packages/ui", "astilba"],
       ].map(async ([path, repository]) => {
         const published = await readJson(`${path}/package.json`);
         assert.equal(
@@ -59,7 +59,7 @@ describe("pilot boundaries", () => {
     );
   });
 
-  it("preserves public package metadata during the development-only cutover", async () => {
+  it("preserves UI public metadata with the approved monorepo identities", async () => {
     // Update this reviewed baseline only alongside an approved public-contract change.
     const expected = await readJson(
       "tooling/migration/public-package-metadata.json"
@@ -218,6 +218,16 @@ describe("pilot boundaries", () => {
             "github.repository == 'astilbahq/astilba' && vars.ENV_PUBLISHER_ENABLED == 'true' && github.ref_type == 'tag'"
           );
           assert.deepEqual(workflow.on, { push: { tags: ["env/v*"] } });
+          assert.doesNotMatch(source, /wrangler deploy|secrets\./u);
+          return;
+        }
+        if (file === "release-ui.yml") {
+          const workflow = parse(source);
+          assert.equal(
+            workflow.jobs["verify-packages"].if,
+            "github.repository == 'astilbahq/astilba' && vars.UI_PUBLISHER_ENABLED == 'true' && github.event.release.prerelease == false && startsWith(github.event.release.tag_name, 'ui/v')"
+          );
+          assert.deepEqual(workflow.on, { release: { types: ["published"] } });
           assert.doesNotMatch(source, /wrangler deploy|secrets\./u);
           return;
         }
