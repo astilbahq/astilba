@@ -1,4 +1,46 @@
-import { cva } from "../../styled-system/css";
+import { css, cva } from "../../styled-system/css";
+
+export const visuallyHidden = css({
+  position: "absolute",
+  inlineSize: "1px",
+  blockSize: "1px",
+  padding: 0,
+  margin: "-1px",
+  overflow: "hidden",
+  clip: "rect(0, 0, 0, 0)",
+  whiteSpace: "nowrap",
+  border: 0,
+});
+
+export const copyIconSwap = css({
+  position: "relative",
+  display: "inline-grid",
+  flex: "0 0 auto",
+  placeItems: "center",
+  "& [data-copy-icon]": {
+    gridArea: "1 / 1",
+    display: "inline-grid",
+    placeItems: "center",
+    opacity: 0,
+    filter: "blur(var(--astilba-blurs-icon-swap))",
+    transform: "scale(0.25)",
+    transitionProperty: "opacity, filter, transform",
+    transitionDuration: "iconSwap",
+    transitionTimingFunction: "inOut",
+    pointerEvents: "none",
+  },
+  '&[data-state="idle"] [data-copy-icon="idle"], &[data-state="copying"] [data-copy-icon="idle"], &[data-state="copied"] [data-copy-icon="copied"], &[data-state="error"] [data-copy-icon="error"]':
+    {
+      opacity: 1,
+      filter: "blur(0)",
+      transform: "scale(1)",
+    },
+  _reducedMotion: {
+    "& [data-copy-icon]": {
+      transition: "none",
+    },
+  },
+});
 
 export const ghostControl = cva({
   base: {

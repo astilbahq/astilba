@@ -2,6 +2,7 @@ import { defineConfig, devices } from "@playwright/test";
 
 const port = 4322;
 const baseURL = `http://127.0.0.1:${port}`;
+const wranglerLogFile = ".wrangler/playwright-dev.log";
 
 export default defineConfig({
   testDir: "./tests/e2e",
@@ -21,7 +22,9 @@ export default defineConfig({
     video: "retain-on-failure",
   },
   webServer: {
-    command: `pnpm exec wrangler dev --local --ip 127.0.0.1 --port ${port}`,
+    // Wrangler exits on EPIPE if Playwright closes its output pipes (workers-sdk#15202).
+    command: `mkdir -p .wrangler && exec pnpm exec wrangler dev --local --ip 127.0.0.1 --port ${port} >"${wranglerLogFile}" 2>&1`,
+    env: { FORCE_COLOR: "0" },
     reuseExistingServer: false,
     timeout: 120_000,
     url: `${baseURL}/docs/`,

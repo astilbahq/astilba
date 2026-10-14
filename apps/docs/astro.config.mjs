@@ -11,6 +11,7 @@ import starlightLlmsTxt from "starlight-llms-txt";
 import { check as checkDocsBuild } from "./.astilba/env/docsBuild.server.ts";
 import { docsProducts, docsSidebar } from "./src/docs/catalog.ts";
 import { removeTerminalWindowHeaders } from "./src/docs/expressive-code.ts";
+import { rehypeMermaid } from "./src/docs/rehype-mermaid.ts";
 import { siteDocsPages } from "./src/docs/site-pages.ts";
 import {
   addDocsSitemapLastModified,
@@ -85,6 +86,9 @@ const sitePageOrder = siteDocsPages.map(({ id }) => id);
 
 export default defineConfig({
   base: DOCS_BASE_PATH,
+  markdown: {
+    rehypePlugins: [rehypeMermaid],
+  },
   outDir: "./dist/docs",
   site,
   integrations: [

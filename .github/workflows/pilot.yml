@@ -91,7 +91,9 @@ jobs:
             apps/docs/test-results/
             apps/site/playwright-report/
             apps/site/test-results/
+            apps/docs/.wrangler/playwright-dev.log
             ci-wrangler-logs/
+          include-hidden-files: true
           retention-days: 7
 
   registry:

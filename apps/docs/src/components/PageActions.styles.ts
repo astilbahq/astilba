@@ -1,5 +1,5 @@
 import { css, cx } from "../../styled-system/css";
-import { ghostControl } from "../styles/recipes";
+import { copyIconSwap, ghostControl, visuallyHidden } from "../styles/recipes";
 
 export const pageActionsStyles = {
   root: css({
@@ -51,35 +51,7 @@ export const pageActionsStyles = {
     display: "block",
     flex: "0 0 auto",
   }),
-  iconSwap: css({
-    position: "relative",
-    display: "inline-grid",
-    flex: "0 0 auto",
-    placeItems: "center",
-    "& [data-copy-icon]": {
-      gridArea: "1 / 1",
-      display: "inline-grid",
-      placeItems: "center",
-      opacity: 0,
-      filter: "blur(var(--astilba-blurs-icon-swap))",
-      transform: "scale(0.25)",
-      transitionProperty: "opacity, filter, transform",
-      transitionDuration: "iconSwap",
-      transitionTimingFunction: "inOut",
-      pointerEvents: "none",
-    },
-    '&[data-state="idle"] [data-copy-icon="idle"], &[data-state="copying"] [data-copy-icon="idle"], &[data-state="copied"] [data-copy-icon="copied"], &[data-state="error"] [data-copy-icon="error"]':
-      {
-        opacity: 1,
-        filter: "blur(0)",
-        transform: "scale(1)",
-      },
-    _reducedMotion: {
-      "& [data-copy-icon]": {
-        transition: "none",
-      },
-    },
-  }),
+  iconSwap: copyIconSwap,
   textSwap: css({
     display: "inline-grid",
     minInlineSize: 0,
@@ -153,15 +125,5 @@ export const pageActionsStyles = {
   menuTrailing: css({
     color: "ink.faint",
   }),
-  status: css({
-    position: "absolute",
-    inlineSize: "1px",
-    blockSize: "1px",
-    padding: 0,
-    margin: "-1px",
-    overflow: "hidden",
-    clip: "rect(0, 0, 0, 0)",
-    whiteSpace: "nowrap",
-    border: 0,
-  }),
+  status: visuallyHidden,
 };

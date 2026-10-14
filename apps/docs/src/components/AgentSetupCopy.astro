@@ -2,6 +2,7 @@
 import { Button } from "@astilba/ui/button";
 import { css } from "../../styled-system/css";
 import { AGENT_SETUP_COPY_TEXT } from "../docs/agent-setup";
+import { visuallyHidden } from "../styles/recipes";
 import { PageActionBrandIcon } from "./PageActionBrandIcon";
 
 const rootClass = css({
@@ -91,17 +92,6 @@ const errorLabelClass = css({
     visibility: "visible",
   },
 });
-const statusClass = css({
-  position: "absolute",
-  inlineSize: "1px",
-  blockSize: "1px",
-  padding: 0,
-  margin: "-1px",
-  overflow: "hidden",
-  clip: "rect(0, 0, 0, 0)",
-  whiteSpace: "nowrap",
-  border: 0,
-});
 ---
 
 <astilba-agent-setup-copy
@@ -179,7 +169,7 @@ const statusClass = css({
       </span>
     </span>
   </Button>
-  <span aria-live="polite" class={statusClass} data-agent-setup-status role="status"></span>
+  <span aria-live="polite" class={visuallyHidden} data-agent-setup-status role="status"></span>
 </astilba-agent-setup-copy>
 
 <script>

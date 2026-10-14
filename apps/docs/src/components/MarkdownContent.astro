@@ -3,6 +3,7 @@ import "@astrojs/starlight/style/markdown.css";
 import { findSiteDocsPage } from "../docs/site-pages";
 import HeadingAnchorCopy from "./HeadingAnchorCopy";
 import HomePage from "./HomePage.astro";
+import { MermaidRenderer } from "./MermaidRenderer";
 import ProductHomePage from "./ProductHomePage.astro";
 
 const { entry } = Astro.locals.starlightRoute;
@@ -24,6 +25,7 @@ const copyCodeLabel = Astro.locals.t("expressiveCode.copyButtonTooltip");
   }
 </div>
 <HeadingAnchorCopy client:load />
+<MermaidRenderer client:load />
 
 <script>
   const enhanceCodeCopyButtons = () => {
