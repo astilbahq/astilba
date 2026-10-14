@@ -371,6 +371,33 @@ test("preserves dialog labelling, focus, dismissal, and motion", async ({
   await expect(trigger).toBeFocused();
 });
 
+test("closes an open dialog when history leaves the dialogs page", async ({
+  page,
+}) => {
+  await openShowcase(page, "/menus/");
+  await page.getByRole("link", { name: "Dialogs" }).click();
+  await page.getByRole("button", { name: "Review deployment" }).click();
+  await expect(page.getByRole("dialog")).toBeVisible();
+
+  await page.goBack();
+  await expect(page).toHaveURL(/\/menus\/$/u);
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await expect(page.locator(".astilba-dialog-backdrop")).toHaveCount(0);
+});
+
+test("shows a focus outline when the dialog popup itself has focus", async ({
+  page,
+}) => {
+  await openShowcase(page, "/dialogs/");
+  await page.getByRole("button", { name: "Review deployment" }).focus();
+  await page.keyboard.press("Enter");
+  const dialog = page.getByRole("dialog");
+  await expect(dialog).toBeVisible();
+  await dialog.focus();
+  await expect(dialog).toHaveCSS("outline-style", "solid");
+  await expect(dialog).toHaveCSS("outline-width", "2px");
+});
+
 test("removes dialog motion when reduced motion is requested", async ({
   page,
 }) => {

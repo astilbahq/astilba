@@ -58,11 +58,14 @@ const getExpectedPageDiscoveryLink = (markdownPath: string): string =>
 const getSitemapPaths = async (
   request: APIRequestContext
 ): Promise<string[]> => {
-  const sitemap = await (await request.get("/docs/sitemap.xml")).text();
+  const response = await request.get("/docs/sitemap.xml");
+  expect(response.ok()).toBe(true);
+  const paths = [
+    ...(await response.text()).matchAll(/<loc>([^<]+)<\/loc>/g),
+  ].map(([, location]) => new URL(location).pathname);
 
-  return [...sitemap.matchAll(/<loc>([^<]+)<\/loc>/g)].map(
-    ([, location]) => new URL(location).pathname
-  );
+  expect(paths.length).toBeGreaterThan(1);
+  return paths;
 };
 
 const expectNoAxeViolations = async (page: Page): Promise<void> => {
@@ -218,8 +221,6 @@ test("renders exactly one page-title heading on every page", async ({
 }) => {
   const paths = await getSitemapPaths(request);
   const invalidPages = [];
-
-  expect(paths.length).toBeGreaterThan(1);
 
   for (const path of paths) {
     const html = await (await request.get(path)).text();

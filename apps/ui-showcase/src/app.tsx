@@ -1010,37 +1010,39 @@ export const App = () => {
             </div>
             <div>
               <div className="control-line">
-                <Dialog.Root>
-                  <Dialog.Trigger render={<Button appearance="outline" />}>
-                    Review deployment
-                  </Dialog.Trigger>
-                  <Dialog.Portal>
-                    <Dialog.Backdrop />
-                    <Dialog.Viewport>
-                      <Dialog.Popup>
-                        <Dialog.Title>
-                          Deploy the verified artifact?
-                        </Dialog.Title>
-                        <Dialog.Description>
-                          The release replaces the current production build.
-                        </Dialog.Description>
-                        <div className="showcase-dialog-actions">
-                          <Dialog.Close render={<Button />}>
-                            Cancel
-                          </Dialog.Close>
-                          <Dialog.Close
-                            onClick={() => {
-                              setDialogAction("Deployment confirmed");
-                            }}
-                            render={<Button appearance="primary" />}
-                          >
-                            Deploy
-                          </Dialog.Close>
-                        </div>
-                      </Dialog.Popup>
-                    </Dialog.Viewport>
-                  </Dialog.Portal>
-                </Dialog.Root>
+                {activePage.id === "dialogs" && (
+                  <Dialog.Root>
+                    <Dialog.Trigger render={<Button appearance="outline" />}>
+                      Review deployment
+                    </Dialog.Trigger>
+                    <Dialog.Portal>
+                      <Dialog.Backdrop />
+                      <Dialog.Viewport>
+                        <Dialog.Popup>
+                          <Dialog.Title>
+                            Deploy the verified artifact?
+                          </Dialog.Title>
+                          <Dialog.Description>
+                            The release replaces the current production build.
+                          </Dialog.Description>
+                          <div className="showcase-dialog-actions">
+                            <Dialog.Close render={<Button />}>
+                              Cancel
+                            </Dialog.Close>
+                            <Dialog.Close
+                              onClick={() => {
+                                setDialogAction("Deployment confirmed");
+                              }}
+                              render={<Button appearance="primary" />}
+                            >
+                              Deploy
+                            </Dialog.Close>
+                          </div>
+                        </Dialog.Popup>
+                      </Dialog.Viewport>
+                    </Dialog.Portal>
+                  </Dialog.Root>
+                )}
               </div>
               <p className="showcase-status" aria-live="polite">
                 {dialogAction}
