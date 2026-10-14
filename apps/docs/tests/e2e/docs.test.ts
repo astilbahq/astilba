@@ -1254,6 +1254,12 @@ test("renders Mermaid diagrams under CSP and copies their source", async ({
   await expect(diagram).toHaveAttribute("data-mermaid-rendered", "");
   await expect(diagram.locator(":scope > svg")).toBeVisible();
   await expect(diagram).not.toHaveAttribute("data-mermaid-error");
+  await expect(diagram.locator(":scope > svg")).toHaveAccessibleName(
+    "Value flow diagram"
+  );
+  await expect(diagram.locator(":scope > svg")).toHaveAccessibleDescription(
+    /Declare --> Generate --> Resolve/
+  );
 
   const copyButton = page.getByRole("button", {
     name: "Copy Mermaid source for Value flow",

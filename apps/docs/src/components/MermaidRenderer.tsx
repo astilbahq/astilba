@@ -250,14 +250,28 @@ export const MermaidRenderer = () => {
             continue;
           }
 
-          node.replaceChildren(renderedSvg, host);
+          const label = findDiagramLabel(node, index);
+          const textAlternative = document.createElement("span");
+          textAlternative.className = styles.visuallyHidden;
+          textAlternative.id = `mermaid-source-${index}`;
+          textAlternative.textContent = source;
+
+          if (!renderedSvg.hasAttribute("aria-labelledby")) {
+            renderedSvg.setAttribute("aria-label", `${label} diagram`);
+          }
+
+          if (!renderedSvg.hasAttribute("aria-describedby")) {
+            renderedSvg.setAttribute("aria-describedby", textAlternative.id);
+          }
+
+          node.replaceChildren(renderedSvg, textAlternative, host);
           node.classList.add(styles.enhancedDiagram);
           node.dataset.mermaidRendered = "";
           delete node.dataset.mermaidError;
           nextDiagrams.push({
             host,
             id: `mermaid-${index}`,
-            label: findDiagramLabel(node, index),
+            label,
             source,
           });
         } catch {
