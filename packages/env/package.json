@@ -1,6 +1,6 @@
 {
   "name": "@astilba/env",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Local-first configuration contracts with deterministic generation, public and server projections, and build-once browser delivery.",
   "keywords": [
     "cli",
