@@ -16,7 +16,7 @@ const trust = JSON.parse(
 test("prepared npm identities contain only Env and coordinated tokens/UI", () => {
   assert.equal(cutover.phase, "publishing-disabled");
   assert.equal(cutover.products.env.phase, "workflow-installed-disabled");
-  assert.equal(cutover.products.ui.phase, "prepared-not-activated");
+  assert.equal(cutover.products.ui.phase, "workflow-installed-disabled");
   assert.equal(trust.phase, "prepared-not-activated");
   assert.equal(trust.repository, cutover.repository);
   assert.equal(trust.provider, "github");
@@ -38,9 +38,7 @@ test("prepared npm identities contain only Env and coordinated tokens/UI", () =>
 for (const product of ["env", "ui"]) {
   test(`${product} publisher stays gated and narrowly permissioned`, async () => {
     const identity = cutover.products[product];
-    const source = await read(
-      `${product === "env" ? ".github/workflows" : "tooling/publishing/workflows"}/${identity.workflow}`
-    );
+    const source = await read(`.github/workflows/${identity.workflow}`);
     const workflow = parse(source);
     const entry =
       workflow.jobs[product === "env" ? "release-identity" : "verify-packages"];
@@ -95,11 +93,11 @@ for (const product of ["env", "ui"]) {
       );
     }
     const active = await readdir(resolve(root, ".github/workflows"));
-    assert.equal(active.includes(identity.workflow), product === "env");
-    const inactive = await readdir(
-      resolve(root, "tooling/publishing/workflows")
+    assert.equal(active.includes(identity.workflow), true);
+    await assert.rejects(
+      read(`tooling/publishing/workflows/${identity.workflow}`),
+      { code: "ENOENT" }
     );
-    assert.equal(inactive.includes(identity.workflow), product === "ui");
     assert.equal(
       workflow.jobs["verify-registry"].env.RELEASE_COMMIT,
       `\${{ github.sha }}`
@@ -153,7 +151,13 @@ for (const product of ["env", "ui"]) {
       );
       assert.equal(workflow.jobs["create-release"].needs, "verify-registry");
     } else {
+      assert.deepEqual(Object.keys(workflow.on), ["release"]);
       assert.deepEqual(workflow.on.release.types, ["published"]);
+      assert.deepEqual(Object.keys(workflow.jobs), [
+        "verify-packages",
+        "publish",
+        "verify-registry",
+      ]);
       assert.equal(workflow.jobs["verify-registry"]["timeout-minutes"], 40);
       assert.equal(
         entry.if,
@@ -166,6 +170,11 @@ for (const product of ["env", "ui"]) {
       );
       assert.equal(workflow.jobs.publish.needs, "verify-packages");
       assert.equal(workflow.jobs.publish.if, undefined);
+      assert.deepEqual(workflow.jobs["verify-registry"].needs, [
+        "verify-packages",
+        "publish",
+      ]);
+      assert.equal(workflow.jobs["verify-registry"].if, undefined);
       assert.equal(commands[0].includes("$tokens"), true);
       assert.equal(commands[1].includes("$ui"), true);
       assert.equal(
@@ -182,23 +191,14 @@ for (const product of ["env", "ui"]) {
   });
 }
 
-test("existing hosted gates audit active Env and inactive UI publishers", async () => {
+test("existing hosted gates audit both installed disabled publishers", async () => {
   const actionlint = await read(".github/workflows/actionlint.yml");
   const zizmor = await read(".github/workflows/zizmor.yml");
   const audit = parse(zizmor).jobs.zizmor.steps.find((step) =>
     step.uses?.startsWith("zizmorcore/zizmor-action@")
   );
-  for (const { workflow } of [cutover.products.ui]) {
-    assert.equal(
-      actionlint.includes(`tooling/publishing/workflows/${workflow}`),
-      true
-    );
-    assert.equal(
-      audit.with.inputs.includes(`tooling/publishing/workflows/${workflow}`),
-      true
-    );
-  }
-  assert.equal(audit.with.inputs.split(" ")[0], ".");
+  assert.equal(actionlint.includes("tooling/publishing/workflows/"), false);
+  assert.equal(audit.with.inputs, ".");
   assert.equal(
     parse(actionlint).jobs.actionlint.steps.some(
       (step) =>

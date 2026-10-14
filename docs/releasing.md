@@ -1,10 +1,12 @@
 # Releasing
 
-This guide describes the existing `astilbahq/ui` publisher, not an active monorepo publisher. The Env/UI migration is documented in [Publisher cutover](./publisher-cutover.md); Env's namespaced workflow is installed but disabled, and UI's template remains inactive. Both require separate first-release approval. Existing releases and deployments remain unchanged.
+The existing `astilbahq/ui` publisher remains responsible for UI releases until a separately approved handover. The monorepo's `release-ui.yml` is installed but disabled by the absent `UI_PUBLISHER_ENABLED` variable; merging it does not authorize publishing. [UI activation](ui-activation.md) records the remaining controls and npm-owner requirements. Env 0.3.1 completed its independent release; production deployments remain unchanged.
 
 `@astilba/tokens` and `@astilba/ui` currently share a version and release together. A release is built from a tag whose commit is already on `main`; the release workflow verifies the repository, packs both packages once, records their checksums, and publishes those exact artifacts in dependency order.
 
 ## Release a version
+
+The steps below describe the legacy UI publisher only. Future monorepo releases use `ui/v<version>`, `release-ui.yml` and protected `npm-ui`, after controls, trust and first publication receive separate approval. Do not run legacy steps to exercise the installed disabled workflow.
 
 1. Update both package versions to the intended semver version.
 2. Merge the change through a pull request with the required checks.

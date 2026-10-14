@@ -12,7 +12,7 @@
       "packages": [{ "name": "@astilba/env", "directory": "packages/env" }]
     },
     "ui": {
-      "phase": "prepared-not-activated",
+      "phase": "workflow-installed-disabled",
       "tagPrefix": "ui/v",
       "workflow": "release-ui.yml",
       "environment": "npm-ui",

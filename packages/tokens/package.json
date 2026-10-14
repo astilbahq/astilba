@@ -2,14 +2,14 @@
   "name": "@astilba/tokens",
   "version": "0.6.0",
   "description": "Astilba's framework-neutral design tokens and Panda preset.",
-  "homepage": "https://github.com/astilbahq/ui/tree/main/packages/tokens#readme",
+  "homepage": "https://github.com/astilbahq/astilba/tree/main/packages/tokens#readme",
   "bugs": {
-    "url": "https://github.com/astilbahq/ui/issues"
+    "url": "https://github.com/astilbahq/astilba/issues"
   },
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/astilbahq/ui.git",
+    "url": "git+https://github.com/astilbahq/astilba.git",
     "directory": "packages/tokens"
   },
   "files": [
