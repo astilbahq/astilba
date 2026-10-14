@@ -14,6 +14,9 @@ describe("compiled component CSS", () => {
     expect(css).toContain(".astilba-collapsible-panel");
     expect(css).toContain(".astilba-dialog-backdrop");
     expect(css).toContain(".astilba-dialog-viewport");
+    expect(css).toMatch(
+      /@supports \(-webkit-touch-callout: none\)\s*\{\s*\.astilba-dialog-backdrop\s*\{\s*position: absolute;/u
+    );
     expect(css).toContain(".astilba-dialog-popup[data-starting-style]");
     expect(css).toContain(".astilba-dialog-popup[data-ending-style]");
     expect(css).toContain("--astilba-durations-modal-open");

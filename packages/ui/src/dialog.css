@@ -18,6 +18,13 @@
     transition-duration: var(--astilba-durations-modal-close);
   }
 
+  /* iOS 26+ Safari keeps fixed layers out from under its browser chrome. */
+  @supports (-webkit-touch-callout: none) {
+    .astilba-dialog-backdrop {
+      position: absolute;
+    }
+  }
+
   .astilba-dialog-viewport {
     position: fixed;
     z-index: var(--astilba-dialog-z-index, 1000);
