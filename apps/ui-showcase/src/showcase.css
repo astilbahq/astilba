@@ -562,6 +562,14 @@ main,
   inline-size: 13rem;
 }
 
+.showcase-dialog-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-block-start: 1.5rem;
+}
+
 .showcase-status {
   margin-block: 0.5rem 0;
   color: var(--astilba-colors-ink-muted);

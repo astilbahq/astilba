@@ -12,6 +12,13 @@ describe("compiled component CSS", () => {
 
     expect(css).toContain(".astilba-control--size_large");
     expect(css).toContain(".astilba-collapsible-panel");
+    expect(css).toContain(".astilba-dialog-backdrop");
+    expect(css).toContain(".astilba-dialog-viewport");
+    expect(css).toContain(".astilba-dialog-popup[data-starting-style]");
+    expect(css).toContain(".astilba-dialog-popup[data-ending-style]");
+    expect(css).toContain("--astilba-durations-modal-open");
+    expect(css).toContain("--astilba-durations-modal-close");
+    expect(css).toContain("--astilba-colors-surface-scrim");
     expect(css).toContain(".astilba-field-root");
     expect(css).toContain(".astilba-field-label");
     expect(css).toContain(".astilba-field-description");

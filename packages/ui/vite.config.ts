@@ -15,6 +15,7 @@ export default defineConfig({
         "@base-ui/react/button",
         "@base-ui/react/collapsible",
         "@base-ui/react/csp-provider",
+        "@base-ui/react/dialog",
         "@base-ui/react/direction-provider",
         "@base-ui/react/menu",
         "@base-ui/react/scroll-area",

@@ -1,0 +1,91 @@
+@layer astilba.recipes {
+  .astilba-dialog-backdrop {
+    position: fixed;
+    z-index: var(--astilba-dialog-z-index, 1000);
+    inset: 0;
+    background: var(--astilba-colors-surface-scrim);
+    opacity: 1;
+    transition-duration: var(--astilba-durations-modal-open);
+    transition-property: opacity;
+    transition-timing-function: var(--astilba-easings-out-quint);
+  }
+
+  .astilba-dialog-backdrop:is([data-starting-style], [data-ending-style]) {
+    opacity: 0;
+  }
+
+  .astilba-dialog-backdrop[data-ending-style] {
+    transition-duration: var(--astilba-durations-modal-close);
+  }
+
+  .astilba-dialog-viewport {
+    position: fixed;
+    z-index: var(--astilba-dialog-z-index, 1000);
+    inset: 0;
+    display: grid;
+    box-sizing: border-box;
+    padding: 1rem;
+    place-items: center;
+  }
+
+  .astilba-dialog-popup {
+    box-sizing: border-box;
+    inline-size: min(32rem, 100%);
+    max-block-size: 100%;
+    overflow-block: auto;
+    border: 0;
+    border-radius: 0;
+    padding: var(--astilba-spacing-elevated-inset);
+    background: var(--astilba-colors-surface-elevated);
+    box-shadow: var(--astilba-shadows-elevated);
+    color: var(--astilba-colors-ink-default);
+    font-family: var(--astilba-fonts-body);
+    outline: 0;
+    opacity: 1;
+    transform: scale(1);
+    transition-duration: var(--astilba-durations-modal-open);
+    transition-property: opacity, transform;
+    transition-timing-function: var(--astilba-easings-out-quint);
+  }
+
+  .astilba-dialog-popup[data-starting-style] {
+    opacity: 0;
+    transform: scale(0.98);
+  }
+
+  .astilba-dialog-popup[data-ending-style] {
+    opacity: 0;
+    transform: scale(0.99);
+    transition-duration: var(--astilba-durations-modal-close);
+  }
+
+  .astilba-dialog-title {
+    margin: 0;
+    color: var(--astilba-colors-ink-strong);
+    font-family: var(--astilba-fonts-heading);
+    font-size: 1rem;
+    font-weight: var(--astilba-font-weights-medium);
+    line-height: 1.25;
+  }
+
+  .astilba-dialog-description {
+    margin-block: 0.5rem 0;
+    margin-inline: 0;
+    color: var(--astilba-colors-ink-muted);
+    font-size: 0.875rem;
+    line-height: 1.5;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .astilba-dialog-backdrop,
+    .astilba-dialog-popup {
+      transition: none;
+    }
+  }
+
+  @media (forced-colors: active) {
+    .astilba-dialog-popup {
+      outline: 1px solid CanvasText;
+    }
+  }
+}

@@ -329,6 +329,62 @@ test("renders the menu surface in both themes", async ({ page }) => {
   await expect(menu).toHaveScreenshot("menu-light.png");
 });
 
+test("preserves dialog labelling, focus, dismissal, and motion", async ({
+  page,
+}) => {
+  await openShowcase(page, "/dialogs/");
+
+  const trigger = page.getByRole("button", { name: "Review deployment" });
+  await trigger.click();
+  const dialog = page.getByRole("dialog", {
+    name: "Deploy the verified artifact?",
+  });
+  await expect(dialog).toBeVisible();
+  await expect(dialog).toHaveAccessibleDescription(
+    "The release replaces the current production build."
+  );
+  await expect(dialog).toHaveCSS("border-radius", "0px");
+  await expect(dialog).toHaveCSS("transition-duration", "0.25s");
+  await expect(dialog).toHaveCSS("padding", "16px");
+  await expect(page.locator(".astilba-dialog-backdrop")).toBeVisible();
+  await expect(page.locator(".showcase-header")).toHaveAttribute(
+    "aria-hidden",
+    "true"
+  );
+
+  const cancel = dialog.getByRole("button", { name: "Cancel" });
+  await expect(cancel).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(dialog.getByRole("button", { name: "Deploy" })).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(cancel).toBeFocused();
+
+  await page.keyboard.press("Escape");
+  await expect(dialog).toBeHidden();
+  await expect(trigger).toBeFocused();
+  await expect(page.getByText("No decision recorded")).toBeVisible();
+
+  await trigger.click();
+  await dialog.getByRole("button", { name: "Deploy" }).click();
+  await expect(dialog).toBeHidden();
+  await expect(page.getByText("Deployment confirmed")).toBeVisible();
+  await expect(trigger).toBeFocused();
+});
+
+test("removes dialog motion when reduced motion is requested", async ({
+  page,
+}) => {
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await openShowcase(page, "/dialogs/");
+
+  await page.getByRole("button", { name: "Review deployment" }).click();
+  await expect(page.getByRole("dialog")).toHaveCSS("transition-duration", "0s");
+  await expect(page.locator(".astilba-dialog-backdrop")).toHaveCSS(
+    "transition-duration",
+    "0s"
+  );
+});
+
 test("preserves collapsible semantics, focus, and motion", async ({ page }) => {
   await openShowcase(page, "/disclosures/");
 
@@ -646,6 +702,14 @@ test("has no detectable accessibility violations in either theme", async ({
   const openDisclosureResults = await analyzeWcag(page);
   expect(openDisclosureResults.violations).toEqual([]);
 
+  await openShowcase(page, "/dialogs/");
+  await page.getByRole("button", { name: "Review deployment" }).click();
+  await page.waitForTimeout(300);
+  const darkDialogResults = await analyzeOpenMenuWcag(page);
+  expect(darkDialogResults.violations).toEqual([]);
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+
   await openShowcase(page, "/actions/");
   await page.getByRole("button", { name: "Use light theme" }).first().click();
   await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
@@ -662,6 +726,13 @@ test("has no detectable accessibility violations in either theme", async ({
   await page.waitForTimeout(300);
   const lightMenuResults = await analyzeOpenMenuWcag(page);
   expect(lightMenuResults.violations).toEqual([]);
+  await page.keyboard.press("Escape");
+
+  await openShowcase(page, "/dialogs/");
+  await page.getByRole("button", { name: "Review deployment" }).click();
+  await page.waitForTimeout(300);
+  const lightDialogResults = await analyzeOpenMenuWcag(page);
+  expect(lightDialogResults.violations).toEqual([]);
 });
 
 test("keeps the showcase within a narrow viewport", async ({ page }) => {
@@ -682,6 +753,17 @@ test("keeps the showcase within a narrow viewport", async ({ page }) => {
   expect((menuBounds?.x ?? 0) + (menuBounds?.width ?? 0)).toBeLessThanOrEqual(
     320
   );
+
+  await page.keyboard.press("Escape");
+  await openShowcase(page, "/dialogs/");
+  await page.getByRole("button", { name: "Review deployment" }).click();
+  const dialogBounds = await page.getByRole("dialog").boundingBox();
+  expect(dialogBounds).not.toBeNull();
+  expect(dialogBounds?.x ?? -1).toBeGreaterThanOrEqual(0);
+  expect(
+    (dialogBounds?.x ?? 0) + (dialogBounds?.width ?? 0)
+  ).toBeLessThanOrEqual(320);
+  await page.keyboard.press("Escape");
 
   await openShowcase(page, "/");
   const brandDimensions = await page.evaluate(() => ({

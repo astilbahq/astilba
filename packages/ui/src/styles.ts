@@ -2,6 +2,14 @@ export const collapsibleStyles = {
   panel: "astilba-collapsible-panel",
 } as const;
 
+export const dialogStyles = {
+  backdrop: "astilba-dialog-backdrop",
+  description: "astilba-dialog-description",
+  popup: "astilba-dialog-popup",
+  title: "astilba-dialog-title",
+  viewport: "astilba-dialog-viewport",
+} as const;
+
 export const fieldStyles = {
   description: "astilba-field-description",
   error: "astilba-field-error",
