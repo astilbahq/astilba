@@ -12,4 +12,4 @@ The required contexts cover UI runtime/browser checks, Docs/apex verification, b
 
 Codex and CodeRabbit review policy remains risk- and availability-aware rather than a permanently required bot status. Dependency-bot PRs are not signed off merely by a green CI board. Assess supported peer ranges and shared toolchain coherence before merging.
 
-Existing repositories, publisher identities, protected production environments and deployment routes are unchanged. The monorepo has no active publisher or production environment. See [development cutover](architecture/development-cutover.md).
+Existing repositories, live npm publisher identities, protected production environments and deployment routes are unchanged. Env's workflow is installed but disabled by the absent `ENV_PUBLISHER_ENABLED` variable; UI remains an inactive template. Protected `npm-env` controls and immutable `env/v*` tag rules must be configured and read back before first-release approval. The monorepo has no enabled publisher or production environment. See [Publisher cutover](publisher-cutover.md) and [development cutover](architecture/development-cutover.md).

@@ -1,9 +1,10 @@
 {
-  "phase": "prepared-not-activated",
+  "phase": "publishing-disabled",
   "repository": "astilbahq/astilba",
   "runtime": { "node": "24.18.1", "npm": "11.16.0", "pnpm": "11.17.0" },
   "products": {
     "env": {
+      "phase": "workflow-installed-disabled",
       "tagPrefix": "env/v",
       "workflow": "release-env.yml",
       "environment": "npm-env",
@@ -11,6 +12,7 @@
       "packages": [{ "name": "@astilba/env", "directory": "packages/env" }]
     },
     "ui": {
+      "phase": "prepared-not-activated",
       "tagPrefix": "ui/v",
       "workflow": "release-ui.yml",
       "environment": "npm-ui",

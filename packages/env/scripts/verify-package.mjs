@@ -73,11 +73,12 @@ const expectedExports = {
   },
 };
 const expectedBugs = {
-  url: "https://github.com/astilbahq/env/issues",
+  url: "https://github.com/astilbahq/astilba/issues",
 };
 const expectedRepository = {
+  directory: "packages/env",
   type: "git",
-  url: "git+https://github.com/astilbahq/env.git",
+  url: "git+https://github.com/astilbahq/astilba.git",
 };
 const expectedPublishConfig = {
   access: "public",
@@ -161,7 +162,8 @@ if (
   packageJson.version !== "0.3.0" ||
   Object.hasOwn(packageJson, "private") ||
   packageJson.license !== "MIT" ||
-  packageJson.homepage !== "https://github.com/astilbahq/env#readme" ||
+  packageJson.homepage !==
+    "https://github.com/astilbahq/astilba/tree/main/packages/env#readme" ||
   !isDeepStrictEqual(packageJson.bugs, expectedBugs) ||
   !isDeepStrictEqual(packageJson.repository, expectedRepository) ||
   packageJson.funding !== "https://github.com/sponsors/astilbahq" ||
