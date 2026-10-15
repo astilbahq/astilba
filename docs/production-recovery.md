@@ -1,5 +1,7 @@
 # Protected production recovery preparation
 
+**Parked:** offline recovery, image remediation and off-machine backups are outside the current monorepo cutover. Their vendor-release monitor is paused. Keep this preparation and its retained evidence; do not provision or activate it. Use the [minimal deployment cutover](minimal-deployment-cutover.md) instead. Requirements below apply only if this separate project is explicitly resumed.
+
 This is an **inactive, unprovisioned recovery path**, not permission to deploy. `tooling/deployment/workflows/recover-web.yml` remains outside `.github/workflows`. Its policy rejects execution: all acceptance gates are false and the offline runtime identity is unset. Sole-maintainer self-approval is explicitly approved; manual approval remains required and administrator bypass stays disabled. No environment, credentials, AWS resources or backup uploads are created by this preparation. Publishing remains disabled, old repositories remain unarchived, and Cache #94 remains excluded.
 
 ## Recovery contract
