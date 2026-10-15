@@ -1,0 +1,188 @@
+{
+  "version": 1,
+  "repository": "astilbahq/docs",
+  "sourceRevision": "69101c58b1494689a3ec48ebd3e059f5d33ce729",
+  "importCommit": "a257d04d3e32db5025bac2f8aaa1ed0d0470f09a",
+  "pages": {
+    "src/content/docs/agents/llms-txt.md": {
+      "contentSha256": "edd0751c612422c4ffd73516194b8e5356994e3e3f603ce71c0fee6ee303b0c7",
+      "lastModified": "2026-10-08T14:22:28.000Z",
+      "sourceCommit": "69101c58b1494689a3ec48ebd3e059f5d33ce729"
+    },
+    "src/content/docs/agents/mcp.md": {
+      "contentSha256": "2c3efe79dec9517f3d66015fc9da24196a2cc21df79f6e09efd07dcb3a905a4f",
+      "lastModified": "2026-10-08T14:22:28.000Z",
+      "sourceCommit": "69101c58b1494689a3ec48ebd3e059f5d33ce729"
+    },
+    "src/content/docs/cache.md": {
+      "contentSha256": "198157c022f25bb80be72e66c97e3369a57e77c4e6f825e6e3690469a4b570a7",
+      "lastModified": "2026-07-24T22:27:46.000Z",
+      "sourceCommit": "8b70fff456d1f344f443322d3c27e595a935931a"
+    },
+    "src/content/docs/cache/api-reference.md": {
+      "contentSha256": "983afab9832471a1cf9dfc35aa562053184d2514052e811ecbcc19c3f26ae06f",
+      "lastModified": "2026-07-27T16:21:30.000Z",
+      "sourceCommit": "63459d4e89d725e88b32c32b3f2ef2a2903ec46d"
+    },
+    "src/content/docs/cache/api-status.md": {
+      "contentSha256": "0515949986f517b0aef4ae57ed7ef3253883abe90476c0c7c53d2ba58f0c2f5e",
+      "lastModified": "2026-07-27T16:21:30.000Z",
+      "sourceCommit": "63459d4e89d725e88b32c32b3f2ef2a2903ec46d"
+    },
+    "src/content/docs/cache/architecture.md": {
+      "contentSha256": "18c64be052b5d8c154a8b8fcf3f01c340f64fcc0d27eaa63efd2afa3828b6221",
+      "lastModified": "2026-07-24T22:27:46.000Z",
+      "sourceCommit": "8b70fff456d1f344f443322d3c27e595a935931a"
+    },
+    "src/content/docs/cache/cloudflare-workers.md": {
+      "contentSha256": "4d461fb7a41b86c4f5c214c197025ccbb0ff6cca6ba4f4b7cbb0a6085ef5c3c9",
+      "lastModified": "2026-07-25T17:15:53.000Z",
+      "sourceCommit": "c3a798ddc214ddfd2b22fdee42d49218c6d27cad"
+    },
+    "src/content/docs/cache/consistency-and-resilience.md": {
+      "contentSha256": "86657face8c8bf38e8b5e7fd3da38d17adab8693670a72066bc40451af813e29",
+      "lastModified": "2026-07-27T16:21:30.000Z",
+      "sourceCommit": "63459d4e89d725e88b32c32b3f2ef2a2903ec46d"
+    },
+    "src/content/docs/cache/core-concepts.md": {
+      "contentSha256": "cf66a2eccd35e938902b965dcc1b1eb6a006b59c6885497977292303784cc93f",
+      "lastModified": "2026-07-27T16:21:30.000Z",
+      "sourceCommit": "63459d4e89d725e88b32c32b3f2ef2a2903ec46d"
+    },
+    "src/content/docs/cache/drivers-and-status.md": {
+      "contentSha256": "60e5802173f155a37ad62e3d47d5bf077461fb37b6ea7d8b1b019bcd1566a7c2",
+      "lastModified": "2026-07-25T17:15:53.000Z",
+      "sourceCommit": "c3a798ddc214ddfd2b22fdee42d49218c6d27cad"
+    },
+    "src/content/docs/cache/how-it-works.md": {
+      "contentSha256": "b78fc92076129c26cf20be779bfbd812d869e340a59ca2ac941577efea423999",
+      "lastModified": "2026-07-27T16:21:30.000Z",
+      "sourceCommit": "63459d4e89d725e88b32c32b3f2ef2a2903ec46d"
+    },
+    "src/content/docs/cache/observability.md": {
+      "contentSha256": "5aaa83613117c8e74d5fd105bf125a6e67338ae874fd778abd834695a3c615e9",
+      "lastModified": "2026-07-27T16:21:30.000Z",
+      "sourceCommit": "63459d4e89d725e88b32c32b3f2ef2a2903ec46d"
+    },
+    "src/content/docs/cache/overview.md": {
+      "contentSha256": "2302fd6b7bad54f363ed218b665237d52eda4e542c3123a084e1a1cf8493d120",
+      "lastModified": "2026-07-27T16:21:30.000Z",
+      "sourceCommit": "63459d4e89d725e88b32c32b3f2ef2a2903ec46d"
+    },
+    "src/content/docs/cache/quickstart.md": {
+      "contentSha256": "674d3a68c1a09bcd7cf759040f0ec42d33961b1dbe70f4aa44c92d46be33de0a",
+      "lastModified": "2026-07-24T22:27:46.000Z",
+      "sourceCommit": "8b70fff456d1f344f443322d3c27e595a935931a"
+    },
+    "src/content/docs/cache/react-and-server-apps.md": {
+      "contentSha256": "c8301716b8bc800c0450112fc6fde45d62d2bff8e62b900797fe33cdd0663d8d",
+      "lastModified": "2026-07-17T15:42:58.000Z",
+      "sourceCommit": "4318662441b0b0302cd90d6d71c50e0d14c75442"
+    },
+    "src/content/docs/cache/reading-and-filling.md": {
+      "contentSha256": "a5aaf74685d5b1ff8e328e5301c46c6d4d542693540fcb88eb898778b54e4d06",
+      "lastModified": "2026-07-27T16:21:30.000Z",
+      "sourceCommit": "63459d4e89d725e88b32c32b3f2ef2a2903ec46d"
+    },
+    "src/content/docs/cache/response-caching.md": {
+      "contentSha256": "e421eb5de8b78239b61c125ad594f1173021146a800faf32fe68959d13e026e9",
+      "lastModified": "2026-07-17T14:11:13.000Z",
+      "sourceCommit": "345d43e6032fa79487c7984cab56fb7eff4ebef2"
+    },
+    "src/content/docs/cache/scopes-and-privacy.md": {
+      "contentSha256": "07cea911ba33732a40552eb167567dbaacc139c3afaba0b58c3105be0b6696e5",
+      "lastModified": "2026-07-17T15:42:58.000Z",
+      "sourceCommit": "4318662441b0b0302cd90d6d71c50e0d14c75442"
+    },
+    "src/content/docs/cache/tags-and-invalidation.md": {
+      "contentSha256": "cea3a434a85d8d10a75dff0f3abb33364419c3bd49c4d72b46e8d2e74dfca3d7",
+      "lastModified": "2026-07-17T15:42:58.000Z",
+      "sourceCommit": "4318662441b0b0302cd90d6d71c50e0d14c75442"
+    },
+    "src/content/docs/env.md": {
+      "contentSha256": "530baffd19ef9d3e95267fc08632cfde897987808157aa219d84e0a51182bb3c",
+      "lastModified": "2026-08-11T11:08:32.000Z",
+      "sourceCommit": "0a14681acaa76ca98d30bb182330d4603bb256e4"
+    },
+    "src/content/docs/env/browser-delivery.md": {
+      "contentSha256": "4780f556fc6ba31e9ec4f2c4d7b9a7f721b030427512f8ab5d7db9e269bb6f52",
+      "lastModified": "2026-08-10T10:49:10.000Z",
+      "sourceCommit": "4e339e119bf3139fb4ca85f03b5d0caf8c56d08c"
+    },
+    "src/content/docs/env/browser-runtime.md": {
+      "contentSha256": "2e92f6665862ce480dd587974a729a982b7de0cbce5843ecc28b76226a859715",
+      "lastModified": "2026-08-03T09:31:20.000Z",
+      "sourceCommit": "2a13452f32ada00bde3bf078a5f2ad664a83b6ec"
+    },
+    "src/content/docs/env/cli-reference.md": {
+      "contentSha256": "69296785982b7060da9372b81a941eea9a0c3314b8e1a93dd1e81dded799d57a",
+      "lastModified": "2026-08-11T11:08:32.000Z",
+      "sourceCommit": "0a14681acaa76ca98d30bb182330d4603bb256e4"
+    },
+    "src/content/docs/env/cloudflare-workers.md": {
+      "contentSha256": "7b87e5e25f5304cc693d879bc93e7a22d1f9fb523179ef1f195e756798b10d48",
+      "lastModified": "2026-08-11T11:08:32.000Z",
+      "sourceCommit": "0a14681acaa76ca98d30bb182330d4603bb256e4"
+    },
+    "src/content/docs/env/declaration-reference.md": {
+      "contentSha256": "3b9ea842d66c0374fb1f3153d7d0231659c44e10207b598b036e86036dcca1a2",
+      "lastModified": "2026-08-11T11:08:32.000Z",
+      "sourceCommit": "0a14681acaa76ca98d30bb182330d4603bb256e4"
+    },
+    "src/content/docs/env/inventory-and-drift.md": {
+      "contentSha256": "45bc80da2b344dba0f356f2f56649ce5c1b9248f42e7dca32269b55ef39d70c1",
+      "lastModified": "2026-08-11T11:08:32.000Z",
+      "sourceCommit": "0a14681acaa76ca98d30bb182330d4603bb256e4"
+    },
+    "src/content/docs/env/lifecycles-and-projections.md": {
+      "contentSha256": "b3a81d417faeb1ef13311880775db0ff160a0e1a8285e8065eabd51de62b013f",
+      "lastModified": "2026-08-11T11:08:32.000Z",
+      "sourceCommit": "0a14681acaa76ca98d30bb182330d4603bb256e4"
+    },
+    "src/content/docs/env/migrate-from-next-dynamic-env.md": {
+      "contentSha256": "770e23cebdec6f72b8d0e492e55af9f1ca97d213e089f751a433db99648ca13a",
+      "lastModified": "2026-08-11T11:08:32.000Z",
+      "sourceCommit": "0a14681acaa76ca98d30bb182330d4603bb256e4"
+    },
+    "src/content/docs/env/nextjs.md": {
+      "contentSha256": "928b2250fe7dfb683b7b638bf1b784c1d06dfa92856c2bbe0ee8cc60fd143e5c",
+      "lastModified": "2026-08-11T11:08:32.000Z",
+      "sourceCommit": "0a14681acaa76ca98d30bb182330d4603bb256e4"
+    },
+    "src/content/docs/env/nodejs.md": {
+      "contentSha256": "b0981dd17155303f0f6cb4bb9cd28e572cfc5e95652fc552b470a436c6b00f47",
+      "lastModified": "2026-08-11T11:08:32.000Z",
+      "sourceCommit": "0a14681acaa76ca98d30bb182330d4603bb256e4"
+    },
+    "src/content/docs/env/overview.md": {
+      "contentSha256": "3902fe591486c0f8a4f86f6037556864ad66b56c2597c26f39f4043a6c7f57ac",
+      "lastModified": "2026-08-11T11:08:32.000Z",
+      "sourceCommit": "0a14681acaa76ca98d30bb182330d4603bb256e4"
+    },
+    "src/content/docs/env/quickstart.md": {
+      "contentSha256": "9f599ce8490b41105d24099416ac5a44f04f83f1aefccfff7e8c92737ac86524",
+      "lastModified": "2026-08-11T11:08:32.000Z",
+      "sourceCommit": "0a14681acaa76ca98d30bb182330d4603bb256e4"
+    },
+    "src/content/docs/env/release-and-support.md": {
+      "contentSha256": "c8e2ad812c1388c1e52aadf10348f2d5b03f452cc0c8ed84d6e7e0ac24ba5fb8",
+      "lastModified": "2026-08-11T11:08:32.000Z",
+      "sourceCommit": "0a14681acaa76ca98d30bb182330d4603bb256e4"
+    },
+    "src/content/docs/env/validation-and-standard-schema.md": {
+      "contentSha256": "e660b3c65e35580692822a6fb4b6c01f0af1432dbe8ef6cce5933794b99915e8",
+      "lastModified": "2026-08-11T11:08:32.000Z",
+      "sourceCommit": "0a14681acaa76ca98d30bb182330d4603bb256e4"
+    },
+    "src/content/docs/env/vite.md": {
+      "contentSha256": "10f7c6d38a7e4ece61f6e565d9f234d0853a68e3d32554023784005f1a87319f",
+      "lastModified": "2026-08-11T11:08:32.000Z",
+      "sourceCommit": "0a14681acaa76ca98d30bb182330d4603bb256e4"
+    },
+    "src/content/docs/index.md": {
+      "contentSha256": "ddbe97e410bc3e6e94e105ac8d9b43526f6859ea9ee6e5bebe521165c8f1578d",
+      "lastModified": "2026-10-08T14:22:28.000Z",
+      "sourceCommit": "69101c58b1494689a3ec48ebd3e059f5d33ce729"
+    }
+  }
+}
