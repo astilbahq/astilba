@@ -118,7 +118,7 @@ jobs:
           for artifact_id in "$DOCS_ID" "$SITE_ID" "$SHOWCASE_ID"; do
             [[ "$artifact_id" =~ ^[0-9]+$ ]] || exit 1
           done
-          [[ "$DOCS_ID" != "$SITE_ID" && "$SITE_ID" != "$SHOWCASE_ID" && "$DOCS_ID" != "$SHOWCASE_ID" ]]
+          [[ "$DOCS_ID" != "$SITE_ID" && "$SITE_ID" != "$SHOWCASE_ID" && "$DOCS_ID" != "$SHOWCASE_ID" ]] || exit 1
           for asset in apps/docs/dist/_headers apps/docs/dist/docs/index.html apps/docs/dist/docs/env/overview/index.html apps/docs/dist/docs/env/overview.md apps/docs/dist/docs/_llms-txt/astilba-env.txt apps/docs/dist/docs/.well-known/agent-skills/astilba-env-docs/SKILL.md apps/docs/dist/docs/sitemap.xml apps/site/dist/index.html apps/site/dist/env/index.html apps/site/dist/cache/index.html apps/site/dist/llms.txt apps/site/dist/.well-known/agent-skills/index.json apps/site/dist/_headers apps/site/dist/sitemap-site.xml apps/site/dist/sitemap.xml apps/ui-showcase/dist/index.html apps/ui-showcase/dist/_headers apps/ui-showcase/dist/robots.txt; do
             test -f "$asset"
           done

@@ -1,7 +1,15 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readdir, readFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  rm,
+  writeFile,
+} from "node:fs/promises";
+import os from "node:os";
 import nodePath from "node:path";
 import { describe, it } from "node:test";
 
@@ -164,6 +172,83 @@ describe("inactive deployment preparation", () => {
       );
       assert.equal(download.with.path, paths[index]);
       assert.equal(download.with["digest-mismatch"], "error");
+    }
+  });
+
+  it("executes the real artifact guard and rejects missing, duplicate or malformed inputs", async () => {
+    const directory = await mkdtemp(
+      resolve(os.tmpdir(), "astilba-deployment-")
+    );
+    const files = [
+      "apps/docs/dist/_headers",
+      "apps/docs/dist/docs/index.html",
+      "apps/docs/dist/docs/env/overview/index.html",
+      "apps/docs/dist/docs/env/overview.md",
+      "apps/docs/dist/docs/_llms-txt/astilba-env.txt",
+      "apps/docs/dist/docs/.well-known/agent-skills/astilba-env-docs/SKILL.md",
+      "apps/docs/dist/docs/sitemap.xml",
+      "apps/site/dist/index.html",
+      "apps/site/dist/env/index.html",
+      "apps/site/dist/cache/index.html",
+      "apps/site/dist/llms.txt",
+      "apps/site/dist/.well-known/agent-skills/index.json",
+      "apps/site/dist/_headers",
+      "apps/site/dist/sitemap-site.xml",
+      "apps/site/dist/sitemap.xml",
+      "apps/ui-showcase/dist/index.html",
+      "apps/ui-showcase/dist/_headers",
+      "apps/ui-showcase/dist/robots.txt",
+      "apps/ui-showcase/dist/assets/example.js",
+      "apps/ui-showcase/dist/assets/example.css",
+    ];
+    const { run } = template.jobs.deploy.steps.find(
+      (step) =>
+        step.name === "Require exact artifact identities and complete assets"
+    );
+    const environment = {
+      DOCS_DIGEST: "a".repeat(64),
+      DOCS_ID: "1",
+      PATH: process.env.PATH,
+      SHOWCASE_DIGEST: "b".repeat(64),
+      SHOWCASE_ID: "2",
+      SITE_DIGEST: "c".repeat(64),
+      SITE_ID: "3",
+    };
+    const execute = (overrides = {}) =>
+      spawnSync(
+        "bash",
+        ["--noprofile", "--norc", "-e", "-u", "-o", "pipefail", "-c", run],
+        {
+          cwd: directory,
+          encoding: "utf-8",
+          env: { ...environment, ...overrides },
+        }
+      );
+    try {
+      await Promise.all(
+        files.map(async (file) => {
+          const path = resolve(directory, file);
+          await mkdir(nodePath.dirname(path), { recursive: true });
+          await writeFile(path, "fixture\n");
+        })
+      );
+      assert.equal(execute().status, 0);
+      for (const overrides of [
+        { DOCS_DIGEST: "" },
+        { SITE_DIGEST: "invalid" },
+        { SHOWCASE_DIGEST: "f".repeat(63) },
+        { DOCS_ID: "" },
+        { SITE_ID: "not-an-id" },
+        { DOCS_ID: "3" },
+        { SHOWCASE_ID: "1" },
+        { SHOWCASE_ID: "3" },
+      ]) {
+        assert.equal(execute(overrides).status, 1);
+      }
+      await rm(resolve(directory, "apps/docs/dist/_headers"));
+      assert.equal(execute().status, 1);
+    } finally {
+      await rm(directory, { force: true, recursive: true });
     }
   });
 
