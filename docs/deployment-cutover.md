@@ -29,6 +29,8 @@ The sequence is apex → apex smoke → Docs → complete web smoke → showcase
 
 ## Repository retirement order
 
+The separate [protected production recovery preparation](production-recovery.md) defines a current-head, exact-baseline restoration path and off-machine backup recommendation. Its template is also uninstalled and inactive; backup/runtime provisioning, protected approval and an actual hosted-contract rehearsal remain prerequisites. It changes no forward gate or deployment authority.
+
 Prepare legacy PR dispositions now; do not merge, close or transfer them in this change. After deployment handover and recovery acceptance, retire unnecessary bot schedules and old deployment credentials under separate approval, refresh migration notices and archive only approved repositories. Preserve historical tags, releases and provenance links. Env can be considered independently after its backlog disposition; Handbook remains a private read-only authority reference. Keep Cache out of the first archive wave while #94 is excluded. See [legacy PR dispositions](legacy-pr-disposition.md).
 
 ## Completed prerequisites

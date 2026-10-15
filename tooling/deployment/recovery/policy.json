@@ -1,0 +1,28 @@
+{
+  "phase": "prepared-inactive",
+  "repository": "astilbahq/astilba",
+  "environment": "production-web",
+  "enableVariable": "WEB_RECOVERY_ENABLED",
+  "reviewerId": 25528100,
+  "allowSelfApproval": true,
+  "oidcSubjectPrefix": "repo:astilbahq@228134288/astilba@1416178684",
+  "acceptance": {
+    "protectedEnvironmentVerified": false,
+    "durableBackupAndRuntimeVerified": false,
+    "maintainerActivationApproval": false
+  },
+  "capsule": {
+    "id": "baseline-2026-10-15",
+    "sha256": "b2e8e5ba26a5ae70a34a13bb1144ea3d2304fa0f47884eee2d4209f2d86639be",
+    "bytes": 16291513,
+    "manifestSha256": "6a21470fdaae81a31842be48e967c40187822104f46cede93432dba468c31395"
+  },
+  "runtime": {
+    "sha256": null,
+    "bytes": null,
+    "imageId": null,
+    "node": "v24.18.1",
+    "wrangler": "4.114.0",
+    "platform": "linux/amd64"
+  }
+}
