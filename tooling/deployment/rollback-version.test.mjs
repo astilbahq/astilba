@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { mkdtemp, rm, symlink } from "node:fs/promises";
+import os from "node:os";
+import nodePath from "node:path";
 import { describe, it } from "node:test";
+import { fileURLToPath } from "node:url";
 
 import { rollbackVersion } from "./rollback-version.mjs";
 
@@ -93,6 +97,43 @@ describe("minimal provider-version rollback", () => {
     );
     assert.equal(result.status, 1);
     assert.match(result.stderr, /Deployment preparation is inactive/u);
+  });
+
+  it("can be imported without running the CLI or requiring activation", () => {
+    const module = new URL("rollback-version.mjs", import.meta.url).href;
+    const result = spawnSync(
+      process.execPath,
+      [
+        "--input-type=module",
+        "--eval",
+        `await import(${JSON.stringify(module)})`,
+      ],
+      { encoding: "utf-8", env: {} }
+    );
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, "");
+    assert.equal(result.stderr, "");
+  });
+
+  it("also blocks direct CLI execution through a symlink", async () => {
+    const directory = await mkdtemp(
+      nodePath.join(os.tmpdir(), "astilba-rollback-cli-")
+    );
+    const entry = nodePath.join(directory, "rollback.mjs");
+    try {
+      await symlink(
+        fileURLToPath(new URL("rollback-version.mjs", import.meta.url)),
+        entry
+      );
+      const result = spawnSync(process.execPath, [entry], {
+        encoding: "utf-8",
+        env: {},
+      });
+      assert.equal(result.status, 1);
+      assert.match(result.stderr, /Deployment preparation is inactive/u);
+    } finally {
+      await rm(directory, { force: true, recursive: true });
+    }
   });
 
   it("restores exactly one specified version at 100% and reads it back", async () => {

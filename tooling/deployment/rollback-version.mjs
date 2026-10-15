@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { realpathSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 
 import { requireActivation } from "./activation.mjs";
@@ -79,7 +80,10 @@ export const rollbackVersion = async (
   return restored.id;
 };
 
-if (import.meta.main) {
+if (
+  process.argv[1] !== undefined &&
+  realpathSync(process.argv[1]) === import.meta.filename
+) {
   requireActivation(
     JSON.parse(
       await readFile(new URL("cutover.json", import.meta.url), "utf-8")
