@@ -21,7 +21,14 @@ import {
   CONTENT_SECURITY_POLICY_ASSET_PATH,
   GLOBAL_SECURITY_HEADERS,
 } from "../src/docs/security.ts";
-import { createDocsSitemapLastModified } from "../src/docs/sitemap.ts";
+import {
+  createDocsSitemapLastModified,
+  docsSitemapSources,
+} from "../src/docs/sitemap.ts";
+import {
+  getDocsOriginalSourceUrl,
+  getDocsSourceUrl,
+} from "../src/docs/source.ts";
 import { DOCS_BASE_PATH, docsUrl, withDocsBase } from "../src/docs/urls.ts";
 import {
   createContentSecurityPolicy,
@@ -664,6 +671,46 @@ for (const { lastmod, page: sitemapPage } of sitemapEntries) {
     alternateUrl.pathname.replace(/^\//, "")
   );
   const markdownContent = await readArtifact(markdownArtifact);
+  const publicSource = docsSitemapSources.find(
+    ({ canonicalPath }) => canonicalPath === sitemapPage.pathname
+  );
+  if (!publicSource) {
+    throw new Error(
+      `[agent-artifacts] Unmapped source for ${sitemapPage.pathname}.`
+    );
+  }
+  const entryId = publicSource.sourcePath
+    .replace(/^src\/content\/docs\//u, "")
+    .replace(/\.mdx?$/u, "");
+  assertExact(
+    markdownArtifact,
+    "current source URL",
+    getFrontmatterString(markdownContent, "source", markdownArtifact, {
+      required: true,
+    }),
+    getDocsSourceUrl(publicSource.sourcePath, entryId)
+  );
+  const originalSource = getDocsOriginalSourceUrl(
+    publicSource.sourcePath,
+    entryId
+  );
+  assertExact(
+    markdownArtifact,
+    "original source attribution",
+    getFrontmatterString(markdownContent, "originalSource", markdownArtifact),
+    originalSource
+  );
+  if (originalSource) {
+    assertIncludes(
+      htmlArtifact,
+      pageHtml,
+      `<meta name="dcterms.source" content="${originalSource}">`
+    );
+  } else if (pageHtml.includes('name="dcterms.source"')) {
+    throw new Error(
+      `[agent-artifacts] Fabricated original source attribution in ${htmlArtifact}.`
+    );
+  }
   const canonicalUrl = getFrontmatterString(
     markdownContent,
     "canonical",
@@ -961,7 +1008,7 @@ for (const field of [
 assertIncludes(
   overviewArtifact,
   markdown,
-  'source: "https://github.com/astilbahq/docs/blob/main/src/content/docs/cache/overview.md"'
+  'source: "https://github.com/astilbahq/astilba/blob/main/apps/docs/src/content/docs/cache/overview.md"'
 );
 
 const envOverviewArtifact = docsArtifact("/env/overview.md");
@@ -975,7 +1022,7 @@ assertIncludes(envOverviewArtifact, envOverviewMarkdown, "@astilba/env");
 assertIncludes(
   envOverviewArtifact,
   envOverviewMarkdown,
-  'source: "https://github.com/astilbahq/docs/blob/main/src/content/docs/env/overview.md"'
+  'source: "https://github.com/astilbahq/astilba/blob/main/apps/docs/src/content/docs/env/overview.md"'
 );
 
 for (const field of [

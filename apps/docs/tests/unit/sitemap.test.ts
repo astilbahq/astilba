@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 
 import { describe, expect, it, vi } from "vitest";
 
+import { runContentGit } from "../../src/docs/content-history";
 import {
   addDocsSitemapLastModified,
   createDocsSitemapLastModified,
@@ -13,7 +14,18 @@ import {
 const COMPLETE_HISTORY_DATE = "2026-07-14T12:34:56+01:00";
 
 const createGitRunner = (date = COMPLETE_HISTORY_DATE): GitRunner =>
-  vi.fn((arguments_) => (arguments_[0] === "rev-parse" ? "false" : date));
+  vi.fn((arguments_, cwd) => {
+    if (arguments_[0] === "log") {
+      if (!date) {
+        return "";
+      }
+      return `${"1".repeat(40)}\0${date}\0\n:100644 100644 ${"0".repeat(40)} ${"2".repeat(40)} M\0${arguments_.at(-1)}\0`;
+    }
+    if (arguments_[0] === "hash-object") {
+      return "2".repeat(40);
+    }
+    return runContentGit(arguments_, cwd);
+  });
 
 describe("documentation sitemap", () => {
   it("maps every public URL to one existing source file", () => {
@@ -62,9 +74,15 @@ describe("documentation sitemap", () => {
     expect(runGit).toHaveBeenCalledWith(
       [
         "log",
-        "-1",
+        "--first-parent",
         "--follow",
-        "--format=%cI",
+        "--find-renames=50%",
+        "--diff-merges=first-parent",
+        "--format=%H%x00%cI",
+        "--raw",
+        "--no-abbrev",
+        "-z",
+        "HEAD",
         "--",
         "src/content/docs/cache/overview.md",
       ],

@@ -3,7 +3,7 @@ import { getCollection } from "astro:content";
 
 import { docsProducts, findDocsContext } from "../docs/catalog";
 import { findSiteDocsPage } from "../docs/site-pages";
-import { getDocsSourceUrl } from "../docs/source";
+import { getDocsOriginalSourceUrl, getDocsSourceUrl } from "../docs/source";
 import { withDocsBase } from "../docs/urls";
 
 interface MarkdownPageProps {
@@ -15,6 +15,7 @@ interface MarkdownPageProps {
   lifecycle?: string;
   product?: string;
   productId?: string;
+  originalSource?: string;
   source: string;
   title: string;
 }
@@ -47,6 +48,9 @@ const createMarkdown = (
     `canonical: ${yamlString(canonical)}`,
     ...productFrontmatter,
     `source: ${yamlString(props.source)}`,
+    ...(props.originalSource
+      ? [`originalSource: ${yamlString(props.originalSource)}`]
+      : []),
     "---",
   ].join("\n");
 
@@ -92,6 +96,7 @@ export const getStaticPaths = (async () => {
             product: product?.label,
             productId: product?.id,
             source: getDocsSourceUrl(entry.filePath, entry.id),
+            originalSource: getDocsOriginalSourceUrl(entry.filePath, entry.id),
             title: entry.data.title,
           } satisfies MarkdownPageProps,
         },
@@ -117,6 +122,7 @@ export const getStaticPaths = (async () => {
           product: context.product.label,
           productId: context.product.id,
           source: getDocsSourceUrl(entry.filePath, entry.id),
+          originalSource: getDocsOriginalSourceUrl(entry.filePath, entry.id),
           title: entry.data.title,
         } satisfies MarkdownPageProps,
       },
