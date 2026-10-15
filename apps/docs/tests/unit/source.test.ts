@@ -23,7 +23,7 @@ describe("documentation source links", () => {
       "src/content/docs/cache/overview.md"
     );
     expect(getDocsSourceUrl(undefined, "cache/overview")).toBe(
-      "https://github.com/astilbahq/docs/blob/main/src/content/docs/cache/overview.md"
+      "https://github.com/astilbahq/astilba/blob/main/apps/docs/src/content/docs/cache/overview.md"
     );
   });
 
@@ -31,5 +31,14 @@ describe("documentation source links", () => {
     expect(
       getDocsSourcePath("/generated/cache/example.mdx", "cache/example")
     ).toBe("src/content/docs/cache/example.mdx");
+  });
+
+  it("encodes path segments without allowing collection ids to escape the source root", () => {
+    expect(getDocsSourceUrl(undefined, "env/a # b")).toBe(
+      "https://github.com/astilbahq/astilba/blob/main/apps/docs/src/content/docs/env/a%20%23%20b.md"
+    );
+    expect(() => getDocsSourceUrl(undefined, "../../private")).toThrow(
+      "Invalid documentation source path"
+    );
   });
 });

@@ -1,6 +1,7 @@
 ---
 import { findDocsContext, getDocumentTitle } from "../docs/catalog";
 import { API_CATALOG_PATH } from "../docs/agent-discovery";
+import { getDocsOriginalSourceUrl } from "../docs/source";
 import { withDocsBase } from "../docs/urls";
 
 const route = Astro.locals.starlightRoute;
@@ -27,6 +28,9 @@ const head = route.head.map((item) => {
 });
 const isDocumentationPage =
   entry.id !== "404" && !entry.id.endsWith("/404");
+const originalSource = isDocumentationPage
+  ? getDocsOriginalSourceUrl(entry.filePath, entry.id)
+  : undefined;
 const baseUrl = Astro.site ?? Astro.url;
 const markdownUrl = isDocumentationPage
   ? new URL(withDocsBase(entry.id ? `/${entry.id}.md` : "/index.md"), baseUrl)
@@ -40,6 +44,7 @@ const apiCatalogUrl = isDocumentationPage && Astro.site
 ---
 
 {head.map(({ tag: Tag, attrs, content }) => <Tag {...attrs} set:html={content} />)}
+{originalSource && <meta name="dcterms.source" content={originalSource} />}
 {
   markdownUrl && (
     <link
