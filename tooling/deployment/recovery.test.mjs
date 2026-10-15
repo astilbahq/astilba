@@ -76,15 +76,19 @@ describe("protected recovery preparation", () => {
     const commands = workflow.jobs.recover.steps
       .map((step) => step.run)
       .filter(Boolean);
+    const reads = commands
+      .flatMap((command) => command.split("\n"))
+      .filter((line) => line.includes("get-object"));
+    assert.equal(reads.length, 2);
     assert.ok(
-      commands
-        .find((command) => command.includes("get-object"))
-        .includes('--version-id "$CAPSULE_VERSION"')
+      reads.some((line) =>
+        line.includes('--key "$CAPSULE_KEY" --version-id "$CAPSULE_VERSION"')
+      )
     );
     assert.ok(
-      commands
-        .find((command) => command.includes("get-object"))
-        .includes('--version-id "$RUNTIME_VERSION"')
+      reads.some((line) =>
+        line.includes('--key "$RUNTIME_KEY" --version-id "$RUNTIME_VERSION"')
+      )
     );
   });
 
