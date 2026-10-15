@@ -223,7 +223,9 @@ test("renders exactly one page-title heading on every page", async ({
   const invalidPages = [];
 
   for (const path of paths) {
-    const html = await (await request.get(path)).text();
+    const response = await request.get(path);
+    expect(response.ok(), path).toBe(true);
+    const html = await response.text();
     const headingCount = html.match(/<h1(?:\s|>)/g)?.length ?? 0;
 
     if (headingCount !== 1) {
@@ -241,7 +243,8 @@ test("keeps every page within a mobile viewport", async ({ page, request }) => {
   await page.setViewportSize({ width: 390, height: 844 });
 
   for (const path of paths) {
-    await page.goto(path);
+    const response = await page.goto(path);
+    expect(response?.ok(), path).toBe(true);
     const overflow = await page.evaluate(
       () => document.documentElement.scrollWidth - window.innerWidth
     );
