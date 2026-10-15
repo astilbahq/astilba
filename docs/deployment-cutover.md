@@ -1,0 +1,36 @@
+# Inactive public web deployment preparation
+
+Production still belongs to `astilbahq/docs` (Docs and apex) and `astilbahq/ui` (showcase). This change installs **no deployment workflow**, creates no environment or credential, and enables no variable. Opening or merging it cannot deploy. Env publishing remains disabled; UI/Tokens publishing is retired. Old repositories remain unarchived and Cache #94 stays excluded.
+
+`tooling/deployment/workflows/deploy-web.yml` is a reviewed candidate outside `.github/workflows`. Actionlint, Zizmor and `pnpm verify:deployment` check it without running it. `cutover.json` records all six acceptance gates as false; `activation.mjs` rejects this checked-in policy even if someone copies the template and sets its enable variable.
+
+## Prepared deployment contract
+
+| App | Verified assets | Existing route | Deployment working directory |
+| --- | --- | --- | --- |
+| Apex | `apps/site/dist` | `astilba.com`; exact `/docs` redirect | `apps/site` |
+| Docs | `apps/docs/dist` | `astilba.com/docs/*` | `apps/docs` |
+| Showcase | `apps/ui-showcase/dist` | `ui.astilba.com` | repository root |
+
+The candidate accepts only manual main-branch dispatches in `astilbahq/astilba` while `WEB_DEPLOYMENTS_ENABLED == 'true'`. Build verification has no production credentials. It fetches complete history, installs the frozen workspace, runs existing UI/web source, browser and dry-run gates, and uploads three separate exact artifacts including hidden discovery files. Current Linux/Windows/runtime/security checks remain independent merge requirements.
+
+The proposed `production-web` environment must require human approval before the deploy job starts. The deploy job rechecks acceptance after approval, downloads by the originating artifact IDs with digest mismatch treated as an error, validates complete assets and digests, and installs with lifecycle scripts disabled. It checks released Env availability and rejects stale main after the approval/install wait. It does not rebuild the static assets or call build-and-deploy package scripts. Credentials are scoped only to each Wrangler invocation.
+
+The sequence is apex → apex smoke → Docs → complete web smoke → showcase → showcase smoke. Existing Worker names, configuration, bindings and route boundaries are byte-preserved. This is not an atomic three-app transaction: a smoke failure stops later steps but does not undo an earlier deploy. A reviewed partial-cutover recovery procedure is mandatory. The monorepo concurrency group serializes its own runs only; it does not coordinate with legacy repositories.
+
+## Required before a separate activation PR
+
+1. **Content dates and source links.** Preserve each imported public page's original last-content-change date and immutable source attribution. Today `apps/docs/src/docs/sitemap.ts` reads snapshot-import Git dates and `source.ts` still links the old mutable main. Full-history checkout alone does not fix this. Build a checked provenance map from the pinned public Docs history; prove content-byte correspondence, define how subsequent monorepo edits advance dates, and test new, edited, renamed and deleted pages. Point current source actions at the monorepo while retaining original attribution. Do not import private Handbook or Cache history. For example, the imported Env overview last changed at public Docs commit `0a14681acaa76ca98d30bb182330d4603bb256e4`, not the October monorepo import.
+2. **Artifacts and routes.** Compare all three candidate outputs with retained production artifacts and live smoke expectations. Enumerate and approve intended differences: monorepo UI source is 0.6.0 whereas the preserved legacy Docs bridge uses exact 0.5.0 bytes. Require unchanged redirect/route ownership, MCP/LLM/Markdown/skills discovery, headers, sitemaps, accessibility and existing screenshot assertions. Do not call the candidate byte-identical without a complete comparison.
+3. **Protected environment and credentials.** Separately configure `production-web` with manual maintainer approval, main-only deployment rules and no administrator bypass. Decide self-approval explicitly for the sole maintainer. Add narrowly scoped production credentials only with approval; never copy their values into evidence. Verify the live protection and consuming workflow identity before enabling anything.
+4. **Non-registry rollback.** Retain the Docs bridge source at `2580aa7b7bc0e6b5c574e41df6391c5c2edd6038`, its original 0.5.0 archives, integrity, provenance and licenses. Preserve checksummed Docs/apex and showcase output archives independently of the seven-day Actions retention. Rehearse recovery without npm UI/Tokens, including partial application failures. Old workflow reruns are not rollback: their stale-main guard rejects historical revisions. Document a current-head recovery or approved artifact restoration path; do not weaken that guard.
+5. **Legacy handover.** Confirm no production run is in flight, then obtain separate approval to pause only old deploy entry points and transfer scheduled smoke ownership. Do not disable all legacy verification or change deployed routes merely to prepare this PR. A README-only merge to either legacy main can trigger deployment, so use the existing notices until that behavior is deliberately retired.
+6. **Maintainer activation.** Obtain explicit deployment approval, record the accepted evidence, and review a separate activation diff that updates the gates, installs the candidate workflow, and adapts preparation tests to the activated contract. The enable variable must remain absent until then. Manually verify the approved current main, complete hosted checks/reviews and protected environment before first dispatch. Disable the deployment switch after the approved cutover window unless a different operating policy is explicitly accepted. No publishing enable flag changes with deployment activation.
+
+## Repository retirement order
+
+Prepare legacy PR dispositions now; do not merge, close or transfer them in this change. After deployment handover and recovery acceptance, retire unnecessary bot schedules and old deployment credentials under separate approval, refresh migration notices and archive only approved repositories. Preserve historical tags, releases and provenance links. Env can be considered independently after its backlog disposition; Handbook remains a private read-only authority reference. Keep Cache out of the first archive wave while #94 is excluded. See [legacy PR dispositions](legacy-pr-disposition.md).
+
+## Completed prerequisites
+
+Env 0.3.1 is published from the monorepo and its old publisher/binding is retired. UI and Tokens are private workspace packages; both npm packages and all sixteen old version archives were confirmed unavailable on 15 October 2026 after separately approved removal. Their old publisher is disabled and both old trust bindings are removed. Docs bridge PR #101 completed its normal production verification; its Docs/apex output matched the prior accepted output byte-for-byte. Those observations do not constitute a monorepo deployment rehearsal. The frozen migration locks/workflows and `ui-retirement.json` remain historical preparation evidence, not current registry availability or deployment authority.
