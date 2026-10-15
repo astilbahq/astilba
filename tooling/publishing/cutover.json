@@ -12,11 +12,10 @@
       "packages": [{ "name": "@astilba/env", "directory": "packages/env" }]
     },
     "ui": {
-      "phase": "workflow-installed-disabled",
+      "phase": "retired-workspace-only",
       "tagPrefix": "ui/v",
       "workflow": "release-ui.yml",
       "environment": "npm-ui",
-      "enableVariable": "UI_PUBLISHER_ENABLED",
       "packages": [
         { "name": "@astilba/tokens", "directory": "packages/tokens" },
         { "name": "@astilba/ui", "directory": "packages/ui" }

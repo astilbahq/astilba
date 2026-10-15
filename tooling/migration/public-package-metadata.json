@@ -2,6 +2,7 @@
   "@astilba/tokens": {
     "name": "@astilba/tokens",
     "version": "0.6.0",
+    "private": true,
     "description": "Astilba's framework-neutral design tokens and Panda preset.",
     "homepage": "https://github.com/astilbahq/astilba/tree/main/packages/tokens#readme",
     "bugs": {
@@ -28,15 +29,12 @@
       },
       "./styles.css": "./dist/tokens.css",
       "./package.json": "./package.json"
-    },
-    "publishConfig": {
-      "access": "public",
-      "provenance": true
     }
   },
   "@astilba/ui": {
     "name": "@astilba/ui",
     "version": "0.6.0",
+    "private": true,
     "description": "Accessible React components for Astilba products.",
     "homepage": "https://github.com/astilbahq/astilba/tree/main/packages/ui#readme",
     "bugs": {
@@ -106,10 +104,6 @@
       },
       "./styles.css": "./dist/styles.css",
       "./package.json": "./package.json"
-    },
-    "publishConfig": {
-      "access": "public",
-      "provenance": true
     },
     "dependencies": {
       "@astilba/tokens": "workspace:*",

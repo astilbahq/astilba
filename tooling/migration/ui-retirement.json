@@ -1,0 +1,10 @@
+{
+  "phase": "workspace-only-registry-removal-blocked",
+  "packages": ["@astilba/tokens", "@astilba/ui"],
+  "legacyDeployment": {
+    "repository": "astilbahq/docs",
+    "registryVersion": "0.5.0"
+  },
+  "unpublishAuthorizedByMerge": false,
+  "deployAuthorizedByMerge": false
+}

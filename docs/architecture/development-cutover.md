@@ -1,18 +1,18 @@
 # Canonical development cutover
 
-`astilbahq/astilba` is the destination for new source PRs, issues and dependency work across Env, tokens/UI, docs, apex and the sanitized Cache snapshot. Env 0.3.1 completed its separately approved monorepo publication; publishing is disabled again and its old npm binding is retired. UI publishing and all production deployments remain with their original repositories; no old repository is archived.
+`astilbahq/astilba` is the destination for new source PRs, issues and dependency work across Env, tokens/UI, docs, apex and the sanitized Cache snapshot. Env 0.3.1 completed its separately approved monorepo publication; publishing is disabled again and its old npm binding is retired. UI/tokens are private workspace packages; their legacy npm packages and publishers are retired. Production deployment authority remains with the old repositories, which remain unarchived. [Inactive deployment preparation](../deployment-cutover.md) records the remaining activation gates.
 
 ## Authority boundaries
 
 | Area | Development | Release or deployment |
 | --- | --- | --- |
 | Env | `packages/env` | Verified monorepo 0.3.1 release; publisher disabled |
-| Tokens and UI | `packages/tokens`, `packages/ui` | Existing UI repository; coordinated versions |
+| Tokens and UI | `packages/tokens`, `packages/ui` | Workspace-only; legacy registry packages and publisher retired |
 | UI showcase | `apps/ui-showcase` | Existing UI production workflow |
 | Docs and apex | `apps/docs`, `apps/site` | Existing Docs production workflows and smoke checks |
 | Cache | `products/cache`, approved sanitized snapshot only | Unreleased and non-publishable; no production cutover |
 
-Public package names, runtime contracts and registry application/fixture pins remain unchanged by UI activation preparation. Env and UI local repository/homepage/issues metadata identifies the monorepo with exact package directories; both installed workflows are disabled. Tokens/UI source remains coordinated at 0.6.0 and registry consumers remain on 0.5.0. Existing `v*` tags and releases remain immutable in their original repositories. Env's verified `env/v0.3.1` is not authority for UI trust, releases or deployments; see [Publisher cutover](../publisher-cutover.md).
+Package names and runtime contracts remain unchanged. Monorepo web apps consume workspace UI/tokens; released Env and independent fixture pins remain unchanged. Env and UI local repository/homepage/issues metadata identifies the monorepo with exact package directories; the Env workflow remains disabled and the UI workflow is removed. Tokens/UI source remains coordinated at 0.6.0; old Docs production retains exact 0.5.0 bytes through its verified local-archive bridge, not npm. Existing `v*` tags and releases remain immutable in their original repositories. Env's verified `env/v0.3.1` is not authority for deployments; see [Publisher cutover](../publisher-cutover.md).
 
 Handbook and private Cache Git ancestry remain excluded. Cache's checked-in authority pin and maintainer-only ancestry/scoped-tree checks remain in force. Unmerged private Cache work is not included merely because it exists in the old repository; it needs its own authority reconciliation, publication review and verified source change.
 
@@ -24,27 +24,13 @@ The integrated tree passed the hosted Linux/Windows matrices, UI browser contrac
 
 ## Outstanding public PR disposition
 
-This assessment does not merge, close or mechanically cherry-pick existing PRs. Reconcile each against the current shared lock and supported package contract before opening a replacement here.
-
-| Existing work | Disposition |
-| --- | --- |
-| Env #32: Vitest 4.1.11 | Already covered by the coordinated Vitest/coverage/Vite+ migration; no separate source transfer needed |
-| Env #27 and old Cache package-check tooling bump | Monorepo #5 already proposes the remaining Are the Types Wrong 0.18.5 changes; review that shared change once |
-| Env #31: pnpm Action update | Candidate for a focused monorepo CI change; preserve consumer runtime pins and verify the exact Action identity |
-| Env #30 and #26: publint and Knip | Deferred shared-toolchain candidates; old-repository green checks do not verify the combined workspace |
-| Env #33, #29 and #28: Next, Ultracite and workerd | Hold: existing checks fail; diagnose and reprepare against the monorepo before adoption |
-| UI #35 and Docs #98: PostCSS override | One shared override update candidate, not two independent merges; current exact pins remain unchanged |
-| UI #21 and Docs #53: lock maintenance | Do not transplant old locks; regenerate only for a scoped approved shared update after maturity gates pass |
-| UI #19 and monorepo #4: blanket pinning | Do not merge as written: they narrow supported peer ranges; #4 also removes an explicitly permitted test-dependency range and fails the Env archive gate |
-| Docs #99: Astro/Starlight update | Hold: Docs verification fails; reprepare both apps together without changing UI/Env registry pins or screenshot assertions |
-
-Private-repository PR details and the complete dated inventory remain in maintainer-local evidence, not in this public document. No dependency versions, locks, original workflows or original PR states change in this cutover.
+The [15 October disposition list](../legacy-pr-disposition.md) supersedes the original development-cutover inventory. It covers all sixteen open public legacy PRs and the boundary for six private Cache PRs. It does not merge, close, transfer or mechanically cherry-pick any work. Private implementation details remain in maintainer-local evidence. Cache #94 remains excluded. Reconcile useful candidates against the shared lock and supported contracts before a separately approved replacement.
 
 ## Activation and later cutovers
 
 1. Merge this development guidance only after its fresh checks and required reviews complete. Announce the development source boundary; assess any old-repository PR submitted afterward as legacy work rather than a second source of truth.
 2. Prepare migration notices for the old repositories and migrate useful issues deliberately. Do not close legacy PRs or disable their automation without approval; old production workflows remain live.
-3. Env completed its separately approved publisher handover and is disabled again. UI activation prepares local metadata and a disabled workflow only; separately approve release controls, npm trust and first-publication acceptance before enabling it. Deployment switching remains a separate cutover.
+3. Env completed its separately approved publisher handover and is disabled again. UI activation is superseded by [workspace-only retirement](../ui-retirement.md); its external publisher and registry removal are complete. Preserve the legacy Docs local-archive bridge and recovery evidence. Deployment switching remains a separate cutover.
 4. Preserve original Docs content dates and source attribution before production cutover; snapshot import dates are not original content dates. Test deployment artifact identity, routes, smoke checks and rollback before switching production authority.
 5. Archive old repositories only after those cutovers and outstanding-work decisions are accepted. Preserve historical tags, releases and the private reference needed by Cache's authority gate.
 

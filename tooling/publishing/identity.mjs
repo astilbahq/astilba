@@ -47,6 +47,11 @@ export const verifyIdentity = ({
   manifests,
 }) => {
   const version = releaseVersion(product, tag);
+  if (cutover.products[product].phase === "retired-workspace-only") {
+    throw new Error(
+      "This product's publisher is retired; use workspace dependencies."
+    );
+  }
   if (
     repository !== cutover.repository ||
     !gitObject.test(commit) ||
@@ -92,6 +97,11 @@ export const verifyIdentity = ({
 
 export const verifyCheckoutIdentity = async (product, tag) => {
   releaseVersion(product, tag);
+  if (cutover.products[product].phase === "retired-workspace-only") {
+    throw new Error(
+      "This product's publisher is retired; use workspace dependencies."
+    );
+  }
   const git = (...arguments_) =>
     execFileSync("git", arguments_, { cwd: root, encoding: "utf-8" }).trim();
   execFileSync(

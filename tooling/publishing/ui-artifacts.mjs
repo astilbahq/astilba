@@ -173,6 +173,11 @@ export const verifyUiArtifacts = async (
 };
 
 export const packUiArtifacts = async (artifactDirectory) => {
+  if (cutover.products.ui.phase === "retired-workspace-only") {
+    throw new Error(
+      "UI release packing is retired; use workspace dependencies."
+    );
+  }
   const directory = resolve(artifactDirectory);
   const dedicatedRoot = resolve(root, ".artifacts");
   const child = relative(dedicatedRoot, directory);

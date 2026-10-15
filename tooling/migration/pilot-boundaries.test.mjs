@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readdir, readFile, realpath } from "node:fs/promises";
 import nodePath from "node:path";
 import { describe, it } from "node:test";
@@ -11,7 +12,7 @@ const readJson = async (path) =>
   JSON.parse(await readFile(resolve(root, path), "utf-8"));
 
 describe("pilot boundaries", () => {
-  it("routes all public package metadata to the monorepo", async () => {
+  it("routes package repository metadata to the monorepo", async () => {
     const manifest = await readJson("package.json");
     assert.equal(manifest.name, "astilba");
     assert.equal(manifest.private, true);
@@ -59,7 +60,7 @@ describe("pilot boundaries", () => {
     );
   });
 
-  it("preserves UI public metadata with the approved monorepo identities", async () => {
+  it("preserves UI exports with the approved private workspace identities", async () => {
     // Update this reviewed baseline only alongside an approved public-contract change.
     const expected = await readJson(
       "tooling/migration/public-package-metadata.json"
@@ -111,7 +112,7 @@ describe("pilot boundaries", () => {
         .filter((manifest) => manifest.private !== true)
         .map((manifest) => manifest.name)
         .toSorted(),
-      ["@astilba/env", "@astilba/tokens", "@astilba/ui"]
+      ["@astilba/env"]
     );
     const rootManifest = await readJson("package.json");
     assert.equal(rootManifest.private, true);
@@ -119,34 +120,109 @@ describe("pilot boundaries", () => {
     assert.equal(workspace.includes("linkWorkspacePackages: false"), true);
   });
 
-  it("keeps web application dependencies bound to registry releases", async () => {
+  it("binds web UI dependencies to workspace source and preserves released Env", async () => {
     await Promise.all(
       ["apps/docs", "apps/site"].map(async (packagePath) => {
         const manifest = await readJson(`${packagePath}/package.json`);
         await Promise.all(
           ["@astilba/tokens", "@astilba/ui"].map(async (name) => {
-            assert.equal(manifest.dependencies[name], "0.5.0");
+            assert.equal(manifest.dependencies[name], "workspace:*");
             const installed = await realpath(
               resolve(root, packagePath, "node_modules", name)
             );
-            const storeRelative = nodePath.relative(
-              resolve(root, "node_modules/.pnpm"),
-              installed
+            assert.equal(
+              installed,
+              await realpath(resolve(root, "packages", name.split("/")[1]))
             );
-            assert.notEqual(storeRelative, "");
-            assert.notEqual(storeRelative, "..");
-            assert.equal(storeRelative.startsWith(`..${nodePath.sep}`), false);
-            assert.equal(nodePath.isAbsolute(storeRelative), false);
             const installedManifest = await readJson(
               `${packagePath}/node_modules/${name}/package.json`
             );
-            assert.equal(installedManifest.version, "0.5.0");
+            assert.equal(installedManifest.name, name);
+            assert.equal(installedManifest.version, "0.6.0");
+            assert.equal(installedManifest.private, true);
+            assert.equal(installedManifest.publishConfig, undefined);
           })
         );
       })
     );
     const docsManifest = await readJson("apps/docs/package.json");
     assert.equal(docsManifest.dependencies["@astilba/env"], "0.3.0");
+    assert.equal(
+      docsManifest.scripts.prepare,
+      "pnpm --filter @astilba/tokens build && pnpm --filter @astilba/ui build && panda codegen"
+    );
+    const tokensManifest = await readJson("packages/tokens/package.json");
+    assert.equal(tokensManifest.scripts.prepare, undefined);
+    const uiManifest = await readJson("packages/ui/package.json");
+    assert.equal(uiManifest.scripts.prepare, undefined);
+    const installedEnv = await readJson(
+      "apps/docs/node_modules/@astilba/env/package.json"
+    );
+    assert.equal(installedEnv.version, "0.3.0");
+    assert.notEqual(
+      await realpath(resolve(root, "apps/docs/node_modules/@astilba/env")),
+      await realpath(resolve(root, "packages/env"))
+    );
+    const lock = parse(
+      await readFile(resolve(root, "pnpm-lock.yaml"), "utf-8")
+    );
+    for (const app of ["apps/docs", "apps/site"]) {
+      for (const name of ["tokens", "ui"]) {
+        assert.deepEqual(lock.importers[app].dependencies[`@astilba/${name}`], {
+          specifier: "workspace:*",
+          version: `link:../../packages/${name}`,
+        });
+      }
+    }
+    for (const name of Object.keys(lock.packages)) {
+      assert.doesNotMatch(name, /^@astilba\/(?:tokens|ui)@/u);
+    }
+  });
+
+  it("preserves the inert legacy deployment workflow and its registry lock", async () => {
+    const lock = parse(
+      await readFile(
+        resolve(root, "tooling/migration/install-baselines/docs-lock.yaml"),
+        "utf-8"
+      )
+    );
+    for (const app of [".", "site"]) {
+      for (const name of ["@astilba/tokens", "@astilba/ui"]) {
+        assert.equal(lock.importers[app].dependencies[name].specifier, "0.5.0");
+      }
+    }
+    await Promise.all(
+      [
+        [
+          "apps/docs/.github/workflows/verification.yml",
+          "97f561ffa061db4e7de9811510da88afbda8d0f6c52c346b7b7ab9f715108963",
+        ],
+        [
+          "tooling/migration/workflows/ui/release.yml",
+          "265cea46eb702adb23bfbbe9165768a25a4df2f5981fd66680453e8695aaa901",
+        ],
+      ].map(async ([path, digest]) => {
+        assert.equal(
+          createHash("sha256")
+            .update(await readFile(resolve(root, path)))
+            .digest("hex"),
+          digest
+        );
+      })
+    );
+    const policy = await readJson("tooling/migration/ui-retirement.json");
+    assert.equal(policy.phase, "workspace-only-registry-removal-blocked");
+    assert.equal(policy.legacyDeployment.repository, "astilbahq/docs");
+    assert.equal(policy.legacyDeployment.registryVersion, "0.5.0");
+    assert.equal(policy.unpublishAuthorizedByMerge, false);
+    assert.equal(policy.deployAuthorizedByMerge, false);
+    assert.deepEqual(policy.packages, ["@astilba/tokens", "@astilba/ui"]);
+    const manifest = await readJson("package.json");
+    assert.equal(manifest.scripts["verify:release-version"], undefined);
+    assert.match(
+      manifest.scripts["verify:web"],
+      /^pnpm --filter @astilba\/tokens build && pnpm --filter @astilba\/ui build &&/u
+    );
   });
 
   it("runs Cache under one root install and the active workflow census", async () => {
@@ -221,22 +297,13 @@ describe("pilot boundaries", () => {
           assert.doesNotMatch(source, /wrangler deploy|secrets\./u);
           return;
         }
-        if (file === "release-ui.yml") {
-          const workflow = parse(source);
-          assert.equal(
-            workflow.jobs["verify-packages"].if,
-            "github.repository == 'astilbahq/astilba' && vars.UI_PUBLISHER_ENABLED == 'true' && github.event.release.prerelease == false && startsWith(github.event.release.tag_name, 'ui/v')"
-          );
-          assert.deepEqual(workflow.on, { release: { types: ["published"] } });
-          assert.doesNotMatch(source, /wrangler deploy|secrets\./u);
-          return;
-        }
         assert.doesNotMatch(
           source,
           /npm publish|wrangler deploy(?! --dry-run)|id-token: write|environment:|secrets\./u
         );
       })
     );
+    assert.equal(files.includes("release-ui.yml"), false);
     const fixture = await readJson("fixtures/registry/env/package.json");
     assert.equal(fixture.packageManager, "pnpm@11.10.0");
     const nodeFixture = await readJson(
