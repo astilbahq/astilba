@@ -1,6 +1,6 @@
 # Astilba verification inventory
 
-The pilot combines the public Env, UI, and web sources with the approved sanitized, unreleased Cache snapshot, retaining their verification contracts. Handbook and private Cache ancestry remain outside this checkout. This inventory records original gates. Current policy: Env publication is monorepo-owned and disabled; UI/tokens are private workspace packages with their monorepo publisher removed. Existing legacy registry versions and original production deployments are preserved; see [UI retirement](../ui-retirement.md).
+The pilot combines the public Env, UI, and web sources with the approved sanitized, unreleased Cache snapshot, retaining their verification contracts. Handbook and private Cache ancestry remain outside this checkout. This inventory records original gates. Current policy: Env publication is monorepo-owned and disabled; UI/tokens are private workspace packages with their publishers and npm registry packages retired. Original production deployment authority is preserved through the verified legacy Docs local-archive bridge; see [UI retirement](../ui-retirement.md) and [inactive deployment preparation](../deployment-cutover.md).
 
 ## Source baseline
 
@@ -77,7 +77,7 @@ UI and Docs run SHA-pinned Actionlint, Zizmor, dependency-review, PR-title valid
 | UI showcase original deployment | Successful main verification; protected `production` environment | Verified `apps/showcase/dist` artifact and digest, stale-main rejection, deploy to `ui.astilba.com`, production smoke |
 | Docs and apex original deployment | Successful main verification; protected `production` environment | Distinct verified artifacts/digests, released Env checks, stale-main rejection, apex deployment/smoke before docs deployment/complete smoke |
 
-Trusted publishers remain bound to the original repository and workflow identities. Existing tags, package versions, provenance, domains, Worker routes and production credentials are unchanged. Imported Env and Docs `.github` folders and `tooling/migration/workflows/ui` are inert references. Root pilot CI has no publication, production environment or deployment credentials.
+The release rows above describe historical contracts, not active publisher authorization. Env 0.3.1 uses the monorepo trusted publisher and its old binding is retired; publishing is disabled. UI/Tokens publishing, old bindings and registry packages are retired. Existing tags, releases, domains, Worker routes and production credentials are unchanged. Imported Env and Docs `.github` folders and `tooling/migration/workflows/ui` are inert references. Root pilot CI has no publication, production environment or deployment credentials. The new deployment template remains outside `.github/workflows` with all acceptance gates false; CI only tests and audits it.
 
 ## Pilot command routing
 
@@ -86,6 +86,7 @@ Trusted publishers remain bound to the original repository and workflow identiti
 | `corepack pnpm install --frozen-lockfile` | Eight public source workspace projects; explicit membership; no registry-fixture discovery |
 | `corepack pnpm@11.10.0 --dir fixtures/registry/env install --frozen-lockfile` | Five independently installed registry-fixture projects |
 | `pnpm verify:boundaries` | Workspace/private allowlist, local UI/tokens resolution, preserved released Env and legacy deployment pins, retired UI publisher and disabled Env |
+| `pnpm verify:deployment` | Inert template, manual/main-only identity, six unresolved activation gates, exact artifact transfer, preserved routes and deployment ordering; no remote mutation |
 | `pnpm verify:ui` | UI base, browser, Astro build and showcase deployment dry-run |
 | `pnpm verify:env` | Env lint/format, Knip, tools, containment, both TypeScript compilers, unit tests, build, TSDoc and package gates |
 | `pnpm verify:web` | Both apps' source/build/browser gates and released Env surfaces |
@@ -100,7 +101,7 @@ Trusted publishers remain bound to the original repository and workflow identiti
 | `.github/workflows/cache.yml` | Original Cache lanes adapted to the root install, with active workflow census and fixed hosted runners |
 | `.github/workflows/cache-mutation.yml` | Original Cache mutation ratchet, isolated from product releases and deployments |
 
-The pilot pins development pnpm 11.17.0 and Node 24.18.1 across thirteen workspaces. Env and Cache use Vite+ 0.3.0 and matching Vitest/coverage 4.1.11, with Oxfmt 0.64.0 and Oxlint 1.79.0. Their Ultracite rule policies remain product-specific. Consumer pins remain independent. The root age gate is 4320 minutes, build permissions are the union of existing approved esbuild/sharp/workerd permissions, and security overrides retain the original protections. Original source locks and policies are retained under `tooling/migration/install-baselines`. Registry fixture locks and package pins are unchanged. Monorepo web apps now link workspace UI/tokens; Env remains released 0.3.0. Old Docs deployment consumers retain UI/tokens 0.5.0 until a separately verified preservation path is approved.
+The pilot pins development pnpm 11.17.0 and Node 24.18.1 across thirteen workspaces. Env and Cache use Vite+ 0.3.0 and matching Vitest/coverage 4.1.11, with Oxfmt 0.64.0 and Oxlint 1.79.0. Their Ultracite rule policies remain product-specific. Consumer pins remain independent. The root age gate is 4320 minutes, build permissions are the union of existing approved esbuild/sharp/workerd permissions, and security overrides retain the original protections. Original source locks and policies are retained under `tooling/migration/install-baselines`. Registry fixture locks and package pins are unchanged. Monorepo web apps now link workspace UI/tokens; Env remains released 0.3.0. Old Docs production retains exact UI/tokens 0.5.0 through its verified local-archive bridge; frozen migration locks remain historical evidence.
 
 Security CI scans the two executable installation graphs: the root lock and independent registry-fixture lock. Archived baseline locks are provenance, not executable installs. No advisory suppression is added.
 

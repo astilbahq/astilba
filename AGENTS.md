@@ -17,7 +17,7 @@ Cache's source-integrity guard protects the pinned executable-source fingerprint
 
 ## Ground rules
 
-The installed `release-env.yml` remains disabled by the absent `ENV_PUBLISHER_ENABLED` variable. UI publishing is retired from this checkout: no `release-ui.yml`, enable variable or prepared UI trust entry may be added. Read `docs/publisher-cutover.md` and `docs/ui-retirement.md` before release or retirement work. Env 0.3.1 completed its separately approved publication; its old npm binding is retired. The old UI publisher and registry versions remain untouched pending separate retirement approval and a verified non-registry-dependent legacy Docs deployment path. Verification CI remains free of publishing and production credentials; deployments and Cache #94 remain excluded.
+The installed `release-env.yml` remains disabled by the absent `ENV_PUBLISHER_ENABLED` variable. UI publishing is retired from this checkout: no `release-ui.yml`, enable variable or prepared UI trust entry may be added. Read `docs/publisher-cutover.md` and `docs/ui-retirement.md` before release or retirement work. Env 0.3.1 completed its separately approved publication; its old npm binding is retired. The old UI publisher and both trust bindings are retired; UI/Tokens registry packages were permanently removed after the verified legacy Docs archive bridge. Read `docs/deployment-cutover.md` before deployment work: its template stays outside `.github/workflows`, all acceptance gates are false, and neither credentials nor an enable variable are configured by preparation. Verification CI remains free of publishing and production credentials; deployments and Cache #94 remain excluded.
 
 1. Run `pnpm verify` before proposing a commit.
 2. Add or update tests for observable behaviour.
