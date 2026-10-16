@@ -49,6 +49,8 @@ overrides:
   sharp@<0.35.5: 0.35.5
   undici@>=7.0.0 <7.29.1: 7.29.1
   smol-toml@>=1.0.0 <1.9.0: 1.9.0
+  # GHSA-238p-pmpm-9mq7: Mermaid 12.1 pins KaTeX ^0.16; Mermaid 12.2 moves to ^0.18.
+  katex@>=0.11.0 <0.18.2: 0.18.11
   fast-uri@3.1.7: 3.1.8
   "typed-rest-client>qs": 6.16.0
   baseline-browser-mapping@2.10.42: 2.11.0

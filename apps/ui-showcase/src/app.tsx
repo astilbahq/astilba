@@ -1,6 +1,7 @@
 import {
   Button,
   Collapsible,
+  Dialog,
   Field,
   IconButton,
   Input,
@@ -47,6 +48,7 @@ type BrandAssetId =
 type ShowcasePageId =
   | "actions"
   | "brand"
+  | "dialogs"
   | "disclosures"
   | "fields"
   | "icons"
@@ -218,6 +220,14 @@ const SHOWCASE_PAGES: readonly ShowcasePage[] = [
     id: "menus",
     label: "Menus",
     title: "Menus",
+  },
+  {
+    description:
+      "Modal surfaces hold one focused decision and return focus to the control that opened them.",
+    href: "/dialogs/",
+    id: "dialogs",
+    label: "Dialogs",
+    title: "Dialogs",
   },
   {
     description:
@@ -397,6 +407,7 @@ export const App = () => {
   const [brandExportError, setBrandExportError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [menuAction, setMenuAction] = useState("No action selected");
+  const [dialogAction, setDialogAction] = useState("No decision recorded");
   const [theme, setTheme] = useState<Theme>("dark");
   const brandCopyResetTimer = useRef<number | null>(null);
   const copyResetTimer = useRef<number | null>(null);
@@ -971,6 +982,70 @@ export const App = () => {
               </div>
               <p className="showcase-status" aria-live="polite">
                 {menuAction}
+              </p>
+            </div>
+          </div>
+        </section>
+
+        <section
+          className="specimen-section"
+          aria-labelledby="dialogs-title"
+          hidden={activePage.id !== "dialogs"}
+        >
+          <div className="section-heading">
+            <div>
+              <p>Overlays</p>
+              <h2 id="dialogs-title">Dialog primitives</h2>
+            </div>
+            <code>Dialog</code>
+          </div>
+
+          <div className="specimen-row">
+            <div>
+              <h3>Focused decisions</h3>
+              <p>
+                Focus stays inside the dialog until it closes, then returns to
+                the trigger.
+              </p>
+            </div>
+            <div>
+              <div className="control-line">
+                {activePage.id === "dialogs" && (
+                  <Dialog.Root>
+                    <Dialog.Trigger render={<Button appearance="outline" />}>
+                      Review deployment
+                    </Dialog.Trigger>
+                    <Dialog.Portal>
+                      <Dialog.Backdrop />
+                      <Dialog.Viewport>
+                        <Dialog.Popup>
+                          <Dialog.Title>
+                            Deploy the verified artifact?
+                          </Dialog.Title>
+                          <Dialog.Description>
+                            The release replaces the current production build.
+                          </Dialog.Description>
+                          <div className="showcase-dialog-actions">
+                            <Dialog.Close render={<Button />}>
+                              Cancel
+                            </Dialog.Close>
+                            <Dialog.Close
+                              onClick={() => {
+                                setDialogAction("Deployment confirmed");
+                              }}
+                              render={<Button appearance="primary" />}
+                            >
+                              Deploy
+                            </Dialog.Close>
+                          </div>
+                        </Dialog.Popup>
+                      </Dialog.Viewport>
+                    </Dialog.Portal>
+                  </Dialog.Root>
+                )}
+              </div>
+              <p className="showcase-status" aria-live="polite">
+                {dialogAction}
               </p>
             </div>
           </div>

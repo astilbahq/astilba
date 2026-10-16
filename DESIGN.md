@@ -149,6 +149,14 @@ Controls, elevated surfaces, and code blocks are square. Inline code is the narr
 - **Motion:** 250ms scale-and-fade entry and 150ms exit, removed under reduced-motion preferences.
 - **Ownership:** the primitive owns accessible menu behaviour and shared item structure; product-specific trigger appearance, widths, selected states, badges, and responsive density stay with the consumer.
 
+### Dialogs
+
+- **Surface:** square elevated surface with a 16px inset and semantic elevated shadow over the semantic scrim, up to 32rem wide.
+- **Structure:** `Dialog.Title` names the dialog and an optional `Dialog.Description` explains it.
+- **Behaviour:** modal by default; focus moves into the popup, stays there while open, and returns to the trigger on close. Escape and backdrop clicks dismiss.
+- **Motion:** 250ms scale-and-fade entry and 150ms exit, removed under reduced-motion preferences.
+- **Ownership:** the primitive owns modal behaviour and the shared surface; consumers own content, actions, and alternative sizes such as full-viewport viewers.
+
 ### Scroll Areas
 
 - **Feedback:** an optional block-axis fade reflects measured overflow at each edge.

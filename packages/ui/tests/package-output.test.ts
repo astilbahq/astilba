@@ -35,6 +35,7 @@ describe("published JavaScript output", () => {
     const [
       button,
       collapsible,
+      dialog,
       field,
       input,
       linkButton,
@@ -46,6 +47,7 @@ describe("published JavaScript output", () => {
     ] = await Promise.all([
       readOutput("button.js"),
       readOutput("collapsible.js"),
+      readOutput("dialog.js"),
       readOutput("field.js"),
       readOutput("input.js"),
       readOutput("link-button.js"),
@@ -62,6 +64,10 @@ describe("published JavaScript output", () => {
     expect(collapsible).not.toContain("@base-ui/react/button");
     expect(collapsible).not.toContain("@base-ui/react/menu");
     expect(collapsible).not.toContain("@base-ui/react/tooltip");
+    expect(dialog).toContain("@base-ui/react/dialog");
+    expect(dialog).not.toContain("@base-ui/react/button");
+    expect(dialog).not.toContain("@base-ui/react/menu");
+    expect(dialog).not.toContain("@base-ui/react/tooltip");
     expect(field).not.toContain("@base-ui/react");
     expect(input).not.toContain("@base-ui/react");
     expect(linkButton).not.toContain("@base-ui/react");

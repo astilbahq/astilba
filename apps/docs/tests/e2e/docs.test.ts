@@ -3,7 +3,13 @@ import { createHash } from "node:crypto";
 import AxeBuilder from "@axe-core/playwright";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { expect, type Page, type Route, test } from "@playwright/test";
+import {
+  type APIRequestContext,
+  expect,
+  type Page,
+  type Route,
+  test,
+} from "@playwright/test";
 
 import { AGENT_SETUP_COPY_TEXT } from "../../src/docs/agent-setup";
 import { EXPECTED_CORPUS_PAGES } from "../../src/docs/mcp-corpus";
@@ -48,6 +54,19 @@ const expectGlobalSecurityHeaders = (headers: Record<string, string>): void => {
 
 const getExpectedPageDiscoveryLink = (markdownPath: string): string =>
   `<${markdownPath}>; rel="alternate"; type="text/markdown", <${withDocsBase("/llms.txt")}>; rel="describedby"; type="text/plain", <${withDocsBase("/.well-known/api-catalog")}>; rel="api-catalog"; type="application/linkset+json"`;
+
+const getSitemapPaths = async (
+  request: APIRequestContext
+): Promise<string[]> => {
+  const response = await request.get("/docs/sitemap.xml");
+  expect(response.ok()).toBe(true);
+  const paths = [
+    ...(await response.text()).matchAll(/<loc>([^<]+)<\/loc>/g),
+  ].map(([, location]) => new URL(location).pathname);
+
+  expect(paths.length).toBeGreaterThan(1);
+  return paths;
+};
 
 const expectNoAxeViolations = async (page: Page): Promise<void> => {
   const results = await new AxeBuilder({ page })
@@ -198,6 +217,47 @@ test("serves the direct sitemap as a static XML asset", async ({ request }) => {
     "application/xml"
   );
   expectGlobalSecurityHeaders(sitemapHeadResponse.headers());
+});
+
+test("renders exactly one page-title heading on every page", async ({
+  request,
+}) => {
+  const paths = await getSitemapPaths(request);
+  const invalidPages = [];
+
+  for (const path of paths) {
+    const response = await request.get(path);
+    expect(response.ok(), path).toBe(true);
+    const html = await response.text();
+    const headingCount = html.match(/<h1(?:\s|>)/g)?.length ?? 0;
+
+    if (headingCount !== 1) {
+      invalidPages.push({ headingCount, path });
+    }
+  }
+
+  expect(invalidPages).toEqual([]);
+});
+
+test("keeps every page within a mobile viewport", async ({ page, request }) => {
+  const paths = await getSitemapPaths(request);
+  const overflowingPages = [];
+
+  await page.setViewportSize({ width: 390, height: 844 });
+
+  for (const path of paths) {
+    const response = await page.goto(path);
+    expect(response?.ok(), path).toBe(true);
+    const overflow = await page.evaluate(
+      () => document.documentElement.scrollWidth - window.innerWidth
+    );
+
+    if (overflow > 0) {
+      overflowingPages.push({ overflow, path });
+    }
+  }
+
+  expect(overflowingPages).toEqual([]);
 });
 
 test("links current monorepo source and retains immutable public attribution", async ({
@@ -1186,6 +1246,84 @@ test("enforces CSP without blocking the interactive shell", async ({
   await expect(
     search.getByRole("link", { name: /Runtime architecture/i }).first()
   ).toBeVisible();
+
+  expect(await page.evaluate(() => window.__cspViolations)).toEqual([]);
+});
+
+test("renders Mermaid diagrams under CSP and copies their source", async ({
+  page,
+}) => {
+  const diagramSource = "flowchart LR\n  Declare --> Generate --> Resolve";
+
+  await page.addInitScript(() => {
+    window.__cspViolations = [];
+    document.addEventListener("securitypolicyviolation", (event) => {
+      window.__cspViolations?.push({
+        blockedUri: event.blockedURI,
+        effectiveDirective: event.effectiveDirective,
+      });
+    });
+  });
+  // No published page uses Mermaid yet, so inject what rehypeMermaid emits.
+  await page.route("**/docs/env/overview/", async (route) => {
+    const response = await route.fetch();
+    const html = await response.text();
+    const contentStart = html.match(/<div class="sl-markdown-content"[^>]*>/);
+
+    if (!contentStart) {
+      throw new Error("The page has no Markdown content container.");
+    }
+
+    await route.fulfill({
+      body: html.replace(
+        contentStart[0],
+        `${contentStart[0]}<h2 id="value-flow">Value flow</h2><div class="mermaid-diagram" data-mermaid>${diagramSource}</div>`
+      ),
+      response,
+    });
+  });
+  await page.goto("/docs/env/overview/");
+
+  const diagram = page.locator("[data-mermaid]");
+  await expect(diagram).toHaveAttribute("data-mermaid-rendered", "");
+  await expect(diagram.locator(":scope > svg")).toBeVisible();
+  await expect(diagram).not.toHaveAttribute("data-mermaid-error");
+  await expect(diagram.locator(":scope > svg")).toHaveAccessibleName(
+    "Value flow diagram"
+  );
+  await expect(diagram.locator(":scope > svg")).toHaveAccessibleDescription(
+    /Declare --> Generate --> Resolve/
+  );
+
+  const copyButton = page.getByRole("button", {
+    name: "Copy Mermaid source for Value flow",
+  });
+  await copyButton.click();
+  await expect
+    .poll(() => page.evaluate(() => navigator.clipboard.readText()))
+    .toBe(diagramSource);
+  await expect(
+    page.getByRole("button", { name: "Copied Mermaid source for Value flow" })
+  ).toBeVisible();
+  await expect(
+    page
+      .getByRole("status")
+      .filter({ hasText: "Value flow Mermaid source copied." })
+  ).toHaveCount(1);
+  await expectNoAxeViolations(page);
+
+  const initialSvg = await diagram.locator(":scope > svg").getAttribute("id");
+  await page
+    .getByRole("button", { name: /Switch to (dark|light) theme/ })
+    .click();
+  await expect
+    .poll(() => diagram.locator(":scope > svg").getAttribute("id"))
+    .not.toBe(initialSvg);
+  await expect(diagram.locator(":scope > svg")).toHaveCount(1);
+  await expect(
+    page.getByRole("button", { name: /Mermaid source for Value flow$/ })
+  ).toHaveCount(1);
+  await expectNoAxeViolations(page);
 
   expect(await page.evaluate(() => window.__cspViolations)).toEqual([]);
 });
@@ -2400,6 +2538,11 @@ test("switches themes and opens mobile navigation", async ({ page }) => {
   await expect(
     page.getByRole("link", { name: "Invalidate cached data" })
   ).toBeVisible();
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth
+    )
+  ).toBe(true);
   await page.keyboard.press("Escape");
   await expect(menuButton).toHaveAttribute("aria-expanded", "false");
   await expect(menuButton).toBeFocused();

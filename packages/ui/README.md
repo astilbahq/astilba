@@ -27,6 +27,7 @@ Then use the components from React:
 import {
   Button,
   Collapsible,
+  Dialog,
   Field,
   Input,
   LinkButton,
@@ -49,6 +50,21 @@ export const Actions = () => (
       <Collapsible.Trigger>Deployment details</Collapsible.Trigger>
       <Collapsible.Panel>Deployed from a verified artifact.</Collapsible.Panel>
     </Collapsible.Root>
+    <Dialog.Root>
+      <Dialog.Trigger>Review release</Dialog.Trigger>
+      <Dialog.Portal>
+        <Dialog.Backdrop />
+        <Dialog.Viewport>
+          <Dialog.Popup>
+            <Dialog.Title>Release review</Dialog.Title>
+            <Dialog.Description>
+              The artifact was verified before publication.
+            </Dialog.Description>
+            <Dialog.Close>Done</Dialog.Close>
+          </Dialog.Popup>
+        </Dialog.Viewport>
+      </Dialog.Portal>
+    </Dialog.Root>
     <Menu.Root>
       <Menu.Trigger>More actions</Menu.Trigger>
       <Menu.Portal>
@@ -105,6 +121,7 @@ Component subpaths are also available when a consumer needs the narrowest possib
 ```tsx
 import { LinkButton } from "@astilba/ui/link-button";
 import { Collapsible } from "@astilba/ui/collapsible";
+import { Dialog } from "@astilba/ui/dialog";
 import { Field } from "@astilba/ui/field";
 import { Input } from "@astilba/ui/input";
 import { Menu } from "@astilba/ui/menu";
@@ -119,6 +136,8 @@ The root entry remains tree-shakeable. Component JavaScript contains no Panda ru
 The component stylesheet contains recipe defaults only. Consumer Panda utilities remain later in the `astilba` layer order and can override those defaults without specificity workarounds.
 
 `Collapsible.Panel` owns only the disclosure transition. Consumers retain their own trigger presentation, content layout, chevrons, and state persistence. Set the panel transition to `none` in a consumer class while restoring persisted state to avoid animating initialization. Keep padding and borders on a child of the measured panel so its closed block size can reach zero cleanly.
+
+`Dialog` owns modal focus containment, dismissal, focus return, labelling from `Dialog.Title` and `Dialog.Description`, and the backdrop and popup transitions. `Dialog.createHandle` connects triggers rendered outside `Dialog.Root` and passes each trigger's `payload` to the root's render function. Consumers retain popup content, actions, sizing beyond the default 32rem width, and any full-viewport presentation. On iOS Safari the backdrop is absolutely positioned so it reaches beneath the browser chrome; give `body` `position: relative` so it covers the whole page.
 
 `ScrollArea` owns overflow-edge feedback, focus treatment, and a scrollbar that appears on hover, focus, or active scrolling. Pass `fade="block"` to `ScrollArea.Viewport` for a vertical edge fade, and set `direction="rtl"` on `ScrollArea.Root` when the scroll coordinates follow right-to-left reading order. Consumers retain sizing, content layout, overscroll policy, and scroll-position persistence. Include `ScrollArea.Content` whenever horizontal overflow is possible.
 

@@ -13,6 +13,7 @@ html {
 }
 
 body {
+  position: relative;
   min-block-size: 100vh;
   margin: 0;
   background: var(--astilba-colors-canvas);
@@ -560,6 +561,14 @@ main,
 
 .showcase-menu-popup {
   inline-size: 13rem;
+}
+
+.showcase-dialog-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-block-start: 1.5rem;
 }
 
 .showcase-status {

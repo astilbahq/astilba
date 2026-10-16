@@ -421,6 +421,35 @@
     color: var(--sl-color-asides-border);
   }
 
+  .sl-markdown-content .mermaid-diagram {
+    overflow-x: auto;
+    margin-block: 1.5rem;
+    border: 1px solid var(--sl-color-hairline-light);
+    padding: 1rem;
+    background: var(--sl-color-bg-nav);
+    color: var(--sl-color-text);
+    font-family: var(--sl-font-mono);
+    font-size: 0.75rem;
+    line-height: 1.5;
+    white-space: pre;
+  }
+
+  .sl-markdown-content .mermaid-diagram[data-mermaid-rendered] {
+    display: flex;
+    justify-content: center;
+    padding-block: 1.5rem;
+    white-space: normal;
+  }
+
+  .sl-markdown-content .mermaid-diagram[data-mermaid-rendered] svg {
+    max-inline-size: 100%;
+    block-size: auto;
+  }
+
+  .sl-markdown-content .mermaid-diagram[data-mermaid-error] {
+    border-color: var(--sl-color-red-high);
+  }
+
   @media (prefers-reduced-motion: reduce) {
     .sl-markdown-content .sl-anchor-link {
       transition: none;
