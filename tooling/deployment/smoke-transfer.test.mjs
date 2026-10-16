@@ -32,7 +32,7 @@ describe("inactive production smoke transfer", () => {
   it("runs only the existing apex and Docs checks without an install or credentials", () => {
     const { smoke } = workflow.jobs;
     assert.equal(smoke["runs-on"], "ubuntu-24.04");
-    assert.equal(smoke["timeout-minutes"], 5);
+    assert.equal(smoke["timeout-minutes"], 25);
     assert.equal(smoke.environment, undefined);
     assert.equal(smoke.env, undefined);
     assert.equal(smoke.steps.length, 4);
@@ -54,13 +54,65 @@ describe("inactive production smoke transfer", () => {
       ]
     );
     for (const step of smoke.steps) {
-      assert.equal(step.if, undefined);
+      assert.equal(
+        step.if,
+        step.run === "node apps/docs/scripts/smoke-production.mjs"
+          ? `\${{ !cancelled() }}`
+          : undefined
+      );
       assert.equal(step.env, undefined);
       assert.equal(step["continue-on-error"], undefined);
     }
     assert.doesNotMatch(
       source,
       /secrets\.|id-token|environment:|npm |pnpm |wrangler |workflow_run|pull_request_target|WEB_DEPLOYMENTS_ENABLED|ENV_PUBLISHER_ENABLED/u
+    );
+  });
+
+  it("allows the existing sequential request and retry budgets plus setup margin", async () => {
+    const [apex, docs] = await Promise.all(
+      ["apps/site", "apps/docs"].map((directory) =>
+        readFile(
+          new URL(`${directory}/scripts/smoke-production.mjs`, root),
+          "utf-8"
+        )
+      )
+    );
+    for (const [script, prefix] of [
+      [apex, "ASTILBA_SITE"],
+      [docs, "ASTILBA_DOCS"],
+    ]) {
+      for (const [setting, value] of [
+        ["ATTEMPTS", "6"],
+        ["REQUEST_TIMEOUT_MS", "10_000"],
+        ["RETRY_DELAY_MS", "2_000"],
+      ]) {
+        assert.match(
+          script,
+          new RegExp(
+            `readInteger\\(\\s*"${prefix}_SMOKE_${setting}",\\s*${value},`,
+            "u"
+          )
+        );
+      }
+    }
+    assert.equal(apex.match(/await request\(/gu).length, 9);
+    const mcp = docs.slice(
+      docs.indexOf("const checkMcp ="),
+      docs.indexOf("const runChecks =")
+    );
+    assert.equal(mcp.match(/await callMcp\(/gu).length, 5);
+    assert.match(mcp, /await notifyMcpInitialized\(\)/u);
+    const apexRequestSeconds = 6 * 9 * 10;
+    const docsRequestSeconds = 6 * (1 + 6) * 10;
+    const retryBackoffSeconds = 5 * 2 + 2 + 4 + 8 + 16 + 30;
+    const setupMarginSeconds = 5 * 60;
+    assert.ok(
+      workflow.jobs.smoke["timeout-minutes"] * 60 >=
+        apexRequestSeconds +
+          docsRequestSeconds +
+          retryBackoffSeconds +
+          setupMarginSeconds
     );
   });
 
