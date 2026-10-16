@@ -77,7 +77,7 @@ UI and Docs run SHA-pinned Actionlint, Zizmor, dependency-review, PR-title valid
 | UI showcase original deployment | Successful main verification; protected `production` environment | Verified `apps/showcase/dist` artifact and digest, stale-main rejection, deploy to `ui.astilba.com`, production smoke |
 | Docs and apex original deployment | Successful main verification; protected `production` environment | Distinct verified artifacts/digests, released Env checks, stale-main rejection, apex deployment/smoke before docs deployment/complete smoke |
 
-The release rows above describe historical contracts, not active publisher authorization. Env 0.3.1 uses the monorepo trusted publisher and its old binding is retired; publishing is disabled. UI/Tokens publishing, old bindings and registry packages are retired. Existing tags, releases, domains, Worker routes and production credentials are unchanged. Imported Env and Docs `.github` folders and `tooling/migration/workflows/ui` are inert references. Root pilot CI has no publication, production environment or deployment credentials. The new deployment template remains outside `.github/workflows` with all acceptance gates false; CI only tests and audits it.
+The release rows above describe historical contracts, not active publisher authorization. Env 0.3.1 uses the monorepo trusted publisher and its old binding is retired; publishing is disabled. UI/Tokens publishing, old bindings and registry packages are retired. Existing tags, releases, domains, Worker routes and production credentials are unchanged. Imported Env and Docs `.github` folders and `tooling/migration/workflows/ui` are inert references. Ordinary verification CI has no publication, production environment or deployment credentials. The installed manual forward workflow remains disabled with all seven acceptance gates false and its enable variable absent; offline recovery remains parked and uninstalled.
 
 ## Pilot command routing
 
@@ -86,7 +86,7 @@ The release rows above describe historical contracts, not active publisher autho
 | `corepack pnpm install --frozen-lockfile` | Eight public source workspace projects; explicit membership; no registry-fixture discovery |
 | `corepack pnpm@11.10.0 --dir fixtures/registry/env install --frozen-lockfile` | Five independently installed registry-fixture projects |
 | `pnpm verify:boundaries` | Workspace/private allowlist, local UI/tokens resolution, preserved released Env and legacy deployment pins, retired UI publisher and disabled Env |
-| `pnpm verify:deployment` | Inert template, manual/main-only identity, six unresolved activation gates, exact artifact transfer, preserved routes and deployment ordering; no remote mutation |
+| `pnpm verify:deployment` | Disabled manual/main-only forward workflow, seven unresolved activation gates, unapplied protection inputs, exact artifact transfer, preserved routes and deployment ordering; no remote mutation |
 | `pnpm verify:ui` | UI base, browser, Astro build and showcase deployment dry-run |
 | `pnpm verify:env` | Env lint/format, Knip, tools, containment, both TypeScript compilers, unit tests, build, TSDoc and package gates |
 | `pnpm verify:web` | Both apps' source/build/browser gates and released Env surfaces |

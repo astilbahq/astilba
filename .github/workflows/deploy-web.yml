@@ -1,5 +1,5 @@
-# INERT: outside .github/workflows. Installing this file needs separate approval.
-name: Public web deployment (inactive preparation)
+# Disabled: WEB_DEPLOYMENTS_ENABLED is absent and cutover.json is inactive.
+name: Public web deployment (disabled pending cutover approval)
 
 on:
   workflow_dispatch:

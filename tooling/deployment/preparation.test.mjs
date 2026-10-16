@@ -21,7 +21,7 @@ const { resolve } = nodePath;
 const root = resolve(import.meta.dirname, "../..");
 const read = (path) => readFile(resolve(root, path), "utf-8");
 const policy = JSON.parse(await read("tooling/deployment/cutover.json"));
-const source = await read("tooling/deployment/workflows/deploy-web.yml");
+const source = await read(".github/workflows/deploy-web.yml");
 const template = parse(source);
 const shaPin = /^[^@]+@[0-9a-f]{40}$/u;
 const gate =
@@ -50,6 +50,42 @@ describe("inactive deployment preparation", () => {
     assert.match(result.stderr, /Deployment preparation is inactive/u);
   });
 
+  it("keeps runtime-security acceptance closed and independently required", () => {
+    assert.equal(policy.acceptance.deploymentRuntimeSecurity, false);
+    const accepted = structuredClone(policy);
+    accepted.phase = "approved-for-activation";
+    for (const key of Object.keys(accepted.acceptance)) {
+      accepted.acceptance[key] = true;
+    }
+    accepted.acceptance.deploymentRuntimeSecurity = false;
+    assert.throws(
+      () => requireActivation(accepted),
+      /Unaccepted deployment gate: deploymentRuntimeSecurity/u
+    );
+  });
+
+  it("preserves the unapplied protected-environment inputs without installing recovery", async () => {
+    const environment = JSON.parse(
+      await read("tooling/deployment/recovery/environment.json")
+    );
+    assert.deepEqual(environment, {
+      can_admins_bypass: false,
+      deployment_branch_policy: {
+        custom_branch_policies: true,
+        protected_branches: false,
+      },
+      name: "production-web",
+      prevent_self_review: false,
+      reviewers: [{ id: 25_528_100, type: "User" }],
+      wait_timer: 0,
+    });
+    assert.deepEqual(
+      JSON.parse(await read("tooling/deployment/recovery/main-branch.json")),
+      { name: "main", type: "branch" }
+    );
+    assert.equal(policy.acceptance.protectedEnvironmentAndCredentials, false);
+  });
+
   it("runs preparation tests and workflow scanners in ordinary credential-free CI", async () => {
     const pilot = parse(await read(".github/workflows/pilot.yml"));
     assert.ok(
@@ -58,17 +94,14 @@ describe("inactive deployment preparation", () => {
     const actionlint = parse(await read(".github/workflows/actionlint.yml"));
     assert.ok(
       actionlint.jobs.actionlint.steps.some(
-        (step) =>
-          step.with?.args ===
-          "-color tooling/deployment/workflows/deploy-web.yml"
+        (step) => step.with?.args === "-color" && step.name === "Lint workflows"
       )
     );
     const zizmor = parse(await read(".github/workflows/zizmor.yml"));
     assert.ok(
       zizmor.jobs.zizmor.steps.some(
         (step) =>
-          step.with?.inputs === "tooling/deployment/workflows/deploy-web.yml" &&
-          step.with["online-audits"] === false
+          step.with?.inputs === "." && step.with["online-audits"] === false
       )
     );
   });
@@ -100,9 +133,11 @@ describe("inactive deployment preparation", () => {
     }
   });
 
-  it("keeps the template uninstalled, manual-only and read-only by default", async () => {
+  it("installs only the forward workflow, manual-only and read-only by default", async () => {
     const installed = await readdir(resolve(root, ".github/workflows"));
-    assert.equal(installed.includes("deploy-web.yml"), false);
+    assert.equal(installed.includes("deploy-web.yml"), true);
+    assert.equal(installed.includes("recover-web.yml"), false);
+    assert.equal(installed.includes("release-ui.yml"), false);
     assert.deepEqual(template.on, { workflow_dispatch: null });
     assert.deepEqual(template.permissions, { contents: "read" });
     assert.deepEqual(Object.keys(template.jobs), ["verify", "deploy"]);

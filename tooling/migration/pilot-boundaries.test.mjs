@@ -297,6 +297,30 @@ describe("pilot boundaries", () => {
           assert.doesNotMatch(source, /wrangler deploy|secrets\./u);
           return;
         }
+        if (file === "deploy-web.yml") {
+          const workflow = parse(source);
+          const gate =
+            "github.repository == 'astilbahq/astilba' && github.ref == 'refs/heads/main' && vars.WEB_DEPLOYMENTS_ENABLED == 'true'";
+          assert.deepEqual(workflow.on, { workflow_dispatch: null });
+          assert.deepEqual(Object.keys(workflow.jobs), ["verify", "deploy"]);
+          for (const job of Object.values(workflow.jobs)) {
+            assert.equal(job.if, gate);
+            assert.equal(job["runs-on"], "ubuntu-24.04");
+          }
+          assert.equal(workflow.jobs.verify.environment, undefined);
+          assert.doesNotMatch(
+            JSON.stringify(workflow.jobs.verify),
+            /secrets\.|wrangler deploy/u
+          );
+          assert.equal(workflow.jobs.deploy.environment.name, "production-web");
+          assert.doesNotMatch(source, /npm publish|id-token: write/u);
+          const policy = await readJson("tooling/deployment/cutover.json");
+          assert.equal(policy.phase, "prepared-inactive");
+          assert.ok(
+            Object.values(policy.acceptance).every((value) => value === false)
+          );
+          return;
+        }
         assert.doesNotMatch(
           source,
           /npm publish|wrangler deploy(?! --dry-run)|id-token: write|environment:|secrets\./u
