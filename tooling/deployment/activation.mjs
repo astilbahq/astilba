@@ -13,6 +13,7 @@ export const requireActivation = (policy) => {
   const gates = [
     "artifactAndRouteComparison",
     "contentDatesAndSourceLinks",
+    "deploymentRuntimeSecurity",
     "legacyDeployHandover",
     "maintainerActivationApproval",
     "nonRegistryRollbackRehearsal",

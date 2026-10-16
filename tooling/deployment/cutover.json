@@ -6,6 +6,7 @@
   "acceptance": {
     "contentDatesAndSourceLinks": false,
     "artifactAndRouteComparison": false,
+    "deploymentRuntimeSecurity": false,
     "protectedEnvironmentAndCredentials": false,
     "nonRegistryRollbackRehearsal": false,
     "legacyDeployHandover": false,
