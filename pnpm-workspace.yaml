@@ -64,7 +64,7 @@ catalog:
   "react-dom": 19.3.0
   "react-router": 8.4.0
   "typescript": 6.0.3
-  "ultracite": 7.12.4
+  "ultracite": 8.0.1
   "vite": 8.3.4
   "vite-plus": 1.2.0
   "vitest": 5.0.4

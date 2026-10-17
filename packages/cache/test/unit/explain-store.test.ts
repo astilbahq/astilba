@@ -73,10 +73,7 @@ function countingStore(inner: Store): CountingStore {
       get: async (
         key: string,
         readKind?: ReadKind
-      ): Promise<StoreValue | undefined> => {
-        const stored = await inner.get(key, readKind);
-        return stored;
-      },
+      ): Promise<StoreValue | undefined> => await inner.get(key, readKind),
       set: async (
         key: string,
         value: string,
