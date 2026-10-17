@@ -32,8 +32,6 @@ jobs:
       - run: pnpm install --frozen-lockfile
         working-directory: fixtures/registry/env
       - run: pnpm check
-      - run: pnpm verify:registry:lint
-        working-directory: .
       - run: pnpm knip
       - run: pnpm verify
       - run: pnpm pack:artifact

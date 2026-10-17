@@ -1,23 +1,20 @@
-# Astilba development monorepo
+# Astilba monorepo
 
-This pnpm workspace is the destination for new Astilba source development. Read `docs/architecture/development-cutover.md` for development versus release authority, `docs/architecture/verification-inventory.md` for the complete gate inventory, and `docs/architecture/pilot-validation.md` for historical validation results. Open new source PRs and issues in `astilbahq/astilba`; do not merge old-repository PRs or transfer their private history as an incidental migration step.
+One pnpm workspace for every Astilba product. Use Node 24.18.1 and pnpm 11.17.0.
 
-- `packages/env` owns Env; its scoped guide covers source, artifact and consumer identities.
-- `packages/tokens` and `packages/ui` own the interface foundation; read their guides and root `PRODUCT.md` and `DESIGN.md`.
-- `apps/ui-showcase` and `fixtures/ui-astro` consume workspace UI source.
-- `apps/docs` and `apps/site` own the docs and apex applications; read `apps/docs/AGENTS.md` and `PRODUCT.md`.
-- `fixtures/registry/env` is an independent registry consumer workspace. It must retain its own lock, pnpm version and public package pins.
-- `products/cache` contains only the approved sanitized, unreleased snapshot. Its five workspaces share the root install; read its scoped guide before editing.
+- `packages/env`: Env, published to npm as `@astilba/env`.
+- `products/cache`: Cache, published to npm as `@astilba/cache`, with its test harness, demo and React Router fixture.
+- `packages/tokens`, `packages/ui`: the interface foundation (private workspace packages). Read `PRODUCT.md` and `DESIGN.md`.
+- `apps/docs`, `apps/site`: astilba.com/docs and the astilba.com apex. Read `apps/docs/AGENTS.md`.
+- `apps/ui-showcase`: ui.astilba.com.
+- `fixtures/ui-astro`: Astro consumer of the workspace UI.
+- `fixtures/registry/env`: Env examples installed from the npm registry. It keeps its own lockfile and pnpm version.
 
-Use Node 24.18.1 and pnpm 11.17.0 for root development. Install root and registry fixtures separately with frozen locks. `pnpm verify:ui`, `pnpm verify:env`, `pnpm verify:web` and `pnpm verify:cache` are scoped source gates; `pnpm verify` runs all four. Root CI adds the complete Env/Windows/runtime matrix, Linux browser contracts, and Cache's separate correctness, integration, boot, and mutation lanes. Follow the inventory for archive and exact consumer pins.
+Each package may have its own `AGENTS.md`; read it before editing there.
 
-Handbook and private Cache history remain outside this checkout. Import only the approved sanitized Cache snapshot, never private source documents or Git ancestry. The root, Cache, apps, fixtures and tooling stay private; only Env is publishable. Tokens and UI are private workspace packages; web apps consume their workspace exports while retaining released Env 0.3.0. Production deployment authority remains with the original repositories. Keep archived workflow copies inert and ordinary verification CI free of publishing and production credentials.
-
-Cache's source-integrity guard protects the pinned executable-source fingerprints in `products/cache/SOURCE-SNAPSHOT.json`, including all existing test assertions and names. The manifest records the explicitly approved duration-parser security amendment; other source and test changes still require maintainer approval. Run the guard after tooling changes. The root UI/control-file policy and the separate product policies must not be mixed through nested-config discovery; each verification lane checks its own canonical policy. Do not run the dirty-route witness concurrently with Cache typechecks.
+`pnpm verify` runs everything; `pnpm verify:ui`, `pnpm verify:env`, `pnpm verify:web` and `pnpm verify:cache` run one area. Merging to `main` deploys the web apps (`.github/workflows/deploy-web.yml`). Pushing an `env/v*` or `cache/v*` tag publishes that package.
 
 ## Ground rules
-
-The installed `release-env.yml` remains disabled by the absent `ENV_PUBLISHER_ENABLED` variable. UI publishing is retired from this checkout: no `release-ui.yml`, enable variable or prepared UI trust entry may be added. Read `docs/publisher-cutover.md` and `docs/ui-retirement.md` before release or retirement work. Env 0.3.1 completed its separately approved publication; its old npm binding is retired. The old UI publisher and both trust bindings are retired; UI/Tokens registry packages were permanently removed after the verified legacy Docs archive bridge. Read `docs/deployment-activation.md` before deployment work: the installed manual forward workflow stays disabled, all seven acceptance gates are false, and neither credentials nor an enable variable are configured by preparation. Offline recovery stays parked and uninstalled. Verification CI remains free of publishing and production credentials; deployments and Cache #94 remain excluded.
 
 1. Run `pnpm verify` before proposing a commit.
 2. Add or update tests for observable behaviour.
@@ -29,3 +26,4 @@ The installed `release-env.yml` remains disabled by the absent `ENV_PUBLISHER_EN
 8. Keep tokens framework-neutral. React and Panda belong in `@astilba/ui`, not in the CSS-only consumption path.
 9. Links that look like buttons remain anchors. Do not route them through the Base UI Button primitive.
 10. Use logical CSS properties and preserve visible focus, reduced-motion, and WCAG 2.2 AA behaviour.
+11. Stay on the task you were given. Don't add release, deployment or recovery machinery that nobody asked for.

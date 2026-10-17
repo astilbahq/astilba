@@ -86,10 +86,6 @@ const requiredMarkers = new Map([
     "src/docs/products/env.ts",
     [`Released as @astilba/env ${version} for public-alpha evaluation`],
   ],
-  [
-    ".github/workflows/verification.yml",
-    ['require("./package.json").dependencies["@astilba/env"]'],
-  ],
 ]);
 
 for (const [path, markers] of requiredMarkers) {

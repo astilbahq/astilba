@@ -1,17 +1,23 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": ["github>astilbahq/docs:renovate-default"],
+  "extends": [
+    "github>astilbahq/docs:renovate-default"
+  ],
   "platformAutomerge": false,
   "lockFileMaintenance": {
     "enabled": true,
-    "schedule": ["before 5am on monday"],
+    "schedule": [
+      "before 5am on monday"
+    ],
     "automerge": true
   },
   "customManagers": [
     {
       "customType": "regex",
       "description": "Keep the current Node.js CI pin current.",
-      "managerFilePatterns": ["/^\\.github\\/workflows\\/verification\\.yml$/"],
+      "managerFilePatterns": [
+        "/^\\.github\\/workflows\\/verification\\.yml$/"
+      ],
       "matchStrings": [
         "- label:\\s*current\\s+version:\\s*\"(?<currentValue>\\d+\\.\\d+\\.\\d+)\""
       ],
@@ -21,20 +27,16 @@
     {
       "customType": "regex",
       "description": "Keep the Zizmor CLI pin current.",
-      "managerFilePatterns": ["/^\\.github\\/workflows\\/zizmor\\.yml$/"],
-      "matchStrings": ["version: \"(?<currentValue>\\d+\\.\\d+\\.\\d+)\""],
+      "managerFilePatterns": [
+        "/^\\.github\\/workflows\\/zizmor\\.yml$/"
+      ],
+      "matchStrings": [
+        "version: \"(?<currentValue>\\d+\\.\\d+\\.\\d+)\""
+      ],
       "depNameTemplate": "zizmorcore/zizmor",
       "datasourceTemplate": "github-releases",
       "extractVersionTemplate": "^v?(?<version>.*)$",
       "versioningTemplate": "semver"
-    }
-  ],
-  "packageRules": [
-    {
-      "description": "Review changes to the Braces security backport.",
-      "matchPackageNames": ["braces", "@dieub/braces-depth-guard"],
-      "groupName": "Braces security backport",
-      "automerge": false
     }
   ]
 }

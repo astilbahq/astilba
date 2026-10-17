@@ -22,7 +22,7 @@
     "smoke:production": "node scripts/smoke-production.mjs",
     "smoke:all": "pnpm smoke:site && pnpm smoke:production",
     "smoke:site": "pnpm --dir ../site smoke:production",
-    "test": "pnpm test:dependency-security && vitest run",
+    "test": "vitest run",
     "test:browser": "pnpm build:production && playwright test",
     "test:browser:install": "playwright install chromium",
     "test:browser:install:ci": "playwright install --with-deps chromium",
@@ -32,8 +32,7 @@
     "verify": "pnpm env:release:check && pnpm env:check && pnpm panda:codegen && pnpm lint && pnpm check && pnpm test && pnpm knip && pnpm deploy:dry-run && pnpm test:browser:run && pnpm verify:site",
     "verify:site": "pnpm --dir ../site check && pnpm --dir ../site test && pnpm --dir ../site deploy:dry-run && pnpm --dir ../site test:browser",
     "verify:agent-artifacts": "node scripts/verify-agent-artifacts.mjs",
-    "worker:types": "wrangler types",
-    "test:dependency-security": "node --test scripts/dependency-security.test.mjs"
+    "worker:types": "wrangler types"
   },
   "dependencies": {
     "@astilba/env": "0.3.0",
@@ -65,7 +64,6 @@
     "@types/react-dom": "19.2.3",
     "ajv": "8.20.0",
     "ajv-formats": "3.0.1",
-    "braces": "npm:@dieub/braces-depth-guard@3.0.3-pn.3",
     "cross-env": "10.1.0",
     "knip": "6.29.0",
     "oxfmt": "0.60.0",

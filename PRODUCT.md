@@ -40,7 +40,6 @@ The packages express Astilba's compact, border-led, nearly monochrome interface 
 - `packages/tokens/tests/` verifies the static token contract.
 - `packages/ui/tests/` verifies component behaviour, accessibility, compiled CSS, package output, and consumer bundling.
 - `apps/ui-showcase/` is the private visual and accessibility harness.
-- `docs/ui-retirement.md` records workspace ownership and the separately gated legacy registry retirement.
 
 ## Product Principles
 

@@ -8,10 +8,7 @@
   "workspaces": {
     ".": {
       "entry": [
-        "scripts/serve-showcase.mjs!",
-        "tooling/migration/*.mjs!",
-        "tooling/deployment/*.mjs!",
-        "tooling/publishing/*.mjs!"
+        "scripts/*.mjs!"
       ],
       "playwright": {
         "config": [],

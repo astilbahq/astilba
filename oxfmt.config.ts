@@ -12,8 +12,5 @@ export default defineConfig({
     "apps/docs/**",
     "apps/site/**",
     "fixtures/registry/**",
-    "tooling/migration/install-baselines/**",
-    "tooling/migration/workflows/**",
-    "docs/architecture/verification-inventory.json",
   ],
 });

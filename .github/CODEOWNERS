@@ -1,6 +1,4 @@
 /.github/ @ReesMorris
-/tooling/ @ReesMorris
-/docs/architecture/ @ReesMorris
 /package.json @ReesMorris
 /pnpm-workspace.yaml @ReesMorris
 /pnpm-lock.yaml @ReesMorris

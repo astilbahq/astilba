@@ -29,13 +29,3 @@ jobs:
           online-audits: false
           token: offline
           version: "1.26.1"
-
-      - name: Audit inactive recovery template
-        uses: zizmorcore/zizmor-action@6fc4b006235f201fdab3722e17240ab420d580e5 # v0.6.1
-        with:
-          inputs: tooling/deployment/workflows/recover-web.yml
-          advanced-security: false
-          min-severity: medium
-          online-audits: false
-          token: offline
-          version: "1.26.1"
