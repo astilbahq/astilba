@@ -26,6 +26,8 @@ trustPolicyExclude:
   - "semver@6.3.1"
 engineStrict: true
 # One version per shared dependency; packages reference it as "catalog:".
+# packages/env keeps exact versions: its release check requires the packed package.json to
+# match the source byte for byte, and pnpm pack rewrites "catalog:".
 catalog:
   "@arethetypeswrong/cli": 0.18.5
   "@astrojs/check": 0.9.9
@@ -47,7 +49,7 @@ catalog:
   "astro": 7.2.8
   "axe-core": 4.12.1
   "cross-env": 10.1.0
-  "fast-check": "^4.8.0"
+  "fast-check": 4.10.2
   "isbot": 5.2.0
   "jsdom": 29.1.1
   "knip": 6.29.0
@@ -73,16 +75,6 @@ catalogs:
     oxfmt: 0.60.0
     oxlint: 1.75.0
 overrides:
-  vitest: 4.1.11
-  "@vitest/spy@4.1.10": 4.1.11
-  "@vitest/utils@4.1.10": 4.1.11
-  "@vitest/expect@4.1.10": 4.1.11
-  "@vitest/mocker@4.1.10": 4.1.11
-  "@vitest/runner@4.1.10": 4.1.11
-  "@vitest/browser@4.1.10": 4.1.11
-  "@vitest/snapshot@4.1.10": 4.1.11
-  "@vitest/pretty-format@4.1.10": 4.1.11
-  "@vitest/browser-preview@4.1.10": 4.1.11
   "@expressive-code/core@0.44.2>postcss-nested": 7.0.2
   # unifont 0.7.5 requires Node 22.19 through Undici 8.
   unifont@0.7.5: 0.7.4
