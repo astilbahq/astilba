@@ -77,7 +77,7 @@ describe("agent discovery metadata", () => {
       ],
       repository: {
         source: "github",
-        url: "https://github.com/astilbahq/docs",
+        url: "https://github.com/astilbahq/astilba",
       },
       title: MCP_SERVER_INFO.title,
       version: MCP_SERVER_INFO.version,

@@ -93,7 +93,7 @@ The same built Worker artifact can use another binding set:
 
 Env validates values at runtime. Its provider-neutral inventory command can compare the declared string names with an application-supplied name list; it does not call Cloudflare, inspect binding kinds, or decide when a changed set should redeploy.
 
-Choose the latest compatibility date supported by your installed Wrangler release. Env does not impose its own date floor. The [0.3.0 release matrix](https://github.com/astilbahq/env/actions/runs/31482997555) exercises the exact packed archive with stock Wrangler 4.115.0 and its bundled workerd at compatibility date `2026-07-29`; it does not replace Wrangler's transitive runtime.
+Choose the latest compatibility date supported by your installed Wrangler release. Env does not impose its own date floor. The 0.3.0 release matrix exercises the exact packed archive with stock Wrangler 4.115.0 and its bundled workerd at compatibility date `2026-07-29`; it does not replace Wrangler's transitive runtime.
 
 ## Generate Cloudflare's binding types
 

@@ -154,7 +154,8 @@ export const cacheProduct = {
   availabilityNote:
     "Unreleased source snapshot. There is no supported npm release, public checkout, or production installation path yet.",
   homePath: "/cache/",
-  repositoryUrl: "https://github.com/astilbahq/docs",
+  repositoryUrl:
+    "https://github.com/astilbahq/astilba/tree/main/packages/cache",
   status: {
     text: "Preview",
     variant: "caution",

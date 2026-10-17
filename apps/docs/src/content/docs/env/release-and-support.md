@@ -125,4 +125,4 @@ Plan for these constraints in 0.3:
 
 The inventory CLI is also deliberately narrow. It compares declared process-target names with a strict application-supplied name list. It does not query providers, inspect values or provider kinds, infer closed ownership, sync or prune configuration, or replace runtime `check` and `load` validation.
 
-The public [Env repository](https://github.com/astilbahq/env) is the source and issue tracker for the alpha. Report a contract, generation, runtime, or browser-boundary defect there.
+The public [Env repository](https://github.com/astilbahq/astilba/tree/main/packages/env) is the source and issue tracker for the alpha. Report a contract, generation, runtime, or browser-boundary defect there.

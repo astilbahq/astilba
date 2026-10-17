@@ -88,7 +88,11 @@ assertIncludes(
   "Env page"
 );
 assertIncludes(env, "0.3.0 · public alpha · local-first", "Env page");
-assertIncludes(env, "github.com/astilbahq/env", "Env page");
+assertIncludes(
+  env,
+  "github.com/astilbahq/astilba/tree/main/packages/env",
+  "Env page"
+);
 assertIncludes(headers, "Content-Security-Policy:", "Static headers");
 assertIncludes(headers, "clipboard-write=(self)", "Static permissions policy");
 assertIncludes(

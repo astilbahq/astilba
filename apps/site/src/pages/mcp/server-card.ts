@@ -24,7 +24,7 @@ export const GET = (): Response =>
       ],
       repository: {
         source: "github",
-        url: "https://github.com/astilbahq/docs",
+        url: "https://github.com/astilbahq/astilba",
       },
       title: "Astilba documentation",
       version: "0.1.0",

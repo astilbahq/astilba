@@ -152,7 +152,7 @@ export const envProduct = {
   availabilityNote:
     "Released as @astilba/env 0.3.0 for public-alpha evaluation. Expect deliberate breaking changes before a stable release.",
   homePath: "/env/",
-  repositoryUrl: "https://github.com/astilbahq/env",
+  repositoryUrl: "https://github.com/astilbahq/astilba/tree/main/packages/env",
   status: {
     text: "Public alpha",
     variant: "caution",

@@ -46,7 +46,7 @@ The plugin emits the stable `ENV_BROWSER_PRIVATE_IMPORT` failure code. Use Vite'
 
 Use a public `build` entry and its generated browser `.build.ts` module when Vite may fix the value at build time. When one built browser shell must receive deployment values, expose the generated public projection through an application-owned endpoint and bootstrap it in the browser.
 
-The [Vite browser shell example](https://github.com/astilbahq/env/tree/main/examples/vite) is an executable adoption fixture that demonstrates both choices. Its `Host`-derived audience fallback is restricted to exact local `localhost` and loopback forms, and its combined server target deliberately exercises a private secret. For production wiring, use a separate public bootstrap target and a configured canonical HTTPS audience as described in [Deliver browser configuration](/docs/env/browser-delivery/).
+The [Vite browser shell example](https://github.com/astilbahq/astilba/tree/main/fixtures/registry/env/vite) is an executable adoption fixture that demonstrates both choices. Its `Host`-derived audience fallback is restricted to exact local `localhost` and loopback forms, and its combined server target deliberately exercises a private secret. For production wiring, use a separate public bootstrap target and a configured canonical HTTPS audience as described in [Deliver browser configuration](/docs/env/browser-delivery/).
 
 ## Keep endpoint behavior elsewhere
 

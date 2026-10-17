@@ -187,7 +187,7 @@ test("serves the direct sitemap as a static XML asset", async ({ request }) => {
     /<lastmod>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z<\/lastmod>/
   );
   expect(sitemap).toContain(
-    `<loc>${docsUrl("/env/overview/")}</loc><lastmod>2026-08-11T11:08:32.000Z</lastmod>`
+    `<loc>${docsUrl("/env/quickstart/")}</loc><lastmod>2026-08-11T11:08:32.000Z</lastmod>`
   );
 
   const sitemapHeadResponse = await request.head("/docs/sitemap.xml", {
@@ -1571,7 +1571,10 @@ test("targets each public product source from product pages", async ({
       name: "Astilba Cache on GitHub",
       exact: true,
     })
-  ).toHaveAttribute("href", "https://github.com/astilbahq/docs");
+  ).toHaveAttribute(
+    "href",
+    "https://github.com/astilbahq/astilba/tree/main/packages/cache"
+  );
   await expect(
     page.locator('a[href*="github.com/astilbahq/cache"]')
   ).toHaveCount(0);
@@ -1582,7 +1585,10 @@ test("targets each public product source from product pages", async ({
       name: "Astilba Cache on GitHub",
       exact: true,
     })
-  ).toHaveAttribute("href", "https://github.com/astilbahq/docs");
+  ).toHaveAttribute(
+    "href",
+    "https://github.com/astilbahq/astilba/tree/main/packages/cache"
+  );
   await expect(
     page.locator('a[href*="github.com/astilbahq/cache"]')
   ).toHaveCount(0);
@@ -1593,7 +1599,10 @@ test("targets each public product source from product pages", async ({
       name: "Astilba Env on GitHub",
       exact: true,
     })
-  ).toHaveAttribute("href", "https://github.com/astilbahq/env");
+  ).toHaveAttribute(
+    "href",
+    "https://github.com/astilbahq/astilba/tree/main/packages/env"
+  );
 });
 
 test("uses product-aware document titles", async ({ page }) => {
@@ -2058,19 +2067,19 @@ test("presents the Env runtime, platform, and framework split", async ({
   for (const [name, href] of [
     [
       "Node server",
-      "https://github.com/astilbahq/env/tree/main/examples/node-service",
+      "https://github.com/astilbahq/astilba/tree/main/fixtures/registry/env/node-service",
     ],
     [
       "Cloudflare Worker",
-      "https://github.com/astilbahq/env/tree/main/examples/cloudflare-worker",
+      "https://github.com/astilbahq/astilba/tree/main/fixtures/registry/env/cloudflare-worker",
     ],
     [
       "Next static shell",
-      "https://github.com/astilbahq/env/tree/main/examples/next-static-shell",
+      "https://github.com/astilbahq/astilba/tree/main/fixtures/registry/env/next-static-shell",
     ],
     [
       "Vite browser shell",
-      "https://github.com/astilbahq/env/tree/main/examples/vite",
+      "https://github.com/astilbahq/astilba/tree/main/fixtures/registry/env/vite",
     ],
   ]) {
     await expect(page.getByRole("link", { name, exact: true })).toHaveAttribute(
