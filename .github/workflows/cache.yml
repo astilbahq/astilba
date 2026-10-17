@@ -15,7 +15,40 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 jobs:
+  changes:
+    name: Detect Cache changes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      relevant: ${{ steps.filter.outputs.relevant }}
+    defaults:
+      run:
+        working-directory: .
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      # Pushes, releases (workflow_call) and dispatches always run every lane. A pull request runs
+      # them only when it touches Cache, its harness, demo or fixture, a root file such as the
+      # lockfile, or this workflow.
+      - id: filter
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          relevant=true
+          if [ "$EVENT" = pull_request ]; then
+            # HEAD is the pull request's merge commit; its first parent is the base branch.
+            # --no-renames lists both sides of a move; -z keeps unusual paths unquoted.
+            changed=$(git diff --name-only --no-renames -z HEAD^1 HEAD | tr '\0' '\n')
+            if ! grep -qE '^([^/]+|packages/cache/.*|packages/cache-harness/.*|apps/cache-demo/.*|fixtures/cache-react-router/.*|\.github/workflows/cache\.yml)$' <<<"$changed"; then
+              relevant=false
+            fi
+          fi
+          echo "relevant=$relevant" >> "$GITHUB_OUTPUT"
   check:
+    needs: changes
+    if: needs.changes.outputs.relevant == 'true'
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
@@ -77,6 +110,8 @@ jobs:
       - run: vp test run --project unit --project harness --coverage
       - run: pnpm lint:publish
   invariants:
+    needs: changes
+    if: needs.changes.outputs.relevant == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
@@ -95,6 +130,8 @@ jobs:
         if: always()
         run: node scripts/invariant-summary.mjs invariants-report.json >> "$GITHUB_STEP_SUMMARY"
   sacred-unwritable-by-tools:
+    needs: changes
+    if: needs.changes.outputs.relevant == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
@@ -123,6 +160,8 @@ jobs:
           fi
           echo "lint autofixer proven live; sacred lane untouched"
   conformance:
+    needs: changes
+    if: needs.changes.outputs.relevant == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
@@ -138,6 +177,8 @@ jobs:
       - name: conformance (driver contracts)
         run: pnpm vitest run --project conformance
   integration:
+    needs: changes
+    if: needs.changes.outputs.relevant == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
@@ -170,6 +211,8 @@ jobs:
           echo "CPU budget verified in effect: CPUs [$cpus] of allowed set [$allowed] ($(nproc) visible)"
           taskset -c "$cpus" pnpm vitest run --project integration --disable-console-intercept
   worker-types-drift:
+    needs: changes
+    if: needs.changes.outputs.relevant == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
@@ -187,6 +230,8 @@ jobs:
           pnpm run types:integration
           git diff --exit-code -- test/integration/worker-configuration.d.ts
   bun:
+    needs: changes
+    if: needs.changes.outputs.relevant == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
@@ -204,6 +249,8 @@ jobs:
           bun-version: 1.3.14
       - run: bun test test/bun-smoke
   knip:
+    needs: changes
+    if: needs.changes.outputs.relevant == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
@@ -219,6 +266,8 @@ jobs:
       - run: pnpm knip
       - run: pnpm knip:production
   build-smoke:
+    needs: changes
+    if: needs.changes.outputs.relevant == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
@@ -234,6 +283,8 @@ jobs:
       - name: build-smoke (react-router build under real Vite 8)
         run: pnpm -C ../../fixtures/cache-react-router run build
   boot-smoke:
+    needs: changes
+    if: needs.changes.outputs.relevant == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
@@ -250,6 +301,8 @@ jobs:
       - name: boot-smoke (workerd boots the fixture and serves one request)
         run: node scripts/boot-smoke.mjs
   module-scope-boot:
+    needs: changes
+    if: needs.changes.outputs.relevant == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
@@ -265,6 +318,8 @@ jobs:
       - name: module-scope-boot (a module-scope factory boots on workerd and survives a request boundary)
         run: node scripts/module-scope-boot.mjs
   demo:
+    needs: changes
+    if: needs.changes.outputs.relevant == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
@@ -288,6 +343,8 @@ jobs:
           (cd ../../apps/cache-demo && pnpm exec wrangler types)
           git diff --exit-code -- ../../apps/cache-demo/worker-configuration.d.ts
   demo-boot-witness:
+    needs: changes
+    if: needs.changes.outputs.relevant == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -308,6 +365,7 @@ jobs:
     name: CI / required
     if: ${{ always() }}
     needs:
+      - changes
       - check
       - invariants
       - sacred-unwritable-by-tools
@@ -328,9 +386,17 @@ jobs:
         env:
           RESULTS: ${{ toJSON(needs) }}
         run: |
+          if ! jq -e '.changes.result == "success"' <<<"$RESULTS" >/dev/null; then
+            echo "::error::changes finished with $(jq -r '.changes.result' <<<"$RESULTS")"
+            exit 1
+          fi
+          if jq -e '.changes.outputs.relevant != "true"' <<<"$RESULTS" >/dev/null; then
+            echo "::notice::no Cache-relevant changes; the lanes were skipped"
+            exit 0
+          fi
           echo "::notice::integration finished with $(jq -r '.integration.result // "absent"' <<<"$RESULTS") — adjudicate per ground rule 14"
-          if ! jq -e 'del(.integration) | all(.[]; .result == "success")' <<<"$RESULTS" >/dev/null; then
-            jq -r 'del(.integration) | to_entries[] | select(.value.result != "success") | "\(.key) finished with \(.value.result)"' <<<"$RESULTS" |
+          if ! jq -e 'del(.changes, .integration) | all(.[]; .result == "success")' <<<"$RESULTS" >/dev/null; then
+            jq -r 'del(.changes, .integration) | to_entries[] | select(.value.result != "success") | "\(.key) finished with \(.value.result)"' <<<"$RESULTS" |
               while IFS= read -r failure; do
                 echo "::error::$failure"
               done
