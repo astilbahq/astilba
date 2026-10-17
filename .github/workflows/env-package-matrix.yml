@@ -35,6 +35,8 @@ jobs:
         env:
           EVENT: ${{ github.event_name }}
         run: |
+          # Fail the step if git diff fails, rather than reading an empty list as "nothing changed".
+          set -o pipefail
           relevant=true
           if [ "$EVENT" = pull_request ]; then
             # HEAD is the pull request's merge commit; its first parent is the base branch.
