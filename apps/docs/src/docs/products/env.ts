@@ -150,7 +150,7 @@ export const envProduct = {
   description:
     "A local-first configuration contract compiler with explicit lifecycles and physically separated browser and server projections.",
   availabilityNote:
-    "Released as @astilba/env 0.3.0 for public-alpha evaluation. Expect deliberate breaking changes before a stable release.",
+    "Released as @astilba/env 0.3.1 for public-alpha evaluation. Expect deliberate breaking changes before a stable release.",
   homePath: "/env/",
   repositoryUrl: "https://github.com/astilbahq/astilba/tree/main/packages/env",
   status: {

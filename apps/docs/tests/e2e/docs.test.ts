@@ -187,7 +187,7 @@ test("serves the direct sitemap as a static XML asset", async ({ request }) => {
     /<lastmod>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z<\/lastmod>/
   );
   expect(sitemap).toContain(
-    `<loc>${docsUrl("/env/quickstart/")}</loc><lastmod>2026-08-11T11:08:32.000Z</lastmod>`
+    `<loc>${docsUrl("/env/cli-reference/")}</loc><lastmod>2026-08-11T11:08:32.000Z</lastmod>`
   );
 
   const sitemapHeadResponse = await request.head("/docs/sitemap.xml", {
@@ -1797,7 +1797,7 @@ test("presents products and copies the agent setup prompt from the homepage", as
     has: page.getByRole("heading", { level: 3, name: "Env" }),
   });
   await expect(envProduct).toContainText("Public alpha");
-  await expect(envProduct).toContainText("@astilba/env 0.3.0");
+  await expect(envProduct).toContainText("@astilba/env 0.3.1");
   await expect(envProduct.getByRole("link", { name: "Env" })).toHaveAttribute(
     "href",
     "/docs/env/"
@@ -1993,7 +1993,7 @@ test("presents Env as a distinct public-alpha product home", async ({
   ).toHaveAttribute("href", "/docs/env/overview/");
   await expect(
     page.getByText(
-      "Released as @astilba/env 0.3.0 for public-alpha evaluation. Expect deliberate breaking changes before a stable release."
+      "Released as @astilba/env 0.3.1 for public-alpha evaluation. Expect deliberate breaking changes before a stable release."
     )
   ).toBeVisible();
   await expect(

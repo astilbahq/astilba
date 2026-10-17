@@ -69,7 +69,7 @@ assertIncludes(
   "Cache page"
 );
 assertIncludes(home, "@astilba/env", "Homepage");
-assertIncludes(home, "0.3.0 is a public alpha", "Homepage");
+assertIncludes(home, "0.3.1 is a public alpha", "Homepage");
 assertIncludes(home, "0.1.0 is an early alpha", "Homepage");
 assertIncludes(
   home,
@@ -87,7 +87,7 @@ assertIncludes(
   'href="https://astilba.com/env/" rel="canonical"',
   "Env page"
 );
-assertIncludes(env, "0.3.0 · public alpha · local-first", "Env page");
+assertIncludes(env, "0.3.1 · public alpha · local-first", "Env page");
 assertIncludes(
   env,
   "github.com/astilbahq/astilba/tree/main/packages/env",

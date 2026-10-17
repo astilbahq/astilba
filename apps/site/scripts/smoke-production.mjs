@@ -100,7 +100,7 @@ const run = async () => {
     "Homepage"
   );
   requireBodyIncludes(home, "@astilba/env", "Homepage");
-  requireBodyIncludes(home, "0.3.0 is a public alpha", "Homepage");
+  requireBodyIncludes(home, "0.3.1 is a public alpha", "Homepage");
   requireBodyIncludes(home, "0.1.0 is an early alpha", "Homepage");
 
   const cacheResponse = await request("/cache/");
@@ -114,7 +114,7 @@ const run = async () => {
   const envResponse = await request("/env/");
   requireStatus(envResponse, 200, "Env page");
   const env = await envResponse.text();
-  requireBodyIncludes(env, "0.3.0 · public alpha · local-first", "Env page");
+  requireBodyIncludes(env, "0.3.1 · public alpha · local-first", "Env page");
   requireBodyIncludes(
     env,
     "github.com/astilbahq/astilba/tree/main/packages/env",

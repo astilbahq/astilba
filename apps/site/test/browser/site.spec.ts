@@ -90,7 +90,7 @@ test("the public home distinguishes the alpha and preview products", async ({
       name: "Infrastructure that tells you where its guarantees end.",
     })
   ).toBeVisible();
-  await expect(page.getByText("0.3.0 is a public alpha")).toBeVisible();
+  await expect(page.getByText("0.3.1 is a public alpha")).toBeVisible();
   await expect(page.getByText("0.1.0 is an early alpha")).toBeVisible();
   const configure = page
     .getByRole("link", { name: "Configure a Node application" })
@@ -125,7 +125,7 @@ test("the Env page presents the public-alpha boundary", async ({ page }) => {
   ).toBeVisible();
   await expect(page.getByText("@astilba/env", { exact: true })).toBeVisible();
   await expect(
-    page.getByText("0.3.0 · public alpha · local-first")
+    page.getByText("0.3.1 · public alpha · local-first")
   ).toBeVisible();
   await expect(
     page.getByRole("link", { name: "View the source" })

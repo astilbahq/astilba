@@ -10,7 +10,7 @@ Treat this as an architectural migration, not a package rename.
 Install the exact public-alpha release before declaring the replacement contract:
 
 ```sh
-pnpm add @astilba/env@0.3.0 --save-exact
+pnpm add @astilba/env@0.3.1 --save-exact
 ```
 
 ## Map the concepts

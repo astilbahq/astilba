@@ -3,7 +3,7 @@ title: Check name inventory drift
 description: Export a value-free target inventory and compare it with an application-owned provider or platform name list.
 ---
 
-Env 0.3.0 can make one declaration the authority for the configuration names a process target expects. Export the declared names, convert a provider or platform list into Env's small observed format, then check required presence and explicit namespace ownership in CI.
+Env 0.3.1 can make one declaration the authority for the configuration names a process target expects. Export the declared names, convert a provider or platform list into Env's small observed format, then check required presence and explicit namespace ownership in CI.
 
 This workflow compares names only. Env does not receive values, contact a provider, inspect secret kinds, sync configuration, or decide which namespace your application owns.
 

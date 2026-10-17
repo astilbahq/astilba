@@ -26,7 +26,7 @@ Use this skill when a question concerns `@astilba/env`, its declaration builders
 
 ## Keep the public-alpha boundary explicit
 
-- Treat `@astilba/env` 0.3.0 as a public alpha, not a stable compatibility promise.
+- Treat `@astilba/env` 0.3.1 as a public alpha, not a stable compatibility promise.
 - Keep browser and server generated modules physically separate.
 - Limit Cloudflare Workers claims to generated deployment targets with first-party codecs. Do not extend that support to request targets, opaque schemas, or other package exports.
 - Do not invent a hosted control plane, provider API, secret store, `.env` loader, inline-script transport, or `@astilba/env/next` export.

@@ -20,8 +20,8 @@ importers:
   cloudflare-worker:
     dependencies:
       '@astilba/env':
-        specifier: 0.3.0
-        version: 0.3.0(vite@8.1.5(@types/node@26.1.2)(esbuild@0.28.1)(yaml@2.9.0))
+        specifier: 0.3.1
+        version: 0.3.1(vite@8.1.5(@types/node@26.1.2)(esbuild@0.28.1)(yaml@2.9.0))
     devDependencies:
       wrangler:
         specifier: 4.115.0
@@ -30,8 +30,8 @@ importers:
   next-static-shell:
     dependencies:
       '@astilba/env':
-        specifier: 0.3.0
-        version: 0.3.0(vite@8.1.5(@types/node@26.1.2)(esbuild@0.28.1)(yaml@2.9.0))
+        specifier: 0.3.1
+        version: 0.3.1(vite@8.1.5(@types/node@26.1.2)(esbuild@0.28.1)(yaml@2.9.0))
       next:
         specifier: 16.3.8
         version: 16.3.8(@types/node@26.1.2)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
@@ -61,14 +61,14 @@ importers:
   node-service:
     dependencies:
       '@astilba/env':
-        specifier: 0.3.0
-        version: 0.3.0(vite@8.1.5(@types/node@26.1.2)(esbuild@0.28.1)(yaml@2.9.0))
+        specifier: 0.3.1
+        version: 0.3.1(vite@8.1.5(@types/node@26.1.2)(esbuild@0.28.1)(yaml@2.9.0))
 
   vite:
     dependencies:
       '@astilba/env':
-        specifier: 0.3.0
-        version: 0.3.0(vite@8.1.5(@types/node@26.1.2)(esbuild@0.28.1)(yaml@2.9.0))
+        specifier: 0.3.1
+        version: 0.3.1(vite@8.1.5(@types/node@26.1.2)(esbuild@0.28.1)(yaml@2.9.0))
     devDependencies:
       cross-env:
         specifier: 10.1.0
@@ -79,8 +79,8 @@ importers:
 
 packages:
 
-  '@astilba/env@0.3.0':
-    resolution: {integrity: sha512-WVo1x/oMi+D1mhoOJVx6RLVy9BGiwtBFljNVjOW778Q6QFNamyhjmSygcpxCdsIdQ7Qhvw/XTCY9GjiEL+C+NA==}
+  '@astilba/env@0.3.1':
+    resolution: {integrity: sha512-FqIxV5jdnXCD5MZtoFfWWhuwT9BhQx3FgMhKlS4Zj9ccpgMTBUGzsNz1nyXMqPebtzdfnyoS7KdXVpjPpOKRhQ==}
     engines: {node: '>=22.14.0 <23.0.0 || >=24.0.0 <25.0.0 || >=26.0.0 <27.0.0'}
     hasBin: true
     peerDependencies:
@@ -1038,7 +1038,7 @@ packages:
 
 snapshots:
 
-  '@astilba/env@0.3.0(vite@8.1.5(@types/node@26.1.2)(esbuild@0.28.1)(yaml@2.9.0))':
+  '@astilba/env@0.3.1(vite@8.1.5(@types/node@26.1.2)(esbuild@0.28.1)(yaml@2.9.0))':
     optionalDependencies:
       vite: 8.1.5(@types/node@26.1.2)(esbuild@0.28.1)(yaml@2.9.0)
 
