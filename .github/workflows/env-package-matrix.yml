@@ -210,3 +210,27 @@ jobs:
           name: astilba-env-archive
           path: packages/env/.artifacts/local
       - run: node scripts/verify-consumer.mjs npm
+
+  result:
+    name: Env matrix result
+    if: always()
+    needs:
+      [
+        pack,
+        consumers,
+        cloudflare-workers,
+        node-typescript,
+        portable,
+        generation-and-vite,
+        next,
+        windows-consumer,
+      ]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require every job to pass
+        # No checkout here, so packages/env (the workflow default) does not exist.
+        working-directory: .
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: jq -e 'all(.[]; .result == "success")' <<<"$RESULTS"

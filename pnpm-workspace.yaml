@@ -17,6 +17,14 @@ allowBuilds:
   sharp: true
   workerd: true
 minimumReleaseAge: 4320
+# Refuse versions published with weaker provenance than earlier releases,
+# and transitive dependencies from git repositories or tarball URLs.
+trustPolicy: no-downgrade
+blockExoticSubdeps: true
+# Published by their own maintainers without provenance after earlier releases had it.
+trustPolicyExclude:
+  - "chokidar@4.0.3"
+  - "semver@6.3.1"
 engineStrict: true
 overrides:
   "@astilba/ui>vite": 8.1.5
