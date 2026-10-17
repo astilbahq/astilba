@@ -229,6 +229,8 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: Require every job to pass
+        # No checkout here, so packages/env (the workflow default) does not exist.
+        working-directory: .
         env:
           RESULTS: ${{ toJSON(needs) }}
         run: jq -e 'all(.[]; .result == "success")' <<<"$RESULTS"
