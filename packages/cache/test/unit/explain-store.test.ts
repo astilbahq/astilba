@@ -204,7 +204,9 @@ describe("explain — introspection-not-testimony: the struck fields are gone (E
     // compile — LEG1 reds. The runtime `expect` pins the witnesses non-vacuously.
     const noAppliedBatch: HasKey<PresentExplanation, "appliedBatch"> = false;
     const noDependencyGraph: HasKey<PresentExplanation, "dependencies"> = false;
+    // oxlint-disable-next-line sonarjs/no-trivial-assertions -- the type annotation is the check
     expect(noAppliedBatch).toBeFalsy();
+    // oxlint-disable-next-line sonarjs/no-trivial-assertions -- the type annotation is the check
     expect(noDependencyGraph).toBeFalsy();
   });
 });

@@ -36,10 +36,8 @@ function tool(manifest, name, args) {
   if (typeof bin === "string") {
     entry = bin;
   } else {
-    assert.ok(bin !== null && typeof bin === "object" && "attw" in bin);
-    assert.equal(name, "attw");
-    assert.equal(typeof bin.attw, "string");
-    entry = bin.attw;
+    assert.ok(bin !== null && typeof bin === "object" && name in bin);
+    entry = bin[name];
   }
   assert.ok(typeof entry === "string" && entry.length > 0);
   execFileSync(

@@ -340,7 +340,7 @@ export default defineConfig({
     // authority, fakes-only); `conformance` holds the phase-2 parameterized driver
     // contracts (deterministic lane) run against the v0.1 fakes as reference impls;
     // `integration` (phase-2) runs the workerd lane via
-    // @cloudflare/vitest-pool-workers and lives in its OWN config file (vitest 4 wires
+    // @cloudflare/vitest-plugin and lives in its OWN config file (vitest 4 wires
     // the pool through the `cloudflareTest` plugin, kept clear of this vp-vite config).
     // The Node projects exclude the Bun smoke suite so Node-side vitest never resolves
     // `bun:test`; the integration project runs off workerd, scoped to test/integration/.
@@ -401,7 +401,7 @@ export default defineConfig({
         },
       },
       // The workerd integration lane. Referenced by path (not inlined): its config
-      // imports the pool-workers `cloudflareTest` plugin against plain vitest/config,
+      // imports the vitest-plugin `cloudflareTest` plugin against plain vitest/config,
       // so no plugin-type skew touches this vp-bundled-vite root config.
       "./test/integration/vitest.config.ts",
     ],

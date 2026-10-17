@@ -33,7 +33,7 @@ import { describe, expect, it } from "vitest";
 const A = "hb:a";
 const B = "hb:b";
 
-// Per-test isolation: every DO in this lane shares ONE KV namespace, and pool-workers'
+// Per-test isolation: every DO in this lane shares ONE KV namespace, and the Workers pool's
 // per-file isolated-storage frames drop under concurrent DO requests (workers-sdk #11031), so
 // tests all writing `__reg:default:…` raced. A UNIQUE regId per test (the tool built)
 // partitions the namespace deterministically. The regId IS the DO name (identity =

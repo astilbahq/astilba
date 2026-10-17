@@ -272,11 +272,7 @@ const SidebarList = ({
   </ul>
 );
 
-export default function DocsSidebar({
-  context,
-  entries,
-  sidebarHash,
-}: DocsSidebarProps) {
+const DocsSidebar = ({ context, entries, sidebarHash }: DocsSidebarProps) => {
   const activeGroupIds = useMemo(
     () => collectDocsSidebarGroupIds(entries, (entry) => entry.containsCurrent),
     [entries]
@@ -420,4 +416,6 @@ export default function DocsSidebar({
       )}
     </div>
   );
-}
+};
+
+export default DocsSidebar;

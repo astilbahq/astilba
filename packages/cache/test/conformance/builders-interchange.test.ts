@@ -12,6 +12,7 @@ import { assertUserTag } from "../../src/tags";
 
 describe("builders — one vocabulary across construction paths (DoD-2)", () => {
   const ids = ["1", "42", "abc", "a.b-c_d", "x%20y"];
+
   it.each(ids)("t and mkTag agree byte-for-byte on book:%s", (id) => {
     const built = t`book:${id}`;
     const branded = mkTag(`book:${id}`);

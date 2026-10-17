@@ -52,6 +52,7 @@ describe("conformance teeth — every contract discriminates a wrong driver", ()
       })
     ).rejects.toThrow();
   });
+
   it("Store RCW check ACCEPTS the reference (non-vacuity)", async () => {
     await expect(
       storeChecks.readYourOwnWrite(makeFakeStoreHarness(), {
@@ -67,6 +68,7 @@ describe("conformance teeth — every contract discriminates a wrong driver", ()
       })
     ).rejects.toThrow();
   });
+
   it("Store throttle check ACCEPTS the classified reference (non-vacuity)", async () => {
     await expect(
       storeChecks.throttleClassified(makeFakeStoreHarness(), {
@@ -83,6 +85,7 @@ describe("conformance teeth — every contract discriminates a wrong driver", ()
       )
     ).rejects.toThrow();
   });
+
   it("Store oversize check ACCEPTS the typed reference (non-vacuity)", async () => {
     await expect(
       storeChecks.oversizeClassified(makeFakeStoreHarness(0, OVERSIZE_LIMIT), {
@@ -98,6 +101,7 @@ describe("conformance teeth — every contract discriminates a wrong driver", ()
       })
     ).rejects.toThrow();
   });
+
   it("Store CAS check ACCEPTS an atomic reference (non-vacuity)", async () => {
     await expect(
       storeChecks.casNoRegress(makeCasStoreHarness(), {
@@ -113,6 +117,7 @@ describe("conformance teeth — every contract discriminates a wrong driver", ()
       )
     ).rejects.toThrow();
   });
+
   it("Registry dual-independence check ACCEPTS the reference (non-vacuity)", async () => {
     await expect(
       registryChecks.softNeverRegressesHard(makeFakeRegistryHarness())
@@ -124,6 +129,7 @@ describe("conformance teeth — every contract discriminates a wrong driver", ()
       registryChecks.noAxisEmptyChange(makeAxisEmptyBatchRegistryHarness())
     ).rejects.toThrow();
   });
+
   it("Registry axis-empty check ACCEPTS the reference (non-vacuity)", async () => {
     await expect(
       registryChecks.noAxisEmptyChange(makeFakeRegistryHarness())
@@ -135,6 +141,7 @@ describe("conformance teeth — every contract discriminates a wrong driver", ()
       registryChecks.isolationScoped(makePrefixDroppingMirrorHarness())
     ).rejects.toThrow();
   });
+
   it("Registry isolation check ACCEPTS the scoped reference (non-vacuity — E19)", async () => {
     await expect(
       registryChecks.isolationScoped(makeScopedMirrorHarness())
@@ -146,6 +153,7 @@ describe("conformance teeth — every contract discriminates a wrong driver", ()
       codecChecks.roundTrip(makeNonByteStableCodec())
     ).rejects.toThrow();
   });
+
   it("Codec round-trip check ACCEPTS the reference (non-vacuity)", async () => {
     await expect(
       codecChecks.roundTrip(() => referenceCodec)
@@ -157,6 +165,7 @@ describe("conformance teeth — every contract discriminates a wrong driver", ()
       lockChecks.monotonePerKey(makeNonMonotoneLockHarness())
     ).rejects.toThrow();
   });
+
   it("Lock fence check ACCEPTS the reference (non-vacuity)", async () => {
     await expect(
       lockChecks.monotonePerKey(makeFakeLockHarness())
@@ -168,6 +177,7 @@ describe("conformance teeth — every contract discriminates a wrong driver", ()
       busChecks.resetBeforeFrame(makeForgetfulBusHarness())
     ).rejects.toThrow();
   });
+
   it("Bus B1 check ACCEPTS the v2 reference (non-vacuity)", async () => {
     await expect(
       busChecks.resetBeforeFrame(makeFakeBusHarness())
@@ -179,6 +189,7 @@ describe("conformance teeth — every contract discriminates a wrong driver", ()
       busChecks.helloAfterReset(makeSilentBusHarness())
     ).rejects.toThrow();
   });
+
   it("Bus B1′ check ACCEPTS the reference (non-vacuity — E21)", async () => {
     await expect(
       busChecks.helloAfterReset(makeFakeBusHarness())
@@ -190,6 +201,7 @@ describe("conformance teeth — every contract discriminates a wrong driver", ()
       busChecks.helloHeadLowerBound(makeUnderdeclaringBusHarness())
     ).rejects.toThrow();
   });
+
   it("Bus B1′ lower-bound check ACCEPTS the reference (non-vacuity — E21)", async () => {
     await expect(
       busChecks.helloHeadLowerBound(makeFakeBusHarness())
@@ -201,6 +213,7 @@ describe("conformance teeth — every contract discriminates a wrong driver", ()
       busChecks.gapHeadLowerBound(makeUnderdeclaringGapBusHarness())
     ).rejects.toThrow();
   });
+
   it("Bus B2′ lower-bound check ACCEPTS the reference (non-vacuity — E21)", async () => {
     await expect(
       busChecks.gapHeadLowerBound(makeFakeBusHarness())
@@ -212,6 +225,7 @@ describe("conformance teeth — every contract discriminates a wrong driver", ()
       busChecks.regIdEcho(makeNoEchoCheckDoBusHarness())
     ).rejects.toThrow();
   });
+
   it("Bus regId-echo check ACCEPTS the doBus reference (non-vacuity — ③)", async () => {
     await expect(
       busChecks.regIdEcho(makeDoBusHarness())
@@ -223,6 +237,7 @@ describe("conformance teeth — every contract discriminates a wrong driver", ()
       busChecks.closeOnDoubt(makeNoCloseOnDoubtDoBusHarness())
     ).rejects.toThrow();
   });
+
   it("Bus close-on-doubt check ACCEPTS the doBus reference (non-vacuity — ①)", async () => {
     await expect(
       busChecks.closeOnDoubt(makeDoBusHarness())

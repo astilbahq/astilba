@@ -81,13 +81,13 @@
   },
   "dependencies": {
     "@astilba/tokens": "workspace:*",
-    "@base-ui/react": "1.6.0"
+    "@base-ui/react": "1.9.0"
   },
   "devDependencies": {
     "@pandacss/dev": "catalog:",
     "@pandacss/preset-base": "catalog:",
     "@testing-library/react": "catalog:",
-    "@testing-library/user-event": "14.6.1",
+    "@testing-library/user-event": "14.6.8",
     "@types/react": "catalog:",
     "@types/react-dom": "catalog:",
     "axe-core": "catalog:",

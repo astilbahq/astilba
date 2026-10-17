@@ -77,12 +77,6 @@ export default defineConfig({
       },
     },
     {
-      files: ["src/components/PageActions.tsx"],
-      rules: {
-        "react/react-compiler": "off",
-      },
-    },
-    {
       files: ["src/components/ThemeToggle.astro"],
       rules: {
         // CSS durations include units (`250ms`, `0.25s`), so parseFloat is

@@ -28,7 +28,7 @@
 //
 // WHY THIS IS A SEPARATE GATE FROM THE integration LANE, AND NOT A DUPLICATE OF IT. The two lanes
 // disagree about what "module scope" is, and the disagreement is the whole reason this file exists.
-// `@cloudflare/vitest-pool-workers` evaluates the `main` worker module lazily, inside the request
+// `@cloudflare/vitest-plugin` evaluates the `main` worker module lazily, inside the request
 // context that first reaches for it — so under that pool a module-scope binding call SUCCEEDS, and a
 // test placed there proves nothing about the placement the quickstart depicts. Measured, not
 // assumed: the same construction that this gate catches at global scope runs clean under the pool.

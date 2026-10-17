@@ -95,13 +95,33 @@ if (!supportedNode(nodeVersion)) {
   );
 }
 
+/** @type {unknown} */
+const manifest = JSON.parse(
+  await readFile(resolve(root, "package.json"), "utf-8")
+);
+/**
+ * The exact version package.json declares, with any `npm:<name>@` alias prefix removed.
+ * @param {string} packageName
+ */
+const declaredVersion = (packageName) => {
+  /** @type {unknown} */
+  const devDependencies =
+    typeof manifest === "object" && manifest !== null
+      ? Object.getOwnPropertyDescriptor(manifest, "devDependencies")?.value
+      : undefined;
+  /** @type {unknown} */
+  const spec =
+    typeof devDependencies === "object" && devDependencies !== null
+      ? Object.getOwnPropertyDescriptor(devDependencies, packageName)?.value
+      : undefined;
+  return typeof spec === "string"
+    ? spec.replace(/^npm:.*@/u, "")
+    : fail(`package.json must declare ${packageName}.`);
+};
+
 const installed = await Promise.all(
-  /** @type {const} */ ([
-    ["typescript", "6.0.3"],
-    ["typescript-7", "7.0.2"],
-    ["vite", "8.1.5"],
-    ["workerd", "1.20260724.1"],
-  ]).map(async ([packageName, version]) => {
+  ["typescript", "typescript-7", "vite", "workerd"].map(async (packageName) => {
+    const version = declaredVersion(packageName);
     await assertInstalledPackage(packageName, version);
     return { packageName, version };
   })
