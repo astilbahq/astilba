@@ -15,6 +15,6 @@
   },
   "dependencies": {
     "@astilba/cache": "workspace:*",
-    "fast-check": "^4.8.0"
+    "fast-check": "catalog:"
   }
 }

@@ -19,25 +19,25 @@
   "dependencies": {
     "@astilba/tokens": "workspace:*",
     "@astilba/ui": "workspace:*",
-    "@astrojs/react": "6.0.1",
-    "@fontsource-variable/geist": "5.3.0",
-    "@fontsource-variable/inter": "5.3.0",
-    "@fontsource-variable/jetbrains-mono": "5.3.0",
-    "astro": "7.2.8",
-    "react": "19.2.8",
-    "react-dom": "19.2.8"
+    "@astrojs/react": "catalog:",
+    "@fontsource-variable/geist": "catalog:",
+    "@fontsource-variable/inter": "catalog:",
+    "@fontsource-variable/jetbrains-mono": "catalog:",
+    "astro": "catalog:",
+    "react": "catalog:",
+    "react-dom": "catalog:"
   },
   "devDependencies": {
-    "@astrojs/check": "0.9.9",
-    "@axe-core/playwright": "4.12.1",
-    "@playwright/test": "1.62.0",
-    "cross-env": "10.1.0",
-    "oxfmt": "0.60.0",
-    "oxlint": "1.75.0",
-    "typescript": "6.0.3",
-    "ultracite": "7.9.4",
-    "vitest": "4.1.11",
-    "wrangler": "4.114.0"
+    "@astrojs/check": "catalog:",
+    "@axe-core/playwright": "catalog:",
+    "@playwright/test": "catalog:",
+    "cross-env": "catalog:",
+    "oxfmt": "catalog:astro-lint",
+    "oxlint": "catalog:astro-lint",
+    "typescript": "catalog:",
+    "ultracite": "catalog:",
+    "vitest": "catalog:",
+    "wrangler": "catalog:"
   },
   "engines": {
     "node": "^22.18.0 || ^24.0.0 || ^26.0.0"

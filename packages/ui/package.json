@@ -84,20 +84,20 @@
     "@base-ui/react": "1.6.0"
   },
   "devDependencies": {
-    "@pandacss/dev": "1.11.5",
-    "@pandacss/preset-base": "1.11.5",
-    "@testing-library/react": "16.3.2",
+    "@pandacss/dev": "catalog:",
+    "@pandacss/preset-base": "catalog:",
+    "@testing-library/react": "catalog:",
     "@testing-library/user-event": "14.6.1",
-    "@types/react": "19.2.17",
-    "@types/react-dom": "19.2.3",
-    "axe-core": "4.12.1",
-    "jsdom": "29.1.1",
-    "lucide-react": "1.25.0",
-    "postcss": "8.5.28",
-    "react": "19.2.8",
-    "react-dom": "19.2.8",
-    "vite": "8.1.5",
-    "vitest": "4.1.11"
+    "@types/react": "catalog:",
+    "@types/react-dom": "catalog:",
+    "axe-core": "catalog:",
+    "jsdom": "catalog:",
+    "lucide-react": "catalog:",
+    "postcss": "catalog:",
+    "react": "catalog:",
+    "react-dom": "catalog:",
+    "vite": "catalog:",
+    "vitest": "catalog:"
   },
   "peerDependencies": {
     "react": ">=19.2.0 <20",

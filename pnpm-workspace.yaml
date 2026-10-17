@@ -25,24 +25,56 @@ trustPolicyExclude:
   - "chokidar@4.0.3"
   - "semver@6.3.1"
 engineStrict: true
+# One version per shared dependency; packages reference it as "catalog:".
+# packages/env keeps exact versions: its release check requires the packed package.json to
+# match the source byte for byte, and pnpm pack rewrites "catalog:".
+catalog:
+  "@arethetypeswrong/cli": 0.18.5
+  "@astrojs/check": 0.9.9
+  "@astrojs/react": 6.0.1
+  "@axe-core/playwright": 4.12.1
+  "@cloudflare/vite-plugin": 1.43.1
+  "@fontsource-variable/geist": 5.3.0
+  "@fontsource-variable/inter": 5.3.0
+  "@fontsource-variable/jetbrains-mono": 5.3.0
+  "@pandacss/dev": 1.11.5
+  "@pandacss/preset-base": 1.11.5
+  "@playwright/test": 1.62.0
+  "@react-router/dev": 8.3.0
+  "@testing-library/react": 16.3.2
+  "@types/node": 24.13.3
+  "@types/react": 19.2.17
+  "@types/react-dom": 19.2.3
+  "@vitest/coverage-istanbul": 4.1.11
+  "astro": 7.2.8
+  "axe-core": 4.12.1
+  "cross-env": 10.1.0
+  "fast-check": 4.10.2
+  "isbot": 5.2.0
+  "jsdom": 29.1.1
+  "knip": 6.29.0
+  "lucide-react": 1.26.0
+  "oxfmt": 0.64.0
+  "oxlint": 1.79.0
+  "oxlint-tsgolint": 7.0.2001
+  "postcss": 8.5.28
+  "publint": 0.3.21
+  "react": 19.2.8
+  "react-dom": 19.2.8
+  "react-router": 8.3.0
+  "typescript": 6.0.3
+  "ultracite": 7.9.4
+  "vite": 8.1.5
+  "vite-plus": 0.3.0
+  "vitest": 4.1.11
+  "wrangler": 4.114.0
+# Docs and site lint with Ultracite's React preset, which enables react/react-compiler;
+# oxlint 1.79 no longer has that rule, so they stay on the last compatible pair.
+catalogs:
+  astro-lint:
+    oxfmt: 0.60.0
+    oxlint: 1.75.0
 overrides:
-  "@astilba/ui>vite": 8.1.5
-  "@astilba/showcase>vite": 8.1.5
-  "@astilba/env>vite": 8.1.5
-  "@astilba/demo>vite": 8.1.4
-  "@astilba/rr-fixture>vite": 8.1.4
-  "@react-router/dev>vite": 8.1.4
-  "@cloudflare/vite-plugin@1.43.1>vite": 8.1.4
-  vitest: 4.1.11
-  "@vitest/spy@4.1.10": 4.1.11
-  "@vitest/utils@4.1.10": 4.1.11
-  "@vitest/expect@4.1.10": 4.1.11
-  "@vitest/mocker@4.1.10": 4.1.11
-  "@vitest/runner@4.1.10": 4.1.11
-  "@vitest/browser@4.1.10": 4.1.11
-  "@vitest/snapshot@4.1.10": 4.1.11
-  "@vitest/pretty-format@4.1.10": 4.1.11
-  "@vitest/browser-preview@4.1.10": 4.1.11
   "@expressive-code/core@0.44.2>postcss-nested": 7.0.2
   # unifont 0.7.5 requires Node 22.19 through Undici 8.
   unifont@0.7.5: 0.7.4
@@ -56,9 +88,9 @@ overrides:
   smol-toml@>=1.0.0 <1.9.0: 1.9.0
   fast-uri@3.1.7: 3.1.8
   "typed-rest-client>qs": 6.16.0
-  baseline-browser-mapping@2.10.42: 2.11.0
   js-yaml@4.3.0: 4.3.2
-  nanoid@3.3.15: 3.3.18
   source-map-js@1.2.1: 1.2.2
   "@cloudflare/vitest-pool-workers@0.18.3>miniflare": 4.20260708.0
   "miniflare@4.20260708.0>workerd": 1.20260708.1
+  # SonarJS loads the TypeScript JS API, which TypeScript 7 no longer ships.
+  "eslint-plugin-sonarjs>typescript": 6.0.3

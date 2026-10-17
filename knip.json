@@ -128,5 +128,6 @@
       "ignoreDependencies": ["@react-router/node", "cloudflare"]
     }
   },
-  "tags": ["-testExport"]
+  "tags": ["-testExport"],
+  "rules": { "catalog": "off" }
 }

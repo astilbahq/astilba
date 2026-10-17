@@ -10,7 +10,7 @@ const require = createRequire(resolve(root, "package.json"));
 const read = (path) => JSON.parse(readFileSync(path, "utf8"));
 const workspaceRoot = resolve(root, "../..");
 const workspace = YAML.parse(readFileSync(resolve(workspaceRoot, "pnpm-workspace.yaml"), "utf8"));
-const expected = workspace.overrides.vitest;
+const expected = workspace.catalog.vitest;
 const direct = realpathSync(require.resolve("vitest/package.json"));
 const owner = require.resolve("vite-plus/package.json");
 assert.equal(read(owner).dependencies.vitest, expected, "Vite+ must declare the matching Vitest runner");
