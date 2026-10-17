@@ -27,6 +27,6 @@ fixtures/   cache-react-router, ui-astro; registry/env (installs Env from npm, s
 ## Releasing and deploying
 
 - **Web:** merging to `main` deploys the apex, docs and UI showcase to Cloudflare.
-- **Packages:** bump the version, merge, then push a tag on `main`: `env/v<version>` or `cache/v<version>`. The release workflow publishes to npm with provenance and creates a GitHub release.
+- **Packages:** bump the version, merge, then push a tag on `main`: `env/v<version>` or `cache/v<version>`. The release workflow publishes to npm with provenance and creates a GitHub release. Cache releases are staged: approve them on npmjs.com (or with `npm stage approve`) to make them live.
 
 See [AGENTS.md](AGENTS.md) for agent guidance and [CONTRIBUTING.md](CONTRIBUTING.md) for contributors.
