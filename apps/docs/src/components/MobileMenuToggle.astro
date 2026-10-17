@@ -43,7 +43,7 @@ const openIconClass = css({
   opacity: 1,
   filter: "blur(0)",
   transform: "scale(1)",
-  _groupExpanded: {
+  "[data-menu-toggle]:has(~ :popover-open) &": {
     opacity: 0,
     filter: "blur(var(--astilba-blurs-icon-swap))",
     transform: "scale(0.25)",
@@ -53,7 +53,7 @@ const closeIconClass = css({
   opacity: 0,
   filter: "blur(var(--astilba-blurs-icon-swap))",
   transform: "scale(0.25)",
-  _groupExpanded: {
+  "[data-menu-toggle]:has(~ :popover-open) &": {
     opacity: 1,
     filter: "blur(0)",
     transform: "scale(1)",
@@ -61,16 +61,17 @@ const closeIconClass = css({
 });
 ---
 
-<starlight-menu-button
-  aria-expanded="false"
-  class:list={[hostClass, "group print:hidden"]}
->
+<!--
+  Starlight 0.42 renders the sidebar as a native popover (#starlight__sidebar) right after this
+  toggle, and handles opening, Escape, light dismiss and focus trapping itself.
+-->
+<div data-menu-toggle class:list={[hostClass, "print:hidden"]}>
   <Button
     aria-controls="starlight__sidebar"
-    aria-expanded="false"
     aria-label={Astro.locals.t("menuButton.accessibleLabel")}
     className={buttonClass}
     iconOnly
+    popoverTarget="starlight__sidebar"
   >
     <span aria-hidden="true" class={iconSwapClass}>
       <span class:list={[iconClass, openIconClass]}>
@@ -81,83 +82,22 @@ const closeIconClass = css({
       </span>
     </span>
   </Button>
-</starlight-menu-button>
+</div>
 
 <script>
-  const elementName = "starlight-menu-button";
+  // Mirror the popover's state on the button's aria-expanded attribute. It is not rendered in the
+  // HTML: without JavaScript the browser exposes the popover button's expanded state itself, and a
+  // static "false" would override it.
+  const sidebar = document.querySelector("#starlight__sidebar");
+  const button = document.querySelector("[data-menu-toggle] button");
 
-  class AstilbaMobileMenuToggle extends HTMLElement {
-    private button: HTMLButtonElement | null = null;
-    private parentNavigation: HTMLElement | null = null;
-    private viewport: MediaQueryList | null = null;
-
-    private readonly handleClick = (): void => {
-      this.setExpanded(this.getAttribute("aria-expanded") !== "true");
-    };
-
-    private readonly handleKeyup = (event: KeyboardEvent): void => {
-      if (event.code !== "Escape") {
-        return;
-      }
-
-      this.setExpanded(false);
-      this.button?.focus();
-    };
-
-    private readonly handleViewportChange = (): void => {
-      this.setExpanded(false);
-    };
-
-    connectedCallback(): void {
-      if (this.button) {
-        return;
-      }
-
-      const button = this.querySelector("button");
-
-      if (!(button instanceof HTMLButtonElement)) {
-        return;
-      }
-
-      this.button = button;
-      this.button.addEventListener("click", this.handleClick);
-
-      const parentNavigation = this.closest("nav");
-
-      if (parentNavigation instanceof HTMLElement) {
-        this.parentNavigation = parentNavigation;
-        this.parentNavigation.addEventListener("keyup", this.handleKeyup);
-      }
-
-      this.viewport = window.matchMedia("(min-width: 50em)");
-      this.viewport.addEventListener("change", this.handleViewportChange);
-      this.setExpanded(this.getAttribute("aria-expanded") === "true");
+  button?.setAttribute(
+    "aria-expanded",
+    String(sidebar?.matches(":popover-open") ?? false)
+  );
+  sidebar?.addEventListener("toggle", (event) => {
+    if (event instanceof ToggleEvent) {
+      button?.setAttribute("aria-expanded", String(event.newState === "open"));
     }
-
-    disconnectedCallback(): void {
-      this.setExpanded(false);
-      this.button?.removeEventListener("click", this.handleClick);
-      this.parentNavigation?.removeEventListener("keyup", this.handleKeyup);
-      this.viewport?.removeEventListener("change", this.handleViewportChange);
-      this.button = null;
-      this.parentNavigation = null;
-      this.viewport = null;
-    }
-
-    private setExpanded(expanded: boolean): void {
-      this.setAttribute("aria-expanded", String(expanded));
-      this.button?.setAttribute("aria-expanded", String(expanded));
-      document.body.toggleAttribute("data-mobile-menu-expanded", expanded);
-
-      for (const element of document.querySelectorAll<HTMLElement>(
-        ".main-frame, .sl-skip-link"
-      )) {
-        element.toggleAttribute("inert", expanded);
-      }
-    }
-  }
-
-  if (!customElements.get(elementName)) {
-    customElements.define(elementName, AstilbaMobileMenuToggle);
-  }
+  });
 </script>

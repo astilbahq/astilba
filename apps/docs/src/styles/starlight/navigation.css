@@ -57,12 +57,12 @@
     box-shadow: none;
   }
 
-  body[data-mobile-menu-expanded] {
+  body:has(#starlight__sidebar:popover-open) {
     overflow: hidden;
   }
 
   @media (min-width: 50rem) {
-    body[data-mobile-menu-expanded] {
+    body:has(#starlight__sidebar:popover-open) {
       overflow: auto;
     }
 
