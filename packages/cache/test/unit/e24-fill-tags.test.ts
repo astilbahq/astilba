@@ -210,52 +210,52 @@ describe("E24 — a dependency declared during a fill joins the stored set (§2.
 });
 
 // ── TOOTH 2: the singleflight joiner inherits the leader's stored set + scope ────────────────────
-describe("E24 — a singleflight joiner reports the leader's stored set (§2.1)", () => {
-  /** Drive a leader + a joiner onto ONE fill, deterministically: the leader's factory parks on a
-   * gate until both have registered/joined, so the second call cannot race ahead into a fresh hit
-   * or its own fill. Returns the two renders and the factory call count (must be 1). */
-  async function leaderJoiner(
-    cache: Cache,
-    scope: "public" | undefined,
-    userId?: string
-  ): Promise<{ joiner: Rendered; calls: number }> {
-    const dep = t`dep:1`;
-    // A deferred gate that holds the leader's fill open until the joiner has joined — a genuine
-    // manual deferred, not incidental promise-wrapping. `resolve` is assigned synchronously inside
-    // the executor, so `releaseGate` is set before any use (definite-assignment).
-    let releaseGate!: () => void;
-    // oxlint-disable-next-line promise/avoid-new -- a test-orchestration deferred; `Promise.withResolvers` is beyond this repo's TS lib target
-    const gate = new Promise<void>((resolve) => {
-      releaseGate = resolve;
+/** Drive a leader + a joiner onto ONE fill, deterministically: the leader's factory parks on a
+ * gate until both have registered/joined, so the second call cannot race ahead into a fresh hit
+ * or its own fill. Returns the two renders and the factory call count (must be 1). */
+async function leaderJoiner(
+  cache: Cache,
+  scope: "public" | undefined,
+  userId?: string
+): Promise<{ joiner: Rendered; calls: number }> {
+  const dep = t`dep:1`;
+  // A deferred gate that holds the leader's fill open until the joiner has joined — a genuine
+  // manual deferred, not incidental promise-wrapping. `resolve` is assigned synchronously inside
+  // the executor, so `releaseGate` is set before any use (definite-assignment).
+  let releaseGate!: () => void;
+  // oxlint-disable-next-line promise/avoid-new -- a test-orchestration deferred; `Promise.withResolvers` is beyond this repo's TS lib target
+  const gate = new Promise<void>((resolve) => {
+    releaseGate = resolve;
+  });
+  let leaderStarted = false;
+  let calls = 0;
+  const factory = async (ctx: FactoryCtx<string>): Promise<string> => {
+    calls++;
+    leaderStarted = true;
+    ctx.dependsOn(dep);
+    await gate;
+    return "v";
+  };
+  const call = async (): Promise<unknown> =>
+    await cache.getOrSet({
+      factory,
+      key: "k",
+      ...(scope === undefined ? {} : { scope }),
+      ...(userId === undefined ? {} : { request: frameRequest() }),
     });
-    let leaderStarted = false;
-    let calls = 0;
-    const factory = async (ctx: FactoryCtx<string>): Promise<string> => {
-      calls++;
-      leaderStarted = true;
-      ctx.dependsOn(dep);
-      await gate;
-      return "v";
-    };
-    const call = async (): Promise<unknown> =>
-      await cache.getOrSet({
-        factory,
-        key: "k",
-        ...(scope === undefined ? {} : { scope }),
-        ...(userId === undefined ? {} : { request: frameRequest() }),
-      });
 
-    // Start the leader; wait until its factory is running (registered in the singleflight map).
-    const leaderRender = render(cache, loaderWith(call), userId);
-    await flushUntil(() => leaderStarted);
-    // Start the joiner; it misses every tier (nothing stored yet) and joins the in-flight leader.
-    const joinerRender = render(cache, loaderWith(call), userId);
-    await yieldTick();
-    releaseGate();
-    const [, joiner] = await Promise.all([leaderRender, joinerRender]);
-    return { calls, joiner };
-  }
+  // Start the leader; wait until its factory is running (registered in the singleflight map).
+  const leaderRender = render(cache, loaderWith(call), userId);
+  await flushUntil(() => leaderStarted);
+  // Start the joiner; it misses every tier (nothing stored yet) and joins the in-flight leader.
+  const joinerRender = render(cache, loaderWith(call), userId);
+  await yieldTick();
+  releaseGate();
+  const [, joiner] = await Promise.all([leaderRender, joinerRender]);
+  return { calls, joiner };
+}
 
+describe("E24 — a singleflight joiner reports the leader's stored set (§2.1)", () => {
   // Mutation: the fill record's `tags: attempt.tags ?? []` → `tags: sortedUserTags(options.tags)`
   // ⇒ the joiner records ITS OWN (empty) declared tags, not the leader's stored set ⇒ its Cache-Tag
   // comes out null ⇒ reds. (The LEADER is unaffected — its own ctx.dependsOn recorded the tag.)

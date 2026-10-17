@@ -25,9 +25,9 @@ Dark mode is the default. Set `data-theme="light"` on the document element to ap
 Add the preset after Panda's base preset and use the `astilba` prefix:
 
 ```ts
+import { astilbaPreset } from "@astilba/tokens/panda";
 import { defineConfig } from "@pandacss/dev";
 import presetBase from "@pandacss/preset-base";
-import { astilbaPreset } from "@astilba/tokens/panda";
 
 export default defineConfig({
   prefix: "astilba",

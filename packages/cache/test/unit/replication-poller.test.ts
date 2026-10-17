@@ -214,37 +214,37 @@ describe("ReplicationPoller — retry ladder escalation + terminal stop (§4.2, 
   });
 });
 
-describe("ReplicationPoller — the terminal verdict is indexed to the pointer (§4.2, E20, errata +25)", () => {
-  /** A pointer scoped to `REG_ID` at a given `snapBatch` (the durable checkpoint index). */
-  const pointerAt = (snapBatch: number): string =>
-    JSON.stringify({
-      epoch: 10,
-      flushedAt: 1,
-      lastBatch: 10,
-      regId: REG_ID,
-      snapBatch,
-    });
+/** A pointer scoped to `REG_ID` at a given `snapBatch` (the durable checkpoint index). */
+const pointerAt = (snapBatch: number): string =>
+  JSON.stringify({
+    epoch: 10,
+    flushedAt: 1,
+    lastBatch: 10,
+    regId: REG_ID,
+    snapBatch,
+  });
 
-  /** A reader whose ladder always rules terminal (snapshot missing at the verdict index), until
-   * `armed` flips — modelling a later snapshot appearing that finally bridges the hole. */
-  const terminalReader = (armed: { value: boolean }): ScriptedReader => {
-    const reader: ScriptedReader = new ScriptedReader(
-      true,
-      (policy) =>
-        policy?.deltasExhausted === true ? "needs-snapshot" : transientMiss,
-      (policy) => {
-        if (armed.value) {
-          reader.suspect = false; // the newer snapshot bridged the hole — reconverge
-          return "converged";
-        }
-        return policy?.snapshotExhausted === true
-          ? "terminal-gap"
-          : transientMiss;
+/** A reader whose ladder always rules terminal (snapshot missing at the verdict index), until
+ * `armed` flips — modelling a later snapshot appearing that finally bridges the hole. */
+const terminalReader = (armed: { value: boolean }): ScriptedReader => {
+  const reader: ScriptedReader = new ScriptedReader(
+    true,
+    (policy) =>
+      policy?.deltasExhausted === true ? "needs-snapshot" : transientMiss,
+    (policy) => {
+      if (armed.value) {
+        reader.suspect = false; // the newer snapshot bridged the hole — reconverge
+        return "converged";
       }
-    );
-    return reader;
-  };
+      return policy?.snapshotExhausted === true
+        ? "terminal-gap"
+        : transientMiss;
+    }
+  );
+  return reader;
+};
 
+describe("ReplicationPoller — the terminal verdict is indexed to the pointer (§4.2, E20, errata +25)", () => {
   it("re-arms ONE snapshot-permitted attempt when a later snapshot advances snapBatch — recovers (never-re-arm ⇒ red)", async () => {
     const store = new MapStore();
     await store.set(KEYS.stateKey, pointerAt(5)); // verdict will index to snapBatch 5

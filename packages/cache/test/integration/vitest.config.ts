@@ -48,6 +48,9 @@ export default defineConfig({
     // the conditional into a deterministic harness — one that awaits the conditions it observes
     // into existence rather than racing them.
     fileParallelism: false,
+    // Vitest 5's filesystem module cache lives at the workspace root, which the workerd runner
+    // resolves against the wrong directory; this lane runs without it.
+    fsModuleCache: false,
     hookTimeout: 30_000,
     include: ["**/*.test.ts"],
     name: "integration",

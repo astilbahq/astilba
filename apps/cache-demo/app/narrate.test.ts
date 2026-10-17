@@ -444,6 +444,18 @@ describe("both ends of the heartbeat number", () => {
 });
 
 // ── The poll rescue ─────────────────────────────────────────────────────────
+/** The measured "purge → bus-frame cursor" row for a reader waiting on `channel`. */
+const waitOn = (channel: Explanation["reader"]["channel"]) =>
+  row(
+    narrate(
+      input({
+        awaitingRescueForMs: 2000,
+        witness: { explanation: withReader({ channel }), ok: true },
+      })
+    ),
+    "purge → bus-frame cursor"
+  ).measured;
+
 describe("the poll rescue row", () => {
   it("prints the epochs on both sides of the number, not just the number", () => {
     const { measured } = row(
@@ -566,16 +578,6 @@ describe("the poll rescue row", () => {
   });
 
   it("gives an established channel and a dead one two different explanations for the same wait", () => {
-    const waitOn = (channel: Explanation["reader"]["channel"]) =>
-      row(
-        narrate(
-          input({
-            awaitingRescueForMs: 2000,
-            witness: { explanation: withReader({ channel }), ok: true },
-          })
-        ),
-        "purge → bus-frame cursor"
-      ).measured;
     expect(
       waitOn("established"),
       "the waiting arm says the same thing whatever the reader's channel is doing"
@@ -618,6 +620,16 @@ describe("the read cost row", () => {
   });
 });
 
+/** The `because` of the degradation judgment for a reader in this state. */
+function becauseFor(over: Partial<Explanation["reader"]>): string {
+  return (
+    narrate(
+      input({ witness: { explanation: withReader(over), ok: true } })
+    ).judgments.find((j) => j.event === TELEMETRY_EVENTS.registry_degraded)
+      ?.because ?? ""
+  );
+}
+
 describe("the judgments the demo derives", () => {
   it("derives nothing from a healthy run", () => {
     expect(narrate(input()).judgments).toStrictEqual([]);
@@ -643,16 +655,6 @@ describe("the judgments the demo derives", () => {
   // every branch shares cannot tell the branches apart. Each arm is now driven to the exact word it
   // owes, and the arms are checked against each other so a swap cannot hide behind a match.
   describe("names WHICH degradation fact it found — one arm at a time", () => {
-    /** The `because` of the degradation judgment for a reader in this state. */
-    function becauseFor(over: Partial<Explanation["reader"]>): string {
-      return (
-        narrate(
-          input({ witness: { explanation: withReader(over), ok: true } })
-        ).judgments.find((j) => j.event === TELEMETRY_EVENTS.registry_degraded)
-          ?.because ?? ""
-      );
-    }
-
     it("names TERMINAL for a terminal reader, and not the other arms", () => {
       const because = becauseFor({ suspect: false, terminal: true });
       expect(because).toMatch(/\bterminal\b/u);

@@ -124,6 +124,21 @@ function runFlush(
   return m.flush(0);
 }
 
+/** The serialized frame of a second flush, optionally with heartbeats between the two flushes. */
+const secondFlushFrame = (withHeartbeats: boolean): string => {
+  const m = new RegistryMachine();
+  m.expire(["b", "a"], 0);
+  m.flush(0); // seq 1
+  if (withHeartbeats) {
+    // Heartbeats at arbitrary times between the two flushes.
+    m.heartbeat(10);
+    m.heartbeat(20);
+    m.heartbeat(30);
+  }
+  m.delete(["a"], 0);
+  return JSON.stringify(persistOf(m.flush(40)).frame);
+};
+
 describe(RegistryMachine, () => {
   test("a mutation mints a strictly-monotone epoch and schedules a flush at nowMs", () => {
     const m = new RegistryMachine();
@@ -830,21 +845,8 @@ describe(RegistryMachine, () => {
   });
 
   test("replay identity across heartbeats: a later flush is byte-identical with or without intervening heartbeats (§4.2, MI8)", () => {
-    const build = (withHeartbeats: boolean): string => {
-      const m = new RegistryMachine();
-      m.expire(["b", "a"], 0);
-      m.flush(0); // seq 1
-      if (withHeartbeats) {
-        // Heartbeats at arbitrary times between the two flushes.
-        m.heartbeat(10);
-        m.heartbeat(20);
-        m.heartbeat(30);
-      }
-      m.delete(["a"], 0);
-      return JSON.stringify(persistOf(m.flush(40)).frame);
-    };
     // The machine-level face of "a host need not journal heartbeats; replay is exact without them":
     // heartbeats change nothing the next batch serializes.
-    expect(build(true)).toBe(build(false));
+    expect(secondFlushFrame(true)).toBe(secondFlushFrame(false));
   });
 });

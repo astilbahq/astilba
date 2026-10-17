@@ -75,6 +75,9 @@ const assertionRewriteRepeal = {
       rules: {
         "vitest/prefer-to-be-falsy": "off",
         "vitest/prefer-to-be-truthy": "off",
+        // Ultracite 7.12's `test` → `it` fix would also rewrite the sacred lane, and carries no
+        // correctness signal, so it is repealed here too.
+        "vitest/consistent-test-it": "off",
       },
     },
   ],

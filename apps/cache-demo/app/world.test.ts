@@ -228,25 +228,25 @@ describe("arm() goes through the same total reset heal() does", () => {
   });
 });
 
+/** A witness reporting an advanced epoch on a channel in `channel`. */
+function advanced(channel: Explanation["reader"]["channel"]) {
+  return {
+    explanation: {
+      key: "k",
+      kind: "absent",
+      reader: { ...READER, appliedEpoch: 5, channel },
+      tier: "miss",
+    },
+    ok: true,
+  } as const;
+}
+
 describe("the poll-rescue stopwatch", () => {
   const pending: PendingPurge = {
     appliedEpochAfterAck: 4,
     appliedEpochAtPurge: 4,
     atMs: 1000,
   };
-
-  /** A witness reporting an advanced epoch on a channel in `channel`. */
-  function advanced(channel: Explanation["reader"]["channel"]) {
-    return {
-      explanation: {
-        key: "k",
-        kind: "absent",
-        reader: { ...READER, appliedEpoch: 5, channel },
-        tier: "miss",
-      },
-      ok: true,
-    } as const;
-  }
 
   it("declares no rescue while the reader's epoch has not moved", () => {
     // The epoch is the entire proof. A reader that was ASKED to learn something and did not has not
