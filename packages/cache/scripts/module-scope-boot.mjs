@@ -75,7 +75,9 @@ const child = spawn(
   "pnpm",
   ["exec", "wrangler", "dev", "-c", CONFIG, "--port", String(PORT)],
   {
-    cwd: FIXTURE,
+    // Run from the Cache package so pnpm resolves its own wrangler; the fixture directory is not a
+    // package. -c is absolute, so wrangler still resolves the Worker relative to the fixture config.
+    cwd: ROOT,
     // Never let wrangler phone home from CI, and never let it try to be interactive.
     env: { ...process.env, CI: "1", WRANGLER_SEND_METRICS: "false" },
     stdio: ["ignore", "pipe", "pipe"],
