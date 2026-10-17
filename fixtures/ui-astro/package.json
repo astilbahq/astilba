@@ -10,15 +10,15 @@
   "dependencies": {
     "@astilba/tokens": "workspace:*",
     "@astilba/ui": "workspace:*",
-    "@astrojs/react": "6.0.1",
-    "astro": "7.2.8",
-    "react": "19.2.8",
-    "react-dom": "19.2.8"
+    "@astrojs/react": "catalog:",
+    "astro": "catalog:",
+    "react": "catalog:",
+    "react-dom": "catalog:"
   },
   "devDependencies": {
-    "@astrojs/check": "0.9.9",
-    "@types/react": "19.2.17",
-    "@types/react-dom": "19.2.3",
-    "typescript": "6.0.3"
+    "@astrojs/check": "catalog:",
+    "@types/react": "catalog:",
+    "@types/react-dom": "catalog:",
+    "typescript": "catalog:"
   }
 }

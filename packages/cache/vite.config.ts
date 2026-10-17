@@ -2,6 +2,7 @@ import { fileURLToPath } from "node:url";
 
 import ultraciteFmt from "ultracite/oxfmt";
 import core from "ultracite/oxlint/core";
+import jsPlugins from "ultracite/oxlint/js-plugins";
 import vitest from "ultracite/oxlint/vitest";
 import { defineConfig } from "vite-plus";
 import type { OxlintConfig } from "vite-plus/lint";
@@ -79,9 +80,24 @@ const assertionRewriteRepeal = {
   ],
 };
 
+// Ultracite 7.9.4 moved the GitHub and SonarJS rules from core into an opt-in JS-plugin preset.
+// Keep them; drop React Doctor, which this toolchain does not install.
+const githubAndSonar = {
+  ...jsPlugins,
+  jsPlugins: jsPlugins.jsPlugins?.filter(
+    (plugin) => typeof plugin === "string" || plugin.name !== "react-doctor"
+  ),
+  rules: Object.fromEntries(
+    Object.entries(jsPlugins.rules ?? {}).filter(
+      ([rule]) => !rule.startsWith("react-doctor/")
+    )
+  ),
+};
+
 // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- sanctioned toolchain bridge
 const ultraciteRules = [
   core,
+  githubAndSonar,
   vitest,
   testPropOverride,
   conformanceOverride,
