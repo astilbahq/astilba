@@ -5,7 +5,7 @@ import { createPageActionDestinations } from "../../src/docs/page-actions";
 describe("page action destinations", () => {
   const markdownUrl = "https://astilba.com/docs/cache/overview.md";
   const sourceUrl =
-    "https://github.com/astilbahq/docs/blob/main/src/content/docs/cache/overview.md";
+    "https://github.com/astilbahq/astilba/blob/main/apps/docs/src/content/docs/cache/overview.md";
   const destinations = createPageActionDestinations(markdownUrl, sourceUrl);
 
   it("keeps the public source as the GitHub destination", () => {

@@ -200,31 +200,20 @@ test("serves the direct sitemap as a static XML asset", async ({ request }) => {
   expectGlobalSecurityHeaders(sitemapHeadResponse.headers());
 });
 
-test("links current monorepo source and retains immutable public attribution", async ({
-  page,
-  request,
-}) => {
+test("links current monorepo source", async ({ page, request }) => {
   const current =
     "https://github.com/astilbahq/astilba/blob/main/apps/docs/src/content/docs/env/overview.md";
-  const original =
-    "https://github.com/astilbahq/docs/blob/0a14681acaa76ca98d30bb182330d4603bb256e4/src/content/docs/env/overview.md";
   const markdown = await request.get("/docs/env/overview.md");
   expect(markdown.status()).toBe(200);
   const text = await markdown.text();
   expect(text).toContain(`source: ${JSON.stringify(current)}`);
-  expect(text).toContain(`originalSource: ${JSON.stringify(original)}`);
   await page.goto("/docs/env/overview/");
-  await expect(page.locator('meta[name="dcterms.source"]')).toHaveAttribute(
-    "content",
-    original
-  );
   await page.getByRole("button", { name: "More page actions" }).click();
   await expect(
     page.getByRole("menuitem", { name: "GitHub", exact: true })
   ).toHaveAttribute("href", current);
   const missing = await request.get("/docs/missing/");
   expect(missing.status()).toBe(404);
-  expect(await missing.text()).not.toContain('name="dcterms.source"');
 });
 
 test("publishes MCP and RFC 9727 discovery metadata", async ({

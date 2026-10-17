@@ -117,6 +117,9 @@ describe("Menu", () => {
     const runAction = await screen.findByRole("menuitem", {
       name: "Run action",
     });
+    // Base UI highlights the first item before it moves focus into the menu;
+    // a key pressed in between still goes to the trigger.
+    await waitFor(() => expect(document.activeElement).toBe(runAction));
     expect(runAction.dataset.highlighted).toBeDefined();
 
     await user.keyboard("{ArrowDown}");

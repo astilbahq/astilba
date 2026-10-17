@@ -16,12 +16,10 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   type ContentProvenance,
   getDocsContentMetadata,
-  getDocsOriginalSource,
   readContentHistory,
   verifyContentProvenance,
 } from "../../src/docs/content-history";
 import provenance from "../../src/docs/content-provenance.json";
-import { getDocsOriginalSourceUrl } from "../../src/docs/source";
 
 const ORIGINAL_DATE = "2026-08-11T11:08:32.000Z";
 const IMPORT_DATE = "2026-10-12T17:30:17.000Z";
@@ -119,9 +117,6 @@ describe("public Docs content provenance", () => {
       lastModified: ORIGINAL_DATE,
       sourceCommit: "0a14681acaa76ca98d30bb182330d4603bb256e4",
     });
-    expect(getDocsOriginalSourceUrl(undefined, "env/overview")).toBe(
-      "https://github.com/astilbahq/docs/blob/0a14681acaa76ca98d30bb182330d4603bb256e4/src/content/docs/env/overview.md"
-    );
   });
 
   it("retains original dates across imports and unrelated monorepo commits", () => {
@@ -129,33 +124,24 @@ describe("public Docs content provenance", () => {
     verifyContentProvenance({ cwd, provenance: imported });
     commit(EDIT_DATE);
     expect(metadata().lastModified).toBe(ORIGINAL_DATE);
-    expect(metadata().originalSource).toContain(
-      `/blob/${"2".repeat(40)}/${PAGE}`
-    );
   });
 
-  it("advances dates for edits and subsequent reverts without losing attribution", () => {
+  it("advances dates for edits and subsequent reverts", () => {
     const { cwd, commit, metadata } = fixture();
     writeFileSync(join(cwd, PAGE), `${ORIGINAL}A later content edit.\n`);
     commit(EDIT_DATE);
     expect(metadata().lastModified).toBe(EDIT_DATE);
-    expect(metadata().originalSource).toContain(
-      `/blob/${"2".repeat(40)}/${PAGE}`
-    );
     writeFileSync(join(cwd, PAGE), ORIGINAL);
     commit(REVERT_DATE);
     expect(metadata().lastModified).toBe(REVERT_DATE);
   });
 
-  it("follows pure and edited renames while preserving the original source path", () => {
+  it("follows pure and edited renames while preserving the original date", () => {
     const { cwd, commit, metadata } = fixture();
     const renamed = "src/content/docs/env/renamed.md";
     renameSync(join(cwd, PAGE), join(cwd, renamed));
     commit(EDIT_DATE);
     expect(metadata(renamed).lastModified).toBe(ORIGINAL_DATE);
-    expect(metadata(renamed).originalSource).toContain(
-      `/blob/${"2".repeat(40)}/${PAGE}`
-    );
     renameSync(join(cwd, renamed), join(cwd, PAGE));
     writeFileSync(
       join(cwd, PAGE),
@@ -163,9 +149,6 @@ describe("public Docs content provenance", () => {
     );
     commit(REVERT_DATE);
     expect(metadata().lastModified).toBe(REVERT_DATE);
-    expect(metadata().originalSource).toContain(
-      `/blob/${"2".repeat(40)}/${PAGE}`
-    );
   });
 
   it("dates new and copied pages from their own creation without fabricating legacy ancestry", () => {
@@ -200,7 +183,7 @@ describe("public Docs content provenance", () => {
   });
 
   it("rejects uncommitted page content and missing source history", () => {
-    const { cwd, imported, metadata } = fixture();
+    const { cwd, metadata } = fixture();
     writeFileSync(join(cwd, PAGE), "Not committed.\n");
     expect(() => metadata()).toThrow(
       "Commit documentation content before building production"
@@ -208,15 +191,6 @@ describe("public Docs content provenance", () => {
     expect(() => metadata("src/content/docs/env/missing.md")).toThrow(
       "Sitemap source has no committed history"
     );
-    expect(
-      getDocsOriginalSource(PAGE, { cwd, provenance: imported })
-    ).toContain(`/blob/${"2".repeat(40)}/${PAGE}`);
-    expect(
-      getDocsOriginalSource("src/content/docs/env/missing.md", {
-        cwd,
-        provenance: imported,
-      })
-    ).toBeUndefined();
   });
 
   it("rejects missing import coverage, altered fingerprints and invalid identities", () => {
