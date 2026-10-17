@@ -6,4 +6,4 @@ Run `pnpm verify:env` from the repository root. `pnpm verify:env:archive` packs 
 
 Registry examples live under `fixtures/registry/env` with their own installation, lockfile and registry pins. Use positive and negative controls for source identity, symlink containment, exports and generated output.
 
-To release, bump `version` in `package.json`, merge, and push an `env/v<version>` tag on `main`.
+To release, bump `version` in `package.json`, merge, and push an `env/v<version>` tag on `main`. The workflow stages the release; it goes live once a maintainer approves it on npm with 2FA.
