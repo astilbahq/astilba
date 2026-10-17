@@ -25,10 +25,7 @@ import {
   createDocsSitemapLastModified,
   docsSitemapSources,
 } from "../src/docs/sitemap.ts";
-import {
-  getDocsOriginalSourceUrl,
-  getDocsSourceUrl,
-} from "../src/docs/source.ts";
+import { getDocsSourceUrl } from "../src/docs/source.ts";
 import { DOCS_BASE_PATH, docsUrl, withDocsBase } from "../src/docs/urls.ts";
 import {
   createContentSecurityPolicy,
@@ -690,27 +687,6 @@ for (const { lastmod, page: sitemapPage } of sitemapEntries) {
     }),
     getDocsSourceUrl(publicSource.sourcePath, entryId)
   );
-  const originalSource = getDocsOriginalSourceUrl(
-    publicSource.sourcePath,
-    entryId
-  );
-  assertExact(
-    markdownArtifact,
-    "original source attribution",
-    getFrontmatterString(markdownContent, "originalSource", markdownArtifact),
-    originalSource
-  );
-  if (originalSource) {
-    assertIncludes(
-      htmlArtifact,
-      pageHtml,
-      `<meta name="dcterms.source" content="${originalSource}">`
-    );
-  } else if (pageHtml.includes('name="dcterms.source"')) {
-    throw new Error(
-      `[agent-artifacts] Fabricated original source attribution in ${htmlArtifact}.`
-    );
-  }
   const canonicalUrl = getFrontmatterString(
     markdownContent,
     "canonical",

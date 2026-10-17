@@ -1,7 +1,4 @@
-import {
-  assertDocsContentPath,
-  getDocsOriginalSource,
-} from "./content-history.ts";
+import { assertDocsContentPath } from "./content-history.ts";
 
 const DOCS_CONTENT_ROOT = "src/content/docs/";
 const DOCS_SOURCE_BASE = new URL(
@@ -36,9 +33,3 @@ export const getDocsSourceUrl = (
       .join("/"),
     DOCS_SOURCE_BASE
   ).href;
-
-export const getDocsOriginalSourceUrl = (
-  filePath: string | undefined,
-  entryId: string
-): string | undefined =>
-  getDocsOriginalSource(getDocsSourcePath(filePath, entryId));

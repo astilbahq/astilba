@@ -193,7 +193,7 @@ export const verifyContentProvenance = ({
   }
 };
 
-const findImportedPage = (
+const findImportedDate = (
   history: ReturnType<typeof readContentHistory>,
   provenance: ContentProvenance,
   sourcePath: string
@@ -211,10 +211,7 @@ const findImportedPage = (
       `Missing imported documentation provenance: ${sourcePath}.`
     );
   }
-  return {
-    lastModified: page.lastModified,
-    source: `https://github.com/${provenance.repository}/blob/${page.sourceCommit}/${path.split("/").map(encodeURIComponent).join("/")}`,
-  };
+  return page.lastModified;
 };
 
 export const getDocsContentMetadata = (
@@ -224,7 +221,7 @@ export const getDocsContentMetadata = (
     provenance = importedProvenance,
     runGit: git = runContentGit,
   }: HistoryOptions = {}
-): { lastModified: string; originalSource?: string } => {
+): { lastModified: string } => {
   assertDocsContentPath(sourcePath);
   const history = readContentHistory(sourcePath, "HEAD", cwd, git);
   const contentChange = history.find(({ before, after }) => before !== after);
@@ -238,30 +235,11 @@ export const getDocsContentMetadata = (
       `Commit documentation content before building production: ${sourcePath}.`
     );
   }
-  const original = findImportedPage(history, provenance, sourcePath);
+  const originalDate = findImportedDate(history, provenance, sourcePath);
   return {
     lastModified:
-      original && contentChange.commit === provenance.importCommit
-        ? original.lastModified
+      originalDate && contentChange.commit === provenance.importCommit
+        ? originalDate
         : contentChange.date,
-    ...(original ? { originalSource: original.source } : {}),
   };
-};
-
-// Attribution describes committed ancestry, not the current working bytes.
-// Unlike production dates, it remains available while editing a page locally.
-export const getDocsOriginalSource = (
-  sourcePath: string,
-  {
-    cwd = process.cwd(),
-    provenance = importedProvenance,
-    runGit: git = runContentGit,
-  }: HistoryOptions = {}
-): string | undefined => {
-  assertDocsContentPath(sourcePath);
-  return findImportedPage(
-    readContentHistory(sourcePath, "HEAD", cwd, git),
-    provenance,
-    sourcePath
-  )?.source;
 };
