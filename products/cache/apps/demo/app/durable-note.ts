@@ -1,5 +1,28 @@
-/* References: E29, E13. */
+// How the console renders `CacheEntry.durable` — the serve-turn's THREE answers, kept
+// apart on purpose.
+//
+// `durable` is a three-state serve-evidence report: a serve says what the serve can prove.
+//   • `true`  — the value was found in L2; the read that found it IS the proof it is durable.
+//   • `false` — the stored scope resolves l1-only (a `usr:` entry); the kernel KNOWS it is not
+// durable, and that positive knowledge is the "landed only in L1".
+//   • ABSENT  — a `pub`/`ten:` entry found in L1, or an unreadable scope: the write-through outcome
+//               is unknowable at serve time. The L1 envelope carries no write-back record, and the
+//               serve does not consult L2 on an L1 hit — so the honest report is "cannot tell".
+//
+// WHY A PURE FUNCTION AND NOT A TERNARY IN THE JSX. The whole risk this file exists to remove is the
+// truthiness collapse: `entry.durable ? "yes" : "…L1 only…"` reads ABSENT as the confident lie
+// "not durable", because a missing property reads `undefined` and `undefined` is falsy. `false` and
+// absent are DIFFERENT answers here — one is "the kernel knows it is not durable", the other is
+// "nobody can tell from this serve" — and a consumer that must tell them apart discriminates
+// EXPLICITLY. So the discrimination lives here, in a function a tooth can feed all three inputs,
+// rather than in a conditional a rendering test cannot reach.
+//
+// IT TAKES THE ENTRY-SHAPED OBJECT, NOT A BARE `boolean | undefined`, and that is deliberate:
+// absence arrives as a MISSING PROPERTY (the exact-optional `durable?`), so modelling it as a
+// missing key rather than an explicit `undefined` is the faithful shape — and it is the one the
+// tooth exercises.
 
+/** Just the field this module reads — `CacheEntry`'s `durable?`, and nothing else it does not need. */
 interface HasDurable {
   readonly durable?: boolean;
 }
@@ -9,7 +32,7 @@ interface HasDurable {
  * consumed surface; the tag type is theirs to share, not the module's to publish. */
 type DurableVerdict = "durable" | "l1-only" | "unknowable";
 
-/** Classify the serve-turn `durable` field into its three distinct states (E29). Explicit
+/** Classify the serve-turn `durable` field into its three distinct states. Explicit
  * `=== true` / `=== false` comparisons: absence (a missing property) is its own arm, never folded
  * into `false`. */
 export function durableVerdict(entry: HasDurable): DurableVerdict {

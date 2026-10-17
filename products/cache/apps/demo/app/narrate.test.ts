@@ -1,4 +1,4 @@
-// The narration's tests (C5-c) — the demo's machinery.
+// The narration's tests — the demo's machinery.
 //
 // The narration is the demo's whole argument, so what is on trial is mostly what it REFUSES to say.
 // It must not claim a bound was met, it must not turn a fault it could not observe into a fault the
@@ -172,7 +172,7 @@ describe("the narration asserts no SLO — the hard line", () => {
   });
 });
 
-// ── E23: the scope distinction ──────────────────────────────────────────────
+// ── the scope distinction ──────────────────────────────────────────────
 //
 // THE ONE THAT MATTERS MOST. A scope that is readable AND exactly `pub` is the only thing that makes
 // a response shared-cacheable; absent, malformed, or unreadable is non-public and poisons it. Those
@@ -240,7 +240,7 @@ describe("the stored scope preserves the readable/unreadable distinction (E23)",
   });
 });
 
-// ── E28: the channel row ────────────────────────────────────────────────────
+// ── the channel row ────────────────────────────────────────────────────
 //
 // The row that tells a dead bus from a quiet healthy one. `suspect` cannot: a reader whose channel
 // never came up has no gap, so it is not suspect, and a dead bus and a serene one produce the same
@@ -295,7 +295,7 @@ describe("the reader's channel state is narrated as a declared state (E28)", () 
   });
 });
 
-// ── E27: the three arms of the witness ──────────────────────────────────────
+// ── the three arms of the witness ──────────────────────────────────────
 describe("the witness's three arms are three different answers (E27)", () => {
   it("reports a read-failed arm as unknown-existence, never as absence", () => {
     // The substitution that would make the witness a liar: "the store did not answer" rendered as
@@ -352,7 +352,7 @@ describe("the witness's three arms are three different answers (E27)", () => {
   });
 });
 
-// ── E27 (5): the request-dependencies row ───────────────────────────────────
+// ── the request-dependencies row ───────────────────────────────────
 //
 // Taken on every real request and covered by nothing — the row could be deleted outright and no gate
 // would have noticed.
@@ -537,7 +537,7 @@ describe("the poll rescue row", () => {
     ).not.toMatch(/has not applied it yet/u);
   });
 
-  // ── THE WAITING ARM READS THE CHANNEL (E28) ───────────────────────────────
+  // ── THE WAITING ARM READS THE CHANNEL ───────────────────────────────
   //
   // This arm used to hard-code a dead bus: it announced that the cursor may never move and that the
   // socket is not there, with no reference to `reader.channel` anywhere in the function. So it printed

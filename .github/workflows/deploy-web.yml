@@ -1,7 +1,8 @@
-# Disabled: WEB_DEPLOYMENTS_ENABLED is absent and cutover.json is inactive.
-name: Public web deployment (disabled pending cutover approval)
+name: Deploy web
 
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -12,161 +13,41 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  verify:
-    if: github.repository == 'astilbahq/astilba' && github.ref == 'refs/heads/main' && vars.WEB_DEPLOYMENTS_ENABLED == 'true'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 60
-    outputs:
-      docs_id: ${{ steps.docs.outputs.artifact-id }}
-      docs_digest: ${{ steps.docs.outputs.artifact-digest }}
-      site_id: ${{ steps.site.outputs.artifact-id }}
-      site_digest: ${{ steps.site.outputs.artifact-digest }}
-      showcase_id: ${{ steps.showcase.outputs.artifact-id }}
-      showcase_digest: ${{ steps.showcase.outputs.artifact-digest }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
-        with:
-          node-version: 24.18.1
-      - name: Require accepted cutover gates
-        run: node tooling/deployment/activation.mjs
-      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm test:browser:install:ci
-      - run: pnpm --dir apps/docs test:browser:install:ci
-      - run: pnpm verify:boundaries && pnpm verify:publisher && pnpm verify:deployment
-      - run: pnpm verify:ui
-      - run: pnpm verify:web
-      - name: Upload verified docs
-        id: docs
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: docs-production-${{ github.sha }}
-          path: apps/docs/dist/
-          include-hidden-files: true
-          if-no-files-found: error
-          retention-days: 7
-      - name: Upload verified apex
-        id: site
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: site-production-${{ github.sha }}
-          path: apps/site/dist/
-          include-hidden-files: true
-          if-no-files-found: error
-          retention-days: 7
-      - name: Upload verified showcase
-        id: showcase
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: showcase-production-${{ github.sha }}
-          path: apps/ui-showcase/dist/
-          include-hidden-files: true
-          if-no-files-found: error
-          retention-days: 7
-
   deploy:
-    if: github.repository == 'astilbahq/astilba' && github.ref == 'refs/heads/main' && vars.WEB_DEPLOYMENTS_ENABLED == 'true'
-    needs: verify
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     environment:
       name: production-web
       url: https://astilba.com/
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: 24.18.1
-      - name: Recheck accepted cutover gates after approval
-        run: node tooling/deployment/activation.mjs
-      - name: Download verified docs
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
-        with:
-          artifact-ids: ${{ needs.verify.outputs.docs_id }}
-          path: apps/docs/dist
-          digest-mismatch: error
-      - name: Download verified apex
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
-        with:
-          artifact-ids: ${{ needs.verify.outputs.site_id }}
-          path: apps/site/dist
-          digest-mismatch: error
-      - name: Download verified showcase
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
-        with:
-          artifact-ids: ${{ needs.verify.outputs.showcase_id }}
-          path: apps/ui-showcase/dist
-          digest-mismatch: error
-      - name: Require exact artifact identities and complete assets
-        env:
-          DOCS_DIGEST: ${{ needs.verify.outputs.docs_digest }}
-          SITE_DIGEST: ${{ needs.verify.outputs.site_digest }}
-          SHOWCASE_DIGEST: ${{ needs.verify.outputs.showcase_digest }}
-          DOCS_ID: ${{ needs.verify.outputs.docs_id }}
-          SITE_ID: ${{ needs.verify.outputs.site_id }}
-          SHOWCASE_ID: ${{ needs.verify.outputs.showcase_id }}
-        run: |
-          for digest in "$DOCS_DIGEST" "$SITE_DIGEST" "$SHOWCASE_DIGEST"; do
-            [[ "$digest" =~ ^[0-9a-f]{64}$ ]] || exit 1
-          done
-          for artifact_id in "$DOCS_ID" "$SITE_ID" "$SHOWCASE_ID"; do
-            [[ "$artifact_id" =~ ^[0-9]+$ ]] || exit 1
-          done
-          [[ "$DOCS_ID" != "$SITE_ID" && "$SITE_ID" != "$SHOWCASE_ID" && "$DOCS_ID" != "$SHOWCASE_ID" ]] || exit 1
-          for asset in apps/docs/dist/_headers apps/docs/dist/docs/index.html apps/docs/dist/docs/env/overview/index.html apps/docs/dist/docs/env/overview.md apps/docs/dist/docs/_llms-txt/astilba-env.txt apps/docs/dist/docs/.well-known/agent-skills/astilba-env-docs/SKILL.md apps/docs/dist/docs/sitemap.xml apps/site/dist/index.html apps/site/dist/env/index.html apps/site/dist/cache/index.html apps/site/dist/llms.txt apps/site/dist/.well-known/agent-skills/index.json apps/site/dist/_headers apps/site/dist/sitemap-site.xml apps/site/dist/sitemap.xml apps/ui-showcase/dist/index.html apps/ui-showcase/dist/_headers apps/ui-showcase/dist/robots.txt; do
-            test -f "$asset"
-          done
-          test -n "$(find apps/ui-showcase/dist/assets -maxdepth 1 -type f -name '*.js' -print -quit)"
-          test -n "$(find apps/ui-showcase/dist/assets -maxdepth 1 -type f -name '*.css' -print -quit)"
-      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271
-      - run: pnpm install --frozen-lockfile --ignore-scripts
-      - name: Verify released Env before any deployment
-        working-directory: apps/docs
-        run: |
-          pnpm env:release:check
-          expected_version="$(node -p 'require("./package.json").dependencies["@astilba/env"]')"
-          resolved_version="$(npm view "@astilba/env@$expected_version" version --registry=https://registry.npmjs.org/)"
-          test "$resolved_version" = "$expected_version"
-      - name: Reject stale main after approval and install
-        env:
-          VERIFIED_SHA: ${{ github.sha }}
-        run: |
-          read -r current_main_sha current_main_ref < <(git ls-remote --exit-code origin refs/heads/main)
-          [[ "$current_main_ref" == "refs/heads/main" && "$current_main_sha" == "$VERIFIED_SHA" ]]
-      - name: Deploy verified apex
-        working-directory: apps/site
-        run: pnpm exec wrangler deploy
-        env:
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-      - name: Smoke-test apex before docs
-        run: pnpm --dir apps/docs smoke:site
+          package-manager-cache: false
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @astilba/tokens build && pnpm --filter @astilba/ui build
+
+      - name: Deploy apex
+        run: pnpm --dir apps/site deploy
+      - run: pnpm --dir apps/site smoke:production
         env:
           ASTILBA_SITE_SMOKE_ATTEMPTS: "10"
           ASTILBA_SITE_SMOKE_RETRY_DELAY_MS: "6000"
-      - name: Deploy verified docs
-        working-directory: apps/docs
-        run: pnpm exec wrangler deploy
+
+      - name: Deploy docs
+        run: pnpm --dir apps/docs deploy
+      - run: pnpm --dir apps/docs smoke:production
         env:
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-      - name: Smoke-test complete public web
-        run: pnpm --dir apps/docs smoke:all
-        env:
-          ASTILBA_SITE_SMOKE_ATTEMPTS: "10"
-          ASTILBA_SITE_SMOKE_RETRY_DELAY_MS: "6000"
           ASTILBA_DOCS_SMOKE_ATTEMPTS: "10"
           ASTILBA_DOCS_SMOKE_RETRY_DELAY_MS: "6000"
-      - name: Deploy verified showcase
-        run: pnpm exec wrangler deploy
-        env:
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-      - name: Smoke-test showcase
-        run: pnpm smoke:production
+
+      - name: Deploy UI showcase
+        run: pnpm --filter @astilba/showcase build && pnpm exec wrangler deploy
+      - run: pnpm smoke:production

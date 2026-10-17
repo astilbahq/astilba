@@ -50,7 +50,7 @@ function snapshotOf(effects: readonly RegistryEffect[]): PersistSnapshotEffect {
   return effect;
 }
 
-/** The flush's single terminal pointer bless (§4.2, D17). */
+/** The flush's single terminal pointer bless. */
 function advanceOf(effects: readonly FlushEffect[]): AdvancePointerEffect {
   const effect = effects.find((e) => e.kind === "advance-pointer");
   if (!effect || effect.kind !== "advance-pointer") {
@@ -78,7 +78,7 @@ function skipOf(effects: readonly FlushEffect[]): SnapshotSkippedEffect {
 
 /**
  * Apply a sequence of frames (deltas and/or a snapshot) via per-axis max-on-write, the way
- * a replica reduces them (§4.1), and normalize to a stable comparable string. The reducer of
+ * a replica reduces them, and normalize to a stable comparable string. The reducer of
  * record for the snapshot-replay equivalence theorem.
  */
 function applyFrames(frames: readonly BusFrame[]): string {
@@ -171,7 +171,7 @@ describe(RegistryMachine, () => {
     expect(JSON.stringify(persist.frame)).toBe(
       '{"changes":[{"softEpoch":1,"tag":"a"}],"fromEpoch":0,"toEpoch":1}'
     );
-    // The pointer is the single terminal effect; its byte-stable form now carries the E19
+    // The pointer is the single terminal effect; its byte-stable form now carries the
     // `regId` echo (alphabetical key order: …lastBatch, regId, snapBatch).
     expect(JSON.stringify(advanceOf(effects).pointer)).toBe(
       '{"epoch":1,"flushedAt":5000,"lastBatch":1,"regId":"default","snapBatch":0}'
@@ -247,7 +247,7 @@ describe(RegistryMachine, () => {
     const persist = persistOf(m.flush(0));
     expect(persist.frame.changes.length).toBeGreaterThan(0);
     for (const change of persist.frame.changes) {
-      // Illegal otherwise: a change with neither axis asserts nothing (F12 addendum).
+      // Illegal otherwise: a change with neither axis asserts nothing (addendum).
       expect(
         change.softEpoch !== undefined || change.hardEpoch !== undefined
       ).toBeTruthy();
@@ -300,7 +300,7 @@ describe(RegistryMachine, () => {
     expect(m.gc(10_000).collectBeforeMs).toBe(5000);
   });
 
-  // ── Snapshot emission (§4.2, F12) ────────────────────────────────────────────
+  // ── Snapshot emission ────────────────────────────────────────────
 
   test("the default cadence emits NO snapshot on an ordinary single-mutation flush (§4.2)", () => {
     const m = new RegistryMachine(); // defaults: 500 batches / 6h
@@ -346,7 +346,7 @@ describe(RegistryMachine, () => {
     runFlush(m, "expire", ["b", "a"]); // seq 1: soft a=1, b=1
     m.delete(["a"], 0); // hard a=2
     const snap = snapshotOf(m.flush(0)); // seq 2: snapshot over (0, 2]
-    // Byte-for-byte the F12 canonical form: a folded across both axes (max soft 1 / hard 2),
+    // Byte-for-byte the canonical form: a folded across both axes (max soft 1 / hard 2),
     // b soft-only, lex-sorted, key order hardEpoch→softEpoch→tag; frame changes→from→to.
     expect(JSON.stringify(snap.frame)).toBe(
       '{"changes":[{"hardEpoch":2,"softEpoch":1,"tag":"a"},{"softEpoch":1,"tag":"b"}],"fromEpoch":0,"toEpoch":2}'
@@ -503,7 +503,7 @@ describe(RegistryMachine, () => {
     expect(bad.snapBatch).not.toBe(live.snapBatch);
   });
 
-  // ── Snapshot SIZE gate (§4.2, CACHE-23) ──────────────────────────────────────
+  // ── Snapshot SIZE gate ──────────────────────────────────────
 
   test("the SIZE gate SKIPS a due snapshot over the ceiling: telemetry emitted, NO persist-snapshot, snapBatch UNADVANCED (§4.2, CACHE-23)", () => {
     // Cadence due at seq 1 (every 1 batch), a tiny ceiling so the snap's ~65 shipped bytes blow
@@ -616,6 +616,8 @@ describe(RegistryMachine, () => {
     expect(m.effectiveConfig.maxSnapshotBytes).toBe(25 * 1024 * 1024);
   });
 
+  // ── configure: cadence as machine state (Ruling B) ───────────────────────────
+
   test("configure sets the effective cadence; unset knobs fall to the defaults (§4.2, Ruling B)", () => {
     const m = new RegistryMachine();
     expect(m.effectiveConfig).toStrictEqual({
@@ -703,7 +705,7 @@ describe(RegistryMachine, () => {
 
   test("property: snapBatch and lastBatch never regress across flushes (the shared regression signature)", () => {
     // A regressing cursor is a pointer blessing an object that may never have been written —
-    // the failure mode BOTH C2-b-1 findings share. Across any sequence of purges and flushes,
+    // the failure mode BOTH findings share. Across any sequence of purges and flushes,
     // including flushes that cross the snapshot cadence and idempotent empty-window flushes,
     // neither cursor may ever go backwards.
     const step = fc.record({
@@ -748,7 +750,7 @@ describe(RegistryMachine, () => {
     expect(holds).not.toThrow();
   });
 
-  // ── regId scoping (E19) — machine state authored by configure ─────────────────
+  // ── regId scoping — machine state authored by configure ─────────────────
 
   test("configure seeds regId into effectiveConfig AND the blessed pointer echo (E19)", () => {
     const m = new RegistryMachine();
@@ -767,7 +769,7 @@ describe(RegistryMachine, () => {
   test("configure REJECTS a regId outside the E19 charset/length (validated at configure time)", () => {
     const m = new RegistryMachine();
     // ':' is the key delimiter, OUTSIDE [a-z0-9._-] — an id carrying one would make the scoped
-    // key ambiguous, so configure throws rather than mint it (injective-by-construction, E19).
+    // key ambiguous, so configure throws rather than mint it (injective-by-construction).
     expect(() => {
       m.configure({ regId: "bad:id" });
     }).toThrow(/regId/u);
@@ -783,7 +785,7 @@ describe(RegistryMachine, () => {
     }).not.toThrow();
   });
 
-  // ── Heartbeat (E5, §4.2) — a state-neutral pointer refresh ────────────────────
+  // ── Heartbeat — a state-neutral pointer refresh ────────────────────
 
   test("heartbeat emits the single terminal pointer effect, refreshing flushedAt ONLY (§4.2, E5)", () => {
     const m = new RegistryMachine();

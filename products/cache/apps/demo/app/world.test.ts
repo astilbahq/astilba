@@ -1,3 +1,15 @@
+// The demo's own state machine — arming, healing, and the rescue stopwatch.
+//
+// Every subject here is a place the demo could lie to your face while every gate stayed green, which
+// is why they are tested away from the app that hosts them.
+//
+// THE TEETH IN THIS FILE STAGE COUNTERFACTUALS, and that discipline is a repair rather than a style.
+// An attribution's tooth has to stage the scene where the credited mechanism is ABSENT and the
+// observable is IDENTICAL — otherwise it feeds the discriminator its own inputs, pins the MAPPING
+// from input to label, and certifies nothing about whether the label is TRUE. The rescue row's
+// previous tooth did exactly that: it asserted that zero new dials produced `carrier`, which is the
+// mapping, while the thing that needed proving was that zero new dials MEANT carrier. It did not.
+
 import type { Explanation, TelemetryEvent } from "@astilba/cache";
 import { TELEMETRY_EVENTS } from "@astilba/cache";
 import { describe, expect, it } from "vitest";
@@ -140,6 +152,14 @@ describe("heal() ends the episode — everything, not just the dials", () => {
 
 // ── ONE RESET PATH: arm is a heal door too ──────────────────────────────────
 describe("arm() goes through the same total reset heal() does", () => {
+  // THE TOOTH THE BRIEF NAMES. `armScene` called `clearFaults(dials)` and nothing else, so the
+  // previous episode's counters, event log, pending purge and last rescue survived onto the new
+  // scene's page and were read as evidence about ITS fault — while the page told the user, in as
+  // many words, that arming this one heals that first. The aliasing lesson in miniature: one
+  // function, both doors.
+  //
+  // MUTATION: make `armScene` skip `healEpisode` (or narrow it back to `clearFaults(state.dials)`).
+  // This goes red.
   it("arm A → evidence → arm B leaves exactly what a never-armed page would show for B", () => {
     const dirtied = episode();
     armScene("backend-kill", dirtied, ARM_OPTIONS);
@@ -247,6 +267,16 @@ describe("the poll-rescue stopwatch", () => {
       )
     ).toBeNull();
   });
+
+  // ── THE COUNTERFACTUAL PAIR ───────────────────────────────────────────────
+  //
+  // These two stage the SAME observable — a purge issued, the applied epoch advancing from 4 to 5,
+  // no own-ack — and differ in exactly one thing: whether the reader had a channel. That is the
+  // discriminator, so that is what the pair varies. A dial-count delta detects only a socket that
+  // came UP during the wait; a socket that opened before the purge and stayed up produces no new
+  // dial, so its delta is zero and it would print `carrier` over a live bus. The first test below is
+  // the scene where the credited mechanism is ABSENT and the observable is identical — the dial-delta
+  // discriminator prints `carrier` for it, which is the mutation that test kills.
 
   it("REFUSES to prove the carrier when the channel was UP — the unsupported carrier credit", () => {
     // MUTATION: restore the dial-delta discriminator (`dialsPassedNow === pending.dialsPassedAtPurge

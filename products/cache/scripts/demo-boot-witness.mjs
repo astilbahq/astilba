@@ -3,7 +3,7 @@
 // WHAT THIS INSTRUMENT PROVES, AND ONLY THIS. Boot `apps/demo` the way a deployment boots it — the
 // output of `react-router build`, started on real workerd by `wrangler dev`, against the real
 // Coordinator Durable Object and KV bindings — and the replication reader's bus channel reaches
-// `established`: a `hello` completed over the Durable Object socket (E28). That is the whole
+// `established`: a `hello` completed over the Durable Object socket. That is the whole
 // finding. The armed half of the run proves the same instrument can report the negative: with this
 // demo's `bus-drop` fault armed, the channel is `never-established` and the library emits
 // `bus_dial_failed`.

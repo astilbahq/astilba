@@ -1,9 +1,9 @@
 import type { Lock, LockHandle } from "@astilba/cache";
 
-// FakeLock — a deterministic cross-isolate lock (§5.2) issuing MONOTONIC fencing
+// FakeLock — a deterministic cross-isolate lock issuing MONOTONIC fencing
 // tokens. Each acquire hands out a strictly higher token than the last, so a later
 // lease-holder always out-fences an earlier one. The born-monotone write-back rule
-// (§5.0, E3) uses that token — never `bornMs` — to reject a stale lease-holder's
+// uses that token — never `bornMs` — to reject a stale lease-holder's
 // late write. No blocking: a fresh acquire models a lease that has superseded the
 // previous holder (whose lower token is now stale), which is exactly the
 // "lock lease expiring before write-back" scenario.

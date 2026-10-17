@@ -3,7 +3,14 @@ import assert from "node:assert/strict";
 import type { Lock } from "@astilba/cache";
 import { describe, it } from "vitest";
 
-/* References: §5.2, §5.0, INV-17, E3. */
+// Lock contract. Pins ONLY the STATED semantics: cross-isolate lock,
+// DO/Redis-primary only, strictly-monotone fencing tokens (INV-17), and the
+// arbitration rule that a later lease out-fences an earlier one — arbitration is by
+// fence, never wall-clock. the own framing: fencing gives mutual exclusion,
+// NOT write-fencing against KV; the born-monotone write-back rule is what
+// bounds a stale lease-holder's late write. Nothing is invented for the Q7-deferred
+// lock-scope parts. The v0.1 FakeLock is the reference; a real DO/Redis lock passes
+// the same block later.
 
 const LOCK_KEY = "conformance:lock:k";
 
@@ -26,7 +33,7 @@ const checkLaterOutFences = async (make: () => Lock): Promise<void> => {
   const lock = make();
   const earlier = await lock.acquire(LOCK_KEY);
   // A fresh acquire models a lease that has superseded the previous holder; its
-  // higher fence out-arbitrates the earlier one regardless of any wall clock (E3).
+  // higher fence out-arbitrates the earlier one regardless of any wall clock.
   const later = await lock.acquire(LOCK_KEY);
   assert.ok(
     later.fence > earlier.fence,
@@ -41,8 +48,8 @@ const checkMutualExclusionShape = async (make: () => Lock): Promise<void> => {
     typeof handle.fence === "number" && Number.isFinite(handle.fence),
     "a handle must carry a finite numeric fence (§5.2)"
   );
-  // Mutual exclusion + a releasable handle is the whole §5.2 surface; write-fencing
-  // against KV is explicitly NOT claimed (MI25) — the §5.0 rule bounds a stale holder.
+  // Mutual exclusion + a releasable handle is the whole lock surface; write-fencing
+  // against KV is explicitly NOT claimed — the rule bounds a stale holder.
   // A rejecting release would throw here and fail the check.
   await handle.release();
 };

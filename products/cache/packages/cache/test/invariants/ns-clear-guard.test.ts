@@ -1,4 +1,4 @@
-// INV-23 — spec §11.23, §2.2, MI1
+// INV-23 — spec
 // Sacred: append-only. Never modify, delete, weaken, skip, or .todo an existing test.
 //
 // The existing INV-23 guard (keys-tags.test.ts) is VACUOUS as a test of clear()'s
@@ -11,14 +11,14 @@
 // This guard closes that gap. Two isolates share the SAME L2 replica (no
 // `delayReplica`, no `advance`), so isolate B's `strong` read genuinely OBSERVES
 // isolate A's pre-clear value in the shared store — the read is non-vacuous. The
-// per-instance `nsVersion` counter that `clear()` also bumps (§2.2, MI1) is scoped
+// per-instance `nsVersion` counter that `clear()` also bumps is scoped
 // to isolate A alone (`class NsVersion` in cache.ts is instantiated once per
 // `createCache()` — i.e. once per isolate, never shared) and so cannot be what
 // stops isolate B, since B's canonical key is built from ITS OWN (unbumped)
 // nsVersion and is therefore identical to the pre-clear key. The ONLY defense that
 // can prevent B from serving stale here is the reserved `__ns:<namespace>` tag's
 // hard purge, applied through the shared registry and observed via B's `strong`
-// live check (§4.1, §11.18 fencing path) — this isolates that mechanism as the
+// live check (fencing path) — this isolates that mechanism as the
 // thing under test.
 
 import { mkTag, world } from "@astilba/harness";

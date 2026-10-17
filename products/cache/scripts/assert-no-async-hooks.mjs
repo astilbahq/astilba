@@ -2,8 +2,8 @@
 // graph, which is why they share this script's one apparatus (a walk of the dist's own edges):
 //
 //   1. `node:async_hooks` may be imported by the `./react-router` door and by NOTHING ELSE the other
-//      doors can reach (C4-c) — the original subject, documented at length below.
-//   2. Both adapter doors import the SAME kernel chunk (E28/E23) — one module instance behind every
+// doors can reach — the original subject, documented at length below.
+// 2. Both adapter doors import the SAME kernel chunk — one module instance behind every
 //      door, so the kernel's instance-keyed WeakMap seams are one map and not three. Its rationale
 //      sits with the assertion itself, further down.
 //
@@ -126,7 +126,7 @@ const failures = [];
 // which means a fork severs the lot at once — and silently: the `./cloudflare` door would register a
 // facade alias in one copy while the `./react-router` door resolves against another, the render's
 // dependencies land under a key nobody reads, `managed === 0`, and an app's `public, s-maxage` ships
-// on a per-principal body. That is the E23 leak, re-opened by a build setting rather than by code,
+// on a per-principal body. That is the leak, re-opened by a build setting rather than by code,
 // which is why the assertion is here — on the BUILT artifact — and not in a test.
 //
 // The hoisting holds today. This is what makes looking permanent, since nothing else would notice.

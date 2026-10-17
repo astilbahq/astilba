@@ -1,13 +1,13 @@
-// Ordinary unit teeth (NOT sacred) — C5-b, erratum E27. The reader-facing half of `explain`: the
-// verdict-with-evidence (E27 (2)) and the reader's own state surfaced via read-only accessors
-// (E27 (4)). The verdict is a PURE classify over the reader's CURRENT knowledge — no live check, no
+// Ordinary unit teeth (NOT sacred). The reader-facing half of `explain`: the
+// verdict-with-evidence and the reader's own state surfaced via read-only accessors
+//. The verdict is a PURE classify over the reader's CURRENT knowledge — no live check, no
 // resync, no recording (introspection, not testimony) — and `unknown` stays `unknown`.
 //
-// Each case bites ONE branch (rule 13) — the named mutation reds it:
+// Each case bites ONE branch — the named mutation reds it:
 //   1. verdict table — a locally-DEAD tag ⇒ `dead` with the purge (hard) epoch as evidence; a
 //                      locally-STALE tag ⇒ `stale` with the soft epoch; a KNOWN-clean tag ⇒ `fresh`;
 //                      an UNKNOWN tag ⇒ `unknown`. (Blind: force one classification ⇒ reds.)
-//   2. unknown-stays-unknown / the E20 (i) gate — a SUSPECT reader fails closed to `unknown` even
+// 2. unknown-stays-unknown / the gate — a SUSPECT reader fails closed to `unknown` even
 //                      when its local knowledge would say `fresh`. (Blind: drop the suspect gate ⇒
 //                      the suspect case returns `fresh` ⇒ reds.)
 //   3. appliedEpoch exposition — reader.appliedEpoch tracks the reader's applied epoch. (Blind:
@@ -50,7 +50,7 @@ function buildReader(): { inval: Invalidation; bus: FakeBus } {
   const bus = new FakeBus(clock);
   const registry = new FakeRegistry(clock, { bus });
   const inval = new Invalidation(registry, memory(), bus);
-  // Put the reader IN USE (E28): construction captures the bus and defers the subscription to first
+  // Put the reader IN USE: construction captures the bus and defers the subscription to first
   // use, so a reader nobody has read from is not listening. These cases drive the verdict over a
   // reader in its steady state, so the fixture subscribes explicitly — exactly what a first read
   // would do.
@@ -180,7 +180,7 @@ describe("explain — a stored entry whose tags the reader does not know reads u
   });
 });
 
-// ── Part B: the reader's own state, surfaced via read-only accessors (E27 (4)) ───────────────────
+// ── Part B: the reader's own state, surfaced via read-only accessors ───────────────────
 
 describe("explain — reader state is exposed from already-tracked state (E27 (4))", () => {
   it("appliedEpoch tracks the reader's applied epoch (a delivered purge advances it)", async () => {

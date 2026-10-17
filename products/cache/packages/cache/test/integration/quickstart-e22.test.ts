@@ -1,20 +1,20 @@
-// C4-a-1 — the §2/E22 quickstart as an EXECUTABLE CI twin. The two construction blocks below are the
-// erratum's §2 hero (i) + explicit composition (ii), CHARACTER-FOR-CHARACTER; only the surrounding
-// imports/exercise are the test's own. This tooth is ALSO the import-path check: the E22 imports
+// the quickstart as an EXECUTABLE CI twin. The two construction blocks below are the
+// documented hero form (i) + explicit composition (ii), CHARACTER-FOR-CHARACTER; only the surrounding
+// imports/exercise are the test's own. This tooth is ALSO the import-path check: the imports
 // (`@astilba/cache/cloudflare`, `@astilba/cache`) must resolve against the new `./cloudflare` exports
 // map — if a line did not resolve, this file would fail to compile/run (a FINDING, never a silent
 // rewrite). The two blocks must produce EQUIVALENT working caches: each serves a `getOrSet`, each is
 // invalidated by `expire`.
 //
-// Lane law (rule 12): the invalidation is observed via a STRONG read — a live registry check that
+// Lane law: the invalidation is observed via a STRONG read — a live registry check that
 // catches the soft-purge deterministically, without depending on bus-frame / poller convergence
 // timing. The verbatim requirement is on the CONSTRUCTION lines; the exercise is the test's to design.
 
-// ─── E22 (i) hero — import line, character-for-character ───
+// ─── Quickstart (i) hero — import line, character-for-character ───
 import { createWorkersCache, Coordinator } from '@astilba/cache/cloudflare'
 export { Coordinator }                    // the DO class your Worker registers
 
-// ─── E22 (ii) explicit composition — import lines, character-for-character ───
+// ─── Quickstart (ii) explicit composition — import lines, character-for-character ───
 import { createCache, memory } from '@astilba/cache'
 import { cloudflareKV, doRegistry, doBus } from '@astilba/cache/cloudflare'
 
@@ -25,7 +25,7 @@ import { env } from 'cloudflare:workers'
 import { describe, expect, it } from 'vitest'
 import type { ClientSocket } from '../../src/adapters/cloudflare/bus-client'
 
-// `clock` / `rng` / `openBusSocket` are E22's illustrative (UNSIGNED) boundary plumbing, supplied here
+// `clock` / `rng` / `openBusSocket` are the illustrative (UNSIGNED) boundary plumbing, supplied here
 // so the explicit-composition block is verbatim. In a TEST file (not `src/`), ambient time/rng need no
 // `// PLATFORM:` note — rule 5 scopes the kernel core, and the grep-guard scans `src/` only.
 const clock = { now: (): number => Date.now() }
@@ -70,7 +70,7 @@ async function serveThenExpire(cache: Cache, bookId: string): Promise<void> {
 
 describe('§2/E22 quickstart is an executable twin (both blocks equivalent)', () => {
   it('(i) hero — the createWorkersCache five-liner serves + expire invalidates', async () => {
-    // ┌── E22 (i), character-for-character ──────────────────────────────────────
+    // ┌── Quickstart (i), character-for-character ──────────────────────────────────────
     const cache = createWorkersCache({
       name: 'journals',                       // one name ⇒ DO address, registry id, key namespace
       kv: env.CACHE_KV,
@@ -81,7 +81,7 @@ describe('§2/E22 quickstart is an executable twin (both blocks equivalent)', ()
   })
 
   it('(ii) explicit composition — the sugar unfolded produces the same working cache', async () => {
-    // ┌── E22 (ii), character-for-character ─────────────────────────────────────
+    // ┌── Quickstart (ii), character-for-character ─────────────────────────────────────
     const stub = env.COORDINATOR.get(env.COORDINATOR.idFromName('journals'))
     const cache = createCache({
       namespace: 'journals',

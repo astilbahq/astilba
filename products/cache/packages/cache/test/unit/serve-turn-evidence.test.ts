@@ -1,4 +1,4 @@
-// Ordinary unit teeth (NOT sacred) — erratum E29 (serve-turn evidence) over E13's write-back
+// Ordinary unit teeth (NOT sacred) for serve-turn evidence over the write-back
 // suppression. The sacred suite cannot reach the suppression branch: its only injected store
 // failure is UNCLASSIFIED, which the kernel must propagate rather than absorb, so the classified
 // shape is fixtured here — the same reason `writeback-classification.test.ts` and
@@ -7,15 +7,15 @@
 // The case this file exists for: an entry can be in L1 and demonstrably NOT in L2, in the SAME
 // isolate that just watched the write-back get suppressed. A serve that reports a constant
 // `durable: true` on an L1 hit is not merely imprecise there — it is stating the opposite of a
-// fact the isolate has already observed. E29's answer is not to make the serve read L2 (that would
-// make an L1 hit cost what §8 says it must not) but to report exactly as much as it knows: nothing.
+// fact the isolate has already observed. the answer is not to make the serve read L2 (that would
+// make an L1 hit cost what the driver contract forbids) but to report exactly as much as it knows: nothing.
 //
 // Exact values throughout (`toBe(true)`/`toBe(false)`), never truthiness: `false` and ABSENT are
 // different answers here, and only an exact assertion tells them apart. The preset's two
 // `prefer-to-be-*` rules autofix that form away, so they are scoped off for this file in
 // vite.config.ts.
 //
-// Each case bites ONE branch (rule 13) — the named mutation reds it:
+// Each case bites ONE branch — the named mutation reds it:
 //   1. suppressed-reread — fill under a suppressed L2 write-back, re-read in the same isolate.
 //      (Blind: pin the L1-hit serve back to `durable: true` ⇒ reds, on a reachable false path.)
 //   2. l2-read-observes — an entry found in L2 reports `true`.
@@ -37,7 +37,7 @@ const NS = "serve-evidence";
 const CLOCK = { now: (): number => 0 };
 const RNG = { next: (): number => 0 };
 
-/** A classified transient write failure — E13's structural contract (`code` + `retryable`), raised
+/** A classified transient write failure — the structural contract (`code` + `retryable`), raised
  * as a class so oxlint's throw rules are satisfied. It shares no identity with the kernel's guard:
  * recognition is structural, which is the point. */
 class ThrottledWriteError extends Error implements StoreWriteError {
@@ -88,16 +88,16 @@ describe("E29 — a serve reports what its own evidence supports", () => {
     const cache = makeCache(writeSuppressingStore(memory()), memory());
 
     // The FILL turn: the factory runs, L1 is hydrated, and the L2 write-back is suppressed
-    // (§5.0, E13) — the value serves, the durable copy does not land. The fill did the write and
+    // — the value serves, the durable copy does not land. The fill did the write and
     // awaited its outcome, so it reports a real boolean.
     const filled = await cache.getOrSetEntry({ factory, key: "k" });
     expect(filled.durable).toBe(false);
 
-    // THE TOOTH: the same isolate re-reads. L1 is checked first (§5.1) and hits, so L2 is never
+    // THE TOOTH: the same isolate re-reads. L1 is checked first and hits, so L2 is never
     // consulted — and this entry is `pub`, so its stored identity says nothing about tier
     // confinement either. The serve therefore has no evidence: not the write-back outcome (that
-    // was the previous turn's, and no record of it rides in the envelope), not an L2 read (§5.1
-    // does not perform one here, and §8 forbids adding one to decorate a field).
+    // was the previous turn's, and no record of it rides in the envelope), not an L2 read (the read path
+    // does not perform one here, and the driver contract forbids adding one to decorate a field).
     //
     // Reporting `true` here — as a hardcoded fresh-hit constant does — is not a rounding error:
     // this isolate WATCHED the write-back get suppressed. The value is provably not in L2, and
@@ -128,7 +128,7 @@ describe("E29 — a serve reports what its own evidence supports", () => {
     // cannot produce both.
     const l2 = memory();
 
-    // The filling isolate hydrates its own L1 from the fill (a read of L2 does NOT — §5.1 serves
+    // The filling isolate hydrates its own L1 from the fill (a read of L2 does NOT — the read path serves
     // from the tier it hit and hydrates nothing), so this is how a `pub` entry comes to sit in L1.
     const withL1 = makeCache(l2, memory());
     await withL1.getOrSetEntry({ factory, key: "shared" });

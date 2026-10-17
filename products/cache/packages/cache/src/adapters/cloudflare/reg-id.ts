@@ -1,11 +1,23 @@
-/* References: E19-b, E19. */
-
-// PLATFORM: Cloudflare runtime bindings are confined to this adapter.
+// @astilba/cache adapter — Coordinator regId resolution (phase 2).
+//
+// PLATFORM: lives under `src/adapters/**` (the sanctioned platform boundary) but is
+// PURE — no ambient time/randomness, no `cloudflare:*` import — so the Node unit lane drives the
+// SAME precedence + refusal the Durable Object runs. The Coordinator reads `ctx.id.name` and
+// `env.REGISTRY_ID` (platform reads, at the `// PLATFORM:`-commented seeding call site) and hands
+// the raw strings HERE; this module owns only the precedence order and the grammar refusal.
+//
+// IDENTITY = ADDRESS. A Coordinator's regId derives from its OWN Durable Object name — the
+// same string a client uses to address it (`idFromName(name)`). Precedence (R3):
+//   regId = ctx.id.name ?? env.REGISTRY_ID ?? "default"
+// Env is the DEMOTED fallback for an un-named object (`newUniqueId` ⇒ `ctx.id.name === undefined`),
+// NOT an override — an override would resurrect the one-registry-per-deployment defect identity = address removes.
+// A NAME that violates the grammar REFUSES loud (R2, validate-and-refuse): at first boot no data
+// exists, so there is nothing to strand — a malformed name is a developer error, not a migration.
 
 import { assertRegId, DEFAULT_REG_ID, isRegId } from "../../registry";
 
 /**
- * Refused (E19-b, R2): a Coordinator addressed by a Durable Object name that violates E19's regId
+ * Refused: a Coordinator addressed by a Durable Object name that violates the regId
  * grammar (`[a-z0-9._-]`, 1–64). Typed so the boot failure is unambiguous and machine-checkable —
  * the fix is a conforming name or an explicit `REGISTRY_ID`. Thrown at first boot only (before any
  * data), so it strands nothing: validate-and-refuse, not journal-wins. `Error.name` stays the class
@@ -26,9 +38,9 @@ export class InvalidRegistryNameError extends Error {
 }
 
 /**
- * Resolve a Coordinator's regId from its platform identity (E19-b, R3). `name` is `ctx.id.name`
+ * Resolve a Coordinator's regId from its platform identity. `name` is `ctx.id.name`
  * (undefined for an un-named / `idFromString`-reached object); `envRegId` is `env.REGISTRY_ID`.
- * Precedence: name ?? env ?? `"default"`. A NAME that violates E19's grammar REFUSES with a typed
+ * Precedence: name ?? env ?? `"default"`. A NAME that violates the grammar REFUSES with a typed
  * `InvalidRegistryNameError` (R2). An env/default winner is still asserted through the existing
  * `assertRegId` (R3 — every winner passes the same charset gate), so a malformed `REGISTRY_ID` also
  * fails loud. An empty-string env value is treated as unset (falls through to `"default"`).

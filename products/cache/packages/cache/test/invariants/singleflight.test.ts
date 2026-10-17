@@ -1,5 +1,5 @@
-// INV-5  — spec §11.5, errata E6
-// INV-24 — spec §11.24 (M10)
+// INV-5 — spec
+// INV-24
 // Sacred: append-only. Never modify, delete, weaken, skip, or .todo an existing test.
 
 import { mkTag, world } from "@astilba/harness";

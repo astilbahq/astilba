@@ -1,17 +1,17 @@
 // Ordinary unit teeth (NOT sacred) — the cached-neg READ surface. Sacred pins the fact a neg
-// re-read surfaces (`value: undefined`, §5.1 step 5 / §3 — negative-caching.test.ts); these pin the
+// re-read surfaces (`value: undefined`, negative-caching.test.ts); these pin the
 // two implementation halves sacred deliberately leaves free, because both are storage policy rather
 // than specified semantics:
 //
 //   1. neg-serve-evidence — a served neg reports the tier it was FOUND in and the durability that
-//                      tier proves (E29): the neg's one write is `writeNegEnvelope`'s L2 write, so a
+// tier proves: the neg's one write is `writeNegEnvelope`'s L2 write, so a
 //                      re-read reports `l2` / `durable:true`. (Blind: report a constant tier or
 //                      durability ⇒ reds.) The value assertion rides along as the near-miss guard —
 //                      the placeholder is `null`, and `null` is what a truthiness-shaped check
 //                      would wave through.
 //   2. neg-hydrates-no-l1 — a neg fill performs ZERO L1 writes. Its placeholder body under a
 //                      `kind:'val'` label would be a value-shaped envelope holding a value no
-//                      origin produced — and a grace/stale-if-error candidate, which §11.7 forbids a
+// origin produced — and a grace/stale-if-error candidate, which invariant 7 forbids a
 //                      neg from ever being. (Blind: drop the `storedKind === "neg"` arm in
 //                      `hydrateL1` ⇒ an L1 write lands ⇒ reds.) The count is codec-independent,
 //                      which is the point: today's default codec cannot encode `undefined` to a
@@ -19,18 +19,18 @@
 //                      not a guarantee, and invisible to any behavioral assertion.
 //   3. neg-evicts-stale-l1 — that same arm DELETES what L1 already held. Storing nothing is only
 //                      half the rule: a fill runs when the read found nothing servable, and an L1
-//                      read a classified transient failure suppressed (E13) is a plain miss over an
+// read a classified transient failure suppressed is a plain miss over an
 //                      entry still sitting there. Left standing, it outlives the 404 — the tier
-//                      reads cleanly again, L1 is consulted first (§5.1), and the superseded value
+// reads cleanly again, L1 is consulted first, and the superseded value
 //                      answers in preference to the neg L2 holds. (Blind: drop the `l1.delete` and
 //                      leave a plain early return ⇒ the old value is served after recovery ⇒ reds.)
 //                      Asserted twice: through the public serve, and against L1's own contents.
 //                      Its CONTROL asserts a value fill still leaves a READABLE L1 entry, so
 //                      "evict unconditionally" cannot pass either.
 //
-// Lane: unit — the scenario needs a store read that rejects with E13's classified shape, which the
+// Lane: unit — the scenario needs a store read that rejects with the classified shape, which the
 // sacred harness's fakes cannot inject (their only injected failure is unclassified), and L1
-// tier-write policy is storage policy §3 leaves free rather than specified semantics.
+// tier-write policy is storage policy left free rather than specified semantics.
 // Deterministic by construction — an injected clock + fake stores, no registry. No timing
 // tolerance, no retry.
 
@@ -84,7 +84,7 @@ function countingStore(inner: Store): CountingStore {
 }
 
 /**
- * A rejection carrying E13's own classified shape (`code` + `retryable`) — the contract the kernel
+ * A rejection carrying the own classified shape (`code` + `retryable`) — the contract the kernel
  * discriminates on structurally, raised as a class so oxlint's throw rules are satisfied. It shares
  * no identity with the kernel's guard, which is the point.
  */
@@ -206,7 +206,7 @@ describe("a served neg reports the evidence of the serve (E29)", () => {
       tags: [t`x`],
     });
     // Found in the durable tier — the neg's only home — so the read is the proof of durability
-    // (E29). An exact value, not a truthiness check: `durable` has a third, ABSENT state.
+    //. An exact value, not a truthiness check: `durable` has a third, ABSENT state.
     expect(reread.tier).toBe("l2");
     expect(reread.durable).toBe(true);
     // And the value is the FACT, not the placeholder. Stated as two assertions because they fail
@@ -254,7 +254,7 @@ describe("a neg fill writes only its own tier (§3, §5.1 step 5)", () => {
 
 describe("a neg fill leaves no superseded value behind in L1 (§3, §5.1 step 5, E13)", () => {
   /** The one arrangement that puts a fill on top of a live L1 entry: L1 holds `v1`, its reads are
-   * suppressed to a miss by a classified transient failure (E13), and L2 no longer has the key — so
+   * suppressed to a miss by a classified transient failure, and L2 no longer has the key — so
    * every tier reads as absent, the factory runs, and it 404s. */
   async function negOverLiveL1(): Promise<{
     readonly cache: Cache;
@@ -290,7 +290,7 @@ describe("a neg fill leaves no superseded value behind in L1 (§3, §5.1 step 5,
   it("a read once L1 is readable again serves the remembered 404, not the superseded value", async () => {
     const { cache, l1, origin } = await negOverLiveL1();
 
-    // The tier reads cleanly again, and L1 is consulted FIRST (§5.1 steps 2/4) — so if anything of
+    // The tier reads cleanly again, and L1 is consulted FIRST (steps 2/4) — so if anything of
     // `v1` survived the neg fill, this is the read that hands it back.
     l1.failReads = false;
     const after = await cache.getOrSetEntry({
@@ -329,7 +329,7 @@ describe("a neg fill leaves no superseded value behind in L1 (§3, §5.1 step 5,
 
     // The counted control above forbids "never write L1"; this one forbids the other degenerate
     // reading — "delete L1 on every fill" — which would satisfy both eviction assertions while
-    // destroying the write-through §5.1 asks for.
+    // destroying the write-through the read path needs.
     await expect(l1.inner.get(hydratedKey(l1))).resolves.toBeDefined();
   });
 });

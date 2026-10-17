@@ -35,6 +35,13 @@ import { lockChecks } from "./runner/lock";
 import { registryChecks } from "./runner/registry";
 import { storeChecks } from "./runner/store";
 
+// Teeth: each contract check is driven against a
+// deliberately-wrong impl and MUST fail (throw/reject), and against the reference and
+// MUST pass. Green-on-reference alone proves nothing — the reference IS the fake — so
+// every suite here demonstrates it can catch a liar. We assert only THAT the targeted
+// check rejects, never on an exact message (so the proofs don't go brittle).
+
+// A small value ceiling for the oversize teeth (bytes) — the fixture writes one over.
 const OVERSIZE_LIMIT = 64;
 
 describe("conformance teeth — every contract discriminates a wrong driver", () => {

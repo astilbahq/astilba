@@ -10,15 +10,15 @@ import type { SimClock } from "./clock";
 
 // FakeStore — an eventually-consistent KV store modelled as N replica views with
 // per-(replica,key) visibility delay, per-key write-throttle emulation (1 write/s
-// → 429), TTL enforcement via SimClock, and injectable get/set failures (§8, §4.2).
+// → 429), TTL enforcement via SimClock, and injectable get/set failures.
 // A single-view, zero-delay, un-throttled store is the strongly-consistent Redis /
 // L1 stand-in.
 
 /**
- * Thrown by `set` when a key is written faster than 1/s (KV's hard 429) — §8, N10.
+ * Thrown by `set` when a key is written faster than 1/s (KV's hard 429).
  * SATISFIES the structural `StoreWriteError` contract (`throttled`, retryable) WITHOUT
  * sharing a class with the kernel: the kernel discriminates it via `isStoreWriteError`
- * (structural), never `instanceof` (E13). `implements` proves the shape conforms.
+ * (structural), never `instanceof`. `implements` proves the shape conforms.
  */
 export class WriteThrottleError extends Error implements StoreWriteError {
   readonly key: string;
@@ -33,7 +33,7 @@ export class WriteThrottleError extends Error implements StoreWriteError {
 }
 
 /**
- * Thrown by `set` when a value exceeds the store's `maxValueBytes` (§8: KV's 25 MiB
+ * Thrown by `set` when a value exceeds the store's `maxValueBytes` ( : KV's 25 MiB
  * value ceiling). Like `WriteThrottleError` it SATISFIES `StoreWriteError` structurally
  * (`too_large`, non-retryable) — the value is REJECTED, never truncated. Internal:
  * consumers discriminate via `isStoreWriteError`, never by this class's identity, so it
@@ -51,7 +51,7 @@ class OversizeValueError extends Error implements StoreWriteError {
   }
 }
 
-/** An injected store failure (chaos) — §9 (KV down, l2_read_error / l2_write_error). */
+/** An injected store failure (chaos) (KV down, l2_read_error / l2_write_error). */
 export class InjectedStoreError extends Error {
   constructor(op: "get" | "set" | "delete", key: string) {
     super(`injected store ${op} failure: ${key}`);
@@ -74,14 +74,14 @@ export interface FakeStoreOptions {
   /** Per-key write throttle window in ms (0 = no throttle). Default 0. */
   readonly throttleWindowMs?: number;
   /**
-   * Max value size in bytes; a `set` of a larger value rejects `too_large` (§8: KV's
+   * Max value size in bytes; a `set` of a larger value rejects `too_large` ( : KV's
    * 25 MiB ceiling) WITHOUT storing or truncating. Default: undefined ⇒ unlimited (the
    * v0.1 behavior, unchanged).
    */
   readonly maxValueBytes?: number;
   /**
    * What a `set` COSTS in logical ms — the clock advances by this much before the version lands,
-   * so a caller that awaits the write observes time having passed (§8: a durable write is not
+   * so a caller that awaits the write observes time having passed ( : a durable write is not
    * free). The one knob that models write LATENCY; `delayReplica`/`delayKey` model replication
    * lag (a completed write held invisible) and move no clock. Default 0 ⇒ free writes, the
    * pre-existing timeline exactly.
@@ -108,8 +108,8 @@ export class FakeStore {
   #replicaDelayMs: number[] = [];
   readonly #keyDelayMs = new Map<string, number>();
   /** Reads that a per-KEY visibility delay (the `delayKey` chaos knob) actively held stale —
-   * a newer written version existed and would have been visible but for the delay (CACHE-28-ii
-   * Stage 2). The reach signal for the delayed-`__state` dimension: the pointer the reader
+   * a newer written version existed and would have been visible but for the delay.
+   *The reach signal for the delayed-`__state` dimension: the pointer the reader
    * resyncs off lags a durable write. Only KEY delays count (a replica-wide delay is a
    * different dimension), and only when a newer version was genuinely hidden — an armed delay
    * over a key with nothing newer to hide never increments (anti-inert-knob). */
@@ -135,7 +135,7 @@ export class FakeStore {
   }
 
   /** Reads a per-key `delayKey` delay held stale so far (a newer version was hidden). Fresh per
-   * world, so `> 0` means the delayed-`__state` arm genuinely fired this run (CACHE-28-ii). */
+   * world, so `> 0` means the delayed-`__state` arm genuinely fired this run. */
   get keyDelayHiddenReads(): number {
     return this.#keyDelayHiddenReads;
   }
@@ -190,7 +190,7 @@ export class FakeStore {
         visible = version;
       }
     }
-    // Reach accounting for the delayed-`__state` dimension (CACHE-28-ii Stage 2): a per-KEY
+    // Reach accounting for the delayed-`__state` dimension: a per-KEY
     // delay HID a newer version this read — one written (`writtenAtMs <= now`) but not yet
     // visible under the key delay. Counted only for key delays (not replica-wide) and only
     // when something newer was genuinely masked, so an armed-but-idle delay never inflates it.
@@ -219,7 +219,7 @@ export class FakeStore {
     if (this.#injectSet.has(key)) {
       throw new InjectedStoreError("set", key);
     }
-    // A write COSTS time (§8: a real durable write is not instantaneous). Charged before the
+    // A write COSTS time (a real durable write is not instantaneous). Charged before the
     // version lands, so the value's `writtenAtMs` is when the write COMPLETED — which is what a
     // caller that awaited it observes. Distinct from `delayReplica`/`delayKey`, which hold a
     // completed write INVISIBLE for a while: those model replication lag, this models latency,
@@ -235,7 +235,7 @@ export class FakeStore {
       const sizeBytes = new TextEncoder().encode(value).length;
       if (sizeBytes > this.#maxValueBytes) {
         // Reject oversize BEFORE appending: the value never enters #versions and is
-        // never truncated (§8: KV 25 MiB ceiling; E13 classified `too_large`).
+        // never truncated (KV 25 MiB ceiling; classified `too_large`).
         throw new OversizeValueError(key, sizeBytes, this.#maxValueBytes);
       }
     }
@@ -315,7 +315,7 @@ export class FakeStore {
   /**
    * Make reads of `key` throw until cleared (KV read error).
    *
-   * DO NOT "make this realistic" by classifying what it throws (§8, E13). The rejection here is
+   * DO NOT "make this realistic" by classifying what it throws. The rejection here is
    * UNCLASSIFIED ON PURPOSE, and it is the ONLY subject this lane has for the kernel's
    * rethrow-unclassified path — the backstop that exists so a driver which fails to classify is
    * LOUD instead of silently laundering its own bugs into misses. Teach this fake to classify and

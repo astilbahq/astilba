@@ -7,12 +7,7 @@
   ],
   "workspaces": {
     ".": {
-      "entry": [
-        "scripts/serve-showcase.mjs!",
-        "tooling/migration/*.mjs!",
-        "tooling/deployment/*.mjs!",
-        "tooling/publishing/*.mjs!"
-      ],
+      "entry": ["scripts/*.mjs!"],
       "playwright": {
         "config": [],
         "entry": ["playwright.config.ts!", "tests/e2e/**/*.ts!"]
@@ -112,7 +107,8 @@
         "scripts/*.mjs",
         "test/**/*.test.ts",
         "test/integration/worker.ts",
-        "test/boot/worker.ts"
+        "test/boot/worker.ts",
+        "test/integration/vitest.config.ts"
       ],
       "project": ["src/**/*.ts!", "test/**/*.ts", "scripts/*.mjs"],
       "ignoreDependencies": ["cloudflare"]

@@ -1,4 +1,4 @@
-// The E28 boot witness worker. Its MODULE SCOPE is real global scope: `wrangler dev` evaluates this
+// The boot witness worker. Its MODULE SCOPE is real global scope: `wrangler dev` evaluates this
 // module when the isolate starts, before any request exists.
 export { Coordinator } from "../../src/adapters/cloudflare/coordinator";
 
@@ -6,7 +6,7 @@ import { createWorkersCache } from "../../src/adapters/cloudflare";
 import { t } from "../../src/index";
 import { env } from "cloudflare:workers";
 
-// ┌── §2/E22 (i), at the placement the hero block depicts: worker.ts module scope ──
+// ┌── Hero form, at the placement the hero block depicts: worker.ts module scope ──
 const cache = createWorkersCache({
   name: 'journals',                       // one name ⇒ DO address, registry id, key namespace
   kv: env.CACHE_KV,

@@ -57,12 +57,6 @@
       "matchDepTypes": ["packageManager"],
       "matchPackageNames": ["pnpm"],
       "allowedVersions": "!/^11\\.12\\.0$/"
-    },
-    {
-      "description": "Review changes to the Braces security backport.",
-      "matchPackageNames": ["braces", "@dieub/braces-depth-guard"],
-      "groupName": "Braces security backport",
-      "automerge": false
     }
   ]
 }

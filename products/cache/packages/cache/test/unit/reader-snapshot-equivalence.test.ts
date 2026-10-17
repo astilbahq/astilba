@@ -7,7 +7,7 @@ import {
   probeEnvelope,
 } from "../conformance/fixtures/reader-parts";
 
-// Reader-side snapshot-replay equivalence (§2, F12) — the reader mirror of the writer-side
+// Reader-side snapshot-replay equivalence — the reader mirror of the writer-side
 // theorem in registry-machine.test.ts. Loading `__snap:<snapBatch>` and replaying the tail
 // `(snapBatch, lastBatch]` must yield the SAME knowledge as replaying every delta `(0, lastBatch]`
 // from zero. Proven by driving the REAL Invalidation two ways and comparing its serve verdicts to
@@ -22,7 +22,7 @@ interface Watermark {
 }
 
 /** Apply frames (deltas and/or a snapshot) via per-axis max-on-write — the way a replica reduces
- * them (§4.1). The reducer of record for the reader-side equivalence theorem. */
+ * them. The reducer of record for the reader-side equivalence theorem. */
 function applyFrames(frames: readonly BusFrame[]): Map<string, Watermark> {
   const map = new Map<string, Watermark>();
   for (const frame of frames) {
@@ -40,7 +40,7 @@ function applyFrames(frames: readonly BusFrame[]): Map<string, Watermark> {
   return map;
 }
 
-/** The §4.1 validity table over one known tag's watermark and an entry's `bornEpoch`. */
+/** The validity table over one known tag's watermark and an entry's `bornEpoch`. */
 function classify(born: number, w: Watermark): Validity {
   if (w.hard > born) {
     return "dead";
@@ -74,7 +74,7 @@ function deltaFor(seq: number, g: Group): BusFrame {
   return { changes, fromEpoch: seq - 1, toEpoch: seq };
 }
 
-/** A cumulative from-0 snapshot over deltas `1..k` (§2). */
+/** A cumulative from-0 snapshot over deltas `1..k`. */
 function snapFor(k: number, deltas: readonly BusFrame[]): BusFrame {
   const cumulative = applyFrames(deltas.slice(0, k));
   const changes: TagChange[] = [...cumulative.entries()].map(([tag, w]) => ({

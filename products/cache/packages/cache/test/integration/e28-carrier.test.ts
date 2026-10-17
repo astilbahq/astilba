@@ -1,11 +1,11 @@
-// Ordinary unit teeth (NOT sacred) — E28's Ticks clause. The CARRIER: whatever this library ships as
-// a composition has to bring its own freshness driver along. Each case bites ONE branch (rule 13):
+// Ordinary unit teeth (NOT sacred) — the Ticks clause. The CARRIER: whatever this library ships as
+// a composition has to bring its own freshness driver along. Each case bites ONE branch:
 //
 //   1. THE CARRIER EXISTS — a plain `getOrSet` on a `createWorkersCache` instance drives a tick.
-//      Before E28 the ONLY caller of a tick was the RR middleware, so a plain Worker on this factory
-//      had no driver at all: no `__state` poll, no E5 feed, no redial ladder. Blind the carrier and
+// Previously the ONLY caller of a tick was the RR middleware, so a plain Worker on this factory
+// had no driver at all: no `__state` poll, no liveness feed, no redial ladder. Blind the carrier and
 //      the tick count stays 0 ⇒ red.
-//   2. THE FLOOR — E28 sets a minimum a carrier must clear: one tick to seed the cursor, and a
+// 2. THE FLOOR — the design sets a minimum a carrier must clear: one tick to seed the cursor, and a
 //      second one a jittered baseline cadence later. This proves the carrier actually clears it —
 //      the later tick is the one that polls.
 //   3. RATE-LIMITED — a burst of reads rides ONE tick. Blind the gate and 1000 reads/second hammer
@@ -13,7 +13,7 @@
 //   4. ADOPT-DON'T-AWAIT — the read does not wait for the tick.
 //   5. CANCELLATION-TOLERANT — a tick that REJECTS (which is how a request teardown surfaces: the
 //      in-flight I/O rejects) never fails the read, never floats an unhandled rejection, and leaves
-//      the reader BEHIND rather than falsely converged. This is the case E28 requires be
+// the reader BEHIND rather than falsely converged. This is the case the design requires be
 //      establishable before the carrier may ship.
 //
 // Lane: integration — because the real `createWorkersCache` config names workerd's binding types,
@@ -194,7 +194,7 @@ describe("E28 — the carrier: what ships as a composition brings its own freshn
       await vi.advanceTimersByTimeAsync(0);
 
       // THE TOOTH: blind the carrier and this stays 0 — which is exactly what a plain Worker on this
-      // factory had before E28. Its `__state` poll never ran, so nothing held its eventual reads
+      // factory had before. Its `__state` poll never ran, so nothing held its eventual reads
       // inside the staleness bound INV-25 fixes, and nothing said so.
       expect(counter.reads).toBeGreaterThan(0);
     } finally {
@@ -249,7 +249,7 @@ describe("E28 — the carrier: what ships as a composition brings its own freshn
   });
 
   it("CANCELLATION-TOLERANT: a REJECTING tick never fails the read and floats nothing", async () => {
-    // THE CASE E28 REQUIRES BEFORE THE CARRIER MAY SHIP. On Workers an un-awaited promise is
+    // THE CASE REQUIRED BEFORE THE CARRIER MAY SHIP. On Workers an un-awaited promise is
     // cancelled when the response returns: the tick's in-flight I/O REJECTS. A failing KV models the
     // same shape — the tick's store read rejects mid-flight, exactly as a teardown makes it.
     vi.useFakeTimers();
@@ -267,7 +267,7 @@ describe("E28 — the carrier: what ships as a composition brings its own freshn
 
       // The READ SUCCEEDS. The tick's failure is not the read's business: a background freshness
       // probe must never fail a user's request, and the L2 read failing is separately absorbed to a
-      // miss (E13), so the factory serves.
+      // miss, so the factory serves.
       await expect(read(cache, "carrier/cancel")).resolves.toBe("v");
       await vi.advanceTimersByTimeAsync(0);
       await Promise.resolve();

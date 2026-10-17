@@ -3,7 +3,7 @@ import { describe, expect, test } from "vitest";
 
 import { buildReaderParts } from "./fixtures/reader-parts";
 
-// C2-b-2-a — E5 elapsed-silence monitor teeth (§4.2, CACHE-27). The reference reader's default
+// Elapsed-silence monitor teeth. The reference reader's default
 // heartbeat interval is 30s ⇒ suspicion raises after 3× = 90s of OBSERVED SILENCE. The monitor
 // measures elapsed silence (not a count of non-advancing ticks), so the raise is sampling-rate-
 // independent. These pin, and are the red target for, the three rule-13 mutations run in review:

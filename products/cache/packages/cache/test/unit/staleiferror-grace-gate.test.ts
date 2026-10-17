@@ -1,19 +1,19 @@
-// The §5.4 classifier is USER-supplied (`defaults.staleIfError`), so the kernel must not invoke it
+// The classifier is USER-supplied (`defaults.staleIfError`), so the kernel must not invoke it
 // on a call where no graced serve is possible. A call declaring no `grace` is exactly that: no
 // waiter on the fill can serve a stale copy (`grace` rides the singleflight join identity, so every
 // waiter declared the same), and the factory error rethrows whatever the classifier would have said.
 // Running app code on a path that cannot use its answer is a side effect the caller never asked for
 // — and a classifier that throws would surface from a call that declared no interest in grace.
 //
-// ORDINARY regression (not sacred): a callback-invocation contract, not a §-numbered safety
-// invariant (E20's remit line — safety is sacred's province). Both directions are pinned, so the
+// ORDINARY regression (not sacred): a callback-invocation contract, not a numbered safety
+// invariant (the remit line — safety is sacred's province). Both directions are pinned, so the
 // gate cannot degenerate into "never classify" either.
 
 import { HttpError } from "@astilba/cache";
 import { mkKey, mkTag, world } from "@astilba/harness";
 import { describe, expect, test } from "vitest";
 
-/** A retriable origin failure (503 ∈ the default retriable set, E2). */
+/** A retriable origin failure (503 ∈ the default retriable set). */
 const retriableFail = async (): Promise<never> => {
   throw new HttpError(new Response(null, { status: 503 }));
 };
@@ -45,7 +45,7 @@ describe("§5.4: the user's classifier runs only where a graced serve is possibl
     ).rejects.toBeInstanceOf(HttpError);
 
     // THE TOOTH: the user's predicate was never called. Removing the declared-grace gate on the
-    // §5.4 classification invokes it here, which is app code running on a path that cannot use it.
+    // HTTP classification invokes it here, which is app code running on a path that cannot use it.
     expect(counter.calls).toBe(0);
   });
 

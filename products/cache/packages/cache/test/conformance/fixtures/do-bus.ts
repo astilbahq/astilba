@@ -7,7 +7,16 @@ import { establish, fanOut } from "../../../src/adapters/cloudflare/bus-server";
 import { decode } from "../../../src/adapters/cloudflare/wire";
 import type { BusHarness, DoubtProbe, MismatchProbe } from "../runner/bus";
 
-/* References: §4.2, E19. */
+// The doBus conformance harness — the REAL wire codec + server fan-out +
+// client, wired over an IN-MEMORY duplex socket pair so the deterministic conformance lane drives
+// the identical code the workerd integration lane does. The pair delivers SYNCHRONOUSLY (buffering
+// a message until a listener attaches, exactly as a WS queues until the receiver is ready), so the
+// generic `runBusContract` — whose checks assert synchronously after `subscribe` — drives doBus with
+// no timing tolerance. Real evictions/redials are the integration lane's job (rulings).
+//
+// This file ALSO ships two deliberately-broken doBus harnesses (the teeth): one whose CLIENT skips
+// the regId-echo check, one whose SERVER skips close-on-doubt. Each proves the matching
+// core check discriminates a liar, not merely that it passes the reference.
 
 const WS_OPEN = 1;
 const WS_CLOSING = 2;
@@ -106,6 +115,8 @@ class MemorySocket {
     this.#closeListeners.push(listener as CloseListener);
   }
 
+  /** Arm the NEXT delivery to this socket to be DOUBTFUL — a throwing `send` AND a non-OPEN
+   * readyState — so the server's `sendOrClose` sees doubt on either path. */
   forceDoubt(): void {
     this.#throwOnSend = true;
     this.readyState = WS_CLOSING;
@@ -120,6 +131,12 @@ function makeSocketPair(): { client: MemorySocket; server: MemorySocket } {
   return { client, server };
 }
 
+/**
+ * The in-memory doBus SERVER: holds the live server sockets + the last-flushed epoch (the `hello`
+ * head), and drives the REAL `establish`/`fanOut`. `publish` advances the head to the
+ * frame's `toEpoch` (a flush is what advances the durable cursor), so a later `hello` declares a
+ * head ≥ every published frame (lower bound). `broadcaster` lets a liar swap in a broken fan-out.
+ */
 class MemoryServer {
   readonly #sockets = new Set<MemorySocket>();
   #head = 0;
@@ -175,7 +192,7 @@ function dialAgainst(
 }
 
 /** Drive a mismatched-scope subscriber against `server` via the given client factory, capturing the
- * events it received + whether it closed (③). A conformant client dispatches NO hello and closes. */
+ * events it received + whether it closed. A conformant client dispatches NO hello and closes. */
 function runMismatchProbe(
   server: MemoryServer,
   makeClient: typeof doBus
@@ -195,6 +212,8 @@ function runMismatchProbe(
   return { closed, events };
 }
 
+/** Drive a two-subscriber close-on-doubt probe against `server`: arm one subscriber's
+ * server socket doubtful, publish, observe both. */
 function runDoubtProbe(server: MemoryServer, frame: BusFrame): DoubtProbe {
   const doubtedFrames: BusFrame[] = [];
   const healthyFrames: BusFrame[] = [];
@@ -241,6 +260,10 @@ function runDoubtProbe(server: MemoryServer, frame: BusFrame): DoubtProbe {
   };
 }
 
+/**
+ * The REFERENCE doBus harness: the real codec + server + client over the in-memory pair.
+ * Passes the CORE block; the loss/reorder GATED checks self-skip (doBus emits no `gap`).
+ */
 export function makeDoBusHarness(): () => BusHarness {
   return (): BusHarness => {
     const server = new MemoryServer("default");
@@ -264,7 +287,7 @@ export function makeDoBusHarness(): () => BusHarness {
 // ── Deliberately-BROKEN doBus harnesses (teeth) ──────────────────────────────────────────────────
 
 /**
- * A CLIENT that SKIPS the E19 regId-echo check (③) — it dispatches every decoded event, `hello`
+ * A CLIENT that SKIPS the regId-echo check — it dispatches every decoded event, `hello`
  * included, regardless of the scope the DO echoed. A mismatched-scope subscriber therefore RECEIVES
  * a hello for a foreign channel instead of closing loud. Targets: the regId-echo core check.
  */
@@ -286,7 +309,7 @@ function naiveNoEchoClient(
         const wire = result.event;
         if (wire.kind === "hello") {
           // BUG: dispatches the hello WITHOUT asserting `wire.regId` matches — the foreign-channel
-          // read E19 forbids. A conformant client closes loud here.
+          // read the protocol forbids. A conformant client closes loud here.
           onEvent({ head: wire.head, kind: "hello" });
           return;
         }
@@ -326,6 +349,11 @@ export function makeNoEchoCheckDoBusHarness(): () => BusHarness {
   };
 }
 
+/**
+ * A SERVER fan-out that SKIPS a doubtful socket WITHOUT closing it (violated) — it simply
+ * ignores a socket whose `send` would fail, leaving the subscriber neither delivered-to nor closed.
+ * A doubtful subscriber is therefore never closed. Targets: the close-on-doubt core check.
+ */
 function naiveNoCloseFanOut(
   sockets: Iterable<ServerSocket>,
   frame: BusFrame
@@ -336,7 +364,7 @@ function naiveNoCloseFanOut(
     v: 1,
   });
   for (const socket of sockets) {
-    // BUG: skip a non-OPEN socket, but do NOT close it (the silent-gap risk ① forbids).
+    // BUG: skip a non-OPEN socket, but do NOT close it (the silent-gap risk forbids).
     if (socket.readyState !== undefined && socket.readyState !== WS_OPEN) {
       continue;
     }

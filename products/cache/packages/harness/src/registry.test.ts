@@ -8,10 +8,10 @@ import { FakeRegistry } from "./registry";
 // Harness self-tests (P1) — FakeRegistry watermark monotonicity: max-on-write,
 // soft never regresses hard, monotone epoch counter.
 
-/** The default-scoped physical mirror keys (§4.2, E19) the FakeRegistry writes — a default
+/** The default-scoped physical mirror keys the FakeRegistry writes — a default
  * FakeRegistry seeds `regId:"default"`, so its keys are `__reg:default:…`. */
 const KEYS = mirrorKeys("default");
-/** The single hot pointer key (§4.2) — blessed at most once per flush. */
+/** The single hot pointer key — blessed at most once per flush. */
 const STATE_KEY = KEYS.stateKey;
 /** Whether a logged key is a `delta` batch key (scheme-agnostic — matches the scoped form). */
 const isDeltaKey = (key: string): boolean => key.includes(":delta:");
@@ -194,7 +194,7 @@ describe(FakeRegistry, () => {
     await clock.runMicrotasks();
     expect(settled).toBeFalsy(); // still in flight — the DO round-trip has not elapsed
     // A hard delete lands DURING the round-trip; the resolved knowledge must reflect it
-    // (primary reads are authoritative — §4.4 — only their completion is delayed).
+    // (primary reads are authoritative — only their completion is delayed).
     await registry.delete(["t"]); // hard epoch 2
     clock.advance(5000);
     registry.pumpChecks(clock.now());

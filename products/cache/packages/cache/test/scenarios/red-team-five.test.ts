@@ -1,4 +1,6 @@
-/* References: §11, §11.34. */
+// Red-team five — the named exit-gate scenarios from spec.
+// Sacred: append-only. Never modify, delete, weaken, skip, or .todo an existing test.
+// Ordering/mechanics only — no incident narrative.
 
 import { mkTag, world } from "@astilba/harness";
 import { test } from "@fast-check/vitest";

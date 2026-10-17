@@ -1,4 +1,4 @@
-// Ordinary unit teeth (NOT sacred) — E7's KIND-AWARE WRITE GUARD (§5.1 step 5, E7/INV-26).
+// Ordinary unit teeth (NOT sacred) — the KIND-AWARE WRITE GUARD.
 //
 // Sacred pins the specified outcome — a live value survives a 404 — and that the store is left
 // holding that val (negative-caching.test.ts, negative-caching-join.test.ts). These pin the guard's
@@ -72,7 +72,7 @@ const SHARED = {
 
 /** A `Store` that answers absence for the next `blind` DATA-key reads, then reverts — the fixture
  * that makes a caller blind to what this tier is really holding (a tier unreadable for a moment;
- * §5.2's leader that read nothing). Registry / mirror keys (`__…`) pass through untouched, and never
+ * the leader that read nothing). Registry / mirror keys (`__…`) pass through untouched, and never
  * consume the budget. The write layer's OWN compare read is the one that must still see the store,
  * so the budget is spent by the tier reads that precede it. */
 function blindingStore(inner: Store, arm: { blind: number }): Store {
@@ -104,7 +104,7 @@ function blindingStore(inner: Store, arm: { blind: number }): Store {
 /** An L1 that records the keys it was asked to WRITE and to DELETE, and exposes the tier underneath
  * so a test can probe L1's own contents rather than inferring them from a serve. The written key is
  * recorded rather than reconstructed, so the probe cannot drift from the kernel's canonical-key
- * rule (§3). */
+ * rule. */
 interface RecordingL1 {
   readonly inner: Store;
   readonly store: Store;
@@ -182,7 +182,7 @@ interface Rig {
 }
 
 /** An L2 whose reads make the stored entry UNREADABLE to this instance, on the two axes the read
- * path fails closed on: `"codec"` stamps a foreign codecId (E8/INV-27), `"decode"` leaves the
+ * path fails closed on: `"codec"` stamps a foreign codecId, `"decode"` leaves the
  * codecId intact and replaces the body with bytes this codec cannot decode (INV-8). `"none"` passes
  * through, so arming happens after seeding and no existing fixture changes shape. */
 type CorruptMode = "none" | "codec" | "decode";
@@ -245,7 +245,7 @@ function rig(): Rig {
       bus,
       clock,
       // Blinding wraps the recorder, not the other way round: the budget must be spent by the TIER
-      // reads (§5.1 steps 2/4), and the recorder still sees every write and delete underneath it.
+      // reads (steps 2/4), and the recorder still sees every write and delete underneath it.
       l1: blindingStore(l1.store, blind),
       l2: blindingStore(corruptibleStore(store.replica(0), corrupt), blind),
       lock: new FakeLock(),
@@ -278,7 +278,7 @@ async function seed(r: Rig): Promise<void> {
  * store holds is decided at the write layer or not at all. `duringFactory` runs after the fill's own
  * pre-factory work and before the 404, which is where a mid-fill fault belongs. */
 async function blind404(r: Rig, duringFactory?: () => void): Promise<unknown> {
-  r.blind.blind = 2; // the L1 tier read, then the L2 tier read (§5.1 steps 2/4).
+  r.blind.blind = 2; // the L1 tier read, then the L2 tier read (steps 2/4).
   const entry = await r.cache.getOrSetEntry({
     ...SHARED,
     factory: async () => {
@@ -290,7 +290,7 @@ async function blind404(r: Rig, duringFactory?: () => void): Promise<unknown> {
   return entry.value;
 }
 
-/** What the key actually HOLDS afterwards, as the non-hydrating witness reports it (E27) — the only
+/** What the key actually HOLDS afterwards, as the non-hydrating witness reports it — the only
  * oracle that can tell a val that survived from a val a correct-looking serve displaced. */
 async function storedKind(cache: Cache): Promise<string> {
   const seen = await cache.explain("k");
@@ -304,7 +304,7 @@ function suppressions(events: readonly TelemetryEvent[]): TelemetryEvent[] {
 describe("E7 kind-aware neg-write guard — which stored vals it protects (§5.1 step 5, E7/INV-26)", () => {
   it("RELEASE ARM: a val the letter releases (hard-purged ⇒ dead) admits the neg, while a val it protects refuses it", async () => {
     // The DEAD arm. A hard purge leaves the bytes in the store but the entry is dead to every
-    // reader, so there is no servable value for E7 to protect and the 404 is the newer truth.
+    // reader, so there is no servable value for the guard to protect and the 404 is the newer truth.
     const dead = rig();
     await seed(dead);
     await dead.cache.delete({ tag: dead.tag });
@@ -319,7 +319,7 @@ describe("E7 kind-aware neg-write guard — which stored vals it protects (§5.1
 
     // THE TOOTH, stated as the PAIR: both callers were equally blind, both got the same 404, and
     // both were served the same not-found fact — only what the store was left holding differs, and
-    // it differs on exactly the term E7 names. Protect every stored envelope and the first reads
+    // it differs on exactly the term the guard names. Protect every stored envelope and the first reads
     // `val`; release every stored envelope and the second reads `neg`.
     await expect(
       Promise.all([storedKind(dead.cache), storedKind(alive.cache)])
@@ -340,7 +340,7 @@ describe("E7 kind-aware neg-write guard — which stored vals it protects (§5.1
     await r.cache.expire({ tag: r.tag });
 
     // The registry goes down INSIDE the factory: the fill's pre-factory live check already ran, so
-    // the guard's own check is the only one denied a verdict. The §4.1 table has a name for that
+    // the guard's own check is the only one denied a verdict. The table has a name for that
     // state — `unknown` — reached here by a throw rather than by a value.
     await expect(
       blind404(r, () => {
@@ -389,7 +389,7 @@ describe("E7 kind-aware neg-write guard — what a refusal leaves behind (§5.1 
     await seed(r); // the value is written through to L1 as well as L2.
     await r.cache.expire({ tag: r.tag });
     // The key the seeding fill actually hydrated L1 under — the tier's own record of what it wrote,
-    // never reconstructed here, so this probe cannot drift from the kernel's canonical-key rule (§3).
+    // never reconstructed here, so this probe cannot drift from the kernel's canonical-key rule.
     const [l1Key] = r.l1.written;
     assert.ok(
       l1Key !== undefined,
@@ -425,8 +425,8 @@ describe("E7 kind-aware neg-write guard — what a refusal leaves behind (§5.1 
 });
 
 describe("E7 kind-aware neg-write guard — SERVABLE is the read path's answer (§5.1 step 5, E7/INV-26, E8/INV-27, E31)", () => {
-  // E7 protects a SERVABLE good value, and servability has a signed definition the read path
-  // already enforces: a codecId this instance does not accept is a miss (E8/INV-27), and a body it
+  // The neg-write guard protects a SERVABLE good value, and servability has a signed definition the read path
+  // already enforces: a codecId this instance does not accept is a miss, and a body it
   // cannot decode is a miss (INV-8). An envelope failing either is not a val — it is a miss wearing
   // bytes, invisible to every reader here — so protecting it protects a ghost. The failure mode is
   // an unbounded origin amplifier rather than a wrong answer: the neg can never land, so every
@@ -469,7 +469,7 @@ describe("E7 kind-aware neg-write guard — SERVABLE is the read path's answer (
     ghost.corrupt.mode = "codec"; // armed AFTER seeding: the bytes are real, this instance cannot read them.
 
     // The discriminating control on the same fixture: an identical rig whose stored val this
-    // instance CAN read, soft-purged so it is stale-but-servable — the val E7 exists to protect.
+    // instance CAN read, soft-purged so it is stale-but-servable — the val the neg-write guard protects.
     const real = rig();
     await seed(real);
     await real.cache.expire({ tag: real.tag });
@@ -545,8 +545,8 @@ describe("E7 kind-aware neg-write guard — the two terms that had no witness (�
   });
 
   it("REGISTRY-ABSENT ARM: with no watermark authority every stored entry validates FRESH, so a servable val still refuses the neg", async () => {
-    // A cache built without registry/bus has no §4.1 authority, so this arm — not `validate` — IS
-    // the whole E7 guard for it. Every other test here runs with a registry, so the arm carried no
+    // A cache built without registry/bus has no watermark authority, so this arm — not `validate` — IS
+    // the whole neg-write guard for it. Every other test here runs with a registry, so the arm carried no
     // witness at all: blind it to `false` and a registry-less deployment buries live values on any
     // transient 404, with every gate green.
     const clock = new SimClock();
@@ -589,10 +589,10 @@ describe("E7 kind-aware neg-write guard — the two terms that had no witness (�
 
 describe("E7 suppression telemetry — one event per suppression, at the seat that rendered it (E7, E31, §10)", () => {
   it("the SERVE seat emits too: a sighted caller that suppresses reports it, exactly as a blind caller's refused write does", async () => {
-    // E31 attaches `neg_suppressed` to whichever seat renders the suppression. The two seats are
+    // The design attaches `neg_suppressed` to whichever seat renders the suppression. The two seats are
     // reached by different callers: a caller holding the protected copy suppresses at the SERVE
     // seat and serves its own value, while a caller blind to it reaches the WRITE layer's guard.
-    // Only the second had a witness before this, which left the commoner case silent — the one E7's
+    // Only the second had a witness before this, which left the commoner case silent — the one the
     // own rationale describes.
     const sighted = rig();
     await seed(sighted);
@@ -649,7 +649,7 @@ describe("E7 guard × the neg-write eviction — one posture, two halves (§5.1 
     await expect(storedKind(r.cache)).resolves.toBe("neg");
 
     // HALF TWO — the same isolate's very next read is served the NEGATIVE, not the stale local copy.
-    // The write that recorded the fact retired the superseded L1 entry in the same motion (§3's
+    // The write that recorded the fact retired the superseded L1 entry in the same motion (the
     // eviction, which carries its own tooth in this file's "what a refusal leaves behind" suite —
     // the control there is that a REFUSED write evicts nothing). Serving the old val here would be
     // precisely the resurrection that eviction exists to prevent.

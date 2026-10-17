@@ -1,12 +1,12 @@
-// Ordinary ADAPTER-lane teeth (NOT sacred) — C4-b. The request-piggyback poll driver: the WeakMap
-// seam read, the staleness gate, and the swallow wrap. Each case bites ONE branch (rule 13):
+// Ordinary ADAPTER-lane teeth (NOT sacred). The request-piggyback poll driver: the WeakMap
+// seam read, the staleness gate, and the swallow wrap. Each case bites ONE branch:
 //   • seam read      — a registry-bearing cache HAS a poller and the tick reaches it; blind the read
 //                      (return undefined) and the tick never fires;
 //   • staleness gate — a burst of requests rides ONE tick; blind the gate (tick every request) and
 //                      the second request ticks too ⇒ red;
 //   • swallow wrap   — a THROWING tick leaves the response untouched AND increments the counter;
 //                      remove the wrap and the rejection escapes into the waitUntil promise ⇒ red.
-// Deterministic lane (rule 12): `tickIfStale` takes `nowMs` explicitly, so the gate is proven with no
+// Deterministic lane: `tickIfStale` takes `nowMs` explicitly, so the gate is proven with no
 // wall clock and no timing tolerance. The middleware cases use one fresh cache each, so the gate's
 // cursor (a WeakMap keyed by the instance) starts empty and the first request always ticks.
 
@@ -127,7 +127,7 @@ describe("request-piggyback poll driver — the WeakMap seam + the staleness gat
     expect(tick).toBeDefined();
     await tick;
 
-    // One tick = one `__state` read (the E5 feed + the ladder + the baseline poll all hang off it).
+    // One tick = one `__state` read (the feed + the ladder + the baseline poll all hang off it).
     // With `replicationPollerOf` blinded to `undefined`, `tickIfStale` returns undefined and this is 0.
     expect(store.reads).toBe(1);
   });
@@ -243,7 +243,7 @@ describe("request-piggyback poll driver — the SWALLOW wrap (C4-b, rule 13)", (
   });
 });
 
-// ── F2: the swallow wrap's OWN escape hatch (C4-b review, rule 13) ────────────────────────────────
+// ── the swallow wrap's OWN escape hatch ────────────────────────────────
 // The wrap above proves a failing TICK cannot reach the response. It proved nothing about the sink
 // the wrap reports THROUGH — app code, called from inside the very catch block whose job is to not
 // throw. Two failure modes, both of which turned the swallow back into an escape:
@@ -322,7 +322,7 @@ describe("request-piggyback poll driver — the swallow wrap's OWN escape hatch 
   });
 
   it("a well-behaved sink is unaffected: the event is still delivered exactly once", async () => {
-    // The guard must not cost the counter it exists to protect (§10) — a non-vacuity check on the
+    // The guard must not cost the counter it exists to protect — a non-vacuity check on the
     // two cases above: the emit still happens, still once, still with the error's NAME only.
     const events: TelemetryEvent[] = [];
     await tickIfStale(makeFailingTickCache(), 0, (event) => {

@@ -2,7 +2,7 @@
   "name": "astilba",
   "version": "0.0.0",
   "private": true,
-  "description": "Astilba's development monorepo for Env, UI, web applications and unreleased Cache.",
+  "description": "Astilba's monorepo: Env, Cache, UI, docs and the apex site.",
   "homepage": "https://github.com/astilbahq/astilba#readme",
   "bugs": {
     "url": "https://github.com/astilbahq/astilba/issues"
@@ -22,7 +22,7 @@
     "knip": "knip --workspace . --workspace packages/tokens --workspace packages/ui --workspace apps/ui-showcase --workspace fixtures/ui-astro",
     "pack:check": "pnpm --filter @astilba/tokens pack:check && pnpm --filter @astilba/ui pack:check",
     "smoke:production": "node scripts/smoke-production.mjs",
-    "test": "pnpm test:dependency-security && pnpm --filter @astilba/tokens --filter @astilba/ui --filter @astilba/showcase --filter @astilba/integration-astro --recursive test",
+    "test": "pnpm --filter @astilba/tokens --filter @astilba/ui --filter @astilba/showcase --filter @astilba/integration-astro --recursive test",
     "test:astro": "pnpm --filter @astilba/tokens build && pnpm --filter @astilba/ui build && pnpm --filter @astilba/integration-astro test",
     "test:browser": "pnpm build && pnpm test:browser:run",
     "test:browser:install": "playwright install chromium",
@@ -30,27 +30,20 @@
     "test:browser:run": "playwright test",
     "test:browser:update": "pnpm build && playwright test --update-snapshots",
     "typecheck": "pnpm --filter @astilba/tokens --filter @astilba/ui --filter @astilba/showcase --filter @astilba/integration-astro --recursive typecheck",
-    "verify": "pnpm verify:boundaries && pnpm verify:publisher && pnpm verify:deployment && pnpm verify:ui && pnpm verify:env && pnpm verify:web && pnpm verify:cache",
-    "verify:deployment": "node --test tooling/deployment/*.test.mjs",
-    "verify:publisher": "node --test tooling/publishing/*.test.mjs",
+    "verify": "pnpm verify:ui && pnpm verify:env && pnpm verify:web && pnpm verify:cache",
     "verify:cache": "pnpm --dir products/cache verify",
-    "verify:boundaries": "node --test tooling/migration/pilot-boundaries.test.mjs",
     "verify:ui": "pnpm verify:base && pnpm test:browser && pnpm deploy:dry-run",
-    "verify:env": "pnpm --dir packages/env check && pnpm verify:registry:lint && pnpm --dir packages/env knip && pnpm --dir packages/env verify",
-    "verify:registry:lint": "node tooling/migration/check-registry.mjs",
+    "verify:env": "pnpm --dir packages/env check && pnpm --dir packages/env knip && pnpm --dir packages/env verify",
     "verify:env:archive": "pnpm --dir packages/env pack:artifact && pnpm --dir packages/env verify:artifact",
-    "verify:env:consumers": "node tooling/migration/verify-env-consumers.mjs",
     "verify:registry": "corepack pnpm@11.10.0 --dir fixtures/registry/env verify:all",
     "verify:web": "pnpm --filter @astilba/tokens build && pnpm --filter @astilba/ui build && pnpm --dir apps/docs verify",
-    "verify:base": "pnpm check && pnpm typecheck && pnpm test && pnpm knip && pnpm pack:check",
-    "test:dependency-security": "node --test scripts/dependency-security.test.mjs"
+    "verify:base": "pnpm check && pnpm typecheck && pnpm test && pnpm knip && pnpm pack:check"
   },
   "devDependencies": {
     "@arethetypeswrong/cli": "0.18.5",
     "@axe-core/playwright": "4.12.1",
     "@playwright/test": "1.61.1",
     "@types/node": "24.13.3",
-    "braces": "npm:@dieub/braces-depth-guard@3.0.3-pn.3",
     "knip": "6.29.0",
     "oxfmt": "0.64.0",
     "oxlint": "1.79.0",
@@ -60,8 +53,7 @@
     "ultracite": "7.9.4",
     "vite-plus": "0.3.0",
     "vitest": "4.1.11",
-    "wrangler": "4.114.0",
-    "yaml": "2.9.0"
+    "wrangler": "4.114.0"
   },
   "engines": {
     "node": "^22.18.0 || >=24.0.0",

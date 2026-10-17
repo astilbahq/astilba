@@ -1,4 +1,4 @@
-// The demo's fault dials — the ONLY mutable chaos state in this app (C5-c).
+// The demo's fault dials — the ONLY mutable chaos state in this app.
 //
 // WHERE CHAOS LIVES, AND WHY IT LIVES THERE. Every fault this demo injects is DEMO-SIDE
 // INTERPOSITION: the wrappers beside this file implement the platform's own interfaces
@@ -35,7 +35,7 @@ interface KvFaults {
 // test drove it — it was reachable only by editing the source, which makes it not a dial but a
 // comment with a `setTimeout` in it. It was also modelling the wrong fault for every scene this demo
 // actually has: a SLOW store is a different subject from a DEAD one, and the latency the flagship
-// scene cares about is the origin refill's — the price E13's miss-class posture makes the caller pay
+// scene cares about is the origin refill's — the price the miss-class posture makes the caller pay
 // — which the app measures at its own edge off the real read rather than off a number it injected.
 // A dial that can only be exercised by a test written to exercise it is a dial that proves the test
 // works. Deleted rather than wired to an invented scene.

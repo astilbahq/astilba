@@ -1,7 +1,7 @@
-// E26 (§5, E16/INV-12): classify's DEAD edge is the STRICT `hardEpoch > bornEpoch`
+// classify's DEAD edge is the STRICT `hardEpoch > bornEpoch`
 // (invalidation.ts). The whole before-initiation anchor rides on that strictness — a strong fill
 // whose bornEpoch is minted AT a purge's epoch (born == hard) is FRESH, because the pre-factory
-// born-mint linearizes the fill at/after that purge (§5, INV-12). A `>=` "hardening" would instead
+// born-mint linearizes the fill at/after that purge. A `>=` "hardening" would instead
 // fence every born==hard value and drive it into re-mint-and-fence exhaustion. This tooth pins the
 // equality boundary directly (an ORDINARY fakes-lane regression, not sacred).
 //

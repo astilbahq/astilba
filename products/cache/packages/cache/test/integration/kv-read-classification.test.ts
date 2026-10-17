@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import { cloudflareKV } from "../../src/adapters/cloudflare/kv";
 import type { StoreMetadata } from "../../src/drivers";
 
-// The DRIVER-FED tooth for E13's GET half (§8, E13). The kernel's read guard absorbs only a
+// The DRIVER-FED tooth for the GET half. The kernel's read guard absorbs only a
 // CLASSIFIED rejection and rethrows anything else — deliberately, so an unnamed driver fault reaches
 // the caller instead of laundering into a confident "not found". That posture only pays if the
 // driver at the boundary actually names its faults: platform knowledge lives in the adapter, and
@@ -14,11 +14,11 @@ import type { StoreMetadata } from "../../src/drivers";
 //
 // So this drives the REAL `cloudflareKV` — not a hand-written fake Store — through the REAL
 // `createCache`, with a namespace whose read rejects in KV's production shape (an ordinary `Error`
-// carrying `status: 429`; Miniflare emits no real 429 of its own, D2/D14). What must happen is E13's
+// carrying `status: 429`; Miniflare emits no real 429 of its own, D2/D14). What must happen is the
 // whole GET half end to end: the read failure is classified at the boundary, suppressed to a plain
 // miss, and refilled from origin. The caller never sees it.
 //
-// Mutation (rule 13): remove the try/catch around the `getWithMetadata` call in
+// Mutation: remove the try/catch around the `getWithMetadata` call in
 // `CloudflareKvStore.get` ⇒ the raw rejection escapes the driver unclassified ⇒ the kernel's
 // backstop rethrows it ⇒ `getOrSet` rejects ⇒ reds. That mutation is the pre-fix state of the file.
 //
@@ -43,10 +43,10 @@ function kvGetRateLimited(): Error {
   });
 }
 
-
-
-
-
+/**
+ * The real KV binding with its READ replaced by a rejection — writes and deletes still land in real
+ * KV. `new Proxy<KVNamespace>` is typed by the target, so the binding needs no cast.
+ */
 function readRejectingNamespace(inner: KVNamespace): KVNamespace {
   return new Proxy(inner, {
     get(target, property, receiver) {
@@ -87,12 +87,12 @@ describe("cloudflareKV classifies a rejected read (§8, E13)", () => {
   });
 
   it("classifies TOTALLY — a rejection of NO recognized shape is still a miss-class event", async () => {
-    /* References: E13. */
-    
-    
-    
-    
-    
+    // the posture is about the READ, not about the taxonomy: an L2 read failure of ANY shape is a
+    // miss-class event, so the driver's classifier is TOTAL and an unrecognized rejection lands on
+    // transient `unavailable` rather than escaping unnamed. A driver that classified only the shapes
+    // it recognizes would leave every UNRECOGNIZED production fault — the ones nobody wrote a
+    // recognizer for, which is the interesting set — falling through the kernel's backstop to the
+    // caller. Blind: make `classifyReadError` rethrow what `isRateLimited` does not match ⇒ reds.
     const opaque: KVNamespace = new Proxy(env.REGISTRY_KV, {
       get(target, property, receiver) {
         if (property === "getWithMetadata") {

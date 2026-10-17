@@ -1,26 +1,14 @@
-# Cache contributor guidance
+# Astilba Cache
 
-This workspace contains an unreleased caching library, deterministic test harness, and local Workers fixtures. This migration snapshot is not approved for publication or deployment.
+A portable TypeScript caching library (`@astilba/cache`) with tag invalidation, stale-if-error resilience and privacy scopes, plus its deterministic test harness (`packages/harness`), a Workers demo (`apps/demo`) and a React Router build fixture (`apps/rr-fixture`). It shares the monorepo root install; run `pnpm verify:cache` from the root.
 
-Use Node 24.18.1 and pnpm 11.17.0 from the monorepo root. Run the root frozen install; this product has no independent active lock or workspace file. Keep dependencies and Actions pinned; security updates must include the lockfile and their verification evidence.
+## Ground rules
 
-## Code and tests
-
-- Preserve every existing invariant/scenario assertion and test name. Changes to these files need explicit maintainer approval; the migration's approval covers comments only.
-- Run invariant tests with `pnpm exec vitest run --project invariants` and typechecks with direct `tsc`. Vite+ is the convenience loop, not a substitute for those commands.
-- Kernel code receives clocks and randomness as inputs. Runtime clocks, timers, and bindings belong in adapters and need a nearby `PLATFORM:` explanation.
-- Retain numeric contract references and safety explanations. Do not include private source documents or internal review narratives.
-- Keep the fake-based correctness suite separate from conformance, workerd integration, and deployed measurements. Do not weaken checks or add retries to deterministic tests.
-- An added branch needs a test that fails when that branch is disabled. Keep the mutation score floor intact.
-- The built package must keep one shared kernel module behind all entry points. Run the packaging/import-graph checks after changes to build configuration.
-- Existing lint directives and the `@testExport` marker have tool effects. Preserve those effects during comment edits.
-
-## Verification and authority
-
-`SPEC-VERSION` records the immutable reference for this snapshot. Maintainers verify its ancestry and scoped specification-tree equality against their approved private reference checkout. Public CI does not fetch that checkout or require its credentials. Contributors use the checked-in API, deterministic tests, and public guidance; do not invent behavior when they conflict.
-
-Run lint/format, all direct typecheck programs, invariant/unit/conformance/demo tests, packaging checks, both Knip modes, generated-type checks, local boot witnesses, and the unsuppressed security scanner. The workflow inventories each lane. The integration result is still reported separately from the aggregate: review all failures, and block a merge on an unrecognized failure. Do not treat the aggregate alone as integration clearance.
-
-Use isolated checkouts for edits and mutation runs. Do not publish, deploy, change repository visibility, or import private Git ancestry as part of ordinary verification.
-
-Run `pnpm verify:cache` at the monorepo root. Native formatter/linter adapters read the unchanged Cache policy with nested discovery disabled; the compiler and type-aware passes remain enabled. The local workflow census mirrors the active root Cache workflow and is checked by root boundary tests. Preserve that equality and keep `jobs` last in the YAML so the frozen negative-control fixture still appends a job to the job map.
+1. **Invariant and scenario tests are append-only.** You may add tests under `packages/cache/test/invariants/**` and `test/scenarios/**`, but never modify, delete, weaken, skip or `.todo` an existing one. If one looks wrong, stop and raise it.
+2. **No ambient time or randomness in the kernel.** `packages/cache/src/**` outside `src/adapters/**` must not call `Date.now(`, `Math.random(`, `setTimeout(`, `setInterval(` or `performance.now(`; components receive a `Clock` and `Rng`. Adapters may use platform APIs, each with a nearby `// PLATFORM:` comment. CI enforces both.
+3. **Toolchain honesty.** No `any`, no `--no-verify`, no disabled checks. A non-null assertion needs a `// SAFETY:` comment, and an `oxlint-disable` or `ts-expect-error` needs an inline justification. The only allowed `as unknown as` cast is the `OxlintConfig[]` bridge in `vite.config.ts`.
+4. **Direct gates.** Typecheck with `tsc --noEmit` and run invariants with `vitest run --project invariants`; `vp` is the convenience loop only.
+5. **Test lanes stay separate.** Invariants and conformance are deterministic and never retry; only the workerd integration lane may tolerate timing. Don't point the invariant suite at real drivers.
+6. **New branches bring their own test.** A change that adds or alters a kernel branch includes a test that fails when that branch is disabled. The weekly Stryker run keeps the mutation score above its floor.
+7. **One kernel module.** The built package must keep one shared kernel module behind all entry points; run `lint:publish` after build configuration changes.
+8. **Self-contained comments.** Explain behaviour in plain language. Don't cite external design documents, section numbers or ticket IDs.

@@ -1,13 +1,13 @@
 import { defineConfig } from "vite-plus";
 
-// Per-package pack config (§1.1 bundler = vp pack / tsdown). Emits ESM `.js` +
+// Per-package pack config (bundler = vp pack / tsdown). Emits ESM `.js` +
 // `.d.ts` (not tsdown's default `.mjs`/`.d.mts`) so the publishConfig exports map
 // resolves and publint --strict / attw --profile esm-only validate a real build (P4).
 // Nothing is npm-published this phase; the only published build is CI's `lint:publish`, a
 // throwaway dist that publint --strict / attw validate. Phase 2 SHIPS the `.` + `./cloudflare`
 // surfaces (this file's two entries) — the artifact is the proof, so the gate builds it for real.
 //
-// THREE published entries (E22 + C4-a-2): the kernel `.` (→ dist/index.*), the Cloudflare adapter
+// THREE published entries: the kernel `.` (→ dist/index.*), the Cloudflare adapter
 // `./cloudflare` (→ dist/adapters/cloudflare/index.*), AND the React-Router adapter
 // `./react-router` (→ dist/adapters/react-router/index.*). ONE config with ALL entries so
 // rolldown hoists the shared kernel into a common chunk — each adapter re-imports it rather
@@ -32,7 +32,7 @@ import { defineConfig } from "vite-plus";
 // has never heard of that facade. The render's dependencies are then recorded under a key nobody
 // reads: the collector comes back empty, `managed === 0`, and the header decision takes its
 // jurisdiction-floor branch — so an app's `public, s-maxage` ships on a per-principal body. That is
-// exactly the E23 leak, re-opened by a build setting. Every error-class `instanceof` across doors
+// exactly the leak, re-opened by a build setting. Every error-class `instanceof` across doors
 // breaks the same way, for the same reason.
 //
 // So do NOT "optimize" the chunks apart. This is not left to be remembered: the publish assertion

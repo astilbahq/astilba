@@ -1,4 +1,21 @@
-/* References: E28. */
+// Ordinary ADAPTER-lane teeth (NOT sacred). The doBus REDIAL driver (the
+// transport reports, the driver retries — and it retries on a TICK, never on a timer). Each
+// case bites one branch:
+//   • redial-on-tick — a closed socket re-establishes when a DUE tick arrives; blind the `onClose`
+//     wiring and the channel stays dead (no second dial, no second hello) ⇒ red;
+// • no-dial-without-a-tick — a close alone re-dials NOTHING. This is the branch: the driver
+// SCHEDULES and the tick performs. Blind it (dial inline from `onClose`, the pre- shape) and
+//     the socket count moves without a tick ⇒ red;
+//   • backoff ladder — consecutive failed establishments back off ×2 up to the 300s cap; blind the
+//     doubling (or the cap) and a tick that must not redial does ⇒ red;
+//   • backoff RESET — a `hello` proves the socket established, so the next close starts the ladder at
+//     the bottom rung again; blind the reset and it keeps climbing ⇒ red;
+//   • every close is DECLARED, not silent — a socket that ends declares `lost` to the subscriber,
+//     whether or not it ever said hello. Blind the declaration and a dead bus reads as a quiet one
+//     ⇒ red. WHICH closes count as dial failures is NOT this driver's call: the reader classifies
+//     them (it is what knows whether a `hello` arrived) and counts them, in one place.
+// Deterministic lane: time is the `nowMs` the test hands `tick`, and the rng is INJECTED —
+// no timers, no wall clock, no timing tolerance. Frames are minted with the REAL wire codec.
 
 import type { BusEvent, Rng } from "@astilba/cache";
 import { describe, expect, it } from "vitest";
@@ -6,7 +23,7 @@ import { describe, expect, it } from "vitest";
 import type { ClientSocket } from "../../src/adapters/cloudflare/bus-client";
 // Deep-imported, NOT via `@astilba/cache/cloudflare`: that barrel re-exports the Coordinator, whose
 // `cloudflare:workers` import resolves only inside the Workers isolate. `redial.ts` itself is pure
-// (E28 removed its last platform touch — the default scheduler — so it now has none at all) — the
+// (removed its last platform touch — the default scheduler — so it now has none at all) — the
 // same reason the conformance lane drives `bus-client`/`wire` from Node.
 import { redialingDoBus } from "../../src/adapters/cloudflare/redial";
 import { encode } from "../../src/adapters/cloudflare/wire";
@@ -19,10 +36,13 @@ type CloseListener = (event: {
   readonly reason: string;
 }) => void;
 
+/** A scriptable client socket: the test PUSHES the establishment `hello` or FIRES a close. The doBus
+ * client is receive-only, so nothing flows the other way. */
 class FakeSocket implements ClientSocket {
   #onMessage: MessageListener | undefined;
   #onClose: CloseListener | undefined;
 
+  // A discriminated tuple union — narrows the listener by `type` with no cast.
   addEventListener(
     ...args: ["message", MessageListener] | ["close", CloseListener]
   ): void {
@@ -39,6 +59,7 @@ class FakeSocket implements ClientSocket {
     // The client's own close never loops back as a transport close event here.
   }
 
+  /** The DO's establishment `hello` — the frame that PROVES this socket is live (echoes regId). */
   hello(head: number): void {
     this.#onMessage?.({ data: encode({ head, kind: "hello", regId: REG_ID }) });
   }
@@ -85,7 +106,7 @@ describe("doBus redial driver — lazy, tick-driven reconnect (C4-b, ruling ⑤,
     sockets[0]?.fireClose();
     expect(sockets).toHaveLength(1);
 
-    // A tick BEFORE the rung is due changes nothing. This is the E28 pacing branch.
+    // A tick BEFORE the rung is due changes nothing. This is the pacing branch.
     bus.tick(999);
     expect(sockets).toHaveLength(1);
 
@@ -167,7 +188,7 @@ describe("doBus redial driver — lazy, tick-driven reconnect (C4-b, ruling ⑤,
   });
 
   it("DECLARES every close as `lost` to the subscriber — establishment is not this driver's to judge", () => {
-    // The dial-failure-as-silence tooth (E28). Blind the declaration and a bus that never came up is
+    // The dial-failure-as-silence tooth. Blind the declaration and a bus that never came up is
     // indistinguishable from a healthy one with nothing to say.
     //
     // Both closes below declare `lost`, and that is the point: the socket cannot tell a dial that

@@ -4,14 +4,14 @@ import type { BusFrame, Registry, Store, TagKnowledge } from "@astilba/cache";
 import { mirrorKeys } from "@astilba/cache/registry";
 import { describe, it } from "vitest";
 
-// Registry contract (§4.1–§4.4). The authoritative Coordinator: dual watermark
-// epochs (soft never regresses hard, max-on-write — §4.1, INV-14), strictly-monotone
-// epoch issuance (§4.1), `check` linearized with durable acceptance (read-your-writes
-// on the primary — §4.3, E1), primary reads always authoritative/known (§4.4), and a
-// monotone-high-water GC-horizon lease registration (E11, INV-28). Asserted through
+// Registry contract. The authoritative Coordinator: dual watermark
+// epochs (soft never regresses hard, max-on-write — INV-14), strictly-monotone
+// epoch issuance, `check` linearized with durable acceptance (read-your-writes
+// on the primary), primary reads always authoritative/known, and a
+// monotone-high-water GC-horizon lease registration. Asserted through
 // the PUBLIC `check`/`expire`/`delete`/`registerRetention` surface so a real DO
 // registry client passes the same block. Frame-delivery duplicate/reorder/delay
-// resilience is the subscriber's job (INV-19) and lives in the Bus contract (C0-b).
+// resilience is the subscriber's job (INV-19) and lives in the Bus contract.
 // The v0.1 FakeRegistry is the reference; deeper fake-only properties (round-trip
 // lag, the GC high-water) are gated on optional harness controls.
 
@@ -29,9 +29,9 @@ export interface RegistryHarness {
   readonly registry: Registry;
   readonly controls?: RegistryControls;
   /**
-   * Optional delta-batch inspector (§4.2): the replication frames the host emitted. A
+   * Optional delta-batch inspector: the replication frames the host emitted. A
    * host that mirrors its batches (the fake, and — via KV — the real Coordinator) can
-   * expose them so the F12 batch-form checks run; a host without one self-skips those.
+   * expose them so the batch-form checks run; a host without one self-skips those.
    */
   readonly emittedBatches?: () => Promise<readonly BusFrame[]>;
 }
@@ -170,7 +170,7 @@ const checkRetentionMonotone = async (
   const horizon = harness.controls?.maxRetentionMs;
   if (!horizon) {
     // No horizon accessor (real driver) — the monotone high-water is verified at the
-    // DO thin-shell conformance (C1) and in sacred INV-16/INV-28. Registration must
+    // DO thin-shell conformance and in sacred INV-16/INV-28. Registration must
     // at least accept churn without throwing.
     await harness.registry.registerRetention(1000);
     await harness.registry.registerRetention(2000);
@@ -200,7 +200,7 @@ const checkAuthoritativeUnderLag = async (
   await harness.registry.expire([TAG_A]);
   const pending = harness.registry.check([TAG_A]);
   // A hard purge lands DURING the round-trip; a primary read is authoritative and
-  // must reflect it (§4.4 — only completion is delayed, not the answer).
+  // must reflect it (only completion is delayed, not the answer).
   await harness.registry.delete([TAG_A]);
   controls.advance(5000);
   const resolved = await pending;
@@ -211,7 +211,7 @@ const checkAuthoritativeUnderLag = async (
   );
 };
 
-/** The E19 `regId` charset/length (`[a-z0-9._-]`, 1–64). */
+/** The `regId` charset/length (`[a-z0-9._-]`, 1–64). */
 const REG_ID_PATTERN = /^[a-z0-9._-]{1,64}$/u;
 
 const checkRegIdPresentAndScoped = async (
@@ -219,7 +219,7 @@ const checkRegIdPresentAndScoped = async (
 ): Promise<void> => {
   const { registry } = make();
   // Presence: `regId` is on the Registry interface (the channel the reader scopes its keyspace
-  // and asserts the pointer echo against — E19). Charset: it must be an injective-safe id (the
+  // and asserts the pointer echo against). Charset: it must be an injective-safe id (the
   // `:` delimiter is outside the charset, so a scoped key parses unambiguously, no escaping).
   assert.strictEqual(
     typeof registry.regId,
@@ -239,8 +239,8 @@ const checkNoAxisEmptyChange = async (
   const emitted = harness.emittedBatches;
   if (!emitted) {
     // No batch inspector (a host that doesn't mirror its frames) — self-skip, like the
-    // control-gated checks. The F12 batch form is proven wherever batches ARE inspectable
-    // (the fake reference here, and the real Coordinator's KV mirror in the C1 transcript).
+    // control-gated checks. The batch form is proven wherever batches ARE inspectable
+    // (the fake reference here, and the real Coordinator's KV mirror in the transcript).
     return;
   }
   // Emit a soft then a hard batch so there is real content to inspect.
@@ -251,7 +251,7 @@ const checkNoAxisEmptyChange = async (
   for (const frame of frames) {
     for (const change of frame.changes) {
       inspected += 1;
-      // F12 addendum: a change carrying NEITHER axis is illegal — an axis-empty change
+      // Frame rule: a change carrying NEITHER axis is illegal — an axis-empty change
       // asserts nothing, so it must never appear in a batch.
       assert.ok(
         change.softEpoch !== undefined || change.hardEpoch !== undefined,
@@ -265,13 +265,13 @@ const checkNoAxisEmptyChange = async (
   );
 };
 
-// ── Isolation property (E19) — two registries, one store, no cross-observation ──────────
+// ── Isolation property — two registries, one store, no cross-observation ──────────
 
 /**
  * A shared-store isolation harness: `writeUnder(regId)` drives one registry's mirror writes for
  * `regId` into the SHARED `store`. The reference scopes every key through `mirrorKeys(regId)`; a
  * prefix-dropping impl collides them onto one unscoped key. The check reads the store back at the
- * scoped keys and proves each registry blessed only its OWN keyspace (E19).
+ * scoped keys and proves each registry blessed only its OWN keyspace.
  */
 export interface IsolationHarness {
   readonly store: Store;
@@ -302,7 +302,7 @@ const checkIsolationScoped = async (
   make: () => IsolationHarness
 ): Promise<void> => {
   const h = make();
-  // Two registries, DIFFERENT regIds, ONE store — the E19 collision scenario.
+  // Two registries, DIFFERENT regIds, ONE store — the collision scenario.
   await h.writeUnder(ISO_A);
   await h.writeUnder(ISO_B);
   const aKeys = mirrorKeys(ISO_A);

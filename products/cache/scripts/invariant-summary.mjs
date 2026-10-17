@@ -1,8 +1,8 @@
-
-
-
-
-
+// Reads a Vitest JSON report for the `invariants` project and prints a Markdown
+// summary (CI redirects stdout to $GITHUB_STEP_SUMMARY). An invariant counts as
+// "passing" only when every test citing `INV-<n>` passed; scenarios are the
+// red-team-five tests under test/scenarios/. In the kernel phase this reads
+// "0/29 passing + 5 scenarios pending".
 
 import { readFileSync } from "node:fs";
 

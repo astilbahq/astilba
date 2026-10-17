@@ -1,4 +1,4 @@
-// The shared flush-effect executor (§4.2, D17) — the thin-shell rule applied to the WRITE path.
+// The shared flush-effect executor — the thin-shell rule applied to the WRITE path.
 //
 // Both hosts of the one pure registry machine — the harness FakeRegistry (Sim store/bus) and
 // the real Coordinator Durable Object (KV) — drive a flush's effect plan through THIS one
@@ -16,7 +16,7 @@ import type { FlushEffect } from "./machine";
 import { mirrorKeys } from "./mirror-keys";
 
 /**
- * A telemetry event routed through the flush sink (§4.2, CACHE-23, E13) — observability, never a
+ * A telemetry event routed through the flush sink — observability, never a
  * persisted object. Two shapes, one channel:
  *   - `snapshot-skipped-oversize` — the MACHINE skipped a due snapshot whose canonical shipped
  *     bytes exceed `maxSnapshotBytes` (a `SnapshotSkippedEffect` the executor forwards here).
@@ -37,7 +37,7 @@ export type FlushTelemetryEvent =
 // `ImmutableKind` — the write-side mirror-object taxonomy — now lives in `../drivers` (the single
 // source shared with the read-side `ReadKind`); re-exported here so `@astilba/cache/registry`
 // consumers keep importing it from the registry surface. The executor (above import) passes it to
-// `putImmutable` so a host maps kind → residency, never by parsing the (E19-scoped) key (2b-2-0, D16).
+// `putImmutable` so a host maps kind → residency, never by parsing the (coped) key.
 export type { ImmutableKind } from "../drivers";
 
 /**
@@ -45,13 +45,13 @@ export type { ImmutableKind } from "../drivers";
  * write; the sink owns only the I/O:
  *   - `putImmutable` writes a content-addressed, write-once object (`__delta:<seq>` /
  *     `__snap:<seq>`) — a host attaches its own residency (the DO's KV TTL) by the `kind` the
- *     executor passes, NEVER by parsing the key (E19 scoped every key to `__reg:<regId>:…`, so a
- *     key-prefix parse silently mis-routed every scoped snapshot to the delta TTL — D16).
+ * executor passes, NEVER by parsing the key ( scoped every key to `__reg:<regId>:…`, so a
+ * key-prefix parse silently mis-routed every scoped snapshot to the delta TTL).
  *   - `putPointer` blesses the ONE hot `__state` key (≤1 write/1.1s). Called EXACTLY ONCE per
  *     flush, last — if it rejects (KV 429 ⇒ `throttled`), the rejection propagates and the whole
  *     flush fails; nothing was blessed, the immutable objects are idempotent, the alarm retries.
  *   - `broadcast` publishes the replication frame (the fake to its Sim bus; the DO drops it
- *     until the C3 hibernatable-socket bus exists).
+ * until the hibernatable-socket bus exists).
  *   - `telemetry` receives an observability event (a skipped oversize snapshot, or the executor's
  *     non-retryable-write belt). Identical across hosts (thin-shell): the fake records it for the
  *     teeth, the real Coordinator forwards it to the platform. Never gates correctness.
@@ -64,7 +64,7 @@ export interface FlushSink {
 }
 
 /**
- * Write an immutable object THROUGH the non-retryable-write belt (§4.2, E13, CACHE-23). The
+ * Write an immutable object THROUGH the non-retryable-write belt. The
  * executor-side backstop for the delta/snapshot SIZE bound, distinct from the machine's snapshot
  * skip: a NON-retryable classified rejection — an oversize immutable (KV `too_large`, 25 MiB, the
  * code `cloudflareKV` raises), the pathological bound no retry can clear — emits a
@@ -93,12 +93,12 @@ async function putImmutableWithBelt(
 }
 
 /**
- * Execute a flush's effect plan against a host sink (§4.2, D17, E19). The plan already carries
+ * Execute a flush's effect plan against a host sink. The plan already carries
  * the once-only terminal `advance-pointer` last, so this never issues two pointer puts in one
  * flush. It does NOT catch a sink rejection: a failed `putPointer` fails the flush whole.
  *
  * `regId` scopes every key through `mirrorKeys(regId)` — the SAME formatter the reader
- * addresses with — so the writer and reader can never re-drift to different bytes (E19). The
+ * addresses with — so the writer and reader can never re-drift to different bytes. The
  * host passes its machine's `regId`; that same id is echoed in the pointer payload the machine
  * minted, so the physical key and the payload agree by construction.
  */
@@ -133,7 +133,7 @@ export async function executeFlushEffects(
         break;
       }
       case "telemetry": {
-        // The machine's `snapshot-skipped-oversize` decision (§4.2, CACHE-23) — NOT a persisted
+        // The machine's `snapshot-skipped-oversize` decision — NOT a persisted
         // object. Forward its measured bytes/ceiling to the sink's observability channel.
         await sink.telemetry({
           bytes: effect.bytes,

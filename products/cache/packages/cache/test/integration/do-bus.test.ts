@@ -1,19 +1,19 @@
-/* References: §4.2, E4, E19, E21. */
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+// The doBus live-channel exit scenes (rulings) — the REAL
+// Coordinator DO WebSocket endpoint + the REAL doBus client, end-to-end on workerd/Miniflare. The
+// DO accepts hibernatable sockets, runs the reset→hello handshake (head = its OWN last-flushed
+// epoch), and fans each flush frame out statelessly; the client dials, decodes, dispatches, and
+// reports its close (no self-reconnect — the test redials explicitly).
+//
+// Lane law: this lane is timing-tolerant. Message delivery over a real socket is async,
+// so the scenes POLL to a convergence predicate (bounded) rather than asserting synchronously.
+//
+// Scene coverage: (i) connect → reset→hello at the DO's flushed head; (ii) mutate →
+// flush → frame delivered live → the reader advances; (iii) evict{close} mid-subscription → the
+// client observes the close → redial → fresh handshake → KV resync converges; (iv) hibernation
+// wake — evict{hibernate}, then a flush wakes the DO and fans out to the still-open socket; (v) two
+// subscribers, one killed socket does not stall the other. The send-throw close-on-doubt MICRO-path
+// is the deterministic conformance proof (Miniflare will not throw on send); the WS-per-DO
+// concurrency ceiling is a deployed probe (docs say "low thousands, then shard").
 
 import {
   evictDurableObject,
@@ -35,8 +35,8 @@ import { Invalidation } from "../../src/invalidation";
 
 const A = "reader:a";
 
-/** A UNIQUE regId per test partitions the shared KV namespace into `__reg:<id>:…` (E19/CACHE-29).
- * Under E19-b the regId IS the DO name (`idFromName(regId)`, identity = address), so no shared
+/** A UNIQUE regId per test partitions the shared KV namespace into `__reg:<id>:…`.
+ * The regId IS the DO name (`idFromName(regId)`, identity = address), so no shared
  * global is written — the DO derives the SAME id from its name; the client + reader use it too. */
 function scope(regId: string): MirrorKeys {
   return mirrorKeys(regId);
@@ -100,13 +100,13 @@ async function waitFor(
   }
 }
 
-/** The `hello` head an establishment declared (the DO's flushed epoch, ③), or -1 if none yet. */
+/** The `hello` head an establishment declared (the DO's flushed epoch), or -1 if none yet. */
 function helloHead(events: readonly BusEvent[]): number {
   const hello = events.find((e) => e.kind === "hello");
   return hello && hello.kind === "hello" ? hello.head : -1;
 }
 
-/** A minimal eventual-read probe envelope (§3): only `tags`/`bornEpoch` steer the §4.1 table. */
+/** A minimal eventual-read probe envelope: only `tags`/`bornEpoch` steer the table. */
 function envelope(tags: readonly string[], bornEpoch: number): Envelope {
   return {
     bornEpoch,
@@ -142,7 +142,7 @@ describe("doBus live channel on workerd (§4.2, E4/E19/E21)", () => {
     c1.close();
 
     // Advance the DO durably: one hard purge (seq 1). A SECOND connection's hello now declares 1 —
-    // the head is the DO's OWN last-flushed epoch (③), not machine.currentEpoch, not a KV read-back.
+    // the head is the DO's OWN last-flushed epoch, not machine.currentEpoch, not a KV read-back.
     await stub.delete([A]);
     expect(await runDurableObjectAlarm(stub)).toBe(true);
     const c2 = connect(stub, RID);
@@ -163,7 +163,7 @@ describe("doBus live channel on workerd (§4.2, E4/E19/E21)", () => {
       () => dialCoordinator(stub),
       { regId: RID }
     ));
-    // Put the reader IN USE (E28): construction captures the bus and defers the subscription to the
+    // Put the reader IN USE: construction captures the bus and defers the subscription to the
     // first read, so a module-scope cache can be built where the platform forbids I/O. This case
     // drives the reader directly, so it opens the channel explicitly — what a first read would do.
     reader.ensureSubscribed();
@@ -196,22 +196,22 @@ describe("doBus live channel on workerd (§4.2, E4/E19/E21)", () => {
     await stub.delete([A]);
     expect(await runDurableObjectAlarm(stub)).toBe(true);
 
-    
-    
+    // A first live subscriber handshakes; eviction then CLOSES its socket — the client observes the
+    // close (no self-reconnect; the redial is explicit).
     const c1 = connect(stub, RID);
     await waitFor(() => c1.events.length >= 2, "pre-evict handshake");
     await evictDurableObject(stub, { webSockets: "close" });
     await waitFor(() => c1.closed(), "client observes the eviction close");
     c1.close();
 
-    // Redial into a FRESH reader (what a C4 reconnect driver would do). The handshake declares head 1
+    // Redial into a FRESH reader (what a reconnect driver would do). The handshake declares head 1
     // over the woken DO, suspending warm trust (applied 0 < 1); a bounded resync off the KV mirror
-    // then carries the reader to the declared head and clears suspicion (E20/E21).
+    // then carries the reader to the declared head and clears suspicion.
     const reader = new Invalidation(doRegistry(stub, RID), store, doBus(
       () => dialCoordinator(stub),
       { regId: RID }
     ));
-    // Put the reader IN USE (E28): construction captures the bus and defers the subscription to the
+    // Put the reader IN USE: construction captures the bus and defers the subscription to the
     // first read, so a module-scope cache can be built where the platform forbids I/O. This case
     // drives the reader directly, so it opens the channel explicitly — what a first read would do.
     reader.ensureSubscribed();
@@ -256,7 +256,7 @@ describe("doBus live channel on workerd (§4.2, E4/E19/E21)", () => {
     const frame = c1.events.slice(before).find((e) => e.kind === "frame");
     expect(frame?.kind === "frame" && frame.frame.toEpoch).toBe(1);
 
-    // E19-b (identity = address): the DO's OWN name survives hibernation + wake — after
+    // Identity = address: the DO's OWN name survives hibernation + wake — after
     // `evictDurableObject` drops it from memory and the flush alarm reconstructs it, `id.name` is
     // still the addressing name, so the name-derived regId is stable across the wake (the map's cheap
     // confirmation that the seeding source does not evaporate on rehydration).

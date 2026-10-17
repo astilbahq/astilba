@@ -1,4 +1,4 @@
-// INV-4 — spec §11.4, §6, errata E17, E29
+// INV-4 — spec
 // Sacred: append-only. Never modify, delete, weaken, skip, or .todo an existing test.
 //
 // INV-4's claim — a `usr:` value never reaches a shared tier — is a property of the ENTRY, not of
@@ -6,7 +6,7 @@
 // did the write-back itself and reports what it did. These pin it on a SERVE turn, where the
 // kernel did no writing and must reason from the identity the entry was stored under.
 //
-// Why exact values here (`toBe(false)`), where the fill-turn pins use `toBeFalsy`: under E29 a
+// Why exact values here (`toBe(false)`), where the fill-turn pins use `toBeFalsy`: here a
 // serve reports `durable` as `true` / `false` / ABSENT, and `toBeFalsy` cannot tell known-not-
 // durable (`false`) from unknowable (absent) — both are falsy. The positive half of INV-4's claim
 // is that the kernel KNOWS a `usr:` entry is not durable, and a truthiness assertion cannot
@@ -41,7 +41,7 @@ describe("serve-turn evidence (§5.1, E29)", () => {
         tags: [tag],
       });
 
-    // The FILL turn — L1-only by scope resolution (§6, E17).
+    // The FILL turn — L1-only by scope resolution.
     const filled = await read();
     expect(filled.durable).toBe(false);
 
@@ -72,7 +72,7 @@ describe("serve-turn evidence (§5.1, E29)", () => {
 
     await read();
     // The SAME serve path as the case above — an L1 hit — differing ONLY in the stored scope. A
-    // `pub` entry's L1 envelope carries no record of what its write-back did, and §5.1 does not
+    // `pub` entry's L1 envelope carries no record of what its write-back did, and the read path does not
     // read L2 on an L1 hit, so this serve genuinely cannot decide. It says so by absence rather
     // than guessing: `true` would claim a shared copy it never saw, `false` would deny one that
     // is very likely there.

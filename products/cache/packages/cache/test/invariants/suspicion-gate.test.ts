@@ -1,20 +1,20 @@
-// INV-11 — spec §11.11
-// INV-25 — spec §4.2, errata E4, E20
+// INV-11 — spec
+// INV-25 — spec
 // Sacred: append-only. Never modify, delete, weaken, skip, or .todo an existing test.
 //
-// E20 (CACHE-25) hardens INV-25/INV-11 — a gap or reconnect that may have hidden a
+// The suspicion gate hardens INV-25/INV-11 — a gap or reconnect that may have hidden a
 // durable purge holds the isolate fail-closed until it can PROVE it caught up. Two rules
 // the traces below pin:
 //   (i) whenever the suspect flag stands, an eventual read treats every tag as unknown
 //       and resolves it by unknownPolicy (miss here) — never off local watermarks,
-//       however complete they look. Stricter than the Q4 allowance to keep serving on a
+// however complete they look. Stricter than the allowance to keep serving on a
 //       merely-degraded map (one degraded by a failed poll, but with no known gap).
 //   (ii) the flag drops only once the isolate replays contiguously up to the pointer's
 //       epoch AND sees the pointer's freshness move forward between two separate reads.
 //       One read, or a pointer parked at/behind the applied epoch, settles nothing — the
 //       store is free to answer a read from a lagging replica.
 //
-// The reachable pre-E20 hole needs a WARM isolate: one that already served the entry once,
+// The reachable pre-gate hole needs a WARM isolate: one that already served the entry once,
 // so a live check recorded every tag it carries (the implicit key/namespace tags too).
 // Its complete-but-stale map would wave a since-purged value through as fresh if a suspect
 // gap let it skip rule (i). The strong prime below builds that map before the purge hides.
@@ -42,7 +42,7 @@ describe("suspicion gate (E20)", () => {
     });
     await w.advance(0);
     // The reader serves the entry once: a live check records EVERY tag it carries, so
-    // its local map is now complete and warm (the reachable pre-E20 hole).
+    // its local map is now complete and warm (the reachable pre- hole).
     await reader.getOrSetEntry({
       consistency: "strong",
       factory: async () => await Promise.resolve("prime"),
@@ -50,7 +50,7 @@ describe("suspicion gate (E20)", () => {
       tags: [tag],
     });
     // Hide a hard purge at epoch 2: drop its bus frame (gap ⇒ suspect) and stall the
-    // __state pointer so resync cannot read it (the §4.2 cold protocol, §1 tail).
+    // __state pointer so resync cannot read it (the cold protocol, tail).
     w.chaos.dropNextFrames(1);
     w.chaos.delayKey("__state", 60_000);
     await writer.delete({ tag });
@@ -143,8 +143,15 @@ describe("suspicion gate (E20)", () => {
       return await Promise.resolve(`refill-${fills}`);
     };
 
-    /* References: E21, E5. */
-
+    // Semantic amendment. The convergence trigger moves
+    // from pointer freshness (forgeable by the heartbeat) to the live-channel
+    // reconnect handshake (reset→hello{head}) + verified catch-up; the assertion (fail-closed once,
+    // then reuse after convergence) is unchanged. Warrant: R. Morris (comprehension exchange per
+    // ADR-004-B) · applied by Claude Code under that warrant.
+    // Re-anchor to the live-channel handshake. Stall the pointer, disconnect, and miss an
+    // unrelated soft purge while disconnected (its durable bless lands but lags); a reconnect then
+    // emits reset -> hello{head}, declaring a head the reader has NOT yet reached — so it stays
+    // suspect until it can resync up to that head.
     w.chaos.delayKey("__state", 100);
     w.chaos.disconnect();
     await writer.expire({ tag: other });
@@ -161,7 +168,7 @@ describe("suspicion gate (E20)", () => {
     expect(first.value).toBe("refill-1");
 
     // The stalled pointer catches up: the reader resyncs the durable prefix up to the head the
-    // reconnect's hello declared (appliedEpoch >= head) and re-trusts — the honest E21 convergence.
+    // reconnect's hello declared (appliedEpoch >= head) and re-trusts — the honest live-head convergence.
     await w.advance(100);
 
     // Read #2: converged ⇒ warm trust restored ⇒ `tag` classifies fresh from LOCAL knowledge with

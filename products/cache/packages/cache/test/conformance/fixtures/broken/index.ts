@@ -30,6 +30,13 @@ import type { StoreHarness } from "../../runner/store";
 import { adaptInvalidation, buildReaderParts } from "../reader-parts";
 import type { ReaderParts } from "../reader-parts";
 
+// Deliberately-WRONG driver fixtures. Each pairs with a meta-assertion (teeth.test.ts)
+// that the TARGETED contract check FAILS against it — proving the check discriminates
+// a liar, not merely that it passes the reference (the __ns-guard / vacuity lesson,
+// These impls are otherwise
+// minimal; only the one targeted property is broken per fixture.
+
+/** A store that drops every read — loses read-your-own-write. Targets: RCW check. */
 class RcwLosingStore implements Store {
   async get(_key: string): Promise<StoreValue | undefined> {
     // BUG: drops every read, so a written value is never observed again.
@@ -244,7 +251,7 @@ export function makeSoftRegressesHardRegistryHarness(): () => RegistryHarness {
   return (): RegistryHarness => ({ registry: new SoftRegressesHardRegistry() });
 }
 
-/** A registry whose soft batch omits BOTH axes. Targets: F12 axis-empty change. */
+/** A registry whose soft batch omits BOTH axes. Targets: axis-empty change. */
 class AxisEmptyBatchRegistry implements Registry {
   readonly regId = "default";
   #epoch = 0;
@@ -264,7 +271,7 @@ class AxisEmptyBatchRegistry implements Registry {
     const fromEpoch = this.#epoch;
     this.#epoch += 1;
     // BUG: emits a change carrying NEITHER `softEpoch` nor `hardEpoch` — an axis-empty
-    // change (F12: illegal; it asserts nothing, so a reader learns nothing from it).
+    // change (illegal; it asserts nothing, so a reader learns nothing from it).
     this.#frames.push({
       changes: tags.map((tag) => ({ tag })),
       fromEpoch,
@@ -308,7 +315,7 @@ export function makeAxisEmptyBatchRegistryHarness(): () => RegistryHarness {
 /**
  * A mirror writer that DROPS the registry prefix — every registry blesses the SAME unscoped
  * `__state`/`__delta:1` regardless of regId, so a second registry's write clobbers the first and a
- * reader cannot tell whose pointer it read (exactly the collision E19 scopes away). Targets: the
+ * reader cannot tell whose pointer it read (exactly the collision scopes away). Targets: the
  * isolation check. The payload still echoes `regId`, so it is the KEY collision — not the echo —
  * that the check catches: the second `writeUnder` overwrites the one shared `__state`, so neither
  * registry's SCOPED key is ever populated.
@@ -397,9 +404,9 @@ export function makeNonMonotoneLockHarness(): () => Lock {
 /**
  * A bus that re-opens the transport WITHOUT re-emitting `reset`. Targets: B1. It is
  * correct everywhere else — it emits `reset` on the initial subscribe and delivers
- * frames faithfully — so the ONLY reason the B1 check rejects it is the missing
- * reconnect handshake (E4): a subscriber that missed a frame while disconnected keeps
- * stale warm trust, exactly the hole E4 closes.
+ * frames faithfully — so the ONLY reason the check rejects it is the missing
+ * reconnect handshake: a subscriber that missed a frame while disconnected keeps
+ * stale warm trust, exactly the hole the reset handshake closes.
  */
 /**
  * Shared plumbing for the deliberately-broken bus fixtures: the handler set, the connection
@@ -413,7 +420,7 @@ abstract class BrokenBusBase implements Bus {
   protected readonly handlers = new Set<(event: BusEvent) => void>();
   protected connected = true;
 
-  /** Default establishment: a bare `reset`, no `hello` (B1). Overridden only where a fixture
+  /** Default establishment: a bare `reset`, no `hello`. Overridden only where a fixture
    * must also emit a hello. */
   subscribe(onEvent: (event: BusEvent) => void): Subscription {
     this.handlers.add(onEvent);
@@ -449,7 +456,7 @@ abstract class BrokenBusBase implements Bus {
 
 class ForgetfulBus extends BrokenBusBase {
   reconnect(): void {
-    // BUG: re-establishes the transport but omits the `reset` handshake (B1/E4).
+    // BUG: re-establishes the transport but omits the `reset` handshake.
     this.connected = true;
   }
 }
@@ -470,16 +477,16 @@ export function makeForgetfulBusHarness(): () => BusHarness {
 }
 
 /**
- * A bus that establishes with a bare `reset` and NEVER a `hello` (B1′/E21). Correct on every
+ * A bus that establishes with a bare `reset` and NEVER a `hello`. Correct on every
  * other axis — reset on establishment, faithful frames, re-emitted reset on reconnect — so the
- * ONLY reason B1′ rejects it is the missing head declaration: a caught-up subscriber gets no
- * live-channel head to anchor convergence on and can never re-trust its warm map (the E5
- * heartbeat is no longer an anchor). Targets: B1′ (reset → hello → frames).
+ * ONLY reason the handshake rule rejects it is the missing head declaration: a caught-up subscriber gets no
+ * live-channel head to anchor convergence on and can never re-trust its warm map (the
+ * heartbeat is no longer an anchor). Targets: the handshake rule (reset → hello → frames).
  */
 class SilentBus extends BrokenBusBase {
   reconnect(): void {
     this.connected = true;
-    // BUG: re-establishes with a bare `reset` — still no `hello` (B1′). The default subscribe
+    // BUG: re-establishes with a bare `reset` — still no `hello`. The default subscribe
     // (inherited) is already reset-only, so this fixture NEVER emits a hello on any establishment.
     this.emit({ kind: "reset" });
   }
@@ -502,9 +509,9 @@ export function makeSilentBusHarness(): () => BusHarness {
 
 /**
  * A bus whose `hello` head UNDER-declares — it sits one below the channel's true head, so a
- * caught-up subscriber believes it has NOT reached the head and stays suspect forever (B1′/E21).
- * Correct on the structural axis — reset → hello → frames, faithful delivery — so the ONLY B1′
- * violation is the lower bound (`head` ≥ every previously-emitted `toEpoch`). Targets: the B1′
+ * caught-up subscriber believes it has NOT reached the head and stays suspect forever.
+ * Correct on the structural axis — reset → hello → frames, faithful delivery — so the ONLY
+ * violation is the lower bound (`head` ≥ every previously-emitted `toEpoch`). Targets: the
  * lower-bound obligation. It tracks the true head over ALL broadcasts (delivery ≠ truth) so the
  * under-declaration is demonstrable against the frames the check observed.
  */
@@ -512,7 +519,7 @@ class UnderdeclaringBus extends BrokenBusBase {
   #head = 0;
 
   override subscribe(onEvent: (event: BusEvent) => void): Subscription {
-    // reset first (inherited), THEN the mis-declared hello — structurally correct order (B1′).
+    // reset first (inherited), THEN the mis-declared hello — structurally correct order.
     const sub = super.subscribe(onEvent);
     if (this.connected) {
       onEvent({ head: this.#underdeclaredHead(), kind: "hello" });
@@ -529,7 +536,7 @@ class UnderdeclaringBus extends BrokenBusBase {
   reconnect(): void {
     this.connected = true;
     this.emit({ kind: "reset" });
-    // BUG: the hello head sits below the channel's true head — the lower bound B1′ requires.
+    // BUG: the hello head sits below the channel's true head — the lower bound the handshake rule requires.
     this.emit({ head: this.#underdeclaredHead(), kind: "hello" });
   }
 
@@ -555,18 +562,18 @@ export function makeUnderdeclaringBusHarness(): () => BusHarness {
 }
 
 /**
- * A bus whose `gap` head UNDER-declares — on a dropped frame it signals a `gap` (B2 ✓) but with a
+ * A bus whose `gap` head UNDER-declares — on a dropped frame it signals a `gap` but with a
  * head BELOW a frame it already delivered, so a reader that reaches the highest delivered frame
- * believes it accounted for the hole (B2′/E21). Correct on every other axis (reset → hello →
+ * believes it accounted for the hole. Correct on every other axis (reset → hello →
  * frames, faithful delivery, a gap ON loss); the ONLY violation is the gap's lower bound. Targets:
- * the B2′ lower-bound obligation.
+ * the lower-bound obligation.
  */
 class UnderdeclaringGapBus extends BrokenBusBase {
   #head = 0;
   #dropNext = 0;
 
   override subscribe(onEvent: (event: BusEvent) => void): Subscription {
-    // Correct establishment: reset (inherited) THEN a truthful hello (B1′ intact).
+    // Correct establishment: reset (inherited) THEN a truthful hello (intact).
     const sub = super.subscribe(onEvent);
     if (this.connected) {
       onEvent({ head: this.#head, kind: "hello" });
@@ -581,7 +588,7 @@ class UnderdeclaringGapBus extends BrokenBusBase {
     }
     if (this.#dropNext > 0) {
       this.#dropNext -= 1;
-      // BUG: the gap head sits below a frame already delivered — B2′ requires `head` ≥ every
+      // BUG: the gap head sits below a frame already delivered — the gap rule requires `head` ≥ every
       // frame emitted before the signal, so a caught-up reader would converge past the hole.
       this.emit({ head: this.#underdeclaredGapHead(), kind: "gap" });
       return;
@@ -623,7 +630,7 @@ export function makeUnderdeclaringGapBusHarness(): () => BusHarness {
   };
 }
 
-// ── Deliberately-WRONG READERS (§4.2 reader contract) ────────────────────────────────────
+// ── Deliberately-WRONG READERS (reader contract) ────────────────────────────────────
 // Each decorates the REAL Invalidation (via the shared parts) and breaks EXACTLY ONE property,
 // so the reader teeth (reader-teeth.test.ts) prove the matching check discriminates it. The
 // reference passes every check; each liar fails only the one it targets.
@@ -681,7 +688,7 @@ function pointerLagsSnap(value: string): boolean {
 }
 
 /**
- * A reader that SERVES a value THROUGH suspicion instead of failing closed — the exact E20 (i)
+ * A reader that SERVES a value THROUGH suspicion instead of failing closed — the exact
  * violation the stale-pointer and unfilled-hole checks forbid. Targets: stale-pointer + hole.
  */
 export function makeServeThroughReaderHarness(): () => ReaderHarness {
@@ -707,7 +714,7 @@ export function makeOverFetchReaderHarness(): () => ReaderHarness {
     assembleLiar(LIAR_REG_ID, (base, parts) => ({
       resync: async (policy?: ResyncPolicy): Promise<ResyncStatus> => {
         const status = await base.resync(policy);
-        // BUG: probes a delta PAST the pointer (an unblessed seq) — the over-fetch E19/§4.4 forbid.
+        // BUG: probes a delta PAST the pointer (an unblessed seq) — an over-fetch.
         await parts.store.get(parts.keys.deltaKey(9999));
         return status;
       },
@@ -753,6 +760,10 @@ export function makeStrictSnapReaderHarness(): () => ReaderHarness {
     }));
 }
 
+/**
+ * A reader that treats a BLESSED-BUT-MISSING snap as fully covered — 'claims coverage it lacks',
+ * converging over a broken chain instead of ruling terminal. Targets: blessed-but-missing-snap.
+ */
 export function makeUnderCoveringSnapReaderHarness(): () => ReaderHarness {
   return (): ReaderHarness =>
     assembleLiar(LIAR_REG_ID, (base) => ({
@@ -766,8 +777,8 @@ export function makeUnderCoveringSnapReaderHarness(): () => ReaderHarness {
     }));
 }
 
-/** A reader whose E5 derivative RAISE is blinded — a missed-heartbeat writer is never noticed.
- * Targets: E5 derivative raising. */
+/** A reader whose derivative RAISE is blinded — a missed-heartbeat writer is never noticed.
+ * Targets: derivative raising. */
 export function makeNeverRaiseReaderHarness(): () => ReaderHarness {
   return (): ReaderHarness =>
     assembleLiar(LIAR_REG_ID, () => ({
@@ -775,7 +786,7 @@ export function makeNeverRaiseReaderHarness(): () => ReaderHarness {
         _pointer: StatePointer,
         _nowMs: number
       ): void => {
-        // BUG: never raises derivative suspicion on consecutive missed heartbeats (E5).
+        // BUG: never raises derivative suspicion on consecutive missed heartbeats.
       },
     }));
 }

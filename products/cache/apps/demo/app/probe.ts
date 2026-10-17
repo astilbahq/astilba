@@ -1,4 +1,4 @@
-// The one entry this demo caches, and the read it performs (C5-c).
+// The one entry this demo caches, and the read it performs.
 //
 // One key, one tag, one factory. A demo with a rich data model would spend the reader's attention
 // on the data model; the whole subject here is what happens to ONE entry when the machinery under
@@ -51,7 +51,7 @@ export type ProbeResult = {
  * different facts.
  *
  * They are — and the library now says so itself. A suppressed store read reports as its own
- * `read-failed` arm of the `Explanation` union (E13's read half, E27): no tier, no identity, and no
+ * `read-failed` arm of the `Explanation` union (the read half): no tier, no identity, and no
  * pretence of absence. So the distinction this app used to narrate around a throw is now a state the
  * witness returns, and none of this demo's dials can make `explain` raise: the KV adapter's read
  * classifier is TOTAL, so every rejection it sees is named and suppressed rather than propagated.
@@ -88,8 +88,9 @@ export async function witnessProbe(cache: Cache): Promise<WitnessResult> {
  */
 export async function readProbe(cache: Cache): Promise<ProbeResult> {
   const runsBefore = factoryRuns;
-  // PLATFORM: measure request duration using the runtime clock.
-
+  // PLATFORM: the wall clock, at the app's edge. The demo is an app, not kernel code
+  // scopes its no-ambient-time grep to the library's own src. There is no simulated clock out here,
+  // and pretending otherwise would report a latency nobody paid.
   const startedMs = Date.now();
   try {
     const entry = await cache.getOrSetEntry<string>({

@@ -1,4 +1,4 @@
-// The KV wrapper's own tests (C5-c) — the demo's machinery, never the kernel's semantics.
+// The KV wrapper's own tests — the demo's machinery, never the kernel's semantics.
 //
 // What is on trial here is the wrapper: does the dial actually reach the binding, does an unfaulted
 // call pass through untouched, and do the counters count. Nothing here asserts anything about the

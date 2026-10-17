@@ -8,12 +8,12 @@ import { describe, it } from "vitest";
 // module path — the same door the drivers that raise it use.
 import { isStoreReadError } from "../../../src/drivers";
 
-// Store contract (§8, §5.0). A parameterized behavior-spec any KV-like driver must
+// Store contract. A parameterized behavior-spec any KV-like driver must
 // satisfy: byte-stable round-trip through the codec (INV-8), same-view
-// read-your-own-write (the RCW floor the born-monotone write-back needs — §5.0, Q6),
-// TTL expiry on a deterministic timeline (§8), and an optional compare-and-set
+// read-your-own-write (the RCW floor the born-monotone write-back needs),
+// TTL expiry on a deterministic timeline, and an optional compare-and-set
 // capability whose adversarial interleaving must not regress the stored
-// (bornEpoch, fence) ordering (E3). The v0.1 FakeStore is the reference and passes
+// (bornEpoch, fence) ordering. The v0.1 FakeStore is the reference and passes
 // first; a real KV / Redis driver passes the same block later. Every fake-vs-real
 // gap (KV's 60s expirationTtl floor, the CAS-less one-cycle RCW race) is recorded in
 // DIVERGENCES.md, never asserted away.
@@ -32,7 +32,7 @@ export interface StoreHarness {
   readonly advance?: (ms: number) => void;
   /**
    * Arms the next write to be throttled (fakes). Absent ⇒ the throttle check self-skips:
-   * a real KV driver under Miniflare cannot be forced to emit a real 429 (D2), so its
+   * a real KV driver under Miniflare cannot be forced to emit a real 429, so its
    * classified-signaling is an integration/probe-lane concern (lane law).
    */
   readonly forceThrottle?: () => void;
@@ -59,9 +59,9 @@ export interface StoreContractOptions {
   readonly maxValueBytes?: number;
 }
 
-// KV's minimum `expirationTtl` (§8 driver table). The TTL-expiry assertion uses this
+// KV's minimum `expirationTtl` (driver table). The TTL-expiry assertion uses this
 // floor so a real KV driver — which silently raises any smaller TTL to 60s — passes
-// the same check the fake does (the sub-floor divergence is ledger-recorded, D1).
+// the same check the fake does (the sub-floor divergence is ledger-recorded).
 const KV_TTL_FLOOR_SECONDS = 60;
 const RT_KEY = "conformance:store:roundtrip";
 const RCW_KEY = "conformance:store:rcw";
@@ -131,8 +131,9 @@ const checkReadYourOwnWrite = async (
   );
 };
 
-/* References: §4.2. */
-
+/** A `readKind` hint is ADVISORY: it may steer a driver's read-cache policy (the
+ * DO KV `cacheTtl`) but NEVER changes the value a Store returns. Every Store tolerates the optional
+ * argument; fakes ignore it. A light acceptance check that the interface evolution is transparent. */
 const checkReadHintTolerated = async (
   make: () => StoreHarness,
   opts: StoreContractOptions = {}
@@ -225,7 +226,7 @@ const checkThrottleClassified = async (
 ): Promise<void> => {
   const harness = make();
   if (!harness.forceThrottle) {
-    // No throttle control (a real KV driver can't be forced to a real 429 — D2). The
+    // No throttle control (a real KV driver can't be forced to a real 429). The
     // classified-signaling contract is an integration/probe concern for such a driver;
     // nothing to assert deterministically here (lane law).
     return;
@@ -233,7 +234,7 @@ const checkThrottleClassified = async (
   const codec = opts.codec ?? jsonCodec;
   harness.forceThrottle();
   // A throttled write must REJECT, and the rejection must carry the STRUCTURAL
-  // classification (§8, E13): `isStoreWriteError` (never `instanceof`), code `throttled`,
+  // classification: `isStoreWriteError` (never `instanceof`), code `throttled`,
   // retryable. A driver that throttles with an unclassified error fails the predicate.
   await assert.rejects(
     harness.store.set(THROTTLE_KEY, codec.encode({ v: "throttled" })),
@@ -257,7 +258,7 @@ const checkReadFailureClassified = async (
   await harness.store.set(READ_FAIL_KEY, codec.encode({ v: "read" }));
   harness.forceReadFailure();
   // The obligation this clause exists to hand every future driver at birth: a failed READ must
-  // reject in the read contract's own vocabulary (§8, E13) — structurally (`isStoreReadError`, never
+  // reject in the read contract's own vocabulary — structurally (`isStoreReadError`, never
   // `instanceof`), code `throttled` or `unavailable`. It belongs to the DRIVER because platform
   // knowledge does: only the shell over a tier knows what that tier's faults look like. The kernel's
   // half is the opposite duty — it absorbs what a driver named and rethrows what nobody named, so an
@@ -287,7 +288,7 @@ const checkOversizeClassified = async (
   await store.set(OVERSIZE_KEY, prior);
   // One byte over the ceiling (ASCII ⇒ bytes === length).
   const oversize = "x".repeat(maxValueBytes + 1);
-  // An over-limit write must REJECT with the structural classification (§8, E13): code
+  // An over-limit write must REJECT with the structural classification: code
   // `too_large`, NOT retryable — never a silent truncate-and-resolve.
   await assert.rejects(
     store.set(OVERSIZE_KEY, oversize),
@@ -372,8 +373,8 @@ export function runStoreContract(
     } else {
       it("exposes no CAS — the one-cycle read-compare-write race is documented, not asserted away (E3; DIVERGENCES D3)", () => {
         // FakeStore has no compare-and-set; the kernel's KV path is read-compare-write
-        // whose residual race is bounded to one refresh cycle (§5.0). The honest
-        // no-CAS condition is asserted; the race itself is ledger-recorded (D3).
+        // whose residual race is bounded to one refresh cycle. The honest
+        // no-CAS condition is asserted; the race itself is ledger-recorded.
         assert.strictEqual(
           make().cas,
           undefined,

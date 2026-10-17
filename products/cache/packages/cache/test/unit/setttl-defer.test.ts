@@ -1,4 +1,4 @@
-// C4 exit gate — the spec-surface method sweep found `FactoryCtx.setTtl` (§2.1) was a SILENT
+// The public-surface method sweep found `FactoryCtx.setTtl` was a SILENT
 // NO-OP: a spec-named method that did nothing. Disposition-law forbids silent stubs — a method
 // either works or throws typed. `setTtl` is deferred to v0.4 (its TTL-override semantics are a
 // v0.4 design slot, alongside `reuseGraced`/`deleteAll`/`expireAll`), so it now throws a typed

@@ -1,12 +1,12 @@
-// Ordinary unit teeth (NOT sacred) — C5-b, erratum E27. `cache.explain(key)` is a WITNESS, not a
+// Ordinary unit teeth (NOT sacred). `cache.explain(key)` is a WITNESS, not a
 // historian: it attests what the system already knows at the instant of the call and reports what it
 // cannot know as `unknown`, adding no tracked state. These teeth pin the store-facing half of the
 // contract; the reader-verdict half lives in explain-reader.test.ts.
 //
-// Each case bites ONE branch (rule 13) — the named mutation reds it:
+// Each case bites ONE branch — the named mutation reds it:
 //   1. introspection-not-testimony — the struck fields (`appliedBatch`, a persisted `dependencies`
 //                          string[] graph) are GONE from `Explanation` (compile-level; re-adding
-//                          either reds tsc / LEG1).
+// either reds tsc / LEG1).
 //   2. absence-is-reportable — explain of a missing key returns a well-typed absent result and never
 //                          throws. (Blind: make the absent path throw ⇒ reds.)
 //   3. tier-is-observation-not-hydration — an L2-only entry reports tier `l2`, and explain NEVER
@@ -14,7 +14,7 @@
 //                          probe for the hydrating read ⇒ an L1 write lands ⇒ reds.)
 //   4. identity-as-stored — the stored tag set, the readable `pub` scope, kind, and bornEpoch are
 //                          read off the store. (Blind: drop the identity read ⇒ reds.)
-//   5. scope-unreadable (E23) — a stored entry whose scope the surface cannot read reports an
+// 5. scope-unreadable — a stored entry whose scope the surface cannot read reports an
 //                          `unreadable` marker, distinct from a readable literal. (Blind: collapse
 //                          the readable/unreadable distinction ⇒ reds.)
 //   6. ttl-as-stored — the ttl is read off the raw metadata: `not-stored` where the format carries
@@ -124,7 +124,7 @@ function scopeStrippingStore(inner: Store): Store {
 
 /** A store whose reads corrupt the entry so the probe's fail-closed branches fire: `"decode"`
  * replaces the body with bytes the codec cannot decode (the decode try/catch), `"codec"` swaps the
- * stored codecId for a foreign one (the codecId-mismatch guard). Both are absence causes E27 (1)
+ * stored codecId for a foreign one (the codecId-mismatch guard). Both are absence causes
  * requires `explain` to report without throwing — the same fail-closed shape the serve path holds. */
 function corruptingStore(inner: Store, mode: "codec" | "decode"): Store {
   return {
@@ -192,7 +192,7 @@ function ttlStampingStore(inner: Store, seconds: number): Store {
 
 // ── 1. introspection-not-testimony (compile-level) ───────────────────────────────────────────────
 
-/** The `present` arm — the shape that carried the struck fields in §7's old `Explanation`. */
+/** The `present` arm — the shape that carried the struck fields in the old `Explanation`. */
 type PresentExplanation = Extract<Explanation, { kind: "present" }>;
 /** `true` iff `K` is a key of `T` — the compile-level witness for a struck field's ABSENCE. */
 type HasKey<T, K extends string> = K extends keyof T ? true : false;
@@ -221,7 +221,7 @@ describe("explain — absence is a reportable state, not an error (E27 (1))", ()
     expect(explanation.tier).toBe("miss");
   });
 
-  // The probe fails closed on EVERY absence cause, not just a plain miss (E27 (1) — never throws).
+  // The probe fails closed on EVERY absence cause, not just a plain miss (never throws).
   // Mutation: drop the decode try/catch in `probeStoredEntry` ⇒ explain throws the decode error out
   // of the async method on an undecodable entry ⇒ reds.
   it("an UNDECODABLE stored entry reports absent, not a throw", async () => {
@@ -244,7 +244,7 @@ describe("explain — absence is a reportable state, not an error (E27 (1))", ()
   });
 
   // Mutation: drop the codecId-mismatch guard in `probeStoredEntry` ⇒ an entry stamped with a
-  // foreign codecId is decoded anyway and reported PRESENT (E8/INV-27: a foreign codec must never
+  // foreign codecId is decoded anyway and reported PRESENT (INV-27: a foreign codec must never
   // run) ⇒ the `kind === "absent"` assertion reds.
   it("a CODEC-MISMATCHED stored entry reports absent, not a throw", async () => {
     const l2 = memory();
@@ -326,7 +326,7 @@ describe("explain — identity is read from the store (E27 (1), E23/E24)", () =>
       "expected the stored entry to be present"
     );
     const { identity } = explanation;
-    // The stored tag set (E24) — the user tags PLUS the reserved per-key/per-namespace tags.
+    // The stored tag set — the user tags PLUS the reserved per-key/per-namespace tags.
     expect(identity.tags).toContain(tagX);
     expect(identity.tags).toContain(tagY);
     expect(identity.tags.some((tag) => tag.startsWith("__k:"))).toBeTruthy();
@@ -362,7 +362,7 @@ describe("explain — identity is read from the store (E27 (1), E23/E24)", () =>
 
   it("reports an UNREADABLE scope marker when the surface returns no readable scope (E23)", async () => {
     // The entry is written normally, then read back through a surface that drops the `scope` field —
-    // the readable-vs-unreadable distinction the E23 gate turns on.
+    // the readable-vs-unreadable distinction the gate turns on.
     const cache = makeCache(scopeStrippingStore(memory()));
     await cache.getOrSet({
       factory: async (): Promise<string> => "v",

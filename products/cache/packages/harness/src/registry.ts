@@ -15,14 +15,14 @@ import type {
 import type { FakeBus } from "./bus";
 import type { SimClock } from "./clock";
 
-// Re-exported so the harness surface still carries the pointer shape (§4.2).
+// Re-exported so the harness surface still carries the pointer shape.
 export type { StatePointer } from "@astilba/cache/registry";
 
-// FakeRegistry — the authoritative Coordinator (§4.1–§4.3), a THIN HOST around the pure
+// FakeRegistry — the authoritative Coordinator, a THIN HOST around the pure
 // RegistryMachine (@astilba/cache/registry). The machine owns the semantics — dual watermark
 // epochs (independent, monotone, max-on-write), strictly-monotone epoch issuance, per-flush
-// content-addressed delta batches (§4.2, E12), the snapshot cadence, and the monotone GC
-// horizon (§4.5, E11). This host keeps only its Sim-plumbing bits — the injected clock, the
+// content-addressed delta batches, the snapshot cadence, and the monotone GC
+// horizon. This host keeps only its Sim-plumbing bits — the injected clock, the
 // check round-trip chaos, the Sim bus/store — and drives the machine's flush effect plan
 // through the SHARED `executeFlushEffects` (the same executor the real Coordinator uses), so
 // write order + the once-only `__state` bless live in ONE place. Its only host policy is
@@ -30,23 +30,23 @@ export type { StatePointer } from "@astilba/cache/registry";
 // is unchanged, so the invariant traces and the Registry conformance contract do not move.
 
 /**
- * The Sim host's flush sink (§4.2, D17). `executeFlushEffects` owns the ORDER and the once-only
+ * The Sim host's flush sink. `executeFlushEffects` owns the ORDER and the once-only
  * pointer bless; this sink owns only the I/O — it mirrors the immutable `__delta:*`/`__snap:*`
  * objects into the Sim store and blesses the single `__state` pointer (the store carries its
  * own visibility lag, the source of pointer-staleness suspicion), and publishes the frame to
  * the Sim bus. Behavioural twin of the real Coordinator's KV sink so the transcript stays
  * byte-identical. When no store is wired the object writes are inert (broadcast still fires).
  * The Sim store carries no residency (no TTL), so the fake's observable twin of the Coordinator's
- * `kind → residency` policy (D16) is the RECORDED `kind` of each immutable write — the teeth read
+ * `kind → residency` policy is the RECORDED `kind` of each immutable write — the teeth read
  * it to assert a snapshot put carries `"snap"`, which is what the Coordinator maps to the 7d TTL.
  */
 class FakeFlushSink implements FlushSink {
-  /** Every telemetry event the executor routed here (CACHE-23) — the teeth read this to assert a
+  /** Every telemetry event the executor routed here — the teeth read this to assert a
    * skipped oversize snapshot / a non-retryable-write belt fired. The real Coordinator forwards to
    * the platform; the fake RECORDS (its observable twin). */
   readonly telemetryEvents: FlushTelemetryEvent[] = [];
 
-  /** Every immutable write's `(key, kind)`, in order (§4.2, D16) — the fake's observable twin of the
+  /** Every immutable write's `(key, kind)`, in order — the fake's observable twin of the
    * Coordinator's `kind → residency` decision. The Sim store has no TTL, so `kind` is what a test
    * asserts: a snapshot put must carry `"snap"` (the kind the real Coordinator maps to the 7d TTL). */
   readonly immutableWrites: {
@@ -84,12 +84,12 @@ class FakeFlushSink implements FlushSink {
 export interface FakeRegistryDeps {
   readonly store?: Store;
   readonly bus?: FakeBus;
-  /** Snapshot-cadence knobs forwarded to the hosted machine (§4.2). Unset ⇒ defaults. */
+  /** Snapshot-cadence knobs forwarded to the hosted machine. Unset ⇒ defaults. */
   readonly snapshotEveryBatches?: number;
   readonly snapshotIntervalMs?: number;
-  /** Snapshot SIZE ceiling forwarded to the hosted machine (§4.2, CACHE-23). Unset ⇒ 25 MiB. */
+  /** Snapshot SIZE ceiling forwarded to the hosted machine. Unset ⇒ 25 MiB. */
   readonly maxSnapshotBytes?: number;
-  /** The mirror-key scope (E19) forwarded to the hosted machine via `configure`. Unset ⇒
+  /** The mirror-key scope forwarded to the hosted machine via `configure`. Unset ⇒
    * `"default"` — like the DO's first-boot seed, it enters the machine only as a `configure`. */
   readonly regId?: string;
 }
@@ -100,8 +100,8 @@ export class FakeRegistry implements Registry {
   readonly #machine: RegistryMachine;
 
   // Injectable round-trip latency on `check` (the DO/primary read). The result is
-  // ALWAYS authoritative (primary-only reads never lag — §4.4); only its COMPLETION
-  // is delayed, modelling §1's honest cold bound (a cold read cannot resolve unknown
+  // ALWAYS authoritative (primary-only reads never lag); only its COMPLETION
+  // is delayed, modelling the honest cold bound (a cold read cannot resolve unknown
   // for free). Pending checks resolve — against the CURRENT watermarks — when the
   // world advances past their due time.
   #checkLagMs = 0;
@@ -112,7 +112,7 @@ export class FakeRegistry implements Registry {
   }[] = [];
 
   // Monotonic count of `check` round-trips (the DO/primary read) this registry has
-  // served — the efficiency tooth for E1's one-round-trip budget (CACHE-31). Read by
+  // served — the efficiency tooth for the one-round-trip budget. Read by
   // tests via `world.registry.checkCount`; never gates semantics.
   #checkCount = 0;
 
@@ -120,7 +120,10 @@ export class FakeRegistry implements Registry {
     this.#clock = clock;
     this.#sink = new FakeFlushSink(deps.store, deps.bus);
     this.#machine = new RegistryMachine();
-
+    // The fake's constructor deps are its "env": like the DO's first-boot seed, they enter the
+    // machine ONLY as a `configure` command (Ruling B), never as a constructor parameter. Only
+    // the knobs the caller set are forwarded (exactOptionalPropertyTypes: no `undefined`
+    // pass-through); an unset knob falls to the machine's default.
     const options: {
       snapshotEveryBatches?: number;
       snapshotIntervalMs?: number;
@@ -146,14 +149,14 @@ export class FakeRegistry implements Registry {
     return this.#machine.currentEpoch;
   }
 
-  /** Every flush-sink telemetry event recorded (§4.2, CACHE-23) — the teeth read this to observe
+  /** Every flush-sink telemetry event recorded — the teeth read this to observe
    * a skipped oversize snapshot or a non-retryable-write belt firing. The real Coordinator forwards
    * these to the platform; the fake records them (its observable twin). Never gates semantics. */
   get telemetryEvents(): readonly FlushTelemetryEvent[] {
     return this.#sink.telemetryEvents;
   }
 
-  /** Every immutable mirror write's `(key, kind)` in order (§4.2, D16) — the fake's observable twin
+  /** Every immutable mirror write's `(key, kind)` in order — the fake's observable twin
    * of the real Coordinator's `kind → residency` decision. The Sim store has no TTL, so the teeth
    * assert the `kind` (a snapshot put carries `"snap"`, the kind the Coordinator maps to the 7d TTL);
    * the residency NUMBER itself is pinned against the real sink in the integration lane. */
@@ -164,7 +167,7 @@ export class FakeRegistry implements Registry {
     return this.#sink.immutableWrites;
   }
 
-  /** The mirror-key scope (§4.2, E19) — the Registry-interface channel the reader reads to
+  /** The mirror-key scope — the Registry-interface channel the reader reads to
    * scope its resync keyspace and to assert the pointer echo. Sourced from the hosted machine. */
   get regId(): string {
     return this.#machine.regId;
@@ -175,7 +178,7 @@ export class FakeRegistry implements Registry {
     return this.#machine.watermarkOf(tag);
   }
 
-  /** Monotonic count of `check` round-trips served (CACHE-31 efficiency tooth). */
+  /** Monotonic count of `check` round-trips served (efficiency tooth). */
   get checkCount(): number {
     return this.#checkCount;
   }
@@ -220,7 +223,7 @@ export class FakeRegistry implements Registry {
   }
 
   /**
-   * The host's state-neutral E5 heartbeat twin (§4.2). The fake has no alarms, so nothing DRIVES a
+   * The host's state-neutral liveness heartbeat twin. The fake has no alarms, so nothing DRIVES a
    * cadence here; this exposes the same one-put pointer refresh the real Coordinator issues on an
    * idle alarm, driven through the SAME `executeFlushEffects` + sink — a behavioural twin so a
    * harness self-test can pin the once-only, cursor-untouched contract without a Durable Object. It
@@ -235,7 +238,7 @@ export class FakeRegistry implements Registry {
     );
   }
 
-  /** GC horizon input: max registered retention, monotone high-water (§4.5, E11). */
+  /** GC horizon input: max registered retention, monotone high-water. */
   get maxRegisteredRetentionMs(): number {
     return this.#machine.gcHorizonMs;
   }

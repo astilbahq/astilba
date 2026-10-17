@@ -1,5 +1,5 @@
-// INV-4  — spec §6/§11.4, errata E17
-// INV-15 — spec §11.15 (MI4)
+// INV-4 — spec
+// INV-15 — spec
 // Sacred: append-only. Never modify, delete, weaken, skip, or .todo an existing test.
 
 import { createCache } from "@astilba/cache";
@@ -16,7 +16,7 @@ import {
 import { test } from "@fast-check/vitest";
 import { describe, expect } from "vitest";
 
-// The `singleflight_option_mismatch` event (§10) carries the colliding key ref and the
+// The `singleflight_option_mismatch` event carries the colliding key ref and the
 // declared tag refs as distinct fields. Pull EACH out on its own so per-field salting can
 // be asserted — a whole-event diff cannot tell "both refs salted" from "only one salted".
 const mismatchEvent = (
@@ -80,7 +80,7 @@ describe("scopes & privacy", () => {
       tags: [tag],
     });
     expect(presentUnread.durable).toBeTruthy();
-    // THE CASE — a public factory that READS a guarded request accessor. Per §6 the
+    // THE CASE — a public factory that READS a guarded request accessor. Under the scope rules the
     // kernel demotes the resulting entry off the shared tier. The ONLY difference from
     // CONTROL B is the property read, so demotion here is caused by the guarded touch.
     const guard = guardedRequest({ tenant: "acme", userId: "u1" });
@@ -113,7 +113,7 @@ describe("scopes & privacy", () => {
     const saltB = "project-B-salt";
     // A concurrent same-key fill pair with INCOMPATIBLE options (the first carries `tag`,
     // the second a fixed distinct tag) reliably emits `singleflight_option_mismatch` in
-    // prod mode — an event ABOUT the colliding key and mismatched tags (§2.1, §10), so a
+    // prod mode — an event ABOUT the colliding key and mismatched tags, so a
     // captured event definitely references both, anchoring the redaction checks below.
     const drive = async (
       key: string,
@@ -180,7 +180,7 @@ describe("scopes & privacy", () => {
     expect(tagRefOf(base)).not.toStrictEqual(tagRefOf(altSalt));
     // Per-field keying — the key ref tracks the key input; the tag ref tracks the tag
     // input. With no raw key/tag/salt present, together with the salt axis this pins each
-    // ref as a per-project SALTED hash of its own identifier (MI4), not an incidental diff.
+    // ref as a per-project SALTED hash of its own identifier, not an incidental diff.
     expect(keyRefOf(base)).not.toStrictEqual(keyRefOf(altKey));
     expect(tagRefOf(base)).not.toStrictEqual(tagRefOf(altTag));
   });

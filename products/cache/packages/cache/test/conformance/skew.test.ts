@@ -11,8 +11,14 @@ import { runLockContract } from "./runner/lock";
 import { runRegistryContract } from "./runner/registry";
 import { runStoreContract } from "./runner/store";
 
-/* References: E3. */
+// SkewedClock conformance pass — the red-team-five clock scenario generalized (a fast
+// writer clock beyond any tolerance is moot under epochs). Driver arbitration
+// carries NO wall-clock term, so a hugely-skewed timeline must yield IDENTICAL
+// correctness outcomes. Skew changing ANY outcome is a
+// FINDING to report, never a flake to tolerate — so the equivalence is asserted, not
+// tolerated.
 
+// One day of skew — far beyond any conceivable clock tolerance.
 const SKEW_MS = 86_400_000;
 
 // Drive a fixed sequence of shared registry/lock arbitration under a given per-isolate
@@ -48,7 +54,7 @@ describe("SkewedClock pass — contracts hold identically on a skewed timeline",
     label: "Registry @ +1d skew",
   });
   // FakeLock consults no clock at all — fences are pure counters, so the fencing
-  // contract is skew-invariant by construction (the strongest form of the E3 claim).
+  // contract is skew-invariant by construction (the strongest form of the claim).
   runLockContract(makeFakeLockHarness(), { label: "Lock (clock-free)" });
 });
 
@@ -63,7 +69,7 @@ describe("SkewedClock pass — skew changes no arbitration outcome", () => {
   it("shared registry/lock arbitration is identical under per-isolate wall-clock skew (E3)", async () => {
     const base = await collectArbitration(0, 0);
     const skewed = await collectArbitration(SKEW_MS, 2 * SKEW_MS);
-
+    // Any divergence here is a FINDING, not a flake.
     expect(skewed).toStrictEqual(base);
   });
 });

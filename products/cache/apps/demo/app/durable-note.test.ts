@@ -1,6 +1,6 @@
-// The durable-note's tooth (C5-c, E29) — the one that fails if `false` and ABSENT are collapsed.
+// The durable-note's tooth — the one that fails if `false` and ABSENT are collapsed.
 //
-// E29's whole point is that a serve's `durable` field has THREE answers, and the two that a
+// the whole point is that a serve's `durable` field has THREE answers, and the two that a
 // truthiness read merges — `false` (known not durable) and ABSENT (unknowable) — are the ones a
 // consumer most needs kept apart. The old console rendered them as one; this tooth pins them as
 // three, and its keystone is the case that goes red the instant they are merged again.

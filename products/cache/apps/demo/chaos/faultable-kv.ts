@@ -1,4 +1,4 @@
-// FaultableKV — the demo's `KVNamespace` interposition (C5-c).
+// FaultableKV — the demo's `KVNamespace` interposition.
 //
 // A wrapper around the REAL KV binding that implements the platform's own interface and can be told
 // to reject reads, reject writes, or make one keyspace unreadable. The library sees a
@@ -14,7 +14,7 @@
 // untouched.
 //
 // FAULTS ARE RAISED THE WAY KV RAISES THEM — a rejected promise carrying an `Error`. The driver
-// classifies a rejected write into the structural failure contract (§8, E13) by inspecting the
+// classifies a rejected write into the structural failure contract by inspecting the
 // rejection, so a fault that rejected with something else would be exercising a classification path
 // the real binding never produces. `throttled` is the one shape worth naming explicitly (KV's
 // 1 write/s/key ceiling arrives as a 429), so `failWrites` rejects with a plain unavailability by

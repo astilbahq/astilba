@@ -1,16 +1,23 @@
 import { InvalidTagError, notImplemented } from "./errors";
 
-/* References: §2.3, E10, §3. */
+// Tags.
+// - charset [a-z0-9:_\-\.|%] (extended with %), <=256 B
+// - <=126 user tags (+2 reserved: __k, __ns); user tags beginning `__` reject
+//   - compound() escapes `%` first (%25), then `:` (%3a) and `|` (%7c), lowercase
+// hex; arity is explicit (empty vector != ['']) — injective
 
+/** The two reserved tag namespaces: the per-key digest and the
+ * per-namespace watermark. A user tag beginning with this prefix is rejected
+ * at write — only the kernel itself may stamp `__k:<h>` / `__ns:<name>`. */
 const RESERVED_TAG_PREFIX = "__";
 
-/** Whether `tag` falls in the reserved `__`-prefixed namespace (§2.3, MI13). */
+/** Whether `tag` falls in the reserved `__`-prefixed namespace. */
 export function isReservedTag(tag: string): boolean {
   return tag.startsWith(RESERVED_TAG_PREFIX);
 }
 
 /**
- * Validate one caller-supplied tag at the write boundary (§2.3, MI13). Throws a
+ * Validate one caller-supplied tag at the write boundary. Throws a
  * real `InvalidTagError` — never `NotImplementedError` — the instant a
  * `__`-prefixed tag reaches `getOrSet`/`getOrSetEntry`/a purge selector, so a
  * forged reserved tag can never be smuggled in as a "user" tag.
@@ -42,26 +49,26 @@ export type Tag = string & { readonly "astilba.tag": true };
 /** A positional argument to `compound()` / an interpolation in `t`. */
 export type TagPart = string | number;
 
-/** The full tag charset (§2.3 + errata E10): the design's `[a-z0-9:_\-.|]` extended with
- * `%` (E10 — `compound()`'s escape byte). One or more of these, nothing else. `-` is placed
+/** The full tag charset: the design's `[a-z0-9:_\-.|]` extended with
+ * `%` (`compound()`'s escape byte). One or more of these, nothing else. `-` is placed
  * last so it is a literal, not a range. */
 const TAG_CHARSET = /^[a-z0-9:_.|%-]+$/u;
 
-/** Maximum tag size (§2.3) — a UTF-8 BYTE budget, not code units. */
+/** Maximum tag size — a UTF-8 BYTE budget, not code units. */
 const MAX_TAG_BYTES = 256;
 
-/** Maximum number of USER tags per entry (§2.3, MI13) — the two reserved tags (`__k`, `__ns`)
+/** Maximum number of USER tags per entry — the two reserved tags (`__k`, `__ns`)
  * are stamped by the kernel and do NOT count against this ceiling. Enforced at the write
- * boundary over the committed set, whichever tag source(s) that set unions (E24). */
+ * boundary over the committed set, whichever tag source(s) that set unions. */
 export const MAX_USER_TAGS = 126;
 
-/** UTF-8 byte length of `s` — the §2.3 tag budget is bytes, not string length. */
+/** UTF-8 byte length of `s` — the tag budget is bytes, not string length. */
 function byteLength(s: string): number {
   return new TextEncoder().encode(s).length;
 }
 
 /**
- * Template helper for a single tag, e.g. ``t`book:${id}` `` (§2.3). The tag TRUST
+ * Template helper for a single tag, e.g. ``t`book:${id}` ``. The tag TRUST
  * BOUNDARY: the interpolations (`values`) are UNTRUSTED user data, so `t` assembles the
  * template, then VALIDATES-and-REJECTS the final string against the full grammar
  * (non-empty, charset, ≤256 UTF-8 bytes, not `__`-prefixed) — throwing `InvalidTagError`
@@ -84,7 +91,7 @@ export function t(
   if (assembled.length === 0) {
     throw new InvalidTagError(assembled, "a tag must be non-empty (§2.3)");
   }
-  // The narrow `__`-prefix backstop (MI13) — the same rejection a user tag hits at write.
+  // The narrow `__`-prefix backstop — the same rejection a user tag hits at write.
   assertUserTag(assembled);
   if (!TAG_CHARSET.test(assembled)) {
     throw new InvalidTagError(
@@ -98,12 +105,12 @@ export function t(
       `a tag may not exceed ${MAX_TAG_BYTES} UTF-8 bytes (§2.3)`
     );
   }
-  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the input passed tag validation before receiving its brand
+  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- branding a fully-validated tag: a single narrowing assertion (string → branded string), not an `as unknown as` cast
   return assembled as Tag;
 }
 
 /**
- * Escapes one `compound()` argument per E10: `%` first (`%25`), then `:`
+ * Escapes one `compound()` argument: `%` first (`%25`), then `:`
  * (`%3a`) and `|` (`%7c`), lowercase hex. Escaping `%` first guarantees the
  * mapping is injective — an escape-lookalike in the input (a literal `%3a`)
  * is itself escaped to `%253a`, so it can never be produced by escaping a raw
@@ -118,10 +125,10 @@ function escapePart(part: TagPart): string {
 
 /**
  * Injective compound tag over an argument vector, e.g. `compound('book', id,
- * 'locale', locale)` (§2.3, MI15). Escaping per E10; empty vector distinct from
+ * 'locale', locale)`. Escaping; empty vector distinct from
  * `['']`.
  *
- * Every part is escaped (§2.3/E10) so an escaped part can never itself
+ * Every part is escaped so an escaped part can never itself
  * contain an unescaped `|`; joining escaped parts on `|` is therefore an
  * injective join. An explicit leading arity count (itself `|`-terminated)
  * makes the count unambiguous — it is always a decimal-digit run followed by
@@ -131,12 +138,12 @@ function escapePart(part: TagPart): string {
  */
 export function compound(...parts: readonly TagPart[]): Tag {
   const encoded = `${parts.length}|${parts.map(escapePart).join("|")}`;
-  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the value was constructed by the canonical compound encoder
+  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- branding a validated compound-encoded string: a single narrowing assertion (string → branded string), not an `as unknown as` cast
   return encoded as Tag;
 }
 
 /**
- * A globally-scoped tag — its own scope-prefix escape hatch (§2.2/§6). Deferred to v0.4:
+ * A globally-scoped tag — its own scope-prefix escape hatch. Deferred to v0.4:
  * its escape-FORM is a wire-compatibility decision reserved for the scope-qualification
  * design, and ships with that consumer rather than standalone here.
  */

@@ -1,14 +1,14 @@
-// Ordinary unit teeth (NOT sacred) — C5-a (CACHE-21, MI12, D3/D4). memory()'s private-eviction
+// Ordinary unit teeth (NOT sacred). memory()'s private-eviction
 // disclosure: a PRIVATE (`usr:`-scoped) entry evicted from the LRU emits exactly one
-// `private_evicted`, payload = reason class + counts + bytes ONLY (E23 payload discipline). Each
-// case bites one branch (rule 13):
+// `private_evicted`, payload = reason class + counts + bytes ONLY (payload discipline). Each
+// case bites one branch:
 //   • emit tooth        — evicting a `usr:` entry emits exactly one event. Drop the emit ⇒ reds.
 //   • no-identifier     — the payload carries NO key/hash/tag/value; only { type, count, bytes }. A
 //     mutation that leaks the evicted key/scope into the payload ⇒ the strict-shape assertion reds.
 //   • private-only      — evicting a `pub` (or scope-less) entry emits NOTHING (detection reads the
 //     `usr:` scope metadata literal, not the key).
 //   • safeEmit routing  — a throwing sink is swallowed (set() still resolves) and onSinkError fires;
-//     two stores never cross-talk (D4, injectable — no module latch).
+// two stores never cross-talk (injectable — no module latch).
 
 import { describe, expect, it } from "vitest";
 
@@ -19,7 +19,7 @@ import type { TelemetryEvent } from "../../src/telemetry";
 const bytesOf = (value: string): number =>
   new TextEncoder().encode(value).length;
 
-/** A canonical-shaped private key + its stored `scope` metadata literal (`usr:<hash>`, §3/§6). The
+/** A canonical-shaped private key + its stored `scope` metadata literal (`usr:<hash>`). The
  * kernel writes both on every L1 set; memory() reads the metadata literal's `usr:` prefix (never the
  * hash) to know an evicted entry was private. */
 const usrMeta = { metadata: { scope: "usr:9f3ahash" } } as const;

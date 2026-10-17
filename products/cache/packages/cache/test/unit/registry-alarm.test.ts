@@ -1,8 +1,8 @@
 import { earliestAlarm } from "@astilba/cache/registry";
 import { describe, expect, test } from "vitest";
 
-// Unit teeth for earliest-wins alarm arbitration (§4.2, B5, D11) — the pure decision behind the
-// Coordinator's ONE alarm slot serving two deadlines (the B5 flush window + the E5 heartbeat
+// Unit teeth for earliest-wins alarm arbitration — the pure decision behind the
+// Coordinator's ONE alarm slot serving two deadlines (the flush window + the heartbeat
 // cadence). The real Coordinator lives on the workerd lane and cannot be unit-tested Node-side, so
 // this pins the pure kernel it delegates to (and the integration heartbeat suite proves the wiring).
 //

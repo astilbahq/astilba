@@ -1,5 +1,5 @@
-// Ordinary unit teeth (NOT sacred) — erratum E13 (the GET half) and E27 (the witness's read-failed
-// arm). E13 signs that a suppressed store GET error is a PLAIN MISS: never unknown, never
+// Ordinary unit teeth (NOT sacred) — erratum store-read suppression and the explain witness's read-failed
+// arm). A a suppressed store GET error is a PLAIN MISS: never unknown, never
 // fail-closed. On the serving path a miss means refill, so a failing tier costs an origin read
 // rather than the request. `explain()` cannot refill, so that remedy does not transfer — the witness
 // gets its own state instead, distinct from absence.
@@ -8,19 +8,19 @@
 // (`InjectedStoreError` carries no `code`), and an unclassified rejection is exactly what the kernel
 // must NOT absorb. So the classified shape is fixtured here, in the lane that owns driver contracts.
 //
-// Each case bites ONE branch (rule 13) — the named mutation reds it:
+// Each case bites ONE branch — the named mutation reds it:
 //   1. suppressed-get-is-a-miss — a classified rejecting L2 read refills from the factory and serves.
 //                          (Blind: unwrap `readTier`'s try/catch ⇒ the raw error escapes ⇒ reds.)
 //   2. unclassified-propagates — a rejection no driver classified reaches the caller unchanged.
 //                          (Blind: suppress everything in `classifyStoreReadFailure` ⇒ reds.)
-//   3. l1-may-serve (E13) — an L1 copy serves while L2's read keeps failing; the factory does not
+// 3. l1-may-serve — an L1 copy serves while L2's read keeps failing; the factory does not
 //                          re-run. (Blind: unwrap the guard ⇒ the L2 read throws before L1's hit can
 //                          be returned ⇒ reds.)
 //   4. durable-false disclosure — a fill whose L2 write-back cannot read-compare lands in L1 only and
 //                          says so. (Blind: unwrap `bornMonotoneWrite`'s read guard ⇒ reds.)
 //   5. suppression is observable — `store_read_suppressed` carries the classified code.
 //                          (Blind: drop the emit ⇒ reds.)
-//   6. read-failed ≠ absent (E27) — four teeth, because the distinction has four ways to collapse:
+// 6. read-failed ≠ absent — four teeth, because the distinction has four ways to collapse:
 //                          (a) laundering read-failed into absent reds the suppressed-read case;
 //                          (b) pinning the answer to a constant read-failed reds the absent case —
 //                          one direction alone would pin the answer, not the reading;
@@ -54,7 +54,7 @@ const CLOCK = { now: (): number => 0 };
 const RNG = { next: (): number => 0 };
 
 /**
- * A rejection carrying E13's OWN classified shape — the structural contract the kernel discriminates
+ * A rejection carrying the OWN classified shape — the structural contract the kernel discriminates
  * on (`code` + `retryable`), raised as a CLASS so oxlint's throw rules are satisfied. Nothing here
  * shares an identity with the kernel's guard: recognition is structural, which is the point.
  */
@@ -78,7 +78,7 @@ class UnclassifiedReadFailureError extends Error {
 }
 
 /** A `Store` whose reads always reject with `error`; writes and deletes pass through to `inner`, so
- * a fill still lands wherever it can (the L1-only case E13 names). */
+ * a fill still lands wherever it can (the L1-only case names). */
 function readRejectingStore(inner: Store, error: () => Error): Store {
   return {
     delete: async (key: string): Promise<void> => {
@@ -169,7 +169,7 @@ describe("E13 — a suppressed store GET error is a plain miss", () => {
       },
       key: "k",
     });
-    // The whole of E13's GET half in two assertions: the read failure did not reach the caller, and
+    // The whole of the GET half in two assertions: the read failure did not reach the caller, and
     // the miss it became was refilled from origin.
     expect(value).toBe("filled");
     expect(calls).toBe(1);
@@ -222,7 +222,7 @@ describe("E13 — the kernel absorbs only what a driver classified", () => {
   });
 });
 
-// ── 3. L1 may serve (E13's own parenthetical) ────────────────────────────────────────────────────
+// ── 3. L1 may serve (the own parenthetical) ────────────────────────────────────────────────────
 
 describe("E13 — L1 may serve while L2's read keeps failing", () => {
   it("an L1 copy serves the second read and the factory does not run again", async () => {
@@ -240,7 +240,7 @@ describe("E13 — L1 may serve while L2's read keeps failing", () => {
     };
     // Fill #1: L1 misses, L2's read is suppressed to a miss, the factory runs, L1 is hydrated.
     await expect(cache.getOrSet({ factory, key: "k" })).resolves.toBe("fill-1");
-    // Fill #2: L1 is checked FIRST (§5.1) and hits, so the failing L2 is never read at all — the
+    // Fill #2: L1 is checked FIRST and hits, so the failing L2 is never read at all — the
     // rescue is structural, not a special case. A second factory run would mean L1 never served.
     await expect(cache.getOrSet({ factory, key: "k" })).resolves.toBe("fill-1");
     expect(calls).toBe(1);
@@ -262,8 +262,8 @@ describe("E13 — a write-back that cannot read-compare is non-durable, not a fa
       factory: async (): Promise<string> => "filled",
       key: "k",
     });
-    // E13's own disclosure: the caller can see a value that landed only in L1. The write-back's
-    // read-compare (E3/INV-17) could not be performed, so the candidate never landed durably — and
+    // the own disclosure: the caller can see a value that landed only in L1. The write-back's
+    // read-compare could not be performed, so the candidate never landed durably — and
     // nothing was written blind to satisfy it.
     expect(entry.value).toBe("filled");
     expect(entry.durable).toBeFalsy();
@@ -314,7 +314,7 @@ describe("E27 — the witness reports a failed read as its own state", () => {
     // than absent wearing a different label.
     assert.ok(explanation.kind === "read-failed");
     expect("tier" in explanation).toBeFalsy();
-    // The reader's own state is still knowable and still reported (E27 (4)).
+    // The reader's own state is still knowable and still reported.
     expect(explanation.reader.appliedEpoch).toBe(0);
   });
 
@@ -322,7 +322,7 @@ describe("E27 — the witness reports a failed read as its own state", () => {
     // L1 cannot be read; L2 is genuinely empty. Tiers are probed L1-then-L2, so the failure is
     // observed FIRST and the absence LAST — the order in which an accumulator that merely tracks the
     // last tier reports `absent` and calls it an answer. Nothing about the key is established: the
-    // tier that might hold it never spoke. Reporting absence here is exactly the laundering E27
+    // tier that might hold it never spoke. Reporting absence here is exactly the laundering
     // forbids, arriving by arithmetic rather than by intent.
     const { cache } = makeCache(
       memory(),

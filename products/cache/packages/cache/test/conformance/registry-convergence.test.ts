@@ -1,18 +1,18 @@
-// Writer→store→reader convergence under a NON-DEFAULT regId (E19/E21) — the round-trip the
-// prior C2-b-1d attempt severed and could not see. Deterministic conformance lane (rule 12): the
+// Writer→store→reader convergence under a NON-DEFAULT regId — the round-trip the
+// prior attempt severed and could not see. Deterministic conformance lane: the
 // world advances on a SimClock, no timing tolerance.
 //
 // The dimension no other oracle here compares: the WRITER (a `world`-shared FakeRegistry scoped to
-// `regId:"tenant-x"`) blesses the §4.2 mirror under `__reg:tenant-x:…`, and the READER (that
+// `regId:"tenant-x"`) blesses the mirror under `__reg:tenant-x:…`, and the READER (that
 // world's reader cache, constructed with the SAME regId via `registry.regId`) must resync off
 // EXACTLY those keys — read the scoped pointer, replay the scoped deltas up to the head the live
 // channel declares, restore warm trust — and then reflect a hard purge that only the mirror
 // carried. A single-registry / default-regId test could round-trip even under the OLD unscoped
 // scheme; forcing a non-default regId is what makes the two sides' key agreement load-bearing.
 //
-// Convergence anchors to the live-channel head (E21): a reconnect emits reset → hello{head}, and
+// Convergence anchors to the live-channel head: a reconnect emits reset → hello{head}, and
 // the reader re-trusts once its scoped replay has carried the applied epoch up to that head. Pointer
-// freshness / the E5 heartbeat is no longer a convergence anchor (CACHE-27).
+// freshness / the heartbeat is no longer a convergence anchor.
 //
 // RED-PROOF (run at review): flip EITHER side's key scheme alone and this test reds — the reader
 // pointed at unscoped `__state` (invalidation.ts) never finds the writer's scoped pointer, so its
@@ -40,7 +40,7 @@ describe("registry convergence under a non-default regId (E19/E21)", () => {
 
     // Warm epoch 1 (delivered soft purge) and born the entry at epoch 1 (locally fresh), then a
     // strong prime so the reader's local map records EVERY tag the entry carries — the warm map
-    // whose completeness must NOT let a since-purged value wave through while suspect (E20 i).
+    // whose completeness must NOT let a since-purged value wave through while suspect.
     await writer.expire({ tag });
     await w.advance(0);
     await writer.getOrSet({
@@ -75,7 +75,7 @@ describe("registry convergence under a non-default regId (E19/E21)", () => {
     // suspect: every tag is unknown ⇒ 'miss' refills (v1 is never served), warm trust not restored.
     await reader.getOrSetEntry({ factory, key: "k", tags: [tag] });
 
-    // Convergence is re-anchored to the live-channel handshake (E21): a reconnect emits
+    // Convergence is re-anchored to the live-channel handshake: a reconnect emits
     // reset → hello{head}. The reader — already resynced up to that head via read #1's scoped
     // replay — reaches appliedEpoch ≥ head and re-trusts. A SEVERED reader could not reach the
     // head (its scoped replay found nothing), so the same reconnect leaves IT suspect.

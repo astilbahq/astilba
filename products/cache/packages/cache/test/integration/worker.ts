@@ -1,11 +1,11 @@
-// Integration-lane test worker (C1-b scaffold). NOT shipped in the published
+// Integration-lane test worker (scaffold). NOT shipped in the published
 // package — it exists only so `@cloudflare/vitest-pool-workers` has a `main` entry
 // that (a) re-exports the placeholder `Coordinator` Durable Object class the
 // wrangler config binds, and (b) provides a default fetch handler for the isolate.
 //
 // This worker is the platform host under test; it carries no kernel logic.
 //
-// IT ALSO HOSTS THE CROSS-REQUEST WITNESS (E28). A `SELF.fetch()` from a test enters this handler in
+// IT ALSO HOSTS THE CROSS-REQUEST WITNESS. A `SELF.fetch()` from a test enters this handler in
 // a request context of its OWN — measured, not assumed — so two such calls against the ONE instance
 // below are two genuinely different request contexts. That is the oracle dimension no test in this
 // repo could reach from inside a single `it(...)`: a handle minted under one request and reused
@@ -21,7 +21,7 @@ import { t } from "@astilba/cache";
 import { createWorkersCache } from "@astilba/cache/cloudflare";
 import { env } from "cloudflare:workers";
 
-/** ONE cache per isolate, at module scope — the §2/E22 (i) placement, held across every request
+/** ONE cache per isolate, at module scope — the placement, held across every request
  * below. Under this pool the module is evaluated lazily inside whichever request first reaches it,
  * so this placement does NOT witness the global-scope law (that is `scripts/module-scope-boot.mjs`,
  * on `wrangler dev`); what it witnesses here is REUSE — the instance outliving the request that

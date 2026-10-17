@@ -4,7 +4,7 @@ Accessible React controls for Astilba products, built with native semantics, Bas
 
 ## Workspace use
 
-This is a private package for Astilba's monorepo; no new npm releases are planned. Existing registry versions remain available only while the legacy deployment path is preserved. See [UI retirement](../../docs/ui-retirement.md).
+This is a private package used by apps in this monorepo; it isn't published to npm.
 
 ```sh
 pnpm --filter <app> add @astilba/ui@workspace:* @astilba/tokens@workspace:*

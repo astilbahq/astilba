@@ -1,7 +1,7 @@
-// INV-10 — spec §11.10
-// INV-22 — spec §11.22 (MI15)
-// INV-23 — spec §11.23 (MI1)
-// INV-29 — errata E10 (§11 invariant amendment; hardens 22's mechanism — kept distinct)
+// INV-10 — spec
+// INV-22 — spec
+// INV-23 — spec
+// INV-29 (hardens INV-22's mechanism — kept distinct)
 // Sacred: append-only. Never modify, delete, weaken, skip, or .todo an existing test.
 
 import { compound, NotImplementedError } from "@astilba/cache";

@@ -6,22 +6,42 @@ import type {
 } from "./invalidation";
 import type { MirrorKeys, StatePointer } from "./registry/mirror-keys";
 
-/* References: §4.2, E20, E21. */
+// The replication-reader SHELL. The tick-driven retry ladder + poll
+// driver that sits ABOVE the pure reader kernel (src/invalidation.ts) and OUT-OF-BAND from every
+// read. The kernel decides (resync / resyncViaSnapshot / notePointerObservation / pollDue return
+// a pure verdict); this shell SCHEDULES — it holds the ladder rung + the next-due time and acts on
+// the tick that finds an attempt due. It never sleeps: `cache.ts` is inside the ground-rule-5
+// ambient-timer-banned zone, so timing enters only as the `nowMs` a driver passes each tick and
+// randomness only as the injected `Rng`. The DRIVER that calls `onPollTick` on a cadence is
+// EXTERNAL to this pure zone (a deterministic test loop here; on workerd it is the
+// request-piggyback driver in the RR adapter — `ctx.waitUntil(tick())` at request start, which is
+// where ambient time and the tick-failure swallow live).
+//
+// THE LADDER NEVER BLOCKS A READ:
+//   The retry ladder NEVER blocks a read. `validate()`'s awaited resync stays the bounded fast
+// pass; a read arriving during `transient-miss` classifies `unknown` and takes the posture
+//   NOW — the ladder heals the future, not the present. Fail-closed means what it says.
+//
+// So this poller only re-drives resync/resyncViaSnapshot in the background off the status the
+// kernel already computed; the awaited read path in `validate()` is untouched.
 
+/** The subset of the reader kernel (`Invalidation`) this shell drives — the seam a test double
+ * can stand in for. `Invalidation` satisfies it structurally; nothing here reaches into kernel
+ * internals or the frozen decision logic (2b-2-a stays sovereign). */
 export interface ReplicationReader {
-  /** Whether the reader currently distrusts its warm map (E20 (i) — a read fails closed while true). */
+  /** Whether the reader currently distrusts its warm map (a read fails closed while true). */
   readonly suspect: boolean;
   /** One bounded delta pass; `deltasExhausted` escalates a persistent hole to `needs-snapshot`. */
   resync(policy?: ResyncPolicy): Promise<ResyncStatus>;
-
+  /** The snapshot bridge; `snapshotExhausted` makes the permanent terminal-vs-converged ruling. */
   resyncViaSnapshot(policy?: SnapshotPolicy): Promise<ResyncStatus>;
-  /** E5 derivative liveness: one pointer observation (raise-only, sampling-rate-independent). */
+  /** derivative liveness: one pointer observation (raise-only, sampling-rate-independent). */
   notePointerObservation(pointer: StatePointer, nowMs: number): void;
   /** The pure poll predicate: has `thresholdMs` elapsed since `lastPollMs`? */
   pollDue(nowMs: number, lastPollMs: number, thresholdMs: number): boolean;
 }
 
-/** Poll-cadence + ladder tuning (§4.2). All in ms; the shell jitters them with the injected rng. */
+/** Poll-cadence + ladder tuning. All in ms; the shell jitters them with the injected rng. */
 export interface ReplicationPollerOptions {
   /** Base poll cadence — maxSyncLag (default 60s). Jittered ±`jitterFraction` per poll. */
   readonly pollBaseMs?: number;
@@ -33,14 +53,16 @@ export interface ReplicationPollerOptions {
   readonly jitterFraction?: number;
 }
 
-/* References: §4.2. */
-
+// maxSyncLag base cadence. 60s is the WORKERS-profile default: the platform's KV
+// propagation clause is "up to 60s or more", so the honest contract bound is 60s. The spec's `5s`
+// is the Redis-profile cadence; the Workers value is reconciled by a post-measurement
+// erratum if probes show the tail comfortably tighter. Numbers first, promises second.
 const DEFAULT_POLL_BASE_MS = 60_000;
 const DEFAULT_FIRST_LADDER_DELAY_MS = 1000;
 const DEFAULT_LATER_LADDER_DELAY_MS = 5000;
 const DEFAULT_JITTER_FRACTION = 0.2; // ±20%
 
-/** Poll-failure backoff ceiling (Q4 knob, C4-b): a warm baseline poll that does NOT converge doubles
+/** Poll-failure backoff ceiling (knob): a warm baseline poll that does NOT converge doubles
  * the cadence (×2) up to this cap — 300s — and the doubled interval is jittered like any other, so a
  * fleet whose L2 is failing degrades to one attempt per ~5 minutes per isolate instead of hammering
  * a sick store every 60s. The cap is on the BASE interval; the ±jitter rides on top (a jittered
@@ -51,7 +73,9 @@ const POLL_BACKOFF_FACTOR = 2;
 
 /** The rung at which the delta budget is spent and the pass may escalate to the snapshot bridge. */
 const ESCALATE_AT_ATTEMPT = 3;
-
+/** The rung at which the snapshot budget is ALSO spent — the reader makes the permanent ruling
+ * (full replay if the chain is intact ⇒ converged, else terminal-gap). Below it, a lagging snap
+ * gets one brief retry. */
 const SNAPSHOT_FINAL_ATTEMPT = 4;
 
 /** Active hole-chasing ladder state: the current rung and when the next attempt is due. */
@@ -60,7 +84,7 @@ interface Ladder {
   nextDueMs: number;
 }
 
-/** Parse the `__state` pointer bytes the reader resyncs off (§4.2, E19) into the wire shape the E5
+/** Parse the `__state` pointer bytes the reader resyncs off into the wire shape the
  * monitor consumes. Malformed / absent ⇒ `undefined` (the observation is simply skipped — a shell
  * read that cannot see the pointer never fabricates liveness). Numbers-only fields; missing
  * optionals default the same way the kernel reader does. */
@@ -92,8 +116,32 @@ function readStatePointer(raw: string): StatePointer | undefined {
   };
 }
 
-/* References: §4.2, E20, E21, E5. */
-
+/**
+ * The tick-driven replication poll driver. Each `onPollTick(nowMs)`:
+ *   1. reads the `__state` pointer and feeds the derivative liveness monitor
+ *      (`notePointerObservation`) — raise-only, every tick, sampling-rate-independent;
+ *   2. while the reader is SUSPECT, runs the retry ladder when an attempt is DUE:
+ * attempt 1 → `resync()` (delta); +~1s → attempt 2 → `resync()` (delta); +~5s →
+ *        attempt 3 → `resync({deltasExhausted})` and, on `needs-snapshot`, `resyncViaSnapshot()`
+ *        (snapshot-permitted). `converged` clears the reader (and backs the ladder off to the
+ *        baseline cadence when suspicion persists awaiting a live-channel head — never a spin);
+ *        `terminal-gap` STOPS the ladder permanently (fail-closed, no spin);
+ *   3. while WARM, runs the baseline liveness poll on the maxSyncLag cadence (60s ±20%), gated by
+ * the kernel's pure `pollDue`, and BACKS OFF on failure: a non-converged poll doubles the
+ *      interval (×2, cap 300s, still jittered); a converged one resets it to the base.
+ *
+ * Pure + tick-driven: no wall clock, no ambient timers, no sleeps — `nowMs` and the injected rng
+ * are the only sources of time/randomness.
+ *
+ * RE-ENTRANCY-SAFE BY CONTRACT. `onPollTick` is NOT required to be awaited before the
+ * next one is fired, and under the request-piggyback driver it routinely is not — a burst of
+ * requests hands one isolate several ticks while a step's store I/O is still in flight. Two
+ * properties make that safe HERE, at the root, rather than in each driver: (i) every due-decision
+ * and the state writes it authorizes happen in ONE synchronous block — no `await` separates a
+ * due-check from its commit, so no tick ever acts on a schedule another tick has already consumed;
+ * (ii) at most ONE ladder step is in flight, and a tick arriving mid-step declines rather than
+ * queues. The `__state` observation is exempt from both — the +25 vigil runs on EVERY tick.
+ */
 export class ReplicationPoller {
   readonly #reader: ReplicationReader;
   readonly #store: Store;
@@ -110,7 +158,7 @@ export class ReplicationPoller {
   /** A terminal-gap verdict indexed to the pointer that produced it: the LADDER stays stopped
    * (fail-closed, no spin) while this chain cannot complete. Permanence attaches to the CHAIN, not
    * the vigil — the baseline observation never stops (below). Cleared on a fresh suspect episode OR
-   * when a durable `snapBatch` advance past `#terminalSnapBatch` bridges the hole (§2, errata +25). */
+   * when a durable `snapBatch` advance past `#terminalSnapBatch` bridges the hole. */
   #terminal = false;
   /** The pointer `snapBatch` the terminal verdict was made against — expired deltas never return, so
    * ONLY an observed `snapBatch` beyond this can re-arm one snapshot-permitted attempt. `null` when
@@ -118,7 +166,7 @@ export class ReplicationPoller {
   #terminalSnapBatch: number | null = null;
   /** Suspect state at the previous tick — the false→true EDGE opens a fresh episode. */
   #prevSuspect = false;
-  /** SINGLE-FLIGHT (C4-b, F1): a ladder step is between its due-decision and its awaits. Set in the
+  /** SINGLE-FLIGHT: a ladder step is between its due-decision and its awaits. Set in the
    * SAME synchronous block as the due-decision that authorized it and cleared in that block's
    * `finally`, so at most one step ever runs. Ticks are request-piggybacked (an isolate gets no
    * free-running timer), which makes RE-ENTRY ROUTINE rather than exotic — a burst of requests can
@@ -131,7 +179,7 @@ export class ReplicationPoller {
   /** Jittered baseline threshold, recomputed each poll (the current interval ±20%). */
   #pollThresholdMs: number;
   /** The CURRENT baseline interval the threshold is drawn from: `#pollBaseMs` while polls converge,
-   * doubled per consecutive failure up to `MAX_POLL_BACKOFF_MS` (C4-b). Reset to the base by the
+   * doubled per consecutive failure up to `MAX_POLL_BACKOFF_MS`. Reset to the base by the
    * first poll that converges again — the backoff is a property of the current failure episode, never
    * a permanent cadence change. */
   #pollIntervalMs: number;
@@ -158,9 +206,9 @@ export class ReplicationPoller {
   }
 
   /**
-   * Whether the reader's replication has reached a permanent terminal gap (§4.2, E20/E21) — the
+   * Whether the reader's replication has reached a permanent terminal gap — the
    * hole-chasing ladder is stopped, fail-closed, until a durable `snapBatch` advance re-arms it.
-   * Read-only exposition of the already-tracked `#terminal` verdict for `explain` (E27 (4)); it
+   * Read-only exposition of the already-tracked `#terminal` verdict for `explain`; it
    * adds no bookkeeping — the field is written only by the tick machinery, never by this getter.
    */
   get terminal(): boolean {
@@ -168,13 +216,13 @@ export class ReplicationPoller {
   }
 
   /**
-   * Advance the state machine one tick (§4.2). Always observes the pointer for E5 liveness; then
+   * Advance the state machine one tick. Always observes the pointer for liveness; then
    * drives the ladder (suspect) or the baseline poll (warm). Out-of-band — never on a read path.
    */
   async onPollTick(nowMs: number): Promise<void> {
     // 1) The baseline `__state` observation — feed EVERY tick, INCLUDING while terminal. Errata +25:
     //    every isolate observes `__state` at least every maxSyncLag — the silent-drop backstop, the
-    //    E5 monitor's feed, and the detector for a durable `snapBatch` advance that re-arms recovery.
+    // silence monitor's feed, and the detector for a durable `snapBatch` advance that re-arms recovery.
     //    A pointer the shell cannot read (absent/garbled) is simply not observed; never fabricates
     //    freshness. The vigil never stops; only the hole-chasing LADDER does (below).
     const raw = await this.#store.get(this.#keys.stateKey);
@@ -183,10 +231,10 @@ export class ReplicationPoller {
       this.#reader.notePointerObservation(pointer, nowMs);
     }
 
-    // 2) SINGLE-FLIGHT DECLINE (C4-b, F1). A ladder step is still between its due-decision and its
+    // 2) SINGLE-FLIGHT DECLINE. A ladder step is still between its due-decision and its
     //    awaits: this tick takes NO decision and mutates NO state — it declines and returns. It does
     //    not queue (a queued tick is the same burst, merely deferred). The observation above ALREADY
-    //    ran, so the +25 vigil and the E5 feed are never skipped by a decline — only the ACTING is.
+    // ran, so the +25 vigil and the feed are never skipped by a decline — only the ACTING is.
     //    Placed BEFORE the episode-edge bookkeeping on purpose: while a step is in flight, no other
     //    tick may touch `#ladder` / `#terminal` / `#prevSuspect` out from under it, so the edge it
     //    would have seen is simply seen by the next tick that gets to act.
@@ -238,7 +286,7 @@ export class ReplicationPoller {
         return;
       }
 
-      // ── THE DECIDE-AND-COMMIT BLOCK (C4-b, F1) ────────────────────────────────────────────────
+      // ── THE DECIDE-AND-COMMIT BLOCK ────────────────────────────────────────────────
       // SYNCHRONOUS: the due-check above and EVERY state write it authorizes land in one turn, with
       // no `await` between them. The rung is claimed (`attempt`), the NEXT rung's due-time is
       // committed PROVISIONALLY — before the I/O, not after it — and the step is marked in flight.
@@ -264,7 +312,7 @@ export class ReplicationPoller {
 
     // 5) Warm — drop any hole-chasing ladder and run the baseline liveness poll on the maxSyncLag
     //    cadence, GATED by the kernel's pure `pollDue`. (The WARM path already commits before it
-    //    awaits: `#lastPollMs` is written above the `resync()` below, so it needs no F1 change.)
+    // awaits: `#lastPollMs` is written above the `resync()` below, so it needs no change.)
     this.#ladder = null;
     if (this.#lastPollMs === null) {
       // Seed the poll cursor on the first warm tick; the baseline poll fires a cadence later.
@@ -274,7 +322,7 @@ export class ReplicationPoller {
     }
     if (this.#reader.pollDue(nowMs, this.#lastPollMs, this.#pollThresholdMs)) {
       this.#lastPollMs = nowMs;
-      // POLL-FAILURE BACKOFF (C4-b, Q4 knob). The baseline poll's status is no longer discarded: a
+      // POLL-FAILURE BACKOFF (knob). The baseline poll's status is no longer discarded: a
       // pass that does NOT converge (a transient hole, a snapshot escalation, a terminal verdict —
       // every non-converged verdict means this poll did not achieve liveness) DOUBLES the interval up
       // to the 300s cap; a converged pass RESETS it to the base. The next threshold is drawn off the
@@ -296,8 +344,17 @@ export class ReplicationPoller {
     return Math.min(intervalMs * POLL_BACKOFF_FACTOR, cap);
   }
 
-  /* References: §4.2, E20, E21. */
-
+  /**
+   * Run one ladder rung. Rungs 1–2 retry the delta pass; rung 3 escalates
+   * (`deltasExhausted`) and bridges via the snapshot on `needs-snapshot`; rung ≥4 spends the
+   * snapshot budget so the reader makes the permanent ruling. Never sleeps.
+   *
+   * the caller has ALREADY claimed the rung (`ladder.attempt`) and committed its provisional
+   * next-due, synchronously, before this is entered — so this method only ever OVERWRITES that
+   * schedule when the outcome calls for a different one. It re-schedules NOTHING on the retry path
+   * (the provisional IS the retry), and it writes nothing that a re-entrant tick could race, because
+   * the in-flight flag the caller set means no other tick is deciding anything while this runs.
+   */
   async #runLadderStep(
     nowMs: number,
     ladder: Ladder,
@@ -309,6 +366,8 @@ export class ReplicationPoller {
       deltasExhausted: attempt >= ESCALATE_AT_ATTEMPT,
     });
     if (status === "needs-snapshot") {
+      // Attempt-3 escalation: the delta budget is spent, so bridge via the snapshot. A lagging snap
+      // gets one brief retry (rung 3); rung ≥4 spends the snapshot budget → permanent ruling.
       status = await this.#reader.resyncViaSnapshot({
         snapshotExhausted: attempt >= SNAPSHOT_FINAL_ATTEMPT,
       });
@@ -316,22 +375,22 @@ export class ReplicationPoller {
 
     if (status === "converged") {
       // The delta/snapshot pass caught up. If suspicion persists (no live-channel head declared this
-      // episode — the Q4 poll-only posture), a resync cannot clear it; back OFF to the baseline
+      // episode — the poll-only posture), a resync cannot clear it; back OFF to the baseline
       // cadence rather than spin, and let a bus hello clear suspicion asynchronously. This is the
       // SUCCESS overwrite of the provisional retry the caller committed before the awaits.
       ladder.attempt = 0;
       ladder.nextDueMs = nowMs + this.#jitter(this.#pollBaseMs);
       return;
     }
-    // Otherwise: `terminal-gap` — unfillable at THIS pointer (§3/E20): stop the LADDER (no spin),
+    // Otherwise: `terminal-gap` — unfillable at THIS pointer: stop the LADDER (no spin),
     // indexing the verdict to the `snapBatch` it was made against. The baseline vigil keeps observing
-    // `__state` (errata +25) and re-arms one attempt only when a later snapshot advances `snapBatch`
+    // `__state`  and re-arms one attempt only when a later snapshot advances `snapBatch`
     // past this index.
     //
     // …or `transient-miss` (or a lingering needs-snapshot when the bridge did not converge): retry on
     // the ladder cadence — attempt 1 → ~1s, attempts ≥2 → ~5s (both jittered). NOTHING is written for
     // that case: the retry is EXACTLY the provisional due-time the caller committed BEFORE the awaits
-    // (F1). Re-writing it here would restore the post-await commit this fix removes — the window in
+    //. Re-writing it here would restore the post-await commit this fix removes — the window in
     // which a tick reads a schedule its predecessor never lived to write, and burns a rung it was
     // never owed.
     if (status === "terminal-gap") {
@@ -346,6 +405,8 @@ export class ReplicationPoller {
     return attempt <= 1 ? this.#firstLadderDelayMs : this.#laterLadderDelayMs;
   }
 
+  /** Jitter a base delay symmetrically by ±`jitterFraction`, drawn from the injected rng (no
+   * ambient randomness). rng.next() ∈ [0,1) ⇒ factor ∈ [1−f, 1+f). */
   #jitter(baseMs: number): number {
     const f = this.#jitterFraction;
     return baseMs * (1 - f + 2 * f * this.#rng.next());

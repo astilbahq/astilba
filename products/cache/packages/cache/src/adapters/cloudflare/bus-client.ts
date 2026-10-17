@@ -1,6 +1,18 @@
-/* References: E19. */
-
-// PLATFORM: Cloudflare runtime bindings are confined to this adapter.
+// @astilba/cache adapter — the `doBus` CLIENT (phase 2).
+//
+// PLATFORM: lives under `src/adapters/**` but is PURE — no ambient time/randomness,
+// no timers, no `cloudflare:*` import — so the Node conformance lane drives the SAME client the
+// integration lane does, over a structural `ClientSocket` (workerd's client WebSocket —
+// `response.webSocket` after `accept()` — satisfies it structurally).
+//
+// MECHANISM-ONLY. The client DIALS, DECODES each message through the shared wire codec,
+// DISPATCHES the resulting `BusEvent` to the reader, and REPORTS its status (an `onClose` callback).
+// It runs NO self-reconnect loop and NO backoff timer — reconnect + backoff are the driver's
+// home; integration tests redial explicitly. It is the `Bus` the reader subscribes to.
+//
+// regId ECHO. On a `hello`, the client asserts the DO-echoed `regId` equals its own
+// configured scope; a mismatch CLOSES the socket loud and dispatches NOTHING (it read a
+// foreign channel). The kernel `BusEvent` has no `regId`, so the echo is stripped after the check.
 
 import type { Bus, BusEvent, Subscription } from "../../drivers";
 import { CLOSE_PROTOCOL, CLOSE_SCOPE_MISMATCH, decode } from "./wire";
@@ -37,6 +49,10 @@ export interface ClientSocket {
  * (a real `stub.fetch` → `accept()`); the client handles both. */
 export type Dial = () => ClientSocket | Promise<ClientSocket>;
 
+/** Why the doBus socket closed (status report). `local` distinguishes a close the client
+ * ITSELF initiated (a protocol/scope violation) from one the transport/server delivered. EXPORTED at
+ * its first consumer, the redial driver (`redial.ts`), has arrived, and an app that supplies
+ * its own `onClose` reads the same shape. */
 export interface DoBusCloseInfo {
   readonly code: number;
   readonly reason: string;
@@ -44,9 +60,10 @@ export interface DoBusCloseInfo {
 }
 
 export interface DoBusOptions {
-  /* References: E19. */
+  /** The mirror-key scope this subscriber expects the DO to echo in its `hello`. */
   readonly regId: string;
-
+  /** Status report: the socket closed. Fired at most once per subscription. The
+   * driver redials off this; integration tests redial explicitly. */
   readonly onClose?: (info: DoBusCloseInfo) => void;
 }
 
@@ -65,7 +82,7 @@ interface SubState {
   socket: ClientSocket | null;
   closed: boolean;
   reported: boolean;
-  /** The subscriber, so a close can DECLARE itself (`lost`, E28) rather than go quiet. */
+  /** The subscriber, so a close can DECLARE itself (`lost`) rather than go quiet. */
   onEvent: ((event: BusEvent) => void) | null;
 }
 
@@ -107,6 +124,9 @@ class DoBus implements Bus {
     };
     const dialed = this.#dial();
     if (isThenable(dialed)) {
+      // Subscribe is synchronous, the dial is not — await it in a detached async IIFE. NO
+      // self-reconnect loop, NO backoff; a dial failure is reported as a local close so
+      // the driver / an integration test can redial.
       void (async (): Promise<void> => {
         try {
           attach(await dialed);
@@ -151,6 +171,7 @@ class DoBus implements Bus {
     };
   }
 
+  /** Decode one message and dispatch it, or CLOSE loud on a protocol/scope violation (rulings). */
   #onMessage(
     data: unknown,
     onEvent: (event: BusEvent) => void,
@@ -170,6 +191,7 @@ class DoBus implements Bus {
     }
     const result = decode(data);
     if (!result.ok) {
+      // Malformed / unknown kind / wrong version — never dispatch a partial event.
       this.#localClose(
         state,
         CLOSE_PROTOCOL,
@@ -181,7 +203,7 @@ class DoBus implements Bus {
     switch (event.kind) {
       case "hello": {
         if (event.regId !== this.#regId) {
-          /* References: E19. */
+          // The DO echoed a foreign scope — fail closed LOUD, dispatch NOTHING.
           this.#localClose(
             state,
             CLOSE_SCOPE_MISMATCH,
@@ -216,6 +238,7 @@ class DoBus implements Bus {
     }
   }
 
+  /** The client initiates a close (protocol/scope) and reports it as `local`. */
   #localClose(state: SubState, code: number, reason: string): void {
     if (state.closed) {
       return;
@@ -228,8 +251,8 @@ class DoBus implements Bus {
   }
 
   /**
-   * Fire the status report at most once per subscription, and DECLARE the loss to the subscriber
-   * (E28). The declaration is what keeps a dead channel from reading as a quiet one: `reset`/`hello`
+   * Fire the status report at most once per subscription, and DECLARE the loss to the subscriber.
+   *The declaration is what keeps a dead channel from reading as a quiet one: `reset`/`hello`
    * are the only other things this client dispatches, so without a `lost` the reader's evidence for
    * "the bus never came up" and "the bus has nothing to say" is identical — namely nothing.
    *
@@ -255,7 +278,7 @@ class DoBus implements Bus {
   }
 
   /**
-   * Close the socket, tolerating a platform refusal — WITHOUT claiming success (E28).
+   * Close the socket, tolerating a platform refusal — WITHOUT claiming success.
    *
    * The refusal is real and routine: this socket may have been minted in an earlier request, and the
    * platform refuses `close()` from a different one exactly as it refuses every other operation on
@@ -289,6 +312,13 @@ class DoBus implements Bus {
   }
 }
 
+/**
+ * Build a `doBus` client `Bus`. `dial` obtains an OPEN socket (synchronously in the
+ * conformance pair; a `stub.fetch` → `accept()` promise in workerd). `options.regId` is the scope
+ * the DO's `hello` must echo; `options.onClose` receives the socket's close (
+ * NO self-reconnect). The reader subscribes to the returned `Bus`; the client decodes each message
+ * and dispatches the `BusEvent`, closing loud on any protocol/scope violation.
+ */
 export function doBus(dial: Dial, options: DoBusOptions): Bus {
   return new DoBus(dial, options);
 }

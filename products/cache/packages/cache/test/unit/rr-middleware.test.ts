@@ -1,6 +1,6 @@
-// Ordinary unit teeth (NOT sacred) — C4-a-2. The RR-v8 middleware shell against a REAL
+// Ordinary unit teeth (NOT sacred). The RR-v8 middleware shell against a REAL
 // `RouterContextProvider` (react-router), no running Workers server. Each case bites one branch
-// (rule 13): the cache-into-context provision (`context.set`), the ALS request frame (`run`), and
+//: the cache-into-context provision (`context.set`), the ALS request frame (`run`), and
 // the born-private header stamp (`headers.set(..., "private")`) — blinding any reds its case.
 
 import assert from "node:assert/strict";

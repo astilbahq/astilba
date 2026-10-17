@@ -1,4 +1,4 @@
-// THE CONSTRUCTION-I/O CENSUS (E28, E28-b) — one of three conformance instruments.
+// THE CONSTRUCTION-I/O CENSUS — one of three conformance instruments.
 //
 // WHAT THIS INSTRUMENT PROVES, AND ONLY THIS: construction is COLD. Building a cache reaches for no
 // binding — it mints no stub, opens no socket, fires no RPC. It is not a style preference: workerd
@@ -8,7 +8,7 @@
 // platform refuses in turn.
 //
 // WHAT IT DOES NOT PROVE — stated here because leaving it unstated is what let a violation through
-// twice, green (E28-b). It says NOTHING about whether handles are minted PER USE. A factory that
+// twice, green. It says NOTHING about whether handles are minted PER USE. A factory that
 // memoized its stub source — holding one connection forever, the exact shape the law forbids —
 // builds just as coldly as one that mints per use, so this census waves it through. The family that
 // catches it is `cross-request.test.ts`, and it is the only one that does. Nor does this file speak
@@ -46,7 +46,7 @@
 //     ONLY. The dial is `async`, so its global-scope refusal becomes a REJECTED PROMISE that the
 //     client's detached `void (async …)()` swallows by design. The Worker boots clean and the boot
 //     witness passes: the channel is simply dead, silently, forever.
-//   • an RPC swallowed by design (the E11 retention lease fired from `createCache`, inside its
+// • an RPC swallowed by design (the retention lease fired from `createCache`, inside its
 //     best-effort `try{}catch{}`) — caught HERE ONLY, for the same reason.
 //
 // So a green boot witness does NOT imply construction is cold; it implies construction did not
@@ -172,12 +172,12 @@ describe("E28 — construction performs no I/O (the census)", () => {
   });
 
   it("NON-VACUITY (i): the census CATCHES a construction that mints", () => {
-    // A stub minted at construction is the pre-E28 shape, and it is what workerd refuses at global
+    // A stub minted at construction is the earlier shape, and it is what workerd refuses at global
     // scope. Standing it up here proves the census above is discriminating rather than merely quiet:
     // the same instrument, pointed at the defect, sees it.
     const { ledger, coordinator } = censusBindings();
 
-    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- exercising the namespace's own surface directly to model the pre-E28 construction; the fake's shape is the census's subject, not a claim about the real type.
+    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- exercising the namespace's own surface directly to model the earlier construction; the fake's shape is the census's subject, not a claim about the real type.
     const ns = coordinator as unknown as {
       get(id: unknown): unknown;
       idFromName(name: string): unknown;
@@ -211,8 +211,8 @@ describe("E28 — construction performs no I/O (the census)", () => {
     });
 
     // The stub is minted from INSIDE the read (`coordinator.get()`), which is the whole point: the
-    // handle belongs to the context that is using it. And the E11 retention lease — deferred out of
-    // construction by E28 — is registered here, on first use, rather than never.
+    // handle belongs to the context that is using it. And the retention lease — deferred out of
+    // construction — is registered here, on first use, rather than never.
     expect(ledger).toContain("coordinator.get()");
     expect(ledger).toContain("stub.registerRetention()");
   });

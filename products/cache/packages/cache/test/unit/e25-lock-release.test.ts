@@ -1,10 +1,20 @@
-/* References: E25. */
+// the fill's post-acquire body runs under a `try/finally` that releases the
+// lock on EVERY exit path. Previously, `validateUserTags` throwing the count-ceiling error at
+// settle-union ran AFTER `maybeLock` acquired the lock and BEFORE the (pre-fence) release, with no
+// try/finally over it — so a `lock:true` fill that over-ran the ceiling at settle LEAKED the lock,
+// blocking every other isolate's fill of that key until lease expiry. The single finally covers the
+// foreground caller AND the background refresh (both route through `fillAndStore`). The `finally`
+// releases on ANY throw from the guarded region regardless of throw flavor, so this one ceiling
+// (synchronous) throw pins the release property; blinding the finally-release reds it.
+//
+// Lane: unit (deterministic). FakeLock is non-blocking by construction, so the leak is observed
+// DIRECTLY via its `isHeld(key)` accessor — a leaked lock stays held; a released one does not.
 
 import { createCache, InvalidTagError, memory } from "@astilba/cache";
 import { FakeLock, mkTag } from "@astilba/harness";
 import { describe, expect, it } from "vitest";
 
-// One past MI13's ≤126 user-tag ceiling (E24) — the settle-union that trips `validateUserTags`.
+// One past the ≤126 user-tag ceiling — the settle-union that trips `validateUserTags`.
 const OVER_CEILING = Array.from({ length: 127 }, (_, i) => mkTag(`t:${i}`));
 
 describe("E25 defect B — a settle-time throw releases the fill's lock", () => {
@@ -20,7 +30,7 @@ describe("E25 defect B — a settle-time throw releases the fill's lock", () => 
     const key = "e25b/over-ceiling";
 
     // The factory succeeds, then `setTags` authors an over-ceiling union — so the throw lands at
-    // settle-time validation, AFTER `maybeLock` acquired the lock (the exact pre-E25 leak window).
+    // settle-time validation, AFTER `maybeLock` acquired the lock (the exact pre- leak window).
     await expect(
       cache.getOrSet({
         factory: async (ctx) => {

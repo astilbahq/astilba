@@ -1,7 +1,7 @@
-// Ordinary unit teeth (NOT sacred) — E28 + E9. Reachability, split by channel, and the E9 triple.
-// Each case bites ONE branch (rule 13); the named mutation reds it.
+// Ordinary unit teeth (NOT sacred). Reachability, split by channel, and the triple.
+// Each case bites ONE branch; the named mutation reds it.
 //
-//   THE E9 TRIPLE — the takedown/embargo switch was dead by two mechanisms and misfired by a third:
+// THE TRIPLE — the takedown/embargo switch was dead by two mechanisms and misfired by a third:
 //   1. SETTABLE   — `takedownSensitive` is reachable through `defaults` (the surface every wrapping
 //                   factory threads), not only through the top-level config. Blind either door ⇒ red.
 //   2. PRECEDENCE — it OUTRANKS an explicitly-set `unknownPolicy`. Blind it back into an
@@ -11,12 +11,12 @@
 //   3. EFFECT     — `'error'` THROWS (`UnknownTagError`) rather than refilling. Blind it back to
 //                   `'miss'`'s byte-identical `{validity:'unknown'}` and the read refills ⇒ red.
 //
-//   REACHABILITY (§1, §5a, §9):
+// REACHABILITY:
 //   4. strong + registry down ⇒ throws `RegistryUnavailableError` (blind ⇒ a raw error or a serve).
 //   5. strong + registry down + `onUnavailable:'eventual'` ⇒ DEGRADES for that call AND emits
 //      `strong_degraded` (blind either half ⇒ red — a degrade nobody can see is a misreport).
 //   6. CHECK-FAILED ⇒ MISS — an eventual read whose live check FAILS resolves to miss/refill
-//      (§5.1/5a, and §9's row for an unreachable registry), never stale.
+// (row for an unreachable registry), never stale.
 //   7. TWO ORIGINS, TWO RULES — a check-FAILURE bypasses `unknownPolicy`; a SUSPECT-MAP unknown does
 //      NOT. Collapsing the two origins into one rule reds, in BOTH directions.
 //
@@ -139,7 +139,7 @@ function rig(
   return { cache, events, registry };
 }
 
-/** A retriable origin failure (§5.4, E2's default classifier) — the grace path's trigger. */
+/** A retriable origin failure (default classifier) — the grace path's trigger. */
 function originDown(): HttpError {
   return new HttpError(new Response(null, { status: 503 }));
 }
@@ -159,7 +159,7 @@ async function seed(cache: Cache, key: string): Promise<void> {
  * "all the user tags", so an assertion can tell them apart.
  *
  * Teaching under `takedownSensitive` takes a STRONG read and nothing else. Strong always runs a live
- * registry check and records what it learns (§1/E1), and it returns from that check without ever
+ * registry check and records what it learns, and it returns from that check without ever
  * reaching the resolution that throws — whereas any eventual read of an unknown tag in this rig
  * throws before it can learn anything. So the education rides a throwaway key that declares only the
  * tag we want known; `TAG` is never checked and stays unknown.
@@ -276,7 +276,7 @@ describe("E28 — reachability (a) the registry RPC (§1)", () => {
     const { cache, registry } = rig();
     await seed(cache, "reach/strong");
     registry.down = true;
-    // §1's named error, CONSTRUCTED for the first time. Blind it and the caller gets whatever raw
+    // the named error, CONSTRUCTED for the first time. Blind it and the caller gets whatever raw
     // thing the transport threw — untyped, uncatchable by contract.
     await expect(
       cache.getOrSet({
@@ -293,7 +293,7 @@ describe("E28 — reachability (a) the registry RPC (§1)", () => {
     await seed(cache, "reach/degrade");
     registry.down = true;
 
-    // §1 named the opt-out and left it undefined; E28 defines it. The read does NOT throw: it takes
+    // The opt-out's meaning is defined here. The read does NOT throw: it takes
     // the eventual posture — local knowledge, fail-closed on unknown — so it refills rather than
     // failing the request. Blind the degrade and this reds with a RegistryUnavailableError.
     const served = await cache.getOrSet({
@@ -331,7 +331,7 @@ describe("E28 — reachability (a) the registry RPC (§1)", () => {
     // refilling, which reaches the classify site and nothing else.
     const { cache, registry, events } = rig({ onUnavailable: "eventual" });
     await seed(cache, "reach/local");
-    // A healthy eventual read teaches the map: the tag becomes locally KNOWN-clean (§5a memoization).
+    // A healthy eventual read teaches the map: the tag becomes locally KNOWN-clean (memoization).
     await cache.getOrSet({
       factory: async (): Promise<string> => "unused",
       key: "reach/local",
@@ -377,8 +377,8 @@ describe("E28 — reachability (a) the registry RPC (§1)", () => {
 
 describe("E28 — check-failed ⇒ miss, and the two-origins rule (§5.1/5a, §9, E20)", () => {
   it("CHECK-FAILED ⇒ MISS: an eventual read whose live check fails refills (never stale)", async () => {
-    // §5a's answer when the registry cannot be reached is to assume the worst about the entry and
-    // go back to origin, which is safe exactly because origin is the truth. §9 says the same from
+    // the answer when the registry cannot be reached is to assume the worst about the entry and
+    // go back to origin, which is safe exactly because origin is the truth. The failure matrix says the same from
     // the other side: an unknown resolves to a miss and never to a stale serve. Blind this to serve
     // the stored value instead and it reds — the blinded version hands back possibly-purged content
     // for no better reason than that the authority on the question is down.
@@ -404,7 +404,7 @@ describe("E28 — check-failed ⇒ miss, and the two-origins rule (§5.1/5a, §9
     // policy's own default is to run the check that has just failed — so consulting it would either
     // loop or answer with the broken mechanism. Under `takedownSensitive` the resolution is 'error' and
     // NEVER reaches a check at all (proven above); under 'registry-check' the failure resolves by
-    // §5a directly. So a failed check must NOT consult the policy — and the observable consequence
+    // unknown resolution directly. So a failed check must NOT consult the policy — and the observable consequence
     // is that the read REFILLS instead of throwing or looping.
     const { cache, registry } = rig({ unknownPolicy: "registry-check" });
     await seed(cache, "origins/bypass");
@@ -417,18 +417,18 @@ describe("E28 — check-failed ⇒ miss, and the two-origins rule (§5.1/5a, §9
       tags: [TAG],
     });
     expect(served).toBe("v2");
-    // AT MOST ONE CHECK PER TIER CONSULTED (L1, then L2 — each classifies its own read, §5.1 steps
+    // AT MOST ONE CHECK PER TIER CONSULTED (L1, then L2 — each classifies its own read, the read path
     // 2/4), and never a SECOND for the same unknown. The measured number is 2, and the number is the
     // tooth: re-route the catch through `unknownResolution` and a 'registry-check' policy answers
     // "check again" to the failure of the check it just made — so each tier checks twice and this
     // reds at 4. (It cannot terminate any other way: the policy's own default IS the mechanism that
-    // is down, which is precisely why §5a rules this origin directly instead.)
+    // is down, which is precisely why unknown resolution rules this origin directly instead.)
     expect(registry.checks - before).toBe(2);
   });
 
   it("TWO ORIGINS (the other rule): a SUSPECT-MAP unknown DOES resolve per unknownPolicy (E20 (i))", async () => {
     // The counterpart, and the direction a collapse breaks the other way: unknowns whose origin is
-    // the MAP (not a failed check) go through the policy exactly as E20 rules. Here the registry is
+    // the MAP (not a failed check) go through the policy exactly as unknown resolution rules. Here the registry is
     // UP, the map knows nothing, and the policy is 'registry-check' — so a check happens and the
     // stored value is confirmed and served. Collapse the origins so every unknown is treated as a
     // check-failure ⇒ no check is made, the read refills ⇒ both assertions red.
@@ -453,7 +453,7 @@ describe("E28 — check-failed ⇒ miss, and the two-origins rule (§5.1/5a, §9
 
   it("TWO ORIGINS: a map-origin unknown under 'miss' refills WITHOUT a check (E20 (i), INV-6)", async () => {
     // The same origin, a different policy — proving the policy is genuinely in charge of this origin
-    // rather than incidentally agreeing with §5a. 'miss' never consults the registry (INV-6).
+    // rather than incidentally agreeing with unknown resolution. 'miss' never consults the registry (INV-6).
     const { cache, registry } = rig({ unknownPolicy: "miss" });
     await seed(cache, "origins/miss");
     const before = registry.checks;
@@ -467,7 +467,7 @@ describe("E28 — check-failed ⇒ miss, and the two-origins rule (§5.1/5a, §9
   });
 });
 
-// ── THE SERVE-TIME RE-VALIDATION OF A GRACED CANDIDATE (§11.18, §1, §5.1) ────────────────────────
+// ── THE SERVE-TIME RE-VALIDATION OF A GRACED CANDIDATE ────────────────────────
 // The strong-path registry-RPC site that sits INSIDE a failed fill: the factory has already errored,
 // and this check decides whether the stale copy may still be served. At `strong` it is a live
 // registry check exactly like the other three, so it honors `onUnavailable` exactly like them.
@@ -556,7 +556,7 @@ describe("E28 — the graced candidate's serve-time re-validation honors onUnava
   }
 
   /** Fill once, then soft-purge so the copy is STALE. At `strong` a stale copy routes to the
-   * FOREGROUND fill (E18 — strong forgoes SWR), so a failing factory meets it as the grace
+   * FOREGROUND fill (strong forgoes SWR), so a failing factory meets it as the grace
    * CANDIDATE, which is the branch under test. */
   async function seedThenSoftPurge(
     rigged: GraceRig,
@@ -639,9 +639,9 @@ describe("E28 — the graced candidate's serve-time re-validation honors onUnava
   });
 });
 
-// ── THE FILL SITE'S OWN GUARD, REACHED (§1, E1/E16/E18) ──────────────────────────────────────────
+// ── THE FILL SITE'S OWN GUARD, REACHED ──────────────────────────────────────────
 // The strong fill mints its bornEpoch from a live check BEFORE running the factory. That check has
-// its own `onUnavailable` guard, and until now nothing reached it: every §1-throw case above SEEDS
+// its own `onUnavailable` guard, and until now nothing reached it: every strong-throw case above SEEDS
 // the key first, so the read's classify site throws while the fill site sits untouched behind it.
 // Blinding the fill's guard therefore left the whole suite green.
 //
@@ -668,7 +668,7 @@ describe("E28 — the strong fill's pre-factory live check honors onUnavailable 
 
     // AND IT REFUSED BEFORE THE FACTORY. The check mints the bornEpoch the fill is anchored on, so a
     // fill that cannot mint must not run: a value born at an unverified epoch is the overstatement of
-    // recency §1 forbids. Blind the guard (`onUnavailable !== "eventual"` ⇒ always false) and this
+    // recency the consistency model forbids. Blind the guard (`onUnavailable !== "eventual"` ⇒ always false) and this
     // reds twice over — the raw registry error escapes untyped AND the factory runs anyway.
     expect(factoryRuns).toBe(0);
   });
@@ -704,7 +704,7 @@ describe("E28 — the strong fill's pre-factory live check honors onUnavailable 
   });
 });
 
-// ── THE SURFACES THAT DESCRIBED THEMSELVES WRONGLY (E9/E28) ──────────────────────────────────────
+// ── THE SURFACES THAT DESCRIBED THEMSELVES WRONGLY ──────────────────────────────────────
 // Two declared-but-unhonored surfaces. Neither is exotic: each is a field whose documentation states
 // a contract the code did not keep. That shape is the hardest to catch by reading, because the doc
 // is what a reader checks the code against, and here the doc is the thing that is wrong.
@@ -795,8 +795,8 @@ describe("E9/E28 — UnknownTagError says exactly what it promises", () => {
 
 describe("E28 — CacheDefaults.consistency is a setting, not a decoration", () => {
   /** Fill `key`, then read it once at EVENTUAL so the live check teaches the map the tag is
-   * known-clean (§5a memoization). After this, an eventual read consults NOBODY and a strong read
-   * still live-checks every time (§1/E1 — strong never consults local knowledge). That asymmetry is
+   * known-clean (memoization). After this, an eventual read consults NOBODY and a strong read
+   * still live-checks every time (strong never consults local knowledge). That asymmetry is
    * the only thing that can tell the two postures apart by counting: before the map is taught, an
    * eventual read of an unknown tag pays exactly one check too, and the counter says nothing. */
   async function seedAndTeach(rigged: Rig, key: string): Promise<void> {

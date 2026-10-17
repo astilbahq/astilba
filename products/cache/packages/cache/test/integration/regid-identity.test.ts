@@ -1,4 +1,4 @@
-// The E19-b identity=address scenes (§4.2, E19/E19-b — R1/R2/R3) — the REAL Coordinator DO on
+// The identity=address scenes — the REAL Coordinator DO on
 // workerd/Miniflare. A Coordinator's regId derives from its OWN Durable Object name (the string
 // clients address it by), journaled at first boot and NEVER re-journaled. This lane exercises the
 // three chartered behaviours end-to-end:
@@ -9,7 +9,7 @@
 //     journaled scope, the `hello` echoes the journaled id (a name-configured client closes loud),
 //     and the orphaning mutation (routing regId back through the cadence reconcile ⇒ a rekey) reds it.
 //
-// Lane law (rule 12): timing-tolerant. Message delivery over a real socket is async, so the hello
+// Lane law: timing-tolerant. Message delivery over a real socket is async, so the hello
 // scenes POLL to a bounded predicate; the DO flush is fired deterministically (`runDurableObjectAlarm`).
 
 import {
@@ -32,14 +32,14 @@ const A = "reader:a";
 
 type CoordinatorStub = DurableObjectStub<Coordinator>;
 
-/** The seeded registry identity durably recorded at first boot (E19-b), read from inside the DO. */
+/** The seeded registry identity durably recorded at first boot, read from inside the DO. */
 async function seededRegId(stub: CoordinatorStub): Promise<string | undefined> {
   return await runInDurableObject(stub, (_instance, state) =>
     state.storage.get<string>("regId")
   );
 }
 
-/** The DO's boot-time regId divergence (E19-b), read from inside the DO after forcing a `#load`. */
+/** The DO's boot-time regId divergence, read from inside the DO after forcing a `#load`. */
 async function divergenceOf(
   stub: CoordinatorStub
 ): Promise<RegIdDivergence | null> {
@@ -57,7 +57,7 @@ async function divergenceOf(
   );
 }
 
-/** The DO's own name as the runtime sees it (E19-b: the identity source), read from inside the DO. */
+/** The DO's own name as the runtime sees it (the identity source), read from inside the DO. */
 async function idName(stub: CoordinatorStub): Promise<string | undefined> {
   return await runInDurableObject(stub, (_instance, state) => state.id.name);
 }
@@ -200,7 +200,7 @@ describe("registry identity = address on workerd (§4.2, E19-b)", () => {
       ).toBeNull();
 
       // The `hello` echoes the JOURNALED id: a client configured with DERIVED (the later boot's wrong
-      // scope) reads a foreign channel and CLOSES loud (E19 scope mismatch); a client configured with
+      // scope) reads a foreign channel and CLOSES loud (scope mismatch); a client configured with
       // the journaled id converges.
       let wrongScopeClosed = false;
       const busWrong = doBus(() => dialCoordinator(stub2), {

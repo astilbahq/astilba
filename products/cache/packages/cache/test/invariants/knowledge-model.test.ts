@@ -1,6 +1,6 @@
-// INV-11 — spec §11.11
-// INV-21 — spec §11.21 (B3)
-// INV-25 — errata E4 (§11 invariant amendment; race-shaped: fc.scheduler())
+// INV-11 — spec
+// INV-21 — spec
+// INV-25 (race-shaped: fc.scheduler())
 // Sacred: append-only. Never modify, delete, weaken, skip, or .todo an existing test.
 
 import { commandsArb, mkTag, modelSetup, world } from "@astilba/harness";

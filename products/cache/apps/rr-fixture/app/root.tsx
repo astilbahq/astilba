@@ -6,7 +6,7 @@ import { cacheMiddleware } from "@astilba/cache/react-router";
 
 import { cache } from "./cache";
 
-// The RR-v8 ROOT middleware (§7). Always-on in v8 — registered as the root route module's
+// The RR-v8 ROOT middleware. Always-on in v8 — registered as the root route module's
 // `middleware` export. `cacheMiddleware` provides `cache` into the request lifecycle, opens the
 // AsyncLocalStorage frame, and stamps the born-private `Cache-Control: private` default.
 export const middleware: MiddlewareFunction[] = [cacheMiddleware({ cache })];

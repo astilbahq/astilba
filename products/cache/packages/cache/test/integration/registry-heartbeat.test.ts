@@ -1,23 +1,23 @@
-/* References: E5. */
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+// The heartbeat suite — the once-dormant liveness path, now sound. Drives the REAL
+// Coordinator Durable Object with `REGISTRY_HEARTBEAT_MS` set (via `Reflect.set` on the live `env`
+// the DO shares — the same mechanism the transcript-v2 test uses for `REGISTRY_KV`, so no
+// wrangler.jsonc var and no `worker-configuration.d.ts` regeneration). It pins the two defects the
+// heartbeat carried while dormant, plus the journal-growth guard the ruling did not cover:
+//
+//   1. A flush-plus-heartbeat alarm must bless `__state` EXACTLY ONCE — the old post-flush
+// heartbeat issued a SECOND sub-second put to the one hot key, which real KV 429s.
+//   2. Earliest-wins arbitration — a pending heartbeat deadline must never starve a later purge's
+// B5 flush (the old `getAlarm() !== null ⇒ return` guard made the flush wait the heartbeat
+// interval, breaching the honest ≤1.1s bound, D11).
+//   3. Heartbeats are STATE-NEUTRAL, so they are NOT journaled: N heartbeats grow the journal by
+// zero, and replay across them is exact (the unbounded-growth hazard).
+//
+// The plan oracle (COUNTS + order of KV puts) is reused from transcript-v2: a doubled `__state`
+// put is byte-identical under last-write-wins, so only a write-COUNT assertion catches it.
+//
+// Lane law: the arbitration assertions read the ARMED alarm deadline and compare against
+// a coarse threshold well clear of both the ~1.1s flush window and the 60s heartbeat interval —
+// timing tolerance is legal in THIS lane and nowhere left of it.
 
 import {
   evictDurableObject,
@@ -33,10 +33,10 @@ import { describe, expect, it } from "vitest";
 const A = "hb:a";
 const B = "hb:b";
 
-// Per-test isolation (CACHE-29): every DO in this lane shares ONE KV namespace, and pool-workers'
+// Per-test isolation: every DO in this lane shares ONE KV namespace, and pool-workers'
 // per-file isolated-storage frames drop under concurrent DO requests (workers-sdk #11031), so
-// tests all writing `__reg:default:…` raced. A UNIQUE regId per test (the tool E19 built)
-// partitions the namespace deterministically. Under E19-b the regId IS the DO name (identity =
+// tests all writing `__reg:default:…` raced. A UNIQUE regId per test (the tool built)
+// partitions the namespace deterministically. The regId IS the DO name (identity =
 // address), so `scope` writes NO shared global — the DO derives the SAME id from the test's own
 // (already-unique) name (`idFromName(regId)`); `scope` just returns the matching key formatter.
 function scope(regId: string): MirrorKeys {
@@ -131,7 +131,7 @@ describe("E5 heartbeat — the sound liveness path (C2-b-1b)", () => {
     }
 
     // The flush alarm's WHOLE plan: the immutable batch, then ONE terminal __state bless. The old
-    // post-flush heartbeat would append a SECOND __state here — the D17 double-write real KV 429s.
+    // post-flush heartbeat would append a SECOND __state here — the double-write real KV 429s.
     expect(plan).toStrictEqual([KEYS.deltaKey(1), KEYS.stateKey]);
     expect(plan.filter((key) => key === KEYS.stateKey)).toHaveLength(1);
   });
@@ -181,7 +181,7 @@ describe("E5 heartbeat — the sound liveness path (C2-b-1b)", () => {
 
     Reflect.set(env, "REGISTRY_HEARTBEAT_MS", String(HEARTBEAT_MS));
     try {
-      // A purge + flush leaves the E5 heartbeat cadence armed ~HEARTBEAT_MS out: the two deadlines
+      // A purge + flush leaves the heartbeat cadence armed ~HEARTBEAT_MS out: the two deadlines
       // compete for the one alarm slot, the nearer one takes it, and whichever lost re-arms once the
       // winner has fired. Here the flush won this tick and the heartbeat re-armed behind it.
       await stub.expire([A]);

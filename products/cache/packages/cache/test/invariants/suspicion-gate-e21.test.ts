@@ -1,18 +1,18 @@
-// INV-11 — spec §11.11
-// INV-25 — spec §4.2, errata E4, E20, E21
+// INV-11 — spec
+// INV-25 — spec
 // Sacred: append-only. Never modify, delete, weaken, skip, or .todo an existing test.
 //
 // A suspect reader must not re-trust its warm map because a pointer's freshness field moved
-// forward (E21). The trace: a warm reader (entry born, tag strong-primed) misses a HARD purge
+// forward. The trace: a warm reader (entry born, tag strong-primed) misses a HARD purge
 // whose bus frame is DROPPED (gap ⇒ suspect); the purge's own __state bless is held behind
 // replication lag, so the reader keeps reading the OLDER pointer (its epoch still pre-purge); an
-// E5 heartbeat then rewrites that older pointer with a higher `flushedAt`, so two successive reads
+// liveness heartbeat then rewrites that older pointer with a higher `flushedAt`, so two successive reads
 // see strictly-increasing freshness on a pointer whose epoch never advanced. The reader must count
 // that freshness motion as no evidence it caught up — it stays suspect and refills, never serving
 // the value the hard purge killed.
 //
 // Red-proven on `main` (whose freshness-advancement convergence clears here and serves the dead
-// value); green under E21 (the gap-opened episode declares no live-channel head the heartbeat can
+// value); green with live-head convergence (the gap-opened episode declares no live-channel head the heartbeat can
 // satisfy, so suspicion is sticky and the read fails closed).
 
 import { mkTag, world } from "@astilba/harness";
@@ -49,8 +49,8 @@ describe("suspicion gate (E21 — convergence anchors to the live channel)", () 
 
     // Stall the __state pointer so the hard purge's bless (epoch 2) stays invisible and the
     // reader keeps reading the PRE-PURGE (epoch-1) pointer through the reads below. The soft
-    // flush already wrote an epoch-1 pointer (flushedAt 0); an E5 heartbeat then writes a SECOND
-    // epoch-1 pointer with a higher flushedAt — the "advancing pre-purge versions" of CACHE-27.
+    // flush already wrote an epoch-1 pointer (flushedAt 0); an heartbeat then writes a SECOND
+    // epoch-1 pointer with a higher flushedAt — the "advancing pre-purge versions" of.
     w.chaos.delayKey("__state", 10_000);
     await w.advance(1000);
     await w.registry.heartbeat();
@@ -81,14 +81,14 @@ describe("suspicion gate (E21 — convergence anchors to the live channel)", () 
 
     // The heartbeat's freshened pre-purge pointer now becomes visible: its `flushedAt` is
     // strictly greater than read #1's. Under the SUPERSEDED rule this freshness motion cleared
-    // suspicion; under E21 it is not an anchor at all.
+    // suspicion; with live-head convergence it is not an anchor at all.
     await w.advance(1000);
     const second = await reader.getOrSetEntry({
       factory,
       key: "k",
       tags: [tag],
     });
-    // E21: no head was declared over the live channel this episode (the frame dropped; the
+    // no head was declared over the live channel this episode (the frame dropped; the
     // heartbeat carries none), so the reader stays suspect and refills AGAIN — it never re-trusts
     // the warm-but-stale map, and never serves a value minted against the skipped hard purge.
     expect(second.value).toBe("refill-2");

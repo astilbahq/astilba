@@ -1,4 +1,4 @@
-// The typed-routes DIRTY-TREE CHECK (C5-c) — proof that apps/demo's generated route types are
+// The typed-routes DIRTY-TREE CHECK — proof that apps/demo's generated route types are
 // generated, load-bearing, and correctly wired.
 //
 // WHAT THIS EXISTS TO CATCH, and why a green typecheck does not catch it. `react-router typegen`
