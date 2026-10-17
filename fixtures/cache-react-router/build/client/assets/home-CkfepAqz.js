@@ -1,1 +1,0 @@
-import{o as e,t}from"./jsx-runtime-DTqGV-ts.js";var n=t(),r=e(function(){return(0,n.jsx)(`h1`,{children:`@astilba/cache — React Router v8 build-smoke fixture`})});export{r as default};
