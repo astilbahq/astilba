@@ -83,10 +83,10 @@ Read [Lifecycles and projections](/docs/env/lifecycles-and-projections/) for the
 
 | Path | Lifecycle and generated import | Example |
 | --- | --- | --- |
-| Node server | Generate on Node.js, then load a generated server target for the lifecycle your server owns. | [Node server](https://github.com/astilbahq/env/tree/main/examples/node-service) |
-| Cloudflare Worker deployment target | Run a generated deployment-lifecycle target through `@astilba/env/runtime` with built-in codecs. Authoring and generation stay on Node.js. | [Cloudflare Worker](https://github.com/astilbahq/env/tree/main/examples/cloudflare-worker) |
-| Next static shell | Import public build values from the generated browser `.build.ts` module. Bootstrap deployment values through an application-owned route without making the page dynamic. | [Next static shell](https://github.com/astilbahq/env/tree/main/examples/next-static-shell) |
-| Vite browser shell | Import public build values from the generated browser `.build.ts` module, or bootstrap deployment values from an application-owned endpoint and generated browser projection. | [Vite browser shell](https://github.com/astilbahq/env/tree/main/examples/vite) |
+| Node server | Generate on Node.js, then load a generated server target for the lifecycle your server owns. | [Node server](https://github.com/astilbahq/astilba/tree/main/fixtures/registry/env/node-service) |
+| Cloudflare Worker deployment target | Run a generated deployment-lifecycle target through `@astilba/env/runtime` with built-in codecs. Authoring and generation stay on Node.js. | [Cloudflare Worker](https://github.com/astilbahq/astilba/tree/main/fixtures/registry/env/cloudflare-worker) |
+| Next static shell | Import public build values from the generated browser `.build.ts` module. Bootstrap deployment values through an application-owned route without making the page dynamic. | [Next static shell](https://github.com/astilbahq/astilba/tree/main/fixtures/registry/env/next-static-shell) |
+| Vite browser shell | Import public build values from the generated browser `.build.ts` module, or bootstrap deployment values from an application-owned endpoint and generated browser projection. | [Vite browser shell](https://github.com/astilbahq/astilba/tree/main/fixtures/registry/env/vite) |
 
 The Worker path is limited to generated deployment-lifecycle targets with built-in codecs. It does not establish support for declaration authoring, generation, request targets, opaque schemas, or other package exports in Workers.
 

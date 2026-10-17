@@ -40,7 +40,9 @@ describe("documentation catalog", () => {
     expect(version.id).toBe("0.3");
     expect(version.lifecycle).toBe("latest");
     expect(page.key).toBe("overview");
-    expect(env.repositoryUrl).toBe("https://github.com/astilbahq/env");
+    expect(env.repositoryUrl).toBe(
+      "https://github.com/astilbahq/astilba/tree/main/packages/env"
+    );
     expect(getProductHomeHref(env)).toBe("/docs/env/");
     expect(getPageHref(version, page)).toBe("/docs/env/overview/");
   });
@@ -51,7 +53,9 @@ describe("documentation catalog", () => {
 
     expect(version.id).toBe("unreleased");
     expect(page.key).toBe("overview");
-    expect(cache.repositoryUrl).toBe("https://github.com/astilbahq/docs");
+    expect(cache.repositoryUrl).toBe(
+      "https://github.com/astilbahq/astilba/tree/main/packages/cache"
+    );
     expect(getProductHomeHref(cache)).toBe("/docs/cache/");
     expect(getPageHref(version, page)).toBe("/docs/cache/overview/");
   });

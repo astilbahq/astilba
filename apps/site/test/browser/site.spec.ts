@@ -109,7 +109,7 @@ test("the public home distinguishes the alpha and preview products", async ({
   );
   await expect(
     page.getByRole("link", { name: "View docs source" })
-  ).toHaveAttribute("href", "https://github.com/astilbahq/docs");
+  ).toHaveAttribute("href", "https://github.com/astilbahq/astilba");
   await expect(
     page.locator('a[href*="github.com/astilbahq/cache"]')
   ).toHaveCount(0);
@@ -131,7 +131,10 @@ test("the Env page presents the public-alpha boundary", async ({ page }) => {
   ).toBeVisible();
   await expect(
     page.getByRole("link", { name: "View the source" })
-  ).toHaveAttribute("href", "https://github.com/astilbahq/env");
+  ).toHaveAttribute(
+    "href",
+    "https://github.com/astilbahq/astilba/tree/main/packages/env"
+  );
   await expect(
     page.getByRole("heading", {
       level: 2,
@@ -155,7 +158,10 @@ test("the Cache page never presents an installation path", async ({ page }) => {
   await expect(page.getByText(/pnpm add|npm install/)).toHaveCount(0);
   await expect(
     page.getByRole("link", { name: "Inspect the docs source" })
-  ).toHaveAttribute("href", "https://github.com/astilbahq/docs");
+  ).toHaveAttribute(
+    "href",
+    "https://github.com/astilbahq/astilba/tree/main/apps/docs"
+  );
   await expect(
     page.locator('a[href*="github.com/astilbahq/cache"]')
   ).toHaveCount(0);

@@ -115,7 +115,11 @@ const run = async () => {
   requireStatus(envResponse, 200, "Env page");
   const env = await envResponse.text();
   requireBodyIncludes(env, "0.3.0 · public alpha · local-first", "Env page");
-  requireBodyIncludes(env, "github.com/astilbahq/env", "Env page");
+  requireBodyIncludes(
+    env,
+    "github.com/astilbahq/astilba/tree/main/packages/env",
+    "Env page"
+  );
 
   const llmsResponse = await request("/llms.txt");
   requireStatus(llmsResponse, 200, "LLMs.txt");
