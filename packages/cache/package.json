@@ -67,7 +67,7 @@
     "verify:toolchain": "node scripts/verify-toolchain.mjs"
   },
   "devDependencies": {
-    "@arethetypeswrong/cli": "0.18.4",
+    "@arethetypeswrong/cli": "0.18.5",
     "@astilba/harness": "workspace:*",
     "@cloudflare/vitest-pool-workers": "0.18.3",
     "@fast-check/vitest": "^0.4.1",

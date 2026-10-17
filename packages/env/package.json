@@ -76,7 +76,7 @@
     "verify:tools": "node scripts/verify-tools.mjs"
   },
   "devDependencies": {
-    "@arethetypeswrong/cli": "0.18.4",
+    "@arethetypeswrong/cli": "0.18.5",
     "@types/node": "26.1.2",
     "@vitest/coverage-istanbul": "4.1.11",
     "esbuild": "0.28.1",
