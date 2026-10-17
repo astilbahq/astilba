@@ -5,7 +5,7 @@ description: Keep private Env declarations, targets, and metadata out of Vite br
 
 The `@astilba/env/vite` integration rejects private Env surfaces when Vite builds browser code. It is a build-time import boundary; it does not generate configuration, create an endpoint, or load browser values.
 
-Env 0.3.0 supports Vite 8.1.5 or later within Vite 8.
+Env 0.3.1 supports Vite 8.1.5 or later within Vite 8.
 
 ## Add the boundary plugin
 

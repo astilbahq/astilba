@@ -154,7 +154,7 @@ export default defineConfig({
           ? [
               starlightLlmsTxt({
                 details:
-                  "Astilba Env 0.3.0 is a public alpha, and Astilba Cache 0.1.0 is an early public alpha. Check each product's release or implementation-status page before making availability claims.",
+                  "Astilba Env 0.3.1 is a public alpha, and Astilba Cache 0.1.0 is an early public alpha. Check each product's release or implementation-status page before making availability claims.",
                 optionalLinks: [
                   {
                     label: "Astilba documentation MCP",

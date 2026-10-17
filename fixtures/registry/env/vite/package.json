@@ -10,7 +10,7 @@
     "start:example": "cross-env VITE_LABEL=local-label node --experimental-strip-types server.ts"
   },
   "dependencies": {
-    "@astilba/env": "0.3.0"
+    "@astilba/env": "0.3.1"
   },
   "devDependencies": {
     "cross-env": "10.1.0",

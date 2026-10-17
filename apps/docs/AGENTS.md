@@ -81,4 +81,4 @@ paths.
 - `pnpm build` produces the docs assets and Pagefind index; `pnpm --dir ../site build:production`
   produces the apex assets and global discovery files.
 - Merging to `main` deploys this app through the root `deploy-web.yml` workflow.
-- Keep external dependency versions exact. UI and tokens use `workspace:*`; Env remains the released 0.3.0 registry dependency. Root `pnpm verify:web` builds workspace tokens and UI before the web gates.
+- Keep external dependency versions exact. UI and tokens use `workspace:*`; Env remains the released 0.3.1 registry dependency. Root `pnpm verify:web` builds workspace tokens and UI before the web gates.

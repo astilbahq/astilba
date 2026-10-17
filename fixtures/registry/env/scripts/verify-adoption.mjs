@@ -11,10 +11,10 @@ import { dirname, resolve } from "node:path";
 import { parse as parseYaml } from "yaml";
 
 const ROOT = resolve(import.meta.dirname, "..");
-const REGISTRY = "https://registry.npmjs.org/@astilba/env/-/env-0.3.0.tgz";
+const REGISTRY = "https://registry.npmjs.org/@astilba/env/-/env-0.3.1.tgz";
 const INTEGRITY =
-  "sha512-WVo1x/oMi+D1mhoOJVx6RLVy9BGiwtBFljNVjOW778Q6QFNamyhjmSygcpxCdsIdQ7Qhvw/XTCY9GjiEL+C+NA==";
-const VERSION = "0.3.0";
+  "sha512-FqIxV5jdnXCD5MZtoFfWWhuwT9BhQx3FgMhKlS4Zj9ccpgMTBUGzsNz1nyXMqPebtzdfnyoS7KdXVpjPpOKRhQ==";
+const VERSION = "0.3.1";
 const NEXT_PRIVATE_BINDING = "NEXT_SERVICE_TOKEN";
 const NEXT_PRIVATE_NAME = "serviceToken";
 const NEXT_PRIVATE_VALUE = "next-server-only-value";

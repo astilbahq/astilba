@@ -31,7 +31,7 @@ const MARKDOWN_FIXTURES = new Map([
   ["/docs/env.md", "# Astilba Env"],
   [
     "/docs/env/overview.md",
-    "# Overview\n\n@astilba/env 0.3.0 is a public alpha.",
+    "# Overview\n\n@astilba/env 0.3.1 is a public alpha.",
   ],
 ]);
 

@@ -9,7 +9,7 @@ Generated server targets also run in Node.js. They read only the source object y
 
 ## Check the supported releases
 
-Env 0.3.0 supports:
+Env 0.3.1 supports:
 
 - Node.js 22.14.0 or later within Node 22;
 - Node.js 24 within Node 24; and

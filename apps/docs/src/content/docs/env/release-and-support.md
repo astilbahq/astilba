@@ -1,21 +1,21 @@
 ---
 title: Release and support
-description: Check the package, CLI, runtime, framework, and public-alpha boundaries of Astilba Env 0.3.0.
+description: Check the package, CLI, runtime, framework, and public-alpha boundaries of Astilba Env 0.3.1.
 ---
 
-`@astilba/env` 0.3.0 is a public alpha. The package and source are public, so applications can evaluate the complete contract, but the API may change deliberately before a stable release.
+`@astilba/env` 0.3.1 is a public alpha. The package and source are public, so applications can evaluate the complete contract, but the API may change deliberately before a stable release.
 
 Install the exact alpha when reproducibility matters:
 
 ```sh
-pnpm add @astilba/env@0.3.0 --save-exact
+pnpm add @astilba/env@0.3.1 --save-exact
 ```
 
-Version 0.3.0 adds provider-neutral contract inventory export and name-drift checking for process targets. It adds no provider client, value sync, provider-kind evidence, JavaScript package export, browser API, runtime API, or generated-module protocol. Version 0.2.3 added complete TSDoc coverage and the executable adoption-example suite.
+Version 0.3.1 republishes 0.3.0 from the Astilba monorepo with updated repository metadata and no API changes. Version 0.3.0 adds provider-neutral contract inventory export and name-drift checking for process targets. It adds no provider client, value sync, provider-kind evidence, JavaScript package export, browser API, runtime API, or generated-module protocol. Version 0.2.3 added complete TSDoc coverage and the executable adoption-example suite.
 
 ## Supported public surface
 
-| Surface | 0.3.0 status |
+| Surface | 0.3.1 status |
 | --- | --- |
 | `defineEnvironment` and `env` builders | Public on supported Node.js releases |
 | `astilba-env generate` and `generate --check` | Public on supported Node.js releases |

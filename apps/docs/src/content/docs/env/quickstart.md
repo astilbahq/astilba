@@ -7,7 +7,7 @@ In this guide, you will replace direct `process.env` reads with one typed deploy
 
 ## Check the requirements
 
-Env 0.3.0 requires a supported Node.js release:
+Env 0.3.1 requires a supported Node.js release:
 
 - Node.js 22.14.0 or later within Node 22;
 - Node.js 24.x; or
@@ -18,7 +18,7 @@ The default `astilba.env.ts` filename requires an ESM package with `"type": "mod
 Install the exact public-alpha release:
 
 ```sh
-pnpm add @astilba/env@0.3.0 --save-exact
+pnpm add @astilba/env@0.3.1 --save-exact
 ```
 
 ## Declare the configuration

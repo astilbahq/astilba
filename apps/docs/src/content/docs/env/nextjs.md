@@ -12,7 +12,7 @@ Use a generated server target wherever Next.js runs server code. When the browse
 
 Both modes use the same generated public projection and validate the same envelope identity. Neither turns the Env envelope into executable JavaScript, writes a `window` global, or interpolates unescaped JSON.
 
-`@astilba/env` 0.3.0 has package-consumer evidence for Next.js 15.5.22 and 16.2.12 across App Router static, App Router request, Pages Router static, and Pages Router request modes. The server side of that evidence uses the Node.js runtime.
+`@astilba/env` 0.3.1 has package-consumer evidence for Next.js 15.5.22 and 16.2.12 across App Router static, App Router request, Pages Router static, and Pages Router request modes. The server side of that evidence uses the Node.js runtime.
 
 The maintained independent-pnpm example invokes Next's webpack builder because default Turbopack cannot resolve the exact-registry dependency from that repository fixture layout. The package-consumer matrix also validates a default `next build`; this is not a general Env or Turbopack incompatibility.
 

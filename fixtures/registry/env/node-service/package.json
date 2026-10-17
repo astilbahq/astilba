@@ -9,6 +9,6 @@
     "start": "node --experimental-strip-types src/server.ts"
   },
   "dependencies": {
-    "@astilba/env": "0.3.0"
+    "@astilba/env": "0.3.1"
   }
 }
