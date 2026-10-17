@@ -41,5 +41,5 @@ export default defineConfig({
     timeout: 120_000,
     url: baseURL,
   },
-  workers: process.env.CI ? 2 : undefined,
+  ...(process.env.CI ? { workers: 2 } : {}),
 });

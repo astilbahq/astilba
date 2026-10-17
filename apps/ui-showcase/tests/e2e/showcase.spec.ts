@@ -185,7 +185,7 @@ test("renders the control contract in both themes", async ({ page }) => {
   await expect(largeIcon).toHaveCSS("height", "18px");
   await expect(largeIcon).toHaveCSS("width", "18px");
 
-  await page.locator(".showcase-nav").evaluate((element) => {
+  await page.locator(".showcase-nav").evaluate((element: HTMLElement) => {
     element.hidden = true;
   });
   const specimens = page.locator(".specimen-section:not([hidden])");
@@ -515,7 +515,7 @@ test("supports horizontal and non-overflowing content without extra tab stops", 
 test("keeps the vertical scrollbar on inline-end in rtl", async ({ page }) => {
   await openShowcase(page, "/scroll-areas/");
   const root = page.getByTestId("vertical-scroll-area");
-  await root.evaluate((element) => {
+  await root.evaluate((element: HTMLElement) => {
     element.dir = "rtl";
   });
 

@@ -14,7 +14,7 @@
     "test:browser:install": "playwright install chromium",
     "test:browser:install:ci": "playwright install --with-deps chromium",
     "test:browser:update": "pnpm build && playwright test --update-snapshots",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.e2e.json"
   },
   "dependencies": {
     "@astilba/tokens": "workspace:*",
@@ -30,6 +30,7 @@
     "@axe-core/playwright": "catalog:",
     "@playwright/test": "catalog:",
     "@testing-library/react": "catalog:",
+    "@types/node": "catalog:",
     "@types/react": "catalog:",
     "@types/react-dom": "catalog:",
     "@vitejs/plugin-react": "6.0.4",
