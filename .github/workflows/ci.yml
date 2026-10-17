@@ -14,6 +14,37 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  changes:
+    name: Detect registry fixture changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      registry: ${{ steps.filter.outputs.registry }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      # The registry examples install the published @astilba/env with their own lockfile, so a
+      # pull request runs them only when it touches the fixture, a root file or this workflow.
+      # Pushes and dispatches always run them.
+      - id: filter
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          # Fail the step if git diff fails, rather than reading an empty list as "nothing changed".
+          set -o pipefail
+          registry=true
+          if [ "$EVENT" = pull_request ]; then
+            # HEAD is the pull request's merge commit; its first parent is the base branch.
+            # --no-renames lists both sides of a move; -z keeps unusual paths unquoted.
+            changed=$(git diff --name-only --no-renames -z HEAD^1 HEAD | tr '\0' '\n')
+            if ! grep -qE '^([^/]+|fixtures/registry/.*|\.github/workflows/ci\.yml)$' <<<"$changed"; then
+              registry=false
+            fi
+          fi
+          echo "registry=$registry" >> "$GITHUB_OUTPUT"
+
   ui:
     name: UI Node ${{ matrix.node }}
     runs-on: ubuntu-latest
@@ -94,6 +125,8 @@ jobs:
 
   registry:
     name: Registry examples on ${{ matrix.os }}
+    needs: changes
+    if: needs.changes.outputs.registry == 'true'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     strategy:
@@ -122,11 +155,17 @@ jobs:
   result:
     name: CI result
     if: always()
-    needs: [ui, ui-browser, web, registry]
+    needs: [changes, ui, ui-browser, web, registry]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - name: Require every job to pass
         env:
           RESULTS: ${{ toJSON(needs) }}
-        run: jq -e 'all(.[]; .result == "success")' <<<"$RESULTS"
+        # The registry job may be skipped when the pull request does not touch its fixture.
+        run: |
+          jq -e '.changes as $changes | $changes.result == "success" and
+            (del(.changes) | to_entries | all(
+              .value.result == "success" or
+              (.key == "registry" and .value.result == "skipped" and
+                $changes.outputs.registry != "true")))' <<<"$RESULTS"

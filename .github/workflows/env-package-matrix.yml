@@ -14,8 +14,44 @@ defaults:
     working-directory: packages/env
 
 jobs:
+  changes:
+    name: Detect Env changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      relevant: ${{ steps.filter.outputs.relevant }}
+    defaults:
+      run:
+        working-directory: .
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      # Pushes, releases (workflow_call) and dispatches always run the matrix. A pull request runs
+      # it only when it touches Env, the registry fixture its consumer jobs use, a root file such
+      # as the lockfile, or this workflow.
+      - id: filter
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          # Fail the step if git diff fails, rather than reading an empty list as "nothing changed".
+          set -o pipefail
+          relevant=true
+          if [ "$EVENT" = pull_request ]; then
+            # HEAD is the pull request's merge commit; its first parent is the base branch.
+            # --no-renames lists both sides of a move; -z keeps unusual paths unquoted.
+            changed=$(git diff --name-only --no-renames -z HEAD^1 HEAD | tr '\0' '\n')
+            if ! grep -qE '^([^/]+|packages/env/.*|fixtures/registry/.*|\.github/workflows/env-package-matrix\.yml)$' <<<"$changed"; then
+              relevant=false
+            fi
+          fi
+          echo "relevant=$relevant" >> "$GITHUB_OUTPUT"
+
   pack:
     name: Pack exact archive
+    needs: changes
+    if: needs.changes.outputs.relevant == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -216,6 +252,7 @@ jobs:
     if: always()
     needs:
       [
+        changes,
         pack,
         consumers,
         cloudflare-workers,
@@ -233,4 +270,8 @@ jobs:
         working-directory: .
         env:
           RESULTS: ${{ toJSON(needs) }}
-        run: jq -e 'all(.[]; .result == "success")' <<<"$RESULTS"
+        # Passes when the pull request touched nothing Env depends on and the matrix was skipped.
+        run: |
+          jq -e 'if .changes.result != "success" then false
+            elif .changes.outputs.relevant != "true" then true
+            else del(.changes) | all(.[]; .result == "success") end' <<<"$RESULTS"
