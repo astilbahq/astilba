@@ -101,13 +101,13 @@ const run = async () => {
   );
   requireBodyIncludes(home, "@astilba/env", "Homepage");
   requireBodyIncludes(home, "0.3.0 is a public alpha", "Homepage");
-  requireBodyIncludes(home, "Cache remains a development preview", "Homepage");
+  requireBodyIncludes(home, "0.1.0 is an early alpha", "Homepage");
 
   const cacheResponse = await request("/cache/");
   requireStatus(cacheResponse, 200, "Cache page");
   requireBodyIncludes(
     await cacheResponse.text(),
-    "No npm package",
+    "0.1.0 is a public alpha",
     "Cache page"
   );
 

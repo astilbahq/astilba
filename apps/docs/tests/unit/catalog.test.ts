@@ -51,7 +51,7 @@ describe("documentation catalog", () => {
     const version = getDefaultVersion(cache);
     const page = getDefaultPage(cache, version);
 
-    expect(version.id).toBe("unreleased");
+    expect(version.id).toBe("0.1");
     expect(page.key).toBe("overview");
     expect(cache.repositoryUrl).toBe(
       "https://github.com/astilbahq/astilba/tree/main/packages/cache"
@@ -170,7 +170,7 @@ describe("documentation catalog", () => {
     const relativeContext = findDocsProductContext("/cache/");
 
     expect(context?.product.id).toBe("cache");
-    expect(context?.version.id).toBe("unreleased");
+    expect(context?.version.id).toBe("0.1");
     expect(relativeContext).toEqual(context);
     expect(findDocsContext("/docs/cache/")).toBeUndefined();
   });
@@ -324,7 +324,10 @@ describe("documentation catalog", () => {
   it("maps lifecycle and icon metadata", () => {
     const version = getDefaultVersion(cache);
 
-    expect(getVersionMeta(version)).toBe("Current");
+    expect(getVersionMeta(version)).toBe("Latest");
+    expect(getVersionMeta({ ...version, lifecycle: "unreleased" })).toBe(
+      "Current"
+    );
     expect(getVersionMeta({ ...version, lifecycle: "latest" })).toBe("Latest");
     expect(getVersionMeta({ ...version, lifecycle: "maintained" })).toBe(
       "Maintained"

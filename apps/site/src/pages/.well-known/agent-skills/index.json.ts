@@ -9,7 +9,7 @@ export const prerender = true;
 const skillDefinitions = [
   {
     description:
-      "Consult Astilba's public Cache documentation to explain or evaluate the unreleased TypeScript cache preview without inventing installation or production support.",
+      "Consult Astilba's public Cache documentation to explain or evaluate the @astilba/cache public alpha without overstating completeness or production support.",
     name: "astilba-cache-docs",
   },
   {

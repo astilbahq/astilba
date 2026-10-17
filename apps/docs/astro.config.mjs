@@ -154,7 +154,7 @@ export default defineConfig({
           ? [
               starlightLlmsTxt({
                 details:
-                  "Astilba Env 0.3.0 is a public alpha; Astilba Cache remains an unreleased preview. Check each product's release or implementation-status page before making availability claims.",
+                  "Astilba Env 0.3.0 is a public alpha, and Astilba Cache 0.1.0 is an early public alpha. Check each product's release or implementation-status page before making availability claims.",
                 optionalLinks: [
                   {
                     label: "Astilba documentation MCP",
@@ -173,7 +173,7 @@ export default defineConfig({
                   {
                     label: "Astilba Cache",
                     description:
-                      "Unreleased preview documentation for Astilba's TypeScript caching library. The package is not installable yet.",
+                      "Public-alpha documentation for @astilba/cache 0.1.0, Astilba's TypeScript caching library.",
                     paths: ["cache", "cache/**"],
                   },
                 ],

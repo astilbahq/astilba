@@ -70,7 +70,7 @@ assertIncludes(
 );
 assertIncludes(home, "@astilba/env", "Homepage");
 assertIncludes(home, "0.3.0 is a public alpha", "Homepage");
-assertIncludes(home, "Cache remains a development preview", "Homepage");
+assertIncludes(home, "0.1.0 is an early alpha", "Homepage");
 assertIncludes(
   home,
   "astilba-control--appearance_primary",
@@ -81,7 +81,7 @@ assertIncludes(
   "astilba-control--appearance_primary",
   "Not-found shared controls"
 );
-assertIncludes(cache, "No npm package", "Cache page");
+assertIncludes(cache, "0.1.0 is a public alpha", "Cache page");
 assertIncludes(
   env,
   'href="https://astilba.com/env/" rel="canonical"',

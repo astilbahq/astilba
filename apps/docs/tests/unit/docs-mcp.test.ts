@@ -259,9 +259,9 @@ describe("generated MCP corpus", () => {
     }
 
     Object.assign(cacheHome, {
-      docsVersion: "Unreleased",
-      docsVersionId: "unreleased",
-      lifecycle: "unreleased",
+      docsVersion: "0.1",
+      docsVersionId: "0.1",
+      lifecycle: "latest",
     });
 
     expect(() => parseDocsCorpus(value)).toThrow(
@@ -300,9 +300,9 @@ describe("generated MCP corpus", () => {
   it("rejects product metadata on the catalogue-independent homepage", () => {
     const value = createCorpusValue();
     Object.assign(value.pages[0], {
-      docsVersion: "Unreleased",
-      docsVersionId: "unreleased",
-      lifecycle: "unreleased",
+      docsVersion: "0.1",
+      docsVersionId: "0.1",
+      lifecycle: "latest",
       product: "Cache",
       productId: "cache",
     });
@@ -343,7 +343,7 @@ describe("generated MCP corpus", () => {
     const results = searchDocs(corpus, {
       productId: "cache",
       query: "tag invalidation",
-      versionId: "unreleased",
+      versionId: "0.1",
     });
 
     expect(results).toHaveLength(1);
@@ -351,7 +351,7 @@ describe("generated MCP corpus", () => {
       productId: "cache",
       title: "Invalidate cached data",
       uri: `${docsOrigin}/docs/cache/tags-and-invalidation.md`,
-      versionId: "unreleased",
+      versionId: "0.1",
     });
     expect(
       searchDocs(corpus, { productId: "missing", query: "cache" })

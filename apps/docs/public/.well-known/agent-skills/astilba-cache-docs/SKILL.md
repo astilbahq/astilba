@@ -1,6 +1,6 @@
 ---
 name: "astilba-cache-docs"
-description: "Consult Astilba's public Cache documentation to explain or evaluate the unreleased TypeScript cache preview without inventing installation or production support."
+description: "Consult Astilba's public Cache documentation to explain or evaluate the @astilba/cache public alpha without overstating completeness or production support."
 ---
 
 # Astilba Cache documentation
@@ -17,10 +17,10 @@ Use this skill when a question concerns Astilba Cache's current public API, beha
 
 ## Keep the release boundary explicit
 
-- Treat `@astilba/cache` as an unreleased source preview. Do not provide a package installation command or claim that a supported production setup exists.
+- Treat `@astilba/cache` 0.1.0 as a public alpha. You may give `pnpm add @astilba/cache`, but say that elapsed TTL is not enforced yet and that no supported production setup exists.
 - Distinguish implemented source behavior, internal integration previews, and unavailable or incomplete surfaces.
 - Do not infer working behavior from a declaration alone. Cross-check the API status page.
-- Present examples as source walkthroughs unless the public docs explicitly describe a supported release.
+- Present examples as evaluation setups, not production configurations.
 
 ## Answer from evidence
 

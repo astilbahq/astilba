@@ -5,8 +5,8 @@ description: Provide Astilba Cache to React Router v8 loaders and actions while 
 
 The current source exposes server middleware at <code>@astilba/cache/react-router</code>. It puts a Cache instance into React Router's typed request context, carries an application-derived identity frame, adopts background recovery work into the request lifecycle, and turns value-cache dependencies into scope-safe response tags.
 
-:::caution[Server adapter, source preview]
-This is a React Router v8 server integration. It is not a browser cache, a client data-fetching library, or a released package. The source adapter has unit and real Vite build coverage, but the npm package and production support policy do not exist yet.
+:::caution[Server adapter, public alpha]
+This is a React Router v8 server integration. It is not a browser cache or a client data-fetching library. It ships in <code>@astilba/cache</code> 0.1.0 with unit and real Vite build coverage, but there is no production support policy yet.
 :::
 
 ## Put Cache on the server

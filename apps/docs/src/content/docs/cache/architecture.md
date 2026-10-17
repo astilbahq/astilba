@@ -34,7 +34,7 @@ These contracts keep the correctness rules independent of a storage vendor. They
 
 See [Read and cache values](/docs/cache/reading-and-filling/) for return metadata, singleflight compatibility, codec changes, and fill failures. See [How Cache works](/docs/cache/how-it-works/) for the invalidation and recovery path around the same operation.
 
-## Compose the current source preview
+## Compose the current alpha
 
 | Configuration | Current behavior |
 | --- | --- |
@@ -60,8 +60,8 @@ The reviewed source snapshot exposes two publish-shaped adapter entry points:
 
 Both are part of the package export map and covered by source tests. Neither is installable from npm yet, and the integration worker and React Router fixture remain test hosts rather than application templates.
 
-:::caution[Source preview only]
-These combinations describe the reviewed source snapshot. <code>@astilba/cache</code> is not published and does not yet have a public checkout, supported installation, compatibility policy, or production deployment path.
+:::caution[Public alpha]
+These combinations describe <code>@astilba/cache</code> 0.1.0. The package has no compatibility policy or production deployment path yet; expect breaking changes before 1.0.
 :::
 
 ## Related

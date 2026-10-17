@@ -5,8 +5,8 @@ description: Understand what Astilba Cache does, where it runs, and whether it f
 
 Astilba Cache stores the result of expensive server-side work so later calls can reuse it. It is designed for TypeScript applications that read from databases, APIs, or other services and need explicit control over invalidation, failures, and who may share a cached value.
 
-:::caution[Development preview]
-<code>@astilba/cache</code> is not published to npm and has no supported production setup. The Cache repository is not publicly accessible. The reviewed source snapshot contains publish-shaped Cloudflare Workers and React Router entry points, but elapsed TTL and grace periods are still not enforced and the full runtime path has not completed its release gates. These docs explain that snapshot; they are not a release announcement or download path.
+:::caution[Public alpha]
+<code>@astilba/cache</code> 0.1.0 is published to npm for evaluation and has no supported production setup. It contains Cloudflare Workers and React Router entry points, but elapsed TTL and grace periods are still not enforced and the full runtime path has not completed its release gates. Expect breaking changes before 1.0.
 :::
 
 ## Decide whether Cache fits
@@ -83,9 +83,9 @@ Cache does not update your source of truth. Change the database or upstream serv
 | Correctness kernel | Implemented | Read, fill, scope, codec, resilience, and invalidation behavior is exercised by deterministic tests. |
 | Driver contracts | Implemented | Application and runtime integrations can implement the typed capability boundaries. |
 | Local memory Store | Implemented in source | <code>memory()</code> provides bounded, per-instance LRU storage and optional physical TTL when given a Clock. |
-| Cloudflare path | Unreleased source preview | <code>./cloudflare</code> exports the Workers factory, KV, Coordinator, Registry, Bus, and tick-driven redial helpers; workerd integration tests cover the primary path. |
-| React Router path | Unreleased source preview | <code>./react-router</code> exports server middleware, typed request context access, request-entry recovery lifecycle adoption, and scope-aware response-tag collection. |
-| Local chaos demo | Source-only evidence app | An unpublished React Router app runs three demo-side binding failures against the real Workers composition without claiming production timing or an SLO. |
+| Cloudflare path | Alpha | <code>./cloudflare</code> exports the Workers factory, KV, Coordinator, Registry, Bus, and tick-driven redial helpers; workerd integration tests cover the primary path. |
+| React Router path | Alpha | <code>./react-router</code> exports server middleware, typed request context access, request-entry recovery lifecycle adoption, and scope-aware response-tag collection. |
+| Local chaos demo | Repository evidence app | A React Router app in the repository (not published) runs three demo-side binding failures against the real Workers composition without claiming production timing or an SLO. |
 | Composed-app boot witness | Required source CI lane | The built demo boots on local workerd with its real Coordinator and KV bindings, proves a healthy Bus reaches <code>established</code>, and proves an armed refusal reports <code>never-established</code> plus <code>bus_dial_failed</code>. It is not a deployed measurement. |
 | Public package | Not released | npm has no <code>@astilba/cache</code> package, so there is no supported installation or production deployment path. |
 

@@ -1806,8 +1806,8 @@ test("presents products and copies the agent setup prompt from the homepage", as
   const cacheProduct = page.getByRole("article").filter({
     has: page.getByRole("heading", { level: 3, name: "Cache" }),
   });
-  await expect(cacheProduct).toContainText("Preview");
-  await expect(cacheProduct).toContainText("There is no supported npm release");
+  await expect(cacheProduct).toContainText("Public alpha");
+  await expect(cacheProduct).toContainText("Released as @astilba/cache 0.1.0");
   await expect(
     cacheProduct.getByRole("link", { name: "Cache" })
   ).toHaveAttribute("href", "/docs/cache/");
@@ -1915,7 +1915,7 @@ test("presents Cache as a distinct product home", async ({ page }) => {
     page.getByRole("button", { name: "Copy agent setup", exact: true })
   ).toBeVisible();
   await expect(
-    page.getByText("There is no supported npm release")
+    page.getByText("Released as @astilba/cache 0.1.0")
   ).toBeVisible();
   await expect(page.getByRole("group", { name: "Page actions" })).toHaveCount(
     0

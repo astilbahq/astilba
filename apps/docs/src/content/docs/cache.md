@@ -8,7 +8,7 @@ next: false
 
 Astilba Cache stores the result of expensive server-side work so later calls can reuse it. It is designed for TypeScript applications that need explicit control over invalidation, failures, and who may share a cached value.
 
-> **Development preview:** `@astilba/cache` is not published to npm, the Cache repository is not publicly accessible, and there is no supported production installation path.
+> **Public alpha:** `@astilba/cache` 0.1.0 is published to npm for evaluation. Elapsed TTL and grace periods are not enforced yet, a few methods still throw, and there is no production support commitment. Expect breaking changes before 1.0.
 
 Cache is a result cache, not a source of truth. Your application still owns the database or upstream service, chooses which values may be shared, and invalidates cached representations after a successful mutation.
 

@@ -5,8 +5,8 @@ description: Compose the current Cache source with Cloudflare KV, a Coordinator 
 
 The current source exposes a Cloudflare entry point at <code>@astilba/cache/cloudflare</code>. Its <code>createWorkersCache()</code> factory combines the portable kernel with a bounded memory L1, Cloudflare KV L2, a Coordinator Durable Object, a live WebSocket Bus, and request-driven recovery behavior.
 
-:::caution[Implemented in source, not released]
-The subpath is part of the reviewed source snapshot and publish configuration, and its primary path runs under workerd integration tests. The package is still absent from npm, elapsed TTL is incomplete, and the deployment has not completed its production-measurement and release gates.
+:::caution[Public alpha, not production-ready]
+The subpath ships in <code>@astilba/cache</code> 0.1.0, and its primary path runs under workerd integration tests. Elapsed TTL is incomplete, and the deployment has not completed its production-measurement and release gates.
 :::
 
 ## See what the factory owns

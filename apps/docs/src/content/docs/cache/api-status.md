@@ -1,13 +1,13 @@
 ---
 title: Implementation status
-description: Check which Astilba Cache methods, helpers, drivers, and adapters work in the current unreleased source build.
+description: Check which Astilba Cache methods, helpers, drivers, and adapters work in the 0.1.0 public alpha.
 ---
 
-Astilba Cache is unreleased. The portable correctness kernel and the main Workers source path are active. The Workers composition now keeps construction I/O-free, acquires request-scoped platform handles lazily, and carries its own request-driven recovery ticks. React Router provides scope-aware L3 dependency collection and response tags. Elapsed TTL and grace policy, CDN purge delivery, several convenience methods, and production release gates remain incomplete.
+Astilba Cache 0.1.0 is a public alpha. The portable correctness kernel and the main Workers source path are active. The Workers composition now keeps construction I/O-free, acquires request-scoped platform handles lazily, and carries its own request-driven recovery ticks. React Router provides scope-aware L3 dependency collection and response tags. Elapsed TTL and grace policy, CDN purge delivery, several convenience methods, and production release gates remain incomplete.
 
-Use this page as the preview ledger. “Implemented” means behavior exists in the reviewed source snapshot and is exercised by the repository's test lanes. It does not mean the package has an npm installation or production support commitment.
+Use this page as the alpha ledger. “Implemented” means behavior ships in the package and is exercised by the repository's test lanes. It does not mean a production support commitment.
 
-This ledger was reviewed against Cache source commit <code>726e1b0</code> from 27 July 2026. The Cache repository is not publicly accessible, so the identifier is maintainer provenance rather than a checkout link. Later source changes are not documented here until this snapshot advances.
+This ledger was reviewed against Cache source commit <code>726e1b0</code> from 27 July 2026. Version 0.1.0 is built from that source plus a linear-time duration parser; the code lives in [<code>packages/cache</code>](https://github.com/astilbahq/astilba/tree/main/packages/cache).
 
 Use [API reference](/docs/cache/api-reference/) for exact exported shapes. When another page and this ledger appear to differ, follow this page and report the stale page.
 
@@ -65,10 +65,10 @@ Both a guard refusal and a stale candidate suppressing the 404 emit <code>neg_su
 | <code>@astilba/cache/cloudflare</code> | Exports <code>createWorkersCache</code>, <code>cloudflareKV</code>, <code>Coordinator</code>, <code>doRegistry</code>, <code>doBus</code>, <code>redialingDoBus</code>, and their public configuration types. |
 | <code>@astilba/cache/react-router</code> | Exports root server middleware, typed Cache context, current request access, default L3 budget and ineligibility event constants, and the observable poll-tick event and interval constants. |
 | Recovery poller | Observes pointer liveness, runs bounded delta and snapshot recovery, and backs baseline polling off on failure. <code>createWorkersCache()</code> drives both polling and lazy Bus redial from request-time reads; React Router can additionally adopt middleware ticks into the response lifecycle with <code>waitUntil</code>. |
-| Local chaos demo | An unpublished React Router v8 app composes the real Workers factory with local KV and Coordinator bindings. Demo-owned wrappers inject a KV backend failure, refuse future Bus dials, or make mirror reads unavailable while leaving live Registry RPC intact. The last fault does not close an already-established socket. The app prints observed outcomes beside documented permissions and asserts no SLO. |
+| Local chaos demo | A React Router v8 app in the repository (<code>apps/cache-demo</code>, not published) composes the real Workers factory with local KV and Coordinator bindings. Demo-owned wrappers inject a KV backend failure, refuse future Bus dials, or make mirror reads unavailable while leaving live Registry RPC intact. The last fault does not close an already-established socket. The app prints observed outcomes beside documented permissions and asserts no SLO. |
 | Composed demo boot witness | A required CI lane builds that demo, boots its emitted Worker on local workerd with the real Coordinator and KV bindings, and reads a machine-facing status route. The healthy arm must reach <code>established</code>; an armed Bus-dial refusal is the negative control and must report <code>never-established</code> plus <code>bus_dial_failed</code>. The lane proves the app is wired to expose those states, not kernel semantics or deployed behavior. |
 
-The two adapter subpaths are present in the source and publish export map, but no package has been published. The poller is an internal seam and the demo is an unpublished workspace app; neither creates another public package entry point.
+The two adapter subpaths ship in the 0.1.0 export map. The poller is an internal seam and the demo is an unpublished workspace app; neither creates another public package entry point.
 
 ## Partial or provisional behavior
 
@@ -119,8 +119,8 @@ These APIs currently return normally or exist in the types but do not apply thei
 
 There is no Redis or Valkey adapter, production Lock, CDN purge path, or deployed-probe package. React Router is the only shared-response adapter. Its fixture and the Cloudflare integration Worker are tests, while the local chaos demo is an evidence app; none of them is a production application template.
 
-:::note[Development tags are not package releases]
-The repository's <code>v0.1</code> tag records the sealed correctness-kernel milestone. npm still has no <code>@astilba/cache</code> package. Keep using the Unreleased documentation until an installable release exists.
+:::note[Release tags]
+Package releases are tagged <code>cache/v&lt;version&gt;</code> in the monorepo and published to npm with provenance. 0.1.0 is the first.
 :::
 
 ## Related

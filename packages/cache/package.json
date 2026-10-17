@@ -1,6 +1,6 @@
 {
   "name": "@astilba/cache",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Portable TypeScript caching with tag invalidation, stale-if-error resilience, and privacy scopes.",
   "homepage": "https://astilba.com/docs/cache/",
   "bugs": {
