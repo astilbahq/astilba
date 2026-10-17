@@ -1,5 +1,5 @@
 // integration-lane smoke test. Proves the fourth (integration) lane actually
-// runs on real workerd via @cloudflare/vitest-pool-workers: the test worker env
+// runs on real workerd via @cloudflare/vitest-plugin: the test worker env
 // loads, the Durable Object binding resolves to a namespace, and the placeholder
 // Coordinator shell instantiates inside the isolate. NO registry semantics are
 // asserted here — that is the conformance lane's job. Lane law: this lane is timing-tolerant.

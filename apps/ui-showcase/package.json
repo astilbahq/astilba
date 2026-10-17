@@ -33,7 +33,7 @@
     "@types/node": "catalog:",
     "@types/react": "catalog:",
     "@types/react-dom": "catalog:",
-    "@vitejs/plugin-react": "6.0.4",
+    "@vitejs/plugin-react": "6.1.2",
     "axe-core": "catalog:",
     "jsdom": "catalog:",
     "vite": "catalog:",

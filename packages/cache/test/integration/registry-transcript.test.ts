@@ -38,7 +38,7 @@ const C = "transcript:c";
 // so the mirror keys are `__reg:default:…`. Address them through the same
 // `mirrorKeys` the kernel writes with, so the transcript compares the real scoped bytes.
 // Per-test isolation. Every DO in this lane shares ONE KV namespace, and
-// pool-workers' per-file isolated-storage frames are known to drop under concurrent DO
+// the Workers pool's per-file isolated-storage frames are known to drop under concurrent DO
 // requests (workers-sdk #11031) — so tests that all wrote the same `__reg:default:…` keys
 // raced. A UNIQUE regId per test (the tool built) partitions the namespace into
 // `__reg:<id>:…`, deterministically. The regId IS the DO name (identity = address),

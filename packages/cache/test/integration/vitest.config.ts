@@ -1,9 +1,9 @@
-import { cloudflareTest } from "@cloudflare/vitest-pool-workers";
+import { cloudflareTest } from "@cloudflare/vitest-plugin";
 import { fileURLToPath } from "node:url";
 import { defineConfig } from "vitest/config";
 
 // The integration lane: the fourth test project, run on real workerd
-// via @cloudflare/vitest-pool-workers. Kept as its own project config file (referenced
+// via @cloudflare/vitest-plugin. Kept as its own project config file (referenced
 // by path from the root vite.config.ts `test.projects`) rather than an inline entry:
 // vitest 4 removed `test.poolOptions`, so the pool is wired through the `cloudflareTest`
 // Vite plugin, and authoring it here keeps its plugin/vite types clear of the root
@@ -23,9 +23,8 @@ export default defineConfig({
     // (identity = address), so `scope()` no longer writes `env.REGISTRY_ID` and the routine per-file
     // identity race the (i) containment guarded is killed (only the deliberate divergence/fallback
     // scenes touch `REGISTRY_ID`, each set-and-cleaned-up under this serialization). Serialization
-    // is KEPT for now purely for the OTHER reason (i) cited: the pool-workers isolated-storage stack
-    // bug under concurrent DO requests (workers-sdk #11031, `@cloudflare/vitest-pool-workers` pinned
-    //). Re-evaluate lifting this once #11031 is resolved (the identity race no longer
+    // is KEPT for now purely for the OTHER reason (i) cited: the Workers pool's isolated-storage stack
+    // bug under concurrent DO requests (workers-sdk #11031). Re-evaluate lifting this once #11031 is resolved (the identity race no longer
     // requires it).
     //
     // NO `retry` HERE, AND THE ABSENCE IS LOAD-BEARING. A retry cannot remedy this

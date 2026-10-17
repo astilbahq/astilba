@@ -40,7 +40,7 @@
     "oxfmt": "catalog:",
     "oxlint": "catalog:",
     "publint": "catalog:",
-    "tsx": "4.23.1",
+    "tsx": "4.23.15",
     "typescript": "catalog:",
     "ultracite": "catalog:",
     "vite-plus": "catalog:",

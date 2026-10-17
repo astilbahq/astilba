@@ -77,9 +77,11 @@ export default defineConfig({
       },
     },
     {
+      // The former react/react-compiler exemption, which oxlint split into these rules.
       files: ["src/components/PageActions.tsx"],
       rules: {
-        "react/react-compiler": "off",
+        "react/set-state-in-effect": "off",
+        "react/todo": "off",
       },
     },
     {

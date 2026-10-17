@@ -109,7 +109,7 @@ describe("Collapsible", () => {
     const trigger = screen.getByRole("button", {
       name: "Deployment details",
     });
-    expect(trigger.getAttribute("aria-disabled")).toBe("true");
+    expect((trigger as HTMLButtonElement).disabled).toBe(true);
     await user.click(trigger);
     expect(trigger.getAttribute("aria-expanded")).toBe("false");
     expect(screen.queryByText("Deployed from a verified artifact.")).toBeNull();

@@ -1,5 +1,5 @@
 // Integration-lane test worker (scaffold). NOT shipped in the published
-// package — it exists only so `@cloudflare/vitest-pool-workers` has a `main` entry
+// package — it exists only so `@cloudflare/vitest-plugin` has a `main` entry
 // that (a) re-exports the placeholder `Coordinator` Durable Object class the
 // wrangler config binds, and (b) provides a default fetch handler for the isolate.
 //

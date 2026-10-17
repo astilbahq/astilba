@@ -24,6 +24,7 @@ describe("reader teeth — every check discriminates a wrong reader", () => {
       readerChecks.stalePointerFailsClosed(makeServeThroughReaderHarness())
     ).rejects.toThrow();
   });
+
   it("stale-pointer check ACCEPTS the reference (non-vacuity)", async () => {
     await expect(
       readerChecks.stalePointerFailsClosed(makeReferenceReaderHarness())
@@ -35,6 +36,7 @@ describe("reader teeth — every check discriminates a wrong reader", () => {
       readerChecks.holeNeverServesThrough(makeServeThroughReaderHarness())
     ).rejects.toThrow();
   });
+
   it("hole-never-serves-through check ACCEPTS the reference (non-vacuity)", async () => {
     await expect(
       readerChecks.holeNeverServesThrough(makeReferenceReaderHarness())
@@ -46,6 +48,7 @@ describe("reader teeth — every check discriminates a wrong reader", () => {
       readerChecks.neverProbesPastPointer(makeOverFetchReaderHarness())
     ).rejects.toThrow();
   });
+
   it("probe-past-pointer check ACCEPTS the reference (non-vacuity)", async () => {
     await expect(
       readerChecks.neverProbesPastPointer(makeReferenceReaderHarness())
@@ -57,6 +60,7 @@ describe("reader teeth — every check discriminates a wrong reader", () => {
       readerChecks.terminalHolePermanent(makeNoTerminalReaderHarness())
     ).rejects.toThrow();
   });
+
   it("terminal-hole check ACCEPTS the reference (non-vacuity)", async () => {
     await expect(
       readerChecks.terminalHolePermanent(makeReferenceReaderHarness())
@@ -68,6 +72,7 @@ describe("reader teeth — every check discriminates a wrong reader", () => {
       readerChecks.laggingSnapBatchConverges(makeStrictSnapReaderHarness())
     ).rejects.toThrow();
   });
+
   it("lagging-snapBatch check ACCEPTS the reference (non-vacuity)", async () => {
     await expect(
       readerChecks.laggingSnapBatchConverges(makeReferenceReaderHarness())
@@ -79,6 +84,7 @@ describe("reader teeth — every check discriminates a wrong reader", () => {
       readerChecks.blessedButMissingSnap(makeUnderCoveringSnapReaderHarness())
     ).rejects.toThrow();
   });
+
   it("blessed-but-missing-snap check ACCEPTS the reference (non-vacuity)", async () => {
     await expect(
       readerChecks.blessedButMissingSnap(makeReferenceReaderHarness())
@@ -90,6 +96,7 @@ describe("reader teeth — every check discriminates a wrong reader", () => {
       readerChecks.e5DerivativeRaising(makeNeverRaiseReaderHarness())
     ).rejects.toThrow();
   });
+
   it("E5-raising check ACCEPTS the reference (non-vacuity)", async () => {
     await expect(
       readerChecks.e5DerivativeRaising(makeReferenceReaderHarness())
@@ -101,6 +108,7 @@ describe("reader teeth — every check discriminates a wrong reader", () => {
       readerChecks.pollDuePredicate(makeStuckPollReaderHarness())
     ).rejects.toThrow();
   });
+
   it("pollDue check ACCEPTS the reference (non-vacuity)", async () => {
     await expect(
       readerChecks.pollDuePredicate(makeReferenceReaderHarness())

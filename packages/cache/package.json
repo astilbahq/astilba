@@ -69,18 +69,19 @@
   "devDependencies": {
     "@arethetypeswrong/cli": "catalog:",
     "@astilba/harness": "workspace:*",
-    "@cloudflare/vitest-pool-workers": "0.18.3",
+    "@cloudflare/vitest-plugin": "1.4.2",
     "@fast-check/vitest": "0.4.1",
     "@stryker-mutator/core": "9.6.1",
     "@stryker-mutator/vitest-runner": "9.6.1",
     "@types/node": "catalog:",
     "@types/react": "catalog:",
     "@vitest/coverage-istanbul": "catalog:",
-    "eslint-plugin-github": "6.0.0",
-    "eslint-plugin-sonarjs": "4.1.0",
+    "eslint": "10.12.0",
+    "eslint-plugin-github": "6.1.2",
+    "eslint-plugin-sonarjs": "4.2.2",
     "fast-check": "catalog:",
     "knip": "catalog:",
-    "miniflare": "4.20260708.0",
+    "miniflare": "5.20261012.0-beta",
     "oxfmt": "catalog:",
     "oxlint": "catalog:",
     "oxlint-tsgolint": "catalog:",
@@ -93,7 +94,7 @@
     "vite-plus": "catalog:",
     "vitest": "catalog:",
     "wrangler": "catalog:",
-    "yaml": "2.9.0"
+    "yaml": "2.9.1"
   },
   "peerDependencies": {
     "react": ">=19.2.7 <20",
