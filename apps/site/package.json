@@ -28,7 +28,7 @@
     "react-dom": "19.2.8"
   },
   "devDependencies": {
-    "@astrojs/check": "0.9.9",
+    "@astrojs/check": "0.9.10",
     "@axe-core/playwright": "4.12.1",
     "@playwright/test": "1.62.0",
     "cross-env": "10.1.0",
