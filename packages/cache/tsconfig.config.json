@@ -1,0 +1,16 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "types": ["node"],
+    "declaration": false,
+    "isolatedDeclarations": false
+  },
+  "include": [
+    "oxfmt.config.ts",
+    "oxlint.config.ts",
+    "vite.config.ts",
+    "test/integration/vitest.config.ts"
+  ]
+}

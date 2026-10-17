@@ -24,7 +24,7 @@ jobs:
       - run: |
           set -euo pipefail
           git merge-base --is-ancestor HEAD origin/main
-          test "$GITHUB_REF_NAME" = "cache/v$(node -p "require('./products/cache/packages/cache/package.json').version")"
+          test "$GITHUB_REF_NAME" = "cache/v$(node -p "require('./packages/cache/package.json').version")"
 
   verify:
     name: Verify Cache
@@ -51,10 +51,10 @@ jobs:
           registry-url: https://registry.npmjs.org
       - run: pnpm install --frozen-lockfile
       - name: Build and check the package
-        working-directory: products/cache/packages/cache
+        working-directory: packages/cache
         run: pnpm build && pnpm lint:publish
       - name: Pack
-        working-directory: products/cache/packages/cache
+        working-directory: packages/cache
         run: |
           set -euo pipefail
           pnpm pack --pack-destination "$RUNNER_TEMP"

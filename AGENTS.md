@@ -3,7 +3,7 @@
 One pnpm workspace for every Astilba product. Use Node 24.18.1 and pnpm 11.17.0.
 
 - `packages/env`: Env, published to npm as `@astilba/env`.
-- `products/cache`: Cache, published to npm as `@astilba/cache`, with its test harness, demo and React Router fixture.
+- `packages/cache`: Cache, published to npm as `@astilba/cache`. It also holds the Cache toolchain (lint, format and test projects) for `packages/cache-harness`, `apps/cache-demo` and `fixtures/cache-react-router`.
 - `packages/tokens`, `packages/ui`: the interface foundation (private workspace packages). Read `PRODUCT.md` and `DESIGN.md`.
 - `apps/docs`, `apps/site`: astilba.com/docs and the astilba.com apex. Read `apps/docs/AGENTS.md`.
 - `apps/ui-showcase`: ui.astilba.com.

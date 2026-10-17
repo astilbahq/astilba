@@ -1,16 +1,15 @@
 packages:
+  - packages/cache
+  - packages/cache-harness
   - packages/env
   - packages/tokens
   - packages/ui
+  - apps/cache-demo
   - apps/docs
   - apps/site
   - apps/ui-showcase
+  - fixtures/cache-react-router
   - fixtures/ui-astro
-  - products/cache
-  - products/cache/packages/cache
-  - products/cache/packages/harness
-  - products/cache/apps/demo
-  - products/cache/apps/rr-fixture
 linkWorkspacePackages: false
 allowBuilds:
   esbuild: true

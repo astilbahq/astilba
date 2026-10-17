@@ -1,6 +1,6 @@
 # Astilba
 
-The monorepo for Astilba's products: [Env](packages/env), [Cache](products/cache), the [UI](packages/ui) and [tokens](packages/tokens) foundation, and the [docs](apps/docs), [apex site](apps/site) and [UI showcase](apps/ui-showcase).
+The monorepo for Astilba's products: [Env](packages/env), [Cache](packages/cache), the [UI](packages/ui) and [tokens](packages/tokens) foundation, and the [docs](apps/docs), [apex site](apps/site) and [UI showcase](apps/ui-showcase).
 
 ## Development
 
@@ -19,10 +19,9 @@ pnpm verify
 ## Workspace
 
 ```text
-packages/   env, tokens, ui
-products/   cache (library, harness, demo, React Router fixture)
-apps/       docs, site, ui-showcase
-fixtures/   ui-astro; registry/env (installs Env from npm, separate lockfile)
+packages/   cache, cache-harness, env, tokens, ui
+apps/       cache-demo, docs, site, ui-showcase
+fixtures/   cache-react-router, ui-astro; registry/env (installs Env from npm, separate lockfile)
 ```
 
 ## Releasing and deploying
