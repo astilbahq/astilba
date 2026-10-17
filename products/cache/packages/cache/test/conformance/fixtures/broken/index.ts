@@ -216,14 +216,12 @@ class SoftRegressesHardRegistry implements Registry {
 
   async check(tags: readonly string[]): Promise<readonly TagKnowledge[]> {
     const through = this.#epoch;
-    return tags.map(
-      (tag): TagKnowledge => ({
-        hardEpoch: this.#hard.get(tag) ?? 0,
-        known: true,
-        softEpoch: this.#soft.get(tag) ?? 0,
-        throughEpoch: through,
-      })
-    );
+    return tags.map((tag): TagKnowledge => ({
+      hardEpoch: this.#hard.get(tag) ?? 0,
+      known: true,
+      softEpoch: this.#soft.get(tag) ?? 0,
+      throughEpoch: through,
+    }));
   }
 
   async expire(tags: readonly string[]): Promise<RegistryAck> {
@@ -261,14 +259,12 @@ class AxisEmptyBatchRegistry implements Registry {
 
   async check(tags: readonly string[]): Promise<readonly TagKnowledge[]> {
     const through = this.#epoch;
-    return tags.map(
-      (): TagKnowledge => ({
-        hardEpoch: 0,
-        known: true,
-        softEpoch: 0,
-        throughEpoch: through,
-      })
-    );
+    return tags.map((): TagKnowledge => ({
+      hardEpoch: 0,
+      known: true,
+      softEpoch: 0,
+      throughEpoch: through,
+    }));
   }
 
   async expire(tags: readonly string[]): Promise<RegistryAck> {

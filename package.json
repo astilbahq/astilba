@@ -53,8 +53,7 @@
     "ultracite": "7.9.4",
     "vite-plus": "0.3.0",
     "vitest": "4.1.11",
-    "wrangler": "4.114.0",
-    "yaml": "2.9.0"
+    "wrangler": "4.114.0"
   },
   "engines": {
     "node": "^22.18.0 || >=24.0.0",

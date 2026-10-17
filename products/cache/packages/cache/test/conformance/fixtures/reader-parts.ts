@@ -89,14 +89,12 @@ class StubRegistry implements Registry {
   }
 
   async check(tags: readonly string[]): Promise<readonly TagKnowledge[]> {
-    return tags.map(
-      (): TagKnowledge => ({
-        hardEpoch: 0,
-        known: true,
-        softEpoch: 0,
-        throughEpoch: 0,
-      })
-    );
+    return tags.map((): TagKnowledge => ({
+      hardEpoch: 0,
+      known: true,
+      softEpoch: 0,
+      throughEpoch: 0,
+    }));
   }
 
   async expire(_tags: readonly string[]): Promise<RegistryAck> {

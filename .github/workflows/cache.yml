@@ -8,6 +8,7 @@ on:
       - main
   pull_request: null
   workflow_dispatch: null
+  workflow_call: null
 permissions:
   contents: read
 concurrency:

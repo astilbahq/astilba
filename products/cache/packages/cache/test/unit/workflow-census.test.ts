@@ -35,7 +35,7 @@ import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 
 const REPO_ROOT = path.resolve(import.meta.dirname, "../../../..");
-const WORKFLOW = path.join(REPO_ROOT, ".github/workflows/ci.yml");
+const WORKFLOW = path.join(REPO_ROOT, "../../.github/workflows/cache.yml");
 
 /** The ONE lane whose result may be excluded, and the reason it is singular. Its reds require a
  * reading — a characterized environmental signature versus a novel one — and a `needs:` entry can

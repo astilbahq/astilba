@@ -67,14 +67,12 @@ class SwitchableRegistry implements Registry {
       throw new Error("registry unreachable (simulated)");
     }
     // Everything reads known-clean: the cases below turn on REACHABILITY, never on a watermark.
-    return tags.map(
-      (): TagKnowledge => ({
-        hardEpoch: 0,
-        known: true,
-        softEpoch: 0,
-        throughEpoch: 0,
-      })
-    );
+    return tags.map((): TagKnowledge => ({
+      hardEpoch: 0,
+      known: true,
+      softEpoch: 0,
+      throughEpoch: 0,
+    }));
   }
 
   async expire(): Promise<RegistryAck> {

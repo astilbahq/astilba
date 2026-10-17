@@ -1,0 +1,68 @@
+name: Release Cache
+
+on:
+  push:
+    tags:
+      - "cache/v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-cache-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  check-tag:
+    name: Check tag matches main and package version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - run: |
+          set -euo pipefail
+          git merge-base --is-ancestor HEAD origin/main
+          test "$GITHUB_REF_NAME" = "cache/v$(node -p "require('./products/cache/packages/cache/package.json').version")"
+
+  verify:
+    name: Verify Cache
+    needs: check-tag
+    uses: ./.github/workflows/cache.yml
+
+  publish:
+    name: Publish to npm
+    needs: verify
+    runs-on: ubuntu-latest
+    environment: npm-cache
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24.18.1
+          package-manager-cache: false
+          registry-url: https://registry.npmjs.org
+      - run: pnpm install --frozen-lockfile
+      - name: Build and check the package
+        working-directory: products/cache/packages/cache
+        run: pnpm build && pnpm lint:publish
+      - name: Pack
+        working-directory: products/cache/packages/cache
+        run: |
+          set -euo pipefail
+          pnpm pack --pack-destination "$RUNNER_TEMP"
+          echo "ARCHIVE=$(ls "$RUNNER_TEMP"/astilba-cache-*.tgz)" >> "$GITHUB_ENV"
+      - name: Publish with provenance
+        run: npm publish "$ARCHIVE" --access public --provenance --ignore-scripts
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes "$ARCHIVE"

@@ -525,13 +525,11 @@ function explainAttribution(
   if (state === undefined) {
     return undefined;
   }
-  return state.records.map(
-    (dependency): ExplainedDependency => ({
-      scope: dependency.scope,
-      tags: dependency.tags,
-      ...(dependency.l3 === undefined ? {} : { l3: dependency.l3 }),
-    })
-  );
+  return state.records.map((dependency): ExplainedDependency => ({
+    scope: dependency.scope,
+    tags: dependency.tags,
+    ...(dependency.l3 === undefined ? {} : { l3: dependency.l3 }),
+  }));
 }
 
 // ── Configuration ───────────────────────────────────────────────────────────
@@ -3733,9 +3731,10 @@ function isDurationUnit(unit: string | undefined): unit is DurationUnit {
  * deferred; the retention lease and the reader's liveness heartbeat cadence need
  * only a coarse ms value, so this parses the `<number><unit>` shape. */
 function durationMs(duration: Duration): number {
-  const match = /^(?<value>[0-9]+(?:\.[0-9]+)?|\.[0-9]+)(?<unit>ms|s|m|h|d)$/u.exec(
-    duration
-  );
+  const match =
+    /^(?<value>[0-9]+(?:\.[0-9]+)?|\.[0-9]+)(?<unit>ms|s|m|h|d)$/u.exec(
+      duration
+    );
   const value = Number(match?.groups?.value ?? "0");
   const rawUnit = match?.groups?.unit;
   // The factor table is the shared `DURATION_UNIT_MS` grammar source (duration.ts) — one
