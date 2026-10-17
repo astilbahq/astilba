@@ -386,17 +386,18 @@ jobs:
         env:
           RESULTS: ${{ toJSON(needs) }}
         run: |
-          if ! jq -e '.changes.result == "success"' <<<"$RESULTS" >/dev/null; then
-            echo "::error::changes finished with $(jq -r '.changes.result' <<<"$RESULTS")"
+          changes=$(jq -r '.changes.result' <<<"$RESULTS")
+          if [ "$changes" != success ]; then
+            echo "::error::changes finished with $changes"
             exit 1
           fi
-          if jq -e '.changes.outputs.relevant != "true"' <<<"$RESULTS" >/dev/null; then
+          if [ "$(jq -r '.changes.outputs.relevant' <<<"$RESULTS")" != true ]; then
             echo "::notice::no Cache-relevant changes; the lanes were skipped"
             exit 0
           fi
           echo "::notice::integration finished with $(jq -r '.integration.result // "absent"' <<<"$RESULTS") — adjudicate per ground rule 14"
-          if ! jq -e 'del(.changes, .integration) | all(.[]; .result == "success")' <<<"$RESULTS" >/dev/null; then
-            jq -r 'del(.changes, .integration) | to_entries[] | select(.value.result != "success") | "\(.key) finished with \(.value.result)"' <<<"$RESULTS" |
+          if ! jq -e 'del(.integration) | all(.[]; .result == "success")' <<<"$RESULTS" >/dev/null; then
+            jq -r 'del(.integration) | to_entries[] | select(.value.result != "success") | "\(.key) finished with \(.value.result)"' <<<"$RESULTS" |
               while IFS= read -r failure; do
                 echo "::error::$failure"
               done
