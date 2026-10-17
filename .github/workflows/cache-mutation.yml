@@ -26,7 +26,7 @@ jobs:
       - name: mutation ratchet (sacred suite is the kill oracle)
         run: |
           set -o pipefail
-          pnpm -C packages/cache test:mutation 2>&1 | tee mutation.log
+          pnpm test:mutation 2>&1 | tee mutation.log
       - name: append the score to the job summary
         if: always()
         run: |
@@ -49,9 +49,9 @@ jobs:
         with:
           name: cache-mutation-${{ github.sha }}-${{ github.run_attempt }}
           path: |
-            products/cache/mutation.log
-            products/cache/packages/cache/reports/mutation/
+            packages/cache/mutation.log
+            packages/cache/reports/mutation/
           retention-days: 7
 defaults:
   run:
-    working-directory: products/cache
+    working-directory: packages/cache

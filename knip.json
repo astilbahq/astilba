@@ -2,8 +2,8 @@
   "$schema": "https://unpkg.com/knip@6/schema.json",
   "ignore": [
     "fixtures/registry/**",
-    "products/cache/**/test/integration/*.d.ts",
-    "products/cache/apps/demo/worker-configuration.d.ts"
+    "packages/cache/test/integration/*.d.ts",
+    "apps/cache-demo/worker-configuration.d.ts"
   ],
   "workspaces": {
     ".": {
@@ -92,36 +92,31 @@
         "worker/**/*.ts!"
       ]
     },
-    "products/cache": {
-      "entry": ["scripts/*.mjs"],
-      "project": ["scripts/*.mjs"],
-      "ignoreBinaries": ["react-router"],
-      "ignoreDependencies": [
-        "eslint-plugin-github",
-        "eslint-plugin-sonarjs",
-        "miniflare"
-      ]
-    },
-    "products/cache/packages/cache": {
+    "packages/cache": {
       "entry": [
         "scripts/*.mjs",
         "test/**/*.test.ts",
-        "test/integration/worker.ts",
         "test/boot/worker.ts",
-        "test/integration/vitest.config.ts"
+        "test/integration/worker.ts"
       ],
-      "project": ["src/**/*.ts!", "test/**/*.ts", "scripts/*.mjs"],
-      "ignoreDependencies": ["cloudflare"]
+      "project": ["scripts/*.mjs", "src/**/*.ts!", "test/**/*.ts"],
+      "ignoreDependencies": [
+        "cloudflare",
+        "eslint-plugin-github",
+        "eslint-plugin-sonarjs",
+        "miniflare"
+      ],
+      "ignoreBinaries": ["react-router"]
     },
-    "products/cache/packages/harness": {
+    "packages/cache-harness": {
       "entry": ["src/**/*.test.ts"],
       "project": ["src/**/*.ts!", "!src/fc-setup.ts!"],
       "ignoreDependencies": []
     },
-    "products/cache/apps/rr-fixture": {
+    "fixtures/cache-react-router": {
       "ignoreDependencies": ["@react-router/node"]
     },
-    "products/cache/apps/demo": {
+    "apps/cache-demo": {
       "entry": ["**/*.test.ts"],
       "project": ["**/*.{ts,tsx}"],
       "ignoreDependencies": ["@react-router/node", "cloudflare"]

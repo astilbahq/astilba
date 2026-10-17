@@ -143,7 +143,7 @@ Cloudflare KV failures use the same classified Store boundary as the kernel. A c
 
 ## Understand the local chaos evidence
 
-The reviewed source snapshot includes an unpublished React Router v8 app under <code>apps/demo</code>. It is not hosted or publicly downloadable. The app runs <code>createWorkersCache()</code> against local KV and Coordinator bindings, then places demo-owned wrappers between those bindings and the library. Cache itself has no fault-injection API.
+The repository includes a React Router v8 demo app under <code>apps/cache-demo</code>. It is not hosted. The app runs <code>createWorkersCache()</code> against local KV and Coordinator bindings, then places demo-owned wrappers between those bindings and the library. Cache itself has no fault-injection API.
 
 The app contains three scenes:
 

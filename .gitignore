@@ -12,8 +12,8 @@ styled-system/
 test-results/
 worker-configuration.d.ts
 !apps/docs/worker-configuration.d.ts
-!products/cache/apps/demo/worker-configuration.d.ts
-!products/cache/packages/cache/test/integration/worker-configuration.d.ts
+!apps/cache-demo/worker-configuration.d.ts
+!packages/cache/test/integration/worker-configuration.d.ts
 .artifacts/
 .next/
 .vite/
@@ -21,3 +21,12 @@ worker-configuration.d.ts
 *.tgz
 *.tsbuildinfo
 .impeccable/*.cache.json
+.dev.vars
+.react-router/
+apps/cache-demo/build/
+fixtures/cache-react-router/build/
+stryker-tmp/
+reports/mutation/
+stryker.log
+mutation.log
+*-report.json

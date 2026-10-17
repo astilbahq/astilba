@@ -31,7 +31,7 @@
     "test:browser:update": "pnpm build && playwright test --update-snapshots",
     "typecheck": "pnpm --filter @astilba/tokens --filter @astilba/ui --filter @astilba/showcase --filter @astilba/integration-astro --recursive typecheck",
     "verify": "pnpm verify:ui && pnpm verify:env && pnpm verify:web && pnpm verify:cache",
-    "verify:cache": "pnpm --dir products/cache verify",
+    "verify:cache": "pnpm --dir packages/cache verify",
     "verify:ui": "pnpm verify:base && pnpm test:browser && pnpm deploy:dry-run",
     "verify:env": "pnpm --dir packages/env check && pnpm --dir packages/env knip && pnpm --dir packages/env verify",
     "verify:env:archive": "pnpm --dir packages/env pack:artifact && pnpm --dir packages/env verify:artifact",
