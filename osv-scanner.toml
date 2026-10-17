@@ -1,3 +1,0 @@
-[[IgnoredVulns]]
-id = "GHSA-vfj7-8cjw-p6xm"
-reason = "braces has no patched release. It only expands glob patterns written in our own build and lint configs, never untrusted input."

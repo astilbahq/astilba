@@ -118,3 +118,15 @@ jobs:
         run: pnpm verify:all
       - if: runner.os == 'Windows'
         run: pnpm verify:windows
+
+  result:
+    name: CI result
+    if: always()
+    needs: [ui, ui-browser, web, registry]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require every job to pass
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: jq -e 'all(.[]; .result == "success")' <<<"$RESULTS"

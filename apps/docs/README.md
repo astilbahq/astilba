@@ -109,7 +109,7 @@ Immediately before Wrangler runs, the deployment job checks that its verified re
 pnpm smoke:all
 ```
 
-The `production` environment scopes `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN`; pull requests can validate Wrangler but cannot access those credentials or deploy. Actions receive read-only repository access by default and cannot approve pull requests. Main-branch protections require the complete verification matrix for administrators as well as other contributors, while CODEOWNERS routes production-path changes to the responsible maintainer. An independent human-approval gate still requires a second eligible repository reviewer and must not be enabled in a way that deadlocks deployments. Cloudflare recommends a custom API token restricted to Workers editing for the Astilba account.
+Merging to `main` deploys through the root `deploy-web.yml`, using the `production-web` environment's `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN`. Only `main` can use that environment, so pull requests can validate Wrangler but cannot deploy. Actions receive read-only repository access by default and cannot approve pull requests.
 
 ### Roll back production
 
