@@ -1,12 +1,12 @@
 ---
 title: Source walkthrough
-description: Follow one Astilba Cache miss and hit through the implemented memory Store in the reviewed source snapshot.
+description: Follow one Astilba Cache miss and hit through the implemented memory Store.
 ---
 
-This walkthrough follows one product through the smallest configuration in the reviewed source snapshot. The first read calls the factory; the second reuses the stored result.
+This walkthrough follows one product through the smallest configuration of <code>@astilba/cache</code> 0.1.0. The first read calls the factory; the second reuses the stored result.
 
-:::caution[Source example, not a runnable public quickstart]
-<code>@astilba/cache</code> is not available from npm, and the Cache repository is not publicly accessible. Use this page to understand the reviewed implementation. It is not a public checkout or production installation recipe.
+:::caution[Evaluation example, not a production setup]
+Install the alpha with <code>pnpm add @astilba/cache</code>. This walkthrough uses the in-memory Store, which is not a production configuration.
 :::
 
 ## Understand the setup
@@ -38,7 +38,7 @@ const clock: Clock = { now: () => Date.now() }
 const rng: Rng = { next: () => Math.random() }
 
 // memory() is normally an isolate-local L1. Using it as L2 here gives the
-// unreleased kernel the Store it requires without pretending this is durable.
+// kernel the Store it requires without pretending this is durable.
 const developmentStore = memory({
   clock,
   maxEntries: 512,

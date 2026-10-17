@@ -114,7 +114,7 @@ describe("documentation sidebar model", () => {
         selected: true,
       },
     ]);
-    expect(known.version?.label).toBe("Unreleased");
+    expect(known.version?.label).toBe("0.1");
     expect(unknown.products).toMatchObject([
       {
         label: "Env",
@@ -132,7 +132,7 @@ describe("documentation sidebar model", () => {
       throw new Error("Expected a product sidebar context.");
     }
     expect(productHome.product.href).toBe("/docs/cache/");
-    expect(productHome.version?.label).toBe("Unreleased");
+    expect(productHome.version?.label).toBe("0.1");
 
     const envPage = createDocsSidebarContext("/docs/env/overview/");
     expect(envPage.mode).toBe("product");

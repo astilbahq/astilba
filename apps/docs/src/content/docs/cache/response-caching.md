@@ -6,7 +6,7 @@ description: Emit safe Cache-Tag headers from React Router renders without shari
 Astilba Cache can connect value-cache dependencies to a shared HTTP cache. During a React Router request, the middleware records every Cache entry the render consumes, checks whether all of those entries are public, and emits their user tags as a <code>Cache-Tag</code> response header when the result is eligible.
 
 :::caution[Tagging is implemented; CDN purging is not]
-The React Router collection and response-header path is implemented in the current source preview. The application still owns its <code>Cache-Control</code> policy, and Cache does not yet send tag purges to Cloudflare or another CDN. Do not treat <code>edgePurged()</code> as proof of an edge purge.
+The React Router collection and response-header path ships in the 0.1.0 alpha. The application still owns its <code>Cache-Control</code> policy, and Cache does not yet send tag purges to Cloudflare or another CDN. Do not treat <code>edgePurged()</code> as proof of an edge purge.
 :::
 
 ## Understand the division of responsibility

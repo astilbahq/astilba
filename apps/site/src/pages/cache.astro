@@ -26,12 +26,12 @@ const guarantees = [
 
 <SiteLayout
   current="cache"
-  description="Astilba Cache is an unreleased server-side TypeScript cache preview with explicit invalidation, resilience, privacy, and runtime boundaries."
+  description="Astilba Cache is a public-alpha server-side TypeScript cache with explicit invalidation, resilience, privacy, and runtime boundaries."
   title="Astilba Cache — Server-side caching with explicit boundaries"
 >
   <section aria-labelledby="cache-title" class="product-hero section-shell">
     <div>
-      <p class="eyebrow">Astilba Cache · Development preview</p>
+      <p class="eyebrow">Astilba Cache · Public alpha</p>
       <h1 id="cache-title">Cache expensive server work without hiding the hard parts.</h1>
       <p class="hero__lede">
         Explicit invalidation, classified stale-on-error behavior, privacy-aware storage
@@ -44,7 +44,7 @@ const guarantees = [
           href="/docs/cache/overview/"
           size="large"
         >
-          Read the preview <span aria-hidden="true">↗</span>
+          Read the docs <span aria-hidden="true">↗</span>
         </LinkButton>
         <LinkButton
           appearance="outline"
@@ -57,7 +57,7 @@ const guarantees = [
       </div>
       <p class="release-line">
         <span class="status-dot" aria-hidden="true"></span>
-        <span>No npm package · Cache source is private · no supported production setup</span>
+        <span><code>@astilba/cache</code> 0.1.0 is a public alpha · elapsed TTL not enforced yet · no supported production setup</span>
       </p>
     </div>
   </section>
@@ -119,22 +119,22 @@ const guarantees = [
     <div class="section-heading">
       <div>
         <p class="eyebrow">04 · Release state</p>
-        <h2 id="status-heading">Implemented is not the same as released</h2>
+        <h2 id="status-heading">Released is not the same as production-ready</h2>
       </div>
-      <span class="lifecycle-badge">Unreleased preview</span>
+      <span class="lifecycle-badge">Public alpha</span>
     </div>
     <div class="status-grid">
       <p><span>Correctness kernel</span><strong>Implemented</strong></p>
       <p><span>Driver contracts</span><strong>Implemented</strong></p>
-      <p><span>Cloudflare path</span><strong>Source preview</strong></p>
-      <p><span>React Router path</span><strong>Source preview</strong></p>
-      <p><span>Local chaos demo</span><strong>Source-only evidence app</strong></p>
+      <p><span>Cloudflare path</span><strong>Alpha</strong></p>
+      <p><span>React Router path</span><strong>Alpha</strong></p>
+      <p><span>Local chaos demo</span><strong>Repository evidence app</strong></p>
       <p><span>Elapsed TTL and grace</span><strong>Incomplete</strong></p>
-      <p><span>Public package</span><strong>Not released</strong></p>
+      <p><span>Public package</span><strong>0.1.0 on npm</strong></p>
     </div>
     <div class="section-actions">
       <a href="/docs/cache/api-status/">Read the complete implementation ledger <span aria-hidden="true">→</span></a>
-      <a href="https://github.com/astilbahq/astilba/tree/main/apps/docs" rel="noopener">Inspect the docs source <span aria-hidden="true">↗</span></a>
+      <a href="https://github.com/astilbahq/astilba/tree/main/packages/cache" rel="noopener">View the source <span aria-hidden="true">↗</span></a>
     </div>
   </section>
 </SiteLayout>

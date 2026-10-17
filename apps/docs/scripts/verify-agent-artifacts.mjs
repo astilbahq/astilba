@@ -523,7 +523,7 @@ assertExact(
         name: "astilba-cache-docs",
         type: "skill-md",
         description:
-          "Consult Astilba's public Cache documentation to explain or evaluate the unreleased TypeScript cache preview without inventing installation or production support.",
+          "Consult Astilba's public Cache documentation to explain or evaluate the @astilba/cache public alpha without overstating completeness or production support.",
         url: `/${cacheSkillArtifact}`,
         digest: cacheSkillDigest,
       },
@@ -822,7 +822,7 @@ assertIncludes(llmsArtifact, llmsIndex, envSetUrl);
 assertIncludes(
   llmsArtifact,
   llmsIndex,
-  "Astilba Cache remains an unreleased preview"
+  "Astilba Cache 0.1.0 is an early public alpha"
 );
 assertIncludes(llmsArtifact, llmsIndex, `Env ${envVersion} is a public alpha`);
 assertIncludes(llmsArtifact, llmsIndex, mcpUrl);
@@ -967,7 +967,7 @@ assertIncludes(
 assertIncludes(
   agentSetupArtifact,
   agentSetupPrompt,
-  "unreleased source preview"
+  "`@astilba/cache` 0.1.0 as a public alpha"
 );
 assertIncludes(
   agentSetupArtifact,

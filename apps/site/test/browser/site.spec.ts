@@ -91,9 +91,7 @@ test("the public home distinguishes the alpha and preview products", async ({
     })
   ).toBeVisible();
   await expect(page.getByText("0.3.0 is a public alpha")).toBeVisible();
-  await expect(
-    page.getByText("Cache remains a development preview")
-  ).toBeVisible();
+  await expect(page.getByText("0.1.0 is an early alpha")).toBeVisible();
   const configure = page
     .getByRole("link", { name: "Configure a Node application" })
     .first();
@@ -145,7 +143,7 @@ test("the Env page presents the public-alpha boundary", async ({ page }) => {
   await expectNoAxeViolations(page);
 });
 
-test("the Cache page never presents an installation path", async ({ page }) => {
+test("the Cache page presents the public-alpha boundary", async ({ page }) => {
   await page.goto("/cache/");
 
   await expect(
@@ -154,13 +152,12 @@ test("the Cache page never presents an installation path", async ({ page }) => {
       name: "Cache expensive server work without hiding the hard parts.",
     })
   ).toBeVisible();
-  await expect(page.getByText("No npm package")).toBeVisible();
-  await expect(page.getByText(/pnpm add|npm install/)).toHaveCount(0);
+  await expect(page.getByText("elapsed TTL not enforced yet")).toBeVisible();
   await expect(
-    page.getByRole("link", { name: "Inspect the docs source" })
+    page.getByRole("link", { name: "View the source" })
   ).toHaveAttribute(
     "href",
-    "https://github.com/astilbahq/astilba/tree/main/apps/docs"
+    "https://github.com/astilbahq/astilba/tree/main/packages/cache"
   );
   await expect(
     page.locator('a[href*="github.com/astilbahq/cache"]')

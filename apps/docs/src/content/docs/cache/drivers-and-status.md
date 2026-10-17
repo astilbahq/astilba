@@ -43,20 +43,20 @@ Serving-path reads also recognize structural <code>throttled</code> and <code>un
 | --- | --- | --- |
 | Portable kernel and contracts | Implemented | Deterministic invariant, scenario, unit, and conformance lanes cover the public read, fill, invalidation, scope, codec, recovery, and failure behavior. |
 | <code>memory()</code> | Implemented root export | Per-instance LRU Store with <code>maxEntries</code> and UTF-8 <code>maxBytes</code> limits. With an injected Clock it also honors Store-level <code>expirationTtl</code>. |
-| <code>cloudflareKV()</code> | Unreleased source preview | KV-backed Store with metadata round trips, a 25 MiB value ceiling, read and write classification, 60-second minimum write residency, and intent-specific mirror read-cache hints. |
-| <code>Coordinator</code> | Unreleased source preview | SQLite-backed Durable Object host for Registry RPC, a replayable command journal, coalesced flush alarms, mirror deltas and snapshots, and WebSocket fan-out. |
-| <code>doRegistry()</code> | Unreleased source preview | Thin Registry RPC client scoped to the named Coordinator. It accepts either a stub or a per-use stub thunk and passes the Registry contract under workerd. |
-| <code>doBus()</code> | Unreleased source preview | Mechanism-only WebSocket Bus client with wire validation, Registry identity checks, and close reporting. |
-| <code>redialingDoBus()</code> | Unreleased source preview | Schedules DO Bus reconnection with injected jitter and exponential backoff capped at 300 seconds; a due <code>tick(nowMs)</code> performs the redial without a platform timer. |
+| <code>cloudflareKV()</code> | Alpha | KV-backed Store with metadata round trips, a 25 MiB value ceiling, read and write classification, 60-second minimum write residency, and intent-specific mirror read-cache hints. |
+| <code>Coordinator</code> | Alpha | SQLite-backed Durable Object host for Registry RPC, a replayable command journal, coalesced flush alarms, mirror deltas and snapshots, and WebSocket fan-out. |
+| <code>doRegistry()</code> | Alpha | Thin Registry RPC client scoped to the named Coordinator. It accepts either a stub or a per-use stub thunk and passes the Registry contract under workerd. |
+| <code>doBus()</code> | Alpha | Mechanism-only WebSocket Bus client with wire validation, Registry identity checks, and close reporting. |
+| <code>redialingDoBus()</code> | Alpha | Schedules DO Bus reconnection with injected jitter and exponential backoff capped at 300 seconds; a due <code>tick(nowMs)</code> performs the redial without a platform timer. |
 | Replication reader | Implemented kernel path | Replays contiguous deltas, escalates persistent holes to a pointer-blessed snapshot, replays the tail, and remains fail closed on corrupt or unfillable chains. |
 | Replication poller | Implemented internal seam | Runs baseline pointer observation, bounded recovery retries, snapshot escalation, and failure backoff from externally supplied ticks. |
-| <code>createWorkersCache()</code> | Unreleased source preview | Composes the Workers Clock/Rng, memory L1, KV L2, lazily minted named Coordinator Registry handles, tick-redialed Bus, and an unawaited read-triggered recovery carrier. Construction performs no I/O. |
-| React Router middleware | Unreleased source preview | Supplies Cache through typed Router context, carries request identity, starts request-entry poll ticks with optional <code>waitUntil</code> adoption, collects served dependencies, emits eligible <code>Cache-Tag</code> headers, and demotes unsafe responses. |
+| <code>createWorkersCache()</code> | Alpha | Composes the Workers Clock/Rng, memory L1, KV L2, lazily minted named Coordinator Registry handles, tick-redialed Bus, and an unawaited read-triggered recovery carrier. Construction performs no I/O. |
+| React Router middleware | Alpha | Supplies Cache through typed Router context, carries request identity, starts request-entry poll ticks with optional <code>waitUntil</code> adoption, collects served dependencies, emits eligible <code>Cache-Tag</code> headers, and demotes unsafe responses. |
 | Local chaos demo | Source-only evidence app | Runs the real Workers composition against local KV and Coordinator bindings. Demo-owned wrappers inject three binding failures and the UI compares observed behavior with documented permissions without asserting an SLO. |
 | Composed demo boot witness | Required source CI lane | Builds and boots the emitted demo Worker on local workerd with its real Coordinator and KV bindings. Bounded polling requires a healthy channel to reach <code>established</code> and, after arming the fault, a fresh scene-owned reader to report <code>never-established</code> plus <code>bus_dial_failed</code>. Probe failure remains distinct from a channel verdict. This is a composition witness, not a deployed measurement or kernel-semantics test. |
 | Redis, production Lock, and CDN drivers | Not implemented | Contracts exist, but no package subpaths or production implementations are present. |
 
-“Unreleased source preview” means the symbol is present in the package export map and publish configuration in the reviewed private source snapshot. It does not mean consumers can inspect or install it. npm still has no <code>@astilba/cache</code> package.
+“Alpha” means the symbol ships in the 0.1.0 export map and runs under the repository's test lanes, without a production support commitment.
 
 ## Understand Cloudflare-specific behavior
 

@@ -33,9 +33,9 @@ The structure borrows TanStack's useful multi-library context and Better Auth's 
 
 ## Current scope
 
-- Two independently versioned products: the public-alpha Env compiler and the unreleased Cache preview.
-- Sixteen progressively disclosed Cache pages backed by a reviewed private-source snapshot, public platform behavior, and approved public copy.
-- One unpublished, non-public Cache chaos evidence app documented in the Workers guide, with its required local workerd witness kept separate from deployed measurements and production support.
+- Two independently versioned products: the public-alpha Env compiler and the public-alpha Cache library.
+- Sixteen progressively disclosed Cache pages backed by the released source, public platform behavior, and approved public copy.
+- One repository-only Cache chaos evidence app documented in the Workers guide, with its required local workerd witness kept separate from deployed measurements and production support.
 - Base UI context switching and animated, session-persisted sidebar sections.
 - Starlight table of contents, theme control, code presentation, and Pagefind search.
 - Visible release-status language wherever a surface is not yet shipped.
@@ -141,7 +141,7 @@ Machine-readable discovery includes an RFC 9727 API catalog, the current experim
 
 A separate, feature-detected WebMCP tool returns the current page's Markdown in bounded chunks. It prefers the current `document.modelContext.registerTool` API, with legacy `navigator.modelContext.registerTool` and `provideContext` fallbacks for compatible browsers and scanners.
 
-Each product document set follows its typed sidebar order. Env identifies its public-alpha npm release and supported integrations; Cache states that the package is unreleased and not installable. HTTP responses and `robots.txt` allow search indexing, real-time AI input, and model training. The production artifact check keeps those signals, negotiated representations, links, and skill digests aligned.
+Each product document set follows its typed sidebar order. Env identifies its public-alpha npm release and supported integrations; Cache identifies its 0.1 public alpha and what is not implemented yet. HTTP responses and `robots.txt` allow search indexing, real-time AI input, and model training. The production artifact check keeps those signals, negotiated representations, links, and skill digests aligned.
 
 ## Keeping product status current
 

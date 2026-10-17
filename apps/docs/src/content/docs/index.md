@@ -6,7 +6,7 @@ tableOfContents: false
 
 Astilba builds portable infrastructure tools and libraries with explicit correctness boundaries. These docs describe each released or reviewed surface, what its guarantees cost, and which parts remain incomplete.
 
-The products are at different lifecycle stages. Env is a 0.3 public alpha; Cache is a source-reviewed development preview. Read each product's status page before treating an example as a supported setup.
+The products are at different lifecycle stages. Env is a 0.3 public alpha; Cache is a 0.1 public alpha. Read each product's status page before treating an example as a supported setup.
 
 ## Products
 
@@ -22,8 +22,8 @@ A portable server-side TypeScript cache with explicit invalidation, resilience, 
 
 Start with the [overview](/docs/cache/overview/), check the [implementation status](/docs/cache/api-status/), review the [source walkthrough](/docs/cache/quickstart/), or learn about the source adapters for [Cloudflare Workers](/docs/cache/cloudflare-workers/) and [React Router](/docs/cache/react-and-server-apps/).
 
-:::caution[Cache is a development preview]
-`@astilba/cache` is not available from npm and has no supported production installation path. The implementation ledger records the exact reviewed source snapshot and incomplete release gates.
+:::caution[Cache is an early alpha]
+`@astilba/cache` 0.1.0 is installable for evaluation, but elapsed TTL and grace periods are not enforced yet and there is no production support commitment. The implementation ledger records what works.
 :::
 
 ## Read the docs in context

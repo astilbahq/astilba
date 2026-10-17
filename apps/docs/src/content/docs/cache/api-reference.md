@@ -5,8 +5,8 @@ description: Reference the root, Cloudflare, and React Router exports in the cur
 
 This page documents the complete root export surface and the two public adapter subpaths in the current source snapshot. Start with the [overview](/docs/cache/overview/) or [source walkthrough](/docs/cache/quickstart/) if you are learning the library; use this page when you need an exact method, option, result field, or driver contract.
 
-:::caution[Unreleased and unevenly implemented]
-<code>@astilba/cache</code> is not published to npm. Some declarations describe intended behavior that still throws or remains inert. Each section calls out important boundaries; [Implementation status](/docs/cache/api-status/) is the authoritative implementation ledger.
+:::caution[Public alpha, unevenly implemented]
+<code>@astilba/cache</code> 0.1.0 is a public alpha. Some declarations describe intended behavior that still throws or remains inert. Each section calls out important boundaries; [Implementation status](/docs/cache/api-status/) is the authoritative implementation ledger.
 :::
 
 ## Create a cache

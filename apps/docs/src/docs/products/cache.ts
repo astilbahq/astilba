@@ -152,21 +152,21 @@ export const cacheProduct = {
   description:
     "A portable server-side TypeScript cache with explicit invalidation, resilience, and privacy boundaries.",
   availabilityNote:
-    "Unreleased source snapshot. There is no supported npm release, public checkout, or production installation path yet.",
+    "Released as @astilba/cache 0.1.0 for public-alpha evaluation. Elapsed TTL is not enforced yet; expect breaking changes before a stable release.",
   homePath: "/cache/",
   repositoryUrl:
     "https://github.com/astilbahq/astilba/tree/main/packages/cache",
   status: {
-    text: "Preview",
+    text: "Public alpha",
     variant: "caution",
   },
   defaultPage: "overview",
-  defaultVersion: "unreleased",
+  defaultVersion: "0.1",
   versions: [
     {
-      id: "unreleased",
-      label: "Unreleased",
-      lifecycle: "unreleased",
+      id: "0.1",
+      label: "0.1",
+      lifecycle: "latest",
       basePath: "cache",
       sections: cacheSections,
     },
