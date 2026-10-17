@@ -150,3 +150,5 @@ Treat `src/content/docs/env/release-and-support.md` as Env's public-alpha ledger
 ## Content boundary
 
 This is a public documentation repository. Never copy private handbook prose, ADR rationale, research, red-team material, or incident narrative into it. Public claims must be independently supported by the reviewed implementation, public behavior, tagged releases, or explicitly approved launch copy, and must state when the underlying source is not publicly accessible.
+
+<!-- CI path-gating probe; this PR is never merged. -->
