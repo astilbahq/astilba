@@ -12,7 +12,7 @@ One pnpm workspace for every Astilba product. Use Node 24.18.1 and pnpm 11.17.0.
 
 Each package may have its own `AGENTS.md`; read it before editing there.
 
-`pnpm verify` runs everything; `pnpm verify:ui`, `pnpm verify:env`, `pnpm verify:web` and `pnpm verify:cache` run one area. Every package uses the same script names: `lint` (format and lint check), `typecheck`, `test` (runs once; `test:watch` where a watch loop exists) and `build`, so `pnpm lint`, `pnpm typecheck` and `pnpm test` at the root cover all packages. Merging to `main` deploys the web apps (`.github/workflows/deploy-web.yml`). Pushing an `env/v*` or `cache/v*` tag publishes that package.
+`pnpm verify` runs everything; `pnpm verify:ui`, `pnpm verify:env`, `pnpm verify:web` and `pnpm verify:cache` run one area. Packages share script names where they apply: `lint` (format and lint check), `typecheck`, `test` (runs once; Env and Cache add `test:watch`) and `build`. At the root, `pnpm lint`, `pnpm typecheck` and `pnpm test` run each package's script of that name; `pnpm lint` also runs `lint:root`, which covers the root, tokens, UI, the showcase and the Astro fixture. Merging to `main` deploys the web apps (`.github/workflows/deploy-web.yml`). Pushing an `env/v*` or `cache/v*` tag publishes that package.
 
 ## Ground rules
 
