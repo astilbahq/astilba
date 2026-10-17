@@ -109,8 +109,8 @@ catalogs:
       specifier: 6.0.3
       version: 6.0.3
     ultracite:
-      specifier: 7.12.4
-      version: 7.12.4
+      specifier: 8.0.1
+      version: 8.0.1
     vite:
       specifier: 8.3.4
       version: 8.3.4
@@ -163,7 +163,7 @@ importers:
         version: 6.0.3
       ultracite:
         specifier: 'catalog:'
-        version: 7.12.4(eslint@10.12.0(jiti@2.7.0)(supports-color@10.2.2))(oxfmt@0.73.0(@astrojs/compiler-rs@0.5.2)(vite-plus@1.2.0(@arethetypeswrong/core@0.18.5)(@astrojs/compiler-rs@0.5.2)(@types/node@24.19.2)(@vitest/coverage-istanbul@5.0.4)(@vitest/ui@5.0.4)(@volar/typescript@2.4.28)(esbuild@0.28.2)(jiti@2.7.0)(jsdom@29.1.1)(playwright@1.64.1)(publint@0.3.25)(tsx@4.23.15)(typescript@6.0.3)(yaml@2.9.1)))(oxlint@1.88.0(oxlint-tsgolint@7.0.2004)(vite-plus@1.2.0(@arethetypeswrong/core@0.18.5)(@astrojs/compiler-rs@0.5.2)(@types/node@24.19.2)(@vitest/coverage-istanbul@5.0.4)(@vitest/ui@5.0.4)(@volar/typescript@2.4.28)(esbuild@0.28.2)(jiti@2.7.0)(jsdom@29.1.1)(playwright@1.64.1)(publint@0.3.25)(tsx@4.23.15)(typescript@6.0.3)(yaml@2.9.1)))(prettier@3.9.9)
+        version: 8.0.1(eslint@10.12.0(jiti@2.7.0)(supports-color@10.2.2))(oxfmt@0.73.0(@astrojs/compiler-rs@0.5.2)(vite-plus@1.2.0(@arethetypeswrong/core@0.18.5)(@astrojs/compiler-rs@0.5.2)(@types/node@24.19.2)(@vitest/coverage-istanbul@5.0.4)(@vitest/ui@5.0.4)(@volar/typescript@2.4.28)(esbuild@0.28.2)(jiti@2.7.0)(jsdom@29.1.1)(playwright@1.64.1)(publint@0.3.25)(tsx@4.23.15)(typescript@6.0.3)(yaml@2.9.1)))(oxlint@1.88.0(oxlint-tsgolint@7.0.2004)(vite-plus@1.2.0(@arethetypeswrong/core@0.18.5)(@astrojs/compiler-rs@0.5.2)(@types/node@24.19.2)(@vitest/coverage-istanbul@5.0.4)(@vitest/ui@5.0.4)(@volar/typescript@2.4.28)(esbuild@0.28.2)(jiti@2.7.0)(jsdom@29.1.1)(playwright@1.64.1)(publint@0.3.25)(tsx@4.23.15)(typescript@6.0.3)(yaml@2.9.1)))(prettier@3.9.9)
       vite-plus:
         specifier: 'catalog:'
         version: 1.2.0(@arethetypeswrong/core@0.18.5)(@astrojs/compiler-rs@0.5.2)(@types/node@24.19.2)(@vitest/coverage-istanbul@5.0.4)(@vitest/ui@5.0.4)(@volar/typescript@2.4.28)(esbuild@0.28.2)(jiti@2.7.0)(jsdom@29.1.1)(playwright@1.64.1)(publint@0.3.25)(tsx@4.23.15)(typescript@6.0.3)(yaml@2.9.1)
@@ -315,7 +315,7 @@ importers:
         version: 6.0.3
       ultracite:
         specifier: 'catalog:'
-        version: 7.12.4(eslint@10.12.0(jiti@2.7.0)(supports-color@10.2.2))(oxfmt@0.73.0(@astrojs/compiler-rs@0.5.2)(vite-plus@1.2.0(@arethetypeswrong/core@0.18.5)(@astrojs/compiler-rs@0.5.2)(@types/node@26.6.5)(@vitest/coverage-istanbul@5.0.4)(@vitest/ui@5.0.4)(@volar/typescript@2.4.28)(esbuild@0.28.2)(jiti@2.7.0)(jsdom@29.1.1)(playwright@1.64.1)(publint@0.3.25)(tsx@4.23.15)(typescript@6.0.3)(yaml@2.9.1)))(oxlint@1.88.0(oxlint-tsgolint@7.0.2004)(vite-plus@1.2.0(@arethetypeswrong/core@0.18.5)(@astrojs/compiler-rs@0.5.2)(@types/node@26.6.5)(@vitest/coverage-istanbul@5.0.4)(@vitest/ui@5.0.4)(@volar/typescript@2.4.28)(esbuild@0.28.2)(jiti@2.7.0)(jsdom@29.1.1)(playwright@1.64.1)(publint@0.3.25)(tsx@4.23.15)(typescript@6.0.3)(yaml@2.9.1)))(prettier@3.9.9)
+        version: 8.0.1(eslint@10.12.0(jiti@2.7.0)(supports-color@10.2.2))(oxfmt@0.73.0(@astrojs/compiler-rs@0.5.2)(vite-plus@1.2.0(@arethetypeswrong/core@0.18.5)(@astrojs/compiler-rs@0.5.2)(@types/node@26.6.5)(@vitest/coverage-istanbul@5.0.4)(@vitest/ui@5.0.4)(@volar/typescript@2.4.28)(esbuild@0.28.2)(jiti@2.7.0)(jsdom@29.1.1)(playwright@1.64.1)(publint@0.3.25)(tsx@4.23.15)(typescript@6.0.3)(yaml@2.9.1)))(oxlint@1.88.0(oxlint-tsgolint@7.0.2004)(vite-plus@1.2.0(@arethetypeswrong/core@0.18.5)(@astrojs/compiler-rs@0.5.2)(@types/node@26.6.5)(@vitest/coverage-istanbul@5.0.4)(@vitest/ui@5.0.4)(@volar/typescript@2.4.28)(esbuild@0.28.2)(jiti@2.7.0)(jsdom@29.1.1)(playwright@1.64.1)(publint@0.3.25)(tsx@4.23.15)(typescript@6.0.3)(yaml@2.9.1)))(prettier@3.9.9)
       vitest:
         specifier: 'catalog:'
         version: 5.0.4(@types/node@26.6.5)(@vitest/browser-preview@5.0.4)(@vitest/coverage-istanbul@5.0.4)(@vitest/ui@5.0.4)(jsdom@29.1.1)(vite@8.3.4(@types/node@26.6.5)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))
@@ -376,7 +376,7 @@ importers:
         version: 6.0.3
       ultracite:
         specifier: 'catalog:'
-        version: 7.12.4(eslint@10.12.0(jiti@2.7.0)(supports-color@10.2.2))(oxfmt@0.73.0(@astrojs/compiler-rs@0.5.2)(vite-plus@1.2.0(@arethetypeswrong/core@0.18.5)(@astrojs/compiler-rs@0.5.2)(@types/node@26.6.5)(@vitest/coverage-istanbul@5.0.4)(@vitest/ui@5.0.4)(@volar/typescript@2.4.28)(esbuild@0.28.2)(jiti@2.7.0)(jsdom@29.1.1)(playwright@1.64.1)(publint@0.3.25)(tsx@4.23.15)(typescript@6.0.3)(yaml@2.9.1)))(oxlint@1.88.0(oxlint-tsgolint@7.0.2004)(vite-plus@1.2.0(@arethetypeswrong/core@0.18.5)(@astrojs/compiler-rs@0.5.2)(@types/node@26.6.5)(@vitest/coverage-istanbul@5.0.4)(@vitest/ui@5.0.4)(@volar/typescript@2.4.28)(esbuild@0.28.2)(jiti@2.7.0)(jsdom@29.1.1)(playwright@1.64.1)(publint@0.3.25)(tsx@4.23.15)(typescript@6.0.3)(yaml@2.9.1)))(prettier@3.9.9)
+        version: 8.0.1(eslint@10.12.0(jiti@2.7.0)(supports-color@10.2.2))(oxfmt@0.73.0(@astrojs/compiler-rs@0.5.2)(vite-plus@1.2.0(@arethetypeswrong/core@0.18.5)(@astrojs/compiler-rs@0.5.2)(@types/node@26.6.5)(@vitest/coverage-istanbul@5.0.4)(@vitest/ui@5.0.4)(@volar/typescript@2.4.28)(esbuild@0.28.2)(jiti@2.7.0)(jsdom@29.1.1)(playwright@1.64.1)(publint@0.3.25)(tsx@4.23.15)(typescript@6.0.3)(yaml@2.9.1)))(oxlint@1.88.0(oxlint-tsgolint@7.0.2004)(vite-plus@1.2.0(@arethetypeswrong/core@0.18.5)(@astrojs/compiler-rs@0.5.2)(@types/node@26.6.5)(@vitest/coverage-istanbul@5.0.4)(@vitest/ui@5.0.4)(@volar/typescript@2.4.28)(esbuild@0.28.2)(jiti@2.7.0)(jsdom@29.1.1)(playwright@1.64.1)(publint@0.3.25)(tsx@4.23.15)(typescript@6.0.3)(yaml@2.9.1)))(prettier@3.9.9)
       vitest:
         specifier: 'catalog:'
         version: 5.0.4(@types/node@26.6.5)(@vitest/browser-preview@5.0.4)(@vitest/coverage-istanbul@5.0.4)(@vitest/ui@5.0.4)(jsdom@29.1.1)(vite@8.3.4(@types/node@26.6.5)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))
@@ -589,7 +589,7 @@ importers:
         version: 6.0.3
       ultracite:
         specifier: 'catalog:'
-        version: 7.12.4(eslint@10.12.0(jiti@2.7.0)(supports-color@10.2.2))(oxfmt@0.73.0(@astrojs/compiler-rs@0.5.2)(vite-plus@1.2.0(@arethetypeswrong/core@0.18.5)(@astrojs/compiler-rs@0.5.2)(@types/node@24.19.2)(@vitest/coverage-istanbul@5.0.4)(@vitest/ui@5.0.4)(@volar/typescript@2.4.28)(esbuild@0.28.2)(jiti@2.7.0)(jsdom@29.1.1)(playwright@1.64.1)(publint@0.3.25)(tsx@4.23.15)(typescript@6.0.3)(yaml@2.9.1)))(oxlint@1.88.0(oxlint-tsgolint@7.0.2004)(vite-plus@1.2.0(@arethetypeswrong/core@0.18.5)(@astrojs/compiler-rs@0.5.2)(@types/node@24.19.2)(@vitest/coverage-istanbul@5.0.4)(@vitest/ui@5.0.4)(@volar/typescript@2.4.28)(esbuild@0.28.2)(jiti@2.7.0)(jsdom@29.1.1)(playwright@1.64.1)(publint@0.3.25)(tsx@4.23.15)(typescript@6.0.3)(yaml@2.9.1)))(prettier@3.9.9)
+        version: 8.0.1(eslint@10.12.0(jiti@2.7.0)(supports-color@10.2.2))(oxfmt@0.73.0(@astrojs/compiler-rs@0.5.2)(vite-plus@1.2.0(@arethetypeswrong/core@0.18.5)(@astrojs/compiler-rs@0.5.2)(@types/node@24.19.2)(@vitest/coverage-istanbul@5.0.4)(@vitest/ui@5.0.4)(@volar/typescript@2.4.28)(esbuild@0.28.2)(jiti@2.7.0)(jsdom@29.1.1)(playwright@1.64.1)(publint@0.3.25)(tsx@4.23.15)(typescript@6.0.3)(yaml@2.9.1)))(oxlint@1.88.0(oxlint-tsgolint@7.0.2004)(vite-plus@1.2.0(@arethetypeswrong/core@0.18.5)(@astrojs/compiler-rs@0.5.2)(@types/node@24.19.2)(@vitest/coverage-istanbul@5.0.4)(@vitest/ui@5.0.4)(@volar/typescript@2.4.28)(esbuild@0.28.2)(jiti@2.7.0)(jsdom@29.1.1)(playwright@1.64.1)(publint@0.3.25)(tsx@4.23.15)(typescript@6.0.3)(yaml@2.9.1)))(prettier@3.9.9)
       vite:
         specifier: npm:@voidzero-dev/vite-plus-core@1.2.0
         version: '@voidzero-dev/vite-plus-core@1.2.0(@arethetypeswrong/core@0.18.5)(@types/node@24.19.2)(@volar/typescript@2.4.28)(esbuild@0.28.2)(jiti@2.7.0)(publint@0.3.25)(tsx@4.23.15)(typescript@6.0.3)(yaml@2.9.1)'
@@ -654,8 +654,8 @@ importers:
         specifier: npm:typescript@7.0.2
         version: typescript@7.0.2
       ultracite:
-        specifier: 7.12.4
-        version: 7.12.4(eslint@10.12.0(jiti@2.7.0)(supports-color@10.2.2))(oxfmt@0.73.0(@astrojs/compiler-rs@0.5.2)(vite-plus@1.2.0(@arethetypeswrong/core@0.18.5)(@astrojs/compiler-rs@0.5.2)(@types/node@26.6.5)(@vitest/coverage-istanbul@5.0.4)(@vitest/ui@5.0.4)(@volar/typescript@2.4.28)(esbuild@0.28.2)(jiti@2.7.0)(jsdom@29.1.1)(playwright@1.64.1)(publint@0.3.25)(tsx@4.23.15)(typescript@6.0.3)(yaml@2.9.1)))(oxlint@1.88.0(oxlint-tsgolint@7.0.2004)(vite-plus@1.2.0(@arethetypeswrong/core@0.18.5)(@astrojs/compiler-rs@0.5.2)(@types/node@26.6.5)(@vitest/coverage-istanbul@5.0.4)(@vitest/ui@5.0.4)(@volar/typescript@2.4.28)(esbuild@0.28.2)(jiti@2.7.0)(jsdom@29.1.1)(playwright@1.64.1)(publint@0.3.25)(tsx@4.23.15)(typescript@6.0.3)(yaml@2.9.1)))(prettier@3.9.9)
+        specifier: 8.0.1
+        version: 8.0.1(eslint@10.12.0(jiti@2.7.0)(supports-color@10.2.2))(oxfmt@0.73.0(@astrojs/compiler-rs@0.5.2)(vite-plus@1.2.0(@arethetypeswrong/core@0.18.5)(@astrojs/compiler-rs@0.5.2)(@types/node@26.6.5)(@vitest/coverage-istanbul@5.0.4)(@vitest/ui@5.0.4)(@volar/typescript@2.4.28)(esbuild@0.28.2)(jiti@2.7.0)(jsdom@29.1.1)(playwright@1.64.1)(publint@0.3.25)(tsx@4.23.15)(typescript@6.0.3)(yaml@2.9.1)))(oxlint@1.88.0(oxlint-tsgolint@7.0.2004)(vite-plus@1.2.0(@arethetypeswrong/core@0.18.5)(@astrojs/compiler-rs@0.5.2)(@types/node@26.6.5)(@vitest/coverage-istanbul@5.0.4)(@vitest/ui@5.0.4)(@volar/typescript@2.4.28)(esbuild@0.28.2)(jiti@2.7.0)(jsdom@29.1.1)(playwright@1.64.1)(publint@0.3.25)(tsx@4.23.15)(typescript@6.0.3)(yaml@2.9.1)))(prettier@3.9.9)
       vite:
         specifier: npm:@voidzero-dev/vite-plus-core@1.2.0
         version: '@voidzero-dev/vite-plus-core@1.2.0(@arethetypeswrong/core@0.18.5)(@types/node@26.6.5)(@volar/typescript@2.4.28)(esbuild@0.28.2)(jiti@2.7.0)(publint@0.3.25)(tsx@4.23.15)(typescript@6.0.3)(yaml@2.9.1)'
@@ -7008,15 +7008,16 @@ packages:
   ufo@1.6.4:
     resolution: {integrity: sha512-JFNbkD1Svwe0KvGi8GOeLcP4kAWQ609twvCdcHxq1oSL8svv39ZuSvajcD8B+5D0eL4+s1Is2D/O6KN3qcTeRA==}
 
-  ultracite@7.12.4:
-    resolution: {integrity: sha512-6jVEwaZBaytFm6XRoI3WGS2ZydrkrNvHTD0qTf7983ti2FlEWL1YcxnPaMaYuS6PkXqMhIK2XGr0cbsL4x5pQA==}
+  ultracite@8.0.1:
+    resolution: {integrity: sha512-4XtB3My7o/O8uveSBPjMO6aPwkO7LEGDf2RCuR4jMVSJ4JByLNIb8+xpCR5M+HssgPrl0aSTQ/40od80ItmiqQ==}
+    engines: {node: '>=22.18.0'}
     hasBin: true
     peerDependencies:
       '@biomejs/biome': ^2.5.0
       eslint: ^10.9.0
-      oxfmt: '>=0.59.0'
+      oxfmt: '>=0.71.0 <1'
       oxlint: ^1.86.0
-      prettier: ^3.0.0
+      prettier: ^3.5.3
       stylelint: ^17.0.0
     peerDependenciesMeta:
       '@biomejs/biome':
@@ -14878,7 +14879,7 @@ snapshots:
 
   ufo@1.6.4: {}
 
-  ultracite@7.12.4(eslint@10.12.0(jiti@2.7.0)(supports-color@10.2.2))(oxfmt@0.73.0(@astrojs/compiler-rs@0.5.2)(vite-plus@1.2.0(@arethetypeswrong/core@0.18.5)(@astrojs/compiler-rs@0.5.2)(@types/node@24.19.2)(@vitest/coverage-istanbul@5.0.4)(@vitest/ui@5.0.4)(@volar/typescript@2.4.28)(esbuild@0.28.2)(jiti@2.7.0)(jsdom@29.1.1)(playwright@1.64.1)(publint@0.3.25)(tsx@4.23.15)(typescript@6.0.3)(yaml@2.9.1)))(oxlint@1.88.0(oxlint-tsgolint@7.0.2004)(vite-plus@1.2.0(@arethetypeswrong/core@0.18.5)(@astrojs/compiler-rs@0.5.2)(@types/node@24.19.2)(@vitest/coverage-istanbul@5.0.4)(@vitest/ui@5.0.4)(@volar/typescript@2.4.28)(esbuild@0.28.2)(jiti@2.7.0)(jsdom@29.1.1)(playwright@1.64.1)(publint@0.3.25)(tsx@4.23.15)(typescript@6.0.3)(yaml@2.9.1)))(prettier@3.9.9):
+  ultracite@8.0.1(eslint@10.12.0(jiti@2.7.0)(supports-color@10.2.2))(oxfmt@0.73.0(@astrojs/compiler-rs@0.5.2)(vite-plus@1.2.0(@arethetypeswrong/core@0.18.5)(@astrojs/compiler-rs@0.5.2)(@types/node@24.19.2)(@vitest/coverage-istanbul@5.0.4)(@vitest/ui@5.0.4)(@volar/typescript@2.4.28)(esbuild@0.28.2)(jiti@2.7.0)(jsdom@29.1.1)(playwright@1.64.1)(publint@0.3.25)(tsx@4.23.15)(typescript@6.0.3)(yaml@2.9.1)))(oxlint@1.88.0(oxlint-tsgolint@7.0.2004)(vite-plus@1.2.0(@arethetypeswrong/core@0.18.5)(@astrojs/compiler-rs@0.5.2)(@types/node@24.19.2)(@vitest/coverage-istanbul@5.0.4)(@vitest/ui@5.0.4)(@volar/typescript@2.4.28)(esbuild@0.28.2)(jiti@2.7.0)(jsdom@29.1.1)(playwright@1.64.1)(publint@0.3.25)(tsx@4.23.15)(typescript@6.0.3)(yaml@2.9.1)))(prettier@3.9.9):
     dependencies:
       '@clack/prompts': 1.8.1
       cli-truncate: 6.1.1
@@ -14905,7 +14906,7 @@ snapshots:
       oxlint: 1.88.0(oxlint-tsgolint@7.0.2004)(vite-plus@1.2.0(@arethetypeswrong/core@0.18.5)(@astrojs/compiler-rs@0.5.2)(@types/node@24.19.2)(@vitest/coverage-istanbul@5.0.4)(@vitest/ui@5.0.4)(@volar/typescript@2.4.28)(esbuild@0.28.2)(jiti@2.7.0)(jsdom@29.1.1)(playwright@1.64.1)(publint@0.3.25)(tsx@4.23.15)(typescript@6.0.3)(yaml@2.9.1))
       prettier: 3.9.9
 
-  ultracite@7.12.4(eslint@10.12.0(jiti@2.7.0)(supports-color@10.2.2))(oxfmt@0.73.0(@astrojs/compiler-rs@0.5.2)(vite-plus@1.2.0(@arethetypeswrong/core@0.18.5)(@astrojs/compiler-rs@0.5.2)(@types/node@26.6.5)(@vitest/coverage-istanbul@5.0.4)(@vitest/ui@5.0.4)(@volar/typescript@2.4.28)(esbuild@0.28.2)(jiti@2.7.0)(jsdom@29.1.1)(playwright@1.64.1)(publint@0.3.25)(tsx@4.23.15)(typescript@6.0.3)(yaml@2.9.1)))(oxlint@1.88.0(oxlint-tsgolint@7.0.2004)(vite-plus@1.2.0(@arethetypeswrong/core@0.18.5)(@astrojs/compiler-rs@0.5.2)(@types/node@26.6.5)(@vitest/coverage-istanbul@5.0.4)(@vitest/ui@5.0.4)(@volar/typescript@2.4.28)(esbuild@0.28.2)(jiti@2.7.0)(jsdom@29.1.1)(playwright@1.64.1)(publint@0.3.25)(tsx@4.23.15)(typescript@6.0.3)(yaml@2.9.1)))(prettier@3.9.9):
+  ultracite@8.0.1(eslint@10.12.0(jiti@2.7.0)(supports-color@10.2.2))(oxfmt@0.73.0(@astrojs/compiler-rs@0.5.2)(vite-plus@1.2.0(@arethetypeswrong/core@0.18.5)(@astrojs/compiler-rs@0.5.2)(@types/node@26.6.5)(@vitest/coverage-istanbul@5.0.4)(@vitest/ui@5.0.4)(@volar/typescript@2.4.28)(esbuild@0.28.2)(jiti@2.7.0)(jsdom@29.1.1)(playwright@1.64.1)(publint@0.3.25)(tsx@4.23.15)(typescript@6.0.3)(yaml@2.9.1)))(oxlint@1.88.0(oxlint-tsgolint@7.0.2004)(vite-plus@1.2.0(@arethetypeswrong/core@0.18.5)(@astrojs/compiler-rs@0.5.2)(@types/node@26.6.5)(@vitest/coverage-istanbul@5.0.4)(@vitest/ui@5.0.4)(@volar/typescript@2.4.28)(esbuild@0.28.2)(jiti@2.7.0)(jsdom@29.1.1)(playwright@1.64.1)(publint@0.3.25)(tsx@4.23.15)(typescript@6.0.3)(yaml@2.9.1)))(prettier@3.9.9):
     dependencies:
       '@clack/prompts': 1.8.1
       cli-truncate: 6.1.1

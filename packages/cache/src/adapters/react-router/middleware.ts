@@ -172,8 +172,8 @@ export function currentRequest(): RequestContext | undefined {
 
 /** The `waitUntil` used when the app configures none: the tick still runs, it is simply not held
  * alive past the response (best-effort, and safe — the driver's promise never rejects). */
-function floatingWaitUntil(promise: Promise<unknown>): void {
-  void promise;
+function floatingWaitUntil(_promise: Promise<unknown>): void {
+  // Nothing holds the promise; the tick finishes on its own.
 }
 
 /**

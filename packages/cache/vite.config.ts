@@ -293,6 +293,9 @@ export default defineConfig({
       "func-style": "off",
       // `i++` in counters/loops is clear and intended.
       "no-plusplus": "off",
+      // Under `exactOptionalPropertyTypes`, `prop?: T | undefined` is not redundant: `?` allows
+      // omission and `| undefined` allows assigning `undefined`.
+      "sonarjs/no-redundant-optional": "off",
       // This repo REQUIRES inline spec citations / provenance.
       "no-inline-comments": "off",
       // The seeded PRNG (SimRng) is defined by its bitwise operations.
