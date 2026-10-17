@@ -32,7 +32,7 @@ jobs:
     uses: ./.github/workflows/env-package-matrix.yml
 
   publish:
-    name: Publish to npm
+    name: Stage on npm
     needs: package-matrix
     runs-on: ubuntu-latest
     environment: npm-env
@@ -56,11 +56,13 @@ jobs:
         env:
           ASTILBA_ENV_ARTIFACT_DIR: .artifacts/release
         run: node packages/env/scripts/verify-artifact.mjs
-      - name: Publish with provenance
+      # The package only allows staged publishes: the version goes live once a maintainer
+      # approves it on npmjs.com with 2FA (npm stage approve).
+      - name: Stage with provenance
         run: |
           set -euo pipefail
           archive="$(node -p "require('./packages/env/.artifacts/release/manifest.json').archive.name")"
-          npm publish "packages/env/.artifacts/release/$archive" --access public --provenance --ignore-scripts
+          npm stage publish "packages/env/.artifacts/release/$archive" --access public --provenance --ignore-scripts
           echo "ARCHIVE=$archive" >> "$GITHUB_ENV"
       - name: Create GitHub release
         env:
