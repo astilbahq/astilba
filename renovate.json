@@ -1,23 +1,33 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": ["github>astilbahq/docs:renovate-default"],
+  "extends": [
+    "config:recommended",
+    ":dependencyDashboard",
+    ":semanticCommits",
+    ":pinDevDependencies",
+    "group:monorepos"
+  ],
+  "timezone": "Europe/London",
+  "schedule": ["before 7am every weekday"],
+  "rangeStrategy": "pin",
+  "minimumReleaseAge": "3 days",
   "platformAutomerge": false,
+  "automergeType": "pr",
+  "automergeStrategy": "squash",
+  "rebaseWhen": "behind-base-branch",
+  "prConcurrentLimit": 3,
+  "prHourlyLimit": 2,
+  "labels": ["dependencies"],
   "lockFileMaintenance": {
     "enabled": true,
     "schedule": ["before 5am on monday"],
     "automerge": true
   },
+  "vulnerabilityAlerts": {
+    "enabled": true,
+    "labels": ["dependencies", "security"]
+  },
   "customManagers": [
-    {
-      "customType": "regex",
-      "description": "Keep the current Node.js CI pin current.",
-      "managerFilePatterns": ["/^\\.github\\/workflows\\/verification\\.yml$/"],
-      "matchStrings": [
-        "- label:\\s*current\\s+version:\\s*\"(?<currentValue>\\d+\\.\\d+\\.\\d+)\""
-      ],
-      "depNameTemplate": "node",
-      "datasourceTemplate": "node-version"
-    },
     {
       "customType": "regex",
       "description": "Keep the Zizmor CLI pin current.",
@@ -27,6 +37,101 @@
       "datasourceTemplate": "github-releases",
       "extractVersionTemplate": "^v?(?<version>.*)$",
       "versioningTemplate": "semver"
+    }
+  ],
+  "packageRules": [
+    {
+      "description": "Manage Node engine ranges by hand.",
+      "matchDepTypes": ["engines"],
+      "enabled": false
+    },
+    {
+      "description": "Automerge routine development dependency updates once checks pass.",
+      "matchManagers": ["npm"],
+      "matchDepTypes": ["devDependencies"],
+      "matchUpdateTypes": ["minor", "patch", "pin", "digest"],
+      "matchCurrentVersion": "!/^0/",
+      "groupName": "routine development dependencies",
+      "automerge": true
+    },
+    {
+      "description": "Group routine runtime dependency updates, but merge them by hand: they ship in published packages and deployed apps.",
+      "matchManagers": ["npm"],
+      "matchDepTypes": ["dependencies"],
+      "matchUpdateTypes": ["minor", "patch", "pin", "digest"],
+      "matchCurrentVersion": "!/^0/",
+      "groupName": "routine runtime dependencies",
+      "automerge": false
+    },
+    {
+      "description": "Automerge pinned GitHub Actions updates once checks pass.",
+      "matchManagers": ["github-actions"],
+      "matchUpdateTypes": ["minor", "patch", "pin", "digest"],
+      "groupName": "GitHub Actions",
+      "automerge": true
+    },
+    {
+      "description": "Merge major updates and pre-1.0 packages by hand.",
+      "matchUpdateTypes": ["major"],
+      "automerge": false
+    },
+    {
+      "matchManagers": ["npm"],
+      "matchCurrentVersion": "/^0\\./",
+      "automerge": false
+    },
+    {
+      "description": "Keep Astro and Starlight changes together for one documentation-shell review.",
+      "groupName": "Astro and Starlight",
+      "matchPackageNames": ["astro", "@astrojs/**", "starlight-*"]
+    },
+    {
+      "description": "Keep Panda packages on one versioned toolchain.",
+      "groupName": "Panda CSS",
+      "matchPackageNames": ["@pandacss/**"]
+    },
+    {
+      "description": "Update the Vite+, Vitest and Oxc toolchain together and review it by hand.",
+      "groupName": "verification toolchain",
+      "matchPackageNames": [
+        "vite-plus",
+        "@voidzero-dev/vite-plus-core",
+        "vitest",
+        "@vitest/**",
+        "oxlint",
+        "oxlint-tsgolint",
+        "oxfmt",
+        "ultracite",
+        "knip",
+        "@playwright/test",
+        "@axe-core/playwright"
+      ],
+      "automerge": false
+    },
+    {
+      "description": "Env's consumer matrix pins exact runtime versions; change them deliberately.",
+      "groupName": "Env consumer matrix pins",
+      "matchFileNames": ["packages/env/**", "fixtures/registry/env/**"],
+      "matchPackageNames": ["typescript", "typescript-7", "vite", "workerd"],
+      "automerge": false
+    },
+    {
+      "description": "Require a maintainer merge for security-sensitive build tooling.",
+      "matchPackageNames": ["parse5", "wrangler"],
+      "automerge": false
+    },
+    {
+      "description": "Hold TypeScript on version 6 until Astro supports the TypeScript 7 programmatic API.",
+      "matchManagers": ["npm"],
+      "matchPackageNames": ["typescript"],
+      "allowedVersions": "<7"
+    },
+    {
+      "description": "Skip pnpm 11.12.0 because its self-update path breaks pnpm/action-setup.",
+      "matchManagers": ["npm"],
+      "matchDepTypes": ["packageManager"],
+      "matchPackageNames": ["pnpm"],
+      "allowedVersions": "!/^11\\.12\\.0$/"
     }
   ]
 }
