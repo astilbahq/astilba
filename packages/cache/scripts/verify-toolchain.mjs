@@ -21,7 +21,10 @@ assert.equal(read(direct).version, expected);
 assert.equal(read(require.resolve("@vitest/coverage-istanbul/package.json")).version, expected);
 
 const lock = YAML.parse(readFileSync(resolve(workspaceRoot, "pnpm-lock.yaml"), "utf8"));
-const cohort = Object.keys(lock.packages).filter((key) => /^(@vitest\/|vitest@)/u.test(key));
+// The @vitest/istanbul-lib-* forks that coverage-istanbul uses are versioned on their own line.
+const cohort = Object.keys(lock.packages).filter((key) =>
+  /^(@vitest\/(?!istanbul-lib-)|vitest@)/u.test(key)
+);
 assert.ok(cohort.length >= 10, "Missing Vitest cohort in lockfile");
 for (const key of cohort) {
   assert.equal(key.slice(key.lastIndexOf("@") + 1), expected, `Split Vitest cohort: ${key}`);

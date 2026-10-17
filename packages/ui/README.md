@@ -103,10 +103,10 @@ Links remain native anchors. `Button` uses Base UI's button primitive and defaul
 Component subpaths are also available when a consumer needs the narrowest possible server or browser module graph:
 
 ```tsx
-import { LinkButton } from "@astilba/ui/link-button";
 import { Collapsible } from "@astilba/ui/collapsible";
 import { Field } from "@astilba/ui/field";
 import { Input } from "@astilba/ui/input";
+import { LinkButton } from "@astilba/ui/link-button";
 import { Menu } from "@astilba/ui/menu";
 import { ScrollArea } from "@astilba/ui/scroll-area";
 import { Tabs } from "@astilba/ui/tabs";

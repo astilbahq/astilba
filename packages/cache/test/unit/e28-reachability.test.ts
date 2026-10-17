@@ -793,27 +793,27 @@ describe("E9/E28 — UnknownTagError says exactly what it promises", () => {
   });
 });
 
-describe("E28 — CacheDefaults.consistency is a setting, not a decoration", () => {
-  /** Fill `key`, then read it once at EVENTUAL so the live check teaches the map the tag is
-   * known-clean (memoization). After this, an eventual read consults NOBODY and a strong read
-   * still live-checks every time (strong never consults local knowledge). That asymmetry is
-   * the only thing that can tell the two postures apart by counting: before the map is taught, an
-   * eventual read of an unknown tag pays exactly one check too, and the counter says nothing. */
-  async function seedAndTeach(rigged: Rig, key: string): Promise<void> {
-    await rigged.cache.getOrSet({
-      consistency: "eventual",
-      factory: async (): Promise<string> => "v1",
-      key,
-      tags: [TAG],
-    });
-    await rigged.cache.getOrSet({
-      consistency: "eventual",
-      factory: async (): Promise<string> => "unused",
-      key,
-      tags: [TAG],
-    });
-  }
+/** Fill `key`, then read it once at EVENTUAL so the live check teaches the map the tag is
+ * known-clean (memoization). After this, an eventual read consults NOBODY and a strong read
+ * still live-checks every time (strong never consults local knowledge). That asymmetry is
+ * the only thing that can tell the two postures apart by counting: before the map is taught, an
+ * eventual read of an unknown tag pays exactly one check too, and the counter says nothing. */
+async function seedAndTeach(rigged: Rig, key: string): Promise<void> {
+  await rigged.cache.getOrSet({
+    consistency: "eventual",
+    factory: async (): Promise<string> => "v1",
+    key,
+    tags: [TAG],
+  });
+  await rigged.cache.getOrSet({
+    consistency: "eventual",
+    factory: async (): Promise<string> => "unused",
+    key,
+    tags: [TAG],
+  });
+}
 
+describe("E28 — CacheDefaults.consistency is a setting, not a decoration", () => {
   it("a defaulted `strong` takes the strong path (a live registry check), with no per-call option", async () => {
     const rigged = rig({ consistencyDefault: "strong" });
     await seedAndTeach(rigged, "defaults/consistency");

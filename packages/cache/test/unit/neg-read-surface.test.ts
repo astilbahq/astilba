@@ -252,41 +252,41 @@ describe("a neg fill writes only its own tier (§3, §5.1 step 5)", () => {
 
 // ── 3. neg-evicts-stale-l1 ───────────────────────────────────────────────────────────────────────
 
+/** The one arrangement that puts a fill on top of a live L1 entry: L1 holds `v1`, its reads are
+ * suppressed to a miss by a classified transient failure, and L2 no longer has the key — so
+ * every tier reads as absent, the factory runs, and it 404s. */
+async function negOverLiveL1(): Promise<{
+  readonly cache: Cache;
+  readonly l1: FlakyStore;
+  readonly origin: () => number;
+}> {
+  const l1 = flakyStore(memory());
+  const l2 = forgetfulStore(memory());
+  const cache = makeCache(l1.store, l2.store);
+  let calls = 0;
+  await cache.getOrSet({
+    factory: async (): Promise<string> => "v1",
+    key: "k",
+    tags: [t`x`],
+  });
+
+  l1.failReads = true;
+  l2.forgotten = true;
+  const negTurn = await cache.getOrSetEntry({
+    factory: async (): Promise<never> => {
+      calls += 1;
+      return await notFound();
+    },
+    key: "k",
+    notFoundTtl: "30s",
+    tags: [t`x`],
+  });
+  expect(negTurn.value).toBeUndefined();
+  expect(calls).toBe(1);
+  return { cache, l1, origin: (): number => calls };
+}
+
 describe("a neg fill leaves no superseded value behind in L1 (§3, §5.1 step 5, E13)", () => {
-  /** The one arrangement that puts a fill on top of a live L1 entry: L1 holds `v1`, its reads are
-   * suppressed to a miss by a classified transient failure, and L2 no longer has the key — so
-   * every tier reads as absent, the factory runs, and it 404s. */
-  async function negOverLiveL1(): Promise<{
-    readonly cache: Cache;
-    readonly l1: FlakyStore;
-    readonly origin: () => number;
-  }> {
-    const l1 = flakyStore(memory());
-    const l2 = forgetfulStore(memory());
-    const cache = makeCache(l1.store, l2.store);
-    let calls = 0;
-    await cache.getOrSet({
-      factory: async (): Promise<string> => "v1",
-      key: "k",
-      tags: [t`x`],
-    });
-
-    l1.failReads = true;
-    l2.forgotten = true;
-    const negTurn = await cache.getOrSetEntry({
-      factory: async (): Promise<never> => {
-        calls += 1;
-        return await notFound();
-      },
-      key: "k",
-      notFoundTtl: "30s",
-      tags: [t`x`],
-    });
-    expect(negTurn.value).toBeUndefined();
-    expect(calls).toBe(1);
-    return { cache, l1, origin: (): number => calls };
-  }
-
   it("a read once L1 is readable again serves the remembered 404, not the superseded value", async () => {
     const { cache, l1, origin } = await negOverLiveL1();
 
