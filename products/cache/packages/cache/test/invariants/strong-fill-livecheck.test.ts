@@ -52,7 +52,7 @@ describe("strong post-fill live check (E16 serve leg)", () => {
     await cache.delete({ tag: purged });
 
     // Two strong getOrSets of a NEVER-cached key, with DISTINCT factory values and NO
-    // mutation between them. The design forbids serving the born-dead "first" value at strong:
+    // mutation between them. A strong read must never serve the born-dead "first" value:
     // the post-fill live check fences it and re-fills with a fresh stamp (bornEpoch now
     // postdates the purge), so the first call establishes a durably-fresh value the
     // second strong read agrees with — both observe "first". A kernel that skips the

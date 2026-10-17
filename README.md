@@ -27,7 +27,7 @@ fixtures/   ui-astro; registry/env (installs Env from npm, separate lockfile)
 
 ## Releasing and deploying
 
-- **Web:** merging to `main` deploys the apex, docs and UI showcase to Cloudflare once CI passes.
+- **Web:** merging to `main` deploys the apex, docs and UI showcase to Cloudflare.
 - **Packages:** bump the version, merge, then push a tag on `main`: `env/v<version>` or `cache/v<version>`. The release workflow publishes to npm with provenance and creates a GitHub release.
 
 See [AGENTS.md](AGENTS.md) for agent guidance and [CONTRIBUTING.md](CONTRIBUTING.md) for contributors.
