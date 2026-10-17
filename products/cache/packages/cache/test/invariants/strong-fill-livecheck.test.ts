@@ -1,20 +1,20 @@
-// INV-1 — spec §11.1, §5.0, errata E16
+// INV-1 — spec
 // Sacred: append-only. Never modify, delete, weaken, skip, or .todo an existing test.
 
 import { mkTag, world } from "@astilba/harness";
 import { describe, expect, test } from "vitest";
 
-// Invariant 1 (§11.1): once a hard delete has become visible at whatever level a
+// Invariant 1: once a hard delete has become visible at whatever level a
 // read asks for, the entry it removed stops being servable — and `strong` asks to
-// see it right away, with no propagation window to wait out. E16 moves
-// INV-12/E1's enforcement to read time and carries it onto the serve leg: a value
+// see it right away, with no propagation window to wait out. The strong pre-factory check moves
+// INV-12/the enforcement to read time and carries it onto the serve leg: a value
 // whose birth predates a hard purge the registry already accepted durably must not
-// reach the caller, and at `strong` least of all — E1 requires that check to be
+// reach the caller, and at `strong` least of all — the design requires that check to be
 // live and un-memoized, so there is no window to hide in. The strong-MISS-FILL path
-// stores a value whose tag is locally UNKNOWN (the §5.0 LOCAL write-back fence reads
-// only local knowledge, so it passes) — and must run E1's live check on the SERVE
-// leg before returning it, fencing and re-filling with fresh stamps under §5.0's
-// attempt budget 3 if the born value is dead against the live watermark (CACHE-26).
+// stores a value whose tag is locally UNKNOWN (the LOCAL write-back fence reads
+// only local knowledge, so it passes) — and must run the live check on the SERVE
+// leg before returning it, fencing and re-filling with fresh stamps under the
+// attempt budget 3 if the born value is dead against the live watermark.
 
 describe("strong post-fill live check (E16 serve leg)", () => {
   test("INV-1: a strong fill never serves a value born against a durable purge the isolate hasn't observed locally", async () => {
@@ -43,8 +43,8 @@ describe("strong post-fill live check (E16 serve leg)", () => {
     expect(cleanSecond).toBe("clean-value");
 
     // THE DISCRIMINATOR. Durably hard-purge `purged` at the registry, but DROP the bus
-    // frame (§4.2) so this isolate never learns of it: the tag is dead at the registry
-    // (hard watermark epoch 1) yet locally UNKNOWN. The §5.0 local write-back fence — it
+    // frame so this isolate never learns of it: the tag is dead at the registry
+    // (hard watermark epoch 1) yet locally UNKNOWN. The local write-back fence — it
     // reads only local knowledge — therefore passes a value born (epoch 0) against it.
     // Selector is { tag } (singular): a { tags } object would purge nothing.
     const purged = mkTag("purged");
@@ -52,7 +52,7 @@ describe("strong post-fill live check (E16 serve leg)", () => {
     await cache.delete({ tag: purged });
 
     // Two strong getOrSets of a NEVER-cached key, with DISTINCT factory values and NO
-    // mutation between them. E16 forbids serving the born-dead "first" value at strong:
+    // mutation between them. The design forbids serving the born-dead "first" value at strong:
     // the post-fill live check fences it and re-fills with a fresh stamp (bornEpoch now
     // postdates the purge), so the first call establishes a durably-fresh value the
     // second strong read agrees with — both observe "first". A kernel that skips the

@@ -1,4 +1,4 @@
-// THE MODULE-SCOPE BOOT WITNESS (§2/E22 (i), E28, E28-b) — one of three conformance instruments.
+// THE MODULE-SCOPE BOOT WITNESS — one of three conformance instruments.
 //
 // WHAT THIS INSTRUMENT PROVES, AND ONLY THIS: THE PLACEMENT IS LEGAL. A Worker whose module scope
 // builds the published factory starts on workerd, and the cache that construction produced goes on
@@ -7,7 +7,7 @@
 // (`packages/cache/test/integration/construction-io-census.test.ts`), and whether handles are minted
 // PER USE is the cross-request family's
 // (`packages/cache/test/integration/cross-request.test.ts`). This file rules on neither. Each clause
-// is held by the instrument that can actually see it, and this one speaks only to its own (E28-b).
+// is held by the instrument that can actually see it, and this one speaks only to its own.
 //
 // WHY THE COLDNESS CLAIM IS NOT THIS FILE'S TO MAKE — and why an earlier version of this header made
 // it anyway, wrongly. A pass here means the isolate started and served; it does NOT mean construction
@@ -45,7 +45,7 @@
 //
 // WHAT IT DOES NOT ESTABLISH, despite that same earlier header claiming it too: that connections are
 // minted PER USE. That claim needs a request to reach a handle the PREVIOUS request minted, and two
-// cold fills never do. Measured (E28-b): a factory that memoizes its stub source — holding one
+// cold fills never do. Measured: a factory that memoizes its stub source — holding one
 // connection forever, the exact shape the law forbids — walks past this gate green, and past the
 // census as well. The cross-request family is where that liar is named and caught.
 //
@@ -130,8 +130,8 @@ function judge(label, result) {
     );
     return;
   }
-  
-  
+  // The POSITIVE proof: the factory ran and the value came back. Never merely "no error seen",
+  // which is how a gate learns to pass on silence.
   if (!result.body.startsWith("OK ")) {
     failures.push(
       `${label}: the Worker answered (${result.status}) but did not serve the value. Body: ${result.body.slice(0, 400)}`

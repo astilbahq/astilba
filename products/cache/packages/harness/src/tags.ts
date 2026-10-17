@@ -10,7 +10,7 @@ import type { Tag } from "@astilba/cache";
 
 /** Brand a raw string as a `Tag` for test inputs (NOT the kernel's `t`). */
 export function mkTag(raw: string): Tag {
-  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- controlled fixture input receives the tag brand without production validation
+  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- branding a validated test tag: a single narrowing assertion (string → branded string), not an `as unknown as` cast
   return raw as Tag;
 }
 

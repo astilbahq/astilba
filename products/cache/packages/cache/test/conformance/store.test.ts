@@ -11,7 +11,7 @@ import {
 import { runStoreContract } from "./runner/store";
 
 // A stand-in value ceiling (bytes) so the oversize contract runs deterministically
-// without allocating KV's real 25 MiB (§8). The reference's `forceThrottle` control
+// without allocating KV's real 25 MiB. The reference's `forceThrottle` control
 // (always present) likewise arms the throttle-classification check.
 const FAKE_MAX_VALUE_BYTES = 1024;
 
@@ -27,7 +27,7 @@ runStoreContract(makeCasStoreHarness(), {
   label: "reference CAS store (capabilities.cas)",
 });
 
-// The kernel memory() L1 store as a third subject (§8, C4-a-0-ii). A clock-injected
+// The kernel memory() L1 store as a third subject. A clock-injected
 // memory runs the WHOLE contract: round-trip, RCW, read-hint, TTL-expiry (advance
 // present), oversize (`too_large` + prior-survives), and the no-CAS branch. Throttle
 // self-skips (L1 has no write-rate ceiling). Eviction/bounds — which the contract does

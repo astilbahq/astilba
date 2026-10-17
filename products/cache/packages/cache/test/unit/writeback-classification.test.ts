@@ -9,7 +9,7 @@ import { createCache } from "@astilba/cache";
 import { SimClock, SimRng } from "@astilba/harness";
 import { describe, expect, test } from "vitest";
 
-// Unit coverage for the L2 write-back failure classification (§5.0, E13) wired in C2-a-2.
+// Unit coverage for the L2 write-back failure classification wired in.
 // The sacred suite CANNOT reach this branch — its only injected store failure carries no
 // `code`, so it lands on the unclassified (propagating) path. Without these tests the
 // suppression path, its `durable:false` surfacing, and the two reserved telemetry names
@@ -139,7 +139,7 @@ describe("L2 write-back failure classification (§5.0, E13)", () => {
       new ClassifiedFailStore(() => new ThrottledWriteError("throttled"))
     );
     const entry = await fill(cache);
-    // Suppressed, not failed: the caller still gets the value (§5.0, E13).
+    // Suppressed, not failed: the caller still gets the value.
     expect(entry.value).toBe("v");
     expect(entry.durable).toBeFalsy();
     expect(types(events)).toContain("writeback_throttled");

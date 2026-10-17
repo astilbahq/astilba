@@ -6,8 +6,8 @@ import {
   probeEnvelope,
 } from "../conformance/fixtures/reader-parts";
 
-// CACHE-33 — a corrupt replication change holes its whole batch; the reader NEVER partial-applies
-// (§4.2, F12, E20). Red target = current main: `readChange` dropped a present-but-non-number axis
+// a corrupt replication change holes its whole batch; the reader NEVER partial-applies
+//. Red target = current main: `readChange` dropped a present-but-non-number axis
 // and `readFrame` kept the readable rest, so a `__delta:6` = {changes:[{tag:"t", hardEpoch:"6"}]}
 // (hard axis corrupted to a STRING) parsed to {tag:"t"} — recording `t` as known-clean {0,0} and
 // advancing the applied epoch, SILENTLY DELETING a hard purge from history (a serve-dead vector
@@ -24,7 +24,7 @@ function deltaFrame(seq: number, changes: readonly TagChange[]): BusFrame {
   return { changes, fromEpoch: seq - 1, toEpoch: seq };
 }
 
-/** A `__state` pointer echoing `REG_ID` (E19), pointing at deltas `1..lastBatch`. */
+/** A `__state` pointer echoing `REG_ID`, pointing at deltas `1..lastBatch`. */
 function pointer(lastBatch: number): unknown {
   return {
     epoch: lastBatch,
@@ -86,7 +86,7 @@ describe("reader fails closed on a corrupt replication change (§4.2, F12, E20)"
     // `unknown`; the entry is NEVER served through the silently-dropped purge. On MAIN
     // (drop-and-continue) `t` was recorded known-clean {0,0} ⇒ classify(born 3) ⇒ `fresh` and the
     // entry IS served — so this assertion REDS on `main` ("expected 'fresh' to be 'unknown'"),
-    // which is the CACHE-33 serve-dead vector this fixes.
+    // which is the serve-dead vector this fixes.
     expect(validity).toBe("unknown");
 
     // Corroboration: the hole leaves the reader suspect (applied stuck at 5 < declared head 6). On

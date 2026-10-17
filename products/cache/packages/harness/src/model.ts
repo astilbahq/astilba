@@ -5,18 +5,18 @@ import { mkKey, mkTag } from "./tags";
 import { world } from "./world";
 import type { World, WorldConfig } from "./world";
 
-// The async model-based layer for fast-check (§ Task 3). The kernel API is
+// The async model-based layer for fast-check . The kernel API is
 // Promise-based, so commands are `AsyncCommand`s driven by `fc.asyncModelRun`
 // inside `fc.asyncProperty`; race-shaped invariants add `fc.scheduler()` to
 // reorder promise resolutions under SimClock. The oracle tracks, per key, the set
-// of legally-servable values given the visibility bounds of §1; the core assertion
+// of legally-servable values given the visibility bounds; the core assertion
 // everywhere is: observed serve ⊆ legal serves.
 
 /** A tiny fixed key/tag space keeps the oracle tractable: key `k<i>` carries tag `t<i>`. */
 export const KEY_SPACE = 3;
 
 /**
- * The WIDE layout's OWN space constants (CACHE-28-ii Stage 1) — deliberately distinct
+ * The WIDE layout's OWN space constants — deliberately distinct
  * from the default generator's `KEY_SPACE`, so touching these can never perturb the
  * regression-floor generator. `TAG_SPACE_WIDE < KEY_SPACE_WIDE` makes ONE tag fan out
  * to multiple keys (`k0`,`k1`,`k2` all carry `t0`), the configuration the default 1:1
@@ -26,7 +26,7 @@ export const KEY_SPACE_WIDE = 3;
 export const TAG_SPACE_WIDE = 1;
 
 /**
- * The key/tag index widths a generator lays its commands over (CACHE-28-ii). The default
+ * The key/tag index widths a generator lays its commands over. The default
  * generator uses `NARROW_LAYOUT` (`tagSpace === keySpace === KEY_SPACE`, so key `k<i>` ↔
  * tag `t<i>` 1:1, exactly as before); the wide generator uses `tagSpace < keySpace` so a
  * tag covers several keys. A command carries its layout so `keyOf`/`tagOf` resolve the
@@ -52,7 +52,7 @@ export const WIDE_LAYOUT: SpaceLayout = {
 
 export interface Model {
   /**
-   * key → the set of values that may legally be served right now (§1 bounds). This is
+   * key → the set of values that may legally be served right now (bounds). This is
    * the SOLE representation of hard-purge visibility (invariant 1): a hard delete clears
    * the key's legal set to empty, so every value born before the (globally visible in this
    * SimClock-serialized model) delete becomes illegal to serve; only a subsequent fill
@@ -60,7 +60,7 @@ export interface Model {
    */
   readonly legal: Map<string, Set<string>>;
   /**
-   * tag → the keys observed carrying it (CACHE-28-ii, §4.1). Populated by every `getOrSet`
+   * tag → the keys observed carrying it. Populated by every `getOrSet`
    * that offers a value for `key` under `tag`; read by a HARD `delete` to fan the tag's
    * purge to EVERY co-tagged key's legal set — the shared-tag facet of invariant 1 (a hard
    * watermark is per-TAG, so it invalidates all entries carrying the tag, not just one key).
@@ -103,7 +103,7 @@ function legalSet(model: Model, key: string): Set<string> {
   return created;
 }
 
-/** Record that `key` carries `tag` (CACHE-28-ii) — the tag→keys index a hard delete fans over. */
+/** Record that `key` carries `tag` — the tag→keys index a hard delete fans over. */
 function indexTagKey(model: Model, tag: string, key: string): void {
   const keys = model.tagKeys.get(tag);
   if (keys) {
@@ -114,7 +114,7 @@ function indexTagKey(model: Model, tag: string, key: string): void {
 }
 
 /**
- * Co-tag fan-out reach counter (CACHE-28-ii Stage 1, R3). A wide property run exercises
+ * Co-tag fan-out reach counter. A wide property run exercises
  * fan-out iff a hard `delete` clears at least one key OTHER than the one it named — the
  * work only a shared-tag layout can produce, which the 1:1 default generator structurally
  * never does. `coTagFanCaseCount` aggregates DISTINCT such runs (keyed on model identity —
@@ -138,7 +138,7 @@ export function resetCoTagFanCases(): void {
   coTagFanCaseCount = 0;
 }
 
-// ── CACHE-28-ii Stage 2: per-dimension DELIVERY-reach accounting ─────────────────────────────
+// ── per-dimension DELIVERY-reach accounting ─────────────────────────────
 //
 // Each chaos dimension the alphabet adds ships a reached-counter so the chaos property can FLOOR
 // it: a dimension whose perturbation never actually FIRED in a run was not exercised, and its
@@ -164,7 +164,7 @@ const strongCounted = new WeakSet<Model>();
 const heartbeatModels = new WeakSet<Model>();
 /** model → keys currently HARD-DEAD: cleared by an accepted hard delete and not yet refilled.
  * The substrate for the strong-read reach — a strong read of a key in this set exercises the
- * `observed ⊆ legal` serve-dead arm on a value the registry purged (CACHE-26's shape). Tracked
+ * `observed ⊆ legal` serve-dead arm on a value the registry purged (the shape). Tracked
  * on the MODEL's accepted-purge bookkeeping (a delete cleared it, a fill re-legitimized it),
  * never on kernel state. */
 const deadKeysByModel = new WeakMap<Model, Set<string>>();
@@ -188,11 +188,11 @@ export function delayedStateReachedCases(): number {
   return delayedStateReachedCount;
 }
 /** Cases where a heartbeat freshened the pointer within a gap-hidden-purge + stalled-pointer
- * episode (the CACHE-27 context), since the last reset. */
+ * episode (the context), since the last reset. */
 export function heartbeatReachedCases(): number {
   return heartbeatReachedCount;
 }
-/** Cases where a STRONG read landed on a hard-dead key (the E16 live-check serve-dead arm),
+/** Cases where a STRONG read landed on a hard-dead key (the live-check serve-dead arm),
  * since the last reset. */
 export function strongReachedCases(): number {
   return strongReachedCount;
@@ -251,7 +251,7 @@ function noteChaosReaches(model: Model, real: Real): void {
   }
   // Heartbeat reach: a heartbeat ran AND a purge was dropped (gap) AND the reader observed a
   // delay-held-stale pointer — the exact gap + delayed-`__state` + heartbeat episode the
-  // CACHE-27 serve-dead lives in. All three are delivery facts, no kernel state.
+  // stalled-pointer serve-dead lives in. All three are delivery facts, no kernel state.
   if (
     heartbeatModels.has(model) &&
     bus.gapFireCount > 0 &&
@@ -270,9 +270,9 @@ export class GetOrSetCommand implements Command {
     readonly keyIndex: number,
     readonly value: string,
     readonly layout: SpaceLayout = NARROW_LAYOUT,
-    /** Read consistency (§1). `strong` (CACHE-28-ii Stage 2) forces the E16 live check, which
+    /** Read consistency. `strong` forces the live check, which
      * enriches knowledge and so makes the serve-dead arm property-reachable for free — a strong
-     * read of a hard-dead value would be `∉ legal` (CACHE-26's shape). It enters under the SAME
+     * read of a hard-dead value would be `∉ legal` (the shape). It enters under the SAME
      * `observed ⊆ legal` assertion; there is NO second strong-legal set (that would be a second
      * kernel — declined). Default `eventual` keeps every prior generator byte-identical. */
     readonly consistency: Consistency = "eventual"
@@ -285,7 +285,7 @@ export class GetOrSetCommand implements Command {
   async run(model: Model, real: Real): Promise<void> {
     const key = keyOf(this.keyIndex, this.layout);
     const tag = tagOf(this.keyIndex, this.layout);
-    // Record the key↔tag association BEFORE the fill (CACHE-28-ii): a later hard delete on
+    // Record the key↔tag association BEFORE the fill: a later hard delete on
     // `tag` fans its purge over every key indexed here. 1:1 layout ⇒ one key per tag ⇒ the
     // pre-Stage-1 single-key clear, unchanged.
     indexTagKey(model, tag, key);
@@ -382,7 +382,7 @@ export class DeleteCommand implements Command {
     const iso = real.world.isolate(this.iso % real.world.isolateCount);
     await iso.cache.delete({ tag: mkTag(tag) });
     // A visible hard delete makes every pre-delete value illegal to serve: clear the legal
-    // set to empty (§1/§4.1, invariant 1). The watermark is per-TAG, so the purge fans over
+    // set to empty (invariant 1). The watermark is per-TAG, so the purge fans over
     // EVERY key carrying `tag` — not just the one keyOf(keyIndex) names. Clear this key
     // (preserving the pre-Stage-1 behavior exactly, incl. a delete on a never-filled key) AND
     // every co-tagged sibling the tag→keys index recorded. 1:1 layout ⇒ the index holds only
@@ -448,7 +448,7 @@ export class DropFrameCommand implements Command {
   }
 }
 
-/** Buffer subsequent bus frames for `ms` (CACHE-28-ii Stage 2, dimension c). The precondition for
+/** Buffer subsequent bus frames for `ms` (dimension c). The precondition for
  * an observable reorder — two frames must be in flight at once for a swap to have anything to swap.
  * Drives the LOGICAL `world.chaos.delayFrames` knob, never `world.bus` directly. */
 export class DelayFramesCommand implements Command {
@@ -469,7 +469,7 @@ export class DelayFramesCommand implements Command {
 }
 
 /** Swap the next two BUFFERED frames so a higher (non-contiguous) frame can arrive ahead of a
- * lower one (CACHE-28-ii Stage 2, dimension c). Out-of-order delivery — a no-op unless a prior
+ * lower one (dimension c). Out-of-order delivery — a no-op unless a prior
  * `delayFrames` has two frames buffered when the second publishes. */
 export class ReorderFramesCommand implements Command {
   check(): boolean {
@@ -486,7 +486,7 @@ export class ReorderFramesCommand implements Command {
   }
 }
 
-/** Stall the `__state` pointer's visibility by `ms` (CACHE-28-ii Stage 2, dimension a). The reader
+/** Stall the `__state` pointer's visibility by `ms` (dimension a). The reader
  * resyncs off a lagging pointer — a stale pointer whose epoch trails a durable purge. Addresses the
  * LOGICAL mirror-key name `"__state"`; the harness resolves it to the physical scoped key. */
 export class DelayStateCommand implements Command {
@@ -506,9 +506,9 @@ export class DelayStateCommand implements Command {
   }
 }
 
-/** Fire an E5 heartbeat (CACHE-28-ii Stage 2, dimension d): the coordinator refreshes the
+/** Fire an heartbeat (dimension d): the coordinator refreshes the
  * `__state` pointer's `flushedAt` freshness field WITHOUT minting any epoch. A DELIVERY
- * perturbation only — freshness motion must never be read as catch-up (CACHE-27), so it changes
+ * perturbation only — freshness motion must never be read as catch-up, so it changes
  * neither `legal` nor `tagKeys`. Its serve-dead relevance is that a heartbeat-freshened stale
  * pointer, read while a gap hides a purge, is exactly where a convergence anchor tied to freshness
  * would wrongly clear suspicion. */
@@ -587,10 +587,10 @@ export function commandsArb(maxCommands = 20): fc.Arbitrary<Iterable<Command>> {
 }
 
 /**
- * The WIDE + CHAOS command arbitrary (CACHE-28-ii Stage 2): the WIDE layout's fills/purges (so
+ * The WIDE + CHAOS command arbitrary: the WIDE layout's fills/purges (so
  * hard deletes still fan over co-tagged siblings) laid under the full delivery-perturbation
  * alphabet — dropped frames (b), buffered + reordered frames (c), a stalled `__state` pointer (a),
- * an E5 heartbeat (d) — plus strong reads as a first-class action (e). Every chaos command is a
+ * an heartbeat (d) — plus strong reads as a first-class action (e). Every chaos command is a
  * DELIVERY perturbation on the REAL side ONLY: none touches `legal`/`tagKeys`, so the oracle's
  * `observed ⊆ legal` legality bound is invariant under gap/delay/reorder/heartbeat — a
  * registry-accepted hard purge stays illegal to serve under ANY delivery schedule. The generator
@@ -608,7 +608,7 @@ export function commandsArbChaos(
   // (a small stall elapses before the read that would observe it). The run's total advance is
   // bounded well under this range, so a `delayState` reliably keeps the pointer stale for the run.
   const stallMs = fc.integer({ max: 200_000, min: 40_000 });
-  // Bias reads toward strong (2/3) so the E16 live-check serve-dead arm and the stalled-pointer
+  // Bias reads toward strong (2/3) so the live-check serve-dead arm and the stalled-pointer
   // observation points (both driven by reads) are exercised often enough to floor.
   const consistency: fc.Arbitrary<Consistency> = fc.constantFrom(
     "eventual",
@@ -638,13 +638,13 @@ export function commandsArbChaos(
 }
 
 /**
- * The convergence-EPISODE arbitrary (CACHE-28-ii Stage 2): a structured skeleton with RANDOM
+ * The convergence-EPISODE arbitrary: a structured skeleton with RANDOM
  * parameters (which key/isolate, timings, stall size, read consistency) that reliably walks the
- * CACHE-27 serve-dead shape every run — the rare episode a uniform generator almost never
+ * stalled-pointer serve-dead shape every run — the rare episode a uniform generator almost never
  * assembles (which is why the deterministic sacred traces construct it by hand). The skeleton:
  *
- *   warm kW  →  stall `__state`  →  drop the HARD purge's frame (gap)  →  heartbeat (freshen the
- *   stalled pointer)  →  strong read of the now-dead kW.
+ * warm kW → stall `__state` → drop the HARD purge's frame (gap) → heartbeat (freshen the
+ * stalled pointer) → strong read of the now-dead kW.
  *
  * (It does NOT reorder — out-of-order delivery is a distinct dimension, floored by the reorder
  * episode below. This episode's serve-dead comes from the dropped hard frame + stalled pointer.)
@@ -652,7 +652,7 @@ export function commandsArbChaos(
  * Under the correct kernel the gap-opened episode declares a live-channel head the stalled pointer
  * and the freshness bump never satisfy, so every read fails closed and REFILLS — the oracle
  * (`observed ⊆ legal`) holds. It is the alphabet's teeth against a convergence anchor that cleared
- * on pointer freshness / a bare resync (CACHE-27): such a kernel serves the gap-hidden dead `warm`
+ * on pointer freshness / a bare resync: such a kernel serves the gap-hidden dead `warm`
  * and reds here. Every step is a DELIVERY perturbation — `legal`/`tagKeys` are untouched — so the
  * episode reliably FIRES the delayed-`__state`, heartbeat, gap and strong-read reaches that floor
  * those dimensions (reorder is floored by the separate reorder episode). Randomizing the parameters
@@ -698,17 +698,17 @@ export function commandsArbConvergenceEpisode(): fc.Arbitrary<
         new DropFrameCommand(),
         new DeleteCommand(WRITER, kA, WIDE_LAYOUT),
         new AdvanceCommand(p.a2),
-        // Freshen the stalled pointer's `flushedAt` — the CACHE-27 bait (no epoch minted).
+        // Freshen the stalled pointer's `flushedAt` — the bait (no epoch minted).
         new HeartbeatCommand(),
         new AdvanceCommand(p.a3),
         // Eventual read of kA — the convergence-anchor witness. Suspect, no REACHED head ⇒ fail
         // closed ⇒ refill. It resyncs off the stalled pointer (delayed-`__state` reach). A kernel
         // that cleared suspicion on a declared-but-unreached head (or on freshness) serves the
-        // dead `warmA` here (CACHE-27).
+        // dead `warmA` here.
         new GetOrSetCommand(READER, kA, `refillA-${p.w}`, WIDE_LAYOUT),
         // Strong read of the co-dead kB — floors the strong reach and participates in
         // value-membership (a dead serve is `∉ legal`); under the correct kernel it refills. It does
-        // NOT witness CACHE-26 (the strong-MISS born-dead serve, owned by strong-fill-livecheck); its
+        // NOT witness the strong-miss born-dead bug (the strong-MISS born-dead serve, owned by strong-fill-livecheck); its
         // value here is exercising a strong action inside the convergence composition.
         new GetOrSetCommand(
           READER,
@@ -722,7 +722,7 @@ export function commandsArbConvergenceEpisode(): fc.Arbitrary<
 }
 
 /**
- * The REORDER episode (CACHE-28-ii Stage 2, dimension c) — `serve-dead-out-of-order`'s episode
+ * The REORDER episode (dimension c) — `serve-dead-out-of-order`'s episode
  * TWIN: a warm reader, then a buffered pair swapped so a HIGHER-epoch HARD delete arrives
  * NON-CONTIGUOUSLY ahead of a lower soft expire — the out-of-order delivery the default generators
  * never assemble. A fixed post-buffer advance (well past the frame delay) guarantees delivery, so
@@ -767,7 +767,7 @@ export function commandsArbReorderEpisode(): fc.Arbitrary<Iterable<Command>> {
 }
 
 /**
- * The WIDE command arbitrary (CACHE-28-ii Stage 1): the SAME command classes as
+ * The WIDE command arbitrary: the SAME command classes as
  * `commandsArb`, laid over `WIDE_LAYOUT` (`TAG_SPACE_WIDE` tags over `KEY_SPACE_WIDE`
  * keys) so ONE tag fans out to several keys. `key` ranges over the wider key space; each
  * command derives its tag as `keyIndex % TAG_SPACE_WIDE`, so a hard `delete` on a shared

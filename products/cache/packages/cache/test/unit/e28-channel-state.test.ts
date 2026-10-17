@@ -1,18 +1,18 @@
-// Ordinary unit teeth (NOT sacred) — E28. Channel state, the declared-degraded mode, and the
-// `explain()` surface over it. Each case bites ONE branch (rule 13):
+// Ordinary unit teeth (NOT sacred). Channel state, the declared-degraded mode, and the
+// `explain()` surface over it. Each case bites ONE branch:
 //
 //   1. NEVER-ESTABLISHED IS DECLARED, NOT SILENT — a reader whose bus never came up reports
 //      `never-established`, and a failed dial is DECLARED (`lost` ⇒ `bus_dial_failed`) rather than
 //      going quiet. THE MUTATION: dial-failure-as-silence (drop the `lost` declaration) ⇒ the reader
 //      reads exactly like a healthy-but-quiet one ⇒ red.
-//   2. NEVER-ESTABLISHED ≠ SUSPICION — the declared mode does NOT raise E20/E21's suspect flag.
+// 2. NEVER-ESTABLISHED ≠ SUSPICION — the declared mode does NOT raise the suspect flag.
 //      Blind it into suspicion and every cold boot reads as a gapped map ⇒ red.
 //   3. ESTABLISHED ON HELLO — and only on hello: a socket that resolved but never spoke has not
 //      established anything.
 //   4. LOST ONLY AFTER ESTABLISHMENT — a channel that never came up did not LOSE anything; it never
 //      had it. Blind the distinction and the two states collapse ⇒ red.
 //   5. explain() SURFACES IT, and adds no bookkeeping — the witness may speak, it may never touch
-//      cache state (E27): explain does NOT dial.
+// cache state: explain does NOT dial.
 //
 // Lane: unit. Deterministic — a hand-driven bus, no timers, no wall clock.
 
@@ -101,7 +101,7 @@ describe("E28 — the reader reports its channel rather than inferring it from q
     // The transport reports its dial failure as a `lost` declaration.
     bus.deliver({ kind: "lost" });
 
-    // THE MUTATION — dial-failure-as-silence: drop the `lost` declaration (the pre-E28 shape, where
+    // THE MUTATION — dial-failure-as-silence: drop the `lost` declaration (the earlier shape, where
     // the rejection was swallowed inside a detached IIFE) and BOTH assertions red. That is the exact
     // failure this erratum exists to end: with nothing on the wire, a bus that never connected and a
     // healthy bus with nothing to say produce identical evidence — none — so the reader would report
@@ -139,7 +139,7 @@ describe("E28 — the reader reports its channel rather than inferring it from q
     // down and the attempt to bring it back did not come up.
     bus.deliver({ kind: "lost" });
 
-    // EXACTLY ONE, which is the count E28's per-failed-dial wording names. It read as two while the
+    // EXACTLY ONE, which is the count the per-failed-dial wording names. It read as two while the
     // adapter wired the same counter to the same sink from its own end; a counter that double-counts
     // is not a counter. Over-gate this (skip the emit whenever the channel is not
     // never-established) and it reds at 0 — a fleet whose bus dies and cannot come back would go
@@ -150,7 +150,7 @@ describe("E28 — the reader reports its channel rather than inferring it from q
   it("never-established is DECLARED DEGRADED, not SUSPICION (E20/E21 keep their posture)", () => {
     const { inval, bus } = reader();
     bus.deliver({ kind: "lost" });
-    // E20/E21's suspect flag is for a map that knows it MISSED something. A reader that never
+    // the suspect flag is for a map that knows it MISSED something. A reader that never
     // connected has missed nothing — it has no channel at all — and those are different states with
     // different remedies. Blind this
     // into suspicion and every cold boot reads as a gapped map, which would make the suspect flag

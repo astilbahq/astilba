@@ -1,8 +1,8 @@
-// INV-14 — spec §11.14
-// INV-16 — spec §11.16 (§4.5, M3)
-// INV-19 — spec §11.19 (M2)
-// INV-20 — spec §11.20 (B5, MI8)
-// INV-28 — errata E11 (§11 invariant amendment)
+// INV-14 — spec
+// INV-16 — spec
+// INV-19
+// INV-20 — spec
+// INV-28
 // Sacred: append-only. Never modify, delete, weaken, skip, or .todo an existing test.
 
 import { commandsArb, mkTag, modelSetup, world } from "@astilba/harness";

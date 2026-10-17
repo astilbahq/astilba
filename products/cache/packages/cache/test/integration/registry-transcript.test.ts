@@ -1,7 +1,7 @@
-// Test B — the rehydration transcript (C1-c). The SAME command script is driven against
+// Test B — the rehydration transcript. The SAME command script is driven against
 // BOTH hosts of the one pure registry machine — the harness `FakeRegistry` and the real
 // Coordinator Durable Object — and their outputs are asserted BYTE-IDENTICAL: the command
-// responses (epoch acks), and the content-addressed `__delta` batches (§4.2, F12 canonical
+// responses (epoch acks), and the content-addressed `__delta` batches (canonical
 // form). This is the payoff of the thin-shell design: two hosts, one machine, identical
 // bytes.
 //
@@ -13,7 +13,7 @@
 // byte-for-byte, that would be a real finding (a monotonicity/determinism STOP, not a
 // ledger entry — the machine is the shared truth).
 //
-// Lane law (rule 12): the flush is fired deterministically, so this integration test
+// Lane law: the flush is fired deterministically, so this integration test
 // carries no timing tolerance in its assertions.
 
 import {
@@ -35,13 +35,13 @@ const B = "transcript:b";
 const C = "transcript:c";
 
 // Both hosts default `regId:"default"` (no REGISTRY_ID wired in this lane's wrangler.jsonc),
-// so the §4.2 mirror keys are `__reg:default:…` (E19). Address them through the same
+// so the mirror keys are `__reg:default:…`. Address them through the same
 // `mirrorKeys` the kernel writes with, so the transcript compares the real scoped bytes.
-// Per-test isolation (CACHE-29). Every DO in this lane shares ONE KV namespace, and
+// Per-test isolation. Every DO in this lane shares ONE KV namespace, and
 // pool-workers' per-file isolated-storage frames are known to drop under concurrent DO
 // requests (workers-sdk #11031) — so tests that all wrote the same `__reg:default:…` keys
-// raced. A UNIQUE regId per test (the tool E19 built) partitions the namespace into
-// `__reg:<id>:…`, deterministically. Under E19-b the regId IS the DO name (identity = address),
+// raced. A UNIQUE regId per test (the tool built) partitions the namespace into
+// `__reg:<id>:…`, deterministically. The regId IS the DO name (identity = address),
 // so `scope` writes NO shared global — the DO derives the SAME id from the test's own
 // (already-unique) name (`idFromName(regId)`); the fake host is constructed with the SAME id so the
 // byte-identity comparison still holds. `scope` just returns the matching key formatter.
@@ -127,7 +127,7 @@ describe("rehydration transcript — FakeRegistry and the real Coordinator emit 
       await fireAlarm(stub);
       seq += 1;
 
-      // The content-addressed batch: byte-identical JSON on both hosts (F12).
+      // The content-addressed batch: byte-identical JSON on both hosts.
       const fakeDelta = fakeStore.writes.get(KEYS.deltaKey(seq));
       const doDelta = await kv.get(KEYS.deltaKey(seq));
       expect(fakeDelta).toBeDefined();
@@ -234,7 +234,7 @@ describe("rehydration transcript — FakeRegistry and the real Coordinator emit 
       await fireAlarm(stub);
       seq += 1;
 
-      // The delta batch stays byte-identical every flush (F12), as in the first case.
+      // The delta batch stays byte-identical every flush, as in the first case.
       const fakeDelta = fakeStore.writes.get(KEYS.deltaKey(seq));
       expect(await kv.get(KEYS.deltaKey(seq))).toBe(fakeDelta);
 
@@ -246,7 +246,7 @@ describe("rehydration transcript — FakeRegistry and the real Coordinator emit 
         expect(doSnap).toBeNull();
       } else {
         // At the cadence: BOTH hosts emit the __snap checkpoint, byte-for-byte identical —
-        // the F12 canonical batch over (0, epoch] (fromEpoch 0), one serializer, two hosts.
+        // the canonical batch over (0, epoch] (fromEpoch 0), one serializer, two hosts.
         expect(fakeSnap).toBeDefined();
         expect(doSnap).toBe(fakeSnap);
         expect(JSON.parse(fakeSnap ?? "null")).toMatchObject({
@@ -329,17 +329,17 @@ describe("rehydration transcript — FakeRegistry and the real Coordinator emit 
       await fireAlarm(stub);
     }
     const snapBatchBefore = pointerSnapBatch(await kv.get(KEYS.stateKey));
-    expect(snapBatchBefore).toBe(EVERY_BATCHES); 
+    expect(snapBatchBefore).toBe(EVERY_BATCHES); // 5
 
-    
-    
-    
-    
-    
-    
-    
-    
-    
+    // Shrink the cadence to 2, then force a rehydration. Ruling B: `env` may only AUTHOR a fresh
+    // journaled `configure`, applied PROSPECTIVELY at a definite journal position — never re-read
+    // into the machine constructor (which would replay the WHOLE journal under cadence 2 and fork
+    // snapBatch, blessing a phantom KEYS.snapKey(6)). The journal is the single durable truth.
+    //
+    // `wrangler types` narrows a `vars` entry to its LITERAL value (`"5"`), so a plain assignment
+    // of `"2"` is a type error. `Reflect.set` writes through the runtime object without a cast
+    //. The DO reads the same live `env` object — which is what makes the
+    // constructor-re-read MUTATION observable (it would fork snapBatch to 6 here).
     const original = env.REGISTRY_SNAPSHOT_EVERY_BATCHES;
     Reflect.set(env, "REGISTRY_SNAPSHOT_EVERY_BATCHES", "2");
     try {
@@ -368,11 +368,11 @@ describe("rehydration transcript — FakeRegistry and the real Coordinator emit 
     }
   });
 
-  /* References: §4.2. */
-  
-  
-  
-  
+  // Transcript v2 — compare the ordered EFFECT PLAN, not just the final bytes. The
+  // oracle-scope lesson made machinery: a double `__state` write is byte-identical under
+  // last-write-wins, so a plan that records COUNTS + order is the only oracle that catches it.
+  // This observes the LIVE DO's KV writes (a recording binding substituted on the shared `env`),
+  // so a DO-side regression becomes a transcript failure — not an invisible production 429.
   it("transcript v2: the DO's flush write plan matches the fake's, one __state bless per flush (§4.2, D17)", async () => {
     const RID = "transcript-v2-plan";
     const KEYS = scope(RID);
@@ -384,10 +384,10 @@ describe("rehydration transcript — FakeRegistry and the real Coordinator emit 
     });
     const stub = env.COORDINATOR.get(env.COORDINATOR.idFromName(RID));
 
-    
-    
-    
-    
+    // A recording KV binding: log every put's KEY, delegate the write to the real namespace so
+    // the DO still functions. `new Proxy<KVNamespace>(target, …)` is typed by the target — no
+    // cast. Substituted on the LIVE `env` the DO shares (the same mechanism the
+    // config test's mutation relies on), and restored in `finally`.
     const realKv = env.REGISTRY_KV;
     const doPlan: string[] = [];
     const recordingKv: KVNamespace = new Proxy(realKv, {
@@ -441,12 +441,12 @@ describe("rehydration transcript — FakeRegistry and the real Coordinator emit 
     expect(doPlan.indexOf(KEYS.snapKey(5))).toBeLessThan(doPlan.lastIndexOf(KEYS.stateKey));
   });
 
-  /* References: §4.2. */
-  
-  
-  
-  
-  
+  // The snapshot SIZE gate: the skip is MACHINE-decided, so both hosts skip the
+  // SAME cadence-due-but-oversize snapshot. The DO takes its ceiling from a config var (via the
+  // journaled `configure` channel, Ruling B), the fake from its constructor — both tiny, so the
+  // seq-5 snapshot blows past it and neither host writes a `__snap`. `REGISTRY_MAX_SNAPSHOT_BYTES`
+  // is NOT in this lane's wrangler vars, so it is set on the LIVE `env` the DO shares (the same
+  // mechanism the config-prospective test uses) and torn down in `finally`.
   it("both hosts SKIP an oversize snapshot identically: no __snap written, snapBatch unadvanced, byte-identical (§4.2, CACHE-23)", async () => {
     const RID = "transcript-oversize-skip";
     const KEYS = scope(RID);
@@ -490,7 +490,7 @@ describe("rehydration transcript — FakeRegistry and the real Coordinator emit 
       }
 
       // The blessed pointer never advanced snapBatch (stalled at 0), identical across hosts modulo
-      // the wall-time `flushedAt` term (the sim-vs-Date.now divergence, D9).
+      // the wall-time `flushedAt` term (the sim-vs-Date.now divergence).
       const doState = await kv.get(KEYS.stateKey);
       expect(pointerSansTime(doState)).toStrictEqual(
         pointerSansTime(fakeStore.writes.get(KEYS.stateKey))

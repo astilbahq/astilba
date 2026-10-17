@@ -14,7 +14,7 @@
 // facts, and the day they disagree the page and the probe will each be certain.
 //
 // WHY IT READS BEFORE IT WITNESSES, in the same order `routes/home.tsx` does. `explain()` observes;
-// it does not open a channel. The subscription is deferred to first USE (E28) — a read, a purge —
+// it does not open a channel. The subscription is deferred to first USE — a read, a purge —
 // so a surface that only witnessed would report `never-established` on an isolate nobody had read
 // from, and that is a fact about the probe's own traffic rather than about the deployment. So this
 // route does what a page does: it performs the app's one read, then witnesses it. What it reports is

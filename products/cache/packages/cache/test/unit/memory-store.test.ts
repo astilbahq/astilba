@@ -1,10 +1,10 @@
-// Ordinary unit teeth (NOT sacred) — C4-a-0-ii, the memory() L1 store (§8).
+// Ordinary unit teeth (NOT sacred), the memory() L1 store.
 //
 // The Store conformance contract drives round-trip / RCW / read-hint / TTL-expiry /
 // oversize against the memory subject, but it does NOT cover bounds + LRU eviction —
 // FakeStore never evicts, so the contract has no such check. These teeth pin the
 // eviction/bounds/TTL-config branches memory() adds, each named so it bites exactly one
-// (rule 13): blind LRU eviction ⇒ a bounds tooth reds; blind byte-accounting ⇒ the
+//: blind LRU eviction ⇒ a bounds tooth reds; blind byte-accounting ⇒ the
 // maxBytes tooth reds; blind the too_large throw ⇒ the oversize tooth reds.
 
 import { isStoreWriteError, memory } from "@astilba/cache";

@@ -1,15 +1,15 @@
-// The C2-b-2 reader-shell payoff (§4.2, E20/E21) — the replication READER driven against the REAL
+// The reader-shell payoff — the replication READER driven against the REAL
 // Coordinator Durable Object + the REAL cloudflareKV mirror on workerd. The DO writes the
-// `__delta`/`__snap`/`__state` mirror (the WRITER side, C1/C2-b); a fresh `Invalidation` reader
-// resyncs off it, and the tick-driven `ReplicationPoller` (C2-b-2-b) drives the retry ladder
-// out-of-band. doBus is C3, so a harness `FakeBus` supplies the live channel: its subscribe-time
-// `hello{head}` declares the DO's reached epoch (E21 — convergence anchors to a live-channel head,
+// `__delta`/`__snap`/`__state` mirror (the WRITER side); a fresh `Invalidation` reader
+// resyncs off it, and the tick-driven `ReplicationPoller` drives the retry ladder
+// out-of-band. doBus is so a harness `FakeBus` supplies the live channel: its subscribe-time
+// `hello{head}` declares the DO's reached epoch (convergence anchors to a live-channel head,
 // never to pointer freshness).
 //
 // Two flows: (1) cold-boot resync off the KV mirror ALONE; (2) a delta hole BELOW a blessed
 // snapshot routes the ladder through the snapshot bridge, not the hole.
 //
-// Lane law (rule 12): the DO flush is fired deterministically (`runDurableObjectAlarm`) and the
+// Lane law: the DO flush is fired deterministically (`runDurableObjectAlarm`) and the
 // poller ticks on explicit `nowMs`, so these assertions carry no timing tolerance despite the lane.
 
 import { fireAlarm } from "./registry-harness";
@@ -30,8 +30,8 @@ const A = "reader:a";
 const B = "reader:b";
 const X = "reader:x";
 
-// Per-test isolation (CACHE-29): a UNIQUE regId per test partitions the shared KV namespace into
-// `__reg:<id>:…` (E19). Under E19-b the regId IS the DO name (`idFromName(regId)`, identity =
+// Per-test isolation: a UNIQUE regId per test partitions the shared KV namespace into
+// `__reg:<id>:…`. The regId IS the DO name (`idFromName(regId)`, identity =
 // address), so `scope` writes NO shared global — the DO derives the SAME id from its name, and the
 // reader is constructed with the SAME id so it resyncs the exact scoped keyspace the DO writes.
 function scope(regId: string): MirrorKeys {
@@ -44,8 +44,8 @@ const EVERY_BATCHES = 5;
 /** A deterministic rng — with `jitterFraction: 0` the poller ignores it, so cadences are exact. */
 const rng = { next: (): number => 0.5 };
 
-/** A minimal eventual-read probe envelope over `tags` born at `bornEpoch` (§3): only `tags` +
- * `bornEpoch` steer the §4.1 validity table, the rest are inert placeholders. */
+/** A minimal eventual-read probe envelope over `tags` born at `bornEpoch`: only `tags` +
+ * `bornEpoch` steer the validity table, the rest are inert placeholders. */
 function envelope(tags: readonly string[], bornEpoch: number): Envelope {
   return {
     bornEpoch,
@@ -66,7 +66,7 @@ function envelope(tags: readonly string[], bornEpoch: number): Envelope {
   };
 }
 
-/** The blessed `__state` pointer's `epoch` — the DO's reached durable epoch (the E21 head). */
+/** The blessed `__state` pointer's `epoch` — the DO's reached durable epoch (the head). */
 async function pointerEpoch(stateKey: string): Promise<number> {
   const raw = await env.REGISTRY_KV.get(stateKey);
   const parsed = JSON.parse(raw ?? "null") as Record<string, unknown>;
@@ -102,13 +102,13 @@ describe("replication reader shell on workerd (§4.2, E20/E21)", () => {
     expect(head).toBe(2);
 
     // A fresh reader with NO prior state. Feed a `hello{head}` at the DO's reached epoch over the
-    // FakeBus (E21): advance the channel head BEFORE subscribe, so the subscribe-time hello declares
+    // FakeBus: advance the channel head BEFORE subscribe, so the subscribe-time hello declares
     // it. No frame is ever delivered — the reader learns the watermarks off KV alone.
     const bus = new FakeBus(new SimClock(0));
     bus.publish({ changes: [], fromEpoch: 0, toEpoch: head });
     const store = cloudflareKV(kv);
     const reader = new Invalidation(doRegistry(stub, RID), store, bus);
-    // Put the reader IN USE (E28): construction captures the bus and defers the subscription to the
+    // Put the reader IN USE: construction captures the bus and defers the subscription to the
     // first read, so a module-scope cache can be built where the platform forbids I/O. This case
     // drives the reader directly, so it opens the channel explicitly — what a first read would do.
     reader.ensureSubscribed();
@@ -170,7 +170,7 @@ describe("replication reader shell on workerd (§4.2, E20/E21)", () => {
     bus.publish({ changes: [], fromEpoch: 0, toEpoch: head });
     const store = cloudflareKV(kv);
     const reader = new Invalidation(doRegistry(stub, RID), store, bus);
-    // Put the reader IN USE (E28): construction captures the bus and defers the subscription to the
+    // Put the reader IN USE: construction captures the bus and defers the subscription to the
     // first read, so a module-scope cache can be built where the platform forbids I/O. This case
     // drives the reader directly, so it opens the channel explicitly — what a first read would do.
     reader.ensureSubscribed();

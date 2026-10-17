@@ -1,9 +1,16 @@
-// E16 promotion-rule regression — spec §11.1/§11.2, §11.12, errata E1/E16
+// Strong-read promotion-rule regression
 // Sacred: append-only. Never modify, delete, weaken, skip, or .todo an existing test.
 
 import { mkTag, world } from "@astilba/harness";
 import { describe, expect, test } from "vitest";
 
+// Shared setup for both cases below: isolate 0 purges a tag whose bus frame is
+// dropped before it is ever delivered, so isolate 1 never observes the purge and
+// stays locally unknown on that tag. Isolate 1 then fills against the key — the
+// write-back fence passes (unknown, not known-dead locally) and stores a value
+// born BEHIND the purge ("born-dead"). The fill must NOT promote the tag to
+// known-clean on isolate 1: only a verified authority (a contiguously-applied bus
+// frame, or a recorded live check) may do that.
 async function setupBornDeadFill(): Promise<{
   filler: ReturnType<ReturnType<typeof world>["isolate"]>["cache"];
   tag: ReturnType<typeof mkTag>;
@@ -65,7 +72,7 @@ describe("E16 promotion rule", () => {
       tags: [tag],
     });
 
-    // A strong read always performs a live, un-memoized registry check (E1) —
+    // A strong read always performs a live, un-memoized registry check —
     // independent of whatever the fill did (or didn't) record locally — so it
     // must also refill rather than serve the born-dead value.
     expect(third).not.toBe("born-dead");

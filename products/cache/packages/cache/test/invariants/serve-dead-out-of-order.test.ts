@@ -1,11 +1,11 @@
-// INV-1 INV-25 — spec §11.1, §4.2, errata E1, E4, E20, E21
+// INV-1 INV-25 — spec
 // Sacred: append-only. Never modify, delete, weaken, skip, or .todo an existing test.
 //
-// A hard purge must never be SERVED once durably accepted (§11.1) — not fresh, not stale via
+// A hard purge must never be SERVED once durably accepted — not fresh, not stale via
 // SWR. Under out-of-order / dropped bus delivery a reader can converge before it has accounted
 // for a higher hard purge that a lower frame (arriving after) masks. Convergence therefore
 // clears ONLY when every KNOWN loss is accounted: each loss-revealing event declares a head the
-// reader must reach (E21) — a `hello`, a `gap` (its `head`), or a NON-CONTIGUOUS frame (its
+// reader must reach — a `hello`, a `gap` (its `head`), or a NON-CONTIGUOUS frame (its
 // `toEpoch`); a contiguous frame declares nothing (it would "converge wherever it stands").
 //
 // Three arms, each a warm reader (entry born epoch 0, tag strong-primed) that misses a hard

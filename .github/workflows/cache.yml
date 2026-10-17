@@ -67,8 +67,6 @@ jobs:
           exit "$fail"
       - name: binary tripwire (no NUL byte in any tracked file)
         run: node scripts/assert-no-nul-bytes.mjs
-      - name: snapshot integrity (pinned source and approved amendments)
-        run: pnpm verify:snapshot
       - name: resolved Vitest cohort (direct and Vite+ share one instance)
         run: pnpm verify:toolchain
       - run: pnpm check

@@ -1,16 +1,16 @@
-// The Coordinator residency decision (§4.2, D16, E19) — the fix for C2-b-2-0.
+// The Coordinator residency decision — the fix for the residency bug.
 //
 // The bug: `CoordinatorFlushSink` chose snapshot-vs-delta KV residency by PARSING the key
-// (`key.startsWith("__snap:")`). But E19 scoped EVERY mirror key to `__reg:<regId>:snap:<seq>` /
+// (`key.startsWith("__snap:")`). But every mirror key is scoped to `__reg:<regId>:snap:<seq>` /
 // `…:delta:<seq>`, so that prefix NEVER matched — every scoped snapshot silently took the 48h
-// DELTA_TTL instead of D16's 7d SNAP_TTL. TTL is Miniflare-blind (D2/D14), so the transcript
+// DELTA_TTL instead of the 7d SNAP_TTL. TTL is Miniflare-blind, so the transcript
 // lane could not see it. The observable here is the residency the sink SELECTS (the `expirationTtl`
 // it passes to its `Store`), NOT KV's enforcement — captured by a fake `Store` behind the REAL
 // `CoordinatorFlushSink`, driven by the SAME `executeFlushEffects` the DO uses (thin-shell).
 //
 // This test is deterministic (no wall time, no KV round-trip); it lives in the integration lane
 // only because it imports the real Coordinator sink, whose module resolves `cloudflare:workers`.
-// It relies on none of the lane's timing tolerance (rule 12).
+// It relies on none of the lane's timing tolerance.
 
 import type { Store, StoreValue, StoreWriteOptions } from "@astilba/cache";
 import { executeFlushEffects, mirrorKeys, RegistryMachine } from "@astilba/cache/registry";
@@ -23,7 +23,7 @@ import {
 } from "../../src/adapters/cloudflare/coordinator";
 
 /** A `Store` that captures each write's key and the SELECTED `expirationTtl` — the residency
- * decision the sink makes, before KV ever enforces it (Miniflare-blind, D2/D14). */
+ * decision the sink makes, before KV ever enforces it (Miniflare-blind). */
 class CapturingResidencyStore implements Store {
   readonly writes: {
     readonly key: string;
@@ -52,7 +52,7 @@ describe("CoordinatorFlushSink — KV residency by effect kind, not key parse (�
     const RID = "resid-probe";
     const KEYS = mirrorKeys(RID);
     // The scoped snapshot key never begins with `__snap:` — the exact reason the old
-    // `startsWith("__snap:")` residency parse could NEVER match post-E19.
+    // `startsWith("__snap:")` residency parse could NEVER match post.
     expect(KEYS.snapKey(1).startsWith("__snap:")).toBe(false);
 
     // Cadence 1 ⇒ the single mutation's flush BOTH persists a delta batch and mints a snapshot.
@@ -60,7 +60,7 @@ describe("CoordinatorFlushSink — KV residency by effect kind, not key parse (�
     machine.expire(["r"], 0);
 
     const store = new CapturingResidencyStore();
-    // The broadcaster (C3-a) is irrelevant to residency; a no-op keeps this focused on the puts.
+    // The broadcaster is irrelevant to residency; a no-op keeps this focused on the puts.
     const sink = new CoordinatorFlushSink(store, () => {
       // no live channel under test here
     });
@@ -77,7 +77,7 @@ describe("CoordinatorFlushSink — KV residency by effect kind, not key parse (�
 
     // THE red-proof (reds on the pre-fix `startsWith` parse: scoped snap → 48h, mis-classified):
     // residency now rides the effect kind, so the snapshot gets its 7d floor.
-    expect(snap?.expirationTtl).toBe(SNAP_TTL_S); // 7d — the D16 snapshot residency
+    expect(snap?.expirationTtl).toBe(SNAP_TTL_S); // 7d — the snapshot residency
     expect(delta?.expirationTtl).toBe(DELTA_TTL_S); // 48h — the delta residency
     // The hot `__state` pointer carries NO TTL (it never expires).
     expect(state?.expirationTtl).toBeUndefined();

@@ -3,10 +3,10 @@ import assert from "node:assert/strict";
 import type { Codec } from "@astilba/cache";
 import { describe, it } from "vitest";
 
-// Codec contract (§8, E8). A pluggable value codec must round-trip byte-stable within
+// Codec contract. A pluggable value codec must round-trip byte-stable within
 // a codec version (INV-8): encode is deterministic, decode reproduces the value, and
 // re-encoding a decoded value yields identical bytes. It must expose a stable,
-// non-empty `codecId` — the field E8's envelope gate compares BEFORE decode so a
+// non-empty `codecId` — the field the envelope gate compares BEFORE decode so a
 // mismatch fails closed to a miss (INV-27; the compare-before-decode gate itself is
 // kernel logic, exercised in sacred). A malformed body must throw so the read path
 // can miss rather than mis-serve. The library's default safe-JSON codec is the

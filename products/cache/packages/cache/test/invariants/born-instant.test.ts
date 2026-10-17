@@ -1,4 +1,4 @@
-// INV-31 — spec §3, errata E29 (the born instant; `age` derived from it)
+// INV-31 (the born instant; `age` derived from it)
 // Sacred: append-only. Never modify, delete, weaken, skip, or .todo an existing test.
 //
 // Birth is an event, and a value has one of them. The stamp is minted once, when the factory
@@ -26,7 +26,7 @@ describe("the born instant (§3, E29)", () => {
   test("INV-31: one value has ONE age — the L1 copy and the L2 copy report it identically, however long the durable write took", async () => {
     const w = world({ isolates: 2, replicas: 1 });
     const tag = mkTag("t0");
-    // A durable write costs real time (§8). The filling isolate mints `bornMs`, then spends this
+    // A durable write costs real time. The filling isolate mints `bornMs`, then spends this
     // long writing L2 before it hydrates its own L1 — the exact window in which a second clock
     // read would drift.
     w.chaos.setL2WriteCost(L2_WRITE_COST_MS);

@@ -1,13 +1,13 @@
-// C4-a-1 — the two `createWorkersCache` factory teeth (§2/E22, E9).
+// the two `createWorkersCache` factory teeth.
 //
 //   • COMPILE-TIME tooth: the SIGNED required key set of `WorkersCacheConfig` is EXACTLY
 //     `{ name, kv, coordinator }` — ceiling 3. Adding a 4th required field flips the `Equal` to
-//     false and `Expect<false>` fails the integration typecheck (LEG2), breaking the build.
+// false and `Expect<false>` fails the integration typecheck, breaking the build.
 //   • RUNTIME tooth (real bindings): the factory stamps the fail-closed safe posture — eventual +
 //     SIE + `unknownPolicy: 'registry-check'` — and inherits createCache's private-by-default scope
 //     resolution (a principal-derived request stays L1-only, `durable:false`).
 //
-// Lane law (rule 12): the runtime tooth is a cold fill + a scope check; both resolve without timing
+// Lane law: the runtime tooth is a cold fill + a scope check; both resolve without timing
 // tolerance, so no polling is needed despite the integration lane.
 
 import { createWorkersCache } from "@astilba/cache/cloudflare";
@@ -82,7 +82,7 @@ describe("createWorkersCache factory teeth (§2/E22, E9)", () => {
     });
     expect(served).toBe("shared");
 
-    // Private-by-default (§6, E17): a principal-derived request (a `userId`) resolves to a `usr:`
+    // Private-by-default: a principal-derived request (a `userId`) resolves to a `usr:`
     // scope that is L1-ONLY and therefore NOT durable — the value is never published to the shared
     // L2 tier. Observed directly via the entry form's `durable` flag. A safe posture the factory
     // inherits unchanged from createCache's scope resolution.

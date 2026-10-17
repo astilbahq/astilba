@@ -1,7 +1,7 @@
-// Ordinary unit teeth (NOT sacred) — C4-a-0-i. Grammar teeth for the two golden-path pure
-// builders: t() (§2.3 + E10 — the tag trust boundary) and duration() (§2.1, F31). Each case
-// bites a specific rejection/acceptance branch (rule 13): blinding that branch reds its case.
-// assertUserTag's narrow `__`-backstop (MI13, DoD completion 1) is pinned narrow-not-weak here.
+// Ordinary unit teeth (NOT sacred). Grammar teeth for the two golden-path pure
+// builders: t() (tag trust boundary) and duration(). Each case
+// bites a specific rejection/acceptance branch: blinding that branch reds its case.
+// assertUserTag's narrow `__`-backstop (DoD completion 1) is pinned narrow-not-weak here.
 
 import {
   duration,
@@ -43,7 +43,7 @@ describe("t() — the tag trust boundary (§2.3, E10)", () => {
 
 describe("duration() — computed-value guards the type system can't catch (§2.1, F31)", () => {
   it("REJECTS the post-multiplication overflow: duration(Number.MAX_SAFE_INTEGER, 'd')", () => {
-    // The F31 tooth: MAX_SAFE_INTEGER is a safe integer, but MAX_SAFE_INTEGER × 86_400_000
+    // The tooth: MAX_SAFE_INTEGER is a safe integer, but MAX_SAFE_INTEGER × 86_400_000
     // is not — the overflow is in the PRODUCT, which a naive pre-multiplication check misses.
     expect(() => duration(Number.MAX_SAFE_INTEGER, "d")).toThrow(
       InvalidDurationError

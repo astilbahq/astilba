@@ -1,38 +1,38 @@
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+// Boot assertion: the RR fixture's Worker STARTS on workerd and serves a request.
+//
+// WHY THIS IS A SEPARATE GATE FROM build-smoke. A build proves the TOOLCHAIN — that real Vite 8
+// compiles the RR adapter and the kernel. It cannot prove the RUNTIME PROFILE, and not by omission:
+// a Workers build leaves `node:` specifiers as UNRESOLVED EXTERNALS. `build/server/assets/
+// server-build-*.js` ships the literal strings "node:crypto" and "node:async_hooks", and whether the
+// isolate can resolve them is decided entirely by the deployment's compat flags — a question no
+// build asks. So the two gates answer different questions and neither substitutes for the other:
+// build-proves-toolchain, boot-proves-runtime-profile.
+//
+// WHAT IT PROVES, AND NOTHING MORE. `@astilba/cache` statically imports `node:crypto` in the one
+// shared chunk every door pulls in, and the RR middleware imports `node:async_hooks`. Under a wrong
+// flag the Worker cannot IMPORT the library — it never boots. This gate starts workerd against the
+// BUILT output and issues ONE request. No bindings, no drivers, no cloud credentials: flag + crypto,
+// and nothing else.
+//
+// WHAT THE ASSERTION IS, AND WHY IT IS NOT A 200. The fixture composes a DRIVERLESS cache (no L2 —
+// deliberately: a fixture that grew bindings would stop being a minimal boot witness), and
+// `getOrSet` without an `l2` throws `NotImplementedError` in this phase. So the loader throws, RR
+// renders its error boundary, and the response is a 500 — under BOTH a right and a wrong flag. The
+// status therefore discriminates nothing, and a gate asserting one would be asserting the fixture's
+// phase rather than its boot. What DOES discriminate is measured, not assumed:
+//
+//     nodejs_als     →  body: `Error: No such module "node:crypto".`   (the module graph never loaded)
+//     nodejs_compat  →  body: `<!DOCTYPE html>…`                       (the app rendered)
+//
+// A rendered document is only reachable once the server build IMPORTED — which is exactly the fact
+// this gate exists to hold: the isolate resolved `node:crypto`, the middleware's ALS frame opened,
+// and the kernel ran (far enough to reach its own phase-honest `NotImplementedError`). That is the
+// boot. So the assertion is POSITIVE — the app rendered — never merely "no error seen", which is how
+// a gate learns to pass on silence.
+//
+// TIGHTEN THIS when `getOrSet` no longer needs an `l2`, or when the fixture legitimately gains one:
+// the request becomes a 200 and the boot proof gets stronger for free. Until then a 200 is not
+// available here without giving the fixture drivers, which would cost more than it proves.
 
 import { spawn } from "node:child_process";
 import { dirname, join, resolve } from "node:path";

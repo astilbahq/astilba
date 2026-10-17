@@ -14,7 +14,14 @@ import { ReplicationPoller } from "../../src/replication-poller";
 import type { ReplicationReader } from "../../src/replication-poller";
 import { buildReaderParts } from "../conformance/fixtures/reader-parts";
 
-/* References: §4.2, E20, E21, E5. */
+// Shell unit teeth for the reader poll driver. These drive the REAL
+// ReplicationPoller state machine over scripted reader doubles (and one real Invalidation for the
+// liveness path), pinning the three shell branches the ladder introduced — each written so it REDS when
+// the branch is blinded:
+//   • pollDue-gating: the baseline poll fires only when the cadence has elapsed;
+//   • terminal-gap STOP: a terminal ruling ends the ladder — no spin;
+//   • attempt-3 snapshot escalation: a persistent delta hole routes to the snapshot bridge.
+// Deterministic lane: no timing tolerance — nowMs and the injected rng are explicit.
 
 const REG_ID = "poller-unit";
 const KEYS: MirrorKeys = mirrorKeys(REG_ID);
@@ -26,7 +33,7 @@ const fixedRng = (value = 0.5): Rng => ({ next: (): number => value });
  * attempt off it). `seq` is inert to the shell; it only steers the kernel's own delta cursor. */
 const transientMiss: ResyncStatus = { kind: "transient-miss", seq: 0 };
 
-/** A Map-backed store; the poller only reads `stateKey` for the E5 observation. `reads` counts
+/** A Map-backed store; the poller only reads `stateKey` for the observation. `reads` counts
  * `get`s so a test can prove the +25 baseline observation keeps firing while terminal. */
 class MapStore implements Store {
   readonly data = new Map<string, string>();
@@ -80,7 +87,7 @@ class ScriptedReader implements ReplicationReader {
   }
 
   notePointerObservation(_pointer: StatePointer, _nowMs: number): void {
-    // The scripted double ignores the observation; the E5-raise path uses a REAL reader instead.
+    // The scripted double ignores the observation; the silence-raise path uses a REAL reader instead.
   }
 
   pollDue(nowMs: number, lastPollMs: number, thresholdMs: number): boolean {
@@ -194,8 +201,11 @@ describe("ReplicationPoller — retry ladder escalation + terminal stop (§4.2, 
     }
     const snapshotAtStop = reader.snapshotCalls;
     const resyncAtStop = reader.resyncCalls;
-    expect(snapshotAtStop).toBe(2);
+    expect(snapshotAtStop).toBe(2); // rung 3 (brief retry) + rung 4 (terminal ruling)
 
+    // Many more ticks after the terminal ruling, `snapBatch` UNCHANGED — the ladder must not fire
+    // again and no snapshot may be re-fetched (no spin). With the terminal STOP blinded, OR re-arm
+    // firing every tick regardless of the `snapBatch` index, these counters would climb here.
     for (let t = 41_000; t <= 200_000; t += 1000) {
       await poller.onPollTick(t);
     }
@@ -278,7 +288,7 @@ describe("ReplicationPoller — the terminal verdict is indexed to the pointer (
     const readsAtTerminal = store.reads;
 
     // 20 more ticks while terminal (snapBatch unchanged). Every one STILL reads __state — the +25
-    // backstop that feeds E5 and detects a snapBatch advance. Suppress the observation (skip the
+    // backstop that feeds the silence monitor and detects a snapBatch advance. Suppress the observation (skip the
     // read while terminal) and the count stops climbing ⇒ this reds.
     let ticks = 0;
     for (let t = 41_000; t <= 60_000; t += 1000) {
@@ -395,6 +405,26 @@ describe("ReplicationPoller — poll-failure backoff: ×2, cap 300s, jittered (�
   });
 });
 
+// ── RE-ENTRANCY SAFETY ─────────────────────────────────────────────────
+// Every tooth above awaits each tick before firing the next. The request-piggyback driver does
+// NOT: an isolate gets no free-running timer, so ticks ride REQUESTS and a burst hands this poller
+// several while one step's store I/O is still out. Under that, the pre-fix ladder bumped `attempt`
+// synchronously but committed `nextDueMs` only AFTER its awaits — so overlapping ticks each read a
+// stale schedule, each passed the same due-check, and each burned a rung: the entire delta+snapshot
+// budget spent in seconds against a store that is still sick, ending in a permanent terminal ruling
+// that reads a transient hole as a permanent gap (the reader then parks fail-closed until a durable
+// snapBatch advance). Two mechanisms close it AT THE ROOT (no driver-side belt), one tooth each:
+//   • the DECIDE-AND-COMMIT block — the provisional next-due is written BEFORE the awaits, so a step
+//     that never returns (a rejecting store — the very case the poll exists for) still leaves the
+//     ladder PACED. Mutation: move the `nextDueMs` write back to post-await ⇒ the pacing tooth reds.
+//   • the IN-FLIGHT FLAG — at most one ladder step runs; a tick arriving mid-step DECLINES (it never
+//     queues). Mutation: drop the flag ⇒ the single-flight tooth reds.
+// Deterministic lane: no wall clock and no timing tolerance — `nowMs` is explicit, and the
+// "slow" store is a promise the test opens BY HAND, so overlap is scripted, not raced.
+
+/** The placeholder a `deferred` slot holds before the promise executor overwrites it. The executor
+ * runs SYNCHRONOUSLY, so it is never actually called — it exists only to type the slot without a
+ * definite-assignment assertion. Module-scoped (it captures nothing). */
 function unsettled(): void {
   return undefined;
 }
@@ -541,6 +571,9 @@ describe("ReplicationPoller — re-entrancy: the decide-and-commit block paces t
     reader.failAll();
     await t2;
 
+    // …and the ~5s escalation cadence rung 2 committed now holds t=3000 OFF. Without the provisional
+    // commit, `nextDueMs` never left 0 and this tick runs rung 3 — the escalation rung, which asks
+    // the reader to declare the delta budget spent and opens the road to the permanent ruling.
     const t3 = piggyback(poller, 3000);
     await flush();
     reader.failAll();
@@ -548,7 +581,8 @@ describe("ReplicationPoller — re-entrancy: the decide-and-commit block paces t
 
     expect(reader.resyncCalls).toBe(control.resyncCalls); // 2 rungs — exactly the serial control's
     expect(reader.policies).toStrictEqual(controlPolicies); // …and the SAME rungs: no escalation
-    expect(reader.snapshotCalls).toBe(0);
+    expect(reader.snapshotCalls).toBe(0); // the snapshot bridge — the last step before the permanent
+    // ruling — was never reached, so no terminal verdict was ever available to be made.
   });
 });
 
@@ -588,7 +622,7 @@ describe("ReplicationPoller — E5 pointer observation feeds derivative suspicio
   it("reads the __state pointer each tick and raises suspicion on observed silence (blind the read ⇒ never raises)", async () => {
     // A REAL reader (default 30s heartbeat ⇒ raise after 90s of silence; ControllableBus does not
     // auto-establish, so it starts non-suspect). The store holds a pointer whose `flushedAt` never
-    // advances, so the poller's per-tick observation must raise E5 once the silence window elapses.
+    // advances, so the poller's per-tick observation must raise suspicion once the silence window elapses.
     const { inval, store, keys } = buildReaderParts(REG_ID);
     const pointer: StatePointer = {
       epoch: 0,
@@ -608,7 +642,7 @@ describe("ReplicationPoller — E5 pointer observation feeds derivative suspicio
     await poller.onPollTick(30_000); // silence 30s < 90s — no raise
     await poller.onPollTick(60_000); // silence 60s < 90s — no raise
     expect(inval.suspect).toBeFalsy();
-    await poller.onPollTick(91_000); // silence 91s ≥ 90s — E5 raises
+    await poller.onPollTick(91_000); // silence 91s ≥ 90s — suspicion raises
     // The tooth: blind the poller's pointer read (never feed notePointerObservation) ⇒ never raises.
     expect(inval.suspect).toBeTruthy();
   });

@@ -1,4 +1,4 @@
-// The demo world — what a request can reach (C5-c).
+// The demo world — what a request can reach.
 //
 // The cache, the dials, and the counters are built ONCE per isolate in `workers/app.ts` (where the
 // real bindings are) and handed to the router as context. This module is deliberately free of the
@@ -69,7 +69,7 @@ export interface PendingPurge {
  * WHICH PATH BROUGHT THE PURGE HOME. Three of them, and the demo may only ever name the one its
  * evidence can actually establish.
  *
- *   - `own-ack`        — this isolate issued the purge, and `expire()`'s registry ack taught its own
+ *   - `own-ack` — this isolate issued the purge, and `expire()`'s registry ack taught its own
  *                        reader before any tick or frame. Nothing was rescued: the reader was never
  *                        lost. It is the ONLY path a single-isolate local run can produce, which is
  *                        why this member exists rather than being quietly folded into the
@@ -77,8 +77,8 @@ export interface PendingPurge {
  *   - `carrier-proven` — the reader had NO CHANNEL at the advance, so the bus cannot have carried
  *                        the frame. The poll of the mirror pointer is the only path left. The
  *                        alternative is not argued away; it is eliminated by a state the reader
- *                        declares (E28).
- *   - `indeterminate`  — the channel was up at the advance. Either path could have carried it, and
+ * declares.
+ *   - `indeterminate` — the channel was up at the advance. Either path could have carried it, and
  *                        this page does not claim which.
  */
 export type RescuePath = "own-ack" | "carrier-proven" | "indeterminate";
@@ -165,7 +165,7 @@ export function healEpisode<TCache>(state: EpisodeState<TCache>): void {
 
 /** What arming needs from the running app. */
 export interface ArmOptions<TCache = Cache> {
-  /** The registry name — the one identity string the factory derives everything from (E19-b). */
+  /** The registry name — the one identity string the factory derives everything from. */
   readonly registryName: string;
   /**
    * Build a NEW cache over the same bindings. The worker's job, because this module is deliberately
@@ -184,7 +184,7 @@ export interface ArmOptions<TCache = Cache> {
  * call `clearFaults` alone.
  *
  * THE MINT IS THE DEAF-READER SCENE'S WHOLE RIG, and the ORDER is the rig. A channel that never
- * established is a property of a reader's LIFETIME (E28), so a page can only show one honestly by
+ * established is a property of a reader's LIFETIME, so a page can only show one honestly by
  * owning a lifetime that began under the dead dial. The isolate's long-lived reader came up on the
  * first request anyone ever made, long before a fault was armed — its channel reads `established`
  * and no amount of arming will change that, which is why "arm, then reload" could never produce the
@@ -201,17 +201,33 @@ export function armScene<TCache>(
   healEpisode(state);
   const scene = sceneOf(id);
   scene.arm(state.dials, { registryName: options.registryName });
-  // AFTER the dial: construction performs no I/O (E28), so what matters is that the first USE lands
+  // AFTER the dial: construction performs no I/O, so what matters is that the first USE lands
   // on the far side of the fault — but arming first is the ordering that makes that true no matter
   // what construction later decides to do.
   state.episodeCache = scene.bootsOwnReader ? options.mintCache() : null;
   state.armed = { atMs: options.nowMs, id };
 }
 
-/* References: E27. */
-
+/**
+ * Which path can the demo actually establish? Ordered by what it can PROVE, most specific first.
+ *
+ * IT READS THE READER'S CHANNEL, NOT A DIAL COUNT, AND THE DIFFERENCE IS THE WHOLE POINT. A
+ * dial-count delta — no new successful dial across the wait — detects only a socket that came up
+ * DURING the wait. A socket that opened before the purge and stayed up produces no new dial, so the
+ * delta is zero, so that rule would print `carrier` — "proven" — over a fully established bus. That
+ * is a fabrication: evidence that cannot tell the alternatives apart, narrated as though it could.
+ *
+ * The channel state eliminates rather than argues. A reader with no channel has nowhere for a frame
+ * to have arrived, so the bus is ruled OUT and the carrier is what is left. A reader with a channel
+ * leaves both paths open, and the demo says so out loud instead of picking the flattering one — a
+ * page whose subject is that unknown stays unknown does not get to make an exception for the
+ * one row where the truth would be a better story.
+ */
 function pathOf(pending: PendingPurge, channel: ChannelState): RescuePath {
   if (pending.appliedEpochAfterAck > pending.appliedEpochAtPurge) {
+    // The reader already knew before any tick could run: it issued the purge and the ack taught it.
+    // Nothing was rescued, and saying otherwise would be the demo taking credit for a trip nobody
+    // made.
     return "own-ack";
   }
   return channel === "established" ? "indeterminate" : "carrier-proven";
@@ -253,11 +269,11 @@ export interface DemoWorld {
    * The cache this request talks to: the EPISODE's own reader when a scene booted one, and the
    * isolate's long-lived cache otherwise. Both are the hero five-liner over the same WRAPPED
    * bindings; what differs is when the reader was born, which is the only thing that can make a
-   * never-established channel showable (E28). The page names which one it is holding.
+   * never-established channel showable. The page names which one it is holding.
    */
   activeCache(): Cache;
   /** The one identity string the factory derives the DO address, the registry id, and the key
-   * namespace from (E19-b). */
+   * namespace from. */
   readonly registryName: string;
   readonly dials: FaultDials;
   readonly kvStats: KvFaultStats;
@@ -337,8 +353,8 @@ type WaitUntil = (promise: Promise<unknown>) => void;
  * module-scope `world`.
  *
  * `ExecutionContext.waitUntil` belongs to ONE request: it holds work open past that request's
- * response and no other's. The cache is built once per isolate (E28), so a `waitUntil` stored on it
- * would be one request's handle reused by every later request — the exact lifetime error E28 exists
+ * response and no other's. The cache is built once per isolate, so a `waitUntil` stored on it
+ * would be one request's handle reused by every later request — the exact lifetime error the reachability rule exists
  * to end. So it rides the request context instead: the worker seeds this from the CURRENT request's
  * `ctx.waitUntil` on every `fetch`, and the root middleware reads it here and hands it to
  * `cacheMiddleware` per call. A separate default is deliberately omitted — a request that reaches the

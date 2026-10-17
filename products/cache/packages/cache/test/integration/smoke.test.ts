@@ -1,8 +1,8 @@
-// C1-b integration-lane smoke test. Proves the fourth (integration) lane actually
+// integration-lane smoke test. Proves the fourth (integration) lane actually
 // runs on real workerd via @cloudflare/vitest-pool-workers: the test worker env
 // loads, the Durable Object binding resolves to a namespace, and the placeholder
 // Coordinator shell instantiates inside the isolate. NO registry semantics are
-// asserted here — that is C1-c. Lane law (rule 12): this lane is timing-tolerant.
+// asserted here — that is the conformance lane's job. Lane law: this lane is timing-tolerant.
 
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";

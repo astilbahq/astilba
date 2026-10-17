@@ -4,6 +4,15 @@ import vitest from "ultracite/oxlint/vitest";
 import { defineConfig } from "vite-plus";
 import type { OxlintConfig } from "vite-plus/lint";
 
+// The ONE sanctioned `as unknown as` cast in this repo. vite-plus
+// bundles its own copy of oxlint, so the `OxlintConfig` type it exports is
+// nominally skewed from the type the ultracite presets are authored against — a
+// types-only mismatch, identical config shape at runtime. No other `as unknown as`
+// is permitted anywhere in the tree.
+// A trailing config whose file-scoped override disables the two vitest rules that
+// false-positive on @fast-check/vitest's mandated `test.prop(...)` — it must be a
+// peer of the presets in `extends` (not a top-level `rules` entry) so its
+// file-scoped override outranks the vitest preset's own file-scoped override.
 const testPropOverride = {
   overrides: [
     {
@@ -31,14 +40,15 @@ const conformanceOverride = {
         // The per-interface wiring files register their `it`s via an imported
         // parameterized runner, so no literal test appears in-file (false positive).
         "sonarjs/no-empty-test-file": "off",
-
+        // Teeth meta-assertions assert only THAT a wrong driver rejects — never on an
+        // exact message (messages would make the proofs brittle).
         "vitest/require-to-throw-message": "off",
       },
     },
   ],
 };
 
-// These two rules autofix `toBe(false)`/`toBe(true)` into `toBeFalsy()`/`toBeTruthy()`. Under E29
+// These two rules autofix `toBe(false)`/`toBe(true)` into `toBeFalsy()`/`toBeTruthy()`. Under
 // a serve reports `durable` as `true` / `false` / ABSENT, so known-not-durable and unknowable are
 // DIFFERENT answers and `toBeFalsy` accepts both — the rewrite turns a proof of the exact value
 // into a tautology that passes on `undefined`. Their premise ("truthiness is what you mean") does
@@ -67,7 +77,7 @@ const assertionRewriteRepeal = {
   ],
 };
 
-// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- bridge matching lint configuration types from separate dependency instances
+// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- sanctioned toolchain bridge
 const ultraciteRules = [
   core,
   vitest,
@@ -82,21 +92,65 @@ const ultraciteRules = [
 const BUN_SMOKE_GLOB = "**/test/bun-smoke/**";
 const NODE_MODULES_GLOB = "**/node_modules/**";
 
+// The workerd integration lane imports runtime-only `cloudflare:workers` /
+// `cloudflare:test` modules, which the Node-side tsgolint pass resolves against each
+// file's nearest tsconfig (the package/Node one) and cannot see — the same carve-out
+// reason as the Bun smoke suite. It is typechecked instead under
+// packages/cache/test/integration/tsconfig.json (the Workers-typed program).
+//
+// the `src/adapters/cloudflare/**` platform boundary is NO LONGER
+// blanket-excluded — the full NON-type-aware oxlint rule set runs over it (syntax-level
+// rules need no `cloudflare:` resolution). tsgolint's TYPE-AWARE pass naturally skips it
+// (the adapter is excluded from the Node tsc program, so it is in no type-checked
+// project — type-aware rules simply don't apply, no error); the Workers-typed program
+// (integration tsconfig) is the adapter's type gate, run direct in CI.
 const INTEGRATION_GLOB = "**/test/integration/**";
 
-// The E28 module-scope boot witness (packages/cache/test/boot). Same carve-out reason as the
+// The module-scope boot witness (packages/cache/test/boot). Same carve-out reason as the
 // integration lane: it is a Worker that imports `cloudflare:workers`, which the Node-side type-aware
 // pass cannot resolve. It is typechecked under the integration tsconfig (the Workers-typed program,
 // run direct in CI) and RUN by `scripts/module-scope-boot.mjs` on `wrangler dev` — the only rig here
 // whose module scope is the isolate's global scope.
 const BOOT_GLOB = "**/test/boot/**";
 
-// The RR-v8 build-smoke fixture (apps/rr-fixture, C4-a-2). Same carve-out reason as the bun/
+// The RR-v8 build-smoke fixture (apps/rr-fixture). Same carve-out reason as the bun/
 // integration lanes: it imports runtime-only virtuals (`virtual:react-router/server-build`) and
 // builds under REAL Vite 8 with JSX/react — a code shape the kernel's Node-side type-aware lint
 // program cannot resolve. Its gate is the `build-smoke` CI job (`react-router build`), not oxlint.
 const RR_FIXTURE_GLOB = "**/apps/rr-fixture/**";
 
+// `apps/**` is NO LONGER blanket-excluded. The old exclusion took the whole apps tree, and its
+// premise was the fixture's alone — a minimal thing whose gate is that it BUILDS. The demo is a
+// deliverable: it has a test lane, a narration that is its actual argument, and two Proxies over
+// platform objects, which is precisely the code that fails in ways review does not catch. Leaving it
+// unlinted because it happened to live under the same directory as the fixture was an accident of
+// globbing, and it cost real findings — an unused import, a nested-ternary thicket in the narration,
+// and two `any` returns leaking out of `Reflect.apply` in the wrappers, all of which the linter found
+// the moment it was allowed to look.
+//
+// WHAT STAYS CARVED OUT: the demo's Workers ENTRY (`apps/demo/workers/**`) — under the RE-MEASURED
+// premise below, because the premise it replaces was false in its load-bearing sentence.
+//
+// The entry imports `cloudflare:workers` and `virtual:react-router/server-build` — runtime-only
+// specifiers the Node-side type-aware pass cannot resolve. That much held up under re-measurement.
+// An unresolvable import does not fail honestly: it makes `env` an `error` type and then reports
+// findings ABOUT ITS OWN FAILURE TO RESOLVE. Its type gate is `apps/demo/tsconfig.workers.json` (the
+// Workers-typed program, run in the demo lane), exactly as the integration lane's entry is gated by
+// its own Workers-typed program rather than by oxlint.
+//
+// WHAT WAS FALSE — and it is the sentence a carve-out lives or dies by. This comment used to claim
+// that "every single diagnostic it produced was a cascade from two unresolved specifiers". Re-run at
+// full resolution, the entry produced FIFTEEN diagnostics: thirteen cascades, and TWO that were
+// nothing of the kind — `promise-function-async` on the build thunk and on `fetch`, both real, both
+// independent of any specifier resolving. The exclusion had been hiding them behind a measurement
+// nobody re-ran. They are FIXED in the entry rather than suppressed: a finding you can fix is not a
+// finding you carve out. The census now stands at fourteen, all of them cascades (the two TS2307s,
+// an `import.meta.env` the orphaned file's program cannot type, two names that live in
+// `worker-configuration.d.ts`, and nine `no-unsafe-*` reported literally against an `error` typed
+// value or an `any` the unresolvable import produced). Those fourteen are TS diagnostics, which have
+// no point-of-use suppression to give them — that is what makes the glob the honest instrument here
+// rather than merely the convenient one. Re-measure before trusting this paragraph; its predecessor
+// was trusted for exactly as long as nobody did.
 const DEMO_WORKER_GLOB = "**/apps/demo/workers/**";
 
 // THE DEMO'S BUILD CONFIGS ARE NOT CARVED OUT, and the exclusion that used to take them is deleted.
@@ -153,7 +207,7 @@ export default defineConfig({
       "func-style": "off",
       // `i++` in counters/loops is clear and intended.
       "no-plusplus": "off",
-
+      // This repo REQUIRES inline spec citations / provenance.
       "no-inline-comments": "off",
       // The seeded PRNG (SimRng) is defined by its bitwise operations.
       "no-bitwise": "off",
@@ -191,12 +245,22 @@ export default defineConfig({
       // — no production importer, so `knip --production` would false-flag it as unused (the adapter is
       // now a PUBLISHED subgraph, C4; the exclusion that formerly hid these is gone). It is a tool
       // marker, not a doc tag, so it is declared VALID rather than suppressing the tag-name check.
-      // (Distinct from `@offGraph`, retired in C4-a-1: THIS premise is live — the six tagged exports
+      // (Distinct from `@offGraph`, retired: THIS premise is live — the six tagged exports
       // are genuinely test-only internals, ruled point-of-use-tagged rather than made public.)
       "jsdoc/check-tag-names": ["error", { definedTags: ["testExport"] }],
     },
   },
   test: {
+    // Four projects: `unit` holds the harness self-tests (non-vacuous foundation —
+    // a broken fake would silently invalidate every invariant above it); `invariants`
+    // holds the 29 invariants + the red-team-five scenarios (the sole semantics
+    // authority, fakes-only); `conformance` holds the phase-2 parameterized driver
+    // contracts (deterministic lane) run against the v0.1 fakes as reference impls;
+    // `integration` (phase-2) runs the workerd lane via
+    // @cloudflare/vitest-pool-workers and lives in its OWN config file (vitest 4 wires
+    // the pool through the `cloudflareTest` plugin, kept clear of this vp-vite config).
+    // The Node projects exclude the Bun smoke suite so Node-side vitest never resolves
+    // `bun:test`; the integration project runs off workerd, scoped to test/integration/.
     projects: [
       {
         test: {
@@ -231,7 +295,7 @@ export default defineConfig({
       },
       {
         test: {
-          // The C5-c chaos demo's OWN machinery (apps/demo): the binding wrappers toggle, the
+          // The chaos demo's OWN machinery (apps/demo): the binding wrappers toggle, the
           // scenes arm what they claim, the narration renders and refuses to assert an SLO. It is
           // NOT a fifth lane in the lane-law sense — it proves the DEMO, never the library, and it
           // deliberately re-tests no kernel semantics (that would be duplicate coverage of the

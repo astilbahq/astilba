@@ -1,4 +1,28 @@
-/* References: E24. */
+// Ordinary unit teeth (NOT sacred). A dependency declared during a fill JOINS
+// the entry's stored tag set (exactly as if passed to `getOrSet`), so every later serving of that
+// entry replays the full stored set — the CDN-cached copy carries the same purge handles as the
+// fill, and `expire({tag})` reaches it. `setTags` authors that set; `dependsOn` adds membership;
+// they union at settle. the ≤126 count ceiling is enforced over the settle-union.
+//
+// Each case bites ONE branch — the named mutation reds it:
+//   1. round-trip        — persistence: envelope stores the dependsOn tag ⇒ a later HIT emits it,
+//                          and `expire` reaches the entry. (Blind: `settleUserTags()` → declared.)
+//   2. joiner-inherits   — a singleflight JOINER records the LEADER's stored set + scope, off the
+//                          one fill outcome, never its own `options.tags`. (Blind: the fill record
+//                          reads `options.tags` instead of `attempt.tags`.)
+//   3. count ceiling     — route-independent: 127 via options ≡ 64 via options + 63 via dependsOn,
+//                          same `InvalidTagError`. (Blind: drop the settle-union validation.)
+//   4. boundary-exact    — 126 passes; 127 rejects. (Blind: the count comparison.)
+//   5. setTags trio      — authored REPLACES declared · unions with dependsOn · ceiling fails fill.
+//                          (Blind: `setTags` back to a no-op.)
+//   6. post-settle       — dependsOn/setTags after the factory settled throw FactorySettledError.
+//                          (Blind: drop the `isSettled()` guard.)
+//   7. per-serving-path  — the stored set rides EVERY serve: stale/SWR (7a), graced (7b),
+//                          neg-suppressed (7c). (Blind: `settleUserTags()` → declared reds all.)
+//
+// Lane: unit. Deterministic — an injected clock + fake store for the registry-absent cases; a
+// SimClock `world()` for the ones that need staleness/grace (expire has no other author). No timing
+// tolerance, no retry; the concurrency in tooth 2 is gated, not raced.
 
 import assert from "node:assert/strict";
 import { setImmediate as yieldTick } from "node:timers/promises";
@@ -68,7 +92,7 @@ interface Rendered {
 }
 
 /** Run one request through the middleware. `userId` (when given) is the app's principal derivation
- * — the `usr:<h>` identity that makes a dependency private (§6, E17). */
+ * — the `usr:<h>` identity that makes a dependency private. */
 async function render(
   cache: Cache,
   loader: () => Promise<Response>,
@@ -96,22 +120,22 @@ function loaderWith(consume: () => Promise<unknown>): () => Promise<Response> {
   };
 }
 
-/** The §7.2/E23 events only (a registry-bearing cache also drives the C4-b poll tick). */
+/** The events only (a registry-bearing cache also drives the poll tick). */
 function l3Events(
   events: readonly TelemetryEvent[]
 ): readonly TelemetryEvent[] {
   return events.filter((event) => event.type === L3_INELIGIBLE);
 }
 
-/** A retriable origin failure (§5.4, E2's default classifier) — the graced serve's trigger. */
+/** A retriable origin failure (default classifier) — the graced serve's trigger. */
 async function serverError(): Promise<never> {
   return await Promise.reject(
     new HttpError(new Response(null, { status: 503 }))
   );
 }
 
-/** A 404 — a `not_found` fact that, over a still-servable candidate, drives a neg-suppressed serve
- * (E7/INV-26): the neg-write is suppressed, the stale value is served. */
+/** A 404 — a `not_found` fact that, over a still-servable candidate, drives a neg-suppressed serve:
+ *the neg-write is suppressed, the stale value is served. */
 async function notFound(): Promise<never> {
   return await Promise.reject(
     new HttpError(new Response(null, { status: 404 }))
@@ -158,7 +182,7 @@ describe("E24 — a dependency declared during a fill joins the stored set (§2.
         scope: "public",
       });
 
-    // Request 1 FILLS it (its own emission rides the E23 ctx path — not the point).
+    // Request 1 FILLS it (its own emission rides the ctx path — not the point).
     await render(cache, loaderWith(call));
 
     // Request 2 HITS it — a fresh hit replays the STORED envelope's tags. The dependsOn tag is now
@@ -241,6 +265,10 @@ describe("E24 — a singleflight joiner reports the leader's stored set (§2.1)"
     expect(joiner.response.headers.get("cache-tag")).toBe("dep:1");
   });
 
+  // The SCOPE half of the same one-record channel: a private (usr:) fill's
+  // joiner inherits the fill's scope evidence too, so it poisons. If the scope did not ride with the
+  // tags off the one fill outcome, the joiner would read as unmanaged and the response would not be
+  // stamped private-with-no-tag.
   it("TOOTH 2 (joiner scope): a joiner of a usr:-scoped fill inherits the private scope and poisons", async () => {
     const { joiner, calls } = await leaderJoiner(makeCache(), undefined, "u-1");
     expect(calls).toBe(1);
@@ -252,7 +280,7 @@ describe("E24 — a singleflight joiner reports the leader's stored set (§2.1)"
   });
 });
 
-// ── TEETH 3 & 4: the MI13 count ceiling over the settle-union ────────────────────────────────────
+// ── TEETH 3 & 4: the count ceiling over the settle-union ────────────────────────────────────
 describe("E24 — the ≤126 user-tag ceiling meets every source at one boundary (§2.3, MI13)", () => {
   // Mutation: drop the settle-union `validateUserTags(userTags)` in `fillAndStore` ⇒ the split-route
   // case stores 127 and RESOLVES ⇒ reds (the all-options case still throws at the boundary, so only
@@ -457,7 +485,7 @@ describe("E24 — a served value reports the stored set on every serve path (§2
       cache,
       loaderWith(async () => {
         // `strong` routes the stale entry to the foreground fill; the failing factory meets it as
-        // the grace CANDIDATE (§11.18) — the error-path serve under test.
+        // the grace CANDIDATE — the error-path serve under test.
         served = await cache.getOrSetEntry({
           consistency: "strong",
           factory: serverError,
@@ -497,7 +525,7 @@ describe("E24 — a served value reports the stored set on every serve path (§2
     const { response } = await render(
       cache,
       loaderWith(async () => {
-        // A 404 with a still-servable candidate: the neg-write is suppressed (E7) and the stale val
+        // A 404 with a still-servable candidate: the neg-write is suppressed and the stale val
         // is served — NOT an error-path serve, so no `servedOnError`.
         served = await cache.getOrSetEntry({
           consistency: "strong",

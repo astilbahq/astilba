@@ -15,10 +15,10 @@
   },
   // SQLite-backed DO storage (the current default class for new Durable Objects).
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Coordinator"] }],
-  // The §4.2 replication mirror: the Coordinator writes `__delta:<seq>` batches, `__snap:<seq>`
+  // The replication mirror: the Coordinator writes `__delta:<seq>` batches, `__snap:<seq>`
   // checkpoints, and the `__state` pointer here (the WRITER side, C1/C2-b). The reader driver
   // (cloudflareKV) is C2. Local-only id — pool-workers/Miniflare backs it with an in-memory namespace.
-  // `CACHE_KV` is the createWorkersCache / E22-quickstart L2 binding (§2/E22); it is bound to the SAME
+  // `CACHE_KV` is the createWorkersCache quickstart L2 binding; it is bound to the SAME
   // local `id` as REGISTRY_KV so the cache's L2 and the registry mirror share one namespace — the real
   // deployment shape (entries and `__reg:*` mirror keys coexist, different prefixes, no collision), and
   // it lets the reader resync off the mirror it can now see through either binding.
@@ -26,7 +26,7 @@
     { "binding": "REGISTRY_KV", "id": "registry-mirror-local" },
     { "binding": "CACHE_KV", "id": "registry-mirror-local" },
   ],
-  // Snapshot cadence for the integration lane (§4.2). Set to 5 batches so the transcript's
+  // Snapshot cadence for the integration lane. Set to 5 batches so the transcript's
   // cadence-crossing case trips it deterministically at seq 5; the other transcript cases
   // (≤4 flushes) stay below it, so their `__state.snapBatch` remains 0 — untouched. Must stay
   // strictly ABOVE the max flush count of any non-cadence transcript case. Interval is left at

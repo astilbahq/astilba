@@ -1,4 +1,4 @@
-// The bounds this deployment DOCUMENTS (C5-c) — the right-hand column of every narration.
+// The bounds this deployment DOCUMENTS — the right-hand column of every narration.
 //
 // READ THIS BEFORE READING A NUMBER OFF THE SCREEN. Everything here is a PERMISSION, not a promise.
 // "Suspicion raises after 90s of observed silence" means the reader is allowed to take that long to
@@ -37,7 +37,7 @@ import { TICK_MIN_INTERVAL_MS } from "@astilba/cache/react-router";
  */
 export const HEARTBEAT_INTERVAL_MS = 30_000;
 
-/** The multiple of the heartbeat interval at which OBSERVED silence raises suspicion (E5). The
+/** The multiple of the heartbeat interval at which OBSERVED silence raises suspicion. The
  * library owns this rule; the demo restates it to have something to print in the documented column,
  * and prints it as a permission the reader has rather than a deadline it meets. */
 const SUSPICION_SILENCE_MULTIPLE = 3;
@@ -57,7 +57,7 @@ const SUSPICION_SILENCE_MULTIPLE = 3;
  * camera is the shipped one.
  *
  * WHAT IT DOES NOT DO — the honest half. `maxSyncLag` is the reader's re-read cadence, which is ONE
- * of the two terms in the eventual bound: §1's honest bound is the cadence PLUS the flush window
+ * of the two terms in the eventual bound: the honest bound is the cadence PLUS the flush window
  * PLUS `__state` KV propagation, and that last term is documented as up to 60 seconds or more with
  * no ceiling. Turning this dial down shortens the term this deployment controls and does nothing
  * whatever to the one it does not. So the rescue this page measures is a LOWER bound on a real
@@ -74,14 +74,14 @@ const SHIPPED_MAX_SYNC_LAG_MS = 60_000;
 
 /** The posture this deployment runs under, and the bounds it therefore documents. */
 export const POSTURE = {
-  /** The heartbeat cadence, both ends (E5). */
+  /** The heartbeat cadence, both ends. */
   heartbeatIntervalMs: HEARTBEAT_INTERVAL_MS,
   /** The base cadence at which the reader re-reads the mirror pointer, jittered ±20% per poll —
    * THIS DEPLOYMENT'S, turned down from the shipped baseline; see `MAX_SYNC_LAG_MS`. */
   maxSyncLagMs: MAX_SYNC_LAG_MS,
   /** The shipped baseline this demo overrides, printed beside the one it runs. */
   shippedMaxSyncLagMs: SHIPPED_MAX_SYNC_LAG_MS,
-  /** How long OBSERVED silence must run before the reader may raise suspicion (E5). Derivative and
+  /** How long OBSERVED silence must run before the reader may raise suspicion. Derivative and
    * raise-only: a live-but-slow writer resets the baseline, and a fast sampler cannot witness 90s of
    * silence in less than 90s. */
   suspicionAfterMs: SUSPICION_SILENCE_MULTIPLE * HEARTBEAT_INTERVAL_MS,
@@ -104,7 +104,7 @@ export const NO_SLO_CAVEAT =
  * silence, and could never grow suspicious. The page said so, loudly, because the alternative was a
  * console showing a system serenely ignoring an outage.
  *
- * That is fixed (E28). The factory now holds the ADDRESS — a namespace and a name — and mints a
+ * That is fixed. The factory now holds the ADDRESS — a namespace and a name — and mints a
  * stub per use, inside whichever request is running. Construction performs no I/O, so the cache is
  * built ONCE at module scope (see `workers/app.ts`), one per isolate, which is the placement the
  * quickstart teaches. The reader accumulates state across requests: it has a channel state, an

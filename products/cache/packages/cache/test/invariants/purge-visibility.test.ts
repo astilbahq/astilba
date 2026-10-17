@@ -1,6 +1,6 @@
-// INV-1 — spec §11.1
-// INV-2 — spec §11.2
-// INV-6 — spec §11.6
+// INV-1 — spec
+// INV-2 — spec
+// INV-6 — spec
 // Sacred: append-only. Never modify, delete, weaken, skip, or .todo an existing test.
 
 import { commandsArb, mkTag, modelSetup, world } from "@astilba/harness";
@@ -67,7 +67,7 @@ describe("purge visibility", () => {
       tags: [tag],
     });
     // Gap the reader's knowledge BEFORE the purge: drop the delta frame and stall the
-    // __state pointer so the hard delete never reaches the cold reader (§4.2, §1 tail).
+    // __state pointer so the hard delete never reaches the cold reader (tail).
     // The reader's DATA replica is NOT delayed, so it genuinely holds v1 and could
     // wrongly serve it as fresh — the fail-closed obligation is real, not vacuous.
     w.chaos.dropNextFrames(5);

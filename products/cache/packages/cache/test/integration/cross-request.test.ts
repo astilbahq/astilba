@@ -1,11 +1,11 @@
-// E28 — the CROSS-REQUEST family (§2/E22 (i), §1, E9/E20/E21, E28-b) — one of three conformance
+// CROSS-REQUEST family — one of three conformance
 // instruments, and the ONLY one with this jurisdiction.
 //
 // WHAT THIS INSTRUMENT PROVES, AND WHAT NOTHING ELSE HERE DOES: that a handle is minted for each
-// use and let go, rather than kept. E28's central clause, and the one no other rig in this repo can
+// use and let go, rather than kept. the central clause, and the one no other rig in this repo can
 // see. The census next door rules only on whether construction touched a binding; the boot witness
 // rules only on whether module-scope placement runs at all. A cache can satisfy both of those and
-// still hoard a connection, which is exactly what happened (E28-b).
+// still hoard a connection, which is exactly what happened.
 //
 // THE ORACLE DIMENSION THIS OPENS. Every other test in this repo lives inside ONE request context:
 // the sacred suite runs on fakes with no platform at all, and the rest of this lane constructs and
@@ -15,7 +15,7 @@
 // instance, which is precisely why the gap was invisible: the composition looks healthy and fails
 // on the first read that has to consult the registry.
 //
-// ── THE NAMED LIAR (E28-b) ──────────────────────────────────────────────────────────────────────
+// ── THE NAMED LIAR ──────────────────────────────────────────────────────────────────────
 // The mutation this family exists to catch, recorded because it is the one that got away twice:
 //
 //     MEMOIZE THE STUB SOURCE in `createWorkersCache` — hoist `stubFor`'s result behind a cache,
@@ -23,7 +23,7 @@
 //         const stubFor = () => (stub ??= coordinator.get(coordinator.idFromName(name)))
 //     so the factory mints ONE handle at first use and retains it forever.
 //
-// That is precisely the violation E28 forbids: a long-lived object holding a connection instead of
+// That is precisely the violation the reachability rule forbids: a long-lived object holding a connection instead of
 // an address. It is also, measured, a LIAR that passes:
 //
 //   • the construction-I/O census — GREEN. Construction is still perfectly cold; the memo is not
@@ -34,7 +34,7 @@
 //
 // Only the cases below red, because only they issue a SECOND request that reaches a handle the FIRST
 // one minted, against real workerd, which then refuses it. That is what a jurisdiction is for, and
-// why E28-b makes every instrument state one: a gate listed by name alone reads as covering more
+// why the design makes every instrument state one: a gate listed by name alone reads as covering more
 // than it can see, and the gap between the two is where this defect lived, twice, in plain sight.
 //
 // THE APPARATUS (an observation names its rig). `SELF.fetch()` enters `worker.ts`'s handler in a
@@ -42,7 +42,7 @@
 // such calls and watching the platform refuse the second. The worker holds ONE module-scope cache;
 // each route below is therefore a second, third, … request against an instance built earlier.
 //
-// Lane law (rule 12): these are integration-lane tests — real workerd, real bindings. The
+// Lane law: these are integration-lane tests — real workerd, real bindings. The
 // assertions are deterministic (fill counts and served values), not timing-dependent.
 
 import { SELF } from "cloudflare:test";
@@ -71,7 +71,7 @@ describe("E28 — one instance, many requests (the cross-request family)", () =>
   });
 
   it("reuse-strong: a strong read in a later request live-checks the registry", async () => {
-    // A strong read ALWAYS performs a live registry RPC (§1) — it is the shortest path from a
+    // A strong read ALWAYS performs a live registry RPC — it is the shortest path from a
     // reused instance to a stub call, and the first thing a held handle breaks.
     const first = await hit("/e28/get?key=e28/strong");
     expect(first).toBe("v1");

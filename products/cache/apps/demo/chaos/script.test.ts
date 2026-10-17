@@ -1,4 +1,4 @@
-// The scene script's tests (C5-c) — the demo's machinery.
+// The scene script's tests — the demo's machinery.
 //
 // The load-bearing one is the mirror-keyspace test. The registry-outage scene has to make the
 // replication mirror unreadable, which means it has to know which keys the mirror lives under — and

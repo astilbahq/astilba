@@ -1,9 +1,9 @@
-// INV-5  — spec §11.5, §5.2 (singleflight), §11.18, errata E7, E29
-// INV-18 — spec §11.18 (the graced serve, observed through a join)
+// INV-5 (singleflight)
+// INV-18 (the graced serve, observed through a join)
 // Sacred: append-only. Never modify, delete, weaken, skip, or .todo an existing test.
 //
-// Singleflight's contract is that a joiner is handed the LEADER's result (§5.2, §11.5). Grace's
-// contract is that a retriable origin failure still serves a servable stored copy (§11.18, §5.4).
+// Singleflight's contract is that a joiner is handed the LEADER's result. Grace's
+// contract is that a retriable origin failure still serves a servable stored copy.
 // Where they cross — an origin outage with several readers on one key — the two have to agree
 // about one thing: what the joiner is told.
 //
@@ -36,7 +36,7 @@ import {
 import { test } from "@fast-check/vitest";
 import { describe, expect } from "vitest";
 
-/** A retriable origin failure (503 ∈ the default retriable set, E2), so grace engages. */
+/** A retriable origin failure (503 ∈ the default retriable set), so grace engages. */
 const outage = async (): Promise<never> => {
   throw new HttpError(new Response(null, { status: 503 }));
 };
@@ -124,7 +124,7 @@ function rig(): Rig {
 }
 
 /** Seed a stored value, then soft-purge it: its candidate is STALE, so it re-validates as servable
- * at serve time — a hard-purged one would not, and grace would never engage (§11.18). */
+ * at serve time — a hard-purged one would not, and grace would never engage. */
 async function seedStaleCopy(r: Rig): Promise<void> {
   await r.cache.getOrSet({
     factory: async () => await Promise.resolve("good"),
@@ -173,7 +173,7 @@ describe("grace across a singleflight join (§5.2, §11.18, E29)", () => {
         await r.cache.getOrSetEntry({ ...SHARED, factory, tags: [r.tag] })
     );
 
-    // Non-vacuity: the leader really did take the error-path grace serve (§11.18, §5.4). Without
+    // Non-vacuity: the leader really did take the error-path grace serve. Without
     // this the comparison below could hold with both sides equally broken.
     expect(led.status === "fulfilled" && led.value.value).toBe("good");
     // THE TOOTH. The joiner holds no candidate of its own — its read found absence — yet it is

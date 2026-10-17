@@ -1,4 +1,48 @@
-/* References: INV-1, INV-25, §11.1, §4.2, E1, E4, E20, E21, E5, E16, §5.0. */
+// INV-1 INV-25 — spec
+// Sacred: append-only. Never modify, delete, weaken, skip, or .todo an existing test.
+//
+// This suite certifies VALUE-MEMBERSHIP legality under the chaos alphabet: `observed serve ⊆ legal`
+// — nothing `∉ legal` is ever served — under every DELIVERY perturbation (a dropped frame/gap,
+// buffered+reordered frames, a stalled `__state` pointer, an heartbeat that freshens the pointer
+// WITHOUT minting an epoch, and strong reads as a first-class action). None is a truth-changing
+// event: they perturb DELIVERY, not acceptance. So the model's `legal`/`tagKeys` sets — what the
+// registry ACCEPTED under the SimClock-serialized issue order — are invariant under the whole
+// alphabet: only an accepted `delete` clears `legal`, a soft `expire` never does, a fill commits the
+// value it offered. Every perturbation can only make the reader MORE conservative, never serve a
+// value the purge killed.
+//
+// DIMENSION BOUNDARY. A value-membership oracle certifies WHAT was served, never WHEN it was born.
+// BIRTH-EPOCH and stability violations — a freshly-fetched value carrying a stale birth certificate,
+// two strong reads of an unmutated key disagreeing — are a different dimension, owned by the
+// dedicated metamorphic tests (`strong-read-stability`, `strong-fill-livecheck`,
+// `strong-miss-soft-idempotence`), which assert read-equality. The strong reads HERE participate in
+// value-membership (a dead value they serve is `∉ legal`), enrich reachable knowledge via
+// memoization, and floor the strong reach — they do NOT witness the strong-miss born-dead bug (the strong-MISS born-dead
+// serve), whose factory bytes the model just blessed into `legal`, so it is membership-invisible and
+// owned there. The one carve-out is the deterministic `strong hit-path` probe below — a value-membership
+// case (a strong HIT serving a now-dead CACHED value) the metamorphic MISS-path scenes never reach.
+//
+// SERVE-DEAD LIAR TAXONOMY (a scene selects its shape by whether the purge is durable-reachable or
+// dropped-and-stalled — because reorder/delay perturb DELIVERY, never durable truth: the writer
+// sequences `delta`/`__state` into the mirror regardless of what the bus did to the frames):
+//   • CONVERGENCE-shaped — the purge is UNLEARNABLE this episode (frame dropped AND the durable path
+//     stalled), so only the suspicion-clearing rule guards it. The convergence episode + the
+// deterministic stalled-pointer scene below carry this (warm reader · dropped HARD frame · stalled
+// `__state` · liveness heartbeat). RED-PROVEN by blinding `Invalidation.#tryConverge` (clear suspicion
+//     on a DECLARED head without REACHING it) ⇒ the gap-hidden purge serves dead. `main` green.
+//   • CLASSIFY-shaped — the purge is DELIVERED but disordered, hence LEARNABLE (resync replays it
+//     from the durable mirror regardless of frame order). The reorder episode carries this (warm
+//     reader · a reordered pair carrying a HARD delete out of order). RED-PROVEN by blinding the
+//     hard-purge `classify` (the known-path defence). It is NOT convergence-shaped: under the
+//     convergence blind the reorder scene STILL fails closed, because resync applies the delivered
+//     purge — convergence-clearing is not the lone defence on delivered disorder.
+//
+// Fence sentinel — do NOT add a `FencedError` catch here. A caller-visible `FencedError` is
+// unreachable in this sequential command lane (every path writing a tag's hard high-water advances
+// the applied high-water in the same step, so the fence-taught retry re-mints `bornEpoch` from
+// the co-advanced floor and self-heals within one attempt; exhaustion needs a 3× mid-factory
+// applied-delete race only `fc.scheduler` produces, which `fc.commands` cannot). A fence surfacing
+// under this chaos alphabet is therefore a REAL finding — let it propagate and adjudicate it.
 
 import {
   commandsArbChaos,
@@ -18,7 +62,7 @@ import { test } from "@fast-check/vitest";
 import fc from "fast-check";
 import { afterAll, beforeAll, describe, expect } from "vitest";
 
-// Per-dimension reach floors (CACHE-28-ii Stage 2). Each counts CASES (property runs) that
+// Per-dimension reach floors. Each counts CASES (property runs) that
 // actually FIRED the dimension's delivery perturbation — a frame genuinely dropped, a buffered
 // pair genuinely swapped, a per-key delay genuinely held a newer pointer stale, a heartbeat
 // landed in a gap-hidden-purge + stalled-pointer episode, a strong read landed on a hard-dead
@@ -56,16 +100,16 @@ describe("chaos-alphabet legality (observed ⊆ legal under delivery perturbatio
   test("INV-1/25: neither an eventual NOR a strong read serves a gap-hidden, heartbeat-freshened, stalled-pointer hard purge (CACHE-27 shape)", async () => {
     // The deterministic anchor of the episode property, catching BOTH serve-dead arms. A warm
     // reader misses a HARD purge whose frame is dropped, while its `__state` pointer is stalled and
-    // an E5 heartbeat rewrites that stale pointer with a higher `flushedAt` (freshness motion, no
+    // an heartbeat rewrites that stale pointer with a higher `flushedAt` (freshness motion, no
     // epoch). Freshness is not catch-up:
     //   • the EVENTUAL read is the convergence-anchor witness — it consults the suspect-gated local
     //     map, so a kernel that cleared suspicion on the declared head WITHOUT reaching it (or on
-    //     freshness) would serve the dead value here (CACHE-27);
+    // freshness) would serve the dead value here;
     //   • the STRONG read confirms strong ALSO fails closed here, participating in the same
-    //     value-membership bound (a dead serve is `∉ legal`). It does NOT witness CACHE-26 (the
+    // value-membership bound (a dead serve is `∉ legal`). It does NOT witness the strong-miss born-dead bug (the
     //     strong-MISS born-dead serve): the eventual read has already refilled the key, so there is
-    //     no dead value on the strong leg. CACHE-26 is owned by `strong-fill-livecheck` (miss path);
-    //     the strong-HIT live-check case is owned by the `E1 hit-path` probe below.
+    // no dead value on the strong leg. That bug is owned by `strong-fill-livecheck` (miss path);
+    // the strong-HIT live-check case is owned by the `strong hit-path` probe below.
     // On the correct kernel both reads fail closed and REFILL.
     const w = world({
       defaults: { unknownPolicy: "miss" },
@@ -134,10 +178,10 @@ describe("chaos-alphabet legality (observed ⊆ legal under delivery perturbatio
     // The SILENT-PROPAGATION window, and the one scene where strong differs from eventual on a HIT.
     // A hard purge is durably accepted at the registry, but its frame is DELAYED in flight (not
     // dropped) — so no gap fires and the reader never turns suspect. It is warm and legitimately
-    // ignorant. A strong read HITS the cached entry; only E1's un-memoized live check (the `validate`
-    // hit-path, §5a) observes the durable purge and refills. A kernel that skipped it classifies from
+    // ignorant. A strong read HITS the cached entry; only the un-memoized live check (the `validate`
+    // hit-path) observes the durable purge and refills. A kernel that skipped it classifies from
     // stale-but-unsuspect local knowledge and serves the dead value — value-illegal (`∉ legal`). This
-    // is CACHE-26's HIT-path twin: the miss path is owned by `strong-fill-livecheck`; this scene is
+    // is the HIT-path twin: the miss path is owned by `strong-fill-livecheck`; this scene is
     // the hit path's first tooth, and it is value-membership-visible (a dead CACHED value is served,
     // not a fresh fetch with a stale birth certificate).
     const w = world({
@@ -169,7 +213,7 @@ describe("chaos-alphabet legality (observed ⊆ legal under delivery perturbatio
     // Durably hard-purge at the registry; its frame is delayed, not dropped.
     await writer.delete({ tag });
     await w.advance(1);
-    // Strong HIT read: E1's live check must observe the durable purge and refill, never serve v0.
+    // Strong HIT read: the live check must observe the durable purge and refill, never serve v0.
     const hit = await reader.getOrSetEntry({
       consistency: "strong",
       factory: async () => await Promise.resolve("v1"),

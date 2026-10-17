@@ -1,4 +1,4 @@
-// MI13 — spec §2.3, errata E24 (the ≤126 user-tag count ceiling)
+// The ≤126 user-tag count ceiling
 // Sacred: append-only. Never modify, delete, weaken, skip, or .todo an existing test.
 
 import { InvalidTagError } from "@astilba/cache";

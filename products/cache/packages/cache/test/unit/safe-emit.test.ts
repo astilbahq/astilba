@@ -1,6 +1,6 @@
-// Ordinary unit teeth (NOT sacred) — C5-a (CACHE-21, D2/D4). The shared `safeEmit` swallow-wrap and
-// its injectable `onSinkError` hook, extracted from C4-b's poll driver. Each case bites one branch
-// (rule 13):
+// Ordinary unit teeth (NOT sacred). The shared `safeEmit` swallow-wrap and
+// its injectable `onSinkError` hook, extracted from the poll driver. Each case bites one branch
+//:
 //   • sync-throw guard   — a sink that THROWS synchronously is swallowed (caller unaffected) and the
 //     hook fires once. Drop the `try/catch` ⇒ the throw reaches the caller ⇒ reds.
 //   • async-reject guard — a sink that returns a REJECTING thenable is adopted-and-swallowed (no
@@ -96,7 +96,7 @@ describe("safeEmit — the shared swallow-wrap (CACHE-21, D2)", () => {
   it("onSinkError is INJECTED, not a module latch: two emit sites never cross-talk (D4)", () => {
     // Two independent caches/registries would each pass their OWN hook. Model that directly: two
     // hooks, two emits — each hook sees exactly its own failure, never the other's. A module-level
-    // latch (the C4-declined design) would let the first emit silence the second, or route both to
+    // latch (the design) would let the first emit silence the second, or route both to
     // one place ⇒ this reds.
     const errorsA: unknown[] = [];
     const errorsB: unknown[] = [];

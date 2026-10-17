@@ -1,4 +1,4 @@
-// The console's shared rendering (C5-c) — two tables and a caveat.
+// The console's shared rendering — two tables and a caveat.
 //
 // Deliberately plain: no styling framework, no charts, no colour that implies a grade. A red cell
 // would be an assertion, and this page does not make assertions. Every number on it is a
@@ -56,7 +56,7 @@ export function ProbePanel({ probe }: { probe: ProbeResult }) {
           </tr>
           <tr>
             <th style={CELL}>write-back durable</th>
-            {/* THREE-state (E29), not a truthiness collapse: `durable` is `true` / `false` /
+            {/* THREE-state, not a truthiness collapse: `durable` is `true` / `false` /
                 ABSENT, and absent ("cannot tell from this serve") is a different answer from
                 `false` ("known not durable"). `durableNote` discriminates explicitly. */}
             <td style={CELL}>{durableNote(entry)}</td>

@@ -1,4 +1,4 @@
-// Public API of @astilba/cache — the spec §2 export surface. Kernel phase: every
+// Public API of @astilba/cache — the export surface. Kernel phase: every
 // value export is a stub that throws NotImplementedError; every type is the
 // spec-verbatim shape the invariant suite compiles against.
 

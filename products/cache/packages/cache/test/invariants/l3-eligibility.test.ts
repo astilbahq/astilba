@@ -1,4 +1,4 @@
-// INV-13 — spec §11.13, §7.2
+// INV-13 — spec
 // Sacred: append-only. Never modify, delete, weaken, skip, or .todo an existing test.
 // Uses the render-time collector as the stub frame-collector/emission adapter.
 
@@ -54,7 +54,7 @@ describe("L3 eligibility", () => {
     }
   );
 
-  // INV-13 — spec §7.2
+  // INV-13 — spec
   // The budget measures OCCURRENCES, not distinct tags. A render consumes an entry once per read,
   // so a tag reaches the collector once per consumption, and the property above already implies it
   // (its over-budget premise is `tags.length > budget`, a count of occurrences) — but its generator

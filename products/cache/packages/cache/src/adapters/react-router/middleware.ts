@@ -1,6 +1,32 @@
-/* References: §7, §7.2, §6, E17, E23. */
-
-// PLATFORM: Cloudflare runtime bindings are confined to this adapter.
+// @astilba/cache/react-router — the React-Router-v8 root middleware (phase 2, →).
+//
+// PLATFORM: lives under `src/adapters/**` (the sanctioned platform boundary). Two
+// ambient platform surfaces, each behind a `// PLATFORM:` note below: `AsyncLocalStorage`
+// (node:async_hooks) for the per-request frames, and the wall clock (`Date.now()`) that stamps the
+// poll tick. The `Cache` itself arrives already-built via options (its clock/rng injected
+// upstream at `createWorkersCache`); no ambient value ever reaches the kernel except as that tick's
+// `nowMs` — which is the same wall clock the factory injected.
+//
+// SCOPE. This middleware:
+//   1. provides a `Cache` into the RR request lifecycle via a `RouterContext<Cache>` (createContext
+//      + the request's RouterContextProvider) so loaders/actions read it with `context.get(...)`;
+//   2. opens an `AsyncLocalStorage` request frame carrying the request's principal-bearing
+//      `RequestContext`, so a `getOrSet` call site reaches it via `currentRequest()` and passes it
+// as `request` (the kernel derives `usr:<hash>` from `userId`/`tenant` internally);
+//   3. opens a SECOND frame carrying this request's render collector, and binds it to the cache at
+//      construction (`bindRenderCollector`) — that is the seam by which every hit and every fill the
+// render consumes reaches the collector automatically, with its scope;
+// 4. fires the REPLICATION POLL TICK at request START, unawaited, through `ctx.waitUntil` —
+//      it races the loaders and never blocks them (see `poll-driver.ts` for the piggyback ruling,
+//      the staleness gate, and the honest request-coupled-detection residue);
+// 5. after `next()`, commits the collector and applies the header algorithm (below).
+//
+// AMENDS the UNCONDITIONAL `Cache-Control: private` STAMP — deliberately, and by name.
+// An earlier change inscribed that stamp as an avowedly INTERIM posture, pending the change that would
+// earn the upgrade. What replaces it is JURISDICTION, not a blanket public upgrade: the adapter now
+// speaks only about what it has observed. It still never fabricates a shared-cache directive — it
+// emits purge tags when it is safe to, demotes to `private` when it is not, and where it observed
+// no dependency at all it fills in a safe default without touching what the application already said.
 
 import { AsyncLocalStorage } from "node:async_hooks";
 
@@ -36,15 +62,15 @@ import { tickIfStale } from "./poll-driver";
  */
 export type CacheMiddlewareArgs = Parameters<MiddlewareFunction>[0];
 
-/** The single telemetry event a shared-cache-INELIGIBLE response emits (§10, §7.2, E23) — exactly
+/** The single telemetry event a shared-cache-INELIGIBLE response emits — exactly
  * one per response, naming the reason CLASS in its `reason` field and nothing else. No tag names
- * ride the payload: which dependency did it is a question for `explain()` (C5), and an operator
+ * ride the payload: which dependency did it is a question for `explain()`, and an operator
  * watching this counter only needs to see THAT a route stopped being CDN-cacheable. */
 export const L3_INELIGIBLE: typeof TELEMETRY_EVENTS.l3_ineligible =
   TELEMETRY_EVENTS.l3_ineligible;
 
 /**
- * The §7.2 shared-cache header budget: 16 KB aggregate, ~1,000 tags. (The 1,024-char cap is a
+ * The shared-cache header budget: 16 KB aggregate, ~1,000 tags. (The 1,024-char cap is a
  * purge-API limit, not a header one — header tags carry no per-tag cap.) Overridable per
  * middleware via `CacheMiddlewareOptions.l3Budget`.
  */
@@ -56,8 +82,8 @@ export const L3_BUDGET_DEFAULT: L3Budget = {
 /**
  * The reason CLASS a telemetry consumer sees, mapped from the kernel's `L3Ineligibility` union.
  * TWO VOCABULARIES, ONE MAPPING POINT — deliberately: the kernel's union is kebab (its own existing
- * convention, `late-tag`), while §10's event vocabulary is snake (`poll_tick_failed`,
- * `singleflight_option_mismatch`), and E23 fixes `scope_unreadable` as the literal class name. This
+ * convention, `late-tag`), while the event vocabulary is snake (`poll_tick_failed`,
+ * `singleflight_option_mismatch`), and the design fixes `scope_unreadable` as the literal class name. This
  * function is the ONLY place the two meet; nothing downstream re-spells either.
  */
 const REASON_CLASS: Readonly<Record<L3Ineligibility, L3IneligibleReason>> = {
@@ -67,18 +93,36 @@ const REASON_CLASS: Readonly<Record<L3Ineligibility, L3IneligibleReason>> = {
   "scope-unreadable": "scope_unreadable",
 };
 
-/** The two response headers this adapter governs (§7.2). `Cache-Control` carries the shared-cache
+/** The two response headers this adapter governs. `Cache-Control` carries the shared-cache
  * posture; `Cache-Tag` is the CDN purge handle keyed off the render's dependency tags. */
 const CACHE_CONTROL = "Cache-Control";
 const CACHE_TAG = "Cache-Tag";
 
-/** The one directive the adapter ever WRITES to `Cache-Control` (§7.2, E23). It never writes
+/** The one directive the adapter ever WRITES to `Cache-Control`. It never writes
  * `public` or an `s-maxage` — opting into shared caching is the application's call, and the
  * adapter's job is to emit the purge tags when that is safe and to demote when it is not. */
 const PRIVATE = "private";
 
-/* References: §6, E17, §10, §7.2, E23. */
-
+/**
+ * `cacheMiddleware` configuration. `cache` is the already-built instance the middleware provides
+ * into the request lifecycle (a `createWorkersCache(...)` / `createCache(...)` result). `request`
+ * is the OPTIONAL principal derivation: it maps the RR request to the identity fields the kernel
+ * reads (`userId`/`tenant`) — the app owns that mapping because identity is app-domain.
+ * Omit it and the request carries no derivable principal (the shared `pub` class, 4).
+ *
+ * `waitUntil` is the Workers `ExecutionContext.waitUntil` the poll tick rides on — pass
+ * `context.cloudflare.ctx.waitUntil` (RR's Cloudflare load context) or `waitUntil` from
+ * `cloudflare:workers`, bound. It is OPTIONAL and never load-bearing for correctness: without it the
+ * tick still fires (unawaited, best-effort) and simply is not kept alive past the response. It is
+ * never awaited on the request path either way — the tick races the loaders, it does not gate them.
+ *
+ * `telemetry` receives the driver's swallowed-tick counter (`poll_tick_failed`) and the single
+ * `l3_ineligible` event a demoted response emits. Every delivery to it goes through
+ * `safeEmit`, so a throwing/rejecting sink is swallowed; `onSinkError` is the OPTIONAL injectable
+ * hook `safeEmit` calls when it swallows such a failure — a sink for reporting the reporter.
+ *
+ * `l3Budget` overrides the header budget (`L3_BUDGET_DEFAULT`).
+ */
 export interface CacheMiddlewareOptions {
   readonly cache: Cache;
   readonly request?: (args: CacheMiddlewareArgs) => RequestContext;
@@ -96,7 +140,7 @@ export interface CacheMiddlewareOptions {
 export const cacheContext: RouterContext<Cache> = createContext<Cache>();
 
 /** The empty principal-bearing frame used when no `request` derivation is configured — a request
- * with no adapter-visible identity (§6, E17 rule 3): `derivePrincipal` finds none ⇒ the `pub` class. */
+ * with no adapter-visible identity: `derivePrincipal` finds none ⇒ the `pub` class. */
 const EMPTY_REQUEST_CONTEXT: RequestContext = Object.freeze({});
 
 // PLATFORM: `AsyncLocalStorage` is a Workers/Node platform API (node:async_hooks; the fixture's
@@ -106,14 +150,21 @@ const EMPTY_REQUEST_CONTEXT: RequestContext = Object.freeze({});
 const requestFrame = new AsyncLocalStorage<RequestContext>();
 
 // PLATFORM: the SECOND `AsyncLocalStorage` frame (node:async_hooks) — this request's render
-/* References: §7, E23. */
-
+// collector. Kept as its own frame rather than folded into `requestFrame`'s value so that
+// `currentRequest()`'s public contract stays exactly a `RequestContext` (an app reads it and hands
+// it straight to `getOrSet`); a merged frame object would either change that public type or need
+// unwrapping at both readers. The frames nest, so they open and close together regardless.
+//
+// The ALS lives HERE, in the adapter, and never in the kernel: `src/**` outside `src/adapters/**` is
+// the pure kernel, and a static `node:async_hooks` import on the `./cloudflare` door
+// would crash any Workers deployment without the `nodejs_als` compat flag at IMPORT time — a cost
+// paid by users who never asked for render collection.
 const collectorFrame = new AsyncLocalStorage<RenderCollector>();
 
 /**
  * The current request's principal-bearing `RequestContext`, or `undefined` outside a middleware
  * frame. Pass it straight through to `getOrSet`'s `request` option so the kernel derives the
- * request's scope (§6, E17): `cache.getOrSet({ key, request: currentRequest(), factory })`.
+ * request's scope: `cache.getOrSet({ key, request: currentRequest(), factory })`.
  */
 export function currentRequest(): RequestContext | undefined {
   return requestFrame.getStore();
@@ -126,7 +177,7 @@ function floatingWaitUntil(promise: Promise<unknown>): void {
 }
 
 /**
- * The header edits one response needs (§7.2, E23), decided BEFORE anything is written. Keeping the
+ * The header edits one response needs, decided BEFORE anything is written. Keeping the
  * decision separate from the write is what lets the same decision be applied twice — once in place,
  * and (when the response's header guard refuses) once on a rebuilt copy — with no risk of the two
  * attempts disagreeing.
@@ -143,10 +194,10 @@ interface HeaderPosture {
 const NO_EDIT: HeaderPosture = Object.freeze({});
 
 /**
- * Decide the §7.2/E23 posture for the response, given the render's emission and how many
+ * Decide the posture for the response, given the render's emission and how many
  * dependencies that render consumed (`managed` — hits, fills, and explicit `dependsOn`
  * declarations, read off the kernel's in-package seam; it is deliberately NOT a field of the
- * spec-verbatim public `L3Emission`, which stays exactly the shape §7.2 names).
+ * spec-verbatim public `L3Emission`, which stays exactly the shape names).
  *
  * THREE postures, in precedence order:
  *
@@ -168,7 +219,7 @@ const NO_EDIT: HeaderPosture = Object.freeze({});
  *      here, at the join. One entry read by several loaders in a render reaches the collector once
  *      per consumption, so its tag arrives once per consumption; a header that repeats the same
  *      purge handle buys nothing and costs bytes. The dedup lives HERE and NOT in the collector on
- *      purpose: `commitHeaders`'s BUDGET counts every occurrence (that is the §7.2 measure invariant
+ * purpose: `commitHeaders`'s BUDGET counts every occurrence (that is the measure invariant
  *      13 pins — collapsing duplicates there would make an over-budget tag list come out eligible),
  *      and emitting fewer bytes than were measured is always safe, while measuring fewer bytes than
  *      are emitted is not. The adapter does NOT fabricate public caching — no `public`, no
@@ -233,7 +284,7 @@ function rebuiltWithPosture(
 }
 
 /**
- * Apply the §7.2/E23 posture to the response and return the response to send.
+ * Apply the posture to the response and return the response to send.
  *
  * NOT ALL RESPONSES ARE WRITABLE. A `Response` obtained from `Response.redirect(...)`, from a
  * `fetch()` passthrough, or from `caches.match(...)` carries an IMMUTABLE header guard: every
@@ -250,7 +301,7 @@ function rebuiltWithPosture(
  * onto it withholds nothing and leaks nothing. The one thing that must never happen — a throw out
  * of the middleware — cannot.
  *
- * The telemetry event an ineligible response owes (§10, §7.2, E23) is emitted exactly once, off the
+ * The telemetry event an ineligible response owes is emitted exactly once, off the
  * DECISION, so it is independent of which of the three write paths the response takes: one event per
  * response, naming the reason CLASS, carrying no tag names.
  */
@@ -260,7 +311,7 @@ function applyHeaders(
   telemetry: TelemetrySink | undefined,
   onSinkError: SinkErrorHook | undefined
 ): Response {
-  // The render's consumed-dependency count, off the kernel's in-package seam (§7, E23) — the one
+  // The render's consumed-dependency count, off the kernel's in-package seam — the one
   // fact the header decision needs that the public emission does not carry.
   const managed = managedDependenciesOf(emission);
   const posture = decidePosture(
@@ -274,7 +325,7 @@ function applyHeaders(
     !emission.eligible &&
     emission.ineligibleReason !== undefined
   ) {
-    // Through `safeEmit` (D2): the L3 emit is on the SYNCHRONOUS response path, so an app sink that
+    // Through `safeEmit`: the L3 emit is on the SYNCHRONOUS response path, so an app sink that
     // threw here would reject the middleware's own promise (a 500 on a route that merely demoted).
     safeEmit(
       telemetry,
@@ -300,10 +351,10 @@ function applyHeaders(
 }
 
 /**
- * Build the RR-v8 root middleware (§7, §7.2). Always-on in v8 (the `unstable_`/`v8_middleware` flag
+ * Build the RR-v8 root middleware. Always-on in v8 (the `unstable_`/`v8_middleware` flag
  * was removed at 8.0.0): register the returned function in a route module's `middleware` array. It
  * provides the cache into `context`, opens the request + collector frames, fires the replication
- * poll tick (unawaited — C4-b), `await`s `next()`, commits the collector, and applies the §7.2/E23
+ * poll tick (unawaited), `await`s `next()`, commits the collector, and applies the
  * header algorithm.
  */
 export function cacheMiddleware(
@@ -317,7 +368,7 @@ export function cacheMiddleware(
     telemetry,
     waitUntil = floatingWaitUntil,
   } = options;
-  // Bind the ambient-collector accessor ONCE, at construction (§7, E23). From here the kernel can
+  // Bind the ambient-collector accessor ONCE, at construction. From here the kernel can
   // reach this request's collector — and ONLY through this binding, so a cache built without the
   // middleware records nothing and emits nothing (it fails closed).
   bindRenderCollector(cache, () => collectorFrame.getStore());
@@ -325,9 +376,9 @@ export function cacheMiddleware(
     const requestContext = deriveRequest?.(args) ?? EMPTY_REQUEST_CONTEXT;
     const collector = cache.collect();
     return await requestFrame.run(requestContext, async () => {
-      // Provide the cache into the RR request lifecycle (§7): loaders read `context.get(cacheContext)`.
+      // Provide the cache into the RR request lifecycle: loaders read `context.get(cacheContext)`.
       args.context.set(cacheContext, cache);
-      // The C4-b request-piggyback poll tick, fired at request START and NEVER awaited here: it
+      // The request-piggyback poll tick, fired at request START and NEVER awaited here: it
       // races the loaders below (a freshness probe must not add its latency to a response). The
       // driver returns `undefined` when the staleness gate holds or the cache has no reader; the
       // promise it does return never rejects (the swallow wrap counts + eats a tick failure).
@@ -338,10 +389,10 @@ export function cacheMiddleware(
         waitUntil(tick);
       }
       return await collectorFrame.run(collector, async () => {
-        // oxlint-disable-next-line node/callback-return -- `next` is React Router's middleware continuation (§7), NOT a Node error-first callback; its result is awaited so the response headers can be decided, then returned below — not returned immediately.
+        // oxlint-disable-next-line node/callback-return -- `next` is React Router's middleware continuation, NOT a Node error-first callback; its result is awaited so the response headers can be decided, then returned below — not returned immediately.
         const response = await next();
-        // Header commit (§7.2): every dependency the render consumed is now known — a tag
-        // discovered after this point is late BY CONSTRUCTION, which is what §7.2 says.
+        // Header commit: every dependency the render consumed is now known — a tag
+        // discovered after this point is late BY CONSTRUCTION, which is what the L3 header rules require.
         // `applyHeaders` returns the response to SEND: the same object when its headers were
         // writable, a rebuilt copy when they were not (an immutable guard — see its doc comment).
         if (response instanceof Response) {

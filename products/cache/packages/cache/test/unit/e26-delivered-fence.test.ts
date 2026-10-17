@@ -1,8 +1,8 @@
-// C4-c — E26 (§5, E16/INV-12): the §5.0 LOCAL write-back fence, DELIVERED-purge arm. A strong fill
+// the LOCAL write-back fence, DELIVERED-purge arm. A strong fill
 // whose mid-factory `dependsOn` tag carries a hard purge DELIVERED into local knowledge during the
-// fill must fence the born value and re-fetch — it must never serve the born-dead value. E25 had
+// fill must fence the born value and re-fetch — it must never serve the born-dead value. An earlier change had
 // added a post-settle union-delta live-check for a DIFFERENT (durably-accepted-but-undelivered)
-// case; E26 reverted that (the strong pre-factory born-mint already dominates every purge accepted
+// case; a later change reverted that (the strong pre-factory born-mint already dominates every purge accepted
 // BEFORE initiation, so the delta check only ever touched during-fill concurrent purges — legal to
 // miss under either linearization). This tooth pins the arm the surviving fence DOES own, and which
 // had no tooth of its own before: a during-fill purge DELIVERED locally.
@@ -13,7 +13,7 @@
 //   during-fill DELIVERED  [THIS TOOTH]: pre-factory mints born=0 (idle registry); the factory
 //                 hard-purges the dependency ⇒ epoch→1 AND the frame is DELIVERED locally
 //                 (FakeRegistry window-0 flush → 0-delay FakeBus → this isolate's knowledge,
-//                 synchronously); classify(born=0,hard=1): 1>0 ⇒ dead ⇒ fence fires ⇒ the §5.0
+// synchronously); classify(born=0,hard=1): 1>0 ⇒ dead ⇒ fence fires ⇒ the
 //                 fence-taught retry re-mints born=1 from the now-advanced local high-water and
 //                 refetches ⇒ serves 'second'.
 //   during-fill UNDELIVERED: born=0; purge@1 not delivered ⇒ tag locally UNKNOWN ⇒ fence passes ⇒

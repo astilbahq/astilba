@@ -1,5 +1,5 @@
-// INV-7  — spec §11.7
-// INV-26 — errata E7 (§11 invariant amendment)
+// INV-7 — spec
+// INV-26
 // Sacred: append-only. Never modify, delete, weaken, skip, or .todo an existing test.
 
 import { HttpError } from "@astilba/cache";
@@ -65,12 +65,12 @@ describe("negative caching", () => {
     }
   );
 
-  // The cached-neg RE-READ — INV-7 on the HIT turn (spec §5.1 step 5, §3).
+  // The cached-neg RE-READ — INV-7 on the HIT turn.
   //
   // The tests above observe the FILL turn: the call whose factory 404'd. These observe the NEXT
   // call — the one negative caching exists for. The remembered 404 must answer it, so the origin is
   // not consulted again, and what the caller receives must be the same fact the fill surfaced. A
-  // neg carries no value (§3); the bytes that remember it are a placeholder, never the answer, and
+  // neg carries no value; the bytes that remember it are a placeholder, never the answer, and
   // an answer that changes between the fill and the re-read is not a cached fact at all.
   test("INV-7: a re-read that HITS a stored neg surfaces the fact, never the stored placeholder", async () => {
     const w = world({ isolates: 1 });
@@ -150,7 +150,7 @@ describe("negative caching", () => {
     });
     expect(filled).toBeUndefined();
 
-    // Both API forms surface a not-found the same way (§5.1 step 5), on the fill turn and on the
+    // Both API forms surface a not-found the same way, on the fill turn and on the
     // hit turn alike — the form a caller chose decides what it learns ABOUT the serve, never what
     // the serve says the origin holds.
     const reread = await cache.getOrSet({

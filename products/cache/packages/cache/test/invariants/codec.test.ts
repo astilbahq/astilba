@@ -1,5 +1,5 @@
-// INV-8  — spec §11.8
-// INV-27 — errata E8 (§11 invariant amendment)
+// INV-8 — spec
+// INV-27
 // Sacred: append-only. Never modify, delete, weaken, skip, or .todo an existing test.
 
 import { createCache } from "@astilba/cache";

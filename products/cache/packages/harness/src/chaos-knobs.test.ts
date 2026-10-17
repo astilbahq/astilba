@@ -5,6 +5,13 @@ import { FakeBus } from "./bus";
 import { SimClock } from "./clock";
 import { FakeStore, InjectedStoreError, WriteThrottleError } from "./store";
 
+// Knob-liveness guard (spirit): every chaos knob must have an OBSERVABLE
+// effect on the system. A knob silently reduced to a no-op must RED here, not rot into a
+// dead switch that makes a trace's chaos vacuous. One guard per knob family — delayKey /
+// throttleKey / injectGetFailure / injectSetFailure (store) and dropNextFrames /
+// disconnect / reconnect (bus). Each guard also observes the knob's OFF state so the
+// assertion cannot pass vacuously.
+
 const emptyFrame = (fromEpoch: number, toEpoch: number) => ({
   changes: [],
   fromEpoch,

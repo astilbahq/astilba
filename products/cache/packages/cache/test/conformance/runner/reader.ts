@@ -16,12 +16,12 @@ import type {
   SnapshotPolicy,
 } from "../../../src/invalidation";
 
-// Replication READER contract (§4.2, E19/E20/E21, F12). The per-isolate reader's honest
+// Replication READER contract. The per-isolate reader's honest
 // job is to resync off the durable `state`/`delta`/`snap` mirror and DECIDE — converge,
 // retry, escalate, or fail-closed-permanent — WITHOUT ever serving a value through an
 // unfilled hole. The reference is the real `Invalidation`; the deliberately-wrong reader
 // fixtures (fixtures/broken) each violate ONE property so `reader-teeth.test.ts` can prove
-// the matching check discriminates a liar (the C0 birthright). Deterministic lane (rule 12):
+// the matching check discriminates a liar (the birthright). Deterministic lane:
 // attempts/ticks are injected explicitly — no real timers, no timing tolerance. The shell's
 // retry-sleep ladder + poll driver are 2b-2-b; this pins the pure decision surface only.
 
@@ -29,7 +29,7 @@ import type {
  * and every liar implement it. Reads issued to the store are logged for the over-fetch check;
  * bus events, attempt policies, and heartbeat ticks are all injected explicitly. */
 export interface ContractReader {
-  /** Deliver one bus event (reset/hello/gap/frame) — drives suspicion + the E21 head anchor. */
+  /** Deliver one bus event (reset/hello/gap/frame) — drives suspicion + the head anchor. */
   applyBusEvent(event: BusEvent): void;
   /** The bounded DELTA pass (validate's fast pass). Returns the status the shell schedules off. */
   resync(policy?: ResyncPolicy): Promise<ResyncStatus>;
@@ -37,9 +37,9 @@ export interface ContractReader {
   resyncViaSnapshot(policy?: SnapshotPolicy): Promise<ResyncStatus>;
   /** The eventual-read serve verdict over an entry: `unknown` ⇒ fail-closed (NO serve-through). */
   verdict(tags: readonly string[], bornEpoch: number): Promise<Validity>;
-  /** Feed one heartbeat pointer observation (E5 derivative raising). */
+  /** Feed one heartbeat pointer observation (derivative raising). */
   notePointerObservation(pointer: StatePointer, nowMs: number): void;
-  /** Whether the reader currently distrusts its warm map (E4/E20/E5). */
+  /** Whether the reader currently distrusts its warm map. */
   suspect(): boolean;
   /** The poll-due predicate (pure). */
   pollDue(nowMs: number, lastPollMs: number, thresholdMs: number): boolean;
@@ -58,7 +58,7 @@ export interface ReaderHarness {
   readonly reader: ContractReader;
   readonly store: RecordingStore;
   readonly keys: MirrorKeys;
-  /** The registry id scoping the mirror keyspace + echoed by seeded pointers (E19). */
+  /** The registry id scoping the mirror keyspace + echoed by seeded pointers. */
   readonly regId: string;
 }
 
@@ -72,7 +72,7 @@ const TAG = "conformance:reader:t";
 const CONVERGED: ResyncStatus = "converged";
 const TERMINAL_GAP: ResyncStatus = "terminal-gap";
 const UNKNOWN: Validity = "unknown";
-/** Mirrors the kernel's documented maxSyncLag base cadence (§4.2, 60s) — the shell jitters ±20%. */
+/** Mirrors the kernel's documented maxSyncLag base cadence — the shell jitters ±20%. */
 const POLL_BASE_MS = 60_000;
 
 /** The retry arm of `ResyncStatus` — narrows to the object member for its `seq` (test-side). */
@@ -92,7 +92,7 @@ function snapFrame(toEpoch: number, changes: readonly TagChange[]): BusFrame {
   return { changes, fromEpoch: 0, toEpoch };
 }
 
-/** A `__state` pointer scoped to `regId` (E19). */
+/** A `__state` pointer scoped to `regId`. */
 function pointerFor(
   regId: string,
   fields: {
@@ -135,7 +135,7 @@ function establish(reader: ContractReader, head: number): void {
   reader.applyBusEvent({ head, kind: "hello" });
 }
 
-/** Every mirror key the reader is ALLOWED to read for this pointer (E19; no over-fetch):
+/** Every mirror key the reader is ALLOWED to read for this pointer (no over-fetch):
  * the pointer, the blessed snapshot alone, and deltas 1..lastBatch — nothing past the pointer. */
 function allowedReadKeys(h: ReaderHarness, p: StatePointer): Set<string> {
   const allowed = new Set<string>([
@@ -368,10 +368,10 @@ const checkBlessedButMissingSnap = async (
   assert.strictEqual(v, UNKNOWN, "the broken-chain reader fails closed");
 };
 
-/** 7. E5 derivative raising. Observed SILENCE — `flushedAt` failing to advance for `3 ×
+/** 7. derivative raising. Observed SILENCE — `flushedAt` failing to advance for `3 ×
  * heartbeatIntervalMs` (90s at the 30s default) — RAISES suspicion. Derivative-only (elapsed
  * silence, never absolute age) and raise-only (an advancing `flushedAt` never clears it —
- * CACHE-27). Sampling-rate-independent: the threshold is elapsed time, not a tick count. A reader
+ *  ). Sampling-rate-independent: the threshold is elapsed time, not a tick count. A reader
  * that never raises fails. */
 const checkE5DerivativeRaising = async (
   make: () => ReaderHarness
@@ -396,7 +396,7 @@ const checkE5DerivativeRaising = async (
     h.reader.suspect(),
     "observed silence reaching 3× the heartbeat interval raises suspicion (E5)"
   );
-  // Raise-only: an advancing flushedAt must NOT clear suspicion (CACHE-27).
+  // Raise-only: an advancing flushedAt must NOT clear suspicion.
   h.reader.notePointerObservation(
     pointerFor(h.regId, {
       epoch: 2,

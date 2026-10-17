@@ -1,4 +1,4 @@
-// Ordinary unit pin (NOT sacred) — CACHE-28-ii.
+// Ordinary unit pin (NOT sacred).
 //
 // Guards the MEANING of the co-tag fan-out floor (`shared-tag-copurge`) and, transitively, the
 // distributions the Stage-2 chaos floors are calibrated against: the DEFAULT `commandsArb`

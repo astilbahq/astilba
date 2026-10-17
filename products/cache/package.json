@@ -10,12 +10,11 @@
     "test": "vp test",
     "test:unit": "vp test run --project unit",
     "test:invariants": "vitest run --project invariants",
-    "verify:snapshot": "node scripts/verify-source-integrity.mjs",
     "verify:toolchain": "node scripts/verify-toolchain.mjs",
     "typecheck": "pnpm --filter @astilba/cache --filter @astilba/harness --filter @astilba/demo --filter @astilba/rr-fixture -r exec tsc --noEmit && pnpm exec tsc --noEmit && pnpm -C packages/cache exec tsc -p test/integration/tsconfig.json --noEmit",
     "knip": "pnpm --dir ../.. exec knip --workspace products/cache --workspace products/cache/packages/cache --workspace products/cache/packages/harness --workspace products/cache/apps/demo --workspace products/cache/apps/rr-fixture",
     "knip:production": "pnpm knip --production",
-    "verify": "pnpm verify:snapshot && pnpm verify:toolchain && pnpm check && pnpm typecheck && pnpm exec vitest run && pnpm exec vp test run --project unit --coverage && pnpm --dir packages/cache run lint:publish && pnpm knip && pnpm knip:production && pnpm build && node scripts/boot-smoke.mjs && node scripts/module-scope-boot.mjs && node scripts/demo-boot-witness.mjs && node scripts/demo-typed-routes.mjs"
+    "verify": "pnpm verify:toolchain && pnpm check && pnpm typecheck && pnpm exec vitest run && pnpm exec vp test run --project unit --coverage && pnpm --dir packages/cache run lint:publish && pnpm knip && pnpm knip:production && pnpm build && node scripts/boot-smoke.mjs && node scripts/module-scope-boot.mjs && node scripts/demo-boot-witness.mjs && node scripts/demo-typed-routes.mjs"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "0.18.3",

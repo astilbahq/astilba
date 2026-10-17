@@ -1,4 +1,23 @@
-/* References: INV-5, §11.5, §5.2, §5.4, §11.18, E6, E7, INV-18, §5.1, INV-15. */
+// INV-5 (singleflight)
+// INV-18 (the graced serve, re-validated at serve time)
+// Sacred: append-only. Never modify, delete, weaken, skip, or .todo an existing test.
+//
+// The MIRROR of the direction grace-join-evidence.test.ts pins. There the LEADER read the servable
+// copy and a later joiner found nothing, so the joiner is served the leader's value+evidence
+// through the shared result. Here the asymmetry is reversed: the LEADER reads NOTHING (blind) and a
+// later JOINER reads the servable copy itself. The origin then fails RETRIABLY for both.
+//
+// the ladder is the CALLER's own per-read algorithm; the singleflight is a mechanism INSIDE
+// step 5, not a substitute for it. A joiner that arrived at step 5 holding its OWN graced copy (from
+// its OWN steps 2–4) qualifies for grace by the letter — the leader's error classification is an
+// INPUT to the joiner's step-5 tail, never a verdict over it. So the shared failure a joiner is
+// handed is the CLASSIFICATION (retriable / not) as a fact; each waiter runs its OWN step-5
+// tail against its OWN read. A blind leader propagates; a sighted joiner serves its own copy.
+//
+// The rig hand-wires the primitives (the INV-15 precedent) for the one thing `world()` cannot
+// express: a leader whose read finds nothing and a joiner whose read finds the servable copy. The
+// interleaving is the fixture, pinned by a held factory (not `fc.scheduler`) — these are not race
+// tests, so the tooth cannot pass or fail by seed.
 
 import { createCache, HttpError } from "@astilba/cache";
 import type { Cache, Store, Tag } from "@astilba/cache";
@@ -14,7 +33,7 @@ import {
 import { test } from "@fast-check/vitest";
 import { describe, expect } from "vitest";
 
-/** A retriable origin failure (503 ∈ the default retriable set, E2), so grace engages. */
+/** A retriable origin failure (503 ∈ the default retriable set), so grace engages. */
 const outage = async (): Promise<never> => {
   throw new HttpError(new Response(null, { status: 503 }));
 };
@@ -99,7 +118,7 @@ function rig(): Rig {
 }
 
 /** Seed a stored value, then soft-purge it: its candidate is STALE, so it re-validates as servable
- * at serve time — a hard-purged one would not, and grace would never engage (§11.18). */
+ * at serve time — a hard-purged one would not, and grace would never engage. */
 async function seedStaleCopy(r: Rig): Promise<void> {
   await r.cache.getOrSet({
     factory: async () => await Promise.resolve("good"),
@@ -149,16 +168,16 @@ describe("grace across a singleflight join — the mirror (§5.1 step 5, §5.2, 
     );
 
     // The leader read nothing, so it has no copy to serve: it propagates the classified retriable
-    // failure (§5.1 step 5). Its blindness is a fact, not a verdict handed to the joiner.
+    // failure. Its blindness is a fact, not a verdict handed to the joiner.
     expect(led.status).toBe("rejected");
     expect(led.status === "rejected" && led.reason instanceof HttpError).toBe(
       true
     );
 
     // THE TOOTH. The joiner holds a servable copy of its OWN (its own read found it), so it serves
-    // THAT — re-validated now (§11.18) — never the leader's disposition. Every field is the
-    // joiner's own read's evidence: found in L2 (so `tier:'l2'`, `durable:true`, E29), stale, and an
-    // error-path serve (`servedOnError`, §5.4). The leader supplied none of this; it had nothing.
+    // THAT — re-validated now — never the leader's disposition. Every field is the
+    // joiner's own read's evidence: found in L2 (so `tier:'l2'`, `durable:true`), stale, and an
+    // error-path serve (`servedOnError`). The leader supplied none of this; it had nothing.
     expect(
       joined.status === "fulfilled" ? { ...joined.value, age: 0 } : joined
     ).toStrictEqual({
@@ -182,7 +201,7 @@ describe("grace across a singleflight join — the mirror (§5.1 step 5, §5.2, 
     );
 
     // One shared origin failure, two dispositions decided per-caller against each caller's own read
-    // (§5.1 step 5): the blind leader propagates it, the sighted joiner survives it by serving its
+    //: the blind leader propagates it, the sighted joiner survives it by serving its
     // own copy. A kernel that leaked the leader's verdict onto the joiner would reject BOTH — turning
     // one origin failure into N failures, the opposite of what stale-if-error exists to do. A kernel
     // that decided the joiner's serve on the leader's (empty) read would strand it the same way.
@@ -194,7 +213,7 @@ describe("grace across a singleflight join — the mirror (§5.1 step 5, §5.2, 
 /**
  * Like `outageWithBlindLeader`, but a HARD delete lands after the joiner has captured its own copy
  * and before the origin fails — raising the hard watermark past that copy's birth, so the joiner's
- * candidate is DEAD against live knowledge (§11.18). Counts factory runs so the caller can prove a
+ * candidate is DEAD against live knowledge. Counts factory runs so the caller can prove a
  * genuine join (exactly one: the leader's; the joiner's never runs).
  */
 async function outageWithBlindLeaderThenHardDelete<R>(
@@ -226,13 +245,13 @@ async function outageWithBlindLeaderThenHardDelete<R>(
   return { factoryRuns, settled };
 }
 
-// INV-18 — spec §11.18: the graced serve is re-validated at SERVE time, across a join. A joiner
+// INV-18: the graced serve is re-validated at SERVE time, across a join. A joiner
 // serves its OWN copy only while that copy is still servable; when a hard delete lands mid-fill the
 // joiner REFUSES the serve and takes the classified failure instead.
 //
-// That refusal is NOT the §5.0 write-back fence, and the vocabulary matters: no `FencedError` is
+// That refusal is NOT the write-back fence, and the vocabulary matters: no `FencedError` is
 // minted on this path. The waiter loses its claim to a graced serve and takes the factory's own
-// classified failure, which each FORM then surfaces its own way (§5.1 step 5): the plain form
+// classified failure, which each FORM then surfaces its own way: the plain form
 // rethrows the typed error, the entry form resolves a MISS.
 //
 // BOTH forms are pinned below, and pinning both is the point: a waiter's outcome must not depend on
@@ -254,15 +273,15 @@ describe("grace across a singleflight join — the §11.18 serve-time re-validat
     );
     const [led, joined] = settled;
 
-    // A genuine join: the leader's factory ran once, the joiner's never (§5.2).
+    // A genuine join: the leader's factory ran once, the joiner's never.
     expect(factoryRuns).toBe(1);
 
-    // The blind leader holds no copy at all, so it rethrows the classified failure (§5.1 step 5).
+    // The blind leader holds no copy at all, so it rethrows the classified failure.
     expect(led.status).toBe("rejected");
 
     // THE TOOTH. The joiner read a servable copy of its own, but a HARD delete landed during the
     // fill and raised the hard watermark above that copy's birth. Its step-5 tail re-validates the
-    // copy NOW (§11.18) and finds it DEAD — a hard-purged value is never resurrected on the error
+    // copy NOW and finds it DEAD — a hard-purged value is never resurrected on the error
     // path — so it REFUSES the serve. The entry form surfaces that refusal as a MISS, the same
     // outcome a solo caller holding a dead copy resolves: the deleted value must not escape, AND the
     // joiner must not be rejected where a solo call would have resolved. Blinding the re-validation
@@ -274,7 +293,7 @@ describe("grace across a singleflight join — the §11.18 serve-time re-validat
         skipped: false,
         stale: false,
         tier: "miss",
-        // oxlint-disable-next-line sonarjs/no-undefined-assignment -- a miss entry carries `value` PRESENT and undefined, and `toStrictEqual` distinguishes that from an absent property; `null` would assert a different shape than the one §5.1 produces.
+        // oxlint-disable-next-line sonarjs/no-undefined-assignment -- a miss entry carries `value` PRESENT and undefined, and `toStrictEqual` distinguishes that from an absent property; `null` would assert a different shape than the one the read path produces.
         value: undefined,
       }
     );
@@ -294,7 +313,7 @@ describe("grace across a singleflight join — the §11.18 serve-time re-validat
     expect(led.status).toBe("rejected");
 
     // The SAME refusal, surfaced the plain form's way: the typed classified error, never the deleted
-    // value. No `FencedError` is minted — this is not the §5.0 write-back fence — so the reason the
+    // value. No `FencedError` is minted — this is not the write-back fence — so the reason the
     // caller sees is the origin's own `HttpError`.
     expect(joined.status).toBe("rejected");
     expect(

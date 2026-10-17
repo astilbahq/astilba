@@ -1,4 +1,34 @@
-/* References: INV-7, §11.7, INV-26, E7, §11, E30, §5.1, §5.2. */
+// INV-7 — spec
+// INV-26
+// Sacred: append-only. Never modify, delete, weaken, skip, or .todo an existing test.
+//
+// The not-found direction of the per-waiter disposition rule — the mirror of the retriable
+// direction grace-join-mirror.test.ts pins: a join hands each waiter the shared FACT of what the
+// origin returned, and each waiter decides its own disposition against its own read. A blind LEADER
+// (its read finds nothing) fills for a key while a sighted JOINER (its read finds a servable stale
+// copy) joins the same fill; the origin then returns 404 for both.
+//
+// INV-26 forbids a neg-write while a servable `val` exists — and that condition is ONTOLOGICAL
+// (it is about the STORE), while the fill can only test what its OWN read SAW. A blind leader saw
+// nothing, so it must not get to decide suppress-vs-write for everyone: the sighted joiner's read IS
+// the existence proof the leader lacked. So the shared 404 is a FACT each waiter classifies against
+// its OWN read — a sighted waiter SUPPRESSES the neg and serves its own copy; a blind waiter WRITES
+// the neg and serves it. This mirrors the ladder being the caller's own per-read algorithm and
+// the singleflight being a mechanism inside step 5, not a substitute for it.
+//
+// THE ORACLE IS THE SOLO PATH. Each assertion below compares the JOINED outcome to the outcome of
+// the IDENTICAL SOLO call (same rig, same options, no second caller) — the joined path must resolve
+// exactly as the solo call resolves, per API form. A tooth written only against what the joined code
+// produces could ratify a defect; comparing against an independently-pinned solo call cannot.
+//
+// The rig hand-wires the primitives (the grace-join precedent) for the one thing `world()` cannot
+// express: a leader whose read finds nothing and a joiner whose read finds the servable copy. The
+// interleaving is pinned by a held factory (not `fc.scheduler`) — these are not race tests, so the
+// tooth cannot pass or fail by seed.
+//
+// Warrant: R. Morris; applied by Claude Code. A genuine join is witnessed at the suppressing seat's
+// singleflight join count (`sfJoins` >= 1, measured per arm); a factory-run count of one is
+// consistent with both a joined caller and a self-serving second caller, and is not a join witness.
 
 import { createCache, HttpError } from "@astilba/cache";
 import type { Cache, CacheEntry, Store, Tag } from "@astilba/cache";
@@ -97,7 +127,7 @@ function rig(): Rig {
 }
 
 /** Seed a stored value, then soft-purge it: its candidate is STALE, so it re-validates as servable
- * at serve time — a hard-purged one would not, and suppression would never engage (§11.18). */
+ * at serve time — a hard-purged one would not, and suppression would never engage. */
 async function seedStaleCopy(r: Rig): Promise<void> {
   await r.cache.getOrSet({
     factory: async () => await Promise.resolve("good"),
@@ -168,7 +198,7 @@ async function solo<R>(
  * DIFFERENT store states does not pin route-equivalence — it pins world-convergence, and collapsing
  * two distinguishable worlds into one observable is what a defect does, not what a specification
  * says. Whether a compare-fetch carried the val's bytes is route; whether the store HOLDS a val is
- * state, and state is allowed to decide outcomes — hit-versus-miss is the product. (§5.1, E7, E29.)
+ * state, and state is allowed to decide outcomes — hit-versus-miss is the product.
  */
 async function soloBlindAgainstSeeded<R>(
   run: (cache: Cache, tag: Tag) => Promise<R>
@@ -196,21 +226,20 @@ describe("negative caching across a singleflight join — the not-found mirror (
     );
     const [led, joined] = settled;
 
-    // A genuine join: the leader's factory ran once, the joiner's never (§5.2).
+    // A genuine join: the leader's factory ran once, the joiner's never.
     expect(factoryRuns).toBe(1);
 
     // The oracles: the SAME solo call, once with a servable stale copy (sighted), once with nothing
-    // (blind). These are the §5.1/E7 contract, pinned independently of the joined path below.
+    // (blind). These are the contract, pinned independently of the joined path below.
     const sightedOracle = await solo(
       true,
       async (cache, tag) =>
         await cache.getOrSetEntry({ ...SHARED, factory: notFound, tags: [tag] })
     );
-    // E7/E29 oracle amendment (CACHE-52) — ground-rule-3 warrant by R. Morris, applied by Claude
-    // Code under that warrant. This oracle ran against an EMPTY store while the rig above is
+    // Oracle amendment. This oracle ran against an EMPTY store while the rig above is
     // seeded, and demanded the two agree. That identity held only because the displacement defect
     // destroyed the seeded val, collapsing both worlds into one observable — so the pin was a
-    // fossil of the very defect the E7 guard removes, and it forced the suppressed fill turn to
+    // fossil of the very defect the guard removes, and it forced the suppressed fill turn to
     // report a durable not-found that provably does not exist. Seeded, the identity survives
     // honestly: the guard sits at one boundary, so this solo caller is suppressed too.
     const blindOracle = await soloBlindAgainstSeeded(
@@ -219,7 +248,7 @@ describe("negative caching across a singleflight join — the not-found mirror (
     );
 
     // Non-vacuity + spec anchor in ONE claim: the two solo oracles are genuinely DIFFERENT
-    // dispositions — the sighted one keeps its own value (E7 suppression), the blind one takes the
+    // dispositions — the sighted one keeps its own value (suppression), the blind one takes the
     // neg (`undefined`). If they were equal the mirror below would prove nothing.
     expect({
       blind: blindOracle.value,
@@ -464,7 +493,7 @@ function sightedLeaderRig(): SightedLeaderRig {
 }
 
 /** Seed a stored value and soft-purge it, so its candidate is STALE and re-validates as servable at
- * serve time (§11.18) — the sighted-leader rig's counterpart of the seeding above. */
+ * serve time — the sighted-leader rig's counterpart of the seeding above. */
 async function seedStaleCopyOn(cache: Cache, tag: Tag): Promise<void> {
   await cache.getOrSet({
     factory: async () => await Promise.resolve("good"),
@@ -506,7 +535,7 @@ async function notFoundWithSightedLeader<R>(
   return { factoryRuns, settled };
 }
 
-/** What the store actually HOLDS for the key afterwards, as the read-only witness reports it (E27):
+/** What the store actually HOLDS for the key afterwards, as the read-only witness reports it:
  * the stored envelope's kind — `val` if the copy survived, `neg` if a neg was written over it. The
  * witness never hydrates, so probing cannot itself change the answer. */
 async function storedKind(cache: Cache): Promise<string> {
@@ -516,10 +545,10 @@ async function storedKind(cache: Cache): Promise<string> {
 
 describe("negative caching across a singleflight join — a sighted leader's suppression is inherited (E7/INV-26, E30)", () => {
   // The mirror of the blind-leader suites above, and the direction that closes the loop: when the
-  // LEADER is the one holding the servable copy, it decides its own disposition (E7 suppression) and
+  // LEADER is the one holding the servable copy, it decides its own disposition (suppression) and
   // the joiner INHERITS that serve. The joiner here reads NOTHING of its own, so if the kernel ever
   // fell back to deciding a waiter's disposition on that waiter's own (empty) read, the joiner would
-  // write a neg straight over the leader's still-servable value — the displacement E7 exists to
+  // write a neg straight over the leader's still-servable value — the displacement the neg-write guard exists to
   // forbid, reached from the opposite side of the join. Both the SERVE and what the store is left
   // holding are pinned, because only the second catches a displacement that still served the value.
   test("INV-26/E30: a sighted leader suppresses the neg and its blind joiner INHERITS that serve with the leader's own entry evidence — and the stored val survives un-displaced (entry form)", async () => {
@@ -532,7 +561,7 @@ describe("negative caching across a singleflight join — a sighted leader's sup
     );
     const [led, joined] = settled;
 
-    // A genuine join: the leader's factory ran once, the joiner's never (§5.2).
+    // A genuine join: the leader's factory ran once, the joiner's never.
     expect(factoryRuns).toBe(1);
 
     // The oracle: the IDENTICAL SOLO sighted call. A solo caller holding a still-servable copy
@@ -545,7 +574,7 @@ describe("negative caching across a singleflight join — a sighted leader's sup
     expect(sightedOracle.value).toBe("good");
 
     // THE TOOTH. The leader serves its own suppressed copy; the blind JOINER — which read nothing —
-    // is handed that same serve and reports the LEADER's entry evidence (E24/E29: found in L2, so
+    // is handed that same serve and reports the LEADER's entry evidence (found in L2, so
     // `tier:'l2'`, `durable:true`, stale, and WITHOUT `servedOnError`, a 404 not being `staleIfError`).
     // Both equal the sighted solo oracle. Blind the leader-sighted arm and the leader still serves
     // (its own tail suppresses), but the joiner falls through to its own empty read and takes a neg.
@@ -557,6 +586,10 @@ describe("negative caching across a singleflight join — a sighted leader's sup
       leader: norm(sightedOracle),
     });
 
+    // THE DURABLE HALF. Suppression means nothing was written, so the store must still hold the VAL.
+    // This is the assertion a serve-only tooth cannot make: a joiner that wrote a neg over the val
+    // could still have been handed "good" to serve, and the displacement would pass unseen. Blinding
+    // the leader-sighted arm leaves the blind joiner writing its neg here, and this reads `neg`.
     await expect(storedKind(r.cache)).resolves.toBe("val");
   });
 
@@ -748,7 +781,7 @@ describe("negative caching across a singleflight join — recording the fact is 
     g.open();
     const served = await Promise.all([leader, ...joiners]);
 
-    // A genuine three-way join: one factory invocation for all of them (§5.2).
+    // A genuine three-way join: one factory invocation for all of them.
     expect(factoryRuns).toBe(1);
 
     // All three are served the recorded neg — the disposition each blind waiter reaches on its own
@@ -767,18 +800,18 @@ describe("negative caching across a singleflight join — recording the fact is 
 });
 
 /**
- * A caller who reads NOTHING of its own is blind to what the STORE holds — and E7's suppression
+ * A caller who reads NOTHING of its own is blind to what the STORE holds — and the suppression
  * turns on the store, not on the reader. The suites above pin the DISPOSITION side of that (who is
  * served what); these pin the side no serve can witness: what the key is left holding.
  *
- * The distinction is the whole of it. E7's suppression rule is ONTOLOGICAL — it turns on what the
+ * The distinction is the whole of it. the suppression rule is ONTOLOGICAL — it turns on what the
  * store actually holds — while a filling caller's own read is merely EPISTEMIC evidence about that.
  * Where the two agree, either one looks like the rule. The blind-leader fixture is where they come
  * apart: the leader sees nothing, the store holds a servable val, and a kernel that decided the
  * WRITE on the leader's read buries it. Serving the sighted joiner its own copy does not repair
  * that — the joiner is served once, and every reader after it gets the negative.
  *
- * So the oracle here is `explain()`, the non-hydrating witness (E27): it reports the STORED
+ * So the oracle here is `explain()`, the non-hydrating witness: it reports the STORED
  * envelope's kind without touching it, which is the only way to tell a val that survived from a val
  * that was displaced behind a correct-looking serve.
  */
@@ -811,7 +844,7 @@ describe("negative caching across a singleflight join — a neg never lands on t
     await expect(storedKind(r.cache)).resolves.toBe("val");
 
     // And the consequence that makes the probe matter: a THIRD caller, joined to nothing, reading on
-    // its own after both waiters settled. It finds the val the store kept and is served it (E7's own
+    // its own after both waiters settled. It finds the val the store kept and is served it (the own
     // suppression, reached epistemically this time — this caller CAN see the copy). Where the neg had
     // landed, this caller and every one after it received `undefined` instead, permanently.
     const later = await r.cache.getOrSetEntry({
@@ -859,7 +892,7 @@ describe("negative caching across a singleflight join — a neg never lands on t
   // ITS RED CONDITION, stated so a later edit can be checked against it: a mutation reds this test
   // only if it makes the serve depend on ATTACHMENT — a suppressing seat that hands the blind caller
   // the envelope the WRITE layer's compare-fetch saw, instead of that caller's own not-found. That is
-  // the optimization the design invites and E31 forbids: a seat serves what its OWN read produced,
+  // the optimization the design invites and the design forbids: a seat serves what its OWN read produced,
   // and the write layer's compare-fetch is not this caller's read.
   //
   // WHAT A CANDIDATE MUTATION MUST GATE ON, because two obvious choices are inert here and an inert
@@ -873,7 +906,7 @@ describe("negative caching across a singleflight join — a neg never lands on t
   //
   // Current code cannot produce that divergence. The validation's own record — the mutant's exact
   // edits, the pair it ran against, and the reds observed — is kept where records of that kind belong
-  // and cited from there (CACHE-52).
+  // and cited from there.
   test("INV-26/E7: what the write layer SAW never leaks into the blind seat's own serve — it resolves exactly as its identical solo call, per form", async () => {
     const r = rig();
     await seedStaleCopy(r);
@@ -942,7 +975,7 @@ describe("negative caching across a singleflight join — a neg never lands on t
     await expect(storedKind(r.cache)).resolves.toBe("neg");
   });
 
-  // E29 gives the fill turn's `durable` a single meaning: a report on THIS turn's own write,
+  // The design gives the fill turn's `durable` a single meaning: a report on THIS turn's own write,
   // awaited past settle. A suppressed write is a settle with a KNOWN outcome — the neg landed
   // nowhere — so the honest report is `false`, and `true` would assert a durable not-found that
   // provably does not exist. Note what this pins and how it differs from the equivalence pins
@@ -984,18 +1017,18 @@ describe("negative caching across a singleflight join — a neg never lands on t
   });
 });
 
-/** A retriable origin failure (503) — the §5.4 `staleIfError` condition, which a 404 is NOT. */
+/** A retriable origin failure (503) — the `staleIfError` condition, which a 404 is NOT. */
 const serverError = async (): Promise<never> => {
   throw new HttpError(new Response(null, { status: 503 }));
 };
 
 describe("E7 suppression vs the error-path grace serve — the flag names an event (E7, E31, §5.4, §11.18)", () => {
-  // E31: the seat holding the protected copy serves it in the grace path's own SHAPE — stale,
-  // re-validated at serve time — but NOT carrying `servedOnError`. That flag marks a §5.4
+  // the seat holding the protected copy serves it in the grace path's own SHAPE — stale,
+  // re-validated at serve time — but NOT carrying `servedOnError`. That flag marks a
   // stale-if-error serve, and a not-found is not an error condition: the origin answered, and this
   // system chose to protect a stored value against that answer. Setting the flag would assert an
   // event that never happened, and it would collapse a distinction the serve kinds are built on —
-  // "the origin failed and grace rescued this" and "the origin says gone and E7 protects the value"
+  // "the origin failed and grace rescued this" and "the origin says gone and The neg-write guard protects the value"
   // are different worlds to whoever reads the evidence.
   test("INV-26/E7/E31: a suppressed serve is stale WITHOUT servedOnError, while the same value served through a retriable failure carries both", async () => {
     // Same world both times — a stored copy, soft-purged so it is stale-but-servable, and a caller

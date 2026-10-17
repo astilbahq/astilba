@@ -10,8 +10,14 @@ stryker-tmp/
 reports/mutation/
 stryker.log
 
+# Agent worktrees (Claude Code creates isolated git worktrees here). Never commit
+# one: a stray `git add -A` would otherwise absorb an entire checkout. Two workers
+# have already run a stray `git checkout -b` against the shared tree; this is the
+# structural guard for the adjacent failure.
 .claude/worktrees/
 
+# pnpm's content-addressed store, created when an install runs with the repo as its root.
+# Local build output: thousands of files, some past GitHub's 100MB blob limit.
 .pnpm-store/
 apps/*/build/
 .react-router/

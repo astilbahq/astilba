@@ -1,7 +1,7 @@
-// INV-30 — spec §5.0 (the SWR background refresh's mint; INV-9's converse direction)
+// INV-30 (the SWR background refresh's mint; INV-9's converse direction)
 // Sacred: append-only. Never modify, delete, weaken, skip, or .todo an existing test.
 //
-// §5.0 names the SWR background refresh among the paths that stamp a newly minted value with the
+// The SWR background refresh is among the paths that stamp a newly minted value with the
 // epoch applied at FILL START. INV-9 pins one direction of that stamp — a fill that began before a
 // visible purge must not escape it. This pins the other: a refresh that begins AFTER a purge must
 // not be TRAPPED by it. A refresh minting from the stale value's own envelope re-births the value
@@ -34,7 +34,7 @@ describe("SWR refresh mint (§5.0)", () => {
     // past the epoch `v1` was born at.
     await cache.expire({ tag });
 
-    // §5.1 step 6 — the stale value is served, and a refresh runs for NEXT time. The SERVED value
+    // the stale value is served, and a refresh runs for NEXT time. The SERVED value
     // is always the stale one, so this arm says nothing about the mint; it only sets it up. The
     // `fills` term is the non-vacuity check: without it the pin below could pass on a kernel that
     // never refreshed at all.

@@ -1,11 +1,11 @@
-// regId resolution teeth (E19-b, C3-b) — the DO-name-derived registry identity (identity = address).
+// regId resolution teeth — the DO-name-derived registry identity (identity = address).
 //
 // PURE unit teeth in the Node lane over `resolveRegId` (src/adapters/cloudflare/reg-id.ts): the
 // SAME precedence + grammar refusal the Coordinator runs at boot, driven directly on {name, env}
 // inputs. Three properties, each RUN here (deterministic — no fast-check):
 //   • precedence — name > env > "default" (R3): the DO name wins; env is the DEMOTED fallback for
 //     an un-named object; "default" is the last resort (zero-config).
-//   • refuse-on-invalid-name (R2) — a NAME violating E19's grammar throws a TYPED
+// • refuse-on-invalid-name (R2) — a NAME violating the grammar throws a TYPED
 //     `InvalidRegistryNameError` naming the grammar + suggesting `REGISTRY_ID`; env/default winners
 //     still pass `assertRegId` (a malformed `REGISTRY_ID` also fails loud).
 //   • the idFromString/newUniqueId trap — an undefined name (the platform drops it) falls through
@@ -70,7 +70,7 @@ describe("resolveRegId — DO-name-derived registry identity (E19-b)", () => {
 
   test("R3: an env/default winner is still asserted — a malformed REGISTRY_ID fails loud", () => {
     // The name is undefined, so env is the winner; a malformed env value must still throw (via the
-    // shared `assertRegId` gate). It is NOT the name-refuse path, so it throws the generic E19 gate
+    // shared `assertRegId` gate). It is NOT the name-refuse path, so it throws the generic regId gate
     // error, not the typed name-refuse error.
     expect(() => resolveRegId(undefined, "BAD:env")).toThrow(/E19/u);
   });

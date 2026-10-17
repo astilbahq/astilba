@@ -1,9 +1,9 @@
 import type { RequestContext } from "@astilba/cache";
 
-// A guarded adapter request object (§6). Property reads are RECORDED (never thrown)
+// A guarded adapter request object. Property reads are RECORDED (never thrown)
 // so a test can witness that a public-scoped factory touched a guarded accessor.
 // The kernel's dev-mode Proxy is what demotes such an entry off the shared tier
-// (§11.4) — so the failure must come from the kernel (NotImplementedError), not
+// — so the failure must come from the kernel (NotImplementedError), not
 // from this fake. The fake must never throw and never demote on its own.
 
 export interface GuardedRequest {

@@ -1,4 +1,4 @@
-// Conformance (NOT sacred) — C4-a-0-i, DoD completion 2. INTERCHANGEABILITY = BYTE-EQUALITY:
+// Conformance (NOT sacred), DoD completion 2. INTERCHANGEABILITY = BYTE-EQUALITY:
 // a kernel-built tag (`t`) and a harness-branded tag (`mkTag`) are the SAME STRING for the same
 // inputs — two construction paths, one vocabulary, no silent normalization drift. This is what
 // licenses the harness's deliberate independence (branding inputs directly, off the builders):

@@ -4,7 +4,7 @@ import { cacheContext, currentRequest } from "@astilba/cache/react-router";
 
 // A loader that exercises the FULL published adapter surface end-to-end (compiled by the build):
 // read the cache off RR context, and pass the ALS-carried principal `RequestContext` straight into
-// `getOrSet`'s `request` — the mechanism the kernel derives `usr:<hash>` scope from (§6, E17).
+// `getOrSet`'s `request` — the mechanism the kernel derives `usr:<hash>` scope from.
 export async function loader({ context }: LoaderFunctionArgs) {
   const cache = context.get(cacheContext);
   const greeting = await cache.getOrSet({

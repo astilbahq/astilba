@@ -1,5 +1,5 @@
-// Public error surface. Spec §1 (RegistryUnavailableError on strong reads),
-// §5.4 (CacheTimeoutError{source}). NotImplementedError is the kernel-phase stub
+// Public error surface: RegistryUnavailableError on strong reads),
+// CacheTimeoutError{source}. NotImplementedError is the kernel-phase stub
 // sentinel: every public entry point throws it until the invariant suite is
 // reviewed and implementation begins.
 
@@ -28,12 +28,12 @@ export function notImplemented(
   throw new NotImplementedError(symbol);
 }
 
-/** Whether a cache timeout originated inside the cache or from a caller abort (§5.4). */
+/** Whether a cache timeout originated inside the cache or from a caller abort. */
 export type CacheTimeoutSource = "cache" | "caller";
 
 /**
  * Distinguishes cache-originated timeouts (retriable — evidence about origin
- * health) from caller aborts (not evidence of origin health) — §5.4.
+ * health) from caller aborts (not evidence of origin health).
  */
 export class CacheTimeoutError extends Error {
   readonly source: CacheTimeoutSource;
@@ -46,7 +46,7 @@ export class CacheTimeoutError extends Error {
 }
 
 /**
- * Thrown by a `strong` read when the registry is unreachable (§1). Opt out with
+ * Thrown by a `strong` read when the registry is unreachable. Opt out with
  * `onUnavailable: 'eventual'`.
  */
 export class RegistryUnavailableError extends Error {
@@ -63,15 +63,34 @@ export class RegistryUnavailableError extends Error {
   }
 }
 
-/* References: §5, E9, E28. */
-
+/**
+ * Thrown by a read whose tag knowledge is UNKNOWN under `unknownPolicy: 'error'`.
+ *
+ * WHAT MAKES THIS DISTINCT FROM A MISS, AND WHY THE DISTINCTION IS THE POINT. Every other
+ * fail-closed resolution refills from origin, which is hard-safe exactly when the origin is truth.
+ * `'error'` is the policy for the case where it is NOT: a namespace under a takedown or a legal
+ * embargo. There, an origin that has not caught up yet can lose a race with the purge and hand back
+ * exactly the content that was supposed to vanish. So this policy declines to guess: it neither
+ * serves the unknown value nor replaces it
+ * with a fresh one, and the caller — who knows what the content is — decides. A policy that resolved
+ * to the same refill as `'miss'` would be a switch that reads as protection and does nothing, which
+ * is worse than no switch at all.
+ *
+ * Carries the key and the tags whose knowledge was unknown, so a caller can tell an embargoed
+ * dependency from a cold one. EXACTLY those: the tags this read could not establish, and no others.
+ * A payload of everything the entry declared cannot answer the question the field exists for — the
+ * caller would have to guess which of them was the problem, which is the guess this policy refuses
+ * to make on their behalf. Reserved (`__`-prefixed) tags never appear here: they are the kernel's
+ * own bookkeeping, they are unknown for exactly the same reason the user's are, and naming them
+ * tells the caller nothing they can act on.
+ */
 export class UnknownTagError extends Error {
   readonly key: string;
   readonly tags: readonly string[];
 
   /**
    * `armedBy` names what selected this resolution — an explicit `unknownPolicy: 'error'`, or the
-   * `takedownSensitive` override that outranks it (E9/E28). The message used to state the former
+   * `takedownSensitive` override that outranks it. The message used to state the former
    * unconditionally, which was wrong precisely on the takedown path: the one place where the
    * operator most needs to know which switch fired is the one where the message named the other.
    */
@@ -93,7 +112,7 @@ export class UnknownTagError extends Error {
   }
 }
 
-/** A typed HTTP error carrying the offending status and response (§5.4). */
+/** A typed HTTP error carrying the offending status and response. */
 export class HttpError extends Error {
   readonly status: number;
   readonly response: Response;
@@ -109,7 +128,7 @@ export class HttpError extends Error {
 /**
  * Thrown at the `getOrSet`/`getOrSetEntry` write boundary when a caller-supplied
  * tag is malformed — in particular a user tag beginning with the reserved `__`
- * prefix (§2.3, MI13). A real runtime error, never `NotImplementedError`: tag
+ * prefix. A real runtime error, never `NotImplementedError`: tag
  * validation is not deferred kernel logic.
  */
 export class InvalidTagError extends Error {
@@ -124,8 +143,8 @@ export class InvalidTagError extends Error {
 
 /**
  * Thrown by `duration()` when a computed duration is malformed — a non-positive or
- * non-finite `value`, or (F31, the critical case) a `value × unitFactor` product that
- * is not a finite, positive, safe integer once multiplied out (§2.1, MI28, F31). A real
+ * non-finite `value`, or (critical case) a `value × unitFactor` product that
+ * is not a finite, positive, safe integer once multiplied out. A real
  * runtime error, never `NotImplementedError`: duration validation is not deferred kernel
  * logic. Mirrors `InvalidTagError` — the builder rejects a bad input, it never coerces one.
  */
@@ -145,7 +164,7 @@ export class InvalidDurationError extends Error {
 
 /**
  * Thrown by the plain `getOrSet` form when a fill is fenced past its write-back
- * retry attempt budget (§5.0/MI6): a hard delete keeps landing mid-fill/mid-
+ * retry attempt budget: a hard delete keeps landing mid-fill/mid-
  * refresh so the accepted result never postdates every purge visible at
  * write-back, and the fill fails within its attempt budget rather than ever
  * storing or serving a fenced value. A real runtime outcome, never
@@ -166,7 +185,7 @@ export class FencedError extends Error {
 }
 
 /**
- * Thrown when a factory declares a dependency after it has settled (§2.1, E24): a
+ * Thrown when a factory declares a dependency after it has settled: a
  * `ctx.dependsOn`/`ctx.setTags` call reaching the context AFTER the factory promise
  * resolved or rejected. The fill's tag set closes at settle, so a later declaration is
  * outside the value's lifetime and cannot join it. A real runtime error, never
@@ -185,7 +204,7 @@ export class FactorySettledError extends Error {
 }
 
 /**
- * The `EntryFactoryCtx.skip()` sentinel (§2.1, M10, invariant 24) — a private
+ * The `EntryFactoryCtx.skip()` sentinel (M10, invariant 24) — a private
  * throw/catch signal, analogous to how a classified factory error rides
  * `fail()`. `skip()` is typed `never` so it never falsely resolves `undefined`
  * as a caller's `T`; `fillAndStore` catches this exact class and turns it into

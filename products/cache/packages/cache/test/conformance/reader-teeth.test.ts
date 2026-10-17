@@ -12,6 +12,12 @@ import {
 import { makeReferenceReaderHarness } from "./fixtures/reference";
 import { readerChecks } from "./runner/reader";
 
+// Reader teeth: each reader check is driven against a
+// deliberately-wrong reader and MUST fail, and against the reference reader and MUST pass.
+// Green-on-reference alone proves nothing — the reference IS the real Invalidation — so each
+// check here demonstrates it discriminates a liar. We assert only THAT the targeted check
+// rejects, never on an exact message (so the proofs don't go brittle).
+
 describe("reader teeth — every check discriminates a wrong reader", () => {
   it("stale-pointer check REJECTS a serve-through reader", async () => {
     await expect(

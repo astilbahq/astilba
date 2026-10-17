@@ -1,4 +1,17 @@
-/* References: INV-4, §11.4, §6, E17, INV-20, INV-8, E1. */
+// INV-4 — spec
+// Sacred: append-only. Never modify, delete, weaken, skip, or .todo an existing test.
+//
+// Scope resolution is TOTAL: an undeclared scope resolves to `usr:<hash>`
+// (L1-only) ONLY when the request carries an adapter-derived principal; absent any
+// principal (no context / null principal) it resolves to the `pub` storage class —
+// DURABLE and SHAREABLE, carrying no adapter-visible identity by construction. This
+// guard pins BOTH sides of that ruling so neither can silently regress:
+//   1. a CONTEXTLESS default write is durable AND visible to a second isolate (`pub`),
+//      guarding against a regression back to the abolished L1-only default (which
+// would also re-break INV-20 / INV-8 / the model);
+//   2. a REQUEST-BEARING default write is `usr:<hash>` — the stored scope begins
+//      `usr:` and carries a NON-EMPTY principal hash suffix, pinning the abolished
+// hashless `usr:` literal (every `usr:` carries a principal hash).
 
 import { createCache } from "@astilba/cache";
 import type { Store, StoreMetadata, StoreWriteOptions } from "@astilba/cache";
@@ -36,7 +49,7 @@ describe("scope resolution (E17)", () => {
     const w = world({ isolates: 2 });
     const producer = w.isolate(0).cache;
     const reader = w.isolate(1).cache;
-    // No `scope`, no `request` — the contextless default. Per E17 rule 3 this is the
+    // No `scope`, no `request` — the contextless default. This is the
     // shared `pub` class: it must land durably in L2, not be confined to L1.
     const written = await producer.getOrSetEntry({
       factory: async () => await Promise.resolve("shared-value"),
@@ -67,7 +80,7 @@ describe("scope resolution (E17)", () => {
       rng: new SimRng(1),
     });
     // No declared `scope`, but a request carrying an adapter-derived principal —
-    // E17 rule 2: `usr:<hash>`, confined to L1, never published to the shared tier.
+    // `usr:<hash>`, confined to L1, never published to the shared tier.
     const written = await cache.getOrSetEntry({
       factory: async () => await Promise.resolve("private-value"),
       key: "profile",
@@ -78,7 +91,7 @@ describe("scope resolution (E17)", () => {
     expect(written.durable).toBeFalsy();
     expect(l2.writes).toHaveLength(0);
     // The stored envelope's scope begins `usr:` AND carries a non-empty hash suffix —
-    // NOT the abolished bare `"usr:"` literal (E17: every `usr:` carries a hash).
+    // NOT the abolished bare `"usr:"` literal (every `usr:` carries a hash).
     const scopes = l1.writes
       .map((meta) => meta.scope)
       .filter((scope): scope is string => typeof scope === "string");
@@ -102,9 +115,9 @@ describe("scope resolution (E17)", () => {
       namespace: "journals",
       rng: new SimRng(1),
     });
-    // A declared `scope:{tenant}` write — §3's envelope `scope` grammar
+    // A declared `scope:{tenant}` write — the envelope `scope` grammar
     // (`'pub' | 'usr:<h>' | 'ten:<h>'`) hashes the tenant exactly like `usr:<h>`
-    // (E17 addendum: "`ten:<h>` uses the same 128-bit truncation (§3)"). The raw
+    // (scoping rule: "`ten:<h>` uses the same 128-bit truncation "). The raw
     // `ten:<tenant>` literal is the abolished pre-v0.1 deviation.
     const written = await cache.getOrSetEntry({
       factory: async () => await Promise.resolve("tenant-value"),
@@ -121,7 +134,7 @@ describe("scope resolution (E17)", () => {
       expect(scope.startsWith("ten:")).toBeTruthy();
       expect(scope.length).toBeGreaterThan("ten:".length);
       // NOT the raw tenant literal — the hashless `ten:acme` form is the
-      // deviation the E17 addendum flags to correct before v0.1.
+      // deviation the addendum flags to correct before v0.1.
       expect(scope).not.toBe("ten:acme");
     }
   });

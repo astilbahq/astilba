@@ -5,7 +5,7 @@ import { Links, Meta, Outlet, Scripts, ScrollRestoration } from "react-router";
 import type { Route } from "./+types/root";
 import { waitUntilContext, worldContext } from "./world";
 
-// The RR-v8 ROOT middleware (§7), always-on. Unlike the build-smoke fixture — which registers
+// The RR-v8 ROOT middleware, always-on. Unlike the build-smoke fixture — which registers
 // `cacheMiddleware({ cache })` against a module-scope, driverless cache — this app's cache is built
 // per isolate from the REAL bindings, so it arrives through the router context the worker seeds.
 // The wrapper is one line, and it is the seam that keeps every route file free of the Workers

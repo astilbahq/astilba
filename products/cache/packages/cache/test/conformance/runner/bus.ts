@@ -3,18 +3,54 @@ import assert from "node:assert/strict";
 import type { Bus, BusEvent, BusFrame, TagChange } from "@astilba/cache";
 import { describe, it } from "vitest";
 
-/* References: §4.2, E4, E21, E19. */
+// Bus contract (interface v2; restructured per). A parameterized
+// behavior-spec any invalidation-bus driver must satisfy. The subscriber consumes a `BusEvent`
+// union (`frame` | `gap` | `reset` | `hello`). Two blocks:
+//
+// CORE — every bus passes: establishment ORDERING, the `hello` head LOWER BOUND, the
+// regId ECHO, FRAME FIDELITY through the codec, and CLOSE-ON-DOUBT. The generic
+//   universal contract — a redisBus (v0.4) passes the identical block without retrofit. Checks
+//   whose control the harness does not expose (a real driver with no deterministic reconnect; a
+//   fake with no live socket to close or scope to echo) SELF-SKIP — they fall to integration, they
+//   never fail (lane law). doBus never emits `gap`, so its loss scenes are real evictions in
+//   integration, not a core obligation.
+//
+//   CONTROLLABILITY-GATED — the drop/gap/reorder scenes: run where the harness has chaos hands.
+// The FakeBus (deterministic drop) passes them fully; doBus (no `gap`) SELF-SKIPS them
+//   here — its loss detection is the reader's contiguity handling over real evictions (C″).
+//
+// The obligations:
+// B1 every transport establishment (subscribe AND reconnect) emits `reset` BEFORE any frame —
+// all warm trust starts suspended pending a resync.
+// Handshake rule: every establishment emits `reset` → `hello` → frames: the `hello` follows the `reset` and
+// precedes any frame. Its `head` is a lower bound on the channel's durable epoch —
+//       `head` ≥ the `toEpoch` of every frame previously emitted (delivery ≠ truth). Under-
+//       declaring it strands a caught-up subscriber suspect.
+// `hello` echoes the channel's `regId`; a subscriber whose configured scope
+//       mismatches must close LOUD and dispatch NO hello (it read a foreign channel).
+// Gap rule: post-reset delivery is contiguous from the applied epoch, or a dropped/lost frame is
+//       signaled as a `gap` (never silently skipped), carrying a `head` ≥ the `toEpoch` of every
+// frame emitted before the signal. GATED — needs a loss-injection control.
+// B3 no delivery guarantee beyond a frame's own `{fromEpoch,toEpoch}` contiguity: the KERNEL
+//       validates contiguity, the bus only transports — so it delivers even a non-contiguous frame
+//       faithfully (byte-identical THROUGH the codec) and never synthesizes a gap it did not cause.
+// any DELIVERY DOUBT ⇒ the channel CLOSES that one subscriber (never a silent gap); one dead
+//       subscriber never blocks the fan-out to the rest.
 
+/** The events a mismatched-scope subscriber received + whether the transport closed it. */
 export interface MismatchProbe {
   readonly events: readonly BusEvent[];
   readonly closed: boolean;
 }
 
+/** One subscriber's observed delivery in a two-subscriber close-on-doubt probe. */
 interface DoubtObservation {
   readonly frames: readonly BusFrame[];
   readonly closed: boolean;
 }
 
+/** A two-subscriber close-on-doubt probe: the subscriber whose delivery was armed
+ * DOUBTFUL, and a HEALTHY co-subscriber that must be unaffected. */
 export interface DoubtProbe {
   readonly doubted: DoubtObservation;
   readonly healthy: DoubtObservation;
@@ -29,16 +65,18 @@ export interface BusHarness {
   publish(frame: BusFrame): void;
   /** Re-establish the transport; a conformant bus re-emits `reset` → `hello` before any frame. */
   reconnect?(): void;
-  /** Drop the next `n` published frames, creating a hole the bus must signal as a `gap` (B2). */
+  /** Drop the next `n` published frames, creating a hole the bus must signal as a `gap`. */
   dropNext?(n: number): void;
   /** Deliver any buffered frames whose time has come (deterministic pump). Absent for a bus that
    * delivers synchronously on publish (the FakeBus reference at zero delay; the doBus pair). */
   pump?(): void;
   /** Subscribe a client whose configured scope MISMATCHES the channel's, resolving with the events
-   * it received + whether the transport closed it (③, E19). Absent on a bus with no scope echo (the
+   * it received + whether the transport closed it. Absent on a bus with no scope echo (the
    * FakeBus) — the regId-echo check self-skips. */
   subscribeMismatchedScope?(): Promise<MismatchProbe>;
-
+  /** Arm ONE of two subscribers' next delivery to be DOUBTFUL (a throwing send / a closing socket),
+   * publish `frame`, and resolve with each subscriber's received frames + close status.
+   * Absent on a bus with no live socket to close (the FakeBus) — the close-on-doubt check self-skips. */
   deliveryDoubtProbe?(frame: BusFrame): Promise<DoubtProbe>;
 }
 
@@ -60,10 +98,10 @@ const kindsOf = (events: readonly BusEvent[]): readonly BusEvent["kind"][] =>
   events.map((e) => e.kind);
 
 /**
- * B1 — every transport establishment emits `reset` before any frame. The initial
+ * every transport establishment emits `reset` before any frame. The initial
  * subscribe is one establishment; a `reconnect()` is another. A bus that re-opens the
  * transport without re-issuing `reset` leaves a subscriber trusting knowledge it may
- * have missed a purge behind (E4) — this check rejects it.
+ * have missed a purge behind — this check rejects it.
  */
 const checkResetBeforeFrame = async (make: () => BusHarness): Promise<void> => {
   const h = make();
@@ -111,11 +149,11 @@ const checkResetBeforeFrame = async (make: () => BusHarness): Promise<void> => {
 };
 
 /**
- * B1′ — every transport establishment emits `reset` → `hello` → frames (E21). The `hello`
+ * every transport establishment emits `reset` → `hello` → frames. The `hello`
  * follows the `reset` and precedes any frame, on the initial subscribe AND on a reconnect.
  * A bus that re-opens the transport without a `hello` leaves the reader with no head to
- * anchor convergence on — a caught-up subscriber can never re-trust its warm map (the E5
- * heartbeat is no longer an anchor, E21) — so this check rejects it.
+ * anchor convergence on — a caught-up subscriber can never re-trust its warm map (the
+ * heartbeat is no longer an anchor) — so this check rejects it.
  */
 const checkHelloAfterReset = async (make: () => BusHarness): Promise<void> => {
   const h = make();
@@ -172,8 +210,15 @@ const checkHelloAfterReset = async (make: () => BusHarness): Promise<void> => {
   }
 };
 
-/* References: E21. */
-
+/**
+ * Handshake rule: lower bound — a `hello`'s `head` is ≥ the `toEpoch` of every frame previously emitted
+ * on the channel. This is stated implementation-agnostically: the check advances the
+ * channel with a few frames, re-establishes, and asserts the fresh `hello` declares a head no
+ * lower than the highest frame it saw. Delivery ≠ truth — even a frame the channel dropped
+ * advanced its durable head — so a conformant bus can only ever OVER-declare, never under. A
+ * bus that under-declares would let a caught-up reader believe it had reached the head when it
+ * had not. Requires a re-establishment control (`reconnect`); without one it falls to integration.
+ */
 const checkHelloHeadLowerBound = async (
   make: () => BusHarness
 ): Promise<void> => {
@@ -209,7 +254,7 @@ const checkHelloHeadLowerBound = async (
 };
 
 /**
- * B2 — a dropped/lost frame is signaled as a `gap`, never silently skipped. Post-reset
+ * a dropped/lost frame is signaled as a `gap`, never silently skipped. Post-reset
  * delivery is contiguous from the applied epoch, OR the break is announced so the
  * subscriber can resync. Requires a loss-injection control (`dropNext`); without one
  * the property is an integration-lane assertion (lane law).
@@ -228,7 +273,7 @@ const checkGapOnLoss = async (make: () => BusHarness): Promise<void> => {
     // A contiguous frame flows through normally.
     h.publish(mkFrame(0, 1));
     h.pump?.();
-    // Now lose the next frame: the transport must signal `gap`, not swallow it (B2).
+    // Now lose the next frame: the transport must signal `gap`, not swallow it.
     h.dropNext(1);
     h.publish(mkFrame(1, 2)); // lost
     h.publish(mkFrame(2, 3)); // delivered after the hole
@@ -243,8 +288,8 @@ const checkGapOnLoss = async (make: () => BusHarness): Promise<void> => {
 };
 
 /**
- * B2′ lower bound — a `gap`'s `head` is ≥ the `toEpoch` of every frame emitted before the signal
- * (E21). Stated implementation-agnostically: advance the channel with delivered frames, drop a
+ * Gap rule: lower bound — a `gap`'s `head` is ≥ the `toEpoch` of every frame emitted before the signal.
+ *Stated implementation-agnostically: advance the channel with delivered frames, drop a
  * higher one, and assert the resulting `gap` declares a head no lower than the highest frame the
  * subscriber saw. Delivery ≠ truth — the dropped frame still advanced the channel — so a
  * conformant bus can only OVER-declare (`head` ≥ the dropped epoch too). A bus that under-declares
@@ -284,7 +329,7 @@ const checkGapHeadLowerBound = async (
 };
 
 /**
- * B3 — the bus transports, it does not validate contiguity. Two non-contiguous frames
+ * the bus transports, it does not validate contiguity. Two non-contiguous frames
  * published with NO loss injected must BOTH be delivered faithfully (byte-identical to
  * what was published), and the bus must NOT synthesize a `gap` of its own for the
  * epoch break — contiguity validation is the kernel's job. This rejects a bus that
@@ -342,8 +387,8 @@ const sameFrame = (a: BusFrame, b: BusFrame): boolean => {
 };
 
 /**
- * ③ regId ECHO — a subscriber whose configured scope MISMATCHES the channel's must dispatch NO
- * `hello` and close LOUD (E19): the live-channel `hello` echoes the DO's `regId`, and a mismatch
+ * regId ECHO — a subscriber whose configured scope MISMATCHES the channel's must dispatch NO
+ * `hello` and close LOUD: the live-channel `hello` echoes the DO's `regId`, and a mismatch
  * means the subscriber read a foreign channel, so it fails closed. Requires a scope-echo control
  * (`subscribeMismatchedScope`); a bus with no scope echo (the FakeBus) self-skips to integration.
  */
@@ -364,7 +409,7 @@ const checkRegIdEcho = async (make: () => BusHarness): Promise<void> => {
 };
 
 /**
- * ① CLOSE-ON-DOUBT — any delivery doubt (a throwing send / a closing socket) ⇒ the channel CLOSES
+ * CLOSE-ON-DOUBT — any delivery doubt (a throwing send / a closing socket) ⇒ the channel CLOSES
  * that ONE subscriber rather than risk a silent gap, and a HEALTHY co-subscriber still receives the
  * frame (one dead subscriber never blocks the fan-out). Requires a live socket to close
  * (`deliveryDoubtProbe`); a bus with none (the FakeBus, whose loss model is `drop`→`gap`) self-skips.
@@ -417,6 +462,12 @@ export const busChecks: {
   transportsWithoutValidating: checkTransportsWithoutValidating,
 };
 
+/**
+ * Register the Bus conformance suite: a CORE block every bus passes (structural checks
+ * self-skip where a harness lacks the control) + a CONTROLLABILITY-GATED block (drop/gap/reorder).
+ * Written generically off a bus-under-test factory, so the FakeBus reference and the real doBus /
+ * redisBus drive the identical blocks.
+ */
 export function runBusContract(
   make: () => BusHarness,
   opts: BusContractOptions = {}

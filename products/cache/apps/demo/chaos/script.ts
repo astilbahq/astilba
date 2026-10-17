@@ -1,4 +1,4 @@
-// The chaos SCRIPT (C5-c) — three faults, written down.
+// The chaos SCRIPT — three faults, written down.
 //
 // The deterministic fakes expose a chaos surface the invariant suite drives: drop the next frames,
 // stall a key, disconnect, crash an isolate, skew a clock. That surface is bound to a simulated
@@ -18,7 +18,7 @@ import { mirrorKeys } from "@astilba/cache/registry";
 
 import type { FaultDials } from "./dials";
 
-/** The three faults the C5 exit line names. */
+/** The three faults the exit line names. */
 export type SceneId = "backend-kill" | "bus-drop" | "registry-outage";
 
 /** Every scene id, in the order the console lists them. */
@@ -48,7 +48,7 @@ export interface Scene {
   /**
    * Does this scene's episode boot a reader of its OWN, minted the moment the fault is armed?
    *
-   * A channel that never established is a fact about a reader's LIFETIME (E28), and the isolate's
+   * A channel that never established is a fact about a reader's LIFETIME, and the isolate's
    * long-lived reader came up on the first request anyone made — so no sequence of arming and
    * reloading can ever show one on it. A scene whose subject IS that state has to own a lifetime
    * that began under the fault. The flag is here rather than assumed everywhere because the demo's
@@ -74,7 +74,7 @@ export interface Scene {
  * consumer left is the `Scene.arm` signature in this file. */
 interface SceneContext {
   /** The registry name — the one identity string the hero factory derives everything from, and the
-   * scope of the mirror keyspace a Coordinator outage takes with it (E19-b). */
+   * scope of the mirror keyspace a Coordinator outage takes with it. */
   readonly registryName: string;
 }
 
@@ -94,7 +94,7 @@ function mirrorPrefix(registryName: string): string {
 }
 
 const SCENES: Readonly<Record<SceneId, Scene>> = {
-  // THE FLAGSHIP. A suppressed L2 read is a plain MISS (E13's read half): the adapter's read
+  // THE FLAGSHIP. A suppressed L2 read is a plain MISS (the read half): the adapter's read
   // classifier is total, so there is no rejection it declines to name, and the kernel rethrows only
   // what nobody classified. This scene drives that path — the durable tier stops answering, the
   // library treats the failed read as a miss, the origin refills, the caller pays latency instead of

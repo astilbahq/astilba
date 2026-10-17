@@ -16,11 +16,11 @@ import { FakeStore } from "./store";
 export const DEFAULT_RNG_SEED = 0x5e_ed;
 
 /**
- * The harness-owned logical→physical mirror-key resolver (§4.2, E19). Chaos knobs address the
+ * The harness-owned logical→physical mirror-key resolver. Chaos knobs address the
  * replication mirror keys by their LOGICAL name (`"__state"`, `"__delta:<seq>"`, `"__snap:<seq>"`,
  * as the sacred traces do); the harness resolves each to the world's PHYSICAL store key through
  * the SAME `mirrorKeys(regId)` the kernel writes with — the mapping is the HARNESS's, not the
- * kernel's, so the sacred `delayKey("__state", …)` call sites keep biting after E19 scoped the
+ * kernel's, so the sacred `delayKey("__state", …)` call sites keep biting after registry scoping moved the
  * physical keys to `__reg:<regId>:…` without the traces moving.
  */
 function makeMirrorKeyResolver(regId: string): (logical: string) => string {
@@ -50,9 +50,9 @@ export interface WorldConfig {
   readonly defaults?: CacheDefaults;
   readonly consistency?: Consistency;
   readonly rngSeed?: number;
-  /** Enable dev mode (guarded-accessor Proxy demotion + mismatch-throws) — §2.1/§6. */
+  /** Enable dev mode (guarded-accessor Proxy demotion + mismatch-throws). */
   readonly dev?: boolean;
-  /** The registry id scoping the §4.2 mirror keyspace (E19). Default `"default"`. The shared
+  /** The registry id scoping the mirror keyspace. Default `"default"`. The shared
    * FakeRegistry is configured with it and the chaos knobs resolve logical mirror keys against
    * it, so a non-default world exercises the scoped keyspace end-to-end. */
   readonly regId?: string;
@@ -63,22 +63,22 @@ export interface Isolate {
   readonly cache: Cache;
   /** This isolate's private L1 (isolate-local). */
   readonly l1: FakeStore;
-  /** This isolate's clock — skew it to hold a higher/lower wall-clock (E3 trace). */
+  /** This isolate's clock — skew it to hold a higher/lower wall-clock (trace). */
   readonly clock: SkewedClock;
 }
 
-/** The chaos surface (§9, §4.2 triggers) the invariant traces drive. */
+/** The chaos surface (triggers) the invariant traces drive. */
 export interface WorldChaos {
   dropNextFrames(n: number): void;
   delayReplica(index: number, ms: number): void;
   delayKey(key: string, ms: number): void;
-  /** Buffer subsequent published frames for `ms` before delivery (CACHE-28-ii Stage 2). Lifted
+  /** Buffer subsequent published frames for `ms` before delivery. Lifted
    * from `bus.delay` onto the chaos surface so a command drives out-of-order delivery through the
    * LOGICAL knob, never reaching into `world.bus` (the fourth-class-key anti-pattern in transport
    * costume). Buffering is also the precondition for `reorderFrames` — a swap needs two frames in
    * flight at once, which only a non-zero delay produces. */
   delayFrames(ms: number): void;
-  /** Swap the next two BUFFERED frames so they arrive out of order (CACHE-28-ii Stage 2). Lifted
+  /** Swap the next two BUFFERED frames so they arrive out of order. Lifted
    * from `bus.reorderNext`; a no-op unless `delayFrames` has two frames buffered when the second
    * publishes. Out-of-order delivery is the reorder dimension's perturbation. */
   reorderFrames(): void;
@@ -91,7 +91,7 @@ export interface WorldChaos {
   /** Inject a registry `check` round-trip latency (the DO/primary read cost). */
   setCheckLag(ms: number): void;
   /**
-   * Inject the logical ms a WRITE to the shared L2 store costs (§8 — a durable write is not
+   * Inject the logical ms a WRITE to the shared L2 store costs ( a durable write is not
    * free). The clock advances by `ms` inside each `set`, so a caller that awaits a write-back
    * observes time having passed. Distinct from `delayReplica`/`delayKey`, which hold a COMPLETED
    * write invisible (replication lag) and move no clock. Default 0 — writes are free unless a

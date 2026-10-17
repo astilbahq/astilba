@@ -1,8 +1,8 @@
-// INV-3  — spec §11.3
-// INV-9  — spec §11.9   (race-shaped: fc.scheduler())
-// INV-12 — spec §11.12, errata E1   (race-shaped: fc.scheduler())
-// INV-17 — spec §11.17, errata E3   (race-shaped: fc.scheduler())
-// INV-18 — spec §11.18
+// INV-3 — spec
+// INV-9 (race-shaped: fc.scheduler())
+// INV-12 (race-shaped: fc.scheduler())
+// INV-17 (race-shaped: fc.scheduler())
+// INV-18 — spec
 // Sacred: append-only. Never modify, delete, weaken, skip, or .todo an existing test.
 
 import { HttpError } from "@astilba/cache";
@@ -11,7 +11,7 @@ import { test } from "@fast-check/vitest";
 import fc from "fast-check";
 import { describe, expect } from "vitest";
 
-// A retriable origin failure (503 ∈ the default retriable set, E2) so the
+// A retriable origin failure (503 ∈ the default retriable set) so the
 // grace/stale-if-error serve path engages — a plain Error is non-retriable and
 // would rethrow before the stored good value is ever consulted.
 const retriableFail = async (): Promise<never> => {
@@ -139,8 +139,17 @@ describe("fill fencing", () => {
     async (s) => {
       const w = world({ isolates: 2 });
       const tag = mkTag("t0");
-      /* References: INV-17, E3, INV-9, INV-12. */
-
+      // NOTE: this INV-17 pair holds bornEpoch EQUAL, so it pins FENCE arbitration only.
+      // bornEpoch-over-fence precedence is exercised elsewhere — INV-9 / INV-12
+      // and red-team scenario 2.
+      // NOTE: the fence↔isolate mapping assumes the kernel acquires locks in call order for
+      // these structurally-identical fills — FakeLock issues tokens by acquire order, which
+      // a straightforward read-L1/L2-then-acquire kernel satisfies under microtask FIFO. If
+      // a future kernel acquires symmetric locks out of order, robustify FakeLock's fence
+      // issuance in the HARNESS — never this test.
+      // The mirror of the case above — here fence and arrival order are SEPARATED the
+      // other way. Isolate 0 locks FIRST (so it holds the LOWER fence), is skewed +15s
+      // (HIGHER bornMs), and writes FIRST via a bare factory.
       w.chaos.skewClock(0, 15_000);
       const firstLowFence = w.isolate(0).cache.getOrSet({
         factory: async () => await Promise.resolve("first-lowfence"),

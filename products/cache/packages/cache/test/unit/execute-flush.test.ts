@@ -12,12 +12,12 @@ import type {
 } from "@astilba/cache/registry";
 import { describe, expect, test } from "vitest";
 
-// The default-scoped physical mirror keys (E19) both the machine and this executor address —
+// The default-scoped physical mirror keys both the machine and this executor address —
 // a default machine mints `regId:"default"`, so the executor writes `__reg:default:…`.
 const KEYS = mirrorKeys("default");
 
-// Teeth for the shared flush executor (§4.2, D17) — the thin-shell rule on the write path.
-// C2-b-1 shipped two production defects the two-host transcript could not observe because it
+// Teeth for the shared flush executor — the thin-shell rule on the write path.
+// shipped two production defects the two-host transcript could not observe because it
 // compared only FINAL bytes, blind to write COUNTS: two hosts making the same redundant
 // `__state` put are byte-identical (last-write-wins erases the evidence), yet on real KV the
 // SECOND sub-second put to the one hot key 429s unconditionally (an intra-invocation livelock).
@@ -35,7 +35,7 @@ class RecordingSink implements FlushSink {
   /** The bytes of each `putPointer` bless, in order — so a test can parse the blessed snapBatch. */
   readonly pointerWrites: string[] = [];
   /** Every immutable write's `(key, kind)` — the executor passes the effect kind so a host maps
-   * residency by KIND, never by parsing the E19-scoped key (§4.2, D16). */
+   * residency by KIND, never by parsing the registry-scoped key. */
   readonly immutableWrites: {
     readonly key: string;
     readonly kind: ImmutableKind;
@@ -64,7 +64,7 @@ class RecordingSink implements FlushSink {
   }
 }
 
-/** A classified `throttled` rejection satisfying the structural contract (§8, E13). */
+/** A classified `throttled` rejection satisfying the structural contract. */
 class ThrottledWriteError extends Error implements StoreWriteError {
   readonly code = "throttled";
   readonly retryable = true;
@@ -101,7 +101,7 @@ class ThrottledPointerSink implements FlushSink {
   }
 }
 
-/** A classified `too_large` rejection (§8, E13) — the KV 25 MiB ceiling, NON-retryable. */
+/** A classified `too_large` rejection — the KV 25 MiB ceiling, NON-retryable. */
 class TooLargeWriteError extends Error implements StoreWriteError {
   readonly code = "too_large";
   readonly retryable = false;
@@ -197,9 +197,9 @@ describe("executeFlushEffects — one pointer bless per flush, ordered last (§4
 
   test("tags each immutable write with its effect KIND — delta vs snap — so a host maps residency by kind, not by parsing the E19-scoped key (§4.2, D16, E19)", async () => {
     // The crossing flush emits a delta AND a snapshot. The executor discriminates the effect
-    // (`persist-batch` vs `persist-snapshot`) and PASSES that kind to the sink. Post-E19 the physical
+    // (`persist-batch` vs `persist-snapshot`) and PASSES that kind to the sink. With registry scoping, the physical
     // keys are `__reg:default:{delta,snap}:<seq>`, so a `startsWith("__snap:")` key-parse never
-    // matches and residency MUST ride the kind (D16). This is the executor-side tooth for the
+    // matches and residency MUST ride the kind. This is the executor-side tooth for the
     // threading: blind either arm (pass "delta" for a snapshot, or drop the kind so it arrives
     // `undefined`) and the snap entry below reds — the same defect that silently gave every scoped
     // snapshot the 48h delta TTL before this fix.
@@ -252,7 +252,7 @@ describe("executeFlushEffects — the snapshot SIZE gate + the non-retryable-wri
       .map((c) => c.key);
     expect(immutablePuts).toStrictEqual([KEYS.deltaKey(1)]); // delta only — snap absent
 
-    // Exactly ONE pointer bless, ordered LAST (D17 preserved through the skip path).
+    // Exactly ONE pointer bless, ordered LAST (preserved through the skip path).
     const pointerCalls = sink.calls.filter((c) => c.op === "putPointer");
     expect(pointerCalls).toHaveLength(1);
     expect(sink.calls.at(-1)?.op).toBe("putPointer");

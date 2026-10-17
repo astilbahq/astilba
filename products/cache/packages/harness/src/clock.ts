@@ -5,7 +5,7 @@ import type { Clock, Rng } from "@astilba/cache";
 // lives in this test layer and is exempt from the src grep-guard.
 
 /**
- * A logical clock (§1(3)). `now()` is the injected `Clock`; `advance`/`runMicrotasks`
+ * A logical clock. `now()` is the injected `Clock`; `advance`/`runMicrotasks`
  * are sim controls the world drives — they are NOT part of the `Clock` the kernel
  * sees.
  */
@@ -41,7 +41,7 @@ export class SimClock implements Clock {
  * skew. Advancing the base `SimClock` moves every view together; the skew shifts
  * only this isolate's `now()` — so a stale writer can hold a strictly HIGHER
  * `bornMs` than a fresher one while the registry epoch (the correctness clock) is
- * unaffected. This is how the E3 "wall clock never arbitrates" trace is built.
+ * unaffected. This is how the "wall clock never arbitrates" trace is built.
  */
 export class SkewedClock implements Clock {
   readonly #base: SimClock;

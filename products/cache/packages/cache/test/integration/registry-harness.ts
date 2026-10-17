@@ -1,8 +1,8 @@
 // Integration-lane factory: a `RegistryHarness` backed by the REAL Coordinator Durable
 // Object, for driving the UNMODIFIED Registry conformance contract on workerd (the
-// conformance dividend, C1-c). Each `make()` mints a FRESH Coordinator id so the
+// conformance dividend). Each `make()` mints a FRESH Coordinator id so the
 // contract's per-check instances are independent. A real driver exposes no fake-only
-// `controls`, so the control-gated conformance checks self-skip (as C0-a designed).
+// `controls`, so the control-gated conformance checks self-skip (as designed).
 
 import { runDurableObjectAlarm } from "cloudflare:test";
 import { env } from "cloudflare:workers";
@@ -27,7 +27,7 @@ export function makeDoRegistry(): RegistryHarness {
  * the exhaustion message below — so a file that never exhausts reports nothing at all, and a file
  * that does reports only what it had gathered by then. Every `n` this instrument can produce is
  * therefore one file's, and conditioned on that file having failed. Widening it means a cross-file
- * channel, which this harness deliberately does not have. Numbers and their disposition: CACHE-46. */
+ * channel, which this harness deliberately does not have. Numbers and their disposition:. */
 const TURNS_ON_SUCCESS: number[] = [];
 
 /**
@@ -36,17 +36,17 @@ const TURNS_ON_SUCCESS: number[] = [];
  * `runDurableObjectAlarm` answers `false` when no alarm is scheduled — a verdict about the present
  * instant, not about the system. The writes that schedule an alarm and the test's question about it
  * are separate trips into the object, so the question can arrive first. Asserting `toBe(true)` on
- * the first ask therefore encodes a race (CACHE-46, upstream workers-sdk #11031).
+ * the first ask therefore encodes a race (upstream workers-sdk #11031).
  *
  * Poll to the precondition instead: ask, and if no alarm was runnable yet, yield and ask again, up
  * to a bounded budget. A harness must never race the event it exists to observe.
  *
  * **DO NOT TREAT THIS LOOP AS PROTECTION, AND DO NOT TUNE ITS BUDGET FROM THIS INSTRUMENT'S
- * OUTPUT.** The measured distribution and what it does and does not establish live in CACHE-46,
+ * OUTPUT.** The measured distribution and what it does and does not establish live,
  * which owns them; what this file must respect is the consequence: the budget is a placeholder, no
  * observation here licenses raising or lowering it, and tuning from a truncated sample is how a real
  * timing failure gets preserved behind a number that looks measured. A change to `TURNS` needs
- * CACHE-46's discriminating run, not a reading from this loop.
+ * the discriminating run, not a reading from this loop.
  *
  * Lives here rather than in any one test file because two suites drive the same alarm, and two
  * copies of a timing discipline drift apart silently.

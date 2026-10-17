@@ -3,15 +3,15 @@ import type { Bus, BusEvent, BusFrame, Subscription } from "@astilba/cache";
 import type { SimClock } from "./clock";
 
 // FakeBus — cross-instance BusEvent delivery with injectable drop, delay, reorder,
-// and disconnect/reconnect (§4.2, E4/E21). It speaks the interface union internally:
-// a `reset` THEN a `hello{head}` on initial connect and on every reconnect() (B1′), a
-// `gap{head}` on a dropped/lost frame (B2′), and a `frame` normally. `head` is the max
+// and disconnect/reconnect. It speaks the interface union internally:
+// a `reset` THEN a `hello{head}` on initial connect and on every reconnect(), a
+// `gap{head}` on a dropped/lost frame, and a `frame` normally. `head` is the max
 // `toEpoch` ever broadcast on this channel — the registry's current durable epoch,
 // declared regardless of whether the frame was delivered (delivery ≠ truth; models the
-// C3 DO's durable state) — so a `gap{head}` declares a head ≥ the frame it lost. Delivery
+// DO's durable state) — so a `gap{head}` declares a head ≥ the frame it lost. Delivery
 // is at-most-once, so a drop or a disconnect leaves a
 // hole the kernel must detect and resync — the kernel, not the bus, owns epoch-contiguity
-// validation (B3). `publish` is the registry side; the world pumps due frame deliveries on
+// validation. `publish` is the registry side; the world pumps due frame deliveries on
 // `advance`. The chaos surface (`dropNextFrames`/`disconnect`/`reconnect`) keeps its v0.1
 // signatures so the sacred traces do not move.
 
@@ -31,11 +31,11 @@ export class FakeBus implements Bus {
   #dropNext = 0;
   #delayMs = 0;
   #reorderNext = false;
-  /** Max `toEpoch` ever broadcast — the channel's declared head (B1′). Advanced on every
-   * `publish` regardless of delivery (delivery ≠ truth; models the C3 DO's durable state). */
+  /** Max `toEpoch` ever broadcast — the channel's declared head. Advanced on every
+   * `publish` regardless of delivery (delivery ≠ truth; models the DO's durable state). */
   #head = 0;
   /** Cumulative count of frames ACTUALLY dropped (a `gap` emitted), and of buffered-frame
-   * pairs ACTUALLY swapped out of order (CACHE-28-ii Stage 2). These count the DELIVERY
+   * pairs ACTUALLY swapped out of order. These count the DELIVERY
    * perturbation FIRING, not the knob being armed — arming `dropNextFrames`/`reorderNext`
    * with no subsequent publish, or a reorder with fewer than two buffered frames, is a no-op
    * that never increments. The chaos property reads them to floor each dimension's reach:
@@ -51,8 +51,8 @@ export class FakeBus implements Bus {
   subscribe(onEvent: EventHandler): Subscription {
     this.#handlers.add(onEvent);
     // A subscriber establishing its transport gets `reset` THEN `hello{head}` BEFORE any
-    // frame (B1′) — all warm trust starts suspended, and the hello declares the head this
-    // subscriber must reach to reconverge (E4/E21).
+    // frame — all warm trust starts suspended, and the hello declares the head this
+    // subscriber must reach to reconverge.
     if (this.#connected) {
       onEvent({ kind: "reset" });
       onEvent({ head: this.#head, kind: "hello" });
@@ -68,14 +68,14 @@ export class FakeBus implements Bus {
   publish(frame: BusFrame): void {
     // The channel declares the registry's current epoch the instant it is broadcast —
     // BEFORE the drop/disconnect logic (delivery ≠ truth). A frame lost to a drop or a
-    // disconnect still advanced the durable head; a later hello declares it (B1′, E21).
+    // disconnect still advanced the durable head; a later hello declares it.
     this.#head = Math.max(this.#head, frame.toEpoch);
     if (!this.#connected) {
       return; // at-most-once: lost while disconnected (reconnect emits `reset` → `hello`)
     }
     if (this.#dropNext > 0) {
       this.#dropNext--;
-      // A dropped frame is a hole: signal `gap{head}` so the subscriber resyncs (B2′). `#head`
+      // A dropped frame is a hole: signal `gap{head}` so the subscriber resyncs. `#head`
       // (set above) already includes THIS dropped frame's `toEpoch` — delivery ≠ truth — so
       // `gap.head` ≥ every frame emitted before the signal: the loss-revealing event declares
       // the head the reader must reach. The frame itself is never delivered (at-most-once).
@@ -145,7 +145,7 @@ export class FakeBus implements Bus {
   }
 
   /** Restore delivery — the transport re-establishes, so every subscriber gets a `reset`
-   * THEN a `hello{head}` and must resync up to that head before warm trust resumes (B1′/E4/E21).
+   * THEN a `hello{head}` and must resync up to that head before warm trust resumes.
    * An idle registry's head equals the applied epoch, so a caught-up subscriber reconverges at
    * once on the hello; a behind one resyncs the delta prefix up to it first. */
   reconnect(): void {
@@ -159,7 +159,7 @@ export class FakeBus implements Bus {
   }
 
   /** Frames actually dropped so far (a `gap` was emitted) — the reach signal for the GAP
-   * dimension (CACHE-28-ii Stage 2). Fresh per world, so `> 0` means a frame was dropped
+   * dimension. Fresh per world, so `> 0` means a frame was dropped
    * during THIS run. */
   get gapFireCount(): number {
     return this.#gapFireCount;

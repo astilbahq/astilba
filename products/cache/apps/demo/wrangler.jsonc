@@ -7,8 +7,25 @@
   "name": "astilba-cache-demo",
   "main": "./workers/app.ts",
   "compatibility_date": "2026-07-08",
-  /* References: §7. */
-
+  // nodejs_compat, and this app is the first thing in the tree in a position to find out why.
+  //
+  // The build-smoke fixture next door sets `nodejs_als` on the reasoning that it is the narrowest
+  // flag that works. That app only ever BUILDS, and a build does not resolve `node:` imports — it
+  // leaves them as externals for the runtime. This app RUNS, and under `nodejs_als` the Workers
+  // runtime refuses to start:
+  //
+  //     service core:user:astilba-cache-demo: Uncaught Error: No such module "node:crypto".
+  //     The Workers runtime failed to start.
+  //
+  // The kernel imports `node:crypto` at the top of cache.ts, unconditionally, and every published
+  // door reaches it. `nodejs_als` supplies AsyncLocalStorage and nothing else, so it is not the
+  // narrowest flag that works — it is a flag that does not work, for any consumer of any door. The
+  // narrowest one that does is `nodejs_compat`, which also supplies the ALS the middleware's request
+  // frame needs: this app boots under `nodejs_compat` ALONE and its render collector runs (the
+  // console's request-dependency row is that frame's own output, and it renders).
+  //
+  // Both flags are named as acceptable for the ALS frames, so this is a choice between two
+  // sanctioned options rather than a departure from either — but only one of them starts.
   "compatibility_flags": ["nodejs_compat"],
   // The Coordinator DO this Worker both HOSTS (workers/app.ts re-exports the class) and ADDRESSES
   // (`COORDINATOR.get(idFromName(name))`, E19-b: identity = address).
@@ -19,7 +36,7 @@
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Coordinator"] }],
   // ONE local namespace under TWO bindings, exactly as the integration lane binds it, because the
   // two roles genuinely share one keyspace in a real deployment: `CACHE_KV` is the cache's L2
-  // (entries), `REGISTRY_KV` is where the Coordinator writes the §4.2 replication mirror
+  // (entries), `REGISTRY_KV` is where the Coordinator writes the replication mirror
   // (`__reg:<regId>:state` / `:delta:<seq>` / `:snap:<seq>`). Different prefixes, no collision — and
   // the reader can only resync off a mirror it can see through its OWN L2 binding, so they must be
   // the same namespace. The demo's KV wrapper sits on the `CACHE_KV` end; `REGISTRY_KV` is read by
@@ -29,8 +46,17 @@
     { "binding": "REGISTRY_KV", "id": "astilba-cache-demo-local" },
   ],
   "vars": {
-    /* References: E5. */
-
+    // THE COORDINATOR END of the one heartbeat number (E5) — 30s, the same number the
+    // `createWorkersCache` reader defaults to. It is set HERE and nowhere else, because a Worker
+    // cannot write a Durable Object's `env`: deploy-time wrangler config is this end's only seed.
+    // The two ends are ONE DOCUMENTED NUMBER over TWO DEPLOYMENT SURFACES, and this file is one of
+    // them. They are NOT matched by construction — that this demo happens to host both ends in a
+    // single script is an accident of packaging, not a mechanism: split the Coordinator into its
+    // own Worker and this var travels with it while the reader's default stays behind. Nothing
+    // checks that they agree; a shorter reader interval just errs toward suspicion (the priced,
+    // conservative direction). Unset would leave the heartbeat DORMANT — the shipped default, on
+    // purpose (an idle heartbeat is a KV write every 30s forever, per registry). The demo sets it
+    // because the demo models the recommended production posture.
     "REGISTRY_HEARTBEAT_MS": "30000",
   },
 }

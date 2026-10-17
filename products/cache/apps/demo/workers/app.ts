@@ -1,4 +1,4 @@
-// The Workers entry (C5-c) — the only place in this app that knows what a binding is.
+// The Workers entry — the only place in this app that knows what a binding is.
 //
 // THIS IS THE INTERPOSITION POINT, and it is worth being exact about why it is here rather than
 // anywhere else. The hero factory takes a KV namespace and a Coordinator namespace and composes the
@@ -39,7 +39,7 @@ import type { SceneId } from "../chaos/script";
 // this entry, so the demo both runs the Coordinator and talks to it — one script, two roles.
 export { Coordinator } from "@astilba/cache/cloudflare";
 
-/** The ONE identity string (E19-b): the Durable Object's name, the registry id, and the cache key
+/** The ONE identity string: the Durable Object's name, the registry id, and the cache key
  * namespace all derive from it, so the address and the scope cannot drift apart. */
 const REGISTRY_NAME = "demo";
 
@@ -110,7 +110,7 @@ function readCoordinatorHeartbeat(raw: string | undefined): number | null {
  * suspicious, no matter how long a fault stayed armed. The page had to print that caveat under every
  * table, because otherwise it showed a system serenely ignoring an outage.
  *
- * E28 settled it: the factory holds the ADDRESS — `{namespace, name}` — and mints a stub per use,
+ * the factory holds the ADDRESS — `{namespace, name}` — and mints a stub per use,
  * inside whichever request is running. Construction wires and captures; it performs no I/O, and
  * minting counts as I/O. So this call is legal at module scope, where `cloudflare:workers`' `env` is
  * how bindings are reached before any request exists.
@@ -206,10 +206,10 @@ export default {
   // `async`, for the same reason as the build thunk above: a function returning a promise says so.
   //
   // `ctx` is the PER-REQUEST `ExecutionContext`, captured here and nowhere else. Its `waitUntil` is
-  // the mechanism the C4-b poll tick rides to outlive the response, so a purge learned mid-tick lands
+  // the mechanism the poll tick rides to outlive the response, so a purge learned mid-tick lands
   // instead of being cancelled at teardown. It is seeded onto the REQUEST context (not the
   // module-scope `world`, which outlives every request and must never hold one request's handle —
-  // the E28 lifetime law). `_env` is unread: bindings reach the module-scope cache through
+  // the lifetime law). `_env` is unread: bindings reach the module-scope cache through
   // `cloudflare:workers`' `env`, and this handler only needs the request and its execution context.
   async fetch(
     request: Request,

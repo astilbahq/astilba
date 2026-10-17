@@ -1,6 +1,40 @@
-/* References: §4.2, E28. */
-
-// PLATFORM: Cloudflare runtime bindings are confined to this adapter.
+// @astilba/cache adapter — the doBus REDIAL driver (phase 2).
+//
+// PLATFORM: `src/adapters/**`. This is the home this design names: *transports
+// report, they never retry themselves*. `doBus` dials, decodes, dispatches, and REPORTS its close —
+// nothing more. Reconnect and backoff live HERE, one layer up, where the policy can be changed
+// without touching the mechanism that carries the frames.
+//
+// THE LOOP IS LAZY, AND A TIMER IS NOT WHAT DRIVES IT. On `onClose` — a server close, an
+// eviction, a dial failure, a protocol/scope refusal — this driver SCHEDULES: it records the instant
+// the next attempt becomes due and returns. It dials nothing. The redial happens when a `tick`
+// arrives at or after that instant, and a tick arrives from a request — which is the only context
+// where a dial can succeed at all.
+//
+// WHY NOT A TIMER, AND WHY THE OLD ONE WAS WORSE THAN SLOW. `setTimeout` at global scope is refused
+// outright by the platform (it is I/O), so scheduling a redial from a close that happened during
+// module evaluation threw — inside a detached async IIFE, where the throw became an unhandled
+// rejection and vanished. The ladder was dead from birth and the attempt counter never left 1. Even
+// past that, a timer is the wrong instrument: it fires with no request context, so the dial it
+// performs is refused; and an isolate frozen between requests DOES NOT RESUME ITS PENDING TIMERS —
+// they are DROPPED (measured on workerd, not assumed; an earlier version of this comment claimed the
+// opposite, and a redial that never happens is not "late", it is absent). So a timer here may only
+// mark WHEN the next attempt is due; the attempt itself belongs to a request.
+//
+// BACKOFF: ×2 per consecutive failed establishment, capped at 300s, jittered ±20% off the injected
+// `Rng` (the SAME family as the poll-failure backoff — one shape, two drivers). The counter RESETS on
+// the `hello` that proves the new socket established, so a healthy socket that closes once redials
+// promptly and only a genuinely-down Coordinator is backed off toward the cap. The ladder is now
+// PACED BY TICKS rather than by wall-clock timers, so its resolution is the tick cadence — a
+// deliberate trade: a redial that waits for the next request costs latency on an idle isolate, which
+// serves no reads and therefore has no one to be stale to.
+//
+// A CLOSE IS NEVER FATAL, INCLUDING A SCOPE MISMATCH. A regId-mismatch close is a
+// deployment error, not a transport fault, so redialing cannot fix it — but it also cannot make it
+// worse: the client dispatches NOTHING on a mismatch, the reader stays fail-closed on the durable
+// mirror, and the capped backoff bounds the cost of retrying at one dial per ~5 minutes. Uniform
+// redial keeps the branch count at zero; the alternative (a permanent, silent give-up) would trade a
+// loud, cheap, self-healing loop for a quiet dead channel.
 
 import type { Bus, BusEvent, Rng, Subscription } from "../../drivers";
 import type { Dial, DoBusCloseInfo } from "./bus-client";
@@ -30,8 +64,13 @@ export interface RedialOptions {
   readonly jitterFraction?: number;
 }
 
-/* References: §4.2, E28. */
-
+/**
+ * A `Bus` that keeps ONE live doBus subscription up (driver duty), redialing
+ * LAZILY. Wraps the mechanism-only client: every close schedules a backed-off redial that the
+ * next `tick` performs, and the app's `onEvent` sees an uninterrupted event stream across sockets
+ * (each new socket re-handshakes `reset` → `hello`, which is exactly the signal the kernel reader
+ * needs to re-resync — the same events it would see on a fresh subscribe).
+ */
 class RedialingBus implements Bus {
   readonly #dial: Dial;
   readonly #options: RedialOptions;
@@ -75,7 +114,7 @@ class RedialingBus implements Bus {
   }
 
   /**
-   * Perform a DUE redial (E28) — called from a request context, which is what makes the dial legal.
+   * Perform a DUE redial — called from a request context, which is what makes the dial legal.
    * A no-op when the channel is up, when nothing is due yet, or after `close()`. Cheap and
    * idempotent, so a carrier may call it on every tick without gating.
    */
@@ -120,7 +159,7 @@ class RedialingBus implements Bus {
       // whether a `hello` ever arrived — is the one place that classifies it and counts it. This
       // driver owns redial POLICY: it counts attempts and schedules the next rung.
       this.#attempt += 1;
-      // SCHEDULE ONLY (E28): record when the next attempt becomes due and stop. No timer is set, so
+      // SCHEDULE ONLY: record when the next attempt becomes due and stop. No timer is set, so
       // nothing here can be refused at global scope, and no dial is attempted outside a request.
       this.#dueAtMs =
         this.#backoffFrom() + this.#jitter(this.#delayFor(this.#attempt));
@@ -164,14 +203,19 @@ class RedialingBus implements Bus {
   }
 }
 
-/** A `Bus` whose redial ladder is driven by ticks rather than timers (E28). `tick(nowMs)` performs a
+/** A `Bus` whose redial ladder is driven by ticks rather than timers. `tick(nowMs)` performs a
  * DUE redial and is a no-op otherwise; the composition calls it from a request context. */
 export interface RedialingBusHandle extends Bus {
   tick(nowMs: number): void;
 }
 
-/* References: E28. */
-
+/**
+ * Build a self-redialing doBus `Bus`. This is the bus `createWorkersCache` wires: the
+ * transport reports its close, and this driver owns the reconnect + the ×2/300s jittered
+ * backoff — LAZILY, performed by `tick` inside a request context rather than by a timer that would
+ * be refused at global scope and would race a dead isolate everywhere else. Use the bare `doBus`
+ * instead when the caller drives redials itself (the integration lane does — tests own time).
+ */
 export function redialingDoBus(
   dial: Dial,
   options: RedialOptions

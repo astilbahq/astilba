@@ -27,7 +27,7 @@ import type { ContractReader, RecordingStore } from "../runner/reader";
 // and a trivial registry (only `regId` + a benign `check` matter to the reader). None of
 // this modifies `src` — it drives the REAL `Invalidation` as the reference.
 
-/** A Map-backed store whose reads are LOGGED (§4.4 over-fetch discipline). Seeding uses `set`
+/** A Map-backed store whose reads are LOGGED (over-fetch discipline). Seeding uses `set`
  * (not logged); the reader's `get`s are logged so a check can prove nothing past the pointer
  * was probed. */
 class RecordingMapStore implements RecordingStore {
@@ -57,7 +57,7 @@ class RecordingMapStore implements RecordingStore {
   }
 }
 
-/** A bus the check drives explicitly (§4.2, E4/E21). It does NOT auto-emit on subscribe — the
+/** A bus the check drives explicitly. It does NOT auto-emit on subscribe — the
  * reader starts in a clean, non-suspect state and every event (reset/hello/gap/frame) is injected
  * by the check, so scenarios are fully deterministic. */
 export class ControllableBus implements Bus {
@@ -79,7 +79,7 @@ export class ControllableBus implements Bus {
   }
 }
 
-/** A trivial registry: only `regId` (E19 scoping) and a benign `check` are exercised by the
+/** A trivial registry: only `regId` (scoping) and a benign `check` are exercised by the
  * reader (the eventual+`miss` verdict path never consults it). */
 class StubRegistry implements Registry {
   readonly regId: string;
@@ -89,12 +89,14 @@ class StubRegistry implements Registry {
   }
 
   async check(tags: readonly string[]): Promise<readonly TagKnowledge[]> {
-    return tags.map((): TagKnowledge => ({
-      hardEpoch: 0,
-      known: true,
-      softEpoch: 0,
-      throughEpoch: 0,
-    }));
+    return tags.map(
+      (): TagKnowledge => ({
+        hardEpoch: 0,
+        known: true,
+        softEpoch: 0,
+        throughEpoch: 0,
+      })
+    );
   }
 
   async expire(_tags: readonly string[]): Promise<RegistryAck> {
@@ -110,8 +112,8 @@ class StubRegistry implements Registry {
   }
 }
 
-/** A minimal eventual-read probe envelope over `tags` born at `bornEpoch` (§3). Only `tags` +
- * `bornEpoch` steer the §4.1 validity table; the rest are inert placeholders. */
+/** A minimal eventual-read probe envelope over `tags` born at `bornEpoch`. Only `tags` +
+ * `bornEpoch` steer the validity table; the rest are inert placeholders. */
 export function probeEnvelope(
   tags: readonly string[],
   bornEpoch: number
@@ -181,13 +183,13 @@ export interface ReaderParts {
   readonly regId: string;
 }
 
-/** Construct a fresh reader scenario scoped to `regId` (E19 — a NON-default id exercises the
+/** Construct a fresh reader scenario scoped to `regId` ( a NON-default id exercises the
  * scoped keyspace, like the convergence lane). */
 export function buildReaderParts(regId: string): ReaderParts {
   const store = new RecordingMapStore();
   const bus = new ControllableBus();
   const inval = new Invalidation(new StubRegistry(regId), store, bus);
-  // PUT THE READER IN USE (E28). Construction no longer subscribes — it captures the bus and defers
+  // PUT THE READER IN USE. Construction no longer subscribes — it captures the bus and defers
   // the dial to the first read, so that one cache per isolate can be built at module scope where the
   // platform forbids I/O. These contracts drive a reader in its STEADY state (they publish frames
   // and expect them applied), so the fixture states that explicitly rather than relying on a

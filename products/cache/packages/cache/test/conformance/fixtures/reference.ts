@@ -29,7 +29,7 @@ import { adaptInvalidation, buildReaderParts } from "./reader-parts";
 // codec/CAS references are small test-local models (no v0.1 fake exists for a
 // CAS-capable store — see DIVERGENCES D3). None of this modifies a fake or `src`.
 
-/** The library-shaped safe-JSON reference codec (§8, byte-stable). */
+/** The library-shaped safe-JSON reference codec (byte-stable). */
 export const referenceCodec: Codec = {
   decode: (value: string): unknown => JSON.parse(value) as unknown,
   encode: (value: unknown): string => JSON.stringify(value),
@@ -39,7 +39,7 @@ export const referenceCodec: Codec = {
 /**
  * A single-view FakeStore harness on a fresh timeline (skewable via `startMs`). Supplies
  * the `forceThrottle` control (a one-shot that throttles the NEXT write) so the throttle
- * check runs; pass `maxValueBytes` to also arm the oversize ceiling (§8) — absent leaves
+ * check runs; pass `maxValueBytes` to also arm the oversize ceiling — absent leaves
  * the store unlimited (the v0.1 behavior).
  */
 export function makeFakeStoreHarness(
@@ -80,7 +80,7 @@ export function makeFakeStoreHarness(
 }
 
 /**
- * A read failure classified in the read contract's own vocabulary (§8, E13), raised by the reference
+ * A read failure classified in the read contract's own vocabulary, raised by the reference
  * store ITSELF. A class (oxlint's throw rules); recognized STRUCTURALLY by `isStoreReadError`, never
  * by identity — which is the point of the shape-based contract, so this shares nothing with the
  * kernel or with `cloudflareKV`'s own error and is still recognized by the same predicate.
@@ -180,7 +180,7 @@ export function makeCasStoreHarness(): () => StoreHarness {
 }
 
 /**
- * The kernel `memory()` L1 store as a third Store conformance subject (§8). Built with a
+ * The kernel `memory()` L1 store as a third Store conformance subject. Built with a
  * controllable test clock so `checkTtlExpiry` RUNS (the `advance` seam mirrors FakeStore)
  * rather than self-skipping, and with `maxBytes` set to the value ceiling so the oversize
  * check over-fills the budget. No `cas` (memory has no compare-and-set → the no-CAS branch
@@ -206,8 +206,8 @@ export function makeMemoryStoreHarness(
 export function makeFakeRegistryHarness(startMs = 0): () => RegistryHarness {
   return (): RegistryHarness => {
     const clock = new SimClock(startMs);
-    // Capture the emitted batches off the fake's own bus (§4.2 broadcast-frame) — the
-    // typed `BusFrame`s the machine flushed, for the F12 batch-form checks. No store /
+    // Capture the emitted batches off the fake's own bus (broadcast-frame) — the
+    // typed `BusFrame`s the machine flushed, for the batch-form checks. No store /
     // JSON round-trip: the frames arrive as objects on the synchronous zero-delay bus.
     const bus = new FakeBus(clock);
     const frames: BusFrame[] = [];
@@ -235,7 +235,7 @@ export function makeFakeRegistryHarness(startMs = 0): () => RegistryHarness {
 }
 
 /**
- * The scoped-mirror isolation REFERENCE (E19): `writeUnder(regId)` drives a REAL FakeRegistry
+ * The scoped-mirror isolation REFERENCE: `writeUnder(regId)` drives a REAL FakeRegistry
  * configured with `regId` — the machine's flush plan through the shared `executeFlushEffects`,
  * scoping every key via `mirrorKeys(regId)` — into one shared store. Two registries under
  * different regIds therefore write disjoint keyspaces; the isolation check proves it.
@@ -262,8 +262,8 @@ export function makeFakeLockHarness(): () => Lock {
 }
 
 /**
- * The replication-READER REFERENCE (§4.2, E19/E20/E21): the REAL `Invalidation`, scoped to a
- * NON-default `regId` (the E19 scoped keyspace, like the convergence lane), driven through the
+ * The replication-READER REFERENCE: the REAL `Invalidation`, scoped to a
+ * NON-default `regId` (the scoped keyspace, like the convergence lane), driven through the
  * `ContractReader` surface. It passes every reader check FIRST; the deliberately-wrong readers
  * (fixtures/broken) each fail the one they target.
  */
@@ -282,9 +282,9 @@ export function makeReferenceReaderHarness(
 }
 
 /**
- * A v2 FakeBus reference harness (§4.2, E4). At zero delay the FakeBus delivers frames
+ * A v2 FakeBus reference harness. At zero delay the FakeBus delivers frames
  * synchronously on publish, so no `pump` is exposed; `reconnect`/`dropNext` bridge to
- * the chaos surface so the B1/B2 checks can drive establishment and loss deterministically.
+ * the chaos surface so the checks can drive establishment and loss deterministically.
  */
 export function makeFakeBusHarness(): () => BusHarness {
   return (): BusHarness => {

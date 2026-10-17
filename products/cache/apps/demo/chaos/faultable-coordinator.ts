@@ -1,4 +1,4 @@
-// The demo's Coordinator interposition — dial loss (C5-c).
+// The demo's Coordinator interposition — dial loss.
 //
 // A wrapper around the REAL `COORDINATOR` Durable Object namespace whose only fault is that the
 // WebSocket upgrade does not connect. That is the whole vocabulary on purpose: the bus transport

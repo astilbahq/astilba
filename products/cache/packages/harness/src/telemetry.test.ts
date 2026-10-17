@@ -12,7 +12,7 @@ describe(hostedTelemetry, () => {
     expect(hosted.config.hosted).toBeTruthy();
     expect(hosted.config.salt).toBe("project-salt");
     expect(hosted.events).toHaveLength(0);
-    // Any CATALOG event name (§10, CACHE-21) — the fake just captures what arrives; the specific
+    // Any CATALOG event name — the fake just captures what arrives; the specific
     // name is immaterial, so a real member stands in for the former off-catalog placeholder.
     hosted.config.sink({ key: "abc", type: "singleflight_option_mismatch" });
     expect(hosted.events).toHaveLength(1);

@@ -2,7 +2,8 @@ import { describe, expect, test } from "vitest";
 
 import { FakeLock } from "./lock";
 
-/* References: INV-17. */
+// Harness self-test — a broken FakeLock would silently invalidate INV-17 and the
+// lock-lease red-team scenario. Fencing tokens MUST be strictly monotonic.
 
 describe(FakeLock, () => {
   test("issues strictly monotonic fencing tokens", async () => {

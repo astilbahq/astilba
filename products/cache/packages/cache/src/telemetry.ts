@@ -1,11 +1,11 @@
-// Telemetry (§10). A hosted sink pseudonymizes every string field a kernel emits:
-// key and tag references arrive as per-project HMAC-salted hashes (MI4) — so a short
+// Telemetry. A hosted sink pseudonymizes every string field a kernel emits:
+// key and tag references arrive as per-project HMAC-salted hashes — so a short
 // or guessable identifier can't be recovered from the hash — and free-form detail is
 // reduced to error codes plus hashed references. Invariant 15 checks that a hosted
 // sink never receives a raw key, tag, or detail.
 
 /**
- * The telemetry event-name CATALOG (§10, CACHE-21) — the single, kernel-hosted registry of every
+ * The telemetry event-name CATALOG — the single, kernel-hosted registry of every
  * event `type` this library emits, the same shape as the exported error classes. Each member is an
  * event NAME; the value equals the key so a producer can reference a name as `TELEMETRY_EVENTS.<name>`
  * (a literal type, refactor-safe) while `TelemetryEventName` (below) is the union of them all.
@@ -25,16 +25,16 @@ export const TELEMETRY_EVENTS = {
   writeback_throttled: "writeback_throttled",
   l2_write_error: "l2_write_error",
   singleflight_option_mismatch: "singleflight_option_mismatch",
-  // A classified store READ failure absorbed into a miss (E13). A RAW fact, not a judgment: it
+  // A classified store READ failure absorbed into a miss. A RAW fact, not a judgment: it
   // states what happened at one instant — this read failed and was suppressed — with no threshold
   // and no accumulated state behind it, so it emits at the moment of suppression and is enrolled
   // LIVE, not reserved. An UNCLASSIFIED read failure emits nothing: it propagates to the caller,
   // which is already the loudest channel there is, and naming it "suppressed" would be false.
   store_read_suppressed: "store_read_suppressed",
-  // An E7 suppression: a 404 that a stored `val` the letter protects turned away (§5.1 step 5, E7,
-  // E31). It fires at EITHER of the two seats the suppression can be rendered at — the serve path's
+  // A suppression: a 404 that the neg-write guard turned away because a stored `val` was still servable.
+  // It fires at EITHER of the two seats the suppression can be rendered at — the serve path's
   // epistemic check, where the caller holds the protected copy and serves it, and the write layer's
-  // kind-aware guard, where the write is refused outright — because E31 attaches the consequence to
+  // kind-aware guard, where the write is refused outright — because the design attaches the consequence to
   // whichever seat renders it, one event per suppression. Do NOT read it as a refused write-back
   // alone: at the serve seat there is no write-back to refuse, and reading it that way once left the
   // commoner of the two cases emitting nothing at all.
@@ -45,15 +45,15 @@ export const TELEMETRY_EVENTS = {
   // kernel declined to; without it the decline is invisible, and a 404 that never becomes a cached
   // negative looks exactly like a 404 nobody asked to cache.
   neg_suppressed: "neg_suppressed",
-  // ── kernel L1 driver — memory() (drivers.ts, MI12): a private entry left L1 ──
+  // ── kernel L1 driver — memory() (drivers.ts): a private entry left L1 ──
   private_evicted: "private_evicted",
-  // ── react-router adapter — poll driver (poll-driver.ts, §4.2): swallowed tick ──
+  // ── react-router adapter — poll driver (poll-driver.ts): swallowed tick ──
   poll_tick_failed: "poll_tick_failed",
-  // ── react-router adapter — middleware (middleware.ts, §7.2/E23): demoted response ──
+  // ── react-router adapter — middleware (middleware.ts): demoted response ──
   l3_ineligible: "l3_ineligible",
-  // ── cloudflare adapter — coordinator (coordinator.ts, E19): journaled-id mismatch ──
+  // ── cloudflare adapter — coordinator (coordinator.ts): journaled-id mismatch ──
   regid_divergence: "regid_divergence",
-  // ── kernel — the reader (invalidation.ts, E28): a lazy bus dial did not establish ──
+  // ── kernel — the reader (invalidation.ts): a lazy bus dial did not establish ──
   // A RAW fact on the same terms as `store_read_suppressed`: it states what happened at one
   // instant — this dial did not come up — with no threshold and no accumulated state behind it. It
   // is BOUNDED without needing one: a dial is attempted only when a tick finds one due, so the
@@ -61,14 +61,14 @@ export const TELEMETRY_EVENTS = {
   // and a channel that never came up is indistinguishable from a quiet healthy one to everything
   // except this event.
   bus_dial_failed: "bus_dial_failed",
-  // ── kernel — the read path (cache.ts, E28/§1): a strong read served eventual instead ──
+  // ── kernel — the read path (cache.ts): a strong read served eventual instead ──
   // Also a RAW fact: this call, at this instant, could not reach the registry and took the eventual
   // posture because the caller opted into it. Carries a reason CLASS only, never the error's own
   // words. A degrade the caller asked for is still a degrade the operator must be able to see —
   // a strong read that answers with eventual's guarantee and says nothing has misreported its own
   // health to the one caller who asked for the stronger answer.
   strong_degraded: "strong_degraded",
-  // ── RESERVED (C2 degraded-mode names) — enrolled in the vocabulary, no emit site yet ──
+  // ── RESERVED (degraded-mode names) — enrolled in the vocabulary, no emit site yet ──
   // A raw event states a fact and may emit the instant the fact occurs (`poll_tick_failed`,
   // `private_evicted`). A DERIVED event states a judgment over accumulated state — these two are
   // judgments (thresholds over consecutive failures, backoff, elapsed silence) — and a judgment
@@ -79,14 +79,14 @@ export const TELEMETRY_EVENTS = {
   state_stale: "state_stale",
 } as const;
 
-/** The closed vocabulary of telemetry event names (§10, CACHE-21). `TelemetryEvent.type` is this
+/** The closed vocabulary of telemetry event names. `TelemetryEvent.type` is this
  * union, and `safeEmit` accepts only members of it — an off-catalog emit is a COMPILE error. */
 export type TelemetryEventName =
   (typeof TELEMETRY_EVENTS)[keyof typeof TELEMETRY_EVENTS];
 
 /**
- * The reason CLASS a shared-cache-ineligible response reports in its `l3_ineligible` payload (§7.2,
- * E23). These are REASON values carried on ONE event, never standalone event types. The middleware
+ * The reason CLASS a shared-cache-ineligible response reports in its `l3_ineligible` payload.
+ *These are REASON values carried on ONE event, never standalone event types. The middleware
  * is the single point that maps the kernel's `L3Ineligibility` union to these snake-case classes;
  * the payload names the class and nothing that identifies the poisoning dependency (that is
  * `explain()`'s job, C5).
@@ -98,7 +98,7 @@ export type L3IneligibleReason =
   | "scope_unreadable";
 
 /**
- * The reason CLASS a `strong_degraded` payload reports (§1, E28) — why a strong read could not
+ * The reason CLASS a `strong_degraded` payload reports — why a strong read could not
  * live-check and served under eventual's posture instead. A CLASS, never the error's own words: the
  * registry's failure text is arbitrary app/platform detail (it can carry a URL, an id, a stack), and
  * this event's whole job is to be safe to point a plain sink at. `registry_unreachable` is the only
@@ -108,8 +108,8 @@ export type L3IneligibleReason =
 export type StrongDegradedReason = "registry_unreachable";
 
 /**
- * A telemetry event. `type` is a CATALOG member (§10, CACHE-21); additional fields are
- * event-specific. Hosted sinks pseudonymize all string fields (invariant 15, MI4). The `type`
+ * A telemetry event. `type` is a CATALOG member; additional fields are
+ * event-specific. Hosted sinks pseudonymize all string fields (invariant 15). The `type`
  * narrowing from a bare `string` is consumer-safe by variance: a sink is a RECEIVER, so an app
  * typed against the older `string` still accepts every catalog member.
  */
@@ -118,11 +118,11 @@ export interface TelemetryEvent {
   readonly [field: string]: unknown;
 }
 
-/** A telemetry sink (§2 `telemetry`). Receives events as they are emitted. */
+/** A telemetry sink (`telemetry`). Receives events as they are emitted. */
 export type TelemetrySink = (event: TelemetryEvent) => void;
 
 /**
- * The hook `safeEmit` calls when it SWALLOWS an app-supplied sink's failure (§10, CACHE-21). It is
+ * The hook `safeEmit` calls when it SWALLOWS an app-supplied sink's failure. It is
  * INJECTABLE — passed in at the emit site, never a module global — so "observed exactly once" is
  * testable with no module-latch order-coupling: two instances each carry their own hook and never
  * cross-talk. It receives the swallowed error, and is itself the LAST link in the swallow chain, so
@@ -131,7 +131,7 @@ export type TelemetrySink = (event: TelemetryEvent) => void;
 export type SinkErrorHook = (error: unknown) => void;
 
 /**
- * Hosted telemetry configuration (§10, MI4). When `hosted` is set, the kernel pseudonymizes every
+ * Hosted telemetry configuration. When `hosted` is set, the kernel pseudonymizes every
  * emitted string field before delivery — key/tag references become per-project HMAC-salted hashes
  * (never raw), and `detail` becomes error codes + hashed refs. `salt` is the per-project HMAC salt
  * that keeps short or guessable identifiers from being reversed out of the hash. `onSinkError` (see
@@ -180,12 +180,12 @@ function reportSinkError(
 }
 
 /**
- * Emit ONE event through an app-supplied sink so that NOTHING it does can escape (§10, CACHE-21;
- * the swallow-wrap extracted from C4-b's poll driver and made shared). A sink is arbitrary app code;
+ * Emit ONE event through an app-supplied sink so that NOTHING it does can escape (
+ * the swallow-wrap extracted from the poll driver and made shared). A sink is arbitrary app code;
  * both of its failure modes are neutralized here:
  *
- *   • a SYNCHRONOUS throw   → the `try`/`catch` (without it the caller's own path would throw);
- *   • a REJECTING thenable  → the returned value is ADOPTED (`Promise.resolve(...).catch(...)`) so a
+ *   • a SYNCHRONOUS throw → the `try`/`catch` (without it the caller's own path would throw);
+ *   • a REJECTING thenable → the returned value is ADOPTED (`Promise.resolve(...).catch(...)`) so a
  *     rejecting `async` sink can never float out as an unhandled rejection.
  *
  * On either failure the injected `onSinkError` hook is called exactly once for that emit. `safeEmit`

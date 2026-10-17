@@ -1,8 +1,8 @@
-// The narration (C5-c) — measured behaviour beside documented bounds, and nothing else.
+// The narration — measured behaviour beside documented bounds, and nothing else.
 //
 // This is the demo's whole argument, so it is worth being precise about what it is allowed to say.
 // `explain()` is a witness: it reports what the system already knows at the instant of the call and
-// reports what it cannot know as `unknown` (§7, E27). This module turns that testimony into rows,
+// reports what it cannot know as `unknown`. This module turns that testimony into rows,
 // pairs each row with the bound this deployment documents for it, and stops. It draws no
 // conclusion. It has no pass/fail. It never says a bound was met.
 //
@@ -82,7 +82,7 @@ export interface NarrationInput {
 }
 
 /** The `Explanation` union's `present` arm, or `undefined`. The other two arms are REPORTABLE
- * states (E27), never errors — `absent` is the store answering "nothing", `read-failed` is the store
+ * states, never errors — `absent` is the store answering "nothing", `read-failed` is the store
  * not answering — so both narrate rather than throw. */
 function presentArm(
   explanation: Explanation
@@ -103,7 +103,7 @@ function ttlLine(explanation: Explanation): string {
 }
 
 /**
- * How the stored scope reads, preserving the readable-vs-unreadable distinction (E23).
+ * How the stored scope reads, preserving the readable-vs-unreadable distinction.
  *
  * THE DISTINCTION IS THE ROW. A scope that is readable and exactly `pub` is the only thing that
  * makes a response shared-cacheable; absent, malformed, or unreadable is non-public and poisons it.
@@ -135,7 +135,7 @@ function verdictLine(explanation: Explanation): string {
 
 /**
  * The two derived telemetry names, emitted by the DEMO because the demo is their first acting
- * consumer (CACHE-21).
+ * consumer.
  *
  * The catalog separates raw facts from judgments, and the separation is load-bearing.
  * `poll_tick_failed` and `bus_dial_failed` are facts: something failed, and the instant it fails
@@ -163,7 +163,7 @@ function verdictLine(explanation: Explanation): string {
  * reader measures that silence in MILLISECONDS and the witness does not carry the number, only the
  * raise. So the demo can say THAT the pointer went unread past the threshold and cannot say for how
  * long — and it declines to fill that gap with a number it owns. A witness adds no bookkeeping to
- * answer a question (E27), so the missing number is a real design question, not an oversight to
+ * answer a question, so the missing number is a real design question, not an oversight to
  * patch from out here.
  */
 /** Which of the reader's degradation facts to name first — the most specific one that is true. */
@@ -284,7 +284,7 @@ function eventsRow(input: NarrationInput): NarrationRow {
 }
 
 /**
- * THE CHANNEL ROW (E28) — the one row that tells a dead bus from a quiet healthy one.
+ * THE CHANNEL ROW — the one row that tells a dead bus from a quiet healthy one.
  *
  * This row exists because `suspect` cannot answer the question an operator actually asks. A reader
  * whose bus never came up is not suspect: it has no gap, because it has no channel — so a dead bus
@@ -448,7 +448,7 @@ function readerRows(explanation: Explanation): readonly NarrationRow[] {
   ];
 }
 
-/** The request-scoped dependency attribution, when a render collector is bound (E27 (5)). */
+/** The request-scoped dependency attribution, when a render collector is bound. */
 function dependencyRow(
   dependencies: readonly ExplainedDependency[]
 ): NarrationRow {

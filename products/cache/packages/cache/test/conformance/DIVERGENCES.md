@@ -13,5 +13,3 @@ The deterministic harness models driver behavior under controlled inputs. Local 
 
 - D5 through D12, D16 through D18: Fake hosts and workerd expose different timing and storage controls. Run the registry/lock/bus contracts for controlled behavior and the integration suites for Durable Object wiring. Do not infer production latency from either lane.
 - D19: The Coordinator's identity can come from its object name, a configured fallback, or the default. Its journal preserves the chosen identity; integration identity tests exercise those cases and divergence reporting.
-
-The source and tests are the evidence for these statements. Preserve their assertions when relocating this workspace. Production measurements and publication approval are separate work.

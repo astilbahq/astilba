@@ -1,4 +1,4 @@
-// The Coordinator wrapper's own tests (C5-c) — the demo's machinery.
+// The Coordinator wrapper's own tests — the demo's machinery.
 //
 // Two of these exist because of bugs this wrapper actually shipped with, and both had the same
 // shape: the wrapper injecting a fault it never meant to inject, into the exact path it exists to
