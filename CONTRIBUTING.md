@@ -9,7 +9,7 @@ Open an issue before investing in a substantial change. Keep pull requests focus
 ```sh
 corepack pnpm install --frozen-lockfile
 corepack pnpm@11.10.0 --dir fixtures/registry/env install --frozen-lockfile
-pnpm test:browser:install
+pnpm --dir apps/ui-showcase test:browser:install
 pnpm --dir apps/docs test:browser:install
 pnpm verify
 ```

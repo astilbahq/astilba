@@ -70,7 +70,7 @@ jobs:
         run: node scripts/assert-no-nul-bytes.mjs
       - name: resolved Vitest cohort (direct and Vite+ share one instance)
         run: pnpm verify:toolchain
-      - run: pnpm check
+      - run: pnpm lint
       - run: pnpm typecheck
       - run: pnpm exec tsc --noEmit
       - run: pnpm exec tsc -p test/integration/tsconfig.json --noEmit

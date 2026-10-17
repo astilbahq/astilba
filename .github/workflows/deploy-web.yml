@@ -51,5 +51,5 @@ jobs:
           ASTILBA_DOCS_SMOKE_RETRY_DELAY_MS: "6000"
 
       - name: Deploy UI showcase
-        run: pnpm --filter @astilba/showcase build && pnpm exec wrangler deploy
-      - run: pnpm smoke:production
+        run: pnpm --dir apps/ui-showcase deploy
+      - run: pnpm --dir apps/ui-showcase smoke:production

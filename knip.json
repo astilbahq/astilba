@@ -7,11 +7,7 @@
   ],
   "workspaces": {
     ".": {
-      "entry": ["scripts/*.mjs!"],
-      "playwright": {
-        "config": [],
-        "entry": ["playwright.config.ts!", "tests/e2e/**/*.ts!"]
-      }
+      "ignoreBinaries": ["build", "wrangler"]
     },
     "packages/tokens": {
       "entry": ["src/index.ts!", "src/panda.ts!", "tests/**/*.test.ts!"],
@@ -23,8 +19,18 @@
       "project": ["src/**/*.{ts,tsx}!", "tests/**/*.tsx!", "*.config.ts!"]
     },
     "apps/ui-showcase": {
-      "entry": ["tests/**/*.test.tsx!"],
-      "project": ["src/**/*.{ts,tsx}!", "tests/**/*.tsx!", "*.config.ts!"]
+      "entry": ["tests/**/*.test.tsx!", "scripts/*.mjs!"],
+      "project": [
+        "src/**/*.{ts,tsx}!",
+        "tests/**/*.tsx!",
+        "*.config.ts!",
+        "tests/e2e/**/*.ts!",
+        "scripts/*.mjs!"
+      ],
+      "playwright": {
+        "config": [],
+        "entry": ["playwright.config.ts!", "tests/e2e/**/*.ts!"]
+      }
     },
     "fixtures/ui-astro": {
       "entry": ["src/pages/**/*.astro!", "tests/**/*.mjs!"],

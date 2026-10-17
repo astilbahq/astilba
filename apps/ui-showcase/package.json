@@ -5,8 +5,15 @@
   "type": "module",
   "scripts": {
     "build": "vite build && node scripts/verify-built-showcase.mjs",
+    "deploy": "pnpm build && wrangler deploy",
+    "deploy:dry-run": "pnpm build && wrangler deploy --dry-run",
     "dev": "vite",
+    "smoke:production": "node scripts/smoke-production.mjs",
     "test": "vitest run",
+    "test:browser": "pnpm build && playwright test",
+    "test:browser:install": "playwright install chromium",
+    "test:browser:install:ci": "playwright install --with-deps chromium",
+    "test:browser:update": "pnpm build && playwright test --update-snapshots",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
@@ -20,6 +27,8 @@
     "react-dom": "19.2.8"
   },
   "devDependencies": {
+    "@axe-core/playwright": "4.12.1",
+    "@playwright/test": "1.61.1",
     "@testing-library/react": "16.3.2",
     "@types/react": "19.2.17",
     "@types/react-dom": "19.2.3",
@@ -27,6 +36,7 @@
     "axe-core": "4.12.1",
     "jsdom": "29.1.1",
     "vite": "8.1.5",
-    "vitest": "4.1.11"
+    "vitest": "4.1.11",
+    "wrangler": "4.114.0"
   }
 }
