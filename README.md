@@ -9,12 +9,12 @@ Use Node 24.18.1 and pnpm 11.17.0.
 ```sh
 corepack pnpm install --frozen-lockfile
 corepack pnpm@11.10.0 --dir fixtures/registry/env install --frozen-lockfile
-pnpm test:browser:install
+pnpm --dir apps/ui-showcase test:browser:install
 pnpm --dir apps/docs test:browser:install
 pnpm verify
 ```
 
-`pnpm verify:ui`, `pnpm verify:env`, `pnpm verify:web` and `pnpm verify:cache` check one area at a time.
+`pnpm verify:ui`, `pnpm verify:env`, `pnpm verify:web` and `pnpm verify:cache` check one area at a time. Across every package, `pnpm lint`, `pnpm typecheck` and `pnpm test` run each package's script of the same name.
 
 ## Workspace
 

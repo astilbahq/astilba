@@ -6,15 +6,15 @@
   "scripts": {
     "build": "astro build && node scripts/verify-built-site.mjs",
     "build:production": "cross-env ASTILBA_SITE=https://astilba.com pnpm build",
-    "check": "astro check && tsc --noEmit",
-    "lint": "ultracite check",
     "deploy": "pnpm build:production && wrangler deploy",
     "deploy:dry-run": "pnpm build:production && wrangler deploy --dry-run",
     "dev": "astro dev",
+    "lint": "ultracite check",
     "preview": "astro preview",
     "smoke:production": "node scripts/smoke-production.mjs",
     "test": "vitest run",
-    "test:browser": "playwright test"
+    "test:browser": "playwright test",
+    "typecheck": "astro check && tsc --noEmit"
   },
   "dependencies": {
     "@astilba/tokens": "workspace:*",

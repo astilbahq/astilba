@@ -34,7 +34,7 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: ${{ matrix.node }}
-      - run: pnpm verify:base
+      - run: pnpm verify:ui:base
 
   ui-browser:
     name: UI browser contract
@@ -49,16 +49,16 @@ jobs:
         with:
           node-version: 24.18.0
       - run: pnpm install --frozen-lockfile
-      - run: pnpm test:browser:install:ci
-      - run: pnpm test:browser
-      - run: pnpm deploy:dry-run
+      - run: pnpm --dir apps/ui-showcase test:browser:install:ci
+      - run: pnpm build:ui && pnpm --dir apps/ui-showcase test:browser
+      - run: pnpm --dir apps/ui-showcase deploy:dry-run
       - if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: ui-browser-diagnostics
           path: |
-            playwright-report/
-            test-results/
+            apps/ui-showcase/playwright-report/
+            apps/ui-showcase/test-results/
           retention-days: 7
 
   web:

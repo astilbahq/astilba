@@ -60,20 +60,20 @@
   },
   "scripts": {
     "build": "vp pack",
-    "check": "vp check",
     "fix": "vp check --fix",
     "generate:check": "astilba-env generate --check",
     "knip": "pnpm --dir ../.. exec knip --workspace packages/env",
+    "lint": "vp check",
     "pack:artifact": "node scripts/pack-artifact.mjs",
-    "test": "vp test",
-    "test:run": "vitest run",
+    "test": "vp test run",
+    "test:watch": "vp test",
     "typecheck": "node node_modules/typescript/bin/tsc --noEmit -p tsconfig.json",
     "typecheck:ts7": "node node_modules/typescript-7/bin/tsc --noEmit -p tsconfig.json",
-    "verify:consumers": "node scripts/verify-consumer.mjs",
+    "verify": "pnpm verify:tools && pnpm verify:filesystem-containment && pnpm typecheck && pnpm typecheck:ts7 && pnpm test && pnpm build && node scripts/verify-public-tsdoc.mjs && node scripts/verify-package.mjs",
     "verify:artifact": "node scripts/verify-artifact.mjs",
+    "verify:consumers": "node scripts/verify-consumer.mjs",
     "verify:filesystem-containment": "node scripts/verify-filesystem-containment.mjs",
-    "verify:tools": "node scripts/verify-tools.mjs",
-    "verify": "pnpm verify:tools && pnpm verify:filesystem-containment && pnpm typecheck && pnpm typecheck:ts7 && pnpm test:run && pnpm build && node scripts/verify-public-tsdoc.mjs && node scripts/verify-package.mjs"
+    "verify:tools": "node scripts/verify-tools.mjs"
   },
   "devDependencies": {
     "@arethetypeswrong/cli": "0.18.4",

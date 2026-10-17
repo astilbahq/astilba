@@ -6,13 +6,13 @@ One pnpm workspace for every Astilba product. Use Node 24.18.1 and pnpm 11.17.0.
 - `packages/cache`: Cache, published to npm as `@astilba/cache`. It also holds the Cache toolchain (lint, format and test projects) for `packages/cache-harness`, `apps/cache-demo` and `fixtures/cache-react-router`.
 - `packages/tokens`, `packages/ui`: the interface foundation (private workspace packages). Read `PRODUCT.md` and `DESIGN.md`.
 - `apps/docs`, `apps/site`: astilba.com/docs and the astilba.com apex. Read `apps/docs/AGENTS.md`.
-- `apps/ui-showcase`: ui.astilba.com.
+- `apps/ui-showcase`: ui.astilba.com, including its Playwright browser tests and Wrangler deploy config.
 - `fixtures/ui-astro`: Astro consumer of the workspace UI.
 - `fixtures/registry/env`: Env examples installed from the npm registry. It keeps its own lockfile and pnpm version.
 
 Each package may have its own `AGENTS.md`; read it before editing there.
 
-`pnpm verify` runs everything; `pnpm verify:ui`, `pnpm verify:env`, `pnpm verify:web` and `pnpm verify:cache` run one area. Merging to `main` deploys the web apps (`.github/workflows/deploy-web.yml`). Pushing an `env/v*` or `cache/v*` tag publishes that package.
+`pnpm verify` runs everything; `pnpm verify:ui`, `pnpm verify:env`, `pnpm verify:web` and `pnpm verify:cache` run one area. Packages share script names where they apply: `lint` (format and lint check), `typecheck`, `test` (runs once; Env and Cache add `test:watch`) and `build`. At the root, `pnpm lint`, `pnpm typecheck` and `pnpm test` run each package's script of that name; `pnpm lint` also runs `lint:root`, which covers the root, tokens, UI, the showcase and the Astro fixture. Merging to `main` deploys the web apps (`.github/workflows/deploy-web.yml`). Pushing an `env/v*` or `cache/v*` tag publishes that package.
 
 ## Ground rules
 

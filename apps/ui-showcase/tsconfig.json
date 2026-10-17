@@ -10,5 +10,6 @@
     "tests/**/*.ts",
     "tests/**/*.tsx",
     "vite.config.ts"
-  ]
+  ],
+  "exclude": ["tests/e2e"]
 }
