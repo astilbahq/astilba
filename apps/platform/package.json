@@ -3,10 +3,14 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "panda codegen && vite",
-    "check": "panda codegen && tsc --noEmit && biome check src tests *.ts",
-    "format": "biome check --write src tests *.ts",
-    "build": "pnpm check && vite build",
+    "prepare": "panda codegen",
+    "dev": "vp dev",
+    "check": "panda codegen && vp check --deny-warnings",
+    "lint": "vp lint --deny-warnings",
+    "format": "vp fmt --write .",
+    "format:check": "vp fmt --check .",
+    "check:fix": "panda codegen && vp check --fix",
+    "build": "pnpm check && vp build",
     "test:browser": "playwright test"
   },
   "dependencies": {
@@ -24,7 +28,6 @@
   },
   "devDependencies": {
     "@axe-core/playwright": "4.14.0",
-    "@biomejs/biome": "2.6.2",
     "@pandacss/dev": "2.3.0",
     "@pandacss/preset-base": "2.3.0",
     "@pandacss/preset-panda": "2.3.0",
@@ -36,7 +39,8 @@
     "@vitejs/plugin-react": "6.1.2",
     "jsqr": "1.4.0",
     "typescript": "7.0.2",
-    "vite": "8.3.5",
+    "vite": "npm:@voidzero-dev/vite-plus-core@1.4.0",
+    "vite-plus": "1.4.0",
     "wrangler": "4.151.3"
   }
 }

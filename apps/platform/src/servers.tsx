@@ -1,8 +1,8 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { client, result, type Schema } from "./api/client";
+import { sessionOptions } from "./api/session";
 import { ServerMetrics } from "./features/metrics";
-import { sessionOptions } from "./router";
 import * as s from "./styles";
 import { BusyButton, ErrorNotice, Field, Form, text, useAction } from "./ui";
 

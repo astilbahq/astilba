@@ -2,9 +2,9 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { QRCodeSVG } from "qrcode.react";
 import { useState } from "react";
 import { client, result, type Schema, setSession } from "./api/client";
+import { sessionOptions } from "./api/session";
 import { EmailVerification, WorkspaceSubscription } from "./hosting";
 import { WorkspaceExport } from "./portability";
-import { sessionOptions } from "./router";
 import * as s from "./styles";
 import { BusyButton, ErrorNotice, Field, Form, text, useAction } from "./ui";
 export function Account() {

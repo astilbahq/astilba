@@ -1,6 +1,6 @@
 # Agentic development research
 
-Reviewed on 22 October 2026 for Astilba's BYOS platform. This is a record of evidence and adoption decisions, not an additional instruction file. [Engineering principles](engineering-principles.md) contains the working policy; the approved product, architecture and implementation plans retain their authority.
+Reviewed on 22 October 2026, with a repository-structure follow-up on 24 October 2026, for Astilba's BYOS platform. This is a record of evidence and adoption decisions, not an additional instruction file. [Engineering principles](engineering-principles.md) contains the working policy; the approved product, architecture and implementation plans retain their authority.
 
 The sources below are first-party publications whose article bodies were inspected. Dates are publication dates shown by the publisher. Engineering case studies, experiments, interviews and product guidance have different evidential weight. None establishes that agent-only engineering or release decisions are generally reliable.
 
@@ -19,6 +19,24 @@ These are Astilba's adaptations of the evidence, not a claim that the publishers
 | Improve from observed failures | Inspect traces and recurring corrections, then adjust a relevant instruction, script or check. Reassess model-specific scaffolding using real tasks, without silently waiving required gates. |
 
 The test policy remains unchanged: no default test-first process, no new coverage percentage targets, and no unit tests that merely restate implementation. The maintainer still owns consequential product, architecture and trust decisions. Routine work already authorized should proceed without repeated permission requests.
+
+## Repository structure follow-up — 24 October 2026
+
+**[OpenAI: Harness engineering](https://openai.com/index/harness-engineering/), 11 February 2026.** This engineering case study uses a short instruction entry point linked to deeper repository documentation, runnable environments per worktree, and mechanically enforced module boundaries. These are useful design examples, not a controlled comparison of folder layouts. Astilba already has scoped instructions and separate worktrees; the practical next step is to enforce an observed dependency problem rather than introduce a new architecture framework. Its release practices do not override our verification gates.
+
+**[Evaluating AGENTS.md: Are Repository-Level Context Files Helpful for Coding Agents?](https://arxiv.org/html/2602.11988v3), revision 3, 29 September 2026.** This benchmark found no general task-success improvement from context files and over 20% higher average inference cost. Instructions were followed, but repository overviews did not provide the expected navigation benefit. The study concerns Python task resolution, not every language, security property or modern model. Together with Vercel's narrower positive result, it argues for testing guidance on real work rather than assuming more documentation helps.
+
+Our structure decisions are adaptations of this evidence and the existing engineering principles:
+
+| Decision | Application |
+| --- | --- |
+| Keep instructions small and specific | Existing scoped `AGENTS.md` files point to task-relevant references; do not generate a second tree of agent-only documentation. |
+| Group code by responsibility | Colocate feature components, styling and private helpers. Split when responsibilities or consumers diverge, not at an arbitrary line count. |
+| Make dependency direction explicit | Routing composes features. Shared API/query state lives below both. The dashboard's Vite+ (Oxlint) check rejects runtime import cycles. |
+| Keep setup reproducible | Use pinned tools, normal package scripts and generated artifacts. Panda code generation runs during installation and before type checking. |
+| Verify observable behaviour | Use the existing real-API browser journeys and local preview. Record actual failures and rework before adding more rules or tooling. |
+
+The [frontend development reference](frontend-development.md) records the resulting boundaries and commands. This follow-up does not call for a wholesale file move, new agent framework, additional planning system or weaker review requirements.
 
 ## Vercel
 

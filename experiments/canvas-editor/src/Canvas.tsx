@@ -291,18 +291,16 @@ export const Canvas = memo(
     );
     const edges = useMemo(
       () =>
-        config.bindings.map(
-          (binding): Edge => ({
-            id: bindingId(binding),
-            source: binding.source,
-            target: binding.target,
-            sourceHandle: binding.kind,
-            targetHandle: "input",
-            label: binding.kind === "database" ? "DATABASE_URL" : "/data",
-            ariaLabel: `${binding.kind} connection`,
-            ...edgeOptions,
-          }),
-        ),
+        config.bindings.map((binding): Edge => ({
+          id: bindingId(binding),
+          source: binding.source,
+          target: binding.target,
+          sourceHandle: binding.kind,
+          targetHandle: "input",
+          label: binding.kind === "database" ? "DATABASE_URL" : "/data",
+          ariaLabel: `${binding.kind} connection`,
+          ...edgeOptions,
+        })),
       [config.bindings],
     );
     const changes = useCallback(

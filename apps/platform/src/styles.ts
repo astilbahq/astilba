@@ -159,3 +159,22 @@ export const metricTable = css({
     borderBottom: "1px solid token(colors.border)",
   },
 });
+
+export const authPage = css({
+  minHeight: "100dvh",
+  display: "grid",
+  placeItems: "center",
+  padding: "48px 24px",
+});
+export const authContent = css({
+  width: "100%",
+  maxWidth: "400px",
+  display: "grid",
+  gap: "32px",
+});
+export const authLogo = css({
+  width: "180px",
+  height: "auto",
+  marginBottom: "8px",
+  filter: { base: "brightness(0)", _dark: "none" },
+});

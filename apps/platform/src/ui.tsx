@@ -8,6 +8,7 @@ import {
   useState,
 } from "react";
 import { ApiError } from "./api/client";
+import { sessionOptions } from "./api/session";
 import * as s from "./styles";
 export function ErrorNotice({ error }: { error: unknown }) {
   if (!error) return null;
@@ -32,7 +33,8 @@ export function useAction() {
   const [formId, setFormId] = useState<string>();
   const mutation = useMutation({
     mutationFn: async (fn: () => Promise<unknown>) => fn(),
-    onSettled: () => queries.invalidateQueries({ queryKey: ["session"] }),
+    onSettled: () =>
+      queries.invalidateQueries({ queryKey: sessionOptions.queryKey }),
   });
   return {
     ...mutation,
@@ -115,7 +117,8 @@ export function Field({
   );
 }
 export function text(data: FormData, name: string) {
-  return String(data.get(name) ?? "");
+  const value = data.get(name);
+  return typeof value === "string" ? value : "";
 }
 export function BusyButton({
   busy,

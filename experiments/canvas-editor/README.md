@@ -32,18 +32,19 @@ Choose the starter or 250-service workspace. Each has separate browser-local sto
 
 ## Pinned stack and licences
 
-| Package | Version | Licence |
-| --- | --- | --- |
-| React / React DOM | 19.3.1 | MIT |
-| React Flow (`@xyflow/react`) | 12.12.0 | MIT |
-| Panda dev, Vite plugin and presets | 2.3.0 | MIT |
-| Vite / React plugin | 8.3.5 / 6.1.2 | MIT |
-| TypeScript | 7.0.2 | Apache-2.0 |
-| Playwright test | 1.64.1 | Apache-2.0 |
-| axe Playwright integration / axe-core | 4.14.0 | MPL-2.0 |
-| Biome | 2.6.2 | MIT OR Apache-2.0 |
-| React / React DOM type declarations | 19.3.0 | MIT |
-| Node type declarations | 24.19.2 | MIT |
+| Package                               | Version       | Licence    |
+| ------------------------------------- | ------------- | ---------- |
+| React / React DOM                     | 19.3.1        | MIT        |
+| React Flow (`@xyflow/react`)          | 12.12.0       | MIT        |
+| Panda dev, Vite plugin and presets    | 2.3.0         | MIT        |
+| Vite+ / React plugin                  | 1.4.0 / 6.1.2 | MIT        |
+| TypeScript                            | 7.0.2         | Apache-2.0 |
+| Playwright test                       | 1.64.1        | Apache-2.0 |
+| axe Playwright integration / axe-core | 4.14.0        | MPL-2.0    |
+| React / React DOM type declarations   | 19.3.0        | MIT        |
+| Node type declarations                | 24.19.2       | MIT        |
+
+Vite+ supplies Vite 8.3.5, Oxlint/Oxfmt and type checking. Shared lint/format settings live in the root `vite.config.ts`; the local config keeps the Panda/React plugins and preview settings. See [frontend development](../../docs/frontend-development.md) for the toolchain conventions.
 
 Direct dependencies are exact and transitive resolutions are in the root lockfile. The workspace retains its 24-hour release-age gate and explicit build-script permissions. Parcel watcher's source-build hook is denied: supported platforms use its optional prebuilt binary. No React Compiler or automatic layout engine is enabled. Panda's generated styles and the production build stay uncommitted.
 
@@ -55,14 +56,14 @@ Local production-build validation on 22 October 2026 uses Chromium 156.0.8078.4 
 
 The 250-service measurement uses an Apple M5 Pro with 18 logical CPUs and 64 GiB RAM, Darwin 27.0.0, Chromium headless at 1440 × 1000 CSS pixels. All 250 custom nodes remain mounted. After selecting Web 1 and centring it, the probe resets optional committed-render counters and drags the node 160 × 100 pixels in 120 pointer steps. `requestAnimationFrame` intervals and the browser's long-task observer cover the drag.
 
-| Measurement | Standalone browser run | Full `make verify` run |
-| --- | --- | --- |
-| Frame interval, median / p95 / maximum | 16.7 / 16.7 / 16.8 ms | 16.7 / 33.3 / 33.4 ms |
-| Frame samples | 123 | 160 |
-| Observed long tasks (over 50 ms) | 0 | 0 |
-| Dragged custom-node commits | 121 | 121 |
-| Other custom-node commits | 0 | 0 |
-| Property-panel commits during drag | 0 | 0 |
+| Measurement                            | Standalone browser run | Full `make verify` run |
+| -------------------------------------- | ---------------------- | ---------------------- |
+| Frame interval, median / p95 / maximum | 16.7 / 16.7 / 16.8 ms  | 16.7 / 33.3 / 33.4 ms  |
+| Frame samples                          | 123                    | 160                    |
+| Observed long tasks (over 50 ms)       | 0                      | 0                      |
+| Dragged custom-node commits            | 121                    | 121                    |
+| Other custom-node commits              | 0                      | 0                      |
+| Property-panel commits during drag     | 0                      | 0                      |
 
 The canvas component itself updates during dragging; its memoized custom nodes do not all update with it. High-frequency positions stay in the canvas, service objects retain identity when unchanged, and the parent receives only a dirty-state transition. Add `?profile=1` to enable these counters; ordinary use does not collect them. The reproducible probe writes the hardware and raw measurements to `.artifacts/plat1/performance.json` on every run. Other hardware, browser scheduling and CI contention will produce different timings. This measures the synthetic interaction, not input latency, production-scale limits, network updates or a capacity guarantee.
 

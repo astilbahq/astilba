@@ -1,3 +1,4 @@
+import "./code-editor.css";
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { yaml } from "@codemirror/lang-yaml";
 import { Compartment, EditorState } from "@codemirror/state";
@@ -18,7 +19,7 @@ export function CodeEditor({
   readOnly: boolean;
   line?: { line: number };
 }) {
-  const theme = useContext(ThemeContext);
+  const { theme } = useContext(ThemeContext);
   const host = useRef<HTMLDivElement>(null),
     view = useRef<EditorView>(null),
     latest = useRef({ change, value, theme });

@@ -1,7 +1,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { client, result, type Schema } from "../api/client";
-import { sessionOptions } from "../router";
+import { sessionOptions } from "../api/session";
 import * as s from "../styles";
 import { BusyButton, ErrorNotice, Field, Form, text, useAction } from "../ui";
 
@@ -278,7 +278,7 @@ function SettingsForm({
         action.run(async () => {
           onSaved(false);
           const url = text(d, "webhookUrl"),
-            secret = String(d.get("webhookSecret") ?? "");
+            secret = text(d, "webhookSecret");
           const updated = await result(
             client.PUT("/api/v1/workspaces/{workspaceId}/alert-settings", {
               params: { path: { workspaceId } },

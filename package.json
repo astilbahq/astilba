@@ -15,6 +15,12 @@
     "app:source": "node scripts/platform-source.mjs",
     "app:image-test": "node scripts/platform-image-test.mjs",
     "app:fixture": "node scripts/platform-fixture.mjs",
-    "agent:build": "node scripts/platform-agent-build.mjs"
+    "agent:build": "node scripts/platform-agent-build.mjs",
+    "lint": "vp lint --deny-warnings apps/platform experiments/canvas-editor vite.config.ts",
+    "format": "vp fmt --write apps/platform experiments/canvas-editor vite.config.ts",
+    "format:check": "vp fmt --check apps/platform experiments/canvas-editor vite.config.ts"
+  },
+  "devDependencies": {
+    "vite-plus": "1.4.0"
   }
 }

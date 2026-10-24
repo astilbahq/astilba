@@ -4,16 +4,15 @@ import {
   createRoute,
   createRouter,
   Link,
+  Navigate,
   Outlet,
+  useLocation,
+  useRouter,
 } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
-import {
-  client,
-  loadSession,
-  result,
-  type Session,
-  setSession,
-} from "./api/client";
+import { type ReactNode, useContext, useEffect, useState } from "react";
+import { client, result, setSession } from "./api/client";
+import { sessionOptions } from "./api/session";
+import logo from "./assets/astilba-lockup-horizontal-light.svg";
 import { Alerts } from "./features/alerts";
 import { hostingOptions, Signup } from "./hosting";
 import { Account, Members } from "./security";
@@ -21,103 +20,173 @@ import { Servers } from "./servers";
 import * as s from "./styles";
 import { ThemeContext } from "./theme";
 import { BusyButton, ErrorNotice, Field, Form, text, useAction } from "./ui";
-import { Dashboard } from "./workspace";
-export const sessionOptions = { queryKey: ["session"], queryFn: loadSession };
-function Root() {
-  const [theme, setTheme] = useState(
-    () =>
-      localStorage.getItem("astilba-theme") ??
-      (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light"),
+import { Dashboard, type WorkspaceSelection } from "./workspace";
+
+function AuthFrame({ children }: { children: ReactNode }) {
+  return (
+    <main id="main" className={s.authPage}>
+      <div className={s.authContent}>
+        <img
+          src={logo}
+          alt="Astilba"
+          width="180"
+          height="37"
+          className={s.authLogo}
+        />
+        {children}
+      </div>
+    </main>
   );
+}
+function Root() {
+  const [theme, setTheme] = useState<"light" | "dark">(() => {
+    const saved = localStorage.getItem("astilba-theme");
+    return saved === "light" || saved === "dark"
+      ? saved
+      : matchMedia("(prefers-color-scheme: dark)").matches
+        ? "dark"
+        : "light";
+  });
   useEffect(() => {
     document.documentElement.classList.toggle("dark", theme === "dark");
     localStorage.setItem("astilba-theme", theme);
   }, [theme]);
   const session = useQuery(sessionOptions);
-  const action = useAction();
   return (
-    <ThemeContext value={theme === "dark" ? "dark" : "light"}>
+    <ThemeContext
+      value={{
+        theme,
+        toggleTheme: () => setTheme(theme === "dark" ? "light" : "dark"),
+      }}
+    >
       <a href="#main" className="skip-link">
         Skip to content
       </a>
-      <div className={s.shell}>
-        <aside className={s.side} aria-label="Workspace navigation">
-          <Link to="/" className={s.brand}>
-            ✳ astilba
-          </Link>
-          <div>
-            <small>YOUR INFRASTRUCTURE</small>
-            <nav aria-label="Main" className={s.nav}>
-              <Link to="/">Projects</Link>
-              <Link to="/servers">Servers</Link>
-              <Link to="/alerts">Alerts</Link>
-              <Link to="/members">Workspace</Link>
-              <Link to="/account">Account security</Link>
-            </nav>
-          </div>
-          <div className={s.stack}>
-            <small>Open source. On your terms.</small>
-            <button
-              type="button"
-              onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
-            >
-              Use {theme === "dark" ? "light" : "dark"} theme
-            </button>
-            <a href="/source/NOTICE.txt">Licence & source</a>
-            {session.data?.user && (
-              <>
-                <span className={s.muted}>{session.data.user.email}</span>
-                <button
-                  type="button"
-                  disabled={action.isPending}
-                  onClick={() =>
-                    action.run(async () => {
-                      await result(client.POST("/api/v1/auth/logout"));
-                      location.assign("/");
-                    })
-                  }
-                >
-                  Sign out
-                </button>
-              </>
-            )}
-          </div>
-        </aside>
-        <main id="main" className={s.main}>
+      {session.isPending ? (
+        <AuthFrame>
+          <p role="status">Loading…</p>
+        </AuthFrame>
+      ) : session.error && !session.data ? (
+        <AuthFrame>
           <ErrorNotice error={session.error} />
-          {session.isPending ? (
-            <p role="status">Loading your workspace…</p>
-          ) : session.data ? (
-            <Outlet />
-          ) : (
-            <button type="button" onClick={() => void session.refetch()}>
-              Retry connection
-            </button>
-          )}
-        </main>
-      </div>
+          <button
+            type="button"
+            disabled={session.isFetching}
+            onClick={() => void session.refetch()}
+          >
+            Retry connection
+          </button>
+        </AuthFrame>
+      ) : (
+        <Outlet />
+      )}
     </ThemeContext>
   );
 }
-export function Authenticated({ children }: { children: React.ReactNode }) {
-  const session = useQuery(sessionOptions);
-  return session.data?.user ? children : <SignIn session={session.data} />;
+function ApplicationLayout() {
+  const sessionQuery = useQuery(sessionOptions);
+  const session = sessionQuery.data;
+  const { returnTo } = application.useRouteContext();
+  const { theme, toggleTheme } = useContext(ThemeContext);
+  const action = useAction();
+  if (!session?.user || session.mfaPending) {
+    return <Navigate to="/login" search={{ returnTo }} replace />;
+  }
+  return (
+    <div className={s.shell}>
+      <aside className={s.side} aria-label="Workspace navigation">
+        <Link to="/" className={s.brand}>
+          ✳ astilba
+        </Link>
+        <div>
+          <small>YOUR INFRASTRUCTURE</small>
+          <nav aria-label="Main" className={s.nav}>
+            <Link to="/">Projects</Link>
+            <Link to="/servers">Servers</Link>
+            <Link to="/alerts">Alerts</Link>
+            <Link to="/members">Workspace</Link>
+            <Link to="/account">Account security</Link>
+          </nav>
+        </div>
+        <div className={s.stack}>
+          <small>Open source. On your terms.</small>
+          <button type="button" onClick={toggleTheme}>
+            Use {theme === "dark" ? "light" : "dark"} theme
+          </button>
+          <a href="/source/NOTICE.txt">Licence & source</a>
+          <span className={s.muted}>{session.user.email}</span>
+          <ErrorNotice error={action.error} />
+          <button
+            type="button"
+            disabled={action.isPending}
+            onClick={() =>
+              action.run(async () => {
+                await result(client.POST("/api/v1/auth/logout"));
+                window.location.assign("/login");
+              })
+            }
+          >
+            Sign out
+          </button>
+        </div>
+      </aside>
+      <main id="main" className={s.main}>
+        <ErrorNotice error={sessionQuery.error} />
+        <Outlet />
+      </main>
+    </div>
+  );
 }
-function SignIn({ session }: { session?: Session }) {
+function AuthLayout() {
+  const location = useLocation();
+  return (
+    <AuthFrame>
+      <Outlet />
+      {location.pathname !== "/login" && (
+        <Link to="/login">Back to sign in</Link>
+      )}
+    </AuthFrame>
+  );
+}
+function loginDestination(value: unknown): string {
+  if (typeof value !== "string" || !value.startsWith("/")) return "/";
+  try {
+    const url = new URL(value, window.location.origin);
+    // Only return to application pages, never auth loops, API endpoints or other origins.
+    if (
+      url.origin !== window.location.origin ||
+      !["/", "/servers", "/alerts", "/members", "/account"].includes(
+        url.pathname.replace(/\/$/, "") || "/",
+      )
+    )
+      return "/";
+    return url.pathname + url.search + url.hash;
+  } catch {
+    return "/";
+  }
+}
+function SignIn() {
+  const session = useQuery(sessionOptions).data;
+  const { returnTo } = loginRoute.useSearch();
+  const router = useRouter();
+  const signedIn = Boolean(session?.user && !session.mfaPending);
+  useEffect(() => {
+    if (signedIn) router.history.replace(returnTo ?? "/");
+  }, [signedIn, router, returnTo]);
   const hosting = useQuery(hostingOptions).data;
   const action = useAction();
+  if (signedIn) return <p role="status">Opening your workspace…</p>;
   return (
     <div className={s.stack}>
       <div>
-        <p className={s.muted}>WELCOME BACK</p>
-        <h1>
-          {session?.mfaPending
-            ? "Verify it’s you"
-            : "Your servers. Your workspace."}
-        </h1>
-        <p className={s.muted}>Sign in to manage your infrastructure.</p>
+        <h1>{session?.mfaPending ? "Verify it’s you" : "Sign in"}</h1>
+        {session?.mfaPending && (
+          <p className={s.muted}>
+            Enter an authenticator or recovery code to continue.
+          </p>
+        )}
       </div>
-      <section className={s.panel}>
+      <section className={s.stack}>
         <ErrorNotice error={action.error} />
         {session?.mfaPending ? (
           <Form
@@ -179,10 +248,6 @@ function SignIn({ session }: { session?: Session }) {
           <Link to="/invitation">Accept invitation</Link>
           {hosting?.enabled && <Link to="/signup">Join the hosted beta</Link>}
         </div>
-        <small>
-          Accounts are created by invitation. To set up a new installation,
-          bootstrap its first owner from the server CLI.
-        </small>
       </section>
     </div>
   );
@@ -255,7 +320,7 @@ function Reset() {
         </Form>
         {complete && (
           <p role="status">
-            Password changed. <Link to="/">Sign in</Link>
+            Password changed. <Link to="/login">Sign in</Link>
           </p>
         )}
       </section>
@@ -324,90 +389,102 @@ function Invitation() {
 const root = createRootRoute({
   component: Root,
   notFoundComponent: () => (
-    <p>
-      Page not found. <Link to="/">Return to projects</Link>
-    </p>
+    <AuthFrame>
+      <p>
+        Page not found. <Link to="/">Return to projects</Link>
+      </p>
+    </AuthFrame>
   ),
 });
-export const dashboardRoute = createRoute({
+const application = createRoute({
   getParentRoute: () => root,
+  id: "application",
+  beforeLoad: ({ location }) => ({ returnTo: location.href }),
+  component: ApplicationLayout,
+});
+const auth = createRoute({
+  getParentRoute: () => root,
+  id: "auth",
+  component: AuthLayout,
+});
+const loginRoute = createRoute({
+  getParentRoute: () => auth,
+  path: "/login",
+  validateSearch: (search: Record<string, unknown>): { returnTo?: string } => ({
+    returnTo:
+      search.returnTo === undefined
+        ? undefined
+        : loginDestination(search.returnTo),
+  }),
+  component: SignIn,
+});
+const dashboardRoute = createRoute({
+  getParentRoute: () => application,
   path: "/",
-  validateSearch: (
-    search: Record<string, unknown>,
-  ): { workspace?: string; project?: string; environment?: string } => ({
+  validateSearch: (search: Record<string, unknown>): WorkspaceSelection => ({
     workspace:
       typeof search.workspace === "string" ? search.workspace : undefined,
     project: typeof search.project === "string" ? search.project : undefined,
     environment:
       typeof search.environment === "string" ? search.environment : undefined,
   }),
-  component: () => (
-    <Authenticated>
-      <Dashboard />
-    </Authenticated>
-  ),
+  component: DashboardPage,
 });
+function DashboardPage() {
+  const selection = dashboardRoute.useSearch();
+  const navigate = dashboardRoute.useNavigate();
+  return (
+    <Dashboard
+      selection={selection}
+      onSelectionChange={(search) => navigate({ search })}
+    />
+  );
+}
 const servers = createRoute({
-  getParentRoute: () => root,
+  getParentRoute: () => application,
   path: "/servers",
-  component: () => (
-    <Authenticated>
-      <Servers />
-    </Authenticated>
-  ),
+  component: Servers,
 });
 const alerts = createRoute({
-  getParentRoute: () => root,
+  getParentRoute: () => application,
   path: "/alerts",
-  component: () => (
-    <Authenticated>
-      <Alerts />
-    </Authenticated>
-  ),
+  component: Alerts,
 });
 const account = createRoute({
-  getParentRoute: () => root,
+  getParentRoute: () => application,
   path: "/account",
-  component: () => (
-    <Authenticated>
-      <Account />
-    </Authenticated>
-  ),
+  component: Account,
 });
 const members = createRoute({
-  getParentRoute: () => root,
+  getParentRoute: () => application,
   path: "/members",
-  component: () => (
-    <Authenticated>
-      <Members />
-    </Authenticated>
-  ),
+  component: Members,
 });
 const reset = createRoute({
-  getParentRoute: () => root,
+  getParentRoute: () => auth,
   path: "/reset",
   component: Reset,
 });
 const invitation = createRoute({
-  getParentRoute: () => root,
+  getParentRoute: () => auth,
   path: "/invitation",
   component: Invitation,
 });
 const signup = createRoute({
-  getParentRoute: () => root,
+  getParentRoute: () => auth,
   path: "/signup",
   component: Signup,
 });
 export const router = createRouter({
   routeTree: root.addChildren([
-    dashboardRoute,
-    servers,
-    alerts,
-    account,
-    members,
-    reset,
-    invitation,
-    signup,
+    application.addChildren([
+      dashboardRoute,
+      servers,
+      alerts,
+      account,
+      members,
+    ]),
+    auth.addChildren([loginRoute, reset, invitation, signup]),
   ]),
 });
 declare module "@tanstack/react-router" {

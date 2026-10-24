@@ -1,3 +1,4 @@
+import "./visual-editor.css";
 import { useQuery } from "@tanstack/react-query";
 import {
   Background,
@@ -44,7 +45,7 @@ export function VisualEditor({
   onLayoutDirty: (v: boolean) => void;
   onSelectService?: (name: string) => void;
 }) {
-  const theme = useContext(ThemeContext);
+  const { theme } = useContext(ThemeContext);
   const configure = write && !spec.compose;
   const [selected, setSelected] = useState<string>();
   const [view, setView] = useState<"canvas" | "list">("canvas");

@@ -354,7 +354,7 @@ function MetricTable({
   children: ReactNode;
 }) {
   return (
-    // biome-ignore lint/a11y/noNoninteractiveTabindex: WebKit needs focus to keyboard-scroll a clipped table.
+    // oxlint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- WebKit needs focus to keyboard-scroll a clipped table.
     <section className={s.metricTable} tabIndex={0} aria-label={label}>
       {children}
     </section>

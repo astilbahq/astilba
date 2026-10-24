@@ -2,6 +2,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useBlocker } from "@tanstack/react-router";
 import { useRef, useState } from "react";
 import { ApiError, client, result, type Schema } from "./api/client";
+import { sessionOptions } from "./api/session";
 import { Backups } from "./features/backups";
 import { ComposeEditor } from "./features/compose-editor";
 import { Deployments } from "./features/deployments";
@@ -10,13 +11,22 @@ import { Upgrades } from "./features/upgrades";
 import { VisualEditor } from "./features/visual-editor";
 import { hostingOptions } from "./hosting";
 import { WorkspaceImport } from "./portability";
-import { dashboardRoute, sessionOptions } from "./router";
 import * as s from "./styles";
 import { BusyButton, ErrorNotice, Field, Form, text, useAction } from "./ui";
-export function Dashboard() {
-  const selection = dashboardRoute.useSearch();
+export type WorkspaceSelection = {
+  workspace?: string;
+  project?: string;
+  environment?: string;
+};
+
+export function Dashboard({
+  selection,
+  onSelectionChange,
+}: {
+  selection: WorkspaceSelection;
+  onSelectionChange: (selection: WorkspaceSelection) => Promise<void>;
+}) {
   const hosted = useQuery(hostingOptions).data?.enabled;
-  const navigate = dashboardRoute.useNavigate();
   const queries = useQueryClient();
   const session = useQuery(sessionOptions).data;
   const action = useAction();
@@ -69,12 +79,10 @@ export function Dashboard() {
             <select
               value={workspaceId}
               onChange={(e) =>
-                void navigate({
-                  search: {
-                    workspace: e.target.value,
-                    project: undefined,
-                    environment: undefined,
-                  },
+                void onSelectionChange({
+                  workspace: e.target.value,
+                  project: undefined,
+                  environment: undefined,
                 })
               }
             >
@@ -246,12 +254,10 @@ export function Dashboard() {
                       await queries.invalidateQueries({
                         queryKey: ["environments", workspaceId, projectId],
                       });
-                      await navigate({
-                        search: {
-                          workspace: workspaceId,
-                          project: projectId,
-                          environment: env.id,
-                        },
+                      await onSelectionChange({
+                        workspace: workspaceId,
+                        project: projectId,
+                        environment: env.id,
                       });
                     })
                   }
