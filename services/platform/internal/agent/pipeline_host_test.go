@@ -135,6 +135,16 @@ func TestNativePipeline(t *testing.T) {
 	var registryCA []byte
 	cancelNext := false
 	engine.Point = func(point string) {
+		if point == "build" {
+			var p pipeline.Command
+			_ = json.Unmarshal(*active.Pipeline, &p)
+			if p.Build.Budget != nil {
+				v, err := docker.ContainerInspect(ctx, pipelineName(active), client.ContainerInspectOptions{})
+				if err != nil || v.Container.HostConfig.Memory != 1536<<20 || v.Container.HostConfig.NanoCPUs != 1_000_000_000 || v.Container.HostConfig.Tmpfs["/workspace"] != "rw,exec,nosuid,nodev,size=128m,mode=0700" || v.Container.HostConfig.Tmpfs["/var/lib/buildkit"] != "rw,exec,nosuid,size=640m" {
+					t.Fatal("custom build limits not applied", err)
+				}
+			}
+		}
 		if point == "build" && cancelNext {
 			active.CancelRequested = true
 			var frozen pipeline.Command
@@ -214,6 +224,7 @@ func TestNativePipeline(t *testing.T) {
 	build.AppID = uuid.New()
 	build.InputHash = strings.Repeat("a", 64)
 	build.Build = &pipeline.BuildConfig{ConnectionID: source.ConnectionID, Branch: "main", RunnerID: serverID, Context: ".", Dockerfile: "Dockerfile", Architecture: runtime.GOARCH, Arguments: map[string]string{}, Secrets: map[string]uuid.UUID{"token": uuid.New()}}
+	build.Build.Budget = &pipeline.BuildBudget{CPUs: 1, MemoryMiB: 1536, SourceMiB: 128, StateMiB: 640, Minutes: 2}
 	build.BuildSecrets = map[string]string{"token": "build-secret-canary"}
 	built := run(build)
 	if built.Report.State != "succeeded" {
@@ -313,6 +324,44 @@ func TestNativePipeline(t *testing.T) {
 		}
 	}
 	saved.Close()
+	// Compare frozen commits rather than webhook path summaries or the moving branch.
+	if err = os.WriteFile(filepath.Join(work, "README.md"), []byte("docs only\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	git("-C", work, "add", ".")
+	git("-C", work, "commit", "-m", "documentation")
+	git("-C", work, "push", repo, "main")
+	watched := build
+	watched.Build = new(pipeline.BuildConfig)
+	*watched.Build = *build.Build
+	watched.Build.WatchPaths = []string{"Dockerfile", "untouched.txt"}
+	watched.CompareCommit = commit
+	watched.Commit = git("-C", work, "rev-parse", "HEAD")
+	skipped := run(watched)
+	var skippedResult pipeline.Result
+	_ = json.Unmarshal(*skipped.Report.Pipeline, &skippedResult)
+	if skipped.Report.State != "succeeded" || !skippedResult.Skipped || skippedResult.Image != "" {
+		t.Fatal("unrelated source was built", skipped.Report.Note)
+	}
+	git("-C", work, "mv", "untouched.txt", "renamed.txt")
+	git("-C", work, "commit", "-m", "rename out of watched path")
+	git("-C", work, "push", repo, "main")
+	watched.Commit = git("-C", work, "rev-parse", "HEAD")
+	renamed := run(watched)
+	var renamedResult pipeline.Result
+	_ = json.Unmarshal(*renamed.Report.Pipeline, &renamedResult)
+	if renamed.Report.State != "succeeded" || renamedResult.Skipped || renamedResult.Image == "" {
+		t.Fatal("watched deletion was skipped", renamed.Report.Note)
+	}
+	defer docker.ImageRemove(ctx, renamedResult.Image, client.ImageRemoveOptions{Force: true})
+	watched.CompareCommit = strings.Repeat("f", 40)
+	unavailable := run(watched)
+	var unavailableResult pipeline.Result
+	_ = json.Unmarshal(*unavailable.Report.Pipeline, &unavailableResult)
+	if unavailable.Report.State != "succeeded" || unavailableResult.Skipped {
+		t.Fatal("unavailable baseline did not rebuild", unavailable.Report.Note)
+	}
+	defer docker.ImageRemove(ctx, unavailableResult.Image, client.ImageRemoveOptions{Force: true})
 	// A failing build cannot replace or mutate the earlier immutable local image.
 	git("-C", work, "config", "user.name", "Fixture")
 	if err = os.WriteFile(filepath.Join(work, "Dockerfile"), []byte("FROM "+execution.TestImage+"\nRUN exit 19\n"), 0600); err != nil {
@@ -330,7 +379,7 @@ func TestNativePipeline(t *testing.T) {
 	if err != nil || current.ID != result.Digest {
 		t.Fatal("failed build changed previous artifact")
 	}
-	// Exhaust only the builder's 1 GiB tmpfs, never the host disk or existing database storage.
+	// Exhaust only the configured builder tmpfs, never host disk or database storage.
 	if err = os.WriteFile(filepath.Join(work, "Dockerfile"), []byte("FROM "+execution.TestImage+"\nRUN dd if=/dev/zero of=/oversized bs=1M count=1100\n"), 0600); err != nil {
 		t.Fatal(err)
 	}

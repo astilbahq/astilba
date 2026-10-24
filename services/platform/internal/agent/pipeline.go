@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/url"
 	"os"
@@ -86,19 +87,24 @@ func (e *Engine) pipelineContainer(ctx context.Context, c api.ExecutionCommand, 
 	build := p.Action == "build"
 	memory := int64(512 << 20)
 	if build {
-		memory = 2 << 30
+		memory = int64(p.Build.Limits().MemoryMiB) << 20
 	}
 	host := &container.HostConfig{ReadonlyRootfs: true, NetworkMode: "host", Privileged: build, CapDrop: []string{"ALL"}, SecurityOpt: []string{"no-new-privileges:true"}, Tmpfs: map[string]string{"/workspace": "rw,exec,nosuid,nodev,size=256m,mode=0700", "/tmp": "rw,nosuid,nodev,size=32m", "/run": "rw,nosuid,nodev,size=16m", "/var/lib/buildkit": "rw,exec,nosuid,size=1024m"}, Resources: container.Resources{Memory: memory, MemorySwap: memory, NanoCPUs: 2_000_000_000, PidsLimit: int64Pointer(256)}}
 	if build {
+		limits := p.Build.Limits()
+		host.Resources.NanoCPUs = int64(limits.CPUs) * 1_000_000_000
+		host.Tmpfs["/workspace"] = fmt.Sprintf("rw,exec,nosuid,nodev,size=%dm,mode=0700", limits.SourceMiB)
+		host.Tmpfs["/var/lib/buildkit"] = fmt.Sprintf("rw,exec,nosuid,size=%dm", limits.StateMiB)
 		host.ReadonlyRootfs = false
 		host.CapDrop = nil
 		host.SecurityOpt = nil
 		config.Entrypoint = []string{"buildkitd"}
-		config.Cmd = []string{"--addr", "unix:///run/buildkit/buildkitd.sock", "--oci-worker-gc", "--oci-worker-gc-keepstorage", "512"}
+		config.Cmd = []string{"--addr", "unix:///run/buildkit/buildkitd.sock", "--oci-worker-gc", "--oci-worker-gc-keepstorage", strconv.Itoa(limits.StateMiB / 2)}
 		if p.Registry != nil {
 			config.Env = []string{"ASTILBA_REGISTRY_HOST=" + strings.Split(p.Registry.Repository, "/")[0]}
 			config.Entrypoint = []string{"sh", "-ec"}
-			config.Cmd = []string{`mkdir -p /etc/buildkit; printf '[registry."%s"]\n  http = false\n  insecure = false\n' "$ASTILBA_REGISTRY_HOST" > /etc/buildkit/buildkitd.toml; exec buildkitd --config /etc/buildkit/buildkitd.toml --addr unix:///run/buildkit/buildkitd.sock --oci-worker-gc --oci-worker-gc-keepstorage 512`}
+			config.Env = append(config.Env, "ASTILBA_GC_MIB="+strconv.Itoa(limits.StateMiB/2))
+			config.Cmd = []string{`mkdir -p /etc/buildkit; printf '[registry."%s"]\n  http = false\n  insecure = false\n' "$ASTILBA_REGISTRY_HOST" > /etc/buildkit/buildkitd.toml; exec buildkitd --config /etc/buildkit/buildkitd.toml --addr unix:///run/buildkit/buildkitd.sock --oci-worker-gc --oci-worker-gc-keepstorage "$ASTILBA_GC_MIB"`}
 		}
 
 	}
@@ -149,7 +155,7 @@ func (e *Engine) clonePipeline(ctx context.Context, c api.ExecutionCommand, p pi
 		return err
 	}
 	if _, err := e.pipelineGit(ctx, c, p, nil, "fetch", "--quiet", "--depth=1", "--no-tags", "origin", p.Commit); err != nil {
-		return errors.New("exact-commit fetch failed or exceeded the 256 MiB source budget")
+		return errors.New("exact-commit fetch failed or exceeded the source storage budget")
 	}
 	out, err := e.pipelineGit(ctx, c, p, nil, "rev-parse", "FETCH_HEAD")
 	if err != nil || strings.TrimSpace(string(out)) != p.Commit {
@@ -313,6 +319,10 @@ func (e *Engine) submitPipeline(ctx context.Context, c api.ExecutionCommand, p p
 }
 func (e *Engine) buildPipeline(ctx context.Context, c api.ExecutionCommand, p pipeline.Command) (pipeline.Result, error) {
 	result := pipeline.Result{Commit: p.Commit, Architecture: p.Build.Architecture, Cache: "BuildKit cache is isolated to this run and cleared at completion."}
+	if p.CompareCommit != "" && !e.watchedSourceChanged(ctx, c, p) {
+		result.Skipped = true
+		return result, nil
+	}
 	listing, err := e.pipelineGit(ctx, c, p, nil, "ls-tree", "-r", p.Commit)
 	if err != nil {
 		return result, err
@@ -409,6 +419,24 @@ func (e *Engine) buildPipeline(ctx context.Context, c api.ExecutionCommand, p pi
 		result.Image = image
 	}
 	return result, nil
+}
+
+// Only a complete diff against a fetched successful artifact may skip a build.
+// Force-pushed or unavailable baselines and bounded-output failures rebuild.
+func (e *Engine) watchedSourceChanged(ctx context.Context, c api.ExecutionCommand, p pipeline.Command) bool {
+	if _, err := e.pipelineGit(ctx, c, p, nil, "fetch", "--quiet", "--depth=1", "--no-tags", "origin", p.CompareCommit); err != nil {
+		return true
+	}
+	paths, err := e.pipelineGit(ctx, c, p, nil, "diff", "--no-renames", "--name-only", "-z", p.CompareCommit, p.Commit, "--")
+	if err != nil || len(paths) > 0 && paths[len(paths)-1] != 0 {
+		return true
+	}
+	for _, name := range bytes.Split(paths, []byte{0}) {
+		if len(name) > 0 && p.Build.Watches(string(name)) {
+			return true
+		}
+	}
+	return false
 }
 func (e *Engine) pipelineBuildLog(ctx context.Context, c api.ExecutionCommand, p pipeline.Command, args []string) (string, error) {
 	cli := e.DockerCLI

@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/astilbahq/astilba/services/platform/internal/composeproject"
 	"github.com/distribution/reference"
@@ -72,6 +73,8 @@ type BuildConfig struct {
 	Secrets          map[string]uuid.UUID `json:"secrets"`
 	AutoBuild        bool                 `json:"autoBuild"`
 	AutoDeploy       bool                 `json:"autoDeploy"`
+	Budget           *BuildBudget         `json:"budget,omitempty"`
+	WatchPaths       []string             `json:"watchPaths,omitempty"`
 }
 type Artifact struct {
 	ID           uuid.UUID  `json:"id"`
@@ -85,20 +88,21 @@ type Artifact struct {
 	RegistryID   *uuid.UUID `json:"registryId,omitempty"`
 }
 type Command struct {
-	SubmissionID uuid.UUID              `json:"submissionId"`
-	Action       string                 `json:"action"`
-	Connection   Connection             `json:"connection"`
-	Commit       string                 `json:"commit"`
-	Branch       string                 `json:"branch"`
-	RevisionID   uuid.UUID              `json:"revisionId"`
-	UnitID       uuid.UUID              `json:"unitId"`
-	AppID        uuid.UUID              `json:"appId"`
-	Source       *Source                `json:"source,omitempty"`
-	Bundle       *composeproject.Bundle `json:"bundle,omitempty"`
-	Build        *BuildConfig           `json:"build,omitempty"`
-	InputHash    string                 `json:"inputHash"`
-	Registry     *Registry              `json:"registry,omitempty"`
-	SubmittedAt  time.Time              `json:"submittedAt"`
+	SubmissionID  uuid.UUID              `json:"submissionId"`
+	Action        string                 `json:"action"`
+	Connection    Connection             `json:"connection"`
+	Commit        string                 `json:"commit"`
+	Branch        string                 `json:"branch"`
+	RevisionID    uuid.UUID              `json:"revisionId"`
+	UnitID        uuid.UUID              `json:"unitId"`
+	AppID         uuid.UUID              `json:"appId"`
+	Source        *Source                `json:"source,omitempty"`
+	Bundle        *composeproject.Bundle `json:"bundle,omitempty"`
+	Build         *BuildConfig           `json:"build,omitempty"`
+	InputHash     string                 `json:"inputHash"`
+	CompareCommit string                 `json:"compareCommit,omitempty"`
+	Registry      *Registry              `json:"registry,omitempty"`
+	SubmittedAt   time.Time              `json:"submittedAt"`
 	// Values exist only in the assigned agent's transport and encrypted journal.
 	Access         *Access           `json:"access,omitempty"`
 	BuildSecrets   map[string]string `json:"buildSecrets,omitempty"`
@@ -127,6 +131,7 @@ type Result struct {
 	Architecture string                `json:"architecture,omitempty"`
 	Logs         string                `json:"logs,omitempty"`
 	Cache        string                `json:"cache,omitempty"`
+	Skipped      bool                  `json:"skipped,omitempty"`
 }
 
 var commitPattern = regexp.MustCompile(`^[a-f0-9]{40}([a-f0-9]{24})?$`)
@@ -183,6 +188,22 @@ func (b BuildConfig) Validate() error {
 	if b.FallbackRunnerID != nil && (*b.FallbackRunnerID == uuid.Nil || *b.FallbackRunnerID == b.RunnerID) {
 		return errors.New("invalid fallback runner")
 	}
+	if err := b.Limits().Validate(); err != nil {
+		return err
+	}
+	if len(b.WatchPaths) > 16 {
+		return &BuildValidationError{"watchPaths", "Use at most 16 watch paths."}
+	}
+	seen := map[string]bool{}
+	for _, p := range b.WatchPaths {
+		if !composeproject.ValidPath(p) || utf8.RuneCountInString(p) > 240 || strings.ContainsAny(p, "*?[]") {
+			return &BuildValidationError{"watchPaths", "Use repository-relative watch paths of at most 240 characters, without leading or trailing slashes, parent traversal or wildcards."}
+		}
+		if seen[p] {
+			return &BuildValidationError{"watchPaths", "Remove duplicate watch paths."}
+		}
+		seen[p] = true
+	}
 	return nil
 }
 func (s Source) Validate() error {
@@ -233,6 +254,9 @@ func (c Command) Validate() error {
 	case "build":
 		if c.Build == nil || c.AppID == uuid.Nil || len(c.InputHash) != 64 {
 			return errors.New("missing build inputs")
+		}
+		if c.CompareCommit != "" && (!ValidCommit(c.CompareCommit) || len(c.Build.WatchPaths) == 0) {
+			return errors.New("invalid watched-build baseline")
 		}
 		return c.Build.Validate()
 	default:

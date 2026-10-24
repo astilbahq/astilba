@@ -249,6 +249,8 @@ Log export reuses resource authorization and secret redaction, caps volume and d
 
 Add GitHub App installation and repository selection while preserving the existing GitLab/Gitea and manually scoped credential paths. Add production Railpack only with a documented supported-language matrix, reproducible image pins and build-secret isolation. Retain Dockerfile builds and explicit overrides.
 
+Deliver this milestone in reviewable changes: build resource budgets and monorepo triggers; bounded project-scoped caches; a validated Railpack path; and GitHub App installation/repository onboarding. Keep the milestone open until all four pass their acceptance checks.
+
 Introduce per-project or per-trust-domain reusable BuildKit caches with bounded storage and safe eviction, configurable build resource budgets, and monorepo watch paths. Prove cache isolation, cancellation, changed input invalidation and exact-commit behavior. Use a representative existing project to measure onboarding and repeated-build latency; no cache hit or universal framework support is promised.
 
 ## P11 Safe application releases

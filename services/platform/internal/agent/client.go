@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
@@ -21,11 +22,12 @@ import (
 )
 
 type Client struct {
-	Journal *Journal
-	Engine  *Engine
-	HTTP    *http.Client
-	Observe func(context.Context) api.AgentHeartbeat
-	Metrics func(context.Context) api.MetricReport
+	Journal       *Journal
+	Engine        *Engine
+	HTTP          *http.Client
+	Observe       func(context.Context) api.AgentHeartbeat
+	Metrics       func(context.Context) api.MetricReport
+	buildControls atomic.Bool
 }
 
 func NewClient(j *Journal, e *Engine) *Client {
@@ -42,6 +44,18 @@ func (c *Client) call(ctx context.Context, method, path string, body, out any, t
 	cfg, e := c.Journal.Config()
 	if e != nil {
 		return e
+	}
+	// Older protocol-1 controllers reject unknown capability fields. Advertise
+	// extensions only after this controller has explicitly accepted that schema.
+	if !c.buildControls.Load() {
+		switch value := body.(type) {
+		case api.AgentEnrollment:
+			value.Capabilities.BuildControls = nil
+			body = value
+		case api.AgentHeartbeat:
+			value.Capabilities.BuildControls = nil
+			body = value
+		}
 	}
 	raw, e := json.Marshal(body)
 	if e != nil {
@@ -60,6 +74,8 @@ func (c *Client) call(ctx context.Context, method, path string, body, out any, t
 		return errors.New("management connection unavailable")
 	}
 	defer response.Body.Close()
+	// Also forget an extension after controller replacement or downgrade.
+	c.buildControls.Store(response.Header.Get("Astilba-Agent-Features") == "build-controls")
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		return errors.New("management rejected request; check enrollment, credentials and operation status")
 	}

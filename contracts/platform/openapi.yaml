@@ -3415,6 +3415,9 @@
           "type": "boolean"
         "compose":
           "type": "boolean"
+        buildControls:
+          type: boolean
+          description: Supports explicit build budgets and frozen-commit watch paths. Agents send this extension only after a controller response advertises Astilba-Agent-Features with build-controls.
         build:
           type: boolean
         backups:
@@ -5468,6 +5471,32 @@
       required:
         - baseRevisionId
         - requestKey
+    BuildBudget:
+      type: object
+      additionalProperties: false
+      description: Assignment lifetime includes queue time. Source and state storage plus 96 MiB must fit the memory limit.
+      properties:
+        cpus:
+          type: integer
+          minimum: 1
+          maximum: 8
+        memoryMiB:
+          type: integer
+          minimum: 512
+          maximum: 8192
+        sourceMiB:
+          type: integer
+          minimum: 64
+          maximum: 1024
+        stateMiB:
+          type: integer
+          minimum: 128
+          maximum: 6144
+        minutes:
+          type: integer
+          minimum: 1
+          maximum: 30
+      required: [cpus, memoryMiB, sourceMiB, stateMiB, minutes]
     BuildConfiguration:
       type: object
       additionalProperties: false
@@ -5510,6 +5539,17 @@
             type: string
             format: uuid
           maxProperties: 16
+        budget:
+          $ref: '#/components/schemas/BuildBudget'
+        watchPaths:
+          type: array
+          maxItems: 16
+          uniqueItems: true
+          description: Literal repository-relative file or directory prefixes for automatic builds; empty means every change.
+          items:
+            type: string
+            minLength: 1
+            maxLength: 240
         autoBuild:
           type: boolean
         autoDeploy:
@@ -5615,6 +5655,9 @@
         logs:
           type: string
           maxLength: 16384
+        skipped:
+          type: boolean
+          description: No watched source paths changed; no artifact or deployment is created.
         cache:
           type: string
           maxLength: 1024
@@ -5730,6 +5773,10 @@
             - build
         connection:
           $ref: '#/components/schemas/GitConnection'
+        compareCommit:
+          type: string
+          maxLength: 64
+          description: Frozen compatible successful-artifact commit used only for automatic watch-path comparison.
         commit:
           type: string
           maxLength: 64
