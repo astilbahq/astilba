@@ -301,4 +301,4 @@ Expose fast local checks and one complete `make verify` entry point, retain exac
 
 ## Current implementation increment
 
-P0–P8 and private-alpha acceptance establish the implementation baseline. Resource history and disk-pressure visibility are merged. P9 continues with [operational alerts](operational-alerts.md), followed by bounded log export as a separate reviewed change. Keep later parity work at milestone level until its prerequisites pass. The disposable experiments remain evidence, not production scaffolding.
+P0–P8 and private-alpha acceptance establish the implementation baseline. P9 includes resource history, disk-pressure visibility, [operational alerts](operational-alerts.md) and [bounded retained-log export](operational-visibility.md#export-retained-logs). Log export preserves the existing sampled data and redaction boundaries; it does not introduce a full log archive. P10 source-to-app workflow is the next product increment. Keep later parity work at milestone level until its prerequisites pass. The disposable experiments remain evidence, not production scaffolding.

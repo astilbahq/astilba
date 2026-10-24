@@ -1711,6 +1711,28 @@
           "schema":
             "type": "string"
             "format": "uuid"
+  /api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/logs/export:
+    get:
+      operationId: exportLogs
+      description: Export already-redacted retained runtime samples and build output. Runtime samples use receipt time; build output uses job creation time. This is not a complete log archive.
+      parameters:
+        - {name: workspaceId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: projectId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: environmentId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: hours, in: query, schema: {type: integer, enum: [1, 6, 24], default: 1}}
+      responses:
+        '200':
+          description: A bounded snapshot export, including requested time limits and truncation metadata.
+          headers:
+            Content-Disposition: {schema: {type: string}}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/LogExport'}
+        default:
+          description: Error
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
   "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/runtime":
     "get":
       "operationId": "getRuntime"
@@ -6597,3 +6619,45 @@
         webhookEnabled: {type: boolean}
         webhookUrl: {type: string, minLength: 1, maxLength: 2048, writeOnly: true}
         webhookSecret: {type: string, minLength: 32, maxLength: 256, writeOnly: true}
+
+    LogExportEntry:
+      type: object
+      additionalProperties: false
+      required: [source, at, resourceId, content, truncated]
+      properties:
+        source:
+          type: string
+          enum: [runtime-sample, build-output]
+          x-enum-varnames: [RuntimeSample, BuildOutput]
+        at:
+          type: string
+          format: date-time
+          description: Runtime observation receipt time or build job creation time, used to select the requested window.
+        resourceId: {type: string, format: uuid}
+        operationId: {type: string, format: uuid}
+        content: {type: string, maxLength: 65536}
+        truncated:
+          type: boolean
+          description: This export shortened this entry. Source snapshots can already be incomplete regardless of this flag.
+    LogExport:
+      type: object
+      additionalProperties: false
+      required: [version, environmentId, coverage, windowStart, windowEnd, contentByteLimit, entryLimit, truncated, entries]
+      properties:
+        version: {type: integer, enum: [1]}
+        environmentId: {type: string, format: uuid}
+        coverage:
+          type: string
+          enum: [retained-snapshots]
+          description: Previously captured, agent-redacted samples only. This is not a complete log archive.
+        windowStart: {type: string, format: date-time}
+        windowEnd: {type: string, format: date-time}
+        contentByteLimit: {type: integer, enum: [65536]}
+        entryLimit: {type: integer, enum: [100]}
+        truncated:
+          type: boolean
+          description: The export omitted entries or shortened content to stay within its limits. False does not imply complete source logs.
+        entries:
+          type: array
+          maxItems: 100
+          items: {$ref: '#/components/schemas/LogExportEntry'}

@@ -804,6 +804,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/logs/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Export already-redacted retained runtime samples and build output. Runtime samples use receipt time; build output uses job creation time. This is not a complete log archive. */
+        get: operations["exportLogs"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/runtime": {
         parameters: {
             query?: never;
@@ -2741,6 +2758,44 @@ export interface components {
             webhookUrl?: string;
             webhookSecret?: string;
         };
+        LogExportEntry: {
+            /** @enum {string} */
+            source: "runtime-sample" | "build-output";
+            /**
+             * Format: date-time
+             * @description Runtime observation receipt time or build job creation time, used to select the requested window.
+             */
+            at: string;
+            /** Format: uuid */
+            resourceId: string;
+            /** Format: uuid */
+            operationId?: string;
+            content: string;
+            /** @description This export shortened this entry. Source snapshots can already be incomplete regardless of this flag. */
+            truncated: boolean;
+        };
+        LogExport: {
+            /** @enum {integer} */
+            version: 1;
+            /** Format: uuid */
+            environmentId: string;
+            /**
+             * @description Previously captured, agent-redacted samples only. This is not a complete log archive.
+             * @enum {string}
+             */
+            coverage: "retained-snapshots";
+            /** Format: date-time */
+            windowStart: string;
+            /** Format: date-time */
+            windowEnd: string;
+            /** @enum {integer} */
+            contentByteLimit: 65536;
+            /** @enum {integer} */
+            entryLimit: 100;
+            /** @description The export omitted entries or shortened content to stay within its limits. False does not imply complete source logs. */
+            truncated: boolean;
+            entries: components["schemas"]["LogExportEntry"][];
+        };
     };
     responses: never;
     parameters: never;
@@ -4663,6 +4718,42 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Operation"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    exportLogs: {
+        parameters: {
+            query?: {
+                hours?: 1 | 6 | 24;
+            };
+            header?: never;
+            path: {
+                workspaceId: string;
+                projectId: string;
+                environmentId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description A bounded snapshot export, including requested time limits and truncation metadata. */
+            200: {
+                headers: {
+                    "Content-Disposition"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LogExport"];
                 };
             };
             /** @description Error */
