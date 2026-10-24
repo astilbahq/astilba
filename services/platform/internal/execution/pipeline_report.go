@@ -65,6 +65,11 @@ func (s *Service) hydratePipeline(ctx context.Context, c *api.ExecutionCommand) 
 	if err = tx.QueryRow(ctx, "SELECT workspace_id FROM servers WHERE id=$1", c.ServerId).Scan(&ws); err != nil {
 		return err
 	}
+	if p.Build != nil && p.Build.NeedsControls() {
+		if _, err = runnerEligible(ctx, tx, ws, c.ServerId, p.Build.Architecture, true); err != nil {
+			return err
+		}
+	}
 	provider, _, err := s.provider(ctx, tx, ws, p.Connection.ID)
 	if err != nil {
 		return err
@@ -249,6 +254,13 @@ func (s *Service) pipelineReport(ctx context.Context, tx pgx.Tx, c api.Execution
 			if hash != p.InputHash || commit != p.Commit {
 				r.State = "failed"
 				r.Note = "Build inputs changed; this result cannot become an artifact."
+				break
+			}
+			if result.Skipped {
+				if p.CompareCommit == "" || len(p.Build.WatchPaths) == 0 || result.Commit != p.Commit || result.Image != "" || result.Digest != "" {
+					return domain.Invalid("build.skipped")
+				}
+				r.Note = "No watched paths changed since the last compatible successful build. No image was built or deployed."
 				break
 			}
 			if result.Commit != p.Commit || result.Architecture != p.Build.Architecture || !validImageDigest(result.Digest) {

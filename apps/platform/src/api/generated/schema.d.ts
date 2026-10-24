@@ -1536,6 +1536,8 @@ export interface components {
             docker: boolean;
             visual?: boolean;
             compose?: boolean;
+            /** @description Supports explicit build budgets and frozen-commit watch paths. Agents send this extension only after a controller response advertises Astilba-Agent-Features with build-controls. */
+            buildControls?: boolean;
             build?: boolean;
             backups?: boolean;
             upgrades?: boolean;
@@ -2245,6 +2247,14 @@ export interface components {
             /** Format: uuid */
             requestKey: string;
         };
+        /** @description Assignment lifetime includes queue time. Source and state storage plus 96 MiB must fit the memory limit. */
+        BuildBudget: {
+            cpus: number;
+            memoryMiB: number;
+            sourceMiB: number;
+            stateMiB: number;
+            minutes: number;
+        };
         BuildConfiguration: {
             /** Format: uuid */
             connectionId: string;
@@ -2265,6 +2275,9 @@ export interface components {
             secrets: {
                 [key: string]: string;
             };
+            budget?: components["schemas"]["BuildBudget"];
+            /** @description Literal repository-relative file or directory prefixes for automatic builds; empty means every change. */
+            watchPaths?: string[];
             autoBuild: boolean;
             autoDeploy: boolean;
         };
@@ -2302,6 +2315,8 @@ export interface components {
             digest?: string;
             architecture?: string;
             logs?: string;
+            /** @description No watched source paths changed; no artifact or deployment is created. */
+            skipped?: boolean;
             cache?: string;
         };
         PipelineRun: {
@@ -2345,6 +2360,8 @@ export interface components {
             /** @enum {string} */
             action: "import" | "submit" | "build";
             connection: components["schemas"]["GitConnection"];
+            /** @description Frozen compatible successful-artifact commit used only for automatic watch-path comparison. */
+            compareCommit?: string;
             commit: string;
             branch: string;
             /** Format: uuid */

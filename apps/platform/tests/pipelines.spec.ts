@@ -46,6 +46,7 @@ test("repository setup, Git service, queued build and cancellation use the real 
           arch: "arm64",
           docker: true,
           build: true,
+          buildControls: true,
         },
         preflight: {
           ready: true,
@@ -61,6 +62,7 @@ test("repository setup, Git service, queued build and cancellation use the real 
     },
   );
   expect(enrolled.status()).toBe(200);
+  expect(enrolled.headers()["astilba-agent-features"]).toBe("build-controls");
   await page
     .getByLabel("Project name", { exact: true })
     .fill(`Builds ${info.project.name}`);
@@ -163,6 +165,50 @@ test("repository setup, Git service, queued build and cancellation use the real 
   await page.getByText("Build a service", { exact: true }).click();
   const build = page.getByRole("form", { name: "Build a service" });
   await build.getByLabel("Branch", { exact: true }).fill("main");
+  await build.getByText("Build resource limits", { exact: true }).click();
+  await build.getByLabel("CPU cores", { exact: true }).fill("1");
+  await build.getByLabel("Memory limit (MiB)", { exact: true }).fill("512");
+  await build
+    .getByLabel("Automatic build watch paths", { exact: true })
+    .fill("apps/web\npnpm-lock.yaml");
+  // Each numeric value is supported, but their combined storage must fit memory.
+  await build.getByRole("button", { name: "Queue build", exact: true }).click();
+  await expect(page.getByRole("alert")).toContainText(
+    "Increase the memory limit",
+  );
+  await expect(
+    build.getByLabel("Memory limit (MiB)", { exact: true }),
+  ).toHaveAttribute("aria-invalid", "true");
+  await expect(
+    build.getByLabel("Memory limit (MiB)", { exact: true }),
+  ).toHaveAccessibleDescription(/96 MiB/);
+  await expect(
+    build.getByLabel("Automatic build watch paths", { exact: true }),
+  ).toHaveValue("apps/web\npnpm-lock.yaml");
+  await build.getByLabel("Memory limit (MiB)", { exact: true }).fill("2048");
+  await build
+    .getByLabel("Assignment lifetime (minutes)", { exact: true })
+    .fill("2");
+  await build
+    .getByLabel("Automatic build watch paths", { exact: true })
+    .fill("apps/web\napps/web");
+  await build.getByRole("button", { name: "Queue build", exact: true }).click();
+  await expect(
+    build.getByLabel("Automatic build watch paths", { exact: true }),
+  ).toHaveAccessibleDescription("Remove duplicate watch paths.");
+  await build
+    .getByLabel("Automatic build watch paths", { exact: true })
+    .fill("../outside");
+  await build.getByRole("button", { name: "Queue build", exact: true }).click();
+  await expect(
+    build.getByLabel("Automatic build watch paths", { exact: true }),
+  ).toHaveAttribute("aria-invalid", "true");
+  await expect(
+    build.getByLabel("Automatic build watch paths", { exact: true }),
+  ).toHaveAccessibleDescription(/repository-relative watch paths/);
+  await build
+    .getByLabel("Automatic build watch paths", { exact: true })
+    .fill("apps/web\npnpm-lock.yaml");
   await build.getByRole("button", { name: "Queue build", exact: true }).click();
   await expect(
     page.getByText(
@@ -177,6 +223,21 @@ test("repository setup, Git service, queued build and cancellation use the real 
   const command = (await poll.json()).command;
   expect(command.kind).toBe("pipeline");
   expect(command.pipeline.commit).toBe("a".repeat(40));
+  expect(command.pipeline.build.budget).toEqual({
+    cpus: 1,
+    memoryMiB: 2048,
+    sourceMiB: 256,
+    stateMiB: 1024,
+    minutes: 2,
+  });
+  expect(command.pipeline.build.watchPaths).toEqual([
+    "apps/web",
+    "pnpm-lock.yaml",
+  ]);
+  expect(command.pipeline.compareCommit).toBeUndefined();
+  if (info.project.name === "chromium")
+    await build.screenshot({ path: info.outputPath("build-controls.png") });
+  expect(Date.parse(command.deadline) - Date.now()).toBeLessThanOrEqual(120000);
   expect(command.pipeline.access.clone.password).toBe("browser-clone-fixture");
   expect(command.pipeline.access.api.password).toBe("");
   const cancelled = page.waitForResponse(

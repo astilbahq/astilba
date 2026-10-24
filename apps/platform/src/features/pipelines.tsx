@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useId, useState } from "react";
 import { ApiError, client, result, type Schema } from "../api/client";
 import * as s from "../styles";
 import { ErrorNotice, Field, Form, text, useAction } from "../ui";
@@ -26,6 +26,13 @@ export function Pipelines({
 }) {
   const action = useAction(),
     queries = useQueryClient();
+  const controlsId = useId();
+  const budgetError =
+    action.error instanceof ApiError &&
+    action.error.detail.fields?.includes("build.budget");
+  const watchError =
+    action.error instanceof ApiError &&
+    action.error.detail.fields?.includes("build.watchPaths");
   const workspace = { workspaceId: path.workspaceId };
   const [notice, setNotice] = useState("");
   const [connection, setConnection] = useState(""),
@@ -416,6 +423,55 @@ export function Pipelines({
                       throw new Error("Give the build secret a mount name.");
                     secretMap[name] = secret;
                   }
+                  const budget = {
+                    cpus: Number(text(d, "cpus")),
+                    memoryMiB: Number(text(d, "memoryMiB")),
+                    sourceMiB: Number(text(d, "sourceMiB")),
+                    stateMiB: Number(text(d, "stateMiB")),
+                    minutes: Number(text(d, "minutes")),
+                  };
+                  const customBudget =
+                    budget.cpus !== 2 ||
+                    budget.memoryMiB !== 2048 ||
+                    budget.sourceMiB !== 256 ||
+                    budget.stateMiB !== 1024 ||
+                    budget.minutes !== 30;
+                  const watchPaths = text(d, "watchPaths")
+                    .split("\n")
+                    .map((p) => p.trim())
+                    .filter(Boolean);
+                  const watchMessage =
+                    watchPaths.length > 16
+                      ? "Use at most 16 watch paths."
+                      : new Set(watchPaths).size !== watchPaths.length
+                        ? "Remove duplicate watch paths."
+                        : watchPaths.some((p) => [...p].length > 240)
+                          ? "Use watch paths of at most 240 characters."
+                          : undefined;
+                  if (watchMessage)
+                    throw new ApiError(
+                      {
+                        code: "invalid_input",
+                        message: watchMessage,
+                        fields: ["build.watchPaths"],
+                        requestId: "",
+                      },
+                      400,
+                    );
+                  if (customBudget || watchPaths.length) {
+                    for (const id of [runner, text(d, "fallback")].filter(
+                      Boolean,
+                    )) {
+                      if (
+                        !servers.data?.find((server) => server.id === id)
+                          ?.capabilities?.buildControls
+                      ) {
+                        throw new Error(
+                          "Update the selected runner and fallback agents before using custom build limits or watch paths.",
+                        );
+                      }
+                    }
+                  }
                   await result(
                     client.POST(`${root}/builds`, {
                       params: { path },
@@ -436,6 +492,10 @@ export function Pipelines({
                             | "arm64",
                           arguments: argumentsMap,
                           secrets: secretMap,
+                          budget: customBudget ? budget : undefined,
+                          watchPaths: watchPaths.length
+                            ? watchPaths
+                            : undefined,
                           autoBuild: d.has("autoBuild"),
                           autoDeploy: d.has("autoDeploy"),
                         },
@@ -477,6 +537,85 @@ export function Pipelines({
                   <option value="amd64">Linux amd64</option>
                 </select>
               </label>
+              <details>
+                <summary>Build resource limits</summary>
+                <div className={s.stack}>
+                  <p
+                    id={`${controlsId}-budget`}
+                    className={budgetError ? s.error : s.muted}
+                  >
+                    {budgetError && action.error instanceof Error
+                      ? action.error.message
+                      : "Limits apply to this assignment, including queue time. Source and builder storage share the memory limit; leave at least 96 MiB for tools. Custom limits require an updated agent."}
+                  </p>
+                  <label>
+                    CPU cores
+                    <input
+                      type="number"
+                      name="cpus"
+                      min={1}
+                      max={8}
+                      step={1}
+                      defaultValue={2}
+                      required
+                    />
+                  </label>
+                  <label>
+                    Memory limit (MiB)
+                    <input
+                      type="number"
+                      name="memoryMiB"
+                      aria-invalid={budgetError || undefined}
+                      aria-describedby={`${controlsId}-budget`}
+                      min={512}
+                      max={8192}
+                      step={1}
+                      defaultValue={2048}
+                      required
+                    />
+                  </label>
+                  <label>
+                    Source storage (MiB)
+                    <input
+                      type="number"
+                      name="sourceMiB"
+                      aria-invalid={budgetError || undefined}
+                      aria-describedby={`${controlsId}-budget`}
+                      min={64}
+                      max={1024}
+                      step={1}
+                      defaultValue={256}
+                      required
+                    />
+                  </label>
+                  <label>
+                    Builder storage (MiB)
+                    <input
+                      type="number"
+                      name="stateMiB"
+                      aria-invalid={budgetError || undefined}
+                      aria-describedby={`${controlsId}-budget`}
+                      min={128}
+                      max={6144}
+                      step={1}
+                      defaultValue={1024}
+                      required
+                    />
+                  </label>
+                  <label>
+                    Assignment lifetime (minutes)
+                    <input
+                      type="number"
+                      name="minutes"
+                      min={1}
+                      max={30}
+                      step={1}
+                      defaultValue={30}
+                      required
+                    />
+                  </label>
+                </div>
+              </details>
               <label>
                 Registry destination
                 <select name="registry">
@@ -525,6 +664,23 @@ export function Pipelines({
                 <input type="checkbox" name="autoBuild" />
                 Build new branch commits from authenticated push webhooks
               </label>
+              <label>
+                Automatic build watch paths
+                <textarea
+                  name="watchPaths"
+                  placeholder={"apps/web\npnpm-lock.yaml"}
+                  aria-invalid={watchError || undefined}
+                  aria-describedby={`${controlsId}-watch`}
+                />
+              </label>
+              <p
+                id={`${controlsId}-watch`}
+                className={watchError ? s.error : s.muted}
+              >
+                {watchError && action.error instanceof Error
+                  ? action.error.message
+                  : "One distinct repository-relative file or directory per line, up to 16. Omit trailing slashes; directories include their contents. Wildcards are unsupported. Leave empty to build every change. Include shared configuration and lockfiles. Manual builds always run. Automatic builds compare with the last compatible successful build and rebuild when comparison is unavailable. Requires an updated agent."}
+              </p>
               {owner && (
                 <label>
                   <input type="checkbox" name="autoDeploy" />
