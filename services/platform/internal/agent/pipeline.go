@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -92,6 +93,9 @@ func (e *Engine) pipelineContainer(ctx context.Context, c api.ExecutionCommand, 
 	host := &container.HostConfig{ReadonlyRootfs: true, NetworkMode: "host", Privileged: build, CapDrop: []string{"ALL"}, SecurityOpt: []string{"no-new-privileges:true"}, Tmpfs: map[string]string{"/workspace": "rw,exec,nosuid,nodev,size=256m,mode=0700", "/tmp": "rw,nosuid,nodev,size=32m", "/run": "rw,nosuid,nodev,size=16m", "/var/lib/buildkit": "rw,exec,nosuid,size=1024m"}, Resources: container.Resources{Memory: memory, MemorySwap: memory, NanoCPUs: 2_000_000_000, PidsLimit: int64Pointer(256)}}
 	if build {
 		limits := p.Build.Limits()
+		if p.CacheScope != "" {
+			host.Tmpfs[cacheContainerDir] = "rw,nosuid,nodev,noexec,size=256m,mode=0700"
+		}
 		host.Resources.NanoCPUs = int64(limits.CPUs) * 1_000_000_000
 		host.Tmpfs["/workspace"] = fmt.Sprintf("rw,exec,nosuid,nodev,size=%dm,mode=0700", limits.SourceMiB)
 		host.Tmpfs["/var/lib/buildkit"] = fmt.Sprintf("rw,exec,nosuid,size=%dm", limits.StateMiB)
@@ -350,6 +354,20 @@ func (e *Engine) buildPipeline(ctx context.Context, c api.ExecutionCommand, p pi
 		}
 	}
 	args := []string{"buildctl", "build", "--frontend", "dockerfile.v0", "--local", "context=" + contextDir, "--local", "dockerfile=" + contextDir, "--opt", "filename=" + p.Build.Dockerfile, "--opt", "platform=linux/" + p.Build.Architecture, "--progress", "plain", "--metadata-file", "/workspace/metadata.json"}
+	var cache *buildCache
+	if p.CacheScope != "" {
+		cache, err = openBuildCache(filepath.Join(e.Journal.dir, "build-cache-v1"))
+		result.Cache = "Project layer cache unavailable; building with fresh state."
+		if err == nil {
+			defer cache.root.Close()
+			result.Cache = "No compatible project layer cache imported."
+			if e.importBuildCache(ctx, c, p, cache) {
+				args = append(args, "--import-cache", "type=local,src="+cacheContainerDir+"/in")
+				result.Cache = "Compatible project layer cache imported; cache hits depend on build inputs."
+			}
+			args = append(args, "--export-cache", "type=local,dest="+cacheContainerDir+"/cache-out,mode=max,ignore-error=true")
+		}
+	}
 	keys := []string{}
 	for k := range p.Build.Arguments {
 		keys = append(keys, k)
@@ -417,6 +435,13 @@ func (e *Engine) buildPipeline(ctx context.Context, c api.ExecutionCommand, p pi
 		}
 		result.Digest = inspected.ID
 		result.Image = image
+	}
+	if cache != nil {
+		if e.retainBuildCache(ctx, c, p, cache) {
+			result.Cache += " Layer cache retained within project and runner limits."
+		} else {
+			result.Cache += " No new layer cache retained."
+		}
 	}
 	return result, nil
 }

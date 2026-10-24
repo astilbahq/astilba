@@ -253,6 +253,8 @@ Deliver this milestone in reviewable changes: build resource budgets and monorep
 
 Introduce per-project or per-trust-domain reusable BuildKit caches with bounded storage and safe eviction, configurable build resource budgets, and monorepo watch paths. Prove cache isolation, cancellation, changed input invalidation and exact-commit behavior. Use a representative existing project to measure onboarding and repeated-build latency; no cache hit or universal framework support is promised.
 
+Build resource budgets and monorepo triggers are implemented. Bounded project layer caches add runner-local OCI exports, compatibility keys, fixed retention/eviction limits and native BuildKit reuse/invalidation checks; see [Git and build workflows](git-builds.md#reusable-layer-caches). Railpack and GitHub App onboarding remain separate increments.
+
 ## P11 Safe application releases
 
 Start with explicitly eligible stateless HTTP services. Create revision-specific instances, wait for meaningful readiness, atomically switch routes and drain the old revision. A failed replacement leaves the serving revision available. Persist traffic-switch and cleanup state so interruption cannot silently choose the wrong revision.

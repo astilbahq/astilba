@@ -60,6 +60,17 @@ func selectRunner(ctx context.Context, tx pgx.Tx, ws, primary uuid.UUID, fallbac
 }
 func (s *Service) insertPipeline(ctx context.Context, tx pgx.Tx, ws, env, key, server uuid.UUID, p pipeline.Command) (api.Operation, error) {
 	var out api.Operation
+	if p.Action == "build" {
+		var project uuid.UUID
+		var raw []byte
+		if err := tx.QueryRow(ctx, "SELECT e.project_id,s.capabilities FROM environments e JOIN servers s ON s.workspace_id=e.workspace_id AND s.id=$3 WHERE e.workspace_id=$1 AND e.id=$2", ws, env, server).Scan(&project, &raw); err != nil {
+			return out, err
+		}
+		var capabilities api.AgentCapabilities
+		if json.Unmarshal(raw, &capabilities) == nil && capabilities.BuildCache != nil && *capabilities.BuildCache && p.Build != nil && p.Build.CanCache() {
+			p.CacheScope = pipeline.Hash([]uuid.UUID{ws, project})
+		}
+	}
 	if err := p.Validate(); err != nil {
 		return out, domain.Invalid("pipeline")
 	}
