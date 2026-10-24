@@ -24,17 +24,6 @@ import (
 	"github.com/moby/moby/client"
 )
 
-type pipelineOutput struct {
-	bytes.Buffer
-	limit int
-}
-
-func (b *pipelineOutput) Write(p []byte) (int, error) {
-	if b.Len()+len(p) > b.limit {
-		return 0, errors.New("pipeline output limit exceeded")
-	}
-	return b.Buffer.Write(p)
-}
 func pipelineName(c api.ExecutionCommand) string { return "astilba-pipeline-" + c.Id.String() }
 func (e *Engine) pipelineCLI(ctx context.Context, name string, env []string, input []byte, limit int, args ...string) ([]byte, error) {
 	cli := e.DockerCLI
@@ -56,13 +45,13 @@ func (e *Engine) pipelineCLI(ctx context.Context, name string, env []string, inp
 	cmd := exec.CommandContext(ctx, cli, command...)
 	cmd.Env = environment
 	cmd.Stdin = bytes.NewReader(input)
-	output := &pipelineOutput{limit: limit}
+	output := &boundedOutput{limit: limit, stopOnLimit: true}
 	cmd.Stdout = output
 	cmd.Stderr = io.Discard
 	if err := cmd.Run(); err != nil {
 		return nil, errors.New("runner tool failed")
 	}
-	return output.Bytes(), nil
+	return output.b.Bytes(), nil
 }
 func (e *Engine) removePipeline(ctx context.Context, c api.ExecutionCommand) error {
 	v, err := e.Docker.ContainerInspect(ctx, pipelineName(c), client.ContainerInspectOptions{})
@@ -431,10 +420,13 @@ func (e *Engine) pipelineBuildLog(ctx context.Context, c api.ExecutionCommand, p
 	if v := os.Getenv("DOCKER_CONFIG"); v != "" {
 		command.Env = append(command.Env, "DOCKER_CONFIG="+v)
 	}
-	out := &pipelineOutput{limit: 1 << 20}
+	out := &boundedOutput{limit: 1 << 20, stopOnLimit: true}
 	command.Stdout = out
 	command.Stderr = out
 	err := command.Run()
+	if out.truncated {
+		return "", errors.New("build output exceeded its capture limit")
+	}
 	values := map[string]string{}
 	for k, v := range p.BuildSecrets {
 		values[k] = v
@@ -447,7 +439,7 @@ func (e *Engine) pipelineBuildLog(ctx context.Context, c api.ExecutionCommand, p
 		values["push"] = p.RegistryAccess.Push.Password
 		values["pull"] = p.RegistryAccess.Pull.Password
 	}
-	logs := redactValues(out.String(), values)
+	logs := redactValues(out.b.String(), values)
 	if len(logs) > 16384 {
 		logs = logs[len(logs)-16384:]
 	}

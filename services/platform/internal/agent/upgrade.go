@@ -405,15 +405,15 @@ func (e *Engine) upgradeDatabaseChecks(ctx context.Context, id string, a domain.
 		}
 		// The pinned dumper inventories every dumpable object class, including
 		// collations and text-search objects; a catalog allowlist misses classes.
-		archive := &cappedOutput{limit: 65536}
+		archive := &boundedOutput{limit: 65536, stopOnLimit: true}
 		if err = e.dataTool(ctx, nil, archive, "exec", id, "pg_dump", "-U", pg.Username, "-d", "postgres", "--schema-only", "-Fc"); err != nil {
 			return errors.New("cannot inventory the postgres maintenance database")
 		}
-		inventory := &cappedOutput{limit: 65536}
-		if err = e.dataTool(ctx, bytes.NewReader(archive.Bytes()), inventory, "exec", "-i", id, "pg_restore", "--list"); err != nil {
+		inventory := &boundedOutput{limit: 65536, stopOnLimit: true}
+		if err = e.dataTool(ctx, bytes.NewReader(archive.b.Bytes()), inventory, "exec", "-i", id, "pg_restore", "--list"); err != nil {
 			return errors.New("cannot read maintenance object inventory")
 		}
-		for _, line := range strings.Split(inventory.String(), "\n") {
+		for _, line := range strings.Split(inventory.b.String(), "\n") {
 			line = strings.TrimSpace(line)
 			if line != "" && !strings.HasPrefix(line, ";") {
 				return errors.New("the postgres maintenance database contains user objects")
