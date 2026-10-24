@@ -53,16 +53,25 @@ func TestNativePipeline(t *testing.T) {
 	if err = journal.SetConfig(Config{ServerID: serverID, MachineID: uuid.New(), Role: "combined"}); err != nil {
 		t.Fatal(err)
 	}
-	dockerCLI := "docker"
-	if _, err := os.Stat("/opt/astilba-plat4/bin/docker"); err == nil {
-		dockerCLI = filepath.Join(state, "docker")
-		config := filepath.Join(state, "fixture-docker")
-		_ = os.Mkdir(config, 0700)
-		_ = os.WriteFile(filepath.Join(config, "config.json"), []byte(`{"cliPluginsExtraDirs":["/opt/astilba-plat4/cli-plugins"]}`), 0600)
-		script := fmt.Sprintf("#!/bin/sh\nexport DOCKER_CONFIG='%s'\nexec /opt/astilba-plat4/bin/docker \"$@\"\n", config)
-		if err = os.WriteFile(dockerCLI, []byte(script), 0700); err != nil {
+	realDocker := "/opt/astilba-plat4/bin/docker"
+	if _, err := os.Stat(realDocker); err != nil {
+		realDocker, err = exec.LookPath("docker")
+		if err != nil {
 			t.Fatal(err)
 		}
+	}
+	dockerCLI := filepath.Join(state, "docker")
+	config := filepath.Join(state, "fixture-docker")
+	if err = os.Mkdir(config, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(filepath.Join(config, "config.json"), []byte(`{"cliPluginsExtraDirs":["/opt/astilba-plat4/cli-plugins"]}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	quote := func(value string) string { return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'" }
+	script := fmt.Sprintf("#!/bin/sh\nexport DOCKER_CONFIG=%s\nexec %s \"$@\"\n", quote(config), quote(realDocker))
+	if err = os.WriteFile(dockerCLI, []byte(script), 0700); err != nil {
+		t.Fatal(err)
 	}
 	engine := &Engine{Journal: journal, Docker: docker, DockerCLI: dockerCLI}
 	root := t.TempDir()

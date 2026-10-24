@@ -51,6 +51,11 @@ func (e *Engine) pipelineExec(ctx context.Context, name string, env []string, ar
 	}
 	for _, v := range env {
 		k, _, _ := strings.Cut(v, "=")
+		// Docker uses this on the host too; keep container auth independent of CLI wrappers.
+		if k == "DOCKER_CONFIG" {
+			command = append(command, "--env", v)
+			continue
+		}
 		command = append(command, "--env", k)
 		environment = append(environment, v)
 	}
