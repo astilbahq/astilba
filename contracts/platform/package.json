@@ -1,0 +1,12 @@
+{
+  "name": "@astilba/api-contract",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "generate": "openapi-typescript openapi.yaml -o ../../apps/platform/src/api/generated/schema.d.ts"
+  },
+  "devDependencies": {
+    "openapi-typescript": "7.13.0",
+    "typescript": "5.9.3"
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "astilba-control-plane",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-22",
+  "workers_dev": false,
+  "containers": [{
+    "class_name": "Management",
+    "scheduling_policy": "durable_object",
+    "images": {"management": {"dockerfile": "../../Dockerfile", "build_context": "../.."}}
+  }],
+  "durable_objects": {"bindings": [{"name": "MANAGEMENT", "class_name": "Management"}]},
+  "exports": {"Management": {"type": "durable-object", "storage": "sqlite"}},
+  "triggers": {"crons": ["* * * * *"]},
+  "vars": {"ASTILBA_ORIGIN": "https://panel.example.com", "ASTILBA_HOSTED": "false"},
+  "observability": {"enabled": false}
+}

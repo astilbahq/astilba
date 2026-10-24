@@ -1,0 +1,22 @@
+global:
+  checkNewVersion: false
+  sendAnonymousUsage: false
+entryPoints:
+  https:
+    address: ":8443"
+    transport:
+      respondingTimeouts:
+        readTimeout: 10s
+        writeTimeout: 35s
+        idleTimeout: 60s
+serversTransport:
+  forwardingTimeouts:
+    dialTimeout: 5s
+    responseHeaderTimeout: 30s
+    idleConnTimeout: 60s
+providers:
+  file:
+    filename: /fixture/routes.yml
+    watch: false
+log:
+  level: ERROR

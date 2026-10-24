@@ -1,0 +1,6599 @@
+"openapi": "3.0.3"
+"info":
+  "title": "Astilba platform API"
+  "version": "0.1.0"
+  "license":
+    "name": "AGPL-3.0-only"
+    "url": "https://www.gnu.org/licenses/agpl-3.0.html"
+"security":
+  -
+    "sessionCookie": []
+"paths":
+  "/api/v1/session":
+    "get":
+      "operationId": "session"
+      "responses":
+        "200":
+          "description": "Success"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Session"
+        "default":
+          "description": "Error"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Error"
+      "security": []
+  "/api/v1/auth/login":
+    "post":
+      "operationId": "login"
+      "responses":
+        "200":
+          "description": "Success"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Session"
+        "default":
+          "description": "Error"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Error"
+      "requestBody":
+        "required": true
+        "content":
+          "application/json":
+            "schema":
+              "$ref": "#/components/schemas/Login"
+      "security": []
+  "/api/v1/auth/mfa":
+    "post":
+      "operationId": "verifyMFA"
+      "responses":
+        "200":
+          "description": "Success"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Session"
+        "default":
+          "description": "Error"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Error"
+      "requestBody":
+        "required": true
+        "content":
+          "application/json":
+            "schema":
+              "$ref": "#/components/schemas/Code"
+      "security": []
+  "/api/v1/auth/logout":
+    "post":
+      "operationId": "logout"
+      "responses":
+        "204":
+          "description": "Success"
+        "default":
+          "description": "Error"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Error"
+      "security": []
+  "/api/v1/auth/reauthenticate":
+    "post":
+      "operationId": "reauthenticate"
+      "responses":
+        "200":
+          "description": "Success"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Session"
+        "default":
+          "description": "Error"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Error"
+      "requestBody":
+        "required": true
+        "content":
+          "application/json":
+            "schema":
+              "$ref": "#/components/schemas/Reauthenticate"
+  "/api/v1/auth/password":
+    "post":
+      "operationId": "changePassword"
+      "responses":
+        "200":
+          "description": "Success"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Session"
+        "default":
+          "description": "Error"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Error"
+      "requestBody":
+        "required": true
+        "content":
+          "application/json":
+            "schema":
+              "$ref": "#/components/schemas/NewPassword"
+  "/api/v1/auth/reset/request":
+    "post":
+      "operationId": "requestPasswordReset"
+      "responses":
+        "202":
+          "description": "Success"
+        "default":
+          "description": "Error"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Error"
+      "requestBody":
+        "required": true
+        "content":
+          "application/json":
+            "schema":
+              "$ref": "#/components/schemas/ResetRequest"
+      "security": []
+  "/api/v1/auth/reset/complete":
+    "post":
+      "operationId": "completePasswordReset"
+      "responses":
+        "204":
+          "description": "Success"
+        "default":
+          "description": "Error"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Error"
+      "requestBody":
+        "required": true
+        "content":
+          "application/json":
+            "schema":
+              "$ref": "#/components/schemas/ResetComplete"
+      "security": []
+  "/api/v1/auth/invitations/accept":
+    "post":
+      "operationId": "acceptInvitation"
+      "responses":
+        "200":
+          "description": "Success"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Session"
+        "default":
+          "description": "Error"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Error"
+      "requestBody":
+        "required": true
+        "content":
+          "application/json":
+            "schema":
+              "$ref": "#/components/schemas/AcceptInvitation"
+      "security": []
+  "/api/v1/auth/mfa/enroll":
+    "post":
+      "operationId": "enrollMFA"
+      "responses":
+        "200":
+          "description": "Success"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/MFAEnrollment"
+        "default":
+          "description": "Error"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Error"
+  "/api/v1/auth/mfa/confirm":
+    "post":
+      "operationId": "confirmMFA"
+      "responses":
+        "200":
+          "description": "Success"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/RecoveryCodes"
+        "default":
+          "description": "Error"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Error"
+      "requestBody":
+        "required": true
+        "content":
+          "application/json":
+            "schema":
+              "$ref": "#/components/schemas/Code"
+  "/api/v1/auth/mfa/disable":
+    "post":
+      "operationId": "disableMFA"
+      "responses":
+        "200":
+          "description": "Success"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Session"
+        "default":
+          "description": "Error"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Error"
+  "/api/v1/auth/mfa/recovery-codes":
+    "post":
+      "operationId": "regenerateRecoveryCodes"
+      "responses":
+        "200":
+          "description": "Success"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/RecoveryCodes"
+        "default":
+          "description": "Error"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Error"
+  /api/v1/workspaces:
+    post:
+      operationId: createWorkspace
+      responses:
+        '201':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Workspace'
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateWorkspace'
+  "/api/v1/workspaces/{workspaceId}":
+    "get":
+      "operationId": "getWorkspace"
+      "responses":
+        "200":
+          "description": "Success"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Workspace"
+        "default":
+          "description": "Error"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Error"
+      "parameters":
+        -
+          "name": "workspaceId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+    "put":
+      "operationId": "updateWorkspace"
+      "responses":
+        "200":
+          "description": "Success"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Workspace"
+        "default":
+          "description": "Error"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Error"
+      "requestBody":
+        "required": true
+        "content":
+          "application/json":
+            "schema":
+              "$ref": "#/components/schemas/WorkspaceSettings"
+      "parameters":
+        -
+          "name": "workspaceId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+  "/api/v1/workspaces/{workspaceId}/members":
+    "get":
+      "operationId": "listMembers"
+      "responses":
+        "200":
+          "description": "Success"
+          "content":
+            "application/json":
+              "schema":
+                "type": "array"
+                "items":
+                  "$ref": "#/components/schemas/Member"
+        "default":
+          "description": "Error"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Error"
+      "parameters":
+        -
+          "name": "workspaceId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+  "/api/v1/workspaces/{workspaceId}/members/{accountId}":
+    "put":
+      "operationId": "updateMember"
+      "responses":
+        "204":
+          "description": "Success"
+        "default":
+          "description": "Error"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Error"
+      "requestBody":
+        "required": true
+        "content":
+          "application/json":
+            "schema":
+              "$ref": "#/components/schemas/RoleChange"
+      "parameters":
+        -
+          "name": "workspaceId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+        -
+          "name": "accountId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+    "delete":
+      "operationId": "removeMember"
+      "responses":
+        "204":
+          "description": "Success"
+        "default":
+          "description": "Error"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Error"
+      "parameters":
+        -
+          "name": "workspaceId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+        -
+          "name": "accountId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+  "/api/v1/workspaces/{workspaceId}/invitations":
+    "get":
+      "operationId": "listInvitations"
+      "responses":
+        "200":
+          "description": "Success"
+          "content":
+            "application/json":
+              "schema":
+                "type": "array"
+                "items":
+                  "$ref": "#/components/schemas/Invitation"
+        "default":
+          "description": "Error"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Error"
+      "parameters":
+        -
+          "name": "workspaceId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+    "post":
+      "operationId": "inviteMember"
+      "responses":
+        "201":
+          "description": "Success"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Invitation"
+        "default":
+          "description": "Error"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Error"
+      "requestBody":
+        "required": true
+        "content":
+          "application/json":
+            "schema":
+              "$ref": "#/components/schemas/InvitationRequest"
+      "parameters":
+        -
+          "name": "workspaceId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+  "/api/v1/workspaces/{workspaceId}/invitations/{invitationId}":
+    "delete":
+      "operationId": "revokeInvitation"
+      "responses":
+        "204":
+          "description": "Success"
+        "default":
+          "description": "Error"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Error"
+      "parameters":
+        -
+          "name": "workspaceId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+        -
+          "name": "invitationId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+  "/api/v1/workspaces/{workspaceId}/audit":
+    "get":
+      "operationId": "listAudit"
+      "responses":
+        "200":
+          "description": "Success"
+          "content":
+            "application/json":
+              "schema":
+                "type": "array"
+                "items":
+                  "$ref": "#/components/schemas/AuditEvent"
+        "default":
+          "description": "Error"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Error"
+      "parameters":
+        -
+          "name": "workspaceId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+  "/api/v1/workspaces/{workspaceId}/projects":
+    "get":
+      "operationId": "listProjects"
+      "responses":
+        "200":
+          "description": "Success"
+          "content":
+            "application/json":
+              "schema":
+                "type": "array"
+                "items":
+                  "$ref": "#/components/schemas/Project"
+        "default":
+          "description": "Error"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Error"
+      "parameters":
+        -
+          "name": "workspaceId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+    "post":
+      "operationId": "createProject"
+      "responses":
+        "201":
+          "description": "Success"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Project"
+        "default":
+          "description": "Error"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Error"
+      "requestBody":
+        "required": true
+        "content":
+          "application/json":
+            "schema":
+              "$ref": "#/components/schemas/Name"
+      "parameters":
+        -
+          "name": "workspaceId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+  "/api/v1/workspaces/{workspaceId}/projects/{projectId}":
+    "get":
+      "operationId": "getProject"
+      "responses":
+        "200":
+          "description": "Success"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Project"
+        "default":
+          "description": "Error"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Error"
+      "parameters":
+        -
+          "name": "workspaceId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+        -
+          "name": "projectId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+  "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments":
+    "get":
+      "operationId": "listEnvironments"
+      "responses":
+        "200":
+          "description": "Success"
+          "content":
+            "application/json":
+              "schema":
+                "type": "array"
+                "items":
+                  "$ref": "#/components/schemas/Environment"
+        "default":
+          "description": "Error"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Error"
+      "parameters":
+        -
+          "name": "workspaceId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+        -
+          "name": "projectId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+    "post":
+      "operationId": "createEnvironment"
+      "responses":
+        "201":
+          "description": "Success"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Environment"
+        "default":
+          "description": "Error"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Error"
+      "requestBody":
+        "required": true
+        "content":
+          "application/json":
+            "schema":
+              "$ref": "#/components/schemas/EnvironmentCreate"
+      "parameters":
+        -
+          "name": "workspaceId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+        -
+          "name": "projectId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+  "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}":
+    "get":
+      "operationId": "getEnvironment"
+      "responses":
+        "200":
+          "description": "Success"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Environment"
+        "default":
+          "description": "Error"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Error"
+      "parameters":
+        -
+          "name": "workspaceId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+        -
+          "name": "projectId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+        -
+          "name": "environmentId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+  "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/draft":
+    "get":
+      "operationId": "getDraft"
+      "responses":
+        "200":
+          "description": "Success"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Revision"
+        "default":
+          "description": "Error"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Error"
+      "parameters":
+        -
+          "name": "workspaceId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+        -
+          "name": "projectId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+        -
+          "name": "environmentId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+    "put":
+      "operationId": "updateDraft"
+      "responses":
+        "200":
+          "description": "Success"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Revision"
+        "default":
+          "description": "Error"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Error"
+      "requestBody":
+        "required": true
+        "content":
+          "application/json":
+            "schema":
+              "$ref": "#/components/schemas/DraftUpdate"
+      "parameters":
+        -
+          "name": "workspaceId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+        -
+          "name": "projectId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+        -
+          "name": "environmentId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+  "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/revisions":
+    "get":
+      "operationId": "listRevisions"
+      "responses":
+        "200":
+          "description": "Success"
+          "content":
+            "application/json":
+              "schema":
+                "type": "array"
+                "items":
+                  "$ref": "#/components/schemas/RevisionSummary"
+        "default":
+          "description": "Error"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Error"
+      "parameters":
+        -
+          "name": "workspaceId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+        -
+          "name": "projectId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+        -
+          "name": "environmentId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+  "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/revisions/{revisionId}":
+    "get":
+      "operationId": "getRevision"
+      "responses":
+        "200":
+          "description": "Success"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Revision"
+        "default":
+          "description": "Error"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Error"
+      "parameters":
+        -
+          "name": "workspaceId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+        -
+          "name": "projectId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+        -
+          "name": "environmentId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+        -
+          "name": "revisionId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+  "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/layout":
+    "get":
+      "operationId": "getLayout"
+      "responses":
+        "200":
+          "description": "Success"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Layout"
+        "default":
+          "description": "Error"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Error"
+      "parameters":
+        -
+          "name": "workspaceId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+        -
+          "name": "projectId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+        -
+          "name": "environmentId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+    "put":
+      "operationId": "updateLayout"
+      "responses":
+        "200":
+          "description": "Success"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Layout"
+        "default":
+          "description": "Error"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Error"
+      "requestBody":
+        "required": true
+        "content":
+          "application/json":
+            "schema":
+              "$ref": "#/components/schemas/Layout"
+      "parameters":
+        -
+          "name": "workspaceId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+        -
+          "name": "projectId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+        -
+          "name": "environmentId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+  "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/secrets":
+    "get":
+      "operationId": "listSecrets"
+      "responses":
+        "200":
+          "description": "Success"
+          "content":
+            "application/json":
+              "schema":
+                "type": "array"
+                "items":
+                  "$ref": "#/components/schemas/SecretVersion"
+        "default":
+          "description": "Error"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Error"
+      "parameters":
+        -
+          "name": "workspaceId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+        -
+          "name": "projectId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+        -
+          "name": "environmentId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+    "post":
+      "operationId": "createSecret"
+      "responses":
+        "201":
+          "description": "Success"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/SecretVersion"
+        "default":
+          "description": "Error"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Error"
+      "requestBody":
+        "required": true
+        "content":
+          "application/json":
+            "schema":
+              "$ref": "#/components/schemas/SecretRequest"
+      "parameters":
+        -
+          "name": "workspaceId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+        -
+          "name": "projectId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+        -
+          "name": "environmentId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+  "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/secrets/{secretId}/versions":
+    "post":
+      "operationId": "createSecretVersion"
+      "responses":
+        "201":
+          "description": "Success"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/SecretVersion"
+        "default":
+          "description": "Error"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Error"
+      "requestBody":
+        "required": true
+        "content":
+          "application/json":
+            "schema":
+              "$ref": "#/components/schemas/SecretValue"
+      "parameters":
+        -
+          "name": "workspaceId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+        -
+          "name": "projectId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+        -
+          "name": "environmentId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+        -
+          "name": "secretId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+  "/api/v1/workspaces/{workspaceId}/servers":
+    "get":
+      "operationId": "listServers"
+      "responses":
+        "200":
+          "description": "Success"
+          "content":
+            "application/json":
+              "schema":
+                "type": "array"
+                "maxItems": 100
+                "items":
+                  "$ref": "#/components/schemas/Server"
+        "default":
+          "description": "Error"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Error"
+      "parameters":
+        -
+          "name": "workspaceId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+    "post":
+      "operationId": "createServer"
+      "responses":
+        "201":
+          "description": "Success"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Enrollment"
+        "default":
+          "description": "Error"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Error"
+      "requestBody":
+        "required": true
+        "content":
+          "application/json":
+            "schema":
+              "$ref": "#/components/schemas/CreateServer"
+      "parameters":
+        -
+          "name": "workspaceId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+  "/api/v1/workspaces/{workspaceId}/servers/{serverId}/enrollment":
+    "post":
+      "operationId": "renewEnrollment"
+      "responses":
+        "201":
+          "description": "Success"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Enrollment"
+        "default":
+          "description": "Error"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Error"
+      "parameters":
+        -
+          "name": "workspaceId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+        -
+          "name": "serverId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+  "/api/v1/workspaces/{workspaceId}/servers/{serverId}/rotate":
+    "post":
+      "operationId": "requestRotation"
+      "responses":
+        "204":
+          "description": "Success"
+        "default":
+          "description": "Error"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Error"
+      "parameters":
+        -
+          "name": "workspaceId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+        -
+          "name": "serverId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+  "/api/v1/workspaces/{workspaceId}/servers/{serverId}/revoke":
+    "post":
+      "operationId": "revokeServer"
+      "responses":
+        "204":
+          "description": "Success"
+        "default":
+          "description": "Error"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Error"
+      "parameters":
+        -
+          "name": "workspaceId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+        -
+          "name": "serverId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+  "/api/v1/workspaces/{workspaceId}/servers/{serverId}/update":
+    "post":
+      "operationId": "updateAgent"
+      "responses":
+        "201":
+          "description": "Success"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Operation"
+        "default":
+          "description": "Error"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Error"
+      "requestBody":
+        "required": true
+        "content":
+          "application/json":
+            "schema":
+              "$ref": "#/components/schemas/UpdateAgent"
+      "parameters":
+        -
+          "name": "workspaceId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+        -
+          "name": "serverId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+  "/api/v1/workspaces/{workspaceId}/agent-releases":
+    "get":
+      "operationId": "listAgentReleases"
+      "responses":
+        "200":
+          "description": "Success"
+          "content":
+            "application/json":
+              "schema":
+                "type": "array"
+                "maxItems": 100
+                "items":
+                  "$ref": "#/components/schemas/AgentRelease"
+        "default":
+          "description": "Error"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Error"
+      "parameters":
+        -
+          "name": "workspaceId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+  "/api/v1/workspaces/{workspaceId}/plans":
+    "post":
+      "operationId": "createExecutionPlan"
+      "responses":
+        "201":
+          "description": "Success"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/ExecutionPlan"
+        "default":
+          "description": "Error"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Error"
+      "requestBody":
+        "required": true
+        "content":
+          "application/json":
+            "schema":
+              "$ref": "#/components/schemas/PlanRequest"
+      "parameters":
+        -
+          "name": "workspaceId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+  "/api/v1/workspaces/{workspaceId}/plans/{planId}/apply":
+    "post":
+      "operationId": "applyExecutionPlan"
+      "responses":
+        "201":
+          "description": "Success"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Operation"
+        "default":
+          "description": "Error"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Error"
+      "requestBody":
+        "required": true
+        "content":
+          "application/json":
+            "schema":
+              "$ref": "#/components/schemas/ApplyPlan"
+      "parameters":
+        -
+          "name": "workspaceId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+        -
+          "name": "planId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+  "/api/v1/workspaces/{workspaceId}/operations":
+    "get":
+      "operationId": "listOperations"
+      "responses":
+        "200":
+          "description": "Success"
+          "content":
+            "application/json":
+              "schema":
+                "type": "array"
+                "maxItems": 100
+                "items":
+                  "$ref": "#/components/schemas/Operation"
+        "default":
+          "description": "Error"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Error"
+      "parameters":
+        -
+          "name": "workspaceId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+  "/api/v1/workspaces/{workspaceId}/operations/{operationId}/cancel":
+    "post":
+      "operationId": "cancelOperation"
+      "responses":
+        "204":
+          "description": "Success"
+        "default":
+          "description": "Error"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Error"
+      "parameters":
+        -
+          "name": "workspaceId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+        -
+          "name": "operationId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+  /agent/v1/metrics:
+    post:
+      operationId: reportAgentMetrics
+      security: [{agentBearer: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/MetricReport'}
+      responses:
+        '204': {description: Sample accepted or already recorded for this minute}
+        default:
+          description: Error
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+  /api/v1/workspaces/{workspaceId}/servers/{serverId}/metrics:
+    get:
+      operationId: getServerMetrics
+      parameters:
+        - {name: workspaceId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: serverId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: hours, in: query, schema: {type: integer, enum: [1, 6, 24], default: 1}}
+      responses:
+        '200':
+          description: Bounded history; absent fields are unavailable, not zero
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/MetricHistory'}
+        default:
+          description: Error
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+  "/agent/v1/enroll":
+    "post":
+      "operationId": "enrollAgent"
+      "responses":
+        "200":
+          "description": "Success"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/AgentStatus"
+        "default":
+          "description": "Error"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Error"
+      "requestBody":
+        "required": true
+        "content":
+          "application/json":
+            "schema":
+              "$ref": "#/components/schemas/AgentEnrollment"
+      "security": []
+  "/agent/v1/heartbeat":
+    "post":
+      "operationId": "agentHeartbeat"
+      "responses":
+        "200":
+          "description": "Success"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/AgentStatus"
+        "default":
+          "description": "Error"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Error"
+      "requestBody":
+        "required": true
+        "content":
+          "application/json":
+            "schema":
+              "$ref": "#/components/schemas/AgentHeartbeat"
+      "security":
+        -
+          "agentBearer": []
+  "/agent/v1/rotate":
+    "post":
+      "operationId": "rotateAgentCredential"
+      "responses":
+        "204":
+          "description": "Success"
+        "default":
+          "description": "Error"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Error"
+      "requestBody":
+        "required": true
+        "content":
+          "application/json":
+            "schema":
+              "$ref": "#/components/schemas/AgentRotation"
+      "security":
+        -
+          "agentBearer": []
+  "/agent/v1/poll":
+    "get":
+      "operationId": "pollAgent"
+      "responses":
+        "200":
+          "description": "Success"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/AgentPoll"
+        "default":
+          "description": "Error"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Error"
+      "security":
+        -
+          "agentBearer": []
+  "/agent/v1/report":
+    "post":
+      "operationId": "reportAgent"
+      "responses":
+        "204":
+          "description": "Success"
+        "default":
+          "description": "Error"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Error"
+      "requestBody":
+        "required": true
+        "content":
+          "application/json":
+            "schema":
+              "$ref": "#/components/schemas/AgentReport"
+      "security":
+        -
+          "agentBearer": []
+  "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/deployment-plans":
+    "post":
+      "operationId": "createVisualPlan"
+      "responses":
+        "201":
+          "description": "Success"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/VisualPlanStatus"
+        "default":
+          "description": "Error"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Error"
+      "requestBody":
+        "required": true
+        "content":
+          "application/json":
+            "schema":
+              "$ref": "#/components/schemas/VisualPlanRequest"
+      "parameters":
+        -
+          "name": "workspaceId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+        -
+          "name": "projectId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+        -
+          "name": "environmentId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+  "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/deployment-plans/{planId}":
+    "get":
+      "operationId": "getVisualPlan"
+      "responses":
+        "200":
+          "description": "Success"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/VisualPlanStatus"
+        "default":
+          "description": "Error"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Error"
+      "parameters":
+        -
+          "name": "workspaceId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+        -
+          "name": "projectId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+        -
+          "name": "environmentId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+        -
+          "name": "planId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+  "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/deployment-plans/{planId}/apply":
+    "post":
+      "operationId": "applyVisualPlan"
+      "responses":
+        "201":
+          "description": "Success"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Operation"
+        "default":
+          "description": "Error"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Error"
+      "requestBody":
+        "required": true
+        "content":
+          "application/json":
+            "schema":
+              "$ref": "#/components/schemas/ApplyPlan"
+      "parameters":
+        -
+          "name": "workspaceId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+        -
+          "name": "projectId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+        -
+          "name": "environmentId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+        -
+          "name": "planId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+  "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/runtime":
+    "get":
+      "operationId": "getRuntime"
+      "responses":
+        "200":
+          "description": "Success"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/VisualObservation"
+        "default":
+          "description": "Error"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Error"
+      "parameters":
+        -
+          "name": "workspaceId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+        -
+          "name": "projectId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+        -
+          "name": "environmentId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+  "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/runtime/refresh":
+    "post":
+      "operationId": "refreshRuntime"
+      "responses":
+        "201":
+          "description": "Success"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Operation"
+        "default":
+          "description": "Error"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Error"
+      "parameters":
+        -
+          "name": "workspaceId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+        -
+          "name": "projectId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+        -
+          "name": "environmentId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+  "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/clone":
+    "post":
+      "operationId": "cloneEnvironment"
+      "responses":
+        "201":
+          "description": "Success"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Environment"
+        "default":
+          "description": "Error"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Error"
+      "requestBody":
+        "required": true
+        "content":
+          "application/json":
+            "schema":
+              "$ref": "#/components/schemas/CloneEnvironment"
+      "parameters":
+        -
+          "name": "workspaceId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+        -
+          "name": "projectId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+        -
+          "name": "environmentId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+  "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/export":
+    "get":
+      "operationId": "exportEnvironment"
+      "responses":
+        "200":
+          "description": "Success"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/ConfigurationExport"
+        "default":
+          "description": "Error"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Error"
+      "parameters":
+        -
+          "name": "workspaceId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+        -
+          "name": "projectId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+        -
+          "name": "environmentId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+  "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/volumes/{volumeId}":
+    "delete":
+      "operationId": "deleteVolume"
+      "responses":
+        "201":
+          "description": "Success"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Operation"
+        "default":
+          "description": "Error"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Error"
+      "parameters":
+        -
+          "name": "workspaceId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+        -
+          "name": "projectId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+        -
+          "name": "environmentId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+        -
+          "name": "volumeId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+  "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/events":
+    "get":
+      "operationId": "environmentEvents"
+      "responses":
+        "200":
+          "description": "Invalidation hints; reconnect or poll to recover missed updates."
+          "content":
+            "text/event-stream":
+              "schema":
+                "type": "string"
+        "default":
+          "description": "Error"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Error"
+      "parameters":
+        -
+          "name": "workspaceId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+        -
+          "name": "projectId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+        -
+          "name": "environmentId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+  "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/volumes":
+    "get":
+      "operationId": "listManagedVolumes"
+      "responses":
+        "200":
+          "description": "Success"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/ManagedVolumes"
+        "default":
+          "description": "Error"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Error"
+      "parameters":
+        -
+          "name": "workspaceId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+        -
+          "name": "projectId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+        -
+          "name": "environmentId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+  "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/compose/preview":
+    "post":
+      "operationId": "previewCompose"
+      "parameters":
+        -
+          "name": "workspaceId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+        -
+          "name": "projectId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+        -
+          "name": "environmentId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+      "requestBody":
+        "required": true
+        "content":
+          "application/json":
+            "schema":
+              "$ref": "#/components/schemas/ComposePreviewRequest"
+      "responses":
+        "200":
+          "description": "Validated source or source-located diagnostics"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/ComposePreview"
+        "default":
+          "description": "Error"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Error"
+  "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/export/archive":
+    "get":
+      "operationId": "exportEnvironmentArchive"
+      "parameters":
+        -
+          "name": "workspaceId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+        -
+          "name": "projectId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+        -
+          "name": "environmentId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+      "responses":
+        "200":
+          "description": "Standalone configuration ZIP"
+          "content":
+            "application/zip":
+              "schema":
+                "type": "string"
+                "format": "binary"
+        "default":
+          "description": "Error"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Error"
+  /api/v1/workspaces/{workspaceId}/git-connections:
+    get:
+      operationId: listGitConnections
+      parameters:
+        - name: workspaceId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/GitConnection'
+                maxItems: 100
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    post:
+      operationId: createGitConnection
+      parameters:
+        - name: workspaceId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '201':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GitConnectionCreated'
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GitConnectionRequest'
+  /api/v1/workspaces/{workspaceId}/registries:
+    get:
+      operationId: listRegistries
+      parameters:
+        - name: workspaceId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Registry'
+                maxItems: 100
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    post:
+      operationId: createRegistry
+      parameters:
+        - name: workspaceId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '201':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Registry'
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegistryRequest'
+  /api/v1/workspaces/{workspaceId}/build-secrets:
+    get:
+      operationId: listBuildSecrets
+      parameters:
+        - name: workspaceId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/BuildSecret'
+                maxItems: 100
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    post:
+      operationId: createBuildSecret
+      parameters:
+        - name: workspaceId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '201':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BuildSecret'
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BuildSecretRequest'
+  /api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/source:
+    get:
+      operationId: getGitSource
+      parameters:
+        - name: workspaceId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: environmentId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GitSourceStatus'
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    put:
+      operationId: bindGitSource
+      parameters:
+        - name: workspaceId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: environmentId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '201':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Operation'
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BindGitSource'
+  /api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/source/refresh:
+    post:
+      operationId: refreshGitSource
+      parameters:
+        - name: workspaceId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: environmentId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '201':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Operation'
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RefreshGitSource'
+  /api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/source/submit:
+    post:
+      operationId: submitGitSource
+      parameters:
+        - name: workspaceId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: environmentId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '201':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Operation'
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SubmitGitSource'
+  /api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/builds:
+    get:
+      operationId: listPipelineRuns
+      parameters:
+        - name: workspaceId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: environmentId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/PipelineRun'
+                maxItems: 100
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    post:
+      operationId: createBuild
+      parameters:
+        - name: workspaceId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: environmentId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '201':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Operation'
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BuildRequest'
+  /api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/artifacts/{artifactId}/promote:
+    post:
+      operationId: promoteArtifact
+      parameters:
+        - name: workspaceId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: environmentId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - in: path
+          name: artifactId
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Revision'
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PromoteArtifact'
+  /hooks/git/{connectionId}:
+    post:
+      operationId: receiveGitPush
+      parameters:
+        - in: path
+          name: connectionId
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '202':
+          description: Success
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      security: []
+  /api/v1/workspaces/{workspaceId}/artifacts:
+    get:
+      operationId: listBuildArtifacts
+      parameters:
+        - name: workspaceId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Immutable built artifacts
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/BuildArtifact'
+                maxItems: 100
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/source/policy:
+    put:
+      operationId: updateGitSourcePolicy
+      parameters:
+        - name: workspaceId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: environmentId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '204':
+          description: Policy updated
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+                - autoDeploy
+              properties:
+                autoDeploy:
+                  type: boolean
+  /api/v1/workspaces/{workspaceId}/backup-destinations:
+    get:
+      operationId: ListBackupDestinations
+      parameters:
+        - name: workspaceId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/BackupDestination'
+                maxItems: 100
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    post:
+      operationId: CreateBackupDestination
+      parameters:
+        - name: workspaceId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '201':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BackupDestination'
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BackupDestinationRequest'
+  /api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/backup-policies:
+    get:
+      operationId: ListBackupPolicies
+      parameters:
+        - name: workspaceId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: environmentId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/BackupPolicy'
+                maxItems: 100
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    post:
+      operationId: CreateBackupPolicy
+      parameters:
+        - name: workspaceId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: environmentId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '201':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BackupPolicy'
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BackupPolicyRequest'
+  /api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/backup-policies/{policyId}:
+    put:
+      operationId: UpdateBackupPolicy
+      parameters:
+        - name: workspaceId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: environmentId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: policyId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BackupPolicy'
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BackupPolicyRequest'
+  /api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/backup-policies/{policyId}/commands:
+    post:
+      operationId: RunBackupCommand
+      parameters:
+        - name: workspaceId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: environmentId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: policyId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '202':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Operation'
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BackupCommandRequest'
+  /api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/backup-policies/{policyId}/status:
+    get:
+      operationId: GetBackupStatus
+      parameters:
+        - name: workspaceId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: environmentId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: policyId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BackupStatus'
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/backup-policies/{policyId}/cutover:
+    post:
+      operationId: PrepareBackupCutover
+      parameters:
+        - name: workspaceId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: environmentId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: policyId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Revision'
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BackupCutoverRequest'
+  /agent/v1/schedule-reports:
+    post:
+      operationId: ReportSchedule
+      security:
+        - agentBearer: []
+      parameters: []
+      responses:
+        '204':
+          description: Success
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ScheduleReport'
+  /api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/upgrades:
+    get:
+      operationId: ListUpgrades
+      parameters:
+        - {name: workspaceId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: projectId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: environmentId, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema: {type: array, maxItems: 100, items: {$ref: '#/components/schemas/UpgradeView'}}
+        default:
+          description: Error
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+    post:
+      operationId: CreateUpgrade
+      parameters:
+        - {name: workspaceId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: projectId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: environmentId, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '201':
+          description: Success
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/UpgradeView'}
+        default:
+          description: Error
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/UpgradeRequest'}
+  /api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/upgrades/{upgradeId}/actions:
+    post:
+      operationId: RunUpgradeAction
+      parameters:
+        - {name: workspaceId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: projectId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: environmentId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: upgradeId, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '202':
+          description: Success
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Operation'}
+        default:
+          description: Error
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/UpgradeActionRequest'}
+  /api/v1/hosting:
+    get:
+      operationId: hostingInfo
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HostedInfo'
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      security: []
+  /api/v1/hosting/signup:
+    post:
+      operationId: hostedSignup
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Session'
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HostedSignup'
+      security: []
+  /api/v1/auth/email/request:
+    post:
+      operationId: requestEmailVerification
+      responses:
+        '204':
+          description: Success
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /api/v1/auth/email/verify:
+    post:
+      operationId: verifyEmail
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Session'
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VerificationCode'
+  /api/v1/workspaces/{workspaceId}/subscription:
+    parameters:
+      - name: workspaceId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    get:
+      operationId: subscription
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Subscription'
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /api/v1/workspaces/{workspaceId}/subscription/checkout:
+    parameters:
+      - name: workspaceId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    post:
+      operationId: checkout
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Redirect'
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /api/v1/workspaces/{workspaceId}/subscription/portal:
+    parameters:
+      - name: workspaceId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    post:
+      operationId: billingPortal
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Redirect'
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /hooks/stripe:
+    post:
+      operationId: stripeWebhook
+      security: []
+      responses:
+        '204':
+          description: Success
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+  /api/v1/workspaces/{workspaceId}/export:
+    parameters:
+      - {name: workspaceId, in: path, required: true, schema: {type: string, format: uuid}}
+    post:
+      operationId: exportWorkspace
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ArchivePassword'}
+      responses:
+        '200':
+          description: Encrypted workspace archive
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/WorkspaceArchive'}
+        default:
+          description: Error
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+  /api/v1/workspaces/{workspaceId}/servers/{serverId}/transfer:
+    parameters:
+      - {name: workspaceId, in: path, required: true, schema: {type: string, format: uuid}}
+      - {name: serverId, in: path, required: true, schema: {type: string, format: uuid}}
+    post:
+      operationId: prepareServerTransfer
+      responses:
+        '201':
+          description: Local owner transfer ticket
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/TransferTicket'}
+        default:
+          description: Error
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+  /api/v1/workspaces/import:
+    post:
+      operationId: importWorkspace
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/WorkspaceImport'}
+      responses:
+        '201':
+          description: Imported workspace awaiting local server transfer
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Workspace'}
+        default:
+          description: Error
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+  "/api/v1/workspaces/{workspaceId}/alerts":
+    "get":
+      "operationId": "listAlerts"
+      "parameters":
+        - name: view
+          in: query
+          schema: {type: string, enum: [all, attention], default: all}
+        -
+          "name": "workspaceId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+        -
+          "name": "before"
+          "in": "query"
+          "schema":
+            "type": "string"
+            "format": "uuid"
+      # Only incident state and acknowledgement filter the attention view.
+      "responses":
+        "200":
+          "description": "Success"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/AlertInbox"
+        "default":
+          "description": "Error"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Error"
+  "/api/v1/workspaces/{workspaceId}/alerts/{alertId}/acknowledge":
+    "post":
+      "operationId": "acknowledgeAlert"
+      "parameters":
+        -
+          "name": "workspaceId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+        -
+          "name": "alertId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+      "responses":
+        "204":
+          "description": "Acknowledged"
+        "default":
+          "description": "Error"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Error"
+  "/api/v1/workspaces/{workspaceId}/alert-settings":
+    "get":
+      "operationId": "getAlertSettings"
+      "parameters":
+        -
+          "name": "workspaceId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+      "responses":
+        "200":
+          "description": "Success"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/AlertSettings"
+        "default":
+          "description": "Error"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Error"
+    "put":
+      "operationId": "putAlertSettings"
+      "parameters":
+        -
+          "name": "workspaceId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+      "requestBody":
+        "required": true
+        "content":
+          "application/json":
+            "schema":
+              "$ref": "#/components/schemas/SaveAlertSettings"
+      "responses":
+        "200":
+          "description": "Success"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/AlertSettings"
+        "default":
+          "description": "Error"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Error"
+"components":
+  "securitySchemes":
+    "agentBearer":
+      "type": "http"
+      "scheme": "bearer"
+    "sessionCookie":
+      "type": "apiKey"
+      "in": "cookie"
+      "name": "__Host-astilba_session"
+  "schemas":
+    "ServerRole":
+      "type": "string"
+      "enum":
+        - "deployment"
+        - "build"
+        - "combined"
+    AgentCapabilities:
+      "type": "object"
+      "additionalProperties": false
+      "required":
+        - "protocol"
+        - "version"
+        - "os"
+        - "arch"
+        - "docker"
+      properties:
+        "protocol":
+          "type": "integer"
+          "enum":
+            - 1
+        "version":
+          "type": "string"
+          "maxLength": 80
+        "os":
+          "type": "string"
+          "maxLength": 40
+        "arch":
+          "type": "string"
+          "enum":
+            - "amd64"
+            - "arm64"
+        "docker":
+          "type": "boolean"
+        "visual":
+          "type": "boolean"
+        "compose":
+          "type": "boolean"
+        build:
+          type: boolean
+        backups:
+          type: boolean
+        upgrades:
+          type: boolean
+        credentialFreeVisualCancel:
+          type: boolean
+          description: Agent accepts visual cancellation without re-sending hydrated credentials.
+    "HostPreflight":
+      "type": "object"
+      "additionalProperties": false
+      "required":
+        - "ready"
+        - "osRelease"
+        - "dockerVersion"
+        - "freeBytes"
+        - "port80Busy"
+        - "port443Busy"
+        - "existingContainers"
+        - "notes"
+      "properties":
+        "ready":
+          "type": "boolean"
+        "osRelease":
+          "type": "string"
+          "maxLength": 128
+        "dockerVersion":
+          "type": "string"
+          "maxLength": 80
+        "freeBytes":
+          "type": "integer"
+          "format": "int64"
+        "port80Busy":
+          "type": "boolean"
+        "port443Busy":
+          "type": "boolean"
+        "existingContainers":
+          "type": "integer"
+        "notes":
+          "type": "array"
+          "maxItems": 12
+          "items":
+            "type": "string"
+            "maxLength": 256
+        "composeVersion":
+          "type": "string"
+          "maxLength": 80
+    "Server":
+      "type": "object"
+      "additionalProperties": false
+      "required":
+        - "id"
+        - "name"
+        - "role"
+        - "status"
+        - "lastSeen"
+        - "capabilities"
+        - "preflight"
+        - "rotationRequested"
+      "properties":
+        transferRequired: {type: boolean}
+        "id":
+          "type": "string"
+          "format": "uuid"
+        "name":
+          "type": "string"
+          "maxLength": 80
+        "role":
+          "$ref": "#/components/schemas/ServerRole"
+        "status":
+          "type": "string"
+          "enum":
+            - "pending"
+            - "online"
+            - "offline"
+            - "revoked"
+        "lastSeen":
+          "type": "string"
+          "format": "date-time"
+          "nullable": true
+        "capabilities":
+          "allOf":
+            -
+              "$ref": "#/components/schemas/AgentCapabilities"
+          "nullable": true
+        "preflight":
+          "allOf":
+            -
+              "$ref": "#/components/schemas/HostPreflight"
+          "nullable": true
+        "rotationRequested":
+          "type": "boolean"
+    "CreateServer":
+      "type": "object"
+      "additionalProperties": false
+      "required":
+        - "name"
+        - "role"
+      "properties":
+        "name":
+          "type": "string"
+          "maxLength": 80
+        "role":
+          "$ref": "#/components/schemas/ServerRole"
+    "Enrollment":
+      "type": "object"
+      "additionalProperties": false
+      "required":
+        - "server"
+        - "token"
+        - "expiresAt"
+      "properties":
+        "server":
+          "$ref": "#/components/schemas/Server"
+        "token":
+          "type": "string"
+          "maxLength": 64
+        "expiresAt":
+          "type": "string"
+          "format": "date-time"
+    "AgentEnrollment":
+      "type": "object"
+      "additionalProperties": false
+      "required":
+        - "serverId"
+        - "token"
+        - "machineId"
+        - "credential"
+        - "capabilities"
+        - "preflight"
+      "properties":
+        controllerGeneration: {type: integer, format: int64, minimum: 0}
+        inventory: {$ref: "#/components/schemas/ControllerInventory"}
+        "serverId":
+          "type": "string"
+          "format": "uuid"
+        "token":
+          "type": "string"
+          "maxLength": 64
+        "machineId":
+          "type": "string"
+          "format": "uuid"
+        "credential":
+          "type": "string"
+          "minLength": 43
+          "maxLength": 43
+        "capabilities":
+          "$ref": "#/components/schemas/AgentCapabilities"
+        "preflight":
+          "$ref": "#/components/schemas/HostPreflight"
+    "AgentHeartbeat":
+      "type": "object"
+      "additionalProperties": false
+      "required":
+        - "capabilities"
+        - "preflight"
+      "properties":
+        "capabilities":
+          "$ref": "#/components/schemas/AgentCapabilities"
+        "preflight":
+          "$ref": "#/components/schemas/HostPreflight"
+    "AgentStatus":
+      "type": "object"
+      "additionalProperties": false
+      "required":
+        - "role"
+        - "rotationRequested"
+      "properties":
+        "role":
+          "$ref": "#/components/schemas/ServerRole"
+        "rotationRequested":
+          "type": "boolean"
+    "AgentRotation":
+      "type": "object"
+      "additionalProperties": false
+      "required":
+        - "credential"
+      "properties":
+        "credential":
+          "type": "string"
+          "minLength": 43
+          "maxLength": 43
+    "TestAction":
+      "type": "string"
+      "enum":
+        - "start"
+        - "inspect"
+        - "remove"
+    "PlanRequest":
+      "type": "object"
+      "additionalProperties": false
+      "required":
+        - "serverId"
+        - "environmentId"
+        - "action"
+      "properties":
+        "serverId":
+          "type": "string"
+          "format": "uuid"
+        "environmentId":
+          "type": "string"
+          "format": "uuid"
+        "action":
+          "$ref": "#/components/schemas/TestAction"
+    "ExecutionPlan":
+      "type": "object"
+      "additionalProperties": false
+      "required":
+        - "id"
+        - "serverId"
+        - "environmentId"
+        - "action"
+        - "resourceId"
+        - "image"
+        - "hash"
+        - "revisionId"
+        - "expiresAt"
+      "properties":
+        "id":
+          "type": "string"
+          "format": "uuid"
+        "serverId":
+          "type": "string"
+          "format": "uuid"
+        "environmentId":
+          "type": "string"
+          "format": "uuid"
+        "action":
+          "$ref": "#/components/schemas/TestAction"
+        "resourceId":
+          "type": "string"
+          "format": "uuid"
+        "image":
+          "type": "string"
+          "maxLength": 256
+        "hash":
+          "type": "string"
+          "maxLength": 64
+        "revisionId":
+          "type": "string"
+          "format": "uuid"
+        "expiresAt":
+          "type": "string"
+          "format": "date-time"
+    "ApplyPlan":
+      "type": "object"
+      "additionalProperties": false
+      "required":
+        - "idempotencyKey"
+      "properties":
+        "idempotencyKey":
+          "type": "string"
+          "format": "uuid"
+    "AgentRelease":
+      "type": "object"
+      "additionalProperties": false
+      "required":
+        - "version"
+        - "protocol"
+        - "arch"
+        - "size"
+        - "sha256"
+        - "signature"
+      "properties":
+        "version":
+          "type": "string"
+          "maxLength": 80
+        "protocol":
+          "type": "integer"
+          "enum":
+            - 1
+        "arch":
+          "type": "string"
+          "enum":
+            - "amd64"
+            - "arm64"
+        "size":
+          "type": "integer"
+          "format": "int64"
+        "sha256":
+          "type": "string"
+          "maxLength": 64
+        "signature":
+          "type": "string"
+          "maxLength": 128
+    "UpdateAgent":
+      "type": "object"
+      "additionalProperties": false
+      "required":
+        - "version"
+      "properties":
+        "version":
+          "type": "string"
+          "maxLength": 80
+    ExecutionCommand:
+      "type": "object"
+      "additionalProperties": false
+      "required":
+        - "id"
+        - "serverId"
+        - "environmentId"
+        - "generation"
+        - "planHash"
+        - "kind"
+        - "action"
+        - "resourceId"
+        - "image"
+        - "deadline"
+        - "release"
+        - "cancelRequested"
+      properties:
+        controllerGeneration: {type: integer, format: int64, minimum: 0}
+        "id":
+          "type": "string"
+          "format": "uuid"
+        "serverId":
+          "type": "string"
+          "format": "uuid"
+        "environmentId":
+          "type": "string"
+          "format": "uuid"
+        "generation":
+          "type": "integer"
+          "format": "int64"
+        "planHash":
+          "type": "string"
+          "maxLength": 64
+        kind:
+          type: string
+          enum:
+            - test
+            - update
+            - visual
+            - pipeline
+            - backup
+            - upgrade
+        "action":
+          "$ref": "#/components/schemas/TestAction"
+        "resourceId":
+          "type": "string"
+          "format": "uuid"
+        "image":
+          "type": "string"
+          "maxLength": 256
+        "deadline":
+          "type": "string"
+          "format": "date-time"
+        "release":
+          "allOf":
+            -
+              "$ref": "#/components/schemas/AgentRelease"
+          "nullable": true
+        "cancelRequested":
+          "type": "boolean"
+        "visual":
+          "$ref": "#/components/schemas/VisualPayload"
+        pipeline:
+          $ref: '#/components/schemas/PipelineCommand'
+        backup:
+          $ref: '#/components/schemas/BackupCommand'
+        upgrade:
+          $ref: '#/components/schemas/UpgradeCommand'
+    "ExecutionState":
+      "type": "string"
+      "enum":
+        - "queued"
+        - "dispatched"
+        - "running"
+        - "waiting_for_agent"
+        - "needs_attention"
+        - "succeeded"
+        - "failed"
+        - "cancelled"
+    "ExecutionStep":
+      "type": "object"
+      "additionalProperties": false
+      "required":
+        - "name"
+        - "state"
+        - "detail"
+      "properties":
+        "name":
+          "type": "string"
+          "maxLength": 80
+        "state":
+          "type": "string"
+          "enum":
+            - "intent"
+            - "done"
+        "detail":
+          "type": "string"
+          "maxLength": 256
+    AgentReport:
+      "type": "object"
+      "additionalProperties": false
+      "required":
+        - "id"
+        - "generation"
+        - "planHash"
+        - "sequence"
+        - "state"
+        - "steps"
+        - "note"
+      properties:
+        "id":
+          "type": "string"
+          "format": "uuid"
+        "generation":
+          "type": "integer"
+          "format": "int64"
+        "planHash":
+          "type": "string"
+          "maxLength": 64
+        "sequence":
+          "type": "integer"
+          "format": "int64"
+        "state":
+          "$ref": "#/components/schemas/ExecutionState"
+        "steps":
+          "type": "array"
+          "maxItems": 16
+          "items":
+            "$ref": "#/components/schemas/ExecutionStep"
+        "note":
+          "type": "string"
+          "maxLength": 1024
+        "observation":
+          "$ref": "#/components/schemas/VisualObservation"
+        pipeline:
+          $ref: '#/components/schemas/PipelineResult'
+        upgrade:
+          $ref: '#/components/schemas/UpgradeStatus'
+    Operation:
+      "type": "object"
+      "additionalProperties": false
+      "required":
+        - "id"
+        - "serverId"
+        - "environmentId"
+        - "generation"
+        - "state"
+        - "kind"
+        - "cancelRequested"
+        - "note"
+        - "steps"
+        - "createdAt"
+      properties:
+        "id":
+          "type": "string"
+          "format": "uuid"
+        "serverId":
+          "type": "string"
+          "format": "uuid"
+        "environmentId":
+          "type": "string"
+          "format": "uuid"
+        "generation":
+          "type": "integer"
+          "format": "int64"
+        "state":
+          "$ref": "#/components/schemas/ExecutionState"
+        kind:
+          type: string
+          enum:
+            - test
+            - update
+            - visual
+            - pipeline
+            - backup
+            - upgrade
+        "cancelRequested":
+          "type": "boolean"
+        "note":
+          "type": "string"
+          "maxLength": 1024
+        "steps":
+          "type": "array"
+          "maxItems": 16
+          "items":
+            "$ref": "#/components/schemas/ExecutionStep"
+        "createdAt":
+          "type": "string"
+          "format": "date-time"
+    "AgentPoll":
+      "type": "object"
+      "additionalProperties": false
+      "required":
+        - "command"
+      "properties":
+        "command":
+          "allOf":
+            -
+              "$ref": "#/components/schemas/ExecutionCommand"
+          "nullable": true
+    "Error":
+      "type": "object"
+      "additionalProperties": false
+      "properties":
+        "code":
+          "type": "string"
+          "maxLength": 80
+        "message":
+          "type": "string"
+          "maxLength": 240
+        "requestId":
+          "type": "string"
+          "maxLength": 80
+        "fields":
+          "type": "array"
+          "items":
+            "type": "string"
+            "maxLength": 160
+        "currentRevision":
+          "$ref": "#/components/schemas/Revision"
+      "required":
+        - "code"
+        - "message"
+        - "requestId"
+    "Role":
+      "type": "string"
+      "enum":
+        - "owner"
+        - "operator"
+        - "viewer"
+    Account:
+      type: object
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+          format: uuid
+        email:
+          type: string
+          maxLength: 254
+          format: email
+        name:
+          type: string
+          maxLength: 80
+          minLength: 1
+        mfaEnabled:
+          type: boolean
+        recoveryCodesRemaining:
+          type: integer
+        emailVerified:
+          type: boolean
+      required:
+        - id
+        - email
+        - name
+        - mfaEnabled
+        - recoveryCodesRemaining
+        - emailVerified
+    "Workspace":
+      "type": "object"
+      "additionalProperties": false
+      "properties":
+        "id":
+          "type": "string"
+          "format": "uuid"
+        "name":
+          "type": "string"
+          "maxLength": 80
+          "minLength": 1
+        "role":
+          "$ref": "#/components/schemas/Role"
+        "requireMfa":
+          "type": "boolean"
+      "required":
+        - "id"
+        - "name"
+        - "role"
+        - "requireMfa"
+    "Session":
+      "type": "object"
+      "additionalProperties": false
+      "properties":
+        "csrfToken":
+          "type": "string"
+          "maxLength": 128
+          "minLength": 1
+        "user":
+          "$ref": "#/components/schemas/Account"
+        "mfaPending":
+          "type": "boolean"
+        "recentAuth":
+          "type": "boolean"
+        "workspaces":
+          "type": "array"
+          "items":
+            "$ref": "#/components/schemas/Workspace"
+      "required":
+        - "csrfToken"
+        - "mfaPending"
+        - "recentAuth"
+        - "workspaces"
+    "Login":
+      "type": "object"
+      "additionalProperties": false
+      "properties":
+        "email":
+          "type": "string"
+          "maxLength": 254
+          "format": "email"
+        "password":
+          "type": "string"
+          "maxLength": 512
+          "minLength": 1
+          "writeOnly": true
+      "required":
+        - "email"
+        - "password"
+    "Code":
+      "type": "object"
+      "additionalProperties": false
+      "properties":
+        "code":
+          "type": "string"
+          "maxLength": 128
+          "minLength": 1
+      "required":
+        - "code"
+    "Reauthenticate":
+      "type": "object"
+      "additionalProperties": false
+      "properties":
+        "password":
+          "type": "string"
+          "maxLength": 512
+          "minLength": 1
+          "writeOnly": true
+        "code":
+          "type": "string"
+          "maxLength": 128
+      "required":
+        - "password"
+    "NewPassword":
+      "type": "object"
+      "additionalProperties": false
+      "properties":
+        "password":
+          "type": "string"
+          "maxLength": 512
+          "minLength": 1
+          "writeOnly": true
+      "required":
+        - "password"
+    "ResetRequest":
+      "type": "object"
+      "additionalProperties": false
+      "properties":
+        "email":
+          "type": "string"
+          "maxLength": 254
+          "format": "email"
+      "required":
+        - "email"
+    "ResetComplete":
+      "type": "object"
+      "additionalProperties": false
+      "properties":
+        "token":
+          "type": "string"
+          "maxLength": 128
+          "minLength": 1
+        "password":
+          "type": "string"
+          "maxLength": 512
+          "minLength": 1
+          "writeOnly": true
+      "required":
+        - "token"
+        - "password"
+    "AcceptInvitation":
+      "type": "object"
+      "additionalProperties": false
+      "properties":
+        "token":
+          "type": "string"
+          "maxLength": 128
+          "minLength": 1
+        "name":
+          "type": "string"
+          "maxLength": 80
+          "minLength": 1
+        "password":
+          "type": "string"
+          "maxLength": 512
+          "minLength": 1
+          "writeOnly": true
+      "required":
+        - "token"
+    "Name":
+      "type": "object"
+      "additionalProperties": false
+      "properties":
+        "name":
+          "type": "string"
+          "maxLength": 80
+          "minLength": 1
+      "required":
+        - "name"
+    "WorkspaceSettings":
+      "type": "object"
+      "additionalProperties": false
+      "properties":
+        "name":
+          "type": "string"
+          "maxLength": 80
+          "minLength": 1
+        "requireMfa":
+          "type": "boolean"
+      "required":
+        - "name"
+        - "requireMfa"
+    "InvitationRequest":
+      "type": "object"
+      "additionalProperties": false
+      "properties":
+        "email":
+          "type": "string"
+          "maxLength": 254
+          "format": "email"
+        "role":
+          "$ref": "#/components/schemas/Role"
+      "required":
+        - "email"
+        - "role"
+    "Invitation":
+      "type": "object"
+      "additionalProperties": false
+      "properties":
+        "id":
+          "type": "string"
+          "format": "uuid"
+        "email":
+          "type": "string"
+          "maxLength": 254
+          "format": "email"
+        "role":
+          "$ref": "#/components/schemas/Role"
+        "expiresAt":
+          "type": "string"
+          "format": "date-time"
+      "required":
+        - "id"
+        - "email"
+        - "role"
+        - "expiresAt"
+    "Member":
+      "type": "object"
+      "additionalProperties": false
+      "properties":
+        "id":
+          "type": "string"
+          "format": "uuid"
+        "name":
+          "type": "string"
+          "maxLength": 80
+          "minLength": 1
+        "email":
+          "type": "string"
+          "maxLength": 254
+          "format": "email"
+        "role":
+          "$ref": "#/components/schemas/Role"
+        "mfaEnabled":
+          "type": "boolean"
+      "required":
+        - "id"
+        - "name"
+        - "email"
+        - "role"
+        - "mfaEnabled"
+    "RoleChange":
+      "type": "object"
+      "additionalProperties": false
+      "properties":
+        "role":
+          "$ref": "#/components/schemas/Role"
+      "required":
+        - "role"
+    "MFAEnrollment":
+      "type": "object"
+      "additionalProperties": false
+      "properties":
+        "secret":
+          "type": "string"
+          "maxLength": 128
+        "uri":
+          "type": "string"
+          "maxLength": 1024
+      "required":
+        - "secret"
+        - "uri"
+    "RecoveryCodes":
+      "type": "object"
+      "additionalProperties": false
+      "properties":
+        "codes":
+          "type": "array"
+          "items":
+            "type": "string"
+            "maxLength": 80
+        "session":
+          "$ref": "#/components/schemas/Session"
+      "required":
+        - "codes"
+        - "session"
+    "Project":
+      "type": "object"
+      "additionalProperties": false
+      "properties":
+        "id":
+          "type": "string"
+          "format": "uuid"
+        "name":
+          "type": "string"
+          "maxLength": 80
+          "minLength": 1
+        "createdAt":
+          "type": "string"
+          "format": "date-time"
+      "required":
+        - "id"
+        - "name"
+        - "createdAt"
+    "DeploymentUnit":
+      "type": "object"
+      "additionalProperties": false
+      "properties":
+        "id":
+          "type": "string"
+          "format": "uuid"
+        "runtime":
+          "type": "string"
+          "enum":
+            - "docker"
+        "serverId":
+          "allOf":
+            -
+              "type": "string"
+              "format": "uuid"
+          "nullable": true
+      "required":
+        - "id"
+        - "runtime"
+    "Environment":
+      "type": "object"
+      "additionalProperties": false
+      "properties":
+        "id":
+          "type": "string"
+          "format": "uuid"
+        "projectId":
+          "type": "string"
+          "format": "uuid"
+        "name":
+          "type": "string"
+          "maxLength": 80
+          "minLength": 1
+        "configurationOwner":
+          "type": "string"
+          "enum":
+            - "dashboard"
+            - "compose"
+        "draftRevisionId":
+          "type": "string"
+          "format": "uuid"
+        "deploymentUnit":
+          "$ref": "#/components/schemas/DeploymentUnit"
+        "appliedRevisionId":
+          "allOf":
+            -
+              "type": "string"
+              "format": "uuid"
+          "nullable": true
+      "required":
+        - "id"
+        - "projectId"
+        - "name"
+        - "configurationOwner"
+        - "draftRevisionId"
+        - "deploymentUnit"
+    ApplicationSource:
+      "type": "object"
+      "additionalProperties": false
+      properties:
+        "kind":
+          "type": "string"
+          "enum":
+            - "image"
+            - "git"
+        image:
+          type: string
+          maxLength: 512
+        "provider":
+          "type": "string"
+          "enum":
+            - "github"
+            - "gitlab"
+            - "gitea"
+        "repository":
+          "type": "string"
+          "maxLength": 2048
+        "ref":
+          "type": "string"
+          "maxLength": 256
+        artifactId:
+          type: string
+          format: uuid
+      "required":
+        - "kind"
+    "ApplicationReference":
+      "type": "object"
+      "additionalProperties": false
+      "properties":
+        "id":
+          "type": "string"
+          "format": "uuid"
+        "name":
+          "type": "string"
+          "maxLength": 80
+          "minLength": 1
+        "source":
+          "$ref": "#/components/schemas/ApplicationSource"
+        "kind":
+          "type": "string"
+          "enum":
+            - "web"
+            - "worker"
+            - "postgres"
+        "variables":
+          "type": "array"
+          "items":
+            "$ref": "#/components/schemas/Variable"
+          "maxItems": 100
+        "mounts":
+          "type": "array"
+          "items":
+            "$ref": "#/components/schemas/VolumeMount"
+          "maxItems": 20
+        "dependsOn":
+          "type": "array"
+          "items":
+            "type": "string"
+            "format": "uuid"
+          "maxItems": 50
+        "health":
+          "$ref": "#/components/schemas/HealthCheck"
+        "postgres":
+          "$ref": "#/components/schemas/Postgres"
+        "command":
+          "type": "array"
+          "items":
+            "type": "string"
+            "maxLength": 4096
+          "maxItems": 32
+        "networks":
+          "type": "array"
+          "items":
+            "type": "string"
+            "format": "uuid"
+          "maxItems": 20
+      "required":
+        - "id"
+        - "name"
+        - "source"
+    "Variable":
+      "type": "object"
+      "additionalProperties": false
+      "properties":
+        "name":
+          "type": "string"
+          "maxLength": 80
+          "pattern": "^[A-Z_][A-Z0-9_]*$"
+        "value":
+          "type": "string"
+          "maxLength": 4096
+        "secretVersionId":
+          "type": "string"
+          "format": "uuid"
+      "required":
+        - "name"
+    "Specification":
+      "type": "object"
+      "additionalProperties": false
+      "properties":
+        "version":
+          "type": "integer"
+          "enum":
+            - 1
+        "applications":
+          "type": "array"
+          "items":
+            "$ref": "#/components/schemas/ApplicationReference"
+          "maxItems": 50
+        "variables":
+          "type": "array"
+          "items":
+            "$ref": "#/components/schemas/Variable"
+          "maxItems": 100
+        "volumes":
+          "type": "array"
+          "items":
+            "$ref": "#/components/schemas/Volume"
+          "maxItems": 50
+        "bindings":
+          "type": "array"
+          "items":
+            "$ref": "#/components/schemas/Binding"
+          "maxItems": 100
+        "routes":
+          "type": "array"
+          "items":
+            "$ref": "#/components/schemas/Route"
+          "maxItems": 50
+        "compose":
+          "$ref": "#/components/schemas/ComposeBundle"
+        "networks":
+          "type": "array"
+          "items":
+            "$ref": "#/components/schemas/NetworkReference"
+          "maxItems": 20
+      "required":
+        - "version"
+        - "applications"
+        - "variables"
+      "x-go-type": "json.RawMessage"
+    "Revision":
+      "type": "object"
+      "additionalProperties": false
+      "properties":
+        "id":
+          "type": "string"
+          "format": "uuid"
+        "authorId":
+          "type": "string"
+          "format": "uuid"
+        "createdAt":
+          "type": "string"
+          "format": "date-time"
+        "hash":
+          "type": "string"
+          "maxLength": 64
+        "specification":
+          "$ref": "#/components/schemas/Specification"
+      "required":
+        - "id"
+        - "authorId"
+        - "createdAt"
+        - "hash"
+        - "specification"
+    "RevisionSummary":
+      "type": "object"
+      "additionalProperties": false
+      "properties":
+        "id":
+          "type": "string"
+          "format": "uuid"
+        "authorId":
+          "type": "string"
+          "format": "uuid"
+        "createdAt":
+          "type": "string"
+          "format": "date-time"
+        "hash":
+          "type": "string"
+          "maxLength": 64
+      "required":
+        - "id"
+        - "authorId"
+        - "createdAt"
+        - "hash"
+    "DraftUpdate":
+      "type": "object"
+      "additionalProperties": false
+      "properties":
+        "baseRevisionId":
+          "type": "string"
+          "format": "uuid"
+        "specification":
+          "$ref": "#/components/schemas/Specification"
+      "required":
+        - "baseRevisionId"
+        - "specification"
+    "Position":
+      "type": "object"
+      "additionalProperties": false
+      "properties":
+        "x":
+          "type": "number"
+          "minimum": -1000000
+          "maximum": 1000000
+        "y":
+          "type": "number"
+          "minimum": -1000000
+          "maximum": 1000000
+      "required":
+        - "x"
+        - "y"
+    "Layout":
+      "type": "object"
+      "additionalProperties": false
+      "properties":
+        "positions":
+          "type": "object"
+          "maxProperties": 50
+          "additionalProperties":
+            "$ref": "#/components/schemas/Position"
+      "required":
+        - "positions"
+    "SecretRequest":
+      "type": "object"
+      "additionalProperties": false
+      "properties":
+        "name":
+          "type": "string"
+          "maxLength": 80
+          "minLength": 1
+        "value":
+          "type": "string"
+          "maxLength": 65536
+          "minLength": 1
+          "writeOnly": true
+      "required":
+        - "name"
+        - "value"
+    "SecretValue":
+      "type": "object"
+      "additionalProperties": false
+      "properties":
+        "value":
+          "type": "string"
+          "maxLength": 65536
+          "minLength": 1
+          "writeOnly": true
+      "required":
+        - "value"
+    "SecretVersion":
+      "type": "object"
+      "additionalProperties": false
+      "properties":
+        "id":
+          "type": "string"
+          "format": "uuid"
+        "secretId":
+          "type": "string"
+          "format": "uuid"
+        "name":
+          "type": "string"
+          "maxLength": 80
+          "minLength": 1
+        "createdAt":
+          "type": "string"
+          "format": "date-time"
+      "required":
+        - "id"
+        - "secretId"
+        - "name"
+        - "createdAt"
+    "AuditEvent":
+      "type": "object"
+      "additionalProperties": false
+      "properties":
+        "id":
+          "type": "string"
+          "format": "uuid"
+        "actorId":
+          "type": "string"
+          "format": "uuid"
+        "action":
+          "type": "string"
+          "maxLength": 80
+        "resourceId":
+          "type": "string"
+          "format": "uuid"
+        "createdAt":
+          "type": "string"
+          "format": "date-time"
+      "required":
+        - "id"
+        - "actorId"
+        - "action"
+        - "resourceId"
+        - "createdAt"
+    "Volume":
+      "type": "object"
+      "additionalProperties": false
+      "properties":
+        "id":
+          "type": "string"
+          "format": "uuid"
+        "name":
+          "type": "string"
+          "maxLength": 80
+      "required":
+        - "id"
+        - "name"
+    "VolumeMount":
+      "type": "object"
+      "additionalProperties": false
+      "properties":
+        "volumeId":
+          "type": "string"
+          "format": "uuid"
+        "target":
+          "type": "string"
+          "maxLength": 240
+        "readOnly":
+          "type": "boolean"
+      "required":
+        - "volumeId"
+        - "target"
+        - "readOnly"
+    "HealthCheck":
+      "type": "object"
+      "additionalProperties": false
+      "properties":
+        "port":
+          "type": "integer"
+          "minimum": 1
+          "maximum": 65535
+        "path":
+          "type": "string"
+          "maxLength": 256
+      "required":
+        - "port"
+        - "path"
+    "Postgres":
+      "type": "object"
+      "additionalProperties": false
+      "properties":
+        "database":
+          "type": "string"
+          "maxLength": 63
+        "username":
+          "type": "string"
+          "maxLength": 63
+        "passwordSecretVersionId":
+          "type": "string"
+          "format": "uuid"
+      "required":
+        - "database"
+        - "username"
+        - "passwordSecretVersionId"
+    "Binding":
+      "type": "object"
+      "additionalProperties": false
+      "properties":
+        "id":
+          "type": "string"
+          "format": "uuid"
+        "sourceId":
+          "type": "string"
+          "format": "uuid"
+        "targetId":
+          "type": "string"
+          "format": "uuid"
+        "variable":
+          "type": "string"
+          "maxLength": 80
+      "required":
+        - "id"
+        - "sourceId"
+        - "targetId"
+        - "variable"
+    "RouteOptions":
+      "type": "object"
+      "additionalProperties": false
+      "properties":
+        "responseHeaders":
+          "type": "object"
+          "additionalProperties":
+            "type": "string"
+            "maxLength": 1024
+          "maxProperties": 16
+        "stripPrefix":
+          "type": "string"
+          "maxLength": 128
+        "requestsPerSecond":
+          "type": "integer"
+          "minimum": 0
+          "maximum": 10000
+      "required": []
+    "Route":
+      "type": "object"
+      "additionalProperties": false
+      "properties":
+        "id":
+          "type": "string"
+          "format": "uuid"
+        "targetId":
+          "type": "string"
+          "format": "uuid"
+        "protocol":
+          "type": "string"
+          "enum":
+            - "http"
+            - "tcp"
+        "domain":
+          "type": "string"
+          "maxLength": 253
+        "port":
+          "type": "integer"
+          "minimum": 1
+          "maximum": 65535
+        "listenPort":
+          "type": "integer"
+          "minimum": 0
+          "maximum": 65535
+        "tls":
+          "type": "string"
+          "enum":
+            - "off"
+            - "managed"
+            - "passthrough"
+        "allowCidrs":
+          "type": "array"
+          "items":
+            "type": "string"
+            "maxLength": 64
+          "maxItems": 32
+        "advanced":
+          "$ref": "#/components/schemas/RouteOptions"
+      "required":
+        - "id"
+        - "targetId"
+        - "protocol"
+        - "domain"
+        - "port"
+        - "listenPort"
+        - "tls"
+        - "allowCidrs"
+    VisualPlan:
+      "type": "object"
+      "additionalProperties": false
+      properties:
+        "id":
+          "type": "string"
+          "format": "uuid"
+        "serverId":
+          "type": "string"
+          "format": "uuid"
+        "environmentId":
+          "type": "string"
+          "format": "uuid"
+        "unitId":
+          "type": "string"
+          "format": "uuid"
+        "revisionId":
+          "type": "string"
+          "format": "uuid"
+        "expectedAppliedId":
+          "allOf":
+            -
+              "type": "string"
+              "format": "uuid"
+          "nullable": true
+        "recipe":
+          "type": "integer"
+          "enum":
+            - 1
+        "specification":
+          "$ref": "#/components/schemas/Specification"
+        "images":
+          "type": "object"
+          "additionalProperties":
+            "type": "string"
+            "maxLength": 512
+          "maxProperties": 20
+        "hostChanges":
+          "type": "boolean"
+        "effects":
+          "type": "array"
+          "items":
+            "type": "string"
+            "maxLength": 300
+          "maxItems": 100
+        "hash":
+          "type": "string"
+          "maxLength": 64
+        "expiresAt":
+          "type": "string"
+          "format": "date-time"
+        "expectedState":
+          "type": "string"
+          "maxLength": 64
+        "acceptDrift":
+          "type": "boolean"
+        artifacts:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/BuildArtifact'
+          maxProperties: 20
+      "required":
+        - "id"
+        - "serverId"
+        - "environmentId"
+        - "unitId"
+        - "revisionId"
+        - "expectedAppliedId"
+        - "recipe"
+        - "specification"
+        - "images"
+        - "hostChanges"
+        - "effects"
+        - "hash"
+        - "expiresAt"
+        - "expectedState"
+        - "acceptDrift"
+      "x-go-type": "json.RawMessage"
+    VisualPayload:
+      "type": "object"
+      "additionalProperties": false
+      properties:
+        "action":
+          "type": "string"
+          "enum":
+            - "resolve"
+            - "deploy"
+            - "observe"
+            - "delete-volume"
+        "plan":
+          "$ref": "#/components/schemas/VisualPlan"
+        "secrets":
+          "type": "object"
+          "additionalProperties":
+            "type": "string"
+            "maxLength": 65536
+          "maxProperties": 100
+        "volumeId":
+          "type": "string"
+          "format": "uuid"
+        registryAccess:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/PipelineCredential'
+          maxProperties: 20
+      "required":
+        - "action"
+        - "plan"
+      "x-go-type": "json.RawMessage"
+    "ResourceObservation":
+      "type": "object"
+      "additionalProperties": false
+      "properties":
+        "id":
+          "type": "string"
+          "format": "uuid"
+        "kind":
+          "type": "string"
+          "maxLength": 20
+        "state":
+          "type": "string"
+          "maxLength": 30
+        "image":
+          "type": "string"
+          "maxLength": 512
+        "drift":
+          "type": "boolean"
+        "note":
+          "type": "string"
+          "maxLength": 256
+        "logs":
+          "type": "string"
+          "maxLength": 2048
+        "memoryBytes":
+          "type": "integer"
+          "format": "int64"
+      "required":
+        - "id"
+        - "kind"
+        - "state"
+        - "image"
+        - "drift"
+        - "note"
+        - "logs"
+        - "memoryBytes"
+    "VisualObservation":
+      "type": "object"
+      "additionalProperties": false
+      "properties":
+        "observedAt":
+          "type": "string"
+          "format": "date-time"
+        "resources":
+          "type": "array"
+          "items":
+            "$ref": "#/components/schemas/ResourceObservation"
+          "maxItems": 40
+        "images":
+          "type": "object"
+          "additionalProperties":
+            "type": "string"
+            "maxLength": 512
+          "maxProperties": 20
+        "applied":
+          "type": "boolean"
+        "stateHash":
+          "type": "string"
+          "maxLength": 64
+        "infrastructureDrift":
+          "type": "boolean"
+        "resourceDrift":
+          "type": "boolean"
+        "omittedResources":
+          "type": "integer"
+          "minimum": 0
+      "required":
+        - "observedAt"
+        - "resources"
+        - "applied"
+        - "stateHash"
+      "x-go-type": "json.RawMessage"
+    "VisualPlanStatus":
+      "type": "object"
+      "additionalProperties": false
+      "properties":
+        "id":
+          "type": "string"
+          "format": "uuid"
+        "operationId":
+          "type": "string"
+          "format": "uuid"
+        "state":
+          "type": "string"
+          "maxLength": 30
+        "plan":
+          "allOf":
+            -
+              "$ref": "#/components/schemas/VisualPlan"
+          "nullable": true
+      "required":
+        - "id"
+        - "operationId"
+        - "state"
+        - "plan"
+      "x-go-type": "json.RawMessage"
+    "VisualPlanRequest":
+      "type": "object"
+      "additionalProperties": false
+      "properties":
+        "serverId":
+          "type": "string"
+          "format": "uuid"
+        "baseRevisionId":
+          "type": "string"
+          "format": "uuid"
+        "allowHostChanges":
+          "type": "boolean"
+        "acceptDrift":
+          "type": "boolean"
+      "required":
+        - "serverId"
+        - "baseRevisionId"
+        - "allowHostChanges"
+        - "acceptDrift"
+    "CloneEnvironment":
+      "type": "object"
+      "additionalProperties": false
+      "properties":
+        "name":
+          "type": "string"
+          "maxLength": 80
+        "copySecrets":
+          "type": "boolean"
+      "required":
+        - "name"
+        - "copySecrets"
+    "ConfigurationExport":
+      "type": "object"
+      "additionalProperties": false
+      "properties":
+        "specification":
+          "$ref": "#/components/schemas/Specification"
+        "compose":
+          "type": "string"
+          "maxLength": 262144
+        "routes":
+          "type": "string"
+          "maxLength": 65536
+        "readme":
+          "type": "string"
+          "maxLength": 65536
+        "files":
+          "type": "array"
+          "items":
+            "$ref": "#/components/schemas/ComposeFile"
+          "maxItems": 20
+      "required":
+        - "specification"
+        - "compose"
+        - "routes"
+        - "readme"
+      "x-go-type": "json.RawMessage"
+    "ManagedVolume":
+      "type": "object"
+      "additionalProperties": false
+      "properties":
+        "id":
+          "type": "string"
+          "format": "uuid"
+        "name":
+          "type": "string"
+          "maxLength": 80
+        "inUse":
+          "type": "boolean"
+        "deleted":
+          "type": "boolean"
+      "required":
+        - "id"
+        - "name"
+        - "inUse"
+        - "deleted"
+    "ManagedVolumes":
+      "type": "array"
+      "items":
+        "$ref": "#/components/schemas/ManagedVolume"
+      "maxItems": 1000
+    "ComposeFile":
+      "type": "object"
+      "additionalProperties": false
+      "properties":
+        "path":
+          "type": "string"
+          "maxLength": 240
+        "content":
+          "type": "string"
+          "maxLength": 65536
+      "required":
+        - "path"
+        - "content"
+    "ComposeOrigin":
+      "type": "object"
+      "additionalProperties": false
+      "properties":
+        "provider":
+          "type": "string"
+          "enum":
+            - "github"
+            - "gitlab"
+            - "gitea"
+        "repository":
+          "type": "string"
+          "maxLength": 2048
+        "commit":
+          "type": "string"
+          "maxLength": 64
+      "required":
+        - "provider"
+        - "repository"
+        - "commit"
+    "ComposeBundle":
+      "type": "object"
+      "additionalProperties": false
+      "properties":
+        "namespace":
+          "type": "string"
+          "format": "uuid"
+        "entrypoints":
+          "type": "array"
+          "items":
+            "type": "string"
+            "maxLength": 240
+          "maxItems": 8
+        "files":
+          "type": "array"
+          "items":
+            "$ref": "#/components/schemas/ComposeFile"
+          "maxItems": 16
+        "origin":
+          "$ref": "#/components/schemas/ComposeOrigin"
+      "required":
+        - "namespace"
+        - "entrypoints"
+        - "files"
+    "NetworkReference":
+      "type": "object"
+      "additionalProperties": false
+      "properties":
+        "id":
+          "type": "string"
+          "format": "uuid"
+        "name":
+          "type": "string"
+          "maxLength": 80
+        "internal":
+          "type": "boolean"
+      "required":
+        - "id"
+        - "name"
+    "EnvironmentCreate":
+      "type": "object"
+      "additionalProperties": false
+      "properties":
+        "name":
+          "type": "string"
+          "maxLength": 80
+        "configurationOwner":
+          "type": "string"
+          "enum":
+            - "dashboard"
+            - "compose"
+      "required":
+        - "name"
+    "SourceDiagnostic":
+      "type": "object"
+      "additionalProperties": false
+      "properties":
+        "path":
+          "type": "string"
+          "maxLength": 240
+        "line":
+          "type": "integer"
+          "minimum": 1
+        "column":
+          "type": "integer"
+          "minimum": 1
+        "message":
+          "type": "string"
+          "maxLength": 2048
+      "required":
+        - "path"
+        - "line"
+        - "column"
+        - "message"
+    "SourceChange":
+      "type": "object"
+      "additionalProperties": false
+      "properties":
+        "path":
+          "type": "string"
+          "maxLength": 240
+        "before":
+          "type": "string"
+          "maxLength": 65536
+        "after":
+          "type": "string"
+          "maxLength": 65536
+      "required":
+        - "path"
+        - "before"
+        - "after"
+    "ComposePreviewRequest":
+      "type": "object"
+      "additionalProperties": false
+      "properties":
+        "specification":
+          "$ref": "#/components/schemas/Specification"
+        "edit":
+          "type": "object"
+          "additionalProperties": false
+          "properties":
+            "service":
+              "type": "string"
+              "maxLength": 80
+            "image":
+              "type": "string"
+              "maxLength": 256
+          "required":
+            - "service"
+            - "image"
+      "required":
+        - "specification"
+    "ComposePreview":
+      "type": "object"
+      "additionalProperties": false
+      "properties":
+        "specification":
+          "$ref": "#/components/schemas/Specification"
+        "diagnostics":
+          "type": "array"
+          "items":
+            "$ref": "#/components/schemas/SourceDiagnostic"
+          "maxItems": 100
+        "changes":
+          "type": "array"
+          "items":
+            "$ref": "#/components/schemas/SourceChange"
+          "maxItems": 16
+        "permissions":
+          "type": "array"
+          "items":
+            "type": "string"
+            "maxLength": 2048
+          "maxItems": 100
+      "required":
+        - "diagnostics"
+        - "changes"
+        - "permissions"
+    PipelineCredential:
+      type: object
+      additionalProperties: false
+      properties:
+        username:
+          type: string
+          maxLength: 200
+        password:
+          type: string
+          maxLength: 8192
+          writeOnly: true
+      required:
+        - username
+        - password
+    GitConnection:
+      type: object
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          maxLength: 80
+        provider:
+          type: string
+          enum:
+            - github
+            - gitlab
+            - gitea
+        baseUrl:
+          type: string
+          maxLength: 2048
+        repository:
+          type: string
+          maxLength: 240
+        repositoryId:
+          type: integer
+          format: int64
+        private:
+          type: boolean
+      required:
+        - id
+        - name
+        - provider
+        - baseUrl
+        - repository
+        - repositoryId
+        - private
+    GitConnectionRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+          maxLength: 80
+        provider:
+          type: string
+          enum:
+            - github
+            - gitlab
+            - gitea
+        baseUrl:
+          type: string
+          maxLength: 2048
+        repository:
+          type: string
+          maxLength: 240
+        api:
+          $ref: '#/components/schemas/PipelineCredential'
+        clone:
+          $ref: '#/components/schemas/PipelineCredential'
+      required:
+        - name
+        - provider
+        - baseUrl
+        - repository
+    GitConnectionCreated:
+      type: object
+      additionalProperties: false
+      properties:
+        connection:
+          $ref: '#/components/schemas/GitConnection'
+        webhookUrl:
+          type: string
+          maxLength: 2048
+        webhookSecret:
+          type: string
+          maxLength: 200
+          writeOnly: true
+      required:
+        - connection
+        - webhookUrl
+        - webhookSecret
+    Registry:
+      type: object
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          maxLength: 80
+        repository:
+          type: string
+          maxLength: 200
+      required:
+        - id
+        - name
+        - repository
+    RegistryRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+          maxLength: 80
+        repository:
+          type: string
+          maxLength: 200
+        push:
+          $ref: '#/components/schemas/PipelineCredential'
+        pull:
+          $ref: '#/components/schemas/PipelineCredential'
+      required:
+        - name
+        - repository
+        - push
+        - pull
+    BuildSecret:
+      type: object
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          maxLength: 80
+        createdAt:
+          type: string
+          format: date-time
+      required:
+        - id
+        - name
+        - createdAt
+    BuildSecretRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+          maxLength: 80
+        value:
+          type: string
+          maxLength: 4096
+          writeOnly: true
+      required:
+        - name
+        - value
+    GitSourceConfiguration:
+      type: object
+      additionalProperties: false
+      properties:
+        connectionId:
+          type: string
+          format: uuid
+        branch:
+          type: string
+          maxLength: 200
+        runnerId:
+          type: string
+          format: uuid
+        fallbackRunnerId:
+          type: string
+          format: uuid
+        entrypoints:
+          type: array
+          items:
+            type: string
+            maxLength: 240
+          maxItems: 8
+        paths:
+          type: array
+          items:
+            type: string
+            maxLength: 240
+          maxItems: 16
+        autoDeploy:
+          type: boolean
+      required:
+        - connectionId
+        - branch
+        - runnerId
+        - entrypoints
+        - paths
+        - autoDeploy
+    GitSourceStatus:
+      type: object
+      additionalProperties: false
+      properties:
+        configuration:
+          $ref: '#/components/schemas/GitSourceConfiguration'
+        importedCommit:
+          type: string
+          maxLength: 64
+        importedRevisionId:
+          type: string
+          format: uuid
+          nullable: true
+        pendingCommit:
+          type: string
+          maxLength: 64
+        status:
+          type: string
+          maxLength: 80
+        clean:
+          type: boolean
+      required:
+        - configuration
+        - importedCommit
+        - importedRevisionId
+        - pendingCommit
+        - status
+        - clean
+    BindGitSource:
+      type: object
+      additionalProperties: false
+      properties:
+        configuration:
+          $ref: '#/components/schemas/GitSourceConfiguration'
+        baseRevisionId:
+          type: string
+          format: uuid
+      required:
+        - configuration
+        - baseRevisionId
+    RefreshGitSource:
+      type: object
+      additionalProperties: false
+      properties:
+        baseRevisionId:
+          type: string
+          format: uuid
+        discardDraft:
+          type: boolean
+      required:
+        - baseRevisionId
+    SubmitGitSource:
+      type: object
+      additionalProperties: false
+      properties:
+        baseRevisionId:
+          type: string
+          format: uuid
+        requestKey:
+          type: string
+          format: uuid
+      required:
+        - baseRevisionId
+        - requestKey
+    BuildConfiguration:
+      type: object
+      additionalProperties: false
+      properties:
+        connectionId:
+          type: string
+          format: uuid
+        branch:
+          type: string
+          maxLength: 200
+        runnerId:
+          type: string
+          format: uuid
+        fallbackRunnerId:
+          type: string
+          format: uuid
+        registryId:
+          type: string
+          format: uuid
+        context:
+          type: string
+          maxLength: 240
+        dockerfile:
+          type: string
+          maxLength: 240
+        architecture:
+          type: string
+          enum:
+            - amd64
+            - arm64
+        arguments:
+          type: object
+          additionalProperties:
+            type: string
+            maxLength: 4096
+          maxProperties: 32
+        secrets:
+          type: object
+          additionalProperties:
+            type: string
+            format: uuid
+          maxProperties: 16
+        autoBuild:
+          type: boolean
+        autoDeploy:
+          type: boolean
+      required:
+        - connectionId
+        - branch
+        - runnerId
+        - context
+        - dockerfile
+        - architecture
+        - arguments
+        - secrets
+        - autoBuild
+        - autoDeploy
+    BuildRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        applicationId:
+          type: string
+          format: uuid
+        baseRevisionId:
+          type: string
+          format: uuid
+        requestKey:
+          type: string
+          format: uuid
+        configuration:
+          $ref: '#/components/schemas/BuildConfiguration'
+      required:
+        - applicationId
+        - baseRevisionId
+        - requestKey
+        - configuration
+    BuildArtifact:
+      type: object
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+          format: uuid
+        buildId:
+          type: string
+          format: uuid
+        image:
+          type: string
+          maxLength: 512
+        digest:
+          type: string
+          maxLength: 80
+        architecture:
+          type: string
+          enum:
+            - amd64
+            - arm64
+        inputHash:
+          type: string
+          maxLength: 64
+        commit:
+          type: string
+          maxLength: 64
+        serverId:
+          type: string
+          format: uuid
+        registryId:
+          type: string
+          format: uuid
+      required:
+        - id
+        - buildId
+        - image
+        - digest
+        - architecture
+        - inputHash
+        - commit
+    PipelineResult:
+      type: object
+      additionalProperties: false
+      properties:
+        commit:
+          type: string
+          maxLength: 64
+        files:
+          type: array
+          items:
+            $ref: '#/components/schemas/ComposeFile'
+          maxItems: 16
+        reviewUrl:
+          type: string
+          maxLength: 2048
+        reviewNumber:
+          type: integer
+        image:
+          type: string
+          maxLength: 512
+        digest:
+          type: string
+          maxLength: 80
+        architecture:
+          type: string
+          maxLength: 20
+        logs:
+          type: string
+          maxLength: 16384
+        cache:
+          type: string
+          maxLength: 1024
+      required:
+        - commit
+      x-go-type: json.RawMessage
+    PipelineRun:
+      type: object
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+          format: uuid
+        applicationId:
+          type: string
+          format: uuid
+        action:
+          type: string
+          maxLength: 20
+        commit:
+          type: string
+          maxLength: 64
+        inputHash:
+          type: string
+          maxLength: 64
+        configuration:
+          $ref: '#/components/schemas/BuildConfiguration'
+        result:
+          $ref: '#/components/schemas/PipelineResult'
+        artifact:
+          $ref: '#/components/schemas/BuildArtifact'
+        operation:
+          $ref: '#/components/schemas/Operation'
+        createdAt:
+          type: string
+          format: date-time
+        automaticDeployment:
+          type: object
+          additionalProperties: false
+          required:
+            - state
+            - note
+          properties:
+            state:
+              type: string
+            note:
+              type: string
+            operationId:
+              type: string
+              format: uuid
+              nullable: true
+      required:
+        - id
+        - applicationId
+        - action
+        - commit
+        - inputHash
+        - operation
+        - createdAt
+    PromoteArtifact:
+      type: object
+      additionalProperties: false
+      properties:
+        baseRevisionId:
+          type: string
+          format: uuid
+        applicationId:
+          type: string
+          format: uuid
+        inputHash:
+          type: string
+          maxLength: 64
+      required:
+        - baseRevisionId
+        - applicationId
+        - inputHash
+    PipelineAccess:
+      type: object
+      additionalProperties: false
+      properties:
+        api:
+          $ref: '#/components/schemas/PipelineCredential'
+        clone:
+          $ref: '#/components/schemas/PipelineCredential'
+        webhook:
+          type: string
+          maxLength: 200
+          writeOnly: true
+      required:
+        - api
+        - clone
+        - webhook
+    RegistryAccess:
+      type: object
+      additionalProperties: false
+      properties:
+        push:
+          $ref: '#/components/schemas/PipelineCredential'
+        pull:
+          $ref: '#/components/schemas/PipelineCredential'
+      required:
+        - push
+        - pull
+    PipelineCommand:
+      type: object
+      additionalProperties: false
+      properties:
+        action:
+          type: string
+          enum:
+            - import
+            - submit
+            - build
+        connection:
+          $ref: '#/components/schemas/GitConnection'
+        commit:
+          type: string
+          maxLength: 64
+        branch:
+          type: string
+          maxLength: 200
+        revisionId:
+          type: string
+          format: uuid
+        unitId:
+          type: string
+          format: uuid
+        appId:
+          type: string
+          format: uuid
+        source:
+          $ref: '#/components/schemas/GitSourceConfiguration'
+        bundle:
+          $ref: '#/components/schemas/ComposeBundle'
+        build:
+          $ref: '#/components/schemas/BuildConfiguration'
+        inputHash:
+          type: string
+          maxLength: 64
+        registry:
+          $ref: '#/components/schemas/Registry'
+        submittedAt:
+          type: string
+          format: date-time
+        access:
+          $ref: '#/components/schemas/PipelineAccess'
+        buildSecrets:
+          type: object
+          additionalProperties:
+            type: string
+            maxLength: 4096
+            writeOnly: true
+          maxProperties: 16
+        registryAccess:
+          $ref: '#/components/schemas/RegistryAccess'
+        submissionId:
+          type: string
+          format: uuid
+      required:
+        - action
+        - connection
+        - commit
+        - branch
+        - revisionId
+        - unitId
+        - appId
+        - inputHash
+        - submittedAt
+        - submissionId
+      x-go-type: json.RawMessage
+    BackupDestination:
+      type: object
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          maxLength: 80
+        kind:
+          type: string
+          enum:
+            - filesystem
+            - s3
+        root:
+          type: string
+          maxLength: 512
+        endpoint:
+          type: string
+          maxLength: 512
+        bucket:
+          type: string
+          maxLength: 63
+        region:
+          type: string
+          maxLength: 80
+      required:
+        - id
+        - name
+        - kind
+        - root
+        - endpoint
+        - bucket
+        - region
+    BackupAccess:
+      type: object
+      additionalProperties: false
+      properties:
+        databasePassword:
+          type: string
+          maxLength: 512
+          writeOnly: true
+        accessKey:
+          type: string
+          maxLength: 512
+          writeOnly: true
+        secretKey:
+          type: string
+          maxLength: 8192
+          writeOnly: true
+        password:
+          type: string
+          maxLength: 512
+          writeOnly: true
+      required:
+        - accessKey
+        - secretKey
+        - password
+    BackupDestinationRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+          maxLength: 80
+        kind:
+          type: string
+          enum:
+            - filesystem
+            - s3
+        root:
+          type: string
+          maxLength: 512
+        endpoint:
+          type: string
+          maxLength: 512
+        bucket:
+          type: string
+          maxLength: 63
+        region:
+          type: string
+          maxLength: 80
+        access:
+          $ref: '#/components/schemas/BackupAccess'
+      required:
+        - name
+        - kind
+        - root
+        - endpoint
+        - bucket
+        - region
+        - access
+    DailySchedule:
+      type: object
+      additionalProperties: false
+      properties:
+        hour:
+          type: integer
+          minimum: 0
+          maximum: 23
+        minute:
+          type: integer
+          minimum: 0
+          maximum: 59
+        timezone:
+          type: string
+          maxLength: 100
+      required:
+        - hour
+        - minute
+        - timezone
+    BackupPolicyRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+          maxLength: 80
+        resourceId:
+          type: string
+          format: uuid
+        destinationId:
+          type: string
+          format: uuid
+        method:
+          type: string
+          enum:
+            - postgres-logical
+            - quiesced-files
+            - container-job
+        schedule:
+          $ref: '#/components/schemas/DailySchedule'
+        retain:
+          type: integer
+          minimum: 1
+          maximum: 100
+        enabled:
+          type: boolean
+        command:
+          type: array
+          items:
+            type: string
+            maxLength: 4096
+          maxItems: 64
+        password:
+          type: string
+          maxLength: 512
+          writeOnly: true
+        baseGeneration:
+          type: integer
+          format: int64
+      required:
+        - name
+        - resourceId
+        - destinationId
+        - method
+        - schedule
+        - retain
+        - enabled
+        - command
+        - password
+        - baseGeneration
+    BackupPolicy:
+      type: object
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          maxLength: 80
+        workspaceId:
+          type: string
+          format: uuid
+        environmentId:
+          type: string
+          format: uuid
+        serverId:
+          type: string
+          format: uuid
+        destinationId:
+          type: string
+          format: uuid
+        resourceId:
+          type: string
+          format: uuid
+        generation:
+          type: integer
+          format: int64
+        method:
+          type: string
+          enum:
+            - postgres-logical
+            - quiesced-files
+            - container-job
+        schedule:
+          $ref: '#/components/schemas/DailySchedule'
+        retain:
+          type: integer
+        enabled:
+          type: boolean
+        command:
+          type: array
+          items:
+            type: string
+            maxLength: 4096
+          maxItems: 64
+        plan:
+          $ref: '#/components/schemas/VisualPlan'
+      required:
+        - id
+        - name
+        - workspaceId
+        - environmentId
+        - serverId
+        - destinationId
+        - resourceId
+        - generation
+        - method
+        - schedule
+        - retain
+        - enabled
+        - plan
+    BackupManifest:
+      type: object
+      additionalProperties: false
+      properties:
+        recipe:
+          type: integer
+        policyId:
+          type: string
+          format: uuid
+        runId:
+          type: string
+          format: uuid
+        environmentId:
+          type: string
+          format: uuid
+        resourceId:
+          type: string
+          format: uuid
+        method:
+          type: string
+          maxLength: 100
+        image:
+          type: string
+          maxLength: 512
+        database:
+          type: string
+          maxLength: 100
+        username:
+          type: string
+          maxLength: 100
+        createdAt:
+          type: string
+          format: date-time
+        roles:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            properties:
+              name:
+                type: string
+                maxLength: 100
+            required:
+              - name
+          maxItems: 100
+        extensions:
+          type: array
+          items:
+            type: string
+            maxLength: 100
+          maxItems: 100
+        sha256:
+          type: string
+          maxLength: 64
+        bytes:
+          type: integer
+          format: int64
+      required:
+        - recipe
+        - policyId
+        - runId
+        - environmentId
+        - resourceId
+        - method
+        - image
+        - database
+        - username
+        - createdAt
+        - roles
+        - extensions
+        - sha256
+        - bytes
+    BackupRun:
+      type: object
+      additionalProperties: false
+      properties:
+        manifestHash:
+          type: string
+          maxLength: 64
+        id:
+          type: string
+          format: uuid
+        policyId:
+          type: string
+          format: uuid
+        generation:
+          type: integer
+          format: int64
+        scheduledAt:
+          type: string
+          format: date-time
+        startedAt:
+          type: string
+          format: date-time
+        finishedAt:
+          type: string
+          format: date-time
+          nullable: true
+        state:
+          type: string
+          enum:
+            - running
+            - succeeded
+            - failed
+            - needs_attention
+            - skipped
+        note:
+          type: string
+          maxLength: 1024
+        snapshot:
+          type: string
+          maxLength: 64
+        verified:
+          type: boolean
+        protected:
+          type: boolean
+        pruned:
+          type: boolean
+        exitCode:
+          type: integer
+          nullable: true
+        manifest:
+          allOf:
+            - $ref: '#/components/schemas/BackupManifest'
+          nullable: true
+        targetId:
+          type: string
+          format: uuid
+      required:
+        - id
+        - policyId
+        - generation
+        - scheduledAt
+        - startedAt
+        - finishedAt
+        - state
+        - note
+        - snapshot
+        - verified
+        - protected
+        - pruned
+        - exitCode
+        - manifest
+        - targetId
+    BackupStatus:
+      type: object
+      additionalProperties: false
+      properties:
+        enabled:
+          type: boolean
+        policyId:
+          type: string
+          format: uuid
+        generation:
+          type: integer
+          format: int64
+        next:
+          type: string
+          format: date-time
+        runs:
+          type: array
+          items:
+            $ref: '#/components/schemas/BackupRun'
+          maxItems: 128
+      required:
+        - enabled
+        - policyId
+        - generation
+        - next
+        - runs
+    BackupInstallation:
+      type: object
+      additionalProperties: false
+      properties:
+        policy:
+          $ref: '#/components/schemas/BackupPolicy'
+        destination:
+          $ref: '#/components/schemas/BackupDestination'
+        access:
+          $ref: '#/components/schemas/BackupAccess'
+        repositoryId:
+          type: string
+          maxLength: 64
+        next:
+          type: string
+          format: date-time
+      required:
+        - policy
+        - destination
+        - access
+        - repositoryId
+        - next
+    BackupCommand:
+      type: object
+      additionalProperties: false
+      properties:
+        action:
+          type: string
+          enum:
+            - install
+            - check
+            - backup
+            - restore
+            - disable
+        installation:
+          $ref: '#/components/schemas/BackupInstallation'
+        runId:
+          type: string
+          format: uuid
+        snapshot:
+          type: string
+          maxLength: 64
+        targetId:
+          type: string
+          format: uuid
+      required:
+        - action
+        - installation
+        - runId
+        - snapshot
+        - targetId
+      x-go-type: json.RawMessage
+    BackupCommandRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        action:
+          type: string
+          enum:
+            - install
+            - check
+            - backup
+            - restore
+            - disable
+        requestKey:
+          type: string
+          format: uuid
+        snapshot:
+          type: string
+          maxLength: 64
+      required:
+        - action
+        - requestKey
+        - snapshot
+    BackupCutoverRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        runId:
+          type: string
+          format: uuid
+        baseRevisionId:
+          type: string
+          format: uuid
+      required:
+        - runId
+        - baseRevisionId
+    ScheduleReport:
+      type: object
+      additionalProperties: false
+      properties:
+        sequence:
+          type: integer
+          format: int64
+        status:
+          $ref: '#/components/schemas/BackupStatus'
+      required:
+        - sequence
+        - status
+
+    UpgradeRequest:
+      type: object
+      additionalProperties: false
+      required: [policyId, resourceId, baseRevisionId, retainDays]
+      properties:
+        policyId: {type: string, format: uuid}
+        resourceId: {type: string, format: uuid}
+        baseRevisionId: {type: string, format: uuid}
+        retainDays: {type: integer, minimum: 1, maximum: 365}
+    UpgradeActionRequest:
+      type: object
+      additionalProperties: false
+      required: [action, requestKey, expectedPhase]
+      properties:
+        action: {type: string, enum: [prepare, cutover, return, reconcile]}
+        requestKey: {type: string, format: uuid}
+        expectedPhase: {type: string, maxLength: 30}
+    UpgradePlan:
+      type: object
+      additionalProperties: false
+      required: [id, recipe, policyId, resourceId, targetVolumeId, targetPlanId, targetRevisionId, retainDays, expiresAt, source]
+      properties:
+        id: {type: string, format: uuid}
+        recipe: {type: integer, enum: [1]}
+        policyId: {type: string, format: uuid}
+        resourceId: {type: string, format: uuid}
+        targetVolumeId: {type: string, format: uuid}
+        targetPlanId: {type: string, format: uuid}
+        targetRevisionId: {type: string, format: uuid}
+        retainDays: {type: integer, minimum: 1, maximum: 365}
+        expiresAt: {type: string, format: date-time}
+        source: {$ref: '#/components/schemas/VisualPlan'}
+    UpgradeStatus:
+      x-go-type: json.RawMessage
+      type: object
+      additionalProperties: false
+      required: [phase, step, serving, writesPossible, keepUntil, snapshot, note]
+      properties:
+        phase: {type: string, enum: [planned, running, ready, attention, complete, returned, rejected]}
+        step: {type: string, maxLength: 80}
+        serving: {type: string, enum: [old, new, none, unknown]}
+        writesPossible: {type: boolean}
+        keepUntil: {type: string, format: date-time}
+        snapshot: {type: string, maxLength: 64}
+        note: {type: string, maxLength: 1024}
+    UpgradeView:
+      type: object
+      additionalProperties: false
+      required: [plan, status]
+      properties:
+        plan: {$ref: '#/components/schemas/UpgradePlan'}
+        status: {$ref: '#/components/schemas/UpgradeStatus'}
+    UpgradeCommand:
+      type: object
+      additionalProperties: false
+      x-go-type: json.RawMessage
+      required: [action, plan, installation]
+      properties:
+        action: {type: string, enum: [prepare, cutover, return, reconcile]}
+        plan: {$ref: '#/components/schemas/UpgradePlan'}
+        installation: {$ref: '#/components/schemas/BackupInstallation'}
+        secrets:
+          type: object
+          maxProperties: 100
+          additionalProperties: {type: string, maxLength: 65536}
+
+    HostedInfo:
+      type: object
+      additionalProperties: false
+      required:
+        - enabled
+        - billingEnabled
+        - support
+      properties:
+        enabled:
+          type: boolean
+        billingEnabled:
+          type: boolean
+        support:
+          type: string
+
+    HostedSignup:
+      type: object
+      additionalProperties: false
+      required:
+        - token
+        - workspace
+      properties:
+        token:
+          type: string
+          minLength: 20
+          maxLength: 200
+          writeOnly: true
+        name:
+          type: string
+          minLength: 1
+          maxLength: 80
+        workspace:
+          type: string
+          minLength: 1
+          maxLength: 80
+        password:
+          type: string
+          minLength: 15
+          maxLength: 512
+          writeOnly: true
+
+    CreateWorkspace:
+      type: object
+      additionalProperties: false
+      required:
+        - name
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 80
+        invitation:
+          type: string
+          minLength: 20
+          maxLength: 200
+          writeOnly: true
+
+    VerificationCode:
+      type: object
+      additionalProperties: false
+      required:
+        - token
+      properties:
+        token:
+          type: string
+          minLength: 20
+          maxLength: 200
+          writeOnly: true
+
+    Redirect:
+      type: object
+      additionalProperties: false
+      required:
+        - url
+      properties:
+        url:
+          type: string
+          format: uri
+
+    Subscription:
+      type: object
+      additionalProperties: false
+      required:
+        - hosted
+        - billingEnabled
+        - status
+        - serverLimit
+        - support
+      properties:
+        hosted:
+          type: boolean
+        billingEnabled:
+          type: boolean
+        status:
+          type: string
+        managementUntil:
+          type: string
+          format: date-time
+        recoveryUntil:
+          type: string
+          format: date-time
+        serverLimit:
+          type: integer
+        support:
+          type: string
+
+    ControllerInventory:
+      type: object
+      additionalProperties: false
+      required: [units, schedules]
+      properties:
+        units:
+          type: object
+          maxProperties: 100
+          additionalProperties: {type: string, maxLength: 64}
+        schedules:
+          type: object
+          maxProperties: 100
+          additionalProperties: {type: integer, format: int64, minimum: 0}
+
+    ArchivePassword:
+      type: object
+      additionalProperties: false
+      required: [passphrase]
+      properties:
+        passphrase: {type: string, minLength: 20, maxLength: 1024, writeOnly: true}
+    WorkspaceArchive:
+      type: object
+      additionalProperties: false
+      required: [archive]
+      properties:
+        archive: {type: string, format: byte, maxLength: 44739400}
+    TransferTicket:
+      type: object
+      additionalProperties: false
+      required: [serverId, generation, token, expiresAt, managementOrigin]
+      properties:
+        serverId: {type: string, format: uuid}
+        generation: {type: integer, format: int64, minimum: 1}
+        token: {type: string}
+        expiresAt: {type: string, format: date-time}
+        managementOrigin: {type: string, format: uri}
+
+    WorkspaceImport:
+      type: object
+      additionalProperties: false
+      required: [passphrase, archive]
+      properties:
+        passphrase: {type: string, minLength: 20, maxLength: 1024, writeOnly: true}
+        archive: {type: string, format: byte, maxLength: 44739400, writeOnly: true}
+        invitation: {type: string, maxLength: 200, writeOnly: true}
+
+    MetricUsage:
+      type: object
+      additionalProperties: false
+      required: [usedBytes, totalBytes]
+      properties:
+        usedBytes: {type: integer, format: int64, minimum: 0}
+        totalBytes: {type: integer, format: int64, minimum: 1}
+    HostMetrics:
+      type: object
+      additionalProperties: false
+      required: [diskSource]
+      properties:
+        cpuPercent: {type: number, format: double, minimum: 0, maximum: 100}
+        memory: {$ref: '#/components/schemas/MetricUsage'}
+        disk: {$ref: '#/components/schemas/MetricUsage'}
+        diskSource: {type: string, enum: [docker, agent], x-enum-varnames: [MetricsDocker, MetricsAgent]}
+    ServiceMetrics:
+      type: object
+      additionalProperties: false
+      required: [resourceId, unitId, state]
+      properties:
+        resourceId: {type: string, format: uuid}
+        unitId: {type: string, format: uuid}
+        state: {type: string, enum: [running, stopped, paused, restarting, unknown], x-enum-varnames: [MetricsRunning, MetricsStopped, MetricsPaused, MetricsRestarting, MetricsUnknown]}
+        cpuPercent: {type: number, format: double, minimum: 0, maximum: 100000}
+        memoryUsedBytes: {type: integer, format: int64, minimum: 0}
+        health: {type: string, enum: [none, starting, healthy, unhealthy], x-enum-varnames: [MetricNoHealthcheck, MetricHealthStarting, MetricHealthy, MetricUnhealthy]}
+    MetricReport:
+      type: object
+      additionalProperties: false
+      required: [host, services, partial]
+      properties:
+        host: {$ref: '#/components/schemas/HostMetrics'}
+        services:
+          type: array
+          maxItems: 40
+          items: {$ref: '#/components/schemas/ServiceMetrics'}
+        partial: {type: boolean, description: Some collection failed or exceeded the sample budget}
+    MetricSample:
+      type: object
+      additionalProperties: false
+      required: [receivedAt, report]
+      properties:
+        receivedAt: {type: string, format: date-time}
+        report: {$ref: '#/components/schemas/MetricReport'}
+    MetricResource:
+      type: object
+      additionalProperties: false
+      required: [id, name, environment]
+      properties:
+        id: {type: string, format: uuid}
+        name: {type: string}
+        environment: {type: string}
+    MetricHistory:
+      type: object
+      additionalProperties: false
+      required: [samples, resources]
+      properties:
+        samples:
+          type: array
+          maxItems: 1440
+          items: {$ref: '#/components/schemas/MetricSample'}
+        resources:
+          type: array
+          maxItems: 1000
+          items: {$ref: '#/components/schemas/MetricResource'}
+
+    Alert:
+      type: object
+      additionalProperties: false
+      required: [id, kind, resourceId, state, reason, openedAt, deliveries]
+      properties:
+        id: {type: string, format: uuid}
+        kind: {type: string, enum: [server_offline, disk_docker, disk_agent, service_runtime, service_health, backup_schedule, deployment_problem, build_problem, backup_problem]}
+        resourceId: {type: string, format: uuid}
+        serverId: {type: string, format: uuid}
+        environmentId: {type: string, format: uuid}
+        state: {type: string, enum: [firing, resolved, event], x-enum-varnames: [AlertFiring, AlertResolved, AlertEvent]}
+        reason: {type: string, enum: ['', recovered, monitoring_stopped], x-enum-varnames: [AlertNoReason, AlertRecovered, AlertMonitoringStopped]}
+        openedAt: {type: string, format: date-time}
+        resolvedAt: {type: string, format: date-time}
+        acknowledgedAt: {type: string, format: date-time}
+        deliveries:
+          type: array
+          maxItems: 202
+          items: {$ref: '#/components/schemas/AlertDelivery'}
+    AlertDelivery:
+      type: object
+      additionalProperties: false
+      required: [channel, phase, state, attempts]
+      properties:
+        channel: {type: string, enum: [email, webhook], x-enum-varnames: [AlertEmail, AlertWebhook]}
+        phase: {type: string, enum: [firing, resolved, event], x-enum-varnames: [DeliveryFiring, DeliveryResolved, DeliveryEvent]}
+        state: {type: string, enum: [pending, leased, sent, failed, cancelled], x-enum-varnames: [DeliveryPending, DeliveryLeased, DeliverySent, DeliveryFailed, DeliveryCancelled]}
+        attempts: {type: integer, minimum: 0, maximum: 5}
+    AlertInbox:
+      type: object
+      additionalProperties: false
+      required: [alerts]
+      properties:
+        alerts:
+          type: array
+          maxItems: 100
+          items: {$ref: '#/components/schemas/Alert'}
+        next: {type: string, format: uuid}
+    AlertSettings:
+      type: object
+      additionalProperties: false
+      required: [emailEnabled, webhookEnabled]
+      properties:
+        emailEnabled: {type: boolean}
+        webhookEnabled: {type: boolean}
+    SaveAlertSettings:
+      type: object
+      additionalProperties: false
+      required: [emailEnabled, webhookEnabled]
+      properties:
+        emailEnabled: {type: boolean}
+        webhookEnabled: {type: boolean}
+        webhookUrl: {type: string, minLength: 1, maxLength: 2048, writeOnly: true}
+        webhookSecret: {type: string, minLength: 32, maxLength: 256, writeOnly: true}

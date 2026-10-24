@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Astilba hosting experiment</title>
+<main>
+  <h1>Astilba hosting experiment</h1>
+  <form id="login">
+    <label>Fixture login token <input id="token" type="password" required autocomplete="off"></label>
+    <button>Sign in</button>
+  </form>
+  <button id="enqueue" disabled>Queue a test operation</button>
+  <button id="logout" disabled>Sign out</button>
+  <pre id="status" role="status" aria-live="polite">Sign in to inspect the fixture.</pre>
+</main>
+<script src="/app.js" defer></script>
+</html>

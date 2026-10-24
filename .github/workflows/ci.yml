@@ -1,0 +1,202 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  go:
+    name: Go verification
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: experiments/durable-execution/go.mod
+          cache-dependency-path: experiments/durable-execution/go.sum
+      - name: Pull pinned fixture images
+        run: |
+          docker pull postgres:18.4-alpine3.23@sha256:996d0920e4ff9df1fc19dacb904492f3c1ec0ec1cc338f0ad7123be7731c5f5e
+          docker pull busybox:1.37.0@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e
+          docker pull traefik:v3.7.16@sha256:22a759fb803abb5c3a7ba5d5a55a201c5fb0fc8993d5c72c47a89075e64f1953
+      - name: Verify
+        run: bash experiments/durable-execution/verify.sh
+        env:
+          PLAT2_DOCKER_HOST: unix:///var/run/docker.sock
+
+  git:
+    name: Git provider verification
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: experiments/git-compose/go.mod
+          cache-dependency-path: experiments/git-compose/go.sum
+      - name: Pull pinned provider images
+        run: |
+          docker pull gitlab/gitlab-ce:19.5.1-ce.0@sha256:bb79dc86267c557fd11e7feb0cd9dd506dd02e991ecdd6cae11ca7d7e5d36fc3
+          docker pull gitea/gitea:28.2.0@sha256:30777c91280d973fa02be48b1ade735bd6859e8f6f7af3b4444d519437852504
+      - name: Verify source edits and local providers
+        run: make verify-git
+        env:
+          PLAT7_DOCKER_HOST: unix:///var/run/docker.sock
+
+  host:
+    name: Host (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install pinned disposable host runtime
+        run: |
+          sudo env PLAT4_DISPOSABLE_HOST=1 bash experiments/durable-execution/host/bootstrap.sh
+          sudo env PLAT4_DISPOSABLE_HOST=1 bash experiments/durable-execution/host/build-tools.sh
+          sudo env ASTILBA_DISPOSABLE_HOST=1 bash services/platform/host/backup-tools.sh
+      - name: Pull pinned fixture images
+        run: |
+          sudo /opt/astilba-plat4/bin/docker --host unix:///run/astilba-plat4/docker.sock pull postgres:17.10-alpine3.23@sha256:8189a1f6e40904781fc9e2612687877791d21679866db58b1de996b31fc312e4
+          sudo /opt/astilba-plat4/bin/docker --host unix:///run/astilba-plat4/docker.sock pull postgres:18.4-alpine3.23@sha256:996d0920e4ff9df1fc19dacb904492f3c1ec0ec1cc338f0ad7123be7731c5f5e
+          sudo /opt/astilba-plat4/bin/docker --host unix:///run/astilba-plat4/docker.sock pull busybox:1.37.0@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e
+          sudo /opt/astilba-plat4/bin/docker --host unix:///run/astilba-plat4/docker.sock pull traefik:v3.7.16@sha256:22a759fb803abb5c3a7ba5d5a55a201c5fb0fc8993d5c72c47a89075e64f1953
+          sudo /opt/astilba-plat4/bin/docker --host unix:///run/astilba-plat4/docker.sock pull moby/buildkit:v0.34.1@sha256:99368f3e46177c6405b9740e4461d91cee004128daeecca78d4ceac50ec1da5c
+          sudo /opt/astilba-plat4/bin/docker --host unix:///run/astilba-plat4/docker.sock pull dxflrs/garage:v2.4.1@sha256:9c96caa2612d3411acc5b0e6701fb238dbfba33e533a6d7d3d811a4b12d0d020
+      - name: Verify native Ubuntu host
+        working-directory: experiments/durable-execution
+        run: sudo env PATH=/opt/astilba-plat4/go/bin:/usr/bin:/bin CGO_ENABLED=1 PLAT4_HOST_TEST=1 PLAT4_ARCH=${{ matrix.arch }} /opt/astilba-plat4/go/bin/go test -race -count=1 -timeout=8m -v -run '^TestHostRuntime$' .
+      - name: Verify builds and PostgreSQL restore
+        run: make verify-build PLAT4_ARCH=${{ matrix.arch }}
+      - name: Verify production agent with systemd
+        run: make verify-agent-host
+
+  cloudflare:
+    name: Cloudflare packaging
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.18.1
+      - run: npm install --global pnpm@11.17.0
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @astilba/cloudflare-spike verify
+        env:
+          WRANGLER_SEND_METRICS: "false"
+
+  canvas:
+    name: Canvas browser verification
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    container:
+      # Keep this version aligned with the canvas @playwright/test dependency.
+      image: mcr.microsoft.com/playwright:v1.64.1-noble@sha256:47b510dd9230bf0b9bfc9b20102241e577ea7a99334ab4c3ca19f19770e9b8ea
+      options: --init --shm-size=1g
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.18.1
+      - run: npm install --global pnpm@11.17.0
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @astilba/canvas-spike verify
+
+  application:
+    name: Application verification
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: services/platform/go.mod
+          cache-dependency-path: services/platform/go.sum
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.18.1
+      - run: npm install --global pnpm@11.17.0
+      - run: pnpm install --frozen-lockfile
+      - name: Start preinstalled browsers
+        id: browsers
+        run: |
+          container=$(docker run --detach --interactive --init --shm-size=1g \
+            --publish 127.0.0.1:54190:54190 \
+            --label "com.astilba.ci-browsers=${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            --volume "$GITHUB_WORKSPACE:/workspace:ro" \
+            --volume "$(command -v node):/opt/ci-node:ro" \
+            --entrypoint /opt/ci-node \
+            mcr.microsoft.com/playwright:v1.64.1-noble@sha256:47b510dd9230bf0b9bfc9b20102241e577ea7a99334ab4c3ca19f19770e9b8ea \
+            /workspace/apps/platform/node_modules/@playwright/test/cli.js run-server --host 0.0.0.0 --port 54190)
+          echo "container=$container" >> "$GITHUB_OUTPUT"
+          curl --fail --silent --show-error --retry 10 --retry-all-errors --retry-delay 1 \
+            --max-time 3 --retry-max-time 30 http://127.0.0.1:54190/json
+      - name: Pull pinned probe image
+        run: docker pull busybox:1.37.0@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e
+      - run: make verify-app
+        env:
+          PLAT_APP_DOCKER_HOST: unix:///var/run/docker.sock
+          PW_TEST_CONNECT_WS_ENDPOINT: ws://127.0.0.1:54190/
+          PW_TEST_CONNECT_EXPOSE_NETWORK: "<loopback>"
+          WRANGLER_SEND_METRICS: "false"
+      - run: make verify-image
+        env:
+          PLAT_APP_DOCKER_HOST: unix:///var/run/docker.sock
+          SOURCE_REVISION: ${{ github.sha }}
+      - run: pnpm app:source
+        env:
+          SOURCE_REVISION: ${{ github.sha }}
+      - name: Stop browser server
+        if: ${{ always() && steps.browsers.outputs.container != '' }}
+        env:
+          BROWSER_CONTAINER: ${{ steps.browsers.outputs.container }}
+        run: |
+          test "$(docker inspect --format '{{ index .Config.Labels "com.astilba.ci-browsers" }}' "$BROWSER_CONTAINER")" = "${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          docker logs "$BROWSER_CONTAINER"
+          docker rm --force "$BROWSER_CONTAINER"
+
+  verify:
+    name: Verify
+    if: always()
+    needs: [go, git, host, cloudflare, canvas, application]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require every verification job
+        env:
+          GIT_RESULT: ${{ needs.git.result }}
+          GO_RESULT: ${{ needs.go.result }}
+          HOST_RESULT: ${{ needs.host.result }}
+          CLOUDFLARE_RESULT: ${{ needs.cloudflare.result }}
+          CANVAS_RESULT: ${{ needs.canvas.result }}
+          APPLICATION_RESULT: ${{ needs.application.result }}
+        run: test "$GIT_RESULT" = success && test "$GO_RESULT" = success && test "$HOST_RESULT" = success && test "$CLOUDFLARE_RESULT" = success && test "$CANVAS_RESULT" = success && test "$APPLICATION_RESULT" = success

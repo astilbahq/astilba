@@ -1,0 +1,22 @@
+[Unit]
+Description=Astilba host agent
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+UMask=0077
+ExecStart=/usr/local/bin/astilba-agent run
+Restart=always
+RestartSec=5
+TimeoutStopSec=40
+NoNewPrivileges=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/astilba-agent /usr/local/bin
+PrivateTmp=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

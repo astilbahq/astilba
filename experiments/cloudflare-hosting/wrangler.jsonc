@@ -1,0 +1,22 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "astilba-plat6-fixture",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-22",
+  "workers_dev": true,
+  "assets": {
+    "directory": "../durable-execution/hosting_assets",
+    "binding": "ASSETS",
+    "run_worker_first": ["/api/*", "/v1/*", "/health", "/_fixture/*"]
+  },
+  "containers": [{
+    "class_name": "Management",
+    "scheduling_policy": "durable_object",
+    "images": {"management": {"dockerfile": "../durable-execution/hosting.Dockerfile", "build_context": "../durable-execution"}}
+  }],
+  "durable_objects": {"bindings": [{"name": "MANAGEMENT", "class_name": "Management"}]},
+  "exports": {"Management": {"type": "durable-object", "storage": "sqlite"}},
+  "triggers": {"crons": ["* * * * *"]},
+  "vars": {"PLAT6_PUBLIC_ORIGIN": "https://example.invalid"},
+  "observability": {"enabled": false}
+}

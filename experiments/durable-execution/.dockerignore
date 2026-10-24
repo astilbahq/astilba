@@ -1,0 +1,11 @@
+**
+!*.go
+!go.mod
+!go.sum
+!hosting_assets/
+!hosting_assets/**
+!cmd/
+!cmd/hosting/
+!cmd/hosting/**
+!hosting.Dockerfile
+*_test.go

@@ -1,0 +1,26 @@
+services:
+  platform:
+    image: astilba:local
+    command: [serve]
+    ports:
+      - 127.0.0.1:8080:8080
+    environment:
+      ASTILBA_DATABASE_URL: ${ASTILBA_DATABASE_URL:?Set a PostgreSQL connection URL}
+      ASTILBA_KEYRING: /run/astilba/keyring.json
+      ASTILBA_LISTEN: 0.0.0.0:8080
+      ASTILBA_ORIGIN: ${ASTILBA_ORIGIN:?Set the public HTTPS origin}
+      ASTILBA_TRUSTED_PROXIES: ${ASTILBA_TRUSTED_PROXIES:-}
+      ASTILBA_SMTP_ADDRESS: ${ASTILBA_SMTP_ADDRESS:-}
+      ASTILBA_SMTP_MODE: ${ASTILBA_SMTP_MODE:-starttls}
+      ASTILBA_SMTP_FROM: ${ASTILBA_SMTP_FROM:-}
+      ASTILBA_SMTP_USERNAME: ${ASTILBA_SMTP_USERNAME:-}
+      ASTILBA_SMTP_PASSWORD: ${ASTILBA_SMTP_PASSWORD:-}
+    volumes:
+      - type: bind
+        source: ${ASTILBA_KEYRING_FILE:?Set an owner-only keyring file readable by UID 65532}
+        target: /run/astilba/keyring.json
+        read_only: true
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
