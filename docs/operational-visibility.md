@@ -8,7 +8,7 @@ and service tables provide the recorded values without interpolation.
 
 Metrics are read-only. They do not restart workloads, reconcile drift, clean
 storage or establish application health. [Operational alerts](operational-alerts.md) use these observations and durable
-operation state. Bounded log export remains a separate P9 increment.
+operation state. Bounded log export is available in each environment.
 
 A new signed agent release supplies collection. Older agents remain connected
 but have no history until updated explicitly. New agents can talk to older
@@ -46,3 +46,37 @@ server and the controller's existing retention sweep removes up to 1,000 expired
 rows per minute for disconnected servers. Storage is therefore subject to sweep
 catch-up after controller downtime. Measure fleet size and storage growth before
 claiming hosted capacity.
+
+## Export retained logs
+
+Open an environment's **Export logs** section, choose the last one, six or 24
+hours, and select **Download logs**. Workspace members who can read the
+environment can download its JSON export. The same nested workspace, project
+and environment authorization applies to the API.
+
+The download contains the latest retained runtime samples and retained build
+output. Runtime samples are selected by the time management received the
+observation; build output is selected by the job's creation time, which can
+precede its actual execution. Each entry identifies its source, resource and,
+for builds, operation. The file also records the environment and exact requested
+window. No server contact or new log collection is triggered by a download.
+
+This is a snapshot export, not a complete historical log archive. Runtime
+inspection currently captures up to ten lines and 512 bytes per service within
+a shared 2 KiB budget; a newer observation replaces the previous one. Build
+output is capped at 16 KiB before storage. Existing retention still applies.
+An empty export means no retained output matched, not that nothing happened.
+
+Exports select the newest entries first and include at most 100 entries and
+64 KiB of log content. The `truncated` fields identify additional shortening or
+omission by the export limits. A false flag does not make the original samples
+complete; `coverage` is always `retained-snapshots`. UTF-8 characters are never
+split at the content limit. JSON metadata and escaping are additional to the
+64 KiB content budget.
+
+The export reuses the agent's existing redaction before sampling and storage.
+It does not load command payloads, configuration or credentials. Known runtime
+and build secret values are redacted, but applications can emit other private
+data, so treat downloaded logs as private. Logs and metrics remain disposable
+observations and are not added to workspace transfer archives. This feature
+does not change retention or add permanent log storage.

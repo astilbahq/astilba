@@ -27,6 +27,9 @@ export function Deployments({
   const [key, setKey] = useState("");
   const [message, setMessage] = useState("");
   const [bundle, setBundle] = useState<Schema["ConfigurationExport"]>();
+  const [logHours, setLogHours] = useState<1 | 6 | 24>(1);
+  const logExport = useAction();
+  const [logNotice, setLogNotice] = useState("");
   const { workspaceId, projectId, environmentId } = path;
   const action = useAction();
   const queries = useQueryClient();
@@ -91,10 +94,12 @@ export function Deployments({
   }, [workspaceId, projectId, environmentId, queries]);
   const ready = plan.data?.plan;
   const stale = !!ready && ready.revisionId !== revision.id;
-  const download = (name: string, data: string) => {
-    const url = URL.createObjectURL(
-      new Blob([data], { type: "text/plain;charset=utf-8" }),
-    );
+  const download = (
+    name: string,
+    data: string,
+    type = "text/plain;charset=utf-8",
+  ) => {
+    const url = URL.createObjectURL(new Blob([data], { type }));
     const link = document.createElement("a");
     link.href = url;
     link.download = name;
@@ -340,6 +345,65 @@ export function Deployments({
             </li>
           ))}
         </ul>
+      </section>
+      <section className={s.panel} aria-label="Log export">
+        <h2>Export logs</h2>
+        <p className={s.muted}>
+          Download retained runtime samples and build output for this
+          environment. These snapshots do not contain every log line. Runtime
+          samples use their receipt time; build output uses the job creation
+          time. Known secret values are redacted before capture, but application
+          output may still contain private data.
+        </p>
+        <p className={s.muted}>
+          Each export includes at most 100 entries and 64 KiB of log text,
+          newest first. The file records the requested window and any further
+          truncation. Inspect the host to refresh its runtime sample.
+        </p>
+        <ErrorNotice error={logExport.error} />
+        <label>
+          Log export window
+          <select
+            value={logHours}
+            onChange={(event) => {
+              setLogHours(Number(event.target.value) as 1 | 6 | 24);
+              setLogNotice("");
+            }}
+          >
+            <option value={1}>Last hour</option>
+            <option value={6}>Last 6 hours</option>
+            <option value={24}>Last 24 hours</option>
+          </select>
+        </label>
+        <button
+          type="button"
+          disabled={logExport.isPending}
+          onClick={() => {
+            setLogNotice("");
+            logExport.run(async () => {
+              const exported = await result(
+                client.GET(`${root}/logs/export`, {
+                  params: { path, query: { hours: logHours } },
+                }),
+              );
+              download(
+                `astilba-logs-${exported.environmentId}.json`,
+                JSON.stringify(exported, null, 2),
+                "application/json",
+              );
+              setLogNotice(
+                exported.entries.length === 0
+                  ? "Downloaded an empty export: no retained log snapshots in this window."
+                  : exported.truncated
+                    ? "Downloaded log snapshots. The export limit omitted or shortened some output."
+                    : "Downloaded retained log snapshots.",
+              );
+            });
+          }}
+        >
+          Download logs
+        </button>
+        {logNotice && <p role="status">{logNotice}</p>}
       </section>
       <section className={s.panel}>
         <h2>Operations</h2>
