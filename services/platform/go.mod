@@ -20,6 +20,7 @@ require (
 	github.com/pressly/goose/v3 v3.29.0
 	github.com/riverqueue/river v0.49.0
 	github.com/riverqueue/river/riverdriver/riverpgxv5 v0.49.0
+	github.com/tailscale/hujson v0.0.0-20260727124030-b80ff77dac4f
 	go.etcd.io/bbolt v1.5.0
 	golang.org/x/sys v0.49.0
 )

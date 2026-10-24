@@ -29,6 +29,7 @@ type Client struct {
 	Metrics       func(context.Context) api.MetricReport
 	buildControls atomic.Bool
 	buildCache    atomic.Bool
+	railpack      atomic.Bool
 }
 
 func NewClient(j *Journal, e *Engine) *Client {
@@ -48,25 +49,13 @@ func (c *Client) call(ctx context.Context, method, path string, body, out any, t
 	}
 	// Older protocol-1 controllers reject unknown capability fields. Advertise
 	// extensions only after this controller has explicitly accepted that schema.
-	if !c.buildControls.Load() {
-		switch value := body.(type) {
-		case api.AgentEnrollment:
-			value.Capabilities.BuildControls = nil
-			body = value
-		case api.AgentHeartbeat:
-			value.Capabilities.BuildControls = nil
-			body = value
-		}
-	}
-	if !c.buildCache.Load() {
-		switch value := body.(type) {
-		case api.AgentEnrollment:
-			value.Capabilities.BuildCache = nil
-			body = value
-		case api.AgentHeartbeat:
-			value.Capabilities.BuildCache = nil
-			body = value
-		}
+	switch value := body.(type) {
+	case api.AgentEnrollment:
+		value.Capabilities = c.advertisedCapabilities(value.Capabilities)
+		body = value
+	case api.AgentHeartbeat:
+		value.Capabilities = c.advertisedCapabilities(value.Capabilities)
+		body = value
 	}
 	raw, e := json.Marshal(body)
 	if e != nil {
@@ -88,6 +77,7 @@ func (c *Client) call(ctx context.Context, method, path string, body, out any, t
 	// Also forget an extension after controller replacement or downgrade.
 	c.buildControls.Store(response.Header.Get("Astilba-Agent-Features") == "build-controls")
 	c.buildCache.Store(response.Header.Get("Astilba-Agent-Build-Cache") == "v1")
+	c.railpack.Store(response.Header.Get("Astilba-Agent-Railpack") == "v1")
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		return errors.New("management rejected request; check enrollment, credentials and operation status")
 	}
@@ -108,6 +98,19 @@ func (c *Client) call(ctx context.Context, method, path string, body, out any, t
 		return errors.New("management response exceeds limits")
 	}
 	return nil
+}
+
+func (c *Client) advertisedCapabilities(v api.AgentCapabilities) api.AgentCapabilities {
+	if !c.buildControls.Load() {
+		v.BuildControls = nil
+	}
+	if !c.buildCache.Load() {
+		v.BuildCache = nil
+	}
+	if !c.railpack.Load() {
+		v.RailpackVersion = nil
+	}
+	return v
 }
 func (c *Client) Enroll(ctx context.Context, token string) error {
 	cfg, e := c.Journal.Config()

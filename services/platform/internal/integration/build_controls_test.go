@@ -156,4 +156,57 @@ func TestBuildControlsAndSuccessfulWatchBaseline(t *testing.T) {
 		t.Fatal("changed image inputs reused watch baseline")
 	}
 	report(c, "failed", pipeline.Result{})
+	// Railpack is an opt-in contract; older and downgraded agents must never
+	// receive hydrated build inputs they cannot execute.
+	cfg.Builder, cfg.Dockerfile, cfg.WatchPaths = "railpack", "", nil
+	cfg.Budget = &pipeline.BuildBudget{CPUs: 2, MemoryMiB: 6144, SourceMiB: 1024, StateMiB: 4096, Minutes: 10}
+	create(400)
+	version := "0.42.0"
+	in.Capabilities.RailpackVersion = &version
+	heartbeat := func() {
+		agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/heartbeat", token, api.AgentHeartbeat{Capabilities: in.Capabilities, Preflight: in.Preflight}, 200, nil)
+	}
+	heartbeat()
+	create(400)
+	version = pipeline.RailpackVersion
+	heartbeat()
+	op = create(202)
+	c = poll()
+	p = pipeline.Command{}
+	_ = json.Unmarshal(*c.Pipeline, &p)
+	if p.Railpack == nil || *p.Railpack != pipeline.RailpackFor("arm64") || p.Build.Dockerfile != "" || p.Build.Builder != "railpack" {
+		t.Fatal("Railpack assignment lost frozen inputs")
+	}
+	badReport := pipeline.Result{Commit: p.Commit, Architecture: "arm64", Image: "astilba-build-" + c.Id.String() + ":built", Digest: "sha256:" + strings.Repeat("d", 64)}
+	for _, summary := range []*pipeline.RailpackSummary{nil, {Version: "0.42.0", Frontend: pipeline.RailpackFrontend, Provider: "node", PlanHash: strings.Repeat("b", 64), Packages: map[string]string{}}} {
+		badReport.Railpack = summary
+		raw, _ := json.Marshal(badReport)
+		msg := json.RawMessage(raw)
+		var rejection api.Error
+		agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/report", token, api.AgentReport{Id: c.Id, Generation: c.Generation, PlanHash: c.PlanHash, Sequence: 1, State: "succeeded", Steps: []api.ExecutionStep{}, Pipeline: &msg}, 400, &rejection)
+		if rejection.Fields == nil || len(*rejection.Fields) != 1 || (*rejection.Fields)[0] != "build.railpack" {
+			t.Fatal("summary was not rejected by assigned-input validation", rejection)
+		}
+	}
+	in.Capabilities.RailpackVersion = nil
+	heartbeat()
+	agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/poll", token, nil, 400, nil)
+	b.call("POST", prefix+"/operations/"+op.Id.String()+"/cancel", nil, 204, nil)
+	c = poll()
+	p = pipeline.Command{}
+	_ = json.Unmarshal(*c.Pipeline, &p)
+	if !c.CancelRequested || p.Access != nil || p.BuildSecrets != nil || p.RegistryAccess != nil {
+		t.Fatal("downgraded runner cancellation was not credential-free")
+	}
+	report(c, "cancelled", pipeline.Result{})
+	in.Capabilities.RailpackVersion = &version
+	heartbeat()
+	push(strings.Repeat("1", 40))
+	c = poll()
+	p = pipeline.Command{}
+	_ = json.Unmarshal(*c.Pipeline, &p)
+	if p.Railpack == nil || *p.Railpack != pipeline.RailpackFor("arm64") || p.Build.Builder != "railpack" {
+		t.Fatal("automatic build omitted Railpack frozen inputs")
+	}
+	report(c, "succeeded", pipeline.Result{Commit: p.Commit, Architecture: "arm64", Image: "astilba-build-" + c.Id.String() + ":built", Digest: "sha256:" + strings.Repeat("d", 64), Railpack: &pipeline.RailpackSummary{Version: pipeline.RailpackVersion, Frontend: pipeline.RailpackFrontend, Provider: "node", PlanHash: strings.Repeat("b", 64), Packages: map[string]string{"node": "24.18.1"}}})
 }

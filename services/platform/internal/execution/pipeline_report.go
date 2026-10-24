@@ -65,8 +65,8 @@ func (s *Service) hydratePipeline(ctx context.Context, c *api.ExecutionCommand) 
 	if err = tx.QueryRow(ctx, "SELECT workspace_id FROM servers WHERE id=$1", c.ServerId).Scan(&ws); err != nil {
 		return err
 	}
-	if p.Build != nil && p.Build.NeedsControls() {
-		if _, err = runnerEligible(ctx, tx, ws, c.ServerId, p.Build.Architecture, true); err != nil {
+	if p.Build != nil && (p.Build.NeedsControls() || p.Build.UsesRailpack()) {
+		if _, err = runnerEligible(ctx, tx, ws, c.ServerId, p.Build.Architecture, p.Build.NeedsControls(), p.Build.UsesRailpack()); err != nil {
 			return err
 		}
 	}
@@ -193,6 +193,9 @@ func (s *Service) pipelineReport(ctx context.Context, tx pgx.Tx, c api.Execution
 	if json.Unmarshal(*r.Pipeline, &result) != nil || len(result.Logs) > 16384 || len(result.Cache) > 256 {
 		return domain.Invalid("pipeline")
 	}
+	if result.Railpack != nil && (p.Railpack == nil || !result.Railpack.Valid(*p.Railpack)) {
+		return domain.Invalid("build.railpack")
+	}
 	if r.State == "succeeded" {
 		switch p.Action {
 		case "import":
@@ -275,6 +278,9 @@ func (s *Service) pipelineReport(ctx context.Context, tx pgx.Tx, c api.Execution
 			}
 			if result.Commit != p.Commit || result.Architecture != p.Build.Architecture || !validImageDigest(result.Digest) {
 				return domain.Invalid("artifact")
+			}
+			if p.Build.UsesRailpack() && result.Railpack == nil {
+				return domain.Invalid("build.railpack")
 			}
 			artifact := pipeline.Artifact{ID: c.Id, BuildID: c.Id, Image: result.Image, Digest: result.Digest, Architecture: result.Architecture, InputHash: p.InputHash, Commit: p.Commit}
 			if p.Registry != nil {

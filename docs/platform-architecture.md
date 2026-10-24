@@ -36,7 +36,7 @@ Future boundaries for multiple deployment units, Kubernetes, live collaboration,
 | API contracts | OpenAPI, oapi-codegen, openapi-typescript and openapi-fetch | Generate Go interfaces and TypeScript bindings from one contract. |
 | Host agent | Go, with a bbolt journal | Persist operation progress locally without another database service. |
 | Containers | Docker Engine SDK, the maintained Compose Go plugin and compose-go | Inspect containers and execute standard Compose projects. |
-| Builds | Dockerfiles through BuildKit; Railpack after validation | Build on an explicitly selected deployment server or customer-owned runner. |
+| Builds | Dockerfile and validated Railpack providers through BuildKit | Build on an explicitly selected deployment server or customer-owned runner. |
 | Application ingress | Traefik on each deployment host | Serve HTTP, HTTPS and explicitly published TCP routes. |
 | Backups | restic plus native database dump and restore tools | Store encrypted backups with explicit consistency guarantees. |
 
@@ -236,7 +236,7 @@ Select a specific server with the build role. A server may have both deployment 
 
 If the selected runner is offline or busy, queue the build and show its state. Never silently move it to a production server. An operator may explicitly configure a fallback. Record the actual runner, source commit, target architecture and input versions so retries and artifacts remain attributable.
 
-Dockerfiles through BuildKit are the baseline. Evaluate Railpack for repositories without a Dockerfile; it is MIT licensed and builds through BuildKit. Record builder version, build inputs and resulting image identity. Bound concurrency, CPU, memory, disk use and retained artifacts, especially when building alongside production services. A failed build must not consume the disk capacity reserved for running databases. [Railpack](https://github.com/railwayapp/railpack).
+Dockerfiles through BuildKit are the baseline. The production Railpack path supports the validated Node/npm, Go and shell matrix for repositories without a Dockerfile. It pins planner/frontend and image inputs, journals the prepared plan before execution, isolates declared build secrets and retains explicit command overrides; see [Git and builds](git-builds.md#railpack-builds). Record builder version, build inputs and resulting image identity. Bound concurrency, CPU, memory, disk use and retained artifacts, especially when building alongside production services. A failed build must not consume the disk capacity reserved for running databases. [Railpack](https://github.com/railwayapp/railpack).
 
 Remote builds publish to a customer-configured OCI registry such as GHCR, GitLab or a self-hosted registry. Capture the resulting digest and deploy that exact artifact; grant runners push and deployment agents pull access only where needed. Show registry setup and connectivity checks during onboarding. A same-host build can use its local immutable image identity without a registry. Transfer or promotion to another host requires publishing that artifact through a registry. An Astilba-operated registry and paid build fleet are separate future services.
 

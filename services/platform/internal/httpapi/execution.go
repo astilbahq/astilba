@@ -35,6 +35,7 @@ func (s *Server) protection(next http.Handler) http.Handler {
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("Astilba-Agent-Features", "build-controls")
 		w.Header().Set("Astilba-Agent-Build-Cache", "v1")
+		w.Header().Set("Astilba-Agent-Railpack", "v1")
 		limit := int64(16384)
 		if r.URL.Path == "/agent/v1/report" || r.URL.Path == "/agent/v1/schedule-reports" {
 			limit = 196608
