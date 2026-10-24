@@ -61,6 +61,8 @@ type Source struct {
 	AutoDeploy       bool       `json:"autoDeploy"`
 }
 type BuildConfig struct {
+	Builder          string               `json:"builder,omitempty"`
+	Railpack         *RailpackOptions     `json:"railpack,omitempty"`
 	ConnectionID     uuid.UUID            `json:"connectionId"`
 	Branch           string               `json:"branch"`
 	RunnerID         uuid.UUID            `json:"runnerId"`
@@ -102,6 +104,7 @@ type Command struct {
 	InputHash     string                 `json:"inputHash"`
 	CompareCommit string                 `json:"compareCommit,omitempty"`
 	CacheScope    string                 `json:"cacheScope,omitempty"`
+	Railpack      *RailpackInputs        `json:"railpack,omitempty"`
 	Registry      *Registry              `json:"registry,omitempty"`
 	SubmittedAt   time.Time              `json:"submittedAt"`
 	// Values exist only in the assigned agent's transport and encrypted journal.
@@ -133,6 +136,7 @@ type Result struct {
 	Logs         string                `json:"logs,omitempty"`
 	Cache        string                `json:"cache,omitempty"`
 	Skipped      bool                  `json:"skipped,omitempty"`
+	Railpack     *RailpackSummary      `json:"railpack,omitempty"`
 }
 
 var commitPattern = regexp.MustCompile(`^[a-f0-9]{40}([a-f0-9]{24})?$`)
@@ -173,7 +177,10 @@ func ValidBranch(s string) bool {
 }
 func ValidContext(s string) bool { return s == "." || composeproject.ValidPath(s) }
 func (b BuildConfig) Validate() error {
-	if b.ConnectionID == uuid.Nil || b.RunnerID == uuid.Nil || !ValidBranch(b.Branch) || !ValidContext(b.Context) || !composeproject.ValidPath(b.Dockerfile) || path.Clean(b.Dockerfile) != b.Dockerfile || (b.Architecture != "amd64" && b.Architecture != "arm64") || len(b.Arguments) > 32 || len(b.Secrets) > 16 {
+	if err := b.validateBuilder(); err != nil {
+		return err
+	}
+	if b.ConnectionID == uuid.Nil || b.RunnerID == uuid.Nil || !ValidBranch(b.Branch) || !ValidContext(b.Context) || !b.UsesRailpack() && (!composeproject.ValidPath(b.Dockerfile) || path.Clean(b.Dockerfile) != b.Dockerfile) || (b.Architecture != "amd64" && b.Architecture != "arm64") || len(b.Arguments) > 32 || len(b.Secrets) > 16 {
 		return errors.New("invalid build configuration")
 	}
 	for k, v := range b.Arguments {
@@ -261,6 +268,13 @@ func (c Command) Validate() error {
 		}
 		if c.CacheScope != "" && (!ValidCacheID(c.CacheScope) || !c.Build.CanCache()) {
 			return errors.New("invalid project cache scope")
+		}
+		if c.Build.UsesRailpack() {
+			if c.Railpack == nil || *c.Railpack != RailpackFor(c.Build.Architecture) {
+				return errors.New("unsupported frozen Railpack inputs")
+			}
+		} else if c.Railpack != nil {
+			return errors.New("Railpack inputs require the Railpack builder")
 		}
 		return c.Build.Validate()
 	default:

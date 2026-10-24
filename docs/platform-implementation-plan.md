@@ -162,7 +162,7 @@ Support customer-configured OCI registries for remote builds, scoped push and pu
 - A failed build leaves the applied deployment untouched. A successful build followed by a changed plan requires a fresh review.
 - The resulting application joins the same binding, domain, export and operation workflows as an image-based application.
 
-The production workflow and supported limits are recorded in [Git and build workflows](git-builds.md). Dockerfile builds use pinned BuildKit on customer runners; Railpack remains deferred after its narrow P0 fixture. Provider API/signature fixtures cover GitHub, GitLab and Gitea, while native runner checks cover public/private exact-commit checkout, review-response recovery, local images, TLS registry transfer and bounded build failure. These checks do not claim a live hosted GitHub pass.
+The production workflow and supported limits are recorded in [Git and build workflows](git-builds.md). Dockerfile builds use pinned BuildKit on customer runners; Production Railpack is delivered separately in P10 after its narrow P0 fixture. Provider API/signature fixtures cover GitHub, GitLab and Gitea, while native runner checks cover public/private exact-commit checkout, review-response recovery, local images, TLS registry transfer and bounded build failure. These checks do not claim a live hosted GitHub pass.
 
 ## P6 Backup and restore
 
@@ -253,7 +253,7 @@ Deliver this milestone in reviewable changes: build resource budgets and monorep
 
 Introduce per-project or per-trust-domain reusable BuildKit caches with bounded storage and safe eviction, configurable build resource budgets, and monorepo watch paths. Prove cache isolation, cancellation, changed input invalidation and exact-commit behavior. Use a representative existing project to measure onboarding and repeated-build latency; no cache hit or universal framework support is promised.
 
-Build resource budgets and monorepo triggers are implemented. Bounded project layer caches add runner-local OCI exports, compatibility keys, fixed retention/eviction limits and native BuildKit reuse/invalidation checks; see [Git and build workflows](git-builds.md#reusable-layer-caches). Railpack and GitHub App onboarding remain separate increments.
+Build resource budgets and monorepo triggers are implemented. Bounded project layer caches add runner-local OCI exports, compatibility keys, fixed retention/eviction limits and native BuildKit reuse/invalidation checks; see [Git and build workflows](git-builds.md#reusable-layer-caches). Production Railpack adds an explicit builder choice, source-preserving command overrides, version-negotiated runners, journaled prepared plans and pinned image/tool inputs. Its supported Node/npm, static Go and shell matrix and limits are documented in [Git and builds](git-builds.md#railpack-builds). GitHub App onboarding remains the final separate increment.
 
 ## P11 Safe application releases
 

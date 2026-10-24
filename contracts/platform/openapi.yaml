@@ -3421,6 +3421,10 @@
         buildCache:
           type: boolean
           description: Supports bounded project-scoped layer caches. Agents send this extension only after a controller response advertises Astilba-Agent-Build-Cache with v1.
+        railpackVersion:
+          type: string
+          maxLength: 80
+          description: Supported Railpack planner/frontend version. Agents send this extension only after a controller response advertises Astilba-Agent-Railpack with v1.
         build:
           type: boolean
         backups:
@@ -5504,6 +5508,20 @@
       type: object
       additionalProperties: false
       properties:
+        builder:
+          type: string
+          enum: [dockerfile, railpack]
+          description: Omission retains the Dockerfile builder.
+        railpack:
+          type: object
+          additionalProperties: false
+          properties:
+            buildCommand:
+              type: string
+              maxLength: 4096
+            startCommand:
+              type: string
+              maxLength: 4096
         connectionId:
           type: string
           format: uuid
@@ -5562,7 +5580,6 @@
         - branch
         - runnerId
         - context
-        - dockerfile
         - architecture
         - arguments
         - secrets
@@ -5629,6 +5646,29 @@
         - architecture
         - inputHash
         - commit
+    RailpackBuildSummary:
+      type: object
+      additionalProperties: false
+      required: [version, frontend, provider, planHash, packages]
+      properties:
+        version:
+          type: string
+          maxLength: 80
+        frontend:
+          type: string
+          maxLength: 512
+        provider:
+          type: string
+          enum: [node, golang, shell]
+        planHash:
+          type: string
+          pattern: '^[a-f0-9]{64}$'
+        packages:
+          type: object
+          maxProperties: 32
+          additionalProperties:
+            type: string
+            maxLength: 80
     PipelineResult:
       type: object
       additionalProperties: false
@@ -5664,6 +5704,8 @@
         cache:
           type: string
           maxLength: 1024
+        railpack:
+          $ref: '#/components/schemas/RailpackBuildSummary'
       required:
         - commit
       x-go-type: json.RawMessage

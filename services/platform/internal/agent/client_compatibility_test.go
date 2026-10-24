@@ -19,6 +19,7 @@ func TestBuildCapabilityNegotiatesWithControllerVersions(t *testing.T) {
 			var modern atomic.Bool
 			var extensions atomic.Int32
 			var cacheExtensions atomic.Int32
+			var railpackExtensions atomic.Int32
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				var body struct {
 					Capabilities map[string]json.RawMessage `json:"capabilities"`
@@ -27,6 +28,13 @@ func TestBuildCapabilityNegotiatesWithControllerVersions(t *testing.T) {
 					t.Error(err)
 					w.WriteHeader(400)
 					return
+				}
+				if _, present := body.Capabilities["railpackVersion"]; present {
+					railpackExtensions.Add(1)
+					if !modern.Load() {
+						w.WriteHeader(400)
+						return
+					}
 				}
 				if _, present := body.Capabilities["buildControls"]; present {
 					extensions.Add(1)
@@ -46,6 +54,7 @@ func TestBuildCapabilityNegotiatesWithControllerVersions(t *testing.T) {
 				if modern.Load() {
 					w.Header().Set("Astilba-Agent-Features", "build-controls")
 					w.Header().Set("Astilba-Agent-Build-Cache", "v1")
+					w.Header().Set("Astilba-Agent-Railpack", "v1")
 				}
 				w.Header().Set("Content-Type", "application/json")
 				_, _ = w.Write([]byte(`{"role":"combined","rotationRequested":false}`))
@@ -62,7 +71,8 @@ func TestBuildCapabilityNegotiatesWithControllerVersions(t *testing.T) {
 			c := NewClient(j, &Engine{Journal: j})
 			c.HTTP = server.Client()
 			c.Observe = func(context.Context) api.AgentHeartbeat {
-				return api.AgentHeartbeat{Capabilities: api.AgentCapabilities{Build: &capable, BuildControls: &capable, BuildCache: &capable}}
+				version := "0.43.0"
+				return api.AgentHeartbeat{Capabilities: api.AgentCapabilities{Build: &capable, BuildControls: &capable, BuildCache: &capable, RailpackVersion: &version}}
 			}
 			if err = c.Enroll(context.Background(), strings.Repeat("a", 43)); err != nil {
 				t.Fatal("older controller enrollment", err)
@@ -70,21 +80,21 @@ func TestBuildCapabilityNegotiatesWithControllerVersions(t *testing.T) {
 			heartbeat := func() error {
 				return c.call(context.Background(), "POST", "/agent/v1/heartbeat", c.Observe(context.Background()), &api.AgentStatus{}, "fixture")
 			}
-			if err = heartbeat(); err != nil || extensions.Load() != 0 || cacheExtensions.Load() != 0 {
+			if err = heartbeat(); err != nil || extensions.Load() != 0 || cacheExtensions.Load() != 0 || railpackExtensions.Load() != 0 {
 				t.Fatal("older controller received capability extension", err)
 			}
 			modern.Store(true)
-			if err = heartbeat(); err != nil || extensions.Load() != 0 || cacheExtensions.Load() != 0 {
+			if err = heartbeat(); err != nil || extensions.Load() != 0 || cacheExtensions.Load() != 0 || railpackExtensions.Load() != 0 {
 				t.Fatal("advertised before negotiation", err)
 			}
-			if err = heartbeat(); err != nil || extensions.Load() != 1 || cacheExtensions.Load() != 1 {
+			if err = heartbeat(); err != nil || extensions.Load() != 1 || cacheExtensions.Load() != 1 || railpackExtensions.Load() != 1 {
 				t.Fatal("supported extension not advertised", err)
 			}
 			modern.Store(false)
 			if heartbeat() == nil {
 				t.Fatal("old request schema fixture did not reject unsupported field")
 			}
-			if err = heartbeat(); err != nil || extensions.Load() != 2 {
+			if err = heartbeat(); err != nil || railpackExtensions.Load() != 2 {
 				t.Fatal("controller downgrade did not clear negotiation", err)
 			}
 		})

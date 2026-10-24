@@ -23,5 +23,8 @@ func (c Command) CacheKey() string {
 		Connection                                         Connection
 		Arguments                                          map[string]string
 		Secrets                                            map[string]uuid.UUID
-	}{BuilderImage, b.Branch, b.Context, b.Dockerfile, b.Architecture, c.Connection, b.Arguments, b.Secrets})
+		BuilderMode                                        string           `json:",omitempty"`
+		Railpack                                           *RailpackOptions `json:",omitempty"`
+		RailpackInputs                                     *RailpackInputs  `json:",omitempty"`
+	}{BuilderImage, b.Branch, b.Context, b.Dockerfile, b.Architecture, c.Connection, b.Arguments, b.Secrets, b.Canonical().Builder, b.Railpack, c.Railpack})
 }

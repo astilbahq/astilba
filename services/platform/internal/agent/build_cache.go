@@ -6,7 +6,6 @@ import (
 	"errors"
 	"io"
 	"os"
-	"os/exec"
 	"path"
 	"path/filepath"
 	"sort"
@@ -217,7 +216,7 @@ func (e *Engine) importBuildCache(ctx context.Context, c api.ExecutionCommand, p
 	if _, err = e.pipelineCLI(ctx, pipelineName(c), nil, nil, 1024, "mkdir", "-p", cacheContainerDir); err != nil {
 		return false
 	}
-	cmd := e.cacheCommand(ctx, c, "tar", "-xf", "-", "-C", cacheContainerDir)
+	cmd := e.pipelineExec(ctx, pipelineName(c), nil, "tar", "-xf", "-", "-C", cacheContainerDir)
 	cmd.Stdin = f
 	err = cmd.Run()
 	if err == nil {
@@ -239,7 +238,7 @@ func (e *Engine) retainBuildCache(ctx context.Context, c api.ExecutionCommand, p
 		return false
 	}
 	defer s.root.Remove(name)
-	cmd := e.cacheCommand(ctx, c, "tar", "-cf", "-", "-C", cacheContainerDir, "cache-out")
+	cmd := e.pipelineExec(ctx, pipelineName(c), nil, "tar", "-cf", "-", "-C", cacheContainerDir, "cache-out")
 	stream, err := cmd.StdoutPipe()
 	if err != nil {
 		f.Close()
@@ -264,20 +263,4 @@ func (e *Engine) retainBuildCache(ctx context.Context, c api.ExecutionCommand, p
 		return false
 	}
 	return s.root.Rename(name, p.CacheScope+"."+p.CacheKey()+".tar") == nil
-}
-
-// Docker's archive API does not expose the live tmpfs. Exec streams through the
-// running container's mount namespace, without a host bind mount or shell input.
-func (e *Engine) cacheCommand(ctx context.Context, c api.ExecutionCommand, args ...string) *exec.Cmd {
-	cli := e.DockerCLI
-	if cli == "" {
-		cli = "docker"
-	}
-	cmd := exec.CommandContext(ctx, cli, append([]string{"exec", "--interactive", pipelineName(c)}, args...)...)
-	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "DOCKER_HOST=" + e.Docker.DaemonHost(), "HOME=" + e.Journal.dir}
-	if v := os.Getenv("DOCKER_CONFIG"); v != "" {
-		cmd.Env = append(cmd.Env, "DOCKER_CONFIG="+v)
-	}
-	cmd.Stderr = io.Discard
-	return cmd
 }

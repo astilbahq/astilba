@@ -47,6 +47,7 @@ test("repository setup, Git service, queued build and cancellation use the real 
           docker: true,
           build: true,
           buildControls: true,
+          railpackVersion: "0.43.0",
         },
         preflight: {
           ready: true,
@@ -63,6 +64,7 @@ test("repository setup, Git service, queued build and cancellation use the real 
   );
   expect(enrolled.status()).toBe(200);
   expect(enrolled.headers()["astilba-agent-features"]).toBe("build-controls");
+  expect(enrolled.headers()["astilba-agent-railpack"]).toBe("v1");
   await page
     .getByLabel("Project name", { exact: true })
     .fill(`Builds ${info.project.name}`);
@@ -166,6 +168,118 @@ test("repository setup, Git service, queued build and cancellation use the real 
   const build = page.getByRole("form", { name: "Build a service" });
   await build.getByLabel("Branch", { exact: true }).fill("main");
   await build.getByText("Build resource limits", { exact: true }).click();
+  await build
+    .getByRole("combobox", { name: "Builder", exact: true })
+    .selectOption("railpack");
+  await expect(
+    build.getByLabel("Memory limit (MiB)", { exact: true }),
+  ).toHaveValue("6144");
+  await expect(
+    build.getByLabel("Builder storage (MiB)", { exact: true }),
+  ).toHaveValue("4096");
+  await build
+    .getByRole("textbox", {
+      name: "Build command override (optional)",
+      exact: true,
+    })
+    .fill("npm run build");
+  await build
+    .getByRole("textbox", {
+      name: "Start command override (optional)",
+      exact: true,
+    })
+    .fill("npm start");
+  await build
+    .getByRole("combobox", { name: "Builder", exact: true })
+    .selectOption("dockerfile");
+  await expect(
+    build.getByLabel("Memory limit (MiB)", { exact: true }),
+  ).toHaveValue("2048");
+  await build
+    .getByLabel("Dockerfile, relative to context", { exact: true })
+    .fill("deploy.Dockerfile");
+  await build
+    .getByRole("combobox", { name: "Builder", exact: true })
+    .selectOption("railpack");
+  await expect(
+    build.getByRole("textbox", {
+      name: "Build command override (optional)",
+      exact: true,
+    }),
+  ).toHaveValue("npm run build");
+  await build.getByLabel("Memory limit (MiB)", { exact: true }).fill("7000");
+  await build
+    .getByRole("combobox", { name: "Builder", exact: true })
+    .selectOption("dockerfile");
+  await expect(
+    build.getByLabel("Memory limit (MiB)", { exact: true }),
+  ).toHaveValue("7000");
+  await expect(
+    build.getByLabel("Dockerfile, relative to context", { exact: true }),
+  ).toHaveValue("deploy.Dockerfile");
+  await build
+    .getByRole("combobox", { name: "Builder", exact: true })
+    .selectOption("railpack");
+  await build.getByLabel("Memory limit (MiB)", { exact: true }).fill("6144");
+  if (info.project.name === "chromium") {
+    await build.screenshot({ path: info.outputPath("railpack-desktop.png") });
+    await page.setViewportSize({ width: 390, height: 844 });
+    await build.screenshot({ path: info.outputPath("railpack-mobile.png") });
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= window.innerWidth,
+      ),
+    ).toBe(true);
+    await page.setViewportSize({ width: 1280, height: 720 });
+  }
+  await build.getByRole("button", { name: "Queue build", exact: true }).click();
+  await expect(
+    page.getByText(
+      "Build queued. Existing workloads stay on their applied image until deployment.",
+      { exact: true },
+    ),
+  ).toBeVisible();
+  const railpack = (
+    await (
+      await request.get("http://127.0.0.1:54181/agent/v1/poll", {
+        headers: agentHeaders,
+      })
+    ).json()
+  ).command;
+  expect(railpack.pipeline.build.builder).toBe("railpack");
+  expect(railpack.pipeline.build.dockerfile).toBe("");
+  expect(railpack.pipeline.build.railpack).toEqual({
+    buildCommand: "npm run build",
+    startCommand: "npm start",
+  });
+  expect(railpack.pipeline.railpack.frontend).toMatch(/@sha256:[a-f0-9]{64}$/);
+  const railpackCancelled = await page.request.post(
+    `/api/v1/workspaces/${ws}/operations/${railpack.id}/cancel`,
+    { headers },
+  );
+  expect(railpackCancelled.status()).toBe(204);
+  const railpackReport = await request.post(
+    "http://127.0.0.1:54181/agent/v1/report",
+    {
+      headers: agentHeaders,
+      data: {
+        id: railpack.id,
+        generation: railpack.generation,
+        planHash: railpack.planHash,
+        sequence: 2,
+        state: "cancelled",
+        note: "Fixture complete.",
+        steps: [],
+      },
+    },
+  );
+  expect(railpackReport.status()).toBe(204);
+  await build
+    .getByRole("combobox", { name: "Builder", exact: true })
+    .selectOption("dockerfile");
+  await build
+    .getByLabel("Dockerfile, relative to context", { exact: true })
+    .fill("Dockerfile");
   await build.getByLabel("CPU cores", { exact: true }).fill("1");
   await build.getByLabel("Memory limit (MiB)", { exact: true }).fill("512");
   await build
