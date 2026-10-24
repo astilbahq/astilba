@@ -18,14 +18,23 @@ Generated `styled-system/` output is ignored by Git. `src/api/generated/` is gen
 
 ## Local commands
 
-Use the Node and pnpm versions pinned in the repository. From the repository root:
+Use the Node, pnpm and Go versions pinned in the repository, plus a disposable local Docker daemon. From the repository root:
 
 ```sh
 pnpm install --frozen-lockfile
-pnpm --filter @astilba/dashboard dev
+export PLAT_APP_DOCKER_HOST=unix:///var/run/docker.sock
+pnpm dev
 ```
 
-The package's `prepare` hook generates Panda's types during installation. If lifecycle scripts were disabled, run `pnpm --filter @astilba/dashboard prepare` explicitly. Vite serves port 54182 and proxies API requests to the Go service on 54181; the frontend command alone does not start the backend. See the root setup instructions for the full application and fixtures.
+Select your actual local Docker Unix socket; the example above is the usual Linux path. `pnpm dev` builds the Go API, starts pinned PostgreSQL on a free loopback port, applies migrations and starts the dashboard with hot reload at `http://127.0.0.1:54182/login`. Sign in with `owner@example.test` / `correct horse battery staple`; the initial workspace is **UI Sandbox**. This is a development-only account. Restart the command after changing Go code.
+
+`pnpm dev --port 55182` uses 55182 for the UI and 55181 for the API. Separate checkouts have separate databases; choose different ports and **separate browser profiles** when using them together. Browser cookies are shared across ports on `127.0.0.1`, so opening two previews in one profile replaces their sign-in sessions. Inherited `ASTILBA_*` configuration is cleared so the preview uses its own database and development settings. Stop it before `make verify`, whose browser fixture uses the default ports.
+
+Ctrl-C stops the API, frontend and owned database container while retaining demo data. `pnpm dev --reset` deletes **this checkout's** demo database and seeds the same initial account/workspace. Generated credentials and keys stay in ignored, private `.artifacts/dev`; both Vite development servers deny HTTP access to `.artifacts`. Keep the state directory with its container: do not copy it to another checkout or remove the keyring from a database you intend to retain.
+
+An atomic `.artifacts/dev.lock` prevents two launchers from changing the same database. If a forced kill leaves it behind, inspect `launcher` for the parent PID and ports, and `processes` for child process-group IDs. Use `ps` and a port-listening tool to establish which recorded processes still belong to this launcher (PIDs may have been reused). Stop those owned groups, confirm the old API/UI listeners and launcher are gone, then remove **only** `.artifacts/dev.lock` and restart. A dead parent PID alone does not prove its children stopped. Normal Ctrl-C removes the lock automatically.
+
+The package's `prepare` hook generates Panda's types during installation. If lifecycle scripts were disabled, run `pnpm --filter @astilba/dashboard prepare` explicitly. For a frontend-only process against an already running local API, use `pnpm --filter @astilba/dashboard dev`; its defaults remain UI 54182 / API 54181. See the application setup guide for running the packaged service.
 
 ```sh
 pnpm --filter @astilba/dashboard check

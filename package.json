@@ -6,6 +6,7 @@
     "node": "24.18.1"
   },
   "scripts": {
+    "dev": "node scripts/platform-dev.mjs",
     "check": "make check && pnpm --filter @astilba/cloudflare-spike check && pnpm --filter @astilba/canvas-spike check",
     "verify": "pnpm check && make verify && pnpm --filter @astilba/cloudflare-spike verify",
     "generate": "node scripts/platform-generate.mjs",
