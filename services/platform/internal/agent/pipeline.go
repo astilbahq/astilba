@@ -28,6 +28,18 @@ import (
 
 func pipelineName(c api.ExecutionCommand) string { return "astilba-pipeline-" + c.Id.String() }
 func (e *Engine) pipelineCLI(ctx context.Context, name string, env []string, input []byte, limit int, args ...string) ([]byte, error) {
+	cmd := e.pipelineExec(ctx, name, env, args...)
+	cmd.Stdin = bytes.NewReader(input)
+	output := &boundedOutput{limit: limit, stopOnLimit: true}
+	cmd.Stdout = output
+	cmd.Stderr = io.Discard
+	if err := cmd.Run(); err != nil {
+		return nil, errors.New("runner tool failed")
+	}
+	return output.b.Bytes(), nil
+}
+
+func (e *Engine) pipelineExec(ctx context.Context, name string, env []string, args ...string) *exec.Cmd {
 	cli := e.DockerCLI
 	if cli == "" {
 		cli = "docker"
@@ -39,6 +51,11 @@ func (e *Engine) pipelineCLI(ctx context.Context, name string, env []string, inp
 	}
 	for _, v := range env {
 		k, _, _ := strings.Cut(v, "=")
+		// Docker uses this on the host too; keep container auth independent of CLI wrappers.
+		if k == "DOCKER_CONFIG" {
+			command = append(command, "--env", v)
+			continue
+		}
 		command = append(command, "--env", k)
 		environment = append(environment, v)
 	}
@@ -46,17 +63,19 @@ func (e *Engine) pipelineCLI(ctx context.Context, name string, env []string, inp
 	command = append(command, args...)
 	cmd := exec.CommandContext(ctx, cli, command...)
 	cmd.Env = environment
-	cmd.Stdin = bytes.NewReader(input)
-	output := &boundedOutput{limit: limit, stopOnLimit: true}
-	cmd.Stdout = output
-	cmd.Stderr = io.Discard
-	if err := cmd.Run(); err != nil {
-		return nil, errors.New("runner tool failed")
-	}
-	return output.b.Bytes(), nil
+	return cmd
 }
 func (e *Engine) removePipeline(ctx context.Context, c api.ExecutionCommand) error {
-	v, err := e.Docker.ContainerInspect(ctx, pipelineName(c), client.ContainerInspectOptions{})
+	for _, v := range []struct{ name, image, kind string }{{pipelineName(c), pipeline.BuilderImage, "pipeline-v1"}, {pipelineName(c) + "-planner", pipeline.RailpackFrontend, "pipeline-planner-v1"}} {
+		if err := e.removePipelineContainer(ctx, c, v.name, v.image, v.kind); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (e *Engine) removePipelineContainer(ctx context.Context, c api.ExecutionCommand, name, image, kind string) error {
+	v, err := e.Docker.ContainerInspect(ctx, name, client.ContainerInspectOptions{})
 	if errdefs.IsNotFound(err) {
 		return nil
 	}
@@ -64,7 +83,7 @@ func (e *Engine) removePipeline(ctx context.Context, c api.ExecutionCommand) err
 		return err
 	}
 	labels := v.Container.Config.Labels
-	if labels[labelServer] != c.ServerId.String() || labels[labelResource] != c.Id.String() || labels[labelEnvironment] != c.EnvironmentId.String() || labels[labelKind] != "pipeline-v1" || labels["com.astilba.plan"] != c.PlanHash || v.Container.Config.Image != pipeline.BuilderImage {
+	if labels[labelServer] != c.ServerId.String() || labels[labelResource] != c.Id.String() || labels[labelEnvironment] != c.EnvironmentId.String() || labels[labelKind] != kind || labels["com.astilba.plan"] != c.PlanHash || v.Container.Config.Image != image {
 		return errors.New("runner container ownership differs")
 	}
 	_, err = e.Docker.ContainerRemove(ctx, v.Container.ID, client.ContainerRemoveOptions{Force: true, RemoveVolumes: true})
@@ -354,6 +373,15 @@ func (e *Engine) buildPipeline(ctx context.Context, c api.ExecutionCommand, p pi
 		}
 	}
 	args := []string{"buildctl", "build", "--frontend", "dockerfile.v0", "--local", "context=" + contextDir, "--local", "dockerfile=" + contextDir, "--opt", "filename=" + p.Build.Dockerfile, "--opt", "platform=linux/" + p.Build.Architecture, "--progress", "plain", "--metadata-file", "/workspace/metadata.json"}
+	if p.Build.UsesRailpack() {
+		prepared, logs, err := e.prepareRailpack(ctx, c, p, contextDir)
+		result.Logs = logs
+		if err != nil {
+			return result, err
+		}
+		result.Railpack = &prepared.Summary
+		args = []string{"buildctl", "build", "--frontend", "gateway.v0", "--local", "context=" + contextDir, "--local", "dockerfile=/workspace/prepared", "--opt", "source=" + p.Railpack.Frontend, "--opt", "platform=linux/" + p.Build.Architecture, "--source-policy-file", "/workspace/prepared/source-policy.json", "--progress", "plain", "--metadata-file", "/workspace/metadata.json"}
+	}
 	var cache *buildCache
 	if p.CacheScope != "" {
 		cache, err = openBuildCache(filepath.Join(e.Journal.dir, "build-cache-v1"))
@@ -374,7 +402,15 @@ func (e *Engine) buildPipeline(ctx context.Context, c api.ExecutionCommand, p pi
 	}
 	sort.Strings(keys)
 	for _, k := range keys {
-		args = append(args, "--opt", "build-arg:"+k+"="+p.Build.Arguments[k])
+		if p.Build.UsesRailpack() {
+			filename := "/workspace/secrets/" + k
+			if _, err = e.pipelineCLI(ctx, pipelineName(c), nil, []byte(p.Build.Arguments[k]), 1024, "sh", "-ec", `umask 077; cat > "$1"`, "--", filename); err != nil {
+				return result, err
+			}
+			args = append(args, "--secret", "id="+k+",src="+filename)
+		} else {
+			args = append(args, "--opt", "build-arg:"+k+"="+p.Build.Arguments[k])
+		}
 	}
 	for name, value := range p.BuildSecrets {
 		filename := "/workspace/secrets/" + name
@@ -399,8 +435,11 @@ func (e *Engine) buildPipeline(ctx context.Context, c api.ExecutionCommand, p pi
 	} else {
 		args = append(args, "--output", "type=docker,name="+image+",dest=/workspace/image.tar")
 	}
-	logs, err := e.pipelineBuildLog(ctx, c, p, args)
-	result.Logs = logs
+	logs, err := e.pipelineLog(ctx, c, p, []string{"DOCKER_CONFIG=/workspace/auth"}, args)
+	result.Logs += logs
+	if len(result.Logs) > 16384 {
+		result.Logs = result.Logs[len(result.Logs)-16384:]
+	}
 	if err != nil {
 		return result, errors.New("BuildKit failed or exceeded its memory/storage budget; existing workloads are unchanged")
 	}
@@ -463,16 +502,8 @@ func (e *Engine) watchedSourceChanged(ctx context.Context, c api.ExecutionComman
 	}
 	return false
 }
-func (e *Engine) pipelineBuildLog(ctx context.Context, c api.ExecutionCommand, p pipeline.Command, args []string) (string, error) {
-	cli := e.DockerCLI
-	if cli == "" {
-		cli = "docker"
-	}
-	command := exec.CommandContext(ctx, cli, append([]string{"exec", "--env", "DOCKER_CONFIG=/workspace/auth", pipelineName(c)}, args...)...)
-	command.Env = []string{"PATH=" + os.Getenv("PATH"), "DOCKER_HOST=" + e.Docker.DaemonHost(), "HOME=" + e.Journal.dir}
-	if v := os.Getenv("DOCKER_CONFIG"); v != "" {
-		command.Env = append(command.Env, "DOCKER_CONFIG="+v)
-	}
+func (e *Engine) pipelineLog(ctx context.Context, c api.ExecutionCommand, p pipeline.Command, env, args []string) (string, error) {
+	command := e.pipelineExec(ctx, pipelineName(c), env, args...)
 	out := &boundedOutput{limit: 1 << 20, stopOnLimit: true}
 	command.Stdout = out
 	command.Stderr = out

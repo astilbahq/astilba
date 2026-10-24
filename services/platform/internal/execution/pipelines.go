@@ -16,7 +16,7 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-func runnerEligible(ctx context.Context, tx pgx.Tx, ws, id uuid.UUID, architecture string, controls bool) (bool, error) {
+func runnerEligible(ctx context.Context, tx pgx.Tx, ws, id uuid.UUID, architecture string, controls, railpack bool) (bool, error) {
 	var role string
 	var raw []byte
 	var online bool
@@ -31,10 +31,13 @@ func runnerEligible(ctx context.Context, tx pgx.Tx, ws, id uuid.UUID, architectu
 	if controls && (c.BuildControls == nil || !*c.BuildControls) {
 		return false, domain.Invalid("runner.buildControlsUpgradeRequired")
 	}
+	if railpack && (c.RailpackVersion == nil || *c.RailpackVersion != pipeline.RailpackVersion) {
+		return false, domain.Invalid("runner.railpackUpgradeRequired")
+	}
 	return online, nil
 }
-func selectRunner(ctx context.Context, tx pgx.Tx, ws, primary uuid.UUID, fallback *uuid.UUID, architecture string, controls bool) (uuid.UUID, error) {
-	online, err := runnerEligible(ctx, tx, ws, primary, architecture, controls)
+func selectRunner(ctx context.Context, tx pgx.Tx, ws, primary uuid.UUID, fallback *uuid.UUID, architecture string, controls, railpack bool) (uuid.UUID, error) {
+	online, err := runnerEligible(ctx, tx, ws, primary, architecture, controls, railpack)
 	if err != nil {
 		return uuid.Nil, err
 	}
@@ -43,7 +46,7 @@ func selectRunner(ctx context.Context, tx pgx.Tx, ws, primary uuid.UUID, fallbac
 		return uuid.Nil, err
 	}
 	if fallback != nil && (!online || busy) {
-		ready, err := runnerEligible(ctx, tx, ws, *fallback, architecture, controls)
+		ready, err := runnerEligible(ctx, tx, ws, *fallback, architecture, controls, railpack)
 		if err != nil {
 			return uuid.Nil, err
 		}
@@ -60,6 +63,14 @@ func selectRunner(ctx context.Context, tx pgx.Tx, ws, primary uuid.UUID, fallbac
 }
 func (s *Service) insertPipeline(ctx context.Context, tx pgx.Tx, ws, env, key, server uuid.UUID, p pipeline.Command) (api.Operation, error) {
 	var out api.Operation
+	if p.Build != nil {
+		canonical := p.Build.Canonical()
+		p.Build = &canonical
+		if canonical.UsesRailpack() {
+			pins := pipeline.RailpackFor(canonical.Architecture)
+			p.Railpack = &pins
+		}
+	}
 	if p.Action == "build" {
 		var project uuid.UUID
 		var raw []byte
@@ -171,7 +182,7 @@ func (s *Service) BindSource(ctx context.Context, p store.Principal, ws, pid, en
 		if err != nil {
 			return domain.Invalid("branch")
 		}
-		server, err := selectRunner(ctx, tx, ws, c.RunnerID, c.FallbackRunnerID, "", false)
+		server, err := selectRunner(ctx, tx, ws, c.RunnerID, c.FallbackRunnerID, "", false, false)
 		if err != nil {
 			return err
 		}
@@ -231,7 +242,7 @@ func (s *Service) RefreshSource(ctx context.Context, p store.Principal, ws, pid,
 				return domain.Conflict
 			}
 		}
-		server, err := selectRunner(ctx, tx, ws, c.RunnerID, c.FallbackRunnerID, "", false)
+		server, err := selectRunner(ctx, tx, ws, c.RunnerID, c.FallbackRunnerID, "", false, false)
 		if err != nil {
 			return err
 		}
@@ -307,7 +318,7 @@ func (s *Service) SubmitSource(ctx context.Context, p store.Principal, ws, pid, 
 		if err = s.rejectRuntimeSecrets(ctx, tx, ws, env, composeproject.Bundle{Files: append(append([]composeproject.File{}, baseline.Files...), v.Spec.Compose.Files...)}); err != nil {
 			return err
 		}
-		server, err := selectRunner(ctx, tx, ws, source.RunnerID, source.FallbackRunnerID, "", false)
+		server, err := selectRunner(ctx, tx, ws, source.RunnerID, source.FallbackRunnerID, "", false, false)
 		if err != nil {
 			return err
 		}
@@ -326,6 +337,7 @@ func (s *Service) SubmitSource(ctx context.Context, p store.Principal, ws, pid, 
 }
 func (s *Service) CreateBuild(ctx context.Context, p store.Principal, ws, pid, env, base, app, key uuid.UUID, c pipeline.BuildConfig) (api.Operation, error) {
 	var out api.Operation
+	c = c.Canonical()
 	if err := c.Validate(); err != nil {
 		var validation *pipeline.BuildValidationError
 		if errors.As(err, &validation) {
@@ -360,7 +372,7 @@ func (s *Service) CreateBuild(ctx context.Context, p store.Principal, ws, pid, e
 		if err != nil {
 			return domain.Invalid("branch")
 		}
-		server, err := selectRunner(ctx, tx, ws, c.RunnerID, c.FallbackRunnerID, c.Architecture, c.NeedsControls())
+		server, err := selectRunner(ctx, tx, ws, c.RunnerID, c.FallbackRunnerID, c.Architecture, c.NeedsControls(), c.UsesRailpack())
 		if err != nil {
 			return err
 		}
@@ -421,6 +433,15 @@ func buildInputHash(c pipeline.Connection, commit string, b pipeline.BuildConfig
 	b.AutoDeploy = false
 	b.Budget = nil
 	b.WatchPaths = nil
+	b = b.Canonical()
+	if b.UsesRailpack() {
+		return pipeline.Hash(struct {
+			Connection      uuid.UUID
+			Commit, Builder string
+			Inputs          pipeline.BuildConfig
+			Railpack        pipeline.RailpackInputs
+		}{c.ID, commit, pipeline.BuilderImage, b, pipeline.RailpackFor(b.Architecture)})
+	}
 	return pipeline.Hash(struct {
 		Connection      uuid.UUID
 		Commit, Builder string

@@ -1540,6 +1540,8 @@ export interface components {
             buildControls?: boolean;
             /** @description Supports bounded project-scoped layer caches. Agents send this extension only after a controller response advertises Astilba-Agent-Build-Cache with v1. */
             buildCache?: boolean;
+            /** @description Supported Railpack planner/frontend version. Agents send this extension only after a controller response advertises Astilba-Agent-Railpack with v1. */
+            railpackVersion?: string;
             build?: boolean;
             backups?: boolean;
             upgrades?: boolean;
@@ -2258,6 +2260,15 @@ export interface components {
             minutes: number;
         };
         BuildConfiguration: {
+            /**
+             * @description Omission retains the Dockerfile builder.
+             * @enum {string}
+             */
+            builder?: "dockerfile" | "railpack";
+            railpack?: {
+                buildCommand?: string;
+                startCommand?: string;
+            };
             /** Format: uuid */
             connectionId: string;
             branch: string;
@@ -2268,7 +2279,7 @@ export interface components {
             /** Format: uuid */
             registryId?: string;
             context: string;
-            dockerfile: string;
+            dockerfile?: string;
             /** @enum {string} */
             architecture: "amd64" | "arm64";
             arguments: {
@@ -2308,6 +2319,16 @@ export interface components {
             /** Format: uuid */
             registryId?: string;
         };
+        RailpackBuildSummary: {
+            version: string;
+            frontend: string;
+            /** @enum {string} */
+            provider: "node" | "golang" | "shell";
+            planHash: string;
+            packages: {
+                [key: string]: string;
+            };
+        };
         PipelineResult: {
             commit: string;
             files?: components["schemas"]["ComposeFile"][];
@@ -2320,6 +2341,7 @@ export interface components {
             /** @description No watched source paths changed; no artifact or deployment is created. */
             skipped?: boolean;
             cache?: string;
+            railpack?: components["schemas"]["RailpackBuildSummary"];
         };
         PipelineRun: {
             /** Format: uuid */

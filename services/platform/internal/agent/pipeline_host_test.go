@@ -48,21 +48,30 @@ func TestNativePipeline(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer journal.Close()
+	defer func() { _ = journal.Close() }()
 	serverID := uuid.New()
 	if err = journal.SetConfig(Config{ServerID: serverID, MachineID: uuid.New(), Role: "combined"}); err != nil {
 		t.Fatal(err)
 	}
-	dockerCLI := "docker"
-	if _, err := os.Stat("/opt/astilba-plat4/bin/docker"); err == nil {
-		dockerCLI = filepath.Join(state, "docker")
-		config := filepath.Join(state, "fixture-docker")
-		_ = os.Mkdir(config, 0700)
-		_ = os.WriteFile(filepath.Join(config, "config.json"), []byte(`{"cliPluginsExtraDirs":["/opt/astilba-plat4/cli-plugins"]}`), 0600)
-		script := fmt.Sprintf("#!/bin/sh\nexport DOCKER_CONFIG='%s'\nexec /opt/astilba-plat4/bin/docker \"$@\"\n", config)
-		if err = os.WriteFile(dockerCLI, []byte(script), 0700); err != nil {
+	realDocker := "/opt/astilba-plat4/bin/docker"
+	if _, err := os.Stat(realDocker); err != nil {
+		realDocker, err = exec.LookPath("docker")
+		if err != nil {
 			t.Fatal(err)
 		}
+	}
+	dockerCLI := filepath.Join(state, "docker")
+	config := filepath.Join(state, "fixture-docker")
+	if err = os.Mkdir(config, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(filepath.Join(config, "config.json"), []byte(`{"cliPluginsExtraDirs":["/opt/astilba-plat4/cli-plugins"]}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	quote := func(value string) string { return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'" }
+	script := fmt.Sprintf("#!/bin/sh\nexport DOCKER_CONFIG=%s\nexec %s \"$@\"\n", quote(config), quote(realDocker))
+	if err = os.WriteFile(dockerCLI, []byte(script), 0700); err != nil {
+		t.Fatal(err)
 	}
 	engine := &Engine{Journal: journal, Docker: docker, DockerCLI: dockerCLI}
 	root := t.TempDir()
@@ -134,11 +143,25 @@ func TestNativePipeline(t *testing.T) {
 	var active api.ExecutionCommand
 	var registryCA []byte
 	cancelNext := false
+	replayNext := false
+	preparedCount := 0
 	engine.Point = func(point string) {
+		if point == "railpack-prepared" {
+			preparedCount++
+			if replayNext {
+				replayNext = false
+				panic("prepared Railpack interruption")
+			}
+		}
 		if point == "build" {
 			var p pipeline.Command
 			_ = json.Unmarshal(*active.Pipeline, &p)
-			if p.Build.Budget != nil {
+			if p.Build.UsesRailpack() {
+				v, err := docker.ContainerInspect(ctx, pipelineName(active), client.ContainerInspectOptions{})
+				if err != nil || v.Container.HostConfig.Memory != 6144<<20 || v.Container.HostConfig.NanoCPUs != 2_000_000_000 || v.Container.HostConfig.Tmpfs["/workspace"] != "rw,exec,nosuid,nodev,size=1024m,mode=0700" || v.Container.HostConfig.Tmpfs["/var/lib/buildkit"] != "rw,exec,nosuid,size=4096m" {
+					t.Fatal("Railpack ignored runner resource limits", err)
+				}
+			} else if p.Build.Budget != nil {
 				v, err := docker.ContainerInspect(ctx, pipelineName(active), client.ContainerInspectOptions{})
 				if err != nil || v.Container.HostConfig.Memory != 1536<<20 || v.Container.HostConfig.NanoCPUs != 1_000_000_000 || v.Container.HostConfig.Tmpfs["/workspace"] != "rw,exec,nosuid,nodev,size=128m,mode=0700" || v.Container.HostConfig.Tmpfs["/var/lib/buildkit"] != "rw,exec,nosuid,size=640m" {
 					t.Fatal("custom build limits not applied", err)
@@ -176,8 +199,44 @@ func TestNativePipeline(t *testing.T) {
 		raw, _ := json.Marshal(p)
 		message := json.RawMessage(raw)
 		c := api.ExecutionCommand{Id: uuid.New(), ServerId: serverID, EnvironmentId: uuid.New(), ResourceId: p.UnitID, Generation: generation, Kind: "pipeline", Action: "inspect", PlanHash: p.Digest(), Pipeline: &message, Deadline: time.Now().Add(2 * time.Minute)}
+		if p.Build != nil && p.Build.UsesRailpack() {
+			c.Deadline = time.Now().Add(10 * time.Minute)
+		}
 		active = c
-		if err = engine.Execute(ctx, c); err != nil {
+		interrupted := false
+		func() {
+			defer func() {
+				if value := recover(); value != nil {
+					if value != "prepared Railpack interruption" {
+						panic(value)
+					}
+					interrupted = true
+				}
+			}()
+			err = engine.Execute(ctx, c)
+		}()
+		if interrupted {
+			before, readErr := journal.Record(c.Id)
+			if readErr != nil || before.Railpack == nil {
+				t.Fatal("prepared plan was not durable", readErr)
+			}
+			if err = journal.Close(); err != nil {
+				t.Fatal(err)
+			}
+			journal, err = Open(state)
+			if err != nil {
+				t.Fatal(err)
+			}
+			engine.Journal = journal
+			if err = engine.Execute(ctx, c); err != nil {
+				t.Fatal(err)
+			}
+			after, readErr := journal.Record(c.Id)
+			if readErr != nil || after.Railpack == nil || before.Railpack.Summary.PlanHash != after.Railpack.Summary.PlanHash {
+				t.Fatal("replayed build changed prepared plan", readErr)
+			}
+		}
+		if err != nil {
 			t.Fatal(err)
 		}
 		record, err := journal.Record(c.Id)
@@ -349,41 +408,7 @@ func TestNativePipeline(t *testing.T) {
 		t.Fatal("read-only registry credential could publish")
 	}
 	registryCA = nil
-	saved, err := docker.ImageSave(ctx, []string{result.Image})
-	if err != nil {
-		t.Fatal(err)
-	}
-	archive := tar.NewReader(saved)
-	for {
-		_, err := archive.Next()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			t.Fatal(err)
-		}
-		data, err := io.ReadAll(io.LimitReader(archive, 32<<20))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if bytes.HasPrefix(data, []byte{0x1f, 0x8b}) {
-			gz, err := gzip.NewReader(bytes.NewReader(data))
-			if err != nil {
-				t.Fatal(err)
-			}
-			data, err = io.ReadAll(io.LimitReader(gz, 32<<20))
-			gz.Close()
-			if err != nil {
-				t.Fatal(err)
-			}
-		}
-		for _, secret := range []string{"build-secret-canary", "reader-token", "writer-token"} {
-			if bytes.Contains(data, []byte(secret)) {
-				t.Fatal("secret entered image layer", secret)
-			}
-		}
-	}
-	saved.Close()
+	assertPipelineImageSecretFree(t, ctx, docker, result.Image, []string{"build-secret-canary", "reader-token", "writer-token"})
 	// Compare frozen commits rather than webhook path summaries or the moving branch.
 	if err = os.WriteFile(filepath.Join(work, "README.md"), []byte("docs only\n"), 0600); err != nil {
 		t.Fatal(err)
@@ -476,5 +501,150 @@ func TestNativePipeline(t *testing.T) {
 	if err != nil || !bytes.Equal(cacheBefore, cacheAfter) {
 		t.Fatal("failed or cancelled build replaced the retained layer cache", err)
 	}
+	cancelNext = false
+	for _, fixture := range []struct {
+		name, build, start, want string
+		files                    map[string]string
+	}{
+		{"node", "node build.js", "node main.js", "node-ok", map[string]string{
+			"package.json":      `{"name":"fixture","version":"1.0.0","engines":{"node":"24.18.1"},"scripts":{"start":"exit 24"}}`,
+			"package-lock.json": `{"name":"fixture","version":"1.0.0","lockfileVersion":3,"requires":true,"packages":{"":{"name":"fixture","version":"1.0.0","engines":{"node":"24.18.1"}}}}`,
+			".mise.toml":        "[tools]\nnode = \"24\"\n",
+			"railpack.json":     `{"steps":{"build":{"commands":["exit 25"]}},"deploy":{"startCommand":"exit 26"}}`,
+			"build.js":          `const fs=require('node:fs'),crypto=require('node:crypto'); if(process.env.EMPTY!=='' || process.env.PUBLIC!=='hello' || !process.env.NPM_TOKEN) process.exit(1); fs.writeFileSync('proof', crypto.createHash('sha256').update(process.env.NPM_TOKEN).digest('hex')); fs.writeFileSync('version',process.version);`,
+			"main.js":           `const fs=require('node:fs'); if(process.env.NPM_TOKEN!==undefined || process.env.EMPTY!==undefined || !fs.existsSync('proof') || fs.readFileSync('version','utf8')!==process.version) process.exit(1); console.log('node-ok '+process.version);`,
+		}},
+		{"golang", "CGO_ENABLED=0 go build -o out .", "./out", "go-ok", map[string]string{
+			"go.mod":  "module example.test/fixture\n\ngo 1.27.3\n",
+			"main.go": "package main\nimport \"fmt\"\nfunc main(){fmt.Println(\"go-ok\")}\n",
+		}},
+		{"shell", "printf '%s' 'shell-ok' > output", "sh start.sh", "shell-ok", map[string]string{
+			"railpack.json": `{"provider":"shell","deploy":{"startCommand":"sh start.sh"}}`,
+			"start.sh":      "#!/bin/sh\ncat output\n",
+		}},
+	} {
+		t.Run("railpack-"+fixture.name, func(t *testing.T) {
+			folder := "railpack-" + fixture.name
+			if err := os.Mkdir(filepath.Join(work, folder), 0700); err != nil {
+				t.Fatal(err)
+			}
+			for name, content := range fixture.files {
+				if err := os.WriteFile(filepath.Join(work, folder, name), []byte(content), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			git("-C", work, "add", ".")
+			git("-C", work, "commit", "-m", "Railpack "+fixture.name)
+			git("-C", work, "push", repo, "main")
+			command := base
+			command.Action, command.Source, command.AppID = "build", nil, uuid.New()
+			command.Commit = git("-C", work, "rev-parse", "HEAD")
+			command.InputHash = strings.Repeat("a", 64)
+			command.Build = &pipeline.BuildConfig{ConnectionID: source.ConnectionID, Branch: "main", RunnerID: serverID, Builder: "railpack", Context: folder, Architecture: runtime.GOARCH, Railpack: &pipeline.RailpackOptions{BuildCommand: fixture.build, StartCommand: fixture.start}, Budget: &pipeline.BuildBudget{CPUs: 2, MemoryMiB: 6144, SourceMiB: 1024, StateMiB: 4096, Minutes: 10}, Arguments: map[string]string{"EMPTY": "", "PUBLIC": "hello"}, Secrets: map[string]uuid.UUID{"NPM_TOKEN": uuid.New()}}
+			command.BuildSecrets = map[string]string{"NPM_TOKEN": "railpack-build-secret-canary"}
+			inputs := pipeline.RailpackFor(runtime.GOARCH)
+			command.Railpack = &inputs
+			replayNext = fixture.name == "node"
+			beforeCount := preparedCount
+			record := run(command)
+			if preparedCount != beforeCount+1 {
+				t.Fatal("replay prepared a different plan")
+			}
+			var built pipeline.Result
+			if record.Report.Pipeline != nil {
+				_ = json.Unmarshal(*record.Report.Pipeline, &built)
+			}
+			if record.Report.State != "succeeded" {
+				t.Fatal("Railpack build", record.Report.Note, built.Logs)
+			}
+			t.Cleanup(func() { _, _ = docker.ImageRemove(ctx, built.Image, client.ImageRemoveOptions{Force: true}) })
+			if record.Railpack == nil || !record.Railpack.Valid(inputs) || built.Railpack == nil || built.Railpack.Provider != fixture.name || built.Commit != command.Commit || built.Architecture != runtime.GOARCH {
+				t.Fatal("missing frozen plan, provider or exact source identity")
+			}
+			runtimeName := "astilba-railpack-check-" + record.Command.Id.String()
+			t.Cleanup(func() {
+				v, err := docker.ContainerInspect(ctx, runtimeName, client.ContainerInspectOptions{})
+				if err == nil && v.Container.Config.Image == built.Image && v.Container.Config.Labels[labelResource] == record.Command.Id.String() {
+					_, _ = docker.ContainerRemove(ctx, runtimeName, client.ContainerRemoveOptions{Force: true})
+				}
+			})
+			runtimeCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+			defer cancel()
+			check := exec.CommandContext(runtimeCtx, dockerCLI, "run", "--rm", "--name", runtimeName, "--label", labelResource+"="+record.Command.Id.String(), "--network=none", "--read-only", "--memory=256m", "--cap-drop=ALL", built.Image)
+			check.Env = append(os.Environ(), "DOCKER_HOST="+docker.DaemonHost())
+			out, err := check.CombinedOutput()
+			want := fixture.want
+			if fixture.name == "node" {
+				want += " v" + built.Railpack.Packages["node"]
+			}
+			if err != nil || strings.TrimSpace(string(out)) != want {
+				t.Fatal("Railpack runtime", err, string(out))
+			}
+			assertPipelineImageSecretFree(t, ctx, docker, built.Image, []string{"railpack-build-secret-canary", "reader-token", "writer-token"})
+			image, err := docker.ImageInspect(ctx, built.Image)
+			if err != nil {
+				t.Fatal(err)
+			}
+			raw, _ := json.Marshal(image)
+			if strings.Contains(string(raw), "railpack-build-secret-canary") || strings.Contains(built.Logs, "railpack-build-secret-canary") {
+				t.Fatal("secret entered image configuration or logs")
+			}
+			if fixture.name == "shell" {
+				command.Build.Railpack.BuildCommand = "exit 17"
+				failed := run(command)
+				if failed.Report.State != "failed" {
+					t.Fatal("failed Railpack build was accepted")
+				}
+				cancelNext = true
+				cancelled := run(command)
+				cancelNext = false
+				if cancelled.Report.State != "cancelled" {
+					t.Fatal("Railpack cancellation was ignored")
+				}
+				after, err := docker.ImageInspect(ctx, built.Image)
+				if err != nil || after.ID != built.Digest {
+					t.Fatal("Railpack failure or cancellation changed the previous image", err)
+				}
+			}
+		})
+	}
+}
 
+func assertPipelineImageSecretFree(t *testing.T, ctx context.Context, docker *client.Client, image string, secrets []string) {
+	t.Helper()
+	saved, err := docker.ImageSave(ctx, []string{image})
+	if err != nil {
+		t.Fatal(err)
+	}
+	archive := tar.NewReader(saved)
+	for {
+		_, err := archive.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		data, err := io.ReadAll(io.LimitReader(archive, 32<<20))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if bytes.HasPrefix(data, []byte{0x1f, 0x8b}) {
+			gz, err := gzip.NewReader(bytes.NewReader(data))
+			if err != nil {
+				t.Fatal(err)
+			}
+			data, err = io.ReadAll(io.LimitReader(gz, 32<<20))
+			gz.Close()
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+		for _, secret := range secrets {
+			if bytes.Contains(data, []byte(secret)) {
+				t.Fatal("secret entered image layer", secret)
+			}
+		}
+	}
+	saved.Close()
 }

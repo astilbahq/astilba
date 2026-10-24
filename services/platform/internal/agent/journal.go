@@ -34,6 +34,7 @@ type Record struct {
 	Report       api.AgentReport
 	Checkpoint   string
 	Acknowledged bool
+	Railpack     *pipeline.PreparedRailpack `json:",omitempty"`
 }
 type Journal struct {
 	db   *bolt.DB

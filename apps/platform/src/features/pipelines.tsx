@@ -9,6 +9,22 @@ import type { EnvironmentPath } from "./visual-editor";
 const root =
   "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}" as const;
 const wsRoot = "/api/v1/workspaces/{workspaceId}" as const;
+const buildDefaults = {
+  dockerfile: {
+    cpus: "2",
+    memoryMiB: "2048",
+    sourceMiB: "256",
+    stateMiB: "1024",
+    minutes: "30",
+  },
+  railpack: {
+    cpus: "2",
+    memoryMiB: "6144",
+    sourceMiB: "1024",
+    stateMiB: "4096",
+    minutes: "30",
+  },
+};
 export function Pipelines({
   path,
   revision,
@@ -27,6 +43,22 @@ export function Pipelines({
   const action = useAction(),
     queries = useQueryClient();
   const controlsId = useId();
+  const [builder, setBuilder] = useState<"dockerfile" | "railpack">(
+    "dockerfile",
+  );
+  const [dockerfile, setDockerfile] = useState("Dockerfile");
+  const [buildCommand, setBuildCommand] = useState("");
+  const [startCommand, setStartCommand] = useState("");
+  const [limits, setLimits] = useState(buildDefaults.dockerfile);
+  const buildFieldError = (...fields: string[]) =>
+    action.error instanceof ApiError &&
+    fields.some(
+      (field) =>
+        action.error instanceof ApiError &&
+        action.error.detail.fields?.includes(`build.${field}`),
+    );
+  const builderError = buildFieldError("builder", "railpack");
+  const inputsError = buildFieldError("arguments", "secrets");
   const budgetError =
     action.error instanceof ApiError &&
     action.error.detail.fields?.includes("build.budget");
@@ -164,9 +196,9 @@ export function Pipelines({
       <section className={s.panel}>
         <h2>Git and builds</h2>
         <p className={s.muted}>
-          Fetch an exact commit on your runner, build with a Dockerfile, then
-          promote its immutable image. Offline or busy runners queue work. A
-          fallback runs only when you explicitly choose one.
+          Fetch an exact commit on your runner, build with Dockerfile or
+          Railpack, then promote its immutable image. Offline or busy runners
+          queue work. A fallback runs only when you explicitly choose one.
         </p>
         <ErrorNotice
           error={
@@ -419,8 +451,7 @@ export function Pipelines({
                   const secret = text(d, "secret");
                   if (secret) {
                     const name = text(d, "secretName");
-                    if (!name)
-                      throw new Error("Give the build secret a mount name.");
+                    if (!name) throw new Error("Give the build secret a name.");
                     secretMap[name] = secret;
                   }
                   const budget = {
@@ -472,6 +503,27 @@ export function Pipelines({
                       }
                     }
                   }
+                  if (builder === "railpack") {
+                    for (const id of [runner, text(d, "fallback")].filter(
+                      Boolean,
+                    )) {
+                      if (
+                        servers.data?.find((server) => server.id === id)
+                          ?.capabilities?.railpackVersion !== "0.43.0"
+                      ) {
+                        throw new ApiError(
+                          {
+                            code: "invalid_input",
+                            message:
+                              "Update the selected runner and fallback to support Railpack 0.43.0 before queuing this build.",
+                            fields: ["build.builder"],
+                            requestId: "",
+                          },
+                          400,
+                        );
+                      }
+                    }
+                  }
                   await result(
                     client.POST(`${root}/builds`, {
                       params: { path },
@@ -486,7 +538,15 @@ export function Pipelines({
                           fallbackRunnerId: text(d, "fallback") || undefined,
                           registryId: text(d, "registry") || undefined,
                           context: text(d, "context"),
-                          dockerfile: text(d, "dockerfile"),
+                          builder:
+                            builder === "railpack" ? "railpack" : undefined,
+                          dockerfile:
+                            builder === "dockerfile" ? dockerfile : undefined,
+                          railpack:
+                            builder === "railpack" &&
+                            (buildCommand || startCommand)
+                              ? { buildCommand, startCommand }
+                              : undefined,
                           architecture: text(d, "architecture") as
                             | "amd64"
                             | "arm64",
@@ -527,9 +587,80 @@ export function Pipelines({
                 <input name="context" defaultValue="." required />
               </label>
               <label>
-                Dockerfile, relative to context
-                <input name="dockerfile" defaultValue="Dockerfile" required />
+                Builder
+                <select
+                  name="builder"
+                  value={builder}
+                  aria-invalid={builderError || undefined}
+                  aria-describedby={`${controlsId}-builder`}
+                  onChange={(e) => {
+                    const next = e.target.value as typeof builder;
+                    if (
+                      Object.keys(limits).every(
+                        (key) =>
+                          limits[key as keyof typeof limits] ===
+                          buildDefaults[builder][key as keyof typeof limits],
+                      )
+                    )
+                      setLimits(buildDefaults[next]);
+                    setBuilder(next);
+                  }}
+                >
+                  <option value="dockerfile">Dockerfile</option>
+                  <option value="railpack">Railpack</option>
+                </select>
               </label>
+              <p
+                id={`${controlsId}-builder`}
+                className={builderError ? s.error : s.muted}
+              >
+                {builderError && action.error instanceof Error
+                  ? action.error.message
+                  : builder === "railpack"
+                    ? "Railpack 0.43.0 supports Node/npm, Go and shell projects here. Review the resource limits below; recommended limits are 6 GiB memory, 1 GiB source and 4 GiB builder storage."
+                    : "Use a Dockerfile from your build context."}
+              </p>
+              {builder === "dockerfile" ? (
+                <label>
+                  Dockerfile, relative to context
+                  <input
+                    name="dockerfile"
+                    value={dockerfile}
+                    onChange={(e) => setDockerfile(e.target.value)}
+                    required
+                  />
+                </label>
+              ) : (
+                <>
+                  <label>
+                    Build command override (optional)
+                    <textarea
+                      name="buildCommand"
+                      value={buildCommand}
+                      onChange={(e) => setBuildCommand(e.target.value)}
+                      maxLength={4096}
+                      aria-invalid={builderError || undefined}
+                      aria-describedby={`${controlsId}-overrides`}
+                    />
+                  </label>
+                  <label>
+                    Start command override (optional)
+                    <input
+                      name="startCommand"
+                      value={startCommand}
+                      onChange={(e) => setStartCommand(e.target.value)}
+                      maxLength={4096}
+                      aria-invalid={builderError || undefined}
+                      aria-describedby={`${controlsId}-overrides`}
+                    />
+                  </label>
+                  <p id={`${controlsId}-overrides`} className={s.muted}>
+                    Leave empty to use detection and repository configuration.
+                    These commands take precedence over repository commands.
+                    Changing builders keeps your command drafts.
+                  </p>
+                </>
+              )}
               <label>
                 Architecture
                 <select name="architecture">
@@ -556,7 +687,10 @@ export function Pipelines({
                       min={1}
                       max={8}
                       step={1}
-                      defaultValue={2}
+                      value={limits.cpus}
+                      onChange={(e) =>
+                        setLimits({ ...limits, cpus: e.target.value })
+                      }
                       required
                     />
                   </label>
@@ -570,7 +704,10 @@ export function Pipelines({
                       min={512}
                       max={8192}
                       step={1}
-                      defaultValue={2048}
+                      value={limits.memoryMiB}
+                      onChange={(e) =>
+                        setLimits({ ...limits, memoryMiB: e.target.value })
+                      }
                       required
                     />
                   </label>
@@ -584,7 +721,10 @@ export function Pipelines({
                       min={64}
                       max={1024}
                       step={1}
-                      defaultValue={256}
+                      value={limits.sourceMiB}
+                      onChange={(e) =>
+                        setLimits({ ...limits, sourceMiB: e.target.value })
+                      }
                       required
                     />
                   </label>
@@ -598,7 +738,10 @@ export function Pipelines({
                       min={128}
                       max={6144}
                       step={1}
-                      defaultValue={1024}
+                      value={limits.stateMiB}
+                      onChange={(e) =>
+                        setLimits({ ...limits, stateMiB: e.target.value })
+                      }
                       required
                     />
                   </label>
@@ -610,7 +753,10 @@ export function Pipelines({
                       min={1}
                       max={30}
                       step={1}
-                      defaultValue={30}
+                      value={limits.minutes}
+                      onChange={(e) =>
+                        setLimits({ ...limits, minutes: e.target.value })
+                      }
                       required
                     />
                   </label>
@@ -636,12 +782,18 @@ export function Pipelines({
                 Plain build arguments
                 <textarea
                   name="arguments"
+                  aria-invalid={inputsError || undefined}
+                  aria-describedby={`${controlsId}-inputs`}
                   placeholder="PUBLIC_BASE_URL=https://example.com"
                 />
               </label>
               <label>
                 Build secret
-                <select name="secret">
+                <select
+                  name="secret"
+                  aria-invalid={inputsError || undefined}
+                  aria-describedby={`${controlsId}-inputs`}
+                >
                   <option value="">None</option>
                   {secrets.data?.map((v) => (
                     <option key={v.id} value={v.id}>
@@ -650,15 +802,25 @@ export function Pipelines({
                   ))}
                 </select>
               </label>
-              <Field
-                name="secretName"
-                label="Secret mount name"
-                required={false}
-              />
-              <p className={s.muted}>
-                Build secrets are separate from runtime secrets and available
-                through Dockerfile secret mounts. Your Dockerfile must avoid
-                copying or printing them.
+              <label>
+                {builder === "railpack"
+                  ? "Secret environment name"
+                  : "Secret mount name"}
+                <input
+                  name="secretName"
+                  aria-invalid={inputsError || undefined}
+                  aria-describedby={`${controlsId}-inputs`}
+                />
+              </label>
+              <p
+                id={`${controlsId}-inputs`}
+                className={inputsError ? s.error : s.muted}
+              >
+                {inputsError && action.error instanceof Error
+                  ? action.error.message
+                  : builder === "railpack"
+                    ? "Declared build secrets are available as build environment variables, separately from runtime secrets. Use distinct public argument and secret names; RAILPACK_ settings must be public arguments. Build commands must avoid copying or printing secrets."
+                    : "Build secrets are separate from runtime secrets and available through Dockerfile secret mounts. Your Dockerfile must avoid copying or printing them."}
               </p>
               <label>
                 <input type="checkbox" name="autoBuild" />
@@ -763,9 +925,7 @@ export function Pipelines({
           <p className={s.muted}>No source or build jobs yet.</p>
         )}
         {runs.data?.map((run) => {
-          const report = run.result as
-            | { logs?: string; cache?: string; reviewUrl?: string }
-            | undefined;
+          const report = run.result;
           return (
             <article key={run.id} className={s.stack}>
               <h4>
@@ -793,6 +953,26 @@ export function Pipelines({
                 </ol>
               )}
               {report?.cache && <p>{report.cache}</p>}
+              {report?.railpack && (
+                <details>
+                  <summary>
+                    Railpack {report.railpack.version} ·{" "}
+                    {report.railpack.provider}
+                  </summary>
+                  <p className={s.muted}>
+                    Frozen planner inputs and resolved tools for this build.
+                  </p>
+                  <pre
+                    className={s.code}
+                    style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}
+                  >{`Frontend: ${report.railpack.frontend}\nPlan: ${report.railpack.planHash}\n${Object.entries(
+                    report.railpack.packages,
+                  )
+                    .sort(([a], [b]) => a.localeCompare(b))
+                    .map(([name, version]) => `${name}: ${version}`)
+                    .join("\n")}`}</pre>
+                </details>
+              )}
               {report?.reviewUrl && (
                 <a href={report.reviewUrl} target="_blank" rel="noreferrer">
                   Open source review

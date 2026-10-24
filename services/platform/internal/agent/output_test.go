@@ -86,7 +86,7 @@ func TestToolCapturesRejectOverflowAndKeepCompleteDiagnostics(t *testing.T) {
 				raw, err = e.pipelineCLI(ctx, "fixture", nil, nil, 4096, "emit")
 				got = string(raw)
 			case "build":
-				got, err = e.pipelineBuildLog(ctx, api.ExecutionCommand{}, pipeline.Command{BuildSecrets: map[string]string{"fixture": secret}}, []string{"emit"})
+				got, err = e.pipelineLog(ctx, api.ExecutionCommand{}, pipeline.Command{BuildSecrets: map[string]string{"fixture": secret}}, nil, []string{"emit"})
 			case "repository":
 				var raw []byte
 				raw, err = e.restic(ctx, backup.Installation{Destination: backup.Destination{Kind: "filesystem", Root: t.TempDir()}}, e.Journal.dir, "emit")

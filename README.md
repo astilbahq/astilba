@@ -4,7 +4,7 @@ An open-source deployment platform for your own servers, with a visual workflow 
 
 Astilba is in private alpha. The core application and its seven technical-validation experiments are implemented, and a live private-alpha acceptance run has exercised deployment and recovery. It is under active development and is not ready for production workloads. There is no public hosted signup yet.
 
-The application supports local accounts and workspace permissions, a visual environment editor, server enrollment, and reviewed visual or file-authoritative Compose deployments. GitHub, GitLab and Gitea imports feed exact-commit Dockerfile builds. Durable operations, scheduled backups and restores, a supported PostgreSQL 17-to-18 upgrade, resource history and operational alerts are implemented. See the [implementation plan](docs/platform-implementation-plan.md) for acceptance evidence, limits and remaining work.
+The application supports local accounts and workspace permissions, a visual environment editor, server enrollment, and reviewed visual or file-authoritative Compose deployments. GitHub, GitLab and Gitea imports feed exact-commit Dockerfile builds and a validated Railpack path for Node/npm, Go and shell projects. Durable operations, scheduled backups and restores, a supported PostgreSQL 17-to-18 upgrade, resource history and operational alerts are implemented. See the [implementation plan](docs/platform-implementation-plan.md) for acceptance evidence, limits and remaining work.
 
 The management application and host agent are fully self-hostable, without an Astilba account or hosted service. Operators provide their own servers and integrations. A paid managed control plane is planned; its commercial launch remains separate from publishing this source.
 
