@@ -1,6 +1,11 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { client, result, type Schema } from "../api/client";
+import { Button } from "../components/button";
+import { Checkbox } from "../components/checkbox";
+import { Label } from "../components/label";
+import { Anchor } from "../components/link";
+import { Select } from "../components/select";
 import * as s from "../styles";
 import { ErrorNotice, Field, Form, text, useAction } from "../ui";
 import type { EnvironmentPath } from "./visual-editor";
@@ -136,9 +141,9 @@ export function Deployments({
               })
             }
           >
-            <label>
+            <Label>
               Deployment server
-              <select
+              <Select
                 value={serverId}
                 onChange={(e) => setServerId(e.target.value)}
                 required
@@ -164,25 +169,25 @@ export function Deployments({
                         : " — supported Compose required"}
                     </option>
                   ))}
-              </select>
-            </label>
+              </Select>
+            </Label>
             {owner && (
-              <label className={s.row}>
-                <input type="checkbox" name="host" />
+              <Label className={s.row}>
+                <Checkbox name="host" />
                 Approve the host permissions listed in the plan, including
                 proxy, ports, certificates and elevated container privileges
-              </label>
+              </Label>
             )}
-            <label className={s.row}>
-              <input type="checkbox" name="drift" />
+            <Label className={s.row}>
+              <Checkbox name="drift" />
               Reconcile reviewed manual changes to Astilba-managed resources
-            </label>
-            <button
+            </Label>
+            <Button
               type="submit"
               disabled={dirty || action.isPending || !serverId}
             >
               Prepare plan
-            </button>
+            </Button>
             {dirty && (
               <small>
                 Save your staged changes before preparing or applying a plan.
@@ -232,9 +237,9 @@ export function Deployments({
               </p>
             )}
             {write && (
-              <button
+              <Button
                 type="button"
-                className={s.primary}
+                variant="primary"
                 disabled={
                   dirty ||
                   stale ||
@@ -266,7 +271,7 @@ export function Deployments({
                 }
               >
                 Apply reviewed plan
-              </button>
+              </Button>
             )}
           </section>
         )}
@@ -275,7 +280,7 @@ export function Deployments({
         <div className={s.spread}>
           <h2>Runtime observations</h2>
           {write && (
-            <button
+            <Button
               type="button"
               disabled={action.isPending}
               onClick={() =>
@@ -292,7 +297,7 @@ export function Deployments({
               }
             >
               Inspect host now
-            </button>
+            </Button>
           )}
         </div>
         <ErrorNotice error={runtime.error} />
@@ -368,7 +373,7 @@ export function Deployments({
                 </ol>
                 {write &&
                   ["pending", "dispatched", "running"].includes(op.state) && (
-                    <button
+                    <Button
                       type="button"
                       onClick={() =>
                         action.run(async () => {
@@ -392,7 +397,7 @@ export function Deployments({
                       }
                     >
                       Request cancellation
-                    </button>
+                    </Button>
                   )}
               </li>
             ))}
@@ -428,11 +433,11 @@ export function Deployments({
             }
           >
             <Field name="name" label="Clone name" />
-            <label className={s.row}>
-              <input type="checkbox" name="copy" />
+            <Label className={s.row}>
+              <Checkbox name="copy" />
               Copy secret values into independent secrets (required for Compose
               sources with secret references; requires recent authentication)
-            </label>
+            </Label>
             {revision.specification.compose &&
               !!revision.specification.routes?.length && (
                 <p>
@@ -440,7 +445,7 @@ export function Deployments({
                   Compose environment and copy the bundle with new routes.
                 </p>
               )}
-            <button
+            <Button
               type="submit"
               disabled={
                 !!revision.specification.compose &&
@@ -448,10 +453,10 @@ export function Deployments({
               }
             >
               Clone saved configuration
-            </button>
+            </Button>
           </Form>
         )}
-        <button
+        <Button
           type="button"
           disabled={action.isPending}
           onClick={() =>
@@ -465,35 +470,35 @@ export function Deployments({
           }
         >
           Prepare export of last applied configuration
-        </button>
+        </Button>
         {bundle && (
           <>
             <pre className={s.log}>{bundle.readme}</pre>
             <div className={s.row}>
-              <a
+              <Anchor
                 href={`/api/v1/workspaces/${workspaceId}/projects/${projectId}/environments/${environmentId}/export/archive`}
                 download
               >
                 Download complete bundle
-              </a>
-              <button
+              </Anchor>
+              <Button
                 type="button"
                 onClick={() => download("compose.json", bundle.compose)}
               >
                 Download Compose
-              </button>
-              <button
+              </Button>
+              <Button
                 type="button"
                 onClick={() => download("routes.yaml", bundle.routes)}
               >
                 Download routes
-              </button>
-              <button
+              </Button>
+              <Button
                 type="button"
                 onClick={() => download("README.txt", bundle.readme)}
               >
                 Download instructions
-              </button>
+              </Button>
             </div>
           </>
         )}
@@ -505,7 +510,7 @@ export function Deployments({
                 {volume.name} ·{" "}
                 {volume.deleted ? "Deleted" : used ? "Attached" : "Retained"}
                 {owner && (
-                  <button
+                  <Button
                     type="button"
                     disabled={
                       used || volume.deleted || dirty || action.isPending
@@ -534,7 +539,7 @@ export function Deployments({
                     }}
                   >
                     Delete data volume permanently
-                  </button>
+                  </Button>
                 )}
               </li>
             );

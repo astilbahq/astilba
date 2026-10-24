@@ -9,8 +9,8 @@
   font:
     13px / 1.6 ui-monospace,
     monospace;
-  min-height: 180px;
-  max-height: 500px;
+  min-block-size: 180px;
+  max-block-size: 500px;
   overflow: auto;
 }
 .compose-code-editor .cm-gutters {

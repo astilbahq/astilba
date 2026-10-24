@@ -1,8 +1,13 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link, useBlocker } from "@tanstack/react-router";
+import { useBlocker } from "@tanstack/react-router";
 import { useRef, useState } from "react";
 import { ApiError, client, result, type Schema } from "./api/client";
 import { sessionOptions } from "./api/session";
+import { Button } from "./components/button";
+import { Label } from "./components/label";
+import { Link } from "./components/link";
+import { Select } from "./components/select";
+import { Textarea } from "./components/textarea";
 import { Backups } from "./features/backups";
 import { ComposeEditor } from "./features/compose-editor";
 import { Deployments } from "./features/deployments";
@@ -74,9 +79,9 @@ export function Dashboard({
           </p>
         </div>
         {workspace && (
-          <label>
+          <Label>
             Workspace
-            <select
+            <Select
               value={workspaceId}
               onChange={(e) =>
                 void onSelectionChange({
@@ -91,8 +96,8 @@ export function Dashboard({
                   {w.name}
                 </option>
               ))}
-            </select>
-          </label>
+            </Select>
+          </Label>
         )}
       </header>
       <ErrorNotice
@@ -263,13 +268,13 @@ export function Dashboard({
                   }
                 >
                   <Field name="name" label="Environment name" />
-                  <label>
+                  <Label>
                     Configuration ownership
-                    <select name="owner">
+                    <Select name="owner">
                       <option value="dashboard">Visual configuration</option>
                       <option value="compose">Compose files</option>
-                    </select>
-                  </label>
+                    </Select>
+                  </Label>
                   <BusyButton busy={action.isPending}>
                     Create environment
                   </BusyButton>
@@ -505,9 +510,9 @@ function DraftEditor({
           {environment.configurationOwner !== "compose" && (
             <details>
               <summary>Advanced specification</summary>
-              <label>
+              <Label>
                 Specification (JSON)
-                <textarea
+                <Textarea
                   className={s.editor}
                   value={draft}
                   readOnly={!write}
@@ -518,20 +523,20 @@ function DraftEditor({
                     setMessage("");
                   }}
                 />
-              </label>
+              </Label>
             </details>
           )}
           {write && (
             <div className={s.row}>
-              <button
+              <Button
                 type="button"
-                className={s.primary}
+                variant="primary"
                 disabled={!dirty || action.isPending || !!conflict}
                 onClick={save}
               >
                 {action.isPending ? "Saving…" : "Save revision"}
-              </button>
-              <button
+              </Button>
+              <Button
                 type="button"
                 disabled={action.isPending}
                 onClick={() => {
@@ -554,7 +559,7 @@ function DraftEditor({
                 }}
               >
                 Reload current
-              </button>
+              </Button>
             </div>
           )}
           {conflict && (
@@ -568,7 +573,7 @@ function DraftEditor({
               <pre className={s.code} style={{ whiteSpace: "pre-wrap" }}>
                 {JSON.stringify(conflict.specification, null, 2)}
               </pre>
-              <button
+              <Button
                 type="button"
                 onClick={() => {
                   setBase(conflict);
@@ -579,7 +584,7 @@ function DraftEditor({
                 }}
               >
                 I have compared and merged my edits
-              </button>
+              </Button>
             </section>
           )}
         </section>
@@ -594,7 +599,7 @@ function DraftEditor({
                   <time className={s.muted} dateTime={revision.createdAt}>
                     {new Date(revision.createdAt).toLocaleString()}
                   </time>
-                  <button
+                  <Button
                     type="button"
                     onClick={() =>
                       action.run(async () => {
@@ -613,7 +618,7 @@ function DraftEditor({
                     }
                   >
                     Compare revision
-                  </button>
+                  </Button>
                 </div>
               ))}
             </div>
@@ -690,12 +695,12 @@ function DraftEditor({
         >
           <p>Leave this page and discard unsaved edits?</p>
           <div className={s.row}>
-            <button type="button" onClick={() => blocker.reset()}>
+            <Button type="button" onClick={() => blocker.reset()}>
               Keep editing
-            </button>
-            <button type="button" onClick={() => blocker.proceed()}>
+            </Button>
+            <Button type="button" onClick={() => blocker.proceed()}>
               Discard and leave
-            </button>
+            </Button>
           </div>
         </section>
       )}

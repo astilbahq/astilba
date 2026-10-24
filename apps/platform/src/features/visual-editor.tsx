@@ -1,4 +1,3 @@
-import "./visual-editor.css";
 import { useQuery } from "@tanstack/react-query";
 import {
   Background,
@@ -10,6 +9,13 @@ import {
 } from "@xyflow/react";
 import { useContext, useEffect, useState } from "react";
 import { client, result, type Schema } from "../api/client";
+import { Button } from "../components/button";
+import { Checkbox } from "../components/checkbox";
+import "./visual-editor.css";
+import { Input } from "../components/input";
+import { Label } from "../components/label";
+import { Select } from "../components/select";
+import { Textarea } from "../components/textarea";
 import * as s from "../styles";
 import { ThemeContext } from "../theme";
 import { ErrorNotice, Field, Form, text, useAction } from "../ui";
@@ -181,20 +187,20 @@ export function VisualEditor({
       <div className={s.spread}>
         <h3>Services and connections</h3>
         <div className={s.row}>
-          <button
+          <Button
             type="button"
             aria-pressed={view === "canvas"}
             onClick={() => setView("canvas")}
           >
             Canvas
-          </button>
-          <button
+          </Button>
+          <Button
             type="button"
             aria-pressed={view === "list"}
             onClick={() => setView("list")}
           >
             Service list
-          </button>
+          </Button>
         </div>
       </div>
       <p className={s.muted}>
@@ -258,20 +264,20 @@ export function VisualEditor({
           ))}
           {spec.applications.map((a) => (
             <li key={a.id}>
-              <button
+              <Button
                 type="button"
                 aria-pressed={selected === a.id}
                 onClick={() => setSelected(a.id)}
               >
                 {a.name}
-              </button>{" "}
+              </Button>{" "}
               <span>{a.kind ?? "web"}</span>
             </li>
           ))}
         </ul>
       )}
       {write && (
-        <button
+        <Button
           type="button"
           disabled={!layoutDirty || dirty || action.isPending}
           onClick={() =>
@@ -303,7 +309,7 @@ export function VisualEditor({
           }
         >
           Save canvas layout
-        </button>
+        </Button>
       )}
       {dirty && layoutDirty && (
         <small>
@@ -370,43 +376,43 @@ export function VisualEditor({
             }}
           >
             <Field name="name" label="Service name" />
-            <label>
+            <Label>
               Service kind
-              <select name="kind">
+              <Select name="kind">
                 <option value="web">Web application</option>
                 <option value="worker">Worker</option>
                 <option value="postgres">PostgreSQL</option>
-              </select>
-            </label>
+              </Select>
+            </Label>
             <Field
               name="image"
               label="Container image (web or worker)"
               required={false}
             />
-            <label>
+            <Label>
               Database password secret (PostgreSQL)
-              <select name="password">
+              <Select name="password">
                 <option value="">Select a secret version</option>
                 {secrets.data?.map((v) => (
                   <option key={v.id} value={v.id}>
                     {v.name} · {v.id.slice(0, 8)}
                   </option>
                 ))}
-              </select>
-            </label>
-            <label>
+              </Select>
+            </Label>
+            <Label>
               PostgreSQL version for a new database
-              <select name="postgresVersion" defaultValue="18">
+              <Select name="postgresVersion" defaultValue="18">
                 <option value="18">18.4</option>
                 <option value="17">17.10</option>
-              </select>
-            </label>
+              </Select>
+            </Label>
 
             <small>
               Create the password in Secrets below before adding PostgreSQL. Its
               data volume is created automatically.
             </small>
-            <button type="submit">Stage new service</button>
+            <Button type="submit">Stage new service</Button>
           </Form>
         </details>
       )}
@@ -434,11 +440,11 @@ export function VisualEditor({
                 })
               }
             >
-              <label>
+              <Label>
                 Volume name
-                <input name="name" defaultValue={volume.name} required />
-              </label>
-              <button type="submit">Stage volume name</button>
+                <Input name="name" defaultValue={volume.name} required />
+              </Label>
+              <Button type="submit">Stage volume name</Button>
             </Form>
           )}
         </section>
@@ -450,9 +456,9 @@ export function VisualEditor({
             <fieldset className={s.row}>
               <legend>Canvas position</legend>
               {(["x", "y"] as const).map((axis) => (
-                <label key={axis}>
+                <Label key={axis}>
                   Position {axis}
-                  <input
+                  <Input
                     type="number"
                     value={
                       positions?.[app.id]?.[axis] ??
@@ -473,7 +479,7 @@ export function VisualEditor({
                       })
                     }
                   />
-                </label>
+                </Label>
               ))}
             </fieldset>
           )}
@@ -511,20 +517,20 @@ export function VisualEditor({
                   update(next);
                 }}
               >
-                <label>
+                <Label>
                   Service name
-                  <input
+                  <Input
                     name="name"
                     value={app.name}
                     onChange={(e) => update({ ...app, name: e.target.value })}
                     required
                   />
-                </label>
+                </Label>
                 {app.kind === "postgres" ? (
                   <>
-                    <label>
+                    <Label>
                       Database name
-                      <input
+                      <Input
                         name="database"
                         value={app.postgres?.database ?? ""}
                         onChange={(e) =>
@@ -539,10 +545,10 @@ export function VisualEditor({
                         }
                         required
                       />
-                    </label>
-                    <label>
+                    </Label>
+                    <Label>
                       Database user
-                      <input
+                      <Input
                         name="username"
                         value={app.postgres?.username ?? ""}
                         onChange={(e) =>
@@ -557,10 +563,10 @@ export function VisualEditor({
                         }
                         required
                       />
-                    </label>
-                    <label>
+                    </Label>
+                    <Label>
                       Password secret version
-                      <select
+                      <Select
                         name="password"
                         value={app.postgres?.passwordSecretVersionId ?? ""}
                         onChange={(e) =>
@@ -580,8 +586,8 @@ export function VisualEditor({
                             {v.name} · {v.id.slice(0, 8)}
                           </option>
                         ))}
-                      </select>
-                    </label>
+                      </Select>
+                    </Label>
                     <small>
                       Changing database initialization credentials does not
                       alter credentials in an existing data volume.
@@ -589,9 +595,9 @@ export function VisualEditor({
                   </>
                 ) : (
                   <>
-                    <label>
+                    <Label>
                       Container image
-                      <input
+                      <Input
                         name="image"
                         value={app.source.image ?? ""}
                         disabled={app.source.kind === "git"}
@@ -606,10 +612,10 @@ export function VisualEditor({
                         }
                         required
                       />
-                    </label>
-                    <label>
+                    </Label>
+                    <Label>
                       Command arguments (one per line)
-                      <textarea
+                      <Textarea
                         key={app.command?.join("\n") ?? ""}
                         name="command"
                         defaultValue={app.command?.join("\n") ?? ""}
@@ -620,12 +626,12 @@ export function VisualEditor({
                           })
                         }
                       />
-                    </label>
+                    </Label>
                     {app.kind !== "worker" && (
                       <>
-                        <label>
+                        <Label>
                           Readiness HTTP port
-                          <input
+                          <Input
                             name="healthPort"
                             type="number"
                             min={1}
@@ -643,10 +649,10 @@ export function VisualEditor({
                               })
                             }
                           />
-                        </label>
-                        <label>
+                        </Label>
+                        <Label>
                           Readiness path
-                          <input
+                          <Input
                             name="healthPath"
                             value={app.health?.path ?? "/"}
                             onChange={(e) =>
@@ -659,12 +665,12 @@ export function VisualEditor({
                               })
                             }
                           />
-                        </label>
+                        </Label>
                       </>
                     )}
                   </>
                 )}
-                <button type="submit">Stage service changes</button>
+                <Button type="submit">Stage service changes</Button>
               </Form>
               <details>
                 <summary>Variables</summary>
@@ -673,7 +679,7 @@ export function VisualEditor({
                     <li key={v.name}>
                       {v.name}:{" "}
                       {v.secretVersionId ? "Secret version selected" : v.value}
-                      <button
+                      <Button
                         type="button"
                         onClick={() =>
                           update({
@@ -685,7 +691,7 @@ export function VisualEditor({
                         }
                       >
                         Remove {v.name}
-                      </button>
+                      </Button>
                     </li>
                   ))}
                 </ul>
@@ -714,18 +720,18 @@ export function VisualEditor({
                 >
                   <Field name="name" label="Variable name" />
                   <Field name="value" label="Plain value" required={false} />
-                  <label>
+                  <Label>
                     Or use secret version
-                    <select name="secret">
+                    <Select name="secret">
                       <option value="">Use plain value</option>
                       {secrets.data?.map((v) => (
                         <option key={v.id} value={v.id}>
                           {v.name} · {v.id.slice(0, 8)}
                         </option>
                       ))}
-                    </select>
-                  </label>
-                  <button type="submit">Stage variable</button>
+                    </Select>
+                  </Label>
+                  <Button type="submit">Stage variable</Button>
                 </Form>
               </details>
               {app.kind !== "postgres" && (
@@ -736,7 +742,7 @@ export function VisualEditor({
                       <li key={m.volumeId}>
                         {spec.volumes?.find((v) => v.id === m.volumeId)?.name}:{" "}
                         {m.target}
-                        <button
+                        <Button
                           type="button"
                           onClick={() =>
                             update({
@@ -748,7 +754,7 @@ export function VisualEditor({
                           }
                         >
                           Detach volume
-                        </button>
+                        </Button>
                       </li>
                     ))}
                   </ul>
@@ -769,22 +775,22 @@ export function VisualEditor({
                       })
                     }
                   >
-                    <label>
+                    <Label>
                       Volume
-                      <select name="volume" required>
+                      <Select name="volume" required>
                         {spec.volumes?.map((v) => (
                           <option key={v.id} value={v.id}>
                             {v.name}
                           </option>
                         ))}
-                      </select>
-                    </label>
+                      </Select>
+                    </Label>
                     <Field name="target" label="Container mount path" />
-                    <label className={s.row}>
-                      <input type="checkbox" name="readOnly" />
+                    <Label className={s.row}>
+                      <Checkbox name="readOnly" />
                       Read only
-                    </label>
-                    <button type="submit">Stage volume attachment</button>
+                    </Label>
+                    <Button type="submit">Stage volume attachment</Button>
                   </Form>
                 </details>
               )}
@@ -807,20 +813,19 @@ export function VisualEditor({
                         a.id !== app.id && (a.kind === "postgres" || a.health),
                     )
                     .map((a) => (
-                      <label className={s.row} key={a.id}>
-                        <input
-                          type="checkbox"
+                      <Label className={s.row} key={a.id}>
+                        <Checkbox
                           name="dependency"
                           value={a.id}
                           defaultChecked={app.dependsOn?.includes(a.id)}
                         />
                         {a.name}
-                      </label>
+                      </Label>
                     ))}
-                  <button type="submit">Stage readiness dependencies</button>
+                  <Button type="submit">Stage readiness dependencies</Button>
                 </Form>
               </details>
-              <button
+              <Button
                 type="button"
                 onClick={() => {
                   stage({
@@ -840,7 +845,7 @@ export function VisualEditor({
                 }}
               >
                 Remove service; retain data volumes
-              </button>
+              </Button>
             </>
           ) : (
             <p className={s.muted}>
@@ -861,7 +866,7 @@ export function VisualEditor({
               {spec.applications.find((a) => a.id === b.targetId)?.name}:{" "}
               {b.variable}
               {configure && (
-                <button
+                <Button
                   type="button"
                   onClick={() =>
                     stage({
@@ -871,7 +876,7 @@ export function VisualEditor({
                   }
                 >
                   Remove binding
-                </button>
+                </Button>
               )}
             </li>
           ))}
@@ -895,9 +900,9 @@ export function VisualEditor({
               })
             }
           >
-            <label>
+            <Label>
               PostgreSQL source
-              <select name="source" required>
+              <Select name="source" required>
                 {spec.applications
                   .filter((a) => a.kind === "postgres")
                   .map((a) => (
@@ -905,11 +910,11 @@ export function VisualEditor({
                       {a.name}
                     </option>
                   ))}
-              </select>
-            </label>
-            <label>
+              </Select>
+            </Label>
+            <Label>
               Receiving service
-              <select name="target" required>
+              <Select name="target" required>
                 {spec.applications
                   .filter((a) => a.kind !== "postgres")
                   .map((a) => (
@@ -917,27 +922,27 @@ export function VisualEditor({
                       {a.name}
                     </option>
                   ))}
-              </select>
-            </label>
-            <label>
+              </Select>
+            </Label>
+            <Label>
               Variable name
-              <input name="variable" defaultValue="DATABASE_URL" required />
-            </label>
-            <button type="submit">Stage binding</button>
+              <Input name="variable" defaultValue="DATABASE_URL" required />
+            </Label>
+            <Button type="submit">Stage binding</Button>
           </Form>
         )}
       </details>
       <ul className={s.list}>
         {spec.volumes?.map((volume) => (
           <li key={volume.id}>
-            <button type="button" onClick={() => setSelected(volume.id)}>
+            <Button type="button" onClick={() => setSelected(volume.id)}>
               {volume.name}
-            </button>
+            </Button>
             {configure &&
               !spec.applications.some((a) =>
                 a.mounts?.some((m) => m.volumeId === volume.id),
               ) && (
-                <button
+                <Button
                   type="button"
                   onClick={() =>
                     stage({
@@ -947,7 +952,7 @@ export function VisualEditor({
                   }
                 >
                   Remove volume from configuration; retain data
-                </button>
+                </Button>
               )}
           </li>
         ))}
@@ -969,7 +974,7 @@ export function VisualEditor({
             }}
           >
             <Field name="name" label="Volume name" />
-            <button type="submit">Stage volume</button>
+            <Button type="submit">Stage volume</Button>
           </Form>
         </details>
       )}
@@ -998,10 +1003,10 @@ function RouteEditor({
             {r.domain} · {r.protocol.toUpperCase()} · {r.tls}
             {write && (
               <>
-                <button type="button" onClick={() => setEdit(r.id)}>
+                <Button type="button" onClick={() => setEdit(r.id)}>
                   Edit route
-                </button>
-                <button
+                </Button>
+                <Button
                   type="button"
                   onClick={() =>
                     change({
@@ -1011,7 +1016,7 @@ function RouteEditor({
                   }
                 >
                   Remove route
-                </button>
+                </Button>
               </>
             )}
           </li>
@@ -1067,9 +1072,9 @@ function RouteEditor({
             form.reset();
           }}
         >
-          <label>
+          <Label>
             Target service
-            <select name="target" required defaultValue={route?.targetId}>
+            <Select name="target" required defaultValue={route?.targetId}>
               {spec.applications
                 .filter((a) => a.kind !== "worker")
                 .map((a) => (
@@ -1077,22 +1082,22 @@ function RouteEditor({
                     {a.name}
                   </option>
                 ))}
-            </select>
-          </label>
-          <label>
+            </Select>
+          </Label>
+          <Label>
             Protocol
-            <select name="protocol" defaultValue={route?.protocol ?? "http"}>
+            <Select name="protocol" defaultValue={route?.protocol ?? "http"}>
               <option value="http">HTTP</option>
               <option value="tcp">TCP</option>
-            </select>
-          </label>
-          <label>
+            </Select>
+          </Label>
+          <Label>
             Domain
-            <input name="domain" defaultValue={route?.domain} required />
-          </label>
-          <label>
+            <Input name="domain" defaultValue={route?.domain} required />
+          </Label>
+          <Label>
             Container port
-            <input
+            <Input
               name="port"
               type="number"
               min={1}
@@ -1100,54 +1105,54 @@ function RouteEditor({
               defaultValue={route?.port ?? 8080}
               required
             />
-          </label>
-          <label>
+          </Label>
+          <Label>
             Host port (TCP only)
-            <input
+            <Input
               name="listenPort"
               type="number"
               min={1024}
               max={65535}
               defaultValue={route?.listenPort || 15432}
             />
-          </label>
-          <label>
+          </Label>
+          <Label>
             TLS policy
-            <select name="tls" defaultValue={route?.tls ?? "managed"}>
+            <Select name="tls" defaultValue={route?.tls ?? "managed"}>
               <option value="managed">Managed certificate (HTTP)</option>
               <option value="passthrough">Pass through TLS (TCP)</option>
               <option value="off">Unencrypted</option>
-            </select>
-          </label>
-          <label>
+            </Select>
+          </Label>
+          <Label>
             Allowed client networks (CIDRs, required for TCP)
-            <textarea
+            <Textarea
               name="cidrs"
               defaultValue={route?.allowCidrs.join("\n") ?? ""}
             />
-          </label>
+          </Label>
           <details>
             <summary>Advanced HTTP settings</summary>
-            <label>
+            <Label>
               Strip path prefix
-              <input
+              <Input
                 name="prefix"
                 defaultValue={route?.advanced?.stripPrefix ?? ""}
               />
-            </label>
-            <label>
+            </Label>
+            <Label>
               Requests per second (0 disables limit)
-              <input
+              <Input
                 name="rate"
                 type="number"
                 min={0}
                 max={10000}
                 defaultValue={route?.advanced?.requestsPerSecond ?? 0}
               />
-            </label>
-            <label>
+            </Label>
+            <Label>
               Response headers (one Name: Value per line)
-              <textarea
+              <Textarea
                 name="headers"
                 defaultValue={Object.entries(
                   route?.advanced?.responseHeaders ?? {},
@@ -1155,18 +1160,18 @@ function RouteEditor({
                   .map(([k, v]) => `${k}: ${v}`)
                   .join("\n")}
               />
-            </label>
+            </Label>
             <small>
               Only X-* headers, Content-Security-Policy and Referrer-Policy are
               accepted. Host files, templates and provider references are
               unavailable.
             </small>
           </details>
-          <button type="submit">Stage route</button>
+          <Button type="submit">Stage route</Button>
           {edit && (
-            <button type="button" onClick={() => setEdit(undefined)}>
+            <Button type="button" onClick={() => setEdit(undefined)}>
               Cancel route edit
-            </button>
+            </Button>
           )}
         </Form>
       )}

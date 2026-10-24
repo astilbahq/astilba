@@ -170,13 +170,11 @@ test("real API: create, conflict, secret, keyboard and reflow", async ({
     page.locator("body").evaluate((el) => getComputedStyle(el).backgroundColor);
   await expect(canvas).toHaveCSS("background-color", await bodyColor());
   await page.emulateMedia({ colorScheme: "light" });
-  await page
-    .getByRole("button", { name: "Use dark theme", exact: true })
-    .click();
+  await page.getByRole("button", { name: "Appearance", exact: true }).click();
+  await page.getByRole("menuitemradio", { name: "Dark", exact: true }).click();
   await expect(canvas).toHaveCSS("background-color", await bodyColor());
-  await page
-    .getByRole("button", { name: "Use light theme", exact: true })
-    .click();
+  await page.getByRole("menuitemradio", { name: "Light", exact: true }).click();
+  await page.keyboard.press("Escape");
   await page.getByRole("button", { name: "Service list", exact: true }).click();
   await page.getByRole("button", { name: "web", exact: true }).click();
   const layout = page.getByLabel("Position x", { exact: true });

@@ -3,6 +3,12 @@ import { QRCodeSVG } from "qrcode.react";
 import { useState } from "react";
 import { client, result, type Schema, setSession } from "./api/client";
 import { sessionOptions } from "./api/session";
+import { Button } from "./components/button";
+import { Checkbox } from "./components/checkbox";
+import { Input } from "./components/input";
+import { Label } from "./components/label";
+import { Anchor } from "./components/link";
+import { Select } from "./components/select";
 import { EmailVerification, WorkspaceSubscription } from "./hosting";
 import { WorkspaceExport } from "./portability";
 import * as s from "./styles";
@@ -82,7 +88,7 @@ export function Account() {
               <p className={s.muted}>
                 {session.user.recoveryCodesRemaining} recovery codes remaining.
               </p>
-              <button
+              <Button
                 type="button"
                 disabled={action.isPending}
                 onClick={() =>
@@ -96,8 +102,8 @@ export function Account() {
                 }
               >
                 Replace recovery codes
-              </button>
-              <button
+              </Button>
+              <Button
                 type="button"
                 disabled={action.isPending}
                 onClick={() => {
@@ -115,10 +121,10 @@ export function Account() {
                 }}
               >
                 Disable two-factor authentication
-              </button>
+              </Button>
             </>
           ) : (
-            <button
+            <Button
               type="button"
               disabled={action.isPending}
               onClick={() =>
@@ -130,7 +136,7 @@ export function Account() {
               }
             >
               Set up authenticator
-            </button>
+            </Button>
           )}
           {enrollment && (
             <>
@@ -146,7 +152,7 @@ export function Account() {
                 className={s.authenticatorQR}
               />
               <code className={s.code}>{enrollment.secret}</code>
-              <a href={enrollment.uri}>Open authenticator app</a>
+              <Anchor href={enrollment.uri}>Open authenticator app</Anchor>
               <Form
                 action={action}
                 onSubmit={(d) =>
@@ -179,9 +185,9 @@ export function Account() {
                 now; each works once.
               </p>
               <pre className={s.code}>{codes.join("\n")}</pre>
-              <button type="button" onClick={() => setCodes(undefined)}>
+              <Button type="button" onClick={() => setCodes(undefined)}>
                 I have saved my codes
-              </button>
+              </Button>
             </div>
           )}
         </section>
@@ -271,16 +277,16 @@ export function Members() {
         <p className={s.muted}>WORKSPACE</p>
         <h1>A place for your team.</h1>
       </div>
-      <label>
+      <Label>
         Workspace
-        <select value={id} onChange={(e) => setSelected(e.target.value)}>
+        <Select value={id} onChange={(e) => setSelected(e.target.value)}>
           {session?.workspaces.map((w) => (
             <option key={w.id} value={w.id}>
               {w.name}
             </option>
           ))}
-        </select>
-      </label>
+        </Select>
+      </Label>
       <WorkspaceSubscription workspaceId={id} owner={ws?.role === "owner"} />
       {ws?.role === "owner" && <WorkspaceExport workspaceId={id} />}
       <ErrorNotice
@@ -313,24 +319,19 @@ export function Members() {
                 })
               }
             >
-              <label>
+              <Label>
                 Name
-                <input
+                <Input
                   name="name"
                   defaultValue={ws.name}
                   required
                   maxLength={80}
                 />
-              </label>
-              <label className={s.row}>
-                <input
-                  style={{ width: "auto" }}
-                  type="checkbox"
-                  name="requireMfa"
-                  defaultChecked={ws.requireMfa}
-                />
+              </Label>
+              <Label className={s.row}>
+                <Checkbox name="requireMfa" defaultChecked={ws.requireMfa} />
                 Require two-factor authentication for changes
-              </label>
+              </Label>
               <small>
                 Confirm your identity in Account security before changing these
                 settings.
@@ -352,9 +353,9 @@ export function Members() {
                       </p>
                     </div>
                     <div className={s.row}>
-                      <label>
+                      <Label>
                         Role for {m.name}
-                        <select
+                        <Select
                           value={m.role}
                           disabled={action.isPending}
                           onChange={(e) =>
@@ -382,9 +383,9 @@ export function Members() {
                           <option value="owner">Owner</option>
                           <option value="operator">Operator</option>
                           <option value="viewer">Viewer</option>
-                        </select>
-                      </label>
-                      <button
+                        </Select>
+                      </Label>
+                      <Button
                         type="button"
                         disabled={action.isPending}
                         onClick={() => {
@@ -412,7 +413,7 @@ export function Members() {
                         }}
                       >
                         Remove
-                      </button>
+                      </Button>
                     </div>
                   </div>
                 ))}
@@ -442,14 +443,14 @@ export function Members() {
                 }
               >
                 <Field name="email" label="Email" type="email" />
-                <label>
+                <Label>
                   Role
-                  <select name="role" defaultValue="operator">
+                  <Select name="role" defaultValue="operator">
                     <option value="owner">Owner</option>
                     <option value="operator">Operator</option>
                     <option value="viewer">Viewer</option>
-                  </select>
-                </label>
+                  </Select>
+                </Label>
                 <BusyButton busy={action.isPending}>Send invitation</BusyButton>
               </Form>
               <div className={s.list}>
@@ -460,7 +461,7 @@ export function Members() {
                       {i.role} · expires{" "}
                       {new Date(i.expiresAt).toLocaleDateString()}
                     </small>
-                    <button
+                    <Button
                       type="button"
                       disabled={action.isPending}
                       onClick={() =>
@@ -480,7 +481,7 @@ export function Members() {
                       }
                     >
                       Revoke
-                    </button>
+                    </Button>
                   </div>
                 ))}
               </div>

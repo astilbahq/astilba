@@ -18,6 +18,7 @@ export default defineConfig({
         ".yarnrc.yml",
         "**/.git/**",
         "**/.artifacts/**",
+        "**/.impeccable/**",
       ],
     },
     proxy: {

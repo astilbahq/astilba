@@ -1,8 +1,10 @@
 import { useQuery } from "@tanstack/react-query";
-import { Link } from "@tanstack/react-router";
 import { useState } from "react";
 import { client, result, setSession } from "./api/client";
 import { sessionOptions } from "./api/session";
+import { Button } from "./components/button";
+import { Link } from "./components/link";
+import * as authStyles from "./features/auth/auth.styles";
 import * as s from "./styles";
 import { BusyButton, ErrorNotice, Field, Form, text, useAction } from "./ui";
 
@@ -33,7 +35,7 @@ export function Signup() {
           <Link to="/members">open workspace billing</Link>.
         </p>
       ) : (
-        <section className={s.panel}>
+        <section className={authStyles.formSection}>
           <Form
             action={action}
             label="Hosted signup"
@@ -100,7 +102,7 @@ export function EmailVerification() {
       <h2>Verify your email</h2>
       <p>Email verification is required for hosted workspace changes.</p>
       <ErrorNotice error={action.error} />
-      <button
+      <Button
         type="button"
         disabled={action.isPending}
         onClick={() =>
@@ -111,7 +113,7 @@ export function EmailVerification() {
         }
       >
         Send verification code
-      </button>
+      </Button>
       {sent && (
         <p role="status">Check your email for a code valid for one hour.</p>
       )}
@@ -187,7 +189,7 @@ export function WorkspaceSubscription({
       </p>
       {owner && data.billingEnabled && (
         <div className={s.row}>
-          <button
+          <Button
             type="button"
             disabled={action.isPending}
             onClick={() =>
@@ -203,8 +205,8 @@ export function WorkspaceSubscription({
             }
           >
             Start subscription
-          </button>
-          <button
+          </Button>
+          <Button
             type="button"
             disabled={action.isPending}
             onClick={() =>
@@ -220,7 +222,7 @@ export function WorkspaceSubscription({
             }
           >
             Manage billing
-          </button>
+          </Button>
         </div>
       )}
       {owner && (

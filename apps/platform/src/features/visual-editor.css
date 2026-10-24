@@ -1,5 +1,5 @@
 .visual-canvas {
-  height: 400px;
+  block-size: 400px;
   border: 1px solid var(--colors-border);
   border-radius: 8px;
   overflow: hidden;

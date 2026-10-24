@@ -1,6 +1,11 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRef, useState } from "react";
 import { client, result, type Schema } from "../api/client";
+import { Button } from "../components/button";
+import { Checkbox } from "../components/checkbox";
+import { Input } from "../components/input";
+import { Label } from "../components/label";
+import { Select } from "../components/select";
 import * as s from "../styles";
 import { BusyButton, ErrorNotice, Form, text, useAction } from "../ui";
 import type { EnvironmentPath } from "./visual-editor";
@@ -114,9 +119,9 @@ export function Upgrades({
               })
             }
           >
-            <label>
+            <Label>
               Final backup policy
-              <select name="policy" required>
+              <Select name="policy" required>
                 <option value="">Select a policy</option>
                 {policies.data
                   ?.filter((p) => p.method === "postgres-logical")
@@ -125,11 +130,11 @@ export function Upgrades({
                       {p.name}
                     </option>
                   ))}
-              </select>
-            </label>
-            <label>
+              </Select>
+            </Label>
+            <Label>
               Minimum days to retain old storage and the recovery snapshot
-              <input
+              <Input
                 name="retainDays"
                 type="number"
                 min={1}
@@ -137,18 +142,18 @@ export function Upgrades({
                 defaultValue="30"
                 required
               />
-            </label>
+            </Label>
             <p>
               Retention prevents platform cleanup. Nothing is automatically
               deleted when it expires; deletion is a separate action.
             </p>
-            <button
+            <Button
               type="submit"
-              className={s.primary}
+              variant="primary"
               disabled={dirty || action.isPending}
             >
               Create upgrade plan
-            </button>
+            </Button>
           </Form>
         </details>
       )}
@@ -225,18 +230,18 @@ export function Upgrades({
                   label="Start reviewed upgrade"
                   onSubmit={() => run(v, "prepare")}
                 >
-                  <label>
-                    <input type="checkbox" required /> I accept downtime for
-                    every service in this environment and have disconnected
-                    external database clients.
-                  </label>
-                  <button
+                  <Label>
+                    <Checkbox required /> I accept downtime for every service in
+                    this environment and have disconnected external database
+                    clients.
+                  </Label>
+                  <Button
                     type="submit"
-                    className={s.primary}
+                    variant="primary"
                     disabled={dirty || action.isPending}
                   >
                     Stop services, back up and verify upgrade
-                  </button>
+                  </Button>
                 </Form>
               )}
               {v.status.phase === "ready" && (
@@ -245,11 +250,10 @@ export function Upgrades({
                   label="Approve database cutover"
                   onSubmit={() => run(v, "cutover")}
                 >
-                  <label>
-                    <input type="checkbox" required /> Allow new writes on
-                    PostgreSQL 18. Returning to the old volume afterward can
-                    lose data.
-                  </label>
+                  <Label>
+                    <Checkbox required /> Allow new writes on PostgreSQL 18.
+                    Returning to the old volume afterward can lose data.
+                  </Label>
                   <BusyButton busy={action.isPending}>
                     Approve cutover and resume services
                   </BusyButton>
@@ -257,25 +261,25 @@ export function Upgrades({
               )}
               {(v.status.phase === "ready" || v.status.phase === "attention") &&
                 !v.status.writesPossible && (
-                  <button
+                  <Button
                     type="button"
                     disabled={action.isPending}
                     onClick={() => run(v, "return")}
                   >
                     Return to old database
-                  </button>
+                  </Button>
                 )}
               {v.status.phase === "attention" && v.status.writesPossible && (
-                <button
+                <Button
                   type="button"
                   disabled={action.isPending}
                   onClick={() => run(v, "reconcile")}
                 >
                   Reconcile new database and resume services
-                </button>
+                </Button>
               )}
               {v.status.phase === "complete" && (
-                <button
+                <Button
                   type="button"
                   disabled={action.isPending}
                   onClick={() =>
@@ -314,7 +318,7 @@ export function Upgrades({
                   }
                 >
                   Load upgraded configuration
-                </button>
+                </Button>
               )}
             </div>
           )}

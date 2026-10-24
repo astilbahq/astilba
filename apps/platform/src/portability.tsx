@@ -1,5 +1,8 @@
 import { useState } from "react";
 import { client, result } from "./api/client";
+import { Checkbox } from "./components/checkbox";
+import { Input } from "./components/input";
+import { Label } from "./components/label";
 import * as s from "./styles";
 import { BusyButton, ErrorNotice, Field, Form, text, useAction } from "./ui";
 
@@ -110,15 +113,15 @@ export function WorkspaceImport({ hosted }: { hosted: boolean }) {
           })
         }
       >
-        <label>
+        <Label>
           Encrypted workspace archive
-          <input
+          <Input
             type="file"
             name="archive"
             accept=".astilba,application/octet-stream"
             required
           />
-        </label>
+        </Label>
         <Field
           name="passphrase"
           label="Archive passphrase"
@@ -133,10 +136,10 @@ export function WorkspaceImport({ hosted }: { hosted: boolean }) {
             autoComplete="off"
           />
         )}
-        <label>
-          <input name="ownership" type="checkbox" required /> Make me the
-          imported workspace owner and require new approval for automation.
-        </label>
+        <Label>
+          <Checkbox name="ownership" required /> Make me the imported workspace
+          owner and require new approval for automation.
+        </Label>
         <BusyButton busy={action.isPending}>Import workspace</BusyButton>
       </Form>
       {done && (

@@ -146,7 +146,9 @@ test("Compose files remain authoritative through graph edits and independent lay
   await page.screenshot({
     path: `../../.artifacts/p4/editor-${info.project.name}-light.png`,
   });
-  await page.getByRole("button", { name: "Use dark theme" }).click();
+  await page.getByRole("button", { name: "Appearance", exact: true }).click();
+  await page.getByRole("menuitemradio", { name: "Dark", exact: true }).click();
+  await page.keyboard.press("Escape");
   expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
   await editor.scrollIntoViewIfNeeded();
   await page.screenshot({

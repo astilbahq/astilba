@@ -3,91 +3,67 @@ import {
   createRootRoute,
   createRoute,
   createRouter,
-  Link,
   Navigate,
   Outlet,
   useLocation,
   useRouter,
 } from "@tanstack/react-router";
-import { type ReactNode, useContext, useEffect, useState } from "react";
+import { useEffect } from "react";
 import { client, result, setSession } from "./api/client";
 import { sessionOptions } from "./api/session";
-import logo from "./assets/astilba-lockup-horizontal-light.svg";
+import { Button } from "./components/button";
+import { Anchor, Link } from "./components/link";
+import { PasswordInput } from "./components/password-input";
+import { ThemeMenu } from "./components/theme-menu";
+import { TooltipProvider } from "./components/tooltip";
 import { Alerts } from "./features/alerts";
+import { AuthFrame } from "./features/auth/auth-frame";
+import * as authStyles from "./features/auth/auth.styles";
+import { Invitation } from "./features/auth/invitation";
+import { PasswordReset } from "./features/auth/password-reset";
+import { authValidation } from "./features/auth/validation";
 import { hostingOptions, Signup } from "./hosting";
 import { Account, Members } from "./security";
 import { Servers } from "./servers";
 import * as s from "./styles";
-import { ThemeContext } from "./theme";
+import { ThemeProvider } from "./theme";
 import { BusyButton, ErrorNotice, Field, Form, text, useAction } from "./ui";
 import { Dashboard, type WorkspaceSelection } from "./workspace";
 
-function AuthFrame({ children }: { children: ReactNode }) {
-  return (
-    <main id="main" className={s.authPage}>
-      <div className={s.authContent}>
-        <img
-          src={logo}
-          alt="Astilba"
-          width="180"
-          height="37"
-          className={s.authLogo}
-        />
-        {children}
-      </div>
-    </main>
-  );
-}
 function Root() {
-  const [theme, setTheme] = useState<"light" | "dark">(() => {
-    const saved = localStorage.getItem("astilba-theme");
-    return saved === "light" || saved === "dark"
-      ? saved
-      : matchMedia("(prefers-color-scheme: dark)").matches
-        ? "dark"
-        : "light";
-  });
-  useEffect(() => {
-    document.documentElement.classList.toggle("dark", theme === "dark");
-    localStorage.setItem("astilba-theme", theme);
-  }, [theme]);
   const session = useQuery(sessionOptions);
   return (
-    <ThemeContext
-      value={{
-        theme,
-        toggleTheme: () => setTheme(theme === "dark" ? "light" : "dark"),
-      }}
-    >
-      <a href="#main" className="skip-link">
-        Skip to content
-      </a>
-      {session.isPending ? (
-        <AuthFrame>
-          <p role="status">Loading…</p>
-        </AuthFrame>
-      ) : session.error && !session.data ? (
-        <AuthFrame>
-          <ErrorNotice error={session.error} />
-          <button
-            type="button"
-            disabled={session.isFetching}
-            onClick={() => void session.refetch()}
-          >
-            Retry connection
-          </button>
-        </AuthFrame>
-      ) : (
-        <Outlet />
-      )}
-    </ThemeContext>
+    <ThemeProvider>
+      <TooltipProvider delay={300}>
+        <Anchor href="#main" className="skip-link">
+          Skip to content
+        </Anchor>
+        {session.isPending ? (
+          <AuthFrame>
+            <p role="status">Loading…</p>
+          </AuthFrame>
+        ) : session.error && !session.data ? (
+          <AuthFrame>
+            <ErrorNotice error={session.error} />
+            <Button
+              type="button"
+              disabled={session.isFetching}
+              onClick={() => void session.refetch()}
+            >
+              Retry connection
+            </Button>
+          </AuthFrame>
+        ) : (
+          <Outlet />
+        )}
+      </TooltipProvider>
+    </ThemeProvider>
   );
 }
 function ApplicationLayout() {
   const sessionQuery = useQuery(sessionOptions);
   const session = sessionQuery.data;
   const { returnTo } = application.useRouteContext();
-  const { theme, toggleTheme } = useContext(ThemeContext);
   const action = useAction();
   if (!session?.user || session.mfaPending) {
     return <Navigate to="/login" search={{ returnTo }} replace />;
@@ -101,22 +77,29 @@ function ApplicationLayout() {
         <div>
           <small>YOUR INFRASTRUCTURE</small>
           <nav aria-label="Main" className={s.nav}>
-            <Link to="/">Projects</Link>
-            <Link to="/servers">Servers</Link>
-            <Link to="/alerts">Alerts</Link>
-            <Link to="/members">Workspace</Link>
-            <Link to="/account">Account security</Link>
+            <Link to="/" variant="navigation">
+              Projects
+            </Link>
+            <Link to="/servers" variant="navigation">
+              Servers
+            </Link>
+            <Link to="/alerts" variant="navigation">
+              Alerts
+            </Link>
+            <Link to="/members" variant="navigation">
+              Workspace
+            </Link>
+            <Link to="/account" variant="navigation">
+              Account security
+            </Link>
           </nav>
         </div>
         <div className={s.stack}>
           <small>Open source. On your terms.</small>
-          <button type="button" onClick={toggleTheme}>
-            Use {theme === "dark" ? "light" : "dark"} theme
-          </button>
-          <a href="/source/NOTICE.txt">Licence & source</a>
+          <Anchor href="/source/NOTICE.txt">Licence & source</Anchor>
           <span className={s.muted}>{session.user.email}</span>
           <ErrorNotice error={action.error} />
-          <button
+          <Button
             type="button"
             disabled={action.isPending}
             onClick={() =>
@@ -127,10 +110,13 @@ function ApplicationLayout() {
             }
           >
             Sign out
-          </button>
+          </Button>
         </div>
       </aside>
       <main id="main" className={s.main}>
+        <div className={s.appearance}>
+          <ThemeMenu />
+        </div>
         <ErrorNotice error={sessionQuery.error} />
         <Outlet />
       </main>
@@ -142,8 +128,10 @@ function AuthLayout() {
   return (
     <AuthFrame>
       <Outlet />
-      {location.pathname !== "/login" && (
-        <Link to="/login">Back to sign in</Link>
+      {location.pathname === "/signup" && (
+        <Link to="/login" className={authStyles.backLink}>
+          Back to sign in
+        </Link>
       )}
     </AuthFrame>
   );
@@ -152,12 +140,17 @@ function loginDestination(value: unknown): string {
   if (typeof value !== "string" || !value.startsWith("/")) return "/";
   try {
     const url = new URL(value, window.location.origin);
-    // Only return to application pages, never auth loops, API endpoints or other origins.
+    // Return only to application pages or an invitation, never sign-in loops, APIs or other origins.
     if (
       url.origin !== window.location.origin ||
-      !["/", "/servers", "/alerts", "/members", "/account"].includes(
-        url.pathname.replace(/\/$/, "") || "/",
-      )
+      ![
+        "/",
+        "/servers",
+        "/alerts",
+        "/members",
+        "/account",
+        "/invitation",
+      ].includes(url.pathname.replace(/\/$/, "") || "/")
     )
       return "/";
     return url.pathname + url.search + url.hash;
@@ -177,7 +170,7 @@ function SignIn() {
   const action = useAction();
   if (signedIn) return <p role="status">Opening your workspace…</p>;
   return (
-    <div className={s.stack}>
+    <div className={authStyles.flow}>
       <div>
         <h1>{session?.mfaPending ? "Verify it’s you" : "Sign in"}</h1>
         {session?.mfaPending && (
@@ -187,10 +180,10 @@ function SignIn() {
         )}
       </div>
       <section className={s.stack}>
-        <ErrorNotice error={action.error} />
         {session?.mfaPending ? (
           <Form
             action={action}
+            validation={authValidation.mfa}
             onSubmit={(d) =>
               action.run(async () =>
                 setSession(
@@ -213,6 +206,7 @@ function SignIn() {
         ) : (
           <Form
             action={action}
+            validation={authValidation.signIn}
             onSubmit={(d) =>
               action.run(async () =>
                 setSession(
@@ -233,154 +227,43 @@ function SignIn() {
               label="Email"
               type="email"
               autoComplete="username"
+              placeholder="you@example.com"
+              variant="quiet"
             />
             <Field
               name="password"
               label="Password"
               type="password"
               autoComplete="current-password"
+              inputComponent={PasswordInput}
+              placeholder="Enter your password"
+              variant="quiet"
+              labelAction={
+                <Link
+                  to="/reset"
+                  variant="plain"
+                  className={authStyles.recoveryLink}
+                >
+                  Forgot password?
+                </Link>
+              }
             />
             <BusyButton busy={action.isPending}>Sign in</BusyButton>
           </Form>
         )}
-        <div className={s.row}>
-          <Link to="/reset">Reset password</Link>
-          <Link to="/invitation">Accept invitation</Link>
-          {hosting?.enabled && <Link to="/signup">Join the hosted beta</Link>}
-        </div>
-      </section>
-    </div>
-  );
-}
-function Reset() {
-  const action = useAction();
-  const [sent, setSent] = useState(false);
-  const [complete, setComplete] = useState(false);
-  return (
-    <div className={s.stack}>
-      <h1>Reset your password</h1>
-      <ErrorNotice error={action.error} />
-      <section className={s.panel}>
-        <Form
-          action={action}
-          onSubmit={(d) =>
-            action.run(async () => {
-              await result(
-                client.POST("/api/v1/auth/reset/request", {
-                  body: { email: text(d, "email") },
-                }),
-              );
-              setSent(true);
-            })
-          }
-        >
-          <Field
-            name="email"
-            label="Account email"
-            type="email"
-            autoComplete="username"
-          />
-          <BusyButton busy={action.isPending}>Send reset code</BusyButton>
-        </Form>
-        {sent && (
-          <p role="status">
-            If this account exists and email is configured, a reset code will
-            arrive shortly.
-          </p>
-        )}
-        <Form
-          action={action}
-          onSubmit={(d) =>
-            action.run(async () => {
-              await result(
-                client.POST("/api/v1/auth/reset/complete", {
-                  body: {
-                    token: text(d, "token"),
-                    password: text(d, "password"),
-                  },
-                }),
-              );
-              setComplete(true);
-            })
-          }
-        >
-          <Field
-            name="token"
-            label="Reset code from email"
-            autoComplete="one-time-code"
-          />
-          <Field
-            name="password"
-            label="New password (15–128 characters)"
-            type="password"
-            autoComplete="new-password"
-            minLength={15}
-          />
-          <BusyButton busy={action.isPending}>Set password</BusyButton>
-        </Form>
-        {complete && (
-          <p role="status">
-            Password changed. <Link to="/login">Sign in</Link>
-          </p>
-        )}
-      </section>
-    </div>
-  );
-}
-function Invitation() {
-  const action = useAction();
-  const session = useQuery(sessionOptions);
-  const [done, setDone] = useState(false);
-  return (
-    <div className={s.stack}>
-      <h1>Join a workspace</h1>
-      <p className={s.muted}>
-        If you already have an account, sign in as the invited email first.
-      </p>
-      <section className={s.panel}>
-        <ErrorNotice error={action.error} />
-        <Form
-          action={action}
-          onSubmit={(d) =>
-            action.run(async () => {
-              setSession(
-                await result(
-                  client.POST("/api/v1/auth/invitations/accept", {
-                    body: {
-                      token: text(d, "token"),
-                      name: text(d, "name") || undefined,
-                      password: text(d, "password") || undefined,
-                    },
-                  }),
-                ),
-              );
-              setDone(true);
-            })
-          }
-        >
-          <Field
-            name="token"
-            label="Invitation code from email"
-            autoComplete="one-time-code"
-          />
-          {!session.data?.user && (
-            <>
-              <Field name="name" label="Your name" autoComplete="name" />
-              <Field
-                name="password"
-                label="Choose a password (15–128 characters)"
-                type="password"
-                autoComplete="new-password"
-                minLength={15}
-              />
-            </>
-          )}
-          <BusyButton busy={action.isPending}>Accept invitation</BusyButton>
-        </Form>
-        {done && (
-          <p role="status">
-            Workspace joined. <Link to="/">Open projects</Link>
-          </p>
+        {(session?.mfaPending || hosting?.enabled) && (
+          <div className={authStyles.secondaryActions}>
+            {session?.mfaPending && (
+              <Link to="/reset" className={authStyles.secondaryLink}>
+                Reset password
+              </Link>
+            )}
+            {hosting?.enabled && (
+              <Link to="/signup" className={authStyles.secondaryLink}>
+                Join the hosted beta
+              </Link>
+            )}
+          </div>
         )}
       </section>
     </div>
@@ -463,13 +346,33 @@ const members = createRoute({
 const reset = createRoute({
   getParentRoute: () => auth,
   path: "/reset",
-  component: Reset,
+  validateSearch: (search: Record<string, unknown>): { token?: string } => ({
+    token:
+      typeof search.token === "string" && search.token
+        ? search.token
+        : undefined,
+  }),
+  component: PasswordResetPage,
 });
+function PasswordResetPage() {
+  const { token } = reset.useSearch();
+  return <PasswordReset key={token ?? "request"} token={token} />;
+}
 const invitation = createRoute({
   getParentRoute: () => auth,
   path: "/invitation",
-  component: Invitation,
+  validateSearch: (search: Record<string, unknown>): { token?: string } => ({
+    token:
+      typeof search.token === "string" && search.token
+        ? search.token
+        : undefined,
+  }),
+  component: InvitationPage,
 });
+function InvitationPage() {
+  const { token } = invitation.useSearch();
+  return <Invitation key={token ?? "missing"} token={token} />;
+}
 const signup = createRoute({
   getParentRoute: () => auth,
   path: "/signup",

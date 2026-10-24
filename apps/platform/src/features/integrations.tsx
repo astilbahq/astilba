@@ -1,6 +1,10 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { client, result } from "../api/client";
+import { Button } from "../components/button";
+import { Input } from "../components/input";
+import { Label } from "../components/label";
+import { Select } from "../components/select";
 import * as s from "../styles";
 import { BusyButton, ErrorNotice, Field, Form, text, useAction } from "../ui";
 
@@ -61,14 +65,14 @@ export function IntegrationSettings({ workspaceId }: { workspaceId: string }) {
         >
           <h3>Repository connection</h3>
           <Field name="name" label="Connection name" />
-          <label>
+          <Label>
             Provider
-            <select name="provider">
+            <Select name="provider">
               <option value="github">GitHub</option>
               <option value="gitlab">GitLab</option>
               <option value="gitea">Gitea</option>
-            </select>
-          </label>
+            </Select>
+          </Label>
           <Field
             name="base"
             label="Provider origin, such as https://github.com"
@@ -109,17 +113,17 @@ export function IntegrationSettings({ workspaceId }: { workspaceId: string }) {
               Configure a push webhook in your repository. Copy this secret now;
               it is shown once.
             </p>
-            <label>
+            <Label>
               Webhook URL
-              <input readOnly value={webhook.url} />
-            </label>
-            <label>
+              <Input readOnly value={webhook.url} />
+            </Label>
+            <Label>
               Webhook secret
-              <input readOnly value={webhook.secret} />
-            </label>
-            <button type="button" onClick={() => setWebhook(undefined)}>
+              <Input readOnly value={webhook.secret} />
+            </Label>
+            <Button type="button" onClick={() => setWebhook(undefined)}>
               Dismiss webhook secret
-            </button>
+            </Button>
           </div>
         )}
         <Form

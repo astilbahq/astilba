@@ -282,6 +282,8 @@ try {
     ASTILBA_KEYRING: keyring,
     ASTILBA_DEVELOPMENT: "true",
     ASTILBA_HOSTED: "false",
+    ASTILBA_SMTP_MODE: "console",
+    ASTILBA_SMTP_FROM: "Astilba <accounts@localhost>",
     ASTILBA_LISTEN: `127.0.0.1:${port - 1}`,
     ASTILBA_ORIGIN: `http://127.0.0.1:${port}`,
   });
@@ -372,7 +374,7 @@ try {
     "Frontend",
   );
   console.log(
-    `\nDemo ready: http://127.0.0.1:${port}/login\nSign in: owner@example.test / correct horse battery staple\nCtrl-C stops the preview and retains its database. Use --reset to start over.\n`,
+    `\nDemo ready: http://127.0.0.1:${port}/login\nSign in: owner@example.test / correct horse battery staple\nLocal email is printed here instead of being sent.\nCtrl-C stops the preview and retains its database. Use --reset to start over.\n`,
   );
   await stopRequested;
 } catch (error) {

@@ -417,7 +417,7 @@ func (s *Server) RequestPasswordReset(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, e)
 		return
 	}
-	e = s.Auth.RequestReset(r.Context(), string(b.Email), s.clientIP(r))
+	e = s.Auth.RequestReset(r.Context(), string(b.Email), s.clientIP(r), s.Origin)
 	if errors.Is(e, domain.RateLimited) {
 		s.fail(w, r, e)
 		return

@@ -2,6 +2,11 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { client, result, type Schema } from "./api/client";
 import { sessionOptions } from "./api/session";
+import { Button } from "./components/button";
+import { Input } from "./components/input";
+import { Label } from "./components/label";
+import { Anchor } from "./components/link";
+import { Select } from "./components/select";
 import { ServerMetrics } from "./features/metrics";
 import * as s from "./styles";
 import { BusyButton, ErrorNotice, Field, Form, text, useAction } from "./ui";
@@ -23,9 +28,9 @@ export function Servers() {
           Astilba.
         </p>
       </header>
-      <label>
+      <Label>
         Workspace
-        <select
+        <Select
           value={workspaceId}
           onChange={(e) => setSelected(e.target.value)}
         >
@@ -34,8 +39,8 @@ export function Servers() {
               {w.name}
             </option>
           ))}
-        </select>
-      </label>
+        </Select>
+      </Label>
       {workspace && <ServerWorkspace key={workspaceId} workspace={workspace} />}
     </div>
   );
@@ -153,14 +158,14 @@ function ServerWorkspace({ workspace }: { workspace: Schema["Workspace"] }) {
             }
           >
             <Field name="name" label="Server name" />
-            <label>
+            <Label>
               Server role
-              <select name="role" defaultValue="deployment">
+              <Select name="role" defaultValue="deployment">
                 <option value="deployment">Deployment server</option>
                 <option value="build">Build runner</option>
                 <option value="combined">Deployment and build</option>
-              </select>
-            </label>
+              </Select>
+            </Label>
             <BusyButton busy={action.isPending}>Create enrollment</BusyButton>
           </Form>
         </section>
@@ -173,10 +178,10 @@ function ServerWorkspace({ workspace }: { workspace: Schema["Workspace"] }) {
             {new Date(enrollment.expiresAt).toLocaleTimeString()}. Paste it into
             the agent’s stdin prompt; keep it out of shell history.
           </p>
-          <label>
+          <Label>
             Enrollment code
-            <input readOnly value={enrollment.token} autoComplete="off" />
-          </label>
+            <Input readOnly value={enrollment.token} autoComplete="off" />
+          </Label>
           <code className={s.code}>
             sudo astilba-agent enroll --management {location.origin} --server{" "}
             {enrollment.server.id} --release-key /etc/astilba/release-public.pem
@@ -190,19 +195,19 @@ function ServerWorkspace({ workspace }: { workspace: Schema["Workspace"] }) {
               {releases.data.map((release) => (
                 <li key={release.sha256}>
                   {release.version} · Linux {release.arch}:{" "}
-                  <a
+                  <Anchor
                     href={`/agent-artifacts/${release.sha256}`}
                     download="astilba-agent"
                   >
                     Download agent
-                  </a>
+                  </Anchor>
                   {" · "}
-                  <a
+                  <Anchor
                     href={`/agent-artifacts/${release.sha256}/manifest.json`}
                     download="release.json"
                   >
                     Signed manifest
-                  </a>
+                  </Anchor>
                 </li>
               ))}
             </ul>
@@ -212,16 +217,16 @@ function ServerWorkspace({ workspace }: { workspace: Schema["Workspace"] }) {
               provide the agent artifact and its signed manifest.
             </p>
           )}
-          <a
+          <Anchor
             href="https://github.com/astilbahq/astilba/blob/main/docs/agent.md"
             target="_blank"
             rel="noreferrer"
           >
             Agent installation guide
-          </a>
-          <button type="button" onClick={() => setEnrollment(undefined)}>
+          </Anchor>
+          <Button type="button" onClick={() => setEnrollment(undefined)}>
             Hide enrollment code
-          </button>
+          </Button>
         </section>
       )}
       {transfer && (
@@ -248,9 +253,9 @@ function ServerWorkspace({ workspace }: { workspace: Schema["Workspace"] }) {
             making further changes. If the code expires, prepare another ticket
             and repeat the command with the new code.
           </p>
-          <button type="button" onClick={() => setTransfer(undefined)}>
+          <Button type="button" onClick={() => setTransfer(undefined)}>
             Hide transfer code
-          </button>
+          </Button>
         </section>
       )}
       <section className={s.stack} aria-label="Connected servers">
@@ -277,7 +282,7 @@ function ServerWorkspace({ workspace }: { workspace: Schema["Workspace"] }) {
                   This imported or recovered server is fenced until its host
                   owner confirms the new controller.
                 </p>
-                <button
+                <Button
                   type="button"
                   disabled={action.isPending}
                   onClick={() =>
@@ -298,7 +303,7 @@ function ServerWorkspace({ workspace }: { workspace: Schema["Workspace"] }) {
                   }
                 >
                   Prepare local transfer
-                </button>
+                </Button>
               </div>
             )}
             {server.capabilities && (
@@ -330,7 +335,7 @@ function ServerWorkspace({ workspace }: { workspace: Schema["Workspace"] }) {
             )}
             {owner && (
               <div className={s.row}>
-                <button
+                <Button
                   type="button"
                   disabled={
                     action.isPending ||
@@ -356,8 +361,8 @@ function ServerWorkspace({ workspace }: { workspace: Schema["Workspace"] }) {
                   {server.rotationRequested
                     ? "Rotation requested"
                     : "Rotate credential"}
-                </button>
-                <button
+                </Button>
+                <Button
                   type="button"
                   disabled={action.isPending}
                   onClick={() => {
@@ -381,8 +386,8 @@ function ServerWorkspace({ workspace }: { workspace: Schema["Workspace"] }) {
                   }}
                 >
                   Revoke connection
-                </button>
-                <button
+                </Button>
+                <Button
                   type="button"
                   disabled={action.isPending || server.transferRequired}
                   onClick={() =>
@@ -403,7 +408,7 @@ function ServerWorkspace({ workspace }: { workspace: Schema["Workspace"] }) {
                   }
                 >
                   New enrollment code
-                </button>
+                </Button>
               </div>
             )}
             {owner &&
@@ -435,9 +440,9 @@ function ServerWorkspace({ workspace }: { workspace: Schema["Workspace"] }) {
                       );
                   }}
                 >
-                  <label>
+                  <Label>
                     Agent release
-                    <select name="version">
+                    <Select name="version">
                       {releases.data
                         .filter(
                           (r) =>
@@ -447,8 +452,8 @@ function ServerWorkspace({ workspace }: { workspace: Schema["Workspace"] }) {
                         .map((r) => (
                           <option key={r.sha256}>{r.version}</option>
                         ))}
-                    </select>
-                  </label>
+                    </Select>
+                  </Label>
                   <BusyButton busy={action.isPending}>Update agent</BusyButton>
                 </Form>
               )}
@@ -484,9 +489,9 @@ function ServerWorkspace({ workspace }: { workspace: Schema["Workspace"] }) {
                 })
               }
             >
-              <label>
+              <Label>
                 Project
-                <select
+                <Select
                   value={selectedProject}
                   onChange={(e) => {
                     setProject(e.target.value);
@@ -498,21 +503,21 @@ function ServerWorkspace({ workspace }: { workspace: Schema["Workspace"] }) {
                       {p.name}
                     </option>
                   ))}
-                </select>
-              </label>
-              <label>
+                </Select>
+              </Label>
+              <Label>
                 Environment
-                <select name="environment" required>
+                <Select name="environment" required>
                   {environments.data?.map((e) => (
                     <option key={e.id} value={e.id}>
                       {e.name}
                     </option>
                   ))}
-                </select>
-              </label>
-              <label>
+                </Select>
+              </Label>
+              <Label>
                 Deployment server
-                <select name="server" required>
+                <Select name="server" required>
                   {servers.data
                     ?.filter(
                       (s) =>
@@ -525,16 +530,16 @@ function ServerWorkspace({ workspace }: { workspace: Schema["Workspace"] }) {
                         {s.name}
                       </option>
                     ))}
-                </select>
-              </label>
-              <label>
+                </Select>
+              </Label>
+              <Label>
                 Operation
-                <select name="action">
+                <Select name="action">
                   <option value="start">Start probe</option>
                   <option value="inspect">Inspect probe</option>
                   <option value="remove">Remove probe</option>
-                </select>
-              </label>
+                </Select>
+              </Label>
               <BusyButton busy={action.isPending}>Review test plan</BusyButton>
             </Form>
           ) : (
@@ -557,7 +562,7 @@ function ServerWorkspace({ workspace }: { workspace: Schema["Workspace"] }) {
                 No existing application, network or volume will be removed. This
                 plan expires at {new Date(plan.expiresAt).toLocaleTimeString()}.
               </p>
-              <button
+              <Button
                 type="button"
                 disabled={action.isPending}
                 onClick={() =>
@@ -576,10 +581,10 @@ function ServerWorkspace({ workspace }: { workspace: Schema["Workspace"] }) {
                 }
               >
                 Apply reviewed plan
-              </button>
-              <button type="button" onClick={() => setPlan(undefined)}>
+              </Button>
+              <Button type="button" onClick={() => setPlan(undefined)}>
                 Discard plan
-              </button>
+              </Button>
             </section>
           )}
         </section>
@@ -619,7 +624,7 @@ function ServerWorkspace({ workspace }: { workspace: Schema["Workspace"] }) {
             )}
             {editable &&
               !["succeeded", "failed", "cancelled"].includes(op.state) && (
-                <button
+                <Button
                   type="button"
                   disabled={action.isPending || op.cancelRequested}
                   onClick={() =>
@@ -638,7 +643,7 @@ function ServerWorkspace({ workspace }: { workspace: Schema["Workspace"] }) {
                   }
                 >
                   Request cancellation
-                </button>
+                </Button>
               )}
             {op.state === "needs_attention" && (
               <p>
