@@ -82,6 +82,8 @@ If the skill or a required reviewer is unavailable, finish preparing the change 
 
 Run checks appropriate to the changed behaviour and complete all required repository checks. Run `make verify` before proposing a commit, as required by the root instructions. Broaden or repeat testing when a change, failure or unresolved risk warrants it; do not run unrelated checks indefinitely after the relevant evidence is complete.
 
+The [CI guide](continuous-integration.md) records the required job groups, cache boundaries and method for comparing elapsed time and runner usage.
+
 Verify the requested effect at the boundary that owns it. A successful command or an expected-looking error response alone does not prove that a deployment, restore or user journey worked. Distinguish implementation failures from unavailable infrastructure. Repeated failures call for diagnosis, not blind retries; check the actual state before repeating an action that may already have taken effect.
 
 Keep the design documentation and Linear issue aligned with the implemented scope. Record the relevant commands, outcomes and material limitations. For interrupted or handed-off work, also record the branch or commit, remaining work and next action; check these against the checkout when resuming. Mark work done only when its acceptance criteria and verification are satisfied; a generated patch, successful build or merged PR alone is insufficient.

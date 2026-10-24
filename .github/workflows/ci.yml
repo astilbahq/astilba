@@ -73,6 +73,15 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Select native Go cache
+        run: |
+          printf 'GOCACHE=%s/astilba-native-go/build\nGOMODCACHE=%s/astilba-native-go/mod\n' "$RUNNER_TEMP" "$RUNNER_TEMP" >> "$GITHUB_ENV"
+      - name: Cache native Go compilation
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/astilba-native-go
+          key: native-go-v1-${{ runner.os }}-${{ matrix.arch }}-${{ hashFiles('experiments/durable-execution/host/bootstrap.sh', '**/go.mod') }}-${{ hashFiles('**/go.sum', 'experiments/durable-execution/**/*.go', 'services/platform/**/*.go') }}
+          restore-keys: native-go-v1-${{ runner.os }}-${{ matrix.arch }}-${{ hashFiles('experiments/durable-execution/host/bootstrap.sh', '**/go.mod') }}-
       - name: Install pinned disposable host runtime
         run: |
           sudo env PLAT4_DISPOSABLE_HOST=1 bash experiments/durable-execution/host/bootstrap.sh
@@ -88,7 +97,7 @@ jobs:
           sudo /opt/astilba-plat4/bin/docker --host unix:///run/astilba-plat4/docker.sock pull dxflrs/garage:v2.4.1@sha256:9c96caa2612d3411acc5b0e6701fb238dbfba33e533a6d7d3d811a4b12d0d020
       - name: Verify native Ubuntu host
         working-directory: experiments/durable-execution
-        run: sudo env PATH=/opt/astilba-plat4/go/bin:/usr/bin:/bin CGO_ENABLED=1 PLAT4_HOST_TEST=1 PLAT4_ARCH=${{ matrix.arch }} /opt/astilba-plat4/go/bin/go test -race -count=1 -timeout=8m -v -run '^TestHostRuntime$' .
+        run: make -C ../.. verify-host PLAT4_ARCH=${{ matrix.arch }}
       - name: Verify builds and PostgreSQL restore
         run: make verify-build PLAT4_ARCH=${{ matrix.arch }}
       - name: Verify production agent with systemd
@@ -147,6 +156,37 @@ jobs:
           node-version: 24.18.1
       - run: npm install --global pnpm@11.17.0
       - run: pnpm install --frozen-lockfile
+      - name: Pull pinned probe image
+        run: docker pull busybox:1.37.0@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e
+      - run: make verify-app-core
+        env:
+          PLAT_APP_DOCKER_HOST: unix:///var/run/docker.sock
+          WRANGLER_SEND_METRICS: "false"
+      - run: make verify-image
+        env:
+          PLAT_APP_DOCKER_HOST: unix:///var/run/docker.sock
+          SOURCE_REVISION: ${{ github.sha }}
+      - run: pnpm app:source
+        env:
+          SOURCE_REVISION: ${{ github.sha }}
+
+  application-browsers:
+    name: Application browser verification
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: services/platform/go.mod
+          cache-dependency-path: services/platform/go.sum
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.18.1
+      - run: npm install --global pnpm@11.17.0
+      - run: pnpm install --frozen-lockfile
       - name: Start preinstalled browsers
         id: browsers
         run: |
@@ -161,21 +201,12 @@ jobs:
           echo "container=$container" >> "$GITHUB_OUTPUT"
           curl --fail --silent --show-error --retry 10 --retry-all-errors --retry-delay 1 \
             --max-time 3 --retry-max-time 30 http://127.0.0.1:54190/json
-      - name: Pull pinned probe image
-        run: docker pull busybox:1.37.0@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e
-      - run: make verify-app
+      - run: pnpm --filter @astilba/dashboard test:browser
         env:
           PLAT_APP_DOCKER_HOST: unix:///var/run/docker.sock
           PW_TEST_CONNECT_WS_ENDPOINT: ws://127.0.0.1:54190/
           PW_TEST_CONNECT_EXPOSE_NETWORK: "<loopback>"
           WRANGLER_SEND_METRICS: "false"
-      - run: make verify-image
-        env:
-          PLAT_APP_DOCKER_HOST: unix:///var/run/docker.sock
-          SOURCE_REVISION: ${{ github.sha }}
-      - run: pnpm app:source
-        env:
-          SOURCE_REVISION: ${{ github.sha }}
       - name: Stop browser server
         if: ${{ always() && steps.browsers.outputs.container != '' }}
         env:
@@ -188,7 +219,7 @@ jobs:
   verify:
     name: Verify
     if: always()
-    needs: [go, git, host, cloudflare, canvas, application]
+    needs: [go, git, host, cloudflare, canvas, application, application-browsers]
     runs-on: ubuntu-24.04
     steps:
       - name: Require every verification job
@@ -199,4 +230,5 @@ jobs:
           CLOUDFLARE_RESULT: ${{ needs.cloudflare.result }}
           CANVAS_RESULT: ${{ needs.canvas.result }}
           APPLICATION_RESULT: ${{ needs.application.result }}
-        run: test "$GIT_RESULT" = success && test "$GO_RESULT" = success && test "$HOST_RESULT" = success && test "$CLOUDFLARE_RESULT" = success && test "$CANVAS_RESULT" = success && test "$APPLICATION_RESULT" = success
+          BROWSERS_RESULT: ${{ needs.application-browsers.result }}
+        run: test "$GIT_RESULT" = success && test "$GO_RESULT" = success && test "$HOST_RESULT" = success && test "$CLOUDFLARE_RESULT" = success && test "$CANVAS_RESULT" = success && test "$APPLICATION_RESULT" = success && test "$BROWSERS_RESULT" = success
