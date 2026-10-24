@@ -14,17 +14,6 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/backup"
 )
 
-type cappedOutput struct {
-	bytes.Buffer
-	limit int
-}
-
-func (w *cappedOutput) Write(p []byte) (int, error) {
-	if w.Len()+len(p) > w.limit {
-		return 0, errors.New("tool output limit exceeded")
-	}
-	return w.Buffer.Write(p)
-}
 func (e *Engine) restic(ctx context.Context, in backup.Installation, dir string, args ...string) ([]byte, error) {
 	cli := e.ResticCLI
 	if cli == "" {
@@ -51,13 +40,13 @@ func (e *Engine) restic(ctx context.Context, in backup.Installation, dir string,
 	cmd := exec.CommandContext(ctx, cli, append([]string{"--no-cache", "--json"}, args...)...)
 	cmd.Dir = dir
 	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + secret, "RESTIC_REPOSITORY=" + repo, "RESTIC_PASSWORD_FILE=" + filepath.Join(secret, "password"), "AWS_ACCESS_KEY_ID=" + in.Access.AccessKey, "AWS_SECRET_ACCESS_KEY=" + in.Access.SecretKey, "AWS_DEFAULT_REGION=" + in.Destination.Region, "TMPDIR=" + secret}
-	out := &cappedOutput{limit: 1 << 20}
+	out := &boundedOutput{limit: 1 << 20, stopOnLimit: true}
 	cmd.Stdout = out
 	cmd.Stderr = io.Discard
 	if err = cmd.Run(); err != nil {
 		return nil, errors.New("repository command failed")
 	}
-	return out.Bytes(), nil
+	return out.b.Bytes(), nil
 }
 func (e *Engine) repositoryOwnership(in backup.Installation, create bool) error {
 	if backup.ValidateDestination(in.Destination, in.Access) != nil || in.Destination.ID != in.Policy.DestinationID || len(in.Access.Password) < 16 {

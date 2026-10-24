@@ -42,9 +42,11 @@ func (e *Engine) dataTool(ctx context.Context, input io.Reader, out io.Writer, a
 	return nil
 }
 func (e *Engine) dataOutput(ctx context.Context, id string, args ...string) ([]byte, error) {
-	out := &cappedOutput{limit: 65536}
-	err := e.dataTool(ctx, nil, out, append([]string{"exec", id}, args...)...)
-	return out.Bytes(), err
+	out := &boundedOutput{limit: 65536, stopOnLimit: true}
+	if err := e.dataTool(ctx, nil, out, append([]string{"exec", id}, args...)...); err != nil {
+		return nil, err
+	}
+	return out.b.Bytes(), nil
 }
 func (e *Engine) sourceContainer(ctx context.Context, p backup.Policy, id uuid.UUID) (container.InspectResponse, error) {
 	list, err := e.ownedContainers(ctx, p.Plan)
