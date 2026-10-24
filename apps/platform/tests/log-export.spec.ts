@@ -34,8 +34,8 @@ test("download log snapshots with an explicit window and empty result", async ({
   expect(download.suggestedFilename()).toMatch(
     /^astilba-logs-[a-f0-9-]+\.json$/,
   );
-  const file = await download.path();
-  if (!file) throw new Error("Downloaded log export has no file.");
+  const file = info.outputPath("logs.json");
+  await download.saveAs(file);
   const data = JSON.parse(await readFile(file, "utf8"));
   expect(data.entries).toEqual([]);
   expect(data.coverage).toBe("retained-snapshots");
