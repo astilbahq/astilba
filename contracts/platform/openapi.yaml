@@ -3418,6 +3418,9 @@
         buildControls:
           type: boolean
           description: Supports explicit build budgets and frozen-commit watch paths. Agents send this extension only after a controller response advertises Astilba-Agent-Features with build-controls.
+        buildCache:
+          type: boolean
+          description: Supports bounded project-scoped layer caches. Agents send this extension only after a controller response advertises Astilba-Agent-Build-Cache with v1.
         build:
           type: boolean
         backups:

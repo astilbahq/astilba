@@ -101,6 +101,7 @@ type Command struct {
 	Build         *BuildConfig           `json:"build,omitempty"`
 	InputHash     string                 `json:"inputHash"`
 	CompareCommit string                 `json:"compareCommit,omitempty"`
+	CacheScope    string                 `json:"cacheScope,omitempty"`
 	Registry      *Registry              `json:"registry,omitempty"`
 	SubmittedAt   time.Time              `json:"submittedAt"`
 	// Values exist only in the assigned agent's transport and encrypted journal.
@@ -257,6 +258,9 @@ func (c Command) Validate() error {
 		}
 		if c.CompareCommit != "" && (!ValidCommit(c.CompareCommit) || len(c.Build.WatchPaths) == 0) {
 			return errors.New("invalid watched-build baseline")
+		}
+		if c.CacheScope != "" && (!ValidCacheID(c.CacheScope) || !c.Build.CanCache()) {
+			return errors.New("invalid project cache scope")
 		}
 		return c.Build.Validate()
 	default:

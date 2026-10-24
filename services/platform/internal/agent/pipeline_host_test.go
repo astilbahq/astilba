@@ -80,7 +80,7 @@ func TestNativePipeline(t *testing.T) {
 	work := filepath.Join(root, "work")
 	_ = os.Mkdir(work, 0700)
 	git("init", "--initial-branch=main", work)
-	files := map[string]string{"compose.yaml": "# keep source comment\nservices:\n  app:\n    image: " + execution.TestImage + "\n", "Dockerfile": "FROM " + execution.TestImage + "\nRUN --mount=type=secret,id=token test -s /run/secrets/token && sha256sum /run/secrets/token > /proof\nCMD [\"sleep\",\"86400\"]\n", "untouched.txt": "retain this\n"}
+	files := map[string]string{"compose.yaml": "# keep source comment\nservices:\n  app:\n    image: " + execution.TestImage + "\n", "Dockerfile": "FROM " + execution.TestImage + "\nCOPY input.txt /input\nRUN --mount=type=secret,id=token test -s /run/secrets/token && sha256sum /run/secrets/token > /proof\nCMD [\"sleep\",\"86400\"]\n", "input.txt": "initial build input\n", "untouched.txt": "retain this\n"}
 	for name, value := range files {
 		if err = os.WriteFile(filepath.Join(work, name), []byte(value), 0600); err != nil {
 			t.Fatal(err)
@@ -142,6 +142,9 @@ func TestNativePipeline(t *testing.T) {
 				v, err := docker.ContainerInspect(ctx, pipelineName(active), client.ContainerInspectOptions{})
 				if err != nil || v.Container.HostConfig.Memory != 1536<<20 || v.Container.HostConfig.NanoCPUs != 1_000_000_000 || v.Container.HostConfig.Tmpfs["/workspace"] != "rw,exec,nosuid,nodev,size=128m,mode=0700" || v.Container.HostConfig.Tmpfs["/var/lib/buildkit"] != "rw,exec,nosuid,size=640m" {
 					t.Fatal("custom build limits not applied", err)
+				}
+				if p.CacheScope != "" && v.Container.HostConfig.Tmpfs[cacheContainerDir] != "rw,nosuid,nodev,noexec,size=256m,mode=0700" {
+					t.Fatal("cache exchange has no hard ceiling")
 				}
 			}
 		}
@@ -226,7 +229,10 @@ func TestNativePipeline(t *testing.T) {
 	build.Build = &pipeline.BuildConfig{ConnectionID: source.ConnectionID, Branch: "main", RunnerID: serverID, Context: ".", Dockerfile: "Dockerfile", Architecture: runtime.GOARCH, Arguments: map[string]string{}, Secrets: map[string]uuid.UUID{"token": uuid.New()}}
 	build.Build.Budget = &pipeline.BuildBudget{CPUs: 1, MemoryMiB: 1536, SourceMiB: 128, StateMiB: 640, Minutes: 2}
 	build.BuildSecrets = map[string]string{"token": "build-secret-canary"}
+	build.CacheScope = pipeline.Hash([]uuid.UUID{uuid.New(), uuid.New()})
+	coldAt := time.Now()
 	built := run(build)
+	coldTime := time.Since(coldAt)
 	if built.Report.State != "succeeded" {
 		t.Fatal("build", built.Report.Note)
 	}
@@ -239,6 +245,60 @@ func TestNativePipeline(t *testing.T) {
 		t.Fatal("built image absent", err)
 	}
 	defer docker.ImageRemove(ctx, result.Image, client.ImageRemoveOptions{Force: true})
+	cacheRun := func(command pipeline.Command, cached bool) pipeline.Result {
+		t.Helper()
+		r := run(command)
+		var value pipeline.Result
+		if r.Report.Pipeline != nil {
+			_ = json.Unmarshal(*r.Report.Pipeline, &value)
+		}
+		if r.Report.State != "succeeded" {
+			t.Fatal("cache build", r.Report.Note, value.Cache, value.Logs)
+		}
+		t.Cleanup(func() { _, _ = docker.ImageRemove(ctx, value.Image, client.ImageRemoveOptions{Force: true}) })
+		found := false
+		for _, line := range strings.Split(value.Logs, "\n") {
+			if strings.Contains(line, "RUN --mount=type=secret") {
+				fields := strings.Fields(line)
+				found = strings.Contains(value.Logs, fields[0]+" CACHED")
+			}
+		}
+		if found != cached || !strings.Contains(value.Cache, "Layer cache retained") {
+			t.Fatal("unexpected real BuildKit layer reuse", cached, value.Cache, value.Logs)
+		}
+		return value
+	}
+	warmAt := time.Now()
+	warm := cacheRun(build, true)
+	t.Logf("bounded layer cache cold=%s warm=%s; timings are fixture observations, not performance guarantees", coldTime, time.Since(warmAt))
+	if !strings.HasPrefix(warm.Cache, "Compatible project layer cache imported;") {
+		t.Fatal("warm build did not import project cache")
+	}
+	other := build
+	other.CacheScope = pipeline.Hash([]uuid.UUID{uuid.New(), uuid.New()})
+	isolated := cacheRun(other, false)
+	if strings.HasPrefix(isolated.Cache, "Compatible project layer cache imported;") {
+		t.Fatal("another project imported cache")
+	}
+	secretVersion := build
+	secretConfig := *build.Build
+	secretConfig.Secrets = map[string]uuid.UUID{"token": uuid.New()}
+	secretVersion.Build = &secretConfig
+	secretVersion.BuildSecrets = map[string]string{"token": "rotated-build-canary"}
+	cacheRun(secretVersion, false)
+	if err = os.WriteFile(filepath.Join(work, "input.txt"), []byte("changed source input\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	git("-C", work, "add", ".")
+	git("-C", work, "commit", "-m", "change build input")
+	git("-C", work, "push", repo, "main")
+	cacheRun(build, true) // The assigned old commit stays exact after the branch moves.
+	changed := build
+	changed.Commit = git("-C", work, "rev-parse", "HEAD")
+	changedResult := cacheRun(changed, false)
+	if changedResult.Commit != changed.Commit {
+		t.Fatal("cache changed assigned source identity")
+	}
 	raw, _ := json.Marshal(inspected)
 	if strings.Contains(string(raw), "build-secret-canary") || strings.Contains(string(raw), "reader-token") {
 		t.Fatal("credential leaked into image config")
@@ -363,6 +423,11 @@ func TestNativePipeline(t *testing.T) {
 	}
 	defer docker.ImageRemove(ctx, unavailableResult.Image, client.ImageRemoveOptions{Force: true})
 	// A failing build cannot replace or mutate the earlier immutable local image.
+	cachePath := filepath.Join(journal.dir, "build-cache-v1", build.CacheScope+"."+build.CacheKey()+".tar")
+	cacheBefore, err := os.ReadFile(cachePath)
+	if err != nil {
+		t.Fatal(err)
+	}
 	git("-C", work, "config", "user.name", "Fixture")
 	if err = os.WriteFile(filepath.Join(work, "Dockerfile"), []byte("FROM "+execution.TestImage+"\nRUN exit 19\n"), 0600); err != nil {
 		t.Fatal(err)
@@ -406,6 +471,10 @@ func TestNativePipeline(t *testing.T) {
 	current, err = docker.ImageInspect(ctx, result.Image)
 	if err != nil || current.ID != result.Digest {
 		t.Fatal("resource failure changed previous artifact")
+	}
+	cacheAfter, err := os.ReadFile(cachePath)
+	if err != nil || !bytes.Equal(cacheBefore, cacheAfter) {
+		t.Fatal("failed or cancelled build replaced the retained layer cache", err)
 	}
 
 }

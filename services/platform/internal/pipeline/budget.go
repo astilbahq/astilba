@@ -2,6 +2,8 @@ package pipeline
 
 import "strings"
 
+const CacheExchangeMiB = 256
+
 type BuildValidationError struct{ Field, Message string }
 
 func (e *BuildValidationError) Error() string { return e.Message }
@@ -30,6 +32,11 @@ func (b BuildBudget) Validate() error {
 	return nil
 }
 func (b BuildConfig) NeedsControls() bool { return b.Budget != nil || len(b.WatchPaths) > 0 }
+
+func (b BuildConfig) CanCache() bool {
+	l := b.Limits()
+	return l.SourceMiB+l.StateMiB+96+CacheExchangeMiB <= l.MemoryMiB
+}
 
 // Watch paths are literal repository-relative prefixes, including deleted paths.
 func (b BuildConfig) Watches(name string) bool {

@@ -28,6 +28,7 @@ type Client struct {
 	Observe       func(context.Context) api.AgentHeartbeat
 	Metrics       func(context.Context) api.MetricReport
 	buildControls atomic.Bool
+	buildCache    atomic.Bool
 }
 
 func NewClient(j *Journal, e *Engine) *Client {
@@ -57,6 +58,16 @@ func (c *Client) call(ctx context.Context, method, path string, body, out any, t
 			body = value
 		}
 	}
+	if !c.buildCache.Load() {
+		switch value := body.(type) {
+		case api.AgentEnrollment:
+			value.Capabilities.BuildCache = nil
+			body = value
+		case api.AgentHeartbeat:
+			value.Capabilities.BuildCache = nil
+			body = value
+		}
+	}
 	raw, e := json.Marshal(body)
 	if e != nil {
 		return e
@@ -76,6 +87,7 @@ func (c *Client) call(ctx context.Context, method, path string, body, out any, t
 	defer response.Body.Close()
 	// Also forget an extension after controller replacement or downgrade.
 	c.buildControls.Store(response.Header.Get("Astilba-Agent-Features") == "build-controls")
+	c.buildCache.Store(response.Header.Get("Astilba-Agent-Build-Cache") == "v1")
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		return errors.New("management rejected request; check enrollment, credentials and operation status")
 	}

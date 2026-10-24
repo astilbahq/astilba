@@ -95,7 +95,7 @@ func TestBuildControlsAndSuccessfulWatchBaseline(t *testing.T) {
 	var p pipeline.Command
 	p = pipeline.Command{}
 	_ = json.Unmarshal(*c.Pipeline, &p)
-	if p.CompareCommit != "" || p.Build.Budget.MemoryMiB != 1024 {
+	if p.CompareCommit != "" || p.Build.Budget.MemoryMiB != 1024 || p.CacheScope != "" {
 		t.Fatal("manual build was filtered or lost limits")
 	}
 	// A skipped report cannot manufacture successful manual work or an artifact.
@@ -104,6 +104,8 @@ func TestBuildControlsAndSuccessfulWatchBaseline(t *testing.T) {
 	agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/report", token, api.AgentReport{Id: c.Id, Generation: c.Generation, PlanHash: c.PlanHash, Sequence: 1, State: "succeeded", Steps: []api.ExecutionStep{}, Pipeline: &msg}, 400, nil)
 	report(c, "succeeded", pipeline.Result{Commit: p.Commit, Architecture: "arm64", Image: "astilba-build-" + c.Id.String() + ":built", Digest: "sha256:" + strings.Repeat("d", 64)})
 	baseline := p.Commit
+	in.Capabilities.BuildCache = &yes
+	agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/heartbeat", token, api.AgentHeartbeat{Capabilities: in.Capabilities, Preflight: in.Preflight}, 200, nil)
 	push := func(commit string) {
 		t.Helper()
 		head.Store(commit)
@@ -130,7 +132,7 @@ func TestBuildControlsAndSuccessfulWatchBaseline(t *testing.T) {
 		c = poll()
 		p = pipeline.Command{}
 		_ = json.Unmarshal(*c.Pipeline, &p)
-		if p.Commit != commit || p.CompareCommit != baseline {
+		if p.Commit != commit || p.CompareCommit != baseline || p.CacheScope != pipeline.Hash([]uuid.UUID{ws, project.Id}) {
 			t.Fatal("watch baseline advanced past the last real artifact", p.CompareCommit)
 		}
 		report(c, state, pipeline.Result{Commit: commit, Architecture: "arm64", Skipped: state == "succeeded"})

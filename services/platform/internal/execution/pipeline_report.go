@@ -70,6 +70,16 @@ func (s *Service) hydratePipeline(ctx context.Context, c *api.ExecutionCommand) 
 			return err
 		}
 	}
+	if p.CacheScope != "" {
+		var raw []byte
+		if err = tx.QueryRow(ctx, "SELECT capabilities FROM servers WHERE id=$1", c.ServerId).Scan(&raw); err != nil {
+			return err
+		}
+		var capabilities api.AgentCapabilities
+		if json.Unmarshal(raw, &capabilities) != nil || capabilities.BuildCache == nil || !*capabilities.BuildCache {
+			return errors.New("runner no longer supports the frozen project cache assignment")
+		}
+	}
 	provider, _, err := s.provider(ctx, tx, ws, p.Connection.ID)
 	if err != nil {
 		return err

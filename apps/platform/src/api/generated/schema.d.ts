@@ -1538,6 +1538,8 @@ export interface components {
             compose?: boolean;
             /** @description Supports explicit build budgets and frozen-commit watch paths. Agents send this extension only after a controller response advertises Astilba-Agent-Features with build-controls. */
             buildControls?: boolean;
+            /** @description Supports bounded project-scoped layer caches. Agents send this extension only after a controller response advertises Astilba-Agent-Build-Cache with v1. */
+            buildCache?: boolean;
             build?: boolean;
             backups?: boolean;
             upgrades?: boolean;

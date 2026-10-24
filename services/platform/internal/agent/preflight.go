@@ -76,6 +76,7 @@ func Preflight(ctx context.Context, docker *client.Client, version, dir string, 
 	build := h.Preflight.Ready && dockerFreeBytes(ctx, docker) >= 4<<30
 	h.Capabilities.Build = &build
 	h.Capabilities.BuildControls = &build
+	h.Capabilities.BuildCache = &build
 	h.Capabilities.Visual = &visual
 	h.Capabilities.Compose = &visual
 	resticCLI := "restic"

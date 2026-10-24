@@ -18,6 +18,7 @@ func TestBuildCapabilityNegotiatesWithControllerVersions(t *testing.T) {
 			j, _ := testVisualJournal(t)
 			var modern atomic.Bool
 			var extensions atomic.Int32
+			var cacheExtensions atomic.Int32
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				var body struct {
 					Capabilities map[string]json.RawMessage `json:"capabilities"`
@@ -35,8 +36,16 @@ func TestBuildCapabilityNegotiatesWithControllerVersions(t *testing.T) {
 						return
 					}
 				}
+				if _, present := body.Capabilities["buildCache"]; present {
+					cacheExtensions.Add(1)
+					if !modern.Load() {
+						w.WriteHeader(400)
+						return
+					}
+				}
 				if modern.Load() {
 					w.Header().Set("Astilba-Agent-Features", "build-controls")
+					w.Header().Set("Astilba-Agent-Build-Cache", "v1")
 				}
 				w.Header().Set("Content-Type", "application/json")
 				_, _ = w.Write([]byte(`{"role":"combined","rotationRequested":false}`))
@@ -53,7 +62,7 @@ func TestBuildCapabilityNegotiatesWithControllerVersions(t *testing.T) {
 			c := NewClient(j, &Engine{Journal: j})
 			c.HTTP = server.Client()
 			c.Observe = func(context.Context) api.AgentHeartbeat {
-				return api.AgentHeartbeat{Capabilities: api.AgentCapabilities{Build: &capable, BuildControls: &capable}}
+				return api.AgentHeartbeat{Capabilities: api.AgentCapabilities{Build: &capable, BuildControls: &capable, BuildCache: &capable}}
 			}
 			if err = c.Enroll(context.Background(), strings.Repeat("a", 43)); err != nil {
 				t.Fatal("older controller enrollment", err)
@@ -61,14 +70,14 @@ func TestBuildCapabilityNegotiatesWithControllerVersions(t *testing.T) {
 			heartbeat := func() error {
 				return c.call(context.Background(), "POST", "/agent/v1/heartbeat", c.Observe(context.Background()), &api.AgentStatus{}, "fixture")
 			}
-			if err = heartbeat(); err != nil || extensions.Load() != 0 {
+			if err = heartbeat(); err != nil || extensions.Load() != 0 || cacheExtensions.Load() != 0 {
 				t.Fatal("older controller received capability extension", err)
 			}
 			modern.Store(true)
-			if err = heartbeat(); err != nil || extensions.Load() != 0 {
+			if err = heartbeat(); err != nil || extensions.Load() != 0 || cacheExtensions.Load() != 0 {
 				t.Fatal("advertised before negotiation", err)
 			}
-			if err = heartbeat(); err != nil || extensions.Load() != 1 {
+			if err = heartbeat(); err != nil || extensions.Load() != 1 || cacheExtensions.Load() != 1 {
 				t.Fatal("supported extension not advertised", err)
 			}
 			modern.Store(false)
@@ -79,5 +88,40 @@ func TestBuildCapabilityNegotiatesWithControllerVersions(t *testing.T) {
 				t.Fatal("controller downgrade did not clear negotiation", err)
 			}
 		})
+	}
+}
+
+func TestCacheCapabilityDoesNotChangeBuildControlsNegotiation(t *testing.T) {
+	j, _ := testVisualJournal(t)
+	var received atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body api.AgentHeartbeat
+		if json.NewDecoder(r.Body).Decode(&body) != nil || body.Capabilities.BuildCache != nil {
+			t.Error("previous build-controls controller received an unknown cache capability")
+			w.WriteHeader(400)
+			return
+		}
+		if body.Capabilities.BuildControls != nil && *body.Capabilities.BuildControls {
+			received.Add(1)
+		}
+		w.Header().Set("Astilba-Agent-Features", "build-controls")
+		_, _ = w.Write([]byte(`{"role":"combined","rotationRequested":false}`))
+	}))
+	defer server.Close()
+	cfg, _ := j.Config()
+	cfg.Origin = server.URL
+	if err := j.SetConfig(cfg); err != nil {
+		t.Fatal(err)
+	}
+	c := NewClient(j, &Engine{Journal: j})
+	c.HTTP = server.Client()
+	yes := true
+	for range 2 {
+		if err := c.call(context.Background(), "POST", "/agent/v1/heartbeat", api.AgentHeartbeat{Capabilities: api.AgentCapabilities{BuildControls: &yes, BuildCache: &yes}}, &api.AgentStatus{}, "fixture"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if received.Load() != 1 {
+		t.Fatal("build-controls negotiation regressed")
 	}
 }
