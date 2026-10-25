@@ -285,16 +285,15 @@ func TestAgentHTTPS(t *testing.T) {
 		}
 		t.Cleanup(local.close)
 		a.local = local
+		// The controller starts its timer before authentication records the poll
+		// event. Measure the empty poll and reconnect with the client's monotonic
+		// clock; subtracting database event times omits the first poll's setup.
+		pollStarted := time.Now()
 		stop, stopped := startTransportAgent(t, a)
 		wait(t, 30*time.Second, func() bool { return h.eventCount(t, a.identity.ServerID, "poll") >= 2 })
-		var pollGap time.Duration
-		var gapSeconds float64
-		if err := h.pool.QueryRow(context.Background(), `SELECT extract(epoch FROM max(at)-min(at)) FROM transport_events WHERE server_id=$1 AND kind='poll'`, a.identity.ServerID).Scan(&gapSeconds); err != nil {
-			t.Fatal(err)
-		}
-		pollGap = time.Duration(gapSeconds * float64(time.Second))
-		if pollGap < pollDuration || pollGap > pollDuration+4*time.Second || h.eventCount(t, a.identity.ServerID, "heartbeat") == 0 {
-			t.Fatalf("poll/heartbeat overlap failed, poll gap %s", pollGap)
+		pollElapsed := time.Since(pollStarted)
+		if pollElapsed < pollDuration || pollElapsed > pollDuration+4*time.Second || h.eventCount(t, a.identity.ServerID, "heartbeat") == 0 {
+			t.Fatalf("poll/heartbeat overlap failed, poll and reconnect took %s", pollElapsed)
 		}
 		h.fault(t, a.identity.ServerID, "delivery")
 		e := h.command(t, a.identity.ServerID)
@@ -379,6 +378,6 @@ func TestAgentHTTPS(t *testing.T) {
 				t.Fatal("offline boundary mismatch")
 			}
 		}
-		t.Logf("poll %.3fs; live heartbeat gaps %.3f..%.3fs; local execution survived transport stop; one reported Docker effect", pollGap.Seconds(), minGap, maxGap)
+		t.Logf("poll and reconnect %.3fs; live heartbeat gaps %.3f..%.3fs; local execution survived transport stop; one reported Docker effect", pollElapsed.Seconds(), minGap, maxGap)
 	})
 }
