@@ -376,3 +376,7 @@ The first implementation milestone must establish that River's open-source core 
 Include the optional Cloudflare Containers target in that milestone. If its lifecycle or economics are unsuitable, revisit the hosting or backend choice before promising Workers-native compatibility; serving the static UI on Cloudflare alone is not equivalent to hosting the complete management service there.
 
 Exact prices, the public product name, measured capacity limits, published support hours and later catalogue additions remain launch decisions. The maintainer's own use is the initial product validation; interviews, pre-sales and external customer commitments are not implementation gates.
+
+## Protected stateless application releases
+
+[Application releases](application-releases.md) defines the P11 execution contract. Visual plans retain logical resources while optional runtime-instance identities isolate candidates and retained revisions. Resolve effective images before selecting a one-application release. Keep the previous healthy HTTP instance serving until mandatory readiness and proxy verification pass; commit active unit state and switch phase atomically before bounded drain and owned cleanup. Release commands carry explicit budgets and uncertain-outcome handling. Rollback creates an immutable draft and a new reviewed candidate; it never rewinds database data.

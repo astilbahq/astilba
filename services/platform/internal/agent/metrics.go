@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
+	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/metrics"
 	"github.com/google/uuid"
 	"github.com/moby/moby/client"
@@ -21,6 +22,7 @@ type containerCounters struct{ cpu, system uint64 }
 
 // MetricCollector belongs to one sampling loop; counter baselines are not shared.
 type MetricCollector struct {
+	Journal    *Journal
 	previous   *cpuCounters
 	containers map[string]containerCounters
 }
@@ -122,17 +124,17 @@ func (c *MetricCollector) Collect(ctx context.Context, docker *client.Client, se
 	if docker == nil {
 		return out
 	}
-	list, e := docker.ContainerList(ctx, client.ContainerListOptions{All: true, Limit: metrics.MaxServices + 1, Filters: client.Filters{}.Add("label", labelServer+"="+server.String()).Add("label", labelKind+"=visual-v1")})
+	list, e := docker.ContainerList(ctx, client.ContainerListOptions{All: true, Limit: metrics.MaxServices*3 + 1, Filters: client.Filters{}.Add("label", labelServer+"="+server.String()).Add("label", labelKind+"=visual-v1")})
 	if e != nil {
 		out.Partial = true
 		return out
 	}
 	sort.Slice(list.Items, func(i, j int) bool { return list.Items[i].ID < list.Items[j].ID })
-	if len(list.Items) > metrics.MaxServices {
+	if len(list.Items) > metrics.MaxServices*3 {
 		out.Partial = true
-		list.Items = list.Items[:metrics.MaxServices]
 	}
 	next := map[string]containerCounters{}
+	activeUnits := map[uuid.UUID]unitState{}
 	for _, item := range list.Items {
 		resource, e := uuid.Parse(item.Labels[labelResource])
 		if e != nil {
@@ -143,6 +145,35 @@ func (c *MetricCollector) Collect(ctx context.Context, docker *client.Client, se
 		if e != nil {
 			out.Partial = true
 			continue
+		}
+		name := deployment.UnitName(resource)
+		if c.Journal != nil {
+			active, loaded := activeUnits[unit]
+			var err error
+			if !loaded {
+				active, err = c.Journal.unit(unit)
+				if err == nil {
+					activeUnits[unit] = active
+				}
+			}
+			if err != nil {
+				out.Partial = true
+				continue
+			}
+			if active.Plan.ID != uuid.Nil {
+				name = active.Plan.ContainerName(resource)
+			}
+		}
+		match := false
+		for _, n := range item.Names {
+			match = match || n == "/"+name
+		}
+		if !match {
+			continue
+		}
+		if len(out.Services) >= metrics.MaxServices {
+			out.Partial = true
+			break
 		}
 		state := api.ServiceMetricsState(item.State)
 		switch state {

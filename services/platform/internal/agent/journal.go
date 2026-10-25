@@ -89,7 +89,7 @@ func Open(dir string) (*Journal, error) {
 	}
 	j := &Journal{db: db, keys: keys, dir: dir}
 	err = db.Update(func(tx *bolt.Tx) error {
-		for _, b := range []string{"identity", "operations", "generations", "units", "routing", "schedules", "upgrades"} {
+		for _, b := range []string{"identity", "operations", "generations", "units", "routing", "schedules", "upgrades", "releases"} {
 			if _, e := tx.CreateBucketIfNotExists([]byte(b)); e != nil {
 				return e
 			}
@@ -119,7 +119,7 @@ func (j *Journal) put(tx *bolt.Tx, bucket, key string, value any) error {
 		return e
 	}
 	limit := 32768
-	if bucket == "units" || bucket == "routing" || bucket == "schedules" || bucket == "upgrades" {
+	if bucket == "units" || bucket == "routing" || bucket == "schedules" || bucket == "upgrades" || bucket == "releases" {
 		limit = 524288
 	}
 	if record, ok := value.(Record); ok && (record.Command.Kind == "visual" || record.Command.Kind == "pipeline" || record.Command.Kind == "backup" || record.Command.Kind == "upgrade") {

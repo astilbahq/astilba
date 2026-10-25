@@ -89,3 +89,7 @@ For managed HTTP TLS, the host operator sets `--acme-email operator@example.com`
 ## Backup support
 
 Backup recipes, operator filesystem roots, the pinned restic prerequisite, offline schedules and local interruption recovery are documented in [Backups and restoration](backups.md). Use those instructions before enabling backup policies on an enrolled server.
+
+## Protected application releases
+
+Agents advertise `safeReleases` only after a controller response includes `Astilba-Agent-Safe-Releases: v1`. Instance-bearing visual plans require that capability at preparation, apply and dispatch; older payloads retain their original names and hashes. [Application releases](application-releases.md) documents eligibility, command uncertainty, cancellation, retention and recovery. The encrypted `releases` journal bucket records switch and drain state alongside the active `units` mapping; existing observations and metrics keep one logical resource per application.

@@ -263,6 +263,9 @@ Use matched workload resources and pinned source/image identities. Record the co
 
 ## P11 Safe application releases
 
+Implementation and recovery contract: [Application releases](application-releases.md).
+
+
 Start with explicitly eligible stateless HTTP services. Create revision-specific instances, wait for meaningful readiness, atomically switch routes and drain the old revision. A failed replacement leaves the serving revision available. Persist traffic-switch and cleanup state so interruption cannot silently choose the wrong revision.
 
 Use the [disposable comparison](../experiments/platform-comparison/RESULTS.md) as acceptance evidence: independently sample the serving revision while a candidate fails readiness and during recovery. Make a failed check an explicit veto before traffic changes; distinguish warning-only and skipped checks from verified readiness. Test controller or agent restart at the traffic-change boundary, not only after an operation completes.

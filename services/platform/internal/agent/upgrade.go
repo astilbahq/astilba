@@ -240,7 +240,7 @@ func (e *Engine) prepareUpgrade(ctx context.Context, c api.ExecutionCommand, s *
 	if err = e.prepareRepository(ctx, &s.Command.Installation, true); err != nil {
 		return err
 	}
-	owned, err := e.ownedContainers(ctx, p.Source)
+	owned, err := e.activeContainers(ctx, p.Source)
 	if err != nil {
 		return err
 	}
@@ -426,7 +426,7 @@ func (e *Engine) upgradeDatabaseChecks(ctx context.Context, id string, a domain.
 func (e *Engine) knownUpgradeWriters(ctx context.Context, id string, a domain.Application, p deployment.Plan) error {
 	allowed := map[string]bool{}
 	for _, app := range p.Specification.Applications {
-		v, err := e.Docker.ContainerInspect(ctx, deployment.UnitName(app.ID), client.ContainerInspectOptions{})
+		v, err := e.Docker.ContainerInspect(ctx, p.ContainerName(app.ID), client.ContainerInspectOptions{})
 		if err != nil {
 			return err
 		}
@@ -548,7 +548,7 @@ func (e *Engine) activateUpgrade(ctx context.Context, c api.ExecutionCommand, s 
 		return err
 	}
 	for _, a := range target.Specification.Applications {
-		v, err := e.Docker.ContainerInspect(ctx, deployment.UnitName(a.ID), client.ContainerInspectOptions{})
+		v, err := e.Docker.ContainerInspect(ctx, target.ContainerName(a.ID), client.ContainerInspectOptions{})
 		if err != nil && !errdefs.IsNotFound(err) {
 			return err
 		}

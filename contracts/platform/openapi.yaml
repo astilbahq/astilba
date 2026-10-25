@@ -3533,6 +3533,51 @@
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/releases":
+    get:
+      operationId: listReleases
+      parameters:
+        - {name: workspaceId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: projectId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: environmentId, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '200':
+          description: Recent successfully applied plans; image availability is checked when preparing rollback.
+          content:
+            application/json:
+              schema:
+                type: array
+                maxItems: 20
+                items: {$ref: '#/components/schemas/ReleaseHistoryEntry'}
+        default:
+          description: Error
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+  "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/releases/{planId}/rollback":
+    post:
+      operationId: rollbackRelease
+      parameters:
+        - {name: workspaceId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: projectId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: environmentId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: planId, in: path, required: true, schema: {type: string, format: uuid}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/RollbackRelease'}
+      responses:
+        '201':
+          description: A new draft revision; nothing is deployed.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Revision'}
+        default:
+          description: Error
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
 "components":
   "securitySchemes":
     "agentBearer":
@@ -3580,6 +3625,9 @@
           "type": "boolean"
         "compose":
           "type": "boolean"
+        safeReleases:
+          type: boolean
+          description: Supports instance-based stateless HTTP releases. Advertised only after Astilba-Agent-Safe-Releases v1.
         buildControls:
           type: boolean
           description: Supports explicit build budgets and frozen-commit watch paths. Agents send this extension only after a controller response advertises Astilba-Agent-Features with build-controls.
@@ -4924,10 +4972,71 @@
         - "listenPort"
         - "tls"
         - "allowCidrs"
+    ReleaseOptions:
+      type: object
+      additionalProperties: false
+      required: [command, commandTimeoutSeconds, drainSeconds]
+      properties:
+        command:
+          type: array
+          maxItems: 32
+          items: {type: string, maxLength: 4096}
+        commandTimeoutSeconds: {type: integer, minimum: 1, maximum: 300}
+        drainSeconds: {type: integer, minimum: 1, maximum: 120}
+    ProtectedRelease:
+      type: object
+      additionalProperties: false
+      required: [applicationId, previousPlanId, options]
+      properties:
+        applicationId: {type: string, format: uuid}
+        previousPlanId: {type: string, format: uuid}
+        options: {$ref: '#/components/schemas/ReleaseOptions'}
+    ReleaseHistoryEntry:
+      type: object
+      additionalProperties: false
+      required: [planId, revisionId, createdAt, applications]
+      properties:
+        planId: {type: string, format: uuid}
+        revisionId: {type: string, format: uuid}
+        createdAt: {type: string, format: date-time}
+        applications:
+          type: array
+          maxItems: 20
+          items:
+            type: object
+            additionalProperties: false
+            required: [id, name, image, eligible, note, changes]
+            properties:
+              changes:
+                type: array
+                maxItems: 8
+                items: {type: string, maxLength: 80}
+              id: {type: string, format: uuid}
+              name: {type: string, maxLength: 80}
+              image: {type: string, maxLength: 512}
+              eligible: {type: boolean}
+              note: {type: string, maxLength: 300}
+    RollbackRelease:
+      type: object
+      additionalProperties: false
+      required: [baseRevisionId, applicationId]
+      properties:
+        baseRevisionId: {type: string, format: uuid}
+        applicationId: {type: string, format: uuid}
     VisualPlan:
       "type": "object"
       "additionalProperties": false
       properties:
+        instances:
+          type: object
+          maxProperties: 20
+          additionalProperties:
+            type: string
+            format: uuid
+        releaseOptions:
+          $ref: "#/components/schemas/ReleaseOptions"
+        release:
+          $ref: "#/components/schemas/ProtectedRelease"
         "id":
           "type": "string"
           "format": "uuid"
@@ -5133,6 +5242,8 @@
       "type": "object"
       "additionalProperties": false
       "properties":
+        releaseOptions:
+          $ref: "#/components/schemas/ReleaseOptions"
         "serverId":
           "type": "string"
           "format": "uuid"

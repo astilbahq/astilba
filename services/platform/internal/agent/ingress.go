@@ -196,12 +196,24 @@ func (e *Engine) rememberProxy(ctx context.Context, s *routeSnapshot) error {
 	return nil
 }
 func (e *Engine) publishVisualRoutes(ctx context.Context, p deployment.Plan) error {
+	return e.publishRoutes(ctx, p, false)
+}
+func (e *Engine) publishReleaseRoutes(ctx context.Context, p deployment.Plan) error {
+	return e.publishRoutes(ctx, p, true)
+}
+func (e *Engine) publishRoutes(ctx context.Context, p deployment.Plan, stableProxy bool) error {
 	state, err := e.Journal.routing()
 	if err != nil {
 		return err
 	}
 	if state.Pending != nil {
-		if err = e.applyRoutes(ctx, state.Pending.Previous, true); err != nil {
+		if stableProxy {
+			v, err := e.Docker.ContainerInspect(ctx, proxyName, client.ContainerInspectOptions{})
+			if err != nil || proxyFingerprint(v) != state.Pending.Previous.ProxyHash {
+				return errors.New("release proxy recovery requires an unchanged owned proxy")
+			}
+		}
+		if err = e.applyRoutes(ctx, state.Pending.Previous, !stableProxy); err != nil {
 			return fmt.Errorf("previous ingress recovery requires attention: %w", err)
 		}
 		state.Current = state.Pending.Previous
@@ -236,7 +248,7 @@ func (e *Engine) publishVisualRoutes(ctx context.Context, p deployment.Plan) err
 	} else {
 		set := deployment.RouteSet{UnitID: p.UnitID, EnvironmentID: p.EnvironmentID, Routes: p.Specification.Routes, Backends: map[string]deployment.Backend{}}
 		for _, a := range p.Specification.Applications {
-			set.Backends[a.ID.String()] = deployment.Backend{Address: deployment.ServiceName(a.ID)}
+			set.Backends[a.ID.String()] = p.Backend(a.ID)
 		}
 		next.Sets[p.UnitID.String()] = set
 	}
@@ -271,7 +283,7 @@ func (e *Engine) publishVisualRoutes(ctx context.Context, p deployment.Plan) err
 	}
 	if err = e.applyRoutes(ctx, next, drift); err != nil {
 		reloadErr := err
-		recovery := e.applyRoutes(ctx, state.Current, true)
+		recovery := e.applyRoutes(ctx, state.Current, !stableProxy)
 		if recovery != nil {
 			return fmt.Errorf("ingress reload and previous-route recovery require attention: %w", recovery)
 		}

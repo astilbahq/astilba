@@ -107,6 +107,7 @@ func (p Plan) Target() deployment.Plan {
 	var target deployment.Plan
 	_ = json.Unmarshal(raw, &target)
 	target.ID, target.RevisionID = p.TargetPlanID, p.TargetRevisionID
+	target.Release, target.ReleaseOptions = nil, nil
 	target.ExpectedAppliedID = &p.Source.RevisionID
 	target.ExpiresAt = p.ExpiresAt
 	for i := range target.Specification.Applications {

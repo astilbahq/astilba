@@ -19,7 +19,7 @@ import (
 
 // The surrounding native fixture supplies real Docker, ingress and the same
 // monotonically increasing command stream used by deployments and backups.
-func nativeUpgradeJourney(t *testing.T, e *Engine, newSource func() (deployment.Plan, map[string]string), next func(upgrade.Command) api.ExecutionCommand) {
+func nativeUpgradeJourney(t *testing.T, e *Engine, newSource func(*testing.T) (deployment.Plan, map[string]string), next func(upgrade.Command) api.ExecutionCommand) {
 	t.Helper()
 	ctx := context.Background()
 	e.ResticCLI = "/opt/astilba-platform-tools/restic"
@@ -30,7 +30,7 @@ func nativeUpgradeJourney(t *testing.T, e *Engine, newSource func() (deployment.
 	e.BackupRoots = append(e.BackupRoots, root)
 	for _, crash := range []string{"", "upgrade-admitted", "upgrade-preflight", "upgrade-quiesce-effect", "upgrade-isolate-effect", "upgrade-backup-effect", "upgrade-restore-effect", "upgrade-database-effect", "upgrade-routes-effect", "upgrade-writers-effect"} {
 		t.Run(strings.TrimPrefix(crash, "upgrade-"), func(t *testing.T) {
-			p, secrets := newSource()
+			p, secrets := newSource(t)
 			a := p.Specification.Applications[1]
 			policy := backup.Policy{ID: uuid.New(), Name: "Upgrade recovery", WorkspaceID: uuid.New(), EnvironmentID: p.EnvironmentID, ServerID: p.ServerID, DestinationID: uuid.New(), ResourceID: a.ID, Generation: 1, Method: "postgres-logical", Schedule: backup.Schedule{Timezone: "UTC"}, Retain: 1, Plan: p}
 			in := backup.Installation{Policy: policy, Destination: backup.Destination{ID: policy.DestinationID, Name: "Recovery fixture", Kind: "filesystem", Root: root}, Access: backup.Access{Password: "upgrade-repository-password-canary"}}
@@ -49,7 +49,7 @@ func nativeUpgradeJourney(t *testing.T, e *Engine, newSource func() (deployment.
 							Env:    []string{"PGPASSWORD=" + secrets[a.Postgres.PasswordSecretVersionID.String()]},
 							Labels: visualLabels(p, uuid.New()),
 						},
-						HostConfig: &container.HostConfig{NetworkMode: container.NetworkMode("container:" + deployment.UnitName(p.Specification.Applications[0].ID))},
+						HostConfig: &container.HostConfig{NetworkMode: container.NetworkMode("container:" + p.ContainerName(p.Specification.Applications[0].ID))},
 					})
 					if err != nil {
 						t.Fatal(err)

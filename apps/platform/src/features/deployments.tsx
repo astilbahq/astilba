@@ -14,6 +14,7 @@ export function Deployments({
   write,
   owner,
   removeVolume,
+  loadRevision,
 }: {
   path: EnvironmentPath;
   revision: Schema["Revision"];
@@ -21,7 +22,10 @@ export function Deployments({
   write: boolean;
   owner: boolean;
   removeVolume: (id: string) => void;
+  loadRevision: (revision: Schema["Revision"]) => void;
 }) {
+  const [requireRelease, setRequireRelease] = useState(false);
+  const [releaseCommand, setReleaseCommand] = useState("");
   const [serverId, setServerId] = useState("");
   const [planId, setPlanId] = useState("");
   const [key, setKey] = useState("");
@@ -62,6 +66,11 @@ export function Deployments({
     queryKey: ["runtime", path],
     queryFn: () => result(client.GET(`${root}/runtime`, { params: { path } })),
     refetchInterval: 5000,
+  });
+  const releases = useQuery({
+    queryKey: ["releases", path, revision.id],
+    queryFn: () => result(client.GET(`${root}/releases`, { params: { path } })),
+    refetchInterval: 10000,
   });
   const volumes = useQuery({
     queryKey: ["volumes", path],
@@ -130,6 +139,19 @@ export function Deployments({
                       serverId,
                       allowHostChanges: d.has("host"),
                       acceptDrift: d.has("drift"),
+                      ...(requireRelease
+                        ? {
+                            releaseOptions: {
+                              command: text(d, "releaseCommand").trim()
+                                ? text(d, "releaseCommand").split("\n")
+                                : [],
+                              commandTimeoutSeconds: Number(
+                                text(d, "releaseTimeout"),
+                              ),
+                              drainSeconds: Number(text(d, "releaseDrain")),
+                            },
+                          }
+                        : {}),
                     },
                   }),
                 );
@@ -182,6 +204,66 @@ export function Deployments({
               <input type="checkbox" name="drift" />
               Reconcile reviewed manual changes to Astilba-managed resources
             </label>
+            <details>
+              <summary>Protected release options</summary>
+              <p>
+                Eligible changes use overlapping instances automatically on
+                supported agents. Require that strategy to set a command or
+                drain budget; incompatible changes will be rejected.
+              </p>
+              <label className={s.row}>
+                <input
+                  type="checkbox"
+                  checked={requireRelease}
+                  onChange={(e) => setRequireRelease(e.target.checked)}
+                />
+                Require a protected stateless HTTP release
+              </label>
+              {requireRelease && (
+                <>
+                  <label>
+                    Release command (one argument per line)
+                    <textarea
+                      name="releaseCommand"
+                      rows={4}
+                      value={releaseCommand}
+                      onChange={(event) =>
+                        setReleaseCommand(event.target.value)
+                      }
+                      disabled={action.isPending}
+                      aria-describedby="release-command-help"
+                    />
+                  </label>
+                  <p id="release-command-help" className={s.muted}>
+                    Optional. Runs in the target image before readiness. A shell
+                    runs only if supplied as an explicit executable. Database
+                    writes and migrations cannot be undone by image rollback.
+                  </p>
+                  <label>
+                    Command timeout (seconds)
+                    <input
+                      name="releaseTimeout"
+                      type="number"
+                      min={1}
+                      max={300}
+                      defaultValue={60}
+                      required
+                    />
+                  </label>
+                  <label>
+                    Connection drain (seconds)
+                    <input
+                      name="releaseDrain"
+                      type="number"
+                      min={1}
+                      max={120}
+                      defaultValue={10}
+                      required
+                    />
+                  </label>
+                </>
+              )}
+            </details>
             <button
               type="submit"
               disabled={dirty || action.isPending || !serverId}
@@ -204,6 +286,23 @@ export function Deployments({
         {ready && (
           <section className={s.stack} aria-label="Reviewed deployment plan">
             <h3>Plan ready</h3>
+            <p>
+              <strong>
+                {ready.release
+                  ? "Protected stateless HTTP release"
+                  : "Standard deployment"}
+              </strong>
+            </p>
+            {ready.release && (
+              <p>
+                Readiness must pass before traffic moves. Drain:{" "}
+                {ready.release.options.drainSeconds} seconds. Release command:{" "}
+                {ready.release.options.command.length
+                  ? ready.release.options.command.join(" · ")
+                  : "none"}
+                .
+              </p>
+            )}
             <p>
               Server:{" "}
               {servers.data?.find((server) => server.id === ready.serverId)
@@ -231,6 +330,12 @@ export function Deployments({
               Secret values are withheld; the plan uses immutable version
               references.
             </p>
+            <details>
+              <summary>Effective configuration and secret references</summary>
+              <pre className={`${s.code} ${s.wrappedCode}`}>
+                {JSON.stringify(ready.specification, null, 2)}
+              </pre>
+            </details>
             {stale && (
               <p role="alert">
                 The saved revision changed. Prepare a new plan.
@@ -275,6 +380,79 @@ export function Deployments({
             )}
           </section>
         )}
+      </section>
+      <section className={s.panel} aria-label="Release history">
+        <h2>Release history</h2>
+        <p className={s.muted}>
+          Rollback creates a new draft for review. Preparing its deployment plan
+          checks the retained image. Release commands are not copied, and
+          database data is never rolled back.
+        </p>
+        <ErrorNotice error={releases.error} />
+        {releases.isPending && <p role="status">Loading release history…</p>}
+        {releases.data?.length === 0 && (
+          <p>Successfully applied deployments will appear here.</p>
+        )}
+        {releases.data?.map((entry) => (
+          <details key={entry.planId}>
+            <summary>
+              Revision {entry.revisionId.slice(0, 8)} ·{" "}
+              {new Date(entry.createdAt).toLocaleString()}
+            </summary>
+            <ul>
+              {entry.applications.map((app) => (
+                <li key={app.id}>
+                  <strong>{app.name}</strong>
+                  <code className={s.code}>{app.image}</code>
+                  <p>{app.note}</p>
+                  {app.changes.length > 0 && (
+                    <p>Changed settings: {app.changes.join(", ")}.</p>
+                  )}
+                  {write && (
+                    <button
+                      type="button"
+                      disabled={!app.eligible || dirty || action.isPending}
+                      onClick={() =>
+                        action.run(async () => {
+                          const next = await result(
+                            client.POST(`${root}/releases/{planId}/rollback`, {
+                              params: {
+                                path: { ...path, planId: entry.planId },
+                              },
+                              body: {
+                                baseRevisionId: revision.id,
+                                applicationId: app.id,
+                              },
+                            }),
+                          );
+                          loadRevision(next);
+                          setRequireRelease(true);
+                          setReleaseCommand("");
+                          setPlanId("");
+                          setMessage(
+                            "Rollback draft created. Review its effective configuration and prepare a new deployment plan; nothing has been deployed.",
+                          );
+                          await queries.invalidateQueries({
+                            queryKey: ["revisions", path],
+                          });
+                          await queries.invalidateQueries({
+                            queryKey: [
+                              "environments",
+                              path.workspaceId,
+                              path.projectId,
+                            ],
+                          });
+                        })
+                      }
+                    >
+                      Create rollback draft for {app.name}
+                    </button>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </details>
+        ))}
       </section>
       <section className={s.panel}>
         <div className={s.spread}>

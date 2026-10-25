@@ -623,6 +623,13 @@ function DraftEditor({
         stage={(spec) => setDraft(JSON.stringify(spec, null, 2))}
       />
       <Deployments
+        loadRevision={(next) => {
+          if (draftRef.current !== savedText) {
+            setConflict(next);
+            return;
+          }
+          replace(next);
+        }}
         path={path}
         revision={base}
         dirty={dirty}
