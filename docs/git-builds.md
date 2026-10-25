@@ -4,11 +4,39 @@ Git source work and builds run on an enrolled **Build** or **Combined** runner. 
 
 ## Connect a repository
 
-An owner with recent authentication creates a repository connection under **Git and builds**. Choose GitHub, GitLab or Gitea, an exact provider origin, and the repository path. GitHub uses https://api.github.com internally; https://github.com is accepted at creation. Hosted GitLab and Gitea are supported directly. For other GitLab/Gitea origins, the management operator configures a comma-separated **ASTILBA_INTEGRATION_ORIGINS** allowlist. Explicit origins may reach private networks, so allow only trusted provider endpoints. HTTPS with publicly trusted certificates is required; numeric loopback HTTP is available only in local development.
+An owner with recent authentication creates a repository connection under **Git and builds**. Use the configured GitHub App to authorize and select a repository, or use the manual GitHub, GitLab or Gitea credential form with an exact provider origin and repository path. GitHub uses https://api.github.com internally; https://github.com is accepted at creation. Hosted GitLab and Gitea are supported directly. For other GitLab/Gitea origins, the management operator configures a comma-separated **ASTILBA_INTEGRATION_ORIGINS** allowlist. Explicit origins may reach private networks, so allow only trusted provider endpoints. HTTPS with publicly trusted certificates is required; numeric loopback HTTP is available only in local development.
 
-Use a repository-scoped API/submission credential and a separate read-only clone credential for private repositories. GitHub needs repository metadata/content access and pull-request writes; GitLab needs project API and repository access; Gitea needs repository and pull-request access. The supplied account must be able to create a branch and review in the selected repository. There is no OAuth installation flow or SSH clone support in this milestone. Connections retain their repository identity and credentials rather than accepting a repository URL in each job. A repository ID or visibility change requires an explicit new connection; branch resolution and queued credential delivery recheck that identity.
+Use a repository-scoped API/submission credential and a separate read-only clone credential for private repositories. GitHub needs repository metadata/content access and pull-request writes; GitLab needs project API and repository access; Gitea needs repository and pull-request access. The supplied account must be able to create a branch and review in the selected repository. SSH clone support is outside this milestone. Connections retain their repository identity and credentials rather than accepting a repository URL in each job. A repository ID or visibility change requires an explicit new connection; branch resolution and queued credential delivery recheck that identity.
 
 The webhook URL and random secret appear once after creation. Configure **push** events in the repository, retaining the raw request body. GitHub and Gitea use HMAC-SHA256; GitLab uses its secret-token header and delivery identifier. Each delivery is checked against the connected repository ID. Delivery replay is deduplicated, retained delivery records are capped, and refresh jobs coalesce while active. Refresh resolves the current authoritative branch through the provider API, so an older delivery cannot roll the source backwards. Fork and pull-request events do not receive build credentials.
+
+## GitHub App onboarding
+
+The management operator registers one GitHub.com App for the installation. Workspace owners choose **Continue with GitHub**, authorize their GitHub identity and select an installation/repository. Install the App or change its selected repositories through the provided GitHub link, then refresh the list. Only a repository administrator can delegate access to a workspace. Manual credentials and GitLab/Gitea remain available.
+
+The App acts as a workspace bot: its connection survives changes to the original administrator’s GitHub membership or OAuth authorization. Disconnect it in Astilba or remove/suspend the installation to stop future access. Disconnect and confirmed installation revocation cancel pending Git work and require renewed approval for automatic imports/builds/deployments. Reconnect only to the same repository ID, path and visibility; create a new connection after a rename, transfer or visibility change. Workspace export/import carries the connection description, but never the controller’s App authority: authorize again on the destination.
+
+OAuth state and S256 PKCE are bound to the account, authentication version, workspace and login session for ten minutes. Identity confirmation in a separate tab preserves that unfinished connection; a new login does not. Codes and temporary user tokens never enter browser storage or runner assignments. Expired proofs are removed by management’s bounded maintenance sweep. The existing Strict session cookie remains unchanged.
+
+The controller mints one-repository tokens: contents read for metadata/import/build checkout, and separate contents write plus pull-request write for source submission. It reuses tokens only with at least 35 minutes remaining, with a 512-entry memory limit and coalesced requests. Successful installation and exact repository identity/visibility checks can be reused for at most five seconds; every credential delivery still checks the local active binding. A missed revocation webhook can therefore take up to five seconds to block new credentials. Already delivered credentials and already running work cannot be recalled instantly. GitHub’s own token revocation and expiry still apply.
+
+The App webhook authenticates raw bytes with HMAC-SHA256 and deduplicates delivery IDs/body hashes. Sanitized durable events fan out in bounded pages; refresh resolves current authoritative branch state. Installation changes reconcile current GitHub authority, preventing old events from undoing a fresh authorization. Unsupported event types do not create pipeline work. This does not enable pull-request previews or fork credentials.
+
+### Operator setup
+
+Register a GitHub App with these settings, substituting your management origin:
+
+- Callback URL: `https://platform.example.com/github/callback`.
+- Setup URL: `https://platform.example.com/github/installed`. Leave **Request user authorization during installation** off; Astilba starts authorization with PKCE separately.
+- Webhook URL: `https://platform.example.com/hooks/github-app`, with a random secret of at least 32 characters and SSL verification enabled.
+- Repository permissions: **Metadata: read**, **Contents: read/write**, **Pull requests: read/write**. No administration or workflow write permission is needed.
+- Subscribe to **Push**. GitHub also sends installation, installation-repository and authorization lifecycle events.
+
+Set `ASTILBA_GITHUB_APP_ID`, `ASTILBA_GITHUB_APP_CLIENT_ID`, `ASTILBA_GITHUB_APP_SLUG`, `ASTILBA_GITHUB_APP_CLIENT_SECRET`, `ASTILBA_GITHUB_APP_WEBHOOK_SECRET`, and exactly one of `ASTILBA_GITHUB_APP_PRIVATE_KEY_FILE` or `ASTILBA_GITHUB_APP_PRIVATE_KEY`. The file must be an owner-only regular PEM file; inline PEM is available for secret bindings in hosted adapters. Use an RSA key of at least 2048 bits. Keep these values in private deployment configuration. Partial configuration prevents management startup; omitting all values keeps the manual credential path available. App registration by manifest and GitHub Enterprise are outside this increment.
+
+The optional static Worker adapter must forward `/hooks/github-app` before assets, just like the existing Git hooks. The container Worker forwards the App secret bindings to management. All token exchange, authorization and credential hydration stay in Go; adapters contain no provider logic.
+
+Official GitHub references: [App security guidance](https://docs.github.com/en/apps/creating-github-apps/about-creating-github-apps/best-practices-for-creating-a-github-app), [OAuth and PKCE](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-user-access-token-for-a-github-app), and [scoped installation tokens](https://docs.github.com/en/rest/apps/apps#create-an-installation-access-token-for-an-app).
 
 ## Import and submit Compose
 

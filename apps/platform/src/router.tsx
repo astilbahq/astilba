@@ -15,6 +15,7 @@ import {
   setSession,
 } from "./api/client";
 import { Alerts } from "./features/alerts";
+import { GitHubCallback, GitHubInstalled } from "./features/github-app";
 import { hostingOptions, Signup } from "./hosting";
 import { Account, Members } from "./security";
 import { Servers } from "./servers";
@@ -398,8 +399,24 @@ const signup = createRoute({
   path: "/signup",
   component: Signup,
 });
+const githubCallback = createRoute({
+  getParentRoute: () => root,
+  path: "/github/callback",
+  component: () => (
+    <Authenticated>
+      <GitHubCallback />
+    </Authenticated>
+  ),
+});
+const githubInstalled = createRoute({
+  getParentRoute: () => root,
+  path: "/github/installed",
+  component: GitHubInstalled,
+});
 export const router = createRouter({
   routeTree: root.addChildren([
+    githubCallback,
+    githubInstalled,
     dashboardRoute,
     servers,
     alerts,

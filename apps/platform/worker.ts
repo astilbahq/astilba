@@ -14,6 +14,7 @@ export default {
         "/agent-artifacts/",
         "/hooks/git/",
         "/hooks/stripe",
+        "/hooks/github-app",
       ].some((prefix) => incoming.pathname.startsWith(prefix))
     ) {
       let upstream: URL;

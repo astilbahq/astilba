@@ -223,6 +223,19 @@ func (s *Store) Rewrap(ctx context.Context) error {
 				return err
 			}
 		}
+		authorizations, err := q.AllGitHubAuthorizations(ctx)
+		if err != nil {
+			return err
+		}
+		for _, v := range authorizations {
+			blob, err := s.Keys.Rewrap(v.EncryptedAccess, pipeline.EncryptionIdentity(v.WorkspaceID, v.ID, "github-authorization"))
+			if err != nil {
+				return err
+			}
+			if err = q.RewrapGitHubAuthorization(ctx, db.RewrapGitHubAuthorizationParams{WorkspaceID: v.WorkspaceID, ID: v.ID, EncryptedAccess: blob}); err != nil {
+				return err
+			}
+		}
 		registries, err := q.AllRegistryAccess(ctx)
 		if err != nil {
 			return err

@@ -14,6 +14,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
+	"github.com/astilbahq/astilba/services/platform/internal/githubapp"
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
@@ -28,6 +29,7 @@ const OfflineAfter = 45 * time.Second
 const RotationOverlap = 2 * time.Minute
 
 type Service struct {
+	GitHub   *githubapp.Client
 	Policy   pipeline.Policy
 	Store    *store.Store
 	Queue    *river.Client[pgx.Tx]
@@ -40,6 +42,8 @@ func New(st *store.Store) (*Service, error) {
 	river.AddWorker(workers, &worker{service: s})
 	river.AddWorker(workers, &refreshWorker{service: s})
 	river.AddWorker(workers, &automaticWorker{service: s})
+	river.AddWorker(workers, &githubFanoutWorker{service: s})
+	river.AddWorker(workers, &githubReconcileWorker{service: s})
 	q, err := river.NewClient(riverpgxv5.New(st.Pool), &river.Config{Workers: workers, Queues: map[string]river.QueueConfig{river.QueueDefault: {MaxWorkers: 4}}, JobTimeout: 10 * time.Second})
 	s.Queue = q
 	return s, err

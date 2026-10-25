@@ -22,8 +22,9 @@ import (
 )
 
 type Policy struct {
-	Origins     []string
-	Development bool
+	Origins       []string
+	Development   bool
+	GitHubFixture string
 }
 
 func (p Policy) Allowed(base string) (bool, error) {
@@ -53,6 +54,7 @@ type Provider struct {
 	Connection Connection
 	access     Credential
 	client     *http.Client
+	base       string
 }
 
 func NewProvider(c Connection, credential Credential, policy Policy) (*Provider, error) {
@@ -71,7 +73,16 @@ func NewProvider(c Connection, credential Credential, policy Policy) (*Provider,
 			return nil, errors.New("invalid source credential")
 		}
 	}
-	return &Provider{Connection: c, access: credential, client: outbound.Client(private, 20*time.Second)}, nil
+	base := c.BaseURL
+	if c.Provider == "github" && policy.GitHubFixture != "" {
+		u, e := url.Parse(policy.GitHubFixture)
+		if !policy.Development || e != nil || u.Scheme != "http" || net.ParseIP(u.Hostname()) == nil || !net.ParseIP(u.Hostname()).IsLoopback() || u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
+			return nil, errors.New("GitHub fixture requires loopback development")
+		}
+		base = policy.GitHubFixture
+		private = true
+	}
+	return &Provider{Connection: c, access: credential, client: outbound.Client(private, 20*time.Second), base: base}, nil
 }
 func GitURL(c Connection) string {
 	base := c.BaseURL
@@ -103,7 +114,7 @@ func (p *Provider) request(ctx context.Context, method, path string, body, out a
 		}
 		reader = bytes.NewReader(raw)
 	}
-	req, err := http.NewRequestWithContext(ctx, method, p.Connection.BaseURL+path, reader)
+	req, err := http.NewRequestWithContext(ctx, method, p.base+path, reader)
 	if err != nil {
 		return errors.New("invalid provider request")
 	}

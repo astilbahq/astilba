@@ -4,6 +4,8 @@ import { client, result } from "../api/client";
 import * as s from "../styles";
 import { BusyButton, ErrorNotice, Field, Form, text, useAction } from "../ui";
 
+import { GitHubAppSettings } from "./github-app";
+
 const wsRoot = "/api/v1/workspaces/{workspaceId}" as const;
 export function IntegrationSettings({ workspaceId }: { workspaceId: string }) {
   const action = useAction(),
@@ -21,6 +23,7 @@ export function IntegrationSettings({ workspaceId }: { workspaceId: string }) {
           repository-scoped tokens and separate registry push and pull
           credentials.
         </p>
+        <GitHubAppSettings workspaceId={workspaceId} />
         <Form
           action={action}
           label="Connect repository"

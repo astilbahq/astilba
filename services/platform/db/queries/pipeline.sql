@@ -10,3 +10,7 @@ UPDATE registries SET encrypted_access=$3 WHERE workspace_id=$1 AND id=$2;
 SELECT workspace_id,id,encrypted_value FROM build_secret_versions FOR UPDATE;
 -- name: RewrapBuildSecret :exec
 UPDATE build_secret_versions SET encrypted_value=$3 WHERE workspace_id=$1 AND id=$2;
+-- name: AllGitHubAuthorizations :many
+SELECT workspace_id,id,encrypted_access FROM github_app_authorizations FOR UPDATE;
+-- name: RewrapGitHubAuthorization :exec
+UPDATE github_app_authorizations SET encrypted_access=$3 WHERE workspace_id=$1 AND id=$2;
