@@ -1,0 +1,201 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+
+# Download and inspect this script before running it. The signing-key fingerprint
+# must come from an independent, trusted channel provided by the operator.
+apply=false
+install_runtime=false
+install_backups=false
+management=
+release=
+fingerprint=
+contact=
+role=deployment
+usage() {
+  cat <<'HELP'
+Usage: sudo bash bootstrap.sh [--check]
+       sudo bash bootstrap.sh --apply --management HTTPS_ORIGIN --release SHA256 \
+         --key-fingerprint SHA256 --role deployment|build|combined \
+         [--certificate-contact EMAIL] [--install-runtime] [--install-backups]
+
+Check mode only inspects this machine. Apply installs the verified agent and
+prepares its service, without enrolling or starting it. --install-runtime permits
+installing Docker 29.9.2 and Compose 5.6.1 when no Docker installation exists.
+It can start Docker and create its networks and firewall rules. Existing Docker is never replaced.
+Public ingress, certificates and ports still require a reviewed deployment plan.
+HELP
+}
+die() { printf '%s\n' "$*" >&2; exit 1; }
+while (($#)); do
+  case "$1" in
+    --check) apply=false; shift ;;
+    --apply) apply=true; shift ;;
+    --install-runtime) install_runtime=true; shift ;;
+    --install-backups) install_backups=true; shift ;;
+    --management|--release|--key-fingerprint|--certificate-contact|--role)
+      (($# >= 2)) || die "Missing value for $1"
+      case "$1" in
+        --management) management=$2 ;; --release) release=$2 ;;
+        --key-fingerprint) fingerprint=$2 ;; --certificate-contact) contact=$2 ;;
+        --role) role=$2 ;;
+      esac
+      shift 2 ;;
+    --help) usage; exit 0 ;;
+    *) usage >&2; die "Unknown option: $1" ;;
+  esac
+done
+[[ -r /etc/os-release ]] || die 'Ubuntu 24.04 LTS is required.'
+source /etc/os-release
+[[ "$ID" == ubuntu && "$VERSION_ID" == 24.04 ]] || die 'Ubuntu 24.04 LTS is required.'
+[[ "$(cat /proc/1/comm)" == systemd ]] || die 'A host running systemd is required.'
+[[ "$role" == deployment || "$role" == build || "$role" == combined ]] || die 'Invalid server role.'
+case "$(uname -m)" in
+  x86_64)
+    arch=amd64
+    runtime_shas=(f811ab57d1f4bb0cce19df7d526da8c711d8ebea0447cc83da1999188e664122 74747b5c99000279b9b2c7eb82543b4121d8436a58aa3be7e78ac6681d74794f 95ddf7a2d8b8c0eb82d8597d4d604e294dcf741081f2e228524d5ab9bfd7c8ae 9725be1df7fd5ccc6b21ac24112885896c8d134345e3f4aa20b3c2064ef4620e)
+    restic_sha=f415415624dcc452f2a02b8c33641791a8c6d6d3b65bbb3543fcf9a25151585c ;;
+  aarch64)
+    arch=arm64
+    runtime_shas=(7837470e586f0b5d228a5eefdd9674b6bd0f127c47841ae808b086ae7fe3f41a de18f48f32758568af16d73aa758678af472c2e780dc2aaa9fd9279b8260f7a9 c34d0bd4a58891b1fd9bab57702d7ce84c0f0c77db5fbabcf192288fe52d2535 d138ccdb343121de4904f53af5c57baee5866f9aedc142c1f8c0d6448ce57a7b)
+    restic_sha=a5f64aaab53d51e311fa3829124c5b703f2d14cf187d8640b6be3b2b49376465 ;;
+  *) die 'Only amd64 and arm64 hosts are supported.' ;;
+esac
+inspect_agent_targets() {
+for target in /usr/local/bin/astilba-agent /etc/astilba/release-public.pem /etc/systemd/system/astilba-agent.service /etc/systemd/system/astilba-agent.service.d /var/lib/astilba-agent; do
+  [[ ! -e "$target" && ! -L "$target" ]] || die 'An existing or partial agent installation needs inspection. Preserve its state and use the agent installation/update guide.'
+done
+for parent in /etc/astilba /usr/local/bin /opt/astilba-platform-tools; do
+  [[ ! -L "$parent" ]] || die 'Refusing a symbolic link at an installation directory.'
+done
+}
+inspect_agent_targets
+docker_ready=false
+if command -v docker >/dev/null 2>&1; then
+  if systemctl is-active --quiet docker.socket && ! systemctl is-active --quiet docker.service; then
+    die 'Docker is stopped with socket activation armed. Inspect and explicitly start it before preparing this host.'
+  fi
+  version=$(docker --host unix:///var/run/docker.sock version --format '{{.Server.Version}}' 2>/dev/null) || die 'An existing Docker installation is stopped or unavailable. Inspect it before preparing this host.'
+  [[ "$version" == 29.9.2 ]] || die 'Existing Docker differs from the validated 29.9.2 baseline. Use the manual installation guide; this script will not replace it.'
+  if [[ "$role" != build ]]; then
+    compose=$(docker --host unix:///var/run/docker.sock compose version --short 2>/dev/null) || die 'Prepare Docker Compose 5.6.1 using the manual guide.'
+    [[ "${compose#v}" == 5.6.1 ]] || die 'Existing Compose differs from the validated 5.6.1 baseline.'
+  fi
+  docker_ready=true
+  count=$(docker --host unix:///var/run/docker.sock ps --all --quiet | wc -l | tr -d ' ')
+  printf 'Compatible Docker found; %s existing containers stay unmanaged.\n' "$count"
+else
+  for target in /var/run/docker.sock /var/lib/docker /var/lib/containerd /etc/docker /etc/systemd/system/docker.service /lib/systemd/system/docker.service; do
+    [[ ! -e "$target" && ! -L "$target" ]] || die 'Existing runtime files need manual inspection. This script will not replace them.'
+  done
+  for package in docker.io docker-ce docker-ce-cli containerd containerd.io runc podman-docker docker-compose docker-compose-plugin; do
+    state=$(dpkg-query -W -f='${db:Status-Status}' "$package" 2>/dev/null || true)
+    [[ "$state" != installed ]] || die 'Existing container runtime packages need manual inspection.'
+  done
+  printf '%s\n' 'Docker is absent. Preparing this host requires explicit --install-runtime permission.'
+fi
+printf 'Supported host: Ubuntu 24.04 %s. Agent role: %s.\n' "$arch" "$role"
+printf '%s\n' 'The agent needs rootful Docker authority. Enrollment and service startup are separate steps.'
+if ! "$apply"; then
+  printf '%s\n' 'Check complete. No packages, services or host configuration were changed.'
+  exit 0
+fi
+[[ "$EUID" == 0 ]] || die 'Apply requires sudo/root.'
+origin_pattern='^https://([A-Za-z0-9][A-Za-z0-9.-]*|\[[0-9A-Fa-f:]+\])(:[0-9]{1,5})?$'
+[[ "$management" =~ $origin_pattern ]] || die 'Management must be an exact HTTPS origin without user information, path or query.'
+[[ "$release" =~ ^[a-f0-9]{64}$ && "$fingerprint" =~ ^[a-f0-9]{64}$ ]] || die 'Release and independently trusted key fingerprint must be lowercase SHA-256 values.'
+if [[ "$role" != build || -n "$contact" ]]; then
+  [[ "$contact" =~ ^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+$ ]] || die 'Provide a certificate-contact email using its plain address.'
+fi
+"$docker_ready" || "$install_runtime" || die 'Use --install-runtime only after reviewing its host and network effects.'
+for tool in curl openssl sha256sum od install flock timeout; do command -v "$tool" >/dev/null || die "Install the OS prerequisite $tool, then retry."; done
+if "$install_backups"; then
+  command -v bzip2 >/dev/null || die 'Install the OS prerequisite bzip2, then retry.'
+  [[ ! -e /opt/astilba-platform-tools/restic && ! -L /opt/astilba-platform-tools/restic ]] || die 'Existing backup tooling needs manual inspection.'
+fi
+[[ ! -L /run/astilba-bootstrap.lock ]] || die 'Refusing a symbolic link at the setup lock.'
+exec 9>/run/astilba-bootstrap.lock
+flock --nonblock 9 || die 'Another host preparation is already running.'
+inspect_agent_targets
+scratch=$(mktemp -d /tmp/astilba-bootstrap.XXXXXXXX)
+step='verify downloads'
+trap 'rm -rf "$scratch"' EXIT
+trap 'printf "Preparation stopped during %s. Preserve any installed files and inspect the host before retrying; no host data is rolled back.\n" "$step" >&2' ERR
+fetch() {
+  (ulimit -c 0; ulimit -f "$((($3+1023)/1024))"; curl -q --fail --location --proto '=https' --proto-redir '=https' --max-redirs 3 --connect-timeout 10 --max-time 120 --retry 2 --retry-max-time 300 --max-filesize "$3" --silent --show-error --output "$2" --url "$1")
+  [[ $(wc -c < "$2") -le "$3" ]] || die 'Downloaded file exceeds its limit.'
+}
+verify_hash() { printf '%s  %s\n' "$2" "$1" | sha256sum --check --status; }
+fetch "$management/agent-public-key.pem" "$scratch/public.pem" 4096
+openssl pkey -pubin -in "$scratch/public.pem" -outform DER -out "$scratch/public.der"
+[[ $(wc -c < "$scratch/public.der") == 44 && $(od -An -tx1 -N12 "$scratch/public.der" | tr -d ' \n') == 302a300506032b6570032100 ]] || die 'The signing key must be Ed25519.'
+verify_hash "$scratch/public.der" "$fingerprint" || die 'The downloaded signing key does not match the independently trusted fingerprint.'
+fetch "$management/agent-artifacts/$release/message" "$scratch/message" 1024
+fetch "$management/agent-artifacts/$release/signature" "$scratch/signature" 64
+mapfile -t fields < "$scratch/message"
+[[ ${#fields[@]} == 6 && ${fields[0]} == astilba-agent-v1 && ${fields[1]} =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$ && ${fields[2]} == 1 && ${fields[3]} == "$arch" && ${fields[4]} =~ ^[1-9][0-9]{0,8}$ && ${fields[5]} == "$release" ]] || die 'The release message is incompatible with this host.'
+[[ ${fields[4]} -le 104857600 && $(wc -c < "$scratch/signature") == 64 ]] || die 'Invalid signed release bounds.'
+printf '%s\n' "${fields[@]}" > "$scratch/canonical-message"
+cmp --silent "$scratch/message" "$scratch/canonical-message" || die 'The signed message is not canonical.'
+openssl pkeyutl -verify -pubin -inkey "$scratch/public.pem" -rawin -in "$scratch/message" -sigfile "$scratch/signature"
+fetch "$management/agent-artifacts/$release" "$scratch/agent" "${fields[4]}"
+[[ $(wc -c < "$scratch/agent") == "${fields[4]}" ]] || die 'The agent size does not match its signed release.'
+verify_hash "$scratch/agent" "$release" || die 'The agent digest does not match its signed release.'
+chmod 0700 "$scratch/agent"
+identity=$("$scratch/agent" describe)
+expected_identity=$(printf '{"Arch":"%s","Protocol":1,"Version":"%s"}' "$arch" "${fields[1]}")
+[[ "$identity" == "$expected_identity" ]] || die 'Compiled agent identity does not match the signed release.'
+# The verified CLI validates the contact address before host installation.
+timeout 15 "$scratch/agent" preflight --state "$scratch/preflight" --acme-email "$contact" >/dev/null
+if ! "$docker_ready"; then
+  runtime_files=("containerd.io_2.4.2-3~ubuntu.24.04~noble_$arch.deb" "docker-ce-cli_29.9.2-1~ubuntu.24.04~noble_$arch.deb" "docker-ce_29.9.2-1~ubuntu.24.04~noble_$arch.deb" "docker-compose-plugin_5.6.1-1~ubuntu.24.04~noble_$arch.deb")
+  packages=()
+  for index in 0 1 2 3; do
+    file=${runtime_files[$index]}
+    fetch "https://download.docker.com/linux/ubuntu/dists/noble/pool/stable/$arch/$file" "$scratch/$file" 104857600
+    verify_hash "$scratch/$file" "${runtime_shas[$index]}"
+    packages+=("$scratch/$file")
+  done
+fi
+if "$install_backups"; then
+  fetch "https://github.com/restic/restic/releases/download/v0.19.1/restic_0.19.1_linux_$arch.bz2" "$scratch/restic.bz2" 33554432
+  verify_hash "$scratch/restic.bz2" "$restic_sha"
+  bzip2 --decompress "$scratch/restic.bz2"
+fi
+if ! "$docker_ready"; then
+  inspect_agent_targets
+  command -v docker >/dev/null && die 'A Docker installation appeared during preparation; inspect it before retrying.'
+  step='install the approved container runtime'
+  printf '%s\n' 'Installing verified Docker packages and their Ubuntu dependencies; Docker may start and create networks and firewall rules.'
+  DEBIAN_FRONTEND=noninteractive apt-get update
+  DEBIAN_FRONTEND=noninteractive apt-get install --yes --no-remove --no-install-recommends "${packages[@]}"
+  [[ $(docker --host unix:///var/run/docker.sock version --format '{{.Server.Version}}') == 29.9.2 ]]
+  [[ $(docker compose version --short) == 5.6.1 || $(docker compose version --short) == v5.6.1 ]]
+fi
+inspect_agent_targets
+step='prepare the verified agent service'
+install -d -m 0700 /var/lib/astilba-agent
+install -d -m 0755 /etc/astilba
+install -m 0644 "$scratch/public.pem" /etc/astilba/release-public.pem
+install -m 0755 "$scratch/agent" /usr/local/bin/astilba-agent
+cat > /etc/systemd/system/astilba-agent.service <<'UNIT'
+__ASTILBA_SYSTEMD_UNIT__
+UNIT
+if [[ -n "$contact" ]]; then
+  install -d -m 0755 /etc/systemd/system/astilba-agent.service.d
+  # systemd expands percent specifiers in ExecStart; the address stays literal.
+  escaped_contact=${contact//%/%%}
+  printf '[Service]\nExecStart=\nExecStart=/usr/local/bin/astilba-agent run --acme-email %s\n' "$escaped_contact" > /etc/systemd/system/astilba-agent.service.d/certificate-contact.conf
+fi
+if "$install_backups"; then
+  install -d -m 0755 /opt/astilba-platform-tools
+  install -m 0755 "$scratch/restic" /opt/astilba-platform-tools/restic
+  install -d -m 0755 /etc/systemd/system/astilba-agent.service.d
+  printf '[Service]\nEnvironment=PATH=/opt/astilba-platform-tools:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n' > /etc/systemd/system/astilba-agent.service.d/backup-tools.conf
+fi
+systemctl daemon-reload
+/usr/local/bin/astilba-agent describe
+restic_cli=restic
+if "$install_backups"; then restic_cli=/opt/astilba-platform-tools/restic; fi
+/usr/local/bin/astilba-agent preflight --acme-email "$contact" --restic-cli "$restic_cli"
+printf '%s\n' 'Preparation complete. Create an enrollment code in the dashboard, enroll through stdin, then explicitly enable the service.'

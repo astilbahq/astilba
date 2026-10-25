@@ -10,6 +10,295 @@
     "sessionCookie": []
   - automationBearer: []
 "paths":
+  "/api/v1/workspaces/{workspaceId}/onboarding": {
+    "get": {
+      "operationId": "getOnboarding",
+      "parameters": [
+        {
+          "name": "workspaceId",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ],
+      "responses": {
+        "200": {
+          "description": "Success",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Onboarding"
+              }
+            }
+          }
+        },
+        "default": {
+          "description": "Error",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Error"
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  "/api/v1/workspaces/{workspaceId}/servers/{serverId}/domain": {
+    "get": {
+      "operationId": "getServerDomain",
+      "parameters": [
+        {
+          "name": "workspaceId",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        {
+          "name": "serverId",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ],
+      "responses": {
+        "200": {
+          "description": "Success",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ServerDomain"
+              }
+            }
+          }
+        },
+        "default": {
+          "description": "Error",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Error"
+              }
+            }
+          }
+        }
+      }
+    },
+    "put": {
+      "operationId": "configureServerDomain",
+      "parameters": [
+        {
+          "name": "workspaceId",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        {
+          "name": "serverId",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ],
+      "responses": {
+        "200": {
+          "description": "Success",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ServerDomain"
+              }
+            }
+          }
+        },
+        "default": {
+          "description": "Error",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Error"
+              }
+            }
+          }
+        }
+      },
+      "requestBody": {
+        "required": true,
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ConfigureServerDomain"
+            }
+          }
+        }
+      }
+    }
+  }
+  "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/domain-suggestion": {
+    "post": {
+      "operationId": "suggestApplicationDomain",
+      "parameters": [
+        {
+          "name": "workspaceId",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        {
+          "name": "projectId",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        {
+          "name": "environmentId",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ],
+      "responses": {
+        "200": {
+          "description": "Success",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DomainSuggestion"
+              }
+            }
+          }
+        },
+        "default": {
+          "description": "Error",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Error"
+              }
+            }
+          }
+        }
+      },
+      "requestBody": {
+        "required": true,
+        "content": {
+          "application/json": {
+            "schema": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "applicationId",
+                "serverId"
+              ],
+              "properties": {
+                "applicationId": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "serverId": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  "/api/v1/workspaces/{workspaceId}/servers/{serverId}/check-domain": {
+    "post": {
+      "operationId": "checkDomain",
+      "parameters": [
+        {
+          "name": "workspaceId",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        {
+          "name": "serverId",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ],
+      "responses": {
+        "200": {
+          "description": "Success",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DomainCheck"
+              }
+            }
+          }
+        },
+        "default": {
+          "description": "Error",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Error"
+              }
+            }
+          }
+        }
+      },
+      "requestBody": {
+        "required": true,
+        "content": {
+          "application/json": {
+            "schema": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "hostname"
+              ],
+              "properties": {
+                "hostname": {
+                  "type": "string",
+                  "maxLength": 253,
+                  "minLength": 3
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
   /api/v1/automation/context:
     get:
       operationId: getAutomationContext
@@ -3742,6 +4031,174 @@
       "in": "cookie"
       "name": "__Host-astilba_session"
   "schemas":
+    "Onboarding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "keyFingerprint",
+        "applicationDomain",
+        "automaticDNS",
+        "bootstrapURL"
+      ],
+      "properties": {
+        "keyFingerprint": {
+          "type": "string"
+        },
+        "applicationDomain": {
+          "type": "string"
+        },
+        "automaticDNS": {
+          "type": "boolean"
+        },
+        "bootstrapURL": {
+          "type": "string"
+        }
+      }
+    }
+    "ConfigureServerDomain": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "baseGeneration",
+        "ipv4",
+        "ipv6"
+      ],
+      "properties": {
+        "baseGeneration": {
+          "type": "integer",
+          "format": "int64",
+          "minimum": 0
+        },
+        "ipv4": {
+          "type": "string",
+          "maxLength": 45
+        },
+        "ipv6": {
+          "type": "string",
+          "maxLength": 45
+        }
+      }
+    }
+    "ServerDomain": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "serverId",
+        "base",
+        "wildcard",
+        "ipv4",
+        "ipv6",
+        "generation",
+        "state",
+        "observedAt",
+        "note",
+        "automaticDNS"
+      ],
+      "properties": {
+        "serverId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "base": {
+          "type": "string"
+        },
+        "wildcard": {
+          "type": "string"
+        },
+        "ipv4": {
+          "type": "string"
+        },
+        "ipv6": {
+          "type": "string"
+        },
+        "generation": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "unconfigured",
+            "pending",
+            "applied",
+            "manual",
+            "failed",
+            "review_required",
+            "disabled"
+          ]
+        },
+        "observedAt": {
+          "type": "string",
+          "format": "date-time",
+          "nullable": true
+        },
+        "note": {
+          "type": "string"
+        },
+        "automaticDNS": {
+          "type": "boolean"
+        }
+      }
+    }
+    "DomainSuggestion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "hostname",
+        "serverId",
+        "dns"
+      ],
+      "properties": {
+        "hostname": {
+          "type": "string"
+        },
+        "serverId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "dns": {
+          "$ref": "#/components/schemas/ServerDomain"
+        }
+      }
+    }
+    "DomainCheck": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "hostname",
+        "state",
+        "addresses",
+        "checkedAt",
+        "note"
+      ],
+      "properties": {
+        "hostname": {
+          "type": "string"
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "matches",
+            "unverified",
+            "unavailable"
+          ]
+        },
+        "addresses": {
+          "type": "array",
+          "maxItems": 100,
+          "items": {
+            "type": "string"
+          }
+        },
+        "checkedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "note": {
+          "type": "string"
+        }
+      }
+    }
     AutomationCapability:
       type: string
       enum: ['environment:read', 'configuration:write', 'deployment:plan', 'deployment:apply', 'build:run']
@@ -3880,6 +4337,7 @@
         - "existingContainers"
         - "notes"
       "properties":
+        certificateContactConfigured: {type: boolean}
         "ready":
           "type": "boolean"
         "osRelease":

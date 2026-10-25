@@ -42,6 +42,18 @@ func PublicKey(data []byte) (ed25519.PublicKey, error) {
 	}
 	return k, nil
 }
+
+func Fingerprint(key ed25519.PublicKey) string {
+	if len(key) != ed25519.PublicKeySize {
+		return ""
+	}
+	raw, err := x509.MarshalPKIXPublicKey(key)
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:])
+}
 func Validate(r api.AgentRelease, key ed25519.PublicKey) error {
 	if !versionPattern.MatchString(r.Version) || !hashPattern.MatchString(r.Sha256) || r.Protocol != 1 || (r.Arch != "amd64" && r.Arch != "arm64") || r.Size < 1 || r.Size > MaxSize {
 		return errors.New("incompatible release manifest")

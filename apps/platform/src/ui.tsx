@@ -119,13 +119,15 @@ export function text(data: FormData, name: string) {
 }
 export function BusyButton({
   busy,
+  disabled = false,
   children,
 }: {
   busy: boolean;
+  disabled?: boolean;
   children: ReactNode;
 }) {
   return (
-    <button type="submit" className={s.primary} disabled={busy}>
+    <button type="submit" className={s.primary} disabled={busy || disabled}>
       {busy ? "Working…" : children}
     </button>
   );

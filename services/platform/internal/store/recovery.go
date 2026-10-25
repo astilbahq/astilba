@@ -24,6 +24,9 @@ func (s *Store) PrepareRecovery(ctx context.Context, id uuid.UUID, next int64) e
 	if _, e = tx.Exec(ctx, "SELECT id FROM workspaces WHERE id=$1 FOR UPDATE", ws); e != nil {
 		return e
 	}
+	if e = LockServerDNS(ctx, tx, id); e != nil {
+		return e
+	}
 	var prior int64
 	if e = tx.QueryRow(ctx, "SELECT controller_generation FROM servers WHERE id=$1 FOR UPDATE", id).Scan(&prior); e != nil {
 		return e
@@ -50,8 +53,11 @@ func (s *Store) PrepareRecovery(ctx context.Context, id uuid.UUID, next int64) e
 	if _, e = tx.Exec(ctx, `UPDATE pipeline_auto_deployments SET state='blocked',note='Management recovery requires renewed approval.' WHERE workspace_id=$1`, ws); e != nil {
 		return e
 	}
+	if _, e = tx.Exec(ctx, "UPDATE server_domains SET approved_controller=NULL,state='review_required',note='Management recovery requires renewed approval.' WHERE server_id=$1", id); e != nil {
+		return e
+	}
 	// River payloads are ephemeral delivery records; domain history stays intact.
-	_, e = tx.Exec(ctx, `DELETE FROM river_job WHERE (kind='platform_execution_v1' AND args->>'id' IN (SELECT id::text FROM execution_operations WHERE server_id=$1)) OR (kind='platform_git_refresh_v1' AND args->>'workspace'=$2) OR (kind='platform_automatic_deployment_v1' AND args->>'ID' IN (SELECT id::text FROM pipeline_auto_deployments WHERE workspace_id=$3))`, id, ws.String(), ws)
+	_, e = tx.Exec(ctx, `DELETE FROM river_job WHERE (kind='platform_dns_v1' AND args->>'server'=($1::uuid)::text) OR (kind='platform_execution_v1' AND args->>'id' IN (SELECT id::text FROM execution_operations WHERE server_id=$1)) OR (kind='platform_git_refresh_v1' AND args->>'workspace'=$2) OR (kind='platform_automatic_deployment_v1' AND args->>'ID' IN (SELECT id::text FROM pipeline_auto_deployments WHERE workspace_id=$3))`, id, ws.String(), ws)
 	if e != nil {
 		return e
 	}

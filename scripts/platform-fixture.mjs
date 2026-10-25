@@ -162,6 +162,7 @@ try {
   await writeFile(join(releases, "fixture.json"), JSON.stringify(release), { mode: 0o600 });
   const env = {
     ...process.env,
+    ASTILBA_APPLICATION_DOMAIN: "apps.example.test",
     ASTILBA_AGENT_RELEASES: releases,
     ASTILBA_AGENT_RELEASE_KEY: releaseKey,
     ASTILBA_DATABASE_URL: `postgres://postgres:${password}@${address}/postgres?sslmode=disable`,

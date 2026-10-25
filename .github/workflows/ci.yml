@@ -82,6 +82,12 @@ jobs:
           path: ${{ runner.temp }}/astilba-native-go
           key: native-go-v1-${{ runner.os }}-${{ matrix.arch }}-${{ hashFiles('experiments/durable-execution/host/bootstrap.sh', '**/go.mod') }}-${{ hashFiles('**/go.sum', 'experiments/durable-execution/**/*.go', 'services/platform/**/*.go') }}
           restore-keys: native-go-v1-${{ runner.os }}-${{ matrix.arch }}-${{ hashFiles('experiments/durable-execution/host/bootstrap.sh', '**/go.mod') }}-
+      - name: Verify fresh production host bootstrap
+        run: |
+          owner=$(cat /proc/sys/kernel/random/uuid)
+          sudo env ASTILBA_DISPOSABLE_HOST=1 ASTILBA_BOOTSTRAP_OWNER="$owner" GITHUB_ACTIONS="$GITHUB_ACTIONS" RUNNER_ENVIRONMENT="$RUNNER_ENVIRONMENT" GITHUB_RUN_ID="$GITHUB_RUN_ID" bash services/platform/host/prepare-bootstrap-test.sh
+          cd services/platform
+          sudo --preserve-env=GOCACHE,GOMODCACHE env PATH="$PATH" ASTILBA_NATIVE_BOOTSTRAP=1 ASTILBA_BOOTSTRAP_OWNER="$owner" go test -count=1 -timeout=12m -v -run '^TestBootstrapOnDisposableHost$' ./host
       - name: Install pinned disposable host runtime
         run: |
           sudo env PLAT4_DISPOSABLE_HOST=1 bash experiments/durable-execution/host/bootstrap.sh

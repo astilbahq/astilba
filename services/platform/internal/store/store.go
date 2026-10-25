@@ -17,12 +17,13 @@ import (
 )
 
 type Store struct {
-	Pool         *pgxpool.Pool
-	Queries      *db.Queries
-	Keys         *cryptobox.Keyring
-	Hosted       bool
-	Hosting      hosting.Config
-	LogRetention time.Duration
+	Pool              *pgxpool.Pool
+	Queries           *db.Queries
+	Keys              *cryptobox.Keyring
+	Hosted            bool
+	Hosting           hosting.Config
+	LogRetention      time.Duration
+	ApplicationDomain string
 }
 type Principal struct {
 	Account    db.Account

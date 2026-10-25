@@ -12,6 +12,7 @@ import { client, result, type Schema } from "../api/client";
 import * as s from "../styles";
 import { ThemeContext } from "../theme";
 import { ErrorNotice, Field, Form, text, useAction } from "../ui";
+import { GeneratedDomain } from "./generated-domain";
 import { ServiceCatalog } from "./service-catalog";
 import { OutputEditor, ServiceConnections } from "./service-outputs";
 import "@xyflow/react/dist/style.css";
@@ -909,6 +910,7 @@ export function VisualEditor({
         </details>
       )}
       <RouteEditor spec={spec} change={stage} write={configure} />
+      {configure && <GeneratedDomain path={path} spec={spec} change={stage} />}
     </section>
   );
 }

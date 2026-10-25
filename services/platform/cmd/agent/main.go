@@ -87,8 +87,14 @@ func run() error {
 		return e
 	}
 	defer docker.Close()
+	preflight := func(ctx context.Context) api.AgentHeartbeat {
+		h := agent.Preflight(ctx, docker, version, *dir, *dockerCLI, *resticCLI)
+		configured := *acmeEmail != ""
+		h.Preflight.CertificateContactConfigured = &configured
+		return h
+	}
 	if command == "preflight" {
-		return json.NewEncoder(os.Stdout).Encode(agent.Preflight(ctx, docker, version, *dir, *dockerCLI, *resticCLI))
+		return json.NewEncoder(os.Stdout).Encode(preflight(ctx))
 	}
 	j, e := agent.Open(*dir)
 	if e != nil {
@@ -191,7 +197,7 @@ func run() error {
 
 		c := agent.NewClient(j, nil)
 		c.Observe = func(ctx context.Context) api.AgentHeartbeat {
-			return agent.Preflight(ctx, docker, version, *dir, *dockerCLI, *resticCLI)
+			return preflight(ctx)
 		}
 		if e = c.Enroll(ctx, string(token)); e != nil {
 			return e
@@ -278,7 +284,7 @@ func run() error {
 	c.Observe = func(ctx context.Context) api.AgentHeartbeat {
 		ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		defer cancel()
-		return agent.Preflight(ctx, docker, version, *dir, *dockerCLI, *resticCLI)
+		return preflight(ctx)
 	}
 	var updated atomic.Bool
 	engine.Update = func(ctx context.Context, r api.AgentRelease) error {

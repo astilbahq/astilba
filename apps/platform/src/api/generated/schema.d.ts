@@ -4,6 +4,70 @@
  */
 
 export interface paths {
+    "/api/v1/workspaces/{workspaceId}/onboarding": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getOnboarding"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspaceId}/servers/{serverId}/domain": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getServerDomain"];
+        put: operations["configureServerDomain"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/domain-suggestion": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["suggestApplicationDomain"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspaceId}/servers/{serverId}/check-domain": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["checkDomain"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/automation/context": {
         parameters: {
             query?: never;
@@ -1796,6 +1860,49 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        Onboarding: {
+            keyFingerprint: string;
+            applicationDomain: string;
+            automaticDNS: boolean;
+            bootstrapURL: string;
+        };
+        ConfigureServerDomain: {
+            /** Format: int64 */
+            baseGeneration: number;
+            ipv4: string;
+            ipv6: string;
+        };
+        ServerDomain: {
+            /** Format: uuid */
+            serverId: string;
+            base: string;
+            wildcard: string;
+            ipv4: string;
+            ipv6: string;
+            /** Format: int64 */
+            generation: number;
+            /** @enum {string} */
+            state: "unconfigured" | "pending" | "applied" | "manual" | "failed" | "review_required" | "disabled";
+            /** Format: date-time */
+            observedAt: string | null;
+            note: string;
+            automaticDNS: boolean;
+        };
+        DomainSuggestion: {
+            hostname: string;
+            /** Format: uuid */
+            serverId: string;
+            dns: components["schemas"]["ServerDomain"];
+        };
+        DomainCheck: {
+            hostname: string;
+            /** @enum {string} */
+            state: "matches" | "unverified" | "unavailable";
+            addresses: string[];
+            /** Format: date-time */
+            checkedAt: string;
+            note: string;
+        };
         /** @enum {string} */
         AutomationCapability: "environment:read" | "configuration:write" | "deployment:plan" | "deployment:apply" | "build:run";
         AutomationCredential: {
@@ -1885,6 +1992,7 @@ export interface components {
             credentialFreeVisualCancel?: boolean;
         };
         HostPreflight: {
+            certificateContactConfigured?: boolean;
             ready: boolean;
             osRelease: string;
             dockerVersion: string;
@@ -3316,6 +3424,185 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    getOnboarding: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Success */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Onboarding"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    getServerDomain: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                serverId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Success */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ServerDomain"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    configureServerDomain: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                serverId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ConfigureServerDomain"];
+            };
+        };
+        responses: {
+            /** @description Success */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ServerDomain"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    suggestApplicationDomain: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                projectId: string;
+                environmentId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** Format: uuid */
+                    applicationId: string;
+                    /** Format: uuid */
+                    serverId: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Success */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DomainSuggestion"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    checkDomain: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                serverId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    hostname: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Success */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DomainCheck"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
     getAutomationContext: {
         parameters: {
             query?: never;
