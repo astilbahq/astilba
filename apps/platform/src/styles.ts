@@ -92,6 +92,7 @@ export const code = css({
   fontSize: "12px",
   overflowWrap: "anywhere",
 });
+export const wrappedCode = css({ whiteSpace: "pre-wrap" });
 export const authenticatorQR = css({ maxWidth: "100%", height: "auto" });
 export const editor = css({
   fontFamily: "ui-monospace, SFMono-Regular, monospace",

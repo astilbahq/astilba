@@ -43,7 +43,37 @@ func (j *Journal) unit(id uuid.UUID) (unitState, error) {
 	return v, err
 }
 func (j *Journal) saveUnit(v unitState) error {
-	return j.db.Update(func(tx *bolt.Tx) error { return j.put(tx, "units", v.Plan.UnitID.String(), v) })
+	return j.db.Update(func(tx *bolt.Tx) error {
+		var previous unitState
+		if err := j.get(tx, "units", v.Plan.UnitID.String(), &previous); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		if err := j.put(tx, "units", v.Plan.UnitID.String(), v); err != nil {
+			return err
+		}
+		var release releaseState
+		err := j.get(tx, "releases", v.Plan.UnitID.String(), &release)
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if release.Phase != "complete" && release.Phase != "aborted" {
+			return nil
+		}
+		keep := release.Retained[:0]
+		for _, item := range release.Retained {
+			for _, app := range v.Plan.Specification.Applications {
+				if app.ID == item.ApplicationID && v.Plan.Instance(app.ID) == previous.Plan.Instance(app.ID) {
+					keep = append(keep, item)
+					break
+				}
+			}
+		}
+		release.Retained = keep
+		return j.put(tx, "releases", v.Plan.UnitID.String(), release)
+	})
 }
 
 func (e *Engine) visualObservation(c api.ExecutionCommand, observed deployment.Observation) error {
@@ -105,6 +135,9 @@ func (e *Engine) executeVisual(ctx context.Context, c api.ExecutionCommand, r Re
 	if e.Docker == nil {
 		return e.finish(c.Id, "failed", "Docker is unavailable.")
 	}
+	if p.Action == "deploy" && p.Plan.Release != nil {
+		return e.executeRelease(ctx, c, p, r)
+	}
 	if e.cancelled(c.Id) {
 		return e.visualFinish(ctx, c, p, "cancelled", "Cancelled at a safe checkpoint. Existing services and data are retained.")
 	}
@@ -130,6 +163,18 @@ func (e *Engine) executeVisual(ctx context.Context, c api.ExecutionCommand, r Re
 			}
 			if d, ok := named.(reference.Digested); ok {
 				image, err = deployment.DigestReference(image, d.Digest().String())
+				if err == nil {
+					_, err = e.Docker.ImageInspect(ctx, image)
+					if errdefs.IsNotFound(err) {
+						lookup, cancel := context.WithTimeout(ctx, 30*time.Second)
+						v, x := e.Docker.DistributionInspect(lookup, image, client.DistributionInspectOptions{EncodedRegistryAuth: visualRegistryAuth(p, a.ID.String())})
+						cancel()
+						err = x
+						if err == nil && v.Descriptor.Digest != d.Digest() {
+							err = errors.New("registry digest differs from reviewed image")
+						}
+					}
+				}
 			} else {
 				lookup, cancel := context.WithTimeout(ctx, 30*time.Second)
 				v, x := e.Docker.DistributionInspect(lookup, image, client.DistributionInspectOptions{EncodedRegistryAuth: visualRegistryAuth(p, a.ID.String())})
@@ -229,37 +274,10 @@ func (e *Engine) executeVisual(ctx context.Context, c api.ExecutionCommand, r Re
 	if err = e.checkpoint(c.Id, "pull"); err != nil {
 		return err
 	}
-	images := make([]string, 0, len(p.Plan.Images)+1)
-	for _, image := range p.Plan.Images {
-		images = append(images, image)
-	}
-	images = append(images, execution.TestImage)
-	for _, image := range images {
-		key := ""
-		for k, v := range p.Plan.Images {
-			if v == image {
-				key = k
-				break
-			}
-		}
-		if a, ok := p.Plan.Artifacts[key]; ok && a.ServerID != nil {
-			v, err := e.Docker.ImageInspect(ctx, image)
-			if err != nil || v.ID != a.Digest || v.Architecture != a.Architecture {
-				return e.visualFinish(ctx, c, p, "failed", "Local artifact identity is unavailable.")
-			}
-			continue
-		}
-		if err = e.pullImageAuth(ctx, image, visualRegistryAuth(p, key)); err != nil {
-			return e.visualFinish(ctx, c, p, "needs_attention", "Image pull failed or was interrupted; inspect the host before retrying.")
-		}
+	if err = e.pullVisualImages(ctx, p); err != nil {
+		return e.visualFinish(ctx, c, p, "needs_attention", err.Error())
 	}
 
-	for key, artifact := range p.Plan.Artifacts {
-		v, err := e.Docker.ImageInspect(ctx, p.Plan.Images[key])
-		if err != nil || v.Architecture != artifact.Architecture {
-			return e.visualFinish(ctx, c, p, "failed", "Artifact architecture differs from the reviewed target.")
-		}
-	}
 	if err = e.checkpoint(c.Id, "storage"); err != nil {
 		return err
 	}
@@ -273,7 +291,7 @@ func (e *Engine) executeVisual(ctx context.Context, c api.ExecutionCommand, r Re
 		if e.cancelled(c.Id) {
 			return e.visualFinish(ctx, c, p, "cancelled", "Stopped at a safe checkpoint. Partially changed services and all data are retained.")
 		}
-		v, err := e.Docker.ContainerInspect(ctx, deployment.UnitName(a.ID), client.ContainerInspectOptions{})
+		v, err := e.Docker.ContainerInspect(ctx, p.Plan.ContainerName(a.ID), client.ContainerInspectOptions{})
 		if err == nil && (!visualOwned(v.Container.Config.Labels, p.Plan) || v.Container.Config.Labels[labelResource] != a.ID.String()) {
 			return e.visualFinish(ctx, c, p, "needs_attention", "An existing container has conflicting ownership. It was not changed.")
 		}
@@ -308,7 +326,16 @@ func (e *Engine) executeVisual(ctx context.Context, c api.ExecutionCommand, r Re
 		keep[a.ID.String()] = true
 	}
 	for _, v := range current {
-		if !keep[v.Labels[labelResource]] {
+		id, _ := uuid.Parse(v.Labels[labelResource])
+		retiredInstance := false
+		if keep[id.String()] && unit.Plan.Instance(id) != p.Plan.Instance(id) {
+			match := false
+			for _, name := range v.Names {
+				match = match || name == "/"+p.Plan.ContainerName(id)
+			}
+			retiredInstance = !match
+		}
+		if !keep[v.Labels[labelResource]] || retiredInstance {
 			if _, err = e.Docker.ContainerRemove(ctx, v.ID, client.ContainerRemoveOptions{Force: true, RemoveVolumes: false}); err != nil && !errdefs.IsNotFound(err) {
 				return e.visualFinish(ctx, c, p, "needs_attention", "A retired service could not be removed; its data was retained.")
 			}
@@ -318,7 +345,7 @@ func (e *Engine) executeVisual(ctx context.Context, c api.ExecutionCommand, r Re
 	if err = e.checkpoint(c.Id, "observe"); err != nil {
 		return err
 	}
-	observed, expected, err := e.observeUnit(ctx, p.Plan, p.Secrets)
+	observed, expected, err := e.observeVisualPlan(ctx, p.Plan, p.Secrets, true)
 	if err != nil {
 		return e.visualFinish(ctx, c, p, "needs_attention", "Cannot confirm the resulting runtime state.")
 	}
@@ -363,6 +390,27 @@ func visualOwned(labels map[string]string, p deployment.Plan) bool {
 func (e *Engine) ownedContainers(ctx context.Context, p deployment.Plan) ([]container.Summary, error) {
 	v, err := e.Docker.ContainerList(ctx, client.ContainerListOptions{All: true, Filters: make(client.Filters).Add("label", labelServer+"="+p.ServerID.String(), "com.astilba.unit="+p.UnitID.String(), labelKind+"=visual-v1")})
 	return v.Items, err
+}
+func (e *Engine) activeContainers(ctx context.Context, p deployment.Plan) ([]container.Summary, error) {
+	list, err := e.ownedContainers(ctx, p)
+	if err != nil {
+		return nil, err
+	}
+	out := []container.Summary{}
+	for _, item := range list {
+		for _, app := range p.Specification.Applications {
+			if item.Labels[labelResource] != app.ID.String() {
+				continue
+			}
+			for _, name := range item.Names {
+				if name == "/"+p.ContainerName(app.ID) {
+					out = append(out, item)
+					break
+				}
+			}
+		}
+	}
+	return out, nil
 }
 func (e *Engine) ensureStorage(ctx context.Context, p deployment.Plan) error {
 	type desiredNetwork struct {
@@ -455,7 +503,16 @@ func (e *Engine) compose(ctx context.Context, p deployment.Plan, body []byte, se
 	if p.Specification.Compose != nil {
 		directory = e.sourceDirectory(p)
 	}
-	args = append([]string{"--host", host, "compose", "--ansi", "never", "--progress", "plain", "--env-file", "/dev/null", "--project-name", deployment.UnitName(p.UnitID), "--project-directory", directory, "--file", "-"}, args...)
+	project := deployment.UnitName(p.UnitID)
+	if p.Specification.Compose == nil && len(args) > 0 {
+		for _, app := range p.Specification.Applications {
+			if args[len(args)-1] == deployment.ServiceName(app.ID) && p.Instances[app.ID.String()] != uuid.Nil {
+				project = p.ContainerName(app.ID)
+				args[len(args)-1] = p.HostName(app.ID)
+			}
+		}
+	}
+	args = append([]string{"--host", host, "compose", "--ansi", "never", "--progress", "plain", "--env-file", "/dev/null", "--project-name", project, "--project-directory", directory, "--file", "-"}, args...)
 	cmd := exec.CommandContext(ctx, cli, args...)
 	cmd.Stdin = bytes.NewReader(body)
 	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + e.Journal.dir, "DOCKER_CONFIG=" + e.Journal.dir + "/docker"}
@@ -576,6 +633,9 @@ func serviceOrder(spec domain.Specification) []domain.Application {
 }
 
 func (e *Engine) observeUnit(ctx context.Context, p deployment.Plan, secrets map[string]string) (deployment.Observation, map[string]string, error) {
+	return e.observeVisualPlan(ctx, p, secrets, false)
+}
+func (e *Engine) observeVisualPlan(ctx context.Context, p deployment.Plan, secrets map[string]string, selected bool) (deployment.Observation, map[string]string, error) {
 	out := deployment.Observation{ObservedAt: time.Now().UTC(), Resources: []deployment.Resource{}}
 	stored, err := e.Journal.unit(p.UnitID)
 	if err != nil {
@@ -603,6 +663,20 @@ func (e *Engine) observeUnit(ctx context.Context, p deployment.Plan, secrets map
 		id, err := uuid.Parse(item.Labels[labelResource])
 		if err != nil || !visualOwned(item.Labels, p) {
 			return out, nil, errors.New("invalid owned resource labels")
+		}
+		active := p
+		if !selected && stored.Plan.ID != uuid.Nil {
+			active = stored.Plan
+		}
+		if item.Names != nil {
+			wantedName := "/" + active.ContainerName(id)
+			match := false
+			for _, name := range item.Names {
+				match = match || name == wantedName
+			}
+			if !match {
+				continue
+			}
 		}
 		v, err := e.Docker.ContainerInspect(ctx, item.ID, client.ContainerInspectOptions{})
 		if err != nil {
@@ -715,7 +789,7 @@ func (e *Engine) waitHTTP(ctx context.Context, c api.ExecutionCommand, p deploym
 	} else if !errdefs.IsNotFound(err) {
 		return err
 	}
-	url := fmt.Sprintf("http://%s:%d%s", deployment.ServiceName(a.ID), a.Health.Port, a.Health.Path)
+	url := fmt.Sprintf("http://%s:%d%s", p.HostName(a.ID), a.Health.Port, a.Health.Path)
 	for range 20 {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -860,4 +934,44 @@ func visualRegistryAuth(p deployment.Payload, key string) string {
 	}
 	raw, _ := json.Marshal(map[string]string{"username": c.Username, "password": c.Password})
 	return base64.URLEncoding.EncodeToString(raw)
+}
+
+func (e *Engine) pullVisualImages(ctx context.Context, p deployment.Payload) error {
+	images := make([]string, 0, len(p.Plan.Images)+1)
+	for _, image := range p.Plan.Images {
+		images = append(images, image)
+	}
+	images = append(images, execution.TestImage)
+	for _, image := range images {
+		key := ""
+		for k, v := range p.Plan.Images {
+			if v == image {
+				key = k
+				break
+			}
+		}
+		if a, ok := p.Plan.Artifacts[key]; ok && a.ServerID != nil {
+			v, err := e.Docker.ImageInspect(ctx, image)
+			if err != nil || v.ID != a.Digest || v.Architecture != a.Architecture {
+				return errors.New("local artifact identity is unavailable")
+			}
+			continue
+		}
+		if _, err := e.Docker.ImageInspect(ctx, image); err == nil {
+			continue
+		} else if !errdefs.IsNotFound(err) {
+			return errors.New("cannot inspect reviewed image")
+		}
+		if err := e.pullImageAuth(ctx, image, visualRegistryAuth(p, key)); err != nil {
+			return errors.New("image pull failed or was interrupted")
+		}
+	}
+
+	for key, artifact := range p.Plan.Artifacts {
+		v, err := e.Docker.ImageInspect(ctx, p.Plan.Images[key])
+		if err != nil || v.Architecture != artifact.Architecture {
+			return errors.New("artifact architecture differs from the reviewed target")
+		}
+	}
+	return nil
 }

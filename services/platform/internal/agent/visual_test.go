@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/composeproject"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
+	"github.com/astilbahq/astilba/services/platform/internal/execution"
 	"github.com/google/uuid"
 	"github.com/moby/moby/client"
 )
@@ -239,5 +241,52 @@ func TestOldComposeRevisionLogsAreWithheldWithoutItsSecrets(t *testing.T) {
 	}
 	if len(observed.Resources) != 1 || observed.Resources[0].Logs != "" || !strings.Contains(observed.Resources[0].Note, "withheld") {
 		t.Fatalf("old file-secret logs not withheld: %+v", observed)
+	}
+}
+
+func TestDigestResolutionRequiresAnAvailableImage(t *testing.T) {
+	for _, cached := range []bool{false, true} {
+		t.Run(map[bool]string{false: "deleted", true: "retained-local"}[cached], func(t *testing.T) {
+			j, p := testVisualJournal(t)
+			image := execution.TestImage
+			app := uuid.New()
+			p.Specification.Applications = []domain.Application{{ID: app, Name: "Web", Source: domain.ApplicationSource{Kind: "image", Image: &image}}}
+			p = p.WithHash()
+			registryLookups := 0
+			daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				switch {
+				case strings.HasSuffix(r.URL.Path, "/containers/json"):
+					fmt.Fprint(w, `[]`)
+				case strings.Contains(r.URL.Path, "/images/") && cached:
+					fmt.Fprintf(w, `{"Id":%q,"Config":{}}`, "sha256:"+strings.Repeat("f", 64))
+				case strings.Contains(r.URL.Path, "/distribution/"):
+					registryLookups++
+					w.WriteHeader(404)
+					fmt.Fprint(w, `{"message":"deleted image"}`)
+				default:
+					w.WriteHeader(404)
+					fmt.Fprint(w, `{"message":"absent"}`)
+				}
+			}))
+			defer daemon.Close()
+			docker, err := client.New(client.WithHost(daemon.URL), client.WithAPIVersion("1.54"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer docker.Close()
+			e := &Engine{Journal: j, Docker: docker}
+			c := visualCommand(p, "resolve", 1)
+			if err = e.Execute(context.Background(), c); err != nil {
+				t.Fatal(err)
+			}
+			r, err := j.Record(c.Id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cached && (r.Report.State != "succeeded" || registryLookups != 0) || !cached && (r.Report.State != "failed" || registryLookups != 1) {
+				t.Fatalf("unavailable image became a ready plan: cached=%v state=%s lookups=%d note=%s", cached, r.Report.State, registryLookups, r.Report.Note)
+			}
+		})
 	}
 }
