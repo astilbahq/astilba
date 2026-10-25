@@ -266,6 +266,14 @@ test("server enrollment is explicit and accessible", async ({ page }, info) => {
     .getByLabel("Server name", { exact: true })
     .fill(`Runner ${info.project.name}`);
   await page.getByLabel("Server role").selectOption("build");
+  await page
+    .getByLabel("I already prepared the verified agent using the manual guide")
+    .check();
+  await page
+    .getByLabel(
+      "I have inspected the preflight report and prepared this host for its selected role",
+    )
+    .check();
   await page.getByRole("button", { name: "Create enrollment" }).click();
   await expect(
     page.getByRole("region", { name: "Enrollment instructions" }),
@@ -303,6 +311,14 @@ test("Worker forwards agent enrollment and verified downloads", async ({
   const responsePromise = page.waitForResponse(
     (r) => r.url().endsWith("/servers") && r.request().method() === "POST",
   );
+  await page
+    .getByLabel("I already prepared the verified agent using the manual guide")
+    .check();
+  await page
+    .getByLabel(
+      "I have inspected the preflight report and prepared this host for its selected role",
+    )
+    .check();
   await page.getByRole("button", { name: "Create enrollment" }).click();
   const enrollment = await (await responsePromise).json();
   const downloadPromise = page.waitForEvent("download");
@@ -320,7 +336,33 @@ test("Worker forwards agent enrollment and verified downloads", async ({
     `http://127.0.0.1:54183/agent-artifacts/${manifest.sha256}`,
   );
   expect(artifact.status()).toBe(200);
-  const { createHash } = await import("node:crypto");
+  const { createHash, createPublicKey, verify } = await import("node:crypto");
+  const publicKey = await page.request.get(
+    "http://127.0.0.1:54183/agent-public-key.pem",
+  );
+  const message = await page.request.get(
+    `http://127.0.0.1:54183/agent-artifacts/${manifest.sha256}/message`,
+  );
+  const signature = await page.request.get(
+    `http://127.0.0.1:54183/agent-artifacts/${manifest.sha256}/signature`,
+  );
+  expect(publicKey.status()).toBe(200);
+  expect(message.status()).toBe(200);
+  expect(signature.status()).toBe(200);
+  expect(
+    verify(
+      null,
+      await message.body(),
+      createPublicKey(await publicKey.text()),
+      await signature.body(),
+    ),
+  ).toBe(true);
+  const bootstrap = await page.request.get(
+    "http://127.0.0.1:54183/onboarding/bootstrap.sh",
+  );
+  expect(bootstrap.status()).toBe(200);
+  expect(bootstrap.headers()["content-type"]).toContain("text/plain");
+
   expect(
     createHash("sha256")
       .update(await artifact.body())

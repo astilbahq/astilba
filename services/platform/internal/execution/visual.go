@@ -99,6 +99,9 @@ func (s *Service) createVisualPlan(ctx context.Context, tx pgx.Tx, ws, pid, env 
 				return domain.Invalid("source.awaitingMerge")
 			}
 		}
+		if err = s.Store.ValidateApplicationRoutes(ctx, tx, ws, env, v.Spec, &in.ServerId); err != nil {
+			return err
+		}
 		ports, err := s.visualServer(ctx, tx, ws, in.ServerId)
 		if err != nil {
 			return err
@@ -321,6 +324,9 @@ func (s *Service) applyVisualPlan(ctx context.Context, tx pgx.Tx, ws, pid, env, 
 		}
 		if time.Now().After(plan.ExpiresAt) || plan.RevisionID != v.Revision || plan.UnitID != v.Unit || (v.Server != nil && *v.Server != plan.ServerID) || !sameID(v.Applied, plan.ExpectedAppliedID) {
 			return domain.Conflict
+		}
+		if err = s.Store.ValidateApplicationRoutes(ctx, tx, ws, env, plan.Specification, &plan.ServerID); err != nil {
+			return err
 		}
 		if plan.HostChanges && !allowHost {
 			return domain.RecentRequired

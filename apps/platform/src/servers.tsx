@@ -1,10 +1,12 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { client, result, type Schema } from "./api/client";
 import { ServerMetrics } from "./features/metrics";
+import { ServerDomains } from "./features/server-domains";
+import { ServerOnboarding } from "./features/server-onboarding";
 import { sessionOptions } from "./router";
 import * as s from "./styles";
-import { BusyButton, ErrorNotice, Field, Form, text, useAction } from "./ui";
+import { BusyButton, ErrorNotice, Form, text, useAction } from "./ui";
 
 export function Servers() {
   const session = useQuery(sessionOptions).data;
@@ -45,6 +47,14 @@ function ServerWorkspace({ workspace }: { workspace: Schema["Workspace"] }) {
   const queries = useQueryClient();
   const action = useAction();
   const [enrollment, setEnrollment] = useState<Schema["Enrollment"]>();
+  useEffect(() => {
+    if (!enrollment) return;
+    const timer = setTimeout(
+      () => setEnrollment(undefined),
+      Math.max(0, new Date(enrollment.expiresAt).getTime() - Date.now()),
+    );
+    return () => clearTimeout(timer);
+  }, [enrollment]);
   const [transfer, setTransfer] = useState<Schema["TransferTicket"]>();
   const [plan, setPlan] = useState<Schema["ExecutionPlan"]>();
   const [applyKey, setApplyKey] = useState("");
@@ -127,43 +137,14 @@ function ServerWorkspace({ workspace }: { workspace: Schema["Workspace"] }) {
         }
       />
       {owner && (
-        <section className={s.panel}>
-          <h2>Enroll a server</h2>
-          <p>
-            Install the verified agent on Ubuntu 24.04, inspect its preflight
-            report, then enroll it. Docker and existing ingress remain
-            unchanged.
-          </p>
-          <Form
-            action={action}
-            onSubmit={(data) =>
-              run(async () =>
-                setEnrollment(
-                  await result(
-                    client.POST("/api/v1/workspaces/{workspaceId}/servers", {
-                      params: { path },
-                      body: {
-                        name: text(data, "name"),
-                        role: text(data, "role") as Schema["ServerRole"],
-                      },
-                    }),
-                  ),
-                ),
-              )
-            }
-          >
-            <Field name="name" label="Server name" />
-            <label>
-              Server role
-              <select name="role" defaultValue="deployment">
-                <option value="deployment">Deployment server</option>
-                <option value="build">Build runner</option>
-                <option value="combined">Deployment and build</option>
-              </select>
-            </label>
-            <BusyButton busy={action.isPending}>Create enrollment</BusyButton>
-          </Form>
-        </section>
+        <ServerOnboarding
+          workspaceId={workspaceId}
+          releases={releases.data ?? []}
+          onEnrollment={(value) => {
+            setEnrollment(value);
+            void refresh();
+          }}
+        />
       )}
       {enrollment && (
         <section className={s.panel} aria-label="Enrollment instructions">
@@ -181,6 +162,13 @@ function ServerWorkspace({ workspace }: { workspace: Schema["Workspace"] }) {
             sudo astilba-agent enroll --management {location.origin} --server{" "}
             {enrollment.server.id} --release-key /etc/astilba/release-public.pem
           </code>
+          <code className={s.code}>
+            sudo systemctl enable --now astilba-agent
+          </code>
+          <p>
+            Enrolling does not start the service. Enable it explicitly, then
+            inspect the connection and role capabilities below.
+          </p>
           <p>
             Use the signed download and systemd installation steps in the
             repository’s agent guide before running this command.
@@ -307,6 +295,27 @@ function ServerWorkspace({ workspace }: { workspace: Schema["Workspace"] }) {
                 · protocol {server.capabilities.protocol}
               </p>
             )}
+            {server.role !== "build" && server.status !== "revoked" && (
+              <ServerDomains
+                workspaceId={workspaceId}
+                server={server}
+                owner={owner}
+              />
+            )}
+            {server.capabilities && (
+              <p>
+                Role capabilities:{" "}
+                {server.role !== "build"
+                  ? `deployment ${server.capabilities.visual ? "available" : "unavailable"} · `
+                  : ""}
+                {server.role !== "deployment"
+                  ? `builds ${server.capabilities.build ? "available" : "unavailable"} · `
+                  : ""}
+                backups{" "}
+                {server.capabilities.backups ? "available" : "unavailable"}.
+                Inspect missing requirements before deploying.
+              </p>
+            )}
             {server.preflight && (
               <>
                 <p>
@@ -320,6 +329,15 @@ function ServerWorkspace({ workspace }: { workspace: Schema["Workspace"] }) {
                   {server.preflight.ready
                     ? "Ready for the test-container operation."
                     : "Resolve host preflight requirements before execution."}
+                </p>
+                <p>
+                  Certificate contact:{" "}
+                  {server.preflight.certificateContactConfigured === undefined
+                    ? "not reported by this agent"
+                    : server.preflight.certificateContactConfigured
+                      ? "configured; certificate issuance still requires deployment"
+                      : "missing; prepare it before managed HTTPS using the agent guide"}
+                  .
                 </p>
                 {server.preflight.notes.map((note) => (
                   <p className={s.notice} key={note}>

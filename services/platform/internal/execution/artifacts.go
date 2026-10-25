@@ -43,7 +43,7 @@ func (s *Service) PromoteArtifact(ctx context.Context, p store.Principal, ws, pi
 		if err = promoteSpecification(ctx, &v.Spec, in.ApplicationId, a); err != nil {
 			return err
 		}
-		revision, err := writePipelineRevision(ctx, tx, ws, env, v.Revision, p.Account.ID, v.Spec)
+		revision, err := s.writePipelineRevision(ctx, tx, ws, env, v.Revision, p.Account.ID, v.Spec)
 		if err != nil {
 			return err
 		}

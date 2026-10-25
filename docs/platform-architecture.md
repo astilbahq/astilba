@@ -220,6 +220,8 @@ The production P2 implementation follows these boundaries in `services/platform/
 
 ## Application networking
 
+[Server and domain onboarding](server-onboarding.md) provides an optional installation-owned application domain. Server wildcards resolve directly to owner-approved public addresses; Astilba does not carry application traffic. Generated names bind workspace/environment/application/server identities and remain ordinary reviewed routes. Manual DNS works with any provider; the optional Cloudflare adapter owns only its marked records. Generation-bound DNS work is fenced during management recovery until renewed owner approval, independently of agent transfer.
+
 Create an isolated Docker network for each initial deployment unit, with stable service DNS names for bindings. PostgreSQL and TCP services are private by default. Publishing them requires review of the endpoint, access restrictions and TLS behaviour. Credentials remain separate for each environment. Public ingress requires customer-controlled reachability and DNS; automatic tunnels and UDP are outside the first release.
 
 Traefik is the only bundled application proxy in the first release. Keep ordinary route intent in a proxy-neutral model and use a Traefik adapter to render HTTP and TCP configuration through its file provider. Reserve public listener ports at host scope and detect conflicting domains, ports and DNS configuration before applying a plan. Keep the proxy administration interface inaccessible from application networks and the public internet. [Traefik file provider](https://doc.traefik.io/traefik/reference/routing-configuration/other-providers/file/).

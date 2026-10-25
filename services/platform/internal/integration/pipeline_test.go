@@ -28,6 +28,7 @@ import (
 
 func TestGitImportBuildIsolationAndArtifactAdmission(t *testing.T) {
 	f := setup(t)
+	f.st.ApplicationDomain = "apps.example.test"
 	b := f.browser(t)
 	ws := b.login("owner@example.test", f.password).Workspaces[0].Id
 	prefix := "/api/v1/workspaces/" + ws.String()
@@ -124,6 +125,15 @@ func TestGitImportBuildIsolationAndArtifactAdmission(t *testing.T) {
 		t.Fatal("import omitted clone access")
 	}
 	files := []composeproject.File{{Path: "compose.yaml", Content: "# preserve me\nservices:\n  web:\n    image: " + pipelineTestImage + "\n"}}
+	badFiles := []composeproject.File{{Path: "compose.yaml", Content: files[0].Content + "x-astilba:\n  routes:\n    - name: web\n      service: web\n      protocol: http\n      domain: other.apps.example.test\n      port: 8080\n      tls: \"off\"\n      allowCidrs: []\n"}}
+	report(c, pipeline.Result{Commit: head, Files: badFiles})
+	var rejected api.Revision
+	b.call("GET", path+"/draft", nil, 200, &rejected)
+	if rejected.Id != env.DraftRevisionId {
+		t.Fatal("Git import saved another generated namespace")
+	}
+	b.call("POST", path+"/source/refresh", map[string]any{"baseRevisionId": env.DraftRevisionId}, 202, &op)
+	c = poll(op.Id)
 	report(c, pipeline.Result{Commit: head, Files: files})
 	var draft api.Revision
 	b.call("GET", path+"/draft", nil, 200, &draft)
@@ -168,7 +178,7 @@ func TestGitImportBuildIsolationAndArtifactAdmission(t *testing.T) {
 		Artifact *pipeline.Artifact `json:"artifact"`
 	}
 	b.call("GET", path+"/builds", nil, 200, &runs)
-	if len(runs) != 2 || runs[0].Artifact == nil {
+	if len(runs) != 3 || runs[0].Artifact == nil {
 		t.Fatal("successful build did not record immutable artifact")
 	}
 	artifact := *runs[0].Artifact
@@ -218,7 +228,7 @@ func TestGitImportBuildIsolationAndArtifactAdmission(t *testing.T) {
 			t.Fatal("retry admitted another execution", err)
 		}
 		b.call("GET", path+"/builds", nil, 200, &runs)
-		if len(runs) != 2 {
+		if len(runs) != 3 {
 			t.Fatal("retry created another pipeline run", len(runs))
 		}
 	})

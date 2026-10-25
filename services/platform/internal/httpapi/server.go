@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"crypto/ed25519"
 	"crypto/subtle"
 	"encoding/gob"
 	"encoding/json"
@@ -53,6 +54,7 @@ type Server struct {
 	Log               *slog.Logger
 	Execution         *execution.Service
 	ArtifactDirectory string
+	AgentReleaseKey   ed25519.PublicKey
 	GitHubConfig      githubapp.Config
 	Development       bool
 	TrustedProxies    []netip.Prefix
@@ -125,6 +127,10 @@ func (s *Server) Handler(assets http.Handler) (http.Handler, error) {
 	})
 	r.Get("/agent-artifacts/{sha}", s.agentArtifact)
 	r.Get("/agent-artifacts/{sha}/manifest.json", s.agentManifest)
+	r.Get("/agent-artifacts/{sha}/message", s.agentReleaseMessage)
+	r.Get("/agent-artifacts/{sha}/signature", s.agentReleaseSignature)
+	r.Get("/agent-public-key.pem", s.agentPublicKey)
+	r.Get("/onboarding/bootstrap.sh", s.hostBootstrap)
 	r.Get("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), time.Second)
 		defer cancel()

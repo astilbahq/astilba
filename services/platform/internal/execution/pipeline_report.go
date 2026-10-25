@@ -155,10 +155,13 @@ func (s *Service) populatePipeline(ctx context.Context, tx pgx.Tx, ws uuid.UUID,
 	return nil
 }
 
-func writePipelineRevision(ctx context.Context, tx pgx.Tx, ws, env, base, actor uuid.UUID, spec domain.Specification) (uuid.UUID, error) {
+func (s *Service) writePipelineRevision(ctx context.Context, tx pgx.Tx, ws, env, base, actor uuid.UUID, spec domain.Specification) (uuid.UUID, error) {
 	raw, _ := json.Marshal(spec)
-	_, canonical, err := domain.ParseSpec(raw)
+	parsed, canonical, err := domain.ParseSpec(raw)
 	if err != nil {
+		return uuid.Nil, err
+	}
+	if err := s.Store.ValidateApplicationRoutes(ctx, tx, ws, env, parsed, nil); err != nil {
 		return uuid.Nil, err
 	}
 	id := uuid.New()
@@ -235,7 +238,7 @@ func (s *Service) pipelineReport(ctx context.Context, tx pgx.Tx, c api.Execution
 				return err
 			}
 			spec.Compose = &composeproject.Bundle{Namespace: p.UnitID, Entrypoints: p.Source.Entrypoints, Files: result.Files, Origin: &composeproject.Origin{Provider: p.Connection.Provider, Repository: pipeline.GitURL(p.Connection), Commit: p.Commit}}
-			id, err := writePipelineRevision(ctx, tx, ws, c.EnvironmentId, current, actor, spec)
+			id, err := s.writePipelineRevision(ctx, tx, ws, c.EnvironmentId, current, actor, spec)
 			if err != nil {
 				r.State = "failed"
 				r.Note = "Imported source is invalid for this environment."
@@ -330,7 +333,7 @@ func (s *Service) pipelineReport(ctx context.Context, tx pgx.Tx, c api.Execution
 					if err = promoteSpecification(ctx, &v.Spec, p.AppID, artifact); err != nil {
 						return err
 					}
-					revision, err := writePipelineRevision(ctx, tx, ws, c.EnvironmentId, v.Revision, actor, v.Spec)
+					revision, err := s.writePipelineRevision(ctx, tx, ws, c.EnvironmentId, v.Revision, actor, v.Spec)
 					if err != nil {
 						return err
 					}

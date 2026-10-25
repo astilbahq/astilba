@@ -2,6 +2,8 @@
 
 The agent runs on a deployment server or build runner. It uses outbound HTTPS; it exposes no listener. Ubuntu 24.04 LTS on amd64 and arm64 is the initial supported host. The probe recipe starts, inspects or removes a small BusyBox container. The visual recipe deploys reviewed image services, named volumes and ingress; see [visual deployments](visual-deployments.md). The pipeline recipe runs Git imports/submissions and bounded Dockerfile/Railpack builds; see [Git and builds](git-builds.md).
 
+The dashboard’s [guided server onboarding](server-onboarding.md) adds a reviewable, signed bootstrap for fresh supported hosts. The manual steps below remain available for existing installations and separately managed runtimes.
+
 ## Prepare verified artifacts
 
 The management operator supplies a signed release catalog and a public key through a trusted channel. Pin that key independently of the download endpoint. A compromised download endpoint must not be able to substitute the key.

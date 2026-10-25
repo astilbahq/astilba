@@ -2,11 +2,17 @@ package httpapi
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/x509"
+	"encoding/base64"
+	"encoding/pem"
 	"github.com/go-chi/chi/v5"
 	"net/http"
 	"path/filepath"
 	"strings"
 
+	hostassets "github.com/astilbahq/astilba/services/platform/host"
+	"github.com/astilbahq/astilba/services/platform/internal/agentrelease"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/execution"
@@ -209,4 +215,49 @@ func (s *Server) agentManifest(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	http.NotFound(w, r)
+}
+
+func (s *Server) agentReleaseMessage(w http.ResponseWriter, r *http.Request) {
+	for _, release := range s.Execution.Releases {
+		if release.Sha256 == chi.URLParam(r, "sha") {
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			_, _ = w.Write(agentrelease.Message(release))
+			return
+		}
+	}
+	http.NotFound(w, r)
+}
+
+func (s *Server) agentReleaseSignature(w http.ResponseWriter, r *http.Request) {
+	for _, release := range s.Execution.Releases {
+		if release.Sha256 == chi.URLParam(r, "sha") {
+			raw, err := base64.StdEncoding.DecodeString(release.Signature)
+			if err != nil || len(raw) != 64 {
+				http.Error(w, "Release signature unavailable", http.StatusInternalServerError)
+				return
+			}
+			w.Header().Set("Content-Type", "application/octet-stream")
+			_, _ = w.Write(raw)
+			return
+		}
+	}
+	http.NotFound(w, r)
+}
+
+func (s *Server) agentPublicKey(w http.ResponseWriter, r *http.Request) {
+	if len(s.AgentReleaseKey) != ed25519.PublicKeySize {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Content-Type", "application/x-pem-file")
+	der, _ := x509.MarshalPKIXPublicKey(s.AgentReleaseKey)
+	_, _ = w.Write(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der}))
+}
+
+func (s *Server) hostBootstrap(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Content-Disposition", `attachment; filename="astilba-bootstrap.sh"`)
+	_, _ = w.Write(hostassets.Bootstrap())
 }

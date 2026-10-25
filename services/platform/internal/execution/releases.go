@@ -217,7 +217,7 @@ func (s *Service) RollbackRelease(ctx context.Context, p store.Principal, ws, pi
 		if err != nil {
 			return err
 		}
-		revision, err := writePipelineRevision(ctx, tx, ws, env, v.Revision, p.Account.ID, target.Specification)
+		revision, err := s.writePipelineRevision(ctx, tx, ws, env, v.Revision, p.Account.ID, target.Specification)
 		if err != nil {
 			return err
 		}
