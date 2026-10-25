@@ -25,9 +25,10 @@ type Store struct {
 	LogRetention time.Duration
 }
 type Principal struct {
-	Account db.Account
-	MFA     bool
-	Recent  bool
+	Account    db.Account
+	MFA        bool
+	Recent     bool
+	Automation *domain.AutomationGrant
 }
 type Workspace struct {
 	ID         uuid.UUID
@@ -108,11 +109,22 @@ func (s *Store) inWorkspaceIsolation(ctx context.Context, p Principal, id uuid.U
 			return err
 		}
 		w = Workspace{r.ID, r.Name, r.Role, r.RequireMfa}
+		mfa := p.MFA
+		if p.Automation != nil {
+			if owner || recent {
+				return domain.Forbidden
+			}
+			var e error
+			mfa, e = s.automationAdmission(ctx, tx, p, id)
+			if e != nil {
+				return e
+			}
+		}
 
 		if (owner && w.Role != "owner") || (write && !domain.CanWrite(w.Role)) {
 			return domain.Forbidden
 		}
-		if write && (s.Hosted || w.RequireMFA) && !p.MFA {
+		if write && (s.Hosted || w.RequireMFA) && !mfa {
 			return domain.MFARequired
 		}
 		if write && s.Hosted {
@@ -139,7 +151,11 @@ func (s *Store) inWorkspaceIsolation(ctx context.Context, p Principal, id uuid.U
 }
 
 func Audit(ctx context.Context, q *db.Queries, p Principal, w uuid.UUID, action string, resource uuid.UUID) error {
-	return q.InsertAudit(ctx, db.InsertAuditParams{WorkspaceID: w, ID: uuid.New(), ActorID: p.Account.ID, Action: action, ResourceID: resource})
+	var credential *uuid.UUID
+	if p.Automation != nil {
+		credential = &p.Automation.ID
+	}
+	return q.InsertAudit(ctx, db.InsertAuditParams{WorkspaceID: w, ID: uuid.New(), ActorID: p.Account.ID, Action: action, ResourceID: resource, AutomationCredentialID: credential})
 }
 
 func (s *Store) Bootstrap(ctx context.Context, email, name, passwordHash, workspaceName string) (uuid.UUID, error) {

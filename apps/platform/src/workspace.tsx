@@ -2,6 +2,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useBlocker } from "@tanstack/react-router";
 import { useRef, useState } from "react";
 import { ApiError, client, result, type Schema } from "./api/client";
+import { AutomationCredentials } from "./features/automation";
 import { Backups } from "./features/backups";
 import { ComposeEditor } from "./features/compose-editor";
 import { Deployments } from "./features/deployments";
@@ -338,6 +339,9 @@ function Environment(props: EnvProps) {
         <p role="status">Loading configuration…</p>
       )}
       <Secrets {...props} />
+      {props.owner && (
+        <AutomationCredentials key={props.environment.id} path={path} />
+      )}
     </div>
   );
 }

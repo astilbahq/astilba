@@ -8,7 +8,139 @@
 "security":
   -
     "sessionCookie": []
+  - automationBearer: []
 "paths":
+  /api/v1/automation/context:
+    get:
+      operationId: getAutomationContext
+      security: [{automationBearer: []}]
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AutomationContext'}
+        default:
+          description: Error
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+  /api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/automation-credentials:
+    get:
+      operationId: listAutomationCredentials
+      parameters:
+        - {name: workspaceId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: projectId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: environmentId, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema: {type: array, items: {$ref: '#/components/schemas/AutomationCredential'}}
+        default:
+          description: Error
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+    post:
+      operationId: createAutomationCredential
+      parameters:
+        - {name: workspaceId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: projectId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: environmentId, in: path, required: true, schema: {type: string, format: uuid}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CreateAutomationCredential'}
+      responses:
+        '201':
+          description: Success
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AutomationCredentialCreated'}
+        default:
+          description: Error
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+  /api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/automation-credentials/{credentialId}:
+    delete:
+      operationId: revokeAutomationCredential
+      parameters:
+        - {name: workspaceId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: projectId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: environmentId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: credentialId, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '204': {description: Revoked}
+        default:
+          description: Error
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+  /api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/operations/{operationId}:
+    get:
+      operationId: getEnvironmentOperation
+      parameters:
+        - {name: workspaceId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: projectId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: environmentId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: operationId, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Operation'}
+        default:
+          description: Error
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+  /api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/build-targets:
+    get:
+      operationId: listConfiguredBuildTargets
+      parameters:
+        - {name: workspaceId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: projectId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: environmentId, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema: {type: array, items: {$ref: '#/components/schemas/ConfiguredBuildTarget'}}
+        default:
+          description: Error
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+  /api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/build-targets/{applicationId}/runs:
+    post:
+      operationId: runConfiguredBuild
+      parameters:
+        - {name: workspaceId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: projectId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: environmentId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: applicationId, in: path, required: true, schema: {type: string, format: uuid}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/RunConfiguredBuild'}
+      responses:
+        '202':
+          description: Success
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Operation'}
+        default:
+          description: Error
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
   /api/v1/workspaces/{workspaceId}/service-catalog:
     get:
       operationId: listServiceCatalog
@@ -3601,6 +3733,7 @@
               schema: {$ref: '#/components/schemas/Error'}
 "components":
   "securitySchemes":
+    automationBearer: {type: http, scheme: bearer}
     "agentBearer":
       "type": "http"
       "scheme": "bearer"
@@ -3609,6 +3742,69 @@
       "in": "cookie"
       "name": "__Host-astilba_session"
   "schemas":
+    AutomationCapability:
+      type: string
+      enum: ['environment:read', 'configuration:write', 'deployment:plan', 'deployment:apply', 'build:run']
+    AutomationCredential:
+      type: object
+      additionalProperties: false
+      required: [id, creatorId, name, capabilities, createdAt, expiresAt]
+      properties:
+        id: {type: string, format: uuid}
+        creatorId: {type: string, format: uuid}
+        name: {type: string, minLength: 1, maxLength: 80}
+        capabilities: {type: array, minItems: 1, maxItems: 5, uniqueItems: true, items: {$ref: '#/components/schemas/AutomationCapability'}}
+        createdAt: {type: string, format: date-time}
+        expiresAt: {type: string, format: date-time}
+        revokedAt: {type: string, format: date-time, nullable: true}
+    CreateAutomationCredential:
+      type: object
+      additionalProperties: false
+      required: [name, capabilities, expiresAt]
+      properties:
+        name: {type: string, minLength: 1, maxLength: 80}
+        capabilities: {type: array, minItems: 1, maxItems: 5, uniqueItems: true, items: {$ref: '#/components/schemas/AutomationCapability'}}
+        expiresAt: {type: string, format: date-time}
+    AutomationCredentialCreated:
+      type: object
+      additionalProperties: false
+      required: [credential, token]
+      properties:
+        credential: {$ref: '#/components/schemas/AutomationCredential'}
+        token: {type: string, writeOnly: true, description: Returned once. Store privately; never log it.}
+    AutomationContext:
+      type: object
+      additionalProperties: false
+      required: [credentialId, workspaceId, projectId, environmentId, workspace, project, environment, capabilities, expiresAt]
+      properties:
+        credentialId: {type: string, format: uuid}
+        workspaceId: {type: string, format: uuid}
+        projectId: {type: string, format: uuid}
+        environmentId: {type: string, format: uuid}
+        workspace: {type: string}
+        project: {type: string}
+        environment: {type: string}
+        capabilities: {type: array, items: {$ref: '#/components/schemas/AutomationCapability'}}
+        expiresAt: {type: string, format: date-time}
+    ConfiguredBuildTarget:
+      type: object
+      additionalProperties: false
+      required: [applicationId, baseRevisionId, name, branch, builder, targetHash]
+      properties:
+        applicationId: {type: string, format: uuid}
+        baseRevisionId: {type: string, format: uuid}
+        name: {type: string}
+        branch: {type: string}
+        builder: {type: string}
+        targetHash: {type: string, pattern: '^[a-f0-9]{64}$'}
+    RunConfiguredBuild:
+      type: object
+      additionalProperties: false
+      required: [baseRevisionId, idempotencyKey, targetHash]
+      properties:
+        baseRevisionId: {type: string, format: uuid}
+        idempotencyKey: {type: string, format: uuid}
+        targetHash: {type: string, pattern: '^[a-f0-9]{64}$'}
     "ServerRole":
       "type": "string"
       "enum":
@@ -4832,6 +5028,7 @@
       "type": "object"
       "additionalProperties": false
       "properties":
+        automationCredentialId: {type: string, format: uuid}
         "id":
           "type": "string"
           "format": "uuid"

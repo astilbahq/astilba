@@ -15,6 +15,7 @@ The management application and host agent are fully self-hostable, without an As
 - [Visual deployment, observations and export](docs/visual-deployments.md)
 - [Compose files, source edits and export](docs/compose-deployments.md)
 - [Git imports, builds, registries and artifact promotion](docs/git-builds.md)
+- [Scoped automation credentials, CLI and MCP](docs/automation.md)
 - [Scheduled backups and restores](docs/backups.md)
 - [Supported PostgreSQL major upgrades](docs/supported-upgrades.md)
 - [Resource history](docs/operational-visibility.md) and [operational alerts](docs/operational-alerts.md)

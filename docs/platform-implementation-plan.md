@@ -1,6 +1,6 @@
 # Astilba platform implementation plan
 
-Status: updated 25 October 2026. P0–P10 are implemented, with P10 acceptance being consolidated through the disposable platform comparison before P11. The private-alpha acceptance and management update are complete. P11–P13 extend routine developer use; P14–P18 remain later increments. Paid admission still requires measured operating limits and launch settings.
+Status: updated 25 October 2026. P0–P12 are implemented, and the private-alpha acceptance and management update are complete. P13 scoped automation is in progress; isolated previews follow separately after P14 domain support. P14–P18 remain later increments. Paid admission still requires measured operating limits and launch settings.
 
 Build the [architecture](platform-architecture.md) in vertical increments. Prove the execution model on disposable infrastructure before expanding the editor and service catalogue. Each milestone ends in a demonstrable user journey and the tests needed to support its claims. The [product brief](platform-product-brief.md) remains the guide to product scope.
 
@@ -283,6 +283,8 @@ Add a small maintained catalog, initially approximately 5–10 recipes, plus sel
 ## P13 Automation and previews
 
 Introduce revocable, scoped automation credentials with explicit workspace/environment capabilities and audit attribution. A general CLI and MCP adapter use the same API admission, plan/apply separation and redaction as the dashboard. They do not automate password/MFA entry or bypass owner-only grants. Keep secrets out of output by default.
+
+The first increment covers owner-issued credentials for exactly one environment, a thin Go CLI and official-SDK stdio MCP. Build authority is limited to re-running owner-configured targets; tokens cannot select workspace credentials/runners or replace automatic policy. Preserve delayed webhook deployment intent and watched-path behavior. Credentials are excluded from transfer archives and revoked by management recovery. See [Environment automation](automation.md). Preview environments remain a separate increment with the P14 domain dependency.
 
 Then add isolated pull-request environments with explicit fork approval, independent secrets/storage, optional generated domains, resource and concurrency limits, and idempotent cleanup on closure. A preview cannot inherit production secrets or address a production resource. GitHub App onboarding, useful build caching, generic bindings and stateless release handling are prerequisites. Verify webhook replay, reopened PRs, offline agents and cleanup after lost acknowledgements.
 
