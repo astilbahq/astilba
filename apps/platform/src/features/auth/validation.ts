@@ -4,7 +4,7 @@ import {
   type FormValidation,
   validateWith,
 } from "../../components/form-validation";
-import { authMessages, type AuthMessages } from "./messages";
+import type { AuthMessages } from "./messages";
 
 export function createAuthValidation(messages: AuthMessages) {
   const email = validateWith(
@@ -54,7 +54,7 @@ export function createAuthValidation(messages: AuthMessages) {
 
   function form(
     fields: FormValidation["fields"],
-    credentialsMessage = messages.invalidCredentials,
+    credentialsMessage: string = messages.invalidCredentials,
   ): FormValidation {
     return {
       fields,
@@ -65,6 +65,8 @@ export function createAuthValidation(messages: AuthMessages) {
             return credentialsMessage;
           case "invitation_signin_required":
             return messages.invitationSignIn;
+          case "mfa_required":
+            return messages.mfaRequired;
           case "rate_limited":
             return messages.rateLimited;
           case "invalid_input":
@@ -92,5 +94,3 @@ export function createAuthValidation(messages: AuthMessages) {
     acceptInvitation: form({}, messages.invalidInvitation),
   };
 }
-
-export const authValidation = createAuthValidation(authMessages);

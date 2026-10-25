@@ -9,3 +9,5 @@ See [frontend development](../../docs/frontend-development.md) for source bounda
 Use the shared control primitives and theme recipes instead of styling native inputs, buttons, labels or links in route selectors. Use the typed shared Link for application routes and Anchor for native href destinations. Use logical CSS properties and semantic colour roles; keep Panda strict token/property checking and the logical-property guards enabled.
 
 Use Base UI (`@base-ui/react`) for custom interactive primitives such as menus, tooltips and dialogs, with Panda recipes for appearance. Native labels, anchors, selects, textareas and checkboxes remain valid accessible primitives; keep typed routing and native form semantics when adopting a Base UI counterpart.
+
+Use the typed i18next feature catalogues for migrated auth/shared-control copy. Keep sentences complete, routes and machine identifiers in code, and language changes free of form remounts. Run `i18n:types` after catalogue edits and keep dev pseudolocales out of production. See frontend development for migration scope and checks.

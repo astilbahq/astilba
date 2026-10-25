@@ -1,4 +1,5 @@
 import { useId, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { cx } from "../../styled-system/css";
 import { passwordInput } from "../../styled-system/recipes";
 import { IconButton } from "./icon-button";
@@ -14,11 +15,14 @@ export function PasswordInput({
   className,
   ...props
 }: PasswordInputProps) {
+  const { t } = useTranslation("common");
   const generatedId = useId();
   const inputId = id ?? generatedId;
   const [visible, setVisible] = useState(false);
   const styles = passwordInput();
-  const toggleLabel = visible ? "Hide password" : "Show password";
+  const toggleLabel = visible
+    ? t(($) => $.password.hide)
+    : t(($) => $.password.show);
 
   return (
     <div className={styles.root}>

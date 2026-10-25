@@ -9,6 +9,7 @@ import {
   useRouter,
 } from "@tanstack/react-router";
 import { useEffect } from "react";
+import { useTranslation } from "react-i18next";
 import { client, result, setSession } from "./api/client";
 import { sessionOptions } from "./api/session";
 import { Button } from "./components/button";
@@ -21,8 +22,9 @@ import { AuthFrame } from "./features/auth/auth-frame";
 import * as authStyles from "./features/auth/auth.styles";
 import { Invitation } from "./features/auth/invitation";
 import { PasswordReset } from "./features/auth/password-reset";
-import { authValidation } from "./features/auth/validation";
+import { useAuthValidation } from "./features/auth/use-auth-validation";
 import { hostingOptions, Signup } from "./hosting";
+import { usePageTitle } from "./i18n/use-page-title";
 import { Account, Members } from "./security";
 import { Servers } from "./servers";
 import * as s from "./styles";
@@ -31,26 +33,30 @@ import { BusyButton, ErrorNotice, Field, Form, text, useAction } from "./ui";
 import { Dashboard, type WorkspaceSelection } from "./workspace";
 
 function Root() {
+  const { t } = useTranslation("common");
   const session = useQuery(sessionOptions);
   return (
     <ThemeProvider>
       <TooltipProvider delay={300}>
         <Anchor href="#main" className="skip-link">
-          Skip to content
+          {t(($) => $.skipContent)}
         </Anchor>
         {session.isPending ? (
           <AuthFrame>
-            <p role="status">Loading…</p>
+            <p role="status">{t(($) => $.loading)}</p>
           </AuthFrame>
         ) : session.error && !session.data ? (
           <AuthFrame>
-            <ErrorNotice error={session.error} />
+            <ErrorNotice
+              error={session.error}
+              message={t(($) => $.requestFailed)}
+            />
             <Button
               type="button"
               disabled={session.isFetching}
               onClick={() => void session.refetch()}
             >
-              Retry connection
+              {t(($) => $.retryConnection)}
             </Button>
           </AuthFrame>
         ) : (
@@ -124,13 +130,14 @@ function ApplicationLayout() {
   );
 }
 function AuthLayout() {
+  const { t } = useTranslation("auth");
   const location = useLocation();
   return (
     <AuthFrame>
       <Outlet />
       {location.pathname === "/signup" && (
         <Link to="/login" className={authStyles.backLink}>
-          Back to sign in
+          {t(($) => $.backToSignIn)}
         </Link>
       )}
     </AuthFrame>
@@ -159,24 +166,33 @@ function loginDestination(value: unknown): string {
   }
 }
 function SignIn() {
+  const { t } = useTranslation("auth");
+  const authValidation = useAuthValidation();
   const session = useQuery(sessionOptions).data;
   const { returnTo } = loginRoute.useSearch();
   const router = useRouter();
   const signedIn = Boolean(session?.user && !session.mfaPending);
+  usePageTitle(
+    session?.mfaPending
+      ? t(($) => $.mfa.pageTitle)
+      : t(($) => $.signIn.pageTitle),
+  );
   useEffect(() => {
     if (signedIn) router.history.replace(returnTo ?? "/");
   }, [signedIn, router, returnTo]);
   const hosting = useQuery(hostingOptions).data;
   const action = useAction();
-  if (signedIn) return <p role="status">Opening your workspace…</p>;
+  if (signedIn) return <p role="status">{t(($) => $.signIn.opening)}</p>;
   return (
     <div className={authStyles.flow}>
       <div>
-        <h1>{session?.mfaPending ? "Verify it’s you" : "Sign in"}</h1>
+        <h1>
+          {session?.mfaPending
+            ? t(($) => $.mfa.title)
+            : t(($) => $.signIn.title)}
+        </h1>
         {session?.mfaPending && (
-          <p className={s.muted}>
-            Enter an authenticator or recovery code to continue.
-          </p>
+          <p className={s.muted}>{t(($) => $.mfa.description)}</p>
         )}
       </div>
       <section className={s.stack}>
@@ -198,10 +214,12 @@ function SignIn() {
           >
             <Field
               name="code"
-              label="Authenticator or recovery code"
+              label={t(($) => $.mfa.code)}
               autoComplete="one-time-code"
             />
-            <BusyButton busy={action.isPending}>Verify</BusyButton>
+            <BusyButton busy={action.isPending}>
+              {t(($) => $.mfa.submit)}
+            </BusyButton>
           </Form>
         ) : (
           <Form
@@ -224,19 +242,19 @@ function SignIn() {
           >
             <Field
               name="email"
-              label="Email"
+              label={t(($) => $.signIn.email)}
               type="email"
               autoComplete="username"
-              placeholder="you@example.com"
+              placeholder={t(($) => $.signIn.emailPlaceholder)}
               variant="quiet"
             />
             <Field
               name="password"
-              label="Password"
+              label={t(($) => $.signIn.password)}
               type="password"
               autoComplete="current-password"
               inputComponent={PasswordInput}
-              placeholder="Enter your password"
+              placeholder={t(($) => $.signIn.passwordPlaceholder)}
               variant="quiet"
               labelAction={
                 <Link
@@ -244,23 +262,25 @@ function SignIn() {
                   variant="plain"
                   className={authStyles.recoveryLink}
                 >
-                  Forgot password?
+                  {t(($) => $.signIn.forgotPassword)}
                 </Link>
               }
             />
-            <BusyButton busy={action.isPending}>Sign in</BusyButton>
+            <BusyButton busy={action.isPending}>
+              {t(($) => $.signIn.submit)}
+            </BusyButton>
           </Form>
         )}
         {(session?.mfaPending || hosting?.enabled) && (
           <div className={authStyles.secondaryActions}>
             {session?.mfaPending && (
               <Link to="/reset" className={authStyles.secondaryLink}>
-                Reset password
+                {t(($) => $.mfa.reset)}
               </Link>
             )}
             {hosting?.enabled && (
               <Link to="/signup" className={authStyles.secondaryLink}>
-                Join the hosted beta
+                {t(($) => $.signIn.hostedBeta)}
               </Link>
             )}
           </div>
@@ -269,15 +289,19 @@ function SignIn() {
     </div>
   );
 }
+function NotFound() {
+  const { t } = useTranslation("common");
+  usePageTitle(t(($) => $.titles.notFound));
+  return (
+    <AuthFrame>
+      <p>{t(($) => $.notFound)}</p>
+      <Link to="/">{t(($) => $.returnToProjects)}</Link>
+    </AuthFrame>
+  );
+}
 const root = createRootRoute({
   component: Root,
-  notFoundComponent: () => (
-    <AuthFrame>
-      <p>
-        Page not found. <Link to="/">Return to projects</Link>
-      </p>
-    </AuthFrame>
-  ),
+  notFoundComponent: NotFound,
 });
 const application = createRoute({
   getParentRoute: () => root,

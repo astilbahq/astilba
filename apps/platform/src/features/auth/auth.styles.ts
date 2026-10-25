@@ -21,6 +21,8 @@ export const palette = css({
 });
 
 export const appearance = css({
+  display: "flex",
+  gap: "2",
   position: "absolute",
   insetBlockStart: { base: "4", sm: "6" },
   insetInlineEnd: { base: "4", sm: "6" },

@@ -170,6 +170,13 @@ try {
     ASTILBA_LISTEN: "127.0.0.1:54184",
     ASTILBA_ORIGIN: "http://127.0.0.1:54183",
   });
+  // Vite exercises dev-only localisation against the same real API/database,
+  // with its own permitted browser origin rather than bypassing CSRF checks.
+  start(binary, ["serve"], {
+    ...env,
+    ASTILBA_LISTEN: "127.0.0.1:54188",
+    ASTILBA_ORIGIN: "http://127.0.0.1:54182",
+  });
   const hostedDatabase = `hosted_${owned.replaceAll("-", "")}`;
   docker(["exec", name, "createdb", "--username", "postgres", hostedDatabase]);
   const hostedEnv = {
@@ -201,7 +208,7 @@ try {
   await mkdir(join(root,".artifacts/p8/browser"),{recursive:true});
   const operatorEnv=Object.fromEntries(["ASTILBA_DATABASE_URL","ASTILBA_KEYRING","ASTILBA_HOSTED","ASTILBA_HOSTED_COHORT_LIMIT","ASTILBA_HOSTED_SERVER_LIMIT","ASTILBA_HOSTED_SUPPORT"].map(key=>[key,hostedEnv[key]]));
   await writeFile(hostedInfo,JSON.stringify({binary,env:operatorEnv,host,container:name,owner:owned,database:hostedDatabase}),{mode:0o600});
-  for (const port of [54181, 54184, 54187]) {
+  for (const port of [54181, 54184, 54187, 54188]) {
     let ready = false;
     for (let i = 0; i < 100; i++) {
       try {

@@ -6,6 +6,7 @@ const generated = [
   "**/styled-system/**",
   "**/dist/**",
   "**/src/api/generated/**",
+  "**/src/i18n/generated/**",
 ];
 
 export default defineConfig({

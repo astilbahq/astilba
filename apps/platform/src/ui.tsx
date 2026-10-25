@@ -10,6 +10,7 @@ import {
   useMemo,
   useState,
 } from "react";
+import { useTranslation } from "react-i18next";
 import { field } from "../styled-system/recipes";
 import { ApiError } from "./api/client";
 import { sessionOptions } from "./api/session";
@@ -18,20 +19,28 @@ import type { FormValidation } from "./components/form-validation";
 import { Input, type InputProps } from "./components/input";
 import { Label } from "./components/label";
 import * as s from "./styles";
-export function ErrorNotice({ error }: { error: unknown }) {
+export function ErrorNotice({
+  error,
+  message,
+}: {
+  error: unknown;
+  message?: string;
+}) {
+  const { t } = useTranslation("common");
   if (!error) return null;
   return (
     <div className={s.error} role="alert">
       <p>
-        {error instanceof Error
-          ? error.message
-          : "Something went wrong. Please retry."}
+        {message ??
+          (error instanceof Error
+            ? error.message
+            : t(($) => $.unexpectedError))}
       </p>
       {error instanceof ApiError && error.detail.fields && (
-        <p>Fields: {error.detail.fields.join(", ")}</p>
+        <p>{t(($) => $.fields, { fields: error.detail.fields.join(", ") })}</p>
       )}
       {error instanceof ApiError && error.detail.requestId && (
-        <small>Request {error.detail.requestId}</small>
+        <small>{t(($) => $.request, { id: error.detail.requestId })}</small>
       )}
     </div>
   );
@@ -55,6 +64,7 @@ const FormErrorContext = createContext<{
   id?: string;
   fields: string[];
   validation?: FormValidation;
+  serverError?: unknown;
 }>({
   fields: [],
 });
@@ -64,13 +74,16 @@ export function Form({
   label,
   action,
   validation,
+  errorMessage,
 }: {
   children: ReactNode;
   onSubmit: (data: FormData, form: HTMLFormElement) => void;
   label?: string;
   action: ReturnType<typeof useAction>;
   validation?: FormValidation;
+  errorMessage?: string;
 }) {
+  const { t } = useTranslation("common");
   const id = useId();
   const error = action.formId === id ? action.error : null;
   const fields = error instanceof ApiError ? (error.detail.fields ?? []) : [];
@@ -81,14 +94,14 @@ export function Form({
   if (error && error !== lastError) setLastError(error);
   const serverErrors = useMemo(
     () =>
-      validation && lastError instanceof ApiError
+      lastError instanceof ApiError
         ? Object.fromEntries(
             (lastError.detail.fields ?? [])
-              .filter((name) => Object.hasOwn(validation.fields, name))
-              .map((name) => [name, validation.message(lastError, name)]),
+              // Base UI owns clearing these markers. Field renders current-language text.
+              .map((name) => [name, "invalid"]),
           )
         : {},
-    [lastError, validation],
+    [lastError],
   );
   const formProps = {
     className: s.stack,
@@ -100,7 +113,9 @@ export function Form({
     },
   };
   return (
-    <FormErrorContext value={{ id: errorId, fields, validation }}>
+    <FormErrorContext
+      value={{ id: errorId, fields, validation, serverError: lastError }}
+    >
       {validation ? (
         <BaseForm
           {...formProps}
@@ -118,8 +133,11 @@ export function Form({
         <form {...formProps} aria-describedby={errorId}>
           {errorId && (
             <span id={errorId} className={s.screenReaderOnly}>
-              {error instanceof Error ? error.message : "Request failed."}{" "}
-              Fields: {fields.join(", ")}
+              {errorMessage ??
+                (error instanceof Error
+                  ? error.message
+                  : t(($) => $.requestFailed))}{" "}
+              {t(($) => $.fields, { fields: fields.join(", ") })}
             </span>
           )}
           {children}
@@ -184,6 +202,13 @@ export function Field({
               }
             : {})}
           type={type}
+          dir={
+            type === "email" || autoComplete === "one-time-code"
+              ? "ltr"
+              : type === "password"
+                ? undefined
+                : "auto"
+          }
           required={required}
           autoComplete={autoComplete}
           minLength={minLength}
@@ -194,17 +219,20 @@ export function Field({
       {error.validation && (
         <BaseField.Validity>
           {({ validity, value }) => {
-            // Native constraints run before validate; use the same schema message
-            // for those failures instead of browser-language validation strings.
+            // Render from validity/value, not cached strings, so a language change
+            // updates visible errors without revalidating or reviving cleared errors.
             const message =
-              validity.valid === false && !validity.customError
-                ? validate?.(value)
+              validity.valid === false
+                ? (validate?.(value) ??
+                  (error.serverError instanceof ApiError &&
+                  error.serverError.detail.fields?.includes(name)
+                    ? error.validation?.message(error.serverError, name)
+                    : null))
                 : null;
             return (
-              <BaseField.Error
-                className={styles.error}
-                {...(message ? { children: message } : {})}
-              />
+              <BaseField.Error className={styles.error}>
+                {message}
+              </BaseField.Error>
             );
           }}
         </BaseField.Validity>
@@ -230,9 +258,10 @@ export function BusyButton({
   busy: boolean;
   children: ReactNode;
 }) {
+  const { t } = useTranslation("common");
   return (
     <Button type="submit" variant="primary" disabled={busy}>
-      {busy ? "Working…" : children}
+      {busy ? t(($) => $.working) : children}
     </Button>
   );
 }

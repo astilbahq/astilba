@@ -5,11 +5,13 @@
   "scripts": {
     "prepare": "panda codegen",
     "dev": "vp dev",
-    "check": "panda codegen && vp check --deny-warnings",
+    "check": "panda codegen && vp check --deny-warnings && pnpm i18n:check",
     "lint": "vp lint --deny-warnings",
     "format": "vp fmt --write .",
     "format:check": "vp fmt --check .",
-    "check:fix": "panda codegen && vp check --fix",
+    "check:fix": "panda codegen && vp check --fix && pnpm i18n:check",
+    "i18n:types": "i18next-cli types",
+    "i18n:check": "i18next-cli types --ci && i18next-cli lint && i18next-cli status && node scripts/check-catalogues.mjs",
     "build": "pnpm check && vp build",
     "test:browser": "playwright test"
   },
@@ -22,10 +24,12 @@
     "@tanstack/react-query": "5.104.5",
     "@tanstack/react-router": "1.170.45",
     "@xyflow/react": "12.12.0",
+    "i18next": "26.5.7",
     "openapi-fetch": "0.17.0",
     "qrcode.react": "4.2.0",
     "react": "19.3.1",
     "react-dom": "19.3.1",
+    "react-i18next": "17.1.5",
     "zod": "4.6.7"
   },
   "devDependencies": {
@@ -40,6 +44,7 @@
     "@types/react": "19.3.0",
     "@types/react-dom": "19.3.0",
     "@vitejs/plugin-react": "6.1.2",
+    "i18next-cli": "1.80.0",
     "jsqr": "1.4.0",
     "typescript": "7.0.2",
     "vite": "npm:@voidzero-dev/vite-plus-core@1.4.0",

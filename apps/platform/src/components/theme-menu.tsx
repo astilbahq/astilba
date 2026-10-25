@@ -1,4 +1,5 @@
 import { useContext } from "react";
+import { useTranslation } from "react-i18next";
 import { ThemeContext, type ThemePreference } from "../theme";
 import { IconButton } from "./icon-button";
 import { Icon } from "./icons";
@@ -31,31 +32,37 @@ function ThemeIcon({ mode }: { mode: ThemePreference }) {
   );
 }
 
-const options = [
-  { value: "light", label: "Light" },
-  { value: "dark", label: "Dark" },
-  { value: "system", label: "System" },
-] as const;
-
 export function ThemeMenu({ scopeClassName }: { scopeClassName?: string }) {
   const { preference, setPreference } = useContext(ThemeContext);
+  const { t } = useTranslation("common");
+  const options = [
+    { value: "light", label: t(($) => $.appearance.light) },
+    { value: "dark", label: t(($) => $.appearance.dark) },
+    { value: "system", label: t(($) => $.appearance.system) },
+  ] as const;
   return (
     <MenuRoot>
       <Tooltip
-        content="Appearance"
+        content={t(($) => $.appearance.label)}
         side="bottom"
         align="end"
         className={scopeClassName}
       >
         <MenuTrigger
           render={
-            <IconButton aria-label="Appearance" className={scopeClassName} />
+            <IconButton
+              aria-label={t(($) => $.appearance.label)}
+              className={scopeClassName}
+            />
           }
         >
           <ThemeIcon mode={preference} />
         </MenuTrigger>
       </Tooltip>
-      <MenuContent aria-label="Appearance" className={scopeClassName}>
+      <MenuContent
+        aria-label={t(($) => $.appearance.label)}
+        className={scopeClassName}
+      >
         <MenuRadioGroup value={preference} onValueChange={setPreference}>
           {options.map(({ value, label }) => (
             <MenuRadioItem key={value} value={value} closeOnClick={false}>

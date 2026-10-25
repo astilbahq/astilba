@@ -1,54 +1,7 @@
-import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { readFile } from "node:fs/promises";
 import AxeBuilder from "@axe-core/playwright";
 import { expect, type Page, test } from "@playwright/test";
-
-async function authFixtureSQL(statement: string) {
-  const fixture: { host: string; container: string; owner: string } =
-    JSON.parse(
-      await readFile(
-        new URL(
-          "../../../.artifacts/p8/browser/hosted-fixture.json",
-          import.meta.url,
-        ),
-        "utf8",
-      ),
-    );
-  const ownership = execFileSync(
-    "docker",
-    [
-      "--host",
-      fixture.host,
-      "inspect",
-      "--format",
-      '{{ index .Config.Labels "com.astilba.p1-test" }}',
-      fixture.container,
-    ],
-    { encoding: "utf8" },
-  ).trim();
-  expect(fixture.host).toBe(process.env.PLAT_APP_DOCKER_HOST);
-  expect(ownership).toBe(fixture.owner);
-  execFileSync(
-    "docker",
-    [
-      "--host",
-      fixture.host,
-      "exec",
-      fixture.container,
-      "psql",
-      "--username",
-      "postgres",
-      "--dbname",
-      "postgres",
-      "-v",
-      "ON_ERROR_STOP=1",
-      "-c",
-      statement,
-    ],
-    { stdio: "pipe" },
-  );
-}
+import { authFixtureSQL } from "./auth-fixture";
 
 async function signIn(page: Page) {
   await page.getByLabel("Email", { exact: true }).fill("owner@example.test");

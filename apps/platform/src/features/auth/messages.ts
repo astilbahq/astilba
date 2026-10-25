@@ -1,30 +1,33 @@
-// Keep complete messages and interpolation separate from rules. A future locale
-// can supply this shape to createAuthValidation without global Zod configuration.
-export const authMessages = {
-  emailRequired: "Enter your email address.",
-  emailInvalid: "Enter a valid email address.",
-  emailTooLong: ({ maximum }: { maximum: number }) =>
-    `Use an email address of ${maximum} bytes or fewer.`,
-  passwordRequired: "Enter your password.",
-  passwordTooShort: ({ minimum }: { minimum: number }) =>
-    `Use at least ${minimum} characters for your password.`,
-  passwordTooLong: ({ maximum }: { maximum: number }) =>
-    `Use ${maximum} characters or fewer for your password.`,
-  nameRequired: "Enter your name.",
-  nameInvalid: "Enter a name without line breaks or control characters.",
-  nameTooLong: ({ maximum }: { maximum: number }) =>
-    `Use ${maximum} characters or fewer for your name.`,
-  codeRequired: "Enter an authenticator or recovery code.",
-  invalidFields: "Check the form details and try again.",
-  invalidValue: "Check this value and try again.",
-  invalidPassword: "Check your password and try again.",
-  invalidCode: "Check your authenticator or recovery code and try again.",
-  invalidCredentials: "The email or password is incorrect.",
-  invalidResetLink: "This reset link is invalid or has expired.",
-  invalidInvitation: "This invitation link is invalid or has expired.",
-  invitationSignIn: "Sign in as the invited account before accepting.",
-  rateLimited: "Too many attempts. Try again later.",
-  requestFailed: "The request could not be completed. Try again.",
-};
+import type { TFunction } from "i18next";
 
-export type AuthMessages = typeof authMessages;
+export function createAuthMessages(t: TFunction<"auth">) {
+  return {
+    emailRequired: t(($) => $.validation.emailRequired),
+    emailInvalid: t(($) => $.validation.emailInvalid),
+    emailTooLong: ({ maximum }: { maximum: number }) =>
+      t(($) => $.validation.emailTooLong, { maximum }),
+    passwordRequired: t(($) => $.validation.passwordRequired),
+    passwordTooShort: ({ minimum }: { minimum: number }) =>
+      t(($) => $.validation.passwordTooShort, { count: minimum }),
+    passwordTooLong: ({ maximum }: { maximum: number }) =>
+      t(($) => $.validation.passwordTooLong, { count: maximum }),
+    nameRequired: t(($) => $.validation.nameRequired),
+    nameInvalid: t(($) => $.validation.nameInvalid),
+    nameTooLong: ({ maximum }: { maximum: number }) =>
+      t(($) => $.validation.nameTooLong, { count: maximum }),
+    codeRequired: t(($) => $.validation.codeRequired),
+    invalidFields: t(($) => $.validation.invalidFields),
+    invalidValue: t(($) => $.validation.invalidValue),
+    invalidPassword: t(($) => $.validation.invalidPassword),
+    invalidCode: t(($) => $.validation.invalidCode),
+    invalidCredentials: t(($) => $.validation.invalidCredentials),
+    invalidResetLink: t(($) => $.validation.invalidResetLink),
+    invalidInvitation: t(($) => $.validation.invalidInvitation),
+    invitationSignIn: t(($) => $.validation.invitationSignIn),
+    mfaRequired: t(($) => $.validation.mfaRequired),
+    rateLimited: t(($) => $.validation.rateLimited),
+    requestFailed: t(($) => $.validation.requestFailed),
+  };
+}
+
+export type AuthMessages = ReturnType<typeof createAuthMessages>;

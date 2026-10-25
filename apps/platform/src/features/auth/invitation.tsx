@@ -1,14 +1,19 @@
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
+import { Trans, useTranslation } from "react-i18next";
 import { client, result, setSession } from "../../api/client";
 import { sessionOptions } from "../../api/session";
 import { Link } from "../../components/link";
+import { usePageTitle } from "../../i18n/use-page-title";
 import * as s from "../../styles";
 import { BusyButton, Field, Form, text, useAction } from "../../ui";
 import * as auth from "./auth.styles";
-import { authValidation } from "./validation";
+import { useAuthValidation } from "./use-auth-validation";
 
 export function Invitation({ token }: { token?: string }) {
+  const { t } = useTranslation("auth");
+  usePageTitle(t(($) => $.invitation.pageTitle));
+  const authValidation = useAuthValidation();
   const action = useAction();
   const session = useQuery(sessionOptions).data;
   const [done, setDone] = useState(false);
@@ -25,24 +30,30 @@ export function Invitation({ token }: { token?: string }) {
     <div className={auth.flow}>
       <div className={auth.headingGroup}>
         <h1 ref={heading} tabIndex={-1}>
-          {done ? "Workspace joined" : "Join a workspace"}
+          {done
+            ? t(($) => $.invitation.completeTitle)
+            : t(($) => $.invitation.title)}
         </h1>
         {!done && token && (
           <p className={s.muted}>
-            {session?.user
-              ? `Signed in as ${session.user.email}.`
-              : "If you already have an account, sign in as the invited email first."}
+            {session?.user ? (
+              <Trans
+                t={t}
+                i18nKey={($) => $.invitation.signedIn}
+                components={{ email: <bdi>{session.user.email}</bdi> }}
+              />
+            ) : (
+              t(($) => $.invitation.signInFirst)
+            )}
           </p>
         )}
       </div>
       <section className={s.stack}>
         {!token ? (
-          <p className={s.muted}>
-            Open the invitation link in your email to join a workspace.
-          </p>
+          <p className={s.muted}>{t(($) => $.invitation.missingToken)}</p>
         ) : done ? (
           <p className={s.muted} role="status">
-            You can now open your projects.
+            {t(($) => $.invitation.complete)}
           </p>
         ) : (
           <>
@@ -74,33 +85,35 @@ export function Invitation({ token }: { token?: string }) {
                 <>
                   <Field
                     name="name"
-                    label="Your name"
+                    label={t(($) => $.invitation.name)}
                     autoComplete="name"
-                    placeholder="Enter your name"
+                    placeholder={t(($) => $.invitation.namePlaceholder)}
                     variant="quiet"
                   />
                   <Field
                     name="password"
-                    label="Choose a password"
+                    label={t(($) => $.invitation.password)}
                     type="password"
                     autoComplete="new-password"
-                    placeholder="Create a password"
+                    placeholder={t(($) => $.invitation.passwordPlaceholder)}
                     variant="quiet"
                   />
                 </>
               )}
-              <BusyButton busy={action.isPending}>Accept invitation</BusyButton>
+              <BusyButton busy={action.isPending}>
+                {t(($) => $.invitation.submit)}
+              </BusyButton>
             </Form>
           </>
         )}
         <div className={auth.secondaryActions}>
           {done ? (
             <Link to="/" className={auth.secondaryLink}>
-              Open projects
+              {t(($) => $.invitation.openProjects)}
             </Link>
           ) : session?.user ? (
             <Link to="/" className={auth.secondaryLink}>
-              Back to projects
+              {t(($) => $.invitation.backToProjects)}
             </Link>
           ) : (
             <Link
@@ -108,7 +121,7 @@ export function Invitation({ token }: { token?: string }) {
               search={{ returnTo }}
               className={auth.secondaryLink}
             >
-              Back to sign in
+              {t(($) => $.backToSignIn)}
             </Link>
           )}
         </div>

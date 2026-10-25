@@ -11,13 +11,22 @@ export default defineConfig({
   },
   outputDir: "../../.artifacts/p1/playwright",
   reporter: "list",
-  webServer: {
-    command: "node ../../scripts/platform-fixture.mjs",
-    url: "http://127.0.0.1:54183/api/v1/session",
-    reuseExistingServer: false,
-    gracefulShutdown: { signal: "SIGTERM", timeout: 15000 },
-    timeout: 180000,
-  },
+  webServer: [
+    {
+      command: "node ../../scripts/platform-fixture.mjs",
+      url: "http://127.0.0.1:54183/api/v1/session",
+      reuseExistingServer: false,
+      gracefulShutdown: { signal: "SIGTERM", timeout: 15000 },
+      timeout: 180000,
+    },
+    {
+      command: "pnpm dev",
+      env: { ASTILBA_DEV_API_PORT: "54188" },
+      url: "http://127.0.0.1:54182",
+      reuseExistingServer: false,
+      gracefulShutdown: { signal: "SIGTERM", timeout: 15000 },
+    },
+  ],
   projects: [
     { name: "chromium" },
     { name: "webkit", use: { ...devices["Desktop Safari"] } },
