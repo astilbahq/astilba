@@ -2,7 +2,7 @@
 
 Compare Astilba and OpenShip through the same small HTTP application and PostgreSQL dataset before P11. The application is a test fixture, separate from production platform code. This directory does not install or modify either product.
 
-The run uses Astilba `fc0b89fb77c47d19d226d4de76e86f9c1897223a` and published OpenShip `v0.9.5`, on separate fresh native arm64 Ubuntu 24.04 hosts with matched resources. The comparison is in progress; no result is claimed here yet. Source, image digests and the installation mode must accompany the final findings.
+The run uses Astilba `fc0b89fb77c47d19d226d4de76e86f9c1897223a` and published OpenShip `v0.9.5`, on separate fresh native arm64 Ubuntu 24.04 hosts with matched resources. The [dated acceptance results](RESULTS.md) record the tested source, image digests, installation modes, outcomes and limitations.
 
 ## Common application
 

@@ -265,6 +265,8 @@ Use matched workload resources and pinned source/image identities. Record the co
 
 Start with explicitly eligible stateless HTTP services. Create revision-specific instances, wait for meaningful readiness, atomically switch routes and drain the old revision. A failed replacement leaves the serving revision available. Persist traffic-switch and cleanup state so interruption cannot silently choose the wrong revision.
 
+Use the [disposable comparison](../experiments/platform-comparison/RESULTS.md) as acceptance evidence: independently sample the serving revision while a candidate fails readiness and during recovery. Make a failed check an explicit veto before traffic changes; distinguish warning-only and skipped checks from verified readiness. Test controller or agent restart at the traffic-change boundary, not only after an operation completes.
+
 Retain immutable images and effective configuration for an explicit rollback plan. Show changed settings and image availability before rollback. Add bounded pre-deployment commands with explicit failure and uncertain-outcome semantics. Database writes, schema migrations, mounted storage, fixed host ports and background workers need separate compatibility decisions; image rollback must never claim to rewind data.
 
 ## P12 Canvas and service catalog
