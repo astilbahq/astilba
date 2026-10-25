@@ -149,6 +149,17 @@ test("Compose files remain authoritative through graph edits and independent lay
   await page.getByRole("button", { name: "Appearance", exact: true }).click();
   await page.getByRole("menuitemradio", { name: "Dark", exact: true }).click();
   await page.keyboard.press("Escape");
+  // Audit the settled page after the popup and theme transitions finish.
+  await expect(
+    page.getByRole("region", {
+      name: "Appearance",
+      exact: true,
+      includeHidden: true,
+    }),
+  ).toHaveCount(0);
+  await expect(page.locator("html")).not.toHaveAttribute(
+    "data-theme-transition",
+  );
   expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
   await editor.scrollIntoViewIfNeeded();
   await page.screenshot({

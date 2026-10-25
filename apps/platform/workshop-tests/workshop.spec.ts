@@ -240,7 +240,7 @@ for (const reducedMotion of ["no-preference", "reduce"] as const) {
     page,
   }) => {
     await page.emulateMedia({ reducedMotion });
-    await page.setViewportSize({ width: 568, height: 320 });
+    await page.setViewportSize({ width: 568, height: 240 });
     await page.goto("/iframe.html?id=controls-toast--multiple&viewMode=story");
     const notifications = page.getByRole("dialog");
     await expect(notifications).toHaveCount(3);
@@ -254,14 +254,14 @@ for (const reducedMotion of ["no-preference", "reduce"] as const) {
     await expect(oldest.locator("[inert]")).toHaveCount(0);
     const viewport = page.getByRole("region", { name: "Notifications" });
     await expect(viewport).toHaveCSS("overflow-y", "auto");
-    expect(
-      await viewport.evaluate((el) => el.scrollHeight > el.clientHeight),
-    ).toBe(true);
+    await expect
+      .poll(() => viewport.evaluate((el) => el.scrollHeight > el.clientHeight))
+      .toBe(true);
     for (const notification of await notifications.all()) {
       await notification.scrollIntoViewIfNeeded();
       const bounds = await notification.boundingBox();
       expect(bounds!.y).toBeGreaterThanOrEqual(0);
-      expect(bounds!.y + bounds!.height).toBeLessThanOrEqual(320);
+      expect(bounds!.y + bounds!.height).toBeLessThanOrEqual(240);
     }
   });
 }
