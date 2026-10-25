@@ -146,7 +146,12 @@ func nativeCatalogJourney(t *testing.T, e *Engine, server uuid.UUID, command fun
 				}
 				return output.String()
 			}
+			waitForCache := func() {
+				t.Helper()
+				exec(source, "timeout", "15", "sh", "-c", `until [ "$(valkey-cli --raw -h "$1" PING 2>/dev/null)" = PONG ]; do sleep 0.1; done`, "probe", env["SOURCE_HOST"])
+			}
 			if recipe.ID == "valkey-cache" {
+				waitForCache()
 				got := exec(source, "valkey-cli", "-h", env["SOURCE_HOST"], "SET", "fixture", "connected")
 				if !strings.Contains(got, "OK") || !strings.Contains(exec(source, "valkey-cli", "GET", "fixture"), "connected") {
 					t.Fatal("cache roundtrip failed")
@@ -160,8 +165,11 @@ func nativeCatalogJourney(t *testing.T, e *Engine, server uuid.UUID, command fun
 			if _, err = e.Docker.ContainerRestart(ctx, p.ContainerName(source), client.ContainerRestartOptions{}); err != nil {
 				t.Fatal(err)
 			}
-			if recipe.ID == "valkey-cache" && strings.TrimSpace(exec(source, "valkey-cli", "GET", "fixture")) != "" {
-				t.Fatal("ephemeral cache retained data")
+			if recipe.ID == "valkey-cache" {
+				waitForCache()
+				if strings.TrimSpace(exec(source, "valkey-cli", "GET", "fixture")) != "" {
+					t.Fatal("ephemeral cache retained data")
+				}
 			}
 			finish("observe", secrets)
 		})
