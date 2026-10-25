@@ -10,7 +10,8 @@ export const inputRecipe = defineRecipe({
     color: "fg",
     backgroundColor: "surface",
     caretColor: "fg",
-    borderColor: "var(--input-hover-border-color, var(--input-border-color))",
+    borderColor:
+      "var(--input-hover-border-color, token(colors.control.border))",
     borderWidth: "1px",
     borderStyle: "solid",
     borderRadius: "control",
@@ -47,14 +48,10 @@ export const inputRecipe = defineRecipe({
     },
   },
   variants: {
-    variant: {
-      outline: { "--input-border-color": "token(colors.control.border)" },
-      quiet: { "--input-border-color": "token(colors.control.quietBorder)" },
-    },
     size: {
       sm: { minBlockSize: "control.sm", fontSize: "sm" },
       md: { minBlockSize: "control.md", fontSize: "md" },
     },
   },
-  defaultVariants: { variant: "outline", size: "md" },
+  defaultVariants: { size: "md" },
 });

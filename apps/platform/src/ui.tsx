@@ -18,6 +18,7 @@ import { Button } from "./components/button";
 import type { FormValidation } from "./components/form-validation";
 import { Input, type InputProps } from "./components/input";
 import { Label } from "./components/label";
+import { ErrorToast } from "./components/toast";
 import * as s from "./styles";
 export function ErrorNotice({
   error,
@@ -62,7 +63,7 @@ export function useAction() {
 }
 const FormErrorContext = createContext<{
   id?: string;
-  fields: string[];
+  fields: readonly string[];
   validation?: FormValidation;
   serverError?: unknown;
 }>({
@@ -86,22 +87,24 @@ export function Form({
   const { t } = useTranslation("common");
   const id = useId();
   const error = action.formId === id ? action.error : null;
-  const fields = error instanceof ApiError ? (error.detail.fields ?? []) : [];
+  const notifyError = error && validation?.isRequestFailure?.(error);
+  const inlineFields =
+    error instanceof ApiError
+      ? validation?.errorFields?.[error.detail.code]
+      : undefined;
+  const fields =
+    inlineFields ??
+    (error instanceof ApiError ? (error.detail.fields ?? []) : []);
   const errorId = error ? `${id}-error` : undefined;
   // Base UI clears individual errors on edit. Keep the last response stable
   // during a retry so its submit focus waits for the next server response.
-  const [lastError, setLastError] = useState(error);
-  if (error && error !== lastError) setLastError(error);
+  const [lastResponse, setLastResponse] = useState({ error, fields });
+  if (error && error !== lastResponse.error) setLastResponse({ error, fields });
   const serverErrors = useMemo(
     () =>
-      lastError instanceof ApiError
-        ? Object.fromEntries(
-            (lastError.detail.fields ?? [])
-              // Base UI owns clearing these markers. Field renders current-language text.
-              .map((name) => [name, "invalid"]),
-          )
-        : {},
-    [lastError],
+      // Base UI owns clearing these markers. Field renders current-language text.
+      Object.fromEntries(lastResponse.fields.map((name) => [name, "invalid"])),
+    [lastResponse],
   );
   const formProps = {
     className: s.stack,
@@ -114,15 +117,24 @@ export function Form({
   };
   return (
     <FormErrorContext
-      value={{ id: errorId, fields, validation, serverError: lastError }}
+      value={{
+        id: errorId,
+        fields: validation ? lastResponse.fields : fields,
+        validation,
+        serverError: lastResponse.error,
+      }}
     >
+      <ErrorToast
+        error={notifyError ? error : null}
+        message={validation?.message(error) ?? ""}
+      />
       {validation ? (
         <BaseForm
           {...formProps}
           errors={serverErrors}
           validationMode="onSubmit"
         >
-          {error && (
+          {error && !notifyError && !inlineFields?.length && (
             <p className={s.error} role="alert">
               {validation.message(error)}
             </p>
@@ -158,7 +170,6 @@ export function Field({
   minLength,
   labelAction,
   placeholder,
-  variant,
   size,
   inputComponent: InputComponent = Input,
 }: {
@@ -173,7 +184,6 @@ export function Field({
   minLength?: number;
   labelAction?: ReactNode;
   placeholder?: string;
-  variant?: InputProps["variant"];
   size?: InputProps["size"];
   inputComponent?: typeof Input;
 }) {
@@ -198,7 +208,6 @@ export function Field({
       <div className={styles.control}>
         <InputComponent
           id={id}
-          variant={variant}
           size={size}
           name={name}
           {...(!error.validation
@@ -234,7 +243,7 @@ export function Field({
               validity.valid === false
                 ? (validate?.(value) ??
                   (error.serverError instanceof ApiError &&
-                  error.serverError.detail.fields?.includes(name)
+                  error.fields.includes(name)
                     ? error.validation?.message(error.serverError, name)
                     : null))
                 : null;

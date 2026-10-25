@@ -6,32 +6,29 @@ import {
   Navigate,
   Outlet,
   useLocation,
-  useRouter,
 } from "@tanstack/react-router";
-import { useEffect } from "react";
 import { useTranslation } from "react-i18next";
-import { client, result, setSession } from "./api/client";
+import { client, result } from "./api/client";
 import { sessionOptions } from "./api/session";
 import { Button } from "./components/button";
 import { Anchor, Link } from "./components/link";
-import { PasswordInput } from "./components/password-input";
 import { ThemeMenu } from "./components/theme-menu";
+import { ErrorToast, ToastProvider } from "./components/toast";
 import { TooltipProvider } from "./components/tooltip";
 import { Alerts } from "./features/alerts";
 import { AuthFrame } from "./features/auth/auth-frame";
 import * as authStyles from "./features/auth/auth.styles";
 import { Invitation } from "./features/auth/invitation";
-import { MFAChallenge } from "./features/auth/mfa-challenge";
 import { PasswordReset } from "./features/auth/password-reset";
-import { useAuthValidation } from "./features/auth/use-auth-validation";
+import { SignIn } from "./features/auth/sign-in";
 import { GitHubCallback, GitHubInstalled } from "./features/github-app";
-import { hostingOptions, Signup } from "./hosting";
+import { Signup } from "./hosting";
 import { usePageTitle } from "./i18n/use-page-title";
 import { Account, Members } from "./security";
 import { Servers } from "./servers";
 import * as s from "./styles";
 import { ThemeProvider } from "./theme";
-import { BusyButton, ErrorNotice, Field, Form, text, useAction } from "./ui";
+import { ErrorNotice, useAction } from "./ui";
 import { Dashboard, type WorkspaceSelection } from "./workspace";
 
 function Root() {
@@ -39,32 +36,35 @@ function Root() {
   const session = useQuery(sessionOptions);
   return (
     <ThemeProvider>
-      <TooltipProvider delay={300}>
-        <Anchor href="#main" className="skip-link">
-          {t(($) => $.skipContent)}
-        </Anchor>
-        {session.isPending ? (
-          <AuthFrame>
-            <p role="status">{t(($) => $.loading)}</p>
-          </AuthFrame>
-        ) : session.error && !session.data ? (
-          <AuthFrame>
-            <ErrorNotice
-              error={session.error}
-              message={t(($) => $.requestFailed)}
-            />
-            <Button
-              type="button"
-              disabled={session.isFetching}
-              onClick={() => void session.refetch()}
-            >
-              {t(($) => $.retryConnection)}
-            </Button>
-          </AuthFrame>
-        ) : (
-          <Outlet />
-        )}
-      </TooltipProvider>
+      <ToastProvider>
+        <TooltipProvider delay={300}>
+          <Anchor href="#main" className="skip-link">
+            {t(($) => $.skipContent)}
+          </Anchor>
+          {session.isPending ? (
+            <AuthFrame>
+              <p role="status">{t(($) => $.loading)}</p>
+            </AuthFrame>
+          ) : session.error && !session.data ? (
+            <AuthFrame>
+              <h1>{t(($) => $.connectionUnavailable)}</h1>
+              <ErrorToast
+                error={session.error}
+                message={t(($) => $.requestFailed)}
+              />
+              <Button
+                type="button"
+                disabled={session.isFetching}
+                onClick={() => void session.refetch()}
+              >
+                {t(($) => $.retryConnection)}
+              </Button>
+            </AuthFrame>
+          ) : (
+            <Outlet />
+          )}
+        </TooltipProvider>
+      </ToastProvider>
     </ThemeProvider>
   );
 }
@@ -168,88 +168,6 @@ function loginDestination(value: unknown): string {
     return "/";
   }
 }
-function SignIn() {
-  const { t } = useTranslation("auth");
-  const authValidation = useAuthValidation();
-  const session = useQuery(sessionOptions).data;
-  const { returnTo } = loginRoute.useSearch();
-  const router = useRouter();
-  const signedIn = Boolean(session?.user && !session.mfaPending);
-  usePageTitle(
-    session?.mfaPending
-      ? t(($) => $.mfa.pageTitle)
-      : t(($) => $.signIn.pageTitle),
-  );
-  useEffect(() => {
-    if (signedIn) router.history.replace(returnTo ?? "/");
-  }, [signedIn, router, returnTo]);
-  const hosting = useQuery(hostingOptions).data;
-  const action = useAction();
-  if (session?.mfaPending) return <MFAChallenge />;
-  if (signedIn) return <p role="status">{t(($) => $.signIn.opening)}</p>;
-  return (
-    <div className={authStyles.flow}>
-      <h1>{t(($) => $.signIn.title)}</h1>
-      <section className={s.stack}>
-        <Form
-          action={action}
-          validation={authValidation.signIn}
-          onSubmit={(d) =>
-            action.run(async () =>
-              setSession(
-                await result(
-                  client.POST("/api/v1/auth/login", {
-                    body: {
-                      email: text(d, "email"),
-                      password: text(d, "password"),
-                    },
-                  }),
-                ),
-              ),
-            )
-          }
-        >
-          <Field
-            name="email"
-            label={t(($) => $.signIn.email)}
-            type="email"
-            autoComplete="username"
-            placeholder={t(($) => $.signIn.emailPlaceholder)}
-            variant="quiet"
-          />
-          <Field
-            name="password"
-            label={t(($) => $.signIn.password)}
-            type="password"
-            autoComplete="current-password"
-            inputComponent={PasswordInput}
-            placeholder={t(($) => $.signIn.passwordPlaceholder)}
-            variant="quiet"
-            labelAction={
-              <Link
-                to="/reset"
-                variant="plain"
-                className={authStyles.recoveryLink}
-              >
-                {t(($) => $.signIn.forgotPassword)}
-              </Link>
-            }
-          />
-          <BusyButton busy={action.isPending}>
-            {t(($) => $.signIn.submit)}
-          </BusyButton>
-        </Form>
-        {hosting?.enabled && (
-          <div className={authStyles.secondaryActions}>
-            <Link to="/signup" className={authStyles.secondaryLink}>
-              {t(($) => $.signIn.hostedBeta)}
-            </Link>
-          </div>
-        )}
-      </section>
-    </div>
-  );
-}
 function NotFound() {
   const { t } = useTranslation("common");
   usePageTitle(t(($) => $.titles.notFound));
@@ -284,8 +202,12 @@ const loginRoute = createRoute({
         ? undefined
         : loginDestination(search.returnTo),
   }),
-  component: SignIn,
+  component: SignInPage,
 });
+function SignInPage() {
+  const { returnTo } = loginRoute.useSearch();
+  return <SignIn returnTo={returnTo} />;
+}
 const dashboardRoute = createRoute({
   getParentRoute: () => application,
   path: "/",

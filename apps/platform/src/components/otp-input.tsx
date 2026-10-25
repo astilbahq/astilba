@@ -17,7 +17,6 @@ export type OTPInputProps = Omit<
 
 export function OTPInput({
   length,
-  variant,
   size,
   className,
   placeholder,
@@ -43,7 +42,7 @@ export function OTPInput({
             }
             autoCapitalize="none"
             placeholder={placeholder}
-            className={cx(input({ variant, size }), styles.input)}
+            className={cx(input({ size }), styles.input)}
             // Base UI 1.9 exposes computed invalidity through state, while its
             // default slot aria-invalid only includes explicit/server errors.
             render={(inputProps, state) => (

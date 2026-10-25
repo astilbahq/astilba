@@ -7,6 +7,7 @@ export default defineConfig({
       "src/features/auth/**/*.{ts,tsx}",
       "src/components/{password-input,theme-menu,locale-menu}.tsx",
       "src/{router,hosting,ui}.tsx",
+      "!src/**/*.stories.tsx",
     ],
     output: "src/locales/{{language}}/{{namespace}}.json",
     defaultNS: "common",
@@ -20,7 +21,12 @@ export default defineConfig({
   },
   lint: {
     // These also contain dashboard screens, which migrate in later feature slices.
-    ignore: ["src/router.tsx", "src/hosting.tsx"],
+    ignore: [
+      "src/router.tsx",
+      "src/hosting.tsx",
+      "src/**/*.stories.tsx",
+      "src/workshop/**",
+    ],
     acceptedTags: "all",
     checkTranslationPlaceholders: "error",
   },

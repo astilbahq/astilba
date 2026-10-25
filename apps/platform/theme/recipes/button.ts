@@ -57,7 +57,7 @@ export const buttonRecipe = defineRecipe({
         backgroundColor: "surface",
         borderColor: "control.border",
         color: "fg",
-        _hover: { _enabled: { backgroundColor: "soft" } },
+        _hover: { _enabled: { backgroundColor: "action.ghostHover" } },
       },
       danger: {
         "--button-focus-color": "token(colors.destructive.solid)",

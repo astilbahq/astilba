@@ -59,7 +59,6 @@ export function PasswordReset({ token }: { token?: string }) {
                 type="email"
                 autoComplete="username"
                 placeholder={t(($) => $.signIn.emailPlaceholder)}
-                variant="quiet"
               />
               <BusyButton busy={request.isPending}>
                 {t(($) => $.reset.send)}
@@ -89,7 +88,6 @@ export function PasswordReset({ token }: { token?: string }) {
                 type="password"
                 autoComplete="new-password"
                 placeholder={t(($) => $.reset.passwordPlaceholder)}
-                variant="quiet"
               />
               <BusyButton busy={completion.isPending}>
                 {t(($) => $.reset.submit)}

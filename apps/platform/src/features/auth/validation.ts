@@ -6,6 +6,8 @@ import {
 } from "../../components/form-validation";
 import type { AuthMessages } from "./messages";
 
+const codeErrorFields = { invalid_credentials: ["code"] } as const;
+
 export function createAuthValidation(messages: AuthMessages) {
   const email = validateWith(
     z
@@ -67,6 +69,14 @@ export function createAuthValidation(messages: AuthMessages) {
   ): FormValidation {
     return {
       fields,
+      isRequestFailure: (error) =>
+        !(error instanceof ApiError) ||
+        ![
+          "invalid_credentials",
+          "invalid_input",
+          "invitation_signin_required",
+          "mfa_required",
+        ].includes(error.detail.code),
       message(error, field) {
         if (!(error instanceof ApiError)) return messages.requestFailed;
         switch (error.detail.code) {
@@ -93,12 +103,18 @@ export function createAuthValidation(messages: AuthMessages) {
 
   return {
     signIn: form({ email, password }),
-    mfa: form({ code }, messages.invalidCode),
-    recovery: form(
-      { code: recoveryCode },
-      messages.invalidRecoveryCode,
-      messages.invalidRecoveryCode,
-    ),
+    mfa: {
+      ...form({ code }, messages.invalidCode),
+      errorFields: codeErrorFields,
+    },
+    recovery: {
+      ...form(
+        { code: recoveryCode },
+        messages.invalidRecoveryCode,
+        messages.invalidRecoveryCode,
+      ),
+      errorFields: codeErrorFields,
+    },
     resetRequest: form({ email }),
     resetPassword: form({ password: newPassword }, messages.invalidResetLink),
     invitation: form(

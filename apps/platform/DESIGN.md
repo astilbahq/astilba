@@ -10,10 +10,8 @@ colors:
   auth-surface-dark: "#121212"
   auth-page: "#fdfdfd"
   auth-page-dark: "#121212"
-  auth-border: "#dedede"
-  auth-border-dark: "#3a3a3a"
-  auth-control-border: "#898989"
-  auth-control-border-dark: "#858585"
+  auth-border: "#939393"
+  auth-border-dark: "#616161"
   auth-action: "#0d0d0d"
   auth-action-dark: "#ffffff"
   auth-on-action: "#ffffff"
@@ -36,10 +34,8 @@ colors:
   soft-dark: "#2b3c30"
   menu-item-hover: "#f4f4f5"
   menu-item-hover-dark: "#ffffff0a"
-  control-border: "#898989"
-  control-border-dark: "#858585"
-  control-quiet-border: "#dedede"
-  control-quiet-border-dark: "#3a3a3a"
+  control-border: "#939393"
+  control-border-dark: "#616161"
   control-interactive-border: "#8c8c8c"
   control-interactive-border-dark: "#707070"
   action-ghost-hover: "#f4f4f5"
@@ -174,7 +170,7 @@ components:
     rounded: "{rounded.control}"
     padding: "8px 12px"
   button-secondary-hover:
-    backgroundColor: "{colors.soft}"
+    backgroundColor: "{colors.action-ghost-hover}"
   button-danger:
     backgroundColor: "{colors.destructive-solid}"
     textColor: "{colors.destructive-contrast}"
@@ -183,13 +179,7 @@ components:
     padding: "8px 12px"
   button-danger-hover:
     backgroundColor: "{colors.destructive-hover}"
-  input-outline:
-    backgroundColor: "{colors.surface}"
-    textColor: "{colors.fg}"
-    typography: "{typography.control-input}"
-    rounded: "{rounded.control}"
-    padding: "8px 12px"
-  input-quiet:
+  input:
     backgroundColor: "{colors.surface}"
     textColor: "{colors.fg}"
     typography: "{typography.control-input}"
@@ -260,7 +250,7 @@ components:
 
 **Creative North Star: "Aligned stack"**
 
-A familiar, focused entry to Astilba: a compact form on an open surface, with a shared starting edge and an unmistakable primary action. The owner selected Aligned stack. Consistent grouping, quiet sign-in field outlines and visible focus supply structure without an outer card.
+A familiar, focused entry to Astilba: a compact form on an open surface, with a shared starting edge and an unmistakable primary action. The owner selected Aligned stack. Consistent grouping, consistent field outlines and visible focus supply structure without an outer card.
 
 The auth visual direction covers AuthFrame and its sign-in, MFA, reset, invitation and conditional hosted-signup flows. Shared control recipes also apply across the application; auth supplies local palette overrides rather than separate control styling. The signed-in dashboard retains its existing green identity. Recording shared control defaults does not approve or redesign its other styles. Product truth remains in ../../PRODUCT.md; the auth system font and logo lettering remain provisional. The auth logo is temporarily omitted at the owner’s request; the heading starts the column.
 
@@ -282,11 +272,11 @@ Shared backgrounds are #fdfdfd in light mode and #121212 in dark mode; text is #
 
 ### Neutral
 
-`surface`, `fg` and `soft` supply control fill, text and secondary hover. `control.border` and `control.quietBorder` supply normal and quiet idle boundaries. `control.interactiveBorder` supplies the shared grey field hover and focus edge, stronger than the quiet idle border in both themes, with a softer neutral edge for hover and focus. Auth's page semantic remains declared, but its visible canvas and current controls use the surface role. Focus Blue remains for auth links, and Selection Blue remains auth text selection.
+`surface` and `fg` supply control fill and text. Secondary buttons share the neutral `action.ghostHover` fill with ghost buttons: #f4f4f5 in light mode and 4% white in dark mode. `control.border` supplies every field’s idle boundary: #939393 in light mode and #616161 in dark mode. These are the nearest 8-bit neutral greys meeting 3:1 against #fdfdfd and #121212 respectively (3.020:1 / 3.025:1). `control.interactiveBorder` supplies the shared grey field hover and focus edge, slightly stronger than the idle border in both themes. Auth's page semantic remains declared, but its visible canvas and current controls use the surface role. Auth links retain their neutral focus edge; Selection Blue remains auth text selection.
 
 **The Auth Boundary Rule.** Share neutral background, foreground and muted roles throughout the app; AuthFrame scopes its action and field palettes. Shared control recipes use semantic roles; field interaction edges use grey throughout, primary actions are neutral throughout, while brand and non-auth link colours remain green.
 
-**The Control State Rule.** Let recipes own idle, hover, focus and invalid states. Input variants set the idle border variable; the base recipe owns the border so interaction states remain effective.
+**The Control State Rule.** Let recipes own idle, hover, focus and invalid states. The base recipe uses the shared control border and accepts a hover override from compound controls such as PasswordInput.
 
 ## Typography
 
@@ -330,13 +320,13 @@ Theme changes use one 250ms snapshot crossfade (`durations.theme`, `easings.them
 
 ### Inputs / Fields
 
-Input uses Base UI and retains native input events and labels. Select, Textarea, Checkbox, Label and anchors retain native browser semantics. Input, Select and Textarea share `outline` and `quiet` variants, with `outline`/`md` defaults. Sign-in explicitly uses `quiet` with readable placeholders; variant selection does not depend on a placeholder selector. Quiet controls need visible content for discoverability. Select keeps native behaviour; Textarea resizes in the block direction.
+Input uses Base UI and retains native input events and labels. Select, Textarea, Checkbox, Label and anchors retain native browser semantics. Input, PasswordInput, OTPInput, Select and Textarea share one border appearance and default to `md` size. All use the same minimum-3:1 idle border, including empty fields. There is no appearance variant or placeholder-dependent styling. Select keeps native behaviour; Textarea resizes in the block direction.
 
 Enabled hover uses the interactive border. Border colour transitions in both directions using the shared button/menu timing: `durations.button` (200ms) and `easings.out`. Reduced motion disables the transition, and theme changes retain the global transition override. The focus outline appears immediately in its final colour, avoiding a flash from the browser’s default outline colour. Focus adds a 1px outline of the same colour at zero offset to the 1px border, appearing as one 2px edge without shifting layout. Explicit `aria-invalid="true"` retains the error border on hover and the error border/outline on focus. Untouched required controls are not styled as errors. Field continues to associate labels and error descriptions.
 
 ### Form validation
 
-Sign-in (including MFA), password reset and invitations opt into the shared Form’s Base UI validation mode. It uses Base UI Form/Field/Label/Error with synchronous Zod field validators. Other forms keep native validation until migrated. Validate on submit, focus the first invalid control, then revalidate as users correct values. Inline errors use the field recipe’s error slot, semantic error colour and 13px secondary type; errors span the field width below its control. Base UI associates errors with controls and owns invalid state. Form-level API failures use one alert; individual errors have no competing live regions.
+Sign-in (including MFA), password reset and invitations opt into the shared Form’s Base UI validation mode. It uses Base UI Form/Field/Label/Error with synchronous Zod field validators. Other forms keep native validation until migrated. Validate on submit, focus the first invalid control, then revalidate as users correct values. Inline errors use the field recipe’s error slot, semantic error colour and 13px secondary type; errors span the field width below its control. Base UI associates errors with controls and owns invalid state. Credential and link failures retain a form alert; request failures use a toast. Individual field errors have no competing live regions.
 
 Authentication rules and messages are separate. A message catalogue is passed into createAuthValidation; i18next supplies complete messages and named interpolation parameters in the current language without global Zod state. Server feedback maps machine error codes, not English API prose. The sign-in password is only checked for presence. New passwords count 15–128 Unicode code points to match the API and are never trimmed or transformed before submission. Native required/type/autocomplete semantics remain; Base UI suppresses browser validation popups and the schema supplies application-language messages. Failed submissions retain drafts and the Go API remains authoritative.
 
@@ -346,7 +336,7 @@ Language uses the shared globe IconButton, Tooltip and radio Menu beside Appeara
 
 ### Password input
 
-PasswordInput composes Input and a ghost IconButton using the `passwordInput` root/input/toggle slots. It starts masked and exposes Show password / Hide password through an accessible button and matching tooltip. The input reserves 48px logical end padding for a 40px target with a 16px eye icon; its existing quiet/outline and sm/md styles remain available. Pointer activation preserves editing focus and selection; keyboard users can Tab to the toggle and activate it with Enter or Space. Hovering anywhere inside PasswordInput, including the reveal toggle, keeps its enabled input’s hover border active. The recipe supplies a separate hover-border override consumed by Input ahead of its variant’s idle border, so Panda’s variant layer cannot reset it. Explicit focus, error and forced-colour edges retain priority. Disabling the input also disables its toggle. Revealing changes only the native type; value, autocomplete, validation, name, refs and errors remain on the same input. Spelling/correction/capitalization are disabled. The sign-in Field uses this control; other password forms keep their current input.
+PasswordInput composes Input and a ghost IconButton using the `passwordInput` root/input/toggle slots. It starts masked and exposes Show password / Hide password through an accessible button and matching tooltip. The input reserves 48px logical end padding for a 40px target with a 16px eye icon; its existing sm/md sizes remain available. Pointer activation preserves editing focus and selection; keyboard users can Tab to the toggle and activate it with Enter or Space. Hovering anywhere inside PasswordInput, including the reveal toggle, keeps its enabled input’s hover border active. The recipe supplies a separate hover-border override consumed by Input ahead of the shared idle border. Explicit focus, error and forced-colour edges retain priority. Disabling the input also disables its toggle. Revealing changes only the native type; value, autocomplete, validation, name, refs and errors remain on the same input. Spelling/correction/capitalization are disabled. The sign-in Field uses this control; other password forms keep their current input.
 
 ### Labels
 
@@ -364,9 +354,9 @@ Checkbox preserves the native input at 18px square, with the brand accent and na
 
 AuthFrame retains the aligned column and familiar flow grouping. Recovery stays beside the password label; secondary actions align to the start edge. Native tab order keeps the credential fields together: Skip to content, Appearance, Email, Password, Show/Hide password, Forgot password, Sign in. The top-corner Appearance control stays before the main content; activating the skip link makes the next Tab reach Email. Field renders its labelAction after the complete control and uses flex ordering for the label-row position and responsive wrapping, without positive tabindex. Reset and invitation secondary links share that starting edge; signup back links remain centred. Links keep their 2px focus outline with 3px offset. Hosted signup remains conditional.
 
-Password recovery shows one stage at a time: account email, a privacy-preserving check-email confirmation, then the new-password form opened from `/reset?token=…`. The code stays out of the form. The field label is “New password”, without a requirements list. Reset uses the same quiet fields and start-aligned secondary links as sign-in. The only secondary action is “Back to sign in”. Invalid links show an inline error, failed submissions retain the password draft, and completion confirms the change before returning to sign-in. Stage transitions focus the heading.
+Password recovery shows one stage at a time: account email, a privacy-preserving check-email confirmation, then the new-password form opened from `/reset?token=…`. The code stays out of the form. The field label is “New password”, without a requirements list. Reset uses the same shared fields and start-aligned secondary links as sign-in. The only secondary action is “Back to sign in”. Invalid links show an inline error, failed submissions retain the password draft, and completion confirms the change before returning to sign-in. Stage transitions focus the heading.
 
-Workspace invitations open `/invitation?token=…`; sign-in has no invitation prompt. Without a token, the page directs users to their invitation email. New accounts enter their name and password in quiet fields; signed-in users confirm acceptance without re-entering credentials. The sign-in link preserves the invitation URL so existing accounts can return after authentication. Successful acceptance removes the form, focuses “Workspace joined”, and offers “Open projects”. Invalid links show an inline error and failed submissions retain the draft.
+Workspace invitations open `/invitation?token=…`; sign-in has no invitation prompt. Without a token, the page directs users to their invitation email. New accounts enter their name and password in shared fields; signed-in users confirm acceptance without re-entering credentials. The sign-in link preserves the invitation URL so existing accounts can return after authentication. Successful acceptance removes the form, focuses “Workspace joined”, and offers “Open projects”. Invalid links show an inline error and failed submissions retain the draft.
 
 ### Feedback and access modes
 
@@ -386,7 +376,13 @@ ErrorNotice consumes the semantic error colour with a matching border and `role=
 
 - **Don't** apply the auth palette to the dashboard as an automatic consistency fix.
 - **Don't** style native inputs or buttons through route descendant selectors; change shared recipes or semantic tokens.
-- **Don't** use quiet empty controls without visible content such as a readable placeholder.
+- **Do** use the shared field border for every input, including empty OTP slots, and recheck its contrast if the surrounding surface changes.
 - **Don't** use Apfel Grotezk, restore the outer auth card or introduce dark input underlines.
 
-Input borders share neutral roles across auth and the app: quiet #dedede/#3a3a3a, outlined #909090/#666666, and hover/focus #8c8c8c/#707070 (light/dark). The focus outline uses the same interactive colour as hover, with no offset. Primary button focus continues to follow its current fill.
+Input borders share neutral roles across auth and the app: idle #939393/#616161 and hover/focus #8c8c8c/#707070 (light/dark). The focus outline uses the same interactive colour as hover, with no offset. Primary button focus continues to follow its current fill.
+
+Toast feedback uses Base UI’s provider, viewport, root, content, title, description, action and close parts, styled through one shared Panda slot recipe. It sits at the logical bottom/end with a 16px inset and a 360px maximum width, fitting 320px screens. The card uses the shared surface/foreground, a lighter 12px-blur toast shadow, 12px corners, 12px padding, 13px text and a 40px ghost close button. The 16px indicator is centered on the title’s first line using the same font-size and line-height tokens. Entry uses 350ms and exit 250ms (`durations.toast.*`) with the shared popup curve, a 16px rise (60px for stacked arrivals), explicit 0→2px blur and 0.97 scale. A collapsed stack peeks by 12px, scales older cards to 0.94/0.88, fades them to 0.6/0.36 and blurs them by 1px/2px. Hover or keyboard focus expands the stack with an 8px gap; Base UI provides measured heights and expanded state. Cards share a stable bottom anchor. Base UI height measurements size a flow spacer for the collapsed or expanded stack; independent translate offsets place cards without affecting the arriving card’s upward motion. Hidden rear content is inert until expanded. Reduced motion removes transitions, decorative transforms and blur while preserving instantaneous layout translation. Error indicators use the shared error role without colouring the whole surface. Forced colours add a system border.
+
+Request failures use persistent, dismissible toasts with polite announcements and no automatic focus change. F6 reaches the notification region with a visible neutral keyboard focus outline; pointer focus does not show it. A padded scroll container keeps tall stacks reachable on short screens. Base UI owns keyboard navigation and dismissal. Retries replace a source’s notification, language changes update it, dismissal stays respected, and leaving the source clears it. Incorrect credentials, expired links and field errors remain near their form/control. A blocked session load retains a heading and Retry connection action even after its toast is dismissed.
+
+Toast motion is clipped inside the measured stack, with 12px inner padding and 4px viewport padding preserving the 16px outer inset. The extra 24px is included in the spacer height. This prevents entrance/exit transforms from briefly creating scrollbars, while the outer viewport still scrolls for genuinely tall stacks and the inner padding preserves shadow and focus clearance.

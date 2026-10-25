@@ -209,5 +209,8 @@ test("production excludes pseudolocales and ignores unsupported stored preferenc
     expect(source).not.toContain("Pseudo (RTL)");
     expect(source).not.toContain("pseudolocalize");
     expect(source).not.toContain("⟦");
+    expect(source).not.toContain("workshop-csrf");
+    expect(source).not.toContain("workshop-request");
+    expect(source).not.toContain("mockServiceWorker");
   }
 });

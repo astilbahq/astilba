@@ -88,7 +88,6 @@ export function Invitation({ token }: { token?: string }) {
                     label={t(($) => $.invitation.name)}
                     autoComplete="name"
                     placeholder={t(($) => $.invitation.namePlaceholder)}
-                    variant="quiet"
                   />
                   <Field
                     name="password"
@@ -96,7 +95,6 @@ export function Invitation({ token }: { token?: string }) {
                     type="password"
                     autoComplete="new-password"
                     placeholder={t(($) => $.invitation.passwordPlaceholder)}
-                    variant="quiet"
                   />
                 </>
               )}

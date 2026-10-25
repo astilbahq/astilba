@@ -33,6 +33,7 @@ check-app:
 
 verify-app: verify-app-core
 	pnpm --filter @astilba/dashboard test:browser
+	pnpm --filter @astilba/dashboard storybook:test
 
 verify-app-core: check-app
 	pnpm agent:build

@@ -21,3 +21,5 @@ allowBuilds:
 peerDependencyRules:
   allowedVersions:
     vite: 1.4.0
+    # Storybook's Vite+ peer range stops at 0.2; this exact pair passes the workshop suite.
+    'storybook@10.6.2>vite-plus': 1.4.0

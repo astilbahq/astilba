@@ -106,6 +106,7 @@ export default interface Resources {
       "light": "Light",
       "system": "System"
     },
+    "connectionUnavailable": "Unable to connect",
     "fields": "Fields: {{fields}}",
     "language": {
       "automatic": "Automatic",
@@ -127,6 +128,13 @@ export default interface Resources {
     "skipContent": "Skip to content",
     "titles": {
       "notFound": "Page not found · Astilba"
+    },
+    "toast": {
+      "dismiss": "Dismiss notification",
+      "error": "Request failed",
+      "notification": "Notification",
+      "region": "Notifications",
+      "success": "Success"
     },
     "unexpectedError": "Something went wrong. Please retry.",
     "working": "Working…"

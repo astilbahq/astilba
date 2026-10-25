@@ -4,34 +4,15 @@ import { client, result, setSession } from "../../api/client";
 import { Input, type InputProps } from "../../components/input";
 import { LinkButton } from "../../components/link";
 import { OTPInput } from "../../components/otp-input";
+import { ErrorToast } from "../../components/toast";
 import * as s from "../../styles";
-import {
-  BusyButton,
-  ErrorNotice,
-  Field,
-  Form,
-  text,
-  useAction,
-} from "../../ui";
+import { BusyButton, Field, Form, text, useAction } from "../../ui";
 import * as auth from "./auth.styles";
 import { useAuthValidation } from "./use-auth-validation";
 
-function AuthenticatorCodeInput({
-  id,
-  name,
-  required,
-  variant,
-  size,
-}: InputProps) {
+function AuthenticatorCodeInput({ id, name, required, size }: InputProps) {
   return (
-    <OTPInput
-      id={id}
-      name={name}
-      required={required}
-      length={6}
-      variant={variant}
-      size={size}
-    />
+    <OTPInput id={id} name={name} required={required} length={6} size={size} />
   );
 }
 
@@ -95,7 +76,6 @@ export function MFAChallenge() {
             inputMode={recovery ? "text" : "numeric"}
             autoCapitalize="none"
             spellCheck={false}
-            variant={recovery ? "quiet" : "outline"}
           />
           <BusyButton busy={busy}>{t(($) => $.mfa.submit)}</BusyButton>
         </Form>
@@ -123,7 +103,7 @@ export function MFAChallenge() {
           >
             {t(($) => $.mfa.useAnotherAccount)}
           </LinkButton>
-          <ErrorNotice
+          <ErrorToast
             error={cancellation.error}
             message={t(($) => $.validation.requestFailed)}
           />

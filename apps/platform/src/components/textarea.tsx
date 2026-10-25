@@ -7,16 +7,6 @@ import {
 
 export type TextareaProps = ComponentProps<"textarea"> & TextareaVariantProps;
 
-export function Textarea({
-  variant,
-  size,
-  className,
-  ...props
-}: TextareaProps) {
-  return (
-    <textarea
-      {...props}
-      className={cx(textarea({ variant, size }), className)}
-    />
-  );
+export function Textarea({ size, className, ...props }: TextareaProps) {
+  return <textarea {...props} className={cx(textarea({ size }), className)} />;
 }

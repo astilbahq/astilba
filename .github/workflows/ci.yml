@@ -207,6 +207,11 @@ jobs:
           PW_TEST_CONNECT_WS_ENDPOINT: ws://127.0.0.1:54190/
           PW_TEST_CONNECT_EXPOSE_NETWORK: "<loopback>"
           WRANGLER_SEND_METRICS: "false"
+      - name: Verify UI workshop
+        run: pnpm --filter @astilba/dashboard storybook:test
+        env:
+          PW_TEST_CONNECT_WS_ENDPOINT: ws://127.0.0.1:54190/
+          PW_TEST_CONNECT_EXPOSE_NETWORK: "<loopback>"
       - name: Stop browser server
         if: ${{ always() && steps.browsers.outputs.container != '' }}
         env:

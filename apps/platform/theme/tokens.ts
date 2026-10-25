@@ -1,7 +1,12 @@
 import { defineSemanticTokens, defineTokens } from "@pandacss/dev";
 
 export const tokens = defineTokens({
-  spacing: { "18": { value: "72px" }, hairline: { value: "1px" } },
+  spacing: {
+    "18": { value: "72px" },
+    hairline: { value: "1px" },
+    toast: { rise: { value: "60px" } },
+  },
+  zIndex: { toast: { value: 1700 } },
   fontWeights: { brand: { value: 650 } },
   lineHeights: {
     body: { value: 1.6 },
@@ -27,6 +32,7 @@ export const tokens = defineTokens({
     viewport: { value: "100dvh" },
     control: { sm: { value: "40px" }, md: { value: "46px" } },
     auth: { content: { value: "360px" } },
+    toast: { value: "360px" },
     shell: { value: "1440px" },
     editor: { value: "360px" },
     log: { value: "280px" },
@@ -40,7 +46,9 @@ export const tokens = defineTokens({
     theme: { value: "250ms" },
     menu: { open: { value: "250ms" }, close: { value: "150ms" } },
     tooltip: { open: { value: "150ms" }, close: { value: "50ms" } },
+    toast: { open: { value: "350ms" }, close: { value: "250ms" } },
   },
+  blurs: { toast: { enter: { value: "2px" }, depth: { value: "1px" } } },
   easings: {
     menu: { value: "cubic-bezier(0.22, 1, 0.36, 1)" },
     theme: { value: "ease-in-out" },
@@ -59,6 +67,13 @@ export const tokens = defineTokens({
 
 export const semanticTokens = defineSemanticTokens({
   shadows: {
+    toast: {
+      value: {
+        base: "0 0 0 1px rgba(0, 0, 0, 0.06), 0 4px 12px rgba(0, 0, 0, 0.06)",
+        _dark:
+          "0 0 0 1px rgba(255, 255, 255, 0.08), 0 4px 12px rgba(0, 0, 0, 0.24)",
+      },
+    },
     menu: {
       value: {
         base: "0 0 0 1px rgba(0, 0, 0, 0.06), 0 2px 6px 0 rgba(0, 0, 0, 0.05), 0 4px 42px 0 rgba(0, 0, 0, 0.06)",
@@ -88,8 +103,7 @@ export const semanticTokens = defineSemanticTokens({
       focus: { value: "{colors.control.interactiveBorder}" },
     },
     control: {
-      border: { value: { base: "#909090", _dark: "#666666" } },
-      quietBorder: { value: { base: "#dedede", _dark: "#3a3a3a" } },
+      border: { value: { base: "#939393", _dark: "#616161" } },
       interactiveBorder: { value: { base: "#8c8c8c", _dark: "#707070" } },
     },
     action: {
@@ -110,8 +124,7 @@ export const semanticTokens = defineSemanticTokens({
       subtle: { value: "{colors.subtle}" },
       surface: { value: "{colors.surface}" },
       page: { value: "{colors.page}" },
-      border: { value: "{colors.control.quietBorder}" },
-      controlBorder: { value: "{colors.control.border}" },
+      border: { value: "{colors.control.border}" },
       action: { value: "{colors.action.solid}" },
       onAction: { value: "{colors.action.contrast}" },
       actionHover: { value: "{colors.action.hover}" },

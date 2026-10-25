@@ -172,9 +172,14 @@ test("two-factor sign-in separates authenticator and recovery modes and preserve
     )
     .toBe(enrollmentCode);
   await page.getByRole("button", { name: "Verify", exact: true }).click();
-  await expect(page.getByRole("alert")).toHaveText(
+  await expect(codeGroup).toHaveAccessibleDescription(
     "This authentication code is invalid or has already been used. Try a new code.",
   );
+  await expect(code).toBeFocused();
+  for (const slot of await slots.all()) {
+    await expect(slot).toHaveAttribute("aria-invalid", "true");
+  }
+  await expect(page.getByRole("alert")).toHaveCount(0);
   await expect
     .poll(() =>
       slots.evaluateAll((inputs) =>
@@ -215,9 +220,12 @@ test("two-factor sign-in separates authenticator and recovery modes and preserve
   }
   await recovery.fill("invalid-recovery-code");
   await page.getByRole("button", { name: "Verify", exact: true }).click();
-  await expect(page.getByRole("alert")).toHaveText(
+  await expect(recovery).toHaveAccessibleDescription(
     "This recovery code is invalid or has already been used. Try another code.",
   );
+  await expect(recovery).toBeFocused();
+  await expect(recovery).toHaveAttribute("aria-invalid", "true");
+  await expect(page.getByRole("alert")).toHaveCount(0);
   await expect(recovery).toHaveValue("invalid-recovery-code");
   await page.getByRole("button", { name: "Use an authenticator code" }).click();
   await expect(code).toHaveValue("");
@@ -250,7 +258,7 @@ test("two-factor sign-in separates authenticator and recovery modes and preserve
   // A successful logout followed by a failed refresh must explain the failure.
   await page.route("**/api/v1/session", (route) => route.abort());
   await page.getByRole("button", { name: "Use another account" }).click();
-  await expect(page.getByRole("alert")).toContainText(
+  await expect(page.getByRole("dialog")).toContainText(
     "The request could not be completed. Try again.",
   );
   await expect(

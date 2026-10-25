@@ -5,8 +5,6 @@ import { select, type SelectVariantProps } from "../../styled-system/recipes";
 export type SelectProps = Omit<ComponentProps<"select">, "size"> &
   SelectVariantProps;
 
-export function Select({ variant, size, className, ...props }: SelectProps) {
-  return (
-    <select {...props} className={cx(select({ variant, size }), className)} />
-  );
+export function Select({ size, className, ...props }: SelectProps) {
+  return <select {...props} className={cx(select({ size }), className)} />;
 }

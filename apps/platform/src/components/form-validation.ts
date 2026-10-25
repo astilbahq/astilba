@@ -4,6 +4,9 @@ export type FieldValidator = (value: unknown) => string | null;
 
 export type FormValidation = {
   fields: Readonly<Record<string, FieldValidator>>;
+  // Field-specific API error codes render inline instead of in the form alert.
+  errorFields?: Readonly<Record<string, readonly string[]>>;
+  isRequestFailure?: (error: unknown) => boolean;
   message: (error: unknown, field?: string) => string;
 };
 

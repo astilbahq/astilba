@@ -8,6 +8,14 @@
   "language": { "label": "Language", "automatic": "Automatic" },
   "password": { "show": "Show password", "hide": "Hide password" },
   "otp": { "character": "Character {{position}} of {{length}}" },
+  "toast": {
+    "region": "Notifications",
+    "dismiss": "Dismiss notification",
+    "error": "Request failed",
+    "success": "Success",
+    "notification": "Notification"
+  },
+  "connectionUnavailable": "Unable to connect",
   "skipContent": "Skip to content",
   "loading": "Loading…",
   "working": "Working…",

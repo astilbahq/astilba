@@ -1,4 +1,5 @@
 import { DirectionProvider } from "@base-ui/react/direction-provider";
+import type { i18n as I18n } from "i18next";
 import {
   createContext,
   type ReactNode,
@@ -16,16 +17,23 @@ import {
   type LocalePreference,
 } from "./locale";
 
-const LocaleContext = createContext<{
+export const LocaleContext = createContext<{
   preference: LocalePreference;
   setPreference: (preference: LocalePreference) => void;
 }>({ preference: "auto", setPreference: () => {} });
 
-function LocaleState({ children }: { children: ReactNode }) {
+function LocaleState({
+  children,
+  availableLocales,
+}: {
+  children: ReactNode;
+  availableLocales: typeof locales;
+}) {
   const { i18n } = useTranslation();
   const [preference, setPreference] = useState(readLocalePreference);
   const locale =
-    locales.find(({ code }) => code === i18n.language) ?? locales[0];
+    availableLocales.find(({ code }) => code === i18n.language) ??
+    availableLocales[0];
   useLayoutEffect(() => {
     document.documentElement.lang = locale.language;
     document.documentElement.dir = locale.direction;
@@ -50,10 +58,18 @@ function LocaleState({ children }: { children: ReactNode }) {
   );
 }
 
-export function LocaleProvider({ children }: { children: ReactNode }) {
+export function LocaleProvider({
+  children,
+  instance = i18n,
+  availableLocales = locales,
+}: {
+  children: ReactNode;
+  instance?: I18n;
+  availableLocales?: typeof locales;
+}) {
   return (
-    <I18nextProvider i18n={i18n}>
-      <LocaleState>{children}</LocaleState>
+    <I18nextProvider i18n={instance}>
+      <LocaleState availableLocales={availableLocales}>{children}</LocaleState>
     </I18nextProvider>
   );
 }
