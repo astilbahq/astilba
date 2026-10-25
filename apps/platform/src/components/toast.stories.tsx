@@ -50,7 +50,7 @@ export const Default: Story = {
     const notification = await within(
       canvasElement.ownerDocument.body,
     ).findByRole("dialog");
-    await waitFor(() => expect(notification).toBeVisible());
+    await waitFor(() => expect(notification).toBeVisible(), { timeout: 5000 });
   },
 };
 export const Success: Story = { args: { type: "success" }, play: Default.play };

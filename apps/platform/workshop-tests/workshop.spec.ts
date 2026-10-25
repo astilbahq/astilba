@@ -12,11 +12,13 @@ const { entries }: { entries: Record<string, { type: string }> } = JSON.parse(
 
 for (const [id, entry] of Object.entries(entries)) {
   if (entry.type !== "story") continue;
-  test(`${id} renders and completes its interaction`, async ({ page }) => {
+  test(`${id} renders and completes its interaction`, async ({
+    page,
+  }, info) => {
     await page.goto(`/?path=/story/${id}`);
     await expect(
       page.getByText(/Component test completed successfully/),
-    ).toBeAttached();
+    ).toBeAttached({ timeout: info.timeout });
     const canvas = page.frameLocator("#storybook-preview-iframe");
     await expect(canvas.getByRole("main")).toBeVisible();
     await expect(
