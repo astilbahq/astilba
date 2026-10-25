@@ -2,7 +2,7 @@ import { defineRecipe } from "@pandacss/dev";
 
 export const inputRecipe = defineRecipe({
   className: "input",
-  jsx: ["Input", "Field"],
+  jsx: ["Input", "Field", "OTPInput"],
   base: {
     inlineSize: "full",
     minInlineSize: "0",

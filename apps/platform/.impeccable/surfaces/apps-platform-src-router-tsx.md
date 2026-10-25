@@ -8,6 +8,7 @@ related_targets:
     "apps/platform/src/features/auth/auth.styles.ts",
     "apps/platform/src/features/auth/password-reset.tsx",
     "apps/platform/src/features/auth/invitation.tsx",
+    "apps/platform/src/features/auth/mfa-challenge.tsx",
   ]
 ---
 
@@ -38,3 +39,5 @@ APPEARANCE: A 40px ghost icon button sits at the top inline-end, 16px from the e
 MENU MOTION: The shared dropdown uses a 250ms scale-and-fade entrance (0.97 → 1) and 150ms exit (1 → 0.99), anchored to the trigger through Base UI. Timing is tokenised; reduced-motion mode is instant and closing popups ignore pointer input.
 
 MENU FINISH: 12px popup corners, 6px padding, 13px text; 32px minimum rows with 8px corners and icon gaps, and 16px icons. Neutral hover fill is #f4f4f5 in light mode and 4% white in dark mode. Item hover fills transition over 200ms with the shared button timing; focus outlines remain immediate. Theme-specific layered shadows replace the border; forced colours retain a visible system border. Theme changes use one 250ms snapshot crossfade, with component transitions temporarily disabled and then restored. Initial load, reduced motion and unsupported browsers switch immediately.
+
+TWO-FACTOR SIGN-IN: An authenticator-code form is the default after password verification. The owner selected six empty Base UI OTP slots using the outline shared input recipe, without placeholder dashes, with tokenised spacing and an explicit Verify button. Full-code paste, one-time-code autocomplete and a numeric keyboard remain available. A separate recovery-code mode keeps one quiet text input, reached through “Use recovery code” below Verify. A quieter “Use another account” action follows it. Keyboard order matches this visible sequence. Both modes have specific instructions and validation, and a keyboard-accessible way back. Slots stay LTR, including arrow-key behavior, inside RTL pages. Switching stages clears the prior stage’s input and errors and focuses the heading; language changes preserve the current draft and focus. Use another account ends the pending session, preserving the safe return destination. Password reset remains on the initial sign-in screen.

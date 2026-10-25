@@ -9,6 +9,7 @@ import { fieldRecipe } from "./theme/recipes/field";
 import { inputRecipe } from "./theme/recipes/input";
 import { linkRecipe } from "./theme/recipes/link";
 import { menuRecipe } from "./theme/recipes/menu";
+import { otpInputRecipe } from "./theme/recipes/otp-input";
 import { passwordInputRecipe } from "./theme/recipes/password-input";
 import { selectRecipe } from "./theme/recipes/select";
 import { textareaRecipe } from "./theme/recipes/textarea";
@@ -39,6 +40,7 @@ export default defineConfig({
       slotRecipes: {
         field: fieldRecipe,
         menu: menuRecipe,
+        otpInput: otpInputRecipe,
         passwordInput: passwordInputRecipe,
         tooltip: tooltipRecipe,
       },

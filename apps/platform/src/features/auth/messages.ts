@@ -16,6 +16,8 @@ export function createAuthMessages(t: TFunction<"auth">) {
     nameTooLong: ({ maximum }: { maximum: number }) =>
       t(($) => $.validation.nameTooLong, { count: maximum }),
     codeRequired: t(($) => $.validation.codeRequired),
+    recoveryCodeRequired: t(($) => $.validation.recoveryCodeRequired),
+    invalidRecoveryCode: t(($) => $.validation.invalidRecoveryCode),
     invalidFields: t(($) => $.validation.invalidFields),
     invalidValue: t(($) => $.validation.invalidValue),
     invalidPassword: t(($) => $.validation.invalidPassword),

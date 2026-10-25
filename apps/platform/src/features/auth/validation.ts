@@ -50,11 +50,20 @@ export function createAuthValidation(messages: AuthMessages) {
         },
       ),
   );
-  const code = validateWith(z.string().trim().min(1, messages.codeRequired));
+  const code = validateWith(
+    z
+      .string()
+      .trim()
+      .regex(/^\d{6}$/, messages.codeRequired),
+  );
+  const recoveryCode = validateWith(
+    z.string().trim().min(1, messages.recoveryCodeRequired),
+  );
 
   function form(
     fields: FormValidation["fields"],
     credentialsMessage: string = messages.invalidCredentials,
+    codeMessage: string = messages.invalidCode,
   ): FormValidation {
     return {
       fields,
@@ -73,7 +82,7 @@ export function createAuthValidation(messages: AuthMessages) {
             if (!field) return messages.invalidFields;
             if (field === "email") return messages.emailInvalid;
             if (field === "password") return messages.invalidPassword;
-            if (field === "code") return messages.invalidCode;
+            if (field === "code") return codeMessage;
             return messages.invalidValue;
           default:
             return messages.requestFailed;
@@ -85,6 +94,11 @@ export function createAuthValidation(messages: AuthMessages) {
   return {
     signIn: form({ email, password }),
     mfa: form({ code }, messages.invalidCode),
+    recovery: form(
+      { code: recoveryCode },
+      messages.invalidRecoveryCode,
+      messages.invalidRecoveryCode,
+    ),
     resetRequest: form({ email }),
     resetPassword: form({ password: newPassword }, messages.invalidResetLink),
     invitation: form(

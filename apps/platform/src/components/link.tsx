@@ -19,3 +19,19 @@ export function Anchor({
 }
 
 export const Link = createLink(Anchor);
+import { Button as BaseButton } from "@base-ui/react/button";
+
+export function LinkButton({
+  variant,
+  className,
+  type = "button",
+  ...props
+}: ComponentProps<"button"> & LinkVariantProps) {
+  return (
+    <BaseButton
+      {...props}
+      type={type}
+      className={cx(link({ variant }), className)}
+    />
+  );
+}

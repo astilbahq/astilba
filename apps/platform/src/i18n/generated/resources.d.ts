@@ -19,12 +19,19 @@ export default interface Resources {
       "title": "Join a workspace"
     },
     "mfa": {
-      "code": "Authenticator or recovery code",
-      "description": "Enter an authenticator or recovery code to continue.",
+      "code": "Authentication code",
+      "codePlaceholder": "Enter your six-digit code",
+      "description": "Enter the six-digit code from your authenticator app.",
       "pageTitle": "Verify it’s you · Astilba",
-      "reset": "Reset password",
+      "recoveryCode": "Recovery code",
+      "recoveryDescription": "Enter one of the recovery codes you saved when you set up two-factor authentication. Each code can only be used once.",
+      "recoveryPlaceholder": "Enter your recovery code",
+      "recoveryTitle": "Use a recovery code",
       "submit": "Verify",
-      "title": "Verify it’s you"
+      "title": "Verify it’s you",
+      "useAnotherAccount": "Use another account",
+      "useAuthenticator": "Use an authenticator code",
+      "useRecovery": "Use recovery code"
     },
     "reset": {
       "complete": "You can now sign in with your new password.",
@@ -67,15 +74,16 @@ export default interface Resources {
       "workspace": "Workspace name"
     },
     "validation": {
-      "codeRequired": "Enter an authenticator or recovery code.",
+      "codeRequired": "Enter the six-digit code from your authenticator app.",
       "emailInvalid": "Enter a valid email address.",
       "emailRequired": "Enter your email address.",
       "emailTooLong": "Use an email address of {{maximum}} bytes or fewer.",
-      "invalidCode": "Check your authenticator or recovery code and try again.",
+      "invalidCode": "This authentication code is invalid or has already been used. Try a new code.",
       "invalidCredentials": "The email or password is incorrect.",
       "invalidFields": "Check the form details and try again.",
       "invalidInvitation": "This invitation link is invalid or has expired.",
       "invalidPassword": "Check your password and try again.",
+      "invalidRecoveryCode": "This recovery code is invalid or has already been used. Try another code.",
       "invalidResetLink": "This reset link is invalid or has expired.",
       "invalidValue": "Check this value and try again.",
       "invitationSignIn": "Sign in as the invited account before accepting.",
@@ -87,6 +95,7 @@ export default interface Resources {
       "passwordTooLong": "Use {{count}} character or fewer for your password." | "Use {{count}} characters or fewer for your password.",
       "passwordTooShort": "Use at least {{count}} character for your password." | "Use at least {{count}} characters for your password.",
       "rateLimited": "Too many attempts. Try again later.",
+      "recoveryCodeRequired": "Enter a recovery code.",
       "requestFailed": "The request could not be completed. Try again."
     }
   },
@@ -104,6 +113,9 @@ export default interface Resources {
     },
     "loading": "Loading…",
     "notFound": "Page not found.",
+    "otp": {
+      "character": "Character {{position}} of {{length}}"
+    },
     "password": {
       "hide": "Hide password",
       "show": "Show password"

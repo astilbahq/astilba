@@ -14,13 +14,19 @@ export const fieldRecipe = defineSlotRecipe({
     hasAction: {
       true: {
         root: {
-          gridTemplateColumns: "minmax(0, 1fr) auto",
+          display: "flex",
+          flexWrap: "wrap",
           alignItems: "baseline",
           columnGap: "3",
         },
-        header: { gridColumn: "1", gridRow: "1" },
-        control: { gridColumn: "1 / -1", gridRow: "2" },
-        action: { gridColumn: "2", gridRow: "1" },
+        header: { maxInlineSize: "full" },
+        control: { order: 2, flexBasis: "full" },
+        action: {
+          order: 1,
+          maxInlineSize: "full",
+          marginInlineStart: "auto",
+        },
+        error: { order: 3, flexBasis: "full" },
       },
     },
   },

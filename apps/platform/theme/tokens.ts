@@ -88,7 +88,7 @@ export const semanticTokens = defineSemanticTokens({
       focus: { value: "{colors.control.interactiveBorder}" },
     },
     control: {
-      border: { value: { base: "#898989", _dark: "#858585" } },
+      border: { value: { base: "#909090", _dark: "#666666" } },
       quietBorder: { value: { base: "#dedede", _dark: "#3a3a3a" } },
       interactiveBorder: { value: { base: "#8c8c8c", _dark: "#707070" } },
     },

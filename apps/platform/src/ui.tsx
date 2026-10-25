@@ -152,6 +152,9 @@ export function Field({
   type = "text",
   required = true,
   autoComplete,
+  inputMode,
+  autoCapitalize,
+  spellCheck,
   minLength,
   labelAction,
   placeholder,
@@ -164,6 +167,9 @@ export function Field({
   type?: string;
   required?: boolean;
   autoComplete?: string;
+  inputMode?: InputProps["inputMode"];
+  autoCapitalize?: InputProps["autoCapitalize"];
+  spellCheck?: InputProps["spellCheck"];
   minLength?: number;
   labelAction?: ReactNode;
   placeholder?: string;
@@ -211,6 +217,9 @@ export function Field({
           }
           required={required}
           autoComplete={autoComplete}
+          inputMode={inputMode}
+          autoCapitalize={autoCapitalize}
+          spellCheck={spellCheck}
           minLength={minLength}
           placeholder={placeholder}
         />

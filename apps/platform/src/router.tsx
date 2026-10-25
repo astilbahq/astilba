@@ -21,6 +21,7 @@ import { Alerts } from "./features/alerts";
 import { AuthFrame } from "./features/auth/auth-frame";
 import * as authStyles from "./features/auth/auth.styles";
 import { Invitation } from "./features/auth/invitation";
+import { MFAChallenge } from "./features/auth/mfa-challenge";
 import { PasswordReset } from "./features/auth/password-reset";
 import { useAuthValidation } from "./features/auth/use-auth-validation";
 import { GitHubCallback, GitHubInstalled } from "./features/github-app";
@@ -184,107 +185,65 @@ function SignIn() {
   }, [signedIn, router, returnTo]);
   const hosting = useQuery(hostingOptions).data;
   const action = useAction();
+  if (session?.mfaPending) return <MFAChallenge />;
   if (signedIn) return <p role="status">{t(($) => $.signIn.opening)}</p>;
   return (
     <div className={authStyles.flow}>
-      <div>
-        <h1>
-          {session?.mfaPending
-            ? t(($) => $.mfa.title)
-            : t(($) => $.signIn.title)}
-        </h1>
-        {session?.mfaPending && (
-          <p className={s.muted}>{t(($) => $.mfa.description)}</p>
-        )}
-      </div>
+      <h1>{t(($) => $.signIn.title)}</h1>
       <section className={s.stack}>
-        {session?.mfaPending ? (
-          <Form
-            action={action}
-            validation={authValidation.mfa}
-            onSubmit={(d) =>
-              action.run(async () =>
-                setSession(
-                  await result(
-                    client.POST("/api/v1/auth/mfa", {
-                      body: { code: text(d, "code") },
-                    }),
-                  ),
+        <Form
+          action={action}
+          validation={authValidation.signIn}
+          onSubmit={(d) =>
+            action.run(async () =>
+              setSession(
+                await result(
+                  client.POST("/api/v1/auth/login", {
+                    body: {
+                      email: text(d, "email"),
+                      password: text(d, "password"),
+                    },
+                  }),
                 ),
-              )
+              ),
+            )
+          }
+        >
+          <Field
+            name="email"
+            label={t(($) => $.signIn.email)}
+            type="email"
+            autoComplete="username"
+            placeholder={t(($) => $.signIn.emailPlaceholder)}
+            variant="quiet"
+          />
+          <Field
+            name="password"
+            label={t(($) => $.signIn.password)}
+            type="password"
+            autoComplete="current-password"
+            inputComponent={PasswordInput}
+            placeholder={t(($) => $.signIn.passwordPlaceholder)}
+            variant="quiet"
+            labelAction={
+              <Link
+                to="/reset"
+                variant="plain"
+                className={authStyles.recoveryLink}
+              >
+                {t(($) => $.signIn.forgotPassword)}
+              </Link>
             }
-          >
-            <Field
-              name="code"
-              label={t(($) => $.mfa.code)}
-              autoComplete="one-time-code"
-            />
-            <BusyButton busy={action.isPending}>
-              {t(($) => $.mfa.submit)}
-            </BusyButton>
-          </Form>
-        ) : (
-          <Form
-            action={action}
-            validation={authValidation.signIn}
-            onSubmit={(d) =>
-              action.run(async () =>
-                setSession(
-                  await result(
-                    client.POST("/api/v1/auth/login", {
-                      body: {
-                        email: text(d, "email"),
-                        password: text(d, "password"),
-                      },
-                    }),
-                  ),
-                ),
-              )
-            }
-          >
-            <Field
-              name="email"
-              label={t(($) => $.signIn.email)}
-              type="email"
-              autoComplete="username"
-              placeholder={t(($) => $.signIn.emailPlaceholder)}
-              variant="quiet"
-            />
-            <Field
-              name="password"
-              label={t(($) => $.signIn.password)}
-              type="password"
-              autoComplete="current-password"
-              inputComponent={PasswordInput}
-              placeholder={t(($) => $.signIn.passwordPlaceholder)}
-              variant="quiet"
-              labelAction={
-                <Link
-                  to="/reset"
-                  variant="plain"
-                  className={authStyles.recoveryLink}
-                >
-                  {t(($) => $.signIn.forgotPassword)}
-                </Link>
-              }
-            />
-            <BusyButton busy={action.isPending}>
-              {t(($) => $.signIn.submit)}
-            </BusyButton>
-          </Form>
-        )}
-        {(session?.mfaPending || hosting?.enabled) && (
+          />
+          <BusyButton busy={action.isPending}>
+            {t(($) => $.signIn.submit)}
+          </BusyButton>
+        </Form>
+        {hosting?.enabled && (
           <div className={authStyles.secondaryActions}>
-            {session?.mfaPending && (
-              <Link to="/reset" className={authStyles.secondaryLink}>
-                {t(($) => $.mfa.reset)}
-              </Link>
-            )}
-            {hosting?.enabled && (
-              <Link to="/signup" className={authStyles.secondaryLink}>
-                {t(($) => $.signIn.hostedBeta)}
-              </Link>
-            )}
+            <Link to="/signup" className={authStyles.secondaryLink}>
+              {t(($) => $.signIn.hostedBeta)}
+            </Link>
           </div>
         )}
       </section>

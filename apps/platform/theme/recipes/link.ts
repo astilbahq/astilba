@@ -2,12 +2,13 @@ import { defineRecipe } from "@pandacss/dev";
 
 export const linkRecipe = defineRecipe({
   className: "link",
-  jsx: ["Link", "Anchor"],
+  jsx: ["Link", "Anchor", "LinkButton"],
   base: {
     color: "link.fg",
     cursor: "pointer",
     borderRadius: "xs",
     textUnderlineOffset: "4px",
+    _disabled: { opacity: 0.55, cursor: "not-allowed" },
     _focusVisible: {
       outline: "2px solid token(colors.link.focus)",
       outlineOffset: "3px",
@@ -19,6 +20,11 @@ export const linkRecipe = defineRecipe({
       plain: {
         textDecoration: "none",
         _hover: { textDecoration: "underline" },
+      },
+      subtle: {
+        color: "subtle",
+        textDecoration: "none",
+        _hover: { color: "link.fg", textDecoration: "underline" },
       },
       navigation: {
         paddingBlock: "2",

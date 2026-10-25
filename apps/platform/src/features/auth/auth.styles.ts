@@ -83,6 +83,8 @@ export const secondaryActions = css({
 export const secondaryLink = css({
   display: "inline-block",
   minBlockSize: "6",
+  justifySelf: "start",
+  textAlign: "start",
 });
 export const backLink = css({
   justifySelf: "center",

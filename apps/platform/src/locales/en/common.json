@@ -7,6 +7,7 @@
   },
   "language": { "label": "Language", "automatic": "Automatic" },
   "password": { "show": "Show password", "hide": "Hide password" },
+  "otp": { "character": "Character {{position}} of {{length}}" },
   "skipContent": "Skip to content",
   "loading": "Loading…",
   "working": "Working…",
