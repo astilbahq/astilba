@@ -12,6 +12,8 @@ export default {
         "/api/",
         "/agent/v1/",
         "/agent-artifacts/",
+        "/agent-public-key.pem",
+        "/onboarding/bootstrap.sh",
         "/hooks/git/",
         "/hooks/stripe",
         "/hooks/github-app",

@@ -271,14 +271,16 @@ export function text(data: FormData, name: string) {
 }
 export function BusyButton({
   busy,
+  disabled = false,
   children,
 }: {
   busy: boolean;
+  disabled?: boolean;
   children: ReactNode;
 }) {
   const { t } = useTranslation("common");
   return (
-    <Button type="submit" variant="primary" disabled={busy}>
+    <Button type="submit" variant="primary" disabled={busy || disabled}>
       {busy ? t(($) => $.working) : children}
     </Button>
   );

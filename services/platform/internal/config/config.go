@@ -2,6 +2,7 @@ package config
 
 import (
 	"errors"
+	"github.com/astilbahq/astilba/services/platform/internal/applicationdns"
 	"github.com/astilbahq/astilba/services/platform/internal/hosting"
 	"net"
 	"net/netip"
@@ -18,6 +19,7 @@ type Config struct {
 	LogRetention                                      time.Duration
 	DatabaseURL, Keyring, KeyringJSON, Listen, Origin string
 	Development, Hosted                               bool
+	ApplicationDNS                                    applicationdns.Config
 	SMTP                                              mailer.Config
 	Hosting                                           hosting.Config
 	TrustedProxies                                    []netip.Prefix
@@ -25,6 +27,7 @@ type Config struct {
 
 func Load() (Config, error) {
 	c := Config{DatabaseURL: os.Getenv("ASTILBA_DATABASE_URL"), Keyring: os.Getenv("ASTILBA_KEYRING"), KeyringJSON: os.Getenv("ASTILBA_KEYRING_JSON"), Listen: os.Getenv("ASTILBA_LISTEN"), Origin: os.Getenv("ASTILBA_ORIGIN"), Development: os.Getenv("ASTILBA_DEVELOPMENT") == "true", Hosted: os.Getenv("ASTILBA_HOSTED") == "true"}
+	c.ApplicationDNS = applicationdns.Config{Base: os.Getenv("ASTILBA_APPLICATION_DOMAIN"), Zone: os.Getenv("ASTILBA_DNS_CLOUDFLARE_ZONE"), Token: os.Getenv("ASTILBA_DNS_CLOUDFLARE_TOKEN")}
 	days := 30
 	if raw := os.Getenv("ASTILBA_LOG_RETENTION_DAYS"); raw != "" {
 		n, e := strconv.Atoi(raw)
@@ -69,6 +72,9 @@ func Load() (Config, error) {
 	return c, nil
 }
 func (c Config) ValidateServer() error {
+	if e := c.ApplicationDNS.Validate(c.Origin); e != nil {
+		return e
+	}
 	u, e := url.Parse(c.Origin)
 	if e != nil || u.Host == "" || u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
 		return errors.New("ASTILBA_ORIGIN must be an exact origin without a path")

@@ -1,6 +1,6 @@
 # Astilba platform implementation plan
 
-Status: updated 25 October 2026. P0–P12 are implemented, and the private-alpha acceptance and management update are complete. P13 scoped automation is in progress; isolated previews follow separately after P14 domain support. P14–P18 remain later increments. Paid admission still requires measured operating limits and launch settings.
+Status: updated 25 October 2026. P0–P12 are implemented, and the private-alpha acceptance and management update are complete. P13 scoped automation is in progress; isolated previews follow separately after P14 domain support. P14 server/domain onboarding is in progress; P15–P18 remain later increments. Paid admission still requires measured operating limits and launch settings.
 
 Build the [architecture](platform-architecture.md) in vertical increments. Prove the execution model on disposable infrastructure before expanding the editor and service catalogue. Each milestone ends in a demonstrable user journey and the tests needed to support its claims. The [product brief](platform-product-brief.md) remains the guide to product scope.
 
@@ -288,9 +288,12 @@ The first increment covers owner-issued credentials for exactly one environment,
 
 Then add isolated pull-request environments with explicit fork approval, independent secrets/storage, optional generated domains, resource and concurrency limits, and idempotent cleanup on closure. A preview cannot inherit production secrets or address a production resource. GitHub App onboarding, useful build caching, generic bindings and stateless release handling are prerequisites. Verify webhook replay, reopened PRs, offline agents and cleanup after lost acknowledgements.
 
-## P14–P18 Later increments
+## P14 Server and domain onboarding
 
-- **P14 Server/domain onboarding:** a reviewable supported-host bootstrap, signed agent enrollment and optional per-installation wildcard application domains. Preserve outbound connections and explicit approval of host/network changes; no mandatory DNS provider.
+The implementation adds a reviewable checksum-pinned supported-host bootstrap, independently pinned signed agent verification, preparation before one-use enrollment and role/certificate-contact checks. Optional generated application names use per-server wildcard DNS pointed directly at owner-approved public addresses. Manual DNS remains provider-neutral; the optional Cloudflare adapter reconciles only installation-owned records and requires renewed approval after management recovery. Names are staged into drafts and retain normal source ownership and plan/apply authority. Custom-domain DNS observations remain separate from ownership, TLS and application health. See [Server and domain onboarding](server-onboarding.md). Native fresh-host acceptance runs on both architectures in CI alongside the existing enrollment and host suites.
+
+## P15–P18 Later increments
+
 - **P15 General scheduling:** useful cron/interval expressions, with documented timezone/DST, overlap, timeout and missed-run semantics that continue when management is offline.
 - **P16 Replicas and placement:** begin with stateless same-host replicas. Define cross-host routing, private networking, storage restrictions and failure domains before multi-host scheduling. Multiple enrolled servers alone do not provide high availability; Kubernetes remains a separate scope decision.
 - **P17 Troubleshooting:** dedicated short-lived resource-scoped container sessions, permissions and audit. Add filesystem access or private-service tunnels only with explicit boundaries; do not place arbitrary shell commands in the deployment API.

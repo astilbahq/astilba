@@ -13,6 +13,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
 
 func project(v db.Project) api.Project {
@@ -163,8 +164,11 @@ func (s *Server) UpdateDraft(w http.ResponseWriter, r *http.Request, ws, pid, id
 	}
 	var out api.Revision
 	var current *api.Revision
-	e = s.Store.InWorkspace(r.Context(), *principal(r.Context()), ws, true, false, false, func(q *db.Queries, _ store.Workspace) error {
+	e = s.Store.InWorkspaceTx(r.Context(), *principal(r.Context()), ws, true, false, false, func(tx pgx.Tx, q *db.Queries, _ store.Workspace) error {
 		ctx := r.Context()
+		if e := s.Store.ValidateApplicationRoutes(ctx, tx, ws, id, spec, nil); e != nil {
+			return e
+		}
 		env, e := q.GetEnvironment(ctx, db.GetEnvironmentParams{WorkspaceID: ws, ProjectID: pid, ID: id})
 		if e != nil {
 			return e

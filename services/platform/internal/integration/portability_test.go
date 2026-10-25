@@ -20,6 +20,7 @@ import (
 
 func TestEncryptedWorkspaceExportPreservesIdentityWithoutInstallationKeys(t *testing.T) {
 	f := setup(t)
+	f.st.ApplicationDomain = "apps.example.test"
 	browser := f.browser(t)
 	session := browser.login("owner@example.test", f.password)
 	ws := session.Workspaces[0].Id
@@ -34,6 +35,7 @@ func TestEncryptedWorkspaceExportPreservesIdentityWithoutInstallationKeys(t *tes
 	if _, e := f.execution.Enroll(context.Background(), enroll); e != nil {
 		t.Fatal(e)
 	}
+	browser.call("PUT", "/api/v1/workspaces/"+ws.String()+"/servers/"+server.Server.Id.String()+"/domain", api.ConfigureServerDomain{Ipv4: "198.51.100.7"}, 200, nil)
 	connection := pipeline.Connection{ID: uuid.New(), Name: "Repository", Provider: "github", BaseURL: "https://github.com", Repository: "example/application", RepositoryID: 42, Private: true}
 	access := pipeline.Access{API: pipeline.Credential{Password: "git-token-canary"}, Webhook: "webhook-canary"}
 	rawAccess, _ := json.Marshal(access)
@@ -84,7 +86,7 @@ func TestEncryptedWorkspaceExportPreservesIdentityWithoutInstallationKeys(t *tes
 	if e != nil || string(value) != "portable-secret-canary" {
 		t.Fatal("secret was not unwrapped into encrypted archive")
 	}
-	for _, forbidden := range []string{"accounts", "memberships", "sessions", "hosted_subscriptions", "river_job"} {
+	for _, forbidden := range []string{"accounts", "memberships", "sessions", "hosted_subscriptions", "river_job", "server_domains", "dns_installation"} {
 		if _, ok := archive.Tables[forbidden]; ok {
 			t.Fatal("installation-private table exported", forbidden)
 		}

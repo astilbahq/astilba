@@ -16,6 +16,7 @@ import (
 
 	dbmigrate "github.com/astilbahq/astilba/services/platform/db"
 	"github.com/astilbahq/astilba/services/platform/internal/agentrelease"
+	"github.com/astilbahq/astilba/services/platform/internal/applicationdns"
 	"github.com/astilbahq/astilba/services/platform/internal/auth"
 	"github.com/astilbahq/astilba/services/platform/internal/billing"
 	"github.com/astilbahq/astilba/services/platform/internal/config"
@@ -87,6 +88,7 @@ func run() error {
 	st := store.New(pool, keys, c.Hosted)
 	st.Hosting = c.Hosting
 	st.LogRetention = c.LogRetention
+	st.ApplicationDomain = c.ApplicationDNS.Base
 	switch os.Args[1] {
 	case "invite":
 		f := flag.NewFlagSet("invite", flag.ContinueOnError)
@@ -261,7 +263,27 @@ func run() error {
 				return err
 			}
 			api.ArtifactDirectory = dir
+			api.AgentReleaseKey = key
 		}
+		if c.ApplicationDNS.Token != "" {
+			api.Execution.DNS = &applicationdns.Cloudflare{Zone: c.ApplicationDNS.Zone, Token: c.ApplicationDNS.Token}
+		}
+		go func() {
+			ticker := time.NewTicker(time.Minute)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					sweep, cancel := context.WithTimeout(ctx, 20*time.Second)
+					if err := api.Execution.SweepDomains(sweep); err != nil && ctx.Err() == nil {
+						slog.Warn("application DNS reconciliation sweep failed")
+					}
+					cancel()
+				}
+			}
+		}()
 		if e = api.Execution.Start(ctx); e != nil {
 			return e
 		}

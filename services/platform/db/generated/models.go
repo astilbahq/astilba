@@ -131,6 +131,11 @@ type DeploymentUnit struct {
 	ServerID      *uuid.UUID `json:"server_id"`
 }
 
+type DnsInstallation struct {
+	Singleton bool      `json:"singleton"`
+	ID        uuid.UUID `json:"id"`
+}
+
 type EmailVerification struct {
 	AccountID uuid.UUID `json:"account_id"`
 	TokenHash []byte    `json:"token_hash"`
@@ -437,6 +442,20 @@ type Server struct {
 	IngressPorts         []byte     `json:"ingress_ports"`
 	ControllerGeneration int64      `json:"controller_generation"`
 	AwaitingTransfer     bool       `json:"awaiting_transfer"`
+}
+
+type ServerDomain struct {
+	ServerID           uuid.UUID   `json:"server_id"`
+	WorkspaceID        uuid.UUID   `json:"workspace_id"`
+	Base               string      `json:"base"`
+	Ipv4               string      `json:"ipv4"`
+	Ipv6               string      `json:"ipv6"`
+	Generation         int64       `json:"generation"`
+	ApprovedController pgtype.Int8 `json:"approved_controller"`
+	State              string      `json:"state"`
+	ObservedAt         *time.Time  `json:"observed_at"`
+	Note               string      `json:"note"`
+	Records            []byte      `json:"records"`
 }
 
 type ServerMetric struct {

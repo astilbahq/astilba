@@ -528,6 +528,7 @@ test("password recovery requests an email link and preserves a failed password d
 
 test("a reset URL changes the password through the real API and cannot be reused", async ({
   page,
+  baseURL,
 }) => {
   const newPassword = ` ${"🔐".repeat(13)} `;
   const id = randomUUID();
@@ -554,6 +555,7 @@ test("a reset URL changes the password through the real API and cannot be reused
     page.getByRole("button", { name: "Sign out", exact: true }),
   ).toBeVisible();
   await page.getByRole("button", { name: "Sign out", exact: true }).click();
+  await expect(page).toHaveURL(`${baseURL}/login`);
   await page.goto(path);
   await page
     .getByLabel("New password", { exact: false })

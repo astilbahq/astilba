@@ -6,6 +6,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"github.com/astilbahq/astilba/services/platform/internal/applicationdns"
+	"net"
 	"os"
 	"strings"
 	"time"
@@ -29,16 +31,19 @@ const OfflineAfter = 45 * time.Second
 const RotationOverlap = 2 * time.Minute
 
 type Service struct {
-	GitHub   *githubapp.Client
-	Policy   pipeline.Policy
-	Store    *store.Store
-	Queue    *river.Client[pgx.Tx]
-	Releases []api.AgentRelease
+	DNS         *applicationdns.Cloudflare
+	DNSResolver *net.Resolver
+	GitHub      *githubapp.Client
+	Policy      pipeline.Policy
+	Store       *store.Store
+	Queue       *river.Client[pgx.Tx]
+	Releases    []api.AgentRelease
 }
 
 func New(st *store.Store) (*Service, error) {
 	s := &Service{Store: st, Policy: pipeline.Policy{Origins: strings.FieldsFunc(os.Getenv("ASTILBA_INTEGRATION_ORIGINS"), func(r rune) bool { return r == ',' })}}
 	workers := river.NewWorkers()
+	river.AddWorker(workers, &domainWorker{service: s})
 	river.AddWorker(workers, &worker{service: s})
 	river.AddWorker(workers, &refreshWorker{service: s})
 	river.AddWorker(workers, &automaticWorker{service: s})
@@ -179,6 +184,11 @@ func (s *Service) Control(ctx context.Context, p store.Principal, ws, id uuid.UU
 		action = "server.revoke"
 	}
 	return s.scope(ctx, p, ws, true, true, true, action, id, func(tx pgx.Tx) error {
+		if revoke {
+			if e := store.LockServerDNS(ctx, tx, id); e != nil {
+				return e
+			}
+		}
 		command := `UPDATE servers SET rotation_requested=true WHERE workspace_id=$1 AND id=$2 AND NOT revoked AND credential_hash IS NOT NULL`
 		if revoke {
 			command = `UPDATE servers SET revoked=true,credential_hash=NULL,previous_hash=NULL,enrollment_hash=NULL,rotation_requested=false WHERE workspace_id=$1 AND id=$2`
