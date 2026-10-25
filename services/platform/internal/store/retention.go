@@ -42,5 +42,9 @@ func (s *Store) PruneHistory(ctx context.Context) error {
 	if e != nil {
 		return e
 	}
+	_, e = tx.Exec(ctx, `DELETE FROM github_app_authorizations WHERE id IN (SELECT id FROM github_app_authorizations WHERE expires_at<now() ORDER BY expires_at LIMIT 1000 FOR UPDATE SKIP LOCKED)`)
+	if e != nil {
+		return e
+	}
 	return tx.Commit(ctx)
 }

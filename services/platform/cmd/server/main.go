@@ -21,6 +21,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/config"
 	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
+	"github.com/astilbahq/astilba/services/platform/internal/githubapp"
 	"github.com/astilbahq/astilba/services/platform/internal/httpapi"
 	"github.com/astilbahq/astilba/services/platform/internal/mailer"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
@@ -194,6 +195,7 @@ func run() error {
 		service := &auth.Service{Store: st, Passwords: passwords, Mail: mail, Now: time.Now}
 		api, cleanup := httpapi.New(st, service, c.Origin, c.Development, slog.Default())
 		api.TrustedProxies = c.TrustedProxies
+		api.GitHubConfig = githubapp.Load()
 		defer cleanup()
 		notices := &billing.Service{Store: st, Now: time.Now}
 		go func() {
