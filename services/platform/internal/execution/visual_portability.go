@@ -134,6 +134,32 @@ func (s *Service) CloneVisual(ctx context.Context, p store.Principal, ws, pid, s
 			b.SourceID = ids[b.SourceID]
 			b.TargetID = ids[b.TargetID]
 		}
+		// A clone without copied secrets omits outputs backed by those variables,
+		// and references to those outputs, just as it omits the variables themselves.
+		for i := range v.Spec.Applications {
+			a := &v.Spec.Applications[i]
+			outputs := []domain.ServiceOutput{}
+			for _, output := range a.Outputs {
+				if output.Type == "variable" {
+					if _, ok := domain.OutputVariable(v.Spec, *a, output.Variable); !ok {
+						continue
+					}
+				}
+				outputs = append(outputs, output)
+			}
+			a.Outputs = outputs
+		}
+		bindings := []domain.Binding{}
+		for _, binding := range v.Spec.Bindings {
+			for _, a := range v.Spec.Applications {
+				if a.ID == binding.SourceID {
+					if _, ok := domain.BindingOutput(a, binding.Output); ok {
+						bindings = append(bindings, binding)
+					}
+				}
+			}
+		}
+		v.Spec.Bindings = bindings
 		for i := range v.Spec.Routes {
 			r := &v.Spec.Routes[i]
 			r.ID = ids[r.ID]

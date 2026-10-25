@@ -91,3 +91,18 @@ func TestAutomaticStatefulEffectiveInputsAndResolvedImages(t *testing.T) {
 		t.Fatal("effective global stateful environment changed without review")
 	}
 }
+
+func TestAutomaticStatefulConsumerTracksSelectedOutputInput(t *testing.T) {
+	value := "first"
+	source := domain.Application{ID: uuid.New(), Name: "Source", Variables: []domain.Variable{{Name: "TOKEN", Value: &value}}, Outputs: []domain.ServiceOutput{{Name: "TOKEN", Type: "variable", Variable: "TOKEN"}}}
+	consumer := domain.Application{ID: uuid.New(), Name: "Consumer", Mounts: []domain.VolumeMount{{VolumeID: uuid.New(), Target: "/data"}}}
+	old := domain.Specification{Applications: []domain.Application{source, consumer}, Bindings: []domain.Binding{{ID: uuid.New(), SourceID: source.ID, TargetID: consumer.ID, Output: "TOKEN", Variable: "AUTH"}}}
+	raw, _ := json.Marshal(old)
+	var next domain.Specification
+	_ = json.Unmarshal(raw, &next)
+	changed := "second"
+	next.Applications[0].Variables[0].Value = &changed
+	if _, err := automaticChanges(old, next); err == nil {
+		t.Fatal("stateful consumer inherited changed output value without review")
+	}
+}

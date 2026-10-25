@@ -32,6 +32,7 @@ type Postgres struct {
 	PasswordSecretVersionID uuid.UUID `json:"passwordSecretVersionId"`
 }
 type Binding struct {
+	Output   string    `json:"output,omitempty"`
 	ID       uuid.UUID `json:"id"`
 	SourceID uuid.UUID `json:"sourceId"`
 	TargetID uuid.UUID `json:"targetId"`
@@ -135,6 +136,9 @@ func ValidateVisual(s Specification) error {
 			}
 			variables[a.ID][v.Name] = true
 		}
+		if err := validateOutputs(s, a); err != nil {
+			return err
+		}
 		for i, m := range a.Mounts {
 			if !volumes[m.VolumeID] || !ValidMount(m.Target) {
 				return Invalid("applications.mounts")
@@ -212,7 +216,8 @@ func ValidateVisual(s Specification) error {
 	for _, b := range s.Bindings {
 		src, sok := apps[b.SourceID]
 		dst, dok := apps[b.TargetID]
-		if !claim(b.ID) || !sok || !dok || b.SourceID == b.TargetID || src.ServiceKind() != "postgres" || dst.ServiceKind() == "postgres" || !variableName.MatchString(b.Variable) || variables[b.TargetID][b.Variable] {
+		_, outputOK := BindingOutput(src, b.Output)
+		if !claim(b.ID) || !sok || !dok || b.SourceID == b.TargetID || !outputOK || dst.ServiceKind() == "postgres" || !variableName.MatchString(b.Variable) || variables[b.TargetID][b.Variable] {
 			return Invalid("bindings")
 		}
 		variables[b.TargetID][b.Variable] = true
@@ -305,11 +310,12 @@ func ValidateRoute(r Route) error {
 	return nil
 }
 
-// Database bindings also imply readiness: the consumer starts after PostgreSQL.
+// Legacy database bindings imply readiness. Named output references do not
+// impose execution order; callers declare readiness with DependsOn.
 func Dependencies(s Specification, a Application) []uuid.UUID {
 	out := append([]uuid.UUID(nil), a.DependsOn...)
 	for _, b := range s.Bindings {
-		if b.TargetID == a.ID {
+		if b.TargetID == a.ID && b.Output == "" {
 			found := false
 			for _, id := range out {
 				found = found || id == b.SourceID

@@ -99,6 +99,11 @@ func ReleaseApplication(old, next Plan) (domain.Application, error) {
 		return domain.Application{}, fail
 	}
 	for _, spec := range []domain.Specification{old.Specification, next.Specification} {
+		for _, binding := range spec.Bindings {
+			if binding.SourceID == changed.ID {
+				return domain.Application{}, fail
+			}
+		}
 		for _, app := range spec.Applications {
 			for _, dep := range domain.Dependencies(spec, app) {
 				if dep == changed.ID {

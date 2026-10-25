@@ -12,6 +12,8 @@ import { client, result, type Schema } from "../api/client";
 import * as s from "../styles";
 import { ThemeContext } from "../theme";
 import { ErrorNotice, Field, Form, text, useAction } from "../ui";
+import { ServiceCatalog } from "./service-catalog";
+import { OutputEditor, ServiceConnections } from "./service-outputs";
 import "@xyflow/react/dist/style.css";
 
 export type EnvironmentPath = {
@@ -51,6 +53,10 @@ export function VisualEditor({
   const [positions, setPositions] = useState<Schema["Layout"]["positions"]>();
   const [savedPositions, setSavedPositions] = useState("");
   const [notice, setNotice] = useState("");
+  const [connection, setConnection] = useState<{
+    source: string;
+    target: string;
+  }>();
   const action = useAction();
   const layout = useQuery({
     queryKey: ["layout", path],
@@ -97,39 +103,24 @@ export function VisualEditor({
   useEffect(() => {
     if (app) onSelectService?.(app.name);
   }, [app, onSelectService]);
-  const connect = (connection: Connection) => {
-    const source = spec.applications.find((a) => a.id === connection.source),
-      target = spec.applications.find((a) => a.id === connection.target);
+  const connect = (next: Connection) => {
+    const source = spec.applications.find((a) => a.id === next.source);
+    const target = spec.applications.find((a) => a.id === next.target);
     if (
       !source ||
       !target ||
-      source.kind !== "postgres" ||
-      target.kind === "postgres" ||
-      source.id === target.id
+      source.id === target.id ||
+      target.kind === "postgres"
     ) {
-      setNotice("Connect PostgreSQL to a web service or worker.");
+      setNotice(
+        "Choose a source service and a different web service or worker to receive its output.",
+      );
       return;
     }
-    if (
-      spec.bindings?.some(
-        (b) => b.targetId === target.id && b.variable === "DATABASE_URL",
-      )
-    ) {
-      setNotice("This service already has a DATABASE_URL binding.");
-      return;
-    }
-    stage({
-      ...spec,
-      bindings: [
-        ...(spec.bindings ?? []),
-        {
-          id: crypto.randomUUID(),
-          sourceId: source.id,
-          targetId: target.id,
-          variable: "DATABASE_URL",
-        },
-      ],
-    });
+    setConnection({ source: source.id, target: target.id });
+    setNotice(
+      "Choose the output and receiving variable in Connections. No binding has been staged yet.",
+    );
   };
   const nodes: Node[] = [
     ...spec.applications.map((a, i) => ({
@@ -309,6 +300,14 @@ export function VisualEditor({
           Save the configuration revision before saving positions for new
           services.
         </small>
+      )}
+      {configure && (
+        <ServiceCatalog
+          path={path}
+          spec={spec}
+          secrets={secrets.data ?? []}
+          stage={stage}
+        />
       )}
       {configure && (
         <details>
@@ -665,6 +664,12 @@ export function VisualEditor({
                 )}
                 <button type="submit">Stage service changes</button>
               </Form>
+              <OutputEditor
+                key={`${app.id}-outputs`}
+                app={app}
+                spec={spec}
+                stage={stage}
+              />
               <details>
                 <summary>Variables</summary>
                 <ul className={s.list}>
@@ -851,81 +856,12 @@ export function VisualEditor({
           )}
         </section>
       )}
-      <details>
-        <summary>Connections</summary>
-        <ul className={s.list}>
-          {spec.bindings?.map((b) => (
-            <li key={b.id}>
-              {spec.applications.find((a) => a.id === b.sourceId)?.name} →{" "}
-              {spec.applications.find((a) => a.id === b.targetId)?.name}:{" "}
-              {b.variable}
-              {configure && (
-                <button
-                  type="button"
-                  onClick={() =>
-                    stage({
-                      ...spec,
-                      bindings: spec.bindings?.filter((x) => x.id !== b.id),
-                    })
-                  }
-                >
-                  Remove binding
-                </button>
-              )}
-            </li>
-          ))}
-        </ul>
-        {configure && (
-          <Form
-            action={action}
-            label="Create database binding"
-            onSubmit={(d) =>
-              stage({
-                ...spec,
-                bindings: [
-                  ...(spec.bindings ?? []),
-                  {
-                    id: crypto.randomUUID(),
-                    sourceId: text(d, "source"),
-                    targetId: text(d, "target"),
-                    variable: text(d, "variable"),
-                  },
-                ],
-              })
-            }
-          >
-            <label>
-              PostgreSQL source
-              <select name="source" required>
-                {spec.applications
-                  .filter((a) => a.kind === "postgres")
-                  .map((a) => (
-                    <option key={a.id} value={a.id}>
-                      {a.name}
-                    </option>
-                  ))}
-              </select>
-            </label>
-            <label>
-              Receiving service
-              <select name="target" required>
-                {spec.applications
-                  .filter((a) => a.kind !== "postgres")
-                  .map((a) => (
-                    <option key={a.id} value={a.id}>
-                      {a.name}
-                    </option>
-                  ))}
-              </select>
-            </label>
-            <label>
-              Variable name
-              <input name="variable" defaultValue="DATABASE_URL" required />
-            </label>
-            <button type="submit">Stage binding</button>
-          </Form>
-        )}
-      </details>
+      <ServiceConnections
+        spec={spec}
+        stage={stage}
+        write={configure}
+        connection={connection}
+      />
       <ul className={s.list}>
         {spec.volumes?.map((volume) => (
           <li key={volume.id}>
