@@ -47,18 +47,34 @@ type AlertSetting struct {
 }
 
 type AuditEvent struct {
-	WorkspaceID uuid.UUID `json:"workspace_id"`
-	ID          uuid.UUID `json:"id"`
-	ActorID     uuid.UUID `json:"actor_id"`
-	Action      string    `json:"action"`
-	ResourceID  uuid.UUID `json:"resource_id"`
-	CreatedAt   time.Time `json:"created_at"`
+	WorkspaceID            uuid.UUID  `json:"workspace_id"`
+	ID                     uuid.UUID  `json:"id"`
+	ActorID                uuid.UUID  `json:"actor_id"`
+	Action                 string     `json:"action"`
+	ResourceID             uuid.UUID  `json:"resource_id"`
+	CreatedAt              time.Time  `json:"created_at"`
+	AutomationCredentialID *uuid.UUID `json:"automation_credential_id"`
 }
 
 type AuthAttempt struct {
 	ScopeHash []byte    `json:"scope_hash"`
 	Attempts  int32     `json:"attempts"`
 	ExpiresAt time.Time `json:"expires_at"`
+}
+
+type AutomationCredential struct {
+	ID            uuid.UUID  `json:"id"`
+	WorkspaceID   uuid.UUID  `json:"workspace_id"`
+	EnvironmentID uuid.UUID  `json:"environment_id"`
+	CreatorID     uuid.UUID  `json:"creator_id"`
+	Name          string     `json:"name"`
+	SecretHash    []byte     `json:"secret_hash"`
+	AuthVersion   int64      `json:"auth_version"`
+	MfaApproved   bool       `json:"mfa_approved"`
+	Capabilities  []string   `json:"capabilities"`
+	CreatedAt     time.Time  `json:"created_at"`
+	ExpiresAt     time.Time  `json:"expires_at"`
+	RevokedAt     *time.Time `json:"revoked_at"`
 }
 
 type BackupDestination struct {
@@ -96,14 +112,15 @@ type BuildSecretVersion struct {
 }
 
 type BuildTarget struct {
-	WorkspaceID     uuid.UUID `json:"workspace_id"`
-	EnvironmentID   uuid.UUID `json:"environment_id"`
-	ApplicationID   uuid.UUID `json:"application_id"`
-	ConnectionID    uuid.UUID `json:"connection_id"`
-	Configuration   []byte    `json:"configuration"`
-	InputHash       string    `json:"input_hash"`
-	RequestedCommit string    `json:"requested_commit"`
-	PolicyActor     uuid.UUID `json:"policy_actor"`
+	WorkspaceID              uuid.UUID `json:"workspace_id"`
+	EnvironmentID            uuid.UUID `json:"environment_id"`
+	ApplicationID            uuid.UUID `json:"application_id"`
+	ConnectionID             uuid.UUID `json:"connection_id"`
+	Configuration            []byte    `json:"configuration"`
+	InputHash                string    `json:"input_hash"`
+	RequestedCommit          string    `json:"requested_commit"`
+	PolicyActor              uuid.UUID `json:"policy_actor"`
+	AutomaticRequestedCommit string    `json:"automatic_requested_commit"`
 }
 
 type DeploymentUnit struct {

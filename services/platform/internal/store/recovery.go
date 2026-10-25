@@ -44,6 +44,9 @@ func (s *Store) PrepareRecovery(ctx context.Context, id uuid.UUID, next int64) e
 	if _, e = tx.Exec(ctx, `UPDATE build_targets SET configuration=configuration || '{"autoBuild":false,"autoDeploy":false}'::jsonb WHERE workspace_id=$1`, ws); e != nil {
 		return e
 	}
+	if _, e = tx.Exec(ctx, `UPDATE automation_credentials SET revoked_at=COALESCE(revoked_at,clock_timestamp()) WHERE workspace_id=$1`, ws); e != nil {
+		return e
+	}
 	if _, e = tx.Exec(ctx, `UPDATE pipeline_auto_deployments SET state='blocked',note='Management recovery requires renewed approval.' WHERE workspace_id=$1`, ws); e != nil {
 		return e
 	}

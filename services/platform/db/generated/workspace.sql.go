@@ -57,15 +57,16 @@ func (q *Queries) GetMembership(ctx context.Context, arg GetMembershipParams) (M
 }
 
 const insertAudit = `-- name: InsertAudit :exec
-INSERT INTO audit_events(workspace_id,id,actor_id,action,resource_id) VALUES($1,$2,$3,$4,$5)
+INSERT INTO audit_events(workspace_id,id,actor_id,action,resource_id,automation_credential_id) VALUES($1,$2,$3,$4,$5,$6)
 `
 
 type InsertAuditParams struct {
-	WorkspaceID uuid.UUID `json:"workspace_id"`
-	ID          uuid.UUID `json:"id"`
-	ActorID     uuid.UUID `json:"actor_id"`
-	Action      string    `json:"action"`
-	ResourceID  uuid.UUID `json:"resource_id"`
+	WorkspaceID            uuid.UUID  `json:"workspace_id"`
+	ID                     uuid.UUID  `json:"id"`
+	ActorID                uuid.UUID  `json:"actor_id"`
+	Action                 string     `json:"action"`
+	ResourceID             uuid.UUID  `json:"resource_id"`
+	AutomationCredentialID *uuid.UUID `json:"automation_credential_id"`
 }
 
 func (q *Queries) InsertAudit(ctx context.Context, arg InsertAuditParams) error {
@@ -75,6 +76,7 @@ func (q *Queries) InsertAudit(ctx context.Context, arg InsertAuditParams) error 
 		arg.ActorID,
 		arg.Action,
 		arg.ResourceID,
+		arg.AutomationCredentialID,
 	)
 	return err
 }
@@ -135,7 +137,7 @@ func (q *Queries) InsertWorkspace(ctx context.Context, arg InsertWorkspaceParams
 }
 
 const listAudit = `-- name: ListAudit :many
-SELECT workspace_id, id, actor_id, action, resource_id, created_at FROM audit_events WHERE workspace_id=$1 ORDER BY created_at DESC,id DESC LIMIT 100
+SELECT workspace_id, id, actor_id, action, resource_id, created_at, automation_credential_id FROM audit_events WHERE workspace_id=$1 ORDER BY created_at DESC,id DESC LIMIT 100
 `
 
 func (q *Queries) ListAudit(ctx context.Context, workspaceID uuid.UUID) ([]AuditEvent, error) {
@@ -154,6 +156,7 @@ func (q *Queries) ListAudit(ctx context.Context, workspaceID uuid.UUID) ([]Audit
 			&i.Action,
 			&i.ResourceID,
 			&i.CreatedAt,
+			&i.AutomationCredentialID,
 		); err != nil {
 			return nil, err
 		}

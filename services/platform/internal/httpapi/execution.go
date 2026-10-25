@@ -33,6 +33,10 @@ func (s *Server) protection(next http.Handler) http.Handler {
 			return
 		}
 		if !strings.HasPrefix(r.URL.Path, "/agent/v1/") {
+			if len(r.Header.Values("Authorization")) != 0 {
+				s.automationRequest(next).ServeHTTP(w, r)
+				return
+			}
 			browser.ServeHTTP(w, r)
 			return
 		}

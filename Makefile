@@ -36,6 +36,7 @@ verify-app: verify-app-core
 
 verify-app-core: check-app
 	pnpm agent:build
+	pnpm cli:build
 	cd services/platform && go test -race -count=1 -timeout=5m ./...
 	pnpm --filter @astilba/dashboard build
 	pnpm --filter @astilba/dashboard exec wrangler deploy --dry-run --outdir ../../.artifacts/p1/worker

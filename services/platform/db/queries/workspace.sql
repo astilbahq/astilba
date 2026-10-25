@@ -37,7 +37,7 @@ SELECT id,email,role,expires_at FROM invitations WHERE workspace_id=$1 AND expir
 -- name: DeleteInvitation :exec
 DELETE FROM invitations WHERE workspace_id=$1 AND id=$2;
 -- name: InsertAudit :exec
-INSERT INTO audit_events(workspace_id,id,actor_id,action,resource_id) VALUES($1,$2,$3,$4,$5);
+INSERT INTO audit_events(workspace_id,id,actor_id,action,resource_id,automation_credential_id) VALUES($1,$2,$3,$4,$5,$6);
 -- name: ListAudit :many
 SELECT * FROM audit_events WHERE workspace_id=$1 ORDER BY created_at DESC,id DESC LIMIT 100;
 -- name: SetWorkspaceSettings :exec

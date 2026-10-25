@@ -105,13 +105,15 @@ func (s *Server) Handler(assets http.Handler) (http.Handler, error) {
 		r.Use(s.protection)
 		r.Use(s.archiveAdmission)
 		r.Use(middleware.OapiRequestValidatorWithOptions(spec, &middleware.Options{
-			Options: openapi3filter.Options{AuthenticationFunc: func(ctx context.Context, _ *openapi3filter.AuthenticationInput) error {
-				if principal(ctx) == nil && agentIdentity(ctx).ID == uuid.Nil {
-					return domain.Unauthenticated
-				}
-				return nil
-			}},
+			Options: openapi3filter.Options{AuthenticationFunc: s.authenticateAPI},
 			ErrorHandlerWithOpts: func(ctx context.Context, err error, w http.ResponseWriter, r *http.Request, _ middleware.ErrorHandlerOpts) {
+				if p := principal(ctx); p != nil && p.Automation != nil {
+					var security *openapi3filter.SecurityRequirementsError
+					if errors.As(err, &security) {
+						s.fail(w, r, domain.Forbidden)
+						return
+					}
+				}
 				if principal(ctx) == nil && agentIdentity(ctx).ID == uuid.Nil && !publicPath(r.URL.Path) && r.URL.Path != "/agent/v1/enroll" {
 					s.fail(w, r, domain.Unauthenticated)
 					return
