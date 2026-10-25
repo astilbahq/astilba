@@ -35,10 +35,10 @@ func (s *Service) openIntegration(ws, id uuid.UUID, kind string, raw []byte, val
 func validCredential(c pipeline.Credential, required bool) bool {
 	return (!required || c.Username != "" && c.Password != "") && len(c.Username) <= 200 && len(c.Password) <= 8192 && !strings.ContainsAny(c.Username+c.Password, "\x00\r\n")
 }
-func (s *Service) Connections(ctx context.Context, p store.Principal, ws uuid.UUID) ([]pipeline.Connection, error) {
-	out := []pipeline.Connection{}
+func (s *Service) Connections(ctx context.Context, p store.Principal, ws uuid.UUID) ([]ConnectionSummary, error) {
+	out := []ConnectionSummary{}
 	err := s.scope(ctx, p, ws, false, false, false, "", uuid.Nil, func(tx pgx.Tx) error {
-		rows, err := tx.Query(ctx, "SELECT configuration FROM git_connections WHERE workspace_id=$1 ORDER BY id LIMIT 100", ws)
+		rows, err := tx.Query(ctx, "SELECT c.configuration,COALESCE(a.active,false),COALESCE(a.app_id,0) FROM git_connections c LEFT JOIN github_app_connections a ON a.workspace_id=c.workspace_id AND a.connection_id=c.id WHERE c.workspace_id=$1 ORDER BY c.id LIMIT 100", ws)
 		if err != nil {
 			return err
 		}
@@ -46,13 +46,22 @@ func (s *Service) Connections(ctx context.Context, p store.Principal, ws uuid.UU
 		for rows.Next() {
 			var raw []byte
 			var c pipeline.Connection
-			if err := rows.Scan(&raw); err != nil {
+			var active bool
+			var app int64
+			if err := rows.Scan(&raw, &active, &app); err != nil {
 				return err
 			}
 			if err := json.Unmarshal(raw, &c); err != nil {
 				return err
 			}
-			out = append(out, c)
+			summary := ConnectionSummary{c, "manual", "connected"}
+			if appConfiguration(raw) {
+				summary.Authentication = "github_app"
+				if !active || s.GitHub == nil || app != s.GitHub.Config.ID {
+					summary.Status = "reauthorization_required"
+				}
+			}
+			out = append(out, summary)
 		}
 		return rows.Err()
 	})
@@ -116,12 +125,12 @@ func loadConnection(ctx context.Context, tx pgx.Tx, ws, id uuid.UUID) (pipeline.
 	return c, secret, err
 }
 func (s *Service) provider(ctx context.Context, tx pgx.Tx, ws, id uuid.UUID) (*pipeline.Provider, pipeline.Connection, error) {
-	c, raw, err := loadConnection(ctx, tx, ws, id)
+	c, _, err := loadConnection(ctx, tx, ws, id)
 	if err != nil {
 		return nil, c, err
 	}
-	var access pipeline.Access
-	if err = s.openIntegration(ws, id, "git", raw, &access); err != nil {
+	access, err := s.gitAccess(ctx, tx, ws, id, false)
+	if err != nil {
 		return nil, c, err
 	}
 	provider, err := pipeline.NewProvider(c, access.API, s.Policy)
@@ -237,6 +246,9 @@ func (s *Service) ReceivePush(ctx context.Context, id uuid.UUID, headers http.He
 	var raw, encrypted []byte
 	if err := s.Store.Pool.QueryRow(ctx, "SELECT workspace_id,configuration,encrypted_access FROM git_connections WHERE id=$1", id).Scan(&ws, &raw, &encrypted); err != nil {
 		return domain.NotFound
+	}
+	if appConfiguration(raw) {
+		return domain.Forbidden
 	}
 	var c pipeline.Connection
 	var access pipeline.Access

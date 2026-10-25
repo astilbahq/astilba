@@ -208,6 +208,43 @@ type GitSubmission struct {
 	RequestKey    uuid.UUID `json:"request_key"`
 }
 
+type GithubAppAuthorization struct {
+	ID              uuid.UUID   `json:"id"`
+	WorkspaceID     uuid.UUID   `json:"workspace_id"`
+	AccountID       uuid.UUID   `json:"account_id"`
+	AuthVersion     int64       `json:"auth_version"`
+	SessionHash     []byte      `json:"session_hash"`
+	StateHash       []byte      `json:"state_hash"`
+	AppID           int64       `json:"app_id"`
+	EncryptedAccess []byte      `json:"encrypted_access"`
+	GithubUserID    pgtype.Int8 `json:"github_user_id"`
+	GithubLogin     string      `json:"github_login"`
+	Status          string      `json:"status"`
+	ExpiresAt       time.Time   `json:"expires_at"`
+	CreatedAt       time.Time   `json:"created_at"`
+}
+
+type GithubAppConnection struct {
+	WorkspaceID    uuid.UUID `json:"workspace_id"`
+	ConnectionID   uuid.UUID `json:"connection_id"`
+	AppID          int64     `json:"app_id"`
+	InstallationID int64     `json:"installation_id"`
+	RepositoryID   int64     `json:"repository_id"`
+	GithubUserID   int64     `json:"github_user_id"`
+	ActorID        uuid.UUID `json:"actor_id"`
+	Generation     int64     `json:"generation"`
+	Active         bool      `json:"active"`
+}
+
+type GithubAppDelivery struct {
+	DeliveryID string    `json:"delivery_id"`
+	BodyHash   string    `json:"body_hash"`
+	Event      []byte    `json:"event"`
+	Cursor     uuid.UUID `json:"cursor"`
+	Completed  bool      `json:"completed"`
+	ReceivedAt time.Time `json:"received_at"`
+}
+
 type HostedBillingEvent struct {
 	ID          string    `json:"id"`
 	WorkspaceID uuid.UUID `json:"workspace_id"`

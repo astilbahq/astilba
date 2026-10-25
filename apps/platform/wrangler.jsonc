@@ -13,6 +13,7 @@
       "/agent-artifacts/*",
       "/hooks/git/*",
       "/hooks/stripe",
+      "/hooks/github-app",
     ],
   },
   "vars": { "API_ORIGIN": "https://api.example.com" },

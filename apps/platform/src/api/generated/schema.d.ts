@@ -804,6 +804,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/logs/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Export already-redacted retained runtime samples and build output. Runtime samples use receipt time; build output uses job creation time. This is not a complete log archive. */
+        get: operations["exportLogs"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/runtime": {
         parameters: {
             query?: never;
@@ -1503,6 +1520,134 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/workspaces/{workspaceId}/github-app": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getGitHubApp"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspaceId}/github-app/authorizations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["startGitHubAuthorization"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/github-app/complete": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["completeGitHubAuthorization"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspaceId}/github-app/authorizations/{authorizationId}/installations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listGitHubInstallations"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspaceId}/github-app/authorizations/{authorizationId}/repositories": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listGitHubRepositories"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspaceId}/github-app/authorizations/{authorizationId}/connections": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["connectGitHubRepository"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspaceId}/git-connections/{connectionId}/disconnect": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["disconnectGitHubRepository"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/hooks/github-app": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["receiveGitHubApp"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -1519,6 +1664,12 @@ export interface components {
             docker: boolean;
             visual?: boolean;
             compose?: boolean;
+            /** @description Supports explicit build budgets and frozen-commit watch paths. Agents send this extension only after a controller response advertises Astilba-Agent-Features with build-controls. */
+            buildControls?: boolean;
+            /** @description Supports bounded project-scoped layer caches. Agents send this extension only after a controller response advertises Astilba-Agent-Build-Cache with v1. */
+            buildCache?: boolean;
+            /** @description Supported Railpack planner/frontend version. Agents send this extension only after a controller response advertises Astilba-Agent-Railpack with v1. */
+            railpackVersion?: string;
             build?: boolean;
             backups?: boolean;
             upgrades?: boolean;
@@ -2153,6 +2304,63 @@ export interface components {
             /** Format: int64 */
             repositoryId: number;
             private: boolean;
+            /** @enum {string} */
+            authentication?: "manual" | "github_app";
+            /** @enum {string} */
+            status?: "connected" | "reauthorization_required";
+        };
+        GitHubAppStatus: {
+            configured: boolean;
+            name?: string;
+            installUrl?: string;
+        };
+        GitHubAuthorizationStart: {
+            authorizationUrl: string;
+        };
+        GitHubAuthorizationComplete: {
+            state: string;
+            code: string;
+        };
+        GitHubUser: {
+            /** Format: int64 */
+            id: number;
+            login: string;
+        };
+        GitHubAuthorization: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            workspaceId: string;
+            user: components["schemas"]["GitHubUser"];
+            /** Format: date-time */
+            expiresAt: string;
+        };
+        GitHubInstallation: {
+            available: boolean;
+            /** Format: int64 */
+            id: number;
+            account: {
+                login: string;
+            };
+        };
+        GitHubRepository: {
+            /** Format: int64 */
+            id: number;
+            full_name: string;
+            private: boolean;
+            permissions: {
+                admin: boolean;
+            };
+        };
+        GitHubConnect: {
+            name: string;
+            repository: string;
+            /** Format: int64 */
+            repositoryId: number;
+            /** Format: int64 */
+            installationId: number;
+            /** Format: uuid */
+            connectionId?: string;
         };
         GitConnectionRequest: {
             name: string;
@@ -2228,7 +2436,24 @@ export interface components {
             /** Format: uuid */
             requestKey: string;
         };
+        /** @description Assignment lifetime includes queue time. Source and state storage plus 96 MiB must fit the memory limit. */
+        BuildBudget: {
+            cpus: number;
+            memoryMiB: number;
+            sourceMiB: number;
+            stateMiB: number;
+            minutes: number;
+        };
         BuildConfiguration: {
+            /**
+             * @description Omission retains the Dockerfile builder.
+             * @enum {string}
+             */
+            builder?: "dockerfile" | "railpack";
+            railpack?: {
+                buildCommand?: string;
+                startCommand?: string;
+            };
             /** Format: uuid */
             connectionId: string;
             branch: string;
@@ -2239,7 +2464,7 @@ export interface components {
             /** Format: uuid */
             registryId?: string;
             context: string;
-            dockerfile: string;
+            dockerfile?: string;
             /** @enum {string} */
             architecture: "amd64" | "arm64";
             arguments: {
@@ -2248,6 +2473,9 @@ export interface components {
             secrets: {
                 [key: string]: string;
             };
+            budget?: components["schemas"]["BuildBudget"];
+            /** @description Literal repository-relative file or directory prefixes for automatic builds; empty means every change. */
+            watchPaths?: string[];
             autoBuild: boolean;
             autoDeploy: boolean;
         };
@@ -2276,6 +2504,16 @@ export interface components {
             /** Format: uuid */
             registryId?: string;
         };
+        RailpackBuildSummary: {
+            version: string;
+            frontend: string;
+            /** @enum {string} */
+            provider: "node" | "golang" | "shell";
+            planHash: string;
+            packages: {
+                [key: string]: string;
+            };
+        };
         PipelineResult: {
             commit: string;
             files?: components["schemas"]["ComposeFile"][];
@@ -2285,7 +2523,10 @@ export interface components {
             digest?: string;
             architecture?: string;
             logs?: string;
+            /** @description No watched source paths changed; no artifact or deployment is created. */
+            skipped?: boolean;
             cache?: string;
+            railpack?: components["schemas"]["RailpackBuildSummary"];
         };
         PipelineRun: {
             /** Format: uuid */
@@ -2328,6 +2569,8 @@ export interface components {
             /** @enum {string} */
             action: "import" | "submit" | "build";
             connection: components["schemas"]["GitConnection"];
+            /** @description Frozen compatible successful-artifact commit used only for automatic watch-path comparison. */
+            compareCommit?: string;
             commit: string;
             branch: string;
             /** Format: uuid */
@@ -2740,6 +2983,44 @@ export interface components {
             webhookEnabled: boolean;
             webhookUrl?: string;
             webhookSecret?: string;
+        };
+        LogExportEntry: {
+            /** @enum {string} */
+            source: "runtime-sample" | "build-output";
+            /**
+             * Format: date-time
+             * @description Runtime observation receipt time or build job creation time, used to select the requested window.
+             */
+            at: string;
+            /** Format: uuid */
+            resourceId: string;
+            /** Format: uuid */
+            operationId?: string;
+            content: string;
+            /** @description This export shortened this entry. Source snapshots can already be incomplete regardless of this flag. */
+            truncated: boolean;
+        };
+        LogExport: {
+            /** @enum {integer} */
+            version: 1;
+            /** Format: uuid */
+            environmentId: string;
+            /**
+             * @description Previously captured, agent-redacted samples only. This is not a complete log archive.
+             * @enum {string}
+             */
+            coverage: "retained-snapshots";
+            /** Format: date-time */
+            windowStart: string;
+            /** Format: date-time */
+            windowEnd: string;
+            /** @enum {integer} */
+            contentByteLimit: 65536;
+            /** @enum {integer} */
+            entryLimit: 100;
+            /** @description The export omitted entries or shortened content to stay within its limits. False does not imply complete source logs. */
+            truncated: boolean;
+            entries: components["schemas"]["LogExportEntry"][];
         };
     };
     responses: never;
@@ -4676,6 +4957,42 @@ export interface operations {
             };
         };
     };
+    exportLogs: {
+        parameters: {
+            query?: {
+                hours?: 1 | 6 | 24;
+            };
+            header?: never;
+            path: {
+                workspaceId: string;
+                projectId: string;
+                environmentId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description A bounded snapshot export, including requested time limits and truncation metadata. */
+            200: {
+                headers: {
+                    "Content-Disposition"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LogExport"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
     getRuntime: {
         parameters: {
             query?: never;
@@ -6424,6 +6741,269 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["AlertSettings"];
                 };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    getGitHubApp: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Success */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GitHubAppStatus"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    startGitHubAuthorization: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Success */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GitHubAuthorizationStart"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    completeGitHubAuthorization: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GitHubAuthorizationComplete"];
+            };
+        };
+        responses: {
+            /** @description Success */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GitHubAuthorization"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    listGitHubInstallations: {
+        parameters: {
+            query?: {
+                page?: number;
+            };
+            header?: never;
+            path: {
+                workspaceId: string;
+                authorizationId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Success */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GitHubInstallation"][];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    listGitHubRepositories: {
+        parameters: {
+            query: {
+                page?: number;
+                installationId: number;
+            };
+            header?: never;
+            path: {
+                workspaceId: string;
+                authorizationId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Success */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GitHubRepository"][];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    connectGitHubRepository: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                authorizationId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GitHubConnect"];
+            };
+        };
+        responses: {
+            /** @description Success */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GitConnection"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    disconnectGitHubRepository: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                connectionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Success */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    receiveGitHubApp: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    [key: string]: unknown;
+                };
+            };
+        };
+        responses: {
+            /** @description Success */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Error */
             default: {

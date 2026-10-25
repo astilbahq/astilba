@@ -1711,6 +1711,28 @@
           "schema":
             "type": "string"
             "format": "uuid"
+  /api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/logs/export:
+    get:
+      operationId: exportLogs
+      description: Export already-redacted retained runtime samples and build output. Runtime samples use receipt time; build output uses job creation time. This is not a complete log archive.
+      parameters:
+        - {name: workspaceId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: projectId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: environmentId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: hours, in: query, schema: {type: integer, enum: [1, 6, 24], default: 1}}
+      responses:
+        '200':
+          description: A bounded snapshot export, including requested time limits and truncation metadata.
+          headers:
+            Content-Disposition: {schema: {type: string}}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/LogExport'}
+        default:
+          description: Error
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
   "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/runtime":
     "get":
       "operationId": "getRuntime"
@@ -3346,6 +3368,171 @@
             "application/json":
               "schema":
                 "$ref": "#/components/schemas/Error"
+  /api/v1/workspaces/{workspaceId}/github-app:
+    get:
+      operationId: "getGitHubApp"
+      parameters:
+        - {"name": "workspaceId", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}
+      responses:
+        200:
+          description: "Success"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GitHubAppStatus"
+        default:
+          description: "Error"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/workspaces/{workspaceId}/github-app/authorizations:
+    post:
+      operationId: "startGitHubAuthorization"
+      parameters:
+        - {"name": "workspaceId", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}
+      responses:
+        200:
+          description: "Success"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GitHubAuthorizationStart"
+        default:
+          description: "Error"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/github-app/complete:
+    post:
+      operationId: "completeGitHubAuthorization"
+      responses:
+        200:
+          description: "Success"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GitHubAuthorization"
+        default:
+          description: "Error"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GitHubAuthorizationComplete"
+  /api/v1/workspaces/{workspaceId}/github-app/authorizations/{authorizationId}/installations:
+    get:
+      operationId: "listGitHubInstallations"
+      parameters:
+        - {"name": "workspaceId", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}
+        - {"name": "authorizationId", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}
+        - {"name": "page", "in": "query", "required": false, "schema": {"type": "integer", "minimum": 1, "maximum": 100, "default": 1}}
+      responses:
+        200:
+          description: "Success"
+          content:
+            application/json:
+              schema:
+                type: "array"
+                maxItems: 100
+                items:
+                  $ref: "#/components/schemas/GitHubInstallation"
+        default:
+          description: "Error"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/workspaces/{workspaceId}/github-app/authorizations/{authorizationId}/repositories:
+    get:
+      operationId: "listGitHubRepositories"
+      parameters:
+        - {"name": "workspaceId", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}
+        - {"name": "authorizationId", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}
+        - {"name": "page", "in": "query", "required": false, "schema": {"type": "integer", "minimum": 1, "maximum": 100, "default": 1}}
+        - {"name": "installationId", "in": "query", "required": true, "schema": {"type": "integer", "format": "int64", "minimum": 1}}
+      responses:
+        200:
+          description: "Success"
+          content:
+            application/json:
+              schema:
+                type: "array"
+                maxItems: 100
+                items:
+                  $ref: "#/components/schemas/GitHubRepository"
+        default:
+          description: "Error"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/workspaces/{workspaceId}/github-app/authorizations/{authorizationId}/connections:
+    post:
+      operationId: "connectGitHubRepository"
+      parameters:
+        - {"name": "workspaceId", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}
+        - {"name": "authorizationId", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}
+      responses:
+        201:
+          description: "Success"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GitConnection"
+        default:
+          description: "Error"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GitHubConnect"
+  /api/v1/workspaces/{workspaceId}/git-connections/{connectionId}/disconnect:
+    post:
+      operationId: "disconnectGitHubRepository"
+      parameters:
+        - {"name": "workspaceId", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}
+        - {"name": "connectionId", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}
+      responses:
+        204:
+          description: "Success"
+        default:
+          description: "Error"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /hooks/github-app:
+    post:
+      operationId: "receiveGitHubApp"
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        202:
+          description: "Success"
+        default:
+          description: "Error"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 "components":
   "securitySchemes":
     "agentBearer":
@@ -3393,6 +3580,16 @@
           "type": "boolean"
         "compose":
           "type": "boolean"
+        buildControls:
+          type: boolean
+          description: Supports explicit build budgets and frozen-commit watch paths. Agents send this extension only after a controller response advertises Astilba-Agent-Features with build-controls.
+        buildCache:
+          type: boolean
+          description: Supports bounded project-scoped layer caches. Agents send this extension only after a controller response advertises Astilba-Agent-Build-Cache with v1.
+        railpackVersion:
+          type: string
+          maxLength: 80
+          description: Supported Railpack planner/frontend version. Agents send this extension only after a controller response advertises Astilba-Agent-Railpack with v1.
         build:
           type: boolean
         backups:
@@ -5225,6 +5422,12 @@
           format: int64
         private:
           type: boolean
+        authentication:
+          type: string
+          enum: [manual, github_app]
+        status:
+          type: string
+          enum: [connected, reauthorization_required]
       required:
         - id
         - name
@@ -5233,6 +5436,151 @@
         - repository
         - repositoryId
         - private
+    GitHubAppStatus:
+      type: "object"
+      additionalProperties: false
+      properties:
+        configured:
+          type: "boolean"
+        name:
+          type: "string"
+          maxLength: 100
+        installUrl:
+          type: "string"
+          maxLength: 2048
+      required:
+        - "configured"
+    GitHubAuthorizationStart:
+      type: "object"
+      additionalProperties: false
+      properties:
+        authorizationUrl:
+          type: "string"
+          maxLength: 4096
+      required:
+        - "authorizationUrl"
+    GitHubAuthorizationComplete:
+      type: "object"
+      additionalProperties: false
+      properties:
+        state:
+          type: "string"
+          maxLength: 43
+        code:
+          type: "string"
+          maxLength: 1024
+      required:
+        - "state"
+        - "code"
+    GitHubUser:
+      type: "object"
+      additionalProperties: false
+      properties:
+        id:
+          type: "integer"
+          format: "int64"
+          minimum: 1
+        login:
+          type: "string"
+          maxLength: 100
+      required:
+        - "id"
+        - "login"
+    GitHubAuthorization:
+      type: "object"
+      additionalProperties: false
+      properties:
+        id:
+          type: "string"
+          format: "uuid"
+        workspaceId:
+          type: "string"
+          format: "uuid"
+        user:
+          $ref: "#/components/schemas/GitHubUser"
+        expiresAt:
+          type: "string"
+          format: "date-time"
+      required:
+        - "id"
+        - "workspaceId"
+        - "user"
+        - "expiresAt"
+    GitHubInstallation:
+      type: "object"
+      additionalProperties: false
+      properties:
+        available:
+          type: boolean
+        id:
+          type: "integer"
+          format: "int64"
+          minimum: 1
+        account:
+          type: "object"
+          additionalProperties: false
+          properties:
+            login:
+              type: "string"
+              maxLength: 100
+          required:
+            - "login"
+      required:
+        - "available"
+        - "id"
+        - "account"
+    GitHubRepository:
+      type: "object"
+      additionalProperties: false
+      properties:
+        id:
+          type: "integer"
+          format: "int64"
+          minimum: 1
+        full_name:
+          type: "string"
+          maxLength: 240
+        private:
+          type: "boolean"
+        permissions:
+          type: "object"
+          additionalProperties: false
+          properties:
+            admin:
+              type: "boolean"
+          required:
+            - "admin"
+      required:
+        - "id"
+        - "full_name"
+        - "private"
+        - "permissions"
+    GitHubConnect:
+      type: "object"
+      additionalProperties: false
+      properties:
+        name:
+          type: "string"
+          maxLength: 80
+        repository:
+          type: "string"
+          maxLength: 240
+        repositoryId:
+          type: "integer"
+          format: "int64"
+          minimum: 1
+        installationId:
+          type: "integer"
+          format: "int64"
+          minimum: 1
+        connectionId:
+          type: "string"
+          format: "uuid"
+      required:
+        - "name"
+        - "repository"
+        - "repositoryId"
+        - "installationId"
     GitConnectionRequest:
       type: object
       additionalProperties: false
@@ -5446,10 +5794,50 @@
       required:
         - baseRevisionId
         - requestKey
+    BuildBudget:
+      type: object
+      additionalProperties: false
+      description: Assignment lifetime includes queue time. Source and state storage plus 96 MiB must fit the memory limit.
+      properties:
+        cpus:
+          type: integer
+          minimum: 1
+          maximum: 8
+        memoryMiB:
+          type: integer
+          minimum: 512
+          maximum: 8192
+        sourceMiB:
+          type: integer
+          minimum: 64
+          maximum: 1024
+        stateMiB:
+          type: integer
+          minimum: 128
+          maximum: 6144
+        minutes:
+          type: integer
+          minimum: 1
+          maximum: 30
+      required: [cpus, memoryMiB, sourceMiB, stateMiB, minutes]
     BuildConfiguration:
       type: object
       additionalProperties: false
       properties:
+        builder:
+          type: string
+          enum: [dockerfile, railpack]
+          description: Omission retains the Dockerfile builder.
+        railpack:
+          type: object
+          additionalProperties: false
+          properties:
+            buildCommand:
+              type: string
+              maxLength: 4096
+            startCommand:
+              type: string
+              maxLength: 4096
         connectionId:
           type: string
           format: uuid
@@ -5488,6 +5876,17 @@
             type: string
             format: uuid
           maxProperties: 16
+        budget:
+          $ref: '#/components/schemas/BuildBudget'
+        watchPaths:
+          type: array
+          maxItems: 16
+          uniqueItems: true
+          description: Literal repository-relative file or directory prefixes for automatic builds; empty means every change.
+          items:
+            type: string
+            minLength: 1
+            maxLength: 240
         autoBuild:
           type: boolean
         autoDeploy:
@@ -5497,7 +5896,6 @@
         - branch
         - runnerId
         - context
-        - dockerfile
         - architecture
         - arguments
         - secrets
@@ -5564,6 +5962,29 @@
         - architecture
         - inputHash
         - commit
+    RailpackBuildSummary:
+      type: object
+      additionalProperties: false
+      required: [version, frontend, provider, planHash, packages]
+      properties:
+        version:
+          type: string
+          maxLength: 80
+        frontend:
+          type: string
+          maxLength: 512
+        provider:
+          type: string
+          enum: [node, golang, shell]
+        planHash:
+          type: string
+          pattern: '^[a-f0-9]{64}$'
+        packages:
+          type: object
+          maxProperties: 32
+          additionalProperties:
+            type: string
+            maxLength: 80
     PipelineResult:
       type: object
       additionalProperties: false
@@ -5593,9 +6014,14 @@
         logs:
           type: string
           maxLength: 16384
+        skipped:
+          type: boolean
+          description: No watched source paths changed; no artifact or deployment is created.
         cache:
           type: string
           maxLength: 1024
+        railpack:
+          $ref: '#/components/schemas/RailpackBuildSummary'
       required:
         - commit
       x-go-type: json.RawMessage
@@ -5708,6 +6134,10 @@
             - build
         connection:
           $ref: '#/components/schemas/GitConnection'
+        compareCommit:
+          type: string
+          maxLength: 64
+          description: Frozen compatible successful-artifact commit used only for automatic watch-path comparison.
         commit:
           type: string
           maxLength: 64
@@ -6597,3 +7027,45 @@
         webhookEnabled: {type: boolean}
         webhookUrl: {type: string, minLength: 1, maxLength: 2048, writeOnly: true}
         webhookSecret: {type: string, minLength: 32, maxLength: 256, writeOnly: true}
+
+    LogExportEntry:
+      type: object
+      additionalProperties: false
+      required: [source, at, resourceId, content, truncated]
+      properties:
+        source:
+          type: string
+          enum: [runtime-sample, build-output]
+          x-enum-varnames: [RuntimeSample, BuildOutput]
+        at:
+          type: string
+          format: date-time
+          description: Runtime observation receipt time or build job creation time, used to select the requested window.
+        resourceId: {type: string, format: uuid}
+        operationId: {type: string, format: uuid}
+        content: {type: string, maxLength: 65536}
+        truncated:
+          type: boolean
+          description: This export shortened this entry. Source snapshots can already be incomplete regardless of this flag.
+    LogExport:
+      type: object
+      additionalProperties: false
+      required: [version, environmentId, coverage, windowStart, windowEnd, contentByteLimit, entryLimit, truncated, entries]
+      properties:
+        version: {type: integer, enum: [1]}
+        environmentId: {type: string, format: uuid}
+        coverage:
+          type: string
+          enum: [retained-snapshots]
+          description: Previously captured, agent-redacted samples only. This is not a complete log archive.
+        windowStart: {type: string, format: date-time}
+        windowEnd: {type: string, format: date-time}
+        contentByteLimit: {type: integer, enum: [65536]}
+        entryLimit: {type: integer, enum: [100]}
+        truncated:
+          type: boolean
+          description: The export omitted entries or shortened content to stay within its limits. False does not imply complete source logs.
+        entries:
+          type: array
+          maxItems: 100
+          items: {$ref: '#/components/schemas/LogExportEntry'}

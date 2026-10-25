@@ -22,9 +22,13 @@ func agentIdentity(ctx context.Context) execution.Identity {
 func (s *Server) protection(next http.Handler) http.Handler {
 	browser := s.Sessions.LoadAndSave(s.identity(s.csrf(next)))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, "/hooks/git/") || r.URL.Path == "/hooks/stripe" {
+		if strings.HasPrefix(r.URL.Path, "/hooks/git/") || r.URL.Path == "/hooks/stripe" || r.URL.Path == "/hooks/github-app" {
 			w.Header().Set("Cache-Control", "no-store")
-			r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+			limit := int64(1 << 20)
+			if r.URL.Path == "/hooks/github-app" {
+				limit = 150000
+			}
+			r.Body = http.MaxBytesReader(w, r.Body, limit)
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -33,6 +37,9 @@ func (s *Server) protection(next http.Handler) http.Handler {
 			return
 		}
 		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("Astilba-Agent-Features", "build-controls")
+		w.Header().Set("Astilba-Agent-Build-Cache", "v1")
+		w.Header().Set("Astilba-Agent-Railpack", "v1")
 		limit := int64(16384)
 		if r.URL.Path == "/agent/v1/report" || r.URL.Path == "/agent/v1/schedule-reports" {
 			limit = 196608

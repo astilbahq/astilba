@@ -65,16 +65,42 @@ func (s *Service) hydratePipeline(ctx context.Context, c *api.ExecutionCommand) 
 	if err = tx.QueryRow(ctx, "SELECT workspace_id FROM servers WHERE id=$1", c.ServerId).Scan(&ws); err != nil {
 		return err
 	}
-	provider, _, err := s.provider(ctx, tx, ws, p.Connection.ID)
-	if err != nil {
+	if p.Build != nil && (p.Build.NeedsControls() || p.Build.UsesRailpack()) {
+		if _, err = runnerEligible(ctx, tx, ws, c.ServerId, p.Build.Architecture, p.Build.NeedsControls(), p.Build.UsesRailpack()); err != nil {
+			return err
+		}
+	}
+	if p.CacheScope != "" {
+		var raw []byte
+		if err = tx.QueryRow(ctx, "SELECT capabilities FROM servers WHERE id=$1", c.ServerId).Scan(&raw); err != nil {
+			return err
+		}
+		var capabilities api.AgentCapabilities
+		if json.Unmarshal(raw, &capabilities) != nil || capabilities.BuildCache == nil || !*capabilities.BuildCache {
+			return errors.New("runner no longer supports the frozen project cache assignment")
+		}
+	}
+	var configuration []byte
+	if err = tx.QueryRow(ctx, "SELECT configuration FROM git_connections WHERE workspace_id=$1 AND id=$2", ws, p.Connection.ID).Scan(&configuration); err != nil {
 		return err
 	}
-	id, private, err := provider.Repository(ctx)
-	if err != nil {
-		return err
-	}
-	if id != p.Connection.RepositoryID || private != p.Connection.Private {
-		return errors.New("repository identity changed")
+	if appConfiguration(configuration) {
+		var current pipeline.Connection
+		if json.Unmarshal(configuration, &current) != nil || current.Provider != p.Connection.Provider || current.BaseURL != p.Connection.BaseURL || current.Repository != p.Connection.Repository || current.RepositoryID != p.Connection.RepositoryID || current.Private != p.Connection.Private {
+			return errors.New("repository identity changed")
+		}
+	} else {
+		provider, _, e := s.provider(ctx, tx, ws, p.Connection.ID)
+		if e != nil {
+			return e
+		}
+		id, private, e := provider.Repository(ctx)
+		if e != nil {
+			return e
+		}
+		if id != p.Connection.RepositoryID || private != p.Connection.Private {
+			return errors.New("repository identity changed")
+		}
 	}
 	if err = s.populatePipeline(ctx, tx, ws, &p); err != nil {
 		return err
@@ -87,12 +113,8 @@ func (s *Service) hydratePipeline(ctx context.Context, c *api.ExecutionCommand) 
 	return tx.Commit(ctx)
 }
 func (s *Service) populatePipeline(ctx context.Context, tx pgx.Tx, ws uuid.UUID, p *pipeline.Command) error {
-	_, cipher, err := loadConnection(ctx, tx, ws, p.Connection.ID)
+	access, err := s.gitAccess(ctx, tx, ws, p.Connection.ID, p.Action == "submit")
 	if err != nil {
-		return err
-	}
-	var access pipeline.Access
-	if err = s.openIntegration(ws, p.Connection.ID, "git", cipher, &access); err != nil {
 		return err
 	}
 	p.Access = &pipeline.Access{}
@@ -178,6 +200,9 @@ func (s *Service) pipelineReport(ctx context.Context, tx pgx.Tx, c api.Execution
 	if json.Unmarshal(*r.Pipeline, &result) != nil || len(result.Logs) > 16384 || len(result.Cache) > 256 {
 		return domain.Invalid("pipeline")
 	}
+	if result.Railpack != nil && (p.Railpack == nil || !result.Railpack.Valid(*p.Railpack)) {
+		return domain.Invalid("build.railpack")
+	}
 	if r.State == "succeeded" {
 		switch p.Action {
 		case "import":
@@ -251,8 +276,18 @@ func (s *Service) pipelineReport(ctx context.Context, tx pgx.Tx, c api.Execution
 				r.Note = "Build inputs changed; this result cannot become an artifact."
 				break
 			}
+			if result.Skipped {
+				if p.CompareCommit == "" || len(p.Build.WatchPaths) == 0 || result.Commit != p.Commit || result.Image != "" || result.Digest != "" {
+					return domain.Invalid("build.skipped")
+				}
+				r.Note = "No watched paths changed since the last compatible successful build. No image was built or deployed."
+				break
+			}
 			if result.Commit != p.Commit || result.Architecture != p.Build.Architecture || !validImageDigest(result.Digest) {
 				return domain.Invalid("artifact")
+			}
+			if p.Build.UsesRailpack() && result.Railpack == nil {
+				return domain.Invalid("build.railpack")
 			}
 			artifact := pipeline.Artifact{ID: c.Id, BuildID: c.Id, Image: result.Image, Digest: result.Digest, Architecture: result.Architecture, InputHash: p.InputHash, Commit: p.Commit}
 			if p.Registry != nil {

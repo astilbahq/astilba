@@ -21,7 +21,7 @@ export default defineConfig({
     },
     {
       command: "pnpm dev",
-      env: { ASTILBA_DEV_API_PORT: "54188" },
+      env: { ASTILBA_DEV_API_PORT: "54189" },
       url: "http://127.0.0.1:54182",
       reuseExistingServer: false,
       gracefulShutdown: { signal: "SIGTERM", timeout: 15000 },

@@ -23,6 +23,7 @@ import * as authStyles from "./features/auth/auth.styles";
 import { Invitation } from "./features/auth/invitation";
 import { PasswordReset } from "./features/auth/password-reset";
 import { useAuthValidation } from "./features/auth/use-auth-validation";
+import { GitHubCallback, GitHubInstalled } from "./features/github-app";
 import { hostingOptions, Signup } from "./hosting";
 import { usePageTitle } from "./i18n/use-page-title";
 import { Account, Members } from "./security";
@@ -157,6 +158,7 @@ function loginDestination(value: unknown): string {
         "/members",
         "/account",
         "/invitation",
+        "/github/callback",
       ].includes(url.pathname.replace(/\/$/, "") || "/")
     )
       return "/";
@@ -402,16 +404,27 @@ const signup = createRoute({
   path: "/signup",
   component: Signup,
 });
+const githubCallback = createRoute({
+  getParentRoute: () => application,
+  path: "/github/callback",
+  component: GitHubCallback,
+});
+const githubInstalled = createRoute({
+  getParentRoute: () => auth,
+  path: "/github/installed",
+  component: GitHubInstalled,
+});
 export const router = createRouter({
   routeTree: root.addChildren([
     application.addChildren([
+      githubCallback,
       dashboardRoute,
       servers,
       alerts,
       account,
       members,
     ]),
-    auth.addChildren([loginRoute, reset, invitation, signup]),
+    auth.addChildren([loginRoute, reset, invitation, signup, githubInstalled]),
   ]),
 });
 declare module "@tanstack/react-router" {

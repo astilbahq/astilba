@@ -73,4 +73,4 @@ Guided host/domain setup, general cron schedules, replicas and cross-host placem
 
 Use React, TypeScript, Vite, TanStack Router and Query, React Flow and a platform-specific UI foundation using Panda CSS. Use Go for management and agents, PostgreSQL for management state, and Docker, Compose, BuildKit and Traefik on deployment hosts. River's open-source core and optional Railpack support must pass the initial technical experiments.
 
-The next step is P9 operational visibility, beginning with resource history and disk pressure. Exact prices, the public product name, measured capacity limits and published support hours remain launch decisions informed by non-critical real use.
+P9 adds resource history, disk pressure, operational alerts and bounded retained-log export. The next product increment is P10 source-to-app workflow. Exact prices, the public product name, measured capacity limits and published support hours remain launch decisions informed by non-critical real use.

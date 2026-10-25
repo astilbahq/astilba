@@ -143,7 +143,7 @@ func (w *refreshWorker) Work(ctx context.Context, job *river.Job[refreshArgs]) e
 			}
 			continue
 		}
-		runner, err := selectRunner(ctx, tx, a.Workspace, cfg.RunnerID, cfg.FallbackRunnerID, "")
+		runner, err := selectRunner(ctx, tx, a.Workspace, cfg.RunnerID, cfg.FallbackRunnerID, "", false, false)
 		if err != nil {
 			return err
 		}
@@ -211,7 +211,7 @@ func (w *refreshWorker) Work(ctx context.Context, job *river.Job[refreshArgs]) e
 		if !found {
 			continue
 		}
-		runner, err := selectRunner(ctx, tx, a.Workspace, cfg.RunnerID, cfg.FallbackRunnerID, cfg.Architecture)
+		runner, err := selectRunner(ctx, tx, a.Workspace, cfg.RunnerID, cfg.FallbackRunnerID, cfg.Architecture, cfg.NeedsControls(), cfg.UsesRailpack())
 		if err != nil {
 			return err
 		}
@@ -223,11 +223,15 @@ func (w *refreshWorker) Work(ctx context.Context, job *river.Job[refreshArgs]) e
 			}
 			registry = &r
 		}
+		compare, err := successfulBuildBaseline(ctx, tx, a.Workspace, v.env, v.app, connection, cfg)
+		if err != nil {
+			return err
+		}
 		hash := buildInputHash(connection, head, cfg)
 		if _, err = tx.Exec(ctx, "UPDATE build_targets SET input_hash=$4,requested_commit=$5 WHERE workspace_id=$1 AND environment_id=$2 AND application_id=$3", a.Workspace, v.env, v.app, hash, head); err != nil {
 			return err
 		}
-		_, err = w.service.insertPipeline(ctx, tx, a.Workspace, v.env, uuid.New(), runner, pipeline.Command{Action: "build", Connection: connection, Commit: head, Branch: a.Branch, RevisionID: v.base, UnitID: env.Unit, AppID: v.app, Build: &cfg, InputHash: hash, Registry: registry, SubmittedAt: time.Now().UTC()})
+		_, err = w.service.insertPipeline(ctx, tx, a.Workspace, v.env, uuid.New(), runner, pipeline.Command{Action: "build", Connection: connection, CompareCommit: compare, Commit: head, Branch: a.Branch, RevisionID: v.base, UnitID: env.Unit, AppID: v.app, Build: &cfg, InputHash: hash, Registry: registry, SubmittedAt: time.Now().UTC()})
 		if err != nil {
 			return err
 		}
@@ -245,4 +249,28 @@ func (w *refreshWorker) Work(ctx context.Context, job *river.Job[refreshArgs]) e
 		return river.JobSnooze(5 * time.Second)
 	}
 	return nil
+}
+
+// Requested commits include cancelled, failed and skipped work; only an actual
+// compatible artifact can establish that watched source has already been built.
+func successfulBuildBaseline(ctx context.Context, tx pgx.Tx, ws, env, app uuid.UUID, connection pipeline.Connection, cfg pipeline.BuildConfig) (string, error) {
+	if len(cfg.WatchPaths) == 0 {
+		return "", nil
+	}
+	var raw []byte
+	err := tx.QueryRow(ctx, `SELECT r.configuration FROM pipeline_runs r JOIN build_artifacts a ON a.id=r.id WHERE r.workspace_id=$1 AND r.environment_id=$2 AND r.application_id=$3 ORDER BY r.created_at DESC,r.id DESC LIMIT 1`, ws, env, app).Scan(&raw)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	var previous pipeline.Command
+	if err = json.Unmarshal(raw, &previous); err != nil {
+		return "", err
+	}
+	if previous.Build == nil || buildInputHash(connection, previous.Commit, cfg) != previous.InputHash {
+		return "", nil
+	}
+	return previous.Commit, nil
 }

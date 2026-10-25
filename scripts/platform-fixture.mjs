@@ -34,10 +34,55 @@ const gitProvider=createServer((request,response)=>{
 });
 await new Promise((resolve,reject)=>{gitProvider.once("error",reject);gitProvider.listen(54185,"127.0.0.1",resolve)});
 
+// Separate localhost OAuth site exercises SameSite=Strict on the return journey.
+const githubKeys = generateKeyPairSync("rsa", { modulusLength: 2048 });
+const githubCodes = new Map();
+const githubHandler = async (request, response) => {
+  response.setHeader("Content-Type", "application/json");
+  const u = new URL(request.url, "http://localhost:54188");
+  if (u.pathname === "/login/oauth/authorize") {
+    const code = randomUUID();
+    githubCodes.set(code, { challenge: u.searchParams.get("code_challenge"), redirect: u.searchParams.get("redirect_uri") });
+    const target = new URL(u.searchParams.get("redirect_uri"));
+    target.searchParams.set("code", code); target.searchParams.set("state", u.searchParams.get("state"));
+    response.writeHead(303, { Location: target.href }).end(); return;
+  }
+  if (u.pathname === "/login/oauth/access_token") {
+    const chunks=[];for await (const chunk of request) chunks.push(chunk);
+    const form = new URLSearchParams(Buffer.concat(chunks).toString());
+    const proof = githubCodes.get(form.get("code"));githubCodes.delete(form.get("code"));
+    if (!proof || proof.challenge !== createHash("sha256").update(form.get("code_verifier") ?? "").digest("base64url") || proof.redirect !== form.get("redirect_uri")) {response.writeHead(401).end();return;}
+    response.end(JSON.stringify({access_token:"github-browser-user-proof"}));return;
+  }
+  if (u.pathname === "/user") {response.end(JSON.stringify({id:7,login:"repository-admin"}));return;}
+  if (u.pathname === "/user/installations") {
+    const installations = u.searchParams.get("page") === "2" ? [{id:2,app_id:1,account:{login:"team"}}] : Array.from({length:100},(_,i)=>({id:100+i,app_id:1,account:{login:`page-one-${i}`},suspended_at:i===0?new Date().toISOString():null}));
+    response.end(JSON.stringify({installations}));return;
+  }
+  if (u.pathname === "/user/installations/2/repositories") {response.end(JSON.stringify({repositories:[{id:12,full_name:"team/app",private:true,permissions:{admin:true}},{id:13,full_name:"team/read-only",private:true,permissions:{admin:false}}]}));return;}
+  if (u.pathname === "/app") {response.end(JSON.stringify({id:1,client_id:"fixture-client"}));return;}
+  if (u.pathname === "/repos/team/app/installation") {response.end(JSON.stringify({id:2,app_id:1,permissions:{contents:"write",pull_requests:"write"}}));return;}
+  if (u.pathname === "/repos/team/app") {response.end(JSON.stringify({id:12,full_name:"team/app",private:true,permissions:{admin:true}}));return;}
+  if (u.pathname === "/applications/fixture-client/token") {response.writeHead(204).end();return;}
+  response.writeHead(404).end();
+};
+const githubProvider = createServer(githubHandler);
+const githubIPv6 = createServer(githubHandler);
+await new Promise((resolve,reject)=>{githubProvider.once("error",reject);githubProvider.listen(54188,"127.0.0.1",resolve)});
+await new Promise((resolve,reject)=>{githubIPv6.once("error",reject);githubIPv6.listen(54188,"::1",resolve)});
+const githubEnv = {
+ ASTILBA_GITHUB_APP_ID:"1",ASTILBA_GITHUB_APP_CLIENT_ID:"fixture-client",ASTILBA_GITHUB_APP_SLUG:"fixture-app",
+ ASTILBA_GITHUB_APP_CLIENT_SECRET:"github-browser-client-secret-fixture", ASTILBA_GITHUB_APP_WEBHOOK_SECRET:"github-browser-webhook-secret-fixture",
+ ASTILBA_GITHUB_APP_PRIVATE_KEY:githubKeys.privateKey.export({type:"pkcs8",format:"pem"}),
+ ASTILBA_GITHUB_APP_FIXTURE_API:"http://127.0.0.1:54188",ASTILBA_GITHUB_APP_FIXTURE_WEB:"http://localhost:54188",
+};
+
 async function cleanup() {
   if (stopping) return;
   stopping = true;
  gitProvider.close();
+ githubProvider.close();
+ githubIPv6.close();
  hostedProxy?.close();
  await rm(hostedInfo,{force:true});
   for (const child of children) child.kill("SIGTERM");
@@ -162,19 +207,22 @@ try {
   };
   start(binary, ["serve"], {
     ...env,
+    ...githubEnv,
     ASTILBA_LISTEN: "127.0.0.1:54181",
     ASTILBA_ORIGIN: "http://127.0.0.1:54181",
   });
   start(binary, ["serve"], {
     ...env,
+    ...githubEnv,
     ASTILBA_LISTEN: "127.0.0.1:54184",
     ASTILBA_ORIGIN: "http://127.0.0.1:54183",
   });
   // Vite exercises dev-only localisation against the same real API/database,
   // with its own permitted browser origin rather than bypassing CSRF checks.
+  // Port 54188 belongs to the separate OAuth provider fixture.
   start(binary, ["serve"], {
     ...env,
-    ASTILBA_LISTEN: "127.0.0.1:54188",
+    ASTILBA_LISTEN: "127.0.0.1:54189",
     ASTILBA_ORIGIN: "http://127.0.0.1:54182",
   });
   const hostedDatabase = `hosted_${owned.replaceAll("-", "")}`;
@@ -208,7 +256,7 @@ try {
   await mkdir(join(root,".artifacts/p8/browser"),{recursive:true});
   const operatorEnv=Object.fromEntries(["ASTILBA_DATABASE_URL","ASTILBA_KEYRING","ASTILBA_HOSTED","ASTILBA_HOSTED_COHORT_LIMIT","ASTILBA_HOSTED_SERVER_LIMIT","ASTILBA_HOSTED_SUPPORT"].map(key=>[key,hostedEnv[key]]));
   await writeFile(hostedInfo,JSON.stringify({binary,env:operatorEnv,host,container:name,owner:owned,database:hostedDatabase}),{mode:0o600});
-  for (const port of [54181, 54184, 54187, 54188]) {
+  for (const port of [54181, 54184, 54187, 54189]) {
     let ready = false;
     for (let i = 0; i < 100; i++) {
       try {

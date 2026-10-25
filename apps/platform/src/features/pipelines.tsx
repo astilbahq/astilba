@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useId, useState } from "react";
 import { ApiError, client, result, type Schema } from "../api/client";
 import { Button } from "../components/button";
 import { Checkbox } from "../components/checkbox";
@@ -16,6 +16,22 @@ import type { EnvironmentPath } from "./visual-editor";
 const root =
   "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}" as const;
 const wsRoot = "/api/v1/workspaces/{workspaceId}" as const;
+const buildDefaults = {
+  dockerfile: {
+    cpus: "2",
+    memoryMiB: "2048",
+    sourceMiB: "256",
+    stateMiB: "1024",
+    minutes: "30",
+  },
+  railpack: {
+    cpus: "2",
+    memoryMiB: "6144",
+    sourceMiB: "1024",
+    stateMiB: "4096",
+    minutes: "30",
+  },
+};
 export function Pipelines({
   path,
   revision,
@@ -33,6 +49,29 @@ export function Pipelines({
 }) {
   const action = useAction(),
     queries = useQueryClient();
+  const controlsId = useId();
+  const [builder, setBuilder] = useState<"dockerfile" | "railpack">(
+    "dockerfile",
+  );
+  const [dockerfile, setDockerfile] = useState("Dockerfile");
+  const [buildCommand, setBuildCommand] = useState("");
+  const [startCommand, setStartCommand] = useState("");
+  const [limits, setLimits] = useState(buildDefaults.dockerfile);
+  const buildFieldError = (...fields: string[]) =>
+    action.error instanceof ApiError &&
+    fields.some(
+      (field) =>
+        action.error instanceof ApiError &&
+        action.error.detail.fields?.includes(`build.${field}`),
+    );
+  const builderError = buildFieldError("builder", "railpack");
+  const inputsError = buildFieldError("arguments", "secrets");
+  const budgetError =
+    action.error instanceof ApiError &&
+    action.error.detail.fields?.includes("build.budget");
+  const watchError =
+    action.error instanceof ApiError &&
+    action.error.detail.fields?.includes("build.watchPaths");
   const workspace = { workspaceId: path.workspaceId };
   const [notice, setNotice] = useState("");
   const [connection, setConnection] = useState(""),
@@ -164,9 +203,9 @@ export function Pipelines({
       <section className={s.panel}>
         <h2>Git and builds</h2>
         <p className={s.muted}>
-          Fetch an exact commit on your runner, build with a Dockerfile, then
-          promote its immutable image. Offline or busy runners queue work. A
-          fallback runs only when you explicitly choose one.
+          Fetch an exact commit on your runner, build with Dockerfile or
+          Railpack, then promote its immutable image. Offline or busy runners
+          queue work. A fallback runs only when you explicitly choose one.
         </p>
         <ErrorNotice
           error={
@@ -419,9 +458,78 @@ export function Pipelines({
                   const secret = text(d, "secret");
                   if (secret) {
                     const name = text(d, "secretName");
-                    if (!name)
-                      throw new Error("Give the build secret a mount name.");
+                    if (!name) throw new Error("Give the build secret a name.");
                     secretMap[name] = secret;
+                  }
+                  const budget = {
+                    cpus: Number(text(d, "cpus")),
+                    memoryMiB: Number(text(d, "memoryMiB")),
+                    sourceMiB: Number(text(d, "sourceMiB")),
+                    stateMiB: Number(text(d, "stateMiB")),
+                    minutes: Number(text(d, "minutes")),
+                  };
+                  const customBudget =
+                    budget.cpus !== 2 ||
+                    budget.memoryMiB !== 2048 ||
+                    budget.sourceMiB !== 256 ||
+                    budget.stateMiB !== 1024 ||
+                    budget.minutes !== 30;
+                  const watchPaths = text(d, "watchPaths")
+                    .split("\n")
+                    .map((p) => p.trim())
+                    .filter(Boolean);
+                  const watchMessage =
+                    watchPaths.length > 16
+                      ? "Use at most 16 watch paths."
+                      : new Set(watchPaths).size !== watchPaths.length
+                        ? "Remove duplicate watch paths."
+                        : watchPaths.some((p) => Array.from(p).length > 240)
+                          ? "Use watch paths of at most 240 characters."
+                          : undefined;
+                  if (watchMessage)
+                    throw new ApiError(
+                      {
+                        code: "invalid_input",
+                        message: watchMessage,
+                        fields: ["build.watchPaths"],
+                        requestId: "",
+                      },
+                      400,
+                    );
+                  if (customBudget || watchPaths.length) {
+                    for (const id of [runner, text(d, "fallback")].filter(
+                      Boolean,
+                    )) {
+                      if (
+                        !servers.data?.find((server) => server.id === id)
+                          ?.capabilities?.buildControls
+                      ) {
+                        throw new Error(
+                          "Update the selected runner and fallback agents before using custom build limits or watch paths.",
+                        );
+                      }
+                    }
+                  }
+                  if (builder === "railpack") {
+                    for (const id of [runner, text(d, "fallback")].filter(
+                      Boolean,
+                    )) {
+                      if (
+                        servers.data?.find((server) => server.id === id)
+                          ?.capabilities?.railpackVersion !== "0.43.0"
+                      ) {
+                        throw new ApiError(
+                          {
+                            code: "invalid_input",
+                            message:
+                              "Update the selected runner and fallback to support Railpack 0.43.0 before queuing this build.",
+                            fields: ["build.builder"],
+                            requestId: "",
+                          },
+                          400,
+                        );
+                      }
+                    }
                   }
                   await result(
                     client.POST(`${root}/builds`, {
@@ -437,12 +545,24 @@ export function Pipelines({
                           fallbackRunnerId: text(d, "fallback") || undefined,
                           registryId: text(d, "registry") || undefined,
                           context: text(d, "context"),
-                          dockerfile: text(d, "dockerfile"),
+                          builder:
+                            builder === "railpack" ? "railpack" : undefined,
+                          dockerfile:
+                            builder === "dockerfile" ? dockerfile : undefined,
+                          railpack:
+                            builder === "railpack" &&
+                            (buildCommand || startCommand)
+                              ? { buildCommand, startCommand }
+                              : undefined,
                           architecture: text(d, "architecture") as
                             | "amd64"
                             | "arm64",
                           arguments: argumentsMap,
                           secrets: secretMap,
+                          budget: customBudget ? budget : undefined,
+                          watchPaths: watchPaths.length
+                            ? watchPaths
+                            : undefined,
                           autoBuild: d.has("autoBuild"),
                           autoDeploy: d.has("autoDeploy"),
                         },
@@ -474,9 +594,80 @@ export function Pipelines({
                 <Input name="context" defaultValue="." required />
               </Label>
               <Label>
-                Dockerfile, relative to context
-                <Input name="dockerfile" defaultValue="Dockerfile" required />
+                Builder
+                <Select
+                  name="builder"
+                  value={builder}
+                  aria-invalid={builderError || undefined}
+                  aria-describedby={`${controlsId}-builder`}
+                  onChange={(e) => {
+                    const next = e.target.value as typeof builder;
+                    if (
+                      Object.keys(limits).every(
+                        (key) =>
+                          limits[key as keyof typeof limits] ===
+                          buildDefaults[builder][key as keyof typeof limits],
+                      )
+                    )
+                      setLimits(buildDefaults[next]);
+                    setBuilder(next);
+                  }}
+                >
+                  <option value="dockerfile">Dockerfile</option>
+                  <option value="railpack">Railpack</option>
+                </Select>
               </Label>
+              <p
+                id={`${controlsId}-builder`}
+                className={builderError ? s.error : s.muted}
+              >
+                {builderError && action.error instanceof Error
+                  ? action.error.message
+                  : builder === "railpack"
+                    ? "Railpack 0.43.0 supports Node/npm, Go and shell projects here. Review the resource limits below; recommended limits are 6 GiB memory, 1 GiB source and 4 GiB builder storage."
+                    : "Use a Dockerfile from your build context."}
+              </p>
+              {builder === "dockerfile" ? (
+                <Label>
+                  Dockerfile, relative to context
+                  <Input
+                    name="dockerfile"
+                    value={dockerfile}
+                    onChange={(e) => setDockerfile(e.target.value)}
+                    required
+                  />
+                </Label>
+              ) : (
+                <>
+                  <Label>
+                    Build command override (optional)
+                    <Textarea
+                      name="buildCommand"
+                      value={buildCommand}
+                      onChange={(e) => setBuildCommand(e.target.value)}
+                      maxLength={4096}
+                      aria-invalid={builderError || undefined}
+                      aria-describedby={`${controlsId}-overrides`}
+                    />
+                  </Label>
+                  <Label>
+                    Start command override (optional)
+                    <Input
+                      name="startCommand"
+                      value={startCommand}
+                      onChange={(e) => setStartCommand(e.target.value)}
+                      maxLength={4096}
+                      aria-invalid={builderError || undefined}
+                      aria-describedby={`${controlsId}-overrides`}
+                    />
+                  </Label>
+                  <p id={`${controlsId}-overrides`} className={s.muted}>
+                    Leave empty to use detection and repository configuration.
+                    These commands take precedence over repository commands.
+                    Changing builders keeps your command drafts.
+                  </p>
+                </>
+              )}
               <Label>
                 Architecture
                 <Select name="architecture">
@@ -484,6 +675,100 @@ export function Pipelines({
                   <option value="amd64">Linux amd64</option>
                 </Select>
               </Label>
+              <details>
+                <summary>Build resource limits</summary>
+                <div className={s.stack}>
+                  <p
+                    id={`${controlsId}-budget`}
+                    className={budgetError ? s.error : s.muted}
+                  >
+                    {budgetError && action.error instanceof Error
+                      ? action.error.message
+                      : "Limits apply to this assignment, including queue time. Source and builder storage share the memory limit; leave at least 96 MiB for tools. Custom limits require an updated agent."}
+                  </p>
+                  <Label>
+                    CPU cores
+                    <Input
+                      type="number"
+                      name="cpus"
+                      min={1}
+                      max={8}
+                      step={1}
+                      value={limits.cpus}
+                      onChange={(e) =>
+                        setLimits({ ...limits, cpus: e.target.value })
+                      }
+                      required
+                    />
+                  </Label>
+                  <Label>
+                    Memory limit (MiB)
+                    <Input
+                      type="number"
+                      name="memoryMiB"
+                      aria-invalid={budgetError || undefined}
+                      aria-describedby={`${controlsId}-budget`}
+                      min={512}
+                      max={8192}
+                      step={1}
+                      value={limits.memoryMiB}
+                      onChange={(e) =>
+                        setLimits({ ...limits, memoryMiB: e.target.value })
+                      }
+                      required
+                    />
+                  </Label>
+                  <Label>
+                    Source storage (MiB)
+                    <Input
+                      type="number"
+                      name="sourceMiB"
+                      aria-invalid={budgetError || undefined}
+                      aria-describedby={`${controlsId}-budget`}
+                      min={64}
+                      max={1024}
+                      step={1}
+                      value={limits.sourceMiB}
+                      onChange={(e) =>
+                        setLimits({ ...limits, sourceMiB: e.target.value })
+                      }
+                      required
+                    />
+                  </Label>
+                  <Label>
+                    Builder storage (MiB)
+                    <Input
+                      type="number"
+                      name="stateMiB"
+                      aria-invalid={budgetError || undefined}
+                      aria-describedby={`${controlsId}-budget`}
+                      min={128}
+                      max={6144}
+                      step={1}
+                      value={limits.stateMiB}
+                      onChange={(e) =>
+                        setLimits({ ...limits, stateMiB: e.target.value })
+                      }
+                      required
+                    />
+                  </Label>
+                  <Label>
+                    Assignment lifetime (minutes)
+                    <Input
+                      type="number"
+                      name="minutes"
+                      min={1}
+                      max={30}
+                      step={1}
+                      value={limits.minutes}
+                      onChange={(e) =>
+                        setLimits({ ...limits, minutes: e.target.value })
+                      }
+                      required
+                    />
+                  </Label>
+                </div>
+              </details>
               <Label>
                 Registry destination
                 <Select name="registry">
@@ -504,12 +789,18 @@ export function Pipelines({
                 Plain build arguments
                 <Textarea
                   name="arguments"
+                  aria-invalid={inputsError || undefined}
+                  aria-describedby={`${controlsId}-inputs`}
                   placeholder="PUBLIC_BASE_URL=https://example.com"
                 />
               </Label>
               <Label>
                 Build secret
-                <Select name="secret">
+                <Select
+                  name="secret"
+                  aria-invalid={inputsError || undefined}
+                  aria-describedby={`${controlsId}-inputs`}
+                >
                   <option value="">None</option>
                   {secrets.data?.map((v) => (
                     <option key={v.id} value={v.id}>
@@ -518,20 +809,47 @@ export function Pipelines({
                   ))}
                 </Select>
               </Label>
-              <Field
-                name="secretName"
-                label="Secret mount name"
-                required={false}
-              />
-              <p className={s.muted}>
-                Build secrets are separate from runtime secrets and available
-                through Dockerfile secret mounts. Your Dockerfile must avoid
-                copying or printing them.
+              <Label>
+                {builder === "railpack"
+                  ? "Secret environment name"
+                  : "Secret mount name"}
+                <Input
+                  name="secretName"
+                  aria-invalid={inputsError || undefined}
+                  aria-describedby={`${controlsId}-inputs`}
+                />
+              </Label>
+              <p
+                id={`${controlsId}-inputs`}
+                className={inputsError ? s.error : s.muted}
+              >
+                {inputsError && action.error instanceof Error
+                  ? action.error.message
+                  : builder === "railpack"
+                    ? "Declared build secrets are available as build environment variables, separately from runtime secrets. Use distinct public argument and secret names; RAILPACK_ settings must be public arguments. Build commands must avoid copying or printing secrets."
+                    : "Build secrets are separate from runtime secrets and available through Dockerfile secret mounts. Your Dockerfile must avoid copying or printing them."}
               </p>
               <Label>
                 <Checkbox name="autoBuild" />
                 Build new branch commits from authenticated push webhooks
               </Label>
+              <Label>
+                Automatic build watch paths
+                <Textarea
+                  name="watchPaths"
+                  placeholder={"apps/web\npnpm-lock.yaml"}
+                  aria-invalid={watchError || undefined}
+                  aria-describedby={`${controlsId}-watch`}
+                />
+              </Label>
+              <p
+                id={`${controlsId}-watch`}
+                className={watchError ? s.error : s.muted}
+              >
+                {watchError && action.error instanceof Error
+                  ? action.error.message
+                  : "One distinct repository-relative file or directory per line, up to 16. Omit trailing slashes; directories include their contents. Wildcards are unsupported. Leave empty to build every change. Include shared configuration and lockfiles. Manual builds always run. Automatic builds compare with the last compatible successful build and rebuild when comparison is unavailable. Requires an updated agent."}
+              </p>
               {owner && (
                 <Label>
                   <Checkbox name="autoDeploy" />
@@ -614,9 +932,7 @@ export function Pipelines({
           <p className={s.muted}>No source or build jobs yet.</p>
         )}
         {runs.data?.map((run) => {
-          const report = run.result as
-            | { logs?: string; cache?: string; reviewUrl?: string }
-            | undefined;
+          const report = run.result;
           return (
             <article key={run.id} className={s.stack}>
               <h4>
@@ -644,6 +960,26 @@ export function Pipelines({
                 </ol>
               )}
               {report?.cache && <p>{report.cache}</p>}
+              {report?.railpack && (
+                <details>
+                  <summary>
+                    Railpack {report.railpack.version} ·{" "}
+                    {report.railpack.provider}
+                  </summary>
+                  <p className={s.muted}>
+                    Frozen planner inputs and resolved tools for this build.
+                  </p>
+                  <pre
+                    className={s.code}
+                    style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}
+                  >{`Frontend: ${report.railpack.frontend}\nPlan: ${report.railpack.planHash}\n${Object.entries(
+                    report.railpack.packages,
+                  )
+                    .sort(([a], [b]) => a.localeCompare(b))
+                    .map(([name, version]) => `${name}: ${version}`)
+                    .join("\n")}`}</pre>
+                </details>
+              )}
               {report?.reviewUrl && (
                 <Anchor
                   href={report.reviewUrl}

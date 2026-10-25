@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
+	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
 	"github.com/moby/moby/client"
 )
 
@@ -75,6 +76,12 @@ func Preflight(ctx context.Context, docker *client.Client, version, dir string, 
 	visual := h.Preflight.Ready && err == nil
 	build := h.Preflight.Ready && dockerFreeBytes(ctx, docker) >= 4<<30
 	h.Capabilities.Build = &build
+	h.Capabilities.BuildControls = &build
+	h.Capabilities.BuildCache = &build
+	if build {
+		version := pipeline.RailpackVersion
+		h.Capabilities.RailpackVersion = &version
+	}
 	h.Capabilities.Visual = &visual
 	h.Capabilities.Compose = &visual
 	resticCLI := "restic"

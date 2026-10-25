@@ -16,7 +16,7 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-func runnerEligible(ctx context.Context, tx pgx.Tx, ws, id uuid.UUID, architecture string) (bool, error) {
+func runnerEligible(ctx context.Context, tx pgx.Tx, ws, id uuid.UUID, architecture string, controls, railpack bool) (bool, error) {
 	var role string
 	var raw []byte
 	var online bool
@@ -28,10 +28,16 @@ func runnerEligible(ctx context.Context, tx pgx.Tx, ws, id uuid.UUID, architectu
 	if json.Unmarshal(raw, &c) != nil || role == "deployment" || c.Build == nil || !*c.Build || !c.Docker || (architecture != "" && architecture != string(c.Arch)) {
 		return false, domain.Invalid("runner")
 	}
+	if controls && (c.BuildControls == nil || !*c.BuildControls) {
+		return false, domain.Invalid("runner.buildControlsUpgradeRequired")
+	}
+	if railpack && (c.RailpackVersion == nil || *c.RailpackVersion != pipeline.RailpackVersion) {
+		return false, domain.Invalid("runner.railpackUpgradeRequired")
+	}
 	return online, nil
 }
-func selectRunner(ctx context.Context, tx pgx.Tx, ws, primary uuid.UUID, fallback *uuid.UUID, architecture string) (uuid.UUID, error) {
-	online, err := runnerEligible(ctx, tx, ws, primary, architecture)
+func selectRunner(ctx context.Context, tx pgx.Tx, ws, primary uuid.UUID, fallback *uuid.UUID, architecture string, controls, railpack bool) (uuid.UUID, error) {
+	online, err := runnerEligible(ctx, tx, ws, primary, architecture, controls, railpack)
 	if err != nil {
 		return uuid.Nil, err
 	}
@@ -40,7 +46,7 @@ func selectRunner(ctx context.Context, tx pgx.Tx, ws, primary uuid.UUID, fallbac
 		return uuid.Nil, err
 	}
 	if fallback != nil && (!online || busy) {
-		ready, err := runnerEligible(ctx, tx, ws, *fallback, architecture)
+		ready, err := runnerEligible(ctx, tx, ws, *fallback, architecture, controls, railpack)
 		if err != nil {
 			return uuid.Nil, err
 		}
@@ -57,6 +63,25 @@ func selectRunner(ctx context.Context, tx pgx.Tx, ws, primary uuid.UUID, fallbac
 }
 func (s *Service) insertPipeline(ctx context.Context, tx pgx.Tx, ws, env, key, server uuid.UUID, p pipeline.Command) (api.Operation, error) {
 	var out api.Operation
+	if p.Build != nil {
+		canonical := p.Build.Canonical()
+		p.Build = &canonical
+		if canonical.UsesRailpack() {
+			pins := pipeline.RailpackFor(canonical.Architecture)
+			p.Railpack = &pins
+		}
+	}
+	if p.Action == "build" {
+		var project uuid.UUID
+		var raw []byte
+		if err := tx.QueryRow(ctx, "SELECT e.project_id,s.capabilities FROM environments e JOIN servers s ON s.workspace_id=e.workspace_id AND s.id=$3 WHERE e.workspace_id=$1 AND e.id=$2", ws, env, server).Scan(&project, &raw); err != nil {
+			return out, err
+		}
+		var capabilities api.AgentCapabilities
+		if json.Unmarshal(raw, &capabilities) == nil && capabilities.BuildCache != nil && *capabilities.BuildCache && p.Build != nil && p.Build.CanCache() {
+			p.CacheScope = pipeline.Hash([]uuid.UUID{ws, project})
+		}
+	}
 	if err := p.Validate(); err != nil {
 		return out, domain.Invalid("pipeline")
 	}
@@ -81,7 +106,7 @@ func (s *Service) insertPipeline(ctx context.Context, tx pgx.Tx, ws, env, key, s
 	}
 	id := uuid.New()
 	message := json.RawMessage(raw)
-	c := api.ExecutionCommand{Id: id, ServerId: server, EnvironmentId: env, ResourceId: p.UnitID, Generation: generation, Kind: "pipeline", Action: "inspect", PlanHash: p.Digest(), Pipeline: &message, Deadline: time.Now().Add(30 * time.Minute)}
+	c := api.ExecutionCommand{Id: id, ServerId: server, EnvironmentId: env, ResourceId: p.UnitID, Generation: generation, Kind: "pipeline", Action: "inspect", PlanHash: p.Digest(), Pipeline: &message, Deadline: time.Now().Add(pipelineLifetime(p))}
 	out, err = s.insert(ctx, tx, ws, key, nil, c)
 	if err != nil {
 		return out, err
@@ -157,7 +182,7 @@ func (s *Service) BindSource(ctx context.Context, p store.Principal, ws, pid, en
 		if err != nil {
 			return domain.Invalid("branch")
 		}
-		server, err := selectRunner(ctx, tx, ws, c.RunnerID, c.FallbackRunnerID, "")
+		server, err := selectRunner(ctx, tx, ws, c.RunnerID, c.FallbackRunnerID, "", false, false)
 		if err != nil {
 			return err
 		}
@@ -217,7 +242,7 @@ func (s *Service) RefreshSource(ctx context.Context, p store.Principal, ws, pid,
 				return domain.Conflict
 			}
 		}
-		server, err := selectRunner(ctx, tx, ws, c.RunnerID, c.FallbackRunnerID, "")
+		server, err := selectRunner(ctx, tx, ws, c.RunnerID, c.FallbackRunnerID, "", false, false)
 		if err != nil {
 			return err
 		}
@@ -293,7 +318,7 @@ func (s *Service) SubmitSource(ctx context.Context, p store.Principal, ws, pid, 
 		if err = s.rejectRuntimeSecrets(ctx, tx, ws, env, composeproject.Bundle{Files: append(append([]composeproject.File{}, baseline.Files...), v.Spec.Compose.Files...)}); err != nil {
 			return err
 		}
-		server, err := selectRunner(ctx, tx, ws, source.RunnerID, source.FallbackRunnerID, "")
+		server, err := selectRunner(ctx, tx, ws, source.RunnerID, source.FallbackRunnerID, "", false, false)
 		if err != nil {
 			return err
 		}
@@ -312,7 +337,12 @@ func (s *Service) SubmitSource(ctx context.Context, p store.Principal, ws, pid, 
 }
 func (s *Service) CreateBuild(ctx context.Context, p store.Principal, ws, pid, env, base, app, key uuid.UUID, c pipeline.BuildConfig) (api.Operation, error) {
 	var out api.Operation
+	c = c.Canonical()
 	if err := c.Validate(); err != nil {
+		var validation *pipeline.BuildValidationError
+		if errors.As(err, &validation) {
+			return out, &domain.Error{Code: "invalid_input", Message: validation.Message, Fields: []string{"build." + validation.Field}}
+		}
 		return out, domain.Invalid("build")
 	}
 	err := s.scope(ctx, p, ws, true, c.AutoDeploy, c.AutoDeploy, "build.create", app, func(tx pgx.Tx) error {
@@ -342,7 +372,7 @@ func (s *Service) CreateBuild(ctx context.Context, p store.Principal, ws, pid, e
 		if err != nil {
 			return domain.Invalid("branch")
 		}
-		server, err := selectRunner(ctx, tx, ws, c.RunnerID, c.FallbackRunnerID, c.Architecture)
+		server, err := selectRunner(ctx, tx, ws, c.RunnerID, c.FallbackRunnerID, c.Architecture, c.NeedsControls(), c.UsesRailpack())
 		if err != nil {
 			return err
 		}
@@ -401,6 +431,17 @@ func buildInputHash(c pipeline.Connection, commit string, b pipeline.BuildConfig
 	b.RegistryID = nil
 	b.AutoBuild = false
 	b.AutoDeploy = false
+	b.Budget = nil
+	b.WatchPaths = nil
+	b = b.Canonical()
+	if b.UsesRailpack() {
+		return pipeline.Hash(struct {
+			Connection      uuid.UUID
+			Commit, Builder string
+			Inputs          pipeline.BuildConfig
+			Railpack        pipeline.RailpackInputs
+		}{c.ID, commit, pipeline.BuilderImage, b, pipeline.RailpackFor(b.Architecture)})
+	}
 	return pipeline.Hash(struct {
 		Connection      uuid.UUID
 		Commit, Builder string
@@ -470,4 +511,11 @@ func (s *Service) SourcePolicy(ctx context.Context, p store.Principal, ws, pid, 
 		}
 		return err
 	})
+}
+
+func pipelineLifetime(p pipeline.Command) time.Duration {
+	if p.Action == "build" && p.Build != nil {
+		return time.Duration(p.Build.Limits().Minutes) * time.Minute
+	}
+	return 30 * time.Minute
 }

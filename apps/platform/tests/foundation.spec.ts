@@ -164,16 +164,22 @@ test("real API: create, conflict, secret, keyboard and reflow", async ({
   expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
 
   // The saved dashboard preference also governs the canvas when the OS differs.
+  const root = page.locator("html");
   await page.emulateMedia({ colorScheme: "dark" });
   const canvas = page.locator(".visual-canvas .react-flow");
   const bodyColor = () =>
     page.locator("body").evaluate((el) => getComputedStyle(el).backgroundColor);
+  // View transitions apply the palette asynchronously; sample it after that commit.
+  await expect(root).toHaveClass("dark");
   await expect(canvas).toHaveCSS("background-color", await bodyColor());
   await page.emulateMedia({ colorScheme: "light" });
+  await expect(root).not.toHaveClass("dark");
   await page.getByRole("button", { name: "Appearance", exact: true }).click();
   await page.getByRole("menuitemradio", { name: "Dark", exact: true }).click();
+  await expect(root).toHaveClass("dark");
   await expect(canvas).toHaveCSS("background-color", await bodyColor());
   await page.getByRole("menuitemradio", { name: "Light", exact: true }).click();
+  await expect(root).not.toHaveClass("dark");
   await page.keyboard.press("Escape");
   await page.getByRole("button", { name: "Service list", exact: true }).click();
   await page.getByRole("button", { name: "web", exact: true }).click();

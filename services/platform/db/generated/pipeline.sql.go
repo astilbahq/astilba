@@ -71,6 +71,36 @@ func (q *Queries) AllGitAccess(ctx context.Context) ([]AllGitAccessRow, error) {
 	return items, nil
 }
 
+const allGitHubAuthorizations = `-- name: AllGitHubAuthorizations :many
+SELECT workspace_id,id,encrypted_access FROM github_app_authorizations FOR UPDATE
+`
+
+type AllGitHubAuthorizationsRow struct {
+	WorkspaceID     uuid.UUID `json:"workspace_id"`
+	ID              uuid.UUID `json:"id"`
+	EncryptedAccess []byte    `json:"encrypted_access"`
+}
+
+func (q *Queries) AllGitHubAuthorizations(ctx context.Context) ([]AllGitHubAuthorizationsRow, error) {
+	rows, err := q.db.Query(ctx, allGitHubAuthorizations)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []AllGitHubAuthorizationsRow{}
+	for rows.Next() {
+		var i AllGitHubAuthorizationsRow
+		if err := rows.Scan(&i.WorkspaceID, &i.ID, &i.EncryptedAccess); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const allRegistryAccess = `-- name: AllRegistryAccess :many
 SELECT workspace_id,id,encrypted_access FROM registries FOR UPDATE
 `
@@ -128,6 +158,21 @@ type RewrapGitAccessParams struct {
 
 func (q *Queries) RewrapGitAccess(ctx context.Context, arg RewrapGitAccessParams) error {
 	_, err := q.db.Exec(ctx, rewrapGitAccess, arg.WorkspaceID, arg.ID, arg.EncryptedAccess)
+	return err
+}
+
+const rewrapGitHubAuthorization = `-- name: RewrapGitHubAuthorization :exec
+UPDATE github_app_authorizations SET encrypted_access=$3 WHERE workspace_id=$1 AND id=$2
+`
+
+type RewrapGitHubAuthorizationParams struct {
+	WorkspaceID     uuid.UUID `json:"workspace_id"`
+	ID              uuid.UUID `json:"id"`
+	EncryptedAccess []byte    `json:"encrypted_access"`
+}
+
+func (q *Queries) RewrapGitHubAuthorization(ctx context.Context, arg RewrapGitHubAuthorizationParams) error {
+	_, err := q.db.Exec(ctx, rewrapGitHubAuthorization, arg.WorkspaceID, arg.ID, arg.EncryptedAccess)
 	return err
 }
 

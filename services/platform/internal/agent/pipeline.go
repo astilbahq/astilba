@@ -6,11 +6,13 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/url"
 	"os"
 	"os/exec"
 	"path"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -24,19 +26,20 @@ import (
 	"github.com/moby/moby/client"
 )
 
-type pipelineOutput struct {
-	bytes.Buffer
-	limit int
-}
-
-func (b *pipelineOutput) Write(p []byte) (int, error) {
-	if b.Len()+len(p) > b.limit {
-		return 0, errors.New("pipeline output limit exceeded")
-	}
-	return b.Buffer.Write(p)
-}
 func pipelineName(c api.ExecutionCommand) string { return "astilba-pipeline-" + c.Id.String() }
 func (e *Engine) pipelineCLI(ctx context.Context, name string, env []string, input []byte, limit int, args ...string) ([]byte, error) {
+	cmd := e.pipelineExec(ctx, name, env, args...)
+	cmd.Stdin = bytes.NewReader(input)
+	output := &boundedOutput{limit: limit, stopOnLimit: true}
+	cmd.Stdout = output
+	cmd.Stderr = io.Discard
+	if err := cmd.Run(); err != nil {
+		return nil, errors.New("runner tool failed")
+	}
+	return output.b.Bytes(), nil
+}
+
+func (e *Engine) pipelineExec(ctx context.Context, name string, env []string, args ...string) *exec.Cmd {
 	cli := e.DockerCLI
 	if cli == "" {
 		cli = "docker"
@@ -48,6 +51,11 @@ func (e *Engine) pipelineCLI(ctx context.Context, name string, env []string, inp
 	}
 	for _, v := range env {
 		k, _, _ := strings.Cut(v, "=")
+		// Docker uses this on the host too; keep container auth independent of CLI wrappers.
+		if k == "DOCKER_CONFIG" {
+			command = append(command, "--env", v)
+			continue
+		}
 		command = append(command, "--env", k)
 		environment = append(environment, v)
 	}
@@ -55,17 +63,19 @@ func (e *Engine) pipelineCLI(ctx context.Context, name string, env []string, inp
 	command = append(command, args...)
 	cmd := exec.CommandContext(ctx, cli, command...)
 	cmd.Env = environment
-	cmd.Stdin = bytes.NewReader(input)
-	output := &pipelineOutput{limit: limit}
-	cmd.Stdout = output
-	cmd.Stderr = io.Discard
-	if err := cmd.Run(); err != nil {
-		return nil, errors.New("runner tool failed")
-	}
-	return output.Bytes(), nil
+	return cmd
 }
 func (e *Engine) removePipeline(ctx context.Context, c api.ExecutionCommand) error {
-	v, err := e.Docker.ContainerInspect(ctx, pipelineName(c), client.ContainerInspectOptions{})
+	for _, v := range []struct{ name, image, kind string }{{pipelineName(c), pipeline.BuilderImage, "pipeline-v1"}, {pipelineName(c) + "-planner", pipeline.RailpackFrontend, "pipeline-planner-v1"}} {
+		if err := e.removePipelineContainer(ctx, c, v.name, v.image, v.kind); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (e *Engine) removePipelineContainer(ctx context.Context, c api.ExecutionCommand, name, image, kind string) error {
+	v, err := e.Docker.ContainerInspect(ctx, name, client.ContainerInspectOptions{})
 	if errdefs.IsNotFound(err) {
 		return nil
 	}
@@ -73,7 +83,7 @@ func (e *Engine) removePipeline(ctx context.Context, c api.ExecutionCommand) err
 		return err
 	}
 	labels := v.Container.Config.Labels
-	if labels[labelServer] != c.ServerId.String() || labels[labelResource] != c.Id.String() || labels[labelEnvironment] != c.EnvironmentId.String() || labels[labelKind] != "pipeline-v1" || labels["com.astilba.plan"] != c.PlanHash || v.Container.Config.Image != pipeline.BuilderImage {
+	if labels[labelServer] != c.ServerId.String() || labels[labelResource] != c.Id.String() || labels[labelEnvironment] != c.EnvironmentId.String() || labels[labelKind] != kind || labels["com.astilba.plan"] != c.PlanHash || v.Container.Config.Image != image {
 		return errors.New("runner container ownership differs")
 	}
 	_, err = e.Docker.ContainerRemove(ctx, v.Container.ID, client.ContainerRemoveOptions{Force: true, RemoveVolumes: true})
@@ -97,19 +107,27 @@ func (e *Engine) pipelineContainer(ctx context.Context, c api.ExecutionCommand, 
 	build := p.Action == "build"
 	memory := int64(512 << 20)
 	if build {
-		memory = 2 << 30
+		memory = int64(p.Build.Limits().MemoryMiB) << 20
 	}
 	host := &container.HostConfig{ReadonlyRootfs: true, NetworkMode: "host", Privileged: build, CapDrop: []string{"ALL"}, SecurityOpt: []string{"no-new-privileges:true"}, Tmpfs: map[string]string{"/workspace": "rw,exec,nosuid,nodev,size=256m,mode=0700", "/tmp": "rw,nosuid,nodev,size=32m", "/run": "rw,nosuid,nodev,size=16m", "/var/lib/buildkit": "rw,exec,nosuid,size=1024m"}, Resources: container.Resources{Memory: memory, MemorySwap: memory, NanoCPUs: 2_000_000_000, PidsLimit: int64Pointer(256)}}
 	if build {
+		limits := p.Build.Limits()
+		if p.CacheScope != "" {
+			host.Tmpfs[cacheContainerDir] = "rw,nosuid,nodev,noexec,size=256m,mode=0700"
+		}
+		host.Resources.NanoCPUs = int64(limits.CPUs) * 1_000_000_000
+		host.Tmpfs["/workspace"] = fmt.Sprintf("rw,exec,nosuid,nodev,size=%dm,mode=0700", limits.SourceMiB)
+		host.Tmpfs["/var/lib/buildkit"] = fmt.Sprintf("rw,exec,nosuid,size=%dm", limits.StateMiB)
 		host.ReadonlyRootfs = false
 		host.CapDrop = nil
 		host.SecurityOpt = nil
 		config.Entrypoint = []string{"buildkitd"}
-		config.Cmd = []string{"--addr", "unix:///run/buildkit/buildkitd.sock", "--oci-worker-gc", "--oci-worker-gc-keepstorage", "512"}
+		config.Cmd = []string{"--addr", "unix:///run/buildkit/buildkitd.sock", "--oci-worker-gc", "--oci-worker-gc-keepstorage", strconv.Itoa(limits.StateMiB / 2)}
 		if p.Registry != nil {
 			config.Env = []string{"ASTILBA_REGISTRY_HOST=" + strings.Split(p.Registry.Repository, "/")[0]}
 			config.Entrypoint = []string{"sh", "-ec"}
-			config.Cmd = []string{`mkdir -p /etc/buildkit; printf '[registry."%s"]\n  http = false\n  insecure = false\n' "$ASTILBA_REGISTRY_HOST" > /etc/buildkit/buildkitd.toml; exec buildkitd --config /etc/buildkit/buildkitd.toml --addr unix:///run/buildkit/buildkitd.sock --oci-worker-gc --oci-worker-gc-keepstorage 512`}
+			config.Env = append(config.Env, "ASTILBA_GC_MIB="+strconv.Itoa(limits.StateMiB/2))
+			config.Cmd = []string{`mkdir -p /etc/buildkit; printf '[registry."%s"]\n  http = false\n  insecure = false\n' "$ASTILBA_REGISTRY_HOST" > /etc/buildkit/buildkitd.toml; exec buildkitd --config /etc/buildkit/buildkitd.toml --addr unix:///run/buildkit/buildkitd.sock --oci-worker-gc --oci-worker-gc-keepstorage "$ASTILBA_GC_MIB"`}
 		}
 
 	}
@@ -160,7 +178,7 @@ func (e *Engine) clonePipeline(ctx context.Context, c api.ExecutionCommand, p pi
 		return err
 	}
 	if _, err := e.pipelineGit(ctx, c, p, nil, "fetch", "--quiet", "--depth=1", "--no-tags", "origin", p.Commit); err != nil {
-		return errors.New("exact-commit fetch failed or exceeded the 256 MiB source budget")
+		return errors.New("exact-commit fetch failed or exceeded the source storage budget")
 	}
 	out, err := e.pipelineGit(ctx, c, p, nil, "rev-parse", "FETCH_HEAD")
 	if err != nil || strings.TrimSpace(string(out)) != p.Commit {
@@ -324,6 +342,10 @@ func (e *Engine) submitPipeline(ctx context.Context, c api.ExecutionCommand, p p
 }
 func (e *Engine) buildPipeline(ctx context.Context, c api.ExecutionCommand, p pipeline.Command) (pipeline.Result, error) {
 	result := pipeline.Result{Commit: p.Commit, Architecture: p.Build.Architecture, Cache: "BuildKit cache is isolated to this run and cleared at completion."}
+	if p.CompareCommit != "" && !e.watchedSourceChanged(ctx, c, p) {
+		result.Skipped = true
+		return result, nil
+	}
 	listing, err := e.pipelineGit(ctx, c, p, nil, "ls-tree", "-r", p.Commit)
 	if err != nil {
 		return result, err
@@ -351,13 +373,44 @@ func (e *Engine) buildPipeline(ctx context.Context, c api.ExecutionCommand, p pi
 		}
 	}
 	args := []string{"buildctl", "build", "--frontend", "dockerfile.v0", "--local", "context=" + contextDir, "--local", "dockerfile=" + contextDir, "--opt", "filename=" + p.Build.Dockerfile, "--opt", "platform=linux/" + p.Build.Architecture, "--progress", "plain", "--metadata-file", "/workspace/metadata.json"}
+	if p.Build.UsesRailpack() {
+		prepared, logs, err := e.prepareRailpack(ctx, c, p, contextDir)
+		result.Logs = logs
+		if err != nil {
+			return result, err
+		}
+		result.Railpack = &prepared.Summary
+		args = []string{"buildctl", "build", "--frontend", "gateway.v0", "--local", "context=" + contextDir, "--local", "dockerfile=/workspace/prepared", "--opt", "source=" + p.Railpack.Frontend, "--opt", "platform=linux/" + p.Build.Architecture, "--source-policy-file", "/workspace/prepared/source-policy.json", "--progress", "plain", "--metadata-file", "/workspace/metadata.json"}
+	}
+	var cache *buildCache
+	if p.CacheScope != "" {
+		cache, err = openBuildCache(filepath.Join(e.Journal.dir, "build-cache-v1"))
+		result.Cache = "Project layer cache unavailable; building with fresh state."
+		if err == nil {
+			defer cache.root.Close()
+			result.Cache = "No compatible project layer cache imported."
+			if e.importBuildCache(ctx, c, p, cache) {
+				args = append(args, "--import-cache", "type=local,src="+cacheContainerDir+"/in")
+				result.Cache = "Compatible project layer cache imported; cache hits depend on build inputs."
+			}
+			args = append(args, "--export-cache", "type=local,dest="+cacheContainerDir+"/cache-out,mode=max,ignore-error=true")
+		}
+	}
 	keys := []string{}
 	for k := range p.Build.Arguments {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
 	for _, k := range keys {
-		args = append(args, "--opt", "build-arg:"+k+"="+p.Build.Arguments[k])
+		if p.Build.UsesRailpack() {
+			filename := "/workspace/secrets/" + k
+			if _, err = e.pipelineCLI(ctx, pipelineName(c), nil, []byte(p.Build.Arguments[k]), 1024, "sh", "-ec", `umask 077; cat > "$1"`, "--", filename); err != nil {
+				return result, err
+			}
+			args = append(args, "--secret", "id="+k+",src="+filename)
+		} else {
+			args = append(args, "--opt", "build-arg:"+k+"="+p.Build.Arguments[k])
+		}
 	}
 	for name, value := range p.BuildSecrets {
 		filename := "/workspace/secrets/" + name
@@ -382,8 +435,11 @@ func (e *Engine) buildPipeline(ctx context.Context, c api.ExecutionCommand, p pi
 	} else {
 		args = append(args, "--output", "type=docker,name="+image+",dest=/workspace/image.tar")
 	}
-	logs, err := e.pipelineBuildLog(ctx, c, p, args)
-	result.Logs = logs
+	logs, err := e.pipelineLog(ctx, c, p, []string{"DOCKER_CONFIG=/workspace/auth"}, args)
+	result.Logs += logs
+	if len(result.Logs) > 16384 {
+		result.Logs = result.Logs[len(result.Logs)-16384:]
+	}
 	if err != nil {
 		return result, errors.New("BuildKit failed or exceeded its memory/storage budget; existing workloads are unchanged")
 	}
@@ -419,22 +475,42 @@ func (e *Engine) buildPipeline(ctx context.Context, c api.ExecutionCommand, p pi
 		result.Digest = inspected.ID
 		result.Image = image
 	}
+	if cache != nil {
+		if e.retainBuildCache(ctx, c, p, cache) {
+			result.Cache += " Layer cache retained within project and runner limits."
+		} else {
+			result.Cache += " No new layer cache retained."
+		}
+	}
 	return result, nil
 }
-func (e *Engine) pipelineBuildLog(ctx context.Context, c api.ExecutionCommand, p pipeline.Command, args []string) (string, error) {
-	cli := e.DockerCLI
-	if cli == "" {
-		cli = "docker"
+
+// Only a complete diff against a fetched successful artifact may skip a build.
+// Force-pushed or unavailable baselines and bounded-output failures rebuild.
+func (e *Engine) watchedSourceChanged(ctx context.Context, c api.ExecutionCommand, p pipeline.Command) bool {
+	if _, err := e.pipelineGit(ctx, c, p, nil, "fetch", "--quiet", "--depth=1", "--no-tags", "origin", p.CompareCommit); err != nil {
+		return true
 	}
-	command := exec.CommandContext(ctx, cli, append([]string{"exec", "--env", "DOCKER_CONFIG=/workspace/auth", pipelineName(c)}, args...)...)
-	command.Env = []string{"PATH=" + os.Getenv("PATH"), "DOCKER_HOST=" + e.Docker.DaemonHost(), "HOME=" + e.Journal.dir}
-	if v := os.Getenv("DOCKER_CONFIG"); v != "" {
-		command.Env = append(command.Env, "DOCKER_CONFIG="+v)
+	paths, err := e.pipelineGit(ctx, c, p, nil, "diff", "--no-renames", "--name-only", "-z", p.CompareCommit, p.Commit, "--")
+	if err != nil || len(paths) > 0 && paths[len(paths)-1] != 0 {
+		return true
 	}
-	out := &pipelineOutput{limit: 1 << 20}
+	for _, name := range bytes.Split(paths, []byte{0}) {
+		if len(name) > 0 && p.Build.Watches(string(name)) {
+			return true
+		}
+	}
+	return false
+}
+func (e *Engine) pipelineLog(ctx context.Context, c api.ExecutionCommand, p pipeline.Command, env, args []string) (string, error) {
+	command := e.pipelineExec(ctx, pipelineName(c), env, args...)
+	out := &boundedOutput{limit: 1 << 20, stopOnLimit: true}
 	command.Stdout = out
 	command.Stderr = out
 	err := command.Run()
+	if out.truncated {
+		return "", errors.New("build output exceeded its capture limit")
+	}
 	values := map[string]string{}
 	for k, v := range p.BuildSecrets {
 		values[k] = v
@@ -447,7 +523,7 @@ func (e *Engine) pipelineBuildLog(ctx context.Context, c api.ExecutionCommand, p
 		values["push"] = p.RegistryAccess.Push.Password
 		values["pull"] = p.RegistryAccess.Pull.Password
 	}
-	logs := redactValues(out.String(), values)
+	logs := redactValues(out.b.String(), values)
 	if len(logs) > 16384 {
 		logs = logs[len(logs)-16384:]
 	}

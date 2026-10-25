@@ -24,6 +24,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/execution"
+	"github.com/astilbahq/astilba/services/platform/internal/githubapp"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/getkin/kin-openapi/openapi3filter"
 	"github.com/go-chi/chi/v5"
@@ -52,6 +53,7 @@ type Server struct {
 	Log               *slog.Logger
 	Execution         *execution.Service
 	ArtifactDirectory string
+	GitHubConfig      githubapp.Config
 	Development       bool
 	TrustedProxies    []netip.Prefix
 }
@@ -83,6 +85,16 @@ func (s *Server) Handler(assets http.Handler) (http.Handler, error) {
 		}
 	}
 	s.Execution.Policy.Development = s.Development
+	if s.Execution.GitHub == nil {
+		var e error
+		s.Execution.GitHub, e = githubapp.New(s.GitHubConfig, s.Origin, s.Development)
+		if e != nil {
+			return nil, e
+		}
+	}
+	if s.Execution.GitHub != nil {
+		s.Execution.Policy.GitHubFixture = s.Execution.GitHub.FixtureAPI()
+	}
 	spec, err := api.GetSwagger()
 	if err != nil {
 		return nil, err
@@ -124,7 +136,7 @@ func (s *Server) Handler(assets http.Handler) (http.Handler, error) {
 	return r, nil
 }
 func publicPath(p string) bool {
-	if strings.HasPrefix(p, "/hooks/git/") || p == "/hooks/stripe" {
+	if strings.HasPrefix(p, "/hooks/git/") || p == "/hooks/stripe" || p == "/hooks/github-app" {
 		return true
 	}
 	switch p {
@@ -257,6 +269,7 @@ func value(p *string) string {
 	return *p
 }
 func (s *Server) establish(ctx context.Context, a db.Account, mfa bool) error {
+	s.Sessions.Remove(ctx, "github-session")
 	if err := s.Sessions.RenewToken(ctx); err != nil {
 		return err
 	}
@@ -319,6 +332,7 @@ func (s *Server) Login(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, e)
 		return
 	}
+	s.Sessions.Remove(r.Context(), "github-session")
 	a, e := s.Auth.Login(r.Context(), string(b.Email), value(b.Password), s.clientIP(r))
 	if e != nil {
 		s.fail(w, r, e)
@@ -376,7 +390,11 @@ func (s *Server) Reauthenticate(w http.ResponseWriter, r *http.Request) {
 	}
 	a, e := s.Auth.Reauthenticate(r.Context(), principal(r.Context()).Account.ID, value(b.Password), value(b.Code))
 	if e == nil {
+		nonce := s.Sessions.GetString(r.Context(), "github-session")
 		e = s.establish(r.Context(), a, len(a.TotpSecret) > 0)
+		if e == nil && nonce != "" {
+			s.Sessions.Put(r.Context(), "github-session", nonce)
+		}
 	}
 	if e != nil {
 		s.fail(w, r, e)

@@ -162,7 +162,7 @@ Support customer-configured OCI registries for remote builds, scoped push and pu
 - A failed build leaves the applied deployment untouched. A successful build followed by a changed plan requires a fresh review.
 - The resulting application joins the same binding, domain, export and operation workflows as an image-based application.
 
-The production workflow and supported limits are recorded in [Git and build workflows](git-builds.md). Dockerfile builds use pinned BuildKit on customer runners; Railpack remains deferred after its narrow P0 fixture. Provider API/signature fixtures cover GitHub, GitLab and Gitea, while native runner checks cover public/private exact-commit checkout, review-response recovery, local images, TLS registry transfer and bounded build failure. These checks do not claim a live hosted GitHub pass.
+The production workflow and supported limits are recorded in [Git and build workflows](git-builds.md). Dockerfile builds use pinned BuildKit on customer runners; Production Railpack is delivered separately in P10 after its narrow P0 fixture. Provider API/signature fixtures cover GitHub, GitLab and Gitea, while native runner checks cover public/private exact-commit checkout, review-response recovery, local images, TLS registry transfer and bounded build failure. These checks do not claim a live hosted GitHub pass.
 
 ## P6 Backup and restore
 
@@ -249,7 +249,11 @@ Log export reuses resource authorization and secret redaction, caps volume and d
 
 Add GitHub App installation and repository selection while preserving the existing GitLab/Gitea and manually scoped credential paths. Add production Railpack only with a documented supported-language matrix, reproducible image pins and build-secret isolation. Retain Dockerfile builds and explicit overrides.
 
+Deliver this milestone in reviewable changes: build resource budgets and monorepo triggers; bounded project-scoped caches; a validated Railpack path; and GitHub App installation/repository onboarding. Keep the milestone open until all four pass their acceptance checks.
+
 Introduce per-project or per-trust-domain reusable BuildKit caches with bounded storage and safe eviction, configurable build resource budgets, and monorepo watch paths. Prove cache isolation, cancellation, changed input invalidation and exact-commit behavior. Use a representative existing project to measure onboarding and repeated-build latency; no cache hit or universal framework support is promised.
+
+Build resource budgets and monorepo triggers are implemented. Bounded project layer caches add runner-local OCI exports, compatibility keys, fixed retention/eviction limits and native BuildKit reuse/invalidation checks; see [Git and build workflows](git-builds.md#reusable-layer-caches). Production Railpack adds an explicit builder choice, source-preserving command overrides, version-negotiated runners, journaled prepared plans and pinned image/tool inputs. Its supported Node/npm, static Go and shell matrix and limits are documented in [Git and builds](git-builds.md#railpack-builds). GitHub App onboarding adds operator registration, session-bound PKCE authorization, administrator-approved repository selection and scoped workspace-bot credentials. Installation-local bindings require fresh authorization after workspace import. Authenticated durable webhook fanout and bounded token/authority reuse preserve runner and manual-provider compatibility; see [GitHub App onboarding](git-builds.md#github-app-onboarding). P10 remains open until its acceptance evidence is complete.
 
 ## P11 Safe application releases
 
@@ -301,4 +305,4 @@ Expose fast local checks and one complete `make verify` entry point, retain exac
 
 ## Current implementation increment
 
-P0–P8 and private-alpha acceptance establish the implementation baseline. Resource history and disk-pressure visibility are merged. P9 continues with [operational alerts](operational-alerts.md), followed by bounded log export as a separate reviewed change. Keep later parity work at milestone level until its prerequisites pass. The disposable experiments remain evidence, not production scaffolding.
+P0–P8 and private-alpha acceptance establish the implementation baseline. P9 includes resource history, disk-pressure visibility, [operational alerts](operational-alerts.md) and [bounded retained-log export](operational-visibility.md#export-retained-logs). Log export preserves the existing sampled data and redaction boundaries; it does not introduce a full log archive. P10 source-to-app workflow is the next product increment. Keep later parity work at milestone level until its prerequisites pass. The disposable experiments remain evidence, not production scaffolding.
