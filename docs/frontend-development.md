@@ -101,7 +101,7 @@ Stories live beside their components as `*.stories.tsx`. `src/components` covers
 
 Keep stories on Panda's existing source glob and use statically extractable recipe variants. Do not add a global `staticCss.recipes: '*'` expansion to production just for controls. Use the actual shared components and page features, and keep fixtures out of their imports. The sign-in route passes its validated return destination into `features/auth/sign-in.tsx`; stories never bypass production route guards.
 
-`workshop-tests` checks every built story's render and play result, state isolation when moving between scenarios, and dark RTL at 320px with axe and an unhandled-request check. It complements the existing real API/PostgreSQL browser tests, which continue to verify authentication and session contracts.
+`workshop-tests` checks every built story's render, play and awaited axe result, state isolation when moving between scenarios, and dark RTL at 320px with an unhandled-request check. Audited journeys select Storybook's manual a11y mode so the addon and Playwright do not scan concurrently; normal workshop browsing retains automatic scans. Story sweeps use the addon's body-level component scope, including portals, with a narrow exception for Base UI's empty focus sentinels ([maintainer explanation](https://github.com/mui/base-ui/issues/4668#issuecomment-4306200868)). The standalone auth and real API/PostgreSQL journeys retain their full-page audits and authentication/session checks.
 
 ## Inline auth validation
 

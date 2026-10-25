@@ -15,7 +15,7 @@ for (const [id, entry] of Object.entries(entries)) {
   test(`${id} renders and completes its interaction`, async ({
     page,
   }, info) => {
-    await page.goto(`/?path=/story/${id}`);
+    await page.goto(`/?path=/story/${id}&globals=a11y.manual:!true`);
     await expect(
       page.getByText(/Component test completed successfully/),
     ).toBeAttached({ timeout: info.timeout });
@@ -24,9 +24,17 @@ for (const [id, entry] of Object.entries(entries)) {
     await expect(
       canvas.getByText("Route not found:", { exact: false }),
     ).toHaveCount(0);
+    // Match Storybook's body-level component scope, including portal content.
+    const audit = new AxeBuilder({ page })
+      .include(["#storybook-preview-iframe", "body"])
+      // Empty Base UI sentinels redirect focus; axe reports them as hidden controls.
+      // https://github.com/mui/base-ui/issues/4668#issuecomment-4306200868
+      .exclude(["#storybook-preview-iframe", "[data-base-ui-focus-guard]"]);
+    expect((await audit.analyze()).violations).toEqual([]);
   });
 }
 
+// Explicit axe journeys own the scan to avoid concurrent Storybook addon audits.
 test("static workshop provides dark RTL auth states without reaching a backend", async ({
   page,
 }, info) => {
@@ -38,7 +46,7 @@ test("static workshop provides dark RTL auth states without reaching a backend",
   });
   await page.setViewportSize({ width: 320, height: 844 });
   await page.goto(
-    "/iframe.html?id=pages-two-factor-sign-in--invalid-code&viewMode=story&globals=theme:dark;locale:en-XB",
+    "/iframe.html?id=pages-two-factor-sign-in--invalid-code&viewMode=story&globals=theme:dark;locale:en-XB;a11y.manual:!true",
   );
   await expect(page.locator("html")).toHaveAttribute("dir", "rtl");
   await expect(page.locator("html")).toHaveClass(/dark/);
@@ -66,11 +74,11 @@ test("static workshop provides dark RTL auth states without reaching a backend",
 
 test("switching scenarios resets errors, drafts and session fixtures", async ({
   page,
-}) => {
+}, info) => {
   await page.goto("/?path=/story/pages-sign-in--rejected-credentials");
   await expect(
     page.getByText(/Component test completed successfully/),
-  ).toBeAttached();
+  ).toBeAttached({ timeout: info.timeout });
   const canvas = page.frameLocator("#storybook-preview-iframe");
   await expect(canvas.getByRole("alert")).toBeVisible();
   await page.getByRole("link", { name: "Default", exact: true }).click();
@@ -123,11 +131,11 @@ test("canvas and toolbar preferences stay synchronized without losing the form",
 
 test("rejected code feedback translates and stays cleared after editing", async ({
   page,
-}) => {
+}, info) => {
   await page.goto("/?path=/story/pages-two-factor-sign-in--invalid-code");
   await expect(
     page.getByText(/Component test completed successfully/),
-  ).toBeAttached();
+  ).toBeAttached({ timeout: info.timeout });
   const canvas = page.frameLocator("#storybook-preview-iframe");
   const group = canvas.getByRole("group");
   const slots = group.getByRole("textbox");
@@ -156,13 +164,13 @@ test("rejected code feedback translates and stays cleared after editing", async 
 
 test("request toasts preserve drafts and focus, translate, dismiss and reset on navigation", async ({
   page,
-}) => {
+}, info) => {
   await page.goto(
-    "/?path=/story/pages-sign-in--network-failure&globals=theme:dark",
+    "/?path=/story/pages-sign-in--network-failure&globals=theme:dark;a11y.manual:!true",
   );
   await expect(
     page.getByText(/Component test completed successfully/),
-  ).toBeAttached();
+  ).toBeAttached({ timeout: info.timeout });
   const canvas = page.frameLocator("#storybook-preview-iframe");
   const email = canvas.locator('input[name="email"]');
   const password = canvas.locator('input[name="password"]');

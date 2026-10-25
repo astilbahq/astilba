@@ -55,7 +55,7 @@ export const NetworkFailure: Story = {
     const notification = await within(
       canvasElement.ownerDocument.body,
     ).findByRole("dialog");
-    await waitFor(() => expect(notification).toBeVisible());
+    await waitFor(() => expect(notification).toBeVisible(), { timeout: 5000 });
     await expect(
       within(canvasElement).queryByRole("alert"),
     ).not.toBeInTheDocument();
