@@ -188,12 +188,15 @@ func (s *Server) UpdateDraft(w http.ResponseWriter, r *http.Request, ws, pid, id
 			}
 		}
 		if env.DraftRevisionID != b.BaseRevisionId {
-			v, e := q.GetRevision(ctx, db.GetRevisionParams{WorkspaceID: ws, EnvironmentID: id, ID: env.DraftRevisionID})
-			if e != nil {
-				return e
+			p := principal(ctx)
+			if p.Automation == nil || p.Automation.Allows(domain.EnvironmentRead) {
+				v, e := q.GetRevision(ctx, db.GetRevisionParams{WorkspaceID: ws, EnvironmentID: id, ID: env.DraftRevisionID})
+				if e != nil {
+					return e
+				}
+				c := revision(v)
+				current = &c
 			}
-			c := revision(v)
-			current = &c
 			return domain.Conflict
 		}
 		for _, secretID := range domain.SecretReferences(spec) {

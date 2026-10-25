@@ -205,7 +205,7 @@ func (s *Server) ListAudit(w http.ResponseWriter, r *http.Request, id uuid.UUID)
 		rows, e := q.ListAudit(r.Context(), id)
 		out := []api.AuditEvent{}
 		for _, v := range rows {
-			out = append(out, api.AuditEvent{Id: v.ID, Action: v.Action, ActorId: v.ActorID, ResourceId: v.ResourceID, CreatedAt: v.CreatedAt})
+			out = append(out, api.AuditEvent{Id: v.ID, Action: v.Action, ActorId: v.ActorID, ResourceId: v.ResourceID, CreatedAt: v.CreatedAt, AutomationCredentialId: v.AutomationCredentialID})
 		}
 		return out, e
 	})

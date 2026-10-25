@@ -130,6 +130,9 @@ func (s *Service) SaveBackupPolicy(ctx context.Context, p store.Principal, ws, p
 		if err != nil {
 			return err
 		}
+		if err = requireServiceOutputs(ctx, tx, ws, *v.Server, plan.Specification); err != nil {
+			return err
+		}
 		if id == uuid.Nil {
 			id = uuid.New()
 			if in.BaseGeneration != 0 {
@@ -263,6 +266,9 @@ func (s *Service) hydrateBackup(ctx context.Context, c *api.ExecutionCommand) er
 	var b backup.Command
 	if c.Backup == nil || json.Unmarshal(*c.Backup, &b) != nil || b.Digest() != c.PlanHash {
 		return domain.Invalid("backup")
+	}
+	if err := requireServiceOutputs(ctx, s.Store.Pool, b.Installation.Policy.WorkspaceID, c.ServerId, b.Installation.Policy.Plan.Specification); err != nil {
+		return err
 	}
 	var cipher []byte
 	var current []byte

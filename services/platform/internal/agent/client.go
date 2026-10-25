@@ -22,14 +22,16 @@ import (
 )
 
 type Client struct {
-	Journal       *Journal
-	Engine        *Engine
-	HTTP          *http.Client
-	Observe       func(context.Context) api.AgentHeartbeat
-	Metrics       func(context.Context) api.MetricReport
-	buildControls atomic.Bool
-	buildCache    atomic.Bool
-	railpack      atomic.Bool
+	Journal        *Journal
+	Engine         *Engine
+	HTTP           *http.Client
+	Observe        func(context.Context) api.AgentHeartbeat
+	Metrics        func(context.Context) api.MetricReport
+	buildControls  atomic.Bool
+	buildCache     atomic.Bool
+	railpack       atomic.Bool
+	safeReleases   atomic.Bool
+	serviceOutputs atomic.Bool
 }
 
 func NewClient(j *Journal, e *Engine) *Client {
@@ -78,6 +80,8 @@ func (c *Client) call(ctx context.Context, method, path string, body, out any, t
 	c.buildControls.Store(response.Header.Get("Astilba-Agent-Features") == "build-controls")
 	c.buildCache.Store(response.Header.Get("Astilba-Agent-Build-Cache") == "v1")
 	c.railpack.Store(response.Header.Get("Astilba-Agent-Railpack") == "v1")
+	c.safeReleases.Store(response.Header.Get("Astilba-Agent-Safe-Releases") == "v1")
+	c.serviceOutputs.Store(response.Header.Get("Astilba-Agent-Service-Outputs") == "v1")
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		return errors.New("management rejected request; check enrollment, credentials and operation status")
 	}
@@ -101,6 +105,12 @@ func (c *Client) call(ctx context.Context, method, path string, body, out any, t
 }
 
 func (c *Client) advertisedCapabilities(v api.AgentCapabilities) api.AgentCapabilities {
+	if !c.serviceOutputs.Load() {
+		v.ServiceOutputs = nil
+	}
+	if !c.safeReleases.Load() {
+		v.SafeReleases = nil
+	}
 	if !c.buildControls.Load() {
 		v.BuildControls = nil
 	}
@@ -287,18 +297,24 @@ func (c *Client) Run(ctx context.Context) error {
 		})
 	})
 	wg.Go(func() {
+		var retry <-chan time.Time
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case <-wake:
-				pending, e := c.Journal.Pending()
-				if e != nil {
-					continue
-				}
-				for _, r := range pending {
-					if r.Report.State == "running" {
-						_ = c.Engine.Execute(ctx, r.Command)
+			case <-retry:
+			}
+			retry = nil
+			pending, e := c.Journal.Pending()
+			if e != nil {
+				retry = time.After(time.Second)
+				continue
+			}
+			for _, r := range pending {
+				if r.Report.State == "running" {
+					if err := c.Engine.Execute(ctx, r.Command); err != nil && ctx.Err() == nil {
+						retry = time.After(time.Second)
 					}
 				}
 			}

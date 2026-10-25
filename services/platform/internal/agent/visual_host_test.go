@@ -207,6 +207,7 @@ func TestNativeVisualDeployment(t *testing.T) {
 	})
 
 	databaseURL := url.URL{Scheme: "postgres", Host: "127.0.0.1:15432", Path: "/app", User: url.UserPassword("app", password), RawQuery: "sslmode=disable"}
+	t.Run("catalog", func(t *testing.T) { nativeCatalogJourney(t, engine, server, command) })
 	db, err := pgx.Connect(ctx, databaseURL.String())
 	if err != nil {
 		t.Fatal("TCP route did not connect to PostgreSQL")
@@ -227,15 +228,25 @@ func TestNativeVisualDeployment(t *testing.T) {
 		})
 	})
 	t.Run("supported_major_upgrades", func(t *testing.T) {
-		nativeUpgradeJourney(t, engine, func() (deployment.Plan, map[string]string) {
+		releaseVerified := false
+		nativeUpgradeJourney(t, engine, func(t *testing.T) (deployment.Plan, map[string]string) {
 			p, secrets := plan("upgrade-"+uuid.NewString(), true)
 			p.Specification.Routes = p.Specification.Routes[:1]
 			image := domain.Postgres17Image
 			p.Specification.Applications[1].Source.Image = &image
 			p.Specification.Applications[1].Mounts[0].Target = domain.PostgresMount(image)
 			p = p.WithHash()
+			if !releaseVerified {
+				p.Specification.Applications[0].Command = []string{"sh", "-c", `mkdir -p /tmp/www/cgi-bin; printf '%s' "$VALUE" > /tmp/www/index.html; printf '#!/bin/sh\nsleep 6\nprintf "Content-Type: text/plain\\r\\n\\r\\n"\nprintf "%%s" "$VALUE"\n' > /tmp/www/cgi-bin/slow; chmod +x /tmp/www/cgi-bin/slow; exec httpd -f -p 8080 -h /tmp/www`}
+				p = p.WithHash()
+			}
 			p = resolve(p)
 			finish(command("deploy", p, secrets))
+			if !releaseVerified {
+				p = nativeReleaseJourney(t, engine, p, secrets, resolve, command, finish)
+				releaseVerified = true
+				j = engine.Journal
+			}
 			return p, secrets
 		}, func(cmd upgrade.Command) api.ExecutionCommand {
 			generation++

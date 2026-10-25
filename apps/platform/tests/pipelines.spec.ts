@@ -274,6 +274,9 @@ test("repository setup, Git service, queued build and cancellation use the real 
     },
   );
   expect(railpackReport.status()).toBe(204);
+  await expect(
+    page.getByRole("article").getByText("Fixture complete.", { exact: true }),
+  ).toBeVisible();
   await build
     .getByRole("combobox", { name: "Builder", exact: true })
     .selectOption("dockerfile");
@@ -355,7 +358,9 @@ test("repository setup, Git service, queued build and cancellation use the real 
   expect(command.pipeline.access.clone.password).toBe("browser-clone-fixture");
   expect(command.pipeline.access.api.password).toBe("");
   const cancelled = page.waitForResponse(
-    (r) => r.url().endsWith("/cancel") && r.request().method() === "POST",
+    (r) =>
+      r.url().endsWith(`/operations/${command.id}/cancel`) &&
+      r.request().method() === "POST",
   );
   await page.getByRole("button", { name: "Cancel build", exact: true }).click();
   expect((await cancelled).status()).toBe(204);
@@ -373,7 +378,15 @@ test("repository setup, Git service, queued build and cancellation use the real 
   });
   expect(report.status()).toBe(204);
   await expect(
-    page.getByRole("heading", { name: /build · aaaaaaaaaaaa · cancelled/ }),
+    page
+      .getByRole("article")
+      .filter({
+        has: page.getByText("Cancelled by user.", { exact: true }),
+      })
+      .getByRole("heading", {
+        name: "build · aaaaaaaaaaaa · cancelled",
+        exact: true,
+      }),
   ).toBeVisible();
 
   // A later successful build exercises artifact reflow and identity through editing.

@@ -175,19 +175,26 @@ func (s *Service) Operations(ctx context.Context, p store.Principal, ws uuid.UUI
 	})
 	if err == nil {
 		for i := range out {
-			if !Terminal(out[i].State) && out[i].State != "needs_attention" {
-				var stale bool
-				err = s.Store.Pool.QueryRow(ctx, "SELECT last_seen IS NULL OR last_seen<now()-interval '45 seconds' FROM servers WHERE id=$1", out[i].ServerId).Scan(&stale)
-				if err != nil {
-					return out, err
-				}
-				if stale {
-					out[i].State = "waiting_for_agent"
-				}
+			if err = s.operationAvailability(ctx, &out[i]); err != nil {
+				return out, err
 			}
 		}
 	}
 	return out, err
+}
+
+func (s *Service) operationAvailability(ctx context.Context, out *api.Operation) error {
+	if Terminal(out.State) || out.State == "needs_attention" {
+		return nil
+	}
+	var stale bool
+	if err := s.Store.Pool.QueryRow(ctx, "SELECT last_seen IS NULL OR last_seen<now()-interval '45 seconds' FROM servers WHERE id=$1", out.ServerId).Scan(&stale); err != nil {
+		return err
+	}
+	if stale {
+		out.State = "waiting_for_agent"
+	}
+	return nil
 }
 func (s *Service) Cancel(ctx context.Context, p store.Principal, ws, id uuid.UUID) error {
 	return s.scope(ctx, p, ws, true, false, false, "operation.cancel", id, func(tx pgx.Tx) error {

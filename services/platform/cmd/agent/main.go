@@ -267,7 +267,7 @@ func run() error {
 	}
 	engine := &agent.Engine{Journal: j, Docker: docker, DockerCLI: *dockerCLI, ACMEEmail: *acmeEmail, ResticCLI: *resticCLI, BackupRoots: strings.Split(*backupRoots, ",")}
 	c := agent.NewClient(j, engine)
-	collector := &agent.MetricCollector{}
+	collector := &agent.MetricCollector{Journal: j}
 	c.Metrics = func(ctx context.Context) api.MetricReport {
 		cfg, err := j.Config()
 		if err != nil {

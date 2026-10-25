@@ -28,7 +28,7 @@ func ExportConfiguration(plan Plan) (Export, error) {
 	}
 	set := RouteSet{UnitID: plan.UnitID, EnvironmentID: plan.EnvironmentID, Routes: plan.Specification.Routes, Backends: map[string]Backend{}}
 	for _, a := range plan.Specification.Applications {
-		set.Backends[a.ID.String()] = Backend{Address: ServiceName(a.ID)}
+		set.Backends[a.ID.String()] = plan.Backend(a.ID)
 	}
 	routes, err := RouteConfig(map[string]RouteSet{plan.UnitID.String(): set})
 	if err != nil {

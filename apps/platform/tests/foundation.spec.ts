@@ -406,6 +406,7 @@ test("visual services stay staged until a reviewed plan is applied", async ({
           arch: "arm64",
           docker: true,
           visual: true,
+          serviceOutputs: true,
         },
         preflight: {
           ready: true,
@@ -466,9 +467,9 @@ test("visual services stay staged until a reviewed plan is applied", async ({
     .selectOption(passwordOption);
   await add.getByRole("button", { name: "Stage new service" }).click();
   await page.getByText("Connections", { exact: true }).click();
-  const binding = page.getByRole("form", { name: "Create database binding" });
+  const binding = page.getByRole("form", { name: "Create service binding" });
   await binding
-    .getByLabel("PostgreSQL source")
+    .getByLabel("Source service")
     .selectOption({ label: "Database" });
   await binding
     .getByLabel("Receiving service")

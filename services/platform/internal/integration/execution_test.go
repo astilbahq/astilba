@@ -85,9 +85,9 @@ func TestServerIdentityLifecycle(t *testing.T) {
 	changed = in
 	changed.ServerId = uuid.New()
 	agentRequest(t, httpClient, tlsServer.URL, "/agent/v1/enroll", "", changed, 401, nil)
-	// A bearer cannot become a browser session or use a browser mutation.
+	// Agent tokens are not management identities, including on mutations.
 	agentRequest(t, httpClient, tlsServer.URL, "/api/v1/workspaces/"+ws.String()+"/servers", token, nil, 401, nil)
-	agentRequest(t, httpClient, tlsServer.URL, "/api/v1/workspaces/"+ws.String()+"/servers", token, map[string]string{"name": "forged", "role": "deployment"}, 403, nil)
+	agentRequest(t, httpClient, tlsServer.URL, "/api/v1/workspaces/"+ws.String()+"/servers", token, map[string]string{"name": "forged", "role": "deployment"}, 401, nil)
 	route := "/api/v1/workspaces/" + ws.String() + "/servers/" + v.Server.Id.String()
 	b.call("POST", route+"/rotate", nil, 204, nil)
 	next, _ := cryptobox.Token()

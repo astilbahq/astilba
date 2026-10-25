@@ -99,6 +99,7 @@ export const authenticatorQR = css({
   maxInlineSize: "full",
   blockSize: "auto",
 });
+export const wrappedCode = css({ whiteSpace: "pre-wrap" });
 export const editor = css({
   fontFamily: "mono",
   fontSize: "secondary",

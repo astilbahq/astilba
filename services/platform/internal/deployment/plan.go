@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -22,6 +23,9 @@ const ObservationLimit = 24000
 const ProxyImage = "traefik:v3.7.16@sha256:22a759fb803abb5c3a7ba5d5a55a201c5fb0fc8993d5c72c47a89075e64f1953"
 
 type Plan struct {
+	Instances         map[string]uuid.UUID         `json:"instances,omitempty"`
+	ReleaseOptions    *ReleaseOptions              `json:"releaseOptions,omitempty"`
+	Release           *Release                     `json:"release,omitempty"`
 	Artifacts         map[string]pipeline.Artifact `json:"artifacts,omitempty"`
 	ID                uuid.UUID                    `json:"id"`
 	ServerID          uuid.UUID                    `json:"serverId"`
@@ -88,6 +92,9 @@ func (p Plan) Validate(resolved bool) error {
 	p.Hash = ""
 	if h != Hash(p) || p.Recipe != Recipe || p.ID == uuid.Nil || p.ServerID == uuid.Nil || p.EnvironmentID == uuid.Nil || p.UnitID == uuid.Nil || p.RevisionID == uuid.Nil {
 		return errors.New("invalid deployment plan identity")
+	}
+	if err := p.validateInstances(); err != nil {
+		return err
 	}
 	raw, err := json.Marshal(p.Specification)
 	if err != nil {
@@ -306,21 +313,39 @@ func ComposeAt(p Plan, secrets map[string]string, export bool, root string) ([]b
 			if b.TargetID != a.ID {
 				continue
 			}
-			db := apps[b.SourceID]
-			pass, e := value(db.Postgres.PasswordSecretVersionID)
-			if e != nil {
-				return nil, e
-			}
-			u := url.URL{Scheme: "postgresql", Host: ServiceName(db.ID) + ":5432", User: url.UserPassword(db.Postgres.Username, pass), Path: "/" + db.Postgres.Database, RawQuery: "sslmode=disable"}
-			if export {
-				u.User = url.User(db.Postgres.Username)
-				env[b.Variable] = strings.Replace(u.String(), db.Postgres.Username+"@", db.Postgres.Username+":${ASTILBA_SECRET_"+strings.ReplaceAll(db.Postgres.PasswordSecretVersionID.String(), "-", "")+"_URLENCODED:?Set URL-encoded database password}@", 1)
-			} else {
-				env[b.Variable] = escape(u.String())
+			source := apps[b.SourceID]
+			output, _ := domain.BindingOutput(source, b.Output)
+			switch output.Type {
+			case "address":
+				env[b.Variable] = p.HostName(source.ID)
+			case "port":
+				env[b.Variable] = strconv.Itoa(output.Port)
+			case "variable":
+				variable, _ := domain.OutputVariable(p.Specification, source, output.Variable)
+				variable.Name = b.Variable
+				if err := vars([]domain.Variable{variable}, env); err != nil {
+					return nil, err
+				}
+			case "url":
+				u := url.URL{Scheme: output.Scheme, Host: p.HostName(source.ID) + ":" + strconv.Itoa(output.Port), Path: output.Path}
+				if source.Postgres != nil && output.Name == "URL" {
+					pass, e := value(source.Postgres.PasswordSecretVersionID)
+					if e != nil {
+						return nil, e
+					}
+					u.RawQuery = "sslmode=disable"
+					if export {
+						u.User = url.User(source.Postgres.Username)
+						env[b.Variable] = strings.Replace(u.String(), source.Postgres.Username+"@", source.Postgres.Username+":${ASTILBA_SECRET_"+strings.ReplaceAll(source.Postgres.PasswordSecretVersionID.String(), "-", "")+"_URLENCODED:?Set URL-encoded database password}@", 1)
+						continue
+					}
+					u.User = url.UserPassword(source.Postgres.Username, pass)
+				}
+				env[b.Variable] = strings.ReplaceAll(u.String(), "$", "$$")
 			}
 		}
 		labels := map[string]string{"com.astilba.server": p.ServerID.String(), "com.astilba.environment": p.EnvironmentID.String(), "com.astilba.unit": p.UnitID.String(), "com.astilba.resource": a.ID.String(), "com.astilba.kind": "visual-v1", "com.astilba.plan": p.Hash}
-		service := map[string]any{"image": p.Images[a.ID.String()], "container_name": UnitName(a.ID), "restart": "unless-stopped", "environment": env, "labels": labels, "networks": map[string]any{"unit": map[string]any{"aliases": []string{ServiceName(a.ID)}}}, "logging": map[string]any{"driver": "json-file", "options": map[string]string{"max-size": "10m", "max-file": "3"}}}
+		service := map[string]any{"image": p.Images[a.ID.String()], "container_name": p.ContainerName(a.ID), "restart": "unless-stopped", "environment": env, "labels": labels, "networks": map[string]any{"unit": map[string]any{"aliases": []string{p.HostName(a.ID)}}}, "logging": map[string]any{"driver": "json-file", "options": map[string]string{"max-size": "10m", "max-file": "3"}}}
 		if len(a.Command) > 0 {
 			command := make([]string, len(a.Command))
 			for i, arg := range a.Command {
@@ -347,17 +372,18 @@ func ComposeAt(p Plan, secrets map[string]string, export bool, root string) ([]b
 				if apps[id].Postgres != nil {
 					condition = "service_healthy"
 				}
-				deps[ServiceName(id)] = map[string]string{"condition": condition}
+				deps[p.HostName(id)] = map[string]string{"condition": condition}
 			}
 			service["depends_on"] = deps
 		}
-		services[ServiceName(a.ID)] = service
+		services[p.HostName(a.ID)] = service
 	}
 	return json.MarshalIndent(map[string]any{"name": UnitName(p.UnitID), "services": services, "volumes": volumes, "networks": map[string]any{"unit": map[string]any{"name": NetworkName(p.UnitID), "external": true}}}, "", "  ")
 }
 
 type Backend struct {
-	Address string `json:"address"`
+	InstanceID *uuid.UUID `json:"instanceId,omitempty"`
+	Address    string     `json:"address"`
 }
 type RouteSet struct {
 	EnvironmentID uuid.UUID          `json:"environmentId"`
@@ -385,7 +411,11 @@ func RouteConfig(sets map[string]RouteSet) ([]byte, error) {
 			}
 			name := UnitName(set.UnitID) + "-" + r.ID.String()
 			backend, ok := set.Backends[r.TargetID.String()]
-			if !ok || backend.Address != ServiceName(r.TargetID) {
+			expected := r.TargetID
+			if backend.InstanceID != nil {
+				expected = *backend.InstanceID
+			}
+			if !ok || backend.Address != ServiceName(expected) {
 				return nil, errors.New("foreign backend reference")
 			}
 			address := fmt.Sprintf("%s:%d", backend.Address, r.Port)

@@ -154,7 +154,7 @@ func (w *refreshWorker) Work(ctx context.Context, job *river.Job[refreshArgs]) e
 		capacity--
 	}
 	// Each target compares against current provider state, so delivery order cannot roll it backwards.
-	rows, err = tx.Query(ctx, `SELECT b.environment_id,b.application_id,b.configuration,e.project_id,e.draft_revision_id,b.requested_commit
+	rows, err = tx.Query(ctx, `SELECT b.environment_id,b.application_id,b.configuration,e.project_id,e.draft_revision_id,b.automatic_requested_commit
  FROM build_targets b JOIN environments e ON e.workspace_id=b.workspace_id AND e.id=b.environment_id
  JOIN memberships m ON m.workspace_id=b.workspace_id AND m.account_id=b.policy_actor
  WHERE b.workspace_id=$1 AND b.connection_id=$2 AND b.configuration->>'branch'=$3 AND b.configuration->>'autoBuild'='true' AND m.role IN ('owner','operator')`, a.Workspace, a.Connection, a.Branch)
@@ -228,7 +228,7 @@ func (w *refreshWorker) Work(ctx context.Context, job *river.Job[refreshArgs]) e
 			return err
 		}
 		hash := buildInputHash(connection, head, cfg)
-		if _, err = tx.Exec(ctx, "UPDATE build_targets SET input_hash=$4,requested_commit=$5 WHERE workspace_id=$1 AND environment_id=$2 AND application_id=$3", a.Workspace, v.env, v.app, hash, head); err != nil {
+		if _, err = tx.Exec(ctx, "UPDATE build_targets SET input_hash=$4,requested_commit=$5,automatic_requested_commit=$5 WHERE workspace_id=$1 AND environment_id=$2 AND application_id=$3", a.Workspace, v.env, v.app, hash, head); err != nil {
 			return err
 		}
 		_, err = w.service.insertPipeline(ctx, tx, a.Workspace, v.env, uuid.New(), runner, pipeline.Command{Action: "build", Connection: connection, CompareCommit: compare, Commit: head, Branch: a.Branch, RevisionID: v.base, UnitID: env.Unit, AppID: v.app, Build: &cfg, InputHash: hash, Registry: registry, SubmittedAt: time.Now().UTC()})
@@ -269,7 +269,7 @@ func successfulBuildBaseline(ctx context.Context, tx pgx.Tx, ws, env, app uuid.U
 	if err = json.Unmarshal(raw, &previous); err != nil {
 		return "", err
 	}
-	if previous.Build == nil || buildInputHash(connection, previous.Commit, cfg) != previous.InputHash {
+	if previous.Build == nil || cfg.AutoDeploy && !previous.Build.AutoDeploy || buildInputHash(connection, previous.Commit, cfg) != previous.InputHash {
 		return "", nil
 	}
 	return previous.Commit, nil

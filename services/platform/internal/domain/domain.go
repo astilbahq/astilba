@@ -69,6 +69,7 @@ type ApplicationSource struct {
 	Ref        *string    `json:"ref,omitempty"`
 }
 type Application struct {
+	Outputs   []ServiceOutput   `json:"outputs,omitempty"`
 	Networks  []uuid.UUID       `json:"networks,omitempty"`
 	ID        uuid.UUID         `json:"id"`
 	Name      string            `json:"name"`

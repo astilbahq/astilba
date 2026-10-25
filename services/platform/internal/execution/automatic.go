@@ -325,10 +325,14 @@ func statefulVisualInputs(spec domain.Specification, app domain.Application) map
 		delete(values, binding.Variable)
 		for _, source := range spec.Applications {
 			if source.ID == binding.SourceID {
+				output, _ := domain.BindingOutput(source, binding.Output)
+				input, _ := domain.OutputVariable(spec, source, output.Variable)
 				bindings[binding.Variable] = struct {
 					ID       uuid.UUID
 					Postgres *domain.Postgres
-				}{source.ID, source.Postgres}
+					Output   domain.ServiceOutput
+					Input    domain.Variable
+				}{source.ID, source.Postgres, output, input}
 			}
 		}
 	}

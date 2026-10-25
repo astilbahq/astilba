@@ -8,6 +8,7 @@ import { Label } from "./components/label";
 import { Link } from "./components/link";
 import { Select } from "./components/select";
 import { Textarea } from "./components/textarea";
+import { AutomationCredentials } from "./features/automation";
 import { Backups } from "./features/backups";
 import { ComposeEditor } from "./features/compose-editor";
 import { Deployments } from "./features/deployments";
@@ -349,6 +350,9 @@ function Environment(props: EnvProps) {
         <p role="status">Loading configuration…</p>
       )}
       <Secrets {...props} />
+      {props.owner && (
+        <AutomationCredentials key={props.environment.id} path={path} />
+      )}
     </div>
   );
 }
@@ -634,6 +638,13 @@ function DraftEditor({
         stage={(spec) => setDraft(JSON.stringify(spec, null, 2))}
       />
       <Deployments
+        loadRevision={(next) => {
+          if (draftRef.current !== savedText) {
+            setConflict(next);
+            return;
+          }
+          replace(next);
+        }}
         path={path}
         revision={base}
         dirty={dirty}

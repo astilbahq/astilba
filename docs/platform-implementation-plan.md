@@ -1,6 +1,6 @@
 # Astilba platform implementation plan
 
-Status: updated 24 October 2026. P0–P8 are implemented and the private-alpha acceptance and management update are complete. P9–P13 extend the first complete journey toward routine developer use; P14–P18 remain later increments. Paid admission still requires measured operating limits and launch settings.
+Status: updated 25 October 2026. P0–P12 are implemented, and the private-alpha acceptance and management update are complete. P13 scoped automation is in progress; isolated previews follow separately after P14 domain support. P14–P18 remain later increments. Paid admission still requires measured operating limits and launch settings.
 
 Build the [architecture](platform-architecture.md) in vertical increments. Prove the execution model on disposable infrastructure before expanding the editor and service catalogue. Each milestone ends in a demonstrable user journey and the tests needed to support its claims. The [product brief](platform-product-brief.md) remains the guide to product scope.
 
@@ -26,7 +26,7 @@ Build the [architecture](platform-architecture.md) in vertical increments. Prove
 | P15 General scheduling | Support useful cron/interval schedules with explicit execution semantics. | P6 |
 | P16 Replicas and multi-host placement | Add stateless replicas before explicit cross-host placement and routing. | P9, P11; separate storage/network design |
 | P17 Interactive troubleshooting | Provide short-lived, audited container sessions and scoped troubleshooting. | P2; separate permission and transport design |
-| P18 Application maintenance | Discover updates and expand tested, version-specific maintenance recipes. | P6, P7, P9, P12 |
+| P18 Application maintenance | Match running workloads to security advisories, offer supported fixes and expand tested maintenance recipes. | P6, P7, P9, P12; stateless fixes use P11 |
 
 P0 experiments are disposable and do not establish new production abstractions. Use the results to refine this architecture before scaffolding the main app. The remaining milestones can contain several small changes; each change should serve its stated platform outcome.
 
@@ -255,13 +255,26 @@ Introduce per-project or per-trust-domain reusable BuildKit caches with bounded 
 
 Build resource budgets and monorepo triggers are implemented. Bounded project layer caches add runner-local OCI exports, compatibility keys, fixed retention/eviction limits and native BuildKit reuse/invalidation checks; see [Git and build workflows](git-builds.md#reusable-layer-caches). Production Railpack adds an explicit builder choice, source-preserving command overrides, version-negotiated runners, journaled prepared plans and pinned image/tool inputs. Its supported Node/npm, static Go and shell matrix and limits are documented in [Git and builds](git-builds.md#railpack-builds). GitHub App onboarding adds operator registration, session-bound PKCE authorization, administrator-approved repository selection and scoped workspace-bot credentials. Installation-local bindings require fresh authorization after workspace import. Authenticated durable webhook fanout and bounded token/authority reuse preserve runner and manual-provider compatibility; see [GitHub App onboarding](git-builds.md#github-app-onboarding). P10 remains open until its acceptance evidence is complete.
 
+## Comparison before P11
+
+Compare the same application and PostgreSQL dataset on Astilba and the published OpenShip 0.9.5 release using newly created disposable hosts. Record successful deployment, build and readiness failures, backup and restore, and PostgreSQL 17 to 18 migration. Verify data and serving revisions independently of either dashboard. Preserve the source database and record the point after which returning to it would discard new writes.
+
+Use matched workload resources and pinned source/image identities. Record the controller overhead, installation mode, manual steps and cold/warm timings. A different topology needed for a supported workflow is a separate scenario. Distinguish observed failures, unsupported paths and infrastructure limitations; do not implement P11 or patch either platform to improve its result. Keep private evidence and credentials outside Git. The fixture and sanitized findings belong in [platform comparison](../experiments/platform-comparison/README.md).
+
 ## P11 Safe application releases
 
+Implementation and recovery contract: [Application releases](application-releases.md).
+
+
 Start with explicitly eligible stateless HTTP services. Create revision-specific instances, wait for meaningful readiness, atomically switch routes and drain the old revision. A failed replacement leaves the serving revision available. Persist traffic-switch and cleanup state so interruption cannot silently choose the wrong revision.
+
+Use the [disposable comparison](../experiments/platform-comparison/RESULTS.md) as acceptance evidence: independently sample the serving revision while a candidate fails readiness and during recovery. Make a failed check an explicit veto before traffic changes; distinguish warning-only and skipped checks from verified readiness. Test controller or agent restart at the traffic-change boundary, not only after an operation completes.
 
 Retain immutable images and effective configuration for an explicit rollback plan. Show changed settings and image availability before rollback. Add bounded pre-deployment commands with explicit failure and uncertain-outcome semantics. Database writes, schema migrations, mounted storage, fixed host ports and background workers need separate compatibility decisions; image rollback must never claim to rewind data.
 
 ## P12 Canvas and service catalog
+
+The [service connection and catalog contract](service-catalog.md) records named outputs, staged recipes, ownership and rollout requirements.
 
 Extend PostgreSQL-specific bindings into typed service outputs and references, including internal addresses, ports and generated connection values. Preserve secret provenance, cycle detection, revision hashing, export and source ownership. Existing shared variables remain supported.
 
@@ -271,6 +284,8 @@ Add a small maintained catalog, initially approximately 5–10 recipes, plus sel
 
 Introduce revocable, scoped automation credentials with explicit workspace/environment capabilities and audit attribution. A general CLI and MCP adapter use the same API admission, plan/apply separation and redaction as the dashboard. They do not automate password/MFA entry or bypass owner-only grants. Keep secrets out of output by default.
 
+The first increment covers owner-issued credentials for exactly one environment, a thin Go CLI and official-SDK stdio MCP. Build authority is limited to re-running owner-configured targets; tokens cannot select workspace credentials/runners or replace automatic policy. Preserve delayed webhook deployment intent and watched-path behavior. Credentials are excluded from transfer archives and revoked by management recovery. See [Environment automation](automation.md). Preview environments remain a separate increment with the P14 domain dependency.
+
 Then add isolated pull-request environments with explicit fork approval, independent secrets/storage, optional generated domains, resource and concurrency limits, and idempotent cleanup on closure. A preview cannot inherit production secrets or address a production resource. GitHub App onboarding, useful build caching, generic bindings and stateless release handling are prerequisites. Verify webhook replay, reopened PRs, offline agents and cleanup after lost acknowledgements.
 
 ## P14–P18 Later increments
@@ -279,7 +294,15 @@ Then add isolated pull-request environments with explicit fork approval, indepen
 - **P15 General scheduling:** useful cron/interval expressions, with documented timezone/DST, overlap, timeout and missed-run semantics that continue when management is offline.
 - **P16 Replicas and placement:** begin with stateless same-host replicas. Define cross-host routing, private networking, storage restrictions and failure domains before multi-host scheduling. Multiple enrolled servers alone do not provide high availability; Kubernetes remains a separate scope decision.
 - **P17 Troubleshooting:** dedicated short-lived resource-scoped container sessions, permissions and audit. Add filesystem access or private-service tunnels only with explicit boundaries; do not place arbitrary shell commands in the deployment API.
-- **P18 Maintenance:** update discovery and review windows, then additional tested version-specific upgrade recipes. Preserve backup, verified restore and new-write boundaries. Do not label an arbitrary image-tag change a supported major upgrade.
+- **P18 Maintenance:** running-workload security advisories, supported fixes and review windows, then additional tested version-specific upgrade recipes. Preserve backup, verified restore and new-write boundaries. Do not label an arbitrary image-tag change a supported major upgrade.
+
+### Security advisories and supported fixes
+
+Match observed running runtime/component versions and immutable image identities against trusted published advisories. Show affected services, applicability evidence, severity, advisory source and fixed versions in the dashboard and existing notification channels. Deduplicate delivery and record resolution. Unknown inventory, an expired feed or an unassessed image remains explicitly unknown; a tag name alone cannot prove package-level vulnerability status. Distinguish this from repository dependency alerts. Advisory visibility can precede the broader P18 recipes.
+
+Offer an explicit update action only when a supported fix is available. Resolve and freeze its source/image identities, show prerequisites and use the existing reviewed build/deployment or maintenance workflow. P11 readiness, drain and rollback protect eligible stateless replacements; database or storage changes retain separately tested backup, restore and new-write boundaries. Unsupported fixes provide actionable manual guidance.
+
+Automatic patching is optional and **off by default**. An owner must explicitly scope eligible services and maintenance windows; record the policy, attempted change and outcome. Fail closed on stale inventory, changed revisions, missing authority or unknown compatibility. Never classify a major database upgrade as an automatic patch. Self-hosted and hosted installations receive the same capability.
 
 Prioritize P9, the source-to-app journey and safe stateless releases alongside actual non-critical use. The later parity milestones do not all become prerequisites for the first limited paid cohort. Record measured cost and capacity before setting allowances, pricing or availability commitments.
 
@@ -305,4 +328,4 @@ Expose fast local checks and one complete `make verify` entry point, retain exac
 
 ## Current implementation increment
 
-P0–P8 and private-alpha acceptance establish the implementation baseline. P9 includes resource history, disk-pressure visibility, [operational alerts](operational-alerts.md) and [bounded retained-log export](operational-visibility.md#export-retained-logs). Log export preserves the existing sampled data and redaction boundaries; it does not introduce a full log archive. P10 source-to-app workflow is the next product increment. Keep later parity work at milestone level until its prerequisites pass. The disposable experiments remain evidence, not production scaffolding.
+P0–P8 and private-alpha acceptance establish the implementation baseline. P9 includes resource history, disk-pressure visibility, [operational alerts](operational-alerts.md) and [bounded retained-log export](operational-visibility.md#export-retained-logs). P10 adds build controls, bounded caches, Railpack and GitHub App onboarding. Run the disposable platform comparison and consolidate its acceptance evidence before P11. Security advisory visibility and supported remediation are recorded under P18. Keep later parity work at milestone level until its prerequisites pass. The disposable experiments remain evidence, not production scaffolding.

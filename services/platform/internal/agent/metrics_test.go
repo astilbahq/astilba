@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -50,10 +51,10 @@ func TestMetricCollectionIsReadOnlyAndBoundsSlowDocker(t *testing.T) {
 		case strings.HasSuffix(r.URL.Path, "/info"):
 			fmt.Fprintf(w, `{"DockerRootDir":%q}`, t.TempDir())
 		case strings.HasSuffix(r.URL.Path, "/containers/json"):
-			if r.URL.Query().Get("limit") != "41" || !strings.Contains(r.URL.Query().Get("filters"), server.String()) {
+			if r.URL.Query().Get("limit") != "121" || !strings.Contains(r.URL.Query().Get("filters"), server.String()) {
 				t.Error("unbounded or unowned inventory")
 			}
-			fmt.Fprintf(w, `[{"Id":"test-container","State":"running","Labels":{"com.astilba.resource":%q,"com.astilba.unit":%q}}]`, resource, unit)
+			fmt.Fprintf(w, `[{"Id":"test-container","Names":[%q],"State":"running","Labels":{"com.astilba.resource":%q,"com.astilba.unit":%q}}]`, "/"+deployment.UnitName(resource), resource, unit)
 		case strings.HasSuffix(r.URL.Path, "/json"):
 			fmt.Fprint(w, `{"State":{"Health":{"Status":"unhealthy"}},"Config":{"Env":["PRIVATE-METRICS-CANARY"]}}`)
 		case strings.HasSuffix(r.URL.Path, "/stats"):
@@ -90,5 +91,46 @@ func TestMetricCollectionIsReadOnlyAndBoundsSlowDocker(t *testing.T) {
 	sample = collector.Collect(context.Background(), docker, server, t.TempDir())
 	if !sample.Partial || time.Since(started) > 2*time.Second {
 		t.Fatal("slow stats blocked bounded collection")
+	}
+}
+
+func TestMetricCollectionKeepsOneMappingAcrossReleaseSwitch(t *testing.T) {
+	j, p := testVisualJournal(t)
+	resource := uuid.New()
+	instance := uuid.New()
+	if err := j.saveUnit(unitState{Plan: p}); err != nil {
+		t.Fatal(err)
+	}
+	var switched atomic.Bool
+	daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/info"):
+			fmt.Fprintf(w, `{"DockerRootDir":%q}`, t.TempDir())
+		case strings.HasSuffix(r.URL.Path, "/containers/json"):
+			fmt.Fprintf(w, `[{"Id":"a-old","Names":[%q],"State":"running","Labels":{"com.astilba.resource":%q,"com.astilba.unit":%q}},{"Id":"b-candidate","Names":[%q],"State":"running","Labels":{"com.astilba.resource":%q,"com.astilba.unit":%q}}]`, "/"+deployment.UnitName(resource), resource, p.UnitID, "/"+deployment.UnitName(instance), resource, p.UnitID)
+		case strings.HasSuffix(r.URL.Path, "/json"):
+			fmt.Fprint(w, `{"State":{"Health":{"Status":"healthy"}}}`)
+		case strings.HasSuffix(r.URL.Path, "/stats"):
+			if switched.CompareAndSwap(false, true) {
+				p.Instances = map[string]uuid.UUID{resource.String(): instance}
+				if err := j.saveUnit(unitState{Plan: p}); err != nil {
+					t.Error(err)
+				}
+			}
+			fmt.Fprint(w, `{"cpu_stats":{"cpu_usage":{"total_usage":10},"system_cpu_usage":100,"online_cpus":2},"memory_stats":{"usage":1024}}`)
+		default:
+			w.WriteHeader(404)
+		}
+	}))
+	defer daemon.Close()
+	docker, err := client.New(client.WithHost(daemon.URL), client.WithAPIVersion("1.54"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer docker.Close()
+	sample := (&MetricCollector{Journal: j}).Collect(context.Background(), docker, p.ServerID, t.TempDir())
+	if !switched.Load() || len(sample.Services) != 1 || sample.Services[0].ResourceId != resource {
+		t.Fatalf("switch invalidated logical inventory: %+v", sample.Services)
 	}
 }

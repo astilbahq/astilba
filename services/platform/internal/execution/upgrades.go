@@ -91,6 +91,9 @@ func (s *Service) CreateUpgrade(ctx context.Context, p store.Principal, ws, pid,
 		if err != nil {
 			return err
 		}
+		if err = requireServiceOutputs(ctx, tx, ws, *v.Server, source.Specification); err != nil {
+			return err
+		}
 		if policy.Plan.Hash != source.Hash || policy.ResourceID != in.ResourceId || policy.Method != "postgres-logical" {
 			return domain.Invalid("policy")
 		}

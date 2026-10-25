@@ -132,6 +132,8 @@ A connection has an explicit type and meaning. An application connected to Postg
 
 An ordinary service connection does not imply a firewall rule or execution order. Services on a deployment unit's Docker network can communicate without a drawn binding. Readiness dependencies are separate validated configuration, with cycles rejected where they would prevent startup.
 
+[Named service outputs and the maintained catalog](service-catalog.md) define the current visual connection types, legacy PostgreSQL readiness behavior, secret/export rules and per-recipe maintenance support. Catalog selection stages an ordinary specification; it does not create a separate runtime or edit Git-owned files.
+
 Canvas positions, selection and viewport state are separate from deployment configuration. Saving a layout must not create a deployment revision or restart a workload. Persist positions per environment and keep selection and viewport preferences local to each user. React Flow's internal state is not stored as the canonical application format.
 
 Use optimistic updates and revision preconditions for draft editing. Concurrent changes return a conflict with a fresh revision to review; do not silently replace another user's edits. Live collaborative dragging can be added later without changing deployment semantics.
@@ -290,6 +292,8 @@ Provide local accounts so self-hosting requires no external identity service. Us
 
 Use secure HttpOnly session cookies, CSRF protection, origin checks, login rate limits, session rotation and recent authentication for secret export, volume deletion, restoration cutover and credential changes. Owner, operator and viewer permissions are enforced by the API. Test denied actions independently of whether the UI displays the relevant control. [SCS](https://github.com/alexedwards/scs), [OWASP password storage](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html), [OWASP sessions](https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html).
 
+Automation uses a distinct bearer principal scoped to one environment and selected capabilities, with hashed credentials, expiry, current-owner/authentication-version checks and admission-time revocation checks. It never becomes recent human identity or falls back to browser cookies. CLI and stdio MCP are thin adapters over explicitly allowed API operations. Build tokens re-run an owner-configured target without replacing its credentials, runner or automatic policy. Credentials stay installation-local and are revoked by management recovery. See [Environment automation](automation.md).
+
 Encrypt secret versions using an established authenticated-encryption primitive with a key ID and an operator-supplied wrapping key outside PostgreSQL. Bind ciphertext to its workspace and secret version as authenticated metadata. Support key rotation without changing the meaning of saved revisions. A database backup without the required key cannot recover those secrets; installation backup instructions must cover both, stored separately.
 
 Secret references appear in specifications and Git; plaintext values are resolved only for execution and remain separately managed per environment. Never put secret values into generated branches or pull requests. Exclude secrets from URLs, process arguments, ordinary exports, audit records and logs wherever the underlying tool permits. Use restrictive temporary files or tool-supported secret inputs and clean them up. Build secrets use BuildKit secret facilities, not ordinary build arguments. Logs can contain customer-emitted secrets despite redaction, so access and retention also form part of the protection.
@@ -376,3 +380,7 @@ The first implementation milestone must establish that River's open-source core 
 Include the optional Cloudflare Containers target in that milestone. If its lifecycle or economics are unsuitable, revisit the hosting or backend choice before promising Workers-native compatibility; serving the static UI on Cloudflare alone is not equivalent to hosting the complete management service there.
 
 Exact prices, the public product name, measured capacity limits, published support hours and later catalogue additions remain launch decisions. The maintainer's own use is the initial product validation; interviews, pre-sales and external customer commitments are not implementation gates.
+
+## Protected stateless application releases
+
+[Application releases](application-releases.md) defines the P11 execution contract. Visual plans retain logical resources while optional runtime-instance identities isolate candidates and retained revisions. Resolve effective images before selecting a one-application release. Keep the previous healthy HTTP instance serving until mandatory readiness and proxy verification pass; commit active unit state and switch phase atomically before bounded drain and owned cleanup. Release commands carry explicit budgets and uncertain-outcome handling. Rollback creates an immutable draft and a new reviewed candidate; it never rewinds database data.

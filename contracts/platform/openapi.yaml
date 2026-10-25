@@ -8,7 +8,160 @@
 "security":
   -
     "sessionCookie": []
+  - automationBearer: []
 "paths":
+  /api/v1/automation/context:
+    get:
+      operationId: getAutomationContext
+      security: [{automationBearer: []}]
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AutomationContext'}
+        default:
+          description: Error
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+  /api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/automation-credentials:
+    get:
+      operationId: listAutomationCredentials
+      parameters:
+        - {name: workspaceId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: projectId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: environmentId, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema: {type: array, items: {$ref: '#/components/schemas/AutomationCredential'}}
+        default:
+          description: Error
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+    post:
+      operationId: createAutomationCredential
+      parameters:
+        - {name: workspaceId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: projectId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: environmentId, in: path, required: true, schema: {type: string, format: uuid}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CreateAutomationCredential'}
+      responses:
+        '201':
+          description: Success
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AutomationCredentialCreated'}
+        default:
+          description: Error
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+  /api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/automation-credentials/{credentialId}:
+    delete:
+      operationId: revokeAutomationCredential
+      parameters:
+        - {name: workspaceId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: projectId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: environmentId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: credentialId, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '204': {description: Revoked}
+        default:
+          description: Error
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+  /api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/operations/{operationId}:
+    get:
+      operationId: getEnvironmentOperation
+      parameters:
+        - {name: workspaceId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: projectId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: environmentId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: operationId, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Operation'}
+        default:
+          description: Error
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+  /api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/build-targets:
+    get:
+      operationId: listConfiguredBuildTargets
+      parameters:
+        - {name: workspaceId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: projectId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: environmentId, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema: {type: array, items: {$ref: '#/components/schemas/ConfiguredBuildTarget'}}
+        default:
+          description: Error
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+  /api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/build-targets/{applicationId}/runs:
+    post:
+      operationId: runConfiguredBuild
+      parameters:
+        - {name: workspaceId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: projectId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: environmentId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: applicationId, in: path, required: true, schema: {type: string, format: uuid}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/RunConfiguredBuild'}
+      responses:
+        '202':
+          description: Success
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Operation'}
+        default:
+          description: Error
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+  /api/v1/workspaces/{workspaceId}/service-catalog:
+    get:
+      operationId: listServiceCatalog
+      parameters:
+        - name: workspaceId
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+      responses:
+        '200':
+          description: Curated templates; staging requires fresh resource identities and normal revision validation.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: '#/components/schemas/CatalogRecipe'}
+        default:
+          description: Error
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
   "/api/v1/session":
     "get":
       "operationId": "session"
@@ -3533,8 +3686,54 @@
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/releases":
+    get:
+      operationId: listReleases
+      parameters:
+        - {name: workspaceId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: projectId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: environmentId, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '200':
+          description: Recent successfully applied plans; image availability is checked when preparing rollback.
+          content:
+            application/json:
+              schema:
+                type: array
+                maxItems: 20
+                items: {$ref: '#/components/schemas/ReleaseHistoryEntry'}
+        default:
+          description: Error
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+  "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/releases/{planId}/rollback":
+    post:
+      operationId: rollbackRelease
+      parameters:
+        - {name: workspaceId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: projectId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: environmentId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: planId, in: path, required: true, schema: {type: string, format: uuid}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/RollbackRelease'}
+      responses:
+        '201':
+          description: A new draft revision; nothing is deployed.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Revision'}
+        default:
+          description: Error
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
 "components":
   "securitySchemes":
+    automationBearer: {type: http, scheme: bearer}
     "agentBearer":
       "type": "http"
       "scheme": "bearer"
@@ -3543,6 +3742,69 @@
       "in": "cookie"
       "name": "__Host-astilba_session"
   "schemas":
+    AutomationCapability:
+      type: string
+      enum: ['environment:read', 'configuration:write', 'deployment:plan', 'deployment:apply', 'build:run']
+    AutomationCredential:
+      type: object
+      additionalProperties: false
+      required: [id, creatorId, name, capabilities, createdAt, expiresAt]
+      properties:
+        id: {type: string, format: uuid}
+        creatorId: {type: string, format: uuid}
+        name: {type: string, minLength: 1, maxLength: 80}
+        capabilities: {type: array, minItems: 1, maxItems: 5, uniqueItems: true, items: {$ref: '#/components/schemas/AutomationCapability'}}
+        createdAt: {type: string, format: date-time}
+        expiresAt: {type: string, format: date-time}
+        revokedAt: {type: string, format: date-time, nullable: true}
+    CreateAutomationCredential:
+      type: object
+      additionalProperties: false
+      required: [name, capabilities, expiresAt]
+      properties:
+        name: {type: string, minLength: 1, maxLength: 80}
+        capabilities: {type: array, minItems: 1, maxItems: 5, uniqueItems: true, items: {$ref: '#/components/schemas/AutomationCapability'}}
+        expiresAt: {type: string, format: date-time}
+    AutomationCredentialCreated:
+      type: object
+      additionalProperties: false
+      required: [credential, token]
+      properties:
+        credential: {$ref: '#/components/schemas/AutomationCredential'}
+        token: {type: string, writeOnly: true, description: Returned once. Store privately; never log it.}
+    AutomationContext:
+      type: object
+      additionalProperties: false
+      required: [credentialId, workspaceId, projectId, environmentId, workspace, project, environment, capabilities, expiresAt]
+      properties:
+        credentialId: {type: string, format: uuid}
+        workspaceId: {type: string, format: uuid}
+        projectId: {type: string, format: uuid}
+        environmentId: {type: string, format: uuid}
+        workspace: {type: string}
+        project: {type: string}
+        environment: {type: string}
+        capabilities: {type: array, items: {$ref: '#/components/schemas/AutomationCapability'}}
+        expiresAt: {type: string, format: date-time}
+    ConfiguredBuildTarget:
+      type: object
+      additionalProperties: false
+      required: [applicationId, baseRevisionId, name, branch, builder, targetHash]
+      properties:
+        applicationId: {type: string, format: uuid}
+        baseRevisionId: {type: string, format: uuid}
+        name: {type: string}
+        branch: {type: string}
+        builder: {type: string}
+        targetHash: {type: string, pattern: '^[a-f0-9]{64}$'}
+    RunConfiguredBuild:
+      type: object
+      additionalProperties: false
+      required: [baseRevisionId, idempotencyKey, targetHash]
+      properties:
+        baseRevisionId: {type: string, format: uuid}
+        idempotencyKey: {type: string, format: uuid}
+        targetHash: {type: string, pattern: '^[a-f0-9]{64}$'}
     "ServerRole":
       "type": "string"
       "enum":
@@ -3580,6 +3842,12 @@
           "type": "boolean"
         "compose":
           "type": "boolean"
+        serviceOutputs:
+          type: boolean
+          description: Supports named service output references; advertised only after Astilba-Agent-Service-Outputs v1.
+        safeReleases:
+          type: boolean
+          description: Supports instance-based stateless HTTP releases. Advertised only after Astilba-Agent-Safe-Releases v1.
         buildControls:
           type: boolean
           description: Supports explicit build budgets and frozen-commit watch paths. Agents send this extension only after a controller response advertises Astilba-Agent-Features with build-controls.
@@ -4507,6 +4775,11 @@
       "type": "object"
       "additionalProperties": false
       "properties":
+        outputs:
+          type: array
+          maxItems: 20
+          items:
+            $ref: '#/components/schemas/ServiceOutput'
         "id":
           "type": "string"
           "format": "uuid"
@@ -4755,6 +5028,7 @@
       "type": "object"
       "additionalProperties": false
       "properties":
+        automationCredentialId: {type: string, format: uuid}
         "id":
           "type": "string"
           "format": "uuid"
@@ -4836,10 +5110,54 @@
         - "database"
         - "username"
         - "passwordSecretVersionId"
+    ServiceOutput:
+      type: object
+      additionalProperties: false
+      required: [name, type]
+      properties:
+        name: {type: string, maxLength: 80, pattern: '^[A-Z_][A-Z0-9_]*$'}
+        type: {type: string, enum: [address, port, url, variable]}
+        port: {type: integer, minimum: 1, maximum: 65535}
+        scheme: {type: string, maxLength: 32}
+        path: {type: string, maxLength: 256}
+        variable: {type: string, maxLength: 80}
+    ServiceSupport:
+      type: object
+      additionalProperties: false
+      required: [level, detail]
+      properties:
+        level: {type: string, enum: [tested, manual, not_applicable]}
+        detail: {type: string}
+    CatalogRecipe:
+      type: object
+      additionalProperties: false
+      required: [id, name, description, documentation, prerequisites, needsPassword, specification, support]
+      properties:
+        id: {type: string}
+        name: {type: string}
+        description: {type: string}
+        documentation: {type: string, format: uri}
+        prerequisites: {type: array, items: {type: string}}
+        needsPassword: {type: boolean}
+        specification: {$ref: '#/components/schemas/Specification'}
+        support:
+          type: object
+          additionalProperties: false
+          required: [deployment, binding, backup, restore, upgrade]
+          properties:
+            deployment: {$ref: '#/components/schemas/ServiceSupport'}
+            binding: {$ref: '#/components/schemas/ServiceSupport'}
+            backup: {$ref: '#/components/schemas/ServiceSupport'}
+            restore: {$ref: '#/components/schemas/ServiceSupport'}
+            upgrade: {$ref: '#/components/schemas/ServiceSupport'}
     "Binding":
       "type": "object"
       "additionalProperties": false
       "properties":
+        output:
+          type: string
+          maxLength: 80
+          description: Named source output; omission preserves the legacy PostgreSQL URL and readiness dependency.
         "id":
           "type": "string"
           "format": "uuid"
@@ -4924,10 +5242,71 @@
         - "listenPort"
         - "tls"
         - "allowCidrs"
+    ReleaseOptions:
+      type: object
+      additionalProperties: false
+      required: [command, commandTimeoutSeconds, drainSeconds]
+      properties:
+        command:
+          type: array
+          maxItems: 32
+          items: {type: string, maxLength: 4096}
+        commandTimeoutSeconds: {type: integer, minimum: 1, maximum: 300}
+        drainSeconds: {type: integer, minimum: 1, maximum: 120}
+    ProtectedRelease:
+      type: object
+      additionalProperties: false
+      required: [applicationId, previousPlanId, options]
+      properties:
+        applicationId: {type: string, format: uuid}
+        previousPlanId: {type: string, format: uuid}
+        options: {$ref: '#/components/schemas/ReleaseOptions'}
+    ReleaseHistoryEntry:
+      type: object
+      additionalProperties: false
+      required: [planId, revisionId, createdAt, applications]
+      properties:
+        planId: {type: string, format: uuid}
+        revisionId: {type: string, format: uuid}
+        createdAt: {type: string, format: date-time}
+        applications:
+          type: array
+          maxItems: 20
+          items:
+            type: object
+            additionalProperties: false
+            required: [id, name, image, eligible, note, changes]
+            properties:
+              changes:
+                type: array
+                maxItems: 8
+                items: {type: string, maxLength: 80}
+              id: {type: string, format: uuid}
+              name: {type: string, maxLength: 80}
+              image: {type: string, maxLength: 512}
+              eligible: {type: boolean}
+              note: {type: string, maxLength: 300}
+    RollbackRelease:
+      type: object
+      additionalProperties: false
+      required: [baseRevisionId, applicationId]
+      properties:
+        baseRevisionId: {type: string, format: uuid}
+        applicationId: {type: string, format: uuid}
     VisualPlan:
       "type": "object"
       "additionalProperties": false
       properties:
+        instances:
+          type: object
+          maxProperties: 20
+          additionalProperties:
+            type: string
+            format: uuid
+        releaseOptions:
+          $ref: "#/components/schemas/ReleaseOptions"
+        release:
+          $ref: "#/components/schemas/ProtectedRelease"
         "id":
           "type": "string"
           "format": "uuid"
@@ -5133,6 +5512,8 @@
       "type": "object"
       "additionalProperties": false
       "properties":
+        releaseOptions:
+          $ref: "#/components/schemas/ReleaseOptions"
         "serverId":
           "type": "string"
           "format": "uuid"

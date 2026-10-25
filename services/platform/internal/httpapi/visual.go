@@ -60,3 +60,17 @@ func (s *Server) ListManagedVolumes(w http.ResponseWriter, r *http.Request, ws, 
 	v, e := s.Execution.ManagedVolumes(r.Context(), *principal(r.Context()), ws, pid, env)
 	s.executionResponse(w, r, 200, v, e)
 }
+
+func (s *Server) ListReleases(w http.ResponseWriter, r *http.Request, ws, pid, env uuid.UUID) {
+	v, e := s.Execution.ReleaseHistory(r.Context(), *principal(r.Context()), ws, pid, env)
+	s.executionResponse(w, r, 200, v, e)
+}
+func (s *Server) RollbackRelease(w http.ResponseWriter, r *http.Request, ws, pid, env, id uuid.UUID) {
+	b, e := decode[api.RollbackRelease](r)
+	if e != nil {
+		s.fail(w, r, e)
+		return
+	}
+	v, e := s.Execution.RollbackRelease(r.Context(), *principal(r.Context()), ws, pid, env, id, b)
+	s.executionResponse(w, r, 201, v, e)
+}

@@ -607,7 +607,7 @@ func (e *Engine) checkRestoreOwnership(ctx context.Context, p backup.Policy) err
 			return errors.New("unsupported database source")
 		}
 		volume = app.Mounts[0].VolumeID
-		c, err := e.Docker.ContainerInspect(ctx, deployment.UnitName(app.ID), client.ContainerInspectOptions{})
+		c, err := e.Docker.ContainerInspect(ctx, p.Plan.ContainerName(app.ID), client.ContainerInspectOptions{})
 		if err != nil && !errdefs.IsNotFound(err) {
 			return err
 		}

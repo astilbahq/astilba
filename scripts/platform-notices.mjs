@@ -26,6 +26,7 @@ const output = execFileSync(
     "{{if .Module}}{{.Module.Path}}|{{.Module.Version}}|{{.Module.Dir}}{{end}}",
     "./cmd/server",
     "./cmd/agent",
+    "./cmd/cli",
   ],
   { cwd: join(root, "services/platform"), encoding: "utf8" },
 );

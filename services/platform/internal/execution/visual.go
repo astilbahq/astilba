@@ -103,6 +103,9 @@ func (s *Service) createVisualPlan(ctx context.Context, tx pgx.Tx, ws, pid, env 
 		if err != nil {
 			return err
 		}
+		if err = requireServiceOutputs(ctx, tx, ws, in.ServerId, v.Spec); err != nil {
+			return err
+		}
 		if v.Spec.Compose != nil {
 			var supported bool
 			if err := tx.QueryRow(ctx, "SELECT COALESCE((capabilities->>'compose')::boolean,false) FROM servers WHERE workspace_id=$1 AND id=$2", ws, in.ServerId).Scan(&supported); err != nil {
@@ -181,6 +184,29 @@ func (s *Service) createVisualPlan(ctx context.Context, tx pgx.Tx, ws, pid, env 
 		plan := deployment.Plan{ID: uuid.New(), ServerID: in.ServerId, EnvironmentID: env, UnitID: v.Unit, RevisionID: v.Revision, ExpectedAppliedID: v.Applied, Recipe: deployment.Recipe, Specification: v.Spec, Images: map[string]string{}, HostChanges: hostChanges, AcceptDrift: in.AcceptDrift, Effects: deployment.Effects(v.Spec, previous, hostChanges), ExpiresAt: time.Now().UTC().Add(15 * time.Minute)}.WithHash()
 		if err = s.planArtifacts(ctx, tx, ws, &plan); err != nil {
 			return err
+		}
+
+		previousPlan, err := appliedVisualPlan(ctx, tx, ws, env)
+		if err != nil {
+			return err
+		}
+		if previousPlan.ServerID == plan.ServerID && plan.Specification.Compose == nil {
+			plan.Instances = map[string]uuid.UUID{}
+			for _, app := range plan.Specification.Applications {
+				if instance := previousPlan.Instances[app.ID.String()]; instance != uuid.Nil && app.Postgres == nil {
+					plan.Instances[app.ID.String()] = instance
+				}
+			}
+		}
+		if in.ReleaseOptions != nil {
+			plan.ReleaseOptions = &deployment.ReleaseOptions{Command: in.ReleaseOptions.Command, CommandTimeoutSeconds: in.ReleaseOptions.CommandTimeoutSeconds, DrainSeconds: in.ReleaseOptions.DrainSeconds}
+		}
+		supported, err := releaseCapability(ctx, tx, ws, plan.ServerID)
+		if err != nil {
+			return err
+		}
+		if (len(plan.Instances) > 0 || plan.ReleaseOptions != nil) && !supported {
+			return domain.Invalid("server.capabilities.safeReleases")
 		}
 		plan = plan.WithHash()
 		if v.Spec.Compose != nil {
@@ -301,6 +327,18 @@ func (s *Service) applyVisualPlan(ctx context.Context, tx pgx.Tx, ws, pid, env, 
 		}
 		if _, err = s.visualServer(ctx, tx, ws, plan.ServerID); err != nil {
 			return err
+		}
+		if err = requireServiceOutputs(ctx, tx, ws, plan.ServerID, plan.Specification); err != nil {
+			return err
+		}
+		if len(plan.Instances) > 0 || plan.Release != nil {
+			supported, err := releaseCapability(ctx, tx, ws, plan.ServerID)
+			if err != nil {
+				return err
+			}
+			if !supported {
+				return domain.Invalid("server.capabilities.safeReleases")
+			}
 		}
 		// Claims include previously applied routes until a successful replacement.
 		claims, err := deployment.Claims(plan)
@@ -452,6 +490,18 @@ func (s *Service) hydrateVisual(ctx context.Context, c *api.ExecutionCommand) er
 	if err := s.Store.Pool.QueryRow(ctx, "SELECT workspace_id FROM servers WHERE id=$1", c.ServerId).Scan(&ws); err != nil {
 		return err
 	}
+	if err := requireServiceOutputs(ctx, s.Store.Pool, ws, c.ServerId, payload.Plan.Specification); err != nil {
+		return err
+	}
+	if len(payload.Plan.Instances) > 0 || payload.Plan.Release != nil {
+		supported, err := releaseCapability(ctx, s.Store.Pool, ws, c.ServerId)
+		if err != nil {
+			return err
+		}
+		if !supported {
+			return domain.Invalid("server.capabilities.safeReleases")
+		}
+	}
 	payload.RegistryAccess = map[string]pipeline.Credential{}
 	for key, a := range payload.Plan.Artifacts {
 		if a.RegistryID == nil {
@@ -554,6 +604,11 @@ func (s *Service) visualReport(ctx context.Context, tx pgx.Tx, c api.ExecutionCo
 		if observed.ResourceDrift && !plan.AcceptDrift {
 			r.State = "failed"
 			r.Note = "Host drift was detected. Review it and explicitly request a reconciliation plan."
+			return nil
+		}
+		if err := configureRelease(ctx, tx, ws, &plan); err != nil {
+			r.State = "failed"
+			r.Note = "Protected release is unavailable for this resolved change. Review its compatibility and agent capabilities."
 			return nil
 		}
 		plan = plan.WithHash()
