@@ -131,6 +131,23 @@ func pipelineExisting(ctx context.Context, tx pgx.Tx, ws, env, key uuid.UUID, ac
 	op, err := scanOperation(tx.QueryRow(ctx, "SELECT "+opColumns+" FROM execution_operations WHERE workspace_id=$1 AND id=$2", ws, command.Id))
 	return op, true, err
 }
+
+func existingBuild(ctx context.Context, tx pgx.Tx, ws, pid, env, app, key uuid.UUID) (api.Operation, bool, error) {
+	old, exists, err := pipelineExisting(ctx, tx, ws, env, key, "build")
+	if err != nil || !exists {
+		return old, exists, err
+	}
+	var matches bool
+	if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pipeline_runs r JOIN environments e ON e.workspace_id=r.workspace_id AND e.id=r.environment_id
+ WHERE r.workspace_id=$1 AND e.project_id=$2 AND r.environment_id=$3 AND r.application_id=$4 AND r.id=$5)`, ws, pid, env, app, old.Id).Scan(&matches); err != nil {
+		return api.Operation{}, true, err
+	}
+	if !matches {
+		return api.Operation{}, true, domain.NotFound
+	}
+	return old, true, nil
+}
+
 func (s *Service) GitSource(ctx context.Context, p store.Principal, ws, pid, env uuid.UUID) (map[string]any, error) {
 	out := map[string]any{}
 	err := s.scope(ctx, p, ws, false, false, false, "", uuid.Nil, func(tx pgx.Tx) error {
@@ -357,6 +374,11 @@ func (s *Service) CreateBuild(ctx context.Context, p store.Principal, ws, pid, e
 }
 
 func (s *Service) admitBuild(ctx context.Context, tx pgx.Tx, p store.Principal, ws, pid, env, base, app, key uuid.UUID, c pipeline.BuildConfig, persist bool) (api.Operation, error) {
+	if persist {
+		if old, exists, err := existingBuild(ctx, tx, ws, pid, env, app, key); err != nil || exists {
+			return old, err
+		}
+	}
 	v, err := loadVisualEnvironment(ctx, tx, ws, pid, env)
 	if err != nil {
 		return api.Operation{}, err
@@ -370,11 +392,6 @@ func (s *Service) admitBuild(ctx context.Context, tx pgx.Tx, p store.Principal, 
 	}
 	if !found {
 		return api.Operation{}, domain.Invalid("applicationId")
-	}
-	if persist {
-		if old, exists, err := pipelineExisting(ctx, tx, ws, env, key, "build"); err != nil || exists {
-			return old, err
-		}
 	}
 	provider, connection, err := s.provider(ctx, tx, ws, c.ConnectionID)
 	if err != nil {

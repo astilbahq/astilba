@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -147,7 +148,8 @@ func TestGitImportBuildIsolationAndArtifactAdmission(t *testing.T) {
 
 	cfg := pipeline.BuildConfig{ConnectionID: connection.Connection.ID, Branch: "main", RunnerID: enrolled.Server.Id, RegistryID: &registry.ID, Context: ".", Dockerfile: "Dockerfile", Architecture: "arm64", Arguments: map[string]string{}, Secrets: map[string]uuid.UUID{"package": buildSecret.ID}}
 	key := uuid.New()
-	b.call("POST", path+"/builds", map[string]any{"baseRevisionId": draft.Id, "applicationId": app, "requestKey": key, "configuration": cfg}, 202, &op)
+	buildRequest := map[string]any{"baseRevisionId": draft.Id, "applicationId": app, "requestKey": key, "configuration": cfg}
+	b.call("POST", path+"/builds", buildRequest, 202, &op)
 	c = poll(op.Id)
 	for _, secret := range []string{"api-write-canary", connection.Secret, "runtime-only-canary", "pull-canary"} {
 		if strings.Contains(string(*c.Pipeline), secret) {
@@ -178,6 +180,48 @@ func TestGitImportBuildIsolationAndArtifactAdmission(t *testing.T) {
 	if !strings.Contains(next.Compose.Files[0].Content, digest) || !strings.Contains(next.Compose.Files[0].Content, "# preserve me") {
 		t.Fatal("promotion lost source or immutable image")
 	}
+	t.Run("accepted build survives draft advancement", func(t *testing.T) {
+		var before, after []byte
+		var generation, replayGeneration int64
+		ctx := context.Background()
+		if err := f.st.Pool.QueryRow(ctx, "SELECT to_jsonb(t) FROM build_targets t WHERE workspace_id=$1 AND environment_id=$2 AND application_id=$3", ws, env.Id, app).Scan(&before); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.st.Pool.QueryRow(ctx, "SELECT execution_generation FROM environments WHERE id=$1", env.Id).Scan(&generation); err != nil {
+			t.Fatal(err)
+		}
+		calls := apiCalls.Load()
+		var replay api.Operation
+		b.call("POST", path+"/builds", buildRequest, 202, &replay)
+		if replay.Id != op.Id || replay.State != "succeeded" {
+			t.Fatal("retry lost the accepted build", replay)
+		}
+		for _, otherPath := range []string{
+			strings.Replace(path, project.Id.String(), uuid.NewString(), 1),
+			strings.Replace(path, env.Id.String(), uuid.NewString(), 1),
+		} {
+			b.call("POST", otherPath+"/builds", buildRequest, 404, nil)
+		}
+		wrongApp := maps.Clone(buildRequest)
+		wrongApp["applicationId"] = uuid.New()
+		b.call("POST", path+"/builds", wrongApp, 404, nil)
+		newBuild := maps.Clone(buildRequest)
+		newBuild["requestKey"] = uuid.New()
+		b.call("POST", path+"/builds", newBuild, 409, nil)
+		if apiCalls.Load() != calls {
+			t.Fatal("receipt recovery or rejected request contacted the provider")
+		}
+		if err := f.st.Pool.QueryRow(ctx, "SELECT to_jsonb(t) FROM build_targets t WHERE workspace_id=$1 AND environment_id=$2 AND application_id=$3", ws, env.Id, app).Scan(&after); err != nil || !bytes.Equal(before, after) {
+			t.Fatal("retry rewrote the build target", err)
+		}
+		if err := f.st.Pool.QueryRow(ctx, "SELECT execution_generation FROM environments WHERE id=$1", env.Id).Scan(&replayGeneration); err != nil || replayGeneration != generation {
+			t.Fatal("retry admitted another execution", err)
+		}
+		b.call("GET", path+"/builds", nil, 200, &runs)
+		if len(runs) != 2 {
+			t.Fatal("retry created another pipeline run", len(runs))
+		}
+	})
 	// A Git draft is not deployable until the source branch has accepted it.
 	b.call("POST", path+"/deployment-plans", api.VisualPlanRequest{BaseRevisionId: promoted.Id, ServerId: enrolled.Server.Id}, 400, nil)
 	// Cancelled and expired work must never publish an artifact, even if the runner reports success.
@@ -340,6 +384,7 @@ func TestGitImportBuildIsolationAndArtifactAdmission(t *testing.T) {
 		b.call("POST", "/api/v1/workspaces", map[string]string{"name": "Other"}, 201, &other)
 		otherPath := strings.Replace(path, ws.String(), other.Id.String(), 1)
 		b.call("GET", otherPath+"/builds", nil, 404, nil)
+		b.call("POST", otherPath+"/builds", buildRequest, 404, nil)
 		b.call("POST", otherPath+"/artifacts/"+artifact.ID.String()+"/promote", api.PromoteArtifact{BaseRevisionId: promoted.Id, ApplicationId: app, InputHash: artifact.InputHash}, 404, nil)
 		var otherArtifacts []pipeline.Artifact
 		b.call("GET", "/api/v1/workspaces/"+other.Id.String()+"/artifacts", nil, 200, &otherArtifacts)
@@ -353,6 +398,7 @@ func TestGitImportBuildIsolationAndArtifactAdmission(t *testing.T) {
 		viewer.call("POST", "/api/v1/auth/invitations/accept", map[string]string{"token": invite, "name": "Viewer", "password": f.password}, 200, &session)
 		viewer.csrf = session.CsrfToken
 		before := apiCalls.Load()
+		viewer.call("POST", path+"/builds", buildRequest, 403, nil)
 		viewer.call("POST", path+"/builds", map[string]any{"baseRevisionId": promoted.Id, "applicationId": app, "requestKey": uuid.New(), "configuration": cfg}, 403, nil)
 		viewer.call("POST", prefix+"/git-connections", map[string]any{"name": "Unauthorized", "provider": "gitea", "baseUrl": provider.URL, "repository": "team/app"}, 403, nil)
 		if apiCalls.Load() != before {

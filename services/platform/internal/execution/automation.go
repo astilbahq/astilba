@@ -57,19 +57,11 @@ func (s *Service) ConfiguredBuildTargets(ctx context.Context, p store.Principal,
 func (s *Service) RunConfiguredBuild(ctx context.Context, p store.Principal, ws, pid, env, app uuid.UUID, in api.RunConfiguredBuild) (api.Operation, error) {
 	var out api.Operation
 	err := s.scope(ctx, p, ws, true, false, false, "build.run", app, func(tx pgx.Tx) error {
-		old, exists, err := pipelineExisting(ctx, tx, ws, env, in.IdempotencyKey, "build")
+		old, exists, err := existingBuild(ctx, tx, ws, pid, env, app, in.IdempotencyKey)
 		if err != nil {
 			return err
 		}
 		if exists {
-			var matches bool
-			if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pipeline_runs r JOIN environments e ON e.workspace_id=r.workspace_id AND e.id=r.environment_id
- WHERE r.workspace_id=$1 AND e.project_id=$2 AND r.environment_id=$3 AND r.application_id=$4 AND r.id=$5)`, ws, pid, env, app, old.Id).Scan(&matches); err != nil {
-				return err
-			}
-			if !matches {
-				return domain.NotFound
-			}
 			out = old
 			return nil
 		}
