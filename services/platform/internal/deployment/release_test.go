@@ -25,6 +25,18 @@ func TestProtectedReleaseEligibilityUsesEffectiveImages(t *testing.T) {
 	if app, err := ReleaseApplication(old, next); err != nil || app.ID != web {
 		t.Fatalf("moved mutable tag should be protected: %v", err)
 	}
+	consumer := domain.Application{ID: uuid.New(), Name: "Consumer", Kind: "worker", Source: old.Specification.Applications[1].Source}
+	boundOld, boundNext := copyPlan(old), copyPlan(next)
+	for _, plan := range []*Plan{&boundOld, &boundNext} {
+		plan.Specification.Applications = append(plan.Specification.Applications, consumer)
+		plan.Images[consumer.ID.String()] = plan.Images[web.String()]
+		plan.Specification.Bindings = append(plan.Specification.Bindings, domain.Binding{ID: uuid.New(), SourceID: web, TargetID: consumer.ID, Output: "HOST", Variable: "HOST"})
+	}
+	boundNext.Specification.Bindings = boundOld.Specification.Bindings
+	boundNext.Images[consumer.ID.String()] = boundOld.Images[consumer.ID.String()]
+	if _, err := ReleaseApplication(boundOld, boundNext); err == nil {
+		t.Fatal("protected release invalidated a consumer's private address")
+	}
 	next.Images[old.Specification.Applications[0].ID.String()] = "postgres@sha256:" + strings.Repeat("b", 64)
 	if _, err := ReleaseApplication(old, next); err == nil {
 		t.Fatal("two effective image changes entered one-app executor")

@@ -83,6 +83,7 @@ func Preflight(ctx context.Context, docker *client.Client, version, dir string, 
 		h.Capabilities.RailpackVersion = &version
 	}
 	h.Capabilities.SafeReleases = &visual
+	h.Capabilities.ServiceOutputs = &visual
 	h.Capabilities.Visual = &visual
 	h.Capabilities.Compose = &visual
 	resticCLI := "restic"

@@ -132,6 +132,8 @@ A connection has an explicit type and meaning. An application connected to Postg
 
 An ordinary service connection does not imply a firewall rule or execution order. Services on a deployment unit's Docker network can communicate without a drawn binding. Readiness dependencies are separate validated configuration, with cycles rejected where they would prevent startup.
 
+[Named service outputs and the maintained catalog](service-catalog.md) define the current visual connection types, legacy PostgreSQL readiness behavior, secret/export rules and per-recipe maintenance support. Catalog selection stages an ordinary specification; it does not create a separate runtime or edit Git-owned files.
+
 Canvas positions, selection and viewport state are separate from deployment configuration. Saving a layout must not create a deployment revision or restart a workload. Persist positions per environment and keep selection and viewport preferences local to each user. React Flow's internal state is not stored as the canonical application format.
 
 Use optimistic updates and revision preconditions for draft editing. Concurrent changes return a conflict with a fresh revision to review; do not silently replace another user's edits. Live collaborative dragging can be added later without changing deployment semantics.

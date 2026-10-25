@@ -4,6 +4,22 @@
  */
 
 export interface paths {
+    "/api/v1/workspaces/{workspaceId}/service-catalog": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listServiceCatalog"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/session": {
         parameters: {
             query?: never;
@@ -1696,6 +1712,8 @@ export interface components {
             docker: boolean;
             visual?: boolean;
             compose?: boolean;
+            /** @description Supports named service output references; advertised only after Astilba-Agent-Service-Outputs v1. */
+            serviceOutputs?: boolean;
             /** @description Supports instance-based stateless HTTP releases. Advertised only after Astilba-Agent-Safe-Releases v1. */
             safeReleases?: boolean;
             /** @description Supports explicit build budgets and frozen-commit watch paths. Agents send this extension only after a controller response advertises Astilba-Agent-Features with build-controls. */
@@ -2026,6 +2044,7 @@ export interface components {
             artifactId?: string;
         };
         ApplicationReference: {
+            outputs?: components["schemas"]["ServiceOutput"][];
             /** Format: uuid */
             id: string;
             name: string;
@@ -2138,7 +2157,40 @@ export interface components {
             /** Format: uuid */
             passwordSecretVersionId: string;
         };
+        ServiceOutput: {
+            name: string;
+            /** @enum {string} */
+            type: "address" | "port" | "url" | "variable";
+            port?: number;
+            scheme?: string;
+            path?: string;
+            variable?: string;
+        };
+        ServiceSupport: {
+            /** @enum {string} */
+            level: "tested" | "manual" | "not_applicable";
+            detail: string;
+        };
+        CatalogRecipe: {
+            id: string;
+            name: string;
+            description: string;
+            /** Format: uri */
+            documentation: string;
+            prerequisites: string[];
+            needsPassword: boolean;
+            specification: components["schemas"]["Specification"];
+            support: {
+                deployment: components["schemas"]["ServiceSupport"];
+                binding: components["schemas"]["ServiceSupport"];
+                backup: components["schemas"]["ServiceSupport"];
+                restore: components["schemas"]["ServiceSupport"];
+                upgrade: components["schemas"]["ServiceSupport"];
+            };
+        };
         Binding: {
+            /** @description Named source output; omission preserves the legacy PostgreSQL URL and readiness dependency. */
+            output?: string;
             /** Format: uuid */
             id: string;
             /** Format: uuid */
@@ -3106,6 +3158,37 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    listServiceCatalog: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Curated templates; staging requires fresh resource identities and normal revision validation. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CatalogRecipe"][];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
     session: {
         parameters: {
             query?: never;

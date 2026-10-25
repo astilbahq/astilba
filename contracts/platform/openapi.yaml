@@ -9,6 +9,27 @@
   -
     "sessionCookie": []
 "paths":
+  /api/v1/workspaces/{workspaceId}/service-catalog:
+    get:
+      operationId: listServiceCatalog
+      parameters:
+        - name: workspaceId
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+      responses:
+        '200':
+          description: Curated templates; staging requires fresh resource identities and normal revision validation.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: '#/components/schemas/CatalogRecipe'}
+        default:
+          description: Error
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
   "/api/v1/session":
     "get":
       "operationId": "session"
@@ -3625,6 +3646,9 @@
           "type": "boolean"
         "compose":
           "type": "boolean"
+        serviceOutputs:
+          type: boolean
+          description: Supports named service output references; advertised only after Astilba-Agent-Service-Outputs v1.
         safeReleases:
           type: boolean
           description: Supports instance-based stateless HTTP releases. Advertised only after Astilba-Agent-Safe-Releases v1.
@@ -4555,6 +4579,11 @@
       "type": "object"
       "additionalProperties": false
       "properties":
+        outputs:
+          type: array
+          maxItems: 20
+          items:
+            $ref: '#/components/schemas/ServiceOutput'
         "id":
           "type": "string"
           "format": "uuid"
@@ -4884,10 +4913,54 @@
         - "database"
         - "username"
         - "passwordSecretVersionId"
+    ServiceOutput:
+      type: object
+      additionalProperties: false
+      required: [name, type]
+      properties:
+        name: {type: string, maxLength: 80, pattern: '^[A-Z_][A-Z0-9_]*$'}
+        type: {type: string, enum: [address, port, url, variable]}
+        port: {type: integer, minimum: 1, maximum: 65535}
+        scheme: {type: string, maxLength: 32}
+        path: {type: string, maxLength: 256}
+        variable: {type: string, maxLength: 80}
+    ServiceSupport:
+      type: object
+      additionalProperties: false
+      required: [level, detail]
+      properties:
+        level: {type: string, enum: [tested, manual, not_applicable]}
+        detail: {type: string}
+    CatalogRecipe:
+      type: object
+      additionalProperties: false
+      required: [id, name, description, documentation, prerequisites, needsPassword, specification, support]
+      properties:
+        id: {type: string}
+        name: {type: string}
+        description: {type: string}
+        documentation: {type: string, format: uri}
+        prerequisites: {type: array, items: {type: string}}
+        needsPassword: {type: boolean}
+        specification: {$ref: '#/components/schemas/Specification'}
+        support:
+          type: object
+          additionalProperties: false
+          required: [deployment, binding, backup, restore, upgrade]
+          properties:
+            deployment: {$ref: '#/components/schemas/ServiceSupport'}
+            binding: {$ref: '#/components/schemas/ServiceSupport'}
+            backup: {$ref: '#/components/schemas/ServiceSupport'}
+            restore: {$ref: '#/components/schemas/ServiceSupport'}
+            upgrade: {$ref: '#/components/schemas/ServiceSupport'}
     "Binding":
       "type": "object"
       "additionalProperties": false
       "properties":
+        output:
+          type: string
+          maxLength: 80
+          description: Named source output; omission preserves the legacy PostgreSQL URL and readiness dependency.
         "id":
           "type": "string"
           "format": "uuid"

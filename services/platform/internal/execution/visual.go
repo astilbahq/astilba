@@ -103,6 +103,9 @@ func (s *Service) createVisualPlan(ctx context.Context, tx pgx.Tx, ws, pid, env 
 		if err != nil {
 			return err
 		}
+		if err = requireServiceOutputs(ctx, tx, ws, in.ServerId, v.Spec); err != nil {
+			return err
+		}
 		if v.Spec.Compose != nil {
 			var supported bool
 			if err := tx.QueryRow(ctx, "SELECT COALESCE((capabilities->>'compose')::boolean,false) FROM servers WHERE workspace_id=$1 AND id=$2", ws, in.ServerId).Scan(&supported); err != nil {
@@ -325,6 +328,9 @@ func (s *Service) applyVisualPlan(ctx context.Context, tx pgx.Tx, ws, pid, env, 
 		if _, err = s.visualServer(ctx, tx, ws, plan.ServerID); err != nil {
 			return err
 		}
+		if err = requireServiceOutputs(ctx, tx, ws, plan.ServerID, plan.Specification); err != nil {
+			return err
+		}
 		if len(plan.Instances) > 0 || plan.Release != nil {
 			supported, err := releaseCapability(ctx, tx, ws, plan.ServerID)
 			if err != nil {
@@ -482,6 +488,9 @@ func (s *Service) hydrateVisual(ctx context.Context, c *api.ExecutionCommand) er
 	payload.Secrets = map[string]string{}
 	var ws uuid.UUID
 	if err := s.Store.Pool.QueryRow(ctx, "SELECT workspace_id FROM servers WHERE id=$1", c.ServerId).Scan(&ws); err != nil {
+		return err
+	}
+	if err := requireServiceOutputs(ctx, s.Store.Pool, ws, c.ServerId, payload.Plan.Specification); err != nil {
 		return err
 	}
 	if len(payload.Plan.Instances) > 0 || payload.Plan.Release != nil {

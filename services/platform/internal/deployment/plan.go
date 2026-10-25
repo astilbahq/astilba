@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -312,17 +313,35 @@ func ComposeAt(p Plan, secrets map[string]string, export bool, root string) ([]b
 			if b.TargetID != a.ID {
 				continue
 			}
-			db := apps[b.SourceID]
-			pass, e := value(db.Postgres.PasswordSecretVersionID)
-			if e != nil {
-				return nil, e
-			}
-			u := url.URL{Scheme: "postgresql", Host: ServiceName(db.ID) + ":5432", User: url.UserPassword(db.Postgres.Username, pass), Path: "/" + db.Postgres.Database, RawQuery: "sslmode=disable"}
-			if export {
-				u.User = url.User(db.Postgres.Username)
-				env[b.Variable] = strings.Replace(u.String(), db.Postgres.Username+"@", db.Postgres.Username+":${ASTILBA_SECRET_"+strings.ReplaceAll(db.Postgres.PasswordSecretVersionID.String(), "-", "")+"_URLENCODED:?Set URL-encoded database password}@", 1)
-			} else {
-				env[b.Variable] = escape(u.String())
+			source := apps[b.SourceID]
+			output, _ := domain.BindingOutput(source, b.Output)
+			switch output.Type {
+			case "address":
+				env[b.Variable] = p.HostName(source.ID)
+			case "port":
+				env[b.Variable] = strconv.Itoa(output.Port)
+			case "variable":
+				variable, _ := domain.OutputVariable(p.Specification, source, output.Variable)
+				variable.Name = b.Variable
+				if err := vars([]domain.Variable{variable}, env); err != nil {
+					return nil, err
+				}
+			case "url":
+				u := url.URL{Scheme: output.Scheme, Host: p.HostName(source.ID) + ":" + strconv.Itoa(output.Port), Path: output.Path}
+				if source.Postgres != nil && output.Name == "URL" {
+					pass, e := value(source.Postgres.PasswordSecretVersionID)
+					if e != nil {
+						return nil, e
+					}
+					u.RawQuery = "sslmode=disable"
+					if export {
+						u.User = url.User(source.Postgres.Username)
+						env[b.Variable] = strings.Replace(u.String(), source.Postgres.Username+"@", source.Postgres.Username+":${ASTILBA_SECRET_"+strings.ReplaceAll(source.Postgres.PasswordSecretVersionID.String(), "-", "")+"_URLENCODED:?Set URL-encoded database password}@", 1)
+						continue
+					}
+					u.User = url.UserPassword(source.Postgres.Username, pass)
+				}
+				env[b.Variable] = strings.ReplaceAll(u.String(), "$", "$$")
 			}
 		}
 		labels := map[string]string{"com.astilba.server": p.ServerID.String(), "com.astilba.environment": p.EnvironmentID.String(), "com.astilba.unit": p.UnitID.String(), "com.astilba.resource": a.ID.String(), "com.astilba.kind": "visual-v1", "com.astilba.plan": p.Hash}

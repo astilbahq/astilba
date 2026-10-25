@@ -274,6 +274,8 @@ Retain immutable images and effective configuration for an explicit rollback pla
 
 ## P12 Canvas and service catalog
 
+The [service connection and catalog contract](service-catalog.md) records named outputs, staged recipes, ownership and rollout requirements.
+
 Extend PostgreSQL-specific bindings into typed service outputs and references, including internal addresses, ports and generated connection values. Preserve secret provenance, cycle detection, revision hashing, export and source ownership. Existing shared variables remain supported.
 
 Add a small maintained catalog, initially approximately 5–10 recipes, plus selected cache/database types where useful. Validate every recipe against the supported Compose subset. For each recipe publish separate deployment, binding, backup, restore and upgrade support; an arbitrary image running successfully does not establish maintenance support. Avoid importing a large unverified catalog or rewriting Git-owned source behind the user's back.
