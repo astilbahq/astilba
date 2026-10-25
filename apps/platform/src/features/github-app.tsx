@@ -1,7 +1,10 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { client, result, type Schema } from "../api/client";
+import { Button } from "../components/button";
+import { Label } from "../components/label";
+import { Anchor, Link } from "../components/link";
+import { Select } from "../components/select";
 import * as s from "../styles";
 import { BusyButton, ErrorNotice, Field, Form, text, useAction } from "../ui";
 
@@ -38,9 +41,9 @@ export function GitHubAppSettings({ workspaceId }: { workspaceId: string }) {
             You need repository administrator access and a recent Astilba
             identity confirmation.
           </p>
-          <button
+          <Button
             type="button"
-            className={s.primary}
+            variant="primary"
             disabled={action.isPending}
             onClick={() =>
               action.run(async () => {
@@ -52,12 +55,12 @@ export function GitHubAppSettings({ workspaceId }: { workspaceId: string }) {
             }
           >
             {action.isPending ? "Opening GitHub…" : "Continue with GitHub"}
-          </button>
+          </Button>
         </>
       ) : status.error ? (
-        <button type="button" onClick={() => void status.refetch()}>
+        <Button type="button" onClick={() => void status.refetch()}>
           Retry GitHub setup
-        </button>
+        </Button>
       ) : (
         <p className={s.muted}>
           The operator hasn’t configured a GitHub App. You can still connect
@@ -76,7 +79,7 @@ export function GitHubAppSettings({ workspaceId }: { workspaceId: string }) {
                 : "GitHub authorization required — continue with GitHub to reconnect this repository."}
             </p>
             {c.status === "connected" && (
-              <button
+              <Button
                 type="button"
                 disabled={action.isPending}
                 onClick={() =>
@@ -94,7 +97,7 @@ export function GitHubAppSettings({ workspaceId }: { workspaceId: string }) {
                 }
               >
                 Disconnect {c.name}
-              </button>
+              </Button>
             )}
           </div>
         ))}
@@ -238,9 +241,9 @@ function GitHubSelection({ grant }: { grant: Schema["GitHubAuthorization"] }) {
         Authorization expires at{" "}
         {new Date(grant.expiresAt).toLocaleTimeString()}. If identity
         confirmation is needed,{" "}
-        <a href="/account" target="_blank" rel="noopener noreferrer">
+        <Link to="/account" target="_blank" rel="noopener noreferrer">
           confirm in Account security
-        </a>
+        </Link>
         , then retry here.
       </p>
       <ErrorNotice
@@ -253,15 +256,15 @@ function GitHubSelection({ grant }: { grant: Schema["GitHubAuthorization"] }) {
         }
       />
       {status.data?.installUrl && (
-        <a
+        <Anchor
           href={status.data.installUrl}
           target="_blank"
           rel="noopener noreferrer"
         >
           Install the App or change its repository access on GitHub
-        </a>
+        </Anchor>
       )}
-      <button
+      <Button
         type="button"
         disabled={installations.isFetching}
         onClick={() => {
@@ -271,7 +274,7 @@ function GitHubSelection({ grant }: { grant: Schema["GitHubAuthorization"] }) {
         }}
       >
         Refresh installations
-      </button>
+      </Button>
       {installations.isPending ? (
         <p role="status">Loading installations…</p>
       ) : !installations.data?.length ? (
@@ -280,9 +283,9 @@ function GitHubSelection({ grant }: { grant: Schema["GitHubAuthorization"] }) {
           this list.
         </p>
       ) : (
-        <label>
+        <Label>
           GitHub installation
-          <select
+          <Select
             value={installation}
             onChange={(e) => {
               setInstallation(e.target.value);
@@ -297,11 +300,11 @@ function GitHubSelection({ grant }: { grant: Schema["GitHubAuthorization"] }) {
                 {i.available ? "" : " — installation unavailable"}
               </option>
             ))}
-          </select>
-        </label>
+          </Select>
+        </Label>
       )}
       <div className={s.row}>
-        <button
+        <Button
           type="button"
           disabled={installationPage === 1 || installations.isFetching}
           onClick={() => {
@@ -310,9 +313,9 @@ function GitHubSelection({ grant }: { grant: Schema["GitHubAuthorization"] }) {
           }}
         >
           Previous installations
-        </button>
+        </Button>
         <span>Page {installationPage}</span>
-        <button
+        <Button
           type="button"
           disabled={
             installationPage === 100 ||
@@ -325,16 +328,16 @@ function GitHubSelection({ grant }: { grant: Schema["GitHubAuthorization"] }) {
           }}
         >
           Next installations
-        </button>
+        </Button>
       </div>
       {installation && (
         <>
           {repositories.isPending ? (
             <p role="status">Loading repositories…</p>
           ) : (
-            <label>
+            <Label>
               GitHub repository
-              <select
+              <Select
                 value={repository}
                 onChange={(e) => setRepository(e.target.value)}
               >
@@ -351,8 +354,8 @@ function GitHubSelection({ grant }: { grant: Schema["GitHubAuthorization"] }) {
                       : " — administrator access required"}
                   </option>
                 ))}
-              </select>
-            </label>
+              </Select>
+            </Label>
           )}
           {repositories.data?.length === 0 && (
             <p>
@@ -361,7 +364,7 @@ function GitHubSelection({ grant }: { grant: Schema["GitHubAuthorization"] }) {
             </p>
           )}
           <div className={s.row}>
-            <button
+            <Button
               type="button"
               disabled={repositoryPage === 1 || repositories.isFetching}
               onClick={() => {
@@ -370,9 +373,9 @@ function GitHubSelection({ grant }: { grant: Schema["GitHubAuthorization"] }) {
               }}
             >
               Previous repositories
-            </button>
+            </Button>
             <span>Page {repositoryPage}</span>
-            <button
+            <Button
               type="button"
               disabled={
                 repositoryPage === 100 ||
@@ -385,14 +388,14 @@ function GitHubSelection({ grant }: { grant: Schema["GitHubAuthorization"] }) {
               }}
             >
               Next repositories
-            </button>
-            <button
+            </Button>
+            <Button
               type="button"
               disabled={repositories.isFetching}
               onClick={() => void repositories.refetch()}
             >
               Refresh repositories
-            </button>
+            </Button>
           </div>
         </>
       )}
@@ -425,9 +428,9 @@ function GitHubSelection({ grant }: { grant: Schema["GitHubAuthorization"] }) {
             {selected.private ? "Private repository" : "Public repository"}
           </p>
           <Field name="name" label="Connection name" />
-          <label>
+          <Label>
             Connection
-            <select name="connection">
+            <Select name="connection">
               <option value="">Create a new connection</option>
               {connections.data
                 ?.filter(
@@ -442,8 +445,8 @@ function GitHubSelection({ grant }: { grant: Schema["GitHubAuthorization"] }) {
                     Reconnect {c.name}
                   </option>
                 ))}
-            </select>
-          </label>
+            </Select>
+          </Label>
           <BusyButton busy={action.isPending}>
             Connect selected repository
           </BusyButton>

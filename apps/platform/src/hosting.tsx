@@ -1,8 +1,13 @@
 import { useQuery } from "@tanstack/react-query";
-import { Link } from "@tanstack/react-router";
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
+import { Trans, useTranslation } from "react-i18next";
 import { client, result, setSession } from "./api/client";
-import { sessionOptions } from "./router";
+import { sessionOptions } from "./api/session";
+import { Button } from "./components/button";
+import { Link } from "./components/link";
+import * as authStyles from "./features/auth/auth.styles";
+import { useAuthValidation } from "./features/auth/use-auth-validation";
+import { usePageTitle } from "./i18n/use-page-title";
 import * as s from "./styles";
 import { BusyButton, ErrorNotice, Field, Form, text, useAction } from "./ui";
 
@@ -10,33 +15,45 @@ export const hostingOptions = {
   queryKey: ["hosting"],
   queryFn: () => result(client.GET("/api/v1/hosting")),
 };
+function SecurityLink({ children }: { children?: ReactNode }) {
+  return <Link to="/account">{children}</Link>;
+}
+function BillingLink({ children }: { children?: ReactNode }) {
+  return <Link to="/members">{children}</Link>;
+}
 export function Signup() {
+  const { t } = useTranslation("auth");
+  const validation = useAuthValidation();
+  usePageTitle(t(($) => $.signup.pageTitle));
   const hosting = useQuery(hostingOptions);
   const session = useQuery(sessionOptions).data;
   const action = useAction();
+  const errorMessage = validation.invitation.message(action.error);
   const [done, setDone] = useState(false);
-  if (!hosting.data?.enabled)
-    return <p>Hosted signup is unavailable on this installation.</p>;
+  if (!hosting.data?.enabled) return <p>{t(($) => $.signup.unavailable)}</p>;
   return (
     <div className={s.stack}>
-      <h1>Welcome to Astilba</h1>
-      <p>
-        Use your beta invitation to create a workspace. Then enable two-factor
-        authentication in account security and choose your workspace
-        subscription.
-      </p>
-      <ErrorNotice error={action.error} />
+      <h1>{t(($) => $.signup.title)}</h1>
+      <p>{t(($) => $.signup.description)}</p>
+      <ErrorNotice error={action.error} message={errorMessage} />
       {done ? (
         <p role="status">
-          Your workspace is ready.{" "}
-          <Link to="/account">Set up account security</Link>, then{" "}
-          <Link to="/members">open workspace billing</Link>.
+          <Trans
+            t={t}
+            ns="auth"
+            i18nKey={($) => $.signup.complete}
+            components={{
+              security: <SecurityLink />,
+              billing: <BillingLink />,
+            }}
+          />
         </p>
       ) : (
-        <section className={s.panel}>
+        <section className={authStyles.formSection}>
           <Form
             action={action}
-            label="Hosted signup"
+            errorMessage={errorMessage}
+            label={t(($) => $.signup.form)}
             onSubmit={(d) =>
               action.run(async () => {
                 setSession(
@@ -59,16 +76,20 @@ export function Signup() {
           >
             <Field
               name="token"
-              label="Beta invitation code"
+              label={t(($) => $.signup.token)}
               autoComplete="off"
             />
-            <Field name="workspace" label="Workspace name" />
+            <Field name="workspace" label={t(($) => $.signup.workspace)} />
             {!session?.user && (
               <>
-                <Field name="name" label="Your name" autoComplete="name" />
+                <Field
+                  name="name"
+                  label={t(($) => $.signup.name)}
+                  autoComplete="name"
+                />
                 <Field
                   name="password"
-                  label="Password"
+                  label={t(($) => $.signup.password)}
                   type="password"
                   autoComplete="new-password"
                   minLength={15}
@@ -77,12 +98,15 @@ export function Signup() {
             )}
             {session?.user && (
               <p>
-                Accepting as {session.user.email}. Two-factor authentication is
-                required.
+                <Trans
+                  t={t}
+                  i18nKey={($) => $.signup.accepting}
+                  components={{ email: <bdi>{session.user.email}</bdi> }}
+                />
               </p>
             )}
             <BusyButton busy={action.isPending}>
-              Create invited workspace
+              {t(($) => $.signup.submit)}
             </BusyButton>
           </Form>
         </section>
@@ -100,7 +124,7 @@ export function EmailVerification() {
       <h2>Verify your email</h2>
       <p>Email verification is required for hosted workspace changes.</p>
       <ErrorNotice error={action.error} />
-      <button
+      <Button
         type="button"
         disabled={action.isPending}
         onClick={() =>
@@ -111,7 +135,7 @@ export function EmailVerification() {
         }
       >
         Send verification code
-      </button>
+      </Button>
       {sent && (
         <p role="status">Check your email for a code valid for one hour.</p>
       )}
@@ -187,7 +211,7 @@ export function WorkspaceSubscription({
       </p>
       {owner && data.billingEnabled && (
         <div className={s.row}>
-          <button
+          <Button
             type="button"
             disabled={action.isPending}
             onClick={() =>
@@ -203,8 +227,8 @@ export function WorkspaceSubscription({
             }
           >
             Start subscription
-          </button>
-          <button
+          </Button>
+          <Button
             type="button"
             disabled={action.isPending}
             onClick={() =>
@@ -220,7 +244,7 @@ export function WorkspaceSubscription({
             }
           >
             Manage billing
-          </button>
+          </Button>
         </div>
       )}
       {owner && (

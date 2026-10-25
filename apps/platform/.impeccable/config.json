@@ -1,0 +1,20 @@
+{
+  "detector": {
+    "ignoreRules": [],
+    "ignoreFiles": [],
+    "ignoreValues": [
+      {
+        "rule": "design-system-font",
+        "value": "ui",
+        "createdAt": "2026-10-24T19:50:06.084Z",
+        "reason": "Verified token alias: Panda fonts.ui resolves to the system font stack already documented in DESIGN.md typography."
+      },
+      {
+        "rule": "design-system-font",
+        "value": "body",
+        "createdAt": "2026-10-24T19:54:50.216Z",
+        "reason": "Verified token alias: Panda fonts.body resolves to the Inter/system stack recorded under shared controls in DESIGN.md."
+      }
+    ]
+  }
+}

@@ -402,7 +402,7 @@ func TestGitImportBuildIsolationAndArtifactAdmission(t *testing.T) {
 			t.Fatal("cross-workspace artifact disclosure")
 		}
 		b.call("POST", prefix+"/invitations", map[string]string{"email": "viewer@example.test", "role": "viewer"}, 201, nil)
-		invite := tokenFromMail(t, f.mail)
+		invite := tokenFromLinkMail(t, f, "/invitation")
 		viewer := f.browser(t)
 		var session api.Session
 		viewer.call("POST", "/api/v1/auth/invitations/accept", map[string]string{"token": invite, "name": "Viewer", "password": f.password}, 200, &session)

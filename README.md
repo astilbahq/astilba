@@ -11,6 +11,7 @@ The management application and host agent are fully self-hostable, without an As
 ## Start here
 
 - [Application setup and verification](services/platform/README.md)
+- [Local development preview and frontend conventions](docs/frontend-development.md)
 - [Host agent installation, recovery and updates](docs/agent.md)
 - [Visual deployment, observations and export](docs/visual-deployments.md)
 - [Compose files, source edits and export](docs/compose-deployments.md)

@@ -1,5 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import type { Schema } from "../api/client";
+import { Button } from "../components/button";
+import { Input } from "../components/input";
+import { Label } from "../components/label";
+import { Select } from "../components/select";
 import * as s from "../styles";
 import { Field, Form, text, useAction } from "../ui";
 
@@ -51,7 +55,7 @@ export function OutputEditor({
             {o.port ? ` · port ${o.port}` : ""}
             {o.variable ? ` · ${o.variable} reference` : ""}
             {app.outputs?.some((custom) => custom.name === o.name) && (
-              <button
+              <Button
                 type="button"
                 onClick={() =>
                   stage({
@@ -73,7 +77,7 @@ export function OutputEditor({
                 }
               >
                 Remove output {o.name} and its bindings
-              </button>
+              </Button>
             )}
           </li>
         ))}
@@ -111,31 +115,31 @@ export function OutputEditor({
           form.reset();
         }}
       >
-        <label>
+        <Label>
           Output name
-          <input
+          <Input
             name="name"
             pattern="[A-Z_][A-Z0-9_]*"
             maxLength={80}
             placeholder="API_URL"
             required
           />
-        </label>
-        <label>
+        </Label>
+        <Label>
           Output type
-          <select
+          <Select
             value={type}
             onChange={(event) => setType(event.target.value as typeof type)}
           >
             <option value="url">Private URL</option>
             <option value="port">Port</option>
             <option value="variable">Source variable reference</option>
-          </select>
-        </label>
+          </Select>
+        </Label>
         {type === "variable" ? (
-          <label>
+          <Label>
             Source variable
-            <select name="variable" required>
+            <Select name="variable" required>
               <option value="">Choose a declared variable</option>
               {variables.map((v) => (
                 <option key={v.name} value={v.name}>
@@ -143,30 +147,30 @@ export function OutputEditor({
                   {v.secretVersionId ? " · secret reference" : ""}
                 </option>
               ))}
-            </select>
-          </label>
+            </Select>
+          </Label>
         ) : (
-          <label>
+          <Label>
             Internal port
-            <input name="port" type="number" min={1} max={65535} required />
-          </label>
+            <Input name="port" type="number" min={1} max={65535} required />
+          </Label>
         )}
         {type === "url" && (
           <>
-            <label>
+            <Label>
               URL scheme
-              <input
+              <Input
                 name="scheme"
                 defaultValue="http"
                 pattern="[a-z][a-z0-9+.\-]*"
                 maxLength={32}
                 required
               />
-            </label>
+            </Label>
             <Field name="path" label="URL path" required={false} />
           </>
         )}
-        <button type="submit">Stage output</button>
+        <Button type="submit">Stage output</Button>
       </Form>
     </details>
   );
@@ -223,7 +227,7 @@ export function ServiceConnections({
             {spec.applications.find((a) => a.id === b.targetId)?.name}:{" "}
             {b.variable}
             {write && (
-              <button
+              <Button
                 type="button"
                 onClick={() =>
                   stage({
@@ -233,7 +237,7 @@ export function ServiceConnections({
                 }
               >
                 Remove binding {b.variable}
-              </button>
+              </Button>
             )}
           </li>
         ))}
@@ -274,9 +278,9 @@ export function ServiceConnections({
             setError("");
           }}
         >
-          <label>
+          <Label>
             Source service
-            <select
+            <Select
               value={source?.id ?? ""}
               onChange={(e) => setSourceId(e.target.value)}
               required
@@ -286,11 +290,11 @@ export function ServiceConnections({
                   {a.name}
                 </option>
               ))}
-            </select>
-          </label>
-          <label>
+            </Select>
+          </Label>
+          <Label>
             Source output
-            <select
+            <Select
               key={source?.id}
               ref={outputInput}
               name="output"
@@ -303,11 +307,11 @@ export function ServiceConnections({
                     {o.name} · {o.type}
                   </option>
                 ))}
-            </select>
-          </label>
-          <label>
+            </Select>
+          </Label>
+          <Label>
             Receiving service
-            <select
+            <Select
               value={target?.id ?? ""}
               onChange={(e) => setTargetId(e.target.value)}
               required
@@ -317,21 +321,21 @@ export function ServiceConnections({
                   {a.name}
                 </option>
               ))}
-            </select>
-          </label>
-          <label>
+            </Select>
+          </Label>
+          <Label>
             Variable name
-            <input
+            <Input
               name="variable"
               pattern="[A-Z_][A-Z0-9_]*"
               maxLength={80}
               defaultValue="DATABASE_URL"
               required
             />
-          </label>
-          <button type="submit" disabled={!source || !target}>
+          </Label>
+          <Button type="submit" disabled={!source || !target}>
             Stage binding
-          </button>
+          </Button>
         </Form>
       )}
     </details>

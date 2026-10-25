@@ -121,7 +121,7 @@ func TestCredentialAndInvitationLifecycle(t *testing.T) {
 	b.call("POST", prefix+"/projects", map[string]string{"name": "blocked"}, 403, nil)
 	b.csrf = oldCSRF
 	b.call("POST", prefix+"/invitations", map[string]string{"email": "viewer@example.test", "role": "viewer"}, 201, nil)
-	invite := tokenFromMail(t, f.mail)
+	invite := tokenFromLinkMail(t, f, "/invitation")
 	viewer := f.browser(t)
 	var accepted api.Session
 	viewer.call("POST", "/api/v1/auth/invitations/accept", map[string]string{"token": invite, "name": "Viewer", "password": f.password}, 200, &accepted)
@@ -160,7 +160,7 @@ func TestCredentialAndInvitationLifecycle(t *testing.T) {
 	replay.login("owner@example.test", f.password)
 	replay.call("POST", "/api/v1/auth/mfa", map[string]string{"code": codes.Codes[0]}, 400, nil)
 	b.call("POST", "/api/v1/auth/reset/request", map[string]string{"email": "owner@example.test"}, 202, nil)
-	token := tokenFromMail(t, f.mail)
+	token := tokenFromLinkMail(t, f, "/reset")
 	newPassword := "new correct horse battery staple"
 	b.call("POST", "/api/v1/auth/reset/complete", map[string]string{"token": token, "password": newPassword}, 204, nil)
 	if login.session().User != nil {
@@ -201,7 +201,7 @@ func TestBootstrapAndOwnerRaces(t *testing.T) {
 	prefix := "/api/v1/workspaces/" + ws.String()
 	f.owner = session.User.Id
 	a.call("POST", prefix+"/invitations", map[string]string{"email": "other@example.test", "role": "owner"}, 201, nil)
-	token := tokenFromMail(t, f.mail)
+	token := tokenFromLinkMail(t, f, "/invitation")
 	b := f.browser(t)
 	var second api.Session
 	b.call("POST", "/api/v1/auth/invitations/accept", map[string]string{"token": token, "name": "Second", "password": f.password}, 200, &second)
@@ -248,7 +248,7 @@ func TestExistingAccountInviteAndMFAPolicy(t *testing.T) {
 	var second api.Workspace
 	a.call("POST", "/api/v1/workspaces", map[string]string{"name": "Second"}, 201, &second)
 	a.call("POST", "/api/v1/workspaces/"+second.Id.String()+"/invitations", map[string]string{"email": "owner@example.test", "role": "viewer"}, 201, nil)
-	token := tokenFromMail(t, f.mail)
+	token := tokenFromLinkMail(t, f, "/invitation")
 	anonymous := f.browser(t)
 	anonymous.call("POST", "/api/v1/auth/invitations/accept", map[string]string{"token": token, "name": "Attacker", "password": "replacement password here"}, 403, nil)
 	// Invitation redemption cannot replace an existing password or attach it to an anonymous session.
@@ -389,10 +389,10 @@ func TestCredentialMutationsRejectRevokedRequestSnapshot(t *testing.T) {
 func TestResetLocksAccountBeforeToken(t *testing.T) {
 	f := setup(t)
 	ctx := context.Background()
-	if e := f.auth.RequestReset(ctx, "owner@example.test", "test"); e != nil {
+	if e := f.auth.RequestReset(ctx, "owner@example.test", "test", f.apiServer.Origin); e != nil {
 		t.Fatal(e)
 	}
-	token := tokenFromMail(t, f.mail)
+	token := tokenFromLinkMail(t, f, "/reset")
 	held, e := f.st.Pool.Begin(ctx)
 	if e != nil {
 		t.Fatal(e)
@@ -450,7 +450,7 @@ func TestOperatorSessionAndInvitationExpiry(t *testing.T) {
 	}
 	ws := session.Workspaces[0].Id
 	owner.call("POST", "/api/v1/workspaces/"+ws.String()+"/invitations", map[string]string{"email": "operator@example.test", "role": "operator"}, 201, nil)
-	token := tokenFromMail(t, f.mail)
+	token := tokenFromLinkMail(t, f, "/invitation")
 	operator := f.browser(t)
 	var accepted api.Session
 	operator.call("POST", "/api/v1/auth/invitations/accept", map[string]string{"token": token, "name": "Operator", "password": f.password}, 200, &accepted)

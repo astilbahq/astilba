@@ -1,27 +1,11 @@
 import { execFileSync } from "node:child_process";
-import { createHash, createHmac, randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
 import jsQR from "jsqr";
-
-function totp(secret: string) {
-  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
-  let bits = "";
-  for (const letter of secret)
-    bits += alphabet.indexOf(letter).toString(2).padStart(5, "0");
-  const key = Buffer.from(
-    bits.match(/.{8}/g)?.map((value) => Number.parseInt(value, 2)) ?? [],
-  );
-  const counter = Buffer.alloc(8);
-  counter.writeBigUInt64BE(BigInt(Math.floor(Date.now() / 30000)));
-  const digest = createHmac("sha1", key).update(counter).digest();
-  const offset = digest[19] & 15;
-  return ((digest.readUInt32BE(offset) & 0x7fffffff) % 1000000)
-    .toString()
-    .padStart(6, "0");
-}
+import { totp } from "./fixtures/totp";
 
 test("hosted signup, MFA, billing admission and encrypted workspace import", async ({
   page,
@@ -101,12 +85,84 @@ test("hosted signup, MFA, billing admission and encrypted workspace import", asy
       .getByLabel("Password", { exact: true })
       .fill("correct horse battery staple");
     await hosted
+      .getByLabel("Beta invitation code")
+      .fill("invalid-beta-invitation");
+    await hosted
+      .getByRole("button", { name: "Create invited workspace" })
+      .click();
+    await expect(hosted.getByRole("alert")).toContainText(
+      "This invitation link is invalid or has expired.",
+    );
+    await expect(
+      hosted.getByRole("form", { name: "Hosted signup" }),
+    ).toHaveAccessibleDescription(
+      /^This invitation link is invalid or has expired\./,
+    );
+    await hosted
+      .getByLabel("Beta invitation code")
+      .fill(`browser-${info.project.name}-signup-invitation-code`);
+    await hosted
       .getByRole("button", { name: "Create invited workspace" })
       .click();
     await expect(
       hosted.getByText("Your workspace is ready.", { exact: false }),
     ).toBeVisible();
     await hosted.getByRole("link", { name: "Set up account security" }).click();
+    // Issue the next invitation after signup claims the first one. The MFA
+    // rejection must roll this invitation back so the later import can use it.
+    const fixture = JSON.parse(
+      await readFile(
+        resolve(
+          import.meta.dirname,
+          "../../../.artifacts/p8/browser/hosted-fixture.json",
+        ),
+        "utf8",
+      ),
+    );
+    const ownership = execFileSync(
+      "docker",
+      [
+        "--host",
+        fixture.host,
+        "inspect",
+        "--format",
+        '{{ index .Config.Labels "com.astilba.p1-test" }}',
+        fixture.container,
+      ],
+      { encoding: "utf8" },
+    ).trim();
+    expect(ownership).toBe(fixture.owner);
+    const code = `browser-${info.project.name}-import-invitation-code`;
+    const hash = createHash("sha256").update(code).digest("hex");
+    execFileSync(
+      "docker",
+      [
+        "--host",
+        fixture.host,
+        "exec",
+        fixture.container,
+        "psql",
+        "--username",
+        "postgres",
+        "--dbname",
+        fixture.database,
+        "-v",
+        "ON_ERROR_STOP=1",
+        "-c",
+        `INSERT INTO hosted_invitations(id,email,token_hash,expires_at) VALUES('${randomUUID()}','${info.project.name}@example.test',decode('${hash}','hex'),now()+interval '1 day')`,
+      ],
+      { stdio: "pipe" },
+    );
+    await hosted.goto(`${origin}/signup`);
+    await hosted.getByLabel("Beta invitation code").fill(code);
+    await hosted.getByLabel("Workspace name").fill("Requires MFA");
+    await hosted
+      .getByRole("button", { name: "Create invited workspace" })
+      .click();
+    await expect(hosted.getByRole("alert")).toContainText(
+      "Set up two-factor authentication before changing this workspace.",
+    );
+    await hosted.goto(`${origin}/account`);
     await expect(
       hosted.getByText("Email verified.", { exact: true }),
     ).toBeVisible();
@@ -163,15 +219,6 @@ test("hosted signup, MFA, billing admission and encrypted workspace import", asy
 
     // The operator boundary grants a test entitlement; billing itself uses real
     // application admission and PostgreSQL. No paid provider call is made.
-    const fixture = JSON.parse(
-      await readFile(
-        resolve(
-          import.meta.dirname,
-          "../../../.artifacts/p8/browser/hosted-fixture.json",
-        ),
-        "utf8",
-      ),
-    );
     const current = await (
       await hosted.request.get(`${origin}/api/v1/session`)
     ).json();
@@ -202,40 +249,6 @@ test("hosted signup, MFA, billing admission and encrypted workspace import", asy
       (await new AxeBuilder({ page: hosted }).analyze()).violations,
     ).toEqual([]);
 
-    const ownership = execFileSync(
-      "docker",
-      [
-        "--host",
-        fixture.host,
-        "inspect",
-        "--format",
-        '{{ index .Config.Labels "com.astilba.p1-test" }}',
-        fixture.container,
-      ],
-      { encoding: "utf8" },
-    ).trim();
-    expect(ownership).toBe(fixture.owner);
-    const code = `browser-${info.project.name}-import-invitation-code`;
-    const hash = createHash("sha256").update(code).digest("hex");
-    execFileSync(
-      "docker",
-      [
-        "--host",
-        fixture.host,
-        "exec",
-        fixture.container,
-        "psql",
-        "--username",
-        "postgres",
-        "--dbname",
-        fixture.database,
-        "-v",
-        "ON_ERROR_STOP=1",
-        "-c",
-        `INSERT INTO hosted_invitations(id,email,token_hash,expires_at) VALUES('${randomUUID()}','${info.project.name}@example.test',decode('${hash}','hex'),now()+interval '1 day')`,
-      ],
-      { stdio: "pipe" },
-    );
     await hosted.getByRole("link", { name: "Projects", exact: true }).click();
     await hosted
       .getByText("Import an encrypted workspace", { exact: true })

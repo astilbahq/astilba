@@ -1,6 +1,8 @@
 import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useState } from "react";
 import { client, result, type Schema } from "../api/client";
+import { Label } from "../components/label";
+import { Select } from "../components/select";
 import * as s from "../styles";
 import { ErrorNotice } from "../ui";
 
@@ -64,17 +66,17 @@ export function ServerMetrics({
             Read-only samples, retained for 24 hours. Missing readings are
             unavailable, not zero. Metrics do not establish application health.
           </p>
-          <label>
+          <Label>
             History window
-            <select
+            <Select
               value={hours}
               onChange={(e) => setHours(Number(e.target.value) as 1 | 6 | 24)}
             >
               <option value={1}>Last hour</option>
               <option value={6}>Last 6 hours</option>
               <option value={24}>Last 24 hours</option>
-            </select>
-          </label>
+            </Select>
+          </Label>
           <ErrorNotice error={history.error} />
           {history.isPending ? (
             <p role="status">Loading resource history…</p>
@@ -173,9 +175,9 @@ export function ServerMetrics({
               )}
               <details>
                 <summary>View service history</summary>
-                <label>
+                <Label>
                   Service history target
-                  <select
+                  <Select
                     value={resource}
                     onChange={(e) => setResource(e.target.value)}
                   >
@@ -185,8 +187,8 @@ export function ServerMetrics({
                         {r.environment} / {r.name}
                       </option>
                     ))}
-                  </select>
-                </label>
+                  </Select>
+                </Label>
                 {resource && (
                   <MetricTable label="Service history readings">
                     <table>
@@ -354,7 +356,7 @@ function MetricTable({
   children: ReactNode;
 }) {
   return (
-    // biome-ignore lint/a11y/noNoninteractiveTabindex: WebKit needs focus to keyboard-scroll a clipped table.
+    // oxlint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- WebKit needs focus to keyboard-scroll a clipped table.
     <section className={s.metricTable} tabIndex={0} aria-label={label}>
       {children}
     </section>

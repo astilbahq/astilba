@@ -14,13 +14,16 @@ skip verification jobs.
 | Cloudflare | Optional hosting adapter packaging |
 | Canvas | Type/lint/build checks, domain tests and Chromium/WebKit journeys |
 | Application | `make verify-app-core`, image smoke test and corresponding-source archive |
-| Application browser | All Chromium and WebKit dashboard journeys against a real API/PostgreSQL fixture |
+| Application browser | All Chromium and WebKit dashboard journeys against a real API/PostgreSQL fixture, followed by standalone Storybook scenarios |
 
 `make verify-app` remains the complete local application check. The CI-only
 split runs its core checks and browser journeys on separate runners. Both
 browsers retain the original single worker and shared fixture, so tests still
 run serially within the browser job.
 The core target explicitly builds dashboard assets before Worker packaging.
+The Storybook suite builds its own static workshop and runs both browsers with
+two workers on port 54201. It uses isolated API fixtures and needs no application
+server or database; the real-API journeys above remain the authentication gate.
 No application server, database, ports or build outputs are shared between the
 core and browser jobs. The browser fixture still builds the dashboard and
 embedded Go server from the current checkout. Keeping both browsers in one job

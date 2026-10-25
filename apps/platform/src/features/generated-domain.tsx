@@ -1,6 +1,10 @@
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { client, result, type Schema } from "../api/client";
+import { Button } from "../components/button";
+import { Input } from "../components/input";
+import { Label } from "../components/label";
+import { Select } from "../components/select";
 import * as s from "../styles";
 import { BusyButton, ErrorNotice, Form, text, useAction } from "../ui";
 import type { EnvironmentPath } from "./visual-editor";
@@ -61,9 +65,9 @@ export function GeneratedDomain({
             })
           }
         >
-          <label>
+          <Label>
             Service
-            <select name="applicationId" required disabled={action.isPending}>
+            <Select name="applicationId" required disabled={action.isPending}>
               {spec.applications
                 .filter((a) => !a.kind || a.kind === "web")
                 .map((a) => (
@@ -71,11 +75,11 @@ export function GeneratedDomain({
                     {a.name}
                   </option>
                 ))}
-            </select>
-          </label>
-          <label>
+            </Select>
+          </Label>
+          <Label>
             Generated domain server
-            <select name="serverId" required disabled={action.isPending}>
+            <Select name="serverId" required disabled={action.isPending}>
               <option value="">Choose a server</option>
               {servers.data
                 ?.filter(
@@ -89,11 +93,11 @@ export function GeneratedDomain({
                     {s.name}
                   </option>
                 ))}
-            </select>
-          </label>
-          <label>
+            </Select>
+          </Label>
+          <Label>
             App port
-            <input
+            <Input
               name="port"
               type="number"
               min={1}
@@ -102,7 +106,7 @@ export function GeneratedDomain({
               required
               disabled={action.isPending}
             />
-          </label>
+          </Label>
           <BusyButton busy={action.isPending}>
             Prepare generated route
           </BusyButton>
@@ -122,7 +126,7 @@ export function GeneratedDomain({
               certificates require an approved ingress plan and public ports
               80/443.
             </p>
-            <button
+            <Button
               type="button"
               disabled={!spec.applications.some((a) => a.id === candidate.app)}
               onClick={() => {
@@ -146,7 +150,7 @@ export function GeneratedDomain({
               }}
             >
               Stage generated HTTP route
-            </button>
+            </Button>
           </div>
         )}
       </div>

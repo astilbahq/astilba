@@ -39,6 +39,8 @@ The tests cover concurrent enrollment and replay, wrong-server and expired token
 
 The live-agent case drops a command-bearing response before journal acceptance, then verifies redelivery. It records heartbeat times during a full empty poll and an effect paused across multiple heartbeat intervals. It disconnects transport during that effect, permits local completion, reconnects and drops the first committed report's acknowledgement. The expected outcome is one journaled result, one controller observation and the original running container with one `effect` log line and no restart.
 
+The empty-poll and reconnect check measures elapsed time on the client's monotonic clock, from starting the agent until the controller records its second poll. The first database poll event is written after authentication, later than the controller starts its timer, so the gap between database events is not the full poll duration. The check retains the 25–29-second bound and requires a concurrent heartbeat.
+
 ## Reproduce
 
 Use the disposable engine and pinned PostgreSQL/BusyBox images in the [PLAT-2 instructions](README.md#reproduce), plus the proxy image:

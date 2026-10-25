@@ -3,7 +3,21 @@
   "name": "astilba-dashboard",
   "main": "worker.ts",
   "compatibility_date": "2026-10-21",
-  "assets": { "directory": "dist", "binding": "ASSETS", "not_found_handling": "single-page-application", "run_worker_first": ["/api/*", "/agent/v1/*", "/agent-artifacts/*", "/agent-public-key.pem", "/onboarding/bootstrap.sh", "/hooks/git/*", "/hooks/stripe", "/hooks/github-app"] },
+  "assets": {
+    "directory": "dist",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": [
+      "/api/*",
+      "/agent/v1/*",
+      "/agent-artifacts/*",
+      "/agent-public-key.pem",
+      "/onboarding/bootstrap.sh",
+      "/hooks/git/*",
+      "/hooks/stripe",
+      "/hooks/github-app",
+    ],
+  },
   "vars": { "API_ORIGIN": "https://api.example.com" },
-  "observability": { "enabled": false }
+  "observability": { "enabled": false },
 }

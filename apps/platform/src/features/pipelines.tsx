@@ -1,6 +1,13 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useId, useState } from "react";
 import { ApiError, client, result, type Schema } from "../api/client";
+import { Button } from "../components/button";
+import { Checkbox } from "../components/checkbox";
+import { Input } from "../components/input";
+import { Label } from "../components/label";
+import { Anchor } from "../components/link";
+import { Select } from "../components/select";
+import { Textarea } from "../components/textarea";
 import * as s from "../styles";
 import { ErrorNotice, Field, Form, text, useAction } from "../ui";
 import { IntegrationSettings } from "./integrations";
@@ -131,9 +138,9 @@ export function Pipelines({
   const selected = connections.data?.find((c) => c.id === connection);
   const runnerFields = (
     <>
-      <label>
+      <Label>
         Build runner
-        <select
+        <Select
           name="runner"
           value={runner}
           onChange={(e) => setRunner(e.target.value)}
@@ -147,11 +154,11 @@ export function Pipelines({
                 {v.name} · {v.status} · {v.capabilities?.arch}
               </option>
             ))}
-        </select>
-      </label>
-      <label>
+        </Select>
+      </Label>
+      <Label>
         Fallback runner
-        <select name="fallback" defaultValue="">
+        <Select name="fallback" defaultValue="">
           <option value="">Queue on selected runner</option>
           {servers.data
             ?.filter(
@@ -165,15 +172,15 @@ export function Pipelines({
                 {v.name} · {v.status}
               </option>
             ))}
-        </select>
-      </label>
+        </Select>
+      </Label>
     </>
   );
   const repositoryFields = (
     <>
-      <label>
+      <Label>
         Repository connection
-        <select
+        <Select
           name="connection"
           required
           value={connection}
@@ -185,8 +192,8 @@ export function Pipelines({
               {c.name} · {c.repository}
             </option>
           ))}
-        </select>
-      </label>
+        </Select>
+      </Label>
       <Field name="branch" label="Branch" />
       {runnerFields}
     </>
@@ -260,9 +267,9 @@ export function Pipelines({
             >
               <Field name="name" label="Service name" />
               {repositoryFields}
-              <button type="submit" disabled={dirty || action.isPending}>
+              <Button type="submit" disabled={dirty || action.isPending}>
                 Stage Git service
-              </button>
+              </Button>
             </Form>
           </details>
         )}
@@ -275,7 +282,7 @@ export function Pipelines({
                 <code>{source.data.importedCommit.slice(0, 12)}</code>
               </p>
               {owner && (
-                <button
+                <Button
                   type="button"
                   disabled={action.isPending}
                   onClick={() =>
@@ -295,7 +302,7 @@ export function Pipelines({
                   {source.data.configuration.autoDeploy
                     ? "Disable automatic source deployments"
                     : "Enable automatic source deployments"}
-                </button>
+                </Button>
               )}
               {source.data.pendingCommit && (
                 <p className={s.notice}>
@@ -326,17 +333,17 @@ export function Pipelines({
                     })
                   }
                 >
-                  <label>
-                    <input type="checkbox" name="discard" />
+                  <Label>
+                    <Checkbox name="discard" />
                     Replace the saved draft with the branch's current source
-                  </label>
-                  <button type="submit" disabled={dirty || action.isPending}>
+                  </Label>
+                  <Button type="submit" disabled={dirty || action.isPending}>
                     Refresh from Git
-                  </button>
+                  </Button>
                 </Form>
               )}
               {write && (
-                <button
+                <Button
                   type="button"
                   disabled={dirty || action.isPending || source.data.clean}
                   onClick={() =>
@@ -358,7 +365,7 @@ export function Pipelines({
                   }
                 >
                   Submit saved draft for review
-                </button>
+                </Button>
               )}
             </div>
           ) : (
@@ -400,30 +407,30 @@ export function Pipelines({
                   }
                 >
                   {repositoryFields}
-                  <label>
+                  <Label>
                     Compose entrypoints, one path per line
-                    <textarea
+                    <Textarea
                       name="entrypoints"
                       required
                       defaultValue="compose.yaml"
                     />
-                  </label>
-                  <label>
+                  </Label>
+                  <Label>
                     Selected source files, one path per line
-                    <textarea
+                    <Textarea
                       name="paths"
                       required
                       defaultValue="compose.yaml"
                     />
-                  </label>
-                  <label>
-                    <input type="checkbox" name="autoDeploy" />
+                  </Label>
+                  <Label>
+                    <Checkbox name="autoDeploy" />
                     Automatically deploy future imported commits after the first
                     reviewed deployment
-                  </label>
-                  <button type="submit" disabled={dirty || action.isPending}>
+                  </Label>
+                  <Button type="submit" disabled={dirty || action.isPending}>
                     Import source
-                  </button>
+                  </Button>
                 </Form>
               </details>
             )
@@ -476,7 +483,7 @@ export function Pipelines({
                       ? "Use at most 16 watch paths."
                       : new Set(watchPaths).size !== watchPaths.length
                         ? "Remove duplicate watch paths."
-                        : watchPaths.some((p) => [...p].length > 240)
+                        : watchPaths.some((p) => Array.from(p).length > 240)
                           ? "Use watch paths of at most 240 characters."
                           : undefined;
                   if (watchMessage)
@@ -569,9 +576,9 @@ export function Pipelines({
                 })
               }
             >
-              <label>
+              <Label>
                 Service
-                <select name="app" required>
+                <Select name="app" required>
                   {revision.specification.applications
                     .filter((a) => a.kind !== "postgres")
                     .map((a) => (
@@ -579,16 +586,16 @@ export function Pipelines({
                         {a.name}
                       </option>
                     ))}
-                </select>
-              </label>
+                </Select>
+              </Label>
               {repositoryFields}
-              <label>
+              <Label>
                 Build context
-                <input name="context" defaultValue="." required />
-              </label>
-              <label>
+                <Input name="context" defaultValue="." required />
+              </Label>
+              <Label>
                 Builder
-                <select
+                <Select
                   name="builder"
                   value={builder}
                   aria-invalid={builderError || undefined}
@@ -608,8 +615,8 @@ export function Pipelines({
                 >
                   <option value="dockerfile">Dockerfile</option>
                   <option value="railpack">Railpack</option>
-                </select>
-              </label>
+                </Select>
+              </Label>
               <p
                 id={`${controlsId}-builder`}
                 className={builderError ? s.error : s.muted}
@@ -621,20 +628,20 @@ export function Pipelines({
                     : "Use a Dockerfile from your build context."}
               </p>
               {builder === "dockerfile" ? (
-                <label>
+                <Label>
                   Dockerfile, relative to context
-                  <input
+                  <Input
                     name="dockerfile"
                     value={dockerfile}
                     onChange={(e) => setDockerfile(e.target.value)}
                     required
                   />
-                </label>
+                </Label>
               ) : (
                 <>
-                  <label>
+                  <Label>
                     Build command override (optional)
-                    <textarea
+                    <Textarea
                       name="buildCommand"
                       value={buildCommand}
                       onChange={(e) => setBuildCommand(e.target.value)}
@@ -642,10 +649,10 @@ export function Pipelines({
                       aria-invalid={builderError || undefined}
                       aria-describedby={`${controlsId}-overrides`}
                     />
-                  </label>
-                  <label>
+                  </Label>
+                  <Label>
                     Start command override (optional)
-                    <input
+                    <Input
                       name="startCommand"
                       value={startCommand}
                       onChange={(e) => setStartCommand(e.target.value)}
@@ -653,7 +660,7 @@ export function Pipelines({
                       aria-invalid={builderError || undefined}
                       aria-describedby={`${controlsId}-overrides`}
                     />
-                  </label>
+                  </Label>
                   <p id={`${controlsId}-overrides`} className={s.muted}>
                     Leave empty to use detection and repository configuration.
                     These commands take precedence over repository commands.
@@ -661,13 +668,13 @@ export function Pipelines({
                   </p>
                 </>
               )}
-              <label>
+              <Label>
                 Architecture
-                <select name="architecture">
+                <Select name="architecture">
                   <option value="arm64">Linux arm64</option>
                   <option value="amd64">Linux amd64</option>
-                </select>
-              </label>
+                </Select>
+              </Label>
               <details>
                 <summary>Build resource limits</summary>
                 <div className={s.stack}>
@@ -679,9 +686,9 @@ export function Pipelines({
                       ? action.error.message
                       : "Limits apply to this assignment, including queue time. Source and builder storage share the memory limit; leave at least 96 MiB for tools. Custom limits require an updated agent."}
                   </p>
-                  <label>
+                  <Label>
                     CPU cores
-                    <input
+                    <Input
                       type="number"
                       name="cpus"
                       min={1}
@@ -693,10 +700,10 @@ export function Pipelines({
                       }
                       required
                     />
-                  </label>
-                  <label>
+                  </Label>
+                  <Label>
                     Memory limit (MiB)
-                    <input
+                    <Input
                       type="number"
                       name="memoryMiB"
                       aria-invalid={budgetError || undefined}
@@ -710,10 +717,10 @@ export function Pipelines({
                       }
                       required
                     />
-                  </label>
-                  <label>
+                  </Label>
+                  <Label>
                     Source storage (MiB)
-                    <input
+                    <Input
                       type="number"
                       name="sourceMiB"
                       aria-invalid={budgetError || undefined}
@@ -727,10 +734,10 @@ export function Pipelines({
                       }
                       required
                     />
-                  </label>
-                  <label>
+                  </Label>
+                  <Label>
                     Builder storage (MiB)
-                    <input
+                    <Input
                       type="number"
                       name="stateMiB"
                       aria-invalid={budgetError || undefined}
@@ -744,10 +751,10 @@ export function Pipelines({
                       }
                       required
                     />
-                  </label>
-                  <label>
+                  </Label>
+                  <Label>
                     Assignment lifetime (minutes)
-                    <input
+                    <Input
                       type="number"
                       name="minutes"
                       min={1}
@@ -759,37 +766,37 @@ export function Pipelines({
                       }
                       required
                     />
-                  </label>
+                  </Label>
                 </div>
               </details>
-              <label>
+              <Label>
                 Registry destination
-                <select name="registry">
+                <Select name="registry">
                   <option value="">Keep image on this runner</option>
                   {registries.data?.map((r) => (
                     <option key={r.id} value={r.id}>
                       {r.name} · {r.repository}
                     </option>
                   ))}
-                </select>
-              </label>
+                </Select>
+              </Label>
               <p className={s.muted}>
                 A local image can deploy only on the runner that built it.
                 Registry images can be promoted to another environment with
                 matching architecture.
               </p>
-              <label>
+              <Label>
                 Plain build arguments
-                <textarea
+                <Textarea
                   name="arguments"
                   aria-invalid={inputsError || undefined}
                   aria-describedby={`${controlsId}-inputs`}
                   placeholder="PUBLIC_BASE_URL=https://example.com"
                 />
-              </label>
-              <label>
+              </Label>
+              <Label>
                 Build secret
-                <select
+                <Select
                   name="secret"
                   aria-invalid={inputsError || undefined}
                   aria-describedby={`${controlsId}-inputs`}
@@ -800,18 +807,18 @@ export function Pipelines({
                       {v.name} · {new Date(v.createdAt).toLocaleString()}
                     </option>
                   ))}
-                </select>
-              </label>
-              <label>
+                </Select>
+              </Label>
+              <Label>
                 {builder === "railpack"
                   ? "Secret environment name"
                   : "Secret mount name"}
-                <input
+                <Input
                   name="secretName"
                   aria-invalid={inputsError || undefined}
                   aria-describedby={`${controlsId}-inputs`}
                 />
-              </label>
+              </Label>
               <p
                 id={`${controlsId}-inputs`}
                 className={inputsError ? s.error : s.muted}
@@ -822,19 +829,19 @@ export function Pipelines({
                     ? "Declared build secrets are available as build environment variables, separately from runtime secrets. Use distinct public argument and secret names; RAILPACK_ settings must be public arguments. Build commands must avoid copying or printing secrets."
                     : "Build secrets are separate from runtime secrets and available through Dockerfile secret mounts. Your Dockerfile must avoid copying or printing them."}
               </p>
-              <label>
-                <input type="checkbox" name="autoBuild" />
+              <Label>
+                <Checkbox name="autoBuild" />
                 Build new branch commits from authenticated push webhooks
-              </label>
-              <label>
+              </Label>
+              <Label>
                 Automatic build watch paths
-                <textarea
+                <Textarea
                   name="watchPaths"
                   placeholder={"apps/web\npnpm-lock.yaml"}
                   aria-invalid={watchError || undefined}
                   aria-describedby={`${controlsId}-watch`}
                 />
-              </label>
+              </Label>
               <p
                 id={`${controlsId}-watch`}
                 className={watchError ? s.error : s.muted}
@@ -844,15 +851,15 @@ export function Pipelines({
                   : "One distinct repository-relative file or directory per line, up to 16. Omit trailing slashes; directories include their contents. Wildcards are unsupported. Leave empty to build every change. Include shared configuration and lockfiles. Manual builds always run. Automatic builds compare with the last compatible successful build and rebuild when comparison is unavailable. Requires an updated agent."}
               </p>
               {owner && (
-                <label>
-                  <input type="checkbox" name="autoDeploy" />
+                <Label>
+                  <Checkbox name="autoDeploy" />
                   Promote successful builds and automatically deploy after the
                   first reviewed deployment
-                </label>
+                </Label>
               )}
-              <button type="submit" disabled={dirty || action.isPending}>
+              <Button type="submit" disabled={dirty || action.isPending}>
                 Queue build
-              </button>
+              </Button>
             </Form>
           </details>
         )}
@@ -891,19 +898,19 @@ export function Pipelines({
               })
             }
           >
-            <label>
+            <Label>
               Built artifact
-              <select name="artifact" required>
+              <Select name="artifact" required>
                 {artifacts.data.map((a) => (
                   <option key={a.id} value={a.id}>
                     {a.commit.slice(0, 12)} · {a.architecture} · {a.image}
                   </option>
                 ))}
-              </select>
-            </label>
-            <label>
+              </Select>
+            </Label>
+            <Label>
               Destination service
-              <select name="app" required>
+              <Select name="app" required>
                 {revision.specification.applications
                   .filter((a) => a.kind !== "postgres")
                   .map((a) => (
@@ -911,11 +918,11 @@ export function Pipelines({
                       {a.name}
                     </option>
                   ))}
-              </select>
-            </label>
-            <button type="submit" disabled={dirty || action.isPending}>
+              </Select>
+            </Label>
+            <Button type="submit" disabled={dirty || action.isPending}>
               Promote existing artifact to draft
-            </button>
+            </Button>
           </Form>
         </section>
       )}
@@ -974,9 +981,13 @@ export function Pipelines({
                 </details>
               )}
               {report?.reviewUrl && (
-                <a href={report.reviewUrl} target="_blank" rel="noreferrer">
+                <Anchor
+                  href={report.reviewUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                >
                   Open source review
-                </a>
+                </Anchor>
               )}
               {report?.logs && (
                 <details>
@@ -993,7 +1004,7 @@ export function Pipelines({
                 !["succeeded", "failed", "cancelled"].includes(
                   run.operation.state,
                 ) && (
-                  <button
+                  <Button
                     type="button"
                     disabled={action.isPending}
                     onClick={() =>
@@ -1013,7 +1024,7 @@ export function Pipelines({
                     }
                   >
                     Cancel {run.action}
-                  </button>
+                  </Button>
                 )}
               {run.artifact && (
                 <div>
@@ -1053,9 +1064,9 @@ export function Pipelines({
                         })
                       }
                     >
-                      <label>
+                      <Label>
                         Destination service
-                        <select name="app">
+                        <Select name="app">
                           {revision.specification.applications
                             .filter((a) => a.kind !== "postgres")
                             .map((a) => (
@@ -1063,14 +1074,14 @@ export function Pipelines({
                                 {a.name}
                               </option>
                             ))}
-                        </select>
-                      </label>
-                      <button
+                        </Select>
+                      </Label>
+                      <Button
                         type="submit"
                         disabled={dirty || action.isPending}
                       >
                         Promote artifact to draft
-                      </button>
+                      </Button>
                     </Form>
                   )}
                 </div>

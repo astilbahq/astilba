@@ -1,0 +1,30 @@
+{
+  "appearance": {
+    "label": "Appearance",
+    "light": "Light",
+    "dark": "Dark",
+    "system": "System"
+  },
+  "language": { "label": "Language", "automatic": "Automatic" },
+  "password": { "show": "Show password", "hide": "Hide password" },
+  "otp": { "character": "Character {{position}} of {{length}}" },
+  "toast": {
+    "region": "Notifications",
+    "dismiss": "Dismiss notification",
+    "error": "Request failed",
+    "success": "Success",
+    "notification": "Notification"
+  },
+  "connectionUnavailable": "Unable to connect",
+  "skipContent": "Skip to content",
+  "loading": "Loading…",
+  "working": "Working…",
+  "retryConnection": "Retry connection",
+  "requestFailed": "The request could not be completed. Try again.",
+  "unexpectedError": "Something went wrong. Please retry.",
+  "fields": "Fields: {{fields}}",
+  "request": "Request {{id}}",
+  "notFound": "Page not found.",
+  "returnToProjects": "Return to projects",
+  "titles": { "notFound": "Page not found · Astilba" }
+}

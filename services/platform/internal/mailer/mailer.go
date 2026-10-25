@@ -5,9 +5,11 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/mail"
 	"net/smtp"
+	"os"
 	"strings"
 	"time"
 )
@@ -16,17 +18,20 @@ type Config struct {
 	Address, Username, Password, From, Mode string
 	Development                             bool
 }
-type Mailer struct{ config Config }
+type Mailer struct {
+	config  Config
+	console io.Writer
+}
 
 var ErrUnavailable = errors.New("email is unavailable; configure SMTP and retry")
 
 func New(c Config) (*Mailer, error) {
-	if c.Address == "" {
+	if c.Mode == "console" {
+		if !c.Development || c.Address != "" || c.Username != "" || c.Password != "" {
+			return nil, errors.New("console email requires local development without SMTP connection settings")
+		}
+	} else if c.Address == "" {
 		return &Mailer{config: c}, nil
-	}
-	host, _, err := net.SplitHostPort(c.Address)
-	if err != nil {
-		return nil, ErrUnavailable
 	}
 	if strings.ContainsAny(c.From, "\r\n") {
 		return nil, ErrUnavailable
@@ -36,6 +41,13 @@ func New(c Config) (*Mailer, error) {
 		return nil, ErrUnavailable
 	}
 	c.From = from.Address
+	if c.Mode == "console" {
+		return &Mailer{config: c, console: os.Stdout}, nil
+	}
+	host, _, err := net.SplitHostPort(c.Address)
+	if err != nil {
+		return nil, ErrUnavailable
+	}
 	if c.Mode != "starttls" && c.Mode != "tls" && !(c.Mode == "plain" && c.Development && (host == "localhost" || host == "127.0.0.1" || host == "::1")) {
 		return nil, ErrUnavailable
 	}
@@ -43,7 +55,7 @@ func New(c Config) (*Mailer, error) {
 }
 func (m *Mailer) Send(ctx context.Context, to, subject, body string) error {
 	c := m.config
-	if c.Address == "" {
+	if c.Address == "" && m.console == nil {
 		return ErrUnavailable
 	}
 	if strings.ContainsAny(to+subject, "\r\n") {
@@ -51,6 +63,13 @@ func (m *Mailer) Send(ctx context.Context, to, subject, body string) error {
 	}
 	if _, err := mail.ParseAddress(to); err != nil {
 		return ErrUnavailable
+	}
+	if m.console != nil {
+		_, err := fmt.Fprintf(m.console, "\n--- Local development email ---\nFrom: %s\nTo: %s\nSubject: %s\n\n%s\n--- End email ---\n", c.From, to, subject, body)
+		if err != nil {
+			return ErrUnavailable
+		}
+		return nil
 	}
 	host, _, _ := net.SplitHostPort(c.Address)
 	dialer := net.Dialer{Timeout: 10 * time.Second}

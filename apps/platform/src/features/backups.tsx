@@ -1,6 +1,11 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRef, useState } from "react";
 import { client, result, type Schema } from "../api/client";
+import { Button } from "../components/button";
+import { Checkbox } from "../components/checkbox";
+import { Input } from "../components/input";
+import { Label } from "../components/label";
+import { Select } from "../components/select";
 import * as s from "../styles";
 import { BusyButton, ErrorNotice, Field, Form, text, useAction } from "../ui";
 import type { EnvironmentPath } from "./visual-editor";
@@ -88,13 +93,13 @@ export function Backups({
               }
             >
               <Field name="name" label="Destination name" />
-              <label>
+              <Label>
                 Storage type
-                <select name="kind">
+                <Select name="kind">
                   <option value="filesystem">Filesystem</option>
                   <option value="s3">S3 compatible</option>
-                </select>
-              </label>
+                </Select>
+              </Label>
               <Field
                 name="root"
                 label="Operator-approved filesystem root"
@@ -169,9 +174,9 @@ export function Backups({
               }
             >
               <Field name="name" label="Policy name" />
-              <label>
+              <Label>
                 Consistency method
-                <select
+                <Select
                   value={method}
                   onChange={(e) => setMethod(e.target.value as typeof method)}
                 >
@@ -180,11 +185,11 @@ export function Backups({
                   </option>
                   <option value="quiesced-files">Quiesced file volume</option>
                   <option value="container-job">Scheduled container job</option>
-                </select>
-              </label>
-              <label>
+                </Select>
+              </Label>
+              <Label>
                 Source resource
-                <select name="resource" required>
+                <Select name="resource" required>
                   <option value="">Choose a resource</option>
                   {method === "quiesced-files"
                     ? revision.specification.volumes?.map((v) => (
@@ -203,13 +208,13 @@ export function Backups({
                             {a.name}
                           </option>
                         ))}
-                </select>
-              </label>
+                </Select>
+              </Label>
               {method !== "container-job" && (
                 <>
-                  <label>
+                  <Label>
                     Backup destination
-                    <select name="destination" required>
+                    <Select name="destination" required>
                       <option value="">Choose a destination</option>
                       {destinations.data?.map((d) => (
                         <option key={d.id} value={d.id}>
@@ -219,8 +224,8 @@ export function Backups({
                             : ""}
                         </option>
                       ))}
-                    </select>
-                  </label>
+                    </Select>
+                  </Label>
                   <Field
                     name="password"
                     label="Repository password (keep a recovery copy)"
@@ -237,13 +242,13 @@ export function Backups({
                 />
               )}
               <Field name="time" label="Daily time" type="time" />
-              <label>
+              <Label>
                 Timezone
-                <input name="timezone" defaultValue="UTC" required />
-              </label>
-              <label>
+                <Input name="timezone" defaultValue="UTC" required />
+              </Label>
+              <Label>
                 Successful uploads to retain
-                <input
+                <Input
                   name="retain"
                   type="number"
                   min="1"
@@ -251,11 +256,11 @@ export function Backups({
                   defaultValue="7"
                   required
                 />
-              </label>
-              <label>
-                <input type="checkbox" name="enabled" defaultChecked />
+              </Label>
+              <Label>
+                <Checkbox name="enabled" defaultChecked />
                 Enable schedule when installed
-              </label>
+              </Label>
               <BusyButton busy={action.isPending}>Create policy</BusyButton>
             </Form>
           </details>
@@ -350,35 +355,35 @@ function PolicyStatus({
       {message && <p role="status">{message}</p>}
       {owner && (
         <div className={s.row}>
-          <button
+          <Button
             type="button"
             disabled={action.isPending}
             onClick={() => command("install")}
           >
             Install schedule
-          </button>
-          <button
+          </Button>
+          <Button
             type="button"
             disabled={action.isPending}
             onClick={() => command("check")}
             hidden={policy.method === "container-job"}
           >
             Check destination
-          </button>
-          <button
+          </Button>
+          <Button
             type="button"
             disabled={action.isPending}
             onClick={() => command("backup")}
           >
             Run now
-          </button>
-          <button
+          </Button>
+          <Button
             type="button"
             disabled={action.isPending}
             onClick={() => command("disable")}
           >
             Disable local schedule
-          </button>
+          </Button>
         </div>
       )}
       {owner && (
@@ -422,26 +427,26 @@ function PolicyStatus({
               })
             }
           >
-            <label>
+            <Label>
               Daily time
-              <input
+              <Input
                 type="time"
                 name="time"
                 defaultValue={`${String(policy.schedule.hour).padStart(2, "0")}:${String(policy.schedule.minute).padStart(2, "0")}`}
                 required
               />
-            </label>
-            <label>
+            </Label>
+            <Label>
               Timezone
-              <input
+              <Input
                 name="timezone"
                 defaultValue={policy.schedule.timezone}
                 required
               />
-            </label>
-            <label>
+            </Label>
+            <Label>
               Successful uploads to retain
-              <input
+              <Input
                 type="number"
                 name="retain"
                 min="1"
@@ -449,15 +454,11 @@ function PolicyStatus({
                 defaultValue={policy.retain}
                 required
               />
-            </label>
-            <label>
-              <input
-                type="checkbox"
-                name="enabled"
-                defaultChecked={policy.enabled}
-              />
+            </Label>
+            <Label>
+              <Checkbox name="enabled" defaultChecked={policy.enabled} />
               Enable schedule when installed
-            </label>
+            </Label>
             {policy.method !== "container-job" && (
               <Field
                 name="password"
@@ -499,13 +500,13 @@ function PolicyStatus({
                 <p>Restored volume {r.targetId} remains separate.</p>
               )}
             {owner && r.state === "succeeded" && r.snapshot && !r.pruned && (
-              <button
+              <Button
                 type="button"
                 disabled={action.isPending}
                 onClick={() => command("restore", r.snapshot)}
               >
                 Restore snapshot into fresh storage
-              </button>
+              </Button>
             )}
             {owner &&
               r.verified &&
@@ -517,7 +518,7 @@ function PolicyStatus({
                     and any writes made since the backup before applying the
                     deployment.
                   </p>
-                  <button
+                  <Button
                     type="button"
                     disabled={action.isPending || dirty}
                     onClick={() =>
@@ -538,7 +539,7 @@ function PolicyStatus({
                     }
                   >
                     Prepare cutover draft
-                  </button>
+                  </Button>
                 </>
               )}
           </li>

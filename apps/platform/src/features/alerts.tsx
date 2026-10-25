@@ -1,7 +1,11 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { client, result, type Schema } from "../api/client";
-import { sessionOptions } from "../router";
+import { sessionOptions } from "../api/session";
+import { Button } from "../components/button";
+import { Checkbox } from "../components/checkbox";
+import { Label } from "../components/label";
+import { Select } from "../components/select";
 import * as s from "../styles";
 import { BusyButton, ErrorNotice, Field, Form, text, useAction } from "../ui";
 
@@ -31,9 +35,9 @@ export function Alerts() {
           workloads.
         </p>
       </header>
-      <label>
+      <Label>
         Workspace
-        <select
+        <Select
           value={workspace?.id ?? ""}
           onChange={(e) => setSelected(e.target.value)}
         >
@@ -42,8 +46,8 @@ export function Alerts() {
               {w.name}
             </option>
           ))}
-        </select>
-      </label>
+        </Select>
+      </Label>
       {workspace && <Inbox key={workspace.id} workspace={workspace} />}
     </div>
   );
@@ -70,9 +74,9 @@ function Inbox({ workspace }: { workspace: Schema["Workspace"] }) {
       <section className={s.panel} aria-label="Operational inbox">
         <div className={s.spread}>
           <h2>Operational inbox</h2>
-          <label>
+          <Label>
             Show
-            <select
+            <Select
               value={view}
               onChange={(e) => {
                 setView(e.target.value as "all" | "attention");
@@ -82,8 +86,8 @@ function Inbox({ workspace }: { workspace: Schema["Workspace"] }) {
             >
               <option value="attention">Needs attention</option>
               <option value="all">All history</option>
-            </select>
-          </label>
+            </Select>
+          </Label>
         </div>
         <p>
           Missing observations do not mean recovery. Resolved and event history
@@ -141,7 +145,7 @@ function Inbox({ workspace }: { workspace: Schema["Workspace"] }) {
                   </p>
                 ) : (
                   workspace.role !== "viewer" && (
-                    <button
+                    <Button
                       type="button"
                       disabled={action.isPending}
                       onClick={() =>
@@ -163,7 +167,7 @@ function Inbox({ workspace }: { workspace: Schema["Workspace"] }) {
                       }
                     >
                       Acknowledge alert
-                    </button>
+                    </Button>
                   )
                 )}
                 {!!alert.deliveries.length && (
@@ -194,7 +198,7 @@ function Inbox({ workspace }: { workspace: Schema["Workspace"] }) {
         )}
         <nav aria-label="Alert pages" className={s.spread}>
           {!!pages.length && (
-            <button
+            <Button
               type="button"
               onClick={() => {
                 setBefore(pages.at(-1) || undefined);
@@ -202,10 +206,10 @@ function Inbox({ workspace }: { workspace: Schema["Workspace"] }) {
               }}
             >
               Newer alerts
-            </button>
+            </Button>
           )}
           {inbox.data?.next && (
-            <button
+            <Button
               type="button"
               onClick={() => {
                 setPages([...pages, before ?? ""]);
@@ -213,7 +217,7 @@ function Inbox({ workspace }: { workspace: Schema["Workspace"] }) {
               }}
             >
               Older alerts
-            </button>
+            </Button>
           )}
         </nav>
       </section>
@@ -278,7 +282,7 @@ function SettingsForm({
         action.run(async () => {
           onSaved(false);
           const url = text(d, "webhookUrl"),
-            secret = String(d.get("webhookSecret") ?? "");
+            secret = text(d, "webhookSecret");
           const updated = await result(
             client.PUT("/api/v1/workspaces/{workspaceId}/alert-settings", {
               params: { path: { workspaceId } },
@@ -297,22 +301,14 @@ function SettingsForm({
       }
     >
       <ErrorNotice error={action.error} />
-      <label>
-        <input
-          type="checkbox"
-          name="emailEnabled"
-          defaultChecked={settings.emailEnabled}
-        />
+      <Label>
+        <Checkbox name="emailEnabled" defaultChecked={settings.emailEnabled} />
         Email verified owners
-      </label>
-      <label>
-        <input
-          type="checkbox"
-          checked={hook}
-          onChange={(e) => setHook(e.target.checked)}
-        />
+      </Label>
+      <Label>
+        <Checkbox checked={hook} onChange={(e) => setHook(e.target.checked)} />
         Send signed webhooks
-      </label>
+      </Label>
       {hook && (
         <>
           <p>

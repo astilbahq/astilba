@@ -8,7 +8,7 @@ import {
   parseLayout,
 } from "../src/domain.ts";
 
-test("typed connections reject wrong directions, missing services and competing bindings", () => {
+void test("typed connections reject wrong directions, missing services and competing bindings", () => {
   const { config } = fixtureData("starter");
   const base = { ...config, bindings: [] };
   const database: Binding = {
@@ -45,7 +45,7 @@ test("typed connections reject wrong directions, missing services and competing 
   );
 });
 
-test("persisted input validates identities, bindings and numeric bounds before it enters the editor", () => {
+void test("persisted input validates identities, bindings and numeric bounds before it enters the editor", () => {
   const { config, layout } = fixtureData("starter");
   assert.deepEqual(parseConfiguration(JSON.stringify(config)), config);
   assert.deepEqual(parseLayout(JSON.stringify(layout)), layout);

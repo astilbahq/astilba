@@ -2,6 +2,7 @@
 !package.json
 !pnpm-lock.yaml
 !pnpm-workspace.yaml
+!vite.config.ts
 !LICENSE
 !apps/
 !apps/**

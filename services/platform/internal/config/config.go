@@ -50,6 +50,14 @@ func Load() (Config, error) {
 		c.Listen = "127.0.0.1:8080"
 	}
 	c.SMTP = mailer.Config{Address: os.Getenv("ASTILBA_SMTP_ADDRESS"), Username: os.Getenv("ASTILBA_SMTP_USERNAME"), Password: os.Getenv("ASTILBA_SMTP_PASSWORD"), From: os.Getenv("ASTILBA_SMTP_FROM"), Mode: os.Getenv("ASTILBA_SMTP_MODE"), Development: c.Development}
+	if c.SMTP.Mode == "console" {
+		if !c.Development {
+			return c, errors.New("console email is only available in local development")
+		}
+		if err := c.ValidateServer(); err != nil {
+			return c, err
+		}
+	}
 	if c.Hosted {
 		cohort, _ := strconv.Atoi(os.Getenv("ASTILBA_HOSTED_COHORT_LIMIT"))
 		servers, _ := strconv.Atoi(os.Getenv("ASTILBA_HOSTED_SERVER_LIMIT"))

@@ -1,6 +1,9 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { client, result, type Schema } from "../api/client";
+import { Button } from "../components/button";
+import { Input } from "../components/input";
+import { Label } from "../components/label";
 import * as s from "../styles";
 import { BusyButton, ErrorNotice, Form, text, useAction } from "../ui";
 
@@ -103,15 +106,15 @@ export function ServerDomains({
             )
           }
         >
-          <label>
+          <Label>
             Hostname to check
-            <input
+            <Input
               name="hostname"
               required
               autoComplete="off"
               placeholder="app.example.com"
             />
-          </label>
+          </Label>
           <BusyButton busy={action.isPending}>Check DNS</BusyButton>
         </Form>
         {check && (
@@ -174,26 +177,26 @@ function DomainAddressForm({
       }
     >
       <ErrorNotice error={action.error} />
-      <label>
+      <Label>
         Public IPv4
-        <input
+        <Input
           name="ipv4"
           disabled={action.isPending}
           value={draft.ipv4}
           onChange={(e) => setDraft({ ...draft, ipv4: e.target.value })}
           autoComplete="off"
         />
-      </label>
-      <label>
+      </Label>
+      <Label>
         Public IPv6
-        <input
+        <Input
           name="ipv6"
           disabled={action.isPending}
           value={draft.ipv6}
           onChange={(e) => setDraft({ ...draft, ipv6: e.target.value })}
           autoComplete="off"
         />
-      </label>
+      </Label>
       <p>
         Provide at least one public address you control. Changing it changes
         every generated app name’s DNS target for this server after propagation.
@@ -205,7 +208,7 @@ function DomainAddressForm({
             The saved configuration changed. Your entries are preserved; load
             and review the current addresses before saving again.
           </p>
-          <button
+          <Button
             type="button"
             disabled={action.isPending}
             onClick={() =>
@@ -217,7 +220,7 @@ function DomainAddressForm({
             }
           >
             Load current addresses
-          </button>
+          </Button>
         </div>
       )}
       <BusyButton busy={action.isPending} disabled={server.transferRequired}>

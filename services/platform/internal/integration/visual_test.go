@@ -169,7 +169,7 @@ func TestVisualPlanAdmissionAndPortability(t *testing.T) {
 	b.call("PUT", clonePath+"/draft", map[string]any{"baseRevisionId": cloneRevision.Id, "specification": cloneSpec}, 400, nil)
 	// A viewer cannot apply or destroy data, even with a valid plan identifier.
 	b.call("POST", prefix+"/invitations", map[string]string{"email": "viewer@example.test", "role": "viewer"}, 201, nil)
-	invite := tokenFromMail(t, f.mail)
+	invite := tokenFromLinkMail(t, f, "/invitation")
 	viewer := f.browser(t)
 	var session api.Session
 	viewer.call("POST", "/api/v1/auth/invitations/accept", map[string]string{"token": invite, "name": "Viewer", "password": f.password}, 200, &session)

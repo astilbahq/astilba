@@ -1,6 +1,10 @@
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { client, result, type Schema } from "../api/client";
+import { Button } from "../components/button";
+import { Label } from "../components/label";
+import { Select } from "../components/select";
+import { Textarea } from "../components/textarea";
 import * as s from "../styles";
 import { ErrorNotice, Field, Form, text, useAction } from "../ui";
 import { CodeEditor } from "./code-editor";
@@ -131,7 +135,7 @@ export function ComposeEditor({
       <ErrorNotice error={failure ?? action.error} />
       <fieldset className={s.row} aria-label="Source files">
         {source.files.map((value) => (
-          <button
+          <Button
             type="button"
             key={value.path}
             aria-pressed={current?.path === value.path}
@@ -141,7 +145,7 @@ export function ComposeEditor({
             }}
           >
             {value.path}
-          </button>
+          </Button>
         ))}
       </fieldset>
       {current && (
@@ -156,7 +160,7 @@ export function ComposeEditor({
             line={line}
           />
           {write && source.files.length > 1 && (
-            <button
+            <Button
               type="button"
               onClick={() => {
                 if (
@@ -181,16 +185,16 @@ export function ComposeEditor({
               }}
             >
               Remove selected file
-            </button>
+            </Button>
           )}
         </>
       )}
       {write && (
         <details>
           <summary>Bundle files and entrypoints</summary>
-          <label>
+          <Label>
             Compose entrypoints (one per line)
-            <textarea
+            <Textarea
               value={source.entrypoints.join("\n")}
               onChange={(event) =>
                 change({
@@ -202,7 +206,7 @@ export function ComposeEditor({
                 })
               }
             />
-          </label>
+          </Label>
           <Form
             action={action}
             label="Add source file"
@@ -224,7 +228,7 @@ export function ComposeEditor({
             }
           >
             <Field name="path" label="New relative file path" />
-            <button type="submit">Add file</button>
+            <Button type="submit">Add file</Button>
           </Form>
         </details>
       )}
@@ -236,7 +240,7 @@ export function ComposeEditor({
               {v.name}:{" "}
               {v.secretVersionId ? "Secret version selected" : v.value}
               {write && (
-                <button
+                <Button
                   type="button"
                   onClick={() =>
                     change({
@@ -248,7 +252,7 @@ export function ComposeEditor({
                   }
                 >
                   Remove {v.name}
-                </button>
+                </Button>
               )}
             </li>
           ))}
@@ -283,18 +287,18 @@ export function ComposeEditor({
               label="Plain interpolation value"
               required={false}
             />
-            <label>
+            <Label>
               Or use secret version
-              <select name="secret">
+              <Select name="secret">
                 <option value="">Use plain value</option>
                 {secrets.data?.map((secret) => (
                   <option key={secret.id} value={secret.id}>
                     {secret.name} · {secret.id.slice(0, 8)}
                   </option>
                 ))}
-              </select>
-            </label>
-            <button type="submit">Stage interpolation value</button>
+              </Select>
+            </Label>
+            <Button type="submit">Stage interpolation value</Button>
           </Form>
         )}
       </details>
@@ -313,7 +317,7 @@ export function ComposeEditor({
             <li
               key={`${item.path}-${item.line}-${item.column}-${item.message}`}
             >
-              <button
+              <Button
                 type="button"
                 onClick={() => {
                   setFile(item.path);
@@ -321,7 +325,7 @@ export function ComposeEditor({
                 }}
               >
                 {item.path}:{item.line}:{item.column}
-              </button>{" "}
+              </Button>{" "}
               {item.message}
             </li>
           ))}
@@ -407,9 +411,9 @@ export function ComposeEditor({
               })
             }
           >
-            <label>
+            <Label>
               Source service
-              <select
+              <Select
                 required
                 value={selectedService}
                 onChange={(event) => setService(event.target.value)}
@@ -420,15 +424,15 @@ export function ComposeEditor({
                     {app.name}
                   </option>
                 ))}
-              </select>
-            </label>
+              </Select>
+            </Label>
             <Field name="image" label="New image reference" />
-            <button
+            <Button
               type="submit"
               disabled={validating || diagnostics.length > 0}
             >
               Preview image edit
-            </button>
+            </Button>
           </Form>
           {proposal && (
             <>
@@ -449,7 +453,7 @@ export function ComposeEditor({
                 </section>
               ))}
               {proposal.specification && proposal.diagnostics.length === 0 && (
-                <button
+                <Button
                   type="button"
                   disabled={proposalBase !== serialized}
                   onClick={() => {
@@ -459,7 +463,7 @@ export function ComposeEditor({
                   }}
                 >
                   Stage this source edit
-                </button>
+                </Button>
               )}
             </>
           )}

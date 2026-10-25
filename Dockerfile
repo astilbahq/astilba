@@ -4,11 +4,12 @@ COPY --from=go /usr/local/go /usr/local/go
 ENV PATH="/usr/local/go/bin:${PATH}" CGO_ENABLED=0 GOPATH=/go
 WORKDIR /src
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
-COPY apps/platform/package.json apps/platform/package.json
+COPY apps/platform/package.json apps/platform/panda.config.ts apps/platform/
+COPY apps/platform/theme/ apps/platform/theme/
 COPY apps/control-plane-worker/package.json apps/control-plane-worker/package.json
 COPY contracts/platform/package.json contracts/platform/package.json
 COPY experiments/cloudflare-hosting/package.json experiments/cloudflare-hosting/package.json
-COPY experiments/canvas-editor/package.json experiments/canvas-editor/package.json
+COPY experiments/canvas-editor/package.json experiments/canvas-editor/panda.config.ts experiments/canvas-editor/
 RUN npm install --global pnpm@11.17.0 && pnpm install --frozen-lockfile
 COPY . .
 ARG TARGETOS

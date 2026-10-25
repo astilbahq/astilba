@@ -1,6 +1,13 @@
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { client, result, type Schema } from "../api/client";
+import { Button } from "../components/button";
+import { Checkbox } from "../components/checkbox";
+import { Input } from "../components/input";
+import { Label } from "../components/label";
+import { Link } from "../components/link";
+import { Select } from "../components/select";
+import { Textarea } from "../components/textarea";
 import * as s from "../styles";
 import { ErrorNotice, Form, text, useAction } from "../ui";
 import type { EnvironmentPath } from "./visual-editor";
@@ -40,9 +47,9 @@ export function AutomationCredentials({ path }: { path: EnvironmentPath }) {
       </p>
       <p className={s.muted}>
         Creating or revoking a token requires recent identity confirmation.{" "}
-        <a href="/account" target="_blank" rel="noreferrer">
+        <Link to="/account" target="_blank" rel="noreferrer">
           Open Account security in a new tab
-        </a>{" "}
+        </Link>{" "}
         to confirm, then return here and retry.
       </p>
       <ErrorNotice error={action.error ?? credentials.error} />
@@ -53,9 +60,9 @@ export function AutomationCredentials({ path }: { path: EnvironmentPath }) {
             Save this token privately now. It is shown once and disappears when
             you leave this environment.
           </p>
-          <label>
+          <Label>
             Automation token
-            <textarea
+            <Textarea
               className={s.code}
               readOnly
               rows={3}
@@ -64,10 +71,10 @@ export function AutomationCredentials({ path }: { path: EnvironmentPath }) {
               autoComplete="off"
               onFocus={(event) => event.currentTarget.select()}
             />
-          </label>
-          <button type="button" onClick={() => setRevealed(undefined)}>
+          </Label>
+          <Button type="button" onClick={() => setRevealed(undefined)}>
             I have saved the token
-          </button>
+          </Button>
         </section>
       )}
       <details>
@@ -108,36 +115,36 @@ export function AutomationCredentials({ path }: { path: EnvironmentPath }) {
             })
           }
         >
-          <label>
+          <Label>
             Token name
-            <input name="name" required maxLength={80} />
-          </label>
-          <label>
+            <Input name="name" required maxLength={80} />
+          </Label>
+          <Label>
             Expires after
-            <select name="days" defaultValue="7">
+            <Select name="days" defaultValue="7">
               <option value="1">1 day</option>
               <option value="7">7 days</option>
               <option value="30">30 days</option>
               <option value="90">90 days</option>
-            </select>
-          </label>
+            </Select>
+          </Label>
           <fieldset className={s.stack}>
             <legend>Capabilities</legend>
             {capabilities.map(({ value, label }) => (
-              <label key={value} className={s.row}>
-                <input
+              <Label key={value} className={s.row}>
+                <Checkbox
                   name="capability"
-                  type="checkbox"
+
                   value={value}
                   defaultChecked={value === "environment:read"}
                 />
                 {label}
-              </label>
+              </Label>
             ))}
           </fieldset>
-          <button type="submit" disabled={action.isPending || !!revealed}>
+          <Button type="submit" disabled={action.isPending || !!revealed}>
             {action.isPending ? "Working…" : "Create token"}
-          </button>
+          </Button>
         </Form>
       </details>
       {credentials.isPending && <p role="status">Loading credentials…</p>}
@@ -163,7 +170,7 @@ export function AutomationCredentials({ path }: { path: EnvironmentPath }) {
               </p>
               <p>{credential.capabilities.join(", ")}</p>
               {active && (
-                <button
+                <Button
                   type="button"
                   disabled={action.isPending}
                   onClick={() => {
@@ -191,7 +198,7 @@ export function AutomationCredentials({ path }: { path: EnvironmentPath }) {
                   }}
                 >
                   Revoke {credential.name}
-                </button>
+                </Button>
               )}
             </li>
           );

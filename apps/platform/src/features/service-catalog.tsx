@@ -1,6 +1,11 @@
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { client, result, type Schema } from "../api/client";
+import { Button } from "../components/button";
+import { Input } from "../components/input";
+import { Label } from "../components/label";
+import { Anchor } from "../components/link";
+import { Select } from "../components/select";
 import * as s from "../styles";
 import { ErrorNotice, Form, text, useAction } from "../ui";
 import type { EnvironmentPath } from "./visual-editor";
@@ -39,9 +44,9 @@ export function ServiceCatalog({
       )}
       {recipe && (
         <>
-          <label>
+          <Label>
             Service recipe
-            <select
+            <Select
               value={recipe.id}
               onChange={(e) => setSelected(e.target.value)}
             >
@@ -50,8 +55,8 @@ export function ServiceCatalog({
                   {r.name}
                 </option>
               ))}
-            </select>
-          </label>
+            </Select>
+          </Label>
           <p>{recipe.description}</p>
           <ul>
             {recipe.prerequisites.map((prerequisite) => (
@@ -71,9 +76,9 @@ export function ServiceCatalog({
               </div>
             ))}
           </dl>
-          <a href={recipe.documentation} target="_blank" rel="noreferrer">
+          <Anchor href={recipe.documentation} target="_blank" rel="noreferrer">
             Upstream {recipe.name} documentation
-          </a>
+          </Anchor>
           <Form
             key={recipe.id}
             action={action}
@@ -104,39 +109,39 @@ export function ServiceCatalog({
               });
             }}
           >
-            <label>
+            <Label>
               New service name
-              <input
+              <Input
                 name="name"
                 defaultValue={recipe.name}
                 maxLength={80}
                 required
               />
-            </label>
+            </Label>
             {recipe.needsPassword && (
-              <label>
+              <Label>
                 Database password secret
-                <select name="password" required>
+                <Select name="password" required>
                   <option value="">Choose an existing secret version</option>
                   {secrets.map((secret) => (
                     <option key={secret.id} value={secret.id}>
                       {secret.name} · {secret.id.slice(0, 8)}
                     </option>
                   ))}
-                </select>
-              </label>
+                </Select>
+              </Label>
             )}
             {recipe.needsPassword && secrets.length === 0 && (
               <p className={s.muted}>
                 Create a password in Secrets before staging this recipe.
               </p>
             )}
-            <button
+            <Button
               type="submit"
               disabled={recipe.needsPassword && secrets.length === 0}
             >
               Stage {recipe.name} recipe
-            </button>
+            </Button>
           </Form>
         </>
       )}

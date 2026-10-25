@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"net/http"
+	"net/url"
 	"time"
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
@@ -180,7 +181,7 @@ func (s *Server) InviteMember(w http.ResponseWriter, r *http.Request, ws uuid.UU
 		return store.Audit(r.Context(), q, *principal(r.Context()), ws, "invitation.create", id)
 	})
 	if e == nil {
-		e = s.Auth.Mail.Send(r.Context(), email, "Join an Astilba workspace", "Enter this one-use invitation code in Astilba within 24 hours:\n\n"+token)
+		e = s.Auth.Mail.Send(r.Context(), email, "Join an Astilba workspace", "Open this one-use link to join the Astilba workspace within 24 hours:\n\n"+s.Origin+"/invitation?"+url.Values{"token": {token}}.Encode())
 		if e != nil {
 			_ = s.Store.Queries.DeleteInvitation(r.Context(), db.DeleteInvitationParams{WorkspaceID: ws, ID: id})
 		}

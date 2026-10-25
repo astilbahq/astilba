@@ -308,3 +308,12 @@ func tokenFromMail(t *testing.T, messages chan string) string {
 		return ""
 	}
 }
+
+func tokenFromLinkMail(t *testing.T, f *fixture, path string) string {
+	t.Helper()
+	link, err := url.Parse(tokenFromMail(t, f.mail))
+	if err != nil || link.Scheme+"://"+link.Host != f.apiServer.Origin || link.Path != path || link.Query().Get("token") == "" {
+		t.Fatal("email must contain a link to the configured origin and expected page with its token")
+	}
+	return link.Query().Get("token")
+}

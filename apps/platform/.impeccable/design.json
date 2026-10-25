@@ -1,0 +1,1095 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-10-24T22:53:13.804913+00:00",
+  "title": "Design System: Astilba Authentication & Shared Controls",
+  "extensions": {
+    "colorMeta": {
+      "auth-fg": {
+        "role": "neutral",
+        "displayName": "Navy Ink",
+        "tonalRamp": [
+          "oklch(15.00% 0 0)",
+          "oklch(26.43% 0 0)",
+          "oklch(37.86% 0 0)",
+          "oklch(49.29% 0 0)",
+          "oklch(60.71% 0 0)",
+          "oklch(72.14% 0 0)",
+          "oklch(83.57% 0 0)",
+          "oklch(95.00% 0 0)"
+        ]
+      },
+      "auth-fg-dark": {
+        "role": "neutral",
+        "displayName": "Navy Ink — Dark",
+        "tonalRamp": [
+          "oklch(15.00% 0 0)",
+          "oklch(26.43% 0 0)",
+          "oklch(37.86% 0 0)",
+          "oklch(49.29% 0 0)",
+          "oklch(60.71% 0 0)",
+          "oklch(72.14% 0 0)",
+          "oklch(83.57% 0 0)",
+          "oklch(95.00% 0 0)"
+        ]
+      },
+      "auth-subtle": {
+        "role": "neutral",
+        "displayName": "Slate Text",
+        "tonalRamp": [
+          "oklch(15.00% 0 0)",
+          "oklch(26.43% 0 0)",
+          "oklch(37.86% 0 0)",
+          "oklch(49.29% 0 0)",
+          "oklch(60.71% 0 0)",
+          "oklch(72.14% 0 0)",
+          "oklch(83.57% 0 0)",
+          "oklch(95.00% 0 0)"
+        ]
+      },
+      "auth-subtle-dark": {
+        "role": "neutral",
+        "displayName": "Slate Text — Dark",
+        "tonalRamp": [
+          "oklch(15.00% 0 0)",
+          "oklch(26.43% 0 0)",
+          "oklch(37.86% 0 0)",
+          "oklch(49.29% 0 0)",
+          "oklch(60.71% 0 0)",
+          "oklch(72.14% 0 0)",
+          "oklch(83.57% 0 0)",
+          "oklch(95.00% 0 0)"
+        ],
+        "canonical": "oklch(83.84% 0 0 / 0.7)"
+      },
+      "auth-surface": {
+        "role": "neutral",
+        "displayName": "Surface White",
+        "tonalRamp": [
+          "oklch(15.00% 0 0)",
+          "oklch(26.43% 0 0)",
+          "oklch(37.86% 0 0)",
+          "oklch(49.29% 0 0)",
+          "oklch(60.71% 0 0)",
+          "oklch(72.14% 0 0)",
+          "oklch(83.57% 0 0)",
+          "oklch(95.00% 0 0)"
+        ]
+      },
+      "auth-surface-dark": {
+        "role": "neutral",
+        "displayName": "Surface White — Dark",
+        "tonalRamp": [
+          "oklch(15.00% 0 0)",
+          "oklch(26.43% 0 0)",
+          "oklch(37.86% 0 0)",
+          "oklch(49.29% 0 0)",
+          "oklch(60.71% 0 0)",
+          "oklch(72.14% 0 0)",
+          "oklch(83.57% 0 0)",
+          "oklch(95.00% 0 0)"
+        ]
+      },
+      "auth-page": {
+        "role": "neutral",
+        "displayName": "Page Tone",
+        "tonalRamp": [
+          "oklch(15.00% 0 0)",
+          "oklch(26.43% 0 0)",
+          "oklch(37.86% 0 0)",
+          "oklch(49.29% 0 0)",
+          "oklch(60.71% 0 0)",
+          "oklch(72.14% 0 0)",
+          "oklch(83.57% 0 0)",
+          "oklch(95.00% 0 0)"
+        ]
+      },
+      "auth-page-dark": {
+        "role": "neutral",
+        "displayName": "Page Tone — Dark",
+        "tonalRamp": [
+          "oklch(15.00% 0 0)",
+          "oklch(26.43% 0 0)",
+          "oklch(37.86% 0 0)",
+          "oklch(49.29% 0 0)",
+          "oklch(60.71% 0 0)",
+          "oklch(72.14% 0 0)",
+          "oklch(83.57% 0 0)",
+          "oklch(95.00% 0 0)"
+        ]
+      },
+      "auth-border": {
+        "role": "neutral",
+        "displayName": "Control Border",
+        "tonalRamp": [
+          "oklch(15.00% 0 0)",
+          "oklch(26.43% 0 0)",
+          "oklch(37.86% 0 0)",
+          "oklch(49.29% 0 0)",
+          "oklch(60.71% 0 0)",
+          "oklch(72.14% 0 0)",
+          "oklch(83.57% 0 0)",
+          "oklch(95.00% 0 0)"
+        ]
+      },
+      "auth-border-dark": {
+        "role": "neutral",
+        "displayName": "Control Border — Dark",
+        "tonalRamp": [
+          "oklch(15.00% 0 0)",
+          "oklch(26.43% 0 0)",
+          "oklch(37.86% 0 0)",
+          "oklch(49.29% 0 0)",
+          "oklch(60.71% 0 0)",
+          "oklch(72.14% 0 0)",
+          "oklch(83.57% 0 0)",
+          "oklch(95.00% 0 0)"
+        ]
+      },
+      "auth-action": {
+        "role": "primary",
+        "displayName": "Navy Action",
+        "tonalRamp": [
+          "oklch(15.00% 0 0)",
+          "oklch(26.43% 0 0)",
+          "oklch(37.86% 0 0)",
+          "oklch(49.29% 0 0)",
+          "oklch(60.71% 0 0)",
+          "oklch(72.14% 0 0)",
+          "oklch(83.57% 0 0)",
+          "oklch(95.00% 0 0)"
+        ]
+      },
+      "auth-action-dark": {
+        "role": "primary",
+        "displayName": "Navy Action — Dark",
+        "tonalRamp": [
+          "oklch(15.00% 0 0)",
+          "oklch(26.43% 0 0)",
+          "oklch(37.86% 0 0)",
+          "oklch(49.29% 0 0)",
+          "oklch(60.71% 0 0)",
+          "oklch(72.14% 0 0)",
+          "oklch(83.57% 0 0)",
+          "oklch(95.00% 0 0)"
+        ]
+      },
+      "auth-on-action": {
+        "role": "primary",
+        "displayName": "On Action",
+        "tonalRamp": [
+          "oklch(15.00% 0.00000 89.88)",
+          "oklch(26.43% 0.00000 89.88)",
+          "oklch(37.86% 0.00000 89.88)",
+          "oklch(49.29% 0.00000 89.88)",
+          "oklch(60.71% 0.00000 89.88)",
+          "oklch(72.14% 0.00000 89.88)",
+          "oklch(83.57% 0.00000 89.88)",
+          "oklch(95.00% 0.00000 89.88)"
+        ]
+      },
+      "auth-on-action-dark": {
+        "role": "primary",
+        "displayName": "On Action — Dark",
+        "tonalRamp": [
+          "oklch(15.00% 0 0)",
+          "oklch(26.43% 0 0)",
+          "oklch(37.86% 0 0)",
+          "oklch(49.29% 0 0)",
+          "oklch(60.71% 0 0)",
+          "oklch(72.14% 0 0)",
+          "oklch(83.57% 0 0)",
+          "oklch(95.00% 0 0)"
+        ]
+      },
+      "auth-action-hover": {
+        "role": "primary",
+        "displayName": "Action Hover",
+        "tonalRamp": [
+          "oklch(15.00% 0 0)",
+          "oklch(26.43% 0 0)",
+          "oklch(37.86% 0 0)",
+          "oklch(49.29% 0 0)",
+          "oklch(60.71% 0 0)",
+          "oklch(72.14% 0 0)",
+          "oklch(83.57% 0 0)",
+          "oklch(95.00% 0 0)"
+        ]
+      },
+      "auth-action-hover-dark": {
+        "role": "primary",
+        "displayName": "Action Hover — Dark",
+        "tonalRamp": [
+          "oklch(15.00% 0.00000 89.88)",
+          "oklch(26.43% 0.00000 89.88)",
+          "oklch(37.86% 0.00000 89.88)",
+          "oklch(49.29% 0.00000 89.88)",
+          "oklch(60.71% 0.00000 89.88)",
+          "oklch(72.14% 0.00000 89.88)",
+          "oklch(83.57% 0.00000 89.88)",
+          "oklch(95.00% 0.00000 89.88)"
+        ]
+      },
+      "auth-soft": {
+        "role": "neutral",
+        "displayName": "Soft Surface",
+        "tonalRamp": [
+          "oklch(15.00% 0.00688 247.90)",
+          "oklch(26.43% 0.00688 247.90)",
+          "oklch(37.86% 0.00688 247.90)",
+          "oklch(49.29% 0.00688 247.90)",
+          "oklch(60.71% 0.00688 247.90)",
+          "oklch(72.14% 0.00688 247.90)",
+          "oklch(83.57% 0.00688 247.90)",
+          "oklch(95.00% 0.00688 247.90)"
+        ]
+      },
+      "auth-soft-dark": {
+        "role": "neutral",
+        "displayName": "Soft Surface — Dark",
+        "tonalRamp": [
+          "oklch(15.00% 0.03135 248.84)",
+          "oklch(26.43% 0.03135 248.84)",
+          "oklch(37.86% 0.03135 248.84)",
+          "oklch(49.29% 0.03135 248.84)",
+          "oklch(60.71% 0.03135 248.84)",
+          "oklch(72.14% 0.03135 248.84)",
+          "oklch(83.57% 0.03135 248.84)",
+          "oklch(95.00% 0.03135 248.84)"
+        ]
+      },
+      "auth-focus": {
+        "role": "primary",
+        "displayName": "Neutral Focus",
+        "tonalRamp": [
+          "oklch(15.00% 0 0)",
+          "oklch(26.43% 0 0)",
+          "oklch(37.86% 0 0)",
+          "oklch(49.29% 0 0)",
+          "oklch(60.71% 0 0)",
+          "oklch(72.14% 0 0)",
+          "oklch(83.57% 0 0)",
+          "oklch(95.00% 0 0)"
+        ]
+      },
+      "auth-focus-dark": {
+        "role": "primary",
+        "displayName": "Neutral Focus — Dark",
+        "tonalRamp": [
+          "oklch(15.00% 0 0)",
+          "oklch(26.43% 0 0)",
+          "oklch(37.86% 0 0)",
+          "oklch(49.29% 0 0)",
+          "oklch(60.71% 0 0)",
+          "oklch(72.14% 0 0)",
+          "oklch(83.57% 0 0)",
+          "oklch(95.00% 0 0)"
+        ]
+      },
+      "auth-selection": {
+        "role": "primary",
+        "displayName": "Selection Blue",
+        "tonalRamp": [
+          "oklch(15.00% 0.02543 249.96)",
+          "oklch(26.43% 0.02543 249.96)",
+          "oklch(37.86% 0.02543 249.96)",
+          "oklch(49.29% 0.02543 249.96)",
+          "oklch(60.71% 0.02543 249.96)",
+          "oklch(72.14% 0.02543 249.96)",
+          "oklch(83.57% 0.02543 249.96)",
+          "oklch(95.00% 0.02543 249.96)"
+        ]
+      },
+      "auth-selection-dark": {
+        "role": "primary",
+        "displayName": "Selection Blue — Dark",
+        "tonalRamp": [
+          "oklch(15.00% 0.05417 249.26)",
+          "oklch(26.43% 0.05417 249.26)",
+          "oklch(37.86% 0.05417 249.26)",
+          "oklch(49.29% 0.05417 249.26)",
+          "oklch(60.71% 0.05417 249.26)",
+          "oklch(72.14% 0.05417 249.26)",
+          "oklch(83.57% 0.05417 249.26)",
+          "oklch(95.00% 0.05417 249.26)"
+        ]
+      },
+      "auth-danger": {
+        "role": "primary",
+        "displayName": "Danger Red",
+        "tonalRamp": [
+          "oklch(15.00% 0.15970 21.30)",
+          "oklch(26.43% 0.15970 21.30)",
+          "oklch(37.86% 0.15970 21.30)",
+          "oklch(49.29% 0.15970 21.30)",
+          "oklch(60.71% 0.15970 21.30)",
+          "oklch(72.14% 0.15970 21.30)",
+          "oklch(83.57% 0.15970 21.30)",
+          "oklch(95.00% 0.15970 21.30)"
+        ]
+      },
+      "auth-danger-dark": {
+        "role": "primary",
+        "displayName": "Danger Red — Dark",
+        "tonalRamp": [
+          "oklch(15.00% 0.16138 21.80)",
+          "oklch(26.43% 0.16138 21.80)",
+          "oklch(37.86% 0.16138 21.80)",
+          "oklch(49.29% 0.16138 21.80)",
+          "oklch(60.71% 0.16138 21.80)",
+          "oklch(72.14% 0.16138 21.80)",
+          "oklch(83.57% 0.16138 21.80)",
+          "oklch(95.00% 0.16138 21.80)"
+        ],
+        "canonical": "oklch(73.63% 0.16138 21.80)"
+      },
+      "fg": {
+        "role": "neutral",
+        "displayName": "Shared Fg",
+        "tonalRamp": [
+          "oklch(15.00% 0 0)",
+          "oklch(26.43% 0 0)",
+          "oklch(37.86% 0 0)",
+          "oklch(49.29% 0 0)",
+          "oklch(60.71% 0 0)",
+          "oklch(72.14% 0 0)",
+          "oklch(83.57% 0 0)",
+          "oklch(95.00% 0 0)"
+        ]
+      },
+      "fg-dark": {
+        "role": "neutral",
+        "displayName": "Shared Fg Dark",
+        "tonalRamp": [
+          "oklch(15.00% 0 0)",
+          "oklch(26.43% 0 0)",
+          "oklch(37.86% 0 0)",
+          "oklch(49.29% 0 0)",
+          "oklch(60.71% 0 0)",
+          "oklch(72.14% 0 0)",
+          "oklch(83.57% 0 0)",
+          "oklch(95.00% 0 0)"
+        ]
+      },
+      "surface": {
+        "role": "neutral",
+        "displayName": "Shared Surface",
+        "tonalRamp": [
+          "oklch(15.00% 0 0)",
+          "oklch(26.43% 0 0)",
+          "oklch(37.86% 0 0)",
+          "oklch(49.29% 0 0)",
+          "oklch(60.71% 0 0)",
+          "oklch(72.14% 0 0)",
+          "oklch(83.57% 0 0)",
+          "oklch(95.00% 0 0)"
+        ]
+      },
+      "surface-dark": {
+        "role": "neutral",
+        "displayName": "Shared Surface Dark",
+        "tonalRamp": [
+          "oklch(15.00% 0 0)",
+          "oklch(26.43% 0 0)",
+          "oklch(37.86% 0 0)",
+          "oklch(49.29% 0 0)",
+          "oklch(60.71% 0 0)",
+          "oklch(72.14% 0 0)",
+          "oklch(83.57% 0 0)",
+          "oklch(95.00% 0 0)"
+        ]
+      },
+      "soft": {
+        "role": "neutral",
+        "displayName": "Shared Soft",
+        "tonalRamp": [
+          "oklch(15.00% 0.01190 145.48)",
+          "oklch(26.43% 0.01190 145.48)",
+          "oklch(37.86% 0.01190 145.48)",
+          "oklch(49.29% 0.01190 145.48)",
+          "oklch(60.71% 0.01190 145.48)",
+          "oklch(72.14% 0.01190 145.48)",
+          "oklch(83.57% 0.01190 145.48)",
+          "oklch(95.00% 0.01190 145.48)"
+        ]
+      },
+      "soft-dark": {
+        "role": "neutral",
+        "displayName": "Shared Soft Dark",
+        "tonalRamp": [
+          "oklch(15.00% 0.03047 153.79)",
+          "oklch(26.43% 0.03047 153.79)",
+          "oklch(37.86% 0.03047 153.79)",
+          "oklch(49.29% 0.03047 153.79)",
+          "oklch(60.71% 0.03047 153.79)",
+          "oklch(72.14% 0.03047 153.79)",
+          "oklch(83.57% 0.03047 153.79)",
+          "oklch(95.00% 0.03047 153.79)"
+        ]
+      },
+      "control-border": {
+        "role": "neutral",
+        "displayName": "Shared Control Border",
+        "tonalRamp": [
+          "oklch(15.00% 0 0)",
+          "oklch(26.43% 0 0)",
+          "oklch(37.86% 0 0)",
+          "oklch(49.29% 0 0)",
+          "oklch(60.71% 0 0)",
+          "oklch(72.14% 0 0)",
+          "oklch(83.57% 0 0)",
+          "oklch(95.00% 0 0)"
+        ]
+      },
+      "control-border-dark": {
+        "role": "neutral",
+        "displayName": "Shared Control Border Dark",
+        "tonalRamp": [
+          "oklch(15.00% 0 0)",
+          "oklch(26.43% 0 0)",
+          "oklch(37.86% 0 0)",
+          "oklch(49.29% 0 0)",
+          "oklch(60.71% 0 0)",
+          "oklch(72.14% 0 0)",
+          "oklch(83.57% 0 0)",
+          "oklch(95.00% 0 0)"
+        ]
+      },
+      "control-interactive-border": {
+        "role": "neutral",
+        "displayName": "Shared Control Interactive Border",
+        "tonalRamp": [
+          "oklch(15.00% 0 0)",
+          "oklch(26.43% 0 0)",
+          "oklch(37.86% 0 0)",
+          "oklch(49.29% 0 0)",
+          "oklch(60.71% 0 0)",
+          "oklch(72.14% 0 0)",
+          "oklch(83.57% 0 0)",
+          "oklch(95.00% 0 0)"
+        ]
+      },
+      "control-interactive-border-dark": {
+        "role": "neutral",
+        "displayName": "Shared Control Interactive Border Dark",
+        "tonalRamp": [
+          "oklch(15.00% 0 0)",
+          "oklch(26.43% 0 0)",
+          "oklch(37.86% 0 0)",
+          "oklch(49.29% 0 0)",
+          "oklch(60.71% 0 0)",
+          "oklch(72.14% 0 0)",
+          "oklch(83.57% 0 0)",
+          "oklch(95.00% 0 0)"
+        ]
+      },
+      "action-solid": {
+        "role": "primary",
+        "displayName": "Shared Action Solid",
+        "tonalRamp": [
+          "oklch(15.00% 0 0)",
+          "oklch(26.43% 0 0)",
+          "oklch(37.86% 0 0)",
+          "oklch(49.29% 0 0)",
+          "oklch(60.71% 0 0)",
+          "oklch(72.14% 0 0)",
+          "oklch(83.57% 0 0)",
+          "oklch(95.00% 0 0)"
+        ]
+      },
+      "action-solid-dark": {
+        "role": "primary",
+        "displayName": "Shared Action Solid Dark",
+        "tonalRamp": [
+          "oklch(15.00% 0 0)",
+          "oklch(26.43% 0 0)",
+          "oklch(37.86% 0 0)",
+          "oklch(49.29% 0 0)",
+          "oklch(60.71% 0 0)",
+          "oklch(72.14% 0 0)",
+          "oklch(83.57% 0 0)",
+          "oklch(95.00% 0 0)"
+        ]
+      },
+      "action-contrast": {
+        "role": "primary",
+        "displayName": "Shared Action Contrast",
+        "tonalRamp": [
+          "oklch(15.00% 0.00000 89.88)",
+          "oklch(26.43% 0.00000 89.88)",
+          "oklch(37.86% 0.00000 89.88)",
+          "oklch(49.29% 0.00000 89.88)",
+          "oklch(60.71% 0.00000 89.88)",
+          "oklch(72.14% 0.00000 89.88)",
+          "oklch(83.57% 0.00000 89.88)",
+          "oklch(95.00% 0.00000 89.88)"
+        ]
+      },
+      "action-contrast-dark": {
+        "role": "primary",
+        "displayName": "Shared Action Contrast Dark",
+        "tonalRamp": [
+          "oklch(15.00% 0 0)",
+          "oklch(26.43% 0 0)",
+          "oklch(37.86% 0 0)",
+          "oklch(49.29% 0 0)",
+          "oklch(60.71% 0 0)",
+          "oklch(72.14% 0 0)",
+          "oklch(83.57% 0 0)",
+          "oklch(95.00% 0 0)"
+        ]
+      },
+      "action-hover": {
+        "role": "primary",
+        "displayName": "Shared Action Hover",
+        "tonalRamp": [
+          "oklch(15.00% 0 0)",
+          "oklch(26.43% 0 0)",
+          "oklch(37.86% 0 0)",
+          "oklch(49.29% 0 0)",
+          "oklch(60.71% 0 0)",
+          "oklch(72.14% 0 0)",
+          "oklch(83.57% 0 0)",
+          "oklch(95.00% 0 0)"
+        ]
+      },
+      "action-hover-dark": {
+        "role": "primary",
+        "displayName": "Shared Action Hover Dark",
+        "tonalRamp": [
+          "oklch(15.00% 0 0)",
+          "oklch(26.43% 0 0)",
+          "oklch(37.86% 0 0)",
+          "oklch(49.29% 0 0)",
+          "oklch(60.71% 0 0)",
+          "oklch(72.14% 0 0)",
+          "oklch(83.57% 0 0)",
+          "oklch(95.00% 0 0)"
+        ]
+      },
+      "destructive-solid": {
+        "role": "primary",
+        "displayName": "Shared Destructive Solid",
+        "tonalRamp": [
+          "oklch(15.00% 0.15970 21.30)",
+          "oklch(26.43% 0.15970 21.30)",
+          "oklch(37.86% 0.15970 21.30)",
+          "oklch(49.29% 0.15970 21.30)",
+          "oklch(60.71% 0.15970 21.30)",
+          "oklch(72.14% 0.15970 21.30)",
+          "oklch(83.57% 0.15970 21.30)",
+          "oklch(95.00% 0.15970 21.30)"
+        ]
+      },
+      "destructive-solid-dark": {
+        "role": "primary",
+        "displayName": "Shared Destructive Solid Dark",
+        "tonalRamp": [
+          "oklch(15.00% 0.09674 12.97)",
+          "oklch(26.43% 0.09674 12.97)",
+          "oklch(37.86% 0.09674 12.97)",
+          "oklch(49.29% 0.09674 12.97)",
+          "oklch(60.71% 0.09674 12.97)",
+          "oklch(72.14% 0.09674 12.97)",
+          "oklch(83.57% 0.09674 12.97)",
+          "oklch(95.00% 0.09674 12.97)"
+        ]
+      },
+      "destructive-contrast": {
+        "role": "primary",
+        "displayName": "Shared Destructive Contrast",
+        "tonalRamp": [
+          "oklch(15.00% 0.00000 89.88)",
+          "oklch(26.43% 0.00000 89.88)",
+          "oklch(37.86% 0.00000 89.88)",
+          "oklch(49.29% 0.00000 89.88)",
+          "oklch(60.71% 0.00000 89.88)",
+          "oklch(72.14% 0.00000 89.88)",
+          "oklch(83.57% 0.00000 89.88)",
+          "oklch(95.00% 0.00000 89.88)"
+        ]
+      },
+      "destructive-contrast-dark": {
+        "role": "primary",
+        "displayName": "Shared Destructive Contrast Dark",
+        "tonalRamp": [
+          "oklch(15.00% 0.07160 14.53)",
+          "oklch(26.43% 0.07160 14.53)",
+          "oklch(37.86% 0.07160 14.53)",
+          "oklch(49.29% 0.07160 14.53)",
+          "oklch(60.71% 0.07160 14.53)",
+          "oklch(72.14% 0.07160 14.53)",
+          "oklch(83.57% 0.07160 14.53)",
+          "oklch(95.00% 0.07160 14.53)"
+        ]
+      },
+      "destructive-hover": {
+        "role": "primary",
+        "displayName": "Shared Destructive Hover",
+        "tonalRamp": [
+          "oklch(15.00% 0.14264 20.02)",
+          "oklch(26.43% 0.14264 20.02)",
+          "oklch(37.86% 0.14264 20.02)",
+          "oklch(49.29% 0.14264 20.02)",
+          "oklch(60.71% 0.14264 20.02)",
+          "oklch(72.14% 0.14264 20.02)",
+          "oklch(83.57% 0.14264 20.02)",
+          "oklch(95.00% 0.14264 20.02)"
+        ]
+      },
+      "destructive-hover-dark": {
+        "role": "primary",
+        "displayName": "Shared Destructive Hover Dark",
+        "tonalRamp": [
+          "oklch(15.00% 0.06914 11.90)",
+          "oklch(26.43% 0.06914 11.90)",
+          "oklch(37.86% 0.06914 11.90)",
+          "oklch(49.29% 0.06914 11.90)",
+          "oklch(60.71% 0.06914 11.90)",
+          "oklch(72.14% 0.06914 11.90)",
+          "oklch(83.57% 0.06914 11.90)",
+          "oklch(95.00% 0.06914 11.90)"
+        ]
+      },
+      "error": {
+        "role": "primary",
+        "displayName": "Shared Error",
+        "tonalRamp": [
+          "oklch(15.00% 0.15194 19.13)",
+          "oklch(26.43% 0.15194 19.13)",
+          "oklch(37.86% 0.15194 19.13)",
+          "oklch(49.29% 0.15194 19.13)",
+          "oklch(60.71% 0.15194 19.13)",
+          "oklch(72.14% 0.15194 19.13)",
+          "oklch(83.57% 0.15194 19.13)",
+          "oklch(95.00% 0.15194 19.13)"
+        ]
+      },
+      "error-dark": {
+        "role": "primary",
+        "displayName": "Shared Error Dark",
+        "tonalRamp": [
+          "oklch(15.00% 0.16138 21.80)",
+          "oklch(26.43% 0.16138 21.80)",
+          "oklch(37.86% 0.16138 21.80)",
+          "oklch(49.29% 0.16138 21.80)",
+          "oklch(60.71% 0.16138 21.80)",
+          "oklch(72.14% 0.16138 21.80)",
+          "oklch(83.57% 0.16138 21.80)",
+          "oklch(95.00% 0.16138 21.80)"
+        ],
+        "canonical": "oklch(73.63% 0.16138 21.80)"
+      },
+      "link-fg": {
+        "role": "primary",
+        "displayName": "Link Fg",
+        "tonalRamp": [
+          "oklch(15.00% 0.06844 165.62)",
+          "oklch(26.43% 0.06844 165.62)",
+          "oklch(37.86% 0.06844 165.62)",
+          "oklch(49.29% 0.06844 165.62)",
+          "oklch(60.71% 0.06844 165.62)",
+          "oklch(72.14% 0.06844 165.62)",
+          "oklch(83.57% 0.06844 165.62)",
+          "oklch(95.00% 0.06844 165.62)"
+        ]
+      },
+      "link-fg-dark": {
+        "role": "primary",
+        "displayName": "Link Fg Dark",
+        "tonalRamp": [
+          "oklch(15.00% 0.08111 158.56)",
+          "oklch(26.43% 0.08111 158.56)",
+          "oklch(37.86% 0.08111 158.56)",
+          "oklch(49.29% 0.08111 158.56)",
+          "oklch(60.71% 0.08111 158.56)",
+          "oklch(72.14% 0.08111 158.56)",
+          "oklch(83.57% 0.08111 158.56)",
+          "oklch(95.00% 0.08111 158.56)"
+        ]
+      },
+      "link-focus": {
+        "role": "primary",
+        "displayName": "Link Focus",
+        "tonalRamp": [
+          "oklch(15.00% 0 0)",
+          "oklch(26.43% 0 0)",
+          "oklch(37.86% 0 0)",
+          "oklch(49.29% 0 0)",
+          "oklch(60.71% 0 0)",
+          "oklch(72.14% 0 0)",
+          "oklch(83.57% 0 0)",
+          "oklch(95.00% 0 0)"
+        ]
+      },
+      "link-focus-dark": {
+        "role": "primary",
+        "displayName": "Link Focus — Dark",
+        "tonalRamp": [
+          "oklch(15.00% 0 0)",
+          "oklch(26.43% 0 0)",
+          "oklch(37.86% 0 0)",
+          "oklch(49.29% 0 0)",
+          "oklch(60.71% 0 0)",
+          "oklch(72.14% 0 0)",
+          "oklch(83.57% 0 0)",
+          "oklch(95.00% 0 0)"
+        ]
+      },
+      "menu-item-hover": {
+        "role": "neutral",
+        "displayName": "Menu Item Hover",
+        "tonalRamp": [
+          "oklch(15.00% 0 0)",
+          "oklch(26.43% 0 0)",
+          "oklch(37.86% 0 0)",
+          "oklch(49.29% 0 0)",
+          "oklch(60.71% 0 0)",
+          "oklch(72.14% 0 0)",
+          "oklch(83.57% 0 0)",
+          "oklch(95.00% 0 0)"
+        ]
+      },
+      "menu-item-hover-dark": {
+        "role": "neutral",
+        "displayName": "Menu Item Hover Dark",
+        "tonalRamp": [
+          "oklch(15.00% 0 0)",
+          "oklch(26.43% 0 0)",
+          "oklch(37.86% 0 0)",
+          "oklch(49.29% 0 0)",
+          "oklch(60.71% 0 0)",
+          "oklch(72.14% 0 0)",
+          "oklch(83.57% 0 0)",
+          "oklch(95.00% 0 0)"
+        ],
+        "canonical": "oklch(100% 0 0 / 0.04)"
+      },
+      "action-ghost-hover": {
+        "role": "neutral",
+        "displayName": "Action Ghost Hover",
+        "tonalRamp": [
+          "oklch(15.00% 0 0)",
+          "oklch(26.43% 0 0)",
+          "oklch(37.86% 0 0)",
+          "oklch(49.29% 0 0)",
+          "oklch(60.71% 0 0)",
+          "oklch(72.14% 0 0)",
+          "oklch(83.57% 0 0)",
+          "oklch(95.00% 0 0)"
+        ]
+      },
+      "action-ghost-hover-dark": {
+        "role": "neutral",
+        "displayName": "Action Ghost Hover Dark",
+        "tonalRamp": [
+          "oklch(15.00% 0 0)",
+          "oklch(26.43% 0 0)",
+          "oklch(37.86% 0 0)",
+          "oklch(49.29% 0 0)",
+          "oklch(60.71% 0 0)",
+          "oklch(72.14% 0 0)",
+          "oklch(83.57% 0 0)",
+          "oklch(95.00% 0 0)"
+        ],
+        "canonical": "oklch(100% 0 0 / 0.04)"
+      }
+    },
+    "typographyMeta": {
+      "headline": {
+        "displayName": "Auth Headline",
+        "purpose": "Compact auth task heading at the approved 24px default; provisional system sans."
+      },
+      "body": {
+        "displayName": "Body",
+        "purpose": "Status, explanation and general auth copy."
+      },
+      "label": {
+        "displayName": "Field Label",
+        "purpose": "Persistent field labels."
+      },
+      "input": {
+        "displayName": "Input Text",
+        "purpose": "Readable native controls."
+      },
+      "action": {
+        "displayName": "Submit Action",
+        "purpose": "Semibold primary button labels."
+      },
+      "secondary": {
+        "displayName": "Secondary Text",
+        "purpose": "Recovery, back and secondary links; muted guidance."
+      },
+      "input-sm": {
+        "displayName": "Input Sm",
+        "purpose": "Resolved shared-control typography; inherits the surrounding font context."
+      },
+      "control-action": {
+        "displayName": "Control Action",
+        "purpose": "Resolved shared-control typography; inherits the surrounding font context."
+      },
+      "control-input": {
+        "displayName": "Control Input",
+        "purpose": "Resolved shared-control typography; inherits the surrounding font context."
+      },
+      "control-input-sm": {
+        "displayName": "Control Input Sm",
+        "purpose": "Resolved shared-control typography; inherits the surrounding font context."
+      },
+      "control-body": {
+        "displayName": "Control Body",
+        "purpose": "Shared feedback body text; inherits the auth system stack inside AuthFrame."
+      }
+    },
+    "shadows": [
+      {
+        "name": "menu-light",
+        "value": "0 0 0 1px rgba(0,0,0,.06),0 2px 6px 0 rgba(0,0,0,.05),0 4px 42px 0 rgba(0,0,0,.06)",
+        "purpose": "Light-theme floating menu elevation."
+      },
+      {
+        "name": "menu-dark",
+        "value": "0 4px 42px 0 rgba(0,0,0,.5),0 2px 6px 0 rgba(0,0,0,.4),0 0 0 1px rgba(255,255,255,.08),inset 0 0 0 1px rgba(255,255,255,.04),inset 0 1px 0 0 rgba(255,255,255,.03)",
+        "purpose": "Dark-theme floating menu elevation and inset highlights."
+      }
+    ],
+    "motion": [
+      {
+        "name": "input-hover",
+        "value": "200ms cubic-bezier(0,0,0.2,1)",
+        "purpose": "Input, Select and Textarea borders share button and menu-item timing. Focus outlines appear immediately in their final colour to avoid a text-colour flash. Reduced motion disables transitions; theme capture temporarily overrides them."
+      },
+      {
+        "name": "menu-open",
+        "value": "250ms",
+        "purpose": "Shared menu scale-and-fade entrance; durations.menu.open."
+      },
+      {
+        "name": "menu-close",
+        "value": "150ms",
+        "purpose": "Shared menu scale-and-fade exit; durations.menu.close."
+      },
+      {
+        "name": "menu-easing",
+        "value": "cubic-bezier(0.22, 1, 0.36, 1)",
+        "purpose": "Decelerating menu motion; easings.menu. Reduced motion disables transitions."
+      },
+      {
+        "name": "theme-change",
+        "value": "250ms ease-in-out",
+        "purpose": "One browser snapshot crossfade for explicit and system theme changes. Suppress individual transitions during capture; reduced motion and unsupported browsers switch immediately."
+      },
+      {
+        "name": "button-hover",
+        "value": "200ms cubic-bezier(0,0,0.2,1)",
+        "purpose": "Shared Button/IconButton fill, border, text and outline transitions; theme timing overrides while switching."
+      },
+      {
+        "name": "menu-item-hover",
+        "value": "200ms cubic-bezier(0,0,0.2,1)",
+        "purpose": "Highlighted menu backgrounds use the shared button timing in both directions; outlines remain immediate. Reduced motion disables the transition."
+      },
+      {
+        "name": "tooltip-open",
+        "value": "150ms cubic-bezier(0,0,0.2,1)",
+        "purpose": "Tooltip opacity and 0.98-scale entrance via durations.tooltip.open and easings.out, after the provider’s 300ms hover delay."
+      },
+      {
+        "name": "tooltip-close",
+        "value": "50ms cubic-bezier(0,0,0.2,1)",
+        "purpose": "Tooltip exit via durations.tooltip.close, without an added delay. Base UI instant states, reduced motion and theme capture disable transitions."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "sm",
+        "value": "40rem"
+      }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "Shared primary recipe, md size; data-size=sm selects the 40px minimum. Uses the surrounding semantic palette.",
+      "html": "<div class=\"ds-shared-scope\"><button type=\"button\" class=\"ds-button ds-button-primary\">Save changes</button></div>",
+      "css": ".ds-shared-scope {font-family:var(--fonts-body, Inter, ui-sans-serif, system-ui, sans-serif);font-size:14px;line-height:1.6;color:var(--colors-fg, #0d0d0d);}.ds-button {display:inline-flex;align-items:center;justify-content:center;gap:8px;font:inherit;font-size:14px;font-weight:600;border-width:1px;border-style:solid;border-radius:var(--radii-control, 6px);padding-inline:12px;padding-block:8px;min-block-size:var(--sizes-control-md, 46px);cursor:pointer;} .ds-button[data-size=sm] {min-block-size:var(--sizes-control-sm, 40px);} .ds-button:focus-visible {outline:2px solid var(--button-focus-color);outline-offset:2px;} .ds-button:disabled {opacity:.55;cursor:not-allowed;}.ds-button-primary {--button-focus-color:var(--colors-action-solid, #0d0d0d);background-color:var(--colors-action-solid, #0d0d0d);border-color:var(--colors-action-solid, #0d0d0d);color:var(--colors-action-contrast, #ffffff);} .ds-button-primary:hover:enabled {--button-focus-color:var(--colors-action-hover, #2b2b2b);background-color:var(--colors-action-hover, #2b2b2b);border-color:var(--colors-action-hover, #2b2b2b);}@media(prefers-reduced-motion:reduce) {.ds-button {transition:none;}} @media(forced-colors:active) {.ds-button {border-color:ButtonText;} .ds-button:focus-visible {outline-color:Highlight;}}.ds-shared-scope button{transition-property:background-color,border-color,color,outline-color;transition-duration:var(--durations-button,200ms);transition-timing-function:var(--easings-out,cubic-bezier(0,0,.2,1))}@media(prefers-reduced-motion:reduce){.ds-shared-scope button{transition:none!important}}"
+    },
+    {
+      "name": "Secondary Button",
+      "kind": "button",
+      "refersTo": "button-secondary",
+      "description": "Shared secondary recipe, md size; data-size=sm selects the 40px minimum. Uses the surrounding semantic palette.",
+      "html": "<div class=\"ds-shared-scope\"><button type=\"button\" class=\"ds-button ds-button-secondary\">Cancel</button></div>",
+      "css": ".ds-shared-scope {font-family:var(--fonts-body, Inter, ui-sans-serif, system-ui, sans-serif);font-size:14px;line-height:1.6;color:var(--colors-fg, #0d0d0d);}.ds-button {display:inline-flex;align-items:center;justify-content:center;gap:8px;font:inherit;font-size:14px;font-weight:600;border-width:1px;border-style:solid;border-radius:var(--radii-control, 6px);padding-inline:12px;padding-block:8px;min-block-size:var(--sizes-control-md, 46px);cursor:pointer;} .ds-button[data-size=sm] {min-block-size:var(--sizes-control-sm, 40px);} .ds-button:focus-visible {outline:2px solid var(--button-focus-color);outline-offset:2px;} .ds-button:disabled {opacity:.55;cursor:not-allowed;}.ds-button-secondary {--button-focus-color:var(--colors-fg, #0d0d0d);background-color:var(--colors-surface, #fdfdfd);border-color:var(--colors-control-border, #939393);color:var(--colors-fg, #0d0d0d);} .ds-button-secondary:hover:enabled {background-color:var(--colors-action-ghost-hover, #f4f4f5);}@media(prefers-reduced-motion:reduce) {.ds-button {transition:none;}} @media(forced-colors:active) {.ds-button {border-color:ButtonText;} .ds-button:focus-visible {outline-color:Highlight;}}.ds-shared-scope button{transition-property:background-color,border-color,color,outline-color;transition-duration:var(--durations-button,200ms);transition-timing-function:var(--easings-out,cubic-bezier(0,0,.2,1))}@media(prefers-reduced-motion:reduce){.ds-shared-scope button{transition:none!important}}"
+    },
+    {
+      "name": "Danger Button",
+      "kind": "button",
+      "refersTo": "button-danger",
+      "description": "Shared danger recipe, md size; data-size=sm selects the 40px minimum. Uses the surrounding semantic palette.",
+      "html": "<div class=\"ds-shared-scope\"><button type=\"button\" class=\"ds-button ds-button-danger\">Delete project</button></div>",
+      "css": ".ds-shared-scope {font-family:var(--fonts-body, Inter, ui-sans-serif, system-ui, sans-serif);font-size:14px;line-height:1.6;color:var(--colors-fg, #0d0d0d);}.ds-button {display:inline-flex;align-items:center;justify-content:center;gap:8px;font:inherit;font-size:14px;font-weight:600;border-width:1px;border-style:solid;border-radius:var(--radii-control, 6px);padding-inline:12px;padding-block:8px;min-block-size:var(--sizes-control-md, 46px);cursor:pointer;} .ds-button[data-size=sm] {min-block-size:var(--sizes-control-sm, 40px);} .ds-button:focus-visible {outline:2px solid var(--button-focus-color);outline-offset:2px;} .ds-button:disabled {opacity:.55;cursor:not-allowed;}.ds-button-danger {--button-focus-color:var(--colors-destructive-solid, #a72b35);background-color:var(--colors-destructive-solid, #a72b35);border-color:var(--colors-destructive-solid, #a72b35);color:var(--colors-destructive-contrast, #ffffff);} .ds-button-danger:hover:enabled {--button-focus-color:var(--colors-destructive-hover, #8c202c);background-color:var(--colors-destructive-hover, #8c202c);border-color:var(--colors-destructive-hover, #8c202c);}@media(prefers-reduced-motion:reduce) {.ds-button {transition:none;}} @media(forced-colors:active) {.ds-button {border-color:ButtonText;} .ds-button:focus-visible {outline-color:Highlight;}}.ds-shared-scope button{transition-property:background-color,border-color,color,outline-color;transition-duration:var(--durations-button,200ms);transition-timing-function:var(--easings-out,cubic-bezier(0,0,.2,1))}@media(prefers-reduced-motion:reduce){.ds-shared-scope button{transition:none!important}}"
+    },
+    {
+      "name": "Input",
+      "kind": "input",
+      "refersTo": "input",
+      "description": "Shared field border in the auth palette, meeting 3:1 on the standard surface. Focus has a flush 2px visual edge; explicit invalid state retains error colour.",
+      "html": "<div class=\"ds-auth-scope\"><div class=\"ds-field\"><label class=\"ds-label\" for=\"ds-outline\">Authenticator or recovery code</label><input class=\"ds-input\" id=\"ds-outline\" name=\"code\" autocomplete=\"one-time-code\" required></div></div>",
+      "css": ".ds-auth-scope {--colors-fg:var(--colors-auth-fg, #0d0d0d);--colors-subtle:var(--colors-auth-subtle, #6c6c6c);--colors-surface:var(--colors-auth-surface, #fdfdfd);--colors-page:var(--colors-auth-page, #fdfdfd);--colors-border:var(--colors-auth-border, #939393);--colors-brand:var(--colors-auth-action, #0d0d0d);--colors-link-fg:var(--colors-auth-action, #0d0d0d);--colors-link-focus:var(--colors-auth-focus, #8c8c8c);--colors-soft:var(--colors-auth-soft, #edf1f5);--colors-danger:var(--colors-auth-danger, #a72b35);--colors-error:var(--colors-auth-danger, #a72b35);--colors-control-border:var(--colors-auth-border, #939393);--colors-action-solid:var(--colors-auth-action, #0d0d0d);--colors-action-contrast:var(--colors-auth-on-action, #ffffff);--colors-action-hover:var(--colors-auth-action-hover, #2b2b2b);font-family:var(--fonts-ui, ui-sans-serif, system-ui, -apple-system, sans-serif);font-size:14px;line-height:1.6;color:var(--colors-fg);}.ds-field {display:grid;gap:8px;min-inline-size:0;} .ds-label {display:grid;gap:6px;font-size:14px;font-weight:500;} .ds-input {inline-size:100%;min-inline-size:0;font:inherit;font-size:16px;color:var(--colors-fg, #0d0d0d);background-color:var(--colors-surface, #fdfdfd);caret-color:var(--colors-fg, #0d0d0d);border:1px solid var(--input-hover-border-color,var(--colors-control-border, #939393));border-radius:var(--radii-control, 6px);padding-inline:12px;padding-block:8px;min-block-size:var(--sizes-control-md, 46px);outline:none;transition-property:border-color;transition-duration:var(--durations-button, 200ms);transition-timing-function:var(--easings-out, cubic-bezier(0,0,.2,1));} .ds-input[data-size=sm] {min-block-size:var(--sizes-control-sm, 40px);font-size:14px;} .ds-input::placeholder {color:var(--colors-subtle, #5a6862);opacity:1;} .ds-input:hover:enabled:not([aria-invalid=\"true\"]) {border-color:var(--colors-control-interactive-border, #8c8c8c);} .ds-input:focus {border-color:var(--colors-control-interactive-border, #8c8c8c);outline:1px solid var(--colors-control-interactive-border, #8c8c8c);outline-offset:0;} .ds-input[aria-invalid=\"true\"], .ds-input[aria-invalid=\"true\"]:hover {border-color:var(--colors-error, #982332);} .ds-input[aria-invalid=\"true\"]:focus {border-color:var(--colors-error, #982332);outline-color:var(--colors-error, #982332);} .ds-input:disabled {opacity:.55;cursor:not-allowed;} @media(prefers-reduced-motion:reduce) {.ds-input {transition:none;}} @media(forced-colors:active) {.ds-input {border-color:ButtonText;} .ds-input:focus {border-color:Highlight;outline-color:Highlight;}}"
+    },
+    {
+      "name": "Select",
+      "kind": "input",
+      "refersTo": "select",
+      "description": "Native select reuses the input states and sizes; the shared field border and md size are defaults.",
+      "html": "<div class=\"ds-shared-scope\"><div class=\"ds-field\"><label class=\"ds-label\" for=\"ds-role\">Role</label><select class=\"ds-input ds-select\" id=\"ds-role\"><option>Operator</option><option>Viewer</option></select></div></div>",
+      "css": ".ds-shared-scope {font-family:var(--fonts-body, Inter, ui-sans-serif, system-ui, sans-serif);font-size:14px;line-height:1.6;color:var(--colors-fg, #0d0d0d);}.ds-field {display:grid;gap:8px;min-inline-size:0;} .ds-label {display:grid;gap:6px;font-size:14px;font-weight:500;} .ds-input {inline-size:100%;min-inline-size:0;font:inherit;font-size:16px;color:var(--colors-fg, #0d0d0d);background-color:var(--colors-surface, #fdfdfd);caret-color:var(--colors-fg, #0d0d0d);border:1px solid var(--input-hover-border-color,var(--colors-control-border, #939393));border-radius:var(--radii-control, 6px);padding-inline:12px;padding-block:8px;min-block-size:var(--sizes-control-md, 46px);outline:none;transition-property:border-color;transition-duration:var(--durations-button, 200ms);transition-timing-function:var(--easings-out, cubic-bezier(0,0,.2,1));} .ds-input[data-size=sm] {min-block-size:var(--sizes-control-sm, 40px);font-size:14px;} .ds-input::placeholder {color:var(--colors-subtle, #5a6862);opacity:1;} .ds-input:hover:enabled:not([aria-invalid=\"true\"]) {border-color:var(--colors-control-interactive-border, #8c8c8c);} .ds-input:focus {border-color:var(--colors-control-interactive-border, #8c8c8c);outline:1px solid var(--colors-control-interactive-border, #8c8c8c);outline-offset:0;} .ds-input[aria-invalid=\"true\"], .ds-input[aria-invalid=\"true\"]:hover {border-color:var(--colors-error, #982332);} .ds-input[aria-invalid=\"true\"]:focus {border-color:var(--colors-error, #982332);outline-color:var(--colors-error, #982332);} .ds-input:disabled {opacity:.55;cursor:not-allowed;} @media(prefers-reduced-motion:reduce) {.ds-input {transition:none;}} @media(forced-colors:active) {.ds-input {border-color:ButtonText;} .ds-input:focus {border-color:Highlight;outline-color:Highlight;}}.ds-select {cursor:pointer;}"
+    },
+    {
+      "name": "Textarea",
+      "kind": "input",
+      "refersTo": "textarea",
+      "description": "Native textarea reuses input states and permits resizing in the block direction.",
+      "html": "<div class=\"ds-shared-scope\"><div class=\"ds-field\"><label class=\"ds-label\" for=\"ds-entrypoints\">Compose entrypoints, one path per line</label><textarea class=\"ds-input ds-textarea\" id=\"ds-entrypoints\" name=\"entrypoints\" required>compose.yaml</textarea></div></div>",
+      "css": ".ds-shared-scope {font-family:var(--fonts-body, Inter, ui-sans-serif, system-ui, sans-serif);font-size:14px;line-height:1.6;color:var(--colors-fg, #0d0d0d);}.ds-field {display:grid;gap:8px;min-inline-size:0;} .ds-label {display:grid;gap:6px;font-size:14px;font-weight:500;} .ds-input {inline-size:100%;min-inline-size:0;font:inherit;font-size:16px;color:var(--colors-fg, #0d0d0d);background-color:var(--colors-surface, #fdfdfd);caret-color:var(--colors-fg, #0d0d0d);border:1px solid var(--input-hover-border-color,var(--colors-control-border, #939393));border-radius:var(--radii-control, 6px);padding-inline:12px;padding-block:8px;min-block-size:var(--sizes-control-md, 46px);outline:none;transition-property:border-color;transition-duration:var(--durations-button, 200ms);transition-timing-function:var(--easings-out, cubic-bezier(0,0,.2,1));} .ds-input[data-size=sm] {min-block-size:var(--sizes-control-sm, 40px);font-size:14px;} .ds-input::placeholder {color:var(--colors-subtle, #5a6862);opacity:1;} .ds-input:hover:enabled:not([aria-invalid=\"true\"]) {border-color:var(--colors-control-interactive-border, #8c8c8c);} .ds-input:focus {border-color:var(--colors-control-interactive-border, #8c8c8c);outline:1px solid var(--colors-control-interactive-border, #8c8c8c);outline-offset:0;} .ds-input[aria-invalid=\"true\"], .ds-input[aria-invalid=\"true\"]:hover {border-color:var(--colors-error, #982332);} .ds-input[aria-invalid=\"true\"]:focus {border-color:var(--colors-error, #982332);outline-color:var(--colors-error, #982332);} .ds-input:disabled {opacity:.55;cursor:not-allowed;} @media(prefers-reduced-motion:reduce) {.ds-input {transition:none;}} @media(forced-colors:active) {.ds-input {border-color:ButtonText;} .ds-input:focus {border-color:Highlight;outline-color:Highlight;}}.ds-textarea {resize:block;}"
+    },
+    {
+      "name": "Checkbox",
+      "kind": "input",
+      "refersTo": "checkbox",
+      "description": "Native checkbox with brand accent; inherited focus is separate from text-input focus.",
+      "html": "<div class=\"ds-shared-scope\"><label><input class=\"ds-checkbox\" type=\"checkbox\"> Require two-factor authentication</label></div>",
+      "css": ".ds-shared-scope {font-family:var(--fonts-body, Inter, ui-sans-serif, system-ui, sans-serif);font-size:14px;line-height:1.6;color:var(--colors-fg, #0d0d0d);}.ds-checkbox {inline-size:18px;block-size:18px;flex:0 0 auto;accent-color:var(--colors-brand, #275e49);cursor:pointer;} .ds-checkbox:disabled {opacity:.55;cursor:not-allowed;} .ds-checkbox:focus-visible {outline:2px solid var(--colors-brand, #275e49);outline-offset:3px;}"
+    },
+    {
+      "name": "Aligned Auth Content",
+      "kind": "custom",
+      "refersTo": "auth-content",
+      "description": "The unchanged 360px column with 24px grouping; AuthFrame supplies the page surface and 124px logo.",
+      "html": "<div class=\"ds-auth-scope\"><div class=\"ds-auth-content\"><div><h1 class=\"ds-auth-title\">Verify it’s you</h1><p class=\"ds-auth-body\">Enter an authenticator or recovery code to continue.</p></div></div></div>",
+      "css": ".ds-auth-scope {--colors-fg:var(--colors-auth-fg, #0d0d0d);--colors-subtle:var(--colors-auth-subtle, #6c6c6c);--colors-surface:var(--colors-auth-surface, #fdfdfd);--colors-page:var(--colors-auth-page, #fdfdfd);--colors-border:var(--colors-auth-border, #939393);--colors-brand:var(--colors-auth-action, #0d0d0d);--colors-link-fg:var(--colors-auth-action, #0d0d0d);--colors-link-focus:var(--colors-auth-focus, #8c8c8c);--colors-soft:var(--colors-auth-soft, #edf1f5);--colors-danger:var(--colors-auth-danger, #a72b35);--colors-error:var(--colors-auth-danger, #a72b35);--colors-control-border:var(--colors-auth-border, #939393);--colors-action-solid:var(--colors-auth-action, #0d0d0d);--colors-action-contrast:var(--colors-auth-on-action, #ffffff);--colors-action-hover:var(--colors-auth-action-hover, #2b2b2b);font-family:var(--fonts-ui, ui-sans-serif, system-ui, -apple-system, sans-serif);font-size:14px;line-height:1.6;color:var(--colors-fg);}.ds-auth-content {inline-size:100%;max-inline-size:var(--sizes-auth-content, 360px);min-inline-size:0;display:grid;gap:24px;overflow-wrap:anywhere;} .ds-auth-content > div {gap:24px;} .ds-auth-title {margin:0;font-size:24px;font-weight:600;line-height:1.3;letter-spacing:-.025em;text-wrap:balance;} .ds-auth-body {margin:0;font-size:13px;line-height:1.6;color:var(--colors-subtle);}"
+    },
+    {
+      "name": "Auth Links",
+      "kind": "nav",
+      "refersTo": "recovery-link",
+      "description": "Recovery and back-to-sign-in link specimens; recovery stays beside the Password label visually but follows the complete password control in DOM/tab order. Keyboard focus uses the shared neutral interactive-border token. The 2px radii.xs token softens focus corners.",
+      "html": "<div class=\"ds-auth-scope\"><div class=\"ds-auth-nav\"><a class=\"ds-recovery\" href=\"/reset\">Forgot password?</a><a href=\"/login\">Back to sign in</a></div></div>",
+      "css": ".ds-auth-scope {--colors-fg:var(--colors-auth-fg, #0d0d0d);--colors-subtle:var(--colors-auth-subtle, #6c6c6c);--colors-surface:var(--colors-auth-surface, #fdfdfd);--colors-page:var(--colors-auth-page, #fdfdfd);--colors-border:var(--colors-auth-border, #939393);--colors-brand:var(--colors-auth-action, #0d0d0d);--colors-link-fg:var(--colors-auth-action, #0d0d0d);--colors-link-focus:var(--colors-auth-focus, #8c8c8c);--colors-soft:var(--colors-auth-soft, #edf1f5);--colors-danger:var(--colors-auth-danger, #a72b35);--colors-error:var(--colors-auth-danger, #a72b35);--colors-control-border:var(--colors-auth-border, #939393);--colors-action-solid:var(--colors-auth-action, #0d0d0d);--colors-action-contrast:var(--colors-auth-on-action, #ffffff);--colors-action-hover:var(--colors-auth-action-hover, #2b2b2b);font-family:var(--fonts-ui, ui-sans-serif, system-ui, -apple-system, sans-serif);font-size:14px;line-height:1.6;color:var(--colors-fg);}.ds-auth-nav {display:grid;gap:12px;text-align:start;margin-block-start:4px;font-size:13px;line-height:1.6;color:var(--colors-subtle);} .ds-auth-nav p {margin:0;} .ds-auth-nav a {border-radius:var(--radii-xs, 2px);display:inline-block;min-block-size:24px;color:var(--colors-link-fg);text-decoration:underline;text-underline-offset:4px;} .ds-auth-nav a:focus-visible {outline:2px solid var(--colors-link-focus, #8c8c8c);outline-offset:3px;} .ds-auth-nav .ds-recovery {display:inline-flex;align-items:center;text-decoration:none;} .ds-auth-nav .ds-recovery:hover {text-decoration:underline;}"
+    },
+    {
+      "name": "Field Label",
+      "kind": "input",
+      "refersTo": "field-label",
+      "description": "Native Label and Field root slots; click the label to focus its associated input. The header preserves the existing wrapping label/action layout.",
+      "html": "<div class=\"ds-shared-scope\"><div class=\"ds-field\"><div class=\"ds-field-header\"><label class=\"ds-label\" for=\"ds-labelled-email\">Email</label></div><input id=\"ds-labelled-email\" class=\"ds-input\" type=\"email\" placeholder=\"you@example.com\"></div></div>",
+      "css": ".ds-auth-scope {--colors-fg:var(--colors-auth-fg, #0d0d0d);--colors-subtle:var(--colors-auth-subtle, #6c6c6c);--colors-surface:var(--colors-auth-surface, #fdfdfd);--colors-page:var(--colors-auth-page, #fdfdfd);--colors-border:var(--colors-auth-border, #939393);--colors-brand:var(--colors-auth-action, #0d0d0d);--colors-link-fg:var(--colors-auth-action, #0d0d0d);--colors-link-focus:var(--colors-auth-focus, #8c8c8c);--colors-soft:var(--colors-auth-soft, #edf1f5);--colors-danger:var(--colors-auth-danger, #a72b35);--colors-error:var(--colors-auth-danger, #a72b35);--colors-control-border:var(--colors-auth-border, #939393);--colors-action-solid:var(--colors-auth-action, #0d0d0d);--colors-action-contrast:var(--colors-auth-on-action, #ffffff);--colors-action-hover:var(--colors-auth-action-hover, #2b2b2b);font-family:var(--fonts-ui, ui-sans-serif, system-ui, -apple-system, sans-serif);font-size:14px;line-height:1.6;color:var(--colors-fg);}.ds-field {display:grid;gap:8px;min-inline-size:0;} .ds-label {display:grid;gap:6px;font-size:14px;font-weight:500;} .ds-input {inline-size:100%;min-inline-size:0;font:inherit;font-size:16px;color:var(--colors-fg, #0d0d0d);background-color:var(--colors-surface, #fdfdfd);caret-color:var(--colors-fg, #0d0d0d);border:1px solid var(--input-hover-border-color,var(--colors-control-border, #939393));border-radius:var(--radii-control, 6px);padding-inline:12px;padding-block:8px;min-block-size:var(--sizes-control-md, 46px);outline:none;transition-property:border-color;transition-duration:var(--durations-button, 200ms);transition-timing-function:var(--easings-out, cubic-bezier(0,0,.2,1));} .ds-input[data-size=sm] {min-block-size:var(--sizes-control-sm, 40px);font-size:14px;} .ds-input::placeholder {color:var(--colors-subtle, #5a6862);opacity:1;} .ds-input:hover:enabled:not([aria-invalid=\"true\"]) {border-color:var(--colors-control-interactive-border, #8c8c8c);} .ds-input:focus {border-color:var(--colors-control-interactive-border, #8c8c8c);outline:1px solid var(--colors-control-interactive-border, #8c8c8c);outline-offset:0;} .ds-input[aria-invalid=\"true\"], .ds-input[aria-invalid=\"true\"]:hover {border-color:var(--colors-error, #982332);} .ds-input[aria-invalid=\"true\"]:focus {border-color:var(--colors-error, #982332);outline-color:var(--colors-error, #982332);} .ds-input:disabled {opacity:.55;cursor:not-allowed;} @media(prefers-reduced-motion:reduce) {.ds-input {transition:none;}} @media(forced-colors:active) {.ds-input {border-color:ButtonText;} .ds-input:focus {border-color:Highlight;outline-color:Highlight;}} .ds-field-header {display:flex;align-items:baseline;justify-content:space-between;flex-wrap:wrap;column-gap:12px;row-gap:4px;}"
+    },
+    {
+      "name": "Underlined Link",
+      "kind": "nav",
+      "refersTo": "link-underline",
+      "description": "Default inline link treatment, shared by native and typed router links. Keyboard focus uses the shared neutral interactive-border token. The 2px radii.xs token softens focus corners.",
+      "html": "<div class=\"ds-link-scope\"><a href=\"/servers\" class=\"ds-link ds-link-underline\">Servers</a></div>",
+      "css": ".ds-link-scope {font-family:var(--fonts-body, Inter, ui-sans-serif, system-ui, sans-serif);font-size:14px;line-height:1.6;}.ds-link {border-radius:var(--radii-xs, 2px);color:var(--colors-link-fg, #275e49);cursor:pointer;text-underline-offset:4px;}.ds-link:focus-visible {outline:2px solid var(--colors-link-focus, #8c8c8c);outline-offset:3px;}.ds-link-underline {text-decoration:underline;}.ds-link-plain {text-decoration:none;}.ds-link-plain:hover {text-decoration:underline;}.ds-link-navigation {display:block;padding-block:8px;padding-inline:10px;border-radius:6px;text-decoration:none;color:var(--colors-subtle, #5a6862);}.ds-link-navigation[data-status=active] {background-color:var(--colors-soft, #e8efe8);color:var(--colors-link-fg, #275e49);font-weight:600;}"
+    },
+    {
+      "name": "Plain Link",
+      "kind": "nav",
+      "refersTo": "link-plain",
+      "description": "No underline at rest; hover reveals the underline. Keyboard focus remains visible. Keyboard focus uses the shared neutral interactive-border token. The 2px radii.xs token softens focus corners.",
+      "html": "<div class=\"ds-link-scope\"><a href=\"/servers\" class=\"ds-link ds-link-plain\">Servers</a></div>",
+      "css": ".ds-link-scope {font-family:var(--fonts-body, Inter, ui-sans-serif, system-ui, sans-serif);font-size:14px;line-height:1.6;}.ds-link {border-radius:var(--radii-xs, 2px);color:var(--colors-link-fg, #275e49);cursor:pointer;text-underline-offset:4px;}.ds-link:focus-visible {outline:2px solid var(--colors-link-focus, #8c8c8c);outline-offset:3px;}.ds-link-underline {text-decoration:underline;}.ds-link-plain {text-decoration:none;}.ds-link-plain:hover {text-decoration:underline;}.ds-link-navigation {display:block;padding-block:8px;padding-inline:10px;border-radius:6px;text-decoration:none;color:var(--colors-subtle, #5a6862);}.ds-link-navigation[data-status=active] {background-color:var(--colors-soft, #e8efe8);color:var(--colors-link-fg, #275e49);font-weight:600;}"
+    },
+    {
+      "name": "Navigation Link",
+      "kind": "nav",
+      "refersTo": "link-navigation",
+      "description": "Sidebar link with active-route colour, weight and padding. Keyboard focus uses the shared neutral interactive-border token.",
+      "html": "<div class=\"ds-link-scope\"><a href=\"/servers\" class=\"ds-link ds-link-navigation\" data-status=\"active\">Servers</a></div>",
+      "css": ".ds-link-scope {font-family:var(--fonts-body, Inter, ui-sans-serif, system-ui, sans-serif);font-size:14px;line-height:1.6;}.ds-link {border-radius:var(--radii-xs, 2px);color:var(--colors-link-fg, #275e49);cursor:pointer;text-underline-offset:4px;}.ds-link:focus-visible {outline:2px solid var(--colors-link-focus, #8c8c8c);outline-offset:3px;}.ds-link-underline {text-decoration:underline;}.ds-link-plain {text-decoration:none;}.ds-link-plain:hover {text-decoration:underline;}.ds-link-navigation {display:block;padding-block:8px;padding-inline:10px;border-radius:6px;text-decoration:none;color:var(--colors-subtle, #5a6862);}.ds-link-navigation[data-status=active] {background-color:var(--colors-soft, #e8efe8);color:var(--colors-link-fg, #275e49);font-weight:600;}"
+    },
+    {
+      "name": "Appearance Icon Button",
+      "kind": "button",
+      "refersTo": "icon-button",
+      "description": "Base UI button with a square ghost recipe, accessible name, and 40px target. Ghost hover/open uses a light neutral fill and the shared button colour transition.",
+      "html": "<button class=\"ds-appearance\" type=\"button\" aria-label=\"Appearance\"><svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" stroke-linecap=\"round\" aria-hidden=\"true\" style=\"inline-size:20px;block-size:20px\"><circle cx=\"12\" cy=\"12\" r=\"4\"/><path d=\"M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5\"/></svg></button>",
+      "css": ".ds-appearance{font-family:var(--fonts-ui, ui-sans-serif, system-ui, sans-serif);font-size:14px;line-height:1.6;display:inline-flex;align-items:center;justify-content:center;inline-size:40px;min-block-size:40px;padding:0;border:1px solid transparent;border-radius:6px;background:transparent;color:var(--colors-fg,#0d0d0d);cursor:pointer}.ds-appearance:hover{background:var(--colors-action-ghost-hover,#f4f4f5)}.ds-appearance:focus-visible{outline:2px solid currentColor;outline-offset:2px}.ds-appearance{transition-property:background-color,border-color,color,outline-color;transition-duration:var(--durations-button,200ms);transition-timing-function:var(--easings-out,cubic-bezier(0,0,.2,1))}@media(prefers-reduced-motion:reduce){.ds-appearance{transition:none!important}}"
+    },
+    {
+      "name": "Appearance Menu",
+      "kind": "custom",
+      "refersTo": "menu",
+      "description": "Static preview of the Base UI radio menu. Live component supplies keyboard control, dismissal and focus restoration. Opens over 250ms from 0.97 scale; closes over 150ms to 0.99. Reduced motion is instant. Token-based 12px popup/8px item radii, 6px padding, 13px text, 8px icon gap and 32px minimum rows. Layered theme-specific shadows and neutral hover fills. Menu icons are 16px; the trigger keeps its 20px default. Theme selection keeps the menu open. Item highlights use the shared 200ms button hover timing, with immediate keyboard outlines.",
+      "html": "<div class=\"ds-menu\" role=\"menu\" aria-label=\"Appearance\"><div role=\"menuitemradio\" aria-checked=\"false\">Light</div><div role=\"menuitemradio\" aria-checked=\"false\">Dark</div><div role=\"menuitemradio\" aria-checked=\"true\">System<svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" aria-hidden=\"true\"><path d=\"m5 12 4 4L19 6\"/></svg></div></div>",
+      "css": ".ds-menu{font-family:var(--fonts-ui, ui-sans-serif, system-ui, sans-serif);font-size:13px;line-height:1.6;min-inline-size:176px;padding:6px;border-radius:12px;box-shadow:var(--shadows-menu,0 0 0 1px rgba(0,0,0,.06),0 2px 6px 0 rgba(0,0,0,.05),0 4px 42px 0 rgba(0,0,0,.06));background:var(--colors-surface,#fdfdfd);color:var(--colors-fg,#0d0d0d)}.ds-menu>div{display:flex;align-items:center;gap:8px;min-block-size:32px;box-sizing:border-box;padding:4px 12px;border-radius:8px}.ds-menu>div:hover{background:var(--colors-menu-item-hover,#f4f4f5)}.ds-menu svg{inline-size:16px;block-size:16px;margin-inline-start:auto} .ds-menu{transform-origin:var(--transform-origin, 100% 0%);transform:scale(1);opacity:1;transition-property:transform,opacity;transition-duration:var(--durations-menu-open,250ms);transition-timing-function:var(--easings-menu,cubic-bezier(0.22,1,0.36,1))}.ds-menu[data-starting-style]{transform:scale(.97);opacity:0}.ds-menu[data-ending-style]{transform:scale(.99);opacity:0;transition-duration:var(--durations-menu-close,150ms)}.ds-menu[data-closed]{pointer-events:none}@media(prefers-reduced-motion:reduce){.ds-menu{transition:none!important}}.dark .ds-menu{box-shadow:var(--shadows-menu,0 4px 42px 0 rgba(0,0,0,.5),0 2px 6px 0 rgba(0,0,0,.4),0 0 0 1px rgba(255,255,255,.08),inset 0 0 0 1px rgba(255,255,255,.04),inset 0 1px 0 0 rgba(255,255,255,.03))}.dark .ds-menu>div:hover{background:var(--colors-menu-item-hover,rgba(255,255,255,.04))}@media(forced-colors:active){.ds-menu{border:1px solid CanvasText}}.ds-menu>div{transition-property:background-color;transition-duration:var(--durations-button,200ms);transition-timing-function:var(--easings-out,cubic-bezier(0,0,.2,1))}@media(prefers-reduced-motion:reduce){.ds-menu>div{transition:none!important}}"
+    },
+    {
+      "name": "Tooltip",
+      "kind": "custom",
+      "refersTo": "tooltip",
+      "description": "Pill-shaped supplementary label sharing the menu surface, foreground, 13px type and shadow. Opens after a 300ms hover delay with a 150ms fade/0.98 scale; closes over 50ms without a delay. Keyboard focus, Base UI instant states and reduced motion skip transitions. Live triggers retain their own accessible name.",
+      "html": "<span class=\"ds-tooltip\">Appearance</span>",
+      "css": ".ds-tooltip{font-family:inherit;line-height:1.6;display:inline-block;font-size:var(--font-sizes-secondary,13px);padding:6px 10px;border-radius:var(--radii-full,9999px);background:var(--colors-surface,#fdfdfd);color:var(--colors-fg,#0d0d0d);box-shadow:var(--shadows-menu,0 0 0 1px rgba(0,0,0,.06),0 2px 6px 0 rgba(0,0,0,.05),0 4px 42px 0 rgba(0,0,0,.06));max-inline-size:min(20rem,var(--available-width,20rem));overflow-wrap:anywhere;transform-origin:var(--transform-origin,50% 100%);transform:scale(1);opacity:1;transition-property:transform,opacity;transition-duration:var(--durations-tooltip-open,150ms);transition-timing-function:var(--easings-out,cubic-bezier(0,0,.2,1))}.ds-tooltip[data-starting-style]{transform:scale(.98);opacity:0}.ds-tooltip[data-ending-style]{transform:scale(.98);opacity:0;transition-duration:var(--durations-tooltip-close,50ms)}.ds-tooltip[data-closed]{pointer-events:none}.ds-tooltip[data-instant]{transition:none}.dark .ds-tooltip{background:var(--colors-surface,#121212);color:var(--colors-fg,#fff);box-shadow:var(--shadows-menu,0 4px 42px 0 rgba(0,0,0,.5),0 2px 6px 0 rgba(0,0,0,.4),0 0 0 1px rgba(255,255,255,.08),inset 0 0 0 1px rgba(255,255,255,.04),inset 0 1px 0 0 rgba(255,255,255,.03))}@media(prefers-reduced-motion:reduce){.ds-tooltip{transition:none!important}}@media(forced-colors:active){.ds-tooltip{border:1px solid CanvasText}}"
+    },
+    {
+      "name": "Password Input",
+      "kind": "input",
+      "refersTo": "password-input",
+      "description": "Static masked preview. Live PasswordInput retains shared Input props and provides a keyboard-accessible Show/Hide control, preserving pointer editing focus. Sign-in uses the shared field border. Hovering the field or its reveal toggle highlights the enabled input border; focus, errors and forced colours retain priority.",
+      "html": "<div class=\"ds-auth-scope\"><div class=\"ds-field\"><label class=\"ds-label\" for=\"ds-password\">Password</label><div class=\"ds-password-input\"><input class=\"ds-input\" id=\"ds-password\" name=\"password\" type=\"password\" autocomplete=\"current-password\" placeholder=\"Enter your password\"><button type=\"button\" aria-label=\"Show password\" aria-controls=\"ds-password\"><svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z\"/><circle cx=\"12\" cy=\"12\" r=\"3\"/></svg></button></div></div></div>",
+      "css": ".ds-auth-scope {--colors-fg:var(--colors-auth-fg, #0d0d0d);--colors-subtle:var(--colors-auth-subtle, #6c6c6c);--colors-surface:var(--colors-auth-surface, #fdfdfd);--colors-page:var(--colors-auth-page, #fdfdfd);--colors-border:var(--colors-auth-border, #939393);--colors-brand:var(--colors-auth-action, #0d0d0d);--colors-link-fg:var(--colors-auth-action, #0d0d0d);--colors-link-focus:var(--colors-auth-focus, #8c8c8c);--colors-soft:var(--colors-auth-soft, #edf1f5);--colors-danger:var(--colors-auth-danger, #a72b35);--colors-error:var(--colors-auth-danger, #a72b35);--colors-control-border:var(--colors-auth-border, #939393);--colors-action-solid:var(--colors-auth-action, #0d0d0d);--colors-action-contrast:var(--colors-auth-on-action, #ffffff);--colors-action-hover:var(--colors-auth-action-hover, #2b2b2b);font-family:var(--fonts-ui, ui-sans-serif, system-ui, -apple-system, sans-serif);font-size:14px;line-height:1.6;color:var(--colors-fg);}.ds-field {display:grid;gap:8px;min-inline-size:0;} .ds-label {display:grid;gap:6px;font-size:14px;font-weight:500;} .ds-input {inline-size:100%;min-inline-size:0;font:inherit;font-size:16px;color:var(--colors-fg, #0d0d0d);background-color:var(--colors-surface, #fdfdfd);caret-color:var(--colors-fg, #0d0d0d);border:1px solid var(--input-hover-border-color,var(--colors-control-border, #939393));border-radius:var(--radii-control, 6px);padding-inline:12px;padding-block:8px;min-block-size:var(--sizes-control-md, 46px);outline:none;transition-property:border-color;transition-duration:var(--durations-button, 200ms);transition-timing-function:var(--easings-out, cubic-bezier(0,0,.2,1));} .ds-input[data-size=sm] {min-block-size:var(--sizes-control-sm, 40px);font-size:14px;} .ds-input::placeholder {color:var(--colors-subtle, #5a6862);opacity:1;} .ds-input:hover:enabled:not([aria-invalid=\"true\"]) {border-color:var(--colors-control-interactive-border, #8c8c8c);} .ds-input:focus {border-color:var(--colors-control-interactive-border, #8c8c8c);outline:1px solid var(--colors-control-interactive-border, #8c8c8c);outline-offset:0;} .ds-input[aria-invalid=\"true\"], .ds-input[aria-invalid=\"true\"]:hover {border-color:var(--colors-error, #982332);} .ds-input[aria-invalid=\"true\"]:focus {border-color:var(--colors-error, #982332);outline-color:var(--colors-error, #982332);} .ds-input:disabled {opacity:.55;cursor:not-allowed;} @media(prefers-reduced-motion:reduce) {.ds-input {transition:none;}} @media(forced-colors:active) {.ds-input {border-color:ButtonText;} .ds-input:focus {border-color:Highlight;outline-color:Highlight;}}.ds-password-input{position:relative;min-inline-size:0}.ds-password-input input{padding-inline-end:48px}.ds-password-input button{position:absolute;inset-inline-end:2px;inset-block:0;margin-block:auto;inline-size:40px;block-size:40px;display:inline-flex;align-items:center;justify-content:center;padding:0;border:1px solid transparent;border-radius:var(--radii-control,6px);background:transparent;color:var(--colors-fg,#0d0d0d);cursor:pointer;transition:background-color var(--durations-button,200ms) var(--easings-out,cubic-bezier(0,0,.2,1))}.ds-password-input button:hover{background:var(--colors-action-ghost-hover,#f4f4f5)}.ds-password-input button:focus-visible{outline:2px solid var(--colors-fg,#0d0d0d);outline-offset:2px}.ds-password-input button svg{inline-size:16px;block-size:16px}@media(prefers-reduced-motion:reduce){.ds-password-input button{transition:none}}.ds-password-input:hover>input:enabled{--input-hover-border-color:var(--colors-control-interactive-border,#8c8c8c)}"
+    },
+    {
+      "name": "Inline Field Error",
+      "kind": "custom",
+      "refersTo": "field-error",
+      "description": "Base UI associates a persistent inline error with its control. Errors appear after submit and revalidate during correction; the recipe uses semantic error colour and secondary type.",
+      "html": "<div class=\"ds-field-error\">Enter your email address.</div>",
+      "css": ".ds-field-error {color:var(--colors-error, #982332);font-family:var(--fonts-ui, ui-sans-serif, system-ui, sans-serif);font-size:var(--font-sizes-secondary, 13px);line-height:1.6;overflow-wrap:anywhere;}"
+    }
+  ],
+  "narrative": {
+    "northStar": "Aligned stack",
+    "overview": "A familiar, focused entry to Astilba: a compact form on an open surface, with a shared starting edge and an unmistakable primary action. The owner selected Aligned stack. Consistent grouping, consistent field outlines and visible focus supply structure without an outer card.\n\nThe auth visual direction covers AuthFrame and its sign-in, MFA, reset, invitation and conditional hosted-signup flows. Shared control recipes also apply across the application; auth supplies local palette overrides rather than separate control styling. The signed-in dashboard retains its existing green identity. Recording shared control defaults does not approve or redesign its other styles. Product truth remains in ../../PRODUCT.md; the auth system font and logo lettering remain provisional. The auth logo is temporarily omitted at the owner’s request; the heading starts the column.\n\nPassword recovery shows one stage at a time: account email, a privacy-preserving check-email confirmation, then the new-password form opened from `/reset?token=…`. The code stays out of the form. The field label is “New password”, without a requirements list. Reset uses the same shared fields and start-aligned secondary links as sign-in. The only secondary action is “Back to sign in”. Invalid links show an inline error, failed submissions retain the password draft, and completion confirms the change before returning to sign-in. Stage transitions focus the heading.\n\nWorkspace invitations open `/invitation?token=…`; sign-in has no invitation prompt. Without a token, the page directs users to their invitation email. New accounts enter their name and password in shared fields; signed-in users confirm acceptance without re-entering credentials. The sign-in link preserves the invitation URL so existing accounts can return after authentication. Successful acceptance removes the form, focuses “Workspace joined”, and offers “Open projects”. Invalid links show an inline error and failed submissions retain the draft.\n\nAppearance uses a shared icon button, tooltip and Light/Dark/System radio menu. System follows OS appearance changes live; explicit preferences persist. Auth palette classes also style portalled popups.\n\nSign-in keeps the credential fields together in native focus order: Skip to content, Appearance, Email, Password, Show/Hide password, Forgot password, Sign in. Recovery stays beside the password label visually; Field renders its labelAction after the full control and uses grid placement for that label-row position. The skip link bypasses Appearance so the next Tab reaches Email; no positive tabindex or automatic field focus is used.\n\nLink focus outlines use the shared neutral interactive-border role in both themes. Skip to content uses foreground text on the shared surface and the same link focus outline, including outside AuthFrame.\n\nSign-in/MFA, reset and invitation forms use Base UI with synchronous Zod validation. Inline errors use the semantic error colour and secondary type; submission focuses the first invalid field, correction revalidates, and failed drafts remain. Auth messages are injected into schema construction from the current i18next catalogue. Non-migrated forms retain native validation.\n\nDark-mode errors use the shared #ff7b7b red for text and invalid input edges, with 7.47:1 contrast on #121212. Light-mode error colours remain unchanged. Error messages provide visible text in addition to colour. Portalled menu and tooltip positioners use viewport-fixed positioning so resizing cannot leave a stale horizontal scroll area in WebKit.\n\nLanguage uses the shared globe IconButton, Tooltip and radio Menu beside Appearance in auth. English remains the only released language; development additionally exposes expanded-text and RTL pseudolocale previews. The menu is hidden in production while only one released language is available. Switching language preserves drafts, password visibility, focus and validation state; visible errors update without reviving cleared errors. HTML direction and Base UI direction stay aligned. Field content and menu items may wrap; layouts use logical properties. Emails/codes remain LTR and embedded identifiers are isolated. Routes and invitation/reset tokens do not change with language.",
+    "keyCharacteristics": [
+      "Open white or cool-navy auth surface with a narrow aligned column.",
+      "Reusable Base UI and native controls with semantic variants and consistent focus states.",
+      "Persistent busy and error feedback with native form behaviour."
+    ],
+    "rules": [
+      {
+        "name": "The Auth Boundary Rule",
+        "body": "Keep the cool-neutral palette inside AuthFrame. Shared control recipes use semantic roles; field interaction edges use grey throughout, while action and brand defaults remain green elsewhere.",
+        "section": "colors"
+      },
+      {
+        "name": "The Control State Rule",
+        "body": "Let recipes own idle, hover, focus and invalid states. All fields use the shared control.border token; compound controls can supply the hover override.",
+        "section": "colors"
+      },
+      {
+        "name": "The Open Surface Rule",
+        "body": "Group auth content through alignment and spacing, with no outer card padding, border, radius or shadow.",
+        "section": "elevation"
+      }
+    ],
+    "dos": [
+      "Do reuse Button, Input, Select, Textarea, Checkbox, Label, Link and Anchor, with Field and BusyButton for form behaviour.",
+      "Do use registered tokens, semantic colour roles and logical CSS properties for control styling.",
+      "Do preserve native labels, keyboard interaction, autofill, error association, reduced motion and forced-colour states.",
+      "Do keep hosted-only actions conditional and preserve the same auth identity on self-hosted installations.",
+      "Do treat the auth interface font and logo lettering as provisional.",
+      "Use Base UI for custom interactive widgets and preserve native HTML semantics for simple controls.",
+      "Use the same minimum-3:1 field border for inputs, passwords, OTP slots, selects and textareas."
+    ],
+    "donts": [
+      "Don't apply the auth palette to the dashboard as an automatic consistency fix.",
+      "Don't style native inputs or buttons through route descendant selectors; change shared recipes or semantic tokens.",
+      "Don't use Apfel Grotezk, restore the outer auth card or introduce dark input underlines."
+    ]
+  }
+}

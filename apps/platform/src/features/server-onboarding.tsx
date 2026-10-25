@@ -1,6 +1,11 @@
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { client, result, type Schema } from "../api/client";
+import { Checkbox } from "../components/checkbox";
+import { Input } from "../components/input";
+import { Label } from "../components/label";
+import { Anchor } from "../components/link";
+import { Select } from "../components/select";
 import * as s from "../styles";
 import { BusyButton, ErrorNotice, Field, Form, text, useAction } from "../ui";
 
@@ -53,9 +58,9 @@ export function ServerOnboarding({
         Prepare the host first. Create its ten-minute enrollment code when you
         are ready to connect.
       </p>
-      <label>
+      <Label>
         Server role
-        <select
+        <Select
           value={role}
           onChange={(e) => {
             setRole(e.target.value as Schema["ServerRole"]);
@@ -65,11 +70,10 @@ export function ServerOnboarding({
           <option value="deployment">Deployment server</option>
           <option value="build">Build runner</option>
           <option value="combined">Deployment and build</option>
-        </select>
-      </label>
-      <label>
-        <input
-          type="checkbox"
+        </Select>
+      </Label>
+      <Label>
+        <Checkbox
           checked={manual}
           onChange={(e) => {
             setManual(e.target.checked);
@@ -77,10 +81,10 @@ export function ServerOnboarding({
           }}
         />
         I already prepared the verified agent using the manual guide
-      </label>
-      <a href={guide} target="_blank" rel="noreferrer">
+      </Label>
+      <Anchor href={guide} target="_blank" rel="noreferrer">
         Agent installation and update guide
-      </a>
+      </Anchor>
       {!manual && (
         <div className={s.stack}>
           <h3>Prepare Ubuntu 24.04</h3>
@@ -91,9 +95,9 @@ export function ServerOnboarding({
           <code
             className={`${s.code} ${s.wrappedCode}`}
           >{`curl --fail --proto '=https' --output astilba-bootstrap.sh ${quote(`${location.origin}/onboarding/bootstrap.sh`)}\nless astilba-bootstrap.sh\nsudo bash astilba-bootstrap.sh --check --role ${role}`}</code>
-          <label>
+          <Label>
             Host architecture
-            <select
+            <Select
               value={arch}
               onChange={(e) => {
                 setArch(e.target.value);
@@ -102,11 +106,11 @@ export function ServerOnboarding({
             >
               <option value="amd64">amd64 (Intel / AMD)</option>
               <option value="arm64">arm64</option>
-            </select>
-          </label>
-          <label>
+            </Select>
+          </Label>
+          <Label>
             Signed agent release
-            <select
+            <Select
               value={release?.sha256 ?? ""}
               onChange={(e) => {
                 setRelease(e.target.value);
@@ -122,8 +126,8 @@ export function ServerOnboarding({
                   {r.version} · {r.arch}
                 </option>
               ))}
-            </select>
-          </label>
+            </Select>
+          </Label>
           {!release && (
             <p className={s.notice}>
               Ask the installation operator to publish a signed release, or use
@@ -138,9 +142,9 @@ export function ServerOnboarding({
             </code>
             ; a value from this same dashboard alone does not establish trust.
           </p>
-          <label>
+          <Label>
             Independently trusted signing-key fingerprint
-            <input
+            <Input
               autoComplete="off"
               value={fingerprint}
               onChange={(e) => {
@@ -149,7 +153,7 @@ export function ServerOnboarding({
               }}
               spellCheck={false}
             />
-          </label>
+          </Label>
           {fingerprint &&
             onboarding.data?.keyFingerprint &&
             fingerprint !== onboarding.data.keyFingerprint && (
@@ -159,9 +163,9 @@ export function ServerOnboarding({
               </p>
             )}
           {role !== "build" && (
-            <label>
+            <Label>
               Certificate contact email
-              <input
+              <Input
                 type="email"
                 value={contact}
                 onChange={(e) => {
@@ -174,11 +178,10 @@ export function ServerOnboarding({
                 Prepared in the agent service. Certificates and public ports
                 still require a reviewed host-permission plan.
               </small>
-            </label>
+            </Label>
           )}
-          <label>
-            <input
-              type="checkbox"
+          <Label>
+            <Checkbox
               checked={runtime}
               onChange={(e) => {
                 setRuntime(e.target.checked);
@@ -187,10 +190,9 @@ export function ServerOnboarding({
             />
             Allow installing missing Docker and Compose. This can start Docker
             and create its networks and firewall rules.
-          </label>
-          <label>
-            <input
-              type="checkbox"
+          </Label>
+          <Label>
+            <Checkbox
               checked={backups}
               onChange={(e) => {
                 setBackups(e.target.checked);
@@ -199,7 +201,7 @@ export function ServerOnboarding({
             />
             Install verified backup tooling for backups and supported database
             upgrades
-          </label>
+          </Label>
           <p>
             Existing runtimes, containers, ingress and agent data are never
             replaced. An incompatible or partial installation requires manual
@@ -224,16 +226,15 @@ export function ServerOnboarding({
         }
       >
         <Field name="name" label="Server name" />
-        <label>
-          <input
-            type="checkbox"
+        <Label>
+          <Checkbox
             checked={prepared}
             onChange={(e) => setPrepared(e.target.checked)}
             disabled={!manual && !ready}
           />
           I have inspected the preflight report and prepared this host for its
           selected role
-        </label>
+        </Label>
         <BusyButton busy={action.isPending} disabled={!prepared}>
           Create enrollment
         </BusyButton>

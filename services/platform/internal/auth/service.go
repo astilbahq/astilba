@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/base32"
 	"errors"
+	"net/url"
 	"strings"
 	"time"
 
@@ -307,7 +308,7 @@ func (s *Service) ChangePassword(ctx context.Context, id uuid.UUID, version int6
 	})
 	return account, err
 }
-func (s *Service) RequestReset(ctx context.Context, email, ip string) error {
+func (s *Service) RequestReset(ctx context.Context, email, ip, origin string) error {
 	if err := s.Limit(ctx, "reset:ip:"+ip, 20, 15*time.Minute); err != nil {
 		return err
 	}
@@ -337,7 +338,7 @@ func (s *Service) RequestReset(ctx context.Context, email, ip string) error {
 	}); err != nil {
 		return err
 	}
-	if err := s.Mail.Send(ctx, email, "Reset your Astilba password", "Enter this one-use code in the password reset form within 30 minutes:\n\n"+token); err != nil {
+	if err := s.Mail.Send(ctx, email, "Reset your Astilba password", "Open this one-use link to reset your password within 30 minutes:\n\n"+origin+"/reset?"+url.Values{"token": {token}}.Encode()); err != nil {
 		_ = s.Store.Queries.DeleteUnsentReset(ctx, db.DeleteUnsentResetParams{AccountID: account.ID, TokenHash: Hash(token)})
 		return err
 	}
