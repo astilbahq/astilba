@@ -276,7 +276,7 @@ test("two-factor sign-in separates authenticator and recovery modes and preserve
   await expect(page).toHaveURL(`${baseURL}/account`);
   await page.getByRole("button", { name: "Sign out", exact: true }).click();
   await expect(page).toHaveURL(`${baseURL}/login`);
-  await page.goto("http://127.0.0.1:54182/login");
+  await page.goto("http://127.0.0.1:15182/login");
   await signIn();
   await code.fill("12");
   await page.getByRole("button", { name: "Language", exact: true }).click();

@@ -106,7 +106,7 @@ test("guided host preparation and domain staging preserve owner review and confl
   await form.getByLabel("Public IPv4", { exact: true }).fill("198.51.100.9");
   const headers = {
     "X-CSRF-Token": session.csrfToken,
-    Origin: "http://127.0.0.1:54181",
+    Origin: "http://127.0.0.1:15181",
   };
   const domainPath = `/api/v1/workspaces/${ws}/servers/${enrollment.server.id}/domain`;
   expect(

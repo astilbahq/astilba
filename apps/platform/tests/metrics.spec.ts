@@ -26,7 +26,7 @@ test("resource history exposes missing, measured and stale data", async ({
     {
       headers: {
         "X-CSRF-Token": session.csrfToken,
-        Origin: "http://127.0.0.1:54181",
+        Origin: "http://127.0.0.1:15181",
       },
       data: { name: `Metrics ${info.project.name}`, role: "deployment" },
     },

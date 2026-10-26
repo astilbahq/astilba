@@ -509,6 +509,15 @@ test("password recovery requests an email link and preserves a failed password d
     await page.emulateMedia({ colorScheme });
     for (const path of ["/reset", "/reset?token=preview-only"]) {
       await page.goto(path);
+      await expect(
+        page.getByRole("heading", {
+          level: 1,
+          name: path.includes("token=")
+            ? "Set a new password"
+            : "Reset your password",
+          exact: true,
+        }),
+      ).toBeVisible();
       await expect
         .poll(() =>
           page

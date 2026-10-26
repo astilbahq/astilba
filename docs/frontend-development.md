@@ -91,7 +91,7 @@ The [cascade-layer rules](https://panda-css.com/docs/styling/cascade-layers) mat
 
 ## UI workshop
 
-Run `pnpm storybook` from the repository root to open the component and page catalogue at `http://127.0.0.1:54200`. It uses Vite+ and the existing Panda configuration; Go, Docker and a signed-in account are unnecessary. `pnpm storybook:build` creates a standalone static workshop in `.artifacts/storybook/static`. `pnpm storybook:test` builds it and runs Chromium/WebKit checks on port 54201. Both `make verify-app` and the application-browser CI job include those checks.
+Run `pnpm storybook` from the repository root to open the component and page catalogue at `http://127.0.0.1:54200`. It uses Vite+ and the existing Panda configuration; Go, Docker and a signed-in account are unnecessary. `pnpm storybook:build` creates a standalone static workshop in `.artifacts/storybook/static`. `pnpm storybook:test` builds it and runs Chromium/WebKit checks on port 15201. Both `make verify-app` and the independent workshop CI workflow include those checks.
 
 Stories live beside their components as `*.stories.tsx`. `src/components` covers the shared controls; `src/features/auth` covers sign-in, two-factor verification, password reset and invitations. Choose named scenarios in the sidebar to open validation errors, rejected requests, pending submissions, recovery mode and completed flows directly. Storybook's play functions reach these states through the actual forms and interactions. Canvas controls select light/dark/system, English, expanded or RTL pseudo, and viewport sizes. Existing page controls remain interactive. Workshop preferences belong to its separate origin.
 
@@ -200,3 +200,10 @@ Resting field borders use #939393 on #fdfdfd (3.020:1) and #616161 on #121212 (3
 Auth forms send connection, rate-limit and unexpected failures to ErrorToast; incorrect credentials, expired links and field validation stay contextual. MFA cancellation failures also use it. A failed initial session load retains an “Unable to connect” heading and Retry connection button alongside its toast, so dismissing the message cannot leave an unexplained empty screen. Other dashboard notices retain their current presentation.
 
 Toast motion is clipped inside the measured stack, with 12px inner padding and 4px viewport padding preserving the 16px outer inset. The extra 24px is included in the spacer height. This prevents entrance/exit transforms from briefly creating scrollbars, while the outer viewport still scrolls for genuinely tall stacks and the inner padding preserves shadow and focus clearance.
+
+Browser tests use isolated loopback ports below the default ephemeral ranges:
+15171 for Canvas, 15181–15189 for the real-API dashboard fixtures and 15201 for
+the static workshop. The dashboard test's Vite instance uses 15182/15189; ordinary
+`pnpm dev` retains 54182/54181 and `pnpm storybook` retains 54200. This keeps late
+fixture listeners from competing with outgoing database sockets and lets browser
+verification run beside the development previews.

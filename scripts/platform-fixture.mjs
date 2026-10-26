@@ -24,6 +24,7 @@ const docker = (args) =>
 let created = false;
 let stopping = false;
 let hostedProxy;
+let ownsHostedInfo = false;
 const hostedInfo = join(root, ".artifacts/p8/browser/hosted-fixture.json");
 // External provider boundary; all product requests still use the real API and PostgreSQL.
 const gitProvider=createServer((request,response)=>{
@@ -32,14 +33,13 @@ const gitProvider=createServer((request,response)=>{
  if(request.url.includes("/branches/")){response.end(JSON.stringify({commit:{sha:"a".repeat(40)}}));return}
  response.end(JSON.stringify({id:12,private:true}));
 });
-await new Promise((resolve,reject)=>{gitProvider.once("error",reject);gitProvider.listen(54185,"127.0.0.1",resolve)});
 
 // Separate localhost OAuth site exercises SameSite=Strict on the return journey.
 const githubKeys = generateKeyPairSync("rsa", { modulusLength: 2048 });
 const githubCodes = new Map();
 const githubHandler = async (request, response) => {
   response.setHeader("Content-Type", "application/json");
-  const u = new URL(request.url, "http://localhost:54188");
+  const u = new URL(request.url, "http://localhost:15188");
   if (u.pathname === "/login/oauth/authorize") {
     const code = randomUUID();
     githubCodes.set(code, { challenge: u.searchParams.get("code_challenge"), redirect: u.searchParams.get("redirect_uri") });
@@ -68,13 +68,11 @@ const githubHandler = async (request, response) => {
 };
 const githubProvider = createServer(githubHandler);
 const githubIPv6 = createServer(githubHandler);
-await new Promise((resolve,reject)=>{githubProvider.once("error",reject);githubProvider.listen(54188,"127.0.0.1",resolve)});
-await new Promise((resolve,reject)=>{githubIPv6.once("error",reject);githubIPv6.listen(54188,"::1",resolve)});
 const githubEnv = {
  ASTILBA_GITHUB_APP_ID:"1",ASTILBA_GITHUB_APP_CLIENT_ID:"fixture-client",ASTILBA_GITHUB_APP_SLUG:"fixture-app",
  ASTILBA_GITHUB_APP_CLIENT_SECRET:"github-browser-client-secret-fixture", ASTILBA_GITHUB_APP_WEBHOOK_SECRET:"github-browser-webhook-secret-fixture",
  ASTILBA_GITHUB_APP_PRIVATE_KEY:githubKeys.privateKey.export({type:"pkcs8",format:"pem"}),
- ASTILBA_GITHUB_APP_FIXTURE_API:"http://127.0.0.1:54188",ASTILBA_GITHUB_APP_FIXTURE_WEB:"http://localhost:54188",
+ ASTILBA_GITHUB_APP_FIXTURE_API:"http://127.0.0.1:15188",ASTILBA_GITHUB_APP_FIXTURE_WEB:"http://localhost:15188",
 };
 
 async function cleanup() {
@@ -84,7 +82,7 @@ async function cleanup() {
  githubProvider.close();
  githubIPv6.close();
  hostedProxy?.close();
- await rm(hostedInfo,{force:true});
+ if (ownsHostedInfo) await rm(hostedInfo,{force:true});
   for (const child of children) child.kill("SIGTERM");
   await Promise.all(
     children.map(
@@ -115,6 +113,19 @@ async function cleanup() {
 for (const sig of ["SIGINT", "SIGTERM"])
   process.on(sig, () => void cleanup().then(() => process.exit(0)));
 try {
+  // Keep isolated test listeners below the default ephemeral port ranges.
+  // Claim the proxy ports before allocating external runtime resources.
+  await new Promise((resolve,reject)=>{gitProvider.once("error",reject);gitProvider.listen(15185,"127.0.0.1",resolve)});
+  await new Promise((resolve,reject)=>{githubProvider.once("error",reject);githubProvider.listen(15188,"127.0.0.1",resolve)});
+  await new Promise((resolve,reject)=>{githubIPv6.once("error",reject);githubIPv6.listen(15188,"::1",resolve)});
+  const certificate=join(directory,"loopback.crt"), certificateKey=join(directory,"loopback.key");
+  execFileSync("openssl",["req","-x509","-newkey","rsa:2048","-nodes","-keyout",certificateKey,"-out",certificate,"-days","1","-subj","/CN=127.0.0.1","-addext","subjectAltName=IP:127.0.0.1"],{stdio:"ignore"});
+  hostedProxy=createHttpsServer({key:await readFile(certificateKey),cert:await readFile(certificate)},(incoming,outgoing)=>{
+    const upstream=httpRequest({host:"127.0.0.1",port:15187,path:incoming.url,method:incoming.method,headers:incoming.headers},response=>{outgoing.writeHead(response.statusCode,response.headers);response.pipe(outgoing)});
+    upstream.on("error",()=>outgoing.writeHead(502).end());incoming.pipe(upstream);
+  });
+  await new Promise((resolve,reject)=>{hostedProxy.once("error",reject);hostedProxy.listen(15186,"127.0.0.1",resolve)});
+
   const envfile = join(directory, "postgres.env");
   await writeFile(envfile, `POSTGRES_PASSWORD=${password}\n`, { mode: 0o600 });
   docker([
@@ -209,22 +220,22 @@ try {
   start(binary, ["serve"], {
     ...env,
     ...githubEnv,
-    ASTILBA_LISTEN: "127.0.0.1:54181",
-    ASTILBA_ORIGIN: "http://127.0.0.1:54181",
+    ASTILBA_LISTEN: "127.0.0.1:15181",
+    ASTILBA_ORIGIN: "http://127.0.0.1:15181",
   });
   start(binary, ["serve"], {
     ...env,
     ...githubEnv,
-    ASTILBA_LISTEN: "127.0.0.1:54184",
-    ASTILBA_ORIGIN: "http://127.0.0.1:54183",
+    ASTILBA_LISTEN: "127.0.0.1:15184",
+    ASTILBA_ORIGIN: "http://127.0.0.1:15183",
   });
   // Vite exercises dev-only localisation against the same real API/database,
   // with its own permitted browser origin rather than bypassing CSRF checks.
-  // Port 54188 belongs to the separate OAuth provider fixture.
+  // Port 15188 belongs to the separate OAuth provider fixture.
   start(binary, ["serve"], {
     ...env,
-    ASTILBA_LISTEN: "127.0.0.1:54189",
-    ASTILBA_ORIGIN: "http://127.0.0.1:54182",
+    ASTILBA_LISTEN: "127.0.0.1:15189",
+    ASTILBA_ORIGIN: "http://127.0.0.1:15182",
   });
   const hostedDatabase = `hosted_${owned.replaceAll("-", "")}`;
   docker(["exec", name, "createdb", "--username", "postgres", hostedDatabase]);
@@ -235,7 +246,7 @@ try {
     ASTILBA_DEVELOPMENT: "false", ASTILBA_HOSTED: "true",
     ASTILBA_HOSTED_COHORT_LIMIT: "5", ASTILBA_HOSTED_SERVER_LIMIT: "2",
     ASTILBA_HOSTED_SUPPORT: "Fixture: asynchronous support weekdays.",
-    ASTILBA_LISTEN: "127.0.0.1:54187", ASTILBA_ORIGIN: "https://127.0.0.1:54186",
+    ASTILBA_LISTEN: "127.0.0.1:15187", ASTILBA_ORIGIN: "https://127.0.0.1:15186",
   };
   execFileSync(binary,["keygen","--out",hostedEnv.ASTILBA_KEYRING],{env:hostedEnv,stdio:"inherit"});
   execFileSync(binary,["migrate"],{env:hostedEnv,stdio:"inherit"});
@@ -246,18 +257,12 @@ try {
       docker(["exec", name,"psql","--username","postgres","--dbname",hostedDatabase,"-v","ON_ERROR_STOP=1","-c",`INSERT INTO hosted_invitations(id,email,token_hash,expires_at) VALUES('${randomUUID()}','${project}@example.test',decode('${digest}','hex'),now()+interval '1 day')`]);
     }
   }
-  const certificate=join(directory,"loopback.crt"), certificateKey=join(directory,"loopback.key");
-  execFileSync("openssl",["req","-x509","-newkey","rsa:2048","-nodes","-keyout",certificateKey,"-out",certificate,"-days","1","-subj","/CN=127.0.0.1","-addext","subjectAltName=IP:127.0.0.1"],{stdio:"ignore"});
-  hostedProxy=createHttpsServer({key:await readFile(certificateKey),cert:await readFile(certificate)},(incoming,outgoing)=>{
-    const upstream=httpRequest({host:"127.0.0.1",port:54187,path:incoming.url,method:incoming.method,headers:incoming.headers},response=>{outgoing.writeHead(response.statusCode,response.headers);response.pipe(outgoing)});
-    upstream.on("error",()=>outgoing.writeHead(502).end());incoming.pipe(upstream);
-  });
-  await new Promise((resolve,reject)=>{hostedProxy.once("error",reject);hostedProxy.listen(54186,"127.0.0.1",resolve)});
   start(binary,["serve"],hostedEnv);
   await mkdir(join(root,".artifacts/p8/browser"),{recursive:true});
   const operatorEnv=Object.fromEntries(["ASTILBA_DATABASE_URL","ASTILBA_KEYRING","ASTILBA_HOSTED","ASTILBA_HOSTED_COHORT_LIMIT","ASTILBA_HOSTED_SERVER_LIMIT","ASTILBA_HOSTED_SUPPORT"].map(key=>[key,hostedEnv[key]]));
+  ownsHostedInfo = true;
   await writeFile(hostedInfo,JSON.stringify({binary,env:operatorEnv,host,container:name,owner:owned,database:hostedDatabase}),{mode:0o600});
-  for (const port of [54181, 54184, 54187, 54189]) {
+  for (const port of [15181, 15184, 15187, 15189]) {
     let ready = false;
     for (let i = 0; i < 100; i++) {
       try {
@@ -281,9 +286,9 @@ try {
       "--ip",
       "127.0.0.1",
       "--port",
-      "54183",
+      "15183",
       "--var",
-      "API_ORIGIN:http://127.0.0.1:54184",
+      "API_ORIGIN:http://127.0.0.1:15184",
       "--var",
       "DEVELOPMENT:true",
     ],

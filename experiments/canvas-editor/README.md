@@ -12,7 +12,7 @@ pnpm --filter @astilba/canvas-spike exec playwright install chromium webkit
 make verify-canvas
 ```
 
-On Linux, install the browser system dependencies with `playwright install --with-deps chromium webkit` on a disposable development host, as CI does. `make verify-canvas` builds the application, runs the two domain test groups and tests the production preview in Chromium and WebKit. The preview owns loopback port 54171 and fails if that port is already in use; it never reuses an unknown server. Reports and screenshots go under the ignored `.artifacts/plat1/` directory. Timings are recorded, not used as CI speed thresholds.
+On Linux, install the browser system dependencies with `playwright install --with-deps chromium webkit` on a disposable development host, as CI does. `make verify-canvas` builds the application, runs the two domain test groups and tests the production preview in Chromium and WebKit. The test preview owns loopback port 15171 and fails if that port is already in use; it never reuses an unknown server. Reports and screenshots go under the ignored `.artifacts/plat1/` directory. Timings are recorded, not used as CI speed thresholds.
 
 For interactive use:
 

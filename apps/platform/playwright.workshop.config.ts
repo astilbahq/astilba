@@ -7,7 +7,7 @@ export default defineConfig({
   timeout: 30000,
   outputDir: "../../.artifacts/storybook/test-results",
   use: {
-    baseURL: "http://127.0.0.1:54201",
+    baseURL: "http://127.0.0.1:15201",
     trace: "retain-on-failure",
     ...devices["Desktop Chrome"],
   },
@@ -17,8 +17,8 @@ export default defineConfig({
   ],
   webServer: {
     command:
-      "vp preview --config .storybook/vite.config.ts --outDir ../../.artifacts/storybook/static --host 127.0.0.1 --port 54201 --strictPort",
-    url: "http://127.0.0.1:54201",
+      "vp preview --config .storybook/vite.config.ts --outDir ../../.artifacts/storybook/static --host 127.0.0.1 --port 15201 --strictPort",
+    url: "http://127.0.0.1:15201",
     reuseExistingServer: false,
   },
 });
