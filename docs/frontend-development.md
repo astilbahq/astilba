@@ -18,6 +18,14 @@ Keep a feature's components, styling and private helpers together. A single file
 
 Generated `styled-system/` output is ignored by Git. `src/api/generated/` is generated from `contracts/platform`; do not hand-edit or format it.
 
+## Signed-in workspace and Projects
+
+`features/shell/app-shell.tsx` owns the desktop sidebar, mobile Base UI navigation dialog, workspace picker and account menu. `router.tsx` resolves the shared `workspace` search parameter against current session memberships and supplies `WorkspaceContext`; workspace sections consume that context instead of maintaining their own selectors. A missing parameter defaults to the first membership. An explicitly unavailable string ID shows a recovery state with a link that clears the selection. Account security remains reachable, and its drafts survive workspace changes. Application task state resets when the authenticated account changes. The GitHub OAuth callback stays in the authenticated AuthFrame because its authorization grant owns its workspace.
+
+`features/projects/projects-overview.tsx` owns the project list and shared Base UI/Zod creation form. Query options live below routing in `api/projects.ts`. Loading, empty, failed-load/retry and view-only states are distinct; request failures preserve creation drafts. The existing project/environment editors and workspace import/create utilities remain in `workspace.tsx`. Unsaved editor navigation uses the shared AlertDialog above mobile navigation; cancelling retains the drawer and draft, while completed navigation closes it and focuses main.
+
+The **Pages/Projects** workshop scenarios combine the shell with memory routing and synthetic memberships/projects. They include populated, empty, loading, error, viewer, no-workspace, long-name, creation, validation and failed-request states. The app catalogue owns shell copy and the projects catalogue owns overview/creation copy. Both participate in the development pseudolocales; runtime browser journeys cover URL persistence, unavailable membership recovery and mobile editor navigation against the real API.
+
 ## Two-factor sign-in
 
 After password verification, `/login` shows the authenticator challenge in `features/auth/mfa-challenge.tsx`. It shares the auth layout. Authenticator entry uses the shared `OTPInput` with six empty slots and the shared input recipe, a numeric keyboard, complete-code paste and one-time-code autocomplete. The explicit Verify action is followed by “Use recovery code”, then the quieter “Use another account” action. Keyboard order follows the same sequence. A separate recovery-code mode keeps one text input with its own label, instructions and validation. Both keep code text LTR and disable spelling/capitalization assistance.

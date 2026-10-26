@@ -6,6 +6,8 @@ export default defineConfig({
     input: [
       "src/features/auth/**/*.{ts,tsx}",
       "src/features/account/**/*.{ts,tsx}",
+      "src/features/shell/**/*.{ts,tsx}",
+      "src/features/projects/**/*.{ts,tsx}",
       "src/components/{password-input,theme-menu,locale-menu}.tsx",
       "src/{router,hosting,ui}.tsx",
       "!src/**/*.stories.tsx",

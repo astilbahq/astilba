@@ -28,19 +28,20 @@ test("Compose files remain authoritative through graph edits and independent lay
   try {
     await expect.poll(() => capturedInitialProjects).toBe(true);
     await page
+      .getByRole("button", { name: "New project", exact: true })
+      .click();
+    await page
       .getByLabel("Project name", { exact: true })
       .fill(`Compose ${info.project.name}`);
     await page
       .getByRole("button", { name: "Create project", exact: true })
       .click();
-    await expect(page.getByLabel("Project name", { exact: true })).toHaveValue(
-      "",
-    );
+    await expect(page.getByRole("status")).toHaveText("Project created.");
   } finally {
     releaseInitialProjects();
   }
   await page
-    .getByRole("link", { name: `Compose ${info.project.name} Open project →` })
+    .getByRole("link", { name: `Compose ${info.project.name} Open project` })
     .click();
   await page.getByText("Add an environment", { exact: true }).click();
   await page.getByLabel("Environment name", { exact: true }).fill("Files");

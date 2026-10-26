@@ -1,7 +1,6 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
+import { useContext, useEffect, useState } from "react";
 import { client, result, type Schema } from "./api/client";
-import { sessionOptions } from "./api/session";
 import { Button } from "./components/button";
 import { Input } from "./components/input";
 import { Label } from "./components/label";
@@ -12,13 +11,10 @@ import { ServerDomains } from "./features/server-domains";
 import { ServerOnboarding } from "./features/server-onboarding";
 import * as s from "./styles";
 import { BusyButton, ErrorNotice, Form, text, useAction } from "./ui";
+import { WorkspaceContext } from "./workspace-context";
 
 export function Servers() {
-  const session = useQuery(sessionOptions).data;
-  const [selected, setSelected] = useState("");
-  const workspace =
-    session?.workspaces.find((w) => w.id === selected) ??
-    session?.workspaces[0];
+  const workspace = useContext(WorkspaceContext);
   const workspaceId = workspace?.id ?? "";
   return (
     <div className={s.stack}>
@@ -30,19 +26,6 @@ export function Servers() {
           Astilba.
         </p>
       </header>
-      <Label>
-        Workspace
-        <Select
-          value={workspaceId}
-          onChange={(e) => setSelected(e.target.value)}
-        >
-          {session?.workspaces.map((w) => (
-            <option key={w.id} value={w.id}>
-              {w.name}
-            </option>
-          ))}
-        </Select>
-      </Label>
       {workspace && <ServerWorkspace key={workspaceId} workspace={workspace} />}
     </div>
   );

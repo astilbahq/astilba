@@ -4,6 +4,7 @@ import {
   type FormValidation,
   validateWith,
 } from "../../components/form-validation";
+import { namedValueValidation } from "../../components/named-value-validation";
 import type { AuthMessages } from "./messages";
 
 const codeErrorFields = { invalid_credentials: ["code"] } as const;
@@ -50,25 +51,12 @@ export function createAuthValidation(messages: AuthMessages) {
         error: messages.passwordTooLong({ maximum: 128 }),
       }),
   );
-  const namedValue = (required: string, invalid: string, tooLong: string) =>
-    validateWith(
-      z
-        .string()
-        .trim()
-        .min(1, required)
-        .refine((value) => Array.from(value).length <= 80, { error: tooLong })
-        .refine(
-          (value) =>
-            !["\r", "\n", "\0"].some((character) => value.includes(character)),
-          { error: invalid },
-        ),
-    );
-  const name = namedValue(
+  const name = namedValueValidation(
     messages.nameRequired,
     messages.nameInvalid,
     messages.nameTooLong({ maximum: 80 }),
   );
-  const workspace = namedValue(
+  const workspace = namedValueValidation(
     messages.workspaceRequired,
     messages.workspaceInvalid,
     messages.workspaceTooLong({ maximum: 80 }),

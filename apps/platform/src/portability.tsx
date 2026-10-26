@@ -76,7 +76,7 @@ export function WorkspaceImport({ hosted }: { hosted: boolean }) {
   const action = useAction();
   const [done, setDone] = useState(false);
   return (
-    <details className={s.panel}>
+    <details className={s.workspaceUtility}>
       <summary>Import an encrypted workspace</summary>
       <p>
         This creates a new workspace with its original resource identities. You

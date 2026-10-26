@@ -1,6 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
 import AxeBuilder from "@axe-core/playwright";
-import { expect, type APIRequestContext, test } from "@playwright/test";
+import {
+  expect,
+  type APIRequestContext,
+  type Page,
+  test,
+} from "@playwright/test";
 import { authFixtureSQL } from "./auth-fixture";
 import { totp } from "./fixtures/totp";
 
@@ -16,6 +21,19 @@ async function post(request: APIRequestContext, path: string, data?: object) {
   });
   await expect(response).toBeOK();
   return response;
+}
+
+async function signOut(page: Page) {
+  await expect(
+    page.getByRole("heading", { name: "Account security", exact: true }),
+  ).toBeVisible();
+  const navigation = page.getByRole("button", {
+    name: "Open navigation",
+    exact: true,
+  });
+  if (await navigation.isVisible()) await navigation.click();
+  await page.getByRole("button", { name: /^Account menu for/ }).click();
+  await page.getByRole("menuitem", { name: "Sign out", exact: true }).click();
 }
 
 test("two-factor sign-in separates authenticator and recovery modes and preserves the return destination", async ({
@@ -238,7 +256,7 @@ test("two-factor sign-in separates authenticator and recovery modes and preserve
   await expect(page).toHaveURL(`${baseURL}/account`);
   await expect(page.getByText("9 recovery codes remaining.")).toBeVisible();
 
-  await page.getByRole("button", { name: "Sign out", exact: true }).click();
+  await signOut(page);
   await expect(page).toHaveURL(`${baseURL}/login`);
   await expect(
     page.getByRole("heading", { name: "Sign in", exact: true }),
@@ -274,7 +292,7 @@ test("two-factor sign-in separates authenticator and recovery modes and preserve
   await code.fill(totp(secret, enrolledAt + 30000));
   await page.getByRole("button", { name: "Verify", exact: true }).click();
   await expect(page).toHaveURL(`${baseURL}/account`);
-  await page.getByRole("button", { name: "Sign out", exact: true }).click();
+  await signOut(page);
   await expect(page).toHaveURL(`${baseURL}/login`);
   await page.goto("http://127.0.0.1:15182/login");
   await signIn();

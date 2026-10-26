@@ -12,7 +12,9 @@ export async function managedDatabase(
     .getByLabel("Password", { exact: true })
     .fill("correct horse battery staple");
   await page.getByRole("button", { name: "Sign in", exact: true }).click();
-  await expect(page.getByLabel("Project name", { exact: true })).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Projects", exact: true }),
+  ).toBeVisible();
   const session = await (await page.request.get("/api/v1/session")).json(),
     ws = session.workspaces[0].id;
   const headers = {

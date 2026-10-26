@@ -105,7 +105,8 @@ test("account credentials use shared forms and clear secrets and drafts after a 
 
   const other = await context.newPage();
   await other.goto("/account");
-  await other.getByRole("button", { name: "Sign out", exact: true }).click();
+  await other.getByRole("button", { name: /^Account menu for/ }).click();
+  await other.getByRole("menuitem", { name: "Sign out", exact: true }).click();
   await other.getByLabel("Email", { exact: true }).fill(emailB);
   await other
     .getByLabel("Password", { exact: true })

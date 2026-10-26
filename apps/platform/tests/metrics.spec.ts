@@ -16,7 +16,7 @@ test("resource history exposes missing, measured and stale data", async ({
     .fill("correct horse battery staple");
   await page.getByRole("button", { name: "Sign in", exact: true }).click();
   await expect(
-    page.getByRole("button", { name: "Sign out", exact: true }),
+    page.getByRole("button", { name: /^Account menu for/ }),
   ).toBeVisible();
   await page.getByRole("link", { name: "Servers", exact: true }).click();
   const session = await (await page.request.get("/api/v1/session")).json();

@@ -55,6 +55,30 @@ export const panel = css({
   gap: "5",
   minInlineSize: "0",
 });
+export const workspaceUtility = css({
+  borderBlockStartWidth: "1px",
+  borderBlockStartStyle: "solid",
+  borderBlockStartColor: "separator",
+  display: "grid",
+  gap: "5",
+  minInlineSize: "0",
+  "& > summary": {
+    minBlockSize: "control.sm",
+    paddingBlock: "3",
+    color: "subtle",
+    fontFamily: "ui",
+    fontSize: "secondary",
+    cursor: "pointer",
+    borderRadius: "control",
+    _hover: { color: "fg" },
+    _focusVisible: {
+      outlineWidth: "2px",
+      outlineStyle: "solid",
+      outlineColor: "link.focus",
+      outlineOffset: "0.5",
+    },
+  },
+});
 export const muted = css({ color: "subtle", fontSize: "secondary" });
 export const notice = css({
   bg: "soft",

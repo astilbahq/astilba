@@ -31,6 +31,40 @@ export default interface Resources {
     },
     "title": "Account security"
   },
+  "app": {
+    "account": {
+      "label": "Account",
+      "menu": "Account menu for {{name}}",
+      "signOut": "Sign out",
+      "source": "Licence and source"
+    },
+    "name": "Astilba",
+    "navigation": {
+      "account": "Account security",
+      "alerts": "Alerts",
+      "close": "Close navigation",
+      "label": "Navigation",
+      "open": "Open navigation",
+      "projects": "Projects",
+      "region": "Workspace navigation",
+      "servers": "Servers",
+      "workspace": "Workspace"
+    },
+    "unsaved": {
+      "description": "Leave this page and discard unsaved edits?",
+      "discard": "Discard and leave",
+      "keep": "Keep editing",
+      "title": "Unsaved changes"
+    },
+    "workspace": {
+      "choose": "Workspace: {{name}}",
+      "empty": "No workspaces yet",
+      "menu": "Choose workspace",
+      "none": "Choose a workspace",
+      "unavailable": "You no longer have access to this workspace, or it does not exist. Choose another workspace to continue.",
+      "unavailableTitle": "Workspace unavailable"
+    }
+  },
   "auth": {
     "backToSignIn": "Back to sign in",
     "emailVerification": {
@@ -282,5 +316,36 @@ export default interface Resources {
     },
     "unexpectedError": "Something went wrong. Please retry.",
     "working": "Working…"
+  },
+  "projects": {
+    "create": {
+      "cancel": "Cancel",
+      "created": "Project created.",
+      "forbidden": "You no longer have permission to create projects in this workspace.",
+      "invalid": "Use a project name without line breaks or null characters.",
+      "mfa": "Set up two-factor authentication in Account security before creating a project.",
+      "name": "Project name",
+      "recentAuth": "Confirm your identity in Account security, then try again.",
+      "required": "Enter a project name.",
+      "submit": "Create project",
+      "subscription": "An active workspace subscription is required. Open Workspace to finish setup.",
+      "title": "New project",
+      "tooLong": "Use at most {{maximum}} characters for the project name.",
+      "verifyEmail": "Verify your email address in Account security before creating a project."
+    },
+    "description": "Applications and environments in {{workspace}}.",
+    "emptyDescription": "Group your application’s environments in a project. You can add an environment next.",
+    "emptyTitle": "Create your first project",
+    "emptyViewerTitle": "No projects yet",
+    "loadFailed": "Projects could not be loaded",
+    "loadRecovery": "Check your connection, then try again.",
+    "loading": "Loading projects…",
+    "newProject": "New project",
+    "noWorkspace": "Ask a workspace owner for an invitation, or import a workspace below.",
+    "noWorkspaceTitle": "No workspace yet",
+    "open": "Open project",
+    "readOnly": "You have view-only access. A workspace owner or member can create projects.",
+    "retry": "Try again",
+    "title": "Projects"
   }
 }
