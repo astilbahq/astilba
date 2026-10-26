@@ -1,4 +1,4 @@
-.PHONY: check verify verify-host verify-build verify-git verify-canvas check-app verify-app verify-app-core verify-image verify-agent-host
+.PHONY: check verify verify-host verify-build verify-git verify-canvas check-app verify-app verify-app-core verify-image verify-agent-host check-ci
 
 check:
 	$(MAKE) check-app
@@ -23,7 +23,10 @@ verify-host:
 verify-build:
 	cd experiments/durable-execution && sudo --preserve-env=GOCACHE,GOMODCACHE env PATH=/opt/astilba-plat4/go/bin:/usr/bin:/bin CGO_ENABLED=1 PLAT4_HOST_TEST=1 PLAT4_ARCH="$(PLAT4_ARCH)" PLAT5_HOST_TEST=1 /opt/astilba-plat4/go/bin/go test -race -count=1 -timeout=12m -v -run '^Test(BuildArtifacts|PostgresRestore)$$' .
 
-check-app:
+check-ci:
+	node --test scripts/ci-native-plan.test.mjs
+
+check-app: check-ci
 	@for file in scripts/platform-*.mjs; do node --check "$$file" || exit 1; done
 	node --test scripts/platform-proxy-test.mjs
 	cd services/platform && test -z "$$(gofmt -l .)" && go mod verify && go vet ./... && go test -short ./...
