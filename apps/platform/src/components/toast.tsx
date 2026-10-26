@@ -66,6 +66,7 @@ export function Toast({ toast }: { toast: BaseToast.Root.ToastObject }) {
           )}
         </div>
         <BaseToast.Close
+          aria-hidden={false}
           render={
             <IconButton size="sm" aria-label={t(($) => $.toast.dismiss)}>
               <Icon>
