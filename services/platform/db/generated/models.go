@@ -12,17 +12,19 @@ import (
 )
 
 type Account struct {
-	ID                uuid.UUID  `json:"id"`
-	Email             string     `json:"email"`
-	Name              string     `json:"name"`
-	PasswordHash      string     `json:"password_hash"`
-	AuthVersion       int64      `json:"auth_version"`
-	TotpSecret        []byte     `json:"totp_secret"`
-	TotpPending       []byte     `json:"totp_pending"`
-	TotpPendingExpiry *time.Time `json:"totp_pending_expiry"`
-	TotpLastStep      int64      `json:"totp_last_step"`
-	CreatedAt         time.Time  `json:"created_at"`
-	EmailVerifiedAt   *time.Time `json:"email_verified_at"`
+	ID                      uuid.UUID  `json:"id"`
+	Email                   string     `json:"email"`
+	Name                    string     `json:"name"`
+	PasswordHash            string     `json:"password_hash"`
+	AuthVersion             int64      `json:"auth_version"`
+	TotpSecret              []byte     `json:"totp_secret"`
+	TotpPending             []byte     `json:"totp_pending"`
+	TotpPendingExpiry       *time.Time `json:"totp_pending_expiry"`
+	TotpLastStep            int64      `json:"totp_last_step"`
+	CreatedAt               time.Time  `json:"created_at"`
+	EmailVerifiedAt         *time.Time `json:"email_verified_at"`
+	RecoveryCodesSaved      bool       `json:"recovery_codes_saved"`
+	RecoveryCodesGeneration *uuid.UUID `json:"recovery_codes_generation"`
 }
 
 type AlertDelivery struct {

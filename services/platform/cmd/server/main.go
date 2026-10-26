@@ -96,11 +96,14 @@ func run() error {
 		if e = f.Parse(os.Args[2:]); e != nil {
 			return e
 		}
+		if e = c.ValidateOrigin(); e != nil {
+			return e
+		}
 		mail, e := mailer.New(c.SMTP)
 		if e != nil {
 			return e
 		}
-		return (&auth.Service{Store: st, Mail: mail, Now: time.Now}).InviteHosted(ctx, *email)
+		return (&auth.Service{Store: st, Mail: mail, Now: time.Now}).InviteHosted(ctx, *email, c.Origin)
 	case "prepare-recovery":
 		f := flag.NewFlagSet("prepare-recovery", flag.ContinueOnError)
 		server := f.String("server", "", "restored server UUID")

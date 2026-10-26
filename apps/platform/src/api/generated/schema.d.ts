@@ -353,6 +353,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/auth/reset/validate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["validatePasswordReset"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/auth/reset/complete": {
         parameters: {
             query?: never;
@@ -363,6 +379,22 @@ export interface paths {
         get?: never;
         put?: never;
         post: operations["completePasswordReset"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/invitations/validate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["validateInvitation"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1522,6 +1554,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/auth/mfa/recovery-codes/acknowledge": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["acknowledgeRecoveryCodes"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/hosting": {
         parameters: {
             query?: never;
@@ -1532,6 +1580,38 @@ export interface paths {
         get: operations["hostingInfo"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/hosting/signup/validate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["validateHostedInvitation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/email/validate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["validateEmailVerification"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2314,6 +2394,7 @@ export interface components {
         /** @enum {string} */
         Role: "owner" | "operator" | "viewer";
         Account: {
+            recoveryCodesSaved: boolean;
             /** Format: uuid */
             id: string;
             /** Format: email */
@@ -2331,6 +2412,8 @@ export interface components {
             requireMfa: boolean;
         };
         Session: {
+            /** Format: uuid */
+            readonly createdWorkspaceId?: string;
             csrfToken: string;
             user?: components["schemas"]["Account"];
             mfaPending: boolean;
@@ -2355,6 +2438,9 @@ export interface components {
         ResetRequest: {
             /** Format: email */
             email: string;
+        };
+        AuthLinkToken: {
+            token: string;
         };
         ResetComplete: {
             token: string;
@@ -2403,6 +2489,8 @@ export interface components {
             uri: string;
         };
         RecoveryCodes: {
+            /** Format: uuid */
+            readonly generation: string;
             codes: string[];
             session: components["schemas"]["Session"];
         };
@@ -3387,6 +3475,14 @@ export interface components {
             billingEnabled: boolean;
             support: string;
         };
+        HostedSignupResult: components["schemas"]["Session"] & {
+            /** Format: uuid */
+            readonly createdWorkspaceId: string;
+        };
+        RecoveryCodesAcknowledgement: {
+            /** Format: uuid */
+            generation: string;
+        };
         HostedSignup: {
             token: string;
             name?: string;
@@ -3405,6 +3501,7 @@ export interface components {
             url: string;
         };
         Subscription: {
+            managementActive: boolean;
             hosted: boolean;
             billingEnabled: boolean;
             status: string;
@@ -4397,6 +4494,37 @@ export interface operations {
             };
         };
     };
+    validatePasswordReset: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AuthLinkToken"];
+            };
+        };
+        responses: {
+            /** @description The reset link is currently valid; the token remains unused. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
     completePasswordReset: {
         parameters: {
             query?: never;
@@ -4411,6 +4539,37 @@ export interface operations {
         };
         responses: {
             /** @description Success */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    validateInvitation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AuthLinkToken"];
+            };
+        };
+        responses: {
+            /** @description The invitation link is currently valid; it remains unused. */
             204: {
                 headers: {
                     [name: string]: unknown;
@@ -7422,6 +7581,39 @@ export interface operations {
             };
         };
     };
+    acknowledgeRecoveryCodes: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RecoveryCodesAcknowledgement"];
+            };
+        };
+        responses: {
+            /** @description Current recovery-code set confirmed saved */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Session"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
     hostingInfo: {
         parameters: {
             query?: never;
@@ -7439,6 +7631,68 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["HostedInfo"];
                 };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    validateHostedInvitation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AuthLinkToken"];
+            };
+        };
+        responses: {
+            /** @description Link is valid; no state was changed */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    validateEmailVerification: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AuthLinkToken"];
+            };
+        };
+        responses: {
+            /** @description Link is valid; no state was changed */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Error */
             default: {
@@ -7470,7 +7724,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Session"];
+                    "application/json": components["schemas"]["HostedSignupResult"];
                 };
             };
             /** @description Error */

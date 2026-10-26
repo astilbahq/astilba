@@ -17,27 +17,34 @@ export const member: Session = {
     name: "Alex",
     mfaEnabled: true,
     recoveryCodesRemaining: 10,
+    recoveryCodesSaved: true,
     emailVerified: true,
   },
 };
 export const pendingMFA: Session = { ...member, mfaPending: true };
 
-export function scenario(session: Session, action?: AnyHandler) {
+export function scenario(session: Session, ...actions: AnyHandler[]) {
   return {
     workshopSession: session,
     msw: {
       handlers: {
         session: sessionHandlers(session),
-        action: action ? [action] : [],
+        action: actions,
       },
     },
   };
 }
 
-export function sessionHandlers(session = guest) {
+export function sessionHandlers(session = guest, hosted = false) {
   return [
     http.get("/api/v1/session", () => HttpResponse.json(session)),
-    http.get("/api/v1/hosting", () => HttpResponse.json({ enabled: false })),
+    http.get("/api/v1/hosting", () =>
+      HttpResponse.json({
+        enabled: hosted,
+        billingEnabled: false,
+        support: "",
+      }),
+    ),
     http.post(
       "/api/v1/auth/logout",
       () => new HttpResponse(null, { status: 204 }),
@@ -75,4 +82,31 @@ export function submitting(path: string) {
     await delay("infinite");
     return new HttpResponse(null, { status: 204 });
   });
+}
+
+export const hostedWorkspaceId = "00000000-0000-4000-8000-000000000002";
+export const hostedMember: Session = {
+  ...member,
+  recentAuth: true,
+  workspaces: [
+    {
+      id: hostedWorkspaceId,
+      name: "My workspace",
+      role: "owner",
+      requireMfa: false,
+    },
+  ],
+};
+export const hostedSubscription: Schema["Subscription"] = {
+  hosted: true,
+  billingEnabled: true,
+  managementActive: false,
+  status: "pending",
+  serverLimit: 2,
+  support: "Contact your installation operator.",
+};
+export function hostedScenario(...args: Parameters<typeof scenario>) {
+  const configured = scenario(...args);
+  configured.msw.handlers.session = sessionHandlers(args[0], true);
+  return configured;
 }

@@ -157,7 +157,7 @@ func publicPath(p string) bool {
 		return true
 	}
 	switch p {
-	case "/api/v1/hosting", "/api/v1/hosting/signup", "/api/v1/session", "/api/v1/auth/login", "/api/v1/auth/mfa", "/api/v1/auth/reset/request", "/api/v1/auth/reset/complete", "/api/v1/auth/invitations/accept":
+	case "/api/v1/hosting", "/api/v1/hosting/signup", "/api/v1/hosting/signup/validate", "/api/v1/session", "/api/v1/auth/login", "/api/v1/auth/mfa", "/api/v1/auth/reset/request", "/api/v1/auth/reset/validate", "/api/v1/auth/reset/complete", "/api/v1/auth/invitations/validate", "/api/v1/auth/invitations/accept":
 		return true
 	}
 	return false
@@ -326,7 +326,7 @@ func (s *Server) session(ctx context.Context) (api.Session, error) {
 	if err != nil {
 		return out, err
 	}
-	out.User = &api.Account{Id: a.ID, Name: a.Name, Email: openapi_types.Email(a.Email), MfaEnabled: len(a.TotpSecret) > 0, RecoveryCodesRemaining: int(count), EmailVerified: a.EmailVerifiedAt != nil}
+	out.User = &api.Account{Id: a.ID, Name: a.Name, Email: openapi_types.Email(a.Email), MfaEnabled: len(a.TotpSecret) > 0, RecoveryCodesRemaining: int(count), EmailVerified: a.EmailVerifiedAt != nil, RecoveryCodesSaved: a.RecoveryCodesSaved}
 	out.RecentAuth = store.Recent(s.Sessions.GetTime(ctx, "recent"), s.Auth.Now())
 	ws, err := s.Store.Queries.ListWorkspaces(ctx, id)
 	for _, w := range ws {
@@ -462,6 +462,18 @@ func (s *Server) RequestPasswordReset(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(202)
 }
+func (s *Server) ValidatePasswordReset(w http.ResponseWriter, r *http.Request) {
+	b, e := decode[api.AuthLinkToken](r)
+	if e == nil {
+		e = s.Auth.ValidateReset(r.Context(), value(b.Token), s.clientIP(r))
+	}
+	if e != nil {
+		s.fail(w, r, e)
+		return
+	}
+	w.WriteHeader(204)
+}
+
 func (s *Server) CompletePasswordReset(w http.ResponseWriter, r *http.Request) {
 	b, e := decode[api.ResetComplete](r)
 	if e == nil {
@@ -476,6 +488,18 @@ func (s *Server) CompletePasswordReset(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(204)
 }
+func (s *Server) ValidateInvitation(w http.ResponseWriter, r *http.Request) {
+	b, e := decode[api.AuthLinkToken](r)
+	if e == nil {
+		e = s.Auth.ValidateInvitation(r.Context(), value(b.Token), s.clientIP(r))
+	}
+	if e != nil {
+		s.fail(w, r, e)
+		return
+	}
+	w.WriteHeader(204)
+}
+
 func (s *Server) AcceptInvitation(w http.ResponseWriter, r *http.Request) {
 	b, e := decode[api.AcceptInvitation](r)
 	if e == nil {
@@ -544,7 +568,7 @@ func (s *Server) sendCodes(w http.ResponseWriter, r *http.Request, a db.Account,
 		s.fail(w, r, e)
 		return
 	}
-	s.respond(w, 200, api.RecoveryCodes{Codes: codes, Session: session})
+	s.respond(w, 200, api.RecoveryCodes{Codes: codes, Session: session, Generation: a.RecoveryCodesGeneration})
 }
 func (s *Server) DisableMFA(w http.ResponseWriter, r *http.Request) {
 	if e := s.recent(r); e != nil {
@@ -554,6 +578,18 @@ func (s *Server) DisableMFA(w http.ResponseWriter, r *http.Request) {
 	a, e := s.Auth.DisableMFA(r.Context(), principal(r.Context()).Account.ID, principal(r.Context()).Account.AuthVersion)
 	if e == nil {
 		e = s.establish(r.Context(), a, false)
+	}
+	if e != nil {
+		s.fail(w, r, e)
+		return
+	}
+	s.sendSession(w, r)
+}
+
+func (s *Server) AcknowledgeRecoveryCodes(w http.ResponseWriter, r *http.Request) {
+	b, e := decode[api.RecoveryCodesAcknowledgement](r)
+	if e == nil {
+		e = s.Auth.AcknowledgeRecoveryCodes(r.Context(), *principal(r.Context()), b.Generation)
 	}
 	if e != nil {
 		s.fail(w, r, e)

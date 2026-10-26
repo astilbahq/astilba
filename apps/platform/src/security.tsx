@@ -9,7 +9,9 @@ import { Input } from "./components/input";
 import { Label } from "./components/label";
 import { Anchor } from "./components/link";
 import { Select } from "./components/select";
-import { EmailVerification, WorkspaceSubscription } from "./hosting";
+import { EmailVerification } from "./features/auth/email-verification";
+import { RecoveryCodesConfirmation } from "./features/auth/recovery-codes-confirmation";
+import { WorkspaceSubscription } from "./hosting";
 import { WorkspaceExport } from "./portability";
 import * as s from "./styles";
 import { BusyButton, ErrorNotice, Field, Form, text, useAction } from "./ui";
@@ -17,11 +19,11 @@ export function Account() {
   const session = useQuery(sessionOptions).data;
   const action = useAction();
   const [enrollment, setEnrollment] = useState<Schema["MFAEnrollment"]>();
-  const [codes, setCodes] = useState<string[]>();
+  const [codes, setCodes] = useState<Schema["RecoveryCodes"]>();
   const [message, setMessage] = useState("");
   const saveCodes = (v: Schema["RecoveryCodes"]) => {
     setSession(v.session);
-    setCodes(v.codes);
+    setCodes(v);
     setEnrollment(undefined);
   };
   return (
@@ -37,7 +39,9 @@ export function Account() {
           {message}
         </p>
       )}
-      <EmailVerification />
+      <section className={s.panel}>
+        <EmailVerification embedded />
+      </section>
       <div className={s.columns}>
         <section className={s.panel}>
           <h2>Confirm your identity</h2>
@@ -179,16 +183,21 @@ export function Account() {
             </>
           )}
           {codes && (
-            <div className={s.stack}>
-              <p role="status">
-                Save these recovery codes somewhere safe. They are shown only
-                now; each works once.
-              </p>
-              <pre className={s.code}>{codes.join("\n")}</pre>
-              <Button type="button" onClick={() => setCodes(undefined)}>
-                I have saved my codes
-              </Button>
-            </div>
+            <RecoveryCodesConfirmation
+              key={codes.generation}
+              data={codes}
+              replacing={action.isPending}
+              onSaved={() => setCodes(undefined)}
+              onReplace={() =>
+                action.run(async () =>
+                  saveCodes(
+                    await result(
+                      client.POST("/api/v1/auth/mfa/recovery-codes"),
+                    ),
+                  ),
+                )
+              }
+            />
           )}
         </section>
       </div>

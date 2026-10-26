@@ -1,10 +1,14 @@
-import { userEvent, within } from "storybook/test";
+import { expect, userEvent, waitFor, within } from "storybook/test";
 
 // Native form names stay stable when the workshop changes language.
 export async function fill(canvas: HTMLElement, name: string, value: string) {
-  const input = canvas.querySelector<HTMLInputElement>(
-    `input[name="${name}"]`,
-  )!;
+  const input = await waitFor(async () => {
+    const control = canvas.querySelector<HTMLInputElement>(
+      `input[name="${name}"]`,
+    );
+    await expect(control).not.toBeNull();
+    return control!;
+  });
   await userEvent.clear(input);
   await userEvent.type(input, value);
   return input;

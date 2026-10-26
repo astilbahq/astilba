@@ -27,7 +27,7 @@ func (q *Queries) AcceptTOTPStep(ctx context.Context, arg AcceptTOTPStepParams) 
 }
 
 const accountByEmail = `-- name: AccountByEmail :one
-SELECT id, email, name, password_hash, auth_version, totp_secret, totp_pending, totp_pending_expiry, totp_last_step, created_at, email_verified_at FROM accounts WHERE email = $1
+SELECT id, email, name, password_hash, auth_version, totp_secret, totp_pending, totp_pending_expiry, totp_last_step, created_at, email_verified_at, recovery_codes_saved, recovery_codes_generation FROM accounts WHERE email = $1
 `
 
 func (q *Queries) AccountByEmail(ctx context.Context, email string) (Account, error) {
@@ -45,12 +45,14 @@ func (q *Queries) AccountByEmail(ctx context.Context, email string) (Account, er
 		&i.TotpLastStep,
 		&i.CreatedAt,
 		&i.EmailVerifiedAt,
+		&i.RecoveryCodesSaved,
+		&i.RecoveryCodesGeneration,
 	)
 	return i, err
 }
 
 const accountByID = `-- name: AccountByID :one
-SELECT id, email, name, password_hash, auth_version, totp_secret, totp_pending, totp_pending_expiry, totp_last_step, created_at, email_verified_at FROM accounts WHERE id = $1
+SELECT id, email, name, password_hash, auth_version, totp_secret, totp_pending, totp_pending_expiry, totp_last_step, created_at, email_verified_at, recovery_codes_saved, recovery_codes_generation FROM accounts WHERE id = $1
 `
 
 func (q *Queries) AccountByID(ctx context.Context, id uuid.UUID) (Account, error) {
@@ -68,6 +70,8 @@ func (q *Queries) AccountByID(ctx context.Context, id uuid.UUID) (Account, error
 		&i.TotpLastStep,
 		&i.CreatedAt,
 		&i.EmailVerifiedAt,
+		&i.RecoveryCodesSaved,
+		&i.RecoveryCodesGeneration,
 	)
 	return i, err
 }
@@ -180,7 +184,7 @@ func (q *Queries) DeleteUnsentReset(ctx context.Context, arg DeleteUnsentResetPa
 
 const disableTOTP = `-- name: DisableTOTP :one
 UPDATE accounts SET totp_secret=NULL, totp_pending=NULL, totp_pending_expiry=NULL,
-    totp_last_step=-1, auth_version=auth_version+1 WHERE id=$1 RETURNING auth_version
+    totp_last_step=-1, auth_version=auth_version+1, recovery_codes_saved=true, recovery_codes_generation=NULL WHERE id=$1 RETURNING auth_version
 `
 
 func (q *Queries) DisableTOTP(ctx context.Context, id uuid.UUID) (int64, error) {
@@ -191,7 +195,7 @@ func (q *Queries) DisableTOTP(ctx context.Context, id uuid.UUID) (int64, error) 
 }
 
 const insertAccount = `-- name: InsertAccount :one
-INSERT INTO accounts(id, email, name, password_hash) VALUES($1,$2,$3,$4) RETURNING id, email, name, password_hash, auth_version, totp_secret, totp_pending, totp_pending_expiry, totp_last_step, created_at, email_verified_at
+INSERT INTO accounts(id, email, name, password_hash) VALUES($1,$2,$3,$4) RETURNING id, email, name, password_hash, auth_version, totp_secret, totp_pending, totp_pending_expiry, totp_last_step, created_at, email_verified_at, recovery_codes_saved, recovery_codes_generation
 `
 
 type InsertAccountParams struct {
@@ -221,6 +225,8 @@ func (q *Queries) InsertAccount(ctx context.Context, arg InsertAccountParams) (A
 		&i.TotpLastStep,
 		&i.CreatedAt,
 		&i.EmailVerifiedAt,
+		&i.RecoveryCodesSaved,
+		&i.RecoveryCodesGeneration,
 	)
 	return i, err
 }
@@ -256,7 +262,7 @@ func (q *Queries) InsertRecoveryCode(ctx context.Context, arg InsertRecoveryCode
 }
 
 const lockAccount = `-- name: LockAccount :one
-SELECT id, email, name, password_hash, auth_version, totp_secret, totp_pending, totp_pending_expiry, totp_last_step, created_at, email_verified_at FROM accounts WHERE id = $1 FOR UPDATE
+SELECT id, email, name, password_hash, auth_version, totp_secret, totp_pending, totp_pending_expiry, totp_last_step, created_at, email_verified_at, recovery_codes_saved, recovery_codes_generation FROM accounts WHERE id = $1 FOR UPDATE
 `
 
 func (q *Queries) LockAccount(ctx context.Context, id uuid.UUID) (Account, error) {
@@ -274,6 +280,8 @@ func (q *Queries) LockAccount(ctx context.Context, id uuid.UUID) (Account, error
 		&i.TotpLastStep,
 		&i.CreatedAt,
 		&i.EmailVerifiedAt,
+		&i.RecoveryCodesSaved,
+		&i.RecoveryCodesGeneration,
 	)
 	return i, err
 }
@@ -296,6 +304,15 @@ func (q *Queries) LockPasswordReset(ctx context.Context, tokenHash []byte) (Pass
 	var i PasswordReset
 	err := row.Scan(&i.AccountID, &i.TokenHash, &i.ExpiresAt)
 	return i, err
+}
+
+const markRecoveryCodesSaved = `-- name: MarkRecoveryCodesSaved :exec
+UPDATE accounts SET recovery_codes_saved=true WHERE id=$1
+`
+
+func (q *Queries) MarkRecoveryCodesSaved(ctx context.Context, id uuid.UUID) error {
+	_, err := q.db.Exec(ctx, markRecoveryCodesSaved, id)
+	return err
 }
 
 const peekPasswordReset = `-- name: PeekPasswordReset :one
@@ -350,6 +367,20 @@ type SetPendingTOTPParams struct {
 
 func (q *Queries) SetPendingTOTP(ctx context.Context, arg SetPendingTOTPParams) error {
 	_, err := q.db.Exec(ctx, setPendingTOTP, arg.ID, arg.TotpPending, arg.TotpPendingExpiry)
+	return err
+}
+
+const startRecoveryCodes = `-- name: StartRecoveryCodes :exec
+UPDATE accounts SET recovery_codes_generation=$2, recovery_codes_saved=false WHERE id=$1
+`
+
+type StartRecoveryCodesParams struct {
+	ID                      uuid.UUID  `json:"id"`
+	RecoveryCodesGeneration *uuid.UUID `json:"recovery_codes_generation"`
+}
+
+func (q *Queries) StartRecoveryCodes(ctx context.Context, arg StartRecoveryCodesParams) error {
+	_, err := q.db.Exec(ctx, startRecoveryCodes, arg.ID, arg.RecoveryCodesGeneration)
 	return err
 }
 

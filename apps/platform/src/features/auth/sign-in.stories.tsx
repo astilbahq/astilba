@@ -33,7 +33,13 @@ export const ValidationErrors: Story = {
 export const RejectedCredentials: Story = {
   play: async ({ canvasElement }) => {
     await credentials(canvasElement);
-    await expect(await within(canvasElement).findByRole("alert")).toBeVisible();
+    const notification = await within(
+      canvasElement.ownerDocument.body,
+    ).findByRole("dialog");
+    await waitFor(() => expect(notification).toBeVisible(), { timeout: 5000 });
+    await expect(
+      within(canvasElement).queryByRole("alert"),
+    ).not.toBeInTheDocument();
   },
 };
 export const Submitting: Story = {

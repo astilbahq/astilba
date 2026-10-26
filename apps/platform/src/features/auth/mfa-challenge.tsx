@@ -1,20 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { client, result, setSession } from "../../api/client";
-import { Input, type InputProps } from "../../components/input";
+import { Input } from "../../components/input";
 import { LinkButton } from "../../components/link";
-import { OTPInput } from "../../components/otp-input";
 import { ErrorToast } from "../../components/toast";
 import * as s from "../../styles";
 import { BusyButton, Field, Form, text, useAction } from "../../ui";
 import * as auth from "./auth.styles";
+import { AuthenticatorInput } from "./authenticator-input";
 import { useAuthValidation } from "./use-auth-validation";
-
-function AuthenticatorCodeInput({ id, name, required, size }: InputProps) {
-  return (
-    <OTPInput id={id} name={name} required={required} length={6} size={size} />
-  );
-}
 
 export function MFAChallenge() {
   const { t } = useTranslation("auth");
@@ -65,7 +59,7 @@ export function MFAChallenge() {
         >
           <Field
             name="code"
-            inputComponent={recovery ? Input : AuthenticatorCodeInput}
+            inputComponent={recovery ? Input : AuthenticatorInput}
             label={
               recovery ? t(($) => $.mfa.recoveryCode) : t(($) => $.mfa.code)
             }

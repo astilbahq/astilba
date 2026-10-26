@@ -149,6 +149,10 @@ func (s *Service) Reauthenticate(ctx context.Context, id uuid.UUID, password, co
 	return account, err
 }
 func recoveryCodes(ctx context.Context, q *db.Queries, id uuid.UUID) ([]string, error) {
+	generation := uuid.New()
+	if err := q.StartRecoveryCodes(ctx, db.StartRecoveryCodesParams{ID: id, RecoveryCodesGeneration: &generation}); err != nil {
+		return nil, err
+	}
 	if err := q.DeleteRecoveryCodes(ctx, id); err != nil {
 		return nil, err
 	}
@@ -344,6 +348,17 @@ func (s *Service) RequestReset(ctx context.Context, email, ip, origin string) er
 	}
 	return nil
 }
+func (s *Service) ValidateReset(ctx context.Context, token, ip string) error {
+	if err := s.Limit(ctx, "reset-validate:ip:"+ip, 60, 15*time.Minute); err != nil {
+		return err
+	}
+	_, err := s.Store.Queries.PeekPasswordReset(ctx, Hash(token))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.Credentials
+	}
+	return err
+}
+
 func (s *Service) CompleteReset(ctx context.Context, token, password, ip string) error {
 	if err := s.Limit(ctx, "reset-complete:ip:"+ip, 20, 15*time.Minute); err != nil {
 		return err
@@ -378,6 +393,17 @@ func (s *Service) CompleteReset(ctx context.Context, token, password, ip string)
 		}
 		return q.DeletePasswordReset(ctx, reset.AccountID)
 	})
+}
+
+func (s *Service) ValidateInvitation(ctx context.Context, token, ip string) error {
+	if err := s.Limit(ctx, "invite-validate:ip:"+ip, 60, 15*time.Minute); err != nil {
+		return err
+	}
+	_, err := s.Store.Queries.PeekInvitation(ctx, Hash(token))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.Credentials
+	}
+	return err
 }
 
 func (s *Service) AcceptInvitation(ctx context.Context, token, name, password string, current *db.Account) (db.Account, error) {
@@ -440,3 +466,19 @@ func (s *Service) AcceptInvitation(ctx context.Context, token, name, password st
 }
 
 func ptrTime(value time.Time) *time.Time { return &value }
+
+func (s *Service) AcknowledgeRecoveryCodes(ctx context.Context, p store.Principal, generation uuid.UUID) error {
+	if !p.MFA {
+		return domain.MFARequired
+	}
+	return s.Store.Transaction(ctx, func(q *db.Queries) error {
+		account, err := lockCurrent(ctx, q, p.Account.ID, p.Account.AuthVersion)
+		if err != nil {
+			return err
+		}
+		if len(account.TotpSecret) == 0 || account.RecoveryCodesGeneration == nil || *account.RecoveryCodesGeneration != generation {
+			return domain.Conflict
+		}
+		return q.MarkRecoveryCodesSaved(ctx, account.ID)
+	})
+}

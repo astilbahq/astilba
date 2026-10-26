@@ -66,3 +66,25 @@ func TestConsoleEmailRequiresLocalDevelopment(t *testing.T) {
 		})
 	}
 }
+
+func TestEmailLinkOriginValidation(t *testing.T) {
+	for _, tc := range []struct {
+		origin                       string
+		development, hosted, allowed bool
+	}{
+		{"https://app.example.test", false, true, true},
+		{"", false, true, false},
+		{"app.example.test", false, true, false},
+		{"https://app.example.test/signup", false, true, false},
+		{"https://user@app.example.test", false, true, false},
+		{"https://app.example.test?host=other", false, true, false},
+		{"http://app.example.test", false, true, false},
+		{"http://127.0.0.1:54182", true, false, true},
+		{"http://127.0.0.1:54182", true, true, false},
+	} {
+		c := Config{Origin: tc.origin, Development: tc.development, Hosted: tc.hosted}
+		if err := c.ValidateOrigin(); (err == nil) != tc.allowed {
+			t.Fatalf("origin %q allowed=%v error=%v", tc.origin, tc.allowed, err)
+		}
+	}
+}

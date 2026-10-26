@@ -220,6 +220,10 @@ try {
   start(binary, ["serve"], {
     ...env,
     ...githubEnv,
+    // This loopback development server delivers verification mail to its console.
+    ASTILBA_SMTP_MODE: "console",
+    ASTILBA_SMTP_ADDRESS: "", ASTILBA_SMTP_USERNAME: "", ASTILBA_SMTP_PASSWORD: "",
+    ASTILBA_SMTP_FROM: "accounts@localhost",
     ASTILBA_LISTEN: "127.0.0.1:15181",
     ASTILBA_ORIGIN: "http://127.0.0.1:15181",
   });
