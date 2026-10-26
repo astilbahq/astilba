@@ -332,6 +332,7 @@ export const AccountChangedWithRecoveryCodes: Story = {
   play: async (context) => {
     await SaveRecoveryCodes.play!(context);
     const queries = context.loaded.workshop.queryClient as QueryClient;
+    await waitFor(() => expect(queries.isMutating()).toBe(0));
     queries.setQueryData(
       sessionOptions.queryKey,
       setSession({
