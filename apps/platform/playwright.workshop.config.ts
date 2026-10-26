@@ -2,6 +2,7 @@ import { defineConfig, devices } from "@playwright/test";
 
 export default defineConfig({
   testDir: "workshop-tests",
+  fullyParallel: true,
   workers: 2,
   timeout: 30000,
   outputDir: "../../.artifacts/storybook/test-results",

@@ -19,7 +19,7 @@ This repository contains the BYOS deployment platform and its technical-validati
 - Node 24.18.1 and pnpm 11.17.0: `pnpm install --frozen-lockfile`, install the Playwright browsers above, then `pnpm verify` for Go/browser verification plus the Cloudflare Worker typecheck and container packaging dry run. This needs Docker and Buildx; use the same explicitly selected disposable daemon. `pnpm check` omits Docker and browser execution.
 - Live Cloudflare tests require an explicitly configured disposable deployment and external database; follow `experiments/cloudflare-hosting/README.md`. Never treat local checks as a live hosting pass.
 
-- `make verify-agent-host`: production agent enrollment, systemd restart, signed update and visual deployment/recovery on the explicitly disposable Ubuntu host prepared for `verify-host`; required on both architectures in CI.
+- `make verify-agent-host`: production agent enrollment, systemd restart, signed update and visual deployment/recovery on the explicitly disposable Ubuntu host prepared for `verify-host`; required on both architectures for native-affecting PRs and every main/manual CI run; see [CI selection](docs/continuous-integration.md).
 - `pnpm agent:build`: builds the production agent for Linux amd64 and arm64. See `docs/agent.md` for signing and installation.
 
 ## Ground rules
