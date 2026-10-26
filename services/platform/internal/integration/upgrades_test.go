@@ -37,6 +37,7 @@ func TestUpgradeApprovalRecoveryAndTenantBoundary(t *testing.T) {
 	in.Capabilities.Visual = &yes
 	in.Capabilities.Backups = &yes
 	in.Capabilities.Upgrades = &yes
+	in.Capabilities.Schedules = &yes
 	agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/enroll", "", in, 200, nil)
 	poll := func(id uuid.UUID) api.ExecutionCommand {
 		t.Helper()
@@ -70,6 +71,49 @@ func TestUpgradeApprovalRecoveryAndTenantBoundary(t *testing.T) {
 	var dest backup.Destination
 	b.call("POST", prefix+"/backup-destinations", map[string]any{"name": "Upgrade storage", "kind": "filesystem", "root": "/srv/backups", "endpoint": "", "bucket": "", "region": "", "access": map[string]string{"accessKey": "", "secretKey": "", "password": ""}}, 201, &dest)
 	password := "upgrade-repository-canary"
+	cron, interval := api.Cron, api.Interval
+	expression, minutes, timeout := "*/15 * * * *", 15, 60
+	for _, test := range []struct {
+		name     string
+		schedule api.DailySchedule
+		timeout  *int
+	}{
+		{"cron", api.DailySchedule{Kind: &cron, Expression: &expression, Timezone: "Europe/London"}, nil},
+		{"interval", api.DailySchedule{Kind: &interval, IntervalMinutes: &minutes, Timezone: "UTC"}, nil},
+		{"custom timeout", api.DailySchedule{Timezone: "UTC"}, &timeout},
+	} {
+		t.Log("upgrade delivery with", test.name)
+		var policy backup.Policy
+		b.call("POST", path+"/backup-policies", api.BackupPolicyRequest{Name: test.name, ResourceId: pg, DestinationId: dest.ID, Method: "postgres-logical", Schedule: test.schedule, TimeoutSeconds: test.timeout, Retain: 7, Enabled: true, Command: []string{}, Password: &password}, 201, &policy)
+		var view upgrade.View
+		b.call("POST", path+"/upgrades", api.UpgradeRequest{PolicyId: policy.ID, ResourceId: pg, BaseRevisionId: draft.Id, RetainDays: 30}, 201, &view)
+		b.call("POST", path+"/upgrades/"+view.Plan.ID.String()+"/actions", api.UpgradeActionRequest{Action: "prepare", RequestKey: uuid.New(), ExpectedPhase: "planned"}, 202, &op)
+		if test.name == "cron" {
+			in.Capabilities.Schedules = nil
+			agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/heartbeat", token, api.AgentHeartbeat{Capabilities: in.Capabilities, Preflight: in.Preflight}, 200, nil)
+			agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/poll", token, nil, 400, nil)
+			in.Capabilities.Schedules = &yes
+			agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/heartbeat", token, api.AgentHeartbeat{Capabilities: in.Capabilities, Preflight: in.Preflight}, 200, nil)
+		}
+		command := poll(op.Id)
+		var hydrated upgrade.Command
+		if command.Kind != "upgrade" || command.ResourceId != view.Plan.ID || command.Backup != nil || command.Upgrade == nil || json.Unmarshal(*command.Upgrade, &hydrated) != nil || hydrated.Digest() != command.PlanHash {
+			t.Fatal("backup credential hydration changed the upgrade command identity")
+		}
+		if hydrated.Installation.Policy.Schedule != policy.Schedule || hydrated.Installation.Policy.TimeoutSeconds != policy.TimeoutSeconds || hydrated.Installation.Access.Password != password || hydrated.Secrets[secret.Id.String()] != "upgrade-database-canary" {
+			t.Fatal("upgrade delivery lost policy settings or assigned credentials")
+		}
+		var persisted []byte
+		if err := f.st.Pool.QueryRow(context.Background(), "SELECT command FROM execution_operations WHERE id=$1", command.Id).Scan(&persisted); err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(persisted), "canary") {
+			t.Fatal("hydrated upgrade credentials were persisted")
+		}
+		report(command, "failed", nil, &upgrade.Status{Phase: "rejected", Serving: "old", KeepUntil: time.Now().Add(30 * 24 * time.Hour)})
+	}
+	in.Capabilities.Schedules = nil
+	agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/heartbeat", token, api.AgentHeartbeat{Capabilities: in.Capabilities, Preflight: in.Preflight}, 200, nil)
 	var policy backup.Policy
 	b.call("POST", path+"/backup-policies", api.BackupPolicyRequest{Name: "Recovery", ResourceId: pg, DestinationId: dest.ID, Method: "postgres-logical", Schedule: api.DailySchedule{Timezone: "UTC"}, Retain: 7, Enabled: true, Command: []string{}, Password: &password}, 201, &policy)
 	var view upgrade.View

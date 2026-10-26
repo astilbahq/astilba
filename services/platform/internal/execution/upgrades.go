@@ -240,6 +240,10 @@ func (s *Service) hydrateUpgrade(ctx context.Context, c *api.ExecutionCommand) e
 	b := backup.Command{Action: "check", Installation: cmd.Installation}
 	raw, _ := json.Marshal(b)
 	copy := *c
+	copy.Kind = "backup"
+	if cmd.Installation.Policy.GeneralSchedule() {
+		copy.Kind = "schedule"
+	}
 	copy.ResourceId = cmd.Plan.PolicyID
 	copy.PlanHash = b.Digest()
 	copy.Backup = rawMessage(raw)
