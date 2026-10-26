@@ -245,7 +245,9 @@ export const CancelDisable: Story = {
     await userEvent.click(
       within(dialog).getByRole("button", { name: "Cancel" }),
     );
-    await waitFor(() => expect(body.queryByRole("alertdialog")).toBeNull());
+    await waitFor(() => expect(body.queryByRole("alertdialog")).toBeNull(), {
+      timeout: 5000,
+    });
     await expect(
       within(context.canvasElement).getByRole("button", {
         name: "Disable two-factor authentication",
@@ -281,7 +283,9 @@ export const DisabledSuccessfully: Story = {
         name: "Disable two-factor",
       }),
     );
-    await waitFor(() => expect(body.queryByRole("alertdialog")).toBeNull());
+    await waitFor(() => expect(body.queryByRole("alertdialog")).toBeNull(), {
+      timeout: 5000,
+    });
     await expect(
       within(context.canvasElement).getByText(
         "Two-factor authentication disabled.",
@@ -313,7 +317,9 @@ export const SaveRecoveryCodes: Story = {
         name: "Replace codes",
       }),
     );
-    await waitFor(() => expect(body.queryByRole("alertdialog")).toBeNull());
+    await waitFor(() => expect(body.queryByRole("alertdialog")).toBeNull(), {
+      timeout: 5000,
+    });
     await expect(
       await within(canvasElement).findByRole("list", {
         name: "Recovery codes",

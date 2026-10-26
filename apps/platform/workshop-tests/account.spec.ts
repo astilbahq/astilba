@@ -23,7 +23,10 @@ for (const theme of ["light", "dark"]) {
       .getByRole("button")
       .last()
       .click();
-    await expect(page.getByRole("alertdialog")).toBeVisible();
+    const dialog = page.getByRole("alertdialog");
+    await expect(dialog).toBeVisible();
+    // Measure contrast after the entrance fade has settled.
+    await expect(dialog).toHaveCSS("opacity", "1");
     expect(
       await page.evaluate(
         () => document.documentElement.scrollWidth <= innerWidth,
