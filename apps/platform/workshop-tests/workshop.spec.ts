@@ -41,7 +41,7 @@ test("static workshop provides dark RTL auth states without reaching a backend",
   const backendRequests: string[] = [];
   page.on("request", (request) => {
     const url = new URL(request.url());
-    if (url.pathname.startsWith("/api/") && url.port !== "54201")
+    if (url.pathname.startsWith("/api/") && url.port !== "15201")
       backendRequests.push(url.href);
   });
   await page.setViewportSize({ width: 320, height: 844 });

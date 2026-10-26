@@ -11,6 +11,9 @@ import {
   Position,
   ReactFlow,
   type ReactFlowInstance,
+  useNodesInitialized,
+  useReactFlow,
+  useStore,
 } from "@xyflow/react";
 import {
   forwardRef,
@@ -52,6 +55,20 @@ const ariaLabels = {
   "edge.a11yDescription.default":
     "Use the Connections section in the service properties to remove a connection.",
 };
+
+function InitialFit({ hasLayout }: { hasLayout: boolean }) {
+  const fitted = useRef(hasLayout);
+  const nodesReady = useNodesInitialized();
+  const { fitView, viewportInitialized } = useReactFlow();
+  const sizeReady = useStore((state) => state.width > 0 && state.height > 0);
+  useEffect(() => {
+    if (fitted.current || !nodesReady || !viewportInitialized || !sizeReady)
+      return;
+    fitted.current = true;
+    void fitView({ padding: 0.25, maxZoom: 1 });
+  }, [fitView, nodesReady, sizeReady, viewportInitialized]);
+  return null;
+}
 
 function ServiceCard({ data: { service }, selected }: NodeProps<ServiceNode>) {
   useLayoutEffect(() => recordCommit("nodes", service.id));
@@ -348,8 +365,6 @@ export const Canvas = memo(
         onNodeClick={(_, node) => onSelect(node.id)}
         defaultEdgeOptions={edgeOptions}
         defaultViewport={initialLayout.viewport}
-        fitView={!hasLayout}
-        fitViewOptions={{ padding: 0.25, maxZoom: 1 }}
         minZoom={0.05}
         maxZoom={2}
         deleteKeyCode={null}
@@ -358,6 +373,7 @@ export const Canvas = memo(
         ariaLabelConfig={ariaLabels}
         proOptions={{ hideAttribution: false }}
       >
+        <InitialFit hasLayout={hasLayout} />
         <Background color="#c9d2c9" gap={24} size={1} />
         <Controls showInteractive={false} />
       </ReactFlow>

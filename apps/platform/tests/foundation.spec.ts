@@ -243,7 +243,7 @@ test("real API: create, conflict, secret, keyboard and reflow", async ({
 test("Worker same-origin path preserves login, cookies and source notices", async ({
   page,
 }) => {
-  await page.goto("http://127.0.0.1:54183/");
+  await page.goto("http://127.0.0.1:15183/");
   await page.getByLabel("Email", { exact: true }).fill("owner@example.test");
   await page
     .getByLabel("Password", { exact: true })
@@ -302,7 +302,7 @@ test("server enrollment is explicit and accessible", async ({ page }, info) => {
 test("Worker forwards agent enrollment and verified downloads", async ({
   page,
 }) => {
-  await page.goto("http://127.0.0.1:54183/");
+  await page.goto("http://127.0.0.1:15183/");
   await page.getByLabel("Email", { exact: true }).fill("owner@example.test");
   await page
     .getByLabel("Password", { exact: true })
@@ -332,23 +332,23 @@ test("Worker forwards agent enrollment and verified downloads", async ({
     .getByRole("link", { name: "Signed manifest" })
     .getAttribute("href");
   const manifestResponse = await page.request.get(
-    `http://127.0.0.1:54183${manifestPath}`,
+    `http://127.0.0.1:15183${manifestPath}`,
   );
   expect(manifestResponse.status()).toBe(200);
   const manifest = await manifestResponse.json();
   const artifact = await page.request.get(
-    `http://127.0.0.1:54183/agent-artifacts/${manifest.sha256}`,
+    `http://127.0.0.1:15183/agent-artifacts/${manifest.sha256}`,
   );
   expect(artifact.status()).toBe(200);
   const { createHash, createPublicKey, verify } = await import("node:crypto");
   const publicKey = await page.request.get(
-    "http://127.0.0.1:54183/agent-public-key.pem",
+    "http://127.0.0.1:15183/agent-public-key.pem",
   );
   const message = await page.request.get(
-    `http://127.0.0.1:54183/agent-artifacts/${manifest.sha256}/message`,
+    `http://127.0.0.1:15183/agent-artifacts/${manifest.sha256}/message`,
   );
   const signature = await page.request.get(
-    `http://127.0.0.1:54183/agent-artifacts/${manifest.sha256}/signature`,
+    `http://127.0.0.1:15183/agent-artifacts/${manifest.sha256}/signature`,
   );
   expect(publicKey.status()).toBe(200);
   expect(message.status()).toBe(200);
@@ -362,7 +362,7 @@ test("Worker forwards agent enrollment and verified downloads", async ({
     ),
   ).toBe(true);
   const bootstrap = await page.request.get(
-    "http://127.0.0.1:54183/onboarding/bootstrap.sh",
+    "http://127.0.0.1:15183/onboarding/bootstrap.sh",
   );
   expect(bootstrap.status()).toBe(200);
   expect(bootstrap.headers()["content-type"]).toContain("text/plain");
@@ -373,7 +373,7 @@ test("Worker forwards agent enrollment and verified downloads", async ({
       .digest("hex"),
   ).toBe(manifest.sha256);
   const enrolled = await page.request.post(
-    "http://127.0.0.1:54183/agent/v1/enroll",
+    "http://127.0.0.1:15183/agent/v1/enroll",
     {
       data: {
         serverId: enrollment.server.id,
@@ -402,7 +402,7 @@ test("Worker forwards agent enrollment and verified downloads", async ({
   );
   expect(enrolled.status()).toBe(200);
   const unknown = await page.request.get(
-    `http://127.0.0.1:54183/agent-artifacts/${"0".repeat(64)}/manifest.json`,
+    `http://127.0.0.1:15183/agent-artifacts/${"0".repeat(64)}/manifest.json`,
   );
   expect(unknown.status()).toBe(404);
 });
@@ -416,7 +416,7 @@ test("visual services stay staged until a reviewed plan is applied", async ({
   const ws = session.workspaces[0].id;
   const headers = {
     "X-CSRF-Token": session.csrfToken,
-    Origin: "http://127.0.0.1:54181",
+    Origin: "http://127.0.0.1:15181",
   };
   const enrollmentResponse = await page.request.post(
     `/api/v1/workspaces/${ws}/servers`,
@@ -434,7 +434,7 @@ test("visual services stay staged until a reviewed plan is applied", async ({
     Authorization: `Bearer ${enrollment.server.id}.${credential}`,
   };
   const enrolled = await request.post(
-    "http://127.0.0.1:54181/agent/v1/enroll",
+    "http://127.0.0.1:15181/agent/v1/enroll",
     {
       data: {
         serverId: enrollment.server.id,
@@ -547,7 +547,7 @@ test("visual services stay staged until a reviewed plan is applied", async ({
   await page.getByRole("button", { name: "Prepare plan", exact: true }).click();
   // A protocol fixture acts as the remote host; the native test covers Docker effects.
   const poll = async () => {
-    const response = await request.get("http://127.0.0.1:54181/agent/v1/poll", {
+    const response = await request.get("http://127.0.0.1:15181/agent/v1/poll", {
       headers: agentHeaders,
     });
     expect(response.status()).toBe(200);
@@ -569,7 +569,7 @@ test("visual services stay staged until a reviewed plan is applied", async ({
     state = "succeeded",
   ) => {
     const response = await request.post(
-      "http://127.0.0.1:54181/agent/v1/report",
+      "http://127.0.0.1:15181/agent/v1/report",
       {
         headers: agentHeaders,
         data: {

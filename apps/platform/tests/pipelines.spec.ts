@@ -17,7 +17,7 @@ test("repository setup, Git service, queued build and cancellation use the real 
     ws = session.workspaces[0].id;
   const headers = {
     "X-CSRF-Token": session.csrfToken,
-    Origin: "http://127.0.0.1:54181",
+    Origin: "http://127.0.0.1:15181",
   };
   const enrollment = await (
     await page.request.post(`/api/v1/workspaces/${ws}/servers`, {
@@ -32,7 +32,7 @@ test("repository setup, Git service, queued build and cancellation use the real 
     Authorization: `Bearer ${enrollment.server.id}.${credential}`,
   };
   const enrolled = await request.post(
-    "http://127.0.0.1:54181/agent/v1/enroll",
+    "http://127.0.0.1:15181/agent/v1/enroll",
     {
       data: {
         serverId: enrollment.server.id,
@@ -93,7 +93,7 @@ test("repository setup, Git service, queued build and cancellation use the real 
     .selectOption("gitea");
   await connect
     .getByLabel("Provider origin, such as https://github.com")
-    .fill("http://127.0.0.1:54185");
+    .fill("http://127.0.0.1:15185");
   await connect
     .getByLabel("Repository path, such as team/application")
     .fill("team/app");
@@ -127,7 +127,7 @@ test("repository setup, Git service, queued build and cancellation use the real 
   });
   // Verify the optional Worker preserves webhook signature bytes and routes to the same domain service.
   const response = await request.post(
-    `http://127.0.0.1:54183/hooks/git/${connection.connection.id}`,
+    `http://127.0.0.1:15183/hooks/git/${connection.connection.id}`,
     {
       headers: {
         "Content-Type": "application/json",
@@ -241,7 +241,7 @@ test("repository setup, Git service, queued build and cancellation use the real 
   ).toBeVisible();
   const railpack = (
     await (
-      await request.get("http://127.0.0.1:54181/agent/v1/poll", {
+      await request.get("http://127.0.0.1:15181/agent/v1/poll", {
         headers: agentHeaders,
       })
     ).json()
@@ -259,7 +259,7 @@ test("repository setup, Git service, queued build and cancellation use the real 
   );
   expect(railpackCancelled.status()).toBe(204);
   const railpackReport = await request.post(
-    "http://127.0.0.1:54181/agent/v1/report",
+    "http://127.0.0.1:15181/agent/v1/report",
     {
       headers: agentHeaders,
       data: {
@@ -333,7 +333,7 @@ test("repository setup, Git service, queued build and cancellation use the real 
       { exact: true },
     ),
   ).toBeVisible();
-  const poll = await request.get("http://127.0.0.1:54181/agent/v1/poll", {
+  const poll = await request.get("http://127.0.0.1:15181/agent/v1/poll", {
     headers: agentHeaders,
   });
   expect(poll.status()).toBe(200);
@@ -364,7 +364,7 @@ test("repository setup, Git service, queued build and cancellation use the real 
   );
   await page.getByRole("button", { name: "Cancel build", exact: true }).click();
   expect((await cancelled).status()).toBe(204);
-  const report = await request.post("http://127.0.0.1:54181/agent/v1/report", {
+  const report = await request.post("http://127.0.0.1:15181/agent/v1/report", {
     headers: agentHeaders,
     data: {
       id: command.id,
@@ -393,14 +393,14 @@ test("repository setup, Git service, queued build and cancellation use the real 
   await build.getByRole("button", { name: "Queue build", exact: true }).click();
   const completed = (
     await (
-      await request.get("http://127.0.0.1:54181/agent/v1/poll", {
+      await request.get("http://127.0.0.1:15181/agent/v1/poll", {
         headers: agentHeaders,
       })
     ).json()
   ).command;
   const digest = `sha256:${"b".repeat(64)}`;
   const succeeded = await request.post(
-    "http://127.0.0.1:54181/agent/v1/report",
+    "http://127.0.0.1:15181/agent/v1/report",
     {
       headers: agentHeaders,
       data: {
