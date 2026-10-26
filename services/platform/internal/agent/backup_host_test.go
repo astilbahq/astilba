@@ -122,7 +122,7 @@ func nativeBackupJourney(t *testing.T, e *Engine, p deployment.Plan, finish func
 		t.Fatal(err)
 	}
 	// A due schedule executes with no management client at all.
-	due := time.Now().UTC().Add(-time.Minute)
+	due := policy.Schedule.Next(time.Now().UTC().Add(-48 * time.Hour))
 	s.Installation.Next = due
 	if err = e.Journal.saveSchedule(s); err != nil {
 		t.Fatal(err)

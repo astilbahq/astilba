@@ -100,6 +100,37 @@ func TestBackupScopeHydrationReportsAndCutover(t *testing.T) {
 		t.Fatal("an upload was assigned an uncreated restore target")
 	}
 	report(uploadedCommand, nil)
+	advanced := input
+	kind, expression, timeout := api.Cron, "*/15 * * * *", 60
+	advanced.Name = "Cron backup"
+	advanced.Schedule = api.DailySchedule{Kind: &kind, Expression: &expression, Timezone: "UTC"}
+	advanced.TimeoutSeconds = &timeout
+	b.call("POST", path+"/backup-policies", advanced, 400, nil)
+	heartbeat := func() {
+		agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/heartbeat", token, api.AgentHeartbeat{Capabilities: in.Capabilities, Preflight: in.Preflight}, 200, nil)
+	}
+	in.Capabilities.Schedules = &yes
+	heartbeat()
+	var cronPolicy backup.Policy
+	b.call("POST", path+"/backup-policies", advanced, 201, &cronPolicy)
+	if cronPolicy.Schedule.Expression != expression || cronPolicy.TimeoutSeconds != 60 {
+		t.Fatal("general schedule configuration lost")
+	}
+	cronPath := path + "/backup-policies/" + cronPolicy.ID.String() + "/commands"
+	b.call("POST", cronPath, api.BackupCommandRequest{Action: "install", RequestKey: uuid.New()}, 202, &op)
+	in.Capabilities.Schedules = nil
+	heartbeat()
+	agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/poll", token, nil, 400, nil)
+	in.Capabilities.Schedules = &yes
+	heartbeat()
+	general := poll(op.Id)
+	if general.Kind != "schedule" || general.Backup == nil || !strings.Contains(string(*general.Backup), password) {
+		t.Fatal("general command lost capability fence/hydration")
+	}
+	report(general, nil)
+	in.Capabilities.Schedules = nil
+	heartbeat()
+	b.call("POST", cronPath, api.BackupCommandRequest{Action: "backup", RequestKey: uuid.New()}, 400, nil)
 	status := backup.Status{PolicyID: policy.ID, Generation: 1, Next: time.Now().Add(time.Hour), Runs: []backup.Run{}}
 	now := time.Now()
 	target := uuid.New()

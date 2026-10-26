@@ -29,3 +29,27 @@ func TestLegacyArchivePurposeAndStrictShape(t *testing.T) {
 		t.Fatal("accepted a new authority field in a legacy archive")
 	}
 }
+
+func TestPreSchedulingVersionTwoArchivesRemainReadable(t *testing.T) {
+	raw, err := os.ReadFile("testdata/workspace-v1.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	archive, err := decodeArchive(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	archive.Version = 2
+	raw, err = json.Marshal(archive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = decodeArchive(raw); err != nil {
+		t.Fatal("pre-scheduling archive rejected", err)
+	}
+	archive.Version = 4
+	raw, _ = json.Marshal(archive)
+	if _, err = decodeArchive(raw); err == nil {
+		t.Fatal("unknown future schedule semantics accepted")
+	}
+}

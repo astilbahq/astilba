@@ -42,12 +42,8 @@ func (j *Journal) Inventory() (api.ControllerInventory, error) {
 		if len(proofs) > 0 {
 			out.PreviewCleanups = &proofs
 		}
-		return tx.Bucket([]byte("schedules")).ForEach(func(k, v []byte) error {
-			var state scheduleState
-			if e := j.get(tx, "schedules", string(k), &state); e != nil {
-				return e
-			}
-			out.Schedules[string(k)] = state.Installation.Policy.Generation
+		return j.eachSchedule(tx, func(id string, state scheduleState) error {
+			out.Schedules[id] = state.Installation.Policy.Generation
 			return nil
 		})
 	})
@@ -103,11 +99,7 @@ func (j *Journal) Transfer(origin string, key []byte, generation int64, token st
 		}); e != nil {
 			return e
 		}
-		if e := tx.Bucket([]byte("schedules")).ForEach(func(k, v []byte) error {
-			var state scheduleState
-			if e := j.get(tx, "schedules", string(k), &state); e != nil {
-				return e
-			}
+		if e := j.eachSchedule(tx, func(_ string, state scheduleState) error {
 			for _, run := range state.Runs {
 				if run.State == "running" || run.State == "needs_attention" {
 					return errors.New("resolve uncertain schedule runs before transfer")

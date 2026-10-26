@@ -2113,6 +2113,8 @@ export interface components {
             /** @description Supported Railpack planner/frontend version. Agents send this extension only after a controller response advertises Astilba-Agent-Railpack with v1. */
             railpackVersion?: string;
             build?: boolean;
+            /** @description Supports general schedule formats and bounded job cleanup. Advertised only after Astilba-Agent-Schedules v1. */
+            schedules?: boolean;
             backups?: boolean;
             upgrades?: boolean;
             /** @description Agent accepts visual cancellation without re-sending hydrated credentials. */
@@ -2242,7 +2244,7 @@ export interface components {
             generation: number;
             planHash: string;
             /** @enum {string} */
-            kind: "test" | "update" | "visual" | "pipeline" | "backup" | "upgrade";
+            kind: "test" | "update" | "visual" | "pipeline" | "backup" | "schedule" | "upgrade";
             action: components["schemas"]["TestAction"];
             /** Format: uuid */
             resourceId: string;
@@ -2290,7 +2292,7 @@ export interface components {
             generation: number;
             state: components["schemas"]["ExecutionState"];
             /** @enum {string} */
-            kind: "test" | "update" | "visual" | "pipeline" | "backup" | "upgrade";
+            kind: "test" | "update" | "visual" | "pipeline" | "backup" | "schedule" | "upgrade";
             cancelRequested: boolean;
             note: string;
             steps: components["schemas"]["ExecutionStep"][];
@@ -3157,7 +3159,12 @@ export interface components {
             region: string;
             access: components["schemas"]["BackupAccess"];
         };
+        /** @description Daily wall-clock, five-field cron, or UTC elapsed interval. Omitted kind preserves the original daily format. */
         DailySchedule: {
+            /** @enum {string} */
+            kind?: "daily" | "cron" | "interval";
+            expression?: string;
+            intervalMinutes?: number;
             hour: number;
             minute: number;
             timezone: string;
@@ -3171,6 +3178,8 @@ export interface components {
             /** @enum {string} */
             method: "postgres-logical" | "quiesced-files" | "container-job";
             schedule: components["schemas"]["DailySchedule"];
+            /** @description Upload/job timeout; omitted preserves the 1800-second limit. Restores retain their separate limit. */
+            timeoutSeconds?: number;
             retain: number;
             enabled: boolean;
             command: string[];
@@ -3197,6 +3206,8 @@ export interface components {
             /** @enum {string} */
             method: "postgres-logical" | "quiesced-files" | "container-job";
             schedule: components["schemas"]["DailySchedule"];
+            /** @description Upload/job timeout; omitted preserves the 1800-second limit. Restores retain their separate limit. */
+            timeoutSeconds?: number;
             retain: number;
             enabled: boolean;
             command?: string[];

@@ -8,6 +8,13 @@ import { Label } from "../components/label";
 import { Select } from "../components/select";
 import * as s from "../styles";
 import { BusyButton, ErrorNotice, Field, Form, text, useAction } from "../ui";
+import {
+  ScheduleFields,
+  scheduleInput,
+  scheduleTimeout,
+  scheduleDescription,
+  nextRunDescription,
+} from "./schedule-fields";
 import type { EnvironmentPath } from "./visual-editor";
 
 const wsRoot = "/api/v1/workspaces/{workspaceId}" as const;
@@ -47,8 +54,8 @@ export function Backups({
       <h2>Backups and scheduled jobs</h2>
       <p>
         Backups catch up once after a missed schedule. Container jobs skip
-        missed runs. Both run once per local date, skip nonexistent daylight
-        saving times, and use the first occurrence of repeated times.
+        missed runs. Schedules continue while management is offline and share
+        the host execution lock with deployments; runs never overlap.
       </p>
       <ErrorNotice
         error={action.error ?? destinations.error ?? policies.error}
@@ -138,7 +145,6 @@ export function Backups({
               label="Create backup policy"
               onSubmit={(d, form) =>
                 action.run(async () => {
-                  const [hour, minute] = text(d, "time").split(":").map(Number);
                   await result(
                     client.POST(`${root}/backup-policies`, {
                       params: { path },
@@ -150,11 +156,8 @@ export function Backups({
                             ? nil
                             : text(d, "destination"),
                         method,
-                        schedule: {
-                          hour,
-                          minute,
-                          timezone: text(d, "timezone"),
-                        },
+                        schedule: scheduleInput(d),
+                        timeoutSeconds: scheduleTimeout(d),
                         retain: Number(text(d, "retain")),
                         enabled: d.has("enabled"),
                         command:
@@ -241,22 +244,22 @@ export function Backups({
                   label='Command as JSON arguments, such as ["node", "job.js"]'
                 />
               )}
-              <Field name="time" label="Daily time" type="time" />
-              <Label>
-                Timezone
-                <Input name="timezone" defaultValue="UTC" required />
-              </Label>
-              <Label>
-                Successful uploads to retain
-                <Input
-                  name="retain"
-                  type="number"
-                  min="1"
-                  max="100"
-                  defaultValue="7"
-                  required
-                />
-              </Label>
+              <ScheduleFields />
+              {method !== "container-job" ? (
+                <Label>
+                  Successful uploads to retain
+                  <Input
+                    name="retain"
+                    type="number"
+                    min="1"
+                    max="100"
+                    defaultValue="7"
+                    required
+                  />
+                </Label>
+              ) : (
+                <Input name="retain" type="hidden" value="1" />
+              )}
               <Label>
                 <Checkbox name="enabled" defaultChecked />
                 Enable schedule when installed
@@ -299,6 +302,7 @@ function PolicyStatus({
     queries = useQueryClient(),
     p = { ...path, policyId: policy.id };
   const [message, setMessage] = useState("");
+  const [editing, setEditing] = useState<Schema["BackupPolicy"]>();
   const status = useQuery({
     queryKey: ["backup-status", p],
     queryFn: () =>
@@ -332,17 +336,17 @@ function PolicyStatus({
     <section className={s.panel} aria-label={`Policy ${policy.name}`}>
       <h3>{policy.name}</h3>
       <p>
-        {policy.method}; daily {String(policy.schedule.hour).padStart(2, "0")}:
-        {String(policy.schedule.minute).padStart(2, "0")}{" "}
-        {policy.schedule.timezone}; retain {policy.retain} successful uploads
-        plus protected recovery points.{" "}
+        {policy.method}; {scheduleDescription(policy.schedule)}; timeout{" "}
+        {policy.timeoutSeconds ?? 1800} seconds.{" "}
+        {policy.method !== "container-job" &&
+          `Retain ${policy.retain} successful uploads plus protected recovery points. `}
         {policy.method === "container-job"
           ? "Missed runs skipped; no overlap."
           : "Missed runs coalesced; no overlap."}
       </p>
       <p>
         {status.data?.generation === policy.generation
-          ? `Installed generation ${status.data.generation}. ${status.data.enabled ? `Next run: ${new Date(status.data.next).toLocaleString()}` : "Local schedule disabled."}`
+          ? `Installed generation ${status.data.generation}. ${status.data.enabled ? `Next run: ${nextRunDescription(status.data.next, policy.schedule)}` : "Local schedule disabled. After a rollback or local recovery, save and install a new generation to enable the configured schedule."}`
           : "Current policy is not installed."}
       </p>
       <p>
@@ -387,91 +391,97 @@ function PolicyStatus({
         </div>
       )}
       {owner && (
-        <details>
+        <details
+          onToggle={(event) =>
+            setEditing(event.currentTarget.open ? policy : undefined)
+          }
+        >
           <summary>Update schedule or refresh deployment</summary>
           <p>
             A new generation takes effect when you install it. Storage
             destination, source resource and consistency method stay fixed;
             create another policy to change them.
           </p>
-          <Form
-            action={action}
-            label={`Update ${policy.name}`}
-            onSubmit={(d, form) =>
-              action.run(async () => {
-                const [hour, minute] = text(d, "time").split(":").map(Number);
-                await result(
-                  client.PUT(policyRoot, {
-                    params: { path: p },
-                    body: {
-                      name: policy.name,
-                      resourceId: policy.resourceId,
-                      destinationId: policy.destinationId,
-                      method: policy.method,
-                      schedule: { hour, minute, timezone: text(d, "timezone") },
-                      retain: Number(text(d, "retain")),
-                      enabled: d.has("enabled"),
-                      command: policy.command ?? [],
-                      password: text(d, "password"),
-                      baseGeneration: policy.generation,
-                    },
-                  }),
-                );
-                form.reset();
-                await queries.invalidateQueries({
-                  queryKey: ["backup-policies", path],
-                });
-                setMessage(
-                  "Policy updated. Install the new generation to activate it.",
-                );
-              })
-            }
-          >
-            <Label>
-              Daily time
-              <Input
-                type="time"
-                name="time"
-                defaultValue={`${String(policy.schedule.hour).padStart(2, "0")}:${String(policy.schedule.minute).padStart(2, "0")}`}
-                required
-              />
-            </Label>
-            <Label>
-              Timezone
-              <Input
-                name="timezone"
-                defaultValue={policy.schedule.timezone}
-                required
-              />
-            </Label>
-            <Label>
-              Successful uploads to retain
-              <Input
-                type="number"
-                name="retain"
-                min="1"
-                max="100"
-                defaultValue={policy.retain}
-                required
-              />
-            </Label>
-            <Label>
-              <Checkbox name="enabled" defaultChecked={policy.enabled} />
-              Enable schedule when installed
-            </Label>
-            {policy.method !== "container-job" && (
-              <Field
-                name="password"
-                label="Existing repository password"
-                type="password"
-                autoComplete="off"
-                minLength={16}
-              />
-            )}
-            <BusyButton busy={action.isPending}>
-              Save policy generation
-            </BusyButton>
-          </Form>
+          {editing && (
+            <>
+              <p>
+                Editing generation {editing.generation}.
+                {editing.generation !== policy.generation &&
+                  " A newer generation is available. Your draft is kept; close and reopen this form to load the latest policy."}
+              </p>
+              <Form
+                action={action}
+                label={`Update ${editing.name}`}
+                onSubmit={(d, form) =>
+                  action.run(async () => {
+                    const saved = await result(
+                      client.PUT(policyRoot, {
+                        params: { path: p },
+                        body: {
+                          name: editing.name,
+                          resourceId: editing.resourceId,
+                          destinationId: editing.destinationId,
+                          method: editing.method,
+                          schedule: scheduleInput(d),
+                          timeoutSeconds: scheduleTimeout(d),
+                          retain: Number(text(d, "retain")),
+                          enabled: d.has("enabled"),
+                          command: editing.command ?? [],
+                          password: text(d, "password"),
+                          baseGeneration: editing.generation,
+                        },
+                      }),
+                    );
+                    setEditing(saved);
+                    form.reset();
+                    await queries.invalidateQueries({
+                      queryKey: ["backup-policies", path],
+                    });
+                    setMessage(
+                      "Policy updated. Install the new generation to activate it.",
+                    );
+                  })
+                }
+              >
+                <ScheduleFields
+                  key={editing.generation}
+                  initial={editing.schedule}
+                  timeout={editing.timeoutSeconds ?? 1800}
+                />
+                {editing.method !== "container-job" ? (
+                  <Label>
+                    Successful uploads to retain
+                    <Input
+                      type="number"
+                      name="retain"
+                      min="1"
+                      max="100"
+                      defaultValue={editing.retain}
+                      required
+                    />
+                  </Label>
+                ) : (
+                  <Input name="retain" type="hidden" value="1" />
+                )}
+                <Label>
+                  <Checkbox name="enabled" defaultChecked={editing.enabled} />
+                  Enable schedule when installed
+                </Label>
+                {editing.method !== "container-job" && (
+                  <Field
+                    name="password"
+                    label="Existing repository password"
+                    type="password"
+                    autoComplete="off"
+                    minLength={16}
+                  />
+                )}
+                <BusyButton busy={action.isPending}>
+                  Save policy generation
+                </BusyButton>
+              </Form>
+            </>
+          )}
         </details>
       )}
       <ol>

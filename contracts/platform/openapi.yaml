@@ -4505,6 +4505,9 @@
           description: Supported Railpack planner/frontend version. Agents send this extension only after a controller response advertises Astilba-Agent-Railpack with v1.
         build:
           type: boolean
+        schedules:
+          type: boolean
+          description: Supports general schedule formats and bounded job cleanup. Advertised only after Astilba-Agent-Schedules v1.
         backups:
           type: boolean
         upgrades:
@@ -4852,6 +4855,7 @@
             - visual
             - pipeline
             - backup
+            - schedule
             - upgrade
         "action":
           "$ref": "#/components/schemas/TestAction"
@@ -4986,6 +4990,7 @@
             - visual
             - pipeline
             - backup
+            - schedule
             - upgrade
         "cancelRequested":
           "type": "boolean"
@@ -7338,7 +7343,18 @@
     DailySchedule:
       type: object
       additionalProperties: false
+      description: Daily wall-clock, five-field cron, or UTC elapsed interval. Omitted kind preserves the original daily format.
       properties:
+        kind:
+          type: string
+          enum: [daily, cron, interval]
+        expression:
+          type: string
+          maxLength: 128
+        intervalMinutes:
+          type: integer
+          minimum: 1
+          maximum: 525600
         hour:
           type: integer
           minimum: 0
@@ -7375,6 +7391,11 @@
             - container-job
         schedule:
           $ref: '#/components/schemas/DailySchedule'
+        timeoutSeconds:
+          type: integer
+          minimum: 1
+          maximum: 1800
+          description: Upload/job timeout; omitted preserves the 1800-second limit. Restores retain their separate limit.
         retain:
           type: integer
           minimum: 1
@@ -7441,6 +7462,11 @@
             - container-job
         schedule:
           $ref: '#/components/schemas/DailySchedule'
+        timeoutSeconds:
+          type: integer
+          minimum: 1
+          maximum: 1800
+          description: Upload/job timeout; omitted preserves the 1800-second limit. Restores retain their separate limit.
         retain:
           type: integer
         enabled:

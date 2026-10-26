@@ -102,6 +102,7 @@ export async function managedDatabase(
             docker: true,
             visual: true,
             backups: true,
+            schedules: true,
             upgrades: true,
           },
           preflight: {

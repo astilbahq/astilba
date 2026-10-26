@@ -141,7 +141,7 @@ func (s *Service) operations(ctx context.Context, tx pgx.Tx, ws uuid.UUID) error
 			if c.Pipeline != nil && json.Unmarshal(*c.Pipeline, &p) == nil && (p.Action == "build" || p.Action == "build-preview") {
 				kind = api.BuildProblem
 			}
-		case "backup":
+		case "backup", "schedule":
 			kind = api.BackupProblem
 		}
 		if kind != "" {

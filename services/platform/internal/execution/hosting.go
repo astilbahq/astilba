@@ -21,7 +21,7 @@ func recoveryCommand(c api.ExecutionCommand) bool {
 			return true
 		}
 	}
-	if c.Kind == "backup" && c.Backup != nil {
+	if (c.Kind == "backup" || c.Kind == "schedule") && c.Backup != nil {
 		var b backup.Command
 		return json.Unmarshal(*c.Backup, &b) == nil && (b.Action == "restore" || b.Action == "check" || b.Action == "snapshots")
 	}

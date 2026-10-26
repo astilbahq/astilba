@@ -103,7 +103,7 @@ func nativeFilesAndJobs(t *testing.T, e *Engine, server uuid.UUID) {
 	job.DestinationID = uuid.Nil
 	job.Command = []string{"sh", "-c", "echo completed >> /data/jobs.txt"}
 	now := time.Now().UTC()
-	job.Schedule = backup.Schedule{Timezone: "UTC", Hour: now.Hour(), Minute: now.Minute()}
+	job.Schedule = backup.Schedule{Kind: "cron", Timezone: "UTC", Expression: "* * * * *"}
 	if err = e.Journal.saveSchedule(scheduleState{Installation: backup.Installation{Policy: job, Next: now.Truncate(time.Minute)}, Runs: []backup.Run{}}); err != nil {
 		t.Fatal(err)
 	}
@@ -117,10 +117,10 @@ func nativeFilesAndJobs(t *testing.T, e *Engine, server uuid.UUID) {
 		t.Fatal(err)
 	}
 	offline, cancel := context.WithCancel(ctx)
-	client := NewClient(e.Journal, e)
-	client.Observe = func(context.Context) api.AgentHeartbeat { return api.AgentHeartbeat{} }
+	agentClient := NewClient(e.Journal, e)
+	agentClient.Observe = func(context.Context) api.AgentHeartbeat { return api.AgentHeartbeat{} }
 	done := make(chan error, 1)
-	go func() { done <- client.Run(offline) }()
+	go func() { done <- agentClient.Run(offline) }()
 	for i := 0; i < 100; i++ {
 		state, err := e.Journal.schedule(job.ID)
 		if err == nil && len(state.Runs) == 1 && state.Runs[0].State == "succeeded" {
@@ -142,6 +142,40 @@ func nativeFilesAndJobs(t *testing.T, e *Engine, server uuid.UUID) {
 	data, err = e.dataOutput(ctx, worker.ID, "cat", "/data/jobs.txt")
 	if err != nil || strings.Count(string(data), "completed") != 1 {
 		t.Fatal("job ran more than once")
+	}
+	// Two concurrent ticks share the host lock; the timed-out owned job must
+	// be stopped before another effect can be admitted.
+	bounded := job
+	bounded.ID = uuid.New()
+	bounded.Schedule = backup.Schedule{Kind: "interval", IntervalMinutes: 1, Timezone: "UTC"}
+	bounded.TimeoutSeconds = 3
+	bounded.Command = []string{"sh", "-c", "trap '' TERM; echo begin >> /data/jobs.txt; sleep 30; echo overrun >> /data/jobs.txt"}
+	if err = e.Journal.saveSchedule(scheduleState{Installation: backup.Installation{Policy: bounded, Next: time.Now().UTC()}}); err != nil {
+		t.Fatal(err)
+	}
+	ticks := make(chan error, 2)
+	go func() { ticks <- e.TickSchedules(ctx) }()
+	go func() { ticks <- e.TickSchedules(ctx) }()
+	for range 2 {
+		if err = <-ticks; err != nil {
+			t.Fatal(err)
+		}
+	}
+	timed, err := e.Journal.schedule(bounded.ID)
+	if err != nil || len(timed.Runs) != 1 || timed.Runs[0].State != "failed" || timed.Runs[0].ExitCode == nil || !strings.Contains(timed.Runs[0].Note, "timeout") {
+		t.Fatalf("bounded job outcome unavailable: %+v %v", timed.Runs, err)
+	}
+	remaining, err := e.Docker.ContainerList(ctx, client.ContainerListOptions{All: true, Filters: make(client.Filters).Add("label", "com.astilba.run="+timed.Runs[0].ID.String())})
+	if err != nil || len(remaining.Items) != 0 {
+		t.Fatal("timeout left a run container behind", err)
+	}
+	data, err = e.dataOutput(ctx, worker.ID, "cat", "/data/jobs.txt")
+	if err != nil || strings.Count(string(data), "begin") != 1 || strings.Contains(string(data), "overrun") {
+		t.Fatal("timeout/overlap allowed additional job effects", err)
+	}
+	timed.Installation.Policy.Enabled = false
+	if err = e.Journal.saveSchedule(timed); err != nil {
+		t.Fatal(err)
 	}
 	raw, _ := json.Marshal(jobState.Runs)
 	if strings.Contains(string(raw), "canary") {

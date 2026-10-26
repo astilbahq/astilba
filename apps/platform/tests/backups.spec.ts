@@ -2,6 +2,235 @@ import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
 import { managedDatabase } from "./fixtures/managed-database";
 
+test("general schedule settings retain invalid drafts and save cron and interval generations", async ({
+  page,
+  request,
+}, info) => {
+  const { ws, project, env, path, pg, prefix, post, headers, agentHeaders } =
+    await managedDatabase(page, request, `Schedules ${info.project.name}`);
+  const destination = await post(`${prefix}/backup-destinations`, {
+    name: "Schedule recovery disk",
+    kind: "filesystem",
+    root: "/srv/backups",
+    endpoint: "",
+    bucket: "",
+    region: "",
+    access: { accessKey: "", secretKey: "", password: "" },
+  });
+  await page.goto(
+    `/?workspace=${ws}&project=${project.id}&environment=${env.id}`,
+  );
+  await page
+    .getByText("Create backup policy or container job", { exact: true })
+    .click();
+  const form = page.getByRole("form", { name: "Create backup policy" });
+  await form.getByLabel("Policy name").fill("Flexible backup");
+  await form.getByLabel("Source resource").selectOption(pg);
+  await form.getByLabel("Backup destination").selectOption(destination.id);
+  await form
+    .getByLabel("Repository password (keep a recovery copy)")
+    .fill("browser-schedule-recovery-canary");
+  await form
+    .getByRole("combobox", { name: "Schedule type", exact: true })
+    .selectOption("cron");
+  await form
+    .getByLabel("Cron expression", { exact: true })
+    .fill("0 0 31 FEB *");
+  await form.getByLabel("Timezone", { exact: true }).fill("Europe/London");
+  await form.getByLabel("Run timeout in seconds", { exact: true }).fill("90");
+  await form
+    .getByRole("button", { name: "Create policy", exact: true })
+    .click();
+  await expect(page.getByRole("alert")).toBeVisible();
+  await expect(form.getByLabel("Cron expression", { exact: true })).toHaveValue(
+    "0 0 31 FEB *",
+  );
+  await expect(
+    form.getByLabel("Run timeout in seconds", { exact: true }),
+  ).toHaveValue("90");
+  await form
+    .getByLabel("Cron expression", { exact: true })
+    .fill("0 2 * * MON-FRI");
+  await form
+    .getByRole("button", { name: "Create policy", exact: true })
+    .click();
+  const panel = page.getByRole("region", {
+    name: "Policy Flexible backup",
+    exact: true,
+  });
+  await expect(panel).toContainText("Cron 0 2 * * MON-FRI (Europe/London)");
+  const policies = await (
+    await page.request.get(`${path}/backup-policies`)
+  ).json();
+  const policy = policies.find(
+    (p: { name: string }) => p.name === "Flexible backup",
+  );
+  expect(
+    (
+      await request.post("/agent/v1/schedule-reports", {
+        headers: agentHeaders,
+        data: {
+          sequence: 1,
+          status: {
+            enabled: true,
+            policyId: policy.id,
+            generation: 1,
+            next: "2030-07-01T02:00:00Z",
+            runs: [],
+          },
+        },
+      })
+    ).status(),
+  ).toBe(204);
+  await expect(panel).toContainText(/Next run:.*(GMT\+1|BST)/, {
+    timeout: 12000,
+  });
+  await panel
+    .getByText("Update schedule or refresh deployment", { exact: true })
+    .click();
+  const update = panel.getByRole("form", {
+    name: "Update Flexible backup",
+    exact: true,
+  });
+  await update
+    .getByRole("combobox", { name: "Schedule type", exact: true })
+    .selectOption("interval");
+  await expect(update.getByLabel("Timezone", { exact: true })).toHaveCount(0);
+  await update.getByLabel("Interval in minutes", { exact: true }).fill("7");
+  await update
+    .getByLabel("Existing repository password")
+    .fill("browser-schedule-recovery-canary");
+  await update
+    .getByRole("button", { name: "Save policy generation", exact: true })
+    .click();
+  await expect(panel).toContainText("Every 7 elapsed minutes, anchored in UTC");
+  await expect(panel).toContainText("Current policy is not installed");
+  const saved = await (
+    await page.request.get(`${path}/backup-policies`)
+  ).json();
+  expect(saved.find((p: { id: string }) => p.id === policy.id)).toMatchObject({
+    generation: 2,
+    schedule: { kind: "interval", intervalMinutes: 7, timezone: "UTC" },
+    timeoutSeconds: 90,
+  });
+  await panel.screenshot({
+    path: info.outputPath("general-schedules-desktop.png"),
+  });
+  await page.setViewportSize({ width: 375, height: 812 });
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth,
+    ),
+  ).toBe(true);
+  await panel.screenshot({
+    path: info.outputPath("general-schedules-mobile.png"),
+  });
+  expect(
+    (
+      await new AxeBuilder({ page })
+        .withTags(["wcag2a", "wcag2aa", "wcag21aa", "wcag22aa"])
+        .analyze()
+    ).violations,
+  ).toEqual([]);
+  await update.getByLabel("Run timeout in seconds", { exact: true }).fill("45");
+  const latest = {
+    name: "Flexible backup",
+    resourceId: pg,
+    destinationId: destination.id,
+    method: "postgres-logical",
+    schedule: {
+      kind: "cron",
+      hour: 0,
+      minute: 0,
+      timezone: "UTC",
+      expression: "0 4 * * *",
+    },
+    timeoutSeconds: 120,
+    retain: 7,
+    enabled: true,
+    command: [],
+    password: "browser-schedule-recovery-canary",
+    baseGeneration: 2,
+  };
+  expect(
+    (
+      await page.request.put(`${path}/backup-policies/${policy.id}`, {
+        headers,
+        data: latest,
+      })
+    ).status(),
+  ).toBe(200);
+  await page.clock.install();
+  await page.clock.fastForward(16000);
+  await page.evaluate(() =>
+    window.dispatchEvent(new Event("visibilitychange")),
+  );
+  await expect(panel).toContainText("A newer generation is available");
+  await expect(
+    update.getByRole("combobox", { name: "Schedule type", exact: true }),
+  ).toHaveValue("interval");
+  await expect(
+    update.getByLabel("Run timeout in seconds", { exact: true }),
+  ).toHaveValue("45");
+  await update
+    .getByLabel("Existing repository password")
+    .fill("browser-schedule-recovery-canary");
+  const conflict = page.waitForResponse(
+    (response) =>
+      response.url().endsWith(`/backup-policies/${policy.id}`) &&
+      response.request().method() === "PUT",
+  );
+  await update
+    .getByRole("button", { name: "Save policy generation", exact: true })
+    .click();
+  expect((await conflict).status()).toBe(409);
+  await expect(
+    update.getByLabel("Run timeout in seconds", { exact: true }),
+  ).toHaveValue("45");
+  const afterConflict = await (
+    await page.request.get(`${path}/backup-policies`)
+  ).json();
+  expect(
+    afterConflict.find((p: { id: string }) => p.id === policy.id),
+  ).toMatchObject({
+    generation: 3,
+    schedule: { kind: "cron", expression: "0 4 * * *" },
+    timeoutSeconds: 120,
+  });
+
+  const factory = await post(`${path}/backup-policies`, {
+    ...latest,
+    name: "Legacy browser timezone",
+    baseGeneration: 0,
+    schedule: { hour: 2, minute: 30, timezone: "Factory" },
+  });
+  expect(
+    (
+      await request.post("/agent/v1/schedule-reports", {
+        headers: agentHeaders,
+        data: {
+          sequence: 1,
+          status: {
+            enabled: true,
+            policyId: factory.id,
+            generation: 1,
+            next: "2030-07-01T02:00:00Z",
+            runs: [],
+          },
+        },
+      })
+    ).status(),
+  ).toBe(204);
+  await page.reload();
+  const legacyPanel = page.getByRole("region", {
+    name: "Policy Legacy browser timezone",
+    exact: true,
+  });
+  await expect(legacyPanel).toContainText("Next run:");
+  if (info.project.name === "webkit")
+    await expect(legacyPanel).toContainText("UTC display");
+});
+
 test("backup setup, restore verification and separate cutover use the real API", async ({
   page,
   request,

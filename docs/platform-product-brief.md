@@ -67,7 +67,7 @@ Hosted accounts capable of changing servers require MFA. Self-hosted owners cont
 
 The next increments add operational visibility, a simpler source-to-app workflow, safe stateless releases, general service bindings and a small maintained catalog, then scoped automation and isolated pull-request previews. These extend the initial journey without making every parity feature a paid-beta prerequisite.
 
-Guided host/domain setup, general cron schedules, replicas and cross-host placement, interactive troubleshooting and broader tested maintenance recipes remain later increments in the implementation plan. Kubernetes, live collaboration, generic database administration, existing-workload adoption, Astilba-operated build runners and an Astilba registry require separate scope decisions.
+Guided host/domain setup and general schedules are implemented. Replicas and cross-host placement, interactive troubleshooting and broader tested maintenance recipes remain later increments in the implementation plan. Kubernetes, live collaboration, generic database administration, existing-workload adoption, Astilba-operated build runners and an Astilba registry require separate scope decisions.
 
 ## Technology and next step
 

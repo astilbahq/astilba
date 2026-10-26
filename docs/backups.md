@@ -38,11 +38,29 @@ The root must already exist with suitable permissions. The agent's existing stat
 
 ## Scheduling, retention and interruptions
 
-Schedules contain a local hour, minute and IANA timezone. They run once per local date, skip nonexistent daylight-saving times, and choose the first occurrence of a repeated time. Each run's identity includes policy ID, generation and scheduled UTC instant. The agent persists the next instant before work begins; moving the clock backward or reconnecting cannot replay an already admitted run.
+Choose daily, cron or fixed-interval schedules. An existing daily policy keeps its original schedule representation and digest, including an empty timezone interpreted as UTC.
 
-Missed backup runs coalesce into one catch-up run. Container jobs more than one minute late are skipped. Jobs and backups share the host execution lock with deployments. Installed schedules continue while management is unavailable; reports upload when it returns. Disabling a local schedule also requires delivery to that agent.
+| Schedule | Timing |
+| --- | --- |
+| Daily | A local hour/minute in an IANA timezone, such as `Europe/London`. |
+| Cron | Five fields: minute, hour, day of month, month, weekday. Supports lists, ranges, steps and month/weekday names; weekdays are 0–6 (Sunday–Saturday). `0 2 * * MON-FRI` runs at 02:00 on weekdays. Restricted day-of-month and weekday fields use OR semantics. No seconds, `@` shortcuts or embedded timezone prefixes. |
+| Fixed interval | 1–525600 elapsed minutes, anchored to the first installed UTC instant. The first run is one interval after installation; later runs do not drift with job duration or daylight-saving changes. A new installed generation resets the anchor. |
 
-Retention considers only this policy's catalogued snapshots after a successful upload. It keeps the configured recent uploads, the newest demonstrated recovery point and snapshots protected by active or interrupted restores. Unknown snapshots are left alone. Maintenance has a bounded repack size and operation deadline. Restores and uploads have a thirty-minute execution limit. Full manifests stay in the encrypted repository; operational records carry their hash and compact metadata. History is bounded to 128 records per policy while retaining a representative of each available snapshot; redundant completed restore records can age out. Unresolved protected history can require operator attention instead of being silently discarded.
+Daily/cron schedules skip nonexistent local times and choose the first occurrence of a repeated wall-clock minute, including half-hour transitions. Cron expressions require an explicit IANA timezone; interval schedules use UTC. Calendar lookup uses the pinned parser's five-year look-ahead; an unavailable next occurrence blocks installation or execution instead of spinning or guessing.
+
+The dashboard formats next runs in the configured timezone. If that zone is unavailable in the browser, it labels a UTC display without changing the schedule.
+
+Each run's identity includes policy ID, generation and scheduled UTC instant. The agent persists the next instant together with its run record before host effects. Restart, reconnect and backward clock changes cannot replay an admitted run. Forward clock changes follow the missed-run rules: missed backups coalesce into one catch-up for the latest due instant, while container jobs more than one minute late are skipped with a history record. There is no arbitrary job replay or configurable parallelism.
+
+Jobs and backups share the host execution lock with deployments and upgrades. If the host is busy, the same catch-up/skip rules apply when it becomes available. Installed schedules continue while management is unavailable; bounded reports upload when it returns. Disabling a local schedule requires delivery to that agent.
+
+Upload/job timeouts can be set from 1 to 1800 seconds; omission preserves the thirty-minute limit. Restores retain their separate thirty-minute limit. A timed-out job stops and removes only its owned run container, with up to thirty additional seconds to confirm cleanup and record the exit result. Unconfirmed cleanup becomes `needs_attention` and blocks further host effects until inspected; a timeout is never evidence of successful application work.
+
+General schedules and custom timeouts require an updated agent advertising the negotiated `schedules` capability. Extended commands use the `schedule` kind, which older executors reject before effects. Current agents omit this capability when talking to older management schemas. The management database advances to schema 17 and older management binaries refuse startup against it.
+
+Advanced schedules remain encrypted in a versioned agent journal bucket, alongside a disabled legacy mirror of their run/writer fences. A rolled-back agent cannot run their cadence, but can still recover recorded writers and block operations over unresolved runs. After an older agent changes or resolves that state, the newer agent honors its newer generation/sequence rather than resurrecting hidden advanced work. The dashboard shows the effective disabled state; save and install a new policy generation to resume general scheduling. Controller transfer preserves policy IDs, history and interval cursors and still refuses unresolved effects.
+
+Retention considers only this policy's catalogued snapshots after a successful upload. It keeps the configured recent uploads, the newest demonstrated recovery point and snapshots protected by active or interrupted restores. Unknown snapshots are left alone. Maintenance has a bounded repack size and operation deadline. Restores have a thirty-minute execution limit; upload/job limits are described above. Full manifests stay in the encrypted repository; operational records carry their hash and compact metadata. History is bounded to 128 records per policy while retaining a representative of each available snapshot; redundant completed restore records can age out. Unresolved protected history can require operator attention instead of being silently discarded.
 
 An interrupted run does not become a success. Inspect any containers with the run's `com.astilba.run` label and the retained target volume. Once uncertain containers are stopped and the outcome is understood, a local operator can close the failed run:
 
