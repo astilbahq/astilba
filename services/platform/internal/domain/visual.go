@@ -26,6 +26,30 @@ type HealthCheck struct {
 	Port int    `json:"port"`
 	Path string `json:"path"`
 }
+
+const MaxReplicas = 10
+const MaxRuntimeInstances = 40
+
+func (a Application) ReplicaCount() int {
+	if a.Replicas == 0 {
+		return 1
+	}
+	return a.Replicas
+}
+
+func (s Specification) HasReplicaConfiguration() bool {
+	for _, a := range s.Applications {
+		if a.Replicas != 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func (h HealthCheck) Valid() bool {
+	return h.Port >= 1 && h.Port <= 65535 && len(h.Path) <= 256 && strings.HasPrefix(h.Path, "/") && !strings.ContainsAny(h.Path, "\r\n\x00")
+}
+
 type Postgres struct {
 	Database                string    `json:"database"`
 	Username                string    `json:"username"`
@@ -88,6 +112,7 @@ func ValidateVisual(s Specification) error {
 	}
 	ids, names := map[uuid.UUID]bool{}, map[string]bool{}
 	apps, volumes := map[uuid.UUID]Application{}, map[uuid.UUID]bool{}
+	runtimeCount := 0
 	claim := func(id uuid.UUID) bool {
 		if id == uuid.Nil || ids[id] {
 			return false
@@ -96,10 +121,17 @@ func ValidateVisual(s Specification) error {
 		return true
 	}
 	for _, a := range s.Applications {
+		if a.Replicas < 0 || a.Replicas > MaxReplicas {
+			return Invalid("applications.replicas")
+		}
+		runtimeCount += a.ReplicaCount()
 		if !claim(a.ID) {
 			return Invalid("applications.id")
 		}
 		apps[a.ID] = a
+	}
+	if s.HasReplicaConfiguration() && (s.Compose != nil || runtimeCount > MaxRuntimeInstances) {
+		return Invalid("applications.replicas")
 	}
 	for _, v := range s.Volumes {
 		name, err := Name(v.Name)
@@ -149,8 +181,37 @@ func ValidateVisual(s Specification) error {
 				}
 			}
 		}
-		if a.Health != nil && (a.ServiceKind() != "web" || a.Health.Port < 1 || a.Health.Port > 65535 || len(a.Health.Path) > 256 || !strings.HasPrefix(a.Health.Path, "/") || strings.ContainsAny(a.Health.Path, "\r\n\x00")) {
+		if a.Health != nil && (a.ServiceKind() != "web" || !a.Health.Valid()) {
 			return Invalid("applications.health")
+		}
+		if a.ReplicaCount() > 1 {
+			if a.ServiceKind() != "web" || a.Health == nil || len(a.Mounts) != 0 || a.Postgres != nil {
+				return Invalid("applications.replicas")
+			}
+			routed := false
+			for _, route := range s.Routes {
+				if route.TargetID == a.ID {
+					if route.Protocol != "http" {
+						return Invalid("applications.replicas")
+					}
+					routed = true
+				}
+			}
+			if !routed {
+				return Invalid("applications.replicas")
+			}
+			for _, b := range s.Bindings {
+				if b.SourceID == a.ID {
+					return Invalid("applications.replicas")
+				}
+			}
+			for _, consumer := range s.Applications {
+				for _, dependency := range Dependencies(s, consumer) {
+					if dependency == a.ID {
+						return Invalid("applications.replicas")
+					}
+				}
+			}
 		}
 		if a.ServiceKind() == "postgres" {
 			if a.Postgres == nil || !dbName.MatchString(a.Postgres.Database) || !dbName.MatchString(a.Postgres.Username) || a.Postgres.PasswordSecretVersionID == uuid.Nil || a.Source.Kind != "image" || a.Source.Image == nil || (*a.Source.Image != PostgresImage && *a.Source.Image != Postgres17Image) || len(a.Command) != 0 {

@@ -133,6 +133,9 @@ func (s *Service) SaveBackupPolicy(ctx context.Context, p store.Principal, ws, p
 		if err = requireServiceOutputs(ctx, tx, ws, *v.Server, plan.Specification); err != nil {
 			return err
 		}
+		if err = requireReplicas(ctx, tx, ws, *v.Server, plan); err != nil {
+			return err
+		}
 		if id == uuid.Nil {
 			id = uuid.New()
 			if in.BaseGeneration != 0 {
@@ -229,6 +232,9 @@ func (s *Service) BackupCommand(ctx context.Context, p store.Principal, ws, pid,
 		if err = s.deploymentServer(ctx, tx, ws, v.ServerID); err != nil {
 			return err
 		}
+		if err = requireReplicas(ctx, tx, ws, v.ServerID, v.Plan); err != nil {
+			return err
+		}
 		var previous []byte
 		err = tx.QueryRow(ctx, "SELECT command FROM execution_operations WHERE workspace_id=$1 AND request_key=$2", ws, in.RequestKey).Scan(&previous)
 		if err == nil {
@@ -295,6 +301,9 @@ func (s *Service) hydrateBackup(ctx context.Context, c *api.ExecutionCommand) er
 		return err
 	}
 	if err := requireServiceOutputs(ctx, s.Store.Pool, b.Installation.Policy.WorkspaceID, c.ServerId, b.Installation.Policy.Plan.Specification); err != nil {
+		return err
+	}
+	if err := requireReplicas(ctx, s.Store.Pool, b.Installation.Policy.WorkspaceID, c.ServerId, b.Installation.Policy.Plan); err != nil {
 		return err
 	}
 	var cipher []byte

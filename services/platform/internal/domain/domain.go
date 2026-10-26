@@ -69,6 +69,7 @@ type ApplicationSource struct {
 	Ref        *string    `json:"ref,omitempty"`
 }
 type Application struct {
+	Replicas  int               `json:"replicas,omitempty"`
 	Outputs   []ServiceOutput   `json:"outputs,omitempty"`
 	Networks  []uuid.UUID       `json:"networks,omitempty"`
 	ID        uuid.UUID         `json:"id"`
@@ -115,6 +116,11 @@ func ParseSpec(raw []byte) (Specification, []byte, error) {
 		return spec, nil, Invalid("specification")
 	}
 	if spec.Compose != nil {
+		for _, app := range spec.Applications {
+			if app.Replicas != 0 {
+				return spec, nil, Invalid("applications.replicas")
+			}
+		}
 		if err := deriveCompose(&spec); err != nil {
 			return spec, nil, err
 		}

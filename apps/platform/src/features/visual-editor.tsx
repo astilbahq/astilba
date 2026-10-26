@@ -137,7 +137,9 @@ export function VisualEditor({
         x: (i % 3) * 250,
         y: Math.floor(i / 3) * 140,
       },
-      data: { label: `${a.name} · ${a.kind ?? "web"}` },
+      data: {
+        label: `${a.name} · ${a.kind ?? "web"}${(a.replicas ?? 1) > 1 ? ` · ${a.replicas} instances` : ""}`,
+      },
       selected: a.id === selected,
       ariaLabel: `Configure ${a.name}`,
       className: "visual-node",
@@ -513,6 +515,10 @@ export function VisualEditor({
                           path: text(d, "healthPath") || "/",
                         }
                       : undefined;
+                    if (app.kind !== "worker") {
+                      const count = Number(text(d, "replicas"));
+                      next.replicas = count === 1 ? undefined : count;
+                    }
                   }
                   update(next);
                 }}
@@ -629,6 +635,34 @@ export function VisualEditor({
                     </Label>
                     {app.kind !== "worker" && (
                       <>
+                        <Label>
+                          Replica count
+                          <Select
+                            name="replicas"
+                            value={app.replicas ?? 1}
+                            onChange={(e) => {
+                              const count = Number(e.currentTarget.value);
+                              update({
+                                ...app,
+                                replicas: count === 1 ? undefined : count,
+                              });
+                            }}
+                          >
+                            {Array.from({ length: 10 }, (_, i) => i + 1).map(
+                              (count) => (
+                                <option key={count} value={count}>
+                                  {count}
+                                </option>
+                              ),
+                            )}
+                          </Select>
+                        </Label>
+                        <small>
+                          Multiple instances need an HTTP route and readiness
+                          check, without persistent mounts or internal
+                          consumers. Keep sessions and shared state outside the
+                          app. All instances run on this server.
+                        </small>
                         <Label>
                           Readiness HTTP port
                           <Input

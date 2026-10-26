@@ -34,6 +34,7 @@ type Client struct {
 	serviceOutputs atomic.Bool
 	previews       atomic.Bool
 	schedules      atomic.Bool
+	replicas       atomic.Bool
 }
 
 func NewClient(j *Journal, e *Engine) *Client {
@@ -86,6 +87,7 @@ func (c *Client) call(ctx context.Context, method, path string, body, out any, t
 	c.serviceOutputs.Store(response.Header.Get("Astilba-Agent-Service-Outputs") == "v1")
 	c.previews.Store(response.Header.Get("Astilba-Agent-Previews") == "v1")
 	c.schedules.Store(response.Header.Get("Astilba-Agent-Schedules") == "v1")
+	c.replicas.Store(response.Header.Get("Astilba-Agent-Replicas") == "v1")
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		return errors.New("management rejected request; check enrollment, credentials and operation status")
 	}
@@ -109,6 +111,9 @@ func (c *Client) call(ctx context.Context, method, path string, body, out any, t
 }
 
 func (c *Client) advertisedCapabilities(v api.AgentCapabilities) api.AgentCapabilities {
+	if !c.replicas.Load() {
+		v.Replicas = nil
+	}
 	if !c.schedules.Load() {
 		v.Schedules = nil
 	}
