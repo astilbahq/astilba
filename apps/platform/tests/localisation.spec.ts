@@ -4,7 +4,7 @@ import AxeBuilder from "@axe-core/playwright";
 import { expect, type Page, test } from "@playwright/test";
 import { authFixtureSQL } from "./auth-fixture";
 
-const dev = "http://127.0.0.1:54182";
+const dev = "http://127.0.0.1:15182";
 
 async function chooseLanguage(page: Page, name: string) {
   // Auth's second menu is Language; its accessible name also changes language.

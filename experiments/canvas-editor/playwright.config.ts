@@ -13,7 +13,7 @@ export default defineConfig({
     ["json", { outputFile: "../../.artifacts/plat1/browser-report.json" }],
   ],
   use: {
-    baseURL: "http://127.0.0.1:54171",
+    baseURL: "http://127.0.0.1:15171",
     viewport: { width: 1440, height: 1000 },
     trace: "retain-on-failure",
     screenshot: "only-on-failure",
@@ -35,8 +35,8 @@ export default defineConfig({
     },
   ],
   webServer: {
-    command: "pnpm preview",
-    url: "http://127.0.0.1:54171",
+    command: "pnpm preview --port 15171",
+    url: "http://127.0.0.1:15171",
     reuseExistingServer: false,
     timeout: 30_000,
   },

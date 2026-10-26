@@ -17,7 +17,7 @@ export async function managedDatabase(
     ws = session.workspaces[0].id;
   const headers = {
     "X-CSRF-Token": session.csrfToken,
-    Origin: "http://127.0.0.1:54181",
+    Origin: "http://127.0.0.1:15181",
   };
   const post = async (path: string, data: unknown) => {
     const response = await page.request.post(path, { headers, data });

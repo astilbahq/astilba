@@ -26,6 +26,45 @@ async function drag(
   await page.mouse.up();
 }
 
+test("initial fit waits for the canvas container after nodes are measured", async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    const checkVisibility = Object.getOwnPropertyDescriptor(
+      Element.prototype,
+      "checkVisibility",
+    )!.value as Element["checkVisibility"];
+    let containerReady = false;
+    Element.prototype.checkVisibility = function (options) {
+      if (this.classList.contains("react-flow__renderer") && !containerReady)
+        return false;
+      return checkVisibility.call(this, options);
+    };
+    window.addEventListener(
+      "canvas-measurement-ready",
+      () => {
+        containerReady = true;
+        window.dispatchEvent(new Event("resize"));
+      },
+      { once: true },
+    );
+  });
+  await page.goto("/");
+  // Nodes can finish measuring before the container's resize effect runs.
+  await expect(node(page, "svc-web-0")).toBeVisible();
+  await page.evaluate(() =>
+    window.dispatchEvent(new Event("canvas-measurement-ready")),
+  );
+  for (const id of [
+    "svc-web-0",
+    "svc-worker-0",
+    "svc-database-0",
+    "svc-volume-0",
+  ]) {
+    await expect(node(page, id)).toBeInViewport({ ratio: 1 });
+  }
+});
+
 test("pointer editing preserves independent draft and layout saves across reload", async ({
   page,
 }) => {

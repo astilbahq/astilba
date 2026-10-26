@@ -98,7 +98,7 @@ test("GitHub App authorization returns across sites, selects a repository and di
     installation: { id: 2, app_id: 1 },
   });
   const response = await page.request.post(
-    "http://127.0.0.1:54183/hooks/github-app",
+    "http://127.0.0.1:15183/hooks/github-app",
     {
       headers: {
         "Content-Type": "application/json",
@@ -114,7 +114,7 @@ test("GitHub App authorization returns across sites, selects a repository and di
     `/api/v1/workspaces/${ws}/git-connections/${connection.id}/disconnect`,
     {
       headers: {
-        Origin: "http://127.0.0.1:54181",
+        Origin: "http://127.0.0.1:15181",
         "X-CSRF-Token": session.csrfToken,
       },
     },

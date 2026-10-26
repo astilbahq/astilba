@@ -72,7 +72,7 @@ test("hosted signup, MFA, billing admission and encrypted workspace import", asy
   const context = await browser.newContext({ ignoreHTTPSErrors: true });
   try {
     const hosted = await context.newPage();
-    const origin = "https://127.0.0.1:54186";
+    const origin = "https://127.0.0.1:15186";
     await hosted.goto(`${origin}/signup`);
     await hosted
       .getByLabel("Beta invitation code")

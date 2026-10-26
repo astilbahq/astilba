@@ -13,7 +13,7 @@
     "i18n:types": "i18next-cli types",
     "i18n:check": "i18next-cli types --ci && i18next-cli lint && i18next-cli status && node scripts/check-catalogues.mjs",
     "build": "pnpm check && vp build",
-    "test:browser": "playwright test",
+    "test:browser": "node --test ../../scripts/platform-fixture-test.mjs && playwright test",
     "storybook:prepare": "msw init .storybook/public --no-save",
     "storybook": "pnpm storybook:prepare && storybook dev --host 127.0.0.1 --port 54200 --no-open --disable-telemetry",
     "storybook:build": "pnpm storybook:prepare && storybook build --output-dir ../../.artifacts/storybook/static --disable-telemetry",
