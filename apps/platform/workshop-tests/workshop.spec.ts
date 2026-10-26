@@ -20,7 +20,10 @@ for (const [id, entry] of Object.entries(entries)) {
       page.getByText(/Component test completed successfully/),
     ).toBeAttached({ timeout: info.timeout });
     const canvas = page.frameLocator("#storybook-preview-iframe");
-    await expect(canvas.getByRole("main")).toBeVisible();
+    // Modal stories correctly hide the background landmark from assistive tech.
+    await expect(
+      canvas.getByRole("main", { includeHidden: true }),
+    ).toBeVisible();
     await expect(
       canvas.getByText("Route not found:", { exact: false }),
     ).toHaveCount(0);

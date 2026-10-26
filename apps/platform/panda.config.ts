@@ -3,6 +3,7 @@ import base from "@pandacss/preset-base";
 import panda from "@pandacss/preset-panda";
 import { globalStyles } from "./theme/global-styles";
 import { logicalProperties } from "./theme/logical-properties";
+import { alertDialogRecipe } from "./theme/recipes/alert-dialog";
 import { buttonRecipe } from "./theme/recipes/button";
 import { checkboxRecipe } from "./theme/recipes/checkbox";
 import { fieldRecipe } from "./theme/recipes/field";
@@ -39,6 +40,7 @@ export default defineConfig({
         link: linkRecipe,
       },
       slotRecipes: {
+        alertDialog: alertDialogRecipe,
         field: fieldRecipe,
         menu: menuRecipe,
         otpInput: otpInputRecipe,

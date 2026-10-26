@@ -183,6 +183,7 @@ export function Field({
   min,
   max,
   defaultValue,
+  onChange,
   labelAction,
   placeholder,
   size,
@@ -200,6 +201,7 @@ export function Field({
   min?: number;
   max?: number;
   defaultValue?: InputProps["defaultValue"];
+  onChange?: InputProps["onChange"];
   labelAction?: ReactNode;
   placeholder?: string;
   size?: InputProps["size"];
@@ -251,6 +253,7 @@ export function Field({
           min={min}
           max={max}
           defaultValue={defaultValue}
+          onChange={onChange}
           placeholder={placeholder}
         />
       </div>
