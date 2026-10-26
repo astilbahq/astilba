@@ -18,6 +18,8 @@ The dashboard supports one logical migration: an Astilba-managed PostgreSQL 17.1
 
 The agent rejects unsupported server versions, storage layouts, roles, extensions and unknown clients before downtime. Disconnect external clients before starting. During migration, the old database runs only in an isolated network namespace; managed applications stay stopped. Astilba cannot coordinate writers in other environments or outside its ownership boundary. The host operator remains responsible for privileged access to Docker and PostgreSQL.
 
+The backup policy can use daily, cron or interval scheduling and a custom timeout. General schedules and custom timeouts require the negotiated `schedules` agent capability at command delivery. Upgrade actions remain `upgrade` commands; preparing one does not install or run the policy's recurring schedule.
+
 Reserve staging space for twice the database size plus 256 MiB, and Docker space for three times its size plus 256 MiB. Before restoring, the agent checks the actual archive size again, requiring four times that size plus 256 MiB on Docker storage. The duration depends on data size and destination throughput; no online or fixed-duration migration is promised.
 
 ## Verification and cutover
