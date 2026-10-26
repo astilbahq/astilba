@@ -4493,6 +4493,9 @@
         safeReleases:
           type: boolean
           description: Supports instance-based stateless HTTP releases. Advertised only after Astilba-Agent-Safe-Releases v1.
+        replicas:
+          type: boolean
+          description: Supports replica recipe 3 and complete instance groups. Advertised only after Astilba-Agent-Replicas v1.
         buildControls:
           type: boolean
           description: Supports explicit build budgets and frozen-commit watch paths. Agents send this extension only after a controller response advertises Astilba-Agent-Features with build-controls.
@@ -5443,6 +5446,11 @@
       "type": "object"
       "additionalProperties": false
       "properties":
+        replicas:
+          type: integer
+          minimum: 1
+          maximum: 10
+          description: Desired stateless HTTP instances on the assigned server; omission means one. Multiple instances require readiness and managed HTTP routing, without mounts or internal consumers.
         outputs:
           type: array
           maxItems: 20
@@ -5947,7 +5955,7 @@
             properties:
               changes:
                 type: array
-                maxItems: 8
+                maxItems: 12
                 items: {type: string, maxLength: 80}
               id: {type: string, format: uuid}
               name: {type: string, maxLength: 80}
@@ -5965,6 +5973,13 @@
       "type": "object"
       "additionalProperties": false
       properties:
+        replicaInstances:
+          type: object
+          maxProperties: 20
+          additionalProperties:
+            type: array
+            maxItems: 9
+            items: {type: string, format: uuid}
         instances:
           type: object
           maxProperties: 20
@@ -6000,6 +6015,8 @@
           "type": "integer"
           "enum":
             - 1
+            - 2
+            - 3
         "specification":
           "$ref": "#/components/schemas/Specification"
         "images":
@@ -6084,6 +6101,16 @@
       "type": "object"
       "additionalProperties": false
       "properties":
+        instances:
+          type: array
+          maxItems: 10
+          items:
+            type: object
+            additionalProperties: false
+            required: [instanceId, state]
+            properties:
+              instanceId: {type: string, format: uuid}
+              state: {type: string, maxLength: 30}
         "id":
           "type": "string"
           "format": "uuid"

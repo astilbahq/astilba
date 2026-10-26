@@ -29,6 +29,9 @@ type PreviewIdentity struct {
 }
 
 func (p PreviewIdentity) Validate(s Specification) error {
+	if s.HasReplicaConfiguration() {
+		return Invalid("preview.replicas")
+	}
 	if p.RequestID == uuid.Nil || p.Generation < 1 {
 		return Invalid("preview.identity")
 	}
@@ -47,6 +50,9 @@ func (p PreviewIdentity) Validate(s Specification) error {
 }
 
 func ValidatePreviewTemplate(s Specification, target uuid.UUID) error {
+	if s.HasReplicaConfiguration() {
+		return Invalid("preview.replicas")
+	}
 	if s.Compose != nil || len(s.Applications) > 5 || len(s.Volumes) > 5 || len(s.Routes) > 5 {
 		return Invalid("preview.specification")
 	}

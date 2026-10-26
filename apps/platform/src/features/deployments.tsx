@@ -315,6 +315,14 @@ export function Deployments({
                 ?.name ?? ready.serverId}
             </p>
             <ul>
+              {ready.specification.applications.map((app) => (
+                <li key={app.id}>
+                  {app.name}: {app.replicas ?? 1}{" "}
+                  {(app.replicas ?? 1) === 1 ? "instance" : "instances"}
+                </li>
+              ))}
+            </ul>
+            <ul>
               {ready.effects.map((effect) => (
                 <li key={effect}>{effect}</li>
               ))}
@@ -520,6 +528,21 @@ export function Deployments({
                 </small>
               )}
               {resource.note && <p>{resource.note}</p>}
+              {!!resource.instances?.length && (
+                <details>
+                  <summary>
+                    Instance states ({resource.instances.length})
+                  </summary>
+                  <ul>
+                    {resource.instances.map((instance) => (
+                      <li key={instance.instanceId}>
+                        <code className={s.code}>{instance.instanceId}</code> ·{" "}
+                        {instance.state}
+                      </li>
+                    ))}
+                  </ul>
+                </details>
+              )}
               {resource.logs && (
                 <details>
                   <summary>Recent logs</summary>

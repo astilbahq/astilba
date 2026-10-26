@@ -8,6 +8,8 @@ Both versions must have an HTTP readiness check and an existing managed HTTP rou
 
 The candidate has its own container, Compose project, Compose service key and private DNS identity; logical application IDs remain stable. It joins the existing owned unit network without publishing another host port. The serving instance remains available while the candidate starts (after the optional release command) and its mandatory HTTP readiness check runs. A failed check vetoes the switch, removes only the owned candidate and leaves the previous revision serving.
 
+For [replicated applications](application-scaling.md), the candidate is a complete replacement pool. Every member must pass readiness before switching the full backend set; the release command still runs once. Both pools consume capacity until drain finishes. Rollback restores the historical count through the same workflow.
+
 The encrypted host journal records candidate, command, switch and drain state. Traefik's atomic file update and runtime acknowledgement precede the active-instance journal commit. That commit stores the effective plan and observed fingerprints with the switch phase in one transaction. Pending route recovery reuses an unchanged proxy. A restarted agent reconciles these states with both containers retained; it does not guess which container can be deleted.
 
 After verified switching, existing connections have the reviewed drain budget (1–120 seconds; default 10), followed by a graceful stop with a 10-second termination timeout. Requests exceeding those bounds can be interrupted. Cancellation before switch intent removes the candidate. After durable switch intent, cancellation completes reconciliation and drain, so reports identify the revision actually serving.

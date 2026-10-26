@@ -14,6 +14,7 @@ import (
 	"github.com/moby/moby/client"
 	bolt "go.etcd.io/bbolt"
 	"os"
+	"slices"
 	"strings"
 	"time"
 )
@@ -79,12 +80,15 @@ func (e *Engine) executeRelease(ctx context.Context, c api.ExecutionCommand, p d
 			return e.finish(c.Id, "failed", "The serving revision no longer matches this protected release.")
 		}
 		for _, a := range p.Plan.Specification.Applications {
-			if a.ID != app.ID && p.Plan.Instance(a.ID) != old.Plan.Instance(a.ID) {
+			if a.ID != app.ID && !slices.Equal(p.Plan.InstanceIDs(a.ID), old.Plan.InstanceIDs(a.ID)) {
 				return e.finish(c.Id, "failed", "An unchanged application's runtime identity differs.")
 			}
 		}
-		if p.Plan.Instance(app.ID) == old.Plan.Instance(app.ID) {
-			return e.finish(c.Id, "failed", "A protected release needs a fresh candidate identity.")
+		oldIDs := old.Plan.InstanceIDs(app.ID)
+		for _, instance := range p.Plan.InstanceIDs(app.ID) {
+			if slices.Contains(oldIDs, instance) {
+				return e.finish(c.Id, "failed", "A protected release needs a completely isolated candidate group.")
+			}
 		}
 		before, _, err := e.observeUnit(ctx, old.Plan, p.Secrets)
 		if err != nil {
@@ -143,7 +147,7 @@ func (e *Engine) executeRelease(ctx context.Context, c api.ExecutionCommand, p d
 		if err = e.ensureStorage(ctx, p.Plan); err != nil {
 			return e.abortRelease(ctx, c, p, &s, "failed", "The owned network or storage differs from the plan.")
 		}
-		if err = e.checkCandidate(ctx, p.Plan, app.ID); err != nil {
+		if _, err = e.candidateContainers(ctx, p.Plan, app.ID); err != nil {
 			return e.finish(c.Id, "needs_attention", "Candidate ownership could not be established; nothing was removed.")
 		}
 		s.Phase = "ready"
@@ -196,7 +200,7 @@ func (e *Engine) executeRelease(ctx context.Context, c api.ExecutionCommand, p d
 		if err = e.checkpoint(c.Id, "release-readiness"); err != nil {
 			return err
 		}
-		if err = e.checkCandidate(ctx, p.Plan, app.ID); err != nil {
+		if _, err = e.candidateContainers(ctx, p.Plan, app.ID); err != nil {
 			return e.finish(c.Id, "needs_attention", "Candidate ownership changed; the serving revision is retained.")
 		}
 		if err = e.waitHTTP(ctx, c, p.Plan, app); err != nil {
@@ -226,7 +230,7 @@ func (e *Engine) executeRelease(ctx context.Context, c api.ExecutionCommand, p d
 		if err = e.checkpoint(c.Id, "release-switch"); err != nil {
 			return err
 		}
-		if err = e.checkCandidate(ctx, p.Plan, app.ID); err != nil {
+		if _, err = e.candidateContainers(ctx, p.Plan, app.ID); err != nil {
 			return e.finish(c.Id, "needs_attention", "Candidate ownership is uncertain. Both revisions are retained.")
 		}
 		if err = e.waitHTTP(ctx, c, p.Plan, app); err != nil {
@@ -277,6 +281,9 @@ func (e *Engine) executeRelease(ctx context.Context, c api.ExecutionCommand, p d
 		if err = e.stopReleaseInstance(ctx, s.Old.Plan, app.ID); err != nil {
 			return e.finish(c.Id, "needs_attention", "The new revision is serving; old-instance retirement needs inspection.")
 		}
+		if err = e.removeRetiredReplicas(ctx, s.Old.Plan, app.ID); err != nil {
+			return e.finish(c.Id, "needs_attention", "The new revision is serving; old replica cleanup needs inspection.")
+		}
 		name := s.Old.Plan.ContainerName(app.ID)
 		found := false
 		for _, item := range s.Retained {
@@ -301,32 +308,62 @@ func (e *Engine) executeRelease(ctx context.Context, c api.ExecutionCommand, p d
 	}
 	return e.visualFinish(ctx, c, p, "succeeded", "The protected release is serving; readiness and proxy switching passed, and the previous instance was drained.")
 }
-func (e *Engine) checkCandidate(ctx context.Context, p deployment.Plan, id uuid.UUID) error {
-	v, err := e.Docker.ContainerInspect(ctx, p.ContainerName(id), client.ContainerInspectOptions{})
-	if errdefs.IsNotFound(err) {
-		return nil
+func (e *Engine) candidateContainers(ctx context.Context, p deployment.Plan, id uuid.UUID) ([]string, error) {
+	containers := []string{}
+	for _, instance := range p.InstanceIDs(id) {
+		v, err := e.Docker.ContainerInspect(ctx, deployment.UnitName(instance), client.ContainerInspectOptions{})
+		if errdefs.IsNotFound(err) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		if !visualOwned(v.Container.Config.Labels, p) || v.Container.Config.Labels[labelResource] != id.String() || v.Container.Config.Labels["com.astilba.plan"] != p.Hash || v.Container.Config.Image != p.Images[id.String()] {
+			return nil, errors.New("candidate identity mismatch")
+		}
+		containers = append(containers, v.Container.ID)
 	}
-	if err != nil {
-		return err
-	}
-	if !visualOwned(v.Container.Config.Labels, p) || v.Container.Config.Labels[labelResource] != id.String() || v.Container.Config.Labels["com.astilba.plan"] != p.Hash || v.Container.Config.Image != p.Images[id.String()] {
-		return errors.New("candidate identity mismatch")
+	return containers, nil
+}
+func (e *Engine) stopReleaseInstance(ctx context.Context, p deployment.Plan, id uuid.UUID) error {
+	for i, instance := range p.InstanceIDs(id) {
+		v, err := e.Docker.ContainerInspect(ctx, deployment.UnitName(instance), client.ContainerInspectOptions{})
+		if i > 0 && errdefs.IsNotFound(err) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if !visualOwned(v.Container.Config.Labels, p) || v.Container.Config.Labels[labelResource] != id.String() || v.Container.Config.Image != p.Images[id.String()] {
+			return errors.New("old instance identity mismatch")
+		}
+		if v.Container.State.Running {
+			seconds := 10
+			if _, err = e.Docker.ContainerStop(ctx, v.Container.ID, client.ContainerStopOptions{Timeout: &seconds}); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
 }
-func (e *Engine) stopReleaseInstance(ctx context.Context, p deployment.Plan, id uuid.UUID) error {
-	v, err := e.Docker.ContainerInspect(ctx, p.ContainerName(id), client.ContainerInspectOptions{})
-	if err != nil {
-		return err
+
+func (e *Engine) removeRetiredReplicas(ctx context.Context, p deployment.Plan, id uuid.UUID) error {
+	for _, instance := range p.ReplicaInstances[id.String()] {
+		v, err := e.Docker.ContainerInspect(ctx, deployment.UnitName(instance), client.ContainerInspectOptions{})
+		if errdefs.IsNotFound(err) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if !visualOwned(v.Container.Config.Labels, p) || v.Container.Config.Labels[labelResource] != id.String() || v.Container.Config.Image != p.Images[id.String()] || v.Container.State.Running {
+			return errors.New("retired replica ownership or stopped state mismatch")
+		}
+		if _, err = e.Docker.ContainerRemove(ctx, v.Container.ID, client.ContainerRemoveOptions{RemoveVolumes: false}); err != nil && !errdefs.IsNotFound(err) {
+			return err
+		}
 	}
-	if !visualOwned(v.Container.Config.Labels, p) || v.Container.Config.Labels[labelResource] != id.String() || v.Container.Config.Image != p.Images[id.String()] {
-		return errors.New("old instance identity mismatch")
-	}
-	if v.Container.State.Running {
-		seconds := 10
-		_, err = e.Docker.ContainerStop(ctx, v.Container.ID, client.ContainerStopOptions{Timeout: &seconds})
-	}
-	return err
+	return nil
 }
 func (e *Engine) abortRelease(ctx context.Context, c api.ExecutionCommand, p deployment.Payload, s *releaseState, status api.ExecutionState, note string) error {
 	if ctx.Err() != nil {
@@ -354,19 +391,22 @@ func (e *Engine) abortRelease(ctx context.Context, c api.ExecutionCommand, p dep
 			return e.finish(c.Id, "needs_attention", "Routing recovery is uncertain. Both revisions are retained.")
 		}
 	}
-	if err := e.checkCandidate(ctx, p.Plan, p.Plan.Release.ApplicationID); err != nil {
+	candidates, err := e.candidateContainers(ctx, p.Plan, p.Plan.Release.ApplicationID)
+	if err != nil {
 		return e.finish(c.Id, "needs_attention", "Candidate cleanup ownership is uncertain. Existing traffic is retained.")
 	}
-	_, err := e.Docker.ContainerRemove(ctx, p.Plan.ContainerName(p.Plan.Release.ApplicationID), client.ContainerRemoveOptions{Force: true, RemoveVolumes: false})
-	if err != nil && !errdefs.IsNotFound(err) {
-		return err
+	for _, containerID := range candidates {
+		_, err := e.Docker.ContainerRemove(ctx, containerID, client.ContainerRemoveOptions{Force: true, RemoveVolumes: false})
+		if err != nil && !errdefs.IsNotFound(err) {
+			return err
+		}
 	}
-	if err = e.removeReleaseCommand(ctx, c, p); err != nil {
+	if err := e.removeReleaseCommand(ctx, c, p); err != nil {
 		return err
 	}
 	e.point("release-abort-cleaned")
 	s.Phase = "aborted"
-	if err = e.Journal.saveRelease(*s); err != nil {
+	if err := e.Journal.saveRelease(*s); err != nil {
 		return err
 	}
 	return e.visualFinish(ctx, c, p, s.AbortStatus, s.AbortNote)
@@ -516,7 +556,13 @@ func (e *Engine) releaseCommand(ctx context.Context, c api.ExecutionCommand, p d
 
 func (e *Engine) releaseDiagnostics(ctx context.Context, c api.ExecutionCommand, p deployment.Payload) string {
 	out := ""
-	for _, item := range []struct{ name, kind, title string }{{p.Plan.ContainerName(p.Plan.Release.ApplicationID), "visual-v1", "Candidate"}, {releaseCommandName(c), "release-command-v1", "Release command"}} {
+	type diagnosticTarget struct{ name, kind, title string }
+	items := []diagnosticTarget{}
+	for _, instance := range p.Plan.InstanceIDs(p.Plan.Release.ApplicationID) {
+		items = append(items, diagnosticTarget{deployment.UnitName(instance), "visual-v1", "Candidate " + instance.String()[:8]})
+	}
+	items = append(items, diagnosticTarget{releaseCommandName(c), "release-command-v1", "Release command"})
+	for _, item := range items {
 		v, err := e.Docker.ContainerInspect(ctx, item.name, client.ContainerInspectOptions{})
 		if err != nil {
 			continue
@@ -525,7 +571,15 @@ func (e *Engine) releaseDiagnostics(ctx context.Context, c api.ExecutionCommand,
 		if labels[labelServer] != p.Plan.ServerID.String() || labels[labelEnvironment] != p.Plan.EnvironmentID.String() || labels["com.astilba.unit"] != p.Plan.UnitID.String() || labels[labelResource] != p.Plan.Release.ApplicationID.String() || labels[labelKind] != item.kind || labels["com.astilba.plan"] != p.Plan.Hash {
 			continue
 		}
-		out += " " + item.title + " state=" + string(v.Container.State.Status) + ", exit=" + fmt.Sprint(v.Container.State.ExitCode) + "."
+		status := " " + item.title + " state=" + string(v.Container.State.Status) + ", exit=" + fmt.Sprint(v.Container.State.ExitCode) + "."
+		if len(out)+len(status) > 512 {
+			break
+		}
+		out += status
+		budget := min(280, 512-len(out)-len(" Output: "))
+		if budget <= 0 {
+			break
+		}
 		values := map[string]string{}
 		for key, value := range p.Secrets {
 			values[key] = value
@@ -541,7 +595,7 @@ func (e *Engine) releaseDiagnostics(ctx context.Context, c api.ExecutionCommand,
 			cancel()
 			continue
 		}
-		sample, err := readVisualLog(logs, v.Container.Config.Tty, values, 280)
+		sample, err := readVisualLog(logs, v.Container.Config.Tty, values, budget)
 		logs.Close()
 		cancel()
 		if err == nil && sample != "" {

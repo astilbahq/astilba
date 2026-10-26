@@ -45,6 +45,15 @@ func (p Plan) Instance(id uuid.UUID) uuid.UUID {
 func (p Plan) ContainerName(id uuid.UUID) string { return UnitName(p.Instance(id)) }
 func (p Plan) HostName(id uuid.UUID) string      { return ServiceName(p.Instance(id)) }
 func (p Plan) Backend(id uuid.UUID) Backend {
+	if p.Recipe == ReplicaRecipe {
+		b := Backend{InstanceIDs: p.InstanceIDs(id)}
+		for _, app := range p.Specification.Applications {
+			if app.ID == id && app.ReplicaCount() > 1 {
+				b.Health = app.Health
+			}
+		}
+		return b
+	}
 	b := Backend{Address: p.HostName(id)}
 	if v := p.Instances[id.String()]; v != uuid.Nil {
 		b.InstanceID = &v
@@ -121,6 +130,15 @@ func (p Plan) validateInstances() error {
 		apps[a.ID.String()] = a
 		used[a.ID] = true
 	}
+	for _, v := range p.Specification.Volumes {
+		used[v.ID] = true
+	}
+	for _, r := range p.Specification.Routes {
+		used[r.ID] = true
+	}
+	if (p.Specification.HasReplicaConfiguration() || len(p.ReplicaInstances) > 0) && p.Recipe != ReplicaRecipe || p.Recipe == ReplicaRecipe && p.Specification.Compose != nil {
+		return errors.New("replicas require a supported visual recipe")
+	}
 	if p.Specification.Compose != nil && (len(p.Instances) > 0 || p.Release != nil || p.ReleaseOptions != nil) {
 		return errors.New("Compose cannot use visual release instances")
 	}
@@ -130,6 +148,22 @@ func (p Plan) validateInstances() error {
 			return errors.New("invalid runtime instance")
 		}
 		used[instance] = true
+	}
+	for id, instances := range p.ReplicaInstances {
+		if _, ok := apps[id]; !ok || len(instances) == 0 {
+			return errors.New("invalid replica application")
+		}
+		for _, instance := range instances {
+			if instance == uuid.Nil || used[instance] {
+				return errors.New("invalid replica identity")
+			}
+			used[instance] = true
+		}
+	}
+	for id, app := range apps {
+		if len(p.ReplicaInstances[id]) != app.ReplicaCount()-1 {
+			return errors.New("replica inventory differs from desired count")
+		}
 	}
 	if p.ReleaseOptions != nil {
 		if err := p.ReleaseOptions.Validate(); err != nil {
