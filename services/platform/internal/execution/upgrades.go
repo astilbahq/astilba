@@ -94,6 +94,9 @@ func (s *Service) CreateUpgrade(ctx context.Context, p store.Principal, ws, pid,
 		if err = requireServiceOutputs(ctx, tx, ws, *v.Server, source.Specification); err != nil {
 			return err
 		}
+		if err = requireReplicas(ctx, tx, ws, *v.Server, source); err != nil {
+			return err
+		}
 		if policy.Plan.Hash != source.Hash || policy.ResourceID != in.ResourceId || policy.Method != "postgres-logical" {
 			return domain.Invalid("policy")
 		}
@@ -150,6 +153,9 @@ func (s *Service) UpgradeAction(ctx context.Context, p store.Principal, ws, pid,
 			return domain.Conflict
 		}
 		if err = s.deploymentServer(ctx, tx, ws, plan.Source.ServerID); err != nil {
+			return err
+		}
+		if err = requireReplicas(ctx, tx, ws, plan.Source.ServerID, plan.Source); err != nil {
 			return err
 		}
 		if err = tx.QueryRow(ctx, "SELECT status FROM supported_upgrades WHERE id=$1 FOR UPDATE", id).Scan(&statusRaw); err != nil {

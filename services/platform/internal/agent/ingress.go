@@ -41,6 +41,39 @@ type routeAttempt struct {
 	Previous  routeSnapshot `json:"previous"`
 	Candidate routeSnapshot `json:"candidate"`
 }
+
+// A replica attempt must also fence older recovery of a legacy or empty Previous.
+// Older agents expect an object here and refuse the tuple before any effects.
+func (a routeAttempt) MarshalJSON() ([]byte, error) {
+	for _, snapshot := range []routeSnapshot{a.Previous, a.Candidate} {
+		for _, set := range snapshot.Sets {
+			for _, backend := range set.Backends {
+				if len(backend.InstanceIDs) > 0 {
+					return json.Marshal([]routeSnapshot{a.Previous, a.Candidate})
+				}
+			}
+		}
+	}
+	type object routeAttempt
+	return json.Marshal(object(a))
+}
+
+func (a *routeAttempt) UnmarshalJSON(raw []byte) error {
+	if bytes.HasPrefix(bytes.TrimSpace(raw), []byte("[")) {
+		var pair []routeSnapshot
+		if err := json.Unmarshal(raw, &pair); err != nil {
+			return err
+		}
+		if len(pair) != 2 {
+			return errors.New("invalid pending route tuple")
+		}
+		a.Previous, a.Candidate = pair[0], pair[1]
+		return nil
+	}
+	type object routeAttempt
+	return json.Unmarshal(raw, (*object)(a))
+}
+
 type routeState struct {
 	Current routeSnapshot `json:"current"`
 	Pending *routeAttempt `json:"pending,omitempty"`

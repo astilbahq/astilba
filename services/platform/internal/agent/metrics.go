@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"math"
 	"os"
@@ -12,9 +13,11 @@ import (
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
+	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/metrics"
 	"github.com/google/uuid"
 	"github.com/moby/moby/client"
+	bolt "go.etcd.io/bbolt"
 )
 
 type cpuCounters struct{ total, idle uint64 }
@@ -124,56 +127,86 @@ func (c *MetricCollector) Collect(ctx context.Context, docker *client.Client, se
 	if docker == nil {
 		return out
 	}
-	list, e := docker.ContainerList(ctx, client.ContainerListOptions{All: true, Limit: metrics.MaxServices*3 + 1, Filters: client.Filters{}.Add("label", labelServer+"="+server.String()).Add("label", labelKind+"=visual-v1")})
+	type identity struct{ resource, unit uuid.UUID }
+	watched := map[string]identity{}
+	desired, units := map[uuid.UUID]int{}, map[uuid.UUID]uuid.UUID{}
+	order := []uuid.UUID{}
+	groups := map[uuid.UUID][]api.ServiceMetrics{}
+	if c.Journal != nil {
+		plans, partial, err := c.Journal.metricUnits(server)
+		out.Partial = out.Partial || partial
+		if err != nil {
+			out.Partial = true
+			return out
+		}
+		for _, active := range plans {
+			for _, app := range active.Plan.Specification.Applications {
+				if _, exists := groups[app.ID]; exists || len(order) >= metrics.MaxServices {
+					out.Partial = true
+					continue
+				}
+				order = append(order, app.ID)
+				groups[app.ID] = nil
+				units[app.ID] = active.Plan.UnitID
+				instances := active.Plan.InstanceIDs(app.ID)
+				desired[app.ID] = len(instances)
+				for _, instance := range instances {
+					name := "/" + deployment.UnitName(instance)
+					if _, exists := watched[name]; exists {
+						out.Partial = true
+						continue
+					}
+					watched[name] = identity{app.ID, active.Plan.UnitID}
+				}
+			}
+		}
+	}
+	limit := metrics.MaxServices * (domain.MaxReplicas + 2)
+	list, e := docker.ContainerList(ctx, client.ContainerListOptions{All: true, Limit: limit + 1, Filters: client.Filters{}.Add("label", labelServer+"="+server.String()).Add("label", labelKind+"=visual-v1")})
 	if e != nil {
 		out.Partial = true
 		return out
 	}
 	sort.Slice(list.Items, func(i, j int) bool { return list.Items[i].ID < list.Items[j].ID })
-	if len(list.Items) > metrics.MaxServices*3 {
+	if len(list.Items) > limit {
 		out.Partial = true
 	}
 	next := map[string]containerCounters{}
-	activeUnits := map[uuid.UUID]unitState{}
 	for _, item := range list.Items {
-		resource, e := uuid.Parse(item.Labels[labelResource])
-		if e != nil {
+		resource, err := uuid.Parse(item.Labels[labelResource])
+		if err != nil {
 			out.Partial = true
 			continue
 		}
-		unit, e := uuid.Parse(item.Labels["com.astilba.unit"])
-		if e != nil {
+		unit, err := uuid.Parse(item.Labels["com.astilba.unit"])
+		if err != nil {
 			out.Partial = true
 			continue
-		}
-		name := deployment.UnitName(resource)
-		if c.Journal != nil {
-			active, loaded := activeUnits[unit]
-			var err error
-			if !loaded {
-				active, err = c.Journal.unit(unit)
-				if err == nil {
-					activeUnits[unit] = active
-				}
-			}
-			if err != nil {
-				out.Partial = true
-				continue
-			}
-			if active.Plan.ID != uuid.Nil {
-				name = active.Plan.ContainerName(resource)
-			}
 		}
 		match := false
-		for _, n := range item.Names {
-			match = match || n == "/"+name
+		for _, name := range item.Names {
+			if c.Journal == nil {
+				match = match || name == "/"+deployment.UnitName(resource)
+			} else {
+				expected, ok := watched[name]
+				match = match || ok && expected.resource == resource && expected.unit == unit
+			}
 		}
 		if !match {
 			continue
 		}
-		if len(out.Services) >= metrics.MaxServices {
+		if previous, exists := units[resource]; exists && previous != unit {
 			out.Partial = true
-			break
+			continue
+		}
+		if _, exists := groups[resource]; !exists {
+			if len(order) >= metrics.MaxServices {
+				out.Partial = true
+				continue
+			}
+			order = append(order, resource)
+			desired[resource] = 1
+			units[resource] = unit
 		}
 		state := api.ServiceMetricsState(item.State)
 		switch state {
@@ -183,23 +216,132 @@ func (c *MetricCollector) Collect(ctx context.Context, docker *client.Client, se
 		default:
 			state = "unknown"
 		}
-		v := api.ServiceMetrics{ResourceId: resource, UnitId: unit, State: state}
+		value := api.ServiceMetrics{ResourceId: resource, UnitId: unit, State: state}
 		if item.Health != nil {
 			health := api.ServiceMetricsHealth(item.Health.Status)
 			if health.Valid() {
-				v.Health = &health
+				value.Health = &health
 			}
 		}
 		if state == "running" {
 			if item.Health == nil {
-				collectHealth(ctx, docker, item.ID, &v, &out.Partial)
+				collectHealth(ctx, docker, item.ID, &value, &out.Partial)
 			}
-			c.collectContainer(ctx, docker, item.ID, &v, next, &out.Partial)
+			c.collectContainer(ctx, docker, item.ID, &value, next, &out.Partial)
 		}
-		out.Services = append(out.Services, v)
+		groups[resource] = append(groups[resource], value)
+	}
+	for _, id := range order {
+		if len(groups[id]) == 0 {
+			out.Partial = true
+			out.Services = append(out.Services, api.ServiceMetrics{ResourceId: id, UnitId: units[id], State: "unknown"})
+		} else {
+			out.Services = append(out.Services, aggregateServiceMetrics(groups[id], desired[id], &out.Partial))
+		}
 	}
 	c.containers = next
 	return out
+}
+
+// Bound journal inventory independently of Docker's list so an entirely absent
+// group remains unknown instead of disappearing from a complete metrics report.
+func (j *Journal) metricUnits(server uuid.UUID) ([]unitState, bool, error) {
+	units := []unitState{}
+	partial := false
+	err := j.db.View(func(tx *bolt.Tx) error {
+		cursor := tx.Bucket([]byte("units")).Cursor()
+		scanned := 0
+		for key, _ := cursor.First(); key != nil; key, _ = cursor.Next() {
+			if scanned == metrics.MaxServices {
+				partial = true
+				break
+			}
+			scanned++
+			var state unitState
+			if err := j.get(tx, "units", string(key), &state); err != nil {
+				return err
+			}
+			if state.Plan.ID == uuid.Nil {
+				continue
+			}
+			if state.Plan.ServerID != server || state.Plan.UnitID.String() != string(key) {
+				return errors.New("metrics unit identity mismatch")
+			}
+			units = append(units, state)
+		}
+		return nil
+	})
+	return units, partial, err
+}
+
+func aggregateServiceMetrics(samples []api.ServiceMetrics, expected int, partial *bool) api.ServiceMetrics {
+	if len(samples) == 1 && expected == 1 {
+		return samples[0]
+	}
+	v := api.ServiceMetrics{ResourceId: samples[0].ResourceId, UnitId: samples[0].UnitId, State: "stopped"}
+	memory, cpu := int64(0), float64(0)
+	memoryKnown, cpuKnown := len(samples) == expected, len(samples) == expected
+	health := api.MetricNoHealthcheck
+	healthKnown, unhealthy := true, len(samples) != expected
+	if len(samples) != expected {
+		*partial = true
+	}
+	for _, member := range samples {
+		if member.State == "running" {
+			v.State = "running"
+			if member.MemoryUsedBytes == nil || memory > math.MaxInt64-*member.MemoryUsedBytes {
+				memoryKnown = false
+			} else {
+				memory += *member.MemoryUsedBytes
+			}
+			if member.CpuPercent == nil {
+				cpuKnown = false
+			} else {
+				cpu += *member.CpuPercent
+			}
+		} else {
+			unhealthy = true
+			if member.State != "stopped" {
+				memoryKnown = false
+				cpuKnown = false
+				*partial = true
+			}
+		}
+		if member.Health == nil {
+			healthKnown = false
+		} else {
+			switch *member.Health {
+			case "unhealthy":
+				unhealthy = true
+			case "starting":
+				health = "starting"
+			case "healthy":
+				if health != "starting" {
+					health = "healthy"
+				}
+			}
+		}
+	}
+	if memoryKnown {
+		v.MemoryUsedBytes = &memory
+	} else {
+		*partial = true
+	}
+	if cpuKnown {
+		if cpu <= 100000 {
+			v.CpuPercent = &cpu
+		} else {
+			*partial = true
+		}
+	}
+	if unhealthy {
+		health = "unhealthy"
+		healthKnown = true
+	}
+	if healthKnown {
+		v.Health = &health
+	}
+	return v
 }
 func (c *MetricCollector) collectContainer(ctx context.Context, docker *client.Client, id string, v *api.ServiceMetrics, next map[string]containerCounters, partial *bool) {
 	statsCtx, cancel := context.WithTimeout(ctx, metricStatsTimeout)

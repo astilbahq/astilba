@@ -20,7 +20,7 @@ func decodeArchive(raw []byte) (Archive, error) {
 	var archive Archive
 	d := json.NewDecoder(bytes.NewReader(raw))
 	d.DisallowUnknownFields()
-	if d.Decode(&archive) != nil || d.Decode(new(any)) != io.EOF || (archive.Version != 1 && archive.Version != 2 && archive.Version != 3) || archive.Workspace == uuid.Nil {
+	if d.Decode(&archive) != nil || d.Decode(new(any)) != io.EOF || (archive.Version != 1 && archive.Version != 2 && archive.Version != 3 && archive.Version != 4) || archive.Workspace == uuid.Nil {
 		return archive, ErrArchive
 	}
 	if archive.Version == 1 {

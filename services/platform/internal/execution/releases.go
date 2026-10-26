@@ -21,6 +21,20 @@ type releaseQuery interface {
 	QueryRow(context.Context, string, ...any) pgx.Row
 }
 
+func requireReplicas(ctx context.Context, q releaseQuery, ws, server uuid.UUID, p deployment.Plan) error {
+	if p.Recipe != deployment.ReplicaRecipe {
+		return nil
+	}
+	var supported bool
+	if err := q.QueryRow(ctx, "SELECT COALESCE((capabilities->>'replicas')::boolean,false) AND COALESCE((capabilities->>'safeReleases')::boolean,false) FROM servers WHERE workspace_id=$1 AND id=$2", ws, server).Scan(&supported); err != nil {
+		return err
+	}
+	if !supported {
+		return domain.Invalid("server.capabilities.replicas")
+	}
+	return nil
+}
+
 func releaseCapability(ctx context.Context, q releaseQuery, ws, server uuid.UUID) (bool, error) {
 	var supported bool
 	err := q.QueryRow(ctx, "SELECT COALESCE((capabilities->>'safeReleases')::boolean,false) FROM servers WHERE workspace_id=$1 AND id=$2", ws, server).Scan(&supported)
@@ -61,11 +75,12 @@ func configureRelease(ctx context.Context, tx pgx.Tx, ws uuid.UUID, p *deploymen
 		options = *p.ReleaseOptions
 	}
 	p.Release = &deployment.Release{ApplicationID: app.ID, PreviousPlanID: previous.ID, Options: options}
-	if p.Instances == nil {
-		p.Instances = map[string]uuid.UUID{}
-	}
-	p.Instances[app.ID.String()] = uuid.New()
+	p.ReplaceInstances(app.ID)
 	p.Effects = []string{"Start an isolated stateless HTTP candidate; failed readiness vetoes the traffic switch and retains the serving revision.", "Verify the proxy switch, drain existing connections, then gracefully stop the old instance. Keep two previous instances while available.", "Image rollback restores application configuration only. Database writes and schema changes are never undone."}
+	if p.Recipe == deployment.ReplicaRecipe {
+		p.Effects[0] = "Start the complete stateless HTTP candidate group; every instance must pass readiness before traffic switches. Old and new groups temporarily run together."
+		p.Effects[1] = "Verify all new private backends, drain existing connections, then stop the complete old group. Retain one stopped primary for each of two previous image generations."
+	}
 	if len(options.Command) > 0 {
 		p.Effects = append(p.Effects, "Run the bounded release command once before readiness. An uncertain command outcome requires inspection; external side effects remain.")
 	}
@@ -253,6 +268,7 @@ func releaseChanges(current, old deployment.Plan, id uuid.UUID) []string {
 		{"Variables and secret-version references", a.Variables, b.Variables},
 		{"Startup command", a.Command, b.Command}, {"HTTP readiness", a.Health, b.Health},
 		{"Dependencies", a.DependsOn, b.DependsOn}, {"Networks", a.Networks, b.Networks},
+		{"Replica count", a.ReplicaCount(), b.ReplicaCount()},
 	} {
 		if deployment.Hash(field.current) != deployment.Hash(field.old) {
 			changes = append(changes, field.name)

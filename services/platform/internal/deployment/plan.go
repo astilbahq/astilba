@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net/url"
 	"sort"
 	"strconv"
@@ -20,10 +21,12 @@ import (
 
 const Recipe = 1
 const PreviewRecipe = 2
+const ReplicaRecipe = 3
 const ObservationLimit = 24000
 const ProxyImage = "traefik:v3.7.16@sha256:22a759fb803abb5c3a7ba5d5a55a201c5fb0fc8993d5c72c47a89075e64f1953"
 
 type Plan struct {
+	ReplicaInstances  map[string][]uuid.UUID       `json:"replicaInstances,omitempty"`
 	Preview           *domain.PreviewIdentity      `json:"preview,omitempty"`
 	Instances         map[string]uuid.UUID         `json:"instances,omitempty"`
 	ReleaseOptions    *ReleaseOptions              `json:"releaseOptions,omitempty"`
@@ -57,14 +60,19 @@ type Payload struct {
 func (p Payload) Digest() string { p.Secrets = nil; p.RegistryAccess = nil; return Hash(p) }
 
 type Resource struct {
-	ID          uuid.UUID `json:"id"`
-	Kind        string    `json:"kind"`
-	State       string    `json:"state"`
-	Image       string    `json:"image"`
-	Drift       bool      `json:"drift"`
-	Note        string    `json:"note"`
-	Logs        string    `json:"logs"`
-	MemoryBytes int64     `json:"memoryBytes"`
+	Instances   []InstanceState `json:"instances,omitempty"`
+	ID          uuid.UUID       `json:"id"`
+	Kind        string          `json:"kind"`
+	State       string          `json:"state"`
+	Image       string          `json:"image"`
+	Drift       bool            `json:"drift"`
+	Note        string          `json:"note"`
+	Logs        string          `json:"logs"`
+	MemoryBytes int64           `json:"memoryBytes"`
+}
+type InstanceState struct {
+	InstanceID uuid.UUID `json:"instanceId"`
+	State      string    `json:"state"`
 }
 type Observation struct {
 	ObservedAt          time.Time         `json:"observedAt"`
@@ -92,7 +100,7 @@ func (p Plan) WithHash() Plan { p.Hash = ""; p.Hash = Hash(p); return p }
 func (p Plan) Validate(resolved bool) error {
 	h := p.Hash
 	p.Hash = ""
-	if h != Hash(p) || p.Preview == nil && p.Recipe != Recipe || p.Preview != nil && p.Recipe != PreviewRecipe || p.ID == uuid.Nil || p.ServerID == uuid.Nil || p.EnvironmentID == uuid.Nil || p.UnitID == uuid.Nil || p.RevisionID == uuid.Nil {
+	if h != Hash(p) || p.Preview == nil && p.Recipe != Recipe && p.Recipe != ReplicaRecipe || p.Preview != nil && p.Recipe != PreviewRecipe || p.ID == uuid.Nil || p.ServerID == uuid.Nil || p.EnvironmentID == uuid.Nil || p.UnitID == uuid.Nil || p.RevisionID == uuid.Nil {
 		return errors.New("invalid deployment plan identity")
 	}
 	if p.Preview != nil {
@@ -395,14 +403,26 @@ func ComposeAt(p Plan, secrets map[string]string, export bool, root string) ([]b
 			}
 			service["depends_on"] = deps
 		}
-		services[p.HostName(a.ID)] = service
+		for _, instance := range p.InstanceIDs(a.ID) {
+			runtime := maps.Clone(service)
+			runtime["container_name"] = UnitName(instance)
+			runtime["networks"] = map[string]any{"unit": map[string]any{"aliases": []string{ServiceName(instance)}}}
+			if p.Recipe == ReplicaRecipe {
+				owned := maps.Clone(labels)
+				owned["com.astilba.instance"] = instance.String()
+				runtime["labels"] = owned
+			}
+			services[ServiceName(instance)] = runtime
+		}
 	}
 	return json.MarshalIndent(map[string]any{"name": UnitName(p.UnitID), "services": services, "volumes": volumes, "networks": map[string]any{"unit": map[string]any{"name": NetworkName(p.UnitID), "external": true}}}, "", "  ")
 }
 
 type Backend struct {
-	InstanceID *uuid.UUID `json:"instanceId,omitempty"`
-	Address    string     `json:"address"`
+	InstanceIDs []uuid.UUID         `json:"instanceIds,omitempty"`
+	Health      *domain.HealthCheck `json:"health,omitempty"`
+	InstanceID  *uuid.UUID          `json:"instanceId,omitempty"`
+	Address     string              `json:"address"`
 }
 type RouteSet struct {
 	EnvironmentID uuid.UUID          `json:"environmentId"`
@@ -430,20 +450,49 @@ func RouteConfig(sets map[string]RouteSet) ([]byte, error) {
 			}
 			name := UnitName(set.UnitID) + "-" + r.ID.String()
 			backend, ok := set.Backends[r.TargetID.String()]
-			expected := r.TargetID
-			if backend.InstanceID != nil {
-				expected = *backend.InstanceID
+			if !ok {
+				return nil, errors.New("missing backend reference")
 			}
-			if !ok || backend.Address != ServiceName(expected) {
-				return nil, errors.New("foreign backend reference")
+			addresses := []string{}
+			if len(backend.InstanceIDs) > 0 {
+				if backend.Address != "" || backend.InstanceID != nil || len(backend.InstanceIDs) > domain.MaxReplicas {
+					return nil, errors.New("invalid replica backend format")
+				}
+				seen := map[uuid.UUID]bool{}
+				for _, instance := range backend.InstanceIDs {
+					if instance == uuid.Nil || seen[instance] {
+						return nil, errors.New("invalid replica backend identity")
+					}
+					seen[instance] = true
+					addresses = append(addresses, fmt.Sprintf("%s:%d", ServiceName(instance), r.Port))
+				}
+				if len(addresses) > 1 && (r.Protocol != "http" || backend.Health == nil || !backend.Health.Valid()) {
+					return nil, errors.New("replica pools require HTTP readiness")
+				}
+			} else {
+				expected := r.TargetID
+				if backend.InstanceID != nil {
+					expected = *backend.InstanceID
+				}
+				if backend.Address != ServiceName(expected) || backend.Health != nil {
+					return nil, errors.New("foreign backend reference")
+				}
+				addresses = append(addresses, fmt.Sprintf("%s:%d", backend.Address, r.Port))
 			}
-			address := fmt.Sprintf("%s:%d", backend.Address, r.Port)
 			if r.Protocol == "http" {
 				if domains[r.Domain] {
 					return nil, errors.New("domain is already claimed")
 				}
 				domains[r.Domain] = true
-				hs[name] = map[string]any{"loadBalancer": map[string]any{"servers": []any{map[string]string{"url": "http://" + address}}}}
+				servers := []any{}
+				for _, address := range addresses {
+					servers = append(servers, map[string]string{"url": "http://" + address})
+				}
+				balancer := map[string]any{"servers": servers}
+				if len(addresses) > 1 {
+					balancer["healthCheck"] = map[string]any{"scheme": "http", "path": backend.Health.Path, "port": backend.Health.Port, "interval": "5s", "timeout": "2s"}
+				}
+				hs[name] = map[string]any{"loadBalancer": balancer}
 				router := map[string]any{"rule": "Host(`" + r.Domain + "`)", "service": name, "entryPoints": []string{"web"}}
 				middlewares := []string{}
 				if len(r.AllowCIDRs) > 0 {
@@ -481,7 +530,7 @@ func RouteConfig(sets map[string]RouteSet) ([]byte, error) {
 					return nil, errors.New("TCP listener is already claimed")
 				}
 				ports[r.ListenPort] = true
-				ts[name] = map[string]any{"loadBalancer": map[string]any{"servers": []any{map[string]string{"address": address}}}}
+				ts[name] = map[string]any{"loadBalancer": map[string]any{"servers": []any{map[string]string{"address": addresses[0]}}}}
 				router := map[string]any{"rule": "HostSNI(`*`)", "service": name, "entryPoints": []string{fmt.Sprintf("tcp-%d", r.ListenPort)}}
 				key := name + "-access"
 				tm[key] = map[string]any{"ipAllowList": map[string]any{"sourceRange": r.AllowCIDRs}}

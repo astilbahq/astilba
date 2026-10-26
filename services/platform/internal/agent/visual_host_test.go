@@ -127,7 +127,18 @@ func TestNativeVisualDeployment(t *testing.T) {
 		image := execution.TestImage
 		pgimage := domain.PostgresImage
 		value := "v1"
-		spec := domain.Specification{Version: 1, Variables: []domain.Variable{}, Applications: []domain.Application{{ID: app, Name: "Web", Source: domain.ApplicationSource{Kind: "image", Image: &image}, Variables: []domain.Variable{{Name: "VALUE", Value: &value}}, Command: []string{"sh", "-c", "mkdir -p /tmp/www; printf '%s' \"$VALUE\" > /tmp/www/index.html; echo \"$DATABASE_URL\"; exec httpd -f -p 8080 -h /tmp/www"}, Health: &domain.HealthCheck{Port: 8080, Path: "/"}}}, Routes: []domain.Route{{ID: uuid.New(), TargetID: app, Protocol: "http", Domain: name + ".example.test", Port: 8080, TLS: "off", AllowCIDRs: []string{}}}}
+		script := `mkdir -p /tmp/www/cgi-bin
+printf '%s' "$VALUE" > /tmp/www/index.html
+printf ready > /tmp/www/health
+cat > /tmp/www/cgi-bin/identity <<'CGI'
+#!/bin/sh
+printf 'Content-Type: text/plain\r\n\r\n'
+hostname
+CGI
+chmod +x /tmp/www/cgi-bin/identity
+echo "$DATABASE_URL"
+exec httpd -f -p 8080 -h /tmp/www`
+		spec := domain.Specification{Version: 1, Variables: []domain.Variable{}, Applications: []domain.Application{{ID: app, Name: "Web", Source: domain.ApplicationSource{Kind: "image", Image: &image}, Variables: []domain.Variable{{Name: "VALUE", Value: &value}}, Command: []string{"sh", "-c", script}, Health: &domain.HealthCheck{Port: 8080, Path: "/health"}}}, Routes: []domain.Route{{ID: uuid.New(), TargetID: app, Protocol: "http", Domain: name + ".example.test", Port: 8080, TLS: "off", AllowCIDRs: []string{}}}}
 		secrets := map[string]string{}
 		if withDB {
 			spec.Volumes = []domain.Volume{{ID: vol, Name: "Data"}}
@@ -165,9 +176,22 @@ func TestNativeVisualDeployment(t *testing.T) {
 		}
 	}
 	p, secrets := plan("first", true)
-	p = resolve(p)
+	p.Specification.Applications[0].Replicas = 3
+	p.PrepareInstances(deployment.Plan{})
+	p = resolve(p.WithHash())
+	abandoned := append([]uuid.UUID(nil), p.InstanceIDs(p.Specification.Applications[0].ID)[1:]...)
+	nativeAbandonReplicaStart(t, engine, p, command("deploy", p, secrets))
+	p.ID, p.RevisionID = uuid.New(), uuid.New()
+	p.PrepareInstances(deployment.Plan{})
+	p = resolve(p.WithHash())
 	r := finish(command("deploy", p, secrets))
+	for _, id := range abandoned {
+		if _, err := docker.ContainerInspect(ctx, deployment.UnitName(id), client.ContainerInspectOptions{}); err == nil {
+			t.Fatal("abandoned initial replica survived successful reconciliation")
+		}
+	}
 	request("first.example.test", "v1")
+	t.Run("replica_distribution_and_health", func(t *testing.T) { nativeReplicaDistribution(t, engine, p) })
 	if strings.Contains(string(*r.Report.Observation), "canary") || strings.Contains(string(*r.Report.Observation), "native%2F") {
 		t.Fatal("observation leaked database credentials")
 	}
@@ -192,7 +216,7 @@ func TestNativeVisualDeployment(t *testing.T) {
 		t.Fatal("deployed database binding differs from its frozen values")
 	}
 	t.Run("resource_metrics", func(t *testing.T) {
-		collector := &MetricCollector{}
+		collector := &MetricCollector{Journal: j}
 		collection, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
 		sample := collector.Collect(collection, docker, server, state)
@@ -237,7 +261,7 @@ func TestNativeVisualDeployment(t *testing.T) {
 			p.Specification.Applications[1].Mounts[0].Target = domain.PostgresMount(image)
 			p = p.WithHash()
 			if !releaseVerified {
-				p.Specification.Applications[0].Command = []string{"sh", "-c", `mkdir -p /tmp/www/cgi-bin; printf '%s' "$VALUE" > /tmp/www/index.html; printf '#!/bin/sh\nsleep 6\nprintf "Content-Type: text/plain\\r\\n\\r\\n"\nprintf "%%s" "$VALUE"\n' > /tmp/www/cgi-bin/slow; chmod +x /tmp/www/cgi-bin/slow; exec httpd -f -p 8080 -h /tmp/www`}
+				p.Specification.Applications[0].Command = []string{"sh", "-c", `mkdir -p /tmp/www/cgi-bin; printf ready > /tmp/www/health; printf '%s' "$VALUE" > /tmp/www/index.html; printf '#!/bin/sh\nsleep 6\nprintf "Content-Type: text/plain\\r\\n\\r\\n"\nprintf "%%s" "$VALUE"\n' > /tmp/www/cgi-bin/slow; chmod +x /tmp/www/cgi-bin/slow; exec httpd -f -p 8080 -h /tmp/www`}
 				p = p.WithHash()
 			}
 			p = resolve(p)
@@ -374,9 +398,11 @@ func TestNativeVisualDeployment(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, a := range crash.Specification.Applications {
-		_, err = docker.ContainerRemove(ctx, deployment.UnitName(a.ID), client.ContainerRemoveOptions{Force: true})
-		if err != nil {
-			t.Fatal(err)
+		for _, id := range crash.InstanceIDs(a.ID) {
+			_, err = docker.ContainerRemove(ctx, deployment.UnitName(id), client.ContainerRemoveOptions{Force: true})
+			if err != nil {
+				t.Fatal(err)
+			}
 		}
 	}
 	_, err = docker.ContainerRemove(ctx, proxyName, client.ContainerRemoveOptions{Force: true})
@@ -404,6 +430,14 @@ func TestNativeVisualDeployment(t *testing.T) {
 		t.Fatalf("standalone export: %v %s", err, output)
 	}
 	request("replacement.example.test", "v2")
+	for _, a := range crash.Specification.Applications {
+		for _, id := range crash.InstanceIDs(a.ID) {
+			v, err := docker.ContainerInspect(ctx, deployment.UnitName(id), client.ContainerInspectOptions{})
+			if err != nil || !v.Container.State.Running {
+				t.Fatal("standalone export did not recreate every instance")
+			}
+		}
+	}
 	t.Cleanup(func() {
 		cmd := exec.Command(dockerCLI, "--host", docker.DaemonHost(), "compose", "--project-directory", dir, "--file", filepath.Join(dir, "compose.json"), "down")
 		cmd.Env = run.Env

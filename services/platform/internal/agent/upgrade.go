@@ -244,7 +244,11 @@ func (e *Engine) prepareUpgrade(ctx context.Context, c api.ExecutionCommand, s *
 	if err != nil {
 		return err
 	}
-	if len(owned) != len(p.Source.Specification.Applications) {
+	expected := 0
+	for _, app := range p.Source.Specification.Applications {
+		expected += len(p.Source.InstanceIDs(app.ID))
+	}
+	if len(owned) != expected {
 		return errors.New("all writers must be owned by this deployment unit")
 	}
 	for _, v := range owned {
@@ -426,14 +430,19 @@ func (e *Engine) upgradeDatabaseChecks(ctx context.Context, id string, a domain.
 func (e *Engine) knownUpgradeWriters(ctx context.Context, id string, a domain.Application, p deployment.Plan) error {
 	allowed := map[string]bool{}
 	for _, app := range p.Specification.Applications {
-		v, err := e.Docker.ContainerInspect(ctx, p.ContainerName(app.ID), client.ContainerInspectOptions{})
-		if err != nil {
-			return err
-		}
-		if v.Container.NetworkSettings != nil {
-			for _, n := range v.Container.NetworkSettings.Networks {
-				allowed[n.IPAddress.String()] = true
-				allowed[n.GlobalIPv6Address.String()] = true
+		for _, instance := range p.InstanceIDs(app.ID) {
+			v, err := e.Docker.ContainerInspect(ctx, deployment.UnitName(instance), client.ContainerInspectOptions{})
+			if err != nil {
+				return err
+			}
+			if !visualOwned(v.Container.Config.Labels, p) || v.Container.Config.Labels[labelResource] != app.ID.String() {
+				return errors.New("writer ownership changed")
+			}
+			if v.Container.NetworkSettings != nil {
+				for _, n := range v.Container.NetworkSettings.Networks {
+					allowed[n.IPAddress.String()] = true
+					allowed[n.GlobalIPv6Address.String()] = true
+				}
 			}
 		}
 	}
@@ -548,12 +557,14 @@ func (e *Engine) activateUpgrade(ctx context.Context, c api.ExecutionCommand, s 
 		return err
 	}
 	for _, a := range target.Specification.Applications {
-		v, err := e.Docker.ContainerInspect(ctx, target.ContainerName(a.ID), client.ContainerInspectOptions{})
-		if err != nil && !errdefs.IsNotFound(err) {
-			return err
-		}
-		if err == nil && (!visualOwned(v.Container.Config.Labels, p.Source) || v.Container.Config.Labels[labelResource] != a.ID.String()) {
-			return errors.New("service ownership changed")
+		for _, instance := range target.InstanceIDs(a.ID) {
+			v, err := e.Docker.ContainerInspect(ctx, deployment.UnitName(instance), client.ContainerInspectOptions{})
+			if err != nil && !errdefs.IsNotFound(err) {
+				return err
+			}
+			if err == nil && (!visualOwned(v.Container.Config.Labels, p.Source) || v.Container.Config.Labels[labelResource] != a.ID.String()) {
+				return errors.New("service ownership changed")
+			}
 		}
 	}
 	if err = e.compose(ctx, target, body, s.Command.Secrets, "up", "--detach", "--no-deps", "--wait", "--wait-timeout", "60", deployment.ServiceName(p.ResourceID)); err != nil {
@@ -591,7 +602,7 @@ func (e *Engine) activateUpgrade(ctx context.Context, c api.ExecutionCommand, s 
 		}
 	}
 	e.point("upgrade-writers-effect")
-	observed, expected, err := e.observeUnit(ctx, target, s.Command.Secrets)
+	observed, expected, err := e.observeVisualPlan(ctx, target, s.Command.Secrets, true)
 	if err != nil {
 		return err
 	}

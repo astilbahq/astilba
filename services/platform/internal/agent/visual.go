@@ -283,6 +283,14 @@ func (e *Engine) executeVisual(ctx context.Context, c api.ExecutionCommand, r Re
 	if err = e.pullVisualImages(ctx, p); err != nil {
 		return e.visualFinish(ctx, c, p, "needs_attention", err.Error())
 	}
+	for _, app := range p.Plan.Specification.Applications {
+		if app.ReplicaCount() > 1 {
+			image, err := e.Docker.ImageInspect(ctx, p.Plan.Images[app.ID.String()])
+			if err != nil || image.Config == nil || len(image.Config.Volumes) > 0 {
+				return e.visualFinish(ctx, c, p, "failed", "Replicas require an image without declared persistent volumes.")
+			}
+		}
+	}
 
 	if err = e.checkpoint(c.Id, "storage"); err != nil {
 		return err
@@ -297,12 +305,14 @@ func (e *Engine) executeVisual(ctx context.Context, c api.ExecutionCommand, r Re
 		if e.cancelled(c.Id) {
 			return e.visualFinish(ctx, c, p, "cancelled", "Stopped at a safe checkpoint. Partially changed services and all data are retained.")
 		}
-		v, err := e.Docker.ContainerInspect(ctx, p.Plan.ContainerName(a.ID), client.ContainerInspectOptions{})
-		if err == nil && (!visualOwned(v.Container.Config.Labels, p.Plan) || v.Container.Config.Labels[labelResource] != a.ID.String()) {
-			return e.visualFinish(ctx, c, p, "needs_attention", "An existing container has conflicting ownership. It was not changed.")
-		}
-		if err != nil && !errdefs.IsNotFound(err) {
-			return e.visualFinish(ctx, c, p, "needs_attention", "Cannot inspect the target container.")
+		for _, instance := range p.Plan.InstanceIDs(a.ID) {
+			v, err := e.Docker.ContainerInspect(ctx, deployment.UnitName(instance), client.ContainerInspectOptions{})
+			if err == nil && (!visualOwned(v.Container.Config.Labels, p.Plan) || v.Container.Config.Labels[labelResource] != a.ID.String()) {
+				return e.visualFinish(ctx, c, p, "needs_attention", "An existing container has conflicting ownership. It was not changed.")
+			}
+			if err != nil && !errdefs.IsNotFound(err) {
+				return e.visualFinish(ctx, c, p, "needs_attention", "Cannot inspect the target container.")
+			}
 		}
 		if err = e.compose(ctx, p.Plan, compose, p.Secrets, "up", "--detach", "--no-deps", "--wait", "--wait-timeout", "60", deployment.ServiceName(a.ID)); err != nil {
 			return e.visualFinish(ctx, c, p, "needs_attention", safeVisualError(err, p.Secrets))
@@ -331,19 +341,33 @@ func (e *Engine) executeVisual(ctx context.Context, c api.ExecutionCommand, r Re
 	if err != nil {
 		return e.visualFinish(ctx, c, p, "needs_attention", "Cannot inspect retired services.")
 	}
+	release, err := e.Journal.release(p.Plan.UnitID)
+	if err != nil {
+		return err
+	}
 	keep := map[string]bool{}
+	wantedNames, retainedNames := map[string]bool{}, map[string]bool{}
 	for _, a := range p.Plan.Specification.Applications {
 		keep[a.ID.String()] = true
+		for _, instance := range p.Plan.InstanceIDs(a.ID) {
+			wantedNames["/"+deployment.UnitName(instance)] = true
+		}
+	}
+	for _, item := range release.Retained {
+		if unit.Plan.Instance(item.ApplicationID) == p.Plan.Instance(item.ApplicationID) {
+			retainedNames["/"+item.Name] = true
+		}
 	}
 	for _, v := range current {
 		id, _ := uuid.Parse(v.Labels[labelResource])
 		retiredInstance := false
-		if keep[id.String()] && unit.Plan.Instance(id) != p.Plan.Instance(id) {
-			match := false
+		if keep[id.String()] {
+			match, retained := false, false
 			for _, name := range v.Names {
-				match = match || name == "/"+p.Plan.ContainerName(id)
+				match = match || wantedNames[name]
+				retained = retained || retainedNames[name]
 			}
-			retiredInstance = !match
+			retiredInstance = !match && !retained
 		}
 		if !keep[v.Labels[labelResource]] || retiredInstance {
 			if _, err = e.Docker.ContainerRemove(ctx, v.ID, client.ContainerRemoveOptions{Force: true, RemoveVolumes: false}); err != nil && !errdefs.IsNotFound(err) {
@@ -407,16 +431,17 @@ func (e *Engine) activeContainers(ctx context.Context, p deployment.Plan) ([]con
 		return nil, err
 	}
 	out := []container.Summary{}
+	names := map[string]string{}
+	for _, app := range p.Specification.Applications {
+		for _, instance := range p.InstanceIDs(app.ID) {
+			names["/"+deployment.UnitName(instance)] = app.ID.String()
+		}
+	}
 	for _, item := range list {
-		for _, app := range p.Specification.Applications {
-			if item.Labels[labelResource] != app.ID.String() {
-				continue
-			}
-			for _, name := range item.Names {
-				if name == "/"+p.ContainerName(app.ID) {
-					out = append(out, item)
-					break
-				}
+		for _, name := range item.Names {
+			if resource, ok := names[name]; ok && resource == item.Labels[labelResource] {
+				out = append(out, item)
+				break
 			}
 		}
 	}
@@ -516,9 +541,15 @@ func (e *Engine) compose(ctx context.Context, p deployment.Plan, body []byte, se
 	project := deployment.UnitName(p.UnitID)
 	if p.Specification.Compose == nil && len(args) > 0 {
 		for _, app := range p.Specification.Applications {
-			if args[len(args)-1] == deployment.ServiceName(app.ID) && p.Instances[app.ID.String()] != uuid.Nil {
-				project = p.ContainerName(app.ID)
-				args[len(args)-1] = p.HostName(app.ID)
+			if args[len(args)-1] == deployment.ServiceName(app.ID) {
+				if p.Instances[app.ID.String()] != uuid.Nil {
+					project = p.ContainerName(app.ID)
+				}
+				args = args[:len(args)-1]
+				for _, instance := range p.InstanceIDs(app.ID) {
+					args = append(args, deployment.ServiceName(instance))
+				}
+				break
 			}
 		}
 	}
@@ -651,6 +682,10 @@ func (e *Engine) observeVisualPlan(ctx context.Context, p deployment.Plan, secre
 	if err != nil {
 		return out, nil, err
 	}
+	active := p
+	if !selected && stored.Plan.ID != uuid.Nil {
+		active = stored.Plan
+	}
 	list, err := e.ownedContainers(ctx, p)
 	if err != nil {
 		return out, nil, err
@@ -667,6 +702,9 @@ func (e *Engine) observeVisualPlan(ctx context.Context, p deployment.Plan, secre
 		if wanted[a] != wanted[b] {
 			return wanted[a]
 		}
+		if a == b {
+			return list[i].ID < list[j].ID
+		}
 		return a < b
 	})
 	for _, item := range list {
@@ -674,15 +712,15 @@ func (e *Engine) observeVisualPlan(ctx context.Context, p deployment.Plan, secre
 		if err != nil || !visualOwned(item.Labels, p) {
 			return out, nil, errors.New("invalid owned resource labels")
 		}
-		active := p
-		if !selected && stored.Plan.ID != uuid.Nil {
-			active = stored.Plan
-		}
+		instance := active.Instance(id)
 		if item.Names != nil {
-			wantedName := "/" + active.ContainerName(id)
 			match := false
-			for _, name := range item.Names {
-				match = match || name == wantedName
+			for _, candidate := range active.InstanceIDs(id) {
+				for _, name := range item.Names {
+					if name == "/"+deployment.UnitName(candidate) {
+						match, instance = true, candidate
+					}
+				}
 			}
 			if !match {
 				continue
@@ -708,8 +746,12 @@ func (e *Engine) observeVisualPlan(ctx context.Context, p deployment.Plan, secre
 			return inspect.Mounts[i].Destination < inspect.Mounts[j].Destination
 		})
 		fingerprint := deployment.Hash([]any{inspect.Image, inspect.Config, inspect.HostConfig, inspect.Mounts, inspect.State.Running, attachments})
-		actual[id.String()] = fingerprint
-		seen[id.String()] = true
+		key := id.String()
+		if active.Recipe == deployment.ReplicaRecipe {
+			key = instance.String()
+		}
+		actual[key] = fingerprint
+		seen[key] = true
 		state := string(inspect.State.Status)
 		if inspect.State.Running {
 			state = "running"
@@ -717,8 +759,11 @@ func (e *Engine) observeVisualPlan(ctx context.Context, p deployment.Plan, secre
 		if inspect.State.Health != nil {
 			state = string(inspect.State.Health.Status)
 		}
-		resource := deployment.Resource{ID: id, Kind: "service", State: state, Image: inspect.Config.Image, Drift: stored.Expected[id.String()] != "" && stored.Expected[id.String()] != fingerprint}
-		if stored.Expected[id.String()] == "" && stored.Plan.ID != uuid.Nil {
+		resource := deployment.Resource{ID: id, Kind: "service", State: state, Image: inspect.Config.Image, Drift: stored.Expected[key] != "" && stored.Expected[key] != fingerprint}
+		if active.Recipe == deployment.ReplicaRecipe {
+			resource.Instances = []deployment.InstanceState{{InstanceID: instance, State: state}}
+		}
+		if stored.Expected[key] == "" && stored.Plan.ID != uuid.Nil {
 			resource.Drift = true
 		}
 		logsSafe := true
@@ -746,7 +791,16 @@ func (e *Engine) observeVisualPlan(ctx context.Context, p deployment.Plan, secre
 						redactions[variable] = value
 					}
 				}
-				resource.Logs, _ = readVisualLog(logs, inspect.Config.Tty, redactions, min(logBudget, 512))
+				prefix := ""
+				if active.Recipe == deployment.ReplicaRecipe {
+					prefix = "\nInstance " + instance.String() + ":\n"
+				}
+				if limit := min(logBudget, 512) - len(prefix); limit > 0 {
+					resource.Logs, _ = readVisualLog(logs, inspect.Config.Tty, redactions, limit)
+					if resource.Logs != "" {
+						resource.Logs = prefix + resource.Logs
+					}
+				}
 				logs.Close()
 				logBudget -= len(resource.Logs)
 			}
@@ -770,10 +824,14 @@ func (e *Engine) observeVisualPlan(ctx context.Context, p deployment.Plan, secre
 		}
 		out.Resources = append(out.Resources, resource)
 	}
-	for id := range stored.Expected {
-		if !seen[id] {
-			parsed, _ := uuid.Parse(id)
-			out.Resources = append(out.Resources, deployment.Resource{ID: parsed, Kind: "service", State: "missing", Drift: true, Note: "A previously observed service is absent."})
+	if active.Recipe == deployment.ReplicaRecipe {
+		out.Resources = aggregateReplicaResources(active, out.Resources, stored.Plan.ID != uuid.Nil)
+	} else {
+		for id := range stored.Expected {
+			if !seen[id] {
+				parsed, _ := uuid.Parse(id)
+				out.Resources = append(out.Resources, deployment.Resource{ID: parsed, Kind: "service", State: "missing", Drift: true, Note: "A previously observed service is absent."})
+			}
 		}
 	}
 	routes, err := e.Journal.routing()
@@ -789,7 +847,20 @@ func (e *Engine) observeVisualPlan(ctx context.Context, p deployment.Plan, secre
 }
 
 func (e *Engine) waitHTTP(ctx context.Context, c api.ExecutionCommand, p deployment.Plan, a domain.Application) error {
-	name := "astilba-health-" + c.Id.String() + "-" + a.ID.String()
+	for _, instance := range p.InstanceIDs(a.ID) {
+		if err := e.waitHTTPInstance(ctx, c, p, a, instance); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (e *Engine) waitHTTPInstance(ctx context.Context, c api.ExecutionCommand, p deployment.Plan, a domain.Application, instance uuid.UUID) error {
+	probe := a.ID
+	if p.Recipe == deployment.ReplicaRecipe {
+		probe = instance
+	}
+	name := "astilba-health-" + c.Id.String() + "-" + probe.String()
 	v, err := e.Docker.ContainerInspect(ctx, name, client.ContainerInspectOptions{})
 	if err == nil {
 		if v.Container.Config.Labels["com.astilba.health"] != c.Id.String() || (v.Container.Config.Labels[labelServer] != p.ServerID.String() || v.Container.Config.Labels["com.astilba.unit"] != p.UnitID.String() || v.Container.Config.Labels[labelKind] != "health-v1") {
@@ -799,7 +870,7 @@ func (e *Engine) waitHTTP(ctx context.Context, c api.ExecutionCommand, p deploym
 	} else if !errdefs.IsNotFound(err) {
 		return err
 	}
-	url := fmt.Sprintf("http://%s:%d%s", p.HostName(a.ID), a.Health.Port, a.Health.Path)
+	url := fmt.Sprintf("http://%s:%d%s", deployment.ServiceName(instance), a.Health.Port, a.Health.Path)
 	for range 20 {
 		if err := ctx.Err(); err != nil {
 			return err
