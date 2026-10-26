@@ -86,7 +86,7 @@ func (e *Engine) Execute(ctx context.Context, c api.ExecutionCommand) error {
 	if c.ServerId != cfg.ServerID || c.Id == uuid.Nil || c.Generation < 1 || len(c.PlanHash) != 64 || (cfg.Role == "build" && c.Kind != "update" && c.Kind != "pipeline") || (cfg.Role == "deployment" && c.Kind == "pipeline") {
 		return errors.New("command identity or role rejected")
 	}
-	if c.Kind != "test" && c.Kind != "update" && c.Kind != "visual" && c.Kind != "pipeline" && c.Kind != "backup" && c.Kind != "upgrade" {
+	if c.Kind != "test" && c.Kind != "update" && c.Kind != "visual" && c.Kind != "pipeline" && c.Kind != "backup" && c.Kind != "schedule" && c.Kind != "upgrade" {
 		return errors.New("unsupported command")
 	}
 	preview := false
@@ -154,7 +154,7 @@ func (e *Engine) Execute(ctx context.Context, c api.ExecutionCommand) error {
 		}
 		return e.finish(c.Id, "succeeded", "Agent artifact verified and installed.")
 	}
-	if c.Kind == "backup" {
+	if c.Kind == "backup" || c.Kind == "schedule" {
 		return e.executeBackup(ctx, c, r)
 	}
 	if c.Kind == "pipeline" {

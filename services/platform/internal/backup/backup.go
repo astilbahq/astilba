@@ -11,7 +11,6 @@ import (
 	"sort"
 	"strings"
 	"time"
-	_ "time/tzdata"
 
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/google/uuid"
@@ -36,25 +35,29 @@ type Access struct {
 	Password         string `json:"password"`
 }
 type Schedule struct {
-	Hour     int    `json:"hour"`
-	Minute   int    `json:"minute"`
-	Timezone string `json:"timezone"`
+	Hour            int    `json:"hour"`
+	Minute          int    `json:"minute"`
+	Timezone        string `json:"timezone"`
+	Kind            string `json:"kind,omitempty"`
+	Expression      string `json:"expression,omitempty"`
+	IntervalMinutes int    `json:"intervalMinutes,omitempty"`
 }
 type Policy struct {
-	ID            uuid.UUID       `json:"id"`
-	Name          string          `json:"name"`
-	WorkspaceID   uuid.UUID       `json:"workspaceId"`
-	EnvironmentID uuid.UUID       `json:"environmentId"`
-	ServerID      uuid.UUID       `json:"serverId"`
-	DestinationID uuid.UUID       `json:"destinationId"`
-	ResourceID    uuid.UUID       `json:"resourceId"`
-	Generation    int64           `json:"generation"`
-	Method        string          `json:"method"`
-	Schedule      Schedule        `json:"schedule"`
-	Retain        int             `json:"retain"`
-	Enabled       bool            `json:"enabled"`
-	Command       []string        `json:"command,omitempty"`
-	Plan          deployment.Plan `json:"plan"`
+	ID             uuid.UUID       `json:"id"`
+	Name           string          `json:"name"`
+	WorkspaceID    uuid.UUID       `json:"workspaceId"`
+	EnvironmentID  uuid.UUID       `json:"environmentId"`
+	ServerID       uuid.UUID       `json:"serverId"`
+	DestinationID  uuid.UUID       `json:"destinationId"`
+	ResourceID     uuid.UUID       `json:"resourceId"`
+	Generation     int64           `json:"generation"`
+	Method         string          `json:"method"`
+	Schedule       Schedule        `json:"schedule"`
+	TimeoutSeconds int             `json:"timeoutSeconds,omitempty"`
+	Retain         int             `json:"retain"`
+	Enabled        bool            `json:"enabled"`
+	Command        []string        `json:"command,omitempty"`
+	Plan           deployment.Plan `json:"plan"`
 }
 type Installation struct {
 	Policy       Policy      `json:"policy"`
@@ -153,44 +156,8 @@ func ValidateDestination(d Destination, a Access) error {
 	}
 	return nil
 }
-func (s Schedule) Validate() error {
-	if s.Timezone == "Local" || s.Hour < 0 || s.Hour > 23 || s.Minute < 0 || s.Minute > 59 || len(s.Timezone) > 100 {
-		return errors.New("invalid schedule")
-	}
-	_, err := time.LoadLocation(s.Timezone)
-	return err
-}
-
-// Each local date runs once, at the first occurrence of a repeated time. A
-// nonexistent wall time is skipped. UTC cursors never move backwards.
-func (s Schedule) Next(after time.Time) time.Time {
-	loc, err := time.LoadLocation(s.Timezone)
-	if err != nil {
-		return time.Time{}
-	}
-	start := after.UTC().Truncate(time.Minute).Add(time.Minute)
-	for t := start; t.Before(start.Add(8 * 24 * time.Hour)); t = t.Add(time.Minute) {
-		local := t.In(loc)
-		if local.Hour() != s.Hour || local.Minute() != s.Minute {
-			continue
-		}
-		repeated := false
-		for prior := t.Add(-3 * time.Hour); prior.Before(t); prior = prior.Add(time.Minute) {
-			earlier := prior.In(loc)
-			if earlier.Year() == local.Year() && earlier.YearDay() == local.YearDay() && earlier.Hour() == s.Hour && earlier.Minute() == s.Minute {
-				repeated = true
-				break
-			}
-		}
-		if repeated {
-			continue
-		}
-		return t
-	}
-	return time.Time{}
-}
 func (p Policy) Validate() error {
-	if p.ID == uuid.Nil || p.WorkspaceID == uuid.Nil || p.EnvironmentID == uuid.Nil || p.ServerID == uuid.Nil || p.ResourceID == uuid.Nil || p.Generation < 1 || p.Name == "" || len(p.Name) > 80 || p.Retain < 1 || p.Retain > 100 || p.Schedule.Validate() != nil || p.Plan.Validate(true) != nil || p.Plan.EnvironmentID != p.EnvironmentID || p.Plan.ServerID != p.ServerID {
+	if p.ID == uuid.Nil || p.WorkspaceID == uuid.Nil || p.EnvironmentID == uuid.Nil || p.ServerID == uuid.Nil || p.ResourceID == uuid.Nil || p.Generation < 1 || p.TimeoutSeconds < 0 || p.TimeoutSeconds > 1800 || p.Name == "" || len(p.Name) > 80 || p.Retain < 1 || p.Retain > 100 || p.Schedule.Validate() != nil || p.Plan.Validate(true) != nil || p.Plan.EnvironmentID != p.EnvironmentID || p.Plan.ServerID != p.ServerID {
 		return errors.New("invalid backup policy")
 	}
 	if p.Method != "postgres-logical" && p.Method != "quiesced-files" && p.Method != "container-job" {

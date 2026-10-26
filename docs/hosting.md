@@ -286,4 +286,4 @@ The separate dashboard-only Worker remains available when the Go API runs on a
 server. Its fixed upstream forwards the API, agent, Git and Stripe webhook paths;
 it is not an arbitrary proxy.
 
-Workspace exports now use archive version 2 to preserve environment purpose, preview-host reservation and lifecycle metadata. Version 1 archives remain importable as ordinary environments/servers. Imported preview policies and fork/cleanup grants are disabled; review resources and transfer agents before renewed owner approval. See [Pull-request previews](pull-request-previews.md).
+Workspace exports use archive version 3 for general schedule and timeout semantics, retaining environment purpose, preview-host reservation and lifecycle metadata. Version 2 archives remain importable; version 1 archives import as ordinary environments/servers. Older controllers reject version 3 rather than reinterpret advanced schedules as daily policies. Imported preview policies and fork/cleanup grants are disabled; review resources and transfer agents before renewed owner approval. See [Pull-request previews](pull-request-previews.md).

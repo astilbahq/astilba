@@ -29,7 +29,7 @@ func nativeControllerTransfer(t *testing.T, e *Engine) *Journal {
 	}
 	var job *scheduleState
 	for i := range states {
-		if states[i].Installation.Policy.Method == "container-job" {
+		if states[i].Installation.Policy.Method == "container-job" && states[i].Installation.Policy.Enabled {
 			job = &states[i]
 			break
 		}

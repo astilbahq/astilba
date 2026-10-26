@@ -90,7 +90,7 @@ func Open(dir string) (*Journal, error) {
 	}
 	j := &Journal{db: db, keys: keys, dir: dir}
 	err = db.Update(func(tx *bolt.Tx) error {
-		for _, b := range []string{"identity", "operations", "generations", "units", "routing", "schedules", "upgrades", "releases", "preview-cleanups"} {
+		for _, b := range []string{"identity", "operations", "generations", "units", "routing", "schedules", "schedules-v2", "upgrades", "releases", "preview-cleanups"} {
 			if _, e := tx.CreateBucketIfNotExists([]byte(b)); e != nil {
 				return e
 			}
@@ -120,10 +120,10 @@ func (j *Journal) put(tx *bolt.Tx, bucket, key string, value any) error {
 		return e
 	}
 	limit := 32768
-	if bucket == "units" || bucket == "routing" || bucket == "schedules" || bucket == "upgrades" || bucket == "releases" {
+	if bucket == "units" || bucket == "routing" || bucket == "schedules" || bucket == "schedules-v2" || bucket == "upgrades" || bucket == "releases" {
 		limit = 524288
 	}
-	if record, ok := value.(Record); ok && (record.Command.Kind == "visual" || record.Command.Kind == "pipeline" || record.Command.Kind == "backup" || record.Command.Kind == "upgrade") {
+	if record, ok := value.(Record); ok && (record.Command.Kind == "visual" || record.Command.Kind == "pipeline" || record.Command.Kind == "backup" || record.Command.Kind == "schedule" || record.Command.Kind == "upgrade") {
 		limit = 524288
 	}
 	if len(raw) > limit {
@@ -178,7 +178,7 @@ func sameCommand(a, b api.ExecutionCommand) bool {
 		}
 		a.Upgrade, b.Upgrade = nil, nil
 	}
-	if a.Kind == "backup" && b.Kind == "backup" {
+	if (a.Kind == "backup" || a.Kind == "schedule") && a.Kind == b.Kind {
 		var ap, bp backup.Command
 		if a.Backup == nil || b.Backup == nil || json.Unmarshal(*a.Backup, &ap) != nil || json.Unmarshal(*b.Backup, &bp) != nil || ap.Digest() != a.PlanHash || bp.Digest() != b.PlanHash {
 			return false

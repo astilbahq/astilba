@@ -1,6 +1,6 @@
 # Astilba platform implementation plan
 
-Status: updated 26 October 2026. P0–P14 are implemented, including scoped automation and isolated pull-request previews. Private-alpha acceptance and the previous management update are complete; newly merged increments still require a separate live update. P15–P18 remain later increments. Paid admission still requires measured operating limits and launch settings.
+Status: updated 26 October 2026. P0–P15 are implemented, including scoped automation, isolated pull-request previews and general scheduling. Private-alpha acceptance and the previous management update are complete; newly merged increments still require a separate live update. P16–P18 remain later increments. Paid admission still requires measured operating limits and launch settings.
 
 Build the [architecture](platform-architecture.md) in vertical increments. Prove the execution model on disposable infrastructure before expanding the editor and service catalogue. Each milestone ends in a demonstrable user journey and the tests needed to support its claims. The [product brief](platform-product-brief.md) remains the guide to product scope.
 
@@ -292,9 +292,11 @@ Isolated pull-request environments use owner-approved visual templates on dedica
 
 The implementation adds a reviewable checksum-pinned supported-host bootstrap, independently pinned signed agent verification, preparation before one-use enrollment and role/certificate-contact checks. Optional generated application names use per-server wildcard DNS pointed directly at owner-approved public addresses. Manual DNS remains provider-neutral; the optional Cloudflare adapter reconciles only installation-owned records and requires renewed approval after management recovery. Names are staged into drafts and retain normal source ownership and plan/apply authority. Custom-domain DNS observations remain separate from ownership, TLS and application health. See [Server and domain onboarding](server-onboarding.md). Native fresh-host acceptance runs on both architectures in CI alongside the existing enrollment and host suites.
 
-## P15–P18 Later increments
+## P15 General scheduling
 
-- **P15 General scheduling:** useful cron/interval expressions, with documented timezone/DST, overlap, timeout and missed-run semantics that continue when management is offline.
+Daily policies remain compatible; five-field cron and UTC intervals extend the existing agent-persisted scheduler. Run IDs/cursors survive restart and transfer, backups coalesce missed work and container jobs skip it, and a host-wide lock prevents overlapping effects. Upload/job timeouts stop owned containers or retain an uncertainty fence. Capability-negotiated commands and disabled legacy journal mirrors preserve rollback behavior; workspace archive version 3 retains imports from versions 1 and 2. See [schedule semantics and verification](backups.md#scheduling-retention-and-interruptions).
+
+## P16–P18 Later increments
 - **P16 Replicas and placement:** begin with stateless same-host replicas. Define cross-host routing, private networking, storage restrictions and failure domains before multi-host scheduling. Multiple enrolled servers alone do not provide high availability; Kubernetes remains a separate scope decision.
 - **P17 Troubleshooting:** dedicated short-lived resource-scoped container sessions, permissions and audit. Add filesystem access or private-service tunnels only with explicit boundaries; do not place arbitrary shell commands in the deployment API.
 - **P18 Maintenance:** running-workload security advisories, supported fixes and review windows, then additional tested version-specific upgrade recipes. Preserve backup, verified restore and new-write boundaries. Do not label an arbitrary image-tag change a supported major upgrade.

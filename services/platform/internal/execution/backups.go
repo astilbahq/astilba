@@ -152,8 +152,23 @@ func (s *Service) SaveBackupPolicy(ctx context.Context, p store.Principal, ws, p
 			}
 		}
 		out = backup.Policy{ID: id, Name: in.Name, WorkspaceID: ws, EnvironmentID: env, ServerID: *v.Server, DestinationID: in.DestinationId, ResourceID: in.ResourceId, Generation: in.BaseGeneration + 1, Method: string(in.Method), Schedule: backup.Schedule{Hour: in.Schedule.Hour, Minute: in.Schedule.Minute, Timezone: in.Schedule.Timezone}, Retain: in.Retain, Enabled: in.Enabled, Command: in.Command, Plan: plan}
+		if in.Schedule.Kind != nil && *in.Schedule.Kind != "daily" {
+			out.Schedule.Kind = string(*in.Schedule.Kind)
+		}
+		if in.Schedule.Expression != nil {
+			out.Schedule.Expression = *in.Schedule.Expression
+		}
+		if in.Schedule.IntervalMinutes != nil {
+			out.Schedule.IntervalMinutes = *in.Schedule.IntervalMinutes
+		}
+		if in.TimeoutSeconds != nil {
+			out.TimeoutSeconds = *in.TimeoutSeconds
+		}
 		if out.Validate() != nil {
 			return domain.Invalid("policy")
+		}
+		if out.GeneralSchedule() && (capabilities.Schedules == nil || !*capabilities.Schedules) {
+			return domain.Invalid("server.capabilities.schedules")
 		}
 		if out.Method != "container-job" {
 			var exists bool
@@ -247,6 +262,9 @@ func (s *Service) BackupCommand(ctx context.Context, p store.Principal, ws, pid,
 		if b.Action == "restore" && !backup.SnapshotID(b.Snapshot) {
 			return domain.Invalid("snapshot")
 		}
+		if err = requireGeneralSchedule(ctx, tx, ws, v.ServerID, v); err != nil {
+			return err
+		}
 		var generation int64
 		if err = tx.QueryRow(ctx, "UPDATE environments SET execution_generation=execution_generation+1 WHERE workspace_id=$1 AND id=$2 RETURNING execution_generation", ws, env).Scan(&generation); err != nil {
 			return err
@@ -254,6 +272,9 @@ func (s *Service) BackupCommand(ctx context.Context, p store.Principal, ws, pid,
 		raw, _ := json.Marshal(b)
 		payload := json.RawMessage(raw)
 		c := api.ExecutionCommand{Id: uuid.New(), ServerId: v.ServerID, EnvironmentId: env, Generation: generation, PlanHash: b.Digest(), Kind: "backup", Action: "inspect", ResourceId: id, Deadline: time.Now().Add(30 * time.Minute), Backup: &payload}
+		if v.GeneralSchedule() {
+			c.Kind = "schedule"
+		}
 		out, err = s.insert(ctx, tx, ws, in.RequestKey, nil, c)
 		return err
 	})
@@ -266,6 +287,12 @@ func (s *Service) hydrateBackup(ctx context.Context, c *api.ExecutionCommand) er
 	var b backup.Command
 	if c.Backup == nil || json.Unmarshal(*c.Backup, &b) != nil || b.Digest() != c.PlanHash {
 		return domain.Invalid("backup")
+	}
+	if (c.Kind == "schedule") != b.Installation.Policy.GeneralSchedule() {
+		return domain.Invalid("schedule.command")
+	}
+	if err := requireGeneralSchedule(ctx, s.Store.Pool, b.Installation.Policy.WorkspaceID, c.ServerId, b.Installation.Policy); err != nil {
+		return err
 	}
 	if err := requireServiceOutputs(ctx, s.Store.Pool, b.Installation.Policy.WorkspaceID, c.ServerId, b.Installation.Policy.Plan.Specification); err != nil {
 		return err
@@ -451,4 +478,19 @@ func (s *Service) PrepareBackupCutover(ctx context.Context, p store.Principal, w
 		return err
 	})
 	return out, err
+}
+
+func requireGeneralSchedule(ctx context.Context, q releaseQuery, ws, server uuid.UUID, p backup.Policy) error {
+	if !p.GeneralSchedule() {
+		return nil
+	}
+	var raw []byte
+	if err := q.QueryRow(ctx, "SELECT capabilities FROM servers WHERE workspace_id=$1 AND id=$2", ws, server).Scan(&raw); err != nil {
+		return err
+	}
+	var cap api.AgentCapabilities
+	if json.Unmarshal(raw, &cap) != nil || cap.Schedules == nil || !*cap.Schedules {
+		return domain.Invalid("server.capabilities.schedules")
+	}
+	return nil
 }

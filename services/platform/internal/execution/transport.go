@@ -88,7 +88,7 @@ func (s *Service) Poll(ctx context.Context, a Identity) (*api.ExecutionCommand, 
 					return nil, err
 				}
 			}
-			if c.Kind == "backup" {
+			if c.Kind == "backup" || c.Kind == "schedule" {
 				if err = s.hydrateBackup(ctx, &c); err != nil {
 					return nil, err
 				}

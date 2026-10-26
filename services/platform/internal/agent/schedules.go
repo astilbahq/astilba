@@ -24,9 +24,27 @@ type scheduleState struct {
 	Writers      []string
 }
 
+func (j *Journal) scheduleIn(tx *bolt.Tx, id string) (scheduleState, error) {
+	var legacy, advanced scheduleState
+	oldErr := j.get(tx, "schedules", id, &legacy)
+	newErr := j.get(tx, "schedules-v2", id, &advanced)
+	if oldErr != nil && !errors.Is(oldErr, os.ErrNotExist) {
+		return legacy, oldErr
+	}
+	if newErr != nil && !errors.Is(newErr, os.ErrNotExist) {
+		return advanced, newErr
+	}
+	if newErr != nil {
+		return legacy, oldErr
+	}
+	if oldErr == nil && (legacy.Installation.Policy.Generation > advanced.Installation.Policy.Generation || legacy.Installation.Policy.Generation == advanced.Installation.Policy.Generation && legacy.Sequence > advanced.Sequence) {
+		return legacy, nil
+	}
+	return advanced, nil
+}
 func (j *Journal) schedule(id uuid.UUID) (scheduleState, error) {
 	var v scheduleState
-	err := j.db.View(func(tx *bolt.Tx) error { return j.get(tx, "schedules", id.String(), &v) })
+	err := j.db.View(func(tx *bolt.Tx) error { var err error; v, err = j.scheduleIn(tx, id.String()); return err })
 	return v, err
 }
 func (j *Journal) saveSchedule(v scheduleState) error {
@@ -34,25 +52,54 @@ func (j *Journal) saveSchedule(v scheduleState) error {
 		return err
 	}
 	return j.db.Update(func(tx *bolt.Tx) error {
-		var old scheduleState
-		err := j.get(tx, "schedules", v.Installation.Policy.ID.String(), &old)
+		id := v.Installation.Policy.ID.String()
+		old, err := j.scheduleIn(tx, id)
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
 		v.Sequence = old.Sequence + 1
-		return j.put(tx, "schedules", v.Installation.Policy.ID.String(), v)
+		if v.Installation.Policy.GeneralSchedule() {
+			if err = j.put(tx, "schedules-v2", id, v); err != nil {
+				return err
+			}
+			// Old binaries must retain uncertainty/writer fences, but cannot execute
+			// an advanced cadence. Their newer local mutations supersede this mirror.
+			mirror := v
+			mirror.Installation.Policy.Enabled = false
+			mirror.Installation.Policy.Schedule = backup.Schedule{Timezone: "UTC"}
+			mirror.Installation.Policy.TimeoutSeconds = 0
+			mirror.Installation.Next = time.Time{}
+			return j.put(tx, "schedules", id, mirror)
+		}
+		if err = j.put(tx, "schedules", id, v); err != nil {
+			return err
+		}
+		return tx.Bucket([]byte("schedules-v2")).Delete([]byte(id))
 	})
+}
+func (j *Journal) eachSchedule(tx *bolt.Tx, visit func(string, scheduleState) error) error {
+	seen := map[string]bool{}
+	for _, bucket := range []string{"schedules-v2", "schedules"} {
+		if err := tx.Bucket([]byte(bucket)).ForEach(func(k, v []byte) error {
+			id := string(k)
+			if seen[id] {
+				return nil
+			}
+			seen[id] = true
+			state, err := j.scheduleIn(tx, id)
+			if err != nil {
+				return err
+			}
+			return visit(id, state)
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 func (j *Journal) scheduleStates() (out []scheduleState, err error) {
 	err = j.db.View(func(tx *bolt.Tx) error {
-		return tx.Bucket([]byte("schedules")).ForEach(func(k, v []byte) error {
-			var s scheduleState
-			if err := j.get(tx, "schedules", string(k), &s); err != nil {
-				return err
-			}
-			out = append(out, s)
-			return nil
-		})
+		return j.eachSchedule(tx, func(_ string, s scheduleState) error { out = append(out, s); return nil })
 	})
 	return
 }
@@ -78,7 +125,7 @@ func (j *Journal) ScheduleReports() ([]api.ScheduleReport, error) {
 }
 func (e *Engine) executeBackup(ctx context.Context, c api.ExecutionCommand, r Record) error {
 	var b backup.Command
-	if c.Backup == nil || json.Unmarshal(*c.Backup, &b) != nil || b.Digest() != c.PlanHash || b.Installation.Policy.ID != c.ResourceId || b.Installation.Policy.ServerID != c.ServerId || b.Installation.Policy.EnvironmentID != c.EnvironmentId || b.Installation.Policy.Validate() != nil {
+	if c.Backup == nil || json.Unmarshal(*c.Backup, &b) != nil || b.Digest() != c.PlanHash || b.Installation.Policy.ID != c.ResourceId || b.Installation.Policy.ServerID != c.ServerId || b.Installation.Policy.EnvironmentID != c.EnvironmentId || b.Installation.Policy.Validate() != nil || (c.Kind == "schedule") != b.Installation.Policy.GeneralSchedule() {
 		return e.finish(c.Id, "failed", "Backup command identity or policy is invalid.")
 	}
 	if e.cancelled(c.Id) || r.Checkpoint == "accepted" && time.Now().After(c.Deadline) {
@@ -142,6 +189,10 @@ func (e *Engine) executeBackup(ctx context.Context, c api.ExecutionCommand, r Re
 			}
 		}
 		b.Installation.Next = b.Installation.Policy.Schedule.Next(time.Now())
+		if b.Installation.Next.IsZero() {
+			err = errors.New("schedule has no supported next occurrence")
+			break
+		}
 		next := scheduleState{Installation: b.Installation, Runs: old.Runs, Sequence: old.Sequence}
 		if len(old.Writers) > 0 || hasUncertainRun(old.Runs) {
 			err = errors.New("resolve interrupted run before replacing schedule")
@@ -163,7 +214,7 @@ func (e *Engine) executeBackup(ctx context.Context, c api.ExecutionCommand, r Re
 		if err != nil {
 			break
 		}
-		if s.Installation.Policy.Generation != b.Installation.Policy.Generation {
+		if s.Installation.Policy.Generation != b.Installation.Policy.Generation || s.Installation.Policy.GeneralSchedule() != b.Installation.Policy.GeneralSchedule() {
 			err = errors.New("install current policy first")
 			break
 		}
@@ -253,16 +304,11 @@ func (e *Engine) tickSchedules(ctx context.Context, clock func() time.Time) erro
 		if !p.Enabled || hasUncertainRun(s.Runs) || s.Installation.Next.IsZero() || now.Before(s.Installation.Next) {
 			continue
 		}
-		at := s.Installation.Next
-		// Coalesce to the last due instant, with a bounded jump for long disconnections.
-		cursor := now.Add(-8 * 24 * time.Hour)
-		if cursor.After(at) {
-			at = p.Schedule.Next(cursor)
+		at, future, dueErr := p.Schedule.Due(s.Installation.Next, now)
+		if dueErr != nil {
+			return dueErr
 		}
-		for next := p.Schedule.Next(at); !next.After(now); next = p.Schedule.Next(at) {
-			at = next
-		}
-		s.Installation.Next = p.Schedule.Next(now)
+		s.Installation.Next = future
 		if p.Method == "container-job" && now.Sub(at) > time.Minute {
 			end := now
 			if err = trimRunHistory(&s, 127); err != nil {
@@ -305,7 +351,11 @@ func (e *Engine) runScheduled(ctx context.Context, s *scheduleState, at time.Tim
 		return err
 	}
 	index := len(s.Runs) - 1
-	runCtx, cancel := context.WithTimeout(ctx, 30*time.Minute)
+	timeout := s.Installation.Policy.RunTimeout()
+	if snapshot != "" {
+		timeout = 30 * time.Minute
+	}
+	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	var err error
 	if snapshot != "" {
@@ -338,10 +388,19 @@ func (e *Engine) runScheduled(ctx context.Context, s *scheduleState, at time.Tim
 	}
 	if err != nil {
 		r.State = "failed"
-		if s.Installation.Policy.Method == "container-job" && r.ExitCode == nil {
+		if s.Installation.Policy.Method == "container-job" && (r.ExitCode == nil || errors.Is(err, errJobCleanup)) {
 			r.State = "needs_attention"
 		}
 		r.Note = "Run failed. Inspect storage access, supported source state and available capacity. Incomplete output is not a usable backup."
+		if errors.Is(runCtx.Err(), context.DeadlineExceeded) {
+			r.Note = "Run exceeded its configured timeout. Inspect the outcome before retrying."
+			if s.Installation.Policy.Method == "container-job" && r.ExitCode != nil {
+				r.Note = "Container job exceeded its timeout; its owned container was stopped and the exit result recorded."
+			}
+		}
+		if errors.Is(err, errJobCleanup) {
+			r.Note = "Job cleanup could not be confirmed. Inspect the owned run container and resolve the run locally before further host operations."
+		}
 	}
 	compactManifest(&r)
 	s.Runs[index] = r

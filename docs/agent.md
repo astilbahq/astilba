@@ -90,7 +90,7 @@ For managed HTTP TLS, the host operator sets `--acme-email operator@example.com`
 
 ## Backup support
 
-Backup recipes, operator filesystem roots, the pinned restic prerequisite, offline schedules and local interruption recovery are documented in [Backups and restoration](backups.md). Use those instructions before enabling backup policies on an enrolled server.
+Backup recipes, operator filesystem roots, the pinned restic prerequisite, daily/cron/interval schedules, bounded job timeouts and local interruption recovery are documented in [Backups and restoration](backups.md). Use those instructions before enabling backup policies on an enrolled server.
 
 ## Protected application releases
 

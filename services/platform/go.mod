@@ -23,6 +23,7 @@ require (
 	github.com/riverqueue/river v0.49.0
 	github.com/riverqueue/river/riverdriver/riverpgxv5 v0.49.0
 	github.com/riverqueue/river/rivertype v0.49.0
+	github.com/robfig/cron/v3 v3.0.1
 	github.com/tailscale/hujson v0.0.0-20260727124030-b80ff77dac4f
 	go.etcd.io/bbolt v1.5.0
 	go.yaml.in/yaml/v3 v3.0.5

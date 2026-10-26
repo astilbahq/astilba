@@ -548,7 +548,9 @@ func (e *Engine) waitPostgresStartup(ctx context.Context, container, user, datab
 	return errors.New("fresh database not ready")
 }
 
-func (e *Engine) runContainerJob(ctx context.Context, s *scheduleState, r *backup.Run) error {
+var errJobCleanup = errors.New("job cleanup unconfirmed")
+
+func (e *Engine) runContainerJob(ctx context.Context, s *scheduleState, r *backup.Run) (result error) {
 	p := s.Installation.Policy
 	if err := e.checkBackupSource(ctx, p); err != nil {
 		return err
@@ -568,6 +570,42 @@ func (e *Engine) runContainerJob(ctx context.Context, s *scheduleState, r *backu
 	if err != nil {
 		return err
 	}
+	defer func() {
+		clean, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		current, cleanupErr := e.Docker.ContainerInspect(clean, created.ID, client.ContainerInspectOptions{})
+		if cleanupErr == nil {
+			owned := true
+			for key, want := range labels {
+				if current.Container.Config.Labels[key] != want {
+					owned = false
+					break
+				}
+			}
+			if !owned {
+				cleanupErr = errors.New("job cleanup ownership changed")
+			} else {
+				if current.Container.State.Running {
+					_, cleanupErr = e.Docker.ContainerStop(clean, created.ID, client.ContainerStopOptions{Timeout: ptr(5)})
+					if cleanupErr == nil {
+						current, cleanupErr = e.Docker.ContainerInspect(clean, created.ID, client.ContainerInspectOptions{})
+					}
+				}
+				if cleanupErr == nil {
+					if current.Container.State.Running {
+						cleanupErr = errors.New("job remains running")
+					} else {
+						code := current.Container.State.ExitCode
+						r.ExitCode = &code
+						_, cleanupErr = e.Docker.ContainerRemove(clean, created.ID, client.ContainerRemoveOptions{})
+					}
+				}
+			}
+		}
+		if cleanupErr != nil {
+			result = errors.Join(result, errJobCleanup, cleanupErr)
+		}
+	}()
 	if _, err = e.Docker.ContainerStart(ctx, created.ID, client.ContainerStartOptions{}); err != nil {
 		return err
 	}
@@ -579,11 +617,10 @@ func (e *Engine) runContainerJob(ctx context.Context, s *scheduleState, r *backu
 		if !v.Container.State.Running {
 			code := v.Container.State.ExitCode
 			r.ExitCode = &code
-			_, err = e.Docker.ContainerRemove(ctx, created.ID, client.ContainerRemoveOptions{})
 			if code != 0 {
 				return fmt.Errorf("job exit %d", code)
 			}
-			return err
+			return nil
 		}
 		if !wait(ctx, time.Second) {
 			return ctx.Err()
