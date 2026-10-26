@@ -281,39 +281,91 @@ for (const reducedMotion of ["no-preference", "reduce"] as const) {
 test("a new toast rises from below the stack without creating scrollbars", async ({
   page,
 }) => {
+  await page.emulateMedia({ reducedMotion: "no-preference" });
   await page.goto("/iframe.html?id=controls-toast--default&viewMode=story");
   await expect(page.getByRole("dialog")).toHaveCount(1);
   await expect(page.getByRole("dialog")).toHaveCSS("opacity", "1");
-  const trajectory = page.getByRole("region").evaluate(async (region) => {
+  await page.getByRole("region").evaluate((region) => {
     const previous = region.querySelector('[role="dialog"]');
-    const points: {
+    type Point = {
       top: number;
       opacity: number;
       blockOverflow: number;
       inlineOverflow: number;
-    }[] = [];
-    const end = performance.now() + 1000;
-    await new Promise<void>((resolve) => {
-      function sample() {
-        const arriving = region.querySelector('[role="dialog"]');
-        if (arriving && arriving !== previous) {
-          const opacity = Number(getComputedStyle(arriving).opacity);
+    };
+    const state = window as typeof window & {
+      toastTrajectory: Promise<Point[]>;
+    };
+    // Capture the real transition before the click; sample its timeline rather
+    // than relying on WebKit painting a particular intermediate frame.
+    state.toastTrajectory = new Promise<Point[]>((resolve) => {
+      region.addEventListener("transitionrun", function capture(event) {
+        const arriving = event.target;
+        if (
+          !(event instanceof TransitionEvent) ||
+          !(arriving instanceof HTMLElement) ||
+          arriving === previous ||
+          arriving.getAttribute("role") !== "dialog" ||
+          event.propertyName !== "opacity"
+        ) {
+          return;
+        }
+        const toast = arriving;
+        region.removeEventListener("transitionrun", capture);
+        const animations = region.getAnimations({ subtree: true });
+        const times = animations.map((animation) => animation.currentTime);
+        for (const animation of animations) animation.pause();
+        const duration = Math.max(
+          ...animations.map((animation) => {
+            const value = animation.effect?.getComputedTiming().duration;
+            return typeof value === "number" ? value : 0;
+          }),
+        );
+        const points: Point[] = [];
+        function sample() {
           points.push({
-            top: arriving.getBoundingClientRect().top,
-            opacity,
+            top: toast.getBoundingClientRect().top,
+            opacity: Number(getComputedStyle(toast).opacity),
             blockOverflow: region.scrollHeight - region.clientHeight,
             inlineOverflow: region.scrollWidth - region.clientWidth,
           });
         }
-        if (performance.now() < end) requestAnimationFrame(sample);
-        else resolve();
-      }
-      requestAnimationFrame(sample);
+        for (let step = 1; step <= 10; step++) {
+          for (const animation of animations) {
+            animation.currentTime = (duration * step) / 10;
+          }
+          sample();
+        }
+        for (const [index, animation] of animations.entries()) {
+          animation.currentTime = times[index];
+          animation.play();
+        }
+        const end = performance.now() + 1000;
+        function observe() {
+          sample();
+          if (performance.now() < end) requestAnimationFrame(observe);
+          else resolve(points);
+        }
+        requestAnimationFrame(observe);
+      });
     });
-    return points;
   });
   await page.getByRole("button", { name: "Show notification" }).click();
-  const points = await trajectory;
+  const points = await page.evaluate(
+    () =>
+      (
+        window as typeof window & {
+          toastTrajectory: Promise<
+            {
+              top: number;
+              opacity: number;
+              blockOverflow: number;
+              inlineOverflow: number;
+            }[]
+          >;
+        }
+      ).toastTrajectory,
+  );
   const arrival = points.find(
     (point) => point.opacity > 0.02 && point.opacity < 0.9,
   );
@@ -321,6 +373,8 @@ test("a new toast rises from below the stack without creating scrollbars", async
   expect(arrival!.top).toBeGreaterThan(points.at(-1)!.top + 4);
   expect(Math.max(...points.map((point) => point.blockOverflow))).toBe(0);
   expect(Math.max(...points.map((point) => point.inlineOverflow))).toBe(0);
+  await expect(page.getByRole("dialog")).toHaveCount(2);
+  await expect(page.getByRole("dialog").first()).toHaveCSS("opacity", "1");
 });
 
 test("hover keeps the stack expanded across gaps and excess toasts leave", async ({
