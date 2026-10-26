@@ -152,6 +152,7 @@ type Environment struct {
 	CreatedAt           time.Time  `json:"created_at"`
 	ExecutionGeneration int64      `json:"execution_generation"`
 	AppliedRevisionID   *uuid.UUID `json:"applied_revision_id"`
+	Purpose             string     `json:"purpose"`
 }
 
 type EnvironmentLayout struct {
@@ -378,6 +379,60 @@ type PipelineRun struct {
 	CreatedAt     time.Time  `json:"created_at"`
 }
 
+type PreviewPolicy struct {
+	ID                   uuid.UUID `json:"id"`
+	WorkspaceID          uuid.UUID `json:"workspace_id"`
+	ProjectID            uuid.UUID `json:"project_id"`
+	EnvironmentID        uuid.UUID `json:"environment_id"`
+	RevisionID           uuid.UUID `json:"revision_id"`
+	ApplicationID        uuid.UUID `json:"application_id"`
+	ConnectionID         uuid.UUID `json:"connection_id"`
+	ServerID             uuid.UUID `json:"server_id"`
+	ActorID              uuid.UUID `json:"actor_id"`
+	AuthVersion          int64     `json:"auth_version"`
+	ControllerGeneration int64     `json:"controller_generation"`
+	Generation           int64     `json:"generation"`
+	Enabled              bool      `json:"enabled"`
+	Note                 string    `json:"note"`
+	Configuration        []byte    `json:"configuration"`
+	DiscoveryPage        int32     `json:"discovery_page"`
+	NextDiscoveryAt      time.Time `json:"next_discovery_at"`
+}
+
+type PreviewRequest struct {
+	ID                 uuid.UUID   `json:"id"`
+	WorkspaceID        uuid.UUID   `json:"workspace_id"`
+	PolicyID           uuid.UUID   `json:"policy_id"`
+	Number             int32       `json:"number"`
+	Head               string      `json:"head"`
+	HeadRepository     int64       `json:"head_repository"`
+	Fork               bool        `json:"fork"`
+	ApprovedHead       string      `json:"approved_head"`
+	ApprovedRepository int64       `json:"approved_repository"`
+	ApprovedGeneration int64       `json:"approved_generation"`
+	Generation         int64       `json:"generation"`
+	EnvironmentID      *uuid.UUID  `json:"environment_id"`
+	ApplicationID      *uuid.UUID  `json:"application_id"`
+	PolicyGeneration   int64       `json:"policy_generation"`
+	Configuration      []byte      `json:"configuration"`
+	State              string      `json:"state"`
+	BuildID            *uuid.UUID  `json:"build_id"`
+	PlanID             *uuid.UUID  `json:"plan_id"`
+	OperationID        *uuid.UUID  `json:"operation_id"`
+	BuiltHead          string      `json:"built_head"`
+	ClosedAt           *time.Time  `json:"closed_at"`
+	CleanupAt          *time.Time  `json:"cleanup_at"`
+	CleanupRequested   bool        `json:"cleanup_requested"`
+	ResumeAfterCancel  bool        `json:"resume_after_cancel"`
+	CleanupActor       *uuid.UUID  `json:"cleanup_actor"`
+	CleanupAuthVersion pgtype.Int8 `json:"cleanup_auth_version"`
+	CleanupController  pgtype.Int8 `json:"cleanup_controller"`
+	NextCheckAt        time.Time   `json:"next_check_at"`
+	Note               string      `json:"note"`
+	CreatedAt          time.Time   `json:"created_at"`
+	UpdatedAt          time.Time   `json:"updated_at"`
+}
+
 type Project struct {
 	WorkspaceID uuid.UUID `json:"workspace_id"`
 	ID          uuid.UUID `json:"id"`
@@ -442,6 +497,7 @@ type Server struct {
 	IngressPorts         []byte     `json:"ingress_ports"`
 	ControllerGeneration int64      `json:"controller_generation"`
 	AwaitingTransfer     bool       `json:"awaiting_transfer"`
+	PreviewOnly          bool       `json:"preview_only"`
 }
 
 type ServerDomain struct {

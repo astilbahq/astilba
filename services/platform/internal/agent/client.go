@@ -32,6 +32,7 @@ type Client struct {
 	railpack       atomic.Bool
 	safeReleases   atomic.Bool
 	serviceOutputs atomic.Bool
+	previews       atomic.Bool
 }
 
 func NewClient(j *Journal, e *Engine) *Client {
@@ -82,6 +83,7 @@ func (c *Client) call(ctx context.Context, method, path string, body, out any, t
 	c.railpack.Store(response.Header.Get("Astilba-Agent-Railpack") == "v1")
 	c.safeReleases.Store(response.Header.Get("Astilba-Agent-Safe-Releases") == "v1")
 	c.serviceOutputs.Store(response.Header.Get("Astilba-Agent-Service-Outputs") == "v1")
+	c.previews.Store(response.Header.Get("Astilba-Agent-Previews") == "v1")
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		return errors.New("management rejected request; check enrollment, credentials and operation status")
 	}
@@ -105,6 +107,9 @@ func (c *Client) call(ctx context.Context, method, path string, body, out any, t
 }
 
 func (c *Client) advertisedCapabilities(v api.AgentCapabilities) api.AgentCapabilities {
+	if !c.previews.Load() {
+		v.Previews = nil
+	}
 	if !c.serviceOutputs.Load() {
 		v.ServiceOutputs = nil
 	}
@@ -159,6 +164,12 @@ func (c *Client) Enroll(ctx context.Context, token string) error {
 	if e = c.call(ctx, "POST", "/agent/v1/enroll", enrollment, &status, ""); e != nil {
 		return e
 	}
+	if enrollment.Inventory != nil {
+		if e = c.Journal.acknowledgePreviewProofs(enrollment.Inventory.PreviewCleanups); e != nil {
+			return e
+		}
+	}
+	cfg.PreviewOnly = status.PreviewOnly != nil && *status.PreviewOnly
 	cfg.Role = status.Role
 	cfg.Pending = ""
 	cfg.Enrolled = true

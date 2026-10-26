@@ -4,7 +4,7 @@ package portability
 // columns are excluded until their import and credential semantics are reviewed.
 type table struct{ Name, Columns string }
 
-var tables = []table{
+var legacyTables = []table{
 	{Name: "projects", Columns: "workspace_id,id,name,created_at"},
 	{Name: "servers", Columns: "id,workspace_id,name,role,machine_id,revoked,rotation_requested,capabilities,preflight,last_seen,update_generation,ingress_ports,controller_generation,awaiting_transfer"},
 	{Name: "environments", Columns: "workspace_id,project_id,id,name,configuration_owner,draft_revision_id,created_at,execution_generation,applied_revision_id"},
@@ -35,3 +35,20 @@ var tables = []table{
 	{Name: "supported_upgrades", Columns: "id,author_id,workspace_id,environment_id,server_id,plan,status"},
 	{Name: "audit_events", Columns: "workspace_id,id,actor_id,action,resource_id,created_at"},
 }
+
+// Version 2 preserves preview purpose and cleanup ownership. Version 1 remains a
+// fixed catalog so archives made before previews can still be decoded strictly.
+var tables = func() []table {
+	out := append([]table{}, legacyTables...)
+	for i := range out {
+		switch out[i].Name {
+		case "servers":
+			out[i].Columns += ",preview_only"
+		case "environments":
+			out[i].Columns += ",purpose"
+		}
+	}
+	return append(out,
+		table{Name: "preview_policies", Columns: "id,workspace_id,project_id,environment_id,revision_id,application_id,connection_id,server_id,actor_id,auth_version,controller_generation,generation,enabled,configuration,discovery_page,next_discovery_at,note"},
+		table{Name: "preview_requests", Columns: "id,workspace_id,policy_id,number,head,head_repository,fork,approved_head,approved_repository,approved_generation,generation,environment_id,application_id,policy_generation,configuration,state,build_id,plan_id,operation_id,built_head,closed_at,cleanup_at,cleanup_requested,resume_after_cancel,cleanup_actor,cleanup_auth_version,cleanup_controller,next_check_at,note,created_at,updated_at"})
+}()

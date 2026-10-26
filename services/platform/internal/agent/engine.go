@@ -2,7 +2,10 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"github.com/astilbahq/astilba/services/platform/internal/deployment"
+	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
 	"io"
 	"sync"
 	"time"
@@ -85,6 +88,22 @@ func (e *Engine) Execute(ctx context.Context, c api.ExecutionCommand) error {
 	}
 	if c.Kind != "test" && c.Kind != "update" && c.Kind != "visual" && c.Kind != "pipeline" && c.Kind != "backup" && c.Kind != "upgrade" {
 		return errors.New("unsupported command")
+	}
+	preview := false
+	if c.Pipeline != nil {
+		var p pipeline.Command
+		if json.Unmarshal(*c.Pipeline, &p) == nil {
+			preview = p.Preview != nil
+		}
+	}
+	if c.Visual != nil {
+		var p deployment.Payload
+		if json.Unmarshal(*c.Visual, &p) == nil {
+			preview = p.Plan.Preview != nil
+		}
+	}
+	if c.Kind != "update" && cfg.PreviewOnly != preview {
+		return errors.New("preview server reservation rejected this command")
 	}
 	r, err := e.Journal.Accept(c)
 	if err != nil {

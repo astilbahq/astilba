@@ -20,7 +20,15 @@ func decodeArchive(raw []byte) (Archive, error) {
 	var archive Archive
 	d := json.NewDecoder(bytes.NewReader(raw))
 	d.DisallowUnknownFields()
-	if d.Decode(&archive) != nil || d.Decode(new(any)) != io.EOF || archive.Version != 1 || archive.Workspace == uuid.Nil || len(archive.Tables) != len(tables) {
+	if d.Decode(&archive) != nil || d.Decode(new(any)) != io.EOF || (archive.Version != 1 && archive.Version != 2) || archive.Workspace == uuid.Nil {
+		return archive, ErrArchive
+	}
+	if archive.Version == 1 {
+		if err := normalizeLegacyArchive(&archive); err != nil {
+			return archive, err
+		}
+	}
+	if len(archive.Tables) != len(tables) {
 		return archive, ErrArchive
 	}
 	name, e := domain.Name(archive.Name)
@@ -65,6 +73,9 @@ func decodeArchive(raw []byte) (Archive, error) {
 		{"pipeline_auto_deployments", "id", "pipeline_runs"},
 		{"pipeline_auto_deployments", "operation_id", "execution_operations"},
 		{"pipeline_auto_deployments", "plan_id", "visual_plans"},
+		{"preview_requests", "build_id", "execution_operations"},
+		{"preview_requests", "operation_id", "execution_operations"},
+		{"preview_requests", "plan_id", "visual_requests"},
 	}
 	for _, ref := range refs {
 		ids := map[string]bool{}
@@ -154,6 +165,26 @@ func (s *Service) Import(ctx context.Context, p store.Principal, passphrase stri
 				}
 			}
 			switch table.Name {
+			case "preview_policies":
+				setValue(row, "enabled", false)
+				setValue(row, "auth_version", p.Account.AuthVersion)
+			case "preview_requests":
+				var state string
+				if json.Unmarshal(row["state"], &state) != nil {
+					return out, ErrArchive
+				}
+				if state != "deleted" {
+					setValue(row, "state", "blocked")
+					setValue(row, "note", "Imported preview requires renewed owner approval.")
+				}
+				setValue(row, "approved_head", "")
+				setValue(row, "approved_repository", 0)
+				setValue(row, "approved_generation", 0)
+				setValue(row, "cleanup_requested", false)
+				setValue(row, "resume_after_cancel", false)
+				setValue(row, "cleanup_actor", nil)
+				setValue(row, "cleanup_auth_version", nil)
+				setValue(row, "cleanup_controller", nil)
 			case "servers":
 				var old int64
 				if json.Unmarshal(row["controller_generation"], &old) != nil || old < 0 || old == math.MaxInt64 {
@@ -245,4 +276,37 @@ func (s *Service) Import(ctx context.Context, p store.Principal, passphrase stri
 		return out, store.Normalize(e)
 	}
 	return out, nil
+}
+
+func normalizeLegacyArchive(a *Archive) error {
+	if len(a.Tables) != len(legacyTables) {
+		return ErrArchive
+	}
+	for _, t := range legacyTables {
+		rows, ok := a.Tables[t.Name]
+		if !ok || rows == nil {
+			return ErrArchive
+		}
+		columns := strings.Split(t.Columns, ",")
+		for _, row := range rows {
+			if len(row) != len(columns) {
+				return ErrArchive
+			}
+			for _, column := range columns {
+				if _, ok := row[column]; !ok {
+					return ErrArchive
+				}
+			}
+			if t.Name == "environments" {
+				setValue(row, "purpose", "standard")
+			}
+			if t.Name == "servers" {
+				setValue(row, "preview_only", false)
+			}
+		}
+	}
+	a.Tables["preview_policies"] = []Row{}
+	a.Tables["preview_requests"] = []Row{}
+	a.Version = 2
+	return nil
 }

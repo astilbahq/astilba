@@ -77,7 +77,24 @@ func TestServerIdentityLifecycle(t *testing.T) {
 	tlsServer := httptest.NewTLSServer(f.server.Config.Handler)
 	defer tlsServer.Close()
 	httpClient := tlsServer.Client()
-	agentRequest(t, httpClient, tlsServer.URL, "/agent/v1/enroll", "", in, 200, nil)
+	// Older agents reject unknown response fields before processing rotation.
+	legacyStatus := func(raw json.RawMessage) {
+		t.Helper()
+		var status struct {
+			Role              api.ServerRole `json:"role"`
+			RotationRequested bool           `json:"rotationRequested"`
+		}
+		decoder := json.NewDecoder(bytes.NewReader(raw))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&status); err != nil {
+			t.Fatal("legacy agent cannot decode status", err)
+		}
+	}
+	var status json.RawMessage
+	agentRequest(t, httpClient, tlsServer.URL, "/agent/v1/enroll", "", in, 200, &status)
+	legacyStatus(status)
+	agentRequest(t, httpClient, tlsServer.URL, "/agent/v1/heartbeat", token, api.AgentHeartbeat{Capabilities: in.Capabilities, Preflight: in.Preflight}, 200, &status)
+	legacyStatus(status)
 	agentRequest(t, httpClient, tlsServer.URL, "/agent/v1/enroll", "", in, 200, nil)
 	changed := in
 	changed.Credential, _ = cryptobox.Token()

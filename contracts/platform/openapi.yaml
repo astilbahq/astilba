@@ -10,6 +10,114 @@
     "sessionCookie": []
   - automationBearer: []
 "paths":
+  /api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/preview-policy:
+    parameters:
+      - name: workspaceId
+        in: path
+        required: true
+        schema: {type: string, format: uuid}
+      - name: projectId
+        in: path
+        required: true
+        schema: {type: string, format: uuid}
+      - name: environmentId
+        in: path
+        required: true
+        schema: {type: string, format: uuid}
+    get:
+      operationId: getPreviewPolicy
+      responses:
+        '200':
+          description: Configured preview policy
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/PreviewPolicy'}
+        default:
+          description: Error
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+    put:
+      operationId: savePreviewPolicy
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/SavePreviewPolicy'}
+      responses:
+        '200':
+          description: Owner-approved preview policy
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/PreviewPolicy'}
+        default:
+          description: Error
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+  /api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/previews:
+    parameters:
+      - name: workspaceId
+        in: path
+        required: true
+        schema: {type: string, format: uuid}
+      - name: projectId
+        in: path
+        required: true
+        schema: {type: string, format: uuid}
+      - name: environmentId
+        in: path
+        required: true
+        schema: {type: string, format: uuid}
+    get:
+      operationId: listPreviews
+      responses:
+        '200':
+          description: Pull-request previews
+          content:
+            application/json:
+              schema: {type: array, maxItems: 100, items: {$ref: '#/components/schemas/PullRequestPreview'}}
+        default:
+          description: Error
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+  /api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/previews/{previewId}/actions:
+    parameters:
+      - name: workspaceId
+        in: path
+        required: true
+        schema: {type: string, format: uuid}
+      - name: projectId
+        in: path
+        required: true
+        schema: {type: string, format: uuid}
+      - name: environmentId
+        in: path
+        required: true
+        schema: {type: string, format: uuid}
+      - name: previewId
+        in: path
+        required: true
+        schema: {type: string, format: uuid}
+    post:
+      operationId: actOnPreview
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/PreviewAction'}
+      responses:
+        '200':
+          description: Current preview state
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/PullRequestPreview'}
+        default:
+          description: Error
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
   "/api/v1/workspaces/{workspaceId}/onboarding": {
     "get": {
       "operationId": "getOnboarding",
@@ -4031,6 +4139,82 @@
       "in": "cookie"
       "name": "__Host-astilba_session"
   "schemas":
+    PreviewCleanupReceipt:
+      type: object
+      additionalProperties: false
+      required: [operationId, digest]
+      properties:
+        operationId: {type: string, format: uuid}
+        digest: {type: string, pattern: '^[a-f0-9]{64}$'}
+    PreviewLimits:
+      type: object
+      additionalProperties: false
+      required: [cpus, memoryMiB, pids]
+      properties:
+        cpus: {type: integer, minimum: 1, maximum: 4}
+        memoryMiB: {type: integer, minimum: 128, maximum: 8192}
+        pids: {type: integer, minimum: 32, maximum: 512}
+    PreviewPolicyConfiguration:
+      type: object
+      additionalProperties: false
+      required: [baseRevisionId, applicationId, build, maxActive, maxConcurrentBuilds, limits, closeGraceHours, generatedDomains]
+      properties:
+        baseRevisionId: {type: string, format: uuid}
+        applicationId: {type: string, format: uuid}
+        build: {$ref: '#/components/schemas/BuildConfiguration'}
+        maxActive: {type: integer, minimum: 1, maximum: 10}
+        maxConcurrentBuilds: {type: integer, minimum: 1, maximum: 3}
+        limits: {$ref: '#/components/schemas/PreviewLimits'}
+        closeGraceHours:
+          type: integer
+          nullable: true
+          minimum: 0
+          maximum: 168
+          description: Null retains closed previews until owner cleanup. Zero deletes immediately.
+        generatedDomains: {type: boolean}
+    PreviewPolicy:
+      type: object
+      additionalProperties: false
+      required: [id, enabled, generation, configuration]
+      properties:
+        note: {type: string}
+
+        id: {type: string, format: uuid}
+        enabled: {type: boolean}
+        generation: {type: integer, format: int64}
+        configuration: {$ref: '#/components/schemas/PreviewPolicyConfiguration'}
+    SavePreviewPolicy:
+      type: object
+      additionalProperties: false
+      required: [enabled, generation, configuration]
+      properties:
+        enabled: {type: boolean}
+        generation: {type: integer, format: int64, minimum: 0}
+        configuration: {$ref: '#/components/schemas/PreviewPolicyConfiguration'}
+    PullRequestPreview:
+      type: object
+      additionalProperties: false
+      required: [id, number, head, headRepository, fork, state, note, generation]
+      properties:
+        id: {type: string, format: uuid}
+        number: {type: integer}
+        head: {type: string}
+        headRepository: {type: integer, format: int64}
+        fork: {type: boolean}
+        state: {type: string}
+        note: {type: string}
+        generation: {type: integer, format: int64}
+        environmentId: {type: string, format: uuid}
+        operationId: {type: string, format: uuid}
+        cleanupAt: {type: string, format: date-time}
+    PreviewAction:
+      type: object
+      additionalProperties: false
+      required: [action, head, headRepository]
+      properties:
+        action: {type: string, enum: [refresh, approve, cleanup]}
+        head: {type: string, maxLength: 64}
+        headRepository: {type: integer, format: int64}
     "Onboarding": {
       "type": "object",
       "additionalProperties": false,
@@ -4278,6 +4462,10 @@
         - "arch"
         - "docker"
       properties:
+        previews:
+          type: boolean
+          description: Supports bounded preview plans and ownership-verified cleanup.
+
         "protocol":
           "type": "integer"
           "enum":
@@ -4377,6 +4565,10 @@
         - "preflight"
         - "rotationRequested"
       "properties":
+        previewOnly:
+          type: boolean
+          description: Immutable reservation for preview workloads.
+
         transferRequired: {type: boolean}
         "id":
           "type": "string"
@@ -4416,6 +4608,10 @@
         - "name"
         - "role"
       "properties":
+        previewOnly:
+          type: boolean
+          description: Immutable reservation for preview workloads.
+
         "name":
           "type": "string"
           "maxLength": 80
@@ -4485,6 +4681,10 @@
         - "role"
         - "rotationRequested"
       "properties":
+        previewOnly:
+          type: boolean
+          description: Immutable reservation for preview workloads.
+
         "role":
           "$ref": "#/components/schemas/ServerRole"
         "rotationRequested":
@@ -5167,6 +5367,11 @@
       "type": "object"
       "additionalProperties": false
       "properties":
+        purpose:
+          type: string
+          enum: [standard, preview_template, preview]
+          description: Immutable environment purpose.
+
         "id":
           "type": "string"
           "format": "uuid"
@@ -6125,6 +6330,11 @@
       "type": "object"
       "additionalProperties": false
       "properties":
+        purpose:
+          type: string
+          enum: [standard, preview_template]
+          description: Immutable environment purpose.
+
         "name":
           "type": "string"
           "maxLength": 80
@@ -7704,6 +7914,12 @@
       additionalProperties: false
       required: [units, schedules]
       properties:
+        previewCleanups:
+          type: array
+          maxItems: 100
+          items:
+            $ref: '#/components/schemas/PreviewCleanupReceipt'
+
         units:
           type: object
           maxProperties: 100

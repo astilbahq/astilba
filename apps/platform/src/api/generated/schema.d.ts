@@ -4,6 +4,67 @@
  */
 
 export interface paths {
+    "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/preview-policy": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                projectId: string;
+                environmentId: string;
+            };
+            cookie?: never;
+        };
+        get: operations["getPreviewPolicy"];
+        put: operations["savePreviewPolicy"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/previews": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                projectId: string;
+                environmentId: string;
+            };
+            cookie?: never;
+        };
+        get: operations["listPreviews"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/previews/{previewId}/actions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                projectId: string;
+                environmentId: string;
+                previewId: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["actOnPreview"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/workspaces/{workspaceId}/onboarding": {
         parameters: {
             query?: never;
@@ -1860,6 +1921,70 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        PreviewCleanupReceipt: {
+            /** Format: uuid */
+            operationId: string;
+            digest: string;
+        };
+        PreviewLimits: {
+            cpus: number;
+            memoryMiB: number;
+            pids: number;
+        };
+        PreviewPolicyConfiguration: {
+            /** Format: uuid */
+            baseRevisionId: string;
+            /** Format: uuid */
+            applicationId: string;
+            build: components["schemas"]["BuildConfiguration"];
+            maxActive: number;
+            maxConcurrentBuilds: number;
+            limits: components["schemas"]["PreviewLimits"];
+            /** @description Null retains closed previews until owner cleanup. Zero deletes immediately. */
+            closeGraceHours: number | null;
+            generatedDomains: boolean;
+        };
+        PreviewPolicy: {
+            note?: string;
+            /** Format: uuid */
+            id: string;
+            enabled: boolean;
+            /** Format: int64 */
+            generation: number;
+            configuration: components["schemas"]["PreviewPolicyConfiguration"];
+        };
+        SavePreviewPolicy: {
+            enabled: boolean;
+            /** Format: int64 */
+            generation: number;
+            configuration: components["schemas"]["PreviewPolicyConfiguration"];
+        };
+        PullRequestPreview: {
+            /** Format: uuid */
+            id: string;
+            number: number;
+            head: string;
+            /** Format: int64 */
+            headRepository: number;
+            fork: boolean;
+            state: string;
+            note: string;
+            /** Format: int64 */
+            generation: number;
+            /** Format: uuid */
+            environmentId?: string;
+            /** Format: uuid */
+            operationId?: string;
+            /** Format: date-time */
+            cleanupAt?: string;
+        };
+        PreviewAction: {
+            /** @enum {string} */
+            action: "refresh" | "approve" | "cleanup";
+            head: string;
+            /** Format: int64 */
+            headRepository: number;
+        };
         Onboarding: {
             keyFingerprint: string;
             applicationDomain: string;
@@ -1966,6 +2091,8 @@ export interface components {
         /** @enum {string} */
         ServerRole: "deployment" | "build" | "combined";
         AgentCapabilities: {
+            /** @description Supports bounded preview plans and ownership-verified cleanup. */
+            previews?: boolean;
             /** @enum {integer} */
             protocol: 1;
             version: string;
@@ -2005,6 +2132,8 @@ export interface components {
             composeVersion?: string;
         };
         Server: {
+            /** @description Immutable reservation for preview workloads. */
+            previewOnly?: boolean;
             transferRequired?: boolean;
             /** Format: uuid */
             id: string;
@@ -2019,6 +2148,8 @@ export interface components {
             rotationRequested: boolean;
         };
         CreateServer: {
+            /** @description Immutable reservation for preview workloads. */
+            previewOnly?: boolean;
             name: string;
             role: components["schemas"]["ServerRole"];
         };
@@ -2046,6 +2177,8 @@ export interface components {
             preflight: components["schemas"]["HostPreflight"];
         };
         AgentStatus: {
+            /** @description Immutable reservation for preview workloads. */
+            previewOnly?: boolean;
             role: components["schemas"]["ServerRole"];
             rotationRequested: boolean;
         };
@@ -2284,6 +2417,11 @@ export interface components {
             serverId?: string | null;
         };
         Environment: {
+            /**
+             * @description Immutable environment purpose.
+             * @enum {string}
+             */
+            purpose?: "standard" | "preview_template" | "preview";
             /** Format: uuid */
             id: string;
             /** Format: uuid */
@@ -2654,6 +2792,11 @@ export interface components {
             internal?: boolean;
         };
         EnvironmentCreate: {
+            /**
+             * @description Immutable environment purpose.
+             * @enum {string}
+             */
+            purpose?: "standard" | "preview_template";
             name: string;
             /** @enum {string} */
             configurationOwner?: "dashboard" | "compose";
@@ -3250,6 +3393,7 @@ export interface components {
             support: string;
         };
         ControllerInventory: {
+            previewCleanups?: components["schemas"]["PreviewCleanupReceipt"][];
             units: {
                 [key: string]: string;
             };
@@ -3424,6 +3568,147 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    getPreviewPolicy: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                projectId: string;
+                environmentId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Configured preview policy */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PreviewPolicy"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    savePreviewPolicy: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                projectId: string;
+                environmentId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SavePreviewPolicy"];
+            };
+        };
+        responses: {
+            /** @description Owner-approved preview policy */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PreviewPolicy"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    listPreviews: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                projectId: string;
+                environmentId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Pull-request previews */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PullRequestPreview"][];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    actOnPreview: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                projectId: string;
+                environmentId: string;
+                previewId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PreviewAction"];
+            };
+        };
+        responses: {
+            /** @description Current preview state */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PullRequestPreview"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
     getOnboarding: {
         parameters: {
             query?: never;

@@ -285,3 +285,5 @@ disposable account/database before choosing this hosting arrangement.
 The separate dashboard-only Worker remains available when the Go API runs on a
 server. Its fixed upstream forwards the API, agent, Git and Stripe webhook paths;
 it is not an arbitrary proxy.
+
+Workspace exports now use archive version 2 to preserve environment purpose, preview-host reservation and lifecycle metadata. Version 1 archives remain importable as ordinary environments/servers. Imported preview policies and fork/cleanup grants are disabled; review resources and transfer agents before renewed owner approval. See [Pull-request previews](pull-request-previews.md).

@@ -86,12 +86,26 @@ func (s *Service) enroll(ctx context.Context, in api.AgentEnrollment) (api.Agent
 		}
 		return out, e
 	}
+	var previewOnly bool
+	var fresh bool
+	if e = tx.QueryRow(ctx, "SELECT preview_only,machine_id IS NULL FROM servers WHERE id=$1", in.ServerId).Scan(&previewOnly, &fresh); e != nil {
+		return out, e
+	}
+	if previewOnly && fresh && in.Preflight.ExistingContainers > 0 {
+		return out, domain.Invalid("preview.cleanServerRequired")
+	}
 	if generation(in.ControllerGeneration) != expected {
 		return out, domain.Unauthenticated
 	}
 	if awaiting {
 		if in.Inventory == nil {
 			return out, domain.Invalid("inventory")
+		}
+		if in.Inventory != nil {
+			if e = s.acceptPreviewCleanupProofs(ctx, tx, ws, in.ServerId, in.Inventory.PreviewCleanups); e != nil {
+				return out, e
+			}
+			in.Inventory.PreviewCleanups = nil
 		}
 		inventory, e := transferInventory(ctx, tx, ws, in.ServerId)
 		if e != nil {
@@ -103,9 +117,12 @@ func (s *Service) enroll(ctx context.Context, in api.AgentEnrollment) (api.Agent
 	}
 	caps, _ := json.Marshal(in.Capabilities)
 	pre, _ := json.Marshal(in.Preflight)
-	e = tx.QueryRow(ctx, `UPDATE servers SET credential_hash=$2,enrollment_hash=NULL,enrollment_expires=NULL,machine_id=$3,capabilities=$4,preflight=$5,last_seen=now(),awaiting_transfer=false WHERE id=$1 RETURNING role,rotation_requested`, in.ServerId, hash(in.Credential), in.MachineId, caps, pre).Scan(&out.Role, &out.RotationRequested)
+	e = tx.QueryRow(ctx, `UPDATE servers SET credential_hash=$2,enrollment_hash=NULL,enrollment_expires=NULL,machine_id=$3,capabilities=$4,preflight=$5,last_seen=now(),awaiting_transfer=false WHERE id=$1 RETURNING role,rotation_requested,preview_only`, in.ServerId, hash(in.Credential), in.MachineId, caps, pre).Scan(&out.Role, &out.RotationRequested, &previewOnly)
 	if e != nil {
 		return out, e
+	}
+	if previewOnly {
+		out.PreviewOnly = &previewOnly
 	}
 	return out, tx.Commit(ctx)
 }

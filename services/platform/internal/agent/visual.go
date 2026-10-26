@@ -129,11 +129,17 @@ func (e *Engine) executeVisual(ctx context.Context, c api.ExecutionCommand, r Re
 	if c.Visual == nil || json.Unmarshal(*c.Visual, &p) != nil || p.Digest() != c.PlanHash || p.Plan.ServerID != c.ServerId || p.Plan.EnvironmentID != c.EnvironmentId || p.Plan.UnitID != c.ResourceId {
 		return e.finish(c.Id, "failed", "Visual command identity does not match its reviewed plan.")
 	}
-	if err := p.Plan.Validate(p.Action != "resolve"); err != nil {
+	if err := p.Plan.Validate(p.Action != "resolve" && p.Action != "preview-cleanup"); err != nil {
 		return e.finish(c.Id, "failed", "The deployment plan is invalid.")
 	}
 	if e.Docker == nil {
 		return e.finish(c.Id, "failed", "Docker is unavailable.")
+	}
+	if p.Action == "preview-cleanup" {
+		if e.cancelled(c.Id) {
+			return e.finish(c.Id, "cancelled", "Preview cleanup cancelled before execution.")
+		}
+		return e.executePreviewCleanup(ctx, c, p, r)
 	}
 	if p.Action == "deploy" && p.Plan.Release != nil {
 		return e.executeRelease(ctx, c, p, r)
@@ -314,7 +320,11 @@ func (e *Engine) executeVisual(ctx context.Context, c api.ExecutionCommand, r Re
 	if err = e.checkpoint(c.Id, "ingress"); err != nil {
 		return err
 	}
-	if err = e.publishVisualRoutes(ctx, p.Plan); err != nil {
+	publish := e.publishVisualRoutes
+	if p.Plan.Preview != nil {
+		publish = e.publishReleaseRoutes
+	}
+	if err = publish(ctx, p.Plan); err != nil {
 		return e.visualFinish(ctx, c, p, "needs_attention", safeVisualError(err, p.Secrets))
 	}
 	current, err := e.ownedContainers(ctx, p.Plan)

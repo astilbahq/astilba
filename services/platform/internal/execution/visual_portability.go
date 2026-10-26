@@ -26,6 +26,9 @@ func (s *Service) CloneVisual(ctx context.Context, p store.Principal, ws, pid, s
 		if err != nil {
 			return err
 		}
+		if v.Purpose != "standard" {
+			return domain.Invalid("preview.cloneUnsupported")
+		}
 		if v.Spec.Compose != nil && len(v.Spec.Routes) > 0 {
 			return &domain.Error{Code: "invalid_input", Message: "Compose sources with routes cannot be cloned automatically. Create a Compose environment and copy the bundle with new routes.", Fields: []string{"compose.routes"}}
 		}

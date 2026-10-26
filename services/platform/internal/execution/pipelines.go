@@ -71,7 +71,7 @@ func (s *Service) insertPipeline(ctx context.Context, tx pgx.Tx, ws, env, key, s
 			p.Railpack = &pins
 		}
 	}
-	if p.Action == "build" {
+	if p.IsBuild() {
 		var project uuid.UUID
 		var raw []byte
 		if err := tx.QueryRow(ctx, "SELECT e.project_id,s.capabilities FROM environments e JOIN servers s ON s.workspace_id=e.workspace_id AND s.id=$3 WHERE e.workspace_id=$1 AND e.id=$2", ws, env, server).Scan(&project, &raw); err != nil {
@@ -80,6 +80,9 @@ func (s *Service) insertPipeline(ctx context.Context, tx pgx.Tx, ws, env, key, s
 		var capabilities api.AgentCapabilities
 		if json.Unmarshal(raw, &capabilities) == nil && capabilities.BuildCache != nil && *capabilities.BuildCache && p.Build != nil && p.Build.CanCache() {
 			p.CacheScope = pipeline.Hash([]uuid.UUID{ws, project})
+			if p.Preview != nil {
+				p.CacheScope = pipeline.Hash([]uuid.UUID{ws, env, p.Preview.RequestID})
+			}
 		}
 	}
 	if err := p.Validate(); err != nil {
@@ -545,7 +548,7 @@ func (s *Service) SourcePolicy(ctx context.Context, p store.Principal, ws, pid, 
 }
 
 func pipelineLifetime(p pipeline.Command) time.Duration {
-	if p.Action == "build" && p.Build != nil {
+	if p.IsBuild() && p.Build != nil {
 		return time.Duration(p.Build.Limits().Minutes) * time.Minute
 	}
 	return 30 * time.Minute

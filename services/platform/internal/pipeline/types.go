@@ -89,7 +89,15 @@ type Artifact struct {
 	ServerID     *uuid.UUID `json:"serverId,omitempty"`
 	RegistryID   *uuid.UUID `json:"registryId,omitempty"`
 }
+type PreviewSource struct {
+	RequestID      uuid.UUID `json:"requestId"`
+	Generation     int64     `json:"generation"`
+	Number         int       `json:"number"`
+	HeadRepository int64     `json:"headRepository"`
+}
+
 type Command struct {
+	Preview       *PreviewSource         `json:"preview,omitempty"`
 	SubmissionID  uuid.UUID              `json:"submissionId"`
 	Action        string                 `json:"action"`
 	Connection    Connection             `json:"connection"`
@@ -245,6 +253,12 @@ func ValidRegistry(repo string) bool {
 	return !tag && !digest && strings.HasPrefix(repo, reference.Domain(r)+"/") && len(repo) <= 200
 }
 func (c Command) Validate() error {
+	if c.Action == "build-preview" && c.Preview == nil {
+		return errors.New("missing preview build authority")
+	}
+	if c.Preview != nil && (c.Action != "build-preview" || c.Preview.RequestID == uuid.Nil || c.Preview.Generation < 1 || c.Preview.Number < 1 || c.Preview.Number > 1000000000 || c.Preview.HeadRepository < 1 || c.Build == nil || len(c.Build.Secrets) > 0 || c.Registry != nil || c.Build.AutoDeploy || c.Build.AutoBuild || c.Build.FallbackRunnerID != nil || c.Build.RegistryID != nil || c.Build.Budget == nil) {
+		return errors.New("invalid preview build")
+	}
 	if !ValidCommit(c.Commit) || !ValidBranch(c.Branch) || !ValidRepository(c.Connection.Repository) || c.RevisionID == uuid.Nil || c.UnitID == uuid.Nil {
 		return errors.New("invalid pipeline identity")
 	}
@@ -259,7 +273,7 @@ func (c Command) Validate() error {
 			return errors.New("missing source bundle")
 		}
 		return c.Bundle.Validate()
-	case "build":
+	case "build", "build-preview":
 		if c.Build == nil || c.AppID == uuid.Nil || len(c.InputHash) != 64 {
 			return errors.New("missing build inputs")
 		}
@@ -285,3 +299,5 @@ func (c Command) Validate() error {
 func EncryptionIdentity(ws, id uuid.UUID, kind string) string {
 	return "pipeline:" + kind + ":" + ws.String() + ":" + id.String()
 }
+
+func (c Command) IsBuild() bool { return c.Action == "build" || c.Action == "build-preview" }

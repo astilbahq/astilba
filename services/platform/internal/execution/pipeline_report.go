@@ -268,7 +268,7 @@ func (s *Service) pipelineReport(ctx context.Context, tx pgx.Tx, c api.Execution
 			if _, err = tx.Exec(ctx, "UPDATE git_sources SET status='awaiting_merge' WHERE workspace_id=$1 AND environment_id=$2", ws, c.EnvironmentId); err != nil {
 				return err
 			}
-		case "build":
+		case "build", "build-preview":
 			var hash, commit string
 			err := tx.QueryRow(ctx, "SELECT input_hash,requested_commit FROM build_targets WHERE workspace_id=$1 AND environment_id=$2 AND application_id=$3", ws, c.EnvironmentId, p.AppID).Scan(&hash, &commit)
 			if err != nil {

@@ -254,6 +254,7 @@ function ServerWorkspace({ workspace }: { workspace: Schema["Workspace"] }) {
               <h2>{server.name}</h2>
               <span>
                 {server.status} · {server.role}
+                {server.previewOnly ? " · Preview only" : ""}
               </span>
             </div>
             <p className={s.muted}>

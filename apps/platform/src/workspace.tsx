@@ -12,7 +12,9 @@ import { AutomationCredentials } from "./features/automation";
 import { Backups } from "./features/backups";
 import { ComposeEditor } from "./features/compose-editor";
 import { Deployments } from "./features/deployments";
+import { IntegrationSettings } from "./features/integrations";
 import { Pipelines } from "./features/pipelines";
+import { Previews } from "./features/previews";
 import { Upgrades } from "./features/upgrades";
 import { VisualEditor } from "./features/visual-editor";
 import { hostingOptions } from "./hosting";
@@ -53,7 +55,7 @@ export function Dashboard({
   const project = projects.data?.find((p) => p.id === selection.project);
   const projectId = project?.id ?? "";
   const environments = useQuery({
-    queryKey: ["environments", workspaceId, projectId],
+    queryKey: ["environments", workspaceId, projectId, selection.environment],
     enabled: !!projectId,
     queryFn: () =>
       result(
@@ -246,9 +248,14 @@ export function Dashboard({
                             params: { path: { workspaceId, projectId } },
                             body: {
                               name: text(d, "name"),
-                              configurationOwner: text(d, "owner") as
-                                | "dashboard"
-                                | "compose",
+                              purpose:
+                                text(d, "owner") === "preview_template"
+                                  ? "preview_template"
+                                  : "standard",
+                              configurationOwner:
+                                text(d, "owner") === "compose"
+                                  ? "compose"
+                                  : "dashboard",
                             },
                           },
                         ),
@@ -274,8 +281,15 @@ export function Dashboard({
                     <Select name="owner">
                       <option value="dashboard">Visual configuration</option>
                       <option value="compose">Compose files</option>
+                      <option value="preview_template">
+                        Pull-request preview template (visual)
+                      </option>
                     </Select>
                   </Label>
+                  <p>
+                    Preview templates use visual configuration and cannot be
+                    deployed directly.
+                  </p>
                   <BusyButton busy={action.isPending}>
                     Create environment
                   </BusyButton>
@@ -343,15 +357,41 @@ function Environment(props: EnvProps) {
             : "Server not assigned"}
         </span>
       </div>
+      {props.environment.purpose === "preview_template" && (
+        <p className={s.notice}>
+          Preview template · This environment supplies separately configured
+          preview resources and secrets. It cannot be deployed.
+        </p>
+      )}
+      {props.environment.purpose === "preview" && (
+        <p className={s.notice}>
+          Managed pull-request preview · Configuration and cleanup are
+          controlled by its template’s policy.
+        </p>
+      )}
       <ErrorNotice error={draft.error} />
       {draft.data ? (
-        <DraftEditor {...props} initial={draft.data} />
+        <DraftEditor
+          {...props}
+          write={props.write && props.environment.purpose !== "preview"}
+          initial={draft.data}
+        />
       ) : (
         <p role="status">Loading configuration…</p>
       )}
-      <Secrets {...props} />
+      <Secrets
+        {...props}
+        write={props.write && props.environment.purpose !== "preview"}
+      />
       {props.owner && (
-        <AutomationCredentials key={props.environment.id} path={path} />
+        <AutomationCredentials
+          key={props.environment.id}
+          path={path}
+          readOnly={
+            !!props.environment.purpose &&
+            props.environment.purpose !== "standard"
+          }
+        />
       )}
     </div>
   );
@@ -629,74 +669,91 @@ function DraftEditor({
           </section>
         </aside>
       </div>
-      <Pipelines
-        path={path}
-        revision={base}
-        dirty={dirty}
-        write={write}
-        owner={owner}
-        stage={(spec) => setDraft(JSON.stringify(spec, null, 2))}
-      />
-      <Deployments
-        loadRevision={(next) => {
-          if (draftRef.current !== savedText) {
-            setConflict(next);
-            return;
-          }
-          replace(next);
-        }}
-        path={path}
-        revision={base}
-        dirty={dirty}
-        write={write}
-        owner={owner}
-        removeVolume={(id) => {
-          if (base.specification.compose) return;
-          setDraft((current) => {
-            try {
-              const spec = JSON.parse(current) as Schema["Specification"];
-              return JSON.stringify(
-                { ...spec, volumes: spec.volumes?.filter((v) => v.id !== id) },
-                null,
-                2,
-              );
-            } catch {
-              return current;
+      {environment.purpose === "preview_template" && (
+        <>
+          <Previews path={path} revision={base} dirty={dirty} owner={owner} />
+          {owner && <IntegrationSettings workspaceId={path.workspaceId} />}
+        </>
+      )}
+      {(!environment.purpose || environment.purpose === "standard") && (
+        <Pipelines
+          path={path}
+          revision={base}
+          dirty={dirty}
+          write={write}
+          owner={owner}
+          stage={(spec) => setDraft(JSON.stringify(spec, null, 2))}
+        />
+      )}
+      {environment.purpose !== "preview_template" && (
+        <Deployments
+          loadRevision={(next) => {
+            if (draftRef.current !== savedText) {
+              setConflict(next);
+              return;
             }
-          });
-          setMessage(
-            "Volume removal staged. Save this revision after reviewing the deletion result.",
-          );
-        }}
-      />
-      <Upgrades
-        path={path}
-        revision={base}
-        owner={owner}
-        dirty={dirty}
-        load={(revision) => {
-          if (draftRef.current !== savedText) {
-            setConflict(revision);
-            return false;
-          }
-          replace(revision);
-          return true;
-        }}
-      />
-      <Backups
-        path={path}
-        revision={base}
-        owner={owner}
-        dirty={dirty}
-        load={(revision) => {
-          if (draftRef.current !== savedText) {
-            setConflict(revision);
-            return false;
-          }
-          replace(revision);
-          return true;
-        }}
-      />
+            replace(next);
+          }}
+          path={path}
+          revision={base}
+          dirty={dirty}
+          write={write}
+          owner={owner && environment.purpose !== "preview"}
+          removeVolume={(id) => {
+            if (base.specification.compose) return;
+            setDraft((current) => {
+              try {
+                const spec = JSON.parse(current) as Schema["Specification"];
+                return JSON.stringify(
+                  {
+                    ...spec,
+                    volumes: spec.volumes?.filter((v) => v.id !== id),
+                  },
+                  null,
+                  2,
+                );
+              } catch {
+                return current;
+              }
+            });
+            setMessage(
+              "Volume removal staged. Save this revision after reviewing the deletion result.",
+            );
+          }}
+        />
+      )}
+      {(!environment.purpose || environment.purpose === "standard") && (
+        <>
+          <Upgrades
+            path={path}
+            revision={base}
+            owner={owner}
+            dirty={dirty}
+            load={(revision) => {
+              if (draftRef.current !== savedText) {
+                setConflict(revision);
+                return false;
+              }
+              replace(revision);
+              return true;
+            }}
+          />
+          <Backups
+            path={path}
+            revision={base}
+            owner={owner}
+            dirty={dirty}
+            load={(revision) => {
+              if (draftRef.current !== savedText) {
+                setConflict(revision);
+                return false;
+              }
+              replace(revision);
+              return true;
+            }}
+          />
+        </>
+      )}
       {blocker.status === "blocked" && (
         <section
           className={s.notice}

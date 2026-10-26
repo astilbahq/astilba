@@ -7,7 +7,7 @@ SELECT * FROM projects WHERE workspace_id=$1 AND id=$2;
 -- name: ListEnvironments :many
 SELECT * FROM environments WHERE workspace_id=$1 AND project_id=$2 ORDER BY created_at,id;
 -- name: InsertEnvironment :one
-INSERT INTO environments(workspace_id,project_id,id,name,draft_revision_id,configuration_owner) VALUES($1,$2,$3,$4,$5,COALESCE(NULLIF(sqlc.arg(configuration_owner)::text,''),'dashboard')) RETURNING *;
+INSERT INTO environments(workspace_id,project_id,id,name,draft_revision_id,configuration_owner,purpose) VALUES($1,$2,$3,$4,$5,COALESCE(NULLIF(sqlc.arg(configuration_owner)::text,''),'dashboard'),COALESCE(NULLIF(sqlc.arg(purpose)::text,''),'standard')) RETURNING *;
 -- name: GetEnvironment :one
 SELECT e.*,d.id AS unit_id,d.runtime,d.server_id FROM environments e JOIN deployment_units d
 ON d.workspace_id=e.workspace_id AND d.environment_id=e.id WHERE e.workspace_id=$1 AND e.project_id=$2 AND e.id=$3;

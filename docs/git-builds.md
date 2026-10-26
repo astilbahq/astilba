@@ -117,3 +117,5 @@ The encrypted host journal records command inputs and outcome before acknowledge
 ## Verification
 
 **make verify** runs provider API/signature contract fixtures, real PostgreSQL admission/background-policy journeys, browser journeys in Chromium/WebKit, and the earlier live disposable GitLab/Gitea spike fixtures. It does not imply a live hosted GitHub pass. **make verify-agent-host** additionally runs private Git HTTP import/submission, real BuildKit builds, a TLS Zot registry with separate push/pull policies, image-layer credential checks, cancellation and builder-only storage exhaustion. Native CI requires amd64 and arm64. The optional Cloudflare dashboard adapter forwards signed webhook bytes before static assets; no live Cloudflare deployment is needed for these local checks.
+
+Pull/merge-request previews use separately approved templates, canonical provider request refs and preview-only hosts. Signed request events and paginated discovery feed authoritative reconciliation. See [Pull-request previews](pull-request-previews.md) for repository permissions, isolation and lifecycle.

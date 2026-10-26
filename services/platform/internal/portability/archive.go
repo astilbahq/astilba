@@ -96,7 +96,7 @@ func (s *Service) transformCredential(table string, row Row, ws uuid.UUID, expor
 	return nil
 }
 func (s *Service) Export(ctx context.Context, p store.Principal, ws uuid.UUID, passphrase string) ([]byte, error) {
-	archive := Archive{Version: 1, Workspace: ws, CreatedAt: time.Now().UTC(), Tables: map[string][]Row{}}
+	archive := Archive{Version: 2, Workspace: ws, CreatedAt: time.Now().UTC(), Tables: map[string][]Row{}}
 	e := s.Store.InWorkspaceSnapshot(ctx, p, ws, func(tx pgx.Tx, q *db.Queries, w store.Workspace) error {
 		archive.Name = w.Name
 		archive.RequireMFA = w.RequireMFA

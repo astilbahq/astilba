@@ -51,4 +51,4 @@ verify-image:
 
 verify-agent-host:
 	cd services/platform && sudo --preserve-env=GOCACHE,GOMODCACHE env PATH=/opt/astilba-plat4/go/bin:/usr/bin:/bin CGO_ENABLED=1 PLAT_APP_DOCKER_HOST=unix:///run/astilba-plat4/docker.sock ASTILBA_NATIVE_AGENT=1 /opt/astilba-plat4/go/bin/go test -race -count=1 -timeout=5m -v -run '^TestNativeAgentService$$' ./internal/integration
-	cd services/platform && sudo --preserve-env=GOCACHE,GOMODCACHE env PATH=/opt/astilba-plat4/go/bin:/usr/bin:/bin CGO_ENABLED=1 PLAT_APP_DOCKER_HOST=unix:///run/astilba-plat4/docker.sock ASTILBA_NATIVE_AGENT=1 /opt/astilba-plat4/go/bin/go test -race -count=1 -timeout=20m -v -run '^TestNative((Visual|Compose)Deployment|Pipeline|Upgrade|ReleaseCommandTransport)$$' ./internal/agent
+	cd services/platform && sudo --preserve-env=GOCACHE,GOMODCACHE env PATH=/opt/astilba-plat4/go/bin:/usr/bin:/bin CGO_ENABLED=1 PLAT_APP_DOCKER_HOST=unix:///run/astilba-plat4/docker.sock ASTILBA_NATIVE_AGENT=1 /opt/astilba-plat4/go/bin/go test -race -count=1 -timeout=20m -v -run '^TestNative((Visual|Compose)Deployment|Pipeline|Upgrade|ReleaseCommandTransport|PreviewEnvironment)$$' ./internal/agent

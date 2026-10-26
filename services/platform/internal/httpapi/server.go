@@ -116,6 +116,15 @@ func (s *Server) Handler(assets http.Handler) (http.Handler, error) {
 						return
 					}
 				}
+				var denied *openapi3filter.SecurityRequirementsError
+				if principal(ctx) != nil && errors.As(err, &denied) {
+					if errors.Is(err, domain.NotFound) {
+						s.fail(w, r, domain.NotFound)
+						return
+					}
+					s.fail(w, r, domain.Forbidden)
+					return
+				}
 				if principal(ctx) == nil && agentIdentity(ctx).ID == uuid.Nil && !publicPath(r.URL.Path) && r.URL.Path != "/agent/v1/enroll" {
 					s.fail(w, r, domain.Unauthenticated)
 					return

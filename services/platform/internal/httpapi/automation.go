@@ -47,11 +47,14 @@ func (s *Server) authenticateAPI(ctx context.Context, in *openapi3filter.Authent
 		}
 	case "sessionCookie":
 		if p != nil && p.Automation == nil {
-			return nil
+			return s.authorizeEnvironmentPurpose(ctx, in.RequestValidationInput)
 		}
 	case "automationBearer":
 		if p != nil && p.Automation != nil {
-			return authorizeAutomation(*p.Automation, in.RequestValidationInput.Route.Operation.OperationID, in.RequestValidationInput.PathParams)
+			if err := authorizeAutomation(*p.Automation, in.RequestValidationInput.Route.Operation.OperationID, in.RequestValidationInput.PathParams); err != nil {
+				return err
+			}
+			return s.authorizeEnvironmentPurpose(ctx, in.RequestValidationInput)
 		}
 	}
 	return domain.Unauthenticated

@@ -23,7 +23,13 @@ const capabilities: {
   { value: "build:run", label: "Re-run owner-configured build targets" },
 ];
 
-export function AutomationCredentials({ path }: { path: EnvironmentPath }) {
+export function AutomationCredentials({
+  path,
+  readOnly = false,
+}: {
+  path: EnvironmentPath;
+  readOnly?: boolean;
+}) {
   const action = useAction();
   const [revealed, setRevealed] = useState<{ id: string; token: string }>();
   const [message, setMessage] = useState("");
@@ -45,6 +51,12 @@ export function AutomationCredentials({ path }: { path: EnvironmentPath }) {
         Tokens expire and can be revoked. They cannot manage accounts, secrets,
         host permissions or recovery.
       </p>
+      {readOnly && (
+        <p>
+          Preview environments and templates support read-only automation. Their
+          lifecycle is controlled by the preview policy.
+        </p>
+      )}
       <p className={s.muted}>
         Creating or revoking a token requires recent identity confirmation.{" "}
         <Link to="/account" target="_blank" rel="noreferrer">
@@ -130,17 +142,19 @@ export function AutomationCredentials({ path }: { path: EnvironmentPath }) {
           </Label>
           <fieldset className={s.stack}>
             <legend>Capabilities</legend>
-            {capabilities.map(({ value, label }) => (
-              <Label key={value} className={s.row}>
-                <Checkbox
-                  name="capability"
+            {capabilities
+              .filter((c) => !readOnly || c.value === "environment:read")
+              .map(({ value, label }) => (
+                <Label key={value} className={s.row}>
+                  <Checkbox
+                    name="capability"
 
-                  value={value}
-                  defaultChecked={value === "environment:read"}
-                />
-                {label}
-              </Label>
-            ))}
+                    value={value}
+                    defaultChecked={value === "environment:read"}
+                  />
+                  {label}
+                </Label>
+              ))}
           </fieldset>
           <Button type="submit" disabled={action.isPending || !!revealed}>
             {action.isPending ? "Working…" : "Create token"}

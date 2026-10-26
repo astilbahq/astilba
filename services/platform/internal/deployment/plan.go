@@ -19,10 +19,12 @@ import (
 )
 
 const Recipe = 1
+const PreviewRecipe = 2
 const ObservationLimit = 24000
 const ProxyImage = "traefik:v3.7.16@sha256:22a759fb803abb5c3a7ba5d5a55a201c5fb0fc8993d5c72c47a89075e64f1953"
 
 type Plan struct {
+	Preview           *domain.PreviewIdentity      `json:"preview,omitempty"`
 	Instances         map[string]uuid.UUID         `json:"instances,omitempty"`
 	ReleaseOptions    *ReleaseOptions              `json:"releaseOptions,omitempty"`
 	Release           *Release                     `json:"release,omitempty"`
@@ -90,8 +92,13 @@ func (p Plan) WithHash() Plan { p.Hash = ""; p.Hash = Hash(p); return p }
 func (p Plan) Validate(resolved bool) error {
 	h := p.Hash
 	p.Hash = ""
-	if h != Hash(p) || p.Recipe != Recipe || p.ID == uuid.Nil || p.ServerID == uuid.Nil || p.EnvironmentID == uuid.Nil || p.UnitID == uuid.Nil || p.RevisionID == uuid.Nil {
+	if h != Hash(p) || p.Preview == nil && p.Recipe != Recipe || p.Preview != nil && p.Recipe != PreviewRecipe || p.ID == uuid.Nil || p.ServerID == uuid.Nil || p.EnvironmentID == uuid.Nil || p.UnitID == uuid.Nil || p.RevisionID == uuid.Nil {
 		return errors.New("invalid deployment plan identity")
+	}
+	if p.Preview != nil {
+		if err := p.Preview.Validate(p.Specification); err != nil {
+			return err
+		}
 	}
 	if err := p.validateInstances(); err != nil {
 		return err
@@ -346,6 +353,18 @@ func ComposeAt(p Plan, secrets map[string]string, export bool, root string) ([]b
 		}
 		labels := map[string]string{"com.astilba.server": p.ServerID.String(), "com.astilba.environment": p.EnvironmentID.String(), "com.astilba.unit": p.UnitID.String(), "com.astilba.resource": a.ID.String(), "com.astilba.kind": "visual-v1", "com.astilba.plan": p.Hash}
 		service := map[string]any{"image": p.Images[a.ID.String()], "container_name": p.ContainerName(a.ID), "restart": "unless-stopped", "environment": env, "labels": labels, "networks": map[string]any{"unit": map[string]any{"aliases": []string{p.HostName(a.ID)}}}, "logging": map[string]any{"driver": "json-file", "options": map[string]string{"max-size": "10m", "max-file": "3"}}}
+		if p.Preview != nil {
+			l := p.Preview.Limits
+			service["cpus"] = l.CPUs
+			service["mem_limit"] = int64(l.MemoryMiB) << 20
+			service["memswap_limit"] = int64(l.MemoryMiB) << 20
+			service["pids_limit"] = l.Pids
+			service["cap_drop"] = []string{"ALL"}
+			if a.Postgres != nil {
+				service["cap_add"] = []string{"CHOWN", "DAC_OVERRIDE", "FOWNER", "SETUID", "SETGID"}
+			}
+			service["security_opt"] = []string{"no-new-privileges:true"}
+		}
 		if len(a.Command) > 0 {
 			command := make([]string, len(a.Command))
 			for i, arg := range a.Command {

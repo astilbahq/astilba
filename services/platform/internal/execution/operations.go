@@ -120,6 +120,9 @@ func (s *Service) insert(ctx context.Context, tx pgx.Tx, ws, key uuid.UUID, plan
 	if controller > 0 {
 		c.ControllerGeneration = &controller
 	}
+	if err := s.previewCommandBoundary(ctx, tx, ws, c); err != nil {
+		return out, err
+	}
 	if err := s.commandAdmission(ctx, tx, ws, c); err != nil {
 		return out, err
 	}
@@ -202,6 +205,10 @@ func (s *Service) Cancel(ctx context.Context, p store.Principal, ws, id uuid.UUI
 		if e == nil && n.RowsAffected() != 1 {
 			return domain.Conflict
 		}
+		if e != nil {
+			return e
+		}
+		_, e = tx.Exec(ctx, "UPDATE preview_requests SET resume_after_cancel=false WHERE workspace_id=$1 AND (build_id=$2 OR operation_id=$2)", ws, id)
 		return e
 	})
 }
@@ -280,6 +287,21 @@ func (w *worker) Work(ctx context.Context, job *river.Job[jobArgs]) error {
 	var c api.ExecutionCommand
 	if err = json.Unmarshal(raw, &c); err != nil {
 		return err
+	}
+	allowed, e := w.service.previewCommandAllowed(ctx, tx, ws, c, false)
+	if e != nil {
+		return e
+	}
+	if !allowed {
+		if state == "queued" {
+			_, err = tx.Exec(ctx, "UPDATE execution_operations SET state='cancelled',cancel_requested=true,note='Preview authority or request changed before dispatch.' WHERE id=$1", c.Id)
+		} else {
+			_, err = tx.Exec(ctx, "UPDATE execution_operations SET cancel_requested=true WHERE id=$1", c.Id)
+		}
+		if err != nil {
+			return err
+		}
+		return tx.Commit(ctx)
 	}
 	if e := w.service.commandAdmission(ctx, tx, ws, c); e != nil {
 		if !errors.Is(e, store.SubscriptionRequired) {
