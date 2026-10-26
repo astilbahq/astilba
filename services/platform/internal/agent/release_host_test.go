@@ -86,14 +86,19 @@ func nativeReleaseJourney(t *testing.T, e *Engine, initial deployment.Plan, secr
 		p.HostChanges, p.AcceptDrift = false, false
 		p.Release, p.ReleaseOptions = nil, nil
 		p.Specification.Applications[0].Variables[0].Value = &value
+		count := 3
+		if value == "v2" {
+			count = 2
+		} else if value == "v3" {
+			count = 1
+		}
+		p.Specification.Applications[0].Replicas = count
+		p.PrepareInstances(current)
 		p = resolve(p.WithHash())
 		options := deployment.DefaultReleaseOptions()
 		options.DrainSeconds = 1
 		p.Release = &deployment.Release{ApplicationID: app, PreviousPlanID: current.ID, Options: options}
-		if p.Instances == nil {
-			p.Instances = map[string]uuid.UUID{}
-		}
-		p.Instances[app.String()] = uuid.New()
+		p.ReplaceInstances(app)
 		return p.WithHash()
 	}
 	rejected := func(p deployment.Plan) string {
@@ -113,8 +118,10 @@ func nativeReleaseJourney(t *testing.T, e *Engine, initial deployment.Plan, secr
 		if err != nil || stored.Plan.Hash != current.Hash {
 			t.Fatal("failed candidate changed active plan")
 		}
-		if _, err = e.Docker.ContainerInspect(ctx, p.ContainerName(app), client.ContainerInspectOptions{}); err == nil {
-			t.Fatal("rejected candidate retained")
+		for _, id := range p.InstanceIDs(app) {
+			if _, err = e.Docker.ContainerInspect(ctx, deployment.UnitName(id), client.ContainerInspectOptions{}); err == nil {
+				t.Fatal("rejected candidate member retained")
+			}
 		}
 		return r.Report.Note
 	}
@@ -258,10 +265,17 @@ func nativeReleaseJourney(t *testing.T, e *Engine, initial deployment.Plan, secr
 		}
 		finish(c)
 		e.Point = nil
+		for _, id := range current.InstanceIDs(app)[1:] {
+			if _, err := e.Docker.ContainerInspect(ctx, deployment.UnitName(id), client.ContainerInspectOptions{}); err == nil {
+				t.Fatal("retired extra instance retained after drain")
+			}
+		}
 		current = p
-		active, err := e.Docker.ContainerInspect(ctx, p.ContainerName(app), client.ContainerInspectOptions{})
-		if err != nil || !active.Container.State.Running {
-			t.Fatal("resumed release did not serve its candidate")
+		for _, id := range p.InstanceIDs(app) {
+			active, err := e.Docker.ContainerInspect(ctx, deployment.UnitName(id), client.ContainerInspectOptions{})
+			if err != nil || !active.Container.State.Running {
+				t.Fatal("resumed release did not serve its complete candidate pool")
+			}
 		}
 		metrics := (&MetricCollector{Journal: e.Journal}).Collect(ctx, e.Docker, p.ServerID, e.Journal.dir)
 		count := 0
@@ -338,6 +352,8 @@ func nativeReleaseJourney(t *testing.T, e *Engine, initial deployment.Plan, secr
 	// configuration, through a new candidate and the same readiness/switch path.
 	rollback := prepare("v1")
 	rollback.Specification.Applications[0] = initial.Specification.Applications[0]
+	rollback.PrepareInstances(current)
+	rollback.ReplaceInstances(app)
 	rollback.Release.Options.Command = []string{}
 	rollback = rollback.WithHash()
 	finish(command("deploy", rollback, secrets))

@@ -84,6 +84,8 @@ sudo systemctl start astilba-agent
 
 Local updates refuse unresolved workload operations. If an update was interrupted, restart first to reconcile the same update, or inspect and retry it locally. If necessary, verify and restore the previous binary with the service stopped; retain the journal and its key. An unavailable artifact, invalid signature or incompatible binary yields `needs_attention`, never a workload restart. Remove retained temporary files only after confirming their ownership and that no updater is active.
 
+Executable rollback does not imply persisted-format compatibility. After a host has recipe-3 replica routes, preceding agents refuse host route publication, including changes for unrelated units. Keep workloads, journal and key intact and restore a replica-capable agent to resume those operations. Scaling back to one instance does not remove this fence. See [application scaling](application-scaling.md#compatibility-export-and-recovery).
+
 ## Certificate contact
 
 For managed HTTP TLS, the host operator sets `--acme-email operator@example.com` on the agent's `run` command (for systemd, use an inspected `ExecStart` override retaining the existing arguments). An owner must then prepare a plan with host changes approved. The agent persists that reviewed contact in the host route registry. Changing the flag alone does not change running ingress. Public DNS must point at this host and TCP ports 80/443 must be reachable for HTTP-01 validation. The agent reports an unready or untrusted certificate as a deployment failure and restores the previous route registry.

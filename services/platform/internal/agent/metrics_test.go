@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
+	"github.com/astilbahq/astilba/services/platform/internal/domain"
+	"github.com/astilbahq/astilba/services/platform/internal/execution"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -51,7 +53,9 @@ func TestMetricCollectionIsReadOnlyAndBoundsSlowDocker(t *testing.T) {
 		case strings.HasSuffix(r.URL.Path, "/info"):
 			fmt.Fprintf(w, `{"DockerRootDir":%q}`, t.TempDir())
 		case strings.HasSuffix(r.URL.Path, "/containers/json"):
-			if r.URL.Query().Get("limit") != "121" || !strings.Contains(r.URL.Query().Get("filters"), server.String()) {
+			// Forty logical resources, ten active members plus two retained
+			// primaries each, and one overflow marker remain a bounded inventory.
+			if r.URL.Query().Get("limit") != "481" || !strings.Contains(r.URL.Query().Get("filters"), server.String()) {
 				t.Error("unbounded or unowned inventory")
 			}
 			fmt.Fprintf(w, `[{"Id":"test-container","Names":[%q],"State":"running","Labels":{"com.astilba.resource":%q,"com.astilba.unit":%q}}]`, "/"+deployment.UnitName(resource), resource, unit)
@@ -98,6 +102,10 @@ func TestMetricCollectionKeepsOneMappingAcrossReleaseSwitch(t *testing.T) {
 	j, p := testVisualJournal(t)
 	resource := uuid.New()
 	instance := uuid.New()
+	image := execution.TestImage
+	p.Specification.Applications = []domain.Application{{ID: resource, Name: "Web", Source: domain.ApplicationSource{Kind: "image", Image: &image}}}
+	p.Images = map[string]string{resource.String(): image}
+	p = p.WithHash()
 	if err := j.saveUnit(unitState{Plan: p}); err != nil {
 		t.Fatal(err)
 	}
@@ -114,6 +122,7 @@ func TestMetricCollectionKeepsOneMappingAcrossReleaseSwitch(t *testing.T) {
 		case strings.HasSuffix(r.URL.Path, "/stats"):
 			if switched.CompareAndSwap(false, true) {
 				p.Instances = map[string]uuid.UUID{resource.String(): instance}
+				p = p.WithHash()
 				if err := j.saveUnit(unitState{Plan: p}); err != nil {
 					t.Error(err)
 				}
@@ -130,7 +139,7 @@ func TestMetricCollectionKeepsOneMappingAcrossReleaseSwitch(t *testing.T) {
 	}
 	defer docker.Close()
 	sample := (&MetricCollector{Journal: j}).Collect(context.Background(), docker, p.ServerID, t.TempDir())
-	if !switched.Load() || len(sample.Services) != 1 || sample.Services[0].ResourceId != resource {
+	if !switched.Load() || len(sample.Services) != 1 || sample.Services[0].ResourceId != resource || sample.Services[0].MemoryUsedBytes == nil || *sample.Services[0].MemoryUsedBytes != 1024 {
 		t.Fatalf("switch invalidated logical inventory: %+v", sample.Services)
 	}
 }

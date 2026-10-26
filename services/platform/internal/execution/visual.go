@@ -187,13 +187,9 @@ func (s *Service) createVisualPlan(ctx context.Context, tx pgx.Tx, ws, pid, env 
 		if err != nil {
 			return err
 		}
-		if previousPlan.ServerID == plan.ServerID && plan.Specification.Compose == nil {
-			plan.Instances = map[string]uuid.UUID{}
-			for _, app := range plan.Specification.Applications {
-				if instance := previousPlan.Instances[app.ID.String()]; instance != uuid.Nil && app.Postgres == nil {
-					plan.Instances[app.ID.String()] = instance
-				}
-			}
+		plan.PrepareInstances(previousPlan)
+		if err = requireReplicas(ctx, tx, ws, plan.ServerID, plan); err != nil {
+			return err
 		}
 		if in.ReleaseOptions != nil {
 			plan.ReleaseOptions = &deployment.ReleaseOptions{Command: in.ReleaseOptions.Command, CommandTimeoutSeconds: in.ReleaseOptions.CommandTimeoutSeconds, DrainSeconds: in.ReleaseOptions.DrainSeconds}
@@ -329,6 +325,9 @@ func (s *Service) applyVisualPlan(ctx context.Context, tx pgx.Tx, ws, pid, env, 
 			return err
 		}
 		if err = requireServiceOutputs(ctx, tx, ws, plan.ServerID, plan.Specification); err != nil {
+			return err
+		}
+		if err = requireReplicas(ctx, tx, ws, plan.ServerID, plan); err != nil {
 			return err
 		}
 		if len(plan.Instances) > 0 || plan.Release != nil {
@@ -499,6 +498,9 @@ func (s *Service) hydrateVisual(ctx context.Context, c *api.ExecutionCommand) er
 	if err := requireServiceOutputs(ctx, s.Store.Pool, ws, c.ServerId, payload.Plan.Specification); err != nil {
 		return err
 	}
+	if err := requireReplicas(ctx, s.Store.Pool, ws, c.ServerId, payload.Plan); err != nil {
+		return err
+	}
 	if len(payload.Plan.Instances) > 0 || payload.Plan.Release != nil {
 		supported, err := releaseCapability(ctx, s.Store.Pool, ws, c.ServerId)
 		if err != nil {
@@ -607,8 +609,15 @@ func (s *Service) visualReport(ctx context.Context, tx pgx.Tx, c api.ExecutionCo
 	}
 	seen := map[uuid.UUID]bool{}
 	for _, v := range observed.Resources {
-		if !allowed[v.ID] || seen[v.ID] || len(v.Logs) > 2048 || len(v.Note) > 256 || len(v.Image) > 512 {
+		if !allowed[v.ID] || seen[v.ID] || len(v.Logs) > 2048 || len(v.Note) > 256 || len(v.Image) > 512 || len(v.Instances) > domain.MaxReplicas {
 			return domain.Invalid("observation.resources")
+		}
+		members := map[uuid.UUID]bool{}
+		for _, instance := range v.Instances {
+			if instance.InstanceID == uuid.Nil || members[instance.InstanceID] || len(instance.State) > 30 {
+				return domain.Invalid("observation.instances")
+			}
+			members[instance.InstanceID] = true
 		}
 		seen[v.ID] = true
 	}
@@ -659,6 +668,21 @@ func (s *Service) visualReport(ctx context.Context, tx pgx.Tx, c api.ExecutionCo
 		for _, resource := range observed.Resources {
 			if resource.Drift || (resource.State != "running" && resource.State != "healthy") || resource.Image != plan.Images[resource.ID.String()] {
 				return domain.Invalid("observation.resources")
+			}
+			if plan.Recipe == deployment.ReplicaRecipe {
+				wanted := plan.InstanceIDs(resource.ID)
+				if len(resource.Instances) != len(wanted) {
+					return domain.Invalid("observation.instances")
+				}
+				members := map[uuid.UUID]bool{}
+				for _, id := range wanted {
+					members[id] = true
+				}
+				for _, instance := range resource.Instances {
+					if !members[instance.InstanceID] || instance.State != "running" && instance.State != "healthy" {
+						return domain.Invalid("observation.instances")
+					}
+				}
 			}
 		}
 		if observed.InfrastructureDrift {

@@ -1,6 +1,6 @@
 # Astilba deployment platform
 
-Status: updated 24 October 2026. The initial application and private-alpha acceptance are implemented. The implementation plan now includes operational visibility and staged developer-experience improvements.
+Status: updated 26 October 2026. P0–P15 and private-alpha acceptance are implemented. P16 begins with same-host stateless replicas before cross-host placement.
 
 The [architecture](platform-architecture.md) and [implementation plan](platform-implementation-plan.md) define the technical boundaries, delivery sequence and acceptance criteria.
 
@@ -67,10 +67,10 @@ Hosted accounts capable of changing servers require MFA. Self-hosted owners cont
 
 The next increments add operational visibility, a simpler source-to-app workflow, safe stateless releases, general service bindings and a small maintained catalog, then scoped automation and isolated pull-request previews. These extend the initial journey without making every parity feature a paid-beta prerequisite.
 
-Guided host/domain setup and general schedules are implemented. Replicas and cross-host placement, interactive troubleshooting and broader tested maintenance recipes remain later increments in the implementation plan. Kubernetes, live collaboration, generic database administration, existing-workload adoption, Astilba-operated build runners and an Astilba registry require separate scope decisions.
+Guided host/domain setup and general schedules are implemented. P16 begins with [same-host stateless HTTP replicas](application-scaling.md); cross-host placement follows a separate networking and failure-domain design. Replicas on one server do not provide host high availability. Interactive troubleshooting and broader tested maintenance recipes remain later increments. Kubernetes, live collaboration, generic database administration, existing-workload adoption, Astilba-operated build runners and an Astilba registry require separate scope decisions.
 
 ## Technology and next step
 
 Use React, TypeScript, Vite, TanStack Router and Query, React Flow and a platform-specific UI foundation using Panda CSS. Use Go for management and agents, PostgreSQL for management state, and Docker, Compose, BuildKit and Traefik on deployment hosts. River's open-source core and optional Railpack support must pass the initial technical experiments.
 
-P9 adds resource history, disk pressure, operational alerts and bounded retained-log export. The next product increment is P10 source-to-app workflow. Exact prices, the public product name, measured capacity limits and published support hours remain launch decisions informed by non-critical real use.
+The next implementation stage is P16 application scaling, followed by interactive troubleshooting and broader maintenance support. Exact prices, the public product name, measured capacity limits and published support hours remain launch decisions informed by non-critical real use.

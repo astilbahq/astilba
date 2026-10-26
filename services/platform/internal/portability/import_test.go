@@ -47,7 +47,7 @@ func TestPreSchedulingVersionTwoArchivesRemainReadable(t *testing.T) {
 	if _, err = decodeArchive(raw); err != nil {
 		t.Fatal("pre-scheduling archive rejected", err)
 	}
-	archive.Version = 4
+	archive.Version = 5
 	raw, _ = json.Marshal(archive)
 	if _, err = decodeArchive(raw); err == nil {
 		t.Fatal("unknown future schedule semantics accepted")

@@ -2186,6 +2186,8 @@ export interface components {
             serviceOutputs?: boolean;
             /** @description Supports instance-based stateless HTTP releases. Advertised only after Astilba-Agent-Safe-Releases v1. */
             safeReleases?: boolean;
+            /** @description Supports replica recipe 3 and complete instance groups. Advertised only after Astilba-Agent-Replicas v1. */
+            replicas?: boolean;
             /** @description Supports explicit build budgets and frozen-commit watch paths. Agents send this extension only after a controller response advertises Astilba-Agent-Features with build-controls. */
             buildControls?: boolean;
             /** @description Supports bounded project-scoped layer caches. Agents send this extension only after a controller response advertises Astilba-Agent-Build-Cache with v1. */
@@ -2536,6 +2538,8 @@ export interface components {
             artifactId?: string;
         };
         ApplicationReference: {
+            /** @description Desired stateless HTTP instances on the assigned server; omission means one. Multiple instances require readiness and managed HTTP routing, without mounts or internal consumers. */
+            replicas?: number;
             outputs?: components["schemas"]["ServiceOutput"][];
             /** Format: uuid */
             id: string;
@@ -2751,6 +2755,9 @@ export interface components {
             applicationId: string;
         };
         VisualPlan: {
+            replicaInstances?: {
+                [key: string]: string[];
+            };
             instances?: {
                 [key: string]: string;
             };
@@ -2768,7 +2775,7 @@ export interface components {
             revisionId: string;
             expectedAppliedId: string | null;
             /** @enum {integer} */
-            recipe: 1;
+            recipe: 1 | 2 | 3;
             specification: components["schemas"]["Specification"];
             images: {
                 [key: string]: string;
@@ -2798,6 +2805,11 @@ export interface components {
             };
         };
         ResourceObservation: {
+            instances?: {
+                /** Format: uuid */
+                instanceId: string;
+                state: string;
+            }[];
             /** Format: uuid */
             id: string;
             kind: string;

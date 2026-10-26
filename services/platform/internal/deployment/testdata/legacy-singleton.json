@@ -1,0 +1,81 @@
+{
+  "plan": {
+    "id": "324b6678-fece-471e-bab9-2ec4b2543e2e",
+    "serverId": "aa48ee68-9baa-4df1-bdd9-150cd9001eee",
+    "environmentId": "472cbcd2-ac10-47fe-af50-dd3a472bac4e",
+    "unitId": "be27a46b-4e39-4596-90e9-80c0774854b6",
+    "revisionId": "e9dd2409-980f-45db-bae2-df28e6923e7b",
+    "expectedAppliedId": null,
+    "recipe": 1,
+    "specification": {
+      "version": 1,
+      "applications": [
+        {
+          "id": "57cd4406-f4d7-42ec-b6c9-86298637e23a",
+          "name": "Database",
+          "source": {
+            "kind": "image",
+            "image": "postgres:18.4-alpine3.23@sha256:996d0920e4ff9df1fc19dacb904492f3c1ec0ec1cc338f0ad7123be7731c5f5e"
+          },
+          "kind": "postgres",
+          "mounts": [
+            {
+              "volumeId": "0b9b1e32-bacb-45a1-8a0b-251835adb4f6",
+              "target": "/var/lib/postgresql",
+              "readOnly": false
+            }
+          ],
+          "postgres": {
+            "database": "app",
+            "username": "app",
+            "passwordSecretVersionId": "ad5c979a-a523-4e07-b02c-2a571c431b97"
+          }
+        },
+        {
+          "id": "1240411b-0750-44a2-8ff3-989e127de3bc",
+          "name": "Web",
+          "source": {
+            "kind": "image",
+            "image": "busybox:1.37.0@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e"
+          },
+          "kind": "web",
+          "health": {
+            "port": 8080,
+            "path": "/"
+          },
+          "command": [
+            "sh",
+            "-c",
+            "echo $VALUE"
+          ]
+        }
+      ],
+      "variables": [],
+      "volumes": [
+        {
+          "id": "0b9b1e32-bacb-45a1-8a0b-251835adb4f6",
+          "name": "Data"
+        }
+      ],
+      "bindings": [
+        {
+          "id": "eb2b978a-6d9e-410a-8558-0f521c101145",
+          "sourceId": "57cd4406-f4d7-42ec-b6c9-86298637e23a",
+          "targetId": "1240411b-0750-44a2-8ff3-989e127de3bc",
+          "variable": "DATABASE_URL"
+        }
+      ]
+    },
+    "images": {
+      "1240411b-0750-44a2-8ff3-989e127de3bc": "busybox:1.37.0@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e",
+      "57cd4406-f4d7-42ec-b6c9-86298637e23a": "postgres:18.4-alpine3.23@sha256:996d0920e4ff9df1fc19dacb904492f3c1ec0ec1cc338f0ad7123be7731c5f5e"
+    },
+    "hostChanges": false,
+    "expectedState": "",
+    "acceptDrift": false,
+    "effects": null,
+    "hash": "ce71dae37af6a21284a76c87676cadd2f88967d96b555f3c90e7b83f3626a71f",
+    "expiresAt": "2026-10-26T15:02:36.983793Z"
+  },
+  "composeHash": "bf8e83e4f526645b0dd79648f29f169dd3877449c8384a3a00802a517cb5e756"
+}
