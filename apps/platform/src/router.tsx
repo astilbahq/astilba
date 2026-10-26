@@ -5,7 +5,6 @@ import {
   createRouter,
   Navigate,
   Outlet,
-  useLocation,
 } from "@tanstack/react-router";
 import { useTranslation } from "react-i18next";
 import { client, result } from "./api/client";
@@ -17,12 +16,13 @@ import { ErrorToast, ToastProvider } from "./components/toast";
 import { TooltipProvider } from "./components/tooltip";
 import { Alerts } from "./features/alerts";
 import { AuthFrame } from "./features/auth/auth-frame";
-import * as authStyles from "./features/auth/auth.styles";
+import { VerifyEmailPage } from "./features/auth/email-verification";
+import { HostedOnboarding } from "./features/auth/hosted-onboarding";
 import { Invitation } from "./features/auth/invitation";
 import { PasswordReset } from "./features/auth/password-reset";
 import { SignIn } from "./features/auth/sign-in";
+import { Signup } from "./features/auth/signup";
 import { GitHubCallback, GitHubInstalled } from "./features/github-app";
-import { Signup } from "./hosting";
 import { usePageTitle } from "./i18n/use-page-title";
 import { Account, Members } from "./security";
 import { Servers } from "./servers";
@@ -132,16 +132,9 @@ function ApplicationLayout() {
   );
 }
 function AuthLayout() {
-  const { t } = useTranslation("auth");
-  const location = useLocation();
   return (
     <AuthFrame>
       <Outlet />
-      {location.pathname === "/signup" && (
-        <Link to="/login" className={authStyles.backLink}>
-          {t(($) => $.backToSignIn)}
-        </Link>
-      )}
     </AuthFrame>
   );
 }
@@ -159,6 +152,9 @@ function loginDestination(value: unknown): string {
         "/members",
         "/account",
         "/invitation",
+        "/signup",
+        "/onboarding",
+        "/verify-email",
         "/github/callback",
       ].includes(url.pathname.replace(/\/$/, "") || "/")
     )
@@ -283,8 +279,67 @@ function InvitationPage() {
 const signup = createRoute({
   getParentRoute: () => auth,
   path: "/signup",
-  component: Signup,
+  validateSearch: (search: Record<string, unknown>): { token?: string } => ({
+    token:
+      typeof search.token === "string" && search.token
+        ? search.token
+        : undefined,
+  }),
+  component: SignupPage,
 });
+function SignupPage() {
+  const { token } = signup.useSearch();
+  const navigate = signup.useNavigate();
+  return (
+    <Signup
+      key={token ?? "missing"}
+      token={token}
+      onCreated={(workspace) =>
+        void navigate({
+          to: "/onboarding",
+          search: { workspace },
+          replace: true,
+        })
+      }
+    />
+  );
+}
+const onboarding = createRoute({
+  getParentRoute: () => auth,
+  path: "/onboarding",
+  validateSearch: (
+    search: Record<string, unknown>,
+  ): { workspace?: string; billing?: "returned" | "cancelled" } => ({
+    workspace:
+      typeof search.workspace === "string" && search.workspace
+        ? search.workspace
+        : undefined,
+    billing:
+      search.billing === "returned" || search.billing === "cancelled"
+        ? search.billing
+        : undefined,
+  }),
+  component: OnboardingPage,
+});
+function OnboardingPage() {
+  const { workspace, billing } = onboarding.useSearch();
+  return <HostedOnboarding workspaceId={workspace} billing={billing} />;
+}
+const verifyEmail = createRoute({
+  getParentRoute: () => auth,
+  path: "/verify-email",
+  validateSearch: (search: Record<string, unknown>): { token?: string } => ({
+    token:
+      typeof search.token === "string" && search.token
+        ? search.token
+        : undefined,
+  }),
+  component: EmailVerificationRoute,
+});
+function EmailVerificationRoute() {
+  const { token } = verifyEmail.useSearch();
+  return <VerifyEmailPage token={token} />;
+}
 const githubCallback = createRoute({
   getParentRoute: () => application,
   path: "/github/callback",
@@ -305,7 +360,15 @@ export const router = createRouter({
       account,
       members,
     ]),
-    auth.addChildren([loginRoute, reset, invitation, signup, githubInstalled]),
+    auth.addChildren([
+      loginRoute,
+      reset,
+      invitation,
+      signup,
+      onboarding,
+      verifyEmail,
+      githubInstalled,
+    ]),
   ]),
 });
 declare module "@tanstack/react-router" {

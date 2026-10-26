@@ -19,7 +19,7 @@ UPDATE accounts SET totp_secret=$3, totp_pending=NULL, totp_pending_expiry=NULL,
     totp_last_step=$2, auth_version=auth_version+1 WHERE id=$1 RETURNING auth_version;
 -- name: DisableTOTP :one
 UPDATE accounts SET totp_secret=NULL, totp_pending=NULL, totp_pending_expiry=NULL,
-    totp_last_step=-1, auth_version=auth_version+1 WHERE id=$1 RETURNING auth_version;
+    totp_last_step=-1, auth_version=auth_version+1, recovery_codes_saved=true, recovery_codes_generation=NULL WHERE id=$1 RETURNING auth_version;
 -- name: AcceptTOTPStep :exec
 UPDATE accounts SET totp_last_step=$2 WHERE id=$1;
 -- name: InsertRecoveryCode :exec
@@ -54,3 +54,8 @@ SELECT pg_advisory_xact_lock(4281642301);
 
 -- name: PeekPasswordReset :one
 SELECT * FROM password_resets WHERE token_hash=$1 AND expires_at>now();
+
+-- name: StartRecoveryCodes :exec
+UPDATE accounts SET recovery_codes_generation=$2, recovery_codes_saved=false WHERE id=$1;
+-- name: MarkRecoveryCodesSaved :exec
+UPDATE accounts SET recovery_codes_saved=true WHERE id=$1;

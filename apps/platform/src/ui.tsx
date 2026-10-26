@@ -77,7 +77,7 @@ export function Form({
   validation,
   errorMessage,
 }: {
-  children: ReactNode;
+  children: ReactNode | ((error: string | null) => ReactNode);
   onSubmit: (data: FormData, form: HTMLFormElement) => void;
   label?: string;
   action: ReturnType<typeof useAction>;
@@ -87,7 +87,7 @@ export function Form({
   const { t } = useTranslation("common");
   const id = useId();
   const error = action.formId === id ? action.error : null;
-  const notifyError = error && validation?.isRequestFailure?.(error);
+  const notifyError = error && validation?.shouldToastError?.(error);
   const inlineFields =
     error instanceof ApiError
       ? validation?.errorFields?.[error.detail.code]
@@ -106,6 +106,23 @@ export function Form({
       Object.fromEntries(lastResponse.fields.map((name) => [name, "invalid"])),
     [lastResponse],
   );
+  const formError =
+    error && validation && !notifyError && !inlineFields?.length
+      ? validation.message(error)
+      : null;
+  const content =
+    typeof children === "function" ? (
+      children(formError)
+    ) : (
+      <>
+        {formError && (
+          <p className={s.error} role="alert">
+            {formError}
+          </p>
+        )}
+        {children}
+      </>
+    );
   const formProps = {
     className: s.stack,
     "aria-label": label,
@@ -134,12 +151,7 @@ export function Form({
           errors={serverErrors}
           validationMode="onSubmit"
         >
-          {error && !notifyError && !inlineFields?.length && (
-            <p className={s.error} role="alert">
-              {validation.message(error)}
-            </p>
-          )}
-          {children}
+          {content}
         </BaseForm>
       ) : (
         <form {...formProps} aria-describedby={errorId}>
@@ -152,7 +164,7 @@ export function Form({
               {t(($) => $.fields, { fields: fields.join(", ") })}
             </span>
           )}
-          {children}
+          {content}
         </form>
       )}
     </FormErrorContext>

@@ -1,7 +1,12 @@
 import { createHash, randomUUID } from "node:crypto";
 import AxeBuilder from "@axe-core/playwright";
 import { expect, type Page, test } from "@playwright/test";
-import { authFixtureSQL } from "./auth-fixture";
+import {
+  authFixtureSQL,
+  emailVerificationFixture,
+  invitationLinkFixture,
+  resetLinkFixture,
+} from "./auth-fixture";
 
 async function signIn(page: Page) {
   await page.getByLabel("Email", { exact: true }).fill("owner@example.test");
@@ -47,16 +52,21 @@ test("sign-in shows associated inline errors after submit and preserves credenti
   await expect(email).not.toHaveAttribute("aria-invalid", "true");
   // Existing credentials are not subjected to the new-password length policy.
   await password.fill("short");
-  await page.getByRole("button", { name: "Sign in", exact: true }).click();
-  await expect(page.getByRole("alert")).toHaveText(
+  await password.press("Enter");
+  await expect(page.getByRole("dialog")).toHaveAccessibleDescription(
     "The email or password is incorrect.",
   );
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  await expect(email).not.toHaveAttribute("aria-invalid", "true");
+  await expect(password).not.toHaveAttribute("aria-invalid", "true");
+  await expect(password).toBeFocused();
   expect(requests).toHaveLength(1);
   await expect(email).toHaveValue("owner@example.test");
   await expect(password).toHaveValue("short");
   await password.fill("correct horse battery staple");
   await page.getByRole("button", { name: "Sign in", exact: true }).click();
   await expect(page.getByLabel("Workspace navigation")).toBeVisible();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
 });
 
 test("reset request errors preserve the draft without promising field highlights", async ({
@@ -124,12 +134,18 @@ test("new account forms validate Unicode passwords and keep errors accessible at
 }) => {
   const posts: string[] = [];
   page.on("request", (request) => {
-    if (request.method() === "POST") posts.push(request.url());
+    if (
+      request.method() === "POST" &&
+      /\/auth\/(reset\/complete|invitations\/accept)$/.test(request.url())
+    )
+      posts.push(request.url());
   });
+  const { token } = await resetLinkFixture();
+  const invitation = await invitationLinkFixture();
   await page.setViewportSize({ width: 320, height: 700 });
   for (const colorScheme of ["light", "dark"] as const) {
     await page.emulateMedia({ colorScheme });
-    await page.goto("/reset?token=validation-only");
+    await page.goto(`/reset?${new URLSearchParams({ token })}`);
     const password = page.getByLabel("New password", { exact: true });
     await password.fill("🔐".repeat(8));
     await page.getByRole("button", { name: "Set password" }).click();
@@ -144,7 +160,9 @@ test("new account forms validate Unicode passwords and keep errors accessible at
     await password.fill("🔐".repeat(128));
     await expect(password).not.toHaveAttribute("aria-invalid", "true");
 
-    await page.goto("/invitation?token=validation-only");
+    await page.goto(
+      `/invitation?${new URLSearchParams({ token: invitation.token })}`,
+    );
     const name = page.getByLabel("Your name");
     await name.fill("   ");
     await page.getByRole("button", { name: "Accept invitation" }).click();
@@ -461,9 +479,87 @@ test("input hover and focus share an edge without shifting the form", async ({
   await expect(email).toHaveCSS("outline-color", invalid);
 });
 
+for (const flow of [
+  {
+    kind: "reset",
+    seed: resetLinkFixture,
+    path: "reset",
+    endpoint: "reset",
+    checking: "Checking your reset link…",
+    ready: "Set a new password",
+    field: "New password",
+    unavailable: "Unable to check this link",
+  },
+  {
+    kind: "invitation",
+    seed: invitationLinkFixture,
+    path: "invitation",
+    endpoint: "invitations",
+    checking: "Checking your invitation…",
+    ready: "Join a workspace",
+    field: "Choose a password",
+    unavailable: "Unable to check this invitation",
+  },
+]) {
+  test(`${flow.kind} link checks hide the form until verified and recover from a network failure`, async ({
+    page,
+  }) => {
+    const { token } = await flow.seed();
+    const path = `/${flow.path}?${new URLSearchParams({ token })}`;
+    let release!: () => void;
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await page.route(
+      `**/api/v1/auth/${flow.endpoint}/validate`,
+      async (route) => {
+        const response = await route.fetch();
+        await released;
+        await route.fulfill({ response });
+      },
+    );
+    await page.goto(path);
+    try {
+      await expect(page.getByRole("status")).toHaveText(flow.checking);
+      await expect(page.locator("form")).toHaveCount(0);
+    } finally {
+      release();
+    }
+    await expect(page.getByRole("heading", { name: flow.ready })).toBeFocused();
+    await expect(page.getByLabel(flow.field)).toBeVisible();
+    await page.unroute(`**/api/v1/auth/${flow.endpoint}/validate`);
+
+    let attempts = 0;
+    await page.route(`**/api/v1/auth/${flow.endpoint}/validate`, (route) =>
+      attempts++ === 0 ? route.abort() : route.continue(),
+    );
+    await page.reload();
+    await expect(
+      page.getByRole("heading", { name: flow.unavailable }),
+    ).toBeFocused();
+    await expect(page.locator("form")).toHaveCount(0);
+    await expect(page.getByRole("dialog")).toHaveAccessibleDescription(
+      "The request could not be completed. Try again.",
+    );
+    await page.getByRole("button", { name: "Try again" }).click();
+    await expect(page.getByRole("heading", { name: flow.ready })).toBeFocused();
+    await expect(page.getByLabel(flow.field)).toBeVisible();
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+    expect(attempts).toBe(2);
+  });
+}
+
 test("password recovery requests an email link and preserves a failed password draft", async ({
   page,
 }) => {
+  const completions: string[] = [];
+  page.on("request", (request) => {
+    if (
+      request.method() === "POST" &&
+      request.url().endsWith("/auth/reset/complete")
+    )
+      completions.push(request.url());
+  });
   await page.goto("/reset");
   await expect(page.getByLabel("New password", { exact: false })).toHaveCount(
     0,
@@ -482,12 +578,34 @@ test("password recovery requests an email link and preserves a failed password d
   await page.getByRole("link", { name: "Forgot password?" }).click();
   await expect(page.getByLabel("Account email")).toBeVisible();
 
-  await page.goto("/reset?token=invalid-test-token");
+  for (const token of ["invalid-test-token", "x".repeat(129)]) {
+    await page.goto(`/reset?${new URLSearchParams({ token })}`);
+    await expect(
+      page.getByRole("heading", { name: "Invalid reset link" }),
+    ).toBeFocused();
+    await expect(
+      page.getByText("This reset link is invalid or has expired.", {
+        exact: true,
+      }),
+    ).toBeVisible();
+    await expect(page.locator("form")).toHaveCount(0);
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Try again" })).toHaveCount(
+      0,
+    );
+    expect(completions).toEqual([]);
+  }
+
+  const validLink = await resetLinkFixture();
+  await page.goto(`/reset?${new URLSearchParams({ token: validLink.token })}`);
   await expect(
     page.getByRole("heading", { name: "Set a new password" }),
   ).toBeVisible();
   await expect(page.getByLabel("Reset code from email")).toHaveCount(0);
   await expect(page.getByLabel("Account email")).toHaveCount(0);
+  await authFixtureSQL(
+    `UPDATE password_resets SET expires_at=now()-interval '1 second' WHERE account_id='${validLink.accountId}'`,
+  );
   await page
     .getByLabel("New password", { exact: false })
     .fill("replacement browser password");
@@ -495,6 +613,16 @@ test("password recovery requests an email link and preserves a failed password d
   await expect(page.getByRole("alert")).toContainText(
     "This reset link is invalid or has expired",
   );
+  const password = page.getByLabel("New password", { exact: true });
+  await expect(password).not.toHaveAttribute("aria-invalid", "true");
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  const inputBox = (await password.boundingBox())!;
+  const errorBox = (await page.getByRole("alert").boundingBox())!;
+  const submitBox = (await page
+    .getByRole("button", { name: "Set password" })
+    .boundingBox())!;
+  expect(errorBox.y).toBeGreaterThanOrEqual(inputBox.y + inputBox.height);
+  expect(errorBox.y + errorBox.height).toBeLessThanOrEqual(submitBox.y);
   await expect(page.getByLabel("New password", { exact: false })).toHaveValue(
     "replacement browser password",
   );
@@ -504,17 +632,22 @@ test("password recovery requests an email link and preserves a failed password d
   await expect(page.getByLabel("Account email")).toBeVisible();
 
   await page.setViewportSize({ width: 320, height: 640 });
+  const accessibleLink = await resetLinkFixture();
+  const validPath = `/reset?${new URLSearchParams({ token: accessibleLink.token })}`;
   for (const colorScheme of ["light", "dark"] as const) {
     await page.evaluate(() => localStorage.removeItem("astilba-theme"));
     await page.emulateMedia({ colorScheme });
-    for (const path of ["/reset", "/reset?token=preview-only"]) {
+    for (const path of ["/reset", "/reset?token=preview-only", validPath]) {
       await page.goto(path);
       await expect(
         page.getByRole("heading", {
           level: 1,
-          name: path.includes("token=")
-            ? "Set a new password"
-            : "Reset your password",
+          name:
+            path === validPath
+              ? "Set a new password"
+              : path.includes("token=")
+                ? "Invalid reset link"
+                : "Reset your password",
           exact: true,
         }),
       ).toBeVisible();
@@ -540,14 +673,7 @@ test("a reset URL changes the password through the real API and cannot be reused
   baseURL,
 }) => {
   const newPassword = ` ${"🔐".repeat(13)} `;
-  const id = randomUUID();
-  const email = `${id}@example.test`;
-  const token = randomUUID();
-  const hash = createHash("sha256").update(token).digest("hex");
-  // Seed a separate account in the owned disposable database; never reset the shared owner.
-  await authFixtureSQL(
-    `INSERT INTO accounts(id,email,name,password_hash) SELECT '${id}','${email}','Reset test',password_hash FROM accounts WHERE email='owner@example.test'; INSERT INTO password_resets(account_id,token_hash,expires_at) VALUES('${id}',decode('${hash}','hex'),now()+interval '30 minutes')`,
-  );
+  const { token, email } = await resetLinkFixture();
   const path = `/reset?${new URLSearchParams({ token })}`;
   await page.goto(path);
   await page.getByLabel("New password", { exact: false }).fill(newPassword);
@@ -566,13 +692,10 @@ test("a reset URL changes the password through the real API and cannot be reused
   await page.getByRole("button", { name: "Sign out", exact: true }).click();
   await expect(page).toHaveURL(`${baseURL}/login`);
   await page.goto(path);
-  await page
-    .getByLabel("New password", { exact: false })
-    .fill("another browser password");
-  await page.getByRole("button", { name: "Set password" }).click();
-  await expect(page.getByRole("alert")).toContainText(
-    "This reset link is invalid or has expired",
-  );
+  await expect(
+    page.getByRole("heading", { name: "Invalid reset link" }),
+  ).toBeFocused();
+  await expect(page.locator("form")).toHaveCount(0);
 });
 
 test("invitation URLs hide code entry, preserve failed drafts and join a new account", async ({
@@ -588,12 +711,33 @@ test("invitation URLs hide code entry, preserve failed drafts and join a new acc
   await expect(
     page.getByRole("button", { name: "Accept invitation" }),
   ).toHaveCount(0);
-  await page.goto("/invitation?token=invalid-invitation");
-  await expect(page.getByLabel("Invitation code from email")).toHaveCount(0);
+  for (const token of ["invalid-invitation", "x".repeat(129)]) {
+    await page.goto(`/invitation?${new URLSearchParams({ token })}`);
+    await expect(
+      page.getByRole("heading", { name: "Invalid invitation link" }),
+    ).toBeFocused();
+    await expect(
+      page.getByText("This invitation link is invalid or has expired.", {
+        exact: true,
+      }),
+    ).toBeVisible();
+    await expect(page.locator("form")).toHaveCount(0);
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Try again" })).toHaveCount(
+      0,
+    );
+  }
+  const expired = await invitationLinkFixture();
+  await page.goto(
+    `/invitation?${new URLSearchParams({ token: expired.token })}`,
+  );
   await page.getByLabel("Your name").fill("Invited viewer");
   await page
     .getByLabel("Choose a password")
     .fill("new invited account password");
+  await authFixtureSQL(
+    `DELETE FROM invitations WHERE id='${expired.invitationId}'`,
+  );
   await page.getByRole("button", { name: "Accept invitation" }).click();
   await expect(page.getByRole("alert")).toContainText(
     "This invitation link is invalid or has expired.",
@@ -602,14 +746,16 @@ test("invitation URLs hide code entry, preserve failed drafts and join a new acc
   await expect(page.getByLabel("Choose a password")).toHaveValue(
     "new invited account password",
   );
-
-  const token = randomUUID();
-  const hash = createHash("sha256").update(token).digest("hex");
-  const workspace = randomUUID();
-  const email = `${randomUUID()}@example.test`;
-  await authFixtureSQL(
-    `INSERT INTO workspaces(id,name) VALUES('${workspace}','Invited workspace'); INSERT INTO invitations(workspace_id,id,email,role,token_hash,expires_at) VALUES('${workspace}','${randomUUID()}','${email}','viewer',decode('${hash}','hex'),now()+interval '1 day')`,
+  await expect(page.getByLabel("Choose a password")).not.toHaveAttribute(
+    "aria-invalid",
+    "true",
   );
+
+  const {
+    token,
+    email,
+    workspaceId: workspace,
+  } = await invitationLinkFixture();
   const path = `/invitation?${new URLSearchParams({ token })}`;
   await page.goto(path);
   await page
@@ -647,23 +793,18 @@ test("invitation URLs hide code entry, preserve failed drafts and join a new acc
     page.getByRole("button", { name: "Sign out", exact: true }),
   ).toBeVisible();
   await page.goto(path);
-  await expect(page.getByLabel("Choose a password")).toHaveCount(0);
-  await page.getByRole("button", { name: "Accept invitation" }).click();
-  await expect(page.getByRole("alert")).toContainText(
-    "This invitation link is invalid or has expired.",
-  );
+  await expect(
+    page.getByRole("heading", { name: "Invalid invitation link" }),
+  ).toBeFocused();
+  await expect(page.locator("form")).toHaveCount(0);
 });
 
 test("existing accounts return to their invitation after signing in", async ({
   page,
   baseURL,
 }) => {
-  const token = randomUUID();
-  const hash = createHash("sha256").update(token).digest("hex");
-  const workspace = randomUUID();
-  await authFixtureSQL(
-    `INSERT INTO workspaces(id,name) VALUES('${workspace}','Another invited workspace'); INSERT INTO invitations(workspace_id,id,email,role,token_hash,expires_at) VALUES('${workspace}','${randomUUID()}','owner@example.test','viewer',decode('${hash}','hex'),now()+interval '1 day')`,
-  );
+  const { token, workspaceId: workspace } =
+    await invitationLinkFixture("owner@example.test");
   const path = `/invitation?${new URLSearchParams({ token })}`;
   await page.goto(path);
   await page.getByRole("link", { name: "Back to sign in" }).click();
@@ -682,4 +823,96 @@ test("existing accounts return to their invitation after signing in", async ({
   expect(session.workspaces).toContainEqual(
     expect.objectContaining({ id: workspace, role: "viewer" }),
   );
+});
+
+test("email links preserve sign-in return, require explicit verification and recover from expiry", async ({
+  page,
+}) => {
+  const { accountId, email, token } = await emailVerificationFixture();
+  let verifications = 0;
+  page.on("request", (request) => {
+    if (
+      request.method() === "POST" &&
+      request.url().endsWith("/api/v1/auth/email/verify")
+    )
+      verifications++;
+  });
+  await page.goto(`/verify-email?${new URLSearchParams({ token })}`);
+  await page.getByRole("link", { name: "Sign in to verify" }).click();
+  await page.getByLabel("Email", { exact: true }).fill(email);
+  await page
+    .getByLabel("Password", { exact: true })
+    .fill("correct horse battery staple");
+  await page.getByRole("button", { name: "Sign in", exact: true }).click();
+  await expect(page).toHaveURL(new RegExp(`/verify-email\\?token=${token}`));
+  const verify = page.getByRole("button", {
+    name: "Verify email",
+    exact: true,
+  });
+  await expect(verify).toBeVisible();
+  await expect(page.locator('input[name="token"]')).toHaveCount(0);
+  expect(verifications).toBe(0);
+  await authFixtureSQL(
+    `UPDATE email_verifications SET expires_at=now()-interval '1 second' WHERE account_id='${accountId}'`,
+  );
+  await verify.click();
+  await expect(page.getByRole("alert")).toContainText(
+    "This verification link is invalid, has expired, or belongs to another account.",
+  );
+  await page
+    .getByRole("button", { name: "Send verification link", exact: true })
+    .click();
+  await expect(
+    page.getByRole("heading", { name: "Check your email" }),
+  ).toBeFocused();
+  await expect(page.getByRole("status")).toContainText(email);
+  await page.goto(`/verify-email?${new URLSearchParams({ token })}`);
+  await expect(
+    page.getByRole("heading", { name: "Invalid verification link" }),
+  ).toBeFocused();
+  await authFixtureSQL(
+    `UPDATE email_verifications SET token_hash=decode('${createHash("sha256").update(token).digest("hex")}','hex'),expires_at=now()+interval '1 hour' WHERE account_id='${accountId}'`,
+  );
+  await page.reload();
+  await page.getByRole("button", { name: "Verify email", exact: true }).click();
+  await expect(
+    page.getByRole("heading", { name: "Email verified", exact: true }),
+  ).toBeFocused();
+  await page.reload();
+  await expect(
+    page.getByRole("heading", { name: "Email verified", exact: true }),
+  ).toBeVisible();
+  expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
+});
+
+test("an expired session during email-link checking offers sign-in again", async ({
+  page,
+}) => {
+  const { email, token } = await emailVerificationFixture();
+  await page.goto("/login");
+  await page.getByLabel("Email", { exact: true }).fill(email);
+  await page
+    .getByLabel("Password", { exact: true })
+    .fill("correct horse battery staple");
+  await page.getByRole("button", { name: "Sign in", exact: true }).click();
+  await expect(
+    page.getByRole("link", { name: "Account security", exact: true }),
+  ).toBeVisible();
+  await page.route(
+    "**/api/v1/auth/email/validate",
+    async (route) => {
+      await page.context().clearCookies();
+      await route.continue({
+        headers: { ...route.request().headers(), cookie: "" },
+      });
+    },
+    { times: 1 },
+  );
+  await page.goto(`/verify-email?${new URLSearchParams({ token })}`);
+  await expect(
+    page.getByRole("link", { name: "Sign in to verify", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Try again", exact: true }),
+  ).toHaveCount(0);
 });

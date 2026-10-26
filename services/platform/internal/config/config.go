@@ -71,21 +71,18 @@ func Load() (Config, error) {
 	}
 	return c, nil
 }
-func (c Config) ValidateServer() error {
-	if e := c.ApplicationDNS.Validate(c.Origin); e != nil {
-		return e
-	}
+func loopbackHost(host string) bool {
+	ip := net.ParseIP(host)
+	return host == "localhost" || (ip != nil && ip.IsLoopback())
+}
+
+func (c Config) ValidateOrigin() error {
 	u, e := url.Parse(c.Origin)
 	if e != nil || u.Host == "" || u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
 		return errors.New("ASTILBA_ORIGIN must be an exact origin without a path")
 	}
-	host, _, e := net.SplitHostPort(c.Listen)
-	if e != nil {
-		return errors.New("ASTILBA_LISTEN must be host:port")
-	}
-	loopback := func(s string) bool { ip := net.ParseIP(s); return s == "localhost" || (ip != nil && ip.IsLoopback()) }
 	if c.Development {
-		if c.Hosted || !loopback(host) || !loopback(u.Hostname()) || u.Scheme != "http" {
+		if c.Hosted || !loopbackHost(u.Hostname()) || u.Scheme != "http" {
 			return errors.New("development mode requires loopback HTTP and cannot be hosted")
 		}
 	} else if u.Scheme != "https" {
@@ -93,6 +90,23 @@ func (c Config) ValidateServer() error {
 	}
 	if strings.HasSuffix(c.Origin, "/") {
 		return errors.New("origin cannot have a trailing slash")
+	}
+	return nil
+}
+
+func (c Config) ValidateServer() error {
+	if e := c.ApplicationDNS.Validate(c.Origin); e != nil {
+		return e
+	}
+	if e := c.ValidateOrigin(); e != nil {
+		return e
+	}
+	host, _, e := net.SplitHostPort(c.Listen)
+	if e != nil {
+		return errors.New("ASTILBA_LISTEN must be host:port")
+	}
+	if c.Development && !loopbackHost(host) {
+		return errors.New("development mode requires loopback HTTP and cannot be hosted")
 	}
 	return nil
 }

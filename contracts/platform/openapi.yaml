@@ -698,6 +698,25 @@
             "schema":
               "$ref": "#/components/schemas/ResetRequest"
       "security": []
+  "/api/v1/auth/reset/validate":
+    "post":
+      "operationId": "validatePasswordReset"
+      "responses":
+        "204":
+          "description": "The reset link is currently valid; the token remains unused."
+        "default":
+          "description": "Error"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Error"
+      "requestBody":
+        "required": true
+        "content":
+          "application/json":
+            "schema":
+              "$ref": "#/components/schemas/AuthLinkToken"
+      "security": []
   "/api/v1/auth/reset/complete":
     "post":
       "operationId": "completePasswordReset"
@@ -716,6 +735,25 @@
           "application/json":
             "schema":
               "$ref": "#/components/schemas/ResetComplete"
+      "security": []
+  "/api/v1/auth/invitations/validate":
+    "post":
+      "operationId": "validateInvitation"
+      "responses":
+        "204":
+          "description": "The invitation link is currently valid; it remains unused."
+        "default":
+          "description": "Error"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Error"
+      "requestBody":
+        "required": true
+        "content":
+          "application/json":
+            "schema":
+              "$ref": "#/components/schemas/AuthLinkToken"
       "security": []
   "/api/v1/auth/invitations/accept":
     "post":
@@ -3584,6 +3622,25 @@
         content:
           application/json:
             schema: {$ref: '#/components/schemas/UpgradeActionRequest'}
+  /api/v1/auth/mfa/recovery-codes/acknowledge:
+    post:
+      operationId: acknowledgeRecoveryCodes
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/RecoveryCodesAcknowledgement'}
+      responses:
+        '200':
+          description: Current recovery-code set confirmed saved
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Session'}
+        default:
+          description: Error
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
   /api/v1/hosting:
     get:
       operationId: hostingInfo
@@ -3601,6 +3658,39 @@
               schema:
                 $ref: '#/components/schemas/Error'
       security: []
+  /api/v1/hosting/signup/validate:
+    post:
+      operationId: validateHostedInvitation
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/AuthLinkToken'}
+      responses:
+        '204':
+          description: Link is valid; no state was changed
+        default:
+          description: Error
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+  /api/v1/auth/email/validate:
+    post:
+      operationId: validateEmailVerification
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/AuthLinkToken'}
+      responses:
+        '204':
+          description: Link is valid; no state was changed
+        default:
+          description: Error
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
   /api/v1/hosting/signup:
     post:
       operationId: hostedSignup
@@ -3610,7 +3700,7 @@
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Session'
+                $ref: '#/components/schemas/HostedSignupResult'
         default:
           description: Error
           content:
@@ -5050,6 +5140,8 @@
       type: object
       additionalProperties: false
       properties:
+        recoveryCodesSaved:
+          type: boolean
         id:
           type: string
           format: uuid
@@ -5068,6 +5160,7 @@
         emailVerified:
           type: boolean
       required:
+        - recoveryCodesSaved
         - id
         - email
         - name
@@ -5098,6 +5191,10 @@
       "type": "object"
       "additionalProperties": false
       "properties":
+        createdWorkspaceId:
+          type: string
+          format: uuid
+          readOnly: true
         "csrfToken":
           "type": "string"
           "maxLength": 128
@@ -5178,6 +5275,17 @@
           "format": "email"
       "required":
         - "email"
+    "AuthLinkToken":
+      "type": "object"
+      "additionalProperties": false
+      "properties":
+        "token":
+          "type": "string"
+          "maxLength": 128
+          "minLength": 1
+          "writeOnly": true
+      "required":
+        - "token"
     "ResetComplete":
       "type": "object"
       "additionalProperties": false
@@ -5320,6 +5428,10 @@
       "type": "object"
       "additionalProperties": false
       "properties":
+        generation:
+          type: string
+          format: uuid
+          readOnly: true
         "codes":
           "type": "array"
           "items":
@@ -5328,6 +5440,7 @@
         "session":
           "$ref": "#/components/schemas/Session"
       "required":
+        - generation
         - "codes"
         - "session"
     "Project":
@@ -7844,6 +7957,19 @@
         support:
           type: string
 
+    HostedSignupResult:
+      allOf:
+        - $ref: '#/components/schemas/Session'
+        - type: object
+          required: [createdWorkspaceId]
+          properties:
+            createdWorkspaceId: {type: string, format: uuid, readOnly: true}
+    RecoveryCodesAcknowledgement:
+      type: object
+      additionalProperties: false
+      required: [generation]
+      properties:
+        generation: {type: string, format: uuid}
     HostedSignup:
       type: object
       additionalProperties: false
@@ -7912,12 +8038,15 @@
       type: object
       additionalProperties: false
       required:
+        - managementActive
         - hosted
         - billingEnabled
         - status
         - serverLimit
         - support
       properties:
+        managementActive:
+          type: boolean
         hosted:
           type: boolean
         billingEnabled:

@@ -8,6 +8,20 @@ import type { AuthMessages } from "./messages";
 
 const codeErrorFields = { invalid_credentials: ["code"] } as const;
 
+function isRequestFailure(error: unknown) {
+  return (
+    !(error instanceof ApiError) ||
+    ![
+      "invalid_credentials",
+      "invalid_input",
+      "invitation_signin_required",
+      "mfa_required",
+      "recent_auth_required",
+      "conflict",
+    ].includes(error.detail.code)
+  );
+}
+
 export function createAuthValidation(messages: AuthMessages) {
   const email = validateWith(
     z
@@ -36,21 +50,28 @@ export function createAuthValidation(messages: AuthMessages) {
         error: messages.passwordTooLong({ maximum: 128 }),
       }),
   );
-  const name = validateWith(
-    z
-      .string()
-      .trim()
-      .min(1, messages.nameRequired)
-      .refine((value) => Array.from(value).length <= 80, {
-        error: messages.nameTooLong({ maximum: 80 }),
-      })
-      .refine(
-        (value) =>
-          !["\r", "\n", "\0"].some((character) => value.includes(character)),
-        {
-          error: messages.nameInvalid,
-        },
-      ),
+  const namedValue = (required: string, invalid: string, tooLong: string) =>
+    validateWith(
+      z
+        .string()
+        .trim()
+        .min(1, required)
+        .refine((value) => Array.from(value).length <= 80, { error: tooLong })
+        .refine(
+          (value) =>
+            !["\r", "\n", "\0"].some((character) => value.includes(character)),
+          { error: invalid },
+        ),
+    );
+  const name = namedValue(
+    messages.nameRequired,
+    messages.nameInvalid,
+    messages.nameTooLong({ maximum: 80 }),
+  );
+  const workspace = namedValue(
+    messages.workspaceRequired,
+    messages.workspaceInvalid,
+    messages.workspaceTooLong({ maximum: 80 }),
   );
   const code = validateWith(
     z
@@ -69,14 +90,7 @@ export function createAuthValidation(messages: AuthMessages) {
   ): FormValidation {
     return {
       fields,
-      isRequestFailure: (error) =>
-        !(error instanceof ApiError) ||
-        ![
-          "invalid_credentials",
-          "invalid_input",
-          "invitation_signin_required",
-          "mfa_required",
-        ].includes(error.detail.code),
+      shouldToastError: isRequestFailure,
       message(error, field) {
         if (!(error instanceof ApiError)) return messages.requestFailed;
         switch (error.detail.code) {
@@ -88,6 +102,10 @@ export function createAuthValidation(messages: AuthMessages) {
             return messages.mfaRequired;
           case "rate_limited":
             return messages.rateLimited;
+          case "recent_auth_required":
+            return messages.recentRequired;
+          case "conflict":
+            return messages.setupConflict;
           case "invalid_input":
             if (!field) return messages.invalidFields;
             if (field === "email") return messages.emailInvalid;
@@ -102,7 +120,13 @@ export function createAuthValidation(messages: AuthMessages) {
   }
 
   return {
-    signIn: form({ email, password }),
+    signIn: {
+      ...form({ email, password }),
+      shouldToastError: (error: unknown) =>
+        isRequestFailure(error) ||
+        (error instanceof ApiError &&
+          error.detail.code === "invalid_credentials"),
+    },
     mfa: {
       ...form({ code }, messages.invalidCode),
       errorFields: codeErrorFields,
@@ -115,6 +139,14 @@ export function createAuthValidation(messages: AuthMessages) {
       ),
       errorFields: codeErrorFields,
     },
+    identity: (mfaEnabled: boolean, recovery: boolean) =>
+      form(
+        mfaEnabled
+          ? { password, code: recovery ? recoveryCode : code }
+          : { password },
+        messages.invalidIdentity,
+      ),
+    setup: form({}, messages.invalidCode),
     resetRequest: form({ email }),
     resetPassword: form({ password: newPassword }, messages.invalidResetLink),
     invitation: form(
@@ -122,5 +154,30 @@ export function createAuthValidation(messages: AuthMessages) {
       messages.invalidInvitation,
     ),
     acceptInvitation: form({}, messages.invalidInvitation),
+    emailVerification: form({}, messages.invalidEmailLink),
+    signup: (existing: boolean): FormValidation => {
+      const base = form(
+        existing ? { workspace } : { workspace, name, password: newPassword },
+        messages.invalidInvitation,
+      );
+      return {
+        ...base,
+        shouldToastError: (error) =>
+          isRequestFailure(error) &&
+          !(
+            error instanceof ApiError &&
+            ["conflict", "forbidden"].includes(error.detail.code)
+          ),
+        message(error, field) {
+          if (error instanceof ApiError) {
+            if (error.detail.code === "forbidden")
+              return messages.signupAccount;
+            if (error.detail.code === "conflict")
+              return messages.signupUnavailable;
+          }
+          return base.message(error, field);
+        },
+      };
+    },
   };
 }

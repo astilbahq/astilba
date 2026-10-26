@@ -21,13 +21,14 @@ type Service struct {
 	Now    func() time.Time
 }
 type Status struct {
-	Hosted          bool       `json:"hosted"`
-	BillingEnabled  bool       `json:"billingEnabled"`
-	Status          string     `json:"status"`
-	ManagementUntil *time.Time `json:"managementUntil,omitempty"`
-	RecoveryUntil   *time.Time `json:"recoveryUntil,omitempty"`
-	ServerLimit     int        `json:"serverLimit"`
-	Support         string     `json:"support"`
+	Hosted           bool       `json:"hosted"`
+	BillingEnabled   bool       `json:"billingEnabled"`
+	Status           string     `json:"status"`
+	ManagementUntil  *time.Time `json:"managementUntil,omitempty"`
+	RecoveryUntil    *time.Time `json:"recoveryUntil,omitempty"`
+	ServerLimit      int        `json:"serverLimit"`
+	Support          string     `json:"support"`
+	ManagementActive bool       `json:"managementActive"`
 }
 
 func (s *Service) Status(ctx context.Context, p store.Principal, ws uuid.UUID) (Status, error) {
@@ -39,6 +40,7 @@ func (s *Service) Status(ctx context.Context, p store.Principal, ws uuid.UUID) (
 		e, err := store.Entitlement(ctx, tx, ws)
 		out.Status = e.Status
 		out.ManagementUntil = e.Until
+		out.ManagementActive = e.Active(s.Now())
 		out.ServerLimit = e.ServerLimit
 		if e.Until != nil {
 			recovery := e.Until.Add(hosting.GracePeriod)
@@ -146,7 +148,7 @@ func (s *Service) Checkout(ctx context.Context, p store.Principal, ws uuid.UUID)
 		}
 		customer = &id
 	}
-	result, e := s.Stripe.Checkout(ctx, current.ID.String(), *customer, s.Origin+"/members?workspace="+ws.String(), current.Expires)
+	result, e := s.Stripe.Checkout(ctx, current.ID.String(), *customer, s.Origin+"/onboarding?workspace="+ws.String(), current.Expires)
 	if e != nil {
 		return "", e
 	}

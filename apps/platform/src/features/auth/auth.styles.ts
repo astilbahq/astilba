@@ -59,6 +59,7 @@ export const content = css({
 
 export const flow = css({ display: "grid", gap: "6" });
 export const headingGroup = css({ display: "grid", gap: "2" });
+export const feedbackGroup = css({ display: "grid", gap: "2" });
 export const formSection = css({
   display: "grid",
   gap: "7",
@@ -89,4 +90,54 @@ export const backLink = css({
   justifySelf: "center",
   fontSize: "secondary",
   minBlockSize: "6",
+});
+
+export const progress = css({
+  display: "grid",
+  gridTemplateColumns: "repeat(4, minmax(0, 1fr))",
+  gap: "3",
+  listStyleType: "none",
+  padding: "0",
+  fontSize: "secondary",
+  color: "subtle",
+  "& li": {
+    borderBlockStartWidth: "2px",
+    borderBlockStartStyle: "solid",
+    borderColor: "control.border",
+    paddingBlockStart: "2",
+    minInlineSize: "0",
+  },
+  "& [aria-current=step]": {
+    color: "fg",
+    borderColor: "fg",
+    fontWeight: "semibold",
+  },
+  "& [data-complete=true]": { borderColor: "fg" },
+});
+export const recoveryCodes = css({
+  display: "grid",
+  gap: "2",
+  padding: "0",
+  listStyleType: "none",
+  direction: "ltr",
+  unicodeBidi: "isolate",
+  fontFamily: "mono",
+  fontSize: "secondary",
+  userSelect: "all",
+  overflowWrap: "anywhere",
+});
+export const setupKey = css({
+  direction: "ltr",
+  unicodeBidi: "isolate",
+  fontFamily: "mono",
+  fontSize: "secondary",
+  userSelect: "all",
+  overflowWrap: "anywhere",
+});
+export const authenticatorQR = css({
+  inlineSize: "full",
+  maxInlineSize: "56",
+  blockSize: "auto",
+  color: "fg",
+  justifySelf: "start",
 });

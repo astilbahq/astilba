@@ -50,20 +50,20 @@ func TestHostedSignupRequiresOneUseWorkspaceAdmission(t *testing.T) {
 	f.st.Hosted = true
 	f.st.Hosting = hosting.Config{CohortLimit: 1, ServerLimit: 2}
 	ctx := context.Background()
-	if e := f.auth.InviteHosted(ctx, "beta@example.test"); e != nil {
+	if e := f.auth.InviteHosted(ctx, "beta@example.test", f.apiServer.Origin); e != nil {
 		t.Fatal(e)
 	}
-	token := tokenFromMail(t, f.mail)
+	token := tokenFromLinkMail(t, f, "/signup")
 	browser := f.browser(t)
 	var session api.Session
 	browser.call("POST", "/api/v1/hosting/signup", map[string]string{"token": token, "workspace": "Beta", "name": "Owner", "password": f.password}, 200, &session)
-	if session.User == nil || !session.User.EmailVerified || len(session.Workspaces) != 1 {
+	if session.User == nil || !session.User.EmailVerified || len(session.Workspaces) != 1 || session.CreatedWorkspaceId == nil || *session.CreatedWorkspaceId != session.Workspaces[0].Id {
 		t.Fatalf("signup did not establish verified owner: %+v", session)
 	}
 	browser.csrf = session.CsrfToken
 	browser.call("POST", "/api/v1/workspaces", map[string]string{"name": "Bypass"}, 400, nil)
 	browser.call("POST", "/api/v1/hosting/signup", map[string]string{"token": token, "workspace": "Reuse"}, 400, nil)
-	if e := f.auth.InviteHosted(ctx, "second@example.test"); e == nil {
+	if e := f.auth.InviteHosted(ctx, "second@example.test", f.apiServer.Origin); e == nil {
 		t.Fatal("cohort allowance bypassed")
 	}
 }
@@ -95,7 +95,11 @@ func (s *stripeFixture) RoundTrip(r *http.Request) (*http.Response, error) {
 		if s.workspace != "" {
 			for _, key := range []string{"success_url", "cancel_url"} {
 				u, e := url.Parse(r.Form.Get(key))
-				if e != nil || u.Query().Get("workspace") != s.workspace {
+				marker := "returned"
+				if key == "cancel_url" {
+					marker = "cancelled"
+				}
+				if e != nil || u.Query().Get("workspace") != s.workspace || u.Path != "/onboarding" || u.Query().Get("billing") != marker {
 					s.t.Error("checkout return lost its workspace")
 				}
 			}

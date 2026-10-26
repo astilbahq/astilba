@@ -80,9 +80,11 @@ test("switching scenarios resets errors, drafts and session fixtures", async ({
     page.getByText(/Component test completed successfully/),
   ).toBeAttached({ timeout: info.timeout });
   const canvas = page.frameLocator("#storybook-preview-iframe");
-  await expect(canvas.getByRole("alert")).toBeVisible();
+  await expect(canvas.getByRole("dialog")).toHaveAccessibleDescription(
+    "The email or password is incorrect.",
+  );
   await page.getByRole("link", { name: "Default", exact: true }).click();
-  await expect(canvas.getByRole("alert")).toHaveCount(0);
+  await expect(canvas.getByRole("dialog")).toHaveCount(0);
   await expect(canvas.getByLabel("Email", { exact: true })).toHaveValue("");
   await page.getByRole("button", { name: "Invitation", exact: true }).click();
   await page
@@ -162,11 +164,11 @@ test("rejected code feedback translates and stays cleared after editing", async 
   await expect(slots.first()).not.toHaveAttribute("aria-invalid", "true");
 });
 
-test("request toasts preserve drafts and focus, translate, dismiss and reset on navigation", async ({
+test("sign-in toasts preserve drafts and focus, translate, dismiss and reset on navigation", async ({
   page,
 }, info) => {
   await page.goto(
-    "/?path=/story/pages-sign-in--network-failure&globals=theme:dark;a11y.manual:!true",
+    "/?path=/story/pages-sign-in--rejected-credentials&globals=theme:dark;a11y.manual:!true",
   );
   await expect(
     page.getByText(/Component test completed successfully/),
@@ -176,7 +178,7 @@ test("request toasts preserve drafts and focus, translate, dismiss and reset on 
   const password = canvas.locator('input[name="password"]');
   const notification = canvas.getByRole("dialog");
   await expect(notification).toHaveAccessibleDescription(
-    "The request could not be completed. Try again.",
+    "The email or password is incorrect.",
   );
   await expect(canvas.getByRole("alert")).toHaveCount(0);
   await expect(email).toHaveValue("alex@example.test");
@@ -239,7 +241,7 @@ test("request toasts preserve drafts and focus, translate, dismiss and reset on 
   await expect(canvas.locator("html")).toHaveAttribute("dir", "ltr");
   await email.press("Enter");
   await expect(notification).toHaveAccessibleDescription(
-    "The request could not be completed. Try again.",
+    "The email or password is incorrect.",
   );
   await page.locator("#pages-sign-in--default").click();
   await expect(notification).toHaveCount(0);
@@ -346,4 +348,44 @@ test("hover keeps the stack expanded across gaps and excess toasts leave", async
     page.locator(`[aria-describedby="${oldestDescription}"]`),
   ).toHaveCount(0);
   await expect(notifications).toHaveCount(3);
+});
+
+test("hosted signup and email verification fit expanded RTL at 320px", async ({
+  page,
+}, info) => {
+  await page.setViewportSize({ width: 320, height: 844 });
+  for (const id of [
+    "pages-hosted-signup--new-account",
+    "pages-email-verification--verify",
+    "pages-email-verification--email-sent",
+    "pages-hosted-onboarding--scan-authenticator",
+    "pages-hosted-onboarding--save-recovery-codes",
+    "pages-hosted-onboarding--subscription",
+  ]) {
+    await page.goto(
+      `/iframe.html?id=${id}&viewMode=story&globals=theme:dark;locale:en-XB;a11y.manual:!true`,
+    );
+    await expect(page.locator("html")).toHaveAttribute("dir", "rtl");
+    await expect(page.getByRole("heading", { level: 1 })).toContainText("⟦");
+    if (id.includes("new-account"))
+      await expect(page.locator('input[name="workspace"]')).toBeVisible();
+    if (id.endsWith("--verify"))
+      await expect(page.locator('button[type="submit"]')).toBeVisible();
+    if (id.endsWith("--email-sent"))
+      await expect(page.getByRole("status")).toBeVisible();
+    if (id.endsWith("--scan-authenticator"))
+      await expect(page.getByRole("group")).toBeVisible();
+    if (id.endsWith("--save-recovery-codes"))
+      await expect(page.locator("li code")).toHaveCount(10);
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= innerWidth,
+      ),
+    ).toBe(true);
+    expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
+    await page.screenshot({
+      path: info.outputPath(`${id}-dark-rtl-320.png`),
+      fullPage: true,
+    });
+  }
 });

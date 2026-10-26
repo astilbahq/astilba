@@ -31,7 +31,7 @@ func (s *Server) HostedSignup(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, e)
 		return
 	}
-	a, _, e := s.Auth.AcceptHosted(r.Context(), value(b.Token), value(b.Name), value(b.Password), b.Workspace, principal(r.Context()))
+	a, workspace, e := s.Auth.AcceptHosted(r.Context(), value(b.Token), value(b.Name), value(b.Password), b.Workspace, principal(r.Context()))
 	if e == nil && principal(r.Context()) == nil {
 		e = s.establish(r.Context(), a, false)
 	}
@@ -39,10 +39,16 @@ func (s *Server) HostedSignup(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, e)
 		return
 	}
-	s.sendSession(w, r)
+	session, e := s.session(r.Context())
+	if e != nil {
+		s.fail(w, r, e)
+		return
+	}
+	session.CreatedWorkspaceId = &workspace
+	s.respond(w, http.StatusOK, session)
 }
 func (s *Server) RequestEmailVerification(w http.ResponseWriter, r *http.Request) {
-	e := s.Auth.RequestEmailVerification(r.Context(), *principal(r.Context()))
+	e := s.Auth.RequestEmailVerification(r.Context(), *principal(r.Context()), s.Origin)
 	if e != nil {
 		s.fail(w, r, e)
 		return
@@ -95,4 +101,27 @@ func (s *Server) StripeWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(204)
+}
+
+func (s *Server) ValidateHostedInvitation(w http.ResponseWriter, r *http.Request) {
+	b, e := decode[api.AuthLinkToken](r)
+	if e == nil {
+		e = s.Auth.ValidateHostedInvitation(r.Context(), value(b.Token), s.clientIP(r))
+	}
+	if e != nil {
+		s.fail(w, r, e)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+func (s *Server) ValidateEmailVerification(w http.ResponseWriter, r *http.Request) {
+	b, e := decode[api.AuthLinkToken](r)
+	if e == nil {
+		e = s.Auth.ValidateEmailVerification(r.Context(), *principal(r.Context()), value(b.Token))
+	}
+	if e != nil {
+		s.fail(w, r, e)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }

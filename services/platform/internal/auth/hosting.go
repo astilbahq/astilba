@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"errors"
+	"net/url"
 	"time"
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
@@ -13,7 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-func (s *Service) InviteHosted(ctx context.Context, email string) error {
+func (s *Service) InviteHosted(ctx context.Context, email, origin string) error {
 	if !s.Store.Hosted {
 		return domain.Forbidden
 	}
@@ -50,7 +51,7 @@ func (s *Service) InviteHosted(ctx context.Context, email string) error {
 	if e = tx.Commit(ctx); e != nil {
 		return e
 	}
-	e = s.Mail.Send(ctx, email, "Your Astilba beta invitation", "Enter this one-use code on the Astilba signup page within 48 hours:\n\n"+token)
+	e = s.Mail.Send(ctx, email, "Your Astilba beta invitation", "Open this one-use link to create your Astilba workspace within 48 hours:\n\n"+origin+"/signup?"+url.Values{"token": {token}}.Encode())
 	if e != nil {
 		_, _ = s.Store.Pool.Exec(ctx, "DELETE FROM hosted_invitations WHERE token_hash=$1 AND claimed_at IS NULL", Hash(token))
 	}
@@ -68,7 +69,7 @@ func (s *Service) AcceptHosted(ctx context.Context, token, name, password, works
 	}
 	workspace, e := domain.Name(workspace)
 	if e != nil {
-		return account, ws, e
+		return account, ws, domain.Invalid("workspace")
 	}
 	var passwordHash string
 	if existing == nil {
@@ -126,7 +127,7 @@ func (s *Service) AcceptHosted(ctx context.Context, token, name, password, works
 	return account, ws, tx.Commit(ctx)
 }
 
-func (s *Service) RequestEmailVerification(ctx context.Context, p store.Principal) error {
+func (s *Service) RequestEmailVerification(ctx context.Context, p store.Principal, origin string) error {
 	if p.Account.EmailVerifiedAt != nil {
 		return nil
 	}
@@ -141,7 +142,7 @@ func (s *Service) RequestEmailVerification(ctx context.Context, p store.Principa
 	if e != nil {
 		return e
 	}
-	e = s.Mail.Send(ctx, p.Account.Email, "Verify your Astilba email", "Enter this one-use code in your account settings within one hour:\n\n"+token)
+	e = s.Mail.Send(ctx, p.Account.Email, "Verify your Astilba email", "Sign in to your Astilba account and open this one-use link to verify your email within one hour:\n\n"+origin+"/verify-email?"+url.Values{"token": {token}}.Encode())
 	if e != nil {
 		_, _ = s.Store.Pool.Exec(ctx, "DELETE FROM email_verifications WHERE account_id=$1 AND token_hash=$2", p.Account.ID, Hash(token))
 	}
@@ -168,4 +169,35 @@ func (s *Service) VerifyEmail(ctx context.Context, p store.Principal, token stri
 		return e
 	}
 	return tx.Commit(ctx)
+}
+
+func (s *Service) ValidateHostedInvitation(ctx context.Context, token, ip string) error {
+	if !s.Store.Hosted {
+		return domain.Forbidden
+	}
+	if e := s.Limit(ctx, "hosted-validate:ip:"+ip, 60, 15*time.Minute); e != nil {
+		return e
+	}
+	var exists bool
+	if e := s.Store.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM hosted_invitations WHERE token_hash=$1 AND claimed_at IS NULL AND expires_at>$2)`, Hash(token), s.Now()).Scan(&exists); e != nil {
+		return e
+	}
+	if !exists {
+		return domain.Credentials
+	}
+	return nil
+}
+
+func (s *Service) ValidateEmailVerification(ctx context.Context, p store.Principal, token string) error {
+	if e := s.Limit(ctx, "email-validate:"+p.Account.ID.String(), 60, 15*time.Minute); e != nil {
+		return e
+	}
+	var exists bool
+	if e := s.Store.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM email_verifications WHERE account_id=$1 AND token_hash=$2 AND expires_at>$3)`, p.Account.ID, Hash(token), s.Now()).Scan(&exists); e != nil {
+		return e
+	}
+	if !exists {
+		return domain.Credentials
+	}
+	return nil
 }

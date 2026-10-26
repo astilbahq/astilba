@@ -1,5 +1,6 @@
 import type { Meta, StoryObj } from "@storybook/tanstack-react";
-import { expect, within } from "storybook/test";
+import { http, HttpResponse } from "msw/http";
+import { expect, waitFor, within } from "storybook/test";
 import {
   accept,
   guest,
@@ -38,15 +39,53 @@ export const EmailSent: Story = {
 };
 export const NewPassword: Story = {
   args: { token: "workshop-reset-token" },
-  parameters: scenario(guest, accept("reset/complete")),
+  parameters: scenario(
+    guest,
+    accept("reset/validate"),
+    accept("reset/complete"),
+  ),
 };
 export const InvalidLink: Story = {
   ...NewPassword,
-  parameters: scenario(guest, reject("reset/complete")),
+  parameters: scenario(guest, reject("reset/validate")),
+  play: async ({ canvasElement }) => {
+    await waitFor(() =>
+      expect(
+        within(canvasElement).getByRole("heading", { level: 1 }),
+      ).toHaveFocus(),
+    );
+    await expect(canvasElement.querySelector("form")).not.toBeInTheDocument();
+  },
+};
+export const ExpiredDuringEntry: Story = {
+  ...NewPassword,
+  parameters: scenario(
+    guest,
+    accept("reset/validate"),
+    reject("reset/complete"),
+  ),
   play: async ({ canvasElement }) => {
     await fill(canvasElement, "password", "correct horse battery staple");
     await submit(canvasElement);
     await expect(await within(canvasElement).findByRole("alert")).toBeVisible();
+  },
+};
+export const CheckingLink: Story = {
+  ...NewPassword,
+  parameters: scenario(guest, submitting("reset/validate")),
+};
+export const CheckUnavailable: Story = {
+  ...NewPassword,
+  parameters: scenario(
+    guest,
+    http.post("/api/v1/auth/reset/validate", () => HttpResponse.error()),
+  ),
+  play: async ({ canvasElement }) => {
+    await expect(
+      await within(within(canvasElement).getByRole("main")).findByRole(
+        "button",
+      ),
+    ).toBeVisible();
   },
 };
 export const Complete: Story = {

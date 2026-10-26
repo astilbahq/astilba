@@ -1,8 +1,8 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
 import AxeBuilder from "@axe-core/playwright";
 import { expect, type Page, test } from "@playwright/test";
-import { authFixtureSQL } from "./auth-fixture";
+import { invitationLinkFixture, resetLinkFixture } from "./auth-fixture";
 
 const dev = "http://127.0.0.1:15182";
 
@@ -58,13 +58,8 @@ test("language changes preserve drafts, reveal state, visible client errors and 
 test("server errors translate without reviving errors cleared by edits", async ({
   page,
 }) => {
-  const token = randomUUID();
-  const hash = createHash("sha256").update(token).digest("hex");
-  const workspace = randomUUID();
   const email = `${randomUUID()}-{{email}}@example.test`;
-  await authFixtureSQL(
-    `INSERT INTO workspaces(id,name) VALUES('${workspace}','Locale workspace'); INSERT INTO invitations(workspace_id,id,email,role,token_hash,expires_at) VALUES('${workspace}','${randomUUID()}','${email}','viewer',decode('${hash}','hex'),now()+interval '1 day')`,
-  );
+  const { token } = await invitationLinkFixture(email);
   await page.goto(`${dev}/invitation?${new URLSearchParams({ token })}`);
   const name = page.locator('input[name="name"]');
   const password = page.locator('input[name="password"]');
@@ -89,7 +84,10 @@ test("server errors translate without reviving errors cleared by edits", async (
   await expect(
     page.getByRole("heading", { name: "Workspace joined" }),
   ).toBeFocused();
-  await page.goto(`${dev}/invitation?token=another-invitation`);
+  const another = await invitationLinkFixture(email);
+  await page.goto(
+    `${dev}/invitation?${new URLSearchParams({ token: another.token })}`,
+  );
   await expect(page.locator("bdi")).toHaveText(email);
   await chooseLanguage(page, "Pseudo (RTL)");
   await expect(page.locator("bdi")).toHaveText(email);
@@ -98,13 +96,15 @@ test("server errors translate without reviving errors cleared by edits", async (
 test("expanded RTL auth remains usable at narrow widths in both themes", async ({
   page,
 }, info) => {
+  const { token } = await resetLinkFixture();
+  const invitation = await invitationLinkFixture();
   await page.setViewportSize({ width: 320, height: 720 });
   for (const colorScheme of ["light", "dark"] as const) {
     await page.emulateMedia({ colorScheme });
     for (const path of [
       "/login",
-      "/reset?token=locale-preview",
-      "/invitation?token=locale-preview",
+      `/reset?${new URLSearchParams({ token })}`,
+      `/invitation?${new URLSearchParams({ token: invitation.token })}`,
     ]) {
       await page.goto(`${dev}${path}`);
       await chooseLanguage(page, "Pseudo (RTL)");

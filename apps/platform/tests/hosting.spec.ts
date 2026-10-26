@@ -73,10 +73,22 @@ test("hosted signup, MFA, billing admission and encrypted workspace import", asy
   try {
     const hosted = await context.newPage();
     const origin = "https://127.0.0.1:15186";
-    await hosted.goto(`${origin}/signup`);
+    await hosted.goto(`${origin}/signup?token=invalid-beta-invitation`);
+    await expect(
+      hosted.getByRole("heading", { name: "Invalid beta invitation" }),
+    ).toBeVisible();
+    await expect(hosted.locator("form")).toHaveCount(0);
+    await hosted.goto(
+      `${origin}/signup?token=browser-${info.project.name}-signup-invitation-code`,
+    );
+    await expect(hosted.locator('input[name="token"]')).toHaveCount(0);
     await hosted
-      .getByLabel("Beta invitation code")
-      .fill(`browser-${info.project.name}-signup-invitation-code`);
+      .getByRole("button", { name: "Create invited workspace" })
+      .click();
+    await expect(hosted.getByLabel("Workspace name")).toBeFocused();
+    await expect(
+      hosted.getByLabel("Workspace name"),
+    ).toHaveAccessibleDescription("Enter a workspace name.");
     await hosted
       .getByLabel("Workspace name")
       .fill(`Hosted ${info.project.name}`);
@@ -84,30 +96,88 @@ test("hosted signup, MFA, billing admission and encrypted workspace import", asy
     await hosted
       .getByLabel("Password", { exact: true })
       .fill("correct horse battery staple");
-    await hosted
-      .getByLabel("Beta invitation code")
-      .fill("invalid-beta-invitation");
+    let failedAvailabilityChecks = 0;
+    await hosted.route("**/api/v1/hosting", (route) => {
+      failedAvailabilityChecks++;
+      return route.abort();
+    });
+    await hosted.clock.setSystemTime(new Date(Date.now() + 20000));
+    await hosted.evaluate(() => {
+      Object.defineProperty(document, "visibilityState", {
+        configurable: true,
+        value: "hidden",
+      });
+      document.dispatchEvent(new Event("visibilitychange", { bubbles: true }));
+      Object.defineProperty(document, "visibilityState", {
+        configurable: true,
+        value: "visible",
+      });
+      document.dispatchEvent(new Event("visibilitychange", { bubbles: true }));
+      delete (document as unknown as Record<string, unknown>).visibilityState;
+    });
+    await expect.poll(() => failedAvailabilityChecks).toBeGreaterThan(0);
+    await expect(hosted.getByLabel("Workspace name")).toHaveValue(
+      `Hosted ${info.project.name}`,
+    );
+    await expect(hosted.getByLabel("Your name")).toHaveValue("Beta owner");
+    await expect(hosted.getByLabel("Password", { exact: true })).toHaveValue(
+      "correct horse battery staple",
+    );
+    await hosted.unroute("**/api/v1/hosting");
+    await hosted.clock.setSystemTime(new Date());
+    let releaseSession!: () => void;
+    const heldSession = new Promise<void>((resolve) => {
+      releaseSession = resolve;
+    });
+    await hosted.route(
+      "**/api/v1/session",
+      async (route) => {
+        await heldSession;
+        await route.continue();
+      },
+      { times: 1 },
+    );
     await hosted
       .getByRole("button", { name: "Create invited workspace" })
       .click();
-    await expect(hosted.getByRole("alert")).toContainText(
-      "This invitation link is invalid or has expired.",
+    try {
+      await expect(
+        hosted.getByRole("heading", { name: "Set up an authenticator" }),
+      ).toBeFocused();
+    } finally {
+      releaseSession();
+    }
+    await expect(hosted).toHaveURL(/\/onboarding[?]workspace=/);
+    const onboardingURL = hosted.url();
+    const createdWorkspace = new URL(onboardingURL).searchParams.get(
+      "workspace",
     );
-    await expect(
-      hosted.getByRole("form", { name: "Hosted signup" }),
-    ).toHaveAccessibleDescription(
-      /^This invitation link is invalid or has expired\./,
+    expect(createdWorkspace).toBeTruthy();
+    await hosted.route(
+      "**/api/v1/workspaces/*/subscription",
+      async (route) => {
+        await context.clearCookies();
+        await route.continue({
+          headers: { ...route.request().headers(), cookie: "" },
+        });
+      },
+      { times: 1 },
     );
+    await hosted.reload();
     await hosted
-      .getByLabel("Beta invitation code")
-      .fill(`browser-${info.project.name}-signup-invitation-code`);
-    await hosted
-      .getByRole("button", { name: "Create invited workspace" })
+      .getByRole("link", { name: "Sign in to continue", exact: true })
       .click();
+    await hosted
+      .getByLabel("Email", { exact: true })
+      .fill(`${info.project.name}@example.test`);
+    await hosted
+      .getByLabel("Password", { exact: true })
+      .fill("correct horse battery staple");
+    await hosted.getByRole("button", { name: "Sign in", exact: true }).click();
+    await expect(hosted).toHaveURL(onboardingURL);
     await expect(
-      hosted.getByText("Your workspace is ready.", { exact: false }),
+      hosted.getByRole("heading", { name: "Set up an authenticator" }),
     ).toBeVisible();
-    await hosted.getByRole("link", { name: "Set up account security" }).click();
     // Issue the next invitation after signup claims the first one. The MFA
     // rejection must roll this invitation back so the later import can use it.
     const fixture = JSON.parse(
@@ -134,27 +204,32 @@ test("hosted signup, MFA, billing admission and encrypted workspace import", asy
     expect(ownership).toBe(fixture.owner);
     const code = `browser-${info.project.name}-import-invitation-code`;
     const hash = createHash("sha256").update(code).digest("hex");
-    execFileSync(
-      "docker",
-      [
-        "--host",
-        fixture.host,
-        "exec",
-        fixture.container,
-        "psql",
-        "--username",
-        "postgres",
-        "--dbname",
-        fixture.database,
-        "-v",
-        "ON_ERROR_STOP=1",
-        "-c",
-        `INSERT INTO hosted_invitations(id,email,token_hash,expires_at) VALUES('${randomUUID()}','${info.project.name}@example.test',decode('${hash}','hex'),now()+interval '1 day')`,
-      ],
-      { stdio: "pipe" },
+    const fixtureSQL = (statement: string) =>
+      execFileSync(
+        "docker",
+        [
+          "--host",
+          fixture.host,
+          "exec",
+          fixture.container,
+          "psql",
+          "--username",
+          "postgres",
+          "--dbname",
+          fixture.database,
+          "-v",
+          "ON_ERROR_STOP=1",
+          "-c",
+          statement,
+        ],
+        { stdio: "pipe" },
+      );
+    fixtureSQL(
+      `INSERT INTO hosted_invitations(id,email,token_hash,expires_at) VALUES('${randomUUID()}','${info.project.name}@example.test',decode('${hash}','hex'),now()+interval '1 day')`,
     );
-    await hosted.goto(`${origin}/signup`);
-    await hosted.getByLabel("Beta invitation code").fill(code);
+    await hosted.goto(
+      `${origin}/signup?${new URLSearchParams({ token: code })}`,
+    );
     await hosted.getByLabel("Workspace name").fill("Requires MFA");
     await hosted
       .getByRole("button", { name: "Create invited workspace" })
@@ -162,12 +237,12 @@ test("hosted signup, MFA, billing admission and encrypted workspace import", asy
     await expect(hosted.getByRole("alert")).toContainText(
       "Set up two-factor authentication before changing this workspace.",
     );
-    await hosted.goto(`${origin}/account`);
+    await hosted.goto(onboardingURL);
     await expect(
-      hosted.getByText("Email verified.", { exact: true }),
+      hosted.getByRole("heading", { name: "Set up an authenticator" }),
     ).toBeVisible();
     await hosted.getByRole("button", { name: "Set up authenticator" }).click();
-    const uri = await hosted
+    let uri = await hosted
       .getByRole("link", { name: "Open authenticator app" })
       .getAttribute("href");
     const qr = hosted.getByRole("img", { name: "Authenticator setup QR code" });
@@ -193,20 +268,94 @@ test("hosted signup, MFA, billing admission and encrypted workspace import", asy
       jsQR(Uint8ClampedArray.from(pixels.data), pixels.width, pixels.height)
         ?.data,
     ).toBe(uri);
-    const secret = new URL(uri ?? "").searchParams.get("secret");
+    let secret = new URL(uri ?? "").searchParams.get("secret");
     expect(secret).toBeTruthy();
-    await hosted.getByLabel("Six-digit code").fill(totp(secret ?? ""));
+    fixtureSQL(
+      `UPDATE accounts SET totp_pending_expiry=now()-interval '1 second' WHERE email='${info.project.name}@example.test'`,
+    );
+    await hosted
+      .getByRole("group", { name: "Authentication code", exact: true })
+      .getByRole("textbox")
+      .first()
+      .pressSequentially(totp(secret ?? ""));
     await hosted
       .getByRole("button", { name: "Enable two-factor authentication" })
       .click();
     await expect(
-      hosted.getByText("Save these recovery codes somewhere safe.", {
-        exact: false,
-      }),
-    ).toBeVisible();
+      hosted
+        .getByRole("group", { name: "Authentication code", exact: true })
+        .getByRole("textbox")
+        .first(),
+    ).toHaveAttribute("aria-invalid", "true");
+    await expect(
+      hosted.getByRole("group", { name: "Authentication code", exact: true }),
+    ).toHaveAccessibleDescription(
+      "This authentication code is invalid or has already been used. Try a new code.",
+    );
+    await hosted
+      .getByRole("button", { name: "Start setup again", exact: true })
+      .click();
+    const oldURI = uri;
+    await expect
+      .poll(async () =>
+        hosted
+          .getByRole("link", { name: "Open authenticator app" })
+          .getAttribute("href"),
+      )
+      .not.toBe(oldURI);
+    uri = await hosted
+      .getByRole("link", { name: "Open authenticator app" })
+      .getAttribute("href");
+    secret = new URL(uri ?? "").searchParams.get("secret");
+    await hosted
+      .getByRole("group", { name: "Authentication code", exact: true })
+      .getByRole("textbox")
+      .first()
+      .pressSequentially(totp(secret ?? ""));
+    await hosted
+      .getByRole("button", { name: "Enable two-factor authentication" })
+      .click();
+    await expect(
+      hosted.getByRole("heading", { name: "Save your recovery codes" }),
+    ).toBeFocused();
+    await expect(
+      hosted
+        .getByRole("list", { name: "Recovery codes", exact: true })
+        .locator("li"),
+    ).toHaveCount(10);
     await expect(qr).toHaveCount(0);
+    await hosted.reload();
+    await expect(
+      hosted.getByRole("heading", { name: "Save your recovery codes" }),
+    ).toBeVisible();
+    await expect(hosted.locator("li code")).toHaveCount(0);
+    await hosted
+      .getByRole("button", { name: "Generate replacement codes" })
+      .click();
+    await expect(
+      hosted
+        .getByRole("list", { name: "Recovery codes", exact: true })
+        .locator("li"),
+    ).toHaveCount(10);
+    const visibleCode = await hosted.locator("li code").first().innerText();
+    expect(
+      await hosted.evaluate(
+        () =>
+          Object.values(localStorage).join(" ") +
+          Object.values(sessionStorage).join(" "),
+      ),
+    ).not.toContain(visibleCode);
     await hosted.getByRole("button", { name: "I have saved my codes" }).click();
-    await hosted.getByRole("link", { name: "Projects", exact: true }).click();
+    await expect(
+      hosted.getByRole("heading", { name: "Set up your subscription" }),
+    ).toBeFocused();
+    await hosted.reload();
+    await expect(
+      hosted.getByRole("heading", { name: "Set up your subscription" }),
+    ).toBeVisible();
+    await hosted
+      .getByRole("link", { name: "Continue later", exact: true })
+      .click();
     await hosted
       .getByLabel("Project name", { exact: true })
       .fill("Subscription gated");
@@ -219,15 +368,17 @@ test("hosted signup, MFA, billing admission and encrypted workspace import", asy
 
     // The operator boundary grants a test entitlement; billing itself uses real
     // application admission and PostgreSQL. No paid provider call is made.
-    const current = await (
-      await hosted.request.get(`${origin}/api/v1/session`)
-    ).json();
+    await hosted.getByRole("link", { name: "Workspace", exact: true }).click();
+    await hosted.getByRole("link", { name: "Finish workspace setup" }).click();
+    await expect(
+      hosted.getByRole("heading", { name: "Set up your subscription" }),
+    ).toBeVisible();
     execFileSync(
       fixture.binary,
       [
         "grant-management",
         "--workspace",
-        current.workspaces[0].id,
+        createdWorkspace!,
         "--until",
         new Date(Date.now() + 3600000).toISOString(),
         "--servers",
@@ -238,6 +389,13 @@ test("hosted signup, MFA, billing admission and encrypted workspace import", asy
         stdio: "pipe",
       },
     );
+    await hosted.reload();
+    await expect(
+      hosted.getByRole("heading", { name: "You’re ready" }),
+    ).toBeVisible();
+    await hosted
+      .getByRole("link", { name: "Open projects", exact: true })
+      .click();
     await hosted.getByRole("link", { name: "Workspace", exact: true }).click();
     await expect(
       hosted.getByRole("heading", { name: "Workspace subscription" }),

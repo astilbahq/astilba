@@ -341,6 +341,7 @@ func TestInvitationPreservesExpiredRecentAuthentication(t *testing.T) {
 	token := seedInvitation(t, f, "owner@example.test")
 	future := time.Now().Add(6 * time.Minute)
 	f.auth.Now = func() time.Time { return future }
+	b.call("POST", "/api/v1/auth/invitations/validate", map[string]string{"token": token}, 204, nil)
 	var session api.Session
 	b.call("POST", "/api/v1/auth/invitations/accept", map[string]string{"token": token}, 200, &session)
 	b.csrf = session.CsrfToken

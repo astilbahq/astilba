@@ -98,9 +98,16 @@ Set `ASTILBA_HOSTED=true`, plus all of:
 - `ASTILBA_HOSTED_SUPPORT`: published support hours and scope.
 
 Issue an invitation with `astilba invite --email owner@example.com`. Each emailed
-code creates one workspace, expires after 48 hours and verifies that email. The
+link creates one workspace, expires after 48 hours and verifies that email. The
 same admission rule applies to additional workspaces created by existing users.
 Hosted writes require both verified email and an MFA-authenticated session.
+
+After signup, `/onboarding?workspace=…` guides authenticator setup, recovery-code
+saving and subscription setup. Existing completed steps are skipped; workspace
+settings offer a resume link. Recovery confirmation is saved for the current code
+generation only. Refreshing before confirmation offers replacement codes; plaintext
+codes are never saved in browser storage. Existing accounts retain their previous
+completed recovery status until codes are replaced or exhausted.
 
 Stripe is optional. For paid Checkout, configure `ASTILBA_STRIPE_SECRET`,
 `ASTILBA_STRIPE_PRICE` and `ASTILBA_STRIPE_WEBHOOK_SECRET` together. Use one recurring
@@ -114,7 +121,10 @@ Use test mode first. Checkout reserves one durable intent per workspace and reus
 it after network failure. Completion is reconciled before an expired intent is
 replaced. Webhooks verify their timestamped raw-body signature, deduplicate events
 and retrieve the current subscription instead of trusting event delivery order.
-Unrecognized customers and subscriptions never grant access.
+Unrecognized customers and subscriptions never grant access. New checkout success
+and cancellation return to the workspace onboarding route. The URL is a navigation
+hint; setup completes only when the server reports active management access. If
+Stripe is not configured, onboarding explains how to contact the operator.
 
 For an unpaid private evaluation, the operator can issue a bounded grant:
 
