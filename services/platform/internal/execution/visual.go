@@ -18,6 +18,7 @@ import (
 )
 
 type visualEnvironment struct {
+	Purpose         string
 	Unit, Revision  uuid.UUID
 	Server, Applied *uuid.UUID
 	Spec            domain.Specification
@@ -26,7 +27,7 @@ type visualEnvironment struct {
 func loadVisualEnvironment(ctx context.Context, tx pgx.Tx, ws, pid, id uuid.UUID) (visualEnvironment, error) {
 	var v visualEnvironment
 	var raw []byte
-	err := tx.QueryRow(ctx, `SELECT d.id,d.server_id,e.draft_revision_id,e.applied_revision_id,r.specification FROM environments e JOIN deployment_units d ON d.workspace_id=e.workspace_id AND d.environment_id=e.id JOIN specification_revisions r ON r.workspace_id=e.workspace_id AND r.environment_id=e.id AND r.id=e.draft_revision_id WHERE e.workspace_id=$1 AND e.project_id=$2 AND e.id=$3`, ws, pid, id).Scan(&v.Unit, &v.Server, &v.Revision, &v.Applied, &raw)
+	err := tx.QueryRow(ctx, `SELECT d.id,d.server_id,e.draft_revision_id,e.applied_revision_id,r.specification,e.purpose FROM environments e JOIN deployment_units d ON d.workspace_id=e.workspace_id AND d.environment_id=e.id JOIN specification_revisions r ON r.workspace_id=e.workspace_id AND r.environment_id=e.id AND r.id=e.draft_revision_id WHERE e.workspace_id=$1 AND e.project_id=$2 AND e.id=$3`, ws, pid, id).Scan(&v.Unit, &v.Server, &v.Revision, &v.Applied, &raw, &v.Purpose)
 	if err == nil {
 		v.Spec, _, err = domain.ParseSpec(raw)
 	}
@@ -141,22 +142,8 @@ func (s *Service) createVisualPlan(ctx context.Context, tx pgx.Tx, ws, pid, env 
 				hostChanges = true
 			}
 		}
-		total, encodedTotal := 0, 0
-		for _, id := range domain.SecretReferences(v.Spec) {
-			secret, err := db.New(tx).GetSecretVersion(ctx, db.GetSecretVersionParams{WorkspaceID: ws, EnvironmentID: env, ID: id})
-			if err != nil {
-				return domain.Invalid("secretVersionId")
-			}
-			plain, err := s.Store.Keys.Open(secret.EncryptedValue, store.SecretIdentity(ws, id))
-			if err != nil {
-				return err
-			}
-			total += len(plain)
-			escaped, _ := json.Marshal(string(plain))
-			encodedTotal += len(escaped)
-		}
-		if total > 65536 || encodedTotal > 140000 {
-			return domain.Invalid("secrets")
+		if err := s.validateVisualSecrets(ctx, tx, ws, env, v.Spec); err != nil {
+			return err
 		}
 		previous := domain.Specification{}
 		if v.Applied != nil {
@@ -185,6 +172,13 @@ func (s *Service) createVisualPlan(ctx context.Context, tx pgx.Tx, ws, pid, env 
 			}
 		}
 		plan := deployment.Plan{ID: uuid.New(), ServerID: in.ServerId, EnvironmentID: env, UnitID: v.Unit, RevisionID: v.Revision, ExpectedAppliedID: v.Applied, Recipe: deployment.Recipe, Specification: v.Spec, Images: map[string]string{}, HostChanges: hostChanges, AcceptDrift: in.AcceptDrift, Effects: deployment.Effects(v.Spec, previous, hostChanges), ExpiresAt: time.Now().UTC().Add(15 * time.Minute)}.WithHash()
+		if v.Purpose == "preview" {
+			plan.Recipe = deployment.PreviewRecipe
+			plan.Preview, err = s.previewPlanIdentity(ctx, tx, ws, env)
+			if err != nil {
+				return err
+			}
+		}
 		if err = s.planArtifacts(ctx, tx, ws, &plan); err != nil {
 			return err
 		}
@@ -483,6 +477,12 @@ func (s *Service) ObserveVisual(ctx context.Context, p store.Principal, ws, pid,
 
 // Secret values are hydrated only at the authenticated agent transport boundary.
 func (s *Service) hydrateVisual(ctx context.Context, c *api.ExecutionCommand) error {
+	if c.Visual != nil {
+		var p deployment.Payload
+		if json.Unmarshal(*c.Visual, &p) == nil && p.Action == "preview-cleanup" {
+			return nil
+		}
+	}
 	if c.Visual == nil {
 		return errors.New("missing visual payload")
 	}
@@ -552,6 +552,19 @@ func (s *Service) hydrateVisual(ctx context.Context, c *api.ExecutionCommand) er
 }
 
 func (s *Service) visualReport(ctx context.Context, tx pgx.Tx, c api.ExecutionCommand, r *api.AgentReport) error {
+	if c.Visual != nil {
+		var p deployment.Payload
+		if json.Unmarshal(*c.Visual, &p) == nil && p.Action == "preview-cleanup" {
+			if r.State != "succeeded" {
+				return nil
+			}
+			var ws uuid.UUID
+			if err := tx.QueryRow(ctx, "SELECT workspace_id FROM servers WHERE id=$1", c.ServerId).Scan(&ws); err != nil {
+				return err
+			}
+			return s.finalizePreviewCleanup(ctx, tx, ws, c)
+		}
+	}
 	if c.Visual == nil || r.Observation == nil {
 		if r.State != "succeeded" {
 			return nil
@@ -700,3 +713,27 @@ func (s *Service) visualReport(ctx context.Context, tx pgx.Tx, c api.ExecutionCo
 }
 
 func rawMessage(raw []byte) *json.RawMessage { v := json.RawMessage(raw); return &v }
+
+func (s *Service) validateVisualSecrets(ctx context.Context, tx pgx.Tx, ws, env uuid.UUID, spec domain.Specification) error {
+	if len(domain.SecretReferences(spec)) > 100 {
+		return domain.Invalid("secrets")
+	}
+	total, encodedTotal := 0, 0
+	for _, id := range domain.SecretReferences(spec) {
+		secret, err := db.New(tx).GetSecretVersion(ctx, db.GetSecretVersionParams{WorkspaceID: ws, EnvironmentID: env, ID: id})
+		if err != nil {
+			return domain.Invalid("secretVersionId")
+		}
+		plain, err := s.Store.Keys.Open(secret.EncryptedValue, store.SecretIdentity(ws, id))
+		if err != nil {
+			return err
+		}
+		total += len(plain)
+		escaped, _ := json.Marshal(string(plain))
+		encodedTotal += len(escaped)
+	}
+	if total > 65536 || encodedTotal > 140000 {
+		return domain.Invalid("secrets")
+	}
+	return nil
+}

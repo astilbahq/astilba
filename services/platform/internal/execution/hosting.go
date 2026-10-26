@@ -7,6 +7,7 @@ import (
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/backup"
+	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/astilbahq/astilba/services/platform/internal/upgrade"
 	"github.com/google/uuid"
@@ -14,6 +15,12 @@ import (
 )
 
 func recoveryCommand(c api.ExecutionCommand) bool {
+	if c.Kind == "visual" && c.Visual != nil {
+		var p deployment.Payload
+		if json.Unmarshal(*c.Visual, &p) == nil && p.Action == "preview-cleanup" && p.Plan.Preview != nil {
+			return true
+		}
+	}
 	if c.Kind == "backup" && c.Backup != nil {
 		var b backup.Command
 		return json.Unmarshal(*c.Backup, &b) == nil && (b.Action == "restore" || b.Action == "check" || b.Action == "snapshots")

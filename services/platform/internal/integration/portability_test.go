@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -266,5 +267,35 @@ func TestManagementRecoveryFencesQueuedCommandsBeforeAgentReconnect(t *testing.T
 	command, e := f.execution.Poll(context.Background(), identity)
 	if e != nil || command == nil || command.Id != next.Id || command.ControllerGeneration == nil || *command.ControllerGeneration != 1 {
 		t.Fatalf("new controller command not fenced: %+v %v", command, e)
+	}
+}
+
+func TestPrePreviewWorkspaceArchiveRemainsImportable(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	raw, err := os.ReadFile("../portability/testdata/workspace-v1.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	envelope, err := portability.Seal(ctx, "legacy archive passphrase", raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner, err := f.st.Queries.AccountByID(ctx, f.owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := portability.Service{Store: f.st}
+	imported, err := service.Import(ctx, store.Principal{Account: owner, Recent: true, MFA: true}, "legacy archive passphrase", envelope, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var purpose string
+	var reserved bool
+	if err = f.st.Pool.QueryRow(ctx, "SELECT e.purpose,s.preview_only FROM environments e JOIN servers s ON s.workspace_id=e.workspace_id WHERE e.workspace_id=$1", imported.ID).Scan(&purpose, &reserved); err != nil {
+		t.Fatal(err)
+	}
+	if purpose != "standard" || reserved {
+		t.Fatal("legacy archive gained preview authority")
 	}
 }

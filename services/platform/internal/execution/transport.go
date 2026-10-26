@@ -39,7 +39,8 @@ func (s *Service) Poll(ctx context.Context, a Identity) (*api.ExecutionCommand, 
 		}
 		var raw []byte
 		var cancel bool
-		err = s.Store.Pool.QueryRow(ctx, `SELECT command,cancel_requested FROM execution_operations WHERE server_id=$1 AND state IN ('dispatched','running','needs_attention') ORDER BY created_at LIMIT 1`, a.ID).Scan(&raw, &cancel)
+		var state string
+		err = s.Store.Pool.QueryRow(ctx, `SELECT command,cancel_requested,state FROM execution_operations WHERE server_id=$1 AND state IN ('dispatched','running','needs_attention') ORDER BY created_at LIMIT 1`, a.ID).Scan(&raw, &cancel, &state)
 		if err == nil {
 			var c api.ExecutionCommand
 			if err = json.Unmarshal(raw, &c); err != nil {
@@ -59,6 +60,20 @@ func (s *Service) Poll(ctx context.Context, a Identity) (*api.ExecutionCommand, 
 					if !errors.Is(e, store.SubscriptionRequired) {
 						return nil, e
 					}
+					cancel = true
+				}
+			}
+			if !cancel {
+				tx, e := s.Store.Pool.Begin(ctx)
+				if e != nil {
+					return nil, e
+				}
+				allowed, e := s.previewCommandAllowed(ctx, tx, a.Workspace, c, state == "dispatched")
+				_ = tx.Rollback(ctx)
+				if e != nil {
+					return nil, e
+				}
+				if !allowed {
 					cancel = true
 				}
 			}
@@ -171,6 +186,11 @@ func (s *Service) Report(ctx context.Context, a Identity, r api.AgentReport) err
 	_, err = tx.Exec(ctx, `UPDATE execution_operations SET state=$2,report_sequence=$3,steps=$4,note=$5 WHERE id=$1`, r.Id, r.State, r.Sequence, steps, r.Note)
 	if err != nil {
 		return err
+	}
+	if Terminal(r.State) {
+		if err = s.enqueuePreviewForEnvironment(ctx, tx, a.Workspace, c.EnvironmentId); err != nil {
+			return err
+		}
 	}
 	return tx.Commit(ctx)
 }

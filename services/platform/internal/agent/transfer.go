@@ -28,6 +28,20 @@ func (j *Journal) Inventory() (api.ControllerInventory, error) {
 		}); e != nil {
 			return e
 		}
+		proofs := []api.PreviewCleanupReceipt{}
+		if e := tx.Bucket([]byte("preview-cleanups")).ForEach(func(k, v []byte) error {
+			var proof api.PreviewCleanupReceipt
+			if e := j.get(tx, "preview-cleanups", string(k), &proof); e != nil {
+				return e
+			}
+			proofs = append(proofs, proof)
+			return nil
+		}); e != nil {
+			return e
+		}
+		if len(proofs) > 0 {
+			out.PreviewCleanups = &proofs
+		}
 		return tx.Bucket([]byte("schedules")).ForEach(func(k, v []byte) error {
 			var state scheduleState
 			if e := j.get(tx, "schedules", string(k), &state); e != nil {
@@ -145,4 +159,18 @@ func (j *Journal) checkController(tx *bolt.Tx, c api.ExecutionCommand) error {
 		return errors.New("command belongs to another controller generation")
 	}
 	return nil
+}
+
+func (j *Journal) acknowledgePreviewProofs(proofs *[]api.PreviewCleanupReceipt) error {
+	if proofs == nil {
+		return nil
+	}
+	return j.db.Update(func(tx *bolt.Tx) error {
+		for _, proof := range *proofs {
+			if err := tx.Bucket([]byte("preview-cleanups")).Delete([]byte(proof.OperationId.String())); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }

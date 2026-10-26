@@ -104,7 +104,7 @@ func (e *Engine) pipelineContainer(ctx context.Context, c api.ExecutionCommand, 
 		}
 	}
 	config := &container.Config{Image: pipeline.BuilderImage, Entrypoint: []string{"sleep"}, Cmd: []string{"infinity"}, Labels: map[string]string{labelServer: c.ServerId.String(), labelResource: c.Id.String(), labelEnvironment: c.EnvironmentId.String(), labelKind: "pipeline-v1", "com.astilba.plan": c.PlanHash}}
-	build := p.Action == "build"
+	build := p.IsBuild()
 	memory := int64(512 << 20)
 	if build {
 		memory = int64(p.Build.Limits().MemoryMiB) << 20
@@ -177,7 +177,11 @@ func (e *Engine) clonePipeline(ctx context.Context, c api.ExecutionCommand, p pi
 	if _, err := e.pipelineGit(ctx, c, p, nil, "remote", "add", "origin", pipeline.GitURL(p.Connection)); err != nil {
 		return err
 	}
-	if _, err := e.pipelineGit(ctx, c, p, nil, "fetch", "--quiet", "--depth=1", "--no-tags", "origin", p.Commit); err != nil {
+	fetch := p.Commit
+	if p.Preview != nil {
+		fetch = pipeline.PullRequestRef(p.Connection.Provider, p.Preview.Number)
+	}
+	if _, err := e.pipelineGit(ctx, c, p, nil, "fetch", "--quiet", "--depth=1", "--no-tags", "origin", fetch); err != nil {
 		return errors.New("exact-commit fetch failed or exceeded the source storage budget")
 	}
 	out, err := e.pipelineGit(ctx, c, p, nil, "rev-parse", "FETCH_HEAD")
@@ -593,7 +597,7 @@ func (e *Engine) executePipeline(ctx context.Context, c api.ExecutionCommand, r 
 		if err = e.checkpoint(c.Id, "submission"); err == nil {
 			result, err = e.submitPipeline(ctx, c, p)
 		}
-	case "build":
+	case "build", "build-preview":
 		if err = e.checkpoint(c.Id, "build"); err == nil {
 			result, err = e.buildPipeline(ctx, c, p)
 		}

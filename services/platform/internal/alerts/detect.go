@@ -138,7 +138,7 @@ func (s *Service) operations(ctx context.Context, tx pgx.Tx, ws uuid.UUID) error
 			var p struct {
 				Action string `json:"action"`
 			}
-			if c.Pipeline != nil && json.Unmarshal(*c.Pipeline, &p) == nil && p.Action == "build" {
+			if c.Pipeline != nil && json.Unmarshal(*c.Pipeline, &p) == nil && (p.Action == "build" || p.Action == "build-preview") {
 				kind = api.BuildProblem
 			}
 		case "backup":

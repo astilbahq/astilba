@@ -47,6 +47,12 @@ func (s *Store) PrepareRecovery(ctx context.Context, id uuid.UUID, next int64) e
 	if _, e = tx.Exec(ctx, `UPDATE build_targets SET configuration=configuration || '{"autoBuild":false,"autoDeploy":false}'::jsonb WHERE workspace_id=$1`, ws); e != nil {
 		return e
 	}
+	if _, e = tx.Exec(ctx, `UPDATE preview_policies SET enabled=false WHERE workspace_id=$1 AND server_id=$2`, ws, id); e != nil {
+		return e
+	}
+	if _, e = tx.Exec(ctx, `UPDATE preview_requests SET state=CASE WHEN state='deleted' THEN state ELSE 'blocked' END,resume_after_cancel=false,cleanup_actor=NULL,cleanup_auth_version=NULL,cleanup_controller=NULL,note='Management recovery requires renewed preview approval.' WHERE workspace_id=$1 AND policy_id IN (SELECT id FROM preview_policies WHERE server_id=$2)`, ws, id); e != nil {
+		return e
+	}
 	if _, e = tx.Exec(ctx, `UPDATE automation_credentials SET revoked_at=COALESCE(revoked_at,clock_timestamp()) WHERE workspace_id=$1`, ws); e != nil {
 		return e
 	}

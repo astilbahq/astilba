@@ -25,6 +25,7 @@ type Config struct {
 	ServerID, MachineID  uuid.UUID
 	Credential, Pending  string
 	EnrollmentToken      string
+	PreviewOnly          bool
 	Enrolled             bool
 	Role                 api.ServerRole
 	PublicKey            []byte
@@ -89,7 +90,7 @@ func Open(dir string) (*Journal, error) {
 	}
 	j := &Journal{db: db, keys: keys, dir: dir}
 	err = db.Update(func(tx *bolt.Tx) error {
-		for _, b := range []string{"identity", "operations", "generations", "units", "routing", "schedules", "upgrades", "releases"} {
+		for _, b := range []string{"identity", "operations", "generations", "units", "routing", "schedules", "upgrades", "releases", "preview-cleanups"} {
 			if _, e := tx.CreateBucketIfNotExists([]byte(b)); e != nil {
 				return e
 			}
@@ -267,6 +268,9 @@ func (j *Journal) Acknowledge(id uuid.UUID, sequence int64) error {
 		}
 		if r.Report.Sequence == sequence && execution.Terminal(r.Report.State) {
 			r.Acknowledged = true
+			if err := tx.Bucket([]byte("preview-cleanups")).Delete([]byte(id.String())); err != nil {
+				return err
+			}
 			return j.put(tx, "operations", id.String(), r)
 		}
 		return nil

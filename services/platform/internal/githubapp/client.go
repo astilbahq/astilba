@@ -391,6 +391,7 @@ func (c *Client) Validate(ctx context.Context, installation, repository, generat
 type tokenKey struct {
 	Installation, Repository int64
 	Write                    bool
+	PullRequests             bool
 }
 type cachedToken struct {
 	err     error
@@ -400,7 +401,13 @@ type cachedToken struct {
 }
 
 func (c *Client) Mint(ctx context.Context, installation, repository int64, write bool) (string, error) {
-	key := tokenKey{installation, repository, write}
+	return c.mintCached(ctx, installation, repository, write, false)
+}
+func (c *Client) MintPreview(ctx context.Context, installation, repository int64) (string, error) {
+	return c.mintCached(ctx, installation, repository, false, true)
+}
+func (c *Client) mintCached(ctx context.Context, installation, repository int64, write, requests bool) (string, error) {
+	key := tokenKey{installation, repository, write, requests}
 	c.mu.Lock()
 	if v := c.tokens[key]; v != nil {
 		if v.ready != nil {
@@ -440,7 +447,7 @@ func (c *Client) Mint(ctx context.Context, installation, repository int64, write
 	pending := &cachedToken{ready: make(chan struct{})}
 	c.tokens[key] = pending
 	c.mu.Unlock()
-	token, expires, err := c.mint(ctx, installation, repository, write)
+	token, expires, err := c.mint(ctx, installation, repository, write, requests)
 	c.mu.Lock()
 	pending.err = err
 	ready := pending.ready
@@ -455,8 +462,11 @@ func (c *Client) Mint(ctx context.Context, installation, repository int64, write
 	c.mu.Unlock()
 	return token, err
 }
-func (c *Client) mint(ctx context.Context, installation, repository int64, write bool) (string, time.Time, error) {
+func (c *Client) mint(ctx context.Context, installation, repository int64, write, requests bool) (string, time.Time, error) {
 	permissions := map[string]string{"contents": "read"}
+	if requests {
+		permissions["pull_requests"] = "read"
+	}
 	if write {
 		permissions["contents"] = "write"
 		permissions["pull_requests"] = "write"

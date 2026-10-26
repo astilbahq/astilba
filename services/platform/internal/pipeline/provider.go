@@ -271,10 +271,10 @@ func (p *Provider) Review(ctx context.Context, base, branch string) (Review, err
 
 type Push struct{ Delivery, Branch, Commit string }
 
-func VerifyPush(kind, secret string, repositoryID int64, headers http.Header, body []byte) (Push, error) {
+func verifyDelivery(kind, secret string, repositoryID int64, headers http.Header, body []byte) (string, string, error) {
 	invalid := errors.New("invalid push delivery")
 	if len(secret) < 32 || repositoryID < 1 || len(body) > 1<<20 {
-		return Push{}, invalid
+		return "", "", invalid
 	}
 	event, delivery := "", ""
 	switch kind {
@@ -285,24 +285,22 @@ func VerifyPush(kind, secret string, repositoryID int64, headers http.Header, bo
 		}
 		value := headers.Get(signature)
 		if !strings.HasPrefix(value, prefix) {
-			return Push{}, invalid
+			return "", "", invalid
 		}
 		actual, err := hex.DecodeString(strings.TrimPrefix(value, prefix))
 		mac := hmac.New(sha256.New, []byte(secret))
 		_, _ = mac.Write(body)
 		if err != nil || !hmac.Equal(actual, mac.Sum(nil)) {
-			return Push{}, invalid
+			return "", "", invalid
 		}
 		event = headers.Get(header)
 		delivery = headers.Get(id)
-		if event != "push" {
-			return Push{}, invalid
-		}
 	case "gitlab":
 		actual, expected := sha256.Sum256([]byte(headers.Get("X-Gitlab-Token"))), sha256.Sum256([]byte(secret))
-		if subtle.ConstantTimeCompare(actual[:], expected[:]) != 1 || headers.Get("X-Gitlab-Event") != "Push Hook" {
-			return Push{}, invalid
+		if subtle.ConstantTimeCompare(actual[:], expected[:]) != 1 {
+			return "", "", invalid
 		}
+		event = headers.Get("X-Gitlab-Event")
 		delivery = headers.Get("webhook-id")
 		if delivery == "" {
 			delivery = headers.Get("Idempotency-Key")
@@ -311,9 +309,18 @@ func VerifyPush(kind, secret string, repositoryID int64, headers http.Header, bo
 			delivery = headers.Get("X-Gitlab-Event-UUID")
 		}
 	default:
-		return Push{}, invalid
+		return "", "", invalid
 	}
 	if delivery == "" || len(delivery) > 200 || strings.ContainsAny(delivery, "\r\n\x00") {
+		return "", "", invalid
+	}
+	return event, delivery, nil
+}
+
+func VerifyPush(kind, secret string, repositoryID int64, headers http.Header, body []byte) (Push, error) {
+	event, delivery, err := verifyDelivery(kind, secret, repositoryID, headers, body)
+	invalid := errors.New("invalid push delivery")
+	if err != nil || (kind == "gitlab" && event != "Push Hook") || (kind != "gitlab" && event != "push") {
 		return Push{}, invalid
 	}
 	var data struct {

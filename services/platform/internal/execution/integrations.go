@@ -255,9 +255,14 @@ func (s *Service) ReceivePush(ctx context.Context, id uuid.UUID, headers http.He
 	if json.Unmarshal(raw, &c) != nil || s.openIntegration(ws, id, "git", encrypted, &access) != nil {
 		return domain.Unauthenticated
 	}
-	push, err := pipeline.VerifyPush(c.Provider, access.Webhook, c.RepositoryID, headers, body)
-	if err != nil {
+	push, pushErr := pipeline.VerifyPush(c.Provider, access.Webhook, c.RepositoryID, headers, body)
+	preview, previewErr := pipeline.VerifyPullRequest(c.Provider, access.Webhook, c.RepositoryID, headers, body)
+	if pushErr != nil && previewErr != nil {
 		return domain.Forbidden
+	}
+	delivery := push.Delivery
+	if previewErr == nil {
+		delivery = preview.Delivery
 	}
 	tx, err := s.Store.Pool.Begin(ctx)
 	if err != nil {
@@ -269,7 +274,7 @@ func (s *Service) ReceivePush(ctx context.Context, id uuid.UUID, headers http.He
 		return err
 	}
 	var previous string
-	err = tx.QueryRow(ctx, "SELECT body_hash FROM git_deliveries WHERE connection_id=$1 AND delivery_id=$2", id, push.Delivery).Scan(&previous)
+	err = tx.QueryRow(ctx, "SELECT body_hash FROM git_deliveries WHERE connection_id=$1 AND delivery_id=$2", id, delivery).Scan(&previous)
 	if err == nil {
 		if previous != pipeline.Hash(string(body)) {
 			return domain.Conflict
@@ -279,13 +284,17 @@ func (s *Service) ReceivePush(ctx context.Context, id uuid.UUID, headers http.He
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return err
 	}
-	if _, err = tx.Exec(ctx, "INSERT INTO git_deliveries(workspace_id,connection_id,delivery_id,body_hash) VALUES($1,$2,$3,$4)", ws, id, push.Delivery, pipeline.Hash(string(body))); err != nil {
+	if _, err = tx.Exec(ctx, "INSERT INTO git_deliveries(workspace_id,connection_id,delivery_id,body_hash) VALUES($1,$2,$3,$4)", ws, id, delivery, pipeline.Hash(string(body))); err != nil {
 		return err
 	}
 	if _, err = tx.Exec(ctx, "DELETE FROM git_deliveries WHERE connection_id=$1 AND delivery_id NOT IN (SELECT delivery_id FROM git_deliveries WHERE connection_id=$1 ORDER BY received_at DESC LIMIT 1000)", id); err != nil {
 		return err
 	}
-	if err = s.enqueueGitRefresh(ctx, tx, ws, id, push); err != nil {
+	if previewErr == nil {
+		if err = s.enqueueConnectionPreviews(ctx, tx, ws, id, preview.Number); err != nil {
+			return err
+		}
+	} else if err = s.enqueueGitRefresh(ctx, tx, ws, id, push); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)

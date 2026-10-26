@@ -15,6 +15,7 @@ import (
 )
 
 type githubEvent struct {
+	Number       int    `json:"number,omitempty"`
 	App          int64  `json:"app"`
 	Kind         string `json:"kind"`
 	Installation int64  `json:"installation"`
@@ -44,10 +45,11 @@ func (s *Service) ReceiveGitHub(ctx context.Context, headers http.Header, body [
 		return domain.Invalid("delivery")
 	}
 	kind := headers.Get("X-GitHub-Event")
-	if kind != "push" && kind != "installation" && kind != "installation_repositories" {
+	if kind != "push" && kind != "installation" && kind != "installation_repositories" && kind != "pull_request" {
 		return nil
 	}
 	var payload struct {
+		Number       int `json:"number"`
 		Installation struct {
 			ID    int64 `json:"id"`
 			AppID int64 `json:"app_id"`
@@ -71,6 +73,11 @@ func (s *Service) ReceiveGitHub(ctx context.Context, headers http.Header, body [
 		}
 		event.Branch = push.Branch
 		event.Commit = push.Commit
+	case "pull_request":
+		if event.Installation < 1 || event.Repository < 1 || payload.Number < 1 || payload.Number > 1000000000 {
+			return domain.Invalid("github.request")
+		}
+		event.Number = payload.Number
 	default:
 		if event.Installation < 1 || payload.Installation.AppID != s.GitHub.Config.ID {
 			return domain.Invalid("installation")
@@ -172,7 +179,11 @@ func (w *githubFanoutWorker) Work(ctx context.Context, job *river.Job[githubFano
 		return e
 	}
 	for _, a := range entries {
-		if event.Kind == "push" {
+		if event.Kind == "pull_request" {
+			if e = s.enqueueConnectionPreviews(ctx, tx, a.Workspace, a.Connection, event.Number); e != nil {
+				return e
+			}
+		} else if event.Kind == "push" {
 			if e = s.enqueueGitRefresh(ctx, tx, a.Workspace, a.Connection, pipeline.Push{Delivery: job.Args.Delivery, Branch: event.Branch, Commit: event.Commit}); e != nil {
 				return e
 			}

@@ -44,8 +44,16 @@ func (s *Store) CreateAutomation(ctx context.Context, p Principal, ws, project, 
 	out = AutomationCredential{ID: uuid.New(), CreatorID: p.Account.ID, Name: name, Capabilities: capabilities, CreatedAt: now, ExpiresAt: expires}
 	hash := sha256.Sum256([]byte(secret))
 	err = s.InWorkspaceTx(ctx, p, ws, true, true, true, func(tx pgx.Tx, q *db.Queries, _ Workspace) error {
-		if _, err := q.GetEnvironment(ctx, db.GetEnvironmentParams{WorkspaceID: ws, ProjectID: project, ID: env}); err != nil {
+		v, err := q.GetEnvironment(ctx, db.GetEnvironmentParams{WorkspaceID: ws, ProjectID: project, ID: env})
+		if err != nil {
 			return err
+		}
+		if v.Purpose != "standard" {
+			for _, cap := range capabilities {
+				if cap != domain.EnvironmentRead {
+					return domain.Invalid("preview.readOnlyAutomation")
+				}
+			}
 		}
 		var active int
 		if err := tx.QueryRow(ctx, "SELECT count(*) FROM automation_credentials WHERE workspace_id=$1 AND revoked_at IS NULL AND expires_at>now()", ws).Scan(&active); err != nil {
@@ -54,7 +62,7 @@ func (s *Store) CreateAutomation(ctx context.Context, p Principal, ws, project, 
 		if active >= 100 {
 			return domain.Invalid("activeCredentialLimit")
 		}
-		_, err := tx.Exec(ctx, `INSERT INTO automation_credentials(id,workspace_id,environment_id,creator_id,name,secret_hash,auth_version,mfa_approved,capabilities,created_at,expires_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`, out.ID, ws, env, p.Account.ID, name, hash[:], p.Account.AuthVersion, p.MFA, capabilities, now, expires)
+		_, err = tx.Exec(ctx, `INSERT INTO automation_credentials(id,workspace_id,environment_id,creator_id,name,secret_hash,auth_version,mfa_approved,capabilities,created_at,expires_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`, out.ID, ws, env, p.Account.ID, name, hash[:], p.Account.AuthVersion, p.MFA, capabilities, now, expires)
 		if err != nil {
 			return err
 		}

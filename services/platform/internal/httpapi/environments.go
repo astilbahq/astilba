@@ -20,7 +20,8 @@ func project(v db.Project) api.Project {
 	return api.Project{Id: v.ID, Name: v.Name, CreatedAt: v.CreatedAt}
 }
 func environment(v db.GetEnvironmentRow) api.Environment {
-	return api.Environment{Id: v.ID, ProjectId: v.ProjectID, Name: v.Name, ConfigurationOwner: api.EnvironmentConfigurationOwner(v.ConfigurationOwner), DraftRevisionId: v.DraftRevisionID, AppliedRevisionId: v.AppliedRevisionID, DeploymentUnit: api.DeploymentUnit{Id: v.UnitID, Runtime: api.Docker, ServerId: v.ServerID}}
+	purpose := api.EnvironmentPurpose(v.Purpose)
+	return api.Environment{Purpose: &purpose, Id: v.ID, ProjectId: v.ProjectID, Name: v.Name, ConfigurationOwner: api.EnvironmentConfigurationOwner(v.ConfigurationOwner), DraftRevisionId: v.DraftRevisionID, AppliedRevisionId: v.AppliedRevisionID, DeploymentUnit: api.DeploymentUnit{Id: v.UnitID, Runtime: api.Docker, ServerId: v.ServerID}}
 }
 func revision(v db.SpecificationRevision) api.Revision {
 	return api.Revision{Id: v.ID, AuthorId: v.AuthorID, CreatedAt: v.CreatedAt, Hash: hex.EncodeToString(v.ContentHash), Specification: json.RawMessage(v.Specification)}
@@ -114,7 +115,15 @@ func (s *Server) CreateEnvironment(w http.ResponseWriter, r *http.Request, ws, p
 		if e != nil {
 			return nil, e
 		}
-		if _, e := q.InsertEnvironment(ctx, db.InsertEnvironmentParams{WorkspaceID: ws, ProjectID: pid, ID: id, Name: name, DraftRevisionID: rev, ConfigurationOwner: owner}); e != nil {
+		if b.Purpose != nil && *b.Purpose == api.EnvironmentCreatePurposePreviewTemplate && owner != "dashboard" {
+			return nil, domain.Invalid("preview.composeUnsupported")
+		}
+		if _, e := q.InsertEnvironment(ctx, db.InsertEnvironmentParams{WorkspaceID: ws, ProjectID: pid, ID: id, Name: name, DraftRevisionID: rev, ConfigurationOwner: owner, Purpose: func() string {
+			if b.Purpose != nil {
+				return string(*b.Purpose)
+			}
+			return "standard"
+		}()}); e != nil {
 			return nil, e
 		}
 		if _, e := insertRevision(r, q, ws, id, rev, canonical); e != nil {

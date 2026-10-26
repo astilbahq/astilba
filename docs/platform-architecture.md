@@ -18,7 +18,7 @@ Each environment uses either visual configuration or a Compose project as its au
 
 This is a platform for solo developers and small trusted teams running their own workloads. Docker networks provide useful application separation, but sharing a Docker daemon is not a security boundary for mutually untrusted tenants. Docker access gives the agent substantial authority over its host. Customers supply deployment servers and may supply separate build runners; builds never run inside the management service. Reseller hosting and mutually untrusted application tenants are outside the first release. [Docker security](https://docs.docker.com/engine/security/).
 
-Future boundaries for multiple deployment units, Kubernetes, live collaboration, database administration and interactive terminals are defined below. Their implementation, UDP routing, automatic pull-request previews, built-in ingress tunnels, existing-workload adoption and Astilba-operated build runners or registries are deferred. No interview or external customer commitment is required before building; validate first on disposable infrastructure and then the maintainer's own non-critical workloads.
+Future boundaries for multiple deployment units, Kubernetes, live collaboration, database administration and interactive terminals are defined below. Their implementation, UDP routing, built-in ingress tunnels, existing-workload adoption and Astilba-operated build runners or registries are deferred. No interview or external customer commitment is required before building; validate first on disposable infrastructure and then the maintainer's own non-critical workloads.
 
 ## Technology decisions
 
@@ -236,7 +236,7 @@ Initial deployments declare a possible restart window. Health checks and explici
 
 ## Builds and artifacts
 
-Select a specific server with the build role. A server may have both deployment and build roles, but a build-only identity cannot deploy applications. Clone source on the assigned runner at an exact commit using provider-appropriate, narrowly scoped credentials. Verify webhook signatures, deduplicate events and resolve the commit before creating work. Builds never execute inside the management service. Automatic pull-request preview environments are deferred.
+Select a specific server with the build role. A server may have both deployment and build roles, but a build-only identity cannot deploy applications. Clone source on the assigned runner at an exact commit using provider-appropriate, narrowly scoped credentials. Verify webhook signatures, deduplicate events and resolve the commit before creating work. Builds never execute inside the management service. Automatic pull-request previews use explicit visual templates and dedicated preview-only combined servers, with independent runtime identities/secrets, exact-commit fork approval and confirmed cleanup. See [Pull-request previews](pull-request-previews.md).
 
 If the selected runner is offline or busy, queue the build and show its state. Never silently move it to a production server. An operator may explicitly configure a fallback. Record the actual runner, source commit, target architecture and input versions so retries and artifacts remain attributable.
 

@@ -22,6 +22,7 @@ export function ServerOnboarding({
   onEnrollment: (value: Schema["Enrollment"]) => void;
 }) {
   const action = useAction();
+  const [previewOnly, setPreviewOnly] = useState(false);
   const [role, setRole] = useState<Schema["ServerRole"]>("deployment");
   const [arch, setArch] = useState("amd64");
   const [releaseSHA, setRelease] = useState("");
@@ -64,6 +65,7 @@ export function ServerOnboarding({
           value={role}
           onChange={(e) => {
             setRole(e.target.value as Schema["ServerRole"]);
+            setPreviewOnly(false);
             setPrepared(false);
           }}
         >
@@ -72,6 +74,25 @@ export function ServerOnboarding({
           <option value="combined">Deployment and build</option>
         </Select>
       </Label>
+      {role === "combined" && (
+        <Label>
+          <Checkbox
+            checked={previewOnly}
+            onChange={(e) => {
+              setPreviewOnly(e.target.checked);
+              setPrepared(false);
+            }}
+          />
+          Reserve this server for pull-request previews only
+        </Label>
+      )}
+      {previewOnly && (
+        <p>
+          Use a fresh host with no existing containers or production
+          private-network access. This reservation is permanent; ordinary
+          Astilba workloads cannot use it.
+        </p>
+      )}
       <Label>
         <Checkbox
           checked={manual}
@@ -218,7 +239,7 @@ export function ServerOnboarding({
             const value = await result(
               client.POST("/api/v1/workspaces/{workspaceId}/servers", {
                 params: { path: { workspaceId } },
-                body: { name: text(d, "name"), role },
+                body: { name: text(d, "name"), role, previewOnly },
               }),
             );
             onEnrollment(value);

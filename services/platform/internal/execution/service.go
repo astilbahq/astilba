@@ -44,12 +44,14 @@ func New(st *store.Store) (*Service, error) {
 	s := &Service{Store: st, Policy: pipeline.Policy{Origins: strings.FieldsFunc(os.Getenv("ASTILBA_INTEGRATION_ORIGINS"), func(r rune) bool { return r == ',' })}}
 	workers := river.NewWorkers()
 	river.AddWorker(workers, &domainWorker{service: s})
+	river.AddWorker(workers, &previewWorker{service: s})
+	river.AddWorker(workers, &previewSweepWorker{service: s})
 	river.AddWorker(workers, &worker{service: s})
 	river.AddWorker(workers, &refreshWorker{service: s})
 	river.AddWorker(workers, &automaticWorker{service: s})
 	river.AddWorker(workers, &githubFanoutWorker{service: s})
 	river.AddWorker(workers, &githubReconcileWorker{service: s})
-	q, err := river.NewClient(riverpgxv5.New(st.Pool), &river.Config{Workers: workers, Queues: map[string]river.QueueConfig{river.QueueDefault: {MaxWorkers: 4}}, JobTimeout: 10 * time.Second})
+	q, err := river.NewClient(riverpgxv5.New(st.Pool), &river.Config{PeriodicJobs: []*river.PeriodicJob{river.NewPeriodicJob(river.PeriodicInterval(30*time.Second), func() (river.JobArgs, *river.InsertOpts) { return previewSweepArgs{}, nil }, &river.PeriodicJobOpts{RunOnStart: true})}, Workers: workers, Queues: map[string]river.QueueConfig{river.QueueDefault: {MaxWorkers: 4}}, JobTimeout: 10 * time.Second})
 	s.Queue = q
 	return s, err
 }
@@ -70,7 +72,7 @@ func (s *Service) scope(ctx context.Context, p store.Principal, ws uuid.UUID, wr
 		}
 		return nil
 	}
-	if action == "operation.cancel" || action == "server.revoke" || action == "upgrade.recover" || action == "backup.recover" || action == "workspace.transfer" {
+	if action == "operation.cancel" || action == "server.revoke" || action == "upgrade.recover" || action == "backup.recover" || action == "workspace.transfer" || action == "preview.cleanup" {
 		return s.Store.InWorkspaceRecovery(ctx, p, ws, owner, recent, fnScope)
 	}
 	return s.Store.InWorkspaceTx(ctx, p, ws, write, owner, recent, fnScope)
@@ -79,7 +81,7 @@ func serverScan(row pgx.Row) (api.Server, error) {
 	var v api.Server
 	var cap, pre []byte
 	var revoked bool
-	err := row.Scan(&v.Id, &v.Name, &v.Role, &v.LastSeen, &cap, &pre, &revoked, &v.RotationRequested, &v.TransferRequired)
+	err := row.Scan(&v.Id, &v.Name, &v.Role, &v.LastSeen, &cap, &pre, &revoked, &v.RotationRequested, &v.TransferRequired, &v.PreviewOnly)
 	if err != nil {
 		return v, err
 	}
@@ -106,7 +108,7 @@ func serverScan(row pgx.Row) (api.Server, error) {
 	return v, nil
 }
 
-const serverColumns = "id,name,role,last_seen,capabilities,preflight,revoked,rotation_requested,awaiting_transfer"
+const serverColumns = "id,name,role,last_seen,capabilities,preflight,revoked,rotation_requested,awaiting_transfer,preview_only"
 
 func (s *Service) Servers(ctx context.Context, p store.Principal, ws uuid.UUID) ([]api.Server, error) {
 	out := []api.Server{}
@@ -133,6 +135,9 @@ func (s *Service) CreateServer(ctx context.Context, p store.Principal, ws uuid.U
 	if err != nil {
 		return out, err
 	}
+	if in.PreviewOnly != nil && *in.PreviewOnly && in.Role != "combined" {
+		return out, domain.Invalid("preview.serverRole")
+	}
 	if in.Role != "deployment" && in.Role != "build" && in.Role != "combined" {
 		return out, domain.Invalid("role")
 	}
@@ -152,7 +157,7 @@ func (s *Service) CreateServer(ctx context.Context, p store.Principal, ws uuid.U
 		if count >= 100 {
 			return domain.Conflict
 		}
-		_, e := tx.Exec(ctx, `INSERT INTO servers(id,workspace_id,name,role,enrollment_hash,enrollment_expires) VALUES($1,$2,$3,$4,$5,$6)`, id, ws, name, in.Role, hash(out.Token), out.ExpiresAt)
+		_, e := tx.Exec(ctx, `INSERT INTO servers(id,workspace_id,name,role,enrollment_hash,enrollment_expires,preview_only) VALUES($1,$2,$3,$4,$5,$6,$7)`, id, ws, name, in.Role, hash(out.Token), out.ExpiresAt, in.PreviewOnly != nil && *in.PreviewOnly)
 		if e != nil {
 			return e
 		}
@@ -236,9 +241,13 @@ func (s *Service) Enroll(ctx context.Context, in api.AgentEnrollment) (api.Agent
 
 func (s *Service) Heartbeat(ctx context.Context, a Identity, in api.AgentHeartbeat) (api.AgentStatus, error) {
 	var out api.AgentStatus
+	var previewOnly bool
 	caps, _ := json.Marshal(in.Capabilities)
 	pre, _ := json.Marshal(in.Preflight)
-	err := s.Store.Pool.QueryRow(ctx, `UPDATE servers SET last_seen=now(),capabilities=$3,preflight=$4 WHERE id=$1 AND NOT revoked AND NOT awaiting_transfer AND (credential_hash=$2 OR (previous_hash=$2 AND previous_until>now())) RETURNING role,rotation_requested`, a.ID, hash(a.Token), caps, pre).Scan(&out.Role, &out.RotationRequested)
+	err := s.Store.Pool.QueryRow(ctx, `UPDATE servers SET last_seen=now(),capabilities=$3,preflight=$4 WHERE id=$1 AND NOT revoked AND NOT awaiting_transfer AND (credential_hash=$2 OR (previous_hash=$2 AND previous_until>now())) RETURNING role,rotation_requested,preview_only`, a.ID, hash(a.Token), caps, pre).Scan(&out.Role, &out.RotationRequested, &previewOnly)
+	if previewOnly {
+		out.PreviewOnly = &previewOnly
+	}
 	if errors.Is(err, pgx.ErrNoRows) {
 		err = domain.Unauthenticated
 	}

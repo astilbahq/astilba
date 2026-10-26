@@ -168,6 +168,9 @@ export function Field({
   autoCapitalize,
   spellCheck,
   minLength,
+  min,
+  max,
+  defaultValue,
   labelAction,
   placeholder,
   size,
@@ -182,6 +185,9 @@ export function Field({
   autoCapitalize?: InputProps["autoCapitalize"];
   spellCheck?: InputProps["spellCheck"];
   minLength?: number;
+  min?: number;
+  max?: number;
+  defaultValue?: InputProps["defaultValue"];
   labelAction?: ReactNode;
   placeholder?: string;
   size?: InputProps["size"];
@@ -230,6 +236,9 @@ export function Field({
           autoCapitalize={autoCapitalize}
           spellCheck={spellCheck}
           minLength={minLength}
+          min={min}
+          max={max}
+          defaultValue={defaultValue}
           placeholder={placeholder}
         />
       </div>
