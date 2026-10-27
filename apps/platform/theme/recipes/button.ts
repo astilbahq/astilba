@@ -1,8 +1,11 @@
 import { defineRecipe } from "@pandacss/dev";
 
+const enabled =
+  "&:not(:disabled, [disabled], [data-disabled], [aria-disabled=true])";
+
 export const buttonRecipe = defineRecipe({
   className: "button",
-  jsx: ["Button", "BusyButton", "IconButton"],
+  jsx: ["Button", "BusyButton", "IconButton", "ButtonLink"],
   base: {
     display: "inline-flex",
     alignItems: "center",
@@ -10,6 +13,7 @@ export const buttonRecipe = defineRecipe({
     gap: "2",
     font: "inherit",
     fontWeight: "semibold",
+    textDecoration: "none",
     borderWidth: "1px",
     borderStyle: "solid",
     borderRadius: "control",
@@ -36,7 +40,7 @@ export const buttonRecipe = defineRecipe({
         backgroundColor: "transparent",
         borderColor: "transparent",
         color: "fg",
-        _hover: { _enabled: { backgroundColor: "action.ghostHover" } },
+        _hover: { [enabled]: { backgroundColor: "action.ghostHover" } },
         "&[aria-expanded=true]": { backgroundColor: "action.ghostHover" },
       },
       primary: {
@@ -45,7 +49,7 @@ export const buttonRecipe = defineRecipe({
         borderColor: "action.solid",
         color: "action.contrast",
         _hover: {
-          _enabled: {
+          [enabled]: {
             "--button-focus-color": "token(colors.action.hover)",
             backgroundColor: "action.hover",
             borderColor: "action.hover",
@@ -57,7 +61,7 @@ export const buttonRecipe = defineRecipe({
         backgroundColor: "surface",
         borderColor: "control.border",
         color: "fg",
-        _hover: { _enabled: { backgroundColor: "action.ghostHover" } },
+        _hover: { [enabled]: { backgroundColor: "action.ghostHover" } },
       },
       danger: {
         "--button-focus-color": "token(colors.destructive.solid)",
@@ -65,7 +69,7 @@ export const buttonRecipe = defineRecipe({
         borderColor: "destructive.solid",
         color: "destructive.contrast",
         _hover: {
-          _enabled: {
+          [enabled]: {
             "--button-focus-color": "token(colors.destructive.hover)",
             backgroundColor: "destructive.hover",
             borderColor: "destructive.hover",

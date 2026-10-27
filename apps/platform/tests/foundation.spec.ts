@@ -37,7 +37,9 @@ test("real API: create, conflict, secret, keyboard and reflow", async ({
   await page
     .getByRole("link", { name: `Website ${info.project.name} Open project` })
     .click();
-  await page.getByText("Add an environment", { exact: true }).click();
+  await page
+    .getByRole("link", { name: "New environment", exact: true })
+    .click();
   await page.getByLabel("Environment name", { exact: true }).fill("Production");
   await page
     .getByRole("button", { name: "Create environment", exact: true })
@@ -473,7 +475,9 @@ test("visual services stay staged until a reviewed plan is applied", async ({
   await page
     .getByRole("link", { name: `Visual ${info.project.name} Open project` })
     .click();
-  await page.getByText("Add an environment", { exact: true }).click();
+  await page
+    .getByRole("link", { name: "New environment", exact: true })
+    .click();
   await page.getByLabel("Environment name", { exact: true }).fill("Production");
   await page
     .getByRole("button", { name: "Create environment", exact: true })

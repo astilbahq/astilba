@@ -1,9 +1,8 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useBlocker } from "@tanstack/react-router";
-import { useContext, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ApiError, client, result, type Schema } from "./api/client";
-import { projectsOptions } from "./api/projects";
 import {
   AlertDialogActions,
   AlertDialogClose,
@@ -14,8 +13,6 @@ import {
 } from "./components/alert-dialog";
 import { Button } from "./components/button";
 import { Label } from "./components/label";
-import { Link } from "./components/link";
-import { Select } from "./components/select";
 import { Textarea } from "./components/textarea";
 import { AutomationCredentials } from "./features/automation";
 import { Backups } from "./features/backups";
@@ -24,6 +21,7 @@ import { Deployments } from "./features/deployments";
 import { IntegrationSettings } from "./features/integrations";
 import { Pipelines } from "./features/pipelines";
 import { Previews } from "./features/previews";
+import { ProjectDetail } from "./features/projects/project-detail";
 import { ProjectsOverview } from "./features/projects/projects-overview";
 import { Upgrades } from "./features/upgrades";
 import { VisualEditor } from "./features/visual-editor";
@@ -31,208 +29,71 @@ import { hostingOptions } from "./hosting";
 import { WorkspaceImport } from "./portability";
 import * as s from "./styles";
 import { BusyButton, ErrorNotice, Field, Form, text, useAction } from "./ui";
-import { WorkspaceContext } from "./workspace-context";
 export type WorkspaceSelection = {
   workspace?: string;
   project?: string;
   environment?: string;
 };
 
-export function Dashboard({
-  selection,
-  onSelectionChange,
-}: {
-  selection: WorkspaceSelection;
-  onSelectionChange: (selection: WorkspaceSelection) => Promise<void>;
-}) {
+export function Dashboard({ selection }: { selection: WorkspaceSelection }) {
+  if (selection.project) {
+    return (
+      <ProjectDetail
+        key={selection.project}
+        projectId={selection.project}
+        environmentId={selection.environment}
+        renderEnvironment={(environment, workspace) => (
+          <Environment
+            key={environment.id}
+            workspaceId={workspace.id}
+            projectId={environment.projectId}
+            environment={environment}
+            write={workspace.role !== "viewer"}
+            owner={workspace.role === "owner"}
+          />
+        )}
+      />
+    );
+  }
+  return <ProjectsLanding />;
+}
+function ProjectsLanding() {
   const action = useAction();
   const hosted = useQuery(hostingOptions).data?.enabled;
-  const queries = useQueryClient();
-  const workspace = useContext(WorkspaceContext);
-  const workspaceId = workspace?.id ?? "";
-  const projects = useQuery(projectsOptions(workspaceId));
-  const project = projects.data?.find((p) => p.id === selection.project);
-  const projectId = project?.id ?? "";
-  const environments = useQuery({
-    queryKey: ["environments", workspaceId, projectId, selection.environment],
-    enabled: !!projectId,
-    queryFn: () =>
-      result(
-        client.GET(
-          "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments",
-          { params: { path: { workspaceId, projectId } } },
-        ),
-      ),
-  });
-  const environment = environments.data?.find(
-    (e) => e.id === selection.environment,
-  );
-  const write = workspace?.role !== "viewer";
   return (
     <div className={s.stack}>
-      {project && (
-        <header className={s.spread}>
-          <div>
-            <h1>{project.name}</h1>
-            <p className={s.muted}>
-              A home for your applications and their configuration.
-            </p>
-          </div>
-        </header>
-      )}
-      <ErrorNotice
-        error={
-          action.error ??
-          (project ? (projects.error ?? environments.error) : null)
-        }
-      />
-      {!project ? (
-        <>
-          <ProjectsOverview />
-          <WorkspaceImport hosted={!!hosted} />
-          <details className={s.workspaceUtility}>
-            <summary>Create another workspace</summary>
-            <Form
-              action={action}
-              onSubmit={(d, form) =>
-                action.run(async () => {
-                  await result(
-                    client.POST("/api/v1/workspaces", {
-                      body: {
-                        name: text(d, "name"),
-                        invitation: hosted ? text(d, "invitation") : undefined,
-                      },
-                    }),
-                  );
-                  form.reset();
-                })
-              }
-            >
-              <Field name="name" label="Workspace name" />
-              {hosted && (
-                <Field
-                  name="invitation"
-                  label="Beta invitation code"
-                  autoComplete="off"
-                />
-              )}
-              <BusyButton busy={action.isPending}>Create workspace</BusyButton>
-            </Form>
-          </details>
-        </>
-      ) : (
-        <>
-          <Link
-            to="/"
-            search={{
-              workspace: workspaceId,
-              project: undefined,
-              environment: undefined,
-            }}
-          >
-            ← All projects
-          </Link>
-          <section className={s.panel}>
-            <div className={s.spread}>
-              <h2>Environments</h2>
-              <div className={s.row}>
-                {environments.data?.map((env) => (
-                  <Link
-                    to="/"
-                    key={env.id}
-                    search={{
-                      workspace: workspaceId,
-                      project: projectId,
-                      environment: env.id,
-                    }}
-                    aria-current={
-                      env.id === environment?.id ? "page" : undefined
-                    }
-                  >
-                    {env.name}
-                  </Link>
-                ))}
-              </div>
-            </div>
-            {write && (
-              <details>
-                <summary>Add an environment</summary>
-                <Form
-                  action={action}
-                  onSubmit={(d, form) =>
-                    action.run(async () => {
-                      const env = await result(
-                        client.POST(
-                          "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments",
-                          {
-                            params: { path: { workspaceId, projectId } },
-                            body: {
-                              name: text(d, "name"),
-                              purpose:
-                                text(d, "owner") === "preview_template"
-                                  ? "preview_template"
-                                  : "standard",
-                              configurationOwner:
-                                text(d, "owner") === "compose"
-                                  ? "compose"
-                                  : "dashboard",
-                            },
-                          },
-                        ),
-                      );
-                      form.reset();
-                      await queries.cancelQueries({
-                        queryKey: ["environments", workspaceId, projectId],
-                      });
-                      await queries.invalidateQueries({
-                        queryKey: ["environments", workspaceId, projectId],
-                      });
-                      await onSelectionChange({
-                        workspace: workspaceId,
-                        project: projectId,
-                        environment: env.id,
-                      });
-                    })
-                  }
-                >
-                  <Field name="name" label="Environment name" />
-                  <Label>
-                    Configuration ownership
-                    <Select name="owner">
-                      <option value="dashboard">Visual configuration</option>
-                      <option value="compose">Compose files</option>
-                      <option value="preview_template">
-                        Pull-request preview template (visual)
-                      </option>
-                    </Select>
-                  </Label>
-                  <p>
-                    Preview templates use visual configuration and cannot be
-                    deployed directly.
-                  </p>
-                  <BusyButton busy={action.isPending}>
-                    Create environment
-                  </BusyButton>
-                </Form>
-              </details>
-            )}
-          </section>
-          {environment ? (
-            <Environment
-              key={environment.id}
-              workspaceId={workspaceId}
-              projectId={projectId}
-              environment={environment}
-              write={write}
-              owner={workspace?.role === "owner"}
+      <ErrorNotice error={action.error} />
+      <ProjectsOverview />
+      <WorkspaceImport hosted={!!hosted} />
+      <details className={s.workspaceUtility}>
+        <summary>Create another workspace</summary>
+        <Form
+          action={action}
+          onSubmit={(data, form) =>
+            action.run(async () => {
+              await result(
+                client.POST("/api/v1/workspaces", {
+                  body: {
+                    name: text(data, "name"),
+                    invitation: hosted ? text(data, "invitation") : undefined,
+                  },
+                }),
+              );
+              form.reset();
+            })
+          }
+        >
+          <Field name="name" label="Workspace name" />
+          {hosted && (
+            <Field
+              name="invitation"
+              label="Beta invitation code"
+              autoComplete="off"
             />
-          ) : (
-            <p className={s.notice}>
-              Choose an environment to view its configuration.
-            </p>
           )}
-        </>
-      )}
+          <BusyButton busy={action.isPending}>Create workspace</BusyButton>
+        </Form>
+      </details>
     </div>
   );
 }

@@ -124,7 +124,10 @@ test("mobile editor navigation keeps both unsaved-change decisions reachable abo
   };
   const projectResponse = await page.request.post(
     `/api/v1/workspaces/${workspaceId}/projects`,
-    { headers, data: { name: `Mobile editor ${info.project.name}` } },
+    {
+      headers,
+      data: { name: `Mobile editor ${info.project.name} ${randomUUID()}` },
+    },
   );
   expect(projectResponse.status()).toBe(201);
   const project = await projectResponse.json();
@@ -150,12 +153,22 @@ test("mobile editor navigation keeps both unsaved-change decisions reachable abo
   await drawer.getByRole("link", { name: "Servers", exact: true }).click();
   const decision = page.getByRole("alertdialog", { name: "Unsaved changes" });
   await expect(decision).toBeVisible();
-  await expect(
-    decision.getByRole("button", { name: "Keep editing" }),
-  ).toBeFocused();
-  expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
-  await decision.getByRole("button", { name: "Keep editing" }).click();
+  const keepEditing = decision.getByRole("button", { name: "Keep editing" });
+  const discard = decision.getByRole("button", { name: "Discard and leave" });
+  await expect(keepEditing).toBeFocused();
+  await keepEditing.press("Shift+Tab");
+  await expect(discard).toBeFocused();
+  await discard.press("Tab");
+  await expect(keepEditing).toBeFocused();
+  // WebKit's empty VoiceOver guards redirect focus, as checked above.
+  // https://github.com/mui/base-ui/issues/4668#issuecomment-4306200868
+  const audit = new AxeBuilder({ page }).exclude(
+    'span[data-base-ui-focus-guard][data-type="inside"][role="button"]:empty',
+  );
+  expect((await audit.analyze()).violations).toEqual([]);
+  await keepEditing.press("Enter");
   await expect(drawer).toBeVisible();
+  await expect(editor).toHaveValue(draft);
   await drawer.getByRole("link", { name: "Projects", exact: true }).click();
   await decision.getByRole("button", { name: "Discard and leave" }).click();
   await expect(
