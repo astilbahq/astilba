@@ -42,7 +42,9 @@ test("GitHub App authorization returns across sites, selects a repository and di
   await page
     .getByRole("link", { name: `GitHub ${info.project.name} Open project` })
     .click();
-  await page.getByText("Add an environment", { exact: true }).click();
+  await page
+    .getByRole("link", { name: "New environment", exact: true })
+    .click();
   await page.getByLabel("Environment name", { exact: true }).fill("Preview");
   await page
     .getByRole("button", { name: "Create environment", exact: true })

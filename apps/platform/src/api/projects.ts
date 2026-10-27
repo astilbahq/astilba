@@ -13,3 +13,16 @@ export const projectsOptions = (workspaceId: string) =>
         }),
       ),
   });
+
+export const projectOptions = (workspaceId: string, projectId: string) =>
+  queryOptions({
+    queryKey: ["project", workspaceId, projectId],
+    enabled: !!workspaceId && !!projectId,
+    queryFn: ({ signal }) =>
+      result(
+        client.GET("/api/v1/workspaces/{workspaceId}/projects/{projectId}", {
+          params: { path: { workspaceId, projectId } },
+          signal,
+        }),
+      ),
+  });

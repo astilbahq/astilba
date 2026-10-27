@@ -21,7 +21,9 @@ test("download log snapshots with an explicit window and empty result", async ({
   await page
     .getByRole("link", { name: `Logs ${info.project.name} Open project` })
     .click();
-  await page.getByText("Add an environment", { exact: true }).click();
+  await page
+    .getByRole("link", { name: "New environment", exact: true })
+    .click();
   await page.getByLabel("Environment name", { exact: true }).fill("Logs");
   await page
     .getByRole("button", { name: "Create environment", exact: true })

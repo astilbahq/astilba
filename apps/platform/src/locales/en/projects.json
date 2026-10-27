@@ -27,5 +27,49 @@
     "recentAuth": "Confirm your identity in Account security, then try again.",
     "subscription": "An active workspace subscription is required. Open Workspace to finish setup."
   },
-  "emptyViewerTitle": "No projects yet"
+  "emptyViewerTitle": "No projects yet",
+  "detail": {
+    "title": "Project",
+    "pageTitle": "{{project}} · Astilba",
+    "breadcrumbs": "Breadcrumb",
+    "loading": "Loading project…",
+    "loadFailed": "Project could not be loaded",
+    "unavailableTitle": "Project unavailable",
+    "unavailable": "This project is unavailable in the selected workspace. Return to Projects to choose one you can access."
+  },
+  "environments": {
+    "title": "Environments",
+    "new": "New environment",
+    "loading": "Loading environments…",
+    "loadFailed": "Environments could not be loaded",
+    "emptyTitle": "Create your first environment",
+    "emptyViewerTitle": "No environments yet",
+    "emptyDescription": "Each environment keeps its own application configuration and deployment. Create one for development, staging or production.",
+    "readOnly": "You have view-only access. A workspace owner or member can create environments.",
+    "visual": "Visual configuration",
+    "compose": "Compose files",
+    "previewTemplate": "Pull-request preview template",
+    "preview": "Pull-request preview",
+    "open": "Open environment",
+    "unavailableTitle": "Environment unavailable",
+    "unavailable": "This environment is unavailable in this project. Use the project breadcrumb to choose another environment."
+  },
+  "createEnvironment": {
+    "title": "New environment",
+    "pageTitle": "New environment · Astilba",
+    "name": "Environment name",
+    "configuration": "Configuration",
+    "submit": "Create environment",
+    "visualDescription": "Build services and connections in Astilba’s visual editor.",
+    "composeDescription": "Compose files remain the source of truth for this environment.",
+    "templateDescription": "This visual template supplies isolated pull-request previews. Templates cannot be deployed directly.",
+    "required": "Enter an environment name.",
+    "invalid": "Use an environment name without line breaks or null characters.",
+    "tooLong": "Use at most {{maximum}} characters for the environment name.",
+    "forbidden": "You no longer have permission to create environments in this workspace.",
+    "mfa": "Set up two-factor authentication in Account security before creating an environment.",
+    "verifyEmail": "Verify your email address in Account security before creating an environment.",
+    "recentAuth": "Confirm your identity in Account security, then try again.",
+    "subscription": "An active workspace subscription is required. Open Workspace to finish setup."
+  }
 }

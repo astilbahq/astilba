@@ -24,6 +24,7 @@ import { PasswordReset } from "./features/auth/password-reset";
 import { SignIn } from "./features/auth/sign-in";
 import { Signup } from "./features/auth/signup";
 import { GitHubCallback, GitHubInstalled } from "./features/github-app";
+import { CreateEnvironment } from "./features/projects/create-environment";
 import {
   AppShell,
   type AppSection,
@@ -111,7 +112,9 @@ function SignedInLayout({
     search.workspace === undefined
       ? workspaces[0]
       : workspaces.find((item) => item.id === search.workspace);
-  const section = location.pathname as AppSection;
+  const section = (
+    location.pathname === "/environments/new" ? "/" : location.pathname
+  ) as AppSection;
   const unavailable =
     search.workspace !== undefined && !workspace && section !== "/account";
   return (
@@ -163,6 +166,7 @@ function loginDestination(value: unknown): string {
         "/signup",
         "/onboarding",
         "/verify-email",
+        "/environments/new",
         "/github/callback",
       ].includes(url.pathname.replace(/\/$/, "") || "/")
     )
@@ -232,11 +236,32 @@ const dashboardRoute = createRoute({
 });
 function DashboardPage() {
   const selection = dashboardRoute.useSearch();
-  const navigate = dashboardRoute.useNavigate();
+  return <Dashboard selection={selection} />;
+}
+const createEnvironmentRoute = createRoute({
+  getParentRoute: () => application,
+  path: "/environments/new",
+  validateSearch: (search: Record<string, unknown>): { project?: string } => ({
+    project: typeof search.project === "string" ? search.project : undefined,
+  }),
+  component: CreateEnvironmentPage,
+});
+function CreateEnvironmentPage() {
+  const { project } = createEnvironmentRoute.useSearch();
+  const navigate = createEnvironmentRoute.useNavigate();
   return (
-    <Dashboard
-      selection={selection}
-      onSelectionChange={(search) => navigate({ search })}
+    <CreateEnvironment
+      projectId={project ?? ""}
+      onCreated={(environment, workspaceId) =>
+        void navigate({
+          to: "/",
+          search: {
+            workspace: workspaceId,
+            project: environment.projectId,
+            environment: environment.id,
+          },
+        })
+      }
     />
   );
 }
@@ -369,6 +394,7 @@ export const router = createRouter({
     application.addChildren([
       githubCallback,
       dashboardRoute,
+      createEnvironmentRoute,
       servers,
       alerts,
       account,

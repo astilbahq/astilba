@@ -41,7 +41,9 @@ test("hosted signup, MFA, billing admission and encrypted workspace import", asy
   await page
     .getByRole("link", { name: "Imported project Open project" })
     .click();
-  await page.getByText("Add an environment", { exact: true }).click();
+  await page
+    .getByRole("link", { name: "New environment", exact: true })
+    .click();
   await page.getByLabel("Environment name", { exact: true }).fill("Production");
   await page
     .getByRole("button", { name: "Create environment", exact: true })
@@ -441,14 +443,22 @@ test("hosted signup, MFA, billing admission and encrypted workspace import", asy
     await hosted
       .getByRole("link", { name: "Imported project Open project" })
       .click();
-    await hosted.getByRole("link", { name: "Production", exact: true }).click();
+    await hosted
+      .getByRole("link", {
+        name: "Production Visual configuration Open environment",
+        exact: true,
+      })
+      .click();
     await expect(
       hosted.getByText("IMPORTED_TOKEN", { exact: true }).first(),
     ).toBeVisible();
     await expect(hosted.locator("body")).not.toContainText(
       "portable-browser-canary",
     );
-    await hosted.getByRole("link", { name: "Projects", exact: true }).click();
+    await hosted
+      .getByRole("navigation", { name: "Navigation", exact: true })
+      .getByRole("link", { name: "Projects", exact: true })
+      .click();
     await hosted.getByRole("button", { name: /^Workspace:/ }).click();
     await hosted
       .getByRole("menuitem", { name: workspaceName, exact: true })

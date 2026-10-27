@@ -37,7 +37,7 @@ export const linkRecipe = defineRecipe({
         transitionDuration: "button",
         transitionTimingFunction: "out",
         _hover: { backgroundColor: "action.ghostHover" },
-        '&[data-status="active"]': {
+        '&[data-status="active"], &[aria-current="page"]': {
           bg: "navigation.active",
           color: "fg",
           fontWeight: "semibold",

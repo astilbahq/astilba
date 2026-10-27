@@ -1,6 +1,7 @@
 import { css } from "../../../styled-system/css";
 
 export const page = css({
+  outline: "none",
   display: "grid",
   gap: "8",
   color: "fg",
@@ -8,6 +9,7 @@ export const page = css({
   fontSize: "sm",
   lineHeight: "body",
 });
+export const recoveryTarget = css({ outline: "none" });
 export const header = css({
   display: "flex",
   justifyContent: "space-between",
@@ -16,6 +18,38 @@ export const header = css({
   gap: "4",
 });
 export const intro = css({ display: "grid", gap: "2", maxInlineSize: "prose" });
+export const environments = css({ display: "grid", gap: "5" });
+export const rowDetails = css({
+  display: "grid",
+  gap: "1",
+  minInlineSize: "0",
+  flexGrow: 1,
+  flexBasis: "64",
+});
+export const metadata = css({
+  display: "flex",
+  flexWrap: "wrap",
+  gap: "3",
+  color: "subtle",
+  fontSize: "secondary",
+});
+export const configuration = css({ display: "grid", gap: "2" });
+export const breadcrumbs = css({
+  display: "flex",
+  flexWrap: "wrap",
+  alignItems: "center",
+  gap: "2",
+  fontSize: "secondary",
+});
+export const breadcrumbLink = css({ color: "fg", overflowWrap: "anywhere" });
+export const breadcrumbItem = css({
+  display: "inline-flex",
+  alignItems: "center",
+  gap: "2",
+  minInlineSize: "0",
+  "--icon-size": "token(sizes.4)",
+  _rtl: { "& > svg": { transform: "scaleX(-1)" } },
+});
 export const title = css({
   fontSize: "2xl",
   fontWeight: "semibold",

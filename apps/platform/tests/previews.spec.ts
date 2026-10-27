@@ -103,12 +103,14 @@ test("preview policy retains failed inputs and approves only the displayed fork 
       .getByRole("button", { name: "Create project", exact: true })
       .click();
     await page.getByRole("link", { name: `${name} Open project` }).click();
-    await page.getByText("Add an environment", { exact: true }).click();
+    await page
+      .getByRole("link", { name: "New environment", exact: true })
+      .click();
     await page
       .getByLabel("Environment name", { exact: true })
       .fill("PR template");
     await page
-      .getByLabel("Configuration ownership")
+      .getByLabel("Configuration", { exact: true })
       .selectOption("preview_template");
     await page
       .getByRole("button", { name: "Create environment", exact: true })

@@ -18,7 +18,9 @@ test("owner issues, saves and revokes an environment token without losing a draf
     .getByRole("button", { name: "Create project", exact: true })
     .click();
   await page.getByRole("link", { name: `${name} Open project` }).click();
-  await page.getByText("Add an environment", { exact: true }).click();
+  await page
+    .getByRole("link", { name: "New environment", exact: true })
+    .click();
   await page.getByLabel("Environment name", { exact: true }).fill("CI");
   await page
     .getByRole("button", { name: "Create environment", exact: true })

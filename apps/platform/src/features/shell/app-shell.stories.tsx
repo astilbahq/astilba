@@ -1,156 +1,22 @@
 import type { Meta, StoryObj } from "@storybook/tanstack-react";
-import { useQuery } from "@tanstack/react-query";
-import {
-  createMemoryHistory,
-  createRootRoute,
-  createRoute,
-  createRouter,
-  Outlet,
-  RouterProvider,
-  useLocation,
-  useNavigate,
-  useSearch,
-} from "@tanstack/react-router";
 import { delay } from "msw";
 import { http, HttpResponse } from "msw/http";
-import { useState } from "react";
 import { expect, userEvent, waitFor, within } from "storybook/test";
-import type { Schema } from "../../api/client";
-import { sessionOptions } from "../../api/session";
-import { hostedMember, scenario } from "../../workshop/fixtures";
-import { Dashboard } from "../../workspace";
-import { WorkspaceContext } from "../../workspace-context";
-import { AppShell, type AppSection, WorkspaceUnavailable } from "./app-shell";
+import {
+  ShellPreview,
+  examples,
+  list,
+  projectsPath,
+  session,
+  workspace,
+  projectHandlers,
+} from "../../workshop/app-preview";
+import { scenario } from "../../workshop/fixtures";
 
-const workspace = hostedMember.workspaces[0];
-const session = {
-  ...hostedMember,
-  workspaces: [
-    workspace,
-    {
-      ...workspace,
-      id: "00000000-0000-4000-8000-000000000003",
-      name: "Personal",
-    },
-  ],
-};
-const examples: Schema["Project"][] = [
-  {
-    id: "00000000-0000-4000-8000-000000000010",
-    createdAt: "2026-01-01T00:00:00Z",
-    name: "Website",
-  },
-  {
-    id: "00000000-0000-4000-8000-000000000011",
-    createdAt: "2026-01-01T00:00:00Z",
-    name: "Internal tools",
-  },
-];
-const projectsPath = "/api/v1/workspaces/:workspaceId/projects";
-const list = (projects = examples) =>
-  http.get(projectsPath, () => HttpResponse.json(projects));
-function PreviewLayout() {
-  const current = useQuery(sessionOptions).data!;
-  const search = useSearch({ strict: false });
-  const location = useLocation();
-  const navigate = useNavigate();
-  const selected =
-    search.workspace === undefined
-      ? current.workspaces[0]
-      : current.workspaces.find((item) => item.id === search.workspace);
-  return (
-    <WorkspaceContext value={selected}>
-      <AppShell
-        key={current.user!.id}
-        user={current.user!}
-        workspaces={current.workspaces}
-        workspace={selected}
-        selectedWorkspaceId={search.workspace}
-        section={location.pathname as AppSection}
-        navigationKey={location.href}
-        onWorkspaceChange={(id) =>
-          void navigate({
-            to: location.pathname as AppSection,
-            search: { workspace: id },
-          })
-        }
-        onSignedOut={() => void navigate({ to: "/login" })}
-      >
-        <div
-          key={
-            location.pathname === "/account"
-              ? "account"
-              : (selected?.id ?? "none")
-          }
-        >
-          {search.workspace !== undefined &&
-          !selected &&
-          location.pathname !== "/account" ? (
-            <WorkspaceUnavailable />
-          ) : (
-            <Outlet />
-          )}
-        </div>
-      </AppShell>
-    </WorkspaceContext>
-  );
-}
-function ProjectPage() {
-  const selection = useSearch({ strict: false });
-  const navigate = useNavigate();
-  return selection.project ? (
-    <h1>Project destination</h1>
-  ) : (
-    <Dashboard
-      selection={selection}
-      onSelectionChange={(search) => navigate({ to: "/", search })}
-    />
-  );
-}
-function ShellPreview({ initialWorkspace }: { initialWorkspace?: string }) {
-  const [router] = useState(() => {
-    const root = createRootRoute({
-      component: PreviewLayout,
-      validateSearch: (
-        search: Record<string, unknown>,
-      ): { workspace?: string; project?: string } => ({
-        workspace:
-          typeof search.workspace === "string" ? search.workspace : undefined,
-        project:
-          typeof search.project === "string" ? search.project : undefined,
-      }),
-    });
-    const index = createRoute({
-      getParentRoute: () => root,
-      path: "/",
-      component: ProjectPage,
-    });
-    const children = (
-      ["/servers", "/alerts", "/members", "/account", "/login"] as const
-    ).map((path) =>
-      createRoute({
-        getParentRoute: () => root,
-        path,
-        component: () => <h1>{path.slice(1)}</h1>,
-      }),
-    );
-    return createRouter({
-      routeTree: root.addChildren([index, ...children]),
-      history: createMemoryHistory({
-        initialEntries: [
-          initialWorkspace
-            ? `/?${new URLSearchParams({ workspace: initialWorkspace })}`
-            : "/",
-        ],
-      }),
-    });
-  });
-  return <RouterProvider router={router} />;
-}
 const meta = {
   title: "Pages/Projects",
   component: ShellPreview,
-  parameters: scenario(session, list()),
+  parameters: scenario(session, ...projectHandlers()),
 } satisfies Meta<typeof ShellPreview>;
 export default meta;
 type Story = StoryObj<typeof meta>;
@@ -398,7 +264,7 @@ export const CurrentWorkspaceKeepsProject: Story = {
       await canvas.findByRole("link", { name: "Website Open project" }),
     );
     await expect(
-      await canvas.findByRole("heading", { name: "Project destination" }),
+      await canvas.findByRole("heading", { name: "Website" }),
     ).toBeVisible();
     if (!canvas.queryByRole("button", { name: "Workspace: My workspace" })) {
       await userEvent.click(
@@ -415,7 +281,7 @@ export const CurrentWorkspaceKeepsProject: Story = {
     const close = body.queryByRole("button", { name: "Close navigation" });
     if (close) await userEvent.click(close);
     await expect(
-      canvas.getByRole("heading", { name: "Project destination" }),
+      canvas.getByRole("heading", { name: "Website" }),
     ).toBeVisible();
   },
 };

@@ -77,7 +77,9 @@ test("repository setup, Git service, queued build and cancellation use the real 
   await page
     .getByRole("link", { name: `Builds ${info.project.name} Open project` })
     .click();
-  await page.getByText("Add an environment", { exact: true }).click();
+  await page
+    .getByRole("link", { name: "New environment", exact: true })
+    .click();
   await page.getByLabel("Environment name", { exact: true }).fill("Preview");
   await page
     .getByRole("button", { name: "Create environment", exact: true })

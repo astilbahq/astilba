@@ -43,9 +43,13 @@ test("Compose files remain authoritative through graph edits and independent lay
   await page
     .getByRole("link", { name: `Compose ${info.project.name} Open project` })
     .click();
-  await page.getByText("Add an environment", { exact: true }).click();
+  await page
+    .getByRole("link", { name: "New environment", exact: true })
+    .click();
   await page.getByLabel("Environment name", { exact: true }).fill("Files");
-  await page.getByLabel("Configuration ownership").selectOption("compose");
+  await page
+    .getByLabel("Configuration", { exact: true })
+    .selectOption("compose");
   await page
     .getByRole("button", { name: "Create environment", exact: true })
     .click();

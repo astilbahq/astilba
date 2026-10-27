@@ -53,6 +53,7 @@ for (const theme of ["light", "dark"]) {
     ).toBe(true);
     await page.keyboard.press("Escape");
     await expect(drawer).toBeVisible();
+    await expect(drawer).toHaveCSS("opacity", "1");
     expect(
       (
         await new AxeBuilder({ page })
