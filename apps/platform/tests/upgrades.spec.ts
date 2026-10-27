@@ -1,5 +1,6 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
+import { openEnvironmentSection } from "./environment-section";
 import { managedDatabase } from "./fixtures/managed-database";
 
 for (const savedEdit of [false, true]) {
@@ -37,6 +38,7 @@ for (const savedEdit of [false, true]) {
     await page.goto(
       `/?workspace=${f.ws}&project=${f.project.id}&environment=${f.env.id}`,
     );
+    await openEnvironmentSection(page, "Deployments");
     const region = page.getByRole("region", {
       name: "Supported major upgrades",
     });
@@ -85,6 +87,7 @@ for (const savedEdit of [false, true]) {
       plan.getByRole("button", { name: "Return to old database" }),
     ).toBeVisible();
     if (savedEdit) {
+      await openEnvironmentSection(page, "Configuration");
       await page.getByText("Advanced specification", { exact: true }).click();
       const editor = page.getByRole("textbox", {
         name: "Specification (JSON)",
@@ -92,6 +95,7 @@ for (const savedEdit of [false, true]) {
       const edited = JSON.parse(await editor.inputValue());
       edited.applications[0].name = "Saved during upgrade";
       await editor.fill(JSON.stringify(edited));
+      await openEnvironmentSection(page, "Configuration");
       await page
         .getByRole("button", { name: "Save revision", exact: true })
         .click();
@@ -99,6 +103,7 @@ for (const savedEdit of [false, true]) {
         page.getByRole("button", { name: "Save revision", exact: true }),
       ).toBeDisabled();
     }
+    await openEnvironmentSection(page, "Deployments");
     await plan.getByLabel(/Allow new writes/).check();
     await cutover.click();
     const activating = await f.poll();
@@ -169,6 +174,7 @@ for (const savedEdit of [false, true]) {
     await plan
       .getByRole("button", { name: "Load upgraded configuration" })
       .click();
+    await openEnvironmentSection(page, "Configuration");
     await expect(
       page.getByRole("button", { name: "Save revision", exact: true }),
     ).toBeDisabled();
@@ -176,19 +182,23 @@ for (const savedEdit of [false, true]) {
       const comparison = plan.getByRole("region", {
         name: "Upgraded revision comparison",
       });
+      await openEnvironmentSection(page, "Deployments");
       await expect(comparison).toBeVisible();
       await expect(comparison.getByRole("status")).toContainText(
         "was preserved",
       );
       await expect(comparison.locator("pre")).toContainText("postgres:18.4");
+      await openEnvironmentSection(page, "Configuration");
       await expect(
         page.getByRole("textbox", { name: "Specification (JSON)" }),
       ).toHaveValue(/Saved during upgrade/);
     } else {
+      await openEnvironmentSection(page, "Configuration");
       await page.getByText("Advanced specification", { exact: true }).click();
       await expect(
         page.getByRole("textbox", { name: "Specification (JSON)" }),
       ).toHaveValue(/postgres:18\.4/);
+      await openEnvironmentSection(page, "Configuration");
       await page.getByText("Add a service", { exact: true }).click();
       const add = page.getByRole("form", { name: "Add service" });
       await add
@@ -204,6 +214,7 @@ for (const savedEdit of [false, true]) {
         .getByLabel("Database password secret (PostgreSQL)")
         .selectOption(f.secret.id);
       await add.getByRole("button", { name: "Stage new service" }).click();
+      await openEnvironmentSection(page, "Configuration");
       await page
         .getByRole("button", { name: "Save revision", exact: true })
         .click();

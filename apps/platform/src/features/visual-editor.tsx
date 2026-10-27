@@ -9,6 +9,7 @@ import {
 } from "@xyflow/react";
 import { useContext, useEffect, useState } from "react";
 import { client, result, type Schema } from "../api/client";
+import type { EnvironmentPath } from "../api/environment";
 import { Button } from "../components/button";
 import { Checkbox } from "../components/checkbox";
 import "./visual-editor.css";
@@ -24,11 +25,7 @@ import { ServiceCatalog } from "./service-catalog";
 import { OutputEditor, ServiceConnections } from "./service-outputs";
 import "@xyflow/react/dist/style.css";
 
-export type EnvironmentPath = {
-  workspaceId: string;
-  projectId: string;
-  environmentId: string;
-};
+export type { EnvironmentPath } from "../api/environment";
 type Spec = Schema["Specification"];
 type App = Schema["ApplicationReference"];
 const postgresImage =

@@ -15,7 +15,6 @@ import { useState } from "react";
 import type { Schema } from "../api/client";
 import { sessionOptions } from "../api/session";
 import { CreateEnvironment } from "../features/projects/create-environment";
-import { ProjectDetail } from "../features/projects/project-detail";
 import {
   AppShell,
   type AppSection,
@@ -23,6 +22,7 @@ import {
 } from "../features/shell/app-shell";
 import { Dashboard } from "../workspace";
 import { WorkspaceContext } from "../workspace-context";
+import { environmentHandlers } from "./environment-fixtures";
 import { hostedMember } from "./fixtures";
 
 function EnvironmentCreation() {
@@ -122,15 +122,7 @@ function PreviewLayout() {
 }
 function ProjectPage() {
   const selection = useSearch({ strict: false });
-  return selection.project ? (
-    <ProjectDetail
-      projectId={selection.project}
-      environmentId={selection.environment}
-      renderEnvironment={(environment) => <h2>{environment.name}</h2>}
-    />
-  ) : (
-    <Dashboard selection={selection} />
-  );
+  return <Dashboard selection={selection} />;
 }
 export function ShellPreview({
   initialWorkspace,
@@ -243,4 +235,5 @@ export const projectHandlers = () => [
         );
   }),
   http.get(environmentsPath, () => HttpResponse.json(environments)),
+  ...environmentHandlers(),
 ];

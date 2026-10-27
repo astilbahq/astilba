@@ -1,5 +1,6 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
+import { openEnvironmentSection } from "./environment-section";
 
 test("Compose files remain authoritative through graph edits and independent layout saves", async ({
   page,
@@ -53,6 +54,7 @@ test("Compose files remain authoritative through graph edits and independent lay
   await page
     .getByRole("button", { name: "Create environment", exact: true })
     .click();
+  await openEnvironmentSection(page, "Configuration");
   const editor = page.getByRole("textbox", {
     name: "Source compose.yaml",
     exact: true,
@@ -73,12 +75,14 @@ test("Compose files remain authoritative through graph edits and independent lay
   await expect(
     page.getByText("Source validated.", { exact: true }),
   ).toBeVisible();
+  await openEnvironmentSection(page, "Configuration");
   await page
     .getByRole("button", { name: "Save revision", exact: true })
     .click();
   await expect(
     page.getByText("Revision saved.", { exact: true }),
   ).toBeVisible();
+  await openEnvironmentSection(page, "Configuration");
   await page.getByRole("button", { name: "Service list", exact: true }).click();
   await page.getByRole("button", { name: "web", exact: true }).click();
   await expect(
@@ -99,6 +103,7 @@ test("Compose files remain authoritative through graph edits and independent lay
     .click();
   await expect(editor).toContainText("busybox:latest");
   expect(await editor.textContent()).toContain("# keep this comment");
+  await openEnvironmentSection(page, "Configuration");
   await page
     .getByRole("button", { name: "Save revision", exact: true })
     .click();
@@ -128,9 +133,11 @@ test("Compose files remain authoritative through graph edits and independent lay
   });
   await diagnostic.click();
   await expect(editor).toBeFocused();
+  await openEnvironmentSection(page, "Configuration");
   await page.getByRole("button", { name: "Service list", exact: true }).focus();
   await diagnostic.click();
   await expect(editor).toBeFocused();
+  await openEnvironmentSection(page, "Configuration");
   await page
     .getByRole("button", { name: "Save revision", exact: true })
     .click();
@@ -177,7 +184,9 @@ test("Compose files remain authoritative through graph edits and independent lay
     ),
   ).toBe(true);
   await page.reload();
+  await openEnvironmentSection(page, "Configuration");
   await expect(editor).toContainText("busybox:latest");
+  await openEnvironmentSection(page, "Configuration");
   await page.getByRole("button", { name: "Service list", exact: true }).click();
   await page.getByRole("button", { name: "web", exact: true }).click();
   await expect(page.getByLabel("Position x", { exact: true })).toHaveValue(

@@ -14,6 +14,7 @@ import { menuRecipe } from "./theme/recipes/menu";
 import { otpInputRecipe } from "./theme/recipes/otp-input";
 import { passwordInputRecipe } from "./theme/recipes/password-input";
 import { selectRecipe } from "./theme/recipes/select";
+import { tabsRecipe } from "./theme/recipes/tabs";
 import { textareaRecipe } from "./theme/recipes/textarea";
 import { toastRecipe } from "./theme/recipes/toast";
 import { tooltipRecipe } from "./theme/recipes/tooltip";
@@ -49,6 +50,7 @@ export default defineConfig({
         passwordInput: passwordInputRecipe,
         tooltip: tooltipRecipe,
         toast: toastRecipe,
+        tabs: tabsRecipe,
       },
     },
   },

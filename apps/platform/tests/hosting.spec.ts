@@ -5,6 +5,7 @@ import { resolve } from "node:path";
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
 import jsQR from "jsqr";
+import { openEnvironmentSection } from "./environment-section";
 import { totp } from "./fixtures/totp";
 
 test("hosted signup, MFA, billing admission and encrypted workspace import", async ({
@@ -48,6 +49,7 @@ test("hosted signup, MFA, billing admission and encrypted workspace import", asy
   await page
     .getByRole("button", { name: "Create environment", exact: true })
     .click();
+  await openEnvironmentSection(page, "Settings");
   await page.getByLabel("Secret name", { exact: true }).fill("IMPORTED_TOKEN");
   await page
     .getByLabel("Secret value", { exact: true })
@@ -449,6 +451,7 @@ test("hosted signup, MFA, billing admission and encrypted workspace import", asy
         exact: true,
       })
       .click();
+    await openEnvironmentSection(hosted, "Settings");
     await expect(
       hosted.getByText("IMPORTED_TOKEN", { exact: true }).first(),
     ).toBeVisible();

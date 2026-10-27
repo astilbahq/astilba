@@ -13,6 +13,7 @@ import account from "../locales/en/account.json";
 import app from "../locales/en/app.json";
 import auth from "../locales/en/auth.json";
 import common from "../locales/en/common.json";
+import environment from "../locales/en/environment.json";
 import projects from "../locales/en/projects.json";
 import { ThemeContext, ThemeProvider, type ThemePreference } from "../theme";
 import { guest } from "./fixtures";
@@ -41,7 +42,14 @@ export async function createWorkshopState(session: Session = guest) {
     instance,
     availableLocales.map(({ code }) => code),
   );
-  const pseudo = pseudolocalize({ auth, common, account, app, projects });
+  const pseudo = pseudolocalize({
+    auth,
+    common,
+    account,
+    app,
+    projects,
+    environment,
+  });
   for (const code of ["en-XA", "en-XB"]) {
     for (const [namespace, messages] of Object.entries(pseudo)) {
       instance.addResourceBundle(code, namespace, messages);

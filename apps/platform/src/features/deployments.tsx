@@ -1,6 +1,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { client, result, type Schema } from "../api/client";
+import { runtimeOptions } from "../api/environment";
 import { Button } from "../components/button";
 import { Checkbox } from "../components/checkbox";
 import { Input } from "../components/input";
@@ -69,11 +70,7 @@ export function Deployments({
         ? false
         : 2000,
   });
-  const runtime = useQuery({
-    queryKey: ["runtime", path],
-    queryFn: () => result(client.GET(`${root}/runtime`, { params: { path } })),
-    refetchInterval: 5000,
-  });
+  const runtime = useQuery(runtimeOptions(path));
   const releases = useQuery({
     queryKey: ["releases", path, revision.id],
     queryFn: () => result(client.GET(`${root}/releases`, { params: { path } })),

@@ -1,5 +1,6 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
+import { openEnvironmentSection } from "./environment-section";
 
 test("owner issues, saves and revokes an environment token without losing a draft", async ({
   page,
@@ -25,11 +26,13 @@ test("owner issues, saves and revokes an environment token without losing a draf
   await page
     .getByRole("button", { name: "Create environment", exact: true })
     .click();
+  await openEnvironmentSection(page, "Configuration");
   await page.getByText("Advanced specification", { exact: true }).click();
   const editor = page.getByLabel("Specification (JSON)");
   await expect(editor).toBeVisible();
   const staged = `${await editor.inputValue()}\n `;
   await editor.fill(staged);
+  await openEnvironmentSection(page, "Settings");
   const panel = page.getByRole("region", { name: "Environment automation" });
   await expect(
     panel.getByRole("link", { name: "Open Account security in a new tab" }),
@@ -88,6 +91,7 @@ test("owner issues, saves and revokes an environment token without losing a draf
   expect(
     (await request.get("/api/v1/automation/context", { headers })).status(),
   ).toBe(401);
+  await openEnvironmentSection(page, "Configuration");
   await expect(editor).toHaveValue(staged);
   await expect(
     page.getByRole("button", { name: "Save revision", exact: true }),
