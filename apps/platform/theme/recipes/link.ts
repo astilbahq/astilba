@@ -26,6 +26,7 @@ export const linkRecipe = defineRecipe({
         textDecoration: "none",
         _hover: { color: "link.fg", textDecoration: "underline" },
       },
+      menu: { color: "fg", textDecoration: "none" },
       navigation: {
         paddingBlock: "2",
         paddingInline: "2.5",

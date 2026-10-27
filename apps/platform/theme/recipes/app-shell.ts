@@ -22,6 +22,7 @@ export const appShellRecipe = defineSlotRecipe({
     "text",
     "secondary",
     "workspaceMenu",
+    "workspaceLabel",
   ],
   base: {
     root: {
@@ -173,6 +174,12 @@ export const appShellRecipe = defineSlotRecipe({
       color: "subtle",
       overflowWrap: "anywhere",
     },
-    workspaceMenu: { minInlineSize: "app.sidebar" },
+    workspaceMenu: { inlineSize: "app.sidebar" },
+    workspaceLabel: {
+      flex: "1",
+      minInlineSize: "0",
+      whiteSpace: "normal",
+      overflowWrap: "anywhere",
+    },
   },
 });
