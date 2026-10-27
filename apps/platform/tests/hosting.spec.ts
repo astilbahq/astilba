@@ -27,9 +27,11 @@ test("hosted signup, MFA, billing admission and encrypted workspace import", asy
   await creation
     .getByRole("button", { name: "Create workspace", exact: true })
     .click();
+  await page.getByRole("button", { name: /^Workspace:/ }).click();
   await page
-    .getByRole("combobox", { name: "Workspace", exact: true })
-    .selectOption({ label: workspaceName });
+    .getByRole("menuitem", { name: workspaceName, exact: true })
+    .click();
+  await page.getByRole("button", { name: "New project", exact: true }).click();
   await page
     .getByLabel("Project name", { exact: true })
     .fill("Imported project");
@@ -37,7 +39,7 @@ test("hosted signup, MFA, billing admission and encrypted workspace import", asy
     .getByRole("button", { name: "Create project", exact: true })
     .click();
   await page
-    .getByRole("link", { name: "Imported project Open project →" })
+    .getByRole("link", { name: "Imported project Open project" })
     .click();
   await page.getByText("Add an environment", { exact: true }).click();
   await page.getByLabel("Environment name", { exact: true }).fill("Production");
@@ -55,9 +57,10 @@ test("hosted signup, MFA, billing admission and encrypted workspace import", asy
     page.getByText("Secret version saved. Its value cannot be read back."),
   ).toBeVisible();
   await page.getByRole("link", { name: "Workspace", exact: true }).click();
+  await page.getByRole("button", { name: /^Workspace:/ }).click();
   await page
-    .getByRole("combobox", { name: "Workspace", exact: true })
-    .selectOption({ label: workspaceName });
+    .getByRole("menuitem", { name: workspaceName, exact: true })
+    .click();
   const passphrase = "browser transfer archive passphrase";
   await page
     .getByLabel("Archive passphrase (at least 20 characters)")
@@ -357,13 +360,16 @@ test("hosted signup, MFA, billing admission and encrypted workspace import", asy
       .getByRole("link", { name: "Continue later", exact: true })
       .click();
     await hosted
+      .getByRole("button", { name: "New project", exact: true })
+      .click();
+    await hosted
       .getByLabel("Project name", { exact: true })
       .fill("Subscription gated");
     await hosted
       .getByRole("button", { name: "Create project", exact: true })
       .click();
-    await expect(hosted.getByRole("alert")).toContainText(
-      "active workspace subscription",
+    await expect(hosted.getByRole("alert")).toHaveText(
+      "An active workspace subscription is required. Open Workspace to finish setup.",
     );
 
     // The operator boundary grants a test entitlement; billing itself uses real
@@ -428,11 +434,12 @@ test("hosted signup, MFA, billing admission and encrypted workspace import", asy
     await expect(
       hosted.getByText("Workspace imported.", { exact: false }),
     ).toBeVisible();
+    await hosted.getByRole("button", { name: /^Workspace:/ }).click();
     await hosted
-      .getByRole("combobox", { name: "Workspace", exact: true })
-      .selectOption({ label: workspaceName });
+      .getByRole("menuitem", { name: workspaceName, exact: true })
+      .click();
     await hosted
-      .getByRole("link", { name: "Imported project Open project →" })
+      .getByRole("link", { name: "Imported project Open project" })
       .click();
     await hosted.getByRole("link", { name: "Production", exact: true }).click();
     await expect(
@@ -442,18 +449,35 @@ test("hosted signup, MFA, billing admission and encrypted workspace import", asy
       "portable-browser-canary",
     );
     await hosted.getByRole("link", { name: "Projects", exact: true }).click();
+    await hosted.getByRole("button", { name: /^Workspace:/ }).click();
     await hosted
-      .getByRole("combobox", { name: "Workspace", exact: true })
-      .selectOption({ label: workspaceName });
-    const importedWorkspace = await hosted
-      .getByRole("combobox", { name: "Workspace", exact: true })
-      .inputValue();
+      .getByRole("menuitem", { name: workspaceName, exact: true })
+      .click();
+    const importedWorkspace = new URL(hosted.url()).searchParams.get(
+      "workspace",
+    )!;
     await hosted.goto(
       `${origin}/members?workspace=${importedWorkspace}&billing=returned`,
     );
     await expect(
-      hosted.getByRole("combobox", { name: "Workspace", exact: true }),
-    ).toHaveValue(importedWorkspace);
+      hosted.getByRole("button", { name: `Workspace: ${workspaceName}` }),
+    ).toBeVisible();
+    expect(new URL(hosted.url()).searchParams.get("workspace")).toBe(
+      importedWorkspace,
+    );
+    await hosted
+      .getByRole("link", { name: "account security", exact: true })
+      .click();
+    await expect(
+      hosted.getByRole("heading", { name: "Account security", exact: true }),
+    ).toBeVisible();
+    expect(new URL(hosted.url()).searchParams.get("workspace")).toBe(
+      importedWorkspace,
+    );
+    await hosted.getByRole("link", { name: "Workspace", exact: true }).click();
+    expect(new URL(hosted.url()).searchParams.get("workspace")).toBe(
+      importedWorkspace,
+    );
   } finally {
     await context.close();
   }

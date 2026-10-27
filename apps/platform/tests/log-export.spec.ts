@@ -11,6 +11,7 @@ test("download log snapshots with an explicit window and empty result", async ({
     .getByLabel("Password", { exact: true })
     .fill("correct horse battery staple");
   await page.getByRole("button", { name: "Sign in", exact: true }).click();
+  await page.getByRole("button", { name: "New project", exact: true }).click();
   await page
     .getByLabel("Project name", { exact: true })
     .fill(`Logs ${info.project.name}`);
@@ -18,7 +19,7 @@ test("download log snapshots with an explicit window and empty result", async ({
     .getByRole("button", { name: "Create project", exact: true })
     .click();
   await page
-    .getByRole("link", { name: `Logs ${info.project.name} Open project →` })
+    .getByRole("link", { name: `Logs ${info.project.name} Open project` })
     .click();
   await page.getByText("Add an environment", { exact: true }).click();
   await page.getByLabel("Environment name", { exact: true }).fill("Logs");

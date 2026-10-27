@@ -12,11 +12,12 @@ test("owner issues, saves and revokes an environment token without losing a draf
     .fill("correct horse battery staple");
   await page.getByRole("button", { name: "Sign in", exact: true }).click();
   const name = `Automation ${info.project.name}`;
+  await page.getByRole("button", { name: "New project", exact: true }).click();
   await page.getByLabel("Project name", { exact: true }).fill(name);
   await page
     .getByRole("button", { name: "Create project", exact: true })
     .click();
-  await page.getByRole("link", { name: `${name} Open project →` }).click();
+  await page.getByRole("link", { name: `${name} Open project` }).click();
   await page.getByText("Add an environment", { exact: true }).click();
   await page.getByLabel("Environment name", { exact: true }).fill("CI");
   await page
@@ -28,6 +29,12 @@ test("owner issues, saves and revokes an environment token without losing a draf
   const staged = `${await editor.inputValue()}\n `;
   await editor.fill(staged);
   const panel = page.getByRole("region", { name: "Environment automation" });
+  await expect(
+    panel.getByRole("link", { name: "Open Account security in a new tab" }),
+  ).toHaveAttribute(
+    "href",
+    `/account?workspace=${new URL(page.url()).searchParams.get("workspace")}`,
+  );
   await panel.getByText("Create automation token", { exact: true }).click();
   await panel.getByLabel("Token name", { exact: true }).fill("CI deploy");
   await panel.getByLabel("Save configuration drafts", { exact: true }).check();

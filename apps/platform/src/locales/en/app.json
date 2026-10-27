@@ -1,0 +1,34 @@
+{
+  "name": "Astilba",
+  "navigation": {
+    "label": "Navigation",
+    "region": "Workspace navigation",
+    "open": "Open navigation",
+    "close": "Close navigation",
+    "projects": "Projects",
+    "servers": "Servers",
+    "alerts": "Alerts",
+    "workspace": "Workspace",
+    "account": "Account security"
+  },
+  "workspace": {
+    "choose": "Workspace: {{name}}",
+    "menu": "Choose workspace",
+    "none": "Choose a workspace",
+    "empty": "No workspaces yet",
+    "unavailableTitle": "Workspace unavailable",
+    "unavailable": "You no longer have access to this workspace, or it does not exist. Choose another workspace to continue."
+  },
+  "account": {
+    "menu": "Account menu for {{name}}",
+    "label": "Account",
+    "source": "Licence and source",
+    "signOut": "Sign out"
+  },
+  "unsaved": {
+    "title": "Unsaved changes",
+    "description": "Leave this page and discard unsaved edits?",
+    "keep": "Keep editing",
+    "discard": "Discard and leave"
+  }
+}

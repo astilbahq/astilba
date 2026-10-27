@@ -67,3 +67,18 @@ export function MenuRadioItem({
     </BaseMenu.RadioItem>
   );
 }
+
+export function MenuLinkItem({
+  className,
+  ...props
+}: Omit<ComponentProps<typeof BaseMenu.LinkItem>, "className"> & {
+  className?: string;
+}) {
+  return (
+    <BaseMenu.LinkItem
+      closeOnClick
+      {...props}
+      className={cx(menu().item, className)}
+    />
+  );
+}

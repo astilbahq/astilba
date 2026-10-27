@@ -12,7 +12,9 @@ test("repository setup, Git service, queued build and cancellation use the real 
     .getByLabel("Password", { exact: true })
     .fill("correct horse battery staple");
   await page.getByRole("button", { name: "Sign in", exact: true }).click();
-  await expect(page.getByLabel("Project name", { exact: true })).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Projects", exact: true }),
+  ).toBeVisible();
   const session = await (await page.request.get("/api/v1/session")).json(),
     ws = session.workspaces[0].id;
   const headers = {
@@ -65,6 +67,7 @@ test("repository setup, Git service, queued build and cancellation use the real 
   expect(enrolled.status()).toBe(200);
   expect(enrolled.headers()["astilba-agent-features"]).toBe("build-controls");
   expect(enrolled.headers()["astilba-agent-railpack"]).toBe("v1");
+  await page.getByRole("button", { name: "New project", exact: true }).click();
   await page
     .getByLabel("Project name", { exact: true })
     .fill(`Builds ${info.project.name}`);
@@ -72,7 +75,7 @@ test("repository setup, Git service, queued build and cancellation use the real 
     .getByRole("button", { name: "Create project", exact: true })
     .click();
   await page
-    .getByRole("link", { name: `Builds ${info.project.name} Open project →` })
+    .getByRole("link", { name: `Builds ${info.project.name} Open project` })
     .click();
   await page.getByText("Add an environment", { exact: true }).click();
   await page.getByLabel("Environment name", { exact: true }).fill("Preview");

@@ -1,0 +1,31 @@
+{
+  "title": "Projects",
+  "description": "Applications and environments in {{workspace}}.",
+  "newProject": "New project",
+  "loading": "Loading projects…",
+  "loadFailed": "Projects could not be loaded",
+  "loadRecovery": "Check your connection, then try again.",
+  "retry": "Try again",
+  "emptyTitle": "Create your first project",
+  "emptyDescription": "Group your application’s environments in a project. You can add an environment next.",
+  "readOnly": "You have view-only access. A workspace owner or member can create projects.",
+  "noWorkspaceTitle": "No workspace yet",
+  "noWorkspace": "Ask a workspace owner for an invitation, or import a workspace below.",
+  "open": "Open project",
+  "create": {
+    "title": "New project",
+    "name": "Project name",
+    "submit": "Create project",
+    "cancel": "Cancel",
+    "created": "Project created.",
+    "required": "Enter a project name.",
+    "invalid": "Use a project name without line breaks or null characters.",
+    "tooLong": "Use at most {{maximum}} characters for the project name.",
+    "forbidden": "You no longer have permission to create projects in this workspace.",
+    "mfa": "Set up two-factor authentication in Account security before creating a project.",
+    "verifyEmail": "Verify your email address in Account security before creating a project.",
+    "recentAuth": "Confirm your identity in Account security, then try again.",
+    "subscription": "An active workspace subscription is required. Open Workspace to finish setup."
+  },
+  "emptyViewerTitle": "No projects yet"
+}

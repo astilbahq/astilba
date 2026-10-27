@@ -5,13 +5,13 @@ import {
   createRouter,
   Navigate,
   Outlet,
+  useLocation,
 } from "@tanstack/react-router";
 import { useTranslation } from "react-i18next";
-import { client, result } from "./api/client";
+import type { Schema } from "./api/client";
 import { sessionOptions } from "./api/session";
 import { Button } from "./components/button";
 import { Anchor, Link } from "./components/link";
-import { ThemeMenu } from "./components/theme-menu";
 import { ErrorToast, ToastProvider } from "./components/toast";
 import { TooltipProvider } from "./components/tooltip";
 import { Account } from "./features/account/account";
@@ -24,13 +24,18 @@ import { PasswordReset } from "./features/auth/password-reset";
 import { SignIn } from "./features/auth/sign-in";
 import { Signup } from "./features/auth/signup";
 import { GitHubCallback, GitHubInstalled } from "./features/github-app";
+import {
+  AppShell,
+  type AppSection,
+  WorkspaceUnavailable,
+} from "./features/shell/app-shell";
 import { usePageTitle } from "./i18n/use-page-title";
 import { Members } from "./security";
 import { Servers } from "./servers";
-import * as s from "./styles";
 import { ThemeProvider } from "./theme";
-import { ErrorNotice, useAction } from "./ui";
+import { ErrorNotice } from "./ui";
 import { Dashboard, type WorkspaceSelection } from "./workspace";
+import { WorkspaceContext } from "./workspace-context";
 
 function Root() {
   const { t } = useTranslation("common");
@@ -73,63 +78,65 @@ function ApplicationLayout() {
   const sessionQuery = useQuery(sessionOptions);
   const session = sessionQuery.data;
   const { returnTo } = application.useRouteContext();
-  const action = useAction();
-  if (!session?.user || session.mfaPending) {
+  if (!session?.user || session.mfaPending)
     return <Navigate to="/login" search={{ returnTo }} replace />;
-  }
   return (
-    <div className={s.shell}>
-      <aside className={s.side} aria-label="Workspace navigation">
-        <Link to="/" className={s.brand}>
-          ✳ astilba
-        </Link>
-        <div>
-          <small>YOUR INFRASTRUCTURE</small>
-          <nav aria-label="Main" className={s.nav}>
-            <Link to="/" variant="navigation">
-              Projects
-            </Link>
-            <Link to="/servers" variant="navigation">
-              Servers
-            </Link>
-            <Link to="/alerts" variant="navigation">
-              Alerts
-            </Link>
-            <Link to="/members" variant="navigation">
-              Workspace
-            </Link>
-            <Link to="/account" variant="navigation">
-              Account security
-            </Link>
-          </nav>
-        </div>
-        <div className={s.stack}>
-          <small>Open source. On your terms.</small>
-          <Anchor href="/source/NOTICE.txt">Licence & source</Anchor>
-          <span className={s.muted}>{session.user.email}</span>
-          <ErrorNotice error={action.error} />
-          <Button
-            type="button"
-            disabled={action.isPending}
-            onClick={() =>
-              action.run(async () => {
-                await result(client.POST("/api/v1/auth/logout"));
-                window.location.assign("/login");
-              })
-            }
-          >
-            Sign out
-          </Button>
-        </div>
-      </aside>
-      <main id="main" className={s.main}>
-        <div className={s.appearance}>
-          <ThemeMenu />
-        </div>
-        <ErrorNotice error={sessionQuery.error} />
+    <SignedInLayout
+      user={session.user}
+      workspaces={session.workspaces}
+      error={sessionQuery.error}
+    />
+  );
+}
+function SignedInLayout({
+  user,
+  workspaces,
+  error,
+}: {
+  user: Schema["Account"];
+  workspaces: readonly Schema["Workspace"][];
+  error: unknown;
+}) {
+  const search = application.useSearch();
+  const navigate = application.useNavigate();
+  const location = useLocation();
+  // OAuth authorization owns its workspace; switching context would reset its selection.
+  if (location.pathname === "/github/callback")
+    return (
+      <AuthFrame key={user.id}>
         <Outlet />
-      </main>
-    </div>
+      </AuthFrame>
+    );
+  const workspace =
+    search.workspace === undefined
+      ? workspaces[0]
+      : workspaces.find((item) => item.id === search.workspace);
+  const section = location.pathname as AppSection;
+  const unavailable =
+    search.workspace !== undefined && !workspace && section !== "/account";
+  return (
+    <WorkspaceContext value={workspace}>
+      <AppShell
+        key={user.id}
+        user={user}
+        workspaces={workspaces}
+        workspace={workspace}
+        selectedWorkspaceId={search.workspace}
+        section={section}
+        navigationKey={location.href}
+        onWorkspaceChange={(id) => {
+          void navigate({ to: section, search: { workspace: id } });
+        }}
+        onSignedOut={() => window.location.assign("/login")}
+      >
+        <ErrorNotice error={error} />
+        <div
+          key={section === "/account" ? "account" : (workspace?.id ?? "none")}
+        >
+          {unavailable ? <WorkspaceUnavailable /> : <Outlet />}
+        </div>
+      </AppShell>
+    </WorkspaceContext>
   );
 }
 function AuthLayout() {
@@ -183,6 +190,12 @@ const application = createRoute({
   getParentRoute: () => root,
   id: "application",
   beforeLoad: ({ location }) => ({ returnTo: location.href }),
+  validateSearch: (
+    search: Record<string, unknown>,
+  ): { workspace?: string } => ({
+    workspace:
+      typeof search.workspace === "string" ? search.workspace : undefined,
+  }),
   component: ApplicationLayout,
 });
 const auth = createRoute({
@@ -208,9 +221,9 @@ function SignInPage() {
 const dashboardRoute = createRoute({
   getParentRoute: () => application,
   path: "/",
-  validateSearch: (search: Record<string, unknown>): WorkspaceSelection => ({
-    workspace:
-      typeof search.workspace === "string" ? search.workspace : undefined,
+  validateSearch: (
+    search: Record<string, unknown>,
+  ): Omit<WorkspaceSelection, "workspace"> => ({
     project: typeof search.project === "string" ? search.project : undefined,
     environment:
       typeof search.environment === "string" ? search.environment : undefined,

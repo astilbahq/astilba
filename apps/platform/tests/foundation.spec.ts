@@ -8,9 +8,7 @@ async function login(page: import("@playwright/test").Page) {
     .getByLabel("Password", { exact: true })
     .fill("correct horse battery staple");
   await page.getByRole("button", { name: "Sign in", exact: true }).click();
-  await expect(
-    page.getByRole("heading", { name: "Built on your terms." }),
-  ).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Projects" })).toBeVisible();
 }
 test("real API: create, conflict, secret, keyboard and reflow", async ({
   page,
@@ -19,6 +17,7 @@ test("real API: create, conflict, secret, keyboard and reflow", async ({
   await page.emulateMedia({ colorScheme: "light" });
   await login(page);
   expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
+  await page.getByRole("button", { name: "New project", exact: true }).click();
   await page.getByLabel("Project name", { exact: true }).fill("   ");
   await page
     .getByRole("button", { name: "Create project", exact: true })
@@ -26,7 +25,9 @@ test("real API: create, conflict, secret, keyboard and reflow", async ({
   await expect(
     page.getByLabel("Project name", { exact: true }),
   ).toHaveAttribute("aria-invalid", "true");
-  await expect(page.getByRole("alert")).toContainText("Fields: name");
+  await expect(
+    page.getByLabel("Project name", { exact: true }),
+  ).toHaveAccessibleDescription("Enter a project name.");
   await page
     .getByLabel("Project name", { exact: true })
     .fill(`Website ${info.project.name}`);
@@ -34,7 +35,7 @@ test("real API: create, conflict, secret, keyboard and reflow", async ({
     .getByRole("button", { name: "Create project", exact: true })
     .click();
   await page
-    .getByRole("link", { name: `Website ${info.project.name} Open project →` })
+    .getByRole("link", { name: `Website ${info.project.name} Open project` })
     .click();
   await page.getByText("Add an environment", { exact: true }).click();
   await page.getByLabel("Environment name", { exact: true }).fill("Production");
@@ -249,14 +250,11 @@ test("Worker same-origin path preserves login, cookies and source notices", asyn
     .getByLabel("Password", { exact: true })
     .fill("correct horse battery staple");
   await page.getByRole("button", { name: "Sign in", exact: true }).click();
-  await expect(
-    page.getByRole("heading", { name: "Built on your terms." }),
-  ).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Projects" })).toBeVisible();
   await page.reload();
-  await expect(
-    page.getByRole("heading", { name: "Built on your terms." }),
-  ).toBeVisible();
-  await page.getByRole("link", { name: "Licence & source" }).click();
+  await expect(page.getByRole("heading", { name: "Projects" })).toBeVisible();
+  await page.getByRole("button", { name: /^Account menu for/ }).click();
+  await page.getByRole("menuitem", { name: "Licence and source" }).click();
   await expect(page.locator("body")).toContainText("Corresponding source:");
 });
 
@@ -465,6 +463,7 @@ test("visual services stay staged until a reviewed plan is applied", async ({
     },
   );
   expect(enrolled.status()).toBe(200);
+  await page.getByRole("button", { name: "New project", exact: true }).click();
   await page
     .getByLabel("Project name", { exact: true })
     .fill(`Visual ${info.project.name}`);
@@ -472,7 +471,7 @@ test("visual services stay staged until a reviewed plan is applied", async ({
     .getByRole("button", { name: "Create project", exact: true })
     .click();
   await page
-    .getByRole("link", { name: `Visual ${info.project.name} Open project →` })
+    .getByRole("link", { name: `Visual ${info.project.name} Open project` })
     .click();
   await page.getByText("Add an environment", { exact: true }).click();
   await page.getByLabel("Environment name", { exact: true }).fill("Production");

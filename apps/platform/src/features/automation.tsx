@@ -59,7 +59,12 @@ export function AutomationCredentials({
       )}
       <p className={s.muted}>
         Creating or revoking a token requires recent identity confirmation.{" "}
-        <Link to="/account" target="_blank" rel="noreferrer">
+        <Link
+          to="/account"
+          search={{ workspace: path.workspaceId }}
+          target="_blank"
+          rel="noreferrer"
+        >
           Open Account security in a new tab
         </Link>{" "}
         to confirm, then return here and retry.

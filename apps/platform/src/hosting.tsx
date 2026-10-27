@@ -101,7 +101,10 @@ export function WorkspaceSubscription({
         <p>
           Billing changes require verified email, two-factor authentication and
           recent identity confirmation in{" "}
-          <Link to="/account">account security</Link>.
+          <Link to="/account" search={{ workspace: workspaceId }}>
+            account security
+          </Link>
+          .
         </p>
       )}
     </section>

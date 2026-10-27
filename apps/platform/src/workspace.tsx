@@ -1,8 +1,17 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useBlocker } from "@tanstack/react-router";
-import { useRef, useState } from "react";
+import { useContext, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { ApiError, client, result, type Schema } from "./api/client";
-import { sessionOptions } from "./api/session";
+import { projectsOptions } from "./api/projects";
+import {
+  AlertDialogActions,
+  AlertDialogClose,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogRoot,
+  AlertDialogTitle,
+} from "./components/alert-dialog";
 import { Button } from "./components/button";
 import { Label } from "./components/label";
 import { Link } from "./components/link";
@@ -15,12 +24,14 @@ import { Deployments } from "./features/deployments";
 import { IntegrationSettings } from "./features/integrations";
 import { Pipelines } from "./features/pipelines";
 import { Previews } from "./features/previews";
+import { ProjectsOverview } from "./features/projects/projects-overview";
 import { Upgrades } from "./features/upgrades";
 import { VisualEditor } from "./features/visual-editor";
 import { hostingOptions } from "./hosting";
 import { WorkspaceImport } from "./portability";
 import * as s from "./styles";
 import { BusyButton, ErrorNotice, Field, Form, text, useAction } from "./ui";
+import { WorkspaceContext } from "./workspace-context";
 export type WorkspaceSelection = {
   workspace?: string;
   project?: string;
@@ -34,24 +45,12 @@ export function Dashboard({
   selection: WorkspaceSelection;
   onSelectionChange: (selection: WorkspaceSelection) => Promise<void>;
 }) {
+  const action = useAction();
   const hosted = useQuery(hostingOptions).data?.enabled;
   const queries = useQueryClient();
-  const session = useQuery(sessionOptions).data;
-  const action = useAction();
-  const workspace =
-    session?.workspaces.find((w) => w.id === selection.workspace) ??
-    session?.workspaces[0];
+  const workspace = useContext(WorkspaceContext);
   const workspaceId = workspace?.id ?? "";
-  const projects = useQuery({
-    queryKey: ["projects", workspaceId],
-    enabled: !!workspaceId,
-    queryFn: () =>
-      result(
-        client.GET("/api/v1/workspaces/{workspaceId}/projects", {
-          params: { path: { workspaceId } },
-        }),
-      ),
-  });
+  const projects = useQuery(projectsOptions(workspaceId));
   const project = projects.data?.find((p) => p.id === selection.project);
   const projectId = project?.id ?? "";
   const environments = useQuery({
@@ -71,106 +70,27 @@ export function Dashboard({
   const write = workspace?.role !== "viewer";
   return (
     <div className={s.stack}>
-      <header className={s.spread}>
-        <div>
-          <p className={s.muted}>YOUR WORKSPACE</p>
-          <h1>{project?.name ?? "Built on your terms."}</h1>
-          <p className={s.muted}>
-            {project
-              ? "A home for your applications and their configuration."
-              : "Your projects, environments and infrastructure in one place."}
-          </p>
-        </div>
-        {workspace && (
-          <Label>
-            Workspace
-            <Select
-              value={workspaceId}
-              onChange={(e) =>
-                void onSelectionChange({
-                  workspace: e.target.value,
-                  project: undefined,
-                  environment: undefined,
-                })
-              }
-            >
-              {session?.workspaces.map((w) => (
-                <option key={w.id} value={w.id}>
-                  {w.name}
-                </option>
-              ))}
-            </Select>
-          </Label>
-        )}
-      </header>
+      {project && (
+        <header className={s.spread}>
+          <div>
+            <h1>{project.name}</h1>
+            <p className={s.muted}>
+              A home for your applications and their configuration.
+            </p>
+          </div>
+        </header>
+      )}
       <ErrorNotice
-        error={action.error ?? projects.error ?? environments.error}
+        error={
+          action.error ??
+          (project ? (projects.error ?? environments.error) : null)
+        }
       />
       {!project ? (
         <>
-          <section className={s.panel}>
-            <div className={s.spread}>
-              <h2>Projects</h2>
-              <span className={s.muted}>
-                {projects.data?.length ?? 0} total
-              </span>
-            </div>
-            {projects.isPending ? (
-              <p role="status">Loading projects…</p>
-            ) : projects.data?.length ? (
-              <div className={s.list}>
-                {projects.data.map((p) => (
-                  <Link
-                    key={p.id}
-                    to="/"
-                    search={{
-                      workspace: workspaceId,
-                      project: p.id,
-                      environment: undefined,
-                    }}
-                  >
-                    <div className={s.spread}>
-                      <strong>{p.name}</strong>
-                      <span>Open project →</span>
-                    </div>
-                  </Link>
-                ))}
-              </div>
-            ) : (
-              <p className={s.muted}>
-                Start with a project, then add its first environment.
-              </p>
-            )}
-            {write && workspace && (
-              <Form
-                action={action}
-                label="New project"
-                onSubmit={(d, form) =>
-                  action.run(async () => {
-                    await result(
-                      client.POST("/api/v1/workspaces/{workspaceId}/projects", {
-                        params: { path: { workspaceId } },
-                        body: { name: text(d, "name") },
-                      }),
-                    );
-                    form.reset();
-                    // An initial list request can still contain the pre-create snapshot.
-                    await queries.cancelQueries({
-                      queryKey: ["projects", workspaceId],
-                    });
-                    await queries.invalidateQueries({
-                      queryKey: ["projects", workspaceId],
-                    });
-                  })
-                }
-              >
-                <Field name="name" label="Project name" />
-                <BusyButton busy={action.isPending}>Create project</BusyButton>
-              </Form>
-            )}
-          </section>
+          <ProjectsOverview />
           <WorkspaceImport hosted={!!hosted} />
-          <details className={s.panel}>
+          <details className={s.workspaceUtility}>
             <summary>Create another workspace</summary>
             <Form
               action={action}
@@ -427,6 +347,7 @@ function DraftEditor({
   const queries = useQueryClient();
   const dirty = draft !== savedText;
   const [layoutDirty, setLayoutDirty] = useState(false);
+  const appT = useTranslation("app").t;
   const blocker = useBlocker({
     shouldBlockFn: () => dirty || layoutDirty,
     enableBeforeUnload: dirty || layoutDirty,
@@ -754,24 +675,32 @@ function DraftEditor({
           />
         </>
       )}
-      {blocker.status === "blocked" && (
-        <section
-          className={s.notice}
-          role="alertdialog"
-          aria-modal="false"
-          aria-label="Unsaved changes"
-        >
-          <p>Leave this page and discard unsaved edits?</p>
-          <div className={s.row}>
-            <Button type="button" onClick={() => blocker.reset()}>
-              Keep editing
+      <AlertDialogRoot
+        open={blocker.status === "blocked"}
+        onOpenChange={(open) => {
+          if (!open && blocker.status === "blocked") blocker.reset();
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogTitle>{appT(($) => $.unsaved.title)}</AlertDialogTitle>
+          <AlertDialogDescription>
+            {appT(($) => $.unsaved.description)}
+          </AlertDialogDescription>
+          <AlertDialogActions>
+            <AlertDialogClose
+              render={<Button>{appT(($) => $.unsaved.keep)}</Button>}
+            />
+            <Button
+              variant="danger"
+              onClick={() => {
+                if (blocker.status === "blocked") blocker.proceed();
+              }}
+            >
+              {appT(($) => $.unsaved.discard)}
             </Button>
-            <Button type="button" onClick={() => blocker.proceed()}>
-              Discard and leave
-            </Button>
-          </div>
-        </section>
-      )}
+          </AlertDialogActions>
+        </AlertDialogContent>
+      </AlertDialogRoot>
     </>
   );
 }

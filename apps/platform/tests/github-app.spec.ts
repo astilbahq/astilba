@@ -11,6 +11,28 @@ test("GitHub App authorization returns across sites, selects a repository and di
     .getByLabel("Password", { exact: true })
     .fill("correct horse battery staple");
   await page.getByRole("button", { name: "Sign in", exact: true }).click();
+  await expect(
+    page.getByRole("heading", { name: "Projects", exact: true }),
+  ).toBeVisible();
+  const initialSession = await (
+    await page.request.get("/api/v1/session")
+  ).json();
+  const workspaceName = `Repository workspace ${info.project.name}`;
+  const workspaceResponse = await page.request.post("/api/v1/workspaces", {
+    headers: {
+      "X-CSRF-Token": initialSession.csrfToken,
+      Origin: new URL(page.url()).origin,
+    },
+    data: { name: workspaceName },
+  });
+  expect(workspaceResponse.status()).toBe(201);
+  const workspace = await workspaceResponse.json();
+  await page.reload();
+  await page.getByRole("button", { name: /^Workspace:/ }).click();
+  await page
+    .getByRole("menuitem", { name: workspaceName, exact: true })
+    .click();
+  await page.getByRole("button", { name: "New project", exact: true }).click();
   await page
     .getByLabel("Project name", { exact: true })
     .fill(`GitHub ${info.project.name}`);
@@ -18,7 +40,7 @@ test("GitHub App authorization returns across sites, selects a repository and di
     .getByRole("button", { name: "Create project", exact: true })
     .click();
   await page
-    .getByRole("link", { name: `GitHub ${info.project.name} Open project →` })
+    .getByRole("link", { name: `GitHub ${info.project.name} Open project` })
     .click();
   await page.getByText("Add an environment", { exact: true }).click();
   await page.getByLabel("Environment name", { exact: true }).fill("Preview");
@@ -35,6 +57,13 @@ test("GitHub App authorization returns across sites, selects a repository and di
     .click();
   await expect(page).toHaveURL(/\/github\/callback$/);
   await expect(page.getByText("Authorized as", { exact: false })).toBeVisible();
+  await expect(
+    page.getByRole("link", { name: "confirm in Account security" }),
+  ).toHaveAttribute("href", `/account?workspace=${workspace.id}`);
+  await expect(page.getByLabel("Workspace navigation")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /^Workspace:/ })).toHaveCount(
+    0,
+  );
   await expect(
     page.getByRole("option", { name: "page-one-0 — installation unavailable" }),
   ).toHaveJSProperty("disabled", true);
@@ -81,7 +110,7 @@ test("GitHub App authorization returns across sites, selects a repository and di
     page.getByText("Repository connected.", { exact: false }),
   ).toBeVisible();
   const session = await (await page.request.get("/api/v1/session")).json();
-  const ws = session.workspaces[0].id;
+  const ws = workspace.id;
   const connections = await (
     await page.request.get(`/api/v1/workspaces/${ws}/git-connections`)
   ).json();

@@ -28,6 +28,7 @@ export const tokens = defineTokens({
     brand: { value: "22px" },
   },
   sizes: {
+    app: { sidebar: { value: "240px" } },
     hairline: { value: "1px" },
     viewport: { value: "100dvh" },
     control: { sm: { value: "40px" }, md: { value: "46px" } },
@@ -87,6 +88,7 @@ export const semanticTokens = defineSemanticTokens({
       value: { base: "rgba(0, 0, 0, 0.32)", _dark: "rgba(0, 0, 0, 0.6)" },
     },
     separator: { value: { base: "#e7e7e7", _dark: "#292929" } },
+    navigation: { active: { value: { base: "#eeeeee", _dark: "#242424" } } },
     menu: {
       itemHover: {
         value: { base: "#f4f4f5", _dark: "rgba(255, 255, 255, 0.04)" },

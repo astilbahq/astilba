@@ -1,13 +1,13 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useContext, useState } from "react";
 import { client, result, type Schema } from "../api/client";
-import { sessionOptions } from "../api/session";
 import { Button } from "../components/button";
 import { Checkbox } from "../components/checkbox";
 import { Label } from "../components/label";
 import { Select } from "../components/select";
 import * as s from "../styles";
 import { BusyButton, ErrorNotice, Field, Form, text, useAction } from "../ui";
+import { WorkspaceContext } from "../workspace-context";
 
 const titles: Record<Schema["Alert"]["kind"], string> = {
   server_offline: "Server disconnected",
@@ -21,11 +21,7 @@ const titles: Record<Schema["Alert"]["kind"], string> = {
   backup_problem: "Backup operation needs review",
 };
 export function Alerts() {
-  const session = useQuery(sessionOptions).data;
-  const [selected, setSelected] = useState("");
-  const workspace =
-    session?.workspaces.find((w) => w.id === selected) ??
-    session?.workspaces[0];
+  const workspace = useContext(WorkspaceContext);
   return (
     <div className={s.stack}>
       <header>
@@ -35,19 +31,6 @@ export function Alerts() {
           workloads.
         </p>
       </header>
-      <Label>
-        Workspace
-        <Select
-          value={workspace?.id ?? ""}
-          onChange={(e) => setSelected(e.target.value)}
-        >
-          {session?.workspaces.map((w) => (
-            <option key={w.id} value={w.id}>
-              {w.name}
-            </option>
-          ))}
-        </Select>
-      </Label>
       {workspace && <Inbox key={workspace.id} workspace={workspace} />}
     </div>
   );

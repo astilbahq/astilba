@@ -344,7 +344,12 @@ function PreviewPolicyEditor({
       <p>
         Enabling, approving or removing previews requires recent identity
         confirmation.{" "}
-        <Link to="/account" target="_blank" rel="noreferrer">
+        <Link
+          to="/account"
+          search={{ workspace: path.workspaceId }}
+          target="_blank"
+          rel="noreferrer"
+        >
           Open Account security
         </Link>{" "}
         to confirm, then return and retry.

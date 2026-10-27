@@ -44,9 +44,7 @@ test("preview policy retains failed inputs and approves only the displayed fork 
       .getByLabel("Password", { exact: true })
       .fill("correct horse battery staple");
     await page.getByRole("button", { name: "Sign in", exact: true }).click();
-    await expect(
-      page.getByRole("heading", { name: "Built on your terms." }),
-    ).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Projects" })).toBeVisible();
     const session = await (await page.request.get("/api/v1/session")).json();
     const ws = session.workspaces[0].id;
     const headers = {
@@ -97,11 +95,14 @@ test("preview policy retains failed inputs and approves only the displayed fork 
     });
     expect(enrolled.status(), await enrolled.text()).toBe(200);
     const name = `Previews ${info.project.name}`;
+    await page
+      .getByRole("button", { name: "New project", exact: true })
+      .click();
     await page.getByLabel("Project name", { exact: true }).fill(name);
     await page
       .getByRole("button", { name: "Create project", exact: true })
       .click();
-    await page.getByRole("link", { name: `${name} Open project →` }).click();
+    await page.getByRole("link", { name: `${name} Open project` }).click();
     await page.getByText("Add an environment", { exact: true }).click();
     await page
       .getByLabel("Environment name", { exact: true })
@@ -193,6 +194,9 @@ test("preview policy retains failed inputs and approves only the displayed fork 
       .click();
     const panel = page.getByRole("region", { name: "Pull-request previews" });
     await panel.getByText("Set up automatic previews", { exact: true }).click();
+    await expect(
+      panel.getByRole("link", { name: "Open Account security", exact: true }),
+    ).toHaveAttribute("href", `/account?workspace=${ws}`);
     const form = panel.getByRole("form", { name: "Preview policy" });
     await form
       .getByRole("combobox", { name: "Git-built service", exact: true })

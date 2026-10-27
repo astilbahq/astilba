@@ -1,7 +1,6 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useContext } from "react";
 import { client, result, type Schema } from "./api/client";
-import { sessionOptions } from "./api/session";
 import { Button } from "./components/button";
 import { Checkbox } from "./components/checkbox";
 import { Input } from "./components/input";
@@ -11,14 +10,9 @@ import { WorkspaceSubscription } from "./hosting";
 import { WorkspaceExport } from "./portability";
 import * as s from "./styles";
 import { BusyButton, ErrorNotice, Field, Form, text, useAction } from "./ui";
+import { WorkspaceContext } from "./workspace-context";
 export function Members() {
-  const session = useQuery(sessionOptions).data;
-  const [selected, setSelected] = useState(
-    () => new URLSearchParams(location.search).get("workspace") ?? "",
-  );
-  const ws =
-    session?.workspaces.find((w) => w.id === selected) ??
-    session?.workspaces[0];
+  const ws = useContext(WorkspaceContext);
   const id = ws?.id ?? "";
   const action = useAction();
   const queries = useQueryClient();
@@ -63,16 +57,6 @@ export function Members() {
         <p className={s.muted}>WORKSPACE</p>
         <h1>A place for your team.</h1>
       </div>
-      <Label>
-        Workspace
-        <Select value={id} onChange={(e) => setSelected(e.target.value)}>
-          {session?.workspaces.map((w) => (
-            <option key={w.id} value={w.id}>
-              {w.name}
-            </option>
-          ))}
-        </Select>
-      </Label>
       <WorkspaceSubscription workspaceId={id} owner={ws?.role === "owner"} />
       {ws?.role === "owner" && <WorkspaceExport workspaceId={id} />}
       <ErrorNotice

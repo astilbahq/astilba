@@ -97,11 +97,12 @@ test("reset request errors preserve the draft without promising field highlights
   ).toBeFocused();
 });
 
-test("non-migrated forms retain native constraints and server error feedback", async ({
+test("project creation validates inline and preserves the draft", async ({
   page,
 }) => {
   await page.goto("/login");
   await signIn(page);
+  await page.getByRole("button", { name: "New project", exact: true }).click();
   const name = page.getByLabel("Project name", { exact: true });
   const submit = page.getByRole("button", {
     name: "Create project",
@@ -119,13 +120,14 @@ test("non-migrated forms retain native constraints and server error feedback", a
   await name.fill("   ");
   await submit.click();
   await expect(name).toHaveAttribute("aria-invalid", "true");
-  await expect(page.getByRole("alert")).toContainText("Fields: name");
+  await expect(name).toHaveAccessibleDescription("Enter a project name.");
+  expect(posts).toHaveLength(0);
   await expect(name).toHaveValue("   ");
   const project = `Validation ${randomUUID()}`;
   await name.fill(project);
   await submit.click();
   await expect(
-    page.getByRole("link", { name: `${project} Open project →` }),
+    page.getByRole("link", { name: `${project} Open project` }),
   ).toBeVisible();
 });
 
@@ -318,7 +320,8 @@ test("login preserves the destination and sign-out hides the application", async
   await page.reload();
   await expect(page.getByLabel("Workspace navigation")).toBeVisible();
 
-  await page.getByRole("button", { name: "Sign out", exact: true }).click();
+  await page.getByRole("button", { name: /^Account menu for/ }).click();
+  await page.getByRole("menuitem", { name: "Sign out", exact: true }).click();
   await expect(page).toHaveURL(`${baseURL}/login`);
   await expect(page.getByRole("heading", { name: "Sign in" })).toBeVisible();
   await expect(page.getByLabel("Workspace navigation")).toHaveCount(0);
@@ -687,9 +690,10 @@ test("a reset URL changes the password through the real API and cannot be reused
   await page.getByLabel("Password", { exact: true }).fill(newPassword);
   await page.getByRole("button", { name: "Sign in", exact: true }).click();
   await expect(
-    page.getByRole("button", { name: "Sign out", exact: true }),
+    page.getByRole("button", { name: /^Account menu for/ }),
   ).toBeVisible();
-  await page.getByRole("button", { name: "Sign out", exact: true }).click();
+  await page.getByRole("button", { name: /^Account menu for/ }).click();
+  await page.getByRole("menuitem", { name: "Sign out", exact: true }).click();
   await expect(page).toHaveURL(`${baseURL}/login`);
   await page.goto(path);
   await expect(
@@ -790,7 +794,7 @@ test("invitation URLs hide code entry, preserve failed drafts and join a new acc
   );
   await page.getByRole("link", { name: "Open projects", exact: true }).click();
   await expect(
-    page.getByRole("button", { name: "Sign out", exact: true }),
+    page.getByRole("button", { name: /^Account menu for/ }),
   ).toBeVisible();
   await page.goto(path);
   await expect(
@@ -896,7 +900,7 @@ test("an expired session during email-link checking offers sign-in again", async
     .fill("correct horse battery staple");
   await page.getByRole("button", { name: "Sign in", exact: true }).click();
   await expect(
-    page.getByRole("link", { name: "Account security", exact: true }),
+    page.getByRole("button", { name: /^Account menu for/ }),
   ).toBeVisible();
   await page.route(
     "**/api/v1/auth/email/validate",

@@ -252,7 +252,7 @@ components:
 
 A familiar, focused entry to Astilba: a compact form on an open surface, with a shared starting edge and an unmistakable primary action. The owner selected Aligned stack. Consistent grouping, consistent field outlines and visible focus supply structure without an outer card.
 
-The auth visual direction covers AuthFrame and its sign-in, MFA, reset, invitation and conditional hosted-signup flows. Shared control recipes also apply across the application; auth supplies local palette overrides rather than separate control styling. The signed-in dashboard retains its existing green identity. Recording shared control defaults does not approve or redesign its other styles. Product truth remains in ../../PRODUCT.md; the auth system font and logo lettering remain provisional. The auth logo is temporarily omitted at the owner’s request; the heading starts the column.
+The auth visual direction covers AuthFrame and its sign-in, MFA, reset, invitation and conditional hosted-signup flows. The signed-in workspace shell and Projects overview extend Aligned stack with the same neutral palette, provisional system sans and shared controls. Shared control recipes also apply across the application; auth supplies local palette overrides rather than separate control styling. Other legacy signed-in surfaces remain outside this redesign scope; their remaining green identity is not a rule for the shell or Projects. Recording shared control defaults does not approve or redesign those other styles. Product truth remains in ../../PRODUCT.md; the system font and logo lettering remain provisional. The auth logo is temporarily omitted at the owner’s request; the heading starts the column. The shell uses the Astilba name as text without the logo asset.
 
 **Key Characteristics:**
 
@@ -268,19 +268,19 @@ Shared backgrounds are #fdfdfd in light mode and #121212 in dark mode; text is #
 
 `action.solid`, `action.contrast` and `action.hover` own primary buttons; `destructive.*` own destructive buttons. Primary buttons share neutral action tokens: #0d0d0d with white text in light mode, #ffffff with #0d0d0d text in dark mode; hover fills are #2b2b2b and #e8e8e8. Auth aliases these same roles. Destructive roles remain shared. `error` owns invalid edges and notices; within auth it resolves to `auth.danger` in both themes. Dark-mode error text and invalid edges use #ff7b7b, with 7.47:1 contrast on the #121212 surface; light-mode values are unchanged.
 
-`link.fg` owns link text; auth uses its action colour and other application links retain their brand colour. `link.focus` and `auth.focus` both alias `control.interactiveBorder`, giving every shared link a neutral grey keyboard outline (#8c8c8c light / #707070 dark). The root skip link overrides only its link text role with `fg`, retaining the shared outline and `surface` background outside the auth palette scope.
+`link.fg` owns default link text; auth uses its action colour, while shell navigation, the shell name and project rows use foreground text. Other application links retain their brand colour. `link.focus` and `auth.focus` both alias `control.interactiveBorder`, giving every shared link a neutral grey keyboard outline (#8c8c8c light / #707070 dark). The root skip link overrides only its link text role with `fg`, retaining the shared outline and `surface` background outside the auth palette scope.
 
 ### Neutral
 
 `surface` and `fg` supply control fill and text. Secondary buttons share the neutral `action.ghostHover` fill with ghost buttons: #f4f4f5 in light mode and 4% white in dark mode. `control.border` supplies every field’s idle boundary: #939393 in light mode and #616161 in dark mode. These are the nearest 8-bit neutral greys meeting 3:1 against #fdfdfd and #121212 respectively (3.020:1 / 3.025:1). `control.interactiveBorder` supplies the shared grey field hover and focus edge, slightly stronger than the idle border in both themes. Auth's page semantic remains declared, but its visible canvas and current controls use the surface role. Auth links retain their neutral focus edge; Selection Blue remains auth text selection.
 
-**The Auth Boundary Rule.** Share neutral background, foreground and muted roles throughout the app; AuthFrame scopes its action and field palettes. Shared control recipes use semantic roles; field interaction edges use grey throughout, primary actions are neutral throughout, while brand and non-auth link colours remain green.
+**The Auth Boundary Rule.** Share neutral background, foreground and muted roles throughout the app; AuthFrame scopes its action and field palettes. Shared control recipes use semantic roles; field interaction edges use grey throughout and primary actions are neutral throughout. The shell and Projects use neutral foreground links; legacy brand and default application link roles remain green outside that scope.
 
 **The Control State Rule.** Let recipes own idle, hover, focus and invalid states. The base recipe uses the shared control border and accepts a hover override from compound controls such as PasswordInput.
 
 ## Typography
 
-The auth headline remains 24px/600 with line-height 1.3. Its system sans stack (`fonts.ui`) and logo lettering are provisional; Apfel Grotezk is excluded. Shared controls inherit the surrounding font: `fonts.body` outside auth and `fonts.ui` inside it. The frontmatter records those resolved contexts.
+The auth and Projects headlines use 24px/600 with line-height 1.3. The system sans stack (`fonts.ui`) and logo lettering are provisional; Apfel Grotezk is excluded. Shared controls inherit the surrounding font: `fonts.ui` in auth, the signed-in shell and Projects, with `fonts.body` retained in other legacy contexts. The frontmatter records those existing font contexts.
 
 Labels use medium weight; actions use semibold. Medium inputs use 16px text, small inputs use 14px; both button sizes use 14px. Secondary auth text remains 13px. Typography, dimensions, radii and spacing are registered theme tokens or Panda scale values.
 
@@ -289,6 +289,8 @@ Labels use medium weight; actions use semibold. Medium inputs use 16px text, sma
 Auth remains a centred grid with a minimum viewport block size (`100dvh`) and a 360px maximum content inline size. It has no inner card padding. Page padding is 80px block-start, 28px inline and 72px block-end; at `sm` (40rem), these become 96px, 24px and 96px. The top inline-end appearance button sits 16px from the edges on small screens and 24px at `sm`; reserved block-start space keeps tall forms clear of it. Tall forms grow and scroll naturally. The logo is temporarily omitted at the owner's request; the heading starts the column.
 
 Content groups use 24px; forms use 20px; multi-form sections retain 28px. Labels sit 8px above fields. Secondary actions use a 12px gap and 4px block-start margin. Alignment follows the writing direction through logical properties. Exploratory slider settings remain excluded.
+
+The signed-in shell uses a sticky, viewport-height sidebar (240px) beside a flexible main area. Below 1024px, a compact header opens modal navigation with the same workspace, destination and account controls. The main area has a 1440px maximum inline size and responsive gutters; navigation names truncate, while project names and context copy wrap.
 
 ## Elevation & Depth
 
@@ -352,6 +354,8 @@ Checkbox preserves the native input at 18px square, with the brand accent and na
 
 ### Containers and navigation
 
+The signed-in sidebar groups workspace selection above primary destinations and account/appearance controls at the bottom. Workspace choice follows the URL across sections. Active navigation reuses `navigation.active` (#eeeeee light / #242424 dark) with foreground text and semibold weight; hover uses the shared ghost fill. Projects uses a heading and workspace context above a separator-led list, with shared links, buttons and fields for opening and creating projects. Loading, retry, empty and view-only states remain distinct; the creation form follows the existing aligned control system. Existing workspace import and creation tools use collapsed native summaries below the overview, with neutral separators, 40px minimum targets and shared neutral focus colours.
+
 AuthFrame retains the aligned column and familiar flow grouping. Recovery stays beside the password label; secondary actions align to the start edge. Native tab order keeps the credential fields together: Skip to content, Appearance, Email, Password, Show/Hide password, Forgot password, Sign in. The top-corner Appearance control stays before the main content; activating the skip link makes the next Tab reach Email. Field renders its labelAction after the complete control and uses flex ordering for the label-row position and responsive wrapping, without positive tabindex. Reset and invitation secondary links share that starting edge; signup back links remain centred. Links keep their 2px focus outline with 3px offset. Hosted signup remains conditional.
 
 Password recovery shows one stage at a time: account email, a privacy-preserving check-email confirmation, then the new-password form opened from `/reset?token=…`. The code stays out of the form. The field label is “New password”, without a requirements list. Reset uses the same shared fields and start-aligned secondary links as sign-in. The only secondary action is “Back to sign in”. Opening a reset link first shows a checking status. Invalid/expired links show a dedicated invalid-link heading without password controls; network or rate failures show an unavailable heading, a retry action and the shared toast. Stage changes focus the heading. A valid link reveals the password form. Completion rechecks the link; expiry during entry shows a form-level alert directly below the password field, using the shared 13px field-error style and 8px spacing without marking the password invalid; failed submissions retain the password draft, and completion confirms the change before returning to sign-in. Stage transitions focus the heading.
@@ -374,7 +378,7 @@ ErrorNotice consumes the semantic error colour with a matching border and `role=
 
 ### Don't:
 
-- **Don't** apply the auth palette to the dashboard as an automatic consistency fix.
+- **Don't** extend the auth, shell and Projects redesign to other legacy signed-in surfaces as an automatic consistency fix.
 - **Don't** style native inputs or buttons through route descendant selectors; change shared recipes or semantic tokens.
 - **Do** use the shared field border for every input, including empty OTP slots, and recheck its contrast if the surrounding surface changes.
 - **Don't** use Apfel Grotezk, restore the outer auth card or introduce dark input underlines.
