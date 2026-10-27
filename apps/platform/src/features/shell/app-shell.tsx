@@ -135,7 +135,7 @@ export function AppShell({
               }}
               aria-current={item.id === workspace?.id ? "true" : undefined}
             >
-              <span className={styles.text}>
+              <span className={styles.workspaceLabel}>
                 <bdi>{item.name}</bdi>
               </span>
               {item.id === workspace?.id && (
@@ -201,13 +201,16 @@ export function AppShell({
           side="top"
           align="start"
         >
-          <MenuLinkItem render={<Link to="/account" search={search} />}>
+          <MenuLinkItem
+            render={<Link to="/account" search={search} variant="menu" />}
+          >
             {t(($) => $.navigation.account)}
           </MenuLinkItem>
           <MenuLinkItem
             render={
               <Anchor
                 href="/source/NOTICE.txt"
+                variant="menu"
                 aria-label={t(($) => $.account.source)}
               />
             }

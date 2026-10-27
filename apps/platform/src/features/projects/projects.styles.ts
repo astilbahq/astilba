@@ -84,4 +84,5 @@ export const open = css({
   alignItems: "center",
   gap: "2",
   fontSize: "secondary",
+  _rtl: { "& > svg": { transform: "scaleX(-1)" } },
 });
