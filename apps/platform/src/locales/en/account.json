@@ -1,0 +1,32 @@
+{
+  "title": "Account security",
+  "password": {
+    "title": "Password",
+    "description": "Changing your password signs out your other sessions.",
+    "change": "Change password",
+    "newPassword": "New password",
+    "save": "Update password",
+    "saved": "Password updated. Your other sessions have been signed out."
+  },
+  "mfa": {
+    "title": "Two-factor authentication",
+    "enabled": "Your account is protected with an authenticator.",
+    "disabled": "Add an authenticator to protect your account with a second sign-in step.",
+    "remaining_one": "{{count}} recovery code remaining.",
+    "remaining_other": "{{count}} recovery codes remaining.",
+    "unsaved": "Save your recovery codes before leaving this page. If you no longer have them, generate a replacement set.",
+    "replace": "Replace recovery codes",
+    "replaceTitle": "Replace your recovery codes?",
+    "replaceDescription": "Your current recovery codes will stop working. Save the new set to keep a way back into your account.",
+    "replaceConfirm": "Replace codes",
+    "replacing": "Replacing codes…",
+    "disable": "Disable two-factor authentication",
+    "disableTitle": "Disable two-factor authentication?",
+    "disableDescription": "Your authenticator and recovery codes will stop working. Workspaces that require two-factor authentication will block changes until you enable it again.",
+    "disableConfirm": "Disable two-factor",
+    "disabling": "Disabling…",
+    "disabledStatus": "Two-factor authentication disabled.",
+    "saved": "Your recovery codes are saved. Keep them somewhere private."
+  },
+  "cancel": "Cancel"
+}

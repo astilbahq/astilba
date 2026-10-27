@@ -149,13 +149,14 @@ export const AccountChangedDuringAcknowledgement: Story = {
   })(),
   play: async (context) => {
     await SaveRecoveryCodes.play!(context);
+    const queries = context.loaded.workshop.queryClient as QueryClient;
+    await waitFor(() => expect(queries.isMutating()).toBe(0));
     await userEvent.click(
       within(context.canvasElement).getByRole("button", {
         name: "I have saved my codes",
       }),
     );
     await waitFor(() => expect(acknowledgementStarted).toBe(true));
-    const queries = context.loaded.workshop.queryClient as QueryClient;
     currentAccount = {
       ...enrolled,
       user: {

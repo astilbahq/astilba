@@ -147,6 +147,7 @@ export function createAuthValidation(messages: AuthMessages) {
         messages.invalidIdentity,
       ),
     setup: form({}, messages.invalidCode),
+    changePassword: form({ password: newPassword }),
     resetRequest: form({ email }),
     resetPassword: form({ password: newPassword }, messages.invalidResetLink),
     invitation: form(

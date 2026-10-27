@@ -24,9 +24,11 @@ import { useAuthValidation } from "./use-auth-validation";
 export function AuthenticatorSetup({
   onEnrolled,
   onResume,
+  deferIdentity = false,
 }: {
   onEnrolled: (data: Schema["RecoveryCodes"]) => void;
   onResume: () => void;
+  deferIdentity?: boolean;
 }) {
   const { t } = useTranslation("auth");
   const session = useQuery(sessionOptions).data;
@@ -35,12 +37,17 @@ export function AuthenticatorSetup({
   const request = useSessionRequest();
   const confirm = useAction();
   const validation = useAuthValidation();
+  const [requested, setRequested] = useState(false);
   const [enrollment, setEnrollment] = useState<Schema["MFAEnrollment"]>();
   const error = confirm.error ?? begin.error;
   const needsIdentity =
     !session?.recentAuth ||
     (error instanceof ApiError && error.detail.code === "recent_auth_required");
   const startEnrollment = () => {
+    setRequested(true);
+    if (needsIdentity) {
+      return;
+    }
     confirm.reset();
     setEnrollment(undefined);
     onResume();
@@ -51,7 +58,7 @@ export function AuthenticatorSetup({
       ),
     );
   };
-  if (needsIdentity)
+  if (needsIdentity && (!deferIdentity || requested))
     return (
       <IdentityConfirmation
         onConfirmed={() => {

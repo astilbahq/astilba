@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
+import { renderStory } from "./story-render";
 
 // The command builds first, so the index is present on a clean checkout too.
 const { entries }: { entries: Record<string, { type: string }> } = JSON.parse(
@@ -15,12 +16,16 @@ for (const [id, entry] of Object.entries(entries)) {
   test(`${id} renders and completes its interaction`, async ({
     page,
   }, info) => {
-    await page.goto(`/?path=/story/${id}&globals=a11y.manual:!true`);
-    await expect(
-      page.getByText(/Component test completed successfully/),
-    ).toBeAttached({ timeout: info.timeout });
+    await renderStory(
+      page,
+      `/?path=/story/${id}&globals=a11y.manual:!true`,
+      info.timeout,
+    );
     const canvas = page.frameLocator("#storybook-preview-iframe");
-    await expect(canvas.getByRole("main")).toBeVisible();
+    // Modal stories correctly hide the background landmark from assistive tech.
+    await expect(
+      canvas.getByRole("main", { includeHidden: true }),
+    ).toBeVisible();
     await expect(
       canvas.getByText("Route not found:", { exact: false }),
     ).toHaveCount(0);
@@ -75,10 +80,11 @@ test("static workshop provides dark RTL auth states without reaching a backend",
 test("switching scenarios resets errors, drafts and session fixtures", async ({
   page,
 }, info) => {
-  await page.goto("/?path=/story/pages-sign-in--rejected-credentials");
-  await expect(
-    page.getByText(/Component test completed successfully/),
-  ).toBeAttached({ timeout: info.timeout });
+  await renderStory(
+    page,
+    "/?path=/story/pages-sign-in--rejected-credentials",
+    info.timeout,
+  );
   const canvas = page.frameLocator("#storybook-preview-iframe");
   await expect(canvas.getByRole("dialog")).toHaveAccessibleDescription(
     "The email or password is incorrect.",
@@ -134,10 +140,11 @@ test("canvas and toolbar preferences stay synchronized without losing the form",
 test("rejected code feedback translates and stays cleared after editing", async ({
   page,
 }, info) => {
-  await page.goto("/?path=/story/pages-two-factor-sign-in--invalid-code");
-  await expect(
-    page.getByText(/Component test completed successfully/),
-  ).toBeAttached({ timeout: info.timeout });
+  await renderStory(
+    page,
+    "/?path=/story/pages-two-factor-sign-in--invalid-code",
+    info.timeout,
+  );
   const canvas = page.frameLocator("#storybook-preview-iframe");
   const group = canvas.getByRole("group");
   const slots = group.getByRole("textbox");
@@ -167,12 +174,11 @@ test("rejected code feedback translates and stays cleared after editing", async 
 test("sign-in toasts preserve drafts and focus, translate, dismiss and reset on navigation", async ({
   page,
 }, info) => {
-  await page.goto(
+  await renderStory(
+    page,
     "/?path=/story/pages-sign-in--rejected-credentials&globals=theme:dark;a11y.manual:!true",
+    info.timeout,
   );
-  await expect(
-    page.getByText(/Component test completed successfully/),
-  ).toBeAttached({ timeout: info.timeout });
   const canvas = page.frameLocator("#storybook-preview-iframe");
   const email = canvas.locator('input[name="email"]');
   const password = canvas.locator('input[name="password"]');

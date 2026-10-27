@@ -37,6 +37,17 @@ jobs:
       - run: npm install --global pnpm@11.17.0
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @astilba/dashboard storybook:test --project=${{ matrix.browser }} --shard=${{ matrix.shard }}/2
+      - name: Retain workshop failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: workshop-${{ matrix.browser }}-${{ strategy.job-index }}-${{ github.run_attempt }}
+          path: |
+            .artifacts/storybook/test-results/**/trace.zip
+            .artifacts/storybook/test-results/**/error-context.md
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 7
 
   verify:
     name: Workshop verification

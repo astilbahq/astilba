@@ -83,6 +83,10 @@ export const semanticTokens = defineSemanticTokens({
     },
   },
   colors: {
+    overlay: {
+      value: { base: "rgba(0, 0, 0, 0.32)", _dark: "rgba(0, 0, 0, 0.6)" },
+    },
+    separator: { value: { base: "#e7e7e7", _dark: "#292929" } },
     menu: {
       itemHover: {
         value: { base: "#f4f4f5", _dark: "rgba(255, 255, 255, 0.04)" },

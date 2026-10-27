@@ -107,6 +107,7 @@ test("expanded RTL auth remains usable at narrow widths in both themes", async (
       `/invitation?${new URLSearchParams({ token: invitation.token })}`,
     ]) {
       await page.goto(`${dev}${path}`);
+      await expect(page.locator('button[type="submit"]')).toBeVisible();
       await chooseLanguage(page, "Pseudo (RTL)");
       await page.locator('button[type="submit"]').click();
       await expect(page.locator('[aria-invalid="true"]').first()).toBeFocused();
