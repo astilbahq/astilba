@@ -78,6 +78,8 @@ func TestCrossHostCoordinatedPlacement(t *testing.T) {
 		host := hostnetwork.Host{Dir: t.TempDir()}
 		wg.Go(func() {
 			lastHeartbeat := time.Time{}
+			var installedNetwork hostnetwork.Manifest
+			networkScopes := map[uuid.UUID]deployment.Plan{}
 			for ctx.Err() == nil {
 				if time.Since(lastHeartbeat) >= 15*time.Second {
 					if _, err := f.execution.Heartbeat(ctx, identity, api.AgentHeartbeat{Capabilities: in.Capabilities, Preflight: in.Preflight}); err != nil {
@@ -110,20 +112,10 @@ func TestCrossHostCoordinatedPlacement(t *testing.T) {
 				}
 				report := api.AgentReport{Id: c.Id, Generation: c.Generation, PlanHash: c.PlanHash, Sequence: 2, State: "succeeded", Steps: []api.ExecutionStep{}}
 				if c.Kind == "network" {
-					var n hostnetwork.Command
-					if hostnetwork.Decode(*c.Network, &n) != nil {
-						t.Error("invalid network command")
-						return
-					}
-					key, err := host.Identity(n.MembershipID)
+					receipt, err := fixtureNetworkReceipt(host, *c, &installedNetwork, networkScopes, 0)
 					if err != nil {
 						t.Error(err)
 						return
-					}
-					receipt := hostnetwork.Receipt{Identity: key, NetworkID: n.NetworkID}
-					if n.Manifest != nil {
-						receipt.Generation = n.Manifest.Generation
-						receipt.Hash = hostnetwork.Hash(*n.Manifest)
 					}
 					raw, _ := json.Marshal(receipt)
 					v := json.RawMessage(raw)
@@ -138,6 +130,7 @@ func TestCrossHostCoordinatedPlacement(t *testing.T) {
 						t.Error("host authority was not frozen")
 						return
 					}
+					networkScopes[command.ParentID] = command.Unit.Plan
 					checkpointHash := ""
 					if command.Phase == "checkpoint" {
 						var descriptor deployment.RecoveryDescriptor
@@ -342,7 +335,11 @@ func TestCrossHostCoordinatedPlacement(t *testing.T) {
 		_ = f.st.Pool.QueryRow(context.Background(), `SELECT jsonb_build_object('members',(SELECT jsonb_agg(jsonb_build_object('server',m.server_id,'enabled',m.enabled,'generation',m.generation,'ack',m.acknowledged_generation,'installed',m.installed_manifest,'controller',s.controller_generation,'approved',m.approved_controller,'revoked',s.revoked,'seen',s.last_seen)) FROM network_members m JOIN servers s ON s.id=m.server_id WHERE m.workspace_id=$1),'operations',(SELECT jsonb_agg(jsonb_build_object('server',o.server_id,'state',o.state,'note',o.note,'command',o.command->'network','errors',j.errors)) FROM execution_operations o LEFT JOIN river_job j ON j.id=o.job_id WHERE o.workspace_id=$1 AND o.kind='network' AND o.state NOT IN ('succeeded','failed','cancelled')))`, ws).Scan(&networkDiagnostic)
 		t.Fatalf("coordinated transition timed out: %s; network: %s", diagnostic, networkDiagnostic)
 	}
-	wait(func() bool { b.call("GET", base+"/network", nil, 200, &network); return network.State == "ready" })
+	waitNetworkReady := func() {
+		t.Helper()
+		wait(func() bool { b.call("GET", base+"/network", nil, 200, &network); return network.State == "ready" })
+	}
+	waitNetworkReady()
 	app := uuid.New()
 	image := execution.TestImage
 	spec := domain.Specification{Version: 1, Variables: []domain.Variable{}, Applications: []domain.Application{{ID: app, Name: "Web", Replicas: 2, Source: domain.ApplicationSource{Kind: "image", Image: &image}, Health: &domain.HealthCheck{Port: 8080, Path: "/"}}}, Routes: []domain.Route{{ID: uuid.New(), TargetID: app, Protocol: "http", Domain: "placement.example.test", Port: 8080, TLS: "off", AllowCIDRs: []string{}}}, Placement: &domain.Placement{NetworkID: network.ID, IngressServerID: servers[0].Server.Id, Applications: []domain.ApplicationPlacement{{ApplicationID: app, CPUMillis: 500, MemoryMiB: 128, Targets: []domain.PlacementTarget{{ServerID: servers[1].Server.Id, Count: 2}}}}}}
@@ -368,6 +365,7 @@ func TestCrossHostCoordinatedPlacement(t *testing.T) {
 	b.call("PUT", path+"/draft", map[string]any{"baseRevisionId": draft.Id, "specification": spec}, 200, &draft)
 
 	var status deployment.Status
+	waitNetworkReady()
 	b.call("POST", path+"/deployment-plans", api.VisualPlanRequest{BaseRevisionId: draft.Id, ServerId: servers[0].Server.Id, AllowHostChanges: true}, 201, &status)
 	wait(func() bool {
 		b.call("GET", path+"/deployment-plans/"+status.ID.String(), nil, 200, &status)
@@ -435,7 +433,7 @@ func TestCrossHostCoordinatedPlacement(t *testing.T) {
 	if err := f.st.Pool.QueryRow(ctx, `SELECT count(*) FROM network_endpoint_sources s JOIN network_plan_sources p ON p.endpoint_id=s.endpoint_id AND p.server_id=s.server_id AND p.unit_id=s.unit_id WHERE p.plan_id=$1 AND s.active`, status.Plan.ID).Scan(&activeCancelledSources); err != nil || activeCancelledSources != 0 {
 		t.Fatal("checkpoint cancellation left candidate-only network grants active", err)
 	}
-	wait(func() bool { b.call("GET", base+"/network", nil, 200, &network); return network.State == "ready" })
+	waitNetworkReady()
 	b.call("POST", path+"/deployment-plans", api.VisualPlanRequest{BaseRevisionId: draft.Id, ServerId: servers[0].Server.Id, AllowHostChanges: true}, 201, &status)
 	wait(func() bool {
 		b.call("GET", path+"/deployment-plans/"+status.ID.String(), nil, 200, &status)
@@ -494,6 +492,7 @@ func TestCrossHostCoordinatedPlacement(t *testing.T) {
 	spec.Routes[0].Domain = "replacement.example.test"
 	spec.Placement.Applications[0].Targets = []domain.PlacementTarget{{ServerID: servers[0].Server.Id, Count: 1}, {ServerID: servers[1].Server.Id, Count: 1}}
 	b.call("PUT", path+"/draft", map[string]any{"baseRevisionId": draft.Id, "specification": spec}, 200, &draft)
+	waitNetworkReady()
 	b.call("POST", path+"/deployment-plans", api.VisualPlanRequest{BaseRevisionId: draft.Id, ServerId: servers[0].Server.Id, AllowHostChanges: true}, 201, &status)
 	wait(func() bool {
 		b.call("GET", path+"/deployment-plans/"+status.ID.String(), nil, 200, &status)
@@ -805,6 +804,7 @@ func TestCrossHostCoordinatedPlacement(t *testing.T) {
 	deploy := func(revision uuid.UUID) deployment.Plan {
 		t.Helper()
 		var plan deployment.Status
+		waitNetworkReady()
 		b.call("POST", databasePath+"/deployment-plans", api.VisualPlanRequest{BaseRevisionId: revision, ServerId: servers[0].Server.Id, AllowHostChanges: true}, 201, &plan)
 		wait(func() bool {
 			b.call("GET", databasePath+"/deployment-plans/"+plan.ID.String(), nil, 200, &plan)
@@ -904,6 +904,7 @@ func TestCrossHostCoordinatedPlacement(t *testing.T) {
 	var failedDraft api.Revision
 	b.call("PUT", databasePath+"/draft", map[string]any{"baseRevisionId": view.Plan.TargetRevisionID, "specification": targetSpec}, 200, &failedDraft)
 	var replacement deployment.Status
+	waitNetworkReady()
 	b.call("POST", databasePath+"/deployment-plans", api.VisualPlanRequest{BaseRevisionId: failedDraft.Id, ServerId: servers[0].Server.Id, AllowHostChanges: true}, 201, &replacement)
 	wait(func() bool {
 		b.call("GET", databasePath+"/deployment-plans/"+replacement.ID.String(), nil, 200, &replacement)
@@ -952,6 +953,7 @@ func TestCrossHostCoordinatedPlacement(t *testing.T) {
 	var restoreDraft api.Revision
 	b.call("POST", databasePath+"/backup-policies/"+recovery.ID.String()+"/cutover", api.BackupCutoverRequest{BaseRevisionId: restoreBase.Id, RunId: restored.ID}, 200, &restoreDraft)
 	var restoreReview deployment.Status
+	waitNetworkReady()
 	b.call("POST", databasePath+"/deployment-plans", api.VisualPlanRequest{BaseRevisionId: restoreDraft.Id, ServerId: servers[0].Server.Id, AllowHostChanges: true}, 201, &restoreReview)
 	wait(func() bool {
 		b.call("GET", databasePath+"/deployment-plans/"+restoreReview.ID.String(), nil, 200, &restoreReview)
@@ -1137,6 +1139,7 @@ func TestManagedNetworkPartialRestrictionConvergesAfterHostIdle(t *testing.T) {
 				defer close(primaryDone)
 			}
 			last := time.Now()
+			var installedNetwork hostnetwork.Manifest
 			for hostCtx.Err() == nil {
 				if time.Since(last) > 10*time.Second {
 					if _, err := f.execution.Heartbeat(hostCtx, identity, api.AgentHeartbeat{Capabilities: in.Capabilities, Preflight: in.Preflight}); err != nil {
@@ -1165,21 +1168,10 @@ func TestManagedNetworkPartialRestrictionConvergesAfterHostIdle(t *testing.T) {
 					time.Sleep(30 * time.Millisecond)
 					continue
 				}
-				var command hostnetwork.Command
-				if hostnetwork.Decode(*c.Network, &command) != nil {
-					t.Error("invalid network command")
-					return
-				}
-				key, err := host.Identity(command.MembershipID)
+				receipt, err := fixtureNetworkReceipt(host, *c, &installedNetwork, nil, 0)
 				if err != nil {
 					t.Error(err)
 					return
-				}
-				receipt := hostnetwork.Receipt{NetworkID: command.NetworkID, Identity: key}
-				if command.Manifest != nil {
-					receipt.Generation = command.Manifest.Generation
-					receipt.Hash = hostnetwork.Hash(*command.Manifest)
-					receipt.Disabled = command.Manifest.Disabled
 				}
 				raw, _ := json.Marshal(receipt)
 				message := json.RawMessage(raw)
