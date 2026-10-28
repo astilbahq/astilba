@@ -44,5 +44,8 @@ export async function result<T>(
   }
   return r.data as T;
 }
-export const loadSession = () =>
-  result(client.GET("/api/v1/session")).then(setSession);
+export async function loadSession({ signal }: { signal?: AbortSignal } = {}) {
+  const session = await result(client.GET("/api/v1/session", { signal }));
+  signal?.throwIfAborted();
+  return setSession(session);
+}
