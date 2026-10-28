@@ -32,7 +32,11 @@ Deleting a service retains its named volumes. Owners can explicitly delete an un
 
 Clones receive new environment, unit, service, route and volume identities. Database bindings target the new database. By default, ordinary secret-backed variables are omitted and PostgreSQL receives a fresh random password. Copying secret values requires an explicit choice and recent authentication. Clones do not copy data, and their domains use `.invalid` until changed.
 
+Cloned placement references the new services and retains the selected workspace network and servers. A fresh clone still requires its initial deployment on the primary server before cross-host placement can be applied.
+
 Export uses the last successfully applied plan and produces `compose.json`, `routes.yaml` and instructions. Secret values become required placeholders, including a separate percent-encoded database-password placeholder for connection URLs. Create the documented external network and volumes on a new host, supply the secrets locally, restore data separately, then run the documented Compose command. The bundle needs neither the management application nor an agent. Existing storage names are preserved deliberately.
+
+Standalone Compose export supports single-host environments. Cross-host environments return an explicit unsupported-export error; they cannot be represented by this bundle. Encrypted workspace transfer remains available for moving their configuration and ownership between management installations.
 
 ## Validation
 

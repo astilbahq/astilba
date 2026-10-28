@@ -128,6 +128,12 @@ func (s *Service) CloneVisual(ctx context.Context, p store.Principal, ws, pid, s
 				a.Postgres.PasswordSecretVersionID = id
 			}
 		}
+		if v.Spec.Placement != nil {
+			for i := range v.Spec.Placement.Applications {
+				placement := &v.Spec.Placement.Applications[i]
+				placement.ApplicationID = ids[placement.ApplicationID]
+			}
+		}
 		for i := range v.Spec.Volumes {
 			v.Spec.Volumes[i].ID = ids[v.Spec.Volumes[i].ID]
 		}
