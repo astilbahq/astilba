@@ -176,9 +176,11 @@ test("real API: create, conflict, secret, keyboard and reflow", async ({
   expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
 
   // The saved dashboard preference also governs the canvas when the OS differs.
+  await openEnvironmentSection(page, "Configuration");
   const root = page.locator("html");
   await page.emulateMedia({ colorScheme: "dark" });
   const canvas = page.locator(".visual-canvas .react-flow");
+  await expect(canvas).toBeVisible();
   const bodyColor = () =>
     page.locator("body").evaluate((el) => getComputedStyle(el).backgroundColor);
   // View transitions apply the palette asynchronously; sample it after that commit.
