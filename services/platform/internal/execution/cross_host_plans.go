@@ -29,10 +29,8 @@ func previousUnits(p deployment.Plan) map[uuid.UUID]deployment.Plan {
 		return out
 	}
 	if p.Distributed != nil {
-		for _, u := range p.Distributed.Units {
-			if len(u.Plan.LocalApplications()) > 0 {
-				out[u.Plan.ServerID] = u.Plan
-			}
+		for _, u := range p.ActiveUnits() {
+			out[u.Plan.ServerID] = u.Plan
 		}
 	} else {
 		out[p.ServerID] = p
