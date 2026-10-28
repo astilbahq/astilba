@@ -18,7 +18,7 @@ import (
 
 func (s *Service) PromoteArtifact(ctx context.Context, p store.Principal, ws, pid, env, id uuid.UUID, in api.PromoteArtifact) (api.Revision, error) {
 	var out api.Revision
-	err := s.scope(ctx, p, ws, true, false, false, "artifact.promote", id, func(tx pgx.Tx) error {
+	err := s.scope(ctx, p, ws, workspaceAccess{Write: true}, "artifact.promote", id, func(tx pgx.Tx) error {
 		v, err := loadVisualEnvironment(ctx, tx, ws, pid, env)
 		if err != nil {
 			return err
@@ -117,7 +117,7 @@ func promoteSpecification(ctx context.Context, spec *domain.Specification, appID
 
 func (s *Service) Artifacts(ctx context.Context, p store.Principal, ws uuid.UUID) ([]pipeline.Artifact, error) {
 	out := []pipeline.Artifact{}
-	err := s.scope(ctx, p, ws, false, false, false, "", uuid.Nil, func(tx pgx.Tx) error {
+	err := s.scope(ctx, p, ws, workspaceAccess{}, "", uuid.Nil, func(tx pgx.Tx) error {
 		rows, err := tx.Query(ctx, "SELECT identity FROM build_artifacts WHERE workspace_id=$1 ORDER BY created_at DESC LIMIT 100", ws)
 		if err != nil {
 			return err

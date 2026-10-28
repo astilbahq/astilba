@@ -4,6 +4,20 @@ Status: updated 28 October 2026. P0–P16 are implemented; each release must pas
 
 Build the [architecture](platform-architecture.md) in vertical increments. Prove the execution model on disposable infrastructure before expanding the editor and service catalogue. Each milestone ends in a demonstrable user journey and the tests needed to support its claims. The [product brief](platform-product-brief.md) remains the guide to product scope.
 
+## Maintenance before further features
+
+Pause feature implementation for the current code-quality phase. The alpha has no users, so internal APIs, public contracts and stored formats may change where that produces a simpler design; document required migrations or installation resets instead of maintaining compatibility solely for this alpha.
+
+Work through the independently verified defects and shared responsibilities in this order:
+
+1. Review login admission, explicit workspace recovery access, build-input validation and queue outcomes, and deployment-observation validation as separate changes. Preserve tenant authorization, phase-specific inventory checks, bounded password memory and progress for valid automatic-build siblings.
+2. Clean up cross-host reservations when entitlement expires before publication, preserving reconciliation after any possible publication effect.
+3. Preserve useful secret-safe diagnostics and give optional Worker hosting the same HTML security/nonce and onboarding-download behavior as Go hosting.
+4. Remove stale owned generated files and prevent delayed editor requests from overwriting newer user work.
+5. Reproduce the upgrade/draft recovery-ordering concern before replacing any timestamp guard; keep unconfirmed concerns separate from verified defects.
+
+Keep the existing product scope and meaningful test gates. File sizes, test ratios and GitHub review-submission counts alone do not establish defects. Resume feature work after these items are resolved or explicitly dispositioned and the resulting implementation passes independent review and its acceptance checks.
+
 ## Milestones and dependencies
 
 | Milestone | Result | Depends on |

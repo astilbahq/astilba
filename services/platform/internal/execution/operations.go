@@ -21,7 +21,7 @@ func (s *Service) Plan(ctx context.Context, p store.Principal, ws uuid.UUID, in 
 	if in.Action != "start" && in.Action != "inspect" && in.Action != "remove" {
 		return plan, domain.Invalid("action")
 	}
-	err := s.scope(ctx, p, ws, true, false, false, "operation.plan", plan.Id, func(tx pgx.Tx) error {
+	err := s.scope(ctx, p, ws, workspaceAccess{Write: true}, "operation.plan", plan.Id, func(tx pgx.Tx) error {
 		if err := s.deploymentServer(ctx, tx, ws, in.ServerId); err != nil {
 			return err
 		}
@@ -69,7 +69,7 @@ func scanOperation(row pgx.Row) (api.Operation, error) {
 }
 func (s *Service) Apply(ctx context.Context, p store.Principal, ws, planID, key uuid.UUID) (api.Operation, error) {
 	var out api.Operation
-	err := s.scope(ctx, p, ws, true, false, false, "operation.apply", planID, func(tx pgx.Tx) error {
+	err := s.scope(ctx, p, ws, workspaceAccess{Write: true}, "operation.apply", planID, func(tx pgx.Tx) error {
 		var existingPlan *uuid.UUID
 		err := tx.QueryRow(ctx, "SELECT plan_id FROM execution_operations WHERE workspace_id=$1 AND request_key=$2", ws, key).Scan(&existingPlan)
 		if err == nil {
@@ -170,7 +170,7 @@ func (s *Service) insert(ctx context.Context, tx pgx.Tx, ws, key uuid.UUID, plan
 }
 func (s *Service) Operations(ctx context.Context, p store.Principal, ws uuid.UUID) ([]api.Operation, error) {
 	out := []api.Operation{}
-	err := s.scope(ctx, p, ws, false, false, false, "", uuid.Nil, func(tx pgx.Tx) error {
+	err := s.scope(ctx, p, ws, workspaceAccess{}, "", uuid.Nil, func(tx pgx.Tx) error {
 		rows, err := tx.Query(ctx, "SELECT "+opColumns+" FROM execution_operations WHERE workspace_id=$1 ORDER BY created_at DESC LIMIT 100", ws)
 		if err != nil {
 			return err
@@ -209,7 +209,7 @@ func (s *Service) operationAvailability(ctx context.Context, out *api.Operation)
 	return nil
 }
 func (s *Service) Cancel(ctx context.Context, p store.Principal, ws, id uuid.UUID) error {
-	return s.scope(ctx, p, ws, true, false, false, "operation.cancel", id, func(tx pgx.Tx) error {
+	return s.scope(ctx, p, ws, workspaceAccess{Write: true, Recovery: true}, "operation.cancel", id, func(tx pgx.Tx) error {
 		n, e := tx.Exec(ctx, `UPDATE execution_operations SET cancel_requested=true,state=CASE WHEN kind='pipeline' AND state='queued' THEN 'cancelled' ELSE state END WHERE workspace_id=$1 AND id=$2 AND state NOT IN ('succeeded','failed','cancelled')`, ws, id)
 		if e == nil && n.RowsAffected() != 1 {
 			return domain.Conflict
@@ -223,7 +223,7 @@ func (s *Service) Cancel(ctx context.Context, p store.Principal, ws, id uuid.UUI
 }
 func (s *Service) RequestUpdate(ctx context.Context, p store.Principal, ws, id uuid.UUID, version string) (api.Operation, error) {
 	var out api.Operation
-	err := s.scope(ctx, p, ws, true, true, true, "server.update", id, func(tx pgx.Tx) error {
+	err := s.scope(ctx, p, ws, workspaceAccess{Write: true, Owner: true, Recent: true}, "server.update", id, func(tx pgx.Tx) error {
 		var cap api.AgentCapabilities
 		var raw []byte
 		var generation int64

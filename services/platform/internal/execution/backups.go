@@ -20,7 +20,7 @@ import (
 
 func (s *Service) BackupDestinations(ctx context.Context, p store.Principal, ws uuid.UUID) ([]backup.Destination, error) {
 	out := []backup.Destination{}
-	err := s.scope(ctx, p, ws, false, false, false, "", uuid.Nil, func(tx pgx.Tx) error {
+	err := s.scope(ctx, p, ws, workspaceAccess{}, "", uuid.Nil, func(tx pgx.Tx) error {
 		rows, err := tx.Query(ctx, "SELECT configuration FROM backup_destinations WHERE workspace_id=$1 ORDER BY id LIMIT 100", ws)
 		if err != nil {
 			return err
@@ -47,7 +47,7 @@ func (s *Service) CreateBackupDestination(ctx context.Context, p store.Principal
 	if backup.ValidateDestination(d, a) != nil {
 		return d, domain.Invalid("destination")
 	}
-	err := s.scope(ctx, p, ws, true, true, true, "backup.destination.create", d.ID, func(tx pgx.Tx) error {
+	err := s.scope(ctx, p, ws, workspaceAccess{Write: true, Owner: true, Recent: true}, "backup.destination.create", d.ID, func(tx pgx.Tx) error {
 		var n int
 		if err := tx.QueryRow(ctx, "SELECT count(*) FROM backup_destinations WHERE workspace_id=$1", ws).Scan(&n); err != nil {
 			return err
@@ -67,7 +67,7 @@ func (s *Service) CreateBackupDestination(ctx context.Context, p store.Principal
 }
 func (s *Service) BackupPolicies(ctx context.Context, p store.Principal, ws, pid, env uuid.UUID) ([]backup.Policy, error) {
 	out := []backup.Policy{}
-	err := s.scope(ctx, p, ws, false, false, false, "", uuid.Nil, func(tx pgx.Tx) error {
+	err := s.scope(ctx, p, ws, workspaceAccess{}, "", uuid.Nil, func(tx pgx.Tx) error {
 		if _, err := loadVisualEnvironment(ctx, tx, ws, pid, env); err != nil {
 			return err
 		}
@@ -93,7 +93,7 @@ func (s *Service) BackupPolicies(ctx context.Context, p store.Principal, ws, pid
 }
 func (s *Service) SaveBackupPolicy(ctx context.Context, p store.Principal, ws, pid, env, id uuid.UUID, in api.BackupPolicyRequest) (backup.Policy, error) {
 	var out backup.Policy
-	err := s.scope(ctx, p, ws, true, true, true, "backup.policy.save", id, func(tx pgx.Tx) error {
+	err := s.scope(ctx, p, ws, workspaceAccess{Write: true, Owner: true, Recent: true}, "backup.policy.save", id, func(tx pgx.Tx) error {
 		v, err := loadVisualEnvironment(ctx, tx, ws, pid, env)
 		if err != nil {
 			return err
@@ -230,7 +230,7 @@ func (s *Service) BackupCommand(ctx context.Context, p store.Principal, ws, pid,
 	if in.Action == "restore" || in.Action == "check" || in.Action == "snapshots" {
 		action = "backup.recover"
 	}
-	err := s.scope(ctx, p, ws, true, true, true, action, id, func(tx pgx.Tx) error {
+	err := s.scope(ctx, p, ws, workspaceAccess{Write: true, Owner: true, Recent: true, Recovery: in.Action == "restore" || in.Action == "check" || in.Action == "snapshots"}, action, id, func(tx pgx.Tx) error {
 		if _, err := loadVisualEnvironment(ctx, tx, ws, pid, env); err != nil {
 			return err
 		}
@@ -365,7 +365,7 @@ func (s *Service) hydrateBackup(ctx context.Context, c *api.ExecutionCommand) er
 }
 func (s *Service) BackupStatus(ctx context.Context, p store.Principal, ws, pid, env, id uuid.UUID) (backup.Status, error) {
 	out := backup.Status{PolicyID: id, Runs: []backup.Run{}}
-	err := s.scope(ctx, p, ws, false, false, false, "", uuid.Nil, func(tx pgx.Tx) error {
+	err := s.scope(ctx, p, ws, workspaceAccess{}, "", uuid.Nil, func(tx pgx.Tx) error {
 		if _, err := loadVisualEnvironment(ctx, tx, ws, pid, env); err != nil {
 			return err
 		}
@@ -434,7 +434,7 @@ func (s *Service) ScheduleReport(ctx context.Context, a Identity, sequence int64
 }
 func (s *Service) PrepareBackupCutover(ctx context.Context, p store.Principal, ws, pid, env, id uuid.UUID, in api.BackupCutoverRequest) (db.SpecificationRevision, error) {
 	var out db.SpecificationRevision
-	err := s.scope(ctx, p, ws, true, true, true, "backup.cutover.prepare", id, func(tx pgx.Tx) error {
+	err := s.scope(ctx, p, ws, workspaceAccess{Write: true, Owner: true, Recent: true}, "backup.cutover.prepare", id, func(tx pgx.Tx) error {
 		v, err := loadVisualEnvironment(ctx, tx, ws, pid, env)
 		if err != nil {
 			return err
