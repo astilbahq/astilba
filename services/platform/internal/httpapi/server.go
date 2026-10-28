@@ -197,17 +197,13 @@ func (s *Server) request(next http.Handler) http.Handler {
 		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'")
 		defer func() {
 			if recover() != nil {
-				s.Log.Error("request panic", "request_id", id)
-				s.fail(w, r, errors.New("panic"))
+				s.Log.Error("request panic", "request_id", id, "route", requestRoute(r), slog.Group("error", "category", "panic"), "frames", panicFrames())
+				s.respond(w, http.StatusInternalServerError, api.Error{Code: "internal_error", Message: "The request could not be completed.", RequestId: id})
 			}
 		}()
 		recorder := chimiddleware.NewWrapResponseWriter(w, r.ProtoMajor)
 		next.ServeHTTP(recorder, r)
-		route := chi.RouteContext(r.Context()).RoutePattern()
-		if route == "" {
-			route = "unmatched"
-		}
-		s.Log.Info("request", "request_id", id, "route", route, "status", recorder.Status())
+		s.Log.Info("request", "request_id", id, "route", requestRoute(r), "status", recorder.Status())
 	})
 }
 func (s *Server) identity(next http.Handler) http.Handler {
@@ -283,7 +279,7 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 			status = 400
 		}
 	} else {
-		s.Log.Error("request failed", "request_id", out.RequestId)
+		s.Log.Error("request failed", "request_id", out.RequestId, "route", requestRoute(r), failureDiagnostic(err))
 	}
 	if status == 429 {
 		w.Header().Set("Retry-After", "300")
