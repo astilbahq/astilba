@@ -21,7 +21,7 @@ func (s *Service) CloneVisual(ctx context.Context, p store.Principal, ws, pid, s
 	if err != nil {
 		return out, err
 	}
-	err = s.scope(ctx, p, ws, true, false, in.CopySecrets, "environment.clone", source, func(tx pgx.Tx) error {
+	err = s.scope(ctx, p, ws, workspaceAccess{Write: true, Recent: in.CopySecrets}, "environment.clone", source, func(tx pgx.Tx) error {
 		v, err := loadVisualEnvironment(ctx, tx, ws, pid, source)
 		if err != nil {
 			return err
@@ -195,7 +195,7 @@ func (s *Service) CloneVisual(ctx context.Context, p store.Principal, ws, pid, s
 
 func (s *Service) ExportVisual(ctx context.Context, p store.Principal, ws, pid, env uuid.UUID) (deployment.Export, error) {
 	var out deployment.Export
-	err := s.scope(ctx, p, ws, false, false, false, "environment.export", env, func(tx pgx.Tx) error {
+	err := s.scope(ctx, p, ws, workspaceAccess{}, "environment.export", env, func(tx pgx.Tx) error {
 		if _, err := loadVisualEnvironment(ctx, tx, ws, pid, env); err != nil {
 			return err
 		}
@@ -215,7 +215,7 @@ func (s *Service) ExportVisual(ctx context.Context, p store.Principal, ws, pid, 
 
 func (s *Service) ManagedVolumes(ctx context.Context, p store.Principal, ws, pid, env uuid.UUID) ([]api.ManagedVolume, error) {
 	out := []api.ManagedVolume{}
-	err := s.scope(ctx, p, ws, false, false, false, "", uuid.Nil, func(tx pgx.Tx) error {
+	err := s.scope(ctx, p, ws, workspaceAccess{}, "", uuid.Nil, func(tx pgx.Tx) error {
 		v, err := loadVisualEnvironment(ctx, tx, ws, pid, env)
 		if err != nil {
 			return err

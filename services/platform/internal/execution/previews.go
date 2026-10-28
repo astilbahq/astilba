@@ -78,7 +78,7 @@ func (p previewPolicy) response() api.PreviewPolicy {
 }
 func (s *Service) PreviewPolicy(ctx context.Context, p store.Principal, ws, pid, env uuid.UUID) (api.PreviewPolicy, error) {
 	var out api.PreviewPolicy
-	err := s.scope(ctx, p, ws, false, false, false, "", uuid.Nil, func(tx pgx.Tx) error {
+	err := s.scope(ctx, p, ws, workspaceAccess{}, "", uuid.Nil, func(tx pgx.Tx) error {
 		if _, err := loadVisualEnvironment(ctx, tx, ws, pid, env); err != nil {
 			return err
 		}
@@ -99,7 +99,7 @@ func (s *Service) SavePreviewPolicy(ctx context.Context, p store.Principal, ws, 
 	if err := cfg.validate(); err != nil {
 		return out, err
 	}
-	err := s.scope(ctx, p, ws, true, true, in.Enabled, "preview.policy", env, func(tx pgx.Tx) error {
+	err := s.scope(ctx, p, ws, workspaceAccess{Write: true, Owner: true, Recent: in.Enabled}, "preview.policy", env, func(tx pgx.Tx) error {
 		v, err := loadVisualEnvironment(ctx, tx, ws, pid, env)
 		if err != nil {
 			return err
@@ -322,7 +322,7 @@ func scanPreview(row pgx.Row) (api.PullRequestPreview, error) {
 }
 func (s *Service) Previews(ctx context.Context, p store.Principal, ws, pid, env uuid.UUID) ([]api.PullRequestPreview, error) {
 	out := []api.PullRequestPreview{}
-	err := s.scope(ctx, p, ws, false, false, false, "", uuid.Nil, func(tx pgx.Tx) error {
+	err := s.scope(ctx, p, ws, workspaceAccess{}, "", uuid.Nil, func(tx pgx.Tx) error {
 		if _, err := loadVisualEnvironment(ctx, tx, ws, pid, env); err != nil {
 			return err
 		}
@@ -344,7 +344,7 @@ func (s *Service) Previews(ctx context.Context, p store.Principal, ws, pid, env 
 }
 func (s *Service) ActOnPreview(ctx context.Context, p store.Principal, ws, pid, env, id uuid.UUID, in api.PreviewAction) (api.PullRequestPreview, error) {
 	var out api.PullRequestPreview
-	err := s.scope(ctx, p, ws, true, true, true, "preview."+string(in.Action), id, func(tx pgx.Tx) error {
+	err := s.scope(ctx, p, ws, workspaceAccess{Write: true, Owner: true, Recent: true, Recovery: in.Action == "cleanup"}, "preview."+string(in.Action), id, func(tx pgx.Tx) error {
 		policy, err := scanPreviewPolicy(tx.QueryRow(ctx, "SELECT "+previewPolicyColumns+" FROM preview_policies WHERE workspace_id=$1 AND project_id=$2 AND environment_id=$3", ws, pid, env))
 		if err != nil {
 			return err

@@ -37,7 +37,7 @@ func validCredential(c pipeline.Credential, required bool) bool {
 }
 func (s *Service) Connections(ctx context.Context, p store.Principal, ws uuid.UUID) ([]ConnectionSummary, error) {
 	out := []ConnectionSummary{}
-	err := s.scope(ctx, p, ws, false, false, false, "", uuid.Nil, func(tx pgx.Tx) error {
+	err := s.scope(ctx, p, ws, workspaceAccess{}, "", uuid.Nil, func(tx pgx.Tx) error {
 		rows, err := tx.Query(ctx, "SELECT c.configuration,COALESCE(a.active,false),COALESCE(a.app_id,0) FROM git_connections c LEFT JOIN github_app_connections a ON a.workspace_id=c.workspace_id AND a.connection_id=c.id WHERE c.workspace_id=$1 ORDER BY c.id LIMIT 100", ws)
 		if err != nil {
 			return err
@@ -85,7 +85,7 @@ func (s *Service) CreateConnection(ctx context.Context, p store.Principal, ws uu
 		return c, "", domain.Invalid("provider")
 	}
 	// Validate authority before contacting a configured integration.
-	err = s.scope(ctx, p, ws, true, true, true, "git.connection.create", c.ID, func(tx pgx.Tx) error {
+	err = s.scope(ctx, p, ws, workspaceAccess{Write: true, Owner: true, Recent: true}, "git.connection.create", c.ID, func(tx pgx.Tx) error {
 		var count int
 		if err := tx.QueryRow(ctx, "SELECT count(*) FROM git_connections WHERE workspace_id=$1", ws).Scan(&count); err != nil {
 			return err
@@ -138,7 +138,7 @@ func (s *Service) provider(ctx context.Context, tx pgx.Tx, ws, id uuid.UUID) (*p
 }
 func (s *Service) Registries(ctx context.Context, p store.Principal, ws uuid.UUID) ([]pipeline.Registry, error) {
 	out := []pipeline.Registry{}
-	err := s.scope(ctx, p, ws, false, false, false, "", uuid.Nil, func(tx pgx.Tx) error {
+	err := s.scope(ctx, p, ws, workspaceAccess{}, "", uuid.Nil, func(tx pgx.Tx) error {
 		rows, err := tx.Query(ctx, "SELECT configuration FROM registries WHERE workspace_id=$1 ORDER BY id LIMIT 100", ws)
 		if err != nil {
 			return err
@@ -169,7 +169,7 @@ func (s *Service) CreateRegistry(ctx context.Context, p store.Principal, ws uuid
 	if !pipeline.ValidRegistry(r.Repository) || !validCredential(access.Push, true) || !validCredential(access.Pull, true) {
 		return r, domain.Invalid("registry")
 	}
-	err = s.scope(ctx, p, ws, true, true, true, "registry.create", r.ID, func(tx pgx.Tx) error {
+	err = s.scope(ctx, p, ws, workspaceAccess{Write: true, Owner: true, Recent: true}, "registry.create", r.ID, func(tx pgx.Tx) error {
 		var count int
 		if err := tx.QueryRow(ctx, "SELECT count(*) FROM registries WHERE workspace_id=$1", ws).Scan(&count); err != nil {
 			return err
@@ -198,7 +198,7 @@ func loadRegistry(ctx context.Context, tx pgx.Tx, ws, id uuid.UUID) (pipeline.Re
 }
 func (s *Service) BuildSecrets(ctx context.Context, p store.Principal, ws uuid.UUID) ([]pipeline.BuildSecret, error) {
 	out := []pipeline.BuildSecret{}
-	err := s.scope(ctx, p, ws, false, false, false, "", uuid.Nil, func(tx pgx.Tx) error {
+	err := s.scope(ctx, p, ws, workspaceAccess{}, "", uuid.Nil, func(tx pgx.Tx) error {
 		rows, err := tx.Query(ctx, "SELECT id,name,created_at FROM build_secret_versions WHERE workspace_id=$1 ORDER BY created_at DESC LIMIT 100", ws)
 		if err != nil {
 			return err
@@ -225,7 +225,7 @@ func (s *Service) CreateBuildSecret(ctx context.Context, p store.Principal, ws u
 	if value == "" || len(value) > 4096 || strings.ContainsRune(value, 0) {
 		return v, domain.Invalid("value")
 	}
-	err = s.scope(ctx, p, ws, true, true, true, "build.secret.create", v.ID, func(tx pgx.Tx) error {
+	err = s.scope(ctx, p, ws, workspaceAccess{Write: true, Owner: true, Recent: true}, "build.secret.create", v.ID, func(tx pgx.Tx) error {
 		var count int
 		if err := tx.QueryRow(ctx, "SELECT count(*) FROM build_secret_versions WHERE workspace_id=$1", ws).Scan(&count); err != nil {
 			return err

@@ -224,6 +224,9 @@ func TestHostedBillingSerializesCheckoutAndFencesExpiredWork(t *testing.T) {
 	if _, e = f.execution.CreateServer(ctx, p, ws, api.CreateServer{Name: "Expired", Role: "deployment"}); e != store.SubscriptionRequired {
 		t.Fatalf("expiry not enforced: %v", e)
 	}
+	if e = f.execution.Control(ctx, p, ws, one.Server.Id, false); e != store.SubscriptionRequired {
+		t.Fatal("ordinary credential rotation gained recovery admission", e)
+	}
 	if e = f.execution.Control(ctx, p, ws, one.Server.Id, true); e != nil {
 		t.Fatal("expired owner could not revoke the source connection for transfer", e)
 	}

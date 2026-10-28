@@ -164,7 +164,7 @@ func (s *Service) PrepareTransfer(ctx context.Context, p store.Principal, ws, id
 		return out, e
 	}
 	out.Token = token
-	e = s.scope(ctx, p, ws, true, true, true, "workspace.transfer", id, func(tx pgx.Tx) error {
+	e = s.scope(ctx, p, ws, workspaceAccess{Write: true, Owner: true, Recent: true, Recovery: true}, "workspace.transfer", id, func(tx pgx.Tx) error {
 		if e := s.Store.ManagedServerAdmission(ctx, tx, ws, id); e != nil {
 			return e
 		}
