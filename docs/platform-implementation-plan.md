@@ -1,6 +1,6 @@
 # Astilba platform implementation plan
 
-Status: updated 27 October 2026. P0–P15 and P16's same-host replicas are implemented. P16 cross-host networking and placement is undergoing implementation and acceptance verification. Private-alpha acceptance and the previous management update are complete; newly merged increments still require a separate live update. Paid admission still requires measured operating limits and launch settings.
+Status: updated 28 October 2026. P0–P16 are implemented; each release must pass its acceptance gates before rollout. Private-alpha acceptance and the previous management update are complete; newly merged increments still require a separate live update. Paid admission still requires measured operating limits and launch settings.
 
 Build the [architecture](platform-architecture.md) in vertical increments. Prove the execution model on disposable infrastructure before expanding the editor and service catalogue. Each milestone ends in a demonstrable user journey and the tests needed to support its claims. The [product brief](platform-product-brief.md) remains the guide to product scope.
 
@@ -304,7 +304,7 @@ The second adds [explicit cross-host placement](cross-host-placement.md) with
 managed private links, frozen per-host artifacts and capacity reservations,
 coordinated releases and remote-writer backup/restore/upgrade barriers. Its
 management-recovery path also reconstructs interrupted operations from host
-checkpoints when the SQL backup predates them. Completion requires real SQL and
+checkpoints when the SQL backup predates them. Verification requires real SQL and
 native-host failure/recovery acceptance, Chromium/WebKit journeys, both native
 architectures and the normal verification/security gates. It provides no host
 high availability. Kubernetes remains a separate scope decision.

@@ -1,6 +1,6 @@
 # Cross-host networking and placement
 
-Status: implementation and acceptance verification in progress. The control plane, agent and dashboard contain cross-host execution; remaining acceptance and release gates must pass before treating it as supported. Managed private links remain installed during management outages; revocation is complete only after affected reachable peers acknowledge removal, with disconnected peers shown as pending.
+The control plane, agent and dashboard implement cross-host execution. Rollout requires matching controller/agent versions and the native and browser acceptance gates below. Managed private links remain installed during management outages; revocation is complete only after affected reachable peers acknowledge removal, with disconnected peers shown as pending.
 
 ## Outcome and constraints
 
