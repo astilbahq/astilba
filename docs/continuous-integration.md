@@ -41,6 +41,18 @@ using temporary repositories.
 Native tests run only on their owned disposable Ubuntu runners. They never reuse
 an existing deployment host or application runtime state.
 
+## Application Go verification
+
+After the application checks and agent/CLI builds, two Go verification processes
+run concurrently. One runs the long coordination and checkpoint-recovery tests;
+the other runs all remaining Go tests. Both use the same anchored selection in
+the Makefile, retain race detection and uncached execution, and have a timeout of
+fifteen minutes. Either process failing fails application verification.
+
+Each integration process owns a separate disposable PostgreSQL container, and
+each test creates its own database and temporary resources. This keeps the
+coordination scenarios from consuming the remaining tests' timeout budget.
+
 ## Browser shards
 
 Application and workshop workflows each run Chromium and WebKit with two shards
