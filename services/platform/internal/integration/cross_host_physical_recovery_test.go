@@ -245,7 +245,11 @@ exec httpd -f -p 8080 -h /tmp/www`}
 	}
 	_, first := deploy()
 	wait("initial source", func() bool { return complete(first.Id) })
-	spec.Placement = &domain.Placement{NetworkID: network.ID, IngressServerID: inputs[0].ServerId, Applications: []domain.ApplicationPlacement{{ApplicationID: app, CPUMillis: 200, MemoryMiB: 128, Targets: []domain.PlacementTarget{{ServerID: inputs[0].ServerId, Count: 1}, {ServerID: inputs[1].ServerId, Count: 1}}}}}
+	targets := []domain.PlacementTarget{{ServerID: inputs[0].ServerId, Count: 1}, {ServerID: inputs[1].ServerId, Count: 1}}
+	if !upgradeRecovery {
+		targets = []domain.PlacementTarget{{ServerID: inputs[1].ServerId, Count: 2}}
+	}
+	spec.Placement = &domain.Placement{NetworkID: network.ID, IngressServerID: inputs[0].ServerId, Applications: []domain.ApplicationPlacement{{ApplicationID: app, CPUMillis: 200, MemoryMiB: 128, Targets: targets}}}
 	applied, distributed := deploy()
 	wait("distributed source", func() bool { return complete(distributed.Id) })
 	wait("settled source network", func() bool {
@@ -265,12 +269,30 @@ exec httpd -f -p 8080 -h /tmp/www`}
 	if remoteUnit == uuid.Nil {
 		t.Fatal("missing remote source unit")
 	}
+	if !upgradeRecovery {
+		var primary deployment.Plan
+		for _, unit := range applied.ActiveUnits() {
+			if unit.Plan.Local.Primary {
+				primary = unit.Plan
+			}
+		}
+		evidence, err := hosts[0].RecoveryEvidence()
+		if err != nil || primary.ID == uuid.Nil || len(primary.LocalApplications()) != 0 || evidence.Units[primary.UnitID.String()] != primary.Hash {
+			t.Fatal("ingress-only source lost its applied unit inventory", err)
+		}
+	}
 	remoteContainers, err := hosts[1].engine.Docker.ContainerList(ctx, client.ContainerListOptions{Filters: client.Filters{}.Add("label", "com.astilba.server="+inputs[1].ServerId.String()).Add("label", "com.astilba.resource="+app.String())})
-	if err != nil || len(remoteContainers.Items) != 1 {
+	expectedRemote := 1
+	if !upgradeRecovery {
+		expectedRemote = 2
+	}
+	if err != nil || len(remoteContainers.Items) != expectedRemote {
 		t.Fatal("remote source container", err, remoteContainers)
 	}
 	remoteID := remoteContainers.Items[0].ID
-	assertPhysicalRemoteHTTP(t, ctx, hosts[0].namespace, spec.Applications[0].Health.Path, remoteID)
+	for _, remote := range remoteContainers.Items {
+		assertPhysicalRemoteHTTP(t, ctx, hosts[0].namespace, spec.Applications[0].Health.Path, remote.ID)
+	}
 	if upgradeRecovery {
 		physicalPGQuery(t, ctx, hosts[0], pg, "CREATE TABLE recovery_canary(value text PRIMARY KEY); INSERT INTO recovery_canary VALUES ('source-before-upgrade')")
 	}
@@ -358,9 +380,11 @@ exec httpd -f -p 8080 -h /tmp/www`}
 		if _, exists := evidence.Units[remoteUnit.String()]; exists {
 			t.Fatal("completed drain kept its unit inventory")
 		}
-		oldPool, err := hosts[1].engine.Docker.ContainerInspect(ctx, remoteID, client.ContainerInspectOptions{})
-		if err != nil || oldPool.Container.State.Running {
-			t.Fatal("drained pool was not stopped and retained", err)
+		for _, remote := range remoteContainers.Items {
+			oldPool, err := hosts[1].engine.Docker.ContainerInspect(ctx, remote.ID, client.ContainerInspectOptions{})
+			if err != nil || oldPool.Container.State.Running {
+				t.Fatal("drained pool was not stopped and retained", err)
+			}
 		}
 	}
 	var exports []string
@@ -462,6 +486,41 @@ exec httpd -f -p 8080 -h /tmp/www`}
 			var controller int64
 			if err := dst.st.Pool.QueryRow(ctx, `SELECT controller_generation FROM servers WHERE id=$1`, inputs[1].ServerId).Scan(&controller); err != nil || controller != 0 {
 				t.Fatal("failed recovery changed authority", err, controller)
+			}
+		})
+	}
+	if !upgradeRecovery {
+		t.Run("wrong_ingress_unit_hash", func(t *testing.T) {
+			dst, owner := management(savedArchive)
+			altered := copyRecoveryExport(t, exports[0])
+			raw, err := os.ReadFile(filepath.Join(altered, "host.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var evidence deployment.RecoveryEvidence
+			if json.Unmarshal(raw, &evidence) != nil || evidence.Units[applied.UnitID.String()] == "" {
+				t.Fatal("missing ingress source hash")
+			}
+			evidence.Units[applied.UnitID.String()] = strings.Repeat("f", 64)
+			raw, err = json.Marshal(evidence)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err = os.WriteFile(filepath.Join(altered, "host.json"), raw, 0600); err != nil {
+				t.Fatal(err)
+			}
+			in := execution.RecoveryImport{WorkspaceID: ws, OwnerID: owner, HostExports: []string{altered, exports[1]}}
+			preview, err := dst.execution.RecoverCrossHost(ctx, in)
+			if err != nil {
+				t.Fatal("inspect wrong ingress hash", err)
+			}
+			in.ExpectedState = preview.StateHash
+			if _, err = dst.execution.RecoverCrossHost(ctx, in); err == nil || !strings.Contains(err.Error(), "incompatible source or target inventory") {
+				t.Fatal("unrelated ingress inventory was accepted", err)
+			}
+			var controller int64
+			if err = dst.st.Pool.QueryRow(ctx, `SELECT controller_generation FROM servers WHERE id=$1`, inputs[0].ServerId).Scan(&controller); err != nil || controller != 0 {
+				t.Fatal("rejected ingress inventory changed authority", err, controller)
 			}
 		})
 	}
@@ -854,7 +913,7 @@ func linkRecoveryFixtureHosts(t *testing.T, first, second string) {
 	}
 }
 
-func alterRecoveryCompletion(t *testing.T, source string, parent uuid.UUID, outcome string) string {
+func copyRecoveryExport(t *testing.T, source string) string {
 	t.Helper()
 	dst := filepath.Join(t.TempDir(), "altered")
 	if err := os.Mkdir(dst, 0700); err != nil {
@@ -873,6 +932,12 @@ func alterRecoveryCompletion(t *testing.T, source string, parent uuid.UUID, outc
 			t.Fatal(err)
 		}
 	}
+	return dst
+}
+
+func alterRecoveryCompletion(t *testing.T, source string, parent uuid.UUID, outcome string) string {
+	t.Helper()
+	dst := copyRecoveryExport(t, source)
 	raw, err := os.ReadFile(filepath.Join(dst, "proofs.jsonl"))
 	if err != nil {
 		t.Fatal(err)
