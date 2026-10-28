@@ -43,6 +43,7 @@
   "omitted_one": "{{count}} resource was omitted from the observation.",
   "omitted_other": "{{count}} resources were omitted from the observation.",
   "openConfiguration": "Open configuration",
+  "conflictNotice": "Another revision is ready to compare. Your edits are preserved. Open Configuration to review and merge them before saving.",
   "savedServices": "Services in the saved configuration. Observations describe the last reported runtime state.",
   "templateService": "Preview template",
   "observedState": "Last observed: {{state}}",

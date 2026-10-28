@@ -322,6 +322,7 @@ export default interface Resources {
     "compose": "Compose files",
     "configuration": "Configuration",
     "configurationDescription": "Review and edit this environment’s configuration. Saving a revision does not deploy it.",
+    "conflictNotice": "Another revision is ready to compare. Your edits are preserved. Open Configuration to review and merge them before saving.",
     "content": "Environment content",
     "deployment": "Deployment",
     "deploymentNote": "Saving configuration does not deploy it. Review a deployment plan before applying changes.",
