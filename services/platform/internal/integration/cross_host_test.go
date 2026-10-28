@@ -101,7 +101,7 @@ func TestCrossHostCoordinatedPlacement(t *testing.T) {
 					if i == 0 && revokePrimary.Load() && errors.Is(err, domain.Unauthenticated) {
 						return
 					}
-					if pollErr != nil || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+					if waitForFixturePollLease(ctx, err) || pollErr != nil || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 						continue
 					}
 					t.Error(err)
@@ -1155,7 +1155,7 @@ func TestManagedNetworkPartialRestrictionConvergesAfterHostIdle(t *testing.T) {
 				expired := poll.Err()
 				done()
 				if err != nil {
-					if expired != nil || hostCtx.Err() != nil {
+					if waitForFixturePollLease(hostCtx, err) || expired != nil || hostCtx.Err() != nil {
 						continue
 					}
 					t.Error(err)

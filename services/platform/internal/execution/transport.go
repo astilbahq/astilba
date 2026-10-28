@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
@@ -13,6 +14,10 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+// ErrPollLeaseHeld distinguishes temporary poll contention from command conflicts.
+// HTTP clients still receive the ordinary conflict response.
+var ErrPollLeaseHeld = fmt.Errorf("poll lease held: %w", domain.Conflict)
+
 // A database lease bounds overlapping polls across management replicas.
 func (s *Service) Poll(ctx context.Context, a Identity) (*api.ExecutionCommand, error) {
 	id := uuid.New()
@@ -21,7 +26,7 @@ func (s *Service) Poll(ctx context.Context, a Identity) (*api.ExecutionCommand, 
 		return nil, err
 	}
 	if n.RowsAffected() != 1 {
-		return nil, domain.Conflict
+		return nil, ErrPollLeaseHeld
 	}
 	defer func() {
 		cleanup, cancel := context.WithTimeout(context.Background(), time.Second)
