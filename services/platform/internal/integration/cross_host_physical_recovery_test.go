@@ -162,9 +162,39 @@ func testNativePhysicalRecovery(t *testing.T, upgradeRecovery bool) {
 			}
 			time.Sleep(50 * time.Millisecond)
 		}
+		diagnosticContext, cancelDiagnostic := context.WithTimeout(ctx, 2*time.Second)
 		var diagnostic []byte
-		_ = source.st.Pool.QueryRow(ctx, `SELECT jsonb_build_object('operations',(SELECT jsonb_agg(jsonb_build_object('kind',kind,'state',state,'phase',command->'crosshost'->>'phase','networkAction',command->'network'->>'action','wantedGeneration',command->'network'->'manifest'->'generation','note',note)) FROM execution_operations WHERE workspace_id=$1 AND state NOT IN ('succeeded','failed','cancelled')),'network',(SELECT jsonb_agg(jsonb_build_object('generation',generation,'ack',acknowledged_generation,'installedGeneration',installed_manifest->'generation')) FROM network_members WHERE workspace_id=$1))`, ws).Scan(&diagnostic)
-		t.Fatal(label, string(diagnostic))
+		diagnosticErr := source.st.Pool.QueryRow(diagnosticContext, `
+WITH roots AS (
+ SELECT id FROM execution_operations
+ WHERE workspace_id=$1 AND parent_id IS NULL AND state NOT IN ('succeeded','failed','cancelled')
+), selected AS (
+ SELECT * FROM execution_operations
+ WHERE workspace_id=$1 AND (state NOT IN ('succeeded','failed','cancelled') OR parent_id IN (SELECT id FROM roots))
+ ORDER BY created_at DESC,id LIMIT 200
+)
+SELECT jsonb_build_object(
+ 'capturedAt',clock_timestamp(),
+ 'operations',(SELECT jsonb_agg(jsonb_build_object(
+  'id',o.id,'parentId',o.parent_id,'kind',o.kind,'state',o.state,
+  'phase',o.command->'crosshost'->>'phase','coordinatorPhase',h.phase,
+  'createdAt',o.created_at,'reportSequence',o.report_sequence,
+  'networkAction',o.command->'network'->>'action',
+  'wantedGeneration',o.command->'network'->'manifest'->'generation',
+  'checkpointId',cp.id,'checkpointPhase',cp.phase,'checkpointAcknowledged',cp.acknowledged,
+  'recoveryOpened',r.opened,
+  'job',jsonb_build_object('id',j.id,'state',j.state,'attempt',j.attempt,
+   'createdAt',j.created_at,'scheduledAt',j.scheduled_at,
+   'attemptedAt',j.attempted_at,'finalizedAt',j.finalized_at)) ORDER BY o.created_at,o.id)
+ FROM selected o
+ LEFT JOIN cross_host_operations h ON h.id=o.id
+ LEFT JOIN river_job j ON j.id=o.job_id
+ LEFT JOIN cross_host_checkpoints cp ON cp.parent_id=COALESCE(o.parent_id,o.id) AND cp.id::text=o.command->'recoveryCheckpoint'->>'checkpointId'
+ LEFT JOIN cross_host_recoveries r ON r.parent_id=COALESCE(o.parent_id,o.id)),
+ 'network',(SELECT jsonb_agg(jsonb_build_object('generation',generation,'ack',acknowledged_generation,
+  'installedGeneration',installed_manifest->'generation')) FROM network_members WHERE workspace_id=$1))`, ws).Scan(&diagnostic)
+		cancelDiagnostic()
+		t.Fatal(label, string(diagnostic), diagnosticErr)
 	}
 	var network struct {
 		ID         uuid.UUID `json:"id"`
