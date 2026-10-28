@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
+	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/execution"
 	"github.com/astilbahq/astilba/services/platform/internal/hostnetwork"
 	"github.com/google/uuid"
@@ -17,6 +18,45 @@ import (
 type networkRemovalJob struct{ ID uuid.UUID }
 
 func (networkRemovalJob) Kind() string { return "platform_execution_v1" }
+
+func fixtureNetworkReceipt(host hostnetwork.Host, c api.ExecutionCommand, current *hostnetwork.Manifest, scopes map[uuid.UUID]deployment.Plan, controller int64) (hostnetwork.Receipt, error) {
+	var command hostnetwork.Command
+	if err := hostnetwork.Decode(*c.Network, &command); err != nil {
+		return hostnetwork.Receipt{}, err
+	}
+	identity, err := host.Identity(command.MembershipID)
+	if err != nil {
+		return hostnetwork.Receipt{}, err
+	}
+	receipt := hostnetwork.Receipt{Identity: identity, NetworkID: command.NetworkID}
+	if command.Manifest != nil {
+		next := *command.Manifest
+		if command.Action == "restrict" {
+			baseline, unit := command.Baseline, uuid.Nil
+			if c.ParentId != nil {
+				plan, ok := scopes[*c.ParentId]
+				if !ok || plan.Local == nil {
+					return receipt, errors.New("fixture has no frozen parent network scope")
+				}
+				baseline, unit = &plan.Local.Network, plan.UnitID
+			}
+			if baseline == nil {
+				return receipt, errors.New("fixture has no standalone network baseline")
+			}
+			before := *current
+			next, err = hostnetwork.ReconcileRestriction(before, *baseline, next, unit, controller)
+			if err != nil {
+				return receipt, err
+			}
+			if hostnetwork.Hash(next) != hostnetwork.Hash(*command.Manifest) {
+				receipt.Before, receipt.Effective = &before, &next
+			}
+		}
+		*current = next
+		receipt.Generation, receipt.Hash, receipt.Disabled = next.Generation, hostnetwork.Hash(next), next.Disabled
+	}
+	return receipt, nil
+}
 
 func TestManagedNetworkLostConfigureReceiptDoesNotBlockRemoval(t *testing.T) {
 	f := setup(t)
@@ -173,5 +213,42 @@ func TestManagedNetworkLostConfigureReceiptDoesNotBlockRemoval(t *testing.T) {
 			t.Fatal("the waiting removal was replaced")
 		}
 		complete(second)
+	})
+	t.Run("same_generation_empty_grants", func(t *testing.T) {
+		// An earlier acknowledgement can retain null empty lists while the next
+		// frozen restriction encodes them as []; the grants are unchanged.
+		wanted := effective
+		wanted.Exports, wanted.Egress = []hostnetwork.Endpoint{}, []hostnetwork.Egress{}
+		baseline := effective
+		baseline.Generation--
+		body := hostnetwork.Command{Action: "restrict", NetworkID: known.NetworkID, MembershipID: member, Baseline: &baseline, Manifest: &wanted}
+		raw, _ := json.Marshal(body)
+		message := json.RawMessage(raw)
+		c := frames[0]
+		c.Id, c.Generation, c.PlanHash, c.Network = uuid.New(), 100, hostnetwork.Hash(body), &message
+		c.Deadline = time.Now().Add(time.Minute)
+		header, _ := json.Marshal(c)
+		if _, err := f.st.Pool.Exec(ctx, `INSERT INTO execution_operations(id,workspace_id,server_id,generation,request_key,command,kind,state) VALUES($1,$2,$3,$4,$5,$6,'network','running')`, c.Id, ws, c.ServerId, c.Generation, uuid.New(), header); err != nil {
+			t.Fatal(err)
+		}
+		current := effective
+		receipt, err := fixtureNetworkReceipt(host, c, &current, nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw, _ = json.Marshal(receipt)
+		value := json.RawMessage(raw)
+		if err = f.execution.Report(ctx, identity, api.AgentReport{Id: c.Id, Generation: c.Generation, PlanHash: c.PlanHash, Sequence: 1, State: "succeeded", Steps: []api.ExecutionStep{}, Network: &value}); err != nil {
+			t.Fatal("no-op restriction receipt rejected", err)
+		}
+		var state string
+		var installed []byte
+		if err = f.st.Pool.QueryRow(ctx, `SELECT o.state,m.installed_manifest FROM execution_operations o JOIN network_members m ON m.server_id=o.server_id WHERE o.id=$1`, c.Id).Scan(&state, &installed); err != nil {
+			t.Fatal(err)
+		}
+		var actual hostnetwork.Manifest
+		if json.Unmarshal(installed, &actual) != nil || hostnetwork.Hash(actual) != hostnetwork.Hash(effective) || state != "succeeded" {
+			t.Fatal("no-op acknowledgement changed installed authority or did not complete")
+		}
 	})
 }
