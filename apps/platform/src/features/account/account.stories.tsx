@@ -248,11 +248,13 @@ export const CancelDisable: Story = {
     await waitFor(() => expect(body.queryByRole("alertdialog")).toBeNull(), {
       timeout: 5000,
     });
-    await expect(
-      within(context.canvasElement).getByRole("button", {
-        name: "Disable two-factor authentication",
-      }),
-    ).toHaveFocus();
+    await waitFor(() =>
+      expect(
+        within(context.canvasElement).getByRole("button", {
+          name: "Disable two-factor authentication",
+        }),
+      ).toHaveFocus(),
+    );
   },
 };
 export const DisableFailed: Story = {
@@ -291,11 +293,13 @@ export const DisabledSuccessfully: Story = {
         "Two-factor authentication disabled.",
       ),
     ).toHaveAttribute("role", "status");
-    await expect(
-      within(context.canvasElement).getByRole("heading", {
-        name: "Two-factor authentication",
-      }),
-    ).toHaveFocus();
+    await waitFor(() =>
+      expect(
+        within(context.canvasElement).getByRole("heading", {
+          name: "Two-factor authentication",
+        }),
+      ).toHaveFocus(),
+    );
   },
 };
 export const SaveRecoveryCodes: Story = {
