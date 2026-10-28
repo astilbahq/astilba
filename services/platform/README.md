@@ -50,6 +50,11 @@ Sessions have a 12-hour absolute lifetime and 30-minute idle timeout. Secure coo
 
 The API does not trust forwarded client-IP headers. Per-IP abuse limits therefore see the immediate peer when a reverse proxy is used; per-account and global limits still apply. Multi-instance rate counters and sessions use PostgreSQL. Before a larger hosted rollout, add an explicitly authenticated proxy trust policy as part of hosting hardening, not an arbitrary forwarded-header override.
 
+Browser session refresh cannot recreate a deleted token. A loaded-token save
+rejected after logout or renewal returns 401 without setting a session cookie.
+Update every management replica and drain requests handled by older binaries
+before relying on this revocation guarantee.
+
 ## Revision and key model
 
 OpenAPI lives in `contracts/platform/openapi.yaml`; regenerate Go and TypeScript bindings with `pnpm generate`. Queries and migrations live in this module's `db` directory. `pnpm generate:check` generates into temporary directories and compares bytes, including from a clean checkout.

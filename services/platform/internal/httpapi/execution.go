@@ -26,7 +26,7 @@ func agentIdentity(ctx context.Context) execution.Identity {
 	return v
 }
 func (s *Server) protection(next http.Handler) http.Handler {
-	browser := s.Sessions.LoadAndSave(s.identity(s.csrf(next)))
+	browser := browserSessionRequest(s.Sessions.LoadAndSave(s.identity(s.csrf(next))))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/hooks/git/") || r.URL.Path == "/hooks/stripe" || r.URL.Path == "/hooks/github-app" {
 			w.Header().Set("Cache-Control", "no-store")
