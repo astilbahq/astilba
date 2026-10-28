@@ -46,7 +46,7 @@ jobs:
           - runner: ubuntu-24.04-arm
             arch: arm64
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 25
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -71,6 +71,7 @@ jobs:
           sudo env PLAT4_DISPOSABLE_HOST=1 bash experiments/durable-execution/host/bootstrap.sh
           sudo env PLAT4_DISPOSABLE_HOST=1 bash experiments/durable-execution/host/build-tools.sh
           sudo env ASTILBA_DISPOSABLE_HOST=1 bash services/platform/host/backup-tools.sh
+          sudo env ASTILBA_DISPOSABLE_HOST=1 bash services/platform/host/network-test-tools.sh
       - name: Pull pinned fixture images
         run: |
           sudo /opt/astilba-plat4/bin/docker --host unix:///run/astilba-plat4/docker.sock pull postgres:17.10-alpine3.23@sha256:8189a1f6e40904781fc9e2612687877791d21679866db58b1de996b31fc312e4

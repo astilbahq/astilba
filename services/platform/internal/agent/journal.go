@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
@@ -38,9 +39,10 @@ type Record struct {
 	Railpack     *pipeline.PreparedRailpack `json:",omitempty"`
 }
 type Journal struct {
-	db   *bolt.DB
-	keys *cryptobox.Keyring
-	dir  string
+	db         *bolt.DB
+	keys       *cryptobox.Keyring
+	dir        string
+	recoveryMu sync.Mutex
 }
 
 func Open(dir string) (*Journal, error) {
@@ -90,7 +92,7 @@ func Open(dir string) (*Journal, error) {
 	}
 	j := &Journal{db: db, keys: keys, dir: dir}
 	err = db.Update(func(tx *bolt.Tx) error {
-		for _, b := range []string{"identity", "operations", "generations", "units", "routing", "schedules", "schedules-v2", "upgrades", "releases", "preview-cleanups"} {
+		for _, b := range []string{"identity", "operations", "generations", "units", "routing", "schedules", "schedules-v2", "upgrades", "releases", "preview-cleanups", "cross-host", "distributed-fences", "retained-pools", "recovery-heads", "recovery-checkpoints", "recovery-authority", "recovery-gc"} {
 			if _, e := tx.CreateBucketIfNotExists([]byte(b)); e != nil {
 				return e
 			}
@@ -98,6 +100,9 @@ func Open(dir string) (*Journal, error) {
 		return nil
 	})
 	if err != nil {
+		return fail(err)
+	}
+	if err = j.pruneRecovery(); err != nil {
 		return fail(err)
 	}
 	return j, nil
@@ -120,10 +125,10 @@ func (j *Journal) put(tx *bolt.Tx, bucket, key string, value any) error {
 		return e
 	}
 	limit := 32768
-	if bucket == "units" || bucket == "routing" || bucket == "schedules" || bucket == "schedules-v2" || bucket == "upgrades" || bucket == "releases" {
+	if bucket == "units" || bucket == "routing" || bucket == "schedules" || bucket == "schedules-v2" || bucket == "upgrades" || bucket == "releases" || bucket == "cross-host" || bucket == "retained-pools" || bucket == "recovery-authority" {
 		limit = 524288
 	}
-	if record, ok := value.(Record); ok && (record.Command.Kind == "visual" || record.Command.Kind == "pipeline" || record.Command.Kind == "backup" || record.Command.Kind == "schedule" || record.Command.Kind == "upgrade") {
+	if record, ok := value.(Record); ok && (record.Command.Kind == "visual" || record.Command.Kind == "pipeline" || record.Command.Kind == "backup" || record.Command.Kind == "schedule" || record.Command.Kind == "upgrade" || record.Command.Kind == "network" || record.Command.Kind == "crosshost") {
 		limit = 524288
 	}
 	if len(raw) > limit {
@@ -155,7 +160,7 @@ func (j *Journal) Pending() (out []Record, err error) {
 			if e := j.get(tx, "operations", string(k), &r); e != nil {
 				return e
 			}
-			if !r.Acknowledged {
+			if !r.Acknowledged && !(j.isCrossHostSentinel(tx, string(k)) || j.isDistributedFence(tx, string(k)) || j.isRecoverySentinel(tx, string(k))) {
 				out = append(out, r)
 			}
 			return nil
@@ -164,6 +169,23 @@ func (j *Journal) Pending() (out []Record, err error) {
 	return
 }
 func sameCommand(a, b api.ExecutionCommand) bool {
+	if a.RecoveryCheckpoint != nil || b.RecoveryCheckpoint != nil {
+		ad, ae := commandCheckpoint(a)
+		bd, be := commandCheckpoint(b)
+		if ae != nil || be != nil || deployment.Hash(ad) != deployment.Hash(bd) {
+			return false
+		}
+		a.RecoveryCheckpoint, b.RecoveryCheckpoint = nil, nil
+	}
+	if a.Kind == "crosshost" && b.Kind == "crosshost" {
+		ap, ae := crossHostCommand(a)
+		bp, be := crossHostCommand(b)
+		if ae != nil || be != nil || ap.Digest() != a.PlanHash || bp.Digest() != b.PlanHash {
+			return false
+		}
+		a.Crosshost = nil
+		b.Crosshost = nil
+	}
 	if a.Kind == "visual" && b.Kind == "visual" {
 		var ap, bp deployment.Payload
 		if a.Visual == nil || b.Visual == nil || json.Unmarshal(*a.Visual, &ap) != nil || json.Unmarshal(*b.Visual, &bp) != nil || ap.Digest() != a.PlanHash || bp.Digest() != b.PlanHash {
@@ -217,6 +239,9 @@ func (j *Journal) Accept(c api.ExecutionCommand) (Record, error) {
 		} else if !errors.Is(e, os.ErrNotExist) {
 			return e
 		}
+		if err := j.crossHostAdmission(tx, c); err != nil {
+			return err
+		}
 		count := 0
 		var oldest string
 		if e := tx.Bucket([]byte("operations")).ForEach(func(k, v []byte) error {
@@ -224,11 +249,18 @@ func (j *Journal) Accept(c api.ExecutionCommand) (Record, error) {
 			if e := j.get(tx, "operations", string(k), &r); e != nil {
 				return e
 			}
-			if !r.Acknowledged {
+			if j.isCrossHostSentinel(tx, string(k)) || j.isDistributedFence(tx, string(k)) || j.isRecoverySentinel(tx, string(k)) {
+				return nil
+			}
+			openingSameRoot := recoveryOpen(c) && c.ParentId != nil && r.Command.ParentId != nil && *c.ParentId == *r.Command.ParentId
+			if !r.Acknowledged && !networkRestriction(c) && !openingSameRoot {
 				return errors.New("a command still awaits completion or acknowledgement")
 			}
+			if r.Command.ParentId != nil && tx.Bucket([]byte("recovery-heads")).Get([]byte(r.Command.ParentId.String())) != nil {
+				return nil
+			}
 			count++
-			if oldest == "" {
+			if oldest == "" && r.Acknowledged {
 				oldest = string(k)
 			}
 			return nil
@@ -236,6 +268,9 @@ func (j *Journal) Accept(c api.ExecutionCommand) (Record, error) {
 			return e
 		}
 		if count >= 128 {
+			if oldest == "" {
+				return errors.New("journal contains too many unacknowledged commands")
+			}
 			if e := tx.Bucket([]byte("operations")).Delete([]byte(oldest)); e != nil {
 				return e
 			}
@@ -245,14 +280,23 @@ func (j *Journal) Accept(c api.ExecutionCommand) (Record, error) {
 		if c.Kind == "update" {
 			key = "agent-update"
 		}
+		if c.Kind == "network" {
+			key = "host-network"
+		}
+		if recoveryOpen(c) {
+			key = "recovery-open:" + c.ParentId.String()
+		}
+		if recoveryClose(c) {
+			key = "recovery-close:" + c.ParentId.String()
+		}
 		e := j.get(tx, "generations", key, &generation)
 		if e != nil && !errors.Is(e, os.ErrNotExist) {
 			return e
 		}
-		if c.Generation <= generation {
+		if c.Generation <= generation && !networkRestriction(c) {
 			return errors.New("stale generation")
 		}
-		if e := j.put(tx, "generations", key, c.Generation); e != nil {
+		if e := j.put(tx, "generations", key, max(generation, c.Generation)); e != nil {
 			return e
 		}
 		out = Record{Command: c, Report: api.AgentReport{Id: c.Id, Generation: c.Generation, PlanHash: c.PlanHash, Sequence: 1, State: "running", Steps: []api.ExecutionStep{}}, Checkpoint: "accepted"}
@@ -261,13 +305,20 @@ func (j *Journal) Accept(c api.ExecutionCommand) (Record, error) {
 	return out, err
 }
 func (j *Journal) Acknowledge(id uuid.UUID, sequence int64) error {
-	return j.db.Update(func(tx *bolt.Tx) error {
+	prune := false
+	err := j.db.Update(func(tx *bolt.Tx) error {
 		var r Record
 		if e := j.get(tx, "operations", id.String(), &r); e != nil {
 			return e
 		}
 		if r.Report.Sequence == sequence && execution.Terminal(r.Report.State) {
 			r.Acknowledged = true
+			if r.Command.ParentId != nil && tx.Bucket([]byte("recovery-heads")).Get([]byte(r.Command.ParentId.String())) != nil {
+				prune = true
+				if err := j.completeRecoveryHead(tx, r); err != nil {
+					return err
+				}
+			}
 			if err := tx.Bucket([]byte("preview-cleanups")).Delete([]byte(id.String())); err != nil {
 				return err
 			}
@@ -275,6 +326,10 @@ func (j *Journal) Acknowledge(id uuid.UUID, sequence int64) error {
 		}
 		return nil
 	})
+	if err == nil && prune {
+		err = j.pruneRecovery()
+	}
+	return err
 }
 
 // Mutate preserves cancellation learned concurrently by the transport loop.

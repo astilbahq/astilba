@@ -17,8 +17,22 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/execution"
 	"github.com/google/uuid"
+	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/client"
 )
+
+func TestVisualFingerprintPreservesEffectiveOOMKillingPolicy(t *testing.T) {
+	inspect := container.InspectResponse{HostConfig: &container.HostConfig{}}
+	enabled := visualFingerprint(inspect, true)
+	inspect.HostConfig.OomKillDisable = ptr(false)
+	if visualFingerprint(inspect, true) != enabled {
+		t.Fatal("Docker's first-start default normalization became configuration drift")
+	}
+	inspect.HostConfig.OomKillDisable = ptr(true)
+	if visualFingerprint(inspect, true) == enabled {
+		t.Fatal("disabling OOM killing no longer registers as configuration drift")
+	}
+}
 
 func testVisualJournal(t *testing.T) (*Journal, deployment.Plan) {
 	t.Helper()

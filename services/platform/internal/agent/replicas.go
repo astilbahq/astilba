@@ -18,12 +18,17 @@ func aggregateReplicaResources(p deployment.Plan, rows []deployment.Resource, in
 	}
 	managed := map[uuid.UUID]bool{}
 	out := []deployment.Resource{}
-	for _, app := range p.Specification.Applications {
+	for _, app := range p.LocalApplications() {
 		managed[app.ID] = true
 		group := deployment.Resource{ID: app.ID, Kind: "service", Image: p.Images[app.ID.String()]}
 		running, healthy, present := 0, 0, 0
 		for _, id := range p.InstanceIDs(app.ID) {
 			member := deployment.InstanceState{InstanceID: id, State: "missing"}
+			if p.Local != nil {
+				member.ServerID = &p.ServerID
+				member.UnitID = &p.UnitID
+				member.Image = p.Images[app.ID.String()]
+			}
 			if row, ok := byInstance[id]; ok && row.ID == app.ID {
 				present++
 				member.State = row.State

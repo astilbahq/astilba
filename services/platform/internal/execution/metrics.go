@@ -35,7 +35,7 @@ func (s *Service) RecordMetrics(ctx context.Context, a Identity, r api.MetricRep
 	}
 	for _, v := range r.Services {
 		var owned bool
-		err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM managed_resources r JOIN deployment_units u ON u.workspace_id=r.workspace_id AND u.id=r.unit_id WHERE r.workspace_id=$1 AND r.id=$2 AND r.unit_id=$3 AND u.server_id=$4)`, workspace, v.ResourceId, v.UnitId, a.ID).Scan(&owned)
+		err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM managed_resources r JOIN deployment_units u ON u.workspace_id=r.workspace_id AND u.id=r.unit_id WHERE r.workspace_id=$1 AND r.id=$2 AND r.unit_id=$3 AND u.server_id=$4) OR EXISTS(SELECT 1 FROM cross_host_runtime r WHERE r.workspace_id=$1 AND r.unit_id=$3 AND r.server_id=$4 AND r.inventory->'plan'->'local'->'instances' ? $2::text)`, workspace, v.ResourceId, v.UnitId, a.ID).Scan(&owned)
 		if err != nil {
 			return err
 		}
@@ -90,7 +90,8 @@ func (s *Service) Metrics(ctx context.Context, p store.Principal, ws, id uuid.UU
 		if err != nil {
 			return err
 		}
-		rows, err = tx.Query(ctx, `SELECT r.id,coalesce((SELECT a->>'name' FROM jsonb_array_elements(v.specification->'applications') a WHERE a->>'id'=r.id::text LIMIT 1),r.id::text),e.name FROM managed_resources r JOIN deployment_units u ON u.workspace_id=r.workspace_id AND u.id=r.unit_id JOIN environments e ON e.workspace_id=r.workspace_id AND e.id=r.environment_id LEFT JOIN specification_revisions v ON v.workspace_id=e.workspace_id AND v.id=e.applied_revision_id WHERE r.workspace_id=$1 AND u.server_id=$2 ORDER BY r.id LIMIT 1000`, ws, id)
+		rows, err = tx.Query(ctx, `SELECT r.id,coalesce((SELECT a->>'name' FROM jsonb_array_elements(v.specification->'applications') a WHERE a->>'id'=r.id::text LIMIT 1),r.id::text),e.name FROM managed_resources r JOIN deployment_units u ON u.workspace_id=r.workspace_id AND u.id=r.unit_id JOIN environments e ON e.workspace_id=r.workspace_id AND e.id=r.environment_id LEFT JOIN specification_revisions v ON v.workspace_id=e.workspace_id AND v.id=e.applied_revision_id WHERE r.workspace_id=$1 AND u.server_id=$2
+		 UNION SELECT (a->>'id')::uuid,a->>'name',e.name FROM cross_host_runtime r JOIN environments e ON e.workspace_id=r.workspace_id AND e.id=r.environment_id CROSS JOIN LATERAL jsonb_array_elements(r.inventory->'plan'->'specification'->'applications') a WHERE r.workspace_id=$1 AND r.server_id=$2 AND r.inventory->'plan'->'local'->'instances' ? (a->>'id') ORDER BY 1 LIMIT 1000`, ws, id)
 		if err != nil {
 			return err
 		}

@@ -26,7 +26,7 @@ Compose/route export includes every frozen instance and health check. Controller
 
 Cross-host execution is not implemented. Logical environment/application identity stays separate from deployment units, which own server placement, local volumes, private endpoints and operation fences. A Compose project remains one unit on one host. Placement must be explicit rather than inferred from a canvas connection.
 
-Before implementation, review private-network enrollment and revocation, authenticated endpoint discovery, ingress placement, partition and lease behavior, failure domains and capacity admission. Each host needs compatible immutable images/artifacts. Never expose a private database to make a binding work; replicas do not imply database replication or live volume migration.
+The [proposed cross-host design](cross-host-placement.md) covers private-network enrollment and revocation, authenticated endpoint discovery, ingress placement, partition behavior, failure domains and capacity admission. Installed private links remain available during management outages; unacknowledged revocation remains visibly incomplete. Each host needs compatible immutable images/artifacts. Never expose a private database to make a binding work; replicas do not imply database replication or live volume migration.
 
 Multi-server changes cannot promise an atomic transaction. Plans must identify every old/new placement, retain known serving pools when coordination is uncertain and expose reconciliation. Host loss cannot authorize unfenced writers or automatic stateful relocation. A single front door and DNS remain failure boundaries until a separately implemented routing design removes them. Kubernetes remains a separate scope decision.
 

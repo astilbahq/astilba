@@ -10,6 +10,40 @@
     "sessionCookie": []
   - automationBearer: []
 "paths":
+  /api/v1/workspaces/{workspaceId}/network:
+    parameters:
+      - {name: workspaceId, in: path, required: true, schema: {type: string, format: uuid}}
+    get:
+      operationId: getManagedNetwork
+      responses:
+        '200':
+          description: Managed network desired state and member acknowledgements
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ManagedNetwork'}
+        default:
+          description: Error
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+    put:
+      operationId: configureManagedNetwork
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ConfigureManagedNetwork'}
+      responses:
+        '200':
+          description: Reviewed network configuration saved for reconciliation
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ManagedNetwork'}
+        default:
+          description: Error
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
   /api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/preview-policy:
     parameters:
       - name: workspaceId
@@ -2138,6 +2172,25 @@
       "security":
         -
           "agentBearer": []
+  /agent/v1/operations/{parentId}/checkpoints/{checkpointId}:
+    get:
+      operationId: downloadRecoveryCheckpoint
+      parameters:
+        - {name: parentId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: checkpointId, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '200':
+          description: Management-keyring-encrypted metadata for the assigned primary.
+          content:
+            application/octet-stream:
+              schema: {type: string, format: binary}
+        default:
+          description: Error
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+      security:
+        - agentBearer: []
   "/agent/v1/report":
     "post":
       "operationId": "reportAgent"
@@ -4229,6 +4282,139 @@
       "in": "cookie"
       "name": "__Host-astilba_session"
   "schemas":
+    CrossHostInventory:
+      type: object
+      additionalProperties: false
+      required: [cpuMillis, memoryMiB, unboundedInventoryHash]
+      properties:
+        ingressReady: {type: boolean}
+        cpuMillis: {type: integer, minimum: 1}
+        memoryMiB: {type: integer, minimum: 1}
+        unboundedInventoryHash: {type: string, pattern: '^[a-f0-9]{64}$'}
+    ManagedNetworkMemberInput:
+      type: object
+      additionalProperties: false
+      required: [serverId, endpoint, listenPort, cpuMillis, memoryMiB, unboundedInventoryHash]
+      properties:
+        serverId: {type: string, format: uuid}
+        endpoint: {type: string, maxLength: 128}
+        listenPort: {type: integer, minimum: 1024, maximum: 65535}
+        cpuMillis: {type: integer, minimum: 100, maximum: 256000}
+        memoryMiB: {type: integer, minimum: 64, maximum: 1048576}
+        unboundedInventoryHash: {type: string, pattern: '^[a-f0-9]{64}$'}
+    ConfigureManagedNetwork:
+      type: object
+      additionalProperties: false
+      required: [baseGeneration, prefix, members]
+      properties:
+        baseGeneration: {type: integer, format: int64, minimum: 0}
+        prefix: {type: string, maxLength: 32}
+        members:
+          type: array
+          maxItems: 16
+          items: {$ref: '#/components/schemas/ManagedNetworkMemberInput'}
+    ManagedNetwork:
+      type: object
+      x-go-type: json.RawMessage
+      additionalProperties: false
+      required: [id, generation, prefix, state, members]
+      properties:
+        id: {type: string, format: uuid}
+        generation: {type: integer, format: int64}
+        prefix: {type: string}
+        state: {type: string}
+        members:
+          type: array
+          maxItems: 32
+          items:
+            type: object
+            additionalProperties: false
+            required: [serverId, membershipId, address, endpoint, listenPort, cpuMillis, memoryMiB, unboundedInventoryHash, enabled, generation, acknowledgedGeneration, state, note]
+            properties:
+              serverId: {type: string, format: uuid}
+              membershipId: {type: string, format: uuid}
+              address: {type: string}
+              endpoint: {type: string}
+              listenPort: {type: integer}
+              cpuMillis: {type: integer}
+              memoryMiB: {type: integer}
+              unboundedInventoryHash: {type: string}
+              publicKey: {type: string}
+              enabled: {type: boolean}
+              generation: {type: integer, format: int64}
+              acknowledgedGeneration: {type: integer, format: int64}
+              state: {type: string}
+              note: {type: string}
+    CrossHostPlacement:
+      type: object
+      additionalProperties: false
+      required: [networkId, ingressServerId, applications]
+      properties:
+        networkId: {type: string, format: uuid}
+        ingressServerId: {type: string, format: uuid}
+        applications:
+          type: array
+          minItems: 1
+          maxItems: 20
+          items:
+            type: object
+            additionalProperties: false
+            required: [applicationId, cpuMillis, memoryMiB, targets]
+            properties:
+              applicationId: {type: string, format: uuid}
+              cpuMillis: {type: integer, minimum: 100, maximum: 16000}
+              memoryMiB: {type: integer, minimum: 64, maximum: 65536}
+              targets:
+                type: array
+                minItems: 1
+                maxItems: 4
+                items:
+                  type: object
+                  additionalProperties: false
+                  required: [serverId, count]
+                  properties:
+                    serverId: {type: string, format: uuid}
+                    count: {type: integer, minimum: 1, maximum: 10}
+    NetworkCommand:
+      type: object
+      x-go-type: json.RawMessage
+      additionalProperties: true
+    NetworkReceipt:
+      type: object
+      x-go-type: json.RawMessage
+      additionalProperties: true
+    CrossHostCommand:
+      type: object
+      x-go-type: json.RawMessage
+      additionalProperties: true
+    RecoveryDescriptor:
+      type: object
+      x-go-type: json.RawMessage
+      additionalProperties: false
+      required: [version,workspaceId,parentId,rootHash,groupId,groupHash,baseId,checkpointId,sequence,digest,bytes,participants]
+      properties:
+        version: {type: integer,enum: [1]}
+        workspaceId: {type: string,format: uuid}
+        parentId: {type: string,format: uuid}
+        rootHash: {type: string,pattern: '^[a-f0-9]{64}$'}
+        groupId: {type: string,format: uuid}
+        groupHash: {type: string,pattern: '^[a-f0-9]{64}$'}
+        baseId: {type: string,format: uuid}
+        checkpointId: {type: string,format: uuid}
+        sequence: {type: integer,format: int64,minimum: 0}
+        previousHash: {type: string,pattern: '^[a-f0-9]{64}$'}
+        digest: {type: string,pattern: '^[a-f0-9]{64}$'}
+        bytes: {type: integer,minimum: 1,maximum: 1048576}
+        participants:
+          type: array
+          minItems: 1
+          maxItems: 4
+          uniqueItems: true
+          items: {type: string,format: uuid}
+    CrossHostReceipt:
+      type: object
+      x-go-type: json.RawMessage
+      additionalProperties: true
     PreviewCleanupReceipt:
       type: object
       additionalProperties: false
@@ -4552,6 +4738,7 @@
         - "arch"
         - "docker"
       properties:
+        crossHost: {type: boolean, description: Supports versioned managed private links and coordinated cross-host commands.}
         previews:
           type: boolean
           description: Supports bounded preview plans and ownership-verified cleanup.
@@ -4621,6 +4808,7 @@
         - "existingContainers"
         - "notes"
       "properties":
+        crossHostInventory: {$ref: '#/components/schemas/CrossHostInventory'}
         certificateContactConfigured: {type: boolean}
         "ready":
           "type": "boolean"
@@ -4924,6 +5112,10 @@
         - "release"
         - "cancelRequested"
       properties:
+        parentId: {type: string, format: uuid}
+        network: {$ref: '#/components/schemas/NetworkCommand'}
+        crosshost: {$ref: '#/components/schemas/CrossHostCommand'}
+        recoveryCheckpoint: {$ref: '#/components/schemas/RecoveryDescriptor'}
         controllerGeneration: {type: integer, format: int64, minimum: 0}
         "id":
           "type": "string"
@@ -4950,6 +5142,8 @@
             - backup
             - schedule
             - upgrade
+            - network
+            - crosshost
         "action":
           "$ref": "#/components/schemas/TestAction"
         "resourceId":
@@ -5018,6 +5212,8 @@
         - "steps"
         - "note"
       properties:
+        network: {$ref: '#/components/schemas/NetworkReceipt'}
+        crosshost: {$ref: '#/components/schemas/CrossHostReceipt'}
         "id":
           "type": "string"
           "format": "uuid"
@@ -5085,6 +5281,8 @@
             - backup
             - schedule
             - upgrade
+            - network
+            - crosshost
         "cancelRequested":
           "type": "boolean"
         "note":
@@ -5640,6 +5838,7 @@
       "type": "object"
       "additionalProperties": false
       "properties":
+        placement: {$ref: '#/components/schemas/CrossHostPlacement'}
         "version":
           "type": "integer"
           "enum":
@@ -6086,6 +6285,9 @@
       "type": "object"
       "additionalProperties": false
       properties:
+        restore: {$ref: "#/components/schemas/RestoreCutover"}
+        distributed: {$ref: "#/components/schemas/DistributedPlan"}
+        local: {$ref: "#/components/schemas/LocalPlacement"}
         replicaInstances:
           type: object
           maxProperties: 20
@@ -6130,6 +6332,7 @@
             - 1
             - 2
             - 3
+            - 4
         "specification":
           "$ref": "#/components/schemas/Specification"
         "images":
@@ -6223,6 +6426,9 @@
             required: [instanceId, state]
             properties:
               instanceId: {type: string, format: uuid}
+              serverId: {type: string, format: uuid}
+              unitId: {type: string, format: uuid}
+              image: {type: string, maxLength: 512}
               state: {type: string, maxLength: 30}
         "id":
           "type": "string"
@@ -6260,6 +6466,19 @@
       "type": "object"
       "additionalProperties": false
       "properties":
+        hosts:
+          type: array
+          maxItems: 4
+          items:
+            type: object
+            additionalProperties: false
+            required: [serverId,unitId,state,observedAt]
+            properties:
+              serverId: {type: string,format: uuid}
+              unitId: {type: string,format: uuid}
+              state: {type: string,maxLength: 40}
+              observedAt: {type: string,format: date-time}
+
         "observedAt":
           "type": "string"
           "format": "date-time"
@@ -7570,6 +7789,7 @@
       type: object
       additionalProperties: false
       properties:
+        coordinated: {type: boolean, description: Writer-stopping schedule is executed by management across all placement units.}
         id:
           type: string
           format: uuid
@@ -7839,6 +8059,10 @@
             - disable
         installation:
           $ref: '#/components/schemas/BackupInstallation'
+        scheduledAt:
+          type: string
+          format: date-time
+          description: Frozen occurrence for a management-coordinated scheduled backup.
         runId:
           type: string
           format: uuid
@@ -7925,6 +8149,7 @@
       additionalProperties: false
       required: [id, recipe, policyId, resourceId, targetVolumeId, targetPlanId, targetRevisionId, retainDays, expiresAt, source]
       properties:
+        group: {$ref: '#/components/schemas/VisualPlan'}
         id: {type: string, format: uuid}
         recipe: {type: integer, enum: [1]}
         policyId: {type: string, format: uuid}
@@ -8096,6 +8321,10 @@
       additionalProperties: false
       required: [units, schedules]
       properties:
+        recovery:
+          type: object
+          x-go-type: json.RawMessage
+          additionalProperties: true
         previewCleanups:
           type: array
           maxItems: 100
@@ -8279,6 +8508,8 @@
           format: date-time
           description: Runtime observation receipt time or build job creation time, used to select the requested window.
         resourceId: {type: string, format: uuid}
+        serverId: {type: string, format: uuid}
+        unitId: {type: string, format: uuid}
         operationId: {type: string, format: uuid}
         content: {type: string, maxLength: 65536}
         truncated:
@@ -8306,3 +8537,35 @@
           type: array
           maxItems: 100
           items: {$ref: '#/components/schemas/LogExportEntry'}
+
+    ManagedLinkSource: {"type":"object","additionalProperties":false,"required":["serverId","unitId"],"properties":{"serverId":{"type":"string","format":"uuid"},"unitId":{"type":"string","format":"uuid"}}}
+
+    ManagedLinkEndpoint: {"type":"object","additionalProperties":false,"required":["id","unitId","resourceId","instanceId","port","containerPort","sources"],"properties":{"id":{"type":"string","format":"uuid"},"unitId":{"type":"string","format":"uuid"},"resourceId":{"type":"string","format":"uuid"},"instanceId":{"type":"string","format":"uuid"},"port":{"type":"integer"},"containerPort":{"type":"integer"},"sources":{"type":"array","maxItems":64,"items":{"$ref":"#/components/schemas/ManagedLinkSource"}}}}
+
+    ManagedLinkPeer: {"type":"object","additionalProperties":false,"required":["serverId","membershipId","address","publicKey","endpoint"],"properties":{"serverId":{"type":"string","format":"uuid"},"membershipId":{"type":"string","format":"uuid"},"address":{"type":"string"},"publicKey":{"type":"string"},"endpoint":{"type":"string"}}}
+
+    ManagedLinkEgress: {"type":"object","additionalProperties":false,"required":["unitId","serverId","endpointId","port"],"properties":{"unitId":{"type":"string","format":"uuid"},"serverId":{"type":"string","format":"uuid"},"endpointId":{"type":"string","format":"uuid"},"port":{"type":"integer"},"ingress":{"type":"boolean"}}}
+
+    ManagedLinkManifest: {"type":"object","additionalProperties":false,"required":["version","networkId","membershipId","serverId","controllerGeneration","generation","prefix","address","publicKey","listenPort","peers","exports","egress","disabled"],"properties":{"version":{"type":"integer","enum":[1]},"networkId":{"type":"string","format":"uuid"},"membershipId":{"type":"string","format":"uuid"},"serverId":{"type":"string","format":"uuid"},"controllerGeneration":{"type":"integer"},"generation":{"type":"integer"},"prefix":{"type":"string"},"address":{"type":"string"},"publicKey":{"type":"string"},"listenPort":{"type":"integer"},"peers":{"type":"array","maxItems":15,"items":{"$ref":"#/components/schemas/ManagedLinkPeer"}},"exports":{"type":"array","maxItems":200,"items":{"$ref":"#/components/schemas/ManagedLinkEndpoint"}},"egress":{"type":"array","maxItems":400,"items":{"$ref":"#/components/schemas/ManagedLinkEgress"}},"disabled":{"type":"boolean"}}}
+
+    PrivateEndpoint: {"type":"object","additionalProperties":false,"required":["serverId","unitId","resourceId","instanceId","address","port","containerPort"],"properties":{"serverId":{"type":"string","format":"uuid"},"unitId":{"type":"string","format":"uuid"},"resourceId":{"type":"string","format":"uuid"},"instanceId":{"type":"string","format":"uuid"},"address":{"type":"string"},"port":{"type":"integer"},"containerPort":{"type":"integer"}}}
+
+    ResourceRequest: {"type":"object","additionalProperties":false,"required":["cpuMillis","memoryMiB"],"properties":{"cpuMillis":{"type":"integer"},"memoryMiB":{"type":"integer"}}}
+
+    LocalPlacement: {"type":"object","additionalProperties":false,"required":["groupId","primary","network","instances","priorInstances","requests","outputs","backends"],"properties":{"groupId":{"type":"string","format":"uuid"},"primary":{"type":"boolean"},"network":{"$ref":"#/components/schemas/ManagedLinkManifest"},"instances":{"type":"object","maxProperties":20,"additionalProperties":{"type":"array","maxItems":10,"items":{"type":"string","format":"uuid"}}},"priorInstances":{"type":"object","maxProperties":20,"additionalProperties":{"type":"array","maxItems":10,"items":{"type":"string","format":"uuid"}}},"requests":{"type":"object","maxProperties":20,"additionalProperties":{"$ref":"#/components/schemas/ResourceRequest"}},"outputs":{"type":"object","maxProperties":100,"additionalProperties":{"$ref":"#/components/schemas/PrivateEndpoint"}},"backends":{"type":"object","maxProperties":20,"additionalProperties":{"type":"array","maxItems":10,"items":{"$ref":"#/components/schemas/PrivateEndpoint"}}}}}
+
+    DistributedUnit: {"type":"object","additionalProperties":false,"required":["plan","previous","cpuMillis","memoryMiB","inventoryHash"],"properties":{"plan":{"$ref":"#/components/schemas/VisualPlan"},"previous":{"type":"object","additionalProperties":true},"cpuMillis":{"type":"integer"},"memoryMiB":{"type":"integer"},"inventoryHash":{"type":"string"}}}
+
+    DistributedPlan: {"type":"object","additionalProperties":false,"required":["networkId","networkGeneration","units"],"properties":{"networkId":{"type":"string","format":"uuid"},"networkGeneration":{"type":"integer"},"units":{"type":"array","maxItems":4,"items":{"$ref":"#/components/schemas/DistributedUnit"}}}}
+    RestoreCutover:
+      type: object
+      additionalProperties: false
+      required: [sourcePlanId, sourceHash, policyId, runId, manifestHash, oldVolumeId, targetVolumeId]
+      properties:
+        sourcePlanId: {type: string, format: uuid}
+        sourceHash: {type: string, pattern: '^[a-f0-9]{64}$'}
+        policyId: {type: string, format: uuid}
+        runId: {type: string, format: uuid}
+        manifestHash: {type: string, pattern: '^[a-f0-9]{64}$'}
+        oldVolumeId: {type: string, format: uuid}
+        targetVolumeId: {type: string, format: uuid}

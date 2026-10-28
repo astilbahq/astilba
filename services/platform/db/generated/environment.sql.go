@@ -97,7 +97,7 @@ func (q *Queries) AllTOTPSecrets(ctx context.Context) ([]AllTOTPSecretsRow, erro
 
 const getEnvironment = `-- name: GetEnvironment :one
 SELECT e.workspace_id, e.project_id, e.id, e.name, e.configuration_owner, e.draft_revision_id, e.created_at, e.execution_generation, e.applied_revision_id, e.purpose,d.id AS unit_id,d.runtime,d.server_id FROM environments e JOIN deployment_units d
-ON d.workspace_id=e.workspace_id AND d.environment_id=e.id WHERE e.workspace_id=$1 AND e.project_id=$2 AND e.id=$3
+ON d.workspace_id=e.workspace_id AND d.environment_id=e.id AND d.primary_unit WHERE e.workspace_id=$1 AND e.project_id=$2 AND e.id=$3
 `
 
 type GetEnvironmentParams struct {

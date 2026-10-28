@@ -140,7 +140,7 @@ func (c *MetricCollector) Collect(ctx context.Context, docker *client.Client, se
 			return out
 		}
 		for _, active := range plans {
-			for _, app := range active.Plan.Specification.Applications {
+			for _, app := range active.Plan.LocalApplications() {
 				if _, exists := groups[app.ID]; exists || len(order) >= metrics.MaxServices {
 					out.Partial = true
 					continue

@@ -27,6 +27,8 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/agent"
 	"github.com/astilbahq/astilba/services/platform/internal/agentrelease"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
+	"github.com/astilbahq/astilba/services/platform/internal/deployment"
+	"github.com/astilbahq/astilba/services/platform/internal/hostnetwork"
 	"github.com/google/uuid"
 	"github.com/moby/moby/client"
 )
@@ -41,7 +43,7 @@ func main() {
 }
 func run() error {
 	if len(os.Args) < 2 {
-		return errors.New("usage: astilba-agent describe|preflight|enroll|transfer|run|retry|resolve-run|inspect-upgrades|inspect-controller|update-local|release-keygen|release-sign")
+		return errors.New("usage: astilba-agent describe|network-support|network-restore|preflight|enroll|transfer|run|retry|resolve-run|reject-cross-host-effect|inspect-upgrades|inspect-cross-host|inspect-controller|export-recovery|update-local|release-keygen|release-sign")
 	}
 	command := os.Args[1]
 	if command == "describe" {
@@ -54,6 +56,8 @@ func run() error {
 	dir := flags.String("state", "/var/lib/astilba-agent", "protected state directory")
 	origin := flags.String("management", "", "exact HTTPS management origin")
 	transferGeneration := flags.Int64("transfer-generation", 0, "confirmed target controller generation")
+	recoveryFile := flags.String("recovery-handover", "", "private exact-root handover produced by offline management recovery")
+	exportDirectory := flags.String("recovery-export", "", "new private directory for host recovery evidence")
 	server := flags.String("server", "", "server UUID from the dashboard")
 	tokenFile := flags.String("token-file", "-", "private enrollment token file or stdin")
 	publicFile := flags.String("release-key", "", "trusted Ed25519 public key PEM")
@@ -82,6 +86,12 @@ func run() error {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
+	if command == "network-support" {
+		return json.NewEncoder(os.Stdout).Encode(map[string]bool{"supported": (hostnetwork.Host{Dir: *dir}).Supported(ctx)})
+	}
+	if command == "network-restore" {
+		return (hostnetwork.Host{Dir: *dir}).Restore(ctx)
+	}
 	docker, e := client.New(client.WithHost(*host))
 	if e != nil {
 		return e
@@ -101,6 +111,19 @@ func run() error {
 		return e
 	}
 	defer j.Close()
+	if command == "export-recovery" {
+		if *exportDirectory == "" {
+			return errors.New("a new --recovery-export directory is required")
+		}
+		return j.ExportRecovery(*exportDirectory)
+	}
+	if command == "inspect-cross-host" {
+		view, err := j.CrossHostView()
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(os.Stdout).Encode(view)
+	}
 	if command == "inspect-controller" {
 		cfg, err := j.Config()
 		if err != nil {
@@ -166,7 +189,23 @@ func run() error {
 			if e != nil {
 				return e
 			}
-			if e = j.Transfer(*origin, key, *transferGeneration, string(token)); e != nil {
+			if *recoveryFile != "" {
+				file, err := privateFile(*recoveryFile)
+				if err != nil {
+					return err
+				}
+				defer file.Close()
+				var handover deployment.RecoveryHandover
+				decoder := json.NewDecoder(io.LimitReader(file, 524289))
+				decoder.DisallowUnknownFields()
+				if decoder.Decode(&handover) != nil || decoder.Decode(new(any)) != io.EOF || handover.Authority.Controller != *transferGeneration {
+					return errors.New("invalid recovery handover")
+				}
+				e = j.TransferRecovery(*origin, key, string(token), handover)
+			} else {
+				e = j.Transfer(*origin, key, *transferGeneration, string(token))
+			}
+			if e != nil {
 				return e
 			}
 			cfg, e = j.Config()
@@ -194,6 +233,10 @@ func run() error {
 		if e = j.SetConfig(cfg); e != nil {
 			return e
 		}
+		if command == "transfer" && cfg.Enrolled {
+			fmt.Println("Agent already enrolled with this recovery authority.")
+			return nil
+		}
 
 		c := agent.NewClient(j, nil)
 		c.Observe = func(ctx context.Context) api.AgentHeartbeat {
@@ -210,14 +253,19 @@ func run() error {
 		if e != nil {
 			return e
 		}
-		return j.Mutate(id, func(r *agent.Record) {
-			if r.Report.State == "needs_attention" {
-				r.Report.State = "running"
-				r.Report.Note = "Local operator requested reconciliation."
-			}
-		})
+		return j.Retry(id)
+	}
+	if command == "reject-cross-host-effect" {
+		id, err := uuid.Parse(*operation)
+		if err != nil {
+			return err
+		}
+		return (&agent.Engine{Journal: j, Docker: docker}).RejectCrossHostEffect(ctx, id)
 	}
 	if command == "update-local" {
+		if err := j.RequireUnreservedHost(); err != nil {
+			return err
+		}
 		upgrades, err := j.UpgradeViews()
 		if err != nil {
 			return err

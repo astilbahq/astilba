@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -49,6 +50,9 @@ func (j *Journal) saveUnit(v unitState) error {
 			return err
 		}
 		if err := j.put(tx, "units", v.Plan.UnitID.String(), v); err != nil {
+			return err
+		}
+		if err := j.syncDistributedFence(tx, v.Plan); err != nil {
 			return err
 		}
 		var release releaseState
@@ -148,54 +152,10 @@ func (e *Engine) executeVisual(ctx context.Context, c api.ExecutionCommand, r Re
 		return e.visualFinish(ctx, c, p, "cancelled", "Cancelled at a safe checkpoint. Existing services and data are retained.")
 	}
 	if p.Action == "resolve" {
-		observed, _, err := e.observeUnit(ctx, p.Plan, nil)
+		observed, err := e.resolveVisual(ctx, p)
 		if err != nil {
-			return e.finish(c.Id, "failed", "Cannot inspect the deployment unit.")
+			return e.finish(c.Id, "failed", err.Error())
 		}
-		observed.Images = map[string]string{}
-		for _, a := range p.Plan.Specification.Applications {
-			image := *a.Source.Image
-			if artifact, ok := p.Plan.Artifacts[a.ID.String()]; ok && artifact.ServerID != nil {
-				v, err := e.Docker.ImageInspect(ctx, image)
-				if err != nil || v.ID != artifact.Digest || v.Architecture != artifact.Architecture {
-					return e.finish(c.Id, "failed", "Built image is unavailable or differs from its recorded identity. Rebuild on this host.")
-				}
-				observed.Images[a.ID.String()] = artifact.Digest
-				continue
-			}
-			named, err := reference.ParseNormalizedNamed(image)
-			if err != nil {
-				return e.finish(c.Id, "failed", "Invalid image reference.")
-			}
-			if d, ok := named.(reference.Digested); ok {
-				image, err = deployment.DigestReference(image, d.Digest().String())
-				if err == nil {
-					_, err = e.Docker.ImageInspect(ctx, image)
-					if errdefs.IsNotFound(err) {
-						lookup, cancel := context.WithTimeout(ctx, 30*time.Second)
-						v, x := e.Docker.DistributionInspect(lookup, image, client.DistributionInspectOptions{EncodedRegistryAuth: visualRegistryAuth(p, a.ID.String())})
-						cancel()
-						err = x
-						if err == nil && v.Descriptor.Digest != d.Digest() {
-							err = errors.New("registry digest differs from reviewed image")
-						}
-					}
-				}
-			} else {
-				lookup, cancel := context.WithTimeout(ctx, 30*time.Second)
-				v, x := e.Docker.DistributionInspect(lookup, image, client.DistributionInspectOptions{EncodedRegistryAuth: visualRegistryAuth(p, a.ID.String())})
-				cancel()
-				err = x
-				if err == nil {
-					image, err = deployment.DigestReference(image, v.Descriptor.Digest.String())
-				}
-			}
-			if err != nil {
-				return e.finish(c.Id, "failed", "Image resolution failed. Check the image reference and registry access.")
-			}
-			observed.Images[a.ID.String()] = image
-		}
-		observed = resolutionObservation(observed)
 		if err = e.visualObservation(c, observed); err != nil {
 			return e.finish(c.Id, "failed", "The resolution report exceeds its supported size.")
 		}
@@ -415,6 +375,69 @@ func (e *Engine) executeVisual(ctx context.Context, c api.ExecutionCommand, r Re
 	return e.finish(c.Id, "succeeded", "The reviewed revision is running and its routes were verified.")
 }
 
+func (e *Engine) resolveVisual(ctx context.Context, p deployment.Payload) (deployment.Observation, error) {
+	return e.resolveVisualImages(ctx, p, nil)
+}
+
+func (e *Engine) resolveVisualImages(ctx context.Context, p deployment.Payload, retained map[string]string) (deployment.Observation, error) {
+	observed, _, err := e.observeUnit(ctx, p.Plan, nil)
+	if err != nil {
+		return observed, errors.New("Cannot inspect the deployment unit.")
+	}
+	observed.Images = map[string]string{}
+	frozenImages := p.Plan.Validate(true) == nil
+	for _, a := range p.Plan.LocalApplications() {
+		image := *a.Source.Image
+		if frozenImages {
+			image = p.Plan.Images[a.ID.String()]
+		}
+		if previous, ok := retained[a.ID.String()]; ok {
+			image = previous
+		}
+		if artifact, ok := p.Plan.Artifacts[a.ID.String()]; ok && artifact.ServerID != nil {
+			v, err := e.Docker.ImageInspect(ctx, image)
+			if err != nil || v.ID != artifact.Digest || v.Architecture != artifact.Architecture {
+				return observed, errors.New("Built image is unavailable or differs from its recorded identity. Rebuild on this host.")
+			}
+			observed.Images[a.ID.String()] = artifact.Digest
+			continue
+		}
+		named, err := reference.ParseNormalizedNamed(image)
+		if err != nil {
+			return observed, errors.New("Invalid image reference.")
+		}
+		if d, ok := named.(reference.Digested); ok {
+			image, err = deployment.DigestReference(image, d.Digest().String())
+			if err == nil {
+				_, err = e.Docker.ImageInspect(ctx, image)
+				if errdefs.IsNotFound(err) {
+					lookup, cancel := context.WithTimeout(ctx, 30*time.Second)
+					v, x := e.Docker.DistributionInspect(lookup, image, client.DistributionInspectOptions{EncodedRegistryAuth: visualRegistryAuth(p, a.ID.String())})
+					cancel()
+					err = x
+					if err == nil && v.Descriptor.Digest != d.Digest() {
+						err = errors.New("registry digest differs from reviewed image")
+					}
+				}
+			}
+		} else {
+			lookup, cancel := context.WithTimeout(ctx, 30*time.Second)
+			v, x := e.Docker.DistributionInspect(lookup, image, client.DistributionInspectOptions{EncodedRegistryAuth: visualRegistryAuth(p, a.ID.String())})
+			cancel()
+			err = x
+			if err == nil {
+				image, err = deployment.DigestReference(image, v.Descriptor.Digest.String())
+			}
+		}
+		if err != nil {
+			return observed, errors.New("Image resolution failed. Check the image reference and registry access.")
+		}
+		observed.Images[a.ID.String()] = image
+	}
+	observed = resolutionObservation(observed)
+	return observed, nil
+}
+
 func visualLabels(p deployment.Plan, resource uuid.UUID) map[string]string {
 	return map[string]string{labelServer: p.ServerID.String(), labelEnvironment: p.EnvironmentID.String(), "com.astilba.unit": p.UnitID.String(), labelResource: resource.String(), labelKind: "visual-v1"}
 }
@@ -473,6 +496,9 @@ func (e *Engine) ensureStorage(ctx context.Context, p deployment.Plan) error {
 		if err != nil || !visualOwned(n.Network.Labels, p) || n.Network.Driver != "bridge" || n.Network.Internal != network.internal {
 			return errors.New("Deployment network ownership or settings do not match.")
 		}
+	}
+	if p.Local != nil && !p.Local.Primary {
+		return nil
 	}
 	for _, vol := range p.Specification.Volumes {
 		v, err := e.Docker.VolumeInspect(ctx, deployment.VolumeName(vol.ID), client.VolumeInspectOptions{})
@@ -542,9 +568,7 @@ func (e *Engine) compose(ctx context.Context, p deployment.Plan, body []byte, se
 	if p.Specification.Compose == nil && len(args) > 0 {
 		for _, app := range p.Specification.Applications {
 			if args[len(args)-1] == deployment.ServiceName(app.ID) {
-				if p.Instances[app.ID.String()] != uuid.Nil {
-					project = p.ContainerName(app.ID)
-				}
+				project = composeApplicationProject(p, app.ID)
 				args = args[:len(args)-1]
 				for _, instance := range p.InstanceIDs(app.ID) {
 					args = append(args, deployment.ServiceName(instance))
@@ -575,6 +599,19 @@ func (e *Engine) compose(ctx context.Context, p deployment.Plan, body []byte, se
 		return fmt.Errorf("Compose did not complete: %s", out.b.String())
 	}
 	return nil
+}
+
+func composeApplicationProject(p deployment.Plan, app uuid.UUID) string {
+	isolated := p.Instances[app.String()] != uuid.Nil
+	if p.Local != nil {
+		_, isolated = p.Local.Requests[app.String()]
+		ids := p.InstanceIDs(app)
+		isolated = isolated || len(ids) > 0 && ids[0] != app
+	}
+	if isolated {
+		return p.ContainerName(app)
+	}
+	return deployment.UnitName(p.UnitID)
 }
 func redactValues(text string, values map[string]string) string {
 	patterns := map[string]bool{}
@@ -731,23 +768,9 @@ func (e *Engine) observeVisualPlan(ctx context.Context, p deployment.Plan, secre
 			return out, nil, err
 		}
 		inspect := v.Container
-		attachments := map[string][]string{}
-		if inspect.NetworkSettings != nil {
-			for name, endpoint := range inspect.NetworkSettings.Networks {
-				aliases := append([]string(nil), endpoint.Aliases...)
-				sort.Strings(aliases)
-				attachments[name] = aliases
-			}
-		}
-		sort.Slice(inspect.Mounts, func(i, j int) bool {
-			if inspect.Mounts[i].Destination == inspect.Mounts[j].Destination {
-				return inspect.Mounts[i].Source < inspect.Mounts[j].Source
-			}
-			return inspect.Mounts[i].Destination < inspect.Mounts[j].Destination
-		})
-		fingerprint := deployment.Hash([]any{inspect.Image, inspect.Config, inspect.HostConfig, inspect.Mounts, inspect.State.Running, attachments})
+		fingerprint := visualFingerprint(inspect, inspect.State.Running)
 		key := id.String()
-		if active.Recipe == deployment.ReplicaRecipe {
+		if active.Recipe == deployment.ReplicaRecipe || active.Recipe == deployment.CrossHostRecipe {
 			key = instance.String()
 		}
 		actual[key] = fingerprint
@@ -756,11 +779,11 @@ func (e *Engine) observeVisualPlan(ctx context.Context, p deployment.Plan, secre
 		if inspect.State.Running {
 			state = "running"
 		}
-		if inspect.State.Health != nil {
+		if inspect.State.Running && inspect.State.Health != nil {
 			state = string(inspect.State.Health.Status)
 		}
 		resource := deployment.Resource{ID: id, Kind: "service", State: state, Image: inspect.Config.Image, Drift: stored.Expected[key] != "" && stored.Expected[key] != fingerprint}
-		if active.Recipe == deployment.ReplicaRecipe {
+		if active.Recipe == deployment.ReplicaRecipe || active.Recipe == deployment.CrossHostRecipe {
 			resource.Instances = []deployment.InstanceState{{InstanceID: instance, State: state}}
 		}
 		if stored.Expected[key] == "" && stored.Plan.ID != uuid.Nil {
@@ -792,7 +815,7 @@ func (e *Engine) observeVisualPlan(ctx context.Context, p deployment.Plan, secre
 					}
 				}
 				prefix := ""
-				if active.Recipe == deployment.ReplicaRecipe {
+				if active.Recipe == deployment.ReplicaRecipe || active.Recipe == deployment.CrossHostRecipe {
 					prefix = "\nInstance " + instance.String() + ":\n"
 				}
 				if limit := min(logBudget, 512) - len(prefix); limit > 0 {
@@ -824,7 +847,7 @@ func (e *Engine) observeVisualPlan(ctx context.Context, p deployment.Plan, secre
 		}
 		out.Resources = append(out.Resources, resource)
 	}
-	if active.Recipe == deployment.ReplicaRecipe {
+	if active.Recipe == deployment.ReplicaRecipe || active.Recipe == deployment.CrossHostRecipe {
 		out.Resources = aggregateReplicaResources(active, out.Resources, stored.Plan.ID != uuid.Nil)
 	} else {
 		for id := range stored.Expected {
@@ -857,7 +880,7 @@ func (e *Engine) waitHTTP(ctx context.Context, c api.ExecutionCommand, p deploym
 
 func (e *Engine) waitHTTPInstance(ctx context.Context, c api.ExecutionCommand, p deployment.Plan, a domain.Application, instance uuid.UUID) error {
 	probe := a.ID
-	if p.Recipe == deployment.ReplicaRecipe {
+	if p.Recipe == deployment.ReplicaRecipe || p.Recipe == deployment.CrossHostRecipe {
 		probe = instance
 	}
 	name := "astilba-health-" + c.Id.String() + "-" + probe.String()
@@ -1055,4 +1078,33 @@ func (e *Engine) pullVisualImages(ctx context.Context, p deployment.Payload) err
 		}
 	}
 	return nil
+}
+
+// Running can be normalized to the recorded serving value when validating an
+// intentional maintenance stop. Every configuration field remains covered.
+func visualFingerprint(inspect container.InspectResponse, running bool) string {
+	attachments := map[string][]string{}
+	if inspect.NetworkSettings != nil {
+		for name, endpoint := range inspect.NetworkSettings.Networks {
+			aliases := append([]string(nil), endpoint.Aliases...)
+			sort.Strings(aliases)
+			attachments[name] = aliases
+		}
+	}
+	mounts := slices.Clone(inspect.Mounts)
+	sort.Slice(mounts, func(i, j int) bool {
+		if mounts[i].Destination == mounts[j].Destination {
+			return mounts[i].Source < mounts[j].Source
+		}
+		return mounts[i].Destination < mounts[j].Destination
+	})
+	hostConfig := inspect.HostConfig
+	if hostConfig != nil && hostConfig.OomKillDisable != nil && !*hostConfig.OomKillDisable {
+		// Docker clears explicit false to the default nil on first start. Both
+		// describe enabled OOM killing; true remains a configuration difference.
+		normalized := *hostConfig
+		normalized.OomKillDisable = nil
+		hostConfig = &normalized
+	}
+	return deployment.Hash([]any{inspect.Image, inspect.Config, hostConfig, mounts, running, attachments})
 }

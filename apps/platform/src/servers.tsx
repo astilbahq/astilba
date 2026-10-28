@@ -6,6 +6,7 @@ import { Input } from "./components/input";
 import { Label } from "./components/label";
 import { Anchor } from "./components/link";
 import { Select } from "./components/select";
+import { ManagedNetwork } from "./features/managed-network";
 import { ServerMetrics } from "./features/metrics";
 import { ServerDomains } from "./features/server-domains";
 import { ServerOnboarding } from "./features/server-onboarding";
@@ -134,6 +135,11 @@ function ServerWorkspace({ workspace }: { workspace: Schema["Workspace"] }) {
           }}
         />
       )}
+      <ManagedNetwork
+        workspaceId={workspaceId}
+        servers={servers.data ?? []}
+        owner={owner}
+      />
       {enrollment && (
         <section className={s.panel} aria-label="Enrollment instructions">
           <h2>Connect {enrollment.server.name}</h2>

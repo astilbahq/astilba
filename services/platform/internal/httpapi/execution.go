@@ -55,12 +55,16 @@ func (s *Server) protection(next http.Handler) http.Handler {
 		w.Header().Set("Astilba-Agent-Previews", "v1")
 		w.Header().Set("Astilba-Agent-Schedules", "v1")
 		w.Header().Set("Astilba-Agent-Replicas", "v1")
+		w.Header().Set("Astilba-Agent-Cross-Host", "v1")
 		limit := int64(16384)
 		if r.URL.Path == "/agent/v1/enroll" {
 			limit = 32768
 		}
 		if r.URL.Path == "/agent/v1/report" || r.URL.Path == "/agent/v1/schedule-reports" {
 			limit = 196608
+		}
+		if r.URL.Path == "/agent/v1/report" {
+			limit = 524288
 		}
 		r.Body = http.MaxBytesReader(w, r.Body, limit)
 		if r.URL.Path != "/agent/v1/enroll" {
@@ -185,6 +189,17 @@ func (s *Server) RotateAgentCredential(w http.ResponseWriter, r *http.Request) {
 func (s *Server) PollAgent(w http.ResponseWriter, r *http.Request) {
 	v, e := s.Execution.Poll(r.Context(), agentIdentity(r.Context()))
 	s.executionResponse(w, r, 200, api.AgentPoll{Command: v}, e)
+}
+func (s *Server) DownloadRecoveryCheckpoint(w http.ResponseWriter, r *http.Request, parentID, checkpointID uuid.UUID) {
+	body, err := s.Execution.RecoveryCheckpoint(r.Context(), agentIdentity(r.Context()), parentID, checkpointID)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(body)
 }
 func (s *Server) ReportAgent(w http.ResponseWriter, r *http.Request) {
 	b, e := decode[api.AgentReport](r)

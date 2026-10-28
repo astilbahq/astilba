@@ -3,6 +3,7 @@ package portability
 import (
 	"encoding/json"
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -40,6 +41,17 @@ func TestPreSchedulingVersionTwoArchivesRemainReadable(t *testing.T) {
 		t.Fatal(err)
 	}
 	archive.Version = 2
+	for _, table := range tables {
+		if strings.HasPrefix(table.Name, "network_") || table.Name == "workspace_networks" || strings.HasPrefix(table.Name, "cross_host_") || table.Name == "backup_cutovers" {
+			delete(archive.Tables, table.Name)
+		}
+	}
+	for _, row := range archive.Tables["deployment_units"] {
+		delete(row, "primary_unit")
+	}
+	for _, row := range archive.Tables["execution_operations"] {
+		delete(row, "parent_id")
+	}
 	raw, err = json.Marshal(archive)
 	if err != nil {
 		t.Fatal(err)
@@ -47,7 +59,7 @@ func TestPreSchedulingVersionTwoArchivesRemainReadable(t *testing.T) {
 	if _, err = decodeArchive(raw); err != nil {
 		t.Fatal("pre-scheduling archive rejected", err)
 	}
-	archive.Version = 5
+	archive.Version = 6
 	raw, _ = json.Marshal(archive)
 	if _, err = decodeArchive(raw); err == nil {
 		t.Fatal("unknown future schedule semantics accepted")

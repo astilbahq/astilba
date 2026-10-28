@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"net/netip"
 	"net/url"
 	"sort"
 	"strconv"
@@ -26,6 +27,9 @@ const ObservationLimit = 24000
 const ProxyImage = "traefik:v3.7.16@sha256:22a759fb803abb5c3a7ba5d5a55a201c5fb0fc8993d5c72c47a89075e64f1953"
 
 type Plan struct {
+	Restore           *RestoreCutover              `json:"restore,omitempty"`
+	Distributed       *DistributedPlan             `json:"distributed,omitempty"`
+	Local             *LocalPlacement              `json:"local,omitempty"`
 	ReplicaInstances  map[string][]uuid.UUID       `json:"replicaInstances,omitempty"`
 	Preview           *domain.PreviewIdentity      `json:"preview,omitempty"`
 	Instances         map[string]uuid.UUID         `json:"instances,omitempty"`
@@ -71,10 +75,20 @@ type Resource struct {
 	MemoryBytes int64           `json:"memoryBytes"`
 }
 type InstanceState struct {
-	InstanceID uuid.UUID `json:"instanceId"`
+	ServerID   *uuid.UUID `json:"serverId,omitempty"`
+	UnitID     *uuid.UUID `json:"unitId,omitempty"`
+	Image      string     `json:"image,omitempty"`
+	InstanceID uuid.UUID  `json:"instanceId"`
+	State      string     `json:"state"`
+}
+type HostObservation struct {
+	ServerID   uuid.UUID `json:"serverId"`
+	UnitID     uuid.UUID `json:"unitId"`
 	State      string    `json:"state"`
+	ObservedAt time.Time `json:"observedAt"`
 }
 type Observation struct {
+	Hosts               []HostObservation `json:"hosts,omitempty"`
 	ObservedAt          time.Time         `json:"observedAt"`
 	Resources           []Resource        `json:"resources"`
 	Images              map[string]string `json:"images,omitempty"`
@@ -100,7 +114,7 @@ func (p Plan) WithHash() Plan { p.Hash = ""; p.Hash = Hash(p); return p }
 func (p Plan) Validate(resolved bool) error {
 	h := p.Hash
 	p.Hash = ""
-	if h != Hash(p) || p.Preview == nil && p.Recipe != Recipe && p.Recipe != ReplicaRecipe || p.Preview != nil && p.Recipe != PreviewRecipe || p.ID == uuid.Nil || p.ServerID == uuid.Nil || p.EnvironmentID == uuid.Nil || p.UnitID == uuid.Nil || p.RevisionID == uuid.Nil {
+	if h != Hash(p) || p.Preview == nil && p.Recipe != Recipe && p.Recipe != ReplicaRecipe && p.Recipe != CrossHostRecipe || p.Preview != nil && p.Recipe != PreviewRecipe || p.ID == uuid.Nil || p.ServerID == uuid.Nil || p.EnvironmentID == uuid.Nil || p.UnitID == uuid.Nil || p.RevisionID == uuid.Nil {
 		return errors.New("invalid deployment plan identity")
 	}
 	if p.Preview != nil {
@@ -108,7 +122,20 @@ func (p Plan) Validate(resolved bool) error {
 			return err
 		}
 	}
-	if err := p.validateInstances(); err != nil {
+	if p.Restore != nil && (p.Distributed == nil || p.Restore.Validate() != nil) {
+		return errors.New("restore cutover requires a frozen distributed source")
+	}
+	if p.Recipe != CrossHostRecipe && (p.Local != nil || p.Distributed != nil || p.Specification.Placement != nil) {
+		return errors.New("cross-host placement requires recipe 4")
+	}
+	if p.Recipe == CrossHostRecipe {
+		if p.Distributed != nil {
+			return p.validateDistributed(resolved)
+		}
+		if err := p.validateLocal(); err != nil {
+			return err
+		}
+	} else if err := p.validateInstances(); err != nil {
 		return err
 	}
 	raw, err := json.Marshal(p.Specification)
@@ -137,10 +164,10 @@ func (p Plan) Validate(resolved bool) error {
 	if len(p.Specification.Applications) > 20 {
 		return errors.New("a visual unit supports at most twenty services")
 	}
-	if len(p.Images) != 0 && len(p.Images) != len(p.Specification.Applications) {
+	if len(p.Images) != 0 && len(p.Images) != len(p.LocalApplications()) {
 		return errors.New("incomplete image resolution")
 	}
-	for _, a := range p.Specification.Applications {
+	for _, a := range p.LocalApplications() {
 		if a.Source.Kind != "image" || a.Source.Image == nil {
 			return errors.New("Git sources require the Git build workflow; select an image")
 		}
@@ -263,6 +290,20 @@ func Compose(p Plan, secrets map[string]string, export bool) ([]byte, error) {
 	return ComposeAt(p, secrets, export, ".")
 }
 func ComposeAt(p Plan, secrets map[string]string, export bool, root string) ([]byte, error) {
+	return composeAt(p, secrets, export, root, nil)
+}
+
+// ComposeApplications compares selected services without hydrating credentials
+// belonging only to other applications in the previous immutable plan.
+func ComposeApplications(p Plan, secrets map[string]string, ids []uuid.UUID) ([]byte, error) {
+	selected := map[uuid.UUID]bool{}
+	for _, id := range ids {
+		selected[id] = true
+	}
+	return composeAt(p, secrets, false, ".", selected)
+}
+
+func composeAt(p Plan, secrets map[string]string, export bool, root string, selected map[uuid.UUID]bool) ([]byte, error) {
 	if err := p.Validate(true); err != nil {
 		return nil, err
 	}
@@ -305,9 +346,15 @@ func ComposeAt(p Plan, secrets map[string]string, export bool, root string) ([]b
 	}
 	services, volumes := map[string]any{}, map[string]any{}
 	for _, v := range p.Specification.Volumes {
+		if p.Local != nil && !p.Local.Primary {
+			continue
+		}
 		volumes[VolumeName(v.ID)] = map[string]any{"name": VolumeName(v.ID), "external": true}
 	}
-	for _, a := range p.Specification.Applications {
+	for _, a := range p.LocalApplications() {
+		if selected != nil && !selected[a.ID] {
+			continue
+		}
 		env := map[string]string{}
 		if err := vars(p.Specification.Variables, env); err != nil {
 			return nil, err
@@ -330,11 +377,12 @@ func ComposeAt(p Plan, secrets map[string]string, export bool, root string) ([]b
 			}
 			source := apps[b.SourceID]
 			output, _ := domain.BindingOutput(source, b.Output)
+			host, port := p.OutputEndpoint(source.ID, output.Port)
 			switch output.Type {
 			case "address":
-				env[b.Variable] = p.HostName(source.ID)
+				env[b.Variable] = host
 			case "port":
-				env[b.Variable] = strconv.Itoa(output.Port)
+				env[b.Variable] = strconv.Itoa(port)
 			case "variable":
 				variable, _ := domain.OutputVariable(p.Specification, source, output.Variable)
 				variable.Name = b.Variable
@@ -342,7 +390,7 @@ func ComposeAt(p Plan, secrets map[string]string, export bool, root string) ([]b
 					return nil, err
 				}
 			case "url":
-				u := url.URL{Scheme: output.Scheme, Host: p.HostName(source.ID) + ":" + strconv.Itoa(output.Port), Path: output.Path}
+				u := url.URL{Scheme: output.Scheme, Host: host + ":" + strconv.Itoa(port), Path: output.Path}
 				if source.Postgres != nil && output.Name == "URL" {
 					pass, e := value(source.Postgres.PasswordSecretVersionID)
 					if e != nil {
@@ -361,6 +409,14 @@ func ComposeAt(p Plan, secrets map[string]string, export bool, root string) ([]b
 		}
 		labels := map[string]string{"com.astilba.server": p.ServerID.String(), "com.astilba.environment": p.EnvironmentID.String(), "com.astilba.unit": p.UnitID.String(), "com.astilba.resource": a.ID.String(), "com.astilba.kind": "visual-v1", "com.astilba.plan": p.Hash}
 		service := map[string]any{"image": p.Images[a.ID.String()], "container_name": p.ContainerName(a.ID), "restart": "unless-stopped", "environment": env, "labels": labels, "networks": map[string]any{"unit": map[string]any{"aliases": []string{p.HostName(a.ID)}}}, "logging": map[string]any{"driver": "json-file", "options": map[string]string{"max-size": "10m", "max-file": "3"}}}
+		if p.Local != nil {
+			if limits, ok := p.Local.Requests[a.ID.String()]; ok {
+				service["cpus"] = float64(limits.CPUMillis) / 1000
+				service["mem_limit"] = int64(limits.MemoryMiB) << 20
+				service["memswap_limit"] = int64(limits.MemoryMiB) << 20
+				service["pids_limit"] = 512
+			}
+		}
 		if p.Preview != nil {
 			l := p.Preview.Limits
 			service["cpus"] = l.CPUs
@@ -395,22 +451,38 @@ func ComposeAt(p Plan, secrets map[string]string, export bool, root string) ([]b
 		if len(domain.Dependencies(p.Specification, a)) > 0 {
 			deps := map[string]any{}
 			for _, id := range domain.Dependencies(p.Specification, a) {
+				if !p.Runs(id) {
+					continue
+				}
 				condition := "service_started"
 				if apps[id].Postgres != nil {
 					condition = "service_healthy"
 				}
 				deps[p.HostName(id)] = map[string]string{"condition": condition}
 			}
-			service["depends_on"] = deps
+			if len(deps) > 0 {
+				service["depends_on"] = deps
+			}
 		}
 		for _, instance := range p.InstanceIDs(a.ID) {
 			runtime := maps.Clone(service)
 			runtime["container_name"] = UnitName(instance)
 			runtime["networks"] = map[string]any{"unit": map[string]any{"aliases": []string{ServiceName(instance)}}}
-			if p.Recipe == ReplicaRecipe {
+			if p.Recipe == ReplicaRecipe || p.Recipe == CrossHostRecipe {
 				owned := maps.Clone(labels)
 				owned["com.astilba.instance"] = instance.String()
 				runtime["labels"] = owned
+			}
+			if p.Local != nil {
+				ports := []any{}
+				for _, endpoint := range p.Local.Network.Exports {
+					if endpoint.UnitID == p.UnitID && endpoint.InstanceID == instance && endpoint.ResourceID == a.ID {
+						ports = append(ports, map[string]any{"target": endpoint.ContainerPort, "published": strconv.Itoa(endpoint.Port), "host_ip": p.Local.Network.Address, "protocol": "tcp"})
+					}
+				}
+				if len(ports) > 0 {
+					runtime["ports"] = ports
+				}
 			}
 			services[ServiceName(instance)] = runtime
 		}
@@ -419,6 +491,7 @@ func ComposeAt(p Plan, secrets map[string]string, export bool, root string) ([]b
 }
 
 type Backend struct {
+	Endpoints   []PrivateEndpoint   `json:"endpoints,omitempty"`
 	InstanceIDs []uuid.UUID         `json:"instanceIds,omitempty"`
 	Health      *domain.HealthCheck `json:"health,omitempty"`
 	InstanceID  *uuid.UUID          `json:"instanceId,omitempty"`
@@ -454,7 +527,26 @@ func RouteConfig(sets map[string]RouteSet) ([]byte, error) {
 				return nil, errors.New("missing backend reference")
 			}
 			addresses := []string{}
-			if len(backend.InstanceIDs) > 0 {
+			if len(backend.Endpoints) > 0 {
+				if backend.Address != "" || backend.InstanceID != nil || len(backend.InstanceIDs) > 0 || len(backend.Endpoints) > domain.MaxReplicas || backend.Health != nil && !backend.Health.Valid() || len(backend.Endpoints) > 1 && (r.Protocol != "http" || backend.Health == nil) || r.Protocol != "http" && (len(backend.Endpoints) != 1 || backend.Health != nil) {
+					return nil, errors.New("invalid cross-host backend")
+				}
+				seen := map[uuid.UUID]bool{}
+				for _, endpoint := range backend.Endpoints {
+					if endpoint.InstanceID == uuid.Nil || endpoint.ServerID == uuid.Nil || endpoint.UnitID == uuid.Nil || endpoint.ResourceID != r.TargetID || endpoint.Port < 1 || endpoint.Port > 65535 || seen[endpoint.InstanceID] {
+						return nil, errors.New("invalid cross-host endpoint")
+					}
+					if ip, err := netip.ParseAddr(endpoint.Address); err == nil {
+						if !ip.Is4() || !ip.IsPrivate() || r.Protocol != "http" {
+							return nil, errors.New("invalid private endpoint address")
+						}
+					} else if endpoint.Address != ServiceName(endpoint.InstanceID) {
+						return nil, errors.New("invalid local endpoint address")
+					}
+					seen[endpoint.InstanceID] = true
+					addresses = append(addresses, endpointAddress(endpoint))
+				}
+			} else if len(backend.InstanceIDs) > 0 {
 				if backend.Address != "" || backend.InstanceID != nil || len(backend.InstanceIDs) > domain.MaxReplicas {
 					return nil, errors.New("invalid replica backend format")
 				}
@@ -489,8 +581,12 @@ func RouteConfig(sets map[string]RouteSet) ([]byte, error) {
 					servers = append(servers, map[string]string{"url": "http://" + address})
 				}
 				balancer := map[string]any{"servers": servers}
-				if len(addresses) > 1 {
-					balancer["healthCheck"] = map[string]any{"scheme": "http", "path": backend.Health.Path, "port": backend.Health.Port, "interval": "5s", "timeout": "2s"}
+				if backend.Health != nil && (len(addresses) > 1 || len(backend.Endpoints) > 0) {
+					check := map[string]any{"scheme": "http", "path": backend.Health.Path, "interval": "5s", "timeout": "2s"}
+					if len(backend.Endpoints) == 0 {
+						check["port"] = backend.Health.Port
+					}
+					balancer["healthCheck"] = check
 				}
 				hs[name] = map[string]any{"loadBalancer": balancer}
 				router := map[string]any{"rule": "Host(`" + r.Domain + "`)", "service": name, "entryPoints": []string{"web"}}

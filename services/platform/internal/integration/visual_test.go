@@ -118,6 +118,14 @@ func TestVisualPlanAdmissionAndPortability(t *testing.T) {
 	}
 	// Admission reserves PostgreSQL initialization even if an initial deployment is cancelled.
 	report(command, deployment.Observation{ObservedAt: time.Now(), Resources: []deployment.Resource{}, StateHash: strings.Repeat("a", 64)}, "cancelled")
+	var inspection api.Operation
+	b.call("POST", path+"/runtime/refresh", nil, 201, &inspection)
+	inspectionCommand := poll(inspection.Id)
+	var inspectionPayload deployment.Payload
+	if json.Unmarshal(*inspectionCommand.Visual, &inspectionPayload) != nil || inspectionPayload.Action != "observe" || inspectionPayload.Plan.ID != ready.ID {
+		t.Fatal("runtime inspection lost the unsuccessful first deployment plan")
+	}
+	report(inspectionCommand, deployment.Observation{ObservedAt: time.Now(), Resources: []deployment.Resource{}, StateHash: strings.Repeat("a", 64)}, "succeeded")
 	spec.Applications[1].Postgres.Username = "different"
 	b.call("PUT", path+"/draft", map[string]any{"baseRevisionId": draft.Id, "specification": spec}, 200, &draft)
 	b.call("POST", path+"/deployment-plans", api.VisualPlanRequest{ServerId: enrolled.Server.Id, BaseRevisionId: draft.Id, AllowHostChanges: true}, 400, nil)

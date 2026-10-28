@@ -48,34 +48,35 @@ func (j *Journal) schedule(id uuid.UUID) (scheduleState, error) {
 	return v, err
 }
 func (j *Journal) saveSchedule(v scheduleState) error {
+	return j.db.Update(func(tx *bolt.Tx) error { return j.putSchedule(tx, v) })
+}
+func (j *Journal) putSchedule(tx *bolt.Tx, v scheduleState) error {
 	if err := trimRunHistory(&v, 128); err != nil {
 		return err
 	}
-	return j.db.Update(func(tx *bolt.Tx) error {
-		id := v.Installation.Policy.ID.String()
-		old, err := j.scheduleIn(tx, id)
-		if err != nil && !errors.Is(err, os.ErrNotExist) {
+	id := v.Installation.Policy.ID.String()
+	old, err := j.scheduleIn(tx, id)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	v.Sequence = old.Sequence + 1
+	if v.Installation.Policy.GeneralSchedule() || v.Installation.Policy.Coordinated {
+		if err = j.put(tx, "schedules-v2", id, v); err != nil {
 			return err
 		}
-		v.Sequence = old.Sequence + 1
-		if v.Installation.Policy.GeneralSchedule() {
-			if err = j.put(tx, "schedules-v2", id, v); err != nil {
-				return err
-			}
-			// Old binaries must retain uncertainty/writer fences, but cannot execute
-			// an advanced cadence. Their newer local mutations supersede this mirror.
-			mirror := v
-			mirror.Installation.Policy.Enabled = false
-			mirror.Installation.Policy.Schedule = backup.Schedule{Timezone: "UTC"}
-			mirror.Installation.Policy.TimeoutSeconds = 0
-			mirror.Installation.Next = time.Time{}
-			return j.put(tx, "schedules", id, mirror)
-		}
-		if err = j.put(tx, "schedules", id, v); err != nil {
-			return err
-		}
-		return tx.Bucket([]byte("schedules-v2")).Delete([]byte(id))
-	})
+		// Old binaries retain uncertainty/writer fences without executing the
+		// advanced cadence. Newer legacy mutations still supersede this mirror.
+		mirror := v
+		mirror.Installation.Policy.Enabled = false
+		mirror.Installation.Policy.Schedule = backup.Schedule{Timezone: "UTC"}
+		mirror.Installation.Policy.TimeoutSeconds = 0
+		mirror.Installation.Next = time.Time{}
+		return j.put(tx, "schedules", id, mirror)
+	}
+	if err = j.put(tx, "schedules", id, v); err != nil {
+		return err
+	}
+	return tx.Bucket([]byte("schedules-v2")).Delete([]byte(id))
 }
 func (j *Journal) eachSchedule(tx *bolt.Tx, visit func(string, scheduleState) error) error {
 	seen := map[string]bool{}
@@ -218,7 +219,15 @@ func (e *Engine) executeBackup(ctx context.Context, c api.ExecutionCommand, r Re
 			err = errors.New("install current policy first")
 			break
 		}
-		err = e.runScheduled(ctx, &s, time.Now().UTC(), b.RunID, b.Snapshot, b.TargetID)
+		at := time.Now().UTC()
+		if b.ScheduledAt != nil {
+			if b.Action != "backup" || !b.Installation.Policy.Coordinated || b.RunID != backup.RunID(b.Installation.Policy, *b.ScheduledAt) || b.ScheduledAt.After(at) {
+				err = errors.New("invalid coordinated schedule occurrence")
+				break
+			}
+			at = b.ScheduledAt.UTC()
+		}
+		err = e.runScheduled(ctx, &s, at, b.RunID, b.Snapshot, b.TargetID)
 	default:
 		err = errors.New("unsupported backup action")
 	}
@@ -248,6 +257,16 @@ func (e *Engine) TickSchedules(ctx context.Context) error { return e.tickSchedul
 func (e *Engine) tickSchedules(ctx context.Context, clock func() time.Time) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if held, err := e.Journal.recoveryHeld(); err != nil {
+		return err
+	} else if held {
+		return nil
+	}
+	if blocked, err := e.Journal.hasCrossHostBarrier(); err != nil {
+		return err
+	} else if blocked {
+		return nil
+	}
 	upgrades, err := e.Journal.upgrades()
 	if err != nil {
 		return err
@@ -301,6 +320,18 @@ func (e *Engine) tickSchedules(ctx context.Context, clock func() time.Time) erro
 	for _, s := range states {
 		now := clock().UTC()
 		p := s.Installation.Policy
+		if p.Coordinated {
+			continue
+		}
+		if p.RequiresQuiescence() {
+			active, err := e.Journal.unit(p.Plan.UnitID)
+			if err != nil {
+				return err
+			}
+			if active.Plan.Specification.HasRemotePlacement() {
+				continue
+			}
+		}
 		if !p.Enabled || hasUncertainRun(s.Runs) || s.Installation.Next.IsZero() || now.Before(s.Installation.Next) {
 			continue
 		}
@@ -350,6 +381,7 @@ func (e *Engine) runScheduled(ctx context.Context, s *scheduleState, at time.Tim
 	if err := e.Journal.saveSchedule(*s); err != nil {
 		return err
 	}
+	e.point("backup-run-recorded")
 	index := len(s.Runs) - 1
 	timeout := s.Installation.Policy.RunTimeout()
 	if snapshot != "" {
@@ -423,9 +455,21 @@ func (e *Engine) runScheduled(ctx context.Context, s *scheduleState, at time.Tim
 func (e *Engine) ResolveScheduledRun(ctx context.Context, policy, run uuid.UUID) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if err := e.Journal.RequireUnreservedHost(); err != nil {
+		return err
+	}
 	s, err := e.Journal.schedule(policy)
 	if err != nil {
 		return err
+	}
+	if s.Installation.Policy.RequiresQuiescence() {
+		active, err := e.Journal.unit(s.Installation.Policy.Plan.UnitID)
+		if err != nil {
+			return err
+		}
+		if active.Plan.Specification.HasRemotePlacement() {
+			return errors.New("distributed writer recovery requires coordinated maintenance")
+		}
 	}
 	if err = e.resumeBackupWriters(ctx, &s); err != nil {
 		return err

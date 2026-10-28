@@ -5,6 +5,7 @@
 package db
 
 import (
+	"net/netip"
 	"time"
 
 	"github.com/google/uuid"
@@ -79,6 +80,15 @@ type AutomationCredential struct {
 	RevokedAt     *time.Time `json:"revoked_at"`
 }
 
+type BackupCutover struct {
+	WorkspaceID   uuid.UUID `json:"workspace_id"`
+	EnvironmentID uuid.UUID `json:"environment_id"`
+	RevisionID    uuid.UUID `json:"revision_id"`
+	PolicyID      uuid.UUID `json:"policy_id"`
+	SourcePlanID  uuid.UUID `json:"source_plan_id"`
+	Configuration []byte    `json:"configuration"`
+}
+
 type BackupDestination struct {
 	ID              uuid.UUID `json:"id"`
 	WorkspaceID     uuid.UUID `json:"workspace_id"`
@@ -87,14 +97,15 @@ type BackupDestination struct {
 }
 
 type BackupPolicy struct {
-	ID              uuid.UUID `json:"id"`
-	WorkspaceID     uuid.UUID `json:"workspace_id"`
-	EnvironmentID   uuid.UUID `json:"environment_id"`
-	ServerID        uuid.UUID `json:"server_id"`
-	Configuration   []byte    `json:"configuration"`
-	EncryptedAccess []byte    `json:"encrypted_access"`
-	Status          []byte    `json:"status"`
-	StatusSequence  int64     `json:"status_sequence"`
+	ID                   uuid.UUID `json:"id"`
+	WorkspaceID          uuid.UUID `json:"workspace_id"`
+	EnvironmentID        uuid.UUID `json:"environment_id"`
+	ServerID             uuid.UUID `json:"server_id"`
+	Configuration        []byte    `json:"configuration"`
+	EncryptedAccess      []byte    `json:"encrypted_access"`
+	Status               []byte    `json:"status"`
+	StatusSequence       int64     `json:"status_sequence"`
+	CoordinatedCheckedAt time.Time `json:"coordinated_checked_at"`
 }
 
 type BuildArtifact struct {
@@ -125,12 +136,89 @@ type BuildTarget struct {
 	AutomaticRequestedCommit string    `json:"automatic_requested_commit"`
 }
 
+type CrossHostApproval struct {
+	WorkspaceID   uuid.UUID `json:"workspace_id"`
+	RequestKey    uuid.UUID `json:"request_key"`
+	ParentID      uuid.UUID `json:"parent_id"`
+	UpgradeID     uuid.UUID `json:"upgrade_id"`
+	Action        string    `json:"action"`
+	ExpectedPhase string    `json:"expected_phase"`
+}
+
+type CrossHostCheckpoint struct {
+	ID           uuid.UUID `json:"id"`
+	WorkspaceID  uuid.UUID `json:"workspace_id"`
+	ParentID     uuid.UUID `json:"parent_id"`
+	Sequence     int64     `json:"sequence"`
+	Descriptor   []byte    `json:"descriptor"`
+	Envelope     []byte    `json:"envelope"`
+	Phase        string    `json:"phase"`
+	Acknowledged bool      `json:"acknowledged"`
+}
+
+type CrossHostOperation struct {
+	ID            uuid.UUID `json:"id"`
+	WorkspaceID   uuid.UUID `json:"workspace_id"`
+	EnvironmentID uuid.UUID `json:"environment_id"`
+	PlanID        uuid.UUID `json:"plan_id"`
+	Phase         string    `json:"phase"`
+	Receipts      []byte    `json:"receipts"`
+}
+
+type CrossHostRecovery struct {
+	ParentID    uuid.UUID `json:"parent_id"`
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	Opened      bool      `json:"opened"`
+	SourceHash  string    `json:"source_hash"`
+	InputHash   string    `json:"input_hash"`
+	OwnerID     uuid.UUID `json:"owner_id"`
+}
+
+type CrossHostRecoveryRow struct {
+	WorkspaceID    uuid.UUID `json:"workspace_id"`
+	TableName      string    `json:"table_name"`
+	SourceHash     string    `json:"source_hash"`
+	AttributedHash string    `json:"attributed_hash"`
+}
+
+type CrossHostRecoveryServer struct {
+	ParentID             uuid.UUID `json:"parent_id"`
+	WorkspaceID          uuid.UUID `json:"workspace_id"`
+	ServerID             uuid.UUID `json:"server_id"`
+	MachineID            uuid.UUID `json:"machine_id"`
+	ControllerGeneration int64     `json:"controller_generation"`
+	Inventory            []byte    `json:"inventory"`
+	Handover             []byte    `json:"handover"`
+	Verified             bool      `json:"verified"`
+}
+
+type CrossHostReservation struct {
+	ServerID    uuid.UUID `json:"server_id"`
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ParentID    uuid.UUID `json:"parent_id"`
+	CpuMillis   int64     `json:"cpu_millis"`
+	MemoryMib   int64     `json:"memory_mib"`
+}
+
+type CrossHostRuntime struct {
+	WorkspaceID   uuid.UUID `json:"workspace_id"`
+	EnvironmentID uuid.UUID `json:"environment_id"`
+	UnitID        uuid.UUID `json:"unit_id"`
+	ServerID      uuid.UUID `json:"server_id"`
+	PlanID        uuid.UUID `json:"plan_id"`
+	Inventory     []byte    `json:"inventory"`
+	ObservedAt    time.Time `json:"observed_at"`
+	CpuMillis     int64     `json:"cpu_millis"`
+	MemoryMib     int64     `json:"memory_mib"`
+}
+
 type DeploymentUnit struct {
 	WorkspaceID   uuid.UUID  `json:"workspace_id"`
 	ID            uuid.UUID  `json:"id"`
 	EnvironmentID uuid.UUID  `json:"environment_id"`
 	Runtime       string     `json:"runtime"`
 	ServerID      *uuid.UUID `json:"server_id"`
+	PrimaryUnit   bool       `json:"primary_unit"`
 }
 
 type DnsInstallation struct {
@@ -183,6 +271,7 @@ type ExecutionOperation struct {
 	CreatedAt       time.Time   `json:"created_at"`
 	VisualPlanID    *uuid.UUID  `json:"visual_plan_id"`
 	AlertObserved   bool        `json:"alert_observed"`
+	ParentID        *uuid.UUID  `json:"parent_id"`
 }
 
 type ExecutionPlan struct {
@@ -334,6 +423,66 @@ type Membership struct {
 	WorkspaceID uuid.UUID `json:"workspace_id"`
 	AccountID   uuid.UUID `json:"account_id"`
 	Role        string    `json:"role"`
+}
+
+type NetworkEndpoint struct {
+	ID            uuid.UUID  `json:"id"`
+	WorkspaceID   uuid.UUID  `json:"workspace_id"`
+	EnvironmentID uuid.UUID  `json:"environment_id"`
+	ServerID      uuid.UUID  `json:"server_id"`
+	UnitID        uuid.UUID  `json:"unit_id"`
+	ResourceID    uuid.UUID  `json:"resource_id"`
+	InstanceID    uuid.UUID  `json:"instance_id"`
+	ListenPort    int32      `json:"listen_port"`
+	ContainerPort int32      `json:"container_port"`
+	Retired       bool       `json:"retired"`
+	PlanID        *uuid.UUID `json:"plan_id"`
+}
+
+type NetworkEndpointSource struct {
+	WorkspaceID uuid.UUID  `json:"workspace_id"`
+	EndpointID  uuid.UUID  `json:"endpoint_id"`
+	ServerID    uuid.UUID  `json:"server_id"`
+	UnitID      uuid.UUID  `json:"unit_id"`
+	Active      bool       `json:"active"`
+	Ingress     bool       `json:"ingress"`
+	PlanID      *uuid.UUID `json:"plan_id"`
+}
+
+type NetworkMember struct {
+	WorkspaceID            uuid.UUID  `json:"workspace_id"`
+	NetworkID              uuid.UUID  `json:"network_id"`
+	ServerID               uuid.UUID  `json:"server_id"`
+	MembershipID           uuid.UUID  `json:"membership_id"`
+	Address                netip.Addr `json:"address"`
+	Endpoint               string     `json:"endpoint"`
+	ListenPort             int32      `json:"listen_port"`
+	CpuMillis              int32      `json:"cpu_millis"`
+	MemoryMib              int32      `json:"memory_mib"`
+	UnboundedInventoryHash string     `json:"unbounded_inventory_hash"`
+	PublicKey              string     `json:"public_key"`
+	Enabled                bool       `json:"enabled"`
+	ApprovedController     int64      `json:"approved_controller"`
+	Generation             int64      `json:"generation"`
+	AcknowledgedGeneration int64      `json:"acknowledged_generation"`
+	ManifestHash           string     `json:"manifest_hash"`
+	InstalledManifest      []byte     `json:"installed_manifest"`
+	Note                   string     `json:"note"`
+}
+
+type NetworkPlanEndpoint struct {
+	PlanID      uuid.UUID `json:"plan_id"`
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	EndpointID  uuid.UUID `json:"endpoint_id"`
+}
+
+type NetworkPlanSource struct {
+	PlanID      uuid.UUID `json:"plan_id"`
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	EndpointID  uuid.UUID `json:"endpoint_id"`
+	ServerID    uuid.UUID `json:"server_id"`
+	UnitID      uuid.UUID `json:"unit_id"`
+	Ingress     bool      `json:"ingress"`
 }
 
 type OperationalAlert struct {
@@ -583,4 +732,12 @@ type Workspace struct {
 	RequireMfa     bool      `json:"require_mfa"`
 	CreatedAt      time.Time `json:"created_at"`
 	AlertScannedAt time.Time `json:"alert_scanned_at"`
+}
+
+type WorkspaceNetwork struct {
+	ID          uuid.UUID    `json:"id"`
+	WorkspaceID uuid.UUID    `json:"workspace_id"`
+	Prefix      netip.Prefix `json:"prefix"`
+	Generation  int64        `json:"generation"`
+	CheckedAt   time.Time    `json:"checked_at"`
 }

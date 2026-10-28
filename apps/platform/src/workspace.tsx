@@ -17,6 +17,7 @@ import { Textarea } from "./components/textarea";
 import { AutomationCredentials } from "./features/automation";
 import { Backups } from "./features/backups";
 import { ComposeEditor } from "./features/compose-editor";
+import { CrossHostPlacement } from "./features/cross-host-placement";
 import { Deployments } from "./features/deployments";
 import { IntegrationSettings } from "./features/integrations";
 import { Pipelines } from "./features/pipelines";
@@ -467,6 +468,16 @@ function DraftEditor({
           stage={(spec) => setDraft(JSON.stringify(spec, null, 2))}
         />
       )}
+      {write &&
+        !base.specification.compose &&
+        (!environment.purpose || environment.purpose === "standard") &&
+        !rawChanged && (
+          <PlacementWorkspace
+            path={path}
+            spec={JSON.parse(draft) as Schema["Specification"]}
+            change={(spec) => setDraft(JSON.stringify(spec, null, 2))}
+          />
+        )}
       {environment.purpose !== "preview_template" && (
         <Deployments
           loadRevision={(next) => {
@@ -658,5 +669,34 @@ function Secrets({ workspaceId, projectId, environment, write }: EnvProps) {
         </Form>
       )}
     </section>
+  );
+}
+
+function PlacementWorkspace({
+  path,
+  spec,
+  change,
+}: {
+  path: { workspaceId: string };
+  spec: Schema["Specification"];
+  change: (spec: Schema["Specification"]) => void;
+}) {
+  const servers = useQuery({
+    queryKey: ["servers", path.workspaceId],
+    queryFn: () =>
+      result(
+        client.GET("/api/v1/workspaces/{workspaceId}/servers", {
+          params: { path: { workspaceId: path.workspaceId } },
+        }),
+      ),
+    refetchInterval: 15000,
+  });
+  return (
+    <CrossHostPlacement
+      workspaceId={path.workspaceId}
+      servers={servers.data ?? []}
+      spec={spec}
+      change={change}
+    />
   );
 }
