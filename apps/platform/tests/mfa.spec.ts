@@ -302,7 +302,7 @@ test("two-factor sign-in separates authenticator and recovery modes and preserve
     .getByRole("menuitemradio", { name: "Pseudo (RTL)", exact: true })
     .click();
   await expect(page.locator("html")).toHaveAttribute("dir", "rtl");
-  const translatedGroup = page.getByRole("group");
+  const translatedGroup = page.getByRole("group", { name: /^⟦/ });
   const translatedSlots = translatedGroup.getByRole("textbox");
   await expect(translatedGroup).toHaveCSS("direction", "ltr");
   await expect(translatedSlots.nth(5)).toHaveAccessibleName(/^⟦/);
