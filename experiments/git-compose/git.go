@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 )
 
 const maxFileBytes = 1 << 20
@@ -231,6 +232,29 @@ func (r *Repository) Publish(ctx context.Context, draft Draft, branch string) (P
 	if current != r.base {
 		return result, ErrConflict
 	}
-	result.Review, err = r.provider.openReview(ctx, r.name, r.branch, branch)
-	return result, err
+	// GitLab can reject a newly pushed source branch while its branch cache
+	// catches up. Only this create-validation failure proves no review exists.
+	reviewCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	for {
+		result.Review, err = r.provider.openReview(reviewCtx, r.name, r.branch, branch)
+		var rejected *apiError
+		if !errors.As(err, &rejected) || !rejected.sourceBranchMissing {
+			return result, err
+		}
+		select {
+		case <-reviewCtx.Done():
+			return result, reviewCtx.Err()
+		case <-time.After(250 * time.Millisecond):
+		}
+		for expectedBranch, expectedCommit := range map[string]string{r.branch: r.base, branch: draft.commit} {
+			current, err = r.remoteHead(reviewCtx, expectedBranch)
+			if err != nil {
+				return result, err
+			}
+			if current != expectedCommit {
+				return result, ErrConflict
+			}
+		}
+	}
 }
