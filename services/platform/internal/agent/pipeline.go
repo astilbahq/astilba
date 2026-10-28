@@ -603,6 +603,10 @@ func (e *Engine) executePipeline(ctx context.Context, c api.ExecutionCommand, r 
 		}
 	}
 	if e.cancelled(c.Id) || ctx.Err() != nil {
+		raw, _ := json.Marshal(pipeline.Result{Logs: result.Logs})
+		if err := e.Journal.Mutate(c.Id, func(record *Record) { message := json.RawMessage(raw); record.Report.Pipeline = &message }); err != nil {
+			return err
+		}
 		return e.finishPipeline(c, "cancelled", "Build/source assignment was cancelled or expired; no artifact is eligible for deployment.")
 	}
 	if err != nil {
