@@ -403,11 +403,11 @@ export const ReloadConfirmation: Story = {
     await userEvent.click(
       canvas.getByRole("button", { name: "Reload current" }),
     );
-    await expect(
-      await within(canvasElement.ownerDocument.body).findByRole("alertdialog", {
-        name: "Discard unsaved configuration?",
-      }),
-    ).toBeVisible();
+    const dialog = await within(canvasElement.ownerDocument.body).findByRole(
+      "alertdialog",
+      { name: "Discard unsaved configuration?" },
+    );
+    await waitFor(() => expect(dialog).toBeVisible());
   },
 };
 export const ReloadFailure: Story = {
