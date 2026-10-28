@@ -143,6 +143,84 @@ export const settings = css({ display: "grid", gap: "6" });
 export const revisions = css({
   display: "grid",
   gap: "4",
-  "& > div": { display: "grid", gap: "2", justifyItems: "start" },
+  "& > div": {
+    display: "flex",
+    flexWrap: "wrap",
+    alignItems: "center",
+    gap: "3",
+    justifyContent: "space-between",
+    paddingBlock: "3",
+    borderBlockEndWidth: "1px",
+    borderBlockEndStyle: "solid",
+    borderBlockEndColor: "separator",
+  },
   "& time": { color: "subtle", fontSize: "secondary" },
+});
+
+export const configurationHeader = css({
+  display: "flex",
+  flexWrap: "wrap",
+  alignItems: "start",
+  justifyContent: "space-between",
+  gap: "4",
+});
+export const configurationActions = css({
+  display: "flex",
+  flexWrap: "wrap",
+  gap: "2",
+});
+export const configurationNotice = css({
+  padding: "3",
+  backgroundColor: "action.ghostHover",
+  borderRadius: "control",
+  overflowWrap: "anywhere",
+});
+export const comparison = css({
+  display: "grid",
+  gap: "4",
+  minInlineSize: "0",
+  marginBlockStart: "5",
+  borderBlockStartWidth: "1px",
+  borderBlockStartStyle: "solid",
+  borderBlockStartColor: "separator",
+  paddingBlockStart: "5",
+});
+export const comparisonHeading = css({
+  fontSize: "md",
+  fontWeight: "semibold",
+  outline: "none",
+});
+export const comparisonColumns = css({
+  display: "grid",
+  gap: "4",
+  gridTemplateColumns: {
+    base: "minmax(0, 1fr)",
+    lg: "repeat(2, minmax(0, 1fr))",
+  },
+});
+export const comparisonCode = css({
+  fontFamily: "mono",
+  fontSize: "secondary",
+  lineHeight: "editor",
+  whiteSpace: "pre-wrap",
+  overflowWrap: "anywhere",
+  blockSize: "editor",
+  overflow: "auto",
+  padding: "4",
+  borderRadius: "control",
+  backgroundColor: "action.ghostHover",
+  _focusVisible: {
+    outlineWidth: "2px",
+    outlineStyle: "solid",
+    outlineColor: "control.interactiveBorder",
+    outlineOffset: "0",
+  },
+});
+export const fieldError = css({ color: "error", fontSize: "secondary" });
+
+export const configurationHeading = css({
+  fontSize: "lg",
+  fontWeight: "semibold",
+  lineHeight: "heading",
+  outline: "none",
 });

@@ -8,6 +8,8 @@ import {
   ReactFlow,
 } from "@xyflow/react";
 import { useContext, useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
+import { cx } from "../../styled-system/css";
 import { client, result, type Schema } from "../api/client";
 import type { EnvironmentPath } from "../api/environment";
 import { Button } from "../components/button";
@@ -23,6 +25,7 @@ import { ErrorNotice, Field, Form, text, useAction } from "../ui";
 import { GeneratedDomain } from "./generated-domain";
 import { ServiceCatalog } from "./service-catalog";
 import { OutputEditor, ServiceConnections } from "./service-outputs";
+import * as v from "./visual-editor.styles";
 import "@xyflow/react/dist/style.css";
 
 export type { EnvironmentPath } from "../api/environment";
@@ -52,6 +55,7 @@ export function VisualEditor({
   onSelectService?: (name: string) => void;
 }) {
   const { theme } = useContext(ThemeContext);
+  const { t } = useTranslation("environment");
   const configure = write && !spec.compose;
   const [selected, setSelected] = useState<string>();
   const [view, setView] = useState<"canvas" | "list">("canvas");
@@ -174,12 +178,18 @@ export function VisualEditor({
     if (moved) setPositions(next);
   };
   return (
-    <section className={s.stack} aria-label="Visual configuration">
-      <div className={s.spread}>
-        <h3>Services and connections</h3>
-        <div className={s.row}>
+    <section
+      className={cx(s.stack, v.workspace)}
+      aria-label="Visual configuration"
+    >
+      <div className={v.header}>
+        <h3 className={v.heading}>Services and connections</h3>
+        <div role="group" aria-label="Configuration view" className={v.views}>
           <Button
             type="button"
+            variant="ghost"
+            size="sm"
+            className={v.view}
             aria-pressed={view === "canvas"}
             onClick={() => setView("canvas")}
           >
@@ -187,6 +197,9 @@ export function VisualEditor({
           </Button>
           <Button
             type="button"
+            variant="ghost"
+            size="sm"
+            className={v.view}
             aria-pressed={view === "list"}
             onClick={() => setView("list")}
           >
@@ -238,6 +251,7 @@ export function VisualEditor({
             nodesConnectable={configure}
             deleteKeyCode={null}
             fitView
+            fitViewOptions={{ maxZoom: 1 }}
             colorMode={theme}
             ariaLabelConfig={{
               "node.a11yDescription.default":
@@ -245,7 +259,7 @@ export function VisualEditor({
             }}
           >
             <Background />
-            <Controls showInteractive={false} />
+            <Controls showInteractive={false} fitViewOptions={{ maxZoom: 1 }} />
           </ReactFlow>
         </div>
       ) : (
@@ -268,39 +282,47 @@ export function VisualEditor({
         </ul>
       )}
       {write && (
-        <Button
-          type="button"
-          disabled={!layoutDirty || dirty || action.isPending}
-          onClick={() =>
-            action.run(async () => {
-              const submitted = positions ?? {};
-              await result(
-                client.PUT(
-                  "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/layout",
-                  {
-                    params: { path },
-                    body: {
-                      positions: Object.fromEntries(
-                        Object.entries(submitted).filter(([id]) =>
-                          [
-                            ...spec.applications,
-                            ...(spec.volumes ?? []),
-                            ...(spec.routes ?? []),
-                            ...(spec.networks ?? []),
-                          ].some((resource) => resource.id === id),
+        <div className={v.layout}>
+          <Button
+            type="button"
+            size="sm"
+            disabled={!layoutDirty || dirty || action.isPending}
+            onClick={() =>
+              action.run(async () => {
+                const submitted = positions ?? {};
+                await result(
+                  client.PUT(
+                    "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/layout",
+                    {
+                      params: { path },
+                      body: {
+                        positions: Object.fromEntries(
+                          Object.entries(submitted).filter(([id]) =>
+                            [
+                              ...spec.applications,
+                              ...(spec.volumes ?? []),
+                              ...(spec.routes ?? []),
+                              ...(spec.networks ?? []),
+                            ].some((resource) => resource.id === id),
+                          ),
                         ),
-                      ),
+                      },
                     },
-                  },
-                ),
-              );
-              setSavedPositions(JSON.stringify(submitted));
-              setNotice("Layout saved. Running services were not changed.");
-            })
-          }
-        >
-          Save canvas layout
-        </Button>
+                  ),
+                );
+                setSavedPositions(JSON.stringify(submitted));
+                setNotice("Layout saved. Running services were not changed.");
+              })
+            }
+          >
+            Save canvas layout
+          </Button>
+          <span className={s.muted}>
+            {layoutDirty
+              ? t(($) => $.configurationEditor.layoutUnsaved)
+              : t(($) => $.configurationEditor.layoutSeparate)}
+          </span>
+        </div>
       )}
       {dirty && layoutDirty && (
         <small>
@@ -317,7 +339,7 @@ export function VisualEditor({
         />
       )}
       {configure && (
-        <details>
+        <details className={s.workspaceUtility}>
           <summary>Add a service</summary>
           <Form
             action={action}
@@ -709,7 +731,7 @@ export function VisualEditor({
                 spec={spec}
                 stage={stage}
               />
-              <details>
+              <details className={s.workspaceUtility}>
                 <summary>Variables</summary>
                 <ul className={s.list}>
                   {app.variables?.map((v) => (
@@ -772,7 +794,7 @@ export function VisualEditor({
                 </Form>
               </details>
               {app.kind !== "postgres" && (
-                <details>
+                <details className={s.workspaceUtility}>
                   <summary>Storage and readiness</summary>
                   <ul>
                     {app.mounts?.map((m) => (
@@ -831,7 +853,7 @@ export function VisualEditor({
                   </Form>
                 </details>
               )}
-              <details>
+              <details className={s.workspaceUtility}>
                 <summary>Readiness dependencies</summary>
                 <Form
                   key={`${app.id}-dependencies-${app.dependsOn?.join()}`}
@@ -926,7 +948,7 @@ export function VisualEditor({
         ))}
       </ul>
       {configure && (
-        <details>
+        <details className={s.workspaceUtility}>
           <summary>Add a data volume</summary>
           <Form
             action={action}
@@ -964,7 +986,7 @@ function RouteEditor({
   const [edit, setEdit] = useState<string>();
   const route = spec.routes?.find((r) => r.id === edit);
   return (
-    <details>
+    <details className={s.workspaceUtility}>
       <summary>HTTP and TCP routes</summary>
       <ul className={s.list}>
         {spec.routes?.map((r) => (
@@ -1100,7 +1122,7 @@ function RouteEditor({
               defaultValue={route?.allowCidrs.join("\n") ?? ""}
             />
           </Label>
-          <details>
+          <details className={s.workspaceUtility}>
             <summary>Advanced HTTP settings</summary>
             <Label>
               Strip path prefix

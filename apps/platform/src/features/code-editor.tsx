@@ -43,7 +43,10 @@ export function CodeEditor({
           ),
           EditorState.readOnly.of(readOnly),
           EditorView.editable.of(!readOnly),
-          EditorView.contentAttributes.of({ "aria-label": label }),
+          EditorView.contentAttributes.of({
+            "aria-label": label,
+            ...(readOnly ? { tabindex: "0" } : {}),
+          }),
           appearance.current.of(
             EditorView.theme({}, { dark: latest.current.theme === "dark" }),
           ),

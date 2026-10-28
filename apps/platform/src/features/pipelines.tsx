@@ -1,6 +1,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useId, useState } from "react";
 import { ApiError, client, result, type Schema } from "../api/client";
+import { publishDraft } from "../api/environment";
 import { Button } from "../components/button";
 import { Checkbox } from "../components/checkbox";
 import { Input } from "../components/input";
@@ -882,7 +883,7 @@ export function Pipelines({
                   (a) => a.id === text(d, "artifact"),
                 );
                 if (!artifact) throw new Error("Choose an artifact.");
-                await result(
+                const next = await result(
                   client.POST(`${root}/artifacts/{artifactId}/promote`, {
                     params: { path: { ...path, artifactId: artifact.id } },
                     body: {
@@ -892,6 +893,7 @@ export function Pipelines({
                     },
                   }),
                 );
+                await publishDraft(queries, path, next);
                 setNotice(
                   "Artifact promoted. Use Reload current, then review a deployment plan.",
                 );
@@ -1040,7 +1042,7 @@ export function Pipelines({
                       onSubmit={(d) =>
                         action.run(async () => {
                           if (!run.artifact) return;
-                          await result(
+                          const next = await result(
                             client.POST(
                               `${root}/artifacts/{artifactId}/promote`,
                               {
@@ -1058,6 +1060,7 @@ export function Pipelines({
                               },
                             ),
                           );
+                          await publishDraft(queries, path, next);
                           setNotice(
                             "Artifact promoted to the saved draft. Use Reload current, then review a deployment plan. Runtime variables and bindings are preserved.",
                           );

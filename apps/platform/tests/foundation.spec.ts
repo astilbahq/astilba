@@ -72,16 +72,7 @@ test("real API: create, conflict, secret, keyboard and reflow", async ({
     .getByRole("button", { name: "Save revision", exact: true })
     .click();
   expect(await rejected).toBe(400);
-  await page.getByRole("button", { name: "Compare revision" }).first().click();
-  await page
-    .getByRole("button", { name: "I have compared and merged my edits" })
-    .click();
   await editor.fill("{");
-  await openEnvironmentSection(page, "Configuration");
-  await page
-    .getByRole("button", { name: "Save revision", exact: true })
-    .click();
-  await expect(page.getByRole("alert")).toBeVisible();
   const settled = page.waitForResponse(
     (response) =>
       response.url().endsWith("/session") &&
@@ -89,6 +80,14 @@ test("real API: create, conflict, secret, keyboard and reflow", async ({
   );
   releaseResponse();
   await settled;
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  await page
+    .getByRole("button", { name: "Save revision", exact: true })
+    .click();
+  await expect(editor).toHaveAttribute("aria-invalid", "true");
+  await expect(editor).toHaveAccessibleDescription(
+    "Enter valid JSON before saving. Your edits have been kept.",
+  );
   await page.unroute(draftRoute);
   await editor.fill(saved);
   await expect(page.getByRole("alert")).toHaveCount(0);

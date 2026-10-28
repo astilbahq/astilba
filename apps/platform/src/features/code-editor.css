@@ -1,27 +1,33 @@
 .compose-code-editor {
-  border: 1px solid var(--colors-border);
-  border-radius: 6px;
+  border: 1px solid var(--colors-control-border);
+  border-radius: var(--radii-control);
   background: var(--colors-surface);
   color: var(--colors-fg);
   overflow: hidden;
 }
 .compose-code-editor .cm-scroller {
-  font:
-    13px / 1.6 ui-monospace,
-    monospace;
+  font: var(--font-sizes-secondary) / var(--line-heights-editor)
+    var(--fonts-mono);
   min-block-size: 180px;
   max-block-size: 500px;
   overflow: auto;
 }
 .compose-code-editor .cm-gutters {
-  background: var(--colors-page);
+  background: var(--colors-action-ghost-hover);
   color: var(--colors-subtle);
-  border-color: var(--colors-border);
+  border-color: var(--colors-control-border);
 }
 .compose-code-editor .cm-cursor {
-  border-left-color: var(--colors-fg);
+  border-inline-start-color: var(--colors-fg);
 }
 .compose-code-editor .cm-editor.cm-focused {
-  outline: 2px solid var(--colors-brand);
+  outline: 2px solid var(--colors-control-interactive-border);
   outline-offset: -2px;
+}
+
+.compose-code-editor .cm-content {
+  caret-color: var(--colors-fg);
+}
+.compose-code-editor .cm-scroller {
+  scrollbar-color: var(--colors-control-border) var(--colors-surface);
 }

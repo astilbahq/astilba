@@ -1,5 +1,5 @@
-import { queryOptions } from "@tanstack/react-query";
-import { client, result } from "./client";
+import { queryOptions, type QueryClient } from "@tanstack/react-query";
+import { client, result, type Schema } from "./client";
 
 export type EnvironmentPath = {
   workspaceId: string;
@@ -22,3 +22,15 @@ export const runtimeOptions = (path: EnvironmentPath) =>
       result(client.GET(`${root}/runtime`, { params: { path }, signal })),
     refetchInterval: 5000,
   });
+
+// Only current-draft reads and successful writes belong here, never history.
+export async function publishDraft(
+  queries: QueryClient,
+  path: EnvironmentPath,
+  revision: Schema["Revision"],
+) {
+  const { queryKey } = draftOptions(path);
+  // Await settlement too: an already-fulfilled read can still be committing.
+  await queries.cancelQueries({ queryKey, exact: true });
+  queries.setQueryData(queryKey, revision);
+}

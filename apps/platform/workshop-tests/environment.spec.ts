@@ -170,3 +170,64 @@ for (const state of ["viewer", "managed-preview"]) {
     ).toHaveCount(0);
   });
 }
+
+test("read-only Compose source supports sequential focus and keyboard scrolling", async ({
+  page,
+}) => {
+  await page.goto(
+    "/iframe.html?id=pages-environment-detail--read-only-compose&viewMode=story&globals=a11y.manual:!true",
+  );
+  const source = page.getByRole("textbox", {
+    name: "Source compose.yaml",
+    exact: true,
+  });
+  await expect(source).toBeVisible();
+  await page.getByRole("button", { name: "compose.yaml", exact: true }).focus();
+  await page.keyboard.press("Tab");
+  await expect(source).toBeFocused();
+  await expect(source).toHaveAttribute("contenteditable", "false");
+  await source.press("PageDown");
+  await expect
+    .poll(() =>
+      page
+        .locator(".compose-code-editor .cm-scroller")
+        .evaluate((element) => element.scrollTop),
+    )
+    .toBeGreaterThan(0);
+  const text = await source.textContent();
+  await source.press("x");
+  await expect(source).toHaveText(text!);
+  await source.press("Tab");
+  await expect(
+    page.getByText("Interpolation values", { exact: true }),
+  ).toBeFocused();
+});
+
+test("reload confirmation preserves focus, supports cancellation and keeps the draft", async ({
+  page,
+}) => {
+  await page.goto(
+    "/iframe.html?id=pages-environment-detail--reload-confirmation&viewMode=story&globals=a11y.manual:!true",
+  );
+  const dialog = page.getByRole("alertdialog", {
+    name: "Discard unsaved configuration?",
+  });
+  const keep = dialog.getByRole("button", { name: "Keep editing" });
+  await expect(keep).toBeFocused();
+  await keep.press("Enter");
+  await expect(dialog).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "Reload current", exact: true }),
+  ).toBeFocused();
+  await expect(page.getByLabel("Specification (JSON)")).toHaveValue(
+    /"development"/,
+  );
+  await page
+    .getByRole("button", { name: "Reload current", exact: true })
+    .click();
+  await dialog.getByRole("button", { name: "Discard and reload" }).click();
+  await expect(page.getByRole("status")).toHaveText("Current revision loaded.");
+  await expect(
+    page.getByRole("button", { name: "Save revision", exact: true }),
+  ).toBeDisabled();
+});
