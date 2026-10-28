@@ -102,7 +102,7 @@ func (s *Service) hydratePipeline(ctx context.Context, c *api.ExecutionCommand) 
 			return errors.New("repository identity changed")
 		}
 	}
-	if err = s.populatePipeline(ctx, tx, ws, &p); err != nil {
+	if err = s.populatePipeline(ctx, tx, ws, c.EnvironmentId, &p); err != nil {
 		return err
 	}
 	raw, err := json.Marshal(p)
@@ -112,7 +112,7 @@ func (s *Service) hydratePipeline(ctx context.Context, c *api.ExecutionCommand) 
 	c.Pipeline = rawMessage(raw)
 	return tx.Commit(ctx)
 }
-func (s *Service) populatePipeline(ctx context.Context, tx pgx.Tx, ws uuid.UUID, p *pipeline.Command) error {
+func (s *Service) populatePipeline(ctx context.Context, tx pgx.Tx, ws, env uuid.UUID, p *pipeline.Command) error {
 	access, err := s.gitAccess(ctx, tx, ws, p.Connection.ID, p.Action == "submit")
 	if err != nil {
 		return err
@@ -124,17 +124,9 @@ func (s *Service) populatePipeline(ctx context.Context, tx pgx.Tx, ws uuid.UUID,
 		p.Access.Clone = access.Clone
 	}
 	if p.Build != nil {
-		p.BuildSecrets = map[string]string{}
-		for name, id := range p.Build.Secrets {
-			var cipher []byte
-			if err = tx.QueryRow(ctx, "SELECT encrypted_value FROM build_secret_versions WHERE workspace_id=$1 AND id=$2", ws, id).Scan(&cipher); err != nil {
-				return err
-			}
-			plain, err := s.Store.Keys.Open(cipher, integrationIdentity(ws, id, "build-secret"))
-			if err != nil {
-				return err
-			}
-			p.BuildSecrets[name] = string(plain)
+		p.BuildSecrets, err = s.buildInputs(ctx, tx, ws, env, *p.Build)
+		if err != nil {
+			return err
 		}
 		if p.Registry != nil {
 			_, cipher, err := loadRegistry(ctx, tx, ws, p.Registry.ID)

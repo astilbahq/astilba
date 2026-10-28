@@ -53,6 +53,7 @@ func TestCrossHostCoordinatedPlacement(t *testing.T) {
 	var revokePrimary atomic.Bool
 	var holdCheckpoint atomic.Bool
 	var holdClosure atomic.Bool
+	var checkedInvalidObservation atomic.Bool
 	seen := sync.Map{}
 	unitPlans := sync.Map{}
 	for i := 0; i < 2; i++ {
@@ -204,6 +205,21 @@ func TestCrossHostCoordinatedPlacement(t *testing.T) {
 						}
 					}
 					receipt := deployment.CrossHostReceipt{ParentID: command.ParentID, GroupHash: command.GroupHash, UnitID: c.ResourceId, Phase: command.Phase, PlanHash: command.Unit.Plan.Hash, Observation: observation, CheckpointHash: checkpointHash}
+					if command.Phase == "observe" && len(observation.Resources) > 0 && checkedInvalidObservation.CompareAndSwap(false, true) {
+						invalid := receipt
+						invalid.Observation.Resources = append([]deployment.Resource(nil), observation.Resources...)
+						instance := deployment.InstanceState{InstanceID: uuid.New(), State: "running"}
+						invalid.Observation.Resources[0].Instances = []deployment.InstanceState{instance, instance}
+						data, _ := json.Marshal(invalid)
+						message := json.RawMessage(data)
+						badReport := report
+						badReport.Crosshost = &message
+						var invalidInput *domain.Error
+						if err := f.execution.Report(ctx, identity, badReport); !errors.As(err, &invalidInput) || invalidInput.Code != "invalid_input" {
+							t.Error("duplicate instances reached cross-host runtime inventory", err)
+							return
+						}
+					}
 					raw, _ := json.Marshal(receipt)
 					v := json.RawMessage(raw)
 					report.Crosshost = &v
@@ -513,6 +529,9 @@ func TestCrossHostCoordinatedPlacement(t *testing.T) {
 		b.call("GET", path+"/runtime", nil, 200, &runtime)
 		return runtime.ObservedAt.After(before) && len(runtime.Hosts) == 2 && runtime.Hosts[0].State == "snapshot" && runtime.Hosts[1].State == "snapshot"
 	})
+	if !checkedInvalidObservation.Load() {
+		t.Fatal("cross-host malformed observation boundary was not exercised")
+	}
 	if len(runtime.Resources) != 1 || len(runtime.Resources[0].Instances) != 2 || !strings.HasPrefix(runtime.Resources[0].Note, "2 of 2") {
 		t.Fatal("inspection collapsed the applied placement group")
 	}

@@ -69,7 +69,7 @@ func requiredPorts(spec domain.Specification) []int {
 }
 func (s *Service) CreateVisualPlan(ctx context.Context, p store.Principal, ws, pid, env uuid.UUID, in api.VisualPlanRequest) (deployment.Status, error) {
 	var out deployment.Status
-	err := s.scope(ctx, p, ws, true, in.AllowHostChanges, in.AllowHostChanges, "deployment.plan", env, func(tx pgx.Tx) error {
+	err := s.scope(ctx, p, ws, workspaceAccess{Write: true, Owner: in.AllowHostChanges, Recent: in.AllowHostChanges}, "deployment.plan", env, func(tx pgx.Tx) error {
 		var err error
 		out, err = s.createVisualPlan(ctx, tx, ws, pid, env, in)
 		return err
@@ -259,7 +259,7 @@ func (s *Service) insertVisual(ctx context.Context, tx pgx.Tx, ws, key uuid.UUID
 }
 func (s *Service) VisualPlan(ctx context.Context, p store.Principal, ws, pid, env, id uuid.UUID) (deployment.Status, error) {
 	var out deployment.Status
-	err := s.scope(ctx, p, ws, false, false, false, "", uuid.Nil, func(tx pgx.Tx) error {
+	err := s.scope(ctx, p, ws, workspaceAccess{}, "", uuid.Nil, func(tx pgx.Tx) error {
 		if _, err := loadVisualEnvironment(ctx, tx, ws, pid, env); err != nil {
 			return err
 		}
@@ -289,7 +289,7 @@ func readPlan(ctx context.Context, tx pgx.Tx, ws, env, id uuid.UUID) (deployment
 }
 func (s *Service) ApplyVisualPlan(ctx context.Context, p store.Principal, ws, pid, env, id, key uuid.UUID) (api.Operation, error) {
 	var out api.Operation
-	err := s.scope(ctx, p, ws, true, false, false, "deployment.apply", id, func(tx pgx.Tx) error {
+	err := s.scope(ctx, p, ws, workspaceAccess{Write: true}, "deployment.apply", id, func(tx pgx.Tx) error {
 		var role string
 		if err := tx.QueryRow(ctx, "SELECT role FROM memberships WHERE workspace_id=$1 AND account_id=$2", ws, p.Account.ID).Scan(&role); err != nil {
 			return err
@@ -447,7 +447,7 @@ func sameID(a, b *uuid.UUID) bool { return a == nil && b == nil || a != nil && b
 
 func (s *Service) Runtime(ctx context.Context, p store.Principal, ws, pid, env uuid.UUID) (deployment.Observation, error) {
 	out := deployment.Observation{Resources: []deployment.Resource{}}
-	err := s.scope(ctx, p, ws, false, false, false, "", uuid.Nil, func(tx pgx.Tx) error {
+	err := s.scope(ctx, p, ws, workspaceAccess{}, "", uuid.Nil, func(tx pgx.Tx) error {
 		if _, err := loadVisualEnvironment(ctx, tx, ws, pid, env); err != nil {
 			return err
 		}
@@ -498,7 +498,7 @@ func (s *Service) Runtime(ctx context.Context, p store.Principal, ws, pid, env u
 }
 func (s *Service) ObserveVisual(ctx context.Context, p store.Principal, ws, pid, env uuid.UUID, volume *uuid.UUID) (api.Operation, error) {
 	var out api.Operation
-	err := s.scope(ctx, p, ws, true, volume != nil, volume != nil, "deployment.observe", env, func(tx pgx.Tx) error {
+	err := s.scope(ctx, p, ws, workspaceAccess{Write: true, Owner: volume != nil, Recent: volume != nil}, "deployment.observe", env, func(tx pgx.Tx) error {
 		v, err := loadVisualEnvironment(ctx, tx, ws, pid, env)
 		if err != nil {
 			return err
@@ -657,8 +657,11 @@ func (s *Service) visualReport(ctx context.Context, tx pgx.Tx, c api.ExecutionCo
 	}
 	var payload deployment.Payload
 	var observed deployment.Observation
-	if json.Unmarshal(*c.Visual, &payload) != nil || json.Unmarshal(*r.Observation, &observed) != nil || len(observed.Resources) > 40 || observed.OmittedResources < 0 || len(*r.Observation) > deployment.ObservationLimit {
+	if json.Unmarshal(*c.Visual, &payload) != nil || json.Unmarshal(*r.Observation, &observed) != nil || len(*r.Observation) > deployment.ObservationLimit {
 		return domain.Invalid("observation")
+	}
+	if err := observed.Validate(time.Now()); err != nil {
+		return err
 	}
 	plan := payload.Plan
 	if plan.ServerID != c.ServerId || plan.EnvironmentID != c.EnvironmentId || payload.Digest() != c.PlanHash {
@@ -690,18 +693,11 @@ func (s *Service) visualReport(ctx context.Context, tx pgx.Tx, c api.ExecutionCo
 		return err
 	}
 	seen := map[uuid.UUID]bool{}
-	for _, v := range observed.Resources {
-		if !allowed[v.ID] || seen[v.ID] || len(v.Logs) > 2048 || len(v.Note) > 256 || len(v.Image) > 512 || len(v.Instances) > domain.MaxReplicas {
+	for _, resource := range observed.Resources {
+		if !allowed[resource.ID] {
 			return domain.Invalid("observation.resources")
 		}
-		members := map[uuid.UUID]bool{}
-		for _, instance := range v.Instances {
-			if instance.InstanceID == uuid.Nil || members[instance.InstanceID] || len(instance.State) > 30 {
-				return domain.Invalid("observation.instances")
-			}
-			members[instance.InstanceID] = true
-		}
-		seen[v.ID] = true
+		seen[resource.ID] = true
 	}
 	if payload.Action == "resolve" && r.State == "succeeded" {
 		plan.Images = observed.Images
@@ -730,9 +726,6 @@ func (s *Service) visualReport(ctx context.Context, tx pgx.Tx, c api.ExecutionCo
 		return err
 	}
 
-	if observed.ObservedAt.IsZero() || observed.ObservedAt.After(time.Now().Add(time.Minute)) {
-		return domain.Invalid("observedAt")
-	}
 	var previous *uuid.UUID
 	err = tx.QueryRow(ctx, "SELECT plan_id FROM visual_runtime WHERE workspace_id=$1 AND environment_id=$2", ws, c.EnvironmentId).Scan(&previous)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"strings"
 	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
@@ -89,7 +88,7 @@ func (s *Service) insertPipeline(ctx context.Context, tx pgx.Tx, ws, env, key, s
 		return out, domain.Invalid("pipeline")
 	}
 	hydrated := p
-	if err := s.populatePipeline(ctx, tx, ws, &hydrated); err != nil {
+	if err := s.populatePipeline(ctx, tx, ws, env, &hydrated); err != nil {
 		return out, err
 	}
 	var count int
@@ -153,7 +152,7 @@ func existingBuild(ctx context.Context, tx pgx.Tx, ws, pid, env, app, key uuid.U
 
 func (s *Service) GitSource(ctx context.Context, p store.Principal, ws, pid, env uuid.UUID) (map[string]any, error) {
 	out := map[string]any{}
-	err := s.scope(ctx, p, ws, false, false, false, "", uuid.Nil, func(tx pgx.Tx) error {
+	err := s.scope(ctx, p, ws, workspaceAccess{}, "", uuid.Nil, func(tx pgx.Tx) error {
 		v, err := loadVisualEnvironment(ctx, tx, ws, pid, env)
 		if err != nil {
 			return err
@@ -186,7 +185,7 @@ func (s *Service) BindSource(ctx context.Context, p store.Principal, ws, pid, en
 	if err := c.Validate(); err != nil {
 		return out, domain.Invalid("source")
 	}
-	err := s.scope(ctx, p, ws, true, true, true, "git.source.bind", env, func(tx pgx.Tx) error {
+	err := s.scope(ctx, p, ws, workspaceAccess{Write: true, Owner: true, Recent: true}, "git.source.bind", env, func(tx pgx.Tx) error {
 		v, err := loadVisualEnvironment(ctx, tx, ws, pid, env)
 		if err != nil {
 			return err
@@ -219,7 +218,7 @@ func (s *Service) BindSource(ctx context.Context, p store.Principal, ws, pid, en
 }
 func (s *Service) RefreshSource(ctx context.Context, p store.Principal, ws, pid, env, base uuid.UUID, discard bool) (api.Operation, error) {
 	var out api.Operation
-	err := s.scope(ctx, p, ws, true, false, false, "git.source.refresh", env, func(tx pgx.Tx) error {
+	err := s.scope(ctx, p, ws, workspaceAccess{Write: true}, "git.source.refresh", env, func(tx pgx.Tx) error {
 		v, err := loadVisualEnvironment(ctx, tx, ws, pid, env)
 		if err != nil {
 			return err
@@ -273,7 +272,7 @@ func (s *Service) RefreshSource(ctx context.Context, p store.Principal, ws, pid,
 }
 func (s *Service) SubmitSource(ctx context.Context, p store.Principal, ws, pid, env, base, key uuid.UUID) (api.Operation, error) {
 	var out api.Operation
-	err := s.scope(ctx, p, ws, true, false, false, "git.source.submit", base, func(tx pgx.Tx) error {
+	err := s.scope(ctx, p, ws, workspaceAccess{Write: true}, "git.source.submit", base, func(tx pgx.Tx) error {
 		v, err := loadVisualEnvironment(ctx, tx, ws, pid, env)
 		if err != nil {
 			return err
@@ -368,7 +367,7 @@ func (s *Service) CreateBuild(ctx context.Context, p store.Principal, ws, pid, e
 		}
 		return out, domain.Invalid("build")
 	}
-	err := s.scope(ctx, p, ws, true, c.AutoDeploy, c.AutoDeploy, "build.create", app, func(tx pgx.Tx) error {
+	err := s.scope(ctx, p, ws, workspaceAccess{Write: true, Owner: c.AutoDeploy, Recent: c.AutoDeploy}, "build.create", app, func(tx pgx.Tx) error {
 		var err error
 		out, err = s.admitBuild(ctx, tx, p, ws, pid, env, base, app, key, c, true)
 		return err
@@ -416,36 +415,11 @@ func (s *Service) admitBuild(ctx context.Context, tx pgx.Tx, p store.Principal, 
 		}
 		registry = &r
 	}
-	total := 0
-	for _, id := range c.Secrets {
-		var cipher []byte
-		if err = tx.QueryRow(ctx, "SELECT encrypted_value FROM build_secret_versions WHERE workspace_id=$1 AND id=$2", ws, id).Scan(&cipher); err != nil {
-			return api.Operation{}, domain.Invalid("build.secrets")
-		}
-		plain, err := s.Store.Keys.Open(cipher, integrationIdentity(ws, id, "build-secret"))
-		if err != nil {
-			return api.Operation{}, err
-		}
-		total += len(plain)
-		for _, v := range c.Arguments {
-			if len(plain) > 0 && strings.Contains(v, string(plain)) {
-				return api.Operation{}, domain.Invalid("build.argumentsContainSecret")
-			}
-		}
-	}
-	argumentFiles := []composeproject.File{}
-	for _, value := range c.Arguments {
-		argumentFiles = append(argumentFiles, composeproject.File{Content: value})
-	}
-	if len(c.Arguments) > 0 {
-		if err = s.rejectRuntimeSecrets(ctx, tx, ws, env, composeproject.Bundle{Files: argumentFiles}); err != nil {
-			return api.Operation{}, err
-		}
-	}
-	if total > 32768 {
-		return api.Operation{}, domain.Invalid("build.secrets")
-	}
 	hash := buildInputHash(connection, commit, c)
+	out, err := s.insertPipeline(ctx, tx, ws, env, key, server, pipeline.Command{Action: "build", Connection: connection, Commit: commit, Branch: c.Branch, RevisionID: base, UnitID: v.Unit, AppID: app, Build: &c, InputHash: hash, Registry: registry, SubmittedAt: time.Now().UTC()})
+	if err != nil {
+		return out, err
+	}
 	if persist {
 		raw, _ := json.Marshal(c)
 		_, err = tx.Exec(ctx, "INSERT INTO build_targets(workspace_id,environment_id,application_id,connection_id,configuration,input_hash,requested_commit,automatic_requested_commit,policy_actor) VALUES($1,$2,$3,$4,$5,$6,$7,$7,$8) ON CONFLICT(workspace_id,environment_id,application_id) DO UPDATE SET connection_id=EXCLUDED.connection_id,configuration=EXCLUDED.configuration,input_hash=EXCLUDED.input_hash,requested_commit=EXCLUDED.requested_commit,automatic_requested_commit=EXCLUDED.automatic_requested_commit,policy_actor=EXCLUDED.policy_actor", ws, env, app, c.ConnectionID, raw, hash, commit, p.Account.ID)
@@ -455,8 +429,7 @@ func (s *Service) admitBuild(ctx context.Context, tx pgx.Tx, p store.Principal, 
 	if err != nil {
 		return api.Operation{}, err
 	}
-	out, err := s.insertPipeline(ctx, tx, ws, env, key, server, pipeline.Command{Action: "build", Connection: connection, Commit: commit, Branch: c.Branch, RevisionID: base, UnitID: v.Unit, AppID: app, Build: &c, InputHash: hash, Registry: registry, SubmittedAt: time.Now().UTC()})
-	return out, err
+	return out, nil
 }
 func buildInputHash(c pipeline.Connection, commit string, b pipeline.BuildConfig) string {
 	// Scheduling and deployment policy do not change the built artifact.
@@ -484,7 +457,7 @@ func buildInputHash(c pipeline.Connection, commit string, b pipeline.BuildConfig
 }
 func (s *Service) PipelineRuns(ctx context.Context, p store.Principal, ws, pid, env uuid.UUID) ([]map[string]any, error) {
 	out := []map[string]any{}
-	err := s.scope(ctx, p, ws, false, false, false, "", uuid.Nil, func(tx pgx.Tx) error {
+	err := s.scope(ctx, p, ws, workspaceAccess{}, "", uuid.Nil, func(tx pgx.Tx) error {
 		if _, err := loadVisualEnvironment(ctx, tx, ws, pid, env); err != nil {
 			return err
 		}
@@ -535,7 +508,7 @@ func (s *Service) PipelineRuns(ctx context.Context, p store.Principal, ws, pid, 
 }
 
 func (s *Service) SourcePolicy(ctx context.Context, p store.Principal, ws, pid, env uuid.UUID, enabled bool) error {
-	return s.scope(ctx, p, ws, true, true, enabled, "git.source.policy", env, func(tx pgx.Tx) error {
+	return s.scope(ctx, p, ws, workspaceAccess{Write: true, Owner: true, Recent: enabled}, "git.source.policy", env, func(tx pgx.Tx) error {
 		if _, err := loadVisualEnvironment(ctx, tx, ws, pid, env); err != nil {
 			return err
 		}

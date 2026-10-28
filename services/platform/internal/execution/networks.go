@@ -81,7 +81,7 @@ func readNetwork(ctx context.Context, tx pgx.Tx, ws uuid.UUID) (managedNetwork, 
 }
 func (s *Service) ManagedNetwork(ctx context.Context, p store.Principal, ws uuid.UUID) (managedNetwork, error) {
 	var n managedNetwork
-	err := s.scope(ctx, p, ws, false, false, false, "", uuid.Nil, func(tx pgx.Tx) error { var e error; n, e = readNetwork(ctx, tx, ws); return e })
+	err := s.scope(ctx, p, ws, workspaceAccess{}, "", uuid.Nil, func(tx pgx.Tx) error { var e error; n, e = readNetwork(ctx, tx, ws); return e })
 	return n, err
 }
 func (s *Service) ConfigureManagedNetwork(ctx context.Context, p store.Principal, ws uuid.UUID, in api.ConfigureManagedNetwork) (managedNetwork, error) {
@@ -90,7 +90,7 @@ func (s *Service) ConfigureManagedNetwork(ctx context.Context, p store.Principal
 	if err != nil || len(in.Members) > hostnetwork.MaxMembers {
 		return out, domain.Invalid("network")
 	}
-	err = s.scope(ctx, p, ws, true, true, true, "network.configure", ws, func(tx pgx.Tx) error {
+	err = s.scope(ctx, p, ws, workspaceAccess{Write: true, Owner: true, Recent: true}, "network.configure", ws, func(tx pgx.Tx) error {
 		old, e := readNetwork(ctx, tx, ws)
 		if e != nil {
 			return e

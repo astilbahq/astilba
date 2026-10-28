@@ -7,6 +7,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"time"
 
+	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -180,6 +181,7 @@ func (w *refreshWorker) Work(ctx context.Context, job *river.Job[refreshArgs]) e
 	if err != nil {
 		return err
 	}
+	var admissionErr error
 	for _, v := range targets {
 		if v.commit == head {
 			continue
@@ -228,22 +230,41 @@ func (w *refreshWorker) Work(ctx context.Context, job *river.Job[refreshArgs]) e
 			return err
 		}
 		hash := buildInputHash(connection, head, cfg)
-		if _, err = tx.Exec(ctx, "UPDATE build_targets SET input_hash=$4,requested_commit=$5,automatic_requested_commit=$5 WHERE workspace_id=$1 AND environment_id=$2 AND application_id=$3", a.Workspace, v.env, v.app, hash, head); err != nil {
+		// A rejected target must not roll back admissions for other environments.
+		target, err := tx.Begin(ctx)
+		if err != nil {
 			return err
 		}
-		_, err = w.service.insertPipeline(ctx, tx, a.Workspace, v.env, uuid.New(), runner, pipeline.Command{Action: "build", Connection: connection, CompareCommit: compare, Commit: head, Branch: a.Branch, RevisionID: v.base, UnitID: env.Unit, AppID: v.app, Build: &cfg, InputHash: hash, Registry: registry, SubmittedAt: time.Now().UTC()})
+		_, err = w.service.insertPipeline(ctx, target, a.Workspace, v.env, uuid.New(), runner, pipeline.Command{Action: "build", Connection: connection, CompareCommit: compare, Commit: head, Branch: a.Branch, RevisionID: v.base, UnitID: env.Unit, AppID: v.app, Build: &cfg, InputHash: hash, Registry: registry, SubmittedAt: time.Now().UTC()})
 		if err != nil {
+			if rollbackErr := target.Rollback(ctx); rollbackErr != nil {
+				return rollbackErr
+			}
+			var invalid *domain.Error
+			if errors.As(err, &invalid) && invalid.Code == "invalid_input" {
+				admissionErr = err
+				continue
+			}
+			return err
+		}
+		if _, err = target.Exec(ctx, "UPDATE build_targets SET input_hash=$4,requested_commit=$5,automatic_requested_commit=$5 WHERE workspace_id=$1 AND environment_id=$2 AND application_id=$3", a.Workspace, v.env, v.app, hash, head); err != nil {
+			return err
+		}
+		if err = target.Commit(ctx); err != nil {
 			return err
 		}
 		capacity--
 	}
-	if !waiting {
+	if !waiting && admissionErr == nil {
 		if _, err = river.JobCompleteTx[*riverpgxv5.Driver](ctx, tx, job); err != nil {
 			return err
 		}
 	}
 	if err = tx.Commit(ctx); err != nil {
 		return err
+	}
+	if admissionErr != nil {
+		return admissionErr
 	}
 	if waiting {
 		return river.JobSnooze(5 * time.Second)

@@ -60,7 +60,7 @@ func (s *Service) Metrics(ctx context.Context, p store.Principal, ws, id uuid.UU
 	if hours != 1 && hours != 6 && hours != 24 {
 		return out, domain.Invalid("hours")
 	}
-	err := s.scope(ctx, p, ws, false, false, false, "", uuid.Nil, func(tx pgx.Tx) error {
+	err := s.scope(ctx, p, ws, workspaceAccess{}, "", uuid.Nil, func(tx pgx.Tx) error {
 		var owned bool
 		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM servers WHERE workspace_id=$1 AND id=$2)`, ws, id).Scan(&owned); err != nil {
 			return err

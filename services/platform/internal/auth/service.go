@@ -45,9 +45,6 @@ func (s *Service) Limit(ctx context.Context, scope string, max int32, window tim
 }
 func (s *Service) Login(ctx context.Context, email, password, ip string) (db.Account, error) {
 	var zero db.Account
-	if err := s.Limit(ctx, "password:global", 1000, 15*time.Minute); err != nil {
-		return zero, err
-	}
 	if err := s.Limit(ctx, "password:ip:"+ip, 50, 15*time.Minute); err != nil {
 		return zero, err
 	}
@@ -56,6 +53,9 @@ func (s *Service) Login(ctx context.Context, email, password, ip string) (db.Acc
 		return zero, domain.Credentials
 	}
 	if err := s.Limit(ctx, "password:account:"+email, 5, 15*time.Minute); err != nil {
+		return zero, err
+	}
+	if err := s.Limit(ctx, "password:global", 1000, 15*time.Minute); err != nil {
 		return zero, err
 	}
 	account, err := s.Store.Queries.AccountByEmail(ctx, email)

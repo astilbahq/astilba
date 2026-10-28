@@ -27,7 +27,7 @@ func (s *Service) ExportLogs(ctx context.Context, p store.Principal, ws, pid, en
 		return out, domain.Invalid("hours")
 	}
 	out.WindowStart = now.Add(-time.Duration(hours) * time.Hour)
-	err := s.scope(ctx, p, ws, false, false, false, "", uuid.Nil, func(tx pgx.Tx) error {
+	err := s.scope(ctx, p, ws, workspaceAccess{}, "", uuid.Nil, func(tx pgx.Tx) error {
 		if _, err := loadVisualEnvironment(ctx, tx, ws, pid, env); err != nil {
 			return err
 		}

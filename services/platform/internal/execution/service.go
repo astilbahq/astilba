@@ -64,7 +64,12 @@ func Hash(v any) string                            { b, _ := json.Marshal(v); re
 func Terminal(s api.ExecutionState) bool {
 	return s == "succeeded" || s == "failed" || s == "cancelled"
 }
-func (s *Service) scope(ctx context.Context, p store.Principal, ws uuid.UUID, write, owner, recent bool, action string, id uuid.UUID, fn func(pgx.Tx) error) error {
+
+type workspaceAccess struct {
+	Write, Owner, Recent, Recovery bool
+}
+
+func (s *Service) scope(ctx context.Context, p store.Principal, ws uuid.UUID, access workspaceAccess, action string, id uuid.UUID, fn func(pgx.Tx) error) error {
 	fnScope := func(tx pgx.Tx, q *db.Queries, _ store.Workspace) error {
 		if err := fn(tx); err != nil {
 			return err
@@ -74,10 +79,10 @@ func (s *Service) scope(ctx context.Context, p store.Principal, ws uuid.UUID, wr
 		}
 		return nil
 	}
-	if action == "operation.cancel" || action == "server.revoke" || action == "upgrade.recover" || action == "backup.recover" || action == "workspace.transfer" || action == "preview.cleanup" {
-		return s.Store.InWorkspaceRecovery(ctx, p, ws, owner, recent, fnScope)
+	if access.Recovery {
+		return s.Store.InWorkspaceRecovery(ctx, p, ws, access.Owner, access.Recent, fnScope)
 	}
-	return s.Store.InWorkspaceTx(ctx, p, ws, write, owner, recent, fnScope)
+	return s.Store.InWorkspaceTx(ctx, p, ws, access.Write, access.Owner, access.Recent, fnScope)
 }
 func serverScan(row pgx.Row) (api.Server, error) {
 	var v api.Server
@@ -114,7 +119,7 @@ const serverColumns = "id,name,role,last_seen,capabilities,preflight,revoked,rot
 
 func (s *Service) Servers(ctx context.Context, p store.Principal, ws uuid.UUID) ([]api.Server, error) {
 	out := []api.Server{}
-	err := s.scope(ctx, p, ws, false, false, false, "", uuid.Nil, func(tx pgx.Tx) error {
+	err := s.scope(ctx, p, ws, workspaceAccess{}, "", uuid.Nil, func(tx pgx.Tx) error {
 		rows, err := tx.Query(ctx, "SELECT "+serverColumns+" FROM servers WHERE workspace_id=$1 ORDER BY name,id LIMIT 100", ws)
 		if err != nil {
 			return err
@@ -148,7 +153,7 @@ func (s *Service) CreateServer(ctx context.Context, p store.Principal, ws uuid.U
 		return out, err
 	}
 	id := uuid.New()
-	err = s.scope(ctx, p, ws, true, true, true, "server.create", id, func(tx pgx.Tx) error {
+	err = s.scope(ctx, p, ws, workspaceAccess{Write: true, Owner: true, Recent: true}, "server.create", id, func(tx pgx.Tx) error {
 		var count int
 		if e := tx.QueryRow(ctx, "SELECT count(*) FROM servers WHERE workspace_id=$1", ws).Scan(&count); e != nil {
 			return e
@@ -175,7 +180,7 @@ func (s *Service) RenewEnrollment(ctx context.Context, p store.Principal, ws, id
 	if err != nil {
 		return out, err
 	}
-	err = s.scope(ctx, p, ws, true, true, true, "server.enrollment", id, func(tx pgx.Tx) error {
+	err = s.scope(ctx, p, ws, workspaceAccess{Write: true, Owner: true, Recent: true}, "server.enrollment", id, func(tx pgx.Tx) error {
 		if e := s.Store.ManagedServerAdmission(ctx, tx, ws, id); e != nil {
 			return e
 		}
@@ -193,7 +198,7 @@ func (s *Service) Control(ctx context.Context, p store.Principal, ws, id uuid.UU
 	if revoke {
 		action = "server.revoke"
 	}
-	return s.scope(ctx, p, ws, true, true, true, action, id, func(tx pgx.Tx) error {
+	return s.scope(ctx, p, ws, workspaceAccess{Write: true, Owner: true, Recent: true, Recovery: revoke}, action, id, func(tx pgx.Tx) error {
 		if revoke {
 			if e := invalidateNetworkMember(ctx, tx, ws, id); e != nil {
 				return e
