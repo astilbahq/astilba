@@ -1,5 +1,6 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
+import { openEnvironmentSection } from "./environment-section";
 import { managedDatabase } from "./fixtures/managed-database";
 
 test("protected release review and rollback draft remain separate from deployment", async ({
@@ -124,6 +125,7 @@ test("protected release review and rollback draft remain separate from deploymen
   await page.goto(
     `/?workspace=${f.ws}&project=${f.project.id}&environment=${f.env.id}`,
   );
+  await openEnvironmentSection(page, "Deployments");
   const region = page.getByRole("region", {
     name: "Deployment review and runtime",
   });

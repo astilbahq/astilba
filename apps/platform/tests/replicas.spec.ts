@@ -1,6 +1,7 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
 import type { Schema } from "../src/api/client";
+import { openEnvironmentSection } from "./environment-section";
 import { managedDatabase } from "./fixtures/managed-database";
 
 test("replica staging retains failed and conflicting drafts and reviews a complete group", async ({
@@ -118,6 +119,7 @@ test("replica staging retains failed and conflicting drafts and reviews a comple
   await page.goto(
     `/?workspace=${f.ws}&project=${f.project.id}&environment=${f.env.id}`,
   );
+  await openEnvironmentSection(page, "Configuration");
   await page.getByRole("button", { name: "Service list", exact: true }).click();
   await page.getByRole("button", { name: "Web", exact: true }).click();
   const properties = page.getByRole("region", { name: "Properties for Web" });
@@ -165,6 +167,7 @@ test("replica staging retains failed and conflicting drafts and reviews a comple
       .replicas,
   ).toBe(3);
 
+  await openEnvironmentSection(page, "Deployments");
   const runtime = page.getByRole("region", {
     name: "Deployment review and runtime",
   });
@@ -203,14 +206,16 @@ test("replica staging retains failed and conflicting drafts and reviews a comple
   expect(
     await page.evaluate(() => document.documentElement.scrollWidth),
   ).toBeLessThanOrEqual(390);
-  expect(
-    (
-      await new AxeBuilder({ page })
-        .include('section[aria-label="Properties for Web"]')
-        .include('section[aria-label="Deployment review and runtime"]')
-        .analyze()
-    ).violations,
-  ).toEqual([]);
+  for (const [section, selector] of [
+    ["Deployments", 'section[aria-label="Deployment review and runtime"]'],
+    ["Configuration", 'section[aria-label="Properties for Web"]'],
+  ] as const) {
+    await openEnvironmentSection(page, section);
+    await expect(page.locator(selector)).toBeVisible();
+    expect(
+      (await new AxeBuilder({ page }).include(selector).analyze()).violations,
+    ).toEqual([]);
+  }
   await properties.screenshot({
     path: `../../.artifacts/plat34/screenshots/mobile-${info.project.name}.png`,
   });

@@ -1,6 +1,7 @@
 import { createHmac } from "node:crypto";
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
+import { openEnvironmentSection } from "./environment-section";
 
 test("repository setup, Git service, queued build and cancellation use the real API", async ({
   page,
@@ -84,6 +85,7 @@ test("repository setup, Git service, queued build and cancellation use the real 
   await page
     .getByRole("button", { name: "Create environment", exact: true })
     .click();
+  await openEnvironmentSection(page, "Deployments");
   await page
     .getByText("Repository, registry and build secret settings", {
       exact: true,
@@ -150,6 +152,7 @@ test("repository setup, Git service, queued build and cancellation use the real 
   await expect(page.getByLabel("Webhook secret", { exact: true })).toHaveCount(
     0,
   );
+  await openEnvironmentSection(page, "Deployments");
   await page.getByText("Add a service from Git", { exact: true }).click();
   const add = page.getByRole("form", { name: "Add Git service" });
   await add.getByLabel("Service name", { exact: true }).fill("web");
@@ -163,12 +166,14 @@ test("repository setup, Git service, queued build and cancellation use the real 
   await add
     .getByRole("button", { name: "Stage Git service", exact: true })
     .click();
+  await openEnvironmentSection(page, "Configuration");
   await page
     .getByRole("button", { name: "Save revision", exact: true })
     .click();
   await expect(
     page.getByText("Revision saved.", { exact: true }),
   ).toBeVisible();
+  await openEnvironmentSection(page, "Deployments");
   await page.getByText("Build a service", { exact: true }).click();
   const build = page.getByRole("form", { name: "Build a service" });
   await build.getByLabel("Branch", { exact: true }).fill("main");
@@ -433,9 +438,11 @@ test("repository setup, Git service, queued build and cancellation use the real 
   await expect(
     page.getByText(/Artifact promoted to the saved draft/),
   ).toBeVisible();
+  await openEnvironmentSection(page, "Configuration");
   await page
     .getByRole("button", { name: "Reload current", exact: true })
     .click();
+  await openEnvironmentSection(page, "Configuration");
   await page.getByRole("button", { name: "Service list", exact: true }).click();
   await page.getByRole("button", { name: "web", exact: true }).click();
   const properties = page.getByRole("form", {
@@ -445,6 +452,7 @@ test("repository setup, Git service, queued build and cancellation use the real 
   await properties
     .getByRole("button", { name: "Stage service changes", exact: true })
     .click();
+  await openEnvironmentSection(page, "Configuration");
   await page
     .getByRole("button", { name: "Save revision", exact: true })
     .click();

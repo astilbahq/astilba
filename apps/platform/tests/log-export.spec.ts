@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
+import { openEnvironmentSection } from "./environment-section";
 
 test("download log snapshots with an explicit window and empty result", async ({
   page,
@@ -28,6 +29,7 @@ test("download log snapshots with an explicit window and empty result", async ({
   await page
     .getByRole("button", { name: "Create environment", exact: true })
     .click();
+  await openEnvironmentSection(page, "Deployments");
   const section = page.getByRole("region", { name: "Log export" });
   await section.getByLabel("Log export window").selectOption("6");
   await section.getByRole("button", { name: "Download logs" }).focus();

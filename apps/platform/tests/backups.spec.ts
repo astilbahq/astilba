@@ -1,5 +1,6 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
+import { openEnvironmentSection } from "./environment-section";
 import { managedDatabase } from "./fixtures/managed-database";
 
 test("general schedule settings retain invalid drafts and save cron and interval generations", async ({
@@ -20,6 +21,7 @@ test("general schedule settings retain invalid drafts and save cron and interval
   await page.goto(
     `/?workspace=${ws}&project=${project.id}&environment=${env.id}`,
   );
+  await openEnvironmentSection(page, "Deployments");
   await page
     .getByText("Create backup policy or container job", { exact: true })
     .click();
@@ -222,6 +224,7 @@ test("general schedule settings retain invalid drafts and save cron and interval
     ).status(),
   ).toBe(204);
   await page.reload();
+  await openEnvironmentSection(page, "Deployments");
   const legacyPanel = page.getByRole("region", {
     name: "Policy Legacy browser timezone",
     exact: true,
@@ -250,6 +253,7 @@ test("backup setup, restore verification and separate cutover use the real API",
   await page.goto(
     `/?workspace=${ws}&project=${project.id}&environment=${env.id}`,
   );
+  await openEnvironmentSection(page, "Deployments");
   await page
     .getByText("Add a reusable backup destination", { exact: true })
     .click();
@@ -263,6 +267,7 @@ test("backup setup, restore verification and separate cutover use the real API",
   await dest
     .getByRole("button", { name: "Add destination", exact: true })
     .click();
+  await openEnvironmentSection(page, "Deployments");
   await page
     .getByText("Create backup policy or container job", { exact: true })
     .click();
@@ -424,13 +429,16 @@ test("backup setup, restore verification and separate cutover use the real API",
   });
   await panel.getByRole("button", { name: "Prepare cutover draft" }).click();
   await ready;
+  await openEnvironmentSection(page, "Configuration");
   await page.getByText("Advanced specification", { exact: true }).click();
   const editor = page.getByRole("textbox", { name: "Specification (JSON)" });
   const edited = JSON.parse(await editor.inputValue());
   edited.applications[0].name = "Edit made while cutover was pending";
   await editor.fill(JSON.stringify(edited, null, 2));
   releaseResponse();
+  await openEnvironmentSection(page, "Deployments");
   await expect(panel.getByText(/Your newer edits were retained/)).toBeVisible();
+  await openEnvironmentSection(page, "Configuration");
   await expect(editor).toHaveValue(/Edit made while cutover was pending/);
   const next = await (await page.request.get(`${path}/draft`)).json();
   expect(next.specification.applications[0].mounts[0].volumeId).toBe(targetId);

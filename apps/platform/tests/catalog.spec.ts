@@ -1,5 +1,6 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
+import { openEnvironmentSection } from "./environment-section";
 import { managedDatabase } from "./fixtures/managed-database";
 
 test("catalog and named connections stage a private revision with secret references", async ({
@@ -14,6 +15,7 @@ test("catalog and named connections stage a private revision with secret referen
   await page.goto(
     `/?workspace=${f.ws}&project=${f.project.id}&environment=${f.env.id}`,
   );
+  await openEnvironmentSection(page, "Configuration");
   await page.getByText("Add from service catalog", { exact: true }).click();
   const recipe = page.getByLabel("Service recipe");
   await expect(recipe).toBeVisible();
@@ -31,6 +33,7 @@ test("catalog and named connections stage a private revision with secret referen
   await page
     .getByRole("button", { name: "Stage Valkey cache recipe", exact: true })
     .click();
+  await openEnvironmentSection(page, "Configuration");
   await page.getByRole("button", { name: "Service list", exact: true }).click();
   await page.getByRole("button", { name: "Nginx", exact: true }).click();
   const properties = page.getByRole("region", {
@@ -97,6 +100,7 @@ test("catalog and named connections stage a private revision with secret referen
   const operationsBefore = await (
     await page.request.get(`${f.prefix}/operations`)
   ).json();
+  await openEnvironmentSection(page, "Configuration");
   await page
     .getByRole("button", { name: "Save revision", exact: true })
     .click();
@@ -129,6 +133,7 @@ test("catalog and named connections stage a private revision with secret referen
       () => document.documentElement.scrollWidth <= window.innerWidth,
     ),
   ).toBeTruthy();
+  await openEnvironmentSection(page, "Configuration");
   await page
     .getByText("Add from service catalog", { exact: true })
     .locator("..")

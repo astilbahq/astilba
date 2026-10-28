@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import AxeBuilder from "@axe-core/playwright";
 import { expect, type Page, test } from "@playwright/test";
 import { authFixtureSQL } from "./auth-fixture";
+import { openEnvironmentSection } from "./environment-section";
 
 async function login(page: Page) {
   await page.goto("/login");
@@ -144,6 +145,7 @@ test("mobile editor navigation keeps both unsaved-change decisions reachable abo
   await selectWorkspace(page, session.workspaces[0].name);
   await expect(page).toHaveURL(projectURL);
   await page.setViewportSize({ width: 390, height: 844 });
+  await openEnvironmentSection(page, "Configuration");
   await page.getByText("Advanced specification", { exact: true }).click();
   const editor = page.getByLabel("Specification (JSON)");
   const draft = `${await editor.inputValue()}\n `;

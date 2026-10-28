@@ -54,6 +54,7 @@ function ProjectEnvironments({
 }) {
   const { t } = useTranslation("projects");
   const common = useTranslation("common").t;
+  const envT = useTranslation("environment").t;
   const environments = useQuery(
     environmentsOptions(workspace.id, project.id, environmentId),
   );
@@ -62,21 +63,30 @@ function ProjectEnvironments({
     (item) => item.id === environmentId,
   );
   const write = workspace.role !== "viewer";
-  usePageTitle(t(($) => $.detail.pageTitle, { project: project.name }));
+  usePageTitle(
+    environment
+      ? envT(($) => $.pageTitle, {
+          environment: environment.name,
+          project: project.name,
+        })
+      : t(($) => $.detail.pageTitle, { project: project.name }),
+  );
   return (
     <>
       <ProjectBreadcrumbs
         workspaceId={workspace.id}
         project={environmentId ? project : undefined}
       />
-      <div className={s.intro}>
-        <h1 className={s.title}>
-          <bdi>{project.name}</bdi>
-        </h1>
-        <p className={s.muted}>
-          <bdi>{workspace.name}</bdi>
-        </p>
-      </div>
+      {!environmentId && (
+        <div className={s.intro}>
+          <h1 className={s.title}>
+            <bdi>{project.name}</bdi>
+          </h1>
+          <p className={s.muted}>
+            <bdi>{workspace.name}</bdi>
+          </p>
+        </div>
+      )}
       <ErrorToast
         error={environments.data ? environments.error : null}
         message={common(($) => $.requestFailed)}

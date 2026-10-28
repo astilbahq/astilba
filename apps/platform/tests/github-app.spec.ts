@@ -1,6 +1,7 @@
 import { createHmac } from "node:crypto";
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
+import { openEnvironmentSection } from "./environment-section";
 
 test("GitHub App authorization returns across sites, selects a repository and disconnects", async ({
   page,
@@ -49,6 +50,7 @@ test("GitHub App authorization returns across sites, selects a repository and di
   await page
     .getByRole("button", { name: "Create environment", exact: true })
     .click();
+  await openEnvironmentSection(page, "Deployments");
   await page
     .getByText("Repository, registry and build secret settings", {
       exact: true,

@@ -2,6 +2,7 @@ import { createHash, randomBytes } from "node:crypto";
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
 import type { Schema } from "../src/api/client";
+import { openEnvironmentSection } from "./environment-section";
 import { managedDatabase } from "./fixtures/managed-database";
 
 test("private network and placement retain failed drafts and review both hosts", async ({
@@ -347,6 +348,7 @@ test("private network and placement retain failed drafts and review both hosts",
   await page.goto(
     `/?workspace=${f.ws}&project=${f.project.id}&environment=${f.env.id}`,
   );
+  await openEnvironmentSection(page, "Configuration");
   await page
     .getByText("Application placement across servers", { exact: true })
     .click();
@@ -428,6 +430,7 @@ test("private network and placement retain failed drafts and review both hosts",
   await save.click();
   await revisionResponse;
 
+  await openEnvironmentSection(page, "Deployments");
   const runtime = page.getByRole("region", {
     name: "Deployment review and runtime",
   });
@@ -487,17 +490,22 @@ test("private network and placement retain failed drafts and review both hosts",
   ).toBeVisible();
   await expect(review).toContainText(f.image);
   await page.emulateMedia({ reducedMotion: "reduce" });
-  for (const width of [320, 390]) {
-    await page.setViewportSize({ width, height: 844 });
+  for (const [section, target, file] of [
+    ["Configuration", placement, "placement-mobile.png"],
+    ["Deployments", review, "review-mobile.png"],
+  ] as const) {
+    await openEnvironmentSection(page, section);
+    for (const width of [320, 390]) {
+      await page.setViewportSize({ width, height: 844 });
+      expect(
+        await page.evaluate(() => document.documentElement.scrollWidth),
+      ).toBeLessThanOrEqual(width);
+    }
     expect(
-      await page.evaluate(() => document.documentElement.scrollWidth),
-    ).toBeLessThanOrEqual(width);
+      (await new AxeBuilder({ page }).include("details").analyze()).violations,
+    ).toEqual([]);
+    await target.screenshot({ path: info.outputPath(file) });
   }
-  expect(
-    (await new AxeBuilder({ page }).include("details").analyze()).violations,
-  ).toEqual([]);
-  await placement.screenshot({ path: info.outputPath("placement-mobile.png") });
-  await review.screenshot({ path: info.outputPath("review-mobile.png") });
 
   await page.getByRole("button", { name: "Open navigation" }).click();
   await page

@@ -2,6 +2,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
+import { openEnvironmentSection } from "./environment-section";
 
 test("preview policy retains failed inputs and approves only the displayed fork commit", async ({
   page,
@@ -116,8 +117,12 @@ test("preview policy retains failed inputs and approves only the displayed fork 
       .getByRole("button", { name: "Create environment", exact: true })
       .click();
     await expect(
-      page.getByText("Preview template ·", { exact: false }),
+      page.getByText(
+        "This template supplies preview resources and secrets. It cannot be deployed directly.",
+        { exact: true },
+      ),
     ).toBeVisible();
+    await openEnvironmentSection(page, "Configuration");
     await page.getByText("Advanced specification", { exact: true }).click();
     await page.getByLabel("Specification (JSON)").fill(
       JSON.stringify({
@@ -137,12 +142,14 @@ test("preview policy retains failed inputs and approves only the displayed fork 
         ],
       }),
     );
+    await openEnvironmentSection(page, "Configuration");
     await page
       .getByRole("button", { name: "Save revision", exact: true })
       .click();
     await expect(
       page.getByRole("button", { name: "Save revision", exact: true }),
     ).toBeDisabled();
+    await openEnvironmentSection(page, "Settings");
     await page
       .getByText("Repository, registry and build secret settings", {
         exact: true,
@@ -189,11 +196,13 @@ test("preview policy retains failed inputs and approves only the displayed fork 
       (c: { name: string }) => c.name === `Preview source ${info.project.name}`,
     );
     expect(connection).toBeDefined();
+    await openEnvironmentSection(page, "Settings");
     await page
       .getByText("Repository, registry and build secret settings", {
         exact: true,
       })
       .click();
+    await openEnvironmentSection(page, "Previews");
     const panel = page.getByRole("region", { name: "Pull-request previews" });
     await panel.getByText("Set up automatic previews", { exact: true }).click();
     await expect(
@@ -285,8 +294,12 @@ test("preview policy retains failed inputs and approves only the displayed fork 
       .getByRole("link", { name: "Open preview environment", exact: true })
       .click();
     await expect(
-      page.getByText("Managed pull-request preview ·", { exact: false }),
+      page.getByText(
+        "Configuration and cleanup of this pull-request preview are controlled by its template’s policy.",
+        { exact: true },
+      ),
     ).toBeVisible();
+    await openEnvironmentSection(page, "Configuration");
     await expect(
       page.getByRole("button", { name: "Save revision", exact: true }),
     ).toHaveCount(0);

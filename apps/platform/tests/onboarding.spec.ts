@@ -1,5 +1,6 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
+import { openEnvironmentSection } from "./environment-section";
 
 test("guided host preparation and domain staging preserve owner review and conflicts", async ({
   page,
@@ -185,6 +186,7 @@ test("guided host preparation and domain staging preserve owner review and confl
   await page.goto(
     `/?workspace=${ws}&project=${project.id}&environment=${env.id}`,
   );
+  await openEnvironmentSection(page, "Configuration");
   await page
     .getByText("Generate an application domain", { exact: true })
     .click();
@@ -208,6 +210,7 @@ test("guided host preparation and domain staging preserve owner review and confl
   ).toBeEnabled();
   const before = await (await page.request.get(`${envPath}/draft`)).json();
   expect(before.specification.routes ?? []).toHaveLength(0);
+  await openEnvironmentSection(page, "Configuration");
   await page
     .getByRole("button", { name: "Save revision", exact: true })
     .click();

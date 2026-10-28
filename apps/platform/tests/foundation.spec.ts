@@ -1,5 +1,6 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
+import { openEnvironmentSection } from "./environment-section";
 
 async function login(page: import("@playwright/test").Page) {
   await page.goto("/");
@@ -44,6 +45,7 @@ test("real API: create, conflict, secret, keyboard and reflow", async ({
   await page
     .getByRole("button", { name: "Create environment", exact: true })
     .click();
+  await openEnvironmentSection(page, "Configuration");
   await page.getByText("Advanced specification", { exact: true }).click();
   const editor = page.getByLabel("Specification (JSON)");
   await expect(editor).toBeVisible();
@@ -65,6 +67,7 @@ test("real API: create, conflict, secret, keyboard and reflow", async ({
     await route.fulfill({ response });
   });
   await editor.fill(JSON.stringify({ ...JSON.parse(saved), version: 0 }));
+  await openEnvironmentSection(page, "Configuration");
   await page
     .getByRole("button", { name: "Save revision", exact: true })
     .click();
@@ -74,6 +77,7 @@ test("real API: create, conflict, secret, keyboard and reflow", async ({
     .getByRole("button", { name: "I have compared and merged my edits" })
     .click();
   await editor.fill("{");
+  await openEnvironmentSection(page, "Configuration");
   await page
     .getByRole("button", { name: "Save revision", exact: true })
     .click();
@@ -97,6 +101,7 @@ test("real API: create, conflict, secret, keyboard and reflow", async ({
   });
   const other = await context.newPage();
   await other.goto(page.url());
+  await openEnvironmentSection(other, "Configuration");
   await other.getByText("Advanced specification", { exact: true }).click();
   await expect(other.getByLabel("Specification (JSON)")).toBeVisible();
   const spec = JSON.parse(await editor.inputValue());
@@ -117,6 +122,7 @@ test("real API: create, conflict, secret, keyboard and reflow", async ({
       },
     });
   });
+  await openEnvironmentSection(page, "Configuration");
   await page
     .getByRole("button", { name: "Save revision", exact: true })
     .click();
@@ -128,6 +134,7 @@ test("real API: create, conflict, secret, keyboard and reflow", async ({
   await expect(serverError).toBeVisible();
   await expect(editor).toHaveValue(`${JSON.stringify(spec, null, 2)}\n`);
   await page.unroute(draftRoute);
+  await openEnvironmentSection(page, "Configuration");
   await page
     .getByRole("button", { name: "Save revision", exact: true })
     .click();
@@ -141,6 +148,7 @@ test("real API: create, conflict, secret, keyboard and reflow", async ({
   await other
     .getByLabel("Specification (JSON)")
     .fill(JSON.stringify(loser, null, 2));
+  await openEnvironmentSection(other, "Configuration");
   await other
     .getByRole("button", { name: "Save revision", exact: true })
     .click();
@@ -151,6 +159,7 @@ test("real API: create, conflict, secret, keyboard and reflow", async ({
     "NODE_ENV",
   );
   await context.close();
+  await openEnvironmentSection(page, "Settings");
   await page.getByLabel("Secret name", { exact: true }).fill("TOKEN");
   await page
     .getByLabel("Secret value", { exact: true })
@@ -184,6 +193,7 @@ test("real API: create, conflict, secret, keyboard and reflow", async ({
   await page.getByRole("menuitemradio", { name: "Light", exact: true }).click();
   await expect(root).not.toHaveClass("dark");
   await page.keyboard.press("Escape");
+  await openEnvironmentSection(page, "Configuration");
   await page.getByRole("button", { name: "Service list", exact: true }).click();
   await page.getByRole("button", { name: "web", exact: true }).click();
   const layout = page.getByLabel("Position x", { exact: true });
@@ -192,6 +202,7 @@ test("real API: create, conflict, secret, keyboard and reflow", async ({
   // Switching through raw editing must not discard a separately staged layout.
   const layoutDraft = await editor.inputValue();
   await editor.fill(`${layoutDraft} `);
+  await openEnvironmentSection(page, "Configuration");
   await page
     .getByRole("button", { name: "Save revision", exact: true })
     .click();
@@ -240,6 +251,7 @@ test("real API: create, conflict, secret, keyboard and reflow", async ({
   await expect(
     page.getByRole("link", { name: "Skip to content" }),
   ).toBeFocused();
+  await openEnvironmentSection(page, "Configuration");
   await page.getByText("Advanced specification", { exact: true }).click();
   await expect(page.getByLabel("Specification (JSON)")).toBeVisible();
 });
@@ -482,6 +494,7 @@ test("visual services stay staged until a reviewed plan is applied", async ({
   await page
     .getByRole("button", { name: "Create environment", exact: true })
     .click();
+  await openEnvironmentSection(page, "Settings");
   await page.getByLabel("Secret name", { exact: true }).fill("DB_PASSWORD");
   await page
     .getByLabel("Secret value", { exact: true })
@@ -492,6 +505,7 @@ test("visual services stay staged until a reviewed plan is applied", async ({
   await expect(
     page.getByText("Secret version saved. Its value cannot be read back."),
   ).toBeVisible();
+  await openEnvironmentSection(page, "Configuration");
   await page.getByText("Add a service", { exact: true }).click();
   const add = page.getByRole("form", { name: "Add service" });
   await add.getByLabel("Service name", { exact: true }).fill("Website");
@@ -535,12 +549,14 @@ test("visual services stay staged until a reviewed plan is applied", async ({
         o.kind === "visual" && o.serverId === enrollment.server.id,
     ),
   ).toHaveLength(0);
+  await openEnvironmentSection(page, "Configuration");
   await page
     .getByRole("button", { name: "Save revision", exact: true })
     .click();
   await expect(
     page.getByText("Revision saved.", { exact: true }),
   ).toBeVisible();
+  await openEnvironmentSection(page, "Deployments");
   await page.getByLabel("Deployment server").selectOption(enrollment.server.id);
   await page
     .getByLabel(
@@ -631,6 +647,7 @@ test("visual services stay staged until a reviewed plan is applied", async ({
   });
   await expect(page.getByText("1.0 MiB in use").first()).toBeVisible();
   await expect(page.getByText("visual · succeeded").last()).toBeVisible();
+  await openEnvironmentSection(page, "Configuration");
   await page.getByRole("button", { name: "Service list", exact: true }).click();
   await page.getByRole("button", { name: "Website", exact: true }).click();
   const properties = page.getByRole("form", { name: "Service properties" });
@@ -653,19 +670,24 @@ test("visual services stay staged until a reviewed plan is applied", async ({
   await expect(
     properties.getByLabel("Command arguments (one per line)"),
   ).toHaveValue("sh\n-c\nsleep 1");
+  await openEnvironmentSection(page, "Deployments");
   await expect(
     page.getByRole("button", { name: "Apply reviewed plan" }),
   ).toBeDisabled();
+  await openEnvironmentSection(page, "Configuration");
   await page
     .getByRole("button", { name: "Save revision", exact: true })
     .click();
+  await openEnvironmentSection(page, "Deployments");
   await expect(
     page.getByText("The saved revision changed. Prepare a new plan."),
   ).toBeVisible();
+  await openEnvironmentSection(page, "Deployments");
   await expect(
     page.getByRole("button", { name: "Apply reviewed plan" }),
   ).toBeDisabled();
   expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
+  await openEnvironmentSection(page, "Configuration");
   await page.getByLabel("Position x", { exact: true }).fill("99");
   await page
     .getByRole("button", { name: "Save canvas layout", exact: true })
@@ -681,6 +703,7 @@ test("visual services stay staged until a reviewed plan is applied", async ({
       exact: true,
     })
     .click();
+  await openEnvironmentSection(page, "Configuration");
   await page
     .getByRole("button", { name: "Save revision", exact: true })
     .click();

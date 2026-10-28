@@ -8,6 +8,7 @@ export default defineConfig({
       "src/features/account/**/*.{ts,tsx}",
       "src/features/shell/**/*.{ts,tsx}",
       "src/features/projects/**/*.{ts,tsx}",
+      "src/features/environments/{environment-detail,environment-overview}.tsx",
       "src/components/{password-input,theme-menu,locale-menu}.tsx",
       "src/{router,hosting,ui}.tsx",
       "!src/**/*.stories.tsx",
