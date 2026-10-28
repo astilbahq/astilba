@@ -14,6 +14,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/hostnetwork"
 	"github.com/astilbahq/astilba/services/platform/internal/portability"
+	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/riverqueue/river"
@@ -261,7 +262,19 @@ func (s *Service) coordinate(ctx context.Context, tx pgx.Tx, job *river.Job[jobA
 	if json.Unmarshal(receiptsRaw, &receipts) != nil {
 		return errors.New("invalid coordinated receipts")
 	}
-	if cancelled && (phase == "checkpoint" || phase == "observe" || phase == "resolve" || phase == "reserve" || phase == "links" || phase == "prepare" || phase == "hook" || phase == "probe") {
+	beforePublication := phase == "checkpoint" || phase == "observe" || phase == "resolve" || phase == "reserve" || phase == "links" || phase == "prepare" || phase == "hook" || phase == "probe"
+	if beforePublication {
+		// Admission must also stop parents between committed phases, before a child exists.
+		if err := s.commandAdmission(ctx, tx, ws, c); errors.Is(err, store.SubscriptionRequired) {
+			cancelled = true
+			if _, err = tx.Exec(ctx, `UPDATE execution_operations SET cancel_requested=true WHERE id=$1`, c.Id); err != nil {
+				return err
+			}
+		} else if err != nil {
+			return err
+		}
+	}
+	if cancelled && beforePublication {
 		var pending bool
 		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM execution_operations WHERE parent_id=$1 AND state NOT IN ('succeeded','failed','cancelled'))`, c.Id).Scan(&pending); err != nil {
 			return err

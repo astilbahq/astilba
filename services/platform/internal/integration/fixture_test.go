@@ -112,6 +112,9 @@ type fixture struct {
 
 func setup(t *testing.T) *fixture { return setupBootstrap(t, true) }
 func setupBootstrap(t *testing.T, bootstrap bool) *fixture {
+	return setupStore(t, bootstrap, false)
+}
+func setupStore(t *testing.T, bootstrap, hosted bool) *fixture {
 	t.Helper()
 	if testing.Short() {
 		t.Skip("disposable PostgreSQL integration requires verify")
@@ -141,7 +144,10 @@ func setupBootstrap(t *testing.T, bootstrap bool) *fixture {
 	}
 	t.Cleanup(pool.Close)
 	keys, _ := cryptobox.New("test")
-	st := store.New(pool, keys, false)
+	st := store.New(pool, keys, hosted)
+	if hosted {
+		st.Hosting.ServerLimit = 100
+	}
 	passwords, e := auth.NewPasswords()
 	if e != nil {
 		t.Fatal(e)
