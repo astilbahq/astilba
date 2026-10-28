@@ -167,6 +167,7 @@ func (s *Service) insertMaintenance(ctx context.Context, tx pgx.Tx, ws, key uuid
 			Observation deployment.Observation `json:"observation"`
 		}
 		if json.Unmarshal(inventory, &current) != nil || current.Plan.Hash != u.Plan.Hash || len(current.Observation.StateHash) != 64 {
+			logUpgradePrepareRejection(ctx, "maintenance_runtime_inventory")
 			return api.Operation{}, domain.Conflict
 		}
 		local := intent

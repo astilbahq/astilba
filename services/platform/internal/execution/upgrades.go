@@ -25,6 +25,7 @@ func noOtherUpgrade(ctx context.Context, tx pgx.Tx, server, allowed uuid.UUID) e
 	var active bool
 	err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM supported_upgrades WHERE server_id=$1 AND id<>$2 AND status->>'phase' NOT IN ('planned','rejected','complete','returned'))`, server, allowed).Scan(&active)
 	if err == nil && active {
+		logUpgradePrepareRejection(ctx, "other_active_upgrade")
 		return domain.Conflict
 	}
 	return err
@@ -143,11 +144,15 @@ func (s *Service) CreateUpgrade(ctx context.Context, p store.Principal, ws, pid,
 }
 func (s *Service) UpgradeAction(ctx context.Context, p store.Principal, ws, pid, env, id uuid.UUID, in api.UpgradeActionRequest) (api.Operation, error) {
 	var out api.Operation
+	if in.Action == "prepare" {
+		ctx = context.WithValue(ctx, upgradePrepareDiagnosticKey{}, true)
+	}
 	action := "upgrade.action"
 	if in.Action == "return" || in.Action == "reconcile" {
 		action = "upgrade.recover"
 	}
-	err := s.scope(ctx, p, ws, true, true, true, action, id, func(tx pgx.Tx) error {
+	err := s.scope(ctx, p, ws, true, true, true, action, id, func(tx pgx.Tx) (err error) {
+		defer func() { logUpgradePrepareDatabaseFailure(ctx, err) }()
 		v, err := loadVisualEnvironment(ctx, tx, ws, pid, env)
 		if err != nil {
 			return err
@@ -159,6 +164,7 @@ func (s *Service) UpgradeAction(ctx context.Context, p store.Principal, ws, pid,
 		var plan upgrade.Plan
 		var status upgrade.Status
 		if json.Unmarshal(planRaw, &plan) != nil || json.Unmarshal(statusRaw, &status) != nil {
+			logUpgradePrepareRejection(ctx, "stored_plan_or_status_json")
 			return domain.Conflict
 		}
 		if err = s.deploymentServer(ctx, tx, ws, plan.Source.ServerID); err != nil {
@@ -183,16 +189,19 @@ func (s *Service) UpgradeAction(ctx context.Context, p store.Principal, ws, pid,
 			var c api.ExecutionCommand
 			var cmd upgrade.Command
 			if json.Unmarshal(prior, &c) != nil {
+				logUpgradePrepareRejection(ctx, "replay_command_json")
 				return domain.Conflict
 			}
 			if c.Kind == "crosshost" && c.Crosshost != nil {
 				var parent coordinationCommand
 				if json.Unmarshal(*c.Crosshost, &parent) != nil || parent.Maintenance == nil {
+					logUpgradePrepareRejection(ctx, "replay_maintenance_json")
 					return domain.Conflict
 				}
 				c = parent.Maintenance.Effect.command("")
 			}
 			if c.Kind != "upgrade" || c.Upgrade == nil || json.Unmarshal(*c.Upgrade, &cmd) != nil || cmd.Plan.ID != id || cmd.Action != string(in.Action) {
+				logUpgradePrepareRejection(ctx, "replay_identity")
 				return domain.Conflict
 			}
 			out, err = scanOperation(tx.QueryRow(ctx, "SELECT "+opColumns+" FROM execution_operations WHERE workspace_id=$1 AND request_key=$2", ws, in.RequestKey))
@@ -202,6 +211,7 @@ func (s *Service) UpgradeAction(ctx context.Context, p store.Principal, ws, pid,
 			return err
 		}
 		if status.Phase != in.ExpectedPhase || !status.Allows(string(in.Action)) {
+			logUpgradePrepareRejection(ctx, "status_phase")
 			return domain.Conflict
 		}
 		var active bool
@@ -209,6 +219,7 @@ func (s *Service) UpgradeAction(ctx context.Context, p store.Principal, ws, pid,
 			return err
 		}
 		if active {
+			logUpgradePrepareRejection(ctx, "primary_active_operation")
 			return domain.Conflict
 		}
 		if in.Action == "prepare" {
@@ -216,6 +227,7 @@ func (s *Service) UpgradeAction(ctx context.Context, p store.Principal, ws, pid,
 				return err
 			}
 			if time.Now().After(plan.ExpiresAt) || v.Applied == nil || *v.Applied != plan.Source.RevisionID {
+				logUpgradePrepareRejection(ctx, "expired_or_applied_revision")
 				return domain.Conflict
 			}
 			var current uuid.UUID
@@ -223,6 +235,7 @@ func (s *Service) UpgradeAction(ctx context.Context, p store.Principal, ws, pid,
 				return err
 			}
 			if current != plan.Source.VisualPlanID() {
+				logUpgradePrepareRejection(ctx, "runtime_plan")
 				return domain.Conflict
 			}
 		}
@@ -231,6 +244,7 @@ func (s *Service) UpgradeAction(ctx context.Context, p store.Principal, ws, pid,
 			return err
 		}
 		if policy.Plan.Hash != plan.Source.Hash {
+			logUpgradePrepareRejection(ctx, "policy_plan_hash")
 			return domain.Conflict
 		}
 		var dest backup.Destination
@@ -266,11 +280,15 @@ func (s *Service) UpgradeAction(ctx context.Context, p store.Principal, ws, pid,
 		_, err = tx.Exec(ctx, "UPDATE supported_upgrades SET status=$2 WHERE id=$1", id, raw)
 		return err
 	})
+	if errors.Is(err, domain.Conflict) {
+		logUpgradePrepareRejection(ctx, "action_conflict")
+	}
 	return out, err
 }
 func (s *Service) hydrateUpgrade(ctx context.Context, c *api.ExecutionCommand) error {
 	var cmd upgrade.Command
 	if c.Upgrade == nil || json.Unmarshal(*c.Upgrade, &cmd) != nil || cmd.Digest() != c.PlanHash {
+		logUpgradePrepareRejection(ctx, "upgrade_command_integrity")
 		return domain.Conflict
 	}
 	// Reuse the backup credential boundary and the visual secret boundary; only

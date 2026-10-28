@@ -115,6 +115,7 @@ func (s *Service) insert(ctx context.Context, tx pgx.Tx, ws, key uuid.UUID, plan
 		return out, e
 	}
 	if awaiting {
+		logUpgradePrepareRejection(ctx, "server_awaiting_transfer")
 		return out, domain.Conflict
 	}
 	if controller > 0 {

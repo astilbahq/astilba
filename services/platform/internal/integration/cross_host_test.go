@@ -873,7 +873,18 @@ func TestCrossHostCoordinatedPlacement(t *testing.T) {
 	prepare := api.UpgradeActionRequest{Action: "prepare", ExpectedPhase: "planned", RequestKey: uuid.New()}
 	var parent, same api.Operation
 	refreshAuthentication()
-	b.call("POST", actions, prepare, 202, &parent)
+	func() {
+		started := time.Now()
+		accepted := false
+		defer func() {
+			// Fatalf in call unwinds this before the host loops or fixture stop.
+			if !accepted {
+				logUpgradePrepareFailure(t, f, ws, databaseEnv.Id, view, recovery.Generation, prepare.RequestKey, started)
+			}
+		}()
+		b.call("POST", actions, prepare, 202, &parent)
+		accepted = true
+	}()
 	refreshAuthentication()
 	b.call("POST", actions, prepare, 202, &same)
 	if parent.Kind != "crosshost" || same.Id != parent.Id {

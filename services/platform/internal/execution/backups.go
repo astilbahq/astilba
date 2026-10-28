@@ -337,6 +337,7 @@ func (s *Service) hydrateBackup(ctx context.Context, c *api.ExecutionCommand) er
 	}
 	var policy backup.Policy
 	if json.Unmarshal(current, &policy) != nil || policy.Generation != b.Installation.Policy.Generation {
+		logUpgradePrepareRejection(ctx, "backup_policy_generation_or_json")
 		return domain.Conflict
 	}
 	if err = s.openIntegration(b.Installation.Policy.WorkspaceID, c.ResourceId, "backup-policy", cipher, &b.Installation.Access); err != nil {

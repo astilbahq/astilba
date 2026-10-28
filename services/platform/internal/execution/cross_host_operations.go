@@ -35,6 +35,7 @@ func (s *Service) insertCoordinationCommand(ctx context.Context, tx pgx.Tx, ws, 
 			return api.Operation{}, err
 		}
 		if !idle {
+			logUpgradePrepareRejection(ctx, "participant_operation_reservation_or_upgrade")
 			return api.Operation{}, domain.Conflict
 		}
 	}
@@ -83,6 +84,7 @@ func (s *Service) crossHostOperationAdmission(ctx context.Context, tx pgx.Tx, ws
 		if c.Kind == "network" && recoveryCommand(c) {
 			return nil
 		}
+		logUpgradePrepareRejection(ctx, "reservation_owner")
 		return domain.Conflict
 	}
 	if c.ParentId != nil {
