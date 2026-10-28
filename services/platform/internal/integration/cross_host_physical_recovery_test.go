@@ -739,7 +739,7 @@ func runPhysicalRecoveryHost(t *testing.T, ctx context.Context, service *executi
 		pollErr := poll.Err()
 		cancel()
 		if err != nil {
-			if ctx.Err() != nil || pollErr != nil || errors.Is(err, context.Canceled) {
+			if waitForFixturePollLease(ctx, err) || ctx.Err() != nil || pollErr != nil || errors.Is(err, context.Canceled) {
 				continue
 			}
 			t.Error(err)

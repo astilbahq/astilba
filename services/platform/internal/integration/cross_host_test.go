@@ -32,6 +32,19 @@ func TestCrossHostCoordinatedPlacement(t *testing.T) {
 	f := setup(t)
 	b := f.browser(t)
 	ws := b.login("owner@example.test", f.password).Workspaces[0].Id
+	confirmedAt := time.Now()
+	// This journey can outlive step-up authentication. Renew with a minute of
+	// margin without exhausting the reauthentication rate limit.
+	refreshAuthentication := func() {
+		t.Helper()
+		if time.Since(confirmedAt) < 4*time.Minute {
+			return
+		}
+		var session api.Session
+		b.call("POST", "/api/v1/auth/reauthenticate", map[string]string{"password": f.password}, 200, &session)
+		b.csrf = session.CsrfToken
+		confirmedAt = time.Now()
+	}
 	base := "/api/v1/workspaces/" + ws.String()
 	var project api.Project
 	b.call("POST", base+"/projects", map[string]string{"name": "Placement"}, 201, &project)
@@ -56,6 +69,7 @@ func TestCrossHostCoordinatedPlacement(t *testing.T) {
 	seen := sync.Map{}
 	unitPlans := sync.Map{}
 	for i := 0; i < 2; i++ {
+		refreshAuthentication()
 		enrolled, in, token := enrollment(t, f, b, ws, "deployment")
 		yes := true
 		in.Capabilities.Backups = &yes
@@ -101,7 +115,7 @@ func TestCrossHostCoordinatedPlacement(t *testing.T) {
 					if i == 0 && revokePrimary.Load() && errors.Is(err, domain.Unauthenticated) {
 						return
 					}
-					if pollErr != nil || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+					if waitForFixturePollLease(ctx, err) || pollErr != nil || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 						continue
 					}
 					t.Error(err)
@@ -319,6 +333,7 @@ func TestCrossHostCoordinatedPlacement(t *testing.T) {
 		Generation int64     `json:"generation"`
 		State      string    `json:"state"`
 	}
+	refreshAuthentication()
 	b.call("PUT", base+"/network", api.ConfigureManagedNetwork{Prefix: "10.251.0.0/24", Members: members}, 200, &network)
 	wait := func(test func() bool) {
 		t.Helper()
@@ -350,12 +365,14 @@ func TestCrossHostCoordinatedPlacement(t *testing.T) {
 	initial.Placement = nil
 	b.call("PUT", path+"/draft", map[string]any{"baseRevisionId": env.DraftRevisionId, "specification": initial}, 200, &draft)
 	var primary deployment.Status
+	refreshAuthentication()
 	b.call("POST", path+"/deployment-plans", api.VisualPlanRequest{BaseRevisionId: draft.Id, ServerId: servers[0].Server.Id, AllowHostChanges: true}, 201, &primary)
 	wait(func() bool {
 		b.call("GET", path+"/deployment-plans/"+primary.ID.String(), nil, 200, &primary)
 		return primary.Plan != nil
 	})
 	var firstOperation api.Operation
+	refreshAuthentication()
 	b.call("POST", path+"/deployment-plans/"+primary.ID.String()+"/apply", api.ApplyPlan{IdempotencyKey: uuid.New()}, 201, &firstOperation)
 	wait(func() bool {
 		var current deployment.Observation
@@ -366,6 +383,7 @@ func TestCrossHostCoordinatedPlacement(t *testing.T) {
 
 	var status deployment.Status
 	waitNetworkReady()
+	refreshAuthentication()
 	b.call("POST", path+"/deployment-plans", api.VisualPlanRequest{BaseRevisionId: draft.Id, ServerId: servers[0].Server.Id, AllowHostChanges: true}, 201, &status)
 	wait(func() bool {
 		b.call("GET", path+"/deployment-plans/"+status.ID.String(), nil, 200, &status)
@@ -379,6 +397,7 @@ func TestCrossHostCoordinatedPlacement(t *testing.T) {
 	// reservation. Management must send an explicit no-effect closure afterward.
 	holdCheckpoint.Store(true)
 	var cancelledCheckpoint api.Operation
+	refreshAuthentication()
 	b.call("POST", apply, api.ApplyPlan{IdempotencyKey: uuid.New()}, 201, &cancelledCheckpoint)
 	wait(func() bool { _, ok := seen.Load("checkpoint-delivery/" + cancelledCheckpoint.Id.String()); return ok })
 	b.call("POST", base+"/operations/"+cancelledCheckpoint.Id.String()+"/cancel", nil, 204, nil)
@@ -434,6 +453,7 @@ func TestCrossHostCoordinatedPlacement(t *testing.T) {
 		t.Fatal("checkpoint cancellation left candidate-only network grants active", err)
 	}
 	waitNetworkReady()
+	refreshAuthentication()
 	b.call("POST", path+"/deployment-plans", api.VisualPlanRequest{BaseRevisionId: draft.Id, ServerId: servers[0].Server.Id, AllowHostChanges: true}, 201, &status)
 	wait(func() bool {
 		b.call("GET", path+"/deployment-plans/"+status.ID.String(), nil, 200, &status)
@@ -443,7 +463,9 @@ func TestCrossHostCoordinatedPlacement(t *testing.T) {
 	key := uuid.New()
 	var operation, again api.Operation
 	holdCheckpoint.Store(true)
+	refreshAuthentication()
 	b.call("POST", apply, api.ApplyPlan{IdempotencyKey: key}, 201, &operation)
+	refreshAuthentication()
 	b.call("POST", apply, api.ApplyPlan{IdempotencyKey: key}, 201, &again)
 	if again.Id != operation.Id {
 		t.Fatal("duplicate group admission")
@@ -493,11 +515,13 @@ func TestCrossHostCoordinatedPlacement(t *testing.T) {
 	spec.Placement.Applications[0].Targets = []domain.PlacementTarget{{ServerID: servers[0].Server.Id, Count: 1}, {ServerID: servers[1].Server.Id, Count: 1}}
 	b.call("PUT", path+"/draft", map[string]any{"baseRevisionId": draft.Id, "specification": spec}, 200, &draft)
 	waitNetworkReady()
+	refreshAuthentication()
 	b.call("POST", path+"/deployment-plans", api.VisualPlanRequest{BaseRevisionId: draft.Id, ServerId: servers[0].Server.Id, AllowHostChanges: true}, 201, &status)
 	wait(func() bool {
 		b.call("GET", path+"/deployment-plans/"+status.ID.String(), nil, 200, &status)
 		return status.Plan != nil
 	})
+	refreshAuthentication()
 	b.call("POST", path+"/deployment-plans/"+status.ID.String()+"/apply", api.ApplyPlan{IdempotencyKey: uuid.New()}, 201, &operation)
 	wait(func() bool {
 		b.call("GET", path+"/runtime", nil, 200, &runtime)
@@ -530,9 +554,11 @@ func TestCrossHostCoordinatedPlacement(t *testing.T) {
 		return len(logged) == 2
 	})
 	var destination backup.Destination
+	refreshAuthentication()
 	b.call("POST", base+"/backup-destinations", map[string]any{"name": "Fixture", "kind": "filesystem", "root": "/srv/fixture-backups", "endpoint": "", "bucket": "", "region": "", "access": map[string]string{"accessKey": "", "secretKey": "", "password": ""}}, 201, &destination)
 	password := "fixture-repository-password"
 	var policy backup.Policy
+	refreshAuthentication()
 	b.call("POST", path+"/backup-policies", api.BackupPolicyRequest{Name: "Coordinated files", ResourceId: volume, DestinationId: destination.ID, Method: "quiesced-files", Schedule: api.DailySchedule{Hour: 2, Minute: 30, Timezone: "UTC"}, Retain: 7, Enabled: true, Command: []string{}, Password: &password}, 201, &policy)
 	if !policy.Coordinated || !policy.RequiresQuiescence() || policy.Plan.Local == nil || !policy.Plan.Local.Primary {
 		t.Fatal("valid quiescing policy did not select coordinated primary maintenance")
@@ -543,6 +569,7 @@ func TestCrossHostCoordinatedPlacement(t *testing.T) {
 	if _, err := f.st.Pool.Exec(ctx, `INSERT INTO supported_upgrades(id,author_id,workspace_id,environment_id,server_id,plan,status) VALUES($1,$2,$3,$4,$5,'{}','{"phase":"ready"}')`, standalone, f.owner, ws, unrelated.Id, servers[1].Server.Id); err != nil {
 		t.Fatal(err)
 	}
+	refreshAuthentication()
 	b.call("POST", path+"/backup-policies/"+policy.ID.String()+"/commands", api.BackupCommandRequest{Action: "backup", RequestKey: uuid.New(), Snapshot: ""}, 409, nil)
 	var blockedReservations int
 	if err := f.st.Pool.QueryRow(ctx, `SELECT count(*) FROM cross_host_reservations WHERE workspace_id=$1`, ws).Scan(&blockedReservations); err != nil || blockedReservations != 0 {
@@ -555,7 +582,9 @@ func TestCrossHostCoordinatedPlacement(t *testing.T) {
 	var maintenance, repeated api.Operation
 	holdRemoteReserve.Store(true)
 	holdRemotePause.Store(true)
+	refreshAuthentication()
 	b.call("POST", path+"/backup-policies/"+policy.ID.String()+"/commands", api.BackupCommandRequest{Action: "backup", RequestKey: backupKey, Snapshot: ""}, 202, &maintenance)
+	refreshAuthentication()
 	b.call("POST", path+"/backup-policies/"+policy.ID.String()+"/commands", api.BackupCommandRequest{Action: "backup", RequestKey: backupKey, Snapshot: ""}, 202, &repeated)
 	if maintenance.Kind != "crosshost" || maintenance.Id != repeated.Id {
 		t.Fatal("quiescing backup did not create one durable parent")
@@ -623,6 +652,7 @@ func TestCrossHostCoordinatedPlacement(t *testing.T) {
 	var blockedWorkspace api.Workspace
 	b.call("POST", "/api/v1/workspaces", map[string]string{"name": "Pending transfer"}, 201, &blockedWorkspace)
 	blockedEnv := envForExecution(t, f, b, blockedWorkspace.Id)
+	refreshAuthentication()
 	blockedServer, _, _ := enrollment(t, f, b, blockedWorkspace.Id, "deployment")
 	if _, err := f.st.Pool.Exec(ctx, `UPDATE servers SET awaiting_transfer=true,controller_generation=1 WHERE workspace_id=$1 AND id=$2`, blockedWorkspace.Id, blockedServer.Server.Id); err != nil {
 		t.Fatal(err)
@@ -667,8 +697,10 @@ func TestCrossHostCoordinatedPlacement(t *testing.T) {
 	// A malformed timestamp in an imported status is isolated too; no global
 	// PostgreSQL cast may abort all tenants' scheduling.
 	var invalidDestination backup.Destination
+	refreshAuthentication()
 	b.call("POST", base+"/backup-destinations", map[string]any{"name": "Imported destination", "kind": "filesystem", "root": "/srv/fixture-imported", "endpoint": "", "bucket": "", "region": "", "access": map[string]string{"accessKey": "", "secretKey": "", "password": ""}}, 201, &invalidDestination)
 	var poisoned backup.Policy
+	refreshAuthentication()
 	b.call("POST", path+"/backup-policies", api.BackupPolicyRequest{Name: "Imported timestamp", ResourceId: volume, DestinationId: invalidDestination.ID, Method: "quiesced-files", Schedule: api.DailySchedule{Hour: (now.Hour() + 22) % 24, Timezone: "UTC"}, Retain: 7, Enabled: true, Command: []string{}, Password: &password}, 201, &poisoned)
 	if _, err := f.st.Pool.Exec(ctx, `UPDATE backup_policies SET status=jsonb_build_object('policyId',id,'generation',1,'enabled',true,'next','0000-01-01T00:00:00Z','runs','[]'::jsonb) WHERE workspace_id=$1 AND id=$2`, ws, poisoned.ID); err != nil {
 		t.Fatal(err)
@@ -792,6 +824,7 @@ func TestCrossHostCoordinatedPlacement(t *testing.T) {
 	b.call("POST", base+"/projects/"+project.Id.String()+"/environments", map[string]string{"name": "Upgrade"}, 201, &databaseEnv)
 	databasePath := base + "/projects/" + project.Id.String() + "/environments/" + databaseEnv.Id.String()
 	var databaseSecret api.SecretVersion
+	refreshAuthentication()
 	b.call("POST", databasePath+"/secrets", map[string]string{"name": "Database", "value": "group-upgrade-database-canary"}, 201, &databaseSecret)
 	web, pg, data := uuid.New(), uuid.New(), uuid.New()
 	pgImage := domain.Postgres17Image
@@ -805,12 +838,14 @@ func TestCrossHostCoordinatedPlacement(t *testing.T) {
 		t.Helper()
 		var plan deployment.Status
 		waitNetworkReady()
+		refreshAuthentication()
 		b.call("POST", databasePath+"/deployment-plans", api.VisualPlanRequest{BaseRevisionId: revision, ServerId: servers[0].Server.Id, AllowHostChanges: true}, 201, &plan)
 		wait(func() bool {
 			b.call("GET", databasePath+"/deployment-plans/"+plan.ID.String(), nil, 200, &plan)
 			return plan.Plan != nil
 		})
 		var op api.Operation
+		refreshAuthentication()
 		b.call("POST", databasePath+"/deployment-plans/"+plan.ID.String()+"/apply", api.ApplyPlan{IdempotencyKey: uuid.New()}, 201, &op)
 		wait(func() bool {
 			var state string
@@ -829,13 +864,17 @@ func TestCrossHostCoordinatedPlacement(t *testing.T) {
 	b.call("PUT", databasePath+"/draft", map[string]any{"baseRevisionId": databaseDraft.Id, "specification": stack}, 200, &databaseDraft)
 	source := deploy(databaseDraft.Id)
 	var recovery backup.Policy
+	refreshAuthentication()
 	b.call("POST", databasePath+"/backup-policies", api.BackupPolicyRequest{Name: "Recovery", ResourceId: pg, DestinationId: destination.ID, Method: "postgres-logical", Schedule: api.DailySchedule{Timezone: "UTC"}, Retain: 7, Enabled: true, Command: []string{}, Password: &password}, 201, &recovery)
 	var view upgrade.View
+	refreshAuthentication()
 	b.call("POST", databasePath+"/upgrades", api.UpgradeRequest{PolicyId: recovery.ID, ResourceId: pg, BaseRevisionId: databaseDraft.Id, RetainDays: 7}, 201, &view)
 	actions := databasePath + "/upgrades/" + view.Plan.ID.String() + "/actions"
 	prepare := api.UpgradeActionRequest{Action: "prepare", ExpectedPhase: "planned", RequestKey: uuid.New()}
 	var parent, same api.Operation
+	refreshAuthentication()
 	b.call("POST", actions, prepare, 202, &parent)
+	refreshAuthentication()
 	b.call("POST", actions, prepare, 202, &same)
 	if parent.Kind != "crosshost" || same.Id != parent.Id {
 		t.Fatal("upgrade prepare did not create one durable parent")
@@ -854,7 +893,9 @@ func TestCrossHostCoordinatedPlacement(t *testing.T) {
 	holdRemoteResume.Store(true)
 	cutover := api.UpgradeActionRequest{Action: "cutover", ExpectedPhase: "ready", RequestKey: uuid.New()}
 	var cutoverParent, duplicate api.Operation
+	refreshAuthentication()
 	b.call("POST", actions, cutover, 202, &cutoverParent)
+	refreshAuthentication()
 	b.call("POST", actions, cutover, 202, &duplicate)
 	if cutoverParent.Id != parent.Id || duplicate.Id != parent.Id {
 		t.Fatal("owner action replaced the upgrade parent")
@@ -905,6 +946,7 @@ func TestCrossHostCoordinatedPlacement(t *testing.T) {
 	b.call("PUT", databasePath+"/draft", map[string]any{"baseRevisionId": view.Plan.TargetRevisionID, "specification": targetSpec}, 200, &failedDraft)
 	var replacement deployment.Status
 	waitNetworkReady()
+	refreshAuthentication()
 	b.call("POST", databasePath+"/deployment-plans", api.VisualPlanRequest{BaseRevisionId: failedDraft.Id, ServerId: servers[0].Server.Id, AllowHostChanges: true}, 201, &replacement)
 	wait(func() bool {
 		b.call("GET", databasePath+"/deployment-plans/"+replacement.ID.String(), nil, 200, &replacement)
@@ -912,6 +954,7 @@ func TestCrossHostCoordinatedPlacement(t *testing.T) {
 	})
 	failCandidate.Store(true)
 	var failedOperation api.Operation
+	refreshAuthentication()
 	b.call("POST", databasePath+"/deployment-plans/"+replacement.ID.String()+"/apply", api.ApplyPlan{IdempotencyKey: uuid.New()}, 201, &failedOperation)
 	wait(func() bool {
 		var state string
@@ -937,6 +980,7 @@ func TestCrossHostCoordinatedPlacement(t *testing.T) {
 	// it must enter writer coordination rather than ordinary pool publication.
 	var restoreBase api.Revision
 	b.call("PUT", databasePath+"/draft", map[string]any{"baseRevisionId": failedDraft.Id, "specification": view.Plan.TargetGroup().Specification}, 200, &restoreBase)
+	refreshAuthentication()
 	b.call("PUT", databasePath+"/backup-policies/"+recovery.ID.String(), api.BackupPolicyRequest{BaseGeneration: recovery.Generation, Name: "Recovery", ResourceId: pg, DestinationId: destination.ID, Method: "postgres-logical", Schedule: api.DailySchedule{Timezone: "UTC"}, Retain: 7, Enabled: true, Command: []string{}, Password: &password}, 200, &recovery)
 	restoredAt := time.Now().UTC()
 	manifest := backup.Manifest{Recipe: backup.Recipe, PolicyID: recovery.ID, RunID: uuid.New(), EnvironmentID: databaseEnv.Id, ResourceID: pg, Method: "postgres-logical", Image: domain.PostgresImage, Database: "app", Username: "app", CreatedAt: restoredAt, Roles: []backup.Role{}, Extensions: []string{}, SHA256: strings.Repeat("f", 64), Bytes: 100}
@@ -949,11 +993,14 @@ func TestCrossHostCoordinatedPlacement(t *testing.T) {
 	if err := f.execution.ScheduleReport(ctx, identities[0], 1, backup.Status{PolicyID: recovery.ID, Generation: recovery.Generation, Runs: []backup.Run{restored, historical}}); err != nil {
 		t.Fatal(err)
 	}
+	refreshAuthentication()
 	b.call("POST", databasePath+"/backup-policies/"+recovery.ID.String()+"/cutover", api.BackupCutoverRequest{BaseRevisionId: restoreBase.Id, RunId: historical.ID}, 400, nil)
 	var restoreDraft api.Revision
+	refreshAuthentication()
 	b.call("POST", databasePath+"/backup-policies/"+recovery.ID.String()+"/cutover", api.BackupCutoverRequest{BaseRevisionId: restoreBase.Id, RunId: restored.ID}, 200, &restoreDraft)
 	var restoreReview deployment.Status
 	waitNetworkReady()
+	refreshAuthentication()
 	b.call("POST", databasePath+"/deployment-plans", api.VisualPlanRequest{BaseRevisionId: restoreDraft.Id, ServerId: servers[0].Server.Id, AllowHostChanges: true}, 201, &restoreReview)
 	wait(func() bool {
 		b.call("GET", databasePath+"/deployment-plans/"+restoreReview.ID.String(), nil, 200, &restoreReview)
@@ -965,6 +1012,7 @@ func TestCrossHostCoordinatedPlacement(t *testing.T) {
 	var restoreOperation api.Operation
 	holdRemotePause.Store(true)
 	holdRemoteResume.Store(true)
+	refreshAuthentication()
 	b.call("POST", databasePath+"/deployment-plans/"+restoreReview.ID.String()+"/apply", api.ApplyPlan{IdempotencyKey: uuid.New()}, 201, &restoreOperation)
 	wait(func() bool {
 		var paused bool
@@ -1004,6 +1052,7 @@ func TestCrossHostCoordinatedPlacement(t *testing.T) {
 	}
 	var archive api.WorkspaceArchive
 	passphrase := "cross-host fixture archive passphrase"
+	refreshAuthentication()
 	b.call("POST", base+"/export", map[string]string{"passphrase": passphrase}, 200, &archive)
 	// Revocation must overtake an unrelated uncertain leaf on an online peer.
 	uncertainID := uuid.New()
@@ -1016,6 +1065,7 @@ func TestCrossHostCoordinatedPlacement(t *testing.T) {
 	// install the new peer at a fresh generation once the host is idle.
 	b.call("GET", base+"/network", nil, 200, &network)
 	members[0].Endpoint = "192.0.2.9:51820"
+	refreshAuthentication()
 	b.call("PUT", base+"/network", api.ConfigureManagedNetwork{Prefix: "10.251.0.0/24", BaseGeneration: network.Generation, Members: members}, 200, &network)
 	wait(func() bool {
 		var pending bool
@@ -1042,6 +1092,7 @@ func TestCrossHostCoordinatedPlacement(t *testing.T) {
 		t.Fatal(err)
 	}
 	revokePrimary.Store(true)
+	refreshAuthentication()
 	b.call("POST", base+"/servers/"+servers[0].Server.Id.String()+"/revoke", nil, 204, nil)
 	wait(func() bool {
 		var removed bool
@@ -1155,7 +1206,7 @@ func TestManagedNetworkPartialRestrictionConvergesAfterHostIdle(t *testing.T) {
 				expired := poll.Err()
 				done()
 				if err != nil {
-					if expired != nil || hostCtx.Err() != nil {
+					if waitForFixturePollLease(hostCtx, err) || expired != nil || hostCtx.Err() != nil {
 						continue
 					}
 					t.Error(err)

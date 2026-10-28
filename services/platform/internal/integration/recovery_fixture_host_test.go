@@ -45,7 +45,7 @@ func runRecoveryFixtureHost(t *testing.T, workers context.Context, service *exec
 		pollErr := poll.Err()
 		done()
 		if err != nil {
-			if pollErr != nil || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+			if waitForFixturePollLease(workers, err) || pollErr != nil || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 				continue
 			}
 			t.Error(err)
