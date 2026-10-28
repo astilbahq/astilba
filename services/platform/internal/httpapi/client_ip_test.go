@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func TestClientIPTrustBoundary(t *testing.T) {
+func TestClientSourceKeyTrustBoundary(t *testing.T) {
 	for _, tc := range []struct {
 		name, peer, want string
 		forwarded        []string
@@ -23,8 +23,14 @@ func TestClientIPTrustBoundary(t *testing.T) {
 		{name: "empty hop", peer: "192.0.2.10:1234", trusted: []string{"192.0.2.0/24"}, forwarded: []string{"198.51.100.20,"}, want: "192.0.2.10"},
 		{name: "no ports in forwarded IPs", peer: "192.0.2.10:1234", trusted: []string{"192.0.2.10/32"}, forwarded: []string{"198.51.100.20:1234"}, want: "192.0.2.10"},
 		{name: "no forwarded zone identifiers", peer: "192.0.2.10:1234", trusted: []string{"192.0.2.10/32"}, forwarded: []string{"fe80::1%eth0"}, want: "192.0.2.10"},
-		{name: "IPv6 chain", peer: "[2001:db8:1::10]:1234", trusted: []string{"2001:db8:1::/64"}, forwarded: []string{" 2001:db8:2::20 , 2001:db8:1::11 "}, want: "2001:db8:2::20"},
-		{name: "canonical IPv6", peer: "[2001:db8:1::10]:1234", trusted: []string{"2001:db8:1::/64"}, forwarded: []string{"2001:0db8:0002:0:0:0:0:0020"}, want: "2001:db8:2::20"},
+		{name: "IPv6 chain", peer: "[2001:db8:1::10]:1234", trusted: []string{"2001:db8:1::/64"}, forwarded: []string{" 2001:db8:2::20 , 2001:db8:1::11 "}, want: "2001:db8:2::/64"},
+		{name: "canonical IPv6", peer: "[2001:db8:1::10]:1234", trusted: []string{"2001:db8:1::/64"}, forwarded: []string{"2001:0db8:0002:0:0:0:0:0020"}, want: "2001:db8:2::/64"},
+		{name: "IPv6 same prefix first address", peer: "[2001:db8:2::1]:1234", want: "2001:db8:2::/64"},
+		{name: "IPv6 same prefix last address", peer: "[2001:db8:2:0:ffff:ffff:ffff:ffff]:1234", want: "2001:db8:2::/64"},
+		{name: "IPv6 distinct prefix", peer: "[2001:db8:2:1::1]:1234", want: "2001:db8:2:1::/64"},
+		{name: "IPv6 exact proxy trust precedes grouping", peer: "[2001:db8:1::10]:1234", trusted: []string{"2001:db8:1::10/128", "2001:db8:1::11/128"}, forwarded: []string{"2001:db8:3::1, 2001:db8:1::11"}, want: "2001:db8:3::/64"},
+		{name: "IPv6 broken chain groups peer", peer: "[2001:db8:1::10]:1234", trusted: []string{"2001:db8:1::10/128"}, forwarded: []string{"invalid"}, want: "2001:db8:1::/64"},
+		{name: "IPv4 keeps adjacent address distinct", peer: "192.0.2.11:1234", want: "192.0.2.11"},
 		{name: "mapped IPv4 cannot reset budget", peer: "[::ffff:192.0.2.10]:1234", trusted: []string{"192.0.2.10/32"}, forwarded: []string{"::ffff:198.51.100.20"}, want: "198.51.100.20"},
 		{name: "invalid peer never trusts forwarding", peer: "invalid", trusted: []string{"0.0.0.0/0"}, forwarded: []string{"198.51.100.20"}, want: "unknown"},
 	} {
@@ -39,8 +45,8 @@ func TestClientIPTrustBoundary(t *testing.T) {
 			r.Header.Set("Forwarded", "for=203.0.113.99")
 			r.Header.Set("X-Real-IP", "203.0.113.99")
 			r.Header.Set("CF-Connecting-IP", "203.0.113.99")
-			if got := s.clientIP(r); got != tc.want {
-				t.Fatalf("client IP = %q, want %q", got, tc.want)
+			if got := s.clientSourceKey(r); got != tc.want {
+				t.Fatalf("client source key = %q, want %q", got, tc.want)
 			}
 		})
 	}

@@ -22,7 +22,7 @@ func (s *Server) HostingInfo(w http.ResponseWriter, r *http.Request) {
 	s.respond(w, 200, api.HostedInfo{Enabled: s.Store.Hosted, BillingEnabled: s.Store.Hosting.BillingEnabled(), Support: s.Store.Hosting.Support})
 }
 func (s *Server) HostedSignup(w http.ResponseWriter, r *http.Request) {
-	if e := s.Auth.Limit(r.Context(), "hosted-signup:ip:"+s.clientIP(r), 10, 15*time.Minute); e != nil {
+	if e := s.Auth.Limit(r.Context(), "hosted-signup:ip:"+s.clientSourceKey(r), 10, 15*time.Minute); e != nil {
 		s.fail(w, r, e)
 		return
 	}
@@ -106,7 +106,7 @@ func (s *Server) StripeWebhook(w http.ResponseWriter, r *http.Request) {
 func (s *Server) ValidateHostedInvitation(w http.ResponseWriter, r *http.Request) {
 	b, e := decode[api.AuthLinkToken](r)
 	if e == nil {
-		e = s.Auth.ValidateHostedInvitation(r.Context(), value(b.Token), s.clientIP(r))
+		e = s.Auth.ValidateHostedInvitation(r.Context(), value(b.Token), s.clientSourceKey(r))
 	}
 	if e != nil {
 		s.fail(w, r, e)
