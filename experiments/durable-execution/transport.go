@@ -313,6 +313,7 @@ func (c *transportController) poll(w http.ResponseWriter, r *http.Request, id, c
 	c.polling[id] = true
 	c.mu.Unlock()
 	defer func() { c.mu.Lock(); delete(c.polling, id); c.mu.Unlock() }()
+	pollStarted := time.Now()
 	deadline := time.NewTimer(pollDuration)
 	defer deadline.Stop()
 	tick := time.NewTicker(100 * time.Millisecond)
@@ -363,6 +364,7 @@ func (c *transportController) poll(w http.ResponseWriter, r *http.Request, id, c
 		case <-r.Context().Done():
 			return
 		case <-deadline.C:
+			w.Header().Set("X-Astilba-Fixture-Poll-Elapsed", time.Since(pollStarted).String())
 			w.WriteHeader(204)
 			return
 		case <-tick.C:
