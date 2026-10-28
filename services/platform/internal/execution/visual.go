@@ -657,8 +657,11 @@ func (s *Service) visualReport(ctx context.Context, tx pgx.Tx, c api.ExecutionCo
 	}
 	var payload deployment.Payload
 	var observed deployment.Observation
-	if json.Unmarshal(*c.Visual, &payload) != nil || json.Unmarshal(*r.Observation, &observed) != nil || len(observed.Resources) > 40 || observed.OmittedResources < 0 || len(*r.Observation) > deployment.ObservationLimit {
+	if json.Unmarshal(*c.Visual, &payload) != nil || json.Unmarshal(*r.Observation, &observed) != nil || len(*r.Observation) > deployment.ObservationLimit {
 		return domain.Invalid("observation")
+	}
+	if err := observed.Validate(time.Now()); err != nil {
+		return err
 	}
 	plan := payload.Plan
 	if plan.ServerID != c.ServerId || plan.EnvironmentID != c.EnvironmentId || payload.Digest() != c.PlanHash {
@@ -690,18 +693,11 @@ func (s *Service) visualReport(ctx context.Context, tx pgx.Tx, c api.ExecutionCo
 		return err
 	}
 	seen := map[uuid.UUID]bool{}
-	for _, v := range observed.Resources {
-		if !allowed[v.ID] || seen[v.ID] || len(v.Logs) > 2048 || len(v.Note) > 256 || len(v.Image) > 512 || len(v.Instances) > domain.MaxReplicas {
+	for _, resource := range observed.Resources {
+		if !allowed[resource.ID] {
 			return domain.Invalid("observation.resources")
 		}
-		members := map[uuid.UUID]bool{}
-		for _, instance := range v.Instances {
-			if instance.InstanceID == uuid.Nil || members[instance.InstanceID] || len(instance.State) > 30 {
-				return domain.Invalid("observation.instances")
-			}
-			members[instance.InstanceID] = true
-		}
-		seen[v.ID] = true
+		seen[resource.ID] = true
 	}
 	if payload.Action == "resolve" && r.State == "succeeded" {
 		plan.Images = observed.Images
@@ -730,9 +726,6 @@ func (s *Service) visualReport(ctx context.Context, tx pgx.Tx, c api.ExecutionCo
 		return err
 	}
 
-	if observed.ObservedAt.IsZero() || observed.ObservedAt.After(time.Now().Add(time.Minute)) {
-		return domain.Invalid("observedAt")
-	}
 	var previous *uuid.UUID
 	err = tx.QueryRow(ctx, "SELECT plan_id FROM visual_runtime WHERE workspace_id=$1 AND environment_id=$2", ws, c.EnvironmentId).Scan(&previous)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
