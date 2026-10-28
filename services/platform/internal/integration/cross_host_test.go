@@ -835,7 +835,18 @@ func TestCrossHostCoordinatedPlacement(t *testing.T) {
 	actions := databasePath + "/upgrades/" + view.Plan.ID.String() + "/actions"
 	prepare := api.UpgradeActionRequest{Action: "prepare", ExpectedPhase: "planned", RequestKey: uuid.New()}
 	var parent, same api.Operation
-	b.call("POST", actions, prepare, 202, &parent)
+	func() {
+		started := time.Now()
+		accepted := false
+		defer func() {
+			// Fatalf in call unwinds this before the host loops or fixture stop.
+			if !accepted {
+				logUpgradePrepareFailure(t, f, ws, databaseEnv.Id, view, recovery.Generation, prepare.RequestKey, started)
+			}
+		}()
+		b.call("POST", actions, prepare, 202, &parent)
+		accepted = true
+	}()
 	b.call("POST", actions, prepare, 202, &same)
 	if parent.Kind != "crosshost" || same.Id != parent.Id {
 		t.Fatal("upgrade prepare did not create one durable parent")
