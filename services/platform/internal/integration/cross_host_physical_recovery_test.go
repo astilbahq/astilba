@@ -108,7 +108,8 @@ func testNativePhysicalRecovery(t *testing.T, upgradeRecovery bool) {
 		})
 		heartbeat, err := host.Preflight(ctx)
 		if err != nil || heartbeat.Capabilities.CrossHost == nil || !*heartbeat.Capabilities.CrossHost || heartbeat.Preflight.CrossHostInventory == nil {
-			t.Fatal("physical host preflight", err, heartbeat.Preflight.Notes)
+			diagnostic, _ := json.Marshal(heartbeat)
+			t.Fatal("physical host preflight", err, string(diagnostic))
 		}
 		in.Capabilities, in.Preflight = heartbeat.Capabilities, heartbeat.Preflight
 		if _, err := source.execution.Enroll(ctx, in); err != nil {
@@ -131,9 +132,11 @@ func testNativePhysicalRecovery(t *testing.T, upgradeRecovery bool) {
 	var holdPrimaryComplete atomic.Bool
 	var crashCutover atomic.Bool
 	interrupted := make(chan api.ExecutionCommand, 1)
+	progress := make([]*physicalRecoveryProgress, len(hosts))
 	for i, host := range hosts {
+		progress[i] = &physicalRecoveryProgress{state: physicalRecoveryStage{ServerID: identities[i].ID, Primary: i == 0}}
 		group.Go(func() {
-			runPhysicalRecoveryHost(t, workers, source.execution, identities[i], host, func(c api.ExecutionCommand) bool {
+			runPhysicalRecoveryHost(t, workers, source.execution, identities[i], host, progress[i], func(c api.ExecutionCommand) bool {
 				if i == 0 && upgradeRecovery && c.Kind == "upgrade" && c.Upgrade != nil {
 					var command upgrade.Command
 					if json.Unmarshal(*c.Upgrade, &command) == nil && command.Action == "cutover" {
@@ -162,9 +165,48 @@ func testNativePhysicalRecovery(t *testing.T, upgradeRecovery bool) {
 			}
 			time.Sleep(50 * time.Millisecond)
 		}
+		diagnosticContext, cancelDiagnostic := context.WithTimeout(ctx, 2*time.Second)
 		var diagnostic []byte
-		_ = source.st.Pool.QueryRow(ctx, `SELECT jsonb_build_object('operations',(SELECT jsonb_agg(jsonb_build_object('kind',kind,'state',state,'phase',command->'crosshost'->>'phase','networkAction',command->'network'->>'action','wantedGeneration',command->'network'->'manifest'->'generation','note',note)) FROM execution_operations WHERE workspace_id=$1 AND state NOT IN ('succeeded','failed','cancelled')),'network',(SELECT jsonb_agg(jsonb_build_object('generation',generation,'ack',acknowledged_generation,'installedGeneration',installed_manifest->'generation')) FROM network_members WHERE workspace_id=$1))`, ws).Scan(&diagnostic)
-		t.Fatal(label, string(diagnostic))
+		diagnosticErr := source.st.Pool.QueryRow(diagnosticContext, `
+WITH roots AS (
+ SELECT id FROM execution_operations
+ WHERE workspace_id=$1 AND parent_id IS NULL AND state NOT IN ('succeeded','failed','cancelled')
+), selected AS (
+ SELECT * FROM execution_operations
+ WHERE workspace_id=$1 AND (state NOT IN ('succeeded','failed','cancelled') OR parent_id IN (SELECT id FROM roots))
+ ORDER BY created_at DESC,id LIMIT 200
+)
+SELECT jsonb_build_object(
+ 'capturedAt',clock_timestamp(),
+ 'operations',(SELECT jsonb_agg(jsonb_build_object(
+  'id',o.id,'parentId',o.parent_id,'serverId',o.server_id,
+  'primary',o.command->'crosshost'->'unit'->'plan'->'local'->'primary',
+  'kind',o.kind,'state',o.state,
+  'phase',o.command->'crosshost'->>'phase','coordinatorPhase',h.phase,
+  'createdAt',o.created_at,'reportSequence',o.report_sequence,
+  'networkAction',o.command->'network'->>'action',
+  'wantedGeneration',o.command->'network'->'manifest'->'generation',
+  'checkpointId',cp.id,'checkpointPhase',cp.phase,'checkpointAcknowledged',cp.acknowledged,
+  'recoveryOpened',r.opened,
+  'job',jsonb_build_object('id',j.id,'state',j.state,'attempt',j.attempt,
+   'createdAt',j.created_at,'scheduledAt',j.scheduled_at,
+   'attemptedAt',j.attempted_at,'finalizedAt',j.finalized_at)) ORDER BY o.created_at,o.id)
+ FROM selected o
+ LEFT JOIN cross_host_operations h ON h.id=o.id
+ LEFT JOIN river_job j ON j.id=o.job_id
+ LEFT JOIN cross_host_checkpoints cp ON cp.parent_id=COALESCE(o.parent_id,o.id) AND cp.id::text=o.command->'recoveryCheckpoint'->>'checkpointId'
+ LEFT JOIN cross_host_recoveries r ON r.parent_id=COALESCE(o.parent_id,o.id)),
+ 'servers',(SELECT jsonb_agg(jsonb_build_object('serverId',id,'lastSeen',last_seen,
+  'pollUntil',poll_until,'pollIdPresent',poll_id IS NOT NULL)) FROM servers WHERE workspace_id=$1),
+ 'network',(SELECT jsonb_agg(jsonb_build_object('serverId',server_id,'generation',generation,'ack',acknowledged_generation,
+  'installedGeneration',installed_manifest->'generation')) FROM network_members WHERE workspace_id=$1))`, ws).Scan(&diagnostic)
+		cancelDiagnostic()
+		stages := make([]physicalRecoveryStage, len(progress))
+		for i, host := range progress {
+			stages[i] = host.snapshot()
+		}
+		hostStages, _ := json.Marshal(stages)
+		t.Fatal(label, string(diagnostic), diagnosticErr, "hostStages", string(hostStages))
 	}
 	var network struct {
 		ID         uuid.UUID `json:"id"`
@@ -541,7 +583,7 @@ exec httpd -f -p 8080 -h /tmp/www`}
 			return current.RecoveryCheckpoint(ctx, identity, d.ParentID, d.CheckpointID)
 		}
 		group.Go(func() {
-			runPhysicalRecoveryHost(t, recovered, current, identity, host, func(c api.ExecutionCommand) bool {
+			runPhysicalRecoveryHost(t, recovered, current, identity, host, progress[i], func(c api.ExecutionCommand) bool {
 				return i == 1 && (holdRemoteOpen.Load() && physicalRecoveryPhase(c) == "recovery-open" || holdRemoteResume.Load() && physicalRecoveryPhase(c) == "resume-target")
 			}, func(c api.ExecutionCommand, r api.AgentReport) bool {
 				var status upgrade.Status
@@ -717,13 +759,49 @@ func physicalRecoveryPhase(c api.ExecutionCommand) string {
 	return body.Phase
 }
 
-func runPhysicalRecoveryHost(t *testing.T, ctx context.Context, service *execution.Service, identity execution.Identity, host *recoveryFixtureHost, hold func(api.ExecutionCommand) bool, acceptFailure func(api.ExecutionCommand, api.AgentReport) bool) {
+type physicalRecoveryStage struct {
+	ServerID    uuid.UUID  `json:"serverId"`
+	Primary     bool       `json:"primary"`
+	Stage       string     `json:"stage"`
+	EnteredAt   time.Time  `json:"enteredAt"`
+	OperationID *uuid.UUID `json:"operationId,omitempty"`
+	Phase       string     `json:"phase,omitempty"`
+}
+
+// This lock stays independent of host.mu so a blocked native process cannot
+// prevent the timeout from identifying its current boundary.
+type physicalRecoveryProgress struct {
+	mu    sync.Mutex
+	state physicalRecoveryStage
+}
+
+func (p *physicalRecoveryProgress) enter(stage string, command *api.ExecutionCommand) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.state.Stage, p.state.EnteredAt = stage, time.Now().UTC()
+	p.state.OperationID, p.state.Phase = nil, ""
+	if command != nil {
+		id := command.Id
+		p.state.OperationID, p.state.Phase = &id, physicalRecoveryPhase(*command)
+	}
+}
+
+func (p *physicalRecoveryProgress) snapshot() physicalRecoveryStage {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.state
+}
+
+func runPhysicalRecoveryHost(t *testing.T, ctx context.Context, service *execution.Service, identity execution.Identity, host *recoveryFixtureHost, progress *physicalRecoveryProgress, hold func(api.ExecutionCommand) bool, acceptFailure func(api.ExecutionCommand, api.AgentReport) bool) {
 	t.Helper()
+	defer progress.enter("stopped", nil)
 	last := time.Time{}
 	for ctx.Err() == nil {
 		if time.Since(last) > 15*time.Second {
+			progress.enter("preflight", nil)
 			heartbeat, err := host.Preflight(ctx)
 			if err == nil {
+				progress.enter("heartbeat", nil)
 				_, err = service.Heartbeat(ctx, identity, heartbeat)
 			}
 			if err != nil {
@@ -734,6 +812,7 @@ func runPhysicalRecoveryHost(t *testing.T, ctx context.Context, service *executi
 			}
 			last = time.Now()
 		}
+		progress.enter("poll", nil)
 		poll, cancel := context.WithTimeout(ctx, time.Second)
 		command, err := service.Poll(poll, identity)
 		pollErr := poll.Err()
@@ -748,10 +827,12 @@ func runPhysicalRecoveryHost(t *testing.T, ctx context.Context, service *executi
 		if command == nil {
 			continue
 		}
+		progress.enter("hold", command)
 		if hold(*command) {
 			time.Sleep(25 * time.Millisecond)
 			continue
 		}
+		progress.enter("execute", command)
 		report, err := host.Execute(ctx, *command)
 		if err != nil {
 			if ctx.Err() == nil {
@@ -763,6 +844,7 @@ func runPhysicalRecoveryHost(t *testing.T, ctx context.Context, service *executi
 			t.Error("physical execution outcome", command.Kind, physicalRecoveryPhase(*command), report.State, report.Note)
 			return
 		}
+		progress.enter("report", command)
 		if err := service.Report(ctx, identity, report); err != nil {
 			if ctx.Err() == nil {
 				var invalid *domain.Error
@@ -774,10 +856,12 @@ func runPhysicalRecoveryHost(t *testing.T, ctx context.Context, service *executi
 			}
 			return
 		}
+		progress.enter("ack", command)
 		if err := host.Acknowledge(command.Id, report.Sequence); err != nil {
 			t.Error(err)
 			return
 		}
+		progress.enter("schedule-report", command)
 		host.mu.Lock()
 		schedules, err := host.engine.Journal.ScheduleReports()
 		host.mu.Unlock()
