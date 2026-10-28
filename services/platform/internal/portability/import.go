@@ -17,10 +17,14 @@ import (
 )
 
 func decodeArchive(raw []byte) (Archive, error) {
+	return decodeArchiveMode(raw, false)
+}
+
+func decodeArchiveMode(raw []byte, recovery bool) (Archive, error) {
 	var archive Archive
 	d := json.NewDecoder(bytes.NewReader(raw))
 	d.DisallowUnknownFields()
-	if d.Decode(&archive) != nil || d.Decode(new(any)) != io.EOF || (archive.Version != 1 && archive.Version != 2 && archive.Version != 3 && archive.Version != 4) || archive.Workspace == uuid.Nil {
+	if d.Decode(&archive) != nil || d.Decode(new(any)) != io.EOF || (archive.Version != 1 && archive.Version != 2 && archive.Version != 3 && archive.Version != 4 && archive.Version != 5) || archive.Workspace == uuid.Nil {
 		return archive, ErrArchive
 	}
 	if archive.Version == 1 {
@@ -28,7 +32,15 @@ func decodeArchive(raw []byte) (Archive, error) {
 			return archive, err
 		}
 	}
+	if archive.Version < 5 {
+		if err := normalizePreNetworkArchive(&archive); err != nil {
+			return archive, err
+		}
+	}
 	if len(archive.Tables) != len(tables) {
+		return archive, ErrArchive
+	}
+	if !recovery && len(archive.Tables["cross_host_reservations"]) > 0 {
 		return archive, ErrArchive
 	}
 	name, e := domain.Name(archive.Name)
@@ -61,7 +73,20 @@ func decodeArchive(raw []byte) (Archive, error) {
 	// Foreign keys on global IDs must refer to records within this archive; a
 	// destination row in another workspace must never satisfy an imported link.
 	refs := []struct{ table, column, target string }{
+		{"backup_cutovers", "source_plan_id", "visual_requests"},
 		{"route_claims", "server_id", "servers"},
+		{"execution_operations", "parent_id", "execution_operations"},
+		{"network_members", "network_id", "workspace_networks"},
+		{"network_members", "server_id", "servers"},
+		{"network_endpoints", "plan_id", "visual_requests"},
+		{"network_plan_endpoints", "plan_id", "visual_requests"},
+		{"network_plan_sources", "plan_id", "visual_requests"},
+		{"cross_host_operations", "id", "execution_operations"},
+		{"cross_host_operations", "plan_id", "visual_requests"},
+		{"cross_host_approvals", "parent_id", "execution_operations"},
+		{"cross_host_approvals", "upgrade_id", "supported_upgrades"},
+		{"cross_host_runtime", "plan_id", "visual_requests"},
+		{"cross_host_reservations", "parent_id", "execution_operations"},
 		{"execution_operations", "plan_id", "execution_plans"},
 		{"execution_operations", "visual_plan_id", "visual_plans"},
 		{"visual_requests", "operation_id", "execution_operations"},
@@ -165,6 +190,9 @@ func (s *Service) Import(ctx context.Context, p store.Principal, passphrase stri
 				}
 			}
 			switch table.Name {
+			case "network_members":
+				setValue(row, "acknowledged_generation", 0)
+				setValue(row, "note", "Imported private links require renewed owner approval after host transfer.")
 			case "preview_policies":
 				setValue(row, "enabled", false)
 				setValue(row, "auth_version", p.Account.AuthVersion)
@@ -308,5 +336,29 @@ func normalizeLegacyArchive(a *Archive) error {
 	a.Tables["preview_policies"] = []Row{}
 	a.Tables["preview_requests"] = []Row{}
 	a.Version = 2
+	return nil
+}
+
+func normalizePreNetworkArchive(a *Archive) error {
+	for _, table := range tables {
+		if strings.HasPrefix(table.Name, "network_") || table.Name == "workspace_networks" || strings.HasPrefix(table.Name, "cross_host_") || table.Name == "backup_cutovers" {
+			if _, ok := a.Tables[table.Name]; ok {
+				return ErrArchive
+			}
+			a.Tables[table.Name] = []Row{}
+		}
+	}
+	for _, row := range a.Tables["deployment_units"] {
+		if _, ok := row["primary_unit"]; ok {
+			return ErrArchive
+		}
+		setValue(row, "primary_unit", true)
+	}
+	for _, row := range a.Tables["execution_operations"] {
+		if _, ok := row["parent_id"]; ok {
+			return ErrArchive
+		}
+		setValue(row, "parent_id", nil)
+	}
 	return nil
 }

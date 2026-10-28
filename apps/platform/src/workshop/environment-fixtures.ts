@@ -129,6 +129,15 @@ export function environmentHandlers() {
         configured: false,
       } satisfies Schema["GitHubAppStatus"]),
     ),
+    http.get("/api/v1/workspaces/:workspaceId/network", () =>
+      HttpResponse.json({
+        id: "00000000-0000-0000-0000-000000000000",
+        generation: 0,
+        prefix: "",
+        state: "unconfigured",
+        members: [],
+      } satisfies Schema["ManagedNetwork"]),
+    ),
     ...[
       "servers",
       "operations",

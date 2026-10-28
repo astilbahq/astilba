@@ -240,6 +240,27 @@ func TestGitHubOnboardingDelegationAndRecoveryBoundaries(t *testing.T) {
 	webhook("push-one", "push", push, 202)
 	webhook("push-one", "push", push, 202)
 	webhook("push-one", "push", push+" ", 409)
+	// Stop the unrelated dispatcher before holding its operation row; its
+	// workspace lock would block the reconciliation whose lock order is tested.
+	var dispatchJobID int64
+	if e = f.st.Pool.QueryRow(ctx, "SELECT job_id FROM execution_operations WHERE id=$1", op.Id).Scan(&dispatchJobID); e != nil {
+		t.Fatal(e)
+	}
+	dispatchJob, e := f.execution.Queue.JobCancel(ctx, dispatchJobID)
+	if e != nil {
+		t.Fatal(e)
+	}
+	dispatchDeadline := time.Now().Add(8 * time.Second)
+	for dispatchJob.State != "cancelled" {
+		if time.Now().After(dispatchDeadline) {
+			t.Fatal("dispatcher did not stop before lock-order probe")
+		}
+		time.Sleep(10 * time.Millisecond)
+		dispatchJob, e = f.execution.Queue.JobGet(ctx, dispatchJobID)
+		if e != nil {
+			t.Fatal(e)
+		}
+	}
 	// A processed installation revocation disables the binding, cancels assigned
 	// work and permits credential-free polling even while GitHub is unavailable.
 	held, e := f.st.Pool.Begin(ctx)

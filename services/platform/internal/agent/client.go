@@ -35,10 +35,15 @@ type Client struct {
 	previews       atomic.Bool
 	schedules      atomic.Bool
 	replicas       atomic.Bool
+	crossHost      atomic.Bool
 }
 
 func NewClient(j *Journal, e *Engine) *Client {
-	return &Client{Journal: j, Engine: e, HTTP: &http.Client{Timeout: 35 * time.Second, Transport: &http.Transport{TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12}, DialContext: (&net.Dialer{Timeout: 5 * time.Second}).DialContext, ResponseHeaderTimeout: 30 * time.Second, MaxConnsPerHost: 4}, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
+	c := &Client{Journal: j, Engine: e, HTTP: &http.Client{Timeout: 35 * time.Second, Transport: &http.Transport{TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12}, DialContext: (&net.Dialer{Timeout: 5 * time.Second}).DialContext, ResponseHeaderTimeout: 30 * time.Second, MaxConnsPerHost: 4}, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
+	if e != nil && e.FetchCheckpoint == nil {
+		e.FetchCheckpoint = c.downloadCheckpoint
+	}
+	return c
 }
 func ValidateOrigin(origin string) error {
 	u, e := url.Parse(origin)
@@ -57,9 +62,15 @@ func (c *Client) call(ctx context.Context, method, path string, body, out any, t
 	switch value := body.(type) {
 	case api.AgentEnrollment:
 		value.Capabilities = c.advertisedCapabilities(value.Capabilities)
+		if !c.crossHost.Load() {
+			value.Preflight.CrossHostInventory = nil
+		}
 		body = value
 	case api.AgentHeartbeat:
 		value.Capabilities = c.advertisedCapabilities(value.Capabilities)
+		if !c.crossHost.Load() {
+			value.Preflight.CrossHostInventory = nil
+		}
 		body = value
 	}
 	raw, e := json.Marshal(body)
@@ -88,12 +99,13 @@ func (c *Client) call(ctx context.Context, method, path string, body, out any, t
 	c.previews.Store(response.Header.Get("Astilba-Agent-Previews") == "v1")
 	c.schedules.Store(response.Header.Get("Astilba-Agent-Schedules") == "v1")
 	c.replicas.Store(response.Header.Get("Astilba-Agent-Replicas") == "v1")
+	c.crossHost.Store(response.Header.Get("Astilba-Agent-Cross-Host") == "v1")
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		return errors.New("management rejected request; check enrollment, credentials and operation status")
 	}
 	limit := int64(16385)
 	if path == "/agent/v1/poll" {
-		limit = 262145
+		limit = 524289
 	}
 	if out == nil {
 		_, e = io.Copy(io.Discard, io.LimitReader(response.Body, limit))
@@ -111,6 +123,9 @@ func (c *Client) call(ctx context.Context, method, path string, body, out any, t
 }
 
 func (c *Client) advertisedCapabilities(v api.AgentCapabilities) api.AgentCapabilities {
+	if !c.crossHost.Load() {
+		v.CrossHost = nil
+	}
 	if !c.replicas.Load() {
 		v.Replicas = nil
 	}

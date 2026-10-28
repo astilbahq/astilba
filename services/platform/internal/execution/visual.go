@@ -27,7 +27,7 @@ type visualEnvironment struct {
 func loadVisualEnvironment(ctx context.Context, tx pgx.Tx, ws, pid, id uuid.UUID) (visualEnvironment, error) {
 	var v visualEnvironment
 	var raw []byte
-	err := tx.QueryRow(ctx, `SELECT d.id,d.server_id,e.draft_revision_id,e.applied_revision_id,r.specification,e.purpose FROM environments e JOIN deployment_units d ON d.workspace_id=e.workspace_id AND d.environment_id=e.id JOIN specification_revisions r ON r.workspace_id=e.workspace_id AND r.environment_id=e.id AND r.id=e.draft_revision_id WHERE e.workspace_id=$1 AND e.project_id=$2 AND e.id=$3`, ws, pid, id).Scan(&v.Unit, &v.Server, &v.Revision, &v.Applied, &raw, &v.Purpose)
+	err := tx.QueryRow(ctx, `SELECT d.id,d.server_id,e.draft_revision_id,e.applied_revision_id,r.specification,e.purpose FROM environments e JOIN deployment_units d ON d.workspace_id=e.workspace_id AND d.environment_id=e.id AND d.primary_unit JOIN specification_revisions r ON r.workspace_id=e.workspace_id AND r.environment_id=e.id AND r.id=e.draft_revision_id WHERE e.workspace_id=$1 AND e.project_id=$2 AND e.id=$3`, ws, pid, id).Scan(&v.Unit, &v.Server, &v.Revision, &v.Applied, &raw, &v.Purpose)
 	if err == nil {
 		v.Spec, _, err = domain.ParseSpec(raw)
 	}
@@ -187,6 +187,26 @@ func (s *Service) createVisualPlan(ctx context.Context, tx pgx.Tx, ws, pid, env 
 		if err != nil {
 			return err
 		}
+		if v.Spec.Placement != nil {
+			out, err = s.createCrossHostPlan(ctx, tx, ws, pid, env, in, v, previousPlan)
+			return err
+		}
+		if previousPlan.Distributed != nil {
+			if previousPlan.Specification.HasRemotePlacement() {
+				return domain.Invalid("placement.consolidateFirst")
+			}
+			if !in.AllowHostChanges {
+				return domain.Invalid("allowHostChanges")
+			}
+			for _, unit := range previousPlan.Distributed.Units {
+				if unit.Plan.Local.Primary {
+					previousPlan = unit.Plan
+					break
+				}
+			}
+			plan.HostChanges = true
+			plan.Effects = append(plan.Effects, "Remove the consolidated placement configuration and private port publications. Persistent services can restart on their existing volumes.")
+		}
 		plan.PrepareInstances(previousPlan)
 		if err = requireReplicas(ctx, tx, ws, plan.ServerID, plan); err != nil {
 			return err
@@ -261,7 +281,9 @@ func readPlan(ctx context.Context, tx pgx.Tx, ws, env, id uuid.UUID) (deployment
 	var raw []byte
 	err := tx.QueryRow(ctx, "SELECT plan FROM visual_plans WHERE workspace_id=$1 AND environment_id=$2 AND id=$3", ws, env, id).Scan(&raw)
 	if err == nil {
-		err = json.Unmarshal(raw, &p)
+		if json.Unmarshal(raw, &p) != nil {
+			err = domain.Invalid("deployment.plan")
+		}
 	}
 	return p, err
 }
@@ -326,6 +348,16 @@ func (s *Service) applyVisualPlan(ctx context.Context, tx pgx.Tx, ws, pid, env, 
 		}
 		if err = requireServiceOutputs(ctx, tx, ws, plan.ServerID, plan.Specification); err != nil {
 			return err
+		}
+		if plan.Distributed != nil {
+			if plan.Restore != nil {
+				err = s.admitRestoreApply(ctx, tx, ws, plan)
+			} else {
+				err = s.admitCrossHostApply(ctx, tx, ws, plan)
+			}
+			if err != nil {
+				return err
+			}
 		}
 		if err = requireReplicas(ctx, tx, ws, plan.ServerID, plan); err != nil {
 			return err
@@ -395,7 +427,13 @@ func (s *Service) applyVisualPlan(ctx context.Context, tx pgx.Tx, ws, pid, env, 
 				}
 			}
 		}
-		out, err = s.insertVisual(ctx, tx, ws, key, deployment.Payload{Action: "deploy", Plan: plan})
+		if plan.Restore != nil {
+			out, err = s.insertRestoreMaintenance(ctx, tx, ws, key, plan)
+		} else if plan.Distributed != nil {
+			out, err = s.insertCoordination(ctx, tx, ws, key, "deploy", plan)
+		} else {
+			out, err = s.insertVisual(ctx, tx, ws, key, deployment.Payload{Action: "deploy", Plan: plan})
+		}
 		if err != nil {
 			return err
 		}
@@ -421,7 +459,40 @@ func (s *Service) Runtime(ctx context.Context, p store.Principal, ws, pid, env u
 		if err != nil {
 			return err
 		}
-		return json.Unmarshal(raw, &out)
+		if err := json.Unmarshal(raw, &out); err != nil {
+			return err
+		}
+		unavailable := map[uuid.UUID]bool{}
+		for i := range out.Hosts {
+			host := &out.Hosts[i]
+			var online bool
+			var phase string
+			if err := tx.QueryRow(ctx, `SELECT NOT revoked AND NOT awaiting_transfer AND last_seen>now()-interval '45 seconds',COALESCE((SELECT CASE WHEN o.command->'crosshost'->>'action'='observe' THEN 'inspection pending' WHEN o.command->'crosshost' ? 'maintenance' THEN 'maintenance' ELSE 'changing' END FROM cross_host_reservations r JOIN execution_operations o ON o.id=r.parent_id WHERE r.server_id=$2 AND o.environment_id=$3 AND o.state NOT IN ('succeeded','failed','cancelled')),'') FROM servers WHERE workspace_id=$1 AND id=$2`, ws, host.ServerID, env).Scan(&online, &phase); err != nil {
+				return err
+			}
+			if !online {
+				host.State = "unknown"
+				unavailable[host.ServerID] = true
+			} else {
+				host.State = "snapshot"
+				if phase != "" {
+					host.State = phase
+					unavailable[host.ServerID] = true
+				}
+			}
+		}
+		for i := range out.Resources {
+			resource := &out.Resources[i]
+			for j := range resource.Instances {
+				instance := &resource.Instances[j]
+				if instance.ServerID != nil && unavailable[*instance.ServerID] {
+					instance.State = "unknown"
+					resource.State = "unknown"
+				}
+			}
+		}
+		return nil
+
 	})
 	return out, err
 }
@@ -439,12 +510,23 @@ func (s *Service) ObserveVisual(ctx context.Context, p store.Principal, ws, pid,
 			return err
 		}
 		var id uuid.UUID
-		if err := tx.QueryRow(ctx, "SELECT visual_plan_id FROM execution_operations WHERE workspace_id=$1 AND environment_id=$2 AND visual_plan_id IS NOT NULL ORDER BY created_at DESC LIMIT 1", ws, env).Scan(&id); err != nil {
+		err = tx.QueryRow(ctx, "SELECT plan_id FROM visual_runtime WHERE workspace_id=$1 AND environment_id=$2 AND plan_id IS NOT NULL", ws, env).Scan(&id)
+		if errors.Is(err, pgx.ErrNoRows) {
+			err = tx.QueryRow(ctx, "SELECT visual_plan_id FROM execution_operations WHERE workspace_id=$1 AND environment_id=$2 AND visual_plan_id IS NOT NULL ORDER BY created_at DESC LIMIT 1", ws, env).Scan(&id)
+		}
+		if err != nil {
 			return err
 		}
 		plan, err := readPlan(ctx, tx, ws, env, id)
 		if err != nil {
 			return err
+		}
+		if plan.Distributed != nil {
+			if volume == nil {
+				out, err = s.insertCoordination(ctx, tx, ws, uuid.New(), "observe", plan)
+				return err
+			}
+			plan = plan.PrimaryPlan()
 		}
 		action := "observe"
 		if volume != nil {
@@ -526,7 +608,7 @@ func (s *Service) hydrateVisual(ctx context.Context, c *api.ExecutionCommand) er
 		payload.RegistryAccess[key] = access.Pull
 	}
 	total := 0
-	refs := domain.SecretReferences(payload.Plan.Specification)
+	refs := payload.Plan.SecretReferences()
 	if payload.Action == "resolve" {
 		refs = nil
 	}
@@ -688,6 +770,11 @@ func (s *Service) visualReport(ctx context.Context, tx pgx.Tx, c api.ExecutionCo
 		if observed.InfrastructureDrift {
 			return domain.Invalid("observation.infrastructureDrift")
 		}
+		if plan.Distributed == nil && plan.Local == nil {
+			if _, err := tx.Exec(ctx, `DELETE FROM cross_host_runtime WHERE workspace_id=$1 AND environment_id=$2`, ws, c.EnvironmentId); err != nil {
+				return err
+			}
+		}
 		previous = &plan.ID
 		if _, err := tx.Exec(ctx, "UPDATE environments SET applied_revision_id=$3 WHERE workspace_id=$1 AND id=$2", ws, c.EnvironmentId, plan.RevisionID); err != nil {
 			return err
@@ -729,6 +816,11 @@ func (s *Service) visualReport(ctx context.Context, tx pgx.Tx, c api.ExecutionCo
 		if _, err := tx.Exec(ctx, "UPDATE managed_volumes SET deleted=true WHERE workspace_id=$1 AND environment_id=$2 AND id=$3", ws, c.EnvironmentId, *payload.VolumeID); err != nil {
 			return err
 		}
+	}
+	if plan.Local != nil && payload.Action == "delete-volume" {
+		// Removing an unused primary volume must not replace the group snapshot
+		// with a primary-only observation.
+		return nil
 	}
 	observed.Images = nil
 	raw, _ := json.Marshal(observed)

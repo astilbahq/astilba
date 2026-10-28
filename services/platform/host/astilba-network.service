@@ -1,0 +1,21 @@
+[Unit]
+Description=Restore approved Astilba private links
+After=network-online.target
+Wants=network-online.target
+Before=docker.service astilba-agent.service
+
+[Service]
+Type=oneshot
+User=root
+UMask=0077
+ExecStart=/usr/local/bin/astilba-agent network-restore
+RemainAfterExit=yes
+NoNewPrivileges=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/astilba-agent
+PrivateTmp=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+
+[Install]
+WantedBy=multi-user.target

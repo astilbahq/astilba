@@ -4,6 +4,24 @@
  */
 
 export interface paths {
+    "/api/v1/workspaces/{workspaceId}/network": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+            };
+            cookie?: never;
+        };
+        get: operations["getManagedNetwork"];
+        put: operations["configureManagedNetwork"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/preview-policy": {
         parameters: {
             query?: never;
@@ -1009,6 +1027,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/agent/v1/operations/{parentId}/checkpoints/{checkpointId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["downloadRecoveryCheckpoint"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/agent/v1/report": {
         parameters: {
             query?: never;
@@ -2001,6 +2035,106 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        CrossHostInventory: {
+            ingressReady?: boolean;
+            cpuMillis: number;
+            memoryMiB: number;
+            unboundedInventoryHash: string;
+        };
+        ManagedNetworkMemberInput: {
+            /** Format: uuid */
+            serverId: string;
+            endpoint: string;
+            listenPort: number;
+            cpuMillis: number;
+            memoryMiB: number;
+            unboundedInventoryHash: string;
+        };
+        ConfigureManagedNetwork: {
+            /** Format: int64 */
+            baseGeneration: number;
+            prefix: string;
+            members: components["schemas"]["ManagedNetworkMemberInput"][];
+        };
+        ManagedNetwork: {
+            /** Format: uuid */
+            id: string;
+            /** Format: int64 */
+            generation: number;
+            prefix: string;
+            state: string;
+            members: {
+                /** Format: uuid */
+                serverId: string;
+                /** Format: uuid */
+                membershipId: string;
+                address: string;
+                endpoint: string;
+                listenPort: number;
+                cpuMillis: number;
+                memoryMiB: number;
+                unboundedInventoryHash: string;
+                publicKey?: string;
+                enabled: boolean;
+                /** Format: int64 */
+                generation: number;
+                /** Format: int64 */
+                acknowledgedGeneration: number;
+                state: string;
+                note: string;
+            }[];
+        };
+        CrossHostPlacement: {
+            /** Format: uuid */
+            networkId: string;
+            /** Format: uuid */
+            ingressServerId: string;
+            applications: {
+                /** Format: uuid */
+                applicationId: string;
+                cpuMillis: number;
+                memoryMiB: number;
+                targets: {
+                    /** Format: uuid */
+                    serverId: string;
+                    count: number;
+                }[];
+            }[];
+        };
+        NetworkCommand: {
+            [key: string]: unknown;
+        };
+        NetworkReceipt: {
+            [key: string]: unknown;
+        };
+        CrossHostCommand: {
+            [key: string]: unknown;
+        };
+        RecoveryDescriptor: {
+            /** @enum {integer} */
+            version: 1;
+            /** Format: uuid */
+            workspaceId: string;
+            /** Format: uuid */
+            parentId: string;
+            rootHash: string;
+            /** Format: uuid */
+            groupId: string;
+            groupHash: string;
+            /** Format: uuid */
+            baseId: string;
+            /** Format: uuid */
+            checkpointId: string;
+            /** Format: int64 */
+            sequence: number;
+            previousHash?: string;
+            digest: string;
+            bytes: number;
+            participants: string[];
+        };
+        CrossHostReceipt: {
+            [key: string]: unknown;
+        };
         PreviewCleanupReceipt: {
             /** Format: uuid */
             operationId: string;
@@ -2171,6 +2305,8 @@ export interface components {
         /** @enum {string} */
         ServerRole: "deployment" | "build" | "combined";
         AgentCapabilities: {
+            /** @description Supports versioned managed private links and coordinated cross-host commands. */
+            crossHost?: boolean;
             /** @description Supports bounded preview plans and ownership-verified cleanup. */
             previews?: boolean;
             /** @enum {integer} */
@@ -2203,6 +2339,7 @@ export interface components {
             credentialFreeVisualCancel?: boolean;
         };
         HostPreflight: {
+            crossHostInventory?: components["schemas"]["CrossHostInventory"];
             certificateContactConfigured?: boolean;
             ready: boolean;
             osRelease: string;
@@ -2314,6 +2451,11 @@ export interface components {
             version: string;
         };
         ExecutionCommand: {
+            /** Format: uuid */
+            parentId?: string;
+            network?: components["schemas"]["NetworkCommand"];
+            crosshost?: components["schemas"]["CrossHostCommand"];
+            recoveryCheckpoint?: components["schemas"]["RecoveryDescriptor"];
             /** Format: int64 */
             controllerGeneration?: number;
             /** Format: uuid */
@@ -2326,7 +2468,7 @@ export interface components {
             generation: number;
             planHash: string;
             /** @enum {string} */
-            kind: "test" | "update" | "visual" | "pipeline" | "backup" | "schedule" | "upgrade";
+            kind: "test" | "update" | "visual" | "pipeline" | "backup" | "schedule" | "upgrade" | "network" | "crosshost";
             action: components["schemas"]["TestAction"];
             /** Format: uuid */
             resourceId: string;
@@ -2349,6 +2491,8 @@ export interface components {
             detail: string;
         };
         AgentReport: {
+            network?: components["schemas"]["NetworkReceipt"];
+            crosshost?: components["schemas"]["CrossHostReceipt"];
             /** Format: uuid */
             id: string;
             /** Format: int64 */
@@ -2374,7 +2518,7 @@ export interface components {
             generation: number;
             state: components["schemas"]["ExecutionState"];
             /** @enum {string} */
-            kind: "test" | "update" | "visual" | "pipeline" | "backup" | "schedule" | "upgrade";
+            kind: "test" | "update" | "visual" | "pipeline" | "backup" | "schedule" | "upgrade" | "network" | "crosshost";
             cancelRequested: boolean;
             note: string;
             steps: components["schemas"]["ExecutionStep"][];
@@ -2562,6 +2706,7 @@ export interface components {
             secretVersionId?: string;
         };
         Specification: {
+            placement?: components["schemas"]["CrossHostPlacement"];
             /** @enum {integer} */
             version: 1;
             applications: components["schemas"]["ApplicationReference"][];
@@ -2755,6 +2900,9 @@ export interface components {
             applicationId: string;
         };
         VisualPlan: {
+            restore?: components["schemas"]["RestoreCutover"];
+            distributed?: components["schemas"]["DistributedPlan"];
+            local?: components["schemas"]["LocalPlacement"];
             replicaInstances?: {
                 [key: string]: string[];
             };
@@ -2775,7 +2923,7 @@ export interface components {
             revisionId: string;
             expectedAppliedId: string | null;
             /** @enum {integer} */
-            recipe: 1 | 2 | 3;
+            recipe: 1 | 2 | 3 | 4;
             specification: components["schemas"]["Specification"];
             images: {
                 [key: string]: string;
@@ -2808,6 +2956,11 @@ export interface components {
             instances?: {
                 /** Format: uuid */
                 instanceId: string;
+                /** Format: uuid */
+                serverId?: string;
+                /** Format: uuid */
+                unitId?: string;
+                image?: string;
                 state: string;
             }[];
             /** Format: uuid */
@@ -2822,6 +2975,15 @@ export interface components {
             memoryBytes: number;
         };
         VisualObservation: {
+            hosts?: {
+                /** Format: uuid */
+                serverId: string;
+                /** Format: uuid */
+                unitId: string;
+                state: string;
+                /** Format: date-time */
+                observedAt: string;
+            }[];
             /** Format: date-time */
             observedAt: string;
             resources: components["schemas"]["ResourceObservation"][];
@@ -3288,6 +3450,8 @@ export interface components {
             baseGeneration: number;
         };
         BackupPolicy: {
+            /** @description Writer-stopping schedule is executed by management across all placement units. */
+            coordinated?: boolean;
             /** Format: uuid */
             id: string;
             name: string;
@@ -3385,6 +3549,11 @@ export interface components {
             /** @enum {string} */
             action: "install" | "check" | "backup" | "restore" | "disable";
             installation: components["schemas"]["BackupInstallation"];
+            /**
+             * Format: date-time
+             * @description Frozen occurrence for a management-coordinated scheduled backup.
+             */
+            scheduledAt?: string;
             /** Format: uuid */
             runId: string;
             snapshot: string;
@@ -3426,6 +3595,7 @@ export interface components {
             expectedPhase: string;
         };
         UpgradePlan: {
+            group?: components["schemas"]["VisualPlan"];
             /** Format: uuid */
             id: string;
             /** @enum {integer} */
@@ -3513,6 +3683,9 @@ export interface components {
             support: string;
         };
         ControllerInventory: {
+            recovery?: {
+                [key: string]: unknown;
+            };
             previewCleanups?: components["schemas"]["PreviewCleanupReceipt"][];
             units: {
                 [key: string]: string;
@@ -3652,6 +3825,10 @@ export interface components {
             /** Format: uuid */
             resourceId: string;
             /** Format: uuid */
+            serverId?: string;
+            /** Format: uuid */
+            unitId?: string;
+            /** Format: uuid */
             operationId?: string;
             content: string;
             /** @description This export shortened this entry. Source snapshots can already be incomplete regardless of this flag. */
@@ -3679,6 +3856,131 @@ export interface components {
             truncated: boolean;
             entries: components["schemas"]["LogExportEntry"][];
         };
+        ManagedLinkSource: {
+            /** Format: uuid */
+            serverId: string;
+            /** Format: uuid */
+            unitId: string;
+        };
+        ManagedLinkEndpoint: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            unitId: string;
+            /** Format: uuid */
+            resourceId: string;
+            /** Format: uuid */
+            instanceId: string;
+            port: number;
+            containerPort: number;
+            sources: components["schemas"]["ManagedLinkSource"][];
+        };
+        ManagedLinkPeer: {
+            /** Format: uuid */
+            serverId: string;
+            /** Format: uuid */
+            membershipId: string;
+            address: string;
+            publicKey: string;
+            endpoint: string;
+        };
+        ManagedLinkEgress: {
+            /** Format: uuid */
+            unitId: string;
+            /** Format: uuid */
+            serverId: string;
+            /** Format: uuid */
+            endpointId: string;
+            port: number;
+            ingress?: boolean;
+        };
+        ManagedLinkManifest: {
+            /** @enum {integer} */
+            version: 1;
+            /** Format: uuid */
+            networkId: string;
+            /** Format: uuid */
+            membershipId: string;
+            /** Format: uuid */
+            serverId: string;
+            controllerGeneration: number;
+            generation: number;
+            prefix: string;
+            address: string;
+            publicKey: string;
+            listenPort: number;
+            peers: components["schemas"]["ManagedLinkPeer"][];
+            exports: components["schemas"]["ManagedLinkEndpoint"][];
+            egress: components["schemas"]["ManagedLinkEgress"][];
+            disabled: boolean;
+        };
+        PrivateEndpoint: {
+            /** Format: uuid */
+            serverId: string;
+            /** Format: uuid */
+            unitId: string;
+            /** Format: uuid */
+            resourceId: string;
+            /** Format: uuid */
+            instanceId: string;
+            address: string;
+            port: number;
+            containerPort: number;
+        };
+        ResourceRequest: {
+            cpuMillis: number;
+            memoryMiB: number;
+        };
+        LocalPlacement: {
+            /** Format: uuid */
+            groupId: string;
+            primary: boolean;
+            network: components["schemas"]["ManagedLinkManifest"];
+            instances: {
+                [key: string]: string[];
+            };
+            priorInstances: {
+                [key: string]: string[];
+            };
+            requests: {
+                [key: string]: components["schemas"]["ResourceRequest"];
+            };
+            outputs: {
+                [key: string]: components["schemas"]["PrivateEndpoint"];
+            };
+            backends: {
+                [key: string]: components["schemas"]["PrivateEndpoint"][];
+            };
+        };
+        DistributedUnit: {
+            plan: components["schemas"]["VisualPlan"];
+            previous: {
+                [key: string]: unknown;
+            };
+            cpuMillis: number;
+            memoryMiB: number;
+            inventoryHash: string;
+        };
+        DistributedPlan: {
+            /** Format: uuid */
+            networkId: string;
+            networkGeneration: number;
+            units: components["schemas"]["DistributedUnit"][];
+        };
+        RestoreCutover: {
+            /** Format: uuid */
+            sourcePlanId: string;
+            sourceHash: string;
+            /** Format: uuid */
+            policyId: string;
+            /** Format: uuid */
+            runId: string;
+            manifestHash: string;
+            /** Format: uuid */
+            oldVolumeId: string;
+            /** Format: uuid */
+            targetVolumeId: string;
+        };
     };
     responses: never;
     parameters: never;
@@ -3688,6 +3990,72 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    getManagedNetwork: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Managed network desired state and member acknowledgements */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ManagedNetwork"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    configureManagedNetwork: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ConfigureManagedNetwork"];
+            };
+        };
+        responses: {
+            /** @description Reviewed network configuration saved for reconciliation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ManagedNetwork"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
     getPreviewPolicy: {
         parameters: {
             query?: never;
@@ -6110,6 +6478,38 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AgentPoll"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    downloadRecoveryCheckpoint: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                parentId: string;
+                checkpointId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Management-keyring-encrypted metadata for the assigned primary. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/octet-stream": string;
                 };
             };
             /** @description Error */

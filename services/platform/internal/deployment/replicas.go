@@ -3,6 +3,9 @@ package deployment
 import "github.com/google/uuid"
 
 func (p Plan) InstanceIDs(id uuid.UUID) []uuid.UUID {
+	if p.Local != nil {
+		return append([]uuid.UUID(nil), p.Local.Instances[id.String()]...)
+	}
 	return append([]uuid.UUID{p.Instance(id)}, p.ReplicaInstances[id.String()]...)
 }
 
@@ -12,7 +15,7 @@ func (p *Plan) PrepareInstances(previous Plan) {
 	if p.Specification.Compose != nil {
 		return
 	}
-	if p.Specification.HasReplicaConfiguration() || previous.Recipe == ReplicaRecipe {
+	if p.Specification.HasReplicaConfiguration() || previous.Recipe == ReplicaRecipe || previous.Recipe == CrossHostRecipe {
 		p.Recipe = ReplicaRecipe
 	}
 	p.Instances = map[string]uuid.UUID{}
@@ -24,10 +27,20 @@ func (p *Plan) PrepareInstances(previous Plan) {
 				p.Instances[id] = instance
 			}
 		}
+		if previous.Local != nil && previous.ServerID == p.ServerID && app.Postgres == nil {
+			if ids := previous.InstanceIDs(app.ID); len(ids) > 0 {
+				p.Instances[id] = ids[0]
+			}
+		}
 		for i := 0; i < app.ReplicaCount()-1; i++ {
 			instance := uuid.New()
 			if previous.ServerID == p.ServerID && i < len(previous.ReplicaInstances[id]) {
 				instance = previous.ReplicaInstances[id][i]
+			}
+			if previous.Local != nil && previous.ServerID == p.ServerID {
+				if ids := previous.InstanceIDs(app.ID); i+1 < len(ids) {
+					instance = ids[i+1]
+				}
 			}
 			p.ReplicaInstances[id] = append(p.ReplicaInstances[id], instance)
 		}

@@ -19,6 +19,7 @@ import * as s from "../../styles";
 import { ErrorNotice, useAction } from "../../ui";
 import { Backups } from "../backups";
 import { ComposeEditor } from "../compose-editor";
+import { CrossHostPlacement } from "../cross-host-placement";
 import { Deployments } from "../deployments";
 import { Pipelines } from "../pipelines";
 import { Previews } from "../previews";
@@ -144,180 +145,197 @@ export function EnvironmentWorkspace({
         value="configuration"
         keepMounted={visited.has("configuration")}
       >
-        <div className={e.configuration}>
-          <section className={s.panel}>
-            <div className={s.spread}>
-              <h2>Configuration</h2>
-              <span className={s.muted}>
-                {dirty ? "Unsaved changes" : "Saved revision"}
-              </span>
-            </div>
-            <p className={s.muted}>{envT(($) => $.configurationDescription)}</p>
-            <ErrorNotice error={visibleError} />
-            {message && (
-              <p role="status" className={s.notice}>
-                {message}
+        <div className={s.stack}>
+          <div className={e.configuration}>
+            <section className={s.panel}>
+              <div className={s.spread}>
+                <h2>Configuration</h2>
+                <span className={s.muted}>
+                  {dirty ? "Unsaved changes" : "Saved revision"}
+                </span>
+              </div>
+              <p className={s.muted}>
+                {envT(($) => $.configurationDescription)}
               </p>
-            )}
-            <div hidden={rawChanged}>
-              {environment.configurationOwner === "compose" ? (
-                <ComposeEditor
-                  baseFiles={base.specification.compose?.files ?? []}
-                  path={path}
-                  spec={
-                    rawChanged
-                      ? base.specification
-                      : (JSON.parse(draft) as Schema["Specification"])
-                  }
-                  change={(spec) => {
-                    setDraft(JSON.stringify(spec, null, 2));
-                    setMessage("");
-                  }}
-                  write={write}
-                  dirty={dirty}
-                  onLayoutDirty={setLayoutDirty}
-                />
-              ) : (
-                <VisualEditor
-                  path={path}
-                  spec={
-                    rawChanged
-                      ? base.specification
-                      : (JSON.parse(draft) as Schema["Specification"])
-                  }
-                  change={(spec) => {
-                    setDraft(JSON.stringify(spec, null, 2));
-                    setMessage("");
-                  }}
-                  write={write}
-                  dirty={dirty}
-                  onLayoutDirty={setLayoutDirty}
-                />
+              <ErrorNotice error={visibleError} />
+              {message && (
+                <p role="status" className={s.notice}>
+                  {message}
+                </p>
               )}
-            </div>
-            {rawChanged && (
-              <p className={s.notice}>
-                Save the advanced specification before returning to the visual
-                editor.
-              </p>
-            )}
-            {environment.configurationOwner !== "compose" && (
-              <details>
-                <summary>Advanced specification</summary>
-                <Label>
-                  Specification (JSON)
-                  <Textarea
-                    className={s.editor}
-                    value={draft}
-                    readOnly={!write}
-                    spellCheck={false}
-                    onChange={(e) => {
-                      setDraft(e.target.value);
-                      setRawChanged(true);
+              <div hidden={rawChanged}>
+                {environment.configurationOwner === "compose" ? (
+                  <ComposeEditor
+                    baseFiles={base.specification.compose?.files ?? []}
+                    path={path}
+                    spec={
+                      rawChanged
+                        ? base.specification
+                        : (JSON.parse(draft) as Schema["Specification"])
+                    }
+                    change={(spec) => {
+                      setDraft(JSON.stringify(spec, null, 2));
                       setMessage("");
                     }}
+                    write={write}
+                    dirty={dirty}
+                    onLayoutDirty={setLayoutDirty}
                   />
-                </Label>
-              </details>
-            )}
-            {write && (
-              <div className={s.row}>
-                <Button
-                  type="button"
-                  variant="primary"
-                  disabled={!dirty || action.isPending || !!conflict}
-                  onClick={save}
-                >
-                  {action.isPending ? "Saving…" : "Save revision"}
-                </Button>
-                <Button
-                  type="button"
-                  disabled={action.isPending}
-                  onClick={() => {
-                    if (
-                      !dirty ||
-                      window.confirm(
-                        "Discard unsaved edits and load the current revision?",
+                ) : (
+                  <VisualEditor
+                    path={path}
+                    spec={
+                      rawChanged
+                        ? base.specification
+                        : (JSON.parse(draft) as Schema["Specification"])
+                    }
+                    change={(spec) => {
+                      setDraft(JSON.stringify(spec, null, 2));
+                      setMessage("");
+                    }}
+                    write={write}
+                    dirty={dirty}
+                    onLayoutDirty={setLayoutDirty}
+                  />
+                )}
+              </div>
+              {rawChanged && (
+                <p className={s.notice}>
+                  Save the advanced specification before returning to the visual
+                  editor.
+                </p>
+              )}
+              {environment.configurationOwner !== "compose" && (
+                <details>
+                  <summary>Advanced specification</summary>
+                  <Label>
+                    Specification (JSON)
+                    <Textarea
+                      className={s.editor}
+                      value={draft}
+                      readOnly={!write}
+                      spellCheck={false}
+                      onChange={(e) => {
+                        setDraft(e.target.value);
+                        setRawChanged(true);
+                        setMessage("");
+                      }}
+                    />
+                  </Label>
+                </details>
+              )}
+              {write && (
+                <div className={s.row}>
+                  <Button
+                    type="button"
+                    variant="primary"
+                    disabled={!dirty || action.isPending || !!conflict}
+                    onClick={save}
+                  >
+                    {action.isPending ? "Saving…" : "Save revision"}
+                  </Button>
+                  <Button
+                    type="button"
+                    disabled={action.isPending}
+                    onClick={() => {
+                      if (
+                        !dirty ||
+                        window.confirm(
+                          "Discard unsaved edits and load the current revision?",
+                        )
                       )
-                    )
-                      action.run(async () =>
-                        replace(
-                          await result(
-                            client.GET(
-                              "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/draft",
-                              { params: { path } },
+                        action.run(async () =>
+                          replace(
+                            await result(
+                              client.GET(
+                                "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/draft",
+                                { params: { path } },
+                              ),
                             ),
                           ),
-                        ),
+                        );
+                    }}
+                  >
+                    Reload current
+                  </Button>
+                </div>
+              )}
+              {conflict && (
+                <section className={s.stack} aria-label="Conflicting revision">
+                  <h3>Another revision was saved</h3>
+                  <p>
+                    Your edits are still in the editor above. Compare them with
+                    the current server revision below, then merge your changes
+                    before saving again.
+                  </p>
+                  <pre className={s.code} style={{ whiteSpace: "pre-wrap" }}>
+                    {JSON.stringify(conflict.specification, null, 2)}
+                  </pre>
+                  <Button
+                    type="button"
+                    onClick={() => {
+                      setBase(conflict);
+                      setConflict(undefined);
+                      setMessage(
+                        "Your edits are preserved and will be saved on top of the compared revision.",
                       );
-                  }}
-                >
-                  Reload current
-                </Button>
-              </div>
-            )}
-            {conflict && (
-              <section className={s.stack} aria-label="Conflicting revision">
-                <h3>Another revision was saved</h3>
-                <p>
-                  Your edits are still in the editor above. Compare them with
-                  the current server revision below, then merge your changes
-                  before saving again.
-                </p>
-                <pre className={s.code} style={{ whiteSpace: "pre-wrap" }}>
-                  {JSON.stringify(conflict.specification, null, 2)}
-                </pre>
-                <Button
-                  type="button"
-                  onClick={() => {
-                    setBase(conflict);
-                    setConflict(undefined);
-                    setMessage(
-                      "Your edits are preserved and will be saved on top of the compared revision.",
-                    );
-                  }}
-                >
-                  I have compared and merged my edits
-                </Button>
-              </section>
-            )}
-          </section>
-          <aside className={e.history} aria-label="Revision history and layout">
-            <h2>Revision history</h2>
-            <section className={s.panel}>
-              <ErrorNotice error={history.error} />
-              <div className={e.revisions}>
-                {history.data?.map((revision) => (
-                  <div key={revision.id}>
-                    <p className={s.code}>{revision.hash.slice(0, 12)}</p>
-                    <time className={s.muted} dateTime={revision.createdAt}>
-                      {new Date(revision.createdAt).toLocaleString()}
-                    </time>
-                    <Button
-                      type="button"
-                      onClick={() =>
-                        action.run(async () => {
-                          const v = await result(
-                            client.GET(
-                              "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/revisions/{revisionId}",
-                              {
-                                params: {
-                                  path: { ...path, revisionId: revision.id },
-                                },
-                              },
-                            ),
-                          );
-                          setConflict(v);
-                        })
-                      }
-                    >
-                      Compare revision
-                    </Button>
-                  </div>
-                ))}
-              </div>
+                    }}
+                  >
+                    I have compared and merged my edits
+                  </Button>
+                </section>
+              )}
             </section>
-          </aside>
+            <aside
+              className={e.history}
+              aria-label="Revision history and layout"
+            >
+              <h2>Revision history</h2>
+              <section className={s.panel}>
+                <ErrorNotice error={history.error} />
+                <div className={e.revisions}>
+                  {history.data?.map((revision) => (
+                    <div key={revision.id}>
+                      <p className={s.code}>{revision.hash.slice(0, 12)}</p>
+                      <time className={s.muted} dateTime={revision.createdAt}>
+                        {new Date(revision.createdAt).toLocaleString()}
+                      </time>
+                      <Button
+                        type="button"
+                        onClick={() =>
+                          action.run(async () => {
+                            const v = await result(
+                              client.GET(
+                                "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/revisions/{revisionId}",
+                                {
+                                  params: {
+                                    path: { ...path, revisionId: revision.id },
+                                  },
+                                },
+                              ),
+                            );
+                            setConflict(v);
+                          })
+                        }
+                      >
+                        Compare revision
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            </aside>
+          </div>
+          {write &&
+            !base.specification.compose &&
+            (!environment.purpose || environment.purpose === "standard") &&
+            !rawChanged && (
+              <PlacementWorkspace
+                path={path}
+                spec={JSON.parse(draft) as Schema["Specification"]}
+                change={(spec) => setDraft(JSON.stringify(spec, null, 2))}
+              />
+            )}
         </div>
       </TabsPanel>
       <TabsPanel value="deployments" keepMounted={visited.has("deployments")}>
@@ -440,5 +458,34 @@ export function EnvironmentWorkspace({
         </AlertDialogContent>
       </AlertDialogRoot>
     </>
+  );
+}
+
+function PlacementWorkspace({
+  path,
+  spec,
+  change,
+}: {
+  path: { workspaceId: string };
+  spec: Schema["Specification"];
+  change: (spec: Schema["Specification"]) => void;
+}) {
+  const servers = useQuery({
+    queryKey: ["servers", path.workspaceId],
+    queryFn: () =>
+      result(
+        client.GET("/api/v1/workspaces/{workspaceId}/servers", {
+          params: { path: { workspaceId: path.workspaceId } },
+        }),
+      ),
+    refetchInterval: 15000,
+  });
+  return (
+    <CrossHostPlacement
+      workspaceId={path.workspaceId}
+      servers={servers.data ?? []}
+      spec={spec}
+      change={change}
+    />
   );
 }

@@ -18,6 +18,7 @@ import (
 	"github.com/alexedwards/scs/pgxstore"
 	"github.com/alexedwards/scs/v2"
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
+	"github.com/astilbahq/astilba/services/platform/host"
 	"github.com/astilbahq/astilba/services/platform/internal/alerts"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/auth"
@@ -140,6 +141,11 @@ func (s *Server) Handler(assets http.Handler) (http.Handler, error) {
 	r.Get("/agent-artifacts/{sha}/signature", s.agentReleaseSignature)
 	r.Get("/agent-public-key.pem", s.agentPublicKey)
 	r.Get("/onboarding/bootstrap.sh", s.hostBootstrap)
+	r.Get("/onboarding/network-prepare.sh", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/x-shellscript; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-store")
+		_, _ = w.Write(host.NetworkPreparation())
+	})
 	r.Get("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), time.Second)
 		defer cancel()

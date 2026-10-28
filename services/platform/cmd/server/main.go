@@ -41,7 +41,7 @@ func main() {
 }
 func run() error {
 	if len(os.Args) < 2 {
-		return errors.New("usage: astilba keygen|migrate|bootstrap|rewrap|invite|grant-management|prepare-recovery|serve")
+		return errors.New("usage: astilba keygen|migrate|bootstrap|rewrap|invite|grant-management|prepare-recovery|recover-cross-host|serve")
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -80,7 +80,14 @@ func run() error {
 	if e != nil {
 		return e
 	}
-	pool, e := pgxpool.New(ctx, c.DatabaseURL)
+	poolConfig, e := pgxpool.ParseConfig(c.DatabaseURL)
+	if e != nil {
+		return errors.New("cannot configure database")
+	}
+	if os.Args[1] == "serve" {
+		store.ConfigureServingPool(poolConfig)
+	}
+	pool, e := pgxpool.NewWithConfig(ctx, poolConfig)
 	if e != nil {
 		return errors.New("cannot configure database")
 	}
@@ -90,6 +97,8 @@ func run() error {
 	st.LogRetention = c.LogRetention
 	st.ApplicationDomain = c.ApplicationDNS.Base
 	switch os.Args[1] {
+	case "recover-cross-host":
+		return recoverCrossHostCommand(ctx, st, os.Args[2:])
 	case "invite":
 		f := flag.NewFlagSet("invite", flag.ContinueOnError)
 		email := f.String("email", "", "beta invitee email")
@@ -186,6 +195,9 @@ func run() error {
 		_, e = st.Bootstrap(ctx, address, owner, hash, ws)
 		return e
 	case "serve":
+		if err := pool.Ping(ctx); err != nil {
+			return errors.New("serving database is unavailable or excluded by offline recovery")
+		}
 		if e = c.ValidateServer(); e != nil {
 			return e
 		}

@@ -13,6 +13,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/backup"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
+	"github.com/astilbahq/astilba/services/platform/internal/hostnetwork"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -25,7 +26,11 @@ func generation(v *int64) int64 {
 }
 func transferInventory(ctx context.Context, tx pgx.Tx, ws, server uuid.UUID) (api.ControllerInventory, error) {
 	out := api.ControllerInventory{Units: map[string]string{}, Schedules: map[string]int64{}}
-	rows, e := tx.Query(ctx, `SELECT r.unit_id,p.plan FROM visual_runtime r JOIN visual_plans p ON p.id=r.plan_id AND p.workspace_id=r.workspace_id WHERE r.workspace_id=$1 AND r.server_id=$2`, ws, server)
+	rows, e := tx.Query(ctx, `SELECT r.unit_id,p.plan FROM visual_runtime r
+	 JOIN visual_plans p ON p.id=r.plan_id AND p.workspace_id=r.workspace_id
+	 WHERE r.workspace_id=$1 AND r.server_id=$2
+	 AND NOT EXISTS(SELECT 1 FROM cross_host_runtime c WHERE c.workspace_id=r.workspace_id AND c.unit_id=r.unit_id)
+	 UNION ALL SELECT unit_id,inventory->'plan' FROM cross_host_runtime WHERE workspace_id=$1 AND server_id=$2`, ws, server)
 	if e != nil {
 		return out, e
 	}
@@ -41,7 +46,7 @@ func transferInventory(ctx context.Context, tx pgx.Tx, ws, server uuid.UUID) (ap
 			rows.Close()
 			return out, e
 		}
-		out.Units[id.String()] = p.Hash
+		out.Units[id.String()] = p.PrimaryPlan().Hash
 	}
 	e = rows.Err()
 	rows.Close()
@@ -111,8 +116,33 @@ func (s *Service) enroll(ctx context.Context, in api.AgentEnrollment) (api.Agent
 		if e != nil {
 			return out, e
 		}
-		if !reflect.DeepEqual(inventory, *in.Inventory) {
+		var staged []byte
+		err := tx.QueryRow(ctx, `SELECT r.inventory FROM cross_host_recovery_servers r JOIN cross_host_recoveries h ON h.parent_id=r.parent_id WHERE r.workspace_id=$1 AND r.server_id=$2 AND r.machine_id=$3 AND r.controller_generation=$4 AND NOT h.opened`, ws, in.ServerId, in.MachineId, expected).Scan(&staged)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return out, err
+		}
+		if err == nil {
+			var stagedInventory api.ControllerInventory
+			if json.Unmarshal(staged, &stagedInventory) != nil {
+				return out, domain.Invalid("recovery.inventory")
+			}
+			inventory = stagedInventory
+		}
+		actual := *in.Inventory
+		if inventory.Recovery != nil || actual.Recovery != nil {
+			var expectedAuthority, actualAuthority deployment.RecoveryAuthority
+			if inventory.Recovery == nil || actual.Recovery == nil || hostnetwork.Decode(*inventory.Recovery, &expectedAuthority) != nil || hostnetwork.Decode(*actual.Recovery, &actualAuthority) != nil || expectedAuthority != actualAuthority {
+				return out, domain.Conflict
+			}
+			inventory.Recovery, actual.Recovery = nil, nil
+		}
+		if !reflect.DeepEqual(inventory, actual) {
 			return out, domain.Conflict
+		}
+		if err == nil {
+			if _, err = tx.Exec(ctx, `UPDATE cross_host_recovery_servers SET verified=true WHERE workspace_id=$1 AND server_id=$2 AND machine_id=$3 AND controller_generation=$4`, ws, in.ServerId, in.MachineId, expected); err != nil {
+				return out, err
+			}
 		}
 	}
 	caps, _ := json.Marshal(in.Capabilities)

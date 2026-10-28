@@ -224,6 +224,16 @@ The production P2 implementation follows these boundaries in `services/platform/
 
 Create an isolated Docker network for each initial deployment unit, with stable service DNS names for bindings. PostgreSQL and TCP services are private by default. Publishing them requires review of the endpoint, access restrictions and TLS behaviour. Credentials remain separate for each environment. Public ingress requires customer-controlled reachability and DNS; automatic tunnels and UDP are outside the first release.
 
+Explicit [cross-host placement](cross-host-placement.md) adds stateless units on
+an owner-approved WireGuard network. Its private UDP transport is separate from
+public application routing. The primary retains ingress, PostgreSQL and volumes;
+immutable per-host plans freeze image architecture, instance identities, resource
+budgets and unit-scoped endpoint grants. One durable coordinator controls
+publication and remote-writer maintenance. Host checkpoints can reconstruct an
+interrupted operation after an older management restore, with exact participant
+verification and acknowledgements before execution reopens. This provides
+explicit placement, not host failover or distributed storage.
+
 Traefik is the only bundled application proxy in the first release. Keep ordinary route intent in a proxy-neutral model and use a Traefik adapter to render HTTP and TCP configuration through its file provider. Reserve public listener ports at host scope and detect conflicting domains, ports and DNS configuration before applying a plan. Keep the proxy administration interface inaccessible from application networks and the public internet. [Traefik file provider](https://doc.traefik.io/traefik/reference/routing-configuration/other-providers/file/).
 
 Offer common route settings through forms and project-scoped advanced Traefik configuration through an explicitly restricted schema. Do not copy arbitrary YAML into the file provider: reject templates and arbitrary host paths, namespace generated resources, validate backend ownership and rewrite permitted references. Reject references to other projects or arbitrary providers, including the internal API. Separate files do not create a security boundary within a provider namespace. Host-wide listener, provider and TLS-default settings are restricted to workspace owners. Include advanced configuration in plans and exports. [Traefik provider namespaces](https://doc.traefik.io/traefik/providers/overview/#provider-namespace).

@@ -46,9 +46,24 @@ var tables = func() []table {
 			out[i].Columns += ",preview_only"
 		case "environments":
 			out[i].Columns += ",purpose"
+		case "deployment_units":
+			out[i].Columns += ",primary_unit"
+		case "execution_operations":
+			out[i].Columns += ",parent_id"
 		}
 	}
 	return append(out,
+		table{Name: "backup_cutovers", Columns: "workspace_id,environment_id,revision_id,policy_id,source_plan_id,configuration"},
+		table{Name: "workspace_networks", Columns: "id,workspace_id,prefix,generation"},
+		table{Name: "network_members", Columns: "workspace_id,network_id,server_id,membership_id,address,endpoint,listen_port,cpu_millis,memory_mib,unbounded_inventory_hash,public_key,enabled,approved_controller,generation,acknowledged_generation,manifest_hash,installed_manifest,note"},
+		table{Name: "network_endpoints", Columns: "id,workspace_id,environment_id,server_id,unit_id,resource_id,instance_id,listen_port,container_port,retired,plan_id"},
+		table{Name: "network_endpoint_sources", Columns: "workspace_id,endpoint_id,server_id,unit_id,active,ingress,plan_id"},
+		table{Name: "network_plan_endpoints", Columns: "plan_id,workspace_id,endpoint_id"},
+		table{Name: "network_plan_sources", Columns: "plan_id,workspace_id,endpoint_id,server_id,unit_id,ingress"},
+		table{Name: "cross_host_operations", Columns: "id,workspace_id,environment_id,plan_id,phase,receipts"},
+		table{Name: "cross_host_approvals", Columns: "workspace_id,request_key,parent_id,upgrade_id,action,expected_phase"},
+		table{Name: "cross_host_runtime", Columns: "workspace_id,environment_id,unit_id,server_id,plan_id,inventory,observed_at,cpu_millis,memory_mib"},
+		table{Name: "cross_host_reservations", Columns: "server_id,workspace_id,parent_id,cpu_millis,memory_mib"},
 		table{Name: "preview_policies", Columns: "id,workspace_id,project_id,environment_id,revision_id,application_id,connection_id,server_id,actor_id,auth_version,controller_generation,generation,enabled,configuration,discovery_page,next_discovery_at,note"},
 		table{Name: "preview_requests", Columns: "id,workspace_id,policy_id,number,head,head_repository,fork,approved_head,approved_repository,approved_generation,generation,environment_id,application_id,policy_generation,configuration,state,build_id,plan_id,operation_id,built_head,closed_at,cleanup_at,cleanup_requested,resume_after_cancel,cleanup_actor,cleanup_auth_version,cleanup_controller,next_check_at,note,created_at,updated_at"})
 }()

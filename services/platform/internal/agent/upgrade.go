@@ -234,7 +234,11 @@ func (e *Engine) prepareUpgrade(ctx context.Context, c api.ExecutionCommand, s *
 	if err != nil || n < 0 || n > 1<<40 || freeBytes(e.Journal.dir) < n*2+256<<20 || dockerFreeBytes(ctx, e.Docker) < n*3+256<<20 {
 		return errors.New("insufficient or unknown capacity for dump and fresh database while retaining the old volume")
 	}
-	if err = e.pullImageAuth(ctx, domain.PostgresImage, ""); err != nil {
+	if _, err = e.Docker.ImageInspect(ctx, domain.PostgresImage); errdefs.IsNotFound(err) {
+		if err = e.pullImageAuth(ctx, domain.PostgresImage, ""); err != nil {
+			return err
+		}
+	} else if err != nil {
 		return err
 	}
 	if err = e.prepareRepository(ctx, &s.Command.Installation, true); err != nil {
@@ -589,7 +593,7 @@ func (e *Engine) activateUpgrade(ctx context.Context, c api.ExecutionCommand, s 
 		return err
 	}
 	for _, a := range serviceOrder(target.Specification) {
-		if a.ID == p.ResourceID {
+		if a.ID == p.ResourceID || !target.Runs(a.ID) || c.ParentId != nil {
 			continue
 		}
 		if err = e.compose(ctx, target, body, s.Command.Secrets, "up", "--detach", "--no-deps", "--wait", "--wait-timeout", "60", deployment.ServiceName(a.ID)); err != nil {
@@ -606,11 +610,11 @@ func (e *Engine) activateUpgrade(ctx context.Context, c api.ExecutionCommand, s 
 	if err != nil {
 		return err
 	}
-	if observed.InfrastructureDrift || len(observed.Resources) != len(target.Specification.Applications) {
+	if observed.InfrastructureDrift || len(observed.Resources) != len(target.LocalApplications()) {
 		return errors.New("activation is unconfirmed")
 	}
 	for _, r := range observed.Resources {
-		if r.State != "running" && r.State != "healthy" {
+		if (c.ParentId == nil || r.ID == p.ResourceID) && r.State != "running" && r.State != "healthy" {
 			return errors.New("service is not running")
 		}
 	}
