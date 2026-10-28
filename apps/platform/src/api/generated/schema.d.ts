@@ -1364,6 +1364,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/build-rejections": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listBuildRejections"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/builds": {
         parameters: {
             query?: never;
@@ -3329,6 +3345,16 @@ export interface components {
             skipped?: boolean;
             cache?: string;
             railpack?: components["schemas"]["RailpackBuildSummary"];
+        };
+        /** @enum {string} */
+        BuildRejectionReason: "missing_build_secret" | "build_secret_budget" | "arguments_contain_secret" | "runtime_secret_budget";
+        BuildRejection: {
+            /** Format: uuid */
+            applicationId: string;
+            commit: string;
+            reason: components["schemas"]["BuildRejectionReason"];
+            /** Format: date-time */
+            rejectedAt: string;
         };
         PipelineRun: {
             /** Format: uuid */
@@ -7336,6 +7362,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Operation"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    listBuildRejections: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                projectId: string;
+                environmentId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Latest automatic build-input rejection for each current application. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BuildRejection"][];
                 };
             };
             /** @description Error */

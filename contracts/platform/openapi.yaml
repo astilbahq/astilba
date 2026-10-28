@@ -3055,6 +3055,24 @@
           application/json:
             schema:
               $ref: '#/components/schemas/SubmitGitSource'
+  /api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/build-rejections:
+    get:
+      operationId: listBuildRejections
+      parameters:
+        - {name: workspaceId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: projectId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: environmentId, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '200':
+          description: Latest automatic build-input rejection for each current application.
+          content:
+            application/json:
+              schema: {type: array, items: {$ref: '#/components/schemas/BuildRejection'}}
+        default:
+          description: Error
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
   /api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/builds:
     get:
       operationId: listPipelineRuns
@@ -7439,6 +7457,18 @@
       required:
         - commit
       x-go-type: json.RawMessage
+    BuildRejectionReason:
+      type: string
+      enum: [missing_build_secret, build_secret_budget, arguments_contain_secret, runtime_secret_budget]
+    BuildRejection:
+      type: object
+      additionalProperties: false
+      required: [applicationId, commit, reason, rejectedAt]
+      properties:
+        applicationId: {type: string, format: uuid}
+        commit: {type: string, minLength: 1, maxLength: 64}
+        reason: {$ref: '#/components/schemas/BuildRejectionReason'}
+        rejectedAt: {type: string, format: date-time}
     PipelineRun:
       type: object
       additionalProperties: false
