@@ -64,7 +64,7 @@ type Server struct {
 func New(st *store.Store, service *auth.Service, origin string, development bool, log *slog.Logger) (*Server, func()) {
 	sessions := scs.New()
 	backend := pgxstore.New(st.Pool)
-	sessions.Store = backend
+	sessions.Store = &sessionStore{PostgresStore: backend, pool: st.Pool}
 	sessions.HashTokenInStore = true
 	sessions.Lifetime = 12 * time.Hour
 	sessions.IdleTimeout = 30 * time.Minute
@@ -77,7 +77,21 @@ func New(st *store.Store, service *auth.Service, origin string, development bool
 		sessions.Cookie.Name = "astilba_session"
 		sessions.Cookie.Secure = false
 	}
-	return &Server{Alerts: alerts.New(st, service.Mail, origin, development, strings.Split(os.Getenv("ASTILBA_ALERT_WEBHOOK_ORIGINS"), ",")), Store: st, Auth: service, Sessions: sessions, Origin: origin, Log: log, Development: development}, backend.StopCleanup
+	server := &Server{Alerts: alerts.New(st, service.Mail, origin, development, strings.Split(os.Getenv("ASTILBA_ALERT_WEBHOOK_ORIGINS"), ",")), Store: st, Auth: service, Sessions: sessions, Origin: origin, Log: log, Development: development}
+	previousError := sessions.ErrorFunc
+	sessions.ErrorFunc = func(w http.ResponseWriter, r *http.Request, err error) {
+		// SCS continues handler writes after ErrorFunc; keep the error response
+		// separate from that handler's stale payload and download headers.
+		guard := w.(*sessionResponseGuard)
+		guard.failed = true
+		guard.Header().Del("Content-Disposition")
+		if errors.Is(err, errSessionRevoked) {
+			server.fail(guard.ResponseWriter, r, domain.Unauthenticated)
+		} else {
+			previousError(guard.ResponseWriter, r, err)
+		}
+	}
+	return server, backend.StopCleanup
 }
 func (s *Server) Handler(assets http.Handler) (http.Handler, error) {
 	if s.Execution == nil {
