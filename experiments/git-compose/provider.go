@@ -17,8 +17,9 @@ import (
 )
 
 type apiError struct {
-	kind   string
-	status int
+	kind                string
+	status              int
+	sourceBranchMissing bool
 }
 
 func (e *apiError) Error() string { return fmt.Sprintf("%s API returned HTTP %d", e.kind, e.status) }
@@ -121,7 +122,13 @@ func (p *Provider) request(ctx context.Context, method, path string, body, out a
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return &apiError{p.kind, resp.StatusCode}
+		rejected := &apiError{kind: p.kind, status: resp.StatusCode}
+		if p.kind == "gitlab" && method == "POST" && strings.HasSuffix(path, "/merge_requests") && resp.StatusCode == http.StatusBadRequest {
+			data, readErr := io.ReadAll(io.LimitReader(resp.Body, 4097))
+			var compact bytes.Buffer
+			rejected.sourceBranchMissing = readErr == nil && len(data) <= 4096 && json.Compact(&compact, data) == nil && compact.String() == `{"message":{"source_branch":["does not exist"]}}`
+		}
+		return rejected
 	}
 	if out == nil {
 		return nil
