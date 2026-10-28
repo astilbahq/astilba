@@ -106,7 +106,7 @@ func TestRecoveryConfirmationMigrationPreservesExistingCredentials(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = provider.Down(ctx); err != nil {
+	if _, err = provider.ApplyVersion(ctx, 18, false); err != nil {
 		t.Fatal(err)
 	}
 	var hash string
@@ -115,7 +115,7 @@ func TestRecoveryConfirmationMigrationPreservesExistingCredentials(t *testing.T)
 	if err = f.st.Pool.QueryRow(ctx, "SELECT password_hash,auth_version,totp_secret FROM accounts WHERE id=$1", f.owner).Scan(&hash, &version, &secret); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = provider.Up(ctx); err != nil {
+	if _, err = provider.ApplyVersion(ctx, 18, true); err != nil {
 		t.Fatal(err)
 	}
 	if err = dbmigrate.Check(ctx, f.st.Pool.Config().ConnString()); err != nil {

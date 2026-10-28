@@ -18,6 +18,7 @@ import (
 
 const ResticVersion = "0.19.1"
 const Recipe = 1
+const QuiescedFiles = "quiesced-files"
 
 type Destination struct {
 	ID       uuid.UUID `json:"id"`
@@ -43,6 +44,7 @@ type Schedule struct {
 	IntervalMinutes int    `json:"intervalMinutes,omitempty"`
 }
 type Policy struct {
+	Coordinated    bool            `json:"coordinated,omitempty"`
 	ID             uuid.UUID       `json:"id"`
 	Name           string          `json:"name"`
 	WorkspaceID    uuid.UUID       `json:"workspaceId"`
@@ -69,6 +71,7 @@ type Installation struct {
 type Command struct {
 	Action       string       `json:"action"`
 	Installation Installation `json:"installation"`
+	ScheduledAt  *time.Time   `json:"scheduledAt,omitempty"`
 	RunID        uuid.UUID    `json:"runId"`
 	Snapshot     string       `json:"snapshot"`
 	TargetID     uuid.UUID    `json:"targetId"`
@@ -160,7 +163,7 @@ func (p Policy) Validate() error {
 	if p.ID == uuid.Nil || p.WorkspaceID == uuid.Nil || p.EnvironmentID == uuid.Nil || p.ServerID == uuid.Nil || p.ResourceID == uuid.Nil || p.Generation < 1 || p.TimeoutSeconds < 0 || p.TimeoutSeconds > 1800 || p.Name == "" || len(p.Name) > 80 || p.Retain < 1 || p.Retain > 100 || p.Schedule.Validate() != nil || p.Plan.Validate(true) != nil || p.Plan.EnvironmentID != p.EnvironmentID || p.Plan.ServerID != p.ServerID {
 		return errors.New("invalid backup policy")
 	}
-	if p.Method != "postgres-logical" && p.Method != "quiesced-files" && p.Method != "container-job" {
+	if p.Method != "postgres-logical" && p.Method != QuiescedFiles && p.Method != "container-job" {
 		return errors.New("unsupported consistency method")
 	}
 	if p.Method == "container-job" && (len(p.Command) < 1 || len(p.Command) > 64) {
@@ -225,3 +228,5 @@ func Prunable(runs []Run, retain int) []string {
 	}
 	return out
 }
+
+func (p Policy) RequiresQuiescence() bool { return p.Method == QuiescedFiles }

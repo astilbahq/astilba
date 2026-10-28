@@ -22,11 +22,11 @@ type releaseQuery interface {
 }
 
 func requireReplicas(ctx context.Context, q releaseQuery, ws, server uuid.UUID, p deployment.Plan) error {
-	if p.Recipe != deployment.ReplicaRecipe {
+	if p.Recipe != deployment.ReplicaRecipe && p.Recipe != deployment.CrossHostRecipe {
 		return nil
 	}
 	var supported bool
-	if err := q.QueryRow(ctx, "SELECT COALESCE((capabilities->>'replicas')::boolean,false) AND COALESCE((capabilities->>'safeReleases')::boolean,false) FROM servers WHERE workspace_id=$1 AND id=$2", ws, server).Scan(&supported); err != nil {
+	if err := q.QueryRow(ctx, "SELECT COALESCE((capabilities->>'replicas')::boolean,false) AND COALESCE((capabilities->>'safeReleases')::boolean,false) AND ($3=3 OR COALESCE((capabilities->>'crossHost')::boolean,false)) FROM servers WHERE workspace_id=$1 AND id=$2", ws, server, p.Recipe).Scan(&supported); err != nil {
 		return err
 	}
 	if !supported {

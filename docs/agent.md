@@ -94,6 +94,35 @@ For managed HTTP TLS, the host operator sets `--acme-email operator@example.com`
 
 Backup recipes, operator filesystem roots, the pinned restic prerequisite, daily/cron/interval schedules, bounded job timeouts and local interruption recovery are documented in [Backups and restoration](backups.md). Use those instructions before enabling backup policies on an enrolled server.
 
+## Optional cross-host networking
+
+Install a signed cross-host-capable agent before preparing private links. In
+Servers, expand **Prepare a deployment server** and download the rendered
+`astilba-network-prepare.sh` script from `/onboarding/network-prepare.sh`. Inspect
+that downloaded script, run `sudo bash astilba-network-prepare.sh --check`, then
+apply it with `sudo bash astilba-network-prepare.sh --apply` on a supported Ubuntu
+24.04 host. The repository's `network-tools.sh` is a source template, so use the
+rendered download. The preparation installs pinned WireGuard/nft tools,
+an `astilba-network` boot-restore service and an agent systemd drop-in allowing
+AF_NETLINK. It preserves the other service restrictions and refuses to overwrite
+an existing network installation. Restart the agent at an idle point after
+preparation; the dashboard still requires separate owner approval of membership,
+UDP endpoints, capacity budgets and application grants.
+
+Allow the selected UDP listener through the server's upstream firewall. Servers
+need direct UDP reachability; this release has no rendezvous or traffic relay.
+Private keys stay in the protected host state directory. Approved private links
+survive management outages and are restored on host boot; revocation remains
+pending until the affected peers acknowledge it.
+
+Recipe-4 plans require the negotiated `crossHost` capability. A coordinated local
+reservation blocks ordinary mutations, updates, local schedules that conflict
+with maintenance, and ordinary controller transfer until its exact operation is
+completed or reconciled. Inspect it with `astilba-agent inspect-cross-host` while
+the service is stopped. Keep the journal and keys intact; no elapsed timeout
+releases this reservation. See [cross-host placement and management
+recovery](cross-host-placement.md) before transferring an interrupted group.
+
 ## Protected application releases
 
 Agents advertise `safeReleases` only after a controller response includes `Astilba-Agent-Safe-Releases: v1`. Instance-bearing visual plans require that capability at preparation, apply and dispatch; older payloads retain their original names and hashes. [Application releases](application-releases.md) documents eligibility, command uncertainty, cancellation, retention and recovery. The encrypted `releases` journal bucket records switch and drain state alongside the active `units` mapping; existing observations and metrics keep one logical resource per application.

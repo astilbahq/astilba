@@ -17,6 +17,9 @@ func (s *Store) PrepareRecovery(ctx context.Context, id uuid.UUID, next int64) e
 		return e
 	}
 	defer tx.Rollback(ctx)
+	if e = RequireOffline(ctx, tx); e != nil {
+		return e
+	}
 	var ws uuid.UUID
 	if e = tx.QueryRow(ctx, "SELECT workspace_id FROM servers WHERE id=$1", id).Scan(&ws); e != nil {
 		return Normalize(e)
@@ -33,6 +36,13 @@ func (s *Store) PrepareRecovery(ctx context.Context, id uuid.UUID, next int64) e
 	}
 	if prior == math.MaxInt64 || next <= prior {
 		return domain.Invalid("controllerGeneration")
+	}
+	var coordinated bool
+	if e = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM cross_host_reservations WHERE server_id=$1)`, id).Scan(&coordinated); e != nil {
+		return e
+	}
+	if coordinated {
+		return domain.Invalid("recovery.crossHostCheckpointRequired")
 	}
 	_, e = tx.Exec(ctx, `UPDATE servers SET controller_generation=$2,awaiting_transfer=true,credential_hash=NULL,previous_hash=NULL,previous_until=NULL,enrollment_hash=NULL,enrollment_expires=NULL,poll_id=NULL,poll_until=NULL,rotation_requested=false WHERE id=$1`, id, next)
 	if e != nil {

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"github.com/astilbahq/astilba/services/platform/internal/backup"
 	"net"
 	"os"
@@ -11,8 +12,10 @@ import (
 	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
+	"github.com/astilbahq/astilba/services/platform/internal/hostnetwork"
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
 	"github.com/moby/moby/client"
+	"path/filepath"
 )
 
 func Preflight(ctx context.Context, docker *client.Client, version, dir string, cli ...string) api.AgentHeartbeat {
@@ -103,5 +106,50 @@ func Preflight(ctx context.Context, docker *client.Client, version, dir string, 
 	if err != nil {
 		h.Preflight.Notes = append(h.Preflight.Notes, "Visual deployment requires Docker Compose 5.6.1.")
 	}
+
+	networkCtx, done := context.WithTimeout(ctx, 2*time.Second)
+	defer done()
+	host := hostnetwork.Host{Dir: dir}
+	marker, markerErr := os.Lstat(filepath.Join(dir, "network-enabled"))
+	crossHost := visual && markerErr == nil && marker.Mode().IsRegular() && marker.Mode().Perm()&0077 == 0 && host.Supported(networkCtx)
+	if crossHost && docker != nil {
+		var inventory api.CrossHostInventory
+		inventory, err = capacityInventory(networkCtx, docker)
+		if err == nil {
+			h.Preflight.CrossHostInventory = &inventory
+		} else {
+			crossHost = false
+		}
+	}
+	h.Capabilities.CrossHost = &crossHost
 	return h
+}
+
+func capacityInventory(ctx context.Context, docker *client.Client) (api.CrossHostInventory, error) {
+	info, infoErr := docker.Info(ctx, client.InfoOptions{})
+	containers, listErr := docker.ContainerList(ctx, client.ContainerListOptions{Limit: 1001})
+	known := infoErr == nil && listErr == nil && len(containers.Items) <= 1000 && info.Info.NCPU > 0 && info.Info.MemTotal > 0
+	unbounded := []string{}
+	if known {
+		for _, row := range containers.Items {
+			c, err := docker.ContainerInspect(ctx, row.ID, client.ContainerInspectOptions{})
+			if err != nil {
+				known = false
+				break
+			}
+			if c.Container.HostConfig == nil || c.Container.HostConfig.Memory <= 0 || c.Container.HostConfig.NanoCPUs <= 0 {
+				unbounded = append(unbounded, row.ID)
+			}
+		}
+	}
+	if !known {
+		return api.CrossHostInventory{}, errors.New("capacity inventory unavailable")
+	}
+	ingressReady := false
+	if proxy, err := docker.ContainerInspect(ctx, proxyName, client.ContainerInspectOptions{}); err == nil && proxy.Container.State.Running && proxy.Container.Config.Labels[labelKind] == "ingress-v1" && proxy.Container.NetworkSettings != nil {
+		if network := proxy.Container.NetworkSettings.Networks["astilba-ingress-network"]; network != nil {
+			ingressReady = network.GwPriority == 100
+		}
+	}
+	return api.CrossHostInventory{IngressReady: &ingressReady, CpuMillis: info.Info.NCPU * 1000, MemoryMiB: int(info.Info.MemTotal >> 20), UnboundedInventoryHash: hostnetwork.StableInventory(unbounded)}, nil
 }

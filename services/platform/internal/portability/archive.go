@@ -4,11 +4,11 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
-	"fmt"
 	"strings"
 	"time"
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
+	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
@@ -96,44 +96,27 @@ func (s *Service) transformCredential(table string, row Row, ws uuid.UUID, expor
 	return nil
 }
 func (s *Service) Export(ctx context.Context, p store.Principal, ws uuid.UUID, passphrase string) ([]byte, error) {
-	archive := Archive{Version: 4, Workspace: ws, CreatedAt: time.Now().UTC(), Tables: map[string][]Row{}}
+	archive := Archive{Version: 5, Workspace: ws, CreatedAt: time.Now().UTC(), Tables: map[string][]Row{}}
 	e := s.Store.InWorkspaceSnapshot(ctx, p, ws, func(tx pgx.Tx, q *db.Queries, w store.Workspace) error {
+		var reserved bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM cross_host_reservations WHERE workspace_id=$1)`, ws).Scan(&reserved); err != nil {
+			return err
+		}
+		if reserved {
+			return domain.Conflict
+		}
 		archive.Name = w.Name
 		archive.RequireMFA = w.RequireMFA
-		size, count := 0, 0
+		var err error
+		archive, err = captureArchive(ctx, tx, archive, true)
+		if err != nil {
+			return err
+		}
 		for _, table := range tables {
-			rows, e := tx.Query(ctx, fmt.Sprintf("SELECT to_jsonb(t) FROM (SELECT %s FROM %s WHERE workspace_id=$1 LIMIT 10001) t", table.Columns, table.Name), ws)
-			if e != nil {
-				return e
-			}
-			archive.Tables[table.Name] = []Row{}
-			for rows.Next() {
-				var raw []byte
-				if e = rows.Scan(&raw); e != nil {
-					rows.Close()
-					return e
+			for _, row := range archive.Tables[table.Name] {
+				if err := s.transformCredential(table.Name, row, ws, true); err != nil {
+					return err
 				}
-				count++
-				size += len(raw)
-				if count > 10000 || size > MaxArchiveBytes {
-					rows.Close()
-					return ErrArchive
-				}
-				var row Row
-				if e = json.Unmarshal(raw, &row); e != nil {
-					rows.Close()
-					return e
-				}
-				if e = s.transformCredential(table.Name, row, ws, true); e != nil {
-					rows.Close()
-					return e
-				}
-				archive.Tables[table.Name] = append(archive.Tables[table.Name], row)
-			}
-			e = rows.Err()
-			rows.Close()
-			if e != nil {
-				return e
 			}
 		}
 		return store.Audit(ctx, q, p, ws, "workspace.export_encrypted", ws)

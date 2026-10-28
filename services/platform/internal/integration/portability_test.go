@@ -17,6 +17,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/portability"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func TestEncryptedWorkspaceExportPreservesIdentityWithoutInstallationKeys(t *testing.T) {
@@ -76,7 +77,7 @@ func TestEncryptedWorkspaceExportPreservesIdentityWithoutInstallationKeys(t *tes
 	if e = json.Unmarshal(plain, &archive); e != nil {
 		t.Fatal(e)
 	}
-	if archive.Version != 4 || archive.Workspace != ws || archive.Name != "Test workspace" || len(archive.Tables["environments"]) != 1 {
+	if archive.Version != 5 || archive.Workspace != ws || archive.Name != "Test workspace" || len(archive.Tables["environments"]) != 1 {
 		t.Fatal("workspace identity not preserved")
 	}
 	var encoded string
@@ -297,5 +298,212 @@ func TestPrePreviewWorkspaceArchiveRemainsImportable(t *testing.T) {
 	}
 	if purpose != "standard" || reserved {
 		t.Fatal("legacy archive gained preview authority")
+	}
+}
+
+func TestOfflineRecoveryMergePreservesImmutableHistory(t *testing.T) {
+	ctx := context.Background()
+	source := setup(t)
+	b := source.browser(t)
+	session := b.login("owner@example.test", source.password)
+	ws := session.Workspaces[0].Id
+	base := "/api/v1/workspaces/" + ws.String()
+	var project api.Project
+	b.call("POST", base+"/projects", map[string]string{"name": "Recovery"}, 201, &project)
+	var env api.Environment
+	b.call("POST", base+"/projects/"+project.Id.String()+"/environments", map[string]string{"name": "Production"}, 201, &env)
+	if _, err := source.st.Pool.Exec(ctx, `UPDATE environments SET applied_revision_id=draft_revision_id WHERE workspace_id=$1 AND id=$2`, ws, env.Id); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := source.st.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := portability.CaptureRecovery(ctx, tx, ws)
+	tx.Rollback(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	archive, err := portability.DecodeRecovery(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	destination := setup(t)
+	owner := destination.browser(t).login("owner@example.test", destination.password).User.Id
+	servingConfig := destination.st.Pool.Config()
+	servingConfig.MinConns = 0
+	servingConfig.MaxConns = 2
+	store.ConfigureServingPool(servingConfig)
+	servingPool, err := pgxpool.NewWithConfig(ctx, servingConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = servingPool.Ping(ctx); err != nil {
+		t.Fatal(err)
+	}
+	probe, err := destination.st.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = store.RequireOffline(ctx, probe); err == nil {
+		t.Fatal("offline recovery admitted a serving controller")
+	}
+	probe.Rollback(ctx)
+	servingPool.Close()
+	destination.server.Close()
+	if err = destination.execution.Stop(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = destination.st.Pool.Exec(ctx, `INSERT INTO workspaces(id,name) VALUES($1,$2)`, ws, archive.Name); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = destination.st.Pool.Exec(ctx, `INSERT INTO accounts(id,email,name,password_hash) VALUES($1,'original-author@example.test','Original author','unusable-fixture-hash')`, session.User.Id); err != nil {
+		t.Fatal(err)
+	}
+	if len(archive.Tables["audit_events"]) == 0 {
+		t.Fatal("fixture has no audit history")
+	}
+	originalAudit := archive.Tables["audit_events"][0]
+	auditRaw, _ := json.Marshal(originalAudit)
+	if _, err = destination.st.Pool.Exec(ctx, `INSERT INTO audit_events SELECT * FROM jsonb_populate_record(NULL::audit_events,$1)`, auditRaw); err != nil {
+		t.Fatal(err)
+	}
+	var auditID uuid.UUID
+	if err = json.Unmarshal(originalAudit["id"], &auditID); err != nil {
+		t.Fatal(err)
+	}
+
+	merge := func(a portability.Archive) error {
+		tx, err := destination.st.Pool.Begin(ctx)
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback(ctx)
+		if err = store.RequireOffline(ctx, tx); err != nil {
+			return err
+		}
+		if err = portability.MergeRecovery(ctx, tx, a, owner); err != nil {
+			return err
+		}
+		return tx.Commit(ctx)
+	}
+	if err = merge(archive); err != nil {
+		t.Fatal("older destination could not recover immutable rows", err)
+	}
+	if err = merge(archive); err != nil {
+		t.Fatal("lost-response retry did not preserve attributed immutable rows", err)
+	}
+	var applied uuid.UUID
+	if err = destination.st.Pool.QueryRow(ctx, `SELECT applied_revision_id FROM environments WHERE workspace_id=$1 AND id=$2`, ws, env.Id).Scan(&applied); err != nil || applied != env.DraftRevisionId {
+		t.Fatal("reusing canonical recovery input lost the globally applied source", err)
+	}
+	var auditActor uuid.UUID
+	if err = destination.st.Pool.QueryRow(ctx, `SELECT actor_id FROM audit_events WHERE workspace_id=$1 AND id=$2`, ws, auditID).Scan(&auditActor); err != nil || auditActor != session.User.Id {
+		t.Fatal("recovery reassigned an existing audit event", err)
+	}
+	var author uuid.UUID
+	if err = destination.st.Pool.QueryRow(ctx, `SELECT author_id FROM specification_revisions WHERE workspace_id=$1 AND environment_id=$2`, ws, env.Id).Scan(&author); err != nil || author != owner {
+		t.Fatal("new records retained a foreign account reference", err)
+	}
+	archive, err = portability.DecodeRecovery(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(archive.Tables["specification_revisions"]) == 0 {
+		t.Fatal("fixture has no immutable revision")
+	}
+	var changed map[string]any
+	if err = json.Unmarshal(archive.Tables["specification_revisions"][0]["specification"], &changed); err != nil {
+		t.Fatal(err)
+	}
+	changed["variables"] = []any{map[string]any{"name": "CHANGED", "value": "conflict"}}
+	archive.Tables["specification_revisions"][0]["specification"], _ = json.Marshal(changed)
+	if err = merge(archive); err == nil {
+		t.Fatal("recovery overwrote conflicting immutable history")
+	}
+}
+
+func TestOfflineRecoveryExcludesReconnectedServingSessions(t *testing.T) {
+	ctx := context.Background()
+	f := setup(t)
+	f.server.Close()
+	if err := f.execution.Stop(ctx); err != nil {
+		t.Fatal(err)
+	}
+	config := f.st.Pool.Config()
+	config.MinConns = 0
+	config.MaxConns = 2
+	store.ConfigureServingPool(config)
+	serving, err := pgxpool.NewWithConfig(ctx, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serving.Close()
+	first, err := serving.Acquire(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := serving.Acquire(ctx)
+	if err != nil {
+		first.Release()
+		t.Fatal(err)
+	}
+	var firstPID, secondPID int32
+	if err = first.QueryRow(ctx, `SELECT pg_backend_pid()`).Scan(&firstPID); err != nil {
+		t.Fatal(err)
+	}
+	if err = second.QueryRow(ctx, `SELECT pg_backend_pid()`).Scan(&secondPID); err != nil {
+		t.Fatal(err)
+	}
+	terminate := func(pid int32) {
+		t.Helper()
+		var killed bool
+		if err := f.st.Pool.QueryRow(ctx, `SELECT pg_terminate_backend($1)`, pid).Scan(&killed); err != nil || !killed {
+			t.Fatal("owned serving backend was not terminated", err)
+		}
+	}
+	terminate(firstPID)
+	_ = first.Conn().Ping(ctx)
+	first.Release()
+	probe, err := f.st.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = store.RequireOffline(ctx, probe); err == nil {
+		probe.Rollback(ctx)
+		second.Release()
+		t.Fatal("losing one session removed exclusion for surviving serving connections")
+	}
+	probe.Rollback(ctx)
+	terminate(secondPID)
+	_ = second.Conn().Ping(ctx)
+	second.Release()
+	offline, err := f.st.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer offline.Rollback(ctx)
+	if err = store.RequireOffline(ctx, offline); err != nil {
+		t.Fatal("dead serving sessions retained offline exclusion", err)
+	}
+	attempt, done := context.WithTimeout(ctx, time.Second)
+	err = serving.Ping(attempt)
+	done()
+	if err == nil {
+		t.Fatal("reconnection bypassed the offline transaction")
+	}
+	if err = offline.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err = serving.Ping(ctx); err != nil {
+		t.Fatal("serving did not reconnect after offline recovery", err)
+	}
+	probe, err = f.st.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer probe.Rollback(ctx)
+	if err = store.RequireOffline(ctx, probe); err == nil {
+		t.Fatal("reconnected serving session lost the shared fence")
 	}
 }

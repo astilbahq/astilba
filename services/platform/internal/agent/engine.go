@@ -24,15 +24,16 @@ const labelEnvironment = "com.astilba.environment"
 const labelKind = "com.astilba.kind"
 
 type Engine struct {
-	Journal     *Journal
-	Docker      *client.Client
-	Point       func(string)
-	Update      func(context.Context, api.AgentRelease) error
-	DockerCLI   string
-	ACMEEmail   string
-	ResticCLI   string
-	BackupRoots []string
-	mu          sync.Mutex
+	Journal         *Journal
+	Docker          *client.Client
+	Point           func(string)
+	Update          func(context.Context, api.AgentRelease) error
+	FetchCheckpoint func(context.Context, deployment.RecoveryDescriptor) ([]byte, error)
+	DockerCLI       string
+	ACMEEmail       string
+	ResticCLI       string
+	BackupRoots     []string
+	mu              sync.Mutex
 }
 
 func (e *Engine) point(p string) {
@@ -86,7 +87,7 @@ func (e *Engine) Execute(ctx context.Context, c api.ExecutionCommand) error {
 	if c.ServerId != cfg.ServerID || c.Id == uuid.Nil || c.Generation < 1 || len(c.PlanHash) != 64 || (cfg.Role == "build" && c.Kind != "update" && c.Kind != "pipeline") || (cfg.Role == "deployment" && c.Kind == "pipeline") {
 		return errors.New("command identity or role rejected")
 	}
-	if c.Kind != "test" && c.Kind != "update" && c.Kind != "visual" && c.Kind != "pipeline" && c.Kind != "backup" && c.Kind != "schedule" && c.Kind != "upgrade" {
+	if c.Kind != "test" && c.Kind != "update" && c.Kind != "visual" && c.Kind != "pipeline" && c.Kind != "backup" && c.Kind != "schedule" && c.Kind != "upgrade" && c.Kind != "network" && c.Kind != "crosshost" {
 		return errors.New("unsupported command")
 	}
 	preview := false
@@ -105,6 +106,11 @@ func (e *Engine) Execute(ctx context.Context, c api.ExecutionCommand) error {
 	if c.Kind != "update" && cfg.PreviewOnly != preview {
 		return errors.New("preview server reservation rejected this command")
 	}
+	if held, err := e.Journal.recoveryHeld(); err != nil {
+		return err
+	} else if held && !networkRestriction(c) && !recoveryOpen(c) {
+		return nil
+	}
 	r, err := e.Journal.Accept(c)
 	if err != nil {
 		return err
@@ -113,8 +119,42 @@ func (e *Engine) Execute(ctx context.Context, c api.ExecutionCommand) error {
 	if execution.Terminal(r.Report.State) || r.Report.State == "needs_attention" {
 		return nil
 	}
+	if recoveryOpen(c) {
+		return e.Journal.executeRecoveryOpen(c)
+	}
+	if recoveryClose(c) {
+		return e.Journal.executeRecoveryClose(c)
+	}
+	if c.ParentId != nil && c.Kind != "crosshost" {
+		state, err := e.Journal.crossHost()
+		if err != nil {
+			return err
+		}
+		unit, primary := state.Unit.Plan.UnitID, state.Unit.Plan.Local != nil && state.Unit.Plan.Local.Primary
+		if state.ParentID == uuid.Nil && networkRestriction(c) {
+			head, err := e.Journal.recoveryHead(*c.ParentId)
+			if err != nil {
+				return err
+			}
+			unit, primary = head.UnitID, head.Primary
+		} else if state.ParentID != *c.ParentId {
+			return e.finish(c.Id, "needs_attention", "The data effect has no matching reserved parent.")
+		}
+		if e.Journal.requireRecoveryCheckpoint(c, unit, primary) != nil {
+			return e.finish(c.Id, "needs_attention", "The parent recovery checkpoint is not bound to this reserved host.")
+		}
+	}
+	if err := e.distributedRuntimeAdmission(c); err != nil {
+		return e.finish(c.Id, "failed", err.Error())
+	}
 	// An already accepted command continues after its admission deadline.
-	if c.Kind != "upgrade" && r.Checkpoint == "accepted" && time.Now().After(c.Deadline) {
+	metadataContinuation := false
+	if c.Kind == "crosshost" {
+		body, bodyErr := crossHostCommand(c)
+		d, descriptorErr := commandCheckpoint(c)
+		metadataContinuation = bodyErr == nil && descriptorErr == nil && body.Phase == "checkpoint" && d.Sequence > 0
+	}
+	if c.Kind != "upgrade" && !metadataContinuation && !networkRestriction(c) && r.Checkpoint == "accepted" && time.Now().After(c.Deadline) {
 		return e.finish(c.Id, "cancelled", "The admission deadline passed before execution.")
 	}
 	upgrades, err := e.Journal.upgrades()
@@ -123,6 +163,18 @@ func (e *Engine) Execute(ctx context.Context, c api.ExecutionCommand) error {
 	}
 	for _, u := range upgrades {
 		if u.Status.Active() && (c.Kind != "upgrade" || c.ResourceId != u.Command.Plan.ID) {
+			if networkRestriction(c) {
+				continue
+			}
+			if c.Kind == "crosshost" && c.ParentId != nil {
+				reservation, err := e.Journal.crossHost()
+				if err != nil {
+					return err
+				}
+				if reservation.ParentID == *c.ParentId && reservation.Maintenance != nil && reservation.Maintenance.Kind == "upgrade" && reservation.Maintenance.ResourceID == u.Command.Plan.ID {
+					continue
+				}
+			}
 			return e.finish(c.Id, "failed", "An active upgrade blocks other host operations until recovery or cutover completes.")
 		}
 	}
@@ -135,7 +187,7 @@ func (e *Engine) Execute(ctx context.Context, c api.ExecutionCommand) error {
 		return err
 	}
 	for _, s := range schedules {
-		if len(s.Writers) > 0 || hasUncertainRun(s.Runs) {
+		if (len(s.Writers) > 0 || hasUncertainRun(s.Runs)) && !networkRestriction(c) {
 			return e.finish(c.Id, "needs_attention", "An interrupted local schedule requires inspection and resolve-run before another host operation.")
 		}
 	}
@@ -153,6 +205,12 @@ func (e *Engine) Execute(ctx context.Context, c api.ExecutionCommand) error {
 			return e.finish(c.Id, "needs_attention", "Agent update did not finish. Inspect the local update state and retry the local procedure.")
 		}
 		return e.finish(c.Id, "succeeded", "Agent artifact verified and installed.")
+	}
+	if c.Kind == "crosshost" {
+		return e.executeCrossHost(ctx, c, r)
+	}
+	if c.Kind == "network" {
+		return e.executeNetwork(ctx, c)
 	}
 	if c.Kind == "backup" || c.Kind == "schedule" {
 		return e.executeBackup(ctx, c, r)

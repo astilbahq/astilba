@@ -31,11 +31,12 @@ import (
 const proxyName = "astilba-ingress"
 
 type routeSnapshot struct {
-	Sets      map[string]deployment.RouteSet `json:"sets"`
-	Ports     []int                          `json:"ports"`
-	Revision  string                         `json:"revision"`
-	Email     string                         `json:"email"`
-	ProxyHash string                         `json:"proxyHash"`
+	ManagedEgress bool                           `json:"managedEgress,omitempty"`
+	Sets          map[string]deployment.RouteSet `json:"sets"`
+	Ports         []int                          `json:"ports"`
+	Revision      string                         `json:"revision"`
+	Email         string                         `json:"email"`
+	ProxyHash     string                         `json:"proxyHash"`
 }
 type routeAttempt struct {
 	Previous  routeSnapshot `json:"previous"`
@@ -48,7 +49,7 @@ func (a routeAttempt) MarshalJSON() ([]byte, error) {
 	for _, snapshot := range []routeSnapshot{a.Previous, a.Candidate} {
 		for _, set := range snapshot.Sets {
 			for _, backend := range set.Backends {
-				if len(backend.InstanceIDs) > 0 {
+				if len(backend.InstanceIDs) > 0 || len(backend.Endpoints) > 0 {
 					return json.Marshal([]routeSnapshot{a.Previous, a.Candidate})
 				}
 			}
@@ -306,6 +307,9 @@ func (e *Engine) publishRoutes(ctx context.Context, p deployment.Plan, stablePro
 			}
 		}
 	}
+	if p.HostChanges {
+		next.ManagedEgress = true
+	}
 	next.Revision = uuid.NewString()
 	if _, err = renderSnapshot(next); err != nil {
 		return err
@@ -415,7 +419,8 @@ func (e *Engine) ensureProxy(ctx context.Context, s routeSnapshot, rebuild bool)
 		return nil
 	}
 	args := proxyArgs(s)
-	if exists && (rebuild || v.Container.Config.Image != deployment.ProxyImage || !reflect.DeepEqual(v.Container.Config.Cmd, args) || !reflect.DeepEqual(v.Container.HostConfig.PortBindings, bindings)) {
+	gatewayChange := s.ManagedEgress && exists && (v.Container.NetworkSettings == nil || v.Container.NetworkSettings.Networks["astilba-ingress-network"] == nil || v.Container.NetworkSettings.Networks["astilba-ingress-network"].GwPriority != 100)
+	if exists && (rebuild || gatewayChange || v.Container.Config.Image != deployment.ProxyImage || !reflect.DeepEqual(v.Container.Config.Cmd, args) || !reflect.DeepEqual(v.Container.HostConfig.PortBindings, bindings)) {
 		_, err = e.Docker.ContainerRemove(ctx, v.Container.ID, client.ContainerRemoveOptions{Force: true})
 		if err != nil {
 			return err
@@ -444,7 +449,11 @@ func (e *Engine) ensureProxy(ctx context.Context, s routeSnapshot, rebuild bool)
 			}
 			listener.Close()
 		}
-		if err = e.pullImage(ctx, deployment.ProxyImage); err != nil {
+		if _, err = e.Docker.ImageInspect(ctx, deployment.ProxyImage); errdefs.IsNotFound(err) {
+			if err = e.pullImage(ctx, deployment.ProxyImage); err != nil {
+				return err
+			}
+		} else if err != nil {
 			return err
 		}
 
@@ -456,7 +465,11 @@ func (e *Engine) ensureProxy(ctx context.Context, s routeSnapshot, rebuild bool)
 		if err != nil || !info.IsDir() || info.Mode().Perm()&0077 != 0 {
 			return errors.New("ingress data directory is not private")
 		}
-		created, err := e.Docker.ContainerCreate(ctx, client.ContainerCreateOptions{Name: proxyName, Config: &container.Config{Image: deployment.ProxyImage, Cmd: args, ExposedPorts: exposed, Labels: map[string]string{labelServer: cfg.ServerID.String(), labelKind: "ingress-v1"}}, HostConfig: &container.HostConfig{NetworkMode: container.NetworkMode(bridgeName), PortBindings: bindings, Mounts: []mount.Mount{{Type: mount.TypeBind, Source: filepath.Dir(e.routePath()), Target: "/etc/astilba", ReadOnly: true}, {Type: mount.TypeBind, Source: data, Target: "/data"}}, RestartPolicy: container.RestartPolicy{Name: "unless-stopped"}, CapDrop: []string{"ALL"}, SecurityOpt: []string{"no-new-privileges"}}})
+		networking := &network.NetworkingConfig{EndpointsConfig: map[string]*network.EndpointSettings{bridgeName: {}}}
+		if s.ManagedEgress {
+			networking.EndpointsConfig[bridgeName].GwPriority = 100
+		}
+		created, err := e.Docker.ContainerCreate(ctx, client.ContainerCreateOptions{NetworkingConfig: networking, Name: proxyName, Config: &container.Config{Image: deployment.ProxyImage, Cmd: args, ExposedPorts: exposed, Labels: map[string]string{labelServer: cfg.ServerID.String(), labelKind: "ingress-v1"}}, HostConfig: &container.HostConfig{NetworkMode: container.NetworkMode(bridgeName), PortBindings: bindings, Mounts: []mount.Mount{{Type: mount.TypeBind, Source: filepath.Dir(e.routePath()), Target: "/etc/astilba", ReadOnly: true}, {Type: mount.TypeBind, Source: data, Target: "/data"}}, RestartPolicy: container.RestartPolicy{Name: "unless-stopped"}, CapDrop: []string{"ALL"}, SecurityOpt: []string{"no-new-privileges"}}})
 		if err != nil {
 			return err
 		}

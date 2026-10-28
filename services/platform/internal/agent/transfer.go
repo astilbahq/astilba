@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"errors"
+	"github.com/google/uuid"
 	"math"
 	"os"
 	"strings"
@@ -50,6 +51,15 @@ func (j *Journal) Inventory() (api.ControllerInventory, error) {
 	if len(out.Units) > 100 || len(out.Schedules) > 100 {
 		return out, errors.New("transfer inventory limit exceeded")
 	}
+	if err == nil {
+		a, e := j.recoveredAuthority()
+		if e != nil {
+			return out, e
+		}
+		if a.Handover.Authority.ParentID != uuid.Nil {
+			out.Recovery = recoveryAuthorityJSON(a.Handover.Authority)
+		}
+	}
 	return out, err
 }
 
@@ -60,6 +70,19 @@ func (j *Journal) Transfer(origin string, key []byte, generation int64, token st
 		return errors.New("valid target origin, release key and generation are required")
 	}
 	return j.db.Update(func(tx *bolt.Tx) error {
+		var recovery recoveredAuthority
+		err := j.get(tx, "recovery-authority", "current", &recovery)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		if err == nil && !recovery.Open {
+			return errors.New("complete the exact-root controller recovery before ordinary transfer")
+		}
+		if reservation, err := j.crossHostIn(tx); err != nil {
+			return err
+		} else if reservation.ParentID != uuid.Nil {
+			return errors.New("resolve the coordinated host reservation before transfer")
+		}
 		var cfg Config
 		if e := j.get(tx, "identity", "config", &cfg); e != nil {
 			return e
@@ -76,6 +99,9 @@ func (j *Journal) Transfer(origin string, key []byte, generation int64, token st
 			var r Record
 			if e := j.get(tx, "operations", string(k), &r); e != nil {
 				return e
+			}
+			if j.isDistributedFence(tx, string(k)) || j.isRecoverySentinel(tx, string(k)) {
+				return nil
 			}
 			if !execution.Terminal(r.Report.State) {
 				return errors.New("resolve unfinished operations before transfer")
@@ -124,6 +150,9 @@ func (j *Journal) Transfer(origin string, key []byte, generation int64, token st
 		if _, e := tx.CreateBucket([]byte("generations")); e != nil {
 			return e
 		}
+		if err := tx.Bucket([]byte("recovery-authority")).Delete([]byte("current")); err != nil {
+			return err
+		}
 		cfg.Origin = origin
 		cfg.PublicKey = append([]byte(nil), key...)
 		cfg.Credential = ""
@@ -149,6 +178,9 @@ func (j *Journal) checkController(tx *bolt.Tx, c api.ExecutionCommand) error {
 	}
 	if cfg.ControllerGeneration != commandGeneration(c) {
 		return errors.New("command belongs to another controller generation")
+	}
+	if recoveryOpen(c) {
+		return j.checkRecoveryOpen(tx, c)
 	}
 	return nil
 }

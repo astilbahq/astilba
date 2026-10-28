@@ -120,6 +120,9 @@ func (s *Service) insert(ctx context.Context, tx pgx.Tx, ws, key uuid.UUID, plan
 	if controller > 0 {
 		c.ControllerGeneration = &controller
 	}
+	if err := s.crossHostOperationAdmission(ctx, tx, ws, c); err != nil {
+		return out, err
+	}
 	if err := s.previewCommandBoundary(ctx, tx, ws, c); err != nil {
 		return out, err
 	}
@@ -130,11 +133,17 @@ func (s *Service) insert(ctx context.Context, tx pgx.Tx, ws, key uuid.UUID, plan
 	if err := tx.QueryRow(ctx, "SELECT count(*) FROM execution_operations WHERE workspace_id=$1 AND state NOT IN ('succeeded','failed','cancelled')", ws).Scan(&pending); err != nil {
 		return out, err
 	}
-	if pending >= 50 {
+	if pending >= 50 && c.ParentId == nil && !(c.Kind == "network" && recoveryCommand(c)) {
 		return out, domain.RateLimited
 	}
-	if c.Kind != "upgrade" {
-		if err := noActiveUpgrade(ctx, tx, c.ServerId); err != nil {
+	if c.Kind != "upgrade" && !(c.Kind == "network" && recoveryCommand(c)) {
+		allowed := uuid.Nil
+		if c.ParentId != nil && c.Kind == "crosshost" {
+			if err := tx.QueryRow(ctx, `SELECT COALESCE(command->'crosshost'->'maintenance'->'effect'->'upgrade'->'plan'->>'id','00000000-0000-0000-0000-000000000000')::uuid FROM execution_operations WHERE workspace_id=$1 AND id=$2`, ws, *c.ParentId).Scan(&allowed); err != nil {
+				return out, err
+			}
+		}
+		if err := noOtherUpgrade(ctx, tx, c.ServerId, allowed); err != nil {
 			return out, err
 		}
 	}
@@ -146,7 +155,7 @@ func (s *Service) insert(ctx context.Context, tx pgx.Tx, ws, key uuid.UUID, plan
 	if c.EnvironmentId != uuid.Nil {
 		env = &c.EnvironmentId
 	}
-	_, err = tx.Exec(ctx, `INSERT INTO execution_operations(id,workspace_id,server_id,environment_id,generation,plan_id,request_key,command,kind,state) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'queued')`, c.Id, ws, c.ServerId, env, c.Generation, planID, key, raw, c.Kind)
+	_, err = tx.Exec(ctx, `INSERT INTO execution_operations(id,workspace_id,server_id,environment_id,generation,plan_id,request_key,command,kind,state,parent_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'queued',$10)`, c.Id, ws, c.ServerId, env, c.Generation, planID, key, raw, c.Kind, c.ParentId)
 	if err != nil {
 		return out, err
 	}
@@ -288,6 +297,22 @@ func (w *worker) Work(ctx context.Context, job *river.Job[jobArgs]) error {
 	if err = json.Unmarshal(raw, &c); err != nil {
 		return err
 	}
+	if c.Kind == "crosshost" && c.ParentId == nil {
+		return w.service.coordinate(ctx, tx, job, ws, c, state, cancelled)
+	}
+	if allowed, err := recoveryGateDelivery(ctx, tx, c); err != nil {
+		return err
+	} else if !allowed {
+		if err = tx.Commit(ctx); err != nil {
+			return err
+		}
+		return river.JobSnooze(2 * time.Second)
+	}
+	if allowed, e := w.service.maintenanceEffectAllowed(ctx, tx, ws, c); e != nil {
+		return e
+	} else if !allowed {
+		return domain.Forbidden
+	}
 	allowed, e := w.service.previewCommandAllowed(ctx, tx, ws, c, false)
 	if e != nil {
 		return e
@@ -337,6 +362,18 @@ func (w *worker) Work(ctx context.Context, job *river.Job[jobArgs]) error {
 	}
 	// Dispatch is durable and idempotent; losing the worker cannot mint a new command or generation.
 	if state == "queued" {
+		if c.Kind == "network" && recoveryCommand(c) {
+			var active bool
+			if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM execution_operations WHERE server_id=$1 AND id<>$2 AND kind='network' AND command->'network'->>'action'='restrict' AND state NOT IN ('queued','succeeded','failed','cancelled'))`, server, c.Id).Scan(&active); err != nil {
+				return err
+			}
+			if active {
+				if err = tx.Commit(ctx); err != nil {
+					return err
+				}
+				return river.JobSnooze(2 * time.Second)
+			}
+		}
 		if _, err = tx.Exec(ctx, "UPDATE execution_operations SET state='dispatched' WHERE id=$1", job.Args.ID); err != nil {
 			return err
 		}

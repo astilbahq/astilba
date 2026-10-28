@@ -40,7 +40,7 @@ func (s *Service) Poll(ctx context.Context, a Identity) (*api.ExecutionCommand, 
 		var raw []byte
 		var cancel bool
 		var state string
-		err = s.Store.Pool.QueryRow(ctx, `SELECT command,cancel_requested,state FROM execution_operations WHERE server_id=$1 AND state IN ('dispatched','running','needs_attention') ORDER BY created_at LIMIT 1`, a.ID).Scan(&raw, &cancel, &state)
+		err = s.Store.Pool.QueryRow(ctx, `SELECT command,cancel_requested,state FROM execution_operations WHERE server_id=$1 AND NOT(kind='crosshost' AND parent_id IS NULL) AND state IN ('dispatched','running','needs_attention') AND NOT EXISTS(SELECT 1 FROM cross_host_recoveries r WHERE r.parent_id=execution_operations.parent_id AND NOT r.opened AND COALESCE(command->'crosshost'->>'phase','')<>'recovery-open') AND (parent_id IS NULL OR command->'recoveryCheckpoint' IS NULL OR command->'crosshost'->>'phase' IN ('checkpoint','checkpoint-closed') OR EXISTS(SELECT 1 FROM cross_host_checkpoints cp WHERE cp.parent_id=execution_operations.parent_id AND cp.id::text=command->'recoveryCheckpoint'->>'checkpointId' AND cp.acknowledged)) ORDER BY (command->'crosshost'->>'phase'='checkpoint') DESC NULLS LAST, (kind='network' AND COALESCE(command->'network'->>'action','')='restrict') DESC,created_at LIMIT 1`, a.ID).Scan(&raw, &cancel, &state)
 		if err == nil {
 			var c api.ExecutionCommand
 			if err = json.Unmarshal(raw, &c); err != nil {
@@ -69,6 +69,9 @@ func (s *Service) Poll(ctx context.Context, a Identity) (*api.ExecutionCommand, 
 					return nil, e
 				}
 				allowed, e := s.previewCommandAllowed(ctx, tx, a.Workspace, c, state == "dispatched")
+				if e == nil && allowed {
+					allowed, e = s.maintenanceEffectAllowed(ctx, tx, a.Workspace, c)
+				}
 				_ = tx.Rollback(ctx)
 				if e != nil {
 					return nil, e
@@ -95,6 +98,11 @@ func (s *Service) Poll(ctx context.Context, a Identity) (*api.ExecutionCommand, 
 			}
 			if c.Kind == "pipeline" {
 				if err = s.hydratePipeline(ctx, &c); err != nil {
+					return nil, err
+				}
+			}
+			if c.Kind == "crosshost" {
+				if err = s.hydrateCrossHost(ctx, &c); err != nil {
 					return nil, err
 				}
 			}
@@ -129,6 +137,11 @@ func (s *Service) Report(ctx context.Context, a Identity, r api.AgentReport) err
 		return err
 	}
 	defer tx.Rollback(ctx)
+	if r.Network != nil {
+		if _, err = tx.Exec(ctx, `SELECT id FROM workspaces WHERE id=$1 FOR UPDATE`, a.Workspace); err != nil {
+			return err
+		}
+	}
 	// Lock identity before operation, matching operator admission. Revocation cannot race acceptance.
 	var valid bool
 	err = tx.QueryRow(ctx, `SELECT NOT revoked AND NOT awaiting_transfer AND (credential_hash=$2 OR (previous_hash=$2 AND previous_until>now())) FROM servers WHERE id=$1 FOR UPDATE`, a.ID, hash(a.Token)).Scan(&valid)
@@ -181,6 +194,12 @@ func (s *Service) Report(ctx context.Context, a Identity, r api.AgentReport) err
 		if err = s.visualReport(ctx, tx, c, &r); err != nil {
 			return err
 		}
+	}
+	if err = s.crossHostReport(ctx, tx, c, &r); err != nil {
+		return err
+	}
+	if err = s.networkReport(ctx, tx, c, &r); err != nil {
+		return err
 	}
 	steps, _ := json.Marshal(r.Steps)
 	_, err = tx.Exec(ctx, `UPDATE execution_operations SET state=$2,report_sequence=$3,steps=$4,note=$5 WHERE id=$1`, r.Id, r.State, r.Sequence, steps, r.Note)

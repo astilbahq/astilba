@@ -294,9 +294,11 @@ export function Deployments({
             <h3>Plan ready</h3>
             <p>
               <strong>
-                {ready.release
-                  ? "Protected stateless HTTP release"
-                  : "Standard deployment"}
+                {ready.distributed
+                  ? "Coordinated cross-host release"
+                  : ready.release
+                    ? "Protected stateless HTTP release"
+                    : "Standard deployment"}
               </strong>
             </p>
             {ready.release && (
@@ -322,6 +324,44 @@ export function Deployments({
                 </li>
               ))}
             </ul>
+            {ready.distributed && (
+              <section className={s.stack} aria-label="Placement changes">
+                <h4>Reviewed placements</h4>
+                {ready.distributed.units.map((unit) => (
+                  <div key={unit.plan.unitId}>
+                    <strong>
+                      {servers.data?.find(
+                        (server) => server.id === unit.plan.serverId,
+                      )?.name ?? unit.plan.serverId}
+                      {unit.plan.local?.primary
+                        ? " · ingress and persistent services"
+                        : ""}
+                    </strong>
+                    <ul>
+                      {ready.specification.applications.map((app) => (
+                        <li key={app.id}>
+                          {app.name}:{" "}
+                          {unit.plan.local?.priorInstances[app.id]?.length ?? 0}{" "}
+                          → {unit.plan.local?.instances[app.id]?.length ?? 0}{" "}
+                          instances
+                          {unit.plan.images[app.id] && (
+                            <code className={s.code}>
+                              {" "}
+                              · {unit.plan.images[app.id]}
+                            </code>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
+                    <p>
+                      New pool: {unit.cpuMillis} millicores · {unit.memoryMiB}{" "}
+                      MiB. Serving pools remain reserved until publication is
+                      confirmed.
+                    </p>
+                  </div>
+                ))}
+              </section>
+            )}
             <ul>
               {ready.effects.map((effect) => (
                 <li key={effect}>{effect}</li>
@@ -332,12 +372,13 @@ export function Deployments({
               revision {ready.revisionId.slice(0, 8)}
             </p>
             <ul>
-              {ready.specification.applications.map((app) => (
-                <li key={app.id}>
-                  <strong>{app.name}</strong>
-                  <code className={s.code}> {ready.images[app.id]}</code>
-                </li>
-              ))}
+              {!ready.distributed &&
+                ready.specification.applications.map((app) => (
+                  <li key={app.id}>
+                    <strong>{app.name}</strong>
+                    <code className={s.code}> {ready.images[app.id]}</code>
+                  </li>
+                ))}
             </ul>
             <p>
               {ready.specification.bindings?.length ?? 0} database bindings.
@@ -483,12 +524,12 @@ export function Deployments({
                     }),
                   );
                   setMessage(
-                    "Runtime inspection queued; resources will not be changed.",
+                    "Runtime inspection queued for the active deployment hosts; resources will not be changed.",
                   );
                 })
               }
             >
-              Inspect host now
+              Inspect runtime
             </Button>
           )}
         </div>
@@ -499,6 +540,20 @@ export function Deployments({
             : "No host observations yet."}{" "}
           Opening this page does not reconcile Docker changes.
         </p>
+        {!!runtime.data?.hosts?.length && (
+          <ul className={s.list} aria-label="Runtime snapshots by server">
+            {runtime.data.hosts.map((host) => (
+              <li key={host.unitId}>
+                <strong>
+                  {servers.data?.find((server) => server.id === host.serverId)
+                    ?.name ?? host.serverId}
+                </strong>{" "}
+                · {host.state} · observed{" "}
+                {new Date(host.observedAt).toLocaleString()}
+              </li>
+            ))}
+          </ul>
+        )}
         {runtime.data?.infrastructureDrift && (
           <p role="alert">
             The ingress configuration has changed outside Astilba.
@@ -538,6 +593,15 @@ export function Deployments({
                       <li key={instance.instanceId}>
                         <code className={s.code}>{instance.instanceId}</code> ·{" "}
                         {instance.state}
+                        {instance.serverId && (
+                          <>
+                            {" "}
+                            ·{" "}
+                            {servers.data?.find(
+                              (server) => server.id === instance.serverId,
+                            )?.name ?? instance.serverId}
+                          </>
+                        )}
                       </li>
                     ))}
                   </ul>

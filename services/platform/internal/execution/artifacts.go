@@ -58,7 +58,7 @@ func (s *Service) PromoteArtifact(ctx context.Context, p store.Principal, ws, pi
 }
 func (s *Service) planArtifacts(ctx context.Context, tx pgx.Tx, ws uuid.UUID, p *deployment.Plan) error {
 	p.Artifacts = map[string]pipeline.Artifact{}
-	for _, app := range p.Specification.Applications {
+	for _, app := range p.LocalApplications() {
 		var raw []byte
 		if app.Source.ArtifactID != nil {
 			if err := tx.QueryRow(ctx, "SELECT identity FROM build_artifacts WHERE workspace_id=$1 AND id=$2", ws, *app.Source.ArtifactID).Scan(&raw); err != nil {

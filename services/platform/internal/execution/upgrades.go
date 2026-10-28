@@ -19,8 +19,11 @@ import (
 )
 
 func noActiveUpgrade(ctx context.Context, tx pgx.Tx, server uuid.UUID) error {
+	return noOtherUpgrade(ctx, tx, server, uuid.Nil)
+}
+func noOtherUpgrade(ctx context.Context, tx pgx.Tx, server, allowed uuid.UUID) error {
 	var active bool
-	err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM supported_upgrades WHERE server_id=$1 AND status->>'phase' NOT IN ('planned','rejected','complete','returned'))`, server).Scan(&active)
+	err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM supported_upgrades WHERE server_id=$1 AND id<>$2 AND status->>'phase' NOT IN ('planned','rejected','complete','returned'))`, server, allowed).Scan(&active)
 	if err == nil && active {
 		return domain.Conflict
 	}
@@ -91,6 +94,12 @@ func (s *Service) CreateUpgrade(ctx context.Context, p store.Principal, ws, pid,
 		if err != nil {
 			return err
 		}
+		var group *deployment.Plan
+		if source.Distributed != nil {
+			frozen := source
+			group = &frozen
+			source = source.PrimaryPlan()
+		}
 		if err = requireServiceOutputs(ctx, tx, ws, *v.Server, source.Specification); err != nil {
 			return err
 		}
@@ -100,7 +109,7 @@ func (s *Service) CreateUpgrade(ctx context.Context, p store.Principal, ws, pid,
 		if policy.Plan.Hash != source.Hash || policy.ResourceID != in.ResourceId || policy.Method != "postgres-logical" {
 			return domain.Invalid("policy")
 		}
-		out.Plan = upgrade.Plan{ID: uuid.New(), Recipe: upgrade.Recipe, PolicyID: policy.ID, ResourceID: in.ResourceId, TargetVolumeID: uuid.New(), TargetPlanID: uuid.New(), TargetRevisionID: uuid.New(), RetainDays: in.RetainDays, ExpiresAt: time.Now().UTC().Add(10 * time.Minute), Source: source}
+		out.Plan = upgrade.Plan{Group: group, ID: uuid.New(), Recipe: upgrade.Recipe, PolicyID: policy.ID, ResourceID: in.ResourceId, TargetVolumeID: uuid.New(), TargetPlanID: uuid.New(), TargetRevisionID: uuid.New(), RetainDays: in.RetainDays, ExpiresAt: time.Now().UTC().Add(10 * time.Minute), Source: source}
 		if out.Plan.Validate() != nil {
 			return domain.Invalid("upgrade.source")
 		}
@@ -164,12 +173,26 @@ func (s *Service) UpgradeAction(ctx context.Context, p store.Principal, ws, pid,
 		if err = json.Unmarshal(statusRaw, &status); err != nil {
 			return err
 		}
+		if plan.Group != nil && in.Action != "prepare" {
+			out, err = s.approveMaintenanceUpgrade(ctx, tx, ws, plan, status, in)
+			return err
+		}
 		var prior []byte
 		err = tx.QueryRow(ctx, "SELECT command FROM execution_operations WHERE workspace_id=$1 AND request_key=$2", ws, in.RequestKey).Scan(&prior)
 		if err == nil {
 			var c api.ExecutionCommand
 			var cmd upgrade.Command
-			if json.Unmarshal(prior, &c) != nil || c.Kind != "upgrade" || c.Upgrade == nil || json.Unmarshal(*c.Upgrade, &cmd) != nil || cmd.Plan.ID != id || cmd.Action != string(in.Action) {
+			if json.Unmarshal(prior, &c) != nil {
+				return domain.Conflict
+			}
+			if c.Kind == "crosshost" && c.Crosshost != nil {
+				var parent coordinationCommand
+				if json.Unmarshal(*c.Crosshost, &parent) != nil || parent.Maintenance == nil {
+					return domain.Conflict
+				}
+				c = parent.Maintenance.Effect.command("")
+			}
+			if c.Kind != "upgrade" || c.Upgrade == nil || json.Unmarshal(*c.Upgrade, &cmd) != nil || cmd.Plan.ID != id || cmd.Action != string(in.Action) {
 				return domain.Conflict
 			}
 			out, err = scanOperation(tx.QueryRow(ctx, "SELECT "+opColumns+" FROM execution_operations WHERE workspace_id=$1 AND request_key=$2", ws, in.RequestKey))
@@ -199,7 +222,7 @@ func (s *Service) UpgradeAction(ctx context.Context, p store.Principal, ws, pid,
 			if err = tx.QueryRow(ctx, "SELECT plan_id FROM visual_runtime WHERE workspace_id=$1 AND environment_id=$2", ws, env).Scan(&current); err != nil {
 				return err
 			}
-			if current != plan.Source.ID {
+			if current != plan.Source.VisualPlanID() {
 				return domain.Conflict
 			}
 		}
@@ -224,7 +247,16 @@ func (s *Service) UpgradeAction(ctx context.Context, p store.Principal, ws, pid,
 			return err
 		}
 		c := api.ExecutionCommand{Id: uuid.New(), ServerId: plan.Source.ServerID, EnvironmentId: env, Generation: generation, PlanHash: cmd.Digest(), ResourceId: id, Kind: "upgrade", Action: "inspect", Deadline: time.Now().Add(2 * time.Hour), Upgrade: rawMessage(raw)}
-		out, err = s.insert(ctx, tx, ws, in.RequestKey, nil, c)
+		if plan.Group != nil {
+			// Hydrate once before any writer reservation so an oversized or
+			// incompatible effect cannot strand a paused deployment.
+			if err = s.hydrateUpgrade(ctx, &c); err != nil {
+				return err
+			}
+			out, err = s.insertUpgradeMaintenance(ctx, tx, ws, in.RequestKey, cmd)
+		} else {
+			out, err = s.insert(ctx, tx, ws, in.RequestKey, nil, c)
+		}
 		if err != nil {
 			return err
 		}
@@ -303,7 +335,23 @@ func (s *Service) upgradeReport(ctx context.Context, tx pgx.Tx, c api.ExecutionC
 	if old.WritesPossible && !next.WritesPossible || next.Phase == "returned" && next.WritesPossible || next.Phase == "ready" && (next.WritesPossible || !backup.SnapshotID(next.Snapshot)) || next.Phase == "complete" && (!next.WritesPossible || next.Serving != "new") || len(next.Note) > 1024 {
 		return domain.Invalid("upgrade.status")
 	}
-	if next.Phase == "complete" || next.Phase == "returned" {
+	if (next.Phase == "complete" || next.Phase == "returned") && c.ParentId != nil {
+		var observed deployment.Observation
+		plan := cmd.Plan.Target()
+		if next.Phase == "returned" {
+			plan = cmd.Plan.Source
+		}
+		if cmd.Plan.Group == nil || r.State != "succeeded" || r.Observation == nil || json.Unmarshal(*r.Observation, &observed) != nil || !observed.Applied || observed.InfrastructureDrift || observed.ResourceDrift || plan.ValidateMaintenanceObservation(observed) != nil {
+			return domain.Invalid("upgrade.observation")
+		}
+		for _, resource := range observed.Resources {
+			if resource.ID == cmd.Plan.ResourceID && resource.State != "running" && resource.State != "healthy" {
+				return domain.Invalid("upgrade.database")
+			}
+		}
+		next.Note = "The primary database outcome is confirmed. Coordinated writer recovery remains pending."
+	}
+	if (next.Phase == "complete" || next.Phase == "returned") && c.ParentId == nil {
 		if r.State != "succeeded" || r.Observation == nil {
 			return domain.Invalid("upgrade.observation")
 		}
@@ -334,12 +382,6 @@ func (s *Service) upgradeReport(ctx context.Context, tx pgx.Tx, c api.ExecutionC
 			if _, err := tx.Exec(ctx, "UPDATE execution_operations SET visual_plan_id=$2 WHERE id=$1", c.Id, plan.ID); err != nil {
 				return err
 			}
-			if _, err := tx.Exec(ctx, "UPDATE environments SET draft_revision_id=$4 WHERE workspace_id=$1 AND id=$2 AND draft_revision_id=$3", cmd.Installation.Policy.WorkspaceID, c.EnvironmentId, cmd.Plan.Source.RevisionID, plan.RevisionID); err != nil {
-				return err
-			}
-			if _, err := tx.Exec(ctx, `UPDATE backup_policies SET configuration=jsonb_set(configuration,'{enabled}','false') WHERE workspace_id=$1 AND environment_id=$2`, cmd.Installation.Policy.WorkspaceID, c.EnvironmentId); err != nil {
-				return err
-			}
 		}
 	}
 	raw, _ = json.Marshal(next)
@@ -348,7 +390,7 @@ func (s *Service) upgradeReport(ctx context.Context, tx pgx.Tx, c api.ExecutionC
 }
 
 func (s *Service) saveUpgradeTarget(ctx context.Context, tx pgx.Tx, cmd upgrade.Command, operation uuid.UUID) error {
-	target := cmd.Plan.Target()
+	target := cmd.Plan.TargetGroup()
 	ws := cmd.Installation.Policy.WorkspaceID
 	env := target.EnvironmentID
 	var author uuid.UUID
@@ -368,6 +410,17 @@ func (s *Service) saveUpgradeTarget(ctx context.Context, tx pgx.Tx, cmd upgrade.
 	if _, err = tx.Exec(ctx, "INSERT INTO visual_requests(id,workspace_id,server_id,environment_id,unit_id,revision_id,candidate,operation_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8)", target.ID, ws, target.ServerID, env, target.UnitID, target.RevisionID, raw, operation); err != nil {
 		return err
 	}
-	_, err = tx.Exec(ctx, "INSERT INTO visual_plans(id,workspace_id,environment_id,plan) VALUES($1,$2,$3,$4)", target.ID, ws, env, raw)
+	if _, err = tx.Exec(ctx, "INSERT INTO visual_plans(id,workspace_id,environment_id,plan) VALUES($1,$2,$3,$4)", target.ID, ws, env, raw); err != nil {
+		return err
+	}
+	if cmd.Plan.Group != nil {
+		if err = copyNetworkPlanAssociations(ctx, tx, ws, cmd.Plan.Group.ID, target.ID); err != nil {
+			return err
+		}
+	}
+	if _, err = tx.Exec(ctx, "UPDATE environments SET draft_revision_id=$4 WHERE workspace_id=$1 AND id=$2 AND draft_revision_id=$3", ws, env, cmd.Plan.Source.RevisionID, target.RevisionID); err != nil {
+		return err
+	}
+	_, err = tx.Exec(ctx, `UPDATE backup_policies SET configuration=jsonb_set(configuration,'{enabled}','false') WHERE workspace_id=$1 AND environment_id=$2`, ws, env)
 	return err
 }

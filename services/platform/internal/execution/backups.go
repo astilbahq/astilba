@@ -11,6 +11,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/backup"
 	"github.com/astilbahq/astilba/services/platform/internal/composeproject"
+	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
@@ -130,6 +131,7 @@ func (s *Service) SaveBackupPolicy(ctx context.Context, p store.Principal, ws, p
 		if err != nil {
 			return err
 		}
+		plan = plan.PrimaryPlan()
 		if err = requireServiceOutputs(ctx, tx, ws, *v.Server, plan.Specification); err != nil {
 			return err
 		}
@@ -142,6 +144,13 @@ func (s *Service) SaveBackupPolicy(ctx context.Context, p store.Principal, ws, p
 				return domain.Conflict
 			}
 		} else {
+			var reserved bool
+			if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM cross_host_operations h JOIN execution_operations o ON o.id=h.id WHERE h.workspace_id=$1 AND h.environment_id=$2 AND o.state NOT IN ('succeeded','failed','cancelled') AND (o.command->'crosshost'->'maintenance'->'effect'->'backup'->'installation'->'policy'->>'id'=$3 OR o.command->'crosshost'->'maintenance'->'effect'->'upgrade'->'plan'->>'policyId'=$3))`, ws, env, id.String()).Scan(&reserved); err != nil {
+				return err
+			}
+			if reserved {
+				return domain.Conflict
+			}
 			var raw []byte
 			if err = tx.QueryRow(ctx, "SELECT configuration FROM backup_policies WHERE workspace_id=$1 AND environment_id=$2 AND id=$3 FOR UPDATE", ws, env, id).Scan(&raw); err != nil {
 				return err
@@ -154,7 +163,7 @@ func (s *Service) SaveBackupPolicy(ctx context.Context, p store.Principal, ws, p
 				return domain.Conflict
 			}
 		}
-		out = backup.Policy{ID: id, Name: in.Name, WorkspaceID: ws, EnvironmentID: env, ServerID: *v.Server, DestinationID: in.DestinationId, ResourceID: in.ResourceId, Generation: in.BaseGeneration + 1, Method: string(in.Method), Schedule: backup.Schedule{Hour: in.Schedule.Hour, Minute: in.Schedule.Minute, Timezone: in.Schedule.Timezone}, Retain: in.Retain, Enabled: in.Enabled, Command: in.Command, Plan: plan}
+		out = backup.Policy{Coordinated: plan.Specification.HasRemotePlacement() && string(in.Method) == backup.QuiescedFiles, ID: id, Name: in.Name, WorkspaceID: ws, EnvironmentID: env, ServerID: *v.Server, DestinationID: in.DestinationId, ResourceID: in.ResourceId, Generation: in.BaseGeneration + 1, Method: string(in.Method), Schedule: backup.Schedule{Hour: in.Schedule.Hour, Minute: in.Schedule.Minute, Timezone: in.Schedule.Timezone}, Retain: in.Retain, Enabled: in.Enabled, Command: in.Command, Plan: plan}
 		if in.Schedule.Kind != nil && *in.Schedule.Kind != "daily" {
 			out.Schedule.Kind = string(*in.Schedule.Kind)
 		}
@@ -240,7 +249,17 @@ func (s *Service) BackupCommand(ctx context.Context, p store.Principal, ws, pid,
 		if err == nil {
 			var c api.ExecutionCommand
 			var b backup.Command
-			if json.Unmarshal(previous, &c) != nil || c.Backup == nil || json.Unmarshal(*c.Backup, &b) != nil || b.Installation.Policy.ID != id || b.Action != string(in.Action) || b.Snapshot != in.Snapshot {
+			if json.Unmarshal(previous, &c) != nil {
+				return domain.Conflict
+			}
+			if c.Kind == "crosshost" && c.Crosshost != nil {
+				var parent coordinationCommand
+				if json.Unmarshal(*c.Crosshost, &parent) != nil || parent.Maintenance == nil {
+					return domain.Conflict
+				}
+				c = parent.Maintenance.Effect.command("")
+			}
+			if c.Backup == nil || json.Unmarshal(*c.Backup, &b) != nil || b.Installation.Policy.ID != id || b.Action != string(in.Action) || b.Snapshot != in.Snapshot {
 				return domain.Conflict
 			}
 			out, err = scanOperation(tx.QueryRow(ctx, "SELECT "+opColumns+" FROM execution_operations WHERE workspace_id=$1 AND request_key=$2", ws, in.RequestKey))
@@ -280,6 +299,10 @@ func (s *Service) BackupCommand(ctx context.Context, p store.Principal, ws, pid,
 		c := api.ExecutionCommand{Id: uuid.New(), ServerId: v.ServerID, EnvironmentId: env, Generation: generation, PlanHash: b.Digest(), Kind: "backup", Action: "inspect", ResourceId: id, Deadline: time.Now().Add(30 * time.Minute), Backup: &payload}
 		if v.GeneralSchedule() {
 			c.Kind = "schedule"
+		}
+		if b.Action == "backup" && v.Plan.Specification.HasRemotePlacement() && v.RequiresQuiescence() {
+			out, err = s.insertBackupMaintenance(ctx, tx, ws, in.RequestKey, c, b)
+			return err
 		}
 		out, err = s.insert(ctx, tx, ws, in.RequestKey, nil, c)
 		return err
@@ -370,9 +393,9 @@ func (s *Service) ScheduleReport(ctx context.Context, a Identity, sequence int64
 	if !valid {
 		return domain.Unauthenticated
 	}
-	var raw []byte
+	var raw, prior []byte
 	var seq int64
-	if err = tx.QueryRow(ctx, "SELECT configuration,status_sequence FROM backup_policies WHERE workspace_id=$1 AND id=$2 AND server_id=$3 FOR UPDATE", a.Workspace, status.PolicyID, a.ID).Scan(&raw, &seq); err != nil {
+	if err = tx.QueryRow(ctx, "SELECT configuration,status_sequence,status FROM backup_policies WHERE workspace_id=$1 AND id=$2 AND server_id=$3 FOR UPDATE", a.Workspace, status.PolicyID, a.ID).Scan(&raw, &seq, &prior); err != nil {
 		return err
 	}
 	var p backup.Policy
@@ -381,6 +404,21 @@ func (s *Service) ScheduleReport(ctx context.Context, a Identity, sequence int64
 	}
 	if sequence <= seq {
 		return tx.Commit(ctx)
+	}
+	if p.Coordinated {
+		if status.Next.Year() < 1 || status.Next.Year() > 9999 {
+			return domain.Invalid("schedule.next")
+		}
+		status.Next = status.Next.UTC()
+		var old backup.Status
+		if json.Unmarshal(prior, &old) != nil {
+			return domain.Conflict
+		}
+		// Management advances this cursor atomically with the coordinated parent.
+		// An unchanged installation report must not rewind it to its local cursor.
+		if old.Generation == status.Generation && !old.Next.IsZero() {
+			status.Next = old.Next
+		}
 	}
 	for _, r := range status.Runs {
 		if r.PolicyID != p.ID || r.Generation < 1 || r.Generation > p.Generation || r.ID == uuid.Nil || len(r.Note) > 1024 || r.Snapshot != "" && !backup.SnapshotID(r.Snapshot) || r.Manifest != nil && (r.Manifest.PolicyID != p.ID || r.Manifest.EnvironmentID != p.EnvironmentID || r.Manifest.ResourceID != p.ResourceID) {
@@ -433,6 +471,21 @@ func (s *Service) PrepareBackupCutover(ctx context.Context, p store.Principal, w
 				}
 			}
 		}
+		var boundary *deployment.RestoreCutover
+		if policy.Plan.Local != nil {
+			current, err := appliedVisualPlan(ctx, tx, ws, env)
+			if err != nil {
+				return err
+			}
+			if current.Distributed == nil || current.PrimaryPlan().Hash != policy.Plan.Hash || deployment.Hash(v.Spec) != deployment.Hash(current.Specification) {
+				return domain.Conflict
+			}
+			source, err = backup.CutoverVolume(policy, run)
+			if err != nil {
+				return domain.Invalid("restore.compatibility")
+			}
+			boundary = &deployment.RestoreCutover{SourcePlanID: current.ID, SourceHash: current.Hash, PolicyID: policy.ID, RunID: run.ID, ManifestHash: run.ManifestHash, OldVolumeID: source, TargetVolumeID: run.TargetID}
+		}
 		if v.Spec.Compose != nil {
 			oldName := ""
 			for _, volume := range v.Spec.Volumes {
@@ -479,6 +532,12 @@ func (s *Service) PrepareBackupCutover(ctx context.Context, p store.Principal, w
 		out, err = q.InsertRevision(ctx, db.InsertRevisionParams{WorkspaceID: ws, EnvironmentID: env, ID: uuid.New(), AuthorID: p.Account.ID, Specification: canonical, ContentHash: h[:]})
 		if err != nil {
 			return err
+		}
+		if boundary != nil {
+			configuration, _ := json.Marshal(boundary)
+			if _, err = tx.Exec(ctx, `INSERT INTO backup_cutovers(workspace_id,environment_id,revision_id,policy_id,source_plan_id,configuration) VALUES($1,$2,$3,$4,$5,$6)`, ws, env, out.ID, id, boundary.SourcePlanID, configuration); err != nil {
+				return err
+			}
 		}
 		n, err := tx.Exec(ctx, "UPDATE environments SET draft_revision_id=$4 WHERE workspace_id=$1 AND id=$2 AND draft_revision_id=$3", ws, env, in.BaseRevisionId, out.ID)
 		if err == nil && n.RowsAffected() != 1 {

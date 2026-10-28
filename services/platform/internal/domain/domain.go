@@ -89,6 +89,7 @@ type Variable struct {
 	SecretVersionID *uuid.UUID `json:"secretVersionId,omitempty"`
 }
 type Specification struct {
+	Placement    *Placement             `json:"placement,omitempty"`
 	Compose      *composeproject.Bundle `json:"compose,omitempty"`
 	Networks     []Network              `json:"networks,omitempty"`
 	Version      int                    `json:"version"`
@@ -162,6 +163,9 @@ func ParseSpec(raw []byte) (Specification, []byte, error) {
 		names[v.Name] = true
 	}
 	if err := ValidateVisual(spec); err != nil {
+		return spec, nil, err
+	}
+	if err := spec.ValidatePlacement(); err != nil {
 		return spec, nil, err
 	}
 	canonical, err := json.Marshal(spec)

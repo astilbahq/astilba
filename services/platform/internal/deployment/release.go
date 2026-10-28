@@ -37,6 +37,11 @@ func (o ReleaseOptions) Validate() error {
 	return nil
 }
 func (p Plan) Instance(id uuid.UUID) uuid.UUID {
+	if p.Local != nil {
+		if ids := p.Local.Instances[id.String()]; len(ids) > 0 {
+			return ids[0]
+		}
+	}
 	if v := p.Instances[id.String()]; v != uuid.Nil {
 		return v
 	}
@@ -45,6 +50,15 @@ func (p Plan) Instance(id uuid.UUID) uuid.UUID {
 func (p Plan) ContainerName(id uuid.UUID) string { return UnitName(p.Instance(id)) }
 func (p Plan) HostName(id uuid.UUID) string      { return ServiceName(p.Instance(id)) }
 func (p Plan) Backend(id uuid.UUID) Backend {
+	if p.Local != nil && p.Local.Primary {
+		if endpoints := p.Local.Backends[id.String()]; len(endpoints) > 0 {
+			for _, a := range p.Specification.Applications {
+				if a.ID == id {
+					return Backend{Endpoints: endpoints, Health: a.Health}
+				}
+			}
+		}
+	}
 	if p.Recipe == ReplicaRecipe {
 		b := Backend{InstanceIDs: p.InstanceIDs(id)}
 		for _, app := range p.Specification.Applications {

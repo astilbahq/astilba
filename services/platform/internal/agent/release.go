@@ -456,6 +456,9 @@ func (e *Engine) removeReleaseCommand(ctx context.Context, c api.ExecutionComman
 	return err
 }
 func (e *Engine) releaseCommand(ctx context.Context, c api.ExecutionCommand, p deployment.Payload, s *releaseState) (string, error) {
+	return e.runReleaseCommand(ctx, c, p, s, e.Journal.saveRelease)
+}
+func (e *Engine) runReleaseCommand(ctx context.Context, c api.ExecutionCommand, p deployment.Payload, s *releaseState, save func(releaseState) error) (string, error) {
 	name := releaseCommandName(c)
 	options := p.Plan.Release.Options
 	id := p.Plan.Release.ApplicationID
@@ -487,7 +490,7 @@ func (e *Engine) releaseCommand(ctx context.Context, c api.ExecutionCommand, p d
 		}
 		s.Phase = "command-starting"
 		s.HookDeadline = time.Now().UTC().Add(time.Duration(options.CommandTimeoutSeconds) * time.Second)
-		if err = e.Journal.saveRelease(*s); err != nil {
+		if err = save(*s); err != nil {
 			return "", err
 		}
 		e.point("release-command-intent")
@@ -548,7 +551,7 @@ func (e *Engine) releaseCommand(ctx context.Context, c api.ExecutionCommand, p d
 		return "failed", nil
 	}
 	s.Phase = "command-done"
-	if err = e.Journal.saveRelease(*s); err != nil {
+	if err = save(*s); err != nil {
 		return "", err
 	}
 	return "succeeded", nil

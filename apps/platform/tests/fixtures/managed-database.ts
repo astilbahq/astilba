@@ -5,6 +5,7 @@ export async function managedDatabase(
   request: APIRequestContext,
   name: string,
   version = 18,
+  workspaceName?: string,
 ) {
   await page.goto("/");
   await page.getByLabel("Email", { exact: true }).fill("owner@example.test");
@@ -15,8 +16,7 @@ export async function managedDatabase(
   await expect(
     page.getByRole("heading", { name: "Projects", exact: true }),
   ).toBeVisible();
-  const session = await (await page.request.get("/api/v1/session")).json(),
-    ws = session.workspaces[0].id;
+  const session = await (await page.request.get("/api/v1/session")).json();
   const headers = {
     "X-CSRF-Token": session.csrfToken,
     Origin: "http://127.0.0.1:15181",
@@ -26,6 +26,9 @@ export async function managedDatabase(
     expect(response.ok(), await response.text()).toBeTruthy();
     return response.json();
   };
+  const ws = workspaceName
+    ? (await post("/api/v1/workspaces", { name: workspaceName })).id
+    : session.workspaces[0].id;
   const prefix = `/api/v1/workspaces/${ws}`;
   const project = await post(`${prefix}/projects`, {
     name: `Recovery ${name}`,

@@ -3,7 +3,6 @@ package execution
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"sort"
 	"time"
 	"unicode/utf8"
@@ -32,22 +31,34 @@ func (s *Service) ExportLogs(ctx context.Context, p store.Principal, ws, pid, en
 		if _, err := loadVisualEnvironment(ctx, tx, ws, pid, env); err != nil {
 			return err
 		}
-		var raw []byte
-		var at time.Time
-		err := tx.QueryRow(ctx, `SELECT observation,observed_at FROM visual_runtime WHERE workspace_id=$1 AND environment_id=$2 AND observed_at>=$3 AND observed_at<=$4`, ws, env, out.WindowStart, out.WindowEnd).Scan(&raw, &at)
-		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		snapshots, err := tx.Query(ctx, `SELECT inventory->'observation',observed_at,server_id,unit_id FROM cross_host_runtime WHERE workspace_id=$1 AND environment_id=$2 AND observed_at BETWEEN $3 AND $4
+		 UNION ALL SELECT observation,observed_at,NULL::uuid,NULL::uuid FROM visual_runtime WHERE workspace_id=$1 AND environment_id=$2 AND observed_at BETWEEN $3 AND $4 AND NOT EXISTS(SELECT 1 FROM cross_host_runtime WHERE workspace_id=$1 AND environment_id=$2)`, ws, env, out.WindowStart, out.WindowEnd)
+		if err != nil {
 			return err
 		}
-		if err == nil {
+		for snapshots.Next() {
+			var raw []byte
+			var at time.Time
+			var server, unit *uuid.UUID
+			if err := snapshots.Scan(&raw, &at, &server, &unit); err != nil {
+				snapshots.Close()
+				return err
+			}
 			var observation deployment.Observation
 			if err := json.Unmarshal(raw, &observation); err != nil {
+				snapshots.Close()
 				return err
 			}
 			for _, resource := range observation.Resources {
 				if resource.Logs != "" {
-					out.Entries = append(out.Entries, api.LogExportEntry{Source: api.RuntimeSample, At: at, ResourceId: resource.ID, Content: resource.Logs})
+					out.Entries = append(out.Entries, api.LogExportEntry{Source: api.RuntimeSample, At: at, ResourceId: resource.ID, ServerId: server, UnitId: unit, Content: resource.Logs})
 				}
 			}
+		}
+		err = snapshots.Err()
+		snapshots.Close()
+		if err != nil {
+			return err
 		}
 		rows, err := tx.Query(ctx, `SELECT id,application_id,created_at,result->>'logs' FROM pipeline_runs WHERE workspace_id=$1 AND environment_id=$2 AND created_at>=$3 AND created_at<=$4 AND result ? 'logs' AND result->>'logs'<>'' ORDER BY created_at DESC,id LIMIT 101`, ws, env, out.WindowStart, out.WindowEnd)
 		if err != nil {
