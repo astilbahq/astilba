@@ -517,7 +517,7 @@ func (e *Engine) pipelineLog(ctx context.Context, c api.ExecutionCommand, p pipe
 	}
 	values := map[string]string{}
 	for k, v := range p.BuildSecrets {
-		values[k] = v
+		values["build:"+k] = v
 	}
 	if p.Access != nil {
 		values["clone"] = p.Access.Clone.Password
