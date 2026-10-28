@@ -34,7 +34,11 @@ func (s *Service) Limit(ctx context.Context, scope string, max int32, window tim
 	if err := s.Store.Queries.PruneAuthAttempts(ctx); err != nil {
 		return err
 	}
-	count, err := s.Store.Queries.RecordAuthAttempt(ctx, db.RecordAuthAttemptParams{ScopeHash: Hash(scope), ExpiresAt: s.Now().Add(window)})
+	return s.recordAttempt(ctx, s.Store.Queries, scope, max, window)
+}
+
+func (s *Service) recordAttempt(ctx context.Context, q *db.Queries, scope string, max int32, window time.Duration) error {
+	count, err := q.RecordAuthAttempt(ctx, db.RecordAuthAttemptParams{ScopeHash: Hash(scope), ExpiresAt: s.Now().Add(window)})
 	if err != nil {
 		return err
 	}
@@ -43,19 +47,45 @@ func (s *Service) Limit(ctx context.Context, scope string, max int32, window tim
 	}
 	return nil
 }
-func (s *Service) Login(ctx context.Context, email, password, ip string) (db.Account, error) {
-	var zero db.Account
-	if err := s.Limit(ctx, "password:global", 1000, 15*time.Minute); err != nil {
-		return zero, err
+
+func (s *Service) admitLogin(ctx context.Context, email, source string) (string, error) {
+	if err := s.Store.Queries.PruneAuthAttempts(ctx); err != nil {
+		return "", err
 	}
-	if err := s.Limit(ctx, "password:ip:"+ip, 50, 15*time.Minute); err != nil {
-		return zero, err
-	}
-	email, err := domain.Email(email)
+	var localErr error
+	err := s.Store.Transaction(ctx, func(q *db.Queries) error {
+		localErr = s.recordAttempt(ctx, q, "password:ip:"+source, 50, 15*time.Minute)
+		if localErr == nil {
+			var err error
+			email, err = domain.Email(email)
+			if err != nil {
+				localErr = domain.Credentials
+			}
+		}
+		if localErr == nil {
+			localErr = s.recordAttempt(ctx, q, "password:account:"+email, 5, 15*time.Minute)
+		}
+		if localErr != nil {
+			if errors.Is(localErr, domain.RateLimited) || errors.Is(localErr, domain.Credentials) {
+				// Local refusals retain their existing attempt accounting.
+				return nil
+			}
+			return localErr
+		}
+		// A global refusal rolls back local charges; concurrent admissions
+		// serialize on the shared global counter before any password work.
+		return s.recordAttempt(ctx, q, "password:global", 1000, 15*time.Minute)
+	})
 	if err != nil {
-		return zero, domain.Credentials
+		return "", err
 	}
-	if err := s.Limit(ctx, "password:account:"+email, 5, 15*time.Minute); err != nil {
+	return email, localErr
+}
+
+func (s *Service) Login(ctx context.Context, email, password, source string) (db.Account, error) {
+	var zero db.Account
+	email, err := s.admitLogin(ctx, email, source)
+	if err != nil {
 		return zero, err
 	}
 	account, err := s.Store.Queries.AccountByEmail(ctx, email)

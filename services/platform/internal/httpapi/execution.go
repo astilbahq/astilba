@@ -158,7 +158,7 @@ func (s *Server) CancelOperation(w http.ResponseWriter, r *http.Request, ws, id 
 	s.executionResponse(w, r, 204, nil, e)
 }
 func (s *Server) EnrollAgent(w http.ResponseWriter, r *http.Request) {
-	if e := s.Auth.Limit(r.Context(), "agent-enroll:"+s.clientIP(r), 30, execution.RotationOverlap); e != nil {
+	if e := s.Auth.Limit(r.Context(), "agent-enroll:"+s.clientSourceKey(r), 30, execution.RotationOverlap); e != nil {
 		s.fail(w, r, e)
 		return
 	}

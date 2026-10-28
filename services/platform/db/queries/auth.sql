@@ -39,7 +39,10 @@ RETURNING attempts;
 -- name: ClearAuthAttempts :exec
 DELETE FROM auth_attempts WHERE scope_hash=$1;
 -- name: PruneAuthAttempts :exec
-DELETE FROM auth_attempts WHERE expires_at < now();
+DELETE FROM auth_attempts WHERE scope_hash IN (
+    SELECT scope_hash FROM auth_attempts WHERE expires_at < now()
+    ORDER BY expires_at,scope_hash LIMIT 1000 FOR UPDATE SKIP LOCKED
+);
 -- name: InsertPasswordReset :exec
 INSERT INTO password_resets(account_id,token_hash,expires_at) VALUES($1,$2,$3)
 ON CONFLICT(account_id) DO UPDATE SET token_hash=EXCLUDED.token_hash,expires_at=EXCLUDED.expires_at;
