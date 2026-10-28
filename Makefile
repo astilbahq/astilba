@@ -30,7 +30,7 @@ check-ci:
 
 check-app: check-ci
 	@for file in scripts/platform-*.mjs; do node --check "$$file" || exit 1; done
-	node --test scripts/platform-proxy-test.mjs
+	node --test scripts/platform-proxy-test.mjs scripts/platform-generate-test.mjs
 	cd services/platform && test -z "$$(gofmt -l .)" && go mod verify && go vet ./... && go test -short ./...
 	pnpm generate:check
 	pnpm --filter @astilba/dashboard check
