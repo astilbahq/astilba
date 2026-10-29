@@ -51,6 +51,9 @@ export function EnvironmentWorkspace({
   );
   const draftRef = useRef(draft);
   draftRef.current = draft;
+  const baseRef = useRef(base.id);
+  baseRef.current = base.id;
+  const reloadSequence = useRef(0);
   const [savedText, setSavedText] = useState(draft);
   const [rawChanged, setRawChanged] = useState(false);
   const [conflict, setConflict] = useState<Schema["Revision"]>();
@@ -257,17 +260,30 @@ export function EnvironmentWorkspace({
                         window.confirm(
                           "Discard unsaved edits and load the current revision?",
                         )
-                      )
-                        action.run(async () =>
-                          replace(
-                            await result(
-                              client.GET(
-                                "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/draft",
-                                { params: { path } },
-                              ),
+                      ) {
+                        const sequence = ++reloadSequence.current;
+                        const requestedDraft = draftRef.current;
+                        const requestedBase = baseRef.current;
+                        action.run(async () => {
+                          const revision = await result(
+                            client.GET(
+                              "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/draft",
+                              { params: { path } },
                             ),
-                          ),
-                        );
+                          );
+                          if (sequence !== reloadSequence.current) return;
+                          if (
+                            draftRef.current !== requestedDraft ||
+                            baseRef.current !== requestedBase
+                          ) {
+                            setMessage(
+                              "Your newer edits were retained. Reload again to discard them and load the current revision.",
+                            );
+                            return;
+                          }
+                          replace(revision);
+                        });
+                      }
                     }}
                   >
                     Reload current

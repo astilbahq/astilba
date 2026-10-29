@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { client, result, type Schema } from "../api/client";
 import { Button } from "../components/button";
 import { Label } from "../components/label";
@@ -53,6 +53,9 @@ export function ComposeEditor({
       ),
   });
   const serialized = JSON.stringify(spec);
+  const serializedRef = useRef(serialized);
+  serializedRef.current = serialized;
+  const previewSequence = useRef(0);
   const { workspaceId, projectId, environmentId } = path;
   useEffect(() => {
     if (!write) {
@@ -389,7 +392,9 @@ export function ComposeEditor({
           <Form
             action={action}
             label="Preview source image edit"
-            onSubmit={(data) =>
+            onSubmit={(data) => {
+              const sequence = ++previewSequence.current;
+              setProposal(undefined);
               action.run(async () => {
                 const value = await result(
                   client.POST(
@@ -406,10 +411,15 @@ export function ComposeEditor({
                     },
                   ),
                 );
-                setProposal(value);
-                setProposalBase(serialized);
-              })
-            }
+                if (
+                  sequence === previewSequence.current &&
+                  serialized === serializedRef.current
+                ) {
+                  setProposal(value);
+                  setProposalBase(serialized);
+                }
+              });
+            }}
           >
             <Label>
               Source service
