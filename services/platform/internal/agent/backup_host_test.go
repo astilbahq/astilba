@@ -117,6 +117,19 @@ func nativeBackupJourney(t *testing.T, e *Engine, p deployment.Plan, finish func
 	}
 	in := backup.Installation{Policy: policy, Destination: backup.Destination{ID: policy.DestinationID, Name: "External recovery fixture", Kind: "filesystem", Root: root}, Access: backup.Access{Password: "native-repository-password-canary"}}
 	finish(backup.Command{Action: "install", Installation: in, RunID: uuid.New(), TargetID: uuid.New()})
+	// Stop this policy before its temporary repository is removed; later
+	// journeys exercise the same journal's scheduler.
+	t.Cleanup(func() {
+		current, err := e.Journal.schedule(policy.ID)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		current.Installation.Policy.Enabled = false
+		if err := e.Journal.saveSchedule(current); err != nil {
+			t.Error(err)
+		}
+	})
 	s, err := e.Journal.schedule(policy.ID)
 	if err != nil {
 		t.Fatal(err)
