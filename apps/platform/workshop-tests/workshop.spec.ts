@@ -256,12 +256,13 @@ test("sign-in toasts preserve drafts and focus, translate, dismiss and reset on 
 for (const reducedMotion of ["no-preference", "reduce"] as const) {
   test(`a toast stack remains scrollable on a short screen with motion ${reducedMotion}`, async ({
     page,
-  }) => {
+  }, info) => {
     await page.emulateMedia({ reducedMotion });
     await page.setViewportSize({ width: 568, height: 240 });
     await page.goto("/iframe.html?id=controls-toast--multiple&viewMode=story");
     const notifications = page.getByRole("dialog");
-    await expect(notifications).toHaveCount(3);
+    // Storybook's asynchronous play function creates this three-toast fixture.
+    await expect(notifications).toHaveCount(3, { timeout: info.timeout });
     const oldest = notifications.last();
     await expect(oldest.locator("[inert]")).toHaveCount(1);
     await page.getByRole("button", { name: "Show notification" }).press("F6");
