@@ -863,6 +863,15 @@ func TestCrossHostCoordinatedPlacement(t *testing.T) {
 	stack.Placement = &domain.Placement{NetworkID: network.ID, IngressServerID: servers[0].Server.Id, Applications: []domain.ApplicationPlacement{{ApplicationID: web, CPUMillis: 500, MemoryMiB: 128, Targets: []domain.PlacementTarget{{ServerID: servers[0].Server.Id, Count: 1}, {ServerID: servers[1].Server.Id, Count: 1}}}}}
 	b.call("PUT", databasePath+"/draft", map[string]any{"baseRevisionId": databaseDraft.Id, "specification": stack}, 200, &databaseDraft)
 	source := deploy(databaseDraft.Id)
+	// Deployment receipts can finish before standalone network reconciliation.
+	wait(func() bool {
+		b.call("GET", base+"/network", nil, 200, &network)
+		var active bool
+		if err := f.st.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM execution_operations WHERE server_id=ANY($1) AND state NOT IN ('succeeded','failed','cancelled'))`, []uuid.UUID{servers[0].Server.Id, servers[1].Server.Id}).Scan(&active); err != nil {
+			t.Fatal(err)
+		}
+		return network.State == "ready" && !active
+	})
 	var recovery backup.Policy
 	refreshAuthentication()
 	b.call("POST", databasePath+"/backup-policies", api.BackupPolicyRequest{Name: "Recovery", ResourceId: pg, DestinationId: destination.ID, Method: "postgres-logical", Schedule: api.DailySchedule{Timezone: "UTC"}, Retain: 7, Enabled: true, Command: []string{}, Password: &password}, 201, &recovery)
