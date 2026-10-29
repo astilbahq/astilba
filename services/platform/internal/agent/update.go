@@ -16,6 +16,23 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 )
 
+// VerifyInstalledUpdate validates the same signed host artifact as Install,
+// without downloading or replacing anything.
+func VerifyInstalledUpdate(r api.AgentRelease, key ed25519.PublicKey, executable string) error {
+	if r.Arch != api.AgentReleaseArch(runtime.GOARCH) {
+		return errors.New("wrong host architecture")
+	}
+	if err := agentrelease.Validate(r, key); err != nil {
+		return err
+	}
+	current, err := os.Open(executable)
+	if err != nil {
+		return err
+	}
+	defer current.Close()
+	return agentrelease.Verify(r, key, current)
+}
+
 // Install only replaces the agent executable. It never stops a workload or edits Docker.
 // The process supervisor restarts it after the current update operation is journaled.
 func Install(ctx context.Context, r api.AgentRelease, key ed25519.PublicKey, source io.Reader, executable string) error {
@@ -98,6 +115,9 @@ func RemoteUpdate(ctx context.Context, c *Client, r api.AgentRelease, executable
 		return e
 	}
 	key := ed25519.PublicKey(cfg.PublicKey)
+	if VerifyInstalledUpdate(r, key, executable) == nil {
+		return nil
+	}
 	if e = agentrelease.Validate(r, key); e != nil {
 		return e
 	}

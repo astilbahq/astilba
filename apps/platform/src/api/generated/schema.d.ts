@@ -2307,6 +2307,8 @@ export interface components {
         AgentCapabilities: {
             /** @description Supports versioned managed private links and coordinated cross-host commands. */
             crossHost?: boolean;
+            /** @description Supports stateful maintenance writer resumption after its admission deadline with primary-first delivery. */
+            maintenanceContinuation?: boolean;
             /** @description Supports bounded preview plans and ownership-verified cleanup. */
             previews?: boolean;
             /** @enum {integer} */

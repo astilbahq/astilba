@@ -368,6 +368,25 @@ func (w *worker) Work(ctx context.Context, job *river.Job[jobArgs]) error {
 			if c.Crosshost == nil || json.Unmarshal(*c.Crosshost, &body) != nil {
 				return domain.Invalid("crosshost")
 			}
+			if body.Maintenance != nil && (body.Phase == "resume-source" || body.Phase == "resume-target") {
+				if body.Unit.Plan.Local == nil || body.ParentID != *c.ParentId || body.Digest() != c.PlanHash {
+					return domain.Invalid("crosshost")
+				}
+				if !body.Unit.Plan.Local.Primary {
+					// Consumers stay stopped until the provider has reconciled its
+					// writers. Cancellation still requires the same resumption.
+					var ready bool
+					if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM execution_operations primary_child JOIN cross_host_operations parent ON parent.id=primary_child.parent_id AND parent.workspace_id=primary_child.workspace_id WHERE primary_child.workspace_id=$1 AND primary_child.parent_id=$2 AND parent.phase=$3 AND primary_child.command->'crosshost'->>'phase'=$4 AND (primary_child.command->'crosshost'->'unit'->'plan'->'local'->>'primary')::boolean AND primary_child.state='succeeded')`, ws, *c.ParentId, "maintenance-"+body.Phase, body.Phase).Scan(&ready); err != nil {
+						return err
+					}
+					if !ready {
+						if err = tx.Commit(ctx); err != nil {
+							return err
+						}
+						return river.JobSnooze(2 * time.Second)
+					}
+				}
+			}
 			if body.Phase == "prepare" && body.Maintenance == nil {
 				if body.Unit.Plan.Local == nil || body.Unit.Plan.Specification.Placement == nil || body.ParentID != *c.ParentId || body.Digest() != c.PlanHash {
 					return domain.Invalid("crosshost")

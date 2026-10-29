@@ -37,6 +37,7 @@ func queuedPreparation(t *testing.T, primaryState, childState api.ExecutionState
 		_, in, _ := enrollment(t, f, b, ws, "deployment")
 		yes := true
 		in.Capabilities.CrossHost = &yes
+		in.Capabilities.MaintenanceContinuation = &yes
 		if _, err := f.execution.Enroll(ctx, in); err != nil {
 			t.Fatal(err)
 		}

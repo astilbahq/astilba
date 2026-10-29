@@ -158,6 +158,13 @@ func (s *Service) insertMaintenance(ctx context.Context, tx pgx.Tx, ws, key uuid
 		if err := requireReplicas(ctx, tx, ws, u.Plan.ServerID, u.Plan); err != nil {
 			return api.Operation{}, err
 		}
+		var continuation bool
+		if err := tx.QueryRow(ctx, `SELECT COALESCE((capabilities->>'maintenanceContinuation')::boolean,false) FROM servers WHERE workspace_id=$1 AND id=$2`, ws, u.Plan.ServerID).Scan(&continuation); err != nil {
+			return api.Operation{}, err
+		}
+		if !continuation {
+			return api.Operation{}, domain.Invalid("server.capabilities.maintenanceContinuation")
+		}
 		var inventory []byte
 		if err := tx.QueryRow(ctx, `SELECT inventory FROM cross_host_runtime WHERE workspace_id=$1 AND environment_id=$2 AND unit_id=$3`, ws, p.EnvironmentID, u.Plan.UnitID).Scan(&inventory); err != nil {
 			return api.Operation{}, err
@@ -359,6 +366,7 @@ func (s *Service) coordinateMaintenance(ctx context.Context, tx pgx.Tx, job *riv
 		return err
 	}
 	all, failed := true, false
+	uncertain, primaryBlocked := false, false
 	children := []uuid.UUID{}
 	for _, u := range maintenancePhaseUnits(m, phase) {
 		if err := s.insertMaintenanceChild(ctx, tx, ws, parent, phase, m, u); err != nil {
@@ -368,15 +376,20 @@ func (s *Service) coordinateMaintenance(ctx context.Context, tx pgx.Tx, job *riv
 		if err := tx.QueryRow(ctx, `SELECT state FROM execution_operations WHERE workspace_id=$1 AND id=$2 AND parent_id=$3 AND server_id=$4`, ws, phaseKey(parent.Id, phase, u.Unit.Plan.UnitID), parent.Id, u.Unit.Plan.ServerID).Scan(&state); err != nil {
 			return err
 		}
-		if state == "needs_attention" {
-			return wait("needs_attention", "Maintenance has an uncertain host outcome. Writers and reservations remain held for reconciliation.")
-		}
+		uncertain = uncertain || state == "needs_attention"
+		primaryBlocked = primaryBlocked || (phase == "maintenance-resume-source" || phase == "maintenance-resume-target") && u.Unit.Plan.Local.Primary && (state == "failed" || state == "cancelled")
 		all = all && Terminal(state)
 		failed = failed || state == "failed" || state == "cancelled"
 		children = append(children, phaseKey(parent.Id, phase, u.Unit.Plan.UnitID))
 	}
 	if err := s.stageRecoveryPhase(ctx, tx, ws, parent, command, phase, children, recoveryGeneration); err != nil {
 		return err
+	}
+	if uncertain {
+		return wait("needs_attention", "Maintenance has an uncertain host outcome. Writers and reservations remain held for reconciliation.")
+	}
+	if primaryBlocked {
+		return wait("needs_attention", "The primary has not confirmed writer recovery. Consumers and reservations remain held for reconciliation.")
 	}
 	if !all {
 		return wait("running", "Coordinated "+phase+"; the primary data effect waits for every required host receipt.")

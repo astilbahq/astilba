@@ -317,7 +317,7 @@ func (h *recoveryFixtureHost) Preflight(ctx context.Context) (api.AgentHeartbeat
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.namespace == "" {
-		return agent.Preflight(ctx, h.engine.Docker, "fixture", h.state, h.engine.DockerCLI, "/opt/astilba-platform-tools/restic"), nil
+		return h.engine.Journal.Preflight(ctx, h.engine.Docker, "fixture", h.state, h.engine.DockerCLI, "/opt/astilba-platform-tools/restic"), nil
 	}
 	reply, err := h.runProcess(ctx, recoveryFixtureRequest{State: h.state, Socket: h.engine.Docker.DaemonHost(), CLI: h.engine.DockerCLI, Preflight: true})
 	if err != nil {
@@ -433,7 +433,7 @@ func TestRecoveryFixtureAgentProcess(t *testing.T) {
 	defer docker.Close()
 	reply := recoveryFixtureReply{}
 	if request.Preflight {
-		heartbeat := agent.Preflight(context.Background(), docker, "fixture", request.State, request.CLI, "/opt/astilba-platform-tools/restic")
+		heartbeat := journal.Preflight(context.Background(), docker, "fixture", request.State, request.CLI, "/opt/astilba-platform-tools/restic")
 		reply.Heartbeat = &heartbeat
 	} else {
 		engine := agent.Engine{Journal: journal, Docker: docker, DockerCLI: request.CLI, ResticCLI: "/opt/astilba-platform-tools/restic", BackupRoots: []string{filepath.Join(request.State, "backups")}, FetchCheckpoint: func(context.Context, deployment.RecoveryDescriptor) ([]byte, error) { return request.Envelope, nil }}
