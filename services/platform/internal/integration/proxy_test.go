@@ -14,26 +14,10 @@ import (
 func TestAuthenticationLimitsBehindTrustedProxy(t *testing.T) {
 	f := setup(t)
 	f.apiServer.TrustedProxies = []netip.Prefix{netip.MustParsePrefix("127.0.0.1/32")}
-	upstream, err := url.Parse(f.server.URL)
-	if err != nil {
-		t.Fatal(err)
-	}
 	// Each edge represents a different client; both reach the API over real TCP
 	// from the same proxy address and append that client's IP to incoming XFF.
-	edge := func(client string) *httptest.Server {
-		proxy := httptest.NewServer(&httputil.ReverseProxy{Rewrite: func(r *httputil.ProxyRequest) {
-			r.SetURL(upstream)
-			chain := r.In.Header.Get("X-Forwarded-For")
-			if chain != "" {
-				chain += ", "
-			}
-			r.Out.Header.Set("X-Forwarded-For", chain+client)
-		}})
-		t.Cleanup(proxy.Close)
-		return proxy
-	}
-	blocked := edge("198.51.100.10")
-	other := edge("198.51.100.11")
+	blocked := proxyClient(t, f, "198.51.100.10")
+	other := proxyClient(t, f, "198.51.100.11")
 	// Start at the limit so the test exercises HTTP admission without spending
 	// fifty password hashes on unrelated credential checks.
 	for range 50 {
@@ -77,4 +61,57 @@ func TestAuthenticationLimitsBehindTrustedProxy(t *testing.T) {
 		}
 	}
 	login(f.server.URL, "198.51.100.99", 429)
+}
+
+func TestLoginIPv6RotationSharesSourceBudget(t *testing.T) {
+	f := setup(t)
+	f.apiServer.TrustedProxies = []netip.Prefix{netip.MustParsePrefix("127.0.0.1/32")}
+	first := proxyClient(t, f, "2001:db8:1::1")
+	rotated := proxyClient(t, f, "2001:db8:1::2")
+	other := proxyClient(t, f, "2001:db8:2::1")
+	// Leave one admission so real HTTP attempts cross the shared /64 boundary
+	// without spending fifty password comparisons on fixture setup.
+	for range 49 {
+		if err := f.auth.Limit(context.Background(), "password:ip:2001:db8:1::/64", 50, 15*time.Minute); err != nil {
+			t.Fatal(err)
+		}
+	}
+	b := f.browser(t)
+	for i, tc := range []struct {
+		proxy  *httptest.Server
+		status int
+	}{{first, 400}, {rotated, 429}, {other, 400}} {
+		r, err := newRequest(b, "POST", "/api/v1/auth/login", []byte(fmt.Sprintf(`{"email":"unknown-%d@example.test","password":"wrong"}`, i)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		u, _ := url.Parse(tc.proxy.URL)
+		r.URL.Scheme, r.URL.Host = u.Scheme, u.Host
+		res, err := b.client.Do(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		res.Body.Close()
+		if res.StatusCode != tc.status {
+			t.Fatalf("login attempt %d returned %d, want %d", i+1, res.StatusCode, tc.status)
+		}
+	}
+}
+
+func proxyClient(t *testing.T, f *fixture, client string) *httptest.Server {
+	t.Helper()
+	upstream, err := url.Parse(f.server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxy := httptest.NewServer(&httputil.ReverseProxy{Rewrite: func(r *httputil.ProxyRequest) {
+		r.SetURL(upstream)
+		chain := r.In.Header.Get("X-Forwarded-For")
+		if chain != "" {
+			chain += ", "
+		}
+		r.Out.Header.Set("X-Forwarded-For", chain+client)
+	}})
+	t.Cleanup(proxy.Close)
+	return proxy
 }

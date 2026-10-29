@@ -370,7 +370,7 @@ func (s *Server) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.Sessions.Remove(r.Context(), "github-session")
-	a, e := s.Auth.Login(r.Context(), string(b.Email), value(b.Password), s.clientIP(r))
+	a, e := s.Auth.Login(r.Context(), string(b.Email), value(b.Password), s.clientSourceKey(r))
 	if e != nil {
 		s.fail(w, r, e)
 		return
@@ -472,7 +472,7 @@ func (s *Server) RequestPasswordReset(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, e)
 		return
 	}
-	e = s.Auth.RequestReset(r.Context(), string(b.Email), s.clientIP(r), s.Origin)
+	e = s.Auth.RequestReset(r.Context(), string(b.Email), s.clientSourceKey(r), s.Origin)
 	if errors.Is(e, domain.RateLimited) {
 		s.fail(w, r, e)
 		return
@@ -485,7 +485,7 @@ func (s *Server) RequestPasswordReset(w http.ResponseWriter, r *http.Request) {
 func (s *Server) ValidatePasswordReset(w http.ResponseWriter, r *http.Request) {
 	b, e := decode[api.AuthLinkToken](r)
 	if e == nil {
-		e = s.Auth.ValidateReset(r.Context(), value(b.Token), s.clientIP(r))
+		e = s.Auth.ValidateReset(r.Context(), value(b.Token), s.clientSourceKey(r))
 	}
 	if e != nil {
 		s.fail(w, r, e)
@@ -497,7 +497,7 @@ func (s *Server) ValidatePasswordReset(w http.ResponseWriter, r *http.Request) {
 func (s *Server) CompletePasswordReset(w http.ResponseWriter, r *http.Request) {
 	b, e := decode[api.ResetComplete](r)
 	if e == nil {
-		e = s.Auth.CompleteReset(r.Context(), b.Token, value(b.Password), s.clientIP(r))
+		e = s.Auth.CompleteReset(r.Context(), b.Token, value(b.Password), s.clientSourceKey(r))
 	}
 	if e == nil {
 		e = s.Sessions.Destroy(r.Context())
@@ -511,7 +511,7 @@ func (s *Server) CompletePasswordReset(w http.ResponseWriter, r *http.Request) {
 func (s *Server) ValidateInvitation(w http.ResponseWriter, r *http.Request) {
 	b, e := decode[api.AuthLinkToken](r)
 	if e == nil {
-		e = s.Auth.ValidateInvitation(r.Context(), value(b.Token), s.clientIP(r))
+		e = s.Auth.ValidateInvitation(r.Context(), value(b.Token), s.clientSourceKey(r))
 	}
 	if e != nil {
 		s.fail(w, r, e)
@@ -523,7 +523,7 @@ func (s *Server) ValidateInvitation(w http.ResponseWriter, r *http.Request) {
 func (s *Server) AcceptInvitation(w http.ResponseWriter, r *http.Request) {
 	b, e := decode[api.AcceptInvitation](r)
 	if e == nil {
-		e = s.Auth.Limit(r.Context(), "invite:"+s.clientIP(r), 20, 15*time.Minute)
+		e = s.Auth.Limit(r.Context(), "invite:"+s.clientSourceKey(r), 20, 15*time.Minute)
 	}
 	if e != nil {
 		s.fail(w, r, e)
