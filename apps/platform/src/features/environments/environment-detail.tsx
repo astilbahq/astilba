@@ -122,6 +122,7 @@ export function EnvironmentDetail(props: EnvProps) {
             {...props}
             write={props.write && !managed}
             initial={draft.data}
+            section={section}
             visited={visited}
             selectSection={(value) => selectSection(value, true)}
           />

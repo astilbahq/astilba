@@ -35,10 +35,12 @@ export function EnvironmentWorkspace({
   initial,
   write,
   owner,
+  section,
   visited,
   selectSection,
 }: EnvProps & {
   initial: Schema["Revision"];
+  section: EnvironmentSection;
   visited: ReadonlySet<EnvironmentSection>;
   selectSection: (section: EnvironmentSection) => void;
 }) {
@@ -131,6 +133,18 @@ export function EnvironmentWorkspace({
     });
   return (
     <>
+      <div aria-live="polite" aria-atomic="true">
+        {conflict && section !== "configuration" && (
+          <div className={e.note}>
+            <div className={s.row}>
+              <p>{envT(($) => $.conflictNotice)}</p>
+              <Button onClick={() => selectSection("configuration")}>
+                {envT(($) => $.openConfiguration)}
+              </Button>
+            </div>
+          </div>
+        )}
+      </div>
       <TabsPanel value="overview" keepMounted>
         <EnvironmentOverview
           environment={environment}
