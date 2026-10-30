@@ -302,7 +302,14 @@ func value(p *string) string {
 	return *p
 }
 func (s *Server) establish(ctx context.Context, a db.Account, mfa bool) error {
-	s.Sessions.Remove(ctx, "github-session")
+	csrf, err := cryptobox.Token()
+	if err != nil {
+		return err
+	}
+	nonce, err := cryptobox.Token()
+	if err != nil {
+		return err
+	}
 	if err := s.Sessions.RenewToken(ctx); err != nil {
 		return err
 	}
@@ -313,11 +320,10 @@ func (s *Server) establish(ctx context.Context, a db.Account, mfa bool) error {
 	s.Sessions.Put(ctx, "version", a.AuthVersion)
 	s.Sessions.Put(ctx, "mfa", mfa)
 	s.Sessions.Put(ctx, "recent", s.Auth.Now())
-	token, err := cryptobox.Token()
-	if err == nil {
-		s.Sessions.Put(ctx, "csrf", token)
-	}
-	return err
+	s.Sessions.Put(ctx, "csrf", csrf)
+	// Authenticated values stay fixed within a token; idle refreshes may overlap.
+	s.Sessions.Put(ctx, "github-session", nonce)
+	return nil
 }
 func (s *Server) session(ctx context.Context) (api.Session, error) {
 	token := s.Sessions.GetString(ctx, "csrf")
@@ -365,7 +371,6 @@ func (s *Server) Login(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, e)
 		return
 	}
-	s.Sessions.Remove(r.Context(), "github-session")
 	a, e := s.Auth.Login(r.Context(), string(b.Email), value(b.Password), s.clientSourceKey(r))
 	if e != nil {
 		s.fail(w, r, e)
@@ -373,6 +378,7 @@ func (s *Server) Login(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(a.TotpSecret) > 0 {
 		if e = s.Sessions.RenewToken(r.Context()); e == nil {
+			s.Sessions.Remove(r.Context(), "github-session")
 			s.Sessions.Remove(r.Context(), "account")
 			s.Sessions.Put(r.Context(), "pending", a.ID.String())
 			s.Sessions.Put(r.Context(), "pending-version", a.AuthVersion)
