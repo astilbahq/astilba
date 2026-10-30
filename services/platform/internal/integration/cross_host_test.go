@@ -580,6 +580,21 @@ func testCrossHostCoordinatedPlacement(t *testing.T, expiryPhase string) {
 	if !runtime.Applied || len(runtime.Resources) != 1 || len(runtime.Resources[0].Instances) != 2 {
 		t.Fatal("aggregate runtime lost a placement")
 	}
+	// A distributed parent is not a runnable single-host Compose projection.
+	b.call("GET", path+"/export", nil, 400, nil)
+	b.call("GET", path+"/export/archive", nil, 400, nil)
+	var cloned api.Environment
+	b.call("POST", path+"/clone", api.CloneEnvironment{Name: "Staging"}, 201, &cloned)
+	var clonedDraft api.Revision
+	clonedPath := base + "/projects/" + project.Id.String() + "/environments/" + cloned.Id.String()
+	b.call("GET", clonedPath+"/draft", nil, 200, &clonedDraft)
+	clonedSpec, _, cloneErr := domain.ParseSpec(clonedDraft.Specification)
+	if cloneErr != nil || clonedSpec.Placement == nil || len(clonedSpec.Applications) != 1 || len(clonedSpec.Placement.Applications) != 1 {
+		t.Fatal("clone lost placement")
+	}
+	if clonedSpec.Applications[0].ID == app || clonedSpec.Placement.Applications[0].ApplicationID != clonedSpec.Applications[0].ID || clonedSpec.Placement.NetworkID != network.ID || clonedSpec.Placement.Applications[0].Targets[0] != spec.Placement.Applications[0].Targets[0] {
+		t.Fatal("clone retained source application identity or changed selected placement")
+	}
 	var primaryReceipts int
 	if err := f.st.Pool.QueryRow(ctx, `SELECT count(*) FROM cross_host_runtime WHERE workspace_id=$1 AND server_id=$2 AND jsonb_array_length(inventory->'observation'->'resources')=0`, ws, servers[0].Server.Id).Scan(&primaryReceipts); err != nil || primaryReceipts != 1 {
 		t.Fatal("empty ingress primary lost its authenticated maintenance baseline", err)
