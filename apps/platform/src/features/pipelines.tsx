@@ -32,6 +32,14 @@ const buildDefaults = {
     minutes: "30",
   },
 };
+const buildRejectionMessages = {
+  missing_build_secret: "A declared build-secret version is unavailable.",
+  build_secret_budget: "Declared build secrets exceed the build-input limit.",
+  arguments_contain_secret:
+    "Public build arguments contain a known secret value.",
+  runtime_secret_budget:
+    "Runtime secrets exceed the build-input validation limit.",
+} satisfies Record<Schema["BuildRejectionReason"], string>;
 export function Pipelines({
   path,
   revision,
@@ -110,6 +118,12 @@ export function Pipelines({
     queryFn: () => result(client.GET(`${root}/builds`, { params: { path } })),
     refetchInterval: 2000,
   });
+  const rejections = useQuery({
+    queryKey: ["build-rejections", path],
+    queryFn: () =>
+      result(client.GET(`${root}/build-rejections`, { params: { path } })),
+    refetchInterval: 3000,
+  });
   const artifacts = useQuery({
     queryKey: ["build-artifacts", path.workspaceId],
     queryFn: () =>
@@ -133,6 +147,7 @@ export function Pipelines({
   });
   const refresh = async () => {
     await queries.invalidateQueries({ queryKey: ["pipeline-runs", path] });
+    await queries.invalidateQueries({ queryKey: ["build-rejections", path] });
     await queries.invalidateQueries({ queryKey: ["git-source", path] });
   };
   const selected = connections.data?.find((c) => c.id === connection);
@@ -928,6 +943,24 @@ export function Pipelines({
       )}
       <section className={s.panel}>
         <h3>Source and build jobs</h3>
+        <ErrorNotice error={rejections.error} />
+        <div role="status" aria-label="Automatic build rejections">
+          {!!rejections.data?.length && (
+            <div className={s.stack}>
+              <h4>Automatic builds need attention</h4>
+              {rejections.data.map((rejection) => (
+                <p key={rejection.applicationId}>
+                  {revision.specification.applications.find(
+                    (app) => app.id === rejection.applicationId,
+                  )?.name ?? "Service"}{" "}
+                  · {rejection.commit.slice(0, 12)} ·{" "}
+                  {buildRejectionMessages[rejection.reason]} Review the build
+                  configuration before retrying.
+                </p>
+              ))}
+            </div>
+          )}
+        </div>
         {!runs.data?.length && (
           <p className={s.muted}>No source or build jobs yet.</p>
         )}

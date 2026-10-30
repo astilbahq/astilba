@@ -102,8 +102,12 @@ func (s *Service) Poll(ctx context.Context, a Identity) (*api.ExecutionCommand, 
 				}
 			}
 			if c.Kind == "pipeline" {
-				if err = s.hydratePipeline(ctx, &c); err != nil {
+				var deliver bool
+				if deliver, err = s.hydratePipeline(ctx, a, &c); err != nil {
 					return nil, err
+				}
+				if !deliver {
+					continue
 				}
 			}
 			if c.Kind == "crosshost" {

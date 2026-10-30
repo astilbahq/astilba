@@ -74,7 +74,7 @@ func authorizeAutomation(g domain.AutomationGrant, operation string, path map[st
 	}
 	var capabilities []string
 	switch operation {
-	case "GetEnvironment", "GetDraft", "ListRevisions", "GetRevision", "GetRuntime", "ListPipelineRuns", "ListReleases":
+	case "GetEnvironment", "GetDraft", "ListRevisions", "GetRevision", "GetRuntime", "ListPipelineRuns", "ListBuildRejections", "ListReleases":
 		capabilities = []string{domain.EnvironmentRead}
 	case "UpdateDraft":
 		capabilities = []string{domain.ConfigurationWrite}

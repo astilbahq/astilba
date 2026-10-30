@@ -48,71 +48,109 @@ func (s *Service) rejectRuntimeSecrets(ctx context.Context, tx pgx.Tx, ws, env u
 	}
 	return rows.Err()
 }
-func (s *Service) hydratePipeline(ctx context.Context, c *api.ExecutionCommand) error {
-	var p pipeline.Command
-	if c.Pipeline == nil || json.Unmarshal(*c.Pipeline, &p) != nil || p.Digest() != c.PlanHash {
-		return errors.New("invalid pipeline payload")
-	}
-	if c.CancelRequested || time.Now().After(c.Deadline) {
-		return nil
-	}
+func (s *Service) hydratePipeline(ctx context.Context, a Identity, c *api.ExecutionCommand) (bool, error) {
 	tx, err := s.Store.Pool.Begin(ctx)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer tx.Rollback(ctx)
-	var ws uuid.UUID
-	if err = tx.QueryRow(ctx, "SELECT workspace_id FROM servers WHERE id=$1", c.ServerId).Scan(&ws); err != nil {
-		return err
+	// Match reporting's identity-before-operation lock order. An expired poll
+	// lease can overlap another poll, so its earlier operation read is not proof
+	// that this command is still deliverable.
+	var valid bool
+	if err = tx.QueryRow(ctx, `SELECT NOT revoked AND NOT awaiting_transfer AND (credential_hash=$2 OR (previous_hash=$2 AND previous_until>now())) FROM servers WHERE id=$1 AND workspace_id=$3 FOR UPDATE`, a.ID, hash(a.Token), a.Workspace).Scan(&valid); err != nil {
+		return false, err
 	}
+	if !valid {
+		return false, domain.Unauthenticated
+	}
+	var raw []byte
+	var state api.ExecutionState
+	var cancelled bool
+	var sequence int64
+	if err = tx.QueryRow(ctx, `SELECT command,state,cancel_requested,report_sequence FROM execution_operations WHERE id=$1 AND server_id=$2 FOR UPDATE`, c.Id, a.ID).Scan(&raw, &state, &cancelled, &sequence); err != nil {
+		return false, err
+	}
+	if Terminal(state) {
+		return false, nil
+	}
+	pollCancelled := c.CancelRequested
+	if err = json.Unmarshal(raw, c); err != nil {
+		return false, err
+	}
+	c.CancelRequested = pollCancelled || cancelled
+	var p pipeline.Command
+	if c.Pipeline == nil || json.Unmarshal(*c.Pipeline, &p) != nil || p.Digest() != c.PlanHash {
+		return false, errors.New("invalid pipeline payload")
+	}
+	if c.CancelRequested || time.Now().After(c.Deadline) {
+		return true, tx.Commit(ctx)
+	}
+	var started *bool
+	if err = tx.QueryRow(ctx, "SELECT delivery_started FROM pipeline_runs WHERE id=$1", c.Id).Scan(&started); err != nil {
+		return false, err
+	}
+	ws := a.Workspace
 	if p.Build != nil && (p.Build.NeedsControls() || p.Build.UsesRailpack()) {
 		if _, err = runnerEligible(ctx, tx, ws, c.ServerId, p.Build.Architecture, p.Build.NeedsControls(), p.Build.UsesRailpack()); err != nil {
-			return err
+			return false, err
 		}
 	}
 	if p.CacheScope != "" {
 		var raw []byte
 		if err = tx.QueryRow(ctx, "SELECT capabilities FROM servers WHERE id=$1", c.ServerId).Scan(&raw); err != nil {
-			return err
+			return false, err
 		}
 		var capabilities api.AgentCapabilities
 		if json.Unmarshal(raw, &capabilities) != nil || capabilities.BuildCache == nil || !*capabilities.BuildCache {
-			return errors.New("runner no longer supports the frozen project cache assignment")
+			return false, errors.New("runner no longer supports the frozen project cache assignment")
 		}
 	}
 	var configuration []byte
 	if err = tx.QueryRow(ctx, "SELECT configuration FROM git_connections WHERE workspace_id=$1 AND id=$2", ws, p.Connection.ID).Scan(&configuration); err != nil {
-		return err
+		return false, err
 	}
 	if appConfiguration(configuration) {
 		var current pipeline.Connection
 		if json.Unmarshal(configuration, &current) != nil || current.Provider != p.Connection.Provider || current.BaseURL != p.Connection.BaseURL || current.Repository != p.Connection.Repository || current.RepositoryID != p.Connection.RepositoryID || current.Private != p.Connection.Private {
-			return errors.New("repository identity changed")
+			return false, errors.New("repository identity changed")
 		}
 	} else {
 		provider, _, e := s.provider(ctx, tx, ws, p.Connection.ID)
 		if e != nil {
-			return e
+			return false, e
 		}
 		id, private, e := provider.Repository(ctx)
 		if e != nil {
-			return e
+			return false, e
 		}
 		if id != p.Connection.RepositoryID || private != p.Connection.Private {
-			return errors.New("repository identity changed")
+			return false, errors.New("repository identity changed")
 		}
 	}
-	if err = s.populatePipeline(ctx, tx, ws, &p); err != nil {
-		return err
+	if err = s.populatePipeline(ctx, tx, ws, c.EnvironmentId, &p); err != nil {
+		var rejected *buildInputRejection
+		if errors.As(err, &rejected) && started != nil && !*started && sequence == 0 && c.ParentId == nil && p.Action == "build" && p.Preview == nil {
+			if _, err = tx.Exec(ctx, "UPDATE execution_operations SET state='failed',note=$2 WHERE id=$1", c.Id, "Build rejected before runner delivery: "+rejected.note()); err != nil {
+				return false, err
+			}
+			return false, tx.Commit(ctx)
+		}
+		return false, err
 	}
-	raw, err := json.Marshal(p)
+	raw, err = json.Marshal(p)
 	if err != nil || len(raw) > 250000 {
-		return errors.New("pipeline payload limit exceeded")
+		return false, errors.New("pipeline payload limit exceeded")
 	}
+	if _, err = tx.Exec(ctx, "UPDATE pipeline_runs SET delivery_started=true WHERE id=$1", c.Id); err != nil {
+		return false, err
+	}
+	// Commit before the hydrated command can leave management. A failed response
+	// is still a possible delivery and cannot later justify a terminal rejection.
 	c.Pipeline = rawMessage(raw)
-	return tx.Commit(ctx)
+	return true, tx.Commit(ctx)
 }
-func (s *Service) populatePipeline(ctx context.Context, tx pgx.Tx, ws uuid.UUID, p *pipeline.Command) error {
+func (s *Service) populatePipeline(ctx context.Context, tx pgx.Tx, ws, env uuid.UUID, p *pipeline.Command) error {
 	access, err := s.gitAccess(ctx, tx, ws, p.Connection.ID, p.Action == "submit")
 	if err != nil {
 		return err
@@ -124,17 +162,9 @@ func (s *Service) populatePipeline(ctx context.Context, tx pgx.Tx, ws uuid.UUID,
 		p.Access.Clone = access.Clone
 	}
 	if p.Build != nil {
-		p.BuildSecrets = map[string]string{}
-		for name, id := range p.Build.Secrets {
-			var cipher []byte
-			if err = tx.QueryRow(ctx, "SELECT encrypted_value FROM build_secret_versions WHERE workspace_id=$1 AND id=$2", ws, id).Scan(&cipher); err != nil {
-				return err
-			}
-			plain, err := s.Store.Keys.Open(cipher, integrationIdentity(ws, id, "build-secret"))
-			if err != nil {
-				return err
-			}
-			p.BuildSecrets[name] = string(plain)
+		p.BuildSecrets, err = s.buildInputs(ctx, tx, ws, env, *p.Build)
+		if err != nil {
+			return err
 		}
 		if p.Registry != nil {
 			_, cipher, err := loadRegistry(ctx, tx, ws, p.Registry.ID)

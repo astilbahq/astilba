@@ -95,6 +95,15 @@ func previewIsolationJourney(t *testing.T, transfer bool) {
 	cfg := pipeline.BuildConfig{Builder: "dockerfile", ConnectionID: connection.Connection.ID, Branch: "main", RunnerID: enrollment.Server.Id, Context: ".", Dockerfile: "Dockerfile", Architecture: "arm64", Arguments: map[string]string{}, Secrets: map[string]uuid.UUID{}, Budget: &pipeline.BuildBudget{CPUs: 1, MemoryMiB: 1024, SourceMiB: 128, StateMiB: 512, Minutes: 5}}
 	policyConfig := map[string]any{"baseRevisionId": revision.Id, "applicationId": app, "build": cfg, "maxActive": 1, "maxConcurrentBuilds": 1, "limits": map[string]int{"cpus": 1, "memoryMiB": 256, "pids": 64}, "closeGraceHours": 24, "generatedDomains": false}
 	var policy api.PreviewPolicy
+	cfg.Arguments = map[string]string{"TOKEN": "prefix-preview-runtime-canary-suffix"}
+	policyConfig["build"] = cfg
+	b.call("PUT", path+"/preview-policy", map[string]any{"enabled": true, "generation": 0, "configuration": policyConfig}, 400, nil)
+	var policies int
+	if err := f.st.Pool.QueryRow(ctx, "SELECT count(*) FROM preview_policies WHERE environment_id=$1", template.Id).Scan(&policies); err != nil || policies != 0 {
+		t.Fatal("rejected secret-bearing policy was persisted", policies, err)
+	}
+	cfg.Arguments = map[string]string{}
+	policyConfig["build"] = cfg
 	b.call("PUT", path+"/preview-policy", map[string]any{"enabled": true, "generation": 0, "configuration": policyConfig}, 200, &policy)
 	hook := func(delivery string) {
 		t.Helper()
