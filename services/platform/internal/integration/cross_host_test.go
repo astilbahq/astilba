@@ -19,6 +19,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/hostnetwork"
 	"github.com/astilbahq/astilba/services/platform/internal/upgrade"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
 
 // Packet reachability and installed-agent barriers are separate native gates.
@@ -62,6 +63,8 @@ func TestCrossHostCoordinatedPlacement(t *testing.T) {
 	var holdRemotePause atomic.Bool
 	var holdRemoteReserve atomic.Bool
 	var holdRemoteResume atomic.Bool
+	var holdPrimaryResume atomic.Bool
+	var unsupportedMaintenanceHost atomic.Int32
 	var failCandidate atomic.Bool
 	var revokePrimary atomic.Bool
 	var holdCheckpoint atomic.Bool
@@ -77,6 +80,7 @@ func TestCrossHostCoordinatedPlacement(t *testing.T) {
 		in.Capabilities.Visual = &yes
 		in.Capabilities.SafeReleases = &yes
 		in.Capabilities.CrossHost = &yes
+		in.Capabilities.MaintenanceContinuation = &yes
 		in.Capabilities.Replicas = &yes
 		in.Capabilities.ServiceOutputs = &yes
 		in.Preflight.CrossHostInventory = &api.CrossHostInventory{IngressReady: &yes, CpuMillis: 4000, MemoryMiB: 8192, UnboundedInventoryHash: inventory}
@@ -96,7 +100,11 @@ func TestCrossHostCoordinatedPlacement(t *testing.T) {
 			networkScopes := map[uuid.UUID]deployment.Plan{}
 			for ctx.Err() == nil {
 				if time.Since(lastHeartbeat) >= 15*time.Second {
-					if _, err := f.execution.Heartbeat(ctx, identity, api.AgentHeartbeat{Capabilities: in.Capabilities, Preflight: in.Preflight}); err != nil {
+					capabilities := in.Capabilities
+					if unsupportedMaintenanceHost.Load() == int32(i+1) {
+						capabilities.MaintenanceContinuation = nil
+					}
+					if _, err := f.execution.Heartbeat(ctx, identity, api.AgentHeartbeat{Capabilities: capabilities, Preflight: in.Preflight}); err != nil {
 						if i == 0 && revokePrimary.Load() && errors.Is(err, domain.Unauthenticated) {
 							return
 						}
@@ -182,6 +190,10 @@ func TestCrossHostCoordinatedPlacement(t *testing.T) {
 					}
 					if i == 1 && command.Phase == "prepare" && failCandidate.Load() {
 						report.State = "failed"
+					}
+					if i == 0 && command.Maintenance != nil && (command.Phase == "resume-source" || command.Phase == "resume-target") && holdPrimaryResume.Load() {
+						time.Sleep(100 * time.Millisecond)
+						continue
 					}
 					if i == 1 && command.Phase == "resume-target" && holdRemoteResume.Load() {
 						time.Sleep(100 * time.Millisecond)
@@ -578,6 +590,68 @@ func TestCrossHostCoordinatedPlacement(t *testing.T) {
 	if _, err := f.st.Pool.Exec(ctx, `DELETE FROM supported_upgrades WHERE workspace_id=$1 AND id=$2`, ws, standalone); err != nil {
 		t.Fatal(err)
 	}
+	for index := range servers {
+		unsupportedMaintenanceHost.Store(int32(index + 1))
+		capabilities := enrollments[index].Capabilities
+		capabilities.MaintenanceContinuation = nil
+		if _, err := f.execution.Heartbeat(ctx, identities[index], api.AgentHeartbeat{Capabilities: capabilities, Preflight: enrollments[index].Preflight}); err != nil {
+			t.Fatal(err)
+		}
+		var before int
+		if err := f.st.Pool.QueryRow(ctx, `SELECT count(*) FROM execution_operations WHERE workspace_id=$1 AND command->'crosshost'->>'action'='maintenance'`, ws).Scan(&before); err != nil {
+			t.Fatal(err)
+		}
+		b.call("POST", path+"/backup-policies/"+policy.ID.String()+"/commands", api.BackupCommandRequest{Action: "backup", RequestKey: uuid.New(), Snapshot: ""}, 400, nil)
+		var unchanged bool
+		if err := f.st.Pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM execution_operations WHERE workspace_id=$1 AND command->'crosshost'->>'action'='maintenance')=$2 AND NOT EXISTS(SELECT 1 FROM cross_host_reservations WHERE workspace_id=$1)`, ws, before).Scan(&unchanged); err != nil || !unchanged {
+			t.Fatal("unsupported maintenance participant acquired a parent or reservation", err)
+		}
+		unsupportedMaintenanceHost.Store(0)
+		if _, err := f.execution.Heartbeat(ctx, identities[index], api.AgentHeartbeat{Capabilities: enrollments[index].Capabilities, Preflight: enrollments[index].Preflight}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	confirmPrimaryResume := func(parent uuid.UUID, phase string) {
+		t.Helper()
+		var child api.ExecutionCommand
+		var body deployment.CrossHostCommand
+		wait(func() bool {
+			var raw []byte
+			var state api.ExecutionState
+			err := f.st.Pool.QueryRow(ctx, `SELECT command,state FROM execution_operations WHERE parent_id=$1 AND server_id=$2 AND command->'crosshost'->>'phase'=$3`, parent, servers[0].Server.Id, phase).Scan(&raw, &state)
+			if errors.Is(err, pgx.ErrNoRows) {
+				return false
+			}
+			if err != nil || json.Unmarshal(raw, &child) != nil || child.Crosshost == nil || json.Unmarshal(*child.Crosshost, &body) != nil {
+				t.Fatal("primary resumption was not frozen", err)
+			}
+			return state == "dispatched"
+		})
+		if err := f.execution.Report(ctx, identities[0], api.AgentReport{Id: child.Id, Generation: child.Generation, PlanHash: child.PlanHash, Sequence: 2, State: "needs_attention", Steps: []api.ExecutionStep{}}); err != nil {
+			t.Fatal(err)
+		}
+		wait(func() bool {
+			var held bool
+			if err := f.st.Pool.QueryRow(ctx, `SELECT state='needs_attention' AND EXISTS(SELECT 1 FROM execution_operations c WHERE c.parent_id=$1 AND c.server_id=$2 AND c.command->'crosshost'->>'phase'=$3 AND c.state='queued') FROM execution_operations WHERE id=$1`, parent, servers[1].Server.Id, phase).Scan(&held); err != nil {
+				t.Fatal(err)
+			}
+			return held
+		})
+		receipt := deployment.CrossHostReceipt{ParentID: parent, GroupHash: body.GroupHash, UnitID: child.ResourceId, Phase: phase, PlanHash: body.Unit.Plan.Hash, Observation: deployment.Observation{ObservedAt: time.Now().UTC(), Resources: []deployment.Resource{}, StateHash: strings.Repeat("a", 64)}}
+		raw, _ := json.Marshal(receipt)
+		message := json.RawMessage(raw)
+		if err := f.execution.Report(ctx, identities[0], api.AgentReport{Id: child.Id, Generation: child.Generation, PlanHash: child.PlanHash, Sequence: 3, State: "succeeded", Steps: []api.ExecutionStep{}, Crosshost: &message}); err != nil {
+			t.Fatal("recovered primary success was rejected", err)
+		}
+		holdPrimaryResume.Store(false)
+		wait(func() bool {
+			var reconciled bool
+			if err := f.st.Pool.QueryRow(ctx, `SELECT state IN ('running','succeeded') FROM execution_operations WHERE id=$1`, parent).Scan(&reconciled); err != nil {
+				t.Fatal(err)
+			}
+			return reconciled
+		})
+	}
 	backupKey := uuid.New()
 	var maintenance, repeated api.Operation
 	holdRemoteReserve.Store(true)
@@ -617,7 +691,9 @@ func TestCrossHostCoordinatedPlacement(t *testing.T) {
 	if err := f.st.Pool.QueryRow(ctx, `SELECT count(*) FROM execution_operations WHERE parent_id=$1 AND kind IN ('backup','schedule')`, maintenance.Id).Scan(&prematureEffects); err != nil || prematureEffects != 0 {
 		t.Fatal("an unconfirmed remote writer permitted a primary backup", err)
 	}
+	holdPrimaryResume.Store(true)
 	holdRemotePause.Store(false)
+	confirmPrimaryResume(maintenance.Id, "resume-source")
 	wait(func() bool {
 		var ops []api.Operation
 		b.call("GET", base+"/operations", nil, 200, &ops)
@@ -900,6 +976,7 @@ func TestCrossHostCoordinatedPlacement(t *testing.T) {
 		t.Fatal("owner review released writer reservations", err)
 	}
 	holdRemoteResume.Store(true)
+	holdPrimaryResume.Store(true)
 	cutover := api.UpgradeActionRequest{Action: "cutover", ExpectedPhase: "ready", RequestKey: uuid.New()}
 	var cutoverParent, duplicate api.Operation
 	refreshAuthentication()
@@ -909,6 +986,7 @@ func TestCrossHostCoordinatedPlacement(t *testing.T) {
 	if cutoverParent.Id != parent.Id || duplicate.Id != parent.Id {
 		t.Fatal("owner action replaced the upgrade parent")
 	}
+	confirmPrimaryResume(parent.Id, "resume-target")
 	wait(func() bool {
 		var blocked bool
 		if err := f.st.Pool.QueryRow(ctx, `SELECT h.phase='maintenance-resume-target' AND EXISTS(SELECT 1 FROM execution_operations c WHERE c.parent_id=h.id AND c.server_id=$2 AND c.command->'crosshost'->>'phase'='resume-target' AND c.state='dispatched') FROM cross_host_operations h WHERE h.id=$1`, parent.Id, servers[1].Server.Id).Scan(&blocked); err != nil {
@@ -1179,6 +1257,7 @@ func TestManagedNetworkPartialRestrictionConvergesAfterHostIdle(t *testing.T) {
 		enrolled, in, token := enrollment(t, f, b, ws, "deployment")
 		yes := true
 		in.Capabilities.CrossHost = &yes
+		in.Capabilities.MaintenanceContinuation = &yes
 		in.Capabilities.Visual = &yes
 		in.Preflight.CrossHostInventory = &api.CrossHostInventory{CpuMillis: 4000, MemoryMiB: 8192, UnboundedInventoryHash: hostnetwork.StableInventory(nil)}
 		agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/enroll", "", in, 200, nil)

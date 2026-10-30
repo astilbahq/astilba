@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -22,20 +23,21 @@ import (
 )
 
 type Client struct {
-	Journal        *Journal
-	Engine         *Engine
-	HTTP           *http.Client
-	Observe        func(context.Context) api.AgentHeartbeat
-	Metrics        func(context.Context) api.MetricReport
-	buildControls  atomic.Bool
-	buildCache     atomic.Bool
-	railpack       atomic.Bool
-	safeReleases   atomic.Bool
-	serviceOutputs atomic.Bool
-	previews       atomic.Bool
-	schedules      atomic.Bool
-	replicas       atomic.Bool
-	crossHost      atomic.Bool
+	Journal                 *Journal
+	Engine                  *Engine
+	HTTP                    *http.Client
+	Observe                 func(context.Context) api.AgentHeartbeat
+	Metrics                 func(context.Context) api.MetricReport
+	buildControls           atomic.Bool
+	buildCache              atomic.Bool
+	railpack                atomic.Bool
+	safeReleases            atomic.Bool
+	serviceOutputs          atomic.Bool
+	previews                atomic.Bool
+	schedules               atomic.Bool
+	replicas                atomic.Bool
+	crossHost               atomic.Bool
+	maintenanceContinuation atomic.Bool
 }
 
 func NewClient(j *Journal, e *Engine) *Client {
@@ -100,6 +102,7 @@ func (c *Client) call(ctx context.Context, method, path string, body, out any, t
 	c.schedules.Store(response.Header.Get("Astilba-Agent-Schedules") == "v1")
 	c.replicas.Store(response.Header.Get("Astilba-Agent-Replicas") == "v1")
 	c.crossHost.Store(response.Header.Get("Astilba-Agent-Cross-Host") == "v1")
+	c.maintenanceContinuation.Store(response.Header.Get("Astilba-Agent-Maintenance-Continuation") == "v1")
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		return errors.New("management rejected request; check enrollment, credentials and operation status")
 	}
@@ -122,9 +125,26 @@ func (c *Client) call(ctx context.Context, method, path string, body, out any, t
 	return nil
 }
 
+func (c *Client) acceptPolledCommand(command api.ExecutionCommand) (Record, error) {
+	if command.Kind == "crosshost" && !c.maintenanceContinuation.Load() {
+		body, err := crossHostCommand(command)
+		if err == nil && body.Maintenance != nil {
+			if _, err = c.Journal.Record(command.Id); errors.Is(err, os.ErrNotExist) {
+				return Record{}, errors.New("controller must support primary-first maintenance continuation before new maintenance commands can be accepted")
+			} else if err != nil {
+				return Record{}, err
+			}
+		}
+	}
+	return c.Journal.Accept(command)
+}
+
 func (c *Client) advertisedCapabilities(v api.AgentCapabilities) api.AgentCapabilities {
 	if !c.crossHost.Load() {
 		v.CrossHost = nil
+	}
+	if !c.maintenanceContinuation.Load() || !c.crossHost.Load() || c.Journal == nil || c.Journal.formatVersion != localStateVersion {
+		v.MaintenanceContinuation = nil
 	}
 	if !c.replicas.Load() {
 		v.Replicas = nil
@@ -379,7 +399,7 @@ func (c *Client) Run(ctx context.Context) error {
 		var poll api.AgentPoll
 		e = c.call(ctx, "GET", "/agent/v1/poll", nil, &poll, cfg.Credential)
 		if e == nil && poll.Command != nil {
-			_, e = c.Journal.Accept(*poll.Command)
+			_, e = c.acceptPolledCommand(*poll.Command)
 			if e == nil {
 				select {
 				case wake <- struct{}{}:

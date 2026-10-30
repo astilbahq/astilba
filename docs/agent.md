@@ -82,7 +82,11 @@ sudo astilba-agent update-local --manifest release.json --artifact ./astilba-age
 sudo systemctl start astilba-agent
 ```
 
-Local updates refuse unresolved workload operations. If an update was interrupted, restart first to reconcile the same update, or inspect and retry it locally. If necessary, verify and restore the previous binary with the service stopped; retain the journal and its key. An unavailable artifact, invalid signature or incompatible binary yields `needs_attention`, never a workload restart. Remove retained temporary files only after confirming their ownership and that no updater is active.
+Local updates refuse unresolved workload operations. If an update was interrupted, restart first to reconcile the same update, or inspect and retry it locally. The successor verifies the exact signed installed artifact when reconciling an unfinished update; migration alone never completes an update. A durably recorded terminal report remains reportable if a later permitted local update installs another signed release before acknowledgment. An expired update can only reconcile a matching artifact already installed for a command retained at startup. New update records retain their first local acceptance time, so an expired first delivery cannot gain this permission across a crash. Cancellation and current controller authority still apply. An unavailable artifact, invalid signature or incompatible binary yields `needs_attention`, never a workload restart. Remove retained temporary files only after confirming their ownership and that no updater is active.
+
+The agent-local keyring now has an explicit versioned envelope. First startup migrates an idle legacy journal atomically, preserving every key and encrypted record. Finish active cross-host maintenance or controller recovery, database upgrades, paused or uncertain scheduled runs, and unacknowledged workload commands with the previous agent before upgrading. Pending signed agent updates remain eligible for migration, including replacement before success recording and success awaiting acknowledgment. Idle distributed-runtime compatibility fences are retained and do not count as pending workload commands.
+
+A refused migration leaves the legacy journal and keyring unchanged. Once migrated, use a format-compatible agent for executable recovery: previous agents refuse the key envelope before journal initialization, pruning, command replay or maintenance effects. There is no automatic format downgrade. Keep the journal, keys and retained recovery capsules together; offline recovery exports keep their existing format. Previously stranded legacy terminal resumptions require separate inspected recovery and are not made successful by migration.
 
 Executable rollback does not imply persisted-format compatibility. After a host has recipe-3 replica routes, preceding agents refuse host route publication, including changes for unrelated units. Keep workloads, journal and key intact and restore a replica-capable agent to resume those operations. Scaling back to one instance does not remove this fence. See [application scaling](application-scaling.md#compatibility-export-and-recovery).
 
@@ -122,6 +126,21 @@ completed or reconciled. Inspect it with `astilba-agent inspect-cross-host` whil
 the service is stopped. Keep the journal and keys intact; no elapsed timeout
 releases this reservation. See [cross-host placement and management
 recovery](cross-host-placement.md) before transferring an interrupted group.
+
+Coordinated maintenance additionally requires `maintenanceContinuation` from every
+participant before creating its parent or reserving a host. Update the controller
+and all idle participants before starting maintenance. Agents advertise support
+only after opening their local state and negotiating
+`Astilba-Agent-Maintenance-Continuation: v1`. An older or restored older controller
+cannot introduce a new maintenance command on these agents. Exact commands
+already accepted still reconcile locally while management is unavailable.
+
+Writer resumptions retain their original commands and deadlines. Queued consumer
+resumptions wait for the matching primary resumption to succeed; cancellation does
+not discard them. A delayed first delivery passes through the existing frozen
+reservation, retained recovery root, selected target, writer ownership and
+readiness checks. An uncertain primary holds consumers and reservations for
+reconciliation.
 
 ## Protected application releases
 
