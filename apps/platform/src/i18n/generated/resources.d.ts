@@ -358,6 +358,7 @@ export default interface Resources {
       "unsaved": "Unsaved changes",
       "workingDraft": "Your editor text"
     },
+    "conflictNotice": "Another revision is ready to compare. Your edits are preserved. Open Configuration to review and merge them before saving.",
     "content": "Environment content",
     "deployment": "Deployment",
     "deploymentNote": "Saving configuration does not deploy it. Review a deployment plan before applying changes.",

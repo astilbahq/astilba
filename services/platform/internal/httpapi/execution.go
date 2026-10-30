@@ -26,7 +26,7 @@ func agentIdentity(ctx context.Context) execution.Identity {
 	return v
 }
 func (s *Server) protection(next http.Handler) http.Handler {
-	browser := s.Sessions.LoadAndSave(s.identity(s.csrf(next)))
+	browser := browserSessionRequest(s.Sessions.LoadAndSave(s.identity(s.csrf(next))))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/hooks/git/") || r.URL.Path == "/hooks/stripe" || r.URL.Path == "/hooks/github-app" {
 			w.Header().Set("Cache-Control", "no-store")
@@ -158,7 +158,7 @@ func (s *Server) CancelOperation(w http.ResponseWriter, r *http.Request, ws, id 
 	s.executionResponse(w, r, 204, nil, e)
 }
 func (s *Server) EnrollAgent(w http.ResponseWriter, r *http.Request) {
-	if e := s.Auth.Limit(r.Context(), "agent-enroll:"+s.clientIP(r), 30, execution.RotationOverlap); e != nil {
+	if e := s.Auth.Limit(r.Context(), "agent-enroll:"+s.clientSourceKey(r), 30, execution.RotationOverlap); e != nil {
 		s.fail(w, r, e)
 		return
 	}

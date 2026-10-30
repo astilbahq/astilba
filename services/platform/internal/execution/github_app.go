@@ -39,7 +39,7 @@ func appConfiguration(raw []byte) bool {
 }
 func (s *Service) GitHubStatus(ctx context.Context, p store.Principal, ws uuid.UUID) (map[string]any, error) {
 	out := map[string]any{"configured": s.GitHub != nil}
-	err := s.scope(ctx, p, ws, false, true, false, "", uuid.Nil, func(tx pgx.Tx) error {
+	err := s.scope(ctx, p, ws, workspaceAccess{Owner: true}, "", uuid.Nil, func(tx pgx.Tx) error {
 		if s.GitHub != nil {
 			out["name"] = s.GitHub.Config.Slug
 			out["installUrl"] = s.GitHub.InstallURL()
@@ -61,7 +61,7 @@ func (s *Service) StartGitHub(ctx context.Context, p store.Principal, ws uuid.UU
 		return nil, err
 	}
 	id := uuid.New()
-	err = s.scope(ctx, p, ws, true, true, true, "git.github.authorize", id, func(tx pgx.Tx) error {
+	err = s.scope(ctx, p, ws, workspaceAccess{Write: true, Owner: true, Recent: true}, "git.github.authorize", id, func(tx pgx.Tx) error {
 		if _, e := tx.Exec(ctx, "DELETE FROM github_app_authorizations WHERE workspace_id=$1 AND expires_at<now()", ws); e != nil {
 			return e
 		}
@@ -115,7 +115,7 @@ func (s *Service) CompleteGitHub(ctx context.Context, p store.Principal, session
 	// Record a failed exchange even if GitHub consumed the code and the HTTP result
 	// was lost; the browser must start again instead of replaying that external effect.
 	var exchangeErr error
-	err := s.scope(ctx, p, ws, true, true, false, "", uuid.Nil, func(tx pgx.Tx) error {
+	err := s.scope(ctx, p, ws, workspaceAccess{Write: true, Owner: true}, "", uuid.Nil, func(tx pgx.Tx) error {
 		var cipher []byte
 		var status string
 		e := tx.QueryRow(ctx, `SELECT encrypted_access,status FROM github_app_authorizations WHERE workspace_id=$1 AND id=$2 AND account_id=$3 AND auth_version=$4 AND session_hash=$5 AND app_id=$6 AND expires_at>now() FOR UPDATE`, ws, id, p.Account.ID, p.Account.AuthVersion, hash(session), s.GitHub.Config.ID).Scan(&cipher, &status)
@@ -164,7 +164,7 @@ func (s *Service) GitHubInstallations(ctx context.Context, p store.Principal, ws
 		return nil, domain.Invalid("page")
 	}
 	out := []githubapp.Installation{}
-	err := s.scope(ctx, p, ws, false, true, false, "", uuid.Nil, func(tx pgx.Tx) error {
+	err := s.scope(ctx, p, ws, workspaceAccess{Owner: true}, "", uuid.Nil, func(tx pgx.Tx) error {
 		_, secret, e := s.gitHubGrant(ctx, tx, p, ws, id, session)
 		if e != nil {
 			return e
@@ -183,7 +183,7 @@ func (s *Service) GitHubRepositories(ctx context.Context, p store.Principal, ws,
 		return nil, domain.Invalid("repository")
 	}
 	out := []githubapp.Repository{}
-	err := s.scope(ctx, p, ws, false, true, false, "", uuid.Nil, func(tx pgx.Tx) error {
+	err := s.scope(ctx, p, ws, workspaceAccess{Owner: true}, "", uuid.Nil, func(tx pgx.Tx) error {
 		_, secret, e := s.gitHubGrant(ctx, tx, p, ws, id, session)
 		if e != nil {
 			return e
@@ -218,7 +218,7 @@ func (s *Service) ConnectGitHub(ctx context.Context, p store.Principal, ws, gran
 		id = *in.ConnectionID
 	}
 	var consumedToken string
-	e = s.scope(ctx, p, ws, true, true, true, "git.github.connect", id, func(tx pgx.Tx) error {
+	e = s.scope(ctx, p, ws, workspaceAccess{Write: true, Owner: true, Recent: true}, "git.github.connect", id, func(tx pgx.Tx) error {
 		auth, secret, e := s.gitHubGrant(ctx, tx, p, ws, grant, session)
 		if e != nil {
 			return e
@@ -290,7 +290,7 @@ func (s *Service) ConnectGitHub(ctx context.Context, p store.Principal, ws, gran
 	return out, e
 }
 func (s *Service) DisconnectGitHub(ctx context.Context, p store.Principal, ws, id uuid.UUID) error {
-	return s.scope(ctx, p, ws, true, true, true, "git.github.disconnect", id, func(tx pgx.Tx) error {
+	return s.scope(ctx, p, ws, workspaceAccess{Write: true, Owner: true, Recent: true}, "git.github.disconnect", id, func(tx pgx.Tx) error {
 		var raw []byte
 		if e := tx.QueryRow(ctx, "SELECT configuration FROM git_connections WHERE workspace_id=$1 AND id=$2", ws, id).Scan(&raw); e != nil {
 			return e

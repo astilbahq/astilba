@@ -11,6 +11,7 @@ import { totp } from "./fixtures/totp";
 test("hosted signup, MFA, billing admission and encrypted workspace import", async ({
   page,
   browser,
+  playwright,
 }, info) => {
   test.setTimeout(120000);
   const workspaceName = `Portable ${info.project.name}`;
@@ -160,17 +161,33 @@ test("hosted signup, MFA, billing admission and encrypted workspace import", asy
       "workspace",
     );
     expect(createdWorkspace).toBeTruthy();
+    // Bind the one-shot rejection to a new document's subscription request.
+    await hosted.goto("about:blank");
+    const subscriptionURL = `${origin}/api/v1/workspaces/${createdWorkspace}/subscription`;
     await hosted.route(
-      "**/api/v1/workspaces/*/subscription",
+      subscriptionURL,
       async (route) => {
         await context.clearCookies();
-        await route.continue({
-          headers: { ...route.request().headers(), cookie: "" },
+        const anonymous = await playwright.request.newContext({
+          ignoreHTTPSErrors: true,
         });
+        try {
+          const rejected = await anonymous.get(subscriptionURL);
+          expect(rejected.status()).toBe(401);
+          await route.fulfill({ response: rejected });
+        } finally {
+          await anonymous.dispose();
+        }
       },
       { times: 1 },
     );
-    await hosted.reload();
+    const rejectedSubscription = hosted.waitForResponse(
+      (response) =>
+        response.url() === subscriptionURL &&
+        response.request().method() === "GET",
+    );
+    await hosted.goto(onboardingURL);
+    expect((await rejectedSubscription).status()).toBe(401);
     await hosted
       .getByRole("link", { name: "Sign in to continue", exact: true })
       .click();

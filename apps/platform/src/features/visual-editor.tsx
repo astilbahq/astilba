@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Background,
   type Connection,
@@ -7,11 +7,15 @@ import {
   type NodeChange,
   ReactFlow,
 } from "@xyflow/react";
-import { useContext, useEffect, useState } from "react";
+import { useContext, useEffect, useId, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { cx } from "../../styled-system/css";
 import { client, result, type Schema } from "../api/client";
-import type { EnvironmentPath } from "../api/environment";
+import {
+  layoutOptions,
+  publishLayout,
+  type EnvironmentPath,
+} from "../api/environment";
 import { Button } from "../components/button";
 import { Checkbox } from "../components/checkbox";
 import "./visual-editor.css";
@@ -36,6 +40,24 @@ const postgresImage =
 
 const postgres17Image =
   "postgres:17.10-alpine3.23@sha256:8189a1f6e40904781fc9e2612687877791d21679866db58b1de996b31fc312e4";
+
+function VolumeNameField({ name }: { name: string }) {
+  const id = useId();
+  const [input, setInput] = useState({ name, value: name });
+  if (input.name !== name) setInput({ name, value: name });
+  return (
+    <Label htmlFor={id}>
+      Volume name
+      <Input
+        id={id}
+        name="name"
+        value={input.value}
+        onChange={(event) => setInput({ name, value: event.target.value })}
+        required
+      />
+    </Label>
+  );
+}
 
 export function VisualEditor({
   path,
@@ -67,16 +89,8 @@ export function VisualEditor({
     target: string;
   }>();
   const action = useAction();
-  const layout = useQuery({
-    queryKey: ["layout", path],
-    queryFn: () =>
-      result(
-        client.GET(
-          "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/layout",
-          { params: { path } },
-        ),
-      ),
-  });
+  const queries = useQueryClient();
+  const layout = useQuery(layoutOptions(path));
   const secrets = useQuery({
     queryKey: ["secrets", path],
     queryFn: () =>
@@ -290,7 +304,9 @@ export function VisualEditor({
             onClick={() =>
               action.run(async () => {
                 const submitted = positions ?? {};
-                await result(
+                const { queryKey } = layoutOptions(path);
+                const previous = queries.getQueryState(queryKey);
+                const saved = await result(
                   client.PUT(
                     "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/layout",
                     {
@@ -310,6 +326,7 @@ export function VisualEditor({
                     },
                   ),
                 );
+                await publishLayout(queries, path, saved, previous);
                 setSavedPositions(JSON.stringify(submitted));
                 setNotice("Layout saved. Running services were not changed.");
               })
@@ -461,10 +478,7 @@ export function VisualEditor({
                 })
               }
             >
-              <Label>
-                Volume name
-                <Input name="name" defaultValue={volume.name} required />
-              </Label>
+              <VolumeNameField name={volume.name} />
               <Button type="submit">Stage volume name</Button>
             </Form>
           )}

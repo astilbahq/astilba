@@ -3,7 +3,7 @@ import { useBlocker } from "@tanstack/react-router";
 import { useEffect, useId, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ApiError, client, result, type Schema } from "../../api/client";
-import { draftOptions, publishDraft } from "../../api/environment";
+import { publishDraft, readCurrentDraft } from "../../api/environment";
 import {
   AlertDialogActions,
   AlertDialogClose,
@@ -37,10 +37,12 @@ export function EnvironmentWorkspace({
   initial,
   write,
   owner,
+  section,
   visited,
   selectSection,
 }: EnvProps & {
   initial: Schema["Revision"];
+  section: EnvironmentSection;
   visited: ReadonlySet<EnvironmentSection>;
   selectSection: (section: EnvironmentSection) => void;
 }) {
@@ -51,6 +53,9 @@ export function EnvironmentWorkspace({
   );
   const draftRef = useRef(draft);
   draftRef.current = draft;
+  const baseRef = useRef(base.id);
+  baseRef.current = base.id;
+  const reloadSequence = useRef(0);
   const [savedText, setSavedText] = useState(draft);
   const [rawChanged, setRawChanged] = useState(false);
   const [conflict, setConflict] = useState<Schema["Revision"]>();
@@ -119,14 +124,14 @@ export function EnvironmentWorkspace({
     setMessage(envT(($) => $.configurationEditor.loaded));
   };
   const reload = () => {
+    const sequence = ++reloadSequence.current;
     const submitted = draftRef.current;
+    const requestedBase = baseRef.current;
     setOperation("reload");
     action.run(async () => {
-      const revision = await queries.fetchQuery({
-        ...draftOptions(path),
-        staleTime: 0,
-      });
-      if (draftRef.current !== submitted) {
+      const revision = await readCurrentDraft(queries, path);
+      if (sequence !== reloadSequence.current) return;
+      if (draftRef.current !== submitted || baseRef.current !== requestedBase) {
         setMessage(envT(($) => $.configurationEditor.reloadNotApplied));
         return;
       }
@@ -154,7 +159,7 @@ export function EnvironmentWorkspace({
             },
           ),
         );
-        await publishDraft(queries, path, revision);
+        await publishDraft(queries, path, revision, base.id);
         setBase(revision);
         setSavedText(JSON.stringify(revision.specification, null, 2));
         const canonical = JSON.stringify(revision.specification, null, 2);
@@ -168,7 +173,12 @@ export function EnvironmentWorkspace({
           if (error.detail.code === "invalid_input")
             rejectedDrafts.current.set(error, draft);
           if (error.detail.currentRevision) {
-            await publishDraft(queries, path, error.detail.currentRevision);
+            await publishDraft(
+              queries,
+              path,
+              error.detail.currentRevision,
+              base.id,
+            );
             setConflict(error.detail.currentRevision);
           }
         }
@@ -178,6 +188,18 @@ export function EnvironmentWorkspace({
   };
   return (
     <>
+      <div aria-live="polite" aria-atomic="true">
+        {conflict && section !== "configuration" && (
+          <div className={e.note}>
+            <div className={s.row}>
+              <p>{envT(($) => $.conflictNotice)}</p>
+              <Button onClick={() => selectSection("configuration")}>
+                {envT(($) => $.openConfiguration)}
+              </Button>
+            </div>
+          </div>
+        )}
+      </div>
       <TabsPanel value="overview" keepMounted>
         <EnvironmentOverview
           environment={environment}
@@ -282,6 +304,9 @@ export function EnvironmentWorkspace({
                         type="button"
                         onClick={() => {
                           setBase(conflict);
+                          setSavedText(
+                            JSON.stringify(conflict.specification, null, 2),
+                          );
                           setConflict(undefined);
                           setMessage(envT(($) => $.configurationEditor.merged));
                           focusTarget(reloadButton.current)?.focus();

@@ -540,7 +540,7 @@ function PolicyStatus({
                             body: { runId: r.id, baseRevisionId: revision.id },
                           }),
                         );
-                        await publishDraft(queries, path, next);
+                        await publishDraft(queries, path, next, revision.id);
                         const loaded = load(next);
                         setMessage(
                           loaded

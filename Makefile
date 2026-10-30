@@ -1,4 +1,6 @@
-.PHONY: check verify verify-host verify-build verify-git verify-canvas check-app verify-app verify-app-core verify-image verify-agent-host check-ci
+.PHONY: check verify verify-host verify-build verify-git verify-canvas check-app verify-app verify-app-core verify-app-go-remaining verify-app-go-coordination verify-image verify-agent-host check-ci
+
+APP_COORDINATION_TESTS = ^(TestCrossHostCoordinatedPlacement|TestCrossHostSubscriptionExpiry|TestPreviewRemovalSurvivesCheckpointUnion)$$
 
 check:
 	$(MAKE) check-app
@@ -41,10 +43,16 @@ verify-app: verify-app-core
 verify-app-core: check-app
 	pnpm agent:build
 	pnpm cli:build
-	cd services/platform && go test -race -count=1 -timeout=15m ./...
+	$(MAKE) -j2 verify-app-go-remaining verify-app-go-coordination
 	pnpm --filter @astilba/dashboard build
 	pnpm --filter @astilba/dashboard exec wrangler deploy --dry-run --outdir ../../.artifacts/p1/worker
 	pnpm --filter @astilba/control-plane-worker verify
+
+verify-app-go-remaining:
+	cd services/platform && go test -race -count=1 -timeout=15m -skip '$(APP_COORDINATION_TESTS)' ./...
+
+verify-app-go-coordination:
+	cd services/platform && go test -race -count=1 -timeout=15m -run '$(APP_COORDINATION_TESTS)' ./internal/integration
 
 verify-image:
 	pnpm app:image-test

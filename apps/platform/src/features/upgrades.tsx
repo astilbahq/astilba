@@ -1,7 +1,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRef, useState } from "react";
 import { client, result, type Schema } from "../api/client";
-import { draftOptions } from "../api/environment";
+import { readCurrentDraft } from "../api/environment";
 import { Button } from "../components/button";
 import { Checkbox } from "../components/checkbox";
 import { Input } from "../components/input";
@@ -286,10 +286,7 @@ export function Upgrades({
                   onClick={() =>
                     action.run(async () => {
                       const [current, revision] = await Promise.all([
-                        queries.fetchQuery({
-                          ...draftOptions(path),
-                          staleTime: 0,
-                        }),
+                        readCurrentDraft(queries, path),
                         result(
                           client.GET(
                             "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/revisions/{revisionId}",

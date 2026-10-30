@@ -70,7 +70,7 @@ func (s *Service) domainConfiguration(ctx context.Context, tx pgx.Tx, ws, id uui
 }
 func (s *Service) ServerDomain(ctx context.Context, p store.Principal, ws, id uuid.UUID) (api.ServerDomain, error) {
 	var out api.ServerDomain
-	e := s.scope(ctx, p, ws, false, false, false, "", uuid.Nil, func(tx pgx.Tx) error { var e error; out, e = s.domainConfiguration(ctx, tx, ws, id); return e })
+	e := s.scope(ctx, p, ws, workspaceAccess{}, "", uuid.Nil, func(tx pgx.Tx) error { var e error; out, e = s.domainConfiguration(ctx, tx, ws, id); return e })
 	return out, e
 }
 func (s *Service) ConfigureServerDomain(ctx context.Context, p store.Principal, ws, id uuid.UUID, in api.ConfigureServerDomain) (api.ServerDomain, error) {
@@ -86,7 +86,7 @@ func (s *Service) ConfigureServerDomain(ctx context.Context, p store.Principal, 
 	if ipv4 == "" && ipv6 == "" {
 		return out, domain.Invalid("publicAddress")
 	}
-	e = s.scope(ctx, p, ws, true, true, true, "server.domain.configure", id, func(tx pgx.Tx) error {
+	e = s.scope(ctx, p, ws, workspaceAccess{Write: true, Owner: true, Recent: true}, "server.domain.configure", id, func(tx pgx.Tx) error {
 		if e := store.LockServerDNS(ctx, tx, id); e != nil {
 			return e
 		}
@@ -129,7 +129,7 @@ func (s *Service) ConfigureServerDomain(ctx context.Context, p store.Principal, 
 }
 func (s *Service) SuggestDomain(ctx context.Context, p store.Principal, ws, pid, env, app, id uuid.UUID) (api.DomainSuggestion, error) {
 	var out api.DomainSuggestion
-	e := s.scope(ctx, p, ws, false, false, false, "", uuid.Nil, func(tx pgx.Tx) error {
+	e := s.scope(ctx, p, ws, workspaceAccess{}, "", uuid.Nil, func(tx pgx.Tx) error {
 		v, e := loadVisualEnvironment(ctx, tx, ws, pid, env)
 		if e != nil {
 			return e

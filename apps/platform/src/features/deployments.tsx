@@ -478,7 +478,7 @@ export function Deployments({
                               },
                             }),
                           );
-                          await publishDraft(queries, path, next);
+                          await publishDraft(queries, path, next, revision.id);
                           loadRevision(next);
                           setRequireRelease(true);
                           setReleaseCommand("");

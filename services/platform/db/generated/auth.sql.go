@@ -327,7 +327,10 @@ func (q *Queries) PeekPasswordReset(ctx context.Context, tokenHash []byte) (Pass
 }
 
 const pruneAuthAttempts = `-- name: PruneAuthAttempts :exec
-DELETE FROM auth_attempts WHERE expires_at < now()
+DELETE FROM auth_attempts WHERE scope_hash IN (
+    SELECT scope_hash FROM auth_attempts WHERE expires_at < now()
+    ORDER BY expires_at,scope_hash LIMIT 1000 FOR UPDATE SKIP LOCKED
+)
 `
 
 func (q *Queries) PruneAuthAttempts(ctx context.Context) error {

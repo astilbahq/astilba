@@ -153,7 +153,7 @@ func existingBuild(ctx context.Context, tx pgx.Tx, ws, pid, env, app, key uuid.U
 
 func (s *Service) GitSource(ctx context.Context, p store.Principal, ws, pid, env uuid.UUID) (map[string]any, error) {
 	out := map[string]any{}
-	err := s.scope(ctx, p, ws, false, false, false, "", uuid.Nil, func(tx pgx.Tx) error {
+	err := s.scope(ctx, p, ws, workspaceAccess{}, "", uuid.Nil, func(tx pgx.Tx) error {
 		v, err := loadVisualEnvironment(ctx, tx, ws, pid, env)
 		if err != nil {
 			return err
@@ -186,7 +186,7 @@ func (s *Service) BindSource(ctx context.Context, p store.Principal, ws, pid, en
 	if err := c.Validate(); err != nil {
 		return out, domain.Invalid("source")
 	}
-	err := s.scope(ctx, p, ws, true, true, true, "git.source.bind", env, func(tx pgx.Tx) error {
+	err := s.scope(ctx, p, ws, workspaceAccess{Write: true, Owner: true, Recent: true}, "git.source.bind", env, func(tx pgx.Tx) error {
 		v, err := loadVisualEnvironment(ctx, tx, ws, pid, env)
 		if err != nil {
 			return err
@@ -219,7 +219,7 @@ func (s *Service) BindSource(ctx context.Context, p store.Principal, ws, pid, en
 }
 func (s *Service) RefreshSource(ctx context.Context, p store.Principal, ws, pid, env, base uuid.UUID, discard bool) (api.Operation, error) {
 	var out api.Operation
-	err := s.scope(ctx, p, ws, true, false, false, "git.source.refresh", env, func(tx pgx.Tx) error {
+	err := s.scope(ctx, p, ws, workspaceAccess{Write: true}, "git.source.refresh", env, func(tx pgx.Tx) error {
 		v, err := loadVisualEnvironment(ctx, tx, ws, pid, env)
 		if err != nil {
 			return err
@@ -273,7 +273,7 @@ func (s *Service) RefreshSource(ctx context.Context, p store.Principal, ws, pid,
 }
 func (s *Service) SubmitSource(ctx context.Context, p store.Principal, ws, pid, env, base, key uuid.UUID) (api.Operation, error) {
 	var out api.Operation
-	err := s.scope(ctx, p, ws, true, false, false, "git.source.submit", base, func(tx pgx.Tx) error {
+	err := s.scope(ctx, p, ws, workspaceAccess{Write: true}, "git.source.submit", base, func(tx pgx.Tx) error {
 		v, err := loadVisualEnvironment(ctx, tx, ws, pid, env)
 		if err != nil {
 			return err
@@ -368,7 +368,7 @@ func (s *Service) CreateBuild(ctx context.Context, p store.Principal, ws, pid, e
 		}
 		return out, domain.Invalid("build")
 	}
-	err := s.scope(ctx, p, ws, true, c.AutoDeploy, c.AutoDeploy, "build.create", app, func(tx pgx.Tx) error {
+	err := s.scope(ctx, p, ws, workspaceAccess{Write: true, Owner: c.AutoDeploy, Recent: c.AutoDeploy}, "build.create", app, func(tx pgx.Tx) error {
 		var err error
 		out, err = s.admitBuild(ctx, tx, p, ws, pid, env, base, app, key, c, true)
 		return err
@@ -484,7 +484,7 @@ func buildInputHash(c pipeline.Connection, commit string, b pipeline.BuildConfig
 }
 func (s *Service) PipelineRuns(ctx context.Context, p store.Principal, ws, pid, env uuid.UUID) ([]map[string]any, error) {
 	out := []map[string]any{}
-	err := s.scope(ctx, p, ws, false, false, false, "", uuid.Nil, func(tx pgx.Tx) error {
+	err := s.scope(ctx, p, ws, workspaceAccess{}, "", uuid.Nil, func(tx pgx.Tx) error {
 		if _, err := loadVisualEnvironment(ctx, tx, ws, pid, env); err != nil {
 			return err
 		}
@@ -535,7 +535,7 @@ func (s *Service) PipelineRuns(ctx context.Context, p store.Principal, ws, pid, 
 }
 
 func (s *Service) SourcePolicy(ctx context.Context, p store.Principal, ws, pid, env uuid.UUID, enabled bool) error {
-	return s.scope(ctx, p, ws, true, true, enabled, "git.source.policy", env, func(tx pgx.Tx) error {
+	return s.scope(ctx, p, ws, workspaceAccess{Write: true, Owner: true, Recent: enabled}, "git.source.policy", env, func(tx pgx.Tx) error {
 		if _, err := loadVisualEnvironment(ctx, tx, ws, pid, env); err != nil {
 			return err
 		}

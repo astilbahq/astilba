@@ -31,7 +31,7 @@ func noOtherUpgrade(ctx context.Context, tx pgx.Tx, server, allowed uuid.UUID) e
 }
 func (s *Service) Upgrades(ctx context.Context, p store.Principal, ws, pid, env uuid.UUID) ([]upgrade.View, error) {
 	out := []upgrade.View{}
-	err := s.scope(ctx, p, ws, false, false, false, "", uuid.Nil, func(tx pgx.Tx) error {
+	err := s.scope(ctx, p, ws, workspaceAccess{}, "", uuid.Nil, func(tx pgx.Tx) error {
 		if _, err := loadVisualEnvironment(ctx, tx, ws, pid, env); err != nil {
 			return err
 		}
@@ -60,7 +60,7 @@ func (s *Service) Upgrades(ctx context.Context, p store.Principal, ws, pid, env 
 }
 func (s *Service) CreateUpgrade(ctx context.Context, p store.Principal, ws, pid, env uuid.UUID, in api.UpgradeRequest) (upgrade.View, error) {
 	var out upgrade.View
-	err := s.scope(ctx, p, ws, true, true, true, "upgrade.plan", env, func(tx pgx.Tx) error {
+	err := s.scope(ctx, p, ws, workspaceAccess{Write: true, Owner: true, Recent: true}, "upgrade.plan", env, func(tx pgx.Tx) error {
 		v, err := loadVisualEnvironment(ctx, tx, ws, pid, env)
 		if err != nil {
 			return err
@@ -147,7 +147,7 @@ func (s *Service) UpgradeAction(ctx context.Context, p store.Principal, ws, pid,
 	if in.Action == "return" || in.Action == "reconcile" {
 		action = "upgrade.recover"
 	}
-	err := s.scope(ctx, p, ws, true, true, true, action, id, func(tx pgx.Tx) error {
+	err := s.scope(ctx, p, ws, workspaceAccess{Write: true, Owner: true, Recent: true, Recovery: in.Action == "return" || in.Action == "reconcile"}, action, id, func(tx pgx.Tx) error {
 		v, err := loadVisualEnvironment(ctx, tx, ws, pid, env)
 		if err != nil {
 			return err

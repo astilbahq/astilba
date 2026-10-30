@@ -69,7 +69,7 @@ func requiredPorts(spec domain.Specification) []int {
 }
 func (s *Service) CreateVisualPlan(ctx context.Context, p store.Principal, ws, pid, env uuid.UUID, in api.VisualPlanRequest) (deployment.Status, error) {
 	var out deployment.Status
-	err := s.scope(ctx, p, ws, true, in.AllowHostChanges, in.AllowHostChanges, "deployment.plan", env, func(tx pgx.Tx) error {
+	err := s.scope(ctx, p, ws, workspaceAccess{Write: true, Owner: in.AllowHostChanges, Recent: in.AllowHostChanges}, "deployment.plan", env, func(tx pgx.Tx) error {
 		var err error
 		out, err = s.createVisualPlan(ctx, tx, ws, pid, env, in)
 		return err
@@ -259,7 +259,7 @@ func (s *Service) insertVisual(ctx context.Context, tx pgx.Tx, ws, key uuid.UUID
 }
 func (s *Service) VisualPlan(ctx context.Context, p store.Principal, ws, pid, env, id uuid.UUID) (deployment.Status, error) {
 	var out deployment.Status
-	err := s.scope(ctx, p, ws, false, false, false, "", uuid.Nil, func(tx pgx.Tx) error {
+	err := s.scope(ctx, p, ws, workspaceAccess{}, "", uuid.Nil, func(tx pgx.Tx) error {
 		if _, err := loadVisualEnvironment(ctx, tx, ws, pid, env); err != nil {
 			return err
 		}
@@ -289,7 +289,7 @@ func readPlan(ctx context.Context, tx pgx.Tx, ws, env, id uuid.UUID) (deployment
 }
 func (s *Service) ApplyVisualPlan(ctx context.Context, p store.Principal, ws, pid, env, id, key uuid.UUID) (api.Operation, error) {
 	var out api.Operation
-	err := s.scope(ctx, p, ws, true, false, false, "deployment.apply", id, func(tx pgx.Tx) error {
+	err := s.scope(ctx, p, ws, workspaceAccess{Write: true}, "deployment.apply", id, func(tx pgx.Tx) error {
 		var role string
 		if err := tx.QueryRow(ctx, "SELECT role FROM memberships WHERE workspace_id=$1 AND account_id=$2", ws, p.Account.ID).Scan(&role); err != nil {
 			return err
@@ -447,7 +447,7 @@ func sameID(a, b *uuid.UUID) bool { return a == nil && b == nil || a != nil && b
 
 func (s *Service) Runtime(ctx context.Context, p store.Principal, ws, pid, env uuid.UUID) (deployment.Observation, error) {
 	out := deployment.Observation{Resources: []deployment.Resource{}}
-	err := s.scope(ctx, p, ws, false, false, false, "", uuid.Nil, func(tx pgx.Tx) error {
+	err := s.scope(ctx, p, ws, workspaceAccess{}, "", uuid.Nil, func(tx pgx.Tx) error {
 		if _, err := loadVisualEnvironment(ctx, tx, ws, pid, env); err != nil {
 			return err
 		}
@@ -498,7 +498,7 @@ func (s *Service) Runtime(ctx context.Context, p store.Principal, ws, pid, env u
 }
 func (s *Service) ObserveVisual(ctx context.Context, p store.Principal, ws, pid, env uuid.UUID, volume *uuid.UUID) (api.Operation, error) {
 	var out api.Operation
-	err := s.scope(ctx, p, ws, true, volume != nil, volume != nil, "deployment.observe", env, func(tx pgx.Tx) error {
+	err := s.scope(ctx, p, ws, workspaceAccess{Write: true, Owner: volume != nil, Recent: volume != nil}, "deployment.observe", env, func(tx pgx.Tx) error {
 		v, err := loadVisualEnvironment(ctx, tx, ws, pid, env)
 		if err != nil {
 			return err

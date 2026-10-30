@@ -147,7 +147,7 @@ func rollbackPlan(current, historical deployment.Plan, appID uuid.UUID) (deploym
 }
 func (s *Service) ReleaseHistory(ctx context.Context, p store.Principal, ws, pid, env uuid.UUID) ([]releaseHistory, error) {
 	out := []releaseHistory{}
-	err := s.scope(ctx, p, ws, false, false, false, "", uuid.Nil, func(tx pgx.Tx) error {
+	err := s.scope(ctx, p, ws, workspaceAccess{}, "", uuid.Nil, func(tx pgx.Tx) error {
 		v, err := loadVisualEnvironment(ctx, tx, ws, pid, env)
 		if err != nil {
 			return err
@@ -194,7 +194,7 @@ func (s *Service) ReleaseHistory(ctx context.Context, p store.Principal, ws, pid
 }
 func (s *Service) RollbackRelease(ctx context.Context, p store.Principal, ws, pid, env, id uuid.UUID, in api.RollbackRelease) (api.Revision, error) {
 	var out api.Revision
-	err := s.scope(ctx, p, ws, true, false, false, "release.rollback.draft", env, func(tx pgx.Tx) error {
+	err := s.scope(ctx, p, ws, workspaceAccess{Write: true}, "release.rollback.draft", env, func(tx pgx.Tx) error {
 		v, err := loadVisualEnvironment(ctx, tx, ws, pid, env)
 		if err != nil {
 			return err

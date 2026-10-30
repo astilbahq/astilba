@@ -35,6 +35,7 @@ For local development only, set `ASTILBA_DEVELOPMENT=true`, `ASTILBA_LISTEN=127.
 | `ASTILBA_KEYRING` | External JSON keyring path. Regular file, owner-only permissions; never stored in PostgreSQL. |
 | `ASTILBA_ORIGIN` | Exact browser origin, without a path or trailing slash. HTTPS outside explicit local development. |
 | `ASTILBA_LISTEN` | HTTP listener; defaults to `127.0.0.1:8080`. Use a TLS-terminating reverse proxy in production. |
+| `ASTILBA_TRUSTED_PROXIES` | Optional comma-separated IPv4 or IPv6 CIDRs for reverse proxies allowed to supply `X-Forwarded-For`. Defaults to no trusted proxies. |
 | `ASTILBA_AGENT_RELEASES`, `ASTILBA_AGENT_RELEASE_KEY` | Optional read-only signed agent catalog directory and its trusted public PEM key. Both are required to offer downloadable agent updates. |
 | **ASTILBA_INTEGRATION_ORIGINS** | Optional comma-separated exact HTTPS origins for self-hosted GitLab/Gitea; explicit origins may reach private networks. See [Git/build trust boundaries](../../docs/git-builds.md). |
 | `ASTILBA_HOSTED` | `true` requires MFA before workspace management writes. Self-hosted owners can enable the same policy per workspace. |
@@ -48,7 +49,14 @@ The bundled image runs as UID/GID 65532 without Node. Its external keyring must 
 
 Sessions have a 12-hour absolute lifetime and 30-minute idle timeout. Secure cookies are HTTP-only, SameSite Strict and use the `__Host-` prefix. Mutations require the configured Origin and a session-bound CSRF token. Accounts are global identities; authorization comes from a current workspace membership. Owners manage membership/settings, owners and operators edit configuration, and viewers read safe metadata. Secret and credential changes require authentication within five minutes. MFA enrollment, password reset and recovery codes invalidate older sessions. Recovery codes are shown once. Password reset emails contain a one-use link to `ASTILBA_ORIGIN/reset?token=…`, valid for 30 minutes. Workspace invitation emails similarly link to `ASTILBA_ORIGIN/invitation?token=…` and expire after 24 hours. These origins come from server configuration, never the request host. Previously issued, unexpired workspace invitation codes remain valid as the `token` value in the new invitation URL; their original email content is unchanged.
 
-The API does not trust forwarded client-IP headers. Per-IP abuse limits therefore see the immediate peer when a reverse proxy is used; per-account and global limits still apply. Multi-instance rate counters and sessions use PostgreSQL. Before a larger hosted rollout, add an explicitly authenticated proxy trust policy as part of hosting hardening, not an arbitrary forwarded-header override.
+Login admission applies the client-source (50 attempts) and normalized account (5 attempts) budgets before charging the installation-wide budget (1,000 admitted attempts), all over 15 minutes. A source refusal charges only the source budget; an account refusal charges the source and account budgets. Neither consumes the installation-wide allowance. Admission updates share one PostgreSQL transaction: an installation-wide refusal rolls back the source and account charges. Password comparison runs after admission and retains its separate two-slot Argon2 memory bound.
+
+Client-source abuse limits use each exact IPv4 address or IPv6 /64. The API walks `X-Forwarded-For` from right to left only while the current address matches `ASTILBA_TRUSTED_PROXIES`; the first untrusted hop supplies the source. Without proxy trust, it uses the immediate peer and ignores forwarding headers. Malformed trusted chains also fall back to the peer. Proxy trust checks use exact addresses before source grouping, and IPv4-mapped IPv6 addresses share the corresponding IPv4 budget. Other forwarded-IP headers are ignored. Multi-instance rate counters and sessions use PostgreSQL.
+
+Browser session refresh cannot recreate a deleted token. A loaded-token save
+rejected after logout or renewal returns 401 without setting a session cookie.
+Update every management replica and drain requests handled by older binaries
+before relying on this revocation guarantee.
 
 ## Revision and key model
 

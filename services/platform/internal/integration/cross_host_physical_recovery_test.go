@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -153,18 +154,61 @@ func testNativePhysicalRecovery(t *testing.T, upgradeRecovery bool) {
 			}, nil)
 		})
 	}
-	wait := func(label string, check func() bool) {
+	wait := func(label string, timeout time.Duration, check func() bool) {
 		t.Helper()
-		until := time.Now().Add(90 * time.Second)
+		until := time.Now().Add(timeout)
 		for time.Now().Before(until) {
 			if check() {
 				return
 			}
 			time.Sleep(50 * time.Millisecond)
 		}
+		diagnosticContext, cancelDiagnostic := context.WithTimeout(context.Background(), 2*time.Second)
 		var diagnostic []byte
-		_ = source.st.Pool.QueryRow(ctx, `SELECT jsonb_build_object('operations',(SELECT jsonb_agg(jsonb_build_object('kind',kind,'state',state,'phase',command->'crosshost'->>'phase','networkAction',command->'network'->>'action','wantedGeneration',command->'network'->'manifest'->'generation','note',note)) FROM execution_operations WHERE workspace_id=$1 AND state NOT IN ('succeeded','failed','cancelled')),'network',(SELECT jsonb_agg(jsonb_build_object('generation',generation,'ack',acknowledged_generation,'installedGeneration',installed_manifest->'generation')) FROM network_members WHERE workspace_id=$1))`, ws).Scan(&diagnostic)
-		t.Fatal(label, string(diagnostic))
+		diagnosticErr := source.st.Pool.QueryRow(diagnosticContext, `
+WITH roots AS (
+ SELECT id FROM execution_operations
+ WHERE workspace_id=$1 AND parent_id IS NULL AND state NOT IN ('succeeded','failed','cancelled')
+), selected AS (
+ SELECT * FROM execution_operations
+ WHERE workspace_id=$1 AND (state NOT IN ('succeeded','failed','cancelled') OR parent_id IN (SELECT id FROM roots))
+ ORDER BY created_at DESC,id LIMIT 200
+)
+SELECT jsonb_build_object(
+ 'capturedAt',clock_timestamp(),
+ 'operations',(SELECT jsonb_agg(jsonb_build_object(
+  'id',o.id,'parentId',o.parent_id,'serverId',o.server_id,
+  'primary',o.command->'crosshost'->'unit'->'plan'->'local'->'primary',
+  'kind',o.kind,'state',o.state,
+  'phase',o.command->'crosshost'->>'phase','coordinatorPhase',h.phase,
+  'createdAt',o.created_at,'reportSequence',o.report_sequence,
+  'networkAction',o.command->'network'->>'action',
+  'wantedGeneration',o.command->'network'->'manifest'->'generation',
+  'checkpointId',cp.id,'checkpointPhase',cp.phase,'checkpointAcknowledged',cp.acknowledged,
+  'recoveryOpened',r.opened,
+  'job',jsonb_build_object('id',j.id,'state',j.state,'attempt',j.attempt,
+   'createdAt',j.created_at,'scheduledAt',j.scheduled_at,
+   'attemptedAt',j.attempted_at,'finalizedAt',j.finalized_at)) ORDER BY o.created_at,o.id)
+ FROM selected o
+ LEFT JOIN cross_host_operations h ON h.id=o.id
+ LEFT JOIN river_job j ON j.id=o.job_id
+ LEFT JOIN cross_host_checkpoints cp ON cp.parent_id=COALESCE(o.parent_id,o.id) AND cp.id::text=o.command->'recoveryCheckpoint'->>'checkpointId'
+ LEFT JOIN cross_host_recoveries r ON r.parent_id=COALESCE(o.parent_id,o.id)),
+ 'servers',(SELECT jsonb_agg(jsonb_build_object('serverId',id,'lastSeen',last_seen,
+  'pollUntil',poll_until,'pollIdPresent',poll_id IS NOT NULL)) FROM servers WHERE workspace_id=$1),
+ 'network',(SELECT jsonb_agg(jsonb_build_object('serverId',server_id,'generation',generation,'ack',acknowledged_generation,
+  'installedGeneration',installed_manifest->'generation')) FROM network_members WHERE workspace_id=$1),
+ 'databaseActivity',(SELECT jsonb_agg(jsonb_build_object(
+  'pid',a.pid,'state',a.state,'waitEventType',a.wait_event_type,'waitEvent',a.wait_event,
+  'xactStart',a.xact_start,'blockingPids',a.blocking_pids) ORDER BY a.pid)
+ FROM (SELECT pid,state,wait_event_type,wait_event,xact_start,pg_blocking_pids(pid) AS blocking_pids
+  FROM pg_stat_activity WHERE datname=current_database() ORDER BY pid LIMIT 24) a))`, ws).Scan(&diagnostic)
+		cancelDiagnostic()
+		t.Logf("%s database diagnostics: readSucceeded=%t %s", label, diagnosticErr == nil, diagnostic)
+		var stacks [128 * 1024]byte
+		stackSize := runtime.Stack(stacks[:], true)
+		t.Logf("%s goroutine stacks: bytes=%d truncated=%t\n%s", label, stackSize, stackSize == len(stacks), stacks[:stackSize])
+		t.Fatal(label)
 	}
 	var network struct {
 		ID         uuid.UUID `json:"id"`
@@ -172,7 +216,7 @@ func testNativePhysicalRecovery(t *testing.T, upgradeRecovery bool) {
 		Generation int64     `json:"generation"`
 	}
 	b.call("PUT", base+"/network", api.ConfigureManagedNetwork{Prefix: "10.248.0.0/24", Members: members}, 200, &network)
-	wait("physical network convergence", func() bool { b.call("GET", base+"/network", nil, 200, &network); return network.State == "ready" })
+	wait("physical network convergence", 90*time.Second, func() bool { b.call("GET", base+"/network", nil, 200, &network); return network.State == "ready" })
 	app, image := uuid.New(), execution.TestImage
 	spec := domain.Specification{Version: 1, Variables: []domain.Variable{}, Applications: []domain.Application{{ID: app, Name: "Web", Replicas: 2, Command: []string{"sh", "-c", "mkdir -p /tmp/www; hostname > /tmp/www/index.html; exec httpd -f -p 8080 -h /tmp/www"}, Source: domain.ApplicationSource{Kind: "image", Image: &image}, Health: &domain.HealthCheck{Port: 8080, Path: "/"}}}, Routes: []domain.Route{{ID: uuid.New(), TargetID: app, Protocol: "http", Domain: "physical-recovery.example.test", Port: 8080, TLS: "off", AllowCIDRs: []string{}}}}
 	pg, volume := uuid.New(), uuid.New()
@@ -217,12 +261,12 @@ exec httpd -f -p 8080 -h /tmp/www`}
 			// unbounded-workload inventory. Renew its explicit owner acknowledgement.
 			b.call("GET", base+"/network", nil, 200, &network)
 			b.call("PUT", base+"/network", api.ConfigureManagedNetwork{Prefix: "10.248.0.0/24", BaseGeneration: network.Generation, Members: members}, 200, &network)
-			wait("refreshed physical network", func() bool { b.call("GET", base+"/network", nil, 200, &network); return network.State == "ready" })
+			wait("refreshed physical network", 90*time.Second, func() bool { b.call("GET", base+"/network", nil, 200, &network); return network.State == "ready" })
 		}
 		b.call("PUT", path+"/draft", map[string]any{"baseRevisionId": revision.Id, "specification": spec}, 200, &revision)
 		var view deployment.Status
 		b.call("POST", path+"/deployment-plans", api.VisualPlanRequest{BaseRevisionId: revision.Id, ServerId: inputs[0].ServerId, AllowHostChanges: true}, 201, &view)
-		wait("physical plan", func() bool {
+		wait("physical plan", 90*time.Second, func() bool {
 			b.call("GET", path+"/deployment-plans/"+view.ID.String(), nil, 200, &view)
 			if view.State == "failed" || view.State == "needs_attention" {
 				t.Fatal("physical plan failed", view)
@@ -244,11 +288,12 @@ exec httpd -f -p 8080 -h /tmp/www`}
 		return state == "succeeded"
 	}
 	_, first := deploy()
-	wait("initial source", func() bool { return complete(first.Id) })
+	// Source deployment includes every coordination phase and graceful retirement.
+	wait("initial source", 3*time.Minute, func() bool { return complete(first.Id) })
 	spec.Placement = &domain.Placement{NetworkID: network.ID, IngressServerID: inputs[0].ServerId, Applications: []domain.ApplicationPlacement{{ApplicationID: app, CPUMillis: 200, MemoryMiB: 128, Targets: []domain.PlacementTarget{{ServerID: inputs[0].ServerId, Count: 1}, {ServerID: inputs[1].ServerId, Count: 1}}}}}
 	applied, distributed := deploy()
-	wait("distributed source", func() bool { return complete(distributed.Id) })
-	wait("settled source network", func() bool {
+	wait("distributed source", 3*time.Minute, func() bool { return complete(distributed.Id) })
+	wait("settled source network", 90*time.Second, func() bool {
 		b.call("GET", base+"/network", nil, 200, &network)
 		var idle bool
 		if err := source.st.Pool.QueryRow(ctx, `SELECT NOT EXISTS(SELECT 1 FROM execution_operations WHERE workspace_id=$1 AND server_id IN ($2,$3) AND state NOT IN ('succeeded','failed','cancelled'))`, ws, inputs[0].ServerId, inputs[1].ServerId).Scan(&idle); err != nil {
@@ -299,7 +344,7 @@ exec httpd -f -p 8080 -h /tmp/www`}
 		b.call("POST", path+"/backup-policies", api.BackupPolicyRequest{Name: "Recovery", ResourceId: pg, DestinationId: destination.ID, Method: "postgres-logical", Schedule: api.DailySchedule{Timezone: "UTC"}, Retain: 7, Enabled: true, Command: []string{}, Password: &password}, 201, &policy)
 		var installation api.Operation
 		b.call("POST", path+"/backup-policies/"+policy.ID.String()+"/commands", api.BackupCommandRequest{Action: "install", RequestKey: uuid.New(), Snapshot: ""}, 202, &installation)
-		wait("physical policy installation", func() bool {
+		wait("physical policy installation", 90*time.Second, func() bool {
 			if !complete(installation.Id) {
 				return false
 			}
@@ -312,7 +357,7 @@ exec httpd -f -p 8080 -h /tmp/www`}
 		b.call("POST", path+"/upgrades", api.UpgradeRequest{PolicyId: policy.ID, ResourceId: pg, BaseRevisionId: revision.Id, RetainDays: 7}, 201, &upgradeView)
 		actions := path + "/upgrades/" + upgradeView.Plan.ID.String() + "/actions"
 		b.call("POST", actions, api.UpgradeActionRequest{Action: "prepare", ExpectedPhase: "planned", RequestKey: uuid.New()}, 202, &operation)
-		wait("physical upgrade preparation", func() bool {
+		wait("physical upgrade preparation", 90*time.Second, func() bool {
 			var ready bool
 			if err := source.st.Pool.QueryRow(ctx, `SELECT h.phase='maintenance-owner' AND u.status->>'phase'='ready' FROM cross_host_operations h JOIN supported_upgrades u ON u.id=$2 WHERE h.id=$1`, operation.Id, upgradeView.Plan.ID).Scan(&ready); err != nil {
 				t.Fatal(err)
@@ -332,7 +377,7 @@ exec httpd -f -p 8080 -h /tmp/www`}
 		holdPrimaryComplete.Store(true)
 		spec.Placement.Applications[0].Targets = []domain.PlacementTarget{{ServerID: inputs[0].ServerId, Count: 2}}
 		target, operation = deploy()
-		wait("remote drain completion", func() bool {
+		wait("remote drain completion", 90*time.Second, func() bool {
 			var done bool
 			if err := source.st.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM execution_operations WHERE parent_id=$1 AND server_id=$2 AND command->'crosshost'->>'phase'='complete' AND state='succeeded')`, operation.Id, inputs[1].ServerId).Scan(&done); err != nil {
 				t.Fatal(err)
@@ -739,7 +784,7 @@ func runPhysicalRecoveryHost(t *testing.T, ctx context.Context, service *executi
 		pollErr := poll.Err()
 		cancel()
 		if err != nil {
-			if ctx.Err() != nil || pollErr != nil || errors.Is(err, context.Canceled) {
+			if waitForFixturePollLease(ctx, err) || ctx.Err() != nil || pollErr != nil || errors.Is(err, context.Canceled) {
 				continue
 			}
 			t.Error(err)

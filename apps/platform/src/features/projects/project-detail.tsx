@@ -77,7 +77,7 @@ function ProjectEnvironments({
         workspaceId={workspace.id}
         project={environmentId ? project : undefined}
       />
-      {!environmentId && (
+      {!environment && (
         <div className={s.intro}>
           <h1 className={s.title}>
             <bdi>{project.name}</bdi>

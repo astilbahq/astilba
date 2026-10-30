@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
+	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
@@ -21,7 +22,7 @@ func (s *Service) Plan(ctx context.Context, p store.Principal, ws uuid.UUID, in 
 	if in.Action != "start" && in.Action != "inspect" && in.Action != "remove" {
 		return plan, domain.Invalid("action")
 	}
-	err := s.scope(ctx, p, ws, true, false, false, "operation.plan", plan.Id, func(tx pgx.Tx) error {
+	err := s.scope(ctx, p, ws, workspaceAccess{Write: true}, "operation.plan", plan.Id, func(tx pgx.Tx) error {
 		if err := s.deploymentServer(ctx, tx, ws, in.ServerId); err != nil {
 			return err
 		}
@@ -69,7 +70,7 @@ func scanOperation(row pgx.Row) (api.Operation, error) {
 }
 func (s *Service) Apply(ctx context.Context, p store.Principal, ws, planID, key uuid.UUID) (api.Operation, error) {
 	var out api.Operation
-	err := s.scope(ctx, p, ws, true, false, false, "operation.apply", planID, func(tx pgx.Tx) error {
+	err := s.scope(ctx, p, ws, workspaceAccess{Write: true}, "operation.apply", planID, func(tx pgx.Tx) error {
 		var existingPlan *uuid.UUID
 		err := tx.QueryRow(ctx, "SELECT plan_id FROM execution_operations WHERE workspace_id=$1 AND request_key=$2", ws, key).Scan(&existingPlan)
 		if err == nil {
@@ -170,7 +171,7 @@ func (s *Service) insert(ctx context.Context, tx pgx.Tx, ws, key uuid.UUID, plan
 }
 func (s *Service) Operations(ctx context.Context, p store.Principal, ws uuid.UUID) ([]api.Operation, error) {
 	out := []api.Operation{}
-	err := s.scope(ctx, p, ws, false, false, false, "", uuid.Nil, func(tx pgx.Tx) error {
+	err := s.scope(ctx, p, ws, workspaceAccess{}, "", uuid.Nil, func(tx pgx.Tx) error {
 		rows, err := tx.Query(ctx, "SELECT "+opColumns+" FROM execution_operations WHERE workspace_id=$1 ORDER BY created_at DESC LIMIT 100", ws)
 		if err != nil {
 			return err
@@ -209,7 +210,7 @@ func (s *Service) operationAvailability(ctx context.Context, out *api.Operation)
 	return nil
 }
 func (s *Service) Cancel(ctx context.Context, p store.Principal, ws, id uuid.UUID) error {
-	return s.scope(ctx, p, ws, true, false, false, "operation.cancel", id, func(tx pgx.Tx) error {
+	return s.scope(ctx, p, ws, workspaceAccess{Write: true, Recovery: true}, "operation.cancel", id, func(tx pgx.Tx) error {
 		n, e := tx.Exec(ctx, `UPDATE execution_operations SET cancel_requested=true,state=CASE WHEN kind='pipeline' AND state='queued' THEN 'cancelled' ELSE state END WHERE workspace_id=$1 AND id=$2 AND state NOT IN ('succeeded','failed','cancelled')`, ws, id)
 		if e == nil && n.RowsAffected() != 1 {
 			return domain.Conflict
@@ -223,7 +224,7 @@ func (s *Service) Cancel(ctx context.Context, p store.Principal, ws, id uuid.UUI
 }
 func (s *Service) RequestUpdate(ctx context.Context, p store.Principal, ws, id uuid.UUID, version string) (api.Operation, error) {
 	var out api.Operation
-	err := s.scope(ctx, p, ws, true, true, true, "server.update", id, func(tx pgx.Tx) error {
+	err := s.scope(ctx, p, ws, workspaceAccess{Write: true, Owner: true, Recent: true}, "server.update", id, func(tx pgx.Tx) error {
 		var cap api.AgentCapabilities
 		var raw []byte
 		var generation int64
@@ -362,6 +363,42 @@ func (w *worker) Work(ctx context.Context, job *river.Job[jobArgs]) error {
 	}
 	// Dispatch is durable and idempotent; losing the worker cannot mint a new command or generation.
 	if state == "queued" {
+		if c.Kind == "crosshost" && c.ParentId != nil {
+			var body deployment.CrossHostCommand
+			if c.Crosshost == nil || json.Unmarshal(*c.Crosshost, &body) != nil {
+				return domain.Invalid("crosshost")
+			}
+			if body.Phase == "prepare" && body.Maintenance == nil {
+				if body.Unit.Plan.Local == nil || body.Unit.Plan.Specification.Placement == nil || body.ParentID != *c.ParentId || body.Digest() != c.PlanHash {
+					return domain.Invalid("crosshost")
+				}
+				if !body.Unit.Plan.Local.Primary {
+					// Freeze every child together, but do not probe primary-owned
+					// bindings before their provider has finished preparing.
+					var primaryState api.ExecutionState
+					var parentCancelled bool
+					var parentPhase string
+					if err = tx.QueryRow(ctx, `SELECT primary_child.state,parent.cancel_requested,coordination.phase FROM execution_operations primary_child JOIN execution_operations parent ON parent.id=primary_child.parent_id JOIN cross_host_operations coordination ON coordination.id=parent.id AND coordination.workspace_id=parent.workspace_id WHERE primary_child.workspace_id=$1 AND primary_child.parent_id=$2 AND primary_child.server_id=$3 AND primary_child.command->'crosshost'->>'phase'='prepare'`, ws, *c.ParentId, body.Unit.Plan.Specification.Placement.IngressServerID).Scan(&primaryState, &parentCancelled, &parentPhase); err != nil {
+						return err
+					}
+					if parentPhase != "prepare" || cancelled || parentCancelled || primaryState == "failed" || primaryState == "cancelled" {
+						if _, err = tx.Exec(ctx, `UPDATE execution_operations SET state='cancelled',cancel_requested=true,note='Cancelled before preparation dispatch.' WHERE id=$1`, c.Id); err != nil {
+							return err
+						}
+						if _, err = river.JobCompleteTx[*riverpgxv5.Driver](ctx, tx, job); err != nil {
+							return err
+						}
+						return tx.Commit(ctx)
+					}
+					if primaryState != "succeeded" {
+						if err = tx.Commit(ctx); err != nil {
+							return err
+						}
+						return river.JobSnooze(2 * time.Second)
+					}
+				}
+			}
+		}
 		if c.Kind == "network" && recoveryCommand(c) {
 			var active bool
 			if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM execution_operations WHERE server_id=$1 AND id<>$2 AND kind='network' AND command->'network'->>'action'='restrict' AND state NOT IN ('queued','succeeded','failed','cancelled'))`, server, c.Id).Scan(&active); err != nil {

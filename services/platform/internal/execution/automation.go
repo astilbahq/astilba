@@ -21,7 +21,7 @@ func targetHash(config pipeline.BuildConfig, actor uuid.UUID) string {
 
 func (s *Service) ConfiguredBuildTargets(ctx context.Context, p store.Principal, ws, pid, env uuid.UUID) ([]api.ConfiguredBuildTarget, error) {
 	out := []api.ConfiguredBuildTarget{}
-	err := s.scope(ctx, p, ws, false, false, false, "", uuid.Nil, func(tx pgx.Tx) error {
+	err := s.scope(ctx, p, ws, workspaceAccess{}, "", uuid.Nil, func(tx pgx.Tx) error {
 		v, err := loadVisualEnvironment(ctx, tx, ws, pid, env)
 		if err != nil {
 			return err
@@ -56,7 +56,7 @@ func (s *Service) ConfiguredBuildTargets(ctx context.Context, p store.Principal,
 
 func (s *Service) RunConfiguredBuild(ctx context.Context, p store.Principal, ws, pid, env, app uuid.UUID, in api.RunConfiguredBuild) (api.Operation, error) {
 	var out api.Operation
-	err := s.scope(ctx, p, ws, true, false, false, "build.run", app, func(tx pgx.Tx) error {
+	err := s.scope(ctx, p, ws, workspaceAccess{Write: true}, "build.run", app, func(tx pgx.Tx) error {
 		old, exists, err := existingBuild(ctx, tx, ws, pid, env, app, in.IdempotencyKey)
 		if err != nil {
 			return err
@@ -89,7 +89,7 @@ func (s *Service) RunConfiguredBuild(ctx context.Context, p store.Principal, ws,
 
 func (s *Service) EnvironmentOperation(ctx context.Context, p store.Principal, ws, pid, env, id uuid.UUID) (api.Operation, error) {
 	var out api.Operation
-	err := s.scope(ctx, p, ws, false, false, false, "", uuid.Nil, func(tx pgx.Tx) error {
+	err := s.scope(ctx, p, ws, workspaceAccess{}, "", uuid.Nil, func(tx pgx.Tx) error {
 		if _, err := loadVisualEnvironment(ctx, tx, ws, pid, env); err != nil {
 			return err
 		}

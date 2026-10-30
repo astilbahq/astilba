@@ -53,3 +53,59 @@ for (const adapter of ["dashboard", "container"]) {
     assert.equal(forwarded.length, 3);
   });
 }
+
+test("dashboard forwards the existing network preparation download", async (t) => {
+  t.mock.method(globalThis, "fetch", async (request) => {
+    assert.equal(
+      request.url,
+      "https://api.example.test/onboarding/network-prepare.sh",
+    );
+    return new Response("#!/bin/sh\n", {
+      headers: {
+        "Content-Type": "text/x-shellscript",
+        "Cache-Control": "no-store",
+      },
+    });
+  });
+  const response = await dashboard.fetch(
+    new Request("https://panel.example.test/onboarding/network-prepare.sh"),
+    { API_ORIGIN: "https://api.example.test" },
+  );
+  assert.equal(response.headers.get("Content-Type"), "text/x-shellscript");
+  assert.equal(await response.text(), "#!/bin/sh\n");
+});
+
+test("dashboard replaces a conditional HTML HEAD response with fresh nonce metadata", async () => {
+  const requests = [];
+  const response = await dashboard.fetch(
+    new Request("https://panel.example.test/", {
+      method: "HEAD",
+      headers: { "If-None-Match": '"old-shell"', Range: "bytes=0-10" },
+    }),
+    {
+      ASSETS: {
+        fetch: async (request) => {
+          requests.push(request);
+          return requests.length === 1
+            ? new Response(null, { status: 304 })
+            : new Response(null, {
+                headers: {
+                  "Content-Type": "text/html",
+                  ETag: '"old-shell"',
+                  "Content-Length": "10",
+                },
+              });
+        },
+      },
+    },
+  );
+  assert.equal(requests.length, 2);
+  assert.equal(requests[1].headers.get("If-None-Match"), null);
+  assert.equal(requests[1].headers.get("Range"), null);
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("Cache-Control"), "no-store");
+  assert.equal(response.headers.get("ETag"), null);
+  assert.equal(response.headers.get("Content-Length"), null);
+  assert.match(response.headers.get("Content-Security-Policy"), /'nonce-[^']+'/);
+  assert.equal(response.body, null);
+});

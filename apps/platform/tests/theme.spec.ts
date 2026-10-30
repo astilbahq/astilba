@@ -175,6 +175,9 @@ test("appearance menu supports keyboard, dismissal, and accessible narrow layout
   browserName,
 }) => {
   await page.goto("/login");
+  await expect(
+    page.getByRole("heading", { name: "Sign in", exact: true }),
+  ).toBeVisible();
   const trigger = page.getByRole("button", { name: "Appearance", exact: true });
   await trigger.focus();
   await expect(page.getByText("Appearance", { exact: true })).toBeVisible();

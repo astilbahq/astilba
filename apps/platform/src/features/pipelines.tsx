@@ -893,7 +893,7 @@ export function Pipelines({
                     },
                   }),
                 );
-                await publishDraft(queries, path, next);
+                await publishDraft(queries, path, next, revision.id);
                 setNotice(
                   "Artifact promoted. Use Reload current, then review a deployment plan.",
                 );
@@ -1060,7 +1060,7 @@ export function Pipelines({
                               },
                             ),
                           );
-                          await publishDraft(queries, path, next);
+                          await publishDraft(queries, path, next, revision.id);
                           setNotice(
                             "Artifact promoted to the saved draft. Use Reload current, then review a deployment plan. Runtime variables and bindings are preserved.",
                           );

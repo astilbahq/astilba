@@ -15,6 +15,12 @@ import (
 	bolt "go.etcd.io/bbolt"
 )
 
+type transportRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f transportRoundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
+	return f(r)
+}
+
 func TestAgentHTTPS(t *testing.T) {
 	h := newTransportHarness(t)
 	t.Run("tls", func(t *testing.T) {
@@ -285,14 +291,52 @@ func TestAgentHTTPS(t *testing.T) {
 		}
 		t.Cleanup(local.close)
 		a.local = local
-		// The controller starts its timer before authentication records the poll
-		// event. Measure the empty poll and reconnect with the client's monotonic
-		// clock; subtracting database event times omits the first poll's setup.
+		type pollCompletion struct {
+			status        int
+			serverElapsed string
+			err           error
+		}
+		firstPoll := make(chan pollCompletion, 1)
+		var firstPollOnce sync.Once
+		observedClient := *a.client
+		transport := observedClient.Transport
+		pollPath := "/v1/servers/" + a.identity.ServerID + "/poll"
+		observedClient.Transport = transportRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+			resp, err := transport.RoundTrip(r)
+			if r.URL.Path == pollPath {
+				firstPollOnce.Do(func() {
+					completion := pollCompletion{err: err}
+					if resp != nil {
+						completion.status = resp.StatusCode
+						completion.serverElapsed = resp.Header.Get("X-Astilba-Fixture-Poll-Elapsed")
+					}
+					select {
+					case firstPoll <- completion:
+					default:
+					}
+				})
+			}
+			return resp, err
+		})
+		a.client = &observedClient
+		// The controller and client can run in different clock domains. Check
+		// the timer minimum there and the reconnect deadline on the client.
 		pollStarted := time.Now()
+		pollDeadline := pollStarted.Add(pollDuration + 4*time.Second)
 		stop, stopped := startTransportAgent(t, a)
-		wait(t, 30*time.Second, func() bool { return h.eventCount(t, a.identity.ServerID, "poll") >= 2 })
+		var completion pollCompletion
+		select {
+		case completion = <-firstPoll:
+		case <-time.After(time.Until(pollDeadline)):
+			t.Fatal("empty poll did not complete before the reconnect deadline")
+		}
+		serverElapsed, parseErr := time.ParseDuration(completion.serverElapsed)
+		if completion.err != nil || completion.status != http.StatusNoContent || parseErr != nil || serverElapsed < pollDuration {
+			t.Fatalf("empty poll failed: status=%d controller elapsed=%q error=%v parse error=%v", completion.status, completion.serverElapsed, completion.err, parseErr)
+		}
+		wait(t, time.Until(pollDeadline), func() bool { return h.eventCount(t, a.identity.ServerID, "poll") >= 2 })
 		pollElapsed := time.Since(pollStarted)
-		if pollElapsed < pollDuration || pollElapsed > pollDuration+4*time.Second || h.eventCount(t, a.identity.ServerID, "heartbeat") == 0 {
+		if pollElapsed > pollDuration+4*time.Second || h.eventCount(t, a.identity.ServerID, "heartbeat") == 0 {
 			t.Fatalf("poll/heartbeat overlap failed, poll and reconnect took %s", pollElapsed)
 		}
 		h.fault(t, a.identity.ServerID, "delivery")
@@ -378,6 +422,6 @@ func TestAgentHTTPS(t *testing.T) {
 				t.Fatal("offline boundary mismatch")
 			}
 		}
-		t.Logf("poll and reconnect %.3fs; live heartbeat gaps %.3f..%.3fs; local execution survived transport stop; one reported Docker effect", pollElapsed.Seconds(), minGap, maxGap)
+		t.Logf("controller empty poll %.3fs; client poll and reconnect %.3fs; live heartbeat gaps %.3f..%.3fs; local execution survived transport stop; one reported Docker effect", serverElapsed.Seconds(), pollElapsed.Seconds(), minGap, maxGap)
 	})
 }
