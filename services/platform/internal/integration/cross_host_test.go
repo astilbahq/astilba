@@ -20,6 +20,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/upgrade"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/pquerna/otp/totp"
 )
 
 // Packet reachability and installed-agent barriers are separate native gates.
@@ -30,9 +31,43 @@ type coordinatedScheduleSweep struct{}
 func (coordinatedScheduleSweep) Kind() string { return "platform_coordinated_schedule_v1" }
 
 func TestCrossHostCoordinatedPlacement(t *testing.T) {
-	f := setup(t)
+	testCrossHostCoordinatedPlacement(t, "")
+}
+
+func TestCrossHostSubscriptionExpiry(t *testing.T) {
+	for _, phase := range []string{"probe", "publish"} {
+		t.Run(phase, func(t *testing.T) {
+			testCrossHostCoordinatedPlacement(t, phase)
+		})
+	}
+}
+
+func testCrossHostCoordinatedPlacement(t *testing.T, expiryPhase string) {
+	t.Helper()
+	f := setupStore(t, true, expiryPhase != "")
+	if expiryPhase != "" {
+		if _, err := f.st.Pool.Exec(context.Background(), `UPDATE accounts SET email_verified_at=now() WHERE id=$1`, f.owner); err != nil {
+			t.Fatal(err)
+		}
+	}
 	b := f.browser(t)
 	ws := b.login("owner@example.test", f.password).Workspaces[0].Id
+	var mfaSecret string
+	if expiryPhase != "" {
+		if err := f.st.GrantManagement(context.Background(), ws, time.Now().Add(time.Hour), 100); err != nil {
+			t.Fatal(err)
+		}
+		var enrollment api.MFAEnrollment
+		b.call("POST", "/api/v1/auth/mfa/enroll", nil, 200, &enrollment)
+		mfaSecret = enrollment.Secret
+		code, err := totp.GenerateCode(enrollment.Secret, time.Now())
+		if err != nil {
+			t.Fatal(err)
+		}
+		var codes api.RecoveryCodes
+		b.call("POST", "/api/v1/auth/mfa/confirm", map[string]string{"code": code}, 200, &codes)
+		b.csrf = codes.Session.CsrfToken
+	}
 	confirmedAt := time.Now()
 	// This journey can outlive step-up authentication. Renew with a minute of
 	// margin without exhausting the reauthentication rate limit.
@@ -42,7 +77,15 @@ func TestCrossHostCoordinatedPlacement(t *testing.T) {
 			return
 		}
 		var session api.Session
-		b.call("POST", "/api/v1/auth/reauthenticate", map[string]string{"password": f.password}, 200, &session)
+		credentials := map[string]string{"password": f.password}
+		if mfaSecret != "" {
+			code, err := totp.GenerateCode(mfaSecret, time.Now())
+			if err != nil {
+				t.Fatal(err)
+			}
+			credentials["code"] = code
+		}
+		b.call("POST", "/api/v1/auth/reauthenticate", credentials, 200, &session)
 		b.csrf = session.CsrfToken
 		confirmedAt = time.Now()
 	}
@@ -421,6 +464,11 @@ func TestCrossHostCoordinatedPlacement(t *testing.T) {
 		t.Fatal("incomplete reviewed group")
 	}
 	apply := path + "/deployment-plans/" + status.ID.String() + "/apply"
+	if expiryPhase != "" {
+		refreshAuthentication()
+		testCrossHostExpiry(t, f, b, ws, path, status, expiryPhase, wait)
+		return
+	}
 	// Cancel after the checkpoint reaches the host, before its report releases
 	// reservation. Management must send an explicit no-effect closure afterward.
 	holdCheckpoint.Store(true)
