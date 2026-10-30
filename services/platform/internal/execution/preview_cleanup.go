@@ -10,6 +10,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
+	"github.com/astilbahq/astilba/services/platform/internal/portability"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -104,7 +105,31 @@ func (s *Service) finalizePreviewCleanup(ctx context.Context, tx pgx.Tx, ws uuid
 	if purpose != "preview" {
 		return domain.Forbidden
 	}
+	var requestEnvironment *uuid.UUID
+	var requestGeneration int64
+	if err := tx.QueryRow(ctx, `SELECT environment_id,generation FROM preview_requests WHERE workspace_id=$1 AND id=$2`, ws, p.Plan.Preview.RequestID).Scan(&requestEnvironment, &requestGeneration); err != nil {
+		return err
+	}
+	if requestEnvironment == nil || *requestEnvironment != c.EnvironmentId || requestGeneration != p.Plan.Preview.Generation {
+		// A reopened request can await allocation or own a new environment.
+		// Replaying its committed removal cleans only the old imported rows.
+		var sameRemoval bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM environments e JOIN execution_operations o ON o.workspace_id=e.workspace_id AND o.environment_id=e.id AND o.id=e.runtime_operation_id WHERE e.workspace_id=$1 AND e.id=$2 AND o.id=$3 AND o.runtime_outcome='removed')`, ws, c.EnvironmentId, c.Id).Scan(&sameRemoval); err != nil {
+			return err
+		}
+		detached := requestEnvironment == nil && requestGeneration >= p.Plan.Preview.Generation
+		replacement := requestEnvironment != nil && *requestEnvironment != c.EnvironmentId && requestGeneration > p.Plan.Preview.Generation
+		if !sameRemoval || (!detached && !replacement) {
+			return domain.Conflict
+		}
+	}
+	if err := recordRuntimeOutcome(ctx, tx, ws, c.EnvironmentId, c.Id, portability.RuntimeOutcome{Kind: "removed"}); err != nil {
+		return err
+	}
 	if _, err := tx.Exec(ctx, "DELETE FROM visual_runtime WHERE workspace_id=$1 AND environment_id=$2 AND server_id=$3 AND unit_id=$4", ws, c.EnvironmentId, c.ServerId, c.ResourceId); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `UPDATE environments SET applied_revision_id=NULL WHERE workspace_id=$1 AND id=$2`, ws, c.EnvironmentId); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(ctx, "DELETE FROM route_claims WHERE workspace_id=$1 AND environment_id=$2 AND server_id=$3", ws, c.EnvironmentId, c.ServerId); err != nil {

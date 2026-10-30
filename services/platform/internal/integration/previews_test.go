@@ -23,11 +23,16 @@ import (
 	"github.com/google/uuid"
 )
 
-func TestPreviewIsolationForkApprovalAndClosure(t *testing.T) { previewIsolationJourney(t, false) }
-func TestPreviewCleanupReceiptSurvivesControllerRecovery(t *testing.T) {
-	previewIsolationJourney(t, true)
+func TestPreviewIsolationForkApprovalAndClosure(t *testing.T) {
+	previewIsolationJourney(t, false, false)
 }
-func previewIsolationJourney(t *testing.T, transfer bool) {
+func TestPreviewCleanupReceiptSurvivesControllerRecovery(t *testing.T) {
+	previewIsolationJourney(t, true, false)
+}
+func TestPreviewRemovalSurvivesCheckpointUnion(t *testing.T) {
+	previewIsolationJourney(t, false, true)
+}
+func previewIsolationJourney(t *testing.T, transfer, recoverCleanup bool) {
 	f := setup(t)
 	ctx := context.Background()
 	b := f.browser(t)
@@ -105,7 +110,7 @@ func previewIsolationJourney(t *testing.T, transfer bool) {
 	cfg.Arguments = map[string]string{}
 	policyConfig["build"] = cfg
 	b.call("PUT", path+"/preview-policy", map[string]any{"enabled": true, "generation": 0, "configuration": policyConfig}, 200, &policy)
-	hook := func(delivery string) {
+	hook := func(t *testing.T, delivery string) {
 		t.Helper()
 		body := []byte(`{"number":7,"repository":{"id":12}}`)
 		mac := hmac.New(sha256.New, []byte(connection.Secret))
@@ -124,7 +129,7 @@ func previewIsolationJourney(t *testing.T, transfer bool) {
 			t.Fatal("hook", response.StatusCode)
 		}
 	}
-	wait := func(state string, previous ...uuid.UUID) api.PullRequestPreview {
+	wait := func(t *testing.T, state string, previous ...uuid.UUID) api.PullRequestPreview {
 		t.Helper()
 		deadline := time.Now().Add(15 * time.Second)
 		var list []api.PullRequestPreview
@@ -140,24 +145,24 @@ func previewIsolationJourney(t *testing.T, transfer bool) {
 		return api.PullRequestPreview{}
 	}
 	// No hook: policy discovery must find the fork and allocate nothing yet.
-	preview := wait("approval_required")
+	preview := wait(t, "approval_required")
 	if preview.EnvironmentId != nil {
 		t.Fatal("fork allocated before approval")
 	}
-	action := func(kind string, code int) {
+	action := func(t *testing.T, kind string, code int) {
 		t.Helper()
 		b.call("POST", path+"/previews/"+preview.Id.String()+"/actions", map[string]any{"action": kind, "head": preview.Head, "headRepository": preview.HeadRepository}, code, nil)
 	}
 	head.Store(strings.Repeat("b", 40))
-	action("approve", 409)
-	action("refresh", 200)
+	action(t, "approve", 409)
+	action(t, "refresh", 200)
 	deadline := time.Now().Add(10 * time.Second)
 	for preview.Head != head.Load().(string) && time.Now().Before(deadline) {
 		time.Sleep(30 * time.Millisecond)
-		preview = wait("approval_required")
+		preview = wait(t, "approval_required")
 	}
-	action("approve", 200)
-	preview = wait("building")
+	action(t, "approve", 200)
+	preview = wait(t, "building")
 	if preview.EnvironmentId == nil {
 		t.Fatal("approved preview has no environment")
 	}
@@ -250,7 +255,7 @@ func previewIsolationJourney(t *testing.T, transfer bool) {
 			t.Fatal("pause did not retain cancellation until acknowledgement")
 		}
 		report(build, nil, nil, "cancelled")
-		preview = wait("building", build.Id)
+		preview = wait(t, "building", build.Id)
 		build = poll()
 
 		// A replay after cancellation acknowledgement must preserve resume intent.
@@ -258,20 +263,20 @@ func previewIsolationJourney(t *testing.T, transfer bool) {
 		report(build, nil, nil, "cancelled")
 		b.call("PUT", path+"/preview-policy", map[string]any{"enabled": false, "generation": policy.Generation, "configuration": policyConfig}, 200, nil)
 		b.call("PUT", path+"/preview-policy", map[string]any{"enabled": true, "generation": policy.Generation, "configuration": policyConfig}, 200, nil)
-		preview = wait("building", build.Id)
+		preview = wait(t, "building", build.Id)
 		build = poll()
 	} else {
 		// Deadline expiry reports cancelled without a lifecycle resume grant.
 		report(build, nil, nil, "cancelled")
-		preview = wait("failed")
-		action("refresh", 200)
-		preview = wait("building", build.Id)
+		preview = wait(t, "failed")
+		action(t, "refresh", 200)
+		preview = wait(t, "building", build.Id)
 		build = poll()
 		b.call("POST", prefix+"/operations/"+build.Id.String()+"/cancel", nil, 204, nil)
 		report(build, nil, nil, "cancelled")
-		preview = wait("failed")
-		action("refresh", 200)
-		preview = wait("building", build.Id)
+		preview = wait(t, "failed")
+		action(t, "refresh", 200)
+		preview = wait(t, "building", build.Id)
 		build = poll()
 	}
 
@@ -290,16 +295,16 @@ func previewIsolationJourney(t *testing.T, transfer bool) {
 	}
 	result := pipeline.Result{Commit: command.Commit, Image: "astilba-build-" + build.Id.String() + ":built", Digest: "sha256:" + strings.Repeat("c", 64), Architecture: "arm64"}
 	report(build, &result, nil)
-	preview = wait("deploying")
+	preview = wait(t, "deploying")
 	resolve := poll()
 	if !transfer {
 		open.Store(false)
-		hook("close-during-resolution")
-		preview = wait("closing")
+		hook(t, "close-during-resolution")
+		preview = wait(t, "closing")
 		open.Store(true)
-		hook("reopen-during-resolution")
+		hook(t, "reopen-during-resolution")
 		report(resolve, nil, nil, "cancelled")
-		preview = wait("deploying", resolve.Id)
+		preview = wait(t, "deploying", resolve.Id)
 		resolve = poll()
 	}
 
@@ -317,12 +322,12 @@ func previewIsolationJourney(t *testing.T, transfer bool) {
 	deploy := poll()
 	if !transfer {
 		open.Store(false)
-		hook("close-during-deployment")
-		preview = wait("closing")
+		hook(t, "close-during-deployment")
+		preview = wait(t, "closing")
 		open.Store(true)
-		hook("reopen-during-deployment")
+		hook(t, "reopen-during-deployment")
 		report(deploy, nil, nil, "cancelled")
-		preview = wait("deploying", deploy.Id)
+		preview = wait(t, "deploying", deploy.Id)
 		resolve = poll()
 		report(resolve, nil, &deployment.Observation{ObservedAt: time.Now(), Resources: []deployment.Resource{}, Images: images, StateHash: strings.Repeat("d", 64)})
 		deploy = poll()
@@ -345,7 +350,7 @@ func previewIsolationJourney(t *testing.T, transfer bool) {
 		resources = append(resources, deployment.Resource{ID: a.ID, Kind: "service", State: "running", Image: payload.Plan.Images[a.ID.String()]})
 	}
 	report(deploy, nil, &deployment.Observation{ObservedAt: time.Now(), Resources: resources, Images: payload.Plan.Images, Applied: true, StateHash: strings.Repeat("e", 64)})
-	preview = wait("ready")
+	preview = wait(t, "ready")
 
 	if !transfer {
 		account, err := f.st.Queries.AccountByID(ctx, f.owner)
@@ -375,9 +380,9 @@ func previewIsolationJourney(t *testing.T, transfer bool) {
 	}
 
 	open.Store(false)
-	hook("close")
-	hook("close")
-	preview = wait("closing")
+	hook(t, "close")
+	hook(t, "close")
+	preview = wait(t, "closing")
 
 	if sentinel != uuid.Nil {
 		var cancelled bool
@@ -390,24 +395,47 @@ func previewIsolationJourney(t *testing.T, transfer bool) {
 	}
 	retained := *preview.EnvironmentId
 	open.Store(true)
-	hook("reopen-before-cleanup")
-	preview = wait("ready")
+	hook(t, "reopen-before-cleanup")
+	preview = wait(t, "ready")
 	if preview.EnvironmentId == nil || *preview.EnvironmentId != retained || preview.CleanupAt != nil {
 		t.Fatal("reopening before cleanup failed to preserve the preview")
 	}
 	open.Store(false)
-	hook("close-again")
-	preview = wait("closing")
+	hook(t, "close-again")
+	preview = wait(t, "closing")
 	if _, err := f.st.Pool.Exec(ctx, "UPDATE preview_requests SET cleanup_at=now()-interval '1 second' WHERE id=$1", preview.Id); err != nil {
 		t.Fatal(err)
 	}
-	hook("cleanup-due")
-	preview = wait("deleting")
+	hook(t, "cleanup-due")
+	preview = wait(t, "deleting")
 	cleanup := poll()
 	payload = deployment.Payload{}
 	json.Unmarshal(*cleanup.Visual, &payload)
 	if payload.Action != "preview-cleanup" || len(payload.Secrets) != 0 {
 		t.Fatal("cleanup received credentials")
+	}
+	var recoverRemoval func(*testing.T, api.AgentEnrollment, uuid.UUID, uuid.UUID)
+	if recoverCleanup {
+		if _, err := f.st.Pool.Exec(ctx, `INSERT INTO route_claims(server_id,claim,workspace_id,environment_id) VALUES($1,'removed-preview.example.test',$2,$3)`, enrollment.Server.Id, ws, *preview.EnvironmentId); err != nil {
+			t.Fatal(err)
+		}
+		recoverRemoval = preparePreviewRemovalRecovery(t, f, b, ws)
+	}
+	var applied bool
+	if err := f.st.Pool.QueryRow(ctx, `SELECT applied_revision_id IS NOT NULL AND runtime_operation_id IS NOT NULL FROM environments WHERE workspace_id=$1 AND id=$2`, ws, *preview.EnvironmentId).Scan(&applied); err != nil || !applied {
+		t.Fatal("unconfirmed cleanup cleared the current applied tuple", err)
+	}
+	if !transfer {
+		for _, state := range []api.ExecutionState{"failed", "cancelled"} {
+			report(cleanup, nil, nil, state)
+			preview = wait(t, "blocked")
+			if err := f.st.Pool.QueryRow(ctx, `SELECT applied_revision_id IS NOT NULL AND runtime_operation_id IS NOT NULL FROM environments WHERE workspace_id=$1 AND id=$2`, ws, *preview.EnvironmentId).Scan(&applied); err != nil || !applied {
+				t.Fatal("unsuccessful cleanup cleared the current applied tuple", state, err)
+			}
+			action(t, "refresh", 200)
+			preview = wait(t, "deleting", cleanup.Id)
+			cleanup = poll()
+		}
 	}
 
 	if transfer {
@@ -433,10 +461,13 @@ func previewIsolationJourney(t *testing.T, transfer bool) {
 	} else {
 		report(cleanup, nil, nil)
 	}
-	preview = wait("deleted")
+	preview = wait(t, "deleted")
 	var count int
 	if err := f.st.Pool.QueryRow(ctx, "SELECT count(*) FROM visual_runtime WHERE environment_id=$1", *preview.EnvironmentId).Scan(&count); err != nil || count != 0 {
 		t.Fatal("active inventory retained", count, err)
+	}
+	if err := f.st.Pool.QueryRow(ctx, `SELECT applied_revision_id IS NULL AND runtime_operation_id IS NOT NULL FROM environments WHERE workspace_id=$1 AND id=$2`, ws, *preview.EnvironmentId).Scan(&applied); err != nil || !applied {
+		t.Fatal("confirmed cleanup retained a current applied tuple", err)
 	}
 	if err := f.st.Pool.QueryRow(ctx, "SELECT count(*) FROM secrets WHERE environment_id=$1", production.Id).Scan(&count); err != nil || count != 1 {
 		t.Fatal("production touched", count, err)
@@ -444,10 +475,41 @@ func previewIsolationJourney(t *testing.T, transfer bool) {
 	if err := f.st.Pool.QueryRow(ctx, "SELECT count(*) FROM secrets WHERE workspace_id=$1 AND environment_id=$2", ws, *preview.EnvironmentId).Scan(&count); err != nil || count != 0 {
 		t.Fatal("preview secret material retained after confirmed cleanup", count, err)
 	}
+	if recoverRemoval != nil {
+		priorGeneration := preview.Generation
+		for _, state := range []string{"deleted", "detached", "replacement"} {
+			if !t.Run(state, func(t *testing.T) {
+				parentT := b.t
+				b.t = t
+				defer func() { b.t = parentT }()
+				if state == "detached" {
+					head.Store(strings.Repeat("f", 40))
+					open.Store(true)
+					hook(t, "reopen-for-new-fork-approval")
+					preview = wait(t, "approval_required")
+				}
+				if state != "deleted" && (preview.EnvironmentId != nil || preview.Generation != priorGeneration) {
+					t.Fatal("reopen did not preserve detached generation", preview)
+				}
+				if state == "replacement" {
+					b.login("owner@example.test", f.password)
+					action(t, "approve", 200)
+					preview = wait(t, "building")
+					if preview.EnvironmentId == nil || *preview.EnvironmentId == retained || preview.Generation <= priorGeneration {
+						t.Fatal("replacement did not receive a new environment and generation", preview)
+					}
+				}
+				recoverRemoval(t, input, preview.Id, retained)
+			}) {
+				return
+			}
+		}
+		return
+	}
 	if !transfer {
 		open.Store(true)
-		hook("reopen-after-cleanup")
-		preview = wait("building")
+		hook(t, "reopen-after-cleanup")
+		preview = wait(t, "building")
 		if preview.EnvironmentId == nil || *preview.EnvironmentId == retained {
 			t.Fatal("reopening after cleanup reused the deleted environment")
 		}

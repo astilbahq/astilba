@@ -24,7 +24,7 @@ func decodeArchiveMode(raw []byte, recovery bool) (Archive, error) {
 	var archive Archive
 	d := json.NewDecoder(bytes.NewReader(raw))
 	d.DisallowUnknownFields()
-	if d.Decode(&archive) != nil || d.Decode(new(any)) != io.EOF || (archive.Version != 1 && archive.Version != 2 && archive.Version != 3 && archive.Version != 4 && archive.Version != 5) || archive.Workspace == uuid.Nil {
+	if d.Decode(&archive) != nil || d.Decode(new(any)) != io.EOF || archive.Version < 1 || archive.Version > 6 || archive.Workspace == uuid.Nil {
 		return archive, ErrArchive
 	}
 	if archive.Version == 1 {
@@ -35,6 +35,23 @@ func decodeArchiveMode(raw []byte, recovery bool) (Archive, error) {
 	if archive.Version < 5 {
 		if err := normalizePreNetworkArchive(&archive); err != nil {
 			return archive, err
+		}
+	}
+	if archive.Version < 6 {
+		for _, row := range archive.Tables["environments"] {
+			if _, exists := row["runtime_operation_id"]; exists {
+				return archive, ErrArchive
+			}
+			setValue(row, "runtime_operation_id", nil)
+		}
+
+		for _, row := range archive.Tables["execution_operations"] {
+			for _, field := range []string{"runtime_outcome", "runtime_plan_id"} {
+				if _, exists := row[field]; exists {
+					return archive, ErrArchive
+				}
+				setValue(row, field, nil)
+			}
 		}
 	}
 	if len(archive.Tables) != len(tables) {
@@ -73,6 +90,7 @@ func decodeArchiveMode(raw []byte, recovery bool) (Archive, error) {
 	// Foreign keys on global IDs must refer to records within this archive; a
 	// destination row in another workspace must never satisfy an imported link.
 	refs := []struct{ table, column, target string }{
+		{"environments", "runtime_operation_id", "execution_operations"},
 		{"backup_cutovers", "source_plan_id", "visual_requests"},
 		{"route_claims", "server_id", "servers"},
 		{"execution_operations", "parent_id", "execution_operations"},
@@ -89,6 +107,7 @@ func decodeArchiveMode(raw []byte, recovery bool) (Archive, error) {
 		{"cross_host_reservations", "parent_id", "execution_operations"},
 		{"execution_operations", "plan_id", "execution_plans"},
 		{"execution_operations", "visual_plan_id", "visual_plans"},
+		{"execution_operations", "runtime_plan_id", "visual_plans"},
 		{"visual_requests", "operation_id", "execution_operations"},
 		{"visual_plans", "id", "visual_requests"},
 		{"visual_runtime", "plan_id", "visual_plans"},
@@ -181,6 +200,7 @@ func (s *Service) Import(ctx context.Context, p store.Principal, passphrase stri
 		}
 	}
 	applied := map[string]json.RawMessage{}
+	appliedOperations := map[string]json.RawMessage{}
 	visualPlans := map[string]json.RawMessage{}
 	for _, table := range tables {
 		for _, row := range archive.Tables[table.Name] {
@@ -227,7 +247,9 @@ func (s *Service) Import(ctx context.Context, p store.Principal, passphrase stri
 					return out, e
 				}
 				applied[id] = row["applied_revision_id"]
+				appliedOperations[id] = row["runtime_operation_id"]
 				setValue(row, "applied_revision_id", nil)
+				setValue(row, "runtime_operation_id", nil)
 			case "execution_operations":
 				id, e := rowString(row, "id")
 				if e != nil {
@@ -283,7 +305,11 @@ func (s *Service) Import(ctx context.Context, p store.Principal, passphrase stri
 		if e = json.Unmarshal(raw, &value); e != nil {
 			return out, ErrArchive
 		}
-		if _, e = tx.Exec(ctx, "UPDATE environments SET applied_revision_id=$3 WHERE workspace_id=$1 AND id=$2", archive.Workspace, id, value); e != nil {
+		var operation *uuid.UUID
+		if e = json.Unmarshal(appliedOperations[id], &operation); e != nil {
+			return out, ErrArchive
+		}
+		if _, e = tx.Exec(ctx, "UPDATE environments SET applied_revision_id=$3,runtime_operation_id=$4 WHERE workspace_id=$1 AND id=$2", archive.Workspace, id, value, operation); e != nil {
 			return out, store.Normalize(e)
 		}
 	}

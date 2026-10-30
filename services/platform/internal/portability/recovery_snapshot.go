@@ -13,7 +13,7 @@ import (
 // sealed with the management keyring before leaving the management process.
 // This is an internal offline-recovery source, never a browser archive response.
 func CaptureRecovery(ctx context.Context, tx pgx.Tx, ws uuid.UUID) ([]byte, error) {
-	archive := Archive{Version: 5, Workspace: ws}
+	archive := Archive{Version: 6, Workspace: ws}
 	if err := tx.QueryRow(ctx, `SELECT name,require_mfa,clock_timestamp() FROM workspaces WHERE id=$1`, ws).Scan(&archive.Name, &archive.RequireMFA, &archive.CreatedAt); err != nil {
 		return nil, err
 	}
@@ -31,7 +31,7 @@ func CaptureRecovery(ctx context.Context, tx pgx.Tx, ws uuid.UUID) ([]byte, erro
 // InspectRecovery reads trusted database state, including a union of individually
 // bounded recovery bases. External decoding and new-base admission stay bounded.
 func InspectRecovery(ctx context.Context, tx pgx.Tx, ws uuid.UUID) (Archive, string, error) {
-	archive := Archive{Version: 5, Workspace: ws}
+	archive := Archive{Version: 6, Workspace: ws}
 	if err := tx.QueryRow(ctx, `SELECT name,require_mfa,clock_timestamp() FROM workspaces WHERE id=$1`, ws).Scan(&archive.Name, &archive.RequireMFA, &archive.CreatedAt); err != nil {
 		return archive, "", err
 	}

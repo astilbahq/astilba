@@ -246,6 +246,7 @@ type Environment struct {
 	ExecutionGeneration int64      `json:"execution_generation"`
 	AppliedRevisionID   *uuid.UUID `json:"applied_revision_id"`
 	Purpose             string     `json:"purpose"`
+	RuntimeOperationID  *uuid.UUID `json:"runtime_operation_id"`
 }
 
 type EnvironmentLayout struct {
@@ -275,6 +276,8 @@ type ExecutionOperation struct {
 	VisualPlanID    *uuid.UUID  `json:"visual_plan_id"`
 	AlertObserved   bool        `json:"alert_observed"`
 	ParentID        *uuid.UUID  `json:"parent_id"`
+	RuntimeOutcome  pgtype.Text `json:"runtime_outcome"`
+	RuntimePlanID   *uuid.UUID  `json:"runtime_plan_id"`
 }
 
 type ExecutionPlan struct {

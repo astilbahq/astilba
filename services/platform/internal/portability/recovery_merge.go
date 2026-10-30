@@ -20,7 +20,7 @@ func DecodeRecovery(raw []byte) (Archive, error) {
 		return Archive{}, ErrArchive
 	}
 	a, err := decodeArchiveMode(raw, true)
-	if err == nil && a.Version != 5 {
+	if err == nil && a.Version != 5 && a.Version != 6 {
 		return a, ErrArchive
 	}
 	return a, err
@@ -101,6 +101,7 @@ func RecoveryImmutable(name string) bool {
 // or deletes history. Ciphertext is preserved with its original key identity.
 func MergeRecovery(ctx context.Context, tx pgx.Tx, a Archive, owner uuid.UUID) error {
 	links := map[string]map[string]json.RawMessage{"environments": {}, "execution_operations": {}}
+	appliedOperations := map[string]json.RawMessage{}
 	for _, t := range tables {
 		for _, sourceRow := range a.Tables[t.Name] {
 			row := maps.Clone(sourceRow)
@@ -162,6 +163,10 @@ func MergeRecovery(ctx context.Context, tx pgx.Tx, a Archive, owner uuid.UUID) e
 				}
 				links[t.Name][id] = row[link]
 				setValue(row, link, nil)
+				if t.Name == "environments" {
+					appliedOperations[id] = row["runtime_operation_id"]
+					setValue(row, "runtime_operation_id", nil)
+				}
 			}
 			raw, err := json.Marshal(row)
 			if err != nil {
@@ -180,7 +185,8 @@ func MergeRecovery(ctx context.Context, tx pgx.Tx, a Archive, owner uuid.UUID) e
 				if err = tx.QueryRow(ctx, query, raw, a.Workspace).Scan(&stored); err != nil {
 					return err
 				}
-				if _, err = tx.Exec(ctx, `INSERT INTO cross_host_recovery_rows(workspace_id,table_name,source_hash,attributed_hash) VALUES($1,$2,$3,$4)`, a.Workspace, t.Name, recoveryRowHash(original), recoveryRowHash(stored)); err != nil {
+				// Cleanup can remove a recovered row without removing its attribution.
+				if _, err = tx.Exec(ctx, `INSERT INTO cross_host_recovery_rows(workspace_id,table_name,source_hash,attributed_hash) VALUES($1,$2,$3,$4) ON CONFLICT(workspace_id,table_name,source_hash) DO UPDATE SET attributed_hash=excluded.attributed_hash`, a.Workspace, t.Name, recoveryRowHash(original), recoveryRowHash(stored)); err != nil {
 					return err
 				}
 			}
@@ -195,6 +201,16 @@ func MergeRecovery(ctx context.Context, tx pgx.Tx, a Archive, owner uuid.UUID) e
 			var value *uuid.UUID
 			if json.Unmarshal(raw, &value) != nil {
 				return ErrArchive
+			}
+			if name == "environments" {
+				var operation *uuid.UUID
+				if json.Unmarshal(appliedOperations[id], &operation) != nil {
+					return ErrArchive
+				}
+				if _, err := tx.Exec(ctx, `UPDATE environments SET applied_revision_id=$3,runtime_operation_id=$4 WHERE workspace_id=$1 AND id=$2`, a.Workspace, id, value, operation); err != nil {
+					return err
+				}
+				continue
 			}
 			if _, err := tx.Exec(ctx, fmt.Sprintf("UPDATE %s SET %s=$3 WHERE workspace_id=$1 AND id=$2", name, field), a.Workspace, id, value); err != nil {
 				return err
