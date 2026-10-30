@@ -74,7 +74,7 @@ test("reload retains edits made while the current revision is loading", async ({
     release();
     await expect(
       page.getByText(
-        "Your newer edits were retained. Reload again to discard them and load the current revision.",
+        "The current revision was fetched, but your newer edits were kept. Reload again when you are ready to discard them.",
         { exact: true },
       ),
     ).toBeVisible();
