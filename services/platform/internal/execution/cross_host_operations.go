@@ -473,10 +473,10 @@ func (s *Service) crossHostReport(ctx context.Context, tx pgx.Tx, c api.Executio
 	if hostnetwork.Decode(*r.Crosshost, &receipt) != nil || receipt.ParentID != command.ParentID || receipt.GroupHash != command.GroupHash || receipt.UnitID != c.ResourceId || receipt.PlanHash != command.Unit.Plan.Hash || receipt.Phase != command.Phase {
 		return domain.Invalid("crosshost.receipt")
 	}
-	if len(receipt.Observation.Resources) > 40 || len(receipt.Observation.StateHash) > 64 || len(receipt.Observation.Images) > 20 {
-		return domain.Invalid("crosshost.observation")
+	if err := receipt.Observation.Validate(time.Now()); err != nil {
+		return err
 	}
-	if len(*r.Crosshost) > deployment.ObservationLimit+2048 || receipt.Observation.ObservedAt.IsZero() || receipt.Observation.ObservedAt.After(time.Now().Add(time.Minute)) {
+	if len(*r.Crosshost) > deployment.ObservationLimit+2048 {
 		return domain.Invalid("crosshost.observation")
 	}
 	allowed := map[uuid.UUID]bool{}
@@ -486,12 +486,10 @@ func (s *Service) crossHostReport(ctx context.Context, tx pgx.Tx, c api.Executio
 	for _, app := range command.Unit.Previous.LocalApplications() {
 		allowed[app.ID] = true
 	}
-	seen := map[uuid.UUID]bool{}
 	for _, resource := range receipt.Observation.Resources {
-		if !allowed[resource.ID] || seen[resource.ID] || len(resource.Logs) > 2048 || len(resource.Note) > 256 || len(resource.Image) > 512 || len(resource.State) > 30 || len(resource.Instances) > domain.MaxReplicas {
+		if !allowed[resource.ID] {
 			return domain.Invalid("crosshost.resources")
 		}
-		seen[resource.ID] = true
 	}
 	if command.Phase == "complete" {
 		plan := command.Unit.Plan
