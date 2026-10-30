@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -80,20 +82,22 @@ func TestNativeVisualDeployment(t *testing.T) {
 	}
 	engine := &Engine{Journal: j, Docker: docker, DockerCLI: dockerCLI}
 	t.Cleanup(func() {
+		cleanup, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
 		filter := make(client.Filters).Add("label", labelServer+"="+server.String())
-		if all, e := docker.ContainerList(ctx, client.ContainerListOptions{All: true, Filters: filter}); e == nil {
+		if all, e := docker.ContainerList(cleanup, client.ContainerListOptions{All: true, Filters: filter}); e == nil {
 			for _, v := range all.Items {
-				_, _ = docker.ContainerRemove(ctx, v.ID, client.ContainerRemoveOptions{Force: true, RemoveVolumes: false})
+				_, _ = docker.ContainerRemove(cleanup, v.ID, client.ContainerRemoveOptions{Force: true, RemoveVolumes: false})
 			}
 		}
-		if all, e := docker.NetworkList(ctx, client.NetworkListOptions{Filters: filter}); e == nil {
+		if all, e := docker.NetworkList(cleanup, client.NetworkListOptions{Filters: filter}); e == nil {
 			for _, v := range all.Items {
-				_, _ = docker.NetworkRemove(ctx, v.ID, client.NetworkRemoveOptions{})
+				_, _ = docker.NetworkRemove(cleanup, v.ID, client.NetworkRemoveOptions{})
 			}
 		}
-		if all, e := docker.VolumeList(ctx, client.VolumeListOptions{Filters: filter}); e == nil {
+		if all, e := docker.VolumeList(cleanup, client.VolumeListOptions{Filters: filter}); e == nil {
 			for _, v := range all.Items {
-				_, _ = docker.VolumeRemove(ctx, v.Name, client.VolumeRemoveOptions{})
+				_, _ = docker.VolumeRemove(cleanup, v.Name, client.VolumeRemoveOptions{})
 			}
 		}
 	})
@@ -161,16 +165,20 @@ exec httpd -f -p 8080 -h /tmp/www`
 		p.ExpectedState = observed.StateHash
 		return p.WithHash()
 	}
+	requestClient := &http.Client{Timeout: 2 * time.Second}
 	request := func(host, want string) {
 		t.Helper()
 		req, _ := http.NewRequest("GET", "http://127.0.0.1/", nil)
 		req.Host = host
-		res, err := http.DefaultClient.Do(req)
+		res, err := requestClient.Do(req)
 		if err != nil {
 			t.Fatal(err)
 		}
 		defer res.Body.Close()
-		b, _ := io.ReadAll(io.LimitReader(res.Body, 512))
+		b, err := io.ReadAll(io.LimitReader(res.Body, 512))
+		if err != nil {
+			t.Fatal(err)
+		}
 		if res.StatusCode != 200 || string(b) != want {
 			t.Fatalf("route %s: %d %q", host, res.StatusCode, b)
 		}
@@ -420,12 +428,43 @@ exec httpd -f -p 8080 -h /tmp/www`
 	if err = os.WriteFile(filepath.Join(dir, "routes.yaml"), []byte(bundle.Routes), 0600); err != nil {
 		t.Fatal(err)
 	}
-	run := exec.Command(dockerCLI, "--host", docker.DaemonHost(), "compose", "--project-directory", dir, "--file", filepath.Join(dir, "compose.json"), "up", "--detach", "--wait")
-	run.Env = os.Environ()
+	// An inherited project name must not redirect startup or teardown.
+	composeEnv := append(os.Environ(), "COMPOSE_PROJECT_NAME=unexpected-"+crash.UnitID.String())
 	for id, value := range secrets {
 		key := "ASTILBA_SECRET_" + strings.ReplaceAll(id, "-", "")
-		run.Env = append(run.Env, key+"="+value, key+"_URLENCODED="+strings.TrimPrefix(url.UserPassword("", value).String(), ":"))
+		composeEnv = append(composeEnv, key+"="+value, key+"_URLENCODED="+strings.TrimPrefix(url.UserPassword("", value).String(), ":"))
 	}
+	composeCommand := func(ctx context.Context, args ...string) *exec.Cmd {
+		args = append([]string{"--host", docker.DaemonHost(), "compose", "--project-name", deployment.UnitName(crash.UnitID), "--project-directory", dir, "--file", filepath.Join(dir, "compose.json")}, args...)
+		cmd := exec.CommandContext(ctx, dockerCLI, args...)
+		cmd.Env = composeEnv
+		// Docker launches Compose as a child; cancel both before teardown begins.
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+		cmd.Cancel = func() error {
+			if cmd.Process == nil {
+				return os.ErrProcessDone
+			}
+			err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+			if errors.Is(err, syscall.ESRCH) {
+				return os.ErrProcessDone
+			}
+			return err
+		}
+		cmd.WaitDelay = 2 * time.Second
+		return cmd
+	}
+	// Exported ingress has no server label, so Compose must clean up even failed starts.
+	t.Cleanup(func() {
+		cleanup, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		cmd := composeCommand(cleanup, "down")
+		if output, err := cmd.CombinedOutput(); err != nil {
+			t.Errorf("standalone export cleanup: %v %s", err, output)
+		}
+	})
+	startup, cancelStartup := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancelStartup()
+	run := composeCommand(startup, "up", "--detach", "--wait")
 	if output, err := run.CombinedOutput(); err != nil {
 		t.Fatalf("standalone export: %v %s", err, output)
 	}
@@ -436,13 +475,11 @@ exec httpd -f -p 8080 -h /tmp/www`
 			if err != nil || !v.Container.State.Running {
 				t.Fatal("standalone export did not recreate every instance")
 			}
+			if v.Container.Config.Labels["com.docker.compose.project"] != deployment.UnitName(crash.UnitID) {
+				t.Fatal("standalone export ignored its explicit project identity")
+			}
 		}
 	}
-	t.Cleanup(func() {
-		cmd := exec.Command(dockerCLI, "--host", docker.DaemonHost(), "compose", "--project-directory", dir, "--file", filepath.Join(dir, "compose.json"), "down")
-		cmd.Env = run.Env
-		_ = cmd.Run()
-	})
 	call, err := docker.ExecCreate(ctx, deployment.UnitName(pg), client.ExecCreateOptions{AttachStdout: true, AttachStderr: true, Cmd: []string{"psql", "-U", "app", "-d", "app", "-Atc", "SELECT value FROM fixture"}})
 	if err != nil {
 		t.Fatal(err)
