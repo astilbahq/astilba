@@ -2,7 +2,6 @@ package httpapi
 
 import (
 	"github.com/astilbahq/astilba/services/platform/internal/api"
-	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
 	"github.com/astilbahq/astilba/services/platform/internal/execution"
 	"github.com/google/uuid"
 	"io"
@@ -17,17 +16,8 @@ func (s *Server) GetGitHubApp(w http.ResponseWriter, r *http.Request, ws uuid.UU
 	s.executionResponse(w, r, 200, v, e)
 }
 func (s *Server) StartGitHubAuthorization(w http.ResponseWriter, r *http.Request, ws uuid.UUID) {
-	nonce := s.githubSession(r)
-	if nonce == "" {
-		var e error
-		nonce, e = cryptobox.Token()
-		if e != nil {
-			s.fail(w, r, e)
-			return
-		}
-		s.Sessions.Put(r.Context(), "github-session", nonce)
-	}
-	v, e := s.Execution.StartGitHub(r.Context(), *principal(r.Context()), ws, nonce)
+	v, e := s.Execution.StartGitHub(r.Context(), *principal(r.Context()), ws, s.githubSession(r))
+
 	s.executionResponse(w, r, 200, v, e)
 }
 func (s *Server) CompleteGitHubAuthorization(w http.ResponseWriter, r *http.Request) {
