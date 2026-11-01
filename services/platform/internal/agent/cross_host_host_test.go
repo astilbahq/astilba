@@ -994,9 +994,7 @@ exec httpd -f -p 8080 -h /tmp/www`
 		if _, err = primary.docker.VolumeInspect(ctx, deployment.VolumeName(volume), client.VolumeInspectOptions{}); err != nil {
 			t.Fatal("major upgrade removed the retained source volume", err)
 		}
-		if status, body := nativePlacementRequest(t, "10.219.0.1", "cross-host.example.test"); status != 200 {
-			t.Fatalf("cross-host application did not recover on PostgreSQL18: %d %s", status, body)
-		}
+		nativeWaitPlacementRecovery(t)
 		currentGroup = upgradePlan.TargetGroup()
 	})
 	for _, method := range []string{backup.QuiescedFiles, "postgres-logical"} {
