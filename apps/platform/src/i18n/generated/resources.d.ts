@@ -299,6 +299,7 @@ export default interface Resources {
       "hide": "Hide password",
       "show": "Show password"
     },
+    "reloadPage": "Reload page",
     "request": "Request {{id}}",
     "requestFailed": "The request could not be completed. Try again.",
     "retryConnection": "Retry connection",
@@ -405,6 +406,7 @@ export default interface Resources {
     "templateService": "Preview template",
     "unsaved": "You have unsaved configuration or layout changes. Return to Configuration to continue editing.",
     "viewDeployments": "View deployments",
+    "viewLoadFailed": "This environment could not be opened. Reload the page to try again.",
     "viewPreviews": "View previews",
     "visual": "Visual configuration"
   },

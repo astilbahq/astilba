@@ -8,6 +8,10 @@ The production dashboard lives in `apps/platform`. It uses React, TanStack Route
 
 Keep a feature's components, styling and private helpers together. A single file is sufficient until responsibilities merit a directory. Promote code to a neutral shared module only when another consumer needs it. Avoid a growing catch-all utilities directory or barrels that obscure dependency direction. Existing top-level feature files can move as they are substantially changed; a bulk rename is not a prerequisite for UI work.
 
+`workspace.tsx` loads `EnvironmentDetail` through TanStack's `lazyRouteComponent` only when an environment is opened. This keeps the editors out of the initial sign-in and Projects script. A local React Suspense boundary retains project context and announces loading; TanStack handles one document reload for a missing JavaScript module. A local CatchBoundary offers a translated Reload page action for stylesheet failures and other unrecovered errors. Keep the lazy and error components at module scope so ordinary rerenders do not reset editor state. The loader has no global retry listener; navigating away does not arm a later reload.
+
+The Vite build retains HTML module preloads and lazy CSS dependencies, but omits dynamic JavaScript preloads. The pinned WebKit browser retains failed modulepreloads across document reloads ([WebKit 270357](https://bugs.webkit.org/show_bug.cgi?id=270357)); native import recovery works without that preload. Deferred JavaScript therefore starts after its CSS is ready. Keep both browser recovery gates when changing this setting.
+
 `src/styles.ts` holds shared layout styles; new feature-only styles belong beside the feature. `src/theme.ts` supplies runtime theme state. The build-time theme lives in `theme/` and is consumed by `panda.config.ts`:
 
 - `theme/tokens.ts`: primitive values and semantic roles, including light/dark values.
