@@ -155,11 +155,6 @@ func TestAutomationRechecksAdmissionAfterWorkspaceWait(t *testing.T) {
 	for _, revoke := range []bool{true, false} {
 		t.Run(map[bool]string{true: "revoked", false: "expired"}[revoke], func(t *testing.T) {
 			grant := issueAutomation(t, b, path, domain.ConfigurationWrite)
-			if !revoke {
-				if _, err := f.st.Pool.Exec(ctx, "UPDATE automation_credentials SET expires_at=clock_timestamp()+interval '500 milliseconds' WHERE id=$1", grant.Credential.Id); err != nil {
-					t.Fatal(err)
-				}
-			}
 			p, err := f.st.AuthenticateAutomation(ctx, *grant.Token)
 			if err != nil {
 				t.Fatal(err)
@@ -198,13 +193,9 @@ func TestAutomationRechecksAdmissionAfterWorkspaceWait(t *testing.T) {
 			if revoke {
 				_, err = lock.Exec(ctx, "UPDATE automation_credentials SET revoked_at=clock_timestamp() WHERE id=$1", grant.Credential.Id)
 			} else {
-				for {
-					var expired bool
-					if err = lock.QueryRow(ctx, "SELECT expires_at<clock_timestamp() FROM automation_credentials WHERE id=$1", grant.Credential.Id).Scan(&expired); err != nil || expired {
-						break
-					}
-					time.Sleep(10 * time.Millisecond)
-				}
+				// Keep expiry after the waiting transaction starts so transaction-time
+				// admission would let the rejected mutation commit.
+				_, err = lock.Exec(ctx, "UPDATE automation_credentials SET created_at=clock_timestamp()-interval '1 hour',expires_at=clock_timestamp() WHERE id=$1", grant.Credential.Id)
 			}
 			if err != nil {
 				t.Fatal(err)
