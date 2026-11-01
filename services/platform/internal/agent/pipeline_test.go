@@ -1,10 +1,16 @@
 package agent
 
 import (
+	"archive/tar"
+	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -96,5 +102,107 @@ func TestPipelineJournalAcceptsCredentialFreeCancellationAndRejectsChangedInputs
 	c.Pipeline = &message
 	if _, err = j.Accept(c); err == nil {
 		t.Fatal("changed frozen source accepted under old plan hash")
+	}
+}
+
+func TestPipelineCombinedLogsRemainReportable(t *testing.T) {
+	journal, plan := testVisualJournal(t)
+	inputs := pipeline.RailpackFor(runtime.GOARCH)
+	connection := pipeline.Connection{ID: uuid.New(), Provider: "github", BaseURL: "https://github.com", Repository: "example/app"}
+	p := pipeline.Command{
+		Action: "build", Connection: connection, Commit: strings.Repeat("a", 40), Branch: "main",
+		RevisionID: uuid.New(), UnitID: plan.UnitID, AppID: uuid.New(), InputHash: strings.Repeat("b", 64),
+		Access: &pipeline.Access{}, Railpack: &inputs,
+		Build: &pipeline.BuildConfig{
+			Builder: "railpack", ConnectionID: connection.ID, RunnerID: plan.ServerID, Branch: "main",
+			Architecture: runtime.GOARCH, Context: ".", Railpack: &pipeline.RailpackOptions{},
+			Budget: &pipeline.BuildBudget{CPUs: 2, MemoryMiB: 6144, SourceMiB: 1024, StateMiB: 4096, Minutes: 30},
+		},
+	}
+	if err := p.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := json.Marshal(p)
+	message := json.RawMessage(raw)
+	c := api.ExecutionCommand{Id: uuid.New(), ServerId: plan.ServerID, EnvironmentId: plan.EnvironmentID, ResourceId: plan.UnitID, Kind: "pipeline", Generation: 1, PlanHash: p.Digest(), Pipeline: &message}
+	if _, err := journal.Accept(c); err != nil {
+		t.Fatal(err)
+	}
+
+	var planner bytes.Buffer
+	archive := tar.NewWriter(&planner)
+	if err := archive.WriteHeader(&tar.Header{Name: "railpack", Typeflag: tar.TypeReg, Mode: 0500, Size: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := archive.Write([]byte("x")); err != nil {
+		t.Fatal(err)
+	}
+	if err := archive.Close(); err != nil {
+		t.Fatal(err)
+	}
+	pathStat := base64.StdEncoding.EncodeToString([]byte(`{"name":"railpack","size":1,"mode":320}`))
+	labels := map[string]string{labelServer: c.ServerId.String(), labelResource: c.Id.String(), labelEnvironment: c.EnvironmentId.String(), labelKind: "pipeline-planner-v1", "com.astilba.plan": c.PlanHash}
+	daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.Contains(r.URL.Path, "/images/") && strings.HasSuffix(r.URL.Path, "/json"):
+			_, _ = w.Write([]byte(`{}`))
+		case r.Method == "POST" && strings.HasSuffix(r.URL.Path, "/containers/create"):
+			_, _ = w.Write([]byte(`{"Id":"owned-planner"}`))
+		case strings.HasSuffix(r.URL.Path, "/archive"):
+			w.Header().Set("X-Docker-Container-Path-Stat", pathStat)
+			_, _ = w.Write(planner.Bytes())
+		case strings.Contains(r.URL.Path, "/containers/") && strings.HasSuffix(r.URL.Path, "/json"):
+			_ = json.NewEncoder(w).Encode(map[string]any{"Id": "owned-planner", "Config": map[string]any{"Image": inputs.Frontend, "Labels": labels}})
+		case r.Method == "DELETE":
+			w.WriteHeader(204)
+		default:
+			t.Errorf("unexpected Docker request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(500)
+		}
+	}))
+	defer daemon.Close()
+	docker, err := client.New(client.WithHost(daemon.URL), client.WithAPIVersion("1.56"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer docker.Close()
+
+	dir := t.TempDir()
+	files := map[string]string{
+		"planner.log": strings.Repeat("é", 8192),
+		"plan.json":   `{"steps":[{"name":"build","commands":[{"cmd":"echo built"}]}],"deploy":{"base":{"image":"scratch"},"startCommand":"sh"}}`,
+		"info.json":   `{"success":true,"railpackVersion":"` + inputs.Version + `","detectedProviders":["shell"],"resolvedPackages":{}}`,
+		"docker": `#!/bin/sh
+case "$*" in
+ *"/workspace/planner/railpack prepare "*) cat "$(dirname "$0")/planner.log";;
+ *"cat /workspace/planner/railpack-plan.json"*) cat "$(dirname "$0")/plan.json";;
+ *"cat /workspace/planner/info.json"*) cat "$(dirname "$0")/info.json";;
+ *" /workspace/context/railpack.json "*) printf '{}';;
+ *"buildctl build "*) printf x; exit 7;;
+ *) cat >/dev/null;;
+esac
+`,
+	}
+	for name, content := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	engine := Engine{Journal: journal, Docker: docker, DockerCLI: filepath.Join(dir, "docker")}
+	result, buildErr := engine.buildPipeline(t.Context(), c, p)
+	if buildErr == nil {
+		t.Fatal("fixture build unexpectedly succeeded")
+	}
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded pipeline.Result
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if len(decoded.Logs) > pipeline.LogLimit || decoded.Logs != strings.Repeat("é", 8191)+"x" {
+		t.Fatalf("combined phase logs are not reportable: bytes=%d, build=%v", len(decoded.Logs), buildErr)
 	}
 }

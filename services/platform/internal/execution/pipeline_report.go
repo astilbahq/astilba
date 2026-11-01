@@ -230,7 +230,7 @@ func (s *Service) pipelineReport(ctx context.Context, tx pgx.Tx, c api.Execution
 		return domain.Invalid("pipeline")
 	}
 	var result pipeline.Result
-	if json.Unmarshal(*r.Pipeline, &result) != nil || len(result.Logs) > 16384 || len(result.Cache) > 256 {
+	if json.Unmarshal(*r.Pipeline, &result) != nil || len(result.Logs) > pipeline.LogLimit || len(result.Cache) > 256 {
 		return domain.Invalid("pipeline")
 	}
 	if result.Railpack != nil && (p.Railpack == nil || !result.Railpack.Valid(*p.Railpack)) {

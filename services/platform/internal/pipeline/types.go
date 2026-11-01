@@ -133,6 +133,9 @@ func (c Command) Digest() string {
 	return Hash(c)
 }
 
+// LogLimit bounds decoded UTF-8 diagnostic bytes in an agent result.
+const LogLimit = 16 << 10
+
 type Result struct {
 	Commit       string                `json:"commit"`
 	Files        []composeproject.File `json:"files,omitempty"`
