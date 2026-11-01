@@ -29,6 +29,7 @@ type recoverySource struct {
 	Roots          map[uuid.UUID]deployment.RecoveryDescriptor
 	KnownSequences map[uuid.UUID]int64
 	Projections    map[uuid.UUID]recoveryProjection
+	Origins        appliedOrigins
 }
 
 func recoveryPrivateFile(path string, limit int64) ([]byte, error) {
@@ -168,6 +169,9 @@ func loadRecoverySource(ctx context.Context, tx pgx.Tx, keys *cryptobox.Keyring,
 					if !slices.Contains(d.Participants, unit.Plan.ServerID) {
 						return out, errors.New("recovery participant is absent from its descriptor")
 					}
+				}
+				if err = out.Origins.add(a, d.ParentID); err != nil {
+					return out, err
 				}
 				if err = bases.Add(a); err != nil {
 					return out, err

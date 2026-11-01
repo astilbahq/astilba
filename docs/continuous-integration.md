@@ -43,15 +43,18 @@ an existing deployment host or application runtime state.
 
 ## Application Go verification
 
-After the application checks and agent/CLI builds, two Go verification processes
-run concurrently. One runs the long coordination and checkpoint-recovery tests;
-the other runs all remaining Go tests. Both use the same anchored selection in
-the Makefile, retain race detection and uncached execution, and have a timeout of
-fifteen minutes. Either process failing fails application verification.
+After the application checks and agent/CLI builds, two Go verification lanes
+run concurrently. One runs the cross-host pair and then preview checkpoint
+recovery in separate processes; the other runs all remaining Go tests. Anchored
+selections in the Makefile partition every test between these processes. Each
+retains race detection, uncached execution and a fifteen-minute process timeout.
+Any process failing fails application verification. The application CI job keeps
+its twenty-five-minute overall timeout.
 
 Each integration process owns a separate disposable PostgreSQL container, and
-each test creates its own database and temporary resources. This keeps the
-coordination scenarios from consuming the remaining tests' timeout budget.
+each test creates its own database and temporary resources. Preview recovery has
+a separate process budget from the cross-host pair; both are isolated from the
+remaining tests.
 
 ## Browser shards
 

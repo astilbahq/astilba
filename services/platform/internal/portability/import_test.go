@@ -52,6 +52,13 @@ func TestPreSchedulingVersionTwoArchivesRemainReadable(t *testing.T) {
 	for _, row := range archive.Tables["execution_operations"] {
 		delete(row, "parent_id")
 	}
+	for _, row := range archive.Tables["environments"] {
+		delete(row, "runtime_operation_id")
+	}
+	for _, row := range archive.Tables["execution_operations"] {
+		delete(row, "runtime_outcome")
+		delete(row, "runtime_plan_id")
+	}
 	raw, err = json.Marshal(archive)
 	if err != nil {
 		t.Fatal(err)
@@ -59,9 +66,47 @@ func TestPreSchedulingVersionTwoArchivesRemainReadable(t *testing.T) {
 	if _, err = decodeArchive(raw); err != nil {
 		t.Fatal("pre-scheduling archive rejected", err)
 	}
-	archive.Version = 6
+	archive.Version = 7
 	raw, _ = json.Marshal(archive)
 	if _, err = decodeArchive(raw); err == nil {
 		t.Fatal("unknown future schedule semantics accepted")
+	}
+}
+
+func TestVersionFivePreservesUnknownAppliedProvenance(t *testing.T) {
+	raw, err := os.ReadFile("testdata/workspace-v1.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err := decodeArchive(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.Version = 5
+	for _, row := range a.Tables["environments"] {
+		delete(row, "runtime_operation_id")
+	}
+	for _, row := range a.Tables["execution_operations"] {
+		delete(row, "runtime_outcome")
+		delete(row, "runtime_plan_id")
+	}
+	raw, _ = json.Marshal(a)
+	decoded, err := decodeArchive(raw)
+	if err != nil || string(decoded.Tables["environments"][0]["runtime_operation_id"]) != "null" {
+		t.Fatal("legacy provenance was inferred or rejected", err)
+	}
+	a.Tables["environments"][0]["runtime_operation_id"] = json.RawMessage("null")
+	raw, _ = json.Marshal(a)
+	if _, err = decodeArchive(raw); err == nil {
+		t.Fatal("version five accepted a new provenance field")
+	}
+	a.Version = 6
+	for _, row := range a.Tables["execution_operations"] {
+		row["runtime_outcome"] = json.RawMessage("null")
+		row["runtime_plan_id"] = json.RawMessage("null")
+	}
+	raw, _ = json.Marshal(a)
+	if _, err = decodeArchive(raw); err != nil {
+		t.Fatal("version six rejected explicit unknown provenance", err)
 	}
 }

@@ -4,9 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math"
 	"slices"
-	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
@@ -167,6 +167,22 @@ func (s *Service) RecoverCrossHost(ctx context.Context, in RecoveryImport) (Reco
 	if err = portability.MergeRecovery(ctx, tx, source.Archive, in.OwnerID); err != nil {
 		return out, err
 	}
+	for env, projection := range source.Projections {
+		if projection.tuple.Operation == uuid.Nil || projection.origin.Operations[projection.tuple.Operation].Runtime.Kind != "removed" {
+			continue
+		}
+		var raw []byte
+		if err = tx.QueryRow(ctx, `SELECT o.command FROM environments e JOIN execution_operations o ON o.workspace_id=e.workspace_id AND o.environment_id=e.id AND o.id=e.runtime_operation_id WHERE e.workspace_id=$1 AND e.id=$2 AND e.runtime_operation_id=$3 AND o.runtime_outcome='removed'`, in.WorkspaceID, env, projection.tuple.Operation).Scan(&raw); err != nil {
+			return out, err
+		}
+		var command api.ExecutionCommand
+		if json.Unmarshal(raw, &command) != nil {
+			return out, portability.ErrArchive
+		}
+		if err = s.finalizePreviewCleanup(ctx, tx, in.WorkspaceID, command); err != nil {
+			return out, fmt.Errorf("finalize recovered preview removal: %w", err)
+		}
+	}
 	if err = holdRecoveryRestrictions(ctx, tx, in.WorkspaceID); err != nil {
 		return out, err
 	}
@@ -301,37 +317,20 @@ func recoveryControllers(before portability.Archive, source recoverySource) (map
 }
 
 func validateRecoveryCompatibility(before portability.Archive, source recoverySource, roots map[uuid.UUID]recoveringRoot) error {
-	created := map[uuid.UUID]time.Time{}
-	for _, archive := range []portability.Archive{before, source.Archive} {
-		for _, row := range archive.Tables["specification_revisions"] {
-			var id uuid.UUID
-			var at time.Time
-			if json.Unmarshal(row["id"], &id) != nil || json.Unmarshal(row["created_at"], &at) != nil {
-				return portability.ErrArchive
-			}
-			created[id] = at
-		}
+	current, err := buildAppliedOrigin(before, uuid.Nil)
+	if err != nil {
+		return err
 	}
-	incoming := map[uuid.UUID]*uuid.UUID{}
-	for _, row := range source.Archive.Tables["environments"] {
-		var id uuid.UUID
-		var applied *uuid.UUID
-		if json.Unmarshal(row["id"], &id) != nil || json.Unmarshal(row["applied_revision_id"], &applied) != nil {
-			return portability.ErrArchive
+	for env, old := range current.Environments {
+		projection, exists := source.Projections[env]
+		if !exists {
+			return errors.New("recovery omitted a known environment projection")
 		}
-		incoming[id] = applied
-	}
-	for _, row := range before.Tables["environments"] {
-		var id uuid.UUID
-		var old *uuid.UUID
-		if json.Unmarshal(row["id"], &id) != nil || json.Unmarshal(row["applied_revision_id"], &old) != nil {
-			return portability.ErrArchive
+		order, err := compareApplied(projection.origin, projection.tuple, current, old)
+		if err != nil {
+			return err
 		}
-		if old == nil {
-			continue
-		}
-		next, exists := incoming[id]
-		if !exists || next == nil || *old != *next && !created[*old].Before(created[*next]) {
+		if order < 0 {
 			return errors.New("current applied history is newer or incompatible; supply a compatible newer checkpoint")
 		}
 	}

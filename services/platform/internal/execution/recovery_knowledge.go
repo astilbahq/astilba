@@ -73,7 +73,7 @@ func (s *Service) prepareRecoveryKnowledge(ctx context.Context, tx pgx.Tx, befor
 	if _, err = tx.CopyFrom(ctx, pgx.Identifier{"recovery_known_operations"}, []string{"id", "report_sequence", "state"}, pgx.CopyFromRows(progress)); err != nil {
 		return err
 	}
-	projections, err := recoveryProjections(ctx, tx, before, source.Archive, roots)
+	projections, err := recoveryProjections(ctx, tx, before, source.Archive, roots, source.Origins)
 	if err != nil {
 		return err
 	}
@@ -206,11 +206,7 @@ func recoveryOperationKnowledge(prior, incoming portability.Row) (portability.Ro
 	if json.Unmarshal(prior["command"], &a) != nil || json.Unmarshal(incoming["command"], &b) != nil {
 		return nil, portability.ErrArchive
 	}
-	a.ControllerGeneration, b.ControllerGeneration = nil, nil
-	a.RecoveryCheckpoint, b.RecoveryCheckpoint = nil, nil
-	a.CancelRequested, b.CancelRequested = false, false
-	a.Deadline, b.Deadline = a.Deadline.UTC(), b.Deadline.UTC()
-	if Hash(a) != Hash(b) {
+	if recoveryCommandIdentity(a) != recoveryCommandIdentity(b) {
 		return nil, errors.New("execution identity conflicts with known management metadata")
 	}
 	qa, err := recoveryValue[int64](prior, "report_sequence")
@@ -229,7 +225,11 @@ func recoveryOperationKnowledge(prior, incoming portability.Row) (portability.Ro
 	if err != nil {
 		return nil, err
 	}
-	if Terminal(sa) && Terminal(sb) && sa != sb || Terminal(sa) && !Terminal(sb) && qb > qa || Terminal(sb) && !Terminal(sa) && qa > qb {
+	outcome, sameRemoval, err := portability.MergeRuntimeOutcomes(prior, incoming)
+	if err != nil {
+		return nil, err
+	}
+	if !sameRemoval && (Terminal(sa) && Terminal(sb) && sa != sb || Terminal(sa) && !Terminal(sb) && qb > qa || Terminal(sb) && !Terminal(sa) && qa > qb) {
 		return nil, errors.New("execution outcome conflicts with known management metadata")
 	}
 	out := maps.Clone(prior)
@@ -238,6 +238,7 @@ func recoveryOperationKnowledge(prior, incoming portability.Row) (portability.Ro
 			out[field] = incoming[field]
 		}
 	}
+	outcome.Set(out)
 	if err = recoveryMonotonic(out, prior, incoming, []string{"cancel_requested"}, nil); err != nil {
 		return nil, err
 	}
