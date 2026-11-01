@@ -370,7 +370,7 @@ func (s *Service) coordinate(ctx context.Context, tx pgx.Tx, job *river.Job[jobA
 		case "checkpoint":
 			phase = "reserve"
 		case "observe":
-			if err := s.recordCrossHostObservations(ctx, tx, ws, p, receipts, p.ActiveUnits(), "observe", false); err != nil {
+			if err := s.recordCrossHostObservations(ctx, tx, ws, uuid.Nil, p, receipts, p.ActiveUnits(), "observe", false); err != nil {
 				return err
 			}
 			return completeCoordination(ctx, tx, job, c.Id, "succeeded", "Every active placement was inspected; resources and the applied revision are unchanged.")
@@ -429,7 +429,7 @@ func (s *Service) coordinate(ctx context.Context, tx pgx.Tx, job *river.Job[jobA
 			}
 			return completeCoordination(ctx, tx, job, c.Id, outcome, "Candidate pools were removed with owned cleanup receipts; previous serving pools are retained.")
 		case "complete":
-			if err := s.finalizeCrossHost(ctx, tx, ws, p, receipts); err != nil {
+			if err := s.finalizeCrossHost(ctx, tx, ws, c.Id, p, receipts); err != nil {
 				return err
 			}
 			return completeCoordination(ctx, tx, job, c.Id, "succeeded", "All placement and ingress receipts are confirmed; previous pools were retired.")
@@ -554,13 +554,13 @@ func (s *Service) crossHostReport(ctx context.Context, tx pgx.Tx, c api.Executio
 	_, err := tx.Exec(ctx, `UPDATE cross_host_operations SET receipts=jsonb_set(receipts,ARRAY[$2]::text[],$3::jsonb,true) WHERE id=$1`, command.ParentID, key, raw)
 	return err
 }
-func (s *Service) finalizeCrossHost(ctx context.Context, tx pgx.Tx, ws uuid.UUID, p deployment.Plan, receipts map[string]deployment.CrossHostReceipt) error {
-	return s.finalizeCrossHostUnits(ctx, tx, ws, p, receipts, p.Distributed.Units)
+func (s *Service) finalizeCrossHost(ctx context.Context, tx pgx.Tx, ws, operation uuid.UUID, p deployment.Plan, receipts map[string]deployment.CrossHostReceipt) error {
+	return s.finalizeCrossHostUnits(ctx, tx, ws, operation, p, receipts, p.Distributed.Units)
 }
-func (s *Service) finalizeCrossHostUnits(ctx context.Context, tx pgx.Tx, ws uuid.UUID, p deployment.Plan, receipts map[string]deployment.CrossHostReceipt, units []deployment.DistributedUnit) error {
-	return s.recordCrossHostObservations(ctx, tx, ws, p, receipts, units, "complete", true)
+func (s *Service) finalizeCrossHostUnits(ctx context.Context, tx pgx.Tx, ws, operation uuid.UUID, p deployment.Plan, receipts map[string]deployment.CrossHostReceipt, units []deployment.DistributedUnit) error {
+	return s.recordCrossHostObservations(ctx, tx, ws, operation, p, receipts, units, "complete", true)
 }
-func (s *Service) recordCrossHostObservations(ctx context.Context, tx pgx.Tx, ws uuid.UUID, p deployment.Plan, receipts map[string]deployment.CrossHostReceipt, units []deployment.DistributedUnit, phase string, apply bool) error {
+func (s *Service) recordCrossHostObservations(ctx context.Context, tx pgx.Tx, ws, operation uuid.UUID, p deployment.Plan, receipts map[string]deployment.CrossHostReceipt, units []deployment.DistributedUnit, phase string, apply bool) error {
 	resources := map[uuid.UUID]deployment.Resource{}
 	hosts := []deployment.HostObservation{}
 	infrastructureDrift := false
@@ -640,14 +640,25 @@ func (s *Service) recordCrossHostObservations(ctx context.Context, tx pgx.Tx, ws
 		observation.Resources = append(observation.Resources, res)
 	}
 	raw, _ := json.Marshal(observation)
+	if apply {
+		var unchanged bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM visual_runtime WHERE workspace_id=$1 AND environment_id=$2 AND plan_id=$3)`, ws, p.EnvironmentID, p.ID).Scan(&unchanged); err != nil {
+			return err
+		}
+		if !unchanged {
+			if err := recordRuntimeOutcome(ctx, tx, ws, p.EnvironmentID, operation, portability.RuntimeOutcome{Kind: "applied", Plan: p.ID}); err != nil {
+				return err
+			}
+		}
+		if _, err := tx.Exec(ctx, `UPDATE environments SET applied_revision_id=$3 WHERE workspace_id=$1 AND id=$2`, ws, p.EnvironmentID, p.RevisionID); err != nil {
+			return err
+		}
+	}
 	if _, err := tx.Exec(ctx, `INSERT INTO visual_runtime(workspace_id,environment_id,unit_id,server_id,plan_id,observation) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(workspace_id,environment_id) DO UPDATE SET plan_id=$5,observation=$6,observed_at=now()`, ws, p.EnvironmentID, p.UnitID, p.ServerID, p.ID, raw); err != nil {
 		return err
 	}
 	if !apply {
 		return nil
-	}
-	if _, err := tx.Exec(ctx, `UPDATE environments SET applied_revision_id=$3 WHERE workspace_id=$1 AND id=$2`, ws, p.EnvironmentID, p.RevisionID); err != nil {
-		return err
 	}
 	claims, err := deployment.Claims(p)
 	if err != nil {

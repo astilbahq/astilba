@@ -26,14 +26,17 @@ type recoveryBaseRow struct {
 	at  time.Time
 }
 
-type recoverySequenceStates struct{ live, terminal api.ExecutionState }
+type recoverySequenceStates struct {
+	live, terminal  api.ExecutionState
+	terminalRemoved bool
+}
 
 func recoveryTerminal(state api.ExecutionState) bool {
 	return state == "succeeded" || state == "failed" || state == "cancelled"
 }
 
 func (b *RecoveryBases) Add(a Archive) error {
-	if a.Version != 5 || a.CreatedAt.IsZero() || b.rows != nil && b.archive.Workspace != a.Workspace {
+	if a.Version != 5 && a.Version != 6 || a.CreatedAt.IsZero() || b.rows != nil && b.archive.Workspace != a.Workspace {
 		return ErrArchive
 	}
 	if b.rows == nil {
@@ -78,10 +81,17 @@ func (b *RecoveryBases) Add(a Archive) error {
 					if recoveryTerminal(state) {
 						prior = &seen.terminal
 					}
-					if *prior != "" && *prior != state {
+					outcome, err := ReadRuntimeOutcome(row)
+					if err != nil {
+						return err
+					}
+					if *prior != "" && *prior != state && !(recoveryTerminal(state) && seen.terminalRemoved && outcome.Kind == "removed") {
 						return errors.New("recovery bases contain conflicting execution progress")
 					}
 					*prior = state
+					if recoveryTerminal(state) {
+						seen.terminalRemoved = outcome.Kind == "removed"
+					}
 					b.reports[key][sequence] = seen
 				}
 			} else if !RecoveryImmutable(table.Name) {
@@ -189,7 +199,11 @@ func combineRecoveryOperation(left, right recoveryBaseRow) (recoveryBaseRow, err
 	if json.Unmarshal(a["state"], &sa) != nil || json.Unmarshal(b["state"], &sb) != nil || json.Unmarshal(a["report_sequence"], &qa) != nil || json.Unmarshal(b["report_sequence"], &qb) != nil || json.Unmarshal(a["cancel_requested"], &cancelA) != nil || json.Unmarshal(b["cancel_requested"], &cancelB) != nil || qa < 0 || qb < 0 {
 		return recoveryBaseRow{}, ErrArchive
 	}
-	if recoveryTerminal(sa) && recoveryTerminal(sb) && sa != sb || recoveryTerminal(sa) && !recoveryTerminal(sb) && qb > qa || recoveryTerminal(sb) && !recoveryTerminal(sa) && qa > qb {
+	outcome, sameRemoval, err := MergeRuntimeOutcomes(a, b)
+	if err != nil {
+		return recoveryBaseRow{}, err
+	}
+	if !sameRemoval && (recoveryTerminal(sa) && recoveryTerminal(sb) && sa != sb || recoveryTerminal(sa) && !recoveryTerminal(sb) && qb > qa || recoveryTerminal(sb) && !recoveryTerminal(sa) && qa > qb) {
 		return recoveryBaseRow{}, conflict
 	}
 	selected := preferred
@@ -200,6 +214,7 @@ func combineRecoveryOperation(left, right recoveryBaseRow) (recoveryBaseRow, err
 	}
 	selected.row = maps.Clone(selected.row)
 	setValue(selected.row, "cancel_requested", cancelA || cancelB)
+	outcome.Set(selected.row)
 	return selected, nil
 }
 

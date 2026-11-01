@@ -459,7 +459,7 @@ func (s *Service) coordinateMaintenance(ctx context.Context, tx pgx.Tx, job *riv
 					return domain.Invalid("maintenance.target")
 				}
 			}
-			if err := s.finalizeCrossHostUnits(ctx, tx, ws, target, receipts, target.ActiveUnits()); err != nil {
+			if err := s.finalizeCrossHostUnits(ctx, tx, ws, parent.Id, target, receipts, target.ActiveUnits()); err != nil {
 				return err
 			}
 			var effectFailed bool

@@ -38,7 +38,7 @@ var legacyTables = []table{
 
 // Version 2 preserves preview purpose and cleanup ownership. Version 1 remains a
 // fixed catalog so archives made before previews can still be decoded strictly.
-var tables = func() []table {
+var version5Tables = func() []table {
 	out := append([]table{}, legacyTables...)
 	for i := range out {
 		switch out[i].Name {
@@ -66,4 +66,17 @@ var tables = func() []table {
 		table{Name: "cross_host_reservations", Columns: "server_id,workspace_id,parent_id,cpu_millis,memory_mib"},
 		table{Name: "preview_policies", Columns: "id,workspace_id,project_id,environment_id,revision_id,application_id,connection_id,server_id,actor_id,auth_version,controller_generation,generation,enabled,configuration,discovery_page,next_discovery_at,note"},
 		table{Name: "preview_requests", Columns: "id,workspace_id,policy_id,number,head,head_repository,fork,approved_head,approved_repository,approved_generation,generation,environment_id,application_id,policy_generation,configuration,state,build_id,plan_id,operation_id,built_head,closed_at,cleanup_at,cleanup_requested,resume_after_cancel,cleanup_actor,cleanup_auth_version,cleanup_controller,next_check_at,note,created_at,updated_at"})
+}()
+
+var tables = func() []table {
+	out := append([]table{}, version5Tables...)
+	for i := range out {
+		switch out[i].Name {
+		case "environments":
+			out[i].Columns += ",runtime_operation_id"
+		case "execution_operations":
+			out[i].Columns += ",runtime_outcome,runtime_plan_id"
+		}
+	}
+	return out
 }()

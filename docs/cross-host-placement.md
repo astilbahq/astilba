@@ -104,6 +104,20 @@ forbidden. Explicit target reconciliation preserves that boundary. The globally
 applied revision changes only after all hosts confirm their target resumption.
 Preserve private recovery exports and handovers until recovery is confirmed.
 
+Recovery orders runtime changes by the operation that actually committed them,
+not revision creation time or the execution counter used by reads and prepares.
+Each operation records an applied immutable plan or confirmed removal; the current
+runtime retains that operation even when cleanup removes its projection. Recovery
+checks each original authenticated base before combining histories. Equivalent
+cleanup acknowledgements remain valid across report and controller transfer.
+Archive version 6 preserves these outcomes. Versions 1–5 remain importable with
+unknown provenance: their nonempty runtime cannot establish recovery ancestry or
+be adopted without a fresh successful application and checkpoint. Unchanged
+unrelated legacy state may be preserved, including legacy state with no runtime.
+A selected preview removal reapplies the existing cleanup finalizer after the
+history merge, clearing live runtime, routes and secrets and marking its request
+deleted. Immutable history and retained checkpoint bytes remain intact.
+
 ## Implementation sequence and evidence
 
 1. Schema/domain/contracts for network membership, grants, explicit units/placement, immutable manifests and coordinated operation receipts; compatibility rejection and transfer versions.

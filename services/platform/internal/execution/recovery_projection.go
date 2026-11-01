@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"maps"
-	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/portability"
@@ -20,22 +19,30 @@ type recoveryProjection struct {
 	units       []portability.Row
 	adopt       bool
 	planID      uuid.UUID
+	origin      *appliedOrigin
+	tuple       appliedTuple
 }
 
-func recoveryProjections(ctx context.Context, tx pgx.Tx, before, incoming portability.Archive, roots map[uuid.UUID]recoveringRoot) (map[uuid.UUID]recoveryProjection, error) {
+func recoveryProjections(ctx context.Context, tx pgx.Tx, before, incoming portability.Archive, roots map[uuid.UUID]recoveringRoot, origins appliedOrigins) (map[uuid.UUID]recoveryProjection, error) {
 	out := map[uuid.UUID]recoveryProjection{}
 	own := map[uuid.UUID]portability.Archive{}
+	ownParents := map[uuid.UUID]uuid.UUID{}
+	previousOrigin, err := buildAppliedOrigin(before, uuid.Nil)
+	if err != nil {
+		return nil, err
+	}
 	for parent, root := range roots {
 		var raw []byte
 		if err := tx.QueryRow(ctx, `SELECT decoded FROM recovery_input_checkpoints WHERE parent_id=$1 AND sequence=0`, parent).Scan(&raw); err != nil {
 			return nil, err
 		}
 		// The loader already authenticated and validated this transaction-local base.
-		var a portability.Archive
-		if json.Unmarshal(raw, &a) != nil {
-			return nil, portability.ErrArchive
+		a, err := portability.DecodeRecovery(raw)
+		if err != nil {
+			return nil, err
 		}
 		own[root.Command.EnvironmentId] = recoveryProjectionArchive(a, root.Command.EnvironmentId)
+		ownParents[root.Command.EnvironmentId] = parent
 	}
 	currentEnv := map[uuid.UUID]portability.Row{}
 	for _, row := range before.Tables["environments"] {
@@ -65,8 +72,27 @@ func recoveryProjections(ctx context.Context, tx pgx.Tx, before, incoming portab
 			return nil, err
 		}
 		candidate := incoming
+		var selectedOrigin *appliedOrigin
 		if !seen[env] {
 			candidate = before
+		}
+		if seen[env] && ownParents[env] == uuid.Nil {
+			selectedOrigin, err = origins.latest(env)
+			if err != nil {
+				return nil, err
+			}
+			var raw []byte
+			if err = tx.QueryRow(ctx, `SELECT decoded FROM recovery_input_checkpoints WHERE parent_id=$1 AND sequence=0`, selectedOrigin.Parent).Scan(&raw); err != nil {
+				return nil, err
+			}
+			base, err := portability.DecodeRecovery(raw)
+			if err != nil {
+				return nil, err
+			}
+			candidate = recoveryProjectionArchive(base, env)
+			for _, r := range candidate.Tables["environments"] {
+				row = r
+			}
 		}
 		if base, exists := own[env]; exists {
 			candidate = base
@@ -85,65 +111,48 @@ func recoveryProjections(ctx context.Context, tx pgx.Tx, before, incoming portab
 				return nil, portability.ErrArchive
 			}
 		}
-		newApplied, err := recoveryValue[*uuid.UUID](row, "applied_revision_id")
+		next, err := appliedFrom(candidate, env)
 		if err != nil {
 			return nil, err
 		}
+		origin := previousOrigin
+		if seen[env] {
+			if selectedOrigin != nil {
+				origin = selectedOrigin
+			} else {
+				origin, err = origins.origin(env, next, ownParents[env])
+				if err != nil {
+					return nil, err
+				}
+			}
+		}
 		oldRow, known := currentEnv[env]
 		adopt := !known
+		old := previousOrigin.Environments[env]
+		if ownParents[env] != uuid.Nil && !next.empty() && next.Operation == uuid.Nil {
+			return nil, errAppliedProvenance
+		}
+		order, err := compareApplied(origin, next, previousOrigin, old)
+		if err != nil {
+			return nil, err
+		}
 		if known {
-			oldApplied, err := recoveryValue[*uuid.UUID](oldRow, "applied_revision_id")
-			if err != nil {
-				return nil, err
-			}
-			oldPlan, err := recoveryRuntimePlan(before, env)
-			if err != nil {
-				return nil, err
-			}
-			newPlan, err := recoveryRuntimePlan(candidate, env)
-			if err != nil {
-				return nil, err
-			}
-			if newApplied != nil && (oldApplied == nil || !sameID(oldApplied, newApplied) || oldPlan != newPlan) {
-				oldGen, err := recoveryValue[int64](oldRow, "execution_generation")
-				if err != nil {
-					return nil, err
-				}
-				newGen, err := recoveryValue[int64](row, "execution_generation")
-				if err != nil {
-					return nil, err
-				}
-				if newGen <= oldGen {
-					if _, selected := own[env]; selected {
-						return nil, errors.New("known applied source conflicts with the recovered parent")
-					}
-				} else {
-					if oldApplied != nil && *oldApplied != *newApplied {
-						oldAt, err := recoveryRevisionTime(before, *oldApplied)
-						if err != nil {
-							return nil, err
-						}
-						newAt, err := recoveryRevisionTime(candidate, *newApplied)
-						if err != nil {
-							return nil, err
-						}
-						if !oldAt.Before(newAt) {
-							return nil, errors.New("source runtime would rewind known applied history")
-						}
-					}
-					adopt = true
-				}
-			}
+			adopt = order > 0
+		}
+		if ownParents[env] != uuid.Nil && order < 0 {
+			return nil, errors.New("known applied source conflicts with the recovered parent")
 		}
 		if !adopt {
 			candidate = before
 			row = oldRow
+			origin, next = previousOrigin, old
 		}
 		projection, err := recoveryProjectionFrom(candidate, env, row)
 		if err != nil {
 			return nil, err
 		}
 		projection.adopt = adopt
+		projection.origin, projection.tuple = origin, next
 		if _, selected := own[env]; selected && projection.planID == uuid.Nil {
 			return nil, errors.New("recovered parent lacks its applied source projection")
 		}
@@ -162,18 +171,6 @@ func recoveryRuntimePlan(a portability.Archive, env uuid.UUID) (uuid.UUID, error
 		}
 	}
 	return uuid.Nil, nil
-}
-func recoveryRevisionTime(a portability.Archive, id uuid.UUID) (time.Time, error) {
-	for _, row := range a.Tables["specification_revisions"] {
-		key, err := recoveryValue[uuid.UUID](row, "id")
-		if err != nil {
-			return time.Time{}, err
-		}
-		if key == id {
-			return recoveryValue[time.Time](row, "created_at")
-		}
-	}
-	return time.Time{}, errors.New("applied revision history is incomplete")
 }
 func recoveryProjectionFrom(a portability.Archive, env uuid.UUID, row portability.Row) (recoveryProjection, error) {
 	out := recoveryProjection{environment: row, runtime: []portability.Row{}, units: []portability.Row{}}
@@ -293,6 +290,7 @@ func applyRecoveryProjection(table string, row portability.Row, projections map[
 	}
 	if p, exists := projections[env]; exists {
 		row["applied_revision_id"] = p.environment["applied_revision_id"]
+		row["runtime_operation_id"] = p.environment["runtime_operation_id"]
 	}
 	return true, nil
 }

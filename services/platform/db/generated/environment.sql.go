@@ -96,7 +96,7 @@ func (q *Queries) AllTOTPSecrets(ctx context.Context) ([]AllTOTPSecretsRow, erro
 }
 
 const getEnvironment = `-- name: GetEnvironment :one
-SELECT e.workspace_id, e.project_id, e.id, e.name, e.configuration_owner, e.draft_revision_id, e.created_at, e.execution_generation, e.applied_revision_id, e.purpose,d.id AS unit_id,d.runtime,d.server_id FROM environments e JOIN deployment_units d
+SELECT e.workspace_id, e.project_id, e.id, e.name, e.configuration_owner, e.draft_revision_id, e.created_at, e.execution_generation, e.applied_revision_id, e.purpose, e.runtime_operation_id,d.id AS unit_id,d.runtime,d.server_id FROM environments e JOIN deployment_units d
 ON d.workspace_id=e.workspace_id AND d.environment_id=e.id AND d.primary_unit WHERE e.workspace_id=$1 AND e.project_id=$2 AND e.id=$3
 `
 
@@ -117,6 +117,7 @@ type GetEnvironmentRow struct {
 	ExecutionGeneration int64      `json:"execution_generation"`
 	AppliedRevisionID   *uuid.UUID `json:"applied_revision_id"`
 	Purpose             string     `json:"purpose"`
+	RuntimeOperationID  *uuid.UUID `json:"runtime_operation_id"`
 	UnitID              uuid.UUID  `json:"unit_id"`
 	Runtime             string     `json:"runtime"`
 	ServerID            *uuid.UUID `json:"server_id"`
@@ -136,6 +137,7 @@ func (q *Queries) GetEnvironment(ctx context.Context, arg GetEnvironmentParams) 
 		&i.ExecutionGeneration,
 		&i.AppliedRevisionID,
 		&i.Purpose,
+		&i.RuntimeOperationID,
 		&i.UnitID,
 		&i.Runtime,
 		&i.ServerID,
@@ -273,7 +275,7 @@ func (q *Queries) InsertDeploymentUnit(ctx context.Context, arg InsertDeployment
 }
 
 const insertEnvironment = `-- name: InsertEnvironment :one
-INSERT INTO environments(workspace_id,project_id,id,name,draft_revision_id,configuration_owner,purpose) VALUES($1,$2,$3,$4,$5,COALESCE(NULLIF($6::text,''),'dashboard'),COALESCE(NULLIF($7::text,''),'standard')) RETURNING workspace_id, project_id, id, name, configuration_owner, draft_revision_id, created_at, execution_generation, applied_revision_id, purpose
+INSERT INTO environments(workspace_id,project_id,id,name,draft_revision_id,configuration_owner,purpose) VALUES($1,$2,$3,$4,$5,COALESCE(NULLIF($6::text,''),'dashboard'),COALESCE(NULLIF($7::text,''),'standard')) RETURNING workspace_id, project_id, id, name, configuration_owner, draft_revision_id, created_at, execution_generation, applied_revision_id, purpose, runtime_operation_id
 `
 
 type InsertEnvironmentParams struct {
@@ -308,6 +310,7 @@ func (q *Queries) InsertEnvironment(ctx context.Context, arg InsertEnvironmentPa
 		&i.ExecutionGeneration,
 		&i.AppliedRevisionID,
 		&i.Purpose,
+		&i.RuntimeOperationID,
 	)
 	return i, err
 }
@@ -421,7 +424,7 @@ func (q *Queries) InsertSecretVersion(ctx context.Context, arg InsertSecretVersi
 }
 
 const listEnvironments = `-- name: ListEnvironments :many
-SELECT workspace_id, project_id, id, name, configuration_owner, draft_revision_id, created_at, execution_generation, applied_revision_id, purpose FROM environments WHERE workspace_id=$1 AND project_id=$2 ORDER BY created_at,id
+SELECT workspace_id, project_id, id, name, configuration_owner, draft_revision_id, created_at, execution_generation, applied_revision_id, purpose, runtime_operation_id FROM environments WHERE workspace_id=$1 AND project_id=$2 ORDER BY created_at,id
 `
 
 type ListEnvironmentsParams struct {
@@ -449,6 +452,7 @@ func (q *Queries) ListEnvironments(ctx context.Context, arg ListEnvironmentsPara
 			&i.ExecutionGeneration,
 			&i.AppliedRevisionID,
 			&i.Purpose,
+			&i.RuntimeOperationID,
 		); err != nil {
 			return nil, err
 		}

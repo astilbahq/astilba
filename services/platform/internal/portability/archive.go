@@ -96,7 +96,7 @@ func (s *Service) transformCredential(table string, row Row, ws uuid.UUID, expor
 	return nil
 }
 func (s *Service) Export(ctx context.Context, p store.Principal, ws uuid.UUID, passphrase string) ([]byte, error) {
-	archive := Archive{Version: 5, Workspace: ws, CreatedAt: time.Now().UTC(), Tables: map[string][]Row{}}
+	archive := Archive{Version: 6, Workspace: ws, CreatedAt: time.Now().UTC(), Tables: map[string][]Row{}}
 	e := s.Store.InWorkspaceSnapshot(ctx, p, ws, func(tx pgx.Tx, q *db.Queries, w store.Workspace) error {
 		var reserved bool
 		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM cross_host_reservations WHERE workspace_id=$1)`, ws).Scan(&reserved); err != nil {
