@@ -115,6 +115,7 @@ func testCrossHostCoordinatedPlacement(t *testing.T, expiryPhase string) {
 	var checkedInvalidObservation atomic.Bool
 	seen := sync.Map{}
 	unitPlans := sync.Map{}
+	checkpointDeliveries := sync.Map{}
 	for i := 0; i < 2; i++ {
 		refreshAuthentication()
 		enrolled, in, token := enrollment(t, f, b, ws, "deployment")
@@ -215,6 +216,7 @@ func testCrossHostCoordinatedPlacement(t *testing.T, expiryPhase string) {
 						}
 						seen.Store("checkpoint-delivery/"+c.ParentId.String(), true)
 						if holdCheckpoint.Load() {
+							checkpointDeliveries.Store(c.ParentId.String(), recoveryOrderingDelivery{Command: *c, Envelope: envelope})
 							time.Sleep(100 * time.Millisecond)
 							continue
 						}
@@ -1057,6 +1059,10 @@ func testCrossHostCoordinatedPlacement(t *testing.T, expiryPhase string) {
 	if err := f.st.Pool.QueryRow(ctx, `SELECT count(*) FROM cross_host_reservations WHERE parent_id=$1`, parent.Id).Scan(&ownerReservations); err != nil || ownerReservations != 2 {
 		t.Fatal("owner review released writer reservations", err)
 	}
+	// PLAT-65: a saved draft can predate the revision inserted by cutover,
+	// despite legitimately becoming the applied revision afterwards.
+	var preservedTargetDraft api.Revision
+	b.call("PUT", databasePath+"/draft", map[string]any{"baseRevisionId": databaseDraft.Id, "specification": view.Plan.TargetGroup().Specification}, 200, &preservedTargetDraft)
 	holdRemoteResume.Store(true)
 	holdPrimaryResume.Store(true)
 	cutover := api.UpgradeActionRequest{Action: "cutover", ExpectedPhase: "ready", RequestKey: uuid.New()}
@@ -1098,6 +1104,49 @@ func testCrossHostCoordinatedPlacement(t *testing.T, expiryPhase string) {
 	if err := f.st.Pool.QueryRow(ctx, `SELECT (configuration->>'enabled')::boolean FROM backup_policies WHERE id=$1`, recovery.ID).Scan(&enabled); err != nil || enabled {
 		t.Fatal("upgraded policy did not require renewed approval", err)
 	}
+	upgradedSnapshot := captureRecoveryOrderingSnapshot(t, f, ws)
+	var draftID uuid.UUID
+	var draftCreated, targetCreated time.Time
+	var upgradedGeneration int64
+	if err := f.st.Pool.QueryRow(ctx, `SELECT e.draft_revision_id,e.execution_generation,d.created_at,r.created_at FROM environments e JOIN specification_revisions d ON d.id=$2 JOIN specification_revisions r ON r.id=$3 WHERE e.id=$1`, databaseEnv.Id, preservedTargetDraft.Id, view.Plan.TargetRevisionID).Scan(&draftID, &upgradedGeneration, &draftCreated, &targetCreated); err != nil || draftID != preservedTargetDraft.Id || !draftCreated.Before(targetCreated) {
+		t.Fatal("upgrade did not preserve the earlier saved target draft", err, draftID, draftCreated, targetCreated)
+	}
+	preservedPlan := deploy(preservedTargetDraft.Id)
+	var preservedGeneration int64
+	if err := f.st.Pool.QueryRow(ctx, `SELECT applied_revision_id,execution_generation FROM environments WHERE id=$1`, databaseEnv.Id).Scan(&applied, &preservedGeneration); err != nil || applied != preservedTargetDraft.Id || preservedGeneration <= upgradedGeneration {
+		t.Fatal("preserved target draft did not become the newer applied runtime", err, applied, upgradedGeneration, preservedGeneration)
+	}
+	appliedSnapshot := captureRecoveryOrderingSnapshot(t, f, ws)
+	var nextDraft api.Revision
+	b.call("PUT", databasePath+"/draft", map[string]any{"baseRevisionId": preservedTargetDraft.Id, "specification": preservedPlan.Specification}, 200, &nextDraft)
+	var nextPlan deployment.Status
+	waitNetworkReady()
+	refreshAuthentication()
+	b.call("POST", databasePath+"/deployment-plans", api.VisualPlanRequest{BaseRevisionId: nextDraft.Id, ServerId: servers[0].Server.Id, AllowHostChanges: true}, 201, &nextPlan)
+	wait(func() bool {
+		b.call("GET", databasePath+"/deployment-plans/"+nextPlan.ID.String(), nil, 200, &nextPlan)
+		return nextPlan.Plan != nil
+	})
+	holdCheckpoint.Store(true)
+	var interruptedOrdering api.Operation
+	refreshAuthentication()
+	b.call("POST", databasePath+"/deployment-plans/"+nextPlan.ID.String()+"/apply", api.ApplyPlan{IdempotencyKey: uuid.New()}, 201, &interruptedOrdering)
+	wait(func() bool { _, ok := checkpointDeliveries.Load(interruptedOrdering.Id.String()); return ok })
+	delivery, _ := checkpointDeliveries.Load(interruptedOrdering.Id.String())
+	if !t.Run("recover_earlier_created_newer_applied_draft", func(t *testing.T) {
+		verifyRecoveryOrdering(t, f, ws, upgradedSnapshot, appliedSnapshot, delivery.(recoveryOrderingDelivery), enrollments, &unitPlans, draftCreated, targetCreated, upgradedGeneration, preservedGeneration)
+	}) {
+		return
+	}
+	// Let the existing lifecycle finish after the isolated recovery attempt.
+	holdCheckpoint.Store(false)
+	wait(func() bool {
+		var state string
+		if err := f.st.Pool.QueryRow(ctx, `SELECT state FROM execution_operations WHERE id=$1`, interruptedOrdering.Id).Scan(&state); err != nil {
+			t.Fatal(err)
+		}
+		return state == "succeeded"
+	})
 	var beforeEndpoints, beforeSources int
 	if err := f.st.Pool.QueryRow(ctx, `SELECT count(*) FROM network_endpoints WHERE workspace_id=$1 AND environment_id=$2 AND NOT retired`, ws, databaseEnv.Id).Scan(&beforeEndpoints); err != nil {
 		t.Fatal(err)
@@ -1112,7 +1161,7 @@ func testCrossHostCoordinatedPlacement(t *testing.T, expiryPhase string) {
 	changed := "candidate"
 	targetSpec.Applications[0].Variables = []domain.Variable{{Name: "CANDIDATE", Value: &changed}}
 	var failedDraft api.Revision
-	b.call("PUT", databasePath+"/draft", map[string]any{"baseRevisionId": view.Plan.TargetRevisionID, "specification": targetSpec}, 200, &failedDraft)
+	b.call("PUT", databasePath+"/draft", map[string]any{"baseRevisionId": nextDraft.Id, "specification": targetSpec}, 200, &failedDraft)
 	var replacement deployment.Status
 	waitNetworkReady()
 	refreshAuthentication()
@@ -1175,7 +1224,7 @@ func testCrossHostCoordinatedPlacement(t *testing.T, expiryPhase string) {
 		b.call("GET", databasePath+"/deployment-plans/"+restoreReview.ID.String(), nil, 200, &restoreReview)
 		return restoreReview.Plan != nil
 	})
-	if restoreReview.Plan.Restore == nil || restoreReview.Plan.Restore.SourcePlanID != view.Plan.TargetPlanID {
+	if restoreReview.Plan.Restore == nil || restoreReview.Plan.Restore.SourcePlanID != nextPlan.ID {
 		t.Fatal("restored-volume review lost its exact source")
 	}
 	var restoreOperation api.Operation
@@ -1202,7 +1251,7 @@ func testCrossHostCoordinatedPlacement(t *testing.T, expiryPhase string) {
 		}
 		return blocked
 	})
-	if err := f.st.Pool.QueryRow(ctx, `SELECT applied_revision_id FROM environments WHERE workspace_id=$1 AND id=$2`, ws, databaseEnv.Id).Scan(&applied); err != nil || applied != view.Plan.TargetRevisionID {
+	if err := f.st.Pool.QueryRow(ctx, `SELECT applied_revision_id FROM environments WHERE workspace_id=$1 AND id=$2`, ws, databaseEnv.Id).Scan(&applied); err != nil || applied != nextDraft.Id {
 		t.Fatal("primary restore receipt prematurely published a global target", err)
 	}
 	holdRemoteResume.Store(false)

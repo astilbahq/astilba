@@ -12,6 +12,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
+	"github.com/astilbahq/astilba/services/platform/internal/portability"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -768,10 +769,15 @@ func (s *Service) visualReport(ctx context.Context, tx pgx.Tx, c api.ExecutionCo
 				return err
 			}
 		}
-		previous = &plan.ID
-		if _, err := tx.Exec(ctx, "UPDATE environments SET applied_revision_id=$3 WHERE workspace_id=$1 AND id=$2", ws, c.EnvironmentId, plan.RevisionID); err != nil {
+		if previous == nil || *previous != plan.ID {
+			if err := recordRuntimeOutcome(ctx, tx, ws, c.EnvironmentId, c.Id, portability.RuntimeOutcome{Kind: "applied", Plan: plan.ID}); err != nil {
+				return err
+			}
+		}
+		if _, err := tx.Exec(ctx, `UPDATE environments SET applied_revision_id=$3 WHERE workspace_id=$1 AND id=$2`, ws, c.EnvironmentId, plan.RevisionID); err != nil {
 			return err
 		}
+		previous = &plan.ID
 		claims, err := deployment.Claims(plan)
 		if err != nil {
 			return domain.Invalid("routes")
