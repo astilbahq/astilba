@@ -197,17 +197,13 @@ func (s *Server) request(next http.Handler) http.Handler {
 		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'")
 		defer func() {
 			if recover() != nil {
-				s.Log.Error("request panic", "request_id", id)
-				s.fail(w, r, errors.New("panic"))
+				s.Log.Error("request panic", "request_id", id, "route", requestRoute(r), slog.Group("error", "category", "panic"), "frames", panicFrames())
+				s.respond(w, http.StatusInternalServerError, api.Error{Code: "internal_error", Message: "The request could not be completed.", RequestId: id})
 			}
 		}()
 		recorder := chimiddleware.NewWrapResponseWriter(w, r.ProtoMajor)
 		next.ServeHTTP(recorder, r)
-		route := chi.RouteContext(r.Context()).RoutePattern()
-		if route == "" {
-			route = "unmatched"
-		}
-		s.Log.Info("request", "request_id", id, "route", route, "status", recorder.Status())
+		s.Log.Info("request", "request_id", id, "route", requestRoute(r), "status", recorder.Status())
 	})
 }
 func (s *Server) identity(next http.Handler) http.Handler {
@@ -283,7 +279,7 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 			status = 400
 		}
 	} else {
-		s.Log.Error("request failed", "request_id", out.RequestId)
+		s.Log.Error("request failed", "request_id", out.RequestId, "route", requestRoute(r), failureDiagnostic(err))
 	}
 	if status == 429 {
 		w.Header().Set("Retry-After", "300")
@@ -306,7 +302,14 @@ func value(p *string) string {
 	return *p
 }
 func (s *Server) establish(ctx context.Context, a db.Account, mfa bool) error {
-	s.Sessions.Remove(ctx, "github-session")
+	csrf, err := cryptobox.Token()
+	if err != nil {
+		return err
+	}
+	nonce, err := cryptobox.Token()
+	if err != nil {
+		return err
+	}
 	if err := s.Sessions.RenewToken(ctx); err != nil {
 		return err
 	}
@@ -317,11 +320,10 @@ func (s *Server) establish(ctx context.Context, a db.Account, mfa bool) error {
 	s.Sessions.Put(ctx, "version", a.AuthVersion)
 	s.Sessions.Put(ctx, "mfa", mfa)
 	s.Sessions.Put(ctx, "recent", s.Auth.Now())
-	token, err := cryptobox.Token()
-	if err == nil {
-		s.Sessions.Put(ctx, "csrf", token)
-	}
-	return err
+	s.Sessions.Put(ctx, "csrf", csrf)
+	// Authenticated values stay fixed within a token; idle refreshes may overlap.
+	s.Sessions.Put(ctx, "github-session", nonce)
+	return nil
 }
 func (s *Server) session(ctx context.Context) (api.Session, error) {
 	token := s.Sessions.GetString(ctx, "csrf")
@@ -369,7 +371,6 @@ func (s *Server) Login(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, e)
 		return
 	}
-	s.Sessions.Remove(r.Context(), "github-session")
 	a, e := s.Auth.Login(r.Context(), string(b.Email), value(b.Password), s.clientSourceKey(r))
 	if e != nil {
 		s.fail(w, r, e)
@@ -377,6 +378,7 @@ func (s *Server) Login(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(a.TotpSecret) > 0 {
 		if e = s.Sessions.RenewToken(r.Context()); e == nil {
+			s.Sessions.Remove(r.Context(), "github-session")
 			s.Sessions.Remove(r.Context(), "account")
 			s.Sessions.Put(r.Context(), "pending", a.ID.String())
 			s.Sessions.Put(r.Context(), "pending-version", a.AuthVersion)

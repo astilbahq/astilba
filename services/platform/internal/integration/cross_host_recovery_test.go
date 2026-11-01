@@ -88,7 +88,7 @@ func TestNativeCrossHostOlderBackupRecovery(t *testing.T) {
 	for i := 0; i < 4; i++ {
 		enrolled, in, token := enrollment(t, source, b, ws, "deployment")
 		yes := true
-		in.Capabilities.Visual, in.Capabilities.CrossHost, in.Capabilities.Replicas = &yes, &yes, &yes
+		in.Capabilities.Visual, in.Capabilities.CrossHost, in.Capabilities.Replicas, in.Capabilities.MaintenanceContinuation = &yes, &yes, &yes, &yes
 		in.Capabilities.ServiceOutputs, in.Capabilities.SafeReleases = &yes, &yes
 		inventory := hostnetwork.StableInventory(nil)
 		in.Preflight.CrossHostInventory = &api.CrossHostInventory{IngressReady: &yes, CpuMillis: 4000, MemoryMiB: 8192, UnboundedInventoryHash: inventory}

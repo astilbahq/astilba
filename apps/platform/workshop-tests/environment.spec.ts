@@ -9,10 +9,27 @@ for (const [state, section] of [
   test(`${state} repository settings show the unconfigured GitHub App state`, async ({
     page,
   }) => {
+    const rejections =
+      state === "overview"
+        ? page.waitForResponse((response) =>
+            new URL(response.url()).pathname.endsWith("/build-rejections"),
+          )
+        : undefined;
     await page.goto(
       `/iframe.html?id=pages-environment-detail--${state}&viewMode=story&globals=a11y.manual:!true`,
     );
     await page.getByRole("tab", { name: section, exact: true }).click();
+    if (rejections) {
+      const response = await rejections;
+      expect(response.status()).toBe(200);
+      expect(await response.json()).toEqual([]);
+      await expect(
+        page
+          .getByRole("heading", { name: "Source and build jobs", exact: true })
+          .locator("..")
+          .getByRole("alert"),
+      ).toHaveCount(0);
+    }
     await page
       .getByText("Repository, registry and build secret settings", {
         exact: true,

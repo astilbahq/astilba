@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"sync/atomic"
@@ -25,6 +26,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/execution"
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
+	"github.com/containerd/errdefs"
 	"github.com/google/uuid"
 	"github.com/moby/moby/client"
 )
@@ -502,6 +504,89 @@ func TestNativePipeline(t *testing.T) {
 		t.Fatal("failed or cancelled build replaced the retained layer cache", err)
 	}
 	cancelNext = false
+	// Cancel only after the runner emitted output, so the terminal report must
+	// retain its diagnostics without advertising any build artifact.
+	func() {
+		marker := filepath.Join(t.TempDir(), "output-started")
+		captureCLI := filepath.Join(t.TempDir(), "capture-build-output")
+		body := "#!/bin/sh\ncase \"$*\" in\n  *' buildctl build '*)\n" +
+			"    printf '%s\\n' 'before cancellation' 'build-secret-canary'\n" +
+			"    : > " + quote(marker) + "\n    exec sleep 60\n    ;;\nesac\n" +
+			"exec " + quote(dockerCLI) + " \"$@\"\n"
+		if err := os.WriteFile(captureCLI, []byte(body), 0700); err != nil {
+			t.Fatal(err)
+		}
+		command := build
+		command.CacheScope = ""
+		raw, _ := json.Marshal(command)
+		message := json.RawMessage(raw)
+		generation++
+		c := api.ExecutionCommand{Id: uuid.New(), ServerId: serverID, EnvironmentId: uuid.New(), ResourceId: command.UnitID, Generation: generation, Kind: "pipeline", Action: "inspect", PlanHash: command.Digest(), Pipeline: &message, Deadline: time.Now().Add(time.Minute)}
+		active = c
+		engine.DockerCLI = captureCLI
+		runCtx, stop := context.WithTimeout(ctx, time.Minute)
+		done := make(chan struct{})
+		var executeErr error
+		go func(command api.ExecutionCommand) {
+			defer close(done)
+			executeErr = engine.Execute(runCtx, command)
+		}(c)
+		defer func() {
+			stop()
+			<-done
+			engine.DockerCLI = dockerCLI
+		}()
+		for {
+			if _, err := os.Stat(marker); err == nil {
+				break
+			} else if !os.IsNotExist(err) {
+				t.Fatal(err)
+			}
+			select {
+			case <-done:
+				t.Fatal("runner finished before emitting cancellation diagnostics", executeErr)
+			case <-runCtx.Done():
+				t.Fatal("runner did not reach its output boundary", runCtx.Err())
+			case <-time.After(10 * time.Millisecond):
+			}
+		}
+		command.Access, command.BuildSecrets, command.RegistryAccess = nil, nil, nil
+		cancelRaw, _ := json.Marshal(command)
+		cancelMessage := json.RawMessage(cancelRaw)
+		c.Pipeline, c.CancelRequested = &cancelMessage, true
+		if _, err := journal.Accept(c); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case <-done:
+		case <-runCtx.Done():
+			t.Fatal("runner did not acknowledge cancellation", runCtx.Err())
+		}
+		if executeErr != nil {
+			t.Fatal(executeErr)
+		}
+		record, err := journal.Record(c.Id)
+		if err != nil || record.Report.State != "cancelled" || record.Report.Pipeline == nil {
+			t.Fatal("cancelled runner lost its diagnostic report", err)
+		}
+		var result pipeline.Result
+		if err := json.Unmarshal(*record.Report.Pipeline, &result); err != nil {
+			t.Fatal(err)
+		}
+		if result.Logs != "before cancellation\n[redacted]\n" {
+			t.Fatal("cancelled runner lost its redacted output")
+		}
+		result.Logs = ""
+		if !reflect.DeepEqual(result, pipeline.Result{}) {
+			t.Fatal("cancelled diagnostics retained non-diagnostic result fields")
+		}
+		if _, err := docker.ContainerInspect(ctx, pipelineName(c), client.ContainerInspectOptions{}); !errdefs.IsNotFound(err) {
+			t.Fatal("cancelled runner was not removed", err)
+		}
+		if err := journal.Acknowledge(c.Id, record.Report.Sequence); err != nil {
+			t.Fatal(err)
+		}
+	}()
 	for _, fixture := range []struct {
 		name, build, start, want string
 		files                    map[string]string

@@ -95,6 +95,10 @@ func (s *Server) ListPipelineRuns(w http.ResponseWriter, r *http.Request, ws, pi
 	v, e := s.Execution.PipelineRuns(r.Context(), *principal(r.Context()), ws, pid, env)
 	s.executionResponse(w, r, 200, v, e)
 }
+func (s *Server) ListBuildRejections(w http.ResponseWriter, r *http.Request, ws, pid, env uuid.UUID) {
+	v, e := s.Execution.BuildRejections(r.Context(), *principal(r.Context()), ws, pid, env)
+	s.executionResponse(w, r, 200, v, e)
+}
 func (s *Server) CreateBuild(w http.ResponseWriter, r *http.Request, ws, pid, env uuid.UUID) {
 	b, e := decode[api.BuildRequest](r)
 	if e != nil {

@@ -27,10 +27,17 @@ let hostedProxy;
 let ownsHostedInfo = false;
 const hostedInfo = join(root, ".artifacts/p8/browser/hosted-fixture.json");
 // External provider boundary; all product requests still use the real API and PostgreSQL.
+const gitHeads = new Map();
 const gitProvider=createServer((request,response)=>{
  response.setHeader("Content-Type","application/json");
  if(request.headers.authorization!=="token browser-api-fixture"){response.writeHead(401).end();return}
- if(request.url.includes("/branches/")){response.end(JSON.stringify({commit:{sha:"a".repeat(40)}}));return}
+ if(request.method==="POST" && request.url==="/__fixture/head"){
+  const chunks=[];request.on("data",chunk=>chunks.push(chunk));request.on("end",()=>{
+   try {const value=JSON.parse(Buffer.concat(chunks).toString());if(typeof value.branch!=="string" || !/^[a-f0-9]{40}$/.test(value.commit))throw new Error("invalid fixture head");gitHeads.set(value.branch,value.commit);response.writeHead(204).end()}
+   catch {response.writeHead(400).end()}
+  });return
+ }
+ if(request.url.includes("/branches/")){const branch=decodeURIComponent(request.url.split("/branches/")[1]);response.end(JSON.stringify({commit:{sha:gitHeads.get(branch)??"a".repeat(40)}}));return}
  response.end(JSON.stringify({id:12,private:true}));
 });
 

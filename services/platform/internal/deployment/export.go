@@ -18,6 +18,9 @@ type Export struct {
 }
 
 func ExportConfiguration(plan Plan) (Export, error) {
+	if plan.Distributed != nil {
+		return Export{}, &domain.Error{Code: "invalid_input", Message: "Standalone Compose export is not supported for cross-host environments."}
+	}
 	root := "."
 	if plan.Specification.Compose != nil {
 		root = "source"

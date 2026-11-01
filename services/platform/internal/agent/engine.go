@@ -24,16 +24,17 @@ const labelEnvironment = "com.astilba.environment"
 const labelKind = "com.astilba.kind"
 
 type Engine struct {
-	Journal         *Journal
-	Docker          *client.Client
-	Point           func(string)
-	Update          func(context.Context, api.AgentRelease) error
-	FetchCheckpoint func(context.Context, deployment.RecoveryDescriptor) ([]byte, error)
-	DockerCLI       string
-	ACMEEmail       string
-	ResticCLI       string
-	BackupRoots     []string
-	mu              sync.Mutex
+	Journal               *Journal
+	Docker                *client.Client
+	Point                 func(string)
+	Update                func(context.Context, api.AgentRelease) error
+	VerifyInstalledUpdate func(api.AgentRelease) error
+	FetchCheckpoint       func(context.Context, deployment.RecoveryDescriptor) ([]byte, error)
+	DockerCLI             string
+	ACMEEmail             string
+	ResticCLI             string
+	BackupRoots           []string
+	mu                    sync.Mutex
 }
 
 func (e *Engine) point(p string) {
@@ -148,13 +149,17 @@ func (e *Engine) Execute(ctx context.Context, c api.ExecutionCommand) error {
 		return e.finish(c.Id, "failed", err.Error())
 	}
 	// An already accepted command continues after its admission deadline.
-	metadataContinuation := false
+	metadataContinuation, maintenanceContinuation := false, false
 	if c.Kind == "crosshost" {
 		body, bodyErr := crossHostCommand(c)
 		d, descriptorErr := commandCheckpoint(c)
 		metadataContinuation = bodyErr == nil && descriptorErr == nil && body.Phase == "checkpoint" && d.Sequence > 0
+		// The maintenance executor validates the retained checkpoint, frozen
+		// reservation, chosen target and exact writer ownership before effects.
+		maintenanceContinuation = bodyErr == nil && body.Maintenance != nil && (body.Phase == "resume-source" || body.Phase == "resume-target")
 	}
-	if c.Kind != "upgrade" && !metadataContinuation && !networkRestriction(c) && r.Checkpoint == "accepted" && time.Now().After(c.Deadline) {
+	updateContinuation := c.Kind == "update" && e.Journal.startupUpdates[c.Id] && (r.AcceptedAt == nil || !r.AcceptedAt.After(c.Deadline)) && !e.cancelled(c.Id) && c.Release != nil && execution.Hash(c.Release) == c.PlanHash
+	if c.Kind != "upgrade" && !updateContinuation && !metadataContinuation && !maintenanceContinuation && !networkRestriction(c) && r.Checkpoint == "accepted" && time.Now().After(c.Deadline) {
 		return e.finish(c.Id, "cancelled", "The admission deadline passed before execution.")
 	}
 	upgrades, err := e.Journal.upgrades()
@@ -197,6 +202,15 @@ func (e *Engine) Execute(ctx context.Context, c api.ExecutionCommand) error {
 		}
 		if e.cancelled(c.Id) {
 			return e.finish(c.Id, "cancelled", "Cancelled before replacing the agent.")
+		}
+		// A predecessor can replace the executable before recording success.
+		// Only a startup-retained, timely accepted command (or its legacy
+		// equivalent) may reconcile that exact signed artifact after expiry.
+		if updateContinuation && e.VerifyInstalledUpdate != nil && e.VerifyInstalledUpdate(*c.Release) == nil {
+			return e.finish(c.Id, "succeeded", "Agent artifact verified and installed.")
+		}
+		if time.Now().After(c.Deadline) {
+			return e.finish(c.Id, "cancelled", "The admission deadline passed before execution.")
 		}
 		if e.Update == nil {
 			return e.finish(c.Id, "needs_attention", "This installation needs the documented local update procedure.")

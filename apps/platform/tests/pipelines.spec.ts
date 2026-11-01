@@ -474,15 +474,124 @@ test("repository setup, Git service, queued build and cancellation use the real 
   expect(saved.specification.applications[0].source.artifactId).toBe(
     completed.id,
   );
+  await openEnvironmentSection(page, "Deployments");
+  const rejections = page.getByRole("status", {
+    name: "Automatic build rejections",
+    exact: true,
+  });
+  await expect(rejections).toHaveCount(1);
+  await expect(rejections).toBeEmpty();
+  const environmentPath = `/api/v1/workspaces/${ws}/projects/${query.get("project")}/environments/${query.get("environment")}`;
+  const rejectionBranch = `rejection-${crypto.randomUUID()}`;
+  const configured = await page.request.post(`${environmentPath}/builds`, {
+    headers,
+    data: {
+      baseRevisionId: saved.id,
+      applicationId: saved.specification.applications[0].id,
+      requestKey: crypto.randomUUID(),
+      configuration: {
+        ...completed.pipeline.build,
+        branch: rejectionBranch,
+        arguments: { PUBLIC_TOKEN: "browser-runtime-canary" },
+        autoBuild: true,
+      },
+    },
+  });
+  expect(configured.status()).toBe(202);
+  const initial = (
+    await (
+      await request.get("http://127.0.0.1:15181/agent/v1/poll", {
+        headers: agentHeaders,
+      })
+    ).json()
+  ).command;
+  expect(
+    (
+      await request.post("http://127.0.0.1:15181/agent/v1/report", {
+        headers: agentHeaders,
+        data: {
+          id: initial.id,
+          generation: initial.generation,
+          planHash: initial.planHash,
+          sequence: 1,
+          state: "cancelled",
+          note: "Fixture complete.",
+          steps: [],
+        },
+      })
+    ).status(),
+  ).toBe(204);
+  expect(
+    (
+      await page.request.post(`${environmentPath}/secrets`, {
+        headers,
+        data: { name: "LATER_TOKEN", value: "browser-runtime-canary" },
+      })
+    ).status(),
+  ).toBe(201);
+  expect(
+    (
+      await request.post("http://127.0.0.1:15185/__fixture/head", {
+        headers: { Authorization: "token browser-api-fixture" },
+        data: { branch: rejectionBranch, commit: "b".repeat(40) },
+      })
+    ).status(),
+  ).toBe(204);
+  const rejectedPush = JSON.stringify({
+    ref: `refs/heads/${rejectionBranch}`,
+    after: "b".repeat(40),
+    repository: { id: 12 },
+  });
+  expect(
+    (
+      await request.post(
+        `http://127.0.0.1:15181/hooks/git/${connection.connection.id}`,
+        {
+          headers: {
+            "Content-Type": "application/json",
+            "X-Gitea-Event": "push",
+            "X-Gitea-Delivery": crypto.randomUUID(),
+            "X-Gitea-Signature": createHmac("sha256", connection.webhookSecret)
+              .update(rejectedPush)
+              .digest("hex"),
+          },
+          data: rejectedPush,
+        },
+      )
+    ).status(),
+  ).toBe(202);
+  await expect(
+    page.getByRole("heading", { name: "Automatic builds need attention" }),
+  ).toBeVisible();
+  await expect(rejections).toContainText(
+    "web · bbbbbbbbbbbb · Public build arguments contain a known secret value",
+  );
+  await expect(page.getByText("browser-runtime-canary")).toHaveCount(0);
   await page.emulateMedia({ reducedMotion: "reduce", colorScheme: "dark" });
   const accessibility = await new AxeBuilder({ page })
     .withTags(["wcag2a", "wcag2aa", "wcag21aa", "wcag22aa"])
     .analyze();
   expect(accessibility.violations).toEqual([]);
+  if (info.project.name === "chromium") {
+    await page
+      .getByRole("heading", { name: "Automatic builds need attention" })
+      .scrollIntoViewIfNeeded();
+    await page.screenshot({
+      path: info.outputPath("build-rejection-desktop.png"),
+    });
+  }
   await page.setViewportSize({ width: 390, height: 844 });
   expect(
     await page.evaluate(
       () => document.documentElement.scrollWidth <= innerWidth,
     ),
   ).toBe(true);
+  if (info.project.name === "chromium") {
+    await page
+      .getByRole("heading", { name: "Automatic builds need attention" })
+      .scrollIntoViewIfNeeded();
+    await page.screenshot({
+      path: info.outputPath("build-rejection-mobile.png"),
+    });
+  }
 });

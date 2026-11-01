@@ -18,6 +18,16 @@ import (
 	"path/filepath"
 )
 
+// Preflight advertises continuation only after this journal opened successfully.
+func (j *Journal) Preflight(ctx context.Context, docker *client.Client, version, dir string, cli ...string) api.AgentHeartbeat {
+	h := Preflight(ctx, docker, version, dir, cli...)
+	if j.formatVersion == localStateVersion && h.Capabilities.CrossHost != nil && *h.Capabilities.CrossHost {
+		yes := true
+		h.Capabilities.MaintenanceContinuation = &yes
+	}
+	return h
+}
+
 func Preflight(ctx context.Context, docker *client.Client, version, dir string, cli ...string) api.AgentHeartbeat {
 	h := api.AgentHeartbeat{Capabilities: api.AgentCapabilities{Os: runtime.GOOS, Arch: api.AgentCapabilitiesArch(runtime.GOARCH), Protocol: 1, Version: version}, Preflight: api.HostPreflight{Notes: []string{}}}
 	credentialFreeCancel := true

@@ -36,16 +36,21 @@ type Record struct {
 	Report       api.AgentReport
 	Checkpoint   string
 	Acknowledged bool
+	AcceptedAt   *time.Time                 `json:",omitempty"`
 	Railpack     *pipeline.PreparedRailpack `json:",omitempty"`
 }
 type Journal struct {
-	db         *bolt.DB
-	keys       *cryptobox.Keyring
-	dir        string
-	recoveryMu sync.Mutex
+	db             *bolt.DB
+	keys           *cryptobox.Keyring
+	dir            string
+	recoveryMu     sync.Mutex
+	formatVersion  int
+	startupUpdates map[uuid.UUID]bool
 }
 
-func Open(dir string) (*Journal, error) {
+func Open(dir string) (*Journal, error) { return openJournal(dir, nil) }
+
+func openJournal(dir string, point func(string) error) (*Journal, error) {
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return nil, err
 	}
@@ -58,39 +63,10 @@ func Open(dir string) (*Journal, error) {
 		return nil, err
 	}
 	fail := func(err error) (*Journal, error) { db.Close(); return nil, err }
-	path := filepath.Join(dir, "keyring.json")
-	if _, err = os.Stat(path); os.IsNotExist(err) {
-		keys, e := cryptobox.New("host")
-		if e != nil {
-			return fail(e)
-		}
-		if e = keys.WriteNew(path); e != nil {
-			return fail(e)
-		}
-	}
-	keys, err := cryptobox.Load(path)
-	if err != nil {
+	j := &Journal{db: db, dir: dir}
+	if err = j.openLocalKeys(point); err != nil {
 		return fail(err)
 	}
-	keyFile, err := os.Open(path)
-	if err != nil {
-		return fail(err)
-	}
-	err = keyFile.Sync()
-	keyFile.Close()
-	if err != nil {
-		return fail(err)
-	}
-	parent, err := os.Open(dir)
-	if err != nil {
-		return fail(err)
-	}
-	err = parent.Sync()
-	parent.Close()
-	if err != nil {
-		return fail(err)
-	}
-	j := &Journal{db: db, keys: keys, dir: dir}
 	err = db.Update(func(tx *bolt.Tx) error {
 		for _, b := range []string{"identity", "operations", "generations", "units", "routing", "schedules", "schedules-v2", "upgrades", "releases", "preview-cleanups", "cross-host", "distributed-fences", "retained-pools", "recovery-heads", "recovery-checkpoints", "recovery-authority", "recovery-gc"} {
 			if _, e := tx.CreateBucketIfNotExists([]byte(b)); e != nil {
@@ -105,11 +81,26 @@ func Open(dir string) (*Journal, error) {
 	if err = j.pruneRecovery(); err != nil {
 		return fail(err)
 	}
+	j.formatVersion = localStateVersion
+	j.startupUpdates = map[uuid.UUID]bool{}
+	pending, err := j.Pending()
+	if err != nil {
+		return fail(err)
+	}
+	for _, record := range pending {
+		if record.Command.Kind == "update" && record.Report.State == "running" {
+			j.startupUpdates[record.Command.Id] = true
+		}
+	}
 	return j, nil
 }
 func (j *Journal) Close() error { return j.db.Close() }
 func (j *Journal) get(tx *bolt.Tx, bucket, key string, out any) error {
-	b := tx.Bucket([]byte(bucket)).Get([]byte(key))
+	bucketValue := tx.Bucket([]byte(bucket))
+	if bucketValue == nil {
+		return os.ErrNotExist
+	}
+	b := bucketValue.Get([]byte(key))
 	if b == nil {
 		return os.ErrNotExist
 	}
@@ -300,6 +291,10 @@ func (j *Journal) Accept(c api.ExecutionCommand) (Record, error) {
 			return e
 		}
 		out = Record{Command: c, Report: api.AgentReport{Id: c.Id, Generation: c.Generation, PlanHash: c.PlanHash, Sequence: 1, State: "running", Steps: []api.ExecutionStep{}}, Checkpoint: "accepted"}
+		if c.Kind == "update" {
+			accepted := time.Now().UTC()
+			out.AcceptedAt = &accepted
+		}
 		return j.put(tx, "operations", c.Id.String(), out)
 	})
 	return out, err

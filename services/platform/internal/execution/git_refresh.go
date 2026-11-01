@@ -228,11 +228,29 @@ func (w *refreshWorker) Work(ctx context.Context, job *river.Job[refreshArgs]) e
 			return err
 		}
 		hash := buildInputHash(connection, head, cfg)
-		if _, err = tx.Exec(ctx, "UPDATE build_targets SET input_hash=$4,requested_commit=$5,automatic_requested_commit=$5 WHERE workspace_id=$1 AND environment_id=$2 AND application_id=$3", a.Workspace, v.env, v.app, hash, head); err != nil {
+		// A rejected target must not roll back admissions for other environments.
+		target, err := tx.Begin(ctx)
+		if err != nil {
 			return err
 		}
-		_, err = w.service.insertPipeline(ctx, tx, a.Workspace, v.env, uuid.New(), runner, pipeline.Command{Action: "build", Connection: connection, CompareCommit: compare, Commit: head, Branch: a.Branch, RevisionID: v.base, UnitID: env.Unit, AppID: v.app, Build: &cfg, InputHash: hash, Registry: registry, SubmittedAt: time.Now().UTC()})
+		_, err = w.service.insertPipeline(ctx, target, a.Workspace, v.env, uuid.New(), runner, pipeline.Command{Action: "build", Connection: connection, CompareCommit: compare, Commit: head, Branch: a.Branch, RevisionID: v.base, UnitID: env.Unit, AppID: v.app, Build: &cfg, InputHash: hash, Registry: registry, SubmittedAt: time.Now().UTC()})
 		if err != nil {
+			if rollbackErr := target.Rollback(ctx); rollbackErr != nil {
+				return rollbackErr
+			}
+			var rejected *buildInputRejection
+			if errors.As(err, &rejected) {
+				if _, err = tx.Exec(ctx, "UPDATE build_targets SET rejected_commit=$4,rejection_reason=$5,rejected_at=clock_timestamp() WHERE workspace_id=$1 AND environment_id=$2 AND application_id=$3", a.Workspace, v.env, v.app, head, rejected.reason); err != nil {
+					return err
+				}
+				continue
+			}
+			return err
+		}
+		if _, err = target.Exec(ctx, "UPDATE build_targets SET input_hash=$4,requested_commit=$5,automatic_requested_commit=$5,rejected_commit=NULL,rejection_reason=NULL,rejected_at=NULL WHERE workspace_id=$1 AND environment_id=$2 AND application_id=$3", a.Workspace, v.env, v.app, hash, head); err != nil {
+			return err
+		}
+		if err = target.Commit(ctx); err != nil {
 			return err
 		}
 		capacity--

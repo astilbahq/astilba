@@ -114,6 +114,9 @@ func (s *Service) Export(ctx context.Context, p store.Principal, ws uuid.UUID, p
 		}
 		for _, table := range tables {
 			for _, row := range archive.Tables[table.Name] {
+				if err := omitExportLogs(table.Name, row); err != nil {
+					return err
+				}
 				if err := s.transformCredential(table.Name, row, ws, true); err != nil {
 					return err
 				}

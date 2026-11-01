@@ -49,6 +49,9 @@ func (s *Service) GitHubStatus(ctx context.Context, p store.Principal, ws uuid.U
 	return out, err
 }
 func (s *Service) StartGitHub(ctx context.Context, p store.Principal, ws uuid.UUID, session string) (map[string]any, error) {
+	if session == "" {
+		return nil, domain.Unauthenticated
+	}
 	if s.GitHub == nil {
 		return nil, domain.Invalid("githubApp.notConfigured")
 	}

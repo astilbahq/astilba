@@ -17,10 +17,12 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/alexedwards/scs/v2"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
 	"github.com/astilbahq/astilba/services/platform/internal/execution"
@@ -119,8 +121,42 @@ func TestGitHubOnboardingDelegationAndRecoveryBoundaries(t *testing.T) {
 			t.Fatalf("webhook status %d: %s", res.StatusCode, raw)
 		}
 	}
+	// An overlapping idle refresh must not erase the browser's OAuth binding.
+	gate := &heldSessionStore{CtxStore: f.apiServer.Sessions.Store.(scs.CtxStore), loaded: make(chan struct{}), release: make(chan struct{})}
+	f.apiServer.Sessions.Store = gate
+	release := sync.OnceFunc(func() { close(gate.release) })
+	defer release()
+	readCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	request, _ := http.NewRequestWithContext(readCtx, "GET", f.server.URL+"/api/v1/session", nil)
+	serverURL, _ := url.Parse(f.server.URL)
+	for _, cookie := range b.client.Jar.Cookies(serverURL) {
+		request.AddCookie(cookie)
+	}
+	finished := make(chan error, 1)
+	gate.armed.Store(true)
+	go func() {
+		response, err := http.DefaultClient.Do(request)
+		if err == nil {
+			_, err = io.Copy(io.Discard, response.Body)
+			response.Body.Close()
+			if response.StatusCode != http.StatusOK {
+				err = fmt.Errorf("overlapping session read returned %d", response.StatusCode)
+			}
+		}
+		finished <- err
+	}()
+	select {
+	case <-gate.loaded:
+	case <-readCtx.Done():
+		t.Fatal("session request did not reach the held store read")
+	}
 	var start api.GitHubAuthorizationStart
 	b.call("POST", prefix+"/github-app/authorizations", nil, 200, &start)
+	release()
+	if err := <-finished; err != nil {
+		t.Fatal(err)
+	}
 	u, _ := url.Parse(start.AuthorizationUrl)
 	state := u.Query().Get("state")
 	challenge = u.Query().Get("code_challenge")
@@ -130,6 +166,8 @@ func TestGitHubOnboardingDelegationAndRecoveryBoundaries(t *testing.T) {
 	if exchanged.Load() != 0 {
 		t.Fatal("wrong session reached code exchange")
 	}
+	// Failed credentials do not alter the current browser's pending authority.
+	b.call("POST", "/api/v1/auth/login", map[string]string{"email": "owner@example.test", "password": f.password + "wrong"}, 400, nil)
 	var grant execution.GitHubAuthorization
 	b.call("POST", "/api/v1/github-app/complete", map[string]string{"state": state, "code": "fixture-code"}, 200, &grant)
 	b.call("POST", "/api/v1/github-app/complete", map[string]string{"state": state, "code": "fixture-code"}, 200, nil)
@@ -327,7 +365,11 @@ func TestGitHubOnboardingDelegationAndRecoveryBoundaries(t *testing.T) {
 	if poll.Command == nil || !poll.Command.CancelRequested || strings.Contains(string(*poll.Command.Pipeline), "canary") {
 		t.Fatal("revocation did not produce credential-free cancellation")
 	}
-	// A fresh login never inherits the old authorization nonce.
+	// Check a live proof, rather than the consumed connection grant.
+	b.call("POST", prefix+"/github-app/authorizations", nil, 200, &start)
+	u, _ = url.Parse(start.AuthorizationUrl)
+	state = u.Query().Get("state")
+	challenge = u.Query().Get("code_challenge")
 	b.login("owner@example.test", f.password)
 	b.call("POST", "/api/v1/github-app/complete", map[string]string{"state": state, "code": "fixture-code"}, 403, nil)
 	if _, e = f.st.Pool.Exec(ctx, "UPDATE github_app_authorizations SET expires_at=now()-interval '1 second'"); e != nil {

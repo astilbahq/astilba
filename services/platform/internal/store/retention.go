@@ -22,6 +22,28 @@ func (s *Store) PruneHistory(ctx context.Context) error {
 	if e != nil {
 		return e
 	}
+	// Imported receipt JSON can contain older, unchecked shapes. Only recognized
+	// resource objects participate; malformed branches must not block other cleanup.
+	_, e = tx.Exec(ctx, `UPDATE cross_host_operations h SET receipts=(
+ SELECT jsonb_object_agg(receipt.key, CASE WHEN jsonb_typeof(receipt.value->'observation'->'resources')='array' THEN
+  jsonb_set(receipt.value,'{observation,resources}',COALESCE((
+   SELECT jsonb_agg(CASE WHEN jsonb_typeof(resource.value)='object' THEN resource.value-'logs' ELSE resource.value END ORDER BY resource.position)
+   FROM jsonb_array_elements(receipt.value->'observation'->'resources') WITH ORDINALITY resource(value,position)
+  ),'[]'::jsonb)) ELSE receipt.value END)
+ FROM jsonb_each(h.receipts) receipt
+) WHERE h.id IN (
+ SELECT h.id FROM cross_host_operations h JOIN execution_operations o ON o.id=h.id
+ WHERE o.created_at<$1 AND o.state IN ('succeeded','failed','cancelled')
+ AND EXISTS (
+  SELECT 1 FROM jsonb_each(CASE WHEN jsonb_typeof(h.receipts)='object' THEN h.receipts ELSE '{}'::jsonb END) receipt
+  CROSS JOIN LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(receipt.value->'observation'->'resources')='array' THEN receipt.value->'observation'->'resources' ELSE '[]'::jsonb END) resource
+  WHERE jsonb_typeof(resource.value)='object' AND resource.value ? 'logs'
+ )
+ ORDER BY o.created_at,h.id LIMIT 100 FOR UPDATE OF h SKIP LOCKED
+)`, cutoff)
+	if e != nil {
+		return e
+	}
 	_, e = tx.Exec(ctx, `DELETE FROM hosted_billing_events WHERE received_at<now()-interval '90 days'`)
 	if e != nil {
 		return e

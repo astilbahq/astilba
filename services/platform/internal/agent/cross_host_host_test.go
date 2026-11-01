@@ -574,18 +574,23 @@ if ! nc -z -w 2 "$DB_HOST" "$DB_PORT"; then
   printf 'Status: 503\r\nContent-Type: text/plain\r\n\r\nDatabase unreachable'
   exit
 fi
+if ! wget -T 2 -q -O /dev/null "$FILES_URL"; then
+  printf 'Status: 503\r\nContent-Type: text/plain\r\n\r\nFile provider unreachable'
+  exit
+fi
 printf 'Content-Type: text/plain\r\n\r\n'
 hostname
 CGI
 chmod +x /tmp/www/cgi-bin/health
 exec httpd -f -p 8080 -h /tmp/www`
 	spec := domain.Specification{Version: 1, Variables: []domain.Variable{}, Applications: []domain.Application{
-		{ID: app, Name: "Web", Source: domain.ApplicationSource{Kind: "image", Image: &webImage}, DependsOn: []uuid.UUID{pg}, Command: []string{"sh", "-c", script}, Health: &domain.HealthCheck{Port: 8080, Path: "/cgi-bin/health"}},
+		{ID: app, Name: "Web", Source: domain.ApplicationSource{Kind: "image", Image: &webImage}, DependsOn: []uuid.UUID{pg, files}, Command: []string{"sh", "-c", script}, Health: &domain.HealthCheck{Port: 8080, Path: "/cgi-bin/health"}},
 		{ID: pg, Name: "Database", Kind: "postgres", Source: domain.ApplicationSource{Kind: "image", Image: &pgImage}, Postgres: &domain.Postgres{Database: "app", Username: "app", PasswordSecretVersionID: secret}, Mounts: []domain.VolumeMount{{VolumeID: volume, Target: domain.PostgresMount(pgImage)}}},
-		{ID: files, Name: "Files", Kind: "worker", Source: domain.ApplicationSource{Kind: "image", Image: &webImage}, Command: []string{"sh", "-c", "test -f /files/value || echo retained-file-data > /files/value; exec sleep 10000"}, Mounts: []domain.VolumeMount{{VolumeID: fileVolume, Target: "/files"}}},
+		{ID: files, Name: "Files", Kind: "web", Source: domain.ApplicationSource{Kind: "image", Image: &webImage}, Command: []string{"sh", "-c", "test -f /files/value || echo retained-file-data > /files/value; exec httpd -f -p 8081 -h /files"}, Health: &domain.HealthCheck{Port: 8081, Path: "/value"}, Outputs: []domain.ServiceOutput{{Name: "URL", Type: "url", Scheme: "http", Port: 8081, Path: "/value"}}, Mounts: []domain.VolumeMount{{VolumeID: fileVolume, Target: "/files"}}},
 	}, Volumes: []domain.Volume{{ID: volume, Name: "Data"}, {ID: fileVolume, Name: "Files"}}, Bindings: []domain.Binding{
 		{ID: uuid.New(), SourceID: pg, TargetID: app, Output: "HOST", Variable: "DB_HOST"},
 		{ID: uuid.New(), SourceID: pg, TargetID: app, Output: "PORT", Variable: "DB_PORT"},
+		{ID: uuid.New(), SourceID: files, TargetID: app, Output: "URL", Variable: "FILES_URL"},
 	}, Routes: []domain.Route{{ID: uuid.New(), TargetID: app, Protocol: "http", Domain: "cross-host.example.test", Port: 8080, TLS: "off", AllowCIDRs: []string{}}}}
 	secrets := map[string]string{secret.String(): "disposable-cross-host-canary"}
 	initial := deployment.Plan{ID: uuid.New(), ServerID: primary.server, EnvironmentID: uuid.New(), UnitID: uuid.New(), RevisionID: uuid.New(), Recipe: deployment.Recipe, Specification: spec, Images: map[string]string{}, HostChanges: true, ExpiresAt: time.Now().Add(time.Hour)}.WithHash()
@@ -620,13 +625,16 @@ exec httpd -f -p 8080 -h /tmp/www`
 	}
 	group, parent := uuid.New(), uuid.New()
 	primaryInstance, remoteInstance, remoteUnit := uuid.New(), uuid.New(), uuid.New()
-	dbEndpoint, webEndpoint := uuid.New(), uuid.New()
+	dbEndpoint, webEndpoint, filesEndpoint := uuid.New(), uuid.New(), uuid.New()
 	manifests[0].Generation = 2
 	manifests[1].Generation = 2
-	manifests[0].Exports = []hostnetwork.Endpoint{{ID: dbEndpoint, UnitID: initial.UnitID, ResourceID: pg, InstanceID: pg, Port: 20001, ContainerPort: 5432, Sources: []hostnetwork.Source{{ServerID: remote.server, UnitID: remoteUnit}}}}
+	manifests[0].Exports = []hostnetwork.Endpoint{
+		{ID: dbEndpoint, UnitID: initial.UnitID, ResourceID: pg, InstanceID: pg, Port: 20001, ContainerPort: 5432, Sources: []hostnetwork.Source{{ServerID: remote.server, UnitID: remoteUnit}}},
+		{ID: filesEndpoint, UnitID: initial.UnitID, ResourceID: files, InstanceID: files, Port: 20003, ContainerPort: 8081, Sources: []hostnetwork.Source{{ServerID: remote.server, UnitID: remoteUnit}}},
+	}
 	manifests[0].Egress = []hostnetwork.Egress{{Ingress: true, UnitID: initial.UnitID, ServerID: remote.server, EndpointID: webEndpoint, Port: 20002}}
 	manifests[1].Exports = []hostnetwork.Endpoint{{ID: webEndpoint, UnitID: remoteUnit, ResourceID: app, InstanceID: remoteInstance, Port: 20002, ContainerPort: 8080, Sources: []hostnetwork.Source{{ServerID: primary.server, UnitID: initial.UnitID}}}}
-	manifests[1].Egress = []hostnetwork.Egress{{UnitID: remoteUnit, ServerID: primary.server, EndpointID: dbEndpoint, Port: 20001}}
+	manifests[1].Egress = []hostnetwork.Egress{{UnitID: remoteUnit, ServerID: primary.server, EndpointID: dbEndpoint, Port: 20001}, {UnitID: remoteUnit, ServerID: primary.server, EndpointID: filesEndpoint, Port: 20003}}
 	spec.Applications = append([]domain.Application(nil), spec.Applications...)
 	spec.Applications[0].Replicas = 2
 	spec.Placement = &domain.Placement{NetworkID: network, IngressServerID: primary.server, Applications: []domain.ApplicationPlacement{{ApplicationID: app, CPUMillis: 200, MemoryMiB: 128, Targets: []domain.PlacementTarget{{ServerID: primary.server, Count: 1}, {ServerID: remote.server, Count: 1}}}}}
@@ -647,6 +655,7 @@ exec httpd -f -p 8080 -h /tmp/www`
 		} else {
 			local.Instances[app.String()] = []uuid.UUID{remoteInstance}
 			local.Outputs[pg.String()+":5432"] = deployment.PrivateEndpoint{ServerID: primary.server, UnitID: initial.UnitID, ResourceID: pg, InstanceID: pg, Address: manifests[0].Address, Port: 20001, ContainerPort: 5432}
+			local.Outputs[files.String()+":8081"] = deployment.PrivateEndpoint{ServerID: primary.server, UnitID: initial.UnitID, ResourceID: files, InstanceID: files, Address: manifests[0].Address, Port: 20003, ContainerPort: 8081}
 		}
 		p := deployment.Plan{ID: uuid.New(), ServerID: host.server, EnvironmentID: initial.EnvironmentID, UnitID: unitID, RevisionID: uuid.NewSHA1(group, []byte("revision")), Recipe: deployment.CrossHostRecipe, Specification: spec, Local: local, Images: map[string]string{}, ExpectedAppliedID: &initial.RevisionID, ExpiresAt: time.Now().Add(time.Hour), ReleaseOptions: &deployment.ReleaseOptions{DrainSeconds: 1, CommandTimeoutSeconds: 60}}
 		if index == 1 {
@@ -894,8 +903,17 @@ exec httpd -f -p 8080 -h /tmp/www`
 			if !interrupted {
 				fileSnapshot = status.Runs[0].Snapshot
 			}
+			// Freeze both resumptions while the non-PostgreSQL provider is
+			// stopped. Primary-first delivery must still recover this remote
+			// consumer after the frozen admission deadlines have elapsed.
+			resumes := []api.ExecutionCommand{command(0, "resume-source"), command(1, "resume-source")}
+			deadline := time.Now().Add(100 * time.Millisecond)
+			for index := range resumes {
+				resumes[index].Deadline = deadline
+			}
+			time.Sleep(time.Until(deadline) + time.Millisecond)
 			for index, host := range hosts {
-				host.command(t, command(index, "resume-source"))
+				host.command(t, resumes[index])
 				r := host.command(t, command(index, "complete"))
 				var receipt deployment.CrossHostReceipt
 				if err = json.Unmarshal(*r.Crosshost, &receipt); err != nil {

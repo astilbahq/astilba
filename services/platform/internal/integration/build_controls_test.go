@@ -209,4 +209,89 @@ func TestBuildControlsAndSuccessfulWatchBaseline(t *testing.T) {
 		t.Fatal("automatic build omitted Railpack frozen inputs")
 	}
 	report(c, "succeeded", pipeline.Result{Commit: p.Commit, Architecture: "arm64", Image: "astilba-build-" + c.Id.String() + ":built", Digest: "sha256:" + strings.Repeat("d", 64), Railpack: &pipeline.RailpackSummary{Version: pipeline.RailpackVersion, Frontend: pipeline.RailpackFrontend, Provider: "node", PlanHash: strings.Repeat("b", 64), Packages: map[string]string{"node": "24.18.1"}}})
+	t.Run("runtime secrets introduced after build configuration", func(t *testing.T) {
+		ctx := context.Background()
+		cfg.Arguments = map[string]string{"TOKEN": "later-runtime-canary"}
+		op := create(202)
+		// A legacy run has no proof that it was never delivered.
+		if _, err := f.st.Pool.Exec(ctx, "UPDATE pipeline_runs SET delivery_started=NULL WHERE id=$1", op.Id); err != nil {
+			t.Fatal(err)
+		}
+		b.call("POST", path+"/secrets", map[string]string{"name": "LATER_TOKEN", "value": "later-runtime-canary"}, 201, nil)
+		// A previously admitted command must not receive newly secret public inputs.
+		agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/poll", token, nil, 400, nil)
+		b.call("POST", prefix+"/operations/"+op.Id.String()+"/cancel", nil, 204, nil)
+		c := poll()
+		if !c.CancelRequested {
+			t.Fatal("secret rejection prevented credential-free cancellation")
+		}
+		report(c, "cancelled", pipeline.Result{})
+
+		var sibling api.Environment
+		b.call("POST", prefix+"/projects/"+project.Id.String()+"/environments", map[string]string{"name": "Unaffected sibling"}, 201, &sibling)
+		siblingPath := prefix + "/projects/" + project.Id.String() + "/environments/" + sibling.Id.String()
+		var siblingDraft api.Revision
+		b.call("PUT", siblingPath+"/draft", map[string]any{"baseRevisionId": sibling.DraftRevisionId, "specification": spec}, 200, &siblingDraft)
+		valid := cfg
+		valid.Arguments = map[string]string{}
+		b.call("POST", siblingPath+"/builds", map[string]any{"baseRevisionId": siblingDraft.Id, "applicationId": app, "requestKey": uuid.New(), "configuration": valid}, 202, nil)
+		initial := poll()
+		report(initial, "failed", pipeline.Result{})
+
+		var before int64
+		if err := f.st.Pool.QueryRow(ctx, "SELECT COALESCE(max(id),0) FROM river_job").Scan(&before); err != nil {
+			t.Fatal(err)
+		}
+		commit := strings.Repeat("2", 40)
+		push(commit)
+		var state string
+		deadline := time.Now().Add(10 * time.Second)
+		for time.Now().Before(deadline) {
+			if err := f.st.Pool.QueryRow(ctx, "SELECT state FROM river_job WHERE id>$1 AND kind='platform_git_refresh_v1' ORDER BY id DESC LIMIT 1", before).Scan(&state); err == nil && (state == "retryable" || state == "completed") {
+				break
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		var admitted int
+		if err := f.st.Pool.QueryRow(ctx, "SELECT count(*) FROM pipeline_runs WHERE environment_id=$1 AND configuration->>'commit'=$2", env.Id, commit).Scan(&admitted); err != nil {
+			t.Fatal(err)
+		}
+		if state != "completed" || admitted != 0 {
+			t.Fatal("automatic admission bypassed runtime-secret exclusion", state, admitted)
+		}
+		var siblings int
+		if err := f.st.Pool.QueryRow(ctx, "SELECT count(*) FROM pipeline_runs WHERE environment_id=$1 AND configuration->>'commit'=$2", sibling.Id, commit).Scan(&siblings); err != nil || siblings != 1 {
+			t.Fatal("rejected target prevented valid sibling progress", siblings, err)
+		}
+		var rejections []api.BuildRejection
+		body := b.call("GET", path+"/build-rejections", nil, 200, &rejections)
+		if len(rejections) != 1 || rejections[0].Commit != commit || rejections[0].Reason != api.ArgumentsContainSecret || bytes.Contains(body, []byte("later-runtime-canary")) {
+			t.Fatal("automatic rejection lost its safe diagnostic", string(body))
+		}
+		reader := issueAutomation(t, b, path, domain.EnvironmentRead)
+		bearerCall(t, f, *reader.Token, "GET", path+"/build-rejections", nil, 200, &rejections)
+		runner := issueAutomation(t, b, path, domain.BuildRun)
+		bearerCall(t, f, *runner.Token, "GET", path+"/build-rejections", nil, 403, nil)
+		report(poll(), "failed", pipeline.Result{})
+		next := strings.Repeat("3", 40)
+		push(next)
+		c = poll()
+		var following pipeline.Command
+		if err := json.Unmarshal(*c.Pipeline, &following); err != nil || following.Commit != next || c.EnvironmentId != sibling.Id {
+			t.Fatal("completed rejection held the branch refresh lease", c, err)
+		}
+		report(c, "failed", pipeline.Result{})
+		// Replacing the invalid configuration clears the diagnostic.
+		cfg.Arguments = map[string]string{}
+		fresh := create(202)
+		b.call("GET", path+"/build-rejections", nil, 200, &rejections)
+		if len(rejections) != 0 {
+			t.Fatal("successful admission retained a stale rejection", rejections)
+		}
+		c = poll()
+		if c.Id != fresh.Id {
+			t.Fatal("replacement configuration did not run", c.Id)
+		}
+		report(c, "failed", pipeline.Result{})
+	})
 }

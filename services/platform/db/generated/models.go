@@ -125,15 +125,18 @@ type BuildSecretVersion struct {
 }
 
 type BuildTarget struct {
-	WorkspaceID              uuid.UUID `json:"workspace_id"`
-	EnvironmentID            uuid.UUID `json:"environment_id"`
-	ApplicationID            uuid.UUID `json:"application_id"`
-	ConnectionID             uuid.UUID `json:"connection_id"`
-	Configuration            []byte    `json:"configuration"`
-	InputHash                string    `json:"input_hash"`
-	RequestedCommit          string    `json:"requested_commit"`
-	PolicyActor              uuid.UUID `json:"policy_actor"`
-	AutomaticRequestedCommit string    `json:"automatic_requested_commit"`
+	WorkspaceID              uuid.UUID   `json:"workspace_id"`
+	EnvironmentID            uuid.UUID   `json:"environment_id"`
+	ApplicationID            uuid.UUID   `json:"application_id"`
+	ConnectionID             uuid.UUID   `json:"connection_id"`
+	Configuration            []byte      `json:"configuration"`
+	InputHash                string      `json:"input_hash"`
+	RequestedCommit          string      `json:"requested_commit"`
+	PolicyActor              uuid.UUID   `json:"policy_actor"`
+	AutomaticRequestedCommit string      `json:"automatic_requested_commit"`
+	RejectedCommit           pgtype.Text `json:"rejected_commit"`
+	RejectionReason          pgtype.Text `json:"rejection_reason"`
+	RejectedAt               *time.Time  `json:"rejected_at"`
 }
 
 type CrossHostApproval struct {
@@ -519,15 +522,16 @@ type PipelineAutoDeployment struct {
 }
 
 type PipelineRun struct {
-	ID            uuid.UUID  `json:"id"`
-	WorkspaceID   uuid.UUID  `json:"workspace_id"`
-	EnvironmentID uuid.UUID  `json:"environment_id"`
-	ApplicationID uuid.UUID  `json:"application_id"`
-	RevisionID    uuid.UUID  `json:"revision_id"`
-	Configuration []byte     `json:"configuration"`
-	Result        []byte     `json:"result"`
-	ArtifactID    *uuid.UUID `json:"artifact_id"`
-	CreatedAt     time.Time  `json:"created_at"`
+	ID              uuid.UUID   `json:"id"`
+	WorkspaceID     uuid.UUID   `json:"workspace_id"`
+	EnvironmentID   uuid.UUID   `json:"environment_id"`
+	ApplicationID   uuid.UUID   `json:"application_id"`
+	RevisionID      uuid.UUID   `json:"revision_id"`
+	Configuration   []byte      `json:"configuration"`
+	Result          []byte      `json:"result"`
+	ArtifactID      *uuid.UUID  `json:"artifact_id"`
+	CreatedAt       time.Time   `json:"created_at"`
+	DeliveryStarted pgtype.Bool `json:"delivery_started"`
 }
 
 type PreviewPolicy struct {

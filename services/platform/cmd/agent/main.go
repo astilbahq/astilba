@@ -97,8 +97,14 @@ func run() error {
 		return e
 	}
 	defer docker.Close()
+	var j *agent.Journal
 	preflight := func(ctx context.Context) api.AgentHeartbeat {
-		h := agent.Preflight(ctx, docker, version, *dir, *dockerCLI, *resticCLI)
+		var h api.AgentHeartbeat
+		if j == nil {
+			h = agent.Preflight(ctx, docker, version, *dir, *dockerCLI, *resticCLI)
+		} else {
+			h = j.Preflight(ctx, docker, version, *dir, *dockerCLI, *resticCLI)
+		}
 		configured := *acmeEmail != ""
 		h.Preflight.CertificateContactConfigured = &configured
 		return h
@@ -106,7 +112,7 @@ func run() error {
 	if command == "preflight" {
 		return json.NewEncoder(os.Stdout).Encode(preflight(ctx))
 	}
-	j, e := agent.Open(*dir)
+	j, e = agent.Open(*dir)
 	if e != nil {
 		return e
 	}
@@ -335,6 +341,13 @@ func run() error {
 		return preflight(ctx)
 	}
 	var updated atomic.Bool
+	engine.VerifyInstalledUpdate = func(r api.AgentRelease) error {
+		cfg, err := j.Config()
+		if err != nil {
+			return err
+		}
+		return agent.VerifyInstalledUpdate(r, ed25519.PublicKey(cfg.PublicKey), *executable)
+	}
 	engine.Update = func(ctx context.Context, r api.AgentRelease) error {
 		e := agent.RemoteUpdate(ctx, c, r, *executable)
 		if e == nil {

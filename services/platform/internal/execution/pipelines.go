@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"strings"
 	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
@@ -89,7 +88,7 @@ func (s *Service) insertPipeline(ctx context.Context, tx pgx.Tx, ws, env, key, s
 		return out, domain.Invalid("pipeline")
 	}
 	hydrated := p
-	if err := s.populatePipeline(ctx, tx, ws, &hydrated); err != nil {
+	if err := s.populatePipeline(ctx, tx, ws, env, &hydrated); err != nil {
 		return out, err
 	}
 	var count int
@@ -114,7 +113,7 @@ func (s *Service) insertPipeline(ctx context.Context, tx pgx.Tx, ws, env, key, s
 	if err != nil {
 		return out, err
 	}
-	_, err = tx.Exec(ctx, "INSERT INTO pipeline_runs(id,workspace_id,environment_id,application_id,revision_id,configuration) VALUES($1,$2,$3,$4,$5,$6)", id, ws, env, p.AppID, p.RevisionID, raw)
+	_, err = tx.Exec(ctx, "INSERT INTO pipeline_runs(id,workspace_id,environment_id,application_id,revision_id,configuration,delivery_started) VALUES($1,$2,$3,$4,$5,$6,false)", id, ws, env, p.AppID, p.RevisionID, raw)
 	return out, err
 }
 func pipelineExisting(ctx context.Context, tx pgx.Tx, ws, env, key uuid.UUID, action string) (api.Operation, bool, error) {
@@ -416,47 +415,21 @@ func (s *Service) admitBuild(ctx context.Context, tx pgx.Tx, p store.Principal, 
 		}
 		registry = &r
 	}
-	total := 0
-	for _, id := range c.Secrets {
-		var cipher []byte
-		if err = tx.QueryRow(ctx, "SELECT encrypted_value FROM build_secret_versions WHERE workspace_id=$1 AND id=$2", ws, id).Scan(&cipher); err != nil {
-			return api.Operation{}, domain.Invalid("build.secrets")
-		}
-		plain, err := s.Store.Keys.Open(cipher, integrationIdentity(ws, id, "build-secret"))
-		if err != nil {
-			return api.Operation{}, err
-		}
-		total += len(plain)
-		for _, v := range c.Arguments {
-			if len(plain) > 0 && strings.Contains(v, string(plain)) {
-				return api.Operation{}, domain.Invalid("build.argumentsContainSecret")
-			}
-		}
-	}
-	argumentFiles := []composeproject.File{}
-	for _, value := range c.Arguments {
-		argumentFiles = append(argumentFiles, composeproject.File{Content: value})
-	}
-	if len(c.Arguments) > 0 {
-		if err = s.rejectRuntimeSecrets(ctx, tx, ws, env, composeproject.Bundle{Files: argumentFiles}); err != nil {
-			return api.Operation{}, err
-		}
-	}
-	if total > 32768 {
-		return api.Operation{}, domain.Invalid("build.secrets")
-	}
 	hash := buildInputHash(connection, commit, c)
+	out, err := s.insertPipeline(ctx, tx, ws, env, key, server, pipeline.Command{Action: "build", Connection: connection, Commit: commit, Branch: c.Branch, RevisionID: base, UnitID: v.Unit, AppID: app, Build: &c, InputHash: hash, Registry: registry, SubmittedAt: time.Now().UTC()})
+	if err != nil {
+		return out, err
+	}
 	if persist {
 		raw, _ := json.Marshal(c)
-		_, err = tx.Exec(ctx, "INSERT INTO build_targets(workspace_id,environment_id,application_id,connection_id,configuration,input_hash,requested_commit,automatic_requested_commit,policy_actor) VALUES($1,$2,$3,$4,$5,$6,$7,$7,$8) ON CONFLICT(workspace_id,environment_id,application_id) DO UPDATE SET connection_id=EXCLUDED.connection_id,configuration=EXCLUDED.configuration,input_hash=EXCLUDED.input_hash,requested_commit=EXCLUDED.requested_commit,automatic_requested_commit=EXCLUDED.automatic_requested_commit,policy_actor=EXCLUDED.policy_actor", ws, env, app, c.ConnectionID, raw, hash, commit, p.Account.ID)
+		_, err = tx.Exec(ctx, "INSERT INTO build_targets(workspace_id,environment_id,application_id,connection_id,configuration,input_hash,requested_commit,automatic_requested_commit,policy_actor) VALUES($1,$2,$3,$4,$5,$6,$7,$7,$8) ON CONFLICT(workspace_id,environment_id,application_id) DO UPDATE SET connection_id=EXCLUDED.connection_id,configuration=EXCLUDED.configuration,input_hash=EXCLUDED.input_hash,requested_commit=EXCLUDED.requested_commit,automatic_requested_commit=EXCLUDED.automatic_requested_commit,policy_actor=EXCLUDED.policy_actor,rejected_commit=NULL,rejection_reason=NULL,rejected_at=NULL", ws, env, app, c.ConnectionID, raw, hash, commit, p.Account.ID)
 	} else {
-		_, err = tx.Exec(ctx, "UPDATE build_targets SET input_hash=$4,requested_commit=$5 WHERE workspace_id=$1 AND environment_id=$2 AND application_id=$3", ws, env, app, hash, commit)
+		_, err = tx.Exec(ctx, "UPDATE build_targets SET input_hash=$4,requested_commit=$5,rejected_commit=NULL,rejection_reason=NULL,rejected_at=NULL WHERE workspace_id=$1 AND environment_id=$2 AND application_id=$3", ws, env, app, hash, commit)
 	}
 	if err != nil {
 		return api.Operation{}, err
 	}
-	out, err := s.insertPipeline(ctx, tx, ws, env, key, server, pipeline.Command{Action: "build", Connection: connection, Commit: commit, Branch: c.Branch, RevisionID: base, UnitID: v.Unit, AppID: app, Build: &c, InputHash: hash, Registry: registry, SubmittedAt: time.Now().UTC()})
-	return out, err
+	return out, nil
 }
 func buildInputHash(c pipeline.Connection, commit string, b pipeline.BuildConfig) string {
 	// Scheduling and deployment policy do not change the built artifact.

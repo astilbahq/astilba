@@ -190,6 +190,9 @@ func (s *Service) SavePreviewPolicy(ctx context.Context, p store.Principal, ws, 
 		if err = s.validateVisualSecrets(ctx, tx, ws, env, v.Spec); err != nil {
 			return err
 		}
+		if _, err = s.buildInputs(ctx, tx, ws, env, cfg.Build); err != nil {
+			return err
+		}
 		id, gen := uuid.New(), int64(1)
 		if exists {
 			id = old.ID

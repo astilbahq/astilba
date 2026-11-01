@@ -2,7 +2,6 @@ import { execFileSync } from "node:child_process";
 import {
   mkdir,
   mkdtemp,
-  readdir,
   readFile,
   rm,
   writeFile,
@@ -10,6 +9,7 @@ import {
 import { tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
 import { pnpm } from "./platform-tools.mjs";
+import { syncSQLC } from "./platform-generated-files.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const check = process.argv.includes("--check");
@@ -71,11 +71,7 @@ try {
       join(root, "apps/platform/src/api/generated/schema.d.ts"),
     ],
   ];
-  for (const name of await readdir(join(temporary, "sqlc")))
-    files.push([
-      join(temporary, "sqlc", name),
-      join(module, "db/generated", name),
-    ]);
+  await syncSQLC(join(temporary, "sqlc"), join(module, "db/generated"), check);
   for (const [source, destination] of files) {
     const generated = await readFile(source);
     if (check) {
