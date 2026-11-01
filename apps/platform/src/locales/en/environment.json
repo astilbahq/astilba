@@ -90,5 +90,22 @@
     "merged": "Your edits are preserved and will be saved on top of the compared revision.",
     "layoutSeparate": "Canvas positions are saved separately.",
     "conflictRegion": "Conflicting revision"
+  },
+  "visualEditor": {
+    "kinds": {
+      "web": "Web service",
+      "worker": "Worker",
+      "postgres": "PostgreSQL",
+      "network": "Network",
+      "volume": "Data volume"
+    },
+    "instances_one": "{{count}} instance",
+    "instances_other": "{{count}} instances",
+    "closeProperties": "Close properties",
+    "graph": "Services and connections",
+    "emptyTitle": "Build your service map",
+    "emptyDescription": "Add a service below to start connecting your environment.",
+    "selectTitle": "Select a resource",
+    "selectDescription": "Choose a service or data volume to inspect its configuration."
   }
 }

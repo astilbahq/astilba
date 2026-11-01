@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import type { Schema } from "../../api/client";
 import { Button } from "../../components/button";
 import { Checkbox } from "../../components/checkbox";
@@ -24,6 +25,8 @@ export function ServiceProperties({
   update,
   stage,
   onRemove,
+  className,
+  header,
 }: {
   app: App;
   spec: Spec;
@@ -36,10 +39,15 @@ export function ServiceProperties({
   update: (app: App) => void;
   stage: (spec: Spec) => void;
   onRemove: () => void;
+  className?: string;
+  header?: ReactNode;
 }) {
   return (
-    <section className={s.panel} aria-label={`Properties for ${app.name}`}>
-      <h3>{app.name}</h3>
+    <section
+      className={className ?? s.panel}
+      aria-label={`Properties for ${app.name}`}
+    >
+      {header ?? <h3>{app.name}</h3>}
       {write && (
         <fieldset className={s.row}>
           <legend>Canvas position</legend>

@@ -5,9 +5,10 @@ import {
   Controls,
   type Node,
   type NodeChange,
+  Position,
   ReactFlow,
 } from "@xyflow/react";
-import { useContext, useEffect, useId, useState } from "react";
+import { useContext, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { cx } from "../../styled-system/css";
 import { client, result, type Schema } from "../api/client";
@@ -18,47 +19,28 @@ import {
 } from "../api/environment";
 import { Button } from "../components/button";
 import "./visual-editor.css";
-import { Input } from "../components/input";
-import { Label } from "../components/label";
-import { Select } from "../components/select";
+import { IconButton } from "../components/icon-button";
+import { Icon } from "../components/icons";
 import * as s from "../styles";
 import { ThemeContext } from "../theme";
-import { ErrorNotice, Field, Form, text, useAction } from "../ui";
+import { ErrorNotice, Form, text, useAction } from "../ui";
 import { GeneratedDomain } from "./generated-domain";
 import { ServiceCatalog } from "./service-catalog";
 import { ServiceConnections } from "./service-outputs";
 import * as v from "./visual-editor.styles";
+import {
+  AddServiceForm,
+  AddVolumeForm,
+  VolumeNameField,
+} from "./visual-editor/add-resource-forms";
 import { RouteEditor } from "./visual-editor/route-editor";
 import { ServiceProperties } from "./visual-editor/service-properties";
+import { ResourceSummary } from "./visual-resource";
 import "@xyflow/react/dist/style.css";
 
 export type { EnvironmentPath } from "../api/environment";
 type Spec = Schema["Specification"];
 type App = Schema["ApplicationReference"];
-const postgresImage =
-  "postgres:18.4-alpine3.23@sha256:996d0920e4ff9df1fc19dacb904492f3c1ec0ec1cc338f0ad7123be7731c5f5e";
-
-const postgres17Image =
-  "postgres:17.10-alpine3.23@sha256:8189a1f6e40904781fc9e2612687877791d21679866db58b1de996b31fc312e4";
-
-function VolumeNameField({ name }: { name: string }) {
-  const id = useId();
-  const [input, setInput] = useState({ name, value: name });
-  if (input.name !== name) setInput({ name, value: name });
-  return (
-    <Label htmlFor={id}>
-      Volume name
-      <Input
-        id={id}
-        name="name"
-        value={input.value}
-        onChange={(event) => setInput({ name, value: event.target.value })}
-        required
-      />
-    </Label>
-  );
-}
-
 export function VisualEditor({
   path,
   spec,
@@ -79,8 +61,15 @@ export function VisualEditor({
   const { theme } = useContext(ThemeContext);
   const { t } = useTranslation("environment");
   const configure = write && !spec.compose;
+  const graph = useRef<HTMLDivElement>(null);
+  const closeProperties = () => {
+    setSelected(undefined);
+    graph.current?.focus();
+  };
   const [selected, setSelected] = useState<string>();
-  const [view, setView] = useState<"canvas" | "list">("canvas");
+  const [view, setView] = useState<"canvas" | "list">(() =>
+    matchMedia("(width < 40rem)").matches ? "list" : "canvas",
+  );
   const [positions, setPositions] = useState<Schema["Layout"]["positions"]>();
   const [savedPositions, setSavedPositions] = useState("");
   const [notice, setNotice] = useState("");
@@ -149,34 +138,49 @@ export function VisualEditor({
     ...spec.applications.map((a, i) => ({
       id: a.id,
       position: positions?.[a.id] ?? {
-        x: (i % 3) * 250,
-        y: Math.floor(i / 3) * 140,
+        x: (i % 2) * 320,
+        y: Math.floor(i / 2) * 180,
       },
       data: {
-        label: `${a.name} · ${a.kind ?? "web"}${(a.replicas ?? 1) > 1 ? ` · ${a.replicas} instances` : ""}`,
+        label: (
+          <ResourceSummary
+            name={a.name}
+            kind={a.kind ?? "web"}
+            instances={a.replicas}
+            detail={
+              a.source.kind === "git" ? a.source.repository : a.source.image
+            }
+          />
+        ),
       },
       selected: a.id === selected,
       ariaLabel: `Configure ${a.name}`,
       className: "visual-node",
+      sourcePosition: Position.Right,
+      targetPosition: Position.Left,
     })),
     ...(spec.networks ?? []).map((network, i) => ({
       id: network.id,
-      position: positions?.[network.id] ?? { x: i * 250, y: -140 },
-      data: { label: `${network.name} · network` },
+      position: positions?.[network.id] ?? { x: i * 320, y: -180 },
+      data: { label: <ResourceSummary name={network.name} kind="network" /> },
       selected: network.id === selected,
       ariaLabel: `${network.name} network`,
       className: "visual-node",
+      sourcePosition: Position.Right,
+      targetPosition: Position.Left,
     })),
     ...(spec.volumes ?? []).map((v, i) => ({
       id: v.id,
       position: positions?.[v.id] ?? {
-        x: i * 250,
-        y: Math.ceil(spec.applications.length / 3) * 140,
+        x: i * 320,
+        y: Math.ceil(spec.applications.length / 2) * 180,
       },
-      data: { label: `${v.name} · volume` },
+      data: { label: <ResourceSummary name={v.name} kind="volume" /> },
       selected: v.id === selected,
       ariaLabel: `Configure ${v.name} volume`,
       className: "visual-node",
+      sourcePosition: Position.Top,
+      targetPosition: Position.Left,
     })),
   ];
   const move = (changes: NodeChange[]) => {
@@ -227,126 +231,305 @@ export function VisualEditor({
       </p>
       <ErrorNotice error={action.error ?? layout.error ?? secrets.error} />
       {notice && <p role="status">{notice}</p>}
-      {view === "canvas" ? (
-        <div className="visual-canvas">
-          <ReactFlow
-            nodes={nodes}
-            edges={[
-              ...spec.applications.flatMap((app) =>
-                (app.networks ?? []).map((id) => ({
-                  id: `network-${id}-${app.id}`,
-                  source: id,
-                  target: app.id,
-                  label: "Network",
-                  ariaLabel: `Network for ${app.name}`,
-                })),
-              ),
-              ...(spec.bindings ?? []).map((b) => ({
-                id: b.id,
-                source: b.sourceId,
-                target: b.targetId,
-                label: b.variable,
-                ariaLabel: `${b.variable} binding`,
-              })),
-              ...spec.applications.flatMap((a) =>
-                (a.mounts ?? []).map((m) => ({
-                  id: `mount-${a.id}-${m.volumeId}`,
-                  source: m.volumeId,
-                  target: a.id,
-                  label: m.readOnly ? "Read-only volume" : "Data volume",
-                  ariaLabel: `Volume attached to ${a.name}`,
-                })),
-              ),
-            ]}
-            onNodesChange={move}
-            onNodeClick={(_, node) => setSelected(node.id)}
-            onConnect={configure ? connect : undefined}
-            nodesDraggable={write}
-            nodesConnectable={configure}
-            deleteKeyCode={null}
-            fitView
-            fitViewOptions={{ maxZoom: 1 }}
-            colorMode={theme}
-            ariaLabelConfig={{
-              "node.a11yDescription.default":
-                "Press Enter to configure this service. Use the service list and forms to add connections without dragging.",
-            }}
-          >
-            <Background />
-            <Controls showInteractive={false} fitViewOptions={{ maxZoom: 1 }} />
-          </ReactFlow>
-        </div>
-      ) : (
-        <ul className={s.list}>
-          {(spec.networks ?? []).map((network) => (
-            <li key={network.id}>{network.name} · network</li>
-          ))}
-          {spec.applications.map((a) => (
-            <li key={a.id}>
+      <div className={v.editor}>
+        <div
+          className={v.graph}
+          ref={graph}
+          tabIndex={-1}
+          role="group"
+          aria-label={t(($) => $.visualEditor.graph)}
+        >
+          {view === "canvas" ? (
+            <div className="visual-canvas">
+              {nodes.length === 0 && (
+                <div className={v.emptyCanvas}>
+                  <h4 className={v.heading}>
+                    {configure
+                      ? t(($) => $.visualEditor.emptyTitle)
+                      : t(($) => $.emptyTitle)}
+                  </h4>
+                  <p className={s.muted}>
+                    {configure
+                      ? t(($) => $.visualEditor.emptyDescription)
+                      : t(($) => $.emptyReadOnly)}
+                  </p>
+                </div>
+              )}
+              <ReactFlow
+                nodes={nodes}
+                edges={[
+                  ...spec.applications.flatMap((app) =>
+                    (app.networks ?? []).map((id) => ({
+                      id: `network-${id}-${app.id}`,
+                      source: id,
+                      target: app.id,
+                      label: "Network",
+                      ariaLabel: `Network for ${app.name}`,
+                    })),
+                  ),
+                  ...(spec.bindings ?? []).map((b) => ({
+                    id: b.id,
+                    source: b.sourceId,
+                    target: b.targetId,
+                    label: b.variable,
+                    ariaLabel: `${b.variable} binding`,
+                  })),
+                  ...spec.applications.flatMap((a) =>
+                    (a.mounts ?? []).map((m) => ({
+                      id: `mount-${a.id}-${m.volumeId}`,
+                      source: m.volumeId,
+                      target: a.id,
+                      type: "smoothstep",
+                      label: m.readOnly ? "Read-only volume" : "Data volume",
+                      ariaLabel: `Volume attached to ${a.name}`,
+                    })),
+                  ),
+                ]}
+                onNodesChange={move}
+                onNodeClick={(_, node) => setSelected(node.id)}
+                onConnect={configure ? connect : undefined}
+                nodesDraggable={write}
+                nodesConnectable={configure}
+                deleteKeyCode={null}
+                fitView
+                fitViewOptions={{ maxZoom: 1 }}
+                colorMode={theme}
+                ariaLabelConfig={{
+                  "node.a11yDescription.default":
+                    "Press Enter to configure this service. Use the service list and forms to add connections without dragging.",
+                }}
+              >
+                <Background gap={24} size={1} />
+                <Controls
+                  orientation="horizontal"
+                  showInteractive={false}
+                  fitViewOptions={{ maxZoom: 1 }}
+                />
+              </ReactFlow>
+            </div>
+          ) : (
+            <ul className={v.resourceList}>
+              {(spec.networks ?? []).map((network) => (
+                <li key={network.id}>
+                  <ResourceSummary name={network.name} kind="network" />
+                </li>
+              ))}
+              {spec.applications.map((a) => (
+                <li key={a.id}>
+                  <ResourceSummary
+                    name={
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        className={v.resourceChoice}
+                        aria-pressed={selected === a.id}
+                        onClick={() => setSelected(a.id)}
+                      >
+                        {a.name}
+                      </Button>
+                    }
+                    kind={a.kind ?? "web"}
+                    instances={a.replicas}
+                    detail={
+                      a.source.kind === "git"
+                        ? a.source.repository
+                        : a.source.image
+                    }
+                  />
+                </li>
+              ))}
+              {spec.volumes?.map((volume) => (
+                <li key={volume.id}>
+                  <ResourceSummary
+                    name={
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        className={v.resourceChoice}
+                        aria-pressed={selected === volume.id}
+                        onClick={() => setSelected(volume.id)}
+                      >
+                        {volume.name}
+                      </Button>
+                    }
+                    kind="volume"
+                  />
+                </li>
+              ))}
+            </ul>
+          )}
+          {write && (
+            <div className={v.layout}>
               <Button
                 type="button"
-                aria-pressed={selected === a.id}
-                onClick={() => setSelected(a.id)}
+                size="sm"
+                disabled={!layoutDirty || dirty || action.isPending}
+                onClick={() =>
+                  action.run(async () => {
+                    const submitted = positions ?? {};
+                    const { queryKey } = layoutOptions(path);
+                    const previous = queries.getQueryState(queryKey);
+                    const saved = await result(
+                      client.PUT(
+                        "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/layout",
+                        {
+                          params: { path },
+                          body: {
+                            positions: Object.fromEntries(
+                              Object.entries(submitted).filter(([id]) =>
+                                [
+                                  ...spec.applications,
+                                  ...(spec.volumes ?? []),
+                                  ...(spec.routes ?? []),
+                                  ...(spec.networks ?? []),
+                                ].some((resource) => resource.id === id),
+                              ),
+                            ),
+                          },
+                        },
+                      ),
+                    );
+                    await publishLayout(queries, path, saved, previous);
+                    setSavedPositions(JSON.stringify(submitted));
+                    setNotice(
+                      "Layout saved. Running services were not changed.",
+                    );
+                  })
+                }
               >
-                {a.name}
-              </Button>{" "}
-              <span>{a.kind ?? "web"}</span>
-            </li>
-          ))}
-        </ul>
-      )}
-      {write && (
-        <div className={v.layout}>
-          <Button
-            type="button"
-            size="sm"
-            disabled={!layoutDirty || dirty || action.isPending}
-            onClick={() =>
-              action.run(async () => {
-                const submitted = positions ?? {};
-                const { queryKey } = layoutOptions(path);
-                const previous = queries.getQueryState(queryKey);
-                const saved = await result(
-                  client.PUT(
-                    "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/layout",
-                    {
-                      params: { path },
-                      body: {
-                        positions: Object.fromEntries(
-                          Object.entries(submitted).filter(([id]) =>
-                            [
-                              ...spec.applications,
-                              ...(spec.volumes ?? []),
-                              ...(spec.routes ?? []),
-                              ...(spec.networks ?? []),
-                            ].some((resource) => resource.id === id),
-                          ),
-                        ),
-                      },
-                    },
-                  ),
-                );
-                await publishLayout(queries, path, saved, previous);
-                setSavedPositions(JSON.stringify(submitted));
-                setNotice("Layout saved. Running services were not changed.");
-              })
-            }
-          >
-            Save canvas layout
-          </Button>
-          <span className={s.muted}>
-            {layoutDirty
-              ? t(($) => $.configurationEditor.layoutUnsaved)
-              : t(($) => $.configurationEditor.layoutSeparate)}
-          </span>
+                Save canvas layout
+              </Button>
+              <span className={s.muted}>
+                {layoutDirty
+                  ? t(($) => $.configurationEditor.layoutUnsaved)
+                  : t(($) => $.configurationEditor.layoutSeparate)}
+              </span>
+            </div>
+          )}
+          {dirty && layoutDirty && (
+            <small>
+              Save the configuration revision before saving positions for new
+              services.
+            </small>
+          )}
         </div>
-      )}
-      {dirty && layoutDirty && (
-        <small>
-          Save the configuration revision before saving positions for new
-          services.
-        </small>
-      )}
+        {!app && !volume && (
+          <section
+            className={v.inspector}
+            aria-label={t(($) => $.visualEditor.selectTitle)}
+          >
+            <h3 className={v.inspectorTitle}>
+              {t(($) => $.visualEditor.selectTitle)}
+            </h3>
+            <p className={s.muted}>
+              {t(($) => $.visualEditor.selectDescription)}
+            </p>
+          </section>
+        )}
+        {volume && (
+          <section
+            className={v.inspector}
+            aria-label={`Properties for ${volume.name}`}
+          >
+            <div className={v.inspectorHeader}>
+              <div>
+                <h3 className={v.inspectorTitle}>{volume.name}</h3>
+                <p className={s.muted}>Data volume</p>
+              </div>
+              <IconButton
+                aria-label={t(($) => $.visualEditor.closeProperties)}
+                onClick={closeProperties}
+              >
+                <Icon>
+                  <path d="m6 6 12 12M18 6 6 18" />
+                </Icon>
+              </IconButton>
+            </div>
+            <p>
+              Removing this volume from configuration retains its data.
+              Permanent deletion is available in the data controls below.
+            </p>
+            {configure && (
+              <Form
+                key={volume.id}
+                action={action}
+                label="Volume properties"
+                onSubmit={(d) =>
+                  stage({
+                    ...spec,
+                    volumes: spec.volumes?.map((v) =>
+                      v.id === volume.id ? { ...v, name: text(d, "name") } : v,
+                    ),
+                  })
+                }
+              >
+                <VolumeNameField name={volume.name} />
+                <Button type="submit">Stage volume name</Button>
+              </Form>
+            )}
+          </section>
+        )}
+        {app && (
+          <ServiceProperties
+            app={app}
+            spec={spec}
+            secrets={secrets.data}
+            action={action}
+            write={write}
+            configure={configure}
+            position={
+              positions?.[app.id] ??
+              nodes.find((node) => node.id === app.id)?.position ?? {
+                x: 0,
+                y: 0,
+              }
+            }
+            onPositionChange={(position) =>
+              setPositions({ ...positions, [app.id]: position })
+            }
+            update={update}
+            stage={stage}
+            onRemove={() => {
+              stage({
+                ...spec,
+                applications: spec.applications
+                  .filter((application) => application.id !== app.id)
+                  .map((application) => ({
+                    ...application,
+                    dependsOn: application.dependsOn?.filter(
+                      (id) => id !== app.id,
+                    ),
+                  })),
+                bindings: spec.bindings?.filter(
+                  (binding) =>
+                    binding.sourceId !== app.id && binding.targetId !== app.id,
+                ),
+                routes: spec.routes?.filter(
+                  (route) => route.targetId !== app.id,
+                ),
+              });
+              setSelected(undefined);
+            }}
+            className={v.inspector}
+            header={
+              <div className={v.inspectorHeader}>
+                <div>
+                  <h3 className={v.inspectorTitle}>{app.name}</h3>
+                  <p className={s.muted}>{app.kind ?? "web"}</p>
+                </div>
+                <IconButton
+                  aria-label={t(($) => $.visualEditor.closeProperties)}
+                  onClick={closeProperties}
+                >
+                  <Icon>
+                    <path d="m6 6 12 12M18 6 6 18" />
+                  </Icon>
+                </IconButton>
+              </div>
+            }
+          />
+        )}
+      </div>
       {configure && (
         <ServiceCatalog
           path={path}
@@ -356,167 +539,12 @@ export function VisualEditor({
         />
       )}
       {configure && (
-        <details className={s.workspaceUtility}>
-          <summary>Add a service</summary>
-          <Form
-            action={action}
-            label="Add service"
-            onSubmit={(d, form) => {
-              const kind = text(d, "kind") as "web" | "worker" | "postgres";
-              const id = crypto.randomUUID();
-              let next: Spec = {
-                ...spec,
-                applications: [...spec.applications],
-              };
-              const service: App = {
-                id,
-                name: text(d, "name"),
-                kind,
-                source: {
-                  kind: "image",
-                  image:
-                    kind === "postgres"
-                      ? text(d, "postgresVersion") === "17"
-                        ? postgres17Image
-                        : postgresImage
-                      : text(d, "image"),
-                },
-              };
-              if (kind === "postgres") {
-                const volumeId = crypto.randomUUID();
-                service.postgres = {
-                  database: "app",
-                  username: "app",
-                  passwordSecretVersionId: text(d, "password"),
-                };
-                service.mounts = [
-                  {
-                    volumeId,
-                    target:
-                      text(d, "postgresVersion") === "17"
-                        ? "/var/lib/postgresql/data"
-                        : "/var/lib/postgresql",
-                    readOnly: false,
-                  },
-                ];
-                next = {
-                  ...next,
-                  volumes: [
-                    ...(next.volumes ?? []),
-                    { id: volumeId, name: `${service.name} data` },
-                  ],
-                };
-              }
-              next.applications.push(service);
-              stage(next);
-              setSelected(id);
-              form.reset();
-            }}
-          >
-            <Field name="name" label="Service name" />
-            <Label>
-              Service kind
-              <Select name="kind">
-                <option value="web">Web application</option>
-                <option value="worker">Worker</option>
-                <option value="postgres">PostgreSQL</option>
-              </Select>
-            </Label>
-            <Field
-              name="image"
-              label="Container image (web or worker)"
-              required={false}
-            />
-            <Label>
-              Database password secret (PostgreSQL)
-              <Select name="password">
-                <option value="">Select a secret version</option>
-                {secrets.data?.map((v) => (
-                  <option key={v.id} value={v.id}>
-                    {v.name} · {v.id.slice(0, 8)}
-                  </option>
-                ))}
-              </Select>
-            </Label>
-            <Label>
-              PostgreSQL version for a new database
-              <Select name="postgresVersion" defaultValue="18">
-                <option value="18">18.4</option>
-                <option value="17">17.10</option>
-              </Select>
-            </Label>
-
-            <small>
-              Create the password in Secrets below before adding PostgreSQL. Its
-              data volume is created automatically.
-            </small>
-            <Button type="submit">Stage new service</Button>
-          </Form>
-        </details>
-      )}
-      {volume && (
-        <section
-          className={s.panel}
-          aria-label={`Properties for ${volume.name}`}
-        >
-          <h3>Data volume</h3>
-          <p>
-            Removing this volume from configuration retains its data. Permanent
-            deletion is available in the data controls below.
-          </p>
-          {configure && (
-            <Form
-              key={volume.id}
-              action={action}
-              label="Volume properties"
-              onSubmit={(d) =>
-                stage({
-                  ...spec,
-                  volumes: spec.volumes?.map((v) =>
-                    v.id === volume.id ? { ...v, name: text(d, "name") } : v,
-                  ),
-                })
-              }
-            >
-              <VolumeNameField name={volume.name} />
-              <Button type="submit">Stage volume name</Button>
-            </Form>
-          )}
-        </section>
-      )}
-      {app && (
-        <ServiceProperties
-          app={app}
+        <AddServiceForm
           spec={spec}
-          secrets={secrets.data}
+          secrets={secrets.data ?? []}
           action={action}
-          write={write}
-          configure={configure}
-          position={
-            positions?.[app.id] ??
-            nodes.find((n) => n.id === app.id)?.position ?? { x: 0, y: 0 }
-          }
-          onPositionChange={(position) =>
-            setPositions({ ...positions, [app.id]: position })
-          }
-          update={update}
           stage={stage}
-          onRemove={() => {
-            stage({
-              ...spec,
-              applications: spec.applications
-                .filter((a) => a.id !== app.id)
-                .map((a) => ({
-                  ...a,
-                  dependsOn: a.dependsOn?.filter((id) => id !== app.id),
-                })),
-              bindings: spec.bindings?.filter(
-                (b) => b.sourceId !== app.id && b.targetId !== app.id,
-              ),
-              routes: spec.routes?.filter((r) => r.targetId !== app.id),
-            });
-            setSelected(undefined);
-          }}
+          onSelect={setSelected}
         />
       )}
       <ServiceConnections
@@ -528,9 +556,13 @@ export function VisualEditor({
       <ul className={s.list}>
         {spec.volumes?.map((volume) => (
           <li key={volume.id}>
-            <Button type="button" onClick={() => setSelected(volume.id)}>
-              {volume.name}
-            </Button>
+            {view === "canvas" ? (
+              <Button type="button" onClick={() => setSelected(volume.id)}>
+                {volume.name}
+              </Button>
+            ) : (
+              <span>{volume.name}</span>
+            )}
             {configure &&
               !spec.applications.some((a) =>
                 a.mounts?.some((m) => m.volumeId === volume.id),
@@ -550,27 +582,7 @@ export function VisualEditor({
           </li>
         ))}
       </ul>
-      {configure && (
-        <details className={s.workspaceUtility}>
-          <summary>Add a data volume</summary>
-          <Form
-            action={action}
-            onSubmit={(d, form) => {
-              stage({
-                ...spec,
-                volumes: [
-                  ...(spec.volumes ?? []),
-                  { id: crypto.randomUUID(), name: text(d, "name") },
-                ],
-              });
-              form.reset();
-            }}
-          >
-            <Field name="name" label="Volume name" />
-            <Button type="submit">Stage volume</Button>
-          </Form>
-        </details>
-      )}
+      {configure && <AddVolumeForm spec={spec} action={action} stage={stage} />}
       <RouteEditor spec={spec} change={stage} write={configure} />
       {configure && <GeneratedDomain path={path} spec={spec} change={stage} />}
     </section>
