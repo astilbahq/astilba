@@ -404,6 +404,15 @@ chmod +x /tmp/www/cgi-bin/health
 		holdPrimaryComplete.Store(true)
 		spec.Placement.Applications[0].Targets = []domain.PlacementTarget{{ServerID: inputs[0].ServerId, Count: 2}}
 		target, operation = deploy()
+		// Graceful retirement belongs to the placement transition, before the
+		// separate completion allowance begins.
+		wait("drain completion phase", 3*time.Minute, func() bool {
+			var ready bool
+			if err := source.st.Pool.QueryRow(ctx, `SELECT phase='complete' FROM cross_host_operations WHERE id=$1`, operation.Id).Scan(&ready); err != nil {
+				t.Fatal(err)
+			}
+			return ready
+		})
 		wait("remote drain completion", 90*time.Second, func() bool {
 			var done bool
 			if err := source.st.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM execution_operations WHERE parent_id=$1 AND server_id=$2 AND command->'crosshost'->>'phase'='complete' AND state='succeeded')`, operation.Id, inputs[1].ServerId).Scan(&done); err != nil {
