@@ -37,7 +37,8 @@ check-app: check-ci
 	pnpm --filter @astilba/control-plane-worker check
 
 verify-app: verify-app-core
-	pnpm --filter @astilba/dashboard test:browser
+	pnpm --filter @astilba/dashboard test:browser --project=chromium
+	pnpm --filter @astilba/dashboard test:browser --project=webkit
 	pnpm --filter @astilba/dashboard storybook:test
 
 verify-app-core: check-app
