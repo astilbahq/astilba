@@ -230,6 +230,8 @@ Auth forms send connection, rate-limit and unexpected failures to ErrorToast. Si
 
 Toast motion is clipped inside the measured stack, with 12px inner padding and 4px viewport padding preserving the 16px outer inset. The extra 24px is included in the spacer height. This prevents entrance/exit transforms from briefly creating scrollbars, while the outer viewport still scrolls for genuinely tall stacks and the inner padding preserves shadow and focus clearance.
 
+`make verify-app` runs Chromium and WebKit in separate invocations, each with a fresh API/database fixture. This matches CI's browser isolation and prevents successful test sign-ins from accumulating across engines within the production IP-rate window. When running the browser script directly, select one project with `pnpm --filter @astilba/dashboard test:browser --project=chromium` or `--project=webkit`.
+
 Browser tests use isolated loopback ports below the default ephemeral ranges:
 15171 for Canvas, 15181–15189 for the real-API dashboard fixtures and 15201 for
 the static workshop. The dashboard test's Vite instance uses 15182/15189; ordinary

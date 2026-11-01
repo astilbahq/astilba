@@ -218,7 +218,12 @@ SELECT jsonb_build_object(
 	b.call("PUT", base+"/network", api.ConfigureManagedNetwork{Prefix: "10.248.0.0/24", Members: members}, 200, &network)
 	wait("physical network convergence", 90*time.Second, func() bool { b.call("GET", base+"/network", nil, 200, &network); return network.State == "ready" })
 	app, image := uuid.New(), execution.TestImage
-	spec := domain.Specification{Version: 1, Variables: []domain.Variable{}, Applications: []domain.Application{{ID: app, Name: "Web", Replicas: 2, Command: []string{"sh", "-c", "mkdir -p /tmp/www; hostname > /tmp/www/index.html; exec httpd -f -p 8080 -h /tmp/www"}, Source: domain.ApplicationSource{Kind: "image", Image: &image}, Health: &domain.HealthCheck{Port: 8080, Path: "/"}}}, Routes: []domain.Route{{ID: uuid.New(), TargetID: app, Protocol: "http", Domain: "physical-recovery.example.test", Port: 8080, TLS: "off", AllowCIDRs: []string{}}}}
+	// Handle TERM so real pool retirement does not wait for a forced kill.
+	const serveHTTP = `trap 'kill -TERM "$server"; wait "$server"; exit 0' TERM INT
+httpd -f -p 8080 -h /tmp/www &
+server=$!
+wait "$server"`
+	spec := domain.Specification{Version: 1, Variables: []domain.Variable{}, Applications: []domain.Application{{ID: app, Name: "Web", Replicas: 2, Command: []string{"sh", "-c", "mkdir -p /tmp/www; hostname > /tmp/www/index.html;\n" + serveHTTP}, Source: domain.ApplicationSource{Kind: "image", Image: &image}, Health: &domain.HealthCheck{Port: 8080, Path: "/"}}}, Routes: []domain.Route{{ID: uuid.New(), TargetID: app, Protocol: "http", Domain: "physical-recovery.example.test", Port: 8080, TLS: "off", AllowCIDRs: []string{}}}}
 	pg, volume := uuid.New(), uuid.New()
 	if upgradeRecovery {
 		var secret api.SecretVersion
@@ -237,7 +242,7 @@ printf 'Content-Type: text/plain\r\n\r\n'
 hostname
 CGI
 chmod +x /tmp/www/cgi-bin/health
-exec httpd -f -p 8080 -h /tmp/www`}
+` + serveHTTP}
 		spec.Applications = append(spec.Applications, domain.Application{ID: pg, Name: "Database", Kind: "postgres", Source: domain.ApplicationSource{Kind: "image", Image: &pgImage}, Postgres: &domain.Postgres{Database: "app", Username: "app", PasswordSecretVersionID: secret.Id}, Mounts: []domain.VolumeMount{{VolumeID: volume, Target: domain.PostgresMount(pgImage)}}})
 		spec.Volumes = []domain.Volume{{ID: volume, Name: "Database"}}
 		spec.Bindings = []domain.Binding{{ID: uuid.New(), SourceID: pg, TargetID: app, Output: "HOST", Variable: "DB_HOST"}, {ID: uuid.New(), SourceID: pg, TargetID: app, Output: "PORT", Variable: "DB_PORT"}}
