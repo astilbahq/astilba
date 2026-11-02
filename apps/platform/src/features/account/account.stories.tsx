@@ -1,5 +1,9 @@
 import type { Meta, StoryObj } from "@storybook/tanstack-react";
-import type { QueryClient } from "@tanstack/react-query";
+import {
+  defaultScheduler,
+  notifyManager,
+  type QueryClient,
+} from "@tanstack/react-query";
 import { http, HttpResponse } from "msw/http";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 import { css } from "../../../styled-system/css";
@@ -279,27 +283,41 @@ export const DisabledSuccessfully: Story = {
   ...sessionMutation(enabled, disabled, "mfa/disable"),
   play: async (context) => {
     await ConfirmDisable.play!(context);
+    const canvas = within(context.canvasElement);
     const body = within(context.canvasElement.ownerDocument.body);
-    await userEvent.click(
-      within(body.getByRole("alertdialog")).getByRole("button", {
-        name: "Disable two-factor",
-      }),
-    );
-    await waitFor(() => expect(body.queryByRole("alertdialog")).toBeNull(), {
-      timeout: 5000,
+    const dialog = body.getByRole("alertdialog");
+    const notifications: Array<() => void> = [];
+    const resumeNotifications = () => {
+      notifyManager.setScheduler(defaultScheduler);
+      notifications.splice(0).forEach(defaultScheduler);
+    };
+    // The dialog can close before session observers remove its trigger.
+    notifyManager.setScheduler((callback) => {
+      notifications.push(callback);
     });
-    await expect(
-      within(context.canvasElement).getByText(
-        "Two-factor authentication disabled.",
-      ),
-    ).toHaveAttribute("role", "status");
-    await waitFor(() =>
-      expect(
-        within(context.canvasElement).getByRole("heading", {
-          name: "Two-factor authentication",
-        }),
-      ).toHaveFocus(),
-    );
+    try {
+      await userEvent.click(
+        within(dialog).getByRole("button", { name: "Disable two-factor" }),
+      );
+      await waitFor(() => expect(body.queryByRole("alertdialog")).toBeNull(), {
+        timeout: 5000,
+      });
+      await waitFor(() => expect(dialog).not.toBeInTheDocument());
+      resumeNotifications();
+      await expect(
+        await canvas.findByRole("button", { name: "Set up authenticator" }),
+      ).toBeVisible();
+      await expect(
+        canvas.getByText("Two-factor authentication disabled."),
+      ).toHaveAttribute("role", "status");
+      await waitFor(() =>
+        expect(
+          canvas.getByRole("heading", { name: "Two-factor authentication" }),
+        ).toHaveFocus(),
+      );
+    } finally {
+      resumeNotifications();
+    }
   },
 };
 export const SaveRecoveryCodes: Story = {

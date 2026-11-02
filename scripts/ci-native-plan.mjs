@@ -18,7 +18,11 @@ export function nativePlan(event, cwd = process.cwd()) {
   if (event === "push" || event === "workflow_dispatch") return true;
   if (event !== "pull_request") throw new Error("Unsupported CI event");
 
-  const git = (...args) => execFileSync("git", args, { cwd, encoding: "utf8" });
+  const env = Object.fromEntries(
+    Object.entries(process.env).filter(([name]) => !name.startsWith("GIT_")),
+  );
+  const git = (...args) =>
+    execFileSync("git", args, { cwd, encoding: "utf8", env });
   // Compare the tested merge to its actual base, not a potentially stale event SHA.
   const parents = git("show", "-s", "--format=%P", "HEAD").trim().split(/\s+/);
   if (parents.length !== 2) throw new Error("Expected a two-parent PR merge");

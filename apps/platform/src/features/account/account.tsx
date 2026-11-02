@@ -366,6 +366,7 @@ function MFASection({ user }: { user: Schema["Account"] }) {
           setMessage(undefined);
         }}
         onDisabled={() => {
+          trigger.current = null;
           setCodes(undefined);
           setMessage("disabledStatus");
         }}
