@@ -1,6 +1,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useContext, useEffect, useState } from "react";
 import { client, result, type Schema } from "./api/client";
+import { serversOptions } from "./api/servers";
 import { Button } from "./components/button";
 import { Input } from "./components/input";
 import { Label } from "./components/label";
@@ -52,13 +53,7 @@ function ServerWorkspace({ workspace }: { workspace: Schema["Workspace"] }) {
   const owner = workspace.role === "owner";
   const path = { workspaceId };
   const servers = useQuery({
-    queryKey: ["servers", workspaceId],
-    queryFn: () =>
-      result(
-        client.GET("/api/v1/workspaces/{workspaceId}/servers", {
-          params: { path },
-        }),
-      ),
+    ...serversOptions(workspaceId),
     refetchInterval: 5000,
   });
   const operations = useQuery({

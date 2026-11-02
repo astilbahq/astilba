@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { client, result, type Schema } from "../api/client";
+import { serversOptions } from "../api/servers";
 import { Button } from "../components/button";
 import { Input } from "../components/input";
 import { Label } from "../components/label";
@@ -24,15 +25,7 @@ export function GeneratedDomain({
     app: string;
     port: number;
   }>();
-  const servers = useQuery({
-    queryKey: ["servers", path.workspaceId],
-    queryFn: () =>
-      result(
-        client.GET("/api/v1/workspaces/{workspaceId}/servers", {
-          params: { path },
-        }),
-      ),
-  });
+  const servers = useQuery(serversOptions(path.workspaceId));
   return (
     <details>
       <summary>Generate an application domain</summary>

@@ -4,6 +4,7 @@ import { useEffect, useId, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ApiError, client, result, type Schema } from "../../api/client";
 import { publishDraft, readCurrentDraft } from "../../api/environment";
+import { serversOptions } from "../../api/servers";
 import {
   AlertDialogActions,
   AlertDialogClose,
@@ -662,13 +663,7 @@ function PlacementWorkspace({
   change: (spec: Schema["Specification"]) => void;
 }) {
   const servers = useQuery({
-    queryKey: ["servers", path.workspaceId],
-    queryFn: () =>
-      result(
-        client.GET("/api/v1/workspaces/{workspaceId}/servers", {
-          params: { path: { workspaceId: path.workspaceId } },
-        }),
-      ),
+    ...serversOptions(path.workspaceId),
     refetchInterval: 15000,
   });
   return (

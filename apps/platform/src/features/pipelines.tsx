@@ -2,6 +2,8 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useId, useState } from "react";
 import { ApiError, client, result, type Schema } from "../api/client";
 import { publishDraft } from "../api/environment";
+import { gitConnectionsOptions } from "../api/integrations";
+import { serversOptions } from "../api/servers";
 import { Button } from "../components/button";
 import { Checkbox } from "../components/checkbox";
 import { Input } from "../components/input";
@@ -85,15 +87,7 @@ export function Pipelines({
   const [notice, setNotice] = useState("");
   const [connection, setConnection] = useState(""),
     [runner, setRunner] = useState("");
-  const connections = useQuery({
-    queryKey: ["git-connections", path.workspaceId],
-    queryFn: () =>
-      result(
-        client.GET(`${wsRoot}/git-connections`, {
-          params: { path: workspace },
-        }),
-      ),
-  });
+  const connections = useQuery(gitConnectionsOptions(path.workspaceId));
   const registries = useQuery({
     queryKey: ["registries", path.workspaceId],
     queryFn: () =>
@@ -109,9 +103,7 @@ export function Pipelines({
       ),
   });
   const servers = useQuery({
-    queryKey: ["servers", path.workspaceId],
-    queryFn: () =>
-      result(client.GET(`${wsRoot}/servers`, { params: { path: workspace } })),
+    ...serversOptions(path.workspaceId),
     refetchInterval: 15000,
   });
   const runs = useQuery({
