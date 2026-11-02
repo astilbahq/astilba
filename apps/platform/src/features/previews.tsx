@@ -1,6 +1,8 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { ApiError, client, result, type Schema } from "../api/client";
+import { gitConnectionsOptions } from "../api/integrations";
+import { serversOptions } from "../api/servers";
 import { Button } from "../components/button";
 import { Checkbox } from "../components/checkbox";
 import { Label } from "../components/label";
@@ -289,23 +291,9 @@ function PreviewPolicyEditor({
   const [builder, setBuilder] = useState<"dockerfile" | "railpack">(
     cfg?.build.builder ?? "dockerfile",
   );
-  const connections = useQuery({
-    queryKey: ["git-connections", path.workspaceId],
-    queryFn: () =>
-      result(
-        client.GET("/api/v1/workspaces/{workspaceId}/git-connections", {
-          params: { path },
-        }),
-      ),
-  });
+  const connections = useQuery(gitConnectionsOptions(path.workspaceId));
   const servers = useQuery({
-    queryKey: ["servers", path.workspaceId],
-    queryFn: () =>
-      result(
-        client.GET("/api/v1/workspaces/{workspaceId}/servers", {
-          params: { path },
-        }),
-      ),
+    ...serversOptions(path.workspaceId),
     refetchInterval: 15000,
   });
   const hosts = servers.data?.filter(
