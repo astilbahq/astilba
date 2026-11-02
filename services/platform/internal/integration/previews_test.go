@@ -155,12 +155,13 @@ func previewIsolationJourney(t *testing.T, transfer, recoverCleanup bool) {
 	}
 	head.Store(strings.Repeat("b", 40))
 	action(t, "approve", 409)
-	action(t, "refresh", 200)
+	hook(t, "head-changed")
 	deadline := time.Now().Add(10 * time.Second)
 	for preview.Head != head.Load().(string) && time.Now().Before(deadline) {
 		time.Sleep(30 * time.Millisecond)
 		preview = wait(t, "approval_required")
 	}
+	action(t, "refresh", 200)
 	action(t, "approve", 200)
 	preview = wait(t, "building")
 	if preview.EnvironmentId == nil {
