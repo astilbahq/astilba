@@ -7,6 +7,9 @@ packages:
 minimumReleaseAge: 1440
 saveExact: true
 overrides:
+  # Keep these paired until upstream tooling adopts the patched matcher APIs.
+  glob@13.0.6: 14.0.3
+  minimatch@10.2.6: 11.0.3
   vite@*: npm:@voidzero-dev/vite-plus-core@1.4.0
   vitest@*: 5.0.5
   # Miniflare pins vulnerable undici; remove when its upstream pin is patched.
