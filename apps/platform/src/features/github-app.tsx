@@ -1,6 +1,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { client, result, type Schema } from "../api/client";
+import { gitConnectionsOptions } from "../api/integrations";
 import { Button } from "../components/button";
 import { Label } from "../components/label";
 import { Anchor, Link } from "../components/link";
@@ -19,15 +20,7 @@ export function GitHubAppSettings({ workspaceId }: { workspaceId: string }) {
     queryKey: ["github-app", workspaceId],
     queryFn: () => result(client.GET(base, { params: { path } })),
   });
-  const connections = useQuery({
-    queryKey: ["git-connections", workspaceId],
-    queryFn: () =>
-      result(
-        client.GET("/api/v1/workspaces/{workspaceId}/git-connections", {
-          params: { path },
-        }),
-      ),
-  });
+  const connections = useQuery(gitConnectionsOptions(workspaceId));
   return (
     <section className={s.stack} aria-label="GitHub App">
       <h3>Connect with the GitHub App</h3>
@@ -177,15 +170,7 @@ function GitHubSelection({ grant }: { grant: Schema["GitHubAuthorization"] }) {
         }),
       ),
   });
-  const connections = useQuery({
-    queryKey: ["git-connections", grant.workspaceId],
-    queryFn: () =>
-      result(
-        client.GET("/api/v1/workspaces/{workspaceId}/git-connections", {
-          params: { path: { workspaceId: grant.workspaceId } },
-        }),
-      ),
-  });
+  const connections = useQuery(gitConnectionsOptions(grant.workspaceId));
   const installations = useQuery({
     queryKey: ["github-installations", grant.id, installationPage],
     queryFn: () =>

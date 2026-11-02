@@ -2,6 +2,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { client, result, type Schema } from "../api/client";
 import { runtimeOptions } from "../api/environment";
+import { serversOptions } from "../api/servers";
 import { Button } from "../components/button";
 import { Checkbox } from "../components/checkbox";
 import { Input } from "../components/input";
@@ -46,13 +47,7 @@ export function Deployments({
   const action = useAction();
   const queries = useQueryClient();
   const servers = useQuery({
-    queryKey: ["servers", path.workspaceId],
-    queryFn: () =>
-      result(
-        client.GET("/api/v1/workspaces/{workspaceId}/servers", {
-          params: { path: { workspaceId: path.workspaceId } },
-        }),
-      ),
+    ...serversOptions(path.workspaceId),
     refetchInterval: 15000,
   });
   const plan = useQuery({
