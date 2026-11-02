@@ -55,12 +55,16 @@ func TestToolCapturesRejectOverflowAndKeepCompleteDiagnostics(t *testing.T) {
 	const secret = "capture-boundary-secret-canary"
 	oversized := strings.Repeat("x", limit-4) + secret
 	for _, tc := range []struct {
-		name, tool, stdout, stderr, want string
-		fail, wantErr                    bool
+		name, tool, stdout, stderr, want, secret string
+		fail, wantErr                            bool
 	}{
 		{name: "source at limit ignores stderr", tool: "source", stdout: strings.Repeat("x", 4096), stderr: oversized, want: strings.Repeat("x", 4096)},
 		{name: "source overflow", tool: "source", stdout: strings.Repeat("x", 4097), wantErr: true},
 		{name: "build at limit", tool: "build", stdout: strings.Repeat("x", limit-len(secret)) + secret, want: strings.Repeat("x", 16384-len("[redacted]")) + "[redacted]"},
+		{name: "build Unicode tail", tool: "build", stdout: strings.Repeat("é", 8192) + "x", want: strings.Repeat("é", 8191) + "x"},
+		{name: "build four-byte Unicode tail", tool: "build", stdout: strings.Repeat("😀", 4096) + "x", want: strings.Repeat("😀", 4095) + "x"},
+		{name: "build invalid UTF-8", tool: "build", stdout: strings.Repeat("x", 16383) + "\xff", want: strings.Repeat("x", 16381) + "\ufffd"},
+		{name: "build normalizes before redaction", tool: "build", stdout: "normalized-\xff-secret", secret: "normalized-\ufffd-secret", want: "[redacted]"},
 		{name: "failed build keeps redacted stdout and stderr", tool: "build", stdout: "stdout " + secret + "\n", stderr: "stderr " + secret, fail: true, wantErr: true, want: "stdout [redacted]\nstderr [redacted]"},
 		{name: "build stdout overflow", tool: "build", stdout: oversized, wantErr: true},
 		{name: "build stderr overflow", tool: "build", stderr: oversized, wantErr: true},
@@ -86,7 +90,11 @@ func TestToolCapturesRejectOverflowAndKeepCompleteDiagnostics(t *testing.T) {
 				raw, err = e.pipelineCLI(ctx, "fixture", nil, nil, 4096, "emit")
 				got = string(raw)
 			case "build":
-				got, err = e.pipelineLog(ctx, api.ExecutionCommand{}, pipeline.Command{BuildSecrets: map[string]string{"fixture": secret}}, nil, []string{"emit"})
+				buildSecret := secret
+				if tc.secret != "" {
+					buildSecret = tc.secret
+				}
+				got, err = e.pipelineLog(ctx, api.ExecutionCommand{}, pipeline.Command{BuildSecrets: map[string]string{"fixture": buildSecret}}, nil, []string{"emit"})
 			case "repository":
 				var raw []byte
 				raw, err = e.restic(ctx, backup.Installation{Destination: backup.Destination{Kind: "filesystem", Root: t.TempDir()}}, e.Journal.dir, "emit")

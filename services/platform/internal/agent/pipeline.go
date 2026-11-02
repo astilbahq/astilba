@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/composeproject"
@@ -440,10 +441,7 @@ func (e *Engine) buildPipeline(ctx context.Context, c api.ExecutionCommand, p pi
 		args = append(args, "--output", "type=docker,name="+image+",dest=/workspace/image.tar")
 	}
 	logs, err := e.pipelineLog(ctx, c, p, []string{"DOCKER_CONFIG=/workspace/auth"}, args)
-	result.Logs += logs
-	if len(result.Logs) > 16384 {
-		result.Logs = result.Logs[len(result.Logs)-16384:]
-	}
+	result.Logs = pipelineLogTail(result.Logs + logs)
 	if err != nil {
 		return result, errors.New("BuildKit failed or exceeded its memory/storage budget; existing workloads are unchanged")
 	}
@@ -527,11 +525,20 @@ func (e *Engine) pipelineLog(ctx context.Context, c api.ExecutionCommand, p pipe
 		values["push"] = p.RegistryAccess.Push.Password
 		values["pull"] = p.RegistryAccess.Pull.Password
 	}
-	logs := redactValues(out.b.String(), values)
-	if len(logs) > 16384 {
-		logs = logs[len(logs)-16384:]
+	// Match secrets against the text JSON will carry, before retaining its tail.
+	logs := redactValues(strings.ToValidUTF8(out.b.String(), "\ufffd"), values)
+	return pipelineLogTail(logs), err
+}
+
+func pipelineLogTail(logs string) string {
+	if len(logs) <= pipeline.LogLimit {
+		return logs
 	}
-	return logs, err
+	start := len(logs) - pipeline.LogLimit
+	for start < len(logs) && !utf8.RuneStart(logs[start]) {
+		start++
+	}
+	return logs[start:]
 }
 func (e *Engine) loadPipelineImage(ctx context.Context, c api.ExecutionCommand) error {
 	cli := e.DockerCLI
