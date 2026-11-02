@@ -43,8 +43,9 @@ func (s *Store) ManagementAdmission(ctx context.Context, tx pgx.Tx, ws uuid.UUID
 
 // InWorkspaceRecovery retains normal ownership, MFA and recent-auth checks but
 // permits billing repair, cancellation and portability during the paid grace.
-func (s *Store) InWorkspaceRecovery(ctx context.Context, p Principal, id uuid.UUID, owner, recent bool, fn func(pgx.Tx, *db.Queries, Workspace) error) error {
-	return s.inWorkspaceTx(ctx, p, id, true, owner, recent, "recovery", fn)
+func (s *Store) InWorkspaceRecovery(ctx context.Context, p Principal, id uuid.UUID, access WorkspaceAccess, fn func(pgx.Tx, *db.Queries, Workspace) error) error {
+	access.Write = true
+	return s.inWorkspaceTx(ctx, p, id, access, "recovery", fn)
 }
 func (s *Store) GrantManagement(ctx context.Context, ws uuid.UUID, until time.Time, limit int) error {
 	if !s.Hosted || limit < 1 || limit > 100 || !until.After(time.Now()) {
@@ -70,7 +71,7 @@ func (s *Store) GrantManagement(ctx context.Context, ws uuid.UUID, until time.Ti
 
 // Billing remains accessible for payment repair even after the recovery window.
 func (s *Store) InWorkspaceBilling(ctx context.Context, p Principal, id uuid.UUID, fn func(pgx.Tx, *db.Queries, Workspace) error) error {
-	return s.inWorkspaceTx(ctx, p, id, true, true, true, "billing", fn)
+	return s.inWorkspaceTx(ctx, p, id, WorkspaceAccess{Write: true, Owner: true, Recent: true}, "billing", fn)
 }
 
 // ManagedServerAdmission counts enrolled and pending non-revoked identities.

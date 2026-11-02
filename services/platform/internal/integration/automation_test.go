@@ -171,7 +171,7 @@ func TestAutomationRechecksAdmissionAfterWorkspaceWait(t *testing.T) {
 			waitCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 			defer cancel()
 			go func() {
-				result <- f.st.InWorkspaceTx(waitCtx, p, scope.WorkspaceId, true, false, false, func(tx pgx.Tx, _ *db.Queries, _ store.Workspace) error {
+				result <- f.st.InWorkspaceTx(waitCtx, p, scope.WorkspaceId, store.WorkspaceAccess{Write: true}, func(tx pgx.Tx, _ *db.Queries, _ store.Workspace) error {
 					_, err := tx.Exec(waitCtx, "UPDATE projects SET name='must not change' WHERE workspace_id=$1 AND id=$2", scope.WorkspaceId, scope.ProjectId)
 					return err
 				})

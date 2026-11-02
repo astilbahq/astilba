@@ -131,7 +131,7 @@ func (s *Server) GetAutomationContext(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var out api.AutomationContext
-	err := s.Store.InWorkspace(r.Context(), p, g.WorkspaceID, false, false, false, func(q *db.Queries, workspace store.Workspace) error {
+	err := s.Store.InWorkspace(r.Context(), p, g.WorkspaceID, store.WorkspaceAccess{}, func(q *db.Queries, workspace store.Workspace) error {
 		env, err := q.GetEnvironment(r.Context(), db.GetEnvironmentParams{WorkspaceID: g.WorkspaceID, ProjectID: g.ProjectID, ID: g.EnvironmentID})
 		if err != nil {
 			return err

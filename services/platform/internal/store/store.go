@@ -37,6 +37,11 @@ type Workspace struct {
 	RequireMFA bool
 }
 
+// WorkspaceAccess controls admission and locking, not SQL read-only mode.
+type WorkspaceAccess struct {
+	Write, Owner, Recent bool
+}
+
 func New(pool *pgxpool.Pool, keys *cryptobox.Keyring, hosted bool) *Store {
 	return &Store{Pool: pool, Queries: db.New(pool), Keys: keys, Hosted: hosted, LogRetention: 30 * 24 * time.Hour}
 }
@@ -65,24 +70,24 @@ func (s *Store) Transaction(ctx context.Context, fn func(*db.Queries) error) err
 }
 
 // Locking the workspace serializes membership decisions and its bounded mutations.
-func (s *Store) InWorkspace(ctx context.Context, p Principal, id uuid.UUID, write, owner, recent bool, fn func(*db.Queries, Workspace) error) error {
-	return s.InWorkspaceTx(ctx, p, id, write, owner, recent, func(tx pgx.Tx, q *db.Queries, w Workspace) error { return fn(q, w) })
+func (s *Store) InWorkspace(ctx context.Context, p Principal, id uuid.UUID, access WorkspaceAccess, fn func(*db.Queries, Workspace) error) error {
+	return s.InWorkspaceTx(ctx, p, id, access, func(tx pgx.Tx, q *db.Queries, w Workspace) error { return fn(q, w) })
 }
 
-func (s *Store) InWorkspaceTx(ctx context.Context, p Principal, id uuid.UUID, write, owner, recent bool, fn func(pgx.Tx, *db.Queries, Workspace) error) error {
-	return s.inWorkspaceTx(ctx, p, id, write, owner, recent, "management", fn)
+func (s *Store) InWorkspaceTx(ctx context.Context, p Principal, id uuid.UUID, access WorkspaceAccess, fn func(pgx.Tx, *db.Queries, Workspace) error) error {
+	return s.inWorkspaceTx(ctx, p, id, access, "management", fn)
 }
 
-func (s *Store) inWorkspaceTx(ctx context.Context, p Principal, id uuid.UUID, write, owner, recent bool, access string, fn func(pgx.Tx, *db.Queries, Workspace) error) error {
-	return s.inWorkspaceIsolation(ctx, p, id, write, owner, recent, access, pgx.ReadCommitted, fn)
+func (s *Store) inWorkspaceTx(ctx context.Context, p Principal, id uuid.UUID, access WorkspaceAccess, mode string, fn func(pgx.Tx, *db.Queries, Workspace) error) error {
+	return s.inWorkspaceIsolation(ctx, p, id, access, mode, pgx.ReadCommitted, fn)
 }
 
 // InWorkspaceSnapshot holds a consistent view across all exported tables while
 // serializing permission changes and interactive workspace mutations.
 func (s *Store) InWorkspaceSnapshot(ctx context.Context, p Principal, id uuid.UUID, fn func(pgx.Tx, *db.Queries, Workspace) error) error {
-	return s.inWorkspaceIsolation(ctx, p, id, true, true, true, "recovery", pgx.RepeatableRead, fn)
+	return s.inWorkspaceIsolation(ctx, p, id, WorkspaceAccess{Write: true, Owner: true, Recent: true}, "recovery", pgx.RepeatableRead, fn)
 }
-func (s *Store) inWorkspaceIsolation(ctx context.Context, p Principal, id uuid.UUID, write, owner, recent bool, access string, isolation pgx.TxIsoLevel, fn func(pgx.Tx, *db.Queries, Workspace) error) error {
+func (s *Store) inWorkspaceIsolation(ctx context.Context, p Principal, id uuid.UUID, access WorkspaceAccess, mode string, isolation pgx.TxIsoLevel, fn func(pgx.Tx, *db.Queries, Workspace) error) error {
 	tx, err := s.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: isolation})
 	if err != nil {
 		return err
@@ -91,7 +96,7 @@ func (s *Store) inWorkspaceIsolation(ctx context.Context, p Principal, id uuid.U
 	q := db.New(tx)
 	err = func() error {
 		var w Workspace
-		if write {
+		if access.Write {
 			if _, err := q.LockWorkspaceByID(ctx, id); err != nil {
 				return err
 			}
@@ -112,7 +117,7 @@ func (s *Store) inWorkspaceIsolation(ctx context.Context, p Principal, id uuid.U
 		w = Workspace{r.ID, r.Name, r.Role, r.RequireMfa}
 		mfa := p.MFA
 		if p.Automation != nil {
-			if owner || recent {
+			if access.Owner || access.Recent {
 				return domain.Forbidden
 			}
 			var e error
@@ -122,13 +127,13 @@ func (s *Store) inWorkspaceIsolation(ctx context.Context, p Principal, id uuid.U
 			}
 		}
 
-		if (owner && w.Role != "owner") || (write && !domain.CanWrite(w.Role)) {
+		if (access.Owner && w.Role != "owner") || (access.Write && !domain.CanWrite(w.Role)) {
 			return domain.Forbidden
 		}
-		if write && (s.Hosted || w.RequireMFA) && !mfa {
+		if access.Write && (s.Hosted || w.RequireMFA) && !mfa {
 			return domain.MFARequired
 		}
-		if write && s.Hosted {
+		if access.Write && s.Hosted {
 			if p.Account.EmailVerifiedAt == nil {
 				return EmailVerificationRequired
 			}
@@ -136,11 +141,11 @@ func (s *Store) inWorkspaceIsolation(ctx context.Context, p Principal, id uuid.U
 			if e != nil {
 				return e
 			}
-			if access == "management" && !entitlement.Active(time.Now()) || access == "recovery" && !entitlement.Recoverable(time.Now()) {
+			if mode == "management" && !entitlement.Active(time.Now()) || mode == "recovery" && !entitlement.Recoverable(time.Now()) {
 				return SubscriptionRequired
 			}
 		}
-		if recent && !p.Recent {
+		if access.Recent && !p.Recent {
 			return domain.RecentRequired
 		}
 		return fn(tx, q, w)

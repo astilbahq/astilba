@@ -10,7 +10,7 @@ import (
 )
 
 func (s *Server) ListServiceCatalog(w http.ResponseWriter, r *http.Request, ws uuid.UUID) {
-	s.scope(w, r, ws, false, false, false, func(_ *db.Queries, _ store.Workspace) (any, error) {
+	s.scope(w, r, ws, store.WorkspaceAccess{}, func(_ *db.Queries, _ store.Workspace) (any, error) {
 		return catalog.Recipes(), nil
 	})
 }

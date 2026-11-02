@@ -387,7 +387,7 @@ func (s *Service) ScheduleReport(ctx context.Context, a Identity, sequence int64
 	}
 	defer tx.Rollback(ctx)
 	var valid bool
-	if err = tx.QueryRow(ctx, "SELECT NOT revoked AND (credential_hash=$2 OR (previous_hash=$2 AND previous_until>now())) FROM servers WHERE id=$1 FOR UPDATE", a.ID, hash(a.Token)).Scan(&valid); err != nil {
+	if err = tx.QueryRow(ctx, `SELECT `+agentCredentialPredicate+` FROM servers WHERE id=$1 FOR UPDATE`, a.ID, hash(a.Token)).Scan(&valid); err != nil {
 		return err
 	}
 	if !valid {
