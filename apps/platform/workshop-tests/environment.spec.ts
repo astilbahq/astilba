@@ -106,7 +106,18 @@ for (const theme of ["light", "dark"]) {
       `/iframe.html?id=pages-environment-detail--long-names&viewMode=story&globals=theme:${theme};locale:en-XB;a11y.manual:!true`,
     );
     await expect(page.locator("html")).toHaveAttribute("dir", "rtl");
-    await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
+    await expect(
+      page.getByRole("heading", {
+        level: 1,
+        name: "production-services-for-customers-in-multiple-regions",
+        exact: true,
+      }),
+    ).toBeVisible();
+    await expect(
+      page.getByText("customer-facing-international-application-service", {
+        exact: true,
+      }),
+    ).toBeVisible();
     expect(
       await page.evaluate(
         () => document.documentElement.scrollWidth <= innerWidth,

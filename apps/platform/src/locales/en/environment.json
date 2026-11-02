@@ -11,6 +11,7 @@
   "sections": "Environment sections",
   "overview": "Overview",
   "configuration": "Configuration",
+  "viewLoadFailed": "This environment could not be opened. Reload the page to try again.",
   "deployments": "Deployments",
   "deployment": "Deployment",
   "settings": "Settings",
