@@ -18,9 +18,9 @@ import (
 func workspace(w store.Workspace) api.Workspace {
 	return api.Workspace{Id: w.ID, Name: w.Name, Role: api.Role(w.Role), RequireMfa: w.RequireMFA}
 }
-func (s *Server) scope(w http.ResponseWriter, r *http.Request, id uuid.UUID, write, owner, recent bool, fn func(*db.Queries, store.Workspace) (any, error)) {
+func (s *Server) scope(w http.ResponseWriter, r *http.Request, id uuid.UUID, access store.WorkspaceAccess, fn func(*db.Queries, store.Workspace) (any, error)) {
 	var out any
-	e := s.Store.InWorkspace(r.Context(), *principal(r.Context()), id, write, owner, recent, func(q *db.Queries, ws store.Workspace) error { var err error; out, err = fn(q, ws); return err })
+	e := s.Store.InWorkspace(r.Context(), *principal(r.Context()), id, access, func(q *db.Queries, ws store.Workspace) error { var err error; out, err = fn(q, ws); return err })
 	if e != nil {
 		s.fail(w, r, e)
 		return
@@ -73,7 +73,7 @@ func (s *Server) CreateWorkspace(w http.ResponseWriter, r *http.Request) {
 	s.respond(w, 201, api.Workspace{Id: id, Name: name, Role: api.Owner})
 }
 func (s *Server) GetWorkspace(w http.ResponseWriter, r *http.Request, id uuid.UUID) {
-	s.scope(w, r, id, false, false, false, func(_ *db.Queries, ws store.Workspace) (any, error) { return workspace(ws), nil })
+	s.scope(w, r, id, store.WorkspaceAccess{}, func(_ *db.Queries, ws store.Workspace) (any, error) { return workspace(ws), nil })
 }
 func (s *Server) UpdateWorkspace(w http.ResponseWriter, r *http.Request, id uuid.UUID) {
 	b, e := decode[api.WorkspaceSettings](r)
@@ -86,7 +86,7 @@ func (s *Server) UpdateWorkspace(w http.ResponseWriter, r *http.Request, id uuid
 		s.fail(w, r, e)
 		return
 	}
-	s.scope(w, r, id, true, true, true, func(q *db.Queries, ws store.Workspace) (any, error) {
+	s.scope(w, r, id, store.WorkspaceAccess{Write: true, Owner: true, Recent: true}, func(q *db.Queries, ws store.Workspace) (any, error) {
 		if b.RequireMfa && !principal(r.Context()).MFA {
 			return nil, domain.MFARequired
 		}
@@ -99,7 +99,7 @@ func (s *Server) UpdateWorkspace(w http.ResponseWriter, r *http.Request, id uuid
 	})
 }
 func (s *Server) ListMembers(w http.ResponseWriter, r *http.Request, id uuid.UUID) {
-	s.scope(w, r, id, false, true, false, func(q *db.Queries, _ store.Workspace) (any, error) {
+	s.scope(w, r, id, store.WorkspaceAccess{Owner: true}, func(q *db.Queries, _ store.Workspace) (any, error) {
 		rows, e := q.ListMembers(r.Context(), id)
 		out := []api.Member{}
 		for _, v := range rows {
@@ -109,7 +109,7 @@ func (s *Server) ListMembers(w http.ResponseWriter, r *http.Request, id uuid.UUI
 	})
 }
 func (s *Server) member(w http.ResponseWriter, r *http.Request, ws, account uuid.UUID, role *api.Role) {
-	s.scope(w, r, ws, true, true, true, func(q *db.Queries, _ store.Workspace) (any, error) {
+	s.scope(w, r, ws, store.WorkspaceAccess{Write: true, Owner: true, Recent: true}, func(q *db.Queries, _ store.Workspace) (any, error) {
 		ctx := r.Context()
 		m, e := q.GetMembership(ctx, db.GetMembershipParams{WorkspaceID: ws, AccountID: account})
 		if e != nil {
@@ -147,7 +147,7 @@ func (s *Server) RemoveMember(w http.ResponseWriter, r *http.Request, ws, id uui
 	s.member(w, r, ws, id, nil)
 }
 func (s *Server) ListInvitations(w http.ResponseWriter, r *http.Request, id uuid.UUID) {
-	s.scope(w, r, id, false, true, false, func(q *db.Queries, _ store.Workspace) (any, error) {
+	s.scope(w, r, id, store.WorkspaceAccess{Owner: true}, func(q *db.Queries, _ store.Workspace) (any, error) {
 		rows, e := q.ListInvitations(r.Context(), id)
 		out := []api.Invitation{}
 		for _, v := range rows {
@@ -174,7 +174,7 @@ func (s *Server) InviteMember(w http.ResponseWriter, r *http.Request, ws uuid.UU
 	}
 	id := uuid.New()
 	expiry := s.Auth.Now().Add(24 * time.Hour)
-	e = s.Store.InWorkspace(r.Context(), *principal(r.Context()), ws, true, true, true, func(q *db.Queries, _ store.Workspace) error {
+	e = s.Store.InWorkspace(r.Context(), *principal(r.Context()), ws, store.WorkspaceAccess{Write: true, Owner: true, Recent: true}, func(q *db.Queries, _ store.Workspace) error {
 		if e := q.InsertInvitation(r.Context(), db.InsertInvitationParams{WorkspaceID: ws, ID: id, Email: email, Role: string(b.Role), TokenHash: auth.Hash(token), ExpiresAt: expiry}); e != nil {
 			return e
 		}
@@ -193,7 +193,7 @@ func (s *Server) InviteMember(w http.ResponseWriter, r *http.Request, ws uuid.UU
 	s.respond(w, 201, api.Invitation{Id: id, Email: openapi_types.Email(email), Role: b.Role, ExpiresAt: expiry})
 }
 func (s *Server) RevokeInvitation(w http.ResponseWriter, r *http.Request, ws, id uuid.UUID) {
-	s.scope(w, r, ws, true, true, true, func(q *db.Queries, _ store.Workspace) (any, error) {
+	s.scope(w, r, ws, store.WorkspaceAccess{Write: true, Owner: true, Recent: true}, func(q *db.Queries, _ store.Workspace) (any, error) {
 		if e := q.DeleteInvitation(r.Context(), db.DeleteInvitationParams{WorkspaceID: ws, ID: id}); e != nil {
 			return nil, e
 		}
@@ -201,7 +201,7 @@ func (s *Server) RevokeInvitation(w http.ResponseWriter, r *http.Request, ws, id
 	})
 }
 func (s *Server) ListAudit(w http.ResponseWriter, r *http.Request, id uuid.UUID) {
-	s.scope(w, r, id, false, true, false, func(q *db.Queries, _ store.Workspace) (any, error) {
+	s.scope(w, r, id, store.WorkspaceAccess{Owner: true}, func(q *db.Queries, _ store.Workspace) (any, error) {
 		rows, e := q.ListAudit(r.Context(), id)
 		out := []api.AuditEvent{}
 		for _, v := range rows {

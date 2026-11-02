@@ -20,7 +20,7 @@ func (s *Server) EnvironmentEvents(w http.ResponseWriter, r *http.Request, ws, p
 	snapshot := func() (string, error) {
 		var revision uuid.UUID
 		var observed, operations string
-		err := s.Store.InWorkspaceTx(r.Context(), p, ws, false, false, false, func(tx pgx.Tx, _ *db.Queries, _ store.Workspace) error {
+		err := s.Store.InWorkspaceTx(r.Context(), p, ws, store.WorkspaceAccess{}, func(tx pgx.Tx, _ *db.Queries, _ store.Workspace) error {
 			return tx.QueryRow(r.Context(), `SELECT e.draft_revision_id,COALESCE(v.observed_at::text,''),COALESCE((SELECT string_agg(o.id::text||o.state||o.report_sequence::text,',' ORDER BY o.id) FROM (SELECT id,state,report_sequence FROM execution_operations WHERE workspace_id=$1 AND environment_id=$3 ORDER BY created_at DESC LIMIT 20) o),'') FROM environments e LEFT JOIN visual_runtime v ON v.workspace_id=e.workspace_id AND v.environment_id=e.id WHERE e.workspace_id=$1 AND e.project_id=$2 AND e.id=$3`, ws, pid, env).Scan(&revision, &observed, &operations)
 		})
 		return deployment.Hash([]any{revision, observed, operations}), err

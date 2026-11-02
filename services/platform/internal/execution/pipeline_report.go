@@ -58,7 +58,7 @@ func (s *Service) hydratePipeline(ctx context.Context, a Identity, c *api.Execut
 	// lease can overlap another poll, so its earlier operation read is not proof
 	// that this command is still deliverable.
 	var valid bool
-	if err = tx.QueryRow(ctx, `SELECT NOT revoked AND NOT awaiting_transfer AND (credential_hash=$2 OR (previous_hash=$2 AND previous_until>now())) FROM servers WHERE id=$1 AND workspace_id=$3 FOR UPDATE`, a.ID, hash(a.Token), a.Workspace).Scan(&valid); err != nil {
+	if err = tx.QueryRow(ctx, `SELECT `+agentCredentialPredicate+` AND NOT awaiting_transfer FROM servers WHERE id=$1 AND workspace_id=$3 FOR UPDATE`, a.ID, hash(a.Token), a.Workspace).Scan(&valid); err != nil {
 		return false, err
 	}
 	if !valid {

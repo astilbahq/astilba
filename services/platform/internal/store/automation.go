@@ -43,7 +43,7 @@ func (s *Store) CreateAutomation(ctx context.Context, p Principal, ws, project, 
 	}
 	out = AutomationCredential{ID: uuid.New(), CreatorID: p.Account.ID, Name: name, Capabilities: capabilities, CreatedAt: now, ExpiresAt: expires}
 	hash := sha256.Sum256([]byte(secret))
-	err = s.InWorkspaceTx(ctx, p, ws, true, true, true, func(tx pgx.Tx, q *db.Queries, _ Workspace) error {
+	err = s.InWorkspaceTx(ctx, p, ws, WorkspaceAccess{Write: true, Owner: true, Recent: true}, func(tx pgx.Tx, q *db.Queries, _ Workspace) error {
 		v, err := q.GetEnvironment(ctx, db.GetEnvironmentParams{WorkspaceID: ws, ProjectID: project, ID: env})
 		if err != nil {
 			return err
@@ -76,7 +76,7 @@ func (s *Store) CreateAutomation(ctx context.Context, p Principal, ws, project, 
 
 func (s *Store) ListAutomation(ctx context.Context, p Principal, ws, project, env uuid.UUID) ([]AutomationCredential, error) {
 	out := []AutomationCredential{}
-	err := s.InWorkspaceTx(ctx, p, ws, false, true, false, func(tx pgx.Tx, q *db.Queries, _ Workspace) error {
+	err := s.InWorkspaceTx(ctx, p, ws, WorkspaceAccess{Owner: true}, func(tx pgx.Tx, q *db.Queries, _ Workspace) error {
 		if _, err := q.GetEnvironment(ctx, db.GetEnvironmentParams{WorkspaceID: ws, ProjectID: project, ID: env}); err != nil {
 			return err
 		}
@@ -98,7 +98,7 @@ func (s *Store) ListAutomation(ctx context.Context, p Principal, ws, project, en
 }
 
 func (s *Store) RevokeAutomation(ctx context.Context, p Principal, ws, project, env, id uuid.UUID) error {
-	return s.InWorkspaceTx(ctx, p, ws, true, true, true, func(tx pgx.Tx, q *db.Queries, _ Workspace) error {
+	return s.InWorkspaceTx(ctx, p, ws, WorkspaceAccess{Write: true, Owner: true, Recent: true}, func(tx pgx.Tx, q *db.Queries, _ Workspace) error {
 		if _, err := q.GetEnvironment(ctx, db.GetEnvironmentParams{WorkspaceID: ws, ProjectID: project, ID: env}); err != nil {
 			return err
 		}

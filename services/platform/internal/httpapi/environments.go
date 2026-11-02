@@ -27,7 +27,7 @@ func revision(v db.SpecificationRevision) api.Revision {
 	return api.Revision{Id: v.ID, AuthorId: v.AuthorID, CreatedAt: v.CreatedAt, Hash: hex.EncodeToString(v.ContentHash), Specification: json.RawMessage(v.Specification)}
 }
 func (s *Server) ListProjects(w http.ResponseWriter, r *http.Request, ws uuid.UUID) {
-	s.scope(w, r, ws, false, false, false, func(q *db.Queries, _ store.Workspace) (any, error) {
+	s.scope(w, r, ws, store.WorkspaceAccess{}, func(q *db.Queries, _ store.Workspace) (any, error) {
 		rows, e := q.ListProjects(r.Context(), ws)
 		out := []api.Project{}
 		for _, v := range rows {
@@ -47,7 +47,7 @@ func (s *Server) CreateProject(w http.ResponseWriter, r *http.Request, ws uuid.U
 		s.fail(w, r, e)
 		return
 	}
-	s.scope(w, r, ws, true, false, false, func(q *db.Queries, _ store.Workspace) (any, error) {
+	s.scope(w, r, ws, store.WorkspaceAccess{Write: true}, func(q *db.Queries, _ store.Workspace) (any, error) {
 		v, e := q.InsertProject(r.Context(), db.InsertProjectParams{WorkspaceID: ws, ID: uuid.New(), Name: name})
 		if e != nil {
 			return nil, e
@@ -56,13 +56,13 @@ func (s *Server) CreateProject(w http.ResponseWriter, r *http.Request, ws uuid.U
 	})
 }
 func (s *Server) GetProject(w http.ResponseWriter, r *http.Request, ws, id uuid.UUID) {
-	s.scope(w, r, ws, false, false, false, func(q *db.Queries, _ store.Workspace) (any, error) {
+	s.scope(w, r, ws, store.WorkspaceAccess{}, func(q *db.Queries, _ store.Workspace) (any, error) {
 		v, e := q.GetProject(r.Context(), db.GetProjectParams{WorkspaceID: ws, ID: id})
 		return project(v), e
 	})
 }
 func (s *Server) ListEnvironments(w http.ResponseWriter, r *http.Request, ws, pid uuid.UUID) {
-	s.scope(w, r, ws, false, false, false, func(q *db.Queries, _ store.Workspace) (any, error) {
+	s.scope(w, r, ws, store.WorkspaceAccess{}, func(q *db.Queries, _ store.Workspace) (any, error) {
 		if _, e := q.GetProject(r.Context(), db.GetProjectParams{WorkspaceID: ws, ID: pid}); e != nil {
 			return nil, e
 		}
@@ -93,7 +93,7 @@ func (s *Server) CreateEnvironment(w http.ResponseWriter, r *http.Request, ws, p
 		s.fail(w, r, e)
 		return
 	}
-	s.scope(w, r, ws, true, false, false, func(q *db.Queries, _ store.Workspace) (any, error) {
+	s.scope(w, r, ws, store.WorkspaceAccess{Write: true}, func(q *db.Queries, _ store.Workspace) (any, error) {
 		ctx := r.Context()
 		if _, e := q.GetProject(ctx, db.GetProjectParams{WorkspaceID: ws, ID: pid}); e != nil {
 			return nil, e
@@ -142,8 +142,8 @@ func (s *Server) CreateEnvironment(w http.ResponseWriter, r *http.Request, ws, p
 		return environment(v), store.Audit(ctx, q, *principal(ctx), ws, "environment.create", id)
 	})
 }
-func (s *Server) envScope(w http.ResponseWriter, r *http.Request, ws, pid, id uuid.UUID, write, recent bool, fn func(*db.Queries, db.GetEnvironmentRow) (any, error)) {
-	s.scope(w, r, ws, write, false, recent, func(q *db.Queries, _ store.Workspace) (any, error) {
+func (s *Server) envScope(w http.ResponseWriter, r *http.Request, ws, pid, id uuid.UUID, access store.WorkspaceAccess, fn func(*db.Queries, db.GetEnvironmentRow) (any, error)) {
+	s.scope(w, r, ws, access, func(q *db.Queries, _ store.Workspace) (any, error) {
 		v, e := q.GetEnvironment(r.Context(), db.GetEnvironmentParams{WorkspaceID: ws, ProjectID: pid, ID: id})
 		if e != nil {
 			return nil, e
@@ -152,10 +152,10 @@ func (s *Server) envScope(w http.ResponseWriter, r *http.Request, ws, pid, id uu
 	})
 }
 func (s *Server) GetEnvironment(w http.ResponseWriter, r *http.Request, ws, pid, id uuid.UUID) {
-	s.envScope(w, r, ws, pid, id, false, false, func(_ *db.Queries, v db.GetEnvironmentRow) (any, error) { return environment(v), nil })
+	s.envScope(w, r, ws, pid, id, store.WorkspaceAccess{}, func(_ *db.Queries, v db.GetEnvironmentRow) (any, error) { return environment(v), nil })
 }
 func (s *Server) GetDraft(w http.ResponseWriter, r *http.Request, ws, pid, id uuid.UUID) {
-	s.envScope(w, r, ws, pid, id, false, false, func(q *db.Queries, v db.GetEnvironmentRow) (any, error) {
+	s.envScope(w, r, ws, pid, id, store.WorkspaceAccess{}, func(q *db.Queries, v db.GetEnvironmentRow) (any, error) {
 		rev, e := q.GetRevision(r.Context(), db.GetRevisionParams{WorkspaceID: ws, EnvironmentID: id, ID: v.DraftRevisionID})
 		return revision(rev), e
 	})
@@ -173,7 +173,7 @@ func (s *Server) UpdateDraft(w http.ResponseWriter, r *http.Request, ws, pid, id
 	}
 	var out api.Revision
 	var current *api.Revision
-	e = s.Store.InWorkspaceTx(r.Context(), *principal(r.Context()), ws, true, false, false, func(tx pgx.Tx, q *db.Queries, _ store.Workspace) error {
+	e = s.Store.InWorkspaceTx(r.Context(), *principal(r.Context()), ws, store.WorkspaceAccess{Write: true}, func(tx pgx.Tx, q *db.Queries, _ store.Workspace) error {
 		ctx := r.Context()
 		if e := s.Store.ValidateApplicationRoutes(ctx, tx, ws, id, spec, nil); e != nil {
 			return e
@@ -239,7 +239,7 @@ func (s *Server) UpdateDraft(w http.ResponseWriter, r *http.Request, ws, pid, id
 	s.respond(w, 200, out)
 }
 func (s *Server) ListRevisions(w http.ResponseWriter, r *http.Request, ws, pid, id uuid.UUID) {
-	s.envScope(w, r, ws, pid, id, false, false, func(q *db.Queries, _ db.GetEnvironmentRow) (any, error) {
+	s.envScope(w, r, ws, pid, id, store.WorkspaceAccess{}, func(q *db.Queries, _ db.GetEnvironmentRow) (any, error) {
 		rows, e := q.ListRevisions(r.Context(), db.ListRevisionsParams{WorkspaceID: ws, EnvironmentID: id})
 		out := []api.RevisionSummary{}
 		for _, v := range rows {
@@ -249,13 +249,13 @@ func (s *Server) ListRevisions(w http.ResponseWriter, r *http.Request, ws, pid, 
 	})
 }
 func (s *Server) GetRevision(w http.ResponseWriter, r *http.Request, ws, pid, id, rid uuid.UUID) {
-	s.envScope(w, r, ws, pid, id, false, false, func(q *db.Queries, _ db.GetEnvironmentRow) (any, error) {
+	s.envScope(w, r, ws, pid, id, store.WorkspaceAccess{}, func(q *db.Queries, _ db.GetEnvironmentRow) (any, error) {
 		v, e := q.GetRevision(r.Context(), db.GetRevisionParams{WorkspaceID: ws, EnvironmentID: id, ID: rid})
 		return revision(v), e
 	})
 }
 func (s *Server) GetLayout(w http.ResponseWriter, r *http.Request, ws, pid, id uuid.UUID) {
-	s.envScope(w, r, ws, pid, id, false, false, func(q *db.Queries, _ db.GetEnvironmentRow) (any, error) {
+	s.envScope(w, r, ws, pid, id, store.WorkspaceAccess{}, func(q *db.Queries, _ db.GetEnvironmentRow) (any, error) {
 		v, e := q.GetLayout(r.Context(), db.GetLayoutParams{WorkspaceID: ws, EnvironmentID: id})
 		if e != nil {
 			return nil, e
@@ -271,7 +271,7 @@ func (s *Server) UpdateLayout(w http.ResponseWriter, r *http.Request, ws, pid, i
 		s.fail(w, r, e)
 		return
 	}
-	s.envScope(w, r, ws, pid, id, true, false, func(q *db.Queries, env db.GetEnvironmentRow) (any, error) {
+	s.envScope(w, r, ws, pid, id, store.WorkspaceAccess{Write: true}, func(q *db.Queries, env db.GetEnvironmentRow) (any, error) {
 		v, e := q.GetRevision(r.Context(), db.GetRevisionParams{WorkspaceID: ws, EnvironmentID: id, ID: env.DraftRevisionID})
 		if e != nil {
 			return nil, e
@@ -298,7 +298,7 @@ func (s *Server) UpdateLayout(w http.ResponseWriter, r *http.Request, ws, pid, i
 	})
 }
 func (s *Server) ListSecrets(w http.ResponseWriter, r *http.Request, ws, pid, id uuid.UUID) {
-	s.envScope(w, r, ws, pid, id, false, false, func(q *db.Queries, _ db.GetEnvironmentRow) (any, error) {
+	s.envScope(w, r, ws, pid, id, store.WorkspaceAccess{}, func(q *db.Queries, _ db.GetEnvironmentRow) (any, error) {
 		rows, e := q.ListSecrets(r.Context(), db.ListSecretsParams{WorkspaceID: ws, EnvironmentID: id})
 		out := []api.SecretVersion{}
 		for _, v := range rows {
@@ -312,7 +312,7 @@ func (s *Server) secret(w http.ResponseWriter, r *http.Request, ws, pid, env, id
 		s.fail(w, r, domain.Invalid("value"))
 		return
 	}
-	s.envScope(w, r, ws, pid, env, true, true, func(q *db.Queries, _ db.GetEnvironmentRow) (any, error) {
+	s.envScope(w, r, ws, pid, env, store.WorkspaceAccess{Write: true, Recent: true}, func(q *db.Queries, _ db.GetEnvironmentRow) (any, error) {
 		ctx := r.Context()
 		if newSecret {
 			if e := q.InsertSecret(ctx, db.InsertSecretParams{WorkspaceID: ws, EnvironmentID: env, ID: id, Name: name}); e != nil {
