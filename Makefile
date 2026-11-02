@@ -1,4 +1,4 @@
-.PHONY: check verify verify-host verify-build verify-git verify-canvas check-app verify-app verify-app-core verify-app-go-remaining verify-app-go-coordination verify-image verify-agent-host check-ci
+.PHONY: check verify verify-host verify-build verify-git verify-canvas check-app verify-app verify-app-core verify-app-go-remaining verify-app-go-coordination verify-image verify-agent-host check-ci check-source-size
 
 APP_COORDINATION_TESTS = ^(TestCrossHostCoordinatedPlacement|TestCrossHostSubscriptionExpiry)$$
 APP_PREVIEW_RECOVERY_TESTS = ^TestPreviewRemovalSurvivesCheckpointUnion$$
@@ -29,7 +29,11 @@ verify-build:
 check-ci:
 	node --test scripts/ci-native-plan.test.mjs
 
-check-app: check-ci
+check-source-size:
+	node --test scripts/source-size.test.mjs
+	node scripts/source-size.mjs
+
+check-app: check-ci check-source-size
 	@for file in scripts/platform-*.mjs; do node --check "$$file" || exit 1; done
 	node --test scripts/platform-proxy-test.mjs scripts/platform-generate-test.mjs
 	cd services/platform && test -z "$$(gofmt -l .)" && go mod verify && go vet ./... && go test -short ./...
