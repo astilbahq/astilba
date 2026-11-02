@@ -22,6 +22,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: services/platform/go.mod
@@ -35,6 +36,7 @@ jobs:
         run: docker pull busybox:1.37.0@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e
       - run: make verify-app-core
         env:
+          SOURCE_SIZE_BASE: ${{ github.event_name == 'push' && github.event.before || 'HEAD^1' }}
           PLAT_APP_DOCKER_HOST: unix:///var/run/docker.sock
           WRANGLER_SEND_METRICS: "false"
       - run: make verify-image
