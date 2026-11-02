@@ -66,7 +66,7 @@ func (s *Service) destination(raw string) (bool, error) {
 }
 func (s *Service) Settings(ctx context.Context, p store.Principal, ws uuid.UUID) (api.AlertSettings, error) {
 	var out api.AlertSettings
-	e := s.Store.InWorkspaceTx(ctx, p, ws, false, true, false, func(tx pgx.Tx, _ *db.Queries, _ store.Workspace) error {
+	e := s.Store.InWorkspaceTx(ctx, p, ws, store.WorkspaceAccess{Owner: true}, func(tx pgx.Tx, _ *db.Queries, _ store.Workspace) error {
 		e := tx.QueryRow(ctx, "SELECT email_enabled,encrypted_webhook IS NOT NULL FROM alert_settings WHERE workspace_id=$1", ws).Scan(&out.EmailEnabled, &out.WebhookEnabled)
 		if errors.Is(e, pgx.ErrNoRows) {
 			return nil
@@ -77,7 +77,7 @@ func (s *Service) Settings(ctx context.Context, p store.Principal, ws uuid.UUID)
 }
 func (s *Service) SaveSettings(ctx context.Context, p store.Principal, ws uuid.UUID, in api.SaveAlertSettings) (api.AlertSettings, error) {
 	out := api.AlertSettings{EmailEnabled: in.EmailEnabled, WebhookEnabled: in.WebhookEnabled}
-	e := s.Store.InWorkspaceTx(ctx, p, ws, true, true, true, func(tx pgx.Tx, q *db.Queries, _ store.Workspace) error {
+	e := s.Store.InWorkspaceTx(ctx, p, ws, store.WorkspaceAccess{Write: true, Owner: true, Recent: true}, func(tx pgx.Tx, q *db.Queries, _ store.Workspace) error {
 		var encrypted []byte
 		err := tx.QueryRow(ctx, "SELECT encrypted_webhook FROM alert_settings WHERE workspace_id=$1", ws).Scan(&encrypted)
 		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
@@ -118,7 +118,7 @@ func (s *Service) SaveSettings(ctx context.Context, p store.Principal, ws uuid.U
 }
 func (s *Service) Inbox(ctx context.Context, p store.Principal, ws uuid.UUID, before *uuid.UUID, attention bool) (api.AlertInbox, error) {
 	out := api.AlertInbox{Alerts: []api.Alert{}}
-	e := s.Store.InWorkspaceTx(ctx, p, ws, false, false, false, func(tx pgx.Tx, _ *db.Queries, _ store.Workspace) error {
+	e := s.Store.InWorkspaceTx(ctx, p, ws, store.WorkspaceAccess{}, func(tx pgx.Tx, _ *db.Queries, _ store.Workspace) error {
 		var stamp *time.Time
 		if before != nil {
 			var t time.Time
@@ -153,7 +153,7 @@ func (s *Service) Inbox(ctx context.Context, p store.Principal, ws uuid.UUID, be
 	return out, e
 }
 func (s *Service) Acknowledge(ctx context.Context, p store.Principal, ws, id uuid.UUID) error {
-	return s.Store.InWorkspaceTx(ctx, p, ws, true, false, false, func(tx pgx.Tx, q *db.Queries, _ store.Workspace) error {
+	return s.Store.InWorkspaceTx(ctx, p, ws, store.WorkspaceAccess{Write: true}, func(tx pgx.Tx, q *db.Queries, _ store.Workspace) error {
 		result, e := tx.Exec(ctx, `UPDATE operational_alerts SET acknowledged_at=COALESCE(acknowledged_at,$3),acknowledged_by=COALESCE(acknowledged_by,$4) WHERE workspace_id=$1 AND id=$2`, ws, id, s.Now(), p.Account.ID)
 		if e != nil {
 			return e

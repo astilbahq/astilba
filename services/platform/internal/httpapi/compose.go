@@ -90,7 +90,7 @@ func (s *Server) PreviewCompose(w http.ResponseWriter, r *http.Request, ws, pid,
 		return result, nil
 	}
 	var output any
-	err = s.Store.InWorkspace(r.Context(), *principal(r.Context()), ws, true, false, false, func(q *db.Queries, _ store.Workspace) error {
+	err = s.Store.InWorkspace(r.Context(), *principal(r.Context()), ws, store.WorkspaceAccess{Write: true}, func(q *db.Queries, _ store.Workspace) error {
 		environment, e := q.GetEnvironment(r.Context(), db.GetEnvironmentParams{WorkspaceID: ws, ProjectID: pid, ID: env})
 		if e != nil {
 			return e

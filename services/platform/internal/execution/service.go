@@ -79,10 +79,11 @@ func (s *Service) scope(ctx context.Context, p store.Principal, ws uuid.UUID, ac
 		}
 		return nil
 	}
+	admission := store.WorkspaceAccess{Write: access.Write, Owner: access.Owner, Recent: access.Recent}
 	if access.Recovery {
-		return s.Store.InWorkspaceRecovery(ctx, p, ws, access.Owner, access.Recent, fnScope)
+		return s.Store.InWorkspaceRecovery(ctx, p, ws, admission, fnScope)
 	}
-	return s.Store.InWorkspaceTx(ctx, p, ws, access.Write, access.Owner, access.Recent, fnScope)
+	return s.Store.InWorkspaceTx(ctx, p, ws, admission, fnScope)
 }
 func serverScan(row pgx.Row) (api.Server, error) {
 	var v api.Server
@@ -221,6 +222,9 @@ func (s *Service) Control(ctx context.Context, p store.Principal, ws, id uuid.UU
 		return nil
 	})
 }
+
+// agentCredentialPredicate uses $2 for the supplied token digest.
+const agentCredentialPredicate = `NOT revoked AND (credential_hash=$2 OR (previous_hash=$2 AND previous_until>now()))`
 
 // Agent identity is bound by a server ID plus a random 256-bit credential, never a tenant selector.
 type Identity struct {

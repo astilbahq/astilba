@@ -1,14 +1,15 @@
 import { useState } from "react";
-import type { Schema } from "../api/client";
-import { Button } from "../components/button";
-import { Input } from "../components/input";
-import { Label } from "../components/label";
-import { Select } from "../components/select";
-import { Textarea } from "../components/textarea";
-import * as s from "../styles";
-import { Form, text, useAction } from "../ui";
+import type { Schema } from "../../api/client";
+import { Button } from "../../components/button";
+import { Input } from "../../components/input";
+import { Label } from "../../components/label";
+import { Select } from "../../components/select";
+import { Textarea } from "../../components/textarea";
+import * as s from "../../styles";
+import { Form, text, useAction } from "../../ui";
 
 type Spec = Schema["Specification"];
+
 export function RouteEditor({
   spec,
   change,

@@ -33,7 +33,7 @@ type Status struct {
 
 func (s *Service) Status(ctx context.Context, p store.Principal, ws uuid.UUID) (Status, error) {
 	out := Status{Hosted: s.Store.Hosted, BillingEnabled: s.Store.Hosting.BillingEnabled(), Status: "self_hosted", Support: s.Store.Hosting.Support}
-	err := s.Store.InWorkspaceTx(ctx, p, ws, false, false, false, func(tx pgx.Tx, _ *db.Queries, _ store.Workspace) error {
+	err := s.Store.InWorkspaceTx(ctx, p, ws, store.WorkspaceAccess{}, func(tx pgx.Tx, _ *db.Queries, _ store.Workspace) error {
 		if !s.Store.Hosted {
 			return nil
 		}
