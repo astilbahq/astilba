@@ -1,16 +1,16 @@
 .visual-canvas {
   block-size: 400px;
-  border: 1px solid var(--colors-border);
-  border-radius: 8px;
+  border: 1px solid var(--colors-control-border);
+  border-radius: var(--radii-control);
   overflow: hidden;
 }
 .visual-canvas .react-flow__node {
   color: var(--colors-fg);
   background: var(--colors-surface);
-  border-color: var(--colors-border);
+  border-color: var(--colors-control-border);
 }
 .visual-canvas .react-flow__node.selected {
-  border-color: var(--colors-brand);
+  border-color: var(--colors-control-interactive-border);
 }
 .visual-canvas .react-flow__edge-text {
   fill: var(--colors-fg);
@@ -21,14 +21,14 @@
 .visual-canvas .react-flow__controls-button {
   background: var(--colors-surface);
   color: var(--colors-fg);
-  border-color: var(--colors-border);
+  border-color: var(--colors-control-border);
 }
 .visual-canvas .react-flow__controls-button svg {
   fill: currentColor;
 }
 
 .visual-canvas :focus-visible {
-  outline: 2px solid var(--colors-brand);
+  outline: 2px solid var(--colors-control-interactive-border);
   outline-offset: 3px;
 }
 .visual-canvas .react-flow {

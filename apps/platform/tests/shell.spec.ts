@@ -162,6 +162,10 @@ test("mobile editor navigation keeps both unsaved-change decisions reachable abo
   await expect(discard).toBeFocused();
   await discard.press("Tab");
   await expect(keepEditing).toBeFocused();
+  await expect(
+    page.getByRole("dialog", { name: "Navigation", includeHidden: true }),
+  ).toHaveCSS("opacity", "1");
+  await expect(decision).toHaveCSS("opacity", "1");
   // WebKit's empty VoiceOver guards redirect focus, as checked above.
   // https://github.com/mui/base-ui/issues/4668#issuecomment-4306200868
   const audit = new AxeBuilder({ page }).exclude(
