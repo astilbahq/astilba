@@ -13,6 +13,7 @@ import { Select } from "../components/select";
 import { Textarea } from "../components/textarea";
 import * as s from "../styles";
 import { ErrorNotice, Field, Form, text, useAction } from "../ui";
+import { AutomaticBuildRejections } from "./automatic-build-rejections";
 import { IntegrationSettings } from "./integrations";
 import type { EnvironmentPath } from "./visual-editor";
 
@@ -35,14 +36,6 @@ const buildDefaults = {
     minutes: "30",
   },
 };
-const buildRejectionMessages = {
-  missing_build_secret: "A declared build-secret version is unavailable.",
-  build_secret_budget: "Declared build secrets exceed the build-input limit.",
-  arguments_contain_secret:
-    "Public build arguments contain a known secret value.",
-  runtime_secret_budget:
-    "Runtime secrets exceed the build-input validation limit.",
-} satisfies Record<Schema["BuildRejectionReason"], string>;
 export function Pipelines({
   path,
   revision,
@@ -937,24 +930,11 @@ export function Pipelines({
       )}
       <section className={s.panel}>
         <h3>Source and build jobs</h3>
-        <ErrorNotice error={rejections.error} />
-        <div role="status" aria-label="Automatic build rejections">
-          {!!rejections.data?.length && (
-            <div className={s.stack}>
-              <h4>Automatic builds need attention</h4>
-              {rejections.data.map((rejection) => (
-                <p key={rejection.applicationId}>
-                  {revision.specification.applications.find(
-                    (app) => app.id === rejection.applicationId,
-                  )?.name ?? "Service"}{" "}
-                  · {rejection.commit.slice(0, 12)} ·{" "}
-                  {buildRejectionMessages[rejection.reason]} Review the build
-                  configuration before retrying.
-                </p>
-              ))}
-            </div>
-          )}
-        </div>
+        <AutomaticBuildRejections
+          rejections={rejections.data}
+          error={rejections.error}
+          applications={revision.specification.applications}
+        />
         {!runs.data?.length && (
           <p className={s.muted}>No source or build jobs yet.</p>
         )}

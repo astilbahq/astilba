@@ -13,6 +13,7 @@ import { Select } from "../components/select";
 import { Textarea } from "../components/textarea";
 import * as s from "../styles";
 import { ErrorNotice, Field, Form, text, useAction } from "../ui";
+import { ReviewedPlacements } from "./reviewed-placements";
 import type { EnvironmentPath } from "./visual-editor";
 
 const root =
@@ -318,42 +319,11 @@ export function Deployments({
               ))}
             </ul>
             {ready.distributed && (
-              <section className={s.stack} aria-label="Placement changes">
-                <h4>Reviewed placements</h4>
-                {ready.distributed.units.map((unit) => (
-                  <div key={unit.plan.unitId}>
-                    <strong>
-                      {servers.data?.find(
-                        (server) => server.id === unit.plan.serverId,
-                      )?.name ?? unit.plan.serverId}
-                      {unit.plan.local?.primary
-                        ? " · ingress and persistent services"
-                        : ""}
-                    </strong>
-                    <ul>
-                      {ready.specification.applications.map((app) => (
-                        <li key={app.id}>
-                          {app.name}:{" "}
-                          {unit.plan.local?.priorInstances[app.id]?.length ?? 0}{" "}
-                          → {unit.plan.local?.instances[app.id]?.length ?? 0}{" "}
-                          instances
-                          {unit.plan.images[app.id] && (
-                            <code className={s.code}>
-                              {" "}
-                              · {unit.plan.images[app.id]}
-                            </code>
-                          )}
-                        </li>
-                      ))}
-                    </ul>
-                    <p>
-                      New pool: {unit.cpuMillis} millicores · {unit.memoryMiB}{" "}
-                      MiB. Serving pools remain reserved until publication is
-                      confirmed.
-                    </p>
-                  </div>
-                ))}
-              </section>
+              <ReviewedPlacements
+                distributed={ready.distributed}
+                applications={ready.specification.applications}
+                servers={servers.data}
+              />
             )}
             <ul>
               {ready.effects.map((effect) => (

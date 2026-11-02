@@ -56,6 +56,39 @@ each test creates its own database and temporary resources. Preview recovery has
 a separate process budget from the cross-host pair; both are isolated from the
 remaining tests.
 
+## Source-size ratchet
+
+`make check-source-size` runs the source-size enforcement fixtures and checks
+authored Go and TypeScript/JavaScript files at the repository root and under
+`apps`, `services`, `contracts`, `scripts` and `.github`. It is a prerequisite of `check-app`,
+so the existing Application verification gate requires it. Files have a
+600-physical-line limit; tests have 800. Comments and blank lines count, while a
+terminal newline does not add a line. Test suffixes and the `tests` and
+`workshop-tests` directories identify tests. Experiments, dependencies, build
+outputs and the generated owners listed in `scripts/source-size.mjs` are excluded
+by their owned paths; an unrelated package named `coverage` or `dist` is checked.
+The checker does not follow source symlinks.
+
+`scripts/source-size-baseline.json` lists exactly the currently oversized files.
+Its entries cannot be added or increased against the comparison commit. Reducing
+an oversized file requires lowering its allowance; reaching the ordinary limit
+removes it. Regenerate eligible reductions with
+`node scripts/source-size.mjs --write-baseline`. The first policy commit derives
+legacy eligibility from its base's actual files instead of accepting arbitrary
+exceptions.
+
+Application CI fetches full history and supplies `SOURCE_SIZE_BASE`: the tested
+PR merge's actual first parent, the previous commit from a push event, or the
+manual run's first parent. CI and explicit `--base <ref>` checks require available
+Git history. Local Git checks otherwise use the common ancestor with
+`origin/main`, falling back to local `main` only when that remote ref is absent.
+Fetch the missing history or supply an available base when resolution fails;
+the checker never fetches automatically.
+
+A Git-free corresponding-source archive can check its embedded sizes and
+allowances, with an explicit notice that historical comparison is unavailable.
+Archives cannot regenerate allowances or satisfy a CI history check.
+
 ## Browser shards
 
 Application and workshop workflows each run Chromium and WebKit with two shards

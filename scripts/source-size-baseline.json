@@ -1,0 +1,23 @@
+{
+  "apps/platform/src/features/deployments.tsx": 845,
+  "apps/platform/src/features/pipelines.tsx": 1103,
+  "apps/platform/src/features/previews.tsx": 634,
+  "apps/platform/src/features/visual-editor.tsx": 990,
+  "apps/platform/src/servers.tsx": 664,
+  "apps/platform/tests/auth.spec.ts": 922,
+  "services/platform/internal/agent/backup_data.go": 722,
+  "services/platform/internal/agent/cross_host_host_test.go": 1313,
+  "services/platform/internal/agent/pipeline.go": 651,
+  "services/platform/internal/agent/release.go": 609,
+  "services/platform/internal/agent/upgrade.go": 686,
+  "services/platform/internal/agent/visual.go": 1110,
+  "services/platform/internal/composeproject/source.go": 844,
+  "services/platform/internal/deployment/plan.go": 670,
+  "services/platform/internal/execution/cross_host_operations.go": 679,
+  "services/platform/internal/execution/preview_workers.go": 671,
+  "services/platform/internal/execution/visual.go": 854,
+  "services/platform/internal/httpapi/server.go": 621,
+  "services/platform/internal/integration/cross_host_physical_recovery_test.go": 1054,
+  "services/platform/internal/integration/cross_host_recovery_test.go": 1361,
+  "services/platform/internal/integration/cross_host_test.go": 1378
+}

@@ -4,7 +4,6 @@ import { useEffect, useId, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ApiError, client, result, type Schema } from "../../api/client";
 import { publishDraft, readCurrentDraft } from "../../api/environment";
-import { serversOptions } from "../../api/servers";
 import {
   AlertDialogActions,
   AlertDialogClose,
@@ -21,7 +20,7 @@ import * as s from "../../styles";
 import { ErrorNotice, useAction } from "../../ui";
 import { Backups } from "../backups";
 import { ComposeEditor } from "../compose-editor";
-import { CrossHostPlacement } from "../cross-host-placement";
+import { PlacementWorkspace } from "../cross-host-placement";
 import { Deployments } from "../deployments";
 import { Pipelines } from "../pipelines";
 import { Previews } from "../previews";
@@ -31,6 +30,7 @@ import { EnvironmentOverview } from "./environment-overview";
 import * as e from "./environment.styles";
 import type { EnvProps, EnvironmentSection } from "./environment.types";
 import { RevisionComparison } from "./revision-comparison";
+import { RevisionHistory } from "./revision-history";
 export function EnvironmentWorkspace({
   workspaceId,
   projectId,
@@ -403,90 +403,24 @@ export function EnvironmentWorkspace({
                 </details>
               )}
             </section>
-            <aside
-              className={e.history}
-              aria-label={envT(($) => $.configurationEditor.history)}
-            >
-              <h2 className={e.heading}>
-                {envT(($) => $.configurationEditor.history)}
-              </h2>
-              <section className={s.panel}>
-                <ErrorNotice error={history.error} />
-                {history.isPending && (
-                  <p className={e.muted}>
-                    {envT(($) => $.configurationEditor.historyLoading)}
-                  </p>
-                )}
-                {history.data?.length === 0 && (
-                  <p className={e.muted}>
-                    {envT(($) => $.configurationEditor.historyEmpty)}
-                  </p>
-                )}
-                <div className={e.revisions}>
-                  {history.data?.map((revision) => (
-                    <div key={revision.id}>
-                      <p className={s.code}>{revision.hash.slice(0, 12)}</p>
-                      <time className={s.muted} dateTime={revision.createdAt}>
-                        {new Date(revision.createdAt).toLocaleString()}
-                      </time>
-                      <Button
-                        type="button"
-                        size="sm"
-                        disabled={action.isPending}
-                        aria-expanded={comparison?.id === revision.id}
-                        onClick={(event) => {
-                          comparisonTrigger.current = event.currentTarget;
-                          setOperation("compare");
-                          action.run(async () => {
-                            const v = await result(
-                              client.GET(
-                                "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/revisions/{revisionId}",
-                                {
-                                  params: {
-                                    path: { ...path, revisionId: revision.id },
-                                  },
-                                },
-                              ),
-                            );
-                            setComparison(v);
-                          });
-                        }}
-                      >
-                        {envT(($) => $.configurationEditor.compare)}
-                      </Button>
-                    </div>
-                  ))}
-                </div>
-              </section>
-              {comparison && (
-                <RevisionComparison
-                  id={`${jsonId}-comparison`}
-                  title={envT(($) => $.configurationEditor.comparison)}
-                  description={envT(
-                    ($) => $.configurationEditor.comparisonDescription,
-                  )}
-                  draft={draft}
-                  revision={comparison}
-                  revisionLabel={envT(
-                    ($) => $.configurationEditor.comparedRevision,
-                    { hash: comparison.hash.slice(0, 12) },
-                  )}
-                  headingRef={comparisonHeading}
-                  headerAction={
-                    <Button
-                      type="button"
-                      size="sm"
-                      onClick={() => {
-                        setComparison(undefined);
-                        focusTarget(comparisonTrigger.current)?.focus();
-                      }}
-                    >
-                      {envT(($) => $.configurationEditor.closeComparison)}
-                    </Button>
-                  }
-                />
-              )}
-            </aside>
+            <RevisionHistory
+              history={history}
+              path={path}
+              action={action}
+              comparison={comparison}
+              draft={draft}
+              jsonId={jsonId}
+              headingRef={comparisonHeading}
+              onCompareStart={(trigger) => {
+                comparisonTrigger.current = trigger;
+                setOperation("compare");
+              }}
+              onComparison={setComparison}
+              onClose={() => {
+                setComparison(undefined);
+                focusTarget(comparisonTrigger.current)?.focus();
+              }}
+            />
           </div>
           {write &&
             !base.specification.compose &&
@@ -650,28 +584,5 @@ export function EnvironmentWorkspace({
         </AlertDialogContent>
       </AlertDialogRoot>
     </>
-  );
-}
-
-function PlacementWorkspace({
-  path,
-  spec,
-  change,
-}: {
-  path: { workspaceId: string };
-  spec: Schema["Specification"];
-  change: (spec: Schema["Specification"]) => void;
-}) {
-  const servers = useQuery({
-    ...serversOptions(path.workspaceId),
-    refetchInterval: 15000,
-  });
-  return (
-    <CrossHostPlacement
-      workspaceId={path.workspaceId}
-      servers={servers.data ?? []}
-      spec={spec}
-      change={change}
-    />
   );
 }
