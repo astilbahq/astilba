@@ -1,10 +1,19 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { devNull, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 import { nativePlan } from "./ci-native-plan.mjs";
+
+const gitEnvironment = {
+  ...Object.fromEntries(
+    Object.entries(process.env).filter(([name]) => !name.startsWith("GIT_")),
+  ),
+  GIT_CONFIG_NOSYSTEM: "1",
+  GIT_CONFIG_GLOBAL: devNull,
+};
 
 function repository(t) {
   const cwd = mkdtempSync(join(tmpdir(), "astilba-ci-selection-"));
@@ -14,6 +23,7 @@ function repository(t) {
       cwd,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
+      env: gitEnvironment,
     });
   git("init", "--initial-branch=main");
   git("config", "user.name", "CI selection fixture");
@@ -119,4 +129,42 @@ test("missing or unexpected PR metadata fails instead of reporting a skip", (t) 
   repo.git("clone", "--depth=1", `file://${repo.cwd}`, shallow);
   assert.throws(() => nativePlan("pull_request", shallow), /two-parent/);
   assert.throws(() => nativePlan("merge_group", repo.cwd), /Unsupported/);
+});
+
+test("inherited Git selectors cannot redirect fixture writes or planner reads", (t) => {
+  const foreign = repository(t);
+  foreign.write("sentinel.txt", "pending work\n");
+  const head = foreign.git("rev-parse", "HEAD");
+  const status = foreign.git("status", "--porcelain=v1");
+  const configuration = foreign.git("config", "--local", "--list");
+  const result = spawnSync(
+    process.execPath,
+    [
+      "--test",
+      "--test-reporter=tap",
+      "--test-name-pattern=^only known frontend and documentation changes",
+      fileURLToPath(import.meta.url),
+    ],
+    {
+      encoding: "utf8",
+      env: {
+        ...Object.fromEntries(
+          Object.entries(process.env).filter(
+            ([name]) => !name.startsWith("NODE_TEST_"),
+          ),
+        ),
+        GIT_DIR: join(foreign.cwd, ".git"),
+        GIT_WORK_TREE: foreign.cwd,
+        GIT_INDEX_FILE: join(foreign.cwd, ".git/index"),
+      },
+    },
+  );
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(
+    result.stdout,
+    /^ok \d+ - only known frontend and documentation changes/m,
+  );
+  assert.equal(foreign.git("rev-parse", "HEAD"), head);
+  assert.equal(foreign.git("status", "--porcelain=v1"), status);
+  assert.equal(foreign.git("config", "--local", "--list"), configuration);
 });
