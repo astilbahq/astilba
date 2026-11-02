@@ -1,6 +1,7 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
 import { openEnvironmentSection } from "./environment-section";
+import { signInAsOwner } from "./fixtures/owner-sign-in";
 
 test("Compose files remain authoritative through graph edits and independent layout saves", async ({
   page,
@@ -21,11 +22,7 @@ test("Compose files remain authoritative through graph edits and independent lay
     await route.fulfill({ response });
   });
   await page.goto("/");
-  await page.getByLabel("Email", { exact: true }).fill("owner@example.test");
-  await page
-    .getByLabel("Password", { exact: true })
-    .fill("correct horse battery staple");
-  await page.getByRole("button", { name: "Sign in", exact: true }).click();
+  await signInAsOwner(page);
   try {
     await expect.poll(() => capturedInitialProjects).toBe(true);
     await page

@@ -1,4 +1,5 @@
 import { type APIRequestContext, expect, type Page } from "@playwright/test";
+import { signInAsOwner } from "./owner-sign-in";
 
 export async function managedDatabase(
   page: Page,
@@ -8,11 +9,7 @@ export async function managedDatabase(
   workspaceName?: string,
 ) {
   await page.goto("/");
-  await page.getByLabel("Email", { exact: true }).fill("owner@example.test");
-  await page
-    .getByLabel("Password", { exact: true })
-    .fill("correct horse battery staple");
-  await page.getByRole("button", { name: "Sign in", exact: true }).click();
+  await signInAsOwner(page);
   await expect(
     page.getByRole("heading", { name: "Projects", exact: true }),
   ).toBeVisible();
