@@ -130,13 +130,18 @@ test("inherited Git selection cannot redirect fixture writes or checker history"
     process.execPath,
     [
       "--test",
+      "--test-reporter=tap",
       "--test-name-pattern=source and test caps",
       fileURLToPath(import.meta.url),
     ],
     {
       encoding: "utf8",
       env: {
-        ...process.env,
+        ...Object.fromEntries(
+          Object.entries(process.env).filter(
+            ([name]) => !name.startsWith("NODE_TEST_"),
+          ),
+        ),
         GIT_DIR: join(foreign.root, ".git"),
         GIT_WORK_TREE: foreign.root,
         GIT_INDEX_FILE: join(foreign.root, ".git/index"),
@@ -144,6 +149,7 @@ test("inherited Git selection cannot redirect fixture writes or checker history"
     },
   );
   assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /^ok \d+ - source and test caps/m);
   assert.equal(foreign.git("rev-parse", "HEAD"), foreign.base);
   assert.equal(foreign.git("config", "user.name"), name);
   assert.equal(foreign.git("status", "--porcelain=v1"), status);
