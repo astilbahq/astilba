@@ -1,6 +1,7 @@
 import { createHmac } from "node:crypto";
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
+import type { Schema } from "../src/api/client";
 import { openEnvironmentSection } from "./environment-section";
 
 test("repository setup, Git service, queued build and cancellation use the real API", async ({
@@ -594,4 +595,141 @@ test("repository setup, Git service, queued build and cancellation use the real 
       path: info.outputPath("build-rejection-mobile.png"),
     });
   }
+  await test.step("promote an existing artifact into another environment", async () => {
+    const artifacts: Schema["BuildArtifact"][] = await (
+      await page.request.get(`/api/v1/workspaces/${ws}/artifacts`)
+    ).json();
+    const artifact = artifacts.find((value) => value.id === completed.id);
+    expect(artifact?.digest).toBe(digest);
+    if (!artifact) throw new Error("Successful build has no artifact.");
+    const environmentsPath = environmentPath.slice(
+      0,
+      environmentPath.lastIndexOf("/"),
+    );
+    const created = await page.request.post(environmentsPath, {
+      headers,
+      data: { name: "Artifact destination" },
+    });
+    expect(created.status()).toBe(201);
+    const destination: Schema["Environment"] = await created.json();
+    const destinationPath = `${environmentsPath}/${destination.id}`;
+    const upstream = crypto.randomUUID(),
+      target = crypto.randomUUID();
+    const image =
+      "busybox:1.37.0@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e";
+    const specification: Schema["Specification"] = {
+      version: 1,
+      applications: [
+        {
+          id: upstream,
+          name: "upstream",
+          kind: "worker",
+          source: { kind: "image", image },
+        },
+        {
+          id: target,
+          name: "release",
+          kind: "worker",
+          source: { kind: "image", image },
+          variables: [{ name: "MODE", value: "destination" }],
+        },
+      ],
+      variables: [{ name: "ENVIRONMENT", value: "destination" }],
+      bindings: [
+        {
+          id: crypto.randomUUID(),
+          sourceId: upstream,
+          targetId: target,
+          output: "HOST",
+          variable: "UPSTREAM_HOST",
+        },
+      ],
+    };
+    const configured = await page.request.put(`${destinationPath}/draft`, {
+      headers,
+      data: { baseRevisionId: destination.draftRevisionId, specification },
+    });
+    expect(configured.status()).toBe(200);
+    const draft: Schema["Revision"] = await configured.json();
+    const destinationPage = await page.context().newPage();
+    const destinationUrl = new URL(page.url());
+    destinationUrl.searchParams.set("environment", destination.id);
+    await destinationPage.goto(destinationUrl.href);
+    await openEnvironmentSection(destinationPage, "Configuration");
+    await destinationPage
+      .getByRole("button", { name: "Service list", exact: true })
+      .click();
+    await destinationPage
+      .getByRole("button", { name: "release", exact: true })
+      .click();
+    const imageInput = destinationPage
+      .getByRole("form", { name: "Service properties", exact: true })
+      .getByLabel("Container image", { exact: true });
+    await expect(imageInput).toHaveValue(image);
+    await openEnvironmentSection(destinationPage, "Deployments");
+    const promote = destinationPage.getByRole("form", {
+      name: "Promote existing artifact",
+      exact: true,
+    });
+    await promote
+      .getByRole("combobox", { name: "Built artifact", exact: true })
+      .selectOption(artifact.id);
+    await promote
+      .getByRole("combobox", { name: "Destination service", exact: true })
+      .selectOption(target);
+    const promotion = destinationPage.waitForResponse(
+      (response) =>
+        response.url().endsWith("/promote") &&
+        response.request().method() === "POST",
+    );
+    await promote
+      .getByRole("button", {
+        name: "Promote existing artifact to draft",
+        exact: true,
+      })
+      .click();
+    const response = await promotion;
+    expect(response.url()).toBe(
+      `http://127.0.0.1:15181${destinationPath}/artifacts/${artifact.id}/promote`,
+    );
+    expect(response.request().postDataJSON()).toEqual({
+      applicationId: target,
+      baseRevisionId: draft.id,
+      inputHash: artifact.inputHash,
+    });
+    expect(response.status()).toBe(200);
+    const saved: Schema["Revision"] = await (
+      await page.request.get(`${destinationPath}/draft`)
+    ).json();
+    expect(
+      saved.specification.applications.find((app) => app.id === target)?.source,
+    ).toEqual({
+      kind: "image",
+      image: artifact.image,
+      artifactId: artifact.id,
+    });
+    expect(
+      saved.specification.applications.filter((app) => app.id !== target),
+    ).toEqual(
+      draft.specification.applications.filter((app) => app.id !== target),
+    );
+    expect(
+      saved.specification.applications.find((app) => app.id === target)
+        ?.variables,
+    ).toEqual(
+      draft.specification.applications.find((app) => app.id === target)
+        ?.variables,
+    );
+    expect(saved.specification.variables).toEqual(
+      draft.specification.variables,
+    );
+    expect(saved.specification.bindings).toEqual(draft.specification.bindings);
+    await openEnvironmentSection(destinationPage, "Configuration");
+    await expect(imageInput).toHaveValue(image);
+    await destinationPage
+      .getByRole("button", { name: "Reload current", exact: true })
+      .click();
+    await expect(imageInput).toHaveValue(artifact.image);
+    await destinationPage.close();
+  });
 });
