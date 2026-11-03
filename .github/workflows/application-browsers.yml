@@ -14,7 +14,33 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  plan:
+    name: Select browser checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      selected: ${{ steps.plan.outputs.browser }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.18.1
+      - id: plan
+        # Pull requests run the base branch's planner, so editing the planner cannot
+        # select its own checks. A key the base planner does not know selects the suite.
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = pull_request ] && git cat-file -e HEAD^1:scripts/ci-plan.mjs 2>/dev/null; then
+            git show HEAD^1:scripts/ci-plan.mjs > "$RUNNER_TEMP/ci-plan.mjs"
+            node "$RUNNER_TEMP/ci-plan.mjs"
+          fi
+          grep -q '^browser=' "$GITHUB_OUTPUT" || echo "browser=true" >> "$GITHUB_OUTPUT"
+
   application-browsers:
+    needs: plan
+    if: needs.plan.outputs.selected == 'true'
     name: Dashboard (${{ matrix.browser }}, ${{ matrix.shard }}/2)
     strategy:
       fail-fast: false
@@ -78,11 +104,18 @@ jobs:
   verify:
     name: Application browser verification
     if: always()
-    needs: [application-browsers]
+    needs: [plan, application-browsers]
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     steps:
       - name: Require every browser shard
         env:
+          PLAN_RESULT: ${{ needs.plan.result }}
+          SELECTED: ${{ needs.plan.outputs.selected }}
           SHARDS_RESULT: ${{ needs.application-browsers.result }}
-        run: test "$SHARDS_RESULT" = success
+        run: |
+          test "$PLAN_RESULT" = success
+          case "$SELECTED:$SHARDS_RESULT" in
+            true:success|false:skipped) ;;
+            *) exit 1 ;;
+          esac
