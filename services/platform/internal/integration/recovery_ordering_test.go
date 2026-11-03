@@ -195,6 +195,9 @@ func verifyRecoveryOrdering(t *testing.T, source *fixture, ws uuid.UUID, before,
 		if err = tx.Commit(ctx); err != nil {
 			t.Fatal(err)
 		}
+		if _, err = destination.st.Pool.Exec(ctx, `INSERT INTO troubleshooting_policies(workspace_id,environment_id,enabled,owners_only,generation,updated_by) SELECT workspace_id,id,true,false,1,$2 FROM environments WHERE workspace_id=$1`, ws, destination.owner); err != nil {
+			t.Fatal(err)
+		}
 		input := execution.RecoveryImport{WorkspaceID: ws, OwnerID: destination.owner, HostExports: exports}
 		preview, err := destination.execution.RecoverCrossHost(ctx, input)
 		if err != nil {
@@ -207,6 +210,10 @@ func verifyRecoveryOrdering(t *testing.T, source *fixture, ws uuid.UUID, before,
 		}
 		if err == nil && !applied.Applied {
 			t.Fatal("recovery did not apply the reviewed checkpoint")
+		}
+		var sessionsEnabled int
+		if err := destination.st.Pool.QueryRow(ctx, `SELECT count(*) FROM troubleshooting_policies WHERE workspace_id=$1 AND enabled`, ws).Scan(&sessionsEnabled); err != nil || sessionsEnabled != 0 {
+			t.Fatal("recovery left terminal sessions enabled", sessionsEnabled, err)
 		}
 		if err == nil {
 			var wantRevision, wantOperation uuid.UUID
