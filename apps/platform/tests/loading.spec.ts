@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { expect, test } from "@playwright/test";
 import { openEnvironmentSection } from "./environment-section";
+import { signInAsOwner } from "./fixtures/owner-sign-in";
 
 for (const asset of ["script", "stylesheet", "both"] as const) {
   test(`environment code loads on demand and recovers missing ${asset} before editing`, async ({
@@ -18,11 +19,7 @@ for (const asset of ["script", "stylesheet", "both"] as const) {
       page.getByRole("heading", { name: "Sign in", exact: true }),
     ).toBeVisible();
     expect(scripts.filter((url) => environmentScript.test(url))).toEqual([]);
-    await page.getByLabel("Email", { exact: true }).fill("owner@example.test");
-    await page
-      .getByLabel("Password", { exact: true })
-      .fill("correct horse battery staple");
-    await page.getByRole("button", { name: "Sign in", exact: true }).click();
+    await signInAsOwner(page);
     await expect(
       page.getByRole("heading", { name: "Projects", exact: true }),
     ).toBeVisible();

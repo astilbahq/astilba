@@ -2,14 +2,11 @@ import { randomUUID } from "node:crypto";
 import { expect, type Page, test } from "@playwright/test";
 import type { Schema } from "../src/api/client";
 import { openEnvironmentSection } from "./environment-section";
+import { signInAsOwner } from "./fixtures/owner-sign-in";
 
 async function openEditor(page: Page) {
   await page.goto("/login");
-  await page.getByLabel("Email", { exact: true }).fill("owner@example.test");
-  await page
-    .getByLabel("Password", { exact: true })
-    .fill("correct horse battery staple");
-  await page.getByRole("button", { name: "Sign in", exact: true }).click();
+  await signInAsOwner(page);
   await expect(
     page.getByRole("heading", { name: "Projects", exact: true }),
   ).toBeVisible();
