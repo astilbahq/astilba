@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 
+	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -22,8 +23,8 @@ func ConfigureServingPool(config *pgxpool.Config) {
 				return err
 			}
 		}
-		var acquired bool
-		if err := conn.QueryRow(ctx, `SELECT pg_try_advisory_lock_shared($1)`, recoveryProcessLock).Scan(&acquired); err != nil {
+		acquired, err := db.New(conn).TakeRecoveryProcessSharedLock(ctx, recoveryProcessLock)
+		if err != nil {
 			return err
 		}
 		if !acquired {
@@ -34,8 +35,8 @@ func ConfigureServingPool(config *pgxpool.Config) {
 }
 
 func RequireOffline(ctx context.Context, tx pgx.Tx) error {
-	var acquired bool
-	if err := tx.QueryRow(ctx, `SELECT pg_try_advisory_xact_lock($1)`, recoveryProcessLock).Scan(&acquired); err != nil {
+	acquired, err := db.New(tx).TakeRecoveryProcessLock(ctx, recoveryProcessLock)
+	if err != nil {
 		return err
 	}
 	if !acquired {

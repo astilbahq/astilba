@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 
+	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/portability"
@@ -36,13 +37,12 @@ func (s *Service) recoverSavedCheckpoints(ctx context.Context, tx pgx.Tx, before
 		}
 		source.KnownSequences[current.Id] = known.Sequence
 		for sequence := retained.Sequence + 1; sequence <= known.Sequence; sequence++ {
-			var descriptor, envelope []byte
-			var phase string
-			var acknowledged bool
-			if err := tx.QueryRow(ctx, `SELECT descriptor,envelope,phase,acknowledged FROM cross_host_checkpoints WHERE workspace_id=$1 AND parent_id=$2 AND sequence=$3`, before.Workspace, current.Id, sequence).Scan(&descriptor, &envelope, &phase, &acknowledged); err != nil {
+			saved, err := db.New(tx).RecoveryCheckpointAt(ctx, db.RecoveryCheckpointAtParams{WorkspaceID: before.Workspace, ParentID: current.Id, Sequence: sequence})
+			if err != nil {
 				return err
 			}
-			if acknowledged {
+			descriptor, envelope, phase := saved.Descriptor, saved.Envelope, saved.Phase
+			if saved.Acknowledged {
 				return errors.New("management acknowledged metadata missing from the primary's retained evidence")
 			}
 			var next deployment.RecoveryDescriptor
@@ -58,6 +58,7 @@ func (s *Service) recoverSavedCheckpoints(ctx context.Context, tx pgx.Tx, before
 				clear(decoded)
 				return errors.New("invalid saved checkpoint continuation")
 			}
+			// inline-sql: recovery session temporary table
 			_, err = tx.Exec(ctx, `INSERT INTO recovery_input_checkpoints(id,parent_id,sequence,descriptor,envelope,decoded,primary_source,retained) VALUES($1,$2,$3,$4,$5,$6,$7,false)`, next.CheckpointID, next.ParentID, next.Sequence, descriptor, envelope, decoded, current.ServerId)
 			clear(decoded)
 			if err != nil {

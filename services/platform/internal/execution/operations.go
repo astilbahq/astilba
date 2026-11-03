@@ -301,7 +301,7 @@ func (w *worker) Work(ctx context.Context, job *river.Job[jobArgs]) error {
 	if c.Kind == "crosshost" && c.ParentId == nil {
 		return w.service.coordinate(ctx, tx, job, ws, c, state, cancelled)
 	}
-	if allowed, err := recoveryGateDelivery(ctx, tx, c); err != nil {
+	if allowed, err := recoveryGateDelivery(ctx, tx, ws, c); err != nil {
 		return err
 	} else if !allowed {
 		if err = tx.Commit(ctx); err != nil {

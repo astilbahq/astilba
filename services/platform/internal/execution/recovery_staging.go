@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 
+	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/hostnetwork"
@@ -17,6 +18,8 @@ func (s *Service) finishRecoveryStaging(ctx context.Context, tx pgx.Tx, in Recov
 	if s.Queue == nil {
 		return errors.New("offline recovery requires the configured durable queue")
 	}
+	q := db.New(tx)
+	// inline-sql: recovery session temporary table
 	if _, err := tx.Exec(ctx, `DELETE FROM cross_host_reservations WHERE workspace_id=$1 AND parent_id NOT IN (SELECT id FROM recovery_selected_roots)`, in.WorkspaceID); err != nil {
 		return err
 	}
@@ -26,8 +29,12 @@ func (s *Service) finishRecoveryStaging(ctx context.Context, tx pgx.Tx, in Recov
 			units = root.Body.Plan.ActiveUnits()
 		}
 		for _, unit := range units {
-			if _, err := tx.Exec(ctx, `INSERT INTO cross_host_reservations(server_id,workspace_id,parent_id,cpu_millis,memory_mib) VALUES($1,$2,$3,$4,$5) ON CONFLICT(server_id) DO UPDATE SET parent_id=excluded.parent_id,cpu_millis=excluded.cpu_millis,memory_mib=excluded.memory_mib WHERE cross_host_reservations.workspace_id=excluded.workspace_id`, unit.Plan.ServerID, in.WorkspaceID, parent, unit.CPUMillis, unit.MemoryMiB); err != nil {
+			reserved, err := q.ReserveRecoveredServer(ctx, db.ReserveRecoveredServerParams{ServerID: unit.Plan.ServerID, WorkspaceID: in.WorkspaceID, ParentID: parent, CpuMillis: unit.CPUMillis, MemoryMib: unit.MemoryMiB})
+			if err != nil {
 				return err
+			}
+			if reserved != 1 {
+				return errors.New("recovery participant is reserved by another workspace")
 			}
 		}
 	}
@@ -46,6 +53,7 @@ func (s *Service) finishRecoveryStaging(ctx context.Context, tx pgx.Tx, in Recov
 				values := []string{unit.Previous.Hash, unit.Plan.Hash}
 				if root.Body.Maintenance == nil && !unit.Plan.Local.Primary && len(unit.Plan.LocalApplications()) == 0 {
 					var complete bool
+					// inline-sql: recovery session temporary table
 					if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM recovery_input_proofs WHERE server_id=$1 AND parent_id=$2 AND id=$3 AND applied AND report->>'state'='succeeded')`, server, root.Command.Id, phaseKey(root.Command.Id, "complete", unit.Plan.UnitID)).Scan(&complete); err != nil {
 						return err
 					}
@@ -69,33 +77,34 @@ func (s *Service) finishRecoveryStaging(ctx context.Context, tx pgx.Tx, in Recov
 		for _, manifest := range host.Networks {
 			observedNetworkGeneration = max(observedNetworkGeneration, manifest.Generation)
 			raw, _ := json.Marshal(manifest)
-			updated, err := tx.Exec(ctx, `UPDATE network_members SET installed_manifest=$4,manifest_hash=$5,acknowledged_generation=0,note='Controller recovery preserves the installed private links; general network mutation requires renewed approval.' WHERE workspace_id=$1 AND server_id=$2 AND membership_id=$3 AND network_id=$6 AND public_key=$7`, in.WorkspaceID, server, manifest.MembershipID, raw, hostnetwork.Hash(manifest), manifest.NetworkID, manifest.PublicKey)
+			updated, err := q.AdoptRecoveredNetworkManifest(ctx, db.AdoptRecoveredNetworkManifestParams{InstalledManifest: raw, ManifestHash: hostnetwork.Hash(manifest), WorkspaceID: in.WorkspaceID, ServerID: server, MembershipID: manifest.MembershipID, NetworkID: manifest.NetworkID, PublicKey: manifest.PublicKey})
 			if err != nil {
 				return err
 			}
-			if updated.RowsAffected() != 1 {
+			if updated != 1 {
 				return errors.New("installed network membership is incompatible with the selected checkpoint")
 			}
 		}
 	}
 	if observedNetworkGeneration > 0 {
-		var generation int64
-		if err := tx.QueryRow(ctx, `UPDATE workspace_networks SET generation=GREATEST(generation,$2)+1 WHERE workspace_id=$1 RETURNING generation`, in.WorkspaceID, observedNetworkGeneration).Scan(&generation); err != nil {
+		generation, err := q.AdvanceRecoveredNetworkGeneration(ctx, db.AdvanceRecoveredNetworkGenerationParams{ObservedGeneration: observedNetworkGeneration, WorkspaceID: in.WorkspaceID})
+		if err != nil {
 			return err
 		}
-		if _, err := tx.Exec(ctx, `UPDATE network_members SET generation=$2,acknowledged_generation=0 WHERE workspace_id=$1`, in.WorkspaceID, generation); err != nil {
+		if err := q.ResetRecoveredNetworkMembers(ctx, db.ResetRecoveredNetworkMembersParams{Generation: generation, WorkspaceID: in.WorkspaceID}); err != nil {
 			return err
 		}
 	}
-	if _, err := tx.Exec(ctx, `UPDATE execution_operations o SET command=jsonb_set(command,'{controllerGeneration}',to_jsonb(s.controller_generation),true) FROM servers s WHERE o.workspace_id=$1 AND s.workspace_id=o.workspace_id AND s.id=o.server_id AND COALESCE(o.command->'crosshost'->>'phase','')<>'recovery-open'`, in.WorkspaceID); err != nil {
+	if err := q.StampOperationControllerGenerations(ctx, in.WorkspaceID); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(ctx, `UPDATE environments e SET execution_generation=GREATEST(execution_generation,COALESCE((SELECT max(generation) FROM execution_operations o WHERE o.workspace_id=e.workspace_id AND o.environment_id=e.id AND kind<>'network'),0)) WHERE workspace_id=$1`, in.WorkspaceID); err != nil {
+	if err := q.RaiseEnvironmentExecutionGenerations(ctx, in.WorkspaceID); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(ctx, `UPDATE servers s SET update_generation=GREATEST(update_generation,COALESCE((SELECT max(generation) FROM execution_operations o WHERE o.server_id=s.id AND o.kind IN ('network','update')),0)),last_seen=NULL WHERE workspace_id=$1`, in.WorkspaceID); err != nil {
+	if err := q.RaiseServerUpdateGenerations(ctx, in.WorkspaceID); err != nil {
 		return err
 	}
+	// inline-sql: recovery session temporary table
 	rows, err := tx.Query(ctx, `SELECT id FROM execution_operations WHERE workspace_id=$1 AND state NOT IN ('succeeded','failed','cancelled') AND (id IN (SELECT id FROM recovery_selected_roots) OR parent_id IN (SELECT id FROM recovery_selected_roots) OR id IN (SELECT id FROM recovery_standalone_restrictions)) ORDER BY created_at,id`, in.WorkspaceID)
 	if err != nil {
 		return err
@@ -119,12 +128,11 @@ func (s *Service) finishRecoveryStaging(ctx context.Context, tx pgx.Tx, in Recov
 		if err != nil {
 			return err
 		}
-		if _, err = tx.Exec(ctx, `UPDATE execution_operations SET job_id=$2 WHERE id=$1`, id, job.Job.ID); err != nil {
+		if err = q.SetOperationJob(ctx, db.SetOperationJobParams{JobID: job.Job.ID, WorkspaceID: in.WorkspaceID, ID: id}); err != nil {
 			return err
 		}
 	}
-	_, err = tx.Exec(ctx, `INSERT INTO audit_events(workspace_id,id,actor_id,action,resource_id) VALUES($1,$2,$3,'workspace.recover_cross_host_checkpoint',$1)`, in.WorkspaceID, uuid.New(), in.OwnerID)
-	return err
+	return q.InsertAudit(ctx, db.InsertAuditParams{WorkspaceID: in.WorkspaceID, ID: uuid.New(), ActorID: in.OwnerID, Action: "workspace.recover_cross_host_checkpoint", ResourceID: in.WorkspaceID})
 }
 
 func checkRecoveredInventory(expected api.ControllerInventory, host deployment.RecoveryEvidence, allowed map[string][]string) error {
