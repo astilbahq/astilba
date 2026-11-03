@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 
+	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
+	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -31,7 +33,7 @@ func fenceRecoveryWorkspace(ctx context.Context, tx pgx.Tx, ws uuid.UUID) error 
 			return err
 		}
 	}
-	return nil
+	return store.FenceTroubleshooting(ctx, db.New(tx), ws)
 }
 
 func (s *Service) restoreRecoveryRoots(ctx context.Context, tx pgx.Tx, ws uuid.UUID, roots map[uuid.UUID]recoveringRoot, sourceHash, inputHash string, owner uuid.UUID) error {

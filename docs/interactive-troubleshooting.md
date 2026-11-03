@@ -238,7 +238,8 @@ contrast ratio of 4.5 and visible focus and reduced-motion behaviour.
 A session table records the target, actor, server, close reason, duration and
 byte counts in each direction. `session.open` and `session.close` audit events
 reference it, and owners can review session history. Refused attempts are
-audited too. If the opening audit event cannot be written, the session does not
+audited too, coalesced to one event per person and reason each hour so that a
+member cannot flood the audit log. If the opening audit event cannot be written, the session does not
 open. Management writes a
 `session.close` with reason `management restart` for sessions left open by a
 restart.

@@ -705,6 +705,39 @@ type SupportedUpgrade struct {
 	Status        []byte    `json:"status"`
 }
 
+type TroubleshootingPolicy struct {
+	WorkspaceID   uuid.UUID `json:"workspace_id"`
+	EnvironmentID uuid.UUID `json:"environment_id"`
+	Enabled       bool      `json:"enabled"`
+	OwnersOnly    bool      `json:"owners_only"`
+	Generation    int64     `json:"generation"`
+	UpdatedBy     uuid.UUID `json:"updated_by"`
+	UpdatedAt     time.Time `json:"updated_at"`
+}
+
+type TroubleshootingSession struct {
+	ID                   uuid.UUID   `json:"id"`
+	WorkspaceID          uuid.UUID   `json:"workspace_id"`
+	EnvironmentID        uuid.UUID   `json:"environment_id"`
+	UnitID               uuid.UUID   `json:"unit_id"`
+	ServerID             uuid.UUID   `json:"server_id"`
+	ApplicationID        uuid.UUID   `json:"application_id"`
+	Instance             int32       `json:"instance"`
+	ActorID              uuid.UUID   `json:"actor_id"`
+	AuthVersion          int64       `json:"auth_version"`
+	BrowserSessionHash   []byte      `json:"browser_session_hash"`
+	ControllerGeneration int64       `json:"controller_generation"`
+	State                string      `json:"state"`
+	TicketHash           []byte      `json:"ticket_hash"`
+	TicketExpiresAt      time.Time   `json:"ticket_expires_at"`
+	DeadlineAt           time.Time   `json:"deadline_at"`
+	CreatedAt            time.Time   `json:"created_at"`
+	ClosedAt             *time.Time  `json:"closed_at"`
+	CloseReason          pgtype.Text `json:"close_reason"`
+	InputBytes           int64       `json:"input_bytes"`
+	OutputBytes          int64       `json:"output_bytes"`
+}
+
 type VisualPlan struct {
 	ID            uuid.UUID `json:"id"`
 	WorkspaceID   uuid.UUID `json:"workspace_id"`
