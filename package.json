@@ -3,8 +3,8 @@
   "private": true,
   "scripts": {
     "dev": "node scripts/platform-dev.mjs",
-    "check": "make check && pnpm --filter @astilba/cloudflare-spike check && pnpm --filter @astilba/canvas-spike check",
-    "verify": "pnpm check && make verify && pnpm --filter @astilba/cloudflare-spike verify",
+    "check": "make check && pnpm --filter @astilba/canvas-spike check",
+    "verify": "pnpm check && make verify",
     "generate": "node scripts/platform-generate.mjs",
     "generate:check": "node scripts/platform-generate.mjs --check",
     "app:build": "node scripts/platform-build.mjs",

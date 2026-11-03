@@ -99,7 +99,7 @@ Vite+ replaces Biome and the separate frontend Vite/type-check commands. It is i
 
 Oxlint enables TypeScript-aware checks, React and accessibility rules. Explicit security rules retain the previous checks against raw HTML injection, unprotected blank-target links and script URLs (including non-JSX string usage). React Compiler-specific ref, purity and effect-state restrictions are not enabled because the app has not adopted the compiler. The tag-over-role preference is also disabled: our live status containers and labelled SVGs deliberately use ARIA. Rules for accessible names, roles, keyboard interaction and hook usage remain enabled, alongside the real-browser accessibility checks.
 
-Panda, Playwright and Node's existing domain-test runner remain in place. Go retains `gofmt` and `go vet`; Wrangler still packages Cloudflare Workers. pnpm remains the package manager, and the existing Make targets still orchestrate the full application.
+Panda, Playwright and Node's existing domain-test runner remain in place. Go retains `gofmt` and `go vet`. pnpm remains the package manager, and the existing Make targets still orchestrate the full application.
 
 Existing `make check-app` invokes the dashboard check, and `make verify-canvas` invokes the canvas check, so both use Vite+ in the existing CI gates. `make verify-app` adds the production build and real API/browser journeys with disposable PostgreSQL; follow the root instructions for its Docker requirements. Tests covering navigation or authentication belong in the existing Playwright suite.
 

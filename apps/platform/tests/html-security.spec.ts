@@ -1,8 +1,6 @@
 import { expect, test, type APIResponse } from "@playwright/test";
 import { openEnvironmentSection } from "./environment-section";
-
-const workerOrigin =
-  process.env.ASTILBA_TEST_WORKER_ORIGIN ?? "http://127.0.0.1:15183";
+import { signInAsOwner } from "./fixtures/owner-sign-in";
 
 function htmlNonce(response: APIResponse, body?: string): string {
   expect(response.status()).toBe(200);
@@ -23,64 +21,36 @@ function htmlNonce(response: APIResponse, body?: string): string {
   return nonce!;
 }
 
-test("Worker HTML nonce survives navigation, HEAD and asset conditionals without changing static caching", async ({
+test("dashboard HTML gets a fresh style nonce without changing static caching", async ({
   request,
 }) => {
-  const first = await request.get(`${workerOrigin}/`);
+  const first = await request.get("/");
   const body = await first.text();
   const nonce = htmlNonce(first, body);
   for (const path of ["/account", "/index.html"]) {
-    const response = await request.get(`${workerOrigin}${path}`);
+    const response = await request.get(path);
     expect(htmlNonce(response, await response.text())).not.toBe(nonce);
   }
-  const conditionals: Record<string, string>[] = [
-    { "If-None-Match": "*" },
-    { Range: "bytes=0-10" },
-    { Range: "bytes=999999999-" },
-  ];
-  for (const headers of conditionals) {
-    const response = await request.get(`${workerOrigin}/`, { headers });
-    expect(htmlNonce(response, await response.text())).not.toBe(nonce);
-  }
-  const head = await request.head(`${workerOrigin}/`, {
-    headers: { "If-None-Match": "*" },
-  });
-  htmlNonce(head);
+  const head = await request.head("/");
+  expect(htmlNonce(head)).not.toBe(nonce);
   expect(await head.body()).toHaveLength(0);
 
   const script = body.match(/<script[^>]+src="([^"]+)"/)?.[1];
   expect(script).toBeTruthy();
-  const asset = await request.get(new URL(script!, workerOrigin).href);
+  const asset = await request.get(script!);
   expect(asset.status()).toBe(200);
-  expect(asset.headers()["cache-control"]).not.toBe("no-store");
-  const etag = asset.headers().etag;
-  expect(etag).toBeTruthy();
-  const cached = await request.get(new URL(script!, workerOrigin).href, {
-    headers: { "If-None-Match": etag },
-  });
-  expect(cached.status()).toBe(304);
-  const partial = await request.get(new URL(script!, workerOrigin).href, {
-    headers: { Range: "bytes=0-10" },
-  });
-  expect(partial.headers().etag).toBe(etag);
-  if (partial.status() === 206) {
-    expect(partial.headers()["content-range"]).toMatch(/^bytes 0-10\//);
-    expect(await partial.body()).toEqual((await asset.body()).subarray(0, 11));
-  } else {
-    expect(partial.status()).toBe(200);
-    expect(await partial.body()).toEqual(await asset.body());
-  }
-
-  const preparation = await request.get(
-    `${workerOrigin}/onboarding/network-prepare.sh`,
+  expect(asset.headers()["cache-control"]).toBe(
+    "public,max-age=31536000,immutable",
   );
+
+  const preparation = await request.get("/onboarding/network-prepare.sh");
   expect(preparation.status()).toBe(200);
   expect(preparation.headers()["content-type"]).toContain("text/x-shellscript");
   expect(preparation.headers()["cache-control"]).toBe("no-store");
   expect(await preparation.text()).toMatch(/^#!/);
 });
 
-test("Worker CSP permits the Compose editor's nonce stylesheet", async ({
+test("CSP permits the Compose editor's nonce stylesheet", async ({
   page,
 }, info) => {
   await page.addInitScript(() => {
@@ -90,14 +60,10 @@ test("Worker CSP permits the Compose editor's nonce stylesheet", async ({
           event.effectiveDirective;
     });
   });
-  await page.goto(workerOrigin);
-  await page.getByLabel("Email", { exact: true }).fill("owner@example.test");
-  await page
-    .getByLabel("Password", { exact: true })
-    .fill("correct horse battery staple");
-  await page.getByRole("button", { name: "Sign in", exact: true }).click();
+  await page.goto("/");
+  await signInAsOwner(page);
   await page.getByRole("button", { name: "New project", exact: true }).click();
-  const name = `Worker styles ${info.project.name} ${crypto.randomUUID()}`;
+  const name = `Editor styles ${info.project.name} ${crypto.randomUUID()}`;
   await page.getByLabel("Project name", { exact: true }).fill(name);
   await page
     .getByRole("button", { name: "Create project", exact: true })

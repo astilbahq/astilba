@@ -125,27 +125,6 @@ test("repository setup, Git service, queued build and cancellation use the real 
   await expect(
     page.getByLabel("Webhook secret", { exact: true }),
   ).toBeVisible();
-  const webhook = JSON.stringify({
-    ref: "refs/heads/main",
-    after: "a".repeat(40),
-    repository: { id: 12 },
-  });
-  // Verify the optional Worker preserves webhook signature bytes and routes to the same domain service.
-  const response = await request.post(
-    `http://127.0.0.1:15183/hooks/git/${connection.connection.id}`,
-    {
-      headers: {
-        "Content-Type": "application/json",
-        "X-Gitea-Event": "push",
-        "X-Gitea-Delivery": crypto.randomUUID(),
-        "X-Gitea-Signature": createHmac("sha256", connection.webhookSecret)
-          .update(webhook)
-          .digest("hex"),
-      },
-      data: webhook,
-    },
-  );
-  expect(response.status()).toBe(202);
   await page.getByRole("button", { name: "Dismiss webhook secret" }).click();
   await expect(page.getByLabel("Webhook secret", { exact: true })).toHaveCount(
     0,

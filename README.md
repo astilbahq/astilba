@@ -32,7 +32,6 @@ The management application and host agent are fully self-hostable, without an As
 - [HTTPS agent transport experiment](experiments/durable-execution/TRANSPORT.md)
 - [Container, ingress and standalone export experiment](experiments/durable-execution/HOST.md)
 - [Build artifacts and PostgreSQL restore experiment](experiments/durable-execution/BUILD_DATA.md)
-- [Complete Cloudflare management hosting experiment](experiments/cloudflare-hosting/README.md)
 - [Git provider and source-preserving Compose experiment](experiments/git-compose/README.md)
 
 ## Verify
@@ -47,7 +46,7 @@ make verify
 
 The check includes formatting, module checksums, `go vet`, staticcheck, real PostgreSQL/Docker crash recovery and HTTPS agent transport, plus source-preserving Compose edits, real GitLab/Gitea repository workflows and the React Flow browser suite. Host tests run with the race detector; the transport fixture also cross-compiles a Linux controller helper. CI runs the suites in separate required jobs alongside native Ubuntu amd64/arm64 host checks. The latter require the [disposable host setup](experiments/durable-execution/HOST.md). No production credentials or server are required. On Linux, the Playwright install needs `--with-deps` on a disposable development host.
 
-For the Cloudflare packaging check, also install Docker Buildx, set `DOCKER_HOST` to the same disposable daemon, then run `pnpm verify`. Live hosting probes remain separate and require a disposable Cloudflare deployment and external PostgreSQL. For the editor alone, use `make verify-canvas` or [start the interactive fixture](experiments/canvas-editor/README.md#reproduce).
+For the editor alone, use `make verify-canvas` or [start the interactive fixture](experiments/canvas-editor/README.md#reproduce).
 
 ## Licence
 

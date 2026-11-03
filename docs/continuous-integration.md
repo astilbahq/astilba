@@ -1,55 +1,68 @@
 # Continuous integration
 
-Eight independent workflows run on pull requests, pushes to `main` and manual
-dispatches. Each has its own workflow/ref concurrency group and can be retried
-without waiting for another workflow's native tests. No workflow uses an event
-path filter, so each required check is always reported.
+Seven independent workflows run on pull requests, pushes to `main` and manual
+dispatches; the native, durable-execution, Git provider and canvas workflows
+also run nightly. Each has its own concurrency group per workflow and ref (and,
+for scheduled workflows, event) and can be retried without waiting for another
+workflow's native tests. No workflow uses an event path filter: a planning job
+selects the suites a pull request can affect, and each required check is a
+final `always()` gate, so it is reported on every run.
 
 | Workflow                   | Required check                   | Verification                                                                                                                      |
 | -------------------------- | -------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
 | `go.yml`                   | Go verification                  | Durable-execution fixtures, including race detection                                                                              |
 | `git-providers.yml`        | Git provider verification        | GitLab/Gitea and source-preserving Compose edits                                                                                  |
 | `ci.yml`                   | Native verification              | Selected amd64 and arm64 host suites: fresh bootstrap, Docker, builds, PostgreSQL restore, systemd agent, deployment and recovery |
-| `cloudflare.yml`           | Cloudflare packaging             | Optional hosting adapter packaging                                                                                                |
 | `canvas.yml`               | Canvas browser verification      | Type/lint/build, domain tests and Chromium/WebKit journeys                                                                        |
-| `application.yml`          | Application verification         | `make verify-app-core`, image smoke test and corresponding-source archive                                                         |
+| `application.yml`          | Application verification         | `make verify-app-build` and three parallel Go race lanes, image smoke test and corresponding-source archive                                                         |
 | `application-browsers.yml` | Application browser verification | Every Chromium/WebKit dashboard journey against a real API/PostgreSQL fixture                                                     |
 | `workshop.yml`             | Workshop verification            | Standalone Storybook scenarios and accessibility audits in both browsers                                                          |
 
-Matrix workflows have a final `always()` gate. A failed or cancelled shard cannot
-satisfy it. Single-job workflows use their workload's check directly. All action
-and image pins, assertions, race detection and uncached test execution remain
-required.
+Each gate requires a successful planner and then either a successful selected
+workload or a skipped unselected one. A failed or cancelled job cannot satisfy
+it. All action and image pins, assertions, race detection and uncached test
+execution remain required.
 
-## Native selection
+## Suite selection
 
-Main pushes and manual runs always test both native architectures. A PR can skip
-native checks only when every changed file is in the frontend/docs allowlist in
-`scripts/ci-native-plan.mjs`: dashboard source, theme, public assets, browser tests,
-Storybook configuration, Panda configuration, Markdown under `docs/`, or the root
-README. `AGENTS.md` and `REVIEW.md` changes always require native checks.
+Every suite runs for main pushes, manual and scheduled runs. For a pull request,
+the plan jobs run the base branch's `scripts/ci-plan.mjs`, so editing the planner
+cannot select its own checks. A suite the base planner does not report, including
+every suite when the base has no planner, is selected. Pull requests run their
+own workflow files, so workflow changes still rely on review. It compares the checked-out merge to its actual first
+parent, including deleted paths and both sides of renames, and skips a suite only
+when every changed path is known not to affect it:
 
-Runtime, contracts, package/lock files, CI, scripts, toolchain and unknown paths
-require both architectures. The planner compares the checked-out PR merge to its
-actual first parent, including deleted paths and both sides of renames. Missing
-merge metadata or a Git error fails the planner and required gate. An empty diff
-also selects the full suite. Native checks skip only with a successful planner
-and an explicit frontend/docs-only result; a missing, failed or cancelled native
-matrix is otherwise a failure. `make check-ci` exercises these selection contracts
-using temporary repositories.
+| Suite | Skipped when every changed path is |
+| --- | --- |
+| Native hosts | Markdown under `docs/` or the root README, dashboard source, theme, public assets, browser tests, Storybook or Panda configuration, or the server-only `auth`, `alerts`, `mailer`, `billing` and `automationclient` packages or the CLI |
+| Application Go race lanes | documentation or dashboard paths above |
+| Application and workshop browsers | documentation |
+| Durable execution, Git providers, canvas | outside that experiment, its workflow and the Makefile (canvas also follows the root JavaScript manifests and lockfile) |
+
+`AGENTS.md`, `REVIEW.md`, runtime, contracts, migrations, package/lock files, CI,
+scripts, toolchain and unknown paths select the native suite. A change to the
+planner or the native workflow selects every suite. Missing merge metadata or a
+Git error in the planner fails every gate; an unreadable base planner or an empty
+diff selects every suite.
+Application checks, builds, the image smoke test and the corresponding-source
+archive always run. `make check-ci` exercises these selection contracts using
+temporary repositories.
 
 Native tests run only on their owned disposable Ubuntu runners. They never reuse
 an existing deployment host or application runtime state.
 
 ## Application Go verification
 
-After the application checks and agent/CLI builds, two Go verification lanes
-run concurrently. One runs the cross-host pair and then preview checkpoint
-recovery in separate processes; the other runs all remaining Go tests. Anchored
-selections in the Makefile partition every test between these processes. Each
-retains race detection, uncached execution and a fifteen-minute process timeout.
-Any process failing fails application verification. The application CI job keeps
-its twenty-five-minute overall timeout.
+Application verification runs four jobs in parallel: `make verify-app-build`
+(application checks, agent/CLI and dashboard builds and packaging, followed by
+the image smoke test and source archive) and three Go race lanes for the
+cross-host pair, preview checkpoint recovery and all remaining Go tests.
+Anchored selections in the Makefile partition every test between the lanes.
+Each retains race detection, uncached execution and a fifteen-minute process
+timeout, and any failure fails the Application verification gate. Locally,
+`make verify-app-core` runs the build target and then the three lanes
+concurrently.
 
 Each integration process owns a separate disposable PostgreSQL container, and
 each test creates its own database and temporary resources. Preview recovery has
@@ -108,12 +121,12 @@ enabled. `make verify-app` remains the complete unsharded local check.
 The previous branch protection requires `Verify`. This PR intentionally does not
 emit that check: it remains blocked until an administrator migrates protection.
 `.github/required-status-checks.json` is the exact replacement payload for the
-required-status-checks endpoint, with strict up-to-date checking and all eight
+required-status-checks endpoint, with strict up-to-date checking and all seven
 unique contexts above.
 
 Before merging the workflow change:
 
-1. Verify all eight new checks succeeded on the current PR merge commit, including
+1. Verify all seven new checks succeeded on the current PR merge commit, including
    both native architectures and every browser shard. Update the branch if its
    base has changed and wait for those checks again.
 2. Back up current branch protection, then atomically replace only its required

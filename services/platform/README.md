@@ -70,7 +70,7 @@ To rotate wrapping keys, generate a second private keyring with `keygen --id nex
 
 ## Verification and distribution
 
-Set `PLAT_APP_DOCKER_HOST` to an explicitly selected disposable local Docker Unix socket. `make verify-app` runs race-enabled Go integration tests, generation checks, Chromium/WebKit journeys and a local Worker proxy. The fixtures create randomly named PostgreSQL containers with unique ownership labels and remove only matching containers. They must never use an existing database. `make verify` also retains all P0 experiment gates.
+Set `PLAT_APP_DOCKER_HOST` to an explicitly selected disposable local Docker Unix socket. `make verify-app` runs race-enabled Go integration tests, generation checks, and Chromium/WebKit journeys. The fixtures create randomly named PostgreSQL containers with unique ownership labels and remove only matching containers. They must never use an existing database. `make verify` also retains all P0 experiment gates.
 
 Browser tests build and run the same embedded assets as the image. They use real API sessions and PostgreSQL, not mocked responses. Focused tests protect envelope identity, artifact signatures and atomic replacement; database journeys cover authorization, bootstrap races, revision conflicts, credential replay and invalidation. No coverage threshold is used. Agent tests exercise actual Docker effects, subprocess exits before acknowledgement, duplicate delivery, rollback, credential boundaries and management loss. `make verify-agent-host` runs the native systemd/enrollment/update journey and the visual/Compose deployment, ingress recovery, standalone export and Git/BuildKit/registry fixtures on the explicitly prepared disposable Ubuntu host; CI requires amd64 and arm64.
 
@@ -82,5 +82,3 @@ SOURCE_REVISION="$(git rev-parse HEAD)" pnpm app:source
 ```
 
 Distribute the generated `.artifacts/p1/astilba-<commit>.tar.gz` with that image. Build from the matching clean commit. Embedded `/source/NOTICE.txt` identifies the exact source commit and includes runtime dependency notices; `/source/LICENSE.txt` contains the AGPL. A development build is explicitly labelled `development` and is not a source-identified release. For a privately hosted fork, make the corresponding source available to its users under the AGPL; a private GitHub link alone does not provide that access.
-
-The optional `apps/platform/worker.ts` serves the same static build and forwards API requests to one configured `API_ORIGIN`. It never accepts a request-supplied upstream. Configure the Go server's browser origin as the Worker origin, preserve Secure cookies, and use HTTPS for the upstream. Redirects are not followed by the proxy. Cloudflare is optional; this adapter does not replace the separately validated Go container/database hosting architecture. P1 performs local adapter checks, not a live Cloudflare deployment.
