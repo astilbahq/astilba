@@ -1,14 +1,11 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
 import { openEnvironmentSection } from "./environment-section";
+import { signInAsOwner } from "./fixtures/owner-sign-in";
 
 async function login(page: import("@playwright/test").Page) {
   await page.goto("/");
-  await page.getByLabel("Email", { exact: true }).fill("owner@example.test");
-  await page
-    .getByLabel("Password", { exact: true })
-    .fill("correct horse battery staple");
-  await page.getByRole("button", { name: "Sign in", exact: true }).click();
+  await signInAsOwner(page);
   await expect(page.getByRole("heading", { name: "Projects" })).toBeVisible();
 }
 test("real API: create, conflict, secret, keyboard and reflow", async ({
@@ -180,17 +177,15 @@ test("real API: create, conflict, secret, keyboard and reflow", async ({
   await page.emulateMedia({ colorScheme: "dark" });
   const canvas = page.locator(".visual-canvas .react-flow");
   await expect(canvas).toBeVisible();
-  const bodyColor = () =>
-    page.locator("body").evaluate((el) => getComputedStyle(el).backgroundColor);
   // View transitions apply the palette asynchronously; sample it after that commit.
   await expect(root).toHaveClass("dark");
-  await expect(canvas).toHaveCSS("background-color", await bodyColor());
+  await expect(canvas).toHaveCSS("background-color", "rgb(21, 21, 21)");
   await page.emulateMedia({ colorScheme: "light" });
   await expect(root).not.toHaveClass("dark");
   await page.getByRole("button", { name: "Appearance", exact: true }).click();
   await page.getByRole("menuitemradio", { name: "Dark", exact: true }).click();
   await expect(root).toHaveClass("dark");
-  await expect(canvas).toHaveCSS("background-color", await bodyColor());
+  await expect(canvas).toHaveCSS("background-color", "rgb(21, 21, 21)");
   await page.getByRole("menuitemradio", { name: "Light", exact: true }).click();
   await expect(root).not.toHaveClass("dark");
   await page.keyboard.press("Escape");

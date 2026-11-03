@@ -6,7 +6,7 @@ export const tokens = defineTokens({
     hairline: { value: "1px" },
     toast: { rise: { value: "60px" } },
   },
-  zIndex: { toast: { value: 1700 } },
+  zIndex: { toast: { value: 1700 }, visual: { value: 1 } },
   fontWeights: { brand: { value: 650 } },
   lineHeights: {
     body: { value: 1.6 },
@@ -39,6 +39,12 @@ export const tokens = defineTokens({
     log: { value: "280px" },
     chart: { value: "100px" },
     table: { value: "400px" },
+    visual: {
+      canvas: { value: "520px" },
+      compact: { value: "360px" },
+      inspector: { value: "320px" },
+      node: { value: "232px" },
+    },
   },
   radii: { control: { value: "6px" }, panel: { value: "10px" } },
   durations: {
@@ -88,6 +94,12 @@ export const semanticTokens = defineSemanticTokens({
       value: { base: "rgba(0, 0, 0, 0.32)", _dark: "rgba(0, 0, 0, 0.6)" },
     },
     separator: { value: { base: "#e7e7e7", _dark: "#292929" } },
+    visual: {
+      ground: { value: { base: "#f8f8f8", _dark: "#151515" } },
+      node: { value: { base: "#fdfdfd", _dark: "#1b1b1b" } },
+      border: { value: { base: "#8c8c8c", _dark: "#707070" } },
+      edge: { value: { base: "#7b7b7b", _dark: "#777777" } },
+    },
     navigation: { active: { value: { base: "#eeeeee", _dark: "#242424" } } },
     menu: {
       itemHover: {
