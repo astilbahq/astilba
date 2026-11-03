@@ -19,28 +19,38 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+const secretVersionPage = 64
+
 func (s *Service) rejectRuntimeSecrets(ctx context.Context, tx pgx.Tx, ws, env uuid.UUID, bundle composeproject.Bundle) error {
-	rows, err := db.New(tx).ListEnvironmentSecretVersions(ctx, db.ListEnvironmentSecretVersionsParams{WorkspaceID: ws, EnvironmentID: env})
-	if err != nil {
-		return err
-	}
+	q := db.New(tx)
 	total := 0
-	for _, row := range rows {
-		value, err := s.Store.Keys.Open(row.EncryptedValue, store.SecretIdentity(ws, row.ID))
+	// Pages bound the ciphertext in memory; versions per environment are unbounded.
+	var after uuid.UUID
+	for {
+		rows, err := q.PageEnvironmentSecretVersions(ctx, db.PageEnvironmentSecretVersionsParams{WorkspaceID: ws, EnvironmentID: env, AfterID: after, PageSize: secretVersionPage})
 		if err != nil {
 			return err
 		}
-		total += len(value)
-		if total > 1<<20 {
-			return domain.Invalid("source.secretBudget")
-		}
-		for _, file := range bundle.Files {
-			if len(value) > 0 && strings.Contains(file.Content, string(value)) {
-				return domain.Invalid("source.containsRuntimeSecret")
+		for _, row := range rows {
+			value, err := s.Store.Keys.Open(row.EncryptedValue, store.SecretIdentity(ws, row.ID))
+			if err != nil {
+				return err
 			}
+			total += len(value)
+			if total > 1<<20 {
+				return domain.Invalid("source.secretBudget")
+			}
+			for _, file := range bundle.Files {
+				if len(value) > 0 && strings.Contains(file.Content, string(value)) {
+					return domain.Invalid("source.containsRuntimeSecret")
+				}
+			}
+			after = row.ID
+		}
+		if len(rows) < secretVersionPage {
+			return nil
 		}
 	}
-	return nil
 }
 func (s *Service) hydratePipeline(ctx context.Context, a Identity, c *api.ExecutionCommand) (bool, error) {
 	tx, err := s.Store.Pool.Begin(ctx)

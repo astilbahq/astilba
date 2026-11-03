@@ -199,10 +199,7 @@ func (s *Service) SaveBackupPolicy(ctx context.Context, p store.Principal, ws, p
 			return err
 		}
 		raw, _ := json.Marshal(out)
-		changed, err := db.New(tx).UpsertBackupPolicy(ctx, db.UpsertBackupPolicyParams{ID: id, WorkspaceID: ws, EnvironmentID: env, ServerID: out.ServerID, Configuration: raw, EncryptedAccess: cipher})
-		if err == nil && changed != 1 {
-			return domain.Conflict
-		}
+		_, err = db.New(tx).UpsertBackupPolicy(ctx, db.UpsertBackupPolicyParams{ID: id, WorkspaceID: ws, EnvironmentID: env, ServerID: out.ServerID, Configuration: raw, EncryptedAccess: cipher})
 		return err
 	})
 	return out, err

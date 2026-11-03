@@ -14,11 +14,35 @@ import (
 	"testing"
 	"time"
 
+	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
+	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
 )
+
+// seedFirstSecretPage stores a full page of versions that sort before any random
+// ID, so a rejection of a later secret proves the check reads past the first page.
+func seedFirstSecretPage(t *testing.T, f *fixture, ws, env uuid.UUID) {
+	t.Helper()
+	ctx := context.Background()
+	q := db.New(f.st.Pool)
+	secret := uuid.New()
+	if err := q.InsertSecret(ctx, db.InsertSecretParams{WorkspaceID: ws, EnvironmentID: env, ID: secret, Name: "FIRST_PAGE"}); err != nil {
+		t.Fatal(err)
+	}
+	for i := range 64 {
+		id := uuid.UUID{15: byte(i + 1)}
+		cipher, err := f.st.Keys.Seal([]byte("first-page-decoy"), store.SecretIdentity(ws, id))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = q.InsertSecretVersion(ctx, db.InsertSecretVersionParams{WorkspaceID: ws, SecretID: secret, ID: id, EncryptedValue: cipher, AuthorID: f.owner}); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
 
 func TestBuildControlsAndSuccessfulWatchBaseline(t *testing.T) {
 	f := setup(t)
@@ -217,6 +241,7 @@ func TestBuildControlsAndSuccessfulWatchBaseline(t *testing.T) {
 		if _, err := f.st.Pool.Exec(ctx, "UPDATE pipeline_runs SET delivery_started=NULL WHERE id=$1", op.Id); err != nil {
 			t.Fatal(err)
 		}
+		seedFirstSecretPage(t, f, ws, env.Id)
 		b.call("POST", path+"/secrets", map[string]string{"name": "LATER_TOKEN", "value": "later-runtime-canary"}, 201, nil)
 		// A previously admitted command must not receive newly secret public inputs.
 		agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/poll", token, nil, 400, nil)

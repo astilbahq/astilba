@@ -1186,6 +1186,21 @@ func (q *Queries) SetRecoveredEnvironmentRuntime(ctx context.Context, arg SetRec
 	return err
 }
 
+const setRecoveredOperationVisualPlan = `-- name: SetRecoveredOperationVisualPlan :exec
+UPDATE execution_operations SET visual_plan_id = $1 WHERE workspace_id = $2 AND id = $3
+`
+
+type SetRecoveredOperationVisualPlanParams struct {
+	VisualPlanID *uuid.UUID `json:"visual_plan_id"`
+	WorkspaceID  uuid.UUID  `json:"workspace_id"`
+	ID           uuid.UUID  `json:"id"`
+}
+
+func (q *Queries) SetRecoveredOperationVisualPlan(ctx context.Context, arg SetRecoveredOperationVisualPlanParams) error {
+	_, err := q.db.Exec(ctx, setRecoveredOperationVisualPlan, arg.VisualPlanID, arg.WorkspaceID, arg.ID)
+	return err
+}
+
 const setRecoveryCheckpointAcknowledged = `-- name: SetRecoveryCheckpointAcknowledged :exec
 UPDATE cross_host_checkpoints SET acknowledged = $1 WHERE workspace_id = $2 AND id = $3
 `
@@ -1308,7 +1323,6 @@ INSERT INTO cross_host_recoveries(parent_id,workspace_id,opened,source_hash,inpu
 SELECT h.id,h.workspace_id,false,$1::text,$2::text,$3::uuid
 FROM cross_host_operations h WHERE h.workspace_id = $4 AND h.id = $5
 ON CONFLICT(parent_id) DO UPDATE SET opened=false,source_hash=excluded.source_hash,input_hash=excluded.input_hash,owner_id=excluded.owner_id
-WHERE cross_host_recoveries.workspace_id=excluded.workspace_id
 `
 
 type UpsertCrossHostRecoveryParams struct {
@@ -1319,8 +1333,8 @@ type UpsertCrossHostRecoveryParams struct {
 	ParentID    uuid.UUID `json:"parent_id"`
 }
 
-// The parent's foreign key and the conflict target ignore the workspace, so both
-// the insert and the update constrain it here.
+// The parent's foreign key and the conflict target ignore the workspace, so the
+// row comes from the workspace's own operation; no row is written for any other.
 func (q *Queries) UpsertCrossHostRecovery(ctx context.Context, arg UpsertCrossHostRecoveryParams) (int64, error) {
 	result, err := q.db.Exec(ctx, upsertCrossHostRecovery,
 		arg.SourceHash,

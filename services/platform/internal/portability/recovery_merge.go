@@ -197,10 +197,6 @@ func MergeRecovery(ctx context.Context, tx pgx.Tx, a Archive, owner uuid.UUID) e
 		}
 	}
 	for name, rows := range links {
-		field := "visual_plan_id"
-		if name == "environments" {
-			field = "applied_revision_id"
-		}
 		for id, raw := range rows {
 			var value *uuid.UUID
 			if json.Unmarshal(raw, &value) != nil {
@@ -220,8 +216,11 @@ func MergeRecovery(ctx context.Context, tx pgx.Tx, a Archive, owner uuid.UUID) e
 				}
 				continue
 			}
-			// inline-sql: identifiers come from the compiled portability table list
-			if _, err := tx.Exec(ctx, fmt.Sprintf("UPDATE %s SET %s=$3 WHERE workspace_id=$1 AND id=$2", name, field), a.Workspace, id, value); err != nil {
+			operation, err := uuid.Parse(id)
+			if err != nil {
+				return ErrArchive
+			}
+			if err = db.New(tx).SetRecoveredOperationVisualPlan(ctx, db.SetRecoveredOperationVisualPlanParams{VisualPlanID: value, WorkspaceID: a.Workspace, ID: operation}); err != nil {
 				return err
 			}
 		}

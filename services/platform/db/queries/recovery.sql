@@ -74,13 +74,12 @@ UPDATE execution_operations SET command = @command,state='running',job_id=NULL
 WHERE workspace_id = @workspace_id AND id = @id;
 
 -- name: UpsertCrossHostRecovery :execrows
--- The parent's foreign key and the conflict target ignore the workspace, so both
--- the insert and the update constrain it here.
+-- The parent's foreign key and the conflict target ignore the workspace, so the
+-- row comes from the workspace's own operation; no row is written for any other.
 INSERT INTO cross_host_recoveries(parent_id,workspace_id,opened,source_hash,input_hash,owner_id)
 SELECT h.id,h.workspace_id,false,@source_hash::text,@input_hash::text,@owner_id::uuid
 FROM cross_host_operations h WHERE h.workspace_id = @workspace_id AND h.id = @parent_id
-ON CONFLICT(parent_id) DO UPDATE SET opened=false,source_hash=excluded.source_hash,input_hash=excluded.input_hash,owner_id=excluded.owner_id
-WHERE cross_host_recoveries.workspace_id=excluded.workspace_id;
+ON CONFLICT(parent_id) DO UPDATE SET opened=false,source_hash=excluded.source_hash,input_hash=excluded.input_hash,owner_id=excluded.owner_id;
 
 -- name: SetCrossHostOperationPhase :exec
 UPDATE cross_host_operations SET phase = @phase WHERE workspace_id = @workspace_id AND id = @id;
@@ -312,3 +311,6 @@ ON CONFLICT(workspace_id,table_name,source_hash) DO UPDATE SET attributed_hash=e
 -- name: SetRecoveredEnvironmentRuntime :exec
 UPDATE environments SET applied_revision_id = @applied_revision_id,runtime_operation_id = @runtime_operation_id
 WHERE workspace_id = @workspace_id AND id = @id;
+
+-- name: SetRecoveredOperationVisualPlan :exec
+UPDATE execution_operations SET visual_plan_id = @visual_plan_id WHERE workspace_id = @workspace_id AND id = @id;

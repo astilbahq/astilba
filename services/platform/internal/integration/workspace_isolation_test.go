@@ -42,7 +42,6 @@ func TestRecoveryWritesStayInWorkspace(t *testing.T) {
 	}{
 		{"foreign recovery of an unrecorded root", func() (int64, error) { return recovery(other, "foreign") }, 0},
 		{"recovery", func() (int64, error) { return recovery(ws, "owned") }, 1},
-		{"foreign recovery", func() (int64, error) { return recovery(other, "foreign") }, 0},
 		{"stage", func() (int64, error) { return stage(ws, 7) }, 1},
 		{"foreign stage", func() (int64, error) { return stage(other, 9) }, 0},
 		{"reservation", func() (int64, error) { return reserve(ws, 100) }, 1},

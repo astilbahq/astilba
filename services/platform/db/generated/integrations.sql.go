@@ -333,42 +333,6 @@ func (q *Queries) ListBuildSecrets(ctx context.Context, workspaceID uuid.UUID) (
 	return items, nil
 }
 
-const listEnvironmentSecretVersions = `-- name: ListEnvironmentSecretVersions :many
-SELECT v.id,v.encrypted_value FROM secret_versions v
-JOIN secrets s ON s.workspace_id=v.workspace_id AND s.id=v.secret_id
-WHERE v.workspace_id = $1 AND s.environment_id = $2
-`
-
-type ListEnvironmentSecretVersionsParams struct {
-	WorkspaceID   uuid.UUID `json:"workspace_id"`
-	EnvironmentID uuid.UUID `json:"environment_id"`
-}
-
-type ListEnvironmentSecretVersionsRow struct {
-	ID             uuid.UUID `json:"id"`
-	EncryptedValue []byte    `json:"encrypted_value"`
-}
-
-func (q *Queries) ListEnvironmentSecretVersions(ctx context.Context, arg ListEnvironmentSecretVersionsParams) ([]ListEnvironmentSecretVersionsRow, error) {
-	rows, err := q.db.Query(ctx, listEnvironmentSecretVersions, arg.WorkspaceID, arg.EnvironmentID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []ListEnvironmentSecretVersionsRow{}
-	for rows.Next() {
-		var i ListEnvironmentSecretVersionsRow
-		if err := rows.Scan(&i.ID, &i.EncryptedValue); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const listGitConnections = `-- name: ListGitConnections :many
 SELECT c.configuration,COALESCE(a.active,false)::boolean AS app_active,COALESCE(a.app_id,0)::bigint AS app_id
 FROM git_connections c LEFT JOIN github_app_connections a ON a.workspace_id=c.workspace_id AND a.connection_id=c.id
@@ -454,6 +418,50 @@ type LockGitConnectionDeliveriesParams struct {
 func (q *Queries) LockGitConnectionDeliveries(ctx context.Context, arg LockGitConnectionDeliveriesParams) error {
 	_, err := q.db.Exec(ctx, lockGitConnectionDeliveries, arg.WorkspaceID, arg.ID)
 	return err
+}
+
+const pageEnvironmentSecretVersions = `-- name: PageEnvironmentSecretVersions :many
+SELECT v.id,v.encrypted_value FROM secret_versions v
+JOIN secrets s ON s.workspace_id=v.workspace_id AND s.id=v.secret_id
+WHERE v.workspace_id = $1 AND s.environment_id = $2 AND v.id > $3
+ORDER BY v.id LIMIT $4
+`
+
+type PageEnvironmentSecretVersionsParams struct {
+	WorkspaceID   uuid.UUID `json:"workspace_id"`
+	EnvironmentID uuid.UUID `json:"environment_id"`
+	AfterID       uuid.UUID `json:"after_id"`
+	PageSize      int32     `json:"page_size"`
+}
+
+type PageEnvironmentSecretVersionsRow struct {
+	ID             uuid.UUID `json:"id"`
+	EncryptedValue []byte    `json:"encrypted_value"`
+}
+
+func (q *Queries) PageEnvironmentSecretVersions(ctx context.Context, arg PageEnvironmentSecretVersionsParams) ([]PageEnvironmentSecretVersionsRow, error) {
+	rows, err := q.db.Query(ctx, pageEnvironmentSecretVersions,
+		arg.WorkspaceID,
+		arg.EnvironmentID,
+		arg.AfterID,
+		arg.PageSize,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []PageEnvironmentSecretVersionsRow{}
+	for rows.Next() {
+		var i PageEnvironmentSecretVersionsRow
+		if err := rows.Scan(&i.ID, &i.EncryptedValue); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const pruneGitDeliveries = `-- name: PruneGitDeliveries :exec
