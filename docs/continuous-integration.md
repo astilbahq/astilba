@@ -102,6 +102,19 @@ A Git-free corresponding-source archive can check its embedded sizes and
 allowances, with an explicit notice that historical comparison is unavailable.
 Archives cannot regenerate allowances or satisfy a CI history check.
 
+## Inline SQL ratchet
+
+`make check-inline-sql` runs as part of `check-app`. It counts Go string literals
+that begin an SQL statement in non-test files under `services/platform`, excluding
+sqlc and OpenAPI output, and compares each Go package (directory) with the same
+comparison base as the source-size ratchet. Statements may move between a
+package's files, so oversized files can still be split, but a package's count
+cannot grow and a new package cannot introduce inline SQL. A literal is an
+approved exception when its own line carries `// inline-sql: <reason>` or the
+line above is only that comment. Move statements into
+`services/platform/db/queries` to reduce the count; moving legacy inline SQL to
+another package counts as new SQL, so convert it to sqlc as part of the move.
+
 ## Browser shards
 
 Application and workshop workflows each run Chromium and WebKit with two shards
