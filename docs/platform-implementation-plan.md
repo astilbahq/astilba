@@ -1,22 +1,14 @@
 # Astilba platform implementation plan
 
-Status: updated 28 October 2026. P0–P16 are implemented; each release must pass its acceptance gates before rollout. Private-alpha acceptance and the previous management update are complete; newly merged increments still require a separate live update. Paid admission still requires measured operating limits and launch settings.
+Status: updated 3 November 2026. P0–P16 are implemented; each release must pass its acceptance gates before rollout. Private-alpha acceptance and the previous management update are complete; newly merged increments still require a separate live update. Paid admission still requires measured operating limits and launch settings.
 
 Build the [architecture](platform-architecture.md) in vertical increments. Prove the execution model on disposable infrastructure before expanding the editor and service catalogue. Each milestone ends in a demonstrable user journey and the tests needed to support its claims. The [product brief](platform-product-brief.md) remains the guide to product scope.
 
-## Maintenance before further features
+## Alpha compatibility and maintenance
 
-Pause feature implementation for the current code-quality phase. The alpha has no users, so internal APIs, public contracts and stored formats may change where that produces a simpler design; document required migrations or installation resets instead of maintaining compatibility solely for this alpha.
+The alpha has no users, so internal APIs, public contracts and stored formats may change where that produces a simpler design; document required migrations or installation resets instead of maintaining compatibility solely for this alpha.
 
-Work through the independently verified defects and shared responsibilities in this order:
-
-1. Review login admission, explicit workspace recovery access, build-input validation and queue outcomes, and deployment-observation validation as separate changes. Preserve tenant authorization, phase-specific inventory checks, bounded password memory and progress for valid automatic-build siblings.
-2. Clean up cross-host reservations when entitlement expires before publication, preserving reconciliation after any possible publication effect.
-3. Preserve useful secret-safe diagnostics and give optional Worker hosting the same HTML security/nonce and onboarding-download behavior as Go hosting.
-4. Remove stale owned generated files and prevent delayed editor requests from overwriting newer user work.
-5. Reproduce the upgrade/draft recovery-ordering concern before replacing any timestamp guard; keep unconfirmed concerns separate from verified defects.
-
-Keep the existing product scope and meaningful test gates. File sizes, test ratios and GitHub review-submission counts alone do not establish defects. Resume feature work after these items are resolved or explicitly dispositioned and the resulting implementation passes independent review and its acceptance checks.
+Feature work has resumed. The code-quality phase that paused it resolved its verified defects: login admission, recovery access, build-input and observation validation; cross-host reservation cleanup on entitlement expiry; secret-safe diagnostics and Worker HTML security; stale generated outputs and editor request ordering; and recovery ordering, which now follows recorded execution provenance rather than revision creation time. Remaining hardening and test-reliability investigations continue as separate issues alongside feature work. File sizes, test ratios and GitHub review-submission counts alone do not establish defects.
 
 ## Milestones and dependencies
 
