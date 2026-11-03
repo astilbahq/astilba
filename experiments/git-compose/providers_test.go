@@ -30,12 +30,18 @@ func fixtureID() string {
 	return hex.EncodeToString(data[:])
 }
 
-func docker(t *testing.T, env map[string]string, args ...string) string {
+func dockerHost(t *testing.T) string {
 	t.Helper()
 	host := os.Getenv("PLAT7_DOCKER_HOST")
 	if !strings.HasPrefix(host, "unix://") {
 		t.Fatal("PLAT7_DOCKER_HOST must select a disposable local Docker socket")
 	}
+	return host
+}
+
+func docker(t *testing.T, env map[string]string, args ...string) string {
+	t.Helper()
+	host := dockerHost(t)
 	cmd := exec.CommandContext(t.Context(), "docker", append([]string{"--host", host}, args...)...)
 	cmd.Env = os.Environ()
 	for key, value := range env {
@@ -90,29 +96,40 @@ func localProvider(t *testing.T, kind string) *Provider {
 		}
 		args = append(args, "--publish", fmt.Sprintf("127.0.0.1:%d:3000", port), GiteaImage)
 	}
-	id := docker(t, env, args...)
-	if len(id) != 64 {
-		t.Fatal("Docker did not return a container identity")
-	}
+	// Register cleanup first: a failed start can still leave a created container.
+	host := dockerHost(t)
 	t.Cleanup(func() {
 		// Cleanup uses a fresh context because the test may have been cancelled.
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		cmd := exec.CommandContext(ctx, "docker", "--host", os.Getenv("PLAT7_DOCKER_HOST"), "inspect", "--format", `{{index .Config.Labels "com.astilba.fixture"}}`, id)
+		listed, err := exec.CommandContext(ctx, "docker", "--host", host, "ps", "-aq", "--no-trunc", "--filter", "name=^/"+name+"$").Output()
+		if err != nil {
+			t.Error("cannot list fixture containers for cleanup")
+			return
+		}
+		id := strings.TrimSpace(string(listed))
+		if id == "" {
+			return
+		}
+		cmd := exec.CommandContext(ctx, "docker", "--host", host, "inspect", "--format", `{{index .Config.Labels "com.astilba.fixture"}}`, id)
 		label, err := cmd.Output()
 		if err != nil || strings.TrimSpace(string(label)) != "plat7" {
 			t.Error("cannot establish container ownership for cleanup")
 			return
 		}
-		if err := exec.CommandContext(ctx, "docker", "--host", os.Getenv("PLAT7_DOCKER_HOST"), "rm", "--force", "--volumes", id).Run(); err != nil {
+		if err := exec.CommandContext(ctx, "docker", "--host", host, "rm", "--force", "--volumes", id).Run(); err != nil {
 			t.Error("fixture container cleanup failed")
 			return
 		}
-		remaining, err := exec.CommandContext(ctx, "docker", "--host", os.Getenv("PLAT7_DOCKER_HOST"), "ps", "-aq", "--filter", "id="+id).Output()
+		remaining, err := exec.CommandContext(ctx, "docker", "--host", host, "ps", "-aq", "--filter", "id="+id).Output()
 		if err != nil || len(bytes.TrimSpace(remaining)) != 0 {
 			t.Error("fixture container deletion was not confirmed")
 		}
 	})
+	id := docker(t, env, args...)
+	if len(id) != 64 {
+		t.Fatal("Docker did not return a container identity")
+	}
 	client := &http.Client{Timeout: 3 * time.Second}
 	health := "/api/healthz"
 	if kind == "gitlab" {
