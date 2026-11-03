@@ -135,7 +135,7 @@ func TestProviderExactHeadReviewAndRedirectBoundary(t *testing.T) {
 	reached := false
 	destination := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { reached = true }))
 	defer destination.Close()
-	redirect := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { http.Redirect(w, r, destination.URL, 302) }))
+	redirect := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { http.Redirect(w, r, destination.URL, http.StatusFound) }))
 	defer redirect.Close()
 	p, err := NewProvider(Connection{Provider: "gitea", BaseURL: redirect.URL, Repository: "team/repo", RepositoryID: 12, Private: true}, Credential{Password: "credential"}, Policy{Development: true})
 	if err != nil {

@@ -32,7 +32,7 @@ func TestHTTPPolicyBlocksPrivateTargetsAndRedirects(t *testing.T) {
 		response.Body.Close()
 		t.Fatal("private request escaped public policy")
 	}
-	redirect := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { http.Redirect(w, r, target.URL, 302) }))
+	redirect := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { http.Redirect(w, r, target.URL, http.StatusFound) }))
 	defer redirect.Close()
 	allowed := Client(true, time.Second)
 	defer allowed.CloseIdleConnections()

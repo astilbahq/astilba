@@ -100,7 +100,7 @@ func TestNativeReleaseCommandTransport(t *testing.T) {
 				req.RequestURI = ""
 				response, err := upstream.RoundTrip(req)
 				if err != nil {
-					http.Error(w, "fixture upstream unavailable", 502)
+					http.Error(w, "fixture upstream unavailable", http.StatusBadGateway)
 					return
 				}
 				defer response.Body.Close()
@@ -145,7 +145,7 @@ func TestNativeReleaseCommandTransport(t *testing.T) {
 				var managementCalls atomic.Int32
 				management := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 					managementCalls.Add(1)
-					http.Error(w, "controller unavailable", 503)
+					http.Error(w, "controller unavailable", http.StatusServiceUnavailable)
 				}))
 				defer management.Close()
 				cfg, err := j.Config()

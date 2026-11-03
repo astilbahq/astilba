@@ -1085,7 +1085,7 @@ func TestNativeCrossHostOlderBackupRecovery(t *testing.T) {
 		}
 		return identities
 	}
-	identities := enrollRecovered(current, applied)
+	enrollRecovered(current, applied)
 	wait("old recovery grants staged", func() bool {
 		var count int
 		if err := destination.st.Pool.QueryRow(ctx, `SELECT count(*) FROM execution_operations WHERE parent_id=$1 AND command->'crosshost'->>'phase'='recovery-open' AND state NOT IN ('succeeded','failed','cancelled')`, operation.Id).Scan(&count); err != nil {
@@ -1126,7 +1126,7 @@ func TestNativeCrossHostOlderBackupRecovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	applied = newer
-	identities = enrollRecovered(current, applied)
+	identities := enrollRecovered(current, applied)
 
 	for i, identity := range identities {
 		poll, done := context.WithTimeout(ctx, 20*time.Second)
