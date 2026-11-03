@@ -2,6 +2,7 @@ package integration
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -10,6 +11,8 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/auth"
 	"github.com/astilbahq/astilba/services/platform/internal/hosting"
+	"github.com/astilbahq/astilba/services/platform/internal/mailer"
+	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
 )
 
@@ -111,6 +114,48 @@ func TestEmailVerificationLinksAreAccountBoundAndExplicit(t *testing.T) {
 	owner.csrf = verified.CsrfToken
 	owner.call("POST", "/api/v1/auth/email/validate", map[string]string{"token": replacement}, 400, nil)
 	owner.call("POST", "/api/v1/auth/email/verify", map[string]string{"token": replacement}, 400, nil)
+}
+
+func TestUndeliveredLinksReleaseTheirTokens(t *testing.T) {
+	f := setupBootstrap(t, false)
+	f.st.Hosted = true
+	f.st.Hosting = hosting.Config{CohortLimit: 1, ServerLimit: 2}
+	ctx := context.Background()
+	unavailable, err := mailer.New(mailer.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	failing := *f.auth
+	failing.Mail = unavailable
+	if err = failing.InviteHosted(ctx, "beta@example.test", f.apiServer.Origin); !errors.Is(err, mailer.ErrUnavailable) {
+		t.Fatalf("undelivered invitation returned %v", err)
+	}
+	var invitations int
+	if err = f.st.Pool.QueryRow(ctx, "SELECT count(*) FROM hosted_invitations").Scan(&invitations); err != nil {
+		t.Fatal(err)
+	}
+	if invitations != 0 {
+		t.Fatal("undelivered invitation kept its cohort slot")
+	}
+	if err = f.auth.InviteHosted(ctx, "beta@example.test", f.apiServer.Origin); err != nil {
+		t.Fatalf("released cohort slot was not reusable: %v", err)
+	}
+	tokenFromLinkMail(t, f, "/signup")
+
+	account, err := f.st.Queries.InsertAccount(ctx, db.InsertAccountParams{ID: uuid.New(), Email: "unverified@example.test", Name: "Unverified", PasswordHash: "unused"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = failing.RequestEmailVerification(ctx, store.Principal{Account: account}, f.apiServer.Origin); !errors.Is(err, mailer.ErrUnavailable) {
+		t.Fatalf("undelivered verification returned %v", err)
+	}
+	var verifications int
+	if err = f.st.Pool.QueryRow(ctx, "SELECT count(*) FROM email_verifications WHERE account_id=$1", account.ID).Scan(&verifications); err != nil {
+		t.Fatal(err)
+	}
+	if verifications != 0 {
+		t.Fatal("undelivered email verification remained redeemable")
+	}
 }
 
 func mustAccountHash(t *testing.T, f *fixture) string {

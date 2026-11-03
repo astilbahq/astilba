@@ -152,8 +152,7 @@ func (s *Service) Report(ctx context.Context, a Identity, r api.AgentReport) err
 		}
 	}
 	// Lock identity before operation, matching operator admission. Revocation cannot race acceptance.
-	var valid bool
-	err = tx.QueryRow(ctx, `SELECT `+agentCredentialPredicate+` AND NOT awaiting_transfer FROM servers WHERE id=$1 FOR UPDATE`, a.ID, hash(a.Token)).Scan(&valid)
+	valid, err := lockAgentCredential(ctx, tx, a)
 	if err != nil {
 		return err
 	}

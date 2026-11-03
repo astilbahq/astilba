@@ -57,8 +57,8 @@ func (s *Service) hydratePipeline(ctx context.Context, a Identity, c *api.Execut
 	// Match reporting's identity-before-operation lock order. An expired poll
 	// lease can overlap another poll, so its earlier operation read is not proof
 	// that this command is still deliverable.
-	var valid bool
-	if err = tx.QueryRow(ctx, `SELECT `+agentCredentialPredicate+` AND NOT awaiting_transfer FROM servers WHERE id=$1 AND workspace_id=$3 FOR UPDATE`, a.ID, hash(a.Token), a.Workspace).Scan(&valid); err != nil {
+	valid, err := lockAgentCredential(ctx, tx, a)
+	if err != nil {
 		return false, err
 	}
 	if !valid {

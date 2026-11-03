@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/alexedwards/scs/pgxstore"
-	"github.com/jackc/pgx/v5/pgxpool"
+	db "github.com/astilbahq/astilba/services/platform/db/generated"
 )
 
 var errSessionRevoked = errors.New("browser session was revoked")
@@ -19,7 +19,7 @@ type sessionLoad struct{ token string }
 
 type sessionStore struct {
 	*pgxstore.PostgresStore
-	pool *pgxpool.Pool
+	queries *db.Queries
 }
 
 func (s *sessionStore) FindCtx(ctx context.Context, token string) ([]byte, bool, error) {
@@ -46,15 +46,15 @@ func (s *sessionStore) CommitCtx(ctx context.Context, token string, data []byte,
 	if loaded.token == token {
 		// A concurrent logout/renewal or expiry cleanup may have deleted the row.
 		// UPDATE serializes with that deletion and never recreates its authority.
-		tag, err := s.pool.Exec(ctx, "UPDATE sessions SET data=$2,expiry=$3 WHERE token=$1", token, data, expiry)
+		n, err := s.queries.RefreshSession(ctx, db.RefreshSessionParams{Token: token, Data: data, Expiry: expiry})
 		if err != nil {
 			return err
 		}
-		if tag.RowsAffected() == 0 {
+		if n == 0 {
 			return errSessionRevoked
 		}
 	} else {
-		if _, err := s.pool.Exec(ctx, "INSERT INTO sessions(token,data,expiry) VALUES($1,$2,$3)", token, data, expiry); err != nil {
+		if err := s.queries.InsertSession(ctx, db.InsertSessionParams{Token: token, Data: data, Expiry: expiry}); err != nil {
 			return err
 		}
 	}

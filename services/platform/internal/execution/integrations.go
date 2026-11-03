@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 
+	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
@@ -38,32 +39,25 @@ func validCredential(c pipeline.Credential, required bool) bool {
 func (s *Service) Connections(ctx context.Context, p store.Principal, ws uuid.UUID) ([]ConnectionSummary, error) {
 	out := []ConnectionSummary{}
 	err := s.scope(ctx, p, ws, workspaceAccess{}, "", uuid.Nil, func(tx pgx.Tx) error {
-		rows, err := tx.Query(ctx, "SELECT c.configuration,COALESCE(a.active,false),COALESCE(a.app_id,0) FROM git_connections c LEFT JOIN github_app_connections a ON a.workspace_id=c.workspace_id AND a.connection_id=c.id WHERE c.workspace_id=$1 ORDER BY c.id LIMIT 100", ws)
+		rows, err := db.New(tx).ListGitConnections(ctx, ws)
 		if err != nil {
 			return err
 		}
-		defer rows.Close()
-		for rows.Next() {
-			var raw []byte
+		for _, row := range rows {
 			var c pipeline.Connection
-			var active bool
-			var app int64
-			if err := rows.Scan(&raw, &active, &app); err != nil {
-				return err
-			}
-			if err := json.Unmarshal(raw, &c); err != nil {
+			if err := json.Unmarshal(row.Configuration, &c); err != nil {
 				return err
 			}
 			summary := ConnectionSummary{c, "manual", "connected"}
-			if appConfiguration(raw) {
+			if appConfiguration(row.Configuration) {
 				summary.Authentication = "github_app"
-				if !active || s.GitHub == nil || app != s.GitHub.Config.ID {
+				if !row.AppActive || s.GitHub == nil || row.AppID != s.GitHub.Config.ID {
 					summary.Status = "reauthorization_required"
 				}
 			}
 			out = append(out, summary)
 		}
-		return rows.Err()
+		return nil
 	})
 	return out, err
 }
@@ -86,14 +80,14 @@ func (s *Service) CreateConnection(ctx context.Context, p store.Principal, ws uu
 	}
 	// Validate authority before contacting a configured integration.
 	err = s.scope(ctx, p, ws, workspaceAccess{Write: true, Owner: true, Recent: true}, "git.connection.create", c.ID, func(tx pgx.Tx) error {
-		var count int
-		if err := tx.QueryRow(ctx, "SELECT count(*) FROM git_connections WHERE workspace_id=$1", ws).Scan(&count); err != nil {
+		q := db.New(tx)
+		count, err := q.CountGitConnections(ctx, ws)
+		if err != nil {
 			return err
 		}
 		if count >= 100 {
 			return domain.Conflict
 		}
-		var err error
 		c.RepositoryID, c.Private, err = provider.Repository(ctx)
 		if err != nil {
 			return domain.Invalid("repository")
@@ -110,19 +104,17 @@ func (s *Service) CreateConnection(ctx context.Context, p store.Principal, ws uu
 			return err
 		}
 		raw, _ := json.Marshal(c)
-		_, err = tx.Exec(ctx, "INSERT INTO git_connections(id,workspace_id,configuration,encrypted_access) VALUES($1,$2,$3,$4)", c.ID, ws, raw, encrypted)
-		return err
+		return q.InsertGitConnection(ctx, db.InsertGitConnectionParams{ID: c.ID, WorkspaceID: ws, Configuration: raw, EncryptedAccess: encrypted})
 	})
 	return c, access.Webhook, err
 }
 func loadConnection(ctx context.Context, tx pgx.Tx, ws, id uuid.UUID) (pipeline.Connection, []byte, error) {
 	var c pipeline.Connection
-	var raw, secret []byte
-	err := tx.QueryRow(ctx, "SELECT configuration,encrypted_access FROM git_connections WHERE workspace_id=$1 AND id=$2", ws, id).Scan(&raw, &secret)
+	row, err := db.New(tx).GetGitConnection(ctx, db.GetGitConnectionParams{WorkspaceID: ws, ID: id})
 	if err == nil {
-		err = json.Unmarshal(raw, &c)
+		err = json.Unmarshal(row.Configuration, &c)
 	}
-	return c, secret, err
+	return c, row.EncryptedAccess, err
 }
 func (s *Service) provider(ctx context.Context, tx pgx.Tx, ws, id uuid.UUID) (*pipeline.Provider, pipeline.Connection, error) {
 	c, _, err := loadConnection(ctx, tx, ws, id)
@@ -139,23 +131,18 @@ func (s *Service) provider(ctx context.Context, tx pgx.Tx, ws, id uuid.UUID) (*p
 func (s *Service) Registries(ctx context.Context, p store.Principal, ws uuid.UUID) ([]pipeline.Registry, error) {
 	out := []pipeline.Registry{}
 	err := s.scope(ctx, p, ws, workspaceAccess{}, "", uuid.Nil, func(tx pgx.Tx) error {
-		rows, err := tx.Query(ctx, "SELECT configuration FROM registries WHERE workspace_id=$1 ORDER BY id LIMIT 100", ws)
+		rows, err := db.New(tx).ListRegistries(ctx, ws)
 		if err != nil {
 			return err
 		}
-		defer rows.Close()
-		for rows.Next() {
-			var raw []byte
+		for _, raw := range rows {
 			var v pipeline.Registry
-			if err := rows.Scan(&raw); err != nil {
-				return err
-			}
 			if err := json.Unmarshal(raw, &v); err != nil {
 				return err
 			}
 			out = append(out, v)
 		}
-		return rows.Err()
+		return nil
 	})
 	return out, err
 }
@@ -170,8 +157,9 @@ func (s *Service) CreateRegistry(ctx context.Context, p store.Principal, ws uuid
 		return r, domain.Invalid("registry")
 	}
 	err = s.scope(ctx, p, ws, workspaceAccess{Write: true, Owner: true, Recent: true}, "registry.create", r.ID, func(tx pgx.Tx) error {
-		var count int
-		if err := tx.QueryRow(ctx, "SELECT count(*) FROM registries WHERE workspace_id=$1", ws).Scan(&count); err != nil {
+		q := db.New(tx)
+		count, err := q.CountRegistries(ctx, ws)
+		if err != nil {
 			return err
 		}
 		if count >= 100 {
@@ -182,36 +170,29 @@ func (s *Service) CreateRegistry(ctx context.Context, p store.Principal, ws uuid
 			return err
 		}
 		raw, _ := json.Marshal(r)
-		_, err = tx.Exec(ctx, "INSERT INTO registries(id,workspace_id,configuration,encrypted_access) VALUES($1,$2,$3,$4)", r.ID, ws, raw, encrypted)
-		return err
+		return q.InsertRegistry(ctx, db.InsertRegistryParams{ID: r.ID, WorkspaceID: ws, Configuration: raw, EncryptedAccess: encrypted})
 	})
 	return r, err
 }
 func loadRegistry(ctx context.Context, tx pgx.Tx, ws, id uuid.UUID) (pipeline.Registry, []byte, error) {
 	var v pipeline.Registry
-	var raw, access []byte
-	err := tx.QueryRow(ctx, "SELECT configuration,encrypted_access FROM registries WHERE workspace_id=$1 AND id=$2", ws, id).Scan(&raw, &access)
+	row, err := db.New(tx).GetRegistry(ctx, db.GetRegistryParams{WorkspaceID: ws, ID: id})
 	if err == nil {
-		err = json.Unmarshal(raw, &v)
+		err = json.Unmarshal(row.Configuration, &v)
 	}
-	return v, access, err
+	return v, row.EncryptedAccess, err
 }
 func (s *Service) BuildSecrets(ctx context.Context, p store.Principal, ws uuid.UUID) ([]pipeline.BuildSecret, error) {
 	out := []pipeline.BuildSecret{}
 	err := s.scope(ctx, p, ws, workspaceAccess{}, "", uuid.Nil, func(tx pgx.Tx) error {
-		rows, err := tx.Query(ctx, "SELECT id,name,created_at FROM build_secret_versions WHERE workspace_id=$1 ORDER BY created_at DESC LIMIT 100", ws)
+		rows, err := db.New(tx).ListBuildSecrets(ctx, ws)
 		if err != nil {
 			return err
 		}
-		defer rows.Close()
-		for rows.Next() {
-			var v pipeline.BuildSecret
-			if err := rows.Scan(&v.ID, &v.Name, &v.CreatedAt); err != nil {
-				return err
-			}
-			out = append(out, v)
+		for _, row := range rows {
+			out = append(out, pipeline.BuildSecret{ID: row.ID, Name: row.Name, CreatedAt: row.CreatedAt})
 		}
-		return rows.Err()
+		return nil
 	})
 	return out, err
 }
@@ -226,8 +207,9 @@ func (s *Service) CreateBuildSecret(ctx context.Context, p store.Principal, ws u
 		return v, domain.Invalid("value")
 	}
 	err = s.scope(ctx, p, ws, workspaceAccess{Write: true, Owner: true, Recent: true}, "build.secret.create", v.ID, func(tx pgx.Tx) error {
-		var count int
-		if err := tx.QueryRow(ctx, "SELECT count(*) FROM build_secret_versions WHERE workspace_id=$1", ws).Scan(&count); err != nil {
+		q := db.New(tx)
+		count, err := q.CountBuildSecrets(ctx, ws)
+		if err != nil {
 			return err
 		}
 		if count >= 100 {
@@ -237,22 +219,23 @@ func (s *Service) CreateBuildSecret(ctx context.Context, p store.Principal, ws u
 		if err != nil {
 			return err
 		}
-		return tx.QueryRow(ctx, "INSERT INTO build_secret_versions(id,workspace_id,name,encrypted_value) VALUES($1,$2,$3,$4) RETURNING created_at", v.ID, ws, v.Name, cipher).Scan(&v.CreatedAt)
+		v.CreatedAt, err = q.InsertBuildSecret(ctx, db.InsertBuildSecretParams{ID: v.ID, WorkspaceID: ws, Name: v.Name, EncryptedValue: cipher})
+		return err
 	})
 	return v, err
 }
 func (s *Service) ReceivePush(ctx context.Context, id uuid.UUID, headers http.Header, body []byte) error {
-	var ws uuid.UUID
-	var raw, encrypted []byte
-	if err := s.Store.Pool.QueryRow(ctx, "SELECT workspace_id,configuration,encrypted_access FROM git_connections WHERE id=$1", id).Scan(&ws, &raw, &encrypted); err != nil {
+	row, err := s.Store.Queries.GitConnectionForWebhook(ctx, id)
+	if err != nil {
 		return domain.NotFound
 	}
-	if appConfiguration(raw) {
+	ws := row.WorkspaceID
+	if appConfiguration(row.Configuration) {
 		return domain.Forbidden
 	}
 	var c pipeline.Connection
 	var access pipeline.Access
-	if json.Unmarshal(raw, &c) != nil || s.openIntegration(ws, id, "git", encrypted, &access) != nil {
+	if json.Unmarshal(row.Configuration, &c) != nil || s.openIntegration(ws, id, "git", row.EncryptedAccess, &access) != nil {
 		return domain.Unauthenticated
 	}
 	push, pushErr := pipeline.VerifyPush(c.Provider, access.Webhook, c.RepositoryID, headers, body)
@@ -269,12 +252,12 @@ func (s *Service) ReceivePush(ctx context.Context, id uuid.UUID, headers http.He
 		return err
 	}
 	defer tx.Rollback(ctx)
+	q := db.New(tx)
 	// A connection lock bounds both delivery retention and coalesced refresh scheduling.
-	if _, err = tx.Exec(ctx, "SELECT id FROM git_connections WHERE id=$1 FOR UPDATE", id); err != nil {
+	if err = q.LockGitConnectionDeliveries(ctx, db.LockGitConnectionDeliveriesParams{WorkspaceID: ws, ID: id}); err != nil {
 		return err
 	}
-	var previous string
-	err = tx.QueryRow(ctx, "SELECT body_hash FROM git_deliveries WHERE connection_id=$1 AND delivery_id=$2", id, delivery).Scan(&previous)
+	previous, err := q.GitDeliveryBodyHash(ctx, db.GitDeliveryBodyHashParams{WorkspaceID: ws, ConnectionID: id, DeliveryID: delivery})
 	if err == nil {
 		if previous != pipeline.Hash(string(body)) {
 			return domain.Conflict
@@ -284,10 +267,10 @@ func (s *Service) ReceivePush(ctx context.Context, id uuid.UUID, headers http.He
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return err
 	}
-	if _, err = tx.Exec(ctx, "INSERT INTO git_deliveries(workspace_id,connection_id,delivery_id,body_hash) VALUES($1,$2,$3,$4)", ws, id, delivery, pipeline.Hash(string(body))); err != nil {
+	if err = q.InsertGitDelivery(ctx, db.InsertGitDeliveryParams{WorkspaceID: ws, ConnectionID: id, DeliveryID: delivery, BodyHash: pipeline.Hash(string(body))}); err != nil {
 		return err
 	}
-	if _, err = tx.Exec(ctx, "DELETE FROM git_deliveries WHERE connection_id=$1 AND delivery_id NOT IN (SELECT delivery_id FROM git_deliveries WHERE connection_id=$1 ORDER BY received_at DESC LIMIT 1000)", id); err != nil {
+	if err = q.PruneGitDeliveries(ctx, db.PruneGitDeliveriesParams{WorkspaceID: ws, ConnectionID: id}); err != nil {
 		return err
 	}
 	if previewErr == nil {

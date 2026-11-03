@@ -31,20 +31,21 @@ func (s *Service) InviteHosted(ctx context.Context, email, origin string) error 
 		return e
 	}
 	defer tx.Rollback(ctx)
-	if _, e = tx.Exec(ctx, "SELECT pg_advisory_xact_lock(4281642302)"); e != nil {
+	q := db.New(tx)
+	if e = q.LockHostedCohort(ctx); e != nil {
 		return e
 	}
-	if _, e = tx.Exec(ctx, "DELETE FROM hosted_invitations WHERE claimed_at IS NULL AND expires_at<=now()"); e != nil {
+	if e = q.DeleteExpiredHostedInvitations(ctx); e != nil {
 		return e
 	}
-	var count int
-	if e = tx.QueryRow(ctx, `SELECT (SELECT count(*) FROM workspaces)+(SELECT count(*) FROM hosted_invitations WHERE claimed_at IS NULL)`).Scan(&count); e != nil {
+	count, e := q.HostedCohortSize(ctx)
+	if e != nil {
 		return e
 	}
-	if count >= s.Store.Hosting.CohortLimit {
+	if count >= int64(s.Store.Hosting.CohortLimit) {
 		return domain.Conflict
 	}
-	_, e = tx.Exec(ctx, `INSERT INTO hosted_invitations(id,email,token_hash,expires_at) VALUES($1,$2,$3,$4)`, uuid.New(), email, Hash(token), s.Now().Add(48*time.Hour))
+	e = q.InsertHostedInvitation(ctx, db.InsertHostedInvitationParams{ID: uuid.New(), Email: email, TokenHash: Hash(token), ExpiresAt: s.Now().Add(48 * time.Hour)})
 	if e != nil {
 		return store.Normalize(e)
 	}
@@ -53,7 +54,7 @@ func (s *Service) InviteHosted(ctx context.Context, email, origin string) error 
 	}
 	e = s.Mail.Send(ctx, email, "Your Astilba beta invitation", "Open this one-use link to create your Astilba workspace within 48 hours:\n\n"+origin+"/signup?"+url.Values{"token": {token}}.Encode())
 	if e != nil {
-		_, _ = s.Store.Pool.Exec(ctx, "DELETE FROM hosted_invitations WHERE token_hash=$1 AND claimed_at IS NULL", Hash(token))
+		_ = s.Store.Queries.DeleteUnsentHostedInvitation(ctx, Hash(token))
 	}
 	return e
 }
@@ -107,7 +108,7 @@ func (s *Service) AcceptHosted(ctx context.Context, token, name, password, works
 			return account, ws, store.Normalize(e)
 		}
 	}
-	if _, e = tx.Exec(ctx, "UPDATE accounts SET email_verified_at=$2 WHERE id=$1", account.ID, s.Now()); e != nil {
+	if e = q.MarkEmailVerified(ctx, db.MarkEmailVerifiedParams{ID: account.ID, EmailVerifiedAt: ptrTime(s.Now())}); e != nil {
 		return account, ws, e
 	}
 	ws = uuid.New()
@@ -117,7 +118,7 @@ func (s *Service) AcceptHosted(ctx context.Context, token, name, password, works
 	if e = q.InsertMembership(ctx, db.InsertMembershipParams{WorkspaceID: ws, AccountID: account.ID, Role: "owner"}); e != nil {
 		return account, ws, e
 	}
-	if _, e = tx.Exec(ctx, `INSERT INTO hosted_subscriptions(workspace_id,server_limit) VALUES($1,$2)`, ws, s.Store.Hosting.ServerLimit); e != nil {
+	if e = q.InsertHostedSubscription(ctx, db.InsertHostedSubscriptionParams{WorkspaceID: ws, ServerLimit: int32(s.Store.Hosting.ServerLimit)}); e != nil {
 		return account, ws, e
 	}
 
@@ -138,13 +139,13 @@ func (s *Service) RequestEmailVerification(ctx context.Context, p store.Principa
 	if e != nil {
 		return e
 	}
-	_, e = s.Store.Pool.Exec(ctx, `INSERT INTO email_verifications(account_id,token_hash,expires_at) VALUES($1,$2,$3) ON CONFLICT(account_id) DO UPDATE SET token_hash=$2,expires_at=$3`, p.Account.ID, Hash(token), s.Now().Add(time.Hour))
+	e = s.Store.Queries.UpsertEmailVerification(ctx, db.UpsertEmailVerificationParams{AccountID: p.Account.ID, TokenHash: Hash(token), ExpiresAt: s.Now().Add(time.Hour)})
 	if e != nil {
 		return e
 	}
 	e = s.Mail.Send(ctx, p.Account.Email, "Verify your Astilba email", "Sign in to your Astilba account and open this one-use link to verify your email within one hour:\n\n"+origin+"/verify-email?"+url.Values{"token": {token}}.Encode())
 	if e != nil {
-		_, _ = s.Store.Pool.Exec(ctx, "DELETE FROM email_verifications WHERE account_id=$1 AND token_hash=$2", p.Account.ID, Hash(token))
+		_ = s.Store.Queries.DeleteUnsentEmailVerification(ctx, db.DeleteUnsentEmailVerificationParams{AccountID: p.Account.ID, TokenHash: Hash(token)})
 	}
 	return e
 }
@@ -157,15 +158,15 @@ func (s *Service) VerifyEmail(ctx context.Context, p store.Principal, token stri
 		return e
 	}
 	defer tx.Rollback(ctx)
-	var id uuid.UUID
-	e = tx.QueryRow(ctx, `DELETE FROM email_verifications WHERE account_id=$1 AND token_hash=$2 AND expires_at>$3 RETURNING account_id`, p.Account.ID, Hash(token), s.Now()).Scan(&id)
+	q := db.New(tx)
+	id, e := q.ConsumeEmailVerification(ctx, db.ConsumeEmailVerificationParams{AccountID: p.Account.ID, TokenHash: Hash(token), ValidAt: s.Now()})
 	if errors.Is(e, pgx.ErrNoRows) {
 		return domain.Credentials
 	}
 	if e != nil {
 		return e
 	}
-	if _, e = tx.Exec(ctx, "UPDATE accounts SET email_verified_at=$2 WHERE id=$1", id, s.Now()); e != nil {
+	if e = q.MarkEmailVerified(ctx, db.MarkEmailVerifiedParams{ID: id, EmailVerifiedAt: ptrTime(s.Now())}); e != nil {
 		return e
 	}
 	return tx.Commit(ctx)
@@ -178,8 +179,8 @@ func (s *Service) ValidateHostedInvitation(ctx context.Context, token, ip string
 	if e := s.Limit(ctx, "hosted-validate:ip:"+ip, 60, 15*time.Minute); e != nil {
 		return e
 	}
-	var exists bool
-	if e := s.Store.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM hosted_invitations WHERE token_hash=$1 AND claimed_at IS NULL AND expires_at>$2)`, Hash(token), s.Now()).Scan(&exists); e != nil {
+	exists, e := s.Store.Queries.HostedInvitationOpen(ctx, db.HostedInvitationOpenParams{TokenHash: Hash(token), ValidAt: s.Now()})
+	if e != nil {
 		return e
 	}
 	if !exists {
@@ -192,8 +193,8 @@ func (s *Service) ValidateEmailVerification(ctx context.Context, p store.Princip
 	if e := s.Limit(ctx, "email-validate:"+p.Account.ID.String(), 60, 15*time.Minute); e != nil {
 		return e
 	}
-	var exists bool
-	if e := s.Store.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM email_verifications WHERE account_id=$1 AND token_hash=$2 AND expires_at>$3)`, p.Account.ID, Hash(token), s.Now()).Scan(&exists); e != nil {
+	exists, e := s.Store.Queries.EmailVerificationOpen(ctx, db.EmailVerificationOpenParams{AccountID: p.Account.ID, TokenHash: Hash(token), ValidAt: s.Now()})
+	if e != nil {
 		return e
 	}
 	if !exists {

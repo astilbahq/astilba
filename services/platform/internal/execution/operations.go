@@ -6,6 +6,7 @@ import (
 	"errors"
 	"time"
 
+	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
@@ -226,13 +227,12 @@ func (s *Service) RequestUpdate(ctx context.Context, p store.Principal, ws, id u
 	var out api.Operation
 	err := s.scope(ctx, p, ws, workspaceAccess{Write: true, Owner: true, Recent: true}, "server.update", id, func(tx pgx.Tx) error {
 		var cap api.AgentCapabilities
-		var raw []byte
-		var generation int64
-		err := tx.QueryRow(ctx, `UPDATE servers SET update_generation=update_generation+1 WHERE workspace_id=$1 AND id=$2 AND NOT revoked AND credential_hash IS NOT NULL RETURNING capabilities,update_generation`, ws, id).Scan(&raw, &generation)
+		row, err := db.New(tx).AdvanceServerUpdateGeneration(ctx, db.AdvanceServerUpdateGenerationParams{WorkspaceID: ws, ID: id})
 		if err != nil {
 			return err
 		}
-		if json.Unmarshal(raw, &cap) != nil || cap.Protocol != 1 {
+		generation := row.UpdateGeneration
+		if json.Unmarshal(row.Capabilities, &cap) != nil || cap.Protocol != 1 {
 			return domain.Conflict
 		}
 		var release *api.AgentRelease

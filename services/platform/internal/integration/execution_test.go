@@ -18,7 +18,9 @@ import (
 
 	"github.com/astilbahq/astilba/services/platform/internal/agent"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
+	"github.com/astilbahq/astilba/services/platform/internal/backup"
 	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
+	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/execution"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 
@@ -138,6 +140,35 @@ func TestServerIdentityLifecycle(t *testing.T) {
 	_ = f.st.Pool.QueryRow(context.Background(), "SELECT count(*) FROM audit_events WHERE workspace_id=$1 AND action LIKE 'server.%' AND actor_id=$2", ws, f.owner).Scan(&count)
 	if count != 4 {
 		t.Fatalf("identity audit events=%d", count)
+	}
+}
+
+// Renewal clears the credential without revoking the server; PLAT-119 replaced the resulting NULL scan error with 401.
+func TestRenewedEnrollmentRejectsAuthenticatedAgentWrites(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	b := f.browser(t)
+	ws := b.login("owner@example.test", f.password).Workspaces[0].Id
+	v, in, _ := enrollment(t, f, b, ws, "deployment")
+	agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/enroll", "", in, 200, nil)
+	identity, e := f.execution.Authenticate(ctx, v.Server.Id, in.Credential)
+	if e != nil {
+		t.Fatal(e)
+	}
+	b.call("POST", "/api/v1/workspaces/"+ws.String()+"/servers/"+v.Server.Id.String()+"/enrollment", nil, 201, nil)
+	writes := map[string]func() error{
+		"report": func() error {
+			return f.execution.Report(ctx, identity, api.AgentReport{Id: uuid.New(), Sequence: 1, State: "running"})
+		},
+		"metrics": func() error {
+			return f.execution.RecordMetrics(ctx, identity, api.MetricReport{Host: api.HostMetrics{DiskSource: "docker"}, Services: []api.ServiceMetrics{}})
+		},
+		"schedule": func() error { return f.execution.ScheduleReport(ctx, identity, 1, backup.Status{}) },
+	}
+	for name, write := range writes {
+		if e := write(); !errors.Is(e, domain.Unauthenticated) {
+			t.Errorf("%s after renewal: %v", name, e)
+		}
 	}
 }
 func TestDurableServerOperations(t *testing.T) {
