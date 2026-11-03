@@ -1,12 +1,38 @@
 import { useQuery } from "@tanstack/react-query";
+import { CatchBoundary, lazyRouteComponent } from "@tanstack/react-router";
+import { Suspense } from "react";
+import { useTranslation } from "react-i18next";
 import { client, result } from "./api/client";
-import { EnvironmentDetail } from "./features/environments/environment-detail";
+import { Button } from "./components/button";
+import { title as environmentTitle } from "./features/environments/environment.styles";
 import { ProjectDetail } from "./features/projects/project-detail";
 import { ProjectsOverview } from "./features/projects/projects-overview";
 import { hostingOptions } from "./hosting";
 import { WorkspaceImport } from "./portability";
 import * as s from "./styles";
 import { BusyButton, ErrorNotice, Field, Form, text, useAction } from "./ui";
+
+const EnvironmentDetail = lazyRouteComponent(
+  () => import("./features/environments/environment-detail"),
+  "EnvironmentDetail",
+);
+
+function EnvironmentLoadError() {
+  const { t } = useTranslation("environment");
+  const common = useTranslation("common").t;
+  return (
+    <div className={s.stack}>
+      <div role="alert">
+        <h1 className={environmentTitle}>{t(($) => $.viewLoadFailed)}</h1>
+      </div>
+      <div>
+        <Button variant="secondary" onClick={() => window.location.reload()}>
+          {common(($) => $.reloadPage)}
+        </Button>
+      </div>
+    </div>
+  );
+}
 export type WorkspaceSelection = {
   workspace?: string;
   project?: string;
@@ -14,6 +40,7 @@ export type WorkspaceSelection = {
 };
 
 export function Dashboard({ selection }: { selection: WorkspaceSelection }) {
+  const { t } = useTranslation("common");
   if (selection.project) {
     return (
       <ProjectDetail
@@ -21,14 +48,32 @@ export function Dashboard({ selection }: { selection: WorkspaceSelection }) {
         projectId={selection.project}
         environmentId={selection.environment}
         renderEnvironment={(environment, workspace) => (
-          <EnvironmentDetail
-            key={environment.id}
-            workspaceId={workspace.id}
-            projectId={environment.projectId}
-            environment={environment}
-            write={workspace.role !== "viewer"}
-            owner={workspace.role === "owner"}
-          />
+          <CatchBoundary
+            getResetKey={() => environment.id}
+            errorComponent={EnvironmentLoadError}
+          >
+            <Suspense
+              fallback={
+                <div className={s.stack}>
+                  <h1 className={environmentTitle}>
+                    <bdi>{environment.name}</bdi>
+                  </h1>
+                  <p role="status" className={s.muted}>
+                    {t(($) => $.loading)}
+                  </p>
+                </div>
+              }
+            >
+              <EnvironmentDetail
+                key={environment.id}
+                workspaceId={workspace.id}
+                projectId={environment.projectId}
+                environment={environment}
+                write={workspace.role !== "viewer"}
+                owner={workspace.role === "owner"}
+              />
+            </Suspense>
+          </CatchBoundary>
         )}
       />
     );

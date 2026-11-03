@@ -21,6 +21,7 @@
   "working": "Working…",
   "retryConnection": "Retry connection",
   "requestFailed": "The request could not be completed. Try again.",
+  "reloadPage": "Reload page",
   "unexpectedError": "Something went wrong. Please retry.",
   "fields": "Fields: {{fields}}",
   "request": "Request {{id}}",

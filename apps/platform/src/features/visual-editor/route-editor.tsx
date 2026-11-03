@@ -23,7 +23,7 @@ export function RouteEditor({
   const [edit, setEdit] = useState<string>();
   const route = spec.routes?.find((r) => r.id === edit);
   return (
-    <details>
+    <details className={s.workspaceUtility}>
       <summary>HTTP and TCP routes</summary>
       <ul className={s.list}>
         {spec.routes?.map((r) => (
@@ -159,7 +159,7 @@ export function RouteEditor({
               defaultValue={route?.allowCidrs.join("\n") ?? ""}
             />
           </Label>
-          <details>
+          <details className={s.workspaceUtility}>
             <summary>Advanced HTTP settings</summary>
             <Label>
               Strip path prefix

@@ -4,16 +4,9 @@ import { Label } from "../../components/label";
 import { Anchor } from "../../components/link";
 import { Select } from "../../components/select";
 import * as s from "../../styles";
-import { ErrorNotice, Form, text, type useAction } from "../../ui";
+import { Form, text, type useAction } from "../../ui";
+import { AutomaticBuildRejections } from "../automatic-build-rejections";
 
-const buildRejectionMessages = {
-  missing_build_secret: "A declared build-secret version is unavailable.",
-  build_secret_budget: "Declared build secrets exceed the build-input limit.",
-  arguments_contain_secret:
-    "Public build arguments contain a known secret value.",
-  runtime_secret_budget:
-    "Runtime secrets exceed the build-input validation limit.",
-} satisfies Record<Schema["BuildRejectionReason"], string>;
 export function PipelineJobs({
   applications,
   runs,
@@ -43,23 +36,11 @@ export function PipelineJobs({
   return (
     <section className={s.panel}>
       <h3>Source and build jobs</h3>
-      <ErrorNotice error={rejectionsError} />
-      <div role="status" aria-label="Automatic build rejections">
-        {!!rejections?.length && (
-          <div className={s.stack}>
-            <h4>Automatic builds need attention</h4>
-            {rejections.map((rejection) => (
-              <p key={rejection.applicationId}>
-                {applications.find((app) => app.id === rejection.applicationId)
-                  ?.name ?? "Service"}{" "}
-                · {rejection.commit.slice(0, 12)} ·{" "}
-                {buildRejectionMessages[rejection.reason]} Review the build
-                configuration before retrying.
-              </p>
-            ))}
-          </div>
-        )}
-      </div>
+      <AutomaticBuildRejections
+        rejections={rejections}
+        error={rejectionsError}
+        applications={applications}
+      />
       {!runs?.length && <p className={s.muted}>No source or build jobs yet.</p>}
       {runs?.map((run) => {
         const report = run.result;

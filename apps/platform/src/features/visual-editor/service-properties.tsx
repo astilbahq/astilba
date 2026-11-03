@@ -285,7 +285,7 @@ export function ServiceProperties({
             spec={spec}
             stage={stage}
           />
-          <details>
+          <details className={s.workspaceUtility}>
             <summary>Variables</summary>
             <ul className={s.list}>
               {app.variables?.map((v) => (
@@ -348,7 +348,7 @@ export function ServiceProperties({
             </Form>
           </details>
           {app.kind !== "postgres" && (
-            <details>
+            <details className={s.workspaceUtility}>
               <summary>Storage and readiness</summary>
               <ul>
                 {app.mounts?.map((m) => (
@@ -407,7 +407,7 @@ export function ServiceProperties({
               </Form>
             </details>
           )}
-          <details>
+          <details className={s.workspaceUtility}>
             <summary>Readiness dependencies</summary>
             <Form
               key={`${app.id}-dependencies-${app.dependsOn?.join()}`}

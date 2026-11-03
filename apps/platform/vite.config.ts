@@ -4,6 +4,13 @@ import { defineConfig } from "vite-plus";
 const apiPort = process.env.ASTILBA_DEV_API_PORT ?? "54181";
 export default defineConfig({
   plugins: [pandacss(), react()],
+  build: {
+    modulePreload: {
+      // Avoid retained failed dynamic-module preloads in WebKit (webkit.org/b/270357).
+      resolveDependencies: (_filename, dependencies, { hostType }) =>
+        hostType === "js" ? [] : dependencies,
+    },
+  },
   server: {
     host: "127.0.0.1",
     port: Number(process.env.ASTILBA_DEV_UI_PORT ?? "54182"),

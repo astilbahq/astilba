@@ -1,6 +1,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRef, useState } from "react";
 import { client, result, type Schema } from "../api/client";
+import { publishDraft } from "../api/environment";
 import { Button } from "../components/button";
 import { Checkbox } from "../components/checkbox";
 import { Input } from "../components/input";
@@ -539,6 +540,7 @@ function PolicyStatus({
                             body: { runId: r.id, baseRevisionId: revision.id },
                           }),
                         );
+                        await publishDraft(queries, path, next, revision.id);
                         const loaded = load(next);
                         setMessage(
                           loaded

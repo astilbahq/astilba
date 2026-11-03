@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import type { Schema } from "../api/client";
+import { serversOptions } from "../api/servers";
 import { Button } from "../components/button";
 import { Checkbox } from "../components/checkbox";
 import { Input } from "../components/input";
@@ -261,5 +262,28 @@ export function CrossHostPlacement({
         </>
       )}
     </details>
+  );
+}
+
+export function PlacementWorkspace({
+  path,
+  spec,
+  change,
+}: {
+  path: { workspaceId: string };
+  spec: Schema["Specification"];
+  change: (spec: Schema["Specification"]) => void;
+}) {
+  const servers = useQuery({
+    ...serversOptions(path.workspaceId),
+    refetchInterval: 15000,
+  });
+  return (
+    <CrossHostPlacement
+      workspaceId={path.workspaceId}
+      servers={servers.data ?? []}
+      spec={spec}
+      change={change}
+    />
   );
 }

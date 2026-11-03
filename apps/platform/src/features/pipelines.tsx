@@ -1,7 +1,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { ApiError, client, result, type Schema } from "../api/client";
-import type { EnvironmentPath } from "../api/environment";
+import { publishDraft, type EnvironmentPath } from "../api/environment";
 import { gitConnectionsOptions } from "../api/integrations";
 import { serversOptions } from "../api/servers";
 import { Button } from "../components/button";
@@ -99,7 +99,7 @@ export function Pipelines({
     artifact: Schema["BuildArtifact"],
     applicationId: string,
   ) => {
-    await result(
+    const next = await result(
       client.POST(`${root}/artifacts/{artifactId}/promote`, {
         params: { path: { ...path, artifactId: artifact.id } },
         body: {
@@ -109,6 +109,7 @@ export function Pipelines({
         },
       }),
     );
+    await publishDraft(queries, path, next, revision.id);
   };
   const selected = connections.data?.find((c) => c.id === connection);
   const runnerFields = (
