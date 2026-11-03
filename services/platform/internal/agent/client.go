@@ -39,6 +39,11 @@ type Client struct {
 	crossHost               atomic.Bool
 	maintenanceContinuation atomic.Bool
 	troubleshooting         atomic.Bool
+	terminalOffers          sync.Map
+	terminalActive          atomic.Int64
+	terminalSessions        sync.WaitGroup
+	terminalMu              sync.Mutex
+	terminalContainers      map[string]bool
 }
 
 func NewClient(j *Journal, e *Engine) *Client {
@@ -104,7 +109,7 @@ func (c *Client) call(ctx context.Context, method, path string, body, out any, t
 	c.replicas.Store(response.Header.Get("Astilba-Agent-Replicas") == "v1")
 	c.crossHost.Store(response.Header.Get("Astilba-Agent-Cross-Host") == "v1")
 	c.maintenanceContinuation.Store(response.Header.Get("Astilba-Agent-Maintenance-Continuation") == "v1")
-	c.troubleshooting.Store(response.Header.Get("Astilba-Agent-Troubleshooting") == "v1")
+	c.troubleshooting.Store(response.Header.Get("Astilba-Agent-Troubleshooting") == "v2")
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		return errors.New("management rejected request; check enrollment, credentials and operation status")
 	}
@@ -259,6 +264,8 @@ func (c *Client) Run(ctx context.Context) error {
 	if !cfg.Enrolled && cfg.EnrollmentToken == "" {
 		return errors.New("enroll this agent before running")
 	}
+	c.Engine.EndJournaledShells(ctx)
+	defer c.terminalSessions.Wait()
 	wake := make(chan struct{}, 1)
 	wake <- struct{}{}
 	var wg sync.WaitGroup
@@ -403,6 +410,9 @@ func (c *Client) Run(ctx context.Context) error {
 		}
 		var poll api.AgentPoll
 		e = c.call(ctx, "GET", "/agent/v1/poll", nil, &poll, cfg.Credential)
+		if e == nil && poll.TroubleshootingOffers != nil {
+			c.offerTroubleshootingSessions(ctx, *poll.TroubleshootingOffers)
+		}
 		if e == nil && poll.Command != nil {
 			_, e = c.acceptPolledCommand(*poll.Command)
 			if e == nil {

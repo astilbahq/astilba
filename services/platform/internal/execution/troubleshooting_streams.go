@@ -26,7 +26,7 @@ func (s *Service) troubleshootingOffers(ctx context.Context, a Identity) ([]api.
 	rows, err := s.Store.Queries.ListTroubleshootingOffers(ctx, db.ListTroubleshootingOffersParams{WorkspaceID: a.Workspace, ServerID: a.ID})
 	out := make([]api.AgentTroubleshootingOffer, 0, len(rows))
 	for _, row := range rows {
-		out = append(out, api.AgentTroubleshootingOffer{SessionId: row.ID, UnitId: row.UnitID, ApplicationId: row.ApplicationID, Instance: int(row.Instance), ControllerGeneration: row.ControllerGeneration})
+		out = append(out, api.AgentTroubleshootingOffer{SessionId: row.ID, UnitId: row.UnitID, ApplicationId: row.ApplicationID, Instance: int(row.Instance), ControllerGeneration: row.ControllerGeneration, ActorId: row.ActorID})
 	}
 	return out, err
 }
