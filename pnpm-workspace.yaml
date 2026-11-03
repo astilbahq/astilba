@@ -8,6 +8,9 @@ overrides:
   # Keep these paired until upstream tooling adopts the patched matcher APIs.
   glob@13.0.6: 14.0.3
   minimatch@10.2.6: 11.0.3
+  # @redocly/openapi-core only calls the removed default export when fetching remote
+  # refs with configured headers; platform generation reads a local contract without them.
+  minimatch@5.1.9: 11.0.3
   vite@*: npm:@voidzero-dev/vite-plus-core@1.4.0
   vitest@*: 5.0.5
 allowBuilds:
