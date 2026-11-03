@@ -271,7 +271,7 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 			status = 403
 		case "not_found":
 			status = 404
-		case "conflict":
+		case "conflict", "troubleshooting_refused":
 			status = 409
 		case "rate_limited":
 			status = 429

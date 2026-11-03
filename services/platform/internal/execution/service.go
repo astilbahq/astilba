@@ -38,6 +38,9 @@ type Service struct {
 	Store       *store.Store
 	Queue       *river.Client[pgx.Tx]
 	Releases    []api.AgentRelease
+	// Troubleshooting declares that one instance serves this installation, which
+	// terminal sessions require until a multi-instance relay exists.
+	Troubleshooting bool
 }
 
 func New(st *store.Store) (*Service, error) {

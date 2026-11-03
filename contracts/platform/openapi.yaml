@@ -44,6 +44,158 @@
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Error'}
+  /api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/troubleshooting:
+    parameters:
+      - name: workspaceId
+        in: path
+        required: true
+        schema: {type: string, format: uuid}
+      - name: projectId
+        in: path
+        required: true
+        schema: {type: string, format: uuid}
+      - name: environmentId
+        in: path
+        required: true
+        schema: {type: string, format: uuid}
+    get:
+      operationId: getTroubleshootingPolicy
+      security: [{sessionCookie: []}]
+      responses:
+        '200':
+          description: Whether terminal sessions are allowed in this environment
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/TroubleshootingPolicy'}
+        default:
+          description: Error
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+    put:
+      operationId: saveTroubleshootingPolicy
+      security: [{sessionCookie: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/SaveTroubleshootingPolicy'}
+      responses:
+        '200':
+          description: Saved terminal session setting
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/TroubleshootingPolicy'}
+        default:
+          description: Error
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+  /api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/troubleshooting/sessions:
+    parameters:
+      - name: workspaceId
+        in: path
+        required: true
+        schema: {type: string, format: uuid}
+      - name: projectId
+        in: path
+        required: true
+        schema: {type: string, format: uuid}
+      - name: environmentId
+        in: path
+        required: true
+        schema: {type: string, format: uuid}
+    get:
+      operationId: listOpenTroubleshootingSessions
+      security: [{sessionCookie: []}]
+      responses:
+        '200':
+          description: Open terminal sessions in this environment
+          content:
+            application/json:
+              schema: {type: array, maxItems: 100, items: {$ref: '#/components/schemas/TroubleshootingSession'}}
+        default:
+          description: Error
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+    post:
+      operationId: openTroubleshootingSession
+      security: [{sessionCookie: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/OpenTroubleshootingSession'}
+      responses:
+        '201':
+          description: Admitted session and its single-use stream ticket
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/OpenedTroubleshootingSession'}
+        default:
+          description: Error
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+  /api/v1/workspaces/{workspaceId}/troubleshooting-sessions:
+    parameters:
+      - name: workspaceId
+        in: path
+        required: true
+        schema: {type: string, format: uuid}
+    get:
+      operationId: listTroubleshootingSessions
+      security: [{sessionCookie: []}]
+      responses:
+        '200':
+          description: Recent terminal sessions in this workspace
+          content:
+            application/json:
+              schema: {type: array, maxItems: 100, items: {$ref: '#/components/schemas/TroubleshootingSession'}}
+        default:
+          description: Error
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+  /api/v1/workspaces/{workspaceId}/troubleshooting-sessions/close:
+    parameters:
+      - name: workspaceId
+        in: path
+        required: true
+        schema: {type: string, format: uuid}
+    post:
+      operationId: closeAllTroubleshootingSessions
+      security: [{sessionCookie: []}]
+      responses:
+        '204':
+          description: Every open session in the workspace was ended
+        default:
+          description: Error
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+  /api/v1/workspaces/{workspaceId}/troubleshooting-sessions/{sessionId}/close:
+    parameters:
+      - name: workspaceId
+        in: path
+        required: true
+        schema: {type: string, format: uuid}
+      - name: sessionId
+        in: path
+        required: true
+        schema: {type: string, format: uuid}
+    post:
+      operationId: closeTroubleshootingSession
+      security: [{sessionCookie: []}]
+      responses:
+        '204':
+          description: The session was ended
+        default:
+          description: Error
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
   /api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/preview-policy:
     parameters:
       - name: workspaceId
@@ -4300,6 +4452,54 @@
       "in": "cookie"
       "name": "__Host-astilba_session"
   "schemas":
+    TroubleshootingPolicy:
+      type: object
+      additionalProperties: false
+      required: [enabled, ownersOnly, generation, available]
+      properties:
+        enabled: {type: boolean}
+        ownersOnly: {type: boolean}
+        generation: {type: integer, format: int64, minimum: 0}
+        available: {type: boolean, description: This installation has enabled terminal sessions.}
+    SaveTroubleshootingPolicy:
+      type: object
+      additionalProperties: false
+      required: [enabled, ownersOnly, generation]
+      properties:
+        enabled: {type: boolean}
+        ownersOnly: {type: boolean}
+        generation: {type: integer, format: int64, minimum: 0}
+    OpenTroubleshootingSession:
+      type: object
+      additionalProperties: false
+      required: [applicationId, instance]
+      properties:
+        applicationId: {type: string, format: uuid}
+        instance: {type: integer, minimum: 1, maximum: 40}
+        serverId: {type: string, format: uuid, description: Required for an application placed across hosts.}
+    TroubleshootingSession:
+      type: object
+      additionalProperties: false
+      required: [id, environmentId, serverId, applicationId, instance, actorId, state, createdAt, deadlineAt]
+      properties:
+        id: {type: string, format: uuid}
+        environmentId: {type: string, format: uuid}
+        serverId: {type: string, format: uuid}
+        applicationId: {type: string, format: uuid}
+        instance: {type: integer}
+        actorId: {type: string, format: uuid}
+        state: {type: string, enum: [offered, active, closed]}
+        createdAt: {type: string, format: date-time}
+        deadlineAt: {type: string, format: date-time}
+        closedAt: {type: string, format: date-time}
+        closeReason: {type: string}
+    OpenedTroubleshootingSession:
+      type: object
+      additionalProperties: false
+      required: [session, ticket]
+      properties:
+        session: {$ref: '#/components/schemas/TroubleshootingSession'}
+        ticket: {type: string, description: Single-use stream ticket valid for 30 seconds.}
     CrossHostInventory:
       type: object
       additionalProperties: false
@@ -4756,6 +4956,9 @@
         - "arch"
         - "docker"
       properties:
+        troubleshooting: {type: boolean, description: Supports terminal sessions. Advertised only after Astilba-Agent-Troubleshooting v1.}
+        troubleshootingEnabled: {type: boolean, description: The host owner has opted in to terminal sessions. Advertised only after Astilba-Agent-Troubleshooting v1.}
+        troubleshootingUnavailable: {type: string, enum: [runtime], description: Why a current agent cannot offer terminal sessions on this host. Advertised only after Astilba-Agent-Troubleshooting v1.}
         crossHost: {type: boolean, description: Supports versioned managed private links and coordinated cross-host commands.}
         maintenanceContinuation: {type: boolean, description: Supports stateful maintenance writer resumption after its admission deadline with primary-first delivery.}
         previews:

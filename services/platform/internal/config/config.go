@@ -18,7 +18,7 @@ import (
 type Config struct {
 	LogRetention                                      time.Duration
 	DatabaseURL, Keyring, KeyringJSON, Listen, Origin string
-	Development, Hosted                               bool
+	Development, Hosted, Troubleshooting              bool
 	ApplicationDNS                                    applicationdns.Config
 	SMTP                                              mailer.Config
 	Hosting                                           hosting.Config
@@ -28,6 +28,13 @@ type Config struct {
 func Load() (Config, error) {
 	c := Config{DatabaseURL: os.Getenv("ASTILBA_DATABASE_URL"), Keyring: os.Getenv("ASTILBA_KEYRING"), KeyringJSON: os.Getenv("ASTILBA_KEYRING_JSON"), Listen: os.Getenv("ASTILBA_LISTEN"), Origin: os.Getenv("ASTILBA_ORIGIN"), Development: os.Getenv("ASTILBA_DEVELOPMENT") == "true", Hosted: os.Getenv("ASTILBA_HOSTED") == "true"}
 	c.ApplicationDNS = applicationdns.Config{Base: os.Getenv("ASTILBA_APPLICATION_DOMAIN"), Zone: os.Getenv("ASTILBA_DNS_CLOUDFLARE_ZONE"), Token: os.Getenv("ASTILBA_DNS_CLOUDFLARE_TOKEN")}
+	switch os.Getenv("ASTILBA_TROUBLESHOOTING") {
+	case "":
+	case "single-instance":
+		c.Troubleshooting = true
+	default:
+		return c, errors.New("ASTILBA_TROUBLESHOOTING must be single-instance when set")
+	}
 	days := 30
 	if raw := os.Getenv("ASTILBA_LOG_RETENTION_DAYS"); raw != "" {
 		n, e := strconv.Atoi(raw)
