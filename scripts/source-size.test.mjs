@@ -113,7 +113,7 @@ test("owned generated output and experiments are excluded, adjacent authored sou
 
 test("output directory names do not hide unrelated authored packages", (t) => {
   const f = fixture(t);
-  for (const directory of ["coverage", "dist", "styled-system", ".wrangler"]) {
+  for (const directory of ["coverage", "dist", "styled-system"]) {
     const path = `services/platform/internal/${directory}/report.go`;
     f.write(path, content(601));
     fail(f.run(), /report.go: 601 lines exceeds 600/);

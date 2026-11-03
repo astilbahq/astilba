@@ -55,7 +55,6 @@ jobs:
           PLAT_APP_DOCKER_HOST: unix:///var/run/docker.sock
           PW_TEST_CONNECT_WS_ENDPOINT: ws://127.0.0.1:54190/
           PW_TEST_CONNECT_EXPOSE_NETWORK: "<loopback>"
-          WRANGLER_SEND_METRICS: "false"
       - name: Retain application failure diagnostics
         if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

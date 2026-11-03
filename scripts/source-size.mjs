@@ -14,7 +14,6 @@ const generated = [
   "apps/platform/styled-system",
   "apps/platform/dist",
   "apps/platform/coverage",
-  "apps/platform/.wrangler",
 ];
 const source = /\.(?:go|[cm]?[jt]sx?)$/;
 const gitEnvironment = {

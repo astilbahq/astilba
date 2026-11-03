@@ -38,7 +38,6 @@ jobs:
         env:
           SOURCE_SIZE_BASE: ${{ github.event_name == 'push' && github.event.before || 'HEAD^1' }}
           PLAT_APP_DOCKER_HOST: unix:///var/run/docker.sock
-          WRANGLER_SEND_METRICS: "false"
       - run: make verify-image
         env:
           PLAT_APP_DOCKER_HOST: unix:///var/run/docker.sock

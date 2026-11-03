@@ -17,11 +17,9 @@
 **/node_modules
 **/dist
 **/styled-system
-**/.wrangler
 **/.env
 **/.env.*
 **/.dev.vars*
-**/wrangler.local.jsonc
 **/*.test
 **/coverage
 **/.artifacts
