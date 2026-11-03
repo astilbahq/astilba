@@ -1,0 +1,299 @@
+# Interactive troubleshooting
+
+Status: proposed P17 design, 3 November 2026. Not implemented. Items marked
+**Owner decision** need approval before implementation starts; they are
+collected at the end.
+
+Interactive troubleshooting lets an authorized person open a short-lived terminal
+session inside one eligible managed container to diagnose a running service. It
+is not a host shell, a deployment mechanism or a general remote-execution API.
+The [architecture boundary](platform-architecture.md#boundaries-for-later-capabilities)
+applies: sessions use a separate authenticated streaming protocol, polling
+remains the only command path, and the operation API gains no shell commands.
+
+## Scope and eligible containers
+
+A session targets one running container that the agent's journaled unit plan
+expects as one of:
+
+- an instance of a visual web application or worker;
+- the managed PostgreSQL container of a visual environment;
+- a service container of an Astilba-managed Compose project.
+
+The agent decides eligibility the way it already decides ownership: from the
+journaled plan, the container's kind label (for example `visual-v1`) and its
+expected name. It then pins the session to that container ID. It refuses every
+other container, including scheduled job, release-command, backup, restore,
+upgrade, ingress and pipeline containers, which carry their own kind labels and
+hold credentials or host-level data.
+
+Containers that are privileged, add capabilities or map devices are ineligible:
+an exec inherits the container's privileges, so a shell there is effectively a
+host shell. **Owner decision:** keep them ineligible (recommended), or allow them
+only to owners with recent authentication.
+
+The session runs the first available shell of `/bin/bash` and `/bin/sh` with a
+TTY, as the container's configured user. Many images run as root inside the
+container; the dashboard says which user the shell will run as. Images without
+a shell (for example distroless) are refused with an explicit reason.
+
+Out of scope for this increment: host shells, build runners, file upload or
+download, port forwarding and private-service tunnels, database consoles,
+unmanaged containers, non-interactive command execution, recording terminal
+contents and multi-instance management relays. Each needs its own boundary and
+review.
+
+## Who can open a session
+
+- **Role:** workspace owners and operators. Viewers and automation credentials
+  (API, CLI and MCP) can never open, join or observe a session. **Owner
+  decision:** whether an environment can restrict sessions to owners. This
+  matters most for Git-managed Compose environments, where operators otherwise
+  cannot change what runs without a merged source change; a shell bypasses that
+  review and exposes the service's environment and volumes.
+- **Authentication:** a browser session with recent authentication (the existing
+  five-minute window) at the moment of opening, and the workspace's existing
+  write requirements: MFA on hosted installations or under the workspace MFA
+  policy, and a verified email on hosted installations. Recency is checked only
+  when the session opens.
+- **Environment setting:** an owner-controlled setting allows sessions in an
+  environment. It defaults to off, is never available for pull-request preview
+  environments, and is switched off by workspace import and management recovery,
+  as preview and automatic-build policies already are.
+- **Host consent:** sessions require the host owner's opt-in, stored in the
+  agent journal and changed with an `astilba-agent` subcommand while the agent is
+  stopped, like transfer. Opting out ends open sessions. Transfer and recovery
+  handover both clear the opt-in, so consent is given again to the new
+  controller. The agent reports two capability values, `troubleshooting`
+  (supported) and `troubleshootingEnabled` (opted in), added explicitly to the
+  agent capability schema, so the dashboard can tell "update the agent" apart
+  from "the host owner has not enabled sessions". Opt-in is consent to a new
+  access channel, not containment: a compromised management service can already
+  deploy arbitrary images with an environment's secrets and volumes. It does mean
+  sessions never appear on a host whose owner did not choose them, and the agent
+  enforces eligibility, timeouts and limits itself. **Owner decision:**
+  agent-side opt-in, default off.
+- **Subscription state:** hosted workspaces past subscription expiry cannot
+  open sessions, matching the existing expiry restriction on management changes.
+
+## Session lifecycle
+
+1. **Request.** The browser asks to open a session for an environment service
+   and, for replicated applications, one instance. Management checks
+   authorization and the host's reported capabilities, then records a session row
+   in PostgreSQL: workspace, environment, unit, server, target, actor, the
+   actor's `auth_version`, a hash of the browser session token, controller
+   generation, state and a deadline at the earlier of 15 minutes and the browser
+   session's absolute expiry. It records an audit event and returns a single-use
+   stream ticket valid for 30 seconds, bound to the account, browser session,
+   workspace and session row.
+2. **Offer.** The poll response to that server includes an offer, separate from
+   journaled operation commands. The offer field is sent only to agents that
+   report `troubleshooting`, so older agents, which reject unknown response
+   fields, are unaffected. Offers are never replayed after their row leaves the
+   offered state.
+3. **Agent stream.** The agent checks its opt-in, the eligibility rules, its
+   local limits and the controller generation, then opens an outbound stream on
+   a dedicated connection separate from its polling client. Management
+   authenticates the server credential and the session before accepting the
+   upgrade, and admits the stream only if the session belongs to that server, is
+   still offered, has not been attached and the generation is current. A refusal
+   is reported as a typed reason: opt-in off, ineligible container, no shell or
+   limit reached.
+4. **Browser stream.** The browser opens a same-origin stream. Management
+   refuses the upgrade unless the session cookie and Origin are valid, then
+   requires the ticket as the first message within five seconds. Redeeming the
+   ticket re-checks membership and allows one browser attachment per session.
+5. **Exec.** Once management confirms that the browser stream is attached, it
+   tells the agent to start the shell, so no shell runs before a person is
+   connected. The agent starts it through the Docker exec API with a TTY,
+   `TERM=xterm-256color` and no other injected environment, exec `Privileged`
+   false and no user override. It journals the exec ID and the shell's process
+   identity, but not terminal content, so it can clean up after a crash.
+6. **End.** A session ends on explicit close, after five minutes without input,
+   at its deadline or when either stream drops. The agent enforces the idle
+   timeout and deadline itself as well, measuring both as durations from
+   admission so clock differences between management and the host do not
+   matter. It ends every process in the shell's
+   Linux session, not just its process group, because interactive shells place
+   jobs in their own groups. It identifies those processes through a pidfd or
+   PID start time within the container's PID namespace, never by a bare host PID
+   that could be reused, and confirms with exec inspection. At startup the agent
+   ends any journaled shell left by a crash. **Owner decision:** five-minute idle
+   timeout and 15-minute maximum.
+
+Management also ends a session when:
+
+- the actor loses the role or membership;
+- the actor's `auth_version` changes (password reset, MFA enrolment, or use of
+  a recovery code);
+- the browser session is logged out or reaches its absolute expiry. Only the
+  reauthentication endpoint, for the same account, moves the binding to the
+  renewed token. The session store defers deleting the old row during that
+  renewal; when the renewed session commits, it deletes the old row, inserts the
+  new one and moves the binding in one transaction, so a re-check never finds
+  neither. Logging in again, changing the password or confirming MFA does not
+  move the binding;
+- the workspace MFA policy is enabled for an actor without MFA;
+- the environment setting is turned off, or an owner-only restriction is turned
+  on for an operator's session;
+- the agent credential is revoked or rotated, or the server is revoked;
+- the subscription expires.
+
+These events end sessions directly through PostgreSQL notifications, which are
+treated as hints to re-read the session row, with a 30-second re-check as a
+fallback. An owner can end any open session in the workspace.
+
+A user can still deliberately start a process in a new Linux session (for
+example with `setsid`). Such processes can survive the terminal until the
+container restarts, and changes made inside the container or its volumes
+persist. The dashboard and audit history therefore mark a container as touched
+by a session and offer a restart.
+
+## Limits
+
+Management enforces limits transactionally in PostgreSQL, and the agent enforces
+its own limits locally. Initial values:
+
+- one session per container, four per host, two per actor, eight per workspace
+  and 64 per installation;
+- 64 KiB/s of input and 1 MiB/s of output per session, with backpressure rather
+  than unbounded buffering.
+
+These are constants, not settings; implementation and measured use can tune
+them. Requests over a limit are refused with an explicit reason rather than
+queued.
+
+## Transport and deployment
+
+Each side uses a WebSocket. Frames are binary, at most 32 KiB, uncompressed and
+read with an explicit per-message limit (the existing 16 KiB agent request limit
+does not apply to a hijacked connection). Message types are input, output,
+resize (with bounded dimensions), ping, refused and exit. Stream handlers clear
+the server's ordinary read and write deadlines and send pings every 30 seconds.
+
+P17 supports single-instance management installations only: both streams for a
+session must reach the instance that holds them, and the existing instances share
+state only through PostgreSQL, with no authenticated path between instances.
+Management cannot reliably detect how many instances share its database, so an
+operator enables sessions with an explicit installation setting,
+`ASTILBA_TROUBLESHOOTING=single-instance`, which declares that one instance
+serves this installation. It is off by default; without it, management reports
+sessions as unavailable. [Hosting](hosting.md) documents the setting beside the
+proxy requirement. Multi-instance relays need a separate design covering
+instance discovery, authenticated and encrypted forwarding, and where checks run.
+**Owner decision:** single-instance only for P17 (recommended), or design the
+multi-instance relay first.
+
+Self-hosted installations need their reverse proxy to forward WebSocket
+upgrades, allow an idle timeout longer than the 30-second ping interval and not
+cap a stream's total duration below 15 minutes. This is a new deployment
+requirement for existing installations; [hosting](hosting.md) and the
+[agent guide](agent.md) must document it, and the proxy profile needs validation
+like the existing transport fixture. **Owner decision:** accept the new proxy
+requirement.
+
+**Owner decision:** new dependencies: a maintained Go WebSocket library for the
+management service and agent, and a terminal component for the dashboard (for
+example xterm.js), both pinned exactly under the existing dependency rules.
+
+## Terminal safety and accessibility
+
+Terminal output comes from the workload and is untrusted. The terminal enables
+no clipboard-write extension, asks before following links in output and takes no
+automatic actions on escape sequences. The dashboard warns that pasted text is
+visible to processes in the container.
+
+The terminal captures keys such as Tab and Escape, so it offers a documented key
+and a visible control to move focus out (WCAG 2.2 success criterion 2.1.2, no
+keyboard trap). It uses the terminal component's screen-reader mode and keeps
+visible focus and reduced-motion behaviour.
+
+## Audit, visibility and privacy
+
+A session table records the target, actor, server, close reason, duration and
+byte counts in each direction. `session.open` and `session.close` audit events
+reference it, and owners can review session history. Management writes a
+`session.close` with reason `management restart` for sessions left open by a
+restart.
+
+Closed session records travel with the workspace archive, which needs a new
+archive version. Exports omit the browser-session reference, and imports accept
+only closed records, which never count against limits.
+
+The agent also writes a local journald record of each session (session ID, actor
+ID as supplied, container ID, start, end and reason), giving the host owner a
+trail outside the management database.
+
+Terminal input and output are not recorded or logged by default: they can
+contain secrets and customer data. Management logs only metadata. Recording would
+be a separate, opt-in decision with its own retention and access rules.
+
+Owners and operators see open sessions on the service. The environment event
+stream's snapshot includes session state so the indicator refreshes, and the
+dashboard fetches open sessions from an authorized endpoint; viewers see neither.
+
+**Owner decision:** owner inbox notifications for sessions opened by operators,
+on by default (recommended).
+
+## Failure and recovery
+
+- **Management outage or restart:** no new sessions. Open streams drop, and the
+  agent ends each shell's session. Workloads are unaffected.
+- **Agent restart, crash or upgrade:** open sessions end; at startup the agent
+  ends any shells it journaled.
+- **Controller transfer:** transfer is a host-local step, so sessions end when
+  the source controller revokes the server; transfer clears the opt-in, and the
+  agent refuses offers from any controller generation other than its current one.
+- **Management restore:** session rows are never restored as active.
+- **Older agents without the capability:** the dashboard explains that the host's
+  agent must be updated.
+
+## Verification
+
+- **Unit:** the permission decision table (role, owner-only restriction, recent
+  authentication at open, MFA and email-verification requirements, environment
+  setting, preview environments, subscription state), ticket binding, single use
+  and expiry, deadline calculation and limit accounting.
+- **Integration**, against real PostgreSQL and Docker:
+  - an end-to-end session through the fixture agent;
+  - sessions are unavailable without `ASTILBA_TROUBLESHOOTING=single-instance`,
+    and no shell starts before the browser stream attaches;
+  - a stolen agent credential cannot attach to another server's session, and a
+    ticket from another account, browser session or workspace is refused;
+  - agent opt-out, ineligible container kinds, privileged containers and
+    shell-less images are refused with typed reasons;
+  - role removal, `auth_version` changes, logout, credential revocation, the
+    owner-only restriction and the deadline end an open session promptly, and
+    reauthentication does not, including a re-check during the renewal;
+  - stream loss and agent crashes leave no process in the shell's Linux session,
+    including background jobs;
+  - frame size, rate and session limits, and import of open session rows.
+- **Browser:** Chromium and WebKit journeys for opening, using with the keyboard,
+  leaving the terminal by keyboard and closing a session, with axe checks,
+  screen-reader mode, visible focus and reduced motion; and a check that the
+  page's content security policy permits the same-origin `wss:` connection.
+- **Proxy:** WebSocket upgrade, ping and stream duration through the validated
+  proxy profile.
+- **Native hosts:** a systemd agent session on amd64 and arm64.
+
+## Increments
+
+1. Session table, permissions, audit, agent capabilities and opt-in, eligibility,
+   the streaming relay and exec, verified without a dashboard terminal.
+2. Dashboard setting, terminal, session history and the touched-container
+   indicator.
+3. Owner notifications and limit tuning from measured use.
+
+## Owner decisions
+
+1. Agent-side opt-in, default off.
+2. Environment setting, default off, plus an optional owners-only restriction.
+3. Privileged, capability-adding or device-mapping containers stay ineligible.
+4. Five-minute idle timeout and 15-minute maximum.
+5. Single-instance management only for P17, with a multi-instance relay as a
+   separate design.
+6. The new reverse-proxy requirement for WebSocket upgrades and stream duration.
+7. New pinned dependencies: a Go WebSocket library and a dashboard terminal
+   component.
+8. Owner notifications for operator-opened sessions, on by default.
