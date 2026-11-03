@@ -1,16 +1,13 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
 import { openEnvironmentSection } from "./environment-section";
+import { signInAsOwner } from "./fixtures/owner-sign-in";
 
 test("guided host preparation and domain staging preserve owner review and conflicts", async ({
   page,
 }, info) => {
   await page.goto("/");
-  await page.getByLabel("Email", { exact: true }).fill("owner@example.test");
-  await page
-    .getByLabel("Password", { exact: true })
-    .fill("correct horse battery staple");
-  await page.getByRole("button", { name: "Sign in", exact: true }).click();
+  await signInAsOwner(page);
   await page.getByRole("link", { name: "Servers", exact: true }).click();
   const setup = page.getByRole("region", { name: "Server onboarding" });
   await expect(
