@@ -88,6 +88,7 @@ for (const theme of ["light", "dark"]) {
     await expect(
       page.getByRole("button", { name: "Service list", exact: true }),
     ).toBeVisible();
+    await page.getByRole("button", { name: "Canvas", exact: true }).click();
     await page.screenshot({
       path: info.outputPath(`configuration-${theme}-desktop.png`),
       fullPage: true,

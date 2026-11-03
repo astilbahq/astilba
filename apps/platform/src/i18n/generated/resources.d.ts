@@ -408,7 +408,24 @@ export default interface Resources {
     "viewDeployments": "View deployments",
     "viewLoadFailed": "This environment could not be opened. Reload the page to try again.",
     "viewPreviews": "View previews",
-    "visual": "Visual configuration"
+    "visual": "Visual configuration",
+    "visualEditor": {
+      "closeProperties": "Close properties",
+      "emptyDescription": "Add a service below to start connecting your environment.",
+      "emptyTitle": "Build your service map",
+      "graph": "Services and connections",
+      "instances": "{{count}} instance" | "{{count}} instances",
+      "kinds": {
+        "network": "Network",
+        "postgres": "PostgreSQL",
+        "volume": "Data volume",
+        "web": "Web service",
+        "worker": "Worker"
+      },
+      "networkDescription": "This network is defined in the Compose files. Edit them to change which services join it.",
+      "selectDescription": "Choose a service or data volume to inspect its configuration.",
+      "selectTitle": "Select a resource"
+    }
   },
   "projects": {
     "create": {

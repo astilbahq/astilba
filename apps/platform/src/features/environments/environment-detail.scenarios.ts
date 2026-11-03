@@ -1,4 +1,5 @@
 import type { StoryObj } from "@storybook/tanstack-react";
+import type { i18n } from "i18next";
 import { http, HttpResponse } from "msw/http";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 import {
@@ -172,10 +173,16 @@ export async function edit(canvasElement: HTMLElement) {
   await userEvent.paste(editedDraft);
   return canvas;
 }
-export async function configure(canvasElement: HTMLElement) {
+export async function configure(canvasElement: HTMLElement, instance?: i18n) {
   const canvas = within(canvasElement);
   await userEvent.click(
-    await canvas.findByRole("button", { name: "Open configuration" }),
+    await canvas.findByRole("button", {
+      name: instance
+        ? (name) =>
+            name ===
+            instance.t(($) => $.openConfiguration, { ns: "environment" })
+        : "Open configuration",
+    }),
   );
   return canvas;
 }
