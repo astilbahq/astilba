@@ -31,8 +31,8 @@ hold credentials or host-level data.
 Containers are ineligible when a shell in them would effectively be a host shell,
 because an exec inherits the container's privileges: privileged containers, added
 capabilities, mapped devices, the host's network, process or IPC namespaces,
-changed kernel parameters, a mounted Docker socket or mounted sensitive host
-paths. Managed Compose already rejects several of these; the agent checks them
+changed kernel parameters, a mounted Docker socket or any host bind mount other
+than the read-only bundle files the agent places itself. Managed Compose already rejects several of these; the agent checks them
 again for every session. **Decided:** these containers are never eligible.
 
 The session runs the first available shell of `/bin/bash` and `/bin/sh` with a
@@ -40,10 +40,11 @@ TTY, as the container's configured user. Many images run as root inside the
 container; the dashboard says which user the shell will run as. Images without
 a shell (for example distroless) are refused with an explicit reason.
 
-The agent reports `troubleshooting` only on hosts whose container runtime
-includes the fix for the runc working-directory escape (CVE-2024-21626, fixed in
-runc 1.1.12); the guided bootstrap already installs a newer runtime. Fixing the
-exec working directory at `/` also removes that escape's exec path.
+Sessions need a container runtime that includes the fix for the runc
+working-directory escape (CVE-2024-21626, fixed in runc 1.1.12). The runtime the
+guided bootstrap installs with `--install-runtime` meets this; hosts with an
+existing runtime may not. This floor reflects only that advisory; implementation
+reviews later runc advisories and raises it if they warrant.
 
 Out of scope for this increment: host shells, build runners, file upload or
 download, port forwarding and private-service tunnels, database consoles,
@@ -66,7 +67,8 @@ review.
   when the session opens.
 - **Environment setting:** an owner-controlled setting allows sessions in an
   environment. Enabling it or widening it beyond owners requires recent
-  authentication, is audited and notifies the workspace's owners. It defaults to
+  authentication and is audited; once owner notifications ship (increment 3), it
+also notifies the workspace's owners. It defaults to
   off, is never available for pull-request preview
   environments, and is switched off by workspace import and management recovery,
   as preview and automatic-build policies already are.
@@ -74,10 +76,13 @@ review.
   agent journal and changed with an `astilba-agent` subcommand while the agent is
   stopped, like transfer. Opting out ends open sessions. Transfer and recovery
   handover both clear the opt-in, so consent is given again to the new
-  controller. The agent reports two capability values, `troubleshooting`
-  (supported) and `troubleshootingEnabled` (opted in), added explicitly to the
-  agent capability schema, so the dashboard can tell "update the agent" apart
-  from "the host owner has not enabled sessions". Opt-in is consent to a new
+  controller. The agent reports capability values, added explicitly to the agent
+  capability schema: `troubleshooting` (supported), `troubleshootingEnabled`
+  (opted in) and, when a current agent runs on a container runtime below the
+  floor, `troubleshootingUnavailable` with the reason `runtime` instead of
+  `troubleshooting`. The dashboard can therefore tell "update the agent",
+  "update the container runtime" and "the host owner has not enabled sessions"
+  apart. Opt-in is consent to a new
   access channel, not containment: a compromised management service can already
   deploy arbitrary images with an environment's secrets and volumes. It does mean
   sessions never appear on a host whose owner did not choose them, and the agent
@@ -122,7 +127,9 @@ review.
    false and no user override. It journals the exec ID and the shell's process
    identity, but not terminal content, so it can clean up after a crash.
 6. **End.** A session ends on explicit close, after 15 minutes without typed input,
-   at its deadline or when either stream drops. The agent enforces the idle
+   at its deadline or when either stream drops. Typed input also refreshes the
+   browser session's idle timer, at most once a minute, so a person working in
+   the terminal is not logged out of the dashboard mid-session. The agent enforces the idle
    timeout and deadline itself as well, measuring both as durations from
    admission so clock differences between management and the host do not
    matter. It ends every process in the shell's
@@ -130,19 +137,19 @@ review.
    jobs in their own groups. It identifies those processes through a pidfd or
    PID start time within the container's PID namespace, never by a bare host PID
    that could be reused, and confirms with exec inspection. At startup the agent
-   ends any journaled shell left by a crash. Only typed input counts as activity: output,
-   resizes and reconnects do not, so a terminal left printing logs cannot stay
+   ends any journaled shell left by a crash. Only typed input counts as activity: output
+   and resizes do not, so a terminal left printing logs cannot stay
    open indefinitely. The dashboard warns a minute before either limit.
    **Decided:** 15-minute idle timeout and 60-minute maximum, in line with the
-   15-minute idle limits in NIST SP 800-63B (AAL3) and PCI DSS and with hosted
-   platforms' one-hour caps.
+   15-minute idle limits recommended by NIST SP 800-63B (AAL3) and required by
+   PCI DSS, and with Heroku Exec's one-hour cap.
 
 Management also ends a session when:
 
 - the actor loses the role or membership;
 - the actor's `auth_version` changes (password reset, MFA enrolment, or use of
   a recovery code);
-- the browser session is logged out or reaches its absolute expiry. Only the
+- the browser session is logged out, idles out or reaches its absolute expiry. Only the
   reauthentication endpoint, for the same account, moves the binding to the
   renewed token. The session store defers deleting the old row during that
   renewal; when the renewed session commits, it deletes the old row, inserts the
@@ -253,14 +260,15 @@ Owners and operators see open sessions on the service. The environment event
 stream's snapshot includes session state so the indicator refreshes, and the
 dashboard fetches open sessions from an authorized endpoint; viewers see neither.
 
-**Owner decision:** owner inbox notifications for sessions opened by operators,
-on by default (recommended).
+**Owner decision:** owner inbox notifications for sessions opened by operators
+and for enabling or widening the environment setting, on by default
+(recommended).
 
 ## Considered and deferred
 
 - **Recording terminal content:** few comparable platforms do it, NIST places
-  session-content recording in no baseline and flags its privacy risk, and a
-  recording would be a new store of secrets. Revisit only with explicit opt-in,
+  session-content recording (AU-14) in no baseline, and a recording would be a
+  new store of secrets and customer data. Revisit only with explicit opt-in,
   retention and access rules.
 - **Just-in-time approval:** commonly suggested for SOC 2 programmes but not
   required; owner notification and audit cover review for this increment.
@@ -278,33 +286,41 @@ on by default (recommended).
   agent refuses offers from any controller generation other than its current one.
 - **Management restore:** session rows are never restored as active.
 - **Older agents without the capability:** the dashboard explains that the host's
-  agent must be updated.
+  agent must be updated; for a runtime below the floor, that the container
+  runtime must be updated.
 
 ## Verification
 
 - **Unit:** the permission decision table (role, owner-only restriction, recent
   authentication at open, MFA and email-verification requirements, environment
-  setting, preview environments, subscription state), ticket binding, single use
-  and expiry, deadline calculation and limit accounting.
+  setting, preview environments, subscription state), recent authentication and
+  audit for enabling or widening the environment setting, ticket binding, single
+  use and expiry, deadline calculation and limit accounting.
 - **Integration**, against real PostgreSQL and Docker:
   - an end-to-end session through the fixture agent;
   - sessions are unavailable without `ASTILBA_TROUBLESHOOTING=single-instance`,
     and no shell starts before the browser stream attaches;
   - a stolen agent credential cannot attach to another server's session, and a
     ticket from another account, browser session or workspace is refused;
-  - agent opt-out, ineligible container kinds, privileged containers and
-    shell-less images are refused with typed reasons;
+  - agent opt-out, ineligible container kinds, shell-less images and each
+    host-equivalent container property (privileged mode, added capabilities,
+    devices, host network, PID or IPC namespace, kernel parameters, a Docker
+    socket and other host bind mounts) are refused with typed reasons, and
+    refused attempts are audited;
   - role removal, `auth_version` changes, logout, credential revocation, the
-    owner-only restriction and the deadline end an open session promptly, and
+    owner-only restriction, browser-session idle expiry, the deadline and an
+    owner ending all sessions end an open session promptly, and
     reauthentication does not, including a re-check during the renewal;
   - stream loss and agent crashes leave no process in the shell's Linux session,
     including background jobs;
   - frame size, rate and session limits, and import of open session rows;
   - only typed input resets the idle timer, the exec working directory is `/`,
-    hosts below the runc floor do not advertise the capability, and a failed
-    audit write prevents the session from opening.
+    hosts below the runc floor report the `runtime` reason, and a failed audit
+    write prevents the session from opening.
 - **Browser:** Chromium and WebKit journeys for opening, using with the keyboard,
-  leaving the terminal by keyboard and closing a session, with axe checks,
+  leaving the terminal by keyboard and closing a session, the warning before a
+  limit, link handling limited to confirmed http and https links and ignored
+  window-manipulation and report sequences, with axe checks,
   screen-reader mode, visible focus and reduced motion; and a check that the
   page's content security policy permits the same-origin `wss:` connection.
 - **Proxy:** WebSocket upgrade, ping and stream duration through the validated
@@ -334,4 +350,5 @@ Decided on 3 November 2026:
    separate design.
 6. The new reverse-proxy requirement for WebSocket upgrades and stream duration.
 7. New pinned dependencies: `github.com/coder/websocket` and xterm.js.
-8. Owner notifications for operator-opened sessions, on by default.
+8. Owner notifications for operator-opened sessions and environment-setting
+   changes, on by default.
