@@ -61,3 +61,24 @@ SELECT count(*) FROM build_secret_versions WHERE workspace_id = @workspace_id;
 -- name: InsertBuildSecret :one
 INSERT INTO build_secret_versions(id,workspace_id,name,encrypted_value)
 VALUES(@id,@workspace_id,@name,@encrypted_value) RETURNING created_at;
+
+-- name: GetBuildSecretValue :one
+SELECT encrypted_value FROM build_secret_versions WHERE workspace_id = @workspace_id AND id = @id;
+
+-- name: ListBuildRejections :many
+SELECT application_id,rejected_commit::text AS rejected_commit,rejection_reason::text AS rejection_reason,rejected_at::timestamptz AS rejected_at FROM build_targets
+WHERE workspace_id = @workspace_id AND environment_id = @environment_id AND rejected_at IS NOT NULL
+ORDER BY application_id;
+
+-- name: ListEnvironmentSecretVersions :many
+SELECT v.id,v.encrypted_value FROM secret_versions v
+JOIN secrets s ON s.workspace_id=v.workspace_id AND s.id=v.secret_id
+WHERE v.workspace_id = @workspace_id AND s.environment_id = @environment_id;
+
+-- name: DeleteEnvironmentSecretVersions :exec
+DELETE FROM secret_versions v USING secrets s
+WHERE s.workspace_id = @workspace_id AND s.environment_id = @environment_id
+    AND v.workspace_id=s.workspace_id AND v.secret_id=s.id;
+
+-- name: DeleteEnvironmentSecrets :exec
+DELETE FROM secrets WHERE workspace_id = @workspace_id AND environment_id = @environment_id;

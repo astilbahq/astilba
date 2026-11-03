@@ -97,3 +97,10 @@ UPDATE servers SET credential_hash = @credential_hash,enrollment_hash=NULL,enrol
     machine_id = @machine_id,capabilities = @capabilities,preflight = @preflight,last_seen=now(),awaiting_transfer=false
 WHERE workspace_id = @workspace_id AND id = @server_id
 RETURNING role,rotation_requested,preview_only;
+
+-- name: ServerCapabilities :one
+SELECT capabilities FROM servers WHERE workspace_id = @workspace_id AND id = @id;
+
+-- name: ServerHasActiveOperations :one
+SELECT EXISTS(SELECT 1 FROM execution_operations
+    WHERE workspace_id = @workspace_id AND server_id = @server_id AND state NOT IN ('succeeded','failed','cancelled'));

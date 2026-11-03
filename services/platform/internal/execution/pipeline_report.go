@@ -20,19 +20,13 @@ import (
 )
 
 func (s *Service) rejectRuntimeSecrets(ctx context.Context, tx pgx.Tx, ws, env uuid.UUID, bundle composeproject.Bundle) error {
-	rows, err := tx.Query(ctx, "SELECT v.id,v.encrypted_value FROM secret_versions v JOIN secrets s ON s.workspace_id=v.workspace_id AND s.id=v.secret_id WHERE v.workspace_id=$1 AND s.environment_id=$2", ws, env)
+	rows, err := db.New(tx).ListEnvironmentSecretVersions(ctx, db.ListEnvironmentSecretVersionsParams{WorkspaceID: ws, EnvironmentID: env})
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
 	total := 0
-	for rows.Next() {
-		var id uuid.UUID
-		var cipher []byte
-		if err = rows.Scan(&id, &cipher); err != nil {
-			return err
-		}
-		value, err := s.Store.Keys.Open(cipher, store.SecretIdentity(ws, id))
+	for _, row := range rows {
+		value, err := s.Store.Keys.Open(row.EncryptedValue, store.SecretIdentity(ws, row.ID))
 		if err != nil {
 			return err
 		}
@@ -46,7 +40,7 @@ func (s *Service) rejectRuntimeSecrets(ctx context.Context, tx pgx.Tx, ws, env u
 			}
 		}
 	}
-	return rows.Err()
+	return nil
 }
 func (s *Service) hydratePipeline(ctx context.Context, a Identity, c *api.ExecutionCommand) (bool, error) {
 	tx, err := s.Store.Pool.Begin(ctx)

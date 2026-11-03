@@ -8,6 +8,7 @@ import (
 	"math"
 	"slices"
 
+	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
@@ -56,14 +57,15 @@ func (s *Service) RecoverCrossHost(ctx context.Context, in RecoveryImport) (Reco
 	if err = store.RequireOffline(ctx, tx); err != nil {
 		return out, err
 	}
-	var owner bool
-	if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM memberships WHERE workspace_id=$1 AND account_id=$2 AND role='owner')`, in.WorkspaceID, in.OwnerID).Scan(&owner); err != nil {
+	q := db.New(tx)
+	owner, err := q.WorkspaceOwnerExists(ctx, db.WorkspaceOwnerExistsParams{WorkspaceID: in.WorkspaceID, AccountID: in.OwnerID})
+	if err != nil {
 		return out, err
 	}
 	if !owner {
 		return out, domain.Forbidden
 	}
-	if _, err = tx.Exec(ctx, `SELECT id FROM workspaces WHERE id=$1 FOR UPDATE`, in.WorkspaceID); err != nil {
+	if _, err = q.LockWorkspaceByID(ctx, in.WorkspaceID); err != nil {
 		return out, err
 	}
 	before, stateHash, err := portability.InspectRecovery(ctx, tx, in.WorkspaceID)
@@ -85,6 +87,7 @@ func (s *Service) RecoverCrossHost(ctx context.Context, in RecoveryImport) (Reco
 	if len(roots) == 0 {
 		return out, errors.New("no interrupted root needs checkpoint recovery; use ordinary controller transfer")
 	}
+	// inline-sql: recovery session temporary tables
 	if _, err = tx.Exec(ctx, `CREATE TEMP TABLE recovery_selected_roots(id uuid PRIMARY KEY) ON COMMIT DROP; CREATE TEMP TABLE recovery_incoming_grants(endpoint_id uuid NOT NULL,server_id uuid NOT NULL,unit_id uuid NOT NULL,PRIMARY KEY(endpoint_id,server_id,unit_id)) ON COMMIT DROP; CREATE TEMP TABLE recovery_standalone_restrictions(id uuid PRIMARY KEY,source jsonb) ON COMMIT DROP; INSERT INTO recovery_standalone_restrictions(id) SELECT id FROM recovery_input_proofs WHERE parent_id='00000000-0000-0000-0000-000000000000'`); err != nil {
 		return out, err
 	}
@@ -107,12 +110,14 @@ func (s *Service) RecoverCrossHost(ctx context.Context, in RecoveryImport) (Reco
 		return out, err
 	}
 	for id := range roots {
+		// inline-sql: recovery session temporary tables
 		if _, err = tx.Exec(ctx, `INSERT INTO recovery_selected_roots VALUES($1)`, id); err != nil {
 			return out, err
 		}
 	}
 	for _, row := range source.Archive.Tables["network_endpoint_sources"] {
 		raw, _ := json.Marshal(row)
+		// inline-sql: recovery session temporary tables
 		if _, err = tx.Exec(ctx, `INSERT INTO recovery_incoming_grants SELECT endpoint_id,server_id,unit_id FROM jsonb_populate_record(NULL::network_endpoint_sources,$1)`, raw); err != nil {
 			return out, err
 		}
@@ -171,8 +176,8 @@ func (s *Service) RecoverCrossHost(ctx context.Context, in RecoveryImport) (Reco
 		if projection.tuple.Operation == uuid.Nil || projection.origin.Operations[projection.tuple.Operation].Runtime.Kind != "removed" {
 			continue
 		}
-		var raw []byte
-		if err = tx.QueryRow(ctx, `SELECT o.command FROM environments e JOIN execution_operations o ON o.workspace_id=e.workspace_id AND o.environment_id=e.id AND o.id=e.runtime_operation_id WHERE e.workspace_id=$1 AND e.id=$2 AND e.runtime_operation_id=$3 AND o.runtime_outcome='removed'`, in.WorkspaceID, env, projection.tuple.Operation).Scan(&raw); err != nil {
+		raw, err := q.RemovedRuntimeCommand(ctx, db.RemovedRuntimeCommandParams{WorkspaceID: in.WorkspaceID, EnvironmentID: env, OperationID: &projection.tuple.Operation})
+		if err != nil {
 			return out, err
 		}
 		var command api.ExecutionCommand
@@ -195,6 +200,7 @@ func (s *Service) RecoverCrossHost(ctx context.Context, in RecoveryImport) (Reco
 	if err = restoreRecoveryGrants(ctx, tx, in.WorkspaceID, source.Projections, roots); err != nil {
 		return out, err
 	}
+	// inline-sql: recovery session temporary tables
 	if _, err = tx.Exec(ctx, `UPDATE execution_operations SET state='cancelled',report_sequence=report_sequence+1,note='Prior controller replay grant superseded by guarded recovery.' WHERE workspace_id=$1 AND parent_id IN (SELECT id FROM recovery_selected_roots) AND command->'crosshost'->>'phase'='recovery-open' AND state NOT IN ('succeeded','failed','cancelled')`, in.WorkspaceID); err != nil {
 		return out, err
 	}
@@ -209,7 +215,7 @@ func (s *Service) RecoverCrossHost(ctx context.Context, in RecoveryImport) (Reco
 	}
 	for server, controller := range controllers {
 		host := source.Hosts[server]
-		if _, err = tx.Exec(ctx, `UPDATE servers SET controller_generation=$3,awaiting_transfer=true,credential_hash=NULL,previous_hash=NULL,previous_until=NULL,enrollment_hash=NULL,enrollment_expires=NULL,poll_id=NULL,poll_until=NULL,rotation_requested=false WHERE workspace_id=$1 AND id=$2`, in.WorkspaceID, server, controller); err != nil {
+		if err = q.FenceServerController(ctx, db.FenceServerControllerParams{ControllerGeneration: controller, WorkspaceID: in.WorkspaceID, ServerID: server}); err != nil {
 			return out, err
 		}
 		if handover, required := out.Handovers[server]; required {
@@ -218,8 +224,12 @@ func (s *Service) RecoverCrossHost(ctx context.Context, in RecoveryImport) (Reco
 			inventory.Recovery = rawMessage(raw)
 			encoded, _ := json.Marshal(inventory)
 			handoverRaw, _ := json.Marshal(handover)
-			if _, err = tx.Exec(ctx, `INSERT INTO cross_host_recovery_servers(parent_id,workspace_id,server_id,machine_id,controller_generation,inventory,handover) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(parent_id,server_id) DO UPDATE SET machine_id=excluded.machine_id,controller_generation=excluded.controller_generation,inventory=excluded.inventory,handover=excluded.handover,verified=false`, handover.Authority.ParentID, in.WorkspaceID, server, host.MachineID, controller, encoded, handoverRaw); err != nil {
+			staged, err := q.StageRecoveryServer(ctx, db.StageRecoveryServerParams{ParentID: handover.Authority.ParentID, WorkspaceID: in.WorkspaceID, ServerID: server, MachineID: host.MachineID, ControllerGeneration: controller, Inventory: encoded, Handover: handoverRaw})
+			if err != nil {
 				return out, err
+			}
+			if staged != 1 {
+				return out, errors.New("recovery participant is staged by another workspace")
 			}
 		}
 	}

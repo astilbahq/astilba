@@ -6,6 +6,7 @@ import (
 	"errors"
 	"time"
 
+	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/backup"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
@@ -160,15 +161,14 @@ func (s *Service) operations(ctx context.Context, tx pgx.Tx, ws uuid.UUID) error
 	return nil
 }
 func (s *Service) enqueue(ctx context.Context, tx pgx.Tx, ws, id uuid.UUID, phase string) error {
-	var email, hook bool
-	var revision int64
-	err := tx.QueryRow(ctx, "SELECT email_enabled,encrypted_webhook IS NOT NULL,revision FROM alert_settings WHERE workspace_id=$1", ws).Scan(&email, &hook, &revision)
+	settings, err := db.New(tx).AlertSettings(ctx, ws)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil
 	}
 	if err != nil {
 		return err
 	}
+	email, hook, revision := settings.EmailEnabled, settings.WebhookEnabled, settings.Revision
 	insert := func(channel string, recipient uuid.UUID, state string) error {
 		_, e := tx.Exec(ctx, `INSERT INTO alert_deliveries(id,workspace_id,alert_id,phase,channel,recipient_id,settings_revision,state,next_attempt_at,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$9) ON CONFLICT DO NOTHING`, uuid.New(), ws, id, phase, channel, recipient, revision, state, s.Now())
 		return e

@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"time"
 
+	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/outbound"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
@@ -84,18 +85,16 @@ func (s *Service) send(ctx context.Context, d delivery) (string, error) {
 	p.AlertID = d.alert
 	p.WorkspaceID = d.workspace
 	p.State = d.phase
-	var emailEnabled, webhookEnabled, ack bool
-	var revision int64
-	var cipher []byte
-	var current string
-	err := s.Store.Pool.QueryRow(ctx, `SELECT a.kind,a.resource_id,a.reason,CASE WHEN $3='resolved' THEN a.resolved_at ELSE a.opened_at END,a.state,a.acknowledged_at IS NOT NULL,s.email_enabled,s.encrypted_webhook IS NOT NULL,s.revision,s.encrypted_webhook FROM operational_alerts a JOIN alert_settings s ON s.workspace_id=a.workspace_id WHERE a.workspace_id=$1 AND a.id=$2`, d.workspace, d.alert, d.phase).Scan(&p.Kind, &p.ResourceID, &p.Reason, &p.OccurredAt, &current, &ack, &emailEnabled, &webhookEnabled, &revision, &cipher)
+	alert, err := s.Store.Queries.AlertDeliveryContext(ctx, db.AlertDeliveryContextParams{Phase: d.phase, WorkspaceID: d.workspace, ID: d.alert})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "cancelled", nil
 	}
 	if err != nil {
 		return "", err
 	}
-	if revision != d.revision || (d.phase == "firing" && current != "firing") || (ack && d.phase != "resolved") {
+	p.Kind, p.ResourceID, p.Reason, p.OccurredAt = api.AlertKind(alert.Kind), alert.ResourceID, alert.Reason, alert.OccurredAt
+	emailEnabled, webhookEnabled, cipher := alert.EmailEnabled, alert.WebhookEnabled, alert.EncryptedWebhook
+	if alert.Revision != d.revision || (d.phase == "firing" && alert.State != "firing") || (alert.Acknowledged && d.phase != "resolved") {
 		return "cancelled", nil
 	}
 	if d.channel == "email" {

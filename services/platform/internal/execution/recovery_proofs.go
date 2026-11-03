@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 
+	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/google/uuid"
@@ -13,6 +14,7 @@ import (
 
 func (s *Service) applyRecoveryProof(ctx context.Context, tx pgx.Tx, ws uuid.UUID, c api.ExecutionCommand, root recoveringRoot) error {
 	var headerRaw, reportRaw []byte
+	// inline-sql: recovery session temporary table
 	err := tx.QueryRow(ctx, `SELECT header,report FROM recovery_input_proofs WHERE server_id=$1 AND id=$2 AND parent_id=$3`, c.ServerId, c.Id, root.Command.Id).Scan(&headerRaw, &reportRaw)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil
@@ -28,22 +30,25 @@ func (s *Service) applyRecoveryProof(ctx context.Context, tx pgx.Tx, ws uuid.UUI
 	if report.State != "running" && report.State != "needs_attention" && !Terminal(report.State) {
 		return errors.New("host proof has an unsupported outcome")
 	}
-	var knownSequence int64
-	var knownState api.ExecutionState
-	if err = tx.QueryRow(ctx, `SELECT report_sequence,state FROM execution_operations WHERE workspace_id=$1 AND id=$2`, ws, c.Id).Scan(&knownSequence, &knownState); err != nil {
+	q := db.New(tx)
+	known, err := q.OperationReportState(ctx, db.OperationReportStateParams{WorkspaceID: ws, ID: c.Id})
+	if err != nil {
 		return err
 	}
+	knownSequence, knownState := known.ReportSequence, api.ExecutionState(known.State)
 	if knownSequence > report.Sequence || knownSequence == report.Sequence && Terminal(knownState) && knownState != report.State {
 		return errors.New("host proof conflicts with newer management knowledge of this operation")
 	}
 	var committed bool
+	// inline-sql: recovery session temporary table
 	if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM recovery_known_operations WHERE id=$1 AND report_sequence=$2 AND state=$3)`, c.Id, report.Sequence, report.State).Scan(&committed); err != nil {
 		return err
 	}
 	if committed {
-		if _, err = tx.Exec(ctx, `UPDATE execution_operations SET cancel_requested=cancel_requested OR $2 WHERE id=$1`, c.Id, header.CancelRequested); err != nil {
+		if err = q.MergeOperationCancelRequest(ctx, db.MergeOperationCancelRequestParams{CancelRequested: header.CancelRequested, WorkspaceID: ws, ID: c.Id}); err != nil {
 			return err
 		}
+		// inline-sql: recovery session temporary table
 		_, err = tx.Exec(ctx, `UPDATE recovery_input_proofs SET applied=true WHERE server_id=$1 AND id=$2`, c.ServerId, c.Id)
 		return err
 	}
@@ -59,10 +64,10 @@ func (s *Service) applyRecoveryProof(ctx context.Context, tx pgx.Tx, ws uuid.UUI
 		return err
 	}
 	steps, _ := json.Marshal(report.Steps)
-	_, err = tx.Exec(ctx, `UPDATE execution_operations SET state=$3,report_sequence=$4,steps=$5,note=$6,cancel_requested=cancel_requested OR $7 WHERE workspace_id=$1 AND id=$2`, ws, c.Id, report.State, report.Sequence, steps, report.Note, header.CancelRequested)
-	if err != nil {
+	if err = q.ApplyRecoveryProof(ctx, db.ApplyRecoveryProofParams{State: string(report.State), ReportSequence: report.Sequence, Steps: steps, Note: report.Note, CancelRequested: header.CancelRequested, WorkspaceID: ws, ID: c.Id}); err != nil {
 		return err
 	}
+	// inline-sql: recovery session temporary table
 	_, err = tx.Exec(ctx, `UPDATE recovery_input_proofs SET applied=true WHERE server_id=$1 AND id=$2`, c.ServerId, c.Id)
 	return err
 }
@@ -84,6 +89,7 @@ func (s *Service) restoreRecoveryProofs(ctx context.Context, tx pgx.Tx, ws uuid.
 			var headerRaw []byte
 			var id uuid.UUID
 			var applied bool
+			// inline-sql: recovery session temporary table
 			err := tx.QueryRow(ctx, `SELECT id,header,applied FROM recovery_input_proofs WHERE parent_id=$1 AND id>$2 ORDER BY id LIMIT 1`, parent, last).Scan(&id, &headerRaw, &applied)
 			if errors.Is(err, pgx.ErrNoRows) {
 				break
@@ -109,6 +115,7 @@ func (s *Service) restoreRecoveryProofs(ctx context.Context, tx pgx.Tx, ws uuid.
 			}
 			if retire {
 				var raw []byte
+				// inline-sql: recovery session temporary table
 				if err = tx.QueryRow(ctx, `SELECT report FROM recovery_input_proofs WHERE server_id=$1 AND id=$2`, header.ServerId, header.Id).Scan(&raw); err != nil {
 					return err
 				}
@@ -128,6 +135,7 @@ func (s *Service) restoreRecoveryProofs(ctx context.Context, tx pgx.Tx, ws uuid.
 					report.Note = "Superseded metadata delivery or replay grant; guarded recovery resumes the retained phase without inferring any data effect."
 					report.Sequence++
 					raw, _ = json.Marshal(report)
+					// inline-sql: recovery session temporary table
 					if _, err = tx.Exec(ctx, `UPDATE recovery_input_proofs SET report=$3 WHERE server_id=$1 AND id=$2`, header.ServerId, header.Id, raw); err != nil {
 						return err
 					}

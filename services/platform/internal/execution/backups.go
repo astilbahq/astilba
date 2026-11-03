@@ -21,23 +21,18 @@ import (
 func (s *Service) BackupDestinations(ctx context.Context, p store.Principal, ws uuid.UUID) ([]backup.Destination, error) {
 	out := []backup.Destination{}
 	err := s.scope(ctx, p, ws, workspaceAccess{}, "", uuid.Nil, func(tx pgx.Tx) error {
-		rows, err := tx.Query(ctx, "SELECT configuration FROM backup_destinations WHERE workspace_id=$1 ORDER BY id LIMIT 100", ws)
+		rows, err := db.New(tx).ListBackupDestinations(ctx, ws)
 		if err != nil {
 			return err
 		}
-		defer rows.Close()
-		for rows.Next() {
-			var raw []byte
+		for _, raw := range rows {
 			var v backup.Destination
-			if err = rows.Scan(&raw); err != nil {
-				return err
-			}
 			if err = json.Unmarshal(raw, &v); err != nil {
 				return err
 			}
 			out = append(out, v)
 		}
-		return rows.Err()
+		return nil
 	})
 	return out, err
 }
@@ -48,8 +43,8 @@ func (s *Service) CreateBackupDestination(ctx context.Context, p store.Principal
 		return d, domain.Invalid("destination")
 	}
 	err := s.scope(ctx, p, ws, workspaceAccess{Write: true, Owner: true, Recent: true}, "backup.destination.create", d.ID, func(tx pgx.Tx) error {
-		var n int
-		if err := tx.QueryRow(ctx, "SELECT count(*) FROM backup_destinations WHERE workspace_id=$1", ws).Scan(&n); err != nil {
+		n, err := db.New(tx).CountBackupDestinations(ctx, ws)
+		if err != nil {
 			return err
 		}
 		if n >= 100 {
@@ -60,8 +55,7 @@ func (s *Service) CreateBackupDestination(ctx context.Context, p store.Principal
 			return err
 		}
 		raw, _ := json.Marshal(d)
-		_, err = tx.Exec(ctx, "INSERT INTO backup_destinations(id,workspace_id,configuration,encrypted_access) VALUES($1,$2,$3,$4)", d.ID, ws, raw, secret)
-		return err
+		return db.New(tx).InsertBackupDestination(ctx, db.InsertBackupDestinationParams{ID: d.ID, WorkspaceID: ws, Configuration: raw, EncryptedAccess: secret})
 	})
 	return d, err
 }
@@ -71,23 +65,18 @@ func (s *Service) BackupPolicies(ctx context.Context, p store.Principal, ws, pid
 		if _, err := loadVisualEnvironment(ctx, tx, ws, pid, env); err != nil {
 			return err
 		}
-		rows, err := tx.Query(ctx, "SELECT configuration FROM backup_policies WHERE workspace_id=$1 AND environment_id=$2 ORDER BY id LIMIT 100", ws, env)
+		rows, err := db.New(tx).ListBackupPolicies(ctx, db.ListBackupPoliciesParams{WorkspaceID: ws, EnvironmentID: env})
 		if err != nil {
 			return err
 		}
-		defer rows.Close()
-		for rows.Next() {
-			var raw []byte
+		for _, raw := range rows {
 			var v backup.Policy
-			if err = rows.Scan(&raw); err != nil {
-				return err
-			}
 			if err = json.Unmarshal(raw, &v); err != nil {
 				return err
 			}
 			out = append(out, v)
 		}
-		return rows.Err()
+		return nil
 	})
 	return out, err
 }
@@ -107,24 +96,24 @@ func (s *Service) SaveBackupPolicy(ctx context.Context, p store.Principal, ws, p
 		if err = noActiveUpgrade(ctx, tx, *v.Server); err != nil {
 			return err
 		}
-		var capRaw []byte
-		if err = tx.QueryRow(ctx, "SELECT capabilities FROM servers WHERE id=$1", *v.Server).Scan(&capRaw); err != nil {
+		capRaw, err := db.New(tx).ServerCapabilities(ctx, db.ServerCapabilitiesParams{WorkspaceID: ws, ID: *v.Server})
+		if err != nil {
 			return err
 		}
 		var capabilities api.AgentCapabilities
 		if json.Unmarshal(capRaw, &capabilities) != nil || capabilities.Backups == nil || !*capabilities.Backups {
 			return domain.Invalid("server.capabilities.backups")
 		}
-		var active bool
-		if err = tx.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM execution_operations WHERE server_id=$1 AND state NOT IN ('succeeded','failed','cancelled'))", *v.Server).Scan(&active); err != nil {
+		active, err := db.New(tx).ServerHasActiveOperations(ctx, db.ServerHasActiveOperationsParams{WorkspaceID: ws, ServerID: *v.Server})
+		if err != nil {
 			return err
 		}
 		if active {
 			return domain.Conflict
 		}
 
-		var planID uuid.UUID
-		if err = tx.QueryRow(ctx, "SELECT plan_id FROM visual_runtime WHERE workspace_id=$1 AND environment_id=$2 AND plan_id IS NOT NULL", ws, env).Scan(&planID); err != nil {
+		planID, err := db.New(tx).EnvironmentRuntimePlan(ctx, db.EnvironmentRuntimePlanParams{WorkspaceID: ws, EnvironmentID: env})
+		if err != nil {
 			return err
 		}
 		plan, err := readPlan(ctx, tx, ws, env, planID)
@@ -144,15 +133,15 @@ func (s *Service) SaveBackupPolicy(ctx context.Context, p store.Principal, ws, p
 				return domain.Conflict
 			}
 		} else {
-			var reserved bool
-			if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM cross_host_operations h JOIN execution_operations o ON o.id=h.id WHERE h.workspace_id=$1 AND h.environment_id=$2 AND o.state NOT IN ('succeeded','failed','cancelled') AND (o.command->'crosshost'->'maintenance'->'effect'->'backup'->'installation'->'policy'->>'id'=$3 OR o.command->'crosshost'->'maintenance'->'effect'->'upgrade'->'plan'->>'policyId'=$3))`, ws, env, id.String()).Scan(&reserved); err != nil {
+			reserved, err := db.New(tx).BackupPolicyMaintenanceReserved(ctx, db.BackupPolicyMaintenanceReservedParams{WorkspaceID: ws, EnvironmentID: env, PolicyID: id.String()})
+			if err != nil {
 				return err
 			}
 			if reserved {
 				return domain.Conflict
 			}
-			var raw []byte
-			if err = tx.QueryRow(ctx, "SELECT configuration FROM backup_policies WHERE workspace_id=$1 AND environment_id=$2 AND id=$3 FOR UPDATE", ws, env, id).Scan(&raw); err != nil {
+			raw, err := db.New(tx).LockBackupPolicyConfiguration(ctx, db.LockBackupPolicyConfigurationParams{WorkspaceID: ws, EnvironmentID: env, ID: id})
+			if err != nil {
 				return err
 			}
 			var old backup.Policy
@@ -183,8 +172,8 @@ func (s *Service) SaveBackupPolicy(ctx context.Context, p store.Principal, ws, p
 			return domain.Invalid("server.capabilities.schedules")
 		}
 		if out.Method != "container-job" {
-			var exists bool
-			if err = tx.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM backup_destinations WHERE workspace_id=$1 AND id=$2)", ws, out.DestinationID).Scan(&exists); err != nil {
+			exists, err := db.New(tx).BackupDestinationExists(ctx, db.BackupDestinationExistsParams{WorkspaceID: ws, ID: out.DestinationID})
+			if err != nil {
 				return err
 			}
 			if !exists {
@@ -194,8 +183,8 @@ func (s *Service) SaveBackupPolicy(ctx context.Context, p store.Principal, ws, p
 				return domain.Invalid("password")
 			}
 		}
-		var n int
-		if err = tx.QueryRow(ctx, "SELECT count(*) FROM backup_policies WHERE workspace_id=$1", ws).Scan(&n); err != nil {
+		n, err := db.New(tx).CountBackupPolicies(ctx, ws)
+		if err != nil {
 			return err
 		}
 		if n >= 100 && in.BaseGeneration == 0 {
@@ -210,15 +199,17 @@ func (s *Service) SaveBackupPolicy(ctx context.Context, p store.Principal, ws, p
 			return err
 		}
 		raw, _ := json.Marshal(out)
-		_, err = tx.Exec(ctx, `INSERT INTO backup_policies(id,workspace_id,environment_id,server_id,configuration,encrypted_access) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(id) DO UPDATE SET configuration=excluded.configuration,encrypted_access=excluded.encrypted_access`, id, ws, env, out.ServerID, raw, cipher)
+		changed, err := db.New(tx).UpsertBackupPolicy(ctx, db.UpsertBackupPolicyParams{ID: id, WorkspaceID: ws, EnvironmentID: env, ServerID: out.ServerID, Configuration: raw, EncryptedAccess: cipher})
+		if err == nil && changed != 1 {
+			return domain.Conflict
+		}
 		return err
 	})
 	return out, err
 }
 func loadBackupPolicy(ctx context.Context, tx pgx.Tx, ws, env, id uuid.UUID) (backup.Policy, error) {
 	var v backup.Policy
-	var raw []byte
-	err := tx.QueryRow(ctx, "SELECT configuration FROM backup_policies WHERE workspace_id=$1 AND environment_id=$2 AND id=$3", ws, env, id).Scan(&raw)
+	raw, err := db.New(tx).BackupPolicyConfiguration(ctx, db.BackupPolicyConfigurationParams{WorkspaceID: ws, EnvironmentID: env, ID: id})
 	if err == nil {
 		err = json.Unmarshal(raw, &v)
 	}
@@ -244,8 +235,7 @@ func (s *Service) BackupCommand(ctx context.Context, p store.Principal, ws, pid,
 		if err = requireReplicas(ctx, tx, ws, v.ServerID, v.Plan); err != nil {
 			return err
 		}
-		var previous []byte
-		err = tx.QueryRow(ctx, "SELECT command FROM execution_operations WHERE workspace_id=$1 AND request_key=$2", ws, in.RequestKey).Scan(&previous)
+		previous, err := db.New(tx).OperationCommandByRequestKey(ctx, db.OperationCommandByRequestKeyParams{WorkspaceID: ws, RequestKey: in.RequestKey})
 		if err == nil {
 			var c api.ExecutionCommand
 			var b backup.Command
@@ -276,8 +266,8 @@ func (s *Service) BackupCommand(ctx context.Context, p store.Principal, ws, pid,
 			}
 		}
 		if v.Method != "container-job" {
-			var raw []byte
-			if err = tx.QueryRow(ctx, "SELECT configuration FROM backup_destinations WHERE workspace_id=$1 AND id=$2", ws, v.DestinationID).Scan(&raw); err != nil {
+			raw, err := db.New(tx).BackupDestinationConfiguration(ctx, db.BackupDestinationConfigurationParams{WorkspaceID: ws, ID: v.DestinationID})
+			if err != nil {
 				return err
 			}
 			if err = json.Unmarshal(raw, &b.Installation.Destination); err != nil {
@@ -290,8 +280,8 @@ func (s *Service) BackupCommand(ctx context.Context, p store.Principal, ws, pid,
 		if err = requireGeneralSchedule(ctx, tx, ws, v.ServerID, v); err != nil {
 			return err
 		}
-		var generation int64
-		if err = tx.QueryRow(ctx, "UPDATE environments SET execution_generation=execution_generation+1 WHERE workspace_id=$1 AND id=$2 RETURNING execution_generation", ws, env).Scan(&generation); err != nil {
+		generation, err := db.New(tx).AdvanceEnvironmentExecutionGeneration(ctx, db.AdvanceEnvironmentExecutionGenerationParams{WorkspaceID: ws, ID: env})
+		if err != nil {
 			return err
 		}
 		raw, _ := json.Marshal(b)
@@ -329,30 +319,27 @@ func (s *Service) hydrateBackup(ctx context.Context, c *api.ExecutionCommand) er
 	if err := requireReplicas(ctx, s.Store.Pool, b.Installation.Policy.WorkspaceID, c.ServerId, b.Installation.Policy.Plan); err != nil {
 		return err
 	}
-	var cipher []byte
-	var current []byte
-	err := s.Store.Pool.QueryRow(ctx, "SELECT encrypted_access,configuration FROM backup_policies WHERE workspace_id=$1 AND environment_id=$2 AND server_id=$3 AND id=$4", b.Installation.Policy.WorkspaceID, c.EnvironmentId, c.ServerId, c.ResourceId).Scan(&cipher, &current)
+	stored, err := s.Store.Queries.BackupPolicyAccess(ctx, db.BackupPolicyAccessParams{WorkspaceID: b.Installation.Policy.WorkspaceID, EnvironmentID: c.EnvironmentId, ServerID: c.ServerId, ID: c.ResourceId})
 	if err != nil {
 		return err
 	}
 	var policy backup.Policy
-	if json.Unmarshal(current, &policy) != nil || policy.Generation != b.Installation.Policy.Generation {
+	if json.Unmarshal(stored.Configuration, &policy) != nil || policy.Generation != b.Installation.Policy.Generation {
 		return domain.Conflict
 	}
-	if err = s.openIntegration(b.Installation.Policy.WorkspaceID, c.ResourceId, "backup-policy", cipher, &b.Installation.Access); err != nil {
+	if err = s.openIntegration(b.Installation.Policy.WorkspaceID, c.ResourceId, "backup-policy", stored.EncryptedAccess, &b.Installation.Access); err != nil {
 		return err
 	}
 	if b.Installation.Policy.Method != "container-job" {
-		var raw []byte
-		err = s.Store.Pool.QueryRow(ctx, "SELECT configuration,encrypted_access FROM backup_destinations WHERE workspace_id=$1 AND id=$2", b.Installation.Policy.WorkspaceID, b.Installation.Policy.DestinationID).Scan(&raw, &cipher)
+		destination, err := s.Store.Queries.BackupDestinationAccess(ctx, db.BackupDestinationAccessParams{WorkspaceID: b.Installation.Policy.WorkspaceID, ID: b.Installation.Policy.DestinationID})
 		if err != nil {
 			return err
 		}
-		if err = json.Unmarshal(raw, &b.Installation.Destination); err != nil {
+		if err = json.Unmarshal(destination.Configuration, &b.Installation.Destination); err != nil {
 			return err
 		}
 		var a backup.Access
-		if err = s.openIntegration(b.Installation.Policy.WorkspaceID, b.Installation.Policy.DestinationID, "backup-destination", cipher, &a); err != nil {
+		if err = s.openIntegration(b.Installation.Policy.WorkspaceID, b.Installation.Policy.DestinationID, "backup-destination", destination.EncryptedAccess, &a); err != nil {
 			return err
 		}
 		b.Installation.Access.AccessKey = a.AccessKey
@@ -369,8 +356,8 @@ func (s *Service) BackupStatus(ctx context.Context, p store.Principal, ws, pid, 
 		if _, err := loadVisualEnvironment(ctx, tx, ws, pid, env); err != nil {
 			return err
 		}
-		var raw []byte
-		if err := tx.QueryRow(ctx, "SELECT status FROM backup_policies WHERE workspace_id=$1 AND environment_id=$2 AND id=$3", ws, env, id).Scan(&raw); err != nil {
+		raw, err := db.New(tx).BackupPolicyStatus(ctx, db.BackupPolicyStatusParams{WorkspaceID: ws, EnvironmentID: env, ID: id})
+		if err != nil {
 			return err
 		}
 		return json.Unmarshal(raw, &out)
@@ -393,16 +380,15 @@ func (s *Service) ScheduleReport(ctx context.Context, a Identity, sequence int64
 	if !valid {
 		return domain.Unauthenticated
 	}
-	var raw, prior []byte
-	var seq int64
-	if err = tx.QueryRow(ctx, "SELECT configuration,status_sequence,status FROM backup_policies WHERE workspace_id=$1 AND id=$2 AND server_id=$3 FOR UPDATE", a.Workspace, status.PolicyID, a.ID).Scan(&raw, &seq, &prior); err != nil {
+	report, err := db.New(tx).LockBackupPolicyReport(ctx, db.LockBackupPolicyReportParams{WorkspaceID: a.Workspace, ID: status.PolicyID, ServerID: a.ID})
+	if err != nil {
 		return err
 	}
 	var p backup.Policy
-	if json.Unmarshal(raw, &p) != nil || status.Generation > p.Generation {
+	if json.Unmarshal(report.Configuration, &p) != nil || status.Generation > p.Generation {
 		return domain.Conflict
 	}
-	if sequence <= seq {
+	if sequence <= report.StatusSequence {
 		return tx.Commit(ctx)
 	}
 	if p.Coordinated {
@@ -411,7 +397,7 @@ func (s *Service) ScheduleReport(ctx context.Context, a Identity, sequence int64
 		}
 		status.Next = status.Next.UTC()
 		var old backup.Status
-		if json.Unmarshal(prior, &old) != nil {
+		if json.Unmarshal(report.Status, &old) != nil {
 			return domain.Conflict
 		}
 		// Management advances this cursor atomically with the coordinated parent.
@@ -425,9 +411,8 @@ func (s *Service) ScheduleReport(ctx context.Context, a Identity, sequence int64
 			return domain.Invalid("run")
 		}
 	}
-	raw, _ = json.Marshal(status)
-	_, err = tx.Exec(ctx, "UPDATE backup_policies SET status=$2,status_sequence=$3 WHERE id=$1", p.ID, raw, sequence)
-	if err != nil {
+	raw, _ := json.Marshal(status)
+	if err = db.New(tx).SaveBackupPolicyReport(ctx, db.SaveBackupPolicyReportParams{Status: raw, StatusSequence: sequence, WorkspaceID: a.Workspace, ID: p.ID}); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
@@ -446,8 +431,8 @@ func (s *Service) PrepareBackupCutover(ctx context.Context, p store.Principal, w
 		if err != nil {
 			return err
 		}
-		var raw []byte
-		if err = tx.QueryRow(ctx, "SELECT status FROM backup_policies WHERE workspace_id=$1 AND environment_id=$2 AND id=$3", ws, env, id).Scan(&raw); err != nil {
+		raw, err := db.New(tx).BackupPolicyStatus(ctx, db.BackupPolicyStatusParams{WorkspaceID: ws, EnvironmentID: env, ID: id})
+		if err != nil {
 			return err
 		}
 		var status backup.Status
@@ -535,12 +520,12 @@ func (s *Service) PrepareBackupCutover(ctx context.Context, p store.Principal, w
 		}
 		if boundary != nil {
 			configuration, _ := json.Marshal(boundary)
-			if _, err = tx.Exec(ctx, `INSERT INTO backup_cutovers(workspace_id,environment_id,revision_id,policy_id,source_plan_id,configuration) VALUES($1,$2,$3,$4,$5,$6)`, ws, env, out.ID, id, boundary.SourcePlanID, configuration); err != nil {
+			if err = q.InsertBackupCutover(ctx, db.InsertBackupCutoverParams{WorkspaceID: ws, EnvironmentID: env, RevisionID: out.ID, PolicyID: id, SourcePlanID: boundary.SourcePlanID, Configuration: configuration}); err != nil {
 				return err
 			}
 		}
-		n, err := tx.Exec(ctx, "UPDATE environments SET draft_revision_id=$4 WHERE workspace_id=$1 AND id=$2 AND draft_revision_id=$3", ws, env, in.BaseRevisionId, out.ID)
-		if err == nil && n.RowsAffected() != 1 {
+		_, err = q.AdvanceDraft(ctx, db.AdvanceDraftParams{WorkspaceID: ws, ID: env, DraftRevisionID: in.BaseRevisionId, DraftRevisionID_2: out.ID})
+		if errors.Is(err, pgx.ErrNoRows) {
 			return domain.Conflict
 		}
 		return err
@@ -548,12 +533,12 @@ func (s *Service) PrepareBackupCutover(ctx context.Context, p store.Principal, w
 	return out, err
 }
 
-func requireGeneralSchedule(ctx context.Context, q releaseQuery, ws, server uuid.UUID, p backup.Policy) error {
+func requireGeneralSchedule(ctx context.Context, q db.DBTX, ws, server uuid.UUID, p backup.Policy) error {
 	if !p.GeneralSchedule() {
 		return nil
 	}
-	var raw []byte
-	if err := q.QueryRow(ctx, "SELECT capabilities FROM servers WHERE workspace_id=$1 AND id=$2", ws, server).Scan(&raw); err != nil {
+	raw, err := db.New(q).ServerCapabilities(ctx, db.ServerCapabilitiesParams{WorkspaceID: ws, ID: server})
+	if err != nil {
 		return err
 	}
 	var cap api.AgentCapabilities

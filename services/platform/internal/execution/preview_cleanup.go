@@ -6,6 +6,7 @@ import (
 	"errors"
 	"time"
 
+	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
@@ -138,10 +139,10 @@ func (s *Service) finalizePreviewCleanup(ctx context.Context, tx pgx.Tx, ws uuid
 	if _, err := tx.Exec(ctx, "UPDATE managed_volumes SET deleted=true WHERE workspace_id=$1 AND environment_id=$2 AND unit_id=$3", ws, c.EnvironmentId, c.ResourceId); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(ctx, "DELETE FROM secret_versions v USING secrets s WHERE s.workspace_id=$1 AND s.environment_id=$2 AND v.workspace_id=s.workspace_id AND v.secret_id=s.id", ws, c.EnvironmentId); err != nil {
+	if err := db.New(tx).DeleteEnvironmentSecretVersions(ctx, db.DeleteEnvironmentSecretVersionsParams{WorkspaceID: ws, EnvironmentID: c.EnvironmentId}); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(ctx, "DELETE FROM secrets WHERE workspace_id=$1 AND environment_id=$2", ws, c.EnvironmentId); err != nil {
+	if err := db.New(tx).DeleteEnvironmentSecrets(ctx, db.DeleteEnvironmentSecretsParams{WorkspaceID: ws, EnvironmentID: c.EnvironmentId}); err != nil {
 		return err
 	}
 	_, err := tx.Exec(ctx, "UPDATE preview_requests SET state='deleted',note='Preview resources and owned data were removed.',cleanup_at=NULL,updated_at=now(),next_check_at=now()+interval '1 day' WHERE workspace_id=$1 AND id=$2 AND environment_id=$3 AND generation=$4", ws, p.Plan.Preview.RequestID, c.EnvironmentId, p.Plan.Preview.Generation)

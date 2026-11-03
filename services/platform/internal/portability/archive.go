@@ -98,8 +98,8 @@ func (s *Service) transformCredential(table string, row Row, ws uuid.UUID, expor
 func (s *Service) Export(ctx context.Context, p store.Principal, ws uuid.UUID, passphrase string) ([]byte, error) {
 	archive := Archive{Version: 6, Workspace: ws, CreatedAt: time.Now().UTC(), Tables: map[string][]Row{}}
 	e := s.Store.InWorkspaceSnapshot(ctx, p, ws, func(tx pgx.Tx, q *db.Queries, w store.Workspace) error {
-		var reserved bool
-		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM cross_host_reservations WHERE workspace_id=$1)`, ws).Scan(&reserved); err != nil {
+		reserved, err := q.WorkspaceHasReservations(ctx, ws)
+		if err != nil {
 			return err
 		}
 		if reserved {
@@ -107,7 +107,6 @@ func (s *Service) Export(ctx context.Context, p store.Principal, ws uuid.UUID, p
 		}
 		archive.Name = w.Name
 		archive.RequireMFA = w.RequireMFA
-		var err error
 		archive, err = captureArchive(ctx, tx, archive, true)
 		if err != nil {
 			return err

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -14,10 +15,12 @@ import (
 // This is an internal offline-recovery source, never a browser archive response.
 func CaptureRecovery(ctx context.Context, tx pgx.Tx, ws uuid.UUID) ([]byte, error) {
 	archive := Archive{Version: 6, Workspace: ws}
-	if err := tx.QueryRow(ctx, `SELECT name,require_mfa,clock_timestamp() FROM workspaces WHERE id=$1`, ws).Scan(&archive.Name, &archive.RequireMFA, &archive.CreatedAt); err != nil {
+	header, err := db.New(tx).WorkspaceRecoveryHeader(ctx, ws)
+	if err != nil {
 		return nil, err
 	}
-	archive, err := captureArchive(ctx, tx, archive, true)
+	archive.Name, archive.RequireMFA, archive.CreatedAt = header.Name, header.RequireMfa, header.CapturedAt
+	archive, err = captureArchive(ctx, tx, archive, true)
 	if err != nil {
 		return nil, err
 	}
@@ -32,10 +35,12 @@ func CaptureRecovery(ctx context.Context, tx pgx.Tx, ws uuid.UUID) ([]byte, erro
 // bounded recovery bases. External decoding and new-base admission stay bounded.
 func InspectRecovery(ctx context.Context, tx pgx.Tx, ws uuid.UUID) (Archive, string, error) {
 	archive := Archive{Version: 6, Workspace: ws}
-	if err := tx.QueryRow(ctx, `SELECT name,require_mfa,clock_timestamp() FROM workspaces WHERE id=$1`, ws).Scan(&archive.Name, &archive.RequireMFA, &archive.CreatedAt); err != nil {
+	header, err := db.New(tx).WorkspaceRecoveryHeader(ctx, ws)
+	if err != nil {
 		return archive, "", err
 	}
-	archive, err := captureArchive(ctx, tx, archive, false)
+	archive.Name, archive.RequireMFA, archive.CreatedAt = header.Name, header.RequireMfa, header.CapturedAt
+	archive, err = captureArchive(ctx, tx, archive, false)
 	if err != nil {
 		return archive, "", err
 	}
@@ -51,6 +56,7 @@ func captureArchive(ctx context.Context, tx pgx.Tx, archive Archive, bounded boo
 		if bounded {
 			limit = " LIMIT 10001"
 		}
+		// inline-sql: identifiers come from the compiled portability table list
 		rows, err := tx.Query(ctx, fmt.Sprintf("SELECT to_jsonb(t) FROM (SELECT %s FROM %s WHERE workspace_id=$1%s) t ORDER BY to_jsonb(t)::text", table.Columns, table.Name, limit), archive.Workspace)
 		if err != nil {
 			return archive, err

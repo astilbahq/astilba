@@ -11,6 +11,7 @@ import (
 	"maps"
 	"strings"
 
+	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -119,6 +120,7 @@ func MergeRecovery(ctx context.Context, tx pgx.Tx, a Archive, owner uuid.UUID) e
 			for i, c := range selected {
 				selected[i] = "dst." + c
 			}
+			// inline-sql: identifiers come from the compiled portability table list
 			query := fmt.Sprintf("SELECT to_jsonb(q) FROM (SELECT %s FROM %s dst CROSS JOIN jsonb_populate_record(NULL::%s,$1) src WHERE %s) q", strings.Join(selected, ","), t.Name, t.Name, where)
 			var existing []byte
 			err = tx.QueryRow(ctx, query, original, a.Workspace).Scan(&existing)
@@ -130,8 +132,8 @@ func MergeRecovery(ctx context.Context, tx pgx.Tx, a Archive, owner uuid.UUID) e
 				if recoveryRowHash(existing) == recoveryRowHash(original) {
 					continue
 				}
-				var attributed string
-				if err := tx.QueryRow(ctx, `SELECT attributed_hash FROM cross_host_recovery_rows WHERE workspace_id=$1 AND table_name=$2 AND source_hash=$3`, a.Workspace, t.Name, recoveryRowHash(original)).Scan(&attributed); err != nil || attributed != recoveryRowHash(existing) {
+				attributed, err := db.New(tx).RecoveryRowAttribution(ctx, db.RecoveryRowAttributionParams{WorkspaceID: a.Workspace, TableName: t.Name, SourceHash: recoveryRowHash(original)})
+				if err != nil || attributed != recoveryRowHash(existing) {
 					return fmt.Errorf("recovery conflicts with immutable %s", t.Name)
 				}
 				continue
@@ -173,8 +175,10 @@ func MergeRecovery(ctx context.Context, tx pgx.Tx, a Archive, owner uuid.UUID) e
 				return err
 			}
 			if !found {
+				// inline-sql: identifiers come from the compiled portability table list
 				_, err = tx.Exec(ctx, fmt.Sprintf("INSERT INTO %s (%s) SELECT %s FROM jsonb_populate_record(NULL::%s,$1)", t.Name, t.Columns, t.Columns, t.Name), raw)
 			} else {
+				// inline-sql: identifiers come from the compiled portability table list
 				_, err = tx.Exec(ctx, fmt.Sprintf("UPDATE %s dst SET (%s)=(SELECT %s FROM jsonb_populate_record(NULL::%s,$1)) FROM jsonb_populate_record(NULL::%s,$1) src WHERE %s", t.Name, t.Columns, t.Columns, t.Name, t.Name, where), raw, a.Workspace)
 			}
 			if err != nil {
@@ -186,7 +190,7 @@ func MergeRecovery(ctx context.Context, tx pgx.Tx, a Archive, owner uuid.UUID) e
 					return err
 				}
 				// Cleanup can remove a recovered row without removing its attribution.
-				if _, err = tx.Exec(ctx, `INSERT INTO cross_host_recovery_rows(workspace_id,table_name,source_hash,attributed_hash) VALUES($1,$2,$3,$4) ON CONFLICT(workspace_id,table_name,source_hash) DO UPDATE SET attributed_hash=excluded.attributed_hash`, a.Workspace, t.Name, recoveryRowHash(original), recoveryRowHash(stored)); err != nil {
+				if err = db.New(tx).UpsertRecoveryRowAttribution(ctx, db.UpsertRecoveryRowAttributionParams{WorkspaceID: a.Workspace, TableName: t.Name, SourceHash: recoveryRowHash(original), AttributedHash: recoveryRowHash(stored)}); err != nil {
 					return err
 				}
 			}
@@ -207,11 +211,16 @@ func MergeRecovery(ctx context.Context, tx pgx.Tx, a Archive, owner uuid.UUID) e
 				if json.Unmarshal(appliedOperations[id], &operation) != nil {
 					return ErrArchive
 				}
-				if _, err := tx.Exec(ctx, `UPDATE environments SET applied_revision_id=$3,runtime_operation_id=$4 WHERE workspace_id=$1 AND id=$2`, a.Workspace, id, value, operation); err != nil {
+				environment, err := uuid.Parse(id)
+				if err != nil {
+					return ErrArchive
+				}
+				if err = db.New(tx).SetRecoveredEnvironmentRuntime(ctx, db.SetRecoveredEnvironmentRuntimeParams{AppliedRevisionID: value, RuntimeOperationID: operation, WorkspaceID: a.Workspace, ID: environment}); err != nil {
 					return err
 				}
 				continue
 			}
+			// inline-sql: identifiers come from the compiled portability table list
 			if _, err := tx.Exec(ctx, fmt.Sprintf("UPDATE %s SET %s=$3 WHERE workspace_id=$1 AND id=$2", name, field), a.Workspace, id, value); err != nil {
 				return err
 			}
