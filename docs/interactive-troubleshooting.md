@@ -1,9 +1,8 @@
 # Interactive troubleshooting
 
-Status: proposed P17 design, 3 November 2026. Not implemented. Decisions 1–4 were
-made on 3 November 2026 after comparing established platforms and security
-standards; items still marked **Owner decision** need approval before
-implementation starts. Both are collected at the end.
+Status: approved P17 design, 3 November 2026. Not implemented. The owner decisions
+were made after comparing established platforms and security standards and are
+collected at the end.
 
 Interactive troubleshooting lets an authorized person open a short-lived terminal
 session inside one eligible managed container to diagnose a running service. It
@@ -205,18 +204,18 @@ serves this installation. It is off by default; without it, management reports
 sessions as unavailable. [Hosting](hosting.md) documents the setting beside the
 proxy requirement. Multi-instance relays need a separate design covering
 instance discovery, authenticated and encrypted forwarding, and where checks run.
-**Owner decision:** single-instance only for P17 (recommended), or design the
-multi-instance relay first.
+**Decided:** single-instance only for P17; a multi-instance relay is a separate
+design.
 
 Self-hosted installations need their reverse proxy to forward WebSocket
 upgrades, allow an idle timeout longer than the 30-second ping interval and not
 cap a stream's total duration below 60 minutes. This is a new deployment
 requirement for existing installations; [hosting](hosting.md) and the
 [agent guide](agent.md) must document it, and the proxy profile needs validation
-like the existing transport fixture. **Owner decision:** accept the new proxy
+like the existing transport fixture. **Decided:** accept the new proxy
 requirement.
 
-**Owner decision:** new dependencies, pinned exactly under the existing
+**Decided:** new dependencies, pinned exactly under the existing
 dependency rules: `github.com/coder/websocket` for the management service and
 agent (maintained, and rejecting cross-origin handshakes and oversized messages
 by default), and xterm.js for the dashboard terminal.
@@ -260,9 +259,8 @@ Owners and operators see open sessions on the service. The environment event
 stream's snapshot includes session state so the indicator refreshes, and the
 dashboard fetches open sessions from an authorized endpoint; viewers see neither.
 
-**Owner decision:** owner inbox notifications for sessions opened by operators
-and for enabling or widening the environment setting, on by default
-(recommended).
+**Decided:** owner inbox notifications for sessions opened by operators and for
+enabling or widening the environment setting, on by default.
 
 ## Considered and deferred
 
@@ -343,9 +341,6 @@ Decided on 3 November 2026:
 2. Environment setting, default off, plus an optional owners-only restriction.
 3. Containers whose shell would effectively be a host shell are never eligible.
 4. 15-minute idle timeout (typed input only) and 60-minute maximum.
-
-**Owner decisions** still open:
-
 5. Single-instance management only for P17, with a multi-instance relay as a
    separate design.
 6. The new reverse-proxy requirement for WebSocket upgrades and stream duration.

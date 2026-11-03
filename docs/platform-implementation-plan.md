@@ -314,7 +314,7 @@ architectures and the normal verification/security gates. It provides no host
 high availability. Kubernetes remains a separate scope decision.
 
 ## P17–P18 Later increments
-- **P17 Troubleshooting:** dedicated short-lived resource-scoped container sessions, permissions and audit; see the [proposed design](interactive-troubleshooting.md). Add filesystem access or private-service tunnels only with explicit boundaries; do not place arbitrary shell commands in the deployment API.
+- **P17 Troubleshooting:** dedicated short-lived resource-scoped container sessions, permissions and audit; see the [approved design](interactive-troubleshooting.md). Add filesystem access or private-service tunnels only with explicit boundaries; do not place arbitrary shell commands in the deployment API.
 - **P18 Maintenance:** running-workload security advisories, supported fixes and review windows, then additional tested version-specific upgrade recipes. Preserve backup, verified restore and new-write boundaries. Do not label an arbitrary image-tag change a supported major upgrade.
 
 ### Security advisories and supported fixes
