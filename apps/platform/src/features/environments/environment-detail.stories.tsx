@@ -146,7 +146,13 @@ export const ObservationRecovered: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await userEvent.click(
-      await canvas.findByRole("button", { name: "Try again" }),
+      // Play starts at the first commit. This button also needs the project,
+      // environments, lazy route, draft and then the failed runtime response.
+      await canvas.findByRole(
+        "button",
+        { name: "Try again" },
+        { timeout: 5000 },
+      ),
     );
     await canvas.findByText("No observations yet");
     await expect(
