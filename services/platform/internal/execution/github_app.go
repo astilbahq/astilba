@@ -6,6 +6,7 @@ import (
 	"errors"
 	"time"
 
+	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/githubapp"
@@ -65,22 +66,22 @@ func (s *Service) StartGitHub(ctx context.Context, p store.Principal, ws uuid.UU
 	}
 	id := uuid.New()
 	err = s.scope(ctx, p, ws, workspaceAccess{Write: true, Owner: true, Recent: true}, "git.github.authorize", id, func(tx pgx.Tx) error {
-		if _, e := tx.Exec(ctx, "DELETE FROM github_app_authorizations WHERE workspace_id=$1 AND expires_at<now()", ws); e != nil {
+		q := db.New(tx)
+		if e := q.DeleteExpiredGitHubAuthorizations(ctx, ws); e != nil {
 			return e
 		}
-		var total, active int
-		if e := tx.QueryRow(ctx, "SELECT count(*),count(*) FILTER(WHERE account_id=$2 AND status IN ('pending','ready')) FROM github_app_authorizations WHERE workspace_id=$1", ws, p.Account.ID).Scan(&total, &active); e != nil {
+		count, e := q.CountGitHubAuthorizations(ctx, db.CountGitHubAuthorizationsParams{WorkspaceID: ws, AccountID: p.Account.ID})
+		if e != nil {
 			return e
 		}
-		if total >= 100 || active >= 5 {
+		if count.Total >= 100 || count.Active >= 5 {
 			return domain.Conflict
 		}
 		secret, e := s.sealIntegration(ws, id, "github-authorization", githubAuthorizationSecret{Verifier: verifier})
 		if e != nil {
 			return e
 		}
-		_, e = tx.Exec(ctx, `INSERT INTO github_app_authorizations(id,workspace_id,account_id,auth_version,session_hash,state_hash,app_id,encrypted_access,status,expires_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,'pending',now()+interval '10 minutes')`, id, ws, p.Account.ID, p.Account.AuthVersion, hash(session), hash(state), s.GitHub.Config.ID, secret)
-		return e
+		return q.InsertGitHubAuthorization(ctx, db.InsertGitHubAuthorizationParams{ID: id, WorkspaceID: ws, AccountID: p.Account.ID, AuthVersion: p.Account.AuthVersion, SessionHash: hash(session), StateHash: hash(state), AppID: s.GitHub.Config.ID, EncryptedAccess: secret})
 	})
 	if err != nil {
 		return nil, err
@@ -92,42 +93,49 @@ func (s *Service) StartGitHub(ctx context.Context, p store.Principal, ws uuid.UU
 // step-up, but never a new login. Neither public IDs nor an archive can grant access.
 func (s *Service) gitHubGrant(ctx context.Context, tx pgx.Tx, p store.Principal, ws, id uuid.UUID, session string) (GitHubAuthorization, githubAuthorizationSecret, error) {
 	v := GitHubAuthorization{ID: id, WorkspaceID: ws}
-	var cipher []byte
 	if s.GitHub == nil {
 		return v, githubAuthorizationSecret{}, domain.Invalid("githubApp.notConfigured")
 	}
-	err := tx.QueryRow(ctx, `SELECT encrypted_access,COALESCE(github_user_id,0),github_login,expires_at FROM github_app_authorizations WHERE workspace_id=$1 AND id=$2 AND account_id=$3 AND auth_version=$4 AND session_hash=$5 AND app_id=$6 AND expires_at>now() AND status='ready' FOR UPDATE`, ws, id, p.Account.ID, p.Account.AuthVersion, hash(session), s.GitHub.Config.ID).Scan(&cipher, &v.User.ID, &v.User.Login, &v.ExpiresAt)
+	row, err := s.lockGitHubAuthorization(ctx, tx, p, ws, id, session)
+	if err == nil && row.Status != "ready" {
+		err = domain.Forbidden
+	}
 	var secret githubAuthorizationSecret
+	if err == nil {
+		v.User.ID, v.User.Login, v.ExpiresAt = row.GithubUserID, row.GithubLogin, row.ExpiresAt
+		err = s.openIntegration(ws, id, "github-authorization", row.EncryptedAccess, &secret)
+	}
+	return v, secret, err
+}
+
+// lockGitHubAuthorization locks an authorization only for the account and login
+// session that started it; any other caller receives Forbidden.
+func (s *Service) lockGitHubAuthorization(ctx context.Context, tx pgx.Tx, p store.Principal, ws, id uuid.UUID, session string) (db.LockGitHubAuthorizationRow, error) {
+	row, err := db.New(tx).LockGitHubAuthorization(ctx, db.LockGitHubAuthorizationParams{WorkspaceID: ws, ID: id, AccountID: p.Account.ID, AuthVersion: p.Account.AuthVersion, SessionHash: hash(session), AppID: s.GitHub.Config.ID})
 	if errors.Is(err, pgx.ErrNoRows) {
 		err = domain.Forbidden
 	}
-	if err == nil {
-		err = s.openIntegration(ws, id, "github-authorization", cipher, &secret)
-	}
-	return v, secret, err
+	return row, err
 }
 func (s *Service) CompleteGitHub(ctx context.Context, p store.Principal, session, state, code string) (GitHubAuthorization, error) {
 	var out GitHubAuthorization
 	if s.GitHub == nil || len(state) != 43 || code == "" || len(code) > 1024 {
 		return out, domain.Invalid("githubApp.authorization")
 	}
-	var ws, id uuid.UUID
-	if err := s.Store.Pool.QueryRow(ctx, "SELECT workspace_id,id FROM github_app_authorizations WHERE state_hash=$1", hash(state)).Scan(&ws, &id); err != nil {
+	authorization, err := s.Store.Queries.GitHubAuthorizationByState(ctx, hash(state))
+	if err != nil {
 		return out, domain.Forbidden
 	}
+	ws, id := authorization.WorkspaceID, authorization.ID
 	// Record a failed exchange even if GitHub consumed the code and the HTTP result
 	// was lost; the browser must start again instead of replaying that external effect.
 	var exchangeErr error
-	err := s.scope(ctx, p, ws, workspaceAccess{Write: true, Owner: true}, "", uuid.Nil, func(tx pgx.Tx) error {
-		var cipher []byte
-		var status string
-		e := tx.QueryRow(ctx, `SELECT encrypted_access,status FROM github_app_authorizations WHERE workspace_id=$1 AND id=$2 AND account_id=$3 AND auth_version=$4 AND session_hash=$5 AND app_id=$6 AND expires_at>now() FOR UPDATE`, ws, id, p.Account.ID, p.Account.AuthVersion, hash(session), s.GitHub.Config.ID).Scan(&cipher, &status)
-		if errors.Is(e, pgx.ErrNoRows) {
-			return domain.Forbidden
-		}
+	err = s.scope(ctx, p, ws, workspaceAccess{Write: true, Owner: true}, "", uuid.Nil, func(tx pgx.Tx) error {
+		row, e := s.lockGitHubAuthorization(ctx, tx, p, ws, id, session)
 		if e != nil {
 			return e
 		}
+		cipher, status := row.EncryptedAccess, row.Status
 		if status == "ready" {
 			out, _, e = s.gitHubGrant(ctx, tx, p, ws, id, session)
 			return e
@@ -152,13 +160,17 @@ func (s *Service) CompleteGitHub(ctx context.Context, p store.Principal, session
 		if e != nil {
 			return e
 		}
-		return tx.QueryRow(ctx, "UPDATE github_app_authorizations SET encrypted_access=$3,status=$4,github_user_id=$5,github_login=$6 WHERE workspace_id=$1 AND id=$2 RETURNING id,workspace_id,expires_at", ws, id, cipher, status, user.ID, user.Login).Scan(&out.ID, &out.WorkspaceID, &out.ExpiresAt)
+		completed, e := db.New(tx).CompleteGitHubAuthorization(ctx, db.CompleteGitHubAuthorizationParams{WorkspaceID: ws, ID: id, EncryptedAccess: cipher, Status: status, GithubUserID: user.ID, GithubLogin: user.Login})
+		out.ID, out.WorkspaceID, out.ExpiresAt = completed.ID, completed.WorkspaceID, completed.ExpiresAt
+		return e
 	})
 	if err == nil && exchangeErr != nil {
 		err = exchangeErr
 	}
 	if err == nil {
-		err = s.Store.Pool.QueryRow(ctx, "SELECT github_user_id,github_login FROM github_app_authorizations WHERE id=$1", id).Scan(&out.User.ID, &out.User.Login)
+		var user db.GitHubAuthorizationUserRow
+		user, err = s.Store.Queries.GitHubAuthorizationUser(ctx, db.GitHubAuthorizationUserParams{WorkspaceID: ws, ID: id})
+		out.User.ID, out.User.Login = user.GithubUserID, user.GithubLogin
 	}
 	return out, err
 }
@@ -239,18 +251,19 @@ func (s *Service) ConnectGitHub(ctx context.Context, p store.Principal, ws, gran
 			return domain.Forbidden
 		}
 		c := pipeline.Connection{ID: id, Name: name, Provider: "github", BaseURL: "https://api.github.com", Repository: repo.FullName, RepositoryID: repo.ID, Private: repo.Private}
+		q := db.New(tx)
 		if in.ConnectionID != nil {
-			var raw []byte
 			var old pipeline.Connection
-			if e = tx.QueryRow(ctx, "SELECT configuration FROM git_connections WHERE workspace_id=$1 AND id=$2 FOR UPDATE", ws, id).Scan(&raw); e != nil {
+			raw, e := q.LockGitConnection(ctx, db.LockGitConnectionParams{WorkspaceID: ws, ID: id})
+			if e != nil {
 				return e
 			}
 			if json.Unmarshal(raw, &old) != nil || !appConfiguration(raw) || old.Repository != c.Repository || old.RepositoryID != c.RepositoryID || old.Private != c.Private {
 				return domain.Conflict
 			}
 		} else {
-			var count int
-			if e = tx.QueryRow(ctx, "SELECT count(*) FROM git_connections WHERE workspace_id=$1", ws).Scan(&count); e != nil {
+			count, e := q.CountGitConnections(ctx, ws)
+			if e != nil {
 				return e
 			}
 			if count >= 100 {
@@ -268,17 +281,26 @@ func (s *Service) ConnectGitHub(ctx context.Context, p store.Principal, ws, gran
 		if e != nil {
 			return e
 		}
-		if _, e = tx.Exec(ctx, `INSERT INTO git_connections(id,workspace_id,configuration,encrypted_access) VALUES($1,$2,$3,$4) ON CONFLICT(id) DO UPDATE SET configuration=$3,encrypted_access=$4`, id, ws, raw, empty); e != nil {
+		// The upserts update nothing for a connection ID owned by another workspace.
+		n, e := q.UpsertGitHubAppGitConnection(ctx, db.UpsertGitHubAppGitConnectionParams{ID: id, WorkspaceID: ws, Configuration: raw, EncryptedAccess: empty})
+		if e == nil && n == 0 {
+			e = domain.NotFound
+		}
+		if e != nil {
 			return e
 		}
-		if _, e = tx.Exec(ctx, `INSERT INTO github_app_connections(workspace_id,connection_id,app_id,installation_id,repository_id,github_user_id,actor_id) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(connection_id) DO UPDATE SET app_id=$3,installation_id=$4,repository_id=$5,github_user_id=$6,actor_id=$7,generation=github_app_connections.generation+1,active=true`, ws, id, s.GitHub.Config.ID, in.InstallationID, repo.ID, auth.User.ID, p.Account.ID); e != nil {
+		n, e = q.UpsertGitHubAppConnection(ctx, db.UpsertGitHubAppConnectionParams{WorkspaceID: ws, ConnectionID: id, AppID: s.GitHub.Config.ID, InstallationID: in.InstallationID, RepositoryID: repo.ID, GithubUserID: auth.User.ID, ActorID: p.Account.ID})
+		if e == nil && n == 0 {
+			e = domain.NotFound
+		}
+		if e != nil {
 			return e
 		}
 		erased, e := s.sealIntegration(ws, grant, "github-authorization", githubAuthorizationSecret{})
 		if e != nil {
 			return e
 		}
-		if _, e = tx.Exec(ctx, "UPDATE github_app_authorizations SET status='consumed',encrypted_access=$2 WHERE id=$1", grant, erased); e != nil {
+		if e = q.ConsumeGitHubAuthorization(ctx, db.ConsumeGitHubAuthorizationParams{WorkspaceID: ws, ID: grant, EncryptedAccess: erased}); e != nil {
 			return e
 		}
 		consumedToken = secret.Token
@@ -294,57 +316,55 @@ func (s *Service) ConnectGitHub(ctx context.Context, p store.Principal, ws, gran
 }
 func (s *Service) DisconnectGitHub(ctx context.Context, p store.Principal, ws, id uuid.UUID) error {
 	return s.scope(ctx, p, ws, workspaceAccess{Write: true, Owner: true, Recent: true}, "git.github.disconnect", id, func(tx pgx.Tx) error {
-		var raw []byte
-		if e := tx.QueryRow(ctx, "SELECT configuration FROM git_connections WHERE workspace_id=$1 AND id=$2", ws, id).Scan(&raw); e != nil {
+		q := db.New(tx)
+		connection, e := q.GetGitConnection(ctx, db.GetGitConnectionParams{WorkspaceID: ws, ID: id})
+		if e != nil {
 			return e
 		}
-		if !appConfiguration(raw) {
+		if !appConfiguration(connection.Configuration) {
 			return domain.Invalid("githubApp.connection")
 		}
 		if e := cancelGitHubWork(ctx, tx, ws, id); e != nil {
 			return e
 		}
-		_, e := tx.Exec(ctx, "UPDATE github_app_connections SET active=false,generation=generation+1 WHERE workspace_id=$1 AND connection_id=$2", ws, id)
-		return e
+		return q.DeactivateGitHubAppConnection(ctx, db.DeactivateGitHubAppConnectionParams{WorkspaceID: ws, ConnectionID: id})
 	})
 }
 func cancelGitHubWork(ctx context.Context, tx pgx.Tx, ws, id uuid.UUID) error {
-	// Match Report: operation rows precede source rows and the App binding.
-	_, e := tx.Exec(ctx, `UPDATE execution_operations SET cancel_requested=true,state=CASE WHEN state='queued' THEN 'cancelled' ELSE state END WHERE workspace_id=$1 AND kind='pipeline' AND command->'pipeline'->'connection'->>'id'=$2 AND state NOT IN ('succeeded','failed','cancelled')`, ws, id.String())
-	if e != nil {
+	q := db.New(tx)
+	if e := q.CancelGitHubOperations(ctx, db.CancelGitHubOperationsParams{WorkspaceID: ws, ConnectionID: id.String()}); e != nil {
 		return e
 	}
-	if _, e := tx.Exec(ctx, "UPDATE git_sources SET status='approval_required',configuration=jsonb_set(configuration,'{autoDeploy}','false') WHERE workspace_id=$1 AND connection_id=$2", ws, id); e != nil {
+	if e := q.PauseGitHubSources(ctx, db.PauseGitHubSourcesParams{WorkspaceID: ws, ConnectionID: id}); e != nil {
 		return e
 	}
-	if _, e := tx.Exec(ctx, "UPDATE build_targets SET configuration=jsonb_set(jsonb_set(configuration,'{autoBuild}','false'),'{autoDeploy}','false') WHERE workspace_id=$1 AND connection_id=$2", ws, id); e != nil {
-		return e
-	}
-
-	return nil
+	return q.PauseGitHubBuildTargets(ctx, db.PauseGitHubBuildTargetsParams{WorkspaceID: ws, ConnectionID: id})
 }
 func (s *Service) gitAccess(ctx context.Context, tx pgx.Tx, ws, id uuid.UUID, write bool) (pipeline.Access, error) {
-	var raw, cipher []byte
-	if e := tx.QueryRow(ctx, "SELECT configuration,encrypted_access FROM git_connections WHERE workspace_id=$1 AND id=$2", ws, id).Scan(&raw, &cipher); e != nil {
+	q := db.New(tx)
+	connection, e := q.GetGitConnection(ctx, db.GetGitConnectionParams{WorkspaceID: ws, ID: id})
+	if e != nil {
 		return pipeline.Access{}, e
 	}
+	raw := connection.Configuration
 	if !appConfiguration(raw) {
 		var access pipeline.Access
-		e := s.openIntegration(ws, id, "git", cipher, &access)
+		e := s.openIntegration(ws, id, "git", connection.EncryptedAccess, &access)
 		return access, e
 	}
 	if s.GitHub == nil {
 		return pipeline.Access{}, domain.Invalid("githubApp.reauthorizationRequired")
 	}
-	var app, installation, repo, generation int64
-	if e := tx.QueryRow(ctx, "SELECT app_id,installation_id,repository_id,generation FROM github_app_connections WHERE workspace_id=$1 AND connection_id=$2 AND active FOR SHARE", ws, id).Scan(&app, &installation, &repo, &generation); e != nil {
+	binding, e := q.ShareActiveGitHubAppConnection(ctx, db.ShareActiveGitHubAppConnectionParams{WorkspaceID: ws, ConnectionID: id})
+	if e != nil {
 		return pipeline.Access{}, domain.Invalid("githubApp.reauthorizationRequired")
 	}
+	installation, repo := binding.InstallationID, binding.RepositoryID
 	var c pipeline.Connection
-	if json.Unmarshal(raw, &c) != nil || c.Provider != "github" || c.BaseURL != "https://api.github.com" || c.RepositoryID != repo || app != s.GitHub.Config.ID {
+	if json.Unmarshal(raw, &c) != nil || c.Provider != "github" || c.BaseURL != "https://api.github.com" || c.RepositoryID != repo || binding.AppID != s.GitHub.Config.ID {
 		return pipeline.Access{}, domain.Forbidden
 	}
-	if e := s.GitHub.Validate(ctx, installation, repo, generation, c.Repository, c.Private); e != nil {
+	if e := s.GitHub.Validate(ctx, installation, repo, binding.Generation, c.Repository, c.Private); e != nil {
 		return pipeline.Access{}, e
 	}
 	token, e := s.GitHub.Mint(ctx, installation, repo, write)

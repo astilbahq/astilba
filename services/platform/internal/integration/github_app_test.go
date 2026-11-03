@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/alexedwards/scs/v2"
+	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
 	"github.com/astilbahq/astilba/services/platform/internal/execution"
@@ -317,7 +318,7 @@ func TestGitHubOnboardingDelegationAndRecoveryBoundaries(t *testing.T) {
 	lockDeadline := time.Now().Add(8 * time.Second)
 	for {
 		var waiting bool
-		if e = f.st.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND query LIKE 'UPDATE execution_operations SET cancel_requested=true%')`).Scan(&waiting); e != nil {
+		if e = f.st.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND query LIKE '%-- name: CancelGitHubOperations%')`).Scan(&waiting); e != nil {
 			t.Fatal(e)
 		}
 		if waiting {
@@ -381,5 +382,49 @@ func TestGitHubOnboardingDelegationAndRecoveryBoundaries(t *testing.T) {
 	var retained int
 	if e = f.st.Pool.QueryRow(ctx, "SELECT count(*) FROM github_app_authorizations").Scan(&retained); e != nil || retained != 0 {
 		t.Fatal("expired authorization credentials retained", e)
+	}
+}
+
+// PLAT-119: reconnecting a GitHub App connection upserts by connection ID alone,
+// so the conflict update must not take over another workspace's connection.
+func TestGitHubAppConnectionUpsertsStayInWorkspace(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	ws := f.browser(t).login("owner@example.test", f.password).Workspaces[0].Id
+	other, id := uuid.New(), uuid.New()
+	if _, e := f.st.Pool.Exec(ctx, "INSERT INTO workspaces(id,name) VALUES($1,'Other workspace')", other); e != nil {
+		t.Fatal(e)
+	}
+	q := db.New(f.st.Pool)
+	connection := func(workspace uuid.UUID, access string) (int64, error) {
+		return q.UpsertGitHubAppGitConnection(ctx, db.UpsertGitHubAppGitConnectionParams{ID: id, WorkspaceID: workspace, Configuration: []byte(`{"authentication":"github_app"}`), EncryptedAccess: []byte(access)})
+	}
+	binding := func(workspace uuid.UUID, installation int64) (int64, error) {
+		return q.UpsertGitHubAppConnection(ctx, db.UpsertGitHubAppConnectionParams{WorkspaceID: workspace, ConnectionID: id, AppID: 1, InstallationID: installation, RepositoryID: 12, GithubUserID: 7, ActorID: f.owner})
+	}
+	for _, step := range []struct {
+		name   string
+		upsert func() (int64, error)
+		rows   int64
+	}{
+		{"connection insert", func() (int64, error) { return connection(ws, "owned") }, 1},
+		{"binding insert", func() (int64, error) { return binding(ws, 2) }, 1},
+		{"connection reconnect", func() (int64, error) { return connection(ws, "reconnected") }, 1},
+		{"binding reconnect", func() (int64, error) { return binding(ws, 3) }, 1},
+		{"foreign connection", func() (int64, error) { return connection(other, "foreign") }, 0},
+		{"foreign binding", func() (int64, error) { return binding(other, 9) }, 0},
+	} {
+		if n, e := step.upsert(); e != nil || n != step.rows {
+			t.Fatalf("%s: rows=%d err=%v", step.name, n, e)
+		}
+	}
+	var connectionWS, bindingWS uuid.UUID
+	var access string
+	var installation, generation int64
+	if e := f.st.Pool.QueryRow(ctx, "SELECT c.workspace_id,convert_from(c.encrypted_access,'UTF8'),a.workspace_id,a.installation_id,a.generation FROM git_connections c JOIN github_app_connections a ON a.connection_id=c.id WHERE c.id=$1", id).Scan(&connectionWS, &access, &bindingWS, &installation, &generation); e != nil {
+		t.Fatal(e)
+	}
+	if connectionWS != ws || bindingWS != ws || access != "reconnected" || installation != 3 || generation != 2 {
+		t.Fatalf("foreign upsert changed the connection: workspace=%s/%s access=%q installation=%d generation=%d", connectionWS, bindingWS, access, installation, generation)
 	}
 }
