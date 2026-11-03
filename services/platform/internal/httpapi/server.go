@@ -112,7 +112,7 @@ func (s *Server) Handler(assets http.Handler) (http.Handler, error) {
 	if s.Execution.GitHub != nil {
 		s.Execution.Policy.GitHubFixture = s.Execution.GitHub.FixtureAPI()
 	}
-	spec, err := api.GetSwagger()
+	spec, err := api.GetSpec()
 	if err != nil {
 		return nil, err
 	}
@@ -164,7 +164,7 @@ func (s *Server) Handler(assets http.Handler) (http.Handler, error) {
 		ctx, cancel := context.WithTimeout(r.Context(), time.Second)
 		defer cancel()
 		if s.Store.Pool.Ping(ctx) != nil {
-			http.Error(w, "unavailable", 503)
+			http.Error(w, "unavailable", http.StatusServiceUnavailable)
 			return
 		}
 		w.WriteHeader(204)

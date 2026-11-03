@@ -36,7 +36,7 @@ check-source-size:
 check-app: check-ci check-source-size
 	@for file in scripts/platform-*.mjs; do node --check "$$file" || exit 1; done
 	node --test scripts/platform-proxy-test.mjs scripts/platform-generate-test.mjs
-	cd services/platform && test -z "$$(gofmt -l .)" && go mod verify && go vet ./... && go test -short ./...
+	cd services/platform && test -z "$$(gofmt -l .)" && go mod verify && go vet ./... && go tool staticcheck ./... && go test -short ./...
 	pnpm generate:check
 	pnpm --filter @astilba/dashboard check
 	pnpm --filter @astilba/control-plane-worker check

@@ -6,7 +6,7 @@ This repository contains the BYOS deployment platform and its technical-validati
 
 ## Commands
 
-- `make check-app`: Go formatting/vet/short tests, generated-code freshness and dashboard type/lint checks.
+- `make check-app`: Go formatting/vet/staticcheck/short tests, generated-code freshness and dashboard type/lint checks.
 - `make verify-app`: also requires `PLAT_APP_DOCKER_HOST` for owned disposable PostgreSQL and real Chromium/WebKit journeys, plus local Worker packaging. `make verify` includes it. `make verify-image` builds and smoke-tests the Node-free image.
 
 - Go: 1.27.3. Dependency versions and image digests are pinned in the experiment.
