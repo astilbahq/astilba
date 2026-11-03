@@ -39,11 +39,20 @@ TTY, as the container's configured user. Many images run as root inside the
 container; the dashboard says which user the shell will run as. Images without
 a shell (for example distroless) are refused with an explicit reason.
 
-Sessions need a container runtime that includes the fix for the runc
-working-directory escape (CVE-2024-21626, fixed in runc 1.1.12). The runtime the
-guided bootstrap installs with `--install-runtime` meets this; hosts with an
-existing runtime may not. This floor reflects only that advisory; implementation
-reviews later runc advisories and raises it if they warrant.
+Sessions need runc 1.3.3 or later on the 1.3 branch, or a final 1.x release from
+1.4 onwards. Older branches are refused. These versions include the fixes for the
+working-directory escape (CVE-2024-21626) and the November 2025 escapes
+(CVE-2025-31133, CVE-2025-52565, CVE-2025-52881), the last of which also hardens the
+terminal an exec allocates. Later low-severity advisories were reviewed and do not
+raise this floor: CVE-2024-45310 is fixed in every accepted version and
+CVE-2026-41579 does not apply under Docker. The runtime the guided bootstrap
+installs with `--install-runtime` meets the floor; Ubuntu 24.04's original
+`1.1.12-0ubuntu3` package does not, and such hosts report the `runtime` reason.
+
+The agent reads the default runtime's version from the Docker API and compares each
+branch's upstream version, allowing a distribution's revision suffix. Any other
+runtime, a pre-release, an unknown version, or a container created with another
+runtime is refused.
 
 Out of scope for this increment: host shells, build runners, file upload or
 download, port forwarding and private-service tunnels, database consoles,
@@ -73,15 +82,16 @@ also notifies the workspace's owners. It defaults to
   as preview and automatic-build policies already are.
 - **Host consent:** sessions require the host owner's opt-in, stored in the
   agent journal and changed with an `astilba-agent` subcommand while the agent is
-  stopped, like transfer. Opting out ends open sessions. Transfer and recovery
-  handover both clear the opt-in, so consent is given again to the new
-  controller. The agent reports capability values, added explicitly to the agent
+  stopped, like transfer. Opting out ends open sessions. Consent names the
+  controller's origin, release key and generation, so transfer, recovery handover
+  and re-enrolling with a new key all withdraw it, and it is given again to the
+  new controller. The agent reports capability values, added explicitly to the agent
   capability schema: `troubleshooting` (supported), `troubleshootingEnabled`
-  (opted in) and, when a current agent runs on a container runtime below the
-  floor, `troubleshootingUnavailable` with the reason `runtime` instead of
-  `troubleshooting`. The dashboard can therefore tell "update the agent",
-  "update the container runtime" and "the host owner has not enabled sessions"
-  apart. Opt-in is consent to a new
+  (opted in) and, instead of `troubleshooting` when a current agent cannot offer
+  sessions, `troubleshootingUnavailable` with the reason `runtime` (a container
+  runtime below the floor) or `host` (the host is not ready for deployments). The
+  dashboard can therefore tell "update the agent", "update the container runtime",
+  "fix this host" and "the host owner has not enabled sessions" apart. Opt-in is consent to a new
   access channel, not containment: a compromised management service can already
   deploy arbitrary images with an environment's secrets and volumes. It does mean
   sessions never appear on a host whose owner did not choose them, and the agent
@@ -281,7 +291,7 @@ enabling or widening the environment setting, on by default.
 - **Agent restart, crash or upgrade:** open sessions end; at startup the agent
   ends any shells it journaled.
 - **Controller transfer:** transfer is a host-local step, so sessions end when
-  the source controller revokes the server; transfer clears the opt-in, and the
+  the source controller revokes the server; transfer withdraws the opt-in, and the
   agent refuses offers from any controller generation other than its current one.
 - **Management restore:** session rows are never restored as active.
 - **Older agents without the capability:** the dashboard explains that the host's
@@ -324,7 +334,8 @@ enabling or widening the environment setting, on by default.
   page's content security policy permits the same-origin `wss:` connection.
 - **Proxy:** WebSocket upgrade, ping and stream duration through the validated
   proxy profile.
-- **Native hosts:** a systemd agent session on amd64 and arm64.
+- **Native hosts:** a systemd agent session on amd64 and arm64, and the guided
+  bootstrap's runtime meeting the runc floor.
 
 ## Increments
 

@@ -2475,7 +2475,7 @@ export interface components {
              * @description Why a current agent cannot offer terminal sessions on this host. Advertised only after Astilba-Agent-Troubleshooting v1.
              * @enum {string}
              */
-            troubleshootingUnavailable?: "runtime";
+            troubleshootingUnavailable?: "runtime" | "host";
             /** @description Supports versioned managed private links and coordinated cross-host commands. */
             crossHost?: boolean;
             /** @description Supports stateful maintenance writer resumption after its admission deadline with primary-first delivery. */
