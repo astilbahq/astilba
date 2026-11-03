@@ -314,7 +314,7 @@ architectures and the normal verification/security gates. It provides no host
 high availability. Kubernetes remains a separate scope decision.
 
 ## P17–P18 Later increments
-- **P17 Troubleshooting:** dedicated short-lived resource-scoped container sessions, permissions and audit. Add filesystem access or private-service tunnels only with explicit boundaries; do not place arbitrary shell commands in the deployment API.
+- **P17 Troubleshooting:** dedicated short-lived resource-scoped container sessions, permissions and audit; see the [approved design](interactive-troubleshooting.md). Add filesystem access or private-service tunnels only with explicit boundaries; do not place arbitrary shell commands in the deployment API.
 - **P18 Maintenance:** running-workload security advisories, supported fixes and review windows, then additional tested version-specific upgrade recipes. Preserve backup, verified restore and new-write boundaries. Do not label an arbitrary image-tag change a supported major upgrade.
 
 ### Security advisories and supported fixes
@@ -349,4 +349,4 @@ Expose fast local checks and one complete `make verify` entry point, retain exac
 
 ## Current implementation increment
 
-P0–P8 and private-alpha acceptance establish the implementation baseline. P9 includes resource history, disk-pressure visibility, [operational alerts](operational-alerts.md) and [bounded retained-log export](operational-visibility.md#export-retained-logs). P10 adds build controls, bounded caches, Railpack and GitHub App onboarding. Run the disposable platform comparison and consolidate its acceptance evidence before P11. Security advisory visibility and supported remediation are recorded under P18. Keep later parity work at milestone level until its prerequisites pass. The disposable experiments remain evidence, not production scaffolding.
+P0–P16 and private-alpha acceptance establish the implementation baseline; P10's acceptance evidence still needs consolidating. The current increment is the [interactive troubleshooting design](interactive-troubleshooting.md) for P17, alongside the incremental move of platform data access to sqlc with per-statement workspace constraints. Security advisory visibility and supported remediation are recorded under P18. Keep later parity work at milestone level until its prerequisites pass. The disposable experiments remain evidence, not production scaffolding.
