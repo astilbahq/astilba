@@ -3,6 +3,7 @@ import { createServer } from "node:http";
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
 import { openEnvironmentSection } from "./environment-section";
+import { signInAsOwner } from "./fixtures/owner-sign-in";
 
 test("preview policy retains failed inputs and approves only the displayed fork commit", async ({
   page,
@@ -40,11 +41,7 @@ test("preview policy retains failed inputs and approves only the displayed fork 
     if (!address || typeof address === "string")
       throw new Error("provider fixture unavailable");
     await page.goto("/");
-    await page.getByLabel("Email", { exact: true }).fill("owner@example.test");
-    await page
-      .getByLabel("Password", { exact: true })
-      .fill("correct horse battery staple");
-    await page.getByRole("button", { name: "Sign in", exact: true }).click();
+    await signInAsOwner(page);
     await expect(page.getByRole("heading", { name: "Projects" })).toBeVisible();
     const session = await (await page.request.get("/api/v1/session")).json();
     const ws = session.workspaces[0].id;

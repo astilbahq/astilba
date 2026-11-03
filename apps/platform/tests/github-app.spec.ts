@@ -2,16 +2,13 @@ import { createHmac } from "node:crypto";
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
 import { openEnvironmentSection } from "./environment-section";
+import { signInAsOwner } from "./fixtures/owner-sign-in";
 
 test("GitHub App authorization returns across sites, selects a repository and disconnects", async ({
   page,
 }, info) => {
   await page.goto("/");
-  await page.getByLabel("Email", { exact: true }).fill("owner@example.test");
-  await page
-    .getByLabel("Password", { exact: true })
-    .fill("correct horse battery staple");
-  await page.getByRole("button", { name: "Sign in", exact: true }).click();
+  await signInAsOwner(page);
   await expect(
     page.getByRole("heading", { name: "Projects", exact: true }),
   ).toBeVisible();

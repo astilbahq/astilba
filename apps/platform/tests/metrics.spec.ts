@@ -1,5 +1,6 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
+import { signInAsOwner } from "./fixtures/owner-sign-in";
 
 test.afterEach(async ({ page }) => {
   await page.unrouteAll({ behavior: "wait" });
@@ -10,11 +11,7 @@ test("resource history exposes missing, measured and stale data", async ({
 }, info) => {
   await page.clock.install();
   await page.goto("/");
-  await page.getByLabel("Email", { exact: true }).fill("owner@example.test");
-  await page
-    .getByLabel("Password", { exact: true })
-    .fill("correct horse battery staple");
-  await page.getByRole("button", { name: "Sign in", exact: true }).click();
+  await signInAsOwner(page);
   await expect(
     page.getByRole("button", { name: /^Account menu for/ }),
   ).toBeVisible();
