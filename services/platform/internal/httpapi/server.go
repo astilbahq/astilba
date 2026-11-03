@@ -64,7 +64,7 @@ type Server struct {
 func New(st *store.Store, service *auth.Service, origin string, development bool, log *slog.Logger) (*Server, func()) {
 	sessions := scs.New()
 	backend := pgxstore.New(st.Pool)
-	sessions.Store = &sessionStore{PostgresStore: backend, pool: st.Pool}
+	sessions.Store = &sessionStore{PostgresStore: backend, queries: st.Queries}
 	sessions.HashTokenInStore = true
 	sessions.Lifetime = 12 * time.Hour
 	sessions.IdleTimeout = 30 * time.Minute

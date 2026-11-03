@@ -12,6 +12,208 @@ import (
 	"github.com/google/uuid"
 )
 
+const claimHostedInvitation = `-- name: ClaimHostedInvitation :exec
+UPDATE hosted_invitations SET claimed_at = $1 WHERE id = $2
+`
+
+type ClaimHostedInvitationParams struct {
+	ClaimedAt *time.Time `json:"claimed_at"`
+	ID        uuid.UUID  `json:"id"`
+}
+
+func (q *Queries) ClaimHostedInvitation(ctx context.Context, arg ClaimHostedInvitationParams) error {
+	_, err := q.db.Exec(ctx, claimHostedInvitation, arg.ClaimedAt, arg.ID)
+	return err
+}
+
+const consumeEmailVerification = `-- name: ConsumeEmailVerification :one
+DELETE FROM email_verifications
+WHERE account_id = $1 AND token_hash = $2 AND expires_at > $3
+RETURNING account_id
+`
+
+type ConsumeEmailVerificationParams struct {
+	AccountID uuid.UUID `json:"account_id"`
+	TokenHash []byte    `json:"token_hash"`
+	ValidAt   time.Time `json:"valid_at"`
+}
+
+func (q *Queries) ConsumeEmailVerification(ctx context.Context, arg ConsumeEmailVerificationParams) (uuid.UUID, error) {
+	row := q.db.QueryRow(ctx, consumeEmailVerification, arg.AccountID, arg.TokenHash, arg.ValidAt)
+	var account_id uuid.UUID
+	err := row.Scan(&account_id)
+	return account_id, err
+}
+
+const countManagedServers = `-- name: CountManagedServers :one
+SELECT count(*) FROM servers WHERE workspace_id = $1 AND NOT revoked AND id <> $2
+`
+
+type CountManagedServersParams struct {
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ExcludeID   uuid.UUID `json:"exclude_id"`
+}
+
+func (q *Queries) CountManagedServers(ctx context.Context, arg CountManagedServersParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countManagedServers, arg.WorkspaceID, arg.ExcludeID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const countWorkspaces = `-- name: CountWorkspaces :one
+SELECT count(*) FROM workspaces
+`
+
+// unscoped: the hosted cohort limit counts every workspace.
+func (q *Queries) CountWorkspaces(ctx context.Context) (int64, error) {
+	row := q.db.QueryRow(ctx, countWorkspaces)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const deleteExpiredHostedInvitations = `-- name: DeleteExpiredHostedInvitations :exec
+DELETE FROM hosted_invitations WHERE claimed_at IS NULL AND expires_at<=now()
+`
+
+func (q *Queries) DeleteExpiredHostedInvitations(ctx context.Context) error {
+	_, err := q.db.Exec(ctx, deleteExpiredHostedInvitations)
+	return err
+}
+
+const deleteUnsentEmailVerification = `-- name: DeleteUnsentEmailVerification :exec
+DELETE FROM email_verifications WHERE account_id = $1 AND token_hash = $2
+`
+
+type DeleteUnsentEmailVerificationParams struct {
+	AccountID uuid.UUID `json:"account_id"`
+	TokenHash []byte    `json:"token_hash"`
+}
+
+func (q *Queries) DeleteUnsentEmailVerification(ctx context.Context, arg DeleteUnsentEmailVerificationParams) error {
+	_, err := q.db.Exec(ctx, deleteUnsentEmailVerification, arg.AccountID, arg.TokenHash)
+	return err
+}
+
+const deleteUnsentHostedInvitation = `-- name: DeleteUnsentHostedInvitation :exec
+DELETE FROM hosted_invitations WHERE token_hash = $1 AND claimed_at IS NULL
+`
+
+// unscoped: the invitation token identifies an invitation that has no workspace yet.
+func (q *Queries) DeleteUnsentHostedInvitation(ctx context.Context, tokenHash []byte) error {
+	_, err := q.db.Exec(ctx, deleteUnsentHostedInvitation, tokenHash)
+	return err
+}
+
+const emailVerificationOpen = `-- name: EmailVerificationOpen :one
+SELECT EXISTS(SELECT 1 FROM email_verifications
+    WHERE account_id = $1 AND token_hash = $2 AND expires_at > $3)::boolean
+`
+
+type EmailVerificationOpenParams struct {
+	AccountID uuid.UUID `json:"account_id"`
+	TokenHash []byte    `json:"token_hash"`
+	ValidAt   time.Time `json:"valid_at"`
+}
+
+func (q *Queries) EmailVerificationOpen(ctx context.Context, arg EmailVerificationOpenParams) (bool, error) {
+	row := q.db.QueryRow(ctx, emailVerificationOpen, arg.AccountID, arg.TokenHash, arg.ValidAt)
+	var column_1 bool
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
+const grantHostedManagement = `-- name: GrantHostedManagement :execrows
+INSERT INTO hosted_subscriptions(workspace_id,status,management_until,server_limit)
+VALUES($1,'granted',$2,$3)
+ON CONFLICT(workspace_id) DO UPDATE SET status='granted',management_until = $2,server_limit = $3,updated_at=now()
+WHERE hosted_subscriptions.subscription_id IS NULL
+`
+
+type GrantHostedManagementParams struct {
+	WorkspaceID     uuid.UUID  `json:"workspace_id"`
+	ManagementUntil *time.Time `json:"management_until"`
+	ServerLimit     int32      `json:"server_limit"`
+}
+
+// An operator grant never replaces a paid subscription.
+func (q *Queries) GrantHostedManagement(ctx context.Context, arg GrantHostedManagementParams) (int64, error) {
+	result, err := q.db.Exec(ctx, grantHostedManagement, arg.WorkspaceID, arg.ManagementUntil, arg.ServerLimit)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const hostedCohortSize = `-- name: HostedCohortSize :one
+SELECT ((SELECT count(*) FROM workspaces)+(SELECT count(*) FROM hosted_invitations WHERE claimed_at IS NULL))::bigint AS size
+`
+
+// unscoped: the hosted cohort limit counts every workspace and open invitation.
+func (q *Queries) HostedCohortSize(ctx context.Context) (int64, error) {
+	row := q.db.QueryRow(ctx, hostedCohortSize)
+	var size int64
+	err := row.Scan(&size)
+	return size, err
+}
+
+const hostedEntitlement = `-- name: HostedEntitlement :one
+SELECT status,management_until,server_limit FROM hosted_subscriptions WHERE workspace_id = $1
+`
+
+type HostedEntitlementRow struct {
+	Status          string     `json:"status"`
+	ManagementUntil *time.Time `json:"management_until"`
+	ServerLimit     int32      `json:"server_limit"`
+}
+
+func (q *Queries) HostedEntitlement(ctx context.Context, workspaceID uuid.UUID) (HostedEntitlementRow, error) {
+	row := q.db.QueryRow(ctx, hostedEntitlement, workspaceID)
+	var i HostedEntitlementRow
+	err := row.Scan(&i.Status, &i.ManagementUntil, &i.ServerLimit)
+	return i, err
+}
+
+const hostedInvitationOpen = `-- name: HostedInvitationOpen :one
+SELECT EXISTS(SELECT 1 FROM hosted_invitations
+    WHERE token_hash = $1 AND claimed_at IS NULL AND expires_at > $2)::boolean
+`
+
+type HostedInvitationOpenParams struct {
+	TokenHash []byte    `json:"token_hash"`
+	ValidAt   time.Time `json:"valid_at"`
+}
+
+// unscoped: the invitation token is checked before its workspace exists.
+func (q *Queries) HostedInvitationOpen(ctx context.Context, arg HostedInvitationOpenParams) (bool, error) {
+	row := q.db.QueryRow(ctx, hostedInvitationOpen, arg.TokenHash, arg.ValidAt)
+	var column_1 bool
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
+const insertHostedInvitation = `-- name: InsertHostedInvitation :exec
+INSERT INTO hosted_invitations(id,email,token_hash,expires_at) VALUES($1,$2,$3,$4)
+`
+
+type InsertHostedInvitationParams struct {
+	ID        uuid.UUID `json:"id"`
+	Email     string    `json:"email"`
+	TokenHash []byte    `json:"token_hash"`
+	ExpiresAt time.Time `json:"expires_at"`
+}
+
+func (q *Queries) InsertHostedInvitation(ctx context.Context, arg InsertHostedInvitationParams) error {
+	_, err := q.db.Exec(ctx, insertHostedInvitation,
+		arg.ID,
+		arg.Email,
+		arg.TokenHash,
+		arg.ExpiresAt,
+	)
+	return err
+}
+
 const insertHostedSubscription = `-- name: InsertHostedSubscription :exec
 INSERT INTO hosted_subscriptions(workspace_id,server_limit) VALUES($1,$2)
 `
@@ -26,6 +228,39 @@ func (q *Queries) InsertHostedSubscription(ctx context.Context, arg InsertHosted
 	return err
 }
 
+const lockHostedCohort = `-- name: LockHostedCohort :exec
+SELECT pg_advisory_xact_lock(4281642302)
+`
+
+// Serializes hosted invitations with the workspace creation that claims them.
+func (q *Queries) LockHostedCohort(ctx context.Context) error {
+	_, err := q.db.Exec(ctx, lockHostedCohort)
+	return err
+}
+
+const lockHostedInvitation = `-- name: LockHostedInvitation :one
+SELECT id,email FROM hosted_invitations
+WHERE token_hash = $1 AND claimed_at IS NULL AND expires_at > $2 FOR UPDATE
+`
+
+type LockHostedInvitationParams struct {
+	TokenHash []byte    `json:"token_hash"`
+	ValidAt   time.Time `json:"valid_at"`
+}
+
+type LockHostedInvitationRow struct {
+	ID    uuid.UUID `json:"id"`
+	Email string    `json:"email"`
+}
+
+// unscoped: the invitation token establishes the invited email before its workspace exists.
+func (q *Queries) LockHostedInvitation(ctx context.Context, arg LockHostedInvitationParams) (LockHostedInvitationRow, error) {
+	row := q.db.QueryRow(ctx, lockHostedInvitation, arg.TokenHash, arg.ValidAt)
+	var i LockHostedInvitationRow
+	err := row.Scan(&i.ID, &i.Email)
+	return i, err
+}
+
 const markEmailVerified = `-- name: MarkEmailVerified :exec
 UPDATE accounts SET email_verified_at=$2 WHERE id=$1
 `
@@ -37,5 +272,21 @@ type MarkEmailVerifiedParams struct {
 
 func (q *Queries) MarkEmailVerified(ctx context.Context, arg MarkEmailVerifiedParams) error {
 	_, err := q.db.Exec(ctx, markEmailVerified, arg.ID, arg.EmailVerifiedAt)
+	return err
+}
+
+const upsertEmailVerification = `-- name: UpsertEmailVerification :exec
+INSERT INTO email_verifications(account_id,token_hash,expires_at) VALUES($1,$2,$3)
+ON CONFLICT(account_id) DO UPDATE SET token_hash = $2,expires_at = $3
+`
+
+type UpsertEmailVerificationParams struct {
+	AccountID uuid.UUID `json:"account_id"`
+	TokenHash []byte    `json:"token_hash"`
+	ExpiresAt time.Time `json:"expires_at"`
+}
+
+func (q *Queries) UpsertEmailVerification(ctx context.Context, arg UpsertEmailVerificationParams) error {
+	_, err := q.db.Exec(ctx, upsertEmailVerification, arg.AccountID, arg.TokenHash, arg.ExpiresAt)
 	return err
 }

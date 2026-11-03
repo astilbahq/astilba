@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
+	"errors"
 	"strings"
 	"time"
 
@@ -43,7 +44,7 @@ func (s *Store) CreateAutomation(ctx context.Context, p Principal, ws, project, 
 	}
 	out = AutomationCredential{ID: uuid.New(), CreatorID: p.Account.ID, Name: name, Capabilities: capabilities, CreatedAt: now, ExpiresAt: expires}
 	hash := sha256.Sum256([]byte(secret))
-	err = s.InWorkspaceTx(ctx, p, ws, WorkspaceAccess{Write: true, Owner: true, Recent: true}, func(tx pgx.Tx, q *db.Queries, _ Workspace) error {
+	err = s.InWorkspace(ctx, p, ws, WorkspaceAccess{Write: true, Owner: true, Recent: true}, func(q *db.Queries, _ Workspace) error {
 		v, err := q.GetEnvironment(ctx, db.GetEnvironmentParams{WorkspaceID: ws, ProjectID: project, ID: env})
 		if err != nil {
 			return err
@@ -55,14 +56,17 @@ func (s *Store) CreateAutomation(ctx context.Context, p Principal, ws, project, 
 				}
 			}
 		}
-		var active int
-		if err := tx.QueryRow(ctx, "SELECT count(*) FROM automation_credentials WHERE workspace_id=$1 AND revoked_at IS NULL AND expires_at>now()", ws).Scan(&active); err != nil {
+		active, err := q.CountActiveAutomationCredentials(ctx, ws)
+		if err != nil {
 			return err
 		}
 		if active >= 100 {
 			return domain.Invalid("activeCredentialLimit")
 		}
-		_, err = tx.Exec(ctx, `INSERT INTO automation_credentials(id,workspace_id,environment_id,creator_id,name,secret_hash,auth_version,mfa_approved,capabilities,created_at,expires_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`, out.ID, ws, env, p.Account.ID, name, hash[:], p.Account.AuthVersion, p.MFA, capabilities, now, expires)
+		err = q.InsertAutomationCredential(ctx, db.InsertAutomationCredentialParams{
+			ID: out.ID, WorkspaceID: ws, EnvironmentID: env, CreatorID: p.Account.ID, Name: name, SecretHash: hash[:],
+			AuthVersion: p.Account.AuthVersion, MfaApproved: p.MFA, Capabilities: capabilities, CreatedAt: now, ExpiresAt: expires,
+		})
 		if err != nil {
 			return err
 		}
@@ -76,37 +80,32 @@ func (s *Store) CreateAutomation(ctx context.Context, p Principal, ws, project, 
 
 func (s *Store) ListAutomation(ctx context.Context, p Principal, ws, project, env uuid.UUID) ([]AutomationCredential, error) {
 	out := []AutomationCredential{}
-	err := s.InWorkspaceTx(ctx, p, ws, WorkspaceAccess{Owner: true}, func(tx pgx.Tx, q *db.Queries, _ Workspace) error {
+	err := s.InWorkspace(ctx, p, ws, WorkspaceAccess{Owner: true}, func(q *db.Queries, _ Workspace) error {
 		if _, err := q.GetEnvironment(ctx, db.GetEnvironmentParams{WorkspaceID: ws, ProjectID: project, ID: env}); err != nil {
 			return err
 		}
-		rows, err := tx.Query(ctx, "SELECT id,creator_id,name,capabilities,created_at,expires_at,revoked_at FROM automation_credentials WHERE workspace_id=$1 AND environment_id=$2 ORDER BY (revoked_at IS NULL AND expires_at>now()) DESC,created_at DESC,id LIMIT 200", ws, env)
+		rows, err := q.ListAutomationCredentials(ctx, db.ListAutomationCredentialsParams{WorkspaceID: ws, EnvironmentID: env})
 		if err != nil {
 			return err
 		}
-		defer rows.Close()
-		for rows.Next() {
-			var v AutomationCredential
-			if err = rows.Scan(&v.ID, &v.CreatorID, &v.Name, &v.Capabilities, &v.CreatedAt, &v.ExpiresAt, &v.RevokedAt); err != nil {
-				return err
-			}
-			out = append(out, v)
+		for _, v := range rows {
+			out = append(out, AutomationCredential{ID: v.ID, CreatorID: v.CreatorID, Name: v.Name, Capabilities: v.Capabilities, CreatedAt: v.CreatedAt, ExpiresAt: v.ExpiresAt, RevokedAt: v.RevokedAt})
 		}
-		return rows.Err()
+		return nil
 	})
 	return out, err
 }
 
 func (s *Store) RevokeAutomation(ctx context.Context, p Principal, ws, project, env, id uuid.UUID) error {
-	return s.InWorkspaceTx(ctx, p, ws, WorkspaceAccess{Write: true, Owner: true, Recent: true}, func(tx pgx.Tx, q *db.Queries, _ Workspace) error {
+	return s.InWorkspace(ctx, p, ws, WorkspaceAccess{Write: true, Owner: true, Recent: true}, func(q *db.Queries, _ Workspace) error {
 		if _, err := q.GetEnvironment(ctx, db.GetEnvironmentParams{WorkspaceID: ws, ProjectID: project, ID: env}); err != nil {
 			return err
 		}
-		n, err := tx.Exec(ctx, "UPDATE automation_credentials SET revoked_at=COALESCE(revoked_at,now()) WHERE workspace_id=$1 AND environment_id=$2 AND id=$3", ws, env, id)
+		n, err := q.RevokeAutomationCredential(ctx, db.RevokeAutomationCredentialParams{WorkspaceID: ws, EnvironmentID: env, ID: id})
 		if err != nil {
 			return err
 		}
-		if n.RowsAffected() != 1 {
+		if n != 1 {
 			return domain.NotFound
 		}
 		return Audit(ctx, q, p, ws, "automation.revoke", id)
@@ -125,18 +124,13 @@ func (s *Store) AuthenticateAutomation(ctx context.Context, token string) (Princ
 	if !ok || err != nil || len(secret) != 43 || decodeErr != nil || len(decoded) != 32 {
 		return p, domain.Unauthenticated
 	}
-	var creator uuid.UUID
-	var stored []byte
-	g := domain.AutomationGrant{ID: id}
-	err = s.Pool.QueryRow(ctx, `SELECT c.workspace_id,e.project_id,c.environment_id,c.creator_id,c.secret_hash,c.capabilities,c.expires_at
- FROM automation_credentials c JOIN environments e ON e.workspace_id=c.workspace_id AND e.id=c.environment_id
- JOIN accounts a ON a.id=c.creator_id JOIN memberships m ON m.workspace_id=c.workspace_id AND m.account_id=c.creator_id
- WHERE c.id=$1 AND c.revoked_at IS NULL AND c.expires_at>clock_timestamp() AND c.auth_version=a.auth_version AND m.role='owner'`, id).Scan(&g.WorkspaceID, &g.ProjectID, &g.EnvironmentID, &creator, &stored, &g.Capabilities, &g.ExpiresAt)
+	row, err := s.Queries.AuthenticateAutomationCredential(ctx, id)
 	hash := sha256.Sum256([]byte(secret))
-	if err != nil || subtle.ConstantTimeCompare(stored, hash[:]) != 1 {
+	if err != nil || subtle.ConstantTimeCompare(row.SecretHash, hash[:]) != 1 {
 		return p, domain.Unauthenticated
 	}
-	p.Account, err = s.Queries.AccountByID(ctx, creator)
+	g := domain.AutomationGrant{ID: id, WorkspaceID: row.WorkspaceID, ProjectID: row.ProjectID, EnvironmentID: row.EnvironmentID, Capabilities: row.Capabilities, ExpiresAt: row.ExpiresAt}
+	p.Account, err = s.Queries.AccountByID(ctx, row.CreatorID)
 	if err != nil {
 		return Principal{}, domain.Unauthenticated
 	}
@@ -151,12 +145,8 @@ func (s *Store) automationAdmission(ctx context.Context, tx pgx.Tx, p Principal,
 	if g.WorkspaceID != ws {
 		return false, domain.Forbidden
 	}
-	var mfa bool
-	err := tx.QueryRow(ctx, `SELECT c.mfa_approved AND a.totp_secret IS NOT NULL
- FROM automation_credentials c JOIN accounts a ON a.id=c.creator_id
- JOIN memberships m ON m.workspace_id=c.workspace_id AND m.account_id=c.creator_id
- WHERE c.id=$1 AND c.workspace_id=$2 AND c.environment_id=$3 AND c.creator_id=$4 AND c.revoked_at IS NULL AND c.expires_at>clock_timestamp() AND c.auth_version=a.auth_version AND m.role='owner'`, g.ID, ws, g.EnvironmentID, p.Account.ID).Scan(&mfa)
-	if err == pgx.ErrNoRows {
+	mfa, err := db.New(tx).AutomationCredentialAdmission(ctx, db.AutomationCredentialAdmissionParams{ID: g.ID, WorkspaceID: ws, EnvironmentID: g.EnvironmentID, CreatorID: p.Account.ID})
+	if errors.Is(err, pgx.ErrNoRows) {
 		return false, domain.Unauthenticated
 	}
 	return mfa, err

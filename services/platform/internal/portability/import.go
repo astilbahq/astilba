@@ -177,21 +177,21 @@ func (s *Service) Import(ctx context.Context, p store.Principal, passphrase stri
 			return out, domain.Forbidden
 		}
 	}
-	var version int64
-	if e = tx.QueryRow(ctx, "SELECT auth_version FROM accounts WHERE id=$1 FOR UPDATE", p.Account.ID).Scan(&version); e != nil {
+	q := db.New(tx)
+	account, e := q.LockAccount(ctx, p.Account.ID)
+	if e != nil {
 		return out, e
 	}
-	if version != p.Account.AuthVersion {
+	if account.AuthVersion != p.Account.AuthVersion {
 		return out, domain.Unauthenticated
 	}
-	q := db.New(tx)
 	if e = q.InsertWorkspace(ctx, db.InsertWorkspaceParams{ID: archive.Workspace, Name: archive.Name}); e != nil {
 		return out, store.Normalize(e)
 	}
 	if e = q.InsertMembership(ctx, db.InsertMembershipParams{WorkspaceID: archive.Workspace, AccountID: p.Account.ID, Role: "owner"}); e != nil {
 		return out, e
 	}
-	if _, e = tx.Exec(ctx, "UPDATE workspaces SET require_mfa=$2 WHERE id=$1", archive.Workspace, archive.RequireMFA); e != nil {
+	if e = q.SetMFAPolicy(ctx, db.SetMFAPolicyParams{ID: archive.Workspace, RequireMfa: archive.RequireMFA}); e != nil {
 		return out, e
 	}
 	if s.Store.Hosted {

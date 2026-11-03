@@ -17,12 +17,14 @@ var SubscriptionRequired = &domain.Error{Code: "subscription_required", Message:
 var EmailVerificationRequired = &domain.Error{Code: "email_verification_required", Message: "Verify your email before changing a hosted workspace."}
 
 func Entitlement(ctx context.Context, tx pgx.Tx, ws uuid.UUID) (hosting.Entitlement, error) {
-	var e hosting.Entitlement
-	err := tx.QueryRow(ctx, `SELECT status,management_until,server_limit FROM hosted_subscriptions WHERE workspace_id=$1`, ws).Scan(&e.Status, &e.Until, &e.ServerLimit)
+	row, err := db.New(tx).HostedEntitlement(ctx, ws)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return e, nil
+		return hosting.Entitlement{}, nil
 	}
-	return e, err
+	if err != nil {
+		return hosting.Entitlement{}, err
+	}
+	return hosting.Entitlement{Status: row.Status, Until: row.ManagementUntil, ServerLimit: int(row.ServerLimit)}, nil
 }
 
 // ManagementAdmission is also called by automatic work and execution dispatch.
@@ -56,14 +58,15 @@ func (s *Store) GrantManagement(ctx context.Context, ws uuid.UUID, until time.Ti
 		return e
 	}
 	defer tx.Rollback(ctx)
-	if _, e = tx.Exec(ctx, "SELECT id FROM workspaces WHERE id=$1 FOR UPDATE", ws); e != nil {
+	q := db.New(tx)
+	if _, e = q.LockWorkspaceByID(ctx, ws); e != nil {
 		return e
 	}
-	n, e := tx.Exec(ctx, `INSERT INTO hosted_subscriptions(workspace_id,status,management_until,server_limit) VALUES($1,'granted',$2,$3) ON CONFLICT(workspace_id) DO UPDATE SET status='granted',management_until=$2,server_limit=$3,updated_at=now() WHERE hosted_subscriptions.subscription_id IS NULL`, ws, until, limit)
+	n, e := q.GrantHostedManagement(ctx, db.GrantHostedManagementParams{WorkspaceID: ws, ManagementUntil: &until, ServerLimit: int32(limit)})
 	if e != nil {
 		return e
 	}
-	if n.RowsAffected() != 1 {
+	if n != 1 {
 		return domain.Conflict
 	}
 	return tx.Commit(ctx)
@@ -84,11 +87,11 @@ func (s *Store) ManagedServerAdmission(ctx context.Context, tx pgx.Tx, ws, exclu
 	if e != nil {
 		return e
 	}
-	var count int
-	if e = tx.QueryRow(ctx, "SELECT count(*) FROM servers WHERE workspace_id=$1 AND NOT revoked AND id<>$2", ws, exclude).Scan(&count); e != nil {
+	count, e := db.New(tx).CountManagedServers(ctx, db.CountManagedServersParams{WorkspaceID: ws, ExcludeID: exclude})
+	if e != nil {
 		return e
 	}
-	if count >= entitlement.ServerLimit {
+	if count >= int64(entitlement.ServerLimit) {
 		return domain.Conflict
 	}
 	return nil
@@ -97,28 +100,27 @@ func (s *Store) ManagedServerAdmission(ctx context.Context, tx pgx.Tx, ws, exclu
 // ConsumeWorkspaceInvitation is shared by signup and workspace import. Its
 // transaction owns both the cohort slot and the destination workspace creation.
 func (s *Store) ConsumeWorkspaceInvitation(ctx context.Context, tx pgx.Tx, token string, now time.Time) (string, error) {
-	if _, e := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(4281642302)"); e != nil {
+	q := db.New(tx)
+	if e := q.LockHostedCohort(ctx); e != nil {
 		return "", e
 	}
 	digest := sha256.Sum256([]byte(token))
-	var id uuid.UUID
-	var email string
-	e := tx.QueryRow(ctx, `SELECT id,email FROM hosted_invitations WHERE token_hash=$1 AND claimed_at IS NULL AND expires_at>$2 FOR UPDATE`, digest[:], now).Scan(&id, &email)
+	invitation, e := q.LockHostedInvitation(ctx, db.LockHostedInvitationParams{TokenHash: digest[:], ValidAt: now})
 	if errors.Is(e, pgx.ErrNoRows) {
 		return "", domain.Credentials
 	}
 	if e != nil {
 		return "", e
 	}
-	var count int
-	if e = tx.QueryRow(ctx, "SELECT count(*) FROM workspaces").Scan(&count); e != nil {
+	count, e := q.CountWorkspaces(ctx)
+	if e != nil {
 		return "", e
 	}
-	if count >= s.Hosting.CohortLimit {
+	if count >= int64(s.Hosting.CohortLimit) {
 		return "", domain.Conflict
 	}
-	if _, e = tx.Exec(ctx, "UPDATE hosted_invitations SET claimed_at=$2 WHERE id=$1", id, now); e != nil {
+	if e = q.ClaimHostedInvitation(ctx, db.ClaimHostedInvitationParams{ID: invitation.ID, ClaimedAt: &now}); e != nil {
 		return "", e
 	}
-	return email, nil
+	return invitation.Email, nil
 }
