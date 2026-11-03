@@ -1,4 +1,3 @@
-import { createHmac } from "node:crypto";
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
 import { openEnvironmentSection } from "./environment-section";
@@ -122,24 +121,6 @@ test("GitHub App authorization returns across sites, selects a repository and di
   expect(JSON.stringify(connections)).not.toContain(
     "github-browser-user-proof",
   );
-  // The optional Worker must preserve App webhook bytes and authentication.
-  const body = JSON.stringify({
-    action: "added",
-    installation: { id: 2, app_id: 1 },
-  });
-  const response = await page.request.post(
-    "http://127.0.0.1:15183/hooks/github-app",
-    {
-      headers: {
-        "Content-Type": "application/json",
-        "X-GitHub-Event": "installation_repositories",
-        "X-GitHub-Delivery": crypto.randomUUID(),
-        "X-Hub-Signature-256": `sha256=${createHmac("sha256", "github-browser-webhook-secret-fixture").update(body).digest("hex")}`,
-      },
-      data: body,
-    },
-  );
-  expect(response.status()).toBe(202);
   const disconnected = await page.request.post(
     `/api/v1/workspaces/${ws}/git-connections/${connection.id}/disconnect`,
     {

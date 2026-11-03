@@ -5,7 +5,6 @@ import { randomBytes, randomUUID, generateKeyPairSync, createHash, sign } from "
 import { mkdtemp, rm, writeFile, mkdir, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { spawnPnpm } from "./platform-tools.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const host = process.env.PLAT_APP_DOCKER_HOST;
@@ -211,35 +210,17 @@ try {
       stdio: ["pipe", "inherit", "inherit"],
     },
   );
-  const start = (cmd, args, environment, cwd = root) => {
-    const options = {
-      cwd,
+  const start = (cmd, args, environment) => {
+    const child = spawn(cmd, args, {
+      cwd: root,
       env: environment,
       stdio: ["ignore", "inherit", "inherit"],
-    };
-    const child =
-      cmd === "pnpm" ? spawnPnpm(args, options) : spawn(cmd, args, options);
+    });
     children.push(child);
     child.once("exit", (code) => {
       if (!stopping) void cleanup().then(() => process.exit(code || 1));
     });
   };
-  start(binary, ["serve"], {
-    ...env,
-    ...githubEnv,
-    // This loopback development server delivers verification mail to its console.
-    ASTILBA_SMTP_MODE: "console",
-    ASTILBA_SMTP_ADDRESS: "", ASTILBA_SMTP_USERNAME: "", ASTILBA_SMTP_PASSWORD: "",
-    ASTILBA_SMTP_FROM: "accounts@localhost",
-    ASTILBA_LISTEN: "127.0.0.1:15181",
-    ASTILBA_ORIGIN: "http://127.0.0.1:15181",
-  });
-  start(binary, ["serve"], {
-    ...env,
-    ...githubEnv,
-    ASTILBA_LISTEN: "127.0.0.1:15184",
-    ASTILBA_ORIGIN: "http://127.0.0.1:15183",
-  });
   // Vite exercises dev-only localisation against the same real API/database,
   // with its own permitted browser origin rather than bypassing CSRF checks.
   // Port 15188 belongs to the separate OAuth provider fixture.
@@ -273,7 +254,7 @@ try {
   const operatorEnv=Object.fromEntries(["ASTILBA_DATABASE_URL","ASTILBA_KEYRING","ASTILBA_HOSTED","ASTILBA_HOSTED_COHORT_LIMIT","ASTILBA_HOSTED_SERVER_LIMIT","ASTILBA_HOSTED_SUPPORT"].map(key=>[key,hostedEnv[key]]));
   ownsHostedInfo = true;
   await writeFile(hostedInfo,JSON.stringify({binary,env:operatorEnv,host,container:name,owner:owned,database:hostedDatabase}),{mode:0o600});
-  for (const port of [15181, 15184, 15187, 15189]) {
+  const waitReady = async (port) => {
     let ready = false;
     for (let i = 0; i < 100; i++) {
       try {
@@ -286,26 +267,21 @@ try {
       await new Promise((r) => setTimeout(r, 100));
     }
     if (!ready) throw new Error("API fixture did not become ready");
-  }
-  start(
-    "pnpm",
-    [
-      "exec",
-      "wrangler",
-      "dev",
-      "--local",
-      "--ip",
-      "127.0.0.1",
-      "--port",
-      "15183",
-      "--var",
-      "API_ORIGIN:http://127.0.0.1:15184",
-      "--var",
-      "DEVELOPMENT:true",
-    ],
-    { ...process.env, WRANGLER_SEND_METRICS: "false" },
-    join(root, "apps/platform"),
-  );
+  };
+  await waitReady(15187);
+  await waitReady(15189);
+  // Playwright waits for this server, so it starts after every other fixture is ready.
+  start(binary, ["serve"], {
+    ...env,
+    ...githubEnv,
+    // This loopback development server delivers verification mail to its console.
+    ASTILBA_SMTP_MODE: "console",
+    ASTILBA_SMTP_ADDRESS: "", ASTILBA_SMTP_USERNAME: "", ASTILBA_SMTP_PASSWORD: "",
+    ASTILBA_SMTP_FROM: "accounts@localhost",
+    ASTILBA_LISTEN: "127.0.0.1:15181",
+    ASTILBA_ORIGIN: "http://127.0.0.1:15181",
+  });
+  await waitReady(15181);
   await new Promise(() => {});
 } catch (error) {
   await cleanup();

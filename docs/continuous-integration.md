@@ -1,6 +1,6 @@
 # Continuous integration
 
-Eight independent workflows run on pull requests, pushes to `main` and manual
+Seven independent workflows run on pull requests, pushes to `main` and manual
 dispatches. Each has its own workflow/ref concurrency group and can be retried
 without waiting for another workflow's native tests. No workflow uses an event
 path filter, so each required check is always reported.
@@ -10,7 +10,6 @@ path filter, so each required check is always reported.
 | `go.yml`                   | Go verification                  | Durable-execution fixtures, including race detection                                                                              |
 | `git-providers.yml`        | Git provider verification        | GitLab/Gitea and source-preserving Compose edits                                                                                  |
 | `ci.yml`                   | Native verification              | Selected amd64 and arm64 host suites: fresh bootstrap, Docker, builds, PostgreSQL restore, systemd agent, deployment and recovery |
-| `cloudflare.yml`           | Cloudflare packaging             | Optional hosting adapter packaging                                                                                                |
 | `canvas.yml`               | Canvas browser verification      | Type/lint/build, domain tests and Chromium/WebKit journeys                                                                        |
 | `application.yml`          | Application verification         | `make verify-app-core`, image smoke test and corresponding-source archive                                                         |
 | `application-browsers.yml` | Application browser verification | Every Chromium/WebKit dashboard journey against a real API/PostgreSQL fixture                                                     |
@@ -108,12 +107,12 @@ enabled. `make verify-app` remains the complete unsharded local check.
 The previous branch protection requires `Verify`. This PR intentionally does not
 emit that check: it remains blocked until an administrator migrates protection.
 `.github/required-status-checks.json` is the exact replacement payload for the
-required-status-checks endpoint, with strict up-to-date checking and all eight
+required-status-checks endpoint, with strict up-to-date checking and all seven
 unique contexts above.
 
 Before merging the workflow change:
 
-1. Verify all eight new checks succeeded on the current PR merge commit, including
+1. Verify all seven new checks succeeded on the current PR merge commit, including
    both native architectures and every browser shard. Update the branch if its
    base has changed and wait for those checks again.
 2. Back up current branch protection, then atomically replace only its required

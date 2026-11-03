@@ -35,11 +35,10 @@ check-source-size:
 
 check-app: check-ci check-source-size
 	@for file in scripts/platform-*.mjs; do node --check "$$file" || exit 1; done
-	node --test scripts/platform-proxy-test.mjs scripts/platform-generate-test.mjs
+	node --test scripts/platform-generate-test.mjs
 	cd services/platform && test -z "$$(gofmt -l .)" && go mod verify && go vet ./... && go test -short ./...
 	pnpm generate:check
 	pnpm --filter @astilba/dashboard check
-	pnpm --filter @astilba/control-plane-worker check
 
 verify-app: verify-app-core
 	pnpm --filter @astilba/dashboard test:browser --project=chromium
@@ -51,8 +50,6 @@ verify-app-core: check-app
 	pnpm cli:build
 	$(MAKE) -j2 verify-app-go-remaining verify-app-go-coordination
 	pnpm --filter @astilba/dashboard build
-	pnpm --filter @astilba/dashboard exec wrangler deploy --dry-run --outdir ../../.artifacts/p1/worker
-	pnpm --filter @astilba/control-plane-worker verify
 
 verify-app-go-remaining:
 	cd services/platform && go test -race -count=1 -timeout=15m -skip '$(APP_COORDINATION_TESTS)|$(APP_PREVIEW_RECOVERY_TESTS)' ./...
