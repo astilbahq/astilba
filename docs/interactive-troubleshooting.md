@@ -1,8 +1,9 @@
 # Interactive troubleshooting
 
-Status: proposed P17 design, 3 November 2026. Not implemented. Items marked
-**Owner decision** need approval before implementation starts; they are
-collected at the end.
+Status: proposed P17 design, 3 November 2026. Not implemented. Decisions 1–4 were
+made on 3 November 2026 after comparing established platforms and security
+standards; items still marked **Owner decision** need approval before
+implementation starts. Both are collected at the end.
 
 Interactive troubleshooting lets an authorized person open a short-lived terminal
 session inside one eligible managed container to diagnose a running service. It
@@ -27,15 +28,22 @@ other container, including scheduled job, release-command, backup, restore,
 upgrade, ingress and pipeline containers, which carry their own kind labels and
 hold credentials or host-level data.
 
-Containers that are privileged, add capabilities or map devices are ineligible:
-an exec inherits the container's privileges, so a shell there is effectively a
-host shell. **Owner decision:** keep them ineligible (recommended), or allow them
-only to owners with recent authentication.
+Containers are ineligible when a shell in them would effectively be a host shell,
+because an exec inherits the container's privileges: privileged containers, added
+capabilities, mapped devices, the host's network, process or IPC namespaces,
+changed kernel parameters, a mounted Docker socket or mounted sensitive host
+paths. Managed Compose already rejects several of these; the agent checks them
+again for every session. **Decided:** these containers are never eligible.
 
 The session runs the first available shell of `/bin/bash` and `/bin/sh` with a
 TTY, as the container's configured user. Many images run as root inside the
 container; the dashboard says which user the shell will run as. Images without
 a shell (for example distroless) are refused with an explicit reason.
+
+The agent reports `troubleshooting` only on hosts whose container runtime
+includes the fix for the runc working-directory escape (CVE-2024-21626, fixed in
+runc 1.1.12); the guided bootstrap already installs a newer runtime. Fixing the
+exec working directory at `/` also removes that escape's exec path.
 
 Out of scope for this increment: host shells, build runners, file upload or
 download, port forwarding and private-service tunnels, database consoles,
@@ -46,8 +54,8 @@ review.
 ## Who can open a session
 
 - **Role:** workspace owners and operators. Viewers and automation credentials
-  (API, CLI and MCP) can never open, join or observe a session. **Owner
-  decision:** whether an environment can restrict sessions to owners. This
+  (API, CLI and MCP) can never open, join or observe a session. **Decided:** an
+  environment can also restrict sessions to owners. This
   matters most for Git-managed Compose environments, where operators otherwise
   cannot change what runs without a merged source change; a shell bypasses that
   review and exposes the service's environment and volumes.
@@ -57,7 +65,9 @@ review.
   policy, and a verified email on hosted installations. Recency is checked only
   when the session opens.
 - **Environment setting:** an owner-controlled setting allows sessions in an
-  environment. It defaults to off, is never available for pull-request preview
+  environment. Enabling it or widening it beyond owners requires recent
+  authentication, is audited and notifies the workspace's owners. It defaults to
+  off, is never available for pull-request preview
   environments, and is switched off by workspace import and management recovery,
   as preview and automatic-build policies already are.
 - **Host consent:** sessions require the host owner's opt-in, stored in the
@@ -71,8 +81,8 @@ review.
   access channel, not containment: a compromised management service can already
   deploy arbitrary images with an environment's secrets and volumes. It does mean
   sessions never appear on a host whose owner did not choose them, and the agent
-  enforces eligibility, timeouts and limits itself. **Owner decision:**
-  agent-side opt-in, default off.
+  enforces eligibility, timeouts and limits itself. **Decided:** agent-side
+  opt-in, default off.
 - **Subscription state:** hosted workspaces past subscription expiry cannot
   open sessions, matching the existing expiry restriction on management changes.
 
@@ -83,7 +93,7 @@ review.
    authorization and the host's reported capabilities, then records a session row
    in PostgreSQL: workspace, environment, unit, server, target, actor, the
    actor's `auth_version`, a hash of the browser session token, controller
-   generation, state and a deadline at the earlier of 15 minutes and the browser
+   generation, state and a deadline at the earlier of 60 minutes and the browser
    session's absolute expiry. It records an audit event and returns a single-use
    stream ticket valid for 30 seconds, bound to the account, browser session,
    workspace and session row.
@@ -106,11 +116,12 @@ review.
    ticket re-checks membership and allows one browser attachment per session.
 5. **Exec.** Once management confirms that the browser stream is attached, it
    tells the agent to start the shell, so no shell runs before a person is
-   connected. The agent starts it through the Docker exec API with a TTY,
+   connected. The agent starts it through the Docker exec API with a TTY and the
+   working directory fixed at `/`,
    `TERM=xterm-256color` and no other injected environment, exec `Privileged`
    false and no user override. It journals the exec ID and the shell's process
    identity, but not terminal content, so it can clean up after a crash.
-6. **End.** A session ends on explicit close, after five minutes without input,
+6. **End.** A session ends on explicit close, after 15 minutes without typed input,
    at its deadline or when either stream drops. The agent enforces the idle
    timeout and deadline itself as well, measuring both as durations from
    admission so clock differences between management and the host do not
@@ -119,8 +130,12 @@ review.
    jobs in their own groups. It identifies those processes through a pidfd or
    PID start time within the container's PID namespace, never by a bare host PID
    that could be reused, and confirms with exec inspection. At startup the agent
-   ends any journaled shell left by a crash. **Owner decision:** five-minute idle
-   timeout and 15-minute maximum.
+   ends any journaled shell left by a crash. Only typed input counts as activity: output,
+   resizes and reconnects do not, so a terminal left printing logs cannot stay
+   open indefinitely. The dashboard warns a minute before either limit.
+   **Decided:** 15-minute idle timeout and 60-minute maximum, in line with the
+   15-minute idle limits in NIST SP 800-63B (AAL3) and PCI DSS and with hosted
+   platforms' one-hour caps.
 
 Management also ends a session when:
 
@@ -142,7 +157,8 @@ Management also ends a session when:
 
 These events end sessions directly through PostgreSQL notifications, which are
 treated as hints to re-read the session row, with a 30-second re-check as a
-fallback. An owner can end any open session in the workspace.
+fallback. An owner can end any open session in the workspace, or all of them at
+once.
 
 A user can still deliberately start a process in a new Linux session (for
 example with `setsid`). Such processes can survive the terminal until the
@@ -187,33 +203,37 @@ multi-instance relay first.
 
 Self-hosted installations need their reverse proxy to forward WebSocket
 upgrades, allow an idle timeout longer than the 30-second ping interval and not
-cap a stream's total duration below 15 minutes. This is a new deployment
+cap a stream's total duration below 60 minutes. This is a new deployment
 requirement for existing installations; [hosting](hosting.md) and the
 [agent guide](agent.md) must document it, and the proxy profile needs validation
 like the existing transport fixture. **Owner decision:** accept the new proxy
 requirement.
 
-**Owner decision:** new dependencies: a maintained Go WebSocket library for the
-management service and agent, and a terminal component for the dashboard (for
-example xterm.js), both pinned exactly under the existing dependency rules.
+**Owner decision:** new dependencies, pinned exactly under the existing
+dependency rules: `github.com/coder/websocket` for the management service and
+agent (maintained, and rejecting cross-origin handshakes and oversized messages
+by default), and xterm.js for the dashboard terminal.
 
 ## Terminal safety and accessibility
 
-Terminal output comes from the workload and is untrusted. The terminal enables
-no clipboard-write extension, asks before following links in output and takes no
-automatic actions on escape sequences. The dashboard warns that pasted text is
-visible to processes in the container.
+Terminal output comes from the workload and is untrusted. The terminal keeps
+window-manipulation and report sequences off, enables no clipboard-write
+extension, opens only `http` and `https` links and asks before following them,
+and takes no other automatic action on escape sequences. The dashboard warns that
+pasted text is visible to processes in the container.
 
 The terminal captures keys such as Tab and Escape, so it offers a documented key
 and a visible control to move focus out (WCAG 2.2 success criterion 2.1.2, no
-keyboard trap). It uses the terminal component's screen-reader mode and keeps
-visible focus and reduced-motion behaviour.
+keyboard trap). It uses the terminal component's screen-reader mode, a minimum
+contrast ratio of 4.5 and visible focus and reduced-motion behaviour.
 
 ## Audit, visibility and privacy
 
 A session table records the target, actor, server, close reason, duration and
 byte counts in each direction. `session.open` and `session.close` audit events
-reference it, and owners can review session history. Management writes a
+reference it, and owners can review session history. Refused attempts are
+audited too. If the opening audit event cannot be written, the session does not
+open. Management writes a
 `session.close` with reason `management restart` for sessions left open by a
 restart.
 
@@ -235,6 +255,17 @@ dashboard fetches open sessions from an authorized endpoint; viewers see neither
 
 **Owner decision:** owner inbox notifications for sessions opened by operators,
 on by default (recommended).
+
+## Considered and deferred
+
+- **Recording terminal content:** few comparable platforms do it, NIST places
+  session-content recording in no baseline and flags its privacy risk, and a
+  recording would be a new store of secrets. Revisit only with explicit opt-in,
+  retention and access rules.
+- **Just-in-time approval:** commonly suggested for SOC 2 programmes but not
+  required; owner notification and audit cover review for this increment.
+- **Read-only sessions:** a shell cannot be meaningfully read-only; log and
+  observation views already provide read-only diagnosis.
 
 ## Failure and recovery
 
@@ -268,7 +299,10 @@ on by default (recommended).
     reauthentication does not, including a re-check during the renewal;
   - stream loss and agent crashes leave no process in the shell's Linux session,
     including background jobs;
-  - frame size, rate and session limits, and import of open session rows.
+  - frame size, rate and session limits, and import of open session rows;
+  - only typed input resets the idle timer, the exec working directory is `/`,
+    hosts below the runc floor do not advertise the capability, and a failed
+    audit write prevents the session from opening.
 - **Browser:** Chromium and WebKit journeys for opening, using with the keyboard,
   leaving the terminal by keyboard and closing a session, with axe checks,
   screen-reader mode, visible focus and reduced motion; and a check that the
@@ -285,15 +319,19 @@ on by default (recommended).
    indicator.
 3. Owner notifications and limit tuning from measured use.
 
-## Owner decisions
+## Decisions
+
+Decided on 3 November 2026:
 
 1. Agent-side opt-in, default off.
 2. Environment setting, default off, plus an optional owners-only restriction.
-3. Privileged, capability-adding or device-mapping containers stay ineligible.
-4. Five-minute idle timeout and 15-minute maximum.
+3. Containers whose shell would effectively be a host shell are never eligible.
+4. 15-minute idle timeout (typed input only) and 60-minute maximum.
+
+**Owner decisions** still open:
+
 5. Single-instance management only for P17, with a multi-instance relay as a
    separate design.
 6. The new reverse-proxy requirement for WebSocket upgrades and stream duration.
-7. New pinned dependencies: a Go WebSocket library and a dashboard terminal
-   component.
+7. New pinned dependencies: `github.com/coder/websocket` and xterm.js.
 8. Owner notifications for operator-opened sessions, on by default.
