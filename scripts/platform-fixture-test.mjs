@@ -24,8 +24,10 @@ async function fixture(t) {
   t.after(() => rm(root, { recursive: true, force: true }));
   for (const directory of ["scripts", "bin", "tmp", ".artifacts/p8/browser"])
     await mkdir(join(root, directory), { recursive: true });
-  for (const file of ["platform-fixture.mjs", "platform-tools.mjs"])
-    await copyFile(new URL(file, import.meta.url), join(root, "scripts", file));
+  await copyFile(
+    new URL("platform-fixture.mjs", import.meta.url),
+    join(root, "scripts/platform-fixture.mjs"),
+  );
   const marker = join(root, ".artifacts/p8/browser/hosted-fixture.json");
   const probe = join(root, "probe.json");
   const docker = join(root, "bin/docker");

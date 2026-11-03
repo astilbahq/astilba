@@ -1,4 +1,4 @@
-.PHONY: check verify verify-host verify-build verify-git verify-canvas check-app verify-app verify-app-core verify-app-go-remaining verify-app-go-coordination verify-image verify-agent-host check-ci check-source-size
+.PHONY: check verify verify-host verify-build verify-git verify-canvas check-app verify-app verify-app-core verify-app-build verify-app-go-remaining verify-app-go-crosshost verify-app-go-preview verify-image verify-agent-host check-ci check-source-size check-inline-sql
 
 APP_COORDINATION_TESTS = ^(TestCrossHostCoordinatedPlacement|TestCrossHostSubscriptionExpiry)$$
 APP_PREVIEW_RECOVERY_TESTS = ^TestPreviewRemovalSurvivesCheckpointUnion$$
@@ -27,38 +27,43 @@ verify-build:
 	cd experiments/durable-execution && sudo --preserve-env=GOCACHE,GOMODCACHE env PATH=/opt/astilba-plat4/go/bin:/usr/bin:/bin CGO_ENABLED=1 PLAT4_HOST_TEST=1 PLAT4_ARCH="$(PLAT4_ARCH)" PLAT5_HOST_TEST=1 /opt/astilba-plat4/go/bin/go test -race -count=1 -timeout=12m -v -run '^Test(BuildArtifacts|PostgresRestore)$$' .
 
 check-ci:
-	node --test scripts/ci-native-plan.test.mjs
+	node --test scripts/ci-plan.test.mjs
 
 check-source-size:
 	node --test scripts/source-size.test.mjs
 	node scripts/source-size.mjs
 
-check-app: check-ci check-source-size
+check-inline-sql:
+	node --test scripts/inline-sql.test.mjs
+	node scripts/inline-sql.mjs
+
+check-app: check-ci check-source-size check-inline-sql
 	@for file in scripts/platform-*.mjs; do node --check "$$file" || exit 1; done
-	node --test scripts/platform-proxy-test.mjs scripts/platform-generate-test.mjs
-	cd services/platform && test -z "$$(gofmt -l .)" && go mod verify && go vet ./... && go test -short ./...
+	node --test scripts/platform-generate-test.mjs
+	cd services/platform && test -z "$$(gofmt -l .)" && go mod verify && go vet ./... && go tool staticcheck ./... && go test -short ./...
 	pnpm generate:check
 	pnpm --filter @astilba/dashboard check
-	pnpm --filter @astilba/control-plane-worker check
 
 verify-app: verify-app-core
 	pnpm --filter @astilba/dashboard test:browser --project=chromium
 	pnpm --filter @astilba/dashboard test:browser --project=webkit
 	pnpm --filter @astilba/dashboard storybook:test
 
-verify-app-core: check-app
+verify-app-core: verify-app-build
+	$(MAKE) -j3 verify-app-go-remaining verify-app-go-crosshost verify-app-go-preview
+
+verify-app-build: check-app
 	pnpm agent:build
 	pnpm cli:build
-	$(MAKE) -j2 verify-app-go-remaining verify-app-go-coordination
 	pnpm --filter @astilba/dashboard build
-	pnpm --filter @astilba/dashboard exec wrangler deploy --dry-run --outdir ../../.artifacts/p1/worker
-	pnpm --filter @astilba/control-plane-worker verify
 
 verify-app-go-remaining:
 	cd services/platform && go test -race -count=1 -timeout=15m -skip '$(APP_COORDINATION_TESTS)|$(APP_PREVIEW_RECOVERY_TESTS)' ./...
 
-verify-app-go-coordination:
+verify-app-go-crosshost:
 	cd services/platform && go test -race -count=1 -timeout=15m -run '$(APP_COORDINATION_TESTS)' ./internal/integration
+
+verify-app-go-preview:
 	cd services/platform && go test -race -count=1 -timeout=15m -run '$(APP_PREVIEW_RECOVERY_TESTS)' ./internal/integration
 
 verify-image:

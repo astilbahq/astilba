@@ -72,22 +72,9 @@ func TestTransportController(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var cfg struct {
-		DB      string
-		Hosting map[string]string
-	}
+	var cfg struct{ DB string }
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		t.Fatal(err)
-	}
-	if cfg.Hosting != nil {
-		t.Setenv("PLAT6_DATABASE_URL", cfg.DB)
-		for key, value := range cfg.Hosting {
-			t.Setenv(key, value)
-		}
-		if err := RunHostingFixture(context.Background(), false); err != nil {
-			t.Fatal(err)
-		}
-		return
 	}
 	pool, err := pgxpool.New(context.Background(), cfg.DB)
 	if err != nil {
@@ -165,23 +152,11 @@ func copyFixtureFiles(t *testing.T, h *harness, id string, files map[string][]by
 }
 
 func newTransportHarness(t *testing.T) *transportHarness {
-	return newHTTPSHarness(t, nil)
-}
-
-func newHTTPSHarness(t *testing.T, hosting map[string]string) *transportHarness {
 	t.Helper()
 	h := newHarness(t)
 	f := h.fixture(t)
 	if _, err := f.pool.Exec(context.Background(), transportSchema); err != nil {
 		t.Fatal(err)
-	}
-	if hosting != nil {
-		if _, err := f.pool.Exec(context.Background(), hostingSchema); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := f.pool.Exec(context.Background(), `INSERT INTO transport_servers(id,role,current_hash) VALUES ('server-01','deployment',$1)`, credentialHash(hostingAgentCredential(hosting["PLAT6_AGENT_SEED"], "server-01"))); err != nil {
-			t.Fatal(err)
-		}
 	}
 	ctx := context.Background()
 	if _, err := h.docker.ImageInspect(ctx, proxyImage); err != nil {
@@ -257,13 +232,7 @@ func newHTTPSHarness(t *testing.T, hosting map[string]string) *transportHarness 
 	t.Cleanup(transport.CloseIdleConnections)
 	x := &transportHarness{fixture: f, client: &http.Client{Transport: transport, Timeout: 35 * time.Second},
 		url: "https://127.0.0.1:" + inspected.Container.NetworkSettings.Ports[port][0].HostPort, proxy: proxy.ID}
-	if hosting != nil {
-		hosting["PLAT6_PUBLIC_ORIGIN"] = x.url
-	}
-	cfg, _ := json.Marshal(struct {
-		DB      string
-		Hosting map[string]string
-	}{u.String(), hosting})
+	cfg, _ := json.Marshal(struct{ DB string }{u.String()})
 	x.replaceController = func() {
 		if x.controller != "" {
 			old, err := h.docker.ContainerInspect(ctx, x.controller, client.ContainerInspectOptions{})

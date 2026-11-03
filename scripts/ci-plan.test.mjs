@@ -5,7 +5,7 @@ import { devNull, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { nativePlan } from "./ci-native-plan.mjs";
+import { ciPlan } from "./ci-plan.mjs";
 
 const gitEnvironment = {
   ...Object.fromEntries(
@@ -82,9 +82,56 @@ test("only known frontend and documentation changes skip native checks", async (
       const repo = repository(t);
       for (const path of paths) repo.write(path, "changed\n");
       repo.merge();
-      assert.equal(nativePlan("pull_request", repo.cwd), expected);
+      assert.equal(ciPlan("pull_request", repo.cwd).native, expected);
     });
   }
+});
+
+test("each suite runs only for paths that can affect it", async (t) => {
+  const cases = [
+    [["docs/hosting.md"], []],
+    [["apps/platform/src/screen.tsx"], ["browser"]],
+    [["services/platform/internal/auth/service.go"], ["go", "browser"]],
+    [["services/platform/cmd/cli/main.go"], ["go", "browser"]],
+    [
+      ["services/platform/internal/agent/engine.go"],
+      ["native", "go", "browser"],
+    ],
+    [
+      ["services/platform/internal/httpapi/execution.go"],
+      ["native", "go", "browser"],
+    ],
+    [
+      ["experiments/durable-execution/verify.sh"],
+      ["native", "go", "browser", "durable"],
+    ],
+    [
+      ["experiments/git-compose/providers_test.go"],
+      ["native", "go", "browser", "git"],
+    ],
+    [
+      ["experiments/canvas-editor/src/app.tsx"],
+      ["native", "go", "browser", "canvas"],
+    ],
+    [["pnpm-lock.yaml"], ["native", "go", "browser", "canvas"]],
+    [["Makefile"], ["native", "go", "browser", "durable", "git", "canvas"]],
+    [
+      ["scripts/ci-plan.mjs"],
+      ["native", "go", "browser", "durable", "git", "canvas"],
+    ],
+    [["AGENTS.md"], ["native", "go", "browser"]],
+  ];
+  for (const [paths, selected] of cases)
+    await t.test(paths.join(", "), (t) => {
+      const repo = repository(t);
+      for (const path of paths) repo.write(path, "changed\n");
+      repo.merge();
+      const plan = ciPlan("pull_request", repo.cwd);
+      assert.deepEqual(
+        Object.keys(plan).filter((suite) => plan[suite]),
+        selected,
+      );
+    });
 });
 
 test("a native deletion or rename into a frontend directory still runs native checks", async (t) => {
@@ -100,7 +147,7 @@ test("a native deletion or rename into a frontend directory still runs native ch
         );
       } else repo.git("rm", "services/platform/native.go");
       repo.merge();
-      assert.equal(nativePlan("pull_request", repo.cwd), true);
+      assert.equal(ciPlan("pull_request", repo.cwd).native, true);
     });
 });
 
@@ -112,23 +159,26 @@ test("base-only native changes do not turn a UI-only tested merge into a native 
   repo.write("services/platform/base-only.go");
   repo.commit();
   repo.git("merge", "--no-ff", "feature", "-m", "tested merge");
-  assert.equal(nativePlan("pull_request", repo.cwd), false);
+  assert.equal(ciPlan("pull_request", repo.cwd).native, false);
 });
 
-test("main pushes and manual runs require native checks without consulting a diff", () => {
-  assert.equal(nativePlan("push", "/nonexistent"), true);
-  assert.equal(nativePlan("workflow_dispatch", "/nonexistent"), true);
+test("main pushes, manual and scheduled runs select every suite without consulting a diff", () => {
+  for (const event of ["push", "workflow_dispatch", "schedule"])
+    assert.ok(
+      Object.values(ciPlan(event, "/nonexistent")).every(Boolean),
+      event,
+    );
 });
 
 test("missing or unexpected PR metadata fails instead of reporting a skip", (t) => {
   const repo = repository(t);
-  assert.throws(() => nativePlan("pull_request", repo.cwd), /two-parent/);
+  assert.throws(() => ciPlan("pull_request", repo.cwd), /two-parent/);
   repo.write("apps/platform/src/ui.tsx");
   repo.merge();
   const shallow = join(repo.cwd, "shallow");
   repo.git("clone", "--depth=1", `file://${repo.cwd}`, shallow);
-  assert.throws(() => nativePlan("pull_request", shallow), /two-parent/);
-  assert.throws(() => nativePlan("merge_group", repo.cwd), /Unsupported/);
+  assert.throws(() => ciPlan("pull_request", shallow), /two-parent/);
+  assert.throws(() => ciPlan("merge_group", repo.cwd), /Unsupported/);
 });
 
 test("inherited Git selectors cannot redirect fixture writes or planner reads", (t) => {

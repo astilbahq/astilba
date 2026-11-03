@@ -177,17 +177,15 @@ test("real API: create, conflict, secret, keyboard and reflow", async ({
   await page.emulateMedia({ colorScheme: "dark" });
   const canvas = page.locator(".visual-canvas .react-flow");
   await expect(canvas).toBeVisible();
-  const bodyColor = () =>
-    page.locator("body").evaluate((el) => getComputedStyle(el).backgroundColor);
   // View transitions apply the palette asynchronously; sample it after that commit.
   await expect(root).toHaveClass("dark");
-  await expect(canvas).toHaveCSS("background-color", await bodyColor());
+  await expect(canvas).toHaveCSS("background-color", "rgb(21, 21, 21)");
   await page.emulateMedia({ colorScheme: "light" });
   await expect(root).not.toHaveClass("dark");
   await page.getByRole("button", { name: "Appearance", exact: true }).click();
   await page.getByRole("menuitemradio", { name: "Dark", exact: true }).click();
   await expect(root).toHaveClass("dark");
-  await expect(canvas).toHaveCSS("background-color", await bodyColor());
+  await expect(canvas).toHaveCSS("background-color", "rgb(21, 21, 21)");
   await page.getByRole("menuitemradio", { name: "Light", exact: true }).click();
   await expect(root).not.toHaveClass("dark");
   await page.keyboard.press("Escape");
@@ -253,18 +251,8 @@ test("real API: create, conflict, secret, keyboard and reflow", async ({
   await page.getByText("Advanced specification", { exact: true }).click();
   await expect(page.getByLabel("Specification (JSON)")).toBeVisible();
 });
-test("Worker same-origin path preserves login, cookies and source notices", async ({
-  page,
-}) => {
-  await page.goto("http://127.0.0.1:15183/");
-  await page.getByLabel("Email", { exact: true }).fill("owner@example.test");
-  await page
-    .getByLabel("Password", { exact: true })
-    .fill("correct horse battery staple");
-  await page.getByRole("button", { name: "Sign in", exact: true }).click();
-  await expect(page.getByRole("heading", { name: "Projects" })).toBeVisible();
-  await page.reload();
-  await expect(page.getByRole("heading", { name: "Projects" })).toBeVisible();
+test("account menu links to the corresponding source", async ({ page }) => {
+  await login(page);
   await page.getByRole("button", { name: /^Account menu for/ }).click();
   await page.getByRole("menuitem", { name: "Licence and source" }).click();
   await expect(page.locator("body")).toContainText("Corresponding source:");
@@ -309,22 +297,10 @@ test("server enrollment is explicit and accessible", async ({ page }, info) => {
   ).toBe(true);
 });
 
-test("Worker forwards agent enrollment and verified downloads", async ({
-  page,
-}) => {
-  await page.goto("http://127.0.0.1:15183/");
-  await page.getByLabel("Email", { exact: true }).fill("owner@example.test");
-  await page
-    .getByLabel("Password", { exact: true })
-    .fill("correct horse battery staple");
-  await page.getByRole("button", { name: "Sign in", exact: true }).click();
+test("agent downloads are signed and verifiable", async ({ page }) => {
+  await login(page);
   await page.getByRole("link", { name: "Servers", exact: true }).click();
-  await page
-    .getByLabel("Server name", { exact: true })
-    .fill("Worker transport");
-  const responsePromise = page.waitForResponse(
-    (r) => r.url().endsWith("/servers") && r.request().method() === "POST",
-  );
+  await page.getByLabel("Server name", { exact: true }).fill("Agent downloads");
   await page
     .getByLabel("I already prepared the verified agent using the manual guide")
     .check();
@@ -334,31 +310,26 @@ test("Worker forwards agent enrollment and verified downloads", async ({
     )
     .check();
   await page.getByRole("button", { name: "Create enrollment" }).click();
-  const enrollment = await (await responsePromise).json();
   const downloadPromise = page.waitForEvent("download");
   await page.getByRole("link", { name: "Download agent", exact: true }).click();
   expect((await downloadPromise).suggestedFilename()).toBe("astilba-agent");
   const manifestPath = await page
     .getByRole("link", { name: "Signed manifest" })
     .getAttribute("href");
-  const manifestResponse = await page.request.get(
-    `http://127.0.0.1:15183${manifestPath}`,
-  );
+  const manifestResponse = await page.request.get(manifestPath!);
   expect(manifestResponse.status()).toBe(200);
   const manifest = await manifestResponse.json();
   const artifact = await page.request.get(
-    `http://127.0.0.1:15183/agent-artifacts/${manifest.sha256}`,
+    `/agent-artifacts/${manifest.sha256}`,
   );
   expect(artifact.status()).toBe(200);
   const { createHash, createPublicKey, verify } = await import("node:crypto");
-  const publicKey = await page.request.get(
-    "http://127.0.0.1:15183/agent-public-key.pem",
-  );
+  const publicKey = await page.request.get("/agent-public-key.pem");
   const message = await page.request.get(
-    `http://127.0.0.1:15183/agent-artifacts/${manifest.sha256}/message`,
+    `/agent-artifacts/${manifest.sha256}/message`,
   );
   const signature = await page.request.get(
-    `http://127.0.0.1:15183/agent-artifacts/${manifest.sha256}/signature`,
+    `/agent-artifacts/${manifest.sha256}/signature`,
   );
   expect(publicKey.status()).toBe(200);
   expect(message.status()).toBe(200);
@@ -371,9 +342,7 @@ test("Worker forwards agent enrollment and verified downloads", async ({
       await signature.body(),
     ),
   ).toBe(true);
-  const bootstrap = await page.request.get(
-    "http://127.0.0.1:15183/onboarding/bootstrap.sh",
-  );
+  const bootstrap = await page.request.get("/onboarding/bootstrap.sh");
   expect(bootstrap.status()).toBe(200);
   expect(bootstrap.headers()["content-type"]).toContain("text/plain");
 
@@ -382,37 +351,8 @@ test("Worker forwards agent enrollment and verified downloads", async ({
       .update(await artifact.body())
       .digest("hex"),
   ).toBe(manifest.sha256);
-  const enrolled = await page.request.post(
-    "http://127.0.0.1:15183/agent/v1/enroll",
-    {
-      data: {
-        serverId: enrollment.server.id,
-        token: enrollment.token,
-        machineId: crypto.randomUUID(),
-        credential: "x".repeat(43),
-        capabilities: {
-          protocol: 1,
-          version: "fixture",
-          os: "linux",
-          arch: "arm64",
-          docker: true,
-        },
-        preflight: {
-          ready: true,
-          osRelease: "ubuntu 24.04",
-          dockerVersion: "fixture",
-          freeBytes: 1000000000,
-          port80Busy: false,
-          port443Busy: false,
-          existingContainers: 0,
-          notes: [],
-        },
-      },
-    },
-  );
-  expect(enrolled.status()).toBe(200);
   const unknown = await page.request.get(
-    `http://127.0.0.1:15183/agent-artifacts/${"0".repeat(64)}/manifest.json`,
+    `/agent-artifacts/${"0".repeat(64)}/manifest.json`,
   );
   expect(unknown.status()).toBe(404);
 });

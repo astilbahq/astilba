@@ -34,7 +34,7 @@ an owner-only environment file outside source control:
 | --- | --- |
 | `ASTILBA_DATABASE_URL` | PostgreSQL connection URL; use verified TLS for a remote database. |
 | `ASTILBA_KEYRING` | Path to a mounted owner-only keyring, readable by UID 65532. |
-| `ASTILBA_KEYRING_JSON` | Alternative injected secret containing the same keyring JSON. Configure exactly one keyring source. |
+| `ASTILBA_KEYRING_JSON` | Alternative keyring JSON supplied directly by a secret manager or container environment. Configure exactly one keyring source. |
 | `ASTILBA_ORIGIN` | Exact public HTTPS origin, without a path or trailing slash. |
 | `ASTILBA_LISTEN` | Listener, normally `0.0.0.0:8080` inside the container. |
 | `ASTILBA_TRUSTED_PROXIES` | Optional comma-separated proxy IP CIDRs, for example `192.0.2.10/32,2001:db8::10/128`. Empty by default; forwarding headers are then ignored. |
@@ -264,40 +264,5 @@ Transfer does not redeploy applications or move volumes. Exact unit hashes and
 schedule generations must match the destination's records; disagreement stops
 enrollment. Take a fresh export or reconcile the source state when possible.
 An incomplete or stale backup is not permission to overwrite the host's journal.
-
-## Optional Cloudflare control plane
-
-[The production Worker adapter](../apps/control-plane-worker) wraps the same
-container image. PostgreSQL remains external and wrapping keys are injected as a
-Worker secret. The container filesystem is disposable; it holds no authoritative
-state. This path is optional and uses no different application feature set.
-
-Configure the account, custom domain and `ASTILBA_ORIGIN` in an uncommitted Wrangler
-overlay. Inject `ASTILBA_DATABASE_URL` and `ASTILBA_KEYRING_JSON` with Wrangler
-secrets, plus SMTP and optional hosted/Stripe settings. Run migrations and bootstrap
-explicitly using the matching application image against that database **before**
-deploying the adapter. The Worker never migrates or creates an owner automatically.
-
-Both Worker adapters replace incoming `X-Forwarded-For` with the edge-provided
-`CF-Connecting-IP`. Configure `ASTILBA_TRUSTED_PROXIES` on the Go server for the
-adapter's actual connection source (and any intervening proxies); the container
-adapter passes this setting through. There is no automatically trusted Cloudflare
-or private address range. Confirm the connection source in the chosen deployment
-before admitting users. Requests without an edge client address retain the
-TCP-peer budget. Cloudflare's [client header semantics](https://developers.cloudflare.com/fundamentals/reference/http-headers/#cf-connecting-ip)
-apply: same-zone Workers can alter client headers, while cross-zone Worker requests
-use a shared Worker address. Do not grant untrusted code control over same-zone
-Workers or header rewriting rules.
-
-The adapter uses one management Durable Object per installation and a scheduled
-keepalive. Active agent long polls also keep the container running. Budget it as
-an active container, not as a free sleeping dashboard. Cloudflare Containers
-requires its own paid account configuration. Local typechecking and packaging are
-not a live-hosting pass; repeat deployment, restart and reconnection checks on a
-disposable account/database before choosing this hosting arrangement.
-
-The separate dashboard-only Worker remains available when the Go API runs on a
-server. Its fixed upstream forwards the API, agent, Git and Stripe webhook paths;
-it is not an arbitrary proxy.
 
 Workspace exports use archive version 6 for committed runtime outcomes alongside replica specifications, runtime inventories, schedules and lifecycle metadata. Versions 1–5 remain importable; their runtime provenance stays unknown. Older controllers reject version 6 rather than discard that identity. Imported preview policies and fork/cleanup grants are disabled; review resources and transfer agents before renewed owner approval. See [Pull-request previews](pull-request-previews.md), [application scaling](application-scaling.md) and [cross-host recovery](cross-host-placement.md).

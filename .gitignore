@@ -1,5 +1,6 @@
 .DS_Store
 .artifacts/
+**/.impeccable/review/
 .env
 .env.*
 !.env.example
@@ -9,10 +10,8 @@ dist/
 coverage/
 *.test
 *.out
-.wrangler/
 .dev.vars
 .dev.vars.*
-wrangler.local.jsonc
 
 experiments/canvas-editor/styled-system/
 

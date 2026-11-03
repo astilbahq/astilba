@@ -1,36 +1,104 @@
 .visual-canvas {
-  block-size: 400px;
-  border: 1px solid var(--colors-control-border);
-  border-radius: var(--radii-control);
+  position: relative;
+  block-size: var(--sizes-visual-compact);
+  border: 1px solid var(--colors-separator);
+  border-radius: var(--radii-xl);
   overflow: hidden;
+  --xy-background-color: var(--colors-visual-ground);
+  --xy-background-pattern-dots-color: var(--colors-separator);
+  --xy-edge-stroke: var(--colors-visual-edge);
+  --xy-edge-stroke-selected: var(--colors-fg);
+  --xy-edge-label-color: var(--colors-fg);
+  --xy-edge-label-background-color: var(--colors-visual-ground);
+  --xy-controls-box-shadow: none;
+  --xy-node-boxshadow-hover: none;
+  --xy-node-boxshadow-selected: none;
 }
-.visual-canvas .react-flow__node {
+@container visual-editor (min-width: 40rem) {
+  .visual-canvas {
+    block-size: var(--sizes-visual-canvas);
+  }
+}
+.visual-canvas .react-flow__node-default {
+  inline-size: var(--sizes-visual-node);
+  padding: var(--spacing-4);
   color: var(--colors-fg);
-  background: var(--colors-surface);
-  border-color: var(--colors-control-border);
+  background: var(--colors-visual-node);
+  border: 1px solid var(--colors-visual-border);
+  border-radius: var(--radii-xl);
+  font-family: var(--fonts-ui);
+  transition: border-color var(--durations-button) var(--easings-out);
 }
-.visual-canvas .react-flow__node.selected {
-  border-color: var(--colors-control-interactive-border);
+.visual-canvas .react-flow__node-default:hover {
+  border-color: var(--colors-fg);
+}
+/* React Flow removes the outline from focused selectable nodes. */
+.visual-canvas .react-flow__node.selectable:focus-visible {
+  outline: 2px solid var(--colors-fg);
+  outline-offset: 3px;
+}
+/* The ring keeps the inspected node distinct from a hovered one. */
+.visual-canvas .react-flow__node-default.selectable.selected {
+  border-color: var(--colors-fg);
+  box-shadow: 0 0 0 1px var(--colors-fg);
+}
+.visual-canvas .react-flow__handle {
+  inline-size: var(--sizes-2);
+  block-size: var(--sizes-2);
+  background: var(--colors-visual-node);
+  border: 1px solid var(--colors-visual-border);
+}
+.visual-canvas .react-flow__edge-path {
+  stroke-width: 1.5;
 }
 .visual-canvas .react-flow__edge-text {
   fill: var(--colors-fg);
 }
 .visual-canvas .react-flow__edge-textbg {
-  fill: var(--colors-surface);
+  fill: var(--colors-visual-ground);
+}
+.visual-canvas .react-flow__controls {
+  border: 1px solid var(--colors-separator);
+  border-radius: var(--radii-control);
+  overflow: hidden;
 }
 .visual-canvas .react-flow__controls-button {
+  inline-size: var(--sizes-control-sm);
+  block-size: var(--sizes-control-sm);
   background: var(--colors-surface);
   color: var(--colors-fg);
-  border-color: var(--colors-control-border);
+  border-color: var(--colors-separator);
+  transition: background-color var(--durations-button) var(--easings-out);
+}
+.visual-canvas .react-flow__controls-button:hover {
+  background: var(--colors-action-ghost-hover);
 }
 .visual-canvas .react-flow__controls-button svg {
   fill: currentColor;
 }
-
 .visual-canvas :focus-visible {
-  outline: 2px solid var(--colors-control-interactive-border);
+  outline: 2px solid var(--colors-fg);
   outline-offset: 3px;
 }
-.visual-canvas .react-flow {
-  background: var(--colors-page);
+.visual-canvas .react-flow__attribution {
+  background: var(--colors-surface);
+  color: var(--colors-subtle);
+}
+@media (forced-colors: active) {
+  .visual-canvas .react-flow__node-default,
+  .visual-canvas .react-flow__handle {
+    border-color: ButtonText;
+  }
+  .visual-canvas .react-flow__node-default.selected,
+  .visual-canvas :focus-visible,
+  .visual-canvas .react-flow__node.selectable:focus-visible {
+    outline: 2px solid Highlight;
+  }
+  .visual-canvas .react-flow__edge-path {
+    stroke: CanvasText;
+  }
+}
+
+.visual-canvas .react-flow__controls-button:focus-visible {
+  outline-offset: -3px;
 }

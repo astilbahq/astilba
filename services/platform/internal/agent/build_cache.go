@@ -177,7 +177,7 @@ func writeCacheArchive(dst io.Writer, src io.Reader) error {
 		if name == "cache-out/ingest" && h.Typeflag == tar.TypeDir && h.Size == 0 {
 			continue
 		}
-		if name == "cache-out/cache.lock" && (h.Typeflag == tar.TypeReg || h.Typeflag == tar.TypeRegA) && h.Size == 0 {
+		if name == "cache-out/cache.lock" && h.Typeflag == tar.TypeReg && h.Size == 0 {
 			continue
 		}
 		rel := strings.TrimPrefix(name, "cache-out/")
@@ -185,7 +185,7 @@ func writeCacheArchive(dst io.Writer, src io.Reader) error {
 		file := rel == "oci-layout" || rel == "index.json" || strings.HasPrefix(rel, "blobs/sha256/") && pipeline.ValidCacheID(strings.TrimPrefix(rel, "blobs/sha256/"))
 		if directory && h.Typeflag == tar.TypeDir {
 			err = out.WriteHeader(&tar.Header{Name: path.Join("in", strings.TrimPrefix(rel, "cache-out")), Typeflag: tar.TypeDir, Mode: 0700})
-		} else if name != rel && file && (h.Typeflag == tar.TypeReg || h.Typeflag == tar.TypeRegA) {
+		} else if name != rel && file && h.Typeflag == tar.TypeReg {
 			err = out.WriteHeader(&tar.Header{Name: path.Join("in", rel), Typeflag: tar.TypeReg, Mode: 0600, Size: h.Size})
 			if err == nil {
 				_, err = io.CopyN(out, in, h.Size)

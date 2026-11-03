@@ -14,7 +14,7 @@ export default defineConfig({
   webServer: [
     {
       command: "node ../../scripts/platform-fixture.mjs",
-      url: "http://127.0.0.1:15183/api/v1/session",
+      url: "http://127.0.0.1:15181/api/v1/session",
       reuseExistingServer: false,
       gracefulShutdown: { signal: "SIGTERM", timeout: 15000 },
       timeout: 180000,

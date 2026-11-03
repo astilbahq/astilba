@@ -48,7 +48,7 @@ func ArchiveContents(filename string) (string, error) {
 		case tar.TypeDir:
 		case tar.TypeSymlink:
 			v.Modified = h.ModTime.UTC().String()
-		case tar.TypeReg, tar.TypeRegA:
+		case tar.TypeReg:
 			v.Type = tar.TypeReg
 			v.Modified = h.ModTime.UTC().String()
 			sum := sha256.New()

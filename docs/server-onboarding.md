@@ -52,7 +52,7 @@ The Servers page can compare a hostname's DNS answers with approved server addre
 
 ## Acceptance checks
 
-`make verify` covers namespace validation, real PostgreSQL/API and queue/recovery behavior, and Chromium/WebKit journeys. Provider tests use the actual HTTP boundary with a disposable DNS fixture, including lost creates and foreign records; they are not a live Cloudflare hosting pass.
+`make verify` covers namespace validation, real PostgreSQL/API and queue/recovery behavior, and Chromium/WebKit journeys. Provider tests use the actual HTTP boundary with a disposable DNS fixture, including lost creates and foreign records; they are not a live Cloudflare DNS pass.
 
 The native host CI jobs additionally run `TestBootstrapOnDisposableHost` on amd64 and arm64 before the existing host suites. Its destructive preparation accepts only an explicitly owned fresh VM or a GitHub-hosted disposable runner whose runtime has no workloads, volumes or custom networks. It tests check-only behavior, invalid signed releases, fresh pinned installation, contact configuration, service startup remaining explicit and refusal to overwrite agent state. Never run that fixture on an existing deployment host.
 

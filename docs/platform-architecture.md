@@ -42,6 +42,10 @@ Future boundaries for multiple deployment units, Kubernetes, live collaboration,
 
 Use Node 24.18.1 and pnpm 11.17.0 for JavaScript tooling. Select and record exact Go, PostgreSQL patch, library, tool and image versions during milestone P0. Commit lockfiles, `go.sum` and image digests. Record JavaScript dependency pins when the dashboard is introduced. Do not install development tools from floating tags.
 
+Platform PostgreSQL access goes through sqlc queries in `services/platform/db/queries`. A query on a workspace-scoped table takes the workspace and constrains `workspace_id` in its predicate, join or conflict target; a worker handling one workspace's job carries the workspace in its arguments and constrains on it. The only unscoped queries are lookups that resolve the workspace from a credential or token (agent credentials, sessions, invitations, memberships) and sweeps that deliberately span workspaces; each carries a `-- unscoped: <reason>` comment. Define security predicates such as credential validity, controller fencing and membership once and reuse them. Bind values as parameters; the only SQL text built at runtime is quoted identifiers, from a compiled allow-list or for customer-managed databases. Inline SQL in Go is limited to those identifiers, session temporary tables, library-owned tables such as River's, and statements against customer-managed databases, each marked `// inline-sql: <reason>`.
+
+Existing code is migrating toward this rule (PLAT-119). Many legacy statements rely on an earlier workspace-scoped lookup and composite foreign keys for isolation; keep those until the statement itself constrains `workspace_id`. Legacy inline SQL may not grow; see the [inline SQL ratchet](continuous-integration.md#inline-sql-ratchet).
+
 React Flow is a renderer and interaction library; it does not define Astilba's deployment format. Automatic layout is optional. Start with manual placement; evaluate Dagre for an arrange action and ELK only if grouping requires it. [React Flow layout options](https://reactflow.dev/learn/layouting/layouting).
 
 The [PLAT-1 editor experiment](../experiments/canvas-editor/README.md) retains React Flow 12.12.0, React 19.3.1 and Panda 2.3.0 after exercising custom service cards, typed connections, keyboard/list editing and independent layout/configuration saves in Chromium and WebKit. Its 250-node synthetic probe avoids graph-wide custom-node and property rerenders during dragging. These are pinned experiment versions and measured feasibility, not a production capacity or complete accessibility claim. The fixture's browser storage and small controls remain separate from the production application.
@@ -76,23 +80,17 @@ Deployment hosts run the agent, Docker and Traefik. Build-only hosts run the age
 
 ## Management deployment targets
 
-The management service does not require a dedicated VPS or have to share a machine with customer applications. It needs reachable compute for the API and workers, PostgreSQL, and HTTPS. The UI is static and can be served separately. Running the management service on an existing server is supported by the same packaging; running it on a laptop is useful for development but remote agents still need a reachable endpoint while it is available.
+The management service does not require a dedicated VPS or have to share a machine with customer applications. It needs reachable compute for the API and workers, PostgreSQL, and HTTPS. The Go application serves the static dashboard and API from one origin. Running the management service on an existing server is supported by the same packaging; running it on a laptop is useful for development but remote agents still need a reachable endpoint while it is available.
 
 | Deployment | Dashboard | API and workers | Persistent data |
 | --- | --- | --- | --- |
 | Portable self-hosted default | Served by the Go application | Go application on an existing server or container host | Local or external PostgreSQL |
-| Cloudflare frontend | Workers Static Assets | The same Go application on another host | PostgreSQL reachable by the Go application |
-| Optional Cloudflare management hosting | Workers Static Assets | Go application in Cloudflare Containers, behind a thin Worker integration | External PostgreSQL; no reliance on container-local durable storage |
 
-Cloudflare's own Containers starter runs a Go HTTP server, so optional Cloudflare hosting does not inherently require replacing Go. Treat it as a deployment adapter: the same management application, agents and protocol remain usable without Cloudflare. Native Workers execution is a separate architecture choice; compiling isolated Go code to Wasm does not make the proposed Go server and River worker loop a drop-in Workers application. [Cloudflare Go container starter](https://developers.cloudflare.com/containers/get-started/), [Workers Static Assets](https://developers.cloudflare.com/workers/static-assets/).
-
-The [PLAT-6 experiment](../experiments/cloudflare-hosting/README.md) validates complete management hosting on Cloudflare Containers at 0–20 synthetic agents, including sleep, replacement, database connectivity, SSE, long polling and scheduled wake. This makes the adapter feasible; it is not a production capacity or cost-saving promise. Container-local disk is ephemeral by default. Keep authoritative state in PostgreSQL and inject wrapping keys through the deployment's secret mechanism. Hyperdrive connects Workers to an existing database; it does not supply a hosted PostgreSQL database for this architecture. [Container lifecycle](https://developers.cloudflare.com/containers/platform-details/), [Hyperdrive](https://developers.cloudflare.com/hyperdrive/).
-
-Use one public origin for the browser's assets and API even when their hosting is split; a narrowly configured Worker proxy can provide this on Cloudflare. Preserve the same authentication, CSRF, cache-control and credential rules. Do not expose provider bindings to domain code or require Cloudflare credentials in an ordinary self-hosted installation.
+The PLAT-6 experiment evaluated Cloudflare hosting (Workers serving the dashboard and Cloudflare Containers running the management service) and passed at 0–20 synthetic agents. It was dropped on 3 November 2026 to keep self-hosted Go serving as the single management hosting path; reintroducing a hosted adapter requires an architecture revision. Do not expose provider bindings to domain code or require Cloudflare credentials in an ordinary self-hosted installation.
 
 Cloudflare for SaaS is an optional custom-domain and edge-routing integration. It can front an origin hosted outside Cloudflare, so it does not determine the API runtime. Custom management domains and routing traffic for customers' deployed applications are distinct features. Application traffic initially reaches each customer's Traefik directly; operating an Astilba edge proxy or tunnel is later scope with separate availability and cost implications. [Cloudflare for SaaS](https://developers.cloudflare.com/cloudflare-for-platforms/cloudflare-for-saas/).
 
-Measure costs before choosing the hosted deployment or promising lower customer prices. Frequent agent polls and heartbeats can keep a container active continuously. Cloudflare Containers charges provisioned memory and disk while active, active CPU usage, and associated Workers and Durable Objects usage; PostgreSQL is an additional cost. Compare that complete workload with a small conventional host, including retained logs and database traffic. [Container pricing](https://developers.cloudflare.com/containers/pricing/).
+Measure costs before choosing the hosted beta's infrastructure or promising lower customer prices. Frequent agent polls and heartbeats keep the management service continuously active. Compare the complete workload, including PostgreSQL, retained logs and database traffic.
 
 ## Domain model and ownership
 
@@ -389,7 +387,7 @@ Extend `make verify` as implementation grows, covering formatting, lint, generat
 
 The first implementation milestone must establish that River's open-source core supports our crash and reconnect semantics, the agent protocol works through the packaged HTTPS configuration, and pinned React Flow works with the platform's UI. It must also prove the Docker and Compose compatibility baseline, exportability, and a workable image-build path.
 
-Include the optional Cloudflare Containers target in that milestone. If its lifecycle or economics are unsuitable, revisit the hosting or backend choice before promising Workers-native compatibility; serving the static UI on Cloudflare alone is not equivalent to hosting the complete management service there.
+That milestone also evaluated optional Cloudflare management hosting. It passed at the tested scale but was dropped on 3 November 2026 to keep a single management hosting path.
 
 Exact prices, the public product name, measured capacity limits, published support hours and later catalogue additions remain launch decisions. The maintainer's own use is the initial product validation; interviews, pre-sales and external customer commitments are not implementation gates.
 
