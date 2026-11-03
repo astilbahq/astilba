@@ -386,8 +386,8 @@ func (s *Service) ScheduleReport(ctx context.Context, a Identity, sequence int64
 		return err
 	}
 	defer tx.Rollback(ctx)
-	var valid bool
-	if err = tx.QueryRow(ctx, `SELECT `+agentCredentialPredicate+` FROM servers WHERE id=$1 FOR UPDATE`, a.ID, hash(a.Token)).Scan(&valid); err != nil {
+	valid, err := lockAgentCredential(ctx, tx, a)
+	if err != nil {
 		return err
 	}
 	if !valid {

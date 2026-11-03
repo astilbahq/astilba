@@ -24,9 +24,8 @@ func (s *Service) RecordMetrics(ctx context.Context, a Identity, r api.MetricRep
 		return err
 	}
 	defer tx.Rollback(ctx)
-	var valid bool
-	var workspace uuid.UUID
-	err = tx.QueryRow(ctx, `SELECT workspace_id,`+agentCredentialPredicate+` AND NOT awaiting_transfer FROM servers WHERE id=$1 FOR UPDATE`, a.ID, hash(a.Token)).Scan(&workspace, &valid)
+	workspace := a.Workspace
+	valid, err := lockAgentCredential(ctx, tx, a)
 	if err != nil {
 		return err
 	}

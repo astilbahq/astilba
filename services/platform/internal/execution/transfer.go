@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"time"
 
+	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/backup"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
@@ -81,22 +82,16 @@ func (s *Service) enroll(ctx context.Context, in api.AgentEnrollment) (api.Agent
 		return out, e
 	}
 	defer tx.Rollback(ctx)
-	var ws uuid.UUID
-	var expected int64
-	var awaiting bool
-	e = tx.QueryRow(ctx, `SELECT workspace_id,controller_generation,awaiting_transfer FROM servers WHERE id=$1 AND NOT revoked AND (machine_id IS NULL OR machine_id=$4) AND ((enrollment_hash=$2 AND enrollment_expires>now() AND credential_hash IS NULL) OR credential_hash=$3) FOR UPDATE`, in.ServerId, hash(in.Token), hash(in.Credential), in.MachineId).Scan(&ws, &expected, &awaiting)
+	q := db.New(tx)
+	locked, e := q.LockAgentEnrollment(ctx, db.LockAgentEnrollmentParams{ServerID: in.ServerId, EnrollmentHash: hash(in.Token), CredentialHash: hash(in.Credential), MachineID: &in.MachineId})
 	if e != nil {
 		if errors.Is(e, pgx.ErrNoRows) {
 			e = domain.Unauthenticated
 		}
 		return out, e
 	}
-	var previewOnly bool
-	var fresh bool
-	if e = tx.QueryRow(ctx, "SELECT preview_only,machine_id IS NULL FROM servers WHERE id=$1", in.ServerId).Scan(&previewOnly, &fresh); e != nil {
-		return out, e
-	}
-	if previewOnly && fresh && in.Preflight.ExistingContainers > 0 {
+	ws, expected, awaiting := locked.WorkspaceID, locked.ControllerGeneration, locked.AwaitingTransfer
+	if locked.PreviewOnly && locked.Fresh && in.Preflight.ExistingContainers > 0 {
 		return out, domain.Invalid("preview.cleanServerRequired")
 	}
 	if generation(in.ControllerGeneration) != expected {
@@ -116,8 +111,8 @@ func (s *Service) enroll(ctx context.Context, in api.AgentEnrollment) (api.Agent
 		if e != nil {
 			return out, e
 		}
-		var staged []byte
-		err := tx.QueryRow(ctx, `SELECT r.inventory FROM cross_host_recovery_servers r JOIN cross_host_recoveries h ON h.parent_id=r.parent_id WHERE r.workspace_id=$1 AND r.server_id=$2 AND r.machine_id=$3 AND r.controller_generation=$4 AND NOT h.opened`, ws, in.ServerId, in.MachineId, expected).Scan(&staged)
+		stagedServer := db.StagedRecoveryInventoryParams{WorkspaceID: ws, ServerID: in.ServerId, MachineID: in.MachineId, ControllerGeneration: expected}
+		staged, err := q.StagedRecoveryInventory(ctx, stagedServer)
 		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return out, err
 		}
@@ -140,19 +135,20 @@ func (s *Service) enroll(ctx context.Context, in api.AgentEnrollment) (api.Agent
 			return out, domain.Conflict
 		}
 		if err == nil {
-			if _, err = tx.Exec(ctx, `UPDATE cross_host_recovery_servers SET verified=true WHERE workspace_id=$1 AND server_id=$2 AND machine_id=$3 AND controller_generation=$4`, ws, in.ServerId, in.MachineId, expected); err != nil {
+			if err = q.VerifyStagedRecoveryServer(ctx, db.VerifyStagedRecoveryServerParams(stagedServer)); err != nil {
 				return out, err
 			}
 		}
 	}
 	caps, _ := json.Marshal(in.Capabilities)
 	pre, _ := json.Marshal(in.Preflight)
-	e = tx.QueryRow(ctx, `UPDATE servers SET credential_hash=$2,enrollment_hash=NULL,enrollment_expires=NULL,machine_id=$3,capabilities=$4,preflight=$5,last_seen=now(),awaiting_transfer=false WHERE id=$1 RETURNING role,rotation_requested,preview_only`, in.ServerId, hash(in.Credential), in.MachineId, caps, pre).Scan(&out.Role, &out.RotationRequested, &previewOnly)
+	enrolled, e := q.CompleteAgentEnrollment(ctx, db.CompleteAgentEnrollmentParams{WorkspaceID: ws, ServerID: in.ServerId, CredentialHash: hash(in.Credential), MachineID: &in.MachineId, Capabilities: caps, Preflight: pre})
 	if e != nil {
 		return out, e
 	}
-	if previewOnly {
-		out.PreviewOnly = &previewOnly
+	out.Role, out.RotationRequested = api.ServerRole(enrolled.Role), enrolled.RotationRequested
+	if enrolled.PreviewOnly {
+		out.PreviewOnly = &enrolled.PreviewOnly
 	}
 	return out, tx.Commit(ctx)
 }
@@ -168,7 +164,9 @@ func (s *Service) PrepareTransfer(ctx context.Context, p store.Principal, ws, id
 		if e := s.Store.ManagedServerAdmission(ctx, tx, ws, id); e != nil {
 			return e
 		}
-		return tx.QueryRow(ctx, `UPDATE servers SET enrollment_hash=$3,enrollment_expires=$4,credential_hash=NULL,previous_hash=NULL,previous_until=NULL,poll_id=NULL,poll_until=NULL,revoked=false WHERE workspace_id=$1 AND id=$2 AND awaiting_transfer RETURNING controller_generation`, ws, id, hash(token), out.ExpiresAt).Scan(&out.Generation)
+		generation, e := db.New(tx).PrepareServerTransfer(ctx, db.PrepareServerTransferParams{WorkspaceID: ws, ID: id, EnrollmentHash: hash(token), EnrollmentExpires: &out.ExpiresAt})
+		out.Generation = generation
+		return e
 	})
 	return out, e
 }

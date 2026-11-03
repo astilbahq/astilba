@@ -85,26 +85,23 @@ func (s *Service) scope(ctx context.Context, p store.Principal, ws uuid.UUID, ac
 	}
 	return s.Store.InWorkspaceTx(ctx, p, ws, admission, fnScope)
 }
-func serverScan(row pgx.Row) (api.Server, error) {
-	var v api.Server
-	var cap, pre []byte
-	var revoked bool
-	err := row.Scan(&v.Id, &v.Name, &v.Role, &v.LastSeen, &cap, &pre, &revoked, &v.RotationRequested, &v.TransferRequired, &v.PreviewOnly)
-	if err != nil {
-		return v, err
-	}
-	if len(cap) > 0 {
-		if err = json.Unmarshal(cap, &v.Capabilities); err != nil {
+
+// serverView maps the server columns shared by ListServers, InsertServer and
+// RenewServerEnrollment; their generated row types convert to ListServersRow.
+func serverView(row db.ListServersRow) (api.Server, error) {
+	v := api.Server{Id: row.ID, Name: row.Name, Role: api.ServerRole(row.Role), LastSeen: row.LastSeen, RotationRequested: row.RotationRequested, TransferRequired: &row.AwaitingTransfer, PreviewOnly: &row.PreviewOnly}
+	if len(row.Capabilities) > 0 {
+		if err := json.Unmarshal(row.Capabilities, &v.Capabilities); err != nil {
 			return v, err
 		}
 	}
-	if len(pre) > 0 {
-		if err = json.Unmarshal(pre, &v.Preflight); err != nil {
+	if len(row.Preflight) > 0 {
+		if err := json.Unmarshal(row.Preflight, &v.Preflight); err != nil {
 			return v, err
 		}
 	}
 	switch {
-	case revoked:
+	case row.Revoked:
 		v.Status = "revoked"
 	case v.LastSeen == nil:
 		v.Status = "pending"
@@ -116,24 +113,21 @@ func serverScan(row pgx.Row) (api.Server, error) {
 	return v, nil
 }
 
-const serverColumns = "id,name,role,last_seen,capabilities,preflight,revoked,rotation_requested,awaiting_transfer,preview_only"
-
 func (s *Service) Servers(ctx context.Context, p store.Principal, ws uuid.UUID) ([]api.Server, error) {
 	out := []api.Server{}
 	err := s.scope(ctx, p, ws, workspaceAccess{}, "", uuid.Nil, func(tx pgx.Tx) error {
-		rows, err := tx.Query(ctx, "SELECT "+serverColumns+" FROM servers WHERE workspace_id=$1 ORDER BY name,id LIMIT 100", ws)
+		rows, err := db.New(tx).ListServers(ctx, ws)
 		if err != nil {
 			return err
 		}
-		defer rows.Close()
-		for rows.Next() {
-			v, e := serverScan(rows)
+		for _, row := range rows {
+			v, e := serverView(row)
 			if e != nil {
 				return e
 			}
 			out = append(out, v)
 		}
-		return rows.Err()
+		return nil
 	})
 	return out, err
 }
@@ -155,8 +149,9 @@ func (s *Service) CreateServer(ctx context.Context, p store.Principal, ws uuid.U
 	}
 	id := uuid.New()
 	err = s.scope(ctx, p, ws, workspaceAccess{Write: true, Owner: true, Recent: true}, "server.create", id, func(tx pgx.Tx) error {
-		var count int
-		if e := tx.QueryRow(ctx, "SELECT count(*) FROM servers WHERE workspace_id=$1", ws).Scan(&count); e != nil {
+		q := db.New(tx)
+		count, e := q.CountServers(ctx, ws)
+		if e != nil {
 			return e
 		}
 		if e := s.Store.ManagedServerAdmission(ctx, tx, ws, uuid.Nil); e != nil {
@@ -165,11 +160,11 @@ func (s *Service) CreateServer(ctx context.Context, p store.Principal, ws uuid.U
 		if count >= 100 {
 			return domain.Conflict
 		}
-		_, e := tx.Exec(ctx, `INSERT INTO servers(id,workspace_id,name,role,enrollment_hash,enrollment_expires,preview_only) VALUES($1,$2,$3,$4,$5,$6,$7)`, id, ws, name, in.Role, hash(out.Token), out.ExpiresAt, in.PreviewOnly != nil && *in.PreviewOnly)
+		row, e := q.InsertServer(ctx, db.InsertServerParams{ID: id, WorkspaceID: ws, Name: name, Role: string(in.Role), EnrollmentHash: hash(out.Token), EnrollmentExpires: &out.ExpiresAt, PreviewOnly: in.PreviewOnly != nil && *in.PreviewOnly})
 		if e != nil {
 			return e
 		}
-		out.Server, e = serverScan(tx.QueryRow(ctx, "SELECT "+serverColumns+" FROM servers WHERE id=$1", id))
+		out.Server, e = serverView(db.ListServersRow(row))
 		return e
 	})
 	return out, err
@@ -188,9 +183,12 @@ func (s *Service) RenewEnrollment(ctx context.Context, p store.Principal, ws, id
 		if e := invalidateNetworkMember(ctx, tx, ws, id); e != nil {
 			return e
 		}
-		row := tx.QueryRow(ctx, `UPDATE servers SET enrollment_hash=$3,enrollment_expires=$4,credential_hash=NULL,previous_hash=NULL,previous_until=NULL,revoked=false,rotation_requested=false WHERE workspace_id=$1 AND id=$2 RETURNING `+serverColumns, ws, id, hash(out.Token), out.ExpiresAt)
-		out.Server, err = serverScan(row)
-		return err
+		row, e := db.New(tx).RenewServerEnrollment(ctx, db.RenewServerEnrollmentParams{WorkspaceID: ws, ID: id, EnrollmentHash: hash(out.Token), EnrollmentExpires: &out.ExpiresAt})
+		if e != nil {
+			return e
+		}
+		out.Server, e = serverView(db.ListServersRow(row))
+		return e
 	})
 	return out, err
 }
@@ -208,23 +206,29 @@ func (s *Service) Control(ctx context.Context, p store.Principal, ws, id uuid.UU
 				return e
 			}
 		}
-		command := `UPDATE servers SET rotation_requested=true WHERE workspace_id=$1 AND id=$2 AND NOT revoked AND credential_hash IS NOT NULL`
+		q := db.New(tx)
+		var n int64
+		var e error
 		if revoke {
-			command = `UPDATE servers SET revoked=true,credential_hash=NULL,previous_hash=NULL,enrollment_hash=NULL,rotation_requested=false WHERE workspace_id=$1 AND id=$2`
+			n, e = q.RevokeServer(ctx, db.RevokeServerParams{WorkspaceID: ws, ID: id})
+		} else {
+			n, e = q.RequestServerRotation(ctx, db.RequestServerRotationParams{WorkspaceID: ws, ID: id})
 		}
-		n, e := tx.Exec(ctx, command, ws, id)
 		if e != nil {
 			return e
 		}
-		if n.RowsAffected() != 1 {
+		if n != 1 {
 			return domain.NotFound
 		}
 		return nil
 	})
 }
 
-// agentCredentialPredicate uses $2 for the supplied token digest.
-const agentCredentialPredicate = `NOT revoked AND (credential_hash=$2 OR (previous_hash=$2 AND previous_until>now()))`
+// lockAgentCredential locks the agent's server row and reports whether its
+// credential is still valid and the server is not awaiting controller transfer.
+func lockAgentCredential(ctx context.Context, tx pgx.Tx, a Identity) (bool, error) {
+	return db.New(tx).LockAgentCredential(ctx, db.LockAgentCredentialParams{WorkspaceID: a.Workspace, ServerID: a.ID, CredentialHash: hash(a.Token)})
+}
 
 // Agent identity is bound by a server ID plus a random 256-bit credential, never a tenant selector.
 type Identity struct {
@@ -242,7 +246,8 @@ func (s *Service) Authenticate(ctx context.Context, id uuid.UUID, token string) 
 	if len(token) != 43 {
 		return v, domain.Unauthenticated
 	}
-	err := s.Store.Pool.QueryRow(ctx, `SELECT workspace_id,role,(credential_hash<>$2),COALESCE((capabilities->>'credentialFreeVisualCancel')::boolean,false) FROM servers WHERE id=$1 AND NOT revoked AND NOT awaiting_transfer AND (credential_hash=$2 OR (previous_hash=$2 AND previous_until>now()))`, id, hash(token)).Scan(&v.Workspace, &v.Role, &v.Previous, &v.CredentialFreeVisualCancel)
+	row, err := s.Store.Queries.AuthenticateAgent(ctx, db.AuthenticateAgentParams{ServerID: id, CredentialHash: hash(token)})
+	v.Workspace, v.Role, v.Previous, v.CredentialFreeVisualCancel = row.WorkspaceID, api.ServerRole(row.Role), row.Previous, row.CredentialFreeVisualCancel
 	if errors.Is(err, pgx.ErrNoRows) {
 		err = domain.Unauthenticated
 	}
@@ -258,12 +263,12 @@ func (s *Service) Enroll(ctx context.Context, in api.AgentEnrollment) (api.Agent
 
 func (s *Service) Heartbeat(ctx context.Context, a Identity, in api.AgentHeartbeat) (api.AgentStatus, error) {
 	var out api.AgentStatus
-	var previewOnly bool
 	caps, _ := json.Marshal(in.Capabilities)
 	pre, _ := json.Marshal(in.Preflight)
-	err := s.Store.Pool.QueryRow(ctx, `UPDATE servers SET last_seen=now(),capabilities=$3,preflight=$4 WHERE id=$1 AND NOT revoked AND NOT awaiting_transfer AND (credential_hash=$2 OR (previous_hash=$2 AND previous_until>now())) RETURNING role,rotation_requested,preview_only`, a.ID, hash(a.Token), caps, pre).Scan(&out.Role, &out.RotationRequested, &previewOnly)
-	if previewOnly {
-		out.PreviewOnly = &previewOnly
+	row, err := s.Store.Queries.RecordAgentHeartbeat(ctx, db.RecordAgentHeartbeatParams{WorkspaceID: a.Workspace, ServerID: a.ID, CredentialHash: hash(a.Token), Capabilities: caps, Preflight: pre})
+	out.Role, out.RotationRequested = api.ServerRole(row.Role), row.RotationRequested
+	if row.PreviewOnly {
+		out.PreviewOnly = &row.PreviewOnly
 	}
 	if errors.Is(err, pgx.ErrNoRows) {
 		err = domain.Unauthenticated
@@ -274,9 +279,8 @@ func (s *Service) Rotate(ctx context.Context, a Identity, candidate string) erro
 	if len(candidate) != 43 {
 		return domain.Invalid("credential")
 	}
-	// The same candidate is an idempotent retry. A previous credential cannot initiate a new exchange.
-	n, err := s.Store.Pool.Exec(ctx, `UPDATE servers SET previous_hash=CASE WHEN credential_hash=$3 THEN previous_hash ELSE credential_hash END,previous_until=CASE WHEN credential_hash=$3 THEN previous_until ELSE now()+interval '2 minutes' END,credential_hash=$3,rotation_requested=false WHERE id=$1 AND NOT revoked AND NOT awaiting_transfer AND ((credential_hash=$2 AND rotation_requested) OR (credential_hash=$3 AND (credential_hash=$2 OR (previous_hash=$2 AND previous_until>now()))))`, a.ID, hash(a.Token), hash(candidate))
-	if err == nil && n.RowsAffected() != 1 {
+	n, err := s.Store.Queries.RotateAgentCredential(ctx, db.RotateAgentCredentialParams{WorkspaceID: a.Workspace, ServerID: a.ID, CredentialHash: hash(a.Token), CandidateHash: hash(candidate)})
+	if err == nil && n != 1 {
 		return domain.Unauthenticated
 	}
 	return err
