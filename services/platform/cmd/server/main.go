@@ -299,6 +299,7 @@ func run() error {
 				}
 			}
 		}()
+		api.Execution.Troubleshooting = c.Troubleshooting
 		if e = api.Execution.Start(ctx); e != nil {
 			return e
 		}

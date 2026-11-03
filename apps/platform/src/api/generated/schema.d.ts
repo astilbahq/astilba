@@ -22,6 +22,101 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/troubleshooting": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                projectId: string;
+                environmentId: string;
+            };
+            cookie?: never;
+        };
+        get: operations["getTroubleshootingPolicy"];
+        put: operations["saveTroubleshootingPolicy"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/troubleshooting/sessions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                projectId: string;
+                environmentId: string;
+            };
+            cookie?: never;
+        };
+        get: operations["listOpenTroubleshootingSessions"];
+        put?: never;
+        post: operations["openTroubleshootingSession"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspaceId}/troubleshooting-sessions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+            };
+            cookie?: never;
+        };
+        get: operations["listTroubleshootingSessions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspaceId}/troubleshooting-sessions/close": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["closeAllTroubleshootingSessions"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspaceId}/troubleshooting-sessions/{sessionId}/close": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["closeTroubleshootingSession"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/preview-policy": {
         parameters: {
             query?: never;
@@ -2051,6 +2146,57 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        TroubleshootingPolicy: {
+            enabled: boolean;
+            ownersOnly: boolean;
+            /** Format: int64 */
+            generation: number;
+            /** @description This installation has enabled terminal sessions. */
+            available: boolean;
+        };
+        SaveTroubleshootingPolicy: {
+            enabled: boolean;
+            ownersOnly: boolean;
+            /** Format: int64 */
+            generation: number;
+        };
+        OpenTroubleshootingSession: {
+            /** Format: uuid */
+            applicationId: string;
+            instance: number;
+            /**
+             * Format: uuid
+             * @description Required for an application placed across hosts.
+             */
+            serverId?: string;
+        };
+        TroubleshootingSession: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            environmentId: string;
+            /** Format: uuid */
+            serverId: string;
+            /** Format: uuid */
+            applicationId: string;
+            instance: number;
+            /** Format: uuid */
+            actorId: string;
+            /** @enum {string} */
+            state: "offered" | "active" | "closed";
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            deadlineAt: string;
+            /** Format: date-time */
+            closedAt?: string;
+            closeReason?: string;
+        };
+        OpenedTroubleshootingSession: {
+            session: components["schemas"]["TroubleshootingSession"];
+            /** @description Single-use stream ticket valid for 30 seconds. */
+            ticket: string;
+        };
         CrossHostInventory: {
             ingressReady?: boolean;
             cpuMillis: number;
@@ -2321,6 +2467,15 @@ export interface components {
         /** @enum {string} */
         ServerRole: "deployment" | "build" | "combined";
         AgentCapabilities: {
+            /** @description Supports terminal sessions. Advertised only after Astilba-Agent-Troubleshooting v1. */
+            troubleshooting?: boolean;
+            /** @description The host owner has opted in to terminal sessions. Advertised only after Astilba-Agent-Troubleshooting v1. */
+            troubleshootingEnabled?: boolean;
+            /**
+             * @description Why a current agent cannot offer terminal sessions on this host. Advertised only after Astilba-Agent-Troubleshooting v1.
+             * @enum {string}
+             */
+            troubleshootingUnavailable?: "runtime";
             /** @description Supports versioned managed private links and coordinated cross-host commands. */
             crossHost?: boolean;
             /** @description Supports stateful maintenance writer resumption after its admission deadline with primary-first delivery. */
@@ -4072,6 +4227,236 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ManagedNetwork"];
                 };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    getTroubleshootingPolicy: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                projectId: string;
+                environmentId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Whether terminal sessions are allowed in this environment */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TroubleshootingPolicy"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    saveTroubleshootingPolicy: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                projectId: string;
+                environmentId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SaveTroubleshootingPolicy"];
+            };
+        };
+        responses: {
+            /** @description Saved terminal session setting */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TroubleshootingPolicy"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    listOpenTroubleshootingSessions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                projectId: string;
+                environmentId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Open terminal sessions in this environment */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TroubleshootingSession"][];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    openTroubleshootingSession: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                projectId: string;
+                environmentId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OpenTroubleshootingSession"];
+            };
+        };
+        responses: {
+            /** @description Admitted session and its single-use stream ticket */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OpenedTroubleshootingSession"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    listTroubleshootingSessions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Recent terminal sessions in this workspace */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TroubleshootingSession"][];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    closeAllTroubleshootingSessions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Every open session in the workspace was ended */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    closeTroubleshootingSession: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The session was ended */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Error */
             default: {

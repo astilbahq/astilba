@@ -67,6 +67,9 @@ func (s *Store) PrepareRecovery(ctx context.Context, id uuid.UUID, next int64) e
 	if e = q.RevokeWorkspaceAutomationCredentials(ctx, ws); e != nil {
 		return e
 	}
+	if e = FenceTroubleshooting(ctx, q, ws); e != nil {
+		return e
+	}
 	if e = q.BlockWorkspaceAutoDeployments(ctx, db.BlockWorkspaceAutoDeploymentsParams{Note: "Management recovery requires renewed approval.", WorkspaceID: ws}); e != nil {
 		return e
 	}
@@ -80,4 +83,23 @@ func (s *Store) PrepareRecovery(ctx context.Context, id uuid.UUID, next int64) e
 		return e
 	}
 	return tx.Commit(ctx)
+}
+
+// FenceTroubleshooting requires an owner to re-enable terminal sessions after any
+// recovery, and ends sessions the restored state still shows as open. Each close is
+// attributed to the session's actor, because recovery has no acting principal.
+func FenceTroubleshooting(ctx context.Context, q *db.Queries, ws uuid.UUID) error {
+	if err := q.DisableWorkspaceTroubleshootingPolicies(ctx, ws); err != nil {
+		return err
+	}
+	ended, err := q.CloseWorkspaceTroubleshootingSessions(ctx, db.CloseWorkspaceTroubleshootingSessionsParams{CloseReason: "management recovery", WorkspaceID: ws})
+	if err != nil {
+		return err
+	}
+	for _, session := range ended {
+		if err = Audit(ctx, q, Principal{Account: db.Account{ID: session.ActorID}}, ws, "session.close", session.ID); err != nil {
+			return err
+		}
+	}
+	return nil
 }

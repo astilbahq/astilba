@@ -9,6 +9,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/portability"
+	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -42,8 +43,10 @@ func fenceRecoveryWorkspace(ctx context.Context, tx pgx.Tx, ws uuid.UUID) error 
 		}
 	}
 	// inline-sql: recovery session temporary table.
-	_, err := tx.Exec(ctx, `UPDATE network_endpoint_sources s SET active=false WHERE workspace_id=$1 AND NOT EXISTS(SELECT 1 FROM recovery_incoming_grants g WHERE g.endpoint_id=s.endpoint_id AND g.server_id=s.server_id AND g.unit_id=s.unit_id)`, ws)
-	return err
+	if _, err := tx.Exec(ctx, `UPDATE network_endpoint_sources s SET active=false WHERE workspace_id=$1 AND NOT EXISTS(SELECT 1 FROM recovery_incoming_grants g WHERE g.endpoint_id=s.endpoint_id AND g.server_id=s.server_id AND g.unit_id=s.unit_id)`, ws); err != nil {
+		return err
+	}
+	return store.FenceTroubleshooting(ctx, q, ws)
 }
 
 func (s *Service) restoreRecoveryRoots(ctx context.Context, tx pgx.Tx, ws uuid.UUID, roots map[uuid.UUID]recoveringRoot, sourceHash, inputHash string, owner uuid.UUID) error {
