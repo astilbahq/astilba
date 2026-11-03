@@ -44,6 +44,11 @@ for (const theme of ["light", "dark"]) {
     await expect(
       properties.getByRole("textbox", { name: "Service name", exact: true }),
     ).toHaveValue("api");
+    const title = properties.getByRole("heading", { name: "api", exact: true });
+    await expect(title).toBeFocused();
+    await api.focus();
+    await api.press("Enter");
+    await expect(title).toBeFocused();
     for (const [name, width, height] of [
       ["desktop", 1440, 1100],
       ["user-1280", 1280, 900],
@@ -61,19 +66,35 @@ for (const theme of ["light", "dark"]) {
       });
     }
     expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
-    await properties.getByRole("button", { name: "Close properties" }).click();
-    await expect(
-      page.getByRole("group", {
-        name: "Services and connections",
-        exact: true,
-      }),
-    ).toBeFocused();
+    await properties
+      .getByRole("button", { name: "Close properties" })
+      .press("Enter");
+    await expect(api).toBeFocused();
+    await expect(api).toHaveCSS("outline-style", "solid");
     await expect(properties).toHaveCount(0);
+    const graph = page.getByRole("group", {
+      name: "Services and connections",
+      exact: true,
+    });
+    await api.press("Enter");
+    await expect(title).toBeFocused();
+    await api.focus();
+    await api.press("Escape");
+    await expect(properties).toHaveCount(0);
+    await expect(graph).toBeFocused();
+    await page
+      .getByRole("group", { name: "Configure api-data volume", exact: true })
+      .click();
+    await page
+      .getByRole("region", { name: "Properties for api-data", exact: true })
+      .getByRole("button", { name: "Close properties" })
+      .click();
+    await expect(graph).toBeFocused();
     await page
       .getByRole("button", { name: "Service list", exact: true })
       .click();
     await page.getByRole("button", { name: "api", exact: true }).click();
-    await expect(properties).toBeVisible();
+    await expect(title).toBeFocused();
 
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto(
@@ -83,7 +104,8 @@ for (const theme of ["light", "dark"]) {
       page.getByRole("button", { name: "Service list", exact: true }),
     ).toHaveAttribute("aria-pressed", "true");
     await page.getByRole("button", { name: "api", exact: true }).click();
-    await expect(properties).toBeVisible();
+    await expect(title).toBeFocused();
+    await expect(title).toBeInViewport();
     await expect(
       page.getByRole("button", { name: "api-data", exact: true }),
     ).toBeVisible();
@@ -123,3 +145,21 @@ for (const theme of ["light", "dark"]) {
     expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
   });
 }
+
+test("narrow empty environments explain the empty service list", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    "/iframe.html?id=pages-environment-detail--empty-canvas&viewMode=story&globals=a11y.manual:!true",
+  );
+  await expect(
+    page.getByRole("button", { name: "Service list", exact: true }),
+  ).toHaveAttribute("aria-pressed", "true");
+  await expect(
+    page.getByRole("heading", { name: "Build your service map", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("region", { name: "Select a resource", exact: true }),
+  ).toHaveCount(0);
+});

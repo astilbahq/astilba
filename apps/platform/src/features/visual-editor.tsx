@@ -8,7 +8,13 @@ import {
   Position,
   ReactFlow,
 } from "@xyflow/react";
-import { useContext, useEffect, useRef, useState } from "react";
+import {
+  useContext,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import { useTranslation } from "react-i18next";
 import { cx } from "../../styled-system/css";
 import { client, result, type Schema } from "../api/client";
@@ -19,8 +25,6 @@ import {
 } from "../api/environment";
 import { Button } from "../components/button";
 import "./visual-editor.css";
-import { IconButton } from "../components/icon-button";
-import { Icon } from "../components/icons";
 import * as s from "../styles";
 import { ThemeContext } from "../theme";
 import { ErrorNotice, Form, text, useAction } from "../ui";
@@ -35,12 +39,21 @@ import {
 } from "./visual-editor/add-resource-forms";
 import { RouteEditor } from "./visual-editor/route-editor";
 import { ServiceProperties } from "./visual-editor/service-properties";
-import { ResourceSummary } from "./visual-resource";
+import {
+  InspectorHeader,
+  NetworkProperties,
+  ResourceList,
+  ResourceSummary,
+} from "./visual-resource";
 import "@xyflow/react/dist/style.css";
 
 export type { EnvironmentPath } from "../api/environment";
 type Spec = Schema["Specification"];
 type App = Schema["ApplicationReference"];
+const nodeId = (target: EventTarget) =>
+  target instanceof HTMLElement && target.classList.contains("react-flow__node")
+    ? target.dataset.id
+    : undefined;
 export function VisualEditor({
   path,
   spec,
@@ -61,15 +74,39 @@ export function VisualEditor({
   const { theme } = useContext(ThemeContext);
   const { t } = useTranslation("environment");
   const configure = write && !spec.compose;
+  const workspace = useRef<HTMLElement>(null);
   const graph = useRef<HTMLDivElement>(null);
-  const closeProperties = () => {
-    setSelected(undefined);
-    graph.current?.focus();
-  };
+  const inspector = useRef<HTMLHeadingElement>(null);
+  const opener = useRef<HTMLElement | null>(null);
   const [selected, setSelected] = useState<string>();
-  const [view, setView] = useState<"canvas" | "list">(() =>
-    matchMedia("(width < 40rem)").matches ? "list" : "canvas",
-  );
+  const [focusInspector, setFocusInspector] = useState(false);
+  const [view, setView] = useState<"canvas" | "list">("canvas");
+  // Match the editor's container queries; navigation can make it narrower
+  // than the viewport.
+  useLayoutEffect(() => {
+    const rem = parseFloat(getComputedStyle(document.documentElement).fontSize);
+    if ((workspace.current?.clientWidth ?? 0) < 40 * rem) setView("list");
+  }, []);
+  // Keyboard and list choices move focus to Properties, which can render below
+  // the graph. Pointer selection on the canvas leaves focus in place.
+  const open = (id: string, from: EventTarget | null) => {
+    opener.current = from instanceof HTMLElement ? from : null;
+    setSelected(id);
+    setFocusInspector(true);
+  };
+  const choose = (id: string) => {
+    opener.current = null;
+    setSelected(id);
+  };
+  useEffect(() => {
+    if (!focusInspector) return;
+    inspector.current?.focus();
+    setFocusInspector(false);
+  }, [focusInspector]);
+  const closeProperties = (returnTo = opener.current) => {
+    setSelected(undefined);
+    (returnTo?.isConnected ? returnTo : graph.current)?.focus();
+  };
   const [positions, setPositions] = useState<Schema["Layout"]["positions"]>();
   const [savedPositions, setSavedPositions] = useState("");
   const [notice, setNotice] = useState("");
@@ -112,6 +149,7 @@ export function VisualEditor({
     });
   const app = spec.applications.find((a) => a.id === selected);
   const volume = spec.volumes?.find((v) => v.id === selected);
+  const network = spec.networks?.find((n) => n.id === selected);
   useEffect(() => {
     if (app) onSelectService?.(app.name);
   }, [app, onSelectService]);
@@ -191,12 +229,27 @@ export function VisualEditor({
         next[c.id] = c.position;
         moved = true;
       }
-      if (c.type === "select" && c.selected) setSelected(c.id);
+      if (c.type === "select" && c.selected) choose(c.id);
     }
     if (moved) setPositions(next);
   };
+  const empty = nodes.length === 0 && (
+    <>
+      <h4 className={v.heading}>
+        {configure
+          ? t(($) => $.visualEditor.emptyTitle)
+          : t(($) => $.emptyTitle)}
+      </h4>
+      <p className={s.muted}>
+        {configure
+          ? t(($) => $.visualEditor.emptyDescription)
+          : t(($) => $.emptyReadOnly)}
+      </p>
+    </>
+  );
   return (
     <section
+      ref={workspace}
       className={cx(s.stack, v.workspace)}
       aria-label="Visual configuration"
     >
@@ -241,20 +294,7 @@ export function VisualEditor({
         >
           {view === "canvas" ? (
             <div className="visual-canvas">
-              {nodes.length === 0 && (
-                <div className={v.emptyCanvas}>
-                  <h4 className={v.heading}>
-                    {configure
-                      ? t(($) => $.visualEditor.emptyTitle)
-                      : t(($) => $.emptyTitle)}
-                  </h4>
-                  <p className={s.muted}>
-                    {configure
-                      ? t(($) => $.visualEditor.emptyDescription)
-                      : t(($) => $.emptyReadOnly)}
-                  </p>
-                </div>
-              )}
+              {empty && <div className={v.emptyCanvas}>{empty}</div>}
               <ReactFlow
                 nodes={nodes}
                 edges={[
@@ -286,7 +326,22 @@ export function VisualEditor({
                   ),
                 ]}
                 onNodesChange={move}
-                onNodeClick={(_, node) => setSelected(node.id)}
+                onKeyDown={(event) => {
+                  const id = nodeId(event.target);
+                  if (!id) return;
+                  if (event.key === "Enter" || event.key === " ") {
+                    open(id, event.target);
+                  } else if (event.key === "Escape") {
+                    // React Flow blurs a node it deselects with Escape.
+                    if (selected === id) closeProperties(graph.current);
+                    else setSelected(undefined);
+                  }
+                }}
+                onClick={(event) => {
+                  // Assistive technologies can activate a node with a click.
+                  const id = nodeId(event.target);
+                  if (id && event.detail === 0) open(id, event.target);
+                }}
                 onConnect={configure ? connect : undefined}
                 nodesDraggable={write}
                 nodesConnectable={configure}
@@ -307,56 +362,10 @@ export function VisualEditor({
                 />
               </ReactFlow>
             </div>
+          ) : empty ? (
+            <div>{empty}</div>
           ) : (
-            <ul className={v.resourceList}>
-              {(spec.networks ?? []).map((network) => (
-                <li key={network.id}>
-                  <ResourceSummary name={network.name} kind="network" />
-                </li>
-              ))}
-              {spec.applications.map((a) => (
-                <li key={a.id}>
-                  <ResourceSummary
-                    name={
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        className={v.resourceChoice}
-                        aria-pressed={selected === a.id}
-                        onClick={() => setSelected(a.id)}
-                      >
-                        {a.name}
-                      </Button>
-                    }
-                    kind={a.kind ?? "web"}
-                    instances={a.replicas}
-                    detail={
-                      a.source.kind === "git"
-                        ? a.source.repository
-                        : a.source.image
-                    }
-                  />
-                </li>
-              ))}
-              {spec.volumes?.map((volume) => (
-                <li key={volume.id}>
-                  <ResourceSummary
-                    name={
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        className={v.resourceChoice}
-                        aria-pressed={selected === volume.id}
-                        onClick={() => setSelected(volume.id)}
-                      >
-                        {volume.name}
-                      </Button>
-                    }
-                    kind="volume"
-                  />
-                </li>
-              ))}
-            </ul>
+            <ResourceList spec={spec} selected={selected} onOpen={open} />
           )}
           {write && (
             <div className={v.layout}>
@@ -413,7 +422,14 @@ export function VisualEditor({
             </small>
           )}
         </div>
-        {!app && !volume && (
+        {network && (
+          <NetworkProperties
+            ref={inspector}
+            name={network.name}
+            onClose={() => closeProperties()}
+          />
+        )}
+        {!app && !volume && !network && !empty && (
           <section
             className={v.inspector}
             aria-label={t(($) => $.visualEditor.selectTitle)}
@@ -431,20 +447,12 @@ export function VisualEditor({
             className={v.inspector}
             aria-label={`Properties for ${volume.name}`}
           >
-            <div className={v.inspectorHeader}>
-              <div>
-                <h3 className={v.inspectorTitle}>{volume.name}</h3>
-                <p className={s.muted}>Data volume</p>
-              </div>
-              <IconButton
-                aria-label={t(($) => $.visualEditor.closeProperties)}
-                onClick={closeProperties}
-              >
-                <Icon>
-                  <path d="m6 6 12 12M18 6 6 18" />
-                </Icon>
-              </IconButton>
-            </div>
+            <InspectorHeader
+              ref={inspector}
+              name={volume.name}
+              kind="volume"
+              onClose={() => closeProperties()}
+            />
             <p>
               Removing this volume from configuration retains its data.
               Permanent deletion is available in the data controls below.
@@ -508,24 +516,16 @@ export function VisualEditor({
                   (route) => route.targetId !== app.id,
                 ),
               });
-              setSelected(undefined);
+              closeProperties(graph.current);
             }}
             className={v.inspector}
             header={
-              <div className={v.inspectorHeader}>
-                <div>
-                  <h3 className={v.inspectorTitle}>{app.name}</h3>
-                  <p className={s.muted}>{app.kind ?? "web"}</p>
-                </div>
-                <IconButton
-                  aria-label={t(($) => $.visualEditor.closeProperties)}
-                  onClick={closeProperties}
-                >
-                  <Icon>
-                    <path d="m6 6 12 12M18 6 6 18" />
-                  </Icon>
-                </IconButton>
-              </div>
+              <InspectorHeader
+                ref={inspector}
+                name={app.name}
+                kind={app.kind ?? "web"}
+                onClose={() => closeProperties()}
+              />
             }
           />
         )}
@@ -544,7 +544,7 @@ export function VisualEditor({
           secrets={secrets.data ?? []}
           action={action}
           stage={stage}
-          onSelect={setSelected}
+          onSelect={choose}
         />
       )}
       <ServiceConnections
@@ -557,7 +557,10 @@ export function VisualEditor({
         {spec.volumes?.map((volume) => (
           <li key={volume.id}>
             {view === "canvas" ? (
-              <Button type="button" onClick={() => setSelected(volume.id)}>
+              <Button
+                type="button"
+                onClick={(event) => open(volume.id, event.currentTarget)}
+              >
                 {volume.name}
               </Button>
             ) : (

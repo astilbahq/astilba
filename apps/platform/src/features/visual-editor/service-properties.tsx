@@ -39,15 +39,12 @@ export function ServiceProperties({
   update: (app: App) => void;
   stage: (spec: Spec) => void;
   onRemove: () => void;
-  className?: string;
-  header?: ReactNode;
+  className: string;
+  header: ReactNode;
 }) {
   return (
-    <section
-      className={className ?? s.panel}
-      aria-label={`Properties for ${app.name}`}
-    >
-      {header ?? <h3>{app.name}</h3>}
+    <section className={className} aria-label={`Properties for ${app.name}`}>
+      {header}
       {write && (
         <fieldset className={s.row}>
           <legend>Canvas position</legend>

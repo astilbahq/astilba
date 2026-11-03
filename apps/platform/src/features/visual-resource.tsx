@@ -1,9 +1,45 @@
-import type { ReactNode } from "react";
+import type { ReactNode, Ref } from "react";
 import { useTranslation } from "react-i18next";
+import type { Schema } from "../api/client";
+import { Button } from "../components/button";
+import { IconButton } from "../components/icon-button";
 import { Icon } from "../components/icons";
+import * as s from "../styles";
 import * as v from "./visual-editor.styles";
 
 type ResourceKind = "web" | "worker" | "postgres" | "network" | "volume";
+
+export function InspectorHeader({
+  name,
+  kind,
+  onClose,
+  ref,
+}: {
+  name: string;
+  kind: ResourceKind;
+  onClose: () => void;
+  ref: Ref<HTMLHeadingElement>;
+}) {
+  const { t } = useTranslation("environment");
+  return (
+    <div className={v.inspectorHeader}>
+      <div>
+        <h3 className={v.inspectorTitle} ref={ref} tabIndex={-1}>
+          {name}
+        </h3>
+        <p className={s.muted}>{t(($) => $.visualEditor.kinds[kind])}</p>
+      </div>
+      <IconButton
+        aria-label={t(($) => $.visualEditor.closeProperties)}
+        onClick={onClose}
+      >
+        <Icon>
+          <path d="m6 6 12 12M18 6 6 18" />
+        </Icon>
+      </IconButton>
+    </div>
+  );
+}
 
 export function ResourceIcon({ kind }: { kind: ResourceKind }) {
   return (
@@ -39,6 +75,24 @@ export function ResourceIcon({ kind }: { kind: ResourceKind }) {
   );
 }
 
+export function NetworkProperties({
+  name,
+  onClose,
+  ref,
+}: {
+  name: string;
+  onClose: () => void;
+  ref: Ref<HTMLHeadingElement>;
+}) {
+  const { t } = useTranslation("environment");
+  return (
+    <section className={v.inspector} aria-label={`Properties for ${name}`}>
+      <InspectorHeader ref={ref} name={name} kind="network" onClose={onClose} />
+      <p className={s.muted}>{t(($) => $.visualEditor.networkDescription)}</p>
+    </section>
+  );
+}
+
 export function ResourceSummary({
   name,
   kind,
@@ -71,5 +125,56 @@ export function ResourceSummary({
         )}
       </div>
     </div>
+  );
+}
+
+export function ResourceList({
+  spec,
+  selected,
+  onOpen,
+}: {
+  spec: Schema["Specification"];
+  selected?: string;
+  onOpen: (id: string, from: HTMLElement) => void;
+}) {
+  const choice = (id: string, name: string) => (
+    <Button
+      type="button"
+      variant="ghost"
+      className={v.resourceChoice}
+      aria-pressed={selected === id}
+      onClick={(event) => onOpen(id, event.currentTarget)}
+    >
+      {name}
+    </Button>
+  );
+  return (
+    <ul className={v.resourceList}>
+      {(spec.networks ?? []).map((network) => (
+        <li key={network.id}>
+          <ResourceSummary name={network.name} kind="network" />
+        </li>
+      ))}
+      {spec.applications.map((a) => (
+        <li key={a.id}>
+          <ResourceSummary
+            name={choice(a.id, a.name)}
+            kind={a.kind ?? "web"}
+            instances={a.replicas}
+            detail={
+              a.source.kind === "git" ? a.source.repository : a.source.image
+            }
+          />
+        </li>
+      ))}
+      {spec.volumes?.map((volume) => (
+        <li key={volume.id}>
+          <ResourceSummary
+            name={choice(volume.id, volume.name)}
+            kind="volume"
+          />
+        </li>
+      ))}
+    </ul>
   );
 }

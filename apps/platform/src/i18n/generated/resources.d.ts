@@ -422,6 +422,7 @@ export default interface Resources {
         "web": "Web service",
         "worker": "Worker"
       },
+      "networkDescription": "This network is defined in the Compose files. Edit them to change which services join it.",
       "selectDescription": "Choose a service or data volume to inspect its configuration.",
       "selectTitle": "Select a resource"
     }

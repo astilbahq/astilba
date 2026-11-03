@@ -11,6 +11,8 @@
   --xy-edge-label-color: var(--colors-fg);
   --xy-edge-label-background-color: var(--colors-visual-ground);
   --xy-controls-box-shadow: none;
+  --xy-node-boxshadow-hover: none;
+  --xy-node-boxshadow-selected: none;
 }
 @container visual-editor (min-width: 40rem) {
   .visual-canvas {
@@ -24,14 +26,21 @@
   background: var(--colors-visual-node);
   border: 1px solid var(--colors-visual-border);
   border-radius: var(--radii-xl);
-  box-shadow: none;
   font-family: var(--fonts-ui);
   transition: border-color var(--durations-button) var(--easings-out);
 }
-.visual-canvas .react-flow__node-default:hover,
-.visual-canvas .react-flow__node-default.selected {
+.visual-canvas .react-flow__node-default:hover {
   border-color: var(--colors-fg);
-  box-shadow: none;
+}
+/* React Flow removes the outline from focused selectable nodes. */
+.visual-canvas .react-flow__node.selectable:focus-visible {
+  outline: 2px solid var(--colors-fg);
+  outline-offset: 3px;
+}
+/* The ring keeps the inspected node distinct from a hovered one. */
+.visual-canvas .react-flow__node-default.selectable.selected {
+  border-color: var(--colors-fg);
+  box-shadow: 0 0 0 1px var(--colors-fg);
 }
 .visual-canvas .react-flow__handle {
   inline-size: var(--sizes-2);
@@ -81,7 +90,8 @@
     border-color: ButtonText;
   }
   .visual-canvas .react-flow__node-default.selected,
-  .visual-canvas :focus-visible {
+  .visual-canvas :focus-visible,
+  .visual-canvas .react-flow__node.selectable:focus-visible {
     outline: 2px solid Highlight;
   }
   .visual-canvas .react-flow__edge-path {

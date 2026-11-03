@@ -105,6 +105,7 @@
     "graph": "Services and connections",
     "emptyTitle": "Build your service map",
     "emptyDescription": "Add a service below to start connecting your environment.",
+    "networkDescription": "This network is defined in the Compose files. Edit them to change which services join it.",
     "selectTitle": "Select a resource",
     "selectDescription": "Choose a service or data volume to inspect its configuration."
   }
