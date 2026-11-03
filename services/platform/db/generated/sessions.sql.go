@@ -10,6 +10,19 @@ import (
 	"time"
 )
 
+const deleteRenewedSession = `-- name: DeleteRenewedSession :execrows
+DELETE FROM sessions WHERE token = $1
+`
+
+// unscoped: the hashed browser session token is the credential.
+func (q *Queries) DeleteRenewedSession(ctx context.Context, token string) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteRenewedSession, token)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const insertSession = `-- name: InsertSession :exec
 INSERT INTO sessions(token,data,expiry) VALUES($1,$2,$3)
 `
@@ -23,6 +36,22 @@ type InsertSessionParams struct {
 // unscoped: the hashed browser session token is the credential.
 func (q *Queries) InsertSession(ctx context.Context, arg InsertSessionParams) error {
 	_, err := q.db.Exec(ctx, insertSession, arg.Token, arg.Data, arg.Expiry)
+	return err
+}
+
+const moveTroubleshootingBrowserBinding = `-- name: MoveTroubleshootingBrowserBinding :exec
+UPDATE troubleshooting_sessions SET browser_session_hash = $1
+WHERE browser_session_hash = $2 AND state <> 'closed'
+`
+
+type MoveTroubleshootingBrowserBindingParams struct {
+	Renewed  []byte `json:"renewed"`
+	Previous []byte `json:"previous"`
+}
+
+// unscoped: the hashed browser session token identifies the sessions it opened.
+func (q *Queries) MoveTroubleshootingBrowserBinding(ctx context.Context, arg MoveTroubleshootingBrowserBindingParams) error {
+	_, err := q.db.Exec(ctx, moveTroubleshootingBrowserBinding, arg.Renewed, arg.Previous)
 	return err
 }
 
