@@ -14,10 +14,34 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  application:
-    name: Application verification
+  plan:
+    name: Select application checks
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 5
+    outputs:
+      go: ${{ steps.plan.outputs.go }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.18.1
+      - id: plan
+        # Pull requests run the base branch's planner, so editing the planner cannot
+        # select its own checks. A key the base planner does not know selects the suite.
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = pull_request ] && git cat-file -e HEAD^1:scripts/ci-plan.mjs 2>/dev/null; then
+            git show HEAD^1:scripts/ci-plan.mjs > "$RUNNER_TEMP/ci-plan.mjs"
+            node "$RUNNER_TEMP/ci-plan.mjs"
+          fi
+          grep -q '^go=' "$GITHUB_OUTPUT" || echo "go=true" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Application checks and builds
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -32,12 +56,9 @@ jobs:
           node-version: 24.18.1
       - run: npm install --global pnpm@11.17.0
       - run: pnpm install --frozen-lockfile
-      - name: Pull pinned probe image
-        run: docker pull busybox:1.37.0@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e
-      - run: make verify-app-core
+      - run: make verify-app-build
         env:
           SOURCE_SIZE_BASE: ${{ github.event_name == 'push' && github.event.before || 'HEAD^1' }}
-          PLAT_APP_DOCKER_HOST: unix:///var/run/docker.sock
       - run: make verify-image
         env:
           PLAT_APP_DOCKER_HOST: unix:///var/run/docker.sock
@@ -45,3 +66,48 @@ jobs:
       - run: pnpm app:source
         env:
           SOURCE_REVISION: ${{ github.sha }}
+
+  go:
+    needs: plan
+    if: needs.plan.outputs.go == 'true'
+    name: Go race (${{ matrix.lane }})
+    strategy:
+      fail-fast: false
+      matrix:
+        lane: [remaining, crosshost, preview]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: services/platform/go.mod
+          cache-dependency-path: services/platform/go.sum
+      - name: Pull pinned probe image
+        run: docker pull busybox:1.37.0@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e
+      - run: make verify-app-go-${{ matrix.lane }}
+        env:
+          PLAT_APP_DOCKER_HOST: unix:///var/run/docker.sock
+
+  verify:
+    name: Application verification
+    if: always()
+    needs: [plan, build, go]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: Require checks, builds and selected Go lanes
+        env:
+          PLAN_RESULT: ${{ needs.plan.result }}
+          BUILD_RESULT: ${{ needs.build.result }}
+          SELECTED: ${{ needs.plan.outputs.go }}
+          GO_RESULT: ${{ needs.go.result }}
+        run: |
+          test "$PLAN_RESULT" = success
+          test "$BUILD_RESULT" = success
+          case "$SELECTED:$GO_RESULT" in
+            true:success|false:skipped) ;;
+            *) exit 1 ;;
+          esac

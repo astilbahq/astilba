@@ -5,17 +5,46 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+  schedule:
+    - cron: "17 3 * * *"
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  # Nightly runs must not cancel an in-flight push to the same ref.
+  group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
+  plan:
+    name: Select Git provider checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      selected: ${{ steps.plan.outputs.git }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.18.1
+      - id: plan
+        # Pull requests run the base branch's planner, so editing the planner cannot
+        # select its own checks. A key the base planner does not know selects the suite.
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = pull_request ] && git cat-file -e HEAD^1:scripts/ci-plan.mjs 2>/dev/null; then
+            git show HEAD^1:scripts/ci-plan.mjs > "$RUNNER_TEMP/ci-plan.mjs"
+            node "$RUNNER_TEMP/ci-plan.mjs"
+          fi
+          grep -q '^git=' "$GITHUB_OUTPUT" || echo "git=true" >> "$GITHUB_OUTPUT"
+
   git:
-    name: Git provider verification
+    needs: plan
+    if: needs.plan.outputs.selected == 'true'
+    name: Git providers
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -34,3 +63,22 @@ jobs:
         run: make verify-git
         env:
           PLAT7_DOCKER_HOST: unix:///var/run/docker.sock
+
+  verify:
+    name: Git provider verification
+    if: always()
+    needs: [plan, git]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: Require the selected Git provider checks
+        env:
+          PLAN_RESULT: ${{ needs.plan.result }}
+          SELECTED: ${{ needs.plan.outputs.selected }}
+          RESULT: ${{ needs.git.result }}
+        run: |
+          test "$PLAN_RESULT" = success
+          case "$SELECTED:$RESULT" in
+            true:success|false:skipped) ;;
+            *) exit 1 ;;
+          esac
