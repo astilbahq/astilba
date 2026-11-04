@@ -131,6 +131,10 @@ also notifies the workspace's owners. It defaults to
    refuses the upgrade unless the session cookie and Origin are valid, then
    requires the ticket as the first message within five seconds. Redeeming the
    ticket re-checks membership and allows one browser attachment per session.
+   A redemption that cannot finish within five seconds refuses the stream and
+   leaves the ticket unused, unless its commit was already on its way to
+   PostgreSQL. That can use up the ticket, and the session then closes once the
+   ticket expires.
 5. **Exec.** Once management confirms that the browser stream is attached, it
    tells the agent to start the shell, so no shell runs before a person is
    connected. The agent starts it through the Docker exec API with a TTY and the

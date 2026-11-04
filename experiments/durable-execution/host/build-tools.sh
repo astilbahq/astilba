@@ -25,7 +25,7 @@ esac
 scratch=$(mktemp -d)
 trap 'rm -rf "$scratch"' EXIT
 fetch() {
-  curl --fail --location --silent --show-error "$1" --output "$scratch/$2"
+  curl --fail --location --silent --show-error --retry 3 --retry-all-errors "$1" --output "$scratch/$2"
   echo "$3  $scratch/$2" | sha256sum --check --status
 }
 fetch "https://github.com/moby/buildkit/releases/download/v0.34.1/buildkit-v0.34.1.linux-$arch.tar.gz" buildkit.tgz "$buildkit_sha"

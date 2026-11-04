@@ -378,6 +378,36 @@ func TestTroubleshootingRefusedBrowserCannotHoldItsStream(t *testing.T) {
 	}
 }
 
+// Nothing reads a browser stream during redemption, so a held workspace lock must not
+// keep it for as long as the lock lasts. Giving up must leave the ticket usable.
+func TestTroubleshootingRedemptionGivesUpWithoutUsingTheTicket(t *testing.T) {
+	x := relayFixture(t)
+	opened := x.open(t, x.owner, x.app, 1, 201)
+	ctx := context.Background()
+	lock, err := x.f.st.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Rollback(ctx)
+	if _, err = lock.Exec(ctx, "SELECT 1 FROM workspaces WHERE id=$1 FOR UPDATE", x.ws); err != nil {
+		t.Fatal(err)
+	}
+	refused := x.attachBrowser(t, x.owner, opened)
+	refused.drained(t)
+	if status := websocket.CloseStatus(refused.err); status != websocket.StatusPolicyViolation {
+		t.Fatalf("close status %d: %v", status, refused.err)
+	}
+	if err = lock.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	agent, status := x.dialAgent(t, opened.Session.Id, x.agentToken)
+	if agent == nil {
+		t.Fatalf("agent stream refused: %d", status)
+	}
+	x.attachBrowser(t, x.owner, opened)
+	agent.expect(t, []byte{terminal.Start})
+}
+
 func TestTroubleshootingStreamsRefuseAnyoneElse(t *testing.T) {
 	x := relayFixture(t)
 	operator := x.member(t, "operator@example.test", "operator")
