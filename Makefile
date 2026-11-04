@@ -97,7 +97,7 @@ verify-agent-host-visual:
 
 # The real idle limit and maximum through every proxy, which takes more than 75 minutes.
 verify-troubleshooting-soak:
-	cd services/platform && $(NATIVE_GO) PLAT_APP_DOCKER_HOST=unix:///run/astilba-plat4/docker.sock ASTILBA_NATIVE_AGENT=1 ASTILBA_NATIVE_SOAK=1 /opt/astilba-plat4/go/bin/go test -race -count=1 -v -timeout=100m -run '^TestTroubleshootingProxySoak$$' ./internal/integration
+	cd services/platform && $(NATIVE_GO) PLAT_APP_DOCKER_HOST=unix:///run/astilba-plat4/docker.sock ASTILBA_NATIVE_AGENT=1 ASTILBA_NATIVE_SOAK=1 /opt/astilba-plat4/go/bin/go test -race -count=1 -v -parallel=3 -timeout=100m -run '^TestTroubleshootingProxySoak$$' ./internal/integration
 
 verify-agent-colima:
 	bash scripts/native-agent-colima.sh '$(value PLAT_AGENT_COLIMA_PROFILE)' '$(value PLAT_AGENT_TESTS)'

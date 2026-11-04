@@ -105,7 +105,7 @@ Native verification gate requires all six jobs to pass:
 
 | Lane | Verification |
 | --- | --- |
-| `core` | PLAT-4 host runtime, builds, PostgreSQL restore, managed links, Compose and cross-host deployment, pipeline, preview, release transport, and troubleshooting target, session, cleanup and refusals |
+| `core` | PLAT-4 host runtime, builds, PostgreSQL restore, managed links, Compose and cross-host deployment, pipeline, preview, release transport, and troubleshooting target, session, cleanup and refusals, including sessions under the production unit and through real nginx, Caddy and Traefik |
 | `recovery` | Agent service enrollment, restart and signed update; a troubleshooting session end to end; cross-host older-backup, drained and upgrade recovery |
 | `visual` | Visual deployment, including catalog, backup, restore and major upgrades |
 

@@ -103,7 +103,7 @@ reach the same instance. Your proxy must:
   and a proxy limit of exactly 30 seconds ends them;
 - not cap a stream's total duration below 60 minutes.
 
-A proxy that refuses upgrades closes a session within about 30 seconds, without starting
+A proxy that refuses upgrades closes a session within about a minute, without starting
 a shell. A shorter idle or duration limit ends a running session early, and its shell
 with it. Nothing else is affected.
 
@@ -124,6 +124,9 @@ server {
     server_name platform.example.com;
     ssl_certificate /etc/ssl/platform/fullchain.pem;
     ssl_certificate_key /etc/ssl/platform/privkey.pem;
+
+    # The largest request is a workspace import.
+    client_max_body_size 45m;
 
     location / {
         proxy_pass http://127.0.0.1:8080;

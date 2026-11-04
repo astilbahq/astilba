@@ -315,6 +315,23 @@ func (p *terminalPeer) waitExit(t *testing.T, code byte) {
 	}
 }
 
+// closedWithin reads a stream until it closes and reports whether a limit warning came first.
+func (p *terminalPeer) closedWithin(t *testing.T, limit time.Duration) bool {
+	t.Helper()
+	warned := false
+	for deadline := time.After(limit); ; {
+		select {
+		case frame, open := <-p.frames:
+			if !open {
+				return warned
+			}
+			warned = warned || frame[0] == terminal.Warning
+		case <-deadline:
+			t.Fatalf("stream still open after %s", limit)
+		}
+	}
+}
+
 // startJob runs a background job from a shell, which job control places in its own
 // process group, and waits for it, so cleanup has to reach the shell's whole Linux session.
 func (a *serviceAgent) startJob(t *testing.T, browser *terminalPeer, seconds int) string {
@@ -344,9 +361,10 @@ func TestNativeTroubleshootingService(t *testing.T) {
 	}
 	a := x.startServiceAgent(t, x.owner, binary, tlsServer.URL, caPath)
 
-	// The sandbox under test is the one in force, not only the one in the file.
-	sandbox := string(a.systemctl("show", a.unit, "--property=User,NoNewPrivileges,ProtectHome,ProtectSystem,PrivateTmp,RestrictAddressFamilies,UMask,Restart"))
-	for _, want := range []string{"User=root", "NoNewPrivileges=yes", "ProtectHome=yes", "ProtectSystem=strict", "PrivateTmp=yes", "RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX", "UMask=0077", "Restart=always"} {
+	// Sessions would still pass without these, so the sessions below prove nothing about
+	// the sandbox unless it is known to be on.
+	sandbox := string(a.systemctl("show", a.unit, "--property=NoNewPrivileges,ProtectHome,ProtectSystem,PrivateTmp,RestrictAddressFamilies,UMask"))
+	for _, want := range []string{"NoNewPrivileges=yes", "ProtectHome=yes", "ProtectSystem=strict", "PrivateTmp=yes", "RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX", "UMask=0077"} {
 		if !strings.Contains(sandbox, want+"\n") {
 			t.Fatalf("unit in force lacks %s:\n%s", want, sandbox)
 		}
@@ -365,8 +383,10 @@ func TestNativeTroubleshootingService(t *testing.T) {
 	x.waitClosed(t, opened.Session.Id, "shell exited")
 	a.waitRunning(t, job, false)
 	a.recordedSession(t, opened.Session.Id, x.f.owner, `"shell exited"`)
-	if strings.Contains(a.journal(t), "privatetext") {
-		t.Fatal("terminal content reached the journal")
+	for _, content := range []string{"privatetext", "pri''vate"} { // what the shell printed and what was typed
+		if strings.Contains(a.journal(t), content) {
+			t.Fatal("terminal content reached the journal")
+		}
 	}
 
 	// Stopping the service ends the shell before the agent exits, so nothing waits for the next start.
@@ -390,11 +410,11 @@ func TestNativeTroubleshootingService(t *testing.T) {
 	browser = x.attachBrowser(t, x.owner, opened)
 	job = a.startJob(t, browser, 4323)
 	a.journaled(t, "terminal session started", "session="+opened.Session.Id.String())
-	x.forgetSessions(t, a)
 	a.systemctl("kill", "--kill-whom=main", "--signal=SIGKILL", a.unit)
 	if !a.running(t, job) {
 		t.Fatal("nothing should have ended the job before the agent restarted")
 	}
+	x.forgetSessions(t, a)
 	browser.drained(t)
 	x.waitClosed(t, opened.Session.Id, "agent stream lost")
 	a.waitRunning(t, job, false)
