@@ -451,7 +451,7 @@ func (q *Queries) ListOpenTroubleshootingSessions(ctx context.Context, arg ListO
 }
 
 const listTroubleshootingOffers = `-- name: ListTroubleshootingOffers :many
-SELECT t.id,t.unit_id,t.application_id,t.instance,t.controller_generation
+SELECT t.id,t.unit_id,t.application_id,t.instance,t.controller_generation,t.actor_id
 FROM troubleshooting_sessions t
 JOIN servers s ON s.workspace_id = t.workspace_id AND s.id = t.server_id
 WHERE t.workspace_id = $1 AND t.server_id = $2 AND t.state = 'offered'
@@ -472,6 +472,7 @@ type ListTroubleshootingOffersRow struct {
 	ApplicationID        uuid.UUID `json:"application_id"`
 	Instance             int32     `json:"instance"`
 	ControllerGeneration int64     `json:"controller_generation"`
+	ActorID              uuid.UUID `json:"actor_id"`
 }
 
 func (q *Queries) ListTroubleshootingOffers(ctx context.Context, arg ListTroubleshootingOffersParams) ([]ListTroubleshootingOffersRow, error) {
@@ -489,6 +490,7 @@ func (q *Queries) ListTroubleshootingOffers(ctx context.Context, arg ListTrouble
 			&i.ApplicationID,
 			&i.Instance,
 			&i.ControllerGeneration,
+			&i.ActorID,
 		); err != nil {
 			return nil, err
 		}

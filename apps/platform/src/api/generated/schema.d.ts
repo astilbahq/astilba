@@ -2704,6 +2704,11 @@ export interface components {
             troubleshootingOffers?: components["schemas"]["AgentTroubleshootingOffer"][];
         };
         AgentTroubleshootingOffer: {
+            /**
+             * Format: uuid
+             * @description The account that opened the session, for the host's own trail.
+             */
+            actorId: string;
             /** Format: uuid */
             sessionId: string;
             /** Format: uuid */

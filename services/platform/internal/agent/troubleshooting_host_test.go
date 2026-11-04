@@ -3,8 +3,9 @@ package agent
 import (
 	"context"
 	"errors"
-	"io"
+	"fmt"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
@@ -33,14 +34,32 @@ func TestNativeTroubleshootingTarget(t *testing.T) {
 	if !troubleshootingRuntime(version.Components) {
 		t.Fatalf("runtime below the floor: %+v", version.Components)
 	}
-	pull, err := docker.ImagePull(ctx, execution.TestImage, client.ImagePullOptions{})
-	if err != nil {
+	// A real heartbeat carries the owner's consent, where the host can offer sessions at all.
+	heartbeatJournal, _ := testVisualJournal(t)
+	if err = heartbeatJournal.SetTroubleshooting(true); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = io.Copy(io.Discard, pull); err != nil {
-		t.Fatal(err)
+	// Native hosts keep Compose out of the default plugin path.
+	cli, provisioned := "docker", false
+	if _, err = os.Stat("/opt/astilba-plat4/bin/docker"); err == nil {
+		provisioned = true
+		state := t.TempDir()
+		if err = os.WriteFile(filepath.Join(state, "config.json"), []byte(`{"cliPluginsExtraDirs":["/opt/astilba-plat4/cli-plugins"]}`), 0600); err != nil {
+			t.Fatal(err)
+		}
+		cli = filepath.Join(state, "docker")
+		if err = os.WriteFile(cli, fmt.Appendf(nil, "#!/bin/sh\nexport DOCKER_CONFIG='%s'\nexec /opt/astilba-plat4/bin/docker \"$@\"\n", state), 0700); err != nil {
+			t.Fatal(err)
+		}
 	}
-	pull.Close()
+	heartbeat := heartbeatJournal.Preflight(ctx, docker, "test", t.TempDir(), cli)
+	if heartbeat.Capabilities.Troubleshooting == nil {
+		if provisioned {
+			t.Fatalf("a provisioned host cannot offer sessions: %+v", heartbeat.Preflight)
+		}
+	} else if heartbeat.Capabilities.TroubleshootingEnabled == nil || !*heartbeat.Capabilities.TroubleshootingEnabled {
+		t.Fatal("a heartbeat did not report the owner's consent")
+	}
 
 	j, plan := testVisualJournal(t)
 	if err = j.saveUnit(unitState{Plan: plan, Expected: map[string]string{}}); err != nil {

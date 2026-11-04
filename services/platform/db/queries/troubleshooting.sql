@@ -93,7 +93,7 @@ SELECT EXISTS(SELECT 1 FROM audit_events
 WHERE workspace_id = @workspace_id AND actor_id = @actor_id AND action = @action AND created_at > now() - interval '1 hour');
 
 -- name: ListTroubleshootingOffers :many
-SELECT t.id,t.unit_id,t.application_id,t.instance,t.controller_generation
+SELECT t.id,t.unit_id,t.application_id,t.instance,t.controller_generation,t.actor_id
 FROM troubleshooting_sessions t
 JOIN servers s ON s.workspace_id = t.workspace_id AND s.id = t.server_id
 WHERE t.workspace_id = @workspace_id AND t.server_id = @server_id AND t.state = 'offered'
