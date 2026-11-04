@@ -131,11 +131,11 @@ selected.
 ## Local native agent tests
 
 `make verify-agent-colima` runs selected `internal/agent` native tests as root
-inside a Colima VM from macOS, in seconds rather than a full CI run. It
-cross-compiles the test binary for the VM's architecture, copies it in, runs it
-and removes it, including on failure. It requires an explicitly named profile,
-refuses Colima's default profile and never starts one. Use a profile created for
-this purpose: tests run as root and act on that VM's Docker daemon.
+inside a Colima VM from macOS, by default in under a minute rather than a full
+CI run. It cross-compiles the test binary for the VM's architecture, copies it
+in, runs it and removes it, including on failure. It requires an explicitly named
+profile, refuses Colima's default profile and never starts one. Use a profile
+created for this purpose: tests run as root and act on that VM's Docker daemon.
 
 ```bash
 colima start -p <disposable-profile> --activate=false --mount none --port-forwarder none --memory 2 --disk 10
@@ -156,11 +156,13 @@ in the VM to every Mac interface, including fixtures with passwords from this
 public source.
 
 `PLAT_AGENT_TESTS` overrides the test pattern. The default runs
-`TestNativeReleaseCommandTransport` and `TestNativeTroubleshootingTarget`, the
-only native tests that need nothing beyond root, the pinned image above and
-Docker with a supported runc and registry access. Interrupting a run removes the
-binary, but a test may stop without its cleanup: recreate the profile if fixtures
-remain. The rest must be asked for by name:
+`TestNativeReleaseCommandTransport`, `TestNativeTroubleshootingTarget` and the
+native session tests in `troubleshooting_session_host_test.go`. These need nothing
+beyond root, the pinned image above and Docker with a supported runc; only
+`docker pull` needs a registry. `scripts/native-agent-colima.sh` lists them by
+name, so add a new test only after checking that it needs no more. Interrupting a
+run removes the binary, but a test may stop without its cleanup: recreate the
+profile if fixtures remain. The rest must be asked for by name:
 
 | Test | Also needs |
 | --- | --- |
