@@ -150,6 +150,9 @@ func TestTroubleshootingAdmissionDecisions(t *testing.T) {
 	unavailable := api.Runtime
 	x.capabilities(t, func(c *api.AgentCapabilities) { c.TroubleshootingUnavailable = &unavailable })
 	x.refused(t, x.owner, domain.TroubleshootingRuntime)
+	unavailable = api.Host
+	x.capabilities(t, func(c *api.AgentCapabilities) { c.TroubleshootingUnavailable = &unavailable })
+	x.refused(t, x.owner, domain.TroubleshootingHostNotReady)
 	x.capabilities(t, func(c *api.AgentCapabilities) { c.Troubleshooting = &yes })
 	x.refused(t, x.owner, domain.TroubleshootingHostOptIn)
 	x.optIn(t)

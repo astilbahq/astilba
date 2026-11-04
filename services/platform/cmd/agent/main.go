@@ -43,7 +43,7 @@ func main() {
 }
 func run() error {
 	if len(os.Args) < 2 {
-		return errors.New("usage: astilba-agent describe|network-support|network-restore|preflight|enroll|transfer|run|retry|resolve-run|reject-cross-host-effect|inspect-upgrades|inspect-cross-host|inspect-controller|export-recovery|update-local|release-keygen|release-sign")
+		return errors.New("usage: astilba-agent describe|network-support|network-restore|preflight|enroll|transfer|troubleshooting-enable|troubleshooting-disable|run|retry|resolve-run|reject-cross-host-effect|inspect-upgrades|inspect-cross-host|inspect-controller|export-recovery|update-local|release-keygen|release-sign")
 	}
 	command := os.Args[1]
 	if command == "describe" {
@@ -253,6 +253,9 @@ func run() error {
 		}
 		fmt.Println("Agent enrolled.")
 		return nil
+	}
+	if command == "troubleshooting-enable" || command == "troubleshooting-disable" {
+		return j.SetTroubleshooting(command == "troubleshooting-enable")
 	}
 	if command == "retry" {
 		id, e := uuid.Parse(*operation)

@@ -1,5 +1,6 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
+import { gotoNextStory } from "./story-render";
 
 for (const theme of ["light", "dark"]) {
   test(`project overview and separate creation fit desktop, mobile and RTL in ${theme}`, async ({
@@ -63,7 +64,8 @@ for (const theme of ["light", "dark"]) {
       "pages-project-detail--long-names",
       "pages-new-environment--visual",
     ]) {
-      await page.goto(
+      await gotoNextStory(
+        page,
         `/iframe.html?id=${id}&viewMode=story&globals=theme:${theme};locale:en-XB;a11y.manual:!true`,
       );
       await expect(page.locator("html")).toHaveAttribute("dir", "rtl");
