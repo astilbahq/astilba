@@ -20,6 +20,10 @@ updates:
     # package's two pins change by hand. Security updates still apply.
     exclude-paths:
       - contracts/platform/package.json
+    # @types/node's major follows the Node version pinned in package.json's engines.
+    ignore:
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
     schedule:
       interval: weekly
     cooldown:
@@ -41,6 +45,18 @@ updates:
       npm-dependencies:
         patterns: ["*"]
         update-types: [minor, patch]
+  # Alpine is the shipped image's base, but its CA bundle comes from the Go image. The Go
+  # and Node build images stay in step with go.mod, engines and CI's pins, so they change
+  # by hand. Dependabot has no Docker security updates, so Alpine fixes wait here too.
+  - package-ecosystem: docker
+    directory: /
+    ignore:
+      - dependency-name: golang
+      - dependency-name: node
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
   - package-ecosystem: gomod
     directory: /experiments/durable-execution
     schedule:
