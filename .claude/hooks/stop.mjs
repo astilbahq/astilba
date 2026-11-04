@@ -17,21 +17,19 @@ const failureReport = (root, failed, skipped) =>
     ...(skipped.length ? [`Not run: ${names(skipped)}`] : []),
   ].join("\n\n");
 
-async function checkWorktree(repo, input, deadline) {
+async function checkWorktree(repo, input, deadline, current) {
   const session = openSession(repo, input.session_id);
-  const created = session.ensureBaseline();
+  session.ensureBaseline();
   const state = session.state();
   const notes = [];
-  if (state.late) {
-    const edited = new Set(session.edits());
-    if (created || Object.keys(state.base.dirty).some((p) => !edited.has(p)))
-      notes.push(
-        `Project checks did not cover changes already in ${repo.root} when these hooks first saw it.`,
-      );
+  if (current && state.late) {
+    notes.push(
+      `Project checks did not cover changes already in ${repo.root} when these hooks first saw it.`,
+    );
     delete state.late;
     session.save(state);
   }
-  const files = session.changedFiles(state);
+  const files = session.changedFiles(state, current);
   const fingerprint = session.fingerprint(files);
   if (!files.length || fingerprint === state.settled) return { notes };
   if (input.background_tasks?.some(({ type }) => editing.has(type))) {
@@ -39,16 +37,12 @@ async function checkWorktree(repo, input, deadline) {
     return { notes };
   }
 
-  // A continuation forced by this hook never earns a fresh set of attempts.
+  // A continuation forced by this hook never earns a fresh set of attempts, and
+  // the count survives settling: another worktree can keep the turn going.
   const samePrompt = input.stop_hook_active || input.prompt_id === state.prompt;
   const blocks = samePrompt ? (state.blocks ?? 0) : 0;
   const settle = (...messages) => {
-    session.save({
-      ...state,
-      settled: fingerprint,
-      failed: undefined,
-      blocks: 0,
-    });
+    session.save({ ...state, settled: fingerprint, failed: undefined, blocks });
     return { notes: [...notes, ...messages] };
   };
   if (samePrompt && fingerprint === state.failed)
@@ -86,8 +80,8 @@ try {
   const input = readInput();
   const deadline = Date.now() + BUDGET_MS;
   const outcomes = await Promise.all(
-    sessionWorktrees(input.cwd, input.session_id).map((repo) =>
-      checkWorktree(repo, input, deadline).catch((error) => ({
+    sessionWorktrees(input.cwd, input.session_id).map((repo, index) =>
+      checkWorktree(repo, input, deadline, index === 0).catch((error) => ({
         notes: [`Project stop hook failed in ${repo.root}: ${error.message}`],
       })),
     ),

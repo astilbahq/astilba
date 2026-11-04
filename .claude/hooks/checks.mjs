@@ -16,7 +16,8 @@ const generated =
 const ciPlan = /^(?:scripts\/ci-plan|\.github\/workflows\/ci\.yml)/;
 const hooks = /^\.claude\/(?:hooks\/|settings\.json$)/;
 // `vp check` reads the root config, and these set the installed tool versions.
-const sharedTools = /^(?:vite\.config\.ts|package\.json|pnpm-lock\.yaml)$/;
+const sharedTools =
+  /^(?:vite\.config\.ts|package\.json|pnpm-lock\.yaml|pnpm-workspace\.yaml)$/;
 
 // Keeps the checks offline: pnpm and Corepack would otherwise install or download
 // what is missing, and Go a missing module or toolchain. CI is dropped because
@@ -36,7 +37,7 @@ const offline = {
 };
 // Failures that say this machine cannot run the check, not that the code is wrong.
 const unavailable =
-  /module lookup disabled by GOPROXY=off|GOTOOLCHAIN=local\)|ERR_PNPM_NO_OFFLINE|Failed to resolve pnpm@|Network access disabled by the environment|Cannot resolve .* history|spawnSync \S+ ENOENT/;
+  /module lookup disabled by GOPROXY=off|GOTOOLCHAIN=local\)|ERR_PNPM_NO_OFFLINE|Failed to resolve pnpm@|Network access disabled by the environment|^Cannot resolve .* history|spawnSync \S+ ENOENT/m;
 
 export const formattable = (path) => format.test(path);
 

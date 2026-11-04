@@ -86,7 +86,7 @@ export function worktreeOf(directory) {
 // directory, so it stays out of `git status` and is removed with the worktree.
 export const sessionWorktree = (cwd) => worktreeOf(cwd) ?? own;
 
-// Every worktree this session has touched that still exists, current one first.
+// The worktree the session is in, then any others it has edited files in.
 export function sessionWorktrees(cwd, sessionId) {
   const repos = new Map();
   for (const repo of [
@@ -113,20 +113,25 @@ function dirty(root) {
     .map((entry) => entry.slice(3));
 }
 
-// Files in commits made since the baseline. Committer dates leave out commits
-// that a pull, reset or branch switch brought in, and a rebase's new dates keep
-// the session's own. An unborn HEAD has no commits to report.
+// Files in commits this worktree's `git commit` made since the baseline. HEAD's
+// reflog says how each commit arrived, so a pull, merge or rebase adds nothing,
+// while a merge commit still reports the files its conflict resolution changed.
+// An unborn HEAD has no reflog.
 function committed(root, since) {
   try {
     return git(
       root,
       "log",
-      "--no-merges",
+      "--walk-reflogs",
+      "--grep-reflog=^commit",
+      "--grep-reflog=^cherry-pick",
+      "--grep-reflog=^revert",
+      `--since=${since}`,
+      "--diff-merges=dense-combined",
       "--no-renames",
       "--name-only",
       "-z",
       "--format=",
-      `--since=${since}`,
     )
       .split("\0")
       .filter(Boolean);
@@ -145,7 +150,7 @@ export function openSession(repo, sessionId) {
   return {
     // The first hook to see a worktree records what was already changed, so a
     // session answers only for its own work. Anything but session start may be
-    // late, with earlier work already in that record. Returns whether it wrote.
+    // late, with earlier work already in that record.
     ensureBaseline(late = true) {
       const state = {
         base: {
@@ -162,29 +167,29 @@ export function openSession(repo, sessionId) {
       try {
         writeFileSync(statePath, JSON.stringify(state), { flag: "wx" });
       } catch (error) {
-        if (error.code === "EEXIST") return false;
-        throw error;
+        if (error.code !== "EEXIST") throw error;
       }
-      mkdirSync(sharedState(), { recursive: true });
-      appendFileSync(worktreeLog(sessionId), `${repo.root}\0`);
-      return true;
     },
 
     state: () => JSON.parse(readFileSync(statePath, "utf8")),
     save: (state) => writeFileSync(statePath, JSON.stringify(state)),
-    edits,
-    recordEdit: (path) => appendFileSync(editsPath, `${path}\0`),
+    recordEdit(path) {
+      appendFileSync(editsPath, `${path}\0`);
+      mkdirSync(sharedState(), { recursive: true });
+      appendFileSync(worktreeLog(sessionId), `${repo.root}\0`);
+    },
 
-    // Files edited through tools, plus anything Git shows changed since the
-    // baseline, which is how Bash writes and commits are detected.
-    changedFiles({ base }) {
-      const changed = new Set([
-        ...edits(),
-        ...committed(repo.root, base.since),
-      ]);
-      for (const path of dirty(repo.root))
-        if (base.dirty[path] !== stamp(join(repo.root, path)))
-          changed.add(path);
+    // Files edited through tools. In the worktree the session is in, also what
+    // Git shows changed since the baseline, which is how Bash writes and commits
+    // are detected. Elsewhere that would claim other sessions' work.
+    changedFiles({ base }, current) {
+      const changed = new Set(edits());
+      if (current) {
+        for (const path of committed(repo.root, base.since)) changed.add(path);
+        for (const path of dirty(repo.root))
+          if (base.dirty[path] !== stamp(join(repo.root, path)))
+            changed.add(path);
+      }
       return [...changed].sort();
     },
 

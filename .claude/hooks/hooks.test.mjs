@@ -40,6 +40,7 @@ test("changed paths select the checks CI would fail", () => {
     "vite.config.ts": ["format", "source size", "dashboard", "canvas"],
     "package.json": ["dashboard", "canvas"],
     "pnpm-lock.yaml": ["dashboard", "canvas"],
+    "pnpm-workspace.yaml": ["dashboard", "canvas"],
   };
   for (const [path, names] of Object.entries(selected)) {
     assert.ok(existsSync(join(repository, path)), `${path} no longer exists`);
@@ -167,33 +168,82 @@ test("Bash writes and commits are detected, earlier changes are not", (t) => {
 test("commits a session did not make are not its changes", (t) => {
   const repo = scratch(t);
   repo.outcome("fail");
-  repo.git(["checkout", "--quiet", "-b", "theirs"]);
-  repo.write("scripts/theirs.mjs");
-  repo.git(["add", "scripts/theirs.mjs"]);
-  repo.git(["commit", "--quiet", "--message", "theirs"], setup);
-  repo.git(["checkout", "--quiet", "-"]);
   repo.start();
+  const linked = join(repo.root, "..", "linked");
+  repo.git(["worktree", "add", "--quiet", "-b", "theirs", linked]);
+  repo.write("scripts/theirs.mjs", "x\n", linked);
+  repo.git(["-C", linked, "add", "scripts/theirs.mjs"]);
+  repo.git(["-C", linked, "commit", "--quiet", "--message", "theirs"]);
   repo.git(["merge", "--quiet", "--ff-only", "theirs"]);
   assert.equal(repo.stop({}), null);
 });
 
-test("Stop checks every worktree the session edited", (t) => {
+test("a conflict resolved in a merge commit is the session's change", (t) => {
+  const repo = scratch(t);
+  repo.outcome("fail");
+  const commit = (text) => {
+    repo.write("scripts/both.mjs", text);
+    repo.git(["add", "scripts/both.mjs"]);
+    repo.git(["commit", "--quiet", "--message", text], setup);
+  };
+  commit("base\n");
+  repo.git(["checkout", "--quiet", "-b", "theirs"]);
+  commit("theirs\n");
+  repo.git(["checkout", "--quiet", "-"]);
+  commit("ours\n");
+  repo.start();
+  assert.throws(() => repo.git(["merge", "--quiet", "theirs"]));
+  repo.write("scripts/both.mjs", "resolved\n");
+  repo.git(["add", "scripts/both.mjs"]);
+  repo.git(["commit", "--quiet", "--no-edit"]);
+  assert.equal(repo.git(["status", "--porcelain", "scripts"]), "");
+  assert.equal(repo.stop({}).decision, "block");
+});
+
+test("other worktrees count only for the files the session edited", (t) => {
   const repo = scratch(t);
   const linked = join(repo.root, "..", "linked");
   repo.git(["worktree", "add", "--quiet", "-b", "linked", linked]);
   repo.write("Makefile", "check-source-size:\n\t@false\n", linked);
   repo.start();
+  repo.write("scripts/theirs.mjs", "x\n", linked);
+  assert.equal(repo.stop({ prompt_id: "1" }), null);
+
   repo.write("scripts/work.mjs", "x\n", linked);
   repo.hook("after-edit.mjs", {
     tool_input: { file_path: join(linked, "scripts/work.mjs") },
   });
-  const { decision, reason } = repo.stop({ prompt_id: "1" });
+  const { decision, reason } = repo.stop({ prompt_id: "2" });
   assert.equal(decision, "block");
   assert.ok(reason.includes(realpathSync(linked)));
   assert.equal(repo.git(["status", "--porcelain"]), "");
 
   rmSync(linked, { recursive: true });
-  assert.equal(repo.stop({ prompt_id: "2" }), null);
+  assert.equal(repo.stop({ prompt_id: "3" }), null);
+});
+
+test("failures in two worktrees cannot hold the session forever", (t) => {
+  const repo = scratch(t);
+  const linked = join(repo.root, "..", "linked");
+  repo.git(["worktree", "add", "--quiet", "-b", "linked", linked]);
+  repo.write("Makefile", "check-source-size:\n\t@false\n", linked);
+  repo.start();
+  const edit = (base, attempt) => {
+    repo.write("scripts/work.mjs", `${attempt}\n`, base);
+    repo.hook("after-edit.mjs", {
+      tool_input: { file_path: join(base, "scripts/work.mjs") },
+    });
+  };
+  let stops = 0;
+  for (; stops < 12; stops++) {
+    // The second worktree starts failing a Stop later, so the two stay offset.
+    repo.outcome(stops === 0 ? "pass" : "fail");
+    edit(repo.root, stops);
+    edit(linked, stops);
+    const output = repo.stop({ prompt_id: "1", stop_hook_active: stops > 0 });
+    if (output?.decision !== "block") break;
+  }
+  assert.ok(stops < 12, "the session was never released");
 });
 
 test("a worktree first seen at Stop is reported, not attributed", (t) => {
