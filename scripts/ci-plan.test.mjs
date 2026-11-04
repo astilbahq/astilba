@@ -112,15 +112,21 @@ test("each suite runs only for paths that can affect it", async (t) => {
   const cases = [
     [["docs/hosting.md"], []],
     [["apps/platform/src/screen.tsx"], ["browser"]],
-    [["services/platform/internal/auth/service.go"], ["go", "browser"]],
-    [["services/platform/cmd/cli/main.go"], ["go", "browser"]],
+    [
+      ["services/platform/internal/auth/service.go"],
+      ["go", "browser", "vulnerabilities"],
+    ],
+    [
+      ["services/platform/cmd/cli/main.go"],
+      ["go", "browser", "vulnerabilities"],
+    ],
     [
       ["services/platform/internal/agent/engine.go"],
-      ["native", "go", "browser"],
+      ["native", "go", "browser", "vulnerabilities"],
     ],
     [
       ["services/platform/internal/httpapi/execution.go"],
-      ["native", "go", "browser"],
+      ["native", "go", "browser", "vulnerabilities"],
     ],
     [
       ["experiments/durable-execution/verify.sh"],
@@ -128,17 +134,55 @@ test("each suite runs only for paths that can affect it", async (t) => {
     ],
     [
       ["experiments/git-compose/providers_test.go"],
-      ["native", "go", "browser", "git"],
+      ["native", "go", "browser", "git", "vulnerabilities"],
     ],
     [
       ["experiments/canvas-editor/src/app.tsx"],
       ["native", "go", "browser", "canvas"],
     ],
-    [["pnpm-lock.yaml"], ["native", "go", "browser", "canvas"]],
-    [["Makefile"], ["native", "go", "browser", "durable", "git", "canvas"]],
+    [
+      ["experiments/canvas-editor/package.json"],
+      ["native", "go", "browser", "canvas", "vulnerabilities"],
+    ],
+    [
+      ["pnpm-lock.yaml"],
+      ["native", "go", "browser", "canvas", "vulnerabilities"],
+    ],
+    [
+      ["services/platform/go.sum"],
+      ["native", "go", "browser", "vulnerabilities"],
+    ],
+    [
+      ["apps/platform/package.json"],
+      ["native", "go", "browser", "vulnerabilities"],
+    ],
+    [
+      [".github/vulnerability-allowlist.json"],
+      ["native", "go", "browser", "vulnerabilities"],
+    ],
+    [
+      ["Makefile"],
+      [
+        "native",
+        "go",
+        "browser",
+        "durable",
+        "git",
+        "canvas",
+        "vulnerabilities",
+      ],
+    ],
     [
       ["scripts/ci-plan.mjs"],
-      ["native", "go", "browser", "durable", "git", "canvas"],
+      [
+        "native",
+        "go",
+        "browser",
+        "durable",
+        "git",
+        "canvas",
+        "vulnerabilities",
+      ],
     ],
     [["AGENTS.md"], ["native", "go", "browser"]],
   ];

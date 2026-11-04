@@ -14,7 +14,7 @@ check is a final `always()` gate, so it is reported on every run.
 | `git-providers.yml`        | Git provider verification        | GitLab/Gitea and source-preserving Compose edits                                                                                  |
 | `ci.yml`                   | Native verification              | Selected amd64 and arm64 host suites: fresh bootstrap, Docker, builds, PostgreSQL restore, systemd agent, deployment and recovery |
 | `canvas.yml`               | Canvas browser verification      | Type/lint/build, domain tests and Chromium/WebKit journeys                                                                        |
-| `application.yml`          | Application verification         | `make verify-app-build` and three parallel Go race lanes, image smoke test and corresponding-source archive                                                         |
+| `application.yml`          | Application verification         | `make verify-app-build` and three parallel Go race lanes, image smoke test, corresponding-source archive and selected vulnerability scan                             |
 | `application-browsers.yml` | Application browser verification | Every Chromium/WebKit dashboard journey against a real API/PostgreSQL fixture                                                     |
 | `workshop.yml`             | Workshop verification            | Standalone Storybook scenarios and accessibility audits in both browsers                                                          |
 
@@ -42,6 +42,7 @@ only when every changed path is known not to affect it:
 | Application Go race lanes | documentation or dashboard paths above |
 | Application and workshop browsers | documentation |
 | Durable execution, Git providers, canvas | outside that experiment, its workflow and the Makefile (canvas also follows the root JavaScript manifests and lockfile) |
+| Vulnerability scan | not a Go file, `go.mod`, `go.sum`, `package.json`, root JavaScript manifest or lockfile, the Makefile, the allowlist, the scanner script or its workflows |
 
 `AGENTS.md`, `REVIEW.md`, runtime, contracts, migrations, package/lock files, CI,
 scripts, toolchain and unknown paths select the native suite. A change to the
@@ -120,6 +121,58 @@ Each integration process owns a separate disposable PostgreSQL container, and
 each test creates its own database and temporary resources. Preview recovery has
 a separate process budget from the cross-host pair; both are isolated from the
 remaining tests.
+
+## Vulnerability scan
+
+`make check-vulnerabilities` runs `govulncheck` (a `services/platform` Go tool) and
+OSV Scanner (a release binary pinned by SHA-256 in `scripts/vulnerability-scan.mjs`)
+against `pnpm-lock.yaml` and every Go module. The Application workflow calls
+`vulnerability-scan.yml` when the suite is selected, and that gate requires it, so
+it adds no required context. The same workflow runs daily on its own, so an advisory
+published after the last code change fails a scheduled run without rerunning the
+application suites; GitHub notifies whoever last changed the schedule. The target is
+not part of `check-app` because it needs the Go and OSV vulnerability databases and
+a GitHub release download. `make check-ci` runs its offline policy tests.
+
+A selected run can fail on an advisory the pull request did not introduce. That
+holds up the merge group too, so land the bump or allowlist entry first.
+
+Findings fail the same way wherever they are. The surface decides how urgent one is
+and what an allowlist entry has to name:
+
+| Surface | Finding |
+| --- | --- |
+| `image`, `agent`, `cli` | A vulnerable function is reachable from `cmd/server`, `cmd/agent` or `cmd/cli`, for the platforms that binary ships to |
+| `dashboard` | A lockfile package in the production dependency closure of `@astilba/dashboard` |
+| `tooling` | Any other lockfile package, or Go reachable only from other `services/platform` packages |
+| `experiment` | A vulnerable function is reachable in `experiments/durable-execution`, `git-compose` or `platform-comparison/app` |
+
+`tooling` means outside the dashboard's production dependencies, so review code that
+a build tool generates into the bundle by hand. Go advisories whose vulnerable
+function is not reachable are listed for information and do not fail. Test-only Go
+code, Go tools such as `staticcheck`, container base images and the pinned runtime
+images are not scanned. The experiments' scans add seconds, so they run
+every time; canvas dependencies are `tooling` because they share the lockfile.
+
+### Exceptions
+
+Add an advisory that cannot be fixed yet to `.github/vulnerability-allowlist.json`
+in a reviewed pull request:
+
+```json
+{
+  "id": "GHSA-xxxx-xxxx-xxxx",
+  "package": "example-package",
+  "surfaces": ["tooling"],
+  "reason": "Why it cannot be fixed yet and why the exposure is acceptable.",
+  "expires": "2026-12-31"
+}
+```
+
+`id` may be the advisory or any alias. An entry can expire at most 90 days ahead and
+still applies on its expiry date. The scan fails if an entry has expired, the
+finding reaches a surface the entry does not name, or the entry no longer matches a
+finding, so exceptions cannot outlive what was reviewed.
 
 ## Source-size ratchet
 
