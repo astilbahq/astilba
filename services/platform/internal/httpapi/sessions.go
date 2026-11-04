@@ -208,6 +208,23 @@ func (s *Server) browserSession(next http.Handler) http.Handler {
 	})
 }
 
+// rotate replaces the token after an account change on an authenticated session.
+// None of these changes proves a fresh credential: a recent session is enough, and
+// ConfirmMFA's code comes from a secret that session was just given. They therefore
+// keep the session's absolute deadline and recent authentication, and a session that
+// a logout has deleted stays deleted.
+func (s *Server) rotate(ctx context.Context, a db.Account, mfa bool) error {
+	ctx.Value(sessionLoadKey{}).(*sessionLoad).replaceLive = true
+	deadline := s.Sessions.Deadline(ctx)
+	recent := s.Sessions.GetTime(ctx, "recent")
+	if err := s.establish(ctx, a, mfa); err != nil {
+		return err
+	}
+	s.Sessions.SetDeadline(ctx, deadline)
+	s.Sessions.Put(ctx, "recent", recent)
+	return nil
+}
+
 // dropStaleSession ends this request's session because its account has moved on, without
 // touching the row or the browser's cookie. This request may have been overtaken by the
 // credential change that is replacing them, which must not see its old row removed as if
@@ -231,14 +248,6 @@ func (s *Server) csrfToken(ctx context.Context) string {
 	}
 	derived := sha256.Sum256([]byte("astilba dead session csrf\x00" + loaded.presented))
 	return base64.RawURLEncoding.EncodeToString(derived[:])
-}
-
-// rotate replaces the token after an account change on the session that authorized it.
-// Unlike signing in, the change proves no credential of its own, so a session that a
-// logout has deleted stays deleted.
-func (s *Server) rotate(ctx context.Context, a db.Account, mfa bool) error {
-	ctx.Value(sessionLoadKey{}).(*sessionLoad).replaceLive = true
-	return s.establish(ctx, a, mfa)
 }
 
 func (s *Server) Reauthenticate(w http.ResponseWriter, r *http.Request) {

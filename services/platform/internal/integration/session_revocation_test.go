@@ -3,8 +3,6 @@ package integration
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/base64"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -256,8 +254,7 @@ func TestStaleRequestsLeaveRenewedCookieAlone(t *testing.T) {
 	} {
 		for _, row := range []string{"outdated", "deleted"} {
 			if row == "deleted" {
-				hash := sha256.Sum256([]byte(stale.cookie.Value))
-				if tag, err := f.st.Pool.Exec(context.Background(), "DELETE FROM sessions WHERE token=$1", base64.RawURLEncoding.EncodeToString(hash[:])); err != nil || tag.RowsAffected() != 1 {
+				if tag, err := f.st.Pool.Exec(context.Background(), "DELETE FROM sessions WHERE token=$1", hashedSessionToken(stale.cookie.Value)); err != nil || tag.RowsAffected() != 1 {
 					t.Fatalf("delete %s row: %v, %v", stale.name, tag, err)
 				}
 			}
