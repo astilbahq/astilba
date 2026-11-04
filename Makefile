@@ -1,4 +1,4 @@
-.PHONY: check verify verify-host verify-build verify-git verify-canvas check-app verify-app verify-app-core verify-app-build verify-app-go-remaining verify-app-go-crosshost verify-app-go-preview verify-image verify-agent-host verify-agent-host-core verify-agent-host-recovery verify-agent-host-visual check-ci check-source-size check-inline-sql
+.PHONY: check verify verify-host verify-build verify-git verify-canvas check-app verify-app verify-app-core verify-app-build verify-app-go-remaining verify-app-go-crosshost verify-app-go-preview verify-image verify-agent-host verify-agent-host-core verify-agent-host-recovery verify-agent-host-visual check-ci check-hooks check-source-size check-inline-sql
 
 APP_COORDINATION_TESTS = ^(TestCrossHostCoordinatedPlacement|TestCrossHostSubscriptionExpiry)$$
 APP_PREVIEW_RECOVERY_TESTS = ^TestPreviewRemovalSurvivesCheckpointUnion$$
@@ -31,6 +31,9 @@ verify-build:
 check-ci:
 	node --test scripts/ci-plan.test.mjs
 
+check-hooks:
+	node --test .claude/hooks/hooks.test.mjs
+
 check-source-size:
 	node --test scripts/source-size.test.mjs
 	node scripts/source-size.mjs
@@ -39,7 +42,7 @@ check-inline-sql:
 	node --test scripts/inline-sql.test.mjs
 	node scripts/inline-sql.mjs
 
-check-app: check-ci check-source-size check-inline-sql
+check-app: check-ci check-hooks check-source-size check-inline-sql
 	@for file in scripts/platform-*.mjs; do node --check "$$file" || exit 1; done
 	node --test scripts/platform-generate-test.mjs
 	cd services/platform && test -z "$$(gofmt -l .)" && go mod verify && go vet ./... && go tool staticcheck ./... && go test -short ./...
