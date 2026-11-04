@@ -107,6 +107,17 @@ on one VM, so it cannot see residue from one lane break another. For example, an
 ingress that survives the preview test's cleanup no longer trips the visual test's
 absent-ingress guard in CI; the sequential target still shows it.
 
+`-run` lists select the native tests, so `make check-ci` fails when a
+`func TestNative*` that Go builds for `linux/amd64` or `linux/arm64` under
+`services/platform` is selected by no lane or by more than one, when a `-run`
+alternative matches no test in its package, or when the workflow's `lane` list
+differs from the targets `verify-agent-host` runs. The helpers that other tests
+re-execute are named exceptions in `scripts/native-lanes.mjs`. It refuses what
+could stop a named test running but it cannot read: Makefile conditionals, shell
+syntax other than `cd DIR && ... go test`, unlisted `go test` flags, and matrix
+`exclude` or `include`. A test that skips itself at run time still counts as
+selected.
+
 ## Application Go verification
 
 Application verification runs four jobs in parallel: `make verify-app-build`
