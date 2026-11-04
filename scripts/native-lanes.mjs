@@ -1,11 +1,13 @@
-import { lstatSync, readdirSync, readFileSync } from "node:fs";
-import { join, posix } from "node:path";
+import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { join, posix, relative } from "node:path";
 import { pathToFileURL } from "node:url";
 
 const root = "services/platform";
 const workflowPath = ".github/workflows/ci.yml";
 const aggregate = "verify-agent-host";
 const lanePrefix = `${aggregate}-`;
+const architectures = ["amd64", "arm64"];
 // Re-executed inside an isolated host process or network namespace by the test
 // that needs them; run directly they only skip.
 const helpers = new Map([
@@ -13,70 +15,103 @@ const helpers = new Map([
   ["TestNativeEndpointHelper", "services/platform/internal/hostnetwork"],
 ]);
 
+// Marks a make reference this check cannot resolve. Make reads an unset one as
+// empty and the command line can set it, so it only matters in `go test` arguments.
+const unresolved = "\0";
+
+// Reads only assignments and rules. Anything else, such as a conditional, a define
+// or `+=`, could change what a lane runs, so it is reported as unread.
 function parseMakefile(text) {
-  const variables = new Map([["MAKE", "make"]]);
-  const rules = new Map();
+  const variables = new Map();
+  const recipes = new Map();
+  const unread = [];
   let current;
   for (const line of text.replace(/\\\n\s*/g, " ").split("\n")) {
     if (line.startsWith("\t")) {
-      current?.recipe.push(line.trim());
+      current?.push(line.trim());
       continue;
     }
-    const content = line.replace(/#.*/, "");
-    const variable = /^\s*([\w.-]+)\s*(?:::?|\?)?=\s*(.*?)\s*$/.exec(content);
-    const rule = /^([^\s:=]+(?:\s+[^\s:=]+)*)\s*:(?!=)\s*(.*?)\s*$/.exec(
-      content,
-    );
+    const content = line.replace(/#.*/, "").trim();
+    const variable = /^([\w.-]+)\s*(?:::?|\?)?=\s*(.*)$/.exec(content);
+    const rule = /^([^\s:=]+(?:\s+[^\s:=]+)*)\s*:(?!=)/.exec(content);
     if (variable) variables.set(variable[1], variable[2]);
     else if (rule) {
-      current = {
-        prerequisites: rule[2].split(/\s+/).filter(Boolean),
-        recipe: [],
-      };
-      for (const target of rule[1].split(/\s+/)) rules.set(target, current);
-    }
+      current = [];
+      for (const target of rule[1].split(/\s+/)) recipes.set(target, current);
+    } else if (content) unread.push(content);
   }
-  // An unresolvable reference throws, because guessing could hide a selection.
   const expand = (value) =>
     value.replace(
-      /\$(?:\$|\(([^()]*)\)|\{([^{}]*)\})/g,
-      (_, parenthesised, braced) => {
-        const name = parenthesised ?? braced;
-        if (name === undefined) return "$";
-        if (!variables.has(name)) throw new Error(`cannot resolve $(${name})`);
-        return expand(variables.get(name));
+      /\$(?:\$|\(([^()]*)\)|\{([^{}]*)\}|.)/g,
+      (reference, parenthesised, braced) => {
+        if (reference === "$$") return "$";
+        const known = variables.get(parenthesised ?? braced);
+        return known === undefined
+          ? `${unresolved}${reference}${unresolved}`
+          : expand(known);
       },
     );
-  return { rules, expand };
+  return { recipes, unread, expand };
 }
 
-// The `go test` commands of one expanded recipe line, with the packages resolved
-// against any `cd` that precedes them on that line, as each line is its own shell.
+const goTestFlag = /^-(?:race|v|count=[1-9]\d*|timeout=\S+)$/;
+const commandPrefix = /^(?:sudo|env|-\S*|\w+=\S*)$/;
+const shellSyntax = /[;|&<>#()`]/;
+const isGoTest = (word, next) => /(^|\/)go$/.test(word) && next === "test";
+
+// The `go test` commands of one expanded recipe line. A line that runs go test
+// must be a plain `cd DIR && ... go test` chain, because any other shell syntax or
+// flag could stop the tests running while the line still names them.
 function goTests(line) {
-  const words = line
-    .replace(/^[@+-]+/, "")
-    .match(/(?:'[^']*'|"[^"]*"|[^\s'"])+/g);
+  const words =
+    line.replace(/^[@+-]+/, "").match(/(?:'[^']*'|"[^"]*"|[^\s'"])+/g) ?? [];
+  if (!words.some((word, i) => isGoTest(word, words[i + 1]))) return [];
+  const syntax = words.find(
+    (word) =>
+      word !== "&&" &&
+      shellSyntax.test(
+        word.replace(
+          new RegExp(
+            `'[^']*'|"[^"]*"|${unresolved}[^${unresolved}]*${unresolved}`,
+            "g",
+          ),
+          "",
+        ),
+      ),
+  );
+  if (syntax) throw new Error(`cannot read shell syntax ${syntax}: ${line}`);
   const commands = [[]];
-  for (const word of words ?? [])
+  for (const word of words)
     if (word === "&&") commands.push([]);
     else commands.at(-1).push(word.replace(/'([^']*)'|"([^"]*)"/g, "$1$2"));
+
   let directory = ".";
   const found = [];
   for (const command of commands) {
-    if (command[0] === "cd") directory = posix.join(directory, command[1]);
-    const go = command.findIndex(
-      (word, i) => /(^|\/)go$/.test(word) && command[i + 1] === "test",
-    );
-    if (go < 0) continue;
+    if (command[0] === "cd" && command.length === 2) {
+      directory = posix.join(directory, command[1]);
+      continue;
+    }
+    const go = command.findIndex((word, i) => isGoTest(word, command[i + 1]));
+    if (
+      go < 0 ||
+      !command.slice(0, go).every((word) => commandPrefix.test(word))
+    )
+      throw new Error(`expected only cd and go test: ${line}`);
+    const args = command.slice(go + 2);
+    if (args.some((arg) => arg.includes(unresolved)))
+      throw new Error(
+        `cannot resolve ${args.join(" ").replaceAll(unresolved, "")}`,
+      );
     const runs = [];
     const packages = [];
-    const args = command.slice(go + 2);
     for (let i = 0; i < args.length; i++) {
-      const flag = /^--?(?:test\.)?(run|skip)(?:=(.*))?$/.exec(args[i]);
-      if (flag?.[1] === "skip") throw new Error("-skip hides selected tests");
-      if (flag) runs.push(flag[2] ?? args[++i]);
+      const run = /^-run(?:=(.*))?$/.exec(args[i]);
+      if (run) runs.push(run[1] ?? args[++i]);
       else if (args[i].startsWith("./"))
         packages.push(posix.join(directory, args[i]));
+      else if (!goTestFlag.test(args[i]))
+        throw new Error(`cannot read go test argument ${args[i]}`);
     }
     if (runs.length !== 1)
       throw new Error(`expected one -run: ${command.join(" ")}`);
@@ -143,17 +178,53 @@ const inPackage = (directory, packages) =>
       : directory === name,
   );
 
+function workflowProblems(workflow, ran) {
+  const problems = [];
+  // The list only reaches the runners through this matrix and this step.
+  if (/^\s*(?:exclude|include):/m.test(workflow))
+    problems.push(`${workflowPath} must not exclude or include matrix entries`);
+  if (
+    !/^\s*- name: .*\n\s*run: make verify-agent-host-\$\{\{ matrix\.lane \}\}\s*$/m.test(
+      workflow,
+    )
+  )
+    problems.push(
+      `${workflowPath} needs an unconditional step: run: make ${lanePrefix}\${{ matrix.lane }}`,
+    );
+  const lists = [
+    ...workflow.matchAll(/^\s*lane:\s*\[([^\]]*)\]\s*(?:#.*)?$/gm),
+  ];
+  if (lists.length !== 1) {
+    problems.push(
+      `${workflowPath} needs exactly one inline lane list, found ${lists.length}`,
+    );
+    return problems;
+  }
+  const listed = lists[0][1]
+    .split(",")
+    .map((name) => name.trim().replace(/^['"]|['"]$/g, ""))
+    .filter(Boolean)
+    .sort();
+  const expected = ran.map((name) => name.replace(lanePrefix, "")).sort();
+  if (listed.join() !== expected.join())
+    problems.push(
+      `${workflowPath} lanes [${listed.join(", ")}] differ from ${aggregate} targets [${expected.join(", ")}]`,
+    );
+  return problems;
+}
+
 // Reads the selection from the Makefile, because `-run` only reaches the
 // packages on its own command line: a matching name in another package still
 // never runs. `tests` lists every Go test, so a lane may select non-native tests.
 export function nativeLaneProblems({ makefile, workflow, tests }) {
-  const problems = [];
-  const { rules, expand } = parseMakefile(makefile);
-  const lanes = [...rules.keys()].filter((name) => name.startsWith(lanePrefix));
+  const { recipes, unread, expand } = parseMakefile(makefile);
+  const problems = unread.map((line) => `Makefile: cannot read: ${line}`);
+  const lanes = [...recipes.keys()].filter((name) =>
+    name.startsWith(lanePrefix),
+  );
 
-  const ran = [...(rules.get(aggregate)?.prerequisites ?? [])];
-  if (!rules.has(aggregate)) problems.push(`Makefile has no ${aggregate} rule`);
-  for (const line of rules.get(aggregate)?.recipe ?? []) {
+  const ran = [];
+  for (const line of recipes.get(aggregate) ?? []) {
     const lane = /^[@+-]*\$\(MAKE\) (\S+)$/.exec(line)?.[1];
     if (lane) ran.push(lane);
     else problems.push(`${aggregate} may only run lanes, found: ${line}`);
@@ -164,68 +235,52 @@ export function nativeLaneProblems({ makefile, workflow, tests }) {
   for (const name of lanes)
     if (!ran.includes(name))
       problems.push(`${name} is not run by ${aggregate}`);
+  problems.push(...workflowProblems(workflow, ran));
 
-  const lists = [
-    ...workflow.matchAll(/^\s*lane:\s*\[([^\]]*)\]\s*(?:#.*)?$/gm),
-  ];
-  if (lists.length !== 1)
-    problems.push(
-      `${workflowPath} needs exactly one inline lane list, found ${lists.length}`,
-    );
-  else {
-    const listed = lists[0][1]
-      .split(",")
-      .map((name) => name.trim().replace(/^['"]|['"]$/g, ""))
-      .filter(Boolean)
-      .sort();
-    const expected = ran
-      .filter((name) => name.startsWith(lanePrefix))
-      .map((name) => name.slice(lanePrefix.length))
-      .sort();
-    if (listed.join() !== expected.join())
-      problems.push(
-        `${workflowPath} lanes [${listed.join(", ")}] differ from ${aggregate} targets [${expected.join(", ")}]`,
-      );
-  }
-
-  const selections = new Map();
-  for (const lane of lanes) {
-    let commands;
-    let branches;
+  const commands = [];
+  let refused = false;
+  for (const lane of lanes)
     try {
-      commands = rules
+      const found = recipes
         .get(lane)
-        .recipe.flatMap((line) => goTests(expand(line)));
-      branches = commands.map(({ pattern }) =>
-        alternatives(pattern).map((source) => ({
-          source,
-          expression: new RegExp(source, "u"),
-        })),
-      );
+        .flatMap((line) => goTests(expand(line)))
+        .map((command) => ({
+          ...command,
+          lane,
+          branches: alternatives(command.pattern).map((source) => ({
+            source,
+            expression: new RegExp(source, "u"),
+          })),
+        }));
+      if (!found.length) problems.push(`${lane} runs no go test`);
+      commands.push(...found);
     } catch (error) {
       problems.push(`${lane}: ${error.message}`);
-      continue;
+      refused = true;
     }
-    if (!commands.length) problems.push(`${lane} runs no go test`);
-    commands.forEach(({ pattern, packages }, index) => {
-      const candidates = tests.filter((test) =>
-        inPackage(test.directory, packages),
-      );
-      for (const { source, expression } of branches[index])
-        if (!candidates.some((test) => expression.test(test.name)))
-          problems.push(
-            `${lane}: -run alternative ${source} matches no test in ${packages.join(", ")}`,
-          );
-      for (const test of candidates) {
-        if (!branches[index].some((b) => b.expression.test(test.name)))
-          continue;
-        const key = `${test.directory}.${test.name}`;
-        selections.set(key, [
-          ...(selections.get(key) ?? []),
-          `${lane} '${pattern}'`,
-        ]);
-      }
-    });
+  // What a refused lane selects is unknown, so reporting its tests as unselected
+  // would be false.
+  if (refused) return problems;
+
+  const selections = new Map();
+  for (const { lane, pattern, packages, branches } of commands) {
+    const candidates = tests.filter((test) =>
+      inPackage(test.directory, packages),
+    );
+    for (const { source, expression } of branches)
+      if (!candidates.some((test) => expression.test(test.name)))
+        problems.push(
+          `${lane}: -run alternative ${source} matches no test in ${packages.join(", ")}`,
+        );
+    for (const test of candidates) {
+      if (!branches.some(({ expression }) => expression.test(test.name)))
+        continue;
+      const key = `${test.directory}.${test.name}`;
+      selections.set(key, [
+        ...(selections.get(key) ?? []),
+        `${lane} '${pattern}'`,
+      ]);
+    }
   }
 
   for (const { name, directory } of tests) {
@@ -253,40 +308,71 @@ export function nativeLaneProblems({ makefile, workflow, tests }) {
   return problems;
 }
 
-// Reads source rather than `go test -list`, which would need Linux to see the
-// linux-tagged native tests. Skips the paths the Go tool itself ignores.
-function testFunctions(directory, prefix, found = []) {
-  for (const entry of readdirSync(directory, { withFileTypes: true })) {
-    if (/^[._]/.test(entry.name)) continue;
-    const path = `${prefix}/${entry.name}`;
-    if (entry.isSymbolicLink())
-      throw new Error(`Native lane checks refuse symlinks: ${path}`);
-    if (entry.isDirectory()) {
-      if (entry.name !== "testdata" && entry.name !== "vendor")
-        testFunctions(join(directory, entry.name), path, found);
-    } else if (entry.isFile() && entry.name.endsWith("_test.go"))
+// The tests a lane's race-enabled `go test` can see on this architecture. Asking
+// Go applies its build constraints and ignored paths, wherever this check runs.
+function linuxTests(cwd, architecture) {
+  const packages = execFileSync(
+    "go",
+    [
+      "list",
+      "-e",
+      "-tags",
+      "race",
+      "-f",
+      '{{.Dir}}\t{{.Root}}\t{{join .TestGoFiles "\t"}}\t{{join .XTestGoFiles "\t"}}',
+      "./...",
+    ],
+    {
+      cwd: join(cwd, root),
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        GOOS: "linux",
+        GOARCH: architecture,
+        CGO_ENABLED: "1",
+      },
+    },
+  );
+  const tests = [];
+  for (const line of packages.split("\n").filter(Boolean)) {
+    const [directory, moduleRoot, ...files] = line.split("\t");
+    for (const file of files.filter(Boolean))
       for (const [, name] of readFileSync(
-        join(directory, entry.name),
+        join(directory, file),
         "utf8",
       ).matchAll(/^func (Test[^\s(]*)\(/gm))
-        found.push({ name, directory: prefix });
+        tests.push({
+          name,
+          directory: posix.join(root, relative(moduleRoot, directory)),
+        });
   }
-  return found;
+  return tests;
 }
 
 function run() {
   const cwd = process.cwd();
-  lstatSync(join(cwd, root));
-  const tests = testFunctions(join(cwd, root), root);
-  const problems = nativeLaneProblems({
-    makefile: readFileSync(join(cwd, "Makefile"), "utf8"),
-    workflow: readFileSync(join(cwd, workflowPath), "utf8"),
-    tests,
-  });
-  if (problems.length) throw new Error(problems.join("\n"));
-  const native = tests.filter((test) => test.name.startsWith("TestNative"));
+  const makefile = readFileSync(join(cwd, "Makefile"), "utf8");
+  const workflow = readFileSync(join(cwd, workflowPath), "utf8");
+  const problems = new Map();
+  let native = 0;
+  for (const architecture of architectures) {
+    const tests = linuxTests(cwd, architecture);
+    native = tests.filter((test) => test.name.startsWith("TestNative")).length;
+    for (const problem of nativeLaneProblems({ makefile, workflow, tests }))
+      problems.set(problem, [...(problems.get(problem) ?? []), architecture]);
+  }
+  if (problems.size)
+    throw new Error(
+      [...problems]
+        .map(([problem, affected]) =>
+          affected.length === architectures.length
+            ? problem
+            : `${problem} (linux/${affected.join(", linux/")} only)`,
+        )
+        .join("\n"),
+    );
   console.log(
-    `Native lanes select each native test once (${native.length - helpers.size} selected, ${helpers.size} helpers).`,
+    `Native lanes select each native test once (${native - helpers.size} selected, ${helpers.size} helpers).`,
   );
 }
 

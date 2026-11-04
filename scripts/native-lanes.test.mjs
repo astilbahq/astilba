@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
@@ -26,7 +32,13 @@ verify-agent-host-visual:
 	cd services/platform && $(NATIVE_AGENT_GO) \\
 		-run '^TestNativeVisualDeployment$$' ./internal/agent
 `;
-const workflow = "        lane: [core, visual]\n";
+const visualLine =
+  "\tcd services/platform && $(NATIVE_AGENT_GO) \\\n\t\t-run '^TestNativeVisualDeployment$$' ./internal/agent\n";
+const workflow = `        lane: [core, visual]
+    steps:
+      - name: Verify production agent with systemd
+        run: make verify-agent-host-\${{ matrix.lane }}
+`;
 const tests = [
   ...[
     "TestNativeCrossHostHelper",
@@ -42,10 +54,13 @@ const tests = [
   })),
 ];
 const without = (name) => tests.filter((entry) => entry.name !== name);
-const replace = (from, to) => {
-  assert.ok(makefile.includes(from), from);
-  return makefile.replaceAll(from, to);
+// A function keeps `$$` literal, as String.replaceAll would collapse it to `$`.
+const replace = (from, to, source = makefile) => {
+  assert.ok(source.includes(from), from);
+  return source.replaceAll(from, () => to);
 };
+const problems = (input) =>
+  nativeLaneProblems({ makefile, workflow, tests, ...input }).join("\n");
 
 test("alternatives distribute groups and keep sets and escapes whole", () => {
   for (const [pattern, expected] of [
@@ -63,7 +78,7 @@ test("alternatives distribute groups and keep sets and escapes whole", () => {
 });
 
 test("a complete partition has no problems", () => {
-  assert.deepEqual(nativeLaneProblems({ makefile, workflow, tests }), []);
+  assert.equal(problems({}), "");
 });
 
 test("reports each way a native test can stop running or run twice", () => {
@@ -98,7 +113,7 @@ test("reports each way a native test can stop running or run twice", () => {
     [
       "a test selected twice within a lane",
       {
-        makefile: makefile.replace(
+        makefile: replace(
           "\nverify-agent-host-visual:",
           "\tcd services/platform && $(NATIVE_AGENT_GO) -run '^TestNativePipeline$$' ./internal/agent\n\nverify-agent-host-visual:",
         ),
@@ -132,10 +147,18 @@ test("reports each way a native test can stop running or run twice", () => {
     ],
     [
       "a lane the aggregate does not run",
-      {
-        makefile: replace("\t$(MAKE) verify-agent-host-visual\n", ""),
-      },
+      { makefile: replace("\t$(MAKE) verify-agent-host-visual\n", "") },
       /verify-agent-host-visual is not run by verify-agent-host/,
+    ],
+    [
+      "an aggregate that names lanes as prerequisites",
+      {
+        makefile: replace(
+          "verify-agent-host:\n\t$(MAKE) verify-agent-host-core\n\t$(MAKE) verify-agent-host-visual\n",
+          "verify-agent-host: verify-agent-host-core verify-agent-host-visual\n",
+        ),
+      },
+      /verify-agent-host-core is not run by verify-agent-host/,
     ],
     [
       "an aggregate target with no rule",
@@ -158,11 +181,7 @@ test("reports each way a native test can stop running or run twice", () => {
       /verify-agent-host may only run lanes/,
     ],
   ])
-    assert.match(
-      nativeLaneProblems({ makefile, workflow, tests, ...input }).join("\n"),
-      expected,
-      label,
-    );
+    assert.match(problems(input), expected, label);
 });
 
 test("reports a -run alternative that matches no test, including nested ones", () => {
@@ -170,157 +189,280 @@ test("reports a -run alternative that matches no test, including nested ones", (
     ["TestNativeComposeDeployment", "^TestNativeComposeDeployment$"],
     ["TestNativePipeline", "^TestNativePipeline$"],
     ["TestNativeVisualDeployment", "^TestNativeVisualDeployment$"],
-  ]) {
-    const problems = nativeLaneProblems({
-      makefile,
-      workflow,
-      tests: without(removed),
-    });
+  ])
     assert.ok(
-      problems.some((problem) =>
-        problem.includes(`-run alternative ${alternative} matches no test`),
+      problems({ tests: without(removed) }).includes(
+        `-run alternative ${alternative} matches no test`,
       ),
-      problems.join("\n"),
+      removed,
     );
-  }
-  const problems = nativeLaneProblems({
-    makefile,
-    workflow,
-    tests: [
-      ...without("TestNativePipeline"),
-      { name: "TestNativePipeline", directory: hostnetwork },
-    ],
-  }).join("\n");
-  assert.match(problems, /alternative \^TestNativePipeline\$ matches no test/);
+  assert.match(
+    problems({
+      tests: [
+        ...without("TestNativePipeline"),
+        { name: "TestNativePipeline", directory: hostnetwork },
+      ],
+    }),
+    /alternative \^TestNativePipeline\$ matches no test/,
+  );
 });
 
 test("a lane may select tests other than native ones", () => {
-  assert.deepEqual(
-    nativeLaneProblems({
+  assert.equal(
+    problems({
       makefile: replace(
         "(Compose|CrossHost)Deployment|Pipeline)$$'",
         "(Compose|CrossHost)Deployment|Pipeline)$$|^TestOrdinary$$'",
       ),
-      workflow,
-      tests,
     }),
-    [],
+    "",
   );
 });
 
-test("the workflow lane list must equal the aggregate's targets", () => {
-  for (const [lane, ok] of [
-    ["lane: [core, visual]", true],
-    ["lane: ['visual', core] # order is free", true],
-    ["lane: [core]", false],
-    ["lane: [core, visual, recovery]", false],
-    ["lane: [core, core, visual]", false],
-    ["lane:\n  - core\n  - visual", false],
-    ["# lane: [core, visual]", false],
+test("the workflow must run exactly the aggregate's targets on every lane", () => {
+  const step = "        run: make verify-agent-host-${{ matrix.lane }}\n";
+  for (const [label, source, ok] of [
+    ["unchanged", workflow, true],
+    [
+      "reordered and commented",
+      replace(
+        "lane: [core, visual]",
+        "lane: ['visual', core] # order is free",
+        workflow,
+      ),
+      true,
+    ],
+    ["short", replace("[core, visual]", "[core]", workflow), false],
+    [
+      "long",
+      replace("[core, visual]", "[core, visual, recovery]", workflow),
+      false,
+    ],
+    [
+      "duplicate",
+      replace("[core, visual]", "[core, core, visual]", workflow),
+      false,
+    ],
+    [
+      "block list",
+      replace("lane: [core, visual]", "lane:\n  - core\n  - visual", workflow),
+      false,
+    ],
+    ["commented out", replace("lane: [core", "# lane: [core", workflow), false],
+    [
+      "a lane excluded",
+      replace(
+        "lane: [core, visual]",
+        "lane: [core, visual]\n        exclude:\n          - lane: visual",
+        workflow,
+      ),
+      false,
+    ],
+    [
+      "a fixed target",
+      replace(step, "        run: make verify-agent-host-core\n", workflow),
+      false,
+    ],
+    [
+      "a conditional step",
+      replace(step, `        if: matrix.lane != 'visual'\n${step}`, workflow),
+      false,
+    ],
   ]) {
-    const problems = nativeLaneProblems({
-      makefile,
-      workflow: `        ${lane}\n`,
-      tests,
-    });
-    assert.equal(problems.length === 0, ok, `${lane}: ${problems.join("; ")}`);
+    const found = problems({ workflow: source });
+    assert.equal(found === "", ok, `${label}: ${found}`);
   }
 });
 
-test("refuses selections it cannot read rather than passing them", () => {
-  for (const [label, from, to, expected] of [
-    ["no -run", "-run '^TestNativeManagedLinks$$' ", "", /expected one -run/],
-    ["-skip", "-v -run", "-skip '^X$$' -run", /-skip hides selected tests/],
+test("refuses a recipe that could stop naming tests from running", () => {
+  const line =
+    "cd services/platform && $(NATIVE_AGENT_GO) -run '^TestNativeVisualDeployment$$' ./internal/agent";
+  const flagged = (flag) =>
+    `cd services/platform && $(NATIVE_AGENT_GO) ${flag} -run '^TestNativeVisualDeployment$$' ./internal/agent`;
+  for (const [label, recipe, expected] of [
+    ["a guard", `[ -n "$$CI" ] || ${line}`, /cannot read shell syntax/],
+    ["a whole-line comment", `# ${line}`, /cannot read shell syntax/],
+    [
+      "a trailing comment",
+      replace("&& $(NATIVE_AGENT_GO)", "&& true # $(NATIVE_AGENT_GO)", line),
+      /cannot read shell syntax/,
+    ],
+    ["hidden failure", `${line} || true`, /cannot read shell syntax/],
+    ["a later command", `exit 0; ${line}`, /cannot read shell syntax/],
+    [
+      "echo",
+      replace("&& $(", "&& echo $(", line),
+      /expected only cd and go test/,
+    ],
+    ["-list", flagged("-list ."), /cannot read go test argument -list/],
+    ["-c", flagged("-c"), /cannot read go test argument -c/],
+    ["-count=0", flagged("-count=0"), /cannot read go test argument -count=0/],
+    ["-skip", flagged("-skip '^X$$'"), /cannot read go test argument -skip/],
+    [
+      "no -run",
+      replace("-run '^TestNativeVisualDeployment$$' ", "", line),
+      /expected one -run/,
+    ],
+    [
+      "no package",
+      replace(" ./internal/agent", "", line),
+      /expected a \.\/ package/,
+    ],
     [
       "an undefined variable",
-      "'^TestNativeManagedLinks$$'",
-      "'$(UNDEFINED)'",
-      /cannot resolve \$\(UNDEFINED\)/,
+      replace("'^TestNativeVisualDeployment$$'", "'$(UNDEFINED)'", line),
+      /cannot resolve .*\$\(UNDEFINED\)/,
+    ],
+    [
+      "a single-character make variable",
+      replace("Deployment$$'", "Deployment$|^TestOrdinary$$'", line),
+      /cannot resolve .*\$\|/,
     ],
     [
       "a quantified group",
-      "'^TestNativeManagedLinks$$'",
-      "'^TestNative(ManagedLinks)?$$'",
+      replace("Native", "Native(Visual)?", line),
       /cannot split a quantified group/,
     ],
     [
       "a subtest selection",
-      "'^TestNativeManagedLinks$$'",
-      "'^TestNativeManagedLinks$$/sub'",
+      replace("Deployment$$", "Deployment$$/sub", line),
       /selects whole tests/,
     ],
     [
       "syntax JavaScript cannot compile",
-      "'^TestNativeManagedLinks$$'",
-      "'^TestNative\\QManagedLinks\\E$$'",
+      replace("Visual", "\\QVisual\\E", line),
       /Invalid/,
     ],
-    ["no package", " ./internal/hostnetwork", "", /expected a \.\/ package/],
-  ])
-    assert.match(
-      nativeLaneProblems({
-        makefile: replace(from, to),
-        workflow,
-        tests,
-      }).join("\n"),
-      expected,
-      label,
-    );
+  ]) {
+    const found = problems({
+      makefile: replace(visualLine, `\t${recipe}\n`),
+    });
+    assert.match(found, expected, label);
+    assert.doesNotMatch(found, /so CI never runs it/, label);
+  }
   assert.match(
-    nativeLaneProblems({
-      makefile: makefile.replace(
-        /^verify-agent-host-visual:[\s\S]*$/m,
-        "verify-agent-host-visual:\n\techo nothing\n",
-      ),
-      workflow,
-      tests,
-    }).join("\n"),
+    problems({ makefile: replace(visualLine, "\t@echo nothing\n") }),
     /verify-agent-host-visual runs no go test/,
   );
 });
 
-test("the check reads the repository's tests and exits non-zero on a missing one", async (t) => {
+test("reports Makefile syntax that could change what a lane runs", () => {
+  for (const [label, source, expected] of [
+    [
+      "an appended variable",
+      replace(
+        "\nverify-agent-host:",
+        "NATIVE_AGENT_GO += -skip '^TestNativePipeline$$'\n\nverify-agent-host:",
+      ),
+      /cannot read: NATIVE_AGENT_GO \+=/,
+    ],
+    [
+      "a conditional recipe",
+      replace(visualLine, `ifdef NATIVE_VISUAL\n${visualLine}endif\n`),
+      /cannot read: ifdef NATIVE_VISUAL/,
+    ],
+    [
+      "a define after a lane",
+      `${replace(visualLine, "\t@echo nothing\n")}\ndefine SPARE\n${visualLine}endef\n`,
+      /cannot read: define SPARE/,
+    ],
+  ])
+    assert.match(problems({ makefile: source }), expected, label);
+});
+
+test("a make variable set elsewhere is harmless outside go test arguments", () => {
+  for (const source of [
+    replace(visualLine, `\t@echo arch=$(PLAT4_ARCH)\n${visualLine}`),
+    replace(
+      "ASTILBA_NATIVE_AGENT=1",
+      'ASTILBA_NATIVE_AGENT=1 PLAT4_ARCH="$(PLAT4_ARCH)"',
+    ),
+    replace("ASTILBA_NATIVE_AGENT=1", "ASTILBA_NATIVE_AGENT=1 ARCH=$(ARCH)"),
+  ])
+    assert.equal(problems({ makefile: source }), "", source);
+});
+
+test("the check asks Go which tests each Linux architecture can run", async (t) => {
   const cwd = mkdtempSync(join(tmpdir(), "astilba-native-lanes-"));
   t.after(() => rmSync(cwd, { recursive: true, force: true }));
   const write = (path, content) => {
     mkdirSync(dirname(join(cwd, path)), { recursive: true });
     writeFileSync(join(cwd, path), content);
   };
-  const go = (...names) =>
-    names.map((name) => `func ${name}(t *testing.T) {\n}\n`).join("\n");
+  const go = (directory, names, constraint = "") =>
+    `${constraint}package ${directory}\n\nimport "testing"\n\n${names
+      .map((name) => `func ${name}(t *testing.T) {\n}\n`)
+      .join("\n")}`;
+  const agentTest = (path, names, constraint) =>
+    write(`${agent}/${path}`, go("agent", names, constraint));
   write("Makefile", makefile);
   write(".github/workflows/ci.yml", workflow);
-  write(
-    `${agent}/agent_test.go`,
-    go(
-      "TestNativeCrossHostHelper",
-      "TestNativeComposeDeployment",
-      "TestNativeCrossHostDeployment",
-      "TestNativePipeline",
-      "TestNativeVisualDeployment",
-    ),
-  );
-  // Linux-only files count wherever the check runs.
+  write("services/platform/go.mod", "module example.invalid/platform\n");
+  agentTest("agent_test.go", [
+    "TestNativeCrossHostHelper",
+    "TestNativeComposeDeployment",
+    "TestNativeCrossHostDeployment",
+    "TestNativeVisualDeployment",
+  ]);
+  agentTest("pipeline_test.go", ["TestNativePipeline"]);
   write(
     `${hostnetwork}/host_linux_test.go`,
-    `//go:build linux\n\npackage hostnetwork\n\n${go("TestNativeEndpointHelper", "TestNativeManagedLinks")}`,
+    go(
+      "hostnetwork",
+      ["TestNativeEndpointHelper", "TestNativeManagedLinks"],
+      "//go:build linux\n\n",
+    ),
   );
-  // None of these reach the Go tool as tests.
-  write(`${agent}/testdata/fixture_test.go`, go("TestNativeInTestdata"));
-  write(`${agent}/_ignored/fixture_test.go`, go("TestNativeUnderscored"));
-  write(`${agent}/support.go`, go("TestNativeNotInATestFile"));
-  write(`${agent}/comment_test.go`, `// ${go("TestNativeCommented")}`);
+  // None of these reach a lane's `go test`.
+  agentTest("testdata/fixture_test.go", ["TestNativeInTestdata"]);
+  agentTest("_ignored/fixture_test.go", ["TestNativeUnderscored"]);
+  agentTest(
+    "norace_test.go",
+    ["TestNativeWithoutRace"],
+    "//go:build !race\n\n",
+  );
+  agentTest("mac_darwin_test.go", ["TestNativeOnDarwin"]);
+  write(
+    `${agent}/support.go`,
+    "package agent\n\nfunc TestNativeNotInATestFile() {}\n",
+  );
+  agentTest("comment_test.go", []);
+  write(
+    `${agent}/comment_test.go`,
+    `${go("agent", [])}// func TestNativeCommented(t *testing.T) {}\n`,
+  );
+  // A stub for other platforms is the same test, not a second selection.
+  agentTest(
+    "pipeline_other_test.go",
+    ["TestNativePipeline"],
+    "//go:build !linux\n\n",
+  );
   const check = () =>
     spawnSync(process.execPath, [script], { cwd, encoding: "utf8" });
 
   const passed = check();
   assert.equal(passed.status, 0, passed.stderr);
+  assert.match(passed.stdout, /5 selected, 2 helpers/);
 
-  write(`${agent}/new_test.go`, go("TestNativeNewlyAdded"));
-  const failed = check();
-  assert.equal(failed.status, 1);
+  agentTest("new_test.go", ["TestNativeNewlyAdded"]);
+  const missing = check();
+  assert.equal(missing.status, 1);
   assert.match(
-    failed.stderr,
-    /TestNativeNewlyAdded in .*agent is selected by no/,
+    missing.stderr,
+    /^TestNativeNewlyAdded in .*agent is selected by no/m,
+  );
+  assert.doesNotMatch(missing.stderr, / only\)/);
+  rmSync(join(cwd, agent, "new_test.go"));
+
+  // A selected test that one architecture cannot build never runs on that lane.
+  renameSync(
+    join(cwd, agent, "pipeline_test.go"),
+    join(cwd, agent, "pipeline_amd64_test.go"),
+  );
+  const partial = check();
+  assert.equal(partial.status, 1);
+  assert.match(
+    partial.stderr,
+    /alternative \^TestNativePipeline\$ matches no test .*\(linux\/arm64 only\)/,
   );
 });
