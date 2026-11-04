@@ -8,28 +8,35 @@ const OUTPUT_CHARS = 3000;
 const format =
   /^(?:apps\/platform\/|experiments\/canvas-editor\/|vite\.config\.ts$)/;
 const sourceSize =
-  /^(?:(?:apps|services|contracts|scripts|\.github)\/.*\.(?:go|[cm]?[jt]sx?)|scripts\/source-size-baseline\.json)$/;
+  /^(?:(?:(?:apps|services|contracts|scripts|\.github)\/.*|[^/]+)\.(?:go|[cm]?[jt]sx?)|scripts\/source-size-baseline\.json)$/;
 const inlineSQL =
   /^(?:services\/platform\/.*\.go|scripts\/(?:inline-sql|ratchet-base).*)$/;
 const generated =
   /^(?:contracts\/platform\/|services\/platform\/(?:db\/(?:queries|migrations|generated)\/|sqlc\.yaml|go\.(?:mod|sum)$|internal\/api\/api\.gen\.go)|apps\/platform\/src\/api\/generated\/|scripts\/platform-generate)/;
 const ciPlan = /^(?:scripts\/ci-plan|\.github\/workflows\/ci\.yml)/;
+const hooks = /^\.claude\/(?:hooks\/|settings\.json$)/;
+// `vp check` reads the root config, and these set the installed tool versions.
+const sharedTools = /^(?:vite\.config\.ts|package\.json|pnpm-lock\.yaml)$/;
 
-// Keeps the checks offline: pnpm would otherwise download the pinned version of
-// itself, and Go a missing module or toolchain.
+// Keeps the checks offline: pnpm and Corepack would otherwise install or download
+// what is missing, and Go a missing module or toolchain. CI is dropped because
+// the ratchets then demand a comparison base that only CI supplies.
 const offline = {
   ...Object.fromEntries(
-    Object.entries(process.env).filter(([name]) => !name.startsWith("GIT_")),
+    Object.entries(process.env).filter(
+      ([name]) => !name.startsWith("GIT_") && name !== "CI",
+    ),
   ),
+  COREPACK_ENABLE_NETWORK: "0",
   GIT_NO_LAZY_FETCH: "1",
   GOPROXY: "off",
   GOTOOLCHAIN: "local",
-  npm_config_manage_package_manager_versions: "false",
-  npm_config_offline: "true",
+  pnpm_config_offline: "true",
+  pnpm_config_verify_deps_before_run: "false",
 };
 // Failures that say this machine cannot run the check, not that the code is wrong.
 const unavailable =
-  /module lookup disabled by GOPROXY=off|GOTOOLCHAIN=local\)|ERR_PNPM_NO_OFFLINE/;
+  /module lookup disabled by GOPROXY=off|GOTOOLCHAIN=local\)|ERR_PNPM_NO_OFFLINE|Failed to resolve pnpm@|Network access disabled by the environment|Cannot resolve .* history|spawnSync \S+ ENOENT/;
 
 export const formattable = (path) => format.test(path);
 
@@ -68,7 +75,7 @@ export function checksFor(root, files) {
   if (any(sourceSize)) add("source size", ["make", "check-source-size"]);
   if (any(inlineSQL)) add("inline SQL", ["make", "check-inline-sql"]);
   if (any(ciPlan)) add("CI plan", ["make", "check-ci"]);
-  if (any(/^\.claude\/hooks\//)) add("hooks", ["make", "check-hooks"]);
+  if (any(hooks)) add("hooks", ["make", "check-hooks"]);
 
   const modules = new Set(
     files
@@ -86,11 +93,11 @@ export function checksFor(root, files) {
     add("generated files", ["pnpm", "generate:check"], {
       requires: "node_modules",
     });
-  if (any(/^apps\/platform\//))
+  if (any(/^apps\/platform\//) || any(sharedTools))
     add("dashboard", ["pnpm", "--filter", "@astilba/dashboard", "check"], {
       requires: "apps/platform/node_modules",
     });
-  if (any(/^experiments\/canvas-editor\//))
+  if (any(/^experiments\/canvas-editor\//) || any(sharedTools))
     add("canvas", ["pnpm", "--filter", "@astilba/canvas-spike", "check"], {
       requires: "experiments/canvas-editor/node_modules",
     });
@@ -143,7 +150,5 @@ function run(root, check, deadline) {
   });
 }
 
-export const runChecks = (root, checks, budgetMs) => {
-  const deadline = Date.now() + budgetMs;
-  return Promise.all(checks.map((check) => run(root, check, deadline)));
-};
+export const runChecks = (root, checks, deadline) =>
+  Promise.all(checks.map((check) => run(root, check, deadline)));

@@ -10,7 +10,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
+import { devNull, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { test } from "node:test";
 import { checksFor, formattable } from "./checks.mjs";
@@ -36,6 +36,10 @@ test("changed paths select the checks CI would fail", () => {
     "scripts/source-size-baseline.json": ["source size"],
     ".github/workflows/ci.yml": ["CI plan"],
     ".claude/hooks/stop.mjs": ["hooks"],
+    ".claude/settings.json": ["hooks"],
+    "vite.config.ts": ["format", "source size", "dashboard", "canvas"],
+    "package.json": ["dashboard", "canvas"],
+    "pnpm-lock.yaml": ["dashboard", "canvas"],
   };
   for (const [path, names] of Object.entries(selected)) {
     assert.ok(existsSync(join(repository, path)), `${path} no longer exists`);
@@ -66,6 +70,27 @@ test("settings run each hook through the Node selector", () => {
   assert.ok(hooks.Stop[0].hooks[0].timeout <= 120);
 });
 
+test("the Node selector uses the repository's pinned version", () => {
+  const { engines } = JSON.parse(
+    readFileSync(join(repository, "package.json"), "utf8"),
+  );
+  assert.ok(
+    readFileSync(join(import.meta.dirname, "node.sh"), "utf8").includes(
+      `version=${engines.node}\n`,
+    ),
+  );
+});
+
+// Setup commits predate every session, so they are not mistaken for its work.
+const setup = { GIT_COMMITTER_DATE: "2020-01-01T00:00:00Z" };
+const env = {
+  ...Object.fromEntries(
+    Object.entries(process.env).filter(([name]) => !name.startsWith("GIT_")),
+  ),
+  GIT_CONFIG_GLOBAL: devNull,
+  GIT_CONFIG_NOSYSTEM: "1",
+};
+
 // Runs the real scripts against a scratch repository whose Makefile decides
 // whether the source-size check passes.
 function scratch(t) {
@@ -81,21 +106,27 @@ function scratch(t) {
   writeFileSync(join(root, "scripts/.keep"), "");
   writeFileSync(join(root, ".gitignore"), "outcome\n");
   writeFileSync(join(root, "outcome"), "pass\n");
-  const git = (...args) =>
+  const git = (args, extra = {}) =>
     execFileSync(
       "git",
       ["-c", "user.name=test", "-c", "user.email=test@example.com", ...args],
-      { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
+      {
+        cwd: root,
+        env: { ...env, ...extra },
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+      },
     );
-  git("init", "--quiet");
-  git("add", ".");
-  git("commit", "--quiet", "--message", "initial");
+  git(["init", "--quiet"]);
+  git(["add", "."]);
+  git(["commit", "--quiet", "--message", "initial"], setup);
   const hook = (script, input, cwd = root) => {
     const output = execFileSync(
       process.execPath,
       [join(cwd, ".claude/hooks", script)],
       {
         cwd,
+        env,
         encoding: "utf8",
         input: JSON.stringify({ session_id: "s", cwd, ...input }),
       },
@@ -127,22 +158,58 @@ test("Bash writes and commits are detected, earlier changes are not", (t) => {
   const session_id = "committing";
   repo.hook("session-start.mjs", { session_id });
   repo.write("scripts/committed.mjs");
-  repo.git("add", "scripts/committed.mjs");
-  repo.git("commit", "--quiet", "--message", "work");
+  repo.git(["add", "scripts/committed.mjs"]);
+  repo.git(["commit", "--quiet", "--message", "work"]);
   const { reason } = repo.hook("stop.mjs", { session_id });
   assert.match(reason, /source size/);
 });
 
-test("a linked worktree keeps its own session state", (t) => {
+test("commits a session did not make are not its changes", (t) => {
+  const repo = scratch(t);
+  repo.outcome("fail");
+  repo.git(["checkout", "--quiet", "-b", "theirs"]);
+  repo.write("scripts/theirs.mjs");
+  repo.git(["add", "scripts/theirs.mjs"]);
+  repo.git(["commit", "--quiet", "--message", "theirs"], setup);
+  repo.git(["checkout", "--quiet", "-"]);
+  repo.start();
+  repo.git(["merge", "--quiet", "--ff-only", "theirs"]);
+  assert.equal(repo.stop({}), null);
+});
+
+test("Stop checks every worktree the session edited", (t) => {
   const repo = scratch(t);
   const linked = join(repo.root, "..", "linked");
-  repo.git("worktree", "add", "--quiet", "-b", "linked", linked);
+  repo.git(["worktree", "add", "--quiet", "-b", "linked", linked]);
   repo.write("Makefile", "check-source-size:\n\t@false\n", linked);
-  repo.start(linked);
+  repo.start();
   repo.write("scripts/work.mjs", "x\n", linked);
-  assert.equal(repo.stop({ prompt_id: "1" }, linked).decision, "block");
-  assert.equal(repo.stop({ prompt_id: "1" }), null);
-  assert.equal(repo.git("status", "--porcelain"), "");
+  repo.hook("after-edit.mjs", {
+    tool_input: { file_path: join(linked, "scripts/work.mjs") },
+  });
+  const { decision, reason } = repo.stop({ prompt_id: "1" });
+  assert.equal(decision, "block");
+  assert.ok(reason.includes(realpathSync(linked)));
+  assert.equal(repo.git(["status", "--porcelain"]), "");
+
+  rmSync(linked, { recursive: true });
+  assert.equal(repo.stop({ prompt_id: "2" }), null);
+});
+
+test("a worktree first seen at Stop is reported, not attributed", (t) => {
+  const repo = scratch(t);
+  const linked = join(repo.root, "..", "linked");
+  repo.git(["worktree", "add", "--quiet", "-b", "linked", linked]);
+  repo.write("Makefile", "check-source-size:\n\t@false\n", linked);
+  repo.write("scripts/earlier.mjs", "x\n", linked);
+  repo.start();
+  const first = repo.stop({}, linked);
+  assert.equal(first.decision, undefined);
+  assert.match(first.systemMessage, /did not cover changes already/);
+  assert.equal(repo.stop({}, linked), null);
+
+  repo.write("scripts/later.mjs", "x\n", linked);
+  assert.equal(repo.stop({}, linked).decision, "block");
 });
 
 test("a failure that cannot be fixed cannot hold the session forever", (t) => {
@@ -155,7 +222,7 @@ test("a failure that cannot be fixed cannot hold the session forever", (t) => {
   assert.match(first.reason, /source size[\s\S]*fail/);
 
   // No change since the block: release at once, then stay quiet.
-  assert.equal(repo.stop({ prompt_id: "1" }).decision, undefined);
+  assert.match(repo.stop({ prompt_id: "1" }).systemMessage, /not rerun/);
   assert.equal(repo.stop({ prompt_id: "1" }), null);
 
   // New attempts keep changing the file: released after the cap, even if the
@@ -189,19 +256,19 @@ test("a check that cannot run is reported, never counted silently", (t) => {
     "Makefile",
     "check-source-size:\n\t@echo module lookup disabled by GOPROXY=off\n\t@false\n",
   );
-  repo.git("commit", "--quiet", "--all", "--message", "offline");
+  repo.git(["commit", "--quiet", "--all", "--message", "offline"], setup);
   repo.start();
   repo.write("scripts/work.mjs");
   assert.match(repo.stop({}).systemMessage, /not run: source size/);
 });
 
-test("subagents that may still edit defer the checks", (t) => {
+test("agents that may still edit defer the checks, and say so", (t) => {
   const repo = scratch(t);
   repo.outcome("fail");
   repo.start();
   repo.write("scripts/work.mjs");
   const background_tasks = [{ id: "1", type: "subagent" }];
-  assert.equal(repo.stop({ background_tasks }), null);
+  assert.match(repo.stop({ background_tasks }).systemMessage, /deferred/);
   assert.equal(repo.stop({ background_tasks: [] }).decision, "block");
 });
 
@@ -209,7 +276,7 @@ test("an edit is recorded and formatted, even with the file gitignored", (t) => 
   const repo = scratch(t);
   repo.outcome("fail");
   repo.write(".gitignore", "outcome\nscripts/ignored.mjs\nignored.go\n");
-  repo.git("commit", "--quiet", "--all", "--message", "ignore");
+  repo.git(["commit", "--quiet", "--all", "--message", "ignore"], setup);
   repo.start();
   repo.write("scripts/ignored.mjs");
   assert.equal(repo.stop({ prompt_id: "1" }), null);
