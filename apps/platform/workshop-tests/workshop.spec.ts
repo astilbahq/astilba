@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
-import { renderStory } from "./story-render";
+import { gotoNextStory, renderStory } from "./story-render";
 
 // The command builds first, so the index is present on a clean checkout too.
 const { entries }: { entries: Record<string, { type: string }> } = JSON.parse(
@@ -386,10 +386,11 @@ test("a new toast rises from below the stack without creating scrollbars", async
 
 test("hover keeps the stack expanded across gaps and excess toasts leave", async ({
   page,
-}) => {
+}, info) => {
   await page.goto("/iframe.html?id=controls-toast--multiple&viewMode=story");
   const notifications = page.getByRole("dialog");
-  await expect(notifications).toHaveCount(3);
+  // Storybook's asynchronous play function creates this three-toast fixture.
+  await expect(notifications).toHaveCount(3, { timeout: info.timeout });
   const oldestDescription = await notifications
     .last()
     .getAttribute("aria-describedby");
@@ -423,7 +424,8 @@ test("hosted signup and email verification fit expanded RTL at 320px", async ({
     "pages-hosted-onboarding--save-recovery-codes",
     "pages-hosted-onboarding--subscription",
   ]) {
-    await page.goto(
+    await gotoNextStory(
+      page,
       `/iframe.html?id=${id}&viewMode=story&globals=theme:dark;locale:en-XB;a11y.manual:!true`,
     );
     await expect(page.locator("html")).toHaveAttribute("dir", "rtl");
