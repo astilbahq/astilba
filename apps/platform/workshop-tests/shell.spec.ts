@@ -2,6 +2,7 @@ import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
 import { pseudolocalize } from "../src/i18n/pseudo";
 import app from "../src/locales/en/app.json" with { type: "json" };
+import { gotoNextStory } from "./story-render";
 const messages = pseudolocalize(app) as typeof app;
 
 for (const theme of ["light", "dark"]) {
@@ -32,7 +33,8 @@ for (const theme of ["light", "dark"]) {
       fullPage: true,
     });
     await page.emulateMedia({ reducedMotion: "no-preference" });
-    await page.goto(
+    await gotoNextStory(
+      page,
       `/iframe.html?id=pages-projects--long-names&viewMode=story&globals=theme:${theme};locale:en-XB;a11y.manual:!true`,
     );
     await expect(page.locator("html")).toHaveAttribute("dir", "rtl");

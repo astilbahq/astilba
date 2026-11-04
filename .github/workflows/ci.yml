@@ -2,6 +2,8 @@ name: Native
 
 on:
   pull_request:
+  merge_group:
+    types: [checks_requested]
   push:
     branches: [main]
   workflow_dispatch:
@@ -14,7 +16,8 @@ permissions:
 concurrency:
   # Nightly runs must not cancel an in-flight push to the same ref.
   group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
-  cancel-in-progress: true
+  # A cancelled merge group would eject its pull requests from the queue.
+  cancel-in-progress: ${{ github.event_name != 'merge_group' }}
 
 jobs:
   plan:
@@ -27,17 +30,25 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          fetch-depth: 2
+          # A merge group's base can be further back than its first parent.
+          fetch-depth: ${{ github.event_name != 'merge_group' && 2 || 0 }}
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24.18.1
       - name: Select checks from the tested merge
         id: plan
-        # Pull requests run the base branch's planner, so editing the planner cannot
-        # select its own checks. A key the base planner does not know selects the suite.
+        # Pull requests and merge groups run their base's planner, so editing the planner
+        # cannot select its own checks. A key the base planner does not know selects the suite.
+        env:
+          MERGE_GROUP_BASE_SHA: ${{ github.event.merge_group.base_sha }}
         run: |
-          if [ "$GITHUB_EVENT_NAME" = pull_request ] && git cat-file -e HEAD^1:scripts/ci-plan.mjs 2>/dev/null; then
-            git show HEAD^1:scripts/ci-plan.mjs > "$RUNNER_TEMP/ci-plan.mjs"
+          case "$GITHUB_EVENT_NAME" in
+            pull_request) base=HEAD^1 ;;
+            merge_group) base=$MERGE_GROUP_BASE_SHA ;;
+            *) base= ;;
+          esac
+          if [ -n "$base" ] && git cat-file -e "$base:scripts/ci-plan.mjs" 2>/dev/null; then
+            git show "$base:scripts/ci-plan.mjs" > "$RUNNER_TEMP/ci-plan.mjs"
             node "$RUNNER_TEMP/ci-plan.mjs"
           fi
           grep -q '^native=' "$GITHUB_OUTPUT" || echo "native=true" >> "$GITHUB_OUTPUT"

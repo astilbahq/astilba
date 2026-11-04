@@ -1,5 +1,6 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Page } from "@playwright/test";
+import { gotoNextStory } from "./story-render";
 
 async function fitCanvas(page: Page) {
   await page.getByRole("button", { name: "Fit View", exact: true }).click();
@@ -97,7 +98,8 @@ for (const theme of ["light", "dark"]) {
     await expect(title).toBeFocused();
 
     await page.setViewportSize({ width: 390, height: 844 });
-    await page.goto(
+    await gotoNextStory(
+      page,
       `/iframe.html?id=pages-environment-detail--canvas&viewMode=story&globals=theme:${theme};a11y.manual:!true`,
     );
     await expect(
@@ -116,7 +118,8 @@ for (const theme of ["light", "dark"]) {
     });
     expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
 
-    await page.goto(
+    await gotoNextStory(
+      page,
       `/iframe.html?id=pages-environment-detail--canvas-long-names&viewMode=story&globals=theme:${theme};locale:en-XB;a11y.manual:!true`,
     );
     await expect(

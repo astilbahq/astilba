@@ -1,5 +1,6 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
+import { gotoNextStory } from "./story-render";
 
 for (const [state, section] of [
   ["overview", "Deployments"],
@@ -103,7 +104,8 @@ for (const theme of ["light", "dark"]) {
       .scrollIntoViewIfNeeded();
     expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
     await page.setViewportSize({ width: 320, height: 844 });
-    await page.goto(
+    await gotoNextStory(
+      page,
       `/iframe.html?id=pages-environment-detail--long-names&viewMode=story&globals=theme:${theme};locale:en-XB;a11y.manual:!true`,
     );
     await expect(page.locator("html")).toHaveAttribute("dir", "rtl");
