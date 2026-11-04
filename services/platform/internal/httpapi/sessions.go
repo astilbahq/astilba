@@ -138,6 +138,21 @@ func browserSessionRequest(next http.Handler) http.Handler {
 	})
 }
 
+// rotate replaces the token after an account change on an authenticated session.
+// None of these changes proves a fresh credential: a recent session is enough, and
+// ConfirmMFA's code comes from a secret that session was just given. They therefore
+// keep the session's absolute deadline and recent authentication.
+func (s *Server) rotate(ctx context.Context, a db.Account, mfa bool) error {
+	deadline := s.Sessions.Deadline(ctx)
+	recent := s.Sessions.GetTime(ctx, "recent")
+	if err := s.establish(ctx, a, mfa); err != nil {
+		return err
+	}
+	s.Sessions.SetDeadline(ctx, deadline)
+	s.Sessions.Put(ctx, "recent", recent)
+	return nil
+}
+
 func (s *Server) Reauthenticate(w http.ResponseWriter, r *http.Request) {
 	b, e := decode[api.Reauthenticate](r)
 	if e != nil {

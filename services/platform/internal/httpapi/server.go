@@ -448,7 +448,7 @@ func (s *Server) ChangePassword(w http.ResponseWriter, r *http.Request) {
 	}
 	a, e := s.Auth.ChangePassword(r.Context(), principal(r.Context()).Account.ID, principal(r.Context()).Account.AuthVersion, value(b.Password))
 	if e == nil {
-		e = s.establish(r.Context(), a, len(a.TotpSecret) > 0)
+		e = s.rotate(r.Context(), a, len(a.TotpSecret) > 0)
 	}
 	if e != nil {
 		s.fail(w, r, e)
@@ -567,7 +567,7 @@ func (s *Server) RegenerateRecoveryCodes(w http.ResponseWriter, r *http.Request)
 }
 func (s *Server) sendCodes(w http.ResponseWriter, r *http.Request, a db.Account, codes []string, e error) {
 	if e == nil {
-		e = s.establish(r.Context(), a, true)
+		e = s.rotate(r.Context(), a, true)
 	}
 	if e != nil {
 		s.fail(w, r, e)
@@ -587,7 +587,7 @@ func (s *Server) DisableMFA(w http.ResponseWriter, r *http.Request) {
 	}
 	a, e := s.Auth.DisableMFA(r.Context(), principal(r.Context()).Account.ID, principal(r.Context()).Account.AuthVersion)
 	if e == nil {
-		e = s.establish(r.Context(), a, false)
+		e = s.rotate(r.Context(), a, false)
 	}
 	if e != nil {
 		s.fail(w, r, e)
