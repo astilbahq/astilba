@@ -82,6 +82,19 @@ jobs:
           path: ${{ runner.temp }}/astilba-native-go
           key: native-go-v2-${{ runner.os }}-${{ matrix.platform.arch }}-${{ matrix.lane }}-${{ hashFiles('.github/workflows/ci.yml', 'experiments/durable-execution/host/bootstrap.sh', '**/go.mod') }}-${{ hashFiles('**/go.sum', 'experiments/durable-execution/**/*.go', 'services/platform/**/*.go') }}
           restore-keys: native-go-v2-${{ runner.os }}-${{ matrix.platform.arch }}-${{ matrix.lane }}-${{ hashFiles('.github/workflows/ci.yml', 'experiments/durable-execution/host/bootstrap.sh', '**/go.mod') }}-
+      - name: Download native Go modules
+        # Loading every package fetches the toolchain and the modules they import, keeping tool-only
+        # modules out of the cache. A package load error also fails here, after the same attempts.
+        run: |
+          for delay in 0 20 40; do
+            sleep "$delay"
+            if timeout 5m go -C services/platform list -deps -test ./... >/dev/null &&
+              timeout 5m go -C experiments/durable-execution list -deps -test ./... >/dev/null; then
+              exit 0
+            fi
+            echo "::warning::Loading native Go packages failed; see the error above"
+          done
+          exit 1
       - name: Verify fresh production host bootstrap
         run: |
           owner=$(cat /proc/sys/kernel/random/uuid)

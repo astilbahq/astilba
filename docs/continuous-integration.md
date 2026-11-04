@@ -303,6 +303,10 @@ architecture, lane, pinned bootstrap/toolchain configuration, module files and G
 sources. A matching toolchain cache can seed a changed source tree; Go checks
 build inputs before reuse. Test commands retain `-race -count=1`.
 
+A separate step fetches the Go toolchain and modules before any test step, making
+up to three attempts, so a briefly dropped module download does not fail the
+check. Test steps are never retried.
+
 Only `GOCACHE` and `GOMODCACHE` are forwarded through `sudo` to the disposable
 native test commands. Runtime state, Docker storage, databases and credentials
 are outside the cache. A cache miss still runs the complete
