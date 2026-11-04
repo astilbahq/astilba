@@ -24,6 +24,10 @@ const (
 	terminalPing        = 30 * time.Second
 	terminalWrite       = 30 * time.Second
 	terminalClose       = 10 * time.Second // beyond the library's limits for a peer that sends nothing
+	terminalQuery       = 5 * time.Second  // bounds the relay's database calls, so a stall cannot hold it up
+	terminalEndRetry    = 30 * time.Second
+	terminalReviewLimit = 6 // review intervals without an answer before a session ends
+	terminalEarlyFrames = 8 // browser frames held while watching for it to leave
 	terminalInputRate   = 64 << 10
 	terminalOutputRate  = 1 << 20
 	terminalResizeRate  = 10
@@ -37,6 +41,16 @@ type terminalPair struct {
 	stream         execution.TroubleshootingStream
 	ready          chan struct{}
 	done           chan struct{}
+	// earlyFrames holds what a browser sends while waiting for its agent, so that those
+	// reads can notice it leaving. It closes when they stop, and the pump drains it first.
+	earlyFrames chan terminalRead
+	browserLeft chan struct{}
+}
+
+type terminalRead struct {
+	kind  websocket.MessageType
+	frame []byte
+	err   error
 }
 
 // terminalHub holds the sessions of this single management instance.
@@ -67,6 +81,9 @@ func (h *terminalHub) join(stream execution.TroubleshootingStream, agent, browse
 	complete := p.agent != nil && p.browser != nil
 	if complete {
 		close(p.ready)
+	} else if browser != nil {
+		// Set here so the relay finds them, whenever the other side joins.
+		p.earlyFrames, p.browserLeft = make(chan terminalRead, terminalEarlyFrames), make(chan struct{})
 	}
 	return p, complete
 }
@@ -210,29 +227,51 @@ func (s *Server) endUnattachedTerminal(stream execution.TroubleshootingStream, r
 }
 
 // attachTerminal registers one side. The second side to arrive runs the relay; the
-// first waits, and ends the session if the other never arrives before the ticket expires.
+// first waits, and ends the session if the other never arrives before the ticket expires
+// or if a waiting browser leaves, so that no shell starts for nobody.
 func (s *Server) attachTerminal(stream execution.TroubleshootingStream, agent, browser *websocket.Conn) {
 	p, complete := s.terminals.join(stream, agent, browser)
+	if !complete && browser != nil {
+		go watchTerminalBrowser(browser, p.earlyFrames, p.browserLeft)
+	}
 	if complete {
 		defer close(p.done)
 		defer s.terminals.remove(stream.Session)
 		s.relayTerminal(p)
 		return
 	}
+	reason := "not attached"
 	select {
 	case <-p.ready:
 		<-p.done
+		return
 	case <-time.After(time.Until(stream.TicketExpires)):
-		if !s.terminals.abandon(p) {
-			<-p.done
+	case <-p.browserLeft:
+		reason = "browser stream lost"
+	}
+	if !s.terminals.abandon(p) {
+		<-p.done
+		return
+	}
+	for _, conn := range []*websocket.Conn{agent, browser} {
+		if conn != nil {
+			closeTerminal(conn, websocket.StatusPolicyViolation, "the other side did not attach")
+		}
+	}
+	s.endUnattachedTerminal(stream, reason)
+}
+
+// watchTerminalBrowser reads a browser that is waiting for its agent. Frames wait for the
+// pump, and past the channel's capacity it stops, which leaves the pump's own backpressure.
+func watchTerminalBrowser(conn *websocket.Conn, frames chan<- terminalRead, left chan<- struct{}) {
+	defer close(frames)
+	for range cap(frames) {
+		kind, frame, err := conn.Read(context.Background())
+		frames <- terminalRead{kind, frame, err}
+		if err != nil {
+			close(left)
 			return
 		}
-		for _, conn := range []*websocket.Conn{agent, browser} {
-			if conn != nil {
-				closeTerminal(conn, websocket.StatusPolicyViolation, "the other side did not attach")
-			}
-		}
-		s.endUnattachedTerminal(stream, "not attached")
 	}
 }
 
@@ -259,19 +298,31 @@ func (s *Server) relayTerminal(p *terminalPair) {
 	}
 	var input, output atomic.Int64
 	var lastInput atomic.Int64
+	var refreshDue atomic.Bool
 	lastInput.Store(time.Now().UnixNano())
 	ws, id := p.stream.Workspace, p.stream.Session
 
-	if err := s.Execution.ActivateTroubleshootingSession(ctx, ws, id); err != nil {
+	// The first stream may have waited up to a ticket's lifetime, so the conditions are
+	// read again before anything can start.
+	query, finish := context.WithTimeout(ctx, terminalQuery)
+	why, err := s.Execution.ReviewTroubleshootingSession(query, ws, id)
+	if err == nil && why == "" {
+		err = s.Execution.ActivateTroubleshootingSession(query, ws, id)
+	}
+	finish()
+	if why != "" {
+		stop(why)
+	} else if err != nil {
+		s.Log.Error("terminal session activation failed", "error", err)
 		stop("activation failed")
 	} else if err = writeTerminal(p.agent, []byte{terminal.Start}); err != nil {
 		stop("agent stream lost")
 	}
 
 	var workers sync.WaitGroup
-	workers.Go(func() { s.pumpTerminalBrowser(ctx, p, &input, &lastInput, stop) })
+	workers.Go(func() { s.pumpTerminalBrowser(ctx, p, &input, &lastInput, &refreshDue, stop) })
 	workers.Go(func() { s.pumpTerminalAgent(ctx, p, &output, stop) })
-	workers.Go(func() { s.superviseTerminal(ctx, p, &lastInput, stop) })
+	workers.Go(func() { s.superviseTerminal(ctx, p, &lastInput, &refreshDue, stop) })
 	<-ctx.Done()
 	once.Do(func() {})
 	// Concurrently, so a peer that does not answer cannot delay the other stream's end.
@@ -279,20 +330,46 @@ func (s *Server) relayTerminal(p *terminalPair) {
 	workers.Go(func() { closeTerminal(p.browser, websocket.StatusNormalClosure, "") })
 	workers.Wait()
 
-	end, finish := context.WithTimeout(context.Background(), 5*time.Second)
-	defer finish()
-	if err := s.Execution.EndTroubleshootingSession(end, ws, id, reason, input.Load(), output.Load()); err != nil {
+	s.recordTerminalEnd(p.stream, reason, input.Load(), output.Load())
+}
+
+// recordTerminalEnd retries, because no relay remains to close the row: left open, it
+// would hold its limits and lose its byte counts. A minute past the deadline the sweep
+// closes it, so retrying stops there.
+func (s *Server) recordTerminalEnd(stream execution.TroubleshootingStream, reason string, input, output int64) {
+	for wait := time.Second; ; wait = min(wait*2, terminalEndRetry) {
+		ctx, cancel := context.WithTimeout(context.Background(), terminalQuery)
+		err := s.Execution.EndTroubleshootingSession(ctx, stream.Workspace, stream.Session, reason, input, output)
+		cancel()
+		if err == nil {
+			return
+		}
 		s.Log.Error("terminal session end failed", "error", err)
+		if time.Now().Add(wait).After(stream.Deadline.Add(time.Minute)) {
+			return
+		}
+		time.Sleep(wait)
 	}
 }
 
-func (s *Server) pumpTerminalBrowser(ctx context.Context, p *terminalPair, input, lastInput *atomic.Int64, stop func(string)) {
-	// Waiting on a limit stops this read, which is the backpressure: nothing is buffered.
+func (s *Server) pumpTerminalBrowser(ctx context.Context, p *terminalPair, input, lastInput *atomic.Int64, refreshDue *atomic.Bool, stop func(string)) {
+	// Waiting on a limit stops this read, which is the backpressure: beyond the frames held
+	// during the wait, nothing is buffered.
 	inputRate := rate.NewLimiter(terminalInputRate, terminal.MaxFrame)
 	resizeRate := rate.NewLimiter(terminalResizeRate, terminalResizeBurst)
+	early := p.earlyFrames
 	lastRefresh := time.Time{}
 	for {
-		kind, frame, err := p.browser.Read(context.Background())
+		var read terminalRead
+		held := false
+		if early != nil {
+			read, held = <-early
+		}
+		if !held {
+			early = nil
+			read.kind, read.frame, read.err = p.browser.Read(context.Background())
+		}
+		kind, frame, err := read.kind, read.frame, read.err
 		if ctx.Err() != nil {
 			return // nothing passes once the session has ended
 		}
@@ -311,9 +388,7 @@ func (s *Server) pumpTerminalBrowser(ctx context.Context, p *terminalPair, input
 			lastInput.Store(now.UnixNano())
 			if now.Sub(lastRefresh) >= time.Minute {
 				lastRefresh = now
-				if err = s.Execution.RefreshTroubleshootingBrowser(ctx, p.stream.Workspace, p.stream.Session, s.Sessions.IdleTimeout, p.stream.Deadline); err != nil && ctx.Err() == nil {
-					s.Log.Error("terminal browser refresh failed", "error", err)
-				}
+				refreshDue.Store(true)
 			}
 			if inputRate.WaitN(ctx, len(frame)) != nil {
 				return // the wait would pass the deadline, which ends the session
@@ -380,12 +455,14 @@ func (s *Server) pumpTerminalAgent(ctx context.Context, p *terminalPair, output 
 }
 
 // superviseTerminal enforces the idle limit, warns before either limit, keeps both
-// connections alive and re-reads the conditions a session depends on.
-func (s *Server) superviseTerminal(ctx context.Context, p *terminalPair, lastInput *atomic.Int64, stop func(string)) {
+// connections alive, re-reads the conditions a session depends on and keeps the browser
+// session alive while the person types. A session whose conditions cannot be read for
+// terminalReviewLimit intervals ends: it may no longer be allowed.
+func (s *Server) superviseTerminal(ctx context.Context, p *terminalPair, lastInput *atomic.Int64, refreshDue *atomic.Bool, stop func(string)) {
 	tick := time.NewTicker(time.Second)
 	defer tick.Stop()
 	nextReview, nextPing := time.Now().Add(s.TerminalReviewEvery), time.Now().Add(terminalPing)
-	warned := time.Time{}
+	warned, reviewed := time.Time{}, time.Now()
 	for {
 		select {
 		case <-ctx.Done():
@@ -409,13 +486,28 @@ func (s *Server) superviseTerminal(ctx context.Context, p *terminalPair, lastInp
 			}
 			if now.After(nextReview) {
 				nextReview = now.Add(s.TerminalReviewEvery)
-				why, err := s.Execution.ReviewTroubleshootingSession(ctx, p.stream.Workspace, p.stream.Session)
-				if err != nil && ctx.Err() == nil {
+				query, cancel := context.WithTimeout(ctx, terminalQuery)
+				why, err := s.Execution.ReviewTroubleshootingSession(query, p.stream.Workspace, p.stream.Session)
+				cancel()
+				if err == nil {
+					reviewed = time.Now()
+				} else if ctx.Err() == nil {
 					s.Log.Error("terminal session review failed", "error", err)
+					if time.Since(reviewed) >= terminalReviewLimit*s.TerminalReviewEvery {
+						why = "session checks failed"
+					}
 				}
 				if why != "" {
 					stop(why)
 					return
+				}
+			}
+			if refreshDue.Swap(false) {
+				query, cancel := context.WithTimeout(ctx, terminalQuery)
+				err := s.Execution.RefreshTroubleshootingBrowser(query, p.stream.Workspace, p.stream.Session, s.Sessions.IdleTimeout, p.stream.Deadline)
+				cancel()
+				if err != nil && ctx.Err() == nil {
+					s.Log.Error("terminal browser refresh failed", "error", err)
 				}
 			}
 			if now.After(nextPing) {

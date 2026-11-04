@@ -185,7 +185,10 @@ Management also ends a session when:
 
 The relay re-reads all of these conditions from PostgreSQL every five seconds, so
 a change made by any request or worker ends the session promptly without a separate
-notification channel. An owner can end any open session in the workspace, or all of
+notification channel. It re-reads them once more before telling the agent to start
+the shell, because the first stream may have waited up to a ticket's lifetime. A session
+whose conditions cannot be read for 30 seconds ends, since it may no longer be allowed.
+An owner can end any open session in the workspace, or all of
 them at once.
 
 A user can still deliberately start a process in a new Linux session (for
@@ -307,7 +310,9 @@ enabling or widening the environment setting, on by default.
 ## Failure and recovery
 
 - **Management outage or restart:** no new sessions. Open streams drop, and the
-  agent ends each shell's session. Workloads are unaffected.
+  agent ends each shell's session. Workloads are unaffected. If a stream outlives a
+  database fault, management retries recording its end until the sweep takes over a
+  minute after the deadline, so the row does not hold its limits.
 - **Agent restart, crash or upgrade:** open sessions end; at startup the agent
   ends any shells it journaled.
 - **Controller transfer:** transfer is a host-local step, so sessions end when
@@ -342,6 +347,11 @@ enabling or widening the environment setting, on by default.
     reauthentication does not, including a re-check during the renewal;
   - stream loss and agent crashes leave no process in the shell's Linux session,
     including background jobs;
+  - a browser that leaves after sending at most a few frames, or an actor who loses
+    access, while waiting for the agent gets no shell, and a session ends when its conditions cannot be read but survives
+    a brief fault;
+  - a database fault as a session ends does not leave its row holding limits or lose
+    its byte counts;
   - frame size, rate and session limits;
   - only typed input resets the idle timer, the exec working directory is `/`,
     hosts below the runc floor report the `runtime` reason, and a failed audit
