@@ -263,6 +263,14 @@ func (a *serviceAgent) waitRunning(t *testing.T, command string, want bool) {
 	t.Fatalf("%q running should be %v", command, want)
 }
 
+// jobEnded waits for a session's job to go. The agent frees the container's slot just
+// afterwards, and a next session's offer arriving before that would be refused.
+func (a *serviceAgent) jobEnded(t *testing.T, job string) {
+	t.Helper()
+	a.waitRunning(t, job, false)
+	time.Sleep(time.Second)
+}
+
 // waitOutput reads a stream until its output holds the text, and returns what it read.
 // Limit warnings may arrive at any point and are not the frames under test.
 func (p *terminalPeer) waitOutput(t *testing.T, text string) string {
@@ -381,7 +389,7 @@ func TestNativeTroubleshootingService(t *testing.T) {
 	browser.send(t, append([]byte{terminal.Input}, "exit 3\n"...))
 	browser.waitExit(t, 3)
 	x.waitClosed(t, opened.Session.Id, "shell exited")
-	a.waitRunning(t, job, false)
+	a.jobEnded(t, job)
 	a.recordedSession(t, opened.Session.Id, x.f.owner, `"shell exited"`)
 	for _, content := range []string{"privatetext", "pri''vate"} { // what the shell printed and what was typed
 		if strings.Contains(a.journal(t), content) {
@@ -417,7 +425,7 @@ func TestNativeTroubleshootingService(t *testing.T) {
 	x.forgetSessions(t, a)
 	browser.drained(t)
 	x.waitClosed(t, opened.Session.Id, "agent stream lost")
-	a.waitRunning(t, job, false)
+	a.jobEnded(t, job)
 	a.journaled(t, "terminal session cleanup finished after restart", "session="+opened.Session.Id.String())
 	if restarts := string(a.systemctl("show", a.unit, "--property=NRestarts")); restarts != "NRestarts=1\n" {
 		t.Fatalf("systemd restarts: %s", restarts)

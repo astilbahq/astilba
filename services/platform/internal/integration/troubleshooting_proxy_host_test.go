@@ -254,7 +254,7 @@ func TestNativeTroubleshootingProxies(t *testing.T) {
 		peer.send(t, append([]byte{terminal.Input}, "exit 3\n"...))
 		peer.waitExit(t, 3)
 		x.waitClosed(t, opened.Session.Id, "shell exited")
-		a.waitRunning(t, job, false)
+		a.jobEnded(t, job)
 		a.recordedSession(t, opened.Session.Id, x.f.owner, `"shell exited"`)
 
 		// Silence, with only the relay's pings on the wire, reaches the idle limit and not
@@ -269,10 +269,7 @@ func TestNativeTroubleshootingProxies(t *testing.T) {
 			t.Fatalf("idle stream ended with %v", peer.err)
 		}
 		x.waitClosed(t, opened.Session.Id, "idle timeout")
-		a.waitRunning(t, job, false)
-		// The agent frees the container's slot just after the job has gone, and this next
-		// session would otherwise be refused for the rare offer that arrives before it does.
-		time.Sleep(time.Second)
+		a.jobEnded(t, job)
 
 		// A person who disappears takes the shell and its jobs along.
 		opened = x.open(t, b, x.app, 1, 201)
@@ -280,7 +277,7 @@ func TestNativeTroubleshootingProxies(t *testing.T) {
 		job = a.startJob(t, peer, 4323)
 		peer.conn.CloseNow()
 		x.waitClosed(t, opened.Session.Id, "browser stream lost")
-		a.waitRunning(t, job, false)
+		a.jobEnded(t, job)
 	}
 	for name, definition := range terminalProxies {
 		t.Run(name, func(t *testing.T) {
@@ -307,7 +304,7 @@ func TestNativeTroubleshootingProxies(t *testing.T) {
 		peer := x.attachBrowser(t, b, opened)
 		job := a.startJob(t, peer, 4321)
 		peer.closedWithin(t, 30*time.Second)
-		a.waitRunning(t, job, false)
+		a.jobEnded(t, job)
 		x.closeReason(t, opened.Session.Id, 20*time.Second)
 	})
 	// A proxy that does not forward upgrades ends the session as soon as the agent tries.
@@ -363,11 +360,10 @@ func TestTroubleshootingProxySoak(t *testing.T) {
 			silent := time.Since(typed)
 			reason := x.closeReason(t, opened.Session.Id, 20*time.Second)
 			t.Logf("idle session ended after %s, %v, reason %q", silent, peer.err, reason)
-			a.waitRunning(t, job, false)
+			a.jobEnded(t, job)
 			if silent < domain.TroubleshootingIdle-time.Minute {
 				t.Fatalf("a proxy cut the silent session after %s: %q", silent, reason)
 			}
-			time.Sleep(time.Second) // for the agent to free the container's slot
 
 			b.login("owner@example.test", x.f.password)
 			opened = x.open(t, b, x.app, 1, 201)
@@ -393,7 +389,7 @@ func TestTroubleshootingProxySoak(t *testing.T) {
 			reason = x.closeReason(t, opened.Session.Id, 20*time.Second)
 			t.Logf("kept session ended after %s, %v, reason %q", time.Since(began), peer.err, reason)
 			t.Logf("agent journal:\n%s", a.journal(t))
-			a.waitRunning(t, job, false)
+			a.jobEnded(t, job)
 			if reason != "deadline" || time.Since(began) < 59*time.Minute {
 				t.Fatalf("a proxy cut the session: %s, %q", time.Since(began), reason)
 			}
