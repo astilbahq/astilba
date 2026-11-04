@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -17,6 +18,7 @@ import (
 	"github.com/alexedwards/scs/v2"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/httpapi"
+	"github.com/google/uuid"
 )
 
 type heldSessionStore struct {
@@ -160,5 +162,110 @@ func TestBrowserSessionRevocationSurvivesDelayedResponse(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// A browser applies Set-Cookie in arrival order, so any response to a request carrying
+// an old token can land after the response that renewed it.
+func TestStaleRequestsLeaveRenewedCookieAlone(t *testing.T) {
+	f := setup(t)
+	target := mustURL(f.server.URL)
+	send := func(method, path, csrf string, cookie *http.Cookie, body string) (*http.Response, []byte) {
+		t.Helper()
+		request, err := http.NewRequest(method, f.server.URL+path, strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		request.Header.Set("Origin", f.server.URL)
+		request.Header.Set("X-CSRF-Token", csrf)
+		if body != "" {
+			request.Header.Set("Content-Type", "application/json")
+		}
+		request.AddCookie(cookie)
+		response, err := http.DefaultClient.Do(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer response.Body.Close()
+		data, err := io.ReadAll(response.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return response, data
+	}
+	signedIn := func() (*browser, *http.Cookie, uuid.UUID) {
+		t.Helper()
+		b := f.browser(t)
+		workspace := b.login("owner@example.test", f.password).Workspaces[0].Id
+		return b, b.client.Jar.Cookies(target)[0], workspace
+	}
+
+	// The cookie must outlast the idle window, since activity no longer rewrites it.
+	guest := f.browser(t)
+	response, data := send("POST", "/api/v1/auth/login", guest.csrf, guest.client.Jar.Cookies(target)[0], `{"email":"owner@example.test","password":"`+f.password+`"}`)
+	if response.StatusCode != 200 || len(response.Cookies()) != 1 || response.Cookies()[0].MaxAge < int((11*time.Hour).Seconds()) {
+		t.Fatalf("login: status %d, cookies %v: %s", response.StatusCode, response.Cookies(), data)
+	}
+	guest.client.Jar.SetCookies(target, response.Cookies())
+	var signIn api.Session
+	if err := json.Unmarshal(data, &signIn); err != nil {
+		t.Fatal(err)
+	}
+	guest.csrf = signIn.CsrfToken
+	guestCookie := guest.client.Jar.Cookies(target)[0]
+
+	// An idle refresh that commits just before the old row's deletion.
+	if response, data = send("GET", "/api/v1/session", "", guestCookie, ""); response.StatusCode != 200 || len(response.Cookies()) != 0 {
+		t.Fatalf("refresh: status %d, cookies %v: %s", response.StatusCode, response.Cookies(), data)
+	}
+
+	reader, readerCookie, workspace := signedIn()
+	writer, writerCookie, _ := signedIn()
+	changer, _, _ := signedIn()
+	var renewed api.Session
+	replacement := "replacement password here"
+	changer.call("POST", "/api/v1/auth/password", map[string]string{"password": replacement}, 200, &renewed)
+	changer.csrf = renewed.CsrfToken
+	renewedCookie := changer.client.Jar.Cookies(target)[0].Value
+
+	// Each runs twice: first while the outdated row exists, then once it has gone.
+	for _, stale := range []struct {
+		name, method, path, csrf string
+		cookie                   *http.Cookie
+		status                   int
+	}{
+		{"session", "GET", "/api/v1/session", "", guestCookie, 200},
+		{"read", "GET", "/api/v1/workspaces/" + workspace.String() + "/projects", "", readerCookie, 401},
+		{"mutation", "POST", "/api/v1/auth/logout", writer.csrf, writerCookie, 403},
+	} {
+		for _, row := range []string{"outdated", "deleted"} {
+			response, data := send(stale.method, stale.path, stale.csrf, stale.cookie, "")
+			if response.StatusCode != stale.status || len(response.Cookies()) != 0 {
+				t.Fatalf("%s with %s row: status %d, cookies %v: %s", stale.name, row, response.StatusCode, response.Cookies(), data)
+			}
+			if strings.Contains(string(data), f.owner.String()) {
+				t.Fatalf("%s with %s row returned the account: %s", stale.name, row, data)
+			}
+		}
+	}
+	if v := changer.session(); v.User == nil || v.User.Id != f.owner || changer.client.Jar.Cookies(target)[0].Value != renewedCookie {
+		t.Fatal("renewed session did not survive stale requests")
+	}
+
+	// A browser left holding the dead token can still sign in, but only with its CSRF token.
+	if v := reader.session(); v.User != nil || v.CsrfToken == "" || reader.client.Jar.Cookies(target)[0].Value != readerCookie.Value {
+		t.Fatalf("dead token session: %+v", v)
+	}
+	token := reader.csrf
+	reader.csrf = "not the token"
+	reader.call("POST", "/api/v1/auth/login", map[string]string{"email": "owner@example.test", "password": replacement}, 403, nil)
+	reader.csrf = token
+	if v := reader.login("owner@example.test", replacement); v.User == nil || reader.client.Jar.Cookies(target)[0].Value == readerCookie.Value {
+		t.Fatal("sign-in from a dead token did not replace it")
+	}
+
+	changer.call("POST", "/api/v1/auth/logout", nil, 204, nil)
+	if cookies := changer.client.Jar.Cookies(target); len(cookies) != 0 {
+		t.Fatalf("logout kept the cookie: %v", cookies)
 	}
 }
