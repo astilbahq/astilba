@@ -353,10 +353,24 @@ enabling or widening the environment setting, on by default.
   window-manipulation and report sequences, with axe checks,
   screen-reader mode, visible focus and reduced motion; and a check that the
   page's content security policy permits the same-origin `wss:` connection.
-- **Proxy:** WebSocket upgrade, ping and stream duration through the validated
-  proxy profile.
-- **Native hosts:** a systemd agent session on amd64 and arm64, and the guided
-  bootstrap's runtime meeting the runc floor.
+- **Proxy:** the native suite runs real sessions through pinned nginx, Caddy and
+  Traefik, using the configurations in [hosting](hosting.md), with the production
+  agent's streams and polls on the proxy's HTTPS origin. It covers the upgrade, input,
+  resize, the warning, the relay's idle limit past a proxy's own timeouts, the `Exit`
+  frame, the close handshake, a dropped browser and cleanup after each. nginx also runs
+  at a 35-second limit, which holds, and below it and without upgrade headers, which
+  end the session early and start no shell respectively.
+  `make verify-troubleshooting-soak` runs the real 15-minute and 60-minute limits on
+  demand. On 4 November 2026 it passed on arm64 through all three proxies. That VM's
+  monotonic clock ran about 2% fast, so its 60-minute maximum lasted about 58m44s by the
+  wall clock. Chromium and WebKit each completed a session through each proxy once that
+  day, opening the stream over HTTP/1.1 even from a page loaded over HTTP/2; that is
+  not in CI until the dashboard terminal's journeys run through a proxy.
+- **Native hosts:** the native suite runs a session under the production unit on amd64
+  and arm64, through the documented commands. Exec and cleanup work under its sandbox,
+  journald records the session without its content, and no job survives the shell's
+  exit, a service stop or a killed agent once systemd restarts it. The guided bootstrap's
+  runtime meets the runc floor.
 
 ## Increments
 
