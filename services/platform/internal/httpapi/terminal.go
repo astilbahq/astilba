@@ -30,6 +30,14 @@ const (
 	terminalResizeBurst = 20
 )
 
+// Limits on browser streams that have not yet redeemed a ticket. These are starting values,
+// not measurements: a person needs one such stream per session, briefly, and each one held
+// costs a socket and a goroutine for at most about 20 seconds.
+const (
+	terminalPendingPerAccount = 4
+	terminalPendingTotal      = 64
+)
+
 // terminalPair joins the two streams of one session. Whichever handler arrives second
 // runs the relay; the first waits for it, so both connections stay owned by a handler.
 type terminalPair struct {
@@ -40,12 +48,41 @@ type terminalPair struct {
 }
 
 // terminalHub holds the sessions of this single management instance.
+//
+// It also counts browser streams between their upgrade and their ticket's outcome, which a
+// signed-in client can open without any session limit applying. Hijacked streams escape the
+// server's timeouts, so an uncounted loop could run out of file descriptors. The per-account
+// count stops one account using up the total and blocking everyone else.
 type terminalHub struct {
-	mu       sync.Mutex
-	sessions map[uuid.UUID]*terminalPair
+	mu           sync.Mutex
+	sessions     map[uuid.UUID]*terminalPair
+	pending      map[uuid.UUID]int
+	pendingTotal int
 }
 
-func newTerminalHub() *terminalHub { return &terminalHub{sessions: map[uuid.UUID]*terminalPair{}} }
+func newTerminalHub() *terminalHub {
+	return &terminalHub{sessions: map[uuid.UUID]*terminalPair{}, pending: map[uuid.UUID]int{}}
+}
+
+func (h *terminalHub) admitPending(account uuid.UUID) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.pendingTotal >= terminalPendingTotal || h.pending[account] >= terminalPendingPerAccount {
+		return false
+	}
+	h.pendingTotal++
+	h.pending[account]++
+	return true
+}
+
+func (h *terminalHub) releasePending(account uuid.UUID) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.pendingTotal--
+	if h.pending[account]--; h.pending[account] == 0 {
+		delete(h.pending, account)
+	}
+}
 
 // join registers one side and reports whether it completes the pair. Finding the pair and
 // taking a place in it are one step, so a side arriving as abandon runs either completes
@@ -172,6 +209,14 @@ func (s *Server) browserTerminal(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, domain.Unauthenticated)
 		return
 	}
+	// Checked first, so that a refused request costs no more than any other. The place is
+	// held until redemption finishes or its refusal has closed.
+	if !s.terminals.admitPending(p.Account.ID) {
+		s.fail(w, r, domain.RateLimited)
+		return
+	}
+	release := sync.OnceFunc(func() { s.terminals.releasePending(p.Account.ID) })
+	defer release()
 	// The Origin was compared exactly above. The library's own check compares it with
 	// the Host header, which a reverse proxy may rewrite.
 	conn, err := acceptTerminal(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
@@ -198,6 +243,7 @@ func (s *Server) browserTerminal(w http.ResponseWriter, r *http.Request) {
 		closeTerminal(conn, websocket.StatusPolicyViolation, "session refused")
 		return
 	}
+	release()
 	s.attachTerminal(stream, nil, conn)
 }
 

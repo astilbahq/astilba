@@ -128,7 +128,8 @@ also notifies the workspace's owners. It defaults to
    container, no shell, limit reached, or Docker unavailable. Until the session has
    started, a failure is reported this way too, and any shell already started is ended.
 4. **Browser stream.** The browser opens a same-origin stream. Management
-   refuses the upgrade unless the session cookie and Origin are valid, then
+   refuses the upgrade unless the session cookie and Origin are valid and the
+   account is within its limit of streams without a redeemed ticket, then
    requires the ticket as the first message within five seconds. Redeeming the
    ticket re-checks membership and allows one browser attachment per session.
    A redemption that cannot finish within five seconds refuses the stream and
@@ -204,11 +205,18 @@ its own limits locally. Initial values:
 - 64 KiB/s of input and 1 MiB/s of output per session, with backpressure rather
   than unbounded buffering. If a shell stops reading and more input arrives than the
   agent can hold (about 1 MiB), the session ends with the reason `input_overflow`,
-  because dropping part of it could run a different command from the one sent.
+  because dropping part of it could run a different command from the one sent;
+- four browser streams per account and 64 per installation that have not yet
+  redeemed a ticket, counted in the management process, which sessions already
+  require to be a single instance. An upgrade over either limit gets a 429 before
+  it happens and writes no audit event, so a refusal costs no more than any other
+  refused request. A browser cannot read that status and sees only a failed connection.
 
 These are constants, not settings; implementation and measured use can tune
 them. Requests over a limit are refused with an explicit reason rather than
-queued.
+queued. [Hosting](hosting.md#per-address-limits-at-the-reverse-proxy) asks operators
+to limit connections per address at the proxy, which also covers unauthenticated
+requests.
 
 ## Transport and deployment
 

@@ -55,7 +55,8 @@ previously encrypted data.
 4. Configure an HTTPS reverse proxy for the public origin, forwarding to the
    loopback-bound management port. Forward request bodies and streaming responses;
    permit at least 35 seconds for agent long polls. Use a certificate trusted by
-   browsers and enrolled agents. Keep the upstream port private.
+   browsers and enrolled agents. Keep the upstream port private, and set
+   [per-address limits](#per-address-limits-at-the-reverse-proxy).
 5. Start `astilba serve`, sign in, enable two-factor authentication and configure
    the workspace's MFA policy. Configure SMTP before inviting other users or
    relying on password recovery.
@@ -89,6 +90,100 @@ different source address; do not copy this example without checking the network.
 With no configured proxies, direct-host requests continue to use their TCP peer.
 Clients sharing a real public IP still share an IP budget; account and global
 authentication limits remain in place.
+
+### Per-address limits at the reverse proxy
+
+Limit connections and requests per client address at your proxy, on every path. Astilba
+limits sign-in attempts and a few signed-in actions, and nothing else limits general
+requests, before or after sign-in.
+
+Give agent paths their own, larger limits. A host holds a long poll while idle and makes
+about 4 requests a second while running an operation. Refusing an agent can delay or cancel
+its work, or leave an update waiting for you to retry it on the host. Enrollment needs no
+credential, so keep it on the general limits.
+
+These values are starting points, not measurements. Requests over them get a 429, so raise
+them if many people, or more than about 20 hosts, share a public address. They count
+requests in progress: a WebSocket counts for as long as it stays open, and over HTTP/2 each
+concurrent request of a dashboard page counts separately. They do not count connections
+that have not finished their headers, so also keep nginx's `worker_connections` above the
+total you expect, allowing two for each proxied request.
+
+nginx, where a location's limits replace the server block's:
+
+```nginx
+limit_conn_zone $binary_remote_addr zone=astilba_connections:10m;
+limit_conn_zone $binary_remote_addr zone=astilba_agent_connections:10m;
+limit_req_zone $binary_remote_addr zone=astilba_requests:10m rate=20r/s;
+limit_req_zone $binary_remote_addr zone=astilba_agent_requests:10m rate=100r/s;
+
+server {
+    # Add these to your existing server block.
+    limit_conn_status 429;
+    limit_req_status 429;
+    limit_conn astilba_connections 64;
+    limit_req zone=astilba_requests burst=100 nodelay;
+
+    location /agent {
+        # Repeat the proxy settings of your main location here.
+        limit_conn astilba_agent_connections 256;
+        limit_req zone=astilba_agent_requests burst=200 nodelay;
+    }
+
+    # Keeps the server block's limits.
+    location = /agent/v1/enroll {
+        # Repeat the proxy settings of your main location here.
+    }
+}
+```
+
+Traefik, with three routers that share a service, entry points and TLS:
+
+- your main router, with `astilba-connections` and `astilba-requests`;
+- ``Host(`platform.example.com`) && Path(`/agent/v1/enroll`)``, with the same two;
+- ``Host(`platform.example.com`) && PathPrefix(`/agent`)``, with the `astilba-agent-` pair.
+
+Keep `Host` in both rules: Traefik prefers the longest rule, so without it your main router
+takes these requests.
+
+```yaml
+http:
+  middlewares:
+    astilba-connections:
+      inFlightReq:
+        amount: 64
+        sourceCriterion:
+          ipStrategy:
+            depth: 0
+    astilba-requests:
+      rateLimit:
+        average: 20
+        period: 1s
+        burst: 100
+    astilba-agent-connections:
+      inFlightReq:
+        amount: 256
+        sourceCriterion:
+          ipStrategy:
+            depth: 0
+    astilba-agent-requests:
+      rateLimit:
+        average: 100
+        period: 1s
+        burst: 200
+```
+
+Caddy has no per-address limit without a plugin, so use one, or set the limits at a
+firewall or load balancer in front of it.
+
+Both examples count the address that connected to the proxy. If another proxy or CDN sits
+in front, they would count everyone as one client, so have the proxy take the client
+address from its trusted hops, as nginx's `realip` module does with `set_real_ip_from`.
+Do not count the raw `X-Forwarded-For` header, whose content a client can choose.
+
+Both also count each IPv6 address separately, and a client usually controls a whole /64,
+so changing address avoids these limits. If you publish an AAAA record, also limit each
+/64 at a firewall.
 
 ### Terminal sessions behind a reverse proxy
 
