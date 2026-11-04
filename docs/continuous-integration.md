@@ -54,14 +54,15 @@ an existing deployment host or application runtime state.
 
 ## Native lanes
 
-Each architecture runs three lanes, each on its own disposable runner VM. The
-Native verification gate requires all six jobs to pass:
+Each architecture runs four lanes, each on its own disposable runner VM. The
+Native verification gate requires all eight jobs to pass:
 
 | Lane | Verification |
 | --- | --- |
 | `core` | PLAT-4 host runtime, builds, PostgreSQL restore, managed links, Compose and cross-host deployment, pipeline, preview, release transport and troubleshooting target |
 | `recovery` | Agent service enrollment, restart and signed update; cross-host older-backup, drained and upgrade recovery |
-| `visual` | Visual deployment, including catalog, backup, restore and major upgrades |
+| `visual` | Visual deployment, including catalog, backup and restore |
+| `upgrade` | Application releases and PostgreSQL major upgrades, then an unrelated unit's routes and data, later deployments and controller transfer on that host |
 
 Every lane repeats the same fresh production bootstrap, pinned runtime install and
 image pulls, so each suite starts from the same prepared host. The Makefile's

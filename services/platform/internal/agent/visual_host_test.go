@@ -23,15 +23,29 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/execution"
-	"github.com/astilbahq/astilba/services/platform/internal/upgrade"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/moby/moby/api/pkg/stdcopy"
 	"github.com/moby/moby/client"
 )
 
+// nativeVisualFixture owns a journal, Docker resources and a monotonically
+// increasing command stream on a disposable native Linux host.
+type nativeVisualFixture struct {
+	t             *testing.T
+	docker        *client.Client
+	state         string
+	dockerCLI     string
+	server        uuid.UUID
+	journal       *Journal
+	engine        *Engine
+	generation    int64
+	requestClient *http.Client
+}
+
 // Run only on the disposable native Linux host: this fixture publishes ports.
-func TestNativeVisualDeployment(t *testing.T) {
+func newNativeVisualFixture(t *testing.T) *nativeVisualFixture {
+	t.Helper()
 	if testing.Short() || os.Getenv("ASTILBA_NATIVE_AGENT") != "1" {
 		t.Skip("requires disposable native Linux host")
 	}
@@ -43,7 +57,7 @@ func TestNativeVisualDeployment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer docker.Close()
+	t.Cleanup(func() { docker.Close() })
 	if _, err = docker.ContainerInspect(ctx, proxyName, client.ContainerInspectOptions{}); err == nil {
 		t.Fatal("fixture requires absent ingress container")
 	}
@@ -55,16 +69,15 @@ func TestNativeVisualDeployment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() {
-		if j != nil {
-			j.Close()
+	f := &nativeVisualFixture{t: t, docker: docker, state: state, dockerCLI: "docker", server: uuid.New(), journal: j, requestClient: &http.Client{Timeout: 2 * time.Second}}
+	t.Cleanup(func() {
+		if f.journal != nil {
+			f.journal.Close()
 		}
-	}()
-	server := uuid.New()
-	if err = j.SetConfig(Config{ServerID: server, MachineID: uuid.New(), Role: "deployment"}); err != nil {
+	})
+	if err = j.SetConfig(Config{ServerID: f.server, MachineID: uuid.New(), Role: "deployment"}); err != nil {
 		t.Fatal(err)
 	}
-	dockerCLI := "docker"
 	// CI installs its pinned toolchain separately from the runner's Docker.
 	if _, err := os.Stat("/opt/astilba-plat4/bin/docker"); err == nil {
 		config := filepath.Join(state, "fixture-docker")
@@ -74,17 +87,17 @@ func TestNativeVisualDeployment(t *testing.T) {
 		if err = os.WriteFile(filepath.Join(config, "config.json"), []byte(`{"cliPluginsExtraDirs":["/opt/astilba-plat4/cli-plugins"]}`), 0600); err != nil {
 			t.Fatal(err)
 		}
-		dockerCLI = filepath.Join(state, "docker")
+		f.dockerCLI = filepath.Join(state, "docker")
 		script := fmt.Sprintf("#!/bin/sh\nexport DOCKER_CONFIG='%s'\nexec /opt/astilba-plat4/bin/docker \"$@\"\n", config)
-		if err = os.WriteFile(dockerCLI, []byte(script), 0700); err != nil {
+		if err = os.WriteFile(f.dockerCLI, []byte(script), 0700); err != nil {
 			t.Fatal(err)
 		}
 	}
-	engine := &Engine{Journal: j, Docker: docker, DockerCLI: dockerCLI}
+	f.engine = &Engine{Journal: j, Docker: docker, DockerCLI: f.dockerCLI}
 	t.Cleanup(func() {
 		cleanup, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		filter := make(client.Filters).Add("label", labelServer+"="+server.String())
+		filter := make(client.Filters).Add("label", labelServer+"="+f.server.String())
 		if all, e := docker.ContainerList(cleanup, client.ContainerListOptions{All: true, Filters: filter}); e == nil {
 			for _, v := range all.Items {
 				_, _ = docker.ContainerRemove(cleanup, v.ID, client.ContainerRemoveOptions{Force: true, RemoveVolumes: false})
@@ -101,37 +114,41 @@ func TestNativeVisualDeployment(t *testing.T) {
 			}
 		}
 	})
-	generation := int64(0)
-	command := func(action string, p deployment.Plan, secrets map[string]string) api.ExecutionCommand {
-		generation++
-		payload := deployment.Payload{Action: action, Plan: p, Secrets: secrets}
-		raw, _ := json.Marshal(payload)
-		v := json.RawMessage(raw)
-		return api.ExecutionCommand{Id: uuid.New(), ServerId: server, EnvironmentId: p.EnvironmentID, ResourceId: p.UnitID, Kind: "visual", Action: "inspect", Generation: generation, PlanHash: payload.Digest(), Visual: &v, Deadline: time.Now().Add(time.Minute)}
+	return f
+}
+
+func (f *nativeVisualFixture) command(action string, p deployment.Plan, secrets map[string]string) api.ExecutionCommand {
+	f.generation++
+	payload := deployment.Payload{Action: action, Plan: p, Secrets: secrets}
+	raw, _ := json.Marshal(payload)
+	v := json.RawMessage(raw)
+	return api.ExecutionCommand{Id: uuid.New(), ServerId: f.server, EnvironmentId: p.EnvironmentID, ResourceId: p.UnitID, Kind: "visual", Action: "inspect", Generation: f.generation, PlanHash: payload.Digest(), Visual: &v, Deadline: time.Now().Add(time.Minute)}
+}
+
+func (f *nativeVisualFixture) finish(c api.ExecutionCommand) Record {
+	f.t.Helper()
+	if err := f.engine.Execute(context.Background(), c); err != nil {
+		f.t.Fatal(err)
 	}
-	finish := func(c api.ExecutionCommand) Record {
-		t.Helper()
-		if err := engine.Execute(ctx, c); err != nil {
-			t.Fatal(err)
-		}
-		r, err := engine.Journal.Record(c.Id)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if r.Report.State != "succeeded" {
-			t.Fatalf("%s failed: %s", c.Kind, r.Report.Note)
-		}
-		if err = engine.Journal.Acknowledge(c.Id, r.Report.Sequence); err != nil {
-			t.Fatal(err)
-		}
-		return r
+	r, err := f.engine.Journal.Record(c.Id)
+	if err != nil {
+		f.t.Fatal(err)
 	}
-	plan := func(name string, withDB bool) (deployment.Plan, map[string]string) {
-		app, pg, vol, secret := uuid.New(), uuid.New(), uuid.New(), uuid.New()
-		image := execution.TestImage
-		pgimage := domain.PostgresImage
-		value := "v1"
-		script := `mkdir -p /tmp/www/cgi-bin
+	if r.Report.State != "succeeded" {
+		f.t.Fatalf("%s failed: %s", c.Kind, r.Report.Note)
+	}
+	if err = f.engine.Journal.Acknowledge(c.Id, r.Report.Sequence); err != nil {
+		f.t.Fatal(err)
+	}
+	return r
+}
+
+func (f *nativeVisualFixture) plan(name string, withDB bool) (deployment.Plan, map[string]string) {
+	app, pg, vol, secret := uuid.New(), uuid.New(), uuid.New(), uuid.New()
+	image := execution.TestImage
+	pgimage := domain.PostgresImage
+	value := "v1"
+	script := `mkdir -p /tmp/www/cgi-bin
 printf '%s' "$VALUE" > /tmp/www/index.html
 printf ready > /tmp/www/health
 cat > /tmp/www/cgi-bin/identity <<'CGI'
@@ -142,53 +159,60 @@ CGI
 chmod +x /tmp/www/cgi-bin/identity
 echo "$DATABASE_URL"
 exec httpd -f -p 8080 -h /tmp/www`
-		spec := domain.Specification{Version: 1, Variables: []domain.Variable{}, Applications: []domain.Application{{ID: app, Name: "Web", Source: domain.ApplicationSource{Kind: "image", Image: &image}, Variables: []domain.Variable{{Name: "VALUE", Value: &value}}, Command: []string{"sh", "-c", script}, Health: &domain.HealthCheck{Port: 8080, Path: "/health"}}}, Routes: []domain.Route{{ID: uuid.New(), TargetID: app, Protocol: "http", Domain: name + ".example.test", Port: 8080, TLS: "off", AllowCIDRs: []string{}}}}
-		secrets := map[string]string{}
-		if withDB {
-			spec.Volumes = []domain.Volume{{ID: vol, Name: "Data"}}
-			spec.Applications = append(spec.Applications, domain.Application{ID: pg, Name: "Database", Kind: "postgres", Source: domain.ApplicationSource{Kind: "image", Image: &pgimage}, Postgres: &domain.Postgres{Database: "app", Username: "app", PasswordSecretVersionID: secret}, Mounts: []domain.VolumeMount{{VolumeID: vol, Target: "/var/lib/postgresql"}}})
-			spec.Bindings = []domain.Binding{{ID: uuid.New(), SourceID: pg, TargetID: app, Variable: "DATABASE_URL"}}
-			secrets[secret.String()] = "native/$secret@canary"
-			spec.Routes = append(spec.Routes, domain.Route{ID: uuid.New(), TargetID: pg, Protocol: "tcp", Domain: "db.example.test", Port: 5432, ListenPort: 15432, TLS: "off", AllowCIDRs: []string{"0.0.0.0/0"}})
-		}
-		p := deployment.Plan{ID: uuid.New(), ServerID: server, EnvironmentID: uuid.New(), UnitID: uuid.New(), RevisionID: uuid.New(), Recipe: deployment.Recipe, Specification: spec, Images: map[string]string{}, HostChanges: true, ExpiresAt: time.Now().Add(time.Hour)}.WithHash()
-		return p, secrets
+	spec := domain.Specification{Version: 1, Variables: []domain.Variable{}, Applications: []domain.Application{{ID: app, Name: "Web", Source: domain.ApplicationSource{Kind: "image", Image: &image}, Variables: []domain.Variable{{Name: "VALUE", Value: &value}}, Command: []string{"sh", "-c", script}, Health: &domain.HealthCheck{Port: 8080, Path: "/health"}}}, Routes: []domain.Route{{ID: uuid.New(), TargetID: app, Protocol: "http", Domain: name + ".example.test", Port: 8080, TLS: "off", AllowCIDRs: []string{}}}}
+	secrets := map[string]string{}
+	if withDB {
+		spec.Volumes = []domain.Volume{{ID: vol, Name: "Data"}}
+		spec.Applications = append(spec.Applications, domain.Application{ID: pg, Name: "Database", Kind: "postgres", Source: domain.ApplicationSource{Kind: "image", Image: &pgimage}, Postgres: &domain.Postgres{Database: "app", Username: "app", PasswordSecretVersionID: secret}, Mounts: []domain.VolumeMount{{VolumeID: vol, Target: "/var/lib/postgresql"}}})
+		spec.Bindings = []domain.Binding{{ID: uuid.New(), SourceID: pg, TargetID: app, Variable: "DATABASE_URL"}}
+		secrets[secret.String()] = "native/$secret@canary"
+		spec.Routes = append(spec.Routes, domain.Route{ID: uuid.New(), TargetID: pg, Protocol: "tcp", Domain: "db.example.test", Port: 5432, ListenPort: 15432, TLS: "off", AllowCIDRs: []string{"0.0.0.0/0"}})
 	}
-	resolve := func(p deployment.Plan) deployment.Plan {
-		t.Helper()
-		r := finish(command("resolve", p, nil))
-		var observed deployment.Observation
-		if err := json.Unmarshal(*r.Report.Observation, &observed); err != nil {
-			t.Fatal(err)
-		}
-		p.Images = observed.Images
-		p.ExpectedState = observed.StateHash
-		return p.WithHash()
+	p := deployment.Plan{ID: uuid.New(), ServerID: f.server, EnvironmentID: uuid.New(), UnitID: uuid.New(), RevisionID: uuid.New(), Recipe: deployment.Recipe, Specification: spec, Images: map[string]string{}, HostChanges: true, ExpiresAt: time.Now().Add(time.Hour)}.WithHash()
+	return p, secrets
+}
+
+func (f *nativeVisualFixture) resolve(p deployment.Plan) deployment.Plan {
+	f.t.Helper()
+	r := f.finish(f.command("resolve", p, nil))
+	var observed deployment.Observation
+	if err := json.Unmarshal(*r.Report.Observation, &observed); err != nil {
+		f.t.Fatal(err)
 	}
-	requestClient := &http.Client{Timeout: 2 * time.Second}
-	request := func(host, want string) {
-		t.Helper()
-		req, _ := http.NewRequest("GET", "http://127.0.0.1/", nil)
-		req.Host = host
-		res, err := requestClient.Do(req)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer res.Body.Close()
-		b, err := io.ReadAll(io.LimitReader(res.Body, 512))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if res.StatusCode != 200 || string(b) != want {
-			t.Fatalf("route %s: %d %q", host, res.StatusCode, b)
-		}
+	p.Images = observed.Images
+	p.ExpectedState = observed.StateHash
+	return p.WithHash()
+}
+
+func (f *nativeVisualFixture) request(host, want string) {
+	f.t.Helper()
+	req, _ := http.NewRequest("GET", "http://127.0.0.1/", nil)
+	req.Host = host
+	res, err := f.requestClient.Do(req)
+	if err != nil {
+		f.t.Fatal(err)
 	}
+	defer res.Body.Close()
+	b, err := io.ReadAll(io.LimitReader(res.Body, 512))
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	if res.StatusCode != 200 || string(b) != want {
+		f.t.Fatalf("route %s: %d %q", host, res.StatusCode, b)
+	}
+}
+
+func TestNativeVisualDeployment(t *testing.T) {
+	f := newNativeVisualFixture(t)
+	ctx := context.Background()
+	docker, state, server, dockerCLI := f.docker, f.state, f.server, f.dockerCLI
+	command, finish, resolve, plan, request := f.command, f.finish, f.resolve, f.plan, f.request
 	p, secrets := plan("first", true)
 	p.Specification.Applications[0].Replicas = 3
 	p.PrepareInstances(deployment.Plan{})
 	p = resolve(p.WithHash())
 	abandoned := append([]uuid.UUID(nil), p.InstanceIDs(p.Specification.Applications[0].ID)[1:]...)
-	nativeAbandonReplicaStart(t, engine, p, command("deploy", p, secrets))
+	nativeAbandonReplicaStart(t, f.engine, p, command("deploy", p, secrets))
 	p.ID, p.RevisionID = uuid.New(), uuid.New()
 	p.PrepareInstances(deployment.Plan{})
 	p = resolve(p.WithHash())
@@ -199,7 +223,7 @@ exec httpd -f -p 8080 -h /tmp/www`
 		}
 	}
 	request("first.example.test", "v1")
-	t.Run("replica_distribution_and_health", func(t *testing.T) { nativeReplicaDistribution(t, engine, p) })
+	t.Run("replica_distribution_and_health", func(t *testing.T) { nativeReplicaDistribution(t, f.engine, p) })
 	if strings.Contains(string(*r.Report.Observation), "canary") || strings.Contains(string(*r.Report.Observation), "native%2F") {
 		t.Fatal("observation leaked database credentials")
 	}
@@ -224,7 +248,7 @@ exec httpd -f -p 8080 -h /tmp/www`
 		t.Fatal("deployed database binding differs from its frozen values")
 	}
 	t.Run("resource_metrics", func(t *testing.T) {
-		collector := &MetricCollector{Journal: j}
+		collector := &MetricCollector{Journal: f.journal}
 		collection, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
 		sample := collector.Collect(collection, docker, server, state)
@@ -239,7 +263,7 @@ exec httpd -f -p 8080 -h /tmp/www`
 	})
 
 	databaseURL := url.URL{Scheme: "postgres", Host: "127.0.0.1:15432", Path: "/app", User: url.UserPassword("app", password), RawQuery: "sslmode=disable"}
-	t.Run("catalog", func(t *testing.T) { nativeCatalogJourney(t, engine, server, command) })
+	t.Run("catalog", func(t *testing.T) { nativeCatalogJourney(t, f.engine, server, command) })
 	db, err := pgx.Connect(ctx, databaseURL.String())
 	if err != nil {
 		t.Fatal("TCP route did not connect to PostgreSQL")
@@ -249,46 +273,17 @@ exec httpd -f -p 8080 -h /tmp/www`
 	}
 	db.Close(ctx)
 	t.Run("database_metadata_restore", func(t *testing.T) {
-		nativePostgresMetadataRestore(t, engine, p)
+		nativePostgresMetadataRestore(t, f.engine, p)
 	})
 	t.Run("backup_and_fresh_restore", func(t *testing.T) {
-		nativeBackupJourney(t, engine, p, func(b backup.Command) Record {
-			generation++
+		nativeBackupJourney(t, f.engine, p, func(b backup.Command) Record {
+			f.generation++
 			raw, _ := json.Marshal(b)
 			value := json.RawMessage(raw)
-			return finish(api.ExecutionCommand{Id: uuid.New(), ServerId: server, EnvironmentId: p.EnvironmentID, ResourceId: b.Installation.Policy.ID, Kind: "backup", Action: "inspect", Generation: generation, PlanHash: b.Digest(), Backup: &value, Deadline: time.Now().Add(time.Minute)})
+			return finish(api.ExecutionCommand{Id: uuid.New(), ServerId: server, EnvironmentId: p.EnvironmentID, ResourceId: b.Installation.Policy.ID, Kind: "backup", Action: "inspect", Generation: f.generation, PlanHash: b.Digest(), Backup: &value, Deadline: time.Now().Add(time.Minute)})
 		})
 	})
-	t.Run("supported_major_upgrades", func(t *testing.T) {
-		releaseVerified := false
-		nativeUpgradeJourney(t, engine, func(t *testing.T) (deployment.Plan, map[string]string) {
-			p, secrets := plan("upgrade-"+uuid.NewString(), true)
-			p.Specification.Routes = p.Specification.Routes[:1]
-			image := domain.Postgres17Image
-			p.Specification.Applications[1].Source.Image = &image
-			p.Specification.Applications[1].Mounts[0].Target = domain.PostgresMount(image)
-			p = p.WithHash()
-			if !releaseVerified {
-				p.Specification.Applications[0].Command = []string{"sh", "-c", `mkdir -p /tmp/www/cgi-bin; printf ready > /tmp/www/health; printf '%s' "$VALUE" > /tmp/www/index.html; printf '#!/bin/sh\nsleep 6\nprintf "Content-Type: text/plain\\r\\n\\r\\n"\nprintf "%%s" "$VALUE"\n' > /tmp/www/cgi-bin/slow; chmod +x /tmp/www/cgi-bin/slow; exec httpd -f -p 8080 -h /tmp/www`}
-				p = p.WithHash()
-			}
-			p = resolve(p)
-			finish(command("deploy", p, secrets))
-			if !releaseVerified {
-				p = nativeReleaseJourney(t, engine, p, secrets, resolve, command, finish)
-				releaseVerified = true
-				j = engine.Journal
-			}
-			return p, secrets
-		}, func(cmd upgrade.Command) api.ExecutionCommand {
-			generation++
-			raw, _ := json.Marshal(cmd)
-			value := json.RawMessage(raw)
-			return api.ExecutionCommand{Id: uuid.New(), ServerId: server, EnvironmentId: cmd.Plan.Source.EnvironmentID, ResourceId: cmd.Plan.ID, Kind: "upgrade", Action: "inspect", Generation: generation, PlanHash: cmd.Digest(), Upgrade: &value, Deadline: time.Now().Add(time.Hour)}
-		})
-		j = engine.Journal
-	})
-	nativeFilesAndJobs(t, engine, server)
+	nativeFilesAndJobs(t, f.engine, server)
 	other, otherSecrets := plan("second", false)
 	other = resolve(other)
 	finish(command("deploy", other, otherSecrets))
@@ -329,7 +324,7 @@ exec httpd -f -p 8080 -h /tmp/www`
 	next = resolve(next.WithHash())
 	c := command("deploy", next, secrets)
 	injected := false
-	engine.Point = func(point string) {
+	f.engine.Point = func(point string) {
 		if point == "route-publishing" && !injected {
 			if _, err := docker.ContainerStop(ctx, proxyName, client.ContainerStopOptions{}); err != nil {
 				t.Fatal(err)
@@ -337,15 +332,15 @@ exec httpd -f -p 8080 -h /tmp/www`
 		}
 		if point == "route-published" && !injected {
 			injected = true
-			if err := os.WriteFile(engine.routePath(), []byte("{invalid"), 0600); err != nil {
+			if err := os.WriteFile(f.engine.routePath(), []byte("{invalid"), 0600); err != nil {
 				t.Fatal(err)
 			}
 		}
 	}
-	if err = engine.Execute(ctx, c); err != nil {
+	if err = f.engine.Execute(ctx, c); err != nil {
 		t.Fatal(err)
 	}
-	r, err = j.Record(c.Id)
+	r, err = f.journal.Record(c.Id)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -354,8 +349,8 @@ exec httpd -f -p 8080 -h /tmp/www`
 	}
 	request("first.example.test", "v2")
 	request("second.example.test", "v1")
-	engine.Point = nil
-	if err = j.Mutate(c.Id, func(r *Record) { r.Report.State = "running" }); err != nil {
+	f.engine.Point = nil
+	if err = f.journal.Mutate(c.Id, func(r *Record) { r.Report.State = "running" }); err != nil {
 		t.Fatal(err)
 	}
 	finish(c)
@@ -375,7 +370,7 @@ exec httpd -f -p 8080 -h /tmp/www`
 	crash.Images = map[string]string{}
 	crash = resolve(crash.WithHash())
 	cc := command("deploy", crash, secrets)
-	engine.Point = func(point string) {
+	f.engine.Point = func(point string) {
 		if point == "route-published" {
 			panic("simulated process exit")
 		}
@@ -386,20 +381,20 @@ exec httpd -f -p 8080 -h /tmp/www`
 				t.Fatal("crash point not reached")
 			}
 		}()
-		_ = engine.Execute(ctx, cc)
+		_ = f.engine.Execute(ctx, cc)
 	}()
-	if err = j.Close(); err != nil {
+	if err = f.journal.Close(); err != nil {
 		t.Fatal(err)
 	}
-	j = nil
-	j, err = Open(state)
+	f.journal = nil
+	f.journal, err = Open(state)
 	if err != nil {
 		t.Fatal(err)
 	}
-	engine = &Engine{Journal: j, Docker: docker, DockerCLI: dockerCLI}
+	f.engine = &Engine{Journal: f.journal, Docker: docker, DockerCLI: dockerCLI}
 	finish(cc)
 	request("second.example.test", "v1")
-	j = nativeControllerTransfer(t, engine)
+	f.journal = nativeControllerTransfer(t, f.engine)
 	// The same exported Compose bundle runs with management and the journal closed.
 	bundle, err := deployment.ExportConfiguration(crash)
 	if err != nil {
@@ -417,10 +412,10 @@ exec httpd -f -p 8080 -h /tmp/www`
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = j.Close(); err != nil {
+	if err = f.journal.Close(); err != nil {
 		t.Fatal(err)
 	}
-	j = nil
+	f.journal = nil
 	dir := t.TempDir()
 	if err = os.WriteFile(filepath.Join(dir, "compose.json"), []byte(bundle.Compose), 0600); err != nil {
 		t.Fatal(err)
@@ -494,11 +489,11 @@ exec httpd -f -p 8080 -h /tmp/www`
 	if err != nil || strings.TrimSpace(output.String()) != "data-survived" {
 		t.Fatal("data did not survive replacement, restart and standalone export")
 	}
-	j, err = Open(state)
+	f.journal, err = Open(state)
 	if err != nil {
 		t.Fatal(err)
 	}
-	engine = &Engine{Journal: j, Docker: docker, DockerCLI: dockerCLI}
+	f.engine = &Engine{Journal: f.journal, Docker: docker, DockerCLI: dockerCLI}
 	deletion := command("delete-volume", crash, nil)
 	controllerGeneration := int64(1)
 	deletion.ControllerGeneration = &controllerGeneration
@@ -510,10 +505,10 @@ exec httpd -f -p 8080 -h /tmp/www`
 	message := json.RawMessage(raw)
 	deletion.Visual = &message
 	deletion.PlanHash = payload.Digest()
-	if err = engine.Execute(ctx, deletion); err != nil {
+	if err = f.engine.Execute(ctx, deletion); err != nil {
 		t.Fatal(err)
 	}
-	deleted, err := j.Record(deletion.Id)
+	deleted, err := f.journal.Record(deletion.Id)
 	if err != nil || deleted.Report.State != "needs_attention" {
 		t.Fatal("in-use volume deletion was not refused")
 	}
