@@ -91,3 +91,86 @@ ORDER BY created_at DESC,id LIMIT 100;
 -- name: RecentlyAudited :one
 SELECT EXISTS(SELECT 1 FROM audit_events
 WHERE workspace_id = @workspace_id AND actor_id = @actor_id AND action = @action AND created_at > now() - interval '1 hour');
+
+-- name: ListTroubleshootingOffers :many
+SELECT t.id,t.unit_id,t.application_id,t.instance,t.controller_generation
+FROM troubleshooting_sessions t
+JOIN servers s ON s.workspace_id = t.workspace_id AND s.id = t.server_id
+WHERE t.workspace_id = @workspace_id AND t.server_id = @server_id AND t.state = 'offered'
+ AND t.agent_attached_at IS NULL AND t.ticket_expires_at > now()
+ AND t.controller_generation = s.controller_generation
+ AND s.capabilities->>'troubleshooting' = 'true'
+ORDER BY t.created_at LIMIT 4;
+
+-- name: AdmitTroubleshootingAgent :one
+UPDATE troubleshooting_sessions t SET agent_attached_at = now(),agent_credential_hash = @credential_hash
+FROM servers s
+WHERE t.workspace_id = @workspace_id AND t.id = @id AND t.server_id = @server_id AND t.state = 'offered'
+ AND t.agent_attached_at IS NULL AND t.ticket_expires_at > now()
+ AND s.workspace_id = t.workspace_id AND s.id = t.server_id AND s.controller_generation = t.controller_generation
+ AND s.credential_hash = @credential_hash
+RETURNING t.ticket_expires_at,t.deadline_at;
+
+-- name: RedeemTroubleshootingTicket :one
+UPDATE troubleshooting_sessions SET browser_attached_at = now(),ticket_hash = NULL
+WHERE workspace_id = @workspace_id AND id = @id AND actor_id = @actor_id AND state = 'offered'
+ AND ticket_hash = @ticket_hash AND browser_session_hash = @browser_session_hash AND auth_version = @auth_version
+ AND ticket_expires_at > now() AND browser_attached_at IS NULL
+RETURNING environment_id,ticket_expires_at,deadline_at;
+
+-- name: ActivateTroubleshootingSession :execrows
+UPDATE troubleshooting_sessions SET state = 'active'
+WHERE workspace_id = @workspace_id AND id = @id AND state = 'offered'
+ AND agent_attached_at IS NOT NULL AND browser_attached_at IS NOT NULL;
+
+-- name: ReviewTroubleshootingSession :one
+SELECT t.workspace_id,
+ CASE
+  WHEN t.state = 'closed' THEN COALESCE(t.close_reason,'closed')
+  WHEN a.auth_version <> t.auth_version THEN 'account security changed'
+  WHEN m.role IS NULL OR m.role NOT IN ('owner','operator') THEN 'role changed'
+  WHEN p.owners_only AND m.role <> 'owner' THEN 'environment setting changed'
+  WHEN w.require_mfa AND a.totp_secret IS NULL THEN 'multi-factor authentication required'
+  WHEN NOT EXISTS(SELECT 1 FROM sessions b WHERE b.expiry > now()
+   AND b.token = translate(rtrim(encode(t.browser_session_hash,'base64'),'='),'+/','-_')) THEN 'browser session ended'
+  WHEN s.revoked OR s.awaiting_transfer OR s.credential_hash IS DISTINCT FROM t.agent_credential_hash
+   OR s.controller_generation <> t.controller_generation THEN 'server credential changed'
+  ELSE ''
+ END::text AS end_reason,
+ h.status AS subscription_status,h.management_until AS subscription_until
+FROM troubleshooting_sessions t
+JOIN accounts a ON a.id = t.actor_id
+JOIN workspaces w ON w.id = t.workspace_id
+JOIN servers s ON s.workspace_id = t.workspace_id AND s.id = t.server_id
+LEFT JOIN memberships m ON m.workspace_id = t.workspace_id AND m.account_id = t.actor_id
+LEFT JOIN troubleshooting_policies p ON p.workspace_id = t.workspace_id AND p.environment_id = t.environment_id
+LEFT JOIN hosted_subscriptions h ON h.workspace_id = t.workspace_id
+WHERE t.workspace_id = @workspace_id AND t.id = @id;
+
+-- name: RefreshTroubleshootingBrowser :exec
+UPDATE sessions b SET expiry = GREATEST(b.expiry,LEAST(now() + make_interval(secs => @idle_seconds::double precision),@deadline_at::timestamptz))
+FROM troubleshooting_sessions t
+WHERE t.workspace_id = @workspace_id AND t.id = @id AND t.state <> 'closed'
+ AND b.token = translate(rtrim(encode(t.browser_session_hash,'base64'),'='),'+/','-_');
+
+-- name: GetTroubleshootingSessionForEnd :one
+SELECT actor_id,state FROM troubleshooting_sessions
+WHERE workspace_id = @workspace_id AND id = @id
+FOR UPDATE;
+
+-- name: EndTroubleshootingSession :exec
+UPDATE troubleshooting_sessions SET state = 'closed',closed_at = COALESCE(closed_at,now()),close_reason = COALESCE(close_reason,@close_reason::text),
+ ticket_hash = NULL,browser_session_hash = NULL,input_bytes = @input_bytes,output_bytes = @output_bytes
+WHERE workspace_id = @workspace_id AND id = @id;
+
+-- name: SweepTroubleshootingSessions :many
+-- unscoped: an installation-wide sweeper ends expired sessions in every workspace.
+UPDATE troubleshooting_sessions SET state = 'closed',closed_at = now(),close_reason = 'expired',ticket_hash = NULL,browser_session_hash = NULL
+WHERE state <> 'closed' AND (deadline_at <= now() - interval '1 minute' OR (state = 'offered' AND ticket_expires_at <= now()))
+RETURNING workspace_id,id,actor_id;
+
+-- name: CloseAbandonedTroubleshootingSessions :many
+-- unscoped: at startup the single instance holds no streams, so every open session in every workspace is abandoned.
+UPDATE troubleshooting_sessions SET state = 'closed',closed_at = now(),close_reason = 'management restart',ticket_hash = NULL,browser_session_hash = NULL
+WHERE state <> 'closed'
+RETURNING workspace_id,id,actor_id;

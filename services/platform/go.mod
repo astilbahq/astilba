@@ -6,6 +6,7 @@ require (
 	github.com/alexedwards/argon2id v1.0.0
 	github.com/alexedwards/scs/pgxstore v0.0.0-20251002162104-209de6e426de
 	github.com/alexedwards/scs/v2 v2.9.0
+	github.com/coder/websocket v1.8.15
 	github.com/compose-spec/compose-go/v2 v2.16.2
 	github.com/containerd/errdefs v1.0.0
 	github.com/distribution/reference v0.6.0
@@ -30,6 +31,7 @@ require (
 	golang.org/x/crypto v0.58.0
 	golang.org/x/net v0.62.0
 	golang.org/x/sys v0.49.0
+	golang.org/x/time v0.15.0
 )
 
 require (
@@ -119,7 +121,6 @@ require (
 	golang.org/x/sync v0.24.0 // indirect
 	golang.org/x/telemetry v0.0.0-20261010193011-f71dc92da45e // indirect
 	golang.org/x/text v0.43.0 // indirect
-	golang.org/x/time v0.15.0 // indirect
 	golang.org/x/tools v0.52.0 // indirect
 	golang.org/x/vuln v1.9.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20261005182115-fad411399dd8 // indirect
