@@ -1277,11 +1277,11 @@ func testCrossHostCoordinatedPlacement(t *testing.T, expiryPhase string) {
 	passphrase := "cross-host fixture archive passphrase"
 	refreshAuthentication()
 	b.call("POST", base+"/export", map[string]string{"passphrase": passphrase}, 200, &archive)
-	// Revocation must overtake an unrelated uncertain leaf on an online peer.
+	// Revocation must overtake an unrelated uncertain leaf on an online peer. The leaf starts already reported, so the fixture's redelivery stays a replay when the state below turns terminal instead of a rejected first report that stops the host.
 	uncertainID := uuid.New()
 	uncertain := api.ExecutionCommand{Id: uncertainID, ServerId: servers[1].Server.Id, EnvironmentId: unrelated.Id, ResourceId: uuid.New(), Generation: 900001, Kind: "test", Action: "inspect", PlanHash: strings.Repeat("b", 64), Deadline: time.Now().Add(time.Hour)}
 	rawUncertain, _ := json.Marshal(uncertain)
-	if _, err := f.st.Pool.Exec(ctx, `INSERT INTO execution_operations(id,workspace_id,server_id,environment_id,generation,request_key,command,kind,state) VALUES($1,$2,$3,$4,$5,$6,$7,'test','needs_attention')`, uncertainID, ws, uncertain.ServerId, unrelated.Id, uncertain.Generation, uuid.New(), rawUncertain); err != nil {
+	if _, err := f.st.Pool.Exec(ctx, `INSERT INTO execution_operations(id,workspace_id,server_id,environment_id,generation,request_key,command,kind,state,report_sequence) VALUES($1,$2,$3,$4,$5,$6,$7,'test','needs_attention',2)`, uncertainID, ws, uncertain.ServerId, unrelated.Id, uncertain.Generation, uuid.New(), rawUncertain); err != nil {
 		t.Fatal(err)
 	}
 	// A transport replacement must revoke the predecessor while busy, then
