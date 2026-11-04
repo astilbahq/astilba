@@ -94,20 +94,25 @@ authentication limits remain in place.
 ### Per-address limits at the reverse proxy
 
 Limit connections and requests per client address at your proxy, on every path. Astilba
-limits sign-in attempts and a few signed-in actions, and nothing else limits general
-requests, before or after sign-in.
+has its own budgets for sign-in, password reset, invitation, signup and enrollment attempts
+and for a few signed-in actions, which proxy settings do not change: for example, 30
+enrollments per address every 2 minutes. Nothing else limits general requests, before or
+after sign-in.
 
-Give agent paths their own, larger limits. A host holds a long poll while idle and makes
-about 4 requests a second while running an operation. Refusing an agent can delay or cancel
-its work, or leave an update waiting for you to retry it on the host. Enrollment needs no
-credential, so keep it on the general limits.
+Give `/agent/` its own, larger limits. A host holds a long poll while idle and makes about 4
+requests a second while running an operation, and refusing an agent can delay or cancel its
+work. Enrollment stays on the general limits, because each attempt writes to the database
+before its credential is checked. So do downloads under `/agent-artifacts/`, which serve
+large files without a credential. A refused download leaves that update waiting for you to
+retry it on the host, so update hosts that share an address a few at a time.
 
 These values are starting points, not measurements. Requests over them get a 429, so raise
-them if many people, or more than about 20 hosts, share a public address. They count
-requests in progress: a WebSocket counts for as long as it stays open, and over HTTP/2 each
-concurrent request of a dashboard page counts separately. They do not count connections
-that have not finished their headers, so also keep nginx's `worker_connections` above the
-total you expect, allowing two for each proxied request.
+them if many people, or more than about 20 hosts, share a public address. The request limits
+count arrivals. The connection limits count requests in progress: a WebSocket counts for as
+long as it stays open, and over HTTP/2 each concurrent request of a dashboard page counts
+separately. They do not count connections that have not finished their headers, so also keep
+nginx's `worker_connections` above the total you expect, allowing two for each proxied
+request.
 
 nginx, where a location's limits replace the server block's:
 
@@ -124,7 +129,7 @@ server {
     limit_conn astilba_connections 64;
     limit_req zone=astilba_requests burst=100 nodelay;
 
-    location /agent {
+    location /agent/ {
         # Repeat the proxy settings of your main location here.
         limit_conn astilba_agent_connections 256;
         limit_req zone=astilba_agent_requests burst=200 nodelay;
@@ -141,7 +146,7 @@ Traefik, with three routers that share a service, entry points and TLS:
 
 - your main router, with `astilba-connections` and `astilba-requests`;
 - ``Host(`platform.example.com`) && Path(`/agent/v1/enroll`)``, with the same two;
-- ``Host(`platform.example.com`) && PathPrefix(`/agent`)``, with the `astilba-agent-` pair.
+- ``Host(`platform.example.com`) && PathPrefix(`/agent/`)``, with the `astilba-agent-` pair.
 
 Keep `Host` in both rules: Traefik prefers the longest rule, so without it your main router
 takes these requests.
@@ -177,9 +182,11 @@ Caddy has no per-address limit without a plugin, so use one, or set the limits a
 firewall or load balancer in front of it.
 
 Both examples count the address that connected to the proxy. If another proxy or CDN sits
-in front, they would count everyone as one client, so have the proxy take the client
-address from its trusted hops, as nginx's `realip` module does with `set_real_ip_from`.
-Do not count the raw `X-Forwarded-For` header, whose content a client can choose.
+in front, they would count everyone as one client. Have nginx take the client address from
+its trusted hops with the `realip` module and `set_real_ip_from`. On Traefik, list those hops
+in the entry point's `forwardedHeaders.trustedIPs`, and set `sourceCriterion.ipStrategy.depth`
+to their number on all four middlewares. Do not count the raw `X-Forwarded-For` header, whose
+content a client can choose.
 
 Both also count each IPv6 address separately, and a client usually controls a whole /64,
 so changing address avoids these limits. If you publish an AAAA record, also limit each
