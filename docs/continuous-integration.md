@@ -147,12 +147,28 @@ and what an allowlist entry has to name:
 | `tooling` | Any other lockfile package, or Go reachable only from other `services/platform` packages |
 | `experiment` | A vulnerable function is reachable in `experiments/durable-execution`, `git-compose` or `platform-comparison/app` |
 
-`tooling` means outside the dashboard's production dependencies, so review code that
-a build tool generates into the bundle by hand. Go advisories whose vulnerable
-function is not reachable are listed for information and do not fail. Test-only Go
-code, Go tools such as `staticcheck`, container base images and the pinned runtime
-images are not scanned. The experiments' scans add seconds, so they run
-every time; canvas dependencies are `tooling` because they share the lockfile.
+Each binary is scanned with the `GOOS`, `GOARCH` and build tags it ships with. These
+choose the source files analysed, not the advisories: an advisory limited to a
+platform nothing ships to can still report as reachable, and then needs a bump or an
+allowlist entry. A new binary under `cmd` or a Go module outside `experiments` stops
+the scan until it is added to `scripts/vulnerability-scan.mjs`.
+
+`dashboard` follows pnpm's production closure, so it includes peers that are never
+bundled, such as `typescript`. `tooling` means outside that closure, so review code
+that a build tool generates into the bundle by hand. Go advisories whose vulnerable
+function is not reachable are listed for information and do not fail.
+
+Not scanned:
+
+- Test-only Go code and Go tools such as `staticcheck`.
+- Container base images and the pinned runtime images.
+- Tools bundled inside another package. `vite` resolves to
+  `@voidzero-dev/vite-plus-core`, which carries Vite, Rolldown and tsdown in its own
+  `dist`, so an advisory against those names cannot match it. Check them when
+  bumping that package.
+
+The experiments' scans add seconds, so they run every time; canvas dependencies are
+`tooling` because they share the lockfile.
 
 ### Exceptions
 
