@@ -1,6 +1,6 @@
 # Astilba deployment platform
 
-Status: updated 3 November 2026. P0–P16 and private-alpha acceptance are implemented. P17 interactive troubleshooting is in design.
+Status: updated 3 November 2026. P0–P16 and private-alpha acceptance are implemented. P17 interactive troubleshooting is in progress: sessions work through the API, without a dashboard terminal yet.
 
 The [architecture](platform-architecture.md) and [implementation plan](platform-implementation-plan.md) define the technical boundaries, delivery sequence and acceptance criteria.
 
@@ -67,10 +67,10 @@ Hosted accounts capable of changing servers require MFA. Self-hosted owners cont
 
 The next increments add operational visibility, a simpler source-to-app workflow, safe stateless releases, general service bindings and a small maintained catalog, then scoped automation and isolated pull-request previews. These extend the initial journey without making every parity feature a paid-beta prerequisite.
 
-Guided host/domain setup, general schedules, [same-host stateless HTTP replicas](application-scaling.md) and [explicit cross-host placement](cross-host-placement.md) are implemented. Replicas do not provide host high availability. [Interactive troubleshooting](interactive-troubleshooting.md) is in design; broader tested maintenance recipes remain a later increment. Kubernetes, live collaboration, generic database administration, existing-workload adoption, Astilba-operated build runners and an Astilba registry require separate scope decisions.
+Guided host/domain setup, general schedules, [same-host stateless HTTP replicas](application-scaling.md) and [explicit cross-host placement](cross-host-placement.md) are implemented. Replicas do not provide host high availability. [Interactive troubleshooting](interactive-troubleshooting.md) is in progress; broader tested maintenance recipes remain a later increment. Kubernetes, live collaboration, generic database administration, existing-workload adoption, Astilba-operated build runners and an Astilba registry require separate scope decisions.
 
 ## Technology and next step
 
 Use React, TypeScript, Vite, TanStack Router and Query, React Flow and a platform-specific UI foundation using Panda CSS. Use Go for management and agents, PostgreSQL for management state, and Docker, Compose, BuildKit and Traefik on deployment hosts. River's open-source core and optional Railpack support must pass the initial technical experiments.
 
-The next implementation stage is P17 [interactive troubleshooting](interactive-troubleshooting.md), followed by broader maintenance support. Exact prices, the public product name, measured capacity limits and published support hours remain launch decisions informed by non-critical real use.
+The current implementation stage is P17 [interactive troubleshooting](interactive-troubleshooting.md), followed by broader maintenance support. Exact prices, the public product name, measured capacity limits and published support hours remain launch decisions informed by non-critical real use.

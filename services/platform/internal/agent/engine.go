@@ -34,6 +34,7 @@ type Engine struct {
 	ACMEEmail             string
 	ResticCLI             string
 	BackupRoots           []string
+	TroubleshootingIdle   time.Duration
 	mu                    sync.Mutex
 }
 

@@ -1,4 +1,4 @@
-.PHONY: check verify verify-host verify-build verify-git verify-canvas check-app verify-app verify-app-core verify-app-build verify-app-go-remaining verify-app-go-crosshost verify-app-go-preview verify-image verify-agent-host verify-agent-host-core verify-agent-host-recovery verify-agent-host-visual verify-agent-host-upgrade check-ci check-hooks check-source-size check-inline-sql
+.PHONY: check verify verify-host verify-build verify-git verify-canvas check-app verify-app verify-app-core verify-app-build verify-app-go-remaining verify-app-go-crosshost verify-app-go-preview verify-image verify-agent-host verify-agent-host-core verify-agent-host-recovery verify-agent-host-visual verify-agent-host-upgrade check-ci check-hooks check-source-size check-inline-sql check-vulnerabilities
 
 APP_COORDINATION_TESTS = ^(TestCrossHostCoordinatedPlacement|TestCrossHostSubscriptionExpiry)$$
 APP_PREVIEW_RECOVERY_TESTS = ^TestPreviewRemovalSurvivesCheckpointUnion$$
@@ -29,8 +29,11 @@ verify-build:
 	cd experiments/durable-execution && sudo --preserve-env=GOCACHE,GOMODCACHE env PATH=/opt/astilba-plat4/go/bin:/usr/bin:/bin CGO_ENABLED=1 PLAT4_HOST_TEST=1 PLAT4_ARCH="$(PLAT4_ARCH)" PLAT5_HOST_TEST=1 /opt/astilba-plat4/go/bin/go test -race -count=1 -timeout=12m -v -run '^Test(BuildArtifacts|PostgresRestore)$$' .
 
 check-ci:
-	node --test scripts/ci-plan.test.mjs scripts/native-lanes.test.mjs
+	node --test scripts/ci-plan.test.mjs scripts/native-lanes.test.mjs scripts/vulnerability-scan.test.mjs
 	node scripts/native-lanes.mjs
+
+check-vulnerabilities:
+	node scripts/vulnerability-scan.mjs
 
 check-hooks:
 	node --test .claude/hooks/hooks.test.mjs
@@ -84,10 +87,10 @@ verify-agent-host:
 
 verify-agent-host-core:
 	cd services/platform && $(NATIVE_GO) ASTILBA_NATIVE_NETWORK=1 /opt/astilba-plat4/go/bin/go test -race -count=1 -timeout=5m -v -run '^TestNativeManagedLinks$$' ./internal/hostnetwork
-	cd services/platform && $(NATIVE_AGENT_GO) -timeout=30m -run '^TestNative((Compose|CrossHost)Deployment|Pipeline|ReleaseCommandTransport|PreviewEnvironment|TroubleshootingTarget)$$' ./internal/agent
+	cd services/platform && $(NATIVE_AGENT_GO) -timeout=30m -run '^TestNative((Compose|CrossHost)Deployment|Pipeline|ReleaseCommandTransport|PreviewEnvironment|TroubleshootingTarget|TroubleshootingSession|TroubleshootingShellExit|TroubleshootingIdleLimit|TroubleshootingRefusals|TroubleshootingCrashCleanup|TroubleshootingEndsSurvivors|TroubleshootingStalledInput|TroubleshootingNoShell)$$' ./internal/agent
 
 verify-agent-host-recovery:
-	cd services/platform && $(NATIVE_AGENT_GO) -timeout=15m -run '^TestNative(AgentService|CrossHostOlderBackupRecovery|CrossHostDrainedRecovery|CrossHostUpgradeRecovery)$$' ./internal/integration
+	cd services/platform && $(NATIVE_AGENT_GO) -timeout=15m -run '^TestNative(AgentService|TroubleshootingEndToEnd|CrossHostOlderBackupRecovery|CrossHostDrainedRecovery|CrossHostUpgradeRecovery)$$' ./internal/integration
 
 verify-agent-host-visual:
 	cd services/platform && $(NATIVE_AGENT_GO) -timeout=30m -run '^TestNativeVisualDeployment$$' ./internal/agent

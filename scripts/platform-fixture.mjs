@@ -280,6 +280,7 @@ try {
     ASTILBA_SMTP_FROM: "accounts@localhost",
     ASTILBA_LISTEN: "127.0.0.1:15181",
     ASTILBA_ORIGIN: "http://127.0.0.1:15181",
+    ASTILBA_TROUBLESHOOTING: "single-instance",
   });
   await waitReady(15181);
   await new Promise(() => {});

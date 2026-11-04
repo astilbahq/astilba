@@ -29,6 +29,16 @@ const javascript = (path) =>
     "vite.config.ts",
   ].includes(path);
 
+const vulnerabilityInputs = (path) =>
+  path.endsWith(".go") ||
+  /(^|\/)(go\.mod|go\.sum|package\.json)$/.test(path) ||
+  javascript(path) ||
+  path === "Makefile" ||
+  path === ".github/vulnerability-allowlist.json" ||
+  path === ".github/workflows/vulnerability-scan.yml" ||
+  path === ".github/workflows/application.yml" ||
+  path.startsWith("scripts/vulnerability-scan");
+
 // A pull request or merge group skips a suite only when every changed path is
 // known not to affect it; anything unrecognised selects the suite.
 const affects = {
@@ -39,6 +49,7 @@ const affects = {
   git: owns("experiments/git-compose/", "git-providers.yml"),
   canvas: (path) =>
     owns("experiments/canvas-editor/", "canvas.yml")(path) || javascript(path),
+  vulnerabilities: vulnerabilityInputs,
 };
 const planner = (path) =>
   path.startsWith("scripts/ci-plan") || path === ".github/workflows/ci.yml";

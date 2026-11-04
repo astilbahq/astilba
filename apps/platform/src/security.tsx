@@ -1,11 +1,14 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useContext } from "react";
 import { client, result, type Schema } from "./api/client";
+import { membersOptions } from "./api/members";
 import { Button } from "./components/button";
 import { Checkbox } from "./components/checkbox";
 import { Input } from "./components/input";
 import { Label } from "./components/label";
 import { Select } from "./components/select";
+import { SessionHistory } from "./features/troubleshooting/session-history";
+import { useAuditActionText } from "./features/troubleshooting/session-text";
 import { WorkspaceSubscription } from "./hosting";
 import { WorkspaceExport } from "./portability";
 import * as s from "./styles";
@@ -16,15 +19,10 @@ export function Members() {
   const id = ws?.id ?? "";
   const action = useAction();
   const queries = useQueryClient();
+  const auditText = useAuditActionText();
   const members = useQuery({
-    queryKey: ["members", id],
+    ...membersOptions(id),
     enabled: !!id && ws?.role === "owner",
-    queryFn: () =>
-      result(
-        client.GET("/api/v1/workspaces/{workspaceId}/members", {
-          params: { path: { workspaceId: id } },
-        }),
-      ),
   });
   const invitations = useQuery({
     queryKey: ["invitations", id],
@@ -262,7 +260,7 @@ export function Members() {
             <div className={s.list}>
               {audit.data?.map((event) => (
                 <div key={event.id} className={s.spread}>
-                  <span>{event.action}</span>
+                  <span>{auditText(event.action)}</span>
                   <time className={s.muted} dateTime={event.createdAt}>
                     {new Date(event.createdAt).toLocaleString()}
                   </time>
@@ -270,6 +268,7 @@ export function Members() {
               ))}
             </div>
           </section>
+          <SessionHistory workspaceId={id} />
         </>
       )}
     </div>

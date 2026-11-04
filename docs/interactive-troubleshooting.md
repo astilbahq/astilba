@@ -1,8 +1,9 @@
 # Interactive troubleshooting
 
-Status: approved P17 design, 3 November 2026. Not implemented. The owner decisions
-were made after comparing established platforms and security standards and are
-collected at the end.
+Status: approved P17 design, 3 November 2026. Increment 1 is implemented, so sessions
+work through the API when an operator, an owner and the host owner all enable them; the
+dashboard terminal is not built yet. The owner decisions were made after comparing
+established platforms and security standards and are collected at the end.
 
 Interactive troubleshooting lets an authorized person open a short-lived terminal
 session inside one eligible managed container to diagnose a running service. It
@@ -123,8 +124,9 @@ also notifies the workspace's owners. It defaults to
    authenticates the server credential and the session before accepting the
    upgrade, and admits the stream only if the session belongs to that server, is
    still offered, has not been attached and the generation is current. A refusal
-   is reported as a typed reason: opt-in off, ineligible container, no shell or
-   limit reached.
+   is reported as a typed reason: opt-in off, runtime below the floor, ineligible
+   container, no shell, limit reached, or Docker unavailable. Until the session has
+   started, a failure is reported this way too, and any shell already started is ended.
 4. **Browser stream.** The browser opens a same-origin stream. Management
    refuses the upgrade unless the session cookie and Origin are valid, then
    requires the ticket as the first message within five seconds. Redeeming the
@@ -141,12 +143,17 @@ also notifies the workspace's owners. It defaults to
    browser session's idle timer, at most once a minute, so a person working in
    the terminal is not logged out of the dashboard mid-session. The agent enforces the idle
    timeout and deadline itself as well, measuring both as durations from
-   admission so clock differences between management and the host do not
+   when the shell starts so clock differences between management and the host do not
    matter. It ends every process in the shell's
    Linux session, not just its process group, because interactive shells place
-   jobs in their own groups. It identifies those processes through a pidfd or
-   PID start time within the container's PID namespace, never by a bare host PID
-   that could be reused, and confirms with exec inspection. At startup the agent
+   jobs in their own groups. It identifies those processes by the boot, the start time and
+   the container's PID namespace, never by a bare host PID that could be reused,
+   signals them through a pidfd, and confirms by re-reading the session's processes.
+   Zombies have already been killed and do not count. A cleanup failure is logged and
+   retried at the next start; it never stops the agent. If the shell has exited and
+   the agent stays down until Docker has forgotten the exec (minutes), the entry is
+   dropped with a warning, because its PID can no longer be trusted, and any background
+   job survives until the container restarts, like the `setsid` case below. At startup the agent
    ends any journaled shell left by a crash. Only typed input counts as activity: output
    and resizes do not, so a terminal left printing logs cannot stay
    open indefinitely. The dashboard warns a minute before either limit.
@@ -191,7 +198,9 @@ its own limits locally. Initial values:
 - one session per container, four per host, two per actor, eight per workspace
   and 64 per installation;
 - 64 KiB/s of input and 1 MiB/s of output per session, with backpressure rather
-  than unbounded buffering.
+  than unbounded buffering. If a shell stops reading and more input arrives than the
+  agent can hold (about 1 MiB), the session ends with the reason `input_overflow`,
+  because dropping part of it could run a different command from the one sent.
 
 These are constants, not settings; implementation and measured use can tune
 them. Requests over a limit are refused with an explicit reason rather than
@@ -204,6 +213,10 @@ read with an explicit per-message limit (the existing 16 KiB agent request limit
 does not apply to a hijacked connection). Message types are input, output,
 resize (with bounded dimensions), ping, refused and exit. Stream handlers clear
 the server's ordinary read and write deadlines and send pings every 30 seconds.
+The relay ends both streams together with a close handshake, so the exit or
+refused frame reaches the browser while it is still sending input. Frames read
+after a session has ended are discarded, and the relay drops a peer that has not
+finished the handshake within 10 seconds.
 
 P17 supports single-instance management installations only: both streams for a
 session must reach the instance that holds them, and the existing instances share
@@ -255,9 +268,10 @@ open. Management writes a
 `session.close` with reason `management restart` for sessions left open by a
 restart.
 
-Closed session records travel with the workspace archive, which needs a new
-archive version. Exports omit the browser-session reference, and imports accept
-only closed records, which never count against limits.
+The `session.open`, `session.close` and refusal audit events travel with the workspace
+archive, like all audit history. The session table stays with the installation: a new
+archive table would enter the offline recovery path for little gain, so a transfer
+keeps who opened which session and when, but not close reasons or byte counts.
 
 The agent also writes a local journald record of each session (session ID, actor
 ID as supplied, container ID, start, end and reason), giving the host owner a
@@ -323,7 +337,7 @@ enabling or widening the environment setting, on by default.
     reauthentication does not, including a re-check during the renewal;
   - stream loss and agent crashes leave no process in the shell's Linux session,
     including background jobs;
-  - frame size, rate and session limits, and import of open session rows;
+  - frame size, rate and session limits;
   - only typed input resets the idle timer, the exec working directory is `/`,
     hosts below the runc floor report the `runtime` reason, and a failed audit
     write prevents the session from opening.

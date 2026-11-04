@@ -1,9 +1,16 @@
 package integration
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
+	"net"
 	"net/http"
+	"net/http/httptest"
+	"net/http/httputil"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -18,15 +25,17 @@ import (
 type terminalPeer struct {
 	conn   *websocket.Conn
 	frames chan []byte
+	err    error // why reading stopped, set before frames closes
 }
 
 func readTerminal(conn *websocket.Conn) *terminalPeer {
-	peer := &terminalPeer{conn, make(chan []byte, 64)}
+	peer := &terminalPeer{conn: conn, frames: make(chan []byte, 64)}
 	go func() {
 		defer close(peer.frames)
 		for {
 			_, frame, err := conn.Read(context.Background())
 			if err != nil {
+				peer.err = err
 				return
 			}
 			peer.frames <- frame
@@ -195,6 +204,128 @@ func TestTroubleshootingRelayCarriesASession(t *testing.T) {
 		t.Fatalf("recorded input %d output %d hash %x", input, output, hash)
 	}
 	x.audited(t, "session.close", 1)
+}
+
+// A session's last frame reaches the browser, followed by an orderly close, while the
+// person is still typing: closing over that unread input would reset the connection,
+// which can destroy the frame.
+func TestTroubleshootingLastFrameReachesTheBrowser(t *testing.T) {
+	for name, test := range map[string]struct {
+		last   []byte
+		reason string
+	}{
+		"exit":    {[]byte{terminal.Exit, 7}, "shell exited"},
+		"refusal": {append([]byte{terminal.Refused}, terminal.RefusedNoShell...), "agent refused: no_shell"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			x := relayFixture(t)
+			opened, agent, browser := x.connected(t, x.owner, 1)
+			go func() {
+				for range agent.frames {
+				}
+			}()
+			typing := make(chan struct{})
+			go func() {
+				defer close(typing)
+				for browser.conn.Write(context.Background(), websocket.MessageBinary, append([]byte{terminal.Input}, "x"...)) == nil {
+					time.Sleep(time.Millisecond) // paced, so the relay is mostly waiting to read
+				}
+			}()
+			time.Sleep(100 * time.Millisecond)
+			agent.send(t, test.last)
+			browser.expect(t, test.last)
+			browser.drained(t)
+			if status := websocket.CloseStatus(browser.err); status != websocket.StatusNormalClosure {
+				t.Fatalf("stream ended with %v, want a normal close", browser.err)
+			}
+			<-typing
+			x.waitClosed(t, opened.Session.Id, test.reason)
+		})
+	}
+}
+
+// A browser that stops answering does not delay the agent's end.
+func TestTroubleshootingStalledBrowserCannotHoldASessionOpen(t *testing.T) {
+	x := relayFixture(t)
+	x.f.apiServer.TerminalIdle = time.Second
+	opened := x.open(t, x.owner, x.app, 1, 201)
+	agent, status := x.dialAgent(t, opened.Session.Id, x.agentToken)
+	if agent == nil {
+		t.Fatalf("agent stream refused: %d", status)
+	}
+	stalled, status := x.dialBrowser(t, x.owner, opened.Session.Id, x.f.server.URL)
+	if stalled == nil {
+		t.Fatalf("browser stream refused: %d", status)
+	}
+	if err := stalled.Write(context.Background(), websocket.MessageText, []byte(opened.Ticket)); err != nil {
+		t.Fatal(err)
+	}
+	agent.expect(t, []byte{terminal.Start})
+	started := time.Now()
+	agent.drained(t)
+	if elapsed := time.Since(started); elapsed > 5*time.Second {
+		t.Fatalf("agent stream ended after %s, waiting on the browser", elapsed)
+	}
+	x.waitClosed(t, opened.Session.Id, "idle timeout")
+}
+
+// dialRawAgent attaches an agent stream with no WebSocket client behind it, so nothing
+// answers the relay unless the test does.
+func (x troubleshootingFixture) dialRawAgent(t *testing.T, session uuid.UUID) (net.Conn, *bufio.Reader) {
+	t.Helper()
+	address := x.f.server.Listener.Addr().String()
+	conn, err := net.Dial("tcp", address)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.Close() })
+	if err = conn.SetDeadline(time.Now().Add(30 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	fmt.Fprintf(conn, "GET /agent/v1/troubleshooting/%s/stream HTTP/1.1\r\nHost: %s\r\nAuthorization: Bearer %s\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n", session, address, x.agentToken)
+	reader := bufio.NewReader(conn)
+	response, err := http.ReadResponse(reader, nil)
+	if err != nil || response.StatusCode != http.StatusSwitchingProtocols {
+		t.Fatalf("agent stream refused: %v %v", response, err)
+	}
+	return conn, reader
+}
+
+// An agent that stops answering, even inside a frame, neither delays the browser's orderly
+// close nor keeps the session from being recorded as ended.
+func TestTroubleshootingUnresponsiveAgentCannotHoldASessionOpen(t *testing.T) {
+	for name, insideFrame := range map[string]bool{"silent": false, "inside a frame": true} {
+		t.Run(name, func(t *testing.T) {
+			x := relayFixture(t)
+			x.f.apiServer.TerminalIdle = time.Second
+			opened := x.open(t, x.owner, x.app, 1, 201)
+			agent, reader := x.dialRawAgent(t, opened.Session.Id)
+			browser := x.attachBrowser(t, x.owner, opened)
+			started := time.Now()
+			// The start signal in a three-byte frame, then the header of the relay's close frame.
+			frames := make([]byte, 5)
+			if _, err := io.ReadFull(reader, frames); err != nil {
+				t.Fatal(err)
+			}
+			if frames[2] != terminal.Start || frames[3] != 0x88 {
+				t.Fatalf("frames %x, want the start signal then a close", frames)
+			}
+			if insideFrame {
+				// A final masked binary frame announcing 1000 bytes that never come.
+				if _, err := agent.Write([]byte{0x82, 0x80 | 126, 0x03, 0xe8, 1, 2, 3, 4}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			browser.drained(t)
+			if elapsed := time.Since(started); elapsed > 5*time.Second {
+				t.Fatalf("browser stream ended after %s, waiting on the agent", elapsed)
+			}
+			if status := websocket.CloseStatus(browser.err); status != websocket.StatusNormalClosure {
+				t.Fatalf("stream ended with %v, want a normal close", browser.err)
+			}
+			x.waitClosed(t, opened.Session.Id, "idle timeout")
+		})
+	}
 }
 
 func TestTroubleshootingStreamsRefuseAnyoneElse(t *testing.T) {
@@ -528,4 +659,48 @@ func TestTroubleshootingAbandonedSessionsClose(t *testing.T) {
 	}
 	x.waitClosed(t, left.Session.Id, "management restart")
 	x.audited(t, "session.close", 2)
+}
+
+// Both streams pass through an ordinary reverse proxy, with the browser's Origin still
+// naming the public origin. This does not cover a proxy's idle or duration limits.
+func TestTroubleshootingThroughAReverseProxy(t *testing.T) {
+	x := relayFixture(t)
+	target, err := url.Parse(x.f.server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	edge := httptest.NewServer(httputil.NewSingleHostReverseProxy(target))
+	t.Cleanup(edge.Close)
+	direct := x.f.server.URL
+	via := "ws" + strings.TrimPrefix(edge.URL, "http")
+	opened := x.open(t, x.owner, x.app, 1, 201)
+
+	dial := func(path string, options *websocket.DialOptions) *terminalPeer {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		conn, _, err := websocket.Dial(ctx, via+path, options)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { conn.CloseNow() })
+		return readTerminal(conn)
+	}
+	agent := dial("/agent/v1/troubleshooting/"+opened.Session.Id.String()+"/stream", &websocket.DialOptions{HTTPHeader: http.Header{"Authorization": {"Bearer " + x.agentToken}}})
+	cookies := x.owner.client.Jar.Cookies(target)
+	header := http.Header{"Origin": {direct}}
+	for _, cookie := range cookies {
+		header.Add("Cookie", cookie.String())
+	}
+	browser := dial(x.prefix+"/troubleshooting-sessions/"+opened.Session.Id.String()+"/stream", &websocket.DialOptions{HTTPHeader: header})
+	browser.send(t, []byte(opened.Ticket))
+	agent.expect(t, []byte{terminal.Start})
+
+	browser.send(t, append([]byte{terminal.Input}, "through\n"...))
+	agent.expect(t, append([]byte{terminal.Input}, "through\n"...))
+	agent.send(t, append([]byte{terminal.Output}, "proxied\n"...))
+	browser.expect(t, append([]byte{terminal.Output}, "proxied\n"...))
+	agent.send(t, []byte{terminal.Exit, 0})
+	browser.expect(t, []byte{terminal.Exit, 0})
+	x.waitClosed(t, opened.Session.Id, "shell exited")
 }
