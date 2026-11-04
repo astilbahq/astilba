@@ -20,6 +20,7 @@ const (
 	TroubleshootingNotDeployed  = "not_deployed"
 	TroubleshootingAgentUpdate  = "agent_update"
 	TroubleshootingRuntime      = "runtime"
+	TroubleshootingHostNotReady = "host_not_ready"
 	TroubleshootingHostOptIn    = "host_opt_in"
 	TroubleshootingLimit        = "limit"
 )
@@ -30,6 +31,7 @@ var troubleshootingMessages = map[string]string{
 	TroubleshootingNotDeployed:  "This service is not deployed, so there is no container to open a session in.",
 	TroubleshootingAgentUpdate:  "Update this server's agent to open terminal sessions.",
 	TroubleshootingRuntime:      "Update this server's container runtime to open terminal sessions.",
+	TroubleshootingHostNotReady: "This server is not ready for deployments. Check its preflight report.",
 	TroubleshootingHostOptIn:    "This server's owner has not enabled terminal sessions on the host.",
 	TroubleshootingLimit:        "Too many terminal sessions are open. Close one and try again.",
 }

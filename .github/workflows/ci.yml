@@ -56,16 +56,18 @@ jobs:
   host:
     needs: plan
     if: needs.plan.outputs.native == 'true'
-    name: Host (${{ matrix.arch }})
+    name: Host (${{ matrix.platform.arch }}, ${{ matrix.lane }})
     strategy:
       fail-fast: false
       matrix:
-        include:
+        platform:
           - runner: ubuntu-24.04
             arch: amd64
           - runner: ubuntu-24.04-arm
             arch: arm64
-    runs-on: ${{ matrix.runner }}
+        # Every lane prepares its own disposable VM identically; none shares host state.
+        lane: [core, recovery, visual]
+    runs-on: ${{ matrix.platform.runner }}
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -78,8 +80,8 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/astilba-native-go
-          key: native-go-v2-${{ runner.os }}-${{ matrix.arch }}-${{ hashFiles('.github/workflows/ci.yml', 'experiments/durable-execution/host/bootstrap.sh', '**/go.mod') }}-${{ hashFiles('**/go.sum', 'experiments/durable-execution/**/*.go', 'services/platform/**/*.go') }}
-          restore-keys: native-go-v2-${{ runner.os }}-${{ matrix.arch }}-${{ hashFiles('.github/workflows/ci.yml', 'experiments/durable-execution/host/bootstrap.sh', '**/go.mod') }}-
+          key: native-go-v2-${{ runner.os }}-${{ matrix.platform.arch }}-${{ matrix.lane }}-${{ hashFiles('.github/workflows/ci.yml', 'experiments/durable-execution/host/bootstrap.sh', '**/go.mod') }}-${{ hashFiles('**/go.sum', 'experiments/durable-execution/**/*.go', 'services/platform/**/*.go') }}
+          restore-keys: native-go-v2-${{ runner.os }}-${{ matrix.platform.arch }}-${{ matrix.lane }}-${{ hashFiles('.github/workflows/ci.yml', 'experiments/durable-execution/host/bootstrap.sh', '**/go.mod') }}-
       - name: Verify fresh production host bootstrap
         run: |
           owner=$(cat /proc/sys/kernel/random/uuid)
@@ -101,12 +103,14 @@ jobs:
           sudo /opt/astilba-plat4/bin/docker --host unix:///run/astilba-plat4/docker.sock pull moby/buildkit:v0.34.1@sha256:99368f3e46177c6405b9740e4461d91cee004128daeecca78d4ceac50ec1da5c
           sudo /opt/astilba-plat4/bin/docker --host unix:///run/astilba-plat4/docker.sock pull dxflrs/garage:v2.4.1@sha256:9c96caa2612d3411acc5b0e6701fb238dbfba33e533a6d7d3d811a4b12d0d020
       - name: Verify native Ubuntu host
+        if: matrix.lane == 'core'
         working-directory: experiments/durable-execution
-        run: make -C ../.. verify-host PLAT4_ARCH=${{ matrix.arch }}
+        run: make -C ../.. verify-host PLAT4_ARCH=${{ matrix.platform.arch }}
       - name: Verify builds and PostgreSQL restore
-        run: make verify-build PLAT4_ARCH=${{ matrix.arch }}
+        if: matrix.lane == 'core'
+        run: make verify-build PLAT4_ARCH=${{ matrix.platform.arch }}
       - name: Verify production agent with systemd
-        run: make verify-agent-host
+        run: make verify-agent-host-${{ matrix.lane }}
 
   verify:
     name: Native verification
