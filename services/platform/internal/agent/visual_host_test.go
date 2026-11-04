@@ -202,6 +202,29 @@ func (f *nativeVisualFixture) request(host, want string) {
 	}
 }
 
+// The fixture must already have transferred to controller generation 1.
+func (f *nativeVisualFixture) refuseInUseVolumeDeletion(p deployment.Plan) {
+	f.t.Helper()
+	deletion := f.command("delete-volume", p, nil)
+	controllerGeneration := int64(1)
+	deletion.ControllerGeneration = &controllerGeneration
+	var payload deployment.Payload
+	_ = json.Unmarshal(*deletion.Visual, &payload)
+	volumeID := p.Specification.Volumes[0].ID
+	payload.VolumeID = &volumeID
+	raw, _ := json.Marshal(payload)
+	message := json.RawMessage(raw)
+	deletion.Visual = &message
+	deletion.PlanHash = payload.Digest()
+	if err := f.engine.Execute(context.Background(), deletion); err != nil {
+		f.t.Fatal(err)
+	}
+	deleted, err := f.engine.Journal.Record(deletion.Id)
+	if err != nil || deleted.Report.State != "needs_attention" {
+		f.t.Fatal("in-use volume deletion was not refused")
+	}
+}
+
 func TestNativeVisualDeployment(t *testing.T) {
 	f := newNativeVisualFixture(t)
 	ctx := context.Background()
@@ -494,24 +517,7 @@ func TestNativeVisualDeployment(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.engine = &Engine{Journal: f.journal, Docker: docker, DockerCLI: dockerCLI}
-	deletion := command("delete-volume", crash, nil)
-	controllerGeneration := int64(1)
-	deletion.ControllerGeneration = &controllerGeneration
-	var payload deployment.Payload
-	_ = json.Unmarshal(*deletion.Visual, &payload)
-	volumeID := crash.Specification.Volumes[0].ID
-	payload.VolumeID = &volumeID
-	raw, _ := json.Marshal(payload)
-	message := json.RawMessage(raw)
-	deletion.Visual = &message
-	deletion.PlanHash = payload.Digest()
-	if err = f.engine.Execute(ctx, deletion); err != nil {
-		t.Fatal(err)
-	}
-	deleted, err := f.journal.Record(deletion.Id)
-	if err != nil || deleted.Report.State != "needs_attention" {
-		t.Fatal("in-use volume deletion was not refused")
-	}
+	f.refuseInUseVolumeDeletion(crash)
 
 	// Explicit removal of an in-use volume must fail; deleting a service keeps data.
 	inspect, err := docker.VolumeInspect(ctx, deployment.VolumeName(crash.Specification.Volumes[0].ID), client.VolumeInspectOptions{})

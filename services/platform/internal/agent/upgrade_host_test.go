@@ -75,6 +75,8 @@ func TestNativeSupportedMajorUpgrades(t *testing.T) {
 	})
 	f.journal = f.engine.Journal
 
+	// The scheduler, daemon and volume deletion also read finished upgrade records.
+	nativeFilesAndJobs(t, f.engine, f.server)
 	second, secondSecrets := f.plan("second", false)
 	second = f.resolve(second)
 	f.finish(f.command("deploy", second, secondSecrets))
@@ -89,9 +91,8 @@ func TestNativeSupportedMajorUpgrades(t *testing.T) {
 	if err = db.QueryRow(ctx, "SELECT value FROM fixture").Scan(&value); err != nil || value != "data-survived" {
 		t.Fatal("upgrades disturbed an unrelated database", err)
 	}
-	if err = f.journal.Transfer("https://127.0.0.1:1", make([]byte, 32), 1, strings.Repeat("t", 43)); err != nil {
-		t.Fatal("finished upgrades held back a controller transfer", err)
-	}
+	f.journal = nativeControllerTransfer(t, f.engine)
+	f.refuseInUseVolumeDeletion(first)
 }
 
 // The surrounding native fixture supplies real Docker, ingress and the same

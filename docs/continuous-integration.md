@@ -62,7 +62,7 @@ Native verification gate requires all eight jobs to pass:
 | `core` | PLAT-4 host runtime, builds, PostgreSQL restore, managed links, Compose and cross-host deployment, pipeline, preview, release transport and troubleshooting target |
 | `recovery` | Agent service enrollment, restart and signed update; cross-host older-backup, drained and upgrade recovery |
 | `visual` | Visual deployment, including catalog, backup and restore |
-| `upgrade` | Application releases and PostgreSQL major upgrades, then an unrelated unit's routes and data, later deployments and controller transfer on that host |
+| `upgrade` | Application releases and PostgreSQL major upgrades, then an unrelated unit's routes and data, scheduled jobs, later deployments, controller transfer and volume deletion on that host |
 
 Every lane repeats the same fresh production bootstrap, pinned runtime install and
 image pulls, so each suite starts from the same prepared host. The Makefile's
@@ -70,7 +70,9 @@ image pulls, so each suite starts from the same prepared host. The Makefile's
 sequence on a local disposable host. CI no longer runs suites from different lanes
 on one VM, so it cannot see residue from one lane break another. For example, an
 ingress that survives the preview test's cleanup no longer trips the visual test's
-absent-ingress guard in CI; the sequential target still shows it.
+absent-ingress guard in CI; the sequential target still shows it. Scheduled jobs,
+controller transfer and volume deletion run in both `visual` and `upgrade`, because
+they read finished upgrade records.
 
 ## Application Go verification
 
