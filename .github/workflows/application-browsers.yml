@@ -12,9 +12,13 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
-  # A cancelled merge group would eject its pull requests from the queue.
-  cancel-in-progress: ${{ github.event_name != 'merge_group' }}
+  # Only pull requests and merge groups share a group. A shared group keeps one waiting
+  # run and cancels the others, even without cancel-in-progress, so main pushes, manual
+  # and scheduled runs each get their own.
+  group: ci-${{ github.workflow }}-${{ (github.event_name == 'pull_request' || github.event_name == 'merge_group') && github.ref || github.run_id }}
+  # A newer commit replaces a pull request's run. A cancelled merge group would eject its
+  # pull requests from the queue.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   plan:

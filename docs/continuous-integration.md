@@ -2,9 +2,10 @@
 
 Seven independent workflows run on pull requests, merge groups, pushes to `main`
 and manual dispatches; the native, durable-execution, Git provider and canvas
-workflows also run nightly. Each has its own concurrency group per workflow and
-ref (and, for scheduled workflows, event) and can be retried without waiting for
-another workflow's native tests. No workflow uses an event path filter: a planning
+workflows also run nightly. Each can be retried without waiting for another
+workflow's native tests. Within a workflow, runs share a concurrency group only per
+pull request or merge group ref; every main push, manual and scheduled run has its
+own, so no run can cancel it. No workflow uses an event path filter: a planning
 job selects the suites a pull request or merge group can affect, and each required
 check is a final `always()` gate, so it is reported on every run.
 
@@ -80,7 +81,11 @@ whenever `main` moves.
 - Merge groups run on a branch in this repository, not in a fork's restricted
   context. Queuing a fork's pull request runs its workflow files and scripts
   with this repository's access, so review them before queuing it.
-- Main pushes still run every suite after a group lands.
+- Main pushes still run every suite after a group lands, and pull requests landing
+  seconds apart each get a complete run. Turning off `cancel-in-progress` alone
+  would not do this: a concurrency group keeps one waiting run and cancels the
+  others, so each push has a group of its own and their runs overlap. `make check-ci`
+  evaluates each workflow's concurrency settings to keep this true.
 
 The queue merges one squashed pull request at a time, builds two at once, starts
 with no wait and allows checks 150 minutes. It replaces "Require branches to be
