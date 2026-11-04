@@ -310,6 +310,8 @@ func TestGitImportBuildIsolationAndArtifactAdmission(t *testing.T) {
 			if state != "dispatched" {
 				t.Fatal("operation never dispatched", state)
 			}
+			// Only a command that may already have reached the runner is still delivered.
+			poll(op.Id)
 			repositoryIdentity.Store(13)
 			agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/poll", token, nil, 500, nil)
 			if expired {
@@ -326,6 +328,9 @@ func TestGitImportBuildIsolationAndArtifactAdmission(t *testing.T) {
 				b.call("POST", prefix+"/operations/"+op.Id.String()+"/cancel", nil, 204, nil)
 			}
 			command := poll(op.Id)
+			if !command.CancelRequested {
+				t.Fatal("cancelled/expired delivery did not request cancellation")
+			}
 			for _, value := range []string{"clone-read-canary", "build-only-canary", "push-canary"} {
 				if strings.Contains(string(*command.Pipeline), value) {
 					t.Fatal("cancelled/expired delivery hydrated unnecessary credential")
