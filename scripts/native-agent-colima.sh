@@ -4,7 +4,7 @@
 set -euo pipefail
 
 profile="${1:-}"
-pattern="${2:-^TestNativeReleaseCommandTransport\$}"
+pattern="${2:-^TestNative(ReleaseCommandTransport|TroubleshootingTarget)\$}"
 
 case "$profile" in
   "")

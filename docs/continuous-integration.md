@@ -79,11 +79,12 @@ publish off the Mac's network: Colima otherwise forwards ports bound to `0.0.0.0
 in the VM to every Mac interface, including fixtures with passwords from this
 public source.
 
-`PLAT_AGENT_TESTS` overrides the test pattern. The default is
-`^TestNativeReleaseCommandTransport$`, the only native test that needs nothing
-beyond root, Docker and the pinned image above. Interrupting a run removes the
-binary, but the test may stop without its cleanup: recreate the profile if
-fixtures remain. The rest must be asked for by name:
+`PLAT_AGENT_TESTS` overrides the test pattern. The default runs
+`TestNativeReleaseCommandTransport` and `TestNativeTroubleshootingTarget`, the
+only native tests that need nothing beyond root, the pinned image above and
+Docker with a supported runc and registry access. Interrupting a run removes the
+binary, but a test may stop without its cleanup: recreate the profile if fixtures
+remain. The rest must be asked for by name:
 
 | Test | Also needs |
 | --- | --- |
