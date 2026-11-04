@@ -71,6 +71,18 @@ sudo systemctl start astilba-agent
 
 The journal retains one unresolved command and up to 128 acknowledged outcomes, with generation fencing after eviction. Probe records are limited to 32 KiB; visual/pipeline records and the host registry to 512 KiB. Reports retain at most 16 steps, 1 KiB of diagnostic text and a bounded 24 KiB observation. Agent report bodies are limited to 192 KiB for bounded source results; other agent requests remain limited to 16 KiB; visual command responses have a 256 KiB bound. Visual logs are bounded and known environment values are redacted. Slow or disconnected management does not block local execution. Revocation rejects subsequent agent requests but does not stop containers or undo accepted effects. Re-enroll the same state directory to report and reconcile outstanding work.
 
+## Terminal session consent
+
+[Interactive troubleshooting](interactive-troubleshooting.md) is off on every host. The host owner opts in with the agent stopped, which also ends any open session when opting out:
+
+```sh
+sudo systemctl stop astilba-agent
+sudo astilba-agent troubleshooting-enable
+sudo systemctl start astilba-agent
+```
+
+`troubleshooting-disable` withdraws consent the same way. Consent names the current controller, so transfer, recovery handover and re-enrolling with a new release key withdraw it. Sessions need runc 1.3.3 or later on the 1.3 branch, or a final 1.x release from 1.4 onwards; other hosts report that the container runtime needs updating. Dashboard sessions are not available yet.
+
 ## Explicit updates
 
 An owner with recent authentication selects a catalog release on the Servers page. Updates are serialized with all other host mutations. The agent verifies protocol, architecture, Ed25519 signature, size, hash and the binary's compiled identity, then fsyncs and atomically replaces only its own executable. Systemd restarts it; the durable operation reports on reconnect. `/usr/local/bin/astilba-agent.previous` retains the previous binary. Workloads stay running. No automatic update policy is enabled.
