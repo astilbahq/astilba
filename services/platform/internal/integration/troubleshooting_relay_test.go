@@ -618,8 +618,13 @@ func TestTroubleshootingTypingRefreshesTheBrowserSession(t *testing.T) {
 	browser.send(t, append([]byte{terminal.Input}, "x"...))
 	agent.expect(t, append([]byte{terminal.Input}, "x"...))
 	var refreshed bool
-	if err := x.f.st.Pool.QueryRow(ctx, "SELECT b.expiry>now()+interval '10 minutes' FROM sessions b JOIN troubleshooting_sessions t ON b.token=translate(rtrim(encode(t.browser_session_hash,'base64'),'='),'+/','-_') WHERE t.id=$1", opened.Session.Id).Scan(&refreshed); err != nil || !refreshed {
-		t.Fatal("typing did not refresh the browser session", err)
+	for deadline := time.Now().Add(5 * time.Second); !refreshed && time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
+		if err := x.f.st.Pool.QueryRow(ctx, "SELECT b.expiry>now()+interval '10 minutes' FROM sessions b JOIN troubleshooting_sessions t ON b.token=translate(rtrim(encode(t.browser_session_hash,'base64'),'='),'+/','-_') WHERE t.id=$1", opened.Session.Id).Scan(&refreshed); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !refreshed {
+		t.Fatal("typing did not refresh the browser session")
 	}
 }
 
