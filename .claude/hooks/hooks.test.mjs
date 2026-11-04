@@ -204,19 +204,23 @@ test("a conflict resolved in a merge commit is the session's change", (t) => {
   assert.equal(repo.stop({}).decision, "block");
 });
 
-test("a conflict resolved in a rebase is the session's change", (t) => {
-  const repo = scratch(t);
-  repo.outcome("fail");
-  conflicted(repo);
-  repo.git(["config", "grep.patternType", "extended"]);
-  repo.start();
-  assert.throws(() => repo.git(["rebase", "theirs"]));
-  repo.write("scripts/both.mjs", "resolved\n");
-  repo.git(["add", "scripts/both.mjs"]);
-  repo.git(["rebase", "--continue"], { GIT_EDITOR: "true" });
-  assert.equal(repo.git(["status", "--porcelain", "scripts"]), "");
-  assert.equal(repo.stop({}).decision, "block");
-});
+for (const start of [
+  ["rebase", "theirs"],
+  ["pull", "--rebase", ".", "theirs"],
+])
+  test(`a conflict resolved in \`git ${start[0]}\` is the session's change`, (t) => {
+    const repo = scratch(t);
+    repo.outcome("fail");
+    conflicted(repo);
+    repo.git(["config", "grep.patternType", "extended"]);
+    repo.start();
+    assert.throws(() => repo.git(start));
+    repo.write("scripts/both.mjs", "resolved\n");
+    repo.git(["add", "scripts/both.mjs"]);
+    repo.git(["rebase", "--continue"], { GIT_EDITOR: "true" });
+    assert.equal(repo.git(["status", "--porcelain", "scripts"]), "");
+    assert.equal(repo.stop({}).decision, "block");
+  });
 
 test("other worktrees count only for the files the session edited", (t) => {
   const repo = scratch(t);
