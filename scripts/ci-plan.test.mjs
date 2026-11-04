@@ -286,6 +286,47 @@ test("every required check reports on merge groups", () => {
   );
 });
 
+function concurrency(file, github) {
+  const setting = (name) =>
+    new RegExp(`^  ${name}: (.*)$`, "m")
+      .exec(workflow(file))[1]
+      .replace(/\$\{\{(.*?)\}\}/g, (_, expression) =>
+        new Function("github", `return ${expression.replaceAll("==", "===")}`)({
+          workflow: file,
+          ...github,
+        }),
+      );
+  return {
+    group: setting("group"),
+    cancels: setting("cancel-in-progress") === "true",
+  };
+}
+
+// A displaced main run fails no required check, so nothing else reports it.
+test("only a pull request's newer commit replaces a run", () => {
+  for (const file of gateWorkflows) {
+    for (const event_name of ["push", "workflow_dispatch", "schedule"]) {
+      const run = (run_id) =>
+        concurrency(file, { event_name, ref: "refs/heads/main", run_id });
+      assert.notEqual(run("1").group, run("2").group, `${file} ${event_name}`);
+    }
+    const pull = (run_id) =>
+      concurrency(file, {
+        event_name: "pull_request",
+        ref: "refs/pull/1/merge",
+        run_id,
+      });
+    assert.equal(pull("1").group, pull("2").group, file);
+    assert.equal(pull("2").cancels, true, file);
+    const queued = concurrency(file, {
+      event_name: "merge_group",
+      ref: "refs/heads/gh-readonly-queue/main/pr-1-abc",
+      run_id: "2",
+    });
+    assert.equal(queued.cancels, false, file);
+  }
+});
+
 function planStep(file) {
   const lines = workflow(file).split("\n");
   const start = lines.indexOf(
