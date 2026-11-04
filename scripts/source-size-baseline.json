@@ -14,7 +14,6 @@
   "services/platform/internal/execution/cross_host_operations.go": 679,
   "services/platform/internal/execution/preview_workers.go": 671,
   "services/platform/internal/execution/visual.go": 854,
-  "services/platform/internal/httpapi/server.go": 609,
   "services/platform/internal/integration/cross_host_physical_recovery_test.go": 1054,
   "services/platform/internal/integration/cross_host_recovery_test.go": 1361,
   "services/platform/internal/integration/cross_host_test.go": 1378
