@@ -88,6 +88,11 @@ func (s *Service) hydratePipeline(ctx context.Context, a Identity, c *api.Execut
 		return false, errors.New("invalid pipeline payload")
 	}
 	if c.CancelRequested || time.Now().After(c.Deadline) {
+		// A renewed subscription can lift this cancellation before the agent reports.
+		// The journaled command still needs its report accepted, so this is a delivery.
+		if err = db.New(tx).MarkPipelineDeliveryStarted(ctx, db.MarkPipelineDeliveryStartedParams{WorkspaceID: a.Workspace, ID: c.Id}); err != nil {
+			return false, err
+		}
 		return true, tx.Commit(ctx)
 	}
 	var started *bool
@@ -146,7 +151,7 @@ func (s *Service) hydratePipeline(ctx context.Context, a Identity, c *api.Execut
 	if err != nil || len(raw) > 250000 {
 		return false, errors.New("pipeline payload limit exceeded")
 	}
-	if _, err = tx.Exec(ctx, "UPDATE pipeline_runs SET delivery_started=true WHERE id=$1", c.Id); err != nil {
+	if err = db.New(tx).MarkPipelineDeliveryStarted(ctx, db.MarkPipelineDeliveryStartedParams{WorkspaceID: ws, ID: c.Id}); err != nil {
 		return false, err
 	}
 	// Commit before the hydrated command can leave management. A failed response
@@ -230,7 +235,8 @@ func (s *Service) pipelineReport(ctx context.Context, tx pgx.Tx, c api.Execution
 		}
 		return nil
 	}
-	if len(*r.Pipeline) > 150000 {
+	// A failed import can carry more source than a result stores, and only a success uses it.
+	if r.State == "succeeded" && len(*r.Pipeline) > 150000 {
 		return domain.Invalid("pipeline")
 	}
 	var result pipeline.Result
@@ -382,6 +388,9 @@ func (s *Service) pipelineReport(ctx context.Context, tx pgx.Tx, c api.Execution
 	// Selected source stays in immutable revisions, rather than duplicating source files in history.
 	result.Files = nil
 	raw, _ := json.Marshal(result)
+	if len(raw) > 150000 {
+		return domain.Invalid("pipeline")
+	}
 	_, err := tx.Exec(ctx, "UPDATE pipeline_runs SET result=$2 WHERE id=$1", c.Id, raw)
 	return err
 }

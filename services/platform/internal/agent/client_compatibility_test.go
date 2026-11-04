@@ -8,8 +8,11 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
+	"github.com/google/uuid"
+	bolt "go.etcd.io/bbolt"
 )
 
 func TestBuildCapabilityNegotiatesWithControllerVersions(t *testing.T) {
@@ -179,5 +182,69 @@ func TestCacheCapabilityDoesNotChangeBuildControlsNegotiation(t *testing.T) {
 	}
 	if received.Load() != 1 {
 		t.Fatal("build-controls negotiation regressed")
+	}
+}
+
+// A restriction is admitted beside a record the controller keeps rejecting, so its report
+// must still be sent even when its key sorts after the rejected record.
+func TestRejectedReportDoesNotBlockLaterRecords(t *testing.T) {
+	j, _ := testVisualJournal(t)
+	rejected, later := uuid.MustParse("00000000-0000-4000-8000-000000000001"), uuid.MustParse("ffffffff-ffff-4fff-bfff-ffffffffffff")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/agent/v1/report" {
+			w.WriteHeader(400)
+			return
+		}
+		var report api.AgentReport
+		if err := json.NewDecoder(r.Body).Decode(&report); err != nil || report.Id == rejected {
+			w.WriteHeader(400)
+			return
+		}
+		w.WriteHeader(204)
+	}))
+	defer server.Close()
+	cfg, err := j.Config()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Origin, cfg.Enrolled, cfg.Credential = server.URL, true, "agent-credential"
+	if err = j.SetConfig(cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err = j.db.Update(func(tx *bolt.Tx) error {
+		for _, id := range []uuid.UUID{rejected, later} {
+			record := Record{Command: api.ExecutionCommand{Id: id, ServerId: cfg.ServerID, Kind: "test"}, Report: api.AgentReport{Id: id, Sequence: 1, State: "cancelled", Steps: []api.ExecutionStep{}}}
+			if err := j.put(tx, "operations", id.String(), record); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	c := NewClient(j, &Engine{Journal: j})
+	c.HTTP = server.Client()
+	c.Observe = func(context.Context) api.AgentHeartbeat { return api.AgentHeartbeat{} }
+	ctx, cancel := context.WithCancel(context.Background())
+	stopped := make(chan error, 1)
+	go func() { stopped <- c.Run(ctx) }()
+	defer func() {
+		cancel()
+		<-stopped
+	}()
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+		record, err := j.Record(later)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if record.Acknowledged {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the later record was not reported")
+		}
+	}
+	if record, err := j.Record(rejected); err != nil || record.Acknowledged {
+		t.Fatal("rejected record was acknowledged", err)
 	}
 }

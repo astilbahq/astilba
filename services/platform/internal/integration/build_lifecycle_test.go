@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
+	"github.com/astilbahq/astilba/services/platform/internal/composeproject"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
 	"github.com/google/uuid"
@@ -162,6 +163,26 @@ func TestBuildDeliveryAdmissionLifecycle(t *testing.T) {
 			finish(t, c)
 		})
 	}
+	t.Run("failed report with oversized rejected source", func(t *testing.T) {
+		op := create(t, healthyPath, healthyDraft, cfg)
+		c := poll(t)
+		if c.Id != op.Id {
+			t.Fatal("wrong build delivered", c.Id)
+		}
+		files := []composeproject.File{}
+		for _, name := range []string{"a.yaml", "b.yaml", "c.yaml"} {
+			files = append(files, composeproject.File{Path: name, Content: strings.Repeat("x", 60000)})
+		}
+		raw, _ := json.Marshal(pipeline.Result{Logs: "selected source is too large", Files: files})
+		agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/report", token, api.AgentReport{Id: c.Id, Generation: c.Generation, PlanHash: c.PlanHash, Sequence: 1, State: "failed", Steps: []api.ExecutionStep{}, Pipeline: (*json.RawMessage)(&raw)}, 204, nil)
+		var stored []byte
+		if err := f.st.Pool.QueryRow(ctx, "SELECT result FROM pipeline_runs WHERE id=$1", op.Id).Scan(&stored); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(stored), "selected source is too large") || strings.Contains(string(stored), "xxxx") {
+			t.Fatal("failed result kept the wrong data", string(stored))
+		}
+	})
 	t.Run("database failure remains retryable", func(t *testing.T) {
 		b := *b
 		b.t = t
