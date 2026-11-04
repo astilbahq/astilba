@@ -100,14 +100,15 @@ To turn it back on, make both changes in one save, then land `strict: false`.
 
 ## Native lanes
 
-Each architecture runs three lanes, each on its own disposable runner VM. The
-Native verification gate requires all six jobs to pass:
+Each architecture runs four lanes, each on its own disposable runner VM. The
+Native verification gate requires all eight jobs to pass:
 
 | Lane | Verification |
 | --- | --- |
 | `core` | PLAT-4 host runtime, builds, PostgreSQL restore, managed links, Compose and cross-host deployment, pipeline, preview, release transport, and troubleshooting target, session, cleanup and refusals |
 | `recovery` | Agent service enrollment, restart and signed update; a troubleshooting session end to end; cross-host older-backup, drained and upgrade recovery |
-| `visual` | Visual deployment, including catalog, backup, restore and major upgrades |
+| `visual` | Visual deployment, including catalog, backup and restore |
+| `upgrade` | Application releases and PostgreSQL major upgrades, then an unrelated unit's routes and data, scheduled jobs, later deployments, controller transfer and volume deletion on that host |
 
 Every lane repeats the same fresh production bootstrap, pinned runtime install and
 image pulls, so each suite starts from the same prepared host. The Makefile's
@@ -115,7 +116,9 @@ image pulls, so each suite starts from the same prepared host. The Makefile's
 sequence on a local disposable host. CI no longer runs suites from different lanes
 on one VM, so it cannot see residue from one lane break another. For example, an
 ingress that survives the preview test's cleanup no longer trips the visual test's
-absent-ingress guard in CI; the sequential target still shows it.
+absent-ingress guard in CI; the sequential target still shows it. Scheduled jobs,
+controller transfer and volume deletion run in both `visual` and `upgrade`, because
+they read finished upgrade records.
 
 `-run` lists select the native tests, so `make check-ci` fails when a
 `func TestNative*` that Go builds for `linux/amd64` or `linux/arm64` under
