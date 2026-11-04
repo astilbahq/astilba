@@ -208,6 +208,7 @@ test("a conflict resolved in a rebase is the session's change", (t) => {
   const repo = scratch(t);
   repo.outcome("fail");
   conflicted(repo);
+  repo.git(["config", "grep.patternType", "extended"]);
   repo.start();
   assert.throws(() => repo.git(["rebase", "theirs"]));
   repo.write("scripts/both.mjs", "resolved\n");

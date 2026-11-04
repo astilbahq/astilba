@@ -126,7 +126,10 @@ function committed(root, since) {
       "--grep-reflog=^commit",
       "--grep-reflog=^cherry-pick",
       "--grep-reflog=^revert",
-      "--grep-reflog=(continue):",
+      "--grep-reflog=^rebase (continue):",
+      "--grep-reflog=^pull --rebase (continue):",
+      // The patterns are literal only in the mode a user's config can change.
+      "--basic-regexp",
       `--since=${since}`,
       "--diff-merges=dense-combined",
       "--no-renames",
