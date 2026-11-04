@@ -335,6 +335,9 @@ func (w *worker) Work(ctx context.Context, job *river.Job[jobArgs]) error {
 		}
 		if state == "queued" {
 			_, err = tx.Exec(ctx, "UPDATE execution_operations SET state='cancelled',cancel_requested=true,note='Subscription expired before dispatch.' WHERE id=$1", c.Id)
+			if err == nil && c.Kind == "upgrade" {
+				err = undeliveredUpgrade(ctx, tx, ws, c)
+			}
 		} else {
 			_, err = tx.Exec(ctx, "UPDATE execution_operations SET cancel_requested=true WHERE id=$1", c.Id)
 		}
