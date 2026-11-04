@@ -23,6 +23,7 @@ jobs:
     timeout-minutes: 5
     outputs:
       go: ${{ steps.plan.outputs.go }}
+      vulnerabilities: ${{ steps.plan.outputs.vulnerabilities }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -102,23 +103,35 @@ jobs:
         env:
           PLAT_APP_DOCKER_HOST: unix:///var/run/docker.sock
 
+  vulnerabilities:
+    needs: plan
+    # Empty when the base planner does not know this suite, which selects it.
+    if: needs.plan.outputs.vulnerabilities != 'false'
+    uses: ./.github/workflows/vulnerability-scan.yml
+
   verify:
     name: Application verification
     if: always()
-    needs: [plan, build, go]
+    needs: [plan, build, go, vulnerabilities]
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     steps:
-      - name: Require checks, builds and selected Go lanes
+      - name: Require checks, builds and selected lanes
         env:
           PLAN_RESULT: ${{ needs.plan.result }}
           BUILD_RESULT: ${{ needs.build.result }}
           SELECTED: ${{ needs.plan.outputs.go }}
           GO_RESULT: ${{ needs.go.result }}
+          SCAN_SELECTED: ${{ needs.plan.outputs.vulnerabilities }}
+          SCAN_RESULT: ${{ needs.vulnerabilities.result }}
         run: |
           test "$PLAN_RESULT" = success
           test "$BUILD_RESULT" = success
           case "$SELECTED:$GO_RESULT" in
             true:success|false:skipped) ;;
+            *) exit 1 ;;
+          esac
+          case "$SCAN_SELECTED:$SCAN_RESULT" in
+            true:success|:success|false:skipped) ;;
             *) exit 1 ;;
           esac
