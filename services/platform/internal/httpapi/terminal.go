@@ -45,15 +45,39 @@ type terminalHub struct {
 
 func newTerminalHub() *terminalHub { return &terminalHub{sessions: map[uuid.UUID]*terminalPair{}} }
 
-func (h *terminalHub) pair(id uuid.UUID, stream execution.TroubleshootingStream) *terminalPair {
+// join registers one side and reports whether it completes the pair. Finding the pair and
+// taking a place in it are one step, so a side arriving as abandon runs either completes
+// the pair first or gets a new one of its own, never one that is already closing.
+func (h *terminalHub) join(stream execution.TroubleshootingStream, agent, browser *websocket.Conn) (*terminalPair, bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	p := h.sessions[id]
+	p := h.sessions[stream.Session]
 	if p == nil {
 		p = &terminalPair{stream: stream, ready: make(chan struct{}), done: make(chan struct{})}
-		h.sessions[id] = p
+		h.sessions[stream.Session] = p
 	}
-	return p
+	if agent != nil {
+		p.agent = agent
+	}
+	if browser != nil {
+		p.browser = browser
+	}
+	complete := p.agent != nil && p.browser != nil
+	if complete {
+		close(p.ready)
+	}
+	return p, complete
+}
+
+// abandon gives up a pair the other side has not joined, and reports whether it did.
+func (h *terminalHub) abandon(p *terminalPair) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if p.agent != nil && p.browser != nil {
+		return false
+	}
+	delete(h.sessions, p.stream.Session)
+	return true
 }
 
 func (h *terminalHub) remove(id uuid.UUID) {
@@ -178,19 +202,7 @@ func (s *Server) endUnattachedTerminal(stream execution.TroubleshootingStream, r
 // attachTerminal registers one side. The second side to arrive runs the relay; the
 // first waits, and ends the session if the other never arrives before the ticket expires.
 func (s *Server) attachTerminal(stream execution.TroubleshootingStream, agent, browser *websocket.Conn) {
-	p := s.terminals.pair(stream.Session, stream)
-	s.terminals.mu.Lock()
-	if agent != nil {
-		p.agent = agent
-	}
-	if browser != nil {
-		p.browser = browser
-	}
-	complete := p.agent != nil && p.browser != nil
-	if complete {
-		close(p.ready)
-	}
-	s.terminals.mu.Unlock()
+	p, complete := s.terminals.join(stream, agent, browser)
 	if complete {
 		defer close(p.done)
 		defer s.terminals.remove(stream.Session)
@@ -201,13 +213,7 @@ func (s *Server) attachTerminal(stream execution.TroubleshootingStream, agent, b
 	case <-p.ready:
 		<-p.done
 	case <-time.After(time.Until(stream.TicketExpires)):
-		s.terminals.mu.Lock()
-		unpaired := p.agent == nil || p.browser == nil
-		if unpaired {
-			delete(s.terminals.sessions, stream.Session)
-		}
-		s.terminals.mu.Unlock()
-		if !unpaired {
+		if !s.terminals.abandon(p) {
 			<-p.done
 			return
 		}
