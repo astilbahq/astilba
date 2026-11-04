@@ -26,6 +26,10 @@ func TestBuildCapabilityNegotiatesWithControllerVersions(t *testing.T) {
 			var replicaExtensions atomic.Int32
 			var continuationExtensions atomic.Int32
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if !modern.Load() {
+					// Every controller marks its responses; this one offers no extension.
+					w.Header().Set("Astilba-Agent-Features", "none")
+				}
 				var body struct {
 					Capabilities map[string]json.RawMessage `json:"capabilities"`
 				}
@@ -179,5 +183,57 @@ func TestCacheCapabilityDoesNotChangeBuildControlsNegotiation(t *testing.T) {
 	}
 	if received.Load() != 1 {
 		t.Fatal("build-controls negotiation regressed")
+	}
+}
+
+func TestProxyResponsesKeepNegotiation(t *testing.T) {
+	proxied := map[string]struct {
+		status int
+		body   string
+	}{
+		"rate limit page":   {429, "<html>Too many requests</html>"},
+		"bad gateway":       {502, "<html>Bad gateway</html>"},
+		"unavailable":       {503, "no available server"},
+		"gateway timeout":   {504, ""},
+		"error envelope":    {400, `{"code":"invalid_input","message":"Rejected.","requestId":"request-1"}`},
+		"maintenance page":  {200, "<html>Back soon</html>"},
+		"empty JSON at 200": {200, "{}"},
+	}
+	for name, response := range proxied {
+		t.Run(name, func(t *testing.T) {
+			var behindProxy atomic.Bool
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				if behindProxy.Load() {
+					w.WriteHeader(response.status)
+					_, _ = w.Write([]byte(response.body))
+					return
+				}
+				w.Header().Set("Astilba-Agent-Features", "build-controls")
+				w.Header().Set("Astilba-Agent-Previews", "v1")
+				_, _ = w.Write([]byte(`{"role":"combined","rotationRequested":false}`))
+			}))
+			defer server.Close()
+			j, _ := testVisualJournal(t)
+			cfg, err := j.Config()
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg.Origin = server.URL
+			if err = j.SetConfig(cfg); err != nil {
+				t.Fatal(err)
+			}
+			c := NewClient(j, &Engine{Journal: j})
+			c.HTTP = server.Client()
+			if err = c.call(context.Background(), "POST", "/agent/v1/heartbeat", api.AgentHeartbeat{}, &api.AgentStatus{}, "fixture"); err != nil {
+				t.Fatal(err)
+			}
+			behindProxy.Store(true)
+			_ = c.call(context.Background(), "POST", "/agent/v1/heartbeat", api.AgentHeartbeat{}, &api.AgentStatus{}, "fixture")
+			yes := true
+			advertised := c.advertisedCapabilities(api.AgentCapabilities{BuildControls: &yes, Previews: &yes, Schedules: &yes})
+			if advertised.BuildControls == nil || advertised.Previews == nil || advertised.Schedules != nil {
+				t.Fatalf("proxy response changed negotiation: %+v", advertised)
+			}
+		})
 	}
 }

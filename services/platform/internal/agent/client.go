@@ -98,18 +98,22 @@ func (c *Client) call(ctx context.Context, method, path string, body, out any, t
 		return errors.New("management connection unavailable")
 	}
 	defer response.Body.Close()
-	// Also forget an extension after controller replacement or downgrade.
-	c.buildControls.Store(response.Header.Get("Astilba-Agent-Features") == "build-controls")
-	c.buildCache.Store(response.Header.Get("Astilba-Agent-Build-Cache") == "v1")
-	c.railpack.Store(response.Header.Get("Astilba-Agent-Railpack") == "v1")
-	c.safeReleases.Store(response.Header.Get("Astilba-Agent-Safe-Releases") == "v1")
-	c.serviceOutputs.Store(response.Header.Get("Astilba-Agent-Service-Outputs") == "v1")
-	c.previews.Store(response.Header.Get("Astilba-Agent-Previews") == "v1")
-	c.schedules.Store(response.Header.Get("Astilba-Agent-Schedules") == "v1")
-	c.replicas.Store(response.Header.Get("Astilba-Agent-Replicas") == "v1")
-	c.crossHost.Store(response.Header.Get("Astilba-Agent-Cross-Host") == "v1")
-	c.maintenanceContinuation.Store(response.Header.Get("Astilba-Agent-Maintenance-Continuation") == "v1")
-	c.troubleshooting.Store(response.Header.Get("Astilba-Agent-Troubleshooting") == "v2")
+	// Also forget an extension after controller replacement or downgrade. Every
+	// controller sets this header on every agent response, whatever its status. A
+	// reverse proxy's own response lacks it and says nothing about management.
+	if response.Header.Get("Astilba-Agent-Features") != "" {
+		c.buildControls.Store(response.Header.Get("Astilba-Agent-Features") == "build-controls")
+		c.buildCache.Store(response.Header.Get("Astilba-Agent-Build-Cache") == "v1")
+		c.railpack.Store(response.Header.Get("Astilba-Agent-Railpack") == "v1")
+		c.safeReleases.Store(response.Header.Get("Astilba-Agent-Safe-Releases") == "v1")
+		c.serviceOutputs.Store(response.Header.Get("Astilba-Agent-Service-Outputs") == "v1")
+		c.previews.Store(response.Header.Get("Astilba-Agent-Previews") == "v1")
+		c.schedules.Store(response.Header.Get("Astilba-Agent-Schedules") == "v1")
+		c.replicas.Store(response.Header.Get("Astilba-Agent-Replicas") == "v1")
+		c.crossHost.Store(response.Header.Get("Astilba-Agent-Cross-Host") == "v1")
+		c.maintenanceContinuation.Store(response.Header.Get("Astilba-Agent-Maintenance-Continuation") == "v1")
+		c.troubleshooting.Store(response.Header.Get("Astilba-Agent-Troubleshooting") == "v2")
+	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		return errors.New("management rejected request; check enrollment, credentials and operation status")
 	}
