@@ -222,9 +222,9 @@ resize (with bounded dimensions), ping, refused and exit. Stream handlers clear
 the server's ordinary read and write deadlines and send pings every 30 seconds.
 The relay ends both streams together with a close handshake, so the exit or
 refused frame reaches the browser while it is still sending input. Frames read
-after a session has ended are discarded. Every close handshake, including one
-that refuses a ticket or ends a side whose other side never attached, drops a
-peer that has not finished it within 10 seconds.
+after a session has ended are discarded. Every close handshake, on management
+or the agent, including one that refuses a ticket or ends a side whose other
+side never attached, drops a peer that has not finished it within 10 seconds.
 
 P17 supports single-instance management installations only: both streams for a
 session must reach the instance that holds them, and the existing instances share

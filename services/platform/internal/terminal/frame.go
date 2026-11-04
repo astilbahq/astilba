@@ -1,4 +1,5 @@
-// Package terminal defines the frames both streams of a troubleshooting session use.
+// Package terminal defines the frames both streams of a troubleshooting session use, and
+// how those streams close.
 // Terminal content passes through unlogged and unrecorded.
 package terminal
 

@@ -273,7 +273,7 @@ func finishTroubleshooting(ctx context.Context, conn *websocket.Conn, frame []by
 	if err := writeTroubleshooting(ctx, conn, frame); err != nil {
 		return err
 	}
-	return conn.Close(websocket.StatusNormalClosure, "")
+	return terminal.Close(conn, websocket.StatusNormalClosure, "")
 }
 
 // findShell returns the first shell the image has, or "" if it has neither. A probe runs
