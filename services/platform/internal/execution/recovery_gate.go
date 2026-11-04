@@ -6,6 +6,7 @@ import (
 	"errors"
 	"time"
 
+	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
@@ -17,8 +18,8 @@ import (
 // participant has proved its staged machine, inventory and controller identity.
 // The caller commits/snoozes while blocked, then resumes its saved normal phase.
 func (s *Service) recoveryGate(ctx context.Context, tx pgx.Tx, ws uuid.UUID, parent api.ExecutionCommand, root coordinationCommand) (bool, error) {
-	var opened bool
-	err := tx.QueryRow(ctx, `SELECT opened FROM cross_host_recoveries WHERE workspace_id=$1 AND parent_id=$2 FOR UPDATE`, ws, parent.Id).Scan(&opened)
+	q := db.New(tx)
+	opened, err := q.LockCrossHostRecoveryOpened(ctx, db.LockCrossHostRecoveryOpenedParams{WorkspaceID: ws, ParentID: parent.Id})
 	if errors.Is(err, pgx.ErrNoRows) || err == nil && opened {
 		return false, nil
 	}
@@ -29,34 +30,32 @@ func (s *Service) recoveryGate(ctx context.Context, tx pgx.Tx, ws uuid.UUID, par
 	if root.Maintenance != nil {
 		units = root.Plan.ActiveUnits()
 	}
-	var proven int
-	if err = tx.QueryRow(ctx, `SELECT count(*) FROM cross_host_recovery_servers r JOIN servers s ON s.workspace_id=r.workspace_id AND s.id=r.server_id WHERE r.workspace_id=$1 AND r.parent_id=$2 AND r.verified AND NOT s.awaiting_transfer AND NOT s.revoked AND s.machine_id=r.machine_id AND s.controller_generation=r.controller_generation`, ws, parent.Id).Scan(&proven); err != nil {
+	proven, err := q.CountProvenRecoveryServers(ctx, db.CountProvenRecoveryServersParams{WorkspaceID: ws, ParentID: parent.Id})
+	if err != nil {
 		return false, err
 	}
-	if proven != len(units) {
-		_, err = tx.Exec(ctx, `UPDATE execution_operations SET state='needs_attention',note='Recovered execution remains held until every participant proves its exact machine, inventory and controller authority.' WHERE id=$1`, parent.Id)
-		return true, err
+	if proven != int64(len(units)) {
+		return true, q.HoldRecoveredOperation(ctx, db.HoldRecoveredOperationParams{Note: "Recovered execution remains held until every participant proves its exact machine, inventory and controller authority.", WorkspaceID: ws, ID: parent.Id})
 	}
 	if parent.RecoveryCheckpoint == nil {
 		return true, domain.Invalid("recovery.checkpoint")
 	}
 	all := true
 	for _, unit := range units {
-		var controller int64
-		if err = tx.QueryRow(ctx, `SELECT controller_generation FROM cross_host_recovery_servers WHERE workspace_id=$1 AND parent_id=$2 AND server_id=$3 AND verified`, ws, parent.Id, unit.Plan.ServerID).Scan(&controller); err != nil {
+		controller, err := q.VerifiedRecoveryController(ctx, db.VerifiedRecoveryControllerParams{WorkspaceID: ws, ParentID: parent.Id, ServerID: unit.Plan.ServerID})
+		if err != nil {
 			return true, err
 		}
 		key := deployment.RecoveryOpenID(parent.Id, unit.Plan.UnitID, controller)
-		var state api.ExecutionState
-		err = tx.QueryRow(ctx, `SELECT state FROM execution_operations WHERE id=$1 AND parent_id=$2 AND server_id=$3`, key, parent.Id, unit.Plan.ServerID).Scan(&state)
+		state, err := q.RecoveryOpenState(ctx, db.RecoveryOpenStateParams{WorkspaceID: ws, ID: key, ParentID: parent.Id, ServerID: unit.Plan.ServerID})
 		if errors.Is(err, pgx.ErrNoRows) {
 			body, err := recoveryOpenBody(parent, root, unit)
 			if err != nil {
 				return true, err
 			}
 			raw, _ := json.Marshal(body)
-			var generation int64
-			if err = tx.QueryRow(ctx, `UPDATE environments SET execution_generation=execution_generation+1 WHERE workspace_id=$1 AND id=$2 RETURNING execution_generation`, ws, parent.EnvironmentId).Scan(&generation); err != nil {
+			generation, err := q.AdvanceEnvironmentExecutionGeneration(ctx, db.AdvanceEnvironmentExecutionGenerationParams{WorkspaceID: ws, ID: parent.EnvironmentId})
+			if err != nil {
 				return true, err
 			}
 			c := api.ExecutionCommand{Id: key, ParentId: &parent.Id, ServerId: unit.Plan.ServerID, EnvironmentId: parent.EnvironmentId, ResourceId: unit.Plan.UnitID, Kind: "crosshost", Action: "inspect", Generation: generation, PlanHash: body.Digest(), Deadline: time.Now().Add(30 * time.Minute), Crosshost: rawMessage(raw), RecoveryCheckpoint: parent.RecoveryCheckpoint}
@@ -71,14 +70,12 @@ func (s *Service) recoveryGate(ctx context.Context, tx pgx.Tx, ws uuid.UUID, par
 		}
 	}
 	if !all {
-		_, err = tx.Exec(ctx, `UPDATE execution_operations SET state='needs_attention',note='Participant identities are verified; waiting for every exact-root replay-hold acknowledgement.' WHERE id=$1`, parent.Id)
-		return true, err
+		return true, q.HoldRecoveredOperation(ctx, db.HoldRecoveredOperationParams{Note: "Participant identities are verified; waiting for every exact-root replay-hold acknowledgement.", WorkspaceID: ws, ID: parent.Id})
 	}
-	_, err = tx.Exec(ctx, `UPDATE cross_host_recoveries SET opened=true WHERE workspace_id=$1 AND parent_id=$2`, ws, parent.Id)
-	return false, err
+	return false, q.OpenCrossHostRecovery(ctx, db.OpenCrossHostRecoveryParams{WorkspaceID: ws, ParentID: parent.Id})
 }
 
-func recoveryGateDelivery(ctx context.Context, tx pgx.Tx, c api.ExecutionCommand) (bool, error) {
+func recoveryGateDelivery(ctx context.Context, tx pgx.Tx, ws uuid.UUID, c api.ExecutionCommand) (bool, error) {
 	if c.ParentId == nil {
 		return true, nil
 	}
@@ -88,8 +85,7 @@ func recoveryGateDelivery(ctx context.Context, tx pgx.Tx, c api.ExecutionCommand
 			return true, nil
 		}
 	}
-	var held bool
-	err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM cross_host_recoveries WHERE parent_id=$1 AND NOT opened)`, *c.ParentId).Scan(&held)
+	held, err := db.New(tx).CrossHostRecoveryHeld(ctx, db.CrossHostRecoveryHeldParams{WorkspaceID: ws, ParentID: *c.ParentId})
 	return !held, err
 }
 

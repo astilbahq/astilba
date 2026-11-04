@@ -35,6 +35,23 @@ func (q *Queries) AdvanceDraft(ctx context.Context, arg AdvanceDraftParams) (uui
 	return id, err
 }
 
+const advanceEnvironmentExecutionGeneration = `-- name: AdvanceEnvironmentExecutionGeneration :one
+UPDATE environments SET execution_generation=execution_generation+1
+WHERE workspace_id = $1 AND id = $2 RETURNING execution_generation
+`
+
+type AdvanceEnvironmentExecutionGenerationParams struct {
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ID          uuid.UUID `json:"id"`
+}
+
+func (q *Queries) AdvanceEnvironmentExecutionGeneration(ctx context.Context, arg AdvanceEnvironmentExecutionGenerationParams) (int64, error) {
+	row := q.db.QueryRow(ctx, advanceEnvironmentExecutionGeneration, arg.WorkspaceID, arg.ID)
+	var execution_generation int64
+	err := row.Scan(&execution_generation)
+	return execution_generation, err
+}
+
 const allEncryptedVersions = `-- name: AllEncryptedVersions :many
 SELECT workspace_id,id,encrypted_value FROM secret_versions FOR UPDATE
 `
@@ -93,6 +110,23 @@ func (q *Queries) AllTOTPSecrets(ctx context.Context) ([]AllTOTPSecretsRow, erro
 		return nil, err
 	}
 	return items, nil
+}
+
+const environmentRuntimePlan = `-- name: EnvironmentRuntimePlan :one
+SELECT plan_id::uuid AS plan_id FROM visual_runtime
+WHERE workspace_id = $1 AND environment_id = $2 AND plan_id IS NOT NULL
+`
+
+type EnvironmentRuntimePlanParams struct {
+	WorkspaceID   uuid.UUID `json:"workspace_id"`
+	EnvironmentID uuid.UUID `json:"environment_id"`
+}
+
+func (q *Queries) EnvironmentRuntimePlan(ctx context.Context, arg EnvironmentRuntimePlanParams) (uuid.UUID, error) {
+	row := q.db.QueryRow(ctx, environmentRuntimePlan, arg.WorkspaceID, arg.EnvironmentID)
+	var plan_id uuid.UUID
+	err := row.Scan(&plan_id)
+	return plan_id, err
 }
 
 const getEnvironment = `-- name: GetEnvironment :one

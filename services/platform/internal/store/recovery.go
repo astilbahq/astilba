@@ -21,63 +21,64 @@ func (s *Store) PrepareRecovery(ctx context.Context, id uuid.UUID, next int64) e
 	if e = RequireOffline(ctx, tx); e != nil {
 		return e
 	}
-	var ws uuid.UUID
-	if e = tx.QueryRow(ctx, "SELECT workspace_id FROM servers WHERE id=$1", id).Scan(&ws); e != nil {
+	q := db.New(tx)
+	ws, e := q.RecoveryServerWorkspace(ctx, id)
+	if e != nil {
 		return Normalize(e)
 	}
-	if _, e = tx.Exec(ctx, "SELECT id FROM workspaces WHERE id=$1 FOR UPDATE", ws); e != nil {
+	if _, e = q.LockWorkspaceByID(ctx, ws); e != nil {
 		return e
 	}
 	if e = LockServerDNS(ctx, tx, id); e != nil {
 		return e
 	}
-	var prior int64
-	if e = tx.QueryRow(ctx, "SELECT controller_generation FROM servers WHERE id=$1 FOR UPDATE", id).Scan(&prior); e != nil {
+	prior, e := q.LockServerControllerGeneration(ctx, db.LockServerControllerGenerationParams{WorkspaceID: ws, ServerID: id})
+	if e != nil {
 		return e
 	}
 	if prior == math.MaxInt64 || next <= prior {
 		return domain.Invalid("controllerGeneration")
 	}
-	var coordinated bool
-	if e = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM cross_host_reservations WHERE server_id=$1)`, id).Scan(&coordinated); e != nil {
+	coordinated, e := q.ServerHasReservation(ctx, db.ServerHasReservationParams{WorkspaceID: ws, ServerID: id})
+	if e != nil {
 		return e
 	}
 	if coordinated {
 		return domain.Invalid("recovery.crossHostCheckpointRequired")
 	}
-	_, e = tx.Exec(ctx, `UPDATE servers SET controller_generation=$2,awaiting_transfer=true,credential_hash=NULL,previous_hash=NULL,previous_until=NULL,enrollment_hash=NULL,enrollment_expires=NULL,poll_id=NULL,poll_until=NULL,rotation_requested=false WHERE id=$1`, id, next)
-	if e != nil {
+	if e = q.FenceServerController(ctx, db.FenceServerControllerParams{ControllerGeneration: next, WorkspaceID: ws, ServerID: id}); e != nil {
 		return e
 	}
-	if _, e = tx.Exec(ctx, `UPDATE execution_operations SET state='cancelled',cancel_requested=true,note='Fenced after management recovery; inspect the host before resuming.' WHERE server_id=$1 AND state NOT IN ('succeeded','failed','cancelled')`, id); e != nil {
+	if e = q.CancelServerOperationsForRecovery(ctx, db.CancelServerOperationsForRecoveryParams{WorkspaceID: ws, ServerID: id}); e != nil {
 		return e
 	}
-	if _, e = tx.Exec(ctx, `UPDATE git_sources SET configuration=configuration || '{"autoDeploy":false}'::jsonb WHERE workspace_id=$1`, ws); e != nil {
+	if e = q.DisableWorkspaceGitAutoDeploy(ctx, ws); e != nil {
 		return e
 	}
-	if _, e = tx.Exec(ctx, `UPDATE build_targets SET configuration=configuration || '{"autoBuild":false,"autoDeploy":false}'::jsonb WHERE workspace_id=$1`, ws); e != nil {
+	if e = q.DisableWorkspaceBuildAutomation(ctx, ws); e != nil {
 		return e
 	}
-	if _, e = tx.Exec(ctx, `UPDATE preview_policies SET enabled=false WHERE workspace_id=$1 AND server_id=$2`, ws, id); e != nil {
+	if e = q.DisableServerPreviewPolicies(ctx, db.DisableServerPreviewPoliciesParams{WorkspaceID: ws, ServerID: id}); e != nil {
 		return e
 	}
-	if _, e = tx.Exec(ctx, `UPDATE preview_requests SET state=CASE WHEN state='deleted' THEN state ELSE 'blocked' END,resume_after_cancel=false,cleanup_actor=NULL,cleanup_auth_version=NULL,cleanup_controller=NULL,note='Management recovery requires renewed preview approval.' WHERE workspace_id=$1 AND policy_id IN (SELECT id FROM preview_policies WHERE server_id=$2)`, ws, id); e != nil {
+	if e = q.BlockServerPreviewRequests(ctx, db.BlockServerPreviewRequestsParams{WorkspaceID: ws, ServerID: id}); e != nil {
 		return e
 	}
-	if _, e = tx.Exec(ctx, `UPDATE automation_credentials SET revoked_at=COALESCE(revoked_at,clock_timestamp()) WHERE workspace_id=$1`, ws); e != nil {
+	if e = q.RevokeWorkspaceAutomationCredentials(ctx, ws); e != nil {
 		return e
 	}
-	if e = FenceTroubleshooting(ctx, db.New(tx), ws); e != nil {
+	if e = FenceTroubleshooting(ctx, q, ws); e != nil {
 		return e
 	}
-	if _, e = tx.Exec(ctx, `UPDATE pipeline_auto_deployments SET state='blocked',note='Management recovery requires renewed approval.' WHERE workspace_id=$1`, ws); e != nil {
+	if e = q.BlockWorkspaceAutoDeployments(ctx, db.BlockWorkspaceAutoDeploymentsParams{Note: "Management recovery requires renewed approval.", WorkspaceID: ws}); e != nil {
 		return e
 	}
-	if _, e = tx.Exec(ctx, "UPDATE server_domains SET approved_controller=NULL,state='review_required',note='Management recovery requires renewed approval.' WHERE server_id=$1", id); e != nil {
+	if e = q.ResetServerDomainApproval(ctx, db.ResetServerDomainApprovalParams{WorkspaceID: ws, ServerID: id}); e != nil {
 		return e
 	}
 	// River payloads are ephemeral delivery records; domain history stays intact.
-	_, e = tx.Exec(ctx, `DELETE FROM river_job WHERE (kind='platform_dns_v1' AND args->>'server'=($1::uuid)::text) OR (kind='platform_execution_v1' AND args->>'id' IN (SELECT id::text FROM execution_operations WHERE server_id=$1)) OR (kind='platform_git_refresh_v1' AND args->>'workspace'=$2) OR (kind='platform_automatic_deployment_v1' AND args->>'ID' IN (SELECT id::text FROM pipeline_auto_deployments WHERE workspace_id=$3))`, id, ws.String(), ws)
+	// inline-sql: river_job is owned by River.
+	_, e = tx.Exec(ctx, `DELETE FROM river_job WHERE (kind='platform_dns_v1' AND args->>'server'=($1::uuid)::text) OR (kind='platform_execution_v1' AND args->>'id' IN (SELECT id::text FROM execution_operations WHERE workspace_id=$3 AND server_id=$1)) OR (kind='platform_git_refresh_v1' AND args->>'workspace'=$2) OR (kind='platform_automatic_deployment_v1' AND args->>'ID' IN (SELECT id::text FROM pipeline_auto_deployments WHERE workspace_id=$3))`, id, ws.String(), ws)
 	if e != nil {
 		return e
 	}

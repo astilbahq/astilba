@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"time"
 
+	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/backup"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
@@ -37,8 +38,8 @@ func validateRestoreRun(ctx context.Context, tx pgx.Tx, ws, env uuid.UUID, sourc
 	if p.Plan.Hash != source.PrimaryPlan().Hash {
 		return domain.Conflict
 	}
-	var raw []byte
-	if err = tx.QueryRow(ctx, `SELECT status FROM backup_policies WHERE workspace_id=$1 AND environment_id=$2 AND id=$3`, ws, env, r.PolicyID).Scan(&raw); err != nil {
+	raw, err := db.New(tx).BackupPolicyStatus(ctx, db.BackupPolicyStatusParams{WorkspaceID: ws, EnvironmentID: env, ID: r.PolicyID})
+	if err != nil {
 		return err
 	}
 	var status backup.Status

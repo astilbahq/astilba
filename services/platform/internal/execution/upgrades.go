@@ -234,7 +234,7 @@ func (s *Service) UpgradeAction(ctx context.Context, p store.Principal, ws, pid,
 			return domain.Conflict
 		}
 		var dest backup.Destination
-		if err = tx.QueryRow(ctx, "SELECT configuration FROM backup_destinations WHERE workspace_id=$1 AND id=$2", ws, policy.DestinationID).Scan(&prior); err != nil {
+		if prior, err = db.New(tx).BackupDestinationConfiguration(ctx, db.BackupDestinationConfigurationParams{WorkspaceID: ws, ID: policy.DestinationID}); err != nil {
 			return err
 		}
 		if err = json.Unmarshal(prior, &dest); err != nil {
@@ -421,6 +421,5 @@ func (s *Service) saveUpgradeTarget(ctx context.Context, tx pgx.Tx, cmd upgrade.
 	if _, err = tx.Exec(ctx, "UPDATE environments SET draft_revision_id=$4 WHERE workspace_id=$1 AND id=$2 AND draft_revision_id=$3", ws, env, cmd.Plan.Source.RevisionID, target.RevisionID); err != nil {
 		return err
 	}
-	_, err = tx.Exec(ctx, `UPDATE backup_policies SET configuration=jsonb_set(configuration,'{enabled}','false') WHERE workspace_id=$1 AND environment_id=$2`, ws, env)
-	return err
+	return db.New(tx).DisableEnvironmentBackupPolicies(ctx, db.DisableEnvironmentBackupPoliciesParams{WorkspaceID: ws, EnvironmentID: env})
 }

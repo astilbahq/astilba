@@ -7,9 +7,127 @@ package db
 
 import (
 	"context"
+	"time"
 
 	"github.com/google/uuid"
 )
+
+const acknowledgeAlert = `-- name: AcknowledgeAlert :execrows
+UPDATE operational_alerts SET acknowledged_at=COALESCE(acknowledged_at,$1::timestamptz),
+    acknowledged_by=COALESCE(acknowledged_by,$2::uuid)
+WHERE workspace_id = $3 AND id = $4
+`
+
+type AcknowledgeAlertParams struct {
+	AcknowledgedAt time.Time `json:"acknowledged_at"`
+	AcknowledgedBy uuid.UUID `json:"acknowledged_by"`
+	WorkspaceID    uuid.UUID `json:"workspace_id"`
+	ID             uuid.UUID `json:"id"`
+}
+
+func (q *Queries) AcknowledgeAlert(ctx context.Context, arg AcknowledgeAlertParams) (int64, error) {
+	result, err := q.db.Exec(ctx, acknowledgeAlert,
+		arg.AcknowledgedAt,
+		arg.AcknowledgedBy,
+		arg.WorkspaceID,
+		arg.ID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const alertDeliveryContext = `-- name: AlertDeliveryContext :one
+SELECT a.kind,a.resource_id,a.reason,
+    (CASE WHEN $1::text='resolved' THEN a.resolved_at ELSE a.opened_at END)::timestamptz AS occurred_at,
+    a.state,(a.acknowledged_at IS NOT NULL)::boolean AS acknowledged,s.email_enabled,
+    (s.encrypted_webhook IS NOT NULL)::boolean AS webhook_enabled,s.revision,s.encrypted_webhook
+FROM operational_alerts a JOIN alert_settings s ON s.workspace_id=a.workspace_id
+WHERE a.workspace_id = $2 AND a.id = $3
+`
+
+type AlertDeliveryContextParams struct {
+	Phase       string    `json:"phase"`
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ID          uuid.UUID `json:"id"`
+}
+
+type AlertDeliveryContextRow struct {
+	Kind             string    `json:"kind"`
+	ResourceID       uuid.UUID `json:"resource_id"`
+	Reason           string    `json:"reason"`
+	OccurredAt       time.Time `json:"occurred_at"`
+	State            string    `json:"state"`
+	Acknowledged     bool      `json:"acknowledged"`
+	EmailEnabled     bool      `json:"email_enabled"`
+	WebhookEnabled   bool      `json:"webhook_enabled"`
+	Revision         int64     `json:"revision"`
+	EncryptedWebhook []byte    `json:"encrypted_webhook"`
+}
+
+func (q *Queries) AlertDeliveryContext(ctx context.Context, arg AlertDeliveryContextParams) (AlertDeliveryContextRow, error) {
+	row := q.db.QueryRow(ctx, alertDeliveryContext, arg.Phase, arg.WorkspaceID, arg.ID)
+	var i AlertDeliveryContextRow
+	err := row.Scan(
+		&i.Kind,
+		&i.ResourceID,
+		&i.Reason,
+		&i.OccurredAt,
+		&i.State,
+		&i.Acknowledged,
+		&i.EmailEnabled,
+		&i.WebhookEnabled,
+		&i.Revision,
+		&i.EncryptedWebhook,
+	)
+	return i, err
+}
+
+const alertOpenedAt = `-- name: AlertOpenedAt :one
+SELECT opened_at FROM operational_alerts WHERE workspace_id = $1 AND id = $2
+`
+
+type AlertOpenedAtParams struct {
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ID          uuid.UUID `json:"id"`
+}
+
+func (q *Queries) AlertOpenedAt(ctx context.Context, arg AlertOpenedAtParams) (time.Time, error) {
+	row := q.db.QueryRow(ctx, alertOpenedAt, arg.WorkspaceID, arg.ID)
+	var opened_at time.Time
+	err := row.Scan(&opened_at)
+	return opened_at, err
+}
+
+const alertSettings = `-- name: AlertSettings :one
+SELECT email_enabled,(encrypted_webhook IS NOT NULL)::boolean AS webhook_enabled,revision
+FROM alert_settings WHERE workspace_id = $1
+`
+
+type AlertSettingsRow struct {
+	EmailEnabled   bool  `json:"email_enabled"`
+	WebhookEnabled bool  `json:"webhook_enabled"`
+	Revision       int64 `json:"revision"`
+}
+
+func (q *Queries) AlertSettings(ctx context.Context, workspaceID uuid.UUID) (AlertSettingsRow, error) {
+	row := q.db.QueryRow(ctx, alertSettings, workspaceID)
+	var i AlertSettingsRow
+	err := row.Scan(&i.EmailEnabled, &i.WebhookEnabled, &i.Revision)
+	return i, err
+}
+
+const alertWebhookCipher = `-- name: AlertWebhookCipher :one
+SELECT encrypted_webhook FROM alert_settings WHERE workspace_id = $1
+`
+
+func (q *Queries) AlertWebhookCipher(ctx context.Context, workspaceID uuid.UUID) ([]byte, error) {
+	row := q.db.QueryRow(ctx, alertWebhookCipher, workspaceID)
+	var encrypted_webhook []byte
+	err := row.Scan(&encrypted_webhook)
+	return encrypted_webhook, err
+}
 
 const allAlertWebhooks = `-- name: AllAlertWebhooks :many
 SELECT workspace_id,encrypted_webhook FROM alert_settings WHERE encrypted_webhook IS NOT NULL FOR UPDATE
@@ -40,6 +158,102 @@ func (q *Queries) AllAlertWebhooks(ctx context.Context) ([]AllAlertWebhooksRow, 
 	return items, nil
 }
 
+const cancelAcknowledgedAlertDeliveries = `-- name: CancelAcknowledgedAlertDeliveries :exec
+UPDATE alert_deliveries SET state='cancelled'
+WHERE workspace_id = $1 AND alert_id = $2 AND phase<>'resolved' AND state IN ('pending','leased')
+`
+
+type CancelAcknowledgedAlertDeliveriesParams struct {
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	AlertID     uuid.UUID `json:"alert_id"`
+}
+
+func (q *Queries) CancelAcknowledgedAlertDeliveries(ctx context.Context, arg CancelAcknowledgedAlertDeliveriesParams) error {
+	_, err := q.db.Exec(ctx, cancelAcknowledgedAlertDeliveries, arg.WorkspaceID, arg.AlertID)
+	return err
+}
+
+const cancelWorkspaceAlertDeliveries = `-- name: CancelWorkspaceAlertDeliveries :exec
+UPDATE alert_deliveries SET state='cancelled'
+WHERE workspace_id = $1 AND state IN ('pending','leased')
+`
+
+func (q *Queries) CancelWorkspaceAlertDeliveries(ctx context.Context, workspaceID uuid.UUID) error {
+	_, err := q.db.Exec(ctx, cancelWorkspaceAlertDeliveries, workspaceID)
+	return err
+}
+
+const listAlerts = `-- name: ListAlerts :many
+SELECT a.id,a.kind,a.resource_id,a.server_id,a.environment_id,a.state,a.reason,a.opened_at,a.resolved_at,a.acknowledged_at,
+    COALESCE((SELECT jsonb_agg(d.value) FROM (
+        SELECT jsonb_build_object('channel',channel,'phase',phase,'state',state,'attempts',attempts) AS value
+        FROM alert_deliveries WHERE workspace_id=a.workspace_id AND alert_id=a.id ORDER BY created_at,id LIMIT 202
+    ) d),'[]'::jsonb)::jsonb AS deliveries
+FROM operational_alerts a
+WHERE a.workspace_id = $1
+    AND (NOT $2::boolean OR a.state='firing' OR (a.state='event' AND a.acknowledged_at IS NULL))
+    AND ($3::timestamptz IS NULL OR (a.opened_at,a.id)<($3::timestamptz,$4::uuid))
+ORDER BY a.opened_at DESC,a.id DESC LIMIT 101
+`
+
+type ListAlertsParams struct {
+	WorkspaceID uuid.UUID  `json:"workspace_id"`
+	Attention   bool       `json:"attention"`
+	BeforeAt    *time.Time `json:"before_at"`
+	BeforeID    *uuid.UUID `json:"before_id"`
+}
+
+type ListAlertsRow struct {
+	ID             uuid.UUID  `json:"id"`
+	Kind           string     `json:"kind"`
+	ResourceID     uuid.UUID  `json:"resource_id"`
+	ServerID       *uuid.UUID `json:"server_id"`
+	EnvironmentID  *uuid.UUID `json:"environment_id"`
+	State          string     `json:"state"`
+	Reason         string     `json:"reason"`
+	OpenedAt       time.Time  `json:"opened_at"`
+	ResolvedAt     *time.Time `json:"resolved_at"`
+	AcknowledgedAt *time.Time `json:"acknowledged_at"`
+	Deliveries     []byte     `json:"deliveries"`
+}
+
+func (q *Queries) ListAlerts(ctx context.Context, arg ListAlertsParams) ([]ListAlertsRow, error) {
+	rows, err := q.db.Query(ctx, listAlerts,
+		arg.WorkspaceID,
+		arg.Attention,
+		arg.BeforeAt,
+		arg.BeforeID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListAlertsRow{}
+	for rows.Next() {
+		var i ListAlertsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Kind,
+			&i.ResourceID,
+			&i.ServerID,
+			&i.EnvironmentID,
+			&i.State,
+			&i.Reason,
+			&i.OpenedAt,
+			&i.ResolvedAt,
+			&i.AcknowledgedAt,
+			&i.Deliveries,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const rewrapAlertWebhook = `-- name: RewrapAlertWebhook :exec
 UPDATE alert_settings SET encrypted_webhook=$2 WHERE workspace_id=$1
 `
@@ -51,5 +265,23 @@ type RewrapAlertWebhookParams struct {
 
 func (q *Queries) RewrapAlertWebhook(ctx context.Context, arg RewrapAlertWebhookParams) error {
 	_, err := q.db.Exec(ctx, rewrapAlertWebhook, arg.WorkspaceID, arg.EncryptedWebhook)
+	return err
+}
+
+const upsertAlertSettings = `-- name: UpsertAlertSettings :exec
+INSERT INTO alert_settings(workspace_id,email_enabled,encrypted_webhook)
+VALUES($1,$2,$3)
+ON CONFLICT(workspace_id) DO UPDATE SET email_enabled=EXCLUDED.email_enabled,
+    encrypted_webhook=EXCLUDED.encrypted_webhook,revision=alert_settings.revision+1
+`
+
+type UpsertAlertSettingsParams struct {
+	WorkspaceID      uuid.UUID `json:"workspace_id"`
+	EmailEnabled     bool      `json:"email_enabled"`
+	EncryptedWebhook []byte    `json:"encrypted_webhook"`
+}
+
+func (q *Queries) UpsertAlertSettings(ctx context.Context, arg UpsertAlertSettingsParams) error {
+	_, err := q.db.Exec(ctx, upsertAlertSettings, arg.WorkspaceID, arg.EmailEnabled, arg.EncryptedWebhook)
 	return err
 }
