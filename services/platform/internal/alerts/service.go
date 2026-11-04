@@ -66,20 +66,20 @@ func (s *Service) destination(raw string) (bool, error) {
 }
 func (s *Service) Settings(ctx context.Context, p store.Principal, ws uuid.UUID) (api.AlertSettings, error) {
 	var out api.AlertSettings
-	e := s.Store.InWorkspaceTx(ctx, p, ws, store.WorkspaceAccess{Owner: true}, func(tx pgx.Tx, _ *db.Queries, _ store.Workspace) error {
-		e := tx.QueryRow(ctx, "SELECT email_enabled,encrypted_webhook IS NOT NULL FROM alert_settings WHERE workspace_id=$1", ws).Scan(&out.EmailEnabled, &out.WebhookEnabled)
+	e := s.Store.InWorkspaceTx(ctx, p, ws, store.WorkspaceAccess{Owner: true}, func(_ pgx.Tx, q *db.Queries, _ store.Workspace) error {
+		settings, e := q.AlertSettings(ctx, ws)
 		if errors.Is(e, pgx.ErrNoRows) {
 			return nil
 		}
+		out.EmailEnabled, out.WebhookEnabled = settings.EmailEnabled, settings.WebhookEnabled
 		return e
 	})
 	return out, e
 }
 func (s *Service) SaveSettings(ctx context.Context, p store.Principal, ws uuid.UUID, in api.SaveAlertSettings) (api.AlertSettings, error) {
 	out := api.AlertSettings{EmailEnabled: in.EmailEnabled, WebhookEnabled: in.WebhookEnabled}
-	e := s.Store.InWorkspaceTx(ctx, p, ws, store.WorkspaceAccess{Write: true, Owner: true, Recent: true}, func(tx pgx.Tx, q *db.Queries, _ store.Workspace) error {
-		var encrypted []byte
-		err := tx.QueryRow(ctx, "SELECT encrypted_webhook FROM alert_settings WHERE workspace_id=$1", ws).Scan(&encrypted)
+	e := s.Store.InWorkspaceTx(ctx, p, ws, store.WorkspaceAccess{Write: true, Owner: true, Recent: true}, func(_ pgx.Tx, q *db.Queries, _ store.Workspace) error {
+		encrypted, err := q.AlertWebhookCipher(ctx, ws)
 		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return err
 		}
@@ -106,10 +106,10 @@ func (s *Service) SaveSettings(ctx context.Context, p store.Principal, ws uuid.U
 		} else {
 			encrypted = nil
 		}
-		if _, err = tx.Exec(ctx, `INSERT INTO alert_settings(workspace_id,email_enabled,encrypted_webhook) VALUES($1,$2,$3) ON CONFLICT(workspace_id) DO UPDATE SET email_enabled=EXCLUDED.email_enabled,encrypted_webhook=EXCLUDED.encrypted_webhook,revision=alert_settings.revision+1`, ws, in.EmailEnabled, encrypted); err != nil {
+		if err = q.UpsertAlertSettings(ctx, db.UpsertAlertSettingsParams{WorkspaceID: ws, EmailEnabled: in.EmailEnabled, EncryptedWebhook: encrypted}); err != nil {
 			return err
 		}
-		if _, err = tx.Exec(ctx, `UPDATE alert_deliveries SET state='cancelled' WHERE workspace_id=$1 AND state IN ('pending','leased')`, ws); err != nil {
+		if err = q.CancelWorkspaceAlertDeliveries(ctx, ws); err != nil {
 			return err
 		}
 		return store.Audit(ctx, q, p, ws, "alerts.settings", ws)
@@ -118,50 +118,45 @@ func (s *Service) SaveSettings(ctx context.Context, p store.Principal, ws uuid.U
 }
 func (s *Service) Inbox(ctx context.Context, p store.Principal, ws uuid.UUID, before *uuid.UUID, attention bool) (api.AlertInbox, error) {
 	out := api.AlertInbox{Alerts: []api.Alert{}}
-	e := s.Store.InWorkspaceTx(ctx, p, ws, store.WorkspaceAccess{}, func(tx pgx.Tx, _ *db.Queries, _ store.Workspace) error {
+	e := s.Store.InWorkspaceTx(ctx, p, ws, store.WorkspaceAccess{}, func(_ pgx.Tx, q *db.Queries, _ store.Workspace) error {
 		var stamp *time.Time
 		if before != nil {
-			var t time.Time
-			if err := tx.QueryRow(ctx, "SELECT opened_at FROM operational_alerts WHERE workspace_id=$1 AND id=$2", ws, *before).Scan(&t); err != nil {
+			t, err := q.AlertOpenedAt(ctx, db.AlertOpenedAtParams{WorkspaceID: ws, ID: *before})
+			if err != nil {
 				return err
 			}
 			stamp = &t
 		}
-		rows, err := tx.Query(ctx, `SELECT a.id,a.kind,a.resource_id,a.server_id,a.environment_id,a.state,a.reason,a.opened_at,a.resolved_at,a.acknowledged_at,COALESCE((SELECT jsonb_agg(d.value) FROM (SELECT jsonb_build_object('channel',channel,'phase',phase,'state',state,'attempts',attempts) value FROM alert_deliveries WHERE alert_id=a.id ORDER BY created_at,id LIMIT 202) d),'[]'::jsonb) FROM operational_alerts a WHERE workspace_id=$1 AND (NOT $4::boolean OR state='firing' OR (state='event' AND acknowledged_at IS NULL)) AND ($2::timestamptz IS NULL OR (opened_at,id)<($2,$3)) ORDER BY opened_at DESC,id DESC LIMIT 101`, ws, stamp, before, attention)
+		rows, err := q.ListAlerts(ctx, db.ListAlertsParams{WorkspaceID: ws, Attention: attention, BeforeAt: stamp, BeforeID: before})
 		if err != nil {
 			return err
 		}
-		defer rows.Close()
-		for rows.Next() {
-			var a api.Alert
-			var raw []byte
-			if err = rows.Scan(&a.Id, &a.Kind, &a.ResourceId, &a.ServerId, &a.EnvironmentId, &a.State, &a.Reason, &a.OpenedAt, &a.ResolvedAt, &a.AcknowledgedAt, &raw); err != nil {
-				return err
-			}
+		for _, row := range rows {
 			if len(out.Alerts) == 100 {
 				id := out.Alerts[99].Id
 				out.Next = &id
 				break
 			}
-			if err = json.Unmarshal(raw, &a.Deliveries); err != nil {
+			a := api.Alert{Id: row.ID, Kind: api.AlertKind(row.Kind), ResourceId: row.ResourceID, ServerId: row.ServerID, EnvironmentId: row.EnvironmentID, State: api.AlertState(row.State), Reason: api.AlertReason(row.Reason), OpenedAt: row.OpenedAt, ResolvedAt: row.ResolvedAt, AcknowledgedAt: row.AcknowledgedAt}
+			if err = json.Unmarshal(row.Deliveries, &a.Deliveries); err != nil {
 				return err
 			}
 			out.Alerts = append(out.Alerts, a)
 		}
-		return rows.Err()
+		return nil
 	})
 	return out, e
 }
 func (s *Service) Acknowledge(ctx context.Context, p store.Principal, ws, id uuid.UUID) error {
-	return s.Store.InWorkspaceTx(ctx, p, ws, store.WorkspaceAccess{Write: true}, func(tx pgx.Tx, q *db.Queries, _ store.Workspace) error {
-		result, e := tx.Exec(ctx, `UPDATE operational_alerts SET acknowledged_at=COALESCE(acknowledged_at,$3),acknowledged_by=COALESCE(acknowledged_by,$4) WHERE workspace_id=$1 AND id=$2`, ws, id, s.Now(), p.Account.ID)
+	return s.Store.InWorkspaceTx(ctx, p, ws, store.WorkspaceAccess{Write: true}, func(_ pgx.Tx, q *db.Queries, _ store.Workspace) error {
+		changed, e := q.AcknowledgeAlert(ctx, db.AcknowledgeAlertParams{AcknowledgedAt: s.Now(), AcknowledgedBy: p.Account.ID, WorkspaceID: ws, ID: id})
 		if e != nil {
 			return e
 		}
-		if result.RowsAffected() != 1 {
+		if changed != 1 {
 			return domain.NotFound
 		}
-		if _, e = tx.Exec(ctx, "UPDATE alert_deliveries SET state='cancelled' WHERE workspace_id=$1 AND alert_id=$2 AND phase<>'resolved' AND state IN ('pending','leased')", ws, id); e != nil {
+		if e = q.CancelAcknowledgedAlertDeliveries(ctx, db.CancelAcknowledgedAlertDeliveriesParams{WorkspaceID: ws, AlertID: id}); e != nil {
 			return e
 		}
 		return store.Audit(ctx, q, p, ws, "alert.acknowledge", id)

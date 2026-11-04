@@ -27,53 +27,32 @@ func generation(v *int64) int64 {
 }
 func transferInventory(ctx context.Context, tx pgx.Tx, ws, server uuid.UUID) (api.ControllerInventory, error) {
 	out := api.ControllerInventory{Units: map[string]string{}, Schedules: map[string]int64{}}
-	rows, e := tx.Query(ctx, `SELECT r.unit_id,p.plan FROM visual_runtime r
-	 JOIN visual_plans p ON p.id=r.plan_id AND p.workspace_id=r.workspace_id
-	 WHERE r.workspace_id=$1 AND r.server_id=$2
-	 AND NOT EXISTS(SELECT 1 FROM cross_host_runtime c WHERE c.workspace_id=r.workspace_id AND c.unit_id=r.unit_id)
-	 UNION ALL SELECT unit_id,inventory->'plan' FROM cross_host_runtime WHERE workspace_id=$1 AND server_id=$2`, ws, server)
+	q := db.New(tx)
+	units, e := q.ServerControllerInventory(ctx, db.ServerControllerInventoryParams{WorkspaceID: ws, ServerID: server})
 	if e != nil {
 		return out, e
 	}
-	for rows.Next() {
-		var id uuid.UUID
-		var raw []byte
+	for _, unit := range units {
 		var p deployment.Plan
-		if e = rows.Scan(&id, &raw); e != nil {
-			rows.Close()
+		if e = json.Unmarshal(unit.Plan, &p); e != nil {
 			return out, e
 		}
-		if e = json.Unmarshal(raw, &p); e != nil {
-			rows.Close()
-			return out, e
-		}
-		out.Units[id.String()] = p.PrimaryPlan().Hash
+		out.Units[unit.UnitID.String()] = p.PrimaryPlan().Hash
 	}
-	e = rows.Err()
-	rows.Close()
+	statuses, e := q.ListServerBackupStatuses(ctx, db.ListServerBackupStatusesParams{WorkspaceID: ws, ServerID: server})
 	if e != nil {
 		return out, e
 	}
-	rows, e = tx.Query(ctx, "SELECT id,status FROM backup_policies WHERE workspace_id=$1 AND server_id=$2", ws, server)
-	if e != nil {
-		return out, e
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var id uuid.UUID
-		var raw []byte
+	for _, row := range statuses {
 		var s backup.Status
-		if e = rows.Scan(&id, &raw); e != nil {
-			return out, e
-		}
-		if e = json.Unmarshal(raw, &s); e != nil {
+		if e = json.Unmarshal(row.Status, &s); e != nil {
 			return out, e
 		}
 		if s.PolicyID != uuid.Nil {
-			out.Schedules[id.String()] = s.Generation
+			out.Schedules[row.ID.String()] = s.Generation
 		}
 	}
-	return out, rows.Err()
+	return out, nil
 }
 func (s *Service) enroll(ctx context.Context, in api.AgentEnrollment) (api.AgentStatus, error) {
 	var out api.AgentStatus

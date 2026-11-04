@@ -34,12 +34,12 @@ func (s *Service) hydrateCrossHost(ctx context.Context, c *api.ExecutionCommand)
 			if a.RegistryID == nil {
 				continue
 			}
-			var cipher []byte
-			if err := s.Store.Pool.QueryRow(ctx, `SELECT encrypted_access FROM registries WHERE workspace_id=$1 AND id=$2`, ws, *a.RegistryID).Scan(&cipher); err != nil {
+			registry, err := s.Store.Queries.GetRegistry(ctx, db.GetRegistryParams{WorkspaceID: ws, ID: *a.RegistryID})
+			if err != nil {
 				return err
 			}
 			var access pipeline.RegistryAccess
-			if err := s.openIntegration(ws, *a.RegistryID, "registry", cipher, &access); err != nil {
+			if err := s.openIntegration(ws, *a.RegistryID, "registry", registry.EncryptedAccess, &access); err != nil {
 				return err
 			}
 			p.RegistryAccess[key] = access.Pull

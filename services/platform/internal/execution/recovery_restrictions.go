@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 
+	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/portability"
@@ -14,12 +15,14 @@ import (
 
 func validateRecoveryRestrictionEvidence(ctx context.Context, tx pgx.Tx, participants map[uuid.UUID]deployment.RecoveryHandover) error {
 	var missing bool
+	// inline-sql: recovery session temporary table
 	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM recovery_standalone_restrictions r WHERE (r.source->>'report_sequence')::bigint>0 AND r.source->>'state' NOT IN ('succeeded','failed','cancelled') AND NOT EXISTS(SELECT 1 FROM recovery_input_proofs p WHERE p.id=r.id AND p.parent_id='00000000-0000-0000-0000-000000000000'))`).Scan(&missing); err != nil {
 		return err
 	}
 	if missing {
 		return errors.New("a delivered standalone removal lacks retained progress evidence; provide compatible newer management metadata or host evidence")
 	}
+	// inline-sql: recovery session temporary table
 	rows, err := tx.Query(ctx, `SELECT DISTINCT server_id FROM recovery_input_proofs WHERE parent_id='00000000-0000-0000-0000-000000000000' AND report->>'state' NOT IN ('succeeded','failed','cancelled')`)
 	if err != nil {
 		return err
@@ -58,6 +61,7 @@ func collectRecoveryRestrictions(ctx context.Context, tx pgx.Tx, archives ...por
 				return portability.ErrArchive
 			}
 			raw, _ := json.Marshal(row)
+			// inline-sql: recovery session temporary table
 			if _, err := tx.Exec(ctx, `INSERT INTO recovery_standalone_restrictions(id,source) VALUES($1,$2) ON CONFLICT(id) DO UPDATE SET source=CASE WHEN recovery_standalone_restrictions.source IS NULL OR (excluded.source->>'report_sequence')::bigint>=(recovery_standalone_restrictions.source->>'report_sequence')::bigint THEN excluded.source ELSE recovery_standalone_restrictions.source END`, id, raw); err != nil {
 				return err
 			}
@@ -70,6 +74,7 @@ func collectRecoveryRestrictions(ctx context.Context, tx pgx.Tx, archives ...por
 // removes active-index entries while merging snapshots. Every selected frame
 // is restored before commit; no host or serving worker can observe this hold.
 func holdRecoveryRestrictions(ctx context.Context, tx pgx.Tx, ws uuid.UUID) error {
+	// inline-sql: recovery session temporary table
 	_, err := tx.Exec(ctx, `UPDATE execution_operations SET state='cancelled',job_id=NULL WHERE workspace_id=$1 AND id IN (SELECT id FROM recovery_standalone_restrictions)`, ws)
 	return err
 }
@@ -82,6 +87,7 @@ func (s *Service) restoreStandaloneRestrictions(ctx context.Context, tx pgx.Tx, 
 		for {
 			var id uuid.UUID
 			var source, header, report []byte
+			// inline-sql: recovery session temporary table
 			err := tx.QueryRow(ctx, `SELECT r.id,r.source,p.header,p.report FROM recovery_standalone_restrictions r LEFT JOIN recovery_input_proofs p ON p.id=r.id AND p.parent_id='00000000-0000-0000-0000-000000000000' WHERE r.id>$1 AND ((CASE WHEN p.report IS NOT NULL AND (p.report->>'sequence')::bigint>=COALESCE((r.source->>'report_sequence')::bigint,0) THEN p.report->>'state' ELSE r.source->>'state' END) IN ('succeeded','failed','cancelled'))=$2 ORDER BY r.id LIMIT 1`, last, terminal).Scan(&id, &source, &header, &report)
 			if errors.Is(err, pgx.ErrNoRows) {
 				break
@@ -132,7 +138,7 @@ func (s *Service) restoreStandaloneRestrictions(ctx context.Context, tx pgx.Tx, 
 				return err
 			}
 			if source != nil {
-				if _, err = tx.Exec(ctx, `UPDATE execution_operations dst SET state=$4,report_sequence=src.report_sequence,cancel_requested=src.cancel_requested,steps=src.steps,note=src.note,job_id=NULL FROM jsonb_populate_record(NULL::execution_operations,$3) src WHERE dst.workspace_id=$1 AND dst.id=$2`, ws, c.Id, source, initial); err != nil {
+				if err = db.New(tx).RestoreStandaloneRestriction(ctx, db.RestoreStandaloneRestrictionParams{State: string(initial), Source: source, WorkspaceID: ws, ID: c.Id}); err != nil {
 					return err
 				}
 			}

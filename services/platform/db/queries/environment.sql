@@ -46,3 +46,10 @@ UPDATE secret_versions SET encrypted_value=$3 WHERE workspace_id=$1 AND id=$2;
 SELECT id,totp_secret,totp_pending FROM accounts WHERE totp_secret IS NOT NULL OR totp_pending IS NOT NULL FOR UPDATE;
 -- name: RewrapTOTP :exec
 UPDATE accounts SET totp_secret=$2,totp_pending=$3 WHERE id=$1;
+-- name: EnvironmentRuntimePlan :one
+SELECT plan_id::uuid AS plan_id FROM visual_runtime
+WHERE workspace_id = @workspace_id AND environment_id = @environment_id AND plan_id IS NOT NULL;
+
+-- name: AdvanceEnvironmentExecutionGeneration :one
+UPDATE environments SET execution_generation=execution_generation+1
+WHERE workspace_id = @workspace_id AND id = @id RETURNING execution_generation;

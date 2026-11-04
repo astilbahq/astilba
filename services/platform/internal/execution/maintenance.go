@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/backup"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
@@ -447,7 +448,7 @@ func (s *Service) coordinateMaintenance(ctx context.Context, tx pgx.Tx, job *riv
 			if phase == "maintenance-complete-target" {
 				if m.Restore != nil {
 					target = *m.Restore
-					if _, err := tx.Exec(ctx, `UPDATE backup_policies SET configuration=jsonb_set(configuration,'{enabled}','false') WHERE workspace_id=$1 AND environment_id=$2`, ws, parent.EnvironmentId); err != nil {
+					if err := db.New(tx).DisableEnvironmentBackupPolicies(ctx, db.DisableEnvironmentBackupPoliciesParams{WorkspaceID: ws, EnvironmentID: parent.EnvironmentId}); err != nil {
 						return err
 					}
 				} else if m.Effect.Upgrade != nil {
