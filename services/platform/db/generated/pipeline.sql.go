@@ -131,6 +131,20 @@ func (q *Queries) AllRegistryAccess(ctx context.Context) ([]AllRegistryAccessRow
 	return items, nil
 }
 
+const markPipelineDeliveryStarted = `-- name: MarkPipelineDeliveryStarted :exec
+UPDATE pipeline_runs SET delivery_started=true WHERE workspace_id = $1 AND id = $2
+`
+
+type MarkPipelineDeliveryStartedParams struct {
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ID          uuid.UUID `json:"id"`
+}
+
+func (q *Queries) MarkPipelineDeliveryStarted(ctx context.Context, arg MarkPipelineDeliveryStartedParams) error {
+	_, err := q.db.Exec(ctx, markPipelineDeliveryStarted, arg.WorkspaceID, arg.ID)
+	return err
+}
+
 const rewrapBuildSecret = `-- name: RewrapBuildSecret :exec
 UPDATE build_secret_versions SET encrypted_value=$3 WHERE workspace_id=$1 AND id=$2
 `

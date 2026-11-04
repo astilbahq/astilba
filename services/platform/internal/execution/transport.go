@@ -1,10 +1,12 @@
 package execution
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
@@ -110,7 +112,8 @@ func (s *Service) poll(ctx context.Context, a Identity, out *api.AgentPoll) (*ap
 			c.CancelRequested = cancel
 			// Existing agents compare hydrated visual payloads byte-for-byte.
 			// Other command kinds have always accepted credential-free cancellation.
-			if cancel && (c.Kind != "visual" || a.CredentialFreeVisualCancel) {
+			// Hydration records a pipeline's delivery without adding its credentials.
+			if cancel && c.Kind != "pipeline" && (c.Kind != "visual" || a.CredentialFreeVisualCancel) {
 				return &c, nil
 			}
 			if c.Kind == "upgrade" {
@@ -159,12 +162,39 @@ func (s *Service) poll(ctx context.Context, a Identity, out *api.AgentPoll) (*ap
 		}
 	}
 }
+
+// PostgreSQL cannot store NUL in text or jsonb, so host output containing one would
+// fail the same report on every retry. A space keeps the payload's size limits exact.
+func replaceEscapedNUL(payload *json.RawMessage) {
+	if payload == nil {
+		return
+	}
+	raw := *payload
+	for i := 0; i < len(raw)-1; i++ {
+		if raw[i] != '\\' {
+			continue
+		}
+		if bytes.HasPrefix(raw[i+1:], []byte("u0000")) {
+			copy(raw[i+1:], "u0020")
+		}
+		i++
+	}
+}
+
 func (s *Service) Report(ctx context.Context, a Identity, r api.AgentReport) error {
-	if r.Sequence < 1 || r.Sequence > 1<<53 || len(r.Note) > 1024 || len(r.Steps) > 16 {
+	if r.Sequence < 1 || r.Sequence > 1<<53 || len(r.Steps) > 16 {
 		return domain.Invalid("report")
+	}
+	// Agents bound notes in raw bytes; invalid UTF-8 from host output grows when encoded.
+	if len(r.Note) > 1024 {
+		r.Note = strings.ToValidUTF8(r.Note[:1024], "")
 	}
 	if r.State != "running" && r.State != "needs_attention" && !Terminal(r.State) {
 		return domain.Invalid("state")
+	}
+	r.Note = strings.ReplaceAll(r.Note, "\x00", " ")
+	for _, payload := range []*json.RawMessage{r.Pipeline, r.Observation, r.Crosshost, r.Upgrade, r.Network} {
+		replaceEscapedNUL(payload)
 	}
 	tx, err := s.Store.Pool.Begin(ctx)
 	if err != nil {
