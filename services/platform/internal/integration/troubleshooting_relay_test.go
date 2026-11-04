@@ -4,10 +4,12 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -266,9 +268,9 @@ func TestTroubleshootingStalledBrowserCannotHoldASessionOpen(t *testing.T) {
 	x.waitClosed(t, opened.Session.Id, "idle timeout")
 }
 
-// dialRawAgent attaches an agent stream with no WebSocket client behind it, so nothing
-// answers the relay unless the test does.
-func (x troubleshootingFixture) dialRawAgent(t *testing.T, session uuid.UUID) (net.Conn, *bufio.Reader) {
+// dialRawStream upgrades a stream with no WebSocket client behind it, so nothing answers
+// the server unless the test does.
+func (x troubleshootingFixture) dialRawStream(t *testing.T, path, headers string) (net.Conn, *bufio.Reader) {
 	t.Helper()
 	address := x.f.server.Listener.Addr().String()
 	conn, err := net.Dial("tcp", address)
@@ -279,13 +281,27 @@ func (x troubleshootingFixture) dialRawAgent(t *testing.T, session uuid.UUID) (n
 	if err = conn.SetDeadline(time.Now().Add(30 * time.Second)); err != nil {
 		t.Fatal(err)
 	}
-	fmt.Fprintf(conn, "GET /agent/v1/troubleshooting/%s/stream HTTP/1.1\r\nHost: %s\r\nAuthorization: Bearer %s\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n", session, address, x.agentToken)
+	fmt.Fprintf(conn, "GET %s HTTP/1.1\r\nHost: %s\r\n%sConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n", path, address, headers)
 	reader := bufio.NewReader(conn)
 	response, err := http.ReadResponse(reader, nil)
 	if err != nil || response.StatusCode != http.StatusSwitchingProtocols {
-		t.Fatalf("agent stream refused: %v %v", response, err)
+		t.Fatalf("stream refused: %v %v", response, err)
 	}
 	return conn, reader
+}
+
+func (x troubleshootingFixture) dialRawAgent(t *testing.T, session uuid.UUID) (net.Conn, *bufio.Reader) {
+	t.Helper()
+	return x.dialRawStream(t, "/agent/v1/troubleshooting/"+session.String()+"/stream", "Authorization: Bearer "+x.agentToken+"\r\n")
+}
+
+func (x troubleshootingFixture) dialRawBrowser(t *testing.T, b *browser, session uuid.UUID) (net.Conn, *bufio.Reader) {
+	t.Helper()
+	headers := "Origin: " + x.f.server.URL + "\r\n"
+	for _, cookie := range b.client.Jar.Cookies(mustURL(x.f.server.URL)) {
+		headers += "Cookie: " + cookie.String() + "\r\n"
+	}
+	return x.dialRawStream(t, x.prefix+"/troubleshooting-sessions/"+session.String()+"/stream", headers)
 }
 
 // An agent that stops answering, even inside a frame, neither delays the browser's orderly
@@ -322,6 +338,40 @@ func TestTroubleshootingUnresponsiveAgentCannotHoldASessionOpen(t *testing.T) {
 			}
 			x.waitClosed(t, opened.Session.Id, "idle timeout")
 		})
+	}
+}
+
+// Reaching a refusal takes only a signed-in session and the right Origin, with no valid
+// ticket or membership, so a peer that stops inside a frame after the refusal must not be
+// able to keep the socket and its goroutine.
+func TestTroubleshootingRefusedBrowserCannotHoldItsStream(t *testing.T) {
+	x := relayFixture(t)
+	opened := x.open(t, x.owner, x.app, 1, 201)
+	conn, reader := x.dialRawBrowser(t, x.owner, opened.Session.Id)
+	// A final masked text frame, whose zero mask leaves the payload as it is.
+	ticket := "wrong-ticket"
+	if _, err := conn.Write(append([]byte{0x81, 0x80 | byte(len(ticket)), 0, 0, 0, 0}, ticket...)); err != nil {
+		t.Fatal(err)
+	}
+	// A close frame with status 1008, policy violation.
+	refusal := append([]byte{0x88, 17, 0x03, 0xf0}, "session refused"...)
+	got := make([]byte, len(refusal))
+	if _, err := io.ReadFull(reader, got); err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(refusal) {
+		t.Fatalf("frame %x, want %x", got, refusal)
+	}
+	// A final masked binary frame announcing 1000 bytes that never come.
+	if _, err := conn.Write([]byte{0x82, 0x80 | 126, 0x03, 0xe8, 1, 2, 3, 4}); err != nil {
+		t.Fatal(err)
+	}
+	// The server's limit is 10 seconds.
+	if err := conn.SetReadDeadline(time.Now().Add(15 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reader.ReadByte(); err == nil || errors.Is(err, os.ErrDeadlineExceeded) {
+		t.Fatalf("stream still held after the close limit: %v", err)
 	}
 }
 
