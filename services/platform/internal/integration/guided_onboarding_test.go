@@ -84,6 +84,23 @@ func TestRecoveryCodeConfirmationIsGenerationBoundAndDoesNotReauthenticate(t *te
 	owner.call("POST", path, map[string]string{"generation": replacement.Generation.String()}, 403, nil)
 }
 
+func TestDisableMFARefusesAccountWithoutMFA(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	owner := f.browser(t)
+	owner.login("owner@example.test", f.password)
+	before, err := f.st.Queries.AccountByID(ctx, f.owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner.call("POST", "/api/v1/auth/mfa/disable", nil, 409, nil)
+	after, err := f.st.Queries.AccountByID(ctx, f.owner)
+	if err != nil || after.AuthVersion != before.AuthVersion {
+		t.Fatal("refused disable revoked the account's sessions", err)
+	}
+	owner.session()
+}
+
 func TestRecoveryConfirmationMigrationPreservesExistingCredentials(t *testing.T) {
 	f := setup(t)
 	ctx := context.Background()
