@@ -9,6 +9,7 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"encoding/pem"
 	"net/http"
 	"net/http/httptest"
@@ -225,6 +226,15 @@ func TestBootstrapOnDisposableHost(t *testing.T) {
 	}
 	if checkErr == nil || activated || !bytes.Contains(checkOut, []byte("socket activation")) {
 		t.Fatalf("check changed stopped runtime: %s activated=%v err=%v", checkOut, activated, checkErr)
+	}
+	// The runtime this bootstrap installs must meet the terminal session runc floor.
+	preflight, e := exec.Command(binary, "preflight", "--state", dir, "--docker", "unix:///var/run/docker.sock").Output()
+	if e != nil {
+		t.Fatalf("preflight: %v", e)
+	}
+	var heartbeat api.AgentHeartbeat
+	if e = json.Unmarshal(preflight, &heartbeat); e != nil || heartbeat.Capabilities.Troubleshooting == nil || !*heartbeat.Capabilities.Troubleshooting {
+		t.Fatalf("bootstrap runtime cannot offer terminal sessions: %s %v", preflight, e)
 	}
 	// The optional-tool flag must not hide a compatible normal-PATH executable.
 	resticPath := "/usr/local/bin/restic"

@@ -205,7 +205,10 @@ func troubleshootingCapability(raw []byte) error {
 		return err
 	}
 	if capabilities.TroubleshootingUnavailable != nil {
-		return domain.TroubleshootingRefused(domain.TroubleshootingRuntime)
+		if *capabilities.TroubleshootingUnavailable == api.Runtime {
+			return domain.TroubleshootingRefused(domain.TroubleshootingRuntime)
+		}
+		return domain.TroubleshootingRefused(domain.TroubleshootingHostNotReady)
 	}
 	if capabilities.Troubleshooting == nil || !*capabilities.Troubleshooting {
 		return domain.TroubleshootingRefused(domain.TroubleshootingAgentUpdate)

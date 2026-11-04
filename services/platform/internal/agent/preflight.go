@@ -25,6 +25,7 @@ func (j *Journal) Preflight(ctx context.Context, docker *client.Client, version,
 		yes := true
 		h.Capabilities.MaintenanceContinuation = &yes
 	}
+	j.reportTroubleshootingConsent(&h)
 	return h
 }
 
@@ -46,11 +47,13 @@ func Preflight(ctx context.Context, docker *client.Client, version, dir string, 
 	if runtime.GOOS != "linux" || id != "ubuntu" || release != "24.04" {
 		h.Preflight.Notes = append(h.Preflight.Notes, "Supported deployment host: Ubuntu 24.04 LTS.")
 	}
+	runtimeReady := false
 	if docker != nil {
 		v, e := docker.ServerVersion(ctx, client.ServerVersionOptions{})
 		if e == nil {
 			h.Capabilities.Docker = true
 			h.Preflight.DockerVersion = v.Version
+			runtimeReady = troubleshootingRuntime(v.Components)
 		}
 		list, e := docker.ContainerList(ctx, client.ContainerListOptions{All: true, Limit: 1001})
 		if e == nil {
@@ -101,6 +104,16 @@ func Preflight(ctx context.Context, docker *client.Client, version, dir string, 
 	h.Capabilities.ServiceOutputs = &visual
 	h.Capabilities.Visual = &visual
 	h.Capabilities.Compose = &visual
+	switch {
+	case visual && runtimeReady:
+		h.Capabilities.Troubleshooting = &visual
+	case visual:
+		unavailable := api.Runtime
+		h.Capabilities.TroubleshootingUnavailable = &unavailable
+	default:
+		unavailable := api.Host
+		h.Capabilities.TroubleshootingUnavailable = &unavailable
+	}
 	resticCLI := "restic"
 	if len(cli) > 1 {
 		resticCLI = cli[1]
