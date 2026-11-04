@@ -4,7 +4,7 @@ Read the [product scope](docs/platform-product-brief.md) and [engineering princi
 
 Run `make verify` with a disposable local Docker engine before submitting code. The [experiment README](experiments/durable-execution/README.md) provides pinned images and setup instructions. Unit tests should protect load-bearing behavior; integration tests should prove guarantees that depend on databases or containers.
 
-Claude Code sessions run the project hooks in `.claude/settings.json`. They format each edited file, and when the agent stops they run the fast offline checks for the files the session changed, sending failures back to it. `make verify` remains the gate. The hooks need Node 24.18.1, selected through `fnm` when it is installed.
+Claude Code sessions run the project hooks in `.claude/settings.json`. They format each edited file, and when the agent stops they run the fast offline checks for the files the session changed, sending failures back to it. Other worktrees count only for files edited through the agent's tools, so Bash changes there go unchecked. `make verify` remains the gate. The hooks need Node 24.18.1, selected through `fnm` when it is installed.
 
 Keep credentials, private URLs, deployment identifiers and personal information out of public changes and test fixtures. Report vulnerabilities through the process in [SECURITY.md](SECURITY.md).
 

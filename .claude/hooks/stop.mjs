@@ -22,9 +22,17 @@ async function checkWorktree(repo, input, deadline, current) {
   session.ensureBaseline();
   const state = session.state();
   const notes = [];
+  // A new prompt earns fresh attempts. A continuation forced by this hook never
+  // does, and settling keeps the count: another worktree can keep the turn going.
+  if (!input.stop_hook_active && input.prompt_id !== state.prompt) {
+    state.prompt = input.prompt_id;
+    state.blocks = 0;
+    delete state.failed;
+    session.save(state);
+  }
   if (current && state.late) {
     notes.push(
-      `Project checks did not cover changes already in ${repo.root} when these hooks first saw it.`,
+      `Project checks in ${repo.root} only cover changes made after these hooks first saw it.`,
     );
     delete state.late;
     session.save(state);
@@ -37,15 +45,12 @@ async function checkWorktree(repo, input, deadline, current) {
     return { notes };
   }
 
-  // A continuation forced by this hook never earns a fresh set of attempts, and
-  // the count survives settling: another worktree can keep the turn going.
-  const samePrompt = input.stop_hook_active || input.prompt_id === state.prompt;
-  const blocks = samePrompt ? (state.blocks ?? 0) : 0;
+  const blocks = state.blocks ?? 0;
   const settle = (...messages) => {
     session.save({ ...state, settled: fingerprint, failed: undefined, blocks });
     return { notes: [...notes, ...messages] };
   };
-  if (samePrompt && fingerprint === state.failed)
+  if (fingerprint === state.failed)
     return settle(
       `Project checks failed in ${repo.root} and those files have not changed since, so they were not rerun.`,
     );
@@ -71,7 +76,6 @@ async function checkWorktree(repo, input, deadline, current) {
     ...state,
     failed: fingerprint,
     blocks: blocks + 1,
-    prompt: input.prompt_id,
   });
   return { notes, block: failureReport(repo.root, failed, skipped) };
 }

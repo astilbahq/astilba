@@ -178,9 +178,7 @@ test("commits a session did not make are not its changes", (t) => {
   assert.equal(repo.stop({}), null);
 });
 
-test("a conflict resolved in a merge commit is the session's change", (t) => {
-  const repo = scratch(t);
-  repo.outcome("fail");
+function conflicted(repo) {
   const commit = (text) => {
     repo.write("scripts/both.mjs", text);
     repo.git(["add", "scripts/both.mjs"]);
@@ -191,11 +189,30 @@ test("a conflict resolved in a merge commit is the session's change", (t) => {
   commit("theirs\n");
   repo.git(["checkout", "--quiet", "-"]);
   commit("ours\n");
+}
+
+test("a conflict resolved in a merge commit is the session's change", (t) => {
+  const repo = scratch(t);
+  repo.outcome("fail");
+  conflicted(repo);
   repo.start();
   assert.throws(() => repo.git(["merge", "--quiet", "theirs"]));
   repo.write("scripts/both.mjs", "resolved\n");
   repo.git(["add", "scripts/both.mjs"]);
   repo.git(["commit", "--quiet", "--no-edit"]);
+  assert.equal(repo.git(["status", "--porcelain", "scripts"]), "");
+  assert.equal(repo.stop({}).decision, "block");
+});
+
+test("a conflict resolved in a rebase is the session's change", (t) => {
+  const repo = scratch(t);
+  repo.outcome("fail");
+  conflicted(repo);
+  repo.start();
+  assert.throws(() => repo.git(["rebase", "theirs"]));
+  repo.write("scripts/both.mjs", "resolved\n");
+  repo.git(["add", "scripts/both.mjs"]);
+  repo.git(["rebase", "--continue"], { GIT_EDITOR: "true" });
   assert.equal(repo.git(["status", "--porcelain", "scripts"]), "");
   assert.equal(repo.stop({}).decision, "block");
 });
@@ -255,7 +272,7 @@ test("a worktree first seen at Stop is reported, not attributed", (t) => {
   repo.start();
   const first = repo.stop({}, linked);
   assert.equal(first.decision, undefined);
-  assert.match(first.systemMessage, /did not cover changes already/);
+  assert.match(first.systemMessage, /only cover changes made after/);
   assert.equal(repo.stop({}, linked), null);
 
   repo.write("scripts/later.mjs", "x\n", linked);
@@ -298,6 +315,20 @@ test("a failure that cannot be fixed cannot hold the session forever", (t) => {
   repo.outcome("pass");
   repo.write("scripts/work.mjs", "fixed\n");
   assert.equal(repo.stop({ prompt_id: "later" }), null);
+});
+
+test("a new prompt earns fresh attempts for a worktree it had not changed", (t) => {
+  const repo = scratch(t);
+  repo.outcome("fail");
+  repo.start();
+  for (let attempt = 0; attempt < 4; attempt++) {
+    repo.write("scripts/work.mjs", `${attempt}\n`);
+    repo.stop({ prompt_id: "1", stop_hook_active: attempt > 0 });
+  }
+  assert.equal(repo.stop({ prompt_id: "2" }), null);
+  repo.write("scripts/work.mjs", "later\n");
+  const output = repo.stop({ prompt_id: "2", stop_hook_active: true });
+  assert.equal(output.decision, "block");
 });
 
 test("a check that cannot run is reported, never counted silently", (t) => {

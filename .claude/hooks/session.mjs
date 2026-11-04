@@ -91,7 +91,7 @@ export function sessionWorktrees(cwd, sessionId) {
   const repos = new Map();
   for (const repo of [
     sessionWorktree(cwd),
-    ...entries(worktreeLog(sessionId)).map(worktreeOf),
+    ...[...new Set(entries(worktreeLog(sessionId)))].map(worktreeOf),
   ])
     if (repo && !repos.has(repo.root)) repos.set(repo.root, repo);
   return [...repos.values()];
@@ -115,8 +115,8 @@ function dirty(root) {
 
 // Files in commits this worktree's `git commit` made since the baseline. HEAD's
 // reflog says how each commit arrived, so a pull, merge or rebase adds nothing,
-// while a merge commit still reports the files its conflict resolution changed.
-// An unborn HEAD has no reflog.
+// while a merge commit or continued rebase still reports the files its conflict
+// resolution changed. An unborn HEAD has no reflog.
 function committed(root, since) {
   try {
     return git(
@@ -126,6 +126,7 @@ function committed(root, since) {
       "--grep-reflog=^commit",
       "--grep-reflog=^cherry-pick",
       "--grep-reflog=^revert",
+      "--grep-reflog=(continue):",
       `--since=${since}`,
       "--diff-merges=dense-combined",
       "--no-renames",
