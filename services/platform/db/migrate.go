@@ -18,7 +18,7 @@ import (
 //go:embed migrations/*.sql
 var migrations embed.FS
 
-const Version int64 = 24
+const Version int64 = 25
 
 func provider(dsn string) (*goose.Provider, *sql.DB, error) {
 	db, err := sql.Open("pgx", dsn)

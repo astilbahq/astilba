@@ -541,10 +541,10 @@ func TestStrandedUpgradeMigration(t *testing.T) {
 		if _, err = f.st.Pool.Exec(ctx, `UPDATE execution_operations SET kind=$1,command=$2::jsonb,note=$3,parent_id=`+test.parent+` WHERE id=$4`, test.kind, test.command, test.note, op); err != nil {
 			t.Fatal(test.name, err)
 		}
-		if _, err = provider.ApplyVersion(ctx, 24, false); err != nil {
+		if _, err = provider.ApplyVersion(ctx, 25, false); err != nil {
 			t.Fatal(err)
 		}
-		if _, err = provider.ApplyVersion(ctx, 24, true); err != nil {
+		if _, err = provider.ApplyVersion(ctx, 25, true); err != nil {
 			t.Fatal(err)
 		}
 		if phase := h.status(t, view.Plan.ID).Phase; phase != test.want {
