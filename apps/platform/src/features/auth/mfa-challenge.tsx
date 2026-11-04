@@ -70,6 +70,7 @@ export function MFAChallenge() {
             inputMode={recovery ? "text" : "numeric"}
             autoCapitalize="none"
             spellCheck={false}
+            description={recovery ? t(($) => $.mfa.recoveryWarning) : undefined}
           />
           <BusyButton busy={busy}>{t(($) => $.mfa.submit)}</BusyButton>
         </Form>

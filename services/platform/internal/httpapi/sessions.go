@@ -2,14 +2,17 @@ package httpapi
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"errors"
 	"net/http"
 	"time"
 
 	"github.com/alexedwards/scs/pgxstore"
+	"github.com/alexedwards/scs/v2"
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
+	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 )
 
@@ -23,6 +26,10 @@ type sessionLoad struct {
 	// moveTerminals defers deleting the old token so the renewed session, the old
 	// session's removal and its terminal bindings commit together.
 	moveTerminals bool
+	// presented is the cookie the browser sent, whether or not its session is alive.
+	presented string
+	// keepCookie leaves a destroyed session's cookie in the browser. See dropStaleSession.
+	keepCookie bool
 }
 
 type sessionStore struct {
@@ -107,17 +114,62 @@ func (s *sessionStore) CommitCtx(ctx context.Context, token string, data []byte,
 	return nil
 }
 
+// sessionResponseGuard saves the session before the first response byte, as SCS's
+// LoadAndSave does.
 type sessionResponseGuard struct {
 	http.ResponseWriter
-	failed bool
+	server  *Server
+	request *http.Request
+	loaded  *sessionLoad
+	saved   bool
+	failed  bool
+}
+
+// save replaces a cookie the browser sent only when this request replaced or deliberately
+// ended its session. A browser applies Set-Cookie in arrival order, so anything else sent
+// to a request carrying an old token could undo the cookie a credential change has just
+// renewed. Idle refreshes need no cookie: it lasts to the session's absolute deadline and
+// the row's expiry enforces the idle timeout.
+func (w *sessionResponseGuard) save() {
+	if w.saved {
+		return
+	}
+	w.saved = true
+	sessions, ctx := w.server.Sessions, w.request.Context()
+	switch sessions.Status(ctx) {
+	case scs.Modified:
+		token, _, err := sessions.Commit(ctx)
+		if err != nil {
+			w.fail(w.request, err)
+		} else if token != w.loaded.presented {
+			sessions.WriteSessionCookie(ctx, w, token, sessions.Deadline(ctx))
+		}
+	case scs.Destroyed:
+		if !w.loaded.keepCookie {
+			sessions.WriteSessionCookie(ctx, w, "", time.Time{})
+		}
+	}
+}
+
+// fail answers a failed load or save. The handler keeps writing after a failed save, so
+// its payload and download headers must stay out of this response.
+func (w *sessionResponseGuard) fail(r *http.Request, err error) {
+	w.failed = true
+	w.Header().Del("Content-Disposition")
+	if errors.Is(err, errSessionRevoked) {
+		err = domain.Unauthenticated
+	}
+	w.server.fail(w.ResponseWriter, r, err)
 }
 
 func (w *sessionResponseGuard) WriteHeader(status int) {
+	w.save()
 	if !w.failed {
 		w.ResponseWriter.WriteHeader(status)
 	}
 }
 func (w *sessionResponseGuard) Write(data []byte) (int, error) {
+	w.save()
 	if w.failed {
 		return 0, errSessionResponse
 	}
@@ -125,17 +177,54 @@ func (w *sessionResponseGuard) Write(data []byte) (int, error) {
 }
 func (w *sessionResponseGuard) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 func (w *sessionResponseGuard) FlushError() error {
+	w.save()
 	if w.failed {
 		return errSessionResponse
 	}
 	return http.NewResponseController(w.ResponseWriter).Flush()
 }
 
-func browserSessionRequest(next http.Handler) http.Handler {
+func (s *Server) browserSession(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ctx := context.WithValue(r.Context(), sessionLoadKey{}, &sessionLoad{})
-		next.ServeHTTP(&sessionResponseGuard{ResponseWriter: w}, r.WithContext(ctx))
+		w.Header().Add("Vary", "Cookie")
+		loaded := &sessionLoad{}
+		if cookie, err := r.Cookie(s.Sessions.Cookie.Name); err == nil {
+			loaded.presented = cookie.Value
+		}
+		guard := &sessionResponseGuard{ResponseWriter: w, server: s, loaded: loaded}
+		ctx, err := s.Sessions.Load(context.WithValue(r.Context(), sessionLoadKey{}, loaded), loaded.presented)
+		if err != nil {
+			guard.fail(r, err)
+			return
+		}
+		guard.request = r.WithContext(ctx)
+		next.ServeHTTP(guard, guard.request)
+		guard.save()
 	})
+}
+
+// dropStaleSession ends a session whose account has moved on, without touching the
+// browser's cookie: this request may have been overtaken by the credential change that
+// renewed it, and a dead token grants nothing.
+func (s *Server) dropStaleSession(ctx context.Context) error {
+	ctx.Value(sessionLoadKey{}).(*sessionLoad).keepCookie = true
+	return s.Sessions.Destroy(ctx)
+}
+
+// csrfToken returns the token a mutation must present. With no live session it derives
+// from the cookie the browser already holds, so a request carrying a dead token can be
+// answered without replacing a cookie that may have been renewed meanwhile. It authorizes
+// only what an anonymous session may do. Like a stored token it reaches only same-origin
+// script, and knowing it requires the unguessable cookie, which __Host- stops another
+// host planting; the hash keeps that cookie from script.
+func (s *Server) csrfToken(ctx context.Context) string {
+	token := s.Sessions.GetString(ctx, "csrf")
+	loaded := ctx.Value(sessionLoadKey{}).(*sessionLoad)
+	if token != "" || s.Sessions.Token(ctx) != "" || loaded.presented == "" {
+		return token
+	}
+	derived := sha256.Sum256([]byte("astilba dead session csrf\x00" + loaded.presented))
+	return base64.RawURLEncoding.EncodeToString(derived[:])
 }
 
 func (s *Server) Reauthenticate(w http.ResponseWriter, r *http.Request) {
@@ -146,8 +235,10 @@ func (s *Server) Reauthenticate(w http.ResponseWriter, r *http.Request) {
 	}
 	a, e := s.Auth.Reauthenticate(r.Context(), principal(r.Context()).Account.ID, value(b.Password), value(b.Code))
 	if e == nil {
-		// Confirming credentials keeps open terminal sessions, unlike any other renewal.
-		r.Context().Value(sessionLoadKey{}).(*sessionLoad).moveTerminals = true
+		// Confirming credentials keeps open terminal sessions, unlike any other renewal. A
+		// recovery code changes the account's version, which ends them, and another request
+		// may then have removed the old session, so there is nothing to move.
+		r.Context().Value(sessionLoadKey{}).(*sessionLoad).moveTerminals = a.AuthVersion == principal(r.Context()).Account.AuthVersion
 		nonce := s.Sessions.GetString(r.Context(), "github-session")
 		e = s.establish(r.Context(), a, len(a.TotpSecret) > 0)
 		if e == nil && nonce != "" {

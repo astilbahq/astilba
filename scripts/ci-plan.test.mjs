@@ -110,7 +110,8 @@ test("only known frontend and documentation changes skip native checks", async (
 
 test("each suite runs only for paths that can affect it", async (t) => {
   const cases = [
-    [["docs/hosting.md"], []],
+    [["docs/agent.md"], []],
+    [["docs/hosting.md"], ["native"]],
     [["apps/platform/src/screen.tsx"], ["browser"]],
     [
       ["services/platform/internal/auth/service.go"],
@@ -286,6 +287,47 @@ test("every required check reports on merge groups", () => {
   );
 });
 
+function concurrency(file, github) {
+  const setting = (name) =>
+    new RegExp(`^  ${name}: (.*)$`, "m")
+      .exec(workflow(file))[1]
+      .replace(/\$\{\{(.*?)\}\}/g, (_, expression) =>
+        new Function("github", `return ${expression.replaceAll("==", "===")}`)({
+          workflow: file,
+          ...github,
+        }),
+      );
+  return {
+    group: setting("group"),
+    cancels: setting("cancel-in-progress") === "true",
+  };
+}
+
+// A displaced main run fails no required check, so nothing else reports it.
+test("only a pull request's newer commit replaces a run", () => {
+  for (const file of gateWorkflows) {
+    for (const event_name of ["push", "workflow_dispatch", "schedule"]) {
+      const run = (run_id) =>
+        concurrency(file, { event_name, ref: "refs/heads/main", run_id });
+      assert.notEqual(run("1").group, run("2").group, `${file} ${event_name}`);
+    }
+    const pull = (run_id) =>
+      concurrency(file, {
+        event_name: "pull_request",
+        ref: "refs/pull/1/merge",
+        run_id,
+      });
+    assert.equal(pull("1").group, pull("2").group, file);
+    assert.equal(pull("2").cancels, true, file);
+    const queued = concurrency(file, {
+      event_name: "merge_group",
+      ref: "refs/heads/gh-readonly-queue/main/pr-1-abc",
+      run_id: "2",
+    });
+    assert.equal(queued.cancels, false, file);
+  }
+});
+
 function planStep(file) {
   const lines = workflow(file).split("\n");
   const start = lines.indexOf(
@@ -362,17 +404,17 @@ test("each workflow runs the base's planner, not the tested commit's", async (t)
   });
   await t.test("the base planner's skip is honoured", (t) => {
     const repo = fixture(t);
-    const base = repo.mergeGroup(["docs/hosting.md"]);
+    const base = repo.mergeGroup(["docs/agent.md"]);
     assert.equal(runPlanStep(t, repo, step, "merge_group", base), "false");
 
     const pull = fixture(t);
-    pull.write("docs/hosting.md");
+    pull.write("docs/agent.md");
     pull.merge();
     assert.equal(runPlanStep(t, pull, step, "pull_request"), "false");
   });
   await t.test("no base planner selects the suite", (t) => {
     const repo = repository(t);
-    const base = repo.mergeGroup(["docs/hosting.md"]);
+    const base = repo.mergeGroup(["docs/agent.md"]);
     assert.equal(runPlanStep(t, repo, step, "merge_group", base), "true");
     assert.equal(runPlanStep(t, repo, step, "merge_group"), "true");
     assert.equal(runPlanStep(t, repo, step, "push"), "true");

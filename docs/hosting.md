@@ -55,7 +55,8 @@ previously encrypted data.
 4. Configure an HTTPS reverse proxy for the public origin, forwarding to the
    loopback-bound management port. Forward request bodies and streaming responses;
    permit at least 35 seconds for agent long polls. Use a certificate trusted by
-   browsers and enrolled agents. Keep the upstream port private.
+   browsers and enrolled agents. Keep the upstream port private, and set
+   [per-address limits](#per-address-limits-at-the-reverse-proxy).
 5. Start `astilba serve`, sign in, enable two-factor authentication and configure
    the workspace's MFA policy. Configure SMTP before inviting other users or
    relying on password recovery.
@@ -90,6 +91,107 @@ With no configured proxies, direct-host requests continue to use their TCP peer.
 Clients sharing a real public IP still share an IP budget; account and global
 authentication limits remain in place.
 
+### Per-address limits at the reverse proxy
+
+Limit connections and requests per client address at your proxy, on every path. Astilba
+has its own budgets for sign-in, password reset, invitation, signup and enrollment attempts
+and for a few signed-in actions, which proxy settings do not change: for example, 30
+enrollments per address every 2 minutes. Nothing else limits general requests, before or
+after sign-in.
+
+Give `/agent/` its own, larger limits. A host holds a long poll while idle and makes about 4
+requests a second while running an operation, and refusing an agent can delay or cancel its
+work. Enrollment stays on the general limits, because each attempt writes to the database
+before its credential is checked. So do downloads under `/agent-artifacts/`, which serve
+large files without a credential. A refused download leaves that update waiting for you to
+retry it on the host, so update hosts that share an address a few at a time.
+
+These values are starting points, not measurements. Requests over them get a 429, so raise
+them if many people, or more than about 20 hosts, share a public address. The request limits
+count arrivals. The connection limits count requests in progress: a WebSocket counts for as
+long as it stays open, and over HTTP/2 each concurrent request of a dashboard page counts
+separately. They do not count connections that have not finished their headers, so also keep
+nginx's `worker_connections` above the total you expect, allowing two for each proxied
+request.
+
+nginx, where a location's limits replace the server block's:
+
+```nginx
+limit_conn_zone $binary_remote_addr zone=astilba_connections:10m;
+limit_conn_zone $binary_remote_addr zone=astilba_agent_connections:10m;
+limit_req_zone $binary_remote_addr zone=astilba_requests:10m rate=20r/s;
+limit_req_zone $binary_remote_addr zone=astilba_agent_requests:10m rate=100r/s;
+
+server {
+    # Add these to your existing server block.
+    limit_conn_status 429;
+    limit_req_status 429;
+    limit_conn astilba_connections 64;
+    limit_req zone=astilba_requests burst=100 nodelay;
+
+    location /agent/ {
+        # Repeat the proxy settings of your main location here.
+        limit_conn astilba_agent_connections 256;
+        limit_req zone=astilba_agent_requests burst=200 nodelay;
+    }
+
+    # Keeps the server block's limits.
+    location = /agent/v1/enroll {
+        # Repeat the proxy settings of your main location here.
+    }
+}
+```
+
+Traefik, with three routers that share a service, entry points and TLS:
+
+- your main router, with `astilba-connections` and `astilba-requests`;
+- ``Host(`platform.example.com`) && Path(`/agent/v1/enroll`)``, with the same two;
+- ``Host(`platform.example.com`) && PathPrefix(`/agent/`)``, with the `astilba-agent-` pair.
+
+Keep `Host` in both rules: Traefik prefers the longest rule, so without it your main router
+takes these requests.
+
+```yaml
+http:
+  middlewares:
+    astilba-connections:
+      inFlightReq:
+        amount: 64
+        sourceCriterion:
+          ipStrategy:
+            depth: 0
+    astilba-requests:
+      rateLimit:
+        average: 20
+        period: 1s
+        burst: 100
+    astilba-agent-connections:
+      inFlightReq:
+        amount: 256
+        sourceCriterion:
+          ipStrategy:
+            depth: 0
+    astilba-agent-requests:
+      rateLimit:
+        average: 100
+        period: 1s
+        burst: 200
+```
+
+Caddy has no per-address limit without a plugin, so use one, or set the limits at a
+firewall or load balancer in front of it.
+
+Both examples count the address that connected to the proxy. If another proxy or CDN sits
+in front, they would count everyone as one client. Have nginx take the client address from
+its trusted hops with the `realip` module and `set_real_ip_from`. On Traefik, list those hops
+in the entry point's `forwardedHeaders.trustedIPs`, and set `sourceCriterion.ipStrategy.depth`
+to their number on all four middlewares. Do not count the raw `X-Forwarded-For` header, whose
+content a client can choose.
+
+Both also count each IPv6 address separately, and a client usually controls a whole /64,
+so changing address avoids these limits. If you publish an AAAA record, also limit each
+/64 at a firewall.
+
 ### Terminal sessions behind a reverse proxy
 
 [Interactive troubleshooting](interactive-troubleshooting.md) uses WebSockets for both
@@ -99,11 +201,86 @@ reach the same instance. Your proxy must:
 
 - forward WebSocket upgrades for `/agent/v1/troubleshooting/` and
   `/api/v1/workspaces/*/troubleshooting-sessions/*/stream`;
-- allow an idle timeout longer than 30 seconds, the interval of the stream pings;
+- allow an idle timeout of at least 35 seconds, because the streams ping every 30 seconds
+  and a proxy limit of exactly 30 seconds ends them;
 - not cap a stream's total duration below 60 minutes.
 
-A proxy that refuses upgrades makes sessions close within about a minute, and a shorter
-idle or duration limit ends them early. Nothing else is affected.
+A proxy that refuses upgrades closes a session within about a minute, without starting
+a shell. A shorter idle or duration limit ends a running session early, and its shell
+with it. Nothing else is affected.
+
+These configurations carry a session through each proxy. `make verify-agent-host-core`
+reads them from this page and runs them with pinned nginx 1.30.6, Caddy 2.11.7 and
+Traefik 3.7.16 images.
+
+nginx needs the upgrade headers, and its `proxy_read_timeout` is the idle limit:
+
+```nginx
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      close;
+}
+
+server {
+    listen 443 ssl;
+    server_name platform.example.com;
+    ssl_certificate /etc/ssl/platform/fullchain.pem;
+    ssl_certificate_key /etc/ssl/platform/privkey.pem;
+
+    # The largest request is a workspace import.
+    client_max_body_size 45m;
+
+    location / {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_buffering off;
+        proxy_read_timeout 120s;
+        proxy_send_timeout 120s;
+    }
+}
+```
+
+Caddy forwards upgrades and sets no stream limit by default:
+
+```caddyfile
+platform.example.com {
+    reverse_proxy 127.0.0.1:8080
+}
+```
+
+Traefik does too. This is its static configuration, followed by the file it loads:
+
+```yaml
+entryPoints:
+  websecure:
+    address: ":443"
+providers:
+  file:
+    filename: /etc/traefik/dynamic.yml
+```
+
+```yaml
+http:
+  routers:
+    platform:
+      rule: Host(`platform.example.com`)
+      entryPoints: [websecure]
+      service: platform
+      tls: {}
+  services:
+    platform:
+      loadBalancer:
+        servers:
+          - url: http://127.0.0.1:8080
+tls:
+  certificates:
+    - certFile: /etc/ssl/platform/fullchain.pem
+      keyFile: /etc/ssl/platform/privkey.pem
+```
 
 ## Hosted admission and billing
 

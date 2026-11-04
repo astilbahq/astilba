@@ -59,9 +59,9 @@ export const InvalidRecoveryCode: Story = {
       "invalid-recovery-code",
     );
     await submit(context.canvasElement);
-    await waitFor(() => expect(input).toHaveAccessibleDescription(/\S/));
-    await expect(input).toHaveFocus();
-    await expect(input).toHaveAttribute("aria-invalid", "true");
+    await waitFor(() => expect(input).toHaveAttribute("aria-invalid", "true"));
+    await waitFor(() => expect(input).toHaveFocus());
+    await expect(input).toHaveAccessibleDescription(/already been used/);
     await expect(
       within(context.canvasElement).queryByRole("alert"),
     ).not.toBeInTheDocument();

@@ -82,21 +82,7 @@ func New(st *store.Store, service *auth.Service, origin string, development bool
 		sessions.Cookie.Name = "astilba_session"
 		sessions.Cookie.Secure = false
 	}
-	server := &Server{TerminalIdle: domain.TroubleshootingIdle, TerminalReviewEvery: domain.TroubleshootingReview, terminals: newTerminalHub(), Alerts: alerts.New(st, service.Mail, origin, development, strings.Split(os.Getenv("ASTILBA_ALERT_WEBHOOK_ORIGINS"), ",")), Store: st, Auth: service, Sessions: sessions, Origin: origin, Log: log, Development: development}
-	previousError := sessions.ErrorFunc
-	sessions.ErrorFunc = func(w http.ResponseWriter, r *http.Request, err error) {
-		// SCS continues handler writes after ErrorFunc; keep the error response
-		// separate from that handler's stale payload and download headers.
-		guard := w.(*sessionResponseGuard)
-		guard.failed = true
-		guard.Header().Del("Content-Disposition")
-		if errors.Is(err, errSessionRevoked) {
-			server.fail(guard.ResponseWriter, r, domain.Unauthenticated)
-		} else {
-			previousError(guard.ResponseWriter, r, err)
-		}
-	}
-	return server, backend.StopCleanup
+	return &Server{TerminalIdle: domain.TroubleshootingIdle, TerminalReviewEvery: domain.TroubleshootingReview, terminals: newTerminalHub(), Alerts: alerts.New(st, service.Mail, origin, development, strings.Split(os.Getenv("ASTILBA_ALERT_WEBHOOK_ORIGINS"), ",")), Store: st, Auth: service, Sessions: sessions, Origin: origin, Log: log, Development: development}, backend.StopCleanup
 }
 func (s *Server) Handler(assets http.Handler) (http.Handler, error) {
 	if s.Execution == nil {
@@ -220,7 +206,7 @@ func (s *Server) identity(next http.Handler) http.Handler {
 		if err == nil {
 			a, e := s.Store.Queries.AccountByID(r.Context(), id)
 			if e != nil || a.AuthVersion != s.Sessions.GetInt64(r.Context(), "version") {
-				if e = s.Sessions.Destroy(r.Context()); e != nil {
+				if e = s.dropStaleSession(r.Context()); e != nil {
 					s.fail(w, r, e)
 					return
 				}
@@ -236,7 +222,7 @@ func (s *Server) identity(next http.Handler) http.Handler {
 func (s *Server) csrf(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "GET" && r.Method != "HEAD" && r.Method != "OPTIONS" {
-			token := s.Sessions.GetString(r.Context(), "csrf")
+			token := s.csrfToken(r.Context())
 			if r.Header.Get("Origin") != s.Origin || token == "" || subtle.ConstantTimeCompare([]byte(token), []byte(r.Header.Get("X-CSRF-Token"))) != 1 {
 				s.fail(w, r, domain.Forbidden)
 				return
@@ -334,7 +320,7 @@ func (s *Server) establish(ctx context.Context, a db.Account, mfa bool) error {
 	return nil
 }
 func (s *Server) session(ctx context.Context) (api.Session, error) {
-	token := s.Sessions.GetString(ctx, "csrf")
+	token := s.csrfToken(ctx)
 	if token == "" {
 		var err error
 		token, err = cryptobox.Token()

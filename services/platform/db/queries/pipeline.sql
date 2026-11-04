@@ -14,3 +14,6 @@ UPDATE build_secret_versions SET encrypted_value=$3 WHERE workspace_id=$1 AND id
 SELECT workspace_id,id,encrypted_access FROM github_app_authorizations FOR UPDATE;
 -- name: RewrapGitHubAuthorization :exec
 UPDATE github_app_authorizations SET encrypted_access=$3 WHERE workspace_id=$1 AND id=$2;
+
+-- name: MarkPipelineDeliveryStarted :exec
+UPDATE pipeline_runs SET delivery_started=true WHERE workspace_id = @workspace_id AND id = @id;

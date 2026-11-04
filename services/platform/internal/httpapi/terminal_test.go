@@ -45,3 +45,30 @@ func TestTerminalLateSideNeverJoinsAnAbandonedPair(t *testing.T) {
 		hub.remove(stream.Session)
 	}
 }
+
+// One account stops at its own limit and leaves room for others, every account stops at the
+// total, and a finished stream gives its place back.
+func TestTerminalPendingLimits(t *testing.T) {
+	hub := newTerminalHub()
+	greedy := uuid.New()
+	for range terminalPendingPerAccount {
+		if !hub.admitPending(greedy) {
+			t.Fatal("refused within the account's limit")
+		}
+	}
+	if hub.admitPending(greedy) {
+		t.Fatal("admitted past the account's limit")
+	}
+	for range terminalPendingTotal - terminalPendingPerAccount {
+		if !hub.admitPending(uuid.New()) {
+			t.Fatalf("another account refused with %d held", hub.pendingTotal)
+		}
+	}
+	if hub.admitPending(uuid.New()) {
+		t.Fatal("admitted past the total")
+	}
+	hub.releasePending(greedy)
+	if !hub.admitPending(uuid.New()) {
+		t.Fatal("a released place was not available")
+	}
+}

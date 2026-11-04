@@ -128,7 +128,8 @@ also notifies the workspace's owners. It defaults to
    container, no shell, limit reached, or Docker unavailable. Until the session has
    started, a failure is reported this way too, and any shell already started is ended.
 4. **Browser stream.** The browser opens a same-origin stream. Management
-   refuses the upgrade unless the session cookie and Origin are valid, then
+   refuses the upgrade unless the session cookie and Origin are valid and the
+   account is within its limit of streams without a redeemed ticket, then
    requires the ticket as the first message within five seconds. Redeeming the
    ticket re-checks membership and allows one browser attachment per session.
    A redemption that cannot finish within five seconds refuses the stream and
@@ -175,8 +176,8 @@ Management also ends a session when:
   renewed token. The session store defers deleting the old row during that
   renewal; when the renewed session commits, it deletes the old row, inserts the
   new one and moves the binding in one transaction, so a re-check never finds
-  neither. Logging in again, changing the password or confirming MFA does not
-  move the binding;
+  neither. Logging in again, changing the password, confirming MFA or using a
+  recovery code does not move the binding;
 - the workspace MFA policy is enabled for an actor without MFA;
 - the environment setting is turned off, or an owner-only restriction is turned
   on for an operator's session;
@@ -204,11 +205,18 @@ its own limits locally. Initial values:
 - 64 KiB/s of input and 1 MiB/s of output per session, with backpressure rather
   than unbounded buffering. If a shell stops reading and more input arrives than the
   agent can hold (about 1 MiB), the session ends with the reason `input_overflow`,
-  because dropping part of it could run a different command from the one sent.
+  because dropping part of it could run a different command from the one sent;
+- four browser streams per account and 64 per installation that have not yet
+  redeemed a ticket, counted in the management process, which sessions already
+  require to be a single instance. An upgrade over either limit gets a 429 before
+  it happens and writes no audit event, so a refusal costs no more than any other
+  refused request. A browser cannot read that status and sees only a failed connection.
 
 These are constants, not settings; implementation and measured use can tune
 them. Requests over a limit are refused with an explicit reason rather than
-queued.
+queued. [Hosting](hosting.md#per-address-limits-at-the-reverse-proxy) asks operators
+to limit connections per address at the proxy, which also covers unauthenticated
+requests.
 
 ## Transport and deployment
 
@@ -237,12 +245,12 @@ instance discovery, authenticated and encrypted forwarding, and where checks run
 design.
 
 Self-hosted installations need their reverse proxy to forward WebSocket
-upgrades, allow an idle timeout longer than the 30-second ping interval and not
-cap a stream's total duration below 60 minutes. This is a new deployment
+upgrades, allow an idle timeout of at least 35 seconds, above the 30-second ping
+interval, and not cap a stream's total duration below 60 minutes. This is a new deployment
 requirement for existing installations; [hosting](hosting.md) and the
-[agent guide](agent.md) must document it, and the proxy profile needs validation
-like the existing transport fixture. **Decided:** accept the new proxy
-requirement.
+[agent guide](agent.md) document it, and the native suite runs a session through
+the documented nginx, Caddy and Traefik configurations. **Decided:** accept the new
+proxy requirement.
 
 **Decided:** new dependencies, pinned exactly under the existing
 dependency rules: `github.com/coder/websocket` for the management service and
@@ -280,7 +288,8 @@ keeps who opened which session and when, but not close reasons or byte counts.
 
 The agent also writes a local journald record of each session (session ID, actor
 ID as supplied, container ID, start, end and reason), giving the host owner a
-trail outside the management database.
+trail outside the management database. After a crash there is no end record; the
+restarted agent records its cleanup, with the session and container IDs.
 
 Terminal input and output are not recorded or logged by default: they can
 contain secrets and customer data. Management logs only metadata. Recording would
@@ -339,7 +348,8 @@ enabling or widening the environment setting, on by default.
   - role removal, `auth_version` changes, logout, credential revocation, the
     owner-only restriction, browser-session idle expiry, the deadline and an
     owner ending all sessions end an open session promptly, and
-    reauthentication does not, including a re-check during the renewal;
+    reauthentication without a recovery code does not, including a re-check during
+    the renewal;
   - stream loss and agent crashes leave no process in the shell's Linux session,
     including background jobs;
   - frame size, rate and session limits;
@@ -352,10 +362,24 @@ enabling or widening the environment setting, on by default.
   window-manipulation and report sequences, with axe checks,
   screen-reader mode, visible focus and reduced motion; and a check that the
   page's content security policy permits the same-origin `wss:` connection.
-- **Proxy:** WebSocket upgrade, ping and stream duration through the validated
-  proxy profile.
-- **Native hosts:** a systemd agent session on amd64 and arm64, and the guided
-  bootstrap's runtime meeting the runc floor.
+- **Proxy:** the native suite runs real sessions through pinned nginx, Caddy and
+  Traefik, using the configurations in [hosting](hosting.md), with the production
+  agent's streams and polls on the proxy's HTTPS origin. It covers the upgrade, input,
+  resize, the warning, the relay's idle limit past a proxy's own timeouts, the `Exit`
+  frame, the close handshake, a dropped browser and cleanup after each. nginx also runs
+  at a 35-second limit, which holds, and below it and without upgrade headers, which
+  end the session early and start no shell respectively.
+  `make verify-troubleshooting-soak` runs the real 15-minute and 60-minute limits on
+  demand. On 4 November 2026 it passed on arm64 through all three proxies. That VM's
+  monotonic clock ran about 2% fast, so its 60-minute maximum lasted about 58m44s by the
+  wall clock. Chromium and WebKit each completed a session through each proxy once that
+  day, opening the stream over HTTP/1.1 even from a page loaded over HTTP/2; that is
+  not in CI until the dashboard terminal's journeys run through a proxy.
+- **Native hosts:** the native suite runs a session under the production unit on amd64
+  and arm64, through the documented commands. Exec and cleanup work under its sandbox,
+  journald records the session without its content, and no job survives the shell's
+  exit, a service stop or a killed agent once systemd restarts it. The guided bootstrap's
+  runtime meets the runc floor.
 
 ## Increments
 

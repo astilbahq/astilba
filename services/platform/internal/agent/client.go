@@ -356,8 +356,9 @@ func (c *Client) Run(ctx context.Context) error {
 				return nil
 			}
 			for _, r := range pending {
+				// One rejected report must not silence a restriction admitted beside it.
 				if e = c.call(ctx, "POST", "/agent/v1/report", r.Report, nil, cfg.Credential); e != nil {
-					return e
+					continue
 				}
 				if execution.Terminal(r.Report.State) {
 					if e = c.Journal.Acknowledge(r.Command.Id, r.Report.Sequence); e != nil {

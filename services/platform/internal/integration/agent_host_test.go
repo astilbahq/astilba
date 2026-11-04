@@ -30,51 +30,18 @@ func TestNativeAgentService(t *testing.T) {
 	if testing.Short() || os.Getenv("ASTILBA_NATIVE_AGENT") != "1" {
 		t.Skip("requires an explicitly disposable Ubuntu systemd host")
 	}
-	if runtime.GOOS != "linux" || os.Geteuid() != 0 {
-		t.Fatal("native agent test requires root on disposable Linux")
-	}
 	f := setup(t)
 	b := f.browser(t)
 	ws := b.login("owner@example.test", f.password).Workspaces[0].Id
 	env := envForExecution(t, f, b, ws)
-	tag := "astilba-p2-" + uuid.NewString()
-	// GitHub's AWS-hosted runners mount /run noexec, and the unit's PrivateTmp and ProtectHome hide /tmp and home.
-	root := filepath.Join("/var/lib", tag)
-	if e := os.Mkdir(root, 0700); e != nil {
-		t.Fatal(e)
-	}
-	defer os.RemoveAll(root)
-	unit := tag + ".service"
-	unitPath := filepath.Join("/run/systemd/system", unit)
-	systemctl := func(args ...string) []byte {
-		t.Helper()
-		out, e := exec.Command("systemctl", args...).CombinedOutput()
-		if e != nil {
-			t.Fatalf("systemctl %s: %s %v", args, out, e)
-		}
-		return out
-	}
-	defer func() {
-		_ = exec.Command("systemctl", "stop", unit).Run()
-		_ = os.Remove(unitPath)
-		_ = exec.Command("systemctl", "daemon-reload").Run()
-	}()
+	root := nativeRoot(t, "astilba-p2")
 	public, private, _ := ed25519.GenerateKey(rand.Reader)
 	der, _ := x509.MarshalPKIXPublicKey(public)
 	keyPath := filepath.Join(root, "release.pem")
 	_ = os.WriteFile(keyPath, pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der}), 0600)
-	build := func(version, name string) string {
-		t.Helper()
-		path := filepath.Join(root, name)
-		cmd := exec.Command("go", "build", "-trimpath", "-ldflags", "-X main.version="+version, "-o", path, "./cmd/agent")
-		cmd.Dir = "../.."
-		if out, e := cmd.CombinedOutput(); e != nil {
-			t.Fatalf("agent build: %s %v", out, e)
-		}
-		return path
-	}
-	binary := build("fixture.1", "agent")
-	next := build("fixture.2", "next-agent")
+	binary, next := filepath.Join(root, "agent"), filepath.Join(root, "next-agent")
+	buildNativeAgent(t, binary, "fixture.1")
+	buildNativeAgent(t, next, "fixture.2")
 	data, e := os.ReadFile(next)
 	if e != nil {
 		t.Fatal(e)
@@ -100,20 +67,7 @@ func TestNativeAgentService(t *testing.T) {
 	if out, e := cmd.CombinedOutput(); e != nil {
 		t.Fatalf("native enrollment: %s %v", out, e)
 	}
-	template, e := os.ReadFile("../../host/astilba-agent.service")
-	if e != nil {
-		t.Fatal(e)
-	}
-	text := strings.ReplaceAll(string(template), "ExecStart=/usr/local/bin/astilba-agent run", "ExecStart="+binary+" run --state "+state+" --docker "+os.Getenv("PLAT_APP_DOCKER_HOST")+" --executable "+binary)
-	text = strings.ReplaceAll(text, "ReadWritePaths=/var/lib/astilba-agent /usr/local/bin", "ReadWritePaths="+root)
-	text = strings.Replace(text, "[Service]", "[Service]\nEnvironment=SSL_CERT_FILE="+caPath, 1)
-	if e = os.WriteFile(unitPath, []byte(text), 0644); e != nil {
-		t.Fatal(e)
-	}
-	if out, e := exec.Command("systemd-analyze", "verify", unitPath).CombinedOutput(); e != nil {
-		t.Fatalf("unit verification: %s %v", out, e)
-	}
-	systemctl("daemon-reload")
+	unit, systemctl := installAgentUnit(t, root, binary, state, caPath)
 	systemctl("start", unit)
 	base := "/api/v1/workspaces/" + ws.String()
 	apply := func(action api.TestAction) api.Operation {

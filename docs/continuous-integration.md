@@ -2,9 +2,10 @@
 
 Seven independent workflows run on pull requests, merge groups, pushes to `main`
 and manual dispatches; the native, durable-execution, Git provider and canvas
-workflows also run nightly. Each has its own concurrency group per workflow and
-ref (and, for scheduled workflows, event) and can be retried without waiting for
-another workflow's native tests. No workflow uses an event path filter: a planning
+workflows also run nightly. Each can be retried without waiting for another
+workflow's native tests. Within a workflow, runs share a concurrency group only per
+pull request or merge group ref; every main push, manual and scheduled run has its
+own, so no run can cancel it. No workflow uses an event path filter: a planning
 job selects the suites a pull request or merge group can affect, and each required
 check is a final `always()` gate, so it is reported on every run.
 
@@ -38,7 +39,7 @@ only when every changed path is known not to affect it:
 
 | Suite | Skipped when every changed path is |
 | --- | --- |
-| Native hosts | Markdown under `docs/` or the root README, dashboard source, theme, public assets, browser tests, Storybook or Panda configuration, or the server-only `auth`, `alerts`, `mailer`, `billing` and `automationclient` packages or the CLI |
+| Native hosts | Markdown under `docs/` other than `docs/hosting.md`, whose proxy configurations the native tests run, or the root README, dashboard source, theme, public assets, browser tests, Storybook or Panda configuration, or the server-only `auth`, `alerts`, `mailer`, `billing` and `automationclient` packages or the CLI |
 | Application Go race lanes | documentation or dashboard paths above |
 | Application and workshop browsers | documentation |
 | Durable execution, Git providers, canvas | outside that experiment, its workflow and the Makefile (canvas also follows the root JavaScript manifests and lockfile) |
@@ -80,7 +81,11 @@ whenever `main` moves.
 - Merge groups run on a branch in this repository, not in a fork's restricted
   context. Queuing a fork's pull request runs its workflow files and scripts
   with this repository's access, so review them before queuing it.
-- Main pushes still run every suite after a group lands.
+- Main pushes still run every suite after a group lands, and pull requests landing
+  seconds apart each get a complete run. Turning off `cancel-in-progress` alone
+  would not do this: a concurrency group keeps one waiting run and cancels the
+  others, so each push has a group of its own and their runs overlap. `make check-ci`
+  evaluates each workflow's concurrency settings to keep this true.
 
 The queue merges one squashed pull request at a time, builds two at once, starts
 with no wait and allows checks 150 minutes. It replaces "Require branches to be
@@ -105,7 +110,7 @@ Native verification gate requires all eight jobs to pass:
 
 | Lane | Verification |
 | --- | --- |
-| `core` | PLAT-4 host runtime, builds, PostgreSQL restore, managed links, Compose and cross-host deployment, pipeline, preview, release transport, and troubleshooting target, session, cleanup and refusals |
+| `core` | PLAT-4 host runtime, builds, PostgreSQL restore, managed links, Compose and cross-host deployment, pipeline, preview, release transport, and troubleshooting target, session, cleanup and refusals, including sessions under the production unit and through real nginx, Caddy and Traefik |
 | `recovery` | Agent service enrollment, restart and signed update; a troubleshooting session end to end; cross-host older-backup, drained and upgrade recovery |
 | `visual` | Visual deployment, including catalog, backup and restore |
 | `upgrade` | Application releases and PostgreSQL major upgrades, then an unrelated unit's routes and data, scheduled jobs, later deployments, controller transfer and volume deletion on that host |
