@@ -124,6 +124,10 @@ function ProjectPage() {
   const selection = useSearch({ strict: false });
   return <Dashboard selection={selection} />;
 }
+// Play starts at the first commit, so a wait for page content also spans the
+// project, environments, lazy route and draft that the page loads after it.
+export const pageBoot = { timeout: 5000 };
+
 export function ShellPreview({
   initialWorkspace,
   initialPath,

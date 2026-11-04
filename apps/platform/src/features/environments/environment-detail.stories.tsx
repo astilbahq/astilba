@@ -4,6 +4,7 @@ import { http, HttpResponse } from "msw/http";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 import {
   ShellPreview,
+  pageBoot,
   session,
   workspace,
   examples,
@@ -99,7 +100,7 @@ export const Recovered: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await userEvent.click(
-      await canvas.findByRole("button", { name: "Try again" }),
+      await canvas.findByRole("button", { name: "Try again" }, pageBoot),
     );
     await expect(
       await canvas.findByRole("heading", { name: "Services" }),
@@ -117,9 +118,11 @@ export const SettingsDuringDraftFailure: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await canvas.findByRole("heading", {
-      name: "Configuration could not be loaded",
-    });
+    await canvas.findByRole(
+      "heading",
+      { name: "Configuration could not be loaded" },
+      pageBoot,
+    );
     await userEvent.click(canvas.getByRole("tab", { name: "Settings" }));
     await expect(
       await canvas.findByRole("heading", { name: "Secrets" }),
@@ -146,13 +149,7 @@ export const ObservationRecovered: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await userEvent.click(
-      // Play starts at the first commit. This button also needs the project,
-      // environments, lazy route, draft and then the failed runtime response.
-      await canvas.findByRole(
-        "button",
-        { name: "Try again" },
-        { timeout: 5000 },
-      ),
+      await canvas.findByRole("button", { name: "Try again" }, pageBoot),
     );
     await canvas.findByText("No observations yet");
     await expect(
@@ -186,7 +183,11 @@ export const Configuration: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await userEvent.click(
-      await canvas.findByRole("button", { name: "Open configuration" }),
+      await canvas.findByRole(
+        "button",
+        { name: "Open configuration" },
+        pageBoot,
+      ),
     );
     await expect(
       canvas.getByRole("tab", { name: "Configuration" }),
@@ -260,10 +261,12 @@ export const Conflict: Story = {
 export const Deployments: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    const button = await canvas.findByRole("button", {
-      name: "Review and deploy",
-    });
-    await canvas.findByRole("heading", { name: "Services" });
+    const button = await canvas.findByRole(
+      "button",
+      { name: "Review and deploy" },
+      pageBoot,
+    );
+    await canvas.findByRole("heading", { name: "Services" }, pageBoot);
     await userEvent.click(button);
     await expect(
       await canvas.findByRole("heading", { name: "Review and deploy" }),
@@ -273,7 +276,9 @@ export const Deployments: Story = {
 export const Settings: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await userEvent.click(await canvas.findByRole("tab", { name: "Settings" }));
+    await userEvent.click(
+      await canvas.findByRole("tab", { name: "Settings" }, pageBoot),
+    );
     await expect(
       await canvas.findByRole("heading", { name: "Secrets" }),
     ).toBeVisible();
@@ -403,7 +408,7 @@ export const RevisionComparison: Story = {
   play: async ({ canvasElement }) => {
     const canvas = await configure(canvasElement);
     await userEvent.click(
-      await canvas.findByRole("button", { name: "Compare revision" }),
+      await canvas.findByRole("button", { name: "Compare revision" }, pageBoot),
     );
     const heading = await canvas.findByRole("heading", {
       name: "Revision comparison",
