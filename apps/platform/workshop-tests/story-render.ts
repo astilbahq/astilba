@@ -1,5 +1,13 @@
 import { expect, type Page } from "@playwright/test";
 
+// A story's MSW client closes as its page unloads, and the worker unregisters
+// itself once none remain. Loading the next story straight away can overlap
+// that teardown and break the load; leaving first narrows the overlap.
+export async function gotoNextStory(page: Page, url: string) {
+  await page.goto("about:blank");
+  await page.goto(url);
+}
+
 export async function renderStory(page: Page, url: string, timeout: number) {
   // State checks do not depend on animation clocks. Dedicated motion journeys
   // keep their own preferences and assertions.
