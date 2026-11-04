@@ -1,11 +1,22 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { devNull, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { ciPlan } from "./ci-plan.mjs";
+
+const root = fileURLToPath(new URL("..", import.meta.url));
+const workflows = join(root, ".github/workflows");
 
 const gitEnvironment = {
   ...Object.fromEntries(
@@ -45,7 +56,17 @@ function repository(t) {
     git("switch", "main");
     git("merge", "--no-ff", "feature", "-m", "tested merge");
   };
-  return { cwd, git, write, commit, merge };
+  // Stacks one single-parent squash commit per pull request and returns the base.
+  const mergeGroup = (...pullRequests) => {
+    git("switch", "main");
+    const base = git("rev-parse", "HEAD").trim();
+    for (const paths of pullRequests) {
+      for (const path of paths) write(path, "changed\n");
+      commit();
+    }
+    return base;
+  };
+  return { cwd, git, write, commit, merge, mergeGroup };
 }
 
 test("only known frontend and documentation changes skip native checks", async (t) => {
@@ -178,7 +199,140 @@ test("missing or unexpected PR metadata fails instead of reporting a skip", (t) 
   const shallow = join(repo.cwd, "shallow");
   repo.git("clone", "--depth=1", `file://${repo.cwd}`, shallow);
   assert.throws(() => ciPlan("pull_request", shallow), /two-parent/);
-  assert.throws(() => ciPlan("merge_group", repo.cwd), /Unsupported/);
+  assert.throws(() => ciPlan("pull_request_target", repo.cwd), /Unsupported/);
+  for (const missing of [undefined, ""])
+    assert.throws(() => ciPlan("merge_group", repo.cwd, missing));
+});
+
+test("a merge group's suites cover every pull request since its base", (t) => {
+  const repo = repository(t);
+  const base = repo.mergeGroup(
+    ["services/platform/native.go"],
+    ["apps/platform/src/ui.tsx"],
+  );
+  assert.equal(ciPlan("merge_group", repo.cwd, base).native, true);
+  const parent = repo.git("rev-parse", "HEAD^1").trim();
+  assert.equal(ciPlan("merge_group", repo.cwd, parent).native, false);
+});
+
+test("an empty merge group selects every suite", (t) => {
+  const repo = repository(t);
+  const head = repo.mergeGroup();
+  assert.ok(
+    Object.values(ciPlan("merge_group", repo.cwd, head)).every(Boolean),
+  );
+});
+
+const { contexts } = JSON.parse(
+  readFileSync(join(root, ".github/required-status-checks.json"), "utf8"),
+);
+const workflow = (file) => readFileSync(join(workflows, file), "utf8");
+const reports = (file) =>
+  contexts.filter((name) => workflow(file).includes(`    name: ${name}\n`));
+const gateWorkflows = readdirSync(workflows).filter(
+  (file) => reports(file).length,
+);
+
+test("every required check reports on merge groups", () => {
+  for (const file of gateWorkflows)
+    assert.match(workflow(file), /^ {2}merge_group:$/m, file);
+  assert.deepEqual(
+    gateWorkflows.flatMap(reports).toSorted(),
+    contexts.toSorted(),
+  );
+});
+
+function planStep(file) {
+  const lines = workflow(file).split("\n");
+  const start = lines.indexOf(
+    "        run: |",
+    lines.findIndex((line) => line.endsWith("id: plan")),
+  );
+  const end = lines.findIndex(
+    (line, index) => index > start && line && !line.startsWith("          "),
+  );
+  const key = /'\^(\w+)='/.exec(lines.slice(start, end).join("\n"))[1];
+  return { key, script: lines.slice(start + 1, end).join("\n") };
+}
+
+const suites = Object.keys(ciPlan("push"));
+const hostilePlanner = `import { appendFileSync } from "node:fs";
+for (const suite of ${JSON.stringify(suites)})
+  appendFileSync(process.env.GITHUB_OUTPUT, suite + "=false\\n");
+`;
+
+function runPlanStep(t, repo, { key, script }, event, base) {
+  const temp = realpathSync(mkdtempSync(join(tmpdir(), "astilba-ci-runner-")));
+  t.after(() => rmSync(temp, { recursive: true, force: true }));
+  const output = join(temp, "output");
+  writeFileSync(output, "");
+  execFileSync("bash", ["-e", "-c", script], {
+    cwd: repo.cwd,
+    stdio: "ignore",
+    env: {
+      ...gitEnvironment,
+      GITHUB_EVENT_NAME: event,
+      GITHUB_OUTPUT: output,
+      RUNNER_TEMP: temp,
+      MERGE_GROUP_BASE_SHA: base ?? "",
+    },
+  });
+  return new RegExp(`^${key}=(\\w+)$`, "m").exec(
+    readFileSync(output, "utf8"),
+  )[1];
+}
+
+test("each workflow runs the base's planner, not the tested commit's", async (t) => {
+  const steps = gateWorkflows.map(planStep);
+  for (const { key, script } of steps) {
+    assert.ok(suites.includes(key), key);
+    assert.equal(
+      script.replaceAll(`'^${key}='`, "KEY").replaceAll(`"${key}=true"`, "KEY"),
+      steps[0].script
+        .replaceAll(`'^${steps[0].key}='`, "KEY")
+        .replaceAll(`"${steps[0].key}=true"`, "KEY"),
+    );
+  }
+  const step = steps[0];
+  const planner = readFileSync(join(root, "scripts/ci-plan.mjs"), "utf8");
+  const fixture = (t) => {
+    const repo = repository(t);
+    repo.git("switch", "main");
+    repo.write("scripts/ci-plan.mjs", planner);
+    repo.commit();
+    repo.git("switch", "feature");
+    repo.git("merge", "--ff-only", "main");
+    return repo;
+  };
+  await t.test("a hostile planner selects nothing it controls", (t) => {
+    const repo = fixture(t);
+    const base = repo.mergeGroup();
+    repo.write("scripts/ci-plan.mjs", hostilePlanner);
+    repo.commit();
+    assert.equal(runPlanStep(t, repo, step, "merge_group", base), "true");
+
+    const pull = fixture(t);
+    pull.write("scripts/ci-plan.mjs", hostilePlanner);
+    pull.merge();
+    assert.equal(runPlanStep(t, pull, step, "pull_request"), "true");
+  });
+  await t.test("the base planner's skip is honoured", (t) => {
+    const repo = fixture(t);
+    const base = repo.mergeGroup(["docs/hosting.md"]);
+    assert.equal(runPlanStep(t, repo, step, "merge_group", base), "false");
+
+    const pull = fixture(t);
+    pull.write("docs/hosting.md");
+    pull.merge();
+    assert.equal(runPlanStep(t, pull, step, "pull_request"), "false");
+  });
+  await t.test("no base planner selects the suite", (t) => {
+    const repo = repository(t);
+    const base = repo.mergeGroup(["docs/hosting.md"]);
+    assert.equal(runPlanStep(t, repo, step, "merge_group", base), "true");
+    assert.equal(runPlanStep(t, repo, step, "merge_group"), "true");
+    assert.equal(runPlanStep(t, repo, step, "push"), "true");
+  });
 });
 
 test("inherited Git selectors cannot redirect fixture writes or planner reads", (t) => {

@@ -2,6 +2,8 @@ name: Native
 
 on:
   pull_request:
+  merge_group:
+    types: [checks_requested]
   push:
     branches: [main]
   workflow_dispatch:
@@ -14,7 +16,8 @@ permissions:
 concurrency:
   # Nightly runs must not cancel an in-flight push to the same ref.
   group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
-  cancel-in-progress: true
+  # A cancelled merge group would eject its pull requests from the queue.
+  cancel-in-progress: ${{ github.event_name != 'merge_group' }}
 
 jobs:
   plan:
@@ -27,17 +30,25 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          fetch-depth: 2
+          # A merge group's base can be further back than its first parent.
+          fetch-depth: ${{ github.event_name != 'merge_group' && 2 || 0 }}
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24.18.1
       - name: Select checks from the tested merge
         id: plan
-        # Pull requests run the base branch's planner, so editing the planner cannot
-        # select its own checks. A key the base planner does not know selects the suite.
+        # Pull requests and merge groups run their base's planner, so editing the planner
+        # cannot select its own checks. A key the base planner does not know selects the suite.
+        env:
+          MERGE_GROUP_BASE_SHA: ${{ github.event.merge_group.base_sha }}
         run: |
-          if [ "$GITHUB_EVENT_NAME" = pull_request ] && git cat-file -e HEAD^1:scripts/ci-plan.mjs 2>/dev/null; then
-            git show HEAD^1:scripts/ci-plan.mjs > "$RUNNER_TEMP/ci-plan.mjs"
+          case "$GITHUB_EVENT_NAME" in
+            pull_request) base=HEAD^1 ;;
+            merge_group) base=$MERGE_GROUP_BASE_SHA ;;
+            *) base= ;;
+          esac
+          if [ -n "$base" ] && git cat-file -e "$base:scripts/ci-plan.mjs" 2>/dev/null; then
+            git show "$base:scripts/ci-plan.mjs" > "$RUNNER_TEMP/ci-plan.mjs"
             node "$RUNNER_TEMP/ci-plan.mjs"
           fi
           grep -q '^native=' "$GITHUB_OUTPUT" || echo "native=true" >> "$GITHUB_OUTPUT"
@@ -45,16 +56,18 @@ jobs:
   host:
     needs: plan
     if: needs.plan.outputs.native == 'true'
-    name: Host (${{ matrix.arch }})
+    name: Host (${{ matrix.platform.arch }}, ${{ matrix.lane }})
     strategy:
       fail-fast: false
       matrix:
-        include:
+        platform:
           - runner: ubuntu-24.04
             arch: amd64
           - runner: ubuntu-24.04-arm
             arch: arm64
-    runs-on: ${{ matrix.runner }}
+        # Every lane prepares its own disposable VM identically; none shares host state.
+        lane: [core, recovery, visual]
+    runs-on: ${{ matrix.platform.runner }}
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -67,8 +80,8 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/astilba-native-go
-          key: native-go-v2-${{ runner.os }}-${{ matrix.arch }}-${{ hashFiles('.github/workflows/ci.yml', 'experiments/durable-execution/host/bootstrap.sh', '**/go.mod') }}-${{ hashFiles('**/go.sum', 'experiments/durable-execution/**/*.go', 'services/platform/**/*.go') }}
-          restore-keys: native-go-v2-${{ runner.os }}-${{ matrix.arch }}-${{ hashFiles('.github/workflows/ci.yml', 'experiments/durable-execution/host/bootstrap.sh', '**/go.mod') }}-
+          key: native-go-v2-${{ runner.os }}-${{ matrix.platform.arch }}-${{ matrix.lane }}-${{ hashFiles('.github/workflows/ci.yml', 'experiments/durable-execution/host/bootstrap.sh', '**/go.mod') }}-${{ hashFiles('**/go.sum', 'experiments/durable-execution/**/*.go', 'services/platform/**/*.go') }}
+          restore-keys: native-go-v2-${{ runner.os }}-${{ matrix.platform.arch }}-${{ matrix.lane }}-${{ hashFiles('.github/workflows/ci.yml', 'experiments/durable-execution/host/bootstrap.sh', '**/go.mod') }}-
       - name: Verify fresh production host bootstrap
         run: |
           owner=$(cat /proc/sys/kernel/random/uuid)
@@ -90,12 +103,14 @@ jobs:
           sudo /opt/astilba-plat4/bin/docker --host unix:///run/astilba-plat4/docker.sock pull moby/buildkit:v0.34.1@sha256:99368f3e46177c6405b9740e4461d91cee004128daeecca78d4ceac50ec1da5c
           sudo /opt/astilba-plat4/bin/docker --host unix:///run/astilba-plat4/docker.sock pull dxflrs/garage:v2.4.1@sha256:9c96caa2612d3411acc5b0e6701fb238dbfba33e533a6d7d3d811a4b12d0d020
       - name: Verify native Ubuntu host
+        if: matrix.lane == 'core'
         working-directory: experiments/durable-execution
-        run: make -C ../.. verify-host PLAT4_ARCH=${{ matrix.arch }}
+        run: make -C ../.. verify-host PLAT4_ARCH=${{ matrix.platform.arch }}
       - name: Verify builds and PostgreSQL restore
-        run: make verify-build PLAT4_ARCH=${{ matrix.arch }}
+        if: matrix.lane == 'core'
+        run: make verify-build PLAT4_ARCH=${{ matrix.platform.arch }}
       - name: Verify production agent with systemd
-        run: make verify-agent-host
+        run: make verify-agent-host-${{ matrix.lane }}
 
   verify:
     name: Native verification

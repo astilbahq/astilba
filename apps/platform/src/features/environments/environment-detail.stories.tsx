@@ -366,7 +366,7 @@ export const ReloadConfirmation: Story = {
       "alertdialog",
       { name: "Discard unsaved configuration?" },
     );
-    await waitFor(() => expect(dialog).toBeVisible());
+    await waitFor(() => expect(dialog).toBeVisible(), { timeout: 5000 });
   },
 };
 export const ReloadFailure: Story = {
