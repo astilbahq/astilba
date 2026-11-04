@@ -291,8 +291,12 @@ func (s *Service) ConfirmMFA(ctx context.Context, id uuid.UUID, version int64, c
 func (s *Service) DisableMFA(ctx context.Context, id uuid.UUID, version int64) (db.Account, error) {
 	var account db.Account
 	err := s.Store.Transaction(ctx, func(q *db.Queries) error {
-		if _, err := lockCurrent(ctx, q, id, version); err != nil {
+		current, err := lockCurrent(ctx, q, id, version)
+		if err != nil {
 			return err
+		}
+		if len(current.TotpSecret) == 0 {
+			return domain.Conflict
 		}
 		if _, err := q.DisableTOTP(ctx, id); err != nil {
 			return err
@@ -300,7 +304,6 @@ func (s *Service) DisableMFA(ctx context.Context, id uuid.UUID, version int64) (
 		if err := q.DeleteRecoveryCodes(ctx, id); err != nil {
 			return err
 		}
-		var err error
 		account, err = q.AccountByID(ctx, id)
 		return err
 	})
