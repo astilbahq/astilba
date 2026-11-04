@@ -173,7 +173,7 @@ func (e *Engine) executeVisual(ctx context.Context, c api.ExecutionCommand, r Re
 			return err
 		}
 		for _, u := range upgrades {
-			if (*p.VolumeID == u.Command.Plan.OldVolume() || *p.VolumeID == u.Command.Plan.TargetVolumeID) && (u.Status.Active() || time.Now().Before(u.Status.KeepUntil)) {
+			if (*p.VolumeID == u.Command.Plan.OldVolume() || *p.VolumeID == u.Command.Plan.TargetVolumeID) && time.Now().Before(u.Status.KeepUntil) {
 				return e.finish(c.Id, "failed", "Upgrade retention protects this volume.")
 			}
 		}
