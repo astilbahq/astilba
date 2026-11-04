@@ -235,8 +235,10 @@ func (s *Server) Reauthenticate(w http.ResponseWriter, r *http.Request) {
 	}
 	a, e := s.Auth.Reauthenticate(r.Context(), principal(r.Context()).Account.ID, value(b.Password), value(b.Code))
 	if e == nil {
-		// Confirming credentials keeps open terminal sessions, unlike any other renewal.
-		r.Context().Value(sessionLoadKey{}).(*sessionLoad).moveTerminals = true
+		// Confirming credentials keeps open terminal sessions, unlike any other renewal. A
+		// recovery code changes the account's version, which ends them, and another request
+		// may then have removed the old session, so there is nothing to move.
+		r.Context().Value(sessionLoadKey{}).(*sessionLoad).moveTerminals = a.AuthVersion == principal(r.Context()).Account.AuthVersion
 		nonce := s.Sessions.GetString(r.Context(), "github-session")
 		e = s.establish(r.Context(), a, len(a.TotpSecret) > 0)
 		if e == nil && nonce != "" {

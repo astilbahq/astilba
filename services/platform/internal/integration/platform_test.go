@@ -159,10 +159,13 @@ func TestCredentialAndInvitationLifecycle(t *testing.T) {
 	replay := f.browser(t)
 	replay.login("owner@example.test", f.password)
 	replay.call("POST", "/api/v1/auth/mfa", map[string]string{"code": codes.Codes[0]}, 400, nil)
-	b.call("POST", "/api/v1/auth/reset/request", map[string]string{"email": "owner@example.test"}, 202, nil)
+	if b.session().User != nil {
+		t.Fatal("old session survived a recovery code")
+	}
+	login.call("POST", "/api/v1/auth/reset/request", map[string]string{"email": "owner@example.test"}, 202, nil)
 	token := tokenFromLinkMail(t, f, "/reset")
 	newPassword := "new correct horse battery staple"
-	b.call("POST", "/api/v1/auth/reset/complete", map[string]string{"token": token, "password": newPassword}, 204, nil)
+	login.call("POST", "/api/v1/auth/reset/complete", map[string]string{"token": token, "password": newPassword}, 204, nil)
 	if login.session().User != nil {
 		t.Fatal("reset left old session valid")
 	}

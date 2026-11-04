@@ -121,7 +121,7 @@ func matchTOTP(code, secret string, now time.Time, last int64) (int64, bool) {
 	}
 	return 0, false
 }
-func (s *Service) checkCode(ctx context.Context, q *db.Queries, account db.Account, code string) error {
+func (s *Service) checkCode(ctx context.Context, q *db.Queries, account *db.Account, code string) error {
 	code = strings.TrimSpace(code)
 	if len(account.TotpSecret) == 0 {
 		return domain.Credentials
@@ -137,7 +137,17 @@ func (s *Service) checkCode(ctx context.Context, q *db.Queries, account db.Accou
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.Credentials
 	}
-	return err
+	if err != nil {
+		return err
+	}
+	// A recovery code may mean a lost authenticator or a stolen account, so its use has
+	// the reach of a password change: other sessions and terminals end, and automation
+	// credentials, preview authority and unfinished GitHub connections stop working.
+	if err = q.BumpAuthVersion(ctx, account.ID); err != nil {
+		return err
+	}
+	account.AuthVersion++
+	return nil
 }
 func (s *Service) VerifyCode(ctx context.Context, id uuid.UUID, expectedVersion int64, code string) (db.Account, error) {
 	var account db.Account
@@ -153,7 +163,7 @@ func (s *Service) VerifyCode(ctx context.Context, id uuid.UUID, expectedVersion 
 		if account.AuthVersion != expectedVersion {
 			return domain.Credentials
 		}
-		return s.checkCode(ctx, q, account, code)
+		return s.checkCode(ctx, q, &account, code)
 	})
 	return account, err
 }
@@ -172,7 +182,7 @@ func (s *Service) Reauthenticate(ctx context.Context, id uuid.UUID, password, co
 			return err
 		}
 		if len(account.TotpSecret) > 0 {
-			return s.checkCode(ctx, q, account, code)
+			return s.checkCode(ctx, q, &account, code)
 		}
 		return nil
 	})

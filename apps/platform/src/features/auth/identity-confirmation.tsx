@@ -85,6 +85,7 @@ export function IdentityConfirmation({
             }
             inputComponent={recovery ? Input : AuthenticatorInput}
             autoComplete="one-time-code"
+            description={recovery ? t(($) => $.mfa.recoveryWarning) : undefined}
           />
         )}
         <BusyButton busy={action.isPending}>

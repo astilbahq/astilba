@@ -16,7 +16,7 @@ Select only the capabilities the caller needs. Build-only callers can discover t
 
 Expiry is required, from one minute to 90 days; the dashboard defaults to seven days. At most 100 unexpired, unrevoked credentials can exist in a workspace. The owner list returns at most 200 records, with active credentials first. Revocation retains metadata and audit history.
 
-Only a SHA-256 hash of the random 256-bit secret is stored. Every request requires the creator to remain an owner with the same authentication version. Password, MFA and recovery changes that invalidate browser sessions also invalidate existing automation credentials. Delegated MFA requires issuance from an MFA-confirmed session with MFA still configured. A credential issued before workspace MFA enforcement cannot use it to bypass that policy. Hosted email verification and subscription admission remain in force.
+Only a SHA-256 hash of the random 256-bit secret is stored. Every request requires the creator to remain an owner with the same authentication version. Password and MFA changes, replacing recovery codes and using a recovery code, at login or to confirm your identity, invalidate browser sessions and existing automation credentials. Delegated MFA requires issuance from an MFA-confirmed session with MFA still configured. A credential issued before workspace MFA enforcement cannot use it to bypass that policy. Hosted email verification and subscription admission remain in force.
 
 Write admission rechecks the grant after acquiring the workspace lock. Revocation or expiry while waiting prevents the mutation. Already accepted durable operations retain their normal completion and cancellation rules; revoke does not cancel work already admitted.
 

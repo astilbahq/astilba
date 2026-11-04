@@ -187,6 +187,7 @@ export function Field({
   labelAction,
   placeholder,
   size,
+  description,
   inputComponent: InputComponent = Input,
 }: {
   name: string;
@@ -205,6 +206,8 @@ export function Field({
   labelAction?: ReactNode;
   placeholder?: string;
   size?: InputProps["size"];
+  /** Only for forms with validation, whose field associates it with the input. */
+  description?: ReactNode;
   inputComponent?: typeof Input;
 }) {
   const id = useId();
@@ -258,6 +261,11 @@ export function Field({
         />
       </div>
       {labelAction && <div className={styles.action}>{labelAction}</div>}
+      {error.validation && description && (
+        <BaseField.Description className={s.muted}>
+          {description}
+        </BaseField.Description>
+      )}
       {error.validation && (
         <BaseField.Validity>
           {({ validity, value }) => {

@@ -215,6 +215,9 @@ test("two-factor sign-in separates authenticator and recovery modes and preserve
   const recovery = page.getByLabel("Recovery code", { exact: true });
   await expect(recovery).toHaveValue("");
   await expect(recovery).toHaveAttribute("inputmode", "text");
+  await expect(recovery).toHaveAccessibleDescription(
+    /signs out your other sessions/,
+  );
   await expect(page.getByRole("alert")).toHaveCount(0);
   for (const colorScheme of ["light", "dark"] as const) {
     await page.emulateMedia({ colorScheme, reducedMotion: "reduce" });
@@ -239,7 +242,7 @@ test("two-factor sign-in separates authenticator and recovery modes and preserve
   await recovery.fill("invalid-recovery-code");
   await page.getByRole("button", { name: "Verify", exact: true }).click();
   await expect(recovery).toHaveAccessibleDescription(
-    "This recovery code is invalid or has already been used. Try another code.",
+    /This recovery code is invalid or has already been used\. Try another code\./,
   );
   await expect(recovery).toBeFocused();
   await expect(recovery).toHaveAttribute("aria-invalid", "true");
