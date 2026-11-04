@@ -117,6 +117,7 @@ export default interface Resources {
       "recoveryDescription": "Enter one of the recovery codes you saved when you set up two-factor authentication. Each code can only be used once.",
       "recoveryPlaceholder": "Enter your recovery code",
       "recoveryTitle": "Use a recovery code",
+      "recoveryWarning": "Using a recovery code signs out your other sessions and ends open terminal sessions. Automation credentials you created stop working until you issue new ones, your preview policies stop until you approve them again, and an unfinished GitHub connection has to restart.",
       "submit": "Verify",
       "title": "Verify it’s you",
       "useAnotherAccount": "Use another account",

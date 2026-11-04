@@ -171,8 +171,8 @@ Management also ends a session when:
   renewed token. The session store defers deleting the old row during that
   renewal; when the renewed session commits, it deletes the old row, inserts the
   new one and moves the binding in one transaction, so a re-check never finds
-  neither. Logging in again, changing the password or confirming MFA does not
-  move the binding;
+  neither. Logging in again, changing the password, confirming MFA or using a
+  recovery code does not move the binding;
 - the workspace MFA policy is enabled for an actor without MFA;
 - the environment setting is turned off, or an owner-only restriction is turned
   on for an operator's session;
@@ -335,7 +335,8 @@ enabling or widening the environment setting, on by default.
   - role removal, `auth_version` changes, logout, credential revocation, the
     owner-only restriction, browser-session idle expiry, the deadline and an
     owner ending all sessions end an open session promptly, and
-    reauthentication does not, including a re-check during the renewal;
+    reauthentication without a recovery code does not, including a re-check during
+    the renewal;
   - stream loss and agent crashes leave no process in the shell's Linux session,
     including background jobs;
   - frame size, rate and session limits;
