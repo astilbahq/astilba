@@ -571,13 +571,16 @@ export default interface Resources {
       "forbidden": "This person is not allowed to open terminal sessions here.",
       "hostNotReady": "This server is not ready for deployments. Check its preflight report.",
       "hostOptIn": "This server’s owner has not enabled terminal sessions on the host.",
+      "ineligible": "This container is not eligible for terminal sessions.",
       "installation": "This installation has not enabled terminal sessions.",
       "invalidInput": "The request named a service or instance that could not be found.",
       "limit": "Too many terminal sessions are open. Close one and try again.",
       "mfaRequired": "This person needs two-factor authentication to open terminal sessions.",
+      "noShell": "This container has no shell to open.",
       "notDeployed": "This service is not deployed, so there is no container to open a session in.",
       "runtime": "This server’s container runtime needs updating before it can open terminal sessions.",
-      "subscriptionRequired": "This workspace needs an active subscription to open terminal sessions."
+      "subscriptionRequired": "This workspace needs an active subscription to open terminal sessions.",
+      "ticket": "The ticket was wrong, expired, already used or presented by someone else."
     },
     "retry": "Try again",
     "setting": {

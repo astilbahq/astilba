@@ -40,6 +40,9 @@ type Workspace struct {
 // WorkspaceAccess controls admission and locking, not SQL read-only mode.
 type WorkspaceAccess struct {
 	Write, Owner, Recent bool
+	// Lock takes the workspace lock without the write requirements, for an operation that
+	// only reduces access and so must not be harder than granting it.
+	Lock bool
 }
 
 func New(pool *pgxpool.Pool, keys *cryptobox.Keyring, hosted bool) *Store {
@@ -96,7 +99,7 @@ func (s *Store) inWorkspaceIsolation(ctx context.Context, p Principal, id uuid.U
 	q := db.New(tx)
 	err = func() error {
 		var w Workspace
-		if access.Write {
+		if access.Write || access.Lock {
 			if _, err := q.LockWorkspaceByID(ctx, id); err != nil {
 				return err
 			}

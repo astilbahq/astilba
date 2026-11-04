@@ -37,6 +37,9 @@ const (
 	refusedUnknown       = "unknown"
 )
 
+// RefusedEnding prefixes the close reason of a session an agent refused.
+const RefusedEnding = "agent refused: "
+
 // Refusal maps an agent's reason to a known value, because the text reaches the session
 // record and the dashboard.
 func Refusal(reason []byte) string {

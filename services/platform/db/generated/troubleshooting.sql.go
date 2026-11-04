@@ -564,6 +564,34 @@ func (q *Queries) LockTroubleshootingAdmission(ctx context.Context) error {
 	return err
 }
 
+const lockTroubleshootingSweepWorkspaces = `-- name: LockTroubleshootingSweepWorkspaces :many
+SELECT w.id FROM workspaces w
+WHERE EXISTS(SELECT 1 FROM troubleshooting_sessions t WHERE t.workspace_id = w.id AND t.state <> 'closed'
+ AND (t.deadline_at <= now() - interval '1 minute' OR (t.state = 'offered' AND t.ticket_expires_at <= now())))
+ORDER BY w.id FOR UPDATE OF w
+`
+
+// unscoped: an installation-wide sweeper ends expired sessions in every workspace.
+func (q *Queries) LockTroubleshootingSweepWorkspaces(ctx context.Context) ([]uuid.UUID, error) {
+	rows, err := q.db.Query(ctx, lockTroubleshootingSweepWorkspaces)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []uuid.UUID{}
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const recentlyAudited = `-- name: RecentlyAudited :one
 SELECT EXISTS(SELECT 1 FROM audit_events
 WHERE workspace_id = $1 AND actor_id = $2 AND action = $3 AND created_at > now() - interval '1 hour')
@@ -723,7 +751,7 @@ func (q *Queries) SaveTroubleshootingPolicy(ctx context.Context, arg SaveTrouble
 
 const sweepTroubleshootingSessions = `-- name: SweepTroubleshootingSessions :many
 UPDATE troubleshooting_sessions SET state = 'closed',closed_at = now(),close_reason = 'expired',ticket_hash = NULL,browser_session_hash = NULL
-WHERE state <> 'closed' AND (deadline_at <= now() - interval '1 minute' OR (state = 'offered' AND ticket_expires_at <= now()))
+WHERE workspace_id = ANY($1::uuid[]) AND state <> 'closed' AND (deadline_at <= now() - interval '1 minute' OR (state = 'offered' AND ticket_expires_at <= now()))
 RETURNING workspace_id,id,actor_id
 `
 
@@ -734,8 +762,8 @@ type SweepTroubleshootingSessionsRow struct {
 }
 
 // unscoped: an installation-wide sweeper ends expired sessions in every workspace.
-func (q *Queries) SweepTroubleshootingSessions(ctx context.Context) ([]SweepTroubleshootingSessionsRow, error) {
-	rows, err := q.db.Query(ctx, sweepTroubleshootingSessions)
+func (q *Queries) SweepTroubleshootingSessions(ctx context.Context, workspaceIds []uuid.UUID) ([]SweepTroubleshootingSessionsRow, error) {
+	rows, err := q.db.Query(ctx, sweepTroubleshootingSessions, workspaceIds)
 	if err != nil {
 		return nil, err
 	}
@@ -849,11 +877,11 @@ func (q *Queries) TroubleshootingEnvironmentExists(ctx context.Context, arg Trou
 }
 
 const troubleshootingUnit = `-- name: TroubleshootingUnit :one
-SELECT d.id AS unit_id,s.capabilities,s.controller_generation
+SELECT d.id AS unit_id,s.capabilities,s.controller_generation,
+ (s.revoked OR s.awaiting_transfer OR s.credential_hash IS NULL)::boolean AS unavailable
 FROM deployment_units d
 JOIN servers s ON s.workspace_id = d.workspace_id AND s.id = d.server_id
 WHERE d.workspace_id = $1 AND d.environment_id = $2 AND d.server_id = $3::uuid
- AND NOT s.revoked AND NOT s.awaiting_transfer AND s.credential_hash IS NOT NULL
 `
 
 type TroubleshootingUnitParams struct {
@@ -866,11 +894,17 @@ type TroubleshootingUnitRow struct {
 	UnitID               uuid.UUID `json:"unit_id"`
 	Capabilities         []byte    `json:"capabilities"`
 	ControllerGeneration int64     `json:"controller_generation"`
+	Unavailable          bool      `json:"unavailable"`
 }
 
 func (q *Queries) TroubleshootingUnit(ctx context.Context, arg TroubleshootingUnitParams) (TroubleshootingUnitRow, error) {
 	row := q.db.QueryRow(ctx, troubleshootingUnit, arg.WorkspaceID, arg.EnvironmentID, arg.ServerID)
 	var i TroubleshootingUnitRow
-	err := row.Scan(&i.UnitID, &i.Capabilities, &i.ControllerGeneration)
+	err := row.Scan(
+		&i.UnitID,
+		&i.Capabilities,
+		&i.ControllerGeneration,
+		&i.Unavailable,
+	)
 	return i, err
 }
