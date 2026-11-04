@@ -83,10 +83,19 @@ whenever `main` moves.
 
 The queue merges one squashed pull request at a time, builds two at once, starts
 with no wait and allows checks 150 minutes. It replaces "Require branches to be
-up to date", so `strict` is `false` in `.github/required-status-checks.json`. To
-remove the queue, first wait for it to empty or remove its entries, since GitHub
-does not document what happens to them. Then turn that setting back on in the same
-save and restore `strict`: with both off, stale pull requests could merge.
+up to date", so `strict` is `false` in `.github/required-status-checks.json` while
+the queue is on.
+
+To remove the queue:
+
+1. Land `strict: true` in that file while the queue is on. If nothing can land
+   through the queue, land it straight after step 3 instead.
+2. Wait for the queue to empty or remove its entries, since GitHub does not
+   document what happens to them.
+3. In one save, turn off "Require merge queue" and turn on "Require branches to be
+   up to date". Never leave both off: stale pull requests could merge.
+
+To turn it back on, make both changes in one save, then land `strict: false`.
 
 ## Native lanes
 
@@ -195,31 +204,27 @@ the single spec file to distribute across shards. The static workshop is built
 on each runner. Accessibility audits and scenario completion assertions remain
 enabled. `make verify-app` remains the complete unsharded local check.
 
-## Required-check migration
+## Required checks
 
-The previous branch protection requires `Verify`. This PR intentionally does not
-emit that check: it remains blocked until an administrator migrates protection.
-`.github/required-status-checks.json` is the exact replacement payload for the
-required-status-checks endpoint, with the current strict setting and all seven
-unique contexts above.
+`.github/required-status-checks.json` is the payload for the required-status-checks
+endpoint. Nothing applies it automatically, and `make check-ci` compares only its
+contexts with the workflows, not with live protection. To apply it:
 
-Before merging the workflow change:
+1. Use the copy on current `origin/main`. Apply a new check after it has landed and
+   reported, so GitHub pins it to the app that reports it. A pull request that
+   renames or removes a required check cannot report the old name, so update it to
+   contain current `origin/main` and apply its copy before merging, once its new
+   checks have succeeded on that update and the queue is empty. After a rename,
+   other open pull requests need that change before they can queue.
+2. Confirm in the branch settings that "Require merge queue" is on if the file says
+   `strict: false` and off if it says `strict: true`. The protection endpoint does
+   not show the queue, so reading protection back cannot catch this.
+3. Back up branch protection, then replace only its required status checks:
+   `gh api --method PATCH repos/astilbahq/astilba/branches/main/protection/required_status_checks --input .github/required-status-checks.json`.
+4. Read protection back and confirm its strict setting and contexts match the file,
+   and that every entry in `checks` has an `app_id`.
 
-1. Verify all seven new checks succeeded on the current PR merge commit, including
-   both native architectures and every browser shard. Update the branch if its
-   base has changed and wait for those checks again.
-2. Back up current branch protection, then atomically replace only its required
-   status checks with the manifest. Preserve review, admin, linear-history and
-   conversation-resolution settings. For this repository, the status-check update
-   is `gh api --method PATCH repos/astilbahq/astilba/branches/main/protection/required_status_checks --input .github/required-status-checks.json`.
-3. Read protection back and confirm the manifest's strict setting and exactly its
-   contexts before merging. Do not temporarily remove protection or retain a
-   missing `Verify` requirement alongside the new contexts.
-
-Opening this PR does not apply that administrator change. If the workflow change
-is abandoned before merge, leave the existing `Verify` requirement in place. To
-roll back after merge, restore the old workflow and its `Verify` requirement
-together once that check succeeds on the rollback PR.
+Do not temporarily remove protection.
 
 ## Native Go cache
 
