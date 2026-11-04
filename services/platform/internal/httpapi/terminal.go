@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"sync"
 	"sync/atomic"
@@ -19,6 +20,7 @@ import (
 
 const (
 	terminalTicketWait  = 5 * time.Second
+	terminalRedeem      = 5 * time.Second
 	terminalPing        = 30 * time.Second
 	terminalWrite       = 30 * time.Second
 	terminalClose       = 10 * time.Second // beyond the library's limits for a peer that sends nothing
@@ -159,8 +161,16 @@ func (s *Server) browserTerminal(w http.ResponseWriter, r *http.Request) {
 		closeTerminal(conn, websocket.StatusPolicyViolation, "ticket required")
 		return
 	}
-	stream, err := s.Execution.RedeemTroubleshootingTicket(context.WithoutCancel(ctx), *p, execution.BrowserBinding{Token: cookie.Value}, ws, id, string(ticket))
+	// Nothing reads the connection during this wait, so a busy pool or a held workspace
+	// lock would otherwise keep the socket and this handler for as long as it lasts.
+	redeem, cancel := context.WithTimeout(context.WithoutCancel(ctx), terminalRedeem)
+	stream, err := s.Execution.RedeemTroubleshootingTicket(redeem, *p, execution.BrowserBinding{Token: cookie.Value}, ws, id, string(ticket))
+	cancel()
 	if err != nil {
+		var refused *domain.Error
+		if !errors.As(err, &refused) {
+			s.Log.Error("terminal ticket redemption failed", failureDiagnostic(err))
+		}
 		closeTerminal(conn, websocket.StatusPolicyViolation, "session refused")
 		return
 	}
