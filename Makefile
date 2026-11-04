@@ -86,10 +86,10 @@ verify-agent-host:
 
 verify-agent-host-core:
 	cd services/platform && $(NATIVE_GO) ASTILBA_NATIVE_NETWORK=1 /opt/astilba-plat4/go/bin/go test -race -count=1 -timeout=5m -v -run '^TestNativeManagedLinks$$' ./internal/hostnetwork
-	cd services/platform && $(NATIVE_AGENT_GO) -timeout=30m -run '^TestNative((Compose|CrossHost)Deployment|Pipeline|ReleaseCommandTransport|PreviewEnvironment|TroubleshootingTarget)$$' ./internal/agent
+	cd services/platform && $(NATIVE_AGENT_GO) -timeout=30m -run '^TestNative((Compose|CrossHost)Deployment|Pipeline|ReleaseCommandTransport|PreviewEnvironment|TroubleshootingTarget|TroubleshootingSession|TroubleshootingShellExit|TroubleshootingIdleLimit|TroubleshootingRefusals|TroubleshootingCrashCleanup|TroubleshootingEndsSurvivors|TroubleshootingStalledInput|TroubleshootingNoShell)$$' ./internal/agent
 
 verify-agent-host-recovery:
-	cd services/platform && $(NATIVE_AGENT_GO) -timeout=15m -run '^TestNative(AgentService|CrossHostOlderBackupRecovery|CrossHostDrainedRecovery|CrossHostUpgradeRecovery)$$' ./internal/integration
+	cd services/platform && $(NATIVE_AGENT_GO) -timeout=15m -run '^TestNative(AgentService|TroubleshootingEndToEnd|CrossHostOlderBackupRecovery|CrossHostDrainedRecovery|CrossHostUpgradeRecovery)$$' ./internal/integration
 
 verify-agent-host-visual:
 	cd services/platform && $(NATIVE_AGENT_GO) -timeout=30m -run '^TestNativeVisualDeployment$$' ./internal/agent

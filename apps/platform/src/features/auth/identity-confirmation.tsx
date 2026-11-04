@@ -14,8 +14,10 @@ import { useAuthValidation } from "./use-auth-validation";
 
 export function IdentityConfirmation({
   onConfirmed,
+  heading: Heading = "h2",
 }: {
   onConfirmed: () => void;
+  heading?: "h2" | "h4";
 }) {
   const { t } = useTranslation("auth");
   const queries = useQueryClient();
@@ -37,9 +39,9 @@ export function IdentityConfirmation({
   }, []);
   return (
     <div className={s.stack}>
-      <h2 ref={heading} tabIndex={-1}>
+      <Heading ref={heading} tabIndex={-1}>
         {t(($) => $.onboarding.identityTitle)}
-      </h2>
+      </Heading>
       <p className={s.muted}>{t(($) => $.onboarding.identityDescription)}</p>
       <Form
         action={action}

@@ -29,14 +29,18 @@ const (
 	RefusedIneligible = "ineligible"
 	RefusedNoShell    = "no_shell"
 	RefusedLimit      = "limit"
-	refusedUnknown    = "unknown"
+	// RefusedUnavailable is a Docker failure on the host, which says nothing about the target.
+	RefusedUnavailable = "unavailable"
+	// RefusedInputOverflow ends a session whose shell stopped reading more input than can wait.
+	RefusedInputOverflow = "input_overflow"
+	refusedUnknown       = "unknown"
 )
 
 // Refusal maps an agent's reason to a known value, because the text reaches the session
 // record and the dashboard.
 func Refusal(reason []byte) string {
 	switch text := string(reason); text {
-	case RefusedOptIn, RefusedRuntime, RefusedIneligible, RefusedNoShell, RefusedLimit:
+	case RefusedOptIn, RefusedRuntime, RefusedIneligible, RefusedNoShell, RefusedLimit, RefusedUnavailable, RefusedInputOverflow:
 		return text
 	default:
 		return refusedUnknown

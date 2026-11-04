@@ -9,6 +9,9 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
+	"net/http/httputil"
+	"net/url"
 	"os"
 	"strings"
 	"testing"
@@ -706,4 +709,48 @@ func TestTroubleshootingAbandonedSessionsClose(t *testing.T) {
 	}
 	x.waitClosed(t, left.Session.Id, "management restart")
 	x.audited(t, "session.close", 2)
+}
+
+// Both streams pass through an ordinary reverse proxy, with the browser's Origin still
+// naming the public origin. This does not cover a proxy's idle or duration limits.
+func TestTroubleshootingThroughAReverseProxy(t *testing.T) {
+	x := relayFixture(t)
+	target, err := url.Parse(x.f.server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	edge := httptest.NewServer(httputil.NewSingleHostReverseProxy(target))
+	t.Cleanup(edge.Close)
+	direct := x.f.server.URL
+	via := "ws" + strings.TrimPrefix(edge.URL, "http")
+	opened := x.open(t, x.owner, x.app, 1, 201)
+
+	dial := func(path string, options *websocket.DialOptions) *terminalPeer {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		conn, _, err := websocket.Dial(ctx, via+path, options)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { conn.CloseNow() })
+		return readTerminal(conn)
+	}
+	agent := dial("/agent/v1/troubleshooting/"+opened.Session.Id.String()+"/stream", &websocket.DialOptions{HTTPHeader: http.Header{"Authorization": {"Bearer " + x.agentToken}}})
+	cookies := x.owner.client.Jar.Cookies(target)
+	header := http.Header{"Origin": {direct}}
+	for _, cookie := range cookies {
+		header.Add("Cookie", cookie.String())
+	}
+	browser := dial(x.prefix+"/troubleshooting-sessions/"+opened.Session.Id.String()+"/stream", &websocket.DialOptions{HTTPHeader: header})
+	browser.send(t, []byte(opened.Ticket))
+	agent.expect(t, []byte{terminal.Start})
+
+	browser.send(t, append([]byte{terminal.Input}, "through\n"...))
+	agent.expect(t, append([]byte{terminal.Input}, "through\n"...))
+	agent.send(t, append([]byte{terminal.Output}, "proxied\n"...))
+	browser.expect(t, append([]byte{terminal.Output}, "proxied\n"...))
+	agent.send(t, []byte{terminal.Exit, 0})
+	browser.expect(t, []byte{terminal.Exit, 0})
+	x.waitClosed(t, opened.Session.Id, "shell exited")
 }

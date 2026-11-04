@@ -5537,8 +5537,9 @@
     AgentTroubleshootingOffer:
       type: object
       additionalProperties: false
-      required: [sessionId, unitId, applicationId, instance, controllerGeneration]
+      required: [sessionId, unitId, applicationId, instance, controllerGeneration, actorId]
       properties:
+        actorId: {type: string, format: uuid, description: "The account that opened the session, for the host's own trail."}
         sessionId: {type: string, format: uuid}
         unitId: {type: string, format: uuid}
         applicationId: {type: string, format: uuid}

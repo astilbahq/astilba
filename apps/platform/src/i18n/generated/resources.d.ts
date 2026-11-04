@@ -501,5 +501,108 @@ export default interface Resources {
     "readOnly": "You have view-only access. A workspace owner or member can create projects.",
     "retry": "Try again",
     "title": "Projects"
+  },
+  "troubleshooting": {
+    "closeReason": {
+      "closed": "Closed by the person who opened it",
+      "closedByOwner": "Ended by an owner",
+      "environmentSetting": "The environment setting changed",
+      "expired": "Reached a time limit",
+      "managementRecovery": "Management was recovered",
+      "none": "Not closed"
+    },
+    "description": "A terminal session opens a shell inside a running service’s container. Opening and closing sessions is audited. What people type and see is not recorded.",
+    "duration": {
+      "inProgress": "In progress",
+      "minutes": "{{count}} minute" | "{{count}} minutes",
+      "notRecorded": "Not recorded",
+      "underMinute": "Under a minute"
+    },
+    "fallback": {
+      "environment": "Environment {{id}}",
+      "member": "Member {{id}}",
+      "server": "Server {{id}}",
+      "service": "Service {{id}}"
+    },
+    "history": {
+      "caption": "Recent terminal sessions",
+      "closeReason": "Close reason",
+      "description": "The 100 most recent sessions in this workspace.",
+      "duration": "Duration",
+      "empty": "No terminal sessions have been opened in this workspace.",
+      "loadFailed": "Session history could not be loaded.",
+      "loading": "Loading session history…",
+      "person": "Person",
+      "region": "Terminal session history table",
+      "start": "Start",
+      "state": "State",
+      "target": "Target",
+      "title": "Terminal session history"
+    },
+    "open": {
+      "allEnded": "All sessions in this workspace ended.",
+      "alreadyEnded": "That session had already ended.",
+      "empty": "No sessions are open in this environment.",
+      "end": "End session",
+      "endAll": "End all sessions in this workspace",
+      "endAllConfirm": "End all sessions",
+      "endAllDescription": "This closes every open shell in every environment of this workspace, not only this one. Anything not saved in those shells is lost.",
+      "endAllTitle": "End all terminal sessions in this workspace?",
+      "endDescription": "This closes the shell on {{target}}. Anything still running in that shell stops, and anything not saved in it is lost.",
+      "endNamed": "End session on {{target}}",
+      "endTitle": "End this terminal session?",
+      "ended": "Session ended.",
+      "ends": "Ends by {{date}}",
+      "keep": "Keep open",
+      "loadFailed": "Open sessions could not be loaded.",
+      "loading": "Loading open sessions…",
+      "refreshFailed": "Open sessions could not be refreshed, so this list may be out of date. Trying again automatically.",
+      "started": "Started {{date}}",
+      "title": "Open sessions",
+      "working": "Ending sessions…"
+    },
+    "refusal": {
+      "activity": "Terminal session refused: {{reason}}",
+      "activityUnknown": "Terminal session refused.",
+      "agentUpdate": "This server’s agent needs updating before it can open terminal sessions.",
+      "emailVerificationRequired": "This person needs a verified email address to open terminal sessions.",
+      "environment": "An owner has not allowed terminal sessions in this environment.",
+      "forbidden": "This person is not allowed to open terminal sessions here.",
+      "hostNotReady": "This server is not ready for deployments. Check its preflight report.",
+      "hostOptIn": "This server’s owner has not enabled terminal sessions on the host.",
+      "installation": "This installation has not enabled terminal sessions.",
+      "invalidInput": "The request named a service or instance that could not be found.",
+      "limit": "Too many terminal sessions are open. Close one and try again.",
+      "mfaRequired": "This person needs two-factor authentication to open terminal sessions.",
+      "notDeployed": "This service is not deployed, so there is no container to open a session in.",
+      "runtime": "This server’s container runtime needs updating before it can open terminal sessions.",
+      "subscriptionRequired": "This workspace needs an active subscription to open terminal sessions."
+    },
+    "retry": "Try again",
+    "setting": {
+      "cancel": "Cancel",
+      "conflict": "Someone else changed this setting. Your choices are kept here, but they have not been saved. Load the current setting and review it before saving again.",
+      "enabled": "Allow terminal sessions in this environment",
+      "loadCurrent": "Load current setting",
+      "loadFailed": "The terminal session setting could not be loaded.",
+      "loading": "Loading the terminal session setting…",
+      "narrowingHelp": "Turning sessions off or restricting them to owners ends the open sessions the new setting no longer allows.",
+      "ownersOnly": "Only owners can open sessions",
+      "ownersOnlyHelp": "A shell exposes the service’s environment and volumes, and can change what runs without a reviewed source change. Operators can open sessions unless you restrict them.",
+      "save": "Save setting",
+      "saved": "Terminal session setting saved.",
+      "title": "Access in this environment",
+      "unavailable": "This installation has not enabled terminal sessions, so nobody can open one yet. Its administrator needs to enable them. You can still choose this environment’s setting.",
+      "widenHelp": "You’ll be asked to confirm your identity when you allow sessions or let operators open them."
+    },
+    "state": {
+      "active": "Connected",
+      "closed": "Ended",
+      "expired": "Expired",
+      "offered": "Not connected"
+    },
+    "target": "{{service}}, instance {{instance}}",
+    "title": "Terminal sessions",
+    "you": "You"
   }
 }

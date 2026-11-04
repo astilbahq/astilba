@@ -81,7 +81,7 @@ sudo astilba-agent troubleshooting-enable
 sudo systemctl start astilba-agent
 ```
 
-`troubleshooting-disable` withdraws consent the same way. Consent names the current controller, so transfer, recovery handover and re-enrolling with a new release key withdraw it. Sessions need runc 1.3.3 or later on the 1.3 branch, or a final 1.x release from 1.4 onwards; other hosts report that the container runtime needs updating. Dashboard sessions are not available yet.
+`troubleshooting-disable` withdraws consent the same way. Consent names the current controller, so transfer, recovery handover and re-enrolling with a new release key withdraw it. Sessions need runc 1.3.3 or later on the 1.3 branch, or a final 1.x release from 1.4 onwards; other hosts report that the container runtime needs updating. The agent writes a journald record of each session's start and end, with the session, the actor as supplied by management, the container and the reason, and no terminal content. If you run a reverse proxy, it must also forward these stream upgrades and allow them to last 60 minutes; see [Hosting](hosting.md#terminal-sessions-behind-a-reverse-proxy). Dashboard sessions are not available yet.
 
 ## Explicit updates
 

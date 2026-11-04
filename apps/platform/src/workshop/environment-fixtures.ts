@@ -122,6 +122,17 @@ export function environmentHandlers() {
     ].map((suffix) =>
       http.get(`${environmentRoot}/${suffix}`, () => HttpResponse.json([])),
     ),
+    http.get(`${environmentRoot}/troubleshooting`, () =>
+      HttpResponse.json({
+        enabled: false,
+        ownersOnly: false,
+        generation: 0,
+        available: true,
+      } satisfies Schema["TroubleshootingPolicy"]),
+    ),
+    http.get(`${environmentRoot}/troubleshooting/sessions`, () =>
+      HttpResponse.json([]),
+    ),
     ...["source", "preview-policy"].map((suffix) =>
       http.get(`${environmentRoot}/${suffix}`, () => workshopError()),
     ),
@@ -141,6 +152,7 @@ export function environmentHandlers() {
     ),
     ...[
       "servers",
+      "members",
       "operations",
       "git-connections",
       "registries",

@@ -109,6 +109,12 @@ func troubleshootingRuntime(components []system.ComponentVersion) bool {
 	return false
 }
 
+// RecordUnitPlan journals a unit's plan without deploying it, for tests that exercise
+// sessions against a container they created themselves.
+func (j *Journal) RecordUnitPlan(plan deployment.Plan) error {
+	return j.saveUnit(unitState{Plan: plan, Expected: map[string]string{}})
+}
+
 // TroubleshootingTarget finds the running container a session may enter, from the
 // unit's journaled plan and the container's own ownership labels and configuration.
 func (e *Engine) TroubleshootingTarget(ctx context.Context, unit, app uuid.UUID, instance int) (string, error) {

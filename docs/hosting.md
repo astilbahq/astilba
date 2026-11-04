@@ -37,6 +37,7 @@ an owner-only environment file outside source control:
 | `ASTILBA_KEYRING_JSON` | Alternative keyring JSON supplied directly by a secret manager or container environment. Configure exactly one keyring source. |
 | `ASTILBA_ORIGIN` | Exact public HTTPS origin, without a path or trailing slash. |
 | `ASTILBA_LISTEN` | Listener, normally `0.0.0.0:8080` inside the container. |
+| `ASTILBA_TROUBLESHOOTING` | Optional. `single-instance` declares that one instance serves this installation, which [interactive troubleshooting](interactive-troubleshooting.md) requires. Off by default. |
 | `ASTILBA_TRUSTED_PROXIES` | Optional comma-separated proxy IP CIDRs, for example `192.0.2.10/32,2001:db8::10/128`. Empty by default; forwarding headers are then ignored. |
 | `ASTILBA_SMTP_ADDRESS`, `ASTILBA_SMTP_MODE`, `ASTILBA_SMTP_FROM` | SMTP delivery settings. Use `tls` or `starttls` outside local development. |
 | `ASTILBA_SMTP_USERNAME`, `ASTILBA_SMTP_PASSWORD` | Optional SMTP credentials. |
@@ -88,6 +89,21 @@ different source address; do not copy this example without checking the network.
 With no configured proxies, direct-host requests continue to use their TCP peer.
 Clients sharing a real public IP still share an IP budget; account and global
 authentication limits remain in place.
+
+### Terminal sessions behind a reverse proxy
+
+[Interactive troubleshooting](interactive-troubleshooting.md) uses WebSockets for both
+the browser and the host agent, on the same origin as the dashboard. It needs
+`ASTILBA_TROUBLESHOOTING=single-instance`, because both streams of a session must
+reach the same instance. Your proxy must:
+
+- forward WebSocket upgrades for `/agent/v1/troubleshooting/` and
+  `/api/v1/workspaces/*/troubleshooting-sessions/*/stream`;
+- allow an idle timeout longer than 30 seconds, the interval of the stream pings;
+- not cap a stream's total duration below 60 minutes.
+
+A proxy that refuses upgrades makes sessions close within about a minute, and a shorter
+idle or duration limit ends them early. Nothing else is affected.
 
 ## Hosted admission and billing
 
