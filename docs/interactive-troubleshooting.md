@@ -141,7 +141,9 @@ also notifies the workspace's owners. It defaults to
 6. **End.** A session ends on explicit close, after 15 minutes without typed input,
    at its deadline or when either stream drops. Typed input also refreshes the
    browser session's idle timer, at most once a minute, so a person working in
-   the terminal is not logged out of the dashboard mid-session. The agent enforces the idle
+   the terminal is not logged out of the dashboard mid-session. The relay can only extend
+   the stored session, so the dashboard terminal also requests the session at most once a
+   minute while the person types, which reissues the browser's cookie. The agent enforces the idle
    timeout and deadline itself as well, measuring both as durations from
    when the shell starts so clock differences between management and the host do not
    matter. It ends every process in the shell's
@@ -183,6 +185,12 @@ The relay re-reads all of these conditions from PostgreSQL every five seconds, s
 a change made by any request or worker ends the session promptly without a separate
 notification channel. An owner can end any open session in the workspace, or all of
 them at once.
+
+Ending a session needs only membership and that role: not the write requirements of MFA,
+a verified email or an active subscription, because stopping access must not be harder
+than granting it. The person who opened a session can end their own, and an owner can
+end anyone's or all of them. The request still needs a browser session and its CSRF
+token, and the close is audited.
 
 A user can still deliberately start a process in a new Linux session (for
 example with `setsid`). Such processes can survive the terminal until the

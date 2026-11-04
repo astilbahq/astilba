@@ -37,6 +37,9 @@ func (s *Server) authorizeEnvironmentPurpose(ctx context.Context, in *openapi3fi
 		return nil
 	}
 	op := strings.ToLower(in.Route.Operation.OperationID)
+	if op == "opentroubleshootingsession" {
+		return nil // these environments can never enable sessions, and admission audits the refusal
+	}
 	if purpose == "preview" {
 		switch op {
 		case "createautomationcredential", "revokeautomationcredential", "refreshruntime":

@@ -25,11 +25,11 @@ SELECT EXISTS(SELECT 1 FROM environments
 WHERE workspace_id = @workspace_id AND project_id = @project_id AND id = @environment_id);
 
 -- name: TroubleshootingUnit :one
-SELECT d.id AS unit_id,s.capabilities,s.controller_generation
+SELECT d.id AS unit_id,s.capabilities,s.controller_generation,
+ (s.revoked OR s.awaiting_transfer OR s.credential_hash IS NULL)::boolean AS unavailable
 FROM deployment_units d
 JOIN servers s ON s.workspace_id = d.workspace_id AND s.id = d.server_id
-WHERE d.workspace_id = @workspace_id AND d.environment_id = @environment_id AND d.server_id = @server_id::uuid
- AND NOT s.revoked AND NOT s.awaiting_transfer AND s.credential_hash IS NOT NULL;
+WHERE d.workspace_id = @workspace_id AND d.environment_id = @environment_id AND d.server_id = @server_id::uuid;
 
 -- name: LockTroubleshootingAdmission :exec
 SELECT pg_advisory_xact_lock(4281642303);
@@ -163,10 +163,17 @@ UPDATE troubleshooting_sessions SET state = 'closed',closed_at = COALESCE(closed
  ticket_hash = NULL,browser_session_hash = NULL,input_bytes = @input_bytes,output_bytes = @output_bytes
 WHERE workspace_id = @workspace_id AND id = @id;
 
+-- name: LockTroubleshootingSweepWorkspaces :many
+-- unscoped: an installation-wide sweeper ends expired sessions in every workspace.
+SELECT w.id FROM workspaces w
+WHERE EXISTS(SELECT 1 FROM troubleshooting_sessions t WHERE t.workspace_id = w.id AND t.state <> 'closed'
+ AND (t.deadline_at <= now() - interval '1 minute' OR (t.state = 'offered' AND t.ticket_expires_at <= now())))
+ORDER BY w.id FOR UPDATE OF w;
+
 -- name: SweepTroubleshootingSessions :many
 -- unscoped: an installation-wide sweeper ends expired sessions in every workspace.
 UPDATE troubleshooting_sessions SET state = 'closed',closed_at = now(),close_reason = 'expired',ticket_hash = NULL,browser_session_hash = NULL
-WHERE state <> 'closed' AND (deadline_at <= now() - interval '1 minute' OR (state = 'offered' AND ticket_expires_at <= now()))
+WHERE workspace_id = ANY(@workspace_ids::uuid[]) AND state <> 'closed' AND (deadline_at <= now() - interval '1 minute' OR (state = 'offered' AND ticket_expires_at <= now()))
 RETURNING workspace_id,id,actor_id;
 
 -- name: CloseAbandonedTroubleshootingSessions :many

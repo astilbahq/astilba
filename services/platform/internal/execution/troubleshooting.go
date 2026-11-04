@@ -127,6 +127,9 @@ func (s *Service) OpenTroubleshootingSession(ctx context.Context, p store.Princi
 		if err != nil {
 			return err
 		}
+		if unit.Unavailable {
+			return domain.TroubleshootingRefused(domain.TroubleshootingHostNotReady)
+		}
 		if err = troubleshootingCapability(unit.Capabilities); err != nil {
 			return err
 		}
@@ -224,7 +227,7 @@ func troubleshootingCapability(raw []byte) error {
 // for recent authentication is not a refusal, and a missing resource reveals nothing.
 // Repeats are coalesced per hour, so a member cannot flood the workspace's audit log
 // and push it past the export limit.
-func (s *Service) auditTroubleshootingRefusal(ctx context.Context, p store.Principal, ws, env uuid.UUID, refusal error) {
+func (s *Service) auditTroubleshootingRefusal(ctx context.Context, p store.Principal, ws, resource uuid.UUID, refusal error) {
 	var refused *domain.Error
 	if !errors.As(refusal, &refused) || refused.Code == domain.RecentRequired.Code || refused.Code == domain.NotFound.Code {
 		return
@@ -239,7 +242,7 @@ func (s *Service) auditTroubleshootingRefusal(ctx context.Context, p store.Princ
 		if err != nil || recent {
 			return err
 		}
-		return store.Audit(ctx, q, p, ws, action, env)
+		return store.Audit(ctx, q, p, ws, action, resource)
 	})
 }
 
@@ -277,9 +280,10 @@ func (s *Service) TroubleshootingSessionHistory(ctx context.Context, p store.Pri
 	return out, err
 }
 
-// CloseTroubleshootingSession lets the person who opened a session, or an owner, end it.
+// CloseTroubleshootingSession lets the person who opened a session, or an owner, end it,
+// whether or not they currently meet the workspace's write requirements.
 func (s *Service) CloseTroubleshootingSession(ctx context.Context, p store.Principal, ws, id uuid.UUID) error {
-	return s.Store.InWorkspace(ctx, p, ws, store.WorkspaceAccess{Write: true}, func(q *db.Queries, w store.Workspace) error {
+	return s.Store.InWorkspace(ctx, p, ws, store.WorkspaceAccess{Lock: true}, func(q *db.Queries, w store.Workspace) error {
 		actor, err := q.GetTroubleshootingSessionActor(ctx, db.GetTroubleshootingSessionActorParams{WorkspaceID: ws, ID: id})
 		if errors.Is(err, pgx.ErrNoRows) {
 			return domain.NotFound
@@ -301,7 +305,7 @@ func (s *Service) CloseTroubleshootingSession(ctx context.Context, p store.Princ
 }
 
 func (s *Service) CloseAllTroubleshootingSessions(ctx context.Context, p store.Principal, ws uuid.UUID) error {
-	return s.Store.InWorkspace(ctx, p, ws, store.WorkspaceAccess{Write: true, Owner: true}, func(q *db.Queries, _ store.Workspace) error {
+	return s.Store.InWorkspace(ctx, p, ws, store.WorkspaceAccess{Lock: true, Owner: true}, func(q *db.Queries, _ store.Workspace) error {
 		ended, err := q.CloseWorkspaceTroubleshootingSessions(ctx, db.CloseWorkspaceTroubleshootingSessionsParams{CloseReason: "closed by owner", WorkspaceID: ws})
 		if err != nil {
 			return err

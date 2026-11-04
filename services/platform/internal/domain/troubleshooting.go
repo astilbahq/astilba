@@ -25,6 +25,7 @@ const (
 	TroubleshootingHostNotReady = "host_not_ready"
 	TroubleshootingHostOptIn    = "host_opt_in"
 	TroubleshootingLimit        = "limit"
+	TroubleshootingTicket       = "ticket"
 )
 
 var troubleshootingMessages = map[string]string{
@@ -36,6 +37,7 @@ var troubleshootingMessages = map[string]string{
 	TroubleshootingHostNotReady: "This server is not ready for deployments. Check its preflight report.",
 	TroubleshootingHostOptIn:    "This server's owner has not enabled terminal sessions on the host.",
 	TroubleshootingLimit:        "Too many terminal sessions are open. Close one and try again.",
+	TroubleshootingTicket:       "This terminal session's ticket is not valid here. Open a new session.",
 }
 
 // TroubleshootingRefused names why a session cannot open; Fields carries the reason.

@@ -428,6 +428,7 @@ func TestTroubleshootingStreamsRefuseAnyoneElse(t *testing.T) {
 	x.attachBrowser(t, x.owner, opened)
 	agent.expect(t, []byte{terminal.Start})
 	refused(x.owner, opened.Ticket)
+	x.audited(t, "session.refused.ticket", 2) // the owner's and the operator's, coalesced
 
 }
 
