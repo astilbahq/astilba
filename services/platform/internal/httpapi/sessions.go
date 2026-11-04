@@ -2,12 +2,15 @@ package httpapi
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"net/http"
 	"time"
 
 	"github.com/alexedwards/scs/pgxstore"
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
+	"github.com/astilbahq/astilba/services/platform/internal/api"
+	"github.com/astilbahq/astilba/services/platform/internal/store"
 )
 
 var errSessionRevoked = errors.New("browser session was revoked")
@@ -15,11 +18,49 @@ var errSessionContext = errors.New("browser session context is unavailable")
 var errSessionResponse = errors.New("browser session response is unavailable")
 
 type sessionLoadKey struct{}
-type sessionLoad struct{ token string }
+type sessionLoad struct {
+	token string
+	// moveTerminals defers deleting the old token so the renewed session, the old
+	// session's removal and its terminal bindings commit together.
+	moveTerminals bool
+}
 
 type sessionStore struct {
 	*pgxstore.PostgresStore
 	queries *db.Queries
+	store   *store.Store
+}
+
+func (s *sessionStore) DeleteCtx(ctx context.Context, token string) error {
+	if loaded, _ := ctx.Value(sessionLoadKey{}).(*sessionLoad); loaded != nil && loaded.moveTerminals && loaded.token == token {
+		return nil
+	}
+	return s.PostgresStore.DeleteCtx(ctx, token)
+}
+
+// renewWithTerminals replaces a token in one transaction, so a re-check of an open
+// terminal session finds exactly one of them.
+func (s *sessionStore) renewWithTerminals(ctx context.Context, previous, token string, data []byte, expiry time.Time) error {
+	oldHash, err := base64.RawURLEncoding.DecodeString(previous)
+	if err != nil {
+		return err
+	}
+	newHash, err := base64.RawURLEncoding.DecodeString(token)
+	if err != nil {
+		return err
+	}
+	return s.store.Transaction(ctx, func(q *db.Queries) error {
+		// A logout or another renewal may have won: never recreate its authority.
+		if n, err := q.DeleteRenewedSession(ctx, previous); err != nil {
+			return err
+		} else if n == 0 {
+			return errSessionRevoked
+		}
+		if err := q.InsertSession(ctx, db.InsertSessionParams{Token: token, Data: data, Expiry: expiry}); err != nil {
+			return err
+		}
+		return q.MoveTroubleshootingBrowserBinding(ctx, db.MoveTroubleshootingBrowserBindingParams{Renewed: newHash, Previous: oldHash})
+	})
 }
 
 func (s *sessionStore) FindCtx(ctx context.Context, token string) ([]byte, bool, error) {
@@ -52,6 +93,10 @@ func (s *sessionStore) CommitCtx(ctx context.Context, token string, data []byte,
 		}
 		if n == 0 {
 			return errSessionRevoked
+		}
+	} else if loaded.moveTerminals && loaded.token != "" {
+		if err := s.renewWithTerminals(ctx, loaded.token, token, data, expiry); err != nil {
+			return err
 		}
 	} else {
 		if err := s.queries.InsertSession(ctx, db.InsertSessionParams{Token: token, Data: data, Expiry: expiry}); err != nil {
@@ -91,4 +136,27 @@ func browserSessionRequest(next http.Handler) http.Handler {
 		ctx := context.WithValue(r.Context(), sessionLoadKey{}, &sessionLoad{})
 		next.ServeHTTP(&sessionResponseGuard{ResponseWriter: w}, r.WithContext(ctx))
 	})
+}
+
+func (s *Server) Reauthenticate(w http.ResponseWriter, r *http.Request) {
+	b, e := decode[api.Reauthenticate](r)
+	if e != nil {
+		s.fail(w, r, e)
+		return
+	}
+	a, e := s.Auth.Reauthenticate(r.Context(), principal(r.Context()).Account.ID, value(b.Password), value(b.Code))
+	if e == nil {
+		// Confirming credentials keeps open terminal sessions, unlike any other renewal.
+		r.Context().Value(sessionLoadKey{}).(*sessionLoad).moveTerminals = true
+		nonce := s.Sessions.GetString(r.Context(), "github-session")
+		e = s.establish(r.Context(), a, len(a.TotpSecret) > 0)
+		if e == nil && nonce != "" {
+			s.Sessions.Put(r.Context(), "github-session", nonce)
+		}
+	}
+	if e != nil {
+		s.fail(w, r, e)
+		return
+	}
+	s.sendSession(w, r)
 }
