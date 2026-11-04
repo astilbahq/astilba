@@ -38,7 +38,8 @@ func TestNativeAgentService(t *testing.T) {
 	ws := b.login("owner@example.test", f.password).Workspaces[0].Id
 	env := envForExecution(t, f, b, ws)
 	tag := "astilba-p2-" + uuid.NewString()
-	root := filepath.Join("/run", tag)
+	// GitHub's AWS-hosted runners mount /run noexec, and the unit's PrivateTmp and ProtectHome hide /tmp and home.
+	root := filepath.Join("/var/lib", tag)
 	if e := os.Mkdir(root, 0700); e != nil {
 		t.Fatal(e)
 	}

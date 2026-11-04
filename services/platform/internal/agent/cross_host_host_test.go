@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"maps"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -497,26 +496,6 @@ func nativePlacementHosts(t *testing.T) (context.Context, []*nativePlacementHost
 	}
 	run("nsenter", "--net=/run/netns/"+hosts[1].namespace, "ping", "-c", "1", "-W", "2", "10.218.0.1")
 	return ctx, hosts
-}
-
-func nativePlacementRequest(t *testing.T, address, domain string) (int, string) {
-	t.Helper()
-	request, err := http.NewRequest("GET", "http://"+address+"/cgi-bin/health", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	request.Host = domain
-	client := http.Client{Timeout: 4 * time.Second, Transport: &http.Transport{Proxy: nil}}
-	response, err := client.Do(request)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer response.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(response.Body, 1024))
-	if err != nil {
-		t.Fatal(err)
-	}
-	return response.StatusCode, string(body)
 }
 
 func TestNativeCrossHostDeployment(t *testing.T) {
@@ -1292,22 +1271,4 @@ func secretsForPlan(p deployment.Plan, secrets map[string]string) map[string]str
 		out[id.String()] = secrets[id.String()]
 	}
 	return out
-}
-
-// Public health checks run every five seconds independently of local readiness.
-// Writer maintenance promises bounded convergence rather than instant routing.
-func nativeWaitPlacementRecovery(t *testing.T) {
-	t.Helper()
-	started := time.Now()
-	for {
-		status, body := nativePlacementRequest(t, "10.219.0.1", "cross-host.example.test")
-		if status == 200 {
-			t.Logf("public routing recovered after %s", time.Since(started).Round(time.Millisecond))
-			return
-		}
-		if time.Since(started) > 30*time.Second {
-			t.Fatalf("application did not recover after writer restart: %d %s", status, body)
-		}
-		time.Sleep(200 * time.Millisecond)
-	}
 }
