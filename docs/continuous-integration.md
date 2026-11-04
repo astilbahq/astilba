@@ -52,6 +52,25 @@ temporary repositories.
 Native tests run only on their owned disposable Ubuntu runners. They never reuse
 an existing deployment host or application runtime state.
 
+## Native lanes
+
+Each architecture runs three lanes, each on its own disposable runner VM. The
+Native verification gate requires all six jobs to pass:
+
+| Lane | Verification |
+| --- | --- |
+| `core` | PLAT-4 host runtime, builds, PostgreSQL restore, managed links, Compose and cross-host deployment, pipeline, preview, release transport and troubleshooting target |
+| `recovery` | Agent service enrollment, restart and signed update; cross-host older-backup, drained and upgrade recovery |
+| `visual` | Visual deployment, including catalog, backup, restore and major upgrades |
+
+Every lane repeats the same fresh production bootstrap, pinned runtime install and
+image pulls, so each suite starts from the same prepared host. The Makefile's
+`verify-agent-host-*` targets partition `verify-agent-host`, which runs them in
+sequence on a local disposable host. CI no longer runs suites from different lanes
+on one VM, so it cannot see residue from one lane break another. For example, an
+ingress that survives the preview test's cleanup no longer trips the visual test's
+absent-ingress guard in CI; the sequential target still shows it.
+
 ## Application Go verification
 
 Application verification runs four jobs in parallel: `make verify-app-build`
@@ -159,7 +178,7 @@ together once that check succeeds on the rollback PR.
 
 The host jobs cache downloaded Go modules and compilation outputs under the
 runner's temporary directory. The key includes the operating system,
-architecture, pinned bootstrap/toolchain configuration, module files and Go
+architecture, lane, pinned bootstrap/toolchain configuration, module files and Go
 sources. A matching toolchain cache can seed a changed source tree; Go checks
 build inputs before reuse. Test commands retain `-race -count=1`.
 
