@@ -56,7 +56,8 @@ Client-source abuse limits use each exact IPv4 address or IPv6 /64. The API walk
 
 Browser session refresh cannot recreate a deleted token. A loaded-token save
 rejected after logout or renewal returns 401 without setting a session cookie.
-Update every management replica and drain requests handled by older binaries
+A password or MFA change whose session has gone answers the same way, although the
+change itself has been applied. Update every management replica and drain requests handled by older binaries
 before relying on this revocation guarantee.
 
 A response replaces a cookie the browser sent only when its request replaced or
