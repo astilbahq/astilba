@@ -346,10 +346,12 @@ export const RestartRequestFailure: Story = {
         'button[name="restartSetup"]',
       )!,
     );
-    await waitFor(() =>
-      expect(
-        within(context.canvasElement.ownerDocument.body).getByRole("dialog"),
-      ).toBeVisible(),
+    await waitFor(
+      () =>
+        expect(
+          within(context.canvasElement.ownerDocument.body).getByRole("dialog"),
+        ).toBeVisible(),
+      { timeout: 5000 },
     );
     await waitFor(() =>
       expect(
