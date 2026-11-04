@@ -109,14 +109,14 @@ func writeTerminal(conn *websocket.Conn, frame []byte) error {
 // The library has no time limit while it discards the payload of a frame, so a peer that
 // stops inside one would hold the handshake for as long as it stays connected. Only
 // CloseRead can then drop the connection: CloseNow waits for the Close in progress.
-func closeTerminal(conn *websocket.Conn) {
+func closeTerminal(conn *websocket.Conn, status websocket.StatusCode, reason string) {
 	limit := time.AfterFunc(terminalClose, func() {
 		ended, cancel := context.WithCancel(context.Background())
 		cancel()
 		conn.CloseRead(ended)
 	})
 	defer limit.Stop()
-	conn.Close(websocket.StatusNormalClosure, "")
+	conn.Close(status, reason)
 }
 
 func (s *Server) agentTerminal(w http.ResponseWriter, r *http.Request) {
@@ -180,12 +180,12 @@ func (s *Server) browserTerminal(w http.ResponseWriter, r *http.Request) {
 	_, ticket, err := conn.Read(first)
 	cancel()
 	if err != nil {
-		conn.Close(websocket.StatusPolicyViolation, "ticket required")
+		closeTerminal(conn, websocket.StatusPolicyViolation, "ticket required")
 		return
 	}
 	stream, err := s.Execution.RedeemTroubleshootingTicket(context.WithoutCancel(ctx), *p, execution.BrowserBinding{Token: cookie.Value}, ws, id, string(ticket))
 	if err != nil {
-		conn.Close(websocket.StatusPolicyViolation, "session refused")
+		closeTerminal(conn, websocket.StatusPolicyViolation, "session refused")
 		return
 	}
 	s.attachTerminal(stream, nil, conn)
@@ -219,7 +219,7 @@ func (s *Server) attachTerminal(stream execution.TroubleshootingStream, agent, b
 		}
 		for _, conn := range []*websocket.Conn{agent, browser} {
 			if conn != nil {
-				conn.Close(websocket.StatusPolicyViolation, "the other side did not attach")
+				closeTerminal(conn, websocket.StatusPolicyViolation, "the other side did not attach")
 			}
 		}
 		s.endUnattachedTerminal(stream, "not attached")
@@ -265,8 +265,8 @@ func (s *Server) relayTerminal(p *terminalPair) {
 	<-ctx.Done()
 	once.Do(func() {})
 	// Concurrently, so a peer that does not answer cannot delay the other stream's end.
-	workers.Go(func() { closeTerminal(p.agent) })
-	workers.Go(func() { closeTerminal(p.browser) })
+	workers.Go(func() { closeTerminal(p.agent, websocket.StatusNormalClosure, "") })
+	workers.Go(func() { closeTerminal(p.browser, websocket.StatusNormalClosure, "") })
 	workers.Wait()
 
 	end, finish := context.WithTimeout(context.Background(), 5*time.Second)
