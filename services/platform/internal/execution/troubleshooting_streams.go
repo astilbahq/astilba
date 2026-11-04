@@ -55,7 +55,10 @@ func (s *Service) RedeemTroubleshootingTicket(ctx context.Context, p store.Princ
 			return err
 		}
 		policy, err := q.GetTroubleshootingPolicy(ctx, db.GetTroubleshootingPolicyParams{WorkspaceID: ws, EnvironmentID: row.EnvironmentID})
-		if err != nil || !policy.Enabled || policy.OwnersOnly && w.Role != "owner" {
+		if err != nil {
+			return err
+		}
+		if !policy.Enabled || policy.OwnersOnly && w.Role != "owner" {
 			return domain.Forbidden
 		}
 		out.TicketExpires, out.Deadline = row.TicketExpiresAt, row.DeadlineAt
