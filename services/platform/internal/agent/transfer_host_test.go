@@ -15,7 +15,7 @@ import (
 	"github.com/moby/moby/client"
 )
 
-func nativeControllerTransfer(t *testing.T, e *Engine) *Journal {
+func nativeControllerTransfer(t *testing.T, e *Engine) {
 	t.Helper()
 	ctx := context.Background()
 	j := e.Journal
@@ -109,5 +109,4 @@ func nativeControllerTransfer(t *testing.T, e *Engine) *Journal {
 	if _, err = j.Accept(old); err == nil {
 		t.Fatal("old controller command accepted after transfer")
 	}
-	return j
 }

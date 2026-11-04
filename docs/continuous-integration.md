@@ -100,14 +100,15 @@ To turn it back on, make both changes in one save, then land `strict: false`.
 
 ## Native lanes
 
-Each architecture runs three lanes, each on its own disposable runner VM. The
-Native verification gate requires all six jobs to pass:
+Each architecture runs four lanes, each on its own disposable runner VM. The
+Native verification gate requires all eight jobs to pass:
 
 | Lane | Verification |
 | --- | --- |
 | `core` | PLAT-4 host runtime, builds, PostgreSQL restore, managed links, Compose and cross-host deployment, pipeline, preview, release transport, and troubleshooting target, session, cleanup and refusals |
 | `recovery` | Agent service enrollment, restart and signed update; a troubleshooting session end to end; cross-host older-backup, drained and upgrade recovery |
-| `visual` | Visual deployment, including catalog, backup, restore and major upgrades |
+| `visual` | Visual deployment, including catalog, backup and restore |
+| `upgrade` | Application releases and PostgreSQL major upgrades, then an unrelated unit's routes and data, scheduled jobs, later deployments, controller transfer and volume deletion on that host |
 
 Every lane repeats the same fresh production bootstrap, pinned runtime install and
 image pulls, so each suite starts from the same prepared host. The Makefile's
@@ -115,7 +116,9 @@ image pulls, so each suite starts from the same prepared host. The Makefile's
 sequence on a local disposable host. CI no longer runs suites from different lanes
 on one VM, so it cannot see residue from one lane break another. For example, an
 ingress that survives the preview test's cleanup no longer trips the visual test's
-absent-ingress guard in CI; the sequential target still shows it.
+absent-ingress guard in CI; the sequential target still shows it. Scheduled jobs,
+controller transfer and volume deletion run in both `visual` and `upgrade`, because
+they read finished upgrade records.
 
 `-run` lists select the native tests, so `make check-ci` fails when a
 `func TestNative*` that Go builds for `linux/amd64` or `linux/arm64` under
@@ -131,11 +134,11 @@ selected.
 ## Local native agent tests
 
 `make verify-agent-colima` runs selected `internal/agent` native tests as root
-inside a Colima VM from macOS, in seconds rather than a full CI run. It
-cross-compiles the test binary for the VM's architecture, copies it in, runs it
-and removes it, including on failure. It requires an explicitly named profile,
-refuses Colima's default profile and never starts one. Use a profile created for
-this purpose: tests run as root and act on that VM's Docker daemon.
+inside a Colima VM from macOS, by default in under a minute rather than a full
+CI run. It cross-compiles the test binary for the VM's architecture, copies it
+in, runs it and removes it, including on failure. It requires an explicitly named
+profile, refuses Colima's default profile and never starts one. Use a profile
+created for this purpose: tests run as root and act on that VM's Docker daemon.
 
 ```bash
 colima start -p <disposable-profile> --activate=false --mount none --port-forwarder none --memory 2 --disk 10
@@ -156,11 +159,13 @@ in the VM to every Mac interface, including fixtures with passwords from this
 public source.
 
 `PLAT_AGENT_TESTS` overrides the test pattern. The default runs
-`TestNativeReleaseCommandTransport` and `TestNativeTroubleshootingTarget`, the
-only native tests that need nothing beyond root, the pinned image above and
-Docker with a supported runc and registry access. Interrupting a run removes the
-binary, but a test may stop without its cleanup: recreate the profile if fixtures
-remain. The rest must be asked for by name:
+`TestNativeReleaseCommandTransport`, `TestNativeTroubleshootingTarget` and the
+native session tests in `troubleshooting_session_host_test.go`. These need nothing
+beyond root, the pinned image above and Docker with a supported runc; only
+`docker pull` needs a registry. `scripts/native-agent-colima.sh` lists them by
+name, so add a new test only after checking that it needs no more. Interrupting a
+run removes the binary, but a test may stop without its cleanup: recreate the
+profile if fixtures remain. The rest must be asked for by name:
 
 | Test | Also needs |
 | --- | --- |
@@ -348,6 +353,10 @@ runner's temporary directory. The key includes the operating system,
 architecture, lane, pinned bootstrap/toolchain configuration, module files and Go
 sources. A matching toolchain cache can seed a changed source tree; Go checks
 build inputs before reuse. Test commands retain `-race -count=1`.
+
+A separate step fetches the Go toolchain and modules before any test step, making
+up to three attempts, so a briefly dropped module download does not fail the
+check. Test steps are never retried.
 
 Only `GOCACHE` and `GOMODCACHE` are forwarded through `sudo` to the disposable
 native test commands. Runtime state, Docker storage, databases and credentials

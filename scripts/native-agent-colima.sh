@@ -4,7 +4,7 @@
 set -euo pipefail
 
 profile="${1:-}"
-pattern="${2:-^TestNative(ReleaseCommandTransport|TroubleshootingTarget)\$}"
+pattern="${2:-^TestNative(ReleaseCommandTransport|TroubleshootingTarget|TroubleshootingSession|TroubleshootingShellExit|TroubleshootingIdleLimit|TroubleshootingRefusals|TroubleshootingCrashCleanup|TroubleshootingEndsSurvivors|TroubleshootingStalledInput|TroubleshootingNoShell)\$}"
 
 case "$profile" in
   "")

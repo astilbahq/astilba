@@ -2,6 +2,8 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
+	"net/url"
 	"os"
 	"strings"
 	"testing"
@@ -13,9 +15,83 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/upgrade"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/client"
 )
+
+// Upgrades share the ingress, journal and command stream with an unrelated unit.
+// None of them may disturb that unit or hold back later commands on the host.
+func TestNativeSupportedMajorUpgrades(t *testing.T) {
+	f := newNativeVisualFixture(t)
+	ctx := context.Background()
+	first, firstSecrets := f.plan("first", true)
+	first.Specification.Applications[0].Replicas = 3
+	first.PrepareInstances(deployment.Plan{})
+	first = f.resolve(first.WithHash())
+	f.finish(f.command("deploy", first, firstSecrets))
+	f.request("first.example.test", "v1")
+	database := first.Specification.Applications[1]
+	startup, cancelStartup := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancelStartup()
+	if err := f.engine.waitPostgresStartup(startup, deployment.UnitName(database.ID), database.Postgres.Username, database.Postgres.Database); err != nil {
+		t.Fatal(err)
+	}
+	databaseURL := url.URL{Scheme: "postgres", Host: "127.0.0.1:15432", Path: "/app", User: url.UserPassword("app", firstSecrets[database.Postgres.PasswordSecretVersionID.String()]), RawQuery: "sslmode=disable"}
+	db, err := pgx.Connect(ctx, databaseURL.String())
+	if err != nil {
+		t.Fatal("TCP route did not connect to PostgreSQL")
+	}
+	if _, err = db.Exec(ctx, "CREATE TABLE fixture(value text); INSERT INTO fixture VALUES ('data-survived')"); err != nil {
+		t.Fatal(err)
+	}
+	db.Close(ctx)
+
+	releaseVerified := false
+	nativeUpgradeJourney(t, f.engine, func(t *testing.T) (deployment.Plan, map[string]string) {
+		p, secrets := f.plan("upgrade-"+uuid.NewString(), true)
+		p.Specification.Routes = p.Specification.Routes[:1]
+		image := domain.Postgres17Image
+		p.Specification.Applications[1].Source.Image = &image
+		p.Specification.Applications[1].Mounts[0].Target = domain.PostgresMount(image)
+		p = p.WithHash()
+		if !releaseVerified {
+			p.Specification.Applications[0].Command = []string{"sh", "-c", `mkdir -p /tmp/www/cgi-bin; printf ready > /tmp/www/health; printf '%s' "$VALUE" > /tmp/www/index.html; printf '#!/bin/sh\nsleep 6\nprintf "Content-Type: text/plain\\r\\n\\r\\n"\nprintf "%%s" "$VALUE"\n' > /tmp/www/cgi-bin/slow; chmod +x /tmp/www/cgi-bin/slow; exec httpd -f -p 8080 -h /tmp/www`}
+			p = p.WithHash()
+		}
+		p = f.resolve(p)
+		f.finish(f.command("deploy", p, secrets))
+		if !releaseVerified {
+			p = nativeReleaseJourney(t, f.engine, p, secrets, f.resolve, f.command, f.finish)
+			releaseVerified = true
+		}
+		return p, secrets
+	}, func(cmd upgrade.Command) api.ExecutionCommand {
+		f.generation++
+		raw, _ := json.Marshal(cmd)
+		value := json.RawMessage(raw)
+		return api.ExecutionCommand{Id: uuid.New(), ServerId: f.server, EnvironmentId: cmd.Plan.Source.EnvironmentID, ResourceId: cmd.Plan.ID, Kind: "upgrade", Action: "inspect", Generation: f.generation, PlanHash: cmd.Digest(), Upgrade: &value, Deadline: time.Now().Add(time.Hour)}
+	})
+
+	// The scheduler, daemon and volume deletion also read finished upgrade records.
+	nativeFilesAndJobs(t, f.engine, f.server)
+	second, secondSecrets := f.plan("second", false)
+	second = f.resolve(second)
+	f.finish(f.command("deploy", second, secondSecrets))
+	f.request("first.example.test", "v1")
+	f.request("second.example.test", "v1")
+	db, err = pgx.Connect(ctx, databaseURL.String())
+	if err != nil {
+		t.Fatal("upgrades disturbed an unrelated TCP route")
+	}
+	defer db.Close(ctx)
+	var value string
+	if err = db.QueryRow(ctx, "SELECT value FROM fixture").Scan(&value); err != nil || value != "data-survived" {
+		t.Fatal("upgrades disturbed an unrelated database", err)
+	}
+	nativeControllerTransfer(t, f.engine)
+	f.refuseInUseVolumeDeletion(first)
+}
 
 // The surrounding native fixture supplies real Docker, ingress and the same
 // monotonically increasing command stream used by deployments and backups.
