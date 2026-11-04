@@ -1,9 +1,52 @@
 version: 2
+# Version updates wait a week for a bad release to be caught. Security updates do not.
 updates:
+  - package-ecosystem: gomod
+    directory: /services/platform
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      # Majors stay out so each one gets its own review.
+      platform-go:
+        patterns: ["*"]
+        update-types: [minor, patch]
+  # pnpm-workspace.yaml brings the other workspace packages into this entry.
+  - package-ecosystem: npm
+    directory: /
+    # Dependabot treats a package pinned at two versions as one dependency. It would move
+    # the contract's TypeScript 5 to 7, which openapi-typescript can't load, so this
+    # package's two pins change by hand. Security updates still apply.
+    exclude-paths:
+      - contracts/platform/package.json
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      # These can need an edit Dependabot won't make: the Playwright image in the workflows,
+      # or the Vite+ pins and allowBuilds in pnpm-workspace.yaml. They stay apart so the
+      # rest can land.
+      needs-review:
+        patterns:
+          - "@pandacss/*"
+          - "@playwright/test"
+          - "@storybook/*"
+          - i18next-cli
+          - storybook
+          - vite-plus
+        update-types: [minor, patch]
+      # Majors stay out so each one gets its own review.
+      npm-dependencies:
+        patterns: ["*"]
+        update-types: [minor, patch]
   - package-ecosystem: gomod
     directory: /experiments/durable-execution
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7
     groups:
       go-dependencies:
         patterns: ["*"]
@@ -11,6 +54,8 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7
     groups:
       github-actions:
         patterns: ["*"]

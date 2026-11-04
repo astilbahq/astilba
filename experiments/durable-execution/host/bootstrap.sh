@@ -44,7 +44,7 @@ esac
 scratch=$(mktemp -d)
 trap 'rm -rf "$scratch"' EXIT
 fetch() {
-  curl --fail --location --silent --show-error "$1" --output "$scratch/$2"
+  curl --fail --location --silent --show-error --retry 3 --retry-all-errors "$1" --output "$scratch/$2"
   echo "$3  $scratch/$2" | sha256sum --check --status
 }
 fetch "https://download.docker.com/linux/static/stable/$docker_arch/docker-29.9.2.tgz" docker.tgz "$docker_sha"

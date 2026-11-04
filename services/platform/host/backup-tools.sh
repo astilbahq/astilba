@@ -9,7 +9,7 @@ case "$(uname -m)" in
 esac
 scratch=$(mktemp -d)
 trap 'rm -rf "$scratch"' EXIT
-curl --fail --location --silent --show-error "https://github.com/restic/restic/releases/download/v0.19.1/restic_0.19.1_linux_$arch.bz2" -o "$scratch/restic.bz2"
+curl --fail --location --silent --show-error --retry 3 --retry-all-errors "https://github.com/restic/restic/releases/download/v0.19.1/restic_0.19.1_linux_$arch.bz2" -o "$scratch/restic.bz2"
 echo "$sha  $scratch/restic.bz2" | sha256sum --check --status
 bzip2 -d "$scratch/restic.bz2"
 install -d -m 0755 /opt/astilba-platform-tools
