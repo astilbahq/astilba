@@ -134,17 +134,8 @@ func (x troubleshootingFixture) connected(t *testing.T, b *browser, instance int
 
 func (x troubleshootingFixture) waitClosed(t *testing.T, session uuid.UUID, reason string) {
 	t.Helper()
-	var state, got string
-	for deadline := time.Now().Add(20 * time.Second); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
-		if err := x.f.st.Pool.QueryRow(context.Background(), "SELECT state,COALESCE(close_reason,'') FROM troubleshooting_sessions WHERE id=$1", session).Scan(&state, &got); err != nil {
-			t.Fatal(err)
-		}
-		if state == "closed" {
-			break
-		}
-	}
-	if state != "closed" || got != reason {
-		t.Fatalf("session %s %q, want closed %q", state, got, reason)
+	if got := x.closeReason(t, session, 20*time.Second); got != reason {
+		t.Fatalf("session closed %q, want %q", got, reason)
 	}
 }
 

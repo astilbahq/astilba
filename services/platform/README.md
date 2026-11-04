@@ -59,6 +59,15 @@ rejected after logout or renewal returns 401 without setting a session cookie.
 Update every management replica and drain requests handled by older binaries
 before relying on this revocation guarantee.
 
+A response replaces a cookie the browser sent only when its request replaced or
+deliberately ended that session, because a browser applies cookies in arrival order
+and a slower response to an older token must not undo a renewal. The cookie therefore
+lasts to the absolute lifetime, and the session row's expiry enforces the idle timeout.
+A browser holding a dead token keeps it until sign-in, with a CSRF token derived from
+it. Cookies issued before this behavior keep their 30-minute lifetime and are not
+extended, so people signed in during an upgrade sign in again once, within 30 minutes
+of the last older replica's response.
+
 ## Revision and key model
 
 OpenAPI lives in `contracts/platform/openapi.yaml`; regenerate Go and TypeScript bindings with `pnpm generate`. Queries and migrations live in this module's `db` directory. `pnpm generate:check` generates into temporary directories and compares bytes, including from a clean checkout.
