@@ -13,6 +13,92 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const activateTroubleshootingSession = `-- name: ActivateTroubleshootingSession :execrows
+UPDATE troubleshooting_sessions SET state = 'active'
+WHERE workspace_id = $1 AND id = $2 AND state = 'offered'
+ AND agent_attached_at IS NOT NULL AND browser_attached_at IS NOT NULL
+`
+
+type ActivateTroubleshootingSessionParams struct {
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ID          uuid.UUID `json:"id"`
+}
+
+func (q *Queries) ActivateTroubleshootingSession(ctx context.Context, arg ActivateTroubleshootingSessionParams) (int64, error) {
+	result, err := q.db.Exec(ctx, activateTroubleshootingSession, arg.WorkspaceID, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const admitTroubleshootingAgent = `-- name: AdmitTroubleshootingAgent :one
+UPDATE troubleshooting_sessions t SET agent_attached_at = now(),agent_credential_hash = $1
+FROM servers s
+WHERE t.workspace_id = $2 AND t.id = $3 AND t.server_id = $4 AND t.state = 'offered'
+ AND t.agent_attached_at IS NULL AND t.ticket_expires_at > now()
+ AND s.workspace_id = t.workspace_id AND s.id = t.server_id AND s.controller_generation = t.controller_generation
+ AND s.credential_hash = $1
+RETURNING t.ticket_expires_at,t.deadline_at
+`
+
+type AdmitTroubleshootingAgentParams struct {
+	CredentialHash []byte    `json:"credential_hash"`
+	WorkspaceID    uuid.UUID `json:"workspace_id"`
+	ID             uuid.UUID `json:"id"`
+	ServerID       uuid.UUID `json:"server_id"`
+}
+
+type AdmitTroubleshootingAgentRow struct {
+	TicketExpiresAt time.Time `json:"ticket_expires_at"`
+	DeadlineAt      time.Time `json:"deadline_at"`
+}
+
+func (q *Queries) AdmitTroubleshootingAgent(ctx context.Context, arg AdmitTroubleshootingAgentParams) (AdmitTroubleshootingAgentRow, error) {
+	row := q.db.QueryRow(ctx, admitTroubleshootingAgent,
+		arg.CredentialHash,
+		arg.WorkspaceID,
+		arg.ID,
+		arg.ServerID,
+	)
+	var i AdmitTroubleshootingAgentRow
+	err := row.Scan(&i.TicketExpiresAt, &i.DeadlineAt)
+	return i, err
+}
+
+const closeAbandonedTroubleshootingSessions = `-- name: CloseAbandonedTroubleshootingSessions :many
+UPDATE troubleshooting_sessions SET state = 'closed',closed_at = now(),close_reason = 'management restart',ticket_hash = NULL,browser_session_hash = NULL
+WHERE state <> 'closed'
+RETURNING workspace_id,id,actor_id
+`
+
+type CloseAbandonedTroubleshootingSessionsRow struct {
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ID          uuid.UUID `json:"id"`
+	ActorID     uuid.UUID `json:"actor_id"`
+}
+
+// unscoped: at startup the single instance holds no streams, so every open session in every workspace is abandoned.
+func (q *Queries) CloseAbandonedTroubleshootingSessions(ctx context.Context) ([]CloseAbandonedTroubleshootingSessionsRow, error) {
+	rows, err := q.db.Query(ctx, closeAbandonedTroubleshootingSessions)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []CloseAbandonedTroubleshootingSessionsRow{}
+	for rows.Next() {
+		var i CloseAbandonedTroubleshootingSessionsRow
+		if err := rows.Scan(&i.WorkspaceID, &i.ID, &i.ActorID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const closeEnvironmentTroubleshootingSessions = `-- name: CloseEnvironmentTroubleshootingSessions :many
 UPDATE troubleshooting_sessions t SET state = 'closed',closed_at = now(),close_reason = $1::text,ticket_hash = NULL,browser_session_hash = NULL
 WHERE t.workspace_id = $2 AND t.environment_id = $3 AND t.state <> 'closed'
@@ -114,6 +200,31 @@ func (q *Queries) DisableWorkspaceTroubleshootingPolicies(ctx context.Context, w
 	return err
 }
 
+const endTroubleshootingSession = `-- name: EndTroubleshootingSession :exec
+UPDATE troubleshooting_sessions SET state = 'closed',closed_at = COALESCE(closed_at,now()),close_reason = COALESCE(close_reason,$1::text),
+ ticket_hash = NULL,browser_session_hash = NULL,input_bytes = $2,output_bytes = $3
+WHERE workspace_id = $4 AND id = $5
+`
+
+type EndTroubleshootingSessionParams struct {
+	CloseReason string    `json:"close_reason"`
+	InputBytes  int64     `json:"input_bytes"`
+	OutputBytes int64     `json:"output_bytes"`
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ID          uuid.UUID `json:"id"`
+}
+
+func (q *Queries) EndTroubleshootingSession(ctx context.Context, arg EndTroubleshootingSessionParams) error {
+	_, err := q.db.Exec(ctx, endTroubleshootingSession,
+		arg.CloseReason,
+		arg.InputBytes,
+		arg.OutputBytes,
+		arg.WorkspaceID,
+		arg.ID,
+	)
+	return err
+}
+
 const expireTroubleshootingSessions = `-- name: ExpireTroubleshootingSessions :many
 UPDATE troubleshooting_sessions SET state = 'closed',closed_at = now(),close_reason = 'expired',ticket_hash = NULL,browser_session_hash = NULL
 WHERE workspace_id = $1 AND state <> 'closed' AND (deadline_at <= now() OR (state = 'offered' AND ticket_expires_at <= now()))
@@ -184,6 +295,29 @@ func (q *Queries) GetTroubleshootingSessionActor(ctx context.Context, arg GetTro
 	var actor_id uuid.UUID
 	err := row.Scan(&actor_id)
 	return actor_id, err
+}
+
+const getTroubleshootingSessionForEnd = `-- name: GetTroubleshootingSessionForEnd :one
+SELECT actor_id,state FROM troubleshooting_sessions
+WHERE workspace_id = $1 AND id = $2
+FOR UPDATE
+`
+
+type GetTroubleshootingSessionForEndParams struct {
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ID          uuid.UUID `json:"id"`
+}
+
+type GetTroubleshootingSessionForEndRow struct {
+	ActorID uuid.UUID `json:"actor_id"`
+	State   string    `json:"state"`
+}
+
+func (q *Queries) GetTroubleshootingSessionForEnd(ctx context.Context, arg GetTroubleshootingSessionForEndParams) (GetTroubleshootingSessionForEndRow, error) {
+	row := q.db.QueryRow(ctx, getTroubleshootingSessionForEnd, arg.WorkspaceID, arg.ID)
+	var i GetTroubleshootingSessionForEndRow
+	err := row.Scan(&i.ActorID, &i.State)
+	return i, err
 }
 
 const insertTroubleshootingSession = `-- name: InsertTroubleshootingSession :one
@@ -316,6 +450,56 @@ func (q *Queries) ListOpenTroubleshootingSessions(ctx context.Context, arg ListO
 	return items, nil
 }
 
+const listTroubleshootingOffers = `-- name: ListTroubleshootingOffers :many
+SELECT t.id,t.unit_id,t.application_id,t.instance,t.controller_generation
+FROM troubleshooting_sessions t
+JOIN servers s ON s.workspace_id = t.workspace_id AND s.id = t.server_id
+WHERE t.workspace_id = $1 AND t.server_id = $2 AND t.state = 'offered'
+ AND t.agent_attached_at IS NULL AND t.ticket_expires_at > now()
+ AND t.controller_generation = s.controller_generation
+ AND s.capabilities->>'troubleshooting' = 'true'
+ORDER BY t.created_at LIMIT 4
+`
+
+type ListTroubleshootingOffersParams struct {
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ServerID    uuid.UUID `json:"server_id"`
+}
+
+type ListTroubleshootingOffersRow struct {
+	ID                   uuid.UUID `json:"id"`
+	UnitID               uuid.UUID `json:"unit_id"`
+	ApplicationID        uuid.UUID `json:"application_id"`
+	Instance             int32     `json:"instance"`
+	ControllerGeneration int64     `json:"controller_generation"`
+}
+
+func (q *Queries) ListTroubleshootingOffers(ctx context.Context, arg ListTroubleshootingOffersParams) ([]ListTroubleshootingOffersRow, error) {
+	rows, err := q.db.Query(ctx, listTroubleshootingOffers, arg.WorkspaceID, arg.ServerID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListTroubleshootingOffersRow{}
+	for rows.Next() {
+		var i ListTroubleshootingOffersRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.UnitID,
+			&i.ApplicationID,
+			&i.Instance,
+			&i.ControllerGeneration,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listTroubleshootingSessions = `-- name: ListTroubleshootingSessions :many
 SELECT id,environment_id,server_id,application_id,instance,actor_id,state,created_at,deadline_at,closed_at,close_reason
 FROM troubleshooting_sessions
@@ -396,6 +580,116 @@ func (q *Queries) RecentlyAudited(ctx context.Context, arg RecentlyAuditedParams
 	return exists, err
 }
 
+const redeemTroubleshootingTicket = `-- name: RedeemTroubleshootingTicket :one
+UPDATE troubleshooting_sessions SET browser_attached_at = now(),ticket_hash = NULL
+WHERE workspace_id = $1 AND id = $2 AND actor_id = $3 AND state = 'offered'
+ AND ticket_hash = $4 AND browser_session_hash = $5 AND auth_version = $6
+ AND ticket_expires_at > now() AND browser_attached_at IS NULL
+RETURNING environment_id,ticket_expires_at,deadline_at
+`
+
+type RedeemTroubleshootingTicketParams struct {
+	WorkspaceID        uuid.UUID `json:"workspace_id"`
+	ID                 uuid.UUID `json:"id"`
+	ActorID            uuid.UUID `json:"actor_id"`
+	TicketHash         []byte    `json:"ticket_hash"`
+	BrowserSessionHash []byte    `json:"browser_session_hash"`
+	AuthVersion        int64     `json:"auth_version"`
+}
+
+type RedeemTroubleshootingTicketRow struct {
+	EnvironmentID   uuid.UUID `json:"environment_id"`
+	TicketExpiresAt time.Time `json:"ticket_expires_at"`
+	DeadlineAt      time.Time `json:"deadline_at"`
+}
+
+func (q *Queries) RedeemTroubleshootingTicket(ctx context.Context, arg RedeemTroubleshootingTicketParams) (RedeemTroubleshootingTicketRow, error) {
+	row := q.db.QueryRow(ctx, redeemTroubleshootingTicket,
+		arg.WorkspaceID,
+		arg.ID,
+		arg.ActorID,
+		arg.TicketHash,
+		arg.BrowserSessionHash,
+		arg.AuthVersion,
+	)
+	var i RedeemTroubleshootingTicketRow
+	err := row.Scan(&i.EnvironmentID, &i.TicketExpiresAt, &i.DeadlineAt)
+	return i, err
+}
+
+const refreshTroubleshootingBrowser = `-- name: RefreshTroubleshootingBrowser :exec
+UPDATE sessions b SET expiry = GREATEST(b.expiry,LEAST(now() + make_interval(secs => $1::double precision),$2::timestamptz))
+FROM troubleshooting_sessions t
+WHERE t.workspace_id = $3 AND t.id = $4 AND t.state <> 'closed'
+ AND b.token = translate(rtrim(encode(t.browser_session_hash,'base64'),'='),'+/','-_')
+`
+
+type RefreshTroubleshootingBrowserParams struct {
+	IdleSeconds float64   `json:"idle_seconds"`
+	DeadlineAt  time.Time `json:"deadline_at"`
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ID          uuid.UUID `json:"id"`
+}
+
+func (q *Queries) RefreshTroubleshootingBrowser(ctx context.Context, arg RefreshTroubleshootingBrowserParams) error {
+	_, err := q.db.Exec(ctx, refreshTroubleshootingBrowser,
+		arg.IdleSeconds,
+		arg.DeadlineAt,
+		arg.WorkspaceID,
+		arg.ID,
+	)
+	return err
+}
+
+const reviewTroubleshootingSession = `-- name: ReviewTroubleshootingSession :one
+SELECT t.workspace_id,
+ CASE
+  WHEN t.state = 'closed' THEN COALESCE(t.close_reason,'closed')
+  WHEN a.auth_version <> t.auth_version THEN 'account security changed'
+  WHEN m.role IS NULL OR m.role NOT IN ('owner','operator') THEN 'role changed'
+  WHEN p.owners_only AND m.role <> 'owner' THEN 'environment setting changed'
+  WHEN w.require_mfa AND a.totp_secret IS NULL THEN 'multi-factor authentication required'
+  WHEN NOT EXISTS(SELECT 1 FROM sessions b WHERE b.expiry > now()
+   AND b.token = translate(rtrim(encode(t.browser_session_hash,'base64'),'='),'+/','-_')) THEN 'browser session ended'
+  WHEN s.revoked OR s.awaiting_transfer OR s.credential_hash IS DISTINCT FROM t.agent_credential_hash
+   OR s.controller_generation <> t.controller_generation THEN 'server credential changed'
+  ELSE ''
+ END::text AS end_reason,
+ h.status AS subscription_status,h.management_until AS subscription_until
+FROM troubleshooting_sessions t
+JOIN accounts a ON a.id = t.actor_id
+JOIN workspaces w ON w.id = t.workspace_id
+JOIN servers s ON s.workspace_id = t.workspace_id AND s.id = t.server_id
+LEFT JOIN memberships m ON m.workspace_id = t.workspace_id AND m.account_id = t.actor_id
+LEFT JOIN troubleshooting_policies p ON p.workspace_id = t.workspace_id AND p.environment_id = t.environment_id
+LEFT JOIN hosted_subscriptions h ON h.workspace_id = t.workspace_id
+WHERE t.workspace_id = $1 AND t.id = $2
+`
+
+type ReviewTroubleshootingSessionParams struct {
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ID          uuid.UUID `json:"id"`
+}
+
+type ReviewTroubleshootingSessionRow struct {
+	WorkspaceID        uuid.UUID   `json:"workspace_id"`
+	EndReason          string      `json:"end_reason"`
+	SubscriptionStatus pgtype.Text `json:"subscription_status"`
+	SubscriptionUntil  *time.Time  `json:"subscription_until"`
+}
+
+func (q *Queries) ReviewTroubleshootingSession(ctx context.Context, arg ReviewTroubleshootingSessionParams) (ReviewTroubleshootingSessionRow, error) {
+	row := q.db.QueryRow(ctx, reviewTroubleshootingSession, arg.WorkspaceID, arg.ID)
+	var i ReviewTroubleshootingSessionRow
+	err := row.Scan(
+		&i.WorkspaceID,
+		&i.EndReason,
+		&i.SubscriptionStatus,
+		&i.SubscriptionUntil,
+	)
+	return i, err
+}
+
 const saveTroubleshootingPolicy = `-- name: SaveTroubleshootingPolicy :exec
 INSERT INTO troubleshooting_policies(workspace_id,environment_id,enabled,owners_only,generation,updated_by)
 VALUES($1,$2,$3,$4,$5,$6)
@@ -423,6 +717,39 @@ func (q *Queries) SaveTroubleshootingPolicy(ctx context.Context, arg SaveTrouble
 		arg.UpdatedBy,
 	)
 	return err
+}
+
+const sweepTroubleshootingSessions = `-- name: SweepTroubleshootingSessions :many
+UPDATE troubleshooting_sessions SET state = 'closed',closed_at = now(),close_reason = 'expired',ticket_hash = NULL,browser_session_hash = NULL
+WHERE state <> 'closed' AND (deadline_at <= now() - interval '1 minute' OR (state = 'offered' AND ticket_expires_at <= now()))
+RETURNING workspace_id,id,actor_id
+`
+
+type SweepTroubleshootingSessionsRow struct {
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ID          uuid.UUID `json:"id"`
+	ActorID     uuid.UUID `json:"actor_id"`
+}
+
+// unscoped: an installation-wide sweeper ends expired sessions in every workspace.
+func (q *Queries) SweepTroubleshootingSessions(ctx context.Context) ([]SweepTroubleshootingSessionsRow, error) {
+	rows, err := q.db.Query(ctx, sweepTroubleshootingSessions)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []SweepTroubleshootingSessionsRow{}
+	for rows.Next() {
+		var i SweepTroubleshootingSessionsRow
+		if err := rows.Scan(&i.WorkspaceID, &i.ID, &i.ActorID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const troubleshootingAdmissionCounts = `-- name: TroubleshootingAdmissionCounts :one
