@@ -11,6 +11,8 @@ const (
 	TroubleshootingPerInstallation = 64
 	TroubleshootingMaxDuration     = 60 * time.Minute
 	TroubleshootingTicketLifetime  = 30 * time.Second
+	TroubleshootingIdle            = 15 * time.Minute
+	TroubleshootingReview          = 5 * time.Second
 )
 
 // Refusal reasons, reported to the dashboard and recorded in the audit action.

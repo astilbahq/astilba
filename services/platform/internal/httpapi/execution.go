@@ -57,7 +57,8 @@ func (s *Server) protection(next http.Handler) http.Handler {
 		w.Header().Set("Astilba-Agent-Replicas", "v1")
 		w.Header().Set("Astilba-Agent-Cross-Host", "v1")
 		w.Header().Set("Astilba-Agent-Maintenance-Continuation", "v1")
-		w.Header().Set("Astilba-Agent-Troubleshooting", "v1")
+		// v2 adds session streams; agents advertise support only when they can run them.
+		w.Header().Set("Astilba-Agent-Troubleshooting", "v2")
 		limit := int64(16384)
 		if r.URL.Path == "/agent/v1/enroll" {
 			limit = 32768
@@ -70,18 +71,7 @@ func (s *Server) protection(next http.Handler) http.Handler {
 		}
 		r.Body = http.MaxBytesReader(w, r.Body, limit)
 		if r.URL.Path != "/agent/v1/enroll" {
-			value := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-			parts := strings.Split(value, ".")
-			if len(parts) != 2 {
-				s.fail(w, r, domain.Unauthenticated)
-				return
-			}
-			id, e := uuid.Parse(parts[0])
-			if e != nil {
-				s.fail(w, r, domain.Unauthenticated)
-				return
-			}
-			identity, e := s.Execution.Authenticate(r.Context(), id, parts[1])
+			identity, e := s.agentRequestIdentity(r)
 			if e != nil {
 				s.fail(w, r, e)
 				return
@@ -90,6 +80,17 @@ func (s *Server) protection(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+func (s *Server) agentRequestIdentity(r *http.Request) (execution.Identity, error) {
+	parts := strings.Split(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "), ".")
+	if len(parts) != 2 {
+		return execution.Identity{}, domain.Unauthenticated
+	}
+	id, err := uuid.Parse(parts[0])
+	if err != nil {
+		return execution.Identity{}, domain.Unauthenticated
+	}
+	return s.Execution.Authenticate(r.Context(), id, parts[1])
 }
 func (s *Server) ListServers(w http.ResponseWriter, r *http.Request, ws uuid.UUID) {
 	v, e := s.Execution.Servers(r.Context(), *principal(r.Context()), ws)
@@ -189,8 +190,8 @@ func (s *Server) RotateAgentCredential(w http.ResponseWriter, r *http.Request) {
 	s.executionResponse(w, r, 204, nil, e)
 }
 func (s *Server) PollAgent(w http.ResponseWriter, r *http.Request) {
-	v, e := s.Execution.Poll(r.Context(), agentIdentity(r.Context()))
-	s.executionResponse(w, r, 200, api.AgentPoll{Command: v}, e)
+	v, e := s.Execution.PollAgent(r.Context(), agentIdentity(r.Context()))
+	s.executionResponse(w, r, 200, v, e)
 }
 func (s *Server) DownloadRecoveryCheckpoint(w http.ResponseWriter, r *http.Request, parentID, checkpointID uuid.UUID) {
 	body, err := s.Execution.RecoveryCheckpoint(r.Context(), agentIdentity(r.Context()), parentID, checkpointID)

@@ -113,8 +113,9 @@ also notifies the workspace's owners. It defaults to
    workspace and session row.
 2. **Offer.** The poll response to that server includes an offer, separate from
    journaled operation commands. The offer field is sent only to agents that
-   report `troubleshooting`, so older agents, which reject unknown response
-   fields, are unaffected. Offers are never replayed after their row leaves the
+   report `troubleshooting`, which they do only after the v2 feature header, so
+   older agents, which reject unknown response fields, are unaffected. An offer
+   wakes the poll but holds back no command. Offers are never replayed after their row leaves the
    offered state.
 3. **Agent stream.** The agent checks its opt-in, the eligibility rules, its
    local limits and the controller generation, then opens an outbound stream on
@@ -171,10 +172,10 @@ Management also ends a session when:
 - the agent credential is revoked or rotated, or the server is revoked;
 - the subscription expires.
 
-These events end sessions directly through PostgreSQL notifications, which are
-treated as hints to re-read the session row, with a 30-second re-check as a
-fallback. An owner can end any open session in the workspace, or all of them at
-once.
+The relay re-reads all of these conditions from PostgreSQL every five seconds, so
+a change made by any request or worker ends the session promptly without a separate
+notification channel. An owner can end any open session in the workspace, or all of
+them at once.
 
 A user can still deliberately start a process in a new Linux session (for
 example with `setsid`). Such processes can survive the terminal until the
