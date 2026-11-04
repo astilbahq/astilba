@@ -128,6 +128,52 @@ syntax other than `cd DIR && ... go test`, unlisted `go test` flags, and matrix
 `exclude` or `include`. A test that skips itself at run time still counts as
 selected.
 
+## Local native agent tests
+
+`make verify-agent-colima` runs selected `internal/agent` native tests as root
+inside a Colima VM from macOS, in seconds rather than a full CI run. It
+cross-compiles the test binary for the VM's architecture, copies it in, runs it
+and removes it, including on failure. It requires an explicitly named profile,
+refuses Colima's default profile and never starts one. Use a profile created for
+this purpose: tests run as root and act on that VM's Docker daemon.
+
+```bash
+colima start -p <disposable-profile> --activate=false --mount none --port-forwarder none --memory 2 --disk 10
+```
+
+```bash
+colima ssh -p <disposable-profile> -- docker pull busybox:1.37.0@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e
+```
+
+```bash
+make verify-agent-colima PLAT_AGENT_COLIMA_PROFILE=<disposable-profile>
+```
+
+`--activate=false` leaves the current Docker context alone and `--mount none`
+keeps macOS files out of the VM. `--port-forwarder none` keeps ports that tests
+publish off the Mac's network: Colima otherwise forwards ports bound to `0.0.0.0`
+in the VM to every Mac interface, including fixtures with passwords from this
+public source.
+
+`PLAT_AGENT_TESTS` overrides the test pattern. The default runs
+`TestNativeReleaseCommandTransport` and `TestNativeTroubleshootingTarget`, the
+only native tests that need nothing beyond root, the pinned image above and
+Docker with a supported runc and registry access. Interrupting a run removes the
+binary, but a test may stop without its cleanup: recreate the profile if fixtures
+remain. The rest must be asked for by name:
+
+| Test | Also needs |
+| --- | --- |
+| `TestNativeComposeDeployment` | Publishes a loopback host port; the pinned Compose plugin and PostgreSQL image |
+| `TestNativePipeline` | `/opt/astilba-plat5/bin/zot` and Git `http-backend`; writes `/etc/docker/certs.d` |
+| `TestNativeVisualDeployment` | Ingress publishes host ports 80, 443 and 15432; the pinned Compose plugin and `/opt/astilba-platform-tools/restic` |
+| `TestNativePreviewEnvironment` | Ingress publishes host ports 80 and 443; the pinned Compose plugin and Git `http-backend` |
+| `TestNativeCrossHostDeployment` | Creates host namespaces, bridges and WireGuard links; the WireGuard module, pinned Compose plugin, `wg` and `nft`, `dockerd` and `docker` under `/opt/astilba-plat4` and restic |
+
+This does not replace CI. `CGO_ENABLED=0` rules out the race detector, the run
+covers only the VM's architecture, and the VM is not the Ubuntu host image CI
+bootstraps. Native verification remains the required check.
+
 ## Application Go verification
 
 Application verification runs four jobs in parallel: `make verify-app-build`
