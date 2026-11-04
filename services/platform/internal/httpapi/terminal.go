@@ -21,6 +21,7 @@ const (
 	terminalTicketWait  = 5 * time.Second
 	terminalPing        = 30 * time.Second
 	terminalWrite       = 30 * time.Second
+	terminalClose       = 10 * time.Second // beyond the library's limits for a peer that sends nothing
 	terminalInputRate   = 64 << 10
 	terminalOutputRate  = 1 << 20
 	terminalResizeRate  = 10
@@ -74,10 +75,24 @@ func acceptTerminal(w http.ResponseWriter, r *http.Request, options *websocket.A
 
 // writeTerminal bounds every write: a peer that stops reading loses its stream rather
 // than blocking the relay, its limits and its re-checks.
-func writeTerminal(ctx context.Context, conn *websocket.Conn, frame []byte) error {
-	ctx, cancel := context.WithTimeout(ctx, terminalWrite)
+func writeTerminal(conn *websocket.Conn, frame []byte) error {
+	ctx, cancel := context.WithTimeout(context.Background(), terminalWrite)
 	defer cancel()
 	return conn.Write(ctx, websocket.MessageBinary, frame)
+}
+
+// closeTerminal ends a stream with a close handshake, which reads any input still queued.
+// The library has no time limit while it discards the payload of a frame, so a peer that
+// stops inside one would hold the handshake for as long as it stays connected. Only
+// CloseRead can then drop the connection: CloseNow waits for the Close in progress.
+func closeTerminal(conn *websocket.Conn) {
+	limit := time.AfterFunc(terminalClose, func() {
+		ended, cancel := context.WithCancel(context.Background())
+		cancel()
+		conn.CloseRead(ended)
+	})
+	defer limit.Stop()
+	conn.Close(websocket.StatusNormalClosure, "")
 }
 
 func (s *Server) agentTerminal(w http.ResponseWriter, r *http.Request) {
@@ -207,6 +222,11 @@ func (s *Server) attachTerminal(stream execution.TroubleshootingStream, agent, b
 
 // relayTerminal runs until the first reason to end. Terminal content is forwarded but
 // never logged; only byte counts are kept.
+//
+// The session's context never reaches a connection operation: the library drops the
+// connection when one is cancelled, and closing over unread input resets it, which can
+// destroy the frame just written. Each stream ends with closeTerminal instead, which also
+// ends its blocked read.
 func (s *Server) relayTerminal(p *terminalPair) {
 	ctx, cancel := context.WithDeadline(context.Background(), p.stream.Deadline)
 	defer cancel()
@@ -228,7 +248,7 @@ func (s *Server) relayTerminal(p *terminalPair) {
 
 	if err := s.Execution.ActivateTroubleshootingSession(ctx, ws, id); err != nil {
 		stop("activation failed")
-	} else if err = writeTerminal(ctx, p.agent, []byte{terminal.Start}); err != nil {
+	} else if err = writeTerminal(p.agent, []byte{terminal.Start}); err != nil {
 		stop("agent stream lost")
 	}
 
@@ -238,8 +258,9 @@ func (s *Server) relayTerminal(p *terminalPair) {
 	workers.Go(func() { s.superviseTerminal(ctx, p, &lastInput, stop) })
 	<-ctx.Done()
 	once.Do(func() {})
-	p.agent.Close(websocket.StatusNormalClosure, "")
-	p.browser.Close(websocket.StatusNormalClosure, "")
+	// Concurrently, so a peer that does not answer cannot delay the other stream's end.
+	workers.Go(func() { closeTerminal(p.agent) })
+	workers.Go(func() { closeTerminal(p.browser) })
 	workers.Wait()
 
 	end, finish := context.WithTimeout(context.Background(), 5*time.Second)
@@ -255,7 +276,10 @@ func (s *Server) pumpTerminalBrowser(ctx context.Context, p *terminalPair, input
 	resizeRate := rate.NewLimiter(terminalResizeRate, terminalResizeBurst)
 	lastRefresh := time.Time{}
 	for {
-		kind, frame, err := p.browser.Read(ctx)
+		kind, frame, err := p.browser.Read(context.Background())
+		if ctx.Err() != nil {
+			return // nothing passes once the session has ended
+		}
 		if err != nil {
 			stop("browser stream lost")
 			return
@@ -290,7 +314,7 @@ func (s *Server) pumpTerminalBrowser(ctx context.Context, p *terminalPair, input
 			stop("invalid frame")
 			return
 		}
-		if err = writeTerminal(ctx, p.agent, frame); err != nil {
+		if err = writeTerminal(p.agent, frame); err != nil {
 			stop("agent stream lost")
 			return
 		}
@@ -300,7 +324,10 @@ func (s *Server) pumpTerminalBrowser(ctx context.Context, p *terminalPair, input
 func (s *Server) pumpTerminalAgent(ctx context.Context, p *terminalPair, output *atomic.Int64, stop func(string)) {
 	outputRate := rate.NewLimiter(terminalOutputRate, terminal.MaxFrame)
 	for {
-		kind, frame, err := p.agent.Read(ctx)
+		kind, frame, err := p.agent.Read(context.Background())
+		if ctx.Err() != nil {
+			return // nothing passes once the session has ended
+		}
 		if err != nil {
 			stop("agent stream lost")
 			return
@@ -325,7 +352,7 @@ func (s *Server) pumpTerminalAgent(ctx context.Context, p *terminalPair, output 
 			stop("invalid frame")
 			return
 		}
-		if err = writeTerminal(ctx, p.browser, frame); err != nil {
+		if err = writeTerminal(p.browser, frame); err != nil {
 			stop("browser stream lost")
 			return
 		}
@@ -359,7 +386,7 @@ func (s *Server) superviseTerminal(ctx context.Context, p *terminalPair, lastInp
 			}
 			if time.Until(end) <= time.Minute && warned.Before(end) {
 				warned = end
-				if err := writeTerminal(ctx, p.browser, terminal.WarningFrame(uint16(max(time.Until(end).Seconds(), 0)))); err != nil {
+				if err := writeTerminal(p.browser, terminal.WarningFrame(uint16(max(time.Until(end).Seconds(), 0)))); err != nil {
 					stop("browser stream lost")
 					return
 				}
@@ -378,7 +405,7 @@ func (s *Server) superviseTerminal(ctx context.Context, p *terminalPair, lastInp
 			if now.After(nextPing) {
 				nextPing = now.Add(terminalPing)
 				for _, conn := range []*websocket.Conn{p.browser, p.agent} {
-					ping, cancel := context.WithTimeout(ctx, 10*time.Second)
+					ping, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 					err := conn.Ping(ping)
 					cancel()
 					if err != nil && ctx.Err() == nil {
