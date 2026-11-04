@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 
+	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/composeproject"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
@@ -32,21 +33,16 @@ func (s *Service) BuildRejections(ctx context.Context, p store.Principal, ws, pi
 		for _, app := range v.Spec.Applications {
 			current[app.ID] = true
 		}
-		rows, err := tx.Query(ctx, `SELECT application_id,rejected_commit,rejection_reason,rejected_at FROM build_targets WHERE workspace_id=$1 AND environment_id=$2 AND rejected_at IS NOT NULL ORDER BY application_id`, ws, env)
+		rows, err := db.New(tx).ListBuildRejections(ctx, db.ListBuildRejectionsParams{WorkspaceID: ws, EnvironmentID: env})
 		if err != nil {
 			return err
 		}
-		defer rows.Close()
-		for rows.Next() {
-			var rejection api.BuildRejection
-			if err = rows.Scan(&rejection.ApplicationId, &rejection.Commit, &rejection.Reason, &rejection.RejectedAt); err != nil {
-				return err
-			}
-			if current[rejection.ApplicationId] {
-				out = append(out, rejection)
+		for _, row := range rows {
+			if current[row.ApplicationID] {
+				out = append(out, api.BuildRejection{ApplicationId: row.ApplicationID, Commit: row.RejectedCommit, Reason: api.BuildRejectionReason(row.RejectionReason), RejectedAt: row.RejectedAt})
 			}
 		}
-		return rows.Err()
+		return nil
 	})
 	return out, err
 }
@@ -74,11 +70,11 @@ func (s *Service) buildInputs(ctx context.Context, tx pgx.Tx, ws, env uuid.UUID,
 	secrets := make(map[string]string, len(build.Secrets))
 	total := 0
 	for name, id := range build.Secrets {
-		var cipher []byte
-		if err := tx.QueryRow(ctx, "SELECT encrypted_value FROM build_secret_versions WHERE workspace_id=$1 AND id=$2", ws, id).Scan(&cipher); err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
-				return nil, &buildInputRejection{"missing_build_secret", "build.secrets"}
-			}
+		cipher, err := db.New(tx).GetBuildSecretValue(ctx, db.GetBuildSecretValueParams{WorkspaceID: ws, ID: id})
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, &buildInputRejection{"missing_build_secret", "build.secrets"}
+		}
+		if err != nil {
 			return nil, err
 		}
 		plain, err := s.Store.Keys.Open(cipher, integrationIdentity(ws, id, "build-secret"))

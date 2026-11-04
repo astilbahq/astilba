@@ -71,6 +71,452 @@ func (q *Queries) AllBackupPolicyAccess(ctx context.Context) ([]AllBackupPolicyA
 	return items, nil
 }
 
+const backupDestinationAccess = `-- name: BackupDestinationAccess :one
+SELECT configuration,encrypted_access FROM backup_destinations WHERE workspace_id = $1 AND id = $2
+`
+
+type BackupDestinationAccessParams struct {
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ID          uuid.UUID `json:"id"`
+}
+
+type BackupDestinationAccessRow struct {
+	Configuration   []byte `json:"configuration"`
+	EncryptedAccess []byte `json:"encrypted_access"`
+}
+
+func (q *Queries) BackupDestinationAccess(ctx context.Context, arg BackupDestinationAccessParams) (BackupDestinationAccessRow, error) {
+	row := q.db.QueryRow(ctx, backupDestinationAccess, arg.WorkspaceID, arg.ID)
+	var i BackupDestinationAccessRow
+	err := row.Scan(&i.Configuration, &i.EncryptedAccess)
+	return i, err
+}
+
+const backupDestinationConfiguration = `-- name: BackupDestinationConfiguration :one
+SELECT configuration FROM backup_destinations WHERE workspace_id = $1 AND id = $2
+`
+
+type BackupDestinationConfigurationParams struct {
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ID          uuid.UUID `json:"id"`
+}
+
+func (q *Queries) BackupDestinationConfiguration(ctx context.Context, arg BackupDestinationConfigurationParams) ([]byte, error) {
+	row := q.db.QueryRow(ctx, backupDestinationConfiguration, arg.WorkspaceID, arg.ID)
+	var configuration []byte
+	err := row.Scan(&configuration)
+	return configuration, err
+}
+
+const backupDestinationExists = `-- name: BackupDestinationExists :one
+SELECT EXISTS(SELECT 1 FROM backup_destinations WHERE workspace_id = $1 AND id = $2)
+`
+
+type BackupDestinationExistsParams struct {
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ID          uuid.UUID `json:"id"`
+}
+
+func (q *Queries) BackupDestinationExists(ctx context.Context, arg BackupDestinationExistsParams) (bool, error) {
+	row := q.db.QueryRow(ctx, backupDestinationExists, arg.WorkspaceID, arg.ID)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
+const backupPolicyAccess = `-- name: BackupPolicyAccess :one
+SELECT encrypted_access,configuration FROM backup_policies
+WHERE workspace_id = $1 AND environment_id = $2 AND server_id = $3 AND id = $4
+`
+
+type BackupPolicyAccessParams struct {
+	WorkspaceID   uuid.UUID `json:"workspace_id"`
+	EnvironmentID uuid.UUID `json:"environment_id"`
+	ServerID      uuid.UUID `json:"server_id"`
+	ID            uuid.UUID `json:"id"`
+}
+
+type BackupPolicyAccessRow struct {
+	EncryptedAccess []byte `json:"encrypted_access"`
+	Configuration   []byte `json:"configuration"`
+}
+
+func (q *Queries) BackupPolicyAccess(ctx context.Context, arg BackupPolicyAccessParams) (BackupPolicyAccessRow, error) {
+	row := q.db.QueryRow(ctx, backupPolicyAccess,
+		arg.WorkspaceID,
+		arg.EnvironmentID,
+		arg.ServerID,
+		arg.ID,
+	)
+	var i BackupPolicyAccessRow
+	err := row.Scan(&i.EncryptedAccess, &i.Configuration)
+	return i, err
+}
+
+const backupPolicyConfiguration = `-- name: BackupPolicyConfiguration :one
+SELECT configuration FROM backup_policies
+WHERE workspace_id = $1 AND environment_id = $2 AND id = $3
+`
+
+type BackupPolicyConfigurationParams struct {
+	WorkspaceID   uuid.UUID `json:"workspace_id"`
+	EnvironmentID uuid.UUID `json:"environment_id"`
+	ID            uuid.UUID `json:"id"`
+}
+
+func (q *Queries) BackupPolicyConfiguration(ctx context.Context, arg BackupPolicyConfigurationParams) ([]byte, error) {
+	row := q.db.QueryRow(ctx, backupPolicyConfiguration, arg.WorkspaceID, arg.EnvironmentID, arg.ID)
+	var configuration []byte
+	err := row.Scan(&configuration)
+	return configuration, err
+}
+
+const backupPolicyMaintenanceReserved = `-- name: BackupPolicyMaintenanceReserved :one
+SELECT EXISTS(SELECT 1 FROM cross_host_operations h
+    JOIN execution_operations o ON o.workspace_id=h.workspace_id AND o.id=h.id
+    WHERE h.workspace_id = $1 AND h.environment_id = $2
+        AND o.state NOT IN ('succeeded','failed','cancelled')
+        AND (o.command->'crosshost'->'maintenance'->'effect'->'backup'->'installation'->'policy'->>'id' = $3::text
+            OR o.command->'crosshost'->'maintenance'->'effect'->'upgrade'->'plan'->>'policyId' = $3::text))
+`
+
+type BackupPolicyMaintenanceReservedParams struct {
+	WorkspaceID   uuid.UUID `json:"workspace_id"`
+	EnvironmentID uuid.UUID `json:"environment_id"`
+	PolicyID      string    `json:"policy_id"`
+}
+
+// A coordinated maintenance operation holds its policy until it finishes.
+func (q *Queries) BackupPolicyMaintenanceReserved(ctx context.Context, arg BackupPolicyMaintenanceReservedParams) (bool, error) {
+	row := q.db.QueryRow(ctx, backupPolicyMaintenanceReserved, arg.WorkspaceID, arg.EnvironmentID, arg.PolicyID)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
+const backupPolicyStatus = `-- name: BackupPolicyStatus :one
+SELECT status FROM backup_policies
+WHERE workspace_id = $1 AND environment_id = $2 AND id = $3
+`
+
+type BackupPolicyStatusParams struct {
+	WorkspaceID   uuid.UUID `json:"workspace_id"`
+	EnvironmentID uuid.UUID `json:"environment_id"`
+	ID            uuid.UUID `json:"id"`
+}
+
+func (q *Queries) BackupPolicyStatus(ctx context.Context, arg BackupPolicyStatusParams) ([]byte, error) {
+	row := q.db.QueryRow(ctx, backupPolicyStatus, arg.WorkspaceID, arg.EnvironmentID, arg.ID)
+	var status []byte
+	err := row.Scan(&status)
+	return status, err
+}
+
+const countBackupDestinations = `-- name: CountBackupDestinations :one
+SELECT count(*) FROM backup_destinations WHERE workspace_id = $1
+`
+
+func (q *Queries) CountBackupDestinations(ctx context.Context, workspaceID uuid.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countBackupDestinations, workspaceID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const countBackupPolicies = `-- name: CountBackupPolicies :one
+SELECT count(*) FROM backup_policies WHERE workspace_id = $1
+`
+
+func (q *Queries) CountBackupPolicies(ctx context.Context, workspaceID uuid.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countBackupPolicies, workspaceID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const disableEnvironmentBackupPolicies = `-- name: DisableEnvironmentBackupPolicies :exec
+UPDATE backup_policies SET configuration=jsonb_set(configuration,'{enabled}','false')
+WHERE workspace_id = $1 AND environment_id = $2
+`
+
+type DisableEnvironmentBackupPoliciesParams struct {
+	WorkspaceID   uuid.UUID `json:"workspace_id"`
+	EnvironmentID uuid.UUID `json:"environment_id"`
+}
+
+func (q *Queries) DisableEnvironmentBackupPolicies(ctx context.Context, arg DisableEnvironmentBackupPoliciesParams) error {
+	_, err := q.db.Exec(ctx, disableEnvironmentBackupPolicies, arg.WorkspaceID, arg.EnvironmentID)
+	return err
+}
+
+const dueCoordinatedBackupPolicies = `-- name: DueCoordinatedBackupPolicies :many
+SELECT workspace_id,server_id,id FROM backup_policies
+WHERE configuration->>'coordinated'='true' AND configuration->>'enabled'='true'
+    AND status->>'enabled'='true' AND status->>'generation'=configuration->>'generation'
+    AND status->>'next'>'0001-01-01T00:00:00Z' AND status->>'next'<= $1::text
+ORDER BY coordinated_checked_at,id LIMIT 100
+`
+
+type DueCoordinatedBackupPoliciesRow struct {
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ServerID    uuid.UUID `json:"server_id"`
+	ID          uuid.UUID `json:"id"`
+}
+
+// unscoped: the coordinated scheduler sweeps every workspace and yields the scan
+// position per policy, then handles each candidate within its own workspace.
+func (q *Queries) DueCoordinatedBackupPolicies(ctx context.Context, dueBefore string) ([]DueCoordinatedBackupPoliciesRow, error) {
+	rows, err := q.db.Query(ctx, dueCoordinatedBackupPolicies, dueBefore)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []DueCoordinatedBackupPoliciesRow{}
+	for rows.Next() {
+		var i DueCoordinatedBackupPoliciesRow
+		if err := rows.Scan(&i.WorkspaceID, &i.ServerID, &i.ID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const insertBackupCutover = `-- name: InsertBackupCutover :exec
+INSERT INTO backup_cutovers(workspace_id,environment_id,revision_id,policy_id,source_plan_id,configuration)
+VALUES($1,$2,$3,$4,$5,$6)
+`
+
+type InsertBackupCutoverParams struct {
+	WorkspaceID   uuid.UUID `json:"workspace_id"`
+	EnvironmentID uuid.UUID `json:"environment_id"`
+	RevisionID    uuid.UUID `json:"revision_id"`
+	PolicyID      uuid.UUID `json:"policy_id"`
+	SourcePlanID  uuid.UUID `json:"source_plan_id"`
+	Configuration []byte    `json:"configuration"`
+}
+
+func (q *Queries) InsertBackupCutover(ctx context.Context, arg InsertBackupCutoverParams) error {
+	_, err := q.db.Exec(ctx, insertBackupCutover,
+		arg.WorkspaceID,
+		arg.EnvironmentID,
+		arg.RevisionID,
+		arg.PolicyID,
+		arg.SourcePlanID,
+		arg.Configuration,
+	)
+	return err
+}
+
+const insertBackupDestination = `-- name: InsertBackupDestination :exec
+INSERT INTO backup_destinations(id,workspace_id,configuration,encrypted_access)
+VALUES($1,$2,$3,$4)
+`
+
+type InsertBackupDestinationParams struct {
+	ID              uuid.UUID `json:"id"`
+	WorkspaceID     uuid.UUID `json:"workspace_id"`
+	Configuration   []byte    `json:"configuration"`
+	EncryptedAccess []byte    `json:"encrypted_access"`
+}
+
+func (q *Queries) InsertBackupDestination(ctx context.Context, arg InsertBackupDestinationParams) error {
+	_, err := q.db.Exec(ctx, insertBackupDestination,
+		arg.ID,
+		arg.WorkspaceID,
+		arg.Configuration,
+		arg.EncryptedAccess,
+	)
+	return err
+}
+
+const listBackupDestinations = `-- name: ListBackupDestinations :many
+SELECT configuration FROM backup_destinations WHERE workspace_id = $1 ORDER BY id LIMIT 100
+`
+
+func (q *Queries) ListBackupDestinations(ctx context.Context, workspaceID uuid.UUID) ([][]byte, error) {
+	rows, err := q.db.Query(ctx, listBackupDestinations, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := [][]byte{}
+	for rows.Next() {
+		var configuration []byte
+		if err := rows.Scan(&configuration); err != nil {
+			return nil, err
+		}
+		items = append(items, configuration)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listBackupPolicies = `-- name: ListBackupPolicies :many
+SELECT configuration FROM backup_policies
+WHERE workspace_id = $1 AND environment_id = $2 ORDER BY id LIMIT 100
+`
+
+type ListBackupPoliciesParams struct {
+	WorkspaceID   uuid.UUID `json:"workspace_id"`
+	EnvironmentID uuid.UUID `json:"environment_id"`
+}
+
+func (q *Queries) ListBackupPolicies(ctx context.Context, arg ListBackupPoliciesParams) ([][]byte, error) {
+	rows, err := q.db.Query(ctx, listBackupPolicies, arg.WorkspaceID, arg.EnvironmentID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := [][]byte{}
+	for rows.Next() {
+		var configuration []byte
+		if err := rows.Scan(&configuration); err != nil {
+			return nil, err
+		}
+		items = append(items, configuration)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listServerBackupStatuses = `-- name: ListServerBackupStatuses :many
+SELECT id,status FROM backup_policies WHERE workspace_id = $1 AND server_id = $2
+`
+
+type ListServerBackupStatusesParams struct {
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ServerID    uuid.UUID `json:"server_id"`
+}
+
+type ListServerBackupStatusesRow struct {
+	ID     uuid.UUID `json:"id"`
+	Status []byte    `json:"status"`
+}
+
+func (q *Queries) ListServerBackupStatuses(ctx context.Context, arg ListServerBackupStatusesParams) ([]ListServerBackupStatusesRow, error) {
+	rows, err := q.db.Query(ctx, listServerBackupStatuses, arg.WorkspaceID, arg.ServerID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListServerBackupStatusesRow{}
+	for rows.Next() {
+		var i ListServerBackupStatusesRow
+		if err := rows.Scan(&i.ID, &i.Status); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const lockBackupPolicyConfiguration = `-- name: LockBackupPolicyConfiguration :one
+SELECT configuration FROM backup_policies
+WHERE workspace_id = $1 AND environment_id = $2 AND id = $3 FOR UPDATE
+`
+
+type LockBackupPolicyConfigurationParams struct {
+	WorkspaceID   uuid.UUID `json:"workspace_id"`
+	EnvironmentID uuid.UUID `json:"environment_id"`
+	ID            uuid.UUID `json:"id"`
+}
+
+func (q *Queries) LockBackupPolicyConfiguration(ctx context.Context, arg LockBackupPolicyConfigurationParams) ([]byte, error) {
+	row := q.db.QueryRow(ctx, lockBackupPolicyConfiguration, arg.WorkspaceID, arg.EnvironmentID, arg.ID)
+	var configuration []byte
+	err := row.Scan(&configuration)
+	return configuration, err
+}
+
+const lockBackupPolicyReport = `-- name: LockBackupPolicyReport :one
+SELECT configuration,status_sequence,status FROM backup_policies
+WHERE workspace_id = $1 AND id = $2 AND server_id = $3 FOR UPDATE
+`
+
+type LockBackupPolicyReportParams struct {
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ID          uuid.UUID `json:"id"`
+	ServerID    uuid.UUID `json:"server_id"`
+}
+
+type LockBackupPolicyReportRow struct {
+	Configuration  []byte `json:"configuration"`
+	StatusSequence int64  `json:"status_sequence"`
+	Status         []byte `json:"status"`
+}
+
+func (q *Queries) LockBackupPolicyReport(ctx context.Context, arg LockBackupPolicyReportParams) (LockBackupPolicyReportRow, error) {
+	row := q.db.QueryRow(ctx, lockBackupPolicyReport, arg.WorkspaceID, arg.ID, arg.ServerID)
+	var i LockBackupPolicyReportRow
+	err := row.Scan(&i.Configuration, &i.StatusSequence, &i.Status)
+	return i, err
+}
+
+const lockCoordinatedBackupPolicy = `-- name: LockCoordinatedBackupPolicy :one
+SELECT configuration,status FROM backup_policies
+WHERE workspace_id = $1 AND server_id = $2 AND id = $3 FOR UPDATE
+`
+
+type LockCoordinatedBackupPolicyParams struct {
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ServerID    uuid.UUID `json:"server_id"`
+	ID          uuid.UUID `json:"id"`
+}
+
+type LockCoordinatedBackupPolicyRow struct {
+	Configuration []byte `json:"configuration"`
+	Status        []byte `json:"status"`
+}
+
+func (q *Queries) LockCoordinatedBackupPolicy(ctx context.Context, arg LockCoordinatedBackupPolicyParams) (LockCoordinatedBackupPolicyRow, error) {
+	row := q.db.QueryRow(ctx, lockCoordinatedBackupPolicy, arg.WorkspaceID, arg.ServerID, arg.ID)
+	var i LockCoordinatedBackupPolicyRow
+	err := row.Scan(&i.Configuration, &i.Status)
+	return i, err
+}
+
+const markBackupPolicyChecked = `-- name: MarkBackupPolicyChecked :exec
+UPDATE backup_policies SET coordinated_checked_at=clock_timestamp()
+WHERE workspace_id = $1 AND id = $2
+`
+
+type MarkBackupPolicyCheckedParams struct {
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ID          uuid.UUID `json:"id"`
+}
+
+func (q *Queries) MarkBackupPolicyChecked(ctx context.Context, arg MarkBackupPolicyCheckedParams) error {
+	_, err := q.db.Exec(ctx, markBackupPolicyChecked, arg.WorkspaceID, arg.ID)
+	return err
+}
+
+const operationCommandByRequestKey = `-- name: OperationCommandByRequestKey :one
+SELECT command FROM execution_operations WHERE workspace_id = $1 AND request_key = $2
+`
+
+type OperationCommandByRequestKeyParams struct {
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	RequestKey  uuid.UUID `json:"request_key"`
+}
+
+func (q *Queries) OperationCommandByRequestKey(ctx context.Context, arg OperationCommandByRequestKeyParams) ([]byte, error) {
+	row := q.db.QueryRow(ctx, operationCommandByRequestKey, arg.WorkspaceID, arg.RequestKey)
+	var command []byte
+	err := row.Scan(&command)
+	return command, err
+}
+
 const rewrapBackupDestinationAccess = `-- name: RewrapBackupDestinationAccess :exec
 UPDATE backup_destinations SET encrypted_access=$3 WHERE workspace_id=$1 AND id=$2
 `
@@ -99,4 +545,74 @@ type RewrapBackupPolicyAccessParams struct {
 func (q *Queries) RewrapBackupPolicyAccess(ctx context.Context, arg RewrapBackupPolicyAccessParams) error {
 	_, err := q.db.Exec(ctx, rewrapBackupPolicyAccess, arg.WorkspaceID, arg.ID, arg.EncryptedAccess)
 	return err
+}
+
+const saveBackupPolicyReport = `-- name: SaveBackupPolicyReport :exec
+UPDATE backup_policies SET status = $1,status_sequence = $2
+WHERE workspace_id = $3 AND id = $4
+`
+
+type SaveBackupPolicyReportParams struct {
+	Status         []byte    `json:"status"`
+	StatusSequence int64     `json:"status_sequence"`
+	WorkspaceID    uuid.UUID `json:"workspace_id"`
+	ID             uuid.UUID `json:"id"`
+}
+
+func (q *Queries) SaveBackupPolicyReport(ctx context.Context, arg SaveBackupPolicyReportParams) error {
+	_, err := q.db.Exec(ctx, saveBackupPolicyReport,
+		arg.Status,
+		arg.StatusSequence,
+		arg.WorkspaceID,
+		arg.ID,
+	)
+	return err
+}
+
+const saveBackupPolicyStatus = `-- name: SaveBackupPolicyStatus :exec
+UPDATE backup_policies SET status = $1 WHERE workspace_id = $2 AND id = $3
+`
+
+type SaveBackupPolicyStatusParams struct {
+	Status      []byte    `json:"status"`
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ID          uuid.UUID `json:"id"`
+}
+
+func (q *Queries) SaveBackupPolicyStatus(ctx context.Context, arg SaveBackupPolicyStatusParams) error {
+	_, err := q.db.Exec(ctx, saveBackupPolicyStatus, arg.Status, arg.WorkspaceID, arg.ID)
+	return err
+}
+
+const upsertBackupPolicy = `-- name: UpsertBackupPolicy :execrows
+INSERT INTO backup_policies(id,workspace_id,environment_id,server_id,configuration,encrypted_access)
+VALUES($1,$2,$3,$4,$5,$6)
+ON CONFLICT(id) DO UPDATE SET configuration=excluded.configuration,encrypted_access=excluded.encrypted_access
+WHERE backup_policies.workspace_id=excluded.workspace_id AND backup_policies.environment_id=excluded.environment_id
+`
+
+type UpsertBackupPolicyParams struct {
+	ID              uuid.UUID `json:"id"`
+	WorkspaceID     uuid.UUID `json:"workspace_id"`
+	EnvironmentID   uuid.UUID `json:"environment_id"`
+	ServerID        uuid.UUID `json:"server_id"`
+	Configuration   []byte    `json:"configuration"`
+	EncryptedAccess []byte    `json:"encrypted_access"`
+}
+
+// The conflict target is the global primary key, so the update must not take
+// over a policy that belongs to another workspace or environment.
+func (q *Queries) UpsertBackupPolicy(ctx context.Context, arg UpsertBackupPolicyParams) (int64, error) {
+	result, err := q.db.Exec(ctx, upsertBackupPolicy,
+		arg.ID,
+		arg.WorkspaceID,
+		arg.EnvironmentID,
+		arg.ServerID,
+		arg.Configuration,
+		arg.EncryptedAccess,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"time"
 
+	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
@@ -79,8 +80,7 @@ func (s *Service) createRecoveryBase(ctx context.Context, tx pgx.Tx, ws uuid.UUI
 		return d, err
 	}
 	descriptor, _ := json.Marshal(d)
-	_, err = tx.Exec(ctx, `INSERT INTO cross_host_checkpoints(id,workspace_id,parent_id,sequence,descriptor,envelope) VALUES($1,$2,$3,0,$4,$5)`, id, ws, root.Id, descriptor, envelope)
-	return d, err
+	return d, db.New(tx).InsertRecoveryBaseCheckpoint(ctx, db.InsertRecoveryBaseCheckpointParams{ID: id, WorkspaceID: ws, ParentID: root.Id, Descriptor: descriptor, Envelope: envelope})
 }
 
 func reserveRecoveryGeneration(ctx context.Context, tx pgx.Tx, ws uuid.UUID, parent api.ExecutionCommand, phase string) (int64, error) {
@@ -91,16 +91,15 @@ func reserveRecoveryGeneration(ctx context.Context, tx pgx.Tx, ws uuid.UUID, par
 	if json.Unmarshal(*parent.RecoveryCheckpoint, &d) != nil || d.Validate() != nil {
 		return 0, domain.Invalid("recovery.checkpoint")
 	}
-	var saved string
-	if err := tx.QueryRow(ctx, `SELECT phase FROM cross_host_checkpoints WHERE id=$1 AND parent_id=$2`, d.CheckpointID, parent.Id).Scan(&saved); err != nil {
+	q := db.New(tx)
+	saved, err := q.RecoveryCheckpointPhase(ctx, db.RecoveryCheckpointPhaseParams{WorkspaceID: ws, ID: d.CheckpointID, ParentID: parent.Id})
+	if err != nil {
 		return 0, err
 	}
 	if saved == phase {
 		return 0, nil
 	}
-	var generation int64
-	err := tx.QueryRow(ctx, `UPDATE environments SET execution_generation=execution_generation+1 WHERE workspace_id=$1 AND id=$2 RETURNING execution_generation`, ws, parent.EnvironmentId).Scan(&generation)
-	return generation, err
+	return q.AdvanceEnvironmentExecutionGeneration(ctx, db.AdvanceEnvironmentExecutionGenerationParams{WorkspaceID: ws, ID: parent.EnvironmentId})
 }
 
 func (s *Service) stageRecoveryPhase(ctx context.Context, tx pgx.Tx, ws uuid.UUID, parent api.ExecutionCommand, command coordinationCommand, phase string, ids []uuid.UUID, generation int64) error {
@@ -111,21 +110,23 @@ func (s *Service) stageRecoveryPhase(ctx context.Context, tx pgx.Tx, ws uuid.UUI
 	if json.Unmarshal(*parent.RecoveryCheckpoint, &previous) != nil || previous.Validate() != nil {
 		return domain.Invalid("recovery.checkpoint")
 	}
-	var existingPhase string
-	if err := tx.QueryRow(ctx, `SELECT phase FROM cross_host_checkpoints WHERE id=$1 AND parent_id=$2`, previous.CheckpointID, parent.Id).Scan(&existingPhase); err != nil {
+	q := db.New(tx)
+	existingPhase, err := q.RecoveryCheckpointPhase(ctx, db.RecoveryCheckpointPhaseParams{WorkspaceID: ws, ID: previous.CheckpointID, ParentID: parent.Id})
+	if err != nil {
 		return err
 	}
 	if existingPhase == phase {
 		return nil
 	}
 	segment := recoveryContinuation{Phase: phase, Children: []recoveryChild{}, Approvals: []portability.Row{}}
-	if err := tx.QueryRow(ctx, `SELECT cancel_requested FROM execution_operations WHERE workspace_id=$1 AND id=$2`, ws, parent.Id).Scan(&segment.CancelRequested); err != nil {
+	segment.CancelRequested, err = q.OperationCancelRequested(ctx, db.OperationCancelRequestedParams{WorkspaceID: ws, ID: parent.Id})
+	if err != nil {
 		return err
 	}
 	for _, id := range ids {
-		var raw []byte
 		var c api.ExecutionCommand
-		if err := tx.QueryRow(ctx, `SELECT command FROM execution_operations WHERE id=$1 AND parent_id=$2`, id, parent.Id).Scan(&raw); err != nil {
+		raw, err := q.RecoveryChildCommand(ctx, db.RecoveryChildCommandParams{WorkspaceID: ws, ID: id, ParentID: parent.Id})
+		if err != nil {
 			return err
 		}
 		if json.Unmarshal(raw, &c) != nil {
@@ -144,30 +145,20 @@ func (s *Service) stageRecoveryPhase(ctx context.Context, tx pgx.Tx, ws uuid.UUI
 		c.Crosshost, c.Backup, c.Upgrade, c.RecoveryCheckpoint = nil, nil, nil, nil
 		segment.Children = append(segment.Children, recoveryChild{Header: c, UnitID: unit})
 	}
-	rows, err := tx.Query(ctx, `SELECT to_jsonb(a) FROM cross_host_approvals a WHERE workspace_id=$1 AND parent_id=$2 AND $3 LIKE '%:'||request_key::text`, ws, parent.Id, phase)
+	approvals, err := q.RecoveryPhaseApprovals(ctx, db.RecoveryPhaseApprovalsParams{WorkspaceID: ws, ParentID: parent.Id, Phase: phase})
 	if err != nil {
 		return err
 	}
-	for rows.Next() {
-		var raw []byte
+	for _, raw := range approvals {
 		var row portability.Row
-		if err = rows.Scan(&raw); err != nil {
-			rows.Close()
-			return err
-		}
 		if err = json.Unmarshal(raw, &row); err != nil {
-			rows.Close()
 			return err
 		}
 		segment.Approvals = append(segment.Approvals, row)
 	}
-	err = rows.Err()
-	rows.Close()
-	if err != nil {
-		return err
-	}
 	if command.Maintenance != nil && command.Maintenance.Effect.Upgrade != nil {
-		if err = tx.QueryRow(ctx, `SELECT status FROM supported_upgrades WHERE workspace_id=$1 AND id=$2`, ws, command.Maintenance.Effect.Upgrade.Plan.ID).Scan(&segment.UpgradeStatus); err != nil {
+		segment.UpgradeStatus, err = q.SupportedUpgradeStatus(ctx, db.SupportedUpgradeStatusParams{WorkspaceID: ws, ID: command.Maintenance.Effect.Upgrade.Plan.ID})
+		if err != nil {
 			return err
 		}
 	}
@@ -193,10 +184,10 @@ func (s *Service) stageRecoveryPhase(ctx context.Context, tx pgx.Tx, ws uuid.UUI
 	}
 	d.Digest, d.Bytes = deployment.RecoveryDigest(envelope), len(envelope)
 	descriptor, _ := json.Marshal(d)
-	if _, err = tx.Exec(ctx, `INSERT INTO cross_host_checkpoints(id,workspace_id,parent_id,sequence,descriptor,envelope,phase) VALUES($1,$2,$3,$4,$5,$6,$7)`, d.CheckpointID, ws, parent.Id, d.Sequence, descriptor, envelope, phase); err != nil {
+	if err = q.InsertRecoveryCheckpoint(ctx, db.InsertRecoveryCheckpointParams{ID: d.CheckpointID, WorkspaceID: ws, ParentID: parent.Id, Sequence: d.Sequence, Descriptor: descriptor, Envelope: envelope, Phase: phase}); err != nil {
 		return err
 	}
-	if _, err = tx.Exec(ctx, `UPDATE execution_operations SET command=jsonb_set(command,'{recoveryCheckpoint}',$2::jsonb,true) WHERE id=$1 OR id=ANY($3::uuid[])`, parent.Id, descriptor, ids); err != nil {
+	if err = q.AttachRecoveryCheckpoint(ctx, db.AttachRecoveryCheckpointParams{Descriptor: descriptor, WorkspaceID: ws, ParentID: parent.Id, ChildIds: ids}); err != nil {
 		return err
 	}
 	var primary deployment.DistributedUnit
@@ -230,8 +221,7 @@ func (s *Service) stageRecoveryPhase(ctx context.Context, tx pgx.Tx, ws uuid.UUI
 // RecoveryCheckpoint returns opaque metadata only to the root's assigned
 // primary. Authentication and controller-transfer fencing remain mandatory.
 func (s *Service) RecoveryCheckpoint(ctx context.Context, a Identity, parent, checkpoint uuid.UUID) ([]byte, error) {
-	var body []byte
-	err := s.Store.Pool.QueryRow(ctx, `SELECT c.envelope FROM cross_host_checkpoints c JOIN execution_operations o ON o.workspace_id=c.workspace_id AND o.id=c.parent_id JOIN servers s ON s.id=o.server_id AND s.workspace_id=o.workspace_id WHERE c.workspace_id=$1 AND c.parent_id=$2 AND c.id=$3 AND o.parent_id IS NULL AND o.server_id=$4 AND NOT s.revoked AND NOT s.awaiting_transfer AND (s.credential_hash=$5 OR (s.previous_hash=$5 AND s.previous_until>now()))`, a.Workspace, parent, checkpoint, a.ID, hash(a.Token)).Scan(&body)
+	body, err := s.Store.Queries.AgentRecoveryCheckpointEnvelope(ctx, db.AgentRecoveryCheckpointEnvelopeParams{WorkspaceID: a.Workspace, ParentID: parent, ID: checkpoint, ServerID: a.ID, CredentialHash: hash(a.Token)})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, domain.NotFound
 	}

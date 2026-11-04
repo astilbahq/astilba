@@ -466,6 +466,39 @@ func (q *Queries) RotateAgentCredential(ctx context.Context, arg RotateAgentCred
 	return result.RowsAffected(), nil
 }
 
+const serverCapabilities = `-- name: ServerCapabilities :one
+SELECT capabilities FROM servers WHERE workspace_id = $1 AND id = $2
+`
+
+type ServerCapabilitiesParams struct {
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ID          uuid.UUID `json:"id"`
+}
+
+func (q *Queries) ServerCapabilities(ctx context.Context, arg ServerCapabilitiesParams) ([]byte, error) {
+	row := q.db.QueryRow(ctx, serverCapabilities, arg.WorkspaceID, arg.ID)
+	var capabilities []byte
+	err := row.Scan(&capabilities)
+	return capabilities, err
+}
+
+const serverHasActiveOperations = `-- name: ServerHasActiveOperations :one
+SELECT EXISTS(SELECT 1 FROM execution_operations
+    WHERE workspace_id = $1 AND server_id = $2 AND state NOT IN ('succeeded','failed','cancelled'))
+`
+
+type ServerHasActiveOperationsParams struct {
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ServerID    uuid.UUID `json:"server_id"`
+}
+
+func (q *Queries) ServerHasActiveOperations(ctx context.Context, arg ServerHasActiveOperationsParams) (bool, error) {
+	row := q.db.QueryRow(ctx, serverHasActiveOperations, arg.WorkspaceID, arg.ServerID)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
 const stagedRecoveryInventory = `-- name: StagedRecoveryInventory :one
 SELECT r.inventory FROM cross_host_recovery_servers r
 JOIN cross_host_recoveries h ON h.workspace_id=r.workspace_id AND h.parent_id=r.parent_id

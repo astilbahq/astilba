@@ -6,6 +6,7 @@ import (
 	"errors"
 	"maps"
 
+	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/portability"
 	"github.com/google/uuid"
@@ -33,6 +34,7 @@ func recoveryProjections(ctx context.Context, tx pgx.Tx, before, incoming portab
 	}
 	for parent, root := range roots {
 		var raw []byte
+		// inline-sql: recovery session temporary table
 		if err := tx.QueryRow(ctx, `SELECT decoded FROM recovery_input_checkpoints WHERE parent_id=$1 AND sequence=0`, parent).Scan(&raw); err != nil {
 			return nil, err
 		}
@@ -82,6 +84,7 @@ func recoveryProjections(ctx context.Context, tx pgx.Tx, before, incoming portab
 				return nil, err
 			}
 			var raw []byte
+			// inline-sql: recovery session temporary table
 			if err = tx.QueryRow(ctx, `SELECT decoded FROM recovery_input_checkpoints WHERE parent_id=$1 AND sequence=0`, selectedOrigin.Parent).Scan(&raw); err != nil {
 				return nil, err
 			}
@@ -334,7 +337,7 @@ func appendRecoveryProjectionRows(a *portability.Archive, projections map[uuid.U
 func stageRecoveryProjections(ctx context.Context, tx pgx.Tx, ws uuid.UUID, projections map[uuid.UUID]recoveryProjection) error {
 	for env, p := range projections {
 		if p.adopt {
-			if _, err := tx.Exec(ctx, `DELETE FROM cross_host_runtime WHERE workspace_id=$1 AND environment_id=$2`, ws, env); err != nil {
+			if err := db.New(tx).DeleteEnvironmentCrossHostRuntime(ctx, db.DeleteEnvironmentCrossHostRuntimeParams{WorkspaceID: ws, EnvironmentID: env}); err != nil {
 				return err
 			}
 		}
@@ -354,8 +357,8 @@ func restoreRecoveryGrants(ctx context.Context, tx pgx.Tx, ws uuid.UUID, project
 		}
 		root, interrupted := selected[env]
 		if interrupted && root.Body.Maintenance == nil {
-			var phase string
-			if err := tx.QueryRow(ctx, `SELECT phase FROM cross_host_operations WHERE workspace_id=$1 AND id=$2`, ws, root.Command.Id).Scan(&phase); err != nil {
+			phase, err := db.New(tx).CrossHostOperationPhase(ctx, db.CrossHostOperationPhaseParams{WorkspaceID: ws, ID: root.Command.Id})
+			if err != nil {
 				return err
 			}
 			switch phase {

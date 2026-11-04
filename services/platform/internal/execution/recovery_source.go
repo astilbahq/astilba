@@ -57,6 +57,7 @@ func loadRecoverySource(ctx context.Context, tx pgx.Tx, keys *cryptobox.Keyring,
 	if len(dirs) == 0 || len(dirs) > 100 {
 		return out, errors.New("provide every required host export")
 	}
+	// inline-sql: recovery session temporary table
 	if _, err := tx.Exec(ctx, `CREATE TEMP TABLE recovery_input_checkpoints(id uuid PRIMARY KEY,parent_id uuid NOT NULL,sequence bigint NOT NULL,descriptor jsonb NOT NULL,envelope bytea NOT NULL,decoded bytea NOT NULL,PRIMARY_SOURCE uuid NOT NULL,retained boolean NOT NULL DEFAULT true,UNIQUE(parent_id,sequence)) ON COMMIT DROP; CREATE TEMP TABLE recovery_input_proofs(server_id uuid NOT NULL,id uuid NOT NULL,parent_id uuid NOT NULL,header jsonb NOT NULL,report jsonb NOT NULL,checkpoint text NOT NULL,applied boolean NOT NULL DEFAULT false,PRIMARY KEY(server_id,id)) ON COMMIT DROP`); err != nil {
 		return out, err
 	}
@@ -183,6 +184,7 @@ func loadRecoverySource(ctx context.Context, tx pgx.Tx, keys *cryptobox.Keyring,
 					return out, errors.New("invalid bounded recovery continuation")
 				}
 			}
+			// inline-sql: recovery session temporary table
 			_, err = tx.Exec(ctx, `INSERT INTO recovery_input_checkpoints(id,parent_id,sequence,descriptor,envelope,decoded,PRIMARY_SOURCE) VALUES($1,$2,$3,$4,$5,$6,$7)`, d.CheckpointID, d.ParentID, d.Sequence, raw, envelope, decoded, host.ServerID)
 			clear(decoded)
 			if err != nil {
@@ -190,6 +192,7 @@ func loadRecoverySource(ctx context.Context, tx pgx.Tx, keys *cryptobox.Keyring,
 			}
 		}
 	}
+	// inline-sql: recovery session temporary table
 	rows, err := tx.Query(ctx, `SELECT descriptor,primary_source FROM recovery_input_checkpoints ORDER BY parent_id,sequence`)
 	if err != nil {
 		return out, err
@@ -270,6 +273,7 @@ func loadRecoveryProofs(ctx context.Context, tx pgx.Tx, dir string, host deploym
 		} else if *header.ParentId != proof.ParentID {
 			return errors.New("host proof parent differs from its frame")
 		}
+		// inline-sql: recovery session temporary table
 		if _, err = tx.Exec(ctx, `INSERT INTO recovery_input_proofs(server_id,id,parent_id,header,report,checkpoint) VALUES($1,$2,$3,$4,$5,$6)`, host.ServerID, proof.ID, proof.ParentID, proof.Header, proof.Report, proof.Checkpoint); err != nil {
 			return err
 		}

@@ -7,6 +7,7 @@ import (
 	"maps"
 	"net/netip"
 
+	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/backup"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
@@ -51,6 +52,7 @@ func (s *Service) prepareRecoveryKnowledge(ctx context.Context, tx pgx.Tx, befor
 	if err != nil {
 		return err
 	}
+	// inline-sql: recovery session temporary table
 	if _, err = tx.Exec(ctx, `CREATE TEMP TABLE recovery_known_operations(id uuid PRIMARY KEY,report_sequence bigint NOT NULL,state text NOT NULL) ON COMMIT DROP`); err != nil {
 		return err
 	}
@@ -408,6 +410,7 @@ func recoveryPolicyKnowledge(prior, incoming portability.Row) (portability.Row, 
 }
 func preflightRecoveryKnownProofs(ctx context.Context, tx pgx.Tx) error {
 	var conflict bool
+	// inline-sql: recovery session temporary table
 	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM recovery_known_operations k JOIN recovery_input_proofs p ON p.id=k.id WHERE k.report_sequence>(p.report->>'sequence')::bigint OR k.report_sequence=(p.report->>'sequence')::bigint AND k.state IN ('succeeded','failed','cancelled') AND k.state<>p.report->>'state')`).Scan(&conflict); err != nil {
 		return err
 	}
@@ -427,8 +430,8 @@ func validateRecoveryUpgradeKnowledge(ctx context.Context, tx pgx.Tx, archives .
 			if err != nil {
 				return err
 			}
-			var raw []byte
-			if err = tx.QueryRow(ctx, `SELECT status FROM supported_upgrades WHERE workspace_id=$1 AND id=$2`, a.Workspace, id).Scan(&raw); err != nil {
+			raw, err := db.New(tx).SupportedUpgradeStatus(ctx, db.SupportedUpgradeStatusParams{WorkspaceID: a.Workspace, ID: id})
+			if err != nil {
 				return err
 			}
 			var current upgrade.Status
