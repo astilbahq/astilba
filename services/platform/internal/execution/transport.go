@@ -20,6 +20,19 @@ var ErrPollLeaseHeld = fmt.Errorf("poll lease held: %w", domain.Conflict)
 
 // A database lease bounds overlapping polls across management replicas.
 func (s *Service) Poll(ctx context.Context, a Identity) (*api.ExecutionCommand, error) {
+	return s.poll(ctx, a, nil)
+}
+
+// PollAgent also returns terminal sessions waiting for this agent. They wake the poll
+// but are not journaled commands, and they cannot be replayed once their offer closes.
+func (s *Service) PollAgent(ctx context.Context, a Identity) (api.AgentPoll, error) {
+	var out api.AgentPoll
+	command, err := s.poll(ctx, a, &out)
+	out.Command = command
+	return out, err
+}
+
+func (s *Service) poll(ctx context.Context, a Identity, out *api.AgentPoll) (*api.ExecutionCommand, error) {
 	id := uuid.New()
 	n, err := s.Store.Pool.Exec(ctx, `UPDATE servers SET poll_id=$2,poll_until=now()+interval '30 seconds' WHERE id=$1 AND (poll_until IS NULL OR poll_until<now())`, a.ID, id)
 	if err != nil {
@@ -41,6 +54,15 @@ func (s *Service) Poll(ctx context.Context, a Identity) (*api.ExecutionCommand, 
 		// Check revocation/expiry after each wait, not only at request entry.
 		if _, err = s.Authenticate(ctx, a.ID, a.Token); err != nil {
 			return nil, err
+		}
+		if out != nil {
+			offers, err := s.troubleshootingOffers(ctx, a)
+			if err != nil {
+				return nil, err
+			}
+			if len(offers) > 0 {
+				out.TroubleshootingOffers = &offers
+			}
 		}
 		var raw []byte
 		var cancel bool
@@ -124,6 +146,9 @@ func (s *Service) Poll(ctx context.Context, a Identity) (*api.ExecutionCommand, 
 		}
 		if !errors.Is(err, pgx.ErrNoRows) {
 			return nil, err
+		}
+		if out != nil && out.TroubleshootingOffers != nil {
+			return nil, nil
 		}
 		select {
 		case <-ctx.Done():

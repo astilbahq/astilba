@@ -59,12 +59,17 @@ type Server struct {
 	GitHubConfig      githubapp.Config
 	Development       bool
 	TrustedProxies    []netip.Prefix
+	// TerminalIdle and TerminalReviewEvery are the relay's idle limit and how often it
+	// re-reads the conditions an open session depends on.
+	TerminalIdle        time.Duration
+	TerminalReviewEvery time.Duration
+	terminals           *terminalHub
 }
 
 func New(st *store.Store, service *auth.Service, origin string, development bool, log *slog.Logger) (*Server, func()) {
 	sessions := scs.New()
 	backend := pgxstore.New(st.Pool)
-	sessions.Store = &sessionStore{PostgresStore: backend, queries: st.Queries}
+	sessions.Store = &sessionStore{PostgresStore: backend, queries: st.Queries, store: st}
 	sessions.HashTokenInStore = true
 	sessions.Lifetime = 12 * time.Hour
 	sessions.IdleTimeout = 30 * time.Minute
@@ -77,7 +82,7 @@ func New(st *store.Store, service *auth.Service, origin string, development bool
 		sessions.Cookie.Name = "astilba_session"
 		sessions.Cookie.Secure = false
 	}
-	server := &Server{Alerts: alerts.New(st, service.Mail, origin, development, strings.Split(os.Getenv("ASTILBA_ALERT_WEBHOOK_ORIGINS"), ",")), Store: st, Auth: service, Sessions: sessions, Origin: origin, Log: log, Development: development}
+	server := &Server{TerminalIdle: domain.TroubleshootingIdle, TerminalReviewEvery: domain.TroubleshootingReview, terminals: newTerminalHub(), Alerts: alerts.New(st, service.Mail, origin, development, strings.Split(os.Getenv("ASTILBA_ALERT_WEBHOOK_ORIGINS"), ",")), Store: st, Auth: service, Sessions: sessions, Origin: origin, Log: log, Development: development}
 	previousError := sessions.ErrorFunc
 	sessions.ErrorFunc = func(w http.ResponseWriter, r *http.Request, err error) {
 		// SCS continues handler writes after ErrorFunc; keep the error response
@@ -149,6 +154,8 @@ func (s *Server) Handler(assets http.Handler) (http.Handler, error) {
 		}))
 		api.HandlerFromMuxWithBaseURL(s, r, "")
 	})
+	r.With(s.terminalAvailable).Get("/agent/v1/troubleshooting/{sessionId}/stream", s.agentTerminal)
+	r.With(s.terminalAvailable).Get("/api/v1/workspaces/{workspaceId}/troubleshooting-sessions/{sessionId}/stream", s.browserTerminal)
 	r.Get("/agent-artifacts/{sha}", s.agentArtifact)
 	r.Get("/agent-artifacts/{sha}/manifest.json", s.agentManifest)
 	r.Get("/agent-artifacts/{sha}/message", s.agentReleaseMessage)
@@ -225,6 +232,7 @@ func (s *Server) identity(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r)
 	})
 }
+
 func (s *Server) csrf(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "GET" && r.Method != "HEAD" && r.Method != "OPTIONS" {
@@ -420,26 +428,6 @@ func (s *Server) Logout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(204)
-}
-func (s *Server) Reauthenticate(w http.ResponseWriter, r *http.Request) {
-	b, e := decode[api.Reauthenticate](r)
-	if e != nil {
-		s.fail(w, r, e)
-		return
-	}
-	a, e := s.Auth.Reauthenticate(r.Context(), principal(r.Context()).Account.ID, value(b.Password), value(b.Code))
-	if e == nil {
-		nonce := s.Sessions.GetString(r.Context(), "github-session")
-		e = s.establish(r.Context(), a, len(a.TotpSecret) > 0)
-		if e == nil && nonce != "" {
-			s.Sessions.Put(r.Context(), "github-session", nonce)
-		}
-	}
-	if e != nil {
-		s.fail(w, r, e)
-		return
-	}
-	s.sendSession(w, r)
 }
 func (s *Server) recent(r *http.Request) error {
 	if p := principal(r.Context()); p == nil {

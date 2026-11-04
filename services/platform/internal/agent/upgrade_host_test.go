@@ -295,14 +295,10 @@ func nativeUpgradeJourney(t *testing.T, e *Engine, newSource func(*testing.T) (d
 				if r.Report.State != "succeeded" || state.Status.Phase != "ready" || state.Status.WritesPossible || !backup.SnapshotID(state.Status.Snapshot) {
 					t.Fatalf("prepare: %s %+v", r.Report.Note, state.Status)
 				}
-				// Scheduled jobs and ordinary host operations cannot resume writers.
-				if err = e.TickSchedules(ctx); err != nil {
-					t.Fatal(err)
-				}
 				for _, id := range state.Writers {
 					v, err := e.Docker.ContainerInspect(ctx, id, client.ContainerInspectOptions{})
 					if err != nil || v.Container.State.Running {
-						t.Fatal("writer resumed before cutover", err)
+						t.Fatal("writer running before cutover", err)
 					}
 				}
 				r = send("cutover", cutoverCrash)

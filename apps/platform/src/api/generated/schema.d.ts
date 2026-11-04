@@ -2467,12 +2467,12 @@ export interface components {
         /** @enum {string} */
         ServerRole: "deployment" | "build" | "combined";
         AgentCapabilities: {
-            /** @description Supports terminal sessions. Advertised only after Astilba-Agent-Troubleshooting v1. */
+            /** @description Supports terminal sessions. Advertised only after Astilba-Agent-Troubleshooting v2. */
             troubleshooting?: boolean;
-            /** @description The host owner has opted in to terminal sessions. Advertised only after Astilba-Agent-Troubleshooting v1. */
+            /** @description The host owner has opted in to terminal sessions. Advertised only after Astilba-Agent-Troubleshooting v2. */
             troubleshootingEnabled?: boolean;
             /**
-             * @description Why a current agent cannot offer terminal sessions on this host. Advertised only after Astilba-Agent-Troubleshooting v1.
+             * @description Why a current agent cannot offer terminal sessions on this host. Advertised only after Astilba-Agent-Troubleshooting v2.
              * @enum {string}
              */
             troubleshootingUnavailable?: "runtime" | "host";
@@ -2700,6 +2700,19 @@ export interface components {
         };
         AgentPoll: {
             command: components["schemas"]["ExecutionCommand"] | null;
+            /** @description Terminal sessions waiting for this agent's stream. Sent only to agents that report troubleshooting. */
+            troubleshootingOffers?: components["schemas"]["AgentTroubleshootingOffer"][];
+        };
+        AgentTroubleshootingOffer: {
+            /** Format: uuid */
+            sessionId: string;
+            /** Format: uuid */
+            unitId: string;
+            /** Format: uuid */
+            applicationId: string;
+            instance: number;
+            /** Format: int64 */
+            controllerGeneration: number;
         };
         Error: {
             code: string;

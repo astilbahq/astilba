@@ -1,4 +1,4 @@
-.PHONY: check verify verify-host verify-build verify-git verify-canvas check-app verify-app verify-app-core verify-app-build verify-app-go-remaining verify-app-go-crosshost verify-app-go-preview verify-image verify-agent-host verify-agent-host-core verify-agent-host-recovery verify-agent-host-visual verify-agent-host-upgrade check-ci check-source-size check-inline-sql
+.PHONY: check verify verify-host verify-build verify-git verify-canvas check-app verify-app verify-app-core verify-app-build verify-app-go-remaining verify-app-go-crosshost verify-app-go-preview verify-image verify-agent-host verify-agent-host-core verify-agent-host-recovery verify-agent-host-visual verify-agent-host-upgrade check-ci check-hooks check-source-size check-inline-sql
 
 APP_COORDINATION_TESTS = ^(TestCrossHostCoordinatedPlacement|TestCrossHostSubscriptionExpiry)$$
 APP_PREVIEW_RECOVERY_TESTS = ^TestPreviewRemovalSurvivesCheckpointUnion$$
@@ -29,7 +29,11 @@ verify-build:
 	cd experiments/durable-execution && sudo --preserve-env=GOCACHE,GOMODCACHE env PATH=/opt/astilba-plat4/go/bin:/usr/bin:/bin CGO_ENABLED=1 PLAT4_HOST_TEST=1 PLAT4_ARCH="$(PLAT4_ARCH)" PLAT5_HOST_TEST=1 /opt/astilba-plat4/go/bin/go test -race -count=1 -timeout=12m -v -run '^Test(BuildArtifacts|PostgresRestore)$$' .
 
 check-ci:
-	node --test scripts/ci-plan.test.mjs
+	node --test scripts/ci-plan.test.mjs scripts/native-lanes.test.mjs
+	node scripts/native-lanes.mjs
+
+check-hooks:
+	node --test .claude/hooks/hooks.test.mjs
 
 check-source-size:
 	node --test scripts/source-size.test.mjs
@@ -39,7 +43,7 @@ check-inline-sql:
 	node --test scripts/inline-sql.test.mjs
 	node scripts/inline-sql.mjs
 
-check-app: check-ci check-source-size check-inline-sql
+check-app: check-ci check-hooks check-source-size check-inline-sql
 	@for file in scripts/platform-*.mjs; do node --check "$$file" || exit 1; done
 	node --test scripts/platform-generate-test.mjs
 	cd services/platform && test -z "$$(gofmt -l .)" && go mod verify && go vet ./... && go tool staticcheck ./... && go test -short ./...

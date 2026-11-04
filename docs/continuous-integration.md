@@ -57,8 +57,8 @@ an existing deployment host or application runtime state.
 
 ## Merge queue
 
-Every required check also reports on `merge_group`, so `main` can require a merge
-queue. A queued pull request is tested on top of `main` and the pull requests
+`main` requires a merge queue, and every required check also reports on
+`merge_group`. A queued pull request is tested on top of `main` and the pull requests
 ahead of it, which replaces updating the branch by hand and restarting its checks
 whenever `main` moves.
 
@@ -81,9 +81,12 @@ whenever `main` moves.
   with this repository's access, so review them before queuing it.
 - Main pushes still run every suite after a group lands.
 
-`.github/required-status-checks.json` records the current strict setting. Change
-it in the same step as the repository setting, or reapplying it will restore
-strict checking under the queue.
+The queue merges one squashed pull request at a time, builds two at once, starts
+with no wait and allows checks 150 minutes. It replaces "Require branches to be
+up to date", so `strict` is `false` in `.github/required-status-checks.json`. To
+remove the queue, first wait for it to empty or remove its entries, since GitHub
+does not document what happens to them. Then turn that setting back on in the same
+save and restore `strict`: with both off, stale pull requests could merge.
 
 ## Native lanes
 
@@ -106,6 +109,17 @@ ingress that survives the preview test's cleanup no longer trips the visual test
 absent-ingress guard in CI; the sequential target still shows it. Scheduled jobs,
 controller transfer and volume deletion run in both `visual` and `upgrade`, because
 they read finished upgrade records.
+
+`-run` lists select the native tests, so `make check-ci` fails when a
+`func TestNative*` that Go builds for `linux/amd64` or `linux/arm64` under
+`services/platform` is selected by no lane or by more than one, when a `-run`
+alternative matches no test in its package, or when the workflow's `lane` list
+differs from the targets `verify-agent-host` runs. The helpers that other tests
+re-execute are named exceptions in `scripts/native-lanes.mjs`. It refuses what
+could stop a named test running but it cannot read: Makefile conditionals, shell
+syntax other than `cd DIR && ... go test`, unlisted `go test` flags, and matrix
+`exclude` or `include`. A test that skips itself at run time still counts as
+selected.
 
 ## Application Go verification
 
@@ -189,7 +203,7 @@ enabled. `make verify-app` remains the complete unsharded local check.
 The previous branch protection requires `Verify`. This PR intentionally does not
 emit that check: it remains blocked until an administrator migrates protection.
 `.github/required-status-checks.json` is the exact replacement payload for the
-required-status-checks endpoint, with strict up-to-date checking and all seven
+required-status-checks endpoint, with the current strict setting and all seven
 unique contexts above.
 
 Before merging the workflow change:
@@ -201,7 +215,7 @@ Before merging the workflow change:
    status checks with the manifest. Preserve review, admin, linear-history and
    conversation-resolution settings. For this repository, the status-check update
    is `gh api --method PATCH repos/astilbahq/astilba/branches/main/protection/required_status_checks --input .github/required-status-checks.json`.
-3. Read protection back and confirm strict checking and exactly the manifest's
+3. Read protection back and confirm the manifest's strict setting and exactly its
    contexts before merging. Do not temporarily remove protection or retain a
    missing `Verify` requirement alongside the new contexts.
 
