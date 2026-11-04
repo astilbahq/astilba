@@ -36,8 +36,10 @@ function parseMakefile(text) {
     const rule = /^([^\s:=]+(?:\s+[^\s:=]+)*)\s*:(?!=)\s*(.*)$/.exec(content);
     if (variable) variables.set(variable[1], variable[2]);
     else if (rule) {
-      // The aggregate's targets are read from its recipe alone.
-      if (rule[1] === aggregate && rule[2]) unread.push(content);
+      // A target-specific variable can rewrite a recipe, and the aggregate and
+      // lanes are read from their recipes alone.
+      if (rule[2].includes("=") || (rule[2] && rule[1].startsWith(aggregate)))
+        unread.push(content);
       current = [];
       for (const target of rule[1].split(/\s+/)) recipes.set(target, current);
     } else if (content) unread.push(content);
@@ -57,7 +59,7 @@ function parseMakefile(text) {
 }
 
 const goTestFlag = /^-(?:race|v|count=[1-9]\d*|timeout=\S+)$/;
-const commandPrefix = /^(?:sudo|env|-\S*|\w+=\S*)$/;
+const commandPrefix = /^(?:sudo|env|-\S*|(?!GOFLAGS=)\w+=\S*)$/;
 const shellSyntax = /[;|&<>#()`]/;
 const quotedOrUnresolved = new RegExp(
   `'[^']*'|"[^"]*"|${unresolved}[^${unresolved}]*${unresolved}`,
@@ -72,6 +74,8 @@ function goTests(line) {
   const words =
     line.replace(/^[@+-]+/, "").match(/(?:'[^']*'|"[^"]*"|[^\s'"])+/g) ?? [];
   if (!words.some((word, i) => isGoTest(word, words[i + 1]))) return [];
+  if (/^[@+]*-/.test(line))
+    throw new Error(`a - prefix ignores go test failures: ${line}`);
   const syntax = words.find(
     (word) =>
       word !== "&&" && shellSyntax.test(word.replace(quotedOrUnresolved, "")),
@@ -181,7 +185,7 @@ function workflowProblems(workflow, ran) {
   if (/^\s*(?:exclude|include):/m.test(workflow))
     problems.push(`${workflowPath} must not exclude or include matrix entries`);
   if (
-    !/^\s*- name: .*\n\s*run: make verify-agent-host-\$\{\{ matrix\.lane \}\}\s*$/m.test(
+    !/^\s*- name: .*\n\s*run: make verify-agent-host-\$\{\{ matrix\.lane \}\}[ \t]*\n[ \t]*(?:- |$)/m.test(
       workflow,
     )
   )
@@ -222,7 +226,7 @@ export function nativeLaneProblems({ makefile, workflow, tests }) {
 
   const ran = [];
   for (const line of recipes.get(aggregate) ?? []) {
-    const lane = /^[@+-]*\$\(MAKE\) (\S+)$/.exec(line)?.[1];
+    const lane = /^[@+]*\$\(MAKE\) (\S+)$/.exec(line)?.[1];
     if (lane) ran.push(lane);
     else problems.push(`${aggregate} may only run lanes, found: ${line}`);
   }

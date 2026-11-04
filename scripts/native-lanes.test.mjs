@@ -171,6 +171,16 @@ test("reports each way a native test can stop running or run twice", () => {
       /cannot read: verify-agent-host: extra-native/,
     ],
     [
+      "an aggregate ignoring a lane's failure",
+      {
+        makefile: replace(
+          "\t$(MAKE) verify-agent-host-visual\n",
+          "\t-$(MAKE) verify-agent-host-visual\n",
+        ),
+      },
+      /verify-agent-host may only run lanes/,
+    ],
+    [
       "an aggregate target with no rule",
       {
         makefile: replace(
@@ -278,6 +288,18 @@ test("the workflow must run exactly the aggregate's targets on every lane", () =
       replace(step, `        if: matrix.lane != 'visual'\n${step}`, workflow),
       false,
     ],
+    [
+      "a condition after the run line",
+      replace(step, `${step}        if: matrix.lane != 'visual'\n`, workflow),
+      false,
+    ],
+    [
+      "ignored step failures",
+      replace(step, `${step}        continue-on-error: true\n`, workflow),
+      false,
+    ],
+    ["a following step", `${workflow}      - name: Next\n`, true],
+    ["a following job", `${workflow}\n  verify:\n`, true],
   ]) {
     const found = problems({ workflow: source });
     assert.equal(found === "", ok, `${label}: ${found}`);
@@ -298,6 +320,12 @@ test("refuses a recipe that could stop naming tests from running", () => {
       /cannot read shell syntax/,
     ],
     ["hidden failure", `${line} || true`, /cannot read shell syntax/],
+    ["an ignored failure", `-${line}`, /a - prefix ignores go test failures/],
+    [
+      "flags outside the allowlist",
+      replace("$(NATIVE_AGENT_GO)", "GOFLAGS=-skip=X $(NATIVE_AGENT_GO)", line),
+      /expected only cd and go test/,
+    ],
     ["a later command", `exit 0; ${line}`, /cannot read shell syntax/],
     [
       "echo",
@@ -365,6 +393,24 @@ test("reports Makefile syntax that could change what a lane runs", () => {
         "NATIVE_AGENT_GO += -skip '^TestNativePipeline$$'\n\nverify-agent-host:",
       ),
       /cannot read: NATIVE_AGENT_GO \+=/,
+    ],
+    [
+      "a target-specific variable on a lane",
+      `verify-agent-host-visual: NATIVE_AGENT_GO = true\n${makefile}`,
+      /cannot read: verify-agent-host-visual: NATIVE_AGENT_GO = true/,
+    ],
+    [
+      "a pattern-specific variable",
+      `verify-%: NATIVE_AGENT_GO = true\n${makefile}`,
+      /cannot read: verify-%: NATIVE_AGENT_GO = true/,
+    ],
+    [
+      "a lane prerequisite",
+      replace(
+        "verify-agent-host-visual:\n",
+        "verify-agent-host-visual: setup\n",
+      ),
+      /cannot read: verify-agent-host-visual: setup/,
     ],
     [
       "a conditional recipe",
