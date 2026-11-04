@@ -158,7 +158,17 @@ test("reports each way a native test can stop running or run twice", () => {
           "verify-agent-host: verify-agent-host-core verify-agent-host-visual\n",
         ),
       },
-      /verify-agent-host-core is not run by verify-agent-host/,
+      /cannot read: verify-agent-host: verify-agent-host-core/,
+    ],
+    [
+      "an aggregate with a prerequisite beyond its lanes",
+      {
+        makefile: replace(
+          "verify-agent-host:\n",
+          "verify-agent-host: extra-native\n",
+        ),
+      },
+      /cannot read: verify-agent-host: extra-native/,
     ],
     [
       "an aggregate target with no rule",

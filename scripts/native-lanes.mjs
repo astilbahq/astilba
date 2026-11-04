@@ -33,9 +33,11 @@ function parseMakefile(text) {
     }
     const content = line.replace(/#.*/, "").trim();
     const variable = /^([\w.-]+)\s*(?:::?|\?)?=\s*(.*)$/.exec(content);
-    const rule = /^([^\s:=]+(?:\s+[^\s:=]+)*)\s*:(?!=)/.exec(content);
+    const rule = /^([^\s:=]+(?:\s+[^\s:=]+)*)\s*:(?!=)\s*(.*)$/.exec(content);
     if (variable) variables.set(variable[1], variable[2]);
     else if (rule) {
+      // The aggregate's targets are read from its recipe alone.
+      if (rule[1] === aggregate && rule[2]) unread.push(content);
       current = [];
       for (const target of rule[1].split(/\s+/)) recipes.set(target, current);
     } else if (content) unread.push(content);
@@ -57,6 +59,10 @@ function parseMakefile(text) {
 const goTestFlag = /^-(?:race|v|count=[1-9]\d*|timeout=\S+)$/;
 const commandPrefix = /^(?:sudo|env|-\S*|\w+=\S*)$/;
 const shellSyntax = /[;|&<>#()`]/;
+const quotedOrUnresolved = new RegExp(
+  `'[^']*'|"[^"]*"|${unresolved}[^${unresolved}]*${unresolved}`,
+  "g",
+);
 const isGoTest = (word, next) => /(^|\/)go$/.test(word) && next === "test";
 
 // The `go test` commands of one expanded recipe line. A line that runs go test
@@ -68,16 +74,7 @@ function goTests(line) {
   if (!words.some((word, i) => isGoTest(word, words[i + 1]))) return [];
   const syntax = words.find(
     (word) =>
-      word !== "&&" &&
-      shellSyntax.test(
-        word.replace(
-          new RegExp(
-            `'[^']*'|"[^"]*"|${unresolved}[^${unresolved}]*${unresolved}`,
-            "g",
-          ),
-          "",
-        ),
-      ),
+      word !== "&&" && shellSyntax.test(word.replace(quotedOrUnresolved, "")),
   );
   if (syntax) throw new Error(`cannot read shell syntax ${syntax}: ${line}`);
   const commands = [[]];
