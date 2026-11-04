@@ -1,4 +1,4 @@
-.PHONY: check verify verify-host verify-build verify-git verify-canvas check-app verify-app verify-app-core verify-app-build verify-app-go-remaining verify-app-go-crosshost verify-app-go-preview verify-image verify-agent-host verify-agent-host-core verify-agent-host-recovery verify-agent-host-visual check-ci check-hooks check-source-size check-inline-sql check-vulnerabilities
+.PHONY: check verify verify-host verify-build verify-git verify-canvas check-app verify-app verify-app-core verify-app-build verify-app-go-remaining verify-app-go-crosshost verify-app-go-preview verify-image verify-agent-host verify-agent-host-core verify-agent-host-recovery verify-agent-host-visual verify-agent-colima check-ci check-hooks check-source-size check-inline-sql check-vulnerabilities
 
 APP_COORDINATION_TESTS = ^(TestCrossHostCoordinatedPlacement|TestCrossHostSubscriptionExpiry)$$
 APP_PREVIEW_RECOVERY_TESTS = ^TestPreviewRemovalSurvivesCheckpointUnion$$
@@ -93,3 +93,6 @@ verify-agent-host-recovery:
 
 verify-agent-host-visual:
 	cd services/platform && $(NATIVE_AGENT_GO) -timeout=30m -run '^TestNativeVisualDeployment$$' ./internal/agent
+
+verify-agent-colima:
+	bash scripts/native-agent-colima.sh '$(value PLAT_AGENT_COLIMA_PROFILE)' '$(value PLAT_AGENT_TESTS)'
