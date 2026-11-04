@@ -1,12 +1,12 @@
 # Continuous integration
 
-Seven independent workflows run on pull requests, pushes to `main` and manual
-dispatches; the native, durable-execution, Git provider and canvas workflows
-also run nightly. Each has its own concurrency group per workflow and ref (and,
-for scheduled workflows, event) and can be retried without waiting for another
-workflow's native tests. No workflow uses an event path filter: a planning job
-selects the suites a pull request can affect, and each required check is a
-final `always()` gate, so it is reported on every run.
+Seven independent workflows run on pull requests, merge groups, pushes to `main`
+and manual dispatches; the native, durable-execution, Git provider and canvas
+workflows also run nightly. Each has its own concurrency group per workflow and
+ref (and, for scheduled workflows, event) and can be retried without waiting for
+another workflow's native tests. No workflow uses an event path filter: a planning
+job selects the suites a pull request or merge group can affect, and each required
+check is a final `always()` gate, so it is reported on every run.
 
 | Workflow                   | Required check                   | Verification                                                                                                                      |
 | -------------------------- | -------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
@@ -25,13 +25,16 @@ execution remain required.
 
 ## Suite selection
 
-Every suite runs for main pushes, manual and scheduled runs. For a pull request,
-the plan jobs run the base branch's `scripts/ci-plan.mjs`, so editing the planner
-cannot select its own checks. A suite the base planner does not report, including
-every suite when the base has no planner, is selected. Pull requests run their
-own workflow files, so workflow changes still rely on review. It compares the checked-out merge to its actual first
-parent, including deleted paths and both sides of renames, and skips a suite only
-when every changed path is known not to affect it:
+Every suite runs for main pushes, manual and scheduled runs. For a pull request
+or merge group, the plan jobs run the base's `scripts/ci-plan.mjs`, so editing the
+planner cannot select its own checks. A suite the base planner does not report,
+including every suite when the base has no planner, is selected. Pull requests
+and merge groups run their own workflow files, so workflow changes still rely on
+review. A pull request compares the checked-out merge to its actual first parent;
+a merge group compares its head to the event's `base_sha`, because a squash group
+is a stack of single-parent commits whose first parent can omit pull requests in
+the group. Both include deleted paths and both sides of renames, and skip a suite
+only when every changed path is known not to affect it:
 
 | Suite | Skipped when every changed path is |
 | --- | --- |
@@ -42,15 +45,45 @@ when every changed path is known not to affect it:
 
 `AGENTS.md`, `REVIEW.md`, runtime, contracts, migrations, package/lock files, CI,
 scripts, toolchain and unknown paths select the native suite. A change to the
-planner or the native workflow selects every suite. Missing merge metadata or a
-Git error in the planner fails every gate; an unreadable base planner or an empty
-diff selects every suite.
+planner or the native workflow selects every suite. A pull request's missing merge
+metadata or a Git error in the planner fails every gate; an unreadable base
+planner, a merge group without a base or an empty diff selects every suite.
 Application checks, builds, the image smoke test and the corresponding-source
 archive always run. `make check-ci` exercises these selection contracts using
 temporary repositories.
 
 Native tests run only on their owned disposable Ubuntu runners. They never reuse
 an existing deployment host or application runtime state.
+
+## Merge queue
+
+Every required check also reports on `merge_group`, so `main` can require a merge
+queue. A queued pull request is tested on top of `main` and the pull requests
+ahead of it, which replaces updating the branch by hand and restarting its checks
+whenever `main` moves.
+
+- The workflow change must reach `main` before the queue is required. Without a
+  `merge_group` trigger the required checks never report and queued pull requests
+  wait until they time out.
+- Keep "Only merge non-failing pull requests" on. `base_sha` may be `main` or the
+  head of the entry ahead, which GitHub does not specify. With the entry ahead, a
+  group uses that entry's planner and diffs only its own changes, which is safe
+  only because that entry must pass its own run and land first. With the setting
+  off, a green group behind it could land a failed or hostile entry ahead.
+- A merge group's run does not cancel an earlier run on its ref, because a
+  cancelled required check would eject a live group's pull requests. Pull requests
+  and merge groups use different refs, so neither can cancel the other. Re-queuing
+  with an unchanged base may reuse the ref, in which case the new run waits for the
+  dropped group's run, which keeps going because Actions has no trigger for
+  `destroyed`. The queue's status check timeout must allow for that wait.
+- Merge groups run on a branch in this repository, not in a fork's restricted
+  context. Queuing a fork's pull request runs its workflow files and scripts
+  with this repository's access, so review them before queuing it.
+- Main pushes still run every suite after a group lands.
+
+`.github/required-status-checks.json` records the current strict setting. Change
+it in the same step as the repository setting, or reapplying it will restore
+strict checking under the queue.
 
 ## Application Go verification
 
@@ -91,9 +124,9 @@ legacy eligibility from its base's actual files instead of accepting arbitrary
 exceptions.
 
 Application CI fetches full history and supplies `SOURCE_SIZE_BASE`: the tested
-PR merge's actual first parent, the previous commit from a push event, or the
-manual run's first parent. CI and explicit `--base <ref>` checks require available
-Git history. Local Git checks otherwise use the common ancestor with
+PR merge's actual first parent, a merge group's `base_sha`, the previous commit
+from a push event, or the manual run's first parent. CI and explicit `--base <ref>`
+checks require available Git history. Local Git checks otherwise use the common ancestor with
 `origin/main`, falling back to local `main` only when that remote ref is absent.
 Fetch the missing history or supply an available base when resolution fails;
 the checker never fetches automatically.
