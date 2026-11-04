@@ -51,12 +51,13 @@ func New(st *store.Store) (*Service, error) {
 	river.AddWorker(workers, &coordinatedScheduleWorker{service: s})
 	river.AddWorker(workers, &previewWorker{service: s})
 	river.AddWorker(workers, &previewSweepWorker{service: s})
+	river.AddWorker(workers, &troubleshootingSweepWorker{service: s})
 	river.AddWorker(workers, &worker{service: s})
 	river.AddWorker(workers, &refreshWorker{service: s})
 	river.AddWorker(workers, &automaticWorker{service: s})
 	river.AddWorker(workers, &githubFanoutWorker{service: s})
 	river.AddWorker(workers, &githubReconcileWorker{service: s})
-	q, err := river.NewClient(riverpgxv5.New(st.Pool), &river.Config{PeriodicJobs: []*river.PeriodicJob{river.NewPeriodicJob(river.PeriodicInterval(5*time.Second), func() (river.JobArgs, *river.InsertOpts) { return networkSweepArgs{}, nil }, &river.PeriodicJobOpts{RunOnStart: true}), river.NewPeriodicJob(river.PeriodicInterval(30*time.Second), func() (river.JobArgs, *river.InsertOpts) { return coordinatedScheduleArgs{}, nil }, &river.PeriodicJobOpts{RunOnStart: true}), river.NewPeriodicJob(river.PeriodicInterval(30*time.Second), func() (river.JobArgs, *river.InsertOpts) { return previewSweepArgs{}, nil }, &river.PeriodicJobOpts{RunOnStart: true})}, Workers: workers, Queues: map[string]river.QueueConfig{river.QueueDefault: {MaxWorkers: 4}}, JobTimeout: 10 * time.Second})
+	q, err := river.NewClient(riverpgxv5.New(st.Pool), &river.Config{PeriodicJobs: []*river.PeriodicJob{river.NewPeriodicJob(river.PeriodicInterval(5*time.Second), func() (river.JobArgs, *river.InsertOpts) { return networkSweepArgs{}, nil }, &river.PeriodicJobOpts{RunOnStart: true}), river.NewPeriodicJob(river.PeriodicInterval(30*time.Second), func() (river.JobArgs, *river.InsertOpts) { return coordinatedScheduleArgs{}, nil }, &river.PeriodicJobOpts{RunOnStart: true}), river.NewPeriodicJob(river.PeriodicInterval(30*time.Second), func() (river.JobArgs, *river.InsertOpts) { return previewSweepArgs{}, nil }, &river.PeriodicJobOpts{RunOnStart: true}), river.NewPeriodicJob(river.PeriodicInterval(30*time.Second), func() (river.JobArgs, *river.InsertOpts) { return troubleshootingSweepArgs{}, nil }, &river.PeriodicJobOpts{RunOnStart: true})}, Workers: workers, Queues: map[string]river.QueueConfig{river.QueueDefault: {MaxWorkers: 4}}, JobTimeout: 10 * time.Second})
 	s.Queue = q
 	return s, err
 }

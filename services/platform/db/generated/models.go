@@ -736,6 +736,9 @@ type TroubleshootingSession struct {
 	CloseReason          pgtype.Text `json:"close_reason"`
 	InputBytes           int64       `json:"input_bytes"`
 	OutputBytes          int64       `json:"output_bytes"`
+	AgentCredentialHash  []byte      `json:"agent_credential_hash"`
+	AgentAttachedAt      *time.Time  `json:"agent_attached_at"`
+	BrowserAttachedAt    *time.Time  `json:"browser_attached_at"`
 }
 
 type VisualPlan struct {
