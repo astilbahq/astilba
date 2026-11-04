@@ -42,7 +42,10 @@ const vulnerabilityInputs = (path) =>
 // A pull request or merge group skips a suite only when every changed path is
 // known not to affect it; anything unrecognised selects the suite.
 const affects = {
-  native: (path) => !(docs(path) || dashboard(path) || serverOnly(path)),
+  // The proxy tests run the configurations on the hosting page.
+  native: (path) =>
+    path === "docs/hosting.md" ||
+    !(docs(path) || dashboard(path) || serverOnly(path)),
   go: (path) => !(docs(path) || dashboard(path)),
   browser: (path) => !docs(path),
   durable: owns("experiments/durable-execution/", "go.yml"),
