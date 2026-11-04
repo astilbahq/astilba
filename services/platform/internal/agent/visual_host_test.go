@@ -37,7 +37,6 @@ type nativeVisualFixture struct {
 	state         string
 	dockerCLI     string
 	server        uuid.UUID
-	journal       *Journal
 	engine        *Engine
 	generation    int64
 	requestClient *http.Client
@@ -69,12 +68,8 @@ func newNativeVisualFixture(t *testing.T) *nativeVisualFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f := &nativeVisualFixture{t: t, docker: docker, state: state, dockerCLI: "docker", server: uuid.New(), journal: j, requestClient: &http.Client{Timeout: 2 * time.Second}}
-	t.Cleanup(func() {
-		if f.journal != nil {
-			f.journal.Close()
-		}
-	})
+	f := &nativeVisualFixture{t: t, docker: docker, state: state, dockerCLI: "docker", server: uuid.New(), engine: &Engine{Journal: j, Docker: docker}, requestClient: &http.Client{Timeout: 2 * time.Second}}
+	t.Cleanup(func() { f.engine.Journal.Close() })
 	if err = j.SetConfig(Config{ServerID: f.server, MachineID: uuid.New(), Role: "deployment"}); err != nil {
 		t.Fatal(err)
 	}
@@ -93,7 +88,7 @@ func newNativeVisualFixture(t *testing.T) *nativeVisualFixture {
 			t.Fatal(err)
 		}
 	}
-	f.engine = &Engine{Journal: j, Docker: docker, DockerCLI: f.dockerCLI}
+	f.engine.DockerCLI = f.dockerCLI
 	t.Cleanup(func() {
 		cleanup, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
@@ -271,7 +266,7 @@ func TestNativeVisualDeployment(t *testing.T) {
 		t.Fatal("deployed database binding differs from its frozen values")
 	}
 	t.Run("resource_metrics", func(t *testing.T) {
-		collector := &MetricCollector{Journal: f.journal}
+		collector := &MetricCollector{Journal: f.engine.Journal}
 		collection, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
 		sample := collector.Collect(collection, docker, server, state)
@@ -363,7 +358,7 @@ func TestNativeVisualDeployment(t *testing.T) {
 	if err = f.engine.Execute(ctx, c); err != nil {
 		t.Fatal(err)
 	}
-	r, err = f.journal.Record(c.Id)
+	r, err = f.engine.Journal.Record(c.Id)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -373,7 +368,7 @@ func TestNativeVisualDeployment(t *testing.T) {
 	request("first.example.test", "v2")
 	request("second.example.test", "v1")
 	f.engine.Point = nil
-	if err = f.journal.Mutate(c.Id, func(r *Record) { r.Report.State = "running" }); err != nil {
+	if err = f.engine.Journal.Mutate(c.Id, func(r *Record) { r.Report.State = "running" }); err != nil {
 		t.Fatal(err)
 	}
 	finish(c)
@@ -406,18 +401,17 @@ func TestNativeVisualDeployment(t *testing.T) {
 		}()
 		_ = f.engine.Execute(ctx, cc)
 	}()
-	if err = f.journal.Close(); err != nil {
+	if err = f.engine.Journal.Close(); err != nil {
 		t.Fatal(err)
 	}
-	f.journal = nil
-	f.journal, err = Open(state)
+	j, err := Open(state)
 	if err != nil {
 		t.Fatal(err)
 	}
-	f.engine = &Engine{Journal: f.journal, Docker: docker, DockerCLI: dockerCLI}
+	f.engine = &Engine{Journal: j, Docker: docker, DockerCLI: dockerCLI}
 	finish(cc)
 	request("second.example.test", "v1")
-	f.journal = nativeControllerTransfer(t, f.engine)
+	nativeControllerTransfer(t, f.engine)
 	// The same exported Compose bundle runs with management and the journal closed.
 	bundle, err := deployment.ExportConfiguration(crash)
 	if err != nil {
@@ -435,10 +429,9 @@ func TestNativeVisualDeployment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = f.journal.Close(); err != nil {
+	if err = f.engine.Journal.Close(); err != nil {
 		t.Fatal(err)
 	}
-	f.journal = nil
 	dir := t.TempDir()
 	if err = os.WriteFile(filepath.Join(dir, "compose.json"), []byte(bundle.Compose), 0600); err != nil {
 		t.Fatal(err)
@@ -512,11 +505,11 @@ func TestNativeVisualDeployment(t *testing.T) {
 	if err != nil || strings.TrimSpace(output.String()) != "data-survived" {
 		t.Fatal("data did not survive replacement, restart and standalone export")
 	}
-	f.journal, err = Open(state)
+	j, err = Open(state)
 	if err != nil {
 		t.Fatal(err)
 	}
-	f.engine = &Engine{Journal: f.journal, Docker: docker, DockerCLI: dockerCLI}
+	f.engine = &Engine{Journal: j, Docker: docker, DockerCLI: dockerCLI}
 	f.refuseInUseVolumeDeletion(crash)
 
 	// Explicit removal of an in-use volume must fail; deleting a service keeps data.

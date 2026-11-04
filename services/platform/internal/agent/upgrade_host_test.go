@@ -64,7 +64,6 @@ func TestNativeSupportedMajorUpgrades(t *testing.T) {
 		if !releaseVerified {
 			p = nativeReleaseJourney(t, f.engine, p, secrets, f.resolve, f.command, f.finish)
 			releaseVerified = true
-			f.journal = f.engine.Journal
 		}
 		return p, secrets
 	}, func(cmd upgrade.Command) api.ExecutionCommand {
@@ -73,7 +72,6 @@ func TestNativeSupportedMajorUpgrades(t *testing.T) {
 		value := json.RawMessage(raw)
 		return api.ExecutionCommand{Id: uuid.New(), ServerId: f.server, EnvironmentId: cmd.Plan.Source.EnvironmentID, ResourceId: cmd.Plan.ID, Kind: "upgrade", Action: "inspect", Generation: f.generation, PlanHash: cmd.Digest(), Upgrade: &value, Deadline: time.Now().Add(time.Hour)}
 	})
-	f.journal = f.engine.Journal
 
 	// The scheduler, daemon and volume deletion also read finished upgrade records.
 	nativeFilesAndJobs(t, f.engine, f.server)
@@ -91,7 +89,7 @@ func TestNativeSupportedMajorUpgrades(t *testing.T) {
 	if err = db.QueryRow(ctx, "SELECT value FROM fixture").Scan(&value); err != nil || value != "data-survived" {
 		t.Fatal("upgrades disturbed an unrelated database", err)
 	}
-	f.journal = nativeControllerTransfer(t, f.engine)
+	nativeControllerTransfer(t, f.engine)
 	f.refuseInUseVolumeDeletion(first)
 }
 
