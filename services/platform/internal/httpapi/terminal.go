@@ -23,7 +23,6 @@ const (
 	terminalRedeem      = 5 * time.Second
 	terminalPing        = 30 * time.Second
 	terminalWrite       = 30 * time.Second
-	terminalClose       = 10 * time.Second // beyond the library's limits for a peer that sends nothing
 	terminalInputRate   = 64 << 10
 	terminalOutputRate  = 1 << 20
 	terminalResizeRate  = 10
@@ -144,20 +143,6 @@ func writeTerminal(conn *websocket.Conn, frame []byte) error {
 	return conn.Write(ctx, websocket.MessageBinary, frame)
 }
 
-// closeTerminal ends a stream with a close handshake, which reads any input still queued.
-// The library has no time limit while it discards the payload of a frame, so a peer that
-// stops inside one would hold the handshake for as long as it stays connected. Only
-// CloseRead can then drop the connection: CloseNow waits for the Close in progress.
-func closeTerminal(conn *websocket.Conn, status websocket.StatusCode, reason string) {
-	limit := time.AfterFunc(terminalClose, func() {
-		ended, cancel := context.WithCancel(context.Background())
-		cancel()
-		conn.CloseRead(ended)
-	})
-	defer limit.Stop()
-	conn.Close(status, reason)
-}
-
 func (s *Server) agentTerminal(w http.ResponseWriter, r *http.Request) {
 	identity, err := s.agentRequestIdentity(r)
 	if err != nil {
@@ -227,7 +212,7 @@ func (s *Server) browserTerminal(w http.ResponseWriter, r *http.Request) {
 	_, ticket, err := conn.Read(first)
 	cancel()
 	if err != nil {
-		closeTerminal(conn, websocket.StatusPolicyViolation, "ticket required")
+		terminal.Close(conn, websocket.StatusPolicyViolation, "ticket required")
 		return
 	}
 	// Nothing reads the connection during this wait, so a busy pool or a held workspace
@@ -240,7 +225,7 @@ func (s *Server) browserTerminal(w http.ResponseWriter, r *http.Request) {
 		if !errors.As(err, &refused) {
 			s.Log.Error("terminal ticket redemption failed", failureDiagnostic(err))
 		}
-		closeTerminal(conn, websocket.StatusPolicyViolation, "session refused")
+		terminal.Close(conn, websocket.StatusPolicyViolation, "session refused")
 		return
 	}
 	release()
@@ -275,7 +260,7 @@ func (s *Server) attachTerminal(stream execution.TroubleshootingStream, agent, b
 		}
 		for _, conn := range []*websocket.Conn{agent, browser} {
 			if conn != nil {
-				closeTerminal(conn, websocket.StatusPolicyViolation, "the other side did not attach")
+				terminal.Close(conn, websocket.StatusPolicyViolation, "the other side did not attach")
 			}
 		}
 		s.endUnattachedTerminal(stream, "not attached")
@@ -287,7 +272,7 @@ func (s *Server) attachTerminal(stream execution.TroubleshootingStream, agent, b
 //
 // The session's context never reaches a connection operation: the library drops the
 // connection when one is cancelled, and closing over unread input resets it, which can
-// destroy the frame just written. Each stream ends with closeTerminal instead, which also
+// destroy the frame just written. Each stream ends with terminal.Close instead, which also
 // ends its blocked read.
 func (s *Server) relayTerminal(p *terminalPair) {
 	ctx, cancel := context.WithDeadline(context.Background(), p.stream.Deadline)
@@ -321,8 +306,8 @@ func (s *Server) relayTerminal(p *terminalPair) {
 	<-ctx.Done()
 	once.Do(func() {})
 	// Concurrently, so a peer that does not answer cannot delay the other stream's end.
-	workers.Go(func() { closeTerminal(p.agent, websocket.StatusNormalClosure, "") })
-	workers.Go(func() { closeTerminal(p.browser, websocket.StatusNormalClosure, "") })
+	workers.Go(func() { terminal.Close(p.agent, websocket.StatusNormalClosure, "") })
+	workers.Go(func() { terminal.Close(p.browser, websocket.StatusNormalClosure, "") })
 	workers.Wait()
 
 	end, finish := context.WithTimeout(context.Background(), 5*time.Second)

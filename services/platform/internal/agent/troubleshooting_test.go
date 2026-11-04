@@ -1,13 +1,22 @@
 package agent
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha1"
+	"encoding/base64"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
+	"github.com/astilbahq/astilba/services/platform/internal/terminal"
+	"github.com/coder/websocket"
 	"github.com/google/uuid"
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/mount"
@@ -185,5 +194,44 @@ func TestTroubleshootingCapabilitiesNeedControllerSupport(t *testing.T) {
 	c.troubleshooting.Store(true)
 	if v := c.advertisedCapabilities(capabilities); v.Troubleshooting == nil || v.TroubleshootingEnabled == nil || v.TroubleshootingUnavailable == nil {
 		t.Fatal("withheld from a controller that supports sessions")
+	}
+}
+
+// A platform that stops inside a frame must not hold a session's slot through the close
+// handshake, which has no time limit of its own while it discards the frame's payload.
+func TestTroubleshootingStalledPlatformCannotHoldTheClose(t *testing.T) {
+	if testing.Short() {
+		t.Skip("waits out the close limit")
+	}
+	release := make(chan struct{})
+	defer close(release)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _, err := http.NewResponseController(w).Hijack()
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		defer raw.Close()
+		accept := sha1.Sum([]byte(r.Header.Get("Sec-WebSocket-Key") + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"))
+		fmt.Fprintf(raw, "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: %s\r\n\r\n", base64.StdEncoding.EncodeToString(accept[:]))
+		// A binary frame that promises 1000 bytes and sends none of them.
+		raw.Write([]byte{0x82, 126, 0x03, 0xe8})
+		<-release
+	}))
+	defer server.Close()
+	conn, _, err := websocket.Dial(context.Background(), server.URL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.CloseNow()
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		finishTroubleshooting(context.Background(), conn, []byte{terminal.Exit, 0})
+	}()
+	select {
+	case <-finished:
+	case <-time.After(15 * time.Second):
+		t.Fatal("the close handshake outlasted its limit")
 	}
 }
