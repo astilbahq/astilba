@@ -204,6 +204,10 @@ read with an explicit per-message limit (the existing 16 KiB agent request limit
 does not apply to a hijacked connection). Message types are input, output,
 resize (with bounded dimensions), ping, refused and exit. Stream handlers clear
 the server's ordinary read and write deadlines and send pings every 30 seconds.
+The relay ends both streams together with a close handshake, so the exit or
+refused frame reaches the browser while it is still sending input. Frames read
+after a session has ended are discarded, and the relay drops a peer that has not
+finished the handshake within 10 seconds.
 
 P17 supports single-instance management installations only: both streams for a
 session must reach the instance that holds them, and the existing instances share

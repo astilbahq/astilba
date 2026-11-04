@@ -6,6 +6,7 @@ import auth from "../locales/en/auth.json";
 import common from "../locales/en/common.json";
 import environment from "../locales/en/environment.json";
 import projects from "../locales/en/projects.json";
+import troubleshooting from "../locales/en/troubleshooting.json";
 import { locales, readLocalePreference, resolveLocale } from "./locale";
 
 export const i18n = createInstance();
@@ -15,7 +16,7 @@ export async function initializeI18n(
   supportedLocales: readonly string[] = locales.map(({ code }) => code),
 ) {
   const resources = {
-    en: { common, auth, account, app, projects, environment },
+    en: { common, auth, account, app, projects, environment, troubleshooting },
   };
   await instance.use(initReactI18next).init({
     resources,
@@ -24,7 +25,15 @@ export async function initializeI18n(
     supportedLngs: [...supportedLocales],
     load: "currentOnly",
     defaultNS: "common",
-    ns: ["common", "auth", "account", "app", "projects", "environment"],
+    ns: [
+      "common",
+      "auth",
+      "account",
+      "app",
+      "projects",
+      "environment",
+      "troubleshooting",
+    ],
     returnEmptyString: false,
     interpolation: { escapeValue: false },
     react: { useSuspense: false },

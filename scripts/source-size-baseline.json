@@ -4,7 +4,7 @@
   "apps/platform/src/servers.tsx": 664,
   "apps/platform/tests/auth.spec.ts": 922,
   "services/platform/internal/agent/backup_data.go": 722,
-  "services/platform/internal/agent/cross_host_host_test.go": 1313,
+  "services/platform/internal/agent/cross_host_host_test.go": 1274,
   "services/platform/internal/agent/pipeline.go": 651,
   "services/platform/internal/agent/release.go": 609,
   "services/platform/internal/agent/upgrade.go": 686,
