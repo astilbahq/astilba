@@ -20,6 +20,7 @@ This repository contains the BYOS deployment platform and its technical-validati
 - Node 24.18.1 and pnpm 11.17.0: `pnpm install --frozen-lockfile`, install the Playwright browsers above, then `pnpm verify` for Go/browser verification. This needs Docker; use the same explicitly selected disposable daemon. `pnpm check` omits Docker and browser execution.
 
 - `make verify-agent-host`: production agent enrollment, systemd restart, signed update and visual deployment/recovery on the explicitly disposable Ubuntu host prepared for `verify-host`; required on both architectures for native-affecting PRs and every main, manual and nightly CI run; see [CI selection](docs/continuous-integration.md).
+- `make verify-troubleshooting-soak`: terminal sessions through every proxy at the real 15-minute idle limit and 60-minute maximum, on the same disposable host. Takes more than 75 minutes, so it runs on demand and is in no other target.
 - `pnpm agent:build`: builds the production agent for Linux amd64 and arm64. See `docs/agent.md` for signing and installation.
 
 ## Ground rules

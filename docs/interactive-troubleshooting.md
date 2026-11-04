@@ -236,9 +236,9 @@ Self-hosted installations need their reverse proxy to forward WebSocket
 upgrades, allow an idle timeout longer than the 30-second ping interval and not
 cap a stream's total duration below 60 minutes. This is a new deployment
 requirement for existing installations; [hosting](hosting.md) and the
-[agent guide](agent.md) must document it, and the proxy profile needs validation
-like the existing transport fixture. **Decided:** accept the new proxy
-requirement.
+[agent guide](agent.md) document it, and the native suite runs a session through
+the documented nginx, Caddy and Traefik configurations. **Decided:** accept the new
+proxy requirement.
 
 **Decided:** new dependencies, pinned exactly under the existing
 dependency rules: `github.com/coder/websocket` for the management service and
@@ -276,7 +276,8 @@ keeps who opened which session and when, but not close reasons or byte counts.
 
 The agent also writes a local journald record of each session (session ID, actor
 ID as supplied, container ID, start, end and reason), giving the host owner a
-trail outside the management database.
+trail outside the management database. After a crash there is no end record; the
+restarted agent records ending the shell, with the session and container IDs.
 
 Terminal input and output are not recorded or logged by default: they can
 contain secrets and customer data. Management logs only metadata. Recording would

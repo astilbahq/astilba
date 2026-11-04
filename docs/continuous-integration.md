@@ -38,7 +38,7 @@ only when every changed path is known not to affect it:
 
 | Suite | Skipped when every changed path is |
 | --- | --- |
-| Native hosts | Markdown under `docs/` or the root README, dashboard source, theme, public assets, browser tests, Storybook or Panda configuration, or the server-only `auth`, `alerts`, `mailer`, `billing` and `automationclient` packages or the CLI |
+| Native hosts | Markdown under `docs/` other than `docs/hosting.md`, whose proxy configurations the native tests run, or the root README, dashboard source, theme, public assets, browser tests, Storybook or Panda configuration, or the server-only `auth`, `alerts`, `mailer`, `billing` and `automationclient` packages or the CLI |
 | Application Go race lanes | documentation or dashboard paths above |
 | Application and workshop browsers | documentation |
 | Durable execution, Git providers, canvas | outside that experiment, its workflow and the Makefile (canvas also follows the root JavaScript manifests and lockfile) |

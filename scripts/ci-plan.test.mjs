@@ -110,7 +110,8 @@ test("only known frontend and documentation changes skip native checks", async (
 
 test("each suite runs only for paths that can affect it", async (t) => {
   const cases = [
-    [["docs/hosting.md"], []],
+    [["docs/agent.md"], []],
+    [["docs/hosting.md"], ["native"]],
     [["apps/platform/src/screen.tsx"], ["browser"]],
     [
       ["services/platform/internal/auth/service.go"],
@@ -362,17 +363,17 @@ test("each workflow runs the base's planner, not the tested commit's", async (t)
   });
   await t.test("the base planner's skip is honoured", (t) => {
     const repo = fixture(t);
-    const base = repo.mergeGroup(["docs/hosting.md"]);
+    const base = repo.mergeGroup(["docs/agent.md"]);
     assert.equal(runPlanStep(t, repo, step, "merge_group", base), "false");
 
     const pull = fixture(t);
-    pull.write("docs/hosting.md");
+    pull.write("docs/agent.md");
     pull.merge();
     assert.equal(runPlanStep(t, pull, step, "pull_request"), "false");
   });
   await t.test("no base planner selects the suite", (t) => {
     const repo = repository(t);
-    const base = repo.mergeGroup(["docs/hosting.md"]);
+    const base = repo.mergeGroup(["docs/agent.md"]);
     assert.equal(runPlanStep(t, repo, step, "merge_group", base), "true");
     assert.equal(runPlanStep(t, repo, step, "merge_group"), "true");
     assert.equal(runPlanStep(t, repo, step, "push"), "true");

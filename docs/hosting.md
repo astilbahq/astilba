@@ -99,11 +99,83 @@ reach the same instance. Your proxy must:
 
 - forward WebSocket upgrades for `/agent/v1/troubleshooting/` and
   `/api/v1/workspaces/*/troubleshooting-sessions/*/stream`;
-- allow an idle timeout longer than 30 seconds, the interval of the stream pings;
+- allow an idle timeout of at least 35 seconds, because the streams ping every 30 seconds
+  and a proxy limit of exactly 30 seconds ends them;
 - not cap a stream's total duration below 60 minutes.
 
-A proxy that refuses upgrades makes sessions close within about a minute, and a shorter
-idle or duration limit ends them early. Nothing else is affected.
+A proxy that refuses upgrades closes a session within about 30 seconds, without starting
+a shell. A shorter idle or duration limit ends a running session early, and its shell
+with it. Nothing else is affected.
+
+These configurations carry a session through each proxy. `make verify-agent-host-core`
+reads them from this page and runs them with pinned nginx 1.30.6, Caddy 2.11.7 and
+Traefik 3.7.16 images.
+
+nginx needs the upgrade headers, and its `proxy_read_timeout` is the idle limit:
+
+```nginx
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      close;
+}
+
+server {
+    listen 443 ssl;
+    server_name platform.example.com;
+    ssl_certificate /etc/ssl/platform/fullchain.pem;
+    ssl_certificate_key /etc/ssl/platform/privkey.pem;
+
+    location / {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_buffering off;
+        proxy_read_timeout 120s;
+        proxy_send_timeout 120s;
+    }
+}
+```
+
+Caddy forwards upgrades and sets no stream limit by default:
+
+```caddyfile
+platform.example.com {
+    reverse_proxy 127.0.0.1:8080
+}
+```
+
+Traefik does too. This is its static configuration, followed by the file it loads:
+
+```yaml
+entryPoints:
+  websecure:
+    address: ":443"
+providers:
+  file:
+    filename: /etc/traefik/dynamic.yml
+```
+
+```yaml
+http:
+  routers:
+    platform:
+      rule: Host(`platform.example.com`)
+      entryPoints: [websecure]
+      service: platform
+      tls: {}
+  services:
+    platform:
+      loadBalancer:
+        servers:
+          - url: http://127.0.0.1:8080
+tls:
+  certificates:
+    - certFile: /etc/ssl/platform/fullchain.pem
+      keyFile: /etc/ssl/platform/privkey.pem
+```
 
 ## Hosted admission and billing
 
