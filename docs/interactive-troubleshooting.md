@@ -128,8 +128,9 @@ also notifies the workspace's owners. It defaults to
    container, no shell, limit reached, or Docker unavailable. Until the session has
    started, a failure is reported this way too, and any shell already started is ended.
 4. **Browser stream.** The browser opens a same-origin stream. Management
-   refuses the upgrade unless the session cookie and Origin are valid and the
-   account is within its limit of streams without a redeemed ticket, then
+   refuses the upgrade unless the session cookie and Origin are valid, the account
+   is an owner or operator of the workspace, and the limits on streams without a
+   redeemed ticket leave room, then
    requires the ticket as the first message within five seconds. Redeeming the
    ticket re-checks membership and allows one browser attachment per session.
    A redemption that cannot finish within five seconds refuses the stream and
@@ -209,11 +210,13 @@ its own limits locally. Initial values:
   than unbounded buffering. If a shell stops reading and more input arrives than the
   agent can hold (about 1 MiB), the session ends with the reason `input_overflow`,
   because dropping part of it could run a different command from the one sent;
-- four browser streams per account and 64 per installation that have not yet
-  redeemed a ticket, counted in the management process, which sessions already
-  require to be a single instance. An upgrade over either limit gets a 429 before
-  it happens and writes no audit event, so a refusal costs no more than any other
-  refused request. A browser cannot read that status and sees only a failed connection.
+- four browser streams per account, eight per workspace and 64 per installation
+  that have not yet redeemed a ticket, counted in the management process, which
+  sessions already require to be a single instance. Only an owner's or operator's
+  stream counts against a workspace; a viewer gets a 403 and anyone else a 404. An
+  upgrade over any of these limits gets a 429 before it happens and writes no audit
+  event, so a refusal costs no more than any other refused request. A browser cannot
+  read that status and sees only a failed connection.
 
 These are constants, not settings; implementation and measured use can tune
 them. Requests over a limit are refused with an explicit reason rather than

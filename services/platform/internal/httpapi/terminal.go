@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/execution"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
@@ -37,8 +38,9 @@ const (
 // not measurements: a person needs one such stream per session, briefly, and each one held
 // costs a socket and a goroutine for at most about 20 seconds.
 const (
-	terminalPendingPerAccount = 4
-	terminalPendingTotal      = 64
+	terminalPendingPerAccount   = 4
+	terminalPendingPerWorkspace = 8
+	terminalPendingTotal        = 64
 )
 
 // terminalPair joins the two streams of one session. Whichever handler arrives second
@@ -65,35 +67,44 @@ type terminalRead struct {
 // It also counts browser streams between their upgrade and their ticket's outcome, which a
 // signed-in client can open without any session limit applying. Hijacked streams escape the
 // server's timeouts, so an uncounted loop could run out of file descriptors. The per-account
-// count stops one account using up the total and blocking everyone else.
+// count stops one account using up the total and blocking everyone else. A workspace owner
+// can invite any number of accounts, so the per-workspace count does the same for a tenant:
+// eight workspaces, rather than one, are needed to reach the total.
 type terminalHub struct {
-	mu           sync.Mutex
-	sessions     map[uuid.UUID]*terminalPair
-	pending      map[uuid.UUID]int
-	pendingTotal int
+	mu                 sync.Mutex
+	sessions           map[uuid.UUID]*terminalPair
+	pendingByAccount   map[uuid.UUID]int
+	pendingByWorkspace map[uuid.UUID]int
+	pendingTotal       int
 }
 
 func newTerminalHub() *terminalHub {
-	return &terminalHub{sessions: map[uuid.UUID]*terminalPair{}, pending: map[uuid.UUID]int{}}
+	return &terminalHub{sessions: map[uuid.UUID]*terminalPair{}, pendingByAccount: map[uuid.UUID]int{}, pendingByWorkspace: map[uuid.UUID]int{}}
 }
 
-func (h *terminalHub) admitPending(account uuid.UUID) bool {
+// admitPending checks every limit before counting anything, so a refusal takes no place from
+// the account, its workspace or the total.
+func (h *terminalHub) admitPending(account, workspace uuid.UUID) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if h.pendingTotal >= terminalPendingTotal || h.pending[account] >= terminalPendingPerAccount {
+	if h.pendingTotal >= terminalPendingTotal || h.pendingByAccount[account] >= terminalPendingPerAccount || h.pendingByWorkspace[workspace] >= terminalPendingPerWorkspace {
 		return false
 	}
 	h.pendingTotal++
-	h.pending[account]++
+	h.pendingByAccount[account]++
+	h.pendingByWorkspace[workspace]++
 	return true
 }
 
-func (h *terminalHub) releasePending(account uuid.UUID) {
+func (h *terminalHub) releasePending(account, workspace uuid.UUID) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.pendingTotal--
-	if h.pending[account]--; h.pending[account] == 0 {
-		delete(h.pending, account)
+	if h.pendingByAccount[account]--; h.pendingByAccount[account] == 0 {
+		delete(h.pendingByAccount, account)
+	}
+	if h.pendingByWorkspace[workspace]--; h.pendingByWorkspace[workspace] == 0 {
+		delete(h.pendingByWorkspace, workspace)
 	}
 }
 
@@ -211,13 +222,26 @@ func (s *Server) browserTerminal(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, domain.Unauthenticated)
 		return
 	}
-	// Checked first, so that a refused request costs no more than any other. The place is
-	// held until redemption finishes or its refusal has closed.
-	if !s.terminals.admitPending(p.Account.ID) {
+	// The path can name any workspace, so only a member's stream may count against one.
+	// Otherwise outsiders could fill another tenant's places, or avoid the workspace limit
+	// by naming a different workspace for each stream. A read-only member can never redeem
+	// a ticket, so its streams would only keep the workspace's operators out.
+	member, err := s.Store.Queries.Workspace(ctx, db.WorkspaceParams{ID: ws, AccountID: p.Account.ID})
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	if !domain.CanWrite(member.Role) {
+		s.fail(w, r, domain.Forbidden)
+		return
+	}
+	// Checked before upgrading, so that a refused request costs no more than any other. The
+	// place is held until redemption finishes or its refusal has closed.
+	if !s.terminals.admitPending(p.Account.ID, ws) {
 		s.fail(w, r, domain.RateLimited)
 		return
 	}
-	release := sync.OnceFunc(func() { s.terminals.releasePending(p.Account.ID) })
+	release := sync.OnceFunc(func() { s.terminals.releasePending(p.Account.ID, ws) })
 	defer release()
 	// The Origin was compared exactly above. The library's own check compares it with
 	// the Host header, which a reverse proxy may rewrite.

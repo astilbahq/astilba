@@ -46,29 +46,46 @@ func TestTerminalLateSideNeverJoinsAnAbandonedPair(t *testing.T) {
 	}
 }
 
-// One account stops at its own limit and leaves room for others, every account stops at the
-// total, and a finished stream gives its place back.
+// Each account and workspace stops at its own limit without costing any other, every stream
+// stops at the total, and a finished stream gives back each of its places.
 func TestTerminalPendingLimits(t *testing.T) {
 	hub := newTerminalHub()
-	greedy := uuid.New()
-	for range terminalPendingPerAccount {
-		if !hub.admitPending(greedy) {
-			t.Fatal("refused within the account's limit")
+	admit := func(account, workspace uuid.UUID) {
+		t.Helper()
+		if !hub.admitPending(account, workspace) {
+			t.Fatalf("refused with %d held", hub.pendingTotal)
 		}
 	}
-	if hub.admitPending(greedy) {
+	greedy, tenant, other := uuid.New(), uuid.New(), uuid.New()
+	for range terminalPendingPerAccount {
+		admit(greedy, tenant)
+	}
+	if hub.admitPending(greedy, other) {
 		t.Fatal("admitted past the account's limit")
 	}
-	for range terminalPendingTotal - terminalPendingPerAccount {
-		if !hub.admitPending(uuid.New()) {
-			t.Fatalf("another account refused with %d held", hub.pendingTotal)
-		}
+	for range terminalPendingPerWorkspace - terminalPendingPerAccount {
+		admit(uuid.New(), tenant)
 	}
-	if hub.admitPending(uuid.New()) {
+	member := uuid.New()
+	if hub.admitPending(member, tenant) {
+		t.Fatal("admitted past the workspace's limit")
+	}
+
+	// Neither refusal counted anywhere: the refused account keeps all its places, and the
+	// account refused by its own limit took none in the workspace it named.
+	for range terminalPendingPerAccount {
+		admit(member, other)
+	}
+	if got := hub.pendingByWorkspace[other]; got != terminalPendingPerAccount {
+		t.Fatalf("another workspace holds %d", got)
+	}
+
+	for hub.pendingTotal < terminalPendingTotal {
+		admit(uuid.New(), uuid.New())
+	}
+	if hub.admitPending(uuid.New(), uuid.New()) {
 		t.Fatal("admitted past the total")
 	}
-	hub.releasePending(greedy)
-	if !hub.admitPending(uuid.New()) {
-		t.Fatal("a released place was not available")
-	}
+	hub.releasePending(greedy, tenant)
+	admit(greedy, tenant)
 }
