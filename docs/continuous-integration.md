@@ -164,8 +164,8 @@ in the VM to every Mac interface, including fixtures with passwords from this
 public source.
 
 `PLAT_AGENT_TESTS` overrides the test pattern. The default runs
-`TestNativeReleaseCommandTransport`, `TestNativeTroubleshootingTarget` and the
-native session tests in `troubleshooting_session_host_test.go`. These need nothing
+`TestNativeReleaseCommandTransport`, `TestNativeCompletionWaitsForAWritersHealthCheck`,
+`TestNativeTroubleshootingTarget` and the native session tests in `troubleshooting_session_host_test.go`. These need nothing
 beyond root, the pinned image above and Docker with a supported runc; only
 `docker pull` needs a registry. `scripts/native-agent-colima.sh` lists them by
 name, so add a new test only after checking that it needs no more. Interrupting a

@@ -19,6 +19,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/upgrade"
 	"github.com/google/uuid"
 	"github.com/moby/moby/client"
+	bolt "go.etcd.io/bbolt"
 )
 
 type maintenanceContinuationFixture struct {
@@ -242,5 +243,27 @@ func TestOlderControllerCannotStartMaintenanceOnMigratedAgent(t *testing.T) {
 	f.freezeBody()
 	if _, err := c.acceptPolledCommand(f.command); err == nil {
 		t.Fatal("older controller delivered a new maintenance phase")
+	}
+}
+
+// A stopping agent runs the phase again when it restarts, so stopping is not its outcome.
+func TestStoppingDuringAMaintenancePhaseRecordsNoOutcome(t *testing.T) {
+	journal, _ := testVisualJournal(t)
+	running := Record{Command: api.ExecutionCommand{Id: uuid.New()}}
+	running.Report.State = "running"
+	if err := journal.db.Update(func(tx *bolt.Tx) error {
+		return journal.put(tx, "operations", running.Command.Id.String(), running)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	stopping, stop := context.WithCancel(context.Background())
+	stop()
+	engine := &Engine{Journal: journal}
+	if err := engine.executeMaintenancePhase(stopping, running.Command, deployment.CrossHostCommand{Phase: "complete"}, crossHostState{Phase: "paused"}); err == nil {
+		t.Fatal("the phase reported nothing to run again")
+	}
+	record, err := journal.Record(running.Command.Id)
+	if err != nil || record.Report.State != "running" {
+		t.Fatal("stopping recorded an outcome", record.Report.State, err)
 	}
 }

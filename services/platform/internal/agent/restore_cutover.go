@@ -238,7 +238,7 @@ func (e *Engine) activateRestoreCutover(ctx context.Context, c api.ExecutionComm
 				if _, err = e.Docker.ContainerStart(ctx, replacement.ContainerID, client.ContainerStartOptions{}); err != nil {
 					return err
 				}
-				if err = e.waitPostgresStartup(ctx, replacement.ContainerID, app.Postgres.Username, app.Postgres.Database); err != nil {
+				if err = e.waitContainerHealthy(ctx, replacement.ContainerID); err != nil {
 					return err
 				}
 			}

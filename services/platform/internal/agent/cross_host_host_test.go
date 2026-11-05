@@ -999,6 +999,7 @@ exec httpd -f -p 8080 -h /tmp/www`
 			if err != nil || recreated.Container.HostConfig.Memory != 0 {
 				t.Fatal("restore recovery adopted memory drift during the creation gap", err)
 			}
+			nativeRequireHealthy(t, recreated.Container)
 			for index, host := range hosts {
 				host.command(t, command(index, "resume-target"))
 				r := host.command(t, command(index, "complete"))
@@ -1010,14 +1011,10 @@ exec httpd -f -p 8080 -h /tmp/www`
 			}
 			if method == backup.QuiescedFiles {
 				value, err := data.dataOutput(ctx, deployment.UnitName(files), "cat", "/files/value")
-				if err != nil || strings.TrimSpace(string(value)) != "retained-file-data" {
-					t.Fatalf("cutover did not serve restored files: %s (%v)", value, err)
-				}
+				nativeRequireValue(t, "restored files", value, "retained-file-data", err)
 			} else {
 				value, err := data.pgQuery(ctx, deployment.UnitName(pg), target.Specification.Applications[1], "SELECT value FROM cross_host_marker")
-				if err != nil || strings.TrimSpace(string(value)) != "retained database data" {
-					t.Fatalf("cutover did not serve the restored database marker: %s (%v)", value, err)
-				}
+				nativeRequireValue(t, "the restored database marker", value, "retained database data", err)
 			}
 			if _, err := primary.docker.VolumeInspect(ctx, deployment.VolumeName(oldVolume), client.VolumeInspectOptions{}); err != nil {
 				t.Fatal("restore cutover removed source data", err)
