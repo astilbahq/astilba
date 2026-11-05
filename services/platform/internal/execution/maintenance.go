@@ -91,6 +91,17 @@ func (s *Service) insertBackupMaintenance(ctx context.Context, tx pgx.Tx, ws, ke
 	return s.insertMaintenance(ctx, tx, ws, key, p, maintenanceEffect{Backup: &b}, deployment.Maintenance{Kind: "backup", ResourceID: b.Installation.Policy.ID, RunID: b.RunID, EffectHash: b.Digest()}, nil)
 }
 
+// completeBeforeEffects ends a coordination at its recovery checkpoint. No host holds
+// any effect of it yet, so a coordinated prepare's plan has nothing left to wait for.
+func completeBeforeEffects(ctx context.Context, tx pgx.Tx, job *river.Job[jobArgs], ws, id uuid.UUID, m *coordinatedMaintenance, state, note string) error {
+	if m != nil && m.Effect.Upgrade != nil {
+		if err := undeliveredUpgrade(ctx, tx, ws, m.Effect.command("")); err != nil {
+			return err
+		}
+	}
+	return completeCoordination(ctx, tx, job, id, state, note)
+}
+
 func (s *Service) insertUpgradeMaintenance(ctx context.Context, tx pgx.Tx, ws, key uuid.UUID, u upgrade.Command) (api.Operation, error) {
 	target := u.Plan.TargetGroup()
 	identity := u
@@ -343,8 +354,9 @@ func (s *Service) coordinateMaintenance(ctx context.Context, tx pgx.Tx, job *riv
 			if err := s.closeUnreservedCheckpoint(ctx, tx, ws, parent, command); err != nil {
 				return err
 			}
-			return completeCoordination(ctx, tx, job, parent.Id, "cancelled", "Cancelled before host reservation or writer maintenance began.")
+			return completeBeforeEffects(ctx, tx, job, ws, parent.Id, m, "cancelled", "Cancelled before host reservation or writer maintenance began.")
 		}
+		action := maintenanceAction(phase)
 		phase = "maintenance-resume-source"
 		if m.Effect.Upgrade != nil {
 			var attempted bool
@@ -359,6 +371,9 @@ func (s *Service) coordinateMaintenance(ctx context.Context, tx pgx.Tx, job *riv
 			return err
 		}
 		if phase == "maintenance-owner" {
+			if err := undeliveredUpgrade(ctx, tx, ws, m.Effect.command(action)); err != nil {
+				return err
+			}
 			return wait("needs_attention", "Cancellation retains stopped writers after the data boundary. Choose an explicit upgrade recovery action.")
 		}
 	}
@@ -396,7 +411,7 @@ func (s *Service) coordinateMaintenance(ctx context.Context, tx pgx.Tx, job *riv
 		return wait("running", "Coordinated "+phase+"; the primary data effect waits for every required host receipt.")
 	}
 	if failed && phase == "maintenance-checkpoint" {
-		return completeCoordination(ctx, tx, job, parent.Id, "failed", "The primary did not acknowledge recovery metadata; no host was reserved or paused.")
+		return completeBeforeEffects(ctx, tx, job, ws, parent.Id, m, "failed", "The primary did not acknowledge recovery metadata; no host was reserved or paused.")
 	}
 	if failed && phase != "maintenance-reserve" && phase != "maintenance-pause" && !strings.HasPrefix(phase, "maintenance-run:") {
 		return wait("needs_attention", "Maintenance writer recovery is incomplete. Reservations remain held.")
