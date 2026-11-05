@@ -117,6 +117,10 @@ test("keeps one current issue open while over budget and closes it afterwards", 
   await syncIssue(unsure.request, "o/r", { problems: [], undecided: true }, "");
   assert.deepEqual(unsure.sent, []);
 
+  const other = issueRequests([{ number: 8, title: "Another issue" }]);
+  await syncIssue(other.request, "o/r", { problems: [], undecided: false }, "");
+  assert.deepEqual(other.sent, []);
+
   const recovered = issueRequests(open);
   await syncIssue(
     recovered.request,
