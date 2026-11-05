@@ -333,14 +333,18 @@ func (f shellFixture) execute(t *testing.T, command ...string) {
 func TestNativeTroubleshootingShellChoice(t *testing.T) {
 	f := newShellFixture(t)
 	trail := captureTrail(t)
+	shell := func() (string, error) {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		return f.client.Engine.findShell(ctx, f.id)
+	}
 	for _, step := range []struct{ name, script, want string }{
 		{"no bash", "true", "/bin/sh"},
 		{"working bash", `printf '#!/bin/sh\nexec /bin/sh "$@"\n' >/bin/bash; chmod +x /bin/bash`, "/bin/bash"},
 		{"unusable bash", `printf '#!/nonexistent\n' >/bin/bash`, "/bin/sh"},
 	} {
 		f.execute(t, "/bin/sh", "-c", step.script)
-		got, err := f.client.Engine.findShell(context.Background(), f.id)
-		if err != nil || got != step.want {
+		if got, err := shell(); err != nil || got != step.want {
 			t.Fatalf("%s: shell %q err %v, want %q", step.name, got, err, step.want)
 		}
 	}
@@ -348,7 +352,7 @@ func TestNativeTroubleshootingShellChoice(t *testing.T) {
 		t.Fatalf("a probe started a missing executable: %s", trail.String())
 	}
 	f.execute(t, "/bin/sh", "-c", `printf '#!/bin/ash\nexec /bin/ash "$@"\n' >/bin/bash; rm /bin/sh`)
-	if got, err := f.client.Engine.findShell(context.Background(), f.id); err != nil || got != "/bin/bash" {
+	if got, err := shell(); err != nil || got != "/bin/bash" {
 		t.Fatalf("no sh: shell %q err %v, want bash", got, err)
 	}
 }
