@@ -5,13 +5,14 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
+	"encoding/json/v2"
 	"net/http"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 )
 
@@ -117,7 +118,7 @@ func TestConnectionCreationHoldsNothingDuringItsCheck(t *testing.T) {
 
 func (h *hungBuild) push(t *testing.T, branch, commit string) {
 	t.Helper()
-	raw, _ := json.Marshal(map[string]any{"ref": "refs/heads/" + branch, "after": commit, "repository": map[string]int{"id": 12}})
+	raw, _ := stablejson.Marshal(map[string]any{"ref": "refs/heads/" + branch, "after": commit, "repository": map[string]int{"id": 12}})
 	mac := hmac.New(sha256.New, []byte(h.secret))
 	mac.Write(raw)
 	request, _ := http.NewRequest("POST", h.f.server.URL+"/hooks/git/"+h.connection.ID.String(), bytes.NewReader(raw))
