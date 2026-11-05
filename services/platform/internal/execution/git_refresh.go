@@ -39,16 +39,13 @@ type refreshWorker struct {
 }
 
 func (w *refreshWorker) Work(ctx context.Context, job *river.Job[refreshArgs]) error {
-	tx, err := w.service.Store.Pool.Begin(ctx)
+	a := job.Args
+	// Match interactive mutation's workspace lock before inspecting membership and drafts.
+	tx, done, err := w.service.Store.BeginWorkspaceWrite(ctx, a.Workspace)
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
-	a := job.Args
-	// Match interactive mutation's workspace lock before inspecting membership and drafts.
-	if _, err = tx.Exec(ctx, "SELECT id FROM workspaces WHERE id=$1 FOR UPDATE", a.Workspace); err != nil {
-		return err
-	}
+	defer done()
 	if err = w.service.Store.ManagementAdmission(ctx, tx, a.Workspace); err != nil {
 		if errors.Is(err, store.SubscriptionRequired) {
 			return nil

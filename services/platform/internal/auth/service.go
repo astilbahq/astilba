@@ -458,10 +458,7 @@ func (s *Service) AcceptInvitation(ctx context.Context, token, name, password st
 	if err != nil {
 		return account, err
 	}
-	err = s.Store.Transaction(ctx, func(q *db.Queries) error {
-		if _, err := q.LockWorkspaceByID(ctx, peek.WorkspaceID); err != nil {
-			return err
-		}
+	err = s.Store.WorkspaceWriteTransaction(ctx, peek.WorkspaceID, func(q *db.Queries) error {
 		invite, err := q.LockInvitation(ctx, Hash(token))
 		if errors.Is(err, pgx.ErrNoRows) {
 			return domain.Credentials

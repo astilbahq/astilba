@@ -568,10 +568,11 @@ const lockTroubleshootingSweepWorkspaces = `-- name: LockTroubleshootingSweepWor
 SELECT w.id FROM workspaces w
 WHERE EXISTS(SELECT 1 FROM troubleshooting_sessions t WHERE t.workspace_id = w.id AND t.state <> 'closed'
  AND (t.deadline_at <= now() - interval '1 minute' OR (t.state = 'offered' AND t.ticket_expires_at <= now())))
-ORDER BY w.id FOR UPDATE OF w
+ORDER BY w.id FOR NO KEY UPDATE OF w SKIP LOCKED
 `
 
 // unscoped: an installation-wide sweeper ends expired sessions in every workspace.
+// A locked workspace waits for the next sweep, so its holder cannot delay any other tenant.
 func (q *Queries) LockTroubleshootingSweepWorkspaces(ctx context.Context) ([]uuid.UUID, error) {
 	rows, err := q.db.Query(ctx, lockTroubleshootingSweepWorkspaces)
 	if err != nil {

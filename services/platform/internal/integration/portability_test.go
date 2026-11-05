@@ -183,7 +183,7 @@ func TestWorkspaceExportRejectsConcurrentOwnerRemoval(t *testing.T) {
 	// interleaving rather than relying on goroutine scheduling or a fixed sleep.
 	for {
 		var waiting bool
-		e = f.st.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND query LIKE '%FROM workspaces WHERE id=$1 FOR UPDATE%')`).Scan(&waiting)
+		e = f.st.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND query LIKE '%FROM workspaces WHERE id=$1 FOR NO KEY UPDATE%')`).Scan(&waiting)
 		if e != nil {
 			t.Fatal(e)
 		}

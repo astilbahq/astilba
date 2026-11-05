@@ -247,14 +247,11 @@ func (s *Service) Webhook(ctx context.Context, raw []byte, signature string) err
 			return e
 		}
 	}
-	tx, e := s.Store.Pool.Begin(ctx)
+	tx, done, e := s.Store.BeginWorkspaceWrite(ctx, ws)
 	if e != nil {
 		return e
 	}
-	defer tx.Rollback(ctx)
-	if _, e = tx.Exec(ctx, "SELECT id FROM workspaces WHERE id=$1 FOR UPDATE", ws); e != nil {
-		return e
-	}
+	defer done()
 	n, e := tx.Exec(ctx, "INSERT INTO hosted_billing_events(id,workspace_id) VALUES($1,$2) ON CONFLICT DO NOTHING", event.ID, ws)
 	if e != nil {
 		return e
