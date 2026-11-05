@@ -10,6 +10,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/hostnetwork"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -338,7 +339,7 @@ func (s *Service) reconcileNetwork(ctx context.Context, ws uuid.UUID) error {
 			commands = append(commands, *removal)
 		}
 		for _, candidate := range commands {
-			raw, _ := json.Marshal(candidate)
+			raw, _ := stablejson.Marshal(candidate)
 			c := api.ExecutionCommand{Id: uuid.New(), ServerId: m.ServerID, Generation: generation, Kind: "network", Action: "inspect", ResourceId: n.ID, PlanHash: hostnetwork.Hash(candidate), Deadline: time.Now().Add(5 * time.Minute), Network: rawMessage(raw)}
 			if _, err = s.insert(ctx, tx, ws, uuid.New(), nil, c); err != nil {
 				// Admission failures precede operation writes. A denied addition
@@ -539,4 +540,4 @@ func sameNetworkConfiguration(a, b hostnetwork.Manifest) bool {
 	return hostnetwork.Hash(a) == hostnetwork.Hash(b)
 }
 
-func mustJSON(v any) []byte { b, _ := json.Marshal(v); return b }
+func mustJSON(v any) []byte { b, _ := stablejson.Marshal(v); return b }

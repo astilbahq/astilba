@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/astilbahq/astilba/services/platform/internal/backup"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 )
 
 func (e *Engine) restic(ctx context.Context, in backup.Installation, dir string, args ...string) ([]byte, error) {
@@ -161,7 +162,7 @@ func (e *Engine) backupSnapshot(ctx context.Context, s *scheduleState, r *backup
 	if err != nil {
 		return err
 	}
-	raw, _ := json.Marshal(m)
+	raw, _ := stablejson.Marshal(m)
 	if err = os.WriteFile(filepath.Join(stage, "manifest.json"), raw, 0600); err != nil {
 		return err
 	}

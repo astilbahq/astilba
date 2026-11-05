@@ -9,6 +9,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/portability"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -52,7 +53,7 @@ func fenceRecoveryWorkspace(ctx context.Context, tx pgx.Tx, ws uuid.UUID) error 
 func (s *Service) restoreRecoveryRoots(ctx context.Context, tx pgx.Tx, ws uuid.UUID, roots map[uuid.UUID]recoveringRoot, sourceHash, inputHash string, owner uuid.UUID) error {
 	q := db.New(tx)
 	for parent, root := range roots {
-		raw, _ := json.Marshal(root.Command)
+		raw, _ := stablejson.Marshal(root.Command)
 		if err := q.RestoreRecoveryRoot(ctx, db.RestoreRecoveryRootParams{Command: raw, WorkspaceID: ws, ID: parent}); err != nil {
 			return err
 		}
@@ -134,7 +135,7 @@ func (s *Service) restoreRecoverySegment(ctx context.Context, tx pgx.Tx, ws uuid
 		if err != nil {
 			return err
 		}
-		raw, _ := json.Marshal(d)
+		raw, _ := stablejson.Marshal(d)
 		c.RecoveryCheckpoint = rawMessage(raw)
 		if err = storeRecoveryFrame(ctx, tx, ws, c); err != nil {
 			return err
@@ -159,7 +160,7 @@ type recoveryApproval struct {
 // decodeRecoveryApproval accepts an approval only for the root being restored, in
 // the workspace being recovered; the checkpoint cannot name any other.
 func decodeRecoveryApproval(ws, parent uuid.UUID, approval portability.Row) (recoveryApproval, []byte, error) {
-	raw, err := json.Marshal(approval)
+	raw, err := stablejson.Marshal(approval)
 	if err != nil {
 		return recoveryApproval{}, nil, err
 	}
@@ -203,7 +204,7 @@ func storeRecoveryFrameState(ctx context.Context, tx pgx.Tx, ws uuid.UUID, c api
 	} else if !errors.Is(err, pgx.ErrNoRows) {
 		return err
 	}
-	raw, _ := json.Marshal(c)
+	raw, _ := stablejson.Marshal(c)
 	if errors.Is(err, pgx.ErrNoRows) {
 		var env *uuid.UUID
 		if c.EnvironmentId != uuid.Nil {

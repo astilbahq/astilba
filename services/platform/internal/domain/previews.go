@@ -1,9 +1,9 @@
 package domain
 
 import (
-	"encoding/json"
 	"errors"
 
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/distribution/reference"
 	"github.com/google/uuid"
 )
@@ -88,7 +88,7 @@ func ValidatePreviewTemplate(s Specification, target uuid.UUID) error {
 // Secret mapping is supplied from the separately scoped template store.
 func RemapPreview(source Specification, ids, secrets map[uuid.UUID]uuid.UUID, hostname func(uuid.UUID) string) (Specification, error) {
 	// Deep-copy pointer and slice fields before changing the frozen template.
-	raw, err := json.Marshal(source)
+	raw, err := stablejson.Marshal(source)
 	if err != nil {
 		return Specification{}, err
 	}
@@ -179,7 +179,7 @@ func RemapPreview(source Specification, ids, secrets map[uuid.UUID]uuid.UUID, ho
 		routes = append(routes, r)
 	}
 	s.Routes = routes
-	raw, err = json.Marshal(s)
+	raw, err = stablejson.Marshal(s)
 	if err != nil {
 		return s, err
 	}

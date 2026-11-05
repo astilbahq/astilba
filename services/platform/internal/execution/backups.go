@@ -13,6 +13,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/composeproject"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -54,7 +55,7 @@ func (s *Service) CreateBackupDestination(ctx context.Context, p store.Principal
 		if err != nil {
 			return err
 		}
-		raw, _ := json.Marshal(d)
+		raw, _ := stablejson.Marshal(d)
 		return db.New(tx).InsertBackupDestination(ctx, db.InsertBackupDestinationParams{ID: d.ID, WorkspaceID: ws, Configuration: raw, EncryptedAccess: secret})
 	})
 	return d, err
@@ -198,7 +199,7 @@ func (s *Service) SaveBackupPolicy(ctx context.Context, p store.Principal, ws, p
 		if err != nil {
 			return err
 		}
-		raw, _ := json.Marshal(out)
+		raw, _ := stablejson.Marshal(out)
 		_, err = db.New(tx).UpsertBackupPolicy(ctx, db.UpsertBackupPolicyParams{ID: id, WorkspaceID: ws, EnvironmentID: env, ServerID: out.ServerID, Configuration: raw, EncryptedAccess: cipher})
 		return err
 	})
@@ -281,7 +282,7 @@ func (s *Service) BackupCommand(ctx context.Context, p store.Principal, ws, pid,
 		if err != nil {
 			return err
 		}
-		raw, _ := json.Marshal(b)
+		raw, _ := stablejson.Marshal(b)
 		payload := json.RawMessage(raw)
 		c := api.ExecutionCommand{Id: uuid.New(), ServerId: v.ServerID, EnvironmentId: env, Generation: generation, PlanHash: b.Digest(), Kind: "backup", Action: "inspect", ResourceId: id, Deadline: time.Now().Add(30 * time.Minute), Backup: &payload}
 		if v.GeneralSchedule() {
@@ -342,7 +343,7 @@ func (s *Service) hydrateBackup(ctx context.Context, c *api.ExecutionCommand) er
 		b.Installation.Access.AccessKey = a.AccessKey
 		b.Installation.Access.SecretKey = a.SecretKey
 	}
-	raw, _ := json.Marshal(b)
+	raw, _ := stablejson.Marshal(b)
 	value := json.RawMessage(raw)
 	c.Backup = &value
 	return nil
@@ -408,7 +409,7 @@ func (s *Service) ScheduleReport(ctx context.Context, a Identity, sequence int64
 			return domain.Invalid("run")
 		}
 	}
-	raw, _ := json.Marshal(status)
+	raw, _ := stablejson.Marshal(status)
 	if err = db.New(tx).SaveBackupPolicyReport(ctx, db.SaveBackupPolicyReportParams{Status: raw, StatusSequence: sequence, WorkspaceID: a.Workspace, ID: p.ID}); err != nil {
 		return err
 	}
@@ -504,7 +505,7 @@ func (s *Service) PrepareBackupCutover(ctx context.Context, p store.Principal, w
 			}
 		}
 
-		raw, _ = json.Marshal(v.Spec)
+		raw, _ = stablejson.Marshal(v.Spec)
 		_, canonical, err := domain.ParseSpec(raw)
 		if err != nil {
 			return err
@@ -516,7 +517,7 @@ func (s *Service) PrepareBackupCutover(ctx context.Context, p store.Principal, w
 			return err
 		}
 		if boundary != nil {
-			configuration, _ := json.Marshal(boundary)
+			configuration, _ := stablejson.Marshal(boundary)
 			if err = q.InsertBackupCutover(ctx, db.InsertBackupCutoverParams{WorkspaceID: ws, EnvironmentID: env, RevisionID: out.ID, PolicyID: id, SourcePlanID: boundary.SourcePlanID, Configuration: configuration}); err != nil {
 				return err
 			}

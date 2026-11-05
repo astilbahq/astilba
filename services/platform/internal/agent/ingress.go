@@ -51,13 +51,13 @@ func (a routeAttempt) MarshalJSON() ([]byte, error) {
 		for _, set := range snapshot.Sets {
 			for _, backend := range set.Backends {
 				if len(backend.InstanceIDs) > 0 || len(backend.Endpoints) > 0 {
-					return json.Marshal([]routeSnapshot{a.Previous, a.Candidate})
+					return stablejson.Marshal([]routeSnapshot{a.Previous, a.Candidate})
 				}
 			}
 		}
 	}
 	type object routeAttempt
-	return json.Marshal(object(a))
+	return stablejson.Marshal(object(a))
 }
 
 func (a *routeAttempt) UnmarshalJSON(raw []byte) error {
@@ -115,7 +115,7 @@ func renderSnapshot(s routeSnapshot) ([]byte, error) {
 		}
 		routers["activation-"+s.Revision] = map[string]any{"entryPoints": []string{"traefik"}, "rule": "Path(`/__astilba_activation`)", "service": "api@internal"}
 	}
-	return json.Marshal(out)
+	return stablejson.Marshal(out)
 }
 func atomicRouteFile(path string, raw []byte) error {
 	dir := filepath.Dir(path)

@@ -2,10 +2,10 @@ package automationclient
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -58,7 +58,7 @@ func (c *Client) MCP(v api.AutomationContext, version string) *mcp.Server {
 		if err != nil {
 			return nil, err
 		}
-		raw, err := json.Marshal(in.Specification)
+		raw, err := stablejson.Marshal(in.Specification)
 		if err != nil {
 			return nil, err
 		}

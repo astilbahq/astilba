@@ -9,6 +9,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -72,7 +73,7 @@ func scanPreviewPolicy(row pgx.Row) (previewPolicy, error) {
 }
 func (p previewPolicy) response() api.PreviewPolicy {
 	var cfg api.PreviewPolicyConfiguration
-	raw, _ := json.Marshal(p.Config)
+	raw, _ := stablejson.Marshal(p.Config)
 	_ = json.Unmarshal(raw, &cfg)
 	return api.PreviewPolicy{Note: &p.Note, Id: p.ID, Generation: p.Generation, Enabled: p.Enabled, Configuration: cfg}
 }
@@ -91,7 +92,7 @@ func (s *Service) PreviewPolicy(ctx context.Context, p store.Principal, ws, pid,
 func (s *Service) SavePreviewPolicy(ctx context.Context, p store.Principal, ws, pid, env uuid.UUID, in api.SavePreviewPolicy) (api.PreviewPolicy, error) {
 	var out api.PreviewPolicy
 	var cfg previewConfig
-	raw, _ := json.Marshal(in.Configuration)
+	raw, _ := stablejson.Marshal(in.Configuration)
 	if json.Unmarshal(raw, &cfg) != nil {
 		return out, domain.Invalid("preview.policy")
 	}
@@ -198,7 +199,7 @@ func (s *Service) SavePreviewPolicy(ctx context.Context, p store.Principal, ws, 
 			id = old.ID
 			gen = old.Generation + 1
 		}
-		raw, _ = json.Marshal(cfg)
+		raw, _ = stablejson.Marshal(cfg)
 		_, err = tx.Exec(ctx, `INSERT INTO preview_policies(id,workspace_id,project_id,environment_id,revision_id,application_id,connection_id,server_id,actor_id,auth_version,controller_generation,generation,enabled,configuration)
    VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
    ON CONFLICT(workspace_id,environment_id) DO UPDATE SET revision_id=EXCLUDED.revision_id,application_id=EXCLUDED.application_id,connection_id=EXCLUDED.connection_id,server_id=EXCLUDED.server_id,actor_id=EXCLUDED.actor_id,auth_version=EXCLUDED.auth_version,controller_generation=EXCLUDED.controller_generation,generation=EXCLUDED.generation,enabled=EXCLUDED.enabled,configuration=EXCLUDED.configuration,discovery_page=1,next_discovery_at=now()`, id, ws, pid, env, cfg.Revision, cfg.App, cfg.Build.ConnectionID, cfg.Build.RunnerID, p.Account.ID, p.Account.AuthVersion, controller, gen, in.Enabled, raw)

@@ -12,6 +12,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -103,7 +104,7 @@ type releaseHistory struct {
 }
 
 func rollbackPlan(current, historical deployment.Plan, appID uuid.UUID) (deployment.Plan, error) {
-	raw, _ := json.Marshal(current)
+	raw, _ := stablejson.Marshal(current)
 	var target deployment.Plan
 	_ = json.Unmarshal(raw, &target)
 	historical.HostChanges, historical.AcceptDrift = false, false

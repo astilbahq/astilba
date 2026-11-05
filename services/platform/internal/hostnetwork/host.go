@@ -11,6 +11,7 @@ import (
 	jsonv2 "encoding/json/v2"
 	"errors"
 	"fmt"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 	"io"
 	"net/netip"
@@ -212,7 +213,7 @@ func Decode(raw []byte, out any) error {
 	return nil
 }
 func (h Host) save(s Snapshot) error {
-	b, err := json.Marshal(s)
+	b, err := stablejson.Marshal(s)
 	if err != nil {
 		return err
 	}

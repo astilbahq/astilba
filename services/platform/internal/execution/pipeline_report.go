@@ -15,6 +15,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/composeproject"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -200,7 +201,7 @@ func (s *Service) hydratePipeline(ctx context.Context, a Identity, c *api.Execut
 		}
 		return false, err
 	}
-	raw, err = json.Marshal(p)
+	raw, err = stablejson.Marshal(p)
 	if err != nil || len(raw) > 250000 {
 		return false, errors.New("pipeline payload limit exceeded")
 	}
@@ -240,7 +241,7 @@ func (s *Service) populatePipeline(ctx context.Context, tx pgx.Tx, ws, env uuid.
 			p.RegistryAccess = &pipeline.RegistryAccess{Push: access.Push}
 		}
 	}
-	raw, err := json.Marshal(p)
+	raw, err := stablejson.Marshal(p)
 	if err != nil || len(raw) > 250000 {
 		return domain.Invalid("pipeline.payloadBudget")
 	}
@@ -248,7 +249,7 @@ func (s *Service) populatePipeline(ctx context.Context, tx pgx.Tx, ws, env uuid.
 }
 
 func (s *Service) writePipelineRevision(ctx context.Context, tx pgx.Tx, ws, env, base, actor uuid.UUID, spec domain.Specification) (uuid.UUID, error) {
-	raw, _ := json.Marshal(spec)
+	raw, _ := stablejson.Marshal(spec)
 	parsed, canonical, err := domain.ParseSpec(raw)
 	if err != nil {
 		return uuid.Nil, err
@@ -346,8 +347,8 @@ func (s *Service) pipelineReport(ctx context.Context, tx pgx.Tx, c api.Execution
 				r.Note = "Imported source is invalid for this environment."
 				break
 			}
-			paths, _ := json.Marshal(p.Source.Paths)
-			entries, _ := json.Marshal(p.Source.Entrypoints)
+			paths, _ := stablejson.Marshal(p.Source.Paths)
+			entries, _ := stablejson.Marshal(p.Source.Entrypoints)
 			if _, err = tx.Exec(ctx, "UPDATE git_sources SET imported_revision_id=$3,imported_commit=$4,pending_commit='',status='ready',configuration=jsonb_set(jsonb_set(configuration,'{paths}',$5::jsonb),'{entrypoints}',$6::jsonb) WHERE workspace_id=$1 AND environment_id=$2", ws, c.EnvironmentId, id, p.Commit, paths, entries); err != nil {
 				return err
 			}
@@ -406,7 +407,7 @@ func (s *Service) pipelineReport(ctx context.Context, tx pgx.Tx, c api.Execution
 				}
 				artifact.ServerID = &c.ServerId
 			}
-			raw, _ := json.Marshal(artifact)
+			raw, _ := stablejson.Marshal(artifact)
 			if _, err = tx.Exec(ctx, "INSERT INTO build_artifacts(id,workspace_id,environment_id,identity) VALUES($1,$2,$3,$4)", c.Id, ws, c.EnvironmentId, raw); err != nil {
 				return err
 			}
@@ -449,7 +450,7 @@ func (s *Service) pipelineReport(ctx context.Context, tx pgx.Tx, c api.Execution
 	}
 	// Selected source stays in immutable revisions, rather than duplicating source files in history.
 	result.Files = nil
-	raw, _ := json.Marshal(result)
+	raw, _ := stablejson.Marshal(result)
 	if len(raw) > 150000 {
 		return domain.Invalid("pipeline")
 	}

@@ -2,13 +2,13 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"flag"
 	"os"
 	"path/filepath"
 
 	"github.com/astilbahq/astilba/services/platform/internal/execution"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
 )
@@ -61,7 +61,7 @@ func recoverCrossHostCommand(ctx context.Context, st *store.Store, args []string
 	}
 	if result.Applied {
 		for server, handover := range result.Handovers {
-			raw, err := json.Marshal(handover)
+			raw, err := stablejson.Marshal(handover)
 			if err != nil {
 				return err
 			}
@@ -94,5 +94,5 @@ func recoverCrossHostCommand(ctx context.Context, st *store.Store, args []string
 			return closeErr
 		}
 	}
-	return json.NewEncoder(os.Stdout).Encode(result)
+	return stablejson.Encode(os.Stdout, result)
 }

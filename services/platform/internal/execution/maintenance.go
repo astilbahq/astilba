@@ -12,6 +12,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/backup"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/astilbahq/astilba/services/platform/internal/upgrade"
 	"github.com/google/uuid"
@@ -44,7 +45,7 @@ func (m maintenanceEffect) command(action string) api.ExecutionCommand {
 		if b.Installation.Policy.GeneralSchedule() {
 			c.Kind = "schedule"
 		}
-		raw, _ := json.Marshal(b)
+		raw, _ := stablejson.Marshal(b)
 		c.Backup = rawMessage(raw)
 	} else if m.Upgrade != nil {
 		u := *m.Upgrade
@@ -52,7 +53,7 @@ func (m maintenanceEffect) command(action string) api.ExecutionCommand {
 			u.Action = action
 		}
 		c.Kind, c.ServerId, c.EnvironmentId, c.ResourceId, c.PlanHash = "upgrade", u.Plan.Source.ServerID, u.Plan.Source.EnvironmentID, u.Plan.ID, u.Digest()
-		raw, _ := json.Marshal(u)
+		raw, _ := stablejson.Marshal(u)
 		c.Upgrade = rawMessage(raw)
 	}
 	return c
@@ -151,7 +152,7 @@ func (s *Service) approveMaintenanceUpgrade(ctx context.Context, tx pgx.Tx, ws u
 		return api.Operation{}, err
 	}
 	status.Phase, status.Note = "running", "Coordinated upgrade action queued: "+string(in.Action)
-	raw, _ = json.Marshal(status)
+	raw, _ = stablejson.Marshal(status)
 	if _, err = tx.Exec(ctx, `UPDATE supported_upgrades SET status=$2 WHERE id=$1`, plan.ID, raw); err != nil {
 		return api.Operation{}, err
 	}
@@ -241,7 +242,7 @@ func maintenanceChildPayload(parent api.ExecutionCommand, phase string, m *coord
 			effectAction, action = maintenanceAction(phase), "effect"
 		}
 		command := deployment.CrossHostCommand{ParentID: parent.Id, GroupHash: parent.PlanHash, Phase: action, Unit: u.Unit, Maintenance: &u.Intent, EffectAction: effectAction, UseTarget: phase == "maintenance-complete-target" || phase == "maintenance-resume-target"}
-		raw, _ := json.Marshal(command)
+		raw, _ := stablejson.Marshal(command)
 		c.Crosshost, c.PlanHash = rawMessage(raw), command.Digest()
 	}
 	return c

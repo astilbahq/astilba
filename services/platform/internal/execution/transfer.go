@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"reflect"
 	"time"
@@ -119,8 +120,8 @@ func (s *Service) enroll(ctx context.Context, in api.AgentEnrollment) (api.Agent
 			}
 		}
 	}
-	caps, _ := json.Marshal(in.Capabilities)
-	pre, _ := json.Marshal(in.Preflight)
+	caps, _ := stablejson.Marshal(in.Capabilities)
+	pre, _ := stablejson.Marshal(in.Preflight)
 	enrolled, e := q.CompleteAgentEnrollment(ctx, db.CompleteAgentEnrollmentParams{WorkspaceID: ws, ServerID: in.ServerId, CredentialHash: hash(in.Credential), MachineID: &in.MachineId, Capabilities: caps, Preflight: pre})
 	if e != nil {
 		return out, e

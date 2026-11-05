@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 )
 
@@ -29,7 +30,7 @@ func (r RestoreCutover) Validate() error {
 // RestoreSpecification permits only replacing the restored volume's identity.
 // Images, credentials, placement and all other service configuration stay fixed.
 func RestoreSpecification(source domain.Specification, old, target uuid.UUID) (domain.Specification, error) {
-	raw, err := json.Marshal(source)
+	raw, err := stablejson.Marshal(source)
 	if err != nil {
 		return source, err
 	}
@@ -65,7 +66,7 @@ func RestoredGroup(source Plan, r RestoreCutover, id, revision uuid.UUID, expire
 	if err != nil {
 		return Plan{}, err
 	}
-	raw, err := json.Marshal(source)
+	raw, err := stablejson.Marshal(source)
 	if err != nil {
 		return Plan{}, err
 	}

@@ -2,7 +2,6 @@ package execution
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
@@ -10,6 +9,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/hostnetwork"
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
 )
@@ -63,7 +63,7 @@ func (s *Service) hydrateCrossHost(ctx context.Context, c *api.ExecutionCommand)
 			p.Secrets[id.String()] = string(plain)
 		}
 	}
-	raw, err := json.Marshal(p)
+	raw, err := stablejson.Marshal(p)
 	if err != nil || len(raw) > 500000 {
 		return errors.New("cross-host payload limit exceeded")
 	}

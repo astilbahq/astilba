@@ -11,6 +11,7 @@ import (
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
 )
@@ -283,7 +284,7 @@ func (s *Service) Import(ctx context.Context, p store.Principal, passphrase stri
 			if e = s.transformCredential(table.Name, row, archive.Workspace, false); e != nil {
 				return out, e
 			}
-			raw, e := json.Marshal(row)
+			raw, e := stablejson.Marshal(row)
 			if e != nil {
 				return out, e
 			}

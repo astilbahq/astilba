@@ -12,6 +12,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/backup"
 	"github.com/astilbahq/astilba/services/platform/internal/execution"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 	"github.com/moby/moby/client"
 	bolt "go.etcd.io/bbolt"
@@ -115,7 +116,7 @@ func (j *Journal) ScheduleReports() ([]api.ScheduleReport, error) {
 		if status.Runs == nil {
 			status.Runs = []backup.Run{}
 		}
-		raw, _ := json.Marshal(status)
+		raw, _ := stablejson.Marshal(status)
 		var dto api.BackupStatus
 		if err = json.Unmarshal(raw, &dto); err != nil {
 			return nil, err

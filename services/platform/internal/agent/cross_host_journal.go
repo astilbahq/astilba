@@ -9,6 +9,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/hostnetwork"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 	bolt "go.etcd.io/bbolt"
 )
@@ -137,7 +138,7 @@ func crossHostCommand(c api.ExecutionCommand) (deployment.CrossHostCommand, erro
 	return command, nil
 }
 func crossHostReceipt(c api.ExecutionCommand, command deployment.CrossHostCommand, observation deployment.Observation) *json.RawMessage {
-	raw, _ := json.Marshal(deployment.CrossHostReceipt{ParentID: command.ParentID, GroupHash: command.GroupHash, UnitID: command.Unit.Plan.UnitID, Phase: command.Phase, PlanHash: command.Unit.Plan.Hash, Observation: observation})
+	raw, _ := stablejson.Marshal(deployment.CrossHostReceipt{ParentID: command.ParentID, GroupHash: command.GroupHash, UnitID: command.Unit.Plan.UnitID, Phase: command.Phase, PlanHash: command.Unit.Plan.Hash, Observation: observation})
 	v := json.RawMessage(raw)
 	return &v
 }

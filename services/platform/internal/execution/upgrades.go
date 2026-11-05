@@ -12,6 +12,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/backup"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/astilbahq/astilba/services/platform/internal/upgrade"
 	"github.com/google/uuid"
@@ -121,8 +122,8 @@ func (s *Service) CreateUpgrade(ctx context.Context, p store.Principal, ws, pid,
 			return domain.Conflict
 		}
 		out.Status = upgrade.Status{Phase: "planned", Serving: "old", KeepUntil: out.Plan.ExpiresAt, Note: "Review downtime, capacity, backup destination and recovery boundary before starting."}
-		raw, _ = json.Marshal(out.Plan)
-		status, _ := json.Marshal(out.Status)
+		raw, _ = stablejson.Marshal(out.Plan)
+		status, _ := stablejson.Marshal(out.Status)
 		_, err = tx.Exec(ctx, "INSERT INTO supported_upgrades(id,workspace_id,environment_id,server_id,plan,status,author_id) VALUES($1,$2,$3,$4,$5,$6,$7)", out.Plan.ID, ws, env, source.ServerID, raw, status, p.Account.ID)
 		if err != nil {
 			return err
@@ -241,7 +242,7 @@ func (s *Service) UpgradeAction(ctx context.Context, p store.Principal, ws, pid,
 			return err
 		}
 		cmd := upgrade.Command{Action: string(in.Action), Plan: plan, Installation: backup.Installation{Policy: policy, Destination: dest}}
-		raw, _ := json.Marshal(cmd)
+		raw, _ := stablejson.Marshal(cmd)
 		var generation int64
 		if err = tx.QueryRow(ctx, "UPDATE environments SET execution_generation=execution_generation+1 WHERE workspace_id=$1 AND id=$2 RETURNING execution_generation", ws, env).Scan(&generation); err != nil {
 			return err
@@ -262,7 +263,7 @@ func (s *Service) UpgradeAction(ctx context.Context, p store.Principal, ws, pid,
 		}
 		status.Phase = "running"
 		status.Note = "Upgrade action queued: " + string(in.Action)
-		raw, _ = json.Marshal(status)
+		raw, _ = stablejson.Marshal(status)
 		_, err = tx.Exec(ctx, "UPDATE supported_upgrades SET status=$2 WHERE id=$1", id, raw)
 		return err
 	})
@@ -276,7 +277,7 @@ func (s *Service) hydrateUpgrade(ctx context.Context, c *api.ExecutionCommand) e
 	// Reuse the backup credential boundary and the visual secret boundary; only
 	// the assigned server receives either set of execution values.
 	b := backup.Command{Action: "check", Installation: cmd.Installation}
-	raw, _ := json.Marshal(b)
+	raw, _ := stablejson.Marshal(b)
 	copy := *c
 	copy.Kind = "backup"
 	if cmd.Installation.Policy.GeneralSchedule() {
@@ -294,7 +295,7 @@ func (s *Service) hydrateUpgrade(ctx context.Context, c *api.ExecutionCommand) e
 	cmd.Installation = b.Installation
 	copy = *c
 	payload := deployment.Payload{Action: "deploy", Plan: cmd.Plan.Source}
-	raw, _ = json.Marshal(payload)
+	raw, _ = stablejson.Marshal(payload)
 	copy.Visual = rawMessage(raw)
 	if err := s.hydrateVisual(ctx, &copy); err != nil {
 		return err
@@ -303,7 +304,7 @@ func (s *Service) hydrateUpgrade(ctx context.Context, c *api.ExecutionCommand) e
 		return err
 	}
 	cmd.Secrets = payload.Secrets
-	raw, _ = json.Marshal(cmd)
+	raw, _ = stablejson.Marshal(cmd)
 	if len(raw) > 450000 {
 		return errors.New("upgrade payload too large")
 	}
@@ -359,7 +360,7 @@ func undeliveredUpgrade(ctx context.Context, tx pgx.Tx, ws uuid.UUID, c api.Exec
 		status.Phase = "attention"
 	}
 	status.Note = "This upgrade action stopped before reaching the host and changed nothing. The operation's note says why."
-	raw, _ = json.Marshal(status)
+	raw, _ = stablejson.Marshal(status)
 	return q.SaveSupportedUpgradeStatus(ctx, db.SaveSupportedUpgradeStatusParams{WorkspaceID: ws, ID: c.ResourceId, Status: raw})
 }
 func (s *Service) upgradeReport(ctx context.Context, tx pgx.Tx, c api.ExecutionCommand, r *api.AgentReport) error {
@@ -428,7 +429,7 @@ func (s *Service) upgradeReport(ctx context.Context, tx pgx.Tx, c api.ExecutionC
 			plan = cmd.Plan.Source
 		}
 		payload := deployment.Payload{Action: "deploy", Plan: plan}
-		body, _ := json.Marshal(payload)
+		body, _ := stablejson.Marshal(payload)
 		copy := c
 		copy.Kind = "visual"
 		copy.PlanHash = payload.Digest()
@@ -442,7 +443,7 @@ func (s *Service) upgradeReport(ctx context.Context, tx pgx.Tx, c api.ExecutionC
 			}
 		}
 	}
-	raw, _ = json.Marshal(next)
+	raw, _ = stablejson.Marshal(next)
 	_, err := tx.Exec(ctx, "UPDATE supported_upgrades SET status=$2 WHERE id=$1", c.ResourceId, raw)
 	return err
 }
@@ -455,7 +456,7 @@ func (s *Service) saveUpgradeTarget(ctx context.Context, tx pgx.Tx, cmd upgrade.
 	if err := tx.QueryRow(ctx, "SELECT author_id FROM supported_upgrades WHERE id=$1", cmd.Plan.ID).Scan(&author); err != nil {
 		return err
 	}
-	raw, _ := json.Marshal(target.Specification)
+	raw, _ := stablejson.Marshal(target.Specification)
 	_, canonical, err := domain.ParseSpec(raw)
 	if err != nil {
 		return err
@@ -464,7 +465,7 @@ func (s *Service) saveUpgradeTarget(ctx context.Context, tx pgx.Tx, cmd upgrade.
 	if _, err = db.New(tx).InsertRevision(ctx, db.InsertRevisionParams{WorkspaceID: ws, EnvironmentID: env, ID: target.RevisionID, AuthorID: author, Specification: canonical, ContentHash: hash[:]}); err != nil {
 		return err
 	}
-	raw, _ = json.Marshal(target)
+	raw, _ = stablejson.Marshal(target)
 	if _, err = tx.Exec(ctx, "INSERT INTO visual_requests(id,workspace_id,server_id,environment_id,unit_id,revision_id,candidate,operation_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8)", target.ID, ws, target.ServerID, env, target.UnitID, target.RevisionID, raw, operation); err != nil {
 		return err
 	}

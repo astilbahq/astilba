@@ -14,6 +14,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/portability"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -79,7 +80,7 @@ func (s *Service) createRecoveryBase(ctx context.Context, tx pgx.Tx, ws uuid.UUI
 	if err := d.Validate(); err != nil {
 		return d, err
 	}
-	descriptor, _ := json.Marshal(d)
+	descriptor, _ := stablejson.Marshal(d)
 	return d, db.New(tx).InsertRecoveryBaseCheckpoint(ctx, db.InsertRecoveryBaseCheckpointParams{ID: id, WorkspaceID: ws, ParentID: root.Id, Descriptor: descriptor, Envelope: envelope})
 }
 
@@ -162,7 +163,7 @@ func (s *Service) stageRecoveryPhase(ctx context.Context, tx pgx.Tx, ws uuid.UUI
 			return err
 		}
 	}
-	raw, err := json.Marshal(segment)
+	raw, err := stablejson.Marshal(segment)
 	if err != nil {
 		return err
 	}
@@ -183,7 +184,7 @@ func (s *Service) stageRecoveryPhase(ctx context.Context, tx pgx.Tx, ws uuid.UUI
 		return err
 	}
 	d.Digest, d.Bytes = deployment.RecoveryDigest(envelope), len(envelope)
-	descriptor, _ := json.Marshal(d)
+	descriptor, _ := stablejson.Marshal(d)
 	if err = q.InsertRecoveryCheckpoint(ctx, db.InsertRecoveryCheckpointParams{ID: d.CheckpointID, WorkspaceID: ws, ParentID: parent.Id, Sequence: d.Sequence, Descriptor: descriptor, Envelope: envelope, Phase: phase}); err != nil {
 		return err
 	}
@@ -209,7 +210,7 @@ func (s *Service) stageRecoveryPhase(ctx context.Context, tx pgx.Tx, ws uuid.UUI
 	if intent != nil {
 		body.GroupHash = parent.PlanHash
 	}
-	payload, _ := json.Marshal(body)
+	payload, _ := stablejson.Marshal(body)
 	if generation < 1 {
 		return domain.Invalid("recovery.generation")
 	}

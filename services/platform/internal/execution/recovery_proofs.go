@@ -8,6 +8,7 @@ import (
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -63,7 +64,7 @@ func (s *Service) applyRecoveryProof(ctx context.Context, tx pgx.Tx, ws uuid.UUI
 	if err = s.networkReport(ctx, tx, reportCommand, &report); err != nil {
 		return err
 	}
-	steps, _ := json.Marshal(report.Steps)
+	steps, _ := stablejson.Marshal(report.Steps)
 	if err = q.ApplyRecoveryProof(ctx, db.ApplyRecoveryProofParams{State: string(report.State), ReportSequence: report.Sequence, Steps: steps, Note: report.Note, CancelRequested: header.CancelRequested, WorkspaceID: ws, ID: c.Id}); err != nil {
 		return err
 	}
@@ -134,7 +135,7 @@ func (s *Service) restoreRecoveryProofs(ctx context.Context, tx pgx.Tx, ws uuid.
 					report.State = "cancelled"
 					report.Note = "Superseded metadata delivery or replay grant; guarded recovery resumes the retained phase without inferring any data effect."
 					report.Sequence++
-					raw, _ = json.Marshal(report)
+					raw, _ = stablejson.Marshal(report)
 					// inline-sql: recovery session temporary table
 					if _, err = tx.Exec(ctx, `UPDATE recovery_input_proofs SET report=$3 WHERE server_id=$1 AND id=$2`, header.ServerId, header.Id, raw); err != nil {
 						return err
@@ -204,7 +205,7 @@ func recoveryMetadataPayload(root recoveringRoot, header api.ExecutionCommand, h
 		if body.Digest() != header.PlanHash {
 			return header, false, errors.New("metadata proof differs from its frozen root")
 		}
-		raw, _ := json.Marshal(body)
+		raw, _ := stablejson.Marshal(body)
 		header.Crosshost = rawMessage(raw)
 		return header, retire, nil
 	}

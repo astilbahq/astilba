@@ -15,6 +15,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/mailer"
 	"github.com/astilbahq/astilba/services/platform/internal/outbound"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -94,7 +95,7 @@ func (s *Service) SaveSettings(ctx context.Context, p store.Principal, ws uuid.U
 				if len(*in.WebhookSecret) < 32 || len(*in.WebhookSecret) > 256 || strings.ContainsAny(*in.WebhookSecret, "\r\n\x00") {
 					return domain.Invalid("webhookSecret")
 				}
-				raw, _ := json.Marshal(webhook{*in.WebhookUrl, *in.WebhookSecret})
+				raw, _ := stablejson.Marshal(webhook{*in.WebhookUrl, *in.WebhookSecret})
 				encrypted, err = s.Store.Keys.Seal(raw, store.AlertWebhookIdentity(ws))
 				if err != nil {
 					return err

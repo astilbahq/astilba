@@ -15,6 +15,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/execution"
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/astilbahq/astilba/services/platform/internal/upgrade"
 	"github.com/google/uuid"
 	bolt "go.etcd.io/bbolt"
@@ -111,7 +112,7 @@ func (j *Journal) get(tx *bolt.Tx, bucket, key string, out any) error {
 	return json.Unmarshal(plain, out)
 }
 func (j *Journal) put(tx *bolt.Tx, bucket, key string, value any) error {
-	raw, e := json.Marshal(value)
+	raw, e := stablejson.Marshal(value)
 	if e != nil {
 		return e
 	}
@@ -209,8 +210,8 @@ func sameCommand(a, b api.ExecutionCommand) bool {
 	}
 	a.CancelRequested = false
 	b.CancelRequested = false
-	aj, _ := json.Marshal(a)
-	bj, _ := json.Marshal(b)
+	aj, _ := stablejson.Marshal(a)
+	bj, _ := stablejson.Marshal(b)
 	return bytes.Equal(aj, bj)
 }
 func (j *Journal) Accept(c api.ExecutionCommand) (Record, error) {

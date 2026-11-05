@@ -8,10 +8,10 @@ Astilba's Go code reads JSON with `encoding/json/v2` and writes hashed, stored a
 | --- | --- |
 | Reading JSON | `encoding/json/v2`. Add `RejectUnknownMembers(true)` where unknown names must be refused. |
 | Hashing or signing a value | `stablejson.Hash`, or the package `Hash` and `Digest` helpers that call it. |
-| Writing a value that is stored, journaled, exported or sent between a controller and an agent | `stablejson.Marshal`. |
+| Writing a value that is stored, journaled, exported, sent between Astilba processes that can be on different releases (controller, agent, CLI requests), or printed by an agent or server command that scripts read | `stablejson.Marshal`, `stablejson.Encode` for a stream or `stablejson.MarshalIndent` for indented files. |
 | Cloning a value through JSON, when the clone can reach a digest | `stablejson.Marshal`, so nil collections stay nil. |
 
-HTTP responses and requests to third parties still use v1 until a later change moves them.
+HTTP responses, the `astilba` CLI's own output and values sent to third parties, including registry credentials for Docker, still use v1 until a later change moves them.
 
 `stablejson.Marshal` calls v2 with `encoding/json`'s `DefaultOptionsV1`, which the standard library defines as equal to v1's `Marshal`. It is the reason production code still names the v1 package.
 
@@ -102,7 +102,7 @@ These libraries call `encoding/json` v1 themselves, so they accept v1's looser i
 
 Once the series finishes, production code names `encoding/json` in only three places, apart from generated code. Each reads or writes a format that Astilba does not control or must not change, so moving it would change behaviour rather than tidy an import:
 
-- **`internal/stablejson`**, for `DefaultOptionsV1` and the decoder behind `Normalize`. This is the frozen format itself.
+- **`internal/stablejson`**, for `DefaultOptionsV1`, the decoder behind `Normalize` and `MarshalIndent`, whose output `jsontext.WithIndent` does not reproduce. This is the frozen format itself.
 - **`internal/domain/compose.go`**, for `DefaultOptionsV1` on `x-astilba` metadata. The YAML is the user's own text in an immutable, content-hashed revision, so it cannot be rewritten to suit a stricter reader.
 - **`internal/cryptobox`**, for `ParseBytesWithLooseRFC4648` on keyrings. Operators write these files, and this option is the standard library's named switch for the line breaks they contain.
 

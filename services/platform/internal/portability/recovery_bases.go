@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 )
 
 // RecoveryBases combines individually validated snapshots without retaining a
@@ -44,7 +45,7 @@ func (b *RecoveryBases) Add(a Archive) error {
 		b.metadata = map[string]map[time.Time]string{}
 		b.reports = map[string]map[int64]recoverySequenceStates{}
 	}
-	workspace, _ := json.Marshal(struct {
+	workspace, _ := stablejson.Marshal(struct {
 		Name string
 		MFA  bool
 	}{a.Name, a.RequireMFA})
@@ -65,7 +66,7 @@ func (b *RecoveryBases) Add(a Archive) error {
 				return err
 			}
 			incoming := recoveryBaseRow{row, a.CreatedAt}
-			raw, _ := json.Marshal(row)
+			raw, _ := stablejson.Marshal(row)
 			if table.Name == "execution_operations" {
 				var sequence int64
 				var state api.ExecutionState
@@ -104,7 +105,7 @@ func (b *RecoveryBases) Add(a Archive) error {
 				b.rows[table.Name][key] = recoveryBaseRow{maps.Clone(row), a.CreatedAt}
 				continue
 			}
-			prior, _ := json.Marshal(known.row)
+			prior, _ := stablejson.Marshal(known.row)
 			if RecoveryImmutable(table.Name) {
 				if recoveryRowHash(prior) != recoveryRowHash(raw) {
 					return fmt.Errorf("recovery bases conflict on immutable %s", table.Name)
@@ -165,7 +166,7 @@ func RecoveryRowKey(table string, row Row) (string, error) {
 		}
 		values = append(values, value)
 	}
-	raw, _ := json.Marshal(values)
+	raw, _ := stablejson.Marshal(values)
 	return string(raw), nil
 }
 
@@ -188,8 +189,8 @@ func combineRecoveryOperation(left, right recoveryBaseRow) (recoveryBaseRow, err
 	ca.ControllerGeneration, cb.ControllerGeneration = nil, nil
 	ca.RecoveryCheckpoint, cb.RecoveryCheckpoint = nil, nil
 	ca.CancelRequested, cb.CancelRequested = false, false
-	ra, _ := json.Marshal(ca)
-	rb, _ := json.Marshal(cb)
+	ra, _ := stablejson.Marshal(ca)
+	rb, _ := stablejson.Marshal(cb)
 	if recoveryRowHash(ra) != recoveryRowHash(rb) {
 		return recoveryBaseRow{}, conflict
 	}
@@ -221,6 +222,6 @@ func combineRecoveryOperation(left, right recoveryBaseRow) (recoveryBaseRow, err
 func recoveryOperationChoice(row Row) string {
 	copy := maps.Clone(row)
 	delete(copy, "cancel_requested")
-	raw, _ := json.Marshal(copy)
+	raw, _ := stablejson.Marshal(copy)
 	return recoveryRowHash(raw)
 }

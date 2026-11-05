@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"github.com/astilbahq/astilba/services/platform/internal/composeproject"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"strings"
 )
 
@@ -93,7 +94,7 @@ func ExportConfiguration(plan Plan) (Export, error) {
 			network = "default"
 		}
 		services["ingress"] = map[string]any{"image": ProxyImage, "command": args, "ports": ports, "volumes": mounts, "networks": []string{network}, "restart": "unless-stopped"}
-		raw, err = json.MarshalIndent(compose, "", "  ")
+		raw, err = stablejson.MarshalIndent(compose, "", "  ")
 		if err != nil {
 			return Export{}, err
 		}

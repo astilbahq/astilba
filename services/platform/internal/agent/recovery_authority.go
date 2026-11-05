@@ -14,6 +14,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/execution"
 	"github.com/astilbahq/astilba/services/platform/internal/hostnetwork"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 	bolt "go.etcd.io/bbolt"
 )
@@ -247,7 +248,7 @@ func (j *Journal) recoveredRoot(c api.ExecutionCommand, p deployment.Plan) bool 
 }
 
 func recoveryAuthorityJSON(a deployment.RecoveryAuthority) *json.RawMessage {
-	raw, _ := json.Marshal(a)
+	raw, _ := stablejson.Marshal(a)
 	message := json.RawMessage(raw)
 	return &message
 }

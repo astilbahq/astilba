@@ -10,6 +10,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -178,7 +179,7 @@ func (s *Service) CloneVisual(ctx context.Context, p store.Principal, ws, pid, s
 		if v.Spec.Compose != nil {
 			v.Spec.Compose.Namespace = unit
 		}
-		raw, _ := json.Marshal(v.Spec)
+		raw, _ := stablejson.Marshal(v.Spec)
 		_, canonical, err := domain.ParseSpec(raw)
 		if err != nil {
 			return err

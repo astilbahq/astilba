@@ -1,6 +1,10 @@
 package portability
 
-import "encoding/json"
+import (
+	"encoding/json"
+
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
+)
 
 // Public transfer excludes captured diagnostics. Internal recovery snapshots use
 // the original rows, including observations and receipts, without this projection.
@@ -14,14 +18,14 @@ func omitExportLogs(table string, row Row) error {
 			return ErrArchive
 		}
 		delete(status, "note")
-		row["status"], _ = json.Marshal(status)
+		row["status"], _ = stablejson.Marshal(status)
 	case "pipeline_runs":
 		var result map[string]json.RawMessage
 		if json.Unmarshal(row["result"], &result) != nil {
 			return ErrArchive
 		}
 		delete(result, "logs")
-		row["result"], _ = json.Marshal(result)
+		row["result"], _ = stablejson.Marshal(result)
 	case "visual_runtime":
 		var err error
 		row["observation"], err = omitObservationLogs(row["observation"])
@@ -38,7 +42,7 @@ func omitExportLogs(table string, row Row) error {
 				return err
 			}
 		}
-		row["inventory"], _ = json.Marshal(inventory)
+		row["inventory"], _ = stablejson.Marshal(inventory)
 	case "cross_host_operations":
 		var receipts map[string]map[string]json.RawMessage
 		if json.Unmarshal(row["receipts"], &receipts) != nil {
@@ -53,7 +57,7 @@ func omitExportLogs(table string, row Row) error {
 				}
 			}
 		}
-		row["receipts"], _ = json.Marshal(receipts)
+		row["receipts"], _ = stablejson.Marshal(receipts)
 	}
 	return nil
 }
@@ -74,6 +78,6 @@ func omitObservationLogs(raw json.RawMessage) (json.RawMessage, error) {
 	for _, resource := range items {
 		delete(resource, "logs")
 	}
-	observation["resources"], _ = json.Marshal(items)
-	return json.Marshal(observation)
+	observation["resources"], _ = stablejson.Marshal(items)
+	return stablejson.Marshal(observation)
 }
