@@ -235,7 +235,10 @@ it adds no required context. The same workflow runs daily on its own, so an advi
 published after the last code change fails a scheduled run without rerunning the
 application suites; GitHub notifies whoever last changed the schedule. The target is
 not part of `check-app` because it needs the Go and OSV vulnerability databases and
-a GitHub release download. `make check-ci` runs its offline policy tests.
+a GitHub release download. `make check-ci` runs its offline policy tests. The download
+follows the rules in [Host downloads](#host-downloads): it repeats for at least four
+minutes, a stall repeats while a slow download finishes, a file failing its hash stops
+the scan, and a 404 also takes four minutes to report.
 
 A selected run can fail on an advisory the pull request did not introduce. That
 holds up the merge group too, so land the bump or allowlist entry first.
@@ -452,6 +455,35 @@ production `mise` path must keep fetching from upstream to prove a fresh install
 so a cache could not remove the wait for an outage. It would save under 30 seconds per
 lane, and a pinned file removed upstream would go unnoticed until the cache expired.
 An outage longer than the retries still fails the job, with the URL in its log.
+
+## Image downloads
+
+`make verify-image` fetches these, and each was measured against a connection that resets:
+
+| Fetch | From | Its own retry |
+| --- | --- | --- |
+| The three `FROM` images | Docker Hub | None for the metadata request: one reset stops the build |
+| `npm install --global pnpm` | npm registry | Three attempts over 70 seconds |
+| `pnpm install --frozen-lockfile` | npm registry | About three and a half minutes |
+| Go modules, in `pnpm app:build` | `proxy.golang.org` | None: one reset stops `go` |
+| PostgreSQL, for the smoke test | Docker Hub | None for the manifest request: one reset stops the pull |
+
+The script makes up to three attempts at the whole `docker build` and at the PostgreSQL
+`docker pull`. One loop around the build covers the fetches without a retry of their own,
+whichever `FROM` or `RUN` they are in, including any added later. A second attempt reuses
+the completed layers, and the job has already built these sources. The attempts share the
+build's 10-minute limit, and a build that reaches it stops, so a Go or registry connection
+that stalls with its peer alive still fails the check; none has been seen in CI.
+
+The loop also repeats what is not a fetch, such as a compile error or a failed integrity
+check, because these tools exit alike for all of them. Every attempt still enforces the
+digests, lockfile integrity and `go.sum`, so an image that passes was verified, and each
+repeat leaves a warning on the run page to diagnose. This differs from the Host and OSV
+Scanner downloads, which are single files whose hash the script checks itself.
+
+`.github/actions/install-pnpm` does not apply: it runs on the runner, and around
+`make verify-image` it would repeat the smoke test, which is never retried. The smoke
+test's HTTPS probe makes its own attempts.
 
 ## Comparing changes
 
