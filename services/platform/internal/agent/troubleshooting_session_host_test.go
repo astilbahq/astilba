@@ -288,7 +288,6 @@ func TestNativeTroubleshootingStalledInput(t *testing.T) {
 	}
 }
 
-// The probe's answer reaches the person when an image has no shell.
 // captureTrail collects what the agent logs for the rest of the test.
 func captureTrail(t *testing.T) *bytes.Buffer {
 	t.Helper()
@@ -353,12 +352,18 @@ func TestNativeTroubleshootingShellChoice(t *testing.T) {
 	}
 	// Only /bin/sh is tried. Starting bash next could stall, so an image with bash alone is
 	// refused, as one with no shell is.
-	f.execute(t, "/bin/sh", "-c", `printf '#!/bin/ash\nexec /bin/ash "$@"\n' >/bin/bash; rm /bin/sh`)
-	if got, err := shell(); err != nil || got != "" {
-		t.Fatalf("no sh: shell %q err %v, want none", got, err)
+	for _, step := range []struct{ name, script string }{
+		{"a /bin/sh that is not a shell", `rm /bin/sh; printf '#!/bin/ash\nexit 1\n' >/bin/sh; chmod +x /bin/sh`},
+		{"bash alone", `printf '#!/bin/ash\nexec /bin/ash "$@"\n' >/bin/bash; rm /bin/sh`},
+	} {
+		f.execute(t, "/bin/ash", "-c", step.script)
+		if got, err := shell(); err != nil || got != "" {
+			t.Fatalf("%s: shell %q err %v, want none", step.name, got, err)
+		}
 	}
 }
 
+// The probe's answer reaches the person when an image has no shell.
 func TestNativeTroubleshootingNoShell(t *testing.T) {
 	f := newShellFixture(t)
 	ctx := context.Background()

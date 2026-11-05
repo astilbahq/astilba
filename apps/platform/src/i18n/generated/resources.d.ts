@@ -576,7 +576,7 @@ export default interface Resources {
       "invalidInput": "The request named a service or instance that could not be found.",
       "limit": "Too many terminal sessions are open. Close one and try again.",
       "mfaRequired": "This person needs two-factor authentication to open terminal sessions.",
-      "noShell": "This container has no shell to open.",
+      "noShell": "This container has no usable /bin/sh, which a session needs.",
       "notDeployed": "This service is not deployed, so there is no container to open a session in.",
       "runtime": "This server’s container runtime needs updating before it can open terminal sessions.",
       "subscriptionRequired": "This workspace needs an active subscription to open terminal sessions.",

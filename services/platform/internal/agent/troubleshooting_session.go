@@ -307,50 +307,41 @@ func finishTroubleshooting(ctx context.Context, conn *websocket.Conn, frame []by
 // stall an exec that starts just after another failed to, for as long as the caller waits,
 // with the person's input waiting for a shell. Looking for the file first would need the
 // archive API, which has dockerd set up the container's mounts as root on the host.
+//
+// The daemon reports a missing or unusable executable as exit code 126 or 127 with an
+// invalid-request error, and also gives 126 to failures unrelated to the image, so the code
+// alone is not enough. Anything else from the daemon says nothing about the image.
 func (e *Engine) findShell(ctx context.Context, container string) (string, error) {
-	missing, code, err := e.probeShell(ctx, container, []string{"/bin/sh", "-c", troubleshootingBashProbe})
-	switch {
-	case err != nil:
-		return "", err
-	case missing:
-		return "", nil
-	case code == 0:
-		return "/bin/bash", nil
-	case code == 3:
-		return "/bin/sh", nil
-	}
-	return "", errors.New("shell probe failed")
-}
-
-// probeShell runs a command and reports whether its executable is missing, or else its
-// exit code. The daemon reports a missing or unusable executable as exit code 126 or 127
-// with an invalid-request error, and also gives 126 to failures unrelated to the image,
-// so the code alone is not enough. Anything else says nothing about the image.
-func (e *Engine) probeShell(ctx context.Context, container string, command []string) (bool, int, error) {
-	probe, err := e.Docker.ExecCreate(ctx, container, client.ExecCreateOptions{Cmd: command, WorkingDir: "/"})
+	probe, err := e.Docker.ExecCreate(ctx, container, client.ExecCreateOptions{Cmd: []string{"/bin/sh", "-c", troubleshootingBashProbe}, WorkingDir: "/"})
 	if err != nil {
-		return false, 0, err
+		return "", err
 	}
 	_, startErr := e.Docker.ExecStart(ctx, probe.ID, client.ExecStartOptions{Detach: true})
 	for attempt := 0; ; attempt++ {
 		state, err := e.Docker.ExecInspect(ctx, probe.ID, client.ExecInspectOptions{})
 		if err != nil {
-			return false, 0, err
+			return "", err
 		}
 		switch {
 		case !state.Running && (state.ExitCode == 126 || state.ExitCode == 127) && (startErr == nil || errdefs.IsInvalidArgument(startErr)):
 			if startErr != nil {
-				slog.Warn("troubleshooting shell did not start", "shell", command[0], "error", startErr)
+				slog.Warn("troubleshooting shell did not start", "error", startErr)
 			}
-			return true, 0, nil
+			return "", nil
 		case startErr != nil:
-			return false, 0, startErr
-		case !state.Running:
-			return false, state.ExitCode, nil
-		case attempt == 50:
-			return false, 0, errors.New("shell probe did not finish")
-		default:
+			return "", startErr
+		case state.Running && attempt == 50:
+			return "", errors.New("shell probe did not finish")
+		case state.Running:
 			time.Sleep(100 * time.Millisecond)
+		case state.ExitCode == 0:
+			return "/bin/bash", nil
+		case state.ExitCode == 3:
+			return "/bin/sh", nil
+		case state.ExitCode < 128: // it ran, but it did not run the probe as a shell would
+			return "", nil
+		default: // killed, which says nothing about the image
+			return "", errors.New("shell probe failed")
 		}
 	}
 }

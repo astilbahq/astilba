@@ -3,6 +3,8 @@ package integration
 import (
 	"context"
 	"errors"
+	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -108,6 +110,50 @@ func TestCancelledPollLeavesNoLease(t *testing.T) {
 		}
 		if held {
 			t.Fatalf("a poll cancelled after %dus left its lease, returning %v", i*15, err)
+		}
+	}
+}
+
+// An agent's polls carry a body, and net/http notices a client leaving only once a request's
+// body has been read. Nothing in the poll reads it: the request validator happens to. Should
+// that change, an agent that stopped would hold its own lease for a whole poll.
+func TestDisconnectedPollLeavesNoLease(t *testing.T) {
+	f := setup(t)
+	b := f.browser(t)
+	ws := b.login("owner@example.test", f.password).Workspaces[0].Id
+	v, in, token := enrollment(t, f, b, ws, "deployment")
+	agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/enroll", "", in, 200, nil)
+	held := func() bool {
+		var held bool
+		if err := f.st.Pool.QueryRow(t.Context(), "SELECT poll_id IS NOT NULL FROM servers WHERE id=$1", v.Server.Id).Scan(&held); err != nil {
+			t.Fatal(err)
+		}
+		return held
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	request, err := http.NewRequestWithContext(ctx, "GET", f.server.URL+"/agent/v1/poll", strings.NewReader("null"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Authorization", "Bearer "+token)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		if response, err := f.server.Client().Do(request); err == nil {
+			response.Body.Close()
+		}
+	}()
+	for deadline := time.Now().Add(5 * time.Second); !held(); time.Sleep(10 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("the poll did not take its lease")
+		}
+	}
+	cancel()
+	<-done
+	for deadline := time.Now().Add(5 * time.Second); held(); time.Sleep(10 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("a poll whose client left kept its lease")
 		}
 	}
 }
