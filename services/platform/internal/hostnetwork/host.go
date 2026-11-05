@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
+	jsonv2 "encoding/json/v2"
 	"errors"
 	"fmt"
 	"github.com/google/uuid"
@@ -205,9 +206,7 @@ func (h Host) Snapshot(id uuid.UUID) (Snapshot, error) {
 	return s, nil
 }
 func Decode(raw []byte, out any) error {
-	d := json.NewDecoder(bytes.NewReader(raw))
-	d.DisallowUnknownFields()
-	if d.Decode(out) != nil || d.Decode(new(any)) != io.EOF {
+	if jsonv2.Unmarshal(raw, out, jsonv2.RejectUnknownMembers(true)) != nil {
 		return errors.New("invalid managed network encoding")
 	}
 	return nil
