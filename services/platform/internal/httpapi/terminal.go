@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/execution"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
@@ -32,114 +33,6 @@ const (
 	terminalResizeRate  = 10
 	terminalResizeBurst = 20
 )
-
-// Limits on browser streams that have not yet redeemed a ticket. These are starting values,
-// not measurements: a person needs one such stream per session, briefly, and each one held
-// costs a socket and a goroutine for at most about 20 seconds.
-const (
-	terminalPendingPerAccount = 4
-	terminalPendingTotal      = 64
-)
-
-// terminalPair joins the two streams of one session. Whichever handler arrives second
-// runs the relay; the first waits for it, so both connections stay owned by a handler.
-type terminalPair struct {
-	agent, browser *websocket.Conn
-	stream         execution.TroubleshootingStream
-	ready          chan struct{}
-	done           chan struct{}
-	// earlyFrames holds what a browser sends while waiting for its agent, so that those
-	// reads can notice it leaving. It closes when they stop, and the pump drains it first.
-	earlyFrames chan terminalRead
-	browserLeft chan struct{}
-}
-
-type terminalRead struct {
-	kind  websocket.MessageType
-	frame []byte
-	err   error
-}
-
-// terminalHub holds the sessions of this single management instance.
-//
-// It also counts browser streams between their upgrade and their ticket's outcome, which a
-// signed-in client can open without any session limit applying. Hijacked streams escape the
-// server's timeouts, so an uncounted loop could run out of file descriptors. The per-account
-// count stops one account using up the total and blocking everyone else.
-type terminalHub struct {
-	mu           sync.Mutex
-	sessions     map[uuid.UUID]*terminalPair
-	pending      map[uuid.UUID]int
-	pendingTotal int
-}
-
-func newTerminalHub() *terminalHub {
-	return &terminalHub{sessions: map[uuid.UUID]*terminalPair{}, pending: map[uuid.UUID]int{}}
-}
-
-func (h *terminalHub) admitPending(account uuid.UUID) bool {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	if h.pendingTotal >= terminalPendingTotal || h.pending[account] >= terminalPendingPerAccount {
-		return false
-	}
-	h.pendingTotal++
-	h.pending[account]++
-	return true
-}
-
-func (h *terminalHub) releasePending(account uuid.UUID) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	h.pendingTotal--
-	if h.pending[account]--; h.pending[account] == 0 {
-		delete(h.pending, account)
-	}
-}
-
-// join registers one side and reports whether it completes the pair. Finding the pair and
-// taking a place in it are one step, so a side arriving as abandon runs either completes
-// the pair first or gets a new one of its own, never one that is already closing.
-func (h *terminalHub) join(stream execution.TroubleshootingStream, agent, browser *websocket.Conn) (*terminalPair, bool) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	p := h.sessions[stream.Session]
-	if p == nil {
-		p = &terminalPair{stream: stream, ready: make(chan struct{}), done: make(chan struct{})}
-		h.sessions[stream.Session] = p
-	}
-	if agent != nil {
-		p.agent = agent
-	}
-	if browser != nil {
-		p.browser = browser
-	}
-	complete := p.agent != nil && p.browser != nil
-	if complete {
-		close(p.ready)
-	} else if browser != nil {
-		// Set here so the relay finds them, whenever the other side joins.
-		p.earlyFrames, p.browserLeft = make(chan terminalRead, terminalEarlyFrames), make(chan struct{})
-	}
-	return p, complete
-}
-
-// abandon gives up a pair the other side has not joined, and reports whether it did.
-func (h *terminalHub) abandon(p *terminalPair) bool {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	if p.agent != nil && p.browser != nil {
-		return false
-	}
-	delete(h.sessions, p.stream.Session)
-	return true
-}
-
-func (h *terminalHub) remove(id uuid.UUID) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	delete(h.sessions, id)
-}
 
 // acceptTerminal upgrades a checked request. Hijacking clears the server's ordinary
 // deadlines, which do not suit a connection that lasts up to an hour.
@@ -211,13 +104,26 @@ func (s *Server) browserTerminal(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, domain.Unauthenticated)
 		return
 	}
-	// Checked first, so that a refused request costs no more than any other. The place is
-	// held until redemption finishes or its refusal has closed.
-	if !s.terminals.admitPending(p.Account.ID) {
+	// The path can name any workspace, so only a member's stream may count against one.
+	// Otherwise outsiders could fill another tenant's places, or avoid the workspace limit
+	// by naming a different workspace for each stream. A read-only member can never redeem
+	// a ticket, so its streams would only keep the workspace's operators out.
+	member, err := s.Store.Queries.Workspace(ctx, db.WorkspaceParams{ID: ws, AccountID: p.Account.ID})
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	if !domain.CanWrite(member.Role) {
+		s.fail(w, r, domain.Forbidden)
+		return
+	}
+	// Checked before upgrading, so that a refused request costs no more than any other. The
+	// place is held until redemption finishes or its refusal has closed.
+	if !s.terminals.admitPending(p.Account.ID, ws) {
 		s.fail(w, r, domain.RateLimited)
 		return
 	}
-	release := sync.OnceFunc(func() { s.terminals.releasePending(p.Account.ID) })
+	release := sync.OnceFunc(func() { s.terminals.releasePending(p.Account.ID, ws) })
 	defer release()
 	// The Origin was compared exactly above. The library's own check compares it with
 	// the Host header, which a reverse proxy may rewrite.
