@@ -4,7 +4,6 @@ import { http, HttpResponse } from "msw/http";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 import {
   ShellPreview,
-  pageBoot,
   session,
   workspace,
   examples,
@@ -100,7 +99,7 @@ export const Recovered: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await userEvent.click(
-      await canvas.findByRole("button", { name: "Try again" }, pageBoot),
+      await canvas.findByRole("button", { name: "Try again" }),
     );
     await expect(
       await canvas.findByRole("heading", { name: "Services" }),
@@ -118,11 +117,9 @@ export const SettingsDuringDraftFailure: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await canvas.findByRole(
-      "heading",
-      { name: "Configuration could not be loaded" },
-      pageBoot,
-    );
+    await canvas.findByRole("heading", {
+      name: "Configuration could not be loaded",
+    });
     await userEvent.click(canvas.getByRole("tab", { name: "Settings" }));
     await expect(
       await canvas.findByRole("heading", { name: "Secrets" }),
@@ -149,9 +146,10 @@ export const ObservationRecovered: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await userEvent.click(
-      await canvas.findByRole("button", { name: "Try again" }, pageBoot),
+      await canvas.findByRole("button", { name: "Try again" }),
     );
-    await canvas.findByText("No observations yet");
+    // Shorter than the five-second runtime poll, which would otherwise hide a broken retry.
+    await canvas.findByText("No observations yet", {}, { timeout: 2000 });
     await expect(
       canvas.getByRole("region", { name: "Deployment" }),
     ).toHaveFocus();
@@ -183,11 +181,7 @@ export const Configuration: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await userEvent.click(
-      await canvas.findByRole(
-        "button",
-        { name: "Open configuration" },
-        pageBoot,
-      ),
+      await canvas.findByRole("button", { name: "Open configuration" }),
     );
     await expect(
       canvas.getByRole("tab", { name: "Configuration" }),
@@ -261,12 +255,10 @@ export const Conflict: Story = {
 export const Deployments: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    const button = await canvas.findByRole(
-      "button",
-      { name: "Review and deploy" },
-      pageBoot,
-    );
-    await canvas.findByRole("heading", { name: "Services" }, pageBoot);
+    const button = await canvas.findByRole("button", {
+      name: "Review and deploy",
+    });
+    await canvas.findByRole("heading", { name: "Services" });
     await userEvent.click(button);
     await expect(
       await canvas.findByRole("heading", { name: "Review and deploy" }),
@@ -276,9 +268,7 @@ export const Deployments: Story = {
 export const Settings: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await userEvent.click(
-      await canvas.findByRole("tab", { name: "Settings" }, pageBoot),
-    );
+    await userEvent.click(await canvas.findByRole("tab", { name: "Settings" }));
     await expect(
       await canvas.findByRole("heading", { name: "Secrets" }),
     ).toBeVisible();
@@ -366,7 +356,7 @@ export const ReloadConfirmation: Story = {
       "alertdialog",
       { name: "Discard unsaved configuration?" },
     );
-    await waitFor(() => expect(dialog).toBeVisible(), { timeout: 5000 });
+    await waitFor(() => expect(dialog).toBeVisible());
   },
 };
 export const ReloadFailure: Story = {
@@ -408,7 +398,7 @@ export const RevisionComparison: Story = {
   play: async ({ canvasElement }) => {
     const canvas = await configure(canvasElement);
     await userEvent.click(
-      await canvas.findByRole("button", { name: "Compare revision" }, pageBoot),
+      await canvas.findByRole("button", { name: "Compare revision" }),
     );
     const heading = await canvas.findByRole("heading", {
       name: "Revision comparison",

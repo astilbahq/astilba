@@ -79,6 +79,12 @@ for (const savedEdit of [false, true]) {
       note: "Final backup and restore verified; applications remain stopped.",
     };
     await f.report(prepared, undefined, status);
+    // Operation history sits above the plan, and a reported result reaches it within a few seconds.
+    // Clicks wait for that, because the page moving during one can lose it.
+    const upgradesInHistory = page.getByText("upgrade · succeeded", {
+      exact: true,
+    });
+    await expect(upgradesInHistory).toHaveCount(1, { timeout: 12000 });
     const cutover = plan.getByRole("button", {
       name: "Approve cutover and resume services",
     });
@@ -121,6 +127,9 @@ for (const savedEdit of [false, true]) {
       },
       "failed",
     );
+    await expect(
+      page.getByText("upgrade · failed", { exact: true }),
+    ).toHaveCount(1, { timeout: 12000 });
     await expect(
       plan.getByRole("button", {
         name: "Reconcile new database and resume services",
@@ -171,6 +180,7 @@ for (const savedEdit of [false, true]) {
     await expect(plan.getByRole("heading", { name: /complete/ })).toBeVisible({
       timeout: 12000,
     });
+    await expect(upgradesInHistory).toHaveCount(2, { timeout: 12000 });
     await plan
       .getByRole("button", { name: "Load upgraded configuration" })
       .click();

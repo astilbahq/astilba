@@ -4,6 +4,7 @@ import { mswLoader } from "msw-storybook-addon/csf3";
 import { setupWorker } from "msw/browser";
 import { http } from "msw/http";
 import { useGlobals } from "storybook/preview-api";
+import { configure } from "storybook/test";
 import * as auth from "../src/features/auth/auth.styles";
 import { guest, sessionHandlers } from "../src/workshop/fixtures";
 import {
@@ -11,6 +12,11 @@ import {
   WorkshopProviders,
 } from "../src/workshop/providers";
 import "../src/global.css";
+
+// Play starts at a story's first commit, so its waits also span the page's own loading and,
+// on a busy machine, most of a second for each mocked response. The default of 1000 ms fails
+// there while the page is still working correctly.
+configure({ asyncUtilTimeout: 5000 });
 
 const preview: Preview = {
   initialGlobals: { theme: "light", locale: "en" },
