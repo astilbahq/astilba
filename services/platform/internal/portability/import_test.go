@@ -110,3 +110,23 @@ func TestVersionFivePreservesUnknownAppliedProvenance(t *testing.T) {
 		t.Fatal("version six rejected explicit unknown provenance", err)
 	}
 }
+
+// Archives are operator-supplied files. Names that mean nothing to PostgreSQL's
+// exporter must not gain meaning through case folding or last-duplicate-wins.
+func TestArchiveRefusesAmbiguousNames(t *testing.T) {
+	raw, err := os.ReadFile("testdata/workspace-v1.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, altered := range map[string]string{
+		"case variant": strings.Replace(string(raw), `"name"`, `"NAME"`, 1),
+		"duplicate":    strings.Replace(string(raw), `"name"`, `"name":"other","name"`, 1),
+	} {
+		if altered == string(raw) {
+			t.Fatal("fixture no longer has a name")
+		}
+		if _, err = decodeArchive([]byte(altered)); err == nil {
+			t.Fatalf("accepted a %s", name)
+		}
+	}
+}

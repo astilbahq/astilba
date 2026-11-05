@@ -1,10 +1,9 @@
 package agent
 
 import (
-	"bytes"
 	"encoding/json"
+	jsonv2 "encoding/json/v2"
 	"errors"
-	"io"
 	"os"
 	"path/filepath"
 
@@ -54,9 +53,7 @@ func (j *Journal) openLocalKeys(point func(string) error) error {
 			return err
 		}
 		var envelope localStateKeys
-		decoder := json.NewDecoder(bytes.NewReader(raw))
-		decoder.DisallowUnknownFields()
-		if decoder.Decode(&envelope) == nil && decoder.Decode(new(any)) == io.EOF {
+		if jsonv2.Unmarshal(raw, &envelope, jsonv2.RejectUnknownMembers(true)) == nil {
 			if envelope.Version != localStateVersion {
 				return errors.New("unsupported agent local state version; use a compatible agent")
 			}

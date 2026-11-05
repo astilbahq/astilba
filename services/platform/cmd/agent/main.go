@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	jsonv2 "encoding/json/v2"
 	"encoding/pem"
 	"errors"
 	"flag"
@@ -202,9 +203,7 @@ func run() error {
 				}
 				defer file.Close()
 				var handover deployment.RecoveryHandover
-				decoder := json.NewDecoder(io.LimitReader(file, 524289))
-				decoder.DisallowUnknownFields()
-				if decoder.Decode(&handover) != nil || decoder.Decode(new(any)) != io.EOF || handover.Authority.Controller != *transferGeneration {
+				if jsonv2.UnmarshalRead(io.LimitReader(file, 524289), &handover, jsonv2.RejectUnknownMembers(true)) != nil || handover.Authority.Controller != *transferGeneration {
 					return errors.New("invalid recovery handover")
 				}
 				e = j.TransferRecovery(*origin, key, string(token), handover)

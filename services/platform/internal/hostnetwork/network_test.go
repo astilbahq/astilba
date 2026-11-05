@@ -98,3 +98,27 @@ func TestNetworkKeyRemainsHostLocalAcrossReconciliation(t *testing.T) {
 		t.Fatal("renewed membership reused its predecessor key", err)
 	}
 }
+
+// Agent receipts stay raw until this decode; the OpenAPI schema leaves them open.
+func TestDecodeRefusesAmbiguousNames(t *testing.T) {
+	type receipt struct {
+		PlanHash string `json:"planHash"`
+	}
+	for _, raw := range []string{
+		`{"planHash":"a","PLANHASH":"b"}`,
+		`{"PlanHash":"b"}`,
+		`{"planHash":"a","planHash":"b"}`,
+		"{\"planHash\":\"\xff\"}",
+		`{"planHash":"a"} {}`,
+		`{"planHash":"a","other":1}`,
+	} {
+		var got receipt
+		if err := Decode([]byte(raw), &got); err == nil {
+			t.Fatalf("accepted %q as %+v", raw, got)
+		}
+	}
+	var got receipt
+	if err := Decode([]byte(`{"planHash":"a"}`), &got); err != nil || got.PlanHash != "a" {
+		t.Fatalf("exact receipt: %+v, %v", got, err)
+	}
+}
