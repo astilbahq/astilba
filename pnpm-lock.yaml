@@ -24,6 +24,9 @@ catalogs:
     '@playwright/test':
       specifier: 1.64.1
       version: 1.64.1
+    typescript:
+      specifier: 7.0.2
+      version: 7.0.2
     vite:
       specifier: npm:@voidzero-dev/vite-plus-core@1.4.0
       version: 1.4.0
@@ -149,7 +152,7 @@ importers:
         specifier: 10.6.5
         version: 10.6.5(@types/react@19.3.0)(react@19.3.1)(vite-plus@1.4.0(@types/node@24.19.2)(@vitest/ui@5.0.5)(esbuild@0.28.2)(jiti@2.7.0)(msw@3.0.3(@types/node@24.19.2)(@voidzero-dev/vite-plus-core@1.4.0(@types/node@24.19.2)(esbuild@0.28.2)(jiti@2.7.0)(typescript@7.0.2)(yaml@2.9.1))(supports-color@10.2.2)(typescript@7.0.2))(playwright@1.64.1)(typescript@7.0.2)(yaml@2.9.1))
       typescript:
-        specifier: 7.0.2
+        specifier: 'catalog:'
         version: 7.0.2
       vite:
         specifier: 'catalog:'
@@ -164,7 +167,7 @@ importers:
         specifier: 7.13.0
         version: 7.13.0(typescript@5.9.3)
       typescript:
-        specifier: 5.9.3
+        specifier: npm:typescript@5.9.3
         version: 5.9.3
 
   experiments/canvas-editor:
@@ -210,7 +213,7 @@ importers:
         specifier: 6.1.2
         version: 6.1.2(@voidzero-dev/vite-plus-core@1.4.0(@types/node@24.19.2)(esbuild@0.28.2)(jiti@2.7.0)(typescript@7.0.2)(yaml@2.9.1))
       typescript:
-        specifier: 7.0.2
+        specifier: 'catalog:'
         version: 7.0.2
       vite:
         specifier: 'catalog:'

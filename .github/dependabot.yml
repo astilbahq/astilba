@@ -15,11 +15,6 @@ updates:
   # pnpm-workspace.yaml brings the other workspace packages into this entry.
   - package-ecosystem: npm
     directory: /
-    # Dependabot treats a package pinned at two versions as one dependency. It would move
-    # the contract's TypeScript 5 to 7, which openapi-typescript can't load, so this
-    # package's two pins change by hand. Security updates still apply.
-    exclude-paths:
-      - contracts/platform/package.json
     # @types/node's major follows the Node version pinned in package.json's engines.
     ignore:
       - dependency-name: "@types/node"
@@ -30,14 +25,15 @@ updates:
       default-days: 7
     groups:
       # These can need an edit Dependabot won't make: the Playwright image in the workflows,
-      # or the Vite+ pins and allowBuilds in pnpm-workspace.yaml. make check-ci fails until
-      # they're aligned. They stay apart so the rest can land.
+      # the Vite+ pins and allowBuilds in pnpm-workspace.yaml, or regenerated API types.
+      # make check-app fails until that's done. They stay apart so the rest can land.
       needs-review:
         patterns:
           - "@pandacss/*"
           - "@playwright/test"
           - "@storybook/*"
           - i18next-cli
+          - openapi-typescript
           - storybook
           - vite-plus
         update-types: [minor, patch]
