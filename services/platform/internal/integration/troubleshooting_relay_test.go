@@ -335,9 +335,9 @@ func TestTroubleshootingUnresponsiveAgentCannotHoldASessionOpen(t *testing.T) {
 	}
 }
 
-// Reaching a refusal takes only a signed-in session and the right Origin, with no valid
-// ticket or membership, so a peer that stops inside a frame after the refusal must not be
-// able to keep the socket and its goroutine.
+// Reaching a refusal takes only an owner's or operator's session and the right Origin, with
+// no valid ticket, so a peer that stops inside a frame after the refusal must not be able to
+// keep the socket and its goroutine.
 func TestTroubleshootingRefusedBrowserCannotHoldItsStream(t *testing.T) {
 	x := relayFixture(t)
 	opened := x.open(t, x.owner, x.app, 1, 201)
@@ -449,6 +449,7 @@ func TestTroubleshootingStreamsRefuseAnyoneElse(t *testing.T) {
 	x.attachBrowser(t, x.owner, opened)
 	agent.expect(t, []byte{terminal.Start})
 	refused(x.owner, opened.Ticket)
+	x.audited(t, "session.refused.ticket", 2) // the owner's and the operator's, coalesced
 
 }
 

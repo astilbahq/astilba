@@ -82,24 +82,33 @@ func (s *Service) hydratePipeline(ctx context.Context, a Identity, c *api.Execut
 	if err = json.Unmarshal(raw, c); err != nil {
 		return false, err
 	}
-	c.CancelRequested = pollCancelled || cancelled
+	// This command carries no credentials, so an agent whose clock lags must not start it.
+	c.CancelRequested = pollCancelled || cancelled || time.Now().After(c.Deadline)
 	var p pipeline.Command
 	if c.Pipeline == nil || json.Unmarshal(*c.Pipeline, &p) != nil || p.Digest() != c.PlanHash {
 		return false, errors.New("invalid pipeline payload")
-	}
-	if c.CancelRequested || time.Now().After(c.Deadline) {
-		// A renewed subscription can lift this cancellation before the agent reports.
-		// The journaled command still needs its report accepted, so this is a delivery.
-		if err = db.New(tx).MarkPipelineDeliveryStarted(ctx, db.MarkPipelineDeliveryStartedParams{WorkspaceID: a.Workspace, ID: c.Id}); err != nil {
-			return false, err
-		}
-		return true, tx.Commit(ctx)
 	}
 	var started *bool
 	if err = tx.QueryRow(ctx, "SELECT delivery_started FROM pipeline_runs WHERE id=$1", c.Id).Scan(&started); err != nil {
 		return false, err
 	}
 	ws := a.Workspace
+	queries := db.New(tx)
+	undelivered := started != nil && !*started && sequence == 0
+	if c.CancelRequested {
+		if !undelivered {
+			return true, tx.Commit(ctx)
+		}
+		// No runner holds this command, and its public arguments have not passed the
+		// delivery check, so it finishes here rather than reaching one to be cancelled.
+		if err = queries.FinishUndeliveredPipeline(ctx, db.FinishUndeliveredPipelineParams{WorkspaceID: ws, ID: c.Id, State: "cancelled", Note: "Cancelled or expired before runner delivery."}); err != nil {
+			return false, err
+		}
+		if err = s.enqueuePreviewForEnvironment(ctx, tx, ws, c.EnvironmentId); err != nil {
+			return false, err
+		}
+		return false, tx.Commit(ctx)
+	}
 	if p.Build != nil && (p.Build.NeedsControls() || p.Build.UsesRailpack()) {
 		if _, err = runnerEligible(ctx, tx, ws, c.ServerId, p.Build.Architecture, p.Build.NeedsControls(), p.Build.UsesRailpack()); err != nil {
 			return false, err
@@ -139,8 +148,8 @@ func (s *Service) hydratePipeline(ctx context.Context, a Identity, c *api.Execut
 	}
 	if err = s.populatePipeline(ctx, tx, ws, c.EnvironmentId, &p); err != nil {
 		var rejected *buildInputRejection
-		if errors.As(err, &rejected) && started != nil && !*started && sequence == 0 && c.ParentId == nil && p.Action == "build" && p.Preview == nil {
-			if _, err = tx.Exec(ctx, "UPDATE execution_operations SET state='failed',note=$2 WHERE id=$1", c.Id, "Build rejected before runner delivery: "+rejected.note()); err != nil {
+		if errors.As(err, &rejected) && undelivered && p.Action == "build" && p.Preview == nil {
+			if err = queries.FinishUndeliveredPipeline(ctx, db.FinishUndeliveredPipelineParams{WorkspaceID: ws, ID: c.Id, State: "failed", Note: "Build rejected before runner delivery: " + rejected.note()}); err != nil {
 				return false, err
 			}
 			return false, tx.Commit(ctx)
@@ -151,7 +160,7 @@ func (s *Service) hydratePipeline(ctx context.Context, a Identity, c *api.Execut
 	if err != nil || len(raw) > 250000 {
 		return false, errors.New("pipeline payload limit exceeded")
 	}
-	if err = db.New(tx).MarkPipelineDeliveryStarted(ctx, db.MarkPipelineDeliveryStartedParams{WorkspaceID: ws, ID: c.Id}); err != nil {
+	if err = queries.MarkPipelineDeliveryStarted(ctx, db.MarkPipelineDeliveryStartedParams{WorkspaceID: ws, ID: c.Id}); err != nil {
 		return false, err
 	}
 	// Commit before the hydrated command can leave management. A failed response

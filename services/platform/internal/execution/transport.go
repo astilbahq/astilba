@@ -112,7 +112,7 @@ func (s *Service) poll(ctx context.Context, a Identity, out *api.AgentPoll) (*ap
 			c.CancelRequested = cancel
 			// Existing agents compare hydrated visual payloads byte-for-byte.
 			// Other command kinds have always accepted credential-free cancellation.
-			// Hydration records a pipeline's delivery without adding its credentials.
+			// Hydration finishes a pipeline no runner holds, and adds no credentials to one it might.
 			if cancel && c.Kind != "pipeline" && (c.Kind != "visual" || a.CredentialFreeVisualCancel) {
 				return &c, nil
 			}

@@ -288,3 +288,51 @@ func TestStaleRequestsLeaveRenewedCookieAlone(t *testing.T) {
 		t.Fatalf("logout kept the cookie: %v", cookies)
 	}
 }
+
+// A dropped connection or statement timeout on the account read must not sign out a
+// valid session, while a missing account must still end it.
+func TestBrowserSessionEndsOnlyWithItsAccount(t *testing.T) {
+	f := setup(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	b := f.browser(t)
+	workspace := b.login("owner@example.test", f.password).Workspaces[0].Id
+	var token string
+	if err := f.st.Pool.QueryRow(ctx, "SELECT token FROM sessions").Scan(&token); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := f.st.Pool.Exec(ctx, "ALTER TABLE accounts RENAME TO accounts_unavailable"); err != nil {
+		t.Fatal(err)
+	}
+	b.call("GET", "/api/v1/workspaces/"+workspace.String()+"/projects", nil, 500, nil)
+	if _, err := f.st.Pool.Exec(ctx, "ALTER TABLE accounts_unavailable RENAME TO accounts"); err != nil {
+		t.Fatal(err)
+	}
+	if v := b.session(); v.User == nil || v.User.Id != f.owner {
+		t.Fatal("session did not survive the failed account lookup")
+	}
+
+	// The product has no account deletion, so remove the row past its references.
+	tx, err := f.st.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, "SET LOCAL session_replication_role = replica"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(ctx, "DELETE FROM accounts WHERE id=$1", f.owner); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if v := b.session(); v.User != nil {
+		t.Fatal("session outlived its deleted account")
+	}
+	var rows int
+	if err := f.st.Pool.QueryRow(ctx, "SELECT count(*) FROM sessions WHERE token=$1", token).Scan(&rows); err != nil || rows != 0 {
+		t.Fatal("deleted account left its session row", err)
+	}
+}

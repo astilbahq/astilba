@@ -32,6 +32,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	chimiddleware "github.com/go-chi/chi/v5/middleware"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	middleware "github.com/oapi-codegen/nethttp-middleware"
 	openapi_types "github.com/oapi-codegen/runtime/types"
 )
@@ -205,6 +206,10 @@ func (s *Server) identity(next http.Handler) http.Handler {
 		id, err := uuid.Parse(s.Sessions.GetString(r.Context(), "account"))
 		if err == nil {
 			a, e := s.Store.Queries.AccountByID(r.Context(), id)
+			if e != nil && !errors.Is(e, pgx.ErrNoRows) {
+				s.fail(w, r, e)
+				return
+			}
 			if e != nil || a.AuthVersion != s.Sessions.GetInt64(r.Context(), "version") {
 				if e = s.dropStaleSession(r.Context()); e != nil {
 					s.fail(w, r, e)

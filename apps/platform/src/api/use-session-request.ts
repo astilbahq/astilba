@@ -1,8 +1,8 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef } from "react";
-import { sessionOptions } from "./session";
+import { holdSignedOutReads, sessionOptions } from "./session";
 
-export function useSessionRequest() {
+export function useSessionRequest({ renewal = false } = {}) {
   const queries = useQueryClient();
   const session = useQuery(sessionOptions).data;
   const lifetime = useRef<AbortController | null>(null);
@@ -27,12 +27,15 @@ export function useSessionRequest() {
         current?.mfaPending === before?.mfaPending
       );
     };
-    try {
-      const value = await request(controller.signal);
-      // A completed response can outlive both its screen and its signed-in account.
-      if (isCurrent()) apply(value);
-    } catch (error) {
-      if (isCurrent()) throw error;
-    }
+    const run = async () => {
+      try {
+        const value = await request(controller.signal);
+        // A completed response can outlive both its screen and its signed-in account.
+        if (isCurrent()) apply(value);
+      } catch (error) {
+        if (isCurrent()) throw error;
+      }
+    };
+    return renewal ? holdSignedOutReads(run) : run();
   };
 }

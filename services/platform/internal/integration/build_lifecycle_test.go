@@ -113,20 +113,7 @@ func TestBuildDeliveryAdmissionLifecycle(t *testing.T) {
 			b.call("POST", path+"/secrets", map[string]string{"name": "TOKEN_" + strings.ReplaceAll(mode, " ", "_"), "value": canary}, 201, nil)
 			if mode == "never delivered" {
 				// River workers need not dispatch queued builds in creation order.
-				deadline := time.Now().Add(8 * time.Second)
-				state := ""
-				for time.Now().Before(deadline) {
-					if err := f.st.Pool.QueryRow(ctx, "SELECT state FROM execution_operations WHERE id=$1", op.Id).Scan(&state); err != nil {
-						t.Fatal(err)
-					}
-					if state == "dispatched" {
-						break
-					}
-					time.Sleep(25 * time.Millisecond)
-				}
-				if state != "dispatched" {
-					t.Fatal("guarded build did not become ready for delivery", state)
-				}
+				awaitDispatch(t, ctx, f, op.Id)
 				healthy := create(t, healthyPath, healthyDraft, cfg)
 				c := poll(t)
 				if c.Id != healthy.Id {
@@ -161,6 +148,37 @@ func TestBuildDeliveryAdmissionLifecycle(t *testing.T) {
 				t.Fatal("rejection obstructed credential-free cancellation", c, err)
 			}
 			finish(t, c)
+		})
+	}
+	for _, ending := range []string{"cancelled", "expired"} {
+		t.Run(ending+" before delivery", func(t *testing.T) {
+			b := *b
+			b.t = t
+			config := cfg
+			canary := "undelivered-canary-" + ending
+			config.Arguments = map[string]string{"TOKEN": canary}
+			op := create(t, path, draft, config)
+			b.call("POST", path+"/secrets", map[string]string{"name": "UNDELIVERED_" + strings.ToUpper(ending), "value": canary}, 201, nil)
+			awaitDispatch(t, ctx, f, op.Id)
+			if ending == "cancelled" {
+				b.call("POST", prefix+"/operations/"+op.Id.String()+"/cancel", nil, 204, nil)
+			} else {
+				expireCommand(t, ctx, f, op.Id)
+			}
+			healthy := create(t, healthyPath, healthyDraft, cfg)
+			c := poll(t)
+			if c.Id != healthy.Id {
+				t.Fatal("undelivered build reached the runner", c.Id)
+			}
+			finish(t, c)
+			var state, note string
+			var sequence int64
+			if err := f.st.Pool.QueryRow(ctx, "SELECT state,note,report_sequence FROM execution_operations WHERE id=$1", op.Id).Scan(&state, &note, &sequence); err != nil {
+				t.Fatal(err)
+			}
+			if state != "cancelled" || sequence != 0 || strings.Contains(note, canary) {
+				t.Fatal("undelivered build was not finished by the controller", state, sequence, note)
+			}
 		})
 	}
 	t.Run("failed report with oversized rejected source", func(t *testing.T) {

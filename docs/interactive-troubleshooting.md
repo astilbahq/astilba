@@ -128,8 +128,9 @@ also notifies the workspace's owners. It defaults to
    container, no shell, limit reached, or Docker unavailable. Until the session has
    started, a failure is reported this way too, and any shell already started is ended.
 4. **Browser stream.** The browser opens a same-origin stream. Management
-   refuses the upgrade unless the session cookie and Origin are valid and the
-   account is within its limit of streams without a redeemed ticket, then
+   refuses the upgrade unless the session cookie and Origin are valid, the account
+   is an owner or operator of the workspace, and the limits on streams without a
+   redeemed ticket leave room, then
    requires the ticket as the first message within five seconds. Redeeming the
    ticket re-checks membership and allows one browser attachment per session.
    A redemption that cannot finish within five seconds refuses the stream and
@@ -146,7 +147,9 @@ also notifies the workspace's owners. It defaults to
 6. **End.** A session ends on explicit close, after 15 minutes without typed input,
    at its deadline or when either stream drops. Typed input also refreshes the
    browser session's idle timer, at most once a minute, so a person working in
-   the terminal is not logged out of the dashboard mid-session. The agent enforces the idle
+   the terminal is not logged out of the dashboard mid-session. The relay can only extend
+   the stored session, so the dashboard terminal also requests the session at most once a
+   minute while the person types, which reissues the browser's cookie. The agent enforces the idle
    timeout and deadline itself as well, measuring both as durations from
    when the shell starts so clock differences between management and the host do not
    matter. It ends every process in the shell's
@@ -192,6 +195,12 @@ whose conditions cannot be read for 30 seconds ends, since it may no longer be a
 An owner can end any open session in the workspace, or all of
 them at once.
 
+Ending a session needs only membership and that role: not the write requirements of MFA,
+a verified email or an active subscription, because stopping access must not be harder
+than granting it. The person who opened a session can end their own, and an owner can
+end anyone's or all of them. The request still needs a browser session and its CSRF
+token, and the close is audited.
+
 A user can still deliberately start a process in a new Linux session (for
 example with `setsid`). Such processes can survive the terminal until the
 container restarts, and changes made inside the container or its volumes
@@ -209,11 +218,13 @@ its own limits locally. Initial values:
   than unbounded buffering. If a shell stops reading and more input arrives than the
   agent can hold (about 1 MiB), the session ends with the reason `input_overflow`,
   because dropping part of it could run a different command from the one sent;
-- four browser streams per account and 64 per installation that have not yet
-  redeemed a ticket, counted in the management process, which sessions already
-  require to be a single instance. An upgrade over either limit gets a 429 before
-  it happens and writes no audit event, so a refusal costs no more than any other
-  refused request. A browser cannot read that status and sees only a failed connection.
+- four browser streams per account, eight per workspace and 64 per installation
+  that have not yet redeemed a ticket, counted in the management process, which
+  sessions already require to be a single instance. Only an owner's or operator's
+  stream counts against a workspace; a viewer gets a 403 and anyone else a 404. An
+  upgrade over any of these limits gets a 429 before it happens and writes no audit
+  event, so a refusal costs no more than any other refused request. A browser cannot
+  read that status and sees only a failed connection.
 
 These are constants, not settings; implementation and measured use can tune
 them. Requests over a limit are refused with an explicit reason rather than

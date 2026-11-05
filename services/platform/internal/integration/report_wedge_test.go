@@ -3,6 +3,7 @@ package integration
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -22,76 +23,48 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
 	"github.com/google/uuid"
 	"github.com/moby/moby/client"
+	"github.com/pressly/goose/v3"
 )
 
-// reportWindow holds the agent's reports until its poll after first delivery, the
-// window between a poll and the next two-second report cycle.
-type reportWindow struct {
-	base      http.RoundTripper
-	delivered func() error
-	release   chan struct{}
-	once      sync.Once
-	mu        sync.Mutex
-	seen      bool
-	reports   []int
+// laggingClock shifts polled deadlines, which an agent cannot tell from its own
+// clock running behind management's by the same amount.
+type laggingClock struct {
+	base http.RoundTripper
+	lag  time.Duration
 }
 
-func (w *reportWindow) RoundTrip(r *http.Request) (*http.Response, error) {
-	if r.URL.Path == "/agent/v1/report" {
-		select {
-		case <-w.release:
-		case <-r.Context().Done():
-			return nil, r.Context().Err()
-		}
-		response, err := w.base.RoundTrip(r)
-		if err == nil {
-			w.mu.Lock()
-			w.reports = append(w.reports, response.StatusCode)
-			w.mu.Unlock()
-		}
-		return response, err
-	}
-	response, err := w.base.RoundTrip(r)
+func (l laggingClock) RoundTrip(r *http.Request) (*http.Response, error) {
+	response, err := l.base.RoundTrip(r)
 	if err != nil || r.URL.Path != "/agent/v1/poll" {
 		return response, err
 	}
-	w.mu.Lock()
-	seen := w.seen
-	w.mu.Unlock()
-	if seen {
-		w.once.Do(func() { close(w.release) })
-		return response, nil
-	}
-	raw, err := io.ReadAll(response.Body)
+	var poll api.AgentPoll
+	err = json.NewDecoder(response.Body).Decode(&poll)
 	_ = response.Body.Close()
 	if err != nil {
 		return nil, err
 	}
-	response.Body = io.NopCloser(bytes.NewReader(raw))
-	var poll api.AgentPoll
-	if json.Unmarshal(raw, &poll) == nil && poll.Command != nil {
-		if err = w.delivered(); err != nil {
-			return nil, err
-		}
-		w.mu.Lock()
-		w.seen = true
-		w.mu.Unlock()
+	if poll.Command != nil {
+		poll.Command.Deadline = poll.Command.Deadline.Add(l.lag)
 	}
+	raw, err := json.Marshal(poll)
+	if err != nil {
+		return nil, err
+	}
+	response.Body = io.NopCloser(bytes.NewReader(raw))
+	response.ContentLength = int64(len(raw))
 	return response, nil
 }
 
-func (w *reportWindow) statuses() []int {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	return append([]int(nil), w.reports...)
+type dispatchedBuild struct {
+	op     api.Operation
+	server uuid.UUID
+	in     api.AgentEnrollment
 }
 
-// A subscription renewed just after a credential-free cancellation must not turn
-// the journaled command's report into a permanent rejection on the real agent.
-func TestRenewedSubscriptionCannotRejectCancelledBuildDelivery(t *testing.T) {
-	f := setup(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
+// dispatchBuild leaves a build ready for its runner's first delivery.
+func dispatchBuild(t *testing.T, ctx context.Context, f *fixture, arguments map[string]string, runtimeSecret string) dispatchedBuild {
+	t.Helper()
 	b := f.browser(t)
 	ws := b.login("owner@example.test", f.password).Workspaces[0].Id
 	prefix := "/api/v1/workspaces/" + ws.String()
@@ -103,13 +76,13 @@ func TestRenewedSubscriptionCannotRejectCancelledBuildDelivery(t *testing.T) {
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"id": 12, "private": false})
 	}))
-	defer provider.Close()
+	t.Cleanup(provider.Close)
 	var connection struct {
 		Connection pipeline.Connection
 	}
-	b.call("POST", prefix+"/git-connections", map[string]string{"name": "Renewal", "provider": "gitea", "baseUrl": provider.URL, "repository": "team/app"}, 201, &connection)
+	b.call("POST", prefix+"/git-connections", map[string]string{"name": "Delivery", "provider": "gitea", "baseUrl": provider.URL, "repository": "team/app"}, 201, &connection)
 	var project api.Project
-	b.call("POST", prefix+"/projects", map[string]string{"name": "Renewal"}, 201, &project)
+	b.call("POST", prefix+"/projects", map[string]string{"name": "Delivery"}, 201, &project)
 	var env api.Environment
 	b.call("POST", prefix+"/projects/"+project.Id.String()+"/environments", map[string]string{"name": "Build"}, 201, &env)
 	path := prefix + "/projects/" + project.Id.String() + "/environments/" + env.Id.String()
@@ -123,55 +96,60 @@ func TestRenewedSubscriptionCannotRejectCancelledBuildDelivery(t *testing.T) {
 	in.Capabilities.Build = &yes
 	agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/enroll", "", in, 200, nil)
 	agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/heartbeat", token, api.AgentHeartbeat{Capabilities: in.Capabilities, Preflight: in.Preflight}, 200, nil)
-
-	canary := "renewal-runtime-canary"
-	config := pipeline.BuildConfig{ConnectionID: connection.Connection.ID, Branch: "main", RunnerID: enrolled.Server.Id, Context: ".", Dockerfile: "Dockerfile", Architecture: "arm64", Arguments: map[string]string{"TOKEN": canary}, Secrets: map[string]uuid.UUID{}}
+	config := pipeline.BuildConfig{ConnectionID: connection.Connection.ID, Branch: "main", RunnerID: enrolled.Server.Id, Context: ".", Dockerfile: "Dockerfile", Architecture: "arm64", Arguments: arguments, Secrets: map[string]uuid.UUID{}}
 	var op api.Operation
 	b.call("POST", path+"/builds", map[string]any{"baseRevisionId": draft.Id, "applicationId": app, "requestKey": uuid.New(), "configuration": config}, 202, &op)
-	// The public argument becomes a runtime secret, so hydration now rejects the build.
-	b.call("POST", path+"/secrets", map[string]string{"name": "RENEWAL_TOKEN", "value": canary}, 201, nil)
+	if runtimeSecret != "" {
+		b.call("POST", path+"/secrets", map[string]string{"name": "NOW_SECRET", "value": runtimeSecret}, 201, nil)
+	}
+	awaitDispatch(t, ctx, f, op.Id)
+	return dispatchedBuild{op: op, server: enrolled.Server.Id, in: in}
+}
+
+func awaitDispatch(t *testing.T, ctx context.Context, f *fixture, id uuid.UUID) {
+	t.Helper()
 	state := ""
 	for deadline := time.Now().Add(20 * time.Second); state != "dispatched"; time.Sleep(25 * time.Millisecond) {
 		if time.Now().After(deadline) {
 			t.Fatal("build did not become ready for delivery", state)
 		}
-		if err := f.st.Pool.QueryRow(ctx, "SELECT state FROM execution_operations WHERE id=$1", op.Id).Scan(&state); err != nil {
+		if err := f.st.Pool.QueryRow(ctx, "SELECT state FROM execution_operations WHERE id=$1", id).Scan(&state); err != nil {
 			t.Fatal(err)
 		}
 	}
-	f.st.Hosted = true
-	if err := f.st.GrantManagement(ctx, ws, time.Now().Add(time.Hour), 100); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.st.Pool.Exec(ctx, "UPDATE hosted_subscriptions SET management_until=now()-interval '1 minute' WHERE workspace_id=$1", ws); err != nil {
-		t.Fatal(err)
-	}
+}
 
+func expireCommand(t *testing.T, ctx context.Context, f *fixture, id uuid.UUID) {
+	t.Helper()
+	if _, err := f.st.Pool.Exec(ctx, "UPDATE execution_operations SET command=jsonb_set(command,'{deadline}',to_jsonb($2::text)) WHERE id=$1", id, time.Now().Add(-time.Minute).UTC().Format(time.RFC3339Nano)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// runAgent runs the real agent client until the returned function stops it.
+func runAgent(t *testing.T, ctx context.Context, f *fixture, build dispatchedBuild, transport http.RoundTripper) (*agent.Journal, func()) {
+	t.Helper()
 	journal, err := agent.Open(t.TempDir() + "/state")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer journal.Close()
+	t.Cleanup(func() { _ = journal.Close() })
 	var generation int64
-	if err = f.st.Pool.QueryRow(ctx, "SELECT controller_generation FROM servers WHERE id=$1", enrolled.Server.Id).Scan(&generation); err != nil {
+	if err = f.st.Pool.QueryRow(ctx, "SELECT controller_generation FROM servers WHERE id=$1", build.server).Scan(&generation); err != nil {
 		t.Fatal(err)
 	}
-	if err = journal.SetConfig(agent.Config{Origin: f.server.URL, ControllerGeneration: generation, ServerID: enrolled.Server.Id, Credential: in.Credential, Enrolled: true, Role: "build"}); err != nil {
+	if err = journal.SetConfig(agent.Config{Origin: f.server.URL, ControllerGeneration: generation, ServerID: build.server, Credential: build.in.Credential, Enrolled: true, Role: "build"}); err != nil {
 		t.Fatal(err)
 	}
 	docker, err := client.New(client.WithHost(os.Getenv("PLAT_APP_DOCKER_HOST")))
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer docker.Close()
-	window := &reportWindow{base: f.server.Client().Transport, release: make(chan struct{}), delivered: func() error {
-		_, err := f.st.Pool.Exec(ctx, "UPDATE hosted_subscriptions SET management_until=now()+interval '1 hour' WHERE workspace_id=$1", ws)
-		return err
-	}}
+	t.Cleanup(func() { _ = docker.Close() })
 	host := agent.NewClient(journal, &agent.Engine{Journal: journal, Docker: docker})
-	host.HTTP = &http.Client{Transport: window}
+	host.HTTP = &http.Client{Transport: transport}
 	host.Observe = func(context.Context) api.AgentHeartbeat {
-		return api.AgentHeartbeat{Capabilities: in.Capabilities, Preflight: in.Preflight}
+		return api.AgentHeartbeat{Capabilities: build.in.Capabilities, Preflight: build.in.Preflight}
 	}
 	stopped := make(chan error, 1)
 	running, stop := context.WithCancel(ctx)
@@ -183,34 +161,109 @@ func TestRenewedSubscriptionCannotRejectCancelledBuildDelivery(t *testing.T) {
 			<-stopped
 		})
 	}
-	defer halt()
+	t.Cleanup(halt)
+	return journal, halt
+}
 
+// A lapsed subscription must not send the real agent a build it would then have
+// no accepted way to report, once a renewal lets input rejection fail that build.
+func TestLapsedSubscriptionFinishesUndeliveredBuildOnController(t *testing.T) {
+	f := setup(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	canary := "lapsed-runtime-canary"
+	build := dispatchBuild(t, ctx, f, map[string]string{"TOKEN": canary}, canary)
+	var ws uuid.UUID
+	if err := f.st.Pool.QueryRow(ctx, "SELECT workspace_id FROM execution_operations WHERE id=$1", build.op.Id).Scan(&ws); err != nil {
+		t.Fatal(err)
+	}
+	f.st.Hosted = true
+	if err := f.st.GrantManagement(ctx, ws, time.Now().Add(time.Hour), 100); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.st.Pool.Exec(ctx, "UPDATE hosted_subscriptions SET management_until=now()-interval '1 minute' WHERE workspace_id=$1", ws); err != nil {
+		t.Fatal(err)
+	}
+	journal, halt := runAgent(t, ctx, f, build, f.server.Client().Transport)
+	state, note := "", ""
+	var sequence int64
+	for deadline := time.Now().Add(30 * time.Second); state != "cancelled"; time.Sleep(100 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("build did not finish: controller %s sequence %d %q", state, sequence, note)
+		}
+		if err := f.st.Pool.QueryRow(ctx, "SELECT state,note,report_sequence FROM execution_operations WHERE id=$1", build.op.Id).Scan(&state, &note, &sequence); err != nil {
+			t.Fatal(err)
+		}
+	}
+	halt()
+	if sequence != 0 {
+		t.Fatal("an agent reported a build that should not have reached it", sequence, note)
+	}
+	if _, err := journal.Record(build.op.Id); err == nil {
+		t.Fatal("undelivered build reached the agent journal")
+	}
+}
+
+// A run left unfinished by a controller that did not record cancelled deliveries may
+// be journaled by its agent, so finishing it here would reject that agent's reports.
+func TestMigrationTreatsUnfinishedRunsAsPossiblyDelivered(t *testing.T) {
+	f := setup(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	build := dispatchBuild(t, ctx, f, map[string]string{}, "")
+	conn, err := sql.Open("pgx", f.st.Pool.Config().ConnString())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	provider, err := goose.NewProvider(goose.DialectPostgres, conn, os.DirFS("../../db/migrations"), goose.WithDisableGlobalRegistry(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = provider.ApplyVersion(ctx, 24, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = provider.ApplyVersion(ctx, 24, true); err != nil {
+		t.Fatal(err)
+	}
+	var started *bool
+	if err = f.st.Pool.QueryRow(ctx, "SELECT delivery_started FROM pipeline_runs WHERE id=$1", build.op.Id).Scan(&started); err != nil {
+		t.Fatal(err)
+	}
+	if started != nil {
+		t.Fatal("unfinished run kept its proof of non-delivery", *started)
+	}
+}
+
+// An expired command carries no credentials, and an agent with a lagging clock that
+// started one could dereference them. Admission's own expiry note would mean the
+// agent's clock stopped it rather than the controller.
+func TestExpiredCommandStopsAgentWithLaggingClock(t *testing.T) {
+	f := setup(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	build := dispatchBuild(t, ctx, f, map[string]string{}, "")
+	// Unknown delivery history is what still reaches a runner after expiry.
+	if _, err := f.st.Pool.Exec(ctx, "UPDATE pipeline_runs SET delivery_started=NULL WHERE id=$1", build.op.Id); err != nil {
+		t.Fatal(err)
+	}
+	expireCommand(t, ctx, f, build.op.Id)
+	journal, _ := runAgent(t, ctx, f, build, laggingClock{base: f.server.Client().Transport, lag: time.Hour})
 	for deadline := time.Now().Add(30 * time.Second); ; time.Sleep(100 * time.Millisecond) {
-		record, err := journal.Record(op.Id)
+		record, err := journal.Record(build.op.Id)
 		if err == nil && record.Acknowledged {
 			break
 		}
 		if time.Now().After(deadline) {
-			pending, _ := journal.Pending()
-			var note string
-			var sequence int64
-			if err = f.st.Pool.QueryRow(ctx, "SELECT state,note,report_sequence FROM execution_operations WHERE id=$1", op.Id).Scan(&state, &note, &sequence); err != nil {
-				t.Fatal(err)
-			}
-			t.Fatalf("report never acknowledged: controller %s sequence %d %q; agent report responses %v; %d pending records", state, sequence, note, window.statuses(), len(pending))
+			t.Fatal("agent's report was never acknowledged")
 		}
 	}
-	if err = f.st.Pool.QueryRow(ctx, "SELECT state FROM execution_operations WHERE id=$1", op.Id).Scan(&state); err != nil {
+	var state, note string
+	if err := f.st.Pool.QueryRow(ctx, "SELECT state,note FROM execution_operations WHERE id=$1", build.op.Id).Scan(&state, &note); err != nil {
 		t.Fatal(err)
 	}
-	if state != "cancelled" {
-		t.Fatal("agent's cancellation was not recorded", state)
-	}
-	halt()
-	// The journal gate that refuses work while a report awaits acknowledgement.
-	next := api.ExecutionCommand{Id: uuid.New(), ServerId: enrolled.Server.Id, EnvironmentId: uuid.New(), ResourceId: uuid.New(), Kind: "test", Generation: 1, PlanHash: strings.Repeat("a", 64), Deadline: time.Now().Add(time.Hour)}
-	if _, err = journal.Accept(next); err != nil {
-		t.Fatal("agent refuses later commands", err)
+	if state != "cancelled" || note != "Build/source assignment was cancelled or expired." {
+		t.Fatalf("agent ran an expired command: %s %q", state, note)
 	}
 }
 

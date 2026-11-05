@@ -6,8 +6,10 @@ import (
 	"testing"
 	"time"
 
+	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/terminal"
 	"github.com/coder/websocket"
+	"github.com/google/uuid"
 )
 
 // Streams without a redeemed ticket hold sockets outside every session limit. Past the
@@ -64,4 +66,55 @@ func TestTroubleshootingUnredeemedStreamsAreLimited(t *testing.T) {
 		t.Fatalf("agent stream refused: %d", status)
 	}
 	agent.expect(t, []byte{terminal.Start})
+}
+
+// The path can name any workspace. Its operators stop at the workspace's limit, and accounts
+// that could never redeem a ticket are refused without taking a place, even once it is full.
+func TestTroubleshootingWorkspaceLimitsUnredeemedStreams(t *testing.T) {
+	x := relayFixture(t)
+	second, third := x.member(t, "second@example.test", "operator"), x.member(t, "third@example.test", "operator")
+	viewer := x.member(t, "viewer@example.test", "viewer")
+	former := x.member(t, "former@example.test", "operator")
+	ctx := context.Background()
+	account, err := x.f.st.Queries.AccountByEmail(ctx, "former@example.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := x.f.st.Queries.DeleteMembership(ctx, db.DeleteMembershipParams{WorkspaceID: x.ws, AccountID: account.ID}); err != nil {
+		t.Fatal(err)
+	}
+	session := uuid.New()
+	dial := func(b *browser) (*websocket.Conn, int) {
+		return x.dialBrowser(t, b, session, x.f.server.URL)
+	}
+	refused := func() {
+		t.Helper()
+		if conn, status := dial(former); conn != nil || status != http.StatusNotFound {
+			t.Fatalf("stream naming another workspace: %d", status)
+		}
+		if conn, status := dial(viewer); conn != nil || status != http.StatusForbidden {
+			t.Fatalf("read-only member's stream: %d", status)
+		}
+	}
+	// More than either limit would allow if these streams counted.
+	for range 9 {
+		refused()
+	}
+	// Every place must be held at once, and the five-second ticket wait ending frees one.
+	started := time.Now()
+	for _, b := range []*browser{x.owner, second} {
+		for range 4 {
+			if conn, status := dial(b); conn == nil {
+				t.Fatalf("member refused within the limit: %d", status)
+			}
+		}
+	}
+	conn, status := dial(third)
+	if time.Since(started) > 4*time.Second {
+		t.Fatal("too slow to hold every place at once")
+	}
+	if conn != nil || status != http.StatusTooManyRequests {
+		t.Fatalf("stream past the workspace's limit: %d", status)
+	}
+	refused()
 }

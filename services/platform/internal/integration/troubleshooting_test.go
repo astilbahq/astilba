@@ -278,7 +278,20 @@ func TestTroubleshootingRequiresABrowserAndAStandardEnvironment(t *testing.T) {
 	x.owner.call("POST", base, map[string]string{"name": "Previews", "purpose": "preview_template"}, 201, &template)
 	path := base + "/" + template.Id.String()
 	x.owner.call("PUT", path+"/troubleshooting", api.SaveTroubleshootingPolicy{Enabled: true}, 403, nil)
-	x.owner.call("POST", path+"/troubleshooting/sessions", api.OpenTroubleshootingSession{ApplicationId: x.app, Instance: 1}, 403, nil)
+	x.owner.call("POST", path+"/troubleshooting/sessions", api.OpenTroubleshootingSession{ApplicationId: x.app, Instance: 1}, 409, nil)
+	x.audited(t, "session.refused.environment", 1)
+}
+
+// A revoked host keeps running its containers, so the service is still deployed.
+func TestTroubleshootingNamesAnUnavailableHost(t *testing.T) {
+	x := deployedTroubleshootingEnvironment(t)
+	x.owner.call("PUT", x.path+"/troubleshooting", api.SaveTroubleshootingPolicy{Enabled: true}, 200, nil)
+	x.optIn(t)
+	if _, err := x.f.st.Pool.Exec(context.Background(), "UPDATE servers SET revoked=true,credential_hash=NULL WHERE workspace_id=$1", x.ws); err != nil {
+		t.Fatal(err)
+	}
+	x.refused(t, x.owner, domain.TroubleshootingHostNotReady)
+	x.audited(t, "session.refused.host_not_ready", 1)
 }
 
 // Both recovery paths share this fence: it needs an owner to re-enable sessions and

@@ -1,6 +1,31 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
 import { managedDatabase } from "./fixtures/managed-database";
+import { signInAsOwner } from "./fixtures/owner-sign-in";
+
+test("a reverse proxy's own error page reads as a usable alert", async ({
+  page,
+}) => {
+  let status = 429;
+  await page.route("**/api/v1/workspaces/*/alerts*", (route) =>
+    route.fulfill({
+      status,
+      contentType: "text/html",
+      body: "<html><body><h1>Proxy error</h1></body></html>",
+    }),
+  );
+  await page.goto("/login");
+  await signInAsOwner(page);
+  await page.getByRole("link", { name: "Alerts", exact: true }).click();
+  const alert = page.getByRole("main").getByRole("alert");
+  await expect(alert).toHaveText("Too many requests. Try again later.");
+  expect(
+    (await new AxeBuilder({ page }).include("main").analyze()).violations,
+  ).toEqual([]);
+  status = 502;
+  await page.reload();
+  await expect(alert).toHaveText("The request could not be completed.");
+});
 
 test("operational inbox records and acknowledges a real failed deployment", async ({
   page,
