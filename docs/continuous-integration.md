@@ -351,12 +351,20 @@ one-sentence explanation:
 | `dberror` | A branch on the error from a value-returning sqlc method or a row scan never looks at it, so an outage reads as a refusal or a missing row. Use `store.IfMissing` or return the error. | #122, #147 |
 | `wsclose` | Code outside `internal/terminal` calls `(*websocket.Conn).Close`, which a peer stalled inside a frame can hold forever. Use `terminal.Close`. | #117, #118, #131 |
 | `jsonguard` | Code imports `encoding/json` outside the files [JSON encoding](json-encoding.md#remaining-v1-use) gives a reason for, or calls a plain `encoding/json/v2` writer outside a named third-party function. A stored or peer value written that way would move a digest when read back. Its two lists are the decisions recorded in [JSON encoding](json-encoding.md), not suppressions. | The `encoding/json/v2` adoption |
+| `txnetwork` | A function holding a transaction calls a Git provider or GitHub, directly or through a function in its package, so a tenant's slow server holds the transaction's locks and connection. Ask between passes with `providerCall`. | Holding a server's row across provider calls, after #157 |
 | `jsontag` | A struct field read from JSON, directly or through a package's own HTTP response helper, has no json tag naming its member. `encoding/json/v2` matches names exactly, so the field would stay zero with no error. | The JSON v2 shadow decoder, before #151 |
 
 These catch the shapes the defects took, so a clean run does not rule a defect out.
 `dberror` looks only at `err != nil` conditions, alone or as `||` terms, on an error set in
 the same block. `jsontag` follows one level of helper, in the same package, that handles an
-`*http.Response`.
+`*http.Response`. `txnetwork` follows direct calls within one package, so it misses a method
+value and a call through an interface or a function value, which includes the fetch of a
+`withProviderCalls` nested in a transaction. A transaction in a struct field, a `db.DBTX`
+parameter and a pinned connection don't count as held. It treats a goroutine or a function
+literal passed elsewhere that never names the transaction as running after it. A transaction
+counts as held until the function returns, even past its own block, so a call after a commit
+belongs in the caller. It does not cover Stripe, which still has these calls under the
+workspace lock.
 
 There is no suppression comment: each failure has a direct fix, and an analyzer
 that needs exceptions should change or go. Add one only for a defect that recurs,
