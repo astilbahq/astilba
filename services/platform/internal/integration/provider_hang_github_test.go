@@ -1,6 +1,7 @@
 package integration
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
@@ -30,19 +31,30 @@ import (
 // heldGitHub answers the OAuth and repository calls of connecting a GitHub App, holding the
 // requests to one path until released.
 type heldGitHub struct {
-	b            *browser
-	prefix       string
-	previewMints atomic.Int64
-	challenge    atomic.Value
-	mu           sync.Mutex
-	match        string
-	gate         chan struct{}
-	entered      chan struct{}
+	f                  *fixture
+	b                  *browser
+	ws                 uuid.UUID
+	prefix             string
+	exchanged, revoked atomic.Int64
+	userFails          atomic.Bool
+	previewMints       atomic.Int64
+	challenge          atomic.Value
+	mu                 sync.Mutex
+	match              string
+	gate               chan struct{}
+	entered            chan struct{}
+}
+
+func newHeldGitHub(t *testing.T) *heldGitHub {
+	t.Helper()
+	f := setup(t)
+	b := f.browser(t)
+	return heldGitHubFor(t, f, b, b.login("owner@example.test", f.password).Workspaces[0].Id)
 }
 
 func heldGitHubFor(t *testing.T, f *fixture, b *browser, ws uuid.UUID) *heldGitHub {
 	t.Helper()
-	h := &heldGitHub{b: b, prefix: "/api/v1/workspaces/" + ws.String()}
+	h := &heldGitHub{f: f, b: b, ws: ws, prefix: "/api/v1/workspaces/" + ws.String()}
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatal(err)
@@ -52,6 +64,9 @@ func heldGitHubFor(t *testing.T, f *fixture, b *browser, ws uuid.UUID) *heldGitH
 		gate, entered := h.gate, h.entered
 		held := gate != nil && r.URL.Path == h.match
 		h.mu.Unlock()
+		if r.URL.Path == "/login/oauth/access_token" {
+			h.exchanged.Add(1)
+		}
 		if held {
 			entered <- struct{}{}
 			select {
@@ -71,7 +86,13 @@ func heldGitHubFor(t *testing.T, f *fixture, b *browser, ws uuid.UUID) *heldGitH
 			}
 			_ = stablejson.Encode(w, map[string]string{"access_token": "user-token-canary"})
 		case "/user":
+			if h.userFails.Load() {
+				w.WriteHeader(502)
+				return
+			}
 			_ = stablejson.Encode(w, map[string]any{"id": 7, "login": "repository-admin"})
+		case "/user/installations":
+			_ = stablejson.Encode(w, map[string]any{"installations": []map[string]any{{"id": 2, "app_id": 1, "account": map[string]string{"login": "team"}}}})
 		case "/user/installations/2/repositories":
 			_ = stablejson.Encode(w, map[string]any{"repositories": []map[string]any{{"id": 12, "full_name": "team/app", "private": true, "permissions": map[string]bool{"admin": true}}}})
 		case "/app":
@@ -92,6 +113,7 @@ func heldGitHubFor(t *testing.T, f *fixture, b *browser, ws uuid.UUID) *heldGitH
 			}
 			_ = stablejson.Encode(w, map[string]any{"token": "installation-" + in.Permissions["contents"] + "-canary", "expires_at": time.Now().Add(time.Hour), "repositories": []map[string]int{{"id": 12}}, "permissions": in.Permissions})
 		case "/applications/fixture-client/token":
+			h.revoked.Add(1)
 			w.WriteHeader(204)
 		default:
 			w.WriteHeader(404)
@@ -202,5 +224,228 @@ func TestPolicySaveChecksTheBranchWithThePullRequestToken(t *testing.T) {
 	h.b.call("PUT", h.path+"/preview-policy", map[string]any{"enabled": false, "generation": 0, "configuration": h.policy}, 200, nil)
 	if github.previewMints.Load() != 1 {
 		t.Fatal("the branch check did not use the pull request token", github.previewMints.Load())
+	}
+}
+
+func (h *heldGitHub) requireWorkspaceFree(t *testing.T) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	requireNoOpenTransaction(t, ctx, h.f)
+	tx, done, err := h.f.st.BeginWorkspaceWrite(ctx, h.ws)
+	if err != nil {
+		t.Fatal("the workspace is held across a GitHub call:", err)
+	}
+	defer done()
+	if _, err = tx.Exec(ctx, "SELECT 1 FROM github_app_authorizations WHERE workspace_id=$1 FOR UPDATE NOWAIT", h.ws); err != nil {
+		t.Fatal("the grant is held across a GitHub call:", err)
+	}
+}
+
+func (h *heldGitHub) grant(t *testing.T) (uuid.UUID, string) {
+	t.Helper()
+	var id uuid.UUID
+	var status string
+	if err := h.f.st.Pool.QueryRow(t.Context(), "SELECT id,status FROM github_app_authorizations WHERE workspace_id=$1", h.ws).Scan(&id, &status); err != nil {
+		t.Fatal(err)
+	}
+	return id, status
+}
+
+const fixtureCode = "fixture-code"
+
+// GitHub accepts a code once. Moving the exchange out of the lock must not let a repeated
+// callback send it twice, or let a caller who lost access during the call keep the token.
+func TestGitHubCodeExchangeHoldsNothingAndHappensOnce(t *testing.T) {
+	complete := map[string]string{"code": fixtureCode}
+	t.Run("a repeated callback during the exchange does not send the code again", func(t *testing.T) {
+		h := newHeldGitHub(t)
+		complete["state"] = h.start(t)
+		entered, release := h.hold(t, "/login/oauth/access_token")
+		finished := h.b.send("POST", "/api/v1/github-app/complete", complete)
+		waitEntered(t, entered)
+		h.requireWorkspaceFree(t)
+		h.b.call("POST", "/api/v1/github-app/complete", complete, 409, nil)
+		id, _ := h.grant(t)
+		h.b.call("GET", h.prefix+"/github-app/authorizations/"+id.String()+"/installations", nil, 403, nil)
+		release()
+		var grant execution.GitHubAuthorization
+		if err := json.Unmarshal(requireReply(t, <-finished, 200), &grant); err != nil {
+			t.Fatal(err)
+		}
+		if grant.User.ID != 7 || h.exchanged.Load() != 1 {
+			t.Fatal("the exchange did not finish exactly once", grant.User, h.exchanged.Load())
+		}
+	})
+	t.Run("a failed exchange cannot be retried with the same code", func(t *testing.T) {
+		h := newHeldGitHub(t)
+		complete["state"] = h.start(t)
+		h.challenge.Store("not the verifier's challenge")
+		h.b.call("POST", "/api/v1/github-app/complete", complete, 400, nil)
+		h.b.call("POST", "/api/v1/github-app/complete", complete, 409, nil)
+		if h.exchanged.Load() != 1 {
+			t.Fatal("a failed exchange could be replayed", h.exchanged.Load())
+		}
+	})
+	for _, loss := range []struct {
+		name   string
+		during func(t *testing.T, h *heldGitHub)
+		status int
+	}{
+		{
+			name: "their role",
+			during: func(t *testing.T, h *heldGitHub) {
+				if _, err := h.f.st.Pool.Exec(t.Context(), "UPDATE memberships SET role='viewer' WHERE workspace_id=$1", h.ws); err != nil {
+					t.Fatal(err)
+				}
+			},
+			status: 403,
+		},
+		{
+			name: "their credentials",
+			during: func(t *testing.T, h *heldGitHub) {
+				if _, err := h.f.st.Pool.Exec(t.Context(), "UPDATE accounts SET auth_version=auth_version+1 WHERE id=$1", h.f.owner); err != nil {
+					t.Fatal(err)
+				}
+			},
+			status: 401,
+		},
+		{
+			name: "their session",
+			during: func(t *testing.T, h *heldGitHub) {
+				h.b.call("POST", "/api/v1/auth/logout", nil, 204, nil)
+			},
+			status: 401,
+		},
+	} {
+		t.Run("a caller who loses "+loss.name+" during the exchange does not keep the token", func(t *testing.T) {
+			h := newHeldGitHub(t)
+			complete["state"] = h.start(t)
+			entered, release := h.hold(t, "/login/oauth/access_token")
+			finished := h.b.send("POST", "/api/v1/github-app/complete", complete)
+			waitEntered(t, entered)
+			loss.during(t, h)
+			release()
+			requireReply(t, <-finished, loss.status)
+			if _, status := h.grant(t); status == "ready" {
+				t.Fatal("the token was stored for a caller who lost access")
+			}
+			if h.revoked.Load() != 1 {
+				t.Fatal("a token nothing stores was left valid at GitHub")
+			}
+		})
+	}
+	t.Run("a token issued when GitHub then fails is not left valid", func(t *testing.T) {
+		h := newHeldGitHub(t)
+		complete["state"] = h.start(t)
+		h.userFails.Store(true)
+		h.b.call("POST", "/api/v1/github-app/complete", complete, 400, nil)
+		if h.revoked.Load() != 1 {
+			t.Fatal("a token nothing stores was left valid at GitHub")
+		}
+	})
+	t.Run("a browser going away during the exchange does not leave the token valid", func(t *testing.T) {
+		h := newHeldGitHub(t)
+		complete["state"] = h.start(t)
+		entered, release := h.hold(t, "/login/oauth/access_token")
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		raw, _ := stablejson.Marshal(complete)
+		request, err := http.NewRequestWithContext(ctx, "POST", h.f.server.URL+"/api/v1/github-app/complete", bytes.NewReader(raw))
+		if err != nil {
+			t.Fatal(err)
+		}
+		request.Header.Set("Origin", h.f.server.URL)
+		request.Header.Set("X-CSRF-Token", h.b.csrf)
+		request.Header.Set("Content-Type", "application/json")
+		gone := make(chan struct{})
+		go func() {
+			defer close(gone)
+			if response, err := h.b.client.Do(request); err == nil {
+				response.Body.Close()
+			}
+		}()
+		waitEntered(t, entered)
+		cancel()
+		<-gone
+		release()
+		deadline := time.Now().Add(15 * time.Second)
+		for h.revoked.Load() != 1 {
+			if time.Now().After(deadline) {
+				t.Fatal("a token nobody can collect was left valid at GitHub")
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		if _, status := h.grant(t); status == "ready" {
+			t.Fatal("a grant nobody can collect was stored")
+		}
+		h.b.call("POST", "/api/v1/github-app/complete", complete, 409, nil)
+		if h.exchanged.Load() != 1 {
+			t.Fatal("the code was sent again", h.exchanged.Load())
+		}
+	})
+}
+
+// Listing what a grant can reach writes nothing, and must not hold the grant or a connection
+// while GitHub answers.
+func TestGitHubListingsHoldNothing(t *testing.T) {
+	for _, tc := range []struct{ name, hold, path string }{
+		{"installations", "/user/installations", "/installations"},
+		{"repositories", "/user/installations/2/repositories", "/repositories?installationId=2"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHeldGitHub(t)
+			state := h.start(t)
+			var grant execution.GitHubAuthorization
+			h.b.call("POST", "/api/v1/github-app/complete", map[string]string{"state": state, "code": fixtureCode}, 200, &grant)
+			entered, release := h.hold(t, tc.hold)
+			finished := h.b.send("GET", h.prefix+"/github-app/authorizations/"+grant.ID.String()+tc.path, nil)
+			waitEntered(t, entered)
+			h.requireWorkspaceFree(t)
+			release()
+			requireReply(t, <-finished, 200)
+		})
+	}
+}
+
+// Connecting uses up a grant. The grant must still be unspent after GitHub answers.
+func TestGitHubConnectRechecksTheGrantAfterAHungCall(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		during      func(t *testing.T, h *heldGitHub)
+		status      int
+		connections int
+	}{
+		{name: "nothing changed", during: func(*testing.T, *heldGitHub) {}, status: 201, connections: 1},
+		{
+			name: "grant used during the call",
+			during: func(t *testing.T, h *heldGitHub) {
+				if _, err := h.f.st.Pool.Exec(t.Context(), "UPDATE github_app_authorizations SET status='consumed' WHERE workspace_id=$1", h.ws); err != nil {
+					t.Fatal(err)
+				}
+			},
+			status: 403,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHeldGitHub(t)
+			state := h.start(t)
+			var grant execution.GitHubAuthorization
+			h.b.call("POST", "/api/v1/github-app/complete", map[string]string{"state": state, "code": fixtureCode}, 200, &grant)
+			entered, release := h.hold(t, "/user/installations/2/repositories")
+			finished := h.b.send("POST", h.prefix+"/github-app/authorizations/"+grant.ID.String()+"/connections", map[string]any{"name": "App repository", "repository": "team/app", "repositoryId": 12, "installationId": 2})
+			waitEntered(t, entered)
+			h.requireWorkspaceFree(t)
+			tc.during(t, h)
+			release()
+			requireReply(t, <-finished, tc.status)
+			var connections int
+			if err := h.f.st.Pool.QueryRow(t.Context(), "SELECT count(*) FROM github_app_connections WHERE workspace_id=$1", h.ws).Scan(&connections); err != nil {
+				t.Fatal(err)
+			}
+			if connections != tc.connections {
+				t.Fatal("connections", connections, "want", tc.connections)
+			}
+		})
 	}
 }

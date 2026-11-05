@@ -30,9 +30,6 @@ UPDATE github_app_authorizations SET encrypted_access = @encrypted_access,status
 WHERE workspace_id = @workspace_id AND id = @id
 RETURNING id,workspace_id,expires_at;
 
--- name: GitHubAuthorizationUser :one
-SELECT github_user_id::bigint AS github_user_id,github_login FROM github_app_authorizations WHERE workspace_id = @workspace_id AND id = @id;
-
 -- name: ConsumeGitHubAuthorization :exec
 UPDATE github_app_authorizations SET status='consumed',encrypted_access = @encrypted_access
 WHERE workspace_id = @workspace_id AND id = @id;

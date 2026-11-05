@@ -141,3 +141,20 @@ func TestPreviewVisualDeliveryRechecksAfterItsProviderCheck(t *testing.T) {
 		})
 	}
 }
+
+// Poll asks the provider before delivering a preview command, with nothing open during the
+// call, and a tenant's slow server must not pin a pool connection per polling runner.
+func TestPreviewDeliveryHoldsNothingDuringItsProviderCheck(t *testing.T) {
+	h, preview := approvedPreviewBuild(t)
+	entered, release := h.provider.hold(t, "/pulls/7")
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+	defer cancel()
+	result := h.pollAsync(ctx)
+	waitEntered(t, entered)
+	h.requireNothingHeld(t, *preview.OperationId)
+	release()
+	outcome := <-result
+	if outcome.err != nil || !carriesCredential(outcome.command) {
+		t.Fatal("an unchanged preview delivery was lost", outcome.err)
+	}
+}

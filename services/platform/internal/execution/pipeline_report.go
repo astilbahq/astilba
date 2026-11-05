@@ -243,7 +243,7 @@ func (s *Service) deliveryRefused(ctx context.Context, tx pgx.Tx, ws uuid.UUID, 
 	} else if err != nil {
 		return false, err
 	}
-	allowed, err := s.previewCommandAllowed(ctx, tx, ws, c, false)
+	allowed, err := s.previewCommandAllowed(ctx, tx, nil, ws, c)
 	return !allowed, err
 }
 func (s *Service) populatePipeline(ctx context.Context, tx pgx.Tx, git *gitAnswers, ws, env uuid.UUID, p *pipeline.Command) error {

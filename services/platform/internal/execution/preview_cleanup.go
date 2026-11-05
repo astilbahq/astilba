@@ -191,7 +191,8 @@ func (s *Service) previewPlanIdentity(ctx context.Context, tx pgx.Tx, ws, env uu
 	return &domain.PreviewIdentity{RequestID: id, Generation: generation, Limits: cfg.Limits}, nil
 }
 
-func (s *Service) previewCommandAllowed(ctx context.Context, tx pgx.Tx, ws uuid.UUID, c api.ExecutionCommand, verify bool) (bool, error) {
+// previewCommandAllowed also verifies the request with its provider when given git to ask.
+func (s *Service) previewCommandAllowed(ctx context.Context, tx pgx.Tx, git *gitAnswers, ws uuid.UUID, c api.ExecutionCommand) (bool, error) {
 	var id uuid.UUID
 	var generation int64
 	var head string
@@ -267,15 +268,15 @@ func (s *Service) previewCommandAllowed(ctx context.Context, tx pgx.Tx, ws uuid.
 	if r.View.Fork && (r.ApprovedHead != r.View.Head || r.ApprovedRepo != r.View.HeadRepository || r.ApprovedGeneration != p.Generation) {
 		return false, nil
 	}
-	if verify {
-		provider, _, err := s.previewProvider(ctx, tx, ws, p.Connection)
+	if git != nil {
+		answer, err := git.pullRequest(ctx, tx, p.Connection, r.View.Number, "")
 		if err != nil {
 			return false, err
 		}
-		pr, err := provider.PullRequest(ctx, r.View.Number)
-		if err != nil {
-			return false, err
+		if answer.Err != nil {
+			return false, answer.Err
 		}
+		pr := answer.Value
 		if !pr.Open || pr.Head != r.View.Head || pr.HeadRepository != r.View.HeadRepository || pr.BaseBranch != p.Config.Build.Branch {
 			return false, nil
 		}

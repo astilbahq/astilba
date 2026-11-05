@@ -318,6 +318,7 @@ func (h *hungBuild) requireNothingHeld(t *testing.T, operation uuid.UUID) {
 			break
 		}
 	}
+	requireNoOpenTransaction(t, ctx, h.f)
 	// The queue in front of the workspace lock is free, not only the lock.
 	_, done, err := h.f.st.BeginWorkspaceWrite(ctx, h.ws)
 	if err != nil {
@@ -325,6 +326,25 @@ func (h *hungBuild) requireNothingHeld(t *testing.T, operation uuid.UUID) {
 	}
 	done()
 	agentRequest(t, h.f.server.Client(), h.f.server.URL, "/agent/v1/heartbeat", h.token, api.AgentHeartbeat{Capabilities: h.enrolled.Capabilities, Preflight: h.enrolled.Preflight}, 200, nil)
+}
+
+// requireNoOpenTransaction catches a transaction left open across a call, which pins a pool
+// connection with no lock to see. The dispatcher's own are brief, so one reading of none will do.
+func requireNoOpenTransaction(t *testing.T, ctx context.Context, f *fixture) {
+	t.Helper()
+	for attempt := 1; ; attempt++ {
+		var open int
+		if err := f.st.Pool.QueryRow(ctx, "SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND state='idle in transaction'").Scan(&open); err != nil {
+			t.Fatal(err)
+		}
+		if open == 0 {
+			return
+		}
+		if attempt == 40 {
+			t.Fatal("a transaction is open across a provider call")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 }
 
 func (h *hungBuild) deliveryStarted(t *testing.T, operation uuid.UUID) bool {
