@@ -24,7 +24,7 @@ sudo /opt/astilba-plat4/bin/docker --host unix:///run/astilba-plat4/docker.sock 
 sudo /opt/astilba-plat4/bin/docker --host unix:///run/astilba-plat4/docker.sock pull traefik:v3.7.16@sha256:22a759fb803abb5c3a7ba5d5a55a201c5fb0fc8993d5c72c47a89075e64f1953
 # For the terminal session proxy tests in make verify-agent-host.
 sudo /opt/astilba-plat4/bin/docker --host unix:///run/astilba-plat4/docker.sock pull nginx:1.30.6-alpine3.24@sha256:0e52bd054126cdc040b1276c0af347aeb02a41b9cfe305d6094767ac30e97949
-sudo /opt/astilba-plat4/bin/docker --host unix:///run/astilba-plat4/docker.sock pull caddy:2.11.7-alpine@sha256:e70b164da81ef698b3ad19af799ea6086ce6d9e48ed4079eb9fe26f6fbf14ee5
+sudo /opt/astilba-plat4/bin/docker --host unix:///run/astilba-plat4/docker.sock pull caddy:2.11.8-alpine@sha256:3db3a09e418f86a8fce8de4bc0026fccd2b4cd925aef00cc7d843d9fdc75e442
 
 make verify-host PLAT4_ARCH=arm64
 ```

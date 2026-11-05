@@ -15,6 +15,7 @@ import (
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
+	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/terminal"
 	"github.com/coder/websocket"
 	"github.com/google/uuid"
@@ -233,5 +234,33 @@ func TestTroubleshootingStalledPlatformCannotHoldTheClose(t *testing.T) {
 	case <-finished:
 	case <-time.After(15 * time.Second):
 		t.Fatal("the close handshake outlasted its limit")
+	}
+}
+
+// A session has already closed for management while its shell is still ending here, so
+// its place is waited for. A session that goes on running still means a refusal.
+func TestTroubleshootingPlaceIsWaitedFor(t *testing.T) {
+	ctx := context.Background()
+	c := &Client{}
+	release, claimed := c.claimTroubleshootingPlace(ctx, "first", time.Millisecond)
+	if !claimed {
+		t.Fatal("a free place was refused")
+	}
+	if _, claimed = c.claimTroubleshootingPlace(ctx, "first", 100*time.Millisecond); claimed {
+		t.Fatal("a container's place was given twice")
+	}
+	time.AfterFunc(100*time.Millisecond, release)
+	release, claimed = c.claimTroubleshootingPlace(ctx, "first", 10*time.Second)
+	if !claimed {
+		t.Fatal("a place freed during the wait was refused")
+	}
+	defer release()
+	for i := 1; i < domain.TroubleshootingPerHost; i++ {
+		if _, claimed = c.claimTroubleshootingPlace(ctx, fmt.Sprint("other", i), time.Millisecond); !claimed {
+			t.Fatal("a free place was refused")
+		}
+	}
+	if _, claimed = c.claimTroubleshootingPlace(ctx, "last", 100*time.Millisecond); claimed {
+		t.Fatal("the host's limit was passed")
 	}
 }

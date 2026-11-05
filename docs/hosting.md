@@ -210,7 +210,7 @@ a shell. A shorter idle or duration limit ends a running session early, and its 
 with it. Nothing else is affected.
 
 These configurations carry a session through each proxy. `make verify-agent-host-core`
-reads them from this page and runs them with pinned nginx 1.30.6, Caddy 2.11.7 and
+reads them from this page and runs them with pinned nginx 1.30.6, Caddy 2.11.8 and
 Traefik 3.7.16 images.
 
 nginx needs the upgrade headers, and its `proxy_read_timeout` is the idle limit:
@@ -251,6 +251,10 @@ platform.example.com {
     reverse_proxy 127.0.0.1:8080
 }
 ```
+
+Use Caddy 2.11.8 or later. 2.11.7 can read the rest of a large request that was refused
+early as a new request, and answer the client's next request on that HTTP/1.1 connection
+with a 431.
 
 Traefik does too. This is its static configuration, followed by the file it loads:
 

@@ -35,10 +35,11 @@ changed kernel parameters, a mounted Docker socket or any host bind mount other
 than the read-only bundle files the agent places itself. Managed Compose already rejects several of these; the agent checks them
 again for every session. **Decided:** these containers are never eligible.
 
-The session runs the first available shell of `/bin/bash` and `/bin/sh` with a
-TTY, as the container's configured user. Many images run as root inside the
-container; the dashboard says which user the shell will run as. Images without
-a shell (for example distroless) are refused with an explicit reason.
+The session runs `/bin/bash` if `/bin/sh` finds that it runs, and otherwise `/bin/sh`,
+with a TTY, as the container's configured user. Many images run as root inside the
+container; the dashboard says which user the shell will run as. Images without a
+usable `/bin/sh` (for example distroless, or an image with only bash) are refused
+with an explicit reason.
 
 Sessions need runc 1.3.3 or later on the 1.3 branch, or a final 1.x release from
 1.4 onwards. Older branches are refused. These versions include the fixes for the
@@ -127,6 +128,8 @@ also notifies the workspace's owners. It defaults to
    is reported as a typed reason: opt-in off, runtime below the floor, ineligible
    container, no shell, limit reached, or Docker unavailable. Until the session has
    started, a failure is reported this way too, and any shell already started is ended.
+   A session is already closed for management while the agent is still ending its shell,
+   so the agent waits up to five seconds for a local limit before it reports one.
 4. **Browser stream.** The browser opens a same-origin stream. Management
    refuses the upgrade unless the session cookie and Origin are valid, the account
    is an owner or operator of the workspace, and the limits on streams without a
@@ -228,7 +231,8 @@ its own limits locally. Initial values:
 
 These are constants, not settings; implementation and measured use can tune
 them. Requests over a limit are refused with an explicit reason rather than
-queued. [Hosting](hosting.md#per-address-limits-at-the-reverse-proxy) asks operators
+queued. The agent's short wait for a session it is still ending is the one delay
+before a refusal. [Hosting](hosting.md#per-address-limits-at-the-reverse-proxy) asks operators
 to limit connections per address at the proxy, which also covers unauthenticated
 requests.
 

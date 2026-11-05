@@ -26,13 +26,14 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/terminal"
 	"github.com/coder/websocket"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/client"
 )
 
 const (
 	nginxImage   = "nginx:1.30.6-alpine3.24@sha256:0e52bd054126cdc040b1276c0af347aeb02a41b9cfe305d6094767ac30e97949"
-	caddyImage   = "caddy:2.11.7-alpine@sha256:e70b164da81ef698b3ad19af799ea6086ce6d9e48ed4079eb9fe26f6fbf14ee5"
+	caddyImage   = "caddy:2.11.8-alpine@sha256:3db3a09e418f86a8fce8de4bc0026fccd2b4cd925aef00cc7d843d9fdc75e442"
 	traefikImage = "traefik:v3.7.16@sha256:22a759fb803abb5c3a7ba5d5a55a201c5fb0fc8993d5c72c47a89075e64f1953"
 	// Longer than a stream ping's interval twice over, and than the 60 seconds that nginx
 	// and Traefik use as defaults for their own timeouts.
@@ -335,6 +336,21 @@ func (x troubleshootingFixture) closeReason(t *testing.T, session uuid.UUID, lim
 	}
 	t.Fatalf("session still %s after %s", state, limit)
 	return ""
+}
+
+// closeReasons lists the fixture's sessions and how each ended: an agent's refusal says
+// so nowhere else.
+func (x troubleshootingFixture) closeReasons(t *testing.T) []string {
+	t.Helper()
+	rows, err := x.f.st.Pool.Query(context.Background(), "SELECT state||': '||COALESCE(close_reason,'') FROM troubleshooting_sessions WHERE workspace_id=$1 ORDER BY created_at", x.ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reasons, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatal(err)
+	}
+	return reasons
 }
 
 // The real limits, which only time can test. Run on demand: this takes more than 75 minutes.

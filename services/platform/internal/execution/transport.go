@@ -20,6 +20,9 @@ import (
 // HTTP clients still receive the ordinary conflict response.
 var ErrPollLeaseHeld = fmt.Errorf("poll lease held: %w", domain.Conflict)
 
+// pollLeaseWait bounds taking or releasing a poll's lease, once its request no longer can.
+const pollLeaseWait = 5 * time.Second
+
 // A database lease bounds overlapping polls across management replicas.
 func (s *Service) Poll(ctx context.Context, a Identity) (*api.ExecutionCommand, error) {
 	return s.poll(ctx, a, nil)
@@ -36,18 +39,23 @@ func (s *Service) PollAgent(ctx context.Context, a Identity) (api.AgentPoll, err
 
 func (s *Service) poll(ctx context.Context, a Identity, out *api.AgentPoll) (*api.ExecutionCommand, error) {
 	id := uuid.New()
-	n, err := s.Store.Pool.Exec(ctx, `UPDATE servers SET poll_id=$2,poll_until=now()+interval '30 seconds' WHERE id=$1 AND (poll_until IS NULL OR poll_until<now())`, a.ID, id)
+	// A client that goes away must not decide either step. Cancelling a statement as it
+	// commits reports a failure for a lease that was taken, and that lease would then turn
+	// away the restarted agent's polls, and its commands and sessions, until it expired.
+	defer func() {
+		cleanup, cancel := context.WithTimeout(context.Background(), pollLeaseWait)
+		defer cancel()
+		_, _ = s.Store.Pool.Exec(cleanup, "UPDATE servers SET poll_id=NULL,poll_until=NULL WHERE id=$1 AND poll_id=$2", a.ID, id)
+	}()
+	claim, claimed := context.WithTimeout(context.WithoutCancel(ctx), pollLeaseWait)
+	n, err := s.Store.Pool.Exec(claim, `UPDATE servers SET poll_id=$2,poll_until=now()+interval '30 seconds' WHERE id=$1 AND (poll_until IS NULL OR poll_until<now())`, a.ID, id)
+	claimed()
 	if err != nil {
 		return nil, err
 	}
 	if n.RowsAffected() != 1 {
 		return nil, ErrPollLeaseHeld
 	}
-	defer func() {
-		cleanup, cancel := context.WithTimeout(context.Background(), time.Second)
-		defer cancel()
-		_, _ = s.Store.Pool.Exec(cleanup, "UPDATE servers SET poll_id=NULL,poll_until=NULL WHERE id=$1 AND poll_id=$2", a.ID, id)
-	}()
 	deadline := time.NewTimer(PollDuration)
 	defer deadline.Stop()
 	tick := time.NewTicker(time.Second)

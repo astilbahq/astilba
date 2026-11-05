@@ -3,6 +3,8 @@ package integration
 import (
 	"context"
 	"errors"
+	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -76,5 +78,82 @@ func TestFixturePollRecoversAfterLeaseContention(t *testing.T) {
 	command, err = f.execution.Poll(ctx, identity)
 	if err != nil || command == nil || command.Id != operation.Id {
 		t.Fatal("expired lease did not release the original command", command, err)
+	}
+}
+
+// A client can go away at any point in a poll, and an agent that restarted is the next to
+// poll. A lease left behind would turn it away, with its commands and sessions, for as long
+// as the lease lasts.
+func TestCancelledPollLeavesNoLease(t *testing.T) {
+	f := setup(t)
+	b := f.browser(t)
+	ws := b.login("owner@example.test", f.password).Workspaces[0].Id
+	v, in, _ := enrollment(t, f, b, ws, "deployment")
+	agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/enroll", "", in, 200, nil)
+	identity, err := f.execution.Authenticate(t.Context(), v.Server.Id, in.Credential)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range 100 {
+		ctx, cancel := context.WithCancel(t.Context())
+		done := make(chan error, 1)
+		go func() {
+			_, err := f.execution.PollAgent(ctx, identity)
+			done <- err
+		}()
+		time.Sleep(time.Duration(i) * 15 * time.Microsecond)
+		cancel()
+		err := <-done
+		var held bool
+		if e := f.st.Pool.QueryRow(t.Context(), "SELECT poll_id IS NOT NULL FROM servers WHERE id=$1", v.Server.Id).Scan(&held); e != nil {
+			t.Fatal(e)
+		}
+		if held {
+			t.Fatalf("a poll cancelled after %dus left its lease, returning %v", i*15, err)
+		}
+	}
+}
+
+// An agent's polls carry a body, and net/http notices a client leaving only once a request's
+// body has been read. Nothing in the poll reads it: the request validator happens to. Should
+// that change, an agent that stopped would hold its own lease for a whole poll.
+func TestDisconnectedPollLeavesNoLease(t *testing.T) {
+	f := setup(t)
+	b := f.browser(t)
+	ws := b.login("owner@example.test", f.password).Workspaces[0].Id
+	v, in, token := enrollment(t, f, b, ws, "deployment")
+	agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/enroll", "", in, 200, nil)
+	held := func() bool {
+		var held bool
+		if err := f.st.Pool.QueryRow(t.Context(), "SELECT poll_id IS NOT NULL FROM servers WHERE id=$1", v.Server.Id).Scan(&held); err != nil {
+			t.Fatal(err)
+		}
+		return held
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	request, err := http.NewRequestWithContext(ctx, "GET", f.server.URL+"/agent/v1/poll", strings.NewReader("null"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Authorization", "Bearer "+token)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		if response, err := f.server.Client().Do(request); err == nil {
+			response.Body.Close()
+		}
+	}()
+	for deadline := time.Now().Add(5 * time.Second); !held(); time.Sleep(10 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("the poll did not take its lease")
+		}
+	}
+	cancel()
+	<-done
+	for deadline := time.Now().Add(5 * time.Second); held(); time.Sleep(10 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("a poll whose client left kept its lease")
+		}
 	}
 }

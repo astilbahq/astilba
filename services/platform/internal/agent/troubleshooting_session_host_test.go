@@ -288,29 +288,87 @@ func TestNativeTroubleshootingStalledInput(t *testing.T) {
 	}
 }
 
-// The probe's answer reaches the person when an image has no shell.
-func TestNativeTroubleshootingNoShell(t *testing.T) {
-	f := newShellFixture(t)
+// captureTrail collects what the agent logs for the rest of the test.
+func captureTrail(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	trail := &bytes.Buffer{}
+	previous, writer, flags := slog.Default(), log.Writer(), log.Flags()
+	slog.SetDefault(slog.New(slog.NewTextHandler(trail, nil)))
+	t.Cleanup(func() {
+		slog.SetDefault(previous)
+		log.SetOutput(writer)
+		log.SetFlags(flags)
+	})
+	return trail
+}
+
+// execute runs a command in the fixture's container and waits for it to succeed.
+func (f shellFixture) execute(t *testing.T, command ...string) {
+	t.Helper()
 	ctx := context.Background()
-	removed, err := f.docker.ExecCreate(ctx, f.id, client.ExecCreateOptions{Cmd: []string{"/bin/rm", "-f", "/bin/sh", "/bin/ash", "/bin/bash"}})
+	created, err := f.docker.ExecCreate(ctx, f.id, client.ExecCreateOptions{Cmd: command})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = f.docker.ExecStart(ctx, removed.ID, client.ExecStartOptions{Detach: true}); err != nil {
+	if _, err = f.docker.ExecStart(ctx, created.ID, client.ExecStartOptions{Detach: true}); err != nil {
 		t.Fatal(err)
 	}
 	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(50 * time.Millisecond) {
-		state, err := f.docker.ExecInspect(ctx, removed.ID, client.ExecInspectOptions{})
+		state, err := f.docker.ExecInspect(ctx, created.ID, client.ExecInspectOptions{})
 		if err != nil {
 			t.Fatal(err)
 		}
 		if !state.Running && state.ExitCode == 0 {
-			break
+			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("could not remove the image's shells", state)
+			t.Fatal("command did not succeed", command, state)
 		}
 	}
+}
+
+// Bash is preferred only if it runs. Finding that out must not start a missing executable
+// on an image with /bin/sh: Docker can stall the next exec after one that failed to start.
+func TestNativeTroubleshootingShellChoice(t *testing.T) {
+	f := newShellFixture(t)
+	trail := captureTrail(t)
+	shell := func() (string, error) {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		return f.client.Engine.findShell(ctx, f.id)
+	}
+	for _, step := range []struct{ name, script, want string }{
+		{"no bash", "true", "/bin/sh"},
+		{"working bash", `printf '#!/bin/sh\nexec /bin/sh "$@"\n' >/bin/bash; chmod +x /bin/bash`, "/bin/bash"},
+		{"unusable bash", `printf '#!/nonexistent\n' >/bin/bash`, "/bin/sh"},
+	} {
+		f.execute(t, "/bin/sh", "-c", step.script)
+		if got, err := shell(); err != nil || got != step.want {
+			t.Fatalf("%s: shell %q err %v, want %q", step.name, got, err, step.want)
+		}
+	}
+	if strings.Contains(trail.String(), "did not start") {
+		t.Fatalf("a probe started a missing executable: %s", trail.String())
+	}
+	// Only /bin/sh is tried. Starting bash next could stall, so an image with bash alone is
+	// refused, as one with no shell is.
+	for _, step := range []struct{ name, script string }{
+		{"a /bin/sh that fails", `rm /bin/sh; printf '#!/bin/ash\nexit 1\n' >/bin/sh; chmod +x /bin/sh`},
+		{"a /bin/sh that does nothing", `printf '#!/bin/ash\nexit 0\n' >/bin/sh`},
+		{"bash alone", `printf '#!/bin/ash\nexec /bin/ash "$@"\n' >/bin/bash; rm /bin/sh`},
+	} {
+		f.execute(t, "/bin/ash", "-c", step.script)
+		if got, err := shell(); err != nil || got != "" {
+			t.Fatalf("%s: shell %q err %v, want none", step.name, got, err)
+		}
+	}
+}
+
+// The probe's answer reaches the person when an image has no shell.
+func TestNativeTroubleshootingNoShell(t *testing.T) {
+	f := newShellFixture(t)
+	ctx := context.Background()
+	f.execute(t, "/bin/rm", "-f", "/bin/sh", "/bin/ash", "/bin/bash")
 	conn, _ := f.run(t, f.offer())
 	read, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
@@ -347,14 +405,7 @@ func TestTroubleshootingOfferIsAttemptedOnce(t *testing.T) {
 
 func TestNativeTroubleshootingShellExit(t *testing.T) {
 	f := newShellFixture(t)
-	var trail bytes.Buffer
-	previous, writer, flags := slog.Default(), log.Writer(), log.Flags()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&trail, nil)))
-	defer func() {
-		slog.SetDefault(previous)
-		log.SetOutput(writer)
-		log.SetFlags(flags)
-	}()
+	trail := captureTrail(t)
 	conn, done := f.run(t, f.offer())
 	typeInto(t, conn, "exit 7\n")
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
