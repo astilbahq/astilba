@@ -165,10 +165,11 @@ WHERE workspace_id = @workspace_id AND id = @id;
 
 -- name: LockTroubleshootingSweepWorkspaces :many
 -- unscoped: an installation-wide sweeper ends expired sessions in every workspace.
+-- A locked workspace waits for the next sweep, so its holder cannot delay any other tenant.
 SELECT w.id FROM workspaces w
 WHERE EXISTS(SELECT 1 FROM troubleshooting_sessions t WHERE t.workspace_id = w.id AND t.state <> 'closed'
  AND (t.deadline_at <= now() - interval '1 minute' OR (t.state = 'offered' AND t.ticket_expires_at <= now())))
-ORDER BY w.id FOR UPDATE OF w;
+ORDER BY w.id FOR NO KEY UPDATE OF w SKIP LOCKED;
 
 -- name: SweepTroubleshootingSessions :many
 -- unscoped: an installation-wide sweeper ends expired sessions in every workspace.

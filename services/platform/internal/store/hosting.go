@@ -53,15 +53,12 @@ func (s *Store) GrantManagement(ctx context.Context, ws uuid.UUID, until time.Ti
 	if !s.Hosted || limit < 1 || limit > 100 || !until.After(time.Now()) {
 		return domain.Invalid("grant")
 	}
-	tx, e := s.Pool.Begin(ctx)
+	tx, done, e := s.BeginWorkspaceWrite(ctx, ws)
 	if e != nil {
 		return e
 	}
-	defer tx.Rollback(ctx)
+	defer done()
 	q := db.New(tx)
-	if _, e = q.LockWorkspaceByID(ctx, ws); e != nil {
-		return e
-	}
 	n, e := q.GrantHostedManagement(ctx, db.GrantHostedManagementParams{WorkspaceID: ws, ManagementUntil: &until, ServerLimit: int32(limit)})
 	if e != nil {
 		return e

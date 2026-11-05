@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"sync"
 	"time"
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
@@ -24,6 +25,7 @@ type Store struct {
 	Hosting           hosting.Config
 	LogRetention      time.Duration
 	ApplicationDomain string
+	writeTurns        sync.Map
 }
 type Principal struct {
 	Account    db.Account
@@ -100,19 +102,28 @@ func (s *Store) InWorkspaceSnapshot(ctx context.Context, p Principal, id uuid.UU
 	return s.inWorkspaceIsolation(ctx, p, id, WorkspaceAccess{Write: true, Owner: true, Recent: true}, "recovery", pgx.RepeatableRead, fn)
 }
 func (s *Store) inWorkspaceIsolation(ctx context.Context, p Principal, id uuid.UUID, access WorkspaceAccess, mode string, isolation pgx.TxIsoLevel, fn func(pgx.Tx, *db.Queries, Workspace) error) error {
-	tx, err := s.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: isolation})
-	if err != nil {
-		return err
+	var tx pgx.Tx
+	var err error
+	if access.Write || access.Lock {
+		// An outsider must neither wait for another tenant's lock nor take it. This
+		// read admits nothing: only the read after the lock sees a revocation it waited behind.
+		if _, err = s.Queries.Workspace(ctx, db.WorkspaceParams{ID: id, AccountID: p.Account.ID}); err != nil {
+			return Normalize(err)
+		}
+		var done func()
+		if tx, done, err = s.beginWorkspaceWrite(ctx, id, isolation); err != nil {
+			return Normalize(err)
+		}
+		defer done()
+	} else {
+		if tx, err = s.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: isolation}); err != nil {
+			return err
+		}
+		defer tx.Rollback(ctx)
 	}
-	defer tx.Rollback(ctx)
 	q := db.New(tx)
 	err = func() error {
 		var w Workspace
-		if access.Write || access.Lock {
-			if _, err := q.LockWorkspaceByID(ctx, id); err != nil {
-				return err
-			}
-		}
 		var r db.WorkspaceRow
 		if isolation == pgx.RepeatableRead {
 			// Locking the membership detects revocation committed after this

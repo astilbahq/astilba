@@ -8,10 +8,10 @@ SELECT w.*,m.role FROM workspaces w JOIN memberships m ON m.workspace_id=w.id WH
 SELECT w.*,m.role FROM workspaces w JOIN memberships m ON m.workspace_id=w.id WHERE w.id=$1 AND m.account_id=$2;
 -- name: WorkspaceForSnapshot :one
 SELECT w.*,m.role FROM workspaces w JOIN memberships m ON m.workspace_id=w.id WHERE w.id=$1 AND m.account_id=$2 FOR SHARE OF m;
--- name: LockWorkspace :one
-SELECT w.*,m.role FROM workspaces w JOIN memberships m ON m.workspace_id=w.id WHERE w.id=$1 AND m.account_id=$2 FOR UPDATE OF w;
 -- name: LockWorkspaceByID :one
-SELECT * FROM workspaces WHERE id=$1 FOR UPDATE;
+-- FOR NO KEY UPDATE serializes writers without making inserts that reference the
+-- workspace, such as a read's audit event, wait for the lock on a connection.
+SELECT * FROM workspaces WHERE id=$1 FOR NO KEY UPDATE;
 -- name: SetMFAPolicy :exec
 UPDATE workspaces SET require_mfa=$2 WHERE id=$1;
 -- name: ListMembers :many
