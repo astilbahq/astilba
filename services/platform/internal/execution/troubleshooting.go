@@ -62,7 +62,7 @@ func (s *Service) SaveTroubleshootingPolicy(ctx context.Context, p store.Princip
 			return domain.Conflict
 		}
 		widened := in.Enabled && (!old.Enabled || old.OwnersOnly && !in.OwnersOnly)
-		if widened && !p.Recent {
+		if widened && !p.Recent() {
 			return domain.RecentRequired
 		}
 		next := old.Generation + 1
@@ -224,12 +224,12 @@ func troubleshootingCapability(raw []byte) error {
 
 // auditTroubleshootingRefusal records a refused attempt by a workspace member in its
 // own transaction, because the refusal rolled back the admission transaction. A prompt
-// for recent authentication is not a refusal, and a missing resource reveals nothing.
-// Repeats are coalesced per hour, so a member cannot flood the workspace's audit log
+// for recent authentication is not a refusal, a missing resource reveals nothing, and a
+// session that has ended may write nothing. Repeats are coalesced per hour, so a member cannot flood the workspace's audit log
 // and push it past the export limit.
 func (s *Service) auditTroubleshootingRefusal(ctx context.Context, p store.Principal, ws, resource uuid.UUID, refusal error) {
 	var refused *domain.Error
-	if !errors.As(refusal, &refused) || refused.Code == domain.RecentRequired.Code || refused.Code == domain.NotFound.Code {
+	if !errors.As(refusal, &refused) || refused.Code == domain.RecentRequired.Code || refused.Code == domain.NotFound.Code || refused.Code == domain.Unauthenticated.Code {
 		return
 	}
 	reason := refused.Code

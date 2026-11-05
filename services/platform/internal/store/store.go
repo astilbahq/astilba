@@ -28,11 +28,20 @@ type Store struct {
 	writeTurns        sync.Map
 }
 type Principal struct {
-	Account    db.Account
-	MFA        bool
-	Recent     bool
-	Automation *domain.AutomationGrant
+	Account db.Account
+	MFA     bool
+	// RecentUntil is when this session's last proof of its credentials stops counting.
+	RecentUntil time.Time
+	// SessionHash is the stored token of the browser session, which a logout ends without
+	// changing the account.
+	SessionHash string
+	Automation  *domain.AutomationGrant
 }
+
+// Recent is decided when it is asked, because a request can wait for the workspace lock
+// for longer than its authentication stays recent.
+func (p Principal) Recent() bool { return time.Now().Before(p.RecentUntil) }
+
 type Workspace struct {
 	ID         uuid.UUID
 	Name, Role string
@@ -56,7 +65,9 @@ func Normalize(err error) error {
 		return domain.NotFound
 	}
 	var pgerr *pgconn.PgError
-	if errors.As(err, &pgerr) && pgerr.Code == "23505" {
+	// 40001 is a repeatable read finding a row changed since its snapshot, which a retry
+	// resolves. Only such a transaction can raise it here.
+	if errors.As(err, &pgerr) && (pgerr.Code == "23505" || pgerr.Code == "40001") {
 		return domain.Conflict
 	}
 	return err
@@ -148,6 +159,10 @@ func (s *Store) inWorkspaceIsolation(ctx context.Context, p Principal, id uuid.U
 			if e != nil {
 				return e
 			}
+		} else if access.Write || access.Lock {
+			if e := browserAdmission(ctx, tx, p, isolation); e != nil {
+				return e
+			}
 		}
 
 		if (access.Owner && w.Role != "owner") || (access.Write && !domain.CanWrite(w.Role)) {
@@ -168,7 +183,7 @@ func (s *Store) inWorkspaceIsolation(ctx context.Context, p Principal, id uuid.U
 				return SubscriptionRequired
 			}
 		}
-		if access.Recent && !p.Recent {
+		if access.Recent && !p.Recent() {
 			return domain.RecentRequired
 		}
 		return fn(tx, q, w)
@@ -177,6 +192,39 @@ func (s *Store) inWorkspaceIsolation(ctx context.Context, p Principal, id uuid.U
 		return Normalize(err)
 	}
 	return Normalize(tx.Commit(ctx))
+}
+
+// AdmitBrowserSession revalidates a session in a transaction holding the workspace lock, so
+// that a credential change or logout committed while the request waited, or the session's
+// expiry, wins. It covers MFA too: every change to it advances the account's version. A
+// refusal rolls back and leaves no audit record, as a refused automation credential does.
+// It takes no locks, so it cannot deadlock or make a revocation wait.
+func AdmitBrowserSession(ctx context.Context, q *db.Queries, p Principal) error {
+	_, err := q.BrowserSessionAdmission(ctx, db.BrowserSessionAdmissionParams{Token: p.SessionHash, AccountID: p.Account.ID, AuthVersion: p.Account.AuthVersion})
+	return IfMissing(err, domain.Unauthenticated)
+}
+
+func browserAdmission(ctx context.Context, tx pgx.Tx, p Principal, isolation pgx.TxIsoLevel) error {
+	if isolation != pgx.RepeatableRead {
+		return AdmitBrowserSession(ctx, db.New(tx), p)
+	}
+	// The snapshot predates the wait for the lock, so a plain read would miss a revocation
+	// committed during it. Locking the rows raises a serialization failure instead, which can
+	// also mean an unrelated change to the account, so Normalize answers with a conflict and
+	// the retry's identity check decides. The savepoint drops those locks, so this check does
+	// not make a revocation wait for the export's capture.
+	//
+	// This read cannot deadlock. It can wait while holding the workspace lock for a holder of
+	// those rows, such as a credential change or an import, but no holder goes on to wait for
+	// a workspace: a workspace lock is only ever taken with no transaction open. A write's
+	// audit insert already waits on the account row in the same order.
+	savepoint, err := tx.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer savepoint.Rollback(ctx)
+	_, err = db.New(savepoint).BrowserSessionSnapshotAdmission(ctx, db.BrowserSessionSnapshotAdmissionParams{Token: p.SessionHash, AccountID: p.Account.ID, AuthVersion: p.Account.AuthVersion})
+	return IfMissing(err, domain.Unauthenticated)
 }
 
 func Audit(ctx context.Context, q *db.Queries, p Principal, w uuid.UUID, action string, resource uuid.UUID) error {
@@ -374,6 +422,17 @@ func (s *Store) Rewrap(ctx context.Context) error {
 	})
 }
 
+const recentAuthentication = 5 * time.Minute
+
 func Recent(at time.Time, now time.Time) bool {
-	return !at.IsZero() && !at.After(now) && now.Sub(at) <= 5*time.Minute
+	return !at.IsZero() && !at.After(now) && now.Sub(at) <= recentAuthentication
+}
+
+// RecentUntil is Principal.RecentUntil for a session that last proved its credentials at
+// the given time.
+func RecentUntil(at time.Time, now time.Time) time.Time {
+	if !Recent(at, now) {
+		return time.Time{}
+	}
+	return at.Add(recentAuthentication)
 }

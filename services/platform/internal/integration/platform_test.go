@@ -376,7 +376,11 @@ func TestCredentialMutationsRejectRevokedRequestSnapshot(t *testing.T) {
 		{"recovery", func() error { _, _, e := f.auth.RegenerateRecovery(ctx, f.owner, old.AuthVersion); return e }},
 		{"enrollment", func() error { _, _, e := f.auth.BeginMFA(ctx, old); return e }},
 		{"confirmation", func() error { _, _, e := f.auth.ConfirmMFA(ctx, f.owner, old.AuthVersion, "123456"); return e }},
-		{"invitation", func() error { _, e := f.auth.AcceptInvitation(ctx, token, "", "", &old); return e }},
+		{"invitation", func() error {
+			p := browserPrincipal(t, f.st, old, false)
+			_, e := f.auth.AcceptInvitation(ctx, token, "", "", &p)
+			return e
+		}},
 	}
 	for _, check := range checks {
 		t.Run(check.name, func(t *testing.T) {

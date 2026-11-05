@@ -17,7 +17,6 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/applicationdns"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
-	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
 )
 
@@ -83,7 +82,9 @@ func TestApplicationDomainScopeAndRecovery(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	if _, e = f.execution.ConfigureServerDomain(ctx, store.Principal{Account: account}, ws, enrolled.Server.Id, api.ConfigureServerDomain{BaseGeneration: profile.Generation, Ipv4: "198.51.100.9"}); e != domain.RecentRequired {
+	stale := browserPrincipal(t, f.st, account, false)
+	stale.RecentUntil = time.Time{}
+	if _, e = f.execution.ConfigureServerDomain(ctx, stale, ws, enrolled.Server.Id, api.ConfigureServerDomain{BaseGeneration: profile.Generation, Ipv4: "198.51.100.9"}); e != domain.RecentRequired {
 		t.Fatalf("missing recent authentication: %v", e)
 	}
 
@@ -172,7 +173,7 @@ func TestApplicationDomainScopeAndRecovery(t *testing.T) {
 	if e = f.st.PrepareRecovery(ctx, enrolled.Server.Id, 1); e != nil {
 		t.Fatal(e)
 	}
-	ticket, e := f.execution.PrepareTransfer(ctx, store.Principal{Account: account, Recent: true}, ws, enrolled.Server.Id)
+	ticket, e := f.execution.PrepareTransfer(ctx, browserPrincipal(t, f.st, account, false), ws, enrolled.Server.Id)
 	if e != nil {
 		t.Fatal(e)
 	}

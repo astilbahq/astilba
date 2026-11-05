@@ -10,7 +10,6 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
-	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
 )
 
@@ -31,7 +30,7 @@ func TestHostedQueuedExpiryAndBackpressure(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	p := store.Principal{Account: account, MFA: true, Recent: true}
+	p := browserPrincipal(t, f.st, account, true)
 	f.st.Hosted = true
 	if e = f.st.GrantManagement(ctx, ws, time.Now().Add(time.Hour), 100); e != nil {
 		t.Fatal(e)

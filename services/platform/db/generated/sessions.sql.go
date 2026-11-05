@@ -8,7 +8,53 @@ package db
 import (
 	"context"
 	"time"
+
+	"github.com/google/uuid"
 )
+
+const browserSessionAdmission = `-- name: BrowserSessionAdmission :one
+SELECT a.id FROM accounts a JOIN sessions s ON s.token = $1 AND s.expiry > clock_timestamp()
+WHERE a.id = $2 AND a.auth_version = $3
+`
+
+type BrowserSessionAdmissionParams struct {
+	Token       string    `json:"token"`
+	AccountID   uuid.UUID `json:"account_id"`
+	AuthVersion int64     `json:"auth_version"`
+}
+
+// unscoped: the hashed browser session token is the credential.
+// Revalidates an authenticated session under the workspace write lock.
+// Keep the validity predicate identical to BrowserSessionSnapshotAdmission.
+func (q *Queries) BrowserSessionAdmission(ctx context.Context, arg BrowserSessionAdmissionParams) (uuid.UUID, error) {
+	row := q.db.QueryRow(ctx, browserSessionAdmission, arg.Token, arg.AccountID, arg.AuthVersion)
+	var id uuid.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
+const browserSessionSnapshotAdmission = `-- name: BrowserSessionSnapshotAdmission :one
+SELECT a.id FROM accounts a JOIN sessions s ON s.token = $1 AND s.expiry > clock_timestamp()
+WHERE a.id = $2 AND a.auth_version = $3
+FOR SHARE OF a FOR KEY SHARE OF s
+`
+
+type BrowserSessionSnapshotAdmissionParams struct {
+	Token       string    `json:"token"`
+	AccountID   uuid.UUID `json:"account_id"`
+	AuthVersion int64     `json:"auth_version"`
+}
+
+// unscoped: the hashed browser session token is the credential.
+// Fails to serialize if the account changed or the session was deleted after the
+// transaction's snapshot. KEY SHARE ignores a session's idle refresh.
+// Keep the validity predicate identical to BrowserSessionAdmission.
+func (q *Queries) BrowserSessionSnapshotAdmission(ctx context.Context, arg BrowserSessionSnapshotAdmissionParams) (uuid.UUID, error) {
+	row := q.db.QueryRow(ctx, browserSessionSnapshotAdmission, arg.Token, arg.AccountID, arg.AuthVersion)
+	var id uuid.UUID
+	err := row.Scan(&id)
+	return id, err
+}
 
 const deleteRenewedSession = `-- name: DeleteRenewedSession :execrows
 DELETE FROM sessions WHERE token = $1

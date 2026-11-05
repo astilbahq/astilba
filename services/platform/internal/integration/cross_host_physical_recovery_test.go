@@ -23,7 +23,6 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/execution"
 	"github.com/astilbahq/astilba/services/platform/internal/portability"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
-	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/astilbahq/astilba/services/platform/internal/upgrade"
 	"github.com/google/uuid"
 	"github.com/moby/moby/client"
@@ -619,7 +618,7 @@ chmod +x /tmp/www/cgi-bin/health
 		interruptedSequence = record.Report.Sequence
 	}
 	for i, host := range hosts {
-		ticket, err := current.PrepareTransfer(ctx, store.Principal{Account: account, Recent: true, MFA: true}, ws, inputs[i].ServerId)
+		ticket, err := current.PrepareTransfer(ctx, browserPrincipal(t, current.Store, account, true), ws, inputs[i].ServerId)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -718,7 +717,7 @@ chmod +x /tmp/www/cgi-bin/health
 			return attention
 		})
 		assertPhysicalWriters(t, ctx, hosts, applied, app, false)
-		principal := store.Principal{Account: account, Recent: true, MFA: true}
+		principal := browserPrincipal(t, current.Store, account, true)
 		if _, err := current.UpgradeAction(ctx, principal, ws, project.Id, environment.Id, upgradeView.Plan.ID, api.UpgradeActionRequest{Action: "return", ExpectedPhase: "attention", RequestKey: uuid.New()}); !errors.Is(err, domain.Conflict) {
 			t.Fatal("possible target writes did not forbid returning to the source", err)
 		}

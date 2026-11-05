@@ -16,3 +16,19 @@ DELETE FROM sessions WHERE token = @token;
 -- unscoped: the hashed browser session token identifies the sessions it opened.
 UPDATE troubleshooting_sessions SET browser_session_hash = @renewed
 WHERE browser_session_hash = @previous AND state <> 'closed';
+
+-- name: BrowserSessionAdmission :one
+-- unscoped: the hashed browser session token is the credential.
+-- Revalidates an authenticated session under the workspace write lock.
+-- Keep the validity predicate identical to BrowserSessionSnapshotAdmission.
+SELECT a.id FROM accounts a JOIN sessions s ON s.token = @token AND s.expiry > clock_timestamp()
+WHERE a.id = @account_id AND a.auth_version = @auth_version;
+
+-- name: BrowserSessionSnapshotAdmission :one
+-- unscoped: the hashed browser session token is the credential.
+-- Fails to serialize if the account changed or the session was deleted after the
+-- transaction's snapshot. KEY SHARE ignores a session's idle refresh.
+-- Keep the validity predicate identical to BrowserSessionAdmission.
+SELECT a.id FROM accounts a JOIN sessions s ON s.token = @token AND s.expiry > clock_timestamp()
+WHERE a.id = @account_id AND a.auth_version = @auth_version
+FOR SHARE OF a FOR KEY SHARE OF s;

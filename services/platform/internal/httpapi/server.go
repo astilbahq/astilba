@@ -195,12 +195,16 @@ func (s *Server) identity(next http.Handler) http.Handler {
 					return
 				}
 			} else {
-				p := &store.Principal{Account: a, MFA: s.Sessions.GetBool(r.Context(), "mfa"), Recent: store.Recent(s.Sessions.GetTime(r.Context(), "recent"), s.Auth.Now())}
-				r = r.WithContext(context.WithValue(r.Context(), principalKey, p))
+				r = r.WithContext(context.WithValue(r.Context(), principalKey, s.sessionPrincipal(r.Context(), a)))
 			}
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// sessionPrincipal is the principal of a loaded session on account a's current version.
+func (s *Server) sessionPrincipal(ctx context.Context, a db.Account) *store.Principal {
+	return &store.Principal{Account: a, MFA: s.Sessions.GetBool(ctx, "mfa"), RecentUntil: store.RecentUntil(s.Sessions.GetTime(ctx, "recent"), s.Auth.Now()), SessionHash: ctx.Value(sessionLoadKey{}).(*sessionLoad).token}
 }
 
 func (s *Server) csrf(next http.Handler) http.Handler {
@@ -413,7 +417,7 @@ func (s *Server) Logout(w http.ResponseWriter, r *http.Request) {
 func (s *Server) recent(r *http.Request) error {
 	if p := principal(r.Context()); p == nil {
 		return domain.Unauthenticated
-	} else if !p.Recent {
+	} else if !p.Recent() {
 		return domain.RecentRequired
 	}
 	return nil
@@ -500,12 +504,9 @@ func (s *Server) AcceptInvitation(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, e)
 		return
 	}
-	var current *db.Account
-	if p := principal(r.Context()); p != nil {
-		current = &p.Account
-	}
+	current := principal(r.Context())
 	a, e := s.Auth.AcceptInvitation(r.Context(), b.Token, value(b.Name), value(b.Password), current)
-	if e == nil && (current == nil || current.ID != a.ID) {
+	if e == nil && (current == nil || current.Account.ID != a.ID) {
 		e = s.establish(r.Context(), a, false)
 	}
 	if e != nil {

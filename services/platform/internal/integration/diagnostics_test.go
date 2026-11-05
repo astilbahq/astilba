@@ -8,7 +8,6 @@ import (
 
 	"github.com/astilbahq/astilba/services/platform/internal/portability"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
-	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
 )
 
@@ -65,7 +64,7 @@ func TestWorkspaceExportOmitsLogsAndPreservesRecoveryDiagnostics(t *testing.T) {
 		t.Fatal(err)
 	}
 	passphrase := "diagnostic export fixture passphrase"
-	encrypted, err := (&portability.Service{Store: f.st}).Export(ctx, store.Principal{Account: account, Recent: true}, ws, passphrase)
+	encrypted, err := (&portability.Service{Store: f.st}).Export(ctx, browserPrincipal(t, f.st, account, false), ws, passphrase)
 	if err != nil {
 		t.Fatal(err)
 	}

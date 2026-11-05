@@ -449,7 +449,7 @@ func (s *Service) ValidateInvitation(ctx context.Context, token, ip string) erro
 	return err
 }
 
-func (s *Service) AcceptInvitation(ctx context.Context, token, name, password string, current *db.Account) (db.Account, error) {
+func (s *Service) AcceptInvitation(ctx context.Context, token, name, password string, current *store.Principal) (db.Account, error) {
 	var account db.Account
 	peek, err := s.Store.Queries.PeekInvitation(ctx, Hash(token))
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -483,11 +483,14 @@ func (s *Service) AcceptInvitation(ctx context.Context, token, name, password st
 		} else if err != nil {
 			return err
 		} else {
-			if current == nil || current.ID != account.ID {
+			if current == nil || current.Account.ID != account.ID {
 				return &domain.Error{Code: "invitation_signin_required", Message: "Sign in as the invited account before accepting."}
 			}
-			account, err = lockCurrent(ctx, q, current.ID, current.AuthVersion)
+			account, err = lockCurrent(ctx, q, current.Account.ID, current.Account.AuthVersion)
 			if err != nil {
+				return err
+			}
+			if err = store.AdmitBrowserSession(ctx, q, *current); err != nil {
 				return err
 			}
 		}

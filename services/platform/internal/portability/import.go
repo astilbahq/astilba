@@ -143,7 +143,7 @@ func decodeArchiveMode(raw []byte, recovery bool) (Archive, error) {
 
 func (s *Service) Import(ctx context.Context, p store.Principal, passphrase string, envelope []byte, invitation string) (store.Workspace, error) {
 	var out store.Workspace
-	if !p.Recent {
+	if !p.Recent() {
 		return out, domain.RecentRequired
 	}
 	if s.Store.Hosted && (!p.MFA || p.Account.EmailVerifiedAt == nil) {
