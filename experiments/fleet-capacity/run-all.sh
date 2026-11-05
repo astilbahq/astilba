@@ -10,8 +10,8 @@ work=$(mktemp -d)
 trap 'rm -rf -- "$work"' EXIT
 # measure handles an interrupt and exits 1, so stop the batch here rather than start the next run.
 trap 'exit 130' INT TERM
-go build -o "$work/fleet-cost" .
-measure() { "$work/fleet-cost" measure --docker-context "$context" --out "$out" --warm 2m --window 8m "$@"; }
+go build -o "$work/fleet-capacity" .
+measure() { "$work/fleet-capacity" measure --docker-context "$context" --out "$out" --warm 2m --window 8m "$@"; }
 # Sharing all CPUs raises NumCPU, the only way to enlarge the application's database pool today.
 wide=(--app-cpuset 0-11 --db-cpuset 0-11 --generator-cpuset 0-11)
 # A throwaway copy of the application with the one-second tick removed. Never committed
@@ -55,6 +55,6 @@ fi
 failed=0
 for name in "$@"; do
   [ -e "$out/$name.json" ] && { echo "skip $name"; continue; }
-  run "$name" || { echo "fleet-cost: run $name failed" >&2; failed=1; }
+  run "$name" || { echo "fleet-capacity: run $name failed" >&2; failed=1; }
 done
 exit "$failed"

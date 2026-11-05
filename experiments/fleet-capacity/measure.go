@@ -22,7 +22,7 @@ import (
 
 const (
 	postgresImage       = "postgres:18.4-alpine3.23@sha256:996d0920e4ff9df1fc19dacb904492f3c1ec0ec1cc338f0ad7123be7731c5f5e"
-	ownerLabel          = "dev.astilba.fleet-cost"
+	ownerLabel          = "dev.astilba.fleet-capacity"
 	ownerEmail          = "owner@fleet.example.test"
 	publicOrigin        = "https://fleet.example.test"
 	statsURL            = "http://127.0.0.1:9100/stats"
@@ -192,7 +192,7 @@ func runMeasure(args []string) error {
 			cleanup(d, id)
 		}
 	}()
-	work, err := os.MkdirTemp("", "fleet-cost-")
+	work, err := os.MkdirTemp("", "fleet-capacity-")
 	if err != nil {
 		return err
 	}
@@ -208,7 +208,7 @@ func runMeasure(args []string) error {
 	if _, err = d.run(ctx, "", "network", "create", "--label", label, names.net); err != nil {
 		return err
 	}
-	password := hex.EncodeToString(suffix) + "-fleet-cost-disposable"
+	password := hex.EncodeToString(suffix) + "-fleet-capacity-disposable"
 	dbArgs := []string{"run", "-d", "--name", names.db, "--label", label, "--network", names.net, "-e", "POSTGRES_USER=astilba", "-e", "POSTGRES_PASSWORD=" + password, "-e", "POSTGRES_DB=astilba", "--tmpfs", "/tmp", "--cpuset-cpus", o.dbCpuset}
 	if o.dbCPUs != "" {
 		dbArgs = append(dbArgs, "--cpus", o.dbCPUs)
@@ -255,7 +255,7 @@ func runMeasure(args []string) error {
 	if _, err = d.run(ctx, "", "cp", filepath.Join(work, "astilba"), names.app+":/usr/local/bin/astilba"); err != nil {
 		return err
 	}
-	if _, err = d.run(ctx, "", "cp", filepath.Join(work, "fleet-cost"), names.gen+":/usr/local/bin/fleet-cost"); err != nil {
+	if _, err = d.run(ctx, "", "cp", filepath.Join(work, "fleet-capacity"), names.gen+":/usr/local/bin/fleet-capacity"); err != nil {
 		return err
 	}
 	dsn := fmt.Sprintf("postgres://astilba:%s@%s:5432/astilba?sslmode=disable", password, names.db)
@@ -281,7 +281,7 @@ func runMeasure(args []string) error {
 		return fmt.Errorf("application did not start: %w", err)
 	}
 	res.Ping, _ = d.run(ctx, "", "exec", names.app, "sh", "-c", "ping -c 100 -i 0.02 -q "+names.db+" | tail -1")
-	genCmd := fmt.Sprintf("exec fleet-cost agents --origin http://%s:8080 --public-origin %s --email %s --agents %d --services %d --per-workspace %d --deploys-per-day %g --deploy-duration %s >/tmp/gen.log 2>&1", names.app, publicOrigin, ownerEmail, o.agents, o.services, o.perWorkspace, o.deploysPerDay, o.deployDuration)
+	genCmd := fmt.Sprintf("exec fleet-capacity agents --origin http://%s:8080 --public-origin %s --email %s --agents %d --services %d --per-workspace %d --deploys-per-day %g --deploy-duration %s >/tmp/gen.log 2>&1", names.app, publicOrigin, ownerEmail, o.agents, o.services, o.perWorkspace, o.deploysPerDay, o.deployDuration)
 	if _, err = d.run(ctx, "", "exec", "-d", "-e", "FLEET_OWNER_PASSWORD="+ownerPassword, names.gen, "sh", "-c", genCmd); err != nil {
 		return err
 	}
@@ -301,7 +301,7 @@ func runMeasure(args []string) error {
 		if !wait(ctx, 5*time.Second) {
 			return ctx.Err()
 		}
-		if alive, _ := d.run(ctx, "", "exec", names.gen, "sh", "-c", "pidof fleet-cost >/dev/null && echo up || tail -20 /tmp/gen.log"); alive != "up" {
+		if alive, _ := d.run(ctx, "", "exec", names.gen, "sh", "-c", "pidof fleet-capacity >/dev/null && echo up || tail -20 /tmp/gen.log"); alive != "up" {
 			return fmt.Errorf("generator stopped: %s", alive)
 		}
 	}
@@ -341,7 +341,7 @@ func build(ctx context.Context, o options, work string) error {
 	if out, err := server.CombinedOutput(); err != nil {
 		return fmt.Errorf("build server: %w: %s", err, out)
 	}
-	self := exec.CommandContext(ctx, "go", "build", "-o", filepath.Join(work, "fleet-cost"), ".")
+	self := exec.CommandContext(ctx, "go", "build", "-o", filepath.Join(work, "fleet-capacity"), ".")
 	self.Env = env
 	if out, err := self.CombinedOutput(); err != nil {
 		return fmt.Errorf("build generator: %w: %s", err, out)

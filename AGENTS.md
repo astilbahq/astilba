@@ -2,7 +2,7 @@
 
 This repository contains the BYOS deployment platform and its technical-validation experiments. Read [engineering principles](docs/engineering-principles.md) before implementation or review. Use the [product brief](docs/platform-product-brief.md) for scope, [architecture](docs/platform-architecture.md) for boundaries, and [implementation plan](docs/platform-implementation-plan.md) for sequencing; read only the sections the task needs.
 
-`experiments/durable-execution` is a disposable Go module for the PLAT-2 through PLAT-5 spikes. `experiments/git-compose` is the separate PLAT-7 Git/provider and source-preserving Compose spike. `experiments/canvas-editor` is the browser-local PLAT-1 React Flow/Panda experiment. `experiments/fleet-cost` measures what connected agents cost management and needs only a disposable Docker VM. The production application is in `services/platform` and `apps/platform`, with its API contract in `contracts/platform`. Keep experiments separate from application code.
+`experiments/durable-execution` is a disposable Go module for the PLAT-2 through PLAT-5 spikes. `experiments/git-compose` is the separate PLAT-7 Git/provider and source-preserving Compose spike. `experiments/canvas-editor` is the browser-local PLAT-1 React Flow/Panda experiment. `experiments/fleet-capacity` measures the load connected agents put on management and needs only a disposable Docker VM. The production application is in `services/platform` and `apps/platform`, with its API contract in `contracts/platform`. Keep experiments separate from application code.
 
 ## Commands
 

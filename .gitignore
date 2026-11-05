@@ -19,4 +19,4 @@ experiments/canvas-editor/styled-system/
 
 apps/platform/styled-system/
 
-experiments/fleet-cost/results/*.json
+experiments/fleet-capacity/results/*.json

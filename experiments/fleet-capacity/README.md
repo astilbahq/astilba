@@ -1,6 +1,6 @@
-# Fleet cost measurement
+# Fleet capacity measurement
 
-Measures what connected agents cost the management application. It runs the real server binary against PostgreSQL 18.4 and drives it with synthetic agents over the public HTTP contract. It imports no application code and adds none. Results and the AWS sizing built on them are in [RESULTS.md](RESULTS.md).
+Measures the load connected agents put on the management application. It runs the real server binary against PostgreSQL 18.4 and drives it with synthetic agents over the public HTTP contract. It imports no application code and adds none. Results and the sizing built on them are in [RESULTS.md](RESULTS.md).
 
 ## What it runs
 
@@ -23,35 +23,31 @@ Before the window, each server's own report is copied back over the previous 24 
 | `-pool12` | The application sees 12 CPUs, so its pool has 12 connections. |
 | `-no-tick` | A throwaway build with [no-tick.patch](no-tick.patch) applied to a temporary copy of the working tree. It bounds what a wake-up could save and is not usable: commands wait up to 25 s. |
 | `-slow-db` | A larger `netem` delay, about 0.8 ms round trip. |
-| `sized-` | CPU quotas matching proposed AWS sizes. |
+| `sized-` | CPU quotas matching proposed sizes. |
 
 `tmpfs-idle-2000-contended` in the published tables is an earlier `tmpfs-idle-2000` on a busy host, kept as evidence of how little margin the pool has. It cannot be repeated by name.
 
 ## CPU figures
 
-CPU is what each container's cgroup reports. A guest counts time its vCPU was preempted by a busy host as CPU used, so a busier host inflates it. Each result records host load and a single-core `pgbench` rate, and the bill in [RESULTS.md](RESULTS.md) uses runs that started at low load. Do not compare CPU between runs without checking both.
+CPU is what each container's cgroup reports. A guest counts time its vCPU was preempted by a busy host as CPU used, so a busier host inflates it. Each result records host load and a single-core `pgbench` rate, and the sizing in [RESULTS.md](RESULTS.md) uses runs that started at low load. Do not compare CPU between runs without checking both.
 
 ## Run it
 
 Use a disposable Docker VM only. The defaults assume 12 CPUs, split 4/4/4 between application, database and generator.
 
 ```bash
-colima start astilba-fleet-cost --activate=false --mount none --port-forwarder none --cpu 12 --memory 20 --disk 40
+colima start astilba-fleet-capacity --activate=false --mount none --port-forwarder none --cpu 12 --memory 20 --disk 40
 ```
 
 ```bash
-./run-all.sh colima-astilba-fleet-cost /path/to/new/results
+./run-all.sh colima-astilba-fleet-capacity /path/to/new/results
 ```
 
 ```bash
 go run . summary /path/to/new/results/*.json
 ```
 
-```bash
-go run . cost /path/to/new/results/tmpfs-idle-0100.json /path/to/new/results/tmpfs-idle-0500.json /path/to/new/results/tmpfs-idle-1000.json /path/to/new/results/tmpfs-idle-1500.json /path/to/new/results/tmpfs-idle-2000.json /path/to/new/results/tmpfs-active-1000.json /path/to/new/results/tmpfs-idle-2000-no-tick.json
-```
-
-That is the list behind [results/cost.md](results/cost.md); [results/summary.md](results/summary.md) came from `summary` over all the runs. `measure` writes one JSON per run. Those files are not kept in this repository, so a repeat produces new measurements rather than the published ones. `run-all.sh` takes run names to repeat one run, skips results that already exist and exits non-zero if any run fails. `--speed-scale` on `cost` tests sensitivity to the CPU conversion. A full `run-all.sh` takes about four hours. Host load comes from the machine running `measure`, so it describes the Docker host only for a local VM. Repeat runs that overlap heavy work on the same machine.
+[results/summary.md](results/summary.md) came from `summary` over all the runs. `measure` writes one JSON per run. Those files are not kept in this repository, so a repeat produces new measurements rather than the published ones. `run-all.sh` takes run names to repeat one run, skips results that already exist and exits non-zero if any run fails. A full `run-all.sh` takes about four hours. Host load comes from the machine running `measure`, so it describes the Docker host only for a local VM. Repeat runs that overlap heavy work on the same machine.
 
 The application's database pool has `max(4, NumCPU)` connections and cannot be configured: `pool_max_conns` in the URL breaks the `database/sql` migration check. So `--app-cpuset` is how a run selects the pool size.
 

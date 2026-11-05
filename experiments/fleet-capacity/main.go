@@ -1,4 +1,4 @@
-// Command fleet-cost measures what connected agents cost the management application.
+// Command fleet-capacity measures the load connected agents put on the management application.
 package main
 
 import (
@@ -15,13 +15,11 @@ func main() {
 		err = runMeasure(os.Args[2:])
 	case len(os.Args) > 1 && os.Args[1] == "summary":
 		err = runSummary(os.Args[2:])
-	case len(os.Args) > 1 && os.Args[1] == "cost":
-		err = runCost(os.Args[2:])
 	default:
-		err = fmt.Errorf("usage: fleet-cost measure|agents|summary|cost")
+		err = fmt.Errorf("usage: fleet-capacity measure|agents|summary")
 	}
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "fleet-cost:", err)
+		fmt.Fprintln(os.Stderr, "fleet-capacity:", err)
 		os.Exit(1)
 	}
 }

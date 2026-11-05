@@ -12,13 +12,13 @@
 | tmpfs-active-1000 | 1000 | 4815 | 4.82 | 0.611 | 0.263 | 4579 | 134 | 5 / 0.97 | 209 / 652 | 1031 / 1105 | 312 | 32 | 8.2 / 524.3 | 0 | 24327 | 6.45 4.97 5.13 |
 | tmpfs-idle-0100 | 100 | 355 | 3.55 | 0.031 | 0.038 | 508 | 38 | 5 / 0.06 | 116 / 119 | 797 / 399 | 10 | 15 | 4.1 / 16.4 | 0 | 20567 | 7.45 7.93 8.65 |
 | tmpfs-idle-0500 | 500 | 1724 | 3.45 | 0.071 | 0.086 | 1196 | 85 | 5 / 0.25 | 116 / 120 | 756 / 378 | 41 | 15 | 4.1 / 16.4 | 0 | 23903 | 3.21 4.88 7.04 |
-| tmpfs-idle-1000 | 1000 | 3354 | 3.35 | 0.190 | 0.217 | 2367 | 134 | 5 / 0.19 | 114 / 117 | 733 / 366 | 66 | 14 | 4.1 / 32.8 | 0 | 23345 | 7.28 7.02 6.09 |
-| tmpfs-idle-1500-slow-db | 1500 | 4977 | 3.32 | 0.192 | 0.239 | 2982 | 190 | 5 / 0.66 | 115 / 123 | 726 / 362 | 102 | 14 | 1048.6 / 1048.6 | 189 | 19452 | 3.41 3.96 3.91 |
+| tmpfs-idle-1000 | 1000 | 3351 | 3.35 | 0.149 | 0.185 | 2364 | 134 | 5 / 0.31 | 114 / 117 | 733 / 366 | 73 | 14 | 4.1 / 16.4 | 0 | 23656 | 3.87 5.17 5.47 |
+| tmpfs-idle-1500-slow-db | 1500 | 4990 | 3.33 | 0.225 | 0.275 | 2984 | 185 | 5 / 0.59 | 114 / 119 | 728 / 363 | 98 | 14 | 8.2 / 524.3 | 0 | 20576 | 6.17 6.15 5.73 |
 | tmpfs-idle-1500 | 1500 | 5127 | 3.42 | 0.175 | 0.216 | 2984 | 185 | 5 / 0.31 | 115 / 120 | 746 / 373 | 103 | 14 | 4.1 / 262.1 | 0 | 13874 | 3.98 5.98 6.32 |
 | tmpfs-idle-2000-contended | 2000 | 6162 | 3.08 | 0.379 | 0.437 | 3371 | 269 | 5 / 0.97 | 114 / 122 | 677 / 336 | 150 | 14 | 262.1 / 4194.3 | 2604 | 9054 | 18.32 20.11 18.42 |
-| tmpfs-idle-2000-no-tick | 2000 | 958 | 0.48 | 0.106 | 0.145 | 3383 | 244 | 5 / 0.06 | 114 / 117 | 152 / 55 | 154 | 14 | 4.1 / 65.5 | 0 | 15655 | 6.37 7.95 7.09 |
+| tmpfs-idle-2000-no-tick | 2000 | 957 | 0.48 | 0.104 | 0.143 | 3378 | 243 | 5 / 0.34 | 114 / 117 | 152 / 55 | 158 | 14 | 4.1 / 16.4 | 0 | 24564 | 2.79 3.29 4.12 |
 | tmpfs-idle-2000-pool12 | 2000 | 6811 | 3.41 | 0.372 | 0.426 | 3429 | 254 | 13 / 0.62 | 115 / 119 | 745 / 371 | 146 | 14 | 4.1 / 1048.6 | 0 | 18560 | 10.49 14.74 15.70 |
-| tmpfs-idle-2000 | 2000 | 6825 | 3.41 | 0.229 | 0.289 | 3377 | 243 | 5 / 0.56 | 117 / 124 | 746 / 372 | 148 | 15 | 32.8 / 1048.6 | 3 | 21728 | 6.53 5.43 4.69 |
+| tmpfs-idle-2000 | 2000 | 6670 | 3.33 | 0.231 | 0.293 | 3381 | 241 | 5 / 0.59 | 114 / 118 | 729 / 364 | 148 | 14 | 4.1 / 262.1 | 0 | 22003 | 4.85 6.01 5.65 |
 
 ### idle-0000
 
@@ -415,71 +415,61 @@ Deploys in window: started 0, finished 0, failed 0; delivery p50/p99 ms 0/0. Err
 
 ### tmpfs-idle-1000
 
-Window 480s; revision 35aa720-dirty; ping round-trip min/avg/max = 0.395/0.470/0.620 ms; options map[agents:1000 appCPUs: appCpuset:0-3 dbCPUs: dbCpuset:4-7 dbRTT:300us dbTmpfs:true deployDuration:2m0s deploysPerDay:0 perWorkspace:5 serverPatched:false services:0 sharedBuffers:1GB warm:2m0s].
+Window 480s; revision f06a5b8; ping round-trip min/avg/max = 0.344/0.447/0.566 ms; options map[agents:1000 appCPUs: appCpuset:0-3 dbCPUs: dbCpuset:4-7 dbRTT:300us dbTmpfs:true deployDuration:2m0s deploysPerDay:0 perWorkspace:5 serverPatched:false services:0 sharedBuffers:1GB warm:2m0s].
 
 | Statement | calls/s | per agent/s | mean ms | exec ms/s | share of exec | WAL B/s |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| AuthenticateAgent | 1118.5 | 1.119 | 0.017 | 19.4 | 42.5% | 4024 |
-| ListTroubleshootingOffers | 995.3 | 0.995 | 0.008 | 8.3 | 18.1% | 0 |
-| poll command | 995.3 | 0.995 | 0.005 | 5.4 | 11.8% | 0 |
-| RecordAgentHeartbeat | 66.9 | 0.067 | 0.057 | 3.8 | 8.3% | 11834 |
-| metrics prune | 16.7 | 0.017 | 0.150 | 2.5 | 5.5% | 5583 |
-| poll lease release | 39.6 | 0.040 | 0.058 | 2.3 | 5.0% | 6484 |
-| poll lease take | 39.6 | 0.040 | 0.054 | 2.1 | 4.7% | 6320 |
-| metrics insert | 16.7 | 0.017 | 0.075 | 1.3 | 2.8% | 20848 |
-| lockAgentCredential | 16.7 | 0.017 | 0.021 | 0.4 | 0.8% | 1528 |
-| WITH locked_jobs AS ( SELECT id, args, attempt, attempted_at… | 1.2 | 0.001 | 0.044 | 0.1 | 0.1% | 366 |
-| SELECT received_at,report FROM (SELECT received_at,report FR… | 1.7 | 0.002 | 0.027 | 0.0 | 0.1% | 0 |
-| WITH job_input AS ( SELECT unnest($1::bigint[]) AS id, unnes… | 0.2 | 0.000 | 0.174 | 0.0 | 0.1% | 256 |
-| UPDATE workspaces SET alert_scanned_at=$1 WHERE id=(SELECT i… | 0.3 | 0.000 | 0.080 | 0.0 | 0.1% | 95 |
-| UPDATE operational_alerts SET state='resolved',reason=$4,res… | 3.3 | 0.003 | 0.007 | 0.0 | 0.0% | 0 |
-| WITH raw_job_data AS ( SELECT unnest($1::bigint[]) AS id, un… | 0.2 | 0.000 | 0.105 | 0.0 | 0.0% | 264 |
+| AuthenticateAgent | 1117.6 | 1.118 | 0.013 | 14.7 | 43.4% | 3813 |
+| ListTroubleshootingOffers | 994.7 | 0.995 | 0.006 | 6.2 | 18.5% | 0 |
+| poll command | 994.7 | 0.995 | 0.004 | 4.0 | 11.8% | 0 |
+| RecordAgentHeartbeat | 66.7 | 0.067 | 0.047 | 3.1 | 9.2% | 10524 |
+| UPDATE servers SET poll_id=$3,poll_until=$4 WHERE id=$1 AND … | 39.6 | 0.040 | 0.049 | 1.9 | 5.7% | 6850 |
+| poll lease take | 39.6 | 0.040 | 0.046 | 1.8 | 5.4% | 6303 |
+| metrics insert | 16.7 | 0.017 | 0.070 | 1.2 | 3.4% | 20211 |
+| metrics prune | 16.7 | 0.017 | 0.017 | 0.3 | 0.8% | 14239 |
+| lockAgentCredential | 16.7 | 0.017 | 0.017 | 0.3 | 0.8% | 1512 |
+| WITH locked_jobs AS ( SELECT id, args, attempt, attempted_at… | 1.2 | 0.001 | 0.044 | 0.1 | 0.2% | 279 |
+| SELECT received_at,report FROM (SELECT received_at,report FR… | 1.7 | 0.002 | 0.023 | 0.0 | 0.1% | 0 |
+| WITH job_input AS ( SELECT unnest($1::bigint[]) AS id, unnes… | 0.2 | 0.000 | 0.168 | 0.0 | 0.1% | 263 |
+| UPDATE workspaces SET alert_scanned_at=$1 WHERE id=(SELECT i… | 0.3 | 0.000 | 0.069 | 0.0 | 0.1% | 99 |
+| WITH raw_job_data AS ( SELECT unnest($1::bigint[]) AS id, un… | 0.2 | 0.000 | 0.109 | 0.0 | 0.1% | 293 |
+| DELETE FROM server_metrics WHERE (server_id,received_at) IN … | 0.0 | 0.000 | 1.269 | 0.0 | 0.1% | 870 |
 
-WAL fsync: 104/s, mean 0.00 ms. Database: 643446463 → 646502079 bytes (6364 bytes/s). Throttled µs: DB 0, app 0. Generator CPU 0.032 cores. Load 7.28 7.02 6.09 → 9.10 6.62 6.07.
+WAL fsync: 110/s, mean 0.00 ms. Database: 642102975 → 645174975 bytes (6398 bytes/s). Throttled µs: DB 0, app 0. Generator CPU 0.028 cores. Load 3.87 5.17 5.47 → 3.68 4.05 4.74.
 
-Largest table growth: server_metrics +2932736 (now 628760576); river_job +40960 (now 286720); workspaces +8192 (now 98304); servers +0 (now 4628480); audit_events +0 (now 376832); auth_attempts +0 (now 253952); 
+Largest table growth: server_metrics +2908160 (now 628695040); river_job +81920 (now 319488); workspaces +8192 (now 98304); servers +0 (now 3293184); audit_events +0 (now 385024); auth_attempts +0 (now 262144); 
 
-Deploys in window: started 0, finished 0, failed 0; delivery p50/p99 ms 0/0. Errors kept since the generator started, including setup, capped at 200: 200.
-Oldest kept error: 20:50:33 poll: Get "http://fleet-app-38e2f8dc:8080/agent/v1/poll": net/http: timeout awaiting response headers
+Deploys in window: started 0, finished 0, failed 0; delivery p50/p99 ms 0/0. Errors kept since the generator started, including setup, capped at 200: 155.
+Oldest kept error: 22:53:04 metrics: Post "http://fleet-app-f7fbde57:8080/agent/v1/metrics": context deadline exceeded
 
 ### tmpfs-idle-1500-slow-db
 
-Window 480s; revision 35aa720; ping round-trip min/avg/max = 0.575/0.786/0.926 ms; options map[agents:1500 appCPUs: appCpuset:0-3 appMemory: dbCPUs: dbCpuset:4-7 dbMemory: dbRTT:500us dbTmpfs:true deployDuration:2m0s deploysPerDay:0 perWorkspace:5 services:0 sharedBuffers:1GB warm:2m0s].
+Window 480s; revision f06a5b8; ping round-trip min/avg/max = 0.581/0.748/1.215 ms; options map[agents:1500 appCPUs: appCpuset:0-3 dbCPUs: dbCpuset:4-7 dbRTT:500us dbTmpfs:true deployDuration:2m0s deploysPerDay:0 perWorkspace:5 serverPatched:false services:0 sharedBuffers:1GB warm:2m0s].
 
 | Statement | calls/s | per agent/s | mean ms | exec ms/s | share of exec | WAL B/s |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| AuthenticateAgent | 1662.1 | 1.108 | 0.011 | 17.7 | 41.4% | 4355 |
-| ListTroubleshootingOffers | 1477.0 | 0.985 | 0.006 | 8.8 | 20.5% | 0 |
-| poll command | 1476.5 | 0.984 | 0.003 | 4.9 | 11.5% | 0 |
-| RecordAgentHeartbeat | 99.9 | 0.067 | 0.041 | 4.1 | 9.6% | 17962 |
-| poll lease take | 59.0 | 0.039 | 0.040 | 2.3 | 5.5% | 10111 |
-| poll lease release | 59.1 | 0.039 | 0.039 | 2.3 | 5.4% | 9144 |
-| metrics insert | 25.4 | 0.017 | 0.057 | 1.4 | 3.4% | 31585 |
-| metrics prune | 25.4 | 0.017 | 0.018 | 0.4 | 1.0% | 13921 |
-| lockAgentCredential | 25.4 | 0.017 | 0.015 | 0.4 | 0.9% | 2078 |
-| WITH locked_jobs AS ( SELECT id, args, attempt, attempted_at… | 1.2 | 0.001 | 0.043 | 0.1 | 0.1% | 351 |
-| SELECT received_at,report FROM (SELECT received_at,report FR… | 1.9 | 0.001 | 0.025 | 0.0 | 0.1% | 0 |
-| UPDATE workspaces SET alert_scanned_at=$1 WHERE id=(SELECT i… | 0.4 | 0.000 | 0.080 | 0.0 | 0.1% | 114 |
-| WITH job_input AS ( SELECT unnest($1::bigint[]) AS id, unnes… | 0.2 | 0.000 | 0.147 | 0.0 | 0.1% | 252 |
-| DELETE FROM server_metrics WHERE (server_id,received_at) IN … | 0.0 | 0.000 | 1.257 | 0.0 | 0.1% | 942 |
-| UPDATE operational_alerts SET state='resolved',reason=$4,res… | 3.7 | 0.002 | 0.005 | 0.0 | 0.0% | 0 |
+| AuthenticateAgent | 1666.6 | 1.111 | 0.012 | 20.8 | 38.1% | 5639 |
+| ListTroubleshootingOffers | 1482.3 | 0.988 | 0.007 | 9.9 | 18.1% | 0 |
+| poll command | 1482.2 | 0.988 | 0.004 | 5.9 | 10.9% | 0 |
+| RecordAgentHeartbeat | 99.9 | 0.067 | 0.052 | 5.2 | 9.5% | 16724 |
+| metrics prune | 25.0 | 0.017 | 0.191 | 4.8 | 8.8% | 8282 |
+| poll lease release | 59.4 | 0.040 | 0.047 | 2.8 | 5.1% | 8921 |
+| poll lease take | 59.4 | 0.040 | 0.046 | 2.8 | 5.1% | 9436 |
+| metrics insert | 25.0 | 0.017 | 0.068 | 1.7 | 3.1% | 32487 |
+| lockAgentCredential | 25.0 | 0.017 | 0.017 | 0.4 | 0.8% | 3244 |
+| WITH locked_jobs AS ( SELECT id, args, attempt, attempted_at… | 1.2 | 0.001 | 0.043 | 0.1 | 0.1% | 263 |
+| SELECT received_at,report FROM (SELECT received_at,report FR… | 1.7 | 0.001 | 0.024 | 0.0 | 0.1% | 0 |
+| WITH job_input AS ( SELECT unnest($1::bigint[]) AS id, unnes… | 0.2 | 0.000 | 0.158 | 0.0 | 0.1% | 252 |
+| UPDATE workspaces SET alert_scanned_at=$1 WHERE id=(SELECT i… | 0.3 | 0.000 | 0.082 | 0.0 | 0.0% | 123 |
+| WITH raw_job_data AS ( SELECT unnest($1::bigint[]) AS id, un… | 0.2 | 0.000 | 0.097 | 0.0 | 0.0% | 299 |
+| BEGIN | 25.8 | 0.017 | 0.001 | 0.0 | 0.0% | 0 |
 
-WAL fsync: 189/s, mean 0.00 ms. Database: 963901119 → 968406719 bytes (9384 bytes/s). Throttled µs: DB 0, app 0. Generator CPU 0.036 cores. Load 3.41 3.96 3.91 → 3.92 4.38 4.18.
+WAL fsync: 190/s, mean 0.00 ms. Database: 965613247 → 970307263 bytes (9777 bytes/s). Throttled µs: DB 0, app 0. Generator CPU 0.046 cores. Load 6.17 6.15 5.73 → 9.20 6.44 5.82.
 
-Largest table growth: server_metrics +4366336 (now 949575680); river_job +65536 (now 303104); workspaces +8192 (now 114688); servers +0 (now 5365760); audit_events +0 (now 507904); auth_attempts +0 (now 368640); 
+Largest table growth: server_metrics +4546560 (now 949370880); river_job +65536 (now 303104); workspaces +8192 (now 114688); servers +0 (now 7421952); audit_events +0 (now 532480); auth_attempts +0 (now 385024); 
 
 Deploys in window: started 0, finished 0, failed 0; delivery p50/p99 ms 0/0. Errors kept since the generator started, including setup, capped at 200: 200.
-Oldest kept error: poll: Get "http://fleet-app-a2f4cf02:8080/agent/v1/poll": net/http: timeout awaiting response headers
-
-Application warnings:
-
-```
-1 time=2026-11-05T19:52:03.828Z level=ERROR msg="maintenance.PeriodicJobEnqueuer: Error starting transaction" error="context canceled"
-      1 time=2026-11-05T19:52:02.191Z level=ERROR msg="producer: Error fetching jobs" err="StandardPilot.JobGetAvailable timed out after 10s: context deadline exceeded" queue=default
-      1 time=2026-11-05T19:52:01.226Z level=ERROR msg="leadership.Elector: Error attempting to resign" attempt=1 client_id=1bfd1bf1a8d6_2026_11_05T19_49_11_959284 err="leadership.Elector.attemptResign timed out after 1s: context deadline exceeded" 
-      1 time=2026-11-05T19:52:00.491Z level=WARN msg="leadership.Elector: Current leader stepping down because the reelection deadline elapsed after an error" client_id=1bfd1bf1a8d6_2026_11_05T19_49_11_959284
-      1 time=2026-11-05T19:51:56.667Z level=ERROR msg="leadership.Elector: Error attempting reelection" attempt=1 client_id=1bfd1bf1a8d6_2026_11_05T19_49_11_959284 err="leadership.attemptReelect timed out after 5s: context deadline exceeded" sleep_
-```
+Oldest kept error: 22:39:42 poll: Get "http://fleet-app-414bc8da:8080/agent/v1/poll": net/http: timeout awaiting response headers
 
 ### tmpfs-idle-1500
 
@@ -565,32 +555,32 @@ Application warnings:
 
 ### tmpfs-idle-2000-no-tick
 
-Window 480s; revision 35aa720-dirty; ping round-trip min/avg/max = 0.369/0.499/1.312 ms; options map[agents:2000 appCPUs: appCpuset:0-3 dbCPUs: dbCpuset:4-7 dbRTT:300us dbTmpfs:true deployDuration:2m0s deploysPerDay:0 perWorkspace:5 serverPatched:true services:0 sharedBuffers:1GB warm:2m0s].
+Window 480s; revision f06a5b8; ping round-trip min/avg/max = 0.400/0.525/0.643 ms; options map[agents:2000 appCPUs: appCpuset:0-3 dbCPUs: dbCpuset:4-7 dbRTT:300us dbTmpfs:true deployDuration:2m0s deploysPerDay:0 perWorkspace:5 serverPatched:true services:0 sharedBuffers:1GB warm:2m0s].
 
 | Statement | calls/s | per agent/s | mean ms | exec ms/s | share of exec | WAL B/s |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| AuthenticateAgent | 325.7 | 0.163 | 0.028 | 9.1 | 25.2% | 8055 |
-| RecordAgentHeartbeat | 133.5 | 0.067 | 0.062 | 8.3 | 23.0% | 26425 |
-| poll lease release | 79.3 | 0.040 | 0.079 | 6.2 | 17.3% | 13235 |
-| poll lease take | 79.4 | 0.040 | 0.065 | 5.2 | 14.3% | 12825 |
-| metrics insert | 33.4 | 0.017 | 0.094 | 3.1 | 8.7% | 42465 |
-| lockAgentCredential | 33.4 | 0.017 | 0.030 | 1.0 | 2.8% | 3923 |
-| ListTroubleshootingOffers | 79.4 | 0.040 | 0.012 | 1.0 | 2.7% | 0 |
-| metrics prune | 33.4 | 0.017 | 0.029 | 1.0 | 2.7% | 26840 |
-| poll command | 79.4 | 0.040 | 0.010 | 0.8 | 2.1% | 0 |
-| WITH locked_jobs AS ( SELECT id, args, attempt, attempted_at… | 1.2 | 0.001 | 0.058 | 0.1 | 0.2% | 363 |
-| DELETE FROM server_metrics WHERE (server_id,received_at) IN … | 0.0 | 0.000 | 3.671 | 0.1 | 0.2% | 1799 |
-| SELECT received_at,report FROM (SELECT received_at,report FR… | 1.7 | 0.001 | 0.036 | 0.1 | 0.2% | 0 |
-| UPDATE workspaces SET alert_scanned_at=$1 WHERE id=(SELECT i… | 0.3 | 0.000 | 0.124 | 0.0 | 0.1% | 141 |
-| WITH job_input AS ( SELECT unnest($1::bigint[]) AS id, unnes… | 0.2 | 0.000 | 0.205 | 0.0 | 0.1% | 288 |
-| UPDATE operational_alerts SET state='resolved',reason=$4,res… | 3.3 | 0.002 | 0.008 | 0.0 | 0.1% | 0 |
+| RecordAgentHeartbeat | 133.3 | 0.067 | 0.068 | 9.1 | 25.4% | 22648 |
+| AuthenticateAgent | 325.2 | 0.163 | 0.025 | 8.2 | 22.8% | 8255 |
+| poll lease release | 79.2 | 0.040 | 0.074 | 5.8 | 16.3% | 13717 |
+| poll lease take | 79.3 | 0.040 | 0.063 | 5.0 | 14.0% | 12941 |
+| metrics insert | 33.3 | 0.017 | 0.106 | 3.5 | 9.9% | 42757 |
+| metrics prune | 33.3 | 0.017 | 0.032 | 1.1 | 3.0% | 34627 |
+| ListTroubleshootingOffers | 79.3 | 0.040 | 0.012 | 0.9 | 2.6% | 0 |
+| lockAgentCredential | 33.3 | 0.017 | 0.027 | 0.9 | 2.5% | 4494 |
+| poll command | 79.3 | 0.040 | 0.009 | 0.7 | 2.1% | 0 |
+| WITH locked_jobs AS ( SELECT id, args, attempt, attempted_at… | 1.2 | 0.001 | 0.094 | 0.1 | 0.3% | 359 |
+| WITH job_input AS ( SELECT unnest($1::bigint[]) AS id, unnes… | 0.2 | 0.000 | 0.326 | 0.1 | 0.2% | 270 |
+| SELECT received_at,report FROM (SELECT received_at,report FR… | 1.7 | 0.001 | 0.037 | 0.1 | 0.2% | 0 |
+| UPDATE workspaces SET alert_scanned_at=$1 WHERE id=(SELECT i… | 0.3 | 0.000 | 0.172 | 0.1 | 0.2% | 140 |
+| DELETE FROM server_metrics WHERE (server_id,received_at) IN … | 0.0 | 0.000 | 3.303 | 0.1 | 0.2% | 708 |
+| WITH raw_job_data AS ( SELECT unnest($1::bigint[]) AS id, un… | 0.2 | 0.000 | 0.204 | 0.0 | 0.1% | 258 |
 
-WAL fsync: 159/s, mean 0.00 ms. Database: 1281578687 → 1287542463 bytes (12418 bytes/s). Throttled µs: DB 0, app 0. Generator CPU 0.068 cores. Load 6.37 7.95 7.09 → 7.84 8.38 7.80.
+WAL fsync: 155/s, mean 0.00 ms. Database: 1277392575 → 1283389119 bytes (12490 bytes/s). Throttled µs: DB 0, app 0. Generator CPU 0.066 cores. Load 2.79 3.29 4.12 → 2.91 2.71 3.39.
 
-Largest table growth: server_metrics +5832704 (now 1257537536); river_job +57344 (now 294912); servers +0 (now 16293888); audit_events +0 (now 638976); auth_attempts +0 (now 450560); sessions +0 (now 212992); 
+Largest table growth: server_metrics +5840896 (now 1257578496); river_job +81920 (now 319488); servers +0 (now 12034048); audit_events +0 (now 655360); auth_attempts +0 (now 450560); sessions +0 (now 237568); 
 
-Deploys in window: started 0, finished 0, failed 0; delivery p50/p99 ms 0/0. Errors kept since the generator started, including setup, capped at 200: 96.
-Oldest kept error: 21:04:46 poll: Get "http://fleet-app-1a3334bc:8080/agent/v1/poll": net/http: timeout awaiting response headers
+Deploys in window: started 0, finished 0, failed 0; delivery p50/p99 ms 0/0. Errors kept since the generator started, including setup, capped at 200: 200.
+Oldest kept error: 23:06:53 metrics: Post "http://fleet-app-6c10b4ec:8080/agent/v1/metrics": context deadline exceeded
 
 ### tmpfs-idle-2000-pool12
 
@@ -636,41 +626,29 @@ Application warnings:
 
 ### tmpfs-idle-2000
 
-Window 480s; revision 35aa720; ping round-trip min/avg/max = 0.359/0.492/0.818 ms; options map[agents:2000 appCPUs: appCpuset:0-3 appMemory: dbCPUs: dbCpuset:4-7 dbMemory: dbRTT:300us dbTmpfs:true deployDuration:2m0s deploysPerDay:0 perWorkspace:5 services:0 sharedBuffers:1GB warm:2m0s].
+Window 480s; revision f06a5b8; ping round-trip min/avg/max = 0.346/0.559/1.686 ms; options map[agents:2000 appCPUs: appCpuset:0-3 dbCPUs: dbCpuset:4-7 dbRTT:300us dbTmpfs:true deployDuration:2m0s deploysPerDay:0 perWorkspace:5 serverPatched:false services:0 sharedBuffers:1GB warm:2m0s].
 
 | Statement | calls/s | per agent/s | mean ms | exec ms/s | share of exec | WAL B/s |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| AuthenticateAgent | 2280.1 | 1.140 | 0.010 | 22.1 | 42.6% | 6028 |
-| ListTroubleshootingOffers | 2028.2 | 1.014 | 0.005 | 10.8 | 20.9% | 0 |
-| poll command | 2028.9 | 1.014 | 0.003 | 5.8 | 11.2% | 0 |
-| RecordAgentHeartbeat | 136.3 | 0.068 | 0.034 | 4.7 | 9.0% | 22656 |
-| poll lease release | 82.0 | 0.041 | 0.034 | 2.8 | 5.3% | 15098 |
-| poll lease take | 82.0 | 0.041 | 0.034 | 2.8 | 5.3% | 13648 |
-| metrics insert | 34.5 | 0.017 | 0.050 | 1.7 | 3.3% | 41596 |
-| metrics prune | 34.5 | 0.017 | 0.015 | 0.5 | 1.0% | 26773 |
-| lockAgentCredential | 34.5 | 0.017 | 0.012 | 0.4 | 0.8% | 2817 |
-| WITH locked_jobs AS ( SELECT id, args, attempt, attempted_at… | 1.2 | 0.001 | 0.038 | 0.0 | 0.1% | 315 |
-| SELECT received_at,report FROM (SELECT received_at,report FR… | 1.7 | 0.001 | 0.023 | 0.0 | 0.1% | 0 |
-| UPDATE workspaces SET alert_scanned_at=$1 WHERE id=(SELECT i… | 0.3 | 0.000 | 0.089 | 0.0 | 0.1% | 139 |
-| WITH job_input AS ( SELECT unnest($1::bigint[]) AS id, unnes… | 0.2 | 0.000 | 0.140 | 0.0 | 0.1% | 325 |
-| WITH raw_job_data AS ( SELECT unnest($1::bigint[]) AS id, un… | 0.2 | 0.000 | 0.092 | 0.0 | 0.0% | 265 |
-| DELETE FROM server_metrics WHERE (server_id,received_at) IN … | 0.0 | 0.000 | 1.086 | 0.0 | 0.0% | 450 |
+| AuthenticateAgent | 2229.2 | 1.115 | 0.010 | 22.7 | 43.2% | 7941 |
+| ListTroubleshootingOffers | 1983.5 | 0.992 | 0.005 | 10.6 | 20.1% | 0 |
+| poll command | 1983.5 | 0.992 | 0.003 | 5.9 | 11.3% | 0 |
+| RecordAgentHeartbeat | 133.2 | 0.067 | 0.035 | 4.7 | 8.9% | 23689 |
+| poll lease release | 79.2 | 0.040 | 0.036 | 2.9 | 5.5% | 12709 |
+| poll lease take | 79.2 | 0.040 | 0.035 | 2.8 | 5.3% | 12695 |
+| metrics insert | 33.4 | 0.017 | 0.054 | 1.8 | 3.4% | 42157 |
+| metrics prune | 33.4 | 0.017 | 0.014 | 0.5 | 0.9% | 25693 |
+| lockAgentCredential | 33.4 | 0.017 | 0.013 | 0.4 | 0.8% | 4240 |
+| WITH locked_jobs AS ( SELECT id, args, attempt, attempted_at… | 1.2 | 0.001 | 0.035 | 0.0 | 0.1% | 282 |
+| SELECT received_at,report FROM (SELECT received_at,report FR… | 1.7 | 0.001 | 0.020 | 0.0 | 0.1% | 0 |
+| UPDATE workspaces SET alert_scanned_at=$1 WHERE id=(SELECT i… | 0.3 | 0.000 | 0.092 | 0.0 | 0.1% | 134 |
+| WITH job_input AS ( SELECT unnest($1::bigint[]) AS id, unnes… | 0.2 | 0.000 | 0.145 | 0.0 | 0.1% | 256 |
+| DELETE FROM server_metrics WHERE (server_id,received_at) IN … | 0.0 | 0.000 | 1.632 | 0.0 | 0.1% | 976 |
+| WITH raw_job_data AS ( SELECT unnest($1::bigint[]) AS id, un… | 0.2 | 0.000 | 0.089 | 0.0 | 0.0% | 343 |
 
-WAL fsync: 224/s, mean 0.00 ms. Database: 1275016895 → 1281185471 bytes (12848 bytes/s). Throttled µs: DB 0, app 0. Generator CPU 0.041 cores. Load 6.53 5.43 4.69 → 3.00 4.27 4.49.
+WAL fsync: 217/s, mean 0.00 ms. Database: 1280685759 → 1286665919 bytes (12456 bytes/s). Throttled µs: DB 0, app 0. Generator CPU 0.044 cores. Load 4.85 6.01 5.65 → 6.11 5.09 5.20.
 
-Largest table growth: server_metrics +6045696 (now 1258176512); river_job +57344 (now 294912); servers +0 (now 9281536); audit_events +0 (now 655360); auth_attempts +0 (now 450560); sessions +0 (now 229376); 
+Largest table growth: server_metrics +5840896 (now 1257594880); river_job +65536 (now 311296); servers +0 (now 15310848); audit_events +0 (now 671744); auth_attempts +0 (now 450560); sessions +0 (now 204800); 
 
 Deploys in window: started 0, finished 0, failed 0; delivery p50/p99 ms 0/0. Errors kept since the generator started, including setup, capped at 200: 200.
-Oldest kept error: poll: Get "http://fleet-app-164631e1:8080/agent/v1/poll": net/http: timeout awaiting response headers
-
-Application warnings:
-
-```
-1 time=2026-11-05T20:07:19.360Z level=ERROR msg="maintenance.PeriodicJobEnqueuer: Error starting transaction" error="context canceled"
-      1 time=2026-11-05T20:07:15.031Z level=ERROR msg="leadership.Elector: Error attempting to resign" attempt=3 client_id=cac4505496bc_2026_11_05T20_04_11_985676 err="leadership.Elector.attemptResign timed out after 3s: context deadline exceeded" 
-      1 time=2026-11-05T20:07:10.403Z level=ERROR msg="leadership.Elector: Error attempting to resign" attempt=2 client_id=cac4505496bc_2026_11_05T20_04_11_985676 err="leadership.Elector.attemptResign timed out after 2s: context deadline exceeded" 
-      1 time=2026-11-05T20:07:07.576Z level=ERROR msg="producer: Error fetching jobs" err="StandardPilot.JobGetAvailable timed out after 10s: context deadline exceeded" queue=default
-      1 time=2026-11-05T20:07:07.447Z level=ERROR msg="leadership.Elector: Error attempting to resign" attempt=1 client_id=cac4505496bc_2026_11_05T20_04_11_985676 err="leadership.Elector.attemptResign timed out after 1s: context deadline exceeded" 
-      1 time=2026-11-05T20:07:06.447Z level=WARN msg="leadership.Elector: Current leader stepping down because the reelection deadline elapsed after an error" client_id=cac4505496bc_2026_11_05T20_04_11_985676
-      1 time=2026-11-05T20:07:02.451Z level=ERROR msg="leadership.Elector: Error attempting reelection" attempt=1 client_id=cac4505496bc_2026_11_05T20_04_11_985676 err="leadership.attemptReelect timed out after 5s: context deadline exceeded" sleep_
-```
+Oldest kept error: 22:26:14 poll: Get "http://fleet-app-f839d508:8080/agent/v1/poll": net/http: timeout awaiting response headers

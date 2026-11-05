@@ -99,7 +99,7 @@ func label(query string) string {
 
 func runSummary(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: fleet-cost summary <result.json>...")
+		return errors.New("usage: fleet-capacity summary <result.json>...")
 	}
 	sort.Slice(args, func(i, j int) bool { return args[i] < args[j] })
 	fmt.Println("| Run | Agents | q/s | q/s per agent | DB CPU cores | App CPU cores | DB anon+shm MiB | App anon MiB | Clients max / mean active | Agent B/s in / out per agent | DB B/s in / out per agent | WAL KiB/s | Logs B/s per agent | Heartbeat p50 / p99 ms | Non-2xx | pgbench -S TPS | Host load |")
