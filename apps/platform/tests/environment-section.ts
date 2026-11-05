@@ -8,8 +8,8 @@ export async function openEnvironmentSection(
   await tab.click();
   await expect(tab).toHaveAttribute("aria-selected", "true");
   // A section's parts load separately and move what is below them as they arrive. A click during
-  // that can report success without reaching its target, so the journey starts once they settle.
-  // This only orders the journey, so a slow machine should not fail it.
+  // that can press one element and release over another, so its target never receives it, though
+  // Playwright reports success. This only orders the journey, so a slow machine should not fail it.
   await expect(
     page.getByRole("region", { name: "Environment content", exact: true }),
   ).not.toHaveAttribute("data-loading", { timeout: 20000 });

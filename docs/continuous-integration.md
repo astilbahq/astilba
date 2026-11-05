@@ -383,11 +383,12 @@ on each runner. Accessibility audits and scenario completion assertions remain
 enabled. `make verify-app` remains the complete unsharded local check.
 
 Two things make a browser click or wait fail on a busy runner without anything being
-wrong. Playwright checks only where a click's press lands, so a page that reflows
-before the release reports a click nothing received: wait for a section's parts to
-load before clicking below them, as `openEnvironmentSection` does. A story's play
-starts at its first commit, so its waits also span page loading; `.storybook/preview.tsx`
-gives them five seconds, and a wait that has to beat a poll sets a shorter limit itself.
+wrong. If the page reflows during a click, its press and release can land on different
+elements. The browser then sends the click to their common ancestor, and Playwright still
+reports success. Wait for a section's parts to load before clicking below them, as
+`openEnvironmentSection` does. A story's play starts at its first commit, so its waits
+also span page loading; `.storybook/preview.tsx` gives them five seconds, and a wait that
+has to beat a poll sets a shorter limit itself.
 
 ## Required checks
 
