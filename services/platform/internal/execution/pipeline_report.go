@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
@@ -20,6 +21,12 @@ import (
 )
 
 const secretVersionPage = 64
+
+// stoppedSubmissionNote stays on the operation through later agent reports, because
+// only the controller knows the runner may already have sent these files onward.
+func stoppedSubmissionNote(id uuid.UUID) string {
+	return "Stopped: these files contain a known runtime secret value, or runtime secrets exceed the limit for checking them. A runner may already have pushed them to branch astilba/" + id.String() + " at the Git provider: check it and any review, and rotate any exposed secret."
+}
 
 func (s *Service) rejectRuntimeSecrets(ctx context.Context, tx pgx.Tx, ws, env uuid.UUID, bundle composeproject.Bundle) error {
 	q := db.New(tx)
@@ -52,6 +59,20 @@ func (s *Service) rejectRuntimeSecrets(ctx context.Context, tx pgx.Tx, ws, env u
 		}
 	}
 }
+
+// sourceSecretRejection names a frozen submission's failed secret check, leaving
+// other errors, such as an undecryptable version, to fail the poll and be retried.
+func sourceSecretRejection(err error) (string, bool) {
+	var invalid *domain.Error
+	if !errors.As(err, &invalid) {
+		return "", false
+	}
+	if slices.Contains(invalid.Fields, "source.secretBudget") {
+		return "This attempt was rejected before reaching a runner: runtime secrets exceed the limit for checking its files.", true
+	}
+	return "This attempt was rejected before reaching a runner: its files contain a known runtime secret value. If an earlier attempt of this draft ran, its astilba/ branch may already hold them.", true
+}
+
 func (s *Service) hydratePipeline(ctx context.Context, a Identity, c *api.ExecutionCommand) (bool, error) {
 	tx, err := s.Store.Pool.Begin(ctx)
 	if err != nil {
@@ -108,6 +129,29 @@ func (s *Service) hydratePipeline(ctx context.Context, a Identity, c *api.Execut
 			return false, err
 		}
 		return false, tx.Commit(ctx)
+	}
+	// A plain Invalid would fail every poll and hold the runner queue. This runs before
+	// provider calls and credential minting, so neither can delay or outlive a rejection.
+	if p.Action == "submit" {
+		if err = s.rejectRuntimeSecrets(ctx, tx, ws, c.EnvironmentId, *p.Bundle); err != nil {
+			note, rejected := sourceSecretRejection(err)
+			if !rejected {
+				return false, err
+			}
+			if undelivered {
+				if err = queries.FinishUndeliveredPipeline(ctx, db.FinishUndeliveredPipelineParams{WorkspaceID: ws, ID: c.Id, State: "failed", Note: note}); err != nil {
+					return false, err
+				}
+				return false, tx.Commit(ctx)
+			}
+			// A runner may hold this command, so it alone can settle it. Recording the
+			// stop also records a late success from that runner as cancelled.
+			if err = queries.StopPossiblyDeliveredPipeline(ctx, db.StopPossiblyDeliveredPipelineParams{WorkspaceID: ws, ID: c.Id, Note: stoppedSubmissionNote(p.SubmissionID)}); err != nil {
+				return false, err
+			}
+			c.CancelRequested = true
+			return true, tx.Commit(ctx)
+		}
 	}
 	if p.Build != nil && (p.Build.NeedsControls() || p.Build.UsesRailpack()) {
 		if _, err = runnerEligible(ctx, tx, ws, c.ServerId, p.Build.Architecture, p.Build.NeedsControls(), p.Build.UsesRailpack()); err != nil {
@@ -230,13 +274,22 @@ func (s *Service) pipelineReport(ctx context.Context, tx pgx.Tx, c api.Execution
 	}
 	var ws uuid.UUID
 	var cancelled bool
-	if err := tx.QueryRow(ctx, "SELECT workspace_id,cancel_requested FROM execution_operations WHERE id=$1", c.Id).Scan(&ws, &cancelled); err != nil {
+	var note string
+	if err := tx.QueryRow(ctx, "SELECT workspace_id,cancel_requested,note FROM execution_operations WHERE id=$1", c.Id).Scan(&ws, &cancelled, &note); err != nil {
 		return err
 	}
 	if r.State == "succeeded" && (cancelled || time.Now().After(c.Deadline)) {
 		r.State = "cancelled"
 		r.Note = "Result arrived after cancellation or expiry."
 		r.Pipeline = nil
+	}
+	if stopped := stoppedSubmissionNote(p.SubmissionID); strings.HasPrefix(note, stopped) {
+		// A cleanup instruction still needs the operator; other agent wording adds nothing.
+		if r.State == "needs_attention" && r.Note != "" {
+			r.Note = stopped + " " + r.Note
+		} else {
+			r.Note = stopped
+		}
 	}
 	if r.Pipeline == nil {
 		if r.State == "succeeded" {

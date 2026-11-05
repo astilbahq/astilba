@@ -304,3 +304,47 @@ func TestRejectedReportDoesNotBlockLaterRecords(t *testing.T) {
 		t.Fatal("rejected record was acknowledged", err)
 	}
 }
+
+// A controller on an older release still answers polls with encoding/json v1, and
+// the agent's own digest check depends on reading that encoding unchanged.
+func TestPollResponsesStayStrictAcrossControllerVersions(t *testing.T) {
+	j, _ := testVisualJournal(t)
+	var answer atomic.Value
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Astilba-Agent-Features", "none")
+		_, _ = w.Write(answer.Load().([]byte))
+	}))
+	defer server.Close()
+	cfg, _ := j.Config()
+	cfg.Origin = server.URL
+	if err := j.SetConfig(cfg); err != nil {
+		t.Fatal(err)
+	}
+	c := NewClient(j, &Engine{Journal: j})
+	c.HTTP = server.Client()
+	payload := json.RawMessage(`{"phase":"a && b <c>"}`)
+	want := api.ExecutionCommand{Id: uuid.New(), ServerId: cfg.ServerID, Generation: 2, PlanHash: "hash", Kind: "crosshost", Action: "inspect", Deadline: time.Date(2026, 1, 2, 3, 4, 5, 6, time.UTC), Crosshost: &payload}
+	raw, err := json.Marshal(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	answer.Store(raw)
+	var got api.ExecutionCommand
+	if err = c.call(context.Background(), "GET", "/agent/v1/poll", nil, &got, "fixture"); err != nil {
+		t.Fatal(err)
+	}
+	wantPayload, _ := json.Marshal(payload)
+	if got.Id != want.Id || !got.Deadline.Equal(want.Deadline) || got.Crosshost == nil || string(*got.Crosshost) != string(wantPayload) {
+		t.Fatalf("read %+v", got)
+	}
+	for name, body := range map[string]string{
+		"case variant": strings.Replace(string(raw), `"planHash"`, `"PLANHASH"`, 1),
+		"duplicate":    strings.Replace(string(raw), `"planHash"`, `"planHash":"other","planHash"`, 1),
+		"trailing":     string(raw) + " {}",
+	} {
+		answer.Store([]byte(body))
+		if err = c.call(context.Background(), "GET", "/agent/v1/poll", nil, &api.ExecutionCommand{}, "fixture"); err == nil {
+			t.Fatalf("accepted a %s", name)
+		}
+	}
+}

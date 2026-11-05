@@ -1,10 +1,8 @@
 package domain
 
 import (
-	"bytes"
 	"encoding/json"
-	"errors"
-	"io"
+	jsonv2 "encoding/json/v2"
 	"math"
 	"net"
 	"net/mail"
@@ -111,9 +109,7 @@ func ParseSpec(raw []byte) (Specification, []byte, error) {
 	if len(raw) > 131072 {
 		return spec, nil, Invalid("specification")
 	}
-	d := json.NewDecoder(bytes.NewReader(raw))
-	d.DisallowUnknownFields()
-	if d.Decode(&spec) != nil || !errors.Is(d.Decode(new(any)), io.EOF) || spec.Version != 1 || spec.Applications == nil || spec.Variables == nil || len(spec.Applications) > 50 || len(spec.Variables) > 100 {
+	if jsonv2.Unmarshal(raw, &spec, jsonv2.RejectUnknownMembers(true)) != nil || spec.Version != 1 || spec.Applications == nil || spec.Variables == nil || len(spec.Applications) > 50 || len(spec.Variables) > 100 {
 		return spec, nil, Invalid("specification")
 	}
 	if spec.Compose != nil {

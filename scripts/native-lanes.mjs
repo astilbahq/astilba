@@ -21,7 +21,7 @@ const unresolved = "\0";
 
 // Reads only assignments and rules. Anything else, such as a conditional, a define
 // or `+=`, could change what a lane runs, so it is reported as unread.
-function parseMakefile(text) {
+export function parseMakefile(text) {
   const variables = new Map();
   const recipes = new Map();
   const unread = [];
@@ -70,7 +70,7 @@ const isGoTest = (word, next) => /(^|\/)go$/.test(word) && next === "test";
 // The `go test` commands of one expanded recipe line. A line that runs go test
 // must be a plain `cd DIR && ... go test` chain, because any other shell syntax or
 // flag could stop the tests running while the line still names them.
-function goTests(line) {
+export function goTests(line) {
   const words =
     line.replace(/^[@+-]+/, "").match(/(?:'[^']*'|"[^"]*"|[^\s'"])+/g) ?? [];
   if (!words.some((word, i) => isGoTest(word, words[i + 1]))) return [];
@@ -105,20 +105,21 @@ function goTests(line) {
         `cannot resolve ${args.join(" ").replaceAll(unresolved, "")}`,
       );
     const runs = [];
+    const skips = [];
     const packages = [];
     for (let i = 0; i < args.length; i++) {
       const run = /^-run(?:=(.*))?$/.exec(args[i]);
+      const skip = /^-skip(?:=(.*))?$/.exec(args[i]);
       if (run) runs.push(run[1] ?? args[++i]);
+      else if (skip) skips.push(skip[1] ?? args[++i]);
       else if (args[i].startsWith("./"))
         packages.push(posix.join(directory, args[i]));
       else if (!goTestFlag.test(args[i]))
         throw new Error(`cannot read go test argument ${args[i]}`);
     }
-    if (runs.length !== 1)
-      throw new Error(`expected one -run: ${command.join(" ")}`);
     if (!packages.length)
       throw new Error(`expected a ./ package: ${command.join(" ")}`);
-    found.push({ pattern: runs[0], packages });
+    found.push({ runs, skips, command: command.join(" "), packages });
   }
   return found;
 }
@@ -179,25 +180,61 @@ const inPackage = (directory, packages) =>
       : directory === name,
   );
 
-function workflowProblems(workflow, ran) {
+export const compile = (pattern) =>
+  alternatives(pattern).map((source) => ({
+    source,
+    expression: new RegExp(source, "u"),
+  }));
+
+const matches = (branches, name) =>
+  branches.some(({ expression }) => expression.test(name));
+
+export const selectionKey = ({ directory, name }) => `${directory}.${name}`;
+
+// Which lanes select each test. `-run` only reaches the packages on its own command
+// line, so a test is keyed by its package as well as its name. A command with no
+// `run` selects every test in its packages except those in `skip`.
+export function selectTests(commands, tests) {
   const problems = [];
-  // The list only reaches the runners through this matrix and this step.
-  if (/^\s*(?:exclude|include):/m.test(workflow))
-    problems.push(`${workflowPath} must not exclude or include matrix entries`);
-  if (
-    !/^\s*- name: .*\n\s*run: make verify-agent-host-\$\{\{ matrix\.lane \}\}[ \t]*\n[ \t]*(?:- |$)/m.test(
-      workflow,
-    )
-  )
-    problems.push(
-      `${workflowPath} needs an unconditional step: run: make ${lanePrefix}\${{ matrix.lane }}`,
+  const selections = new Map();
+  for (const { lane, label, packages, run, skip } of commands) {
+    const candidates = tests.filter((test) =>
+      inPackage(test.directory, packages),
     );
+    for (const { source, expression } of run)
+      if (!candidates.some((test) => expression.test(test.name)))
+        problems.push(
+          `${lane}: -run alternative ${source} matches no test in ${packages.join(", ")}`,
+        );
+    for (const test of candidates) {
+      if (run.length && !matches(run, test.name)) continue;
+      if (matches(skip, test.name)) continue;
+      const key = selectionKey(test);
+      selections.set(key, [...(selections.get(key) ?? []), label]);
+    }
+  }
+  return { problems, selections };
+}
+
+export function selectionProblem({ directory, name }, selected, prefix) {
+  if (!selected.length)
+    return `${name} in ${directory} is selected by no ${prefix}* lane, so CI never runs it`;
+  if (selected.length > 1)
+    return `${name} in ${directory} is selected more than once: ${selected.join(" and ")}`;
+}
+
+// The list only reaches the runners through one inline matrix list, so a matrix
+// `include`, `exclude` or a second list could change what runs.
+export function matrixProblems(workflow, path, expected, owner) {
+  const problems = [];
+  if (/^\s*(?:exclude|include):/m.test(workflow))
+    problems.push(`${path} must not exclude or include matrix entries`);
   const lists = [
     ...workflow.matchAll(/^\s*lane:\s*\[([^\]]*)\]\s*(?:#.*)?$/gm),
   ];
   if (lists.length !== 1) {
     problems.push(
-      `${workflowPath} needs exactly one inline lane list, found ${lists.length}`,
+      `${path} needs exactly one inline lane list, found ${lists.length}`,
     );
     return problems;
   }
@@ -206,11 +243,26 @@ function workflowProblems(workflow, ran) {
     .map((name) => name.trim().replace(/^['"]|['"]$/g, ""))
     .filter(Boolean)
     .sort();
-  const expected = ran.map((name) => name.replace(lanePrefix, "")).sort();
-  if (listed.join() !== expected.join())
+  const names = [...expected].sort();
+  if (listed.join() !== names.join())
     problems.push(
-      `${workflowPath} lanes [${listed.join(", ")}] differ from ${aggregate} targets [${expected.join(", ")}]`,
+      `${path} lanes [${listed.join(", ")}] differ from ${owner} targets [${names.join(", ")}]`,
     );
+  return problems;
+}
+
+function workflowProblems(workflow, ran) {
+  const problems = [];
+  if (
+    !/^\s*- name: .*\n\s*run: make verify-agent-host-\$\{\{ matrix\.lane \}\}[ \t]*\n[ \t]*(?:- |$)/m.test(
+      workflow,
+    )
+  )
+    problems.push(
+      `${workflowPath} needs an unconditional step: run: make ${lanePrefix}\${{ matrix.lane }}`,
+    );
+  const expected = ran.map((name) => name.replace(lanePrefix, ""));
+  problems.push(...matrixProblems(workflow, workflowPath, expected, aggregate));
   return problems;
 }
 
@@ -245,14 +297,19 @@ export function nativeLaneProblems({ makefile, workflow, tests }) {
       const found = recipes
         .get(lane)
         .flatMap((line) => goTests(expand(line)))
-        .map((command) => ({
-          ...command,
-          lane,
-          branches: alternatives(command.pattern).map((source) => ({
-            source,
-            expression: new RegExp(source, "u"),
-          })),
-        }));
+        .map(({ runs, skips, command, packages }) => {
+          if (skips.length)
+            throw new Error(`cannot read go test argument -skip: ${command}`);
+          if (runs.length !== 1)
+            throw new Error(`expected one -run: ${command}`);
+          return {
+            lane,
+            label: `${lane} '${runs[0]}'`,
+            packages,
+            run: compile(runs[0]),
+            skip: [],
+          };
+        });
       if (!found.length) problems.push(`${lane} runs no go test`);
       commands.push(...found);
     } catch (error) {
@@ -263,43 +320,22 @@ export function nativeLaneProblems({ makefile, workflow, tests }) {
   // would be false.
   if (refused) return problems;
 
-  const selections = new Map();
-  for (const { lane, pattern, packages, branches } of commands) {
-    const candidates = tests.filter((test) =>
-      inPackage(test.directory, packages),
-    );
-    for (const { source, expression } of branches)
-      if (!candidates.some((test) => expression.test(test.name)))
-        problems.push(
-          `${lane}: -run alternative ${source} matches no test in ${packages.join(", ")}`,
-        );
-    for (const test of candidates) {
-      if (!branches.some(({ expression }) => expression.test(test.name)))
-        continue;
-      const key = `${test.directory}.${test.name}`;
-      selections.set(key, [
-        ...(selections.get(key) ?? []),
-        `${lane} '${pattern}'`,
-      ]);
-    }
-  }
+  const { problems: unmatched, selections } = selectTests(commands, tests);
+  problems.push(...unmatched);
 
-  for (const { name, directory } of tests) {
+  for (const test of tests) {
+    const { name, directory } = test;
     if (!name.startsWith("TestNative")) continue;
-    const selected = selections.get(`${directory}.${name}`) ?? [];
+    const selected = selections.get(selectionKey(test)) ?? [];
     if (helpers.get(name) === directory) {
       if (selected.length)
         problems.push(
           `${name} is a helper that no lane may select, but ${selected.join(" and ")} does`,
         );
-    } else if (!selected.length)
-      problems.push(
-        `${name} in ${directory} is selected by no ${lanePrefix}* -run, so CI never runs it`,
-      );
-    else if (selected.length > 1)
-      problems.push(
-        `${name} in ${directory} is selected more than once: ${selected.join(" and ")}`,
-      );
+      continue;
+    }
+    const problem = selectionProblem(test, selected, lanePrefix);
+    if (problem) problems.push(problem);
   }
   for (const [name, directory] of helpers)
     if (
@@ -311,7 +347,7 @@ export function nativeLaneProblems({ makefile, workflow, tests }) {
 
 // The tests a lane's race-enabled `go test` can see on this architecture. Asking
 // Go applies its build constraints and ignored paths, wherever this check runs.
-function linuxTests(cwd, architecture) {
+export function linuxTests(cwd, architecture) {
   const packages = execFileSync(
     "go",
     [

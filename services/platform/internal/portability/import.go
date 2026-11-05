@@ -1,11 +1,10 @@
 package portability
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
+	jsonv2 "encoding/json/v2"
 	"fmt"
-	"io"
 	"math"
 	"strings"
 	"time"
@@ -22,9 +21,7 @@ func decodeArchive(raw []byte) (Archive, error) {
 
 func decodeArchiveMode(raw []byte, recovery bool) (Archive, error) {
 	var archive Archive
-	d := json.NewDecoder(bytes.NewReader(raw))
-	d.DisallowUnknownFields()
-	if d.Decode(&archive) != nil || d.Decode(new(any)) != io.EOF || archive.Version < 1 || archive.Version > 6 || archive.Workspace == uuid.Nil {
+	if jsonv2.Unmarshal(raw, &archive, jsonv2.RejectUnknownMembers(true)) != nil || archive.Version < 1 || archive.Version > 6 || archive.Workspace == uuid.Nil {
 		return archive, ErrArchive
 	}
 	if archive.Version == 1 {

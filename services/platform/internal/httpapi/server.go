@@ -6,8 +6,8 @@ import (
 	"crypto/subtle"
 	"encoding/gob"
 	"encoding/json"
+	jsonv2 "encoding/json/v2"
 	"errors"
-	"io"
 	"log/slog"
 	"net/http"
 	"net/netip"
@@ -287,9 +287,7 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 }
 func decode[T any](r *http.Request) (T, error) {
 	var v T
-	d := json.NewDecoder(r.Body)
-	d.DisallowUnknownFields()
-	if d.Decode(&v) != nil || !errors.Is(d.Decode(new(any)), io.EOF) {
+	if jsonv2.UnmarshalRead(r.Body, &v, jsonv2.RejectUnknownMembers(true)) != nil {
 		return v, domain.Invalid("request")
 	}
 	return v, nil

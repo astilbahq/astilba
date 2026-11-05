@@ -90,7 +90,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        lane: [remaining, crosshost, preview]
+        lane: [remaining, operations, crosshost, preview]
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:

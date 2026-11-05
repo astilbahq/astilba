@@ -1,7 +1,8 @@
-.PHONY: check verify verify-host verify-build verify-git verify-canvas check-app verify-app verify-app-core verify-app-build verify-app-go-remaining verify-app-go-crosshost verify-app-go-preview verify-image verify-agent-host verify-agent-host-core verify-agent-host-recovery verify-agent-host-visual verify-agent-host-upgrade verify-troubleshooting-soak verify-agent-colima check-ci check-hooks check-source-size check-inline-sql check-vulnerabilities
+.PHONY: check verify verify-host verify-build verify-git verify-canvas check-app verify-app verify-app-core verify-app-build verify-app-go-remaining verify-app-go-operations verify-app-go-crosshost verify-app-go-preview verify-image verify-agent-host verify-agent-host-core verify-agent-host-recovery verify-agent-host-visual verify-agent-host-upgrade verify-troubleshooting-soak verify-agent-colima check-ci check-hooks check-source-size check-inline-sql check-vulnerabilities
 
 APP_COORDINATION_TESTS = ^(TestCrossHostCoordinatedPlacement|TestCrossHostSubscriptionExpiry)$$
 APP_PREVIEW_RECOVERY_TESTS = ^TestPreviewRemovalSurvivesCheckpointUnion$$
+APP_OPERATIONS_TESTS = ^Test(Troubleshooting|ManagedNetwork|Maintenance|Automation|Git)
 NATIVE_GO = sudo --preserve-env=GOCACHE,GOMODCACHE env PATH=/opt/astilba-plat4/go/bin:/opt/astilba-plat4/bin:/usr/sbin:/usr/bin:/sbin:/bin CGO_ENABLED=1
 NATIVE_AGENT_GO = $(NATIVE_GO) PLAT_APP_DOCKER_HOST=unix:///run/astilba-plat4/docker.sock ASTILBA_NATIVE_AGENT=1 /opt/astilba-plat4/go/bin/go test -race -count=1 -v
 
@@ -29,8 +30,9 @@ verify-build:
 	cd experiments/durable-execution && sudo --preserve-env=GOCACHE,GOMODCACHE env PATH=/opt/astilba-plat4/go/bin:/usr/bin:/bin CGO_ENABLED=1 PLAT4_HOST_TEST=1 PLAT4_ARCH="$(PLAT4_ARCH)" PLAT5_HOST_TEST=1 /opt/astilba-plat4/go/bin/go test -race -count=1 -timeout=12m -v -run '^Test(BuildArtifacts|PostgresRestore)$$' .
 
 check-ci:
-	node --test scripts/ci-plan.test.mjs scripts/native-lanes.test.mjs scripts/vulnerability-scan.test.mjs
+	node --test scripts/ci-plan.test.mjs scripts/native-lanes.test.mjs scripts/app-lanes.test.mjs scripts/vulnerability-scan.test.mjs
 	node scripts/native-lanes.mjs
+	node scripts/app-lanes.mjs
 
 check-vulnerabilities:
 	node scripts/vulnerability-scan.mjs
@@ -59,7 +61,7 @@ verify-app: verify-app-core
 	pnpm --filter @astilba/dashboard storybook:test
 
 verify-app-core: verify-app-build
-	$(MAKE) -j3 verify-app-go-remaining verify-app-go-crosshost verify-app-go-preview
+	$(MAKE) -j4 verify-app-go-remaining verify-app-go-operations verify-app-go-crosshost verify-app-go-preview
 
 verify-app-build: check-app
 	pnpm agent:build
@@ -67,13 +69,17 @@ verify-app-build: check-app
 	pnpm --filter @astilba/dashboard build
 
 verify-app-go-remaining:
-	cd services/platform && go test -race -count=1 -timeout=15m -skip '$(APP_COORDINATION_TESTS)|$(APP_PREVIEW_RECOVERY_TESTS)' ./...
+	cd services/platform && go test -race -count=1 -v -timeout=15m -skip '$(APP_COORDINATION_TESTS)|$(APP_PREVIEW_RECOVERY_TESTS)|$(APP_OPERATIONS_TESTS)' ./...
+
+# Selects across every package, because the -skip above also reaches every package.
+verify-app-go-operations:
+	cd services/platform && go test -race -count=1 -v -timeout=15m -run '$(APP_OPERATIONS_TESTS)' ./...
 
 verify-app-go-crosshost:
-	cd services/platform && go test -race -count=1 -timeout=15m -run '$(APP_COORDINATION_TESTS)' ./internal/integration
+	cd services/platform && go test -race -count=1 -v -timeout=15m -run '$(APP_COORDINATION_TESTS)' ./internal/integration
 
 verify-app-go-preview:
-	cd services/platform && go test -race -count=1 -timeout=15m -run '$(APP_PREVIEW_RECOVERY_TESTS)' ./internal/integration
+	cd services/platform && go test -race -count=1 -v -timeout=15m -run '$(APP_PREVIEW_RECOVERY_TESTS)' ./internal/integration
 
 verify-image:
 	pnpm app:image-test

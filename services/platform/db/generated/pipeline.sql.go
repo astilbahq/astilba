@@ -225,3 +225,18 @@ func (q *Queries) RewrapRegistryAccess(ctx context.Context, arg RewrapRegistryAc
 	_, err := q.db.Exec(ctx, rewrapRegistryAccess, arg.WorkspaceID, arg.ID, arg.EncryptedAccess)
 	return err
 }
+
+const stopPossiblyDeliveredPipeline = `-- name: StopPossiblyDeliveredPipeline :exec
+UPDATE execution_operations SET cancel_requested = true, note = $1::text || CASE WHEN state = 'needs_attention' AND note <> '' THEN ' ' || note ELSE '' END WHERE workspace_id = $2 AND id = $3
+`
+
+type StopPossiblyDeliveredPipelineParams struct {
+	Note        string    `json:"note"`
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ID          uuid.UUID `json:"id"`
+}
+
+func (q *Queries) StopPossiblyDeliveredPipeline(ctx context.Context, arg StopPossiblyDeliveredPipelineParams) error {
+	_, err := q.db.Exec(ctx, stopPossiblyDeliveredPipeline, arg.Note, arg.WorkspaceID, arg.ID)
+	return err
+}

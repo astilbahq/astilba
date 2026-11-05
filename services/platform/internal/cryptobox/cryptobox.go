@@ -1,12 +1,12 @@
 package cryptobox
 
 import (
-	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	jsonv2 "encoding/json/v2"
 	"errors"
 	"io"
 	"os"
@@ -62,9 +62,9 @@ func Parse(raw []byte) (*Keyring, error) {
 		return nil, ErrKey
 	}
 	var ring Keyring
-	decoder := json.NewDecoder(bytes.NewReader(raw))
-	decoder.DisallowUnknownFields()
-	if decoder.Decode(&ring) != nil || decoder.Decode(new(any)) != io.EOF {
+	// Operators may build a keyring by hand, and a key value can end in an escaped
+	// newline. Refusing it would stop the control plane starting.
+	if jsonv2.Unmarshal(raw, &ring, jsonv2.RejectUnknownMembers(true), json.ParseBytesWithLooseRFC4648(true)) != nil {
 		return nil, ErrKey
 	}
 	if err := ring.Validate(); err != nil {
@@ -153,9 +153,7 @@ func (r *Keyring) unwrap(blob []byte, identity string) (envelope, []byte, error)
 	if len(blob) > 1<<20 {
 		return env, nil, ErrKey
 	}
-	d := json.NewDecoder(bytes.NewReader(blob))
-	d.DisallowUnknownFields()
-	if d.Decode(&env) != nil || env.Version != 1 || len(r.Keys[env.KeyID]) != 32 {
+	if jsonv2.Unmarshal(blob, &env, jsonv2.RejectUnknownMembers(true)) != nil || env.Version != 1 || len(r.Keys[env.KeyID]) != 32 {
 		return env, nil, ErrKey
 	}
 	key, err := open(r.Keys[env.KeyID], env.Key, identity+":"+env.KeyID+":key")

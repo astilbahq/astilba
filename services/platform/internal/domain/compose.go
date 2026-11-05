@@ -1,9 +1,9 @@
 package domain
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
+	jsonv2 "encoding/json/v2"
 	"fmt"
 	"sort"
 
@@ -98,9 +98,10 @@ func deriveCompose(spec *Specification) error {
 			} `json:"routes"`
 		}
 		b, _ := json.Marshal(raw)
-		decoder := json.NewDecoder(bytes.NewReader(b))
-		decoder.DisallowUnknownFields()
-		if decoder.Decode(&metadata) != nil {
+		// People write this YAML and revisions keep it verbatim, so every later parse
+		// repeats this decode. It stays on v1 rules so that accepted files keep loading,
+		// and on an older controller after a rollback.
+		if jsonv2.Unmarshal(b, &metadata, json.DefaultOptionsV1(), jsonv2.RejectUnknownMembers(true)) != nil {
 			return Invalid("compose.x-astilba")
 		}
 		for _, r := range metadata.Routes {
