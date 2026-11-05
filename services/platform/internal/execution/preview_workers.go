@@ -116,6 +116,7 @@ type previewRecord struct {
 	Build, Plan                      *uuid.UUID
 	BuiltHead                        string
 	Closed                           *time.Time
+	Updated                          time.Time
 	Cleanup                          bool
 	ResumeAfterCancel                bool
 	CleanupActor                     *uuid.UUID
@@ -125,7 +126,7 @@ type previewRecord struct {
 func loadPreview(ctx context.Context, tx pgx.Tx, id uuid.UUID) (previewRecord, error) {
 	var r previewRecord
 	var raw []byte
-	err := tx.QueryRow(ctx, "SELECT "+previewColumns+",policy_id,application_id,policy_generation,configuration,approved_head,approved_repository,approved_generation,build_id,plan_id,built_head,closed_at,cleanup_requested,cleanup_actor,cleanup_auth_version,cleanup_controller,resume_after_cancel FROM preview_requests WHERE id=$1", id).Scan(&r.View.Id, &r.View.Number, &r.View.Head, &r.View.HeadRepository, &r.View.Fork, &r.View.State, &r.View.Note, &r.View.Generation, &r.View.EnvironmentId, &r.View.OperationId, &r.View.CleanupAt, &r.Policy, &r.App, &r.PolicyGeneration, &raw, &r.ApprovedHead, &r.ApprovedRepo, &r.ApprovedGeneration, &r.Build, &r.Plan, &r.BuiltHead, &r.Closed, &r.Cleanup, &r.CleanupActor, &r.CleanupAuth, &r.CleanupController, &r.ResumeAfterCancel)
+	err := tx.QueryRow(ctx, "SELECT "+previewColumns+",policy_id,application_id,policy_generation,configuration,approved_head,approved_repository,approved_generation,build_id,plan_id,built_head,closed_at,cleanup_requested,cleanup_actor,cleanup_auth_version,cleanup_controller,resume_after_cancel,updated_at FROM preview_requests WHERE id=$1", id).Scan(&r.View.Id, &r.View.Number, &r.View.Head, &r.View.HeadRepository, &r.View.Fork, &r.View.State, &r.View.Note, &r.View.Generation, &r.View.EnvironmentId, &r.View.OperationId, &r.View.CleanupAt, &r.Policy, &r.App, &r.PolicyGeneration, &raw, &r.ApprovedHead, &r.ApprovedRepo, &r.ApprovedGeneration, &r.Build, &r.Plan, &r.BuiltHead, &r.Closed, &r.Cleanup, &r.CleanupActor, &r.CleanupAuth, &r.CleanupController, &r.ResumeAfterCancel, &r.Updated)
 	if err == nil && len(raw) > 0 {
 		var c previewConfig
 		err = json.Unmarshal(raw, &c)
@@ -151,6 +152,14 @@ func (w *previewWorker) Work(ctx context.Context, job *river.Job[previewArgs]) e
 			return err
 		}
 	}
+	return s.withGit(ctx, ws, func(git *gitAnswers) error { return w.work(ctx, git, a, policyID, ws) })
+}
+
+// work holds the workspace turn only between provider calls. The pass that acts re-reads the
+// policy, its authority and the request, so an answer cannot apply to a generation, owner or
+// cleanup decision it was not asked for.
+func (w *previewWorker) work(ctx context.Context, git *gitAnswers, a previewArgs, policyID, ws uuid.UUID) error {
+	s := w.service
 	tx, done, err := s.Store.BeginWorkspaceWrite(ctx, ws)
 	if err != nil {
 		return err
@@ -167,24 +176,25 @@ func (w *previewWorker) Work(ctx context.Context, job *river.Job[previewArgs]) e
 			}
 			return nil
 		}
-		provider, _, err := s.previewProvider(ctx, tx, ws, policy.Connection)
-		if err != nil {
-			if _, e := tx.Exec(ctx, "UPDATE preview_policies SET note='Cannot verify repository access or discover requests. Check the Git connection; existing previews are retained.',next_discovery_at=now()+interval '1 minute' WHERE id=$1", policyID); e != nil {
-				return e
-			}
-			return tx.Commit(ctx)
-		}
 		var page int
 		if err = tx.QueryRow(ctx, "SELECT discovery_page FROM preview_policies WHERE id=$1", policyID).Scan(&page); err != nil {
 			return err
 		}
-		numbers, err := provider.OpenPullRequests(ctx, policy.Config.Build.Branch, page)
+		open, err := git.openPullRequests(ctx, tx, policy.Connection, policy.Config.Build.Branch, page)
 		if err != nil {
-			if _, e := tx.Exec(ctx, "UPDATE preview_policies SET note='Cannot discover requests from the provider. Check repository access and retry after any rate limit. Existing previews are retained.',next_discovery_at=now()+interval '1 minute' WHERE id=$1", policyID); e != nil {
+			return err
+		}
+		if open.Err != nil {
+			note := "Cannot discover requests from the provider. Check repository access and retry after any rate limit. Existing previews are retained."
+			if open.Setup {
+				note = "Cannot verify repository access or discover requests. Check the Git connection; existing previews are retained."
+			}
+			if _, e := tx.Exec(ctx, "UPDATE preview_policies SET note=$2,next_discovery_at=now()+interval '1 minute' WHERE id=$1", policyID, note); e != nil {
 				return e
 			}
 			return tx.Commit(ctx)
 		}
+		numbers := open.Value
 		for _, n := range numbers {
 			if err = s.enqueuePreview(ctx, tx, previewArgs{Policy: policy.ID, Number: n}); err != nil {
 				return err
@@ -241,30 +251,26 @@ func (w *previewWorker) Work(ctx context.Context, job *river.Job[previewArgs]) e
 		}
 		return tx.Commit(ctx)
 	}
-	provider, connection, err := s.previewProvider(ctx, tx, ws, policy.Connection)
-	if err != nil {
-		if exists {
-			if e := s.previewState(ctx, tx, record.View.Id, "blocked", "Cannot verify the request with its provider. Existing preview resources are retained; check the Git connection.", time.Minute); e != nil {
-				return e
-			}
-			return tx.Commit(ctx)
-		}
-		return err
-	}
 	number := a.Number
 	if exists {
 		number = record.View.Number
 	}
-	request, err := provider.PullRequest(ctx, number)
+	// Another job can record a newer answer during this one's call. Applying the older one over
+	// it would reopen a closed request, or clean up an open one, until the next check.
+	answer, err := git.pullRequest(ctx, tx, policy.Connection, number, record.Updated.Format(time.RFC3339Nano))
 	if err != nil {
+		return err
+	}
+	if answer.Err != nil {
 		if exists {
 			if e := s.previewState(ctx, tx, record.View.Id, "blocked", "Cannot verify the request with its provider. Existing preview resources are retained; check the Git connection.", time.Minute); e != nil {
 				return e
 			}
 			return tx.Commit(ctx)
 		}
-		return err
+		return answer.Err
 	}
+	request, connection := answer.Value, answer.Connection
 	if !exists {
 		if !request.Open || request.BaseBranch != policy.Config.Build.Branch {
 			return nil
@@ -285,7 +291,7 @@ func (w *previewWorker) Work(ctx context.Context, job *river.Job[previewArgs]) e
 			return err
 		}
 	}
-	if err = s.reconcilePreview(ctx, tx, policy, &record, request, connection); err != nil {
+	if err = s.reconcilePreview(ctx, tx, git, policy, &record, request, connection); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
@@ -309,7 +315,7 @@ func previewBusy(ctx context.Context, tx pgx.Tx, ws uuid.UUID, env *uuid.UUID) (
 	err := tx.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM execution_operations WHERE workspace_id=$2 AND environment_id=$1 AND state NOT IN ('succeeded','failed','cancelled'))", *env, ws).Scan(&busy)
 	return busy, err
 }
-func (s *Service) reconcilePreview(ctx context.Context, tx pgx.Tx, p previewPolicy, r *previewRecord, pr pipeline.PullRequest, connection pipeline.Connection) error {
+func (s *Service) reconcilePreview(ctx context.Context, tx pgx.Tx, git *gitAnswers, p previewPolicy, r *previewRecord, pr pipeline.PullRequest, connection pipeline.Connection) error {
 	id := r.View.Id
 	if pr.Open && pr.BaseBranch != p.Config.Build.Branch {
 		if err := s.cancelPreviewEnvironment(ctx, tx, p.Workspace, r.View.EnvironmentId); err != nil {
@@ -441,7 +447,7 @@ func (s *Service) reconcilePreview(ctx context.Context, tx pgx.Tx, p previewPoli
 		}
 		cfg := r.Config.Build
 		hash := buildInputHash(connection, pr.Head, cfg)
-		op, err := s.insertPipeline(ctx, tx, nil, p.Workspace, *r.View.EnvironmentId, uuid.New(), p.Server, pipeline.Command{Preview: &pipeline.PreviewSource{RequestID: id, Generation: r.View.Generation, Number: pr.Number, HeadRepository: pr.HeadRepository}, Action: "build-preview", Connection: connection, Commit: pr.Head, Branch: cfg.Branch, RevisionID: v.Revision, UnitID: v.Unit, AppID: *r.App, Build: &cfg, InputHash: hash, SubmittedAt: time.Now().UTC()})
+		op, err := s.insertPipeline(ctx, tx, git, p.Workspace, *r.View.EnvironmentId, uuid.New(), p.Server, pipeline.Command{Preview: &pipeline.PreviewSource{RequestID: id, Generation: r.View.Generation, Number: pr.Number, HeadRepository: pr.HeadRepository}, Action: "build-preview", Connection: connection, Commit: pr.Head, Branch: cfg.Branch, RevisionID: v.Revision, UnitID: v.Unit, AppID: *r.App, Build: &cfg, InputHash: hash, SubmittedAt: time.Now().UTC()})
 		if err != nil {
 			return err
 		}

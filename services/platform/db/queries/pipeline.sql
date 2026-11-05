@@ -21,3 +21,8 @@ UPDATE pipeline_runs SET delivery_started=true WHERE workspace_id = @workspace_i
 UPDATE execution_operations SET state = @state, note = @note WHERE workspace_id = @workspace_id AND id = @id;
 -- name: StopPossiblyDeliveredPipeline :exec
 UPDATE execution_operations SET cancel_requested = true, note = @note::text || CASE WHEN state = 'needs_attention' AND note <> '' THEN ' ' || note ELSE '' END WHERE workspace_id = @workspace_id AND id = @id;
+
+-- name: AutomaticDeploymentWorkspace :one
+-- unscoped: queued jobs carry only the deployment, as the other job lookups by ID do; the row
+-- establishes the workspace. Remove this when jobs carry the workspace in their arguments.
+SELECT workspace_id FROM pipeline_auto_deployments WHERE id = @id;

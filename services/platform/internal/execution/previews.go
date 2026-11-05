@@ -385,7 +385,7 @@ func (s *Service) ActOnPreview(ctx context.Context, p store.Principal, ws, pid, 
 			} else if *generationWhenAsked != policy.Generation {
 				return domain.Conflict
 			}
-			answer, err := git.pullRequest(ctx, tx, policy.Connection, out.Number)
+			answer, err := git.pullRequest(ctx, tx, policy.Connection, out.Number, "")
 			if err != nil {
 				return err
 			}

@@ -3,6 +3,7 @@ package integration
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -220,6 +221,124 @@ func TestPreviewApprovalRechecksAfterAHungProvider(t *testing.T) {
 			}
 			if approved != "" {
 				t.Fatal("an approval applied to a state that changed during the call", approved)
+			}
+		})
+	}
+}
+
+// A preview job checks its request with the provider. Authority to run it must be the
+// authority after the call, not before.
+func TestPreviewWorkerRechecksAuthorityAfterAHungProvider(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		during   func(t *testing.T, h *hungPreview)
+		requests int
+	}{
+		{name: "nothing changed", during: func(*testing.T, *hungPreview) {}, requests: 1},
+		{
+			name: "owner demoted",
+			during: func(t *testing.T, h *hungPreview) {
+				execSQL(t, h.hungBuild, "UPDATE memberships SET role='viewer' WHERE workspace_id=$1", h.ws)
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHungPreview(t)
+			entered, release := h.provider.hold(t, "/pulls/7")
+			h.b.call("PUT", h.path+"/preview-policy", map[string]any{"enabled": true, "generation": 0, "configuration": h.policy}, 200, nil)
+			waitEntered(t, entered)
+			h.requireNothingHeld(t, uuid.Nil)
+			tc.during(t, h)
+			release()
+			deadline := time.Now().Add(20 * time.Second)
+			for {
+				var unfinished, finished int
+				if err := h.f.st.Pool.QueryRow(t.Context(), "SELECT count(*) FILTER(WHERE finalized_at IS NULL),count(*) FILTER(WHERE finalized_at IS NOT NULL) FROM river_job WHERE kind=$1 AND (args->>'number')::int=7", "platform_preview_v1").Scan(&unfinished, &finished); err != nil {
+					t.Fatal(err)
+				}
+				if unfinished == 0 && finished > 0 {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatal("the preview job never finished", unfinished, finished)
+				}
+				time.Sleep(30 * time.Millisecond)
+			}
+			var requests int
+			if err := h.f.st.Pool.QueryRow(t.Context(), "SELECT count(*) FROM preview_requests WHERE workspace_id=$1", h.ws).Scan(&requests); err != nil {
+				t.Fatal(err)
+			}
+			if requests != tc.requests {
+				t.Fatal("preview requests", requests, "want", tc.requests)
+			}
+		})
+	}
+}
+
+// A job holding an older answer must not overwrite what another job has recorded since, which
+// would cancel a newer build and start an older one, or reopen a closed request. The other job
+// here is a real one, so this depends on its commit moving what the question is keyed on.
+func TestPreviewWorkerAsksAgainAfterAnotherJobRecordsTheRequest(t *testing.T) {
+	newer := strings.Repeat("d", 40)
+	for _, tc := range []struct {
+		name   string
+		change func(h *hungPreview)
+		check  string
+		want   string
+	}{
+		{
+			name:   "head moved",
+			change: func(h *hungPreview) { h.provider.pullHead.Store(newer) },
+			check:  "SELECT head FROM preview_requests WHERE id=$1",
+			want:   newer,
+		},
+		{
+			name:   "request closed",
+			change: func(h *hungPreview) { h.provider.pullClosed.Store(true) },
+			check:  "SELECT state FROM preview_requests WHERE id=$1",
+			want:   "deleted",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHungPreview(t)
+			h.b.call("PUT", h.path+"/preview-policy", map[string]any{"enabled": true, "generation": 0, "configuration": h.policy}, 200, nil)
+			preview := h.waitPreview(t, "approval_required")
+			read := func() string {
+				t.Helper()
+				var got string
+				if err := h.f.st.Pool.QueryRow(t.Context(), tc.check, preview.Id).Scan(&got); err != nil {
+					t.Fatal(err)
+				}
+				return got
+			}
+			entered, release := h.provider.holdOnce(t, "/pulls/7")
+			h.pullRequestHook(t)
+			waitEntered(t, entered)
+			tc.change(h)
+			h.pullRequestHook(t)
+			deadline := time.Now().Add(15 * time.Second)
+			for read() != tc.want {
+				if time.Now().After(deadline) {
+					t.Fatal("the second job never recorded the change")
+				}
+				time.Sleep(30 * time.Millisecond)
+			}
+			release()
+			for {
+				var unfinished int
+				if err := h.f.st.Pool.QueryRow(t.Context(), "SELECT count(*) FROM river_job WHERE kind='platform_preview_v1' AND finalized_at IS NULL").Scan(&unfinished); err != nil {
+					t.Fatal(err)
+				}
+				if unfinished == 0 {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatal("the held job never finished")
+				}
+				time.Sleep(30 * time.Millisecond)
+			}
+			if got := read(); got != tc.want {
+				t.Fatal("an older answer overwrote what another job recorded", got, "want", tc.want)
 			}
 		})
 	}

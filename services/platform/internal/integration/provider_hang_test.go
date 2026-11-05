@@ -29,6 +29,7 @@ type heldGitea struct {
 	head       atomic.Value
 	repository atomic.Int64
 	pullHead   atomic.Value
+	pullClosed atomic.Bool
 	onRequest  atomic.Pointer[func(path string)]
 
 	mu       sync.Mutex
@@ -48,7 +49,10 @@ func newHeldGitea(t *testing.T) *heldGitea {
 	h.repository.Store(12)
 	h.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Read before waiting: a held request answers with what was true when it was asked.
-		repository, head, pullHead := h.repository.Load(), h.head.Load().(string), h.pullHead.Load().(string)
+		repository, head, pullHead, pullState := h.repository.Load(), h.head.Load().(string), h.pullHead.Load().(string), "open"
+		if h.pullClosed.Load() {
+			pullState = "closed"
+		}
 		if hook := h.onRequest.Load(); hook != nil {
 			(*hook)(r.URL.Path)
 		}
@@ -84,7 +88,7 @@ func newHeldGitea(t *testing.T) *heldGitea {
 		case strings.Contains(r.URL.Path, "/branches/"):
 			_ = stablejson.Encode(w, map[string]any{"commit": map[string]string{"sha": head}})
 		case strings.HasSuffix(r.URL.Path, "/pulls/7"):
-			_ = stablejson.Encode(w, map[string]any{"number": 7, "state": "open", "base": map[string]any{"ref": "main", "repo": map[string]any{"id": 12}}, "head": map[string]any{"sha": pullHead, "repo": map[string]any{"id": 99}}})
+			_ = stablejson.Encode(w, map[string]any{"number": 7, "state": pullState, "base": map[string]any{"ref": "main", "repo": map[string]any{"id": 12}}, "head": map[string]any{"sha": pullHead, "repo": map[string]any{"id": 99}}})
 		case strings.HasSuffix(r.URL.Path, "/pulls"):
 			_ = stablejson.Encode(w, []map[string]int{{"number": 7}})
 		default:
