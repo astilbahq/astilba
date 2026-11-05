@@ -99,7 +99,7 @@ func TestPreviewPolicyRechecksAfterAHungProvider(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHungPreview(t)
-			entered, release := h.provider.hold(t, "/branches/")
+			entered, release := h.provider.hold(t, "/branches/main")
 			finished := h.b.send("PUT", h.path+"/preview-policy", map[string]any{"enabled": true, "generation": 0, "configuration": h.policy})
 			waitEntered(t, entered)
 			h.requireNothingHeld(t, uuid.Nil)
@@ -134,7 +134,7 @@ func TestPolicySaveDoesNotUndoAPauseDuringItsCheck(t *testing.T) {
 	h := newHungPreview(t)
 	var saved api.PreviewPolicy
 	h.b.call("PUT", h.path+"/preview-policy", map[string]any{"enabled": true, "generation": 0, "configuration": h.policy}, 200, &saved)
-	entered, release := h.provider.hold(t, "/branches/")
+	entered, release := h.provider.hold(t, "/branches/main")
 	finished := h.b.send("PUT", h.path+"/preview-policy", map[string]any{"enabled": true, "generation": saved.Generation, "configuration": h.policy})
 	waitEntered(t, entered)
 	h.b.call("PUT", h.path+"/preview-policy", map[string]any{"enabled": false, "generation": saved.Generation, "configuration": h.policy}, 200, nil)
@@ -154,7 +154,7 @@ func TestPolicySaveDoesNotUndoAPauseDuringItsCheck(t *testing.T) {
 // and the generation read under the lock lets only one of them through.
 func TestHungPolicySavesLeaveThePoolServing(t *testing.T) {
 	h := newHungPreview(t)
-	entered, release := h.provider.hold(t, "/branches/")
+	entered, release := h.provider.hold(t, "/branches/main")
 	size := int(h.f.st.Pool.Config().MaxConns) + 2
 	results := make([]<-chan reply, size)
 	for i := range results {

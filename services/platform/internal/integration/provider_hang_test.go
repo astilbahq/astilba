@@ -32,6 +32,7 @@ type heldGitea struct {
 
 	mu       sync.Mutex
 	match    string
+	skip     int
 	failHeld bool
 	gate     chan struct{}
 	entered  chan struct{}
@@ -52,7 +53,11 @@ func newHeldGitea(t *testing.T) *heldGitea {
 		h.mu.Lock()
 		h.asked[r.URL.Path]++
 		gate, entered := h.gate, h.entered
-		held := gate != nil && strings.Contains(r.URL.Path, h.match)
+		held := gate != nil && strings.HasSuffix(r.URL.Path, h.match)
+		if held && h.skip > 0 {
+			h.skip--
+			held = false
+		}
 		h.mu.Unlock()
 		if held {
 			entered <- struct{}{}
@@ -85,7 +90,7 @@ func newHeldGitea(t *testing.T) *heldGitea {
 	return h
 }
 
-// hold makes requests whose path contains match hang until the returned release runs.
+// hold makes requests whose path ends with match hang until the returned release runs.
 func (h *heldGitea) hold(t *testing.T, match string) (<-chan struct{}, func()) {
 	t.Helper()
 	gate, entered := make(chan struct{}), make(chan struct{}, 64)
@@ -100,6 +105,15 @@ func (h *heldGitea) hold(t *testing.T, match string) (<-chan struct{}, func()) {
 	})
 	t.Cleanup(release)
 	return entered, release
+}
+
+// holdAfter is hold for a request after the next few that match.
+func (h *heldGitea) holdAfter(t *testing.T, match string, passed int) (<-chan struct{}, func()) {
+	t.Helper()
+	h.mu.Lock()
+	h.skip = passed
+	h.mu.Unlock()
+	return h.hold(t, match)
 }
 
 func (h *heldGitea) failReleased() {
@@ -369,15 +383,15 @@ func TestDeliveryRechecksEverythingAfterAHungProvider(t *testing.T) {
 			during: func(t *testing.T, h *hungBuild, operation uuid.UUID) {
 				execSQL(t, h, "UPDATE execution_operations SET cancel_requested=true WHERE id=$1", operation)
 			},
-			check: func(t *testing.T, h *hungBuild, operation uuid.UUID, result polled) {
-				var state string
-				if err := h.f.st.Pool.QueryRow(t.Context(), "SELECT state FROM execution_operations WHERE id=$1", operation).Scan(&state); err != nil {
-					t.Fatal(err)
-				}
-				if carriesCredential(result.command) || h.deliveryStarted(t, operation) || state != "cancelled" {
-					t.Fatal("a command cancelled during the call was still delivered", state, result.err)
-				}
-			},
+			check: stoppedBeforeDelivery,
+		},
+		{
+			// Hosted with no entitlement row is a lapsed subscription. Setting it only now keeps
+			// the dispatcher from refusing the command before the poll reaches the provider.
+			name:     "subscription lapsed",
+			finishes: true,
+			during:   func(t *testing.T, h *hungBuild, _ uuid.UUID) { h.f.st.Hosted = true },
+			check:    stoppedBeforeDelivery,
 		},
 		{
 			name: "connection repointed",
@@ -424,6 +438,17 @@ func TestDeliveryRechecksEverythingAfterAHungProvider(t *testing.T) {
 			}
 			tc.check(t, h, op.Id, <-result)
 		})
+	}
+}
+
+func stoppedBeforeDelivery(t *testing.T, h *hungBuild, operation uuid.UUID, result polled) {
+	t.Helper()
+	var state string
+	if err := h.f.st.Pool.QueryRow(t.Context(), "SELECT state FROM execution_operations WHERE id=$1", operation).Scan(&state); err != nil {
+		t.Fatal(err)
+	}
+	if carriesCredential(result.command) || h.deliveryStarted(t, operation) || state != "cancelled" {
+		t.Fatal("a command that stopped being allowed during the call was still delivered", state, result.err)
 	}
 }
 
@@ -555,7 +580,7 @@ func TestBuildReportRechecksAfterAHungProvider(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHungBuild(t)
 			c := h.deliver(t, automatic(h))
-			entered, release := h.provider.hold(t, "/branches/")
+			entered, release := h.provider.hold(t, "/branches/main")
 			finished := make(chan error, 1)
 			go func() { finished <- h.f.execution.Report(context.Background(), h.identity, h.succeeded(t, c)) }()
 			waitEntered(t, entered)
@@ -574,7 +599,7 @@ func TestBuildReportRechecksAfterAHungProvider(t *testing.T) {
 	t.Run("provider failure leaves the report to retry", func(t *testing.T) {
 		h := newHungBuild(t)
 		c := h.deliver(t, automatic(h))
-		entered, release := h.provider.hold(t, "/branches/")
+		entered, release := h.provider.hold(t, "/branches/main")
 		h.provider.failReleased()
 		finished := make(chan error, 1)
 		go func() { finished <- h.f.execution.Report(context.Background(), h.identity, h.succeeded(t, c)) }()

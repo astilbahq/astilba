@@ -62,6 +62,7 @@ func (s *Service) poll(ctx context.Context, a Identity, out *api.AgentPoll) (*ap
 	defer deadline.Stop()
 	tick := time.NewTicker(time.Second)
 	defer tick.Stop()
+	var verified uuid.UUID
 	for {
 		// Check revocation/expiry after each wait, not only at request entry.
 		if _, err = s.Authenticate(ctx, a.ID, a.Token); err != nil {
@@ -107,7 +108,8 @@ func (s *Service) poll(ctx context.Context, a Identity, out *api.AgentPoll) (*ap
 				if e != nil {
 					return nil, e
 				}
-				allowed, e := s.previewCommandAllowed(ctx, tx, a.Workspace, c, state == "dispatched")
+				verify := state == "dispatched" && verified != c.Id
+				allowed, e := s.previewCommandAllowed(ctx, tx, a.Workspace, c, verify)
 				if e == nil && allowed {
 					allowed, e = s.maintenanceEffectAllowed(ctx, tx, a.Workspace, c)
 				}
@@ -117,6 +119,13 @@ func (s *Service) poll(ctx context.Context, a Identity, out *api.AgentPoll) (*ap
 				}
 				if !allowed {
 					cancel = true
+				}
+				// The provider call can take many seconds, and a command's secrets leave soon
+				// after it, so everything read before it is read again: the agent's credential,
+				// the operation and what the call was checked against.
+				if verify && allowed {
+					verified = c.Id
+					continue
 				}
 			}
 			c.CancelRequested = cancel

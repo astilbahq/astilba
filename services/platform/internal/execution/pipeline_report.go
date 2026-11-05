@@ -117,8 +117,14 @@ func (s *Service) decidePipelineDelivery(ctx context.Context, git *gitAnswers, a
 	if err = json.Unmarshal(raw, c); err != nil {
 		return false, err
 	}
+	// The dispatcher stops a command that loses its authority or subscription, but only on
+	// its next run, so this pass, the last before credentials leave, checks for itself.
+	refused, err := s.deliveryRefused(ctx, tx, a.Workspace, *c)
+	if err != nil {
+		return false, err
+	}
 	// This command carries no credentials, so an agent whose clock lags must not start it.
-	c.CancelRequested = pollCancelled || cancelled || time.Now().After(c.Deadline)
+	c.CancelRequested = pollCancelled || cancelled || refused || time.Now().After(c.Deadline)
 	var p pipeline.Command
 	if c.Pipeline == nil || json.Unmarshal(*c.Pipeline, &p) != nil || p.Digest() != c.PlanHash {
 		return false, errors.New("invalid pipeline payload")
@@ -223,6 +229,15 @@ func (s *Service) decidePipelineDelivery(ctx context.Context, git *gitAnswers, a
 	// is still a possible delivery and cannot later justify a terminal rejection.
 	c.Pipeline = rawMessage(raw)
 	return true, tx.Commit(ctx)
+}
+func (s *Service) deliveryRefused(ctx context.Context, tx pgx.Tx, ws uuid.UUID, c api.ExecutionCommand) (bool, error) {
+	if err := s.commandAdmission(ctx, tx, ws, c); errors.Is(err, store.SubscriptionRequired) {
+		return true, nil
+	} else if err != nil {
+		return false, err
+	}
+	allowed, err := s.previewCommandAllowed(ctx, tx, ws, c, false)
+	return !allowed, err
 }
 func (s *Service) populatePipeline(ctx context.Context, tx pgx.Tx, git *gitAnswers, ws, env uuid.UUID, p *pipeline.Command) error {
 	access, err := s.commandAccess(ctx, tx, git, ws, p.Connection.ID, p.Action == "submit")
