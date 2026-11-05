@@ -2,7 +2,7 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
+	"encoding/json/jsontext"
 	"errors"
 	"os"
 	"path/filepath"
@@ -95,7 +95,7 @@ func (e *Engine) executeNetwork(ctx context.Context, c api.ExecutionCommand) err
 	return e.Journal.Mutate(c.Id, func(r *Record) {
 		r.Report.State = "succeeded"
 		r.Report.Note = "Managed network configuration acknowledged; deployment separately verifies endpoint reachability."
-		message := json.RawMessage(raw)
+		message := jsontext.Value(raw)
 		r.Report.Network = &message
 	})
 }

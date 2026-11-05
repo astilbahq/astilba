@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"encoding/json/jsontext"
 	"errors"
 	"fmt"
 	"strings"
@@ -174,7 +175,7 @@ func (s *Service) poll(ctx context.Context, a Identity, out *api.AgentPoll) (*ap
 
 // PostgreSQL cannot store NUL in text or jsonb, so host output containing one would
 // fail the same report on every retry. A space keeps the payload's size limits exact.
-func replaceEscapedNUL(payload *json.RawMessage) {
+func replaceEscapedNUL(payload *jsontext.Value) {
 	if payload == nil {
 		return
 	}
@@ -202,7 +203,7 @@ func (s *Service) Report(ctx context.Context, a Identity, r api.AgentReport) err
 		return domain.Invalid("state")
 	}
 	r.Note = strings.ReplaceAll(r.Note, "\x00", " ")
-	for _, payload := range []*json.RawMessage{r.Pipeline, r.Observation, r.Crosshost, r.Upgrade, r.Network} {
+	for _, payload := range []*jsontext.Value{r.Pipeline, r.Observation, r.Crosshost, r.Upgrade, r.Network} {
 		replaceEscapedNUL(payload)
 	}
 	var tx pgx.Tx

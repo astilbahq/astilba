@@ -3,7 +3,7 @@ package deployment
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
+	"encoding/json/jsontext"
 	"errors"
 	"slices"
 	"strconv"
@@ -77,11 +77,11 @@ func UnretainedRecoveryDelivery(id uuid.UUID, next, retained RecoveryDescriptor)
 }
 
 type RecoveryProof struct {
-	ParentID   uuid.UUID       `json:"parentId"`
-	ID         uuid.UUID       `json:"id"`
-	Header     json.RawMessage `json:"header"`
-	Checkpoint string          `json:"checkpoint"`
-	Report     json.RawMessage `json:"report"`
+	ParentID   uuid.UUID      `json:"parentId"`
+	ID         uuid.UUID      `json:"id"`
+	Header     jsontext.Value `json:"header"`
+	Checkpoint string         `json:"checkpoint"`
+	Report     jsontext.Value `json:"report"`
 }
 
 type RecoveryRoot struct {

@@ -1,7 +1,7 @@
 package agent
 
 import (
-	"encoding/json"
+	"encoding/json/jsontext"
 	jsonv2 "encoding/json/v2"
 	"errors"
 	"os"
@@ -16,8 +16,8 @@ import (
 const localStateVersion = 1
 
 type localStateKeys struct {
-	Version int             `json:"agentStateVersion"`
-	Keyring json.RawMessage `json:"keyring"`
+	Version int            `json:"agentStateVersion"`
+	Keyring jsontext.Value `json:"keyring"`
 }
 
 // The agent-local envelope deliberately cannot be parsed as a cryptobox keyring.

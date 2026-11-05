@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"encoding/json/jsontext"
 	"errors"
 	"fmt"
 	"io"
@@ -86,7 +87,7 @@ func (e *Engine) upgradeReport(c api.ExecutionCommand, s upgradeState, success b
 		return err
 	}
 	raw, _ := stablejson.Marshal(s.Status)
-	if err := e.Journal.Mutate(c.Id, func(r *Record) { value := json.RawMessage(raw); r.Report.Upgrade = &value }); err != nil {
+	if err := e.Journal.Mutate(c.Id, func(r *Record) { value := jsontext.Value(raw); r.Report.Upgrade = &value }); err != nil {
 		return err
 	}
 	state := api.ExecutionState("failed")

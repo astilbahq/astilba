@@ -1,7 +1,7 @@
 package agent
 
 import (
-	"encoding/json"
+	"encoding/json/jsontext"
 	"errors"
 	"os"
 	"time"
@@ -137,9 +137,9 @@ func crossHostCommand(c api.ExecutionCommand) (deployment.CrossHostCommand, erro
 	}
 	return command, nil
 }
-func crossHostReceipt(c api.ExecutionCommand, command deployment.CrossHostCommand, observation deployment.Observation) *json.RawMessage {
+func crossHostReceipt(c api.ExecutionCommand, command deployment.CrossHostCommand, observation deployment.Observation) *jsontext.Value {
 	raw, _ := stablejson.Marshal(deployment.CrossHostReceipt{ParentID: command.ParentID, GroupHash: command.GroupHash, UnitID: command.Unit.Plan.UnitID, Phase: command.Phase, PlanHash: command.Unit.Plan.Hash, Observation: observation})
-	v := json.RawMessage(raw)
+	v := jsontext.Value(raw)
 	return &v
 }
 

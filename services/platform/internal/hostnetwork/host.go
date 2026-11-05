@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
+	"encoding/json/jsontext"
 	jsonv2 "encoding/json/v2"
 	"errors"
 	"fmt"
@@ -384,9 +385,9 @@ func (h Host) inspectInterface(ctx context.Context, m Manifest, group uint32, re
 		return err
 	}
 	var links []struct {
-		IfName string          `json:"ifname"`
-		Alias  string          `json:"ifalias"`
-		Group  json.RawMessage `json:"group"`
+		IfName string         `json:"ifname"`
+		Alias  string         `json:"ifalias"`
+		Group  jsontext.Value `json:"group"`
 		Info   struct {
 			Kind string `json:"info_kind"`
 		} `json:"linkinfo"`

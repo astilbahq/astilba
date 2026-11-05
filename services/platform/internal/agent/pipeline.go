@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"encoding/json/jsontext"
 	"errors"
 	"fmt"
 	"io"
@@ -345,7 +346,7 @@ func (e *Engine) buildPipeline(ctx context.Context, c api.ExecutionCommand, p pi
 	if err != nil {
 		return result, err
 	}
-	var info map[string]json.RawMessage
+	var info map[string]jsontext.Value
 	if json.Unmarshal(metadata, &info) != nil {
 		return result, errors.New("invalid BuildKit metadata")
 	}
@@ -507,21 +508,21 @@ func (e *Engine) executePipeline(ctx context.Context, c api.ExecutionCommand, r 
 	}
 	if e.cancelled(c.Id) || ctx.Err() != nil {
 		raw, _ := stablejson.Marshal(pipeline.Result{Logs: result.Logs})
-		if err := e.Journal.Mutate(c.Id, func(record *Record) { message := json.RawMessage(raw); record.Report.Pipeline = &message }); err != nil {
+		if err := e.Journal.Mutate(c.Id, func(record *Record) { message := jsontext.Value(raw); record.Report.Pipeline = &message }); err != nil {
 			return err
 		}
 		return e.finishPipeline(c, "cancelled", "Build/source assignment was cancelled or expired; no artifact is eligible for deployment.")
 	}
 	if err != nil {
 		raw, _ := stablejson.Marshal(result)
-		_ = e.Journal.Mutate(c.Id, func(record *Record) { message := json.RawMessage(raw); record.Report.Pipeline = &message })
+		_ = e.Journal.Mutate(c.Id, func(record *Record) { message := jsontext.Value(raw); record.Report.Pipeline = &message })
 		return e.pipelineFailure(ctx, c, err)
 	}
 	raw, err := stablejson.Marshal(result)
 	if err != nil || len(raw) > 150000 {
 		return e.finishPipeline(c, "failed", "Pipeline result exceeds its supported size.")
 	}
-	if err = e.Journal.Mutate(c.Id, func(record *Record) { message := json.RawMessage(raw); record.Report.Pipeline = &message }); err != nil {
+	if err = e.Journal.Mutate(c.Id, func(record *Record) { message := jsontext.Value(raw); record.Report.Pipeline = &message }); err != nil {
 		return err
 	}
 	e.point("pipeline-result")

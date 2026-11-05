@@ -2,7 +2,7 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
+	"encoding/json/jsontext"
 	"errors"
 	"io"
 	"net/http"
@@ -187,7 +187,7 @@ func (e *Engine) executeRecoveryCheckpoint(ctx context.Context, c api.ExecutionC
 	receipt.Observation.ObservedAt = time.Now().UTC()
 	raw, _ := stablejson.Marshal(receipt)
 	return e.Journal.Mutate(c.Id, func(r *Record) {
-		message := json.RawMessage(raw)
+		message := jsontext.Value(raw)
 		r.Report.Crosshost = &message
 		r.Report.State = "succeeded"
 		r.Report.Note = "The assigned primary durably retained recovery metadata before any host reservation."

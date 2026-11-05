@@ -1,7 +1,7 @@
 package pipeline
 
 import (
-	"encoding/json"
+	"encoding/json/jsontext"
 	"strings"
 )
 
@@ -45,7 +45,7 @@ type RailpackSummary struct {
 }
 
 type PreparedRailpack struct {
-	Plan    json.RawMessage `json:"plan"`
+	Plan    jsontext.Value  `json:"plan"`
 	Summary RailpackSummary `json:"summary"`
 }
 

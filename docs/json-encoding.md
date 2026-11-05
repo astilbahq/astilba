@@ -76,7 +76,7 @@ v2 refuses duplicate names and invalid UTF-8, and matches names by exact case. D
 
 - **PostgreSQL `jsonb`.** It removes duplicate names and rejects invalid UTF-8 on write, so stored rows cannot contain either. No migration uses a plain `json` column for this data.
 - **Journals, generated keyrings, network snapshots, recovery files.** Go's v1 encoder writes struct tag names exactly, cannot produce duplicates from a struct and replaces invalid UTF-8. No JSON tag in this repository's history has been renamed by case alone.
-- **Workspace archives and recovery bundles.** Rows come from PostgreSQL, so the same applies. `map[string]json.RawMessage` keeps `null` as the text `null` under both versions.
+- **Workspace archives and recovery bundles.** Rows come from PostgreSQL, so the same applies. `map[string]jsontext.Value` keeps `null` as the text `null` under both versions.
 - **`null`, empty arrays and timestamps.** These decode to the same Go values, so digests of decoded values do not move.
 
 Two readers keep looser matching, because their input is written by people and refusing it would take a working system down:

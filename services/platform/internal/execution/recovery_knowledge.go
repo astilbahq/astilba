@@ -3,6 +3,7 @@ package execution
 import (
 	"context"
 	"encoding/json"
+	"encoding/json/jsontext"
 	"errors"
 	"maps"
 	"net/netip"
@@ -101,7 +102,7 @@ func (s *Service) prepareRecoveryKnowledge(ctx context.Context, tx pgx.Tx, befor
 				case "environments":
 					err = recoveryMonotonic(selected, prior, row, nil, []string{"execution_generation"})
 				case "workspace_networks":
-					if Hash(json.RawMessage(prior["id"])) != Hash(json.RawMessage(row["id"])) || Hash(json.RawMessage(prior["prefix"])) != Hash(json.RawMessage(row["prefix"])) {
+					if Hash(jsontext.Value(prior["id"])) != Hash(jsontext.Value(row["id"])) || Hash(jsontext.Value(prior["prefix"])) != Hash(jsontext.Value(row["prefix"])) {
 						return errors.New("network identity conflicts with known management metadata")
 					}
 					err = recoveryMonotonic(selected, prior, row, nil, []string{"generation"})
@@ -352,7 +353,7 @@ func recoveryInstalledMember(row portability.Row, hosts map[uuid.UUID]deployment
 	return false, nil
 }
 func recoveryUpgradeKnowledge(prior, incoming portability.Row) (portability.Row, error) {
-	if Hash(json.RawMessage(prior["plan"])) != Hash(json.RawMessage(incoming["plan"])) {
+	if Hash(jsontext.Value(prior["plan"])) != Hash(jsontext.Value(incoming["plan"])) {
 		return nil, errors.New("upgrade plan conflicts with known management metadata")
 	}
 	a, err := recoveryValue[upgrade.Status](prior, "status")
