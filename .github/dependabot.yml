@@ -30,8 +30,8 @@ updates:
       default-days: 7
     groups:
       # These can need an edit Dependabot won't make: the Playwright image in the workflows,
-      # or the Vite+ pins and allowBuilds in pnpm-workspace.yaml. They stay apart so the
-      # rest can land.
+      # or the Vite+ pins and allowBuilds in pnpm-workspace.yaml. make check-ci fails until
+      # they're aligned. They stay apart so the rest can land.
       needs-review:
         patterns:
           - "@pandacss/*"

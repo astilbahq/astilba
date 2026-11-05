@@ -23,17 +23,17 @@
   },
   "devDependencies": {
     "@axe-core/playwright": "4.14.0",
-    "@pandacss/dev": "2.4.0",
-    "@pandacss/preset-base": "2.4.0",
-    "@pandacss/preset-panda": "2.4.0",
-    "@pandacss/vite": "2.4.0",
-    "@playwright/test": "1.64.1",
+    "@pandacss/dev": "catalog:",
+    "@pandacss/preset-base": "catalog:",
+    "@pandacss/preset-panda": "catalog:",
+    "@pandacss/vite": "catalog:",
+    "@playwright/test": "catalog:",
     "@types/node": "24.19.2",
     "@types/react": "19.3.0",
     "@types/react-dom": "19.3.0",
     "@vitejs/plugin-react": "6.1.2",
     "typescript": "7.0.2",
-    "vite": "npm:@voidzero-dev/vite-plus-core@1.4.0",
-    "vite-plus": "1.4.0"
+    "vite": "catalog:",
+    "vite-plus": "catalog:"
   }
 }

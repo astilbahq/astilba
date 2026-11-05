@@ -339,6 +339,13 @@ line above is only that comment. Move statements into
 `services/platform/db/queries` to reduce the count; moving legacy inline SQL to
 another package counts as new SQL, so convert it to sqlc as part of the move.
 
+## Pin alignment
+
+`make check-ci` runs `scripts/pin-alignment.mjs`, which reads the workspace file,
+manifests, lockfile and workflows without installing anything and fails when pins
+that must move together differ. [Dependency pins](frontend-development.md#dependency-pins)
+lists them.
+
 ## Browser shards
 
 Application and workshop workflows each run Chromium and WebKit with two shards
