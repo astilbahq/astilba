@@ -74,8 +74,17 @@ func TestSubmitDeliveryRechecksRuntimeSecrets(t *testing.T) {
 		}
 		agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/report", token, r, 204, nil)
 	}
-	// prepare leaves an imported environment with the canary in its saved draft.
-	prepare := func(t *testing.T, name, canary string) (string, api.Revision) {
+	inContent := func(canary string) func(*composeproject.Bundle) {
+		return func(bundle *composeproject.Bundle) { bundle.Files[0].Content += "# " + canary + "\n" }
+	}
+	// The runner adds this path to the tree it pushes, whatever the file holds.
+	inFileName := func(canary string) func(*composeproject.Bundle) {
+		return func(bundle *composeproject.Bundle) {
+			bundle.Files = append(bundle.Files, composeproject.File{Path: "config/" + canary + ".env", Content: "MODE=plain\n"})
+		}
+	}
+	// prepare leaves an imported environment with plant's change in its saved draft.
+	prepare := func(t *testing.T, name string, plant func(*composeproject.Bundle), baseline ...composeproject.File) (string, api.Revision) {
 		t.Helper()
 		b := *b
 		b.t = t
@@ -83,6 +92,9 @@ func TestSubmitDeliveryRechecksRuntimeSecrets(t *testing.T) {
 		b.call("POST", prefix+"/projects/"+project.Id.String()+"/environments", map[string]string{"name": name, "configurationOwner": "compose"}, 201, &env)
 		path := prefix + "/projects/" + project.Id.String() + "/environments/" + env.Id.String()
 		source := pipeline.Source{ConnectionID: connection.Connection.ID, Branch: "main", RunnerID: enrolled.Server.Id, Paths: []string{"compose.yaml"}, Entrypoints: []string{"compose.yaml"}}
+		for _, file := range baseline {
+			source.Paths = append(source.Paths, file.Path)
+		}
 		var imported api.Operation
 		b.call("PUT", path+"/source", map[string]any{"baseRevisionId": env.DraftRevisionId, "configuration": source}, 202, &imported)
 		heartbeat(t)
@@ -92,14 +104,14 @@ func TestSubmitDeliveryRechecksRuntimeSecrets(t *testing.T) {
 			t.Fatal("import did not reach the runner", command)
 		}
 		original := "services:\n  web:\n    image: " + pipelineTestImage + "\n"
-		report(t, command, 2, "succeeded", "", &pipeline.Result{Commit: head, Files: []composeproject.File{{Path: "compose.yaml", Content: original}}})
+		report(t, command, 2, "succeeded", "", &pipeline.Result{Commit: head, Files: append([]composeproject.File{{Path: "compose.yaml", Content: original}}, baseline...)})
 		var draft api.Revision
 		b.call("GET", path+"/draft", nil, 200, &draft)
 		var spec domain.Specification
 		if err := json.Unmarshal(draft.Specification, &spec); err != nil {
 			t.Fatal(err)
 		}
-		spec.Compose.Files[0].Content += "# " + canary + "\n"
+		plant(spec.Compose)
 		b.call("PUT", path+"/draft", map[string]any{"baseRevisionId": draft.Id, "specification": spec}, 200, &draft)
 		return path, draft
 	}
@@ -156,8 +168,8 @@ func TestSubmitDeliveryRechecksRuntimeSecrets(t *testing.T) {
 			b := *b
 			b.t = t
 			canary := "never-delivered-canary"
-			path, draft := prepare(t, "Never delivered "+name, canary)
-			healthyPath, healthyDraft := prepare(t, "Healthy after "+name, "not-a-secret")
+			path, draft := prepare(t, "Never delivered "+name, inContent(canary))
+			healthyPath, healthyDraft := prepare(t, "Healthy after "+name, inContent("not-a-secret"))
 			rejected := dispatched(t, path, draft)
 			makeSecret(t, path)
 			healthy := submit(t, healthyPath, healthyDraft)
@@ -178,12 +190,16 @@ func TestSubmitDeliveryRechecksRuntimeSecrets(t *testing.T) {
 		})
 	}
 
-	for _, mode := range []string{"delivered without report", "legacy unknown", "running", "needs attention"} {
+	for _, mode := range []string{"delivered without report", "delivered file name", "legacy unknown", "running", "needs attention"} {
 		t.Run(mode+" stops without credentials", func(t *testing.T) {
 			b := *b
 			b.t = t
 			canary := "possibly-delivered-canary-" + strings.ReplaceAll(mode, " ", "-")
-			path, draft := prepare(t, "Possibly "+mode, canary)
+			plant := inContent(canary)
+			if mode == "delivered file name" {
+				plant = inFileName(canary)
+			}
+			path, draft := prepare(t, "Possibly "+mode, plant)
 			op := dispatched(t, path, draft)
 			command := poll(t)
 			if command == nil || command.Id != op.Id {
@@ -239,4 +255,26 @@ func TestSubmitDeliveryRechecksRuntimeSecrets(t *testing.T) {
 			}
 		})
 	}
+
+	// These run last because an accepted submission holds the runner from here on.
+	t.Run("admission refuses a file name holding a runtime secret", func(t *testing.T) {
+		b := *b
+		b.t = t
+		canary := "admission-file-name-canary"
+		path, draft := prepare(t, "Admitted file name", inFileName(canary))
+		b.call("POST", path+"/secrets", map[string]string{"name": "TOKEN", "value": canary}, 201, nil)
+		refusal := string(b.call("POST", path+"/source/submit", map[string]any{"baseRevisionId": draft.Id, "requestKey": uuid.New()}, 400, nil))
+		if !strings.Contains(refusal, "source.containsRuntimeSecret") || strings.Contains(refusal, canary) {
+			t.Fatal("admission did not refuse the file name, or echoed the value", refusal)
+		}
+	})
+	t.Run("a draft can rename a secret file name out of its baseline", func(t *testing.T) {
+		b := *b
+		b.t = t
+		canary := "baseline-file-name-canary"
+		rename := func(bundle *composeproject.Bundle) { bundle.Files[1].Path = "config/app.env" }
+		path, draft := prepare(t, "Renamed baseline", rename, composeproject.File{Path: "config/" + canary + ".env", Content: "MODE=plain\n"})
+		b.call("POST", path+"/secrets", map[string]string{"name": "TOKEN", "value": canary}, 201, nil)
+		submit(t, path, draft)
+	})
 }

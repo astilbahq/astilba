@@ -5,6 +5,7 @@ import (
 	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"errors"
+	"slices"
 	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
@@ -336,7 +337,13 @@ func (s *Service) SubmitSource(ctx context.Context, p store.Principal, ws, pid, 
 		if head != commit {
 			return domain.Conflict
 		}
-		if err = s.rejectRuntimeSecrets(ctx, tx, ws, env, composeproject.Bundle{Files: append(append([]composeproject.File{}, baseline.Files...), v.Spec.Compose.Files...)}); err != nil {
+		// A baseline file's name is already in the repository, and a draft must stay able to
+		// rename it away, so only the names being submitted are checked.
+		files := slices.Clone(v.Spec.Compose.Files)
+		for _, file := range baseline.Files {
+			files = append(files, composeproject.File{Content: file.Content})
+		}
+		if err = s.rejectRuntimeSecrets(ctx, tx, ws, env, composeproject.Bundle{Files: files}); err != nil {
 			return err
 		}
 		server, err := selectRunner(ctx, tx, ws, source.RunnerID, source.FallbackRunnerID, "", false, false)
