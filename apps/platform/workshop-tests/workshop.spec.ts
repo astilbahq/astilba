@@ -253,6 +253,20 @@ test("sign-in toasts preserve drafts and focus, translate, dismiss and reset on 
   await expect(notification).toHaveCount(0);
 });
 
+test("reduced motion shows a popup from its first frame", async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.goto(
+    "/iframe.html?id=pages-terminal-sessions--end-all-confirmation&viewMode=story",
+  );
+  const popup = page.getByRole("alertdialog");
+  await expect(popup).toBeVisible();
+  // Base UI holds the attribute only until the next paint, which a busy machine can delay.
+  await popup.evaluate((node) => node.setAttribute("data-starting-style", ""));
+  await expect(popup).toHaveCSS("opacity", "1");
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  await expect(popup).toHaveCSS("opacity", "0");
+});
+
 for (const reducedMotion of ["no-preference", "reduce"] as const) {
   test(`a toast stack remains scrollable on a short screen with motion ${reducedMotion}`, async ({
     page,

@@ -170,7 +170,7 @@ export const PasswordRequestFailure: Story = {
     const notification = await within(
       context.canvasElement.ownerDocument.body,
     ).findByRole("dialog");
-    await waitFor(() => expect(notification).toBeVisible(), { timeout: 5000 });
+    await waitFor(() => expect(notification).toBeVisible());
     await expect(password).toHaveValue("a long example password");
   },
 };
@@ -233,7 +233,7 @@ export const ConfirmDisable: Story = {
     await expect(dialog).toHaveAccessibleName(
       "Disable two-factor authentication?",
     );
-    await waitFor(() => expect(dialog).toBeVisible(), { timeout: 5000 });
+    await waitFor(() => expect(dialog).toBeVisible());
     await waitFor(() =>
       expect(
         within(dialog).getByRole("button", { name: "Cancel" }),
@@ -249,9 +249,7 @@ export const CancelDisable: Story = {
     await userEvent.click(
       within(dialog).getByRole("button", { name: "Cancel" }),
     );
-    await waitFor(() => expect(body.queryByRole("alertdialog")).toBeNull(), {
-      timeout: 5000,
-    });
+    await waitFor(() => expect(body.queryByRole("alertdialog")).toBeNull());
     await waitFor(() =>
       expect(
         within(context.canvasElement).getByRole("button", {
@@ -299,9 +297,7 @@ export const DisabledSuccessfully: Story = {
       await userEvent.click(
         within(dialog).getByRole("button", { name: "Disable two-factor" }),
       );
-      await waitFor(() => expect(body.queryByRole("alertdialog")).toBeNull(), {
-        timeout: 5000,
-      });
+      await waitFor(() => expect(body.queryByRole("alertdialog")).toBeNull());
       await waitFor(() => expect(dialog).not.toBeInTheDocument());
       resumeNotifications();
       await expect(
@@ -339,9 +335,7 @@ export const SaveRecoveryCodes: Story = {
         name: "Replace codes",
       }),
     );
-    await waitFor(() => expect(body.queryByRole("alertdialog")).toBeNull(), {
-      timeout: 5000,
-    });
+    await waitFor(() => expect(body.queryByRole("alertdialog")).toBeNull());
     await expect(
       await within(canvasElement).findByRole("list", {
         name: "Recovery codes",

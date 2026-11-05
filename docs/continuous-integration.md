@@ -382,6 +382,13 @@ the single spec file to distribute across shards. The static workshop is built
 on each runner. Accessibility audits and scenario completion assertions remain
 enabled. `make verify-app` remains the complete unsharded local check.
 
+Two things make a browser click or wait fail on a busy runner without anything being
+wrong. Playwright checks only where a click's press lands, so a page that reflows
+before the release reports a click nothing received: wait for a section's parts to
+load before clicking below them, as `openEnvironmentSection` does. A story's play
+starts at its first commit, so its waits also span page loading; `.storybook/preview.tsx`
+gives them five seconds, and a wait that has to beat a poll sets a shorter limit itself.
+
 ## Required checks
 
 `.github/required-status-checks.json` is the payload for the required-status-checks

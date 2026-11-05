@@ -75,7 +75,7 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24.18.1
-      - run: npm install --global pnpm@11.17.0
+      - uses: ./.github/actions/install-pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @astilba/dashboard storybook:test --project=${{ matrix.browser }} --shard=${{ matrix.shard }}/2
       - name: Retain workshop failure diagnostics

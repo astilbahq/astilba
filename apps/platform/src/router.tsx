@@ -16,7 +16,7 @@ import { ErrorToast, ToastProvider } from "./components/toast";
 import { TooltipProvider } from "./components/tooltip";
 import { Account } from "./features/account/account";
 import { Alerts } from "./features/alerts";
-import { AuthFrame } from "./features/auth/auth-frame";
+import { AuthFrame, AuthPage } from "./features/auth/auth-frame";
 import { VerifyEmailPage } from "./features/auth/email-verification";
 import { HostedOnboarding } from "./features/auth/hosted-onboarding";
 import { Invitation } from "./features/auth/invitation";
@@ -49,9 +49,11 @@ function Root() {
             {t(($) => $.skipContent)}
           </Anchor>
           {session.isPending ? (
-            <AuthFrame>
+            // The page that follows brings its own controls. Offering them here would let its
+            // arrival close an open menu and lose keyboard focus.
+            <AuthPage>
               <p role="status">{t(($) => $.loading)}</p>
-            </AuthFrame>
+            </AuthPage>
           ) : session.error && !session.data ? (
             <AuthFrame>
               <h1>{t(($) => $.connectionUnavailable)}</h1>

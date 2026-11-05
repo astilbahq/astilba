@@ -253,6 +253,29 @@ test("appearance menu supports keyboard, dismissal, and accessible narrow layout
   }
 });
 
+test("the first session check cannot close a menu or take focus from its trigger", async ({
+  page,
+}) => {
+  let finishCheck!: () => void;
+  const check = new Promise<void>((resolve) => {
+    finishCheck = resolve;
+  });
+  await page.route("**/api/v1/session", async (route) => {
+    await check;
+    await route.continue();
+  });
+  await page.goto("/login");
+  await expect(page.getByRole("status")).toBeVisible();
+  const trigger = page.getByRole("button", { name: "Appearance", exact: true });
+  await expect(trigger).toHaveCount(0);
+  finishCheck();
+  await trigger.focus();
+  await expect(trigger).toBeFocused();
+  await trigger.click();
+  await page.getByRole("menuitemradio", { name: "Dark", exact: true }).click();
+  await expect(page.locator("html")).toHaveClass("dark");
+});
+
 test("blocked browser storage does not prevent sign-in or appearance changes", async ({
   page,
 }) => {

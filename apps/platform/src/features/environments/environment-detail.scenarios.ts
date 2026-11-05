@@ -4,7 +4,6 @@ import { http, HttpResponse } from "msw/http";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 import {
   ShellPreview,
-  pageBoot,
   session,
   environments,
   environmentsPath,
@@ -50,7 +49,7 @@ export const environmentListRecovery: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await canvas.findByText("Loading environments…", {}, pageBoot);
+    await canvas.findByText("Loading environments…");
     await expect(canvas.getByRole("heading", { level: 1 })).toHaveTextContent(
       "Website",
     );
@@ -115,15 +114,9 @@ export const rollbackAfterEditing: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    const deployments = await canvas.findByRole(
-      "tab",
-      { name: "Deployments" },
-      pageBoot,
-    );
+    const deployments = await canvas.findByRole("tab", { name: "Deployments" });
     await userEvent.click(deployments);
-    await userEvent.click(
-      await canvas.findByText(/^Revision 00000000/, {}, pageBoot),
-    );
+    await userEvent.click(await canvas.findByText(/^Revision 00000000/));
     await userEvent.click(
       canvas.getByRole("button", { name: "Create rollback draft for api" }),
     );
@@ -167,7 +160,7 @@ export const rollbackAfterEditing: Story = {
 export async function edit(canvasElement: HTMLElement) {
   const canvas = within(canvasElement);
   await userEvent.click(
-    await canvas.findByRole("button", { name: "Open configuration" }, pageBoot),
+    await canvas.findByRole("button", { name: "Open configuration" }),
   );
   await userEvent.click(
     canvas.getByText("Advanced specification", { exact: true }),
@@ -181,17 +174,13 @@ export async function edit(canvasElement: HTMLElement) {
 export async function configure(canvasElement: HTMLElement, instance?: i18n) {
   const canvas = within(canvasElement);
   await userEvent.click(
-    await canvas.findByRole(
-      "button",
-      {
-        name: instance
-          ? (name) =>
-              name ===
-              instance.t(($) => $.openConfiguration, { ns: "environment" })
-          : "Open configuration",
-      },
-      pageBoot,
-    ),
+    await canvas.findByRole("button", {
+      name: instance
+        ? (name) =>
+            name ===
+            instance.t(($) => $.openConfiguration, { ns: "environment" })
+        : "Open configuration",
+    }),
   );
   return canvas;
 }

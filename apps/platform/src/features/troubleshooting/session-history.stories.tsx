@@ -4,7 +4,6 @@ import { expect, userEvent, within } from "storybook/test";
 import { ApiError, type Schema } from "../../api/client";
 import {
   ShellPreview,
-  pageBoot,
   projectHandlers,
   session,
   workspace,
@@ -95,11 +94,7 @@ export const History: Story = {
     ).toBeVisible();
     await expect(canvas.getByRole("cell", { name: "Expired" })).toBeVisible();
     await expect(
-      await canvas.findAllByRole(
-        "rowheader",
-        { name: /api, instance 1/ },
-        pageBoot,
-      ),
+      await canvas.findAllByRole("rowheader", { name: /api, instance 1/ }),
     ).not.toHaveLength(0);
     await expect(
       await canvas.findByRole("rowheader", { name: /Service 00000000/ }),

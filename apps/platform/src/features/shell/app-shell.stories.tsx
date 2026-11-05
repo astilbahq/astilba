@@ -112,7 +112,7 @@ export const CreateFailure: Story = {
     const toast = await within(
       context.canvasElement.ownerDocument.body,
     ).findByRole("dialog");
-    await waitFor(() => expect(toast).toBeVisible(), { timeout: 5000 });
+    await waitFor(() => expect(toast).toBeVisible());
     await expect(canvas.getByLabelText("Project name", {})).toHaveValue(
       "API service",
     );

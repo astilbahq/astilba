@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
+import { useIsFetching, useQuery } from "@tanstack/react-query";
 import { useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { draftOptions } from "../../api/environment";
@@ -19,6 +19,9 @@ export function EnvironmentDetail(props: EnvProps) {
     () => new Set(["overview"]),
   );
   const content = useRef<HTMLElement>(null);
+  const loading = useIsFetching({
+    predicate: ({ state }) => state.data === undefined,
+  });
   const tabs = useRef<Partial<Record<EnvironmentSection, HTMLElement>>>({});
   const path = {
     workspaceId: props.workspaceId,
@@ -115,6 +118,7 @@ export function EnvironmentDetail(props: EnvProps) {
         ref={content}
         tabIndex={-1}
         aria-label={t(($) => $.content)}
+        aria-busy={loading > 0}
         className={s.recoveryTarget}
       >
         {draft.data ? (

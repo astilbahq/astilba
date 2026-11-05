@@ -4,6 +4,14 @@ import { LocaleMenu } from "../../components/locale-menu";
 import { ThemeMenu } from "../../components/theme-menu";
 import * as auth from "./auth.styles";
 
+export function AuthPage({ children }: { children: ReactNode }) {
+  return (
+    <main id="main" className={cx(auth.palette, auth.page)}>
+      <div className={auth.content}>{children}</div>
+    </main>
+  );
+}
+
 export function AuthFrame({ children }: { children: ReactNode }) {
   return (
     <>
@@ -11,9 +19,7 @@ export function AuthFrame({ children }: { children: ReactNode }) {
         <ThemeMenu scopeClassName={auth.palette} />
         <LocaleMenu scopeClassName={auth.palette} />
       </div>
-      <main id="main" className={cx(auth.palette, auth.page)}>
-        <div className={auth.content}>{children}</div>
-      </main>
+      <AuthPage>{children}</AuthPage>
     </>
   );
 }

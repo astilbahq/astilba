@@ -42,7 +42,9 @@ export const InvalidCode: Story = {
     await waitFor(() =>
       expect(canvas.getByRole("group")).toHaveAccessibleDescription(/\S/),
     );
-    await expect(canvas.getAllByRole("textbox")[0]).toHaveFocus();
+    await waitFor(() =>
+      expect(canvas.getAllByRole("textbox")[0]).toHaveFocus(),
+    );
     await expect(canvas.getAllByRole("textbox")[0]).toHaveAttribute(
       "aria-invalid",
       "true",
@@ -75,7 +77,7 @@ export const RateLimited: Story = {
     const notification = await within(
       canvasElement.ownerDocument.body,
     ).findByRole("dialog");
-    await waitFor(() => expect(notification).toBeVisible(), { timeout: 5000 });
+    await waitFor(() => expect(notification).toBeVisible());
     await expect(canvas.queryByRole("alert")).not.toBeInTheDocument();
     await expect(canvas.getAllByRole("textbox")[0]).not.toHaveAttribute(
       "aria-invalid",

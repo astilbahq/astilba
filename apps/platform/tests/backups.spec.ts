@@ -3,6 +3,34 @@ import { expect, test } from "@playwright/test";
 import { openEnvironmentSection } from "./environment-section";
 import { managedDatabase } from "./fixtures/managed-database";
 
+test("a section's late responses settle before its controls are used", async ({
+  page,
+  request,
+}, info) => {
+  const { ws, project, env } = await managedDatabase(
+    page,
+    request,
+    `Late ${info.project.name}`,
+  );
+  // Operation history sits above these controls, and rendering it moves them.
+  await page.route("**/operations", async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    await route.continue();
+  });
+  await page.goto(
+    `/?workspace=${ws}&project=${project.id}&environment=${env.id}`,
+  );
+  await openEnvironmentSection(page, "Deployments");
+  // Deliberately not a retrying assertion: the section has to be settled already.
+  expect(await page.getByText("visual · succeeded").count()).toBeGreaterThan(0);
+  await page
+    .getByText("Create backup policy or container job", { exact: true })
+    .click();
+  await expect(
+    page.getByRole("form", { name: "Create backup policy" }),
+  ).toBeVisible();
+});
+
 test("general schedule settings retain invalid drafts and save cron and interval generations", async ({
   page,
   request,
@@ -303,6 +331,12 @@ test("backup setup, restore verification and separate cutover use the real API",
     "browser-repository-canary",
   );
   await report(install);
+  // Operation history sits above the policy and grows when it next polls. A click during that
+  // reflow presses the button and releases over something else, so nothing is sent.
+  const backupsInHistory = page.getByText("backup · succeeded", {
+    exact: true,
+  });
+  await expect(backupsInHistory).toHaveCount(1);
   const requestKeys: string[] = [];
   let loseResponse = true;
   const commandPattern = "**/backup-policies/*/commands";
@@ -325,6 +359,7 @@ test("backup setup, restore verification and separate cutover use the real API",
   const manual = await poll();
   expect(manual.backup.targetId).toBe("00000000-0000-0000-0000-000000000000");
   await report(manual);
+  await expect(backupsInHistory).toHaveCount(2);
   const retried = page.waitForResponse(
     (response) =>
       response.url().endsWith("/commands") && response.status() === 202,
