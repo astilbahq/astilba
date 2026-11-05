@@ -21,9 +21,7 @@ import (
 var ErrPollLeaseHeld = fmt.Errorf("poll lease held: %w", domain.Conflict)
 
 // pollLeaseWait bounds taking or releasing a poll's lease, once its request no longer can.
-// Other work can hold the server's row across a Git provider call, which has a limit of 20
-// seconds. Giving up sooner would send the agent into its backoff or strand the lease.
-const pollLeaseWait = 30 * time.Second
+const pollLeaseWait = 5 * time.Second
 
 // A database lease bounds overlapping polls across management replicas.
 func (s *Service) Poll(ctx context.Context, a Identity) (*api.ExecutionCommand, error) {

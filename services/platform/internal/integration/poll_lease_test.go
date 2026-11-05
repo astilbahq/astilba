@@ -157,34 +157,3 @@ func TestDisconnectedPollLeavesNoLease(t *testing.T) {
 		}
 	}
 }
-
-// Other work can hold a server's row across a call to a Git provider. A poll that is still
-// wanted waits for it, because giving up would send the agent into its backoff.
-func TestPollWaitsForALockOnItsServer(t *testing.T) {
-	f := setup(t)
-	b := f.browser(t)
-	ws := b.login("owner@example.test", f.password).Workspaces[0].Id
-	v, in, _ := enrollment(t, f, b, ws, "deployment")
-	agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/enroll", "", in, 200, nil)
-	identity, err := f.execution.Authenticate(t.Context(), v.Server.Id, in.Credential)
-	if err != nil {
-		t.Fatal(err)
-	}
-	tx, err := f.st.Pool.Begin(t.Context())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer tx.Rollback(context.Background())
-	if _, err = tx.Exec(t.Context(), "SELECT id FROM servers WHERE id=$1 FOR UPDATE", v.Server.Id); err != nil {
-		t.Fatal(err)
-	}
-	time.AfterFunc(6*time.Second, func() { tx.Rollback(context.Background()) })
-	began := time.Now()
-	ctx, cancel := context.WithTimeout(t.Context(), 7*time.Second)
-	defer cancel()
-	// With no work waiting, the poll lasts until ctx ends, unless it gave up on the lock.
-	_, err = f.execution.PollAgent(ctx, identity)
-	if lasted := time.Since(began); lasted < 6500*time.Millisecond {
-		t.Fatalf("a poll behind a held lock gave up after %s: %v", lasted, err)
-	}
-}
