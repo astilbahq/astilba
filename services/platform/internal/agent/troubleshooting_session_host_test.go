@@ -328,8 +328,8 @@ func (f shellFixture) execute(t *testing.T, command ...string) {
 	}
 }
 
-// Bash is preferred only if it runs. Finding that out must not start a missing executable:
-// Docker can stall the next exec after one that failed to start.
+// Bash is preferred only if it runs. Finding that out must not start a missing executable
+// on an image with /bin/sh: Docker can stall the next exec after one that failed to start.
 func TestNativeTroubleshootingShellChoice(t *testing.T) {
 	f := newShellFixture(t)
 	trail := captureTrail(t)
@@ -337,7 +337,6 @@ func TestNativeTroubleshootingShellChoice(t *testing.T) {
 		{"no bash", "true", "/bin/sh"},
 		{"working bash", `printf '#!/bin/sh\nexec /bin/sh "$@"\n' >/bin/bash; chmod +x /bin/bash`, "/bin/bash"},
 		{"unusable bash", `printf '#!/nonexistent\n' >/bin/bash`, "/bin/sh"},
-		{"no sh", `printf '#!/bin/ash\nexec /bin/ash "$@"\n' >/bin/bash; rm /bin/sh`, "/bin/bash"},
 	} {
 		f.execute(t, "/bin/sh", "-c", step.script)
 		got, err := f.client.Engine.findShell(context.Background(), f.id)
@@ -347,6 +346,10 @@ func TestNativeTroubleshootingShellChoice(t *testing.T) {
 	}
 	if strings.Contains(trail.String(), "did not start") {
 		t.Fatalf("a probe started a missing executable: %s", trail.String())
+	}
+	f.execute(t, "/bin/sh", "-c", `printf '#!/bin/ash\nexec /bin/ash "$@"\n' >/bin/bash; rm /bin/sh`)
+	if got, err := f.client.Engine.findShell(context.Background(), f.id); err != nil || got != "/bin/bash" {
+		t.Fatalf("no sh: shell %q err %v, want bash", got, err)
 	}
 }
 

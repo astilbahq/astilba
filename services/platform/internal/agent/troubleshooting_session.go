@@ -302,30 +302,26 @@ func finishTroubleshooting(ctx context.Context, conn *websocket.Conn, frame []by
 
 // findShell returns the shell to run, preferring bash, or "" if the image has neither. A
 // probe runs because starting a missing executable in an attached exec only fails after
-// the stream has been upgraded. No exec is tried just to see whether it starts, because
-// Docker can stall one that starts just after another failed to, for as long as the caller
-// waits, with the person's input waiting for a shell. So /bin/sh is looked for first, and
-// it is what finds out whether bash runs.
+// the stream has been upgraded. /bin/sh is asked about bash, rather than bash being tried
+// and sh started next: Docker can stall an exec that starts just after another failed to,
+// for as long as the caller waits, with the person's input waiting for a shell. That risk
+// is left only for an image without a usable /bin/sh. Looking for the file first would need
+// the archive API, which has dockerd set up the container's mounts as root on the host.
 func (e *Engine) findShell(ctx context.Context, container string) (string, error) {
-	_, err := e.Docker.ContainerStatPath(ctx, container, client.ContainerStatPathOptions{Path: "/bin/sh"})
-	if err != nil && !errdefs.IsNotFound(err) {
+	missing, code, err := e.probeShell(ctx, container, []string{"/bin/sh", "-c", troubleshootingBashProbe})
+	if err != nil {
 		return "", err
 	}
-	if err == nil {
-		missing, code, err := e.probeShell(ctx, container, []string{"/bin/sh", "-c", troubleshootingBashProbe})
-		switch {
-		case err != nil:
-			return "", err
-		case missing: // present but unusable, which leaves bash
-		case code == 0:
+	if !missing {
+		switch code {
+		case 0:
 			return "/bin/bash", nil
-		case code == 3:
+		case 3:
 			return "/bin/sh", nil
-		default:
-			return "", errors.New("shell probe failed")
 		}
+		return "", errors.New("shell probe failed")
 	}
-	missing, code, err := e.probeShell(ctx, container, []string{"/bin/bash", "-c", "exit 0"})
+	missing, code, err = e.probeShell(ctx, container, []string{"/bin/bash", "-c", "exit 0"})
 	if err != nil || missing {
 		return "", err
 	}
