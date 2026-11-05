@@ -174,6 +174,13 @@ func (x troubleshootingFixture) startServiceAgent(t *testing.T, owner *browser, 
 	unit, systemctl := installAgentUnit(t, root, binary, state, caPath, "--docker-cli", cli)
 	systemctl("start", unit)
 	a := &serviceAgent{plan.ServerID, unit, systemctl, docker, created.ID}
+	// A session that ends early shows only as input that never ran, without these.
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("session states: %v", x.closeReasons(t))
+			t.Logf("agent journal:\n%s", a.journal(t))
+		}
+	})
 	x.awaitSessions(t, a)
 	return a
 }
@@ -263,12 +270,11 @@ func (a *serviceAgent) waitRunning(t *testing.T, command string, want bool) {
 	t.Fatalf("%q running should be %v", command, want)
 }
 
-// jobEnded waits for a session's job to go. The agent frees the container's slot just
-// afterwards, and a next session's offer arriving before that would be refused.
+// jobEnded waits for a session's job to go. The next session opens straight away, while
+// the agent is still finishing this one, as a person's reopening can.
 func (a *serviceAgent) jobEnded(t *testing.T, job string) {
 	t.Helper()
 	a.waitRunning(t, job, false)
-	time.Sleep(time.Second)
 }
 
 // waitOutput reads a stream until its output holds the text, and returns what it read.

@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -27,6 +28,11 @@ const (
 	troubleshootingMaxStreams = 2 * domain.TroubleshootingPerHost
 	// Bounds the Docker calls before a shell runs, so a hung daemon cannot hold stream slots.
 	troubleshootingDockerWait = 30 * time.Second
+	// Well within a ticket's lifetime. Ending a shell normally takes a fraction of a second.
+	troubleshootingPlaceWait = 5 * time.Second
+	// How the shell probe says that /bin/sh runs but /bin/bash does not. It is neither of
+	// the codes for a missing executable, and nothing else in the probe can exit with it.
+	troubleshootingNoBash = 3
 	// Input waiting for a shell that is not reading, about 1 MiB at most. Beyond this the
 	// session ends: dropping some of it could run a different command from the one sent.
 	troubleshootingInputQueue = 32
@@ -213,6 +219,35 @@ func (c *Client) dialTroubleshootingStream(ctx context.Context, session uuid.UUI
 	return conn, nil
 }
 
+// claimTroubleshootingPlace takes the container's place among this agent's sessions. A
+// session has already closed for management while its shell is still being ended here, so
+// a person who reopens at once is not told too many are open: the wait lets that finish.
+func (c *Client) claimTroubleshootingPlace(ctx context.Context, container string, wait time.Duration) (func(), bool) {
+	ctx, cancel := context.WithTimeout(ctx, wait)
+	defer cancel()
+	for {
+		c.terminalMu.Lock()
+		if c.terminalContainers == nil {
+			c.terminalContainers = map[string]bool{}
+		}
+		if !c.terminalContainers[container] && len(c.terminalContainers) < domain.TroubleshootingPerHost {
+			c.terminalContainers[container] = true
+			c.terminalMu.Unlock()
+			return func() {
+				c.terminalMu.Lock()
+				delete(c.terminalContainers, container)
+				c.terminalMu.Unlock()
+			}, true
+		}
+		c.terminalMu.Unlock()
+		select {
+		case <-ctx.Done():
+			return nil, false
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+}
+
 func (c *Client) runTroubleshootingSession(ctx context.Context, offer api.AgentTroubleshootingOffer) error {
 	cfg, err := c.Journal.Config()
 	if err != nil {
@@ -222,23 +257,14 @@ func (c *Client) runTroubleshootingSession(ctx context.Context, offer api.AgentT
 		return errors.New("offer is from another controller generation")
 	}
 	reason, container := c.Engine.troubleshootingRefusal(ctx, offer)
-	c.terminalMu.Lock()
 	if reason == "" {
-		if c.terminalContainers == nil {
-			c.terminalContainers = map[string]bool{}
-		}
-		if c.terminalContainers[container] || len(c.terminalContainers) >= domain.TroubleshootingPerHost {
+		release, claimed := c.claimTroubleshootingPlace(ctx, container, troubleshootingPlaceWait)
+		if !claimed {
 			reason = terminal.RefusedLimit
 		} else {
-			c.terminalContainers[container] = true
-			defer func() {
-				c.terminalMu.Lock()
-				delete(c.terminalContainers, container)
-				c.terminalMu.Unlock()
-			}()
+			defer release()
 		}
 	}
-	c.terminalMu.Unlock()
 
 	conn, err := c.dialTroubleshootingStream(ctx, offer.SessionId)
 	if err != nil {
@@ -276,44 +302,66 @@ func finishTroubleshooting(ctx context.Context, conn *websocket.Conn, frame []by
 	return terminal.Close(conn, websocket.StatusNormalClosure, "")
 }
 
-// findShell returns the first shell the image has, or "" if it has neither. A probe runs
-// because starting a missing executable in an attached exec only fails after the stream
-// has been upgraded. The daemon reports a missing or unusable executable as exit code 126
-// or 127 with an invalid-request error, and also gives 126 to failures unrelated to the
-// image, so the code alone is not enough. Anything else says nothing about the image.
+// findShell returns the shell to run, preferring bash, or "" if the image has neither. A
+// probe runs because starting a missing executable in an attached exec only fails after
+// the stream has been upgraded. /bin/sh is asked about bash, rather than bash being tried
+// and sh started next: Docker can stall an exec that starts just after another failed to,
+// for as long as the caller waits, with the person's input waiting for a shell.
 func (e *Engine) findShell(ctx context.Context, container string) (string, error) {
-	for _, shell := range []string{"/bin/bash", "/bin/sh"} {
-		probe, err := e.Docker.ExecCreate(ctx, container, client.ExecCreateOptions{Cmd: []string{shell, "-c", "exit 0"}, WorkingDir: "/"})
-		if err != nil {
+	missing, code, err := e.probeShell(ctx, container, []string{"/bin/sh", "-c", `/bin/bash -c "exit 0" >/dev/null 2>&1 || exit ` + strconv.Itoa(troubleshootingNoBash)})
+	if err != nil {
+		return "", err
+	}
+	if missing {
+		missing, code, err = e.probeShell(ctx, container, []string{"/bin/bash", "-c", "exit 0"})
+		if err != nil || missing {
 			return "", err
 		}
-		_, startErr := e.Docker.ExecStart(ctx, probe.ID, client.ExecStartOptions{Detach: true})
-		missing := false
-		for attempt := 0; !missing; attempt++ {
-			state, err := e.Docker.ExecInspect(ctx, probe.ID, client.ExecInspectOptions{})
-			if err != nil {
-				return "", err
+		if code != 0 {
+			return "", errors.New("shell probe failed")
+		}
+		return "/bin/bash", nil
+	}
+	switch code {
+	case 0:
+		return "/bin/bash", nil
+	case troubleshootingNoBash:
+		return "/bin/sh", nil
+	}
+	return "", errors.New("shell probe failed")
+}
+
+// probeShell runs a command and reports whether its executable is missing, or else its
+// exit code. The daemon reports a missing or unusable executable as exit code 126 or 127
+// with an invalid-request error, and also gives 126 to failures unrelated to the image,
+// so the code alone is not enough. Anything else says nothing about the image.
+func (e *Engine) probeShell(ctx context.Context, container string, command []string) (bool, int, error) {
+	probe, err := e.Docker.ExecCreate(ctx, container, client.ExecCreateOptions{Cmd: command, WorkingDir: "/"})
+	if err != nil {
+		return false, 0, err
+	}
+	_, startErr := e.Docker.ExecStart(ctx, probe.ID, client.ExecStartOptions{Detach: true})
+	for attempt := 0; ; attempt++ {
+		state, err := e.Docker.ExecInspect(ctx, probe.ID, client.ExecInspectOptions{})
+		if err != nil {
+			return false, 0, err
+		}
+		switch {
+		case !state.Running && (state.ExitCode == 126 || state.ExitCode == 127) && (startErr == nil || errdefs.IsInvalidArgument(startErr)):
+			if startErr != nil {
+				slog.Warn("troubleshooting shell did not start", "shell", command[0], "error", startErr)
 			}
-			switch {
-			case !state.Running && (state.ExitCode == 126 || state.ExitCode == 127) && (startErr == nil || errdefs.IsInvalidArgument(startErr)):
-				missing = true
-				if startErr != nil {
-					slog.Warn("troubleshooting shell did not start", "shell", shell, "error", startErr)
-				}
-			case startErr != nil:
-				return "", startErr
-			case !state.Running && state.ExitCode == 0:
-				return shell, nil
-			case !state.Running:
-				return "", errors.New("shell probe failed")
-			case attempt == 50:
-				return "", errors.New("shell probe did not finish")
-			default:
-				time.Sleep(100 * time.Millisecond)
-			}
+			return true, 0, nil
+		case startErr != nil:
+			return false, 0, startErr
+		case !state.Running:
+			return false, state.ExitCode, nil
+		case attempt == 50:
+			return false, 0, errors.New("shell probe did not finish")
+		default:
+			time.Sleep(100 * time.Millisecond)
 		}
 	}
-	return "", nil
 }
 
 // runShell starts the shell only now that a person is connected, as the container's

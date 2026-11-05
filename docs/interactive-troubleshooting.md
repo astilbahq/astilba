@@ -127,6 +127,8 @@ also notifies the workspace's owners. It defaults to
    is reported as a typed reason: opt-in off, runtime below the floor, ineligible
    container, no shell, limit reached, or Docker unavailable. Until the session has
    started, a failure is reported this way too, and any shell already started is ended.
+   A session is already closed for management while the agent is still ending its shell,
+   so the agent waits up to five seconds for a local limit before it reports one.
 4. **Browser stream.** The browser opens a same-origin stream. Management
    refuses the upgrade unless the session cookie and Origin are valid, the account
    is an owner or operator of the workspace, and the limits on streams without a

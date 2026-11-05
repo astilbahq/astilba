@@ -289,28 +289,63 @@ func TestNativeTroubleshootingStalledInput(t *testing.T) {
 }
 
 // The probe's answer reaches the person when an image has no shell.
-func TestNativeTroubleshootingNoShell(t *testing.T) {
-	f := newShellFixture(t)
+// execute runs a command in the fixture's container and waits for it to succeed.
+func (f shellFixture) execute(t *testing.T, command ...string) {
+	t.Helper()
 	ctx := context.Background()
-	removed, err := f.docker.ExecCreate(ctx, f.id, client.ExecCreateOptions{Cmd: []string{"/bin/rm", "-f", "/bin/sh", "/bin/ash", "/bin/bash"}})
+	created, err := f.docker.ExecCreate(ctx, f.id, client.ExecCreateOptions{Cmd: command})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = f.docker.ExecStart(ctx, removed.ID, client.ExecStartOptions{Detach: true}); err != nil {
+	if _, err = f.docker.ExecStart(ctx, created.ID, client.ExecStartOptions{Detach: true}); err != nil {
 		t.Fatal(err)
 	}
 	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(50 * time.Millisecond) {
-		state, err := f.docker.ExecInspect(ctx, removed.ID, client.ExecInspectOptions{})
+		state, err := f.docker.ExecInspect(ctx, created.ID, client.ExecInspectOptions{})
 		if err != nil {
 			t.Fatal(err)
 		}
 		if !state.Running && state.ExitCode == 0 {
-			break
+			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("could not remove the image's shells", state)
+			t.Fatal("command did not succeed", command, state)
 		}
 	}
+}
+
+// Bash is preferred only if it runs. Finding that out must not start a missing executable
+// on an image with /bin/sh: Docker can stall the next exec after one that failed to start.
+func TestNativeTroubleshootingShellChoice(t *testing.T) {
+	f := newShellFixture(t)
+	var trail bytes.Buffer
+	previous, writer, flags := slog.Default(), log.Writer(), log.Flags()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&trail, nil)))
+	defer func() {
+		slog.SetDefault(previous)
+		log.SetOutput(writer)
+		log.SetFlags(flags)
+	}()
+	for _, step := range []struct{ name, script, want string }{
+		{"no bash", "true", "/bin/sh"},
+		{"working bash", `printf '#!/bin/sh\nexec /bin/sh "$@"\n' >/bin/bash; chmod +x /bin/bash`, "/bin/bash"},
+		{"unusable bash", `printf '#!/nonexistent\n' >/bin/bash`, "/bin/sh"},
+	} {
+		f.execute(t, "/bin/sh", "-c", step.script)
+		got, err := f.client.Engine.findShell(context.Background(), f.id)
+		if err != nil || got != step.want {
+			t.Fatalf("%s: shell %q err %v, want %q", step.name, got, err, step.want)
+		}
+	}
+	if strings.Contains(trail.String(), "did not start") {
+		t.Fatalf("a probe started a missing executable: %s", trail.String())
+	}
+}
+
+func TestNativeTroubleshootingNoShell(t *testing.T) {
+	f := newShellFixture(t)
+	ctx := context.Background()
+	f.execute(t, "/bin/rm", "-f", "/bin/sh", "/bin/ash", "/bin/bash")
 	conn, _ := f.run(t, f.offer())
 	read, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
