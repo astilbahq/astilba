@@ -41,7 +41,7 @@ function RecoveryStep({
   const session = useQuery(sessionOptions).data;
   const queries = useQueryClient();
   const action = useAction();
-  const request = useSessionRequest();
+  const request = useSessionRequest({ renewal: true });
   const validation = useAuthValidation();
   const regenerate = () => {
     onCreated(undefined);
