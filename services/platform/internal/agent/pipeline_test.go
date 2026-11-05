@@ -13,6 +13,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
@@ -124,7 +125,7 @@ func TestPipelineCombinedLogsRemainReportable(t *testing.T) {
 	}
 	raw, _ := json.Marshal(p)
 	message := json.RawMessage(raw)
-	c := api.ExecutionCommand{Id: uuid.New(), ServerId: plan.ServerID, EnvironmentId: plan.EnvironmentID, ResourceId: plan.UnitID, Kind: "pipeline", Generation: 1, PlanHash: p.Digest(), Pipeline: &message}
+	c := api.ExecutionCommand{Id: uuid.New(), ServerId: plan.ServerID, EnvironmentId: plan.EnvironmentID, ResourceId: plan.UnitID, Kind: "pipeline", Generation: 1, PlanHash: p.Digest(), Pipeline: &message, Deadline: time.Now().Add(time.Hour)}
 	if _, err := journal.Accept(c); err != nil {
 		t.Fatal(err)
 	}
