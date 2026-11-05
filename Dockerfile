@@ -22,7 +22,6 @@ LABEL org.opencontainers.image.source="https://github.com/astilbahq/astilba" \
       org.opencontainers.image.revision="$SOURCE_REVISION"
 COPY --from=build /out/astilba /usr/local/bin/astilba
 COPY --from=build /src/apps/platform/dist/source /usr/share/licenses/astilba
-COPY --from=go /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 USER 65532:65532
 EXPOSE 8080
 ENTRYPOINT ["/usr/local/bin/astilba"]
