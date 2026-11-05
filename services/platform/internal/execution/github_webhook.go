@@ -7,6 +7,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/githubapp"
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/riverqueue/river"
@@ -83,7 +84,7 @@ func (s *Service) ReceiveGitHub(ctx context.Context, headers http.Header, body [
 			return domain.Invalid("installation")
 		}
 	}
-	raw, _ := json.Marshal(event)
+	raw, _ := stablejson.Marshal(event)
 	tx, e := s.Store.Pool.Begin(ctx)
 	if e != nil {
 		return e

@@ -7,6 +7,7 @@ import (
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 )
 
@@ -68,7 +69,7 @@ func (s *Server) BindGitSource(w http.ResponseWriter, r *http.Request, ws, pid, 
 		return
 	}
 	var cfg pipeline.Source
-	raw, _ := json.Marshal(b.Configuration)
+	raw, _ := stablejson.Marshal(b.Configuration)
 	_ = json.Unmarshal(raw, &cfg)
 	v, e := s.Execution.BindSource(r.Context(), *principal(r.Context()), ws, pid, env, b.BaseRevisionId, cfg)
 	s.executionResponse(w, r, 202, v, e)
@@ -106,7 +107,7 @@ func (s *Server) CreateBuild(w http.ResponseWriter, r *http.Request, ws, pid, en
 		return
 	}
 	var cfg pipeline.BuildConfig
-	raw, _ := json.Marshal(b.Configuration)
+	raw, _ := stablejson.Marshal(b.Configuration)
 	_ = json.Unmarshal(raw, &cfg)
 	v, e := s.Execution.CreateBuild(r.Context(), *principal(r.Context()), ws, pid, env, b.BaseRevisionId, b.ApplicationId, b.RequestKey, cfg)
 	s.executionResponse(w, r, 202, v, e)

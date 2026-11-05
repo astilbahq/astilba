@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 )
 
@@ -45,7 +46,7 @@ func New(origin, token string, development bool) (*Client, error) {
 func (c *Client) request(ctx context.Context, method, path string, input, output any) error {
 	var body io.Reader
 	if input != nil {
-		raw, err := json.Marshal(input)
+		raw, err := stablejson.Marshal(input)
 		if err != nil {
 			return errors.New("invalid request input")
 		}

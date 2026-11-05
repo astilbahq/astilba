@@ -11,6 +11,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/githubapp"
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -274,7 +275,7 @@ func (s *Service) ConnectGitHub(ctx context.Context, p store.Principal, ws, gran
 		if e != nil {
 			return e
 		}
-		raw, e := json.Marshal(struct {
+		raw, e := stablejson.Marshal(struct {
 			pipeline.Connection
 			Authentication string `json:"authentication"`
 		}{c, "github_app"})

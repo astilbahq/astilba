@@ -11,6 +11,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -20,7 +21,7 @@ func integrationIdentity(ws, id uuid.UUID, kind string) string {
 	return pipeline.EncryptionIdentity(ws, id, kind)
 }
 func (s *Service) sealIntegration(ws, id uuid.UUID, kind string, value any) ([]byte, error) {
-	raw, err := json.Marshal(value)
+	raw, err := stablejson.Marshal(value)
 	if err != nil {
 		return nil, err
 	}
@@ -103,7 +104,7 @@ func (s *Service) CreateConnection(ctx context.Context, p store.Principal, ws uu
 		if err != nil {
 			return err
 		}
-		raw, _ := json.Marshal(c)
+		raw, _ := stablejson.Marshal(c)
 		return q.InsertGitConnection(ctx, db.InsertGitConnectionParams{ID: c.ID, WorkspaceID: ws, Configuration: raw, EncryptedAccess: encrypted})
 	})
 	return c, access.Webhook, err
@@ -169,7 +170,7 @@ func (s *Service) CreateRegistry(ctx context.Context, p store.Principal, ws uuid
 		if err != nil {
 			return err
 		}
-		raw, _ := json.Marshal(r)
+		raw, _ := stablejson.Marshal(r)
 		return q.InsertRegistry(ctx, db.InsertRegistryParams{ID: r.ID, WorkspaceID: ws, Configuration: raw, EncryptedAccess: encrypted})
 	})
 	return r, err

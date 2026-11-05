@@ -11,6 +11,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/hostnetwork"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 	"github.com/moby/moby/client"
 )
@@ -90,7 +91,7 @@ func (e *Engine) executeNetwork(ctx context.Context, c api.ExecutionCommand) err
 		receipt.Hash = hostnetwork.Hash(m)
 		receipt.Disabled = m.Disabled
 	}
-	raw, _ := json.Marshal(receipt)
+	raw, _ := stablejson.Marshal(receipt)
 	return e.Journal.Mutate(c.Id, func(r *Record) {
 		r.Report.State = "succeeded"
 		r.Report.Note = "Managed network configuration acknowledged; deployment separately verifies endpoint reachability."

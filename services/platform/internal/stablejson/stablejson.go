@@ -13,11 +13,27 @@ import (
 	"encoding/hex"
 	jsonv1 "encoding/json"
 	"encoding/json/v2"
+	"io"
 )
 
 // Marshal encodes v as encoding/json v1 does, byte for byte.
 func Marshal(v any) ([]byte, error) {
 	return json.Marshal(v, jsonv1.DefaultOptionsV1())
+}
+
+// Encode writes v to w as Marshal does, followed by a newline, as a v1 Encoder does.
+func Encode(w io.Writer, v any) error {
+	raw, err := Marshal(v)
+	if err != nil {
+		return err
+	}
+	_, err = w.Write(append(raw, '\n'))
+	return err
+}
+
+// MarshalIndent is Marshal with v1's indentation.
+func MarshalIndent(v any, prefix, indent string) ([]byte, error) {
+	return jsonv1.MarshalIndent(v, prefix, indent)
 }
 
 // Normalize rewrites one JSON document with sorted object names and v1 escaping,

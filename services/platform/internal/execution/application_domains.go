@@ -2,7 +2,6 @@ package execution
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"net"
 	"sort"
@@ -10,6 +9,7 @@ import (
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -280,7 +280,7 @@ func (s *Service) reconcileDomain(ctx context.Context, a domainArgs) error {
 	if providerErr != nil {
 		state, note = "failed", providerErr.Error()
 	}
-	raw, _ := json.Marshal(records)
+	raw, _ := stablejson.Marshal(records)
 	if records == nil {
 		raw = []byte(`{}`)
 	}

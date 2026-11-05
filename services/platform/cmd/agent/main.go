@@ -30,6 +30,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/hostnetwork"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 	"github.com/moby/moby/client"
 )
@@ -48,7 +49,7 @@ func run() error {
 	}
 	command := os.Args[1]
 	if command == "describe" {
-		return json.NewEncoder(os.Stdout).Encode(map[string]any{"Version": version, "Protocol": 1, "Arch": runtime.GOARCH})
+		return stablejson.Encode(os.Stdout, map[string]any{"Version": version, "Protocol": 1, "Arch": runtime.GOARCH})
 	}
 	if command == "release-keygen" || command == "release-sign" {
 		return releaseCommand(command, os.Args[2:])
@@ -88,7 +89,7 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 	if command == "network-support" {
-		return json.NewEncoder(os.Stdout).Encode(map[string]bool{"supported": (hostnetwork.Host{Dir: *dir}).Supported(ctx)})
+		return stablejson.Encode(os.Stdout, map[string]bool{"supported": (hostnetwork.Host{Dir: *dir}).Supported(ctx)})
 	}
 	if command == "network-restore" {
 		return (hostnetwork.Host{Dir: *dir}).Restore(ctx)
@@ -111,7 +112,7 @@ func run() error {
 		return h
 	}
 	if command == "preflight" {
-		return json.NewEncoder(os.Stdout).Encode(preflight(ctx))
+		return stablejson.Encode(os.Stdout, preflight(ctx))
 	}
 	j, e = agent.Open(*dir)
 	if e != nil {
@@ -129,7 +130,7 @@ func run() error {
 		if err != nil {
 			return err
 		}
-		return json.NewEncoder(os.Stdout).Encode(view)
+		return stablejson.Encode(os.Stdout, view)
 	}
 	if command == "inspect-controller" {
 		cfg, err := j.Config()
@@ -140,7 +141,7 @@ func run() error {
 		if err != nil {
 			return err
 		}
-		return json.NewEncoder(os.Stdout).Encode(struct {
+		return stablejson.Encode(os.Stdout, struct {
 			Origin     string                  `json:"origin"`
 			ServerID   uuid.UUID               `json:"serverId"`
 			Generation int64                   `json:"controllerGeneration"`
@@ -153,9 +154,12 @@ func run() error {
 		if err != nil {
 			return err
 		}
-		encoder := json.NewEncoder(os.Stdout)
-		encoder.SetIndent("", "  ")
-		return encoder.Encode(views)
+		raw, err := stablejson.MarshalIndent(views, "", "  ")
+		if err != nil {
+			return err
+		}
+		_, err = os.Stdout.Write(append(raw, '\n'))
+		return err
 	}
 	if command == "enroll" || command == "transfer" {
 		if e = agent.ValidateOrigin(*origin); e != nil {
@@ -444,7 +448,7 @@ func releaseCommand(command string, args []string) error {
 	if e = writeNew(filepath.Join(*out, r.Sha256), data, 0755); e != nil {
 		return e
 	}
-	b, _ := json.MarshalIndent(r, "", "  ")
+	b, _ := stablejson.MarshalIndent(r, "", "  ")
 	return writeNew(filepath.Join(*out, r.Version+"-"+string(r.Arch)+".json"), b, 0644)
 }
 func writeNew(path string, b []byte, mode os.FileMode) error {

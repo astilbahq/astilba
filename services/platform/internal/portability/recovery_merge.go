@@ -100,7 +100,7 @@ func MergeRecovery(ctx context.Context, tx pgx.Tx, a Archive, owner uuid.UUID) e
 	for _, t := range tables {
 		for _, sourceRow := range a.Tables[t.Name] {
 			row := maps.Clone(sourceRow)
-			original, err := json.Marshal(row)
+			original, err := stablejson.Marshal(row)
 			if err != nil {
 				return err
 			}
@@ -167,7 +167,7 @@ func MergeRecovery(ctx context.Context, tx pgx.Tx, a Archive, owner uuid.UUID) e
 					setValue(row, "runtime_operation_id", nil)
 				}
 			}
-			raw, err := json.Marshal(row)
+			raw, err := stablejson.Marshal(row)
 			if err != nil {
 				return err
 			}

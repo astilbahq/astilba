@@ -13,6 +13,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/hostnetwork"
 	"github.com/astilbahq/astilba/services/platform/internal/portability"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/astilbahq/astilba/services/platform/internal/upgrade"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -41,7 +42,7 @@ func recoveryValue[T any](row portability.Row, key string) (T, error) {
 	}
 	return value, nil
 }
-func recoverySet(row portability.Row, key string, value any) { row[key], _ = json.Marshal(value) }
+func recoverySet(row portability.Row, key string, value any) { row[key], _ = stablejson.Marshal(value) }
 
 func (s *Service) prepareRecoveryKnowledge(ctx context.Context, tx pgx.Tx, before portability.Archive, source *recoverySource, roots map[uuid.UUID]recoveringRoot) error {
 	known, err := indexRecoveryRows(before)

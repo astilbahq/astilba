@@ -81,7 +81,7 @@ func PrepareRailpackConfig(raw []byte, options *RailpackOptions) ([]byte, string
 		}
 		deploy["startCommand"] = options.StartCommand
 	}
-	data, err := json.Marshal(cfg)
+	data, err := stablejson.Marshal(cfg)
 	return data, provider, err
 }
 
@@ -266,7 +266,7 @@ func FreezeRailpackPlan(raw, infoRaw []byte, c Command, configuredProvider strin
 		}
 		deploy["paths"] = append(old, strings.Join(paths, ":"))
 	}
-	frozen, err := json.Marshal(plan)
+	frozen, err := stablejson.Marshal(plan)
 	if err != nil || len(frozen) > RailpackPlanLimit {
 		return nil, errors.New("Frozen Railpack plan exceeds supported limits")
 	}

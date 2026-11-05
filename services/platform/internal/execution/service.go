@@ -267,8 +267,8 @@ func (s *Service) Enroll(ctx context.Context, in api.AgentEnrollment) (api.Agent
 
 func (s *Service) Heartbeat(ctx context.Context, a Identity, in api.AgentHeartbeat) (api.AgentStatus, error) {
 	var out api.AgentStatus
-	caps, _ := json.Marshal(in.Capabilities)
-	pre, _ := json.Marshal(in.Preflight)
+	caps, _ := stablejson.Marshal(in.Capabilities)
+	pre, _ := stablejson.Marshal(in.Preflight)
 	row, err := s.Store.Queries.RecordAgentHeartbeat(ctx, db.RecordAgentHeartbeatParams{WorkspaceID: a.Workspace, ServerID: a.ID, CredentialHash: hash(a.Token), Capabilities: caps, Preflight: pre})
 	out.Role, out.RotationRequested = api.ServerRole(row.Role), row.RotationRequested
 	if row.PreviewOnly {

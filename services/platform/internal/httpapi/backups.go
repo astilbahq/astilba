@@ -6,6 +6,7 @@ import (
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/backup"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 )
 
@@ -75,7 +76,7 @@ func (s *Server) ReportSchedule(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, e)
 		return
 	}
-	raw, _ := json.Marshal(b.Status)
+	raw, _ := stablejson.Marshal(b.Status)
 	var status backup.Status
 	if e = json.Unmarshal(raw, &status); e == nil {
 		e = s.Execution.ScheduleReport(r.Context(), agentIdentity(r.Context()), b.Sequence, status)

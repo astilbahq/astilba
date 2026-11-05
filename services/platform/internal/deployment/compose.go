@@ -11,6 +11,7 @@ import (
 
 	"github.com/astilbahq/astilba/services/platform/internal/composeproject"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/compose-spec/compose-go/v2/types"
 	"github.com/google/uuid"
 )
@@ -140,7 +141,7 @@ func sourceCompose(p Plan, secrets map[string]string, root string, export bool) 
 			return v
 		}
 	}
-	return json.MarshalIndent(rewrite(value), "", "  ")
+	return stablejson.MarshalIndent(rewrite(value), "", "  ")
 }
 func SourceNetworkName(unit, id uuid.UUID, name string) string {
 	if name == "default" {

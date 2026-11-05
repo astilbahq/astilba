@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
-	"encoding/json"
 	jsonv2 "encoding/json/v2"
 	"errors"
 	"io"
@@ -21,6 +20,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
 	"github.com/astilbahq/astilba/services/platform/internal/execution"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 )
 
 type Client struct {
@@ -82,7 +82,7 @@ func (c *Client) call(ctx context.Context, method, path string, body, out any, t
 		}
 		body = value
 	}
-	raw, e := json.Marshal(body)
+	raw, e := stablejson.Marshal(body)
 	if e != nil {
 		return e
 	}

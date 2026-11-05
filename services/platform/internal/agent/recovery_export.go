@@ -112,7 +112,7 @@ func (j *Journal) ExportRecovery(dir string) error {
 			if err = writeRecoveryExportFile(filepath.Join(dir, d.CheckpointID.String()+".capsule"), body); err != nil {
 				return err
 			}
-			raw, _ := json.Marshal(d)
+			raw, _ := stablejson.Marshal(d)
 			return writeRecoveryExportFile(filepath.Join(dir, d.CheckpointID.String()+".json"), raw)
 		})
 	}); err != nil {
@@ -133,7 +133,7 @@ func (j *Journal) ExportRecovery(dir string) error {
 	if digest != evidence.ProofDigest {
 		return errors.New("host proofs changed while exporting")
 	}
-	raw, err := json.Marshal(evidence)
+	raw, err := stablejson.Marshal(evidence)
 	if err != nil {
 		return err
 	}

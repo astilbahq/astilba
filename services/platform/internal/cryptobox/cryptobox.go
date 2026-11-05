@@ -11,6 +11,8 @@ import (
 	"io"
 	"os"
 	"regexp"
+
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 )
 
 var ErrKey = errors.New("secret key is unavailable or ciphertext is invalid")
@@ -94,7 +96,7 @@ func (r *Keyring) WriteNew(path string) error {
 		return errors.New("cannot create keyring; choose a new private file")
 	}
 	defer f.Close()
-	return json.NewEncoder(f).Encode(r)
+	return stablejson.Encode(f, r)
 }
 
 func aead(key []byte) (cipher.AEAD, error) {
@@ -145,7 +147,7 @@ func (r *Keyring) Seal(value []byte, identity string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	return json.Marshal(envelope{Version: 1, KeyID: r.Active, Key: wrapped, Data: data})
+	return stablejson.Marshal(envelope{Version: 1, KeyID: r.Active, Key: wrapped, Data: data})
 }
 
 func (r *Keyring) unwrap(blob []byte, identity string) (envelope, []byte, error) {
@@ -185,7 +187,7 @@ func (r *Keyring) Rewrap(blob []byte, identity string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	return json.Marshal(env)
+	return stablejson.Marshal(env)
 }
 
 func Token() (string, error) {

@@ -8,6 +8,7 @@ import (
 	"sort"
 
 	"github.com/astilbahq/astilba/services/platform/internal/composeproject"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 )
 
@@ -97,7 +98,7 @@ func deriveCompose(spec *Specification) error {
 				Advanced   *RouteOptions `json:"advanced,omitempty"`
 			} `json:"routes"`
 		}
-		b, _ := json.Marshal(raw)
+		b, _ := stablejson.Marshal(raw)
 		// People write this YAML and revisions keep it verbatim, so every later parse
 		// repeats this decode. It stays on v1 rules so that accepted files keep loading,
 		// and on an older controller after a rollback.

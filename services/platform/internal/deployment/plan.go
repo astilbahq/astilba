@@ -1,7 +1,6 @@
 package deployment
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
@@ -133,7 +132,7 @@ func (p Plan) Validate(resolved bool) error {
 	} else if err := p.validateInstances(); err != nil {
 		return err
 	}
-	raw, err := json.Marshal(p.Specification)
+	raw, err := stablejson.Marshal(p.Specification)
 	if err != nil {
 		return err
 	}
@@ -482,7 +481,7 @@ func composeAt(p Plan, secrets map[string]string, export bool, root string, sele
 			services[ServiceName(instance)] = runtime
 		}
 	}
-	return json.MarshalIndent(map[string]any{"name": UnitName(p.UnitID), "services": services, "volumes": volumes, "networks": map[string]any{"unit": map[string]any{"name": NetworkName(p.UnitID), "external": true}}}, "", "  ")
+	return stablejson.MarshalIndent(map[string]any{"name": UnitName(p.UnitID), "services": services, "volumes": volumes, "networks": map[string]any{"unit": map[string]any{"name": NetworkName(p.UnitID), "external": true}}}, "", "  ")
 }
 
 type Backend struct {
@@ -646,7 +645,7 @@ func RouteConfig(sets map[string]RouteSet) ([]byte, error) {
 			out[kind] = group
 		}
 	}
-	return json.Marshal(out)
+	return stablejson.Marshal(out)
 }
 
 // An image change cannot reinterpret an existing PostgreSQL data directory.

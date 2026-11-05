@@ -2,13 +2,13 @@ package execution
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/hostnetwork"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/riverqueue/river"
@@ -76,7 +76,7 @@ func (s *Service) finishRecoveryStaging(ctx context.Context, tx pgx.Tx, in Recov
 		}
 		for _, manifest := range host.Networks {
 			observedNetworkGeneration = max(observedNetworkGeneration, manifest.Generation)
-			raw, _ := json.Marshal(manifest)
+			raw, _ := stablejson.Marshal(manifest)
 			updated, err := q.AdoptRecoveredNetworkManifest(ctx, db.AdoptRecoveredNetworkManifestParams{InstalledManifest: raw, ManifestHash: hostnetwork.Hash(manifest), WorkspaceID: in.WorkspaceID, ServerID: server, MembershipID: manifest.MembershipID, NetworkID: manifest.NetworkID, PublicKey: manifest.PublicKey})
 			if err != nil {
 				return err

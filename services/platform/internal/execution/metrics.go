@@ -6,6 +6,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/metrics"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -15,7 +16,7 @@ func (s *Service) RecordMetrics(ctx context.Context, a Identity, r api.MetricRep
 	if !metrics.Valid(r) {
 		return domain.Invalid("metrics")
 	}
-	raw, err := json.Marshal(r)
+	raw, err := stablejson.Marshal(r)
 	if err != nil || len(raw) > 12000 {
 		return domain.Invalid("metrics")
 	}

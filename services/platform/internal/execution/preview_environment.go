@@ -2,7 +2,6 @@ package execution
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
@@ -100,7 +99,7 @@ func (s *Service) createPreviewEnvironment(ctx context.Context, tx pgx.Tx, p pre
 	if _, err = q.PutLayout(ctx, db.PutLayoutParams{WorkspaceID: p.Workspace, EnvironmentID: env, Positions: []byte("{}")}); err != nil {
 		return err
 	}
-	cfg, _ := json.Marshal(p.Config)
+	cfg, _ := stablejson.Marshal(p.Config)
 	if _, err = tx.Exec(ctx, "UPDATE deployment_units SET server_id=$2 WHERE workspace_id=$1 AND id=$3", p.Workspace, p.Server, unit); err != nil {
 		return err
 	}

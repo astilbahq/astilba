@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -24,7 +25,7 @@ func CaptureRecovery(ctx context.Context, tx pgx.Tx, ws uuid.UUID) ([]byte, erro
 	if err != nil {
 		return nil, err
 	}
-	raw, err := json.Marshal(archive)
+	raw, err := stablejson.Marshal(archive)
 	if err != nil || len(raw) > MaxArchiveBytes {
 		return nil, ErrArchive
 	}

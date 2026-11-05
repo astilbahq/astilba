@@ -3,7 +3,6 @@ package httpapi
 import (
 	"archive/zip"
 	"bytes"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -15,6 +14,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/composeproject"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
 )
@@ -74,7 +74,7 @@ func (s *Server) PreviewCompose(w http.ResponseWriter, r *http.Request, ws, pid,
 				}
 			}
 			result["changes"] = changes
-			raw, _ := json.Marshal(spec)
+			raw, _ := stablejson.Marshal(spec)
 			spec, _, err = domain.ParseSpec(raw)
 			if err != nil {
 				return nil, fmt.Errorf("invalid source edit: %w", err)

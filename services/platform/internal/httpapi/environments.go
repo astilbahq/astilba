@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"github.com/astilbahq/astilba/services/platform/internal/composeproject"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"net/http"
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
@@ -110,7 +111,7 @@ func (s *Server) CreateEnvironment(w http.ResponseWriter, r *http.Request, ws, p
 		if owner == "compose" {
 			initial.Compose = &composeproject.Bundle{Namespace: unit, Entrypoints: []string{"compose.yaml"}, Files: []composeproject.File{{Path: "compose.yaml", Content: "services: {}\n"}}}
 		}
-		raw, _ := json.Marshal(initial)
+		raw, _ := stablejson.Marshal(initial)
 		_, canonical, e := domain.ParseSpec(raw)
 		if e != nil {
 			return nil, e
@@ -194,8 +195,8 @@ func (s *Server) UpdateDraft(w http.ResponseWriter, r *http.Request, ws, pid, id
 			if json.Unmarshal(previous.Specification, &old) != nil || old.Compose == nil {
 				return domain.Conflict
 			}
-			before, _ := json.Marshal(old.Compose.Origin)
-			after, _ := json.Marshal(spec.Compose.Origin)
+			before, _ := stablejson.Marshal(old.Compose.Origin)
+			after, _ := stablejson.Marshal(spec.Compose.Origin)
 			if !bytes.Equal(before, after) {
 				return domain.Invalid("compose.origin")
 			}
@@ -287,7 +288,7 @@ func (s *Server) UpdateLayout(w http.ResponseWriter, r *http.Request, ws, pid, i
 		if e = domain.ValidateLayout(positions, spec); e != nil {
 			return nil, e
 		}
-		raw, e := json.Marshal(b.Positions)
+		raw, e := stablejson.Marshal(b.Positions)
 		if e != nil {
 			return nil, e
 		}

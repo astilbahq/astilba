@@ -13,6 +13,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/portability"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -116,7 +117,7 @@ func (s *Service) RecoverCrossHost(ctx context.Context, in RecoveryImport) (Reco
 		}
 	}
 	for _, row := range source.Archive.Tables["network_endpoint_sources"] {
-		raw, _ := json.Marshal(row)
+		raw, _ := stablejson.Marshal(row)
 		// inline-sql: recovery session temporary tables
 		if _, err = tx.Exec(ctx, `INSERT INTO recovery_incoming_grants SELECT endpoint_id,server_id,unit_id FROM jsonb_populate_record(NULL::network_endpoint_sources,$1)`, raw); err != nil {
 			return out, err
@@ -220,10 +221,10 @@ func (s *Service) RecoverCrossHost(ctx context.Context, in RecoveryImport) (Reco
 		}
 		if handover, required := out.Handovers[server]; required {
 			inventory := api.ControllerInventory{Units: host.Units, Schedules: host.Schedules}
-			raw, _ := json.Marshal(handover.Authority)
+			raw, _ := stablejson.Marshal(handover.Authority)
 			inventory.Recovery = rawMessage(raw)
-			encoded, _ := json.Marshal(inventory)
-			handoverRaw, _ := json.Marshal(handover)
+			encoded, _ := stablejson.Marshal(inventory)
+			handoverRaw, _ := stablejson.Marshal(handover)
 			staged, err := q.StageRecoveryServer(ctx, db.StageRecoveryServerParams{ParentID: handover.Authority.ParentID, WorkspaceID: in.WorkspaceID, ServerID: server, MachineID: host.MachineID, ControllerGeneration: controller, Inventory: encoded, Handover: handoverRaw})
 			if err != nil {
 				return out, err
@@ -283,7 +284,7 @@ func requiredRecoveryRoots(source recoverySource) (map[uuid.UUID]recoveringRoot,
 		if !exists || d.RootHash != c.PlanHash || d.GroupID != body.Plan.ID || d.GroupHash != body.Plan.Hash {
 			return out, errors.New("an interrupted root requires its complete primary capsule chain")
 		}
-		raw, _ := json.Marshal(d)
+		raw, _ := stablejson.Marshal(d)
 		c.RecoveryCheckpoint = rawMessage(raw)
 		out[c.Id] = recoveringRoot{Command: c, Body: body, Descriptor: d, KnownSequence: source.KnownSequences[c.Id]}
 	}

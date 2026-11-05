@@ -9,6 +9,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/portability"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -60,7 +61,7 @@ func collectRecoveryRestrictions(ctx context.Context, tx pgx.Tx, archives ...por
 			if json.Unmarshal(row["id"], &id) != nil || json.Unmarshal(row["server_id"], &server) != nil || id != c.Id || server != c.ServerId {
 				return portability.ErrArchive
 			}
-			raw, _ := json.Marshal(row)
+			raw, _ := stablejson.Marshal(row)
 			// inline-sql: recovery session temporary table
 			if _, err := tx.Exec(ctx, `INSERT INTO recovery_standalone_restrictions(id,source) VALUES($1,$2) ON CONFLICT(id) DO UPDATE SET source=CASE WHEN recovery_standalone_restrictions.source IS NULL OR (excluded.source->>'report_sequence')::bigint>=(recovery_standalone_restrictions.source->>'report_sequence')::bigint THEN excluded.source ELSE recovery_standalone_restrictions.source END`, id, raw); err != nil {
 				return err

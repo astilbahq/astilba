@@ -2,7 +2,6 @@ package hostnetwork
 
 import (
 	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/netip"
@@ -109,7 +108,7 @@ func TransportEndpoint(s string) bool {
 func port(n int) bool { return n >= FirstEndpointPort && n <= LastEndpointPort }
 func (m Manifest) Validate() error {
 	bad := func() error { return errors.New("invalid managed network manifest") }
-	raw, _ := json.Marshal(m)
+	raw, _ := stablejson.Marshal(m)
 	if len(raw) > 98304 {
 		return bad()
 	}

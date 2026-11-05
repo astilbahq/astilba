@@ -11,6 +11,7 @@ import (
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -273,7 +274,7 @@ func (s *Service) Report(ctx context.Context, a Identity, r api.AgentReport) err
 	if err = s.networkReport(ctx, tx, c, &r); err != nil {
 		return err
 	}
-	steps, _ := json.Marshal(r.Steps)
+	steps, _ := stablejson.Marshal(r.Steps)
 	_, err = tx.Exec(ctx, `UPDATE execution_operations SET state=$2,report_sequence=$3,steps=$4,note=$5 WHERE id=$1`, r.Id, r.State, r.Sequence, steps, r.Note)
 	if err != nil {
 		return err

@@ -8,6 +8,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/composeproject"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -54,7 +55,7 @@ func mergedSourceSelection(ctx context.Context, tx pgx.Tx, ws, env uuid.UUID, bu
 	if bundle == nil || bundle.Origin == nil {
 		return c, false, nil
 	}
-	files, _ := json.Marshal(sourceFiles(bundle))
+	files, _ := stablejson.Marshal(sourceFiles(bundle))
 	rows, err := tx.Query(ctx, `SELECT r.result FROM git_submissions g JOIN pipeline_runs r ON r.id=g.operation_id JOIN execution_operations o ON o.id=r.id
  WHERE g.workspace_id=$1 AND g.environment_id=$2 AND o.state='succeeded'
  AND r.configuration->>'commit'=$3 AND r.configuration#>>'{connection,id}'=$4 AND r.configuration->>'branch'=$5

@@ -9,6 +9,7 @@ import (
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/backup"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -101,7 +102,7 @@ func (s *Service) runCoordinatedSchedule(ctx context.Context, ws, server, id uui
 		return err
 	}
 	status.Next = next
-	raw, _ := json.Marshal(status)
+	raw, _ := stablejson.Marshal(status)
 	if err = q.SaveBackupPolicyStatus(ctx, db.SaveBackupPolicyStatusParams{Status: raw, WorkspaceID: ws, ID: id}); err != nil {
 		return err
 	}

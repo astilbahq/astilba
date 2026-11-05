@@ -1,13 +1,13 @@
 package execution
 
 import (
-	"encoding/json"
 	"errors"
 	"slices"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/hostnetwork"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 )
 
 func recoveryChildFrame(parent api.ExecutionCommand, root coordinationCommand, phase string, header api.ExecutionCommand) (api.ExecutionCommand, error) {
@@ -49,7 +49,7 @@ func recoveryChildFrame(parent api.ExecutionCommand, root coordinationCommand, p
 			return header, errors.New("unsupported recovered deployment phase")
 		}
 		body := deployment.CrossHostCommand{ParentID: parent.Id, GroupHash: root.Plan.Hash, Phase: phase, Unit: unit}
-		raw, _ := json.Marshal(body)
+		raw, _ := stablejson.Marshal(body)
 		payload = api.ExecutionCommand{Kind: "crosshost", Action: "inspect", ServerId: unit.Plan.ServerID, EnvironmentId: unit.Plan.EnvironmentID, ResourceId: unit.Plan.UnitID, PlanHash: body.Digest(), Crosshost: rawMessage(raw)}
 	}
 	if payload.Kind != header.Kind || payload.Action != header.Action || payload.ServerId != header.ServerId || payload.EnvironmentId != header.EnvironmentId || payload.ResourceId != header.ResourceId || payload.PlanHash != header.PlanHash {

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 
 	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 	bolt "go.etcd.io/bbolt"
 )
@@ -40,7 +41,7 @@ func (j *Journal) openLocalKeys(point func(string) error) error {
 			return err
 		}
 		j.keys = keys
-		raw, err = json.Marshal(keys)
+		raw, err = stablejson.Marshal(keys)
 		if err != nil {
 			return err
 		}
@@ -71,7 +72,7 @@ func (j *Journal) openLocalKeys(point func(string) error) error {
 			return err
 		}
 	}
-	body, err := json.Marshal(localStateKeys{Version: localStateVersion, Keyring: raw})
+	body, err := stablejson.Marshal(localStateKeys{Version: localStateVersion, Keyring: raw})
 	if err != nil {
 		return err
 	}

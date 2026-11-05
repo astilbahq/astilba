@@ -9,6 +9,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -34,7 +35,7 @@ func (s *Service) closeUnreservedCheckpoint(ctx context.Context, tx pgx.Tx, ws u
 			return nil
 		}
 		body := deployment.CrossHostCommand{ParentID: parent.Id, GroupHash: d.RootHash, Phase: "checkpoint-closed", Unit: unit}
-		raw, _ := json.Marshal(body)
+		raw, _ := stablejson.Marshal(body)
 		generation, err := db.New(tx).AdvanceEnvironmentExecutionGeneration(ctx, db.AdvanceEnvironmentExecutionGenerationParams{WorkspaceID: ws, ID: parent.EnvironmentId})
 		if err != nil {
 			return err

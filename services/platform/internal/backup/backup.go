@@ -1,7 +1,6 @@
 package backup
 
 import (
-	"encoding/json"
 	"errors"
 	"net/url"
 	"path/filepath"
@@ -180,7 +179,7 @@ func (p Policy) Validate() error {
 func RunID(p Policy, at time.Time) uuid.UUID {
 	return uuid.NewSHA1(p.ID, []byte(stringInt(p.Generation)+":"+at.UTC().Format(time.RFC3339)))
 }
-func stringInt(n int64) string { b, _ := json.Marshal(n); return string(b) }
+func stringInt(n int64) string { b, _ := stablejson.Marshal(n); return string(b) }
 
 // Only catalogued snapshots can be forgotten. Unknown snapshots, active restores
 // and the newest demonstrated recovery point are never retention candidates.

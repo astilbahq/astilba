@@ -10,6 +10,7 @@ import (
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -33,7 +34,7 @@ func rowString(row Row, key string) (string, error) {
 	}
 	return value, nil
 }
-func setValue(row Row, key string, value any) { row[key], _ = json.Marshal(value) }
+func setValue(row Row, key string, value any) { row[key], _ = stablejson.Marshal(value) }
 func credential(table string, row Row, workspace uuid.UUID) (string, string, error) {
 	var field, purpose string
 	switch table {
@@ -126,7 +127,7 @@ func (s *Service) Export(ctx context.Context, p store.Principal, ws uuid.UUID, p
 	if e != nil {
 		return nil, e
 	}
-	plaintext, e := json.Marshal(archive)
+	plaintext, e := stablejson.Marshal(archive)
 	if e != nil {
 		return nil, e
 	}

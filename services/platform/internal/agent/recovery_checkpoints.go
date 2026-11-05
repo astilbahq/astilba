@@ -14,6 +14,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/hostnetwork"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 	bolt "go.etcd.io/bbolt"
 )
@@ -184,7 +185,7 @@ func (e *Engine) executeRecoveryCheckpoint(ctx context.Context, c api.ExecutionC
 	receipt := deployment.CrossHostReceipt{ParentID: command.ParentID, GroupHash: command.GroupHash, UnitID: c.ResourceId, PlanHash: command.Unit.Plan.Hash, Phase: command.Phase, CheckpointHash: d.Digest}
 	receipt.Observation.Resources = []deployment.Resource{}
 	receipt.Observation.ObservedAt = time.Now().UTC()
-	raw, _ := json.Marshal(receipt)
+	raw, _ := stablejson.Marshal(receipt)
 	return e.Journal.Mutate(c.Id, func(r *Record) {
 		message := json.RawMessage(raw)
 		r.Report.Crosshost = &message

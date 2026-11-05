@@ -10,6 +10,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/composeproject"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -102,7 +103,7 @@ func (s *Service) insertPipeline(ctx context.Context, tx pgx.Tx, ws, env, key, s
 	if err := tx.QueryRow(ctx, "UPDATE environments SET execution_generation=execution_generation+1 WHERE workspace_id=$1 AND id=$2 AND draft_revision_id=$3 RETURNING execution_generation", ws, env, p.RevisionID).Scan(&generation); err != nil {
 		return out, err
 	}
-	raw, err := json.Marshal(p)
+	raw, err := stablejson.Marshal(p)
 	if err != nil || len(raw) > 150000 {
 		return out, domain.Invalid("pipeline")
 	}
@@ -205,7 +206,7 @@ func (s *Service) BindSource(ctx context.Context, p store.Principal, ws, pid, en
 		if err != nil {
 			return err
 		}
-		raw, _ := json.Marshal(c)
+		raw, _ := stablejson.Marshal(c)
 		_, err = tx.Exec(ctx, "INSERT INTO git_sources(workspace_id,environment_id,connection_id,configuration,policy_actor) VALUES($1,$2,$3,$4,$5)", ws, env, c.ConnectionID, raw, p.Account.ID)
 		if err != nil {
 			return err
@@ -421,7 +422,7 @@ func (s *Service) admitBuild(ctx context.Context, tx pgx.Tx, p store.Principal, 
 		return out, err
 	}
 	if persist {
-		raw, _ := json.Marshal(c)
+		raw, _ := stablejson.Marshal(c)
 		_, err = tx.Exec(ctx, "INSERT INTO build_targets(workspace_id,environment_id,application_id,connection_id,configuration,input_hash,requested_commit,automatic_requested_commit,policy_actor) VALUES($1,$2,$3,$4,$5,$6,$7,$7,$8) ON CONFLICT(workspace_id,environment_id,application_id) DO UPDATE SET connection_id=EXCLUDED.connection_id,configuration=EXCLUDED.configuration,input_hash=EXCLUDED.input_hash,requested_commit=EXCLUDED.requested_commit,automatic_requested_commit=EXCLUDED.automatic_requested_commit,policy_actor=EXCLUDED.policy_actor,rejected_commit=NULL,rejection_reason=NULL,rejected_at=NULL", ws, env, app, c.ConnectionID, raw, hash, commit, p.Account.ID)
 	} else {
 		_, err = tx.Exec(ctx, "UPDATE build_targets SET input_hash=$4,requested_commit=$5,rejected_commit=NULL,rejection_reason=NULL,rejected_at=NULL WHERE workspace_id=$1 AND environment_id=$2 AND application_id=$3", ws, env, app, hash, commit)
