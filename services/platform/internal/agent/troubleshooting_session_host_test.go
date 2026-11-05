@@ -353,7 +353,8 @@ func TestNativeTroubleshootingShellChoice(t *testing.T) {
 	// Only /bin/sh is tried. Starting bash next could stall, so an image with bash alone is
 	// refused, as one with no shell is.
 	for _, step := range []struct{ name, script string }{
-		{"a /bin/sh that is not a shell", `rm /bin/sh; printf '#!/bin/ash\nexit 1\n' >/bin/sh; chmod +x /bin/sh`},
+		{"a /bin/sh that fails", `rm /bin/sh; printf '#!/bin/ash\nexit 1\n' >/bin/sh; chmod +x /bin/sh`},
+		{"a /bin/sh that does nothing", `printf '#!/bin/ash\nexit 0\n' >/bin/sh`},
 		{"bash alone", `printf '#!/bin/ash\nexec /bin/ash "$@"\n' >/bin/bash; rm /bin/sh`},
 	} {
 		f.execute(t, "/bin/ash", "-c", step.script)

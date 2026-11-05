@@ -29,8 +29,9 @@ const (
 	troubleshootingDockerWait = 30 * time.Second
 	// Well within a ticket's lifetime. Ending a shell normally takes a fraction of a second.
 	troubleshootingPlaceWait = 5 * time.Second
-	// Exits with 3, which is neither of the codes for a missing executable, if bash does not run.
-	troubleshootingBashProbe = `/bin/bash -c "exit 0" >/dev/null 2>&1 || exit 3`
+	// Exits with 4 if bash runs and 3 if not. Neither is a code for a missing executable, and
+	// a /bin/sh that does not run the script as a shell would cannot pass for one that did.
+	troubleshootingBashProbe = `/bin/bash -c "exit 0" >/dev/null 2>&1 && exit 4 || exit 3`
 	// Input waiting for a shell that is not reading, about 1 MiB at most. Beyond this the
 	// session ends: dropping some of it could run a different command from the one sent.
 	troubleshootingInputQueue = 32
@@ -334,7 +335,7 @@ func (e *Engine) findShell(ctx context.Context, container string) (string, error
 			return "", errors.New("shell probe did not finish")
 		case state.Running:
 			time.Sleep(100 * time.Millisecond)
-		case state.ExitCode == 0:
+		case state.ExitCode == 4:
 			return "/bin/bash", nil
 		case state.ExitCode == 3:
 			return "/bin/sh", nil
