@@ -101,13 +101,24 @@ pnpm --filter @astilba/dashboard build
 
 `check` regenerates Panda types, runs Vite+'s format, lint and type checks, then checks translation types, copy and catalogues. `format` writes formatting and organises imports; `check:fix` also applies safe lint fixes. The root `vite.config.ts` owns shared Oxlint/Oxfmt settings. Each app's Vite config owns its plugins, server and build settings. Generated code, build artifacts and source brand assets are excluded from formatting. Runtime import cycles are errors; erased `import type` references are allowed.
 
-Vite+ replaces Biome and the separate frontend Vite/type-check commands. It is installed locally and pinned, so no global installation is required. `vite` is aliased to the matching `@voidzero-dev/vite-plus-core`; the Vitest override matches Vite+'s bundled runner. The narrow pnpm peer exception for that core alias accounts for its different version number. Keep all three pins aligned when upgrading, while preserving the release-age gate. This follows the [local installation](https://viteplus.dev/guide/local-cli) and [monorepo](https://viteplus.dev/guide/monorepo) guides.
+Vite+ replaces Biome and the separate frontend Vite/type-check commands. It is installed locally and pinned, so no global installation is required. `vite` is aliased to the matching `@voidzero-dev/vite-plus-core`; the Vitest override matches Vite+'s bundled runner. The narrow pnpm peer exception for that core alias accounts for its different version number. This follows the [local installation](https://viteplus.dev/guide/local-cli) and [monorepo](https://viteplus.dev/guide/monorepo) guides.
 
 Oxlint enables TypeScript-aware checks, React and accessibility rules. Explicit security rules retain the previous checks against raw HTML injection, unprotected blank-target links and script URLs (including non-JSX string usage). React Compiler-specific ref, purity and effect-state restrictions are not enabled because the app has not adopted the compiler. The tag-over-role preference is also disabled: our live status containers and labelled SVGs deliberately use ARIA. Rules for accessible names, roles, keyboard interaction and hook usage remain enabled, alongside the real-browser accessibility checks.
 
 Panda, Playwright and Node's existing domain-test runner remain in place. Go retains `gofmt` and `go vet`. pnpm remains the package manager, and the existing Make targets still orchestrate the full application.
 
 Existing `make check-app` invokes the dashboard check, and `make verify-canvas` invokes the canvas check, so both use Vite+ in the existing CI gates. `make verify-app` adds the production build and real API/browser journeys with disposable PostgreSQL; follow the root instructions for its Docker requirements. Tests covering navigation or authentication belong in the existing Playwright suite.
+
+### Dependency pins
+
+The `catalog` in `pnpm-workspace.yaml` holds the Vite+, Panda and Playwright versions, and manifests refer to it with `catalog:`. `make check-ci` runs `scripts/pin-alignment.mjs`, which fails when these drift, as a catalog can't reach all of them:
+
+- **Vite+:** `vite-plus` and the `vite` alias in the catalog, the `vitest@*` override (Vite+'s bundled runner), and both `peerDependencyRules.allowedVersions` entries. The `storybook@<major>>vite-plus` key names Storybook's current major.
+- **Playwright:** `@playwright/test` in the catalog, and the image tag and digest in the Canvas, Workshop and Application browsers workflows. The check can't tell offline that a digest belongs to its tag; the browser jobs run from the digest, so a wrong one shows up there.
+- **Panda and Storybook:** every package in each family has the same version.
+- **`allowBuilds`:** each key names an exact version from the lockfile, so a new release's install scripts need a fresh decision.
+
+Dependabot moves the catalog's `vite-plus` line and not the rest, so its `needs-review` pull requests can need these edits by hand. Preserve the release-age gate when making them.
 
 ## Panda CSS conventions
 
