@@ -11,6 +11,7 @@ if (!host?.startsWith("unix:///"))
 const id = randomUUID(),
   label = `com.astilba.p1-test=${id}`,
   image = `astilba-p1-test:${id}`,
+  probeImage = `astilba-p1-test-probe:${id}`,
   network = `astilba-p1-${id}`,
   volume = `astilba-p1-${id}`,
   db = `astilba-db-${id}`,
@@ -24,6 +25,52 @@ const docker = (args, options = {}) =>
     ...options,
   });
 const directory = await mkdtemp(join(tmpdir(), "astilba-image-"));
+// A sample of the fixed hosts the server calls, which chain to different roots.
+const trustedHosts = [
+  "https://api.github.com/",
+  "https://api.stripe.com/",
+  "https://api.cloudflare.com/",
+];
+function checkTrustRoots() {
+  execFileSync(
+    "go",
+    [
+      "build",
+      "-o",
+      join(directory, "https-probe"),
+      "scripts/platform-image-https-probe.go",
+    ],
+    {
+      cwd: root,
+      env: {
+        ...process.env,
+        CGO_ENABLED: "0",
+        GOOS: "linux",
+        GOARCH: docker(["version", "--format", "{{.Server.Arch}}"]).trim(),
+      },
+    },
+  );
+  docker(
+    ["build", "--label", label, "-t", probeImage, "-f", "-", directory],
+    { input: `FROM ${image}\nCOPY https-probe /https-probe\n` },
+  );
+  // Runs as the image's user with the server's restrictions, using the shipped bundle.
+  console.log(
+    docker([
+      "run",
+      "--rm",
+      "--read-only",
+      "--cap-drop",
+      "ALL",
+      "--security-opt",
+      "no-new-privileges:true",
+      "--entrypoint",
+      "/https-probe",
+      probeImage,
+      ...trustedHosts,
+    ]),
+  );
+}
 let madeNetwork = false,
   madeVolume = false;
 const containers = [];
@@ -62,6 +109,7 @@ try {
     "-c",
     "! command -v node",
   ]);
+  checkTrustRoots();
   docker(["network", "create", "--label", label, network]);
   madeNetwork = true;
   docker(["volume", "create", "--label", label, volume]);
@@ -250,7 +298,7 @@ try {
   const denied = await fetch(`http://${restoredAddress}/agent/v1/heartbeat`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${server.server.id}.${credential}` }, body: JSON.stringify({ capabilities: { protocol: 1, version: "fixture", os: "linux", arch: "arm64", docker: true }, preflight: { ready: true, osRelease: "Ubuntu 24.04", dockerVersion: "fixture", port80Busy: false, port443Busy: false, freeBytes: 10000000000, existingContainers: 0, notes: [] } }) });
   if (denied.status !== 401) throw new Error("Restored controller accepted old agent credentials");
   await denied.body?.cancel();
-  console.log("Image passed: non-root Node-free installation, explicit migrations/bootstrap, source notices, separate database/key restore and stale-work fencing.");
+  console.log("Image passed: non-root Node-free installation, HTTPS trust from the shipped bundle, explicit migrations/bootstrap, source notices, separate database/key restore and stale-work fencing.");
 } finally {
   for (const name of containers.reverse()) {
     const actual = docker([
@@ -280,17 +328,19 @@ try {
       if (actual === id) docker([kind, "rm", name]);
     }
   }
-  try {
-    if (
-      docker([
-        "image",
-        "inspect",
-        "--format",
-        '{{ index .Config.Labels "com.astilba.p1-test" }}',
-        image,
-      ]).trim() === id
-    )
-      docker(["image", "rm", image]);
-  } catch {}
+  for (const name of [probeImage, image]) {
+    try {
+      if (
+        docker([
+          "image",
+          "inspect",
+          "--format",
+          '{{ index .Config.Labels "com.astilba.p1-test" }}',
+          name,
+        ]).trim() === id
+      )
+        docker(["image", "rm", name]);
+    } catch {}
+  }
   await rm(directory, { recursive: true, force: true });
 }
