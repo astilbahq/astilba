@@ -23,10 +23,15 @@ import (
 
 const secretVersionPage = 64
 
-// stoppedSubmissionNote stays on the operation through later agent reports, because
-// only the controller knows the runner may already have sent these files onward.
-func stoppedSubmissionNote(id uuid.UUID) string {
+// stoppedSubmissionWarning stays on the operation through later agent reports, because
+// only the controller knows the runner may already have sent these files onward. Reports
+// recognise a stopped run by this exact text, including on a replica or rollback still
+// running an older release, so extend the note below rather than rewording this.
+func stoppedSubmissionWarning(id uuid.UUID) string {
 	return "Stopped: these files contain a known runtime secret value, or runtime secrets exceed the limit for checking them. A runner may already have pushed them to branch astilba/" + id.String() + " at the Git provider: check it and any review, and rotate any exposed secret."
+}
+func stoppedSubmissionNote(id uuid.UUID) string {
+	return stoppedSubmissionWarning(id) + " The value may be in a file's name rather than its contents."
 }
 
 func (s *Service) rejectRuntimeSecrets(ctx context.Context, tx pgx.Tx, ws, env uuid.UUID, bundle composeproject.Bundle) error {
@@ -48,9 +53,11 @@ func (s *Service) rejectRuntimeSecrets(ctx context.Context, tx pgx.Tx, ws, env u
 			if total > 1<<20 {
 				return domain.Invalid("source.secretBudget")
 			}
+			secret := string(value)
 			for _, file := range bundle.Files {
-				if len(value) > 0 && strings.Contains(file.Content, string(value)) {
-					return domain.Invalid("source.containsRuntimeSecret")
+				// A submission pushes both: the path names a tree entry, the content fills its blob.
+				if len(secret) > 0 && (strings.Contains(file.Path, secret) || strings.Contains(file.Content, secret)) {
+					return &domain.Error{Code: "invalid_input", Message: "A file's name or contents include a known runtime secret value.", Fields: []string{"source.containsRuntimeSecret"}}
 				}
 			}
 			after = row.ID
@@ -71,7 +78,7 @@ func sourceSecretRejection(err error) (string, bool) {
 	if slices.Contains(invalid.Fields, "source.secretBudget") {
 		return "This attempt was rejected before reaching a runner: runtime secrets exceed the limit for checking its files.", true
 	}
-	return "This attempt was rejected before reaching a runner: its files contain a known runtime secret value. If an earlier attempt of this draft ran, its astilba/ branch may already hold them.", true
+	return "This attempt was rejected before reaching a runner: the names or contents of its files include a known runtime secret value. If an earlier attempt of this draft ran, its astilba/ branch may already hold them.", true
 }
 
 // hydratePipeline holds the agent's row and the operation only while it decides. Provider
@@ -313,7 +320,8 @@ func (s *Service) pipelineReport(ctx context.Context, tx pgx.Tx, git *gitAnswers
 		r.Note = "Result arrived after cancellation or expiry."
 		r.Pipeline = nil
 	}
-	if stopped := stoppedSubmissionNote(p.SubmissionID); strings.HasPrefix(note, stopped) {
+	if strings.HasPrefix(note, stoppedSubmissionWarning(p.SubmissionID)) {
+		stopped := stoppedSubmissionNote(p.SubmissionID)
 		// A cleanup instruction still needs the operator; other agent wording adds nothing.
 		if r.State == "needs_attention" && r.Note != "" {
 			r.Note = stopped + " " + r.Note
