@@ -3,7 +3,8 @@ package agent
 import (
 	"bytes"
 	"context"
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"fmt"
 	"io"
 	"net"
@@ -22,6 +23,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/execution"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 	"github.com/moby/moby/api/pkg/stdcopy"
 	"github.com/moby/moby/client"
@@ -132,7 +134,7 @@ x-keep:
 	spec := domain.Specification{Version: 1, Applications: []domain.Application{}, Variables: []domain.Variable{{Name: "DATABASE_PASSWORD", SecretVersionID: &secret}}, Compose: &composeproject.Bundle{Namespace: unit, Entrypoints: []string{"compose.yaml"}, Files: []composeproject.File{{Path: "compose.yaml", Content: source}, {Path: "site/index.html", Content: "first"}}}}
 	prepare := func(spec domain.Specification) deployment.Plan {
 		t.Helper()
-		raw, _ := json.Marshal(spec)
+		raw, _ := stablejson.Marshal(spec)
 		parsed, _, err := domain.ParseSpec(raw)
 		if err != nil {
 			t.Fatal(err)
@@ -151,8 +153,8 @@ x-keep:
 		if action != "resolve" {
 			payload.Secrets = secrets
 		}
-		raw, _ := json.Marshal(payload)
-		message := json.RawMessage(raw)
+		raw, _ := stablejson.Marshal(payload)
+		message := jsontext.Value(raw)
 		return api.ExecutionCommand{Id: uuid.New(), ServerId: server, EnvironmentId: env, ResourceId: unit, Generation: generation, Kind: "visual", Action: "inspect", PlanHash: payload.Digest(), Visual: &message, Deadline: time.Now().Add(4 * time.Minute)}
 	}
 	finish := func(c api.ExecutionCommand) {

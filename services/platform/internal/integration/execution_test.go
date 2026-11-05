@@ -3,7 +3,8 @@ package integration
 import (
 	"bytes"
 	"context"
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"errors"
 	"io"
 	"net/http"
@@ -22,6 +23,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/execution"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 
 	"github.com/google/uuid"
@@ -31,7 +33,7 @@ import (
 
 func agentRequest(t *testing.T, c *http.Client, origin, path, token string, body any, status int, out any) {
 	t.Helper()
-	raw, _ := json.Marshal(body)
+	raw, _ := stablejson.Marshal(body)
 	method := "POST"
 	if body == nil {
 		method = "GET"
@@ -80,19 +82,17 @@ func TestServerIdentityLifecycle(t *testing.T) {
 	defer tlsServer.Close()
 	httpClient := tlsServer.Client()
 	// Older agents reject unknown response fields before processing rotation.
-	legacyStatus := func(raw json.RawMessage) {
+	legacyStatus := func(raw jsontext.Value) {
 		t.Helper()
 		var status struct {
 			Role              api.ServerRole `json:"role"`
 			RotationRequested bool           `json:"rotationRequested"`
 		}
-		decoder := json.NewDecoder(bytes.NewReader(raw))
-		decoder.DisallowUnknownFields()
-		if err := decoder.Decode(&status); err != nil {
+		if err := json.Unmarshal(raw, &status, json.RejectUnknownMembers(true)); err != nil {
 			t.Fatal("legacy agent cannot decode status", err)
 		}
 	}
-	var status json.RawMessage
+	var status jsontext.Value
 	agentRequest(t, httpClient, tlsServer.URL, "/agent/v1/enroll", "", in, 200, &status)
 	legacyStatus(status)
 	agentRequest(t, httpClient, tlsServer.URL, "/agent/v1/heartbeat", token, api.AgentHeartbeat{Capabilities: in.Capabilities, Preflight: in.Preflight}, 200, &status)
@@ -506,7 +506,7 @@ func TestProcessExitAfterExternalEffect(t *testing.T) {
 			c := api.ExecutionCommand{Id: uuid.New(), ServerId: server, EnvironmentId: env, ResourceId: uuid.NewSHA1(server, []byte(env.String()+":probe:v1")), Generation: 1, PlanHash: strings.Repeat("a", 64), Kind: "test", Image: execution.TestImage, Action: "start", Deadline: time.Now().Add(time.Minute)}
 			run := func(point string, code int) {
 				t.Helper()
-				b, _ := json.Marshal(c)
+				b, _ := stablejson.Marshal(c)
 				cmd := exec.Command(os.Args[0], "-test.run=^TestP2EngineHelper$")
 				cmd.Env = append(os.Environ(), "ASTILBA_P2_HELPER=1", "ASTILBA_P2_STATE="+dir, "ASTILBA_P2_COMMAND="+string(b), "ASTILBA_P2_POINT="+point)
 				output, e := cmd.CombinedOutput()

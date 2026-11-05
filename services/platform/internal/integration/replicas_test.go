@@ -1,7 +1,8 @@
 package integration
 
 import (
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"slices"
 	"strings"
 	"testing"
@@ -10,6 +11,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 )
 
@@ -50,8 +52,8 @@ func TestReplicaCapabilityInventoryAndRollbackAdmission(t *testing.T) {
 	}
 	report := func(c api.ExecutionCommand, observation deployment.Observation, status int) {
 		t.Helper()
-		raw, _ := json.Marshal(observation)
-		value := json.RawMessage(raw)
+		raw, _ := stablejson.Marshal(observation)
+		value := jsontext.Value(raw)
 		agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/report", token, api.AgentReport{Id: c.Id, Generation: c.Generation, PlanHash: c.PlanHash, Sequence: 2, State: "succeeded", Steps: []api.ExecutionStep{}, Observation: &value}, status, nil)
 	}
 	input := func(host bool) api.VisualPlanRequest {

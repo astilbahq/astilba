@@ -3,7 +3,8 @@ package integration
 import (
 	"bytes"
 	"context"
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"io"
 	"log/slog"
 	"net/http"
@@ -142,12 +143,12 @@ func TestBrowserSessionRevocationSurvivesDelayedResponse(t *testing.T) {
 			if result.response.StatusCode != 401 || len(result.response.Cookies()) != 0 {
 				t.Fatalf("stale response: status %d, cookies %d", result.response.StatusCode, len(result.response.Cookies()))
 			}
-			decoder := json.NewDecoder(bytes.NewReader(result.body))
+			decoder := jsontext.NewDecoder(bytes.NewReader(result.body))
 			var failure api.Error
-			if err := decoder.Decode(&failure); err != nil || failure.Code != "unauthenticated" {
+			if err := json.UnmarshalDecode(decoder, &failure); err != nil || failure.Code != "unauthenticated" {
 				t.Fatal("stale response did not contain the authentication error", err)
 			}
-			if err := decoder.Decode(new(any)); err != io.EOF {
+			if err := json.UnmarshalDecode(decoder, new(any)); err != io.EOF {
 				t.Fatal("stale handler payload followed the authentication error", err)
 			}
 			old, _ := http.NewRequestWithContext(ctx, "GET", server.URL+"/api/v1/workspaces/"+workspace.String()+"/projects", nil)

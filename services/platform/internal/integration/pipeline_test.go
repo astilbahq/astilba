@@ -6,7 +6,8 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"fmt"
 	"io"
 	"maps"
@@ -23,6 +24,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 )
 
@@ -47,14 +49,14 @@ func TestGitImportBuildIsolationAndArtifactAdmission(t *testing.T) {
 			return
 		}
 		if strings.Contains(r.URL.Path, "/branches/") {
-			_ = json.NewEncoder(w).Encode(map[string]any{"commit": map[string]string{"sha": providerHead.Load().(string)}})
+			_ = stablejson.Encode(w, map[string]any{"commit": map[string]string{"sha": providerHead.Load().(string)}})
 			return
 		}
 		if strings.HasSuffix(r.URL.Path, "/pulls/5") {
-			_ = json.NewEncoder(w).Encode(map[string]any{"merged": mergeHead.Load().(string) != "", "merge_commit_sha": mergeHead.Load().(string)})
+			_ = stablejson.Encode(w, map[string]any{"merged": mergeHead.Load().(string) != "", "merge_commit_sha": mergeHead.Load().(string)})
 			return
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"id": repositoryIdentity.Load(), "private": true})
+		_ = stablejson.Encode(w, map[string]any{"id": repositoryIdentity.Load(), "private": true})
 	}))
 	defer provider.Close()
 	var connection struct {
@@ -111,8 +113,8 @@ func TestGitImportBuildIsolationAndArtifactAdmission(t *testing.T) {
 	}
 	report := func(c api.ExecutionCommand, r pipeline.Result) {
 		t.Helper()
-		raw, _ := json.Marshal(r)
-		msg := json.RawMessage(raw)
+		raw, _ := stablejson.Marshal(r)
+		msg := jsontext.Value(raw)
 		agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/report", token, api.AgentReport{Id: c.Id, Generation: c.Generation, PlanHash: c.PlanHash, Sequence: 2, State: "succeeded", Steps: []api.ExecutionStep{}, Pipeline: &msg}, 204, nil)
 	}
 	c := poll(op.Id)
@@ -240,7 +242,7 @@ func TestGitImportBuildIsolationAndArtifactAdmission(t *testing.T) {
 		c = poll(op.Id)
 		if expire {
 			c.Deadline = time.Now().Add(-time.Second)
-			raw, _ := json.Marshal(c)
+			raw, _ := stablejson.Marshal(c)
 			if _, err := f.st.Pool.Exec(context.Background(), "UPDATE execution_operations SET command=$2 WHERE id=$1", c.Id, raw); err != nil {
 				t.Fatal(err)
 			}
@@ -320,7 +322,7 @@ func TestGitImportBuildIsolationAndArtifactAdmission(t *testing.T) {
 				var frozen api.ExecutionCommand
 				_ = json.Unmarshal(raw, &frozen)
 				frozen.Deadline = time.Now().Add(-time.Second)
-				raw, _ = json.Marshal(frozen)
+				raw, _ = stablejson.Marshal(frozen)
 				if _, err := f.st.Pool.Exec(context.Background(), "UPDATE execution_operations SET command=$2 WHERE id=$1", op.Id, raw); err != nil {
 					t.Fatal(err)
 				}
@@ -374,8 +376,8 @@ func TestGitImportBuildIsolationAndArtifactAdmission(t *testing.T) {
 		}
 		command := *polled.Command
 		// Another authenticated server cannot report the fallback's result.
-		raw, _ := json.Marshal(pipeline.Result{Commit: head, Image: registry.Repository + "@" + digest, Digest: digest, Architecture: "arm64"})
-		msg := json.RawMessage(raw)
+		raw, _ := stablejson.Marshal(pipeline.Result{Commit: head, Image: registry.Repository + "@" + digest, Digest: digest, Architecture: "arm64"})
+		msg := jsontext.Value(raw)
 		agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/report", token, api.AgentReport{Id: command.Id, Generation: command.Generation, PlanHash: command.PlanHash, Sequence: 2, State: "succeeded", Steps: []api.ExecutionStep{}, Pipeline: &msg}, 404, nil)
 		agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/report", fallbackToken, api.AgentReport{Id: command.Id, Generation: command.Generation, PlanHash: command.PlanHash, Sequence: 2, State: "cancelled", Steps: []api.ExecutionStep{}}, 204, nil)
 		cfg.FallbackRunnerID = nil
@@ -438,7 +440,7 @@ func TestGitImportBuildIsolationAndArtifactAdmission(t *testing.T) {
 		push := func(commit, id string) {
 			providerHead.Store(commit)
 			deliveryID = id
-			body, _ := json.Marshal(map[string]any{"ref": "refs/heads/main", "after": commit, "repository": map[string]int{"id": 12}})
+			body, _ := stablejson.Marshal(map[string]any{"ref": "refs/heads/main", "after": commit, "repository": map[string]int{"id": 12}})
 			send(body, true, 202)
 		}
 		push(strings.Repeat("c", 40), "conflict")
@@ -543,8 +545,8 @@ func TestGitImportBuildIsolationAndArtifactAdmission(t *testing.T) {
 			t.Fatal("automatic deployment escalated host permissions")
 		}
 		observation := deployment.Observation{Images: map[string]string{app.String(): pipelineTestImage}, Resources: []deployment.Resource{}, StateHash: strings.Repeat("a", 64), ObservedAt: time.Now()}
-		raw, _ := json.Marshal(observation)
-		message := json.RawMessage(raw)
+		raw, _ := stablejson.Marshal(observation)
+		message := jsontext.Value(raw)
 		command = *polled.Command
 		agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/report", token, api.AgentReport{Id: command.Id, Generation: command.Generation, PlanHash: command.PlanHash, Sequence: 2, State: "succeeded", Steps: []api.ExecutionStep{}, Observation: &message}, 204, nil)
 		agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/poll", token, nil, 200, &polled)
@@ -593,15 +595,15 @@ func TestGitWebhookBurstMakesBoundedProgress(t *testing.T) {
 	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if strings.Contains(r.URL.Path, "/branches/") {
-			_ = json.NewEncoder(w).Encode(map[string]any{"commit": map[string]string{"sha": commit}})
+			_ = stablejson.Encode(w, map[string]any{"commit": map[string]string{"sha": commit}})
 			return
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"id": 12, "private": false})
+		_ = stablejson.Encode(w, map[string]any{"id": 12, "private": false})
 	}))
 	defer provider.Close()
 	var connection struct {
-		Connection    pipeline.Connection
-		WebhookSecret string
+		Connection    pipeline.Connection `json:"connection"`
+		WebhookSecret string              `json:"webhookSecret"`
 	}
 	b.call("POST", prefix+"/git-connections", map[string]string{"name": "Burst", "provider": "gitea", "baseUrl": provider.URL, "repository": "team/app"}, 201, &connection)
 	enrolled, in, _ := enrollment(t, f, b, ws, "build")
@@ -614,7 +616,7 @@ func TestGitWebhookBurstMakesBoundedProgress(t *testing.T) {
 	var project api.Project
 	b.call("POST", prefix+"/projects", map[string]string{"name": "Burst"}, 201, &project)
 	cfg := pipeline.BuildConfig{ConnectionID: connection.Connection.ID, Branch: "main", RunnerID: enrolled.Server.Id, Context: ".", Dockerfile: "Dockerfile", Architecture: "arm64", Arguments: map[string]string{}, Secrets: map[string]uuid.UUID{}, AutoBuild: true}
-	raw, _ := json.Marshal(cfg)
+	raw, _ := stablejson.Marshal(cfg)
 	for i := 0; i < 51; i++ {
 		var env api.Environment
 		b.call("POST", prefix+"/projects/"+project.Id.String()+"/environments", map[string]string{"name": fmt.Sprintf("Target %d", i)}, 201, &env)
@@ -626,7 +628,7 @@ func TestGitWebhookBurstMakesBoundedProgress(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	body, _ := json.Marshal(map[string]any{"ref": "refs/heads/main", "after": commit, "repository": map[string]int{"id": 12}})
+	body, _ := stablejson.Marshal(map[string]any{"ref": "refs/heads/main", "after": commit, "repository": map[string]int{"id": 12}})
 	mac := hmac.New(sha256.New, []byte(connection.WebhookSecret))
 	_, _ = mac.Write(body)
 	req, _ := http.NewRequest("POST", f.server.URL+"/hooks/git/"+connection.Connection.ID.String(), bytes.NewReader(body))

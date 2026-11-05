@@ -2,7 +2,7 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
+	"encoding/json/jsontext"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,6 +13,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/backup"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/hostnetwork"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 )
 
@@ -36,10 +37,10 @@ func TestRecoveryTransferHoldsReplayAndPreservesFrozenReservation(t *testing.T) 
 	d := deployment.RecoveryDescriptor{Version: 1, WorkspaceID: uuid.New(), ParentID: parent, RootHash: strings.Repeat("a", 64), GroupID: p.Local.GroupID, GroupHash: strings.Repeat("b", 64), BaseID: id, CheckpointID: id, Digest: deployment.RecoveryDigest(envelope), Bytes: len(envelope), Participants: []uuid.UUID{p.ServerID}}
 	makeCommand := func(phase string, generation int64) api.ExecutionCommand {
 		body := deployment.CrossHostCommand{ParentID: parent, GroupHash: d.GroupHash, Phase: phase, Unit: deployment.DistributedUnit{Plan: p}, Secrets: map[string]string{"canary": "private-host-secret-canary"}}
-		raw, _ := json.Marshal(body)
-		message := json.RawMessage(raw)
-		descriptor, _ := json.Marshal(d)
-		metadata := json.RawMessage(descriptor)
+		raw, _ := stablejson.Marshal(body)
+		message := jsontext.Value(raw)
+		descriptor, _ := stablejson.Marshal(d)
+		metadata := jsontext.Value(descriptor)
 		return api.ExecutionCommand{Id: uuid.New(), ParentId: &parent, ServerId: p.ServerID, EnvironmentId: p.EnvironmentID, ResourceId: p.UnitID, Kind: "crosshost", Action: "inspect", Generation: generation, PlanHash: body.Digest(), Deadline: time.Now().Add(time.Hour), Crosshost: &message, RecoveryCheckpoint: &metadata}
 	}
 	reserve := makeCommand("reserve", 1)
@@ -211,7 +212,7 @@ func TestRecoveryHandoverLargeNetworkFencesAnUncontactedHost(t *testing.T) {
 		t.Fatal(err)
 	}
 	h := deployment.RecoveryHandover{Authority: deployment.RecoveryAuthority{ParentID: parent, RootHash: d.RootHash, EvidenceHash: deployment.Hash(evidence), Controller: 1}, Descriptor: d, UnitID: p.UnitID, EnvironmentID: p.EnvironmentID, UnitHash: p.Hash, Network: network}
-	raw, _ := json.Marshal(h)
+	raw, _ := stablejson.Marshal(h)
 	if len(raw) <= 32768 {
 		t.Fatal("fixture does not cover an admitted network above the former handover cap")
 	}

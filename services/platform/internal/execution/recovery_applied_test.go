@@ -2,7 +2,7 @@ package execution
 
 import (
 	"encoding/base64"
-	"encoding/json"
+	"encoding/json/v2"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +12,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/hostnetwork"
 	"github.com/astilbahq/astilba/services/platform/internal/portability"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/astilbahq/astilba/services/platform/internal/upgrade"
 	"github.com/google/uuid"
 )
@@ -40,7 +41,7 @@ func appliedTestArchive(t *testing.T) (portability.Archive, deployment.Plan) {
 }
 
 func appliedTestDeploy(a portability.Archive, p deployment.Plan, generation int64) portability.Archive {
-	raw, _ := json.Marshal(a)
+	raw, _ := stablejson.Marshal(a)
 	var out portability.Archive
 	_ = json.Unmarshal(raw, &out)
 	body := deployment.Payload{Action: "deploy", Plan: p}

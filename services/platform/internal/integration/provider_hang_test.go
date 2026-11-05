@@ -3,7 +3,7 @@ package integration
 import (
 	"bytes"
 	"context"
-	"encoding/json"
+	"encoding/json/jsontext"
 	"errors"
 	"io"
 	"net/http"
@@ -18,6 +18,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/execution"
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -77,13 +78,13 @@ func newHeldGitea(t *testing.T) *heldGitea {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case strings.Contains(r.URL.Path, "/branches/"):
-			_ = json.NewEncoder(w).Encode(map[string]any{"commit": map[string]string{"sha": head}})
+			_ = stablejson.Encode(w, map[string]any{"commit": map[string]string{"sha": head}})
 		case strings.HasSuffix(r.URL.Path, "/pulls/7"):
-			_ = json.NewEncoder(w).Encode(map[string]any{"number": 7, "state": "open", "base": map[string]any{"ref": "main", "repo": map[string]any{"id": 12}}, "head": map[string]any{"sha": pullHead, "repo": map[string]any{"id": 99}}})
+			_ = stablejson.Encode(w, map[string]any{"number": 7, "state": "open", "base": map[string]any{"ref": "main", "repo": map[string]any{"id": 12}}, "head": map[string]any{"sha": pullHead, "repo": map[string]any{"id": 99}}})
 		case strings.HasSuffix(r.URL.Path, "/pulls"):
-			_ = json.NewEncoder(w).Encode([]map[string]int{{"number": 7}})
+			_ = stablejson.Encode(w, []map[string]int{{"number": 7}})
 		default:
-			_ = json.NewEncoder(w).Encode(map[string]any{"id": repository, "private": false})
+			_ = stablejson.Encode(w, map[string]any{"id": repository, "private": false})
 		}
 	}))
 	t.Cleanup(h.server.Close)
@@ -145,7 +146,7 @@ type reply struct {
 func (b *browser) send(method, path string, body any) <-chan reply {
 	out := make(chan reply, 1)
 	go func() {
-		raw, _ := json.Marshal(body)
+		raw, _ := stablejson.Marshal(body)
 		request, err := http.NewRequest(method, b.f.server.URL+path, bytes.NewReader(raw))
 		if err != nil {
 			out <- reply{err: err}
@@ -523,8 +524,8 @@ func (h *hungBuild) deliver(t *testing.T, config pipeline.BuildConfig) *api.Exec
 
 func (h *hungBuild) succeeded(t *testing.T, c *api.ExecutionCommand) api.AgentReport {
 	t.Helper()
-	raw, _ := json.Marshal(pipeline.Result{Commit: h.provider.head.Load().(string), Image: "astilba-build-" + c.Id.String() + ":built", Digest: "sha256:" + strings.Repeat("b", 64), Architecture: "arm64"})
-	message := json.RawMessage(raw)
+	raw, _ := stablejson.Marshal(pipeline.Result{Commit: h.provider.head.Load().(string), Image: "astilba-build-" + c.Id.String() + ":built", Digest: "sha256:" + strings.Repeat("b", 64), Architecture: "arm64"})
+	message := jsontext.Value(raw)
 	return api.AgentReport{Id: c.Id, Generation: c.Generation, PlanHash: c.PlanHash, Sequence: 1, State: "succeeded", Steps: []api.ExecutionStep{}, Pipeline: &message}
 }
 

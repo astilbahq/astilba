@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
-	"encoding/json"
+	"encoding/json/jsontext"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -16,6 +16,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/hostnetwork"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/astilbahq/astilba/services/platform/internal/upgrade"
 	"github.com/google/uuid"
 	"github.com/moby/moby/client"
@@ -73,8 +74,8 @@ func TestActiveUpgradeHoldsSchedulesUntilItFinishes(t *testing.T) {
 func deleteVolumeCommand(p deployment.Plan, volume uuid.UUID) api.ExecutionCommand {
 	c := visualCommand(p, "delete-volume", 1)
 	payload := deployment.Payload{Action: "delete-volume", Plan: p, VolumeID: &volume}
-	raw, _ := json.Marshal(payload)
-	message := json.RawMessage(raw)
+	raw, _ := stablejson.Marshal(payload)
+	message := jsontext.Value(raw)
 	c.Visual, c.PlanHash = &message, payload.Digest()
 	return c
 }
@@ -93,8 +94,8 @@ func TestActiveUpgradeBlocksOtherHostOperations(t *testing.T) {
 		network, member := uuid.New(), uuid.New()
 		manifest := hostnetwork.Manifest{Version: 1, NetworkID: network, MembershipID: member, ServerID: p.ServerID, Generation: 1, Prefix: "10.251.0.0/24", Address: "10.251.0.1", PublicKey: base64.StdEncoding.EncodeToString([]byte(strings.Repeat("k", 32))), ListenPort: 51820}
 		body := hostnetwork.Command{Action: action, NetworkID: network, MembershipID: member, Manifest: &manifest}
-		raw, _ := json.Marshal(body)
-		message := json.RawMessage(raw)
+		raw, _ := stablejson.Marshal(body)
+		message := jsontext.Value(raw)
 		return api.ExecutionCommand{Id: uuid.New(), ServerId: p.ServerID, ResourceId: network, Kind: "network", Action: "inspect", PlanHash: hostnetwork.Hash(body), Generation: 1, Deadline: time.Now().Add(time.Minute), Network: &message}
 	}
 	// Carries only what the gate reads; executeCrossHost then refuses it as invalid.
@@ -102,8 +103,8 @@ func TestActiveUpgradeBlocksOtherHostOperations(t *testing.T) {
 		t.Helper()
 		parent := uuid.New()
 		body := deployment.CrossHostCommand{ParentID: parent, GroupHash: strings.Repeat("b", 64), Phase: "effect", Unit: deployment.DistributedUnit{Plan: p}, Maintenance: maintenance}
-		raw, _ := json.Marshal(body)
-		message := json.RawMessage(raw)
+		raw, _ := stablejson.Marshal(body)
+		message := jsontext.Value(raw)
 		c := api.ExecutionCommand{Id: uuid.New(), ParentId: &parent, ServerId: p.ServerID, EnvironmentId: p.EnvironmentID, ResourceId: p.UnitID, Kind: "crosshost", Action: "inspect", PlanHash: body.Digest(), Generation: 1, Deadline: time.Now().Add(time.Minute), Crosshost: &message}
 		if _, err := j.reserveCrossHost(c, body); err != nil {
 			t.Fatal(err)
@@ -191,7 +192,7 @@ func TestUpgradeRetentionProtectsVolumes(t *testing.T) {
 					removals++
 					w.WriteHeader(http.StatusNoContent)
 				case strings.Contains(r.URL.Path, "/volumes/"):
-					_ = json.NewEncoder(w).Encode(map[string]any{"Name": deployment.VolumeName(tc.volume), "Labels": visualLabels(p, tc.volume)})
+					_ = stablejson.Encode(w, map[string]any{"Name": deployment.VolumeName(tc.volume), "Labels": visualLabels(p, tc.volume)})
 				case strings.HasSuffix(r.URL.Path, "/json"):
 					_, _ = w.Write([]byte("[]"))
 				default:

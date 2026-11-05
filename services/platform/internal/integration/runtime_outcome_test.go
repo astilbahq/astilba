@@ -2,7 +2,7 @@ package integration
 
 import (
 	"context"
-	"encoding/json"
+	"encoding/json/jsontext"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +12,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/execution"
 	"github.com/astilbahq/astilba/services/platform/internal/portability"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 )
 
@@ -50,8 +51,8 @@ func TestVisualRuntimeOutcomeRequiresAppliedReport(t *testing.T) {
 		} else {
 			observation.Resources = []deployment.Resource{{ID: app, State: "running", Image: image}}
 		}
-		raw, _ := json.Marshal(observation)
-		agentRequest(t, target.server.Client(), target.server.URL, "/agent/v1/report", token, api.AgentReport{Id: c.Id, Generation: c.Generation, PlanHash: c.PlanHash, Sequence: 1, State: "succeeded", Steps: []api.ExecutionStep{}, Observation: (*json.RawMessage)(&raw)}, 204, nil)
+		raw, _ := stablejson.Marshal(observation)
+		agentRequest(t, target.server.Client(), target.server.URL, "/agent/v1/report", token, api.AgentReport{Id: c.Id, Generation: c.Generation, PlanHash: c.PlanHash, Sequence: 1, State: "succeeded", Steps: []api.ExecutionStep{}, Observation: (*jsontext.Value)(&raw)}, 204, nil)
 	}
 	send(f, *polled.Command, false, true)
 	b.call("GET", path+"/deployment-plans/"+plan.ID.String(), nil, 200, &plan)

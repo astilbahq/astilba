@@ -2,7 +2,8 @@ package integration
 
 import (
 	"context"
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"errors"
 	"testing"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/execution"
 	"github.com/astilbahq/astilba/services/platform/internal/hostnetwork"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -102,18 +104,18 @@ func TestManagedNetworkLostConfigureReceiptDoesNotBlockRemoval(t *testing.T) {
 	if _, err = f.st.Pool.Exec(ctx, `INSERT INTO workspace_networks(id,workspace_id,prefix,generation) VALUES($1,$2,'10.251.0.0/24',3)`, known.NetworkID, ws); err != nil {
 		t.Fatal(err)
 	}
-	knownRaw, _ := json.Marshal(known)
+	knownRaw, _ := stablejson.Marshal(known)
 	if _, err = f.st.Pool.Exec(ctx, `INSERT INTO network_members(workspace_id,network_id,server_id,membership_id,address,endpoint,listen_port,cpu_millis,memory_mib,unbounded_inventory_hash,public_key,approved_controller,generation,acknowledged_generation,installed_manifest) VALUES($1,$2,$3,$4,'10.251.0.1','192.0.2.1:51820',51820,1000,1024,$5,$6,0,3,1,$7)`, ws, known.NetworkID, in.ServerId, member, hostnetwork.StableInventory(nil), own.PublicKey, knownRaw); err != nil {
 		t.Fatal(err)
 	}
 	commands := []hostnetwork.Command{{Action: "restrict", NetworkID: known.NetworkID, MembershipID: member, Baseline: &known, Manifest: &wanted}, {Action: "configure", NetworkID: known.NetworkID, MembershipID: member, Manifest: &configured}}
 	var frames []api.ExecutionCommand
 	for i, body := range commands {
-		raw, _ := json.Marshal(body)
-		message := json.RawMessage(raw)
+		raw, _ := stablejson.Marshal(body)
+		message := jsontext.Value(raw)
 		id := []uuid.UUID{uuid.MustParse("00000000-0000-4000-8000-000000000001"), uuid.MustParse("00000000-0000-4000-8000-000000000002")}[i]
 		c := api.ExecutionCommand{Id: id, ServerId: in.ServerId, Generation: int64(3 - i), Kind: "network", Action: "inspect", ResourceId: known.NetworkID, PlanHash: hostnetwork.Hash(body), Deadline: time.Now().Add(time.Minute), Network: &message}
-		header, _ := json.Marshal(c)
+		header, _ := stablejson.Marshal(c)
 		if _, err = f.st.Pool.Exec(ctx, `INSERT INTO execution_operations(id,workspace_id,server_id,generation,request_key,command,kind,state) VALUES($1,$2,$3,$4,$5,$6,'network','running')`, c.Id, ws, c.ServerId, c.Generation, uuid.New(), header); err != nil {
 			t.Fatal(err)
 		}
@@ -130,8 +132,8 @@ func TestManagedNetworkLostConfigureReceiptDoesNotBlockRemoval(t *testing.T) {
 			observed = configured
 		}
 		receipt.Generation, receipt.Hash, receipt.Disabled = observed.Generation, hostnetwork.Hash(observed), observed.Disabled
-		raw, _ := json.Marshal(receipt)
-		message := json.RawMessage(raw)
+		raw, _ := stablejson.Marshal(receipt)
+		message := jsontext.Value(raw)
 		r := api.AgentReport{Id: c.Id, Generation: c.Generation, PlanHash: c.PlanHash, Sequence: 1, State: "succeeded", Steps: []api.ExecutionStep{}, Network: &message}
 		if err = f.execution.Report(ctx, identity, r); err != nil {
 			t.Fatal("valid out-of-order receipt blocked acknowledgement", i, err)
@@ -158,7 +160,7 @@ func TestManagedNetworkLostConfigureReceiptDoesNotBlockRemoval(t *testing.T) {
 		for i := 0; i < 2; i++ {
 			c := frames[0]
 			c.Id, c.Generation = uuid.New(), int64(10+i)
-			raw, _ := json.Marshal(c)
+			raw, _ := stablejson.Marshal(c)
 			if _, err = f.st.Pool.Exec(ctx, `INSERT INTO execution_operations(id,workspace_id,server_id,generation,request_key,command,kind,state) VALUES($1,$2,$3,$4,$5,$6,'network','queued')`, c.Id, ws, c.ServerId, c.Generation, uuid.New(), raw); err != nil {
 				t.Fatal("queued removal backlog could not be retained", err)
 			}
@@ -201,8 +203,8 @@ func TestManagedNetworkLostConfigureReceiptDoesNotBlockRemoval(t *testing.T) {
 		complete := func(c api.ExecutionCommand) {
 			t.Helper()
 			receipt := hostnetwork.Receipt{Identity: own, NetworkID: known.NetworkID, Generation: effective.Generation, Hash: hostnetwork.Hash(effective), Before: &effective, Effective: &effective}
-			raw, _ := json.Marshal(receipt)
-			message := json.RawMessage(raw)
+			raw, _ := stablejson.Marshal(receipt)
+			message := jsontext.Value(raw)
 			if err := current.Report(ctx, identity, api.AgentReport{Id: c.Id, Generation: c.Generation, PlanHash: c.PlanHash, Sequence: 1, State: "succeeded", Steps: []api.ExecutionStep{}, Network: &message}); err != nil {
 				t.Fatal(err)
 			}
@@ -222,12 +224,12 @@ func TestManagedNetworkLostConfigureReceiptDoesNotBlockRemoval(t *testing.T) {
 		baseline := effective
 		baseline.Generation--
 		body := hostnetwork.Command{Action: "restrict", NetworkID: known.NetworkID, MembershipID: member, Baseline: &baseline, Manifest: &wanted}
-		raw, _ := json.Marshal(body)
-		message := json.RawMessage(raw)
+		raw, _ := stablejson.Marshal(body)
+		message := jsontext.Value(raw)
 		c := frames[0]
 		c.Id, c.Generation, c.PlanHash, c.Network = uuid.New(), 100, hostnetwork.Hash(body), &message
 		c.Deadline = time.Now().Add(time.Minute)
-		header, _ := json.Marshal(c)
+		header, _ := stablejson.Marshal(c)
 		if _, err := f.st.Pool.Exec(ctx, `INSERT INTO execution_operations(id,workspace_id,server_id,generation,request_key,command,kind,state) VALUES($1,$2,$3,$4,$5,$6,'network','running')`, c.Id, ws, c.ServerId, c.Generation, uuid.New(), header); err != nil {
 			t.Fatal(err)
 		}
@@ -236,8 +238,8 @@ func TestManagedNetworkLostConfigureReceiptDoesNotBlockRemoval(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		raw, _ = json.Marshal(receipt)
-		value := json.RawMessage(raw)
+		raw, _ = stablejson.Marshal(receipt)
+		value := jsontext.Value(raw)
 		if err = f.execution.Report(ctx, identity, api.AgentReport{Id: c.Id, Generation: c.Generation, PlanHash: c.PlanHash, Sequence: 1, State: "succeeded", Steps: []api.ExecutionStep{}, Network: &value}); err != nil {
 			t.Fatal("no-op restriction receipt rejected", err)
 		}

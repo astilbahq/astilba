@@ -5,11 +5,12 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 )
 
 func TestPullRequestAuthorityAndDiscovery(t *testing.T) {
@@ -24,14 +25,14 @@ func TestPullRequestAuthorityAndDiscovery(t *testing.T) {
 				w.Header().Set("Content-Type", "application/json")
 				switch {
 				case strings.HasSuffix(r.URL.Path, "/7"):
-					json.NewEncoder(w).Encode(map[string]any{"number": 7, "iid": 7, "state": state, "sha": sha, "target_project_id": base, "source_project_id": source, "target_branch": "main", "base": map[string]any{"ref": "main", "repo": map[string]any{"id": base}}, "head": map[string]any{"sha": sha, "repo": map[string]any{"id": source}}})
+					stablejson.Encode(w, map[string]any{"number": 7, "iid": 7, "state": state, "sha": sha, "target_project_id": base, "source_project_id": source, "target_branch": "main", "base": map[string]any{"ref": "main", "repo": map[string]any{"id": base}}, "head": map[string]any{"sha": sha, "repo": map[string]any{"id": source}}})
 				case strings.HasSuffix(r.URL.Path, "/pulls") || strings.HasSuffix(r.URL.Path, "/merge_requests"):
 					if r.URL.Query().Get("page") != "2" || r.URL.Query().Get("per_page") != "50" {
 						t.Error("discovery cursor/bound missing")
 					}
-					json.NewEncoder(w).Encode([]map[string]int{{"number": 7, "iid": 7}})
+					stablejson.Encode(w, []map[string]int{{"number": 7, "iid": 7}})
 				default:
-					json.NewEncoder(w).Encode(map[string]any{"id": 12, "private": true})
+					stablejson.Encode(w, map[string]any{"id": 12, "private": true})
 				}
 			}))
 			defer server.Close()

@@ -2,7 +2,8 @@ package integration
 
 import (
 	"context"
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"strings"
 	"testing"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/backup"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 )
 
@@ -49,8 +51,8 @@ func TestBackupScopeHydrationReportsAndCutover(t *testing.T) {
 		t.Helper()
 		r := api.AgentReport{Id: c.Id, Generation: c.Generation, PlanHash: c.PlanHash, Sequence: 1, State: "succeeded", Steps: []api.ExecutionStep{}}
 		if obs != nil {
-			raw, _ := json.Marshal(obs)
-			r.Observation = (*json.RawMessage)(&raw)
+			raw, _ := stablejson.Marshal(obs)
+			r.Observation = (*jsontext.Value)(&raw)
 		}
 		agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/report", token, r, 204, nil)
 	}
@@ -137,8 +139,8 @@ func TestBackupScopeHydrationReportsAndCutover(t *testing.T) {
 	run := backup.Run{ID: uuid.New(), PolicyID: policy.ID, Generation: 1, ScheduledAt: now, StartedAt: now, FinishedAt: &now, State: "succeeded", Snapshot: strings.Repeat("a", 64), Verified: false, TargetID: target, Manifest: &backup.Manifest{Roles: []backup.Role{}, Extensions: []string{}, Recipe: 1, PolicyID: policy.ID, EnvironmentID: env.Id, ResourceID: pg}}
 	status.Runs = append(status.Runs, run)
 	send := func(seq int64, want int) {
-		raw, _ := json.Marshal(status)
-		agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/schedule-reports", token, map[string]any{"sequence": seq, "status": json.RawMessage(raw)}, want, nil)
+		raw, _ := stablejson.Marshal(status)
+		agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/schedule-reports", token, map[string]any{"sequence": seq, "status": jsontext.Value(raw)}, want, nil)
 	}
 	send(1, 204)
 	send(1, 204)

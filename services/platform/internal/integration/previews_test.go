@@ -5,7 +5,8 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -19,6 +20,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
 	"github.com/astilbahq/astilba/services/platform/internal/portability"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
 )
@@ -46,21 +48,21 @@ func previewIsolationJourney(t *testing.T, transfer, recoverCleanup bool) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case strings.Contains(r.URL.Path, "/branches/"):
-			json.NewEncoder(w).Encode(map[string]any{"commit": map[string]string{"sha": head.Load().(string)}})
+			stablejson.Encode(w, map[string]any{"commit": map[string]string{"sha": head.Load().(string)}})
 		case strings.HasSuffix(r.URL.Path, "/pulls/7"):
 			state := "open"
 			if !open.Load() {
 				state = "closed"
 			}
-			json.NewEncoder(w).Encode(map[string]any{"number": 7, "state": state, "base": map[string]any{"ref": "main", "repo": map[string]any{"id": 12}}, "head": map[string]any{"sha": head.Load().(string), "repo": map[string]any{"id": 99}}})
+			stablejson.Encode(w, map[string]any{"number": 7, "state": state, "base": map[string]any{"ref": "main", "repo": map[string]any{"id": 12}}, "head": map[string]any{"sha": head.Load().(string), "repo": map[string]any{"id": 99}}})
 		case strings.HasSuffix(r.URL.Path, "/pulls"):
 			rows := []map[string]int{}
 			if open.Load() {
 				rows = append(rows, map[string]int{"number": 7})
 			}
-			json.NewEncoder(w).Encode(rows)
+			stablejson.Encode(w, rows)
 		default:
-			json.NewEncoder(w).Encode(map[string]any{"id": 12, "private": true})
+			stablejson.Encode(w, map[string]any{"id": 12, "private": true})
 		}
 	}))
 	defer provider.Close()
@@ -231,13 +233,13 @@ func previewIsolationJourney(t *testing.T, transfer, recoverCleanup bool) {
 			r.State = state[0]
 		}
 		if result != nil {
-			raw, _ := json.Marshal(result)
-			msg := json.RawMessage(raw)
+			raw, _ := stablejson.Marshal(result)
+			msg := jsontext.Value(raw)
 			r.Pipeline = &msg
 		}
 		if observation != nil {
-			raw, _ := json.Marshal(observation)
-			msg := json.RawMessage(raw)
+			raw, _ := stablejson.Marshal(observation)
+			msg := jsontext.Value(raw)
 			r.Observation = &msg
 		}
 		agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/report", token, r, 204, nil)

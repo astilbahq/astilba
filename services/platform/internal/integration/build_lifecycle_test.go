@@ -6,7 +6,8 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -18,6 +19,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/composeproject"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 )
 
@@ -32,15 +34,15 @@ func TestBuildDeliveryAdmissionLifecycle(t *testing.T) {
 	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if strings.Contains(r.URL.Path, "/branches/") {
-			_ = json.NewEncoder(w).Encode(map[string]any{"commit": map[string]string{"sha": head.Load().(string)}})
+			_ = stablejson.Encode(w, map[string]any{"commit": map[string]string{"sha": head.Load().(string)}})
 			return
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"id": 12, "private": false})
+		_ = stablejson.Encode(w, map[string]any{"id": 12, "private": false})
 	}))
 	defer provider.Close()
 	var connection struct {
-		Connection    pipeline.Connection
-		WebhookSecret string
+		Connection    pipeline.Connection `json:"connection"`
+		WebhookSecret string              `json:"webhookSecret"`
 	}
 	b.call("POST", prefix+"/git-connections", map[string]string{"name": "Lifecycle", "provider": "gitea", "baseUrl": provider.URL, "repository": "team/app"}, 201, &connection)
 	var project api.Project
@@ -191,8 +193,8 @@ func TestBuildDeliveryAdmissionLifecycle(t *testing.T) {
 		for _, name := range []string{"a.yaml", "b.yaml", "c.yaml"} {
 			files = append(files, composeproject.File{Path: name, Content: strings.Repeat("x", 60000)})
 		}
-		raw, _ := json.Marshal(pipeline.Result{Logs: "selected source is too large", Files: files})
-		agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/report", token, api.AgentReport{Id: c.Id, Generation: c.Generation, PlanHash: c.PlanHash, Sequence: 1, State: "failed", Steps: []api.ExecutionStep{}, Pipeline: (*json.RawMessage)(&raw)}, 204, nil)
+		raw, _ := stablejson.Marshal(pipeline.Result{Logs: "selected source is too large", Files: files})
+		agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/report", token, api.AgentReport{Id: c.Id, Generation: c.Generation, PlanHash: c.PlanHash, Sequence: 1, State: "failed", Steps: []api.ExecutionStep{}, Pipeline: (*jsontext.Value)(&raw)}, 204, nil)
 		var stored []byte
 		if err := f.st.Pool.QueryRow(ctx, "SELECT result FROM pipeline_runs WHERE id=$1", op.Id).Scan(&stored); err != nil {
 			t.Fatal(err)
@@ -222,7 +224,7 @@ func TestBuildDeliveryAdmissionLifecycle(t *testing.T) {
 		})
 		commit := strings.Repeat("b", 40)
 		head.Store(commit)
-		body, _ := json.Marshal(map[string]any{"ref": "refs/heads/main", "after": commit, "repository": map[string]int{"id": 12}})
+		body, _ := stablejson.Marshal(map[string]any{"ref": "refs/heads/main", "after": commit, "repository": map[string]int{"id": 12}})
 		mac := hmac.New(sha256.New, []byte(connection.WebhookSecret))
 		_, _ = mac.Write(body)
 		req, _ := http.NewRequest("POST", f.server.URL+"/hooks/git/"+connection.Connection.ID.String(), bytes.NewReader(body))

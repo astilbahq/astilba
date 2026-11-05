@@ -1,13 +1,15 @@
 package portability
 
 import (
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"maps"
 	"reflect"
 	"testing"
 	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 )
 
@@ -42,7 +44,7 @@ func TestRecoveryBasesRetainMissingHistoryAndKnownOutcomes(t *testing.T) {
 	changed := maps.Clone(project)
 	setValue(changed, "name", "Middle")
 	middle.Tables["projects"] = []Row{changed}
-	original, _ := json.Marshal(older)
+	original, _ := stablejson.Marshal(older)
 	combine := func(inputs ...Archive) Archive {
 		t.Helper()
 		var combined RecoveryBases
@@ -64,7 +66,7 @@ func TestRecoveryBasesRetainMissingHistoryAndKnownOutcomes(t *testing.T) {
 			t.Fatal("a later fork erased known completion or cancellation")
 		}
 	}
-	after, _ := json.Marshal(older)
+	after, _ := stablejson.Marshal(older)
 	if string(original) != string(after) {
 		t.Fatal("combining bases changed reusable input")
 	}
@@ -197,7 +199,7 @@ func TestRecoveryHashesKeepTheirReleasedValues(t *testing.T) {
 	if got := recoveryRowHash([]byte(`not json`)); got != "7ccfa1fbf3940e6f0c0375d87c0f9235a50514e14cb427bdfaf5077987b26ccf" {
 		t.Errorf("unparseable row hash changed to %s", got)
 	}
-	state, err := recoveryStateHash(Archive{Name: "a && b", RequireMFA: true, Tables: map[string][]Row{"z": {{"k": json.RawMessage(`{ "x" : "<" }`), "n": json.RawMessage("null")}}, "a": nil}})
+	state, err := recoveryStateHash(Archive{Name: "a && b", RequireMFA: true, Tables: map[string][]Row{"z": {{"k": jsontext.Value(`{ "x" : "<" }`), "n": jsontext.Value("null")}}, "a": nil}})
 	if err != nil || state != "1984a913f487793d106b3381b1780af5355345ee1e56fa420428c7fb472ab0cd" {
 		t.Errorf("state hash changed to %s, %v", state, err)
 	}

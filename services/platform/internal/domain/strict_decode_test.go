@@ -1,11 +1,11 @@
 package domain
 
 import (
-	"encoding/json"
 	"strings"
 	"testing"
 
 	"github.com/astilbahq/astilba/services/platform/internal/composeproject"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 )
 
@@ -28,7 +28,7 @@ func TestParseSpecRefusesAmbiguousNames(t *testing.T) {
 
 func composeSpec(metadata string) []byte {
 	content := "services:\n  web:\n    image: registry.example.test/web@sha256:" + strings.Repeat("a", 64) + "\nx-astilba:\n  routes:\n    - name: public\n      service: web\n      protocol: http\n      domain: app.example.test\n      port: 8080\n      " + metadata + "\n"
-	raw, _ := json.Marshal(map[string]any{"version": 1, "applications": []any{}, "variables": []any{}, "compose": composeproject.Bundle{Namespace: uuid.MustParse("11111111-1111-4111-8111-111111111111"), Entrypoints: []string{"compose.yaml"}, Files: []composeproject.File{{Path: "compose.yaml", Content: content}}}})
+	raw, _ := stablejson.Marshal(map[string]any{"version": 1, "applications": []any{}, "variables": []any{}, "compose": composeproject.Bundle{Namespace: uuid.MustParse("11111111-1111-4111-8111-111111111111"), Entrypoints: []string{"compose.yaml"}, Files: []composeproject.File{{Path: "compose.yaml", Content: content}}}})
 	return raw
 }
 

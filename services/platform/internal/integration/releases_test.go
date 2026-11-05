@@ -1,10 +1,12 @@
 package integration
 
 import (
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 	"strings"
 	"testing"
@@ -43,8 +45,8 @@ func TestReleasePlanHistoryAndRollbackAdmission(t *testing.T) {
 	}
 	report := func(c api.ExecutionCommand, obs deployment.Observation) {
 		t.Helper()
-		raw, _ := json.Marshal(obs)
-		agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/report", token, api.AgentReport{Id: c.Id, Generation: c.Generation, PlanHash: c.PlanHash, Sequence: 2, State: "succeeded", Steps: []api.ExecutionStep{}, Observation: (*json.RawMessage)(&raw)}, 204, nil)
+		raw, _ := stablejson.Marshal(obs)
+		agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/report", token, api.AgentReport{Id: c.Id, Generation: c.Generation, PlanHash: c.PlanHash, Sequence: 2, State: "succeeded", Steps: []api.ExecutionStep{}, Observation: (*jsontext.Value)(&raw)}, 204, nil)
 	}
 	digest := "busybox@sha256:" + strings.Repeat("a", 64)
 	prepare := func(host bool, options *api.ReleaseOptions) deployment.Status {

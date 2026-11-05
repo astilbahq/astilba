@@ -2,7 +2,7 @@ package integration
 
 import (
 	"context"
-	"encoding/json"
+	"encoding/json/v2"
 	"io"
 	"net/http"
 	"strings"
@@ -10,6 +10,7 @@ import (
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/auth"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 )
 
 func TestResetLinkValidationDoesNotConsumeOrChangeCredentials(t *testing.T) {
@@ -29,7 +30,7 @@ func TestResetLinkValidationDoesNotConsumeOrChangeCredentials(t *testing.T) {
 	}
 	check := func(token string, status int) {
 		t.Helper()
-		body, _ := json.Marshal(map[string]string{"token": token})
+		body, _ := stablejson.Marshal(map[string]string{"token": token})
 		request, err := newRequest(guest, "POST", "/api/v1/auth/reset/validate", body)
 		if err != nil {
 			t.Fatal(err)

@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -16,6 +15,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/backup"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/mount"
@@ -292,7 +292,7 @@ func nativeBackupJourney(t *testing.T, e *Engine, p deployment.Plan, finish func
 	if err != nil {
 		t.Fatal(err)
 	}
-	raw, _ := json.Marshal(reports)
+	raw, _ := stablejson.Marshal(reports)
 	if strings.Contains(string(raw), "canary") || strings.Contains(string(raw), root) {
 		t.Fatal("schedule report leaked repository credentials or local paths")
 	}
@@ -423,7 +423,7 @@ func TestScheduleHistoryKeepsSnapshotsWithinTransportBounds(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	raw, _ := json.Marshal(reports[0])
+	raw, _ := stablejson.Marshal(reports[0])
 	if len(raw) > 196608 {
 		t.Fatalf("valid history exceeds the report body limit: %d", len(raw))
 	}

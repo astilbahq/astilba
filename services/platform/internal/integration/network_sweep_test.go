@@ -2,12 +2,13 @@ package integration
 
 import (
 	"context"
-	"encoding/json"
+	"encoding/json/v2"
 	"testing"
 	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/execution"
 	"github.com/astilbahq/astilba/services/platform/internal/hostnetwork"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 	"slices"
 )
@@ -85,7 +86,7 @@ func TestManagedNetworkSweepYieldsBlockedAndCompletedWorkspaces(t *testing.T) {
 						}
 					}
 					prior[i].Sort()
-					raw, _ := json.Marshal(prior[i])
+					raw, _ := stablejson.Marshal(prior[i])
 					if _, err := f.st.Pool.Exec(ctx, `INSERT INTO network_members(workspace_id,network_id,server_id,membership_id,address,endpoint,listen_port,cpu_millis,memory_mib,unbounded_inventory_hash,public_key,enabled,approved_controller,generation,acknowledged_generation,installed_manifest) VALUES($1,$1,$2,$3,$4,'192.0.2.2:51820',51820,1000,1024,$5,$6,$7,0,2,1,$8)`, first, prior[i].ServerID, prior[i].MembershipID, prior[i].Address, hostnetwork.StableInventory(nil), prior[i].PublicKey, i != 0, raw); err != nil {
 						t.Fatal(err)
 					}

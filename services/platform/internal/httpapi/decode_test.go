@@ -1,13 +1,14 @@
 package httpapi
 
 import (
-	"encoding/json"
+	"encoding/json/jsontext"
 	"net/http/httptest"
 	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 )
 
@@ -46,9 +47,9 @@ func TestDecodeRefusesDuplicatesInsideRawPayloads(t *testing.T) {
 
 // An agent on an older release still writes reports with encoding/json v1.
 func TestDecodeReadsReportsFromOlderAgents(t *testing.T) {
-	crosshost := json.RawMessage(`{"phase":"a && b <c>"}`)
+	crosshost := jsontext.Value(`{"phase":"a && b <c>"}`)
 	want := api.AgentReport{Id: uuid.New(), Generation: 3, PlanHash: "hash", Sequence: 2, State: "running", Note: "a && b <c>", Crosshost: &crosshost}
-	raw, err := json.Marshal(want)
+	raw, err := stablejson.Marshal(want)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,7 +57,7 @@ func TestDecodeReadsReportsFromOlderAgents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	written, _ := json.Marshal(crosshost)
+	written, _ := stablejson.Marshal(crosshost)
 	if string(*got.Crosshost) != string(written) {
 		t.Fatalf("raw payload was rewritten: %s", *got.Crosshost)
 	}

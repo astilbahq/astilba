@@ -2,7 +2,6 @@ package integration
 
 import (
 	"context"
-	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -10,6 +9,7 @@ import (
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
 )
@@ -124,7 +124,7 @@ func TestHistoryRetentionAcrossRepresentativeFleet(t *testing.T) {
 			}
 		}
 	}
-	result, _ := json.Marshal(map[string]any{"logs": strings.Repeat("build log\n", 100), "digest": "retained-artifact-identity"})
+	result, _ := stablejson.Marshal(map[string]any{"logs": strings.Repeat("build log\n", 100), "digest": "retained-artifact-identity"})
 	if _, e := f.st.Pool.Exec(ctx, `INSERT INTO pipeline_runs(id,workspace_id,environment_id,application_id,revision_id,configuration,result,created_at) VALUES($1,$2,$3,$4,$5,'{}',$6,now()-interval '31 days')`, pipelineID, ws, env, uuid.New(), revision, result); e != nil {
 		t.Fatal(e)
 	}

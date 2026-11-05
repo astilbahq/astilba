@@ -3,7 +3,7 @@ package integration
 import (
 	"bytes"
 	"context"
-	"encoding/json"
+	"encoding/json/v2"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,6 +13,7 @@ import (
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -84,14 +85,14 @@ func TestAutomationCLIAndRealStdioMCP(t *testing.T) {
 		if err != nil || result.IsError != failure {
 			t.Fatal("MCP tool result violates API outcome", name, err, result)
 		}
-		data, _ := json.Marshal(result)
+		data, _ := stablejson.Marshal(result)
 		if strings.Contains(string(data), *grant.Token) {
 			t.Fatal("tool output exposed bearer credential")
 		}
 		return result
 	}
 	listing := call("build_targets", map[string]any{}, false)
-	listingJSON, _ := json.Marshal(listing.StructuredContent)
+	listingJSON, _ := stablejson.Marshal(listing.StructuredContent)
 	var targetOutput struct {
 		Targets []api.ConfiguredBuildTarget `json:"targets"`
 	}
@@ -99,7 +100,7 @@ func TestAutomationCLIAndRealStdioMCP(t *testing.T) {
 		t.Fatal("legacy MCP target result must be an object containing targets")
 	}
 	read := call("draft_get", map[string]any{}, false)
-	raw, _ := json.Marshal(read.StructuredContent)
+	raw, _ := stablejson.Marshal(read.StructuredContent)
 	if json.Unmarshal(raw, &draft) != nil || draft.Id != env.DraftRevisionId {
 		t.Fatal("stdio output lost the real revision")
 	}
