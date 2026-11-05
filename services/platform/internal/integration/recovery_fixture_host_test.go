@@ -3,7 +3,8 @@ package integration
 import (
 	"bytes"
 	"context"
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"io"
@@ -22,6 +23,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/execution"
 	"github.com/astilbahq/astilba/services/platform/internal/hostnetwork"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/distribution/reference"
 	"github.com/google/uuid"
 	"github.com/moby/moby/client"
@@ -71,8 +73,8 @@ func runRecoveryFixtureHost(t *testing.T, workers context.Context, service *exec
 			if command.Manifest != nil {
 				receipt.Generation, receipt.Hash = command.Manifest.Generation, hostnetwork.Hash(*command.Manifest)
 			}
-			raw, _ := json.Marshal(receipt)
-			value := json.RawMessage(raw)
+			raw, _ := stablejson.Marshal(receipt)
+			value := jsontext.Value(raw)
 			report.Network = &value
 		case "visual":
 			var err error
@@ -104,8 +106,8 @@ func runRecoveryFixtureHost(t *testing.T, workers context.Context, service *exec
 					observation.Images[app.ID.String()] = *app.Source.Image
 				}
 				receipt := deployment.CrossHostReceipt{ParentID: command.ParentID, GroupHash: command.GroupHash, UnitID: c.ResourceId, Phase: command.Phase, PlanHash: command.Unit.Plan.Hash, Observation: observation}
-				raw, _ := json.Marshal(receipt)
-				value := json.RawMessage(raw)
+				raw, _ := stablejson.Marshal(receipt)
+				value := jsontext.Value(raw)
 				report.Crosshost = &value
 			} else {
 				time.Sleep(25 * time.Millisecond)
@@ -330,7 +332,7 @@ func (h *recoveryFixtureHost) Preflight(ctx context.Context) (api.AgentHeartbeat
 }
 
 func (h *recoveryFixtureHost) runProcess(ctx context.Context, request recoveryFixtureRequest) (recoveryFixtureReply, error) {
-	input, err := json.Marshal(request)
+	input, err := stablejson.Marshal(request)
 	if err != nil {
 		return recoveryFixtureReply{}, err
 	}
@@ -364,7 +366,7 @@ func (h *recoveryFixtureHost) runProcess(ctx context.Context, request recoveryFi
 	}
 	var reply recoveryFixtureReply
 	// The test runner can append PASS after the helper's single JSON reply.
-	if err = json.NewDecoder(&output).Decode(&reply); err != nil {
+	if err = json.UnmarshalDecode(jsontext.NewDecoder(&output), &reply); err != nil {
 		return recoveryFixtureReply{}, fmt.Errorf("native agent reply: %w; %s", err, diagnostics.String())
 	}
 	if reply.Error != "" {
@@ -418,7 +420,7 @@ func TestRecoveryFixtureAgentProcess(t *testing.T) {
 		t.Fatal("disposable native Linux host required")
 	}
 	var request recoveryFixtureRequest
-	if err := json.NewDecoder(os.Stdin).Decode(&request); err != nil {
+	if err := json.UnmarshalDecode(jsontext.NewDecoder(os.Stdin), &request); err != nil {
 		t.Fatal(err)
 	}
 	journal, err := agent.Open(request.State)
@@ -452,7 +454,7 @@ func TestRecoveryFixtureAgentProcess(t *testing.T) {
 	if err = journal.Close(); err != nil {
 		reply.Error = err.Error()
 	}
-	if err = json.NewEncoder(os.Stdout).Encode(reply); err != nil {
+	if err = stablejson.Encode(os.Stdout, reply); err != nil {
 		t.Fatal(err)
 	}
 }

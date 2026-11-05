@@ -2,7 +2,8 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 	bolt "go.etcd.io/bbolt"
 )
@@ -34,9 +36,9 @@ func TestBuildCapabilityNegotiatesWithControllerVersions(t *testing.T) {
 					w.Header().Set("Astilba-Agent-Features", "none")
 				}
 				var body struct {
-					Capabilities map[string]json.RawMessage `json:"capabilities"`
+					Capabilities map[string]jsontext.Value `json:"capabilities"`
 				}
-				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				if err := json.UnmarshalDecode(jsontext.NewDecoder(r.Body), &body); err != nil {
 					t.Error(err)
 					w.WriteHeader(400)
 					return
@@ -159,7 +161,7 @@ func TestCacheCapabilityDoesNotChangeBuildControlsNegotiation(t *testing.T) {
 	var received atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body api.AgentHeartbeat
-		if json.NewDecoder(r.Body).Decode(&body) != nil || body.Capabilities.BuildCache != nil {
+		if json.UnmarshalDecode(jsontext.NewDecoder(r.Body), &body) != nil || body.Capabilities.BuildCache != nil {
 			t.Error("previous build-controls controller received an unknown cache capability")
 			w.WriteHeader(400)
 			return
@@ -252,7 +254,7 @@ func TestRejectedReportDoesNotBlockLaterRecords(t *testing.T) {
 			return
 		}
 		var report api.AgentReport
-		if err := json.NewDecoder(r.Body).Decode(&report); err != nil || report.Id == rejected {
+		if err := json.UnmarshalDecode(jsontext.NewDecoder(r.Body), &report); err != nil || report.Id == rejected {
 			w.WriteHeader(400)
 			return
 		}
@@ -322,9 +324,9 @@ func TestPollResponsesStayStrictAcrossControllerVersions(t *testing.T) {
 	}
 	c := NewClient(j, &Engine{Journal: j})
 	c.HTTP = server.Client()
-	payload := json.RawMessage(`{"phase":"a && b <c>"}`)
+	payload := jsontext.Value(`{"phase":"a && b <c>"}`)
 	want := api.ExecutionCommand{Id: uuid.New(), ServerId: cfg.ServerID, Generation: 2, PlanHash: "hash", Kind: "crosshost", Action: "inspect", Deadline: time.Date(2026, 1, 2, 3, 4, 5, 6, time.UTC), Crosshost: &payload}
-	raw, err := json.Marshal(want)
+	raw, err := stablejson.Marshal(want)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -333,7 +335,7 @@ func TestPollResponsesStayStrictAcrossControllerVersions(t *testing.T) {
 	if err = c.call(context.Background(), "GET", "/agent/v1/poll", nil, &got, "fixture"); err != nil {
 		t.Fatal(err)
 	}
-	wantPayload, _ := json.Marshal(payload)
+	wantPayload, _ := stablejson.Marshal(payload)
 	if got.Id != want.Id || !got.Deadline.Equal(want.Deadline) || got.Crosshost == nil || string(*got.Crosshost) != string(wantPayload) {
 		t.Fatalf("read %+v", got)
 	}

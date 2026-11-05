@@ -2,7 +2,8 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"errors"
 	"strings"
 	"testing"
@@ -11,6 +12,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/hostnetwork"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 )
 
@@ -39,10 +41,10 @@ func TestRecoverySupersedesUnretainedDelivery(t *testing.T) {
 	d := deployment.RecoveryDescriptor{Version: 1, WorkspaceID: uuid.New(), ParentID: parent, RootHash: strings.Repeat("a", 64), GroupID: p.Local.GroupID, GroupHash: strings.Repeat("b", 64), BaseID: id, CheckpointID: id, Digest: deployment.RecoveryDigest(base), Bytes: len(base), Participants: []uuid.UUID{p.ServerID}}
 	command := func(d deployment.RecoveryDescriptor, phase string, generation int64) api.ExecutionCommand {
 		body := deployment.CrossHostCommand{ParentID: parent, GroupHash: d.GroupHash, Phase: phase, Unit: deployment.DistributedUnit{Plan: p}}
-		raw, _ := json.Marshal(body)
-		message := json.RawMessage(raw)
-		descriptor, _ := json.Marshal(d)
-		metadata := json.RawMessage(descriptor)
+		raw, _ := stablejson.Marshal(body)
+		message := jsontext.Value(raw)
+		descriptor, _ := stablejson.Marshal(d)
+		metadata := jsontext.Value(descriptor)
 		return api.ExecutionCommand{Id: uuid.NewSHA1(d.CheckpointID, []byte("recovery-delivery")), ParentId: &parent, ServerId: p.ServerID, EnvironmentId: p.EnvironmentID, ResourceId: p.UnitID, Kind: "crosshost", Action: "inspect", Generation: generation, PlanHash: body.Digest(), Deadline: time.Now().Add(time.Hour), Crosshost: &message, RecoveryCheckpoint: &metadata}
 	}
 	engine := Engine{Journal: j, FetchCheckpoint: func(context.Context, deployment.RecoveryDescriptor) ([]byte, error) { return base, nil }}
@@ -127,8 +129,8 @@ func TestRecoverySupersedesUnretainedDelivery(t *testing.T) {
 		t.Fatal("invalid closure payload")
 	}
 	closeBody.GroupHash = d.RootHash
-	raw, _ := json.Marshal(closeBody)
-	message := json.RawMessage(raw)
+	raw, _ := stablejson.Marshal(closeBody)
+	message := jsontext.Value(raw)
 	closed.Crosshost = &message
 	closed.Id, closed.PlanHash, closed.ControllerGeneration = deployment.RecoveryCloseID(parent, p.UnitID), closeBody.Digest(), &controller
 	if err = engine.Execute(context.Background(), closed); err != nil {

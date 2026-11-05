@@ -3,7 +3,7 @@ package agent
 import (
 	"context"
 	"crypto/ed25519"
-	"encoding/json"
+	"encoding/json/jsontext"
 	"strings"
 	"testing"
 
@@ -11,6 +11,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/backup"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 )
 
@@ -25,16 +26,16 @@ func TestDistributedBackupAdmissionOnlyCoordinatesWriterStops(t *testing.T) {
 	for _, action := range []string{"install", "disable", "check", "restore", "backup"} {
 		t.Run(action, func(t *testing.T) {
 			command := backup.Command{Action: action, Installation: backup.Installation{Policy: backup.Policy{Plan: p, Method: backup.QuiescedFiles}}}
-			raw, _ := json.Marshal(command)
-			message := json.RawMessage(raw)
+			raw, _ := stablejson.Marshal(command)
+			message := jsontext.Value(raw)
 			err := e.distributedRuntimeAdmission(api.ExecutionCommand{Kind: "backup", Backup: &message})
 			if (err != nil) != (action == "backup") {
 				t.Fatalf("action %s parent admission: %v", action, err)
 			}
 			command.Installation.Policy.Plan.ID = uuid.New()
 			command.Installation.Policy.Plan = command.Installation.Policy.Plan.WithHash()
-			raw, _ = json.Marshal(command)
-			message = json.RawMessage(raw)
+			raw, _ = stablejson.Marshal(command)
+			message = jsontext.Value(raw)
 			if err = e.distributedRuntimeAdmission(api.ExecutionCommand{Kind: "backup", Backup: &message}); err == nil {
 				t.Fatal("stale source policy bypassed renewed approval")
 			}
@@ -50,8 +51,8 @@ func TestCrossHostReservationSurvivesChildAcknowledgementAndRestart(t *testing.T
 	unit := deployment.DistributedUnit{Plan: p}
 	command := deployment.CrossHostCommand{ParentID: parent, GroupHash: strings.Repeat("a", 64), Phase: "reserve", Unit: unit}
 	c := api.ExecutionCommand{Id: uuid.New(), ServerId: p.ServerID, EnvironmentId: p.EnvironmentID, ResourceId: p.UnitID, Generation: 1, Kind: "crosshost", ParentId: &parent, PlanHash: command.Digest()}
-	raw, _ := json.Marshal(command)
-	message := json.RawMessage(raw)
+	raw, _ := stablejson.Marshal(command)
+	message := jsontext.Value(raw)
 	c.Crosshost = &message
 	if _, err := j.Accept(c); err != nil {
 		t.Fatal(err)
@@ -109,8 +110,8 @@ func TestCrossHostReservationSurvivesChildAcknowledgementAndRestart(t *testing.T
 	next.Id = uuid.New()
 	next.Generation = 2
 	command.Phase = "prepare"
-	raw, _ = json.Marshal(command)
-	message = json.RawMessage(raw)
+	raw, _ = stablejson.Marshal(command)
+	message = jsontext.Value(raw)
 	next.Crosshost = &message
 	next.PlanHash = command.Digest()
 	if _, err = j.Accept(next); err != nil {

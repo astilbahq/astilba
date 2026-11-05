@@ -2,12 +2,14 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"fmt"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/backup"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/execution"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 	"github.com/moby/moby/client"
 	bolt "go.etcd.io/bbolt"
@@ -40,12 +42,14 @@ func scheduledJobFixture(t *testing.T, cleanupFailure string) (*Engine, backup.P
 		path := r.URL.Path
 		switch {
 		case strings.HasSuffix(path, "/containers/json"):
-			json.NewEncoder(w).Encode([]any{map[string]any{"Id": "source", "Labels": visualLabels(p, app), "Names": []string{"/" + p.ContainerName(app)}}})
+			stablejson.Encode(w, []any{map[string]any{"Id": "source", "Labels": visualLabels(p, app), "Names": []string{"/" + p.ContainerName(app)}}})
 		case strings.HasSuffix(path, "/containers/source/json"):
-			json.NewEncoder(w).Encode(source)
+			stablejson.Encode(w, source)
 		case strings.HasSuffix(path, "/containers/create"):
-			var b struct{ Labels map[string]string }
-			json.NewDecoder(r.Body).Decode(&b)
+			var b struct {
+				Labels map[string]string `json:"Labels"`
+			}
+			json.UnmarshalDecode(jsontext.NewDecoder(r.Body), &b)
 			jobLabels = b.Labels
 			created++
 			jobInspects = 0
@@ -62,7 +66,7 @@ func scheduledJobFixture(t *testing.T, cleanupFailure string) (*Engine, backup.P
 				fmt.Fprint(w, `{"message":"cleanup inspect failed"}`)
 				return
 			}
-			json.NewEncoder(w).Encode(map[string]any{"Id": "job", "Config": map[string]any{"Labels": jobLabels}, "State": map[string]any{"Running": false, "Status": "exited", "ExitCode": 0}})
+			stablejson.Encode(w, map[string]any{"Id": "job", "Config": map[string]any{"Labels": jobLabels}, "State": map[string]any{"Running": false, "Status": "exited", "ExitCode": 0}})
 		case strings.HasSuffix(path, "/containers/job") && r.Method == "DELETE":
 			if cleanupFailure == "remove" {
 				w.WriteHeader(500)
@@ -109,15 +113,15 @@ func TestHydratedScheduleCancellationPreservesAcceptedCredentials(t *testing.T) 
 			if kind == "schedule" {
 				b.Installation.Policy.Schedule = backup.Schedule{Kind: "interval", IntervalMinutes: 1, Timezone: "UTC"}
 			}
-			raw, _ := json.Marshal(b)
-			payload := json.RawMessage(raw)
+			raw, _ := stablejson.Marshal(b)
+			payload := jsontext.Value(raw)
 			c := api.ExecutionCommand{Id: uuid.New(), ServerId: p.ServerID, EnvironmentId: p.EnvironmentID, ResourceId: b.Installation.Policy.ID, Kind: kind, Generation: 1, PlanHash: b.Digest(), Backup: &payload, Deadline: time.Now().Add(time.Minute)}
 			if _, err := j.Accept(c); err != nil {
 				t.Fatal(err)
 			}
 			b.Installation.Access = backup.Access{}
-			raw, _ = json.Marshal(b)
-			bare := json.RawMessage(raw)
+			raw, _ = stablejson.Marshal(b)
+			bare := jsontext.Value(raw)
 			c.Backup = &bare
 			c.CancelRequested = true
 			record, err := j.Accept(c)
@@ -125,8 +129,8 @@ func TestHydratedScheduleCancellationPreservesAcceptedCredentials(t *testing.T) 
 				t.Fatal("credential-free cancellation lost accepted intent/access", err)
 			}
 			b.Installation.Policy.TimeoutSeconds = 5
-			raw, _ = json.Marshal(b)
-			changed := json.RawMessage(raw)
+			raw, _ = stablejson.Marshal(b)
+			changed := jsontext.Value(raw)
 			c.Backup = &changed
 			if _, err = j.Accept(c); err == nil {
 				t.Fatal("cancellation changed frozen execution inputs")
@@ -154,8 +158,8 @@ func TestManualAdvancedRunRejectsSupersedingLegacyMirror(t *testing.T) {
 		t.Fatal(err)
 	}
 	b := backup.Command{Action: "backup", Installation: backup.Installation{Policy: policy}, RunID: uuid.New()}
-	raw, _ := json.Marshal(b)
-	payload := json.RawMessage(raw)
+	raw, _ := stablejson.Marshal(b)
+	payload := jsontext.Value(raw)
 	c := api.ExecutionCommand{Id: uuid.New(), ServerId: p.ServerID, EnvironmentId: p.EnvironmentID, ResourceId: policy.ID, Kind: "schedule", Generation: 2, PlanHash: b.Digest(), Backup: &payload, Deadline: time.Now().Add(time.Minute)}
 	e := Engine{Journal: j}
 	if err := e.Execute(context.Background(), c); err != nil {

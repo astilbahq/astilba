@@ -3,8 +3,9 @@ package stablejson_test
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
-	jsonv2 "encoding/json/v2"
+	jsonv1 "encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"testing"
 	"time"
 
@@ -45,7 +46,7 @@ func TestDigestsKeepTheirReleasedValues(t *testing.T) {
 		// The agent checks this before replacing itself, so it is the way out of any
 		// version skew. If it moves, older agents can no longer be updated.
 		"agent update":     {execution.Hash(&api.AgentRelease{Version: "1.2.3", Protocol: 1, Arch: "amd64", Size: 10, Sha256: "abc", Signature: "c2ln"}), "79aeb2511ac7f04786d42ee6c6728efcca3f99ec16ab6f06886d627cc19b934c"},
-		"railpack policy":  {pipeline.Hash(json.RawMessage(pipeline.RailpackSourcePolicy(pipeline.RailpackInputs{}))), "dfda240d8e63dbca7e0346203c386b54a7e9498f226f20b8d1cae26695af15fd"},
+		"railpack policy":  {pipeline.Hash(jsontext.Value(pipeline.RailpackSourcePolicy(pipeline.RailpackInputs{}))), "dfda240d8e63dbca7e0346203c386b54a7e9498f226f20b8d1cae26695af15fd"},
 		"pipeline command": {pipeline.Command{Action: fixtureText, SubmissionID: fixtureID}.Digest(), "6761729faa7743cf39ec678c7924953fe79f09db951b0439dfa45eb49c722f48"},
 		"backup command":   {backup.Command{Action: fixtureText, RunID: fixtureID, ScheduledAt: &fixtureTime}.Digest(), "b46c63ebce0d6ba5b5cb1c183e466015bea68dce2eab6c25b99a26bf733acb9b"},
 		"upgrade command":  {upgrade.Command{Action: fixtureText, Plan: upgrade.Plan{ID: fixtureID}}.Digest(), "fad33cca183644bcfd9e57f2917147dad328f0d842b60c6b75319be60e5744af"},
@@ -58,7 +59,7 @@ func TestDigestsKeepTheirReleasedValues(t *testing.T) {
 			Off   bool    `json:"off,omitempty"`
 			None  []string
 		}{fixtureText, &empty, false, nil}), "ebe6f76b01a6cfb11fed997e7296524d9b6465eb1a9f06dea99c4d7f4a6a9ca9"},
-		"raw message and bytes": {pipeline.Hash(map[string]any{"z": json.RawMessage(`{ "a" : "<" }`), "a": []byte(fixtureText)}), "ad97cfd776d61e9f3dffd9ca020784c1408bb4c09d729517b6b1647502bbd170"},
+		"raw message and bytes": {pipeline.Hash(map[string]any{"z": jsontext.Value(`{ "a" : "<" }`), "a": []byte(fixtureText)}), "ad97cfd776d61e9f3dffd9ca020784c1408bb4c09d729517b6b1647502bbd170"},
 		// Docker health checks hold time.Duration, which plain v2 refuses to encode.
 		// Agent fingerprints ignore Marshal errors, so they would hash only the output
 		// before the failing field and miss drift in anything after it.
@@ -90,10 +91,10 @@ func TestDigestsSurviveTheWireAcrossVersions(t *testing.T) {
 		t.Fatal(err)
 	}
 	var older, newer deployment.Payload
-	if err = json.Unmarshal(raw, &older); err != nil {
+	if err = jsonv1.Unmarshal(raw, &older); err != nil {
 		t.Fatal(err)
 	}
-	if err = jsonv2.Unmarshal(raw, &newer, jsonv2.RejectUnknownMembers(true)); err != nil {
+	if err = json.Unmarshal(raw, &newer, json.RejectUnknownMembers(true)); err != nil {
 		t.Fatal(err)
 	}
 	if older.Digest() != want.Digest() || newer.Digest() != want.Digest() {

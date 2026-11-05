@@ -1,7 +1,7 @@
 package agent
 
 import (
-	"encoding/json"
+	"encoding/json/jsontext"
 	"strings"
 	"testing"
 	"time"
@@ -9,6 +9,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/hostnetwork"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 )
 
@@ -32,7 +33,7 @@ func TestRestrictiveNetworkRecordsFitJournalAndRecoveryTransport(t *testing.T) {
 			before.Exports = append(before.Exports, hostnetwork.Endpoint{ID: uuid.New(), UnitID: plan.UnitID, ResourceID: uuid.New(), InstanceID: uuid.New(), Port: 20000 + index, ContainerPort: 8080})
 		}
 		before.Exports[index].Sources = append(before.Exports[index].Sources, hostnetwork.Source{ServerID: peer, UnitID: uuid.New()})
-		raw, _ := json.Marshal(before)
+		raw, _ := stablejson.Marshal(before)
 		if len(raw) > 98304 {
 			before.Exports[index].Sources = before.Exports[index].Sources[:len(before.Exports[index].Sources)-1]
 			break
@@ -46,15 +47,15 @@ func TestRestrictiveNetworkRecordsFitJournalAndRecoveryTransport(t *testing.T) {
 	wanted.Exports = append([]hostnetwork.Endpoint{}, before.Exports...)
 	wanted.Exports[0].Sources = append([]hostnetwork.Source{}, before.Exports[0].Sources[1:]...)
 	body := hostnetwork.Command{Action: "restrict", NetworkID: before.NetworkID, MembershipID: member, Baseline: &before, Manifest: &wanted}
-	raw, _ := json.Marshal(body)
-	message := json.RawMessage(raw)
+	raw, _ := stablejson.Marshal(body)
+	message := jsontext.Value(raw)
 	c := api.ExecutionCommand{Id: uuid.New(), ServerId: plan.ServerID, Generation: 1, Kind: "network", Action: "inspect", ResourceId: before.NetworkID, PlanHash: hostnetwork.Hash(body), Deadline: time.Now().Add(time.Minute), Network: &message}
 	if _, err := j.Accept(c); err != nil {
 		t.Fatal(err)
 	}
 	receipt := hostnetwork.Receipt{Identity: identity, NetworkID: before.NetworkID, Generation: wanted.Generation, Hash: hostnetwork.Hash(wanted), Before: &before, Effective: &wanted}
-	receiptRaw, _ := json.Marshal(receipt)
-	value := json.RawMessage(receiptRaw)
+	receiptRaw, _ := stablejson.Marshal(receipt)
+	value := jsontext.Value(receiptRaw)
 	if err := j.Mutate(c.Id, func(r *Record) { r.Report.State, r.Report.Network = "succeeded", &value }); err != nil {
 		t.Fatal("admitted maximal restriction cannot persist its receipt", err)
 	}
@@ -62,10 +63,10 @@ func TestRestrictiveNetworkRecordsFitJournalAndRecoveryTransport(t *testing.T) {
 	if err != nil {
 		t.Fatal("persisted maximal restriction cannot be read", err)
 	}
-	report, _ := json.Marshal(r.Report)
-	record, _ := json.Marshal(r)
-	header, _ := json.Marshal(r.Command)
-	proof, _ := json.Marshal(deployment.RecoveryProof{ID: c.Id, Header: header, Report: report, Checkpoint: r.Checkpoint})
+	report, _ := stablejson.Marshal(r.Report)
+	record, _ := stablejson.Marshal(r)
+	header, _ := stablejson.Marshal(r.Command)
+	proof, _ := stablejson.Marshal(deployment.RecoveryProof{ID: c.Id, Header: header, Report: report, Checkpoint: r.Checkpoint})
 	if len(report) <= 196608 || len(report) >= 524288 || len(record) >= 524288 || len(proof)+1 >= 524288 {
 		t.Fatalf("restriction transport bounds differ: report=%d record=%d proof=%d", len(report), len(record), len(proof)+1)
 	}
@@ -92,15 +93,15 @@ func TestRestrictiveNetworkRecordsFitJournalAndRecoveryTransport(t *testing.T) {
 		}
 	}
 	body.Action, body.Baseline = "configure", nil
-	raw, _ = json.Marshal(body)
-	message = json.RawMessage(raw)
+	raw, _ = stablejson.Marshal(body)
+	message = jsontext.Value(raw)
 	c.Id, c.Generation, c.Network, c.PlanHash = uuid.New(), 4, &message, hostnetwork.Hash(body)
 	if _, err := j.Accept(c); err == nil {
 		t.Fatal("restrictive replay lowered the stale-configure fence")
 	}
 	body.Action, body.Baseline = "restrict", &before
-	raw, _ = json.Marshal(body)
-	message = json.RawMessage(raw)
+	raw, _ = stablejson.Marshal(body)
+	message = jsontext.Value(raw)
 	c.Id, c.Generation, c.Network, c.PlanHash = uuid.New(), 6, &message, hostnetwork.Hash(body)
 	if _, err := j.Accept(c); err != nil {
 		t.Fatal(err)

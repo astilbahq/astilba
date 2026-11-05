@@ -1,11 +1,8 @@
 package integration
 
 import (
-	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
+	"encoding/json/v2"
 	"errors"
 	"os"
 	"os/exec"
@@ -25,6 +22,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/execution"
 	"github.com/astilbahq/astilba/services/platform/internal/portability"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/astilbahq/astilba/services/platform/internal/upgrade"
 	"github.com/google/uuid"
@@ -561,7 +559,7 @@ chmod +x /tmp/www/cgi-bin/health
 				t.Fatal("missing ingress source hash")
 			}
 			evidence.Units[applied.UnitID.String()] = strings.Repeat("f", 64)
-			raw, err = json.Marshal(evidence)
+			raw, err = stablejson.Marshal(evidence)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -904,7 +902,7 @@ func runPhysicalRecoveryHost(t *testing.T, ctx context.Context, service *executi
 			return
 		}
 		for _, schedule := range schedules {
-			raw, _ := json.Marshal(schedule.Status)
+			raw, _ := stablejson.Marshal(schedule.Status)
 			var status backup.Status
 			if err := json.Unmarshal(raw, &status); err != nil {
 				t.Error(err)
@@ -970,85 +968,4 @@ func linkRecoveryFixtureHosts(t *testing.T, first, second string) {
 		run("-n", host.ns, "address", "add", []string{"192.0.2.1/30", "192.0.2.2/30"}[i], "dev", host.name)
 		run("-n", host.ns, "link", "set", host.name, "up")
 	}
-}
-
-func copyRecoveryExport(t *testing.T, source string) string {
-	t.Helper()
-	dst := filepath.Join(t.TempDir(), "altered")
-	if err := os.Mkdir(dst, 0700); err != nil {
-		t.Fatal(err)
-	}
-	entries, err := os.ReadDir(source)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, entry := range entries {
-		raw, err := os.ReadFile(filepath.Join(source, entry.Name()))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(dst, entry.Name()), raw, 0600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	return dst
-}
-
-func alterRecoveryCompletion(t *testing.T, source string, parent uuid.UUID, outcome string) string {
-	t.Helper()
-	dst := copyRecoveryExport(t, source)
-	raw, err := os.ReadFile(filepath.Join(dst, "proofs.jsonl"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var changed bool
-	var result bytes.Buffer
-	for _, line := range bytes.Split(bytes.TrimSpace(raw), []byte("\n")) {
-		var proof deployment.RecoveryProof
-		if err := json.Unmarshal(line, &proof); err != nil {
-			t.Fatal(err)
-		}
-		var report api.AgentReport
-		if err := json.Unmarshal(proof.Report, &report); err != nil {
-			t.Fatal(err)
-		}
-		if proof.ParentID == parent && report.Crosshost != nil {
-			var receipt deployment.CrossHostReceipt
-			if err := json.Unmarshal(*report.Crosshost, &receipt); err != nil {
-				t.Fatal(err)
-			}
-			if receipt.Phase == "complete" {
-				changed = true
-				if outcome == "missing" {
-					continue
-				}
-				report.State = api.ExecutionState(outcome)
-				proof.Report, _ = json.Marshal(report)
-				line, _ = json.Marshal(proof)
-			}
-		}
-		result.Write(line)
-		result.WriteByte('\n')
-	}
-	if !changed {
-		t.Fatal("missing actual complete proof to alter")
-	}
-	if err := os.WriteFile(filepath.Join(dst, "proofs.jsonl"), result.Bytes(), 0600); err != nil {
-		t.Fatal(err)
-	}
-	raw, err = os.ReadFile(filepath.Join(dst, "host.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var evidence deployment.RecoveryEvidence
-	if err := json.Unmarshal(raw, &evidence); err != nil {
-		t.Fatal(err)
-	}
-	digest := sha256.Sum256(result.Bytes())
-	evidence.ProofDigest = hex.EncodeToString(digest[:])
-	raw, _ = json.Marshal(evidence)
-	if err := os.WriteFile(filepath.Join(dst, "host.json"), raw, 0600); err != nil {
-		t.Fatal(err)
-	}
-	return dst
 }

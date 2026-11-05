@@ -7,7 +7,8 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"encoding/pem"
 	"net/http"
 	"net/http/httptest"
@@ -22,6 +23,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/execution"
 	"github.com/astilbahq/astilba/services/platform/internal/githubapp"
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 )
 
@@ -67,28 +69,28 @@ func heldGitHubFor(t *testing.T, f *fixture, b *browser, ws uuid.UUID) *heldGitH
 				w.WriteHeader(401)
 				return
 			}
-			_ = json.NewEncoder(w).Encode(map[string]string{"access_token": "user-token-canary"})
+			_ = stablejson.Encode(w, map[string]string{"access_token": "user-token-canary"})
 		case "/user":
-			_ = json.NewEncoder(w).Encode(map[string]any{"id": 7, "login": "repository-admin"})
+			_ = stablejson.Encode(w, map[string]any{"id": 7, "login": "repository-admin"})
 		case "/user/installations/2/repositories":
-			_ = json.NewEncoder(w).Encode(map[string]any{"repositories": []map[string]any{{"id": 12, "full_name": "team/app", "private": true, "permissions": map[string]bool{"admin": true}}}})
+			_ = stablejson.Encode(w, map[string]any{"repositories": []map[string]any{{"id": 12, "full_name": "team/app", "private": true, "permissions": map[string]bool{"admin": true}}}})
 		case "/app":
-			_ = json.NewEncoder(w).Encode(map[string]any{"id": 1, "client_id": "fixture-client"})
+			_ = stablejson.Encode(w, map[string]any{"id": 1, "client_id": "fixture-client"})
 		case "/repos/team/app/installation":
-			_ = json.NewEncoder(w).Encode(map[string]any{"id": 2, "app_id": 1, "permissions": map[string]string{"contents": "write", "pull_requests": "write"}})
+			_ = stablejson.Encode(w, map[string]any{"id": 2, "app_id": 1, "permissions": map[string]string{"contents": "write", "pull_requests": "write"}})
 		case "/repos/team/app":
-			_ = json.NewEncoder(w).Encode(map[string]any{"id": 12, "full_name": "team/app", "private": true, "permissions": map[string]bool{"admin": true}})
+			_ = stablejson.Encode(w, map[string]any{"id": 12, "full_name": "team/app", "private": true, "permissions": map[string]bool{"admin": true}})
 		case "/repos/team/app/branches/main":
-			_ = json.NewEncoder(w).Encode(map[string]any{"commit": map[string]string{"sha": strings.Repeat("a", 40)}})
+			_ = stablejson.Encode(w, map[string]any{"commit": map[string]string{"sha": strings.Repeat("a", 40)}})
 		case "/app/installations/2/access_tokens":
 			var in struct {
 				Permissions map[string]string `json:"permissions"`
 			}
-			_ = json.NewDecoder(r.Body).Decode(&in)
+			_ = json.UnmarshalDecode(jsontext.NewDecoder(r.Body), &in)
 			if in.Permissions["pull_requests"] != "" {
 				h.previewMints.Add(1)
 			}
-			_ = json.NewEncoder(w).Encode(map[string]any{"token": "installation-" + in.Permissions["contents"] + "-canary", "expires_at": time.Now().Add(time.Hour), "repositories": []map[string]int{{"id": 12}}, "permissions": in.Permissions})
+			_ = stablejson.Encode(w, map[string]any{"token": "installation-" + in.Permissions["contents"] + "-canary", "expires_at": time.Now().Add(time.Hour), "repositories": []map[string]int{{"id": 12}}, "permissions": in.Permissions})
 		case "/applications/fixture-client/token":
 			w.WriteHeader(204)
 		default:

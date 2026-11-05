@@ -1,12 +1,13 @@
 package deployment
 
 import (
-	"encoding/json"
+	"encoding/json/v2"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 )
 
@@ -27,10 +28,10 @@ func TestBindingRenderingAndPortableSecrets(t *testing.T) {
 	}
 	var doc struct {
 		Services map[string]struct {
-			Environment map[string]string
-			Command     []string
-			DependsOn   map[string]any `json:"depends_on"`
-		}
+			Environment map[string]string `json:"environment"`
+			Command     []string          `json:"command"`
+			DependsOn   map[string]any    `json:"depends_on"`
+		} `json:"services"`
 	}
 	if err = json.Unmarshal(raw, &doc); err != nil {
 		t.Fatal(err)
@@ -85,7 +86,7 @@ func TestVisualContractRejections(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			p := testPlan()
 			change(&p.Specification)
-			raw, _ := json.Marshal(p.Specification)
+			raw, _ := stablejson.Marshal(p.Specification)
 			if _, _, err := domain.ParseSpec(raw); err == nil {
 				t.Fatal("invalid visual specification accepted")
 			}

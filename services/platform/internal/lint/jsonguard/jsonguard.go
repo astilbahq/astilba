@@ -21,6 +21,7 @@ var Analyzer = &analysis.Analyzer{
 
 // Files with a recorded reason to name encoding/json, as package/file.
 var v1Importers = map[string]bool{
+	"internal/stablejson/golden_test.go": true, // decodes with v1, as an older peer does
 	"internal/stablejson/stablejson.go":  true,
 	"internal/domain/compose.go":         true,
 	"internal/cryptobox/cryptobox.go":    true,

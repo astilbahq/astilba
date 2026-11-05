@@ -2,7 +2,8 @@ package integration
 
 import (
 	"context"
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/execution"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 )
 
@@ -81,9 +83,9 @@ func TestOutputAuthorityCloneAndAgentCompatibility(t *testing.T) {
 	if polled.Command == nil || strings.Contains(string(*polled.Command.Visual), "output-secret-canary") {
 		t.Fatal("resolution received secret or no command")
 	}
-	observation, _ := json.Marshal(deployment.Observation{ObservedAt: time.Now(), Resources: []deployment.Resource{}, Images: map[string]string{source.String(): image, target.String(): image}, StateHash: strings.Repeat("a", 64)})
+	observation, _ := stablejson.Marshal(deployment.Observation{ObservedAt: time.Now(), Resources: []deployment.Resource{}, Images: map[string]string{source.String(): image, target.String(): image}, StateHash: strings.Repeat("a", 64)})
 	c := polled.Command
-	agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/report", token, api.AgentReport{Id: c.Id, Generation: c.Generation, PlanHash: c.PlanHash, Sequence: 1, State: "succeeded", Steps: []api.ExecutionStep{}, Observation: (*json.RawMessage)(&observation)}, 204, nil)
+	agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/report", token, api.AgentReport{Id: c.Id, Generation: c.Generation, PlanHash: c.PlanHash, Sequence: 1, State: "succeeded", Steps: []api.ExecutionStep{}, Observation: (*jsontext.Value)(&observation)}, 204, nil)
 	b.call("GET", path+"/deployment-plans/"+status.ID.String(), nil, 200, &status)
 	in.Capabilities.ServiceOutputs = &no
 	heartbeat()

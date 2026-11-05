@@ -2,13 +2,15 @@ package integration
 
 import (
 	"context"
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"testing"
 	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/execution"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 )
 
@@ -28,13 +30,13 @@ func queuedMaintenanceResume(t *testing.T, phase string, primaryState, childStat
 		}
 		body.Phase = phase
 		body.Maintenance = &deployment.Maintenance{Kind: "backup", ResourceID: uuid.New()}
-		message, _ := json.Marshal(body)
-		payload := json.RawMessage(message)
+		message, _ := stablejson.Marshal(body)
+		payload := jsontext.Value(message)
 		c.Crosshost, c.PlanHash = &payload, body.Digest()
 		// The coordinator freezes all children before the provider finishes.
 		// Delivery can outlive the original deadline without replacing them.
 		c.Deadline = time.Now().Add(-time.Hour)
-		raw, _ = json.Marshal(c)
+		raw, _ = stablejson.Marshal(c)
 		if _, err := f.service.st.Pool.Exec(ctx, `UPDATE execution_operations SET command=$2 WHERE id=$1`, id, raw); err != nil {
 			t.Fatal(err)
 		}
@@ -146,7 +148,7 @@ func TestMaintenancePrimaryTerminalFailureSurfacesBeforeConsumerCompletion(t *te
 					}
 					child.Id = uuid.NewSHA1(parent.Id, []byte("crosshost:maintenance-"+phase+":"+body.Unit.Plan.UnitID.String()))
 					child.ResourceId = body.Unit.Plan.UnitID
-					raw, _ = json.Marshal(child)
+					raw, _ = stablejson.Marshal(child)
 					if _, err := f.service.st.Pool.Exec(ctx, `UPDATE execution_operations SET id=$2,command=$3 WHERE id=$1`, id, child.Id, raw); err != nil {
 						t.Fatal(err)
 					}
@@ -175,16 +177,16 @@ func TestMaintenancePrimaryTerminalFailureSurfacesBeforeConsumerCompletion(t *te
 					Effect struct{}     `json:"effect"`
 					Units  []unitIntent `json:"units"`
 				}{Units: intents}}
-				payload, _ := json.Marshal(body)
-				message := json.RawMessage(payload)
+				payload, _ := stablejson.Marshal(body)
+				message := jsontext.Value(payload)
 				parent.Crosshost, parent.PlanHash = &message, execution.Hash(body)
 				id := uuid.New()
 				envelope := []byte("frozen-test-capsule")
 				d := deployment.RecoveryDescriptor{Version: 1, WorkspaceID: ws, ParentID: parent.Id, RootHash: parent.PlanHash, GroupID: uuid.New(), GroupHash: parent.PlanHash, BaseID: id, CheckpointID: id, Bytes: len(envelope), Digest: deployment.RecoveryDigest(envelope), Participants: []uuid.UUID{units[0].Plan.ServerID, units[1].Plan.ServerID}}
-				descriptor, _ := json.Marshal(d)
-				metadata := json.RawMessage(descriptor)
+				descriptor, _ := stablejson.Marshal(d)
+				metadata := jsontext.Value(descriptor)
 				parent.RecoveryCheckpoint = &metadata
-				raw, _ = json.Marshal(parent)
+				raw, _ = stablejson.Marshal(parent)
 				if _, err := f.service.st.Pool.Exec(ctx, `UPDATE execution_operations SET command=$2 WHERE id=$1`, parent.Id, raw); err != nil {
 					t.Fatal(err)
 				}

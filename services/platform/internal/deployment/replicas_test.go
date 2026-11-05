@@ -1,11 +1,12 @@
 package deployment
 
 import (
-	"encoding/json"
+	"encoding/json/v2"
 	"os"
 	"testing"
 
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 )
 
@@ -60,10 +61,10 @@ func TestReplicaGroupRenderingAndLegacyRouteRefusal(t *testing.T) {
 	}
 	var compose struct {
 		Services map[string]struct {
-			ContainerName string `json:"container_name"`
-			Labels        map[string]string
-			Environment   map[string]string
-		}
+			ContainerName string            `json:"container_name"`
+			Labels        map[string]string `json:"labels"`
+			Environment   map[string]string `json:"environment"`
+		} `json:"services"`
 	}
 	if json.Unmarshal(raw, &compose) != nil || len(compose.Services) != 4 {
 		t.Fatal("replicas were not rendered alongside the singleton database")
@@ -86,15 +87,19 @@ func TestReplicaGroupRenderingAndLegacyRouteRefusal(t *testing.T) {
 		HTTP struct {
 			Services map[string]struct {
 				Balancer struct {
-					Servers []struct{ URL string }
-					Health  *struct {
-						Path string
-						Port int
+					Servers []struct {
+						URL string `json:"url"`
+					} `json:"servers"`
+					Health *struct {
+						Path string `json:"path"`
+						Port int    `json:"port"`
 					} `json:"healthCheck"`
 				} `json:"loadBalancer"`
-			}
-		}
-		TCP struct{ Services map[string]any }
+			} `json:"services"`
+		} `json:"http"`
+		TCP struct {
+			Services map[string]any `json:"services"`
+		} `json:"tcp"`
 	}
 	if json.Unmarshal(raw, &routes) != nil || len(routes.TCP.Services) != 1 || len(routes.HTTP.Services) != 1 {
 		t.Fatal("mixed singleton TCP route was lost")
@@ -107,7 +112,7 @@ func TestReplicaGroupRenderingAndLegacyRouteRefusal(t *testing.T) {
 	// The previous consumer knows only Address/InstanceID. Its required-address
 	// check must fail rather than republish a primary-only shared host snapshot.
 	for key, b := range set.Backends {
-		raw, _ := json.Marshal(b)
+		raw, _ := stablejson.Marshal(b)
 		var previous struct {
 			Address    string     `json:"address"`
 			InstanceID *uuid.UUID `json:"instanceId"`
@@ -133,12 +138,12 @@ func TestReplicaEligibilityPreservesOrdinaryMountedApps(t *testing.T) {
 	volume := uuid.New()
 	p.Specification.Volumes = append(p.Specification.Volumes, domain.Volume{ID: volume, Name: "Application state"})
 	web.Mounts = []domain.VolumeMount{{VolumeID: volume, Target: "/state"}}
-	raw, _ := json.Marshal(p.Specification)
+	raw, _ := stablejson.Marshal(p.Specification)
 	if _, _, err := domain.ParseSpec(raw); err != nil {
 		t.Fatalf("ordinary mounted app fixture is invalid: %v", err)
 	}
 	web.Replicas = 3
-	raw, _ = json.Marshal(p.Specification)
+	raw, _ = stablejson.Marshal(p.Specification)
 	if _, _, err := domain.ParseSpec(raw); err == nil {
 		t.Fatal("replication admitted a persistent writer")
 	}

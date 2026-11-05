@@ -2,20 +2,21 @@ package catalog
 
 import (
 	"context"
-	"encoding/json"
+	"encoding/json/v2"
 	"testing"
 	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/composeproject"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 )
 
 func TestRecipesUseValidatedVisualAndComposeSubset(t *testing.T) {
 	for _, recipe := range Recipes() {
 		t.Run(recipe.ID, func(t *testing.T) {
-			raw, _ := json.Marshal(recipe.Specification)
+			raw, _ := stablejson.Marshal(recipe.Specification)
 			if _, _, err := domain.ParseSpec(raw); err != nil {
 				t.Fatal(err)
 			}
@@ -49,7 +50,7 @@ func TestRecipesUseValidatedVisualAndComposeSubset(t *testing.T) {
 				delete(s, "labels")
 				s["networks"] = []string{"unit"}
 			}
-			raw, _ = json.Marshal(source)
+			raw, _ = stablejson.Marshal(source)
 			bundle := composeproject.Bundle{Namespace: uuid.New(), Entrypoints: []string{"compose.json"}, Files: []composeproject.File{{Path: "compose.json", Content: string(raw)}}}
 			if _, err := composeproject.Load(context.Background(), bundle, nil); err != nil {
 				t.Fatal("recipe exceeds supported Compose input subset", err)

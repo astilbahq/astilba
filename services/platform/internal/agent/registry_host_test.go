@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"net"
@@ -17,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -53,7 +53,7 @@ func startNativeRegistry(t *testing.T) *nativeRegistry {
 	_, port, _ := net.SplitHostPort(listener.Addr().String())
 	_ = listener.Close()
 	config := map[string]any{"distSpecVersion": "1.1.1", "storage": map[string]any{"rootDirectory": filepath.Join(dir, "data")}, "http": map[string]any{"address": "127.0.0.1", "port": port, "auth": map[string]any{"htpasswd": map[string]any{"path": filepath.Join(dir, "htpasswd")}}, "accessControl": map[string]any{"repositories": map[string]any{"fixture/**": map[string]any{"policies": []any{map[string]any{"users": []string{"builder"}, "actions": []string{"read", "create", "update"}}, map[string]any{"users": []string{"deployer"}, "actions": []string{"read"}}}}}}}, "log": map[string]any{"level": "error"}}
-	raw, _ := json.Marshal(config)
+	raw, _ := stablejson.Marshal(config)
 	file := filepath.Join(dir, "config.json")
 	_ = os.WriteFile(file, raw, 0600)
 	log, err := os.Create(filepath.Join(dir, "registry.log"))

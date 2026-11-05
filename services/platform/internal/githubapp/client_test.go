@@ -8,7 +8,8 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"encoding/pem"
 	"net/http"
 	"net/http/httptest"
@@ -18,6 +19,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 )
 
 func TestScopedTokensIdentityAndBoundedReuse(t *testing.T) {
@@ -54,29 +57,29 @@ func TestScopedTokensIdentityAndBoundedReuse(t *testing.T) {
 		}
 		switch r.URL.Path {
 		case "/app":
-			json.NewEncoder(w).Encode(map[string]any{"id": 1, "client_id": "fixture-client"})
+			stablejson.Encode(w, map[string]any{"id": 1, "client_id": "fixture-client"})
 		case "/repos/team/app/installation":
 			if removed.Load() {
 				w.WriteHeader(404)
 				return
 			}
-			json.NewEncoder(w).Encode(map[string]any{"id": 2, "app_id": 1, "permissions": map[string]string{"contents": "write", "pull_requests": "write"}})
+			stablejson.Encode(w, map[string]any{"id": 2, "app_id": 1, "permissions": map[string]string{"contents": "write", "pull_requests": "write"}})
 		case "/repos/team/app":
 			metadata.Add(1)
-			json.NewEncoder(w).Encode(map[string]any{"id": 12, "full_name": "team/app", "private": true})
+			stablejson.Encode(w, map[string]any{"id": 12, "full_name": "team/app", "private": true})
 		case "/app/installations/2/access_tokens":
 			minted.Add(1)
 			var in struct {
 				Repositories []int64           `json:"repository_ids"`
 				Permissions  map[string]string `json:"permissions"`
 			}
-			if json.NewDecoder(r.Body).Decode(&in) != nil || len(in.Repositories) != 1 || in.Repositories[0] != 12 {
+			if json.UnmarshalDecode(jsontext.NewDecoder(r.Body), &in) != nil || len(in.Repositories) != 1 || in.Repositories[0] != 12 {
 				t.Error("token was not restricted to selected repository")
 			}
 			if broader.Load() {
 				in.Permissions["administration"] = "write"
 			}
-			json.NewEncoder(w).Encode(map[string]any{"token": "ghs_1_" + strings.Repeat("opaque.", 30), "expires_at": time.Now().Add(time.Hour), "repositories": []map[string]any{{"id": 12}}, "permissions": in.Permissions})
+			stablejson.Encode(w, map[string]any{"token": "ghs_1_" + strings.Repeat("opaque.", 30), "expires_at": time.Now().Add(time.Hour), "repositories": []map[string]any{{"id": 12}}, "permissions": in.Permissions})
 		default:
 			t.Errorf("unexpected path %s", r.URL.Path)
 			w.WriteHeader(404)

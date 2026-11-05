@@ -4,7 +4,8 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -21,6 +22,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/execution"
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 	"github.com/moby/moby/client"
 	"github.com/pressly/goose/v3"
@@ -39,7 +41,7 @@ func (l laggingClock) RoundTrip(r *http.Request) (*http.Response, error) {
 		return response, err
 	}
 	var poll api.AgentPoll
-	err = json.NewDecoder(response.Body).Decode(&poll)
+	err = json.UnmarshalDecode(jsontext.NewDecoder(response.Body), &poll)
 	_ = response.Body.Close()
 	if err != nil {
 		return nil, err
@@ -47,7 +49,7 @@ func (l laggingClock) RoundTrip(r *http.Request) (*http.Response, error) {
 	if poll.Command != nil {
 		poll.Command.Deadline = poll.Command.Deadline.Add(l.lag)
 	}
-	raw, err := json.Marshal(poll)
+	raw, err := stablejson.Marshal(poll)
 	if err != nil {
 		return nil, err
 	}
@@ -71,14 +73,14 @@ func dispatchBuild(t *testing.T, ctx context.Context, f *fixture, arguments map[
 	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if strings.Contains(r.URL.Path, "/branches/") {
-			_ = json.NewEncoder(w).Encode(map[string]any{"commit": map[string]string{"sha": strings.Repeat("a", 40)}})
+			_ = stablejson.Encode(w, map[string]any{"commit": map[string]string{"sha": strings.Repeat("a", 40)}})
 			return
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"id": 12, "private": false})
+		_ = stablejson.Encode(w, map[string]any{"id": 12, "private": false})
 	}))
 	t.Cleanup(provider.Close)
 	var connection struct {
-		Connection pipeline.Connection
+		Connection pipeline.Connection `json:"connection"`
 	}
 	b.call("POST", prefix+"/git-connections", map[string]string{"name": "Delivery", "provider": "gitea", "baseUrl": provider.URL, "repository": "team/app"}, 201, &connection)
 	var project api.Project
@@ -303,16 +305,16 @@ func TestReportsAcceptHostOutputContainingNUL(t *testing.T) {
 	var plan deployment.Status
 	b.call("POST", path+"/deployment-plans", api.VisualPlanRequest{ServerId: enrolled.Server.Id, BaseRevisionId: draft.Id, AllowHostChanges: true}, 201, &plan)
 	c := poll(plan.OperationID)
-	resolved, _ := json.Marshal(deployment.Observation{ObservedAt: time.Now(), Resources: []deployment.Resource{}, Images: map[string]string{app.String(): image}, StateHash: strings.Repeat("a", 64)})
-	agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/report", token, api.AgentReport{Id: c.Id, Generation: c.Generation, PlanHash: c.PlanHash, Sequence: 1, State: "succeeded", Steps: []api.ExecutionStep{}, Observation: (*json.RawMessage)(&resolved)}, 204, nil)
+	resolved, _ := stablejson.Marshal(deployment.Observation{ObservedAt: time.Now(), Resources: []deployment.Resource{}, Images: map[string]string{app.String(): image}, StateHash: strings.Repeat("a", 64)})
+	agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/report", token, api.AgentReport{Id: c.Id, Generation: c.Generation, PlanHash: c.PlanHash, Sequence: 1, State: "succeeded", Steps: []api.ExecutionStep{}, Observation: (*jsontext.Value)(&resolved)}, 204, nil)
 	var op api.Operation
 	b.call("POST", path+"/deployment-plans/"+plan.ID.String()+"/apply", api.ApplyPlan{IdempotencyKey: uuid.New()}, 201, &op)
 	c = poll(op.Id)
 	// The escaped backslash is literal text, not an escaped NUL.
-	observed, _ := json.Marshal(deployment.Observation{ObservedAt: time.Now(), Resources: []deployment.Resource{{ID: app, Kind: "application", State: "failed", Logs: "boot\x00log \\u0000"}}, StateHash: strings.Repeat("b", 64)})
+	observed, _ := stablejson.Marshal(deployment.Observation{ObservedAt: time.Now(), Resources: []deployment.Resource{{ID: app, Kind: "application", State: "failed", Logs: "boot\x00log \\u0000"}}, StateHash: strings.Repeat("b", 64)})
 	// Encoded host output can pass the contract's character limit and exceed its byte limit.
 	long := "compose\x00failed" + strings.Repeat("\ufffd", 400)
-	agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/report", token, api.AgentReport{Id: c.Id, Generation: c.Generation, PlanHash: c.PlanHash, Sequence: 1, State: "failed", Note: long, Steps: []api.ExecutionStep{}, Observation: (*json.RawMessage)(&observed)}, 204, nil)
+	agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/report", token, api.AgentReport{Id: c.Id, Generation: c.Generation, PlanHash: c.PlanHash, Sequence: 1, State: "failed", Note: long, Steps: []api.ExecutionStep{}, Observation: (*jsontext.Value)(&observed)}, 204, nil)
 	var note, logs string
 	if err := f.st.Pool.QueryRow(ctx, "SELECT o.note,r.observation->'resources'->0->>'logs' FROM execution_operations o JOIN visual_runtime r ON r.environment_id=o.environment_id WHERE o.id=$1", op.Id).Scan(&note, &logs); err != nil {
 		t.Fatal(err)

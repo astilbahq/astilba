@@ -3,7 +3,8 @@ package agent
 import (
 	"bufio"
 	"context"
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"io"
@@ -12,7 +13,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -23,6 +23,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/execution"
 	"github.com/astilbahq/astilba/services/platform/internal/hostnetwork"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/astilbahq/astilba/services/platform/internal/upgrade"
 	"github.com/distribution/reference"
 	"github.com/google/uuid"
@@ -88,10 +89,10 @@ func TestNativeCrossHostHelper(t *testing.T) {
 	engine.FetchCheckpoint = func(_ context.Context, d deployment.RecoveryDescriptor) ([]byte, error) {
 		return nativeRecoveryEnvelope(d.ParentID), nil
 	}
-	decoder, encoder := json.NewDecoder(bufio.NewReader(os.Stdin)), json.NewEncoder(os.Stdout)
+	decoder := jsontext.NewDecoder(bufio.NewReader(os.Stdin))
 	for {
 		var request hostRequest
-		if err = decoder.Decode(&request); err == io.EOF {
+		if err = json.UnmarshalDecode(decoder, &request); err == io.EOF {
 			return
 		} else if err != nil {
 			t.Fatal(err)
@@ -140,7 +141,7 @@ func TestNativeCrossHostHelper(t *testing.T) {
 		if err != nil {
 			reply.Error = err.Error()
 		}
-		if err = encoder.Encode(reply); err != nil {
+		if err = stablejson.Encode(os.Stdout, reply); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -151,7 +152,7 @@ type nativePlacementHost struct {
 	namespace, state, socket, cli string
 	helper                        *exec.Cmd
 	input                         io.WriteCloser
-	output                        *json.Decoder
+	output                        *jsontext.Decoder
 	generation, networkGeneration int64
 	controllerGeneration          int64
 	docker                        *client.Client
@@ -179,7 +180,7 @@ func (h *nativePlacementHost) start(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h.output = json.NewDecoder(bufio.NewReader(output))
+	h.output = jsontext.NewDecoder(bufio.NewReader(output))
 	log, err := os.OpenFile(filepath.Join(h.root, "helper.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
 	if err != nil {
 		t.Fatal(err)
@@ -204,8 +205,8 @@ func (h *nativePlacementHost) call(t *testing.T, request hostRequest) hostReply 
 	t.Helper()
 	if c := request.Command; c != nil && c.ParentId != nil {
 		if d, ok := h.checkpoints[*c.ParentId]; ok {
-			raw, _ := json.Marshal(d)
-			message := json.RawMessage(raw)
+			raw, _ := stablejson.Marshal(d)
+			message := jsontext.Value(raw)
 			c.RecoveryCheckpoint = &message
 			if c.EnvironmentId == uuid.Nil {
 				c.EnvironmentId = h.checkpointEnvironments[*c.ParentId]
@@ -214,19 +215,19 @@ func (h *nativePlacementHost) call(t *testing.T, request hostRequest) hostReply 
 			if err == nil && body.Phase == "reserve" && body.Unit.Plan.Local.Primary && !h.checkpointReady[*c.ParentId] {
 				checkpoint := *c
 				body.Phase = "checkpoint"
-				payload, _ := json.Marshal(body)
-				msg := json.RawMessage(payload)
+				payload, _ := stablejson.Marshal(body)
+				msg := jsontext.Value(payload)
 				checkpoint.Id, checkpoint.Generation, checkpoint.Crosshost, checkpoint.PlanHash = uuid.New(), c.Generation-1, &msg, body.Digest()
 				h.command(t, checkpoint)
 				h.checkpointReady[*c.ParentId] = true
 			}
 		}
 	}
-	if err := json.NewEncoder(h.input).Encode(request); err != nil {
+	if err := stablejson.Encode(h.input, request); err != nil {
 		t.Fatal(err)
 	}
 	var reply hostReply
-	if err := h.output.Decode(&reply); err != nil {
+	if err := json.UnmarshalDecode(h.output, &reply); err != nil {
 		t.Fatalf("host process response: %v", err)
 	}
 	if reply.Error != "" {
@@ -254,92 +255,9 @@ func (h *nativePlacementHost) visual(t *testing.T, action string, p deployment.P
 	t.Helper()
 	h.generation++
 	body := deployment.Payload{Action: action, Plan: p, Secrets: secrets}
-	raw, _ := json.Marshal(body)
-	message := json.RawMessage(raw)
+	raw, _ := stablejson.Marshal(body)
+	message := jsontext.Value(raw)
 	return h.command(t, api.ExecutionCommand{Id: uuid.New(), ServerId: h.server, EnvironmentId: p.EnvironmentID, ResourceId: p.UnitID, Generation: h.generation, Kind: "visual", Action: "inspect", PlanHash: body.Digest(), Deadline: time.Now().Add(5 * time.Minute), Visual: &message})
-}
-func (h *nativePlacementHost) crossHost(t *testing.T, parent uuid.UUID, hash, phase string, unit deployment.DistributedUnit, secrets map[string]string) api.AgentReport {
-	t.Helper()
-	return h.command(t, h.crossHostCommand(parent, hash, phase, unit, secrets))
-}
-func (h *nativePlacementHost) crossHostCommand(parent uuid.UUID, hash, phase string, unit deployment.DistributedUnit, secrets map[string]string) api.ExecutionCommand {
-	body := deployment.CrossHostCommand{ParentID: parent, GroupHash: hash, Phase: phase, Unit: unit, Secrets: secrets}
-	return h.coordinatedCommand(body)
-}
-func (h *nativePlacementHost) coordinatedCommand(body deployment.CrossHostCommand) api.ExecutionCommand {
-	if h.checkpoints == nil {
-		h.checkpoints = map[uuid.UUID]deployment.RecoveryDescriptor{}
-		h.checkpointReady = map[uuid.UUID]bool{}
-		h.checkpointEnvironments = map[uuid.UUID]uuid.UUID{}
-	}
-	if body.Phase != "resolve" && body.Phase != "observe" {
-		if _, ok := h.checkpoints[body.ParentID]; !ok {
-			p := body.Unit.Plan
-			participants := []uuid.UUID{p.ServerID}
-			for _, peer := range p.Local.Network.Peers {
-				participants = append(participants, peer.ServerID)
-			}
-			sort.Slice(participants, func(i, j int) bool { return participants[i].String() < participants[j].String() })
-			id := uuid.NewSHA1(body.ParentID, []byte("native-recovery-checkpoint"))
-			envelope := nativeRecoveryEnvelope(body.ParentID)
-			h.checkpoints[body.ParentID] = deployment.RecoveryDescriptor{Version: 1, WorkspaceID: uuid.NewSHA1(p.EnvironmentID, []byte("native-workspace")), ParentID: body.ParentID, RootHash: body.GroupHash, GroupID: p.Local.GroupID, GroupHash: body.GroupHash, BaseID: id, CheckpointID: id, Digest: deployment.RecoveryDigest(envelope), Bytes: len(envelope), Participants: participants}
-			h.checkpointEnvironments[body.ParentID] = p.EnvironmentID
-			if p.Local.Primary && body.Phase == "reserve" {
-				h.generation++ // The primary metadata ACK precedes reserve.
-			}
-		}
-	}
-	h.generation++
-	raw, _ := json.Marshal(body)
-	message := json.RawMessage(raw)
-	c := api.ExecutionCommand{Id: uuid.New(), ParentId: &body.ParentID, ServerId: h.server, EnvironmentId: body.Unit.Plan.EnvironmentID, ResourceId: body.Unit.Plan.UnitID, Generation: h.generation, Kind: "crosshost", Action: "inspect", PlanHash: body.Digest(), Deadline: time.Now().Add(5 * time.Minute), Crosshost: &message}
-	if d, ok := h.checkpoints[body.ParentID]; ok {
-		raw, _ := json.Marshal(d)
-		checkpoint := json.RawMessage(raw)
-		c.RecoveryCheckpoint = &checkpoint
-	}
-	if h.controllerGeneration > 0 {
-		c.ControllerGeneration = &h.controllerGeneration
-	}
-	return c
-}
-func (h *nativePlacementHost) backupCommand(body backup.Command, parent *uuid.UUID) api.ExecutionCommand {
-	h.generation++
-	raw, _ := json.Marshal(body)
-	message := json.RawMessage(raw)
-	p := body.Installation.Policy
-	c := api.ExecutionCommand{Id: uuid.New(), ParentId: parent, ServerId: h.server, EnvironmentId: p.EnvironmentID, ResourceId: p.ID, Generation: h.generation, Kind: "backup", Action: "inspect", PlanHash: body.Digest(), Deadline: time.Now().Add(5 * time.Minute), Backup: &message}
-	if parent != nil {
-		if d, ok := h.checkpoints[*parent]; ok {
-			raw, _ := json.Marshal(d)
-			checkpoint := json.RawMessage(raw)
-			c.RecoveryCheckpoint = &checkpoint
-		}
-	}
-	return c
-}
-func (h *nativePlacementHost) network(t *testing.T, parent *uuid.UUID, m hostnetwork.Manifest, restrict bool) {
-	t.Helper()
-	h.networkGeneration++
-	action := "configure"
-	if restrict {
-		action = "restrict"
-	}
-	body := hostnetwork.Command{Action: action, NetworkID: m.NetworkID, MembershipID: m.MembershipID, Manifest: &m}
-	if restrict && parent == nil {
-		prior, err := (hostnetwork.Host{Dir: h.state}).Snapshot(m.NetworkID)
-		if err != nil {
-			t.Fatal(err)
-		}
-		body.Baseline = &prior.Manifest
-	}
-	raw, _ := json.Marshal(body)
-	message := json.RawMessage(raw)
-	c := api.ExecutionCommand{Id: uuid.New(), ParentId: parent, ServerId: h.server, Generation: h.networkGeneration, Kind: "network", Action: "inspect", ResourceId: m.NetworkID, PlanHash: hostnetwork.Hash(body), Deadline: time.Now().Add(5 * time.Minute), Network: &message}
-	if h.controllerGeneration > 0 {
-		c.ControllerGeneration = &h.controllerGeneration
-	}
-	h.command(t, c)
 }
 
 func nativePlacementHosts(t *testing.T) (context.Context, []*nativePlacementHost) {
@@ -694,11 +612,11 @@ exec httpd -f -p 8080 -h /tmp/www`
 	}
 	primary.crossHost(t, parent, groupHash, "probe", units[0], secrets)
 	publication := primary.crossHostCommand(parent, groupHash, "publish", units[0], secrets)
-	if err = json.NewEncoder(primary.input).Encode(hostRequest{Command: &publication, CrashAt: "route-published"}); err != nil {
+	if err = stablejson.Encode(primary.input, hostRequest{Command: &publication, CrashAt: "route-published"}); err != nil {
 		t.Fatal(err)
 	}
 	var lost hostReply
-	if err = primary.output.Decode(&lost); err == nil {
+	if err = json.UnmarshalDecode(primary.output, &lost); err == nil {
 		t.Fatal("publication crash did not interrupt the process")
 	}
 	primary.stop()
@@ -743,7 +661,7 @@ exec httpd -f -p 8080 -h /tmp/www`
 			}
 			before[id] = v.Container.ID
 		}
-		raw, _ := json.Marshal(units[0])
+		raw, _ := stablejson.Marshal(units[0])
 		var candidate deployment.DistributedUnit
 		if err := json.Unmarshal(raw, &candidate); err != nil {
 			t.Fatal(err)
@@ -780,10 +698,10 @@ exec httpd -f -p 8080 -h /tmp/www`
 			}
 		}
 		hook := primary.crossHostCommand(parent, strings.Repeat("1", 64), "hook", candidate, secretsForPlan(candidate.Plan, secrets))
-		if err := json.NewEncoder(primary.input).Encode(hostRequest{Command: &hook, CrashAt: "release-command-intent"}); err != nil {
+		if err := stablejson.Encode(primary.input, hostRequest{Command: &hook, CrashAt: "release-command-intent"}); err != nil {
 			t.Fatal(err)
 		}
-		if err := primary.output.Decode(&lost); err == nil {
+		if err := json.UnmarshalDecode(primary.output, &lost); err == nil {
 			t.Fatal("release-command intent crash did not interrupt the helper")
 		}
 		primary.stop()
@@ -823,10 +741,10 @@ exec httpd -f -p 8080 -h /tmp/www`
 				host.command(t, command(index, "reserve"))
 			}
 			pause := command(0, "pause")
-			if err = json.NewEncoder(primary.input).Encode(hostRequest{Command: &pause, CrashAt: "maintenance-writer-stopped"}); err != nil {
+			if err = stablejson.Encode(primary.input, hostRequest{Command: &pause, CrashAt: "maintenance-writer-stopped"}); err != nil {
 				t.Fatal(err)
 			}
-			if err = primary.output.Decode(&lost); err == nil {
+			if err = json.UnmarshalDecode(primary.output, &lost); err == nil {
 				t.Fatal("writer-stop crash did not interrupt the process")
 			}
 			primary.stop()
@@ -846,10 +764,10 @@ exec httpd -f -p 8080 -h /tmp/www`
 			primary.command(t, command(0, "effect"))
 			leaf := primary.backupCommand(effect, &parent)
 			if interrupted {
-				if err := json.NewEncoder(primary.input).Encode(hostRequest{Command: &leaf, CrashAt: "backup-run-recorded"}); err != nil {
+				if err := stablejson.Encode(primary.input, hostRequest{Command: &leaf, CrashAt: "backup-run-recorded"}); err != nil {
 					t.Fatal(err)
 				}
-				if err := primary.output.Decode(&lost); err == nil {
+				if err := json.UnmarshalDecode(primary.output, &lost); err == nil {
 					t.Fatal("backup crash did not interrupt the helper")
 				}
 				primary.stop()
@@ -927,8 +845,8 @@ exec httpd -f -p 8080 -h /tmp/www`
 			primary.generation++
 			body := effect
 			body.Action = action
-			raw, _ := json.Marshal(body)
-			message := json.RawMessage(raw)
+			raw, _ := stablejson.Marshal(body)
+			message := jsontext.Value(raw)
 			return api.ExecutionCommand{Id: uuid.New(), ParentId: &parent, ServerId: primary.server, EnvironmentId: initial.EnvironmentID, ResourceId: upgradePlan.ID, Kind: "upgrade", Action: "inspect", Generation: primary.generation, Deadline: time.Now().Add(5 * time.Minute), PlanHash: body.Digest(), Upgrade: &message}
 		}
 		for index, host := range hosts {
@@ -1041,10 +959,10 @@ exec httpd -f -p 8080 -h /tmp/www`
 				host.command(t, command(index, "pause"))
 			}
 			cutover := command(0, "restore")
-			if err := json.NewEncoder(primary.input).Encode(hostRequest{Command: &cutover, CrashAt: "restore-cutover-created"}); err != nil {
+			if err := stablejson.Encode(primary.input, hostRequest{Command: &cutover, CrashAt: "restore-cutover-created"}); err != nil {
 				t.Fatal(err)
 			}
-			if err := primary.output.Decode(&lost); err == nil {
+			if err := json.UnmarshalDecode(primary.output, &lost); err == nil {
 				t.Fatal("restore cutover crash did not interrupt the helper")
 			}
 			primary.stop()
@@ -1124,11 +1042,11 @@ exec httpd -f -p 8080 -h /tmp/www`
 		}
 		stale := command(0, "reserve")
 		stale.ControllerGeneration = nil
-		if err := json.NewEncoder(primary.input).Encode(hostRequest{Command: &stale}); err != nil {
+		if err := stablejson.Encode(primary.input, hostRequest{Command: &stale}); err != nil {
 			t.Fatal(err)
 		}
 		var rejected hostReply
-		if err := primary.output.Decode(&rejected); err != nil || rejected.Error == "" {
+		if err := json.UnmarshalDecode(primary.output, &rejected); err != nil || rejected.Error == "" {
 			t.Fatal("old controller authority was accepted", err)
 		}
 		for index, host := range hosts {
@@ -1202,8 +1120,8 @@ exec httpd -f -p 8080 -h /tmp/www`
 		wanted.Generation += 2
 		wanted.Egress = nil
 		body := hostnetwork.Command{Action: "restrict", NetworkID: wanted.NetworkID, MembershipID: wanted.MembershipID, Manifest: &wanted}
-		raw, _ := json.Marshal(body)
-		message := json.RawMessage(raw)
+		raw, _ := stablejson.Marshal(body)
+		message := jsontext.Value(raw)
 		primary.networkGeneration++
 		cleanup := api.ExecutionCommand{Id: uuid.New(), ParentId: &parent, ServerId: primary.server, EnvironmentId: commands[0].Unit.Plan.EnvironmentID, Generation: primary.networkGeneration, Kind: "network", Action: "inspect", ResourceId: wanted.NetworkID, PlanHash: hostnetwork.Hash(body), Deadline: time.Now().Add(-time.Hour), Network: &message}
 		remoteInstance := commands[1].Unit.Plan.InstanceIDs(app)[0]

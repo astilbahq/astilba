@@ -342,7 +342,8 @@ another package counts as new SQL, so convert it to sqlc as part of the move.
 ## Repository analyzers
 
 `make check-app` runs `services/platform/internal/lint/astilba-lint` over non-test
-code. Each analyzer turns a defect that review kept catching into a failure with a
+code, and `jsonguard` and `jsontag` over tests too, because a test that reads JSON loosely can
+pass where production would not. Each analyzer turns a defect that review kept catching into a failure with a
 one-sentence explanation:
 
 | Analyzer | Fails when | From |

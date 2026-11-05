@@ -2,7 +2,8 @@ package integration
 
 import (
 	"context"
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"errors"
 	"os"
 	"path/filepath"
@@ -20,6 +21,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/execution"
 	"github.com/astilbahq/astilba/services/platform/internal/hostnetwork"
 	"github.com/astilbahq/astilba/services/platform/internal/portability"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
 	"github.com/moby/moby/client"
@@ -273,8 +275,8 @@ func TestNativeCrossHostOlderBackupRecovery(t *testing.T) {
 			t.Fatal(err)
 		}
 		receipt := deployment.CrossHostReceipt{ParentID: operation.Id, GroupHash: command.GroupHash, UnitID: c.ResourceId, Phase: command.Phase, PlanHash: command.Unit.Plan.Hash, Observation: deployment.Observation{ObservedAt: time.Now().UTC(), Resources: []deployment.Resource{}}}
-		raw, _ := json.Marshal(receipt)
-		value := json.RawMessage(raw)
+		raw, _ := stablejson.Marshal(receipt)
+		value := jsontext.Value(raw)
 		if err = source.execution.Report(ctx, identity, api.AgentReport{Id: c.Id, Generation: c.Generation, PlanHash: c.PlanHash, Sequence: 2, State: "succeeded", Steps: []api.ExecutionStep{}, Crosshost: &value}); err != nil {
 			t.Fatal(err)
 		}
@@ -511,7 +513,7 @@ func TestNativeCrossHostOlderBackupRecovery(t *testing.T) {
 		var envB api.Environment
 		fb.call("POST", base+"/projects/"+project.Id.String()+"/environments", map[string]string{"name": "Other branch"}, 201, &envB)
 		pathB := base + "/projects/" + project.Id.String() + "/environments/" + envB.Id.String()
-		raw, _ := json.Marshal(initial)
+		raw, _ := stablejson.Marshal(initial)
 		var specB domain.Specification
 		_ = json.Unmarshal(raw, &specB)
 		specB.Applications[0].ID = uuid.New()
@@ -549,7 +551,7 @@ func TestNativeCrossHostOlderBackupRecovery(t *testing.T) {
 		stopPolls[0]()
 		<-pollDone[0]
 		restriction := recoveryFixtureRestriction(t, ctx, fork.st, enrollments[0].ServerId)
-		restrictionRaw, _ := json.Marshal(restriction)
+		restrictionRaw, _ := stablejson.Marshal(restriction)
 		requestKey := uuid.New()
 		if _, err = fork.st.Pool.Exec(ctx, `INSERT INTO execution_operations(id,workspace_id,server_id,generation,request_key,command,kind,state) VALUES($1,$2,$3,$4,$5,$6,'network','queued')`, restriction.Id, ws, restriction.ServerId, restriction.Generation, requestKey, restrictionRaw); err != nil {
 			t.Fatal(err)
@@ -678,7 +680,7 @@ func TestNativeCrossHostOlderBackupRecovery(t *testing.T) {
 		unapplied, revision, unit := uuid.New(), uuid.New(), uuid.New()
 		obsolete := uuid.New()
 		observation := deployment.Observation{ObservedAt: time.Now().UTC(), Resources: []deployment.Resource{}, StateHash: strings.Repeat("b", 64)}
-		raw, _ := json.Marshal(observation)
+		raw, _ := stablejson.Marshal(observation)
 		tx, err := known.st.Pool.Begin(ctx)
 		if err != nil {
 			t.Fatal(err)
@@ -831,7 +833,7 @@ func TestNativeCrossHostOlderBackupRecovery(t *testing.T) {
 	t.Run("undelivered_database_revocation", func(t *testing.T) {
 		queued, queuedOwner := olderManagement(true)
 		command := recoveryFixtureRestriction(t, ctx, queued.st, enrollments[0].ServerId)
-		header, _ := json.Marshal(command)
+		header, _ := stablejson.Marshal(command)
 		if _, err := queued.st.Pool.Exec(ctx, `INSERT INTO execution_operations(id,workspace_id,server_id,generation,request_key,command,kind,state) VALUES($1,$2,$3,$4,$5,$6,'network','queued')`, command.Id, ws, command.ServerId, command.Generation, uuid.New(), header); err != nil {
 			t.Fatal(err)
 		}
@@ -1199,8 +1201,8 @@ func TestNativeCrossHostOlderBackupRecovery(t *testing.T) {
 	restrictionWanted.Generation++
 	restrictionWanted.Exports, restrictionWanted.Egress = nil, nil
 	restrictionBody := hostnetwork.Command{Action: "restrict", NetworkID: restrictionBaseline.NetworkID, MembershipID: restrictionBaseline.MembershipID, Baseline: &restrictionBaseline, Manifest: &restrictionWanted}
-	restrictionRaw, _ := json.Marshal(restrictionBody)
-	restrictionMessage := json.RawMessage(restrictionRaw)
+	restrictionRaw, _ := stablejson.Marshal(restrictionBody)
+	restrictionMessage := jsontext.Value(restrictionRaw)
 	priorAuthority := applied.Handovers[enrollments[0].ServerId].Authority.Controller
 	pendingRestriction := api.ExecutionCommand{Id: uuid.MustParse("00000000-0000-4000-8000-000000000011"), ServerId: enrollments[0].ServerId, Generation: 100000, ControllerGeneration: &priorAuthority, Kind: "network", Action: "inspect", ResourceId: restrictionBaseline.NetworkID, PlanHash: hostnetwork.Hash(restrictionBody), Deadline: time.Now().Add(time.Minute), Network: &restrictionMessage}
 	completedRestriction := pendingRestriction
@@ -1211,8 +1213,8 @@ func TestNativeCrossHostOlderBackupRecovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	acknowledgedReceipt := hostnetwork.Receipt{NetworkID: restrictionBaseline.NetworkID, Identity: hostnetwork.Identity{MembershipID: restrictionBaseline.MembershipID, PublicKey: restrictionBaseline.PublicKey}, Generation: restrictionWanted.Generation, Hash: hostnetwork.Hash(restrictionWanted), Disabled: restrictionWanted.Disabled}
-	acknowledgedRaw, _ := json.Marshal(acknowledgedReceipt)
-	acknowledgedMessage := json.RawMessage(acknowledgedRaw)
+	acknowledgedRaw, _ := stablejson.Marshal(acknowledgedReceipt)
+	acknowledgedMessage := jsontext.Value(acknowledgedRaw)
 	if err = journals[0].Mutate(acknowledgedRestriction.Id, func(r *agent.Record) { r.Report.State, r.Report.Network = "succeeded", &acknowledgedMessage }); err != nil {
 		t.Fatal(err)
 	}
@@ -1227,8 +1229,8 @@ func TestNativeCrossHostOlderBackupRecovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	completedReceipt := hostnetwork.Receipt{NetworkID: restrictionBaseline.NetworkID, Identity: hostnetwork.Identity{MembershipID: restrictionBaseline.MembershipID, PublicKey: restrictionBaseline.PublicKey}, Generation: restrictionWanted.Generation, Hash: hostnetwork.Hash(restrictionWanted), Disabled: restrictionWanted.Disabled}
-	completedReceiptRaw, _ := json.Marshal(completedReceipt)
-	completedReceiptMessage := json.RawMessage(completedReceiptRaw)
+	completedReceiptRaw, _ := stablejson.Marshal(completedReceipt)
+	completedReceiptMessage := jsontext.Value(completedReceiptRaw)
 	if err = journals[0].Mutate(completedRestriction.Id, func(r *agent.Record) { r.Report.State, r.Report.Network = "succeeded", &completedReceiptMessage }); err != nil {
 		t.Fatal(err)
 	}
@@ -1244,13 +1246,13 @@ func TestNativeCrossHostOlderBackupRecovery(t *testing.T) {
 		againExports = append(againExports, dir)
 	}
 	second, secondOwner := olderManagement(true)
-	stalePending, _ := json.Marshal(acknowledgedRestriction)
+	stalePending, _ := stablejson.Marshal(acknowledgedRestriction)
 	if _, err = second.st.Pool.Exec(ctx, `INSERT INTO execution_operations(id,workspace_id,server_id,generation,request_key,command,kind,state) VALUES($1,$2,$3,$4,$5,$6,'network','queued')`, acknowledgedRestriction.Id, ws, acknowledgedRestriction.ServerId, acknowledgedRestriction.Generation, uuid.New(), stalePending); err != nil {
 		t.Fatal(err)
 	}
 	unobserved := pendingRestriction
 	unobserved.Id, unobserved.Generation = uuid.MustParse("00000000-0000-4000-8000-000000000010"), 99997
-	unobservedRaw, _ := json.Marshal(unobserved)
+	unobservedRaw, _ := stablejson.Marshal(unobserved)
 	if _, err = second.st.Pool.Exec(ctx, `INSERT INTO execution_operations(id,workspace_id,server_id,generation,request_key,command,kind,state) VALUES($1,$2,$3,$4,$5,$6,'network','dispatched')`, unobserved.Id, ws, unobserved.ServerId, unobserved.Generation, uuid.New(), unobservedRaw); err != nil {
 		t.Fatal(err)
 	}
@@ -1267,8 +1269,8 @@ func TestNativeCrossHostOlderBackupRecovery(t *testing.T) {
 	nonparticipantWanted.Generation++
 	nonparticipantWanted.Peers, nonparticipantWanted.Exports, nonparticipantWanted.Egress = nil, nil, nil
 	nonparticipantBody := hostnetwork.Command{Action: "restrict", NetworkID: nonparticipantBaseline.NetworkID, MembershipID: nonparticipantBaseline.MembershipID, Baseline: &nonparticipantBaseline, Manifest: &nonparticipantWanted}
-	nonparticipantPayload, _ := json.Marshal(nonparticipantBody)
-	nonparticipantMessage := json.RawMessage(nonparticipantPayload)
+	nonparticipantPayload, _ := stablejson.Marshal(nonparticipantBody)
+	nonparticipantMessage := jsontext.Value(nonparticipantPayload)
 	nonparticipantCommand := api.ExecutionCommand{Id: uuid.New(), ServerId: enrollments[2].ServerId, Generation: 1000, Kind: "network", Action: "inspect", ResourceId: nonparticipantBaseline.NetworkID, PlanHash: hostnetwork.Hash(nonparticipantBody), Deadline: time.Now().Add(time.Minute), Network: &nonparticipantMessage}
 	if _, err = journals[2].Accept(nonparticipantCommand); err != nil {
 		t.Fatal(err)
@@ -1339,23 +1341,4 @@ func TestNativeCrossHostOlderBackupRecovery(t *testing.T) {
 		t.Fatal("guarded transfer discarded the pending removal", err)
 	}
 
-}
-
-func recoveryFixtureRestriction(t *testing.T, ctx context.Context, st *store.Store, server uuid.UUID) api.ExecutionCommand {
-	t.Helper()
-	var raw []byte
-	if err := st.Pool.QueryRow(ctx, `SELECT installed_manifest FROM network_members WHERE server_id=$1`, server).Scan(&raw); err != nil {
-		t.Fatal(err)
-	}
-	var baseline hostnetwork.Manifest
-	if json.Unmarshal(raw, &baseline) != nil {
-		t.Fatal("invalid queued-removal baseline")
-	}
-	wanted := baseline
-	wanted.Generation++
-	wanted.Exports, wanted.Egress = nil, nil
-	body := hostnetwork.Command{Action: "restrict", NetworkID: baseline.NetworkID, MembershipID: baseline.MembershipID, Baseline: &baseline, Manifest: &wanted}
-	payload, _ := json.Marshal(body)
-	message := json.RawMessage(payload)
-	return api.ExecutionCommand{Id: uuid.New(), ServerId: server, Generation: 10000, Kind: "network", Action: "inspect", ResourceId: baseline.NetworkID, PlanHash: hostnetwork.Hash(body), Deadline: time.Now().Add(time.Hour), Network: &message}
 }
