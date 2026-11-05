@@ -185,6 +185,14 @@ func namedReturnedLater(q *db.Queries, cleanup func()) (err error) {
 	return
 }
 
+func retriedInBranch(q *db.Queries) error {
+	_, err := q.AccountByID()
+	if err != nil {
+		_, err = q.AccountByID()
+	}
+	return err
+}
+
 func retried(q *db.Queries, wrap func(error) error) error {
 	var last error
 	for range 3 {

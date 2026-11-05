@@ -194,11 +194,15 @@ func firstUse(pass *analysis.Pass, err types.Object, stmts []ast.Stmt) use {
 			first = check.Init
 		}
 		if assign, ok := first.(*ast.AssignStmt); ok {
-			if _, assigns := assignment(pass, err, assign); assigns {
+			if call, assigns := assignment(pass, err, assign); assigns {
 				for _, value := range assign.Rhs {
 					if mentions(pass, err, value) {
 						return read
 					}
+				}
+				// A retry keeps a read's failure in the variable for whatever runs next.
+				if call != nil && readCall(pass, call) {
+					return unused
 				}
 				return replaced
 			}
