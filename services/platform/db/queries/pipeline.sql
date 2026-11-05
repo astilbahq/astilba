@@ -19,3 +19,5 @@ UPDATE github_app_authorizations SET encrypted_access=$3 WHERE workspace_id=$1 A
 UPDATE pipeline_runs SET delivery_started=true WHERE workspace_id = @workspace_id AND id = @id;
 -- name: FinishUndeliveredPipeline :exec
 UPDATE execution_operations SET state = @state, note = @note WHERE workspace_id = @workspace_id AND id = @id;
+-- name: StopPossiblyDeliveredPipeline :exec
+UPDATE execution_operations SET cancel_requested = true, note = @note::text || CASE WHEN state = 'needs_attention' AND note <> '' THEN ' ' || note ELSE '' END WHERE workspace_id = @workspace_id AND id = @id;
