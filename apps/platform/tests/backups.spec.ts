@@ -331,12 +331,12 @@ test("backup setup, restore verification and separate cutover use the real API",
     "browser-repository-canary",
   );
   await report(install);
-  // Operation history sits above the policy and grows when it next polls. A click during that
-  // reflow presses the button and releases over something else, so nothing is sent.
+  // Operation history sits above the policy, and a reported result reaches it within a few seconds.
+  // Clicks wait for that, because the page moving during one can lose it.
   const backupsInHistory = page.getByText("backup · succeeded", {
     exact: true,
   });
-  await expect(backupsInHistory).toHaveCount(1);
+  await expect(backupsInHistory).toHaveCount(1, { timeout: 12000 });
   const requestKeys: string[] = [];
   let loseResponse = true;
   const commandPattern = "**/backup-policies/*/commands";
@@ -359,7 +359,7 @@ test("backup setup, restore verification and separate cutover use the real API",
   const manual = await poll();
   expect(manual.backup.targetId).toBe("00000000-0000-0000-0000-000000000000");
   await report(manual);
-  await expect(backupsInHistory).toHaveCount(2);
+  await expect(backupsInHistory).toHaveCount(2, { timeout: 12000 });
   const retried = page.waitForResponse(
     (response) =>
       response.url().endsWith("/commands") && response.status() === 202,
@@ -436,6 +436,7 @@ test("backup setup, restore verification and separate cutover use the real API",
   const restore = await poll();
   expect(restore.backup.snapshot).toBe(snapshot);
   await report(restore);
+  await expect(backupsInHistory).toHaveCount(3, { timeout: 12000 });
   const restored = {
     ...run,
     id: crypto.randomUUID(),

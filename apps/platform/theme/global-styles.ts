@@ -49,12 +49,11 @@ export const globalStyles = defineGlobalStyles({
         transition: "none!",
         scrollBehavior: "auto!",
       },
-    // Base UI holds these for a frame so a transition has something to start from. Without a
-    // transition they would only hide the popup until the browser next paints.
-    "[data-starting-style],[data-ending-style]": {
+    // Base UI holds this for a frame so a transition has something to start from. Without a
+    // transition it would only hide the popup until the browser next paints.
+    "[data-starting-style]": {
       opacity: "1!",
       transform: "none!",
-      filter: "none!",
     },
   },
 });

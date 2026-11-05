@@ -276,6 +276,28 @@ test("the first session check cannot close a menu or take focus from its trigger
   await expect(page.locator("html")).toHaveClass("dark");
 });
 
+test("retrying a failed session check keeps the controls", async ({ page }) => {
+  let attempts = 0;
+  let finishRetry!: () => void;
+  const retry = new Promise<void>((resolve) => {
+    finishRetry = resolve;
+  });
+  await page.route("**/api/v1/session", async (route) => {
+    attempts++;
+    if (attempts === 1) return route.abort();
+    await retry;
+    await route.continue();
+  });
+  await page.goto("/login");
+  await page.getByRole("button", { name: "Retry connection" }).click();
+  await expect(page.getByRole("status")).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Appearance", exact: true }),
+  ).toBeVisible();
+  finishRetry();
+  await expect(page.getByRole("heading", { name: "Sign in" })).toBeVisible();
+});
+
 test("blocked browser storage does not prevent sign-in or appearance changes", async ({
   page,
 }) => {

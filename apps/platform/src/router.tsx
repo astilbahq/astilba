@@ -48,12 +48,17 @@ function Root() {
           <Anchor href="#main" className="skip-link">
             {t(($) => $.skipContent)}
           </Anchor>
-          {session.isPending ? (
+          {session.isPending && session.errorUpdateCount === 0 ? (
             // The page that follows brings its own controls. Offering them here would let its
             // arrival close an open menu and lose keyboard focus.
             <AuthPage>
               <p role="status">{t(($) => $.loading)}</p>
             </AuthPage>
+          ) : session.isPending ? (
+            // A refetch without data is pending again, and the failure screen's controls stay.
+            <AuthFrame>
+              <p role="status">{t(($) => $.loading)}</p>
+            </AuthFrame>
           ) : session.error && !session.data ? (
             <AuthFrame>
               <h1>{t(($) => $.connectionUnavailable)}</h1>
