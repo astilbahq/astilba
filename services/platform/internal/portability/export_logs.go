@@ -1,8 +1,8 @@
 package portability
 
 import (
-	"encoding/json"
 	"encoding/json/jsontext"
+	"encoding/json/v2"
 
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 )

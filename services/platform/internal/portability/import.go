@@ -2,9 +2,8 @@ package portability
 
 import (
 	"context"
-	"encoding/json"
 	"encoding/json/jsontext"
-	jsonv2 "encoding/json/v2"
+	"encoding/json/v2"
 	"fmt"
 	"math"
 	"strings"
@@ -23,7 +22,7 @@ func decodeArchive(raw []byte) (Archive, error) {
 
 func decodeArchiveMode(raw []byte, recovery bool) (Archive, error) {
 	var archive Archive
-	if jsonv2.Unmarshal(raw, &archive, jsonv2.RejectUnknownMembers(true)) != nil || archive.Version < 1 || archive.Version > 6 || archive.Workspace == uuid.Nil {
+	if json.Unmarshal(raw, &archive, json.RejectUnknownMembers(true)) != nil || archive.Version < 1 || archive.Version > 6 || archive.Workspace == uuid.Nil {
 		return archive, ErrArchive
 	}
 	if archive.Version == 1 {

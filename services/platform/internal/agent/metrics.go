@@ -2,7 +2,8 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"errors"
 	"io"
 	"math"
@@ -364,7 +365,7 @@ func (c *MetricCollector) collectContainer(ctx context.Context, docker *client.C
 			Usage *uint64 `json:"usage"`
 		} `json:"memory_stats"`
 	}
-	if json.NewDecoder(io.LimitReader(stats.Body, 65536)).Decode(&sample) != nil || sample.Memory.Usage == nil || *sample.Memory.Usage > math.MaxInt64 {
+	if json.UnmarshalDecode(jsontext.NewDecoder(io.LimitReader(stats.Body, 65536)), &sample) != nil || sample.Memory.Usage == nil || *sample.Memory.Usage > math.MaxInt64 {
 		*partial = true
 		return
 	}

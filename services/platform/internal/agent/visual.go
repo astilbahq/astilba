@@ -3,8 +3,8 @@ package agent
 import (
 	"context"
 	"encoding/base64"
-	"encoding/json"
 	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"io"
@@ -667,7 +667,7 @@ func (e *Engine) observeVisualPlan(ctx context.Context, p deployment.Plan, secre
 						Usage uint64 `json:"usage"`
 					} `json:"memory_stats"`
 				}
-				if json.NewDecoder(io.LimitReader(stats.Body, 65536)).Decode(&sample) == nil {
+				if json.UnmarshalDecode(jsontext.NewDecoder(io.LimitReader(stats.Body, 65536)), &sample) == nil {
 					resource.MemoryBytes = int64(sample.MemoryStats.Usage)
 				}
 				stats.Body.Close()
@@ -770,12 +770,12 @@ func (e *Engine) pullImageAuth(ctx context.Context, image, auth string) error {
 		return err
 	}
 	defer stream.Close()
-	decoder := json.NewDecoder(stream)
+	decoder := jsontext.NewDecoder(stream)
 	for {
 		var message struct {
 			Error string `json:"error"`
 		}
-		err := decoder.Decode(&message)
+		err := json.UnmarshalDecode(decoder, &message)
 		if errors.Is(err, io.EOF) {
 			return nil
 		}

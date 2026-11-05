@@ -5,8 +5,8 @@ import (
 	"crypto/ed25519"
 	"crypto/subtle"
 	"encoding/gob"
-	"encoding/json"
-	jsonv2 "encoding/json/v2"
+	jsonv1 "encoding/json"
+	"encoding/json/v2"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -227,7 +227,7 @@ func (s *Server) respond(w http.ResponseWriter, status int, value any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	if value != nil {
-		_ = json.NewEncoder(w).Encode(value)
+		_ = jsonv1.NewEncoder(w).Encode(value)
 	}
 }
 func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
@@ -265,7 +265,7 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 }
 func decode[T any](r *http.Request) (T, error) {
 	var v T
-	if jsonv2.UnmarshalRead(r.Body, &v, jsonv2.RejectUnknownMembers(true)) != nil {
+	if json.UnmarshalRead(r.Body, &v, json.RejectUnknownMembers(true)) != nil {
 		return v, domain.Invalid("request")
 	}
 	return v, nil

@@ -3,8 +3,8 @@ package execution
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"strings"

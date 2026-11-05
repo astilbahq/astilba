@@ -3,8 +3,8 @@ package execution
 import (
 	"context"
 	"encoding/hex"
-	"encoding/json"
 	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"errors"
 	"time"
 

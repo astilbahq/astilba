@@ -3,8 +3,8 @@ package execution
 import (
 	"context"
 	"encoding/hex"
-	"encoding/json"
 	"encoding/json/jsontext"
+	"encoding/json/v2"
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"

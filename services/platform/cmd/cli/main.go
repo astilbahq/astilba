@@ -2,7 +2,8 @@ package main
 
 import (
 	"context"
-	"encoding/json"
+	jsonv1 "encoding/json"
+	"encoding/json/jsontext"
 	"errors"
 	"flag"
 	"fmt"
@@ -172,7 +173,7 @@ func run(ctx context.Context, args []string) error {
 			input = f
 		}
 		raw, e := io.ReadAll(io.LimitReader(input, 150001))
-		if e != nil || len(raw) > 150000 || !json.Valid(raw) {
+		if e != nil || len(raw) > 150000 || !jsontext.Value(raw).IsValid() {
 			return errors.New("specification must be valid JSON within the API size limit")
 		}
 		out, err = client.UpdateDraft(ctx, v, api.DraftUpdate{BaseRevisionId: baseID, Specification: raw})
@@ -224,7 +225,7 @@ func run(ctx context.Context, args []string) error {
 }
 
 func output(value any) error {
-	encoder := json.NewEncoder(os.Stdout)
+	encoder := jsonv1.NewEncoder(os.Stdout)
 	encoder.SetIndent("", "  ")
 	return encoder.Encode(value)
 }

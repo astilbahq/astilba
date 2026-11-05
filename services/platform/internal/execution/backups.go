@@ -3,8 +3,8 @@ package execution
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/json"
 	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"errors"
 	"time"
 

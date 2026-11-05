@@ -3,7 +3,7 @@ package execution
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/json"
+	"encoding/json/v2"
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/api"

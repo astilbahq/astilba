@@ -7,8 +7,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
-	jsonv2 "encoding/json/v2"
+	"encoding/json/v2"
 	"errors"
 	"io"
 	"os"
@@ -42,7 +41,7 @@ func recoveryPrivateFile(path string, limit int64) ([]byte, error) {
 }
 
 func recoveryDecode(raw []byte, out any) error {
-	if jsonv2.Unmarshal(raw, out, jsonv2.RejectUnknownMembers(true)) != nil {
+	if json.Unmarshal(raw, out, json.RejectUnknownMembers(true)) != nil {
 		return errors.New("invalid recovery record encoding")
 	}
 	return nil
