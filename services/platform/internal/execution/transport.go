@@ -206,6 +206,14 @@ func (s *Service) Report(ctx context.Context, a Identity, r api.AgentReport) err
 	for _, payload := range []*jsontext.Value{r.Pipeline, r.Observation, r.Crosshost, r.Upgrade, r.Network} {
 		replaceEscapedNUL(payload)
 	}
+	// A provider call between passes must not count against the agent's report.
+	received := time.Now()
+	return s.withGit(ctx, a.Workspace, func(git *gitAnswers) error { return s.applyReport(ctx, git, received, a, r) })
+}
+
+// applyReport takes its report by value because a pass rewrites it, and a pass that asks a
+// provider a question is rolled back and made again from what the agent sent.
+func (s *Service) applyReport(ctx context.Context, git *gitAnswers, received time.Time, a Identity, r api.AgentReport) error {
 	var tx pgx.Tx
 	var err error
 	if r.Network != nil {
@@ -257,7 +265,7 @@ func (s *Service) Report(ctx context.Context, a Identity, r api.AgentReport) err
 		return domain.Invalid("pipeline")
 	}
 	if c.Kind == "pipeline" {
-		if err = s.pipelineReport(ctx, tx, c, &r); err != nil {
+		if err = s.pipelineReport(ctx, tx, git, received, c, &r); err != nil {
 			return err
 		}
 	}
