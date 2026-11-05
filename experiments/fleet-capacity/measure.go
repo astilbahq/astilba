@@ -290,8 +290,7 @@ func runMeasure(args []string) error {
 		raw, e := d.run(ctx, "", "exec", names.gen, "wget", "-q", "-O", "-", statsURL)
 		if e == nil {
 			var s struct {
-				Ready  bool     `json:"ready"`
-				Errors []string `json:"errors"`
+				Ready bool `json:"ready"`
 			}
 			if json.Unmarshal([]byte(raw), &s) == nil && s.Ready {
 				break

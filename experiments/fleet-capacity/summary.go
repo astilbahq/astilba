@@ -17,7 +17,6 @@ type statement struct {
 	Query         string  `json:"query"`
 	Calls         float64 `json:"calls"`
 	TotalExecTime float64 `json:"total_exec_time"`
-	MeanExecTime  float64 `json:"mean_exec_time"`
 	WALBytes      float64 `json:"wal_bytes"`
 }
 

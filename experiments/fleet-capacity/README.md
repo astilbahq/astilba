@@ -47,7 +47,7 @@ colima start astilba-fleet-capacity --activate=false --mount none --port-forward
 go run . summary /path/to/new/results/*.json
 ```
 
-[results/summary.md](results/summary.md) came from `summary` over all the runs. `measure` writes one JSON per run. Those files are not kept in this repository, so a repeat produces new measurements rather than the published ones. `run-all.sh` takes run names to repeat one run, skips results that already exist and exits non-zero if any run fails. A full `run-all.sh` takes about four hours. Host load comes from the machine running `measure`, so it describes the Docker host only for a local VM. Repeat runs that overlap heavy work on the same machine.
+[results/summary.md](results/summary.md) came from `summary` over the published runs, not the discarded first versions that RESULTS.md quotes. `measure` writes one JSON per run. Those files are not kept in this repository, so a repeat produces new measurements rather than the published ones. `run-all.sh` takes run names to repeat one run, skips results that already exist and exits non-zero if any run fails. A full `run-all.sh` takes about four hours. Host load comes from the machine running `measure`, so it describes the Docker host only for a local VM. Repeat runs that overlap heavy work on the same machine.
 
 The application's database pool has `max(4, NumCPU)` connections and cannot be configured: `pool_max_conns` in the URL breaks the `database/sql` migration check. So `--app-cpuset` is how a run selects the pool size.
 
