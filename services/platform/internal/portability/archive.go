@@ -3,7 +3,8 @@ package portability
 import (
 	"context"
 	"encoding/hex"
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"strings"
 	"time"
 
@@ -16,7 +17,7 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-type Row map[string]json.RawMessage
+type Row map[string]jsontext.Value
 type Archive struct {
 	Version    int              `json:"version"`
 	Workspace  uuid.UUID        `json:"workspace"`

@@ -1,7 +1,7 @@
 package portability
 
 import (
-	"encoding/json"
+	"encoding/json/v2"
 	"errors"
 
 	"github.com/google/uuid"

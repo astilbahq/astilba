@@ -4,7 +4,8 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"time"
@@ -33,7 +34,7 @@ type recoveryContinuation struct {
 	CancelRequested bool              `json:"cancelRequested"`
 	Children        []recoveryChild   `json:"children"`
 	Approvals       []portability.Row `json:"approvals"`
-	UpgradeStatus   json.RawMessage   `json:"upgradeStatus,omitempty"`
+	UpgradeStatus   jsontext.Value    `json:"upgradeStatus,omitempty"`
 }
 
 func recoveryIdentity(d deployment.RecoveryDescriptor) string {

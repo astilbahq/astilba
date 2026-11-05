@@ -3,7 +3,8 @@ package execution
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"errors"
 	"time"
 
@@ -283,7 +284,7 @@ func (s *Service) BackupCommand(ctx context.Context, p store.Principal, ws, pid,
 			return err
 		}
 		raw, _ := stablejson.Marshal(b)
-		payload := json.RawMessage(raw)
+		payload := jsontext.Value(raw)
 		c := api.ExecutionCommand{Id: uuid.New(), ServerId: v.ServerID, EnvironmentId: env, Generation: generation, PlanHash: b.Digest(), Kind: "backup", Action: "inspect", ResourceId: id, Deadline: time.Now().Add(30 * time.Minute), Backup: &payload}
 		if v.GeneralSchedule() {
 			c.Kind = "schedule"
@@ -344,7 +345,7 @@ func (s *Service) hydrateBackup(ctx context.Context, c *api.ExecutionCommand) er
 		b.Installation.Access.SecretKey = a.SecretKey
 	}
 	raw, _ := stablejson.Marshal(b)
-	value := json.RawMessage(raw)
+	value := jsontext.Value(raw)
 	c.Backup = &value
 	return nil
 }

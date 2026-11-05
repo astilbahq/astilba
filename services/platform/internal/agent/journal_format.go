@@ -1,8 +1,8 @@
 package agent
 
 import (
-	"encoding/json"
-	jsonv2 "encoding/json/v2"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"errors"
 	"os"
 	"path/filepath"
@@ -16,8 +16,8 @@ import (
 const localStateVersion = 1
 
 type localStateKeys struct {
-	Version int             `json:"agentStateVersion"`
-	Keyring json.RawMessage `json:"keyring"`
+	Version int            `json:"agentStateVersion"`
+	Keyring jsontext.Value `json:"keyring"`
 }
 
 // The agent-local envelope deliberately cannot be parsed as a cryptobox keyring.
@@ -54,7 +54,7 @@ func (j *Journal) openLocalKeys(point func(string) error) error {
 			return err
 		}
 		var envelope localStateKeys
-		if jsonv2.Unmarshal(raw, &envelope, jsonv2.RejectUnknownMembers(true)) == nil {
+		if json.Unmarshal(raw, &envelope, json.RejectUnknownMembers(true)) == nil {
 			if envelope.Version != localStateVersion {
 				return errors.New("unsupported agent local state version; use a compatible agent")
 			}

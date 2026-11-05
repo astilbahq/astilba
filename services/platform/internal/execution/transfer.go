@@ -2,7 +2,7 @@ package execution
 
 import (
 	"context"
-	"encoding/json"
+	"encoding/json/v2"
 	"errors"
 	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"

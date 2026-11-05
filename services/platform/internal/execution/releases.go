@@ -3,7 +3,8 @@ package execution
 import (
 	"context"
 	"encoding/hex"
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"errors"
 	"time"
 
@@ -241,7 +242,7 @@ func (s *Service) RollbackRelease(ctx context.Context, p store.Principal, ws, pi
 		if err != nil {
 			return err
 		}
-		out = api.Revision{Id: row.ID, AuthorId: row.AuthorID, CreatedAt: row.CreatedAt, Hash: hex.EncodeToString(row.ContentHash), Specification: json.RawMessage(row.Specification)}
+		out = api.Revision{Id: row.ID, AuthorId: row.AuthorID, CreatedAt: row.CreatedAt, Hash: hex.EncodeToString(row.ContentHash), Specification: jsontext.Value(row.Specification)}
 		return nil
 	})
 	return out, err

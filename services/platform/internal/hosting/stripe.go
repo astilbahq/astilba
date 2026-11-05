@@ -1,12 +1,12 @@
 package hosting
 
 import (
-	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"io"
@@ -180,7 +180,7 @@ type Event struct {
 	ID   string `json:"id"`
 	Type string `json:"type"`
 	Data struct {
-		Object json.RawMessage `json:"object"`
+		Object jsontext.Value `json:"object"`
 	} `json:"data"`
 }
 
@@ -220,7 +220,7 @@ func VerifyEvent(raw []byte, header, secret string, now time.Time) (Event, error
 			verified = true
 		}
 	}
-	if !verified || json.NewDecoder(bytes.NewReader(raw)).Decode(&out) != nil || !validID(out.ID, "evt_") {
+	if !verified || json.Unmarshal(raw, &out) != nil || !validID(out.ID, "evt_") {
 		return out, ErrProvider
 	}
 	return out, nil

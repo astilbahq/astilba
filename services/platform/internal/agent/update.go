@@ -3,7 +3,7 @@ package agent
 import (
 	"context"
 	"crypto/ed25519"
-	"encoding/json"
+	"encoding/json/v2"
 	"errors"
 	"io"
 	"net/http"

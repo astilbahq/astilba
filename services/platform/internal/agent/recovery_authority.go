@@ -3,7 +3,7 @@ package agent
 import (
 	"bytes"
 	"crypto/ed25519"
-	"encoding/json"
+	"encoding/json/jsontext"
 	"errors"
 	"math"
 	"os"
@@ -247,9 +247,9 @@ func (j *Journal) recoveredRoot(c api.ExecutionCommand, p deployment.Plan) bool 
 	return err == nil && s.Open && c.ParentId != nil && *c.ParentId == s.Handover.Authority.ParentID && commandGeneration(c) == s.Handover.Authority.Controller && p.Hash == s.Handover.UnitHash
 }
 
-func recoveryAuthorityJSON(a deployment.RecoveryAuthority) *json.RawMessage {
+func recoveryAuthorityJSON(a deployment.RecoveryAuthority) *jsontext.Value {
 	raw, _ := stablejson.Marshal(a)
-	message := json.RawMessage(raw)
+	message := jsontext.Value(raw)
 	return &message
 }
 

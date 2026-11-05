@@ -11,7 +11,7 @@ Astilba's Go code reads JSON with `encoding/json/v2` and writes hashed, stored a
 | Writing a value that is stored, journaled, exported, sent between Astilba processes that can be on different releases (controller, agent, CLI requests), or printed by an agent or server command that scripts read | `stablejson.Marshal`, `stablejson.Encode` for a stream or `stablejson.MarshalIndent` for indented files. |
 | Cloning a value through JSON, when the clone can reach a digest | `stablejson.Marshal`, so nil collections stay nil. |
 
-HTTP responses, the `astilba` CLI's own output and values sent to third parties, including registry credentials for Docker, still use v1 until a later change moves them.
+Requests to third parties, alert webhooks and Docker registry credentials use plain `encoding/json/v2`, because nothing hashes, stores or compares them. Compared with v1, `&`, `<`, `>`, U+2028 and U+2029 are no longer escaped, map order is random and invalid UTF-8 is an error rather than replaced. HTTP responses and the `astilba` CLI's own output still use v1 until a later change moves them.
 
 `stablejson.Marshal` calls v2 with `encoding/json`'s `DefaultOptionsV1`, which the standard library defines as equal to v1's `Marshal`. It is the reason production code still names the v1 package.
 
@@ -76,12 +76,14 @@ v2 refuses duplicate names and invalid UTF-8, and matches names by exact case. D
 
 - **PostgreSQL `jsonb`.** It removes duplicate names and rejects invalid UTF-8 on write, so stored rows cannot contain either. No migration uses a plain `json` column for this data.
 - **Journals, generated keyrings, network snapshots, recovery files.** Go's v1 encoder writes struct tag names exactly, cannot produce duplicates from a struct and replaces invalid UTF-8. No JSON tag in this repository's history has been renamed by case alone.
-- **Workspace archives and recovery bundles.** Rows come from PostgreSQL, so the same applies. `map[string]json.RawMessage` keeps `null` as the text `null` under both versions.
+- **Workspace archives and recovery bundles.** Rows come from PostgreSQL, so the same applies. `map[string]jsontext.Value` keeps `null` as the text `null` under both versions.
 - **`null`, empty arrays and timestamps.** These decode to the same Go values, so digests of decoded values do not move.
 
-Two readers keep looser matching, because their input is written by people and refusing it would take a working system down:
+Some readers stay looser, because other people or tools write their input and refusing it would take a working system down:
 
 - **Compose `x-astilba` metadata** keeps v1 rules, through `DefaultOptionsV1`. The YAML is stored verbatim and re-read every time a revision is parsed, so refusing a saved `allowCIDRs:` would stop planning, automatic deploys, runtime views and recovery for that environment. An older controller after a rollback reads it the same way. This reader has no second parser to disagree with.
+- **`railpack.json`** keeps v1 rules, through `DefaultOptionsV1`. It is a repository's own file, reread for every build of that commit, so refusing it or merging a repeated block differently would stop or change builds of unchanged source. v2's `AllowDuplicateNames` is not equivalent, because it merges a repeated object where v1 replaces it.
+- **`ip` and `nft` output** accepts invalid UTF-8. Both print interface aliases and comments byte for byte, and another administrator's alias must not stop this host's network from converging.
 - **Keyrings** accept line breaks inside base64 key values. Operators can build a keyring by hand or through a secret manager, and refusing a value such as one from `jq --rawfile` would stop the control plane at startup. Member names must still match exactly: a hand-built `"Active"` now stops startup until it is corrected, with no effect on stored data. Duplicate key IDs are refused.
 
 ## Trust boundaries
@@ -100,10 +102,11 @@ These libraries call `encoding/json` v1 themselves, so they accept v1's looser i
 
 ## Remaining v1 use
 
-Once the series finishes, production code names `encoding/json` in only three places, apart from generated code. Each reads or writes a format that Astilba does not control or must not change, so moving it would change behaviour rather than tidy an import:
+Once the series finishes, production code names `encoding/json` in only four places. Each reads or writes a format that Astilba does not control or must not change, so moving it would change behaviour rather than tidy an import:
 
 - **`internal/stablejson`**, for `DefaultOptionsV1`, the decoder behind `Normalize` and `MarshalIndent`, whose output `jsontext.WithIndent` does not reproduce. This is the frozen format itself.
 - **`internal/domain/compose.go`**, for `DefaultOptionsV1` on `x-astilba` metadata. The YAML is the user's own text in an immutable, content-hashed revision, so it cannot be rewritten to suit a stricter reader.
+- **`internal/pipeline/railpack_plan.go`**, for `DefaultOptionsV1` on a repository's `railpack.json`, for the same reason as Compose metadata: it is the user's own text, and it is read again for every build.
 - **`internal/cryptobox`**, for `ParseBytesWithLooseRFC4648` on keyrings. Operators write these files, and this option is the standard library's named switch for the line breaks they contain.
 
 Test code may keep v1, which also exercises the format older peers write.

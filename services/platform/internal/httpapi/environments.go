@@ -4,7 +4,8 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"github.com/astilbahq/astilba/services/platform/internal/composeproject"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"net/http"
@@ -25,7 +26,7 @@ func environment(v db.GetEnvironmentRow) api.Environment {
 	return api.Environment{Purpose: &purpose, Id: v.ID, ProjectId: v.ProjectID, Name: v.Name, ConfigurationOwner: api.EnvironmentConfigurationOwner(v.ConfigurationOwner), DraftRevisionId: v.DraftRevisionID, AppliedRevisionId: v.AppliedRevisionID, DeploymentUnit: api.DeploymentUnit{Id: v.UnitID, Runtime: api.Docker, ServerId: v.ServerID}}
 }
 func revision(v db.SpecificationRevision) api.Revision {
-	return api.Revision{Id: v.ID, AuthorId: v.AuthorID, CreatedAt: v.CreatedAt, Hash: hex.EncodeToString(v.ContentHash), Specification: json.RawMessage(v.Specification)}
+	return api.Revision{Id: v.ID, AuthorId: v.AuthorID, CreatedAt: v.CreatedAt, Hash: hex.EncodeToString(v.ContentHash), Specification: jsontext.Value(v.Specification)}
 }
 func (s *Server) ListProjects(w http.ResponseWriter, r *http.Request, ws uuid.UUID) {
 	s.scope(w, r, ws, store.WorkspaceAccess{}, func(q *db.Queries, _ store.Workspace) (any, error) {

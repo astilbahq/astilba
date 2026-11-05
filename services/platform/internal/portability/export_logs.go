@@ -1,7 +1,8 @@
 package portability
 
 import (
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 )
@@ -13,14 +14,14 @@ func omitExportLogs(table string, row Row) error {
 	case "execution_operations":
 		setValue(row, "note", "")
 	case "supported_upgrades":
-		var status map[string]json.RawMessage
+		var status map[string]jsontext.Value
 		if json.Unmarshal(row["status"], &status) != nil {
 			return ErrArchive
 		}
 		delete(status, "note")
 		row["status"], _ = stablejson.Marshal(status)
 	case "pipeline_runs":
-		var result map[string]json.RawMessage
+		var result map[string]jsontext.Value
 		if json.Unmarshal(row["result"], &result) != nil {
 			return ErrArchive
 		}
@@ -31,7 +32,7 @@ func omitExportLogs(table string, row Row) error {
 		row["observation"], err = omitObservationLogs(row["observation"])
 		return err
 	case "cross_host_runtime":
-		var inventory map[string]json.RawMessage
+		var inventory map[string]jsontext.Value
 		if json.Unmarshal(row["inventory"], &inventory) != nil {
 			return ErrArchive
 		}
@@ -44,7 +45,7 @@ func omitExportLogs(table string, row Row) error {
 		}
 		row["inventory"], _ = stablejson.Marshal(inventory)
 	case "cross_host_operations":
-		var receipts map[string]map[string]json.RawMessage
+		var receipts map[string]map[string]jsontext.Value
 		if json.Unmarshal(row["receipts"], &receipts) != nil {
 			return ErrArchive
 		}
@@ -62,8 +63,8 @@ func omitExportLogs(table string, row Row) error {
 	return nil
 }
 
-func omitObservationLogs(raw json.RawMessage) (json.RawMessage, error) {
-	var observation map[string]json.RawMessage
+func omitObservationLogs(raw jsontext.Value) (jsontext.Value, error) {
+	var observation map[string]jsontext.Value
 	if json.Unmarshal(raw, &observation) != nil {
 		return nil, ErrArchive
 	}
@@ -71,7 +72,7 @@ func omitObservationLogs(raw json.RawMessage) (json.RawMessage, error) {
 	if !ok {
 		return raw, nil
 	}
-	var items []map[string]json.RawMessage
+	var items []map[string]jsontext.Value
 	if json.Unmarshal(resources, &items) != nil {
 		return nil, ErrArchive
 	}

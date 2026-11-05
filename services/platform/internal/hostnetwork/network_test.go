@@ -122,3 +122,12 @@ func TestDecodeRefusesAmbiguousNames(t *testing.T) {
 		t.Fatalf("exact receipt: %+v, %v", got, err)
 	}
 }
+
+func TestToolOutputKeepsReadingForeignInterfaceAliases(t *testing.T) {
+	var links []struct {
+		Name string `json:"ifname"`
+	}
+	if err := readToolJSON([]byte(`[{"ifname":"eth0","ifalias":"caf`+"\xff"+`"}]`), &links); err != nil || links[0].Name != "eth0" {
+		t.Fatalf("links %+v, %v", links, err)
+	}
+}
