@@ -345,7 +345,7 @@ another package counts as new SQL, so convert it to sqlc as part of the move.
 code. Each analyzer turns a defect that review kept catching into a failure with a
 one-sentence explanation:
 
-| Analyzer | Fails when | Caught by review in |
+| Analyzer | Fails when | From |
 | --- | --- | --- |
 | `dberror` | A branch on the error from a value-returning sqlc method or a row scan never looks at it, so an outage reads as a refusal or a missing row. Use `store.IfMissing` or return the error. | #122, #147 |
 | `wsclose` | Code outside `internal/terminal` calls `(*websocket.Conn).Close`, which a peer stalled inside a frame can hold forever. Use `terminal.Close`. | #117, #118, #131 |
@@ -360,6 +360,13 @@ There is no suppression comment: each failure has a direct fix, and an analyzer
 that needs exceptions should change or go. Add one only for a defect that recurs,
 that it can detect without false alarms, and whose failure fits in a sentence.
 Test it with `analysistest` against the shape of the original defect.
+
+## Pin alignment
+
+`make check-ci` runs `scripts/pin-alignment.mjs`, which reads the workspace file,
+manifests, lockfile and workflows without installing anything and fails when pins
+that must move together differ. [Dependency pins](frontend-development.md#dependency-pins)
+lists them.
 
 ## Browser shards
 

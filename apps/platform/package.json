@@ -38,12 +38,12 @@
   },
   "devDependencies": {
     "@axe-core/playwright": "4.14.0",
-    "@pandacss/dev": "2.4.0",
-    "@pandacss/eslint-plugin": "2.4.0",
-    "@pandacss/preset-base": "2.4.0",
-    "@pandacss/preset-panda": "2.4.0",
-    "@pandacss/vite": "2.4.0",
-    "@playwright/test": "1.64.1",
+    "@pandacss/dev": "catalog:",
+    "@pandacss/eslint-plugin": "catalog:",
+    "@pandacss/preset-base": "catalog:",
+    "@pandacss/preset-panda": "catalog:",
+    "@pandacss/vite": "catalog:",
+    "@playwright/test": "catalog:",
     "@storybook/addon-a11y": "10.6.5",
     "@storybook/tanstack-react": "10.6.5",
     "@types/node": "24.19.2",
@@ -56,7 +56,7 @@
     "msw-storybook-addon": "3.0.3",
     "storybook": "10.6.5",
     "typescript": "7.0.2",
-    "vite": "npm:@voidzero-dev/vite-plus-core@1.4.0",
-    "vite-plus": "1.4.0"
+    "vite": "catalog:",
+    "vite-plus": "catalog:"
   }
 }
