@@ -634,15 +634,15 @@ func TestNativePipeline(t *testing.T) {
 			replayNext = fixture.name == "node"
 			beforeCount := preparedCount
 			record := run(command)
-			if preparedCount != beforeCount+1 {
-				t.Fatal("replay prepared a different plan")
-			}
 			var built pipeline.Result
 			if record.Report.Pipeline != nil {
 				_ = json.Unmarshal(*record.Report.Pipeline, &built)
 			}
 			if record.Report.State != "succeeded" {
-				t.Fatal("Railpack build", record.Report.Note, built.Logs)
+				t.Fatalf("Railpack build %s after preparing %d times: %s\n%s", record.Report.State, preparedCount-beforeCount, record.Report.Note, built.Logs)
+			}
+			if preparedCount != beforeCount+1 {
+				t.Fatalf("a build prepared its plan %d times: a replay must reuse the frozen plan", preparedCount-beforeCount)
 			}
 			t.Cleanup(func() { _, _ = docker.ImageRemove(ctx, built.Image, client.ImageRemoveOptions{Force: true}) })
 			if record.Railpack == nil || !record.Railpack.Valid(inputs) || built.Railpack == nil || built.Railpack.Provider != fixture.name || built.Commit != command.Commit || built.Architecture != runtime.GOARCH {
