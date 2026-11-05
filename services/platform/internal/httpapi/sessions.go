@@ -23,13 +23,17 @@ var errSessionResponse = errors.New("browser session response is unavailable")
 type sessionLoadKey struct{}
 type sessionLoad struct {
 	token string
-	// moveTerminals defers deleting the old token so the renewed session, the old
-	// session's removal and its terminal bindings commit together.
+	// replaceLive defers deleting the old token so the renewed session and the old
+	// session's removal commit together, and the renewal fails if the old row has gone.
+	replaceLive bool
+	// moveTerminals also carries the old session's terminal bindings to the new token.
 	moveTerminals bool
 	// presented is the cookie the browser sent, whether or not its session is alive.
 	presented string
 	// keepCookie leaves a destroyed session's cookie in the browser. See dropStaleSession.
 	keepCookie bool
+	// keepRow leaves a destroyed session's row in place. See dropStaleSession.
+	keepRow bool
 }
 
 type sessionStore struct {
@@ -39,15 +43,15 @@ type sessionStore struct {
 }
 
 func (s *sessionStore) DeleteCtx(ctx context.Context, token string) error {
-	if loaded, _ := ctx.Value(sessionLoadKey{}).(*sessionLoad); loaded != nil && loaded.moveTerminals && loaded.token == token {
+	if loaded, _ := ctx.Value(sessionLoadKey{}).(*sessionLoad); loaded != nil && (loaded.replaceLive || loaded.keepRow) && loaded.token == token {
 		return nil
 	}
 	return s.PostgresStore.DeleteCtx(ctx, token)
 }
 
-// renewWithTerminals replaces a token in one transaction, so a re-check of an open
-// terminal session finds exactly one of them.
-func (s *sessionStore) renewWithTerminals(ctx context.Context, previous, token string, data []byte, expiry time.Time) error {
+// renewLive replaces a token in one transaction, so a re-check of an open terminal
+// session finds exactly one of them.
+func (s *sessionStore) renewLive(ctx context.Context, previous, token string, data []byte, expiry time.Time, moveTerminals bool) error {
 	oldHash, err := base64.RawURLEncoding.DecodeString(previous)
 	if err != nil {
 		return err
@@ -65,6 +69,9 @@ func (s *sessionStore) renewWithTerminals(ctx context.Context, previous, token s
 		}
 		if err := q.InsertSession(ctx, db.InsertSessionParams{Token: token, Data: data, Expiry: expiry}); err != nil {
 			return err
+		}
+		if !moveTerminals {
+			return nil
 		}
 		return q.MoveTroubleshootingBrowserBinding(ctx, db.MoveTroubleshootingBrowserBindingParams{Renewed: newHash, Previous: oldHash})
 	})
@@ -101,8 +108,8 @@ func (s *sessionStore) CommitCtx(ctx context.Context, token string, data []byte,
 		if n == 0 {
 			return errSessionRevoked
 		}
-	} else if loaded.moveTerminals && loaded.token != "" {
-		if err := s.renewWithTerminals(ctx, loaded.token, token, data, expiry); err != nil {
+	} else if loaded.replaceLive {
+		if err := s.renewLive(ctx, loaded.token, token, data, expiry, loaded.moveTerminals); err != nil {
 			return err
 		}
 	} else {
@@ -206,8 +213,10 @@ func (s *Server) browserSession(next http.Handler) http.Handler {
 // rotate replaces the token after an account change on an authenticated session.
 // None of these changes proves a fresh credential: a recent session is enough, and
 // ConfirmMFA's code comes from a secret that session was just given. They therefore
-// keep the session's absolute deadline and recent authentication.
+// keep the session's absolute deadline and recent authentication, and a session that
+// a logout has deleted stays deleted.
 func (s *Server) rotate(ctx context.Context, a db.Account, mfa bool) error {
+	ctx.Value(sessionLoadKey{}).(*sessionLoad).replaceLive = true
 	deadline := s.Sessions.Deadline(ctx)
 	recent := s.Sessions.GetTime(ctx, "recent")
 	if err := s.establish(ctx, a, mfa); err != nil {
@@ -220,9 +229,12 @@ func (s *Server) rotate(ctx context.Context, a db.Account, mfa bool) error {
 
 // dropStaleSession ends a session whose account has moved on, without touching the
 // browser's cookie: this request may have been overtaken by the credential change that
-// renewed it, and a dead token grants nothing.
-func (s *Server) dropStaleSession(ctx context.Context) error {
-	ctx.Value(sessionLoadKey{}).(*sessionLoad).keepCookie = true
+// renewed it, and a dead token grants nothing. keepRow also leaves the row for an account
+// that still exists, because that change may still be replacing it and must not see it
+// removed as if by a logout, and a token on an older account version grants nothing.
+func (s *Server) dropStaleSession(ctx context.Context, keepRow bool) error {
+	loaded := ctx.Value(sessionLoadKey{}).(*sessionLoad)
+	loaded.keepCookie, loaded.keepRow = true, keepRow
 	return s.Sessions.Destroy(ctx)
 }
 
@@ -251,9 +263,11 @@ func (s *Server) Reauthenticate(w http.ResponseWriter, r *http.Request) {
 	a, e := s.Auth.Reauthenticate(r.Context(), principal(r.Context()).Account.ID, value(b.Password), value(b.Code))
 	if e == nil {
 		// Confirming credentials keeps open terminal sessions, unlike any other renewal. A
-		// recovery code changes the account's version, which ends them, and another request
-		// may then have removed the old session, so there is nothing to move.
-		r.Context().Value(sessionLoadKey{}).(*sessionLoad).moveTerminals = a.AuthVersion == principal(r.Context()).Account.AuthVersion
+		// recovery code changes the account's version, which ends them, so there is nothing
+		// to move.
+		loaded := r.Context().Value(sessionLoadKey{}).(*sessionLoad)
+		loaded.replaceLive = true
+		loaded.moveTerminals = a.AuthVersion == principal(r.Context()).Account.AuthVersion
 		nonce := s.Sessions.GetString(r.Context(), "github-session")
 		e = s.establish(r.Context(), a, len(a.TotpSecret) > 0)
 		if e == nil && nonce != "" {

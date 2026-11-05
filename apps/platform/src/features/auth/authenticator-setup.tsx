@@ -34,7 +34,7 @@ export function AuthenticatorSetup({
   const session = useQuery(sessionOptions).data;
   const queries = useQueryClient();
   const begin = useAction();
-  const request = useSessionRequest();
+  const request = useSessionRequest({ renewal: true });
   const confirm = useAction();
   const validation = useAuthValidation();
   const [requested, setRequested] = useState(false);

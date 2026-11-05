@@ -42,7 +42,7 @@ function PasswordSection() {
   const { t } = useTranslation("account");
   const queries = useQueryClient();
   const session = useQuery(sessionOptions).data;
-  const request = useSessionRequest();
+  const request = useSessionRequest({ renewal: true });
   const action = useAction();
   const validation = useAuthValidation();
   const [editing, setEditing] = useState(false);
@@ -164,7 +164,7 @@ function CredentialDialog({
   const session = useQuery(sessionOptions).data;
   const queries = useQueryClient();
   const action = useAction();
-  const request = useSessionRequest();
+  const request = useSessionRequest({ renewal: true });
   const validation = useAuthValidation();
   const cancel = useRef<HTMLButtonElement>(null);
   const title = useRef<HTMLHeadingElement>(null);

@@ -310,17 +310,66 @@ func (s *Service) hydrateUpgrade(ctx context.Context, c *api.ExecutionCommand) e
 	c.Upgrade = rawMessage(raw)
 	return nil
 }
+
+// refusedUpgrade settles a plan whose command ended without a status. Agents do that
+// when they cannot read or trust the plan, normally before admitting the command;
+// steps show this attempt was admitted earlier. Only a prepare starts from a host with
+// nothing to recover. WritesPossible stays as last reported: the controller can never
+// lower it again, and the agent's own record refuses a return after new writes.
+func refusedUpgrade(status upgrade.Status, action string, r *api.AgentReport) upgrade.Status {
+	if action == "prepare" && len(r.Steps) == 0 {
+		status.Phase = "rejected"
+		status.Note = "The agent refused this upgrade before changing the host. The operation's note says why."
+		return status
+	}
+	status.Phase = "attention"
+	if len(r.Steps) > 0 {
+		status.Serving = "unknown"
+	}
+	status.Note = "The agent ended this upgrade action without reporting an outcome. Inspect the host and the operation's note before choosing a recovery action."
+	return status
+}
+
+// undeliveredUpgrade settles the plan of a command that will never reach the host,
+// returning it to the phase the host still holds. Return and reconcile can start from
+// more than one phase; attention keeps the recovery each one allows.
+func undeliveredUpgrade(ctx context.Context, tx pgx.Tx, ws uuid.UUID, c api.ExecutionCommand) error {
+	var cmd upgrade.Command
+	if c.Upgrade == nil || json.Unmarshal(*c.Upgrade, &cmd) != nil {
+		return domain.Invalid("upgrade")
+	}
+	q := db.New(tx)
+	raw, err := q.SupportedUpgradeStatus(ctx, db.SupportedUpgradeStatusParams{WorkspaceID: ws, ID: c.ResourceId})
+	if err != nil {
+		return err
+	}
+	var status upgrade.Status
+	if json.Unmarshal(raw, &status) != nil {
+		return domain.Conflict
+	}
+	if status.Phase != "running" {
+		return nil
+	}
+	switch cmd.Action {
+	case "prepare":
+		status.Phase = "rejected"
+	case "cutover":
+		status.Phase = "ready"
+	default:
+		status.Phase = "attention"
+	}
+	status.Note = "This upgrade action stopped before reaching the host and changed nothing. The operation's note says why."
+	raw, _ = json.Marshal(status)
+	return q.SaveSupportedUpgradeStatus(ctx, db.SaveSupportedUpgradeStatusParams{WorkspaceID: ws, ID: c.ResourceId, Status: raw})
+}
 func (s *Service) upgradeReport(ctx context.Context, tx pgx.Tx, c api.ExecutionCommand, r *api.AgentReport) error {
-	if r.Upgrade == nil {
-		if Terminal(r.State) {
-			return domain.Invalid("upgrade")
-		}
+	if r.Upgrade == nil && !Terminal(r.State) {
 		return nil
 	}
 	var cmd upgrade.Command
 	var next, old upgrade.Status
 	var raw []byte
-	if c.Upgrade == nil || json.Unmarshal(*c.Upgrade, &cmd) != nil || cmd.Digest() != c.PlanHash || json.Unmarshal(*r.Upgrade, &next) != nil {
+	if c.Upgrade == nil || json.Unmarshal(*c.Upgrade, &cmd) != nil || cmd.Digest() != c.PlanHash || r.Upgrade != nil && json.Unmarshal(*r.Upgrade, &next) != nil {
 		return domain.Invalid("upgrade")
 	}
 	if cmd.Plan.Source.ServerID != c.ServerId || cmd.Plan.Source.EnvironmentID != c.EnvironmentId || cmd.Plan.ID != c.ResourceId {
@@ -332,7 +381,16 @@ func (s *Service) upgradeReport(ctx context.Context, tx pgx.Tx, c api.ExecutionC
 	if json.Unmarshal(raw, &old) != nil {
 		return domain.Conflict
 	}
-	if old.WritesPossible && !next.WritesPossible || next.Phase == "returned" && next.WritesPossible || next.Phase == "ready" && (next.WritesPossible || !backup.SnapshotID(next.Snapshot)) || next.Phase == "complete" && (!next.WritesPossible || next.Serving != "new") || len(next.Note) > 1024 {
+	if r.Upgrade == nil {
+		// Success always states its outcome, and only a plan still at running awaits one.
+		if r.State == "succeeded" {
+			return domain.Invalid("upgrade")
+		}
+		if old.Phase != "running" {
+			return nil
+		}
+		next = refusedUpgrade(old, cmd.Action, r)
+	} else if old.WritesPossible && !next.WritesPossible || next.Phase == "returned" && next.WritesPossible || next.Phase == "ready" && (next.WritesPossible || !backup.SnapshotID(next.Snapshot)) || next.Phase == "complete" && (!next.WritesPossible || next.Serving != "new") || len(next.Note) > 1024 {
 		return domain.Invalid("upgrade.status")
 	}
 	if (next.Phase == "complete" || next.Phase == "returned") && c.ParentId != nil {

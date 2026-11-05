@@ -15,7 +15,7 @@ ARG TARGETARCH
 ARG SOURCE_REVISION=development
 RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build GOOS="$TARGETOS" GOARCH="$TARGETARCH" SOURCE_REVISION="$SOURCE_REVISION" pnpm app:build /out/astilba
 
-FROM alpine:3.23.4@sha256:5b10f432ef3da1b8d4c7eb6c487f2f5a8f096bc91145e68878dd4a5019afde11
+FROM alpine:3.24.3@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a
 ARG SOURCE_REVISION=development
 LABEL org.opencontainers.image.source="https://github.com/astilbahq/astilba" \
       org.opencontainers.image.licenses="AGPL-3.0-only" \

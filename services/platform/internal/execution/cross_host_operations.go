@@ -219,7 +219,7 @@ func (s *Service) coordinate(ctx context.Context, tx pgx.Tx, job *river.Job[jobA
 					return err
 				}
 			}
-			return completeCoordination(ctx, tx, job, c.Id, "cancelled", "Cancelled before recovery metadata or any host effects were admitted.")
+			return completeBeforeEffects(ctx, tx, job, ws, c.Id, command.Maintenance, "cancelled", "Cancelled before recovery metadata or any host effects were admitted.")
 		}
 		var phase string
 		if err := tx.QueryRow(ctx, `SELECT phase FROM cross_host_operations WHERE id=$1`, c.Id).Scan(&phase); err != nil {
@@ -239,7 +239,7 @@ func (s *Service) coordinate(ctx context.Context, tx pgx.Tx, job *river.Job[jobA
 					return err
 				}
 			}
-			return completeCoordination(ctx, tx, job, c.Id, "failed", "Recovery metadata exceeds the supported checkpoint limits; no host was reserved or changed.")
+			return completeBeforeEffects(ctx, tx, job, ws, c.Id, command.Maintenance, "failed", "Recovery metadata exceeds the supported checkpoint limits; no host was reserved or changed.")
 		}
 		if err != nil {
 			return err

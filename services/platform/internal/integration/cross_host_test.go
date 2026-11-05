@@ -1039,9 +1039,7 @@ func testCrossHostCoordinatedPlacement(t *testing.T, expiryPhase string) {
 	var recovery backup.Policy
 	refreshAuthentication()
 	b.call("POST", databasePath+"/backup-policies", api.BackupPolicyRequest{Name: "Recovery", ResourceId: pg, DestinationId: destination.ID, Method: "postgres-logical", Schedule: api.DailySchedule{Timezone: "UTC"}, Retain: 7, Enabled: true, Command: []string{}, Password: &password}, 201, &recovery)
-	var view upgrade.View
-	refreshAuthentication()
-	b.call("POST", databasePath+"/upgrades", api.UpgradeRequest{PolicyId: recovery.ID, ResourceId: pg, BaseRevisionId: databaseDraft.Id, RetainDays: 7}, 201, &view)
+	view := planAfterCancelledCoordinatedPrepare(t, f, b, refreshAuthentication, wait, databasePath, api.UpgradeRequest{PolicyId: recovery.ID, ResourceId: pg, BaseRevisionId: databaseDraft.Id, RetainDays: 7})
 	actions := databasePath + "/upgrades/" + view.Plan.ID.String() + "/actions"
 	prepare := api.UpgradeActionRequest{Action: "prepare", ExpectedPhase: "planned", RequestKey: uuid.New()}
 	var parent, same api.Operation
@@ -1067,6 +1065,7 @@ func testCrossHostCoordinatedPlacement(t *testing.T, expiryPhase string) {
 	// despite legitimately becoming the applied revision afterwards.
 	var preservedTargetDraft api.Revision
 	b.call("PUT", databasePath+"/draft", map[string]any{"baseRevisionId": databaseDraft.Id, "specification": view.Plan.TargetGroup().Specification}, 200, &preservedTargetDraft)
+	cancelCoordinatedCutover(t, f, b, refreshAuthentication, wait, actions, parent.Id, view.Plan.ID)
 	holdRemoteResume.Store(true)
 	holdPrimaryResume.Store(true)
 	cutover := api.UpgradeActionRequest{Action: "cutover", ExpectedPhase: "ready", RequestKey: uuid.New()}

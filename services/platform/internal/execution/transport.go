@@ -228,6 +228,11 @@ func (s *Service) Report(ctx context.Context, a Identity, r api.AgentReport) err
 	if c.Generation != r.Generation || c.PlanHash != r.PlanHash || (a.Role == "build" && c.Kind != "update" && c.Kind != "pipeline") || (a.Role == "deployment" && c.Kind == "pipeline") {
 		return domain.Forbidden
 	}
+	// Poll never delivers a coordination root. Only the controller may settle one: a
+	// terminal report would stop coordinate resuming and releasing the other hosts.
+	if c.Kind == "crosshost" && c.ParentId == nil {
+		return domain.Forbidden
+	}
 	if r.Sequence <= seq {
 		return tx.Commit(ctx)
 	}

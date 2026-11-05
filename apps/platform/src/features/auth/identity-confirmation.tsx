@@ -23,7 +23,7 @@ export function IdentityConfirmation({
   const queries = useQueryClient();
   const user = useQuery(sessionOptions).data?.user;
   const action = useAction();
-  const request = useSessionRequest();
+  const request = useSessionRequest({ renewal: true });
   const validation = useAuthValidation();
   const [recovery, setRecovery] = useState(false);
   const heading = useRef<HTMLHeadingElement>(null);
