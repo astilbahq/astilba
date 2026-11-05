@@ -3,7 +3,8 @@ package integration
 import (
 	"archive/zip"
 	"bytes"
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"io"
 	"strings"
 	"testing"
@@ -14,6 +15,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/execution"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 )
 
@@ -74,8 +76,8 @@ func TestComposeSourceAdmissionAndExport(t *testing.T) {
 	}
 	report := func(command api.ExecutionCommand, observation deployment.Observation) {
 		t.Helper()
-		raw, _ := json.Marshal(observation)
-		message := json.RawMessage(raw)
+		raw, _ := stablejson.Marshal(observation)
+		message := jsontext.Value(raw)
 		agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/report", token, api.AgentReport{Id: command.Id, Generation: command.Generation, PlanHash: command.PlanHash, Sequence: 2, State: "succeeded", Steps: []api.ExecutionStep{}, Observation: &message}, 204, nil)
 	}
 	create := func() deployment.Status {

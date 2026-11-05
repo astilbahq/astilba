@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,6 +13,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/execution"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/mount"
@@ -177,7 +177,7 @@ func nativeFilesAndJobs(t *testing.T, e *Engine, server uuid.UUID) {
 	if err = e.Journal.saveSchedule(timed); err != nil {
 		t.Fatal(err)
 	}
-	raw, _ := json.Marshal(jobState.Runs)
+	raw, _ := stablejson.Marshal(jobState.Runs)
 	if strings.Contains(string(raw), "canary") {
 		t.Fatal("job result leaked secrets")
 	}

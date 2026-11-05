@@ -4,7 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
+	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"os"
@@ -19,6 +19,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/execution"
 	"github.com/astilbahq/astilba/services/platform/internal/hostnetwork"
 	"github.com/astilbahq/astilba/services/platform/internal/portability"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/moby/moby/client"
@@ -144,7 +145,9 @@ func verifyRecoveryOrdering(t *testing.T, source *fixture, ws uuid.UUID, before,
 		for rows.Next() {
 			var id uuid.UUID
 			var raw []byte
-			var status struct{ Generation int64 }
+			var status struct {
+				Generation int64 `json:"generation"`
+			}
 			if err = rows.Scan(&id, &raw); err != nil || json.Unmarshal(raw, &status) != nil {
 				t.Fatal("read accepted schedule inventory", err)
 			}
@@ -162,7 +165,7 @@ func verifyRecoveryOrdering(t *testing.T, source *fixture, ws uuid.UUID, before,
 		if err == nil {
 			evidence.Networks = []hostnetwork.Manifest{manifest}
 		}
-		raw, err = json.Marshal(evidence)
+		raw, err = stablejson.Marshal(evidence)
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -5,7 +5,8 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"fmt"
 	"io"
 	"net/http"
@@ -26,6 +27,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/execution"
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/containerd/errdefs"
 	"github.com/google/uuid"
 	"github.com/moby/moby/client"
@@ -120,7 +122,7 @@ func TestNativePipeline(t *testing.T) {
 			if r.Method == "GET" {
 				if reviews.Load() > 0 {
 					_, branch, _ := strings.Cut(r.URL.Query().Get("head"), ":")
-					_ = json.NewEncoder(w).Encode([]map[string]any{{"number": 1, "html_url": "http://127.0.0.1/review/1", "head": map[string]string{"ref": branch}, "base": map[string]string{"ref": "main"}}})
+					_ = stablejson.Encode(w, []map[string]any{{"number": 1, "html_url": "http://127.0.0.1/review/1", "head": map[string]string{"ref": branch}, "base": map[string]string{"ref": "main"}}})
 				} else {
 					_, _ = w.Write([]byte("[]"))
 				}
@@ -180,8 +182,8 @@ func TestNativePipeline(t *testing.T) {
 				t.Fatal("invalid native pipeline fixture")
 			}
 			frozen.Access, frozen.BuildSecrets, frozen.RegistryAccess = nil, nil, nil
-			raw, _ := json.Marshal(frozen)
-			message := json.RawMessage(raw)
+			raw, _ := stablejson.Marshal(frozen)
+			message := jsontext.Value(raw)
 			active.Pipeline = &message
 			if _, err := journal.Accept(active); err != nil {
 				t.Fatal(err)
@@ -198,8 +200,8 @@ func TestNativePipeline(t *testing.T) {
 	run := func(p pipeline.Command) Record {
 		t.Helper()
 		generation++
-		raw, _ := json.Marshal(p)
-		message := json.RawMessage(raw)
+		raw, _ := stablejson.Marshal(p)
+		message := jsontext.Value(raw)
 		c := api.ExecutionCommand{Id: uuid.New(), ServerId: serverID, EnvironmentId: uuid.New(), ResourceId: p.UnitID, Generation: generation, Kind: "pipeline", Action: "inspect", PlanHash: p.Digest(), Pipeline: &message, Deadline: time.Now().Add(2 * time.Minute)}
 		if p.Build != nil && p.Build.UsesRailpack() {
 			c.Deadline = time.Now().Add(10 * time.Minute)
@@ -360,7 +362,7 @@ func TestNativePipeline(t *testing.T) {
 	if changedResult.Commit != changed.Commit {
 		t.Fatal("cache changed assigned source identity")
 	}
-	raw, _ := json.Marshal(inspected)
+	raw, _ := stablejson.Marshal(inspected)
 	if strings.Contains(string(raw), "build-secret-canary") || strings.Contains(string(raw), "reader-token") {
 		t.Fatal("credential leaked into image config")
 	}
@@ -518,8 +520,8 @@ func TestNativePipeline(t *testing.T) {
 		}
 		command := build
 		command.CacheScope = ""
-		raw, _ := json.Marshal(command)
-		message := json.RawMessage(raw)
+		raw, _ := stablejson.Marshal(command)
+		message := jsontext.Value(raw)
 		generation++
 		c := api.ExecutionCommand{Id: uuid.New(), ServerId: serverID, EnvironmentId: uuid.New(), ResourceId: command.UnitID, Generation: generation, Kind: "pipeline", Action: "inspect", PlanHash: command.Digest(), Pipeline: &message, Deadline: time.Now().Add(time.Minute)}
 		active = c
@@ -551,8 +553,8 @@ func TestNativePipeline(t *testing.T) {
 			}
 		}
 		command.Access, command.BuildSecrets, command.RegistryAccess = nil, nil, nil
-		cancelRaw, _ := json.Marshal(command)
-		cancelMessage := json.RawMessage(cancelRaw)
+		cancelRaw, _ := stablejson.Marshal(command)
+		cancelMessage := jsontext.Value(cancelRaw)
 		c.Pipeline, c.CancelRequested = &cancelMessage, true
 		if _, err := journal.Accept(c); err != nil {
 			t.Fatal(err)
@@ -670,7 +672,7 @@ func TestNativePipeline(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			raw, _ := json.Marshal(image)
+			raw, _ := stablejson.Marshal(image)
 			if strings.Contains(string(raw), "railpack-build-secret-canary") || strings.Contains(built.Logs, "railpack-build-secret-canary") {
 				t.Fatal("secret entered image configuration or logs")
 			}

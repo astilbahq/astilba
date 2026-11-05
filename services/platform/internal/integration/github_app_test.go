@@ -9,7 +9,8 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/hex"
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"encoding/pem"
 	"fmt"
 	"io"
@@ -29,6 +30,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/execution"
 	"github.com/astilbahq/astilba/services/platform/internal/githubapp"
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 )
 
@@ -56,39 +58,39 @@ func TestGitHubOnboardingDelegationAndRecoveryBoundaries(t *testing.T) {
 				w.WriteHeader(401)
 				return
 			}
-			json.NewEncoder(w).Encode(map[string]string{"access_token": "user-proof-canary", "refresh_token": "discard-this-refresh"})
+			stablejson.Encode(w, map[string]string{"access_token": "user-proof-canary", "refresh_token": "discard-this-refresh"})
 		case r.URL.Path == "/user":
-			json.NewEncoder(w).Encode(map[string]any{"id": 7, "login": "repository-admin"})
+			stablejson.Encode(w, map[string]any{"id": 7, "login": "repository-admin"})
 		case r.URL.Path == "/user/installations":
-			json.NewEncoder(w).Encode(map[string]any{"installations": []map[string]any{{"id": 2, "app_id": 1, "account": map[string]string{"login": "team"}}}})
+			stablejson.Encode(w, map[string]any{"installations": []map[string]any{{"id": 2, "app_id": 1, "account": map[string]string{"login": "team"}}}})
 		case r.URL.Path == "/user/installations/2/repositories":
-			json.NewEncoder(w).Encode(map[string]any{"repositories": []map[string]any{{"id": 12, "full_name": "team/app", "private": true, "permissions": map[string]bool{"admin": !notAdmin.Load()}}}})
+			stablejson.Encode(w, map[string]any{"repositories": []map[string]any{{"id": 12, "full_name": "team/app", "private": true, "permissions": map[string]bool{"admin": !notAdmin.Load()}}}})
 		case r.URL.Path == "/app":
-			json.NewEncoder(w).Encode(map[string]any{"id": 1, "client_id": "fixture-client"})
+			stablejson.Encode(w, map[string]any{"id": 1, "client_id": "fixture-client"})
 		case r.URL.Path == "/repos/team/app/installation":
 			if revoked.Load() {
 				w.WriteHeader(404)
 				return
 			}
-			json.NewEncoder(w).Encode(map[string]any{"id": 2, "app_id": 1, "permissions": map[string]string{"contents": "write", "pull_requests": "write"}})
+			stablejson.Encode(w, map[string]any{"id": 2, "app_id": 1, "permissions": map[string]string{"contents": "write", "pull_requests": "write"}})
 		case r.URL.Path == "/repos/team/app":
 			metadata.Add(1)
-			json.NewEncoder(w).Encode(map[string]any{"id": 12, "full_name": "team/app", "private": true, "permissions": map[string]bool{"admin": !notAdmin.Load()}})
+			stablejson.Encode(w, map[string]any{"id": 12, "full_name": "team/app", "private": true, "permissions": map[string]bool{"admin": !notAdmin.Load()}})
 		case r.URL.Path == "/repos/team/app/branches/main" || r.URL.Path == "/repos/team/app/branches/other":
-			json.NewEncoder(w).Encode(map[string]any{"commit": map[string]string{"sha": strings.Repeat("a", 40)}})
+			stablejson.Encode(w, map[string]any{"commit": map[string]string{"sha": strings.Repeat("a", 40)}})
 		case r.URL.Path == "/app/installations/2/access_tokens":
 			var in struct {
 				IDs         []int64           `json:"repository_ids"`
 				Permissions map[string]string `json:"permissions"`
 			}
-			_ = json.NewDecoder(r.Body).Decode(&in)
+			_ = json.UnmarshalDecode(jsontext.NewDecoder(r.Body), &in)
 			if len(in.IDs) != 1 || in.IDs[0] != 12 {
 				t.Error("unscoped token requested")
 				w.WriteHeader(400)
 				return
 			}
 			minted.Add(1)
-			json.NewEncoder(w).Encode(map[string]any{"token": "installation-" + in.Permissions["contents"] + "-canary", "expires_at": time.Now().Add(time.Hour), "repositories": []map[string]int{{"id": 12}}, "permissions": in.Permissions})
+			stablejson.Encode(w, map[string]any{"token": "installation-" + in.Permissions["contents"] + "-canary", "expires_at": time.Now().Add(time.Hour), "repositories": []map[string]int{{"id": 12}}, "permissions": in.Permissions})
 		case r.URL.Path == "/applications/fixture-client/token":
 			w.WriteHeader(204)
 		default:
@@ -231,8 +233,8 @@ func TestGitHubOnboardingDelegationAndRecoveryBoundaries(t *testing.T) {
 	var values map[string]any
 	_ = json.Unmarshal(config, &values)
 	values["id"] = imported.String()
-	config, _ = json.Marshal(values)
-	access, _ := json.Marshal(pipeline.Access{})
+	config, _ = stablejson.Marshal(values)
+	access, _ := stablejson.Marshal(pipeline.Access{})
 	cipher, e = f.st.Keys.Seal(access, pipeline.EncryptionIdentity(ws, imported, "git"))
 	if e != nil {
 		t.Fatal(e)

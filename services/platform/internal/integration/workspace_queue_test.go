@@ -2,7 +2,7 @@ package integration
 
 import (
 	"context"
-	"encoding/json"
+	"encoding/json/jsontext"
 	"net/http"
 	"testing"
 	"time"
@@ -120,7 +120,7 @@ func TestWorkspaceLockWaitersLeaveThePoolServing(t *testing.T) {
 		}
 	}
 
-	network := json.RawMessage(`{}`)
+	network := jsontext.Value(`{}`)
 	finished := make(chan struct{}, 4*waiters)
 	for range waiters {
 		for _, attempt := range []func(*browser, context.Context) (int, error){rename, closeSessions} {

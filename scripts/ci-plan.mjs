@@ -23,6 +23,7 @@ const owns = (prefix, workflow) => (path) =>
   path === "Makefile";
 const javascript = (path) =>
   [
+    ".github/actions/install-pnpm/action.yml",
     "package.json",
     "pnpm-lock.yaml",
     "pnpm-workspace.yaml",

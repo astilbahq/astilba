@@ -6,7 +6,6 @@ import {
   ShellPreview,
   environments,
   examples,
-  pageBoot,
   projectHandlers,
   session,
   workspace,
@@ -45,9 +44,7 @@ const pollWait = 7000;
 
 async function openSettings(canvasElement: HTMLElement) {
   const canvas = within(canvasElement);
-  await userEvent.click(
-    await canvas.findByRole("tab", { name: "Settings" }, pageBoot),
-  );
+  await userEvent.click(await canvas.findByRole("tab", { name: "Settings" }));
   return canvas;
 }
 

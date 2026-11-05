@@ -3,7 +3,7 @@ package integration
 import (
 	"bytes"
 	"context"
-	"encoding/json"
+	"encoding/json/jsontext"
 	"errors"
 	"testing"
 	"time"
@@ -12,6 +12,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/execution"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 	"github.com/riverqueue/river"
 )
@@ -58,16 +59,16 @@ func queuedPreparation(t *testing.T, primaryState, childState api.ExecutionState
 			Specification: domain.Specification{Placement: &domain.Placement{IngressServerID: servers[0].ServerId}},
 			Local:         &deployment.LocalPlacement{Primary: i == 0},
 		}}}
-		raw, err := json.Marshal(body)
+		raw, err := stablejson.Marshal(body)
 		if err != nil {
 			t.Fatal(err)
 		}
-		payload := json.RawMessage(raw)
+		payload := jsontext.Value(raw)
 		commands = append(commands, api.ExecutionCommand{Id: uuid.New(), ParentId: &parent, ServerId: server.ServerId, EnvironmentId: env, Kind: "crosshost", Generation: int64(i + 2), PlanHash: body.Digest(), Crosshost: &payload, Deadline: time.Now().Add(time.Minute)})
 	}
 	states := []api.ExecutionState{"running", primaryState, childState}
 	for i, command := range commands {
-		raw, err := json.Marshal(command)
+		raw, err := stablejson.Marshal(command)
 		if err != nil {
 			t.Fatal(err)
 		}

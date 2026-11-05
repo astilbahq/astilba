@@ -42,8 +42,8 @@ only when every changed path is known not to affect it:
 | Native hosts | Markdown under `docs/` other than `docs/hosting.md`, whose proxy configurations the native tests run, or the root README, dashboard source, theme, public assets, browser tests, Storybook or Panda configuration, or the server-only `auth`, `alerts`, `mailer`, `billing` and `automationclient` packages or the CLI |
 | Application Go race lanes | documentation or dashboard paths above |
 | Application and workshop browsers | documentation |
-| Durable execution, Git providers, canvas | outside that experiment, its workflow and the Makefile (canvas also follows the root JavaScript manifests and lockfile) |
-| Vulnerability scan | not a Go file, `go.mod`, `go.sum`, `package.json`, root JavaScript manifest or lockfile, the Makefile, the allowlist, the scanner script or its workflows |
+| Durable execution, Git providers, canvas | outside that experiment, its workflow and the Makefile (canvas also follows the root JavaScript manifests and lockfile, and the pnpm install action) |
+| Vulnerability scan | not a Go file, `go.mod`, `go.sum`, `package.json`, root JavaScript manifest or lockfile, the pnpm install action, the Makefile, the allowlist, the scanner script or its workflows |
 
 `AGENTS.md`, `REVIEW.md`, runtime, contracts, migrations, package/lock files, CI,
 scripts, toolchain and unknown paths select the native suite. A change to the
@@ -342,7 +342,8 @@ another package counts as new SQL, so convert it to sqlc as part of the move.
 ## Repository analyzers
 
 `make check-app` runs `services/platform/internal/lint/astilba-lint` over non-test
-code. Each analyzer turns a defect that review kept catching into a failure with a
+code, and `jsonguard` and `jsontag` over tests too, because a test that reads JSON loosely can
+pass where production would not. Each analyzer turns a defect that review kept catching into a failure with a
 one-sentence explanation:
 
 | Analyzer | Fails when | From |
@@ -382,6 +383,14 @@ They run with two workers and `fullyParallel: true`, allowing individual cases i
 the single spec file to distribute across shards. The static workshop is built
 on each runner. Accessibility audits and scenario completion assertions remain
 enabled. `make verify-app` remains the complete unsharded local check.
+
+Two things make a browser click or wait fail on a busy runner without anything being
+wrong. If the page reflows during a click, its press and release can land on different
+elements. The browser then sends the click to their common ancestor, and Playwright still
+reports success. Wait for a section's parts to load before clicking below them, as
+`openEnvironmentSection` does. A story's play starts at its first commit, so its waits
+also span page loading; `.storybook/preview.tsx` gives them five seconds, and a wait that
+has to beat a poll sets a shorter limit itself.
 
 ## Required checks
 

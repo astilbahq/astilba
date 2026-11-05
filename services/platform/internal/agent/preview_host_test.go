@@ -4,7 +4,8 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"net/http/cgi"
 	"net/http/httptest"
 	"os"
@@ -21,6 +22,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/execution"
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/containerd/errdefs"
 	"github.com/google/uuid"
 	"github.com/moby/moby/api/types/container"
@@ -140,8 +142,8 @@ func TestNativePreviewEnvironment(t *testing.T) {
 	env, unit, app, pg, volume, request := uuid.New(), uuid.New(), uuid.New(), uuid.New(), uuid.New(), uuid.New()
 	cfg := pipeline.BuildConfig{Builder: "dockerfile", ConnectionID: uuid.New(), Branch: "main", RunnerID: server, Context: ".", Dockerfile: "Dockerfile", Architecture: runtime.GOARCH, Arguments: map[string]string{}, Secrets: map[string]uuid.UUID{}, Budget: &pipeline.BuildBudget{CPUs: 1, MemoryMiB: 1024, SourceMiB: 128, StateMiB: 512, Minutes: 5}}
 	build := pipeline.Command{Action: "build-preview", Preview: &pipeline.PreviewSource{RequestID: request, Generation: 1, Number: 7, HeadRepository: 12}, Connection: pipeline.Connection{ID: cfg.ConnectionID, Provider: "gitea", BaseURL: provider.URL, Repository: "team/app", RepositoryID: 12}, Commit: sha, Branch: "main", RevisionID: uuid.New(), UnitID: unit, AppID: app, Build: &cfg, InputHash: strings.Repeat("a", 64), SubmittedAt: time.Now().UTC()}
-	raw, _ := json.Marshal(build)
-	msg := json.RawMessage(raw)
+	raw, _ := stablejson.Marshal(build)
+	msg := jsontext.Value(raw)
 	command := api.ExecutionCommand{Id: uuid.New(), ServerId: server, EnvironmentId: env, ResourceId: unit, Generation: 1, Kind: "pipeline", Action: "inspect", PlanHash: build.Digest(), Pipeline: &msg, Deadline: time.Now().Add(5 * time.Minute)}
 	if err = e.Execute(ctx, command); err != nil {
 		t.Fatal(err)
@@ -175,8 +177,8 @@ func TestNativePreviewEnvironment(t *testing.T) {
 		t.Helper()
 		generation++
 		payload := deployment.Payload{Plan: p, Action: action, Secrets: secrets}
-		raw, _ := json.Marshal(payload)
-		msg := json.RawMessage(raw)
+		raw, _ := stablejson.Marshal(payload)
+		msg := jsontext.Value(raw)
 		cfg, _ := j.Config()
 		c := api.ExecutionCommand{Id: uuid.New(), ServerId: server, EnvironmentId: p.EnvironmentID, ResourceId: p.UnitID, Generation: generation, Kind: "visual", Action: "inspect", PlanHash: payload.Digest(), Visual: &msg, Deadline: time.Now().Add(3 * time.Minute)}
 		if cfg.ControllerGeneration > 0 {
@@ -257,8 +259,8 @@ func TestNativePreviewEnvironment(t *testing.T) {
 	})
 	generation++
 	payload := deployment.Payload{Action: "preview-cleanup", Plan: plan}
-	raw, _ = json.Marshal(payload)
-	msg = json.RawMessage(raw)
+	raw, _ = stablejson.Marshal(payload)
+	msg = jsontext.Value(raw)
 	cleanup := api.ExecutionCommand{Id: uuid.New(), ServerId: server, EnvironmentId: env, ResourceId: unit, Generation: generation, Kind: "visual", Action: "inspect", PlanHash: payload.Digest(), Visual: &msg, Deadline: time.Now().Add(3 * time.Minute)}
 	interrupted := false
 	e.Point = func(point string) {

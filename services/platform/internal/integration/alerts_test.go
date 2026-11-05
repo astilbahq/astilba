@@ -5,7 +5,6 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -19,6 +18,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/backup"
 	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 )
 
@@ -165,7 +165,7 @@ func TestAlertConditionsRequireRealRecovery(t *testing.T) {
 		if _, err := f.st.Pool.Exec(ctx, "DELETE FROM server_metrics WHERE server_id=$1", server); err != nil {
 			t.Fatal(err)
 		}
-		data, _ := json.Marshal(metrics)
+		data, _ := stablejson.Marshal(metrics)
 		for i := 0; i < 3; i++ {
 			if _, err := f.st.Pool.Exec(ctx, "INSERT INTO server_metrics(workspace_id,server_id,received_at,report) VALUES($1,$2,$3,$4)", ws, server, now.Truncate(time.Minute).Add(-time.Duration(i)*time.Minute), data); err != nil {
 				t.Fatal(err)
@@ -212,16 +212,16 @@ func TestAlertConditionsRequireRealRecovery(t *testing.T) {
 	active("server_offline", 0)
 	policy := uuid.New()
 	failedAt, restoredAt := now.Add(-time.Hour), now.Add(-time.Minute)
-	config, _ := json.Marshal(backup.Policy{ID: policy, Enabled: true})
+	config, _ := stablejson.Marshal(backup.Policy{ID: policy, Enabled: true})
 	status := backup.Status{Runs: []backup.Run{{ID: uuid.New(), State: "failed", FinishedAt: &failedAt}, {ID: uuid.New(), State: "succeeded", FinishedAt: &restoredAt, TargetID: uuid.New()}}}
-	data, _ := json.Marshal(status)
+	data, _ := stablejson.Marshal(status)
 	if _, err := f.st.Pool.Exec(ctx, "INSERT INTO backup_policies(id,workspace_id,environment_id,server_id,configuration,encrypted_access,status) VALUES($1,$2,$3,$4,$5,'x',$6)", policy, ws, env, server, config, data); err != nil {
 		t.Fatal(err)
 	}
 	alertSweep(t, f, ws)
 	active("backup_schedule", 1)
 	status.Runs = append(status.Runs, backup.Run{ID: uuid.New(), State: "succeeded", FinishedAt: &now})
-	data, _ = json.Marshal(status)
+	data, _ = stablejson.Marshal(status)
 	if _, err := f.st.Pool.Exec(ctx, "UPDATE backup_policies SET status=$2 WHERE id=$1", policy, data); err != nil {
 		t.Fatal(err)
 	}
@@ -231,7 +231,7 @@ func TestAlertConditionsRequireRealRecovery(t *testing.T) {
 	status.Runs = append(status.Runs, backup.Run{ID: uuid.New(), State: "needs_attention", StartedAt: now.Add(time.Minute)})
 	for _, state := range []string{"needs_attention", "failed"} {
 		status.Runs[len(status.Runs)-1].State = state
-		data, _ = json.Marshal(status)
+		data, _ = stablejson.Marshal(status)
 		if _, err := f.st.Pool.Exec(ctx, "UPDATE backup_policies SET status=$2 WHERE id=$1", policy, data); err != nil {
 			t.Fatal(err)
 		}

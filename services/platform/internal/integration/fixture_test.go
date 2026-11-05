@@ -4,7 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"encoding/json"
+	"encoding/json/v2"
 	"flag"
 	"fmt"
 	"io"
@@ -28,6 +28,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/execution"
 	"github.com/astilbahq/astilba/services/platform/internal/httpapi"
 	"github.com/astilbahq/astilba/services/platform/internal/mailer"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -264,7 +265,7 @@ func (b *browser) call(method, path string, body any, status int, out any) []byt
 	b.t.Helper()
 	var raw []byte
 	if body != nil {
-		raw, _ = json.Marshal(body)
+		raw, _ = stablejson.Marshal(body)
 	}
 	request, e := http.NewRequest(method, b.f.server.URL+path, bytes.NewReader(raw))
 	if e != nil {

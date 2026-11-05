@@ -1,0 +1,15 @@
+name: Install pnpm
+description: Installs the pinned pnpm, making up to three attempts so one dropped registry connection does not fail the job.
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        for delay in 0 20 40; do
+          sleep "$delay"
+          if npm install --global pnpm@11.17.0; then
+            exit 0
+          fi
+          echo "::warning::Installing pnpm failed; see the error above"
+        done
+        exit 1

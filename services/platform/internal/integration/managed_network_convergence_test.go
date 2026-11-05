@@ -2,7 +2,7 @@ package integration
 
 import (
 	"context"
-	"encoding/json"
+	"encoding/json/jsontext"
 	"strings"
 	"sync"
 	"testing"
@@ -10,6 +10,7 @@ import (
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/hostnetwork"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 )
 
@@ -84,8 +85,8 @@ func TestManagedNetworkPartialRestrictionConvergesAfterHostIdle(t *testing.T) {
 					t.Error(err)
 					return
 				}
-				raw, _ := json.Marshal(receipt)
-				message := json.RawMessage(raw)
+				raw, _ := stablejson.Marshal(receipt)
+				message := jsontext.Value(raw)
 				if err = f.execution.Report(hostCtx, identity, api.AgentReport{Id: c.Id, Generation: c.Generation, PlanHash: c.PlanHash, State: "succeeded", Sequence: 1, Steps: []api.ExecutionStep{}, Network: &message}); err != nil && hostCtx.Err() == nil {
 					t.Error(err)
 					return
@@ -114,7 +115,7 @@ func TestManagedNetworkPartialRestrictionConvergesAfterHostIdle(t *testing.T) {
 	waitNetwork(func() bool { b.call("GET", base+"/network", nil, 200, &network); return network.State == "ready" })
 	uncertain := uuid.New()
 	c := api.ExecutionCommand{Id: uncertain, ServerId: ids[1], Kind: "test", ResourceId: uuid.New(), Generation: 9999, PlanHash: strings.Repeat("b", 64), Action: "inspect", Deadline: time.Now().Add(time.Hour)}
-	raw, _ := json.Marshal(c)
+	raw, _ := stablejson.Marshal(c)
 	if _, err := f.st.Pool.Exec(ctx, `INSERT INTO execution_operations(id,workspace_id,server_id,generation,request_key,command,kind,state) VALUES($1,$2,$3,9999,$4,$5,'test','needs_attention')`, uncertain, ws, ids[1], uuid.New(), raw); err != nil {
 		t.Fatal(err)
 	}

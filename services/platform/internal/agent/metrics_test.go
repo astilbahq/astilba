@@ -2,11 +2,11 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/execution"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -86,7 +86,7 @@ func TestMetricCollectionIsReadOnlyAndBoundsSlowDocker(t *testing.T) {
 	if sample.Services[0].Health == nil || *sample.Services[0].Health != "unhealthy" {
 		t.Fatal("health summary missing from older-daemon inspect path")
 	}
-	raw, _ := json.Marshal(sample)
+	raw, _ := stablejson.Marshal(sample)
 	if strings.Contains(string(raw), "PRIVATE-METRICS-CANARY") {
 		t.Fatal("inspect configuration escaped into metrics")
 	}

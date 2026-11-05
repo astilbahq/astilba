@@ -6,7 +6,8 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"errors"
 	"io"
 	"net/http"
@@ -22,6 +23,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
 	"github.com/astilbahq/astilba/services/platform/internal/portability"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -55,7 +57,7 @@ func bearerCall(t *testing.T, f *fixture, token, method, path string, input any,
 	t.Helper()
 	var raw []byte
 	if input != nil {
-		raw, _ = json.Marshal(input)
+		raw, _ = stablejson.Marshal(input)
 	}
 	r, err := http.NewRequest(method, f.server.URL+path, bytes.NewReader(raw))
 	if err != nil {
@@ -224,15 +226,15 @@ func TestAutomationConfiguredBuildPreservesAutomaticDeployment(t *testing.T) {
 	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if strings.Contains(r.URL.Path, "/branches/") {
-			json.NewEncoder(w).Encode(map[string]any{"commit": map[string]string{"sha": head.Load().(string)}})
+			stablejson.Encode(w, map[string]any{"commit": map[string]string{"sha": head.Load().(string)}})
 			return
 		}
-		json.NewEncoder(w).Encode(map[string]any{"id": 12, "private": false})
+		stablejson.Encode(w, map[string]any{"id": 12, "private": false})
 	}))
 	defer provider.Close()
 	var connection struct {
-		Connection    pipeline.Connection
-		WebhookSecret string
+		Connection    pipeline.Connection `json:"connection"`
+		WebhookSecret string              `json:"webhookSecret"`
 	}
 	b.call("POST", prefix+"/git-connections", map[string]string{"name": "Configured source", "provider": "gitea", "baseUrl": provider.URL, "repository": "team/app"}, 201, &connection)
 	enrolled, in, agentToken := enrollment(t, f, b, scope.WorkspaceId, "combined")
@@ -258,8 +260,8 @@ func TestAutomationConfiguredBuildPreservesAutomaticDeployment(t *testing.T) {
 	}
 	report := func(c api.ExecutionCommand, state api.ExecutionState, result pipeline.Result) {
 		t.Helper()
-		raw, _ := json.Marshal(result)
-		msg := json.RawMessage(raw)
+		raw, _ := stablejson.Marshal(result)
+		msg := jsontext.Value(raw)
 		agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/report", agentToken, api.AgentReport{Id: c.Id, Generation: c.Generation, PlanHash: c.PlanHash, Sequence: 2, State: state, Steps: []api.ExecutionStep{}, Pipeline: &msg}, 204, nil)
 	}
 	report(poll(), "cancelled", pipeline.Result{})
@@ -322,7 +324,7 @@ func TestAutomationConfiguredBuildPreservesAutomaticDeployment(t *testing.T) {
 	}
 	// A delayed webhook must still build and deploy, even though B is already a
 	// successful artifact and the target has watch paths.
-	raw, _ := json.Marshal(map[string]any{"ref": "refs/heads/main", "after": commit, "repository": map[string]int{"id": 12}})
+	raw, _ := stablejson.Marshal(map[string]any{"ref": "refs/heads/main", "after": commit, "repository": map[string]int{"id": 12}})
 	mac := hmac.New(sha256.New, []byte(connection.WebhookSecret))
 	mac.Write(raw)
 	req, _ := http.NewRequest("POST", f.server.URL+"/hooks/git/"+connection.Connection.ID.String(), bytes.NewReader(raw))
@@ -357,8 +359,8 @@ func TestAutomationConfiguredBuildPreservesAutomaticDeployment(t *testing.T) {
 		t.Fatal("automatic deployment skipped review")
 	}
 	observation := deployment.Observation{Images: map[string]string{app.String(): result.Digest}, Resources: []deployment.Resource{}, StateHash: strings.Repeat("a", 64), ObservedAt: time.Now()}
-	data, _ := json.Marshal(observation)
-	message := json.RawMessage(data)
+	data, _ := stablejson.Marshal(observation)
+	message := jsontext.Value(data)
 	agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/report", agentToken, api.AgentReport{Id: c.Id, Generation: c.Generation, PlanHash: c.PlanHash, Sequence: 2, State: "succeeded", Steps: []api.ExecutionStep{}, Observation: &message}, 204, nil)
 	c = poll()
 	json.Unmarshal(*c.Visual, &visual)
@@ -379,8 +381,8 @@ func TestAutomationConfiguredBuildPreservesAutomaticDeployment(t *testing.T) {
 	b.call("POST", path+"/builds", map[string]any{"baseRevisionId": draft.Id, "applicationId": app, "requestKey": uuid.New(), "configuration": cfg}, 202, nil)
 	result.Commit = head.Load().(string)
 	result.Image = "astilba-build-" + c.Id.String() + ":built"
-	lateRaw, _ := json.Marshal(result)
-	lateMessage := json.RawMessage(lateRaw)
+	lateRaw, _ := stablejson.Marshal(result)
+	lateMessage := jsontext.Value(lateRaw)
 	agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/report", agentToken, api.AgentReport{Id: c.Id, Generation: c.Generation, PlanHash: c.PlanHash, Sequence: 3, State: "succeeded", Steps: []api.ExecutionStep{}, Pipeline: &lateMessage}, 409, nil)
 	bearerCall(t, f, *grant.Token, "GET", path+"/operations/"+run.Id.String(), nil, 200, &run)
 	if run.State != "cancelled" {

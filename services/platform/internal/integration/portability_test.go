@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/hex"
-	"encoding/json"
+	"encoding/json/v2"
 	"os"
 	"strings"
 	"testing"
@@ -15,6 +15,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
 	"github.com/astilbahq/astilba/services/platform/internal/portability"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -40,17 +41,17 @@ func TestEncryptedWorkspaceExportPreservesIdentityWithoutInstallationKeys(t *tes
 	browser.call("PUT", "/api/v1/workspaces/"+ws.String()+"/servers/"+server.Server.Id.String()+"/domain", api.ConfigureServerDomain{Ipv4: "198.51.100.7"}, 200, nil)
 	connection := pipeline.Connection{ID: uuid.New(), Name: "Repository", Provider: "github", BaseURL: "https://github.com", Repository: "example/application", RepositoryID: 42, Private: true}
 	access := pipeline.Access{API: pipeline.Credential{Password: "git-token-canary"}, Webhook: "webhook-canary"}
-	rawAccess, _ := json.Marshal(access)
+	rawAccess, _ := stablejson.Marshal(access)
 	cipher, e := f.st.Keys.Seal(rawAccess, pipeline.EncryptionIdentity(ws, connection.ID, "git"))
 	if e != nil {
 		t.Fatal(e)
 	}
-	rawConnection, _ := json.Marshal(connection)
+	rawConnection, _ := stablejson.Marshal(connection)
 	if _, e = f.st.Pool.Exec(context.Background(), "INSERT INTO git_connections(id,workspace_id,configuration,encrypted_access) VALUES($1,$2,$3,$4)", connection.ID, ws, rawConnection, cipher); e != nil {
 		t.Fatal(e)
 	}
 	source := pipeline.Source{ConnectionID: connection.ID, Branch: "main", RunnerID: server.Server.Id, Entrypoints: []string{"compose.yaml"}, Paths: []string{}, AutoDeploy: true}
-	rawSource, _ := json.Marshal(source)
+	rawSource, _ := stablejson.Marshal(source)
 	if _, e = f.st.Pool.Exec(context.Background(), "INSERT INTO git_sources(workspace_id,environment_id,connection_id,configuration,policy_actor) VALUES($1,$2,$3,$4,$5)", ws, env.Id, connection.ID, rawSource, f.owner); e != nil {
 		t.Fatal(e)
 	}
@@ -364,7 +365,7 @@ func TestOfflineRecoveryMergePreservesImmutableHistory(t *testing.T) {
 		t.Fatal("fixture has no audit history")
 	}
 	originalAudit := archive.Tables["audit_events"][0]
-	auditRaw, _ := json.Marshal(originalAudit)
+	auditRaw, _ := stablejson.Marshal(originalAudit)
 	if _, err = destination.st.Pool.Exec(ctx, `INSERT INTO audit_events SELECT * FROM jsonb_populate_record(NULL::audit_events,$1)`, auditRaw); err != nil {
 		t.Fatal(err)
 	}
@@ -417,7 +418,7 @@ func TestOfflineRecoveryMergePreservesImmutableHistory(t *testing.T) {
 		t.Fatal(err)
 	}
 	changed["variables"] = []any{map[string]any{"name": "CHANGED", "value": "conflict"}}
-	archive.Tables["specification_revisions"][0]["specification"], _ = json.Marshal(changed)
+	archive.Tables["specification_revisions"][0]["specification"], _ = stablejson.Marshal(changed)
 	if err = merge(archive); err == nil {
 		t.Fatal("recovery overwrote conflicting immutable history")
 	}

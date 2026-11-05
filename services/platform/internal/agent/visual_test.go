@@ -2,7 +2,8 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -16,6 +17,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/execution"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/client"
@@ -53,8 +55,8 @@ func testVisualJournal(t *testing.T) (*Journal, deployment.Plan) {
 }
 func visualCommand(plan deployment.Plan, action string, generation int64) api.ExecutionCommand {
 	payload := deployment.Payload{Action: action, Plan: plan}
-	raw, _ := json.Marshal(payload)
-	message := json.RawMessage(raw)
+	raw, _ := stablejson.Marshal(payload)
+	message := jsontext.Value(raw)
 	return api.ExecutionCommand{Id: uuid.New(), ServerId: plan.ServerID, EnvironmentId: plan.EnvironmentID, ResourceId: plan.UnitID, Kind: "visual", Action: "inspect", Visual: &message, PlanHash: payload.Digest(), Generation: generation, Deadline: time.Now().Add(time.Minute)}
 }
 
@@ -169,12 +171,12 @@ func TestRetainedResourcesDoNotBlockInspectionOrResolution(t *testing.T) {
 	daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if strings.HasSuffix(r.URL.Path, "/containers/json") {
-			_ = json.NewEncoder(w).Encode(items)
+			_ = stablejson.Encode(w, items)
 			return
 		}
 		for id, label := range labels {
 			if strings.HasSuffix(r.URL.Path, "/containers/"+id+"/json") {
-				_ = json.NewEncoder(w).Encode(map[string]any{
+				_ = stablejson.Encode(w, map[string]any{
 					"Id": id, "Image": "sha256:example", "Config": map[string]any{"Image": "example.test/app:1", "Labels": label},
 					"State": map[string]any{"Running": true, "Status": "running"}, "HostConfig": map[string]any{}, "NetworkSettings": map[string]any{},
 				})
@@ -234,9 +236,9 @@ func TestOldComposeRevisionLogsAreWithheldWithoutItsSecrets(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case strings.HasSuffix(r.URL.Path, "/containers/json"):
-			_ = json.NewEncoder(w).Encode([]any{map[string]any{"Id": "old-container", "Labels": labels}})
+			_ = stablejson.Encode(w, []any{map[string]any{"Id": "old-container", "Labels": labels}})
 		case strings.HasSuffix(r.URL.Path, "/containers/old-container/json"):
-			_ = json.NewEncoder(w).Encode(map[string]any{"Id": "old-container", "Image": "sha256:example", "Config": map[string]any{"Image": "example.test/app:1", "Labels": labels, "Tty": true, "Env": []string{"TOKEN_FILE=/run/secrets/token"}}, "State": map[string]any{"Running": true, "Status": "running"}, "HostConfig": map[string]any{}, "NetworkSettings": map[string]any{}})
+			_ = stablejson.Encode(w, map[string]any{"Id": "old-container", "Image": "sha256:example", "Config": map[string]any{"Image": "example.test/app:1", "Labels": labels, "Tty": true, "Env": []string{"TOKEN_FILE=/run/secrets/token"}}, "State": map[string]any{"Running": true, "Status": "running"}, "HostConfig": map[string]any{}, "NetworkSettings": map[string]any{}})
 		case strings.HasSuffix(r.URL.Path, "/logs"):
 			_, _ = w.Write([]byte("OLD-FILE-SECRET-CANARY\n"))
 		default:

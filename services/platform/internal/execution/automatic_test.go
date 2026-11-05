@@ -1,12 +1,13 @@
 package execution
 
 import (
-	"encoding/json"
+	"encoding/json/v2"
 	"strings"
 	"testing"
 
 	"github.com/astilbahq/astilba/services/platform/internal/composeproject"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 )
 
@@ -15,7 +16,7 @@ func TestAutomaticChangesRequireReviewForStatefulChangesAndNewPermissions(t *tes
 	original := "services:\n  db:\n    image: postgres:16\n    volumes: [data:/var/lib/postgresql/data]\n  web:\n    image: nginx:1\n    ports: [127.0.0.1:9011:80]\nvolumes:\n  data: {}\n"
 	parse := func(content string) domain.Specification {
 		t.Helper()
-		raw, _ := json.Marshal(domain.Specification{Version: 1, Applications: []domain.Application{}, Compose: &composeproject.Bundle{Namespace: namespace, Entrypoints: []string{"compose.yaml"}, Files: []composeproject.File{{Path: "compose.yaml", Content: content}}}, Variables: []domain.Variable{}})
+		raw, _ := stablejson.Marshal(domain.Specification{Version: 1, Applications: []domain.Application{}, Compose: &composeproject.Bundle{Namespace: namespace, Entrypoints: []string{"compose.yaml"}, Files: []composeproject.File{{Path: "compose.yaml", Content: content}}}, Variables: []domain.Variable{}})
 		spec, _, err := domain.ParseSpec(raw)
 		if err != nil {
 			t.Fatalf("%#v", err)
@@ -57,7 +58,7 @@ func TestAutomaticStatefulEffectiveInputsAndResolvedImages(t *testing.T) {
 	namespace := uuid.New()
 	parse := func(content, config string) domain.Specification {
 		t.Helper()
-		raw, _ := json.Marshal(domain.Specification{Version: 1, Applications: []domain.Application{}, Variables: []domain.Variable{}, Compose: &composeproject.Bundle{Namespace: namespace, Entrypoints: []string{"compose.yaml"}, Files: []composeproject.File{{Path: "compose.yaml", Content: content}, {Path: "postgresql.conf", Content: config}}}})
+		raw, _ := stablejson.Marshal(domain.Specification{Version: 1, Applications: []domain.Application{}, Variables: []domain.Variable{}, Compose: &composeproject.Bundle{Namespace: namespace, Entrypoints: []string{"compose.yaml"}, Files: []composeproject.File{{Path: "compose.yaml", Content: content}, {Path: "postgresql.conf", Content: config}}}})
 		spec, _, err := domain.ParseSpec(raw)
 		if err != nil {
 			t.Fatal(err)
@@ -97,7 +98,7 @@ func TestAutomaticStatefulConsumerTracksSelectedOutputInput(t *testing.T) {
 	source := domain.Application{ID: uuid.New(), Name: "Source", Variables: []domain.Variable{{Name: "TOKEN", Value: &value}}, Outputs: []domain.ServiceOutput{{Name: "TOKEN", Type: "variable", Variable: "TOKEN"}}}
 	consumer := domain.Application{ID: uuid.New(), Name: "Consumer", Mounts: []domain.VolumeMount{{VolumeID: uuid.New(), Target: "/data"}}}
 	old := domain.Specification{Applications: []domain.Application{source, consumer}, Bindings: []domain.Binding{{ID: uuid.New(), SourceID: source.ID, TargetID: consumer.ID, Output: "TOKEN", Variable: "AUTH"}}}
-	raw, _ := json.Marshal(old)
+	raw, _ := stablejson.Marshal(old)
 	var next domain.Specification
 	_ = json.Unmarshal(raw, &next)
 	changed := "second"

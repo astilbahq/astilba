@@ -3,7 +3,8 @@ package integration
 import (
 	"bufio"
 	"context"
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/execution"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 )
 
@@ -55,8 +57,8 @@ func TestVisualPlanAdmissionAndPortability(t *testing.T) {
 	}
 	report := func(c api.ExecutionCommand, obs deployment.Observation, state api.ExecutionState) {
 		t.Helper()
-		raw, _ := json.Marshal(obs)
-		agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/report", token, api.AgentReport{Id: c.Id, Generation: c.Generation, PlanHash: c.PlanHash, Sequence: 2, State: state, Steps: []api.ExecutionStep{}, Observation: (*json.RawMessage)(&raw)}, 204, nil)
+		raw, _ := stablejson.Marshal(obs)
+		agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/report", token, api.AgentReport{Id: c.Id, Generation: c.Generation, PlanHash: c.PlanHash, Sequence: 2, State: state, Steps: []api.ExecutionStep{}, Observation: (*jsontext.Value)(&raw)}, 204, nil)
 	}
 	create := func() deployment.Status {
 		t.Helper()
@@ -135,7 +137,11 @@ func TestVisualPlanAdmissionAndPortability(t *testing.T) {
 	b.call("POST", path+"/deployment-plans/"+ready.ID.String()+"/apply", api.ApplyPlan{IdempotencyKey: uuid.New()}, 201, &op)
 	command = poll(op.Id)
 	report(command, deployment.Observation{ObservedAt: time.Now(), Resources: []deployment.Resource{{ID: app, Kind: "service", State: "running", Image: image}, {ID: pg, Kind: "service", State: "healthy", Image: pgimage}}, Applied: true, StateHash: strings.Repeat("b", 64)}, "succeeded")
-	var exported struct{ Compose, Routes, Readme string }
+	var exported struct {
+		Compose string `json:"compose"`
+		Routes  string `json:"routes"`
+		Readme  string `json:"readme"`
+	}
 	raw := b.call("GET", path+"/export", nil, 200, &exported)
 	if strings.Contains(string(raw), "visual-secret-canary") || !strings.Contains(exported.Compose, "ASTILBA_SECRET_") {
 		t.Fatal("export exposed values or omitted placeholders")

@@ -1,7 +1,7 @@
 package pipeline
 
 import (
-	"encoding/json"
+	"encoding/json/v2"
 	"strings"
 	"testing"
 	"unicode/utf8"

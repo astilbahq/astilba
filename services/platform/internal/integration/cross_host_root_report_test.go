@@ -2,13 +2,13 @@ package integration
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"testing"
 	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 )
 
@@ -33,7 +33,7 @@ func TestAgentCannotReportCrossHostRoot(t *testing.T) {
 		t.Fatal(err)
 	}
 	root := api.ExecutionCommand{Id: uuid.New(), ServerId: in.ServerId, EnvironmentId: env, Generation: 1, Kind: "crosshost", Action: "inspect", PlanHash: "root-plan-hash", Deadline: time.Now().Add(time.Hour)}
-	raw, err := json.Marshal(root)
+	raw, err := stablejson.Marshal(root)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -2,10 +2,11 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
+	"encoding/json/v2"
 	"fmt"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/execution"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/moby/moby/api/types/container"
 	"io"
 	"net/http"
@@ -77,7 +78,7 @@ func nativeReleaseJourney(t *testing.T, e *Engine, initial deployment.Plan, secr
 		}
 	}()
 	prepare := func(value string) deployment.Plan {
-		raw, _ := json.Marshal(current)
+		raw, _ := stablejson.Marshal(current)
 		var p deployment.Plan
 		_ = json.Unmarshal(raw, &p)
 		p.ID, p.RevisionID = uuid.New(), uuid.New()
@@ -373,7 +374,7 @@ func nativeReleaseJourney(t *testing.T, e *Engine, initial deployment.Plan, secr
 	current.Release = nil
 	current = resolve(current.WithHash())
 	finish(command("deploy", current, secrets))
-	raw, _ := json.Marshal(current)
+	raw, _ := stablejson.Marshal(current)
 	var converted deployment.Plan
 	_ = json.Unmarshal(raw, &converted)
 	volume := uuid.New()

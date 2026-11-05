@@ -1,7 +1,8 @@
 package domain
 
 import (
-	"encoding/json"
+	"encoding/json/v2"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 	"testing"
 )
@@ -10,13 +11,13 @@ func TestCrossHostPlacementPreservesStatefulOwnership(t *testing.T) {
 	image := "example.test/app:1"
 	app, primary, remote := uuid.New(), uuid.New(), uuid.New()
 	spec := Specification{Version: 1, Variables: []Variable{}, Applications: []Application{{ID: app, Name: "App", Source: ApplicationSource{Kind: "image", Image: &image}, Replicas: 3, Health: &HealthCheck{Port: 8080, Path: "/ready"}}}, Routes: []Route{{ID: uuid.New(), TargetID: app, Protocol: "http", Domain: "app.example.test", Port: 8080, TLS: "off"}}, Placement: &Placement{NetworkID: uuid.New(), IngressServerID: primary, Applications: []ApplicationPlacement{{ApplicationID: app, CPUMillis: 500, MemoryMiB: 256, Targets: []PlacementTarget{{ServerID: primary, Count: 1}, {ServerID: remote, Count: 2}}}}}}
-	parse := func(s Specification) error { b, _ := json.Marshal(s); _, _, err := ParseSpec(b); return err }
+	parse := func(s Specification) error { b, _ := stablejson.Marshal(s); _, _, err := ParseSpec(b); return err }
 	if err := parse(spec); err != nil {
 		t.Fatal(err)
 	}
 	for _, name := range []string{"count", "mounted-singleton", "duplicate-host", "unknown-application"} {
 		t.Run(name, func(t *testing.T) {
-			b, _ := json.Marshal(spec)
+			b, _ := stablejson.Marshal(spec)
 			var next Specification
 			_ = json.Unmarshal(b, &next)
 			switch name {

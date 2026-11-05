@@ -2,7 +2,7 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
+	"encoding/json/jsontext"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,6 +11,7 @@ import (
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 	bolt "go.etcd.io/bbolt"
 )
@@ -22,8 +23,8 @@ func TestRecoveryRetentionPreservesUnfinishedChains(t *testing.T) {
 		body := []byte("opaque-" + parent.String())
 		d := deployment.RecoveryDescriptor{Version: 1, WorkspaceID: uuid.New(), ParentID: parent, RootHash: strings.Repeat("a", 64), GroupID: uuid.New(), GroupHash: strings.Repeat("b", 64), BaseID: id, CheckpointID: id, Digest: deployment.RecoveryDigest(body), Bytes: len(body), Participants: []uuid.UUID{p.ServerID}}
 		command := deployment.CrossHostCommand{ParentID: parent, GroupHash: d.GroupHash, Phase: "complete", Unit: deployment.DistributedUnit{Plan: p}}
-		raw, _ := json.Marshal(command)
-		message := json.RawMessage(raw)
+		raw, _ := stablejson.Marshal(command)
+		message := jsontext.Value(raw)
 		c := api.ExecutionCommand{Id: uuid.New(), ParentId: &parent, ServerId: p.ServerID, EnvironmentId: p.EnvironmentID, ResourceId: p.UnitID, Kind: "crosshost", Action: "inspect", Generation: generation, PlanHash: command.Digest(), Crosshost: &message}
 		if err := j.retainCheckpoint(c, d, body); err != nil {
 			t.Fatal(err)
@@ -171,10 +172,10 @@ func TestRecoveryClosureBoundsCheckpointOnlyCancellations(t *testing.T) {
 		plan.Local = &deployment.LocalPlacement{GroupID: d.GroupID, Primary: true}
 		plan = plan.WithHash()
 		payload := deployment.CrossHostCommand{ParentID: parent, GroupHash: d.GroupHash, Phase: "checkpoint", Unit: deployment.DistributedUnit{Plan: plan}}
-		raw, _ := json.Marshal(payload)
-		message := json.RawMessage(raw)
-		metadata, _ := json.Marshal(d)
-		descriptor := json.RawMessage(metadata)
+		raw, _ := stablejson.Marshal(payload)
+		message := jsontext.Value(raw)
+		metadata, _ := stablejson.Marshal(d)
+		descriptor := jsontext.Value(metadata)
 		c := api.ExecutionCommand{Id: uuid.New(), ParentId: &parent, ServerId: p.ServerID, EnvironmentId: p.EnvironmentID, ResourceId: p.UnitID, Kind: "crosshost", Action: "inspect", Generation: int64(index*2 + 1), PlanHash: payload.Digest(), Deadline: time.Now().Add(time.Hour), Crosshost: &message, RecoveryCheckpoint: &descriptor}
 		if _, err := j.Accept(c); err != nil {
 			t.Fatal(err)
@@ -195,8 +196,8 @@ func TestRecoveryClosureBoundsCheckpointOnlyCancellations(t *testing.T) {
 			t.Fatal("metadata acknowledgement inferred parent completion", err)
 		}
 		payload.Phase, payload.GroupHash = "checkpoint-closed", d.RootHash
-		raw, _ = json.Marshal(payload)
-		message = json.RawMessage(raw)
+		raw, _ = stablejson.Marshal(payload)
+		message = jsontext.Value(raw)
 		c.Id, c.Generation, c.PlanHash = deployment.RecoveryCloseID(parent, p.UnitID), int64(index*2+2), payload.Digest()
 		c.Crosshost = &message
 		if err = engine.Execute(context.Background(), c); err != nil {

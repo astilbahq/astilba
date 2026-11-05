@@ -16,7 +16,7 @@ import { ErrorToast, ToastProvider } from "./components/toast";
 import { TooltipProvider } from "./components/tooltip";
 import { Account } from "./features/account/account";
 import { Alerts } from "./features/alerts";
-import { AuthFrame } from "./features/auth/auth-frame";
+import { AuthFrame, AuthPage } from "./features/auth/auth-frame";
 import { VerifyEmailPage } from "./features/auth/email-verification";
 import { HostedOnboarding } from "./features/auth/hosted-onboarding";
 import { Invitation } from "./features/auth/invitation";
@@ -48,7 +48,14 @@ function Root() {
           <Anchor href="#main" className="skip-link">
             {t(($) => $.skipContent)}
           </Anchor>
-          {session.isPending ? (
+          {session.isPending && session.errorUpdateCount === 0 ? (
+            // The page that follows brings its own controls. Offering them here would let its
+            // arrival close an open menu and lose keyboard focus.
+            <AuthPage>
+              <p role="status">{t(($) => $.loading)}</p>
+            </AuthPage>
+          ) : session.isPending ? (
+            // A refetch without data is pending again, and the failure screen's controls stay.
             <AuthFrame>
               <p role="status">{t(($) => $.loading)}</p>
             </AuthFrame>

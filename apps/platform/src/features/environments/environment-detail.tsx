@@ -1,5 +1,5 @@
-import { useQuery } from "@tanstack/react-query";
-import { useRef, useState } from "react";
+import { useIsFetching, useQuery } from "@tanstack/react-query";
+import { type ComponentProps, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { draftOptions } from "../../api/environment";
 import { Button } from "../../components/button";
@@ -10,6 +10,17 @@ import { EnvironmentSettings } from "./environment-settings";
 import { EnvironmentWorkspace } from "./environment-workspace";
 import * as s from "./environment.styles";
 import type { EnvProps, EnvironmentSection } from "./environment.types";
+
+// Marks the first load of what a section shows, which browser journeys wait for because it moves
+// the page. It is not aria-busy: a slow request would then hold back status messages from
+// assistive technology across every section that has already loaded.
+function EnvironmentContent(props: ComponentProps<"section">) {
+  const loading = useIsFetching({
+    predicate: ({ state }) =>
+      state.data === undefined && state.errorUpdateCount === 0,
+  });
+  return <section {...props} data-loading={loading > 0 || undefined} />;
+}
 
 export function EnvironmentDetail(props: EnvProps) {
   const { t } = useTranslation("environment");
@@ -111,7 +122,7 @@ export function EnvironmentDetail(props: EnvProps) {
         error={draft.data ? draft.error : null}
         message={common(($) => $.requestFailed)}
       />
-      <section
+      <EnvironmentContent
         ref={content}
         tabIndex={-1}
         aria-label={t(($) => $.content)}
@@ -157,7 +168,7 @@ export function EnvironmentDetail(props: EnvProps) {
             )}
           </div>
         </TabsPanel>
-      </section>
+      </EnvironmentContent>
     </TabsRoot>
   );
 }

@@ -121,4 +121,4 @@ Once the series finishes, production code names `encoding/json` in only four pla
 - **`internal/pipeline/railpack_plan.go`**, for `DefaultOptionsV1` on a repository's `railpack.json`, for the same reason as Compose metadata: it is the user's own text, and it is read again for every build.
 - **`internal/cryptobox`**, for `ParseBytesWithLooseRFC4648` on keyrings. Operators write these files, and this option is the standard library's named switch for the line breaks they contain.
 
-Test code may keep v1, which also exercises the format older peers write.
+Tests follow the same rules, because a test decoding with v1 folds case and can pass where production would not. `stablejson` writes exactly what an older peer writes, so compatibility tests use it. Only `internal/stablejson/golden_test.go` still names v1, to decode as an older peer does.

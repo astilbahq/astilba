@@ -8,7 +8,8 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -325,7 +326,7 @@ func TestSucceededUpdateAcknowledgesAfterLaterSignedLocalInstall(t *testing.T) {
 		}
 		if r.URL.Path == "/agent/v1/report" {
 			var report api.AgentReport
-			if json.NewDecoder(r.Body).Decode(&report) != nil || report.Id != command.Id || report.PlanHash != command.PlanHash || report.State != "succeeded" {
+			if json.UnmarshalDecode(jsontext.NewDecoder(r.Body), &report) != nil || report.Id != command.Id || report.PlanHash != command.PlanHash || report.State != "succeeded" {
 				t.Error("historical update report changed")
 				w.WriteHeader(400)
 				return
