@@ -13,13 +13,25 @@ import (
 )
 
 // The sweep closes an offer nobody attached to and leaves a live relay alone, whatever
-// its ticket says.
+// its ticket says. A relay waiting for its other side records why it ends, however its
+// clock compares with the database's, unless a minute shows it could not.
 func TestTroubleshootingSweepClosesOnlyAbandonedOffers(t *testing.T) {
 	x := relayFixture(t)
 	ctx := context.Background()
 	live, _, _ := x.connected(t, x.owner, 1)
 	abandoned := x.open(t, x.owner, x.app2, 1, 201)
+	operator := x.member(t, "operator@example.test", "operator")
+	waiting := x.open(t, operator, x.app, 2, 201)
+	stranded := x.open(t, operator, x.app, 3, 201)
+	for _, session := range []uuid.UUID{waiting.Session.Id, stranded.Session.Id} {
+		if agent, status := x.dialAgent(t, session, x.agentToken); agent == nil {
+			t.Fatalf("agent stream refused: %d", status)
+		}
+	}
 	if _, err := x.f.st.Pool.Exec(ctx, "UPDATE troubleshooting_sessions SET ticket_expires_at=now()-interval '1 second' WHERE workspace_id=$1", x.ws); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := x.f.st.Pool.Exec(ctx, "UPDATE troubleshooting_sessions SET ticket_expires_at=now()-interval '2 minutes' WHERE id=$1", stranded.Session.Id); err != nil {
 		t.Fatal(err)
 	}
 	var state string
@@ -29,8 +41,12 @@ func TestTroubleshootingSweepClosesOnlyAbandonedOffers(t *testing.T) {
 		}
 	}
 	x.waitClosed(t, abandoned.Session.Id, "expired")
+	x.waitClosed(t, stranded.Session.Id, "expired")
 	if err := x.f.st.Pool.QueryRow(ctx, "SELECT state FROM troubleshooting_sessions WHERE id=$1", live.Session.Id).Scan(&state); err != nil || state != "active" {
 		t.Fatal("the sweep closed a live relay", state, err)
+	}
+	if err := x.f.st.Pool.QueryRow(ctx, "SELECT state FROM troubleshooting_sessions WHERE id=$1", waiting.Session.Id).Scan(&state); err != nil || state != "offered" {
+		t.Fatal("the sweep closed a relay waiting for its other side", state, err)
 	}
 }
 

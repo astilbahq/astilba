@@ -51,8 +51,9 @@ VALUES(@id,@workspace_id,@environment_id,@unit_id,@server_id,@application_id,@in
 RETURNING id,environment_id,server_id,application_id,instance,actor_id,state,created_at,deadline_at,closed_at,close_reason;
 
 -- name: ExpireTroubleshootingSessions :many
+-- A stream that attached has a relay waiting, as in SweepTroubleshootingSessions.
 UPDATE troubleshooting_sessions SET state = 'closed',closed_at = now(),close_reason = 'expired',ticket_hash = NULL,browser_session_hash = NULL
-WHERE workspace_id = @workspace_id AND state <> 'closed' AND (deadline_at <= now() OR (state = 'offered' AND ticket_expires_at <= now()))
+WHERE workspace_id = @workspace_id AND state <> 'closed' AND (deadline_at <= now() OR (state = 'offered' AND (ticket_expires_at <= now() - interval '1 minute' OR (ticket_expires_at <= now() AND agent_attached_at IS NULL AND browser_attached_at IS NULL))))
 RETURNING id,actor_id;
 
 -- name: GetTroubleshootingSessionActor :one
@@ -168,13 +169,14 @@ WHERE workspace_id = @workspace_id AND id = @id;
 -- A locked workspace waits for the next sweep, so its holder cannot delay any other tenant.
 SELECT w.id FROM workspaces w
 WHERE EXISTS(SELECT 1 FROM troubleshooting_sessions t WHERE t.workspace_id = w.id AND t.state <> 'closed'
- AND (t.deadline_at <= now() - interval '1 minute' OR (t.state = 'offered' AND t.ticket_expires_at <= now())))
+ AND (t.deadline_at <= now() - interval '1 minute' OR (t.state = 'offered' AND (t.ticket_expires_at <= now() - interval '1 minute' OR (t.ticket_expires_at <= now() AND t.agent_attached_at IS NULL AND t.browser_attached_at IS NULL)))))
 ORDER BY w.id FOR NO KEY UPDATE OF w SKIP LOCKED;
 
 -- name: SweepTroubleshootingSessions :many
 -- unscoped: an installation-wide sweeper ends expired sessions in every workspace.
+-- A stream that attached has a relay waiting, which ends the session itself and records why; the minute covers a relay that could not.
 UPDATE troubleshooting_sessions SET state = 'closed',closed_at = now(),close_reason = 'expired',ticket_hash = NULL,browser_session_hash = NULL
-WHERE workspace_id = ANY(@workspace_ids::uuid[]) AND state <> 'closed' AND (deadline_at <= now() - interval '1 minute' OR (state = 'offered' AND ticket_expires_at <= now()))
+WHERE workspace_id = ANY(@workspace_ids::uuid[]) AND state <> 'closed' AND (deadline_at <= now() - interval '1 minute' OR (state = 'offered' AND (ticket_expires_at <= now() - interval '1 minute' OR (ticket_expires_at <= now() AND agent_attached_at IS NULL AND browser_attached_at IS NULL))))
 RETURNING workspace_id,id,actor_id;
 
 -- name: CloseAbandonedTroubleshootingSessions :many
