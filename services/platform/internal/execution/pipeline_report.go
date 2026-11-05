@@ -34,6 +34,11 @@ func stoppedSubmissionNote(id uuid.UUID) string {
 	return stoppedSubmissionWarning(id) + " The value may be in a file's name rather than its contents."
 }
 
+func containsSecret(text, value string) bool {
+	value = domain.SecretSearchForm(value)
+	return value != "" && strings.Contains(text, value)
+}
+
 func (s *Service) rejectRuntimeSecrets(ctx context.Context, tx pgx.Tx, ws, env uuid.UUID, bundle composeproject.Bundle) error {
 	q := db.New(tx)
 	total := 0
@@ -56,7 +61,7 @@ func (s *Service) rejectRuntimeSecrets(ctx context.Context, tx pgx.Tx, ws, env u
 			secret := string(value)
 			for _, file := range bundle.Files {
 				// A submission pushes both: the path names a tree entry, the content fills its blob.
-				if len(secret) > 0 && (strings.Contains(file.Path, secret) || strings.Contains(file.Content, secret)) {
+				if containsSecret(file.Path, secret) || containsSecret(file.Content, secret) {
 					return &domain.Error{Code: "invalid_input", Message: "A file's name or contents include a known runtime secret value.", Fields: []string{"source.containsRuntimeSecret"}}
 				}
 			}

@@ -390,6 +390,7 @@ func (s *Service) reconcilePreview(ctx context.Context, tx pgx.Tx, git *gitAnswe
 	if busy {
 		return s.previewState(ctx, tx, id, r.View.State, "Waiting for the assigned agent to finish or acknowledge cancellation.", time.Minute)
 	}
+	var allocation pgx.Tx
 	if r.View.EnvironmentId == nil {
 		var active, serverActive int
 		if err = tx.QueryRow(ctx, "SELECT count(*),count(*) FILTER(WHERE p.server_id=$2) FROM preview_requests r JOIN preview_policies p ON p.id=r.policy_id WHERE r.workspace_id=$1 AND r.environment_id IS NOT NULL AND r.state<>'deleted'", p.Workspace, p.Server).Scan(&active, &serverActive); err != nil {
@@ -401,6 +402,12 @@ func (s *Service) reconcilePreview(ctx context.Context, tx pgx.Tx, git *gitAnswe
 		}
 		if active >= 20 || serverActive >= 10 || own >= p.Config.MaxActive {
 			return s.previewState(ctx, tx, id, "queued", "Waiting for an available preview resource slot.", time.Minute)
+		}
+		// The arguments can only be checked against the environment this creates. A build
+		// rejected on this pass must not leave it behind: its frozen inputs can never pass,
+		// and it would hold a resource slot and stop the owner correcting the policy.
+		if allocation, err = tx.Begin(ctx); err != nil {
+			return err
 		}
 		if err = s.createPreviewEnvironment(ctx, tx, p, r); err != nil {
 			return err
@@ -448,6 +455,17 @@ func (s *Service) reconcilePreview(ctx context.Context, tx pgx.Tx, git *gitAnswe
 		cfg := r.Config.Build
 		hash := buildInputHash(connection, pr.Head, cfg)
 		op, err := s.insertPipeline(ctx, tx, git, p.Workspace, *r.View.EnvironmentId, uuid.New(), p.Server, pipeline.Command{Preview: &pipeline.PreviewSource{RequestID: id, Generation: r.View.Generation, Number: pr.Number, HeadRepository: pr.HeadRepository}, Action: "build-preview", Connection: connection, Commit: pr.Head, Branch: cfg.Branch, RevisionID: v.Revision, UnitID: v.Unit, AppID: *r.App, Build: &cfg, InputHash: hash, SubmittedAt: time.Now().UTC()})
+		// A policy saved under an earlier check can fail this one. Failing the job would roll
+		// back the reason and leave every retry and sweep to ask the provider again.
+		var rejected *buildInputRejection
+		if errors.As(err, &rejected) {
+			if allocation != nil {
+				if err = allocation.Rollback(ctx); err != nil {
+					return err
+				}
+			}
+			return s.previewState(ctx, tx, id, "failed", "Preview build rejected before runner delivery: "+rejected.note(), 5*time.Minute)
+		}
 		if err != nil {
 			return err
 		}

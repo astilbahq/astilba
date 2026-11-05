@@ -3,7 +3,6 @@ package execution
 import (
 	"context"
 	"errors"
-	"strings"
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
@@ -86,7 +85,7 @@ func (s *Service) buildInputs(ctx context.Context, tx pgx.Tx, ws, env uuid.UUID,
 			return nil, &buildInputRejection{"build_secret_budget", "build.secrets"}
 		}
 		for _, value := range build.Arguments {
-			if len(plain) > 0 && strings.Contains(value, string(plain)) {
+			if containsSecret(value, string(plain)) {
 				return nil, &buildInputRejection{"arguments_contain_secret", "build.argumentsContainSecret"}
 			}
 		}

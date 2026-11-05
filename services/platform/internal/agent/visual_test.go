@@ -125,6 +125,21 @@ func TestKnownValuesAreRedactedBeforeLogTruncation(t *testing.T) {
 	if got, err := readVisualLog(strings.NewReader(strings.Repeat("x", 1<<20)+"abcdefghij"), true, values, 512); err == nil || got != "" {
 		t.Fatal("incomplete oversized sample was exposed")
 	}
+	for _, stored := range []string{"pasted-value ", " pasted-value", "pasted-value\r\n", "\tpasted-value\n"} {
+		if got := redactValues(`token="pasted-value"`, map[string]string{"pasted": stored}); got != `token="[redacted]"` {
+			t.Fatalf("value stored as %q leaked: %s", stored, got)
+		}
+	}
+	// Plain configuration is redacted too, so a short padded value must not mask ordinary text.
+	for stored, c := range map[string]struct{ input, want string }{
+		" ":    {"a b", "a[redacted]b"},
+		", ":   {"a,b, c", "a,b[redacted]c"},
+		"\tab": {"ab", "ab"},
+	} {
+		if got := redactValues(c.input, map[string]string{"plain": stored}); got != c.want {
+			t.Fatalf("value %q changed how it matches: %q", stored, got)
+		}
+	}
 }
 
 func TestResolutionReportKeepsCapacityWithoutDuplicatedImages(t *testing.T) {

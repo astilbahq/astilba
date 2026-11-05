@@ -291,10 +291,20 @@ func TestGitImportBuildIsolationAndArtifactAdmission(t *testing.T) {
 	t.Run("secret arguments are rejected", func(t *testing.T) {
 		escaped := "runtime&quote\"backslash\\newline\nend"
 		b.call("POST", path+"/secrets", map[string]string{"name": "ESCAPED_RUNTIME", "value": escaped}, 201, nil)
-		for _, value := range []string{"build-only-canary", "runtime-only-canary", escaped} {
+		var pasted pipeline.BuildSecret
+		b.call("POST", prefix+"/build-secrets", map[string]string{"name": "PASTED_BUILD", "value": "build-pasted-canary\n"}, 201, &pasted)
+		declared := map[string]uuid.UUID{"PASTED_BUILD": pasted.ID}
+		for name, id := range cfg.Secrets {
+			declared[name] = id
+		}
+		for _, value := range []string{"build-only-canary", "runtime-only-canary", escaped, "build-pasted-canary"} {
 			invalid := cfg
+			invalid.Secrets = declared
 			invalid.Arguments = map[string]string{"TOKEN": value}
-			b.call("POST", path+"/builds", map[string]any{"baseRevisionId": promoted.Id, "applicationId": app, "requestKey": uuid.New(), "configuration": invalid}, 400, nil)
+			refusal := b.call("POST", path+"/builds", map[string]any{"baseRevisionId": promoted.Id, "applicationId": app, "requestKey": uuid.New(), "configuration": invalid}, 400, nil)
+			if !bytes.Contains(refusal, []byte("build.argumentsContainSecret")) {
+				t.Fatal("argument was refused for another reason", value, string(refusal))
+			}
 		}
 	})
 	t.Run("cancel and expiry deliver without provider credentials", func(t *testing.T) {

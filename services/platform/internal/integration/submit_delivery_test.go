@@ -268,6 +268,19 @@ func TestSubmitDeliveryRechecksRuntimeSecrets(t *testing.T) {
 			t.Fatal("admission did not refuse the file name, or echoed the value", refusal)
 		}
 	})
+	t.Run("admission finds a runtime secret stored with surrounding whitespace", func(t *testing.T) {
+		b := *b
+		b.t = t
+		canary := "pasted-secret-canary"
+		for name, plant := range map[string]func(*composeproject.Bundle){"content": func(bundle *composeproject.Bundle) { bundle.Files[0].Content += "# TOKEN=\"" + canary + "\"\n" }, "file name": inFileName(canary)} {
+			path, draft := prepare(t, "Pasted secret in "+name, plant)
+			b.call("POST", path+"/secrets", map[string]string{"name": "TOKEN", "value": canary + "\n"}, 201, nil)
+			refusal := string(b.call("POST", path+"/source/submit", map[string]any{"baseRevisionId": draft.Id, "requestKey": uuid.New()}, 400, nil))
+			if !strings.Contains(refusal, "source.containsRuntimeSecret") || strings.Contains(refusal, canary) {
+				t.Fatal("admission did not refuse the trimmed value, or echoed it", name, refusal)
+			}
+		}
+	})
 	t.Run("a draft can rename a secret file name out of its baseline", func(t *testing.T) {
 		b := *b
 		b.t = t
