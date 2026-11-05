@@ -3,7 +3,7 @@ package execution
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/json"
+	"encoding/json/v2"
 	"errors"
 	"net/url"
 	"slices"
@@ -74,7 +74,20 @@ func sourceSecretRejection(err error) (string, bool) {
 	return "This attempt was rejected before reaching a runner: its files contain a known runtime secret value. If an earlier attempt of this draft ran, its astilba/ branch may already hold them.", true
 }
 
+// hydratePipeline holds the agent's row and the operation only while it decides. Provider
+// and GitHub calls run between passes, and the pass that delivers re-makes every decision
+// below: a revoked or rotated agent, a cancelled or expired operation, a new runtime secret
+// or a changed connection all stop the credential after the call as they would before it.
 func (s *Service) hydratePipeline(ctx context.Context, a Identity, c *api.ExecutionCommand) (bool, error) {
+	var deliver bool
+	err := s.withGit(ctx, a.Workspace, func(git *gitAnswers) error {
+		var err error
+		deliver, err = s.decidePipelineDelivery(ctx, git, a, c)
+		return err
+	})
+	return deliver, err
+}
+func (s *Service) decidePipelineDelivery(ctx context.Context, git *gitAnswers, a Identity, c *api.ExecutionCommand) (bool, error) {
 	tx, err := s.Store.Pool.Begin(ctx)
 	if err != nil {
 		return false, err
@@ -104,8 +117,14 @@ func (s *Service) hydratePipeline(ctx context.Context, a Identity, c *api.Execut
 	if err = json.Unmarshal(raw, c); err != nil {
 		return false, err
 	}
+	// The dispatcher stops a command that loses its authority or subscription, but only on
+	// its next run, so this pass, the last before credentials leave, checks for itself.
+	refused, err := s.deliveryRefused(ctx, tx, a.Workspace, *c)
+	if err != nil {
+		return false, err
+	}
 	// This command carries no credentials, so an agent whose clock lags must not start it.
-	c.CancelRequested = pollCancelled || cancelled || time.Now().After(c.Deadline)
+	c.CancelRequested = pollCancelled || cancelled || refused || time.Now().After(c.Deadline)
 	var p pipeline.Command
 	if c.Pipeline == nil || json.Unmarshal(*c.Pipeline, &p) != nil || p.Digest() != c.PlanHash {
 		return false, errors.New("invalid pipeline payload")
@@ -169,29 +188,27 @@ func (s *Service) hydratePipeline(ctx context.Context, a Identity, c *api.Execut
 			return false, errors.New("runner no longer supports the frozen project cache assignment")
 		}
 	}
-	var configuration []byte
-	if err = tx.QueryRow(ctx, "SELECT configuration FROM git_connections WHERE workspace_id=$1 AND id=$2", ws, p.Connection.ID).Scan(&configuration); err != nil {
+	current, app, err := git.connection(ctx, tx, p.Connection.ID)
+	if err != nil {
 		return false, err
 	}
-	if appConfiguration(configuration) {
-		var current pipeline.Connection
-		if json.Unmarshal(configuration, &current) != nil || current.Provider != p.Connection.Provider || current.BaseURL != p.Connection.BaseURL || current.Repository != p.Connection.Repository || current.RepositoryID != p.Connection.RepositoryID || current.Private != p.Connection.Private {
+	if app {
+		if current.Provider != p.Connection.Provider || current.BaseURL != p.Connection.BaseURL || current.Repository != p.Connection.Repository || current.RepositoryID != p.Connection.RepositoryID || current.Private != p.Connection.Private {
 			return false, errors.New("repository identity changed")
 		}
 	} else {
-		provider, _, e := s.provider(ctx, tx, ws, p.Connection.ID)
-		if e != nil {
-			return false, e
+		repository, err := git.repository(ctx, tx, p.Connection.ID)
+		if err != nil {
+			return false, err
 		}
-		id, private, e := provider.Repository(ctx)
-		if e != nil {
-			return false, e
+		if repository.Err != nil {
+			return false, repository.Err
 		}
-		if id != p.Connection.RepositoryID || private != p.Connection.Private {
+		if repository.Value.ID != p.Connection.RepositoryID || repository.Value.Private != p.Connection.Private {
 			return false, errors.New("repository identity changed")
 		}
 	}
-	if err = s.populatePipeline(ctx, tx, ws, c.EnvironmentId, &p); err != nil {
+	if err = s.populatePipeline(ctx, tx, git, ws, c.EnvironmentId, &p); err != nil {
 		var rejected *buildInputRejection
 		if errors.As(err, &rejected) && undelivered && p.Action == "build" && p.Preview == nil {
 			if err = queries.FinishUndeliveredPipeline(ctx, db.FinishUndeliveredPipelineParams{WorkspaceID: ws, ID: c.Id, State: "failed", Note: "Build rejected before runner delivery: " + rejected.note()}); err != nil {
@@ -213,8 +230,17 @@ func (s *Service) hydratePipeline(ctx context.Context, a Identity, c *api.Execut
 	c.Pipeline = rawMessage(raw)
 	return true, tx.Commit(ctx)
 }
-func (s *Service) populatePipeline(ctx context.Context, tx pgx.Tx, ws, env uuid.UUID, p *pipeline.Command) error {
-	access, err := s.gitAccess(ctx, tx, ws, p.Connection.ID, p.Action == "submit")
+func (s *Service) deliveryRefused(ctx context.Context, tx pgx.Tx, ws uuid.UUID, c api.ExecutionCommand) (bool, error) {
+	if err := s.commandAdmission(ctx, tx, ws, c); errors.Is(err, store.SubscriptionRequired) {
+		return true, nil
+	} else if err != nil {
+		return false, err
+	}
+	allowed, err := s.previewCommandAllowed(ctx, tx, ws, c, false)
+	return !allowed, err
+}
+func (s *Service) populatePipeline(ctx context.Context, tx pgx.Tx, git *gitAnswers, ws, env uuid.UUID, p *pipeline.Command) error {
+	access, err := s.commandAccess(ctx, tx, git, ws, p.Connection.ID, p.Action == "submit")
 	if err != nil {
 		return err
 	}
@@ -248,6 +274,19 @@ func (s *Service) populatePipeline(ctx context.Context, tx pgx.Tx, ws, env uuid.
 	return nil
 }
 
+// commandAccess asks git, or contacts GitHub in place for an admission path that has not
+// moved its provider calls out of its locks yet and so passes no git.
+func (s *Service) commandAccess(ctx context.Context, tx pgx.Tx, git *gitAnswers, ws, id uuid.UUID, write bool) (pipeline.Access, error) {
+	if git == nil {
+		return s.gitAccess(ctx, tx, ws, id, write)
+	}
+	access, err := git.access(ctx, tx, id, write)
+	if err != nil {
+		return pipeline.Access{}, err
+	}
+	return access.Value, access.Err
+}
+
 func (s *Service) writePipelineRevision(ctx context.Context, tx pgx.Tx, ws, env, base, actor uuid.UUID, spec domain.Specification) (uuid.UUID, error) {
 	raw, _ := stablejson.Marshal(spec)
 	parsed, canonical, err := domain.ParseSpec(raw)
@@ -268,7 +307,7 @@ func (s *Service) writePipelineRevision(ctx context.Context, tx pgx.Tx, ws, env,
 	}
 	return id, err
 }
-func (s *Service) pipelineReport(ctx context.Context, tx pgx.Tx, c api.ExecutionCommand, r *api.AgentReport) error {
+func (s *Service) pipelineReport(ctx context.Context, tx pgx.Tx, git *gitAnswers, received time.Time, c api.ExecutionCommand, r *api.AgentReport) error {
 	var p pipeline.Command
 	if c.Pipeline == nil || json.Unmarshal(*c.Pipeline, &p) != nil || p.Digest() != c.PlanHash {
 		return domain.Forbidden
@@ -279,7 +318,7 @@ func (s *Service) pipelineReport(ctx context.Context, tx pgx.Tx, c api.Execution
 	if err := tx.QueryRow(ctx, "SELECT workspace_id,cancel_requested,note FROM execution_operations WHERE id=$1", c.Id).Scan(&ws, &cancelled, &note); err != nil {
 		return err
 	}
-	if r.State == "succeeded" && (cancelled || time.Now().After(c.Deadline)) {
+	if r.State == "succeeded" && (cancelled || received.After(c.Deadline)) {
 		r.State = "cancelled"
 		r.Note = "Result arrived after cancellation or expiry."
 		r.Pipeline = nil
@@ -424,15 +463,14 @@ func (s *Service) pipelineReport(ctx context.Context, tx pgx.Tx, c api.Execution
 				if err != nil {
 					return err
 				}
-				provider, _, err := s.provider(ctx, tx, ws, p.Connection.ID)
+				head, err := git.head(ctx, tx, p.Connection.ID, p.Branch)
 				if err != nil {
 					return err
 				}
-				head, err := provider.Resolve(ctx, p.Branch)
-				if err != nil {
-					return err
+				if head.Err != nil {
+					return head.Err
 				}
-				if v.Revision == p.RevisionID && head == p.Commit {
+				if v.Revision == p.RevisionID && head.Value == p.Commit {
 					if err = promoteSpecification(ctx, &v.Spec, p.AppID, artifact); err != nil {
 						return err
 					}

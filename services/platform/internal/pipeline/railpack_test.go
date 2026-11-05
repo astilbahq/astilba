@@ -1,9 +1,10 @@
 package pipeline
 
 import (
-	"encoding/json"
+	"encoding/json/v2"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 )
@@ -96,5 +97,27 @@ func TestRailpackModeAdmissionAndCacheCompatibility(t *testing.T) {
 	b.Secrets = map[string]uuid.UUID{"TOKEN": uuid.New()}
 	if b.Validate() == nil {
 		t.Fatal("secret collided with public planner input")
+	}
+}
+
+// A build of an unchanged commit must not start failing, or plan differently, after
+// an agent update.
+func TestRailpackConfigurationKeepsReadingWhatEarlierBuildsAccepted(t *testing.T) {
+	for name, test := range map[string]struct{ raw, contains, excludes string }{
+		"duplicate":          {raw: `{"provider":"node","provider":"golang"}`},
+		"changed type":       {raw: `{"provider":1,"provider":"golang"}`},
+		"replaced object":    {raw: `{"provider":"golang","deploy":{"startCommand":"a"},"deploy":{"base":{"image":"x"}}}`, contains: `"image":"x"`, excludes: `"startCommand"`},
+		"invalid text":       {raw: `{"provider":"golang","deploy":{"startCommand":"caf` + "\xff" + `"}}`},
+		"unpaired surrogate": {raw: `{"provider":"golang","deploy":{"startCommand":"` + `\` + `ud83d"}}`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			projected, provider, err := PrepareRailpackConfig([]byte(test.raw), nil)
+			if err != nil || provider != "golang" || !utf8.Valid(projected) {
+				t.Fatalf("%q: %s, %s, %v", test.raw, projected, provider, err)
+			}
+			if !strings.Contains(string(projected), test.contains) || test.excludes != "" && strings.Contains(string(projected), test.excludes) {
+				t.Fatalf("%q planned %s", test.raw, projected)
+			}
+		})
 	}
 }

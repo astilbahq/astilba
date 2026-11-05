@@ -2,13 +2,14 @@ package integration
 
 import (
 	"context"
-	"encoding/json"
+	"encoding/json/jsontext"
 	"testing"
 	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/hostnetwork"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 )
 
@@ -34,7 +35,7 @@ func TestPollDeliversRestrictionDuringPausedCrossHostOperation(t *testing.T) {
 	}
 	insert := func(c api.ExecutionCommand, state string, created time.Time) {
 		t.Helper()
-		raw, err := json.Marshal(c)
+		raw, err := stablejson.Marshal(c)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -55,22 +56,22 @@ func TestPollDeliversRestrictionDuringPausedCrossHostOperation(t *testing.T) {
 	child := parent
 	child.Id, child.ParentId, child.Generation = uuid.New(), &parent.Id, 2
 	body := deployment.CrossHostCommand{ParentID: parent.Id, Phase: "prepare", Unit: deployment.DistributedUnit{Plan: deployment.Plan{ServerID: in.ServerId, EnvironmentID: env}}}
-	raw, _ := json.Marshal(body)
-	message := json.RawMessage(raw)
+	raw, _ := stablejson.Marshal(body)
+	message := jsontext.Value(raw)
 	child.Crosshost, child.PlanHash = &message, body.Digest()
 	insert(child, "needs_attention", now.Add(-3*time.Second))
 
 	restrictionBody := hostnetwork.Command{Action: "restrict", NetworkID: uuid.New(), MembershipID: uuid.New()}
-	raw, _ = json.Marshal(restrictionBody)
-	message = json.RawMessage(raw)
+	raw, _ = stablejson.Marshal(restrictionBody)
+	message = jsontext.Value(raw)
 	restriction := api.ExecutionCommand{Id: uuid.New(), ServerId: in.ServerId, Generation: 3, Kind: "network", Action: "inspect", Network: &message, PlanHash: hostnetwork.Hash(restrictionBody), Deadline: now.Add(time.Hour)}
 	insert(restriction, "dispatched", now.Add(-2*time.Second))
 
 	checkpoint := child
 	checkpoint.Id, checkpoint.Generation = uuid.New(), 4
 	body.Phase = "checkpoint"
-	raw, _ = json.Marshal(body)
-	message = json.RawMessage(raw)
+	raw, _ = stablejson.Marshal(body)
+	message = jsontext.Value(raw)
 	checkpoint.Crosshost, checkpoint.PlanHash = &message, body.Digest()
 	insert(checkpoint, "dispatched", now.Add(-time.Second))
 

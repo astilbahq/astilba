@@ -3,7 +3,8 @@ package httpapi
 import (
 	"bytes"
 	"context"
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"io"
@@ -128,10 +129,10 @@ func diagnosticRequest(t *testing.T, handler func(*Server, http.ResponseWriter, 
 		t.Fatal("request or error contents leaked into logs")
 	}
 	var records []map[string]any
-	decoder := json.NewDecoder(&logs)
+	decoder := jsontext.NewDecoder(&logs)
 	for {
 		var record map[string]any
-		if err := decoder.Decode(&record); errors.Is(err, io.EOF) {
+		if err := json.UnmarshalDecode(decoder, &record); errors.Is(err, io.EOF) {
 			break
 		} else if err != nil {
 			t.Fatal(err)

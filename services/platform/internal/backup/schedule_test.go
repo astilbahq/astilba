@@ -1,9 +1,11 @@
 package backup
 
 import (
-	"encoding/json"
+	"encoding/json/v2"
 	"testing"
 	"time"
+
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 )
 
 func instant(t *testing.T, value string) time.Time {
@@ -80,7 +82,7 @@ func TestLegacyBlankTimezonePreservesWireAndUTCBehavior(t *testing.T) {
 	if err := s.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	raw, _ := json.Marshal(s)
+	raw, _ := stablejson.Marshal(s)
 	if string(raw) != wire {
 		t.Fatalf("legacy digest input changed: %s", raw)
 	}

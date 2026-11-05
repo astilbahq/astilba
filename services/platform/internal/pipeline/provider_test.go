@@ -5,12 +5,13 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
+
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 )
 
 func TestProviderAuthorityAndPushAuthentication(t *testing.T) {
@@ -78,18 +79,18 @@ func TestProviderExactHeadReviewAndRedirectBoundary(t *testing.T) {
 				switch {
 				case strings.Contains(r.URL.Path, "/branches/"):
 					if kind == "gitlab" {
-						_ = json.NewEncoder(w).Encode(map[string]any{"commit": map[string]string{"id": head}})
+						_ = stablejson.Encode(w, map[string]any{"commit": map[string]string{"id": head}})
 					} else {
-						_ = json.NewEncoder(w).Encode(map[string]any{"commit": map[string]string{"sha": head}})
+						_ = stablejson.Encode(w, map[string]any{"commit": map[string]string{"sha": head}})
 					}
 				case strings.HasSuffix(r.URL.Path, "/pulls") || strings.HasSuffix(r.URL.Path, "/merge_requests"):
 					if r.Method == "GET" {
 						_, _ = w.Write([]byte("[]"))
 						return
 					}
-					_ = json.NewEncoder(w).Encode(map[string]any{"number": 5, "iid": 5, "html_url": "https://example.test/review/5", "web_url": "https://example.test/review/5"})
+					_ = stablejson.Encode(w, map[string]any{"number": 5, "iid": 5, "html_url": "https://example.test/review/5", "web_url": "https://example.test/review/5"})
 				default:
-					_ = json.NewEncoder(w).Encode(map[string]any{"id": repositoryID, "private": true})
+					_ = stablejson.Encode(w, map[string]any{"id": repositoryID, "private": true})
 				}
 			}))
 			defer server.Close()

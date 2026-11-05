@@ -1,10 +1,13 @@
 package portability
 
 import (
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 )
 
 func TestLegacyArchivePurposeAndStrictShape(t *testing.T) {
@@ -24,8 +27,8 @@ func TestLegacyArchivePurposeAndStrictShape(t *testing.T) {
 	if err = json.Unmarshal(raw, &altered); err != nil {
 		t.Fatal(err)
 	}
-	altered.Tables["servers"][0]["preview_only"] = json.RawMessage("true")
-	invalid, _ := json.Marshal(altered)
+	altered.Tables["servers"][0]["preview_only"] = jsontext.Value("true")
+	invalid, _ := stablejson.Marshal(altered)
 	if _, err = decodeArchive(invalid); err == nil {
 		t.Fatal("accepted a new authority field in a legacy archive")
 	}
@@ -59,7 +62,7 @@ func TestPreSchedulingVersionTwoArchivesRemainReadable(t *testing.T) {
 		delete(row, "runtime_outcome")
 		delete(row, "runtime_plan_id")
 	}
-	raw, err = json.Marshal(archive)
+	raw, err = stablejson.Marshal(archive)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +70,7 @@ func TestPreSchedulingVersionTwoArchivesRemainReadable(t *testing.T) {
 		t.Fatal("pre-scheduling archive rejected", err)
 	}
 	archive.Version = 7
-	raw, _ = json.Marshal(archive)
+	raw, _ = stablejson.Marshal(archive)
 	if _, err = decodeArchive(raw); err == nil {
 		t.Fatal("unknown future schedule semantics accepted")
 	}
@@ -90,22 +93,22 @@ func TestVersionFivePreservesUnknownAppliedProvenance(t *testing.T) {
 		delete(row, "runtime_outcome")
 		delete(row, "runtime_plan_id")
 	}
-	raw, _ = json.Marshal(a)
+	raw, _ = stablejson.Marshal(a)
 	decoded, err := decodeArchive(raw)
 	if err != nil || string(decoded.Tables["environments"][0]["runtime_operation_id"]) != "null" {
 		t.Fatal("legacy provenance was inferred or rejected", err)
 	}
-	a.Tables["environments"][0]["runtime_operation_id"] = json.RawMessage("null")
-	raw, _ = json.Marshal(a)
+	a.Tables["environments"][0]["runtime_operation_id"] = jsontext.Value("null")
+	raw, _ = stablejson.Marshal(a)
 	if _, err = decodeArchive(raw); err == nil {
 		t.Fatal("version five accepted a new provenance field")
 	}
 	a.Version = 6
 	for _, row := range a.Tables["execution_operations"] {
-		row["runtime_outcome"] = json.RawMessage("null")
-		row["runtime_plan_id"] = json.RawMessage("null")
+		row["runtime_outcome"] = jsontext.Value("null")
+		row["runtime_plan_id"] = jsontext.Value("null")
 	}
-	raw, _ = json.Marshal(a)
+	raw, _ = stablejson.Marshal(a)
 	if _, err = decodeArchive(raw); err != nil {
 		t.Fatal("version six rejected explicit unknown provenance", err)
 	}

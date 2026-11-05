@@ -6,7 +6,8 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -18,6 +19,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
 )
@@ -54,15 +56,15 @@ func TestBuildControlsAndSuccessfulWatchBaseline(t *testing.T) {
 	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if strings.Contains(r.URL.Path, "/branches/") {
-			_ = json.NewEncoder(w).Encode(map[string]any{"commit": map[string]string{"sha": head.Load().(string)}})
+			_ = stablejson.Encode(w, map[string]any{"commit": map[string]string{"sha": head.Load().(string)}})
 			return
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"id": 12, "private": false})
+		_ = stablejson.Encode(w, map[string]any{"id": 12, "private": false})
 	}))
 	defer provider.Close()
 	var connection struct {
-		Connection    pipeline.Connection
-		WebhookSecret string
+		Connection    pipeline.Connection `json:"connection"`
+		WebhookSecret string              `json:"webhookSecret"`
 	}
 	b.call("POST", prefix+"/git-connections", map[string]string{"name": "Watch", "provider": "gitea", "baseUrl": provider.URL, "repository": "team/app"}, 201, &connection)
 	var project api.Project
@@ -108,8 +110,8 @@ func TestBuildControlsAndSuccessfulWatchBaseline(t *testing.T) {
 	}
 	report := func(c api.ExecutionCommand, state api.ExecutionState, result pipeline.Result) {
 		t.Helper()
-		raw, _ := json.Marshal(result)
-		msg := json.RawMessage(raw)
+		raw, _ := stablejson.Marshal(result)
+		msg := jsontext.Value(raw)
 		agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/report", token, api.AgentReport{Id: c.Id, Generation: c.Generation, PlanHash: c.PlanHash, Sequence: 2, State: state, Steps: []api.ExecutionStep{}, Pipeline: &msg}, 204, nil)
 	}
 	c := poll()
@@ -123,8 +125,8 @@ func TestBuildControlsAndSuccessfulWatchBaseline(t *testing.T) {
 		t.Fatal("manual build was filtered or lost limits")
 	}
 	// A skipped report cannot manufacture successful manual work or an artifact.
-	raw, _ := json.Marshal(pipeline.Result{Commit: p.Commit, Skipped: true})
-	msg := json.RawMessage(raw)
+	raw, _ := stablejson.Marshal(pipeline.Result{Commit: p.Commit, Skipped: true})
+	msg := jsontext.Value(raw)
 	agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/report", token, api.AgentReport{Id: c.Id, Generation: c.Generation, PlanHash: c.PlanHash, Sequence: 1, State: "succeeded", Steps: []api.ExecutionStep{}, Pipeline: &msg}, 400, nil)
 	report(c, "succeeded", pipeline.Result{Commit: p.Commit, Architecture: "arm64", Image: "astilba-build-" + c.Id.String() + ":built", Digest: "sha256:" + strings.Repeat("d", 64)})
 	baseline := p.Commit
@@ -133,7 +135,7 @@ func TestBuildControlsAndSuccessfulWatchBaseline(t *testing.T) {
 	push := func(commit string) {
 		t.Helper()
 		head.Store(commit)
-		body, _ := json.Marshal(map[string]any{"ref": "refs/heads/main", "after": commit, "repository": map[string]int{"id": 12}})
+		body, _ := stablejson.Marshal(map[string]any{"ref": "refs/heads/main", "after": commit, "repository": map[string]int{"id": 12}})
 		mac := hmac.New(sha256.New, []byte(connection.WebhookSecret))
 		_, _ = mac.Write(body)
 		req, _ := http.NewRequest("POST", f.server.URL+"/hooks/git/"+connection.Connection.ID.String(), bytes.NewReader(body))
@@ -204,8 +206,8 @@ func TestBuildControlsAndSuccessfulWatchBaseline(t *testing.T) {
 	badReport := pipeline.Result{Commit: p.Commit, Architecture: "arm64", Image: "astilba-build-" + c.Id.String() + ":built", Digest: "sha256:" + strings.Repeat("d", 64)}
 	for _, summary := range []*pipeline.RailpackSummary{nil, {Version: "0.42.0", Frontend: pipeline.RailpackFrontend, Provider: "node", PlanHash: strings.Repeat("b", 64), Packages: map[string]string{}}} {
 		badReport.Railpack = summary
-		raw, _ := json.Marshal(badReport)
-		msg := json.RawMessage(raw)
+		raw, _ := stablejson.Marshal(badReport)
+		msg := jsontext.Value(raw)
 		var rejection api.Error
 		agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/report", token, api.AgentReport{Id: c.Id, Generation: c.Generation, PlanHash: c.PlanHash, Sequence: 1, State: "succeeded", Steps: []api.ExecutionStep{}, Pipeline: &msg}, 400, &rejection)
 		if rejection.Fields == nil || len(*rejection.Fields) != 1 || (*rejection.Fields)[0] != "build.railpack" {

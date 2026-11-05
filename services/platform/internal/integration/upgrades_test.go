@@ -3,7 +3,8 @@ package integration
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"net/http"
 	"os"
 	"strings"
@@ -17,6 +18,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/backup"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/astilbahq/astilba/services/platform/internal/upgrade"
 	"github.com/google/uuid"
 	"github.com/moby/moby/client"
@@ -82,12 +84,12 @@ func (h *upgradeHost) report(t *testing.T, c api.ExecutionCommand, state api.Exe
 	t.Helper()
 	r := api.AgentReport{Id: c.Id, Generation: c.Generation, PlanHash: c.PlanHash, Sequence: 1, State: state, Steps: []api.ExecutionStep{}}
 	if obs != nil {
-		raw, _ := json.Marshal(obs)
-		r.Observation = (*json.RawMessage)(&raw)
+		raw, _ := stablejson.Marshal(obs)
+		r.Observation = (*jsontext.Value)(&raw)
 	}
 	if status != nil {
-		raw, _ := json.Marshal(status)
-		r.Upgrade = (*json.RawMessage)(&raw)
+		raw, _ := stablejson.Marshal(status)
+		r.Upgrade = (*jsontext.Value)(&raw)
 	}
 	agentRequest(t, h.f.server.Client(), h.f.server.URL, "/agent/v1/report", h.token, r, 204, nil)
 }
@@ -195,9 +197,9 @@ func TestUpgradeApprovalRecoveryAndTenantBoundary(t *testing.T) {
 	status.Step = "complete"
 	status.Serving = "new"
 	completed := poll(op.Id)
-	rawStatus, _ := json.Marshal(status)
-	emptyObservation, _ := json.Marshal(deployment.Observation{ObservedAt: time.Now(), Resources: []deployment.Resource{}, StateHash: strings.Repeat("d", 64)})
-	agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/report", token, api.AgentReport{Id: completed.Id, Generation: completed.Generation, PlanHash: completed.PlanHash, Sequence: 1, State: "succeeded", Steps: []api.ExecutionStep{}, Upgrade: (*json.RawMessage)(&rawStatus), Observation: (*json.RawMessage)(&emptyObservation)}, 400, nil)
+	rawStatus, _ := stablejson.Marshal(status)
+	emptyObservation, _ := stablejson.Marshal(deployment.Observation{ObservedAt: time.Now(), Resources: []deployment.Resource{}, StateHash: strings.Repeat("d", 64)})
+	agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/report", token, api.AgentReport{Id: completed.Id, Generation: completed.Generation, PlanHash: completed.PlanHash, Sequence: 1, State: "succeeded", Steps: []api.ExecutionStep{}, Upgrade: (*jsontext.Value)(&rawStatus), Observation: (*jsontext.Value)(&emptyObservation)}, 400, nil)
 	report(completed, "succeeded", &deployment.Observation{ObservedAt: time.Now(), Applied: true, Resources: []deployment.Resource{{ID: pg, Kind: "service", State: "healthy", Image: domain.PostgresImage}}, StateHash: strings.Repeat("d", 64)}, &status)
 	b.call("GET", path+"/draft", nil, 200, &draft)
 	var final domain.Specification

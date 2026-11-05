@@ -2,7 +2,7 @@ package execution
 
 import (
 	"context"
-	"encoding/json"
+	"encoding/json/v2"
 	"time"
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"

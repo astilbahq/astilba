@@ -2,7 +2,7 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
+	"encoding/json/v2"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -15,6 +15,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/execution"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 	"github.com/moby/moby/client"
 )
@@ -101,7 +102,7 @@ func TestReplicaMetricInventoryIncludesSecondariesAndAbsentGroups(t *testing.T) 
 					items = append(items, map[string]any{"Id": fmt.Sprintf("member-%d", i), "Names": []string{"/" + deployment.UnitName(id)}, "State": "running", "Labels": map[string]string{labelResource: app.String(), "com.astilba.unit": p.UnitID.String()}})
 				}
 			}
-			_ = json.NewEncoder(w).Encode(items)
+			_ = stablejson.Encode(w, items)
 		case strings.HasSuffix(r.URL.Path, "/json"):
 			fmt.Fprint(w, `{"State":{"Health":{"Status":"healthy"}}}`)
 		case strings.HasSuffix(r.URL.Path, "/stats"):
@@ -148,7 +149,7 @@ func TestPendingReplicaRoutingRejectsLegacyReaderBeforeRecovery(t *testing.T) {
 	}
 	for _, previous := range []routeSnapshot{{Sets: map[string]deployment.RouteSet{}}, legacy, candidate} {
 		state := routeState{Current: previous, Pending: &routeAttempt{Previous: previous, Candidate: candidate}}
-		raw, err := json.Marshal(state)
+		raw, err := stablejson.Marshal(state)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -175,7 +176,7 @@ func TestPendingReplicaRoutingRejectsLegacyReaderBeforeRecovery(t *testing.T) {
 			}
 		}
 	}
-	raw, err := json.Marshal(routeState{Current: legacy, Pending: &routeAttempt{Previous: legacy, Candidate: legacy}})
+	raw, err := stablejson.Marshal(routeState{Current: legacy, Pending: &routeAttempt{Previous: legacy, Candidate: legacy}})
 	var old oldState
 	if err != nil || json.Unmarshal(raw, &old) != nil || old.Pending == nil {
 		t.Fatal("legacy singleton pending encoding changed", err)

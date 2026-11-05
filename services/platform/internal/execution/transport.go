@@ -3,7 +3,8 @@ package execution
 import (
 	"bytes"
 	"context"
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"strings"
@@ -61,6 +62,7 @@ func (s *Service) poll(ctx context.Context, a Identity, out *api.AgentPoll) (*ap
 	defer deadline.Stop()
 	tick := time.NewTicker(time.Second)
 	defer tick.Stop()
+	var verified uuid.UUID
 	for {
 		// Check revocation/expiry after each wait, not only at request entry.
 		if _, err = s.Authenticate(ctx, a.ID, a.Token); err != nil {
@@ -106,7 +108,8 @@ func (s *Service) poll(ctx context.Context, a Identity, out *api.AgentPoll) (*ap
 				if e != nil {
 					return nil, e
 				}
-				allowed, e := s.previewCommandAllowed(ctx, tx, a.Workspace, c, state == "dispatched")
+				verify := state == "dispatched" && verified != c.Id
+				allowed, e := s.previewCommandAllowed(ctx, tx, a.Workspace, c, verify)
 				if e == nil && allowed {
 					allowed, e = s.maintenanceEffectAllowed(ctx, tx, a.Workspace, c)
 				}
@@ -116,6 +119,13 @@ func (s *Service) poll(ctx context.Context, a Identity, out *api.AgentPoll) (*ap
 				}
 				if !allowed {
 					cancel = true
+				}
+				// The provider call can take many seconds, and a command's secrets leave soon
+				// after it, so everything read before it is read again: the agent's credential,
+				// the operation and what the call was checked against.
+				if verify && allowed {
+					verified = c.Id
+					continue
 				}
 			}
 			c.CancelRequested = cancel
@@ -174,7 +184,7 @@ func (s *Service) poll(ctx context.Context, a Identity, out *api.AgentPoll) (*ap
 
 // PostgreSQL cannot store NUL in text or jsonb, so host output containing one would
 // fail the same report on every retry. A space keeps the payload's size limits exact.
-func replaceEscapedNUL(payload *json.RawMessage) {
+func replaceEscapedNUL(payload *jsontext.Value) {
 	if payload == nil {
 		return
 	}
@@ -202,9 +212,17 @@ func (s *Service) Report(ctx context.Context, a Identity, r api.AgentReport) err
 		return domain.Invalid("state")
 	}
 	r.Note = strings.ReplaceAll(r.Note, "\x00", " ")
-	for _, payload := range []*json.RawMessage{r.Pipeline, r.Observation, r.Crosshost, r.Upgrade, r.Network} {
+	for _, payload := range []*jsontext.Value{r.Pipeline, r.Observation, r.Crosshost, r.Upgrade, r.Network} {
 		replaceEscapedNUL(payload)
 	}
+	// A provider call between passes must not count against the agent's report.
+	received := time.Now()
+	return s.withGit(ctx, a.Workspace, func(git *gitAnswers) error { return s.applyReport(ctx, git, received, a, r) })
+}
+
+// applyReport takes its report by value because a pass rewrites it, and a pass that asks a
+// provider a question is rolled back and made again from what the agent sent.
+func (s *Service) applyReport(ctx context.Context, git *gitAnswers, received time.Time, a Identity, r api.AgentReport) error {
 	var tx pgx.Tx
 	var err error
 	if r.Network != nil {
@@ -256,7 +274,7 @@ func (s *Service) Report(ctx context.Context, a Identity, r api.AgentReport) err
 		return domain.Invalid("pipeline")
 	}
 	if c.Kind == "pipeline" {
-		if err = s.pipelineReport(ctx, tx, c, &r); err != nil {
+		if err = s.pipelineReport(ctx, tx, git, received, c, &r); err != nil {
 			return err
 		}
 	}

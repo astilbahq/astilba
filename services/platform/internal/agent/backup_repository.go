@@ -3,7 +3,8 @@ package agent
 import (
 	"bytes"
 	"context"
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"errors"
 	"io"
 	"os"
@@ -170,14 +171,18 @@ func (e *Engine) backupSnapshot(ctx context.Context, s *scheduleState, r *backup
 	if err != nil {
 		return err
 	}
-	dec := json.NewDecoder(bytes.NewReader(out))
+	dec := jsontext.NewDecoder(bytes.NewReader(out))
 	snapshot := ""
-	for dec.More() {
+	for {
 		var line struct {
 			Type     string `json:"message_type"`
 			Snapshot string `json:"snapshot_id"`
 		}
-		if err = dec.Decode(&line); err != nil {
+		err := json.UnmarshalDecode(dec, &line)
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
 			return err
 		}
 		if line.Type == "summary" {

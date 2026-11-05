@@ -4,7 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"io"
@@ -327,8 +328,7 @@ func (e *Engine) buildPipeline(ctx context.Context, c api.ExecutionCommand, p pi
 		if host == "docker.io" {
 			host = "https://index.docker.io/v1/"
 		}
-		auth := map[string]any{"auths": map[string]any{host: map[string]string{"auth": base64.StdEncoding.EncodeToString([]byte(p.RegistryAccess.Push.Username + ":" + p.RegistryAccess.Push.Password))}}}
-		data, _ := json.Marshal(auth)
+		data, _ := buildKitAuthConfig(host, p.RegistryAccess.Push)
 		if _, err = e.pipelineCLI(ctx, pipelineName(c), nil, data, 1024, "sh", "-ec", "umask 077; cat > /workspace/auth/config.json"); err != nil {
 			return result, err
 		}
@@ -345,7 +345,7 @@ func (e *Engine) buildPipeline(ctx context.Context, c api.ExecutionCommand, p pi
 	if err != nil {
 		return result, err
 	}
-	var info map[string]json.RawMessage
+	var info map[string]jsontext.Value
 	if json.Unmarshal(metadata, &info) != nil {
 		return result, errors.New("invalid BuildKit metadata")
 	}
@@ -507,21 +507,21 @@ func (e *Engine) executePipeline(ctx context.Context, c api.ExecutionCommand, r 
 	}
 	if e.cancelled(c.Id) || ctx.Err() != nil {
 		raw, _ := stablejson.Marshal(pipeline.Result{Logs: result.Logs})
-		if err := e.Journal.Mutate(c.Id, func(record *Record) { message := json.RawMessage(raw); record.Report.Pipeline = &message }); err != nil {
+		if err := e.Journal.Mutate(c.Id, func(record *Record) { message := jsontext.Value(raw); record.Report.Pipeline = &message }); err != nil {
 			return err
 		}
 		return e.finishPipeline(c, "cancelled", "Build/source assignment was cancelled or expired; no artifact is eligible for deployment.")
 	}
 	if err != nil {
 		raw, _ := stablejson.Marshal(result)
-		_ = e.Journal.Mutate(c.Id, func(record *Record) { message := json.RawMessage(raw); record.Report.Pipeline = &message })
+		_ = e.Journal.Mutate(c.Id, func(record *Record) { message := jsontext.Value(raw); record.Report.Pipeline = &message })
 		return e.pipelineFailure(ctx, c, err)
 	}
 	raw, err := stablejson.Marshal(result)
 	if err != nil || len(raw) > 150000 {
 		return e.finishPipeline(c, "failed", "Pipeline result exceeds its supported size.")
 	}
-	if err = e.Journal.Mutate(c.Id, func(record *Record) { message := json.RawMessage(raw); record.Report.Pipeline = &message }); err != nil {
+	if err = e.Journal.Mutate(c.Id, func(record *Record) { message := jsontext.Value(raw); record.Report.Pipeline = &message }); err != nil {
 		return err
 	}
 	e.point("pipeline-result")
@@ -544,4 +544,9 @@ func (e *Engine) finishPipeline(c api.ExecutionCommand, state api.ExecutionState
 		return e.finish(c.Id, "needs_attention", "Runner cleanup failed. Inspect the owned container and retry this operation locally.")
 	}
 	return e.finish(c.Id, state, note)
+}
+
+// buildKitAuthConfig writes the Docker config file BuildKit reads to push an image.
+func buildKitAuthConfig(host string, push pipeline.Credential) ([]byte, error) {
+	return json.Marshal(map[string]any{"auths": map[string]any{host: map[string]string{"auth": base64.StdEncoding.EncodeToString([]byte(push.Username + ":" + push.Password))}}})
 }

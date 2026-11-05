@@ -2,7 +2,7 @@ package integration
 
 import (
 	"context"
-	"encoding/json"
+	"encoding/json/v2"
 	"fmt"
 	"io"
 	"net/http"
@@ -16,6 +16,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/applicationdns"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
 )
@@ -132,7 +133,7 @@ func TestApplicationDomainScopeAndRecovery(t *testing.T) {
 			delete(records, r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:])
 			result = map[string]any{}
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "result": result})
+		_ = stablejson.Encode(w, map[string]any{"success": true, "result": result})
 	}))
 	defer provider.Close()
 	u, _ := url.Parse(provider.URL)

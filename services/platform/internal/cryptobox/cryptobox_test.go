@@ -2,9 +2,11 @@ package cryptobox
 
 import (
 	"bytes"
-	"encoding/json"
+	"encoding/json/v2"
 	"strings"
 	"testing"
+
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 )
 
 func TestEnvelopeIdentityAndRotation(t *testing.T) {
@@ -44,7 +46,7 @@ func TestEnvelopeIdentityAndRotation(t *testing.T) {
 		t.Fatal("rotation changed data ciphertext")
 	}
 	b.Data[len(b.Data)-1] ^= 1
-	bad, _ := json.Marshal(b)
+	bad, _ := stablejson.Marshal(b)
 	if _, e := next.Open(bad, "workspace-a:version-1"); e == nil {
 		t.Fatal("accepted corrupt data")
 	}
@@ -55,7 +57,7 @@ func TestParseRefusesAmbiguousKeyrings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	raw, err := json.Marshal(ring)
+	raw, err := stablejson.Marshal(ring)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,7 +83,7 @@ func TestParseAcceptsLineBreaksInKeyValues(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	raw, err := json.Marshal(ring)
+	raw, err := stablejson.Marshal(ring)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -3,7 +3,8 @@ package integration
 import (
 	"bytes"
 	"context"
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"io"
 	"net/http"
 	"sync"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/alexedwards/scs/v2"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/pquerna/otp/totp"
 )
 
@@ -39,7 +41,7 @@ func sendHeld(t *testing.T, b *browser, gate *heldSessionStore, cookies []*http.
 	var raw []byte
 	if body != nil {
 		var err error
-		if raw, err = json.Marshal(body); err != nil {
+		if raw, err = stablejson.Marshal(body); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -105,7 +107,7 @@ func sessionFromCookies(t *testing.T, b *browser, cookies []*http.Cookie) api.Se
 	}
 	defer response.Body.Close()
 	var session api.Session
-	if err := json.NewDecoder(response.Body).Decode(&session); err != nil {
+	if err := json.UnmarshalDecode(jsontext.NewDecoder(response.Body), &session); err != nil {
 		t.Fatal(err)
 	}
 	return session

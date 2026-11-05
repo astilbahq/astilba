@@ -3,7 +3,8 @@ package agent
 import (
 	"bytes"
 	"context"
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"errors"
 	"os"
 	"os/exec"
@@ -16,6 +17,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/execution"
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/containerd/errdefs"
 	"github.com/google/uuid"
 	"github.com/moby/moby/api/types/container"
@@ -48,11 +50,13 @@ func TestCrossHostRetainedPoolProcess(t *testing.T) {
 			os.Exit(77)
 		}
 	}}
-	reply := struct{ Error string }{}
+	reply := struct {
+		Error string `json:"error"`
+	}{}
 	if err := engine.retainCrossHostPool(t.Context(), state.Unit.Plan, &state); err != nil {
 		reply.Error = err.Error()
 	}
-	if err := json.NewEncoder(os.Stdout).Encode(reply); err != nil {
+	if err := stablejson.Encode(os.Stdout, reply); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -190,8 +194,10 @@ func TestCrossHostRetainedPools(t *testing.T) {
 		if err != nil {
 			t.Fatalf("retention child: %s: %v", out, err)
 		}
-		var reply struct{ Error string }
-		if err := json.NewDecoder(bytes.NewReader(out)).Decode(&reply); err != nil {
+		var reply struct {
+			Error string `json:"error"`
+		}
+		if err := json.UnmarshalDecode(jsontext.NewDecoder(bytes.NewReader(out)), &reply); err != nil {
 			t.Fatalf("retention reply: %s: %v", out, err)
 		}
 		return reply.Error

@@ -2,7 +2,8 @@ package execution
 
 import (
 	"context"
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"errors"
 	"time"
 
@@ -89,7 +90,7 @@ func (s *Service) insertPipeline(ctx context.Context, tx pgx.Tx, ws, env, key, s
 		return out, domain.Invalid("pipeline")
 	}
 	hydrated := p
-	if err := s.populatePipeline(ctx, tx, ws, env, &hydrated); err != nil {
+	if err := s.populatePipeline(ctx, tx, nil, ws, env, &hydrated); err != nil {
 		return out, err
 	}
 	var count int
@@ -108,7 +109,7 @@ func (s *Service) insertPipeline(ctx context.Context, tx pgx.Tx, ws, env, key, s
 		return out, domain.Invalid("pipeline")
 	}
 	id := uuid.New()
-	message := json.RawMessage(raw)
+	message := jsontext.Value(raw)
 	c := api.ExecutionCommand{Id: id, ServerId: server, EnvironmentId: env, ResourceId: p.UnitID, Generation: generation, Kind: "pipeline", Action: "inspect", PlanHash: p.Digest(), Pipeline: &message, Deadline: time.Now().Add(pipelineLifetime(p))}
 	out, err = s.insert(ctx, tx, ws, key, nil, c)
 	if err != nil {
@@ -493,10 +494,10 @@ func (s *Service) PipelineRuns(ctx context.Context, p store.Principal, ws, pid, 
 				data["configuration"] = c.Build
 			}
 			if len(result) > 0 {
-				data["result"] = json.RawMessage(result)
+				data["result"] = jsontext.Value(result)
 			}
 			if len(artifact) > 0 {
-				data["artifact"] = json.RawMessage(artifact)
+				data["artifact"] = jsontext.Value(artifact)
 			}
 			if autoState != nil {
 				data["automaticDeployment"] = map[string]any{"state": *autoState, "note": *autoNote, "operationId": autoOperation}

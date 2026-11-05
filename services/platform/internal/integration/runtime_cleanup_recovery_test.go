@@ -2,7 +2,8 @@ package integration
 
 import (
 	"context"
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"errors"
 	"sort"
 	"strings"
@@ -17,6 +18,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/execution"
 	"github.com/astilbahq/astilba/services/platform/internal/hostnetwork"
 	"github.com/astilbahq/astilba/services/platform/internal/portability"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 )
 
@@ -89,8 +91,8 @@ func preparePreviewRemovalRecovery(t *testing.T, f *fixture, b *browser, ws uuid
 						t.Error(err)
 						return
 					}
-					raw, _ := json.Marshal(receipt)
-					report.Network = (*json.RawMessage)(&raw)
+					raw, _ := stablejson.Marshal(receipt)
+					report.Network = (*jsontext.Value)(&raw)
 				case "visual":
 					var payload deployment.Payload
 					if json.Unmarshal(*c.Visual, &payload) != nil {
@@ -110,8 +112,8 @@ func preparePreviewRemovalRecovery(t *testing.T, f *fixture, b *browser, ws uuid
 							observation.Resources = append(observation.Resources, deployment.Resource{ID: a.ID, State: "running", Image: payload.Plan.Images[a.ID.String()]})
 						}
 					}
-					raw, _ := json.Marshal(observation)
-					report.Observation = (*json.RawMessage)(&raw)
+					raw, _ := stablejson.Marshal(observation)
+					report.Observation = (*jsontext.Value)(&raw)
 				case "crosshost":
 					var body deployment.CrossHostCommand
 					if json.Unmarshal(*c.Crosshost, &body) != nil {
@@ -159,8 +161,8 @@ func preparePreviewRemovalRecovery(t *testing.T, f *fixture, b *browser, ws uuid
 							receipt.Observation.Resources = append(receipt.Observation.Resources, r)
 						}
 					}
-					raw, _ := json.Marshal(receipt)
-					report.Crosshost = (*json.RawMessage)(&raw)
+					raw, _ := stablejson.Marshal(receipt)
+					report.Crosshost = (*jsontext.Value)(&raw)
 				default:
 					t.Error("unexpected recovery fixture command", c.Kind)
 					return

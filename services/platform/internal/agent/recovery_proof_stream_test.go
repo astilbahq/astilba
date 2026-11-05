@@ -2,7 +2,7 @@ package agent
 
 import (
 	"bytes"
-	"encoding/json"
+	"encoding/json/jsontext"
 	"testing"
 	"time"
 
@@ -16,7 +16,7 @@ import (
 func TestRecoveryProofLinesKeepTheirReleasedDigest(t *testing.T) {
 	j, _ := testVisualJournal(t)
 	id, parent := uuid.MustParse("11111111-1111-4111-8111-111111111111"), uuid.MustParse("22222222-2222-4222-8222-222222222222")
-	receipt := json.RawMessage(`{"phase":"a && b <c>","observation":{"resources":[{"logs":"dropped"}]}}`)
+	receipt := jsontext.Value(`{"phase":"a && b <c>","observation":{"resources":[{"logs":"dropped"}]}}`)
 	record := Record{
 		Command:    api.ExecutionCommand{Id: id, ParentId: &parent, ServerId: id, Kind: "crosshost", Action: "a && b <c>", Generation: 1, PlanHash: "hash", Deadline: time.Date(2026, 1, 2, 3, 4, 5, 6000, time.UTC)},
 		Checkpoint: "after <c>",

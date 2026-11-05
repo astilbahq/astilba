@@ -3,7 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/base64"
-	"encoding/json"
+	"encoding/json/jsontext"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -15,6 +15,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/hostnetwork"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/astilbahq/astilba/services/platform/internal/upgrade"
 	"github.com/google/uuid"
 	"github.com/moby/moby/client"
@@ -54,10 +55,10 @@ func expiredMaintenance(t *testing.T, reserved bool) maintenanceContinuationFixt
 	envelope := []byte("opaque-frozen-maintenance-root")
 	d := deployment.RecoveryDescriptor{Version: 1, WorkspaceID: uuid.New(), ParentID: parent, RootHash: strings.Repeat("a", 64), GroupID: p.Local.GroupID, GroupHash: strings.Repeat("b", 64), BaseID: id, CheckpointID: id, Digest: deployment.RecoveryDigest(envelope), Bytes: len(envelope), Participants: []uuid.UUID{p.ServerID}}
 	body := deployment.CrossHostCommand{ParentID: parent, GroupHash: d.RootHash, Phase: "resume-source", Unit: deployment.DistributedUnit{Plan: p}, Maintenance: &deployment.Maintenance{Kind: "backup", ResourceID: uuid.New(), RunID: uuid.New(), EffectHash: strings.Repeat("c", 64), ExpectedState: strings.Repeat("d", 64)}}
-	raw, _ := json.Marshal(body)
-	message := json.RawMessage(raw)
-	descriptor, _ := json.Marshal(d)
-	metadata := json.RawMessage(descriptor)
+	raw, _ := stablejson.Marshal(body)
+	message := jsontext.Value(raw)
+	descriptor, _ := stablejson.Marshal(d)
+	metadata := jsontext.Value(descriptor)
 	generation := int64(1)
 	c := api.ExecutionCommand{Id: uuid.New(), ParentId: &parent, ServerId: p.ServerID, EnvironmentId: p.EnvironmentID, ResourceId: p.UnitID, Kind: "crosshost", Action: "inspect", Generation: 1, ControllerGeneration: &generation, PlanHash: body.Digest(), Deadline: time.Now().Add(-time.Hour), Crosshost: &message, RecoveryCheckpoint: &metadata}
 	if err := j.retainCheckpoint(c, d, envelope); err != nil {
@@ -94,8 +95,8 @@ func expiredMaintenance(t *testing.T, reserved bool) maintenanceContinuationFixt
 }
 
 func (f *maintenanceContinuationFixture) freezeBody() {
-	raw, _ := json.Marshal(f.body)
-	message := json.RawMessage(raw)
+	raw, _ := stablejson.Marshal(f.body)
+	message := jsontext.Value(raw)
 	f.command.Crosshost, f.command.PlanHash = &message, f.body.Digest()
 }
 
@@ -170,8 +171,8 @@ func TestExpiredMaintenanceRejectsChangedAuthorityRootAndTarget(t *testing.T) {
 			case "root":
 				d := f.descriptor
 				d.RootHash = strings.Repeat("e", 64)
-				raw, _ := json.Marshal(d)
-				metadata := json.RawMessage(raw)
+				raw, _ := stablejson.Marshal(d)
+				metadata := jsontext.Value(raw)
 				f.command.RecoveryCheckpoint = &metadata
 			case "target":
 				target := f.body.Unit.Plan

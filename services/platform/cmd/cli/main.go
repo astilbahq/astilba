@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"encoding/json"
+	"encoding/json/jsontext"
 	"errors"
 	"flag"
 	"fmt"
@@ -15,6 +15,7 @@ import (
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/automationclient"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -172,7 +173,7 @@ func run(ctx context.Context, args []string) error {
 			input = f
 		}
 		raw, e := io.ReadAll(io.LimitReader(input, 150001))
-		if e != nil || len(raw) > 150000 || !json.Valid(raw) {
+		if e != nil || len(raw) > 150000 || !jsontext.Value(raw).IsValid() {
 			return errors.New("specification must be valid JSON within the API size limit")
 		}
 		out, err = client.UpdateDraft(ctx, v, api.DraftUpdate{BaseRevisionId: baseID, Specification: raw})
@@ -224,7 +225,5 @@ func run(ctx context.Context, args []string) error {
 }
 
 func output(value any) error {
-	encoder := json.NewEncoder(os.Stdout)
-	encoder.SetIndent("", "  ")
-	return encoder.Encode(value)
+	return stablejson.EncodeIndent(os.Stdout, value, "", "  ")
 }

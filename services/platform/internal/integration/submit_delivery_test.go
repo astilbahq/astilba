@@ -2,7 +2,8 @@ package integration
 
 import (
 	"context"
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -14,6 +15,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/composeproject"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 )
 
@@ -31,10 +33,10 @@ func TestSubmitDeliveryRechecksRuntimeSecrets(t *testing.T) {
 	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if strings.Contains(r.URL.Path, "/branches/") {
-			_ = json.NewEncoder(w).Encode(map[string]any{"commit": map[string]string{"sha": head}})
+			_ = stablejson.Encode(w, map[string]any{"commit": map[string]string{"sha": head}})
 			return
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"id": 12, "private": true})
+		_ = stablejson.Encode(w, map[string]any{"id": 12, "private": true})
 	}))
 	defer provider.Close()
 	const writeCredential = "submit-write-canary"
@@ -63,11 +65,11 @@ func TestSubmitDeliveryRechecksRuntimeSecrets(t *testing.T) {
 		t.Helper()
 		r := api.AgentReport{Id: c.Id, Generation: c.Generation, PlanHash: c.PlanHash, Sequence: sequence, State: state, Note: note, Steps: []api.ExecutionStep{}}
 		if result != nil {
-			raw, err := json.Marshal(result)
+			raw, err := stablejson.Marshal(result)
 			if err != nil {
 				t.Fatal(err)
 			}
-			message := json.RawMessage(raw)
+			message := jsontext.Value(raw)
 			r.Pipeline = &message
 		}
 		agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/report", token, r, 204, nil)

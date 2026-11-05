@@ -3,7 +3,7 @@ package execution
 import (
 	"context"
 	"crypto/rand"
-	"encoding/json"
+	"encoding/json/v2"
 	"errors"
 	"time"
 

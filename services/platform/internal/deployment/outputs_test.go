@@ -1,11 +1,12 @@
 package deployment
 
 import (
-	"encoding/json"
+	"encoding/json/v2"
 	"strings"
 	"testing"
 
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 )
 
@@ -30,9 +31,9 @@ func TestNamedOutputsResolveRuntimeIdentityAndSecretProvenance(t *testing.T) {
 	}
 	var rendered struct {
 		Services map[string]struct {
-			Environment map[string]string
-			DependsOn   map[string]any `json:"depends_on"`
-		}
+			Environment map[string]string `json:"environment"`
+			DependsOn   map[string]any    `json:"depends_on"`
+		} `json:"services"`
 	}
 	if err = json.Unmarshal(raw, &rendered); err != nil {
 		t.Fatal(err)
@@ -70,7 +71,11 @@ func TestGeneralReferencesAreNotReadinessEdges(t *testing.T) {
 	b.Name = "Peer"
 	p.Specification.Applications = []domain.Application{a, b}
 	p.Specification.Bindings = []domain.Binding{{ID: uuid.New(), SourceID: a.ID, TargetID: b.ID, Output: "HOST", Variable: "PEER"}, {ID: uuid.New(), SourceID: b.ID, TargetID: a.ID, Output: "HOST", Variable: "PEER"}}
-	parse := func() error { raw, _ := json.Marshal(p.Specification); _, _, err := domain.ParseSpec(raw); return err }
+	parse := func() error {
+		raw, _ := stablejson.Marshal(p.Specification)
+		_, _, err := domain.ParseSpec(raw)
+		return err
+	}
 	if err := parse(); err != nil {
 		t.Fatal("reciprocal static references rejected", err)
 	}
@@ -106,7 +111,7 @@ func TestOutputAdmissionRejectsUnresolvableOrConflictingReferences(t *testing.T)
 		t.Run(name, func(t *testing.T) {
 			p := testPlan()
 			change(&p.Specification)
-			raw, _ := json.Marshal(p.Specification)
+			raw, _ := stablejson.Marshal(p.Specification)
 			if _, _, err := domain.ParseSpec(raw); err == nil {
 				t.Fatal("invalid reference accepted")
 			}

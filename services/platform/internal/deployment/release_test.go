@@ -1,16 +1,17 @@
 package deployment
 
 import (
-	"encoding/json"
+	"encoding/json/v2"
 	"strings"
 	"testing"
 
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 )
 
 func copyPlan(p Plan) Plan {
-	raw, _ := json.Marshal(p)
+	raw, _ := stablejson.Marshal(p)
 	var n Plan
 	_ = json.Unmarshal(raw, &n)
 	return n
@@ -77,10 +78,12 @@ func TestReleaseInstanceRenderingKeepsLogicalOwnership(t *testing.T) {
 	}
 	var doc struct {
 		Services map[string]struct {
-			ContainerName string `json:"container_name"`
-			Labels        map[string]string
-			Networks      map[string]struct{ Aliases []string }
-		}
+			ContainerName string            `json:"container_name"`
+			Labels        map[string]string `json:"labels"`
+			Networks      map[string]struct {
+				Aliases []string `json:"aliases"`
+			} `json:"networks"`
+		} `json:"services"`
 	}
 	if err = json.Unmarshal(raw, &doc); err != nil {
 		t.Fatal(err)

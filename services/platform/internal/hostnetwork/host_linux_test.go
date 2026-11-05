@@ -4,7 +4,7 @@ package hostnetwork
 
 import (
 	"context"
-	"encoding/json"
+	"encoding/json/jsontext"
 	"fmt"
 	"net/http"
 	"os"
@@ -264,7 +264,7 @@ func TestNativeManagedLinks(t *testing.T) {
 	}
 	for _, key := range []string{"a", "b"} {
 		raw := in(key, "nft", "-j", "list", "table", "ip", "fixture")
-		if !json.Valid(raw) {
+		if !jsontext.Value(raw).IsValid() {
 			t.Fatal("unrelated firewall table was lost")
 		}
 	}

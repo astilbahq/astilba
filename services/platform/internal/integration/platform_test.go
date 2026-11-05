@@ -2,10 +2,10 @@ package integration
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/astilbahq/astilba/services/platform/internal/httpapi"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"io"
 	"log/slog"
 	"net/http"
@@ -49,7 +49,7 @@ func TestTenantRevisionsAndSecrets(t *testing.T) {
 	statuses := make(chan int, 2)
 	for i := 0; i < 2; i++ {
 		wg.Go(func() {
-			data, _ := json.Marshal(payload)
+			data, _ := stablejson.Marshal(payload)
 			req, _ := newRequest(owner, "PUT", path+"/draft", data)
 			res, e := owner.client.Do(req)
 			if e != nil {

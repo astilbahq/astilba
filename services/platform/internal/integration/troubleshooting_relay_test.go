@@ -3,7 +3,6 @@ package integration
 import (
 	"bufio"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -19,6 +18,7 @@ import (
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/astilbahq/astilba/services/platform/internal/terminal"
 	"github.com/coder/websocket"
 	"github.com/google/uuid"
@@ -700,7 +700,7 @@ func TestTroubleshootingOffersStayOutOfTheCommandPath(t *testing.T) {
 		t.Fatal("offer missing", offers, err)
 	}
 	command := api.ExecutionCommand{Id: uuid.New(), Kind: "test", ServerId: server}
-	raw, _ := json.Marshal(command)
+	raw, _ := stablejson.Marshal(command)
 	if _, err = x.f.st.Pool.Exec(ctx, `INSERT INTO execution_operations(id,workspace_id,server_id,generation,request_key,command,kind,state) VALUES($1,$2,$3,1,$4,$5,'test','dispatched')`, command.Id, x.ws, server, uuid.NewString(), raw); err != nil {
 		t.Fatal(err)
 	}

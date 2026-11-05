@@ -3,10 +3,11 @@ package integration
 import (
 	"bytes"
 	"context"
-	"encoding/json"
+	"encoding/json/v2"
 	"testing"
 
 	"github.com/astilbahq/astilba/services/platform/internal/portability"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
 )
@@ -85,7 +86,7 @@ func TestWorkspaceExportOmitsLogsAndPreservesRecoveryDiagnostics(t *testing.T) {
 		"visual_plans":          {"retained-configuration-value"},
 		"supported_upgrades":    {`"phase":"attention"`, `"step":"restore"`, `"serving":"none"`, "retained-upgrade-snapshot"},
 	} {
-		encoded, _ := json.Marshal(exported.Tables[table])
+		encoded, _ := stablejson.Marshal(exported.Tables[table])
 		for _, log := range []string{"application-note-log-canary", "upgrade-note-log-canary", "application-log-canary", "build-log-canary"} {
 			if bytes.Contains(encoded, []byte(log)) {
 				t.Errorf("%s exported diagnostic %s", table, log)

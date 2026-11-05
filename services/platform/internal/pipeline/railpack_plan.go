@@ -1,7 +1,9 @@
 package pipeline
 
 import (
-	"encoding/json"
+	jsonv1 "encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"path"
@@ -16,11 +18,11 @@ import (
 
 const RailpackPlanLimit = 128 << 10
 
-func railpackPlanHash(plan json.RawMessage, inputs RailpackInputs) string {
+func railpackPlanHash(plan jsontext.Value, inputs RailpackInputs) string {
 	return Hash(struct {
-		Plan   json.RawMessage
+		Plan   jsontext.Value
 		Inputs RailpackInputs
-		Policy json.RawMessage
+		Policy jsontext.Value
 	}{plan, inputs, RailpackSourcePolicy(inputs)})
 }
 
@@ -51,8 +53,11 @@ func PrepareRailpackConfig(raw []byte, options *RailpackOptions) ([]byte, string
 	if err != nil {
 		return nil, "", errors.New("Railpack configuration must be valid JSON or JSON with comments")
 	}
+	// A repository's own file, reread for every build of that commit. v1's rules keep
+	// an unchanged commit building and planning the same. v2's duplicate option is not
+	// equal to them, because it merges a repeated object instead of replacing it.
 	var cfg map[string]any
-	if json.Unmarshal(clean, &cfg) != nil || cfg == nil {
+	if json.Unmarshal(clean, &cfg, jsonv1.DefaultOptionsV1()) != nil || cfg == nil {
 		return nil, "", errors.New("Railpack configuration must be an object")
 	}
 	provider := ""

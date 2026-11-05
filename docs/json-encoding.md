@@ -1,6 +1,6 @@
 # JSON encoding
 
-Astilba's Go code reads JSON with `encoding/json/v2` and writes hashed, stored and peer-to-peer JSON through `internal/stablejson`. The owner chose full adoption while the project is in alpha; packages move across in stages, so some still call v1 until the series finishes.
+Astilba's Go code reads JSON with `encoding/json/v2` and writes everything except requests to third parties through `internal/stablejson`. The owner chose full adoption while the project is in alpha.
 
 ## The rule
 
@@ -8,12 +8,24 @@ Astilba's Go code reads JSON with `encoding/json/v2` and writes hashed, stored a
 | --- | --- |
 | Reading JSON | `encoding/json/v2`. Add `RejectUnknownMembers(true)` where unknown names must be refused. |
 | Hashing or signing a value | `stablejson.Hash`, or the package `Hash` and `Digest` helpers that call it. |
-| Writing a value that is stored, journaled, exported, sent between Astilba processes that can be on different releases (controller, agent, CLI requests), or printed by an agent or server command that scripts read | `stablejson.Marshal`, `stablejson.Encode` for a stream or `stablejson.MarshalIndent` for indented files. |
+| Writing a value that is stored, journaled, exported or sent between Astilba processes that can be on different releases, an API response, or command output that scripts read | `stablejson.Marshal`, `stablejson.Encode` for a stream, `stablejson.MarshalIndent` or `stablejson.EncodeIndent`. |
 | Cloning a value through JSON, when the clone can reach a digest | `stablejson.Marshal`, so nil collections stay nil. |
 
-HTTP responses, the `astilba` CLI's own output and values sent to third parties, including registry credentials for Docker, still use v1 until a later change moves them.
+Requests to third parties, alert webhooks and Docker registry credentials use plain `encoding/json/v2`, because nothing hashes, stores or compares them. Compared with v1, `&`, `<`, `>`, U+2028 and U+2029 are no longer escaped, map order is random and invalid UTF-8 is an error rather than replaced.
+
+The `jsonguard` analyzer in `make check-app` checks this: `encoding/json` only in the files listed under [Remaining v1 use](#remaining-v1-use), and plain v2 writers only in the functions it names. A named function can still add a second writer, so a clean run does not rule that out.
 
 `stablejson.Marshal` calls v2 with `encoding/json`'s `DefaultOptionsV1`, which the standard library defines as equal to v1's `Marshal`. It is the reason production code still names the v1 package.
+
+## Why API responses stay on v1 bytes
+
+Plain v2 would change what responses mean, not only how they look. Measured across the integration tests, `applications[].replicas` would appear as `0` inside specifications and plans, `omittedResources`, `coordinated`, `intervalMinutes`, `timeoutSeconds` and `networks[].internal` would appear with zero values, `PreviewPolicy.note` would disappear when empty, and nil arrays and maps would change from `null` to `[]` or `{}`.
+
+The cause is that responses share Go structs with stored and hashed values, such as `deployment.Plan`, `domain.Specification` and `backup.Policy`, so one `omitempty` tag has to mean one thing. 
+
+Moving responses to plain v2 stays possible later. It would mean retagging scalar and pointer `omitempty` fields as `omitzero`, keeping `omitempty` on slices and maps, and setting `FormatNilSliceAsNull`, `FormatNilMapAsNull`, `Deterministic` and `jsontext.AllowInvalidUTF8`. The one `jsontext.Value` field with `omitempty`, `recoveryContinuation.UpgradeStatus`, needs its own decision, because v1 writes empty and `null` raw values that v2 drops. There are up to 356 tags to review, 190 of them in `api.gen.go` and so changed through the contract, or roughly two or three days of work, and no versioned digest format would be needed. Mirrors of `deployment.Plan`, `domain.Specification` and `backup.Policy` with synthetic values wrote the same bytes this way, but that did not run against the real types or stored data, so the pinned digests would have to confirm it. The only response change left would be that `&`, `<`, `>`, U+2028 and U+2029 stop being escaped, which is the same JSON, so the owner chose not to do it now.
+
+v2 with `OmitEmptyWithLegacySemantics` was also rejected: it still changes nil collections and escaping, still names the v1 package and adds a third format.
 
 ## Why hashed JSON stays on v1 bytes
 
@@ -76,12 +88,14 @@ v2 refuses duplicate names and invalid UTF-8, and matches names by exact case. D
 
 - **PostgreSQL `jsonb`.** It removes duplicate names and rejects invalid UTF-8 on write, so stored rows cannot contain either. No migration uses a plain `json` column for this data.
 - **Journals, generated keyrings, network snapshots, recovery files.** Go's v1 encoder writes struct tag names exactly, cannot produce duplicates from a struct and replaces invalid UTF-8. No JSON tag in this repository's history has been renamed by case alone.
-- **Workspace archives and recovery bundles.** Rows come from PostgreSQL, so the same applies. `map[string]json.RawMessage` keeps `null` as the text `null` under both versions.
+- **Workspace archives and recovery bundles.** Rows come from PostgreSQL, so the same applies. `map[string]jsontext.Value` keeps `null` as the text `null` under both versions.
 - **`null`, empty arrays and timestamps.** These decode to the same Go values, so digests of decoded values do not move.
 
-Two readers keep looser matching, because their input is written by people and refusing it would take a working system down:
+Some readers stay looser, because other people or tools write their input and refusing it would take a working system down:
 
 - **Compose `x-astilba` metadata** keeps v1 rules, through `DefaultOptionsV1`. The YAML is stored verbatim and re-read every time a revision is parsed, so refusing a saved `allowCIDRs:` would stop planning, automatic deploys, runtime views and recovery for that environment. An older controller after a rollback reads it the same way. This reader has no second parser to disagree with.
+- **`railpack.json`** keeps v1 rules, through `DefaultOptionsV1`. It is a repository's own file, reread for every build of that commit, so refusing it or merging a repeated block differently would stop or change builds of unchanged source. v2's `AllowDuplicateNames` is not equivalent, because it merges a repeated object where v1 replaces it.
+- **`ip` and `nft` output** accepts invalid UTF-8. Both print interface aliases and comments byte for byte, and another administrator's alias must not stop this host's network from converging.
 - **Keyrings** accept line breaks inside base64 key values. Operators can build a keyring by hand or through a secret manager, and refusing a value such as one from `jq --rawfile` would stop the control plane at startup. Member names must still match exactly: a hand-built `"Active"` now stops startup until it is corrected, with no effect on stored data. Duplicate key IDs are refused.
 
 ## Trust boundaries
@@ -100,10 +114,11 @@ These libraries call `encoding/json` v1 themselves, so they accept v1's looser i
 
 ## Remaining v1 use
 
-Once the series finishes, production code names `encoding/json` in only three places, apart from generated code. Each reads or writes a format that Astilba does not control or must not change, so moving it would change behaviour rather than tidy an import:
+Once the series finishes, production code names `encoding/json` in only four places. Each reads or writes a format that Astilba does not control or must not change, so moving it would change behaviour rather than tidy an import:
 
 - **`internal/stablejson`**, for `DefaultOptionsV1`, the decoder behind `Normalize` and `MarshalIndent`, whose output `jsontext.WithIndent` does not reproduce. This is the frozen format itself.
 - **`internal/domain/compose.go`**, for `DefaultOptionsV1` on `x-astilba` metadata. The YAML is the user's own text in an immutable, content-hashed revision, so it cannot be rewritten to suit a stricter reader.
+- **`internal/pipeline/railpack_plan.go`**, for `DefaultOptionsV1` on a repository's `railpack.json`, for the same reason as Compose metadata: it is the user's own text, and it is read again for every build.
 - **`internal/cryptobox`**, for `ParseBytesWithLooseRFC4648` on keyrings. Operators write these files, and this option is the standard library's named switch for the line breaks they contain.
 
-Test code may keep v1, which also exercises the format older peers write.
+Tests follow the same rules, because a test decoding with v1 folds case and can pass where production would not. `stablejson` writes exactly what an older peer writes, so compatibility tests use it. Only `internal/stablejson/golden_test.go` still names v1, to decode as an older peer does.

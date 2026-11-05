@@ -31,6 +31,16 @@ func Encode(w io.Writer, v any) error {
 	return err
 }
 
+// EncodeIndent writes v to w as MarshalIndent does, followed by a newline.
+func EncodeIndent(w io.Writer, v any, prefix, indent string) error {
+	raw, err := MarshalIndent(v, prefix, indent)
+	if err != nil {
+		return err
+	}
+	_, err = w.Write(append(raw, '\n'))
+	return err
+}
+
 // MarshalIndent is Marshal with v1's indentation.
 func MarshalIndent(v any, prefix, indent string) ([]byte, error) {
 	return jsonv1.MarshalIndent(v, prefix, indent)

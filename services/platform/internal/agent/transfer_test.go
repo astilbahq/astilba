@@ -3,8 +3,10 @@ package agent
 import (
 	"crypto/ed25519"
 	"crypto/rand"
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"reflect"
 	"strings"
 	"testing"
@@ -101,15 +103,15 @@ func TestExpiredVisualCancellationRetainsHydratedState(t *testing.T) {
 		t.Fatal(e)
 	}
 	payload.Secrets = map[string]string{uuid.NewString(): "stored-secret"}
-	raw, _ := json.Marshal(payload)
-	message := json.RawMessage(raw)
+	raw, _ := stablejson.Marshal(payload)
+	message := jsontext.Value(raw)
 	command.Visual = &message
 	if _, e := j.Accept(command); e != nil {
 		t.Fatal(e)
 	}
 	payload.Secrets = nil
-	raw, _ = json.Marshal(payload)
-	cancelPayload := json.RawMessage(raw)
+	raw, _ = stablejson.Marshal(payload)
+	cancelPayload := jsontext.Value(raw)
 	cancelled := command
 	cancelled.Visual = &cancelPayload
 	cancelled.CancelRequested = true

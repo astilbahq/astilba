@@ -4533,7 +4533,8 @@
           items: {$ref: '#/components/schemas/ManagedNetworkMemberInput'}
     ManagedNetwork:
       type: object
-      x-go-type: json.RawMessage
+      x-go-type: jsontext.Value
+      x-go-type-import: {path: encoding/json/jsontext}
       additionalProperties: false
       required: [id, generation, prefix, state, members]
       properties:
@@ -4595,19 +4596,23 @@
                     count: {type: integer, minimum: 1, maximum: 10}
     NetworkCommand:
       type: object
-      x-go-type: json.RawMessage
+      x-go-type: jsontext.Value
+      x-go-type-import: {path: encoding/json/jsontext}
       additionalProperties: true
     NetworkReceipt:
       type: object
-      x-go-type: json.RawMessage
+      x-go-type: jsontext.Value
+      x-go-type-import: {path: encoding/json/jsontext}
       additionalProperties: true
     CrossHostCommand:
       type: object
-      x-go-type: json.RawMessage
+      x-go-type: jsontext.Value
+      x-go-type-import: {path: encoding/json/jsontext}
       additionalProperties: true
     RecoveryDescriptor:
       type: object
-      x-go-type: json.RawMessage
+      x-go-type: jsontext.Value
+      x-go-type-import: {path: encoding/json/jsontext}
       additionalProperties: false
       required: [version,workspaceId,parentId,rootHash,groupId,groupHash,baseId,checkpointId,sequence,digest,bytes,participants]
       properties:
@@ -4631,7 +4636,8 @@
           items: {type: string,format: uuid}
     CrossHostReceipt:
       type: object
-      x-go-type: json.RawMessage
+      x-go-type: jsontext.Value
+      x-go-type-import: {path: encoding/json/jsontext}
       additionalProperties: true
     PreviewCleanupReceipt:
       type: object
@@ -6117,7 +6123,8 @@
         - "version"
         - "applications"
         - "variables"
-      "x-go-type": "json.RawMessage"
+      "x-go-type": "jsontext.Value"
+      "x-go-type-import": {"path": "encoding/json/jsontext"}
     "Revision":
       "type": "object"
       "additionalProperties": false
@@ -6619,7 +6626,8 @@
         - "expiresAt"
         - "expectedState"
         - "acceptDrift"
-      "x-go-type": "json.RawMessage"
+      "x-go-type": "jsontext.Value"
+      "x-go-type-import": {"path": "encoding/json/jsontext"}
     VisualPayload:
       "type": "object"
       "additionalProperties": false
@@ -6650,7 +6658,8 @@
       "required":
         - "action"
         - "plan"
-      "x-go-type": "json.RawMessage"
+      "x-go-type": "jsontext.Value"
+      "x-go-type-import": {"path": "encoding/json/jsontext"}
     "ResourceObservation":
       "type": "object"
       "additionalProperties": false
@@ -6748,7 +6757,8 @@
         - "resources"
         - "applied"
         - "stateHash"
-      "x-go-type": "json.RawMessage"
+      "x-go-type": "jsontext.Value"
+      "x-go-type-import": {"path": "encoding/json/jsontext"}
     "VisualPlanStatus":
       "type": "object"
       "additionalProperties": false
@@ -6772,7 +6782,8 @@
         - "operationId"
         - "state"
         - "plan"
-      "x-go-type": "json.RawMessage"
+      "x-go-type": "jsontext.Value"
+      "x-go-type-import": {"path": "encoding/json/jsontext"}
     "VisualPlanRequest":
       "type": "object"
       "additionalProperties": false
@@ -6831,7 +6842,8 @@
         - "compose"
         - "routes"
         - "readme"
-      "x-go-type": "json.RawMessage"
+      "x-go-type": "jsontext.Value"
+      "x-go-type-import": {"path": "encoding/json/jsontext"}
     "ManagedVolume":
       "type": "object"
       "additionalProperties": false
@@ -7675,7 +7687,8 @@
           $ref: '#/components/schemas/RailpackBuildSummary'
       required:
         - commit
-      x-go-type: json.RawMessage
+      x-go-type: jsontext.Value
+      x-go-type-import: {path: encoding/json/jsontext}
     BuildRejectionReason:
       type: string
       enum: [missing_build_secret, build_secret_budget, arguments_contain_secret, runtime_secret_budget]
@@ -7855,7 +7868,8 @@
         - inputHash
         - submittedAt
         - submissionId
-      x-go-type: json.RawMessage
+      x-go-type: jsontext.Value
+      x-go-type-import: {path: encoding/json/jsontext}
     BackupDestination:
       type: object
       additionalProperties: false
@@ -8328,7 +8342,8 @@
         - runId
         - snapshot
         - targetId
-      x-go-type: json.RawMessage
+      x-go-type: jsontext.Value
+      x-go-type-import: {path: encoding/json/jsontext}
     BackupCommandRequest:
       type: object
       additionalProperties: false
@@ -8411,7 +8426,8 @@
         expiresAt: {type: string, format: date-time}
         source: {$ref: '#/components/schemas/VisualPlan'}
     UpgradeStatus:
-      x-go-type: json.RawMessage
+      x-go-type: jsontext.Value
+      x-go-type-import: {path: encoding/json/jsontext}
       type: object
       additionalProperties: false
       required: [phase, step, serving, writesPossible, keepUntil, snapshot, note]
@@ -8433,7 +8449,8 @@
     UpgradeCommand:
       type: object
       additionalProperties: false
-      x-go-type: json.RawMessage
+      x-go-type: jsontext.Value
+      x-go-type-import: {path: encoding/json/jsontext}
       required: [action, plan, installation]
       properties:
         action: {type: string, enum: [prepare, cutover, return, reconcile]}
@@ -8573,7 +8590,8 @@
       properties:
         recovery:
           type: object
-          x-go-type: json.RawMessage
+          x-go-type: jsontext.Value
+          x-go-type-import: {path: encoding/json/jsontext}
           additionalProperties: true
         previewCleanups:
           type: array

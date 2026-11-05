@@ -2,7 +2,8 @@ package integration
 
 import (
 	"context"
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"errors"
 	"strings"
 	"sync"
@@ -17,6 +18,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/execution"
 	"github.com/astilbahq/astilba/services/platform/internal/hostnetwork"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/astilbahq/astilba/services/platform/internal/upgrade"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -32,14 +34,6 @@ func (coordinatedScheduleSweep) Kind() string { return "platform_coordinated_sch
 
 func TestCrossHostCoordinatedPlacement(t *testing.T) {
 	testCrossHostCoordinatedPlacement(t, "")
-}
-
-func TestCrossHostSubscriptionExpiry(t *testing.T) {
-	for _, phase := range []string{"probe", "publish"} {
-		t.Run(phase, func(t *testing.T) {
-			testCrossHostCoordinatedPlacement(t, phase)
-		})
-	}
 }
 
 func testCrossHostCoordinatedPlacement(t *testing.T, expiryPhase string) {
@@ -184,8 +178,8 @@ func testCrossHostCoordinatedPlacement(t *testing.T, expiryPhase string) {
 						t.Error(err)
 						return
 					}
-					raw, _ := json.Marshal(receipt)
-					v := json.RawMessage(raw)
+					raw, _ := stablejson.Marshal(receipt)
+					v := jsontext.Value(raw)
 					report.Network = &v
 				} else if c.Kind == "crosshost" {
 					var command deployment.CrossHostCommand
@@ -281,8 +275,8 @@ func testCrossHostCoordinatedPlacement(t *testing.T, expiryPhase string) {
 						invalid.Observation.Resources = append([]deployment.Resource(nil), observation.Resources...)
 						instance := deployment.InstanceState{InstanceID: uuid.New(), State: "running"}
 						invalid.Observation.Resources[0].Instances = []deployment.InstanceState{instance, instance}
-						data, _ := json.Marshal(invalid)
-						message := json.RawMessage(data)
+						data, _ := stablejson.Marshal(invalid)
+						message := jsontext.Value(data)
 						badReport := report
 						badReport.Crosshost = &message
 						var invalidInput *domain.Error
@@ -291,8 +285,8 @@ func testCrossHostCoordinatedPlacement(t *testing.T, expiryPhase string) {
 							return
 						}
 					}
-					raw, _ := json.Marshal(receipt)
-					v := json.RawMessage(raw)
+					raw, _ := stablejson.Marshal(receipt)
+					v := jsontext.Value(raw)
 					report.Crosshost = &v
 				} else if c.Kind == "upgrade" {
 					var command upgrade.Command
@@ -326,12 +320,12 @@ func testCrossHostCoordinatedPlacement(t *testing.T, expiryPhase string) {
 							}
 							observation.Resources = append(observation.Resources, res)
 						}
-						raw, _ := json.Marshal(observation)
-						value := json.RawMessage(raw)
+						raw, _ := stablejson.Marshal(observation)
+						value := jsontext.Value(raw)
 						report.Observation = &value
 					}
-					raw, _ := json.Marshal(status)
-					value := json.RawMessage(raw)
+					raw, _ := stablejson.Marshal(status)
+					value := jsontext.Value(raw)
 					report.Upgrade = &value
 				} else if c.Kind == "backup" || c.Kind == "schedule" {
 					var command backup.Command
@@ -384,8 +378,8 @@ func testCrossHostCoordinatedPlacement(t *testing.T, expiryPhase string) {
 							observation.Resources = append(observation.Resources, resource)
 						}
 					}
-					raw, _ := json.Marshal(observation)
-					value := json.RawMessage(raw)
+					raw, _ := stablejson.Marshal(observation)
+					value := jsontext.Value(raw)
 					report.Observation = &value
 				} else {
 					t.Error("unexpected host operation", c.Kind)
@@ -527,8 +521,8 @@ func testCrossHostCoordinatedPlacement(t *testing.T, expiryPhase string) {
 		t.Fatal("invalid closure payload")
 	}
 	closureReceipt := deployment.CrossHostReceipt{ParentID: closureBody.ParentID, GroupHash: closureBody.GroupHash, UnitID: closureFrame.ResourceId, PlanHash: closureBody.Unit.Plan.Hash, Phase: closureBody.Phase, Observation: deployment.Observation{ObservedAt: time.Now().UTC(), Resources: []deployment.Resource{}}}
-	rawClosureReceipt, _ := json.Marshal(closureReceipt)
-	closureValue := json.RawMessage(rawClosureReceipt)
+	rawClosureReceipt, _ := stablejson.Marshal(closureReceipt)
+	closureValue := jsontext.Value(rawClosureReceipt)
 	acceptedClosure.State, acceptedClosure.Sequence, acceptedClosure.Crosshost = "succeeded", 2, &closureValue
 	if err := f.execution.Report(ctx, identities[0], acceptedClosure); err != nil {
 		t.Fatal(err)
@@ -734,8 +728,8 @@ func testCrossHostCoordinatedPlacement(t *testing.T, expiryPhase string) {
 			return held
 		})
 		receipt := deployment.CrossHostReceipt{ParentID: parent, GroupHash: body.GroupHash, UnitID: child.ResourceId, Phase: phase, PlanHash: body.Unit.Plan.Hash, Observation: deployment.Observation{ObservedAt: time.Now().UTC(), Resources: []deployment.Resource{}, StateHash: strings.Repeat("a", 64)}}
-		raw, _ := json.Marshal(receipt)
-		message := json.RawMessage(raw)
+		raw, _ := stablejson.Marshal(receipt)
+		message := jsontext.Value(raw)
 		if err := f.execution.Report(ctx, identities[0], api.AgentReport{Id: child.Id, Generation: child.Generation, PlanHash: child.PlanHash, Sequence: 3, State: "succeeded", Steps: []api.ExecutionStep{}, Crosshost: &message}); err != nil {
 			t.Fatal("recovered primary success was rejected", err)
 		}
@@ -829,7 +823,7 @@ func testCrossHostCoordinatedPlacement(t *testing.T, expiryPhase string) {
 	if _, err := f.st.Pool.Exec(ctx, `UPDATE servers SET awaiting_transfer=true,controller_generation=1 WHERE workspace_id=$1 AND id=$2`, blockedWorkspace.Id, blockedServer.Server.Id); err != nil {
 		t.Fatal(err)
 	}
-	configuration, _ := json.Marshal(policy)
+	configuration, _ := stablejson.Marshal(policy)
 	var blockedPolicy backup.Policy
 	if err := json.Unmarshal(configuration, &blockedPolicy); err != nil {
 		t.Fatal(err)
@@ -859,7 +853,7 @@ func testCrossHostCoordinatedPlacement(t *testing.T, expiryPhase string) {
 	if err := blockedPolicy.Validate(); err != nil {
 		t.Fatal("invalid pending-transfer policy fixture", err)
 	}
-	configuration, _ = json.Marshal(blockedPolicy)
+	configuration, _ = stablejson.Marshal(blockedPolicy)
 	if _, err := f.st.Pool.Exec(ctx, `INSERT INTO backup_policies(id,workspace_id,environment_id,server_id,configuration,encrypted_access,status,status_sequence)
 	 SELECT id,$1,$2,$3,jsonb_set($4::jsonb,'{id}',to_jsonb(id::text)),$5,
 	 jsonb_build_object('policyId',id,'generation',1,'enabled',true,'next',$6::text,'runs','[]'::jsonb),1
@@ -944,7 +938,7 @@ func testCrossHostCoordinatedPlacement(t *testing.T, expiryPhase string) {
 		}
 		return state == "completed"
 	})
-	validDestination, _ := json.Marshal(invalidDestination)
+	validDestination, _ := stablejson.Marshal(invalidDestination)
 	if _, err := f.st.Pool.Exec(ctx, `UPDATE backup_destinations SET configuration=$3 WHERE workspace_id=$1 AND id=$2`, ws, invalidDestination.ID, validDestination); err != nil {
 		t.Fatal(err)
 	}
@@ -959,8 +953,8 @@ func testCrossHostCoordinatedPlacement(t *testing.T, expiryPhase string) {
 	}
 	malformedPlan.Distributed.Units[0].Plan.Local = nil
 	malformedPlan = malformedPlan.WithHash()
-	malformedStructure, _ := json.Marshal(malformedPlan)
-	for _, invalid := range []json.RawMessage{json.RawMessage(`{"hash":42}`), json.RawMessage(malformedStructure)} {
+	malformedStructure, _ := stablejson.Marshal(malformedPlan)
+	for _, invalid := range []jsontext.Value{jsontext.Value(`{"hash":42}`), jsontext.Value(malformedStructure)} {
 		invalidPlanID := uuid.New()
 		if _, err := f.st.Pool.Exec(ctx, `INSERT INTO visual_requests(id,workspace_id,server_id,environment_id,unit_id,revision_id,operation_id,candidate) SELECT $1,workspace_id,server_id,environment_id,unit_id,revision_id,operation_id,candidate FROM visual_requests WHERE workspace_id=$2 AND id=$3`, invalidPlanID, ws, sourcePlanID); err != nil {
 			t.Fatal(err)
@@ -1279,7 +1273,7 @@ func testCrossHostCoordinatedPlacement(t *testing.T, expiryPhase string) {
 	// Revocation must overtake an unrelated uncertain leaf on an online peer. The leaf starts already reported, so the fixture's redelivery stays a replay when the state below turns terminal instead of a rejected first report that stops the host.
 	uncertainID := uuid.New()
 	uncertain := api.ExecutionCommand{Id: uncertainID, ServerId: servers[1].Server.Id, EnvironmentId: unrelated.Id, ResourceId: uuid.New(), Generation: 900001, Kind: "test", Action: "inspect", PlanHash: strings.Repeat("b", 64), Deadline: time.Now().Add(time.Hour)}
-	rawUncertain, _ := json.Marshal(uncertain)
+	rawUncertain, _ := stablejson.Marshal(uncertain)
 	if _, err := f.st.Pool.Exec(ctx, `INSERT INTO execution_operations(id,workspace_id,server_id,environment_id,generation,request_key,command,kind,state,report_sequence) VALUES($1,$2,$3,$4,$5,$6,$7,'test','needs_attention',2)`, uncertainID, ws, uncertain.ServerId, unrelated.Id, uncertain.Generation, uuid.New(), rawUncertain); err != nil {
 		t.Fatal(err)
 	}

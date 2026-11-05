@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 	"github.com/moby/moby/client"
 )
@@ -27,7 +27,7 @@ func TestReleaseDiagnosticsCannotOverwriteSecretPatterns(t *testing.T) {
 			return
 		}
 		if strings.Contains(r.URL.Path, p.ContainerName(app)) {
-			_ = json.NewEncoder(w).Encode(map[string]any{"Id": "candidate", "Config": map[string]any{"Tty": true, "Labels": map[string]string{labelServer: p.ServerID.String(), labelEnvironment: p.EnvironmentID.String(), "com.astilba.unit": p.UnitID.String(), labelResource: app.String(), labelKind: "visual-v1", "com.astilba.plan": p.Hash}, "Env": []string{secret.String() + "=replacement", "DATABASE_URL=postgres://app:" + plain + "@database/app"}}, "State": map[string]any{"Status": "exited", "ExitCode": 23}})
+			_ = stablejson.Encode(w, map[string]any{"Id": "candidate", "Config": map[string]any{"Tty": true, "Labels": map[string]string{labelServer: p.ServerID.String(), labelEnvironment: p.EnvironmentID.String(), "com.astilba.unit": p.UnitID.String(), labelResource: app.String(), labelKind: "visual-v1", "com.astilba.plan": p.Hash}, "Env": []string{secret.String() + "=replacement", "DATABASE_URL=postgres://app:" + plain + "@database/app"}}, "State": map[string]any{"Status": "exited", "ExitCode": 23}})
 			return
 		}
 		w.WriteHeader(404)

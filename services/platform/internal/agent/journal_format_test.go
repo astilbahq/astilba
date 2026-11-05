@@ -2,7 +2,8 @@ package agent
 
 import (
 	"bytes"
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/backup"
 	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/astilbahq/astilba/services/platform/internal/upgrade"
 	"github.com/google/uuid"
 	bolt "go.etcd.io/bbolt"
@@ -24,7 +26,7 @@ func legacyJournal(t *testing.T, seed func(*Journal)) (string, []byte) {
 	if seed != nil {
 		seed(j)
 	}
-	raw, err := json.Marshal(j.keys)
+	raw, err := stablejson.Marshal(j.keys)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -77,8 +79,8 @@ func TestLocalStateMigrationPreservesKeysCiphertextAndRecoveryEvidence(t *testin
 		parent, id, env, unit, group := uuid.New(), uuid.New(), uuid.New(), uuid.New(), uuid.New()
 		capsule = deployment.RecoveryDescriptor{Version: 1, WorkspaceID: uuid.New(), ParentID: parent, RootHash: strings.Repeat("a", 64), GroupID: group, GroupHash: strings.Repeat("b", 64), BaseID: id, CheckpointID: id, Digest: deployment.RecoveryDigest(capsuleBody), Bytes: len(capsuleBody), Participants: []uuid.UUID{expected.ServerID}}
 		body := deployment.CrossHostCommand{ParentID: parent, GroupHash: capsule.GroupHash, Phase: "checkpoint", Unit: deployment.DistributedUnit{Plan: deployment.Plan{ServerID: expected.ServerID, EnvironmentID: env, UnitID: unit, Local: &deployment.LocalPlacement{Primary: true, GroupID: group}}.WithHash()}}
-		rawBody, _ := json.Marshal(body)
-		message := json.RawMessage(rawBody)
+		rawBody, _ := stablejson.Marshal(body)
+		message := jsontext.Value(rawBody)
 		header := api.ExecutionCommand{Id: uuid.New(), ParentId: &parent, ServerId: expected.ServerID, EnvironmentId: env, ResourceId: unit, Kind: "crosshost", PlanHash: body.Digest(), Crosshost: &message}
 		if err := j.retainCheckpoint(header, capsule, capsuleBody); err != nil {
 			t.Fatal(err)

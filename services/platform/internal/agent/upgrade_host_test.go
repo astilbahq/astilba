@@ -2,7 +2,7 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
+	"encoding/json/jsontext"
 	"net/url"
 	"os"
 	"strings"
@@ -13,6 +13,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/backup"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/astilbahq/astilba/services/platform/internal/upgrade"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -68,8 +69,8 @@ func TestNativeSupportedMajorUpgrades(t *testing.T) {
 		return p, secrets
 	}, func(cmd upgrade.Command) api.ExecutionCommand {
 		f.generation++
-		raw, _ := json.Marshal(cmd)
-		value := json.RawMessage(raw)
+		raw, _ := stablejson.Marshal(cmd)
+		value := jsontext.Value(raw)
 		return api.ExecutionCommand{Id: uuid.New(), ServerId: f.server, EnvironmentId: cmd.Plan.Source.EnvironmentID, ResourceId: cmd.Plan.ID, Kind: "upgrade", Action: "inspect", Generation: f.generation, PlanHash: cmd.Digest(), Upgrade: &value, Deadline: time.Now().Add(time.Hour)}
 	})
 

@@ -2,12 +2,12 @@ package integration
 
 import (
 	"context"
-	"encoding/json"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 
@@ -101,7 +101,7 @@ func TestMetricHistoryIsolationRetentionAndRateBound(t *testing.T) {
 	stranger.login("metric-stranger@example.test", f.password)
 	stranger.call("GET", route, nil, 404, nil)
 	b.call("GET", "/api/v1/workspaces/"+uuid.NewString()+"/servers/"+other.Server.Id.String()+"/metrics", nil, 404, nil)
-	raw, _ := json.Marshal(api.MetricReport{Host: api.HostMetrics{DiskSource: "agent"}, Services: []api.ServiceMetrics{}})
+	raw, _ := stablejson.Marshal(api.MetricReport{Host: api.HostMetrics{DiskSource: "agent"}, Services: []api.ServiceMetrics{}})
 	if _, e = f.st.Pool.Exec(ctx, `INSERT INTO server_metrics(workspace_id,server_id,received_at,report) SELECT $1,$2,$4::timestamptz-n*interval '1 minute',$3 FROM generate_series(1,1500) n`, ws, enrolled.Server.Id, raw, firstSample); e != nil {
 		t.Fatal(e)
 	}

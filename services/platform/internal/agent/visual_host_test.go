@@ -3,7 +3,8 @@ package agent
 import (
 	"bytes"
 	"context"
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"io"
@@ -23,6 +24,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/execution"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/moby/moby/api/pkg/stdcopy"
@@ -115,8 +117,8 @@ func newNativeVisualFixture(t *testing.T) *nativeVisualFixture {
 func (f *nativeVisualFixture) command(action string, p deployment.Plan, secrets map[string]string) api.ExecutionCommand {
 	f.generation++
 	payload := deployment.Payload{Action: action, Plan: p, Secrets: secrets}
-	raw, _ := json.Marshal(payload)
-	v := json.RawMessage(raw)
+	raw, _ := stablejson.Marshal(payload)
+	v := jsontext.Value(raw)
 	return api.ExecutionCommand{Id: uuid.New(), ServerId: f.server, EnvironmentId: p.EnvironmentID, ResourceId: p.UnitID, Kind: "visual", Action: "inspect", Generation: f.generation, PlanHash: payload.Digest(), Visual: &v, Deadline: time.Now().Add(time.Minute)}
 }
 
@@ -207,8 +209,8 @@ func (f *nativeVisualFixture) refuseInUseVolumeDeletion(p deployment.Plan) {
 	_ = json.Unmarshal(*deletion.Visual, &payload)
 	volumeID := p.Specification.Volumes[0].ID
 	payload.VolumeID = &volumeID
-	raw, _ := json.Marshal(payload)
-	message := json.RawMessage(raw)
+	raw, _ := stablejson.Marshal(payload)
+	message := jsontext.Value(raw)
 	deletion.Visual = &message
 	deletion.PlanHash = payload.Digest()
 	if err := f.engine.Execute(context.Background(), deletion); err != nil {
@@ -296,8 +298,8 @@ func TestNativeVisualDeployment(t *testing.T) {
 	t.Run("backup_and_fresh_restore", func(t *testing.T) {
 		nativeBackupJourney(t, f.engine, p, func(b backup.Command) Record {
 			f.generation++
-			raw, _ := json.Marshal(b)
-			value := json.RawMessage(raw)
+			raw, _ := stablejson.Marshal(b)
+			value := jsontext.Value(raw)
 			return finish(api.ExecutionCommand{Id: uuid.New(), ServerId: server, EnvironmentId: p.EnvironmentID, ResourceId: b.Installation.Policy.ID, Kind: "backup", Action: "inspect", Generation: f.generation, PlanHash: b.Digest(), Backup: &value, Deadline: time.Now().Add(time.Minute)})
 		})
 	})

@@ -5,7 +5,6 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -18,6 +17,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/billing"
 	"github.com/astilbahq/astilba/services/platform/internal/hosting"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
 )
@@ -139,7 +139,7 @@ func (s *stripeFixture) RoundTrip(r *http.Request) (*http.Response, error) {
 		s.t.Errorf("unexpected Stripe call %s %s", r.Method, r.URL.Path)
 		return nil, fmt.Errorf("unexpected call")
 	}
-	raw, _ := json.Marshal(body)
+	raw, _ := stablejson.Marshal(body)
 	return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(string(raw))), Header: make(http.Header)}, nil
 }
 func (s *stripeFixture) complete() {
@@ -153,7 +153,7 @@ func (s *stripeFixture) complete() {
 }
 func signedEvent(t *testing.T, kind, id string, object any) ([]byte, string) {
 	t.Helper()
-	raw, e := json.Marshal(map[string]any{"id": id, "type": kind, "data": map[string]any{"object": object}})
+	raw, e := stablejson.Marshal(map[string]any{"id": id, "type": kind, "data": map[string]any{"object": object}})
 	if e != nil {
 		t.Fatal(e)
 	}

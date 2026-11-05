@@ -2,13 +2,13 @@ package integration
 
 import (
 	"context"
-	"encoding/json"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 )
 
@@ -32,7 +32,7 @@ func TestLogExportBoundsAndScope(t *testing.T) {
 		t.Fatal(err)
 	}
 	old := time.Now().UTC().Add(-2 * time.Hour)
-	observation, _ := json.Marshal(deployment.Observation{ObservedAt: old, Resources: []deployment.Resource{{ID: resource, Logs: "runtime [redacted]", Note: "not log output"}}})
+	observation, _ := stablejson.Marshal(deployment.Observation{ObservedAt: old, Resources: []deployment.Resource{{ID: resource, Logs: "runtime [redacted]", Note: "not log output"}}})
 	if _, err := f.st.Pool.Exec(ctx, `INSERT INTO visual_runtime(workspace_id,environment_id,unit_id,server_id,observation,observed_at) VALUES($1,$2,$3,$4,$5,$6)`, ws, env.Id, unit, server.Server.Id, observation, old); err != nil {
 		t.Fatal(err)
 	}
@@ -42,7 +42,7 @@ func TestLogExportBoundsAndScope(t *testing.T) {
 		if _, err := f.st.Pool.Exec(ctx, `INSERT INTO execution_operations(id,workspace_id,server_id,environment_id,generation,request_key,command,kind,state,created_at) VALUES($1,$2,$3,$4,$5,$1,'{}','pipeline','succeeded',$6)`, id, ws, server.Server.Id, target.Id, generation, at); err != nil {
 			t.Fatal(err)
 		}
-		result, _ := json.Marshal(map[string]string{"logs": text, "unrelated": "must-not-be-exported"})
+		result, _ := stablejson.Marshal(map[string]string{"logs": text, "unrelated": "must-not-be-exported"})
 		if _, err := f.st.Pool.Exec(ctx, `INSERT INTO pipeline_runs(id,workspace_id,environment_id,application_id,revision_id,configuration,result,created_at) VALUES($1,$2,$3,$4,$5,'{}',$6,$7)`, id, ws, target.Id, resource, target.DraftRevisionId, result, at); err != nil {
 			t.Fatal(err)
 		}
@@ -56,7 +56,7 @@ func TestLogExportBoundsAndScope(t *testing.T) {
 		t.Fatalf("wrong default window: %+v", out)
 	}
 	b.call("GET", path+"?hours=6", nil, 200, &out)
-	raw, _ := json.Marshal(out)
+	raw, _ := stablejson.Marshal(out)
 	if len(out.Entries) != 3 || strings.Contains(string(raw), "must-not-be-exported") || strings.Contains(string(raw), "other-environment-output") {
 		t.Fatalf("export included non-log or foreign data: %s", raw)
 	}

@@ -5,9 +5,9 @@ import (
 	"crypto/ed25519"
 	"crypto/subtle"
 	"encoding/gob"
-	"encoding/json"
-	jsonv2 "encoding/json/v2"
+	"encoding/json/v2"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/netip"
@@ -27,6 +27,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/execution"
 	"github.com/astilbahq/astilba/services/platform/internal/githubapp"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/getkin/kin-openapi/openapi3filter"
 	"github.com/go-chi/chi/v5"
@@ -223,12 +224,25 @@ func (s *Server) csrf(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r)
 	})
 }
+
+// respond writes the frozen format, because responses share their structs with stored
+// and hashed values, and clients read the result. It encodes before the status, so a
+// value that cannot be encoded is a logged failure, not an empty 200.
 func (s *Server) respond(w http.ResponseWriter, status int, value any) {
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	if value != nil {
-		_ = json.NewEncoder(w).Encode(value)
+	if value == nil {
+		w.WriteHeader(status)
+		return
 	}
+	body, err := stablejson.Marshal(value)
+	if err != nil {
+		id := w.Header().Get("X-Request-ID")
+		s.Log.Error("response could not be encoded", "request_id", id, "type", fmt.Sprintf("%T", value), failureDiagnostic(err))
+		status = http.StatusInternalServerError
+		body, _ = stablejson.Marshal(api.Error{Code: "internal_error", Message: "The request could not be completed.", RequestId: id})
+	}
+	w.WriteHeader(status)
+	_, _ = w.Write(append(body, '\n'))
 }
 func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 	err = store.Normalize(err)
@@ -265,7 +279,7 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 }
 func decode[T any](r *http.Request) (T, error) {
 	var v T
-	if jsonv2.UnmarshalRead(r.Body, &v, jsonv2.RejectUnknownMembers(true)) != nil {
+	if json.UnmarshalRead(r.Body, &v, json.RejectUnknownMembers(true)) != nil {
 		return v, domain.Invalid("request")
 	}
 	return v, nil

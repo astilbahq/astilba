@@ -2,7 +2,7 @@ package execution
 
 import (
 	"context"
-	"encoding/json"
+	"encoding/json/v2"
 	"errors"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
@@ -100,7 +100,10 @@ func (s *Service) SavePreviewPolicy(ctx context.Context, p store.Principal, ws, 
 	if err := cfg.validate(); err != nil {
 		return out, err
 	}
-	err := s.scope(ctx, p, ws, workspaceAccess{Write: true, Owner: true, Recent: in.Enabled}, "preview.policy", env, func(tx pgx.Tx) error {
+	var enabledWhenAsked *bool
+	// The runner's row and the workspace are free during the branch check. The pass that
+	// saves re-reads the draft, generation, runner and connection the check was made for.
+	err := s.gitScope(ctx, p, ws, workspaceAccess{Write: true, Owner: true, Recent: in.Enabled}, "preview.policy", env, func(tx pgx.Tx, git *gitAnswers) error {
 		v, err := loadVisualEnvironment(ctx, tx, ws, pid, env)
 		if err != nil {
 			return err
@@ -114,6 +117,15 @@ func (s *Service) SavePreviewPolicy(ctx context.Context, p store.Principal, ws, 
 		}
 		exists := err == nil
 		if !exists && in.Generation != 0 || exists && old.Generation != in.Generation {
+			return domain.Conflict
+		}
+		// Pausing and resuming keep the generation, because retained previews and approvals
+		// are bound to it, so only this shows that another owner paused or resumed the
+		// policy during the call. This save must not undo that without either of them knowing.
+		enabled := exists && old.Enabled
+		if enabledWhenAsked == nil {
+			enabledWhenAsked = &enabled
+		} else if *enabledWhenAsked != enabled {
 			return domain.Conflict
 		}
 		var active bool
@@ -181,12 +193,12 @@ func (s *Service) SavePreviewPolicy(ctx context.Context, p store.Principal, ws, 
 				return domain.Invalid("preview.generatedDomains")
 			}
 		}
-		provider, _, err := s.previewProvider(ctx, tx, ws, cfg.Build.ConnectionID)
+		head, err := git.previewHead(ctx, tx, cfg.Build.ConnectionID, cfg.Build.Branch)
 		if err != nil {
 			return err
 		}
-		if _, err = provider.Resolve(ctx, cfg.Build.Branch); err != nil {
-			return domain.Invalid("preview.branch")
+		if head.Err != nil {
+			return head.failure(domain.Invalid("preview.branch"))
 		}
 		if err = s.validateVisualSecrets(ctx, tx, ws, env, v.Spec); err != nil {
 			return err

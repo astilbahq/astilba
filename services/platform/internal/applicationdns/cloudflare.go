@@ -3,7 +3,8 @@ package applicationdns
 import (
 	"bytes"
 	"context"
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"errors"
 	"io"
 	"net/http"
@@ -57,8 +58,8 @@ func (c *Cloudflare) request(ctx context.Context, method, path string, in, out a
 		return ErrProvider
 	}
 	var envelope struct {
-		Success bool            `json:"success"`
-		Result  json.RawMessage `json:"result"`
+		Success bool           `json:"success"`
+		Result  jsontext.Value `json:"result"`
 		Info    struct {
 			Total int `json:"total_count"`
 		} `json:"result_info"`
