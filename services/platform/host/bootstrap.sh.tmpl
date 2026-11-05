@@ -121,9 +121,27 @@ scratch=$(mktemp -d /tmp/astilba-bootstrap.XXXXXXXX)
 step='verify downloads'
 trap 'rm -rf "$scratch"' EXIT
 trap 'printf "Preparation stopped during %s. Preserve any installed files and inspect the host before retrying; no host data is rolled back.\n" "$step" >&2' ERR
+# Waits out a release host's outage of a few minutes, saying what it is waiting for. A refusal
+# such as a 404 will not change, so it stops at once. Every download precedes any host change.
 fetch() {
-  (ulimit -c 0; ulimit -f "$((($3+1023)/1024))"; curl -q --fail --location --proto '=https' --proto-redir '=https' --max-redirs 3 --connect-timeout 10 --max-time 120 --retry 2 --retry-all-errors --retry-max-time 300 --max-filesize "$3" --silent --show-error --output "$2" --url "$1")
-  [[ $(wc -c < "$2") -le "$3" ]] || die 'Downloaded file exceeds its limit.'
+  local delay http status deadline=$((SECONDS + 300))
+  for delay in 0 5 10 20 40 60 60 60 60; do
+    ((SECONDS < deadline)) || break
+    ((delay == 0)) || printf 'Trying again in %s seconds.\n' "$delay" >&2
+    sleep "$delay"
+    status=0
+    http=$(ulimit -c 0; ulimit -f "$((($3+1023)/1024))"; curl -q --fail --location --proto '=https' --proto-redir '=https' --max-redirs 3 --connect-timeout 10 --max-time 120 --max-filesize "$3" --silent --show-error --write-out '%{http_code}' --output "$2" --url "$1") || status=$?
+    if ((status == 0)); then
+      [[ $(wc -c < "$2") -le "$3" ]] || die "The download from $1 exceeds its limit."
+      return 0
+    fi
+    case "$http" in
+      408|429) ;;
+      4??) die "$1 refused the download with HTTP $http." ;;
+    esac
+    printf 'Download from %s failed (curl exit %s, HTTP %s).\n' "$1" "$status" "$http" >&2
+  done
+  die "Could not download $1; the errors above give the cause. Nothing has been installed, so run this script again once it is resolved."
 }
 verify_hash() { printf '%s  %s\n' "$2" "$1" | sha256sum --check --status; }
 fetch "$management/agent-public-key.pem" "$scratch/public.pem" 4096
@@ -152,14 +170,16 @@ if ! "$docker_ready"; then
   packages=()
   for index in 0 1 2 3; do
     file=${runtime_files[$index]}
-    fetch "https://download.docker.com/linux/ubuntu/dists/noble/pool/stable/$arch/$file" "$scratch/$file" 104857600
-    verify_hash "$scratch/$file" "${runtime_shas[$index]}"
+    url="https://download.docker.com/linux/ubuntu/dists/noble/pool/stable/$arch/$file"
+    fetch "$url" "$scratch/$file" 104857600
+    verify_hash "$scratch/$file" "${runtime_shas[$index]}" || die "The download from $url does not match its pinned checksum."
     packages+=("$scratch/$file")
   done
 fi
 if "$install_backups"; then
-  fetch "https://github.com/restic/restic/releases/download/v0.19.1/restic_0.19.1_linux_$arch.bz2" "$scratch/restic.bz2" 33554432
-  verify_hash "$scratch/restic.bz2" "$restic_sha"
+  url="https://github.com/restic/restic/releases/download/v0.19.1/restic_0.19.1_linux_$arch.bz2"
+  fetch "$url" "$scratch/restic.bz2" 33554432
+  verify_hash "$scratch/restic.bz2" "$restic_sha" || die "The download from $url does not match its pinned checksum."
   bzip2 --decompress "$scratch/restic.bz2"
 fi
 if ! "$docker_ready"; then

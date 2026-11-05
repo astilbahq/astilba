@@ -421,6 +421,28 @@ native test commands. Runtime state, Docker storage, databases and credentials
 are outside the cache. A cache miss still runs the complete
 suite and builds the missing dependencies.
 
+## Host downloads
+
+Each Host job downloads pinned tools from GitHub releases, `download.docker.com` and
+`go.dev`. Each download repeats for at least four minutes before the job fails, because
+four attempts in seven seconds failed Host jobs in bursts of up to ten minutes on
+5 November 2026, while the same step on the same architecture passed on other runners
+in the same minutes.
+
+- A file that fails its checksum stops the job. Only a failed download repeats.
+- Every failure names the URL. The fixture scripts in `experiments/durable-execution/host`
+  and `backup-tools.sh` use curl's retries, so a 404 such as a mistyped pin also takes
+  about four minutes to report. The production bootstrap reports one at once.
+- `build-tools.sh` installs the checksum-pinned `mise` where Railpack looks for it, as the
+  production agent does, so `TestBuildArtifacts` does not download it during the test. The
+  test fails if the file is missing.
+
+These downloads are not cached between runs. `TestBootstrapOnDisposableHost` and the
+production `mise` path must keep fetching from upstream to prove a fresh install works,
+so a cache could not remove the wait for an outage. It would save under 30 seconds per
+lane, and a pinned file removed upstream would go unnoticed until the cache expired.
+An outage longer than the retries still fails the job, with the URL in its log.
+
 ## Comparing changes
 
 Compare a successful baseline with a first cache-miss run and a subsequent

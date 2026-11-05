@@ -26,6 +26,10 @@ func exerciseRailpack(t *testing.T, h *runtimeHarness, r *buildRegistry, pki bui
 			t.Fatal(e)
 		}
 	}
+	// Without this file Railpack would download mise itself, with no checksum, and still pass.
+	if _, e := os.Stat("/tmp/railpack/mise/mise-2026.10.14"); e != nil {
+		t.Fatal("run host/build-tools.sh to install the pinned mise: ", e)
+	}
 	buildWrite(t, filepath.Join(source, "start.sh"), []byte("#!/bin/sh\nprintf 'railpack fixture\\n'\n"))
 	buildWrite(t, filepath.Join(source, ".dockerignore"), []byte(".git\n.env*\n"))
 	plan := filepath.Join(planDir, "railpack-plan.json")

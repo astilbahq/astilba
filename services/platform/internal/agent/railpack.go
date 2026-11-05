@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"path"
 	"path/filepath"
@@ -15,6 +16,10 @@ import (
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/client"
 )
+
+// railpackMiseDownload waits out a release host's outage of a few minutes, so one does not fail
+// a customer's build. The checksum is a separate step afterwards, so a mismatch is never retried.
+const railpackMiseDownload = `umask 077; for delay in 0 5 10 20 40 60 60 60 60; do sleep "$delay"; if wget -T 60 -qO /workspace/planner/mise.tgz "$1"; then exit 0; fi; done; exit 1`
 
 // The stopped helper exposes only the CLI from the same pinned frontend image.
 // Its entrypoint never runs and it receives neither source nor credentials.
@@ -84,8 +89,17 @@ func (e *Engine) prepareRailpack(ctx context.Context, c api.ExecutionCommand, p 
 		if err = e.installRailpackPlanner(ctx, c, p); err != nil {
 			return nil, "", err
 		}
-		install := `set -e; umask 077; mkdir -p /workspace/planner/mise /workspace/planner/tmp /workspace/planner/home; ln -s /workspace/planner /tmp/railpack; wget -T 60 -qO /workspace/planner/mise.tgz "$1"; printf '%s  /workspace/planner/mise.tgz\n' "$2" | sha256sum -c -; tar -xzOf /workspace/planner/mise.tgz mise/bin/mise > /workspace/planner/mise/mise-2026.10.14; chmod 500 /workspace/planner/mise/mise-2026.10.14; rm /workspace/planner/mise.tgz`
-		if _, err = e.pipelineCLI(ctx, pipelineName(c), nil, nil, 1024, "sh", "-ec", install, "--", p.Railpack.MiseArchive, p.Railpack.MiseSHA256); err != nil {
+		// Half the time left, at most, so a short assignment can still report which download failed.
+		download, stopDownload := context.WithTimeout(ctx, min(5*time.Minute, time.Until(c.Deadline)/2))
+		defer stopDownload()
+		if _, err = e.pipelineCLI(download, pipelineName(c), nil, nil, 1024, "sh", "-ec", railpackMiseDownload, "--", p.Railpack.MiseArchive); err != nil {
+			return nil, "", fmt.Errorf("cannot download the pinned Railpack helper from %s; check this server's outbound access and source storage limit, then retry the build", p.Railpack.MiseArchive)
+		}
+		if _, err = e.pipelineCLI(ctx, pipelineName(c), nil, nil, 1024, "sh", "-ec", `printf '%s  /workspace/planner/mise.tgz\n' "$1" | sha256sum -c -`, "--", p.Railpack.MiseSHA256); err != nil {
+			return nil, "", fmt.Errorf("the download from %s does not match its pinned checksum", p.Railpack.MiseArchive)
+		}
+		install := `set -e; umask 077; mkdir -p /workspace/planner/mise /workspace/planner/tmp /workspace/planner/home; ln -s /workspace/planner /tmp/railpack; tar -xzOf /workspace/planner/mise.tgz mise/bin/mise > /workspace/planner/mise/mise-2026.10.14; chmod 500 /workspace/planner/mise/mise-2026.10.14; rm /workspace/planner/mise.tgz`
+		if _, err = e.pipelineCLI(ctx, pipelineName(c), nil, nil, 1024, "sh", "-ec", install); err != nil {
 			return nil, "", errors.New("cannot install the checksum-pinned Railpack helper within source storage limits")
 		}
 		if _, err = e.pipelineCLI(ctx, pipelineName(c), nil, config, 1024, "sh", "-ec", `umask 077; cat > /workspace/planner/config.json`); err != nil {

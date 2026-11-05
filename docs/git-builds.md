@@ -74,6 +74,8 @@ Select **Railpack** to plan and build a supported repository without a Dockerfil
 | Go | A Go module producing a static binary | Compile with `CGO_ENABLED=0`, then start the resulting binary. |
 | Shell | An explicit shell provider with a start script | Execute the build override and start script in the runtime image. |
 
+Planning downloads a checksum-pinned `mise` from GitHub releases on the build server. It waits up to about five minutes for GitHub to respond, or half the time left in the assignment lifetime if that is shorter, then fails the build with a message naming the URL, and the build can be retried. A checksum mismatch is never retried. The Railpack images come from `ghcr.io`, and the build itself fetches language toolchains and packages from their usual sources, so a build server needs outbound access to those too.
+
 The native fixture runs this matrix on Linux amd64 and arm64 in CI. Other languages, package managers, framework-specific adapters and arbitrary custom Railpack plans are outside this matrix; use a Dockerfile when a project exceeds it. A successful fixture is not a promise that every application in a language will build within the same budget.
 
 The repository's `railpack.json` remains authoritative for other Railpack settings; JSON with comments is accepted. A public `RAILPACK_CONFIG_FILE` argument can select another context-relative configuration file. Optional **Build command override** and **Start command override** take precedence over repository commands without editing tracked source. The effective provider must be Node, Go or shell; unsupported explicit providers fail even when detection finds a supported language.
