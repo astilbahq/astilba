@@ -26,6 +26,8 @@ type heldSessionStore struct {
 	armed   atomic.Bool
 	loaded  chan struct{}
 	release chan struct{}
+	// armedCommit holds the next save instead, after its handler has run.
+	armedCommit atomic.Bool
 }
 
 func (s *heldSessionStore) FindCtx(ctx context.Context, token string) ([]byte, bool, error) {
@@ -39,6 +41,18 @@ func (s *heldSessionStore) FindCtx(ctx context.Context, token string) ([]byte, b
 		}
 	}
 	return data, found, err
+}
+
+func (s *heldSessionStore) CommitCtx(ctx context.Context, token string, data []byte, expiry time.Time) error {
+	if s.armedCommit.CompareAndSwap(true, false) {
+		close(s.loaded)
+		select {
+		case <-s.release:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return s.CtxStore.CommitCtx(ctx, token, data, expiry)
 }
 
 func TestBrowserSessionRevocationSurvivesDelayedResponse(t *testing.T) {
@@ -239,6 +253,11 @@ func TestStaleRequestsLeaveRenewedCookieAlone(t *testing.T) {
 		{"mutation", "POST", "/api/v1/auth/logout", writer.csrf, writerCookie, 403},
 	} {
 		for _, row := range []string{"outdated", "deleted"} {
+			if row == "deleted" {
+				if tag, err := f.st.Pool.Exec(context.Background(), "DELETE FROM sessions WHERE token=$1", hashedSessionToken(stale.cookie.Value)); err != nil || tag.RowsAffected() != 1 {
+					t.Fatalf("delete %s row: %v, %v", stale.name, tag, err)
+				}
+			}
 			response, data := send(stale.method, stale.path, stale.csrf, stale.cookie, "")
 			if response.StatusCode != stale.status || len(response.Cookies()) != 0 {
 				t.Fatalf("%s with %s row: status %d, cookies %v: %s", stale.name, row, response.StatusCode, response.Cookies(), data)
