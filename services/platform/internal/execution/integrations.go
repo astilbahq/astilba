@@ -79,8 +79,10 @@ func (s *Service) CreateConnection(ctx context.Context, p store.Principal, ws uu
 	if err != nil {
 		return c, "", domain.Invalid("provider")
 	}
-	// Validate authority before contacting a configured integration.
-	err = s.scope(ctx, p, ws, workspaceAccess{Write: true, Owner: true, Recent: true}, "git.connection.create", c.ID, func(tx pgx.Tx) error {
+	// Validate authority before contacting a configured integration. The answer is about
+	// this request's own URL and credential, so only the limit needs checking again.
+	var repository *gitAnswer[repositoryIdentity]
+	create := func(tx pgx.Tx) error {
 		q := db.New(tx)
 		count, err := q.CountGitConnections(ctx, ws)
 		if err != nil {
@@ -89,10 +91,16 @@ func (s *Service) CreateConnection(ctx context.Context, p store.Principal, ws uu
 		if count >= 100 {
 			return domain.Conflict
 		}
-		c.RepositoryID, c.Private, err = provider.Repository(ctx)
-		if err != nil {
+		if repository == nil {
+			return &providerCall{fetch: func(ctx context.Context) {
+				id, private, err := provider.Repository(ctx)
+				repository = &gitAnswer[repositoryIdentity]{Value: repositoryIdentity{id, private}, Err: err}
+			}}
+		}
+		if repository.Err != nil {
 			return domain.Invalid("repository")
 		}
+		c.RepositoryID, c.Private = repository.Value.ID, repository.Value.Private
 		if c.Private && !validCredential(access.Clone, true) {
 			return domain.Invalid("clone")
 		}
@@ -106,6 +114,9 @@ func (s *Service) CreateConnection(ctx context.Context, p store.Principal, ws uu
 		}
 		raw, _ := stablejson.Marshal(c)
 		return q.InsertGitConnection(ctx, db.InsertGitConnectionParams{ID: c.ID, WorkspaceID: ws, Configuration: raw, EncryptedAccess: encrypted})
+	}
+	err = withProviderCalls(ctx, func() error {
+		return s.scope(ctx, p, ws, workspaceAccess{Write: true, Owner: true, Recent: true}, "git.connection.create", c.ID, create)
 	})
 	return c, access.Webhook, err
 }

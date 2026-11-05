@@ -146,7 +146,8 @@ type gitAnswer[T any] struct {
 	Value T
 	Err   error
 	// Setup marks an Err from establishing the credential, rather than from the question.
-	Setup bool
+	Setup      bool
+	Connection pipeline.Connection
 }
 
 // failure maps a failed question to the caller's own refusal, leaving a credential failure
@@ -216,14 +217,17 @@ func askGit[T any](ctx context.Context, tx pgx.Tx, g *gitAnswers, id uuid.UUID, 
 	if err != nil {
 		return gitAnswer[T]{}, err
 	}
+	var out gitAnswer[T]
 	if known.state.unusable != nil {
-		return gitAnswer[T]{Err: known.state.unusable, Setup: true}, nil
+		out = gitAnswer[T]{Err: known.state.unusable, Setup: true}
+	} else if stored, ok := known.values[question]; ok {
+		out = stored.(gitAnswer[T])
+	} else {
+		state := known.state
+		return out, &providerCall{fetch: func(ctx context.Context) { known.values[question] = fetch(ctx, state) }}
 	}
-	if stored, ok := known.values[question]; ok {
-		return stored.(gitAnswer[T]), nil
-	}
-	state := known.state
-	return gitAnswer[T]{}, &providerCall{fetch: func(ctx context.Context) { known.values[question] = fetch(ctx, state) }}
+	out.Connection = known.state.connection
+	return out, nil
 }
 
 func askProvider[T any](ctx context.Context, tx pgx.Tx, g *gitAnswers, id uuid.UUID, preview bool, question string, call func(context.Context, *pipeline.Provider) (T, error)) (gitAnswer[T], error) {
@@ -266,8 +270,16 @@ func (g *gitAnswers) repository(ctx context.Context, tx pgx.Tx, id uuid.UUID) (g
 	})
 }
 
+// head is asked again after a push delivery for the branch. The workspace lock no longer
+// orders an admission's head against the refresh that delivery starts: that refresh could
+// finish first, and the admission would then record a commit older than one the controller
+// had already been told about, with nothing left to notice.
 func (g *gitAnswers) head(ctx context.Context, tx pgx.Tx, id uuid.UUID, branch string) (gitAnswer[string], error) {
-	return askProvider(ctx, tx, g, id, false, "head/"+branch, func(ctx context.Context, p *pipeline.Provider) (string, error) {
+	pushes, err := db.New(tx).GitBranchPushes(ctx, db.GitBranchPushesParams{WorkspaceID: g.ws, ConnectionID: id, Branch: branch})
+	if err != nil {
+		return gitAnswer[string]{}, err
+	}
+	return askProvider(ctx, tx, g, id, false, fmt.Sprintf("head/%d/%s", pushes, branch), func(ctx context.Context, p *pipeline.Provider) (string, error) {
 		return p.Resolve(ctx, branch)
 	})
 }
@@ -277,5 +289,27 @@ func (g *gitAnswers) head(ctx context.Context, tx pgx.Tx, id uuid.UUID, branch s
 func (g *gitAnswers) previewHead(ctx context.Context, tx pgx.Tx, id uuid.UUID, branch string) (gitAnswer[string], error) {
 	return askProvider(ctx, tx, g, id, true, "head/"+branch, func(ctx context.Context, p *pipeline.Provider) (string, error) {
 		return p.Resolve(ctx, branch)
+	})
+}
+
+func (g *gitAnswers) pullRequest(ctx context.Context, tx pgx.Tx, id uuid.UUID, number int) (gitAnswer[pipeline.PullRequest], error) {
+	return askProvider(ctx, tx, g, id, true, fmt.Sprintf("pull/%d", number), func(ctx context.Context, p *pipeline.Provider) (pipeline.PullRequest, error) {
+		return p.PullRequest(ctx, number)
+	})
+}
+
+// mergedAt asks whether any of these reviews merged as exactly this commit.
+func (g *gitAnswers) mergedAt(ctx context.Context, tx pgx.Tx, id uuid.UUID, reviews []int, head string) (gitAnswer[bool], error) {
+	return askProvider(ctx, tx, g, id, false, fmt.Sprintf("merged/%s/%v", head, reviews), func(ctx context.Context, p *pipeline.Provider) (bool, error) {
+		for _, number := range reviews {
+			merged, err := p.MergedCommit(ctx, number)
+			if err != nil {
+				return false, err
+			}
+			if merged == head {
+				return true, nil
+			}
+		}
+		return false, nil
 	})
 }

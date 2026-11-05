@@ -360,7 +360,8 @@ func (s *Service) Previews(ctx context.Context, p store.Principal, ws, pid, env 
 }
 func (s *Service) ActOnPreview(ctx context.Context, p store.Principal, ws, pid, env, id uuid.UUID, in api.PreviewAction) (api.PullRequestPreview, error) {
 	var out api.PullRequestPreview
-	err := s.scope(ctx, p, ws, workspaceAccess{Write: true, Owner: true, Recent: true, Recovery: in.Action == "cleanup"}, "preview."+string(in.Action), id, func(tx pgx.Tx) error {
+	var generationWhenAsked *int64
+	err := s.gitScope(ctx, p, ws, workspaceAccess{Write: true, Owner: true, Recent: true, Recovery: in.Action == "cleanup"}, "preview."+string(in.Action), id, func(tx pgx.Tx, git *gitAnswers) error {
 		policy, err := scanPreviewPolicy(tx.QueryRow(ctx, "SELECT "+previewPolicyColumns+" FROM preview_policies WHERE workspace_id=$1 AND project_id=$2 AND environment_id=$3", ws, pid, env))
 		if err != nil {
 			return err
@@ -377,14 +378,21 @@ func (s *Service) ActOnPreview(ctx context.Context, p store.Principal, ws, pid, 
 			if err = s.previewAuthority(ctx, tx, policy); err != nil {
 				return err
 			}
-			provider, _, err := s.previewProvider(ctx, tx, ws, policy.Connection)
+			// An approval is for the policy the owner approved under, so a save during the call
+			// must not carry it across to a configuration nobody approved this commit for.
+			if generationWhenAsked == nil {
+				generationWhenAsked = &policy.Generation
+			} else if *generationWhenAsked != policy.Generation {
+				return domain.Conflict
+			}
+			answer, err := git.pullRequest(ctx, tx, policy.Connection, out.Number)
 			if err != nil {
 				return err
 			}
-			r, err := provider.PullRequest(ctx, out.Number)
-			if err != nil {
-				return err
+			if answer.Err != nil {
+				return answer.Err
 			}
+			r := answer.Value
 			if !r.Open || !r.Fork || r.Head != out.Head || r.HeadRepository != out.HeadRepository || r.BaseBranch != policy.Config.Build.Branch {
 				return domain.Conflict
 			}

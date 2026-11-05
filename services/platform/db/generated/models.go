@@ -293,6 +293,14 @@ type ExecutionPlan struct {
 	ExpiresAt     time.Time `json:"expires_at"`
 }
 
+type GitBranchPush struct {
+	WorkspaceID  uuid.UUID `json:"workspace_id"`
+	ConnectionID uuid.UUID `json:"connection_id"`
+	Branch       string    `json:"branch"`
+	Sequence     int64     `json:"sequence"`
+	PushedAt     time.Time `json:"pushed_at"`
+}
+
 type GitConnection struct {
 	ID              uuid.UUID `json:"id"`
 	WorkspaceID     uuid.UUID `json:"workspace_id"`
