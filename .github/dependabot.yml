@@ -45,8 +45,8 @@ updates:
       npm-dependencies:
         patterns: ["*"]
         update-types: [minor, patch]
-  # Alpine is the shipped image's base, but its CA bundle comes from the Go image. The Go
-  # and Node build images stay in step with go.mod, engines and CI's pins, so they change
+  # Alpine is the shipped image's base, and its CA bundle is the one the image trusts. The
+  # Go and Node build images stay in step with go.mod, engines and CI's pins, so they change
   # by hand. Dependabot has no Docker security updates, so Alpine fixes wait here too.
   - package-ecosystem: docker
     directory: /
