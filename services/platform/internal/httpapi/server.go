@@ -211,7 +211,7 @@ func (s *Server) identity(next http.Handler) http.Handler {
 				return
 			}
 			if e != nil || a.AuthVersion != s.Sessions.GetInt64(r.Context(), "version") {
-				if e = s.dropStaleSession(r.Context()); e != nil {
+				if e = s.dropStaleSession(r.Context(), e == nil); e != nil {
 					s.fail(w, r, e)
 					return
 				}

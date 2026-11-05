@@ -30,8 +30,10 @@ type sessionLoad struct {
 	moveTerminals bool
 	// presented is the cookie the browser sent, whether or not its session is alive.
 	presented string
-	// stale leaves a destroyed session's row and cookie in place. See dropStaleSession.
-	stale bool
+	// keepCookie leaves a destroyed session's cookie in the browser. See dropStaleSession.
+	keepCookie bool
+	// keepRow leaves a destroyed session's row in place. See dropStaleSession.
+	keepRow bool
 }
 
 type sessionStore struct {
@@ -41,7 +43,7 @@ type sessionStore struct {
 }
 
 func (s *sessionStore) DeleteCtx(ctx context.Context, token string) error {
-	if loaded, _ := ctx.Value(sessionLoadKey{}).(*sessionLoad); loaded != nil && (loaded.replaceLive || loaded.stale) && loaded.token == token {
+	if loaded, _ := ctx.Value(sessionLoadKey{}).(*sessionLoad); loaded != nil && (loaded.replaceLive || loaded.keepRow) && loaded.token == token {
 		return nil
 	}
 	return s.PostgresStore.DeleteCtx(ctx, token)
@@ -150,7 +152,7 @@ func (w *sessionResponseGuard) save() {
 			sessions.WriteSessionCookie(ctx, w, token, sessions.Deadline(ctx))
 		}
 	case scs.Destroyed:
-		if !w.loaded.stale {
+		if !w.loaded.keepCookie {
 			sessions.WriteSessionCookie(ctx, w, "", time.Time{})
 		}
 	}
@@ -225,12 +227,14 @@ func (s *Server) rotate(ctx context.Context, a db.Account, mfa bool) error {
 	return nil
 }
 
-// dropStaleSession ends this request's session because its account has moved on, without
-// touching the row or the browser's cookie. This request may have been overtaken by the
-// credential change that is replacing them, which must not see its old row removed as if
-// by a logout, and a token on an older account version grants nothing.
-func (s *Server) dropStaleSession(ctx context.Context) error {
-	ctx.Value(sessionLoadKey{}).(*sessionLoad).stale = true
+// dropStaleSession ends a session whose account has moved on, without touching the
+// browser's cookie: this request may have been overtaken by the credential change that
+// renewed it, and a dead token grants nothing. keepRow also leaves the row for an account
+// that still exists, because that change may still be replacing it and must not see it
+// removed as if by a logout, and a token on an older account version grants nothing.
+func (s *Server) dropStaleSession(ctx context.Context, keepRow bool) error {
+	loaded := ctx.Value(sessionLoadKey{}).(*sessionLoad)
+	loaded.keepCookie, loaded.keepRow = true, keepRow
 	return s.Sessions.Destroy(ctx)
 }
 
