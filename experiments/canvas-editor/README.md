@@ -36,7 +36,7 @@ Choose the starter or 250-service workspace. Each has separate browser-local sto
 | ------------------------------------- | ------------- | ---------- |
 | React / React DOM                     | 19.3.1        | MIT        |
 | React Flow (`@xyflow/react`)          | 12.12.0       | MIT        |
-| Panda dev, Vite plugin and presets    | 2.3.0         | MIT        |
+| Panda dev, Vite plugin and presets    | 2.4.0         | MIT        |
 | Vite+ / React plugin                  | 1.4.0 / 6.1.2 | MIT        |
 | TypeScript                            | 7.0.2         | Apache-2.0 |
 | Playwright test                       | 1.64.1        | Apache-2.0 |
