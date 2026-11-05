@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/distribution/reference"
 	"github.com/tailscale/hujson"
 )
@@ -123,7 +124,7 @@ func pinRailpackImage(layer map[string]any, inputs RailpackInputs) error {
 // Source policy also covers images created internally by the frontend rather
 // than serialized in the plan. Last matching allow/deny wins; conversion retries.
 func RailpackSourcePolicy(inputs RailpackInputs) []byte {
-	data, _ := json.Marshal(map[string]any{"version": 1, "rules": []any{
+	data, _ := stablejson.Marshal(map[string]any{"version": 1, "rules": []any{
 		map[string]any{"action": "DENY", "selector": map[string]string{"identifier": "docker-image://*"}},
 		map[string]any{"action": "ALLOW", "selector": map[string]string{"identifier": `^docker-image://.+@sha256:[a-f0-9]{64}$`, "match_type": "REGEX"}},
 		map[string]any{"action": "CONVERT", "selector": map[string]string{"identifier": "docker-image://docker.io/library/alpine:latest", "match_type": "EXACT"}, "updates": map[string]string{"identifier": "docker-image://" + inputs.HelperImage}},

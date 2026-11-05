@@ -89,6 +89,32 @@ test("accepts an aligned set", () => {
   assert.deepEqual(pinProblems(inputs()), []);
 });
 
+test("allows the contract's compiler only as an exact alias", () => {
+  const compiler = (version) =>
+    pinProblems(
+      inputs((v) => {
+        v.workspace.catalog.typescript = "7.0.2";
+        v.manifests["contracts/platform/package.json"] = {
+          devDependencies: { typescript: version },
+        };
+      }),
+    );
+  assert.deepEqual(compiler("npm:typescript@5.9.3"), []);
+  assert.deepEqual(compiler("catalog:"), []);
+  for (const version of ["5.9.3", "npm:typescript@^5.9.3"])
+    assert.match(compiler(version).join("\n"), /typescript must be "catalog:"/);
+  assert.match(
+    pinProblems(
+      inputs((v) => {
+        v.workspace.catalog.typescript = "7.0.2";
+        v.manifests["apps/platform/package.json"].devDependencies.typescript =
+          "npm:typescript@5.9.3";
+      }),
+    ).join("\n"),
+    /apps\/platform\/package\.json: typescript must be "catalog:"/,
+  );
+});
+
 const misalignments = [
   // What Dependabot leaves behind: it moves the catalog's vite-plus line and nothing else.
   [

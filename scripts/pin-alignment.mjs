@@ -3,6 +3,13 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 const dependencyFields = ["dependencies", "devDependencies"];
+// openapi-typescript 7 can't load TypeScript 7. The contract keeps its own compiler, as
+// an alias because Dependabot skips aliases but merges two plain pins of one package and
+// would move this one to 7. It goes once the generator supports the catalog's version.
+const generatorCompiler = ({ path, name, version }) =>
+  path === "contracts/platform/package.json" &&
+  name === "typescript" &&
+  /^npm:typescript@\d+\.\d+\.\d+$/.test(version);
 
 // Reads the block mappings and lists pnpm-workspace.yaml uses. Anything else is
 // refused, because a value this can't read would otherwise go unchecked.
@@ -90,9 +97,15 @@ export function pinProblems({ workspace, lockfile, manifests, workflows }) {
   const packages = lockfilePackages(lockfile);
 
   // A manifest holding its own version would drift away from the catalog unseen.
-  for (const { path, name, version } of pins)
-    if (path !== "pnpm-workspace.yaml" && catalog[name] !== undefined)
-      problems.push(`${path}: ${name} must be "catalog:", found ${version}`);
+  for (const pin of pins)
+    if (
+      pin.path !== "pnpm-workspace.yaml" &&
+      catalog[pin.name] !== undefined &&
+      !generatorCompiler(pin)
+    )
+      problems.push(
+        `${pin.path}: ${pin.name} must be "catalog:", found ${pin.version}`,
+      );
 
   const vitePlus = catalog["vite-plus"];
   const core = `npm:@voidzero-dev/vite-plus-core@${vitePlus}`;

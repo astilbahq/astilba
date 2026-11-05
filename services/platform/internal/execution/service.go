@@ -3,10 +3,10 @@ package execution
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"github.com/astilbahq/astilba/services/platform/internal/applicationdns"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"net"
 	"os"
 	"strings"
@@ -64,7 +64,7 @@ func New(st *store.Store) (*Service, error) {
 func (s *Service) Start(ctx context.Context) error { return s.Queue.Start(ctx) }
 func (s *Service) Stop(ctx context.Context) error  { return s.Queue.Stop(ctx) }
 func hash(s string) []byte                         { h := sha256.Sum256([]byte(s)); return h[:] }
-func Hash(v any) string                            { b, _ := json.Marshal(v); return hex.EncodeToString(hash(string(b))) }
+func Hash(v any) string                            { return stablejson.Hash(v) }
 func Terminal(s api.ExecutionState) bool {
 	return s == "succeeded" || s == "failed" || s == "cancelled"
 }

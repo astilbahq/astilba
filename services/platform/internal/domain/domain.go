@@ -1,7 +1,6 @@
 package domain
 
 import (
-	"encoding/json"
 	jsonv2 "encoding/json/v2"
 	"math"
 	"net"
@@ -12,6 +11,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/astilbahq/astilba/services/platform/internal/composeproject"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 )
 
@@ -164,7 +164,8 @@ func ParseSpec(raw []byte) (Specification, []byte, error) {
 	if err := spec.ValidatePlacement(); err != nil {
 		return spec, nil, err
 	}
-	canonical, err := json.Marshal(spec)
+	// Stored revisions and their content hashes keep this encoding.
+	canonical, err := stablejson.Marshal(spec)
 	if len(canonical) > 131072 {
 		return spec, nil, Invalid("specification")
 	}

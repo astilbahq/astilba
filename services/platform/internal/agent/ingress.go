@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/containerd/errdefs"
 	"github.com/google/uuid"
 	"github.com/moby/moby/api/pkg/stdcopy"
@@ -269,7 +270,8 @@ func (e *Engine) publishRoutes(ctx context.Context, p deployment.Plan, stablePro
 	if len(p.Specification.Routes) == 0 && len(state.Current.Sets) == 0 {
 		return nil
 	}
-	raw, _ := json.Marshal(state.Current)
+	// The clone keeps nil collections, because route sets enter StateHash.
+	raw, _ := stablejson.Marshal(state.Current)
 	var next routeSnapshot
 	if err = json.Unmarshal(raw, &next); err != nil {
 		return err

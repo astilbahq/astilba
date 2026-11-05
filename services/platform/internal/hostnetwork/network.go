@@ -1,9 +1,7 @@
 package hostnetwork
 
 import (
-	"crypto/sha256"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +10,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 )
 
@@ -85,11 +84,7 @@ type Receipt struct {
 	Effective  *Manifest `json:"effective,omitempty"`
 }
 
-func Hash(v any) string {
-	b, _ := json.Marshal(v)
-	h := sha256.Sum256(b)
-	return hex.EncodeToString(h[:])
-}
+func Hash(v any) string { return stablejson.Hash(v) }
 func (m Manifest) Interface() string {
 	return "as" + strings.ReplaceAll(m.NetworkID.String(), "-", "")[:12]
 }

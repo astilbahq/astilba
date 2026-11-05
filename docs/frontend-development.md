@@ -118,6 +118,8 @@ The `catalog` in `pnpm-workspace.yaml` holds the Vite+, Panda and Playwright ver
 - **Panda and Storybook:** every package in each family has the same version.
 - **`allowBuilds`:** each key names an exact version from the lockfile, so a new release's install scripts need a fresh decision.
 
+`contracts/platform` keeps its own TypeScript 5 through an `npm:` alias, because `openapi-typescript` 7.13.0 can't load TypeScript 7: 7.0's root module has no compiler API. Dependabot skips aliases and updates the catalog's `typescript` without touching the alias, while it would merge two plain pins and move this one to 7. That leaves the [vulnerability scan](continuous-integration.md#vulnerability-scan) to report an advisory on the alias, which is bumped by hand. Replace the alias with `catalog:` once a generator release supports the catalog's version and `pnpm generate:check` still passes.
+
 Dependabot moves the catalog's `vite-plus` line and not the rest, so its `needs-review` pull requests can need these edits by hand. Preserve the release-age gate when making them.
 
 ## Panda CSS conventions

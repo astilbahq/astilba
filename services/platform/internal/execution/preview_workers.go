@@ -4,12 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"time"
 
-	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
-	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
@@ -526,108 +523,6 @@ func (s *Service) reconcilePreview(ctx context.Context, tx pgx.Tx, p previewPoli
 	}
 	return s.previewState(ctx, tx, id, "ready", "", 5*time.Minute)
 }
-func (s *Service) createPreviewEnvironment(ctx context.Context, tx pgx.Tx, p previewPolicy, r *previewRecord) error {
-	var raw []byte
-	if err := tx.QueryRow(ctx, "SELECT specification FROM specification_revisions WHERE workspace_id=$1 AND environment_id=$2 AND id=$3", p.Workspace, p.Template, p.Revision).Scan(&raw); err != nil {
-		return err
-	}
-	template, _, err := domain.ParseSpec(raw)
-	if err != nil {
-		return err
-	}
-	env, rev, unit := uuid.New(), uuid.New(), uuid.New()
-	q := db.New(tx)
-	if _, err = q.InsertEnvironment(ctx, db.InsertEnvironmentParams{WorkspaceID: p.Workspace, ProjectID: p.Project, ID: env, Name: fmt.Sprintf("Preview %s #%d", r.View.Id, r.View.Generation+1), DraftRevisionID: rev, ConfigurationOwner: "dashboard", Purpose: "preview"}); err != nil {
-		return err
-	}
-	ids := map[uuid.UUID]uuid.UUID{}
-	for _, a := range template.Applications {
-		ids[a.ID] = uuid.New()
-	}
-	for _, v := range template.Volumes {
-		ids[v.ID] = uuid.New()
-	}
-	for _, b := range template.Bindings {
-		ids[b.ID] = uuid.New()
-	}
-	for _, route := range template.Routes {
-		ids[route.ID] = uuid.New()
-	}
-	passwords := map[uuid.UUID]bool{}
-	for _, a := range template.Applications {
-		if a.Postgres != nil {
-			passwords[a.Postgres.PasswordSecretVersionID] = true
-		}
-	}
-	secrets := map[uuid.UUID]uuid.UUID{}
-	for _, old := range domain.SecretReferences(template) {
-		var value string
-		if passwords[old] {
-			value, err = cryptobox.Token()
-		} else {
-			var v db.SecretVersion
-			v, err = q.GetSecretVersion(ctx, db.GetSecretVersionParams{WorkspaceID: p.Workspace, EnvironmentID: p.Template, ID: old})
-			if err == nil {
-				var plain []byte
-				plain, err = s.Store.Keys.Open(v.EncryptedValue, store.SecretIdentity(p.Workspace, old))
-				value = string(plain)
-				clear(plain)
-			}
-		}
-		if err != nil {
-			return err
-		}
-		sid, id := uuid.New(), uuid.New()
-		if err = q.InsertSecret(ctx, db.InsertSecretParams{WorkspaceID: p.Workspace, EnvironmentID: env, ID: sid, Name: "Preview " + old.String()}); err != nil {
-			return err
-		}
-		cipher, err := s.Store.Keys.Seal([]byte(value), store.SecretIdentity(p.Workspace, id))
-		if err != nil {
-			return err
-		}
-		if _, err = q.InsertSecretVersion(ctx, db.InsertSecretVersionParams{WorkspaceID: p.Workspace, SecretID: sid, ID: id, EncryptedValue: cipher, AuthorID: p.Actor}); err != nil {
-			return err
-		}
-		secrets[old] = id
-	}
-	spec, err := domain.RemapPreview(template, ids, secrets, func(app uuid.UUID) string {
-		if !p.Config.Domains {
-			return ""
-		}
-		return domain.ApplicationHostname(s.Store.ApplicationDomain, p.Workspace, env, app, p.Server)
-	})
-	if err != nil {
-		return err
-	}
-	raw, err = json.Marshal(spec)
-	if err != nil {
-		return err
-	}
-	if _, err = q.InsertRevision(ctx, db.InsertRevisionParams{WorkspaceID: p.Workspace, EnvironmentID: env, ID: rev, AuthorID: p.Actor, Specification: raw, ContentHash: hash(string(raw))}); err != nil {
-		return err
-	}
-	if err = q.InsertDeploymentUnit(ctx, db.InsertDeploymentUnitParams{WorkspaceID: p.Workspace, EnvironmentID: env, ID: unit}); err != nil {
-		return err
-	}
-	if _, err = q.PutLayout(ctx, db.PutLayoutParams{WorkspaceID: p.Workspace, EnvironmentID: env, Positions: []byte("{}")}); err != nil {
-		return err
-	}
-	cfg, _ := json.Marshal(p.Config)
-	if _, err = tx.Exec(ctx, "UPDATE deployment_units SET server_id=$2 WHERE workspace_id=$1 AND id=$3", p.Workspace, p.Server, unit); err != nil {
-		return err
-	}
-	if _, err = tx.Exec(ctx, "UPDATE preview_requests SET environment_id=$2,application_id=$3,configuration=$4,policy_generation=$5,generation=generation+1,build_id=NULL,plan_id=NULL,operation_id=NULL,built_head='' WHERE id=$1", r.View.Id, env, ids[p.App], cfg, p.Generation); err != nil {
-		return err
-	}
-	r.View.EnvironmentId = &env
-	app := ids[p.App]
-	r.App = &app
-	r.Config = &p.Config
-	r.PolicyGeneration = p.Generation
-	r.View.Generation++
-	return nil
-}
-
 func (s *Service) enqueueConnectionPreviews(ctx context.Context, tx pgx.Tx, ws, connection uuid.UUID, number int) error {
 	rows, err := tx.Query(ctx, "SELECT id FROM preview_policies WHERE workspace_id=$1 AND connection_id=$2 AND enabled ORDER BY id LIMIT 100", ws, connection)
 	if err != nil {

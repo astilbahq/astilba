@@ -188,3 +188,17 @@ func TestRecoveryBasesAcceptEquivalentRemovalAcknowledgements(t *testing.T) {
 		t.Fatal("conflicting actual effects accepted")
 	}
 }
+
+// Recovery bundles written by an earlier release are compared against these hashes.
+func TestRecoveryHashesKeepTheirReleasedValues(t *testing.T) {
+	if got := recoveryRowHash([]byte(`{ "z": 12345678901234567890, "a": "<&>", "f": 1.50 }`)); got != "5c49f6125abc1c236566d3a168d97c59e8e09a18058fa283efc2b59c865a8f83" {
+		t.Errorf("row hash changed to %s", got)
+	}
+	if got := recoveryRowHash([]byte(`not json`)); got != "7ccfa1fbf3940e6f0c0375d87c0f9235a50514e14cb427bdfaf5077987b26ccf" {
+		t.Errorf("unparseable row hash changed to %s", got)
+	}
+	state, err := recoveryStateHash(Archive{Name: "a && b", RequireMFA: true, Tables: map[string][]Row{"z": {{"k": json.RawMessage(`{ "x" : "<" }`), "n": json.RawMessage("null")}}, "a": nil}})
+	if err != nil || state != "1984a913f487793d106b3381b1780af5355345ee1e56fa420428c7fb472ab0cd" {
+		t.Errorf("state hash changed to %s, %v", state, err)
+	}
+}

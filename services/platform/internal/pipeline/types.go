@@ -1,9 +1,6 @@
 package pipeline
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"path"
 	"regexp"
@@ -12,6 +9,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/astilbahq/astilba/services/platform/internal/composeproject"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/distribution/reference"
 	"github.com/google/uuid"
 )
@@ -121,11 +119,7 @@ type Command struct {
 	RegistryAccess *RegistryAccess   `json:"registryAccess,omitempty"`
 }
 
-func Hash(value any) string {
-	b, _ := json.Marshal(value)
-	h := sha256.Sum256(b)
-	return hex.EncodeToString(h[:])
-}
+func Hash(value any) string { return stablejson.Hash(value) }
 func (c Command) Digest() string {
 	c.Access = nil
 	c.BuildSecrets = nil
