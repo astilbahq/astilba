@@ -50,10 +50,10 @@ func sourceSelection(c pipeline.Source, b *composeproject.Bundle) pipeline.Sourc
 	return c
 }
 
-// Only the provider's merged commit authorizes replacing edited Git files.
-func mergedSourceSelection(ctx context.Context, tx pgx.Tx, ws, env uuid.UUID, bundle *composeproject.Bundle, provider *pipeline.Provider, head string, c pipeline.Source) (pipeline.Source, bool, error) {
+// mergedSourceReviews lists the reviews submitted from exactly this draft of the source.
+func mergedSourceReviews(ctx context.Context, tx pgx.Tx, ws, env uuid.UUID, bundle *composeproject.Bundle, c pipeline.Source) ([]int, error) {
 	if bundle == nil || bundle.Origin == nil {
-		return c, false, nil
+		return nil, nil
 	}
 	files, _ := stablejson.Marshal(sourceFiles(bundle))
 	rows, err := tx.Query(ctx, `SELECT r.result FROM git_submissions g JOIN pipeline_runs r ON r.id=g.operation_id JOIN execution_operations o ON o.id=r.id
@@ -62,14 +62,14 @@ func mergedSourceSelection(ctx context.Context, tx pgx.Tx, ws, env uuid.UUID, bu
  AND (SELECT jsonb_object_agg(f->>'path',f->>'content') FROM jsonb_array_elements(r.configuration#>'{bundle,files}') f)=$6::jsonb
  ORDER BY r.created_at DESC`, ws, env, bundle.Origin.Commit, c.ConnectionID.String(), c.Branch, files)
 	if err != nil {
-		return c, false, err
+		return nil, err
 	}
 	reviews := []int{}
 	for rows.Next() {
 		var result []byte
 		if err = rows.Scan(&result); err != nil {
 			rows.Close()
-			return c, false, err
+			return nil, err
 		}
 		var r pipeline.Result
 		if json.Unmarshal(result, &r) == nil && r.ReviewNumber > 0 {
@@ -78,6 +78,32 @@ func mergedSourceSelection(ctx context.Context, tx pgx.Tx, ws, env uuid.UUID, bu
 	}
 	err = rows.Err()
 	rows.Close()
+	return reviews, err
+}
+
+// Only the provider's merged commit authorizes replacing edited Git files.
+func mergedSourceSelection(ctx context.Context, tx pgx.Tx, git *gitAnswers, ws, env uuid.UUID, bundle *composeproject.Bundle, head string, c pipeline.Source) (pipeline.Source, bool, error) {
+	reviews, err := mergedSourceReviews(ctx, tx, ws, env, bundle, c)
+	if err != nil || len(reviews) == 0 {
+		return c, false, err
+	}
+	merged, err := git.mergedAt(ctx, tx, c.ConnectionID, reviews, head)
+	if err != nil {
+		return c, false, err
+	}
+	if merged.Err != nil {
+		return c, false, merged.Err
+	}
+	if merged.Value {
+		return sourceSelection(c, bundle), true, nil
+	}
+	return c, false, nil
+}
+
+// lockedMergedSourceSelection is mergedSourceSelection for the refresh worker, which has not
+// moved its provider calls out of its locks yet.
+func lockedMergedSourceSelection(ctx context.Context, tx pgx.Tx, ws, env uuid.UUID, bundle *composeproject.Bundle, provider *pipeline.Provider, head string, c pipeline.Source) (pipeline.Source, bool, error) {
+	reviews, err := mergedSourceReviews(ctx, tx, ws, env, bundle, c)
 	if err != nil {
 		return c, false, err
 	}

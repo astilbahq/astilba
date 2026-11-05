@@ -56,7 +56,7 @@ func (s *Service) ConfiguredBuildTargets(ctx context.Context, p store.Principal,
 
 func (s *Service) RunConfiguredBuild(ctx context.Context, p store.Principal, ws, pid, env, app uuid.UUID, in api.RunConfiguredBuild) (api.Operation, error) {
 	var out api.Operation
-	err := s.scope(ctx, p, ws, workspaceAccess{Write: true}, "build.run", app, func(tx pgx.Tx) error {
+	err := s.gitScope(ctx, p, ws, workspaceAccess{Write: true}, "build.run", app, func(tx pgx.Tx, git *gitAnswers) error {
 		old, exists, err := existingBuild(ctx, tx, ws, pid, env, app, in.IdempotencyKey)
 		if err != nil {
 			return err
@@ -81,7 +81,7 @@ func (s *Service) RunConfiguredBuild(ctx context.Context, p store.Principal, ws,
 			return domain.Conflict
 		}
 		cfg.AutoBuild, cfg.AutoDeploy = false, false
-		out, err = s.admitBuild(ctx, tx, p, ws, pid, env, in.BaseRevisionId, app, in.IdempotencyKey, cfg.Canonical(), false)
+		out, err = s.admitBuild(ctx, tx, git, p, ws, pid, env, in.BaseRevisionId, app, in.IdempotencyKey, cfg.Canonical(), false)
 		return err
 	})
 	return out, err
