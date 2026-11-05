@@ -131,6 +131,19 @@ func (q *Queries) AllRegistryAccess(ctx context.Context) ([]AllRegistryAccessRow
 	return items, nil
 }
 
+const automaticDeploymentWorkspace = `-- name: AutomaticDeploymentWorkspace :one
+SELECT workspace_id FROM pipeline_auto_deployments WHERE id = $1
+`
+
+// unscoped: queued jobs carry only the deployment, as the other job lookups by ID do; the row
+// establishes the workspace. Remove this when jobs carry the workspace in their arguments.
+func (q *Queries) AutomaticDeploymentWorkspace(ctx context.Context, id uuid.UUID) (uuid.UUID, error) {
+	row := q.db.QueryRow(ctx, automaticDeploymentWorkspace, id)
+	var workspace_id uuid.UUID
+	err := row.Scan(&workspace_id)
+	return workspace_id, err
+}
+
 const finishUndeliveredPipeline = `-- name: FinishUndeliveredPipeline :exec
 UPDATE execution_operations SET state = $1, note = $2 WHERE workspace_id = $3 AND id = $4
 `

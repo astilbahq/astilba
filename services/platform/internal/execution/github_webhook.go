@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json/v2"
 	"errors"
+	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/githubapp"
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
@@ -185,6 +186,11 @@ func (w *githubFanoutWorker) Work(ctx context.Context, job *river.Job[githubFano
 				return e
 			}
 		} else if event.Kind == "push" {
+			// As a webhook does: a refresh past its question has this lock until it commits, so
+			// the job below is not dropped as a duplicate of one that won't see this push.
+			if e = db.New(tx).LockGitConnectionDeliveries(ctx, db.LockGitConnectionDeliveriesParams{WorkspaceID: a.Workspace, ID: a.Connection}); e != nil {
+				return e
+			}
 			if e = s.enqueueGitRefresh(ctx, tx, a.Workspace, a.Connection, pipeline.Push{Delivery: job.Args.Delivery, Branch: event.Branch, Commit: event.Commit}); e != nil {
 				return e
 			}

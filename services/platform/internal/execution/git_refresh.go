@@ -45,6 +45,12 @@ type refreshWorker struct {
 }
 
 func (w *refreshWorker) Work(ctx context.Context, job *river.Job[refreshArgs]) error {
+	return w.service.withGit(ctx, job.Args.Workspace, func(git *gitAnswers) error { return w.work(ctx, git, job) })
+}
+
+// work holds the workspace turn and the connection only between provider calls. The pass
+// that admits work re-reads the sources, drafts, capacity and policy the head was fetched for.
+func (w *refreshWorker) work(ctx context.Context, git *gitAnswers, job *river.Job[refreshArgs]) error {
 	a := job.Args
 	// Match interactive mutation's workspace lock before inspecting membership and drafts.
 	tx, done, err := w.service.Store.BeginWorkspaceWrite(ctx, a.Workspace)
@@ -66,14 +72,14 @@ func (w *refreshWorker) Work(ctx context.Context, job *river.Job[refreshArgs]) e
 		return err
 	}
 	capacity := 50 - active
-	provider, connection, err := w.service.provider(ctx, tx, a.Workspace, a.Connection)
+	resolved, err := git.head(ctx, tx, a.Connection, a.Branch)
 	if err != nil {
 		return err
 	}
-	head, err := provider.Resolve(ctx, a.Branch)
-	if err != nil {
-		return err
+	if resolved.Err != nil {
+		return resolved.Err
 	}
+	connection, head := resolved.Connection, resolved.Value
 	rows, err := tx.Query(ctx, `SELECT g.environment_id,g.configuration,g.imported_revision_id,g.imported_commit,e.project_id,e.draft_revision_id,g.policy_actor
  FROM git_sources g JOIN environments e ON e.workspace_id=g.workspace_id AND e.id=g.environment_id
  JOIN memberships m ON m.workspace_id=g.workspace_id AND m.account_id=g.policy_actor
@@ -102,6 +108,9 @@ func (w *refreshWorker) Work(ctx context.Context, job *river.Job[refreshArgs]) e
 		return err
 	}
 	waiting := false
+	// Sources share the operation's pass limit however many there are, so each edited source's
+	// question joins one call instead of taking a pass.
+	var unanswered *providerCall
 	for _, v := range sources {
 		if v.commit == head {
 			continue
@@ -135,7 +144,12 @@ func (w *refreshWorker) Work(ctx context.Context, job *river.Job[refreshArgs]) e
 			cfg = sourceSelection(cfg, env.Spec.Compose)
 		}
 		if !clean {
-			cfg, clean, err = lockedMergedSourceSelection(ctx, tx, a.Workspace, v.env, env.Spec.Compose, provider, head, cfg)
+			cfg, clean, err = mergedSourceSelection(ctx, tx, git, a.Workspace, v.env, env.Spec.Compose, head, cfg)
+			var call *providerCall
+			if errors.As(err, &call) {
+				unanswered = unanswered.and(call)
+				continue
+			}
 			if err != nil {
 				return err
 			}
@@ -150,11 +164,14 @@ func (w *refreshWorker) Work(ctx context.Context, job *river.Job[refreshArgs]) e
 		if err != nil {
 			return err
 		}
-		_, err = w.service.insertPipeline(ctx, tx, nil, a.Workspace, v.env, uuid.New(), runner, pipeline.Command{Action: "import", Connection: connection, Commit: head, Branch: a.Branch, RevisionID: v.base, UnitID: env.Unit, Source: &cfg, SubmittedAt: time.Now().UTC()})
+		_, err = w.service.insertPipeline(ctx, tx, git, a.Workspace, v.env, uuid.New(), runner, pipeline.Command{Action: "import", Connection: connection, Commit: head, Branch: a.Branch, RevisionID: v.base, UnitID: env.Unit, Source: &cfg, SubmittedAt: time.Now().UTC()})
 		if err != nil {
 			return err
 		}
 		capacity--
+	}
+	if unanswered != nil {
+		return unanswered
 	}
 	// Each target compares against current provider state, so delivery order cannot roll it backwards.
 	rows, err = tx.Query(ctx, `SELECT b.environment_id,b.application_id,b.configuration,e.project_id,e.draft_revision_id,b.automatic_requested_commit
@@ -236,7 +253,7 @@ func (w *refreshWorker) Work(ctx context.Context, job *river.Job[refreshArgs]) e
 		if err != nil {
 			return err
 		}
-		_, err = w.service.insertPipeline(ctx, target, nil, a.Workspace, v.env, uuid.New(), runner, pipeline.Command{Action: "build", Connection: connection, CompareCommit: compare, Commit: head, Branch: a.Branch, RevisionID: v.base, UnitID: env.Unit, AppID: v.app, Build: &cfg, InputHash: hash, Registry: registry, SubmittedAt: time.Now().UTC()})
+		_, err = w.service.insertPipeline(ctx, target, git, a.Workspace, v.env, uuid.New(), runner, pipeline.Command{Action: "build", Connection: connection, CompareCommit: compare, Commit: head, Branch: a.Branch, RevisionID: v.base, UnitID: env.Unit, AppID: v.app, Build: &cfg, InputHash: hash, Registry: registry, SubmittedAt: time.Now().UTC()})
 		if err != nil {
 			if rollbackErr := target.Rollback(ctx); rollbackErr != nil {
 				return rollbackErr

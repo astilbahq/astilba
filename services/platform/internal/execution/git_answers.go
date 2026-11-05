@@ -23,6 +23,18 @@ type providerCall struct{ fetch func(context.Context) }
 
 func (*providerCall) Error() string { return "provider answer needed" }
 
+// and returns a call making both calls, for a body that can ask several questions in one
+// pass rather than spending a pass on each.
+func (c *providerCall) and(other *providerCall) *providerCall {
+	if c == nil {
+		return other
+	}
+	return &providerCall{fetch: func(ctx context.Context) {
+		c.fetch(ctx)
+		other.fetch(ctx)
+	}}
+}
+
 // providerPassLimit bounds the passes of one operation. A real operation asks only a few
 // separate questions, so reaching this means the state is changing faster than it can
 // settle: a pass after a change discards the answers and asks again.
@@ -292,8 +304,10 @@ func (g *gitAnswers) previewHead(ctx context.Context, tx pgx.Tx, id uuid.UUID, b
 	})
 }
 
-func (g *gitAnswers) pullRequest(ctx context.Context, tx pgx.Tx, id uuid.UUID, number int) (gitAnswer[pipeline.PullRequest], error) {
-	return askProvider(ctx, tx, g, id, true, fmt.Sprintf("pull/%d", number), func(ctx context.Context, p *pipeline.Provider) (pipeline.PullRequest, error) {
+// pullRequest is asked again when recorded changes, for a caller whose answer must not be
+// older than what another job has already recorded about the request.
+func (g *gitAnswers) pullRequest(ctx context.Context, tx pgx.Tx, id uuid.UUID, number int, recorded string) (gitAnswer[pipeline.PullRequest], error) {
+	return askProvider(ctx, tx, g, id, true, fmt.Sprintf("pull/%d/%s", number, recorded), func(ctx context.Context, p *pipeline.Provider) (pipeline.PullRequest, error) {
 		return p.PullRequest(ctx, number)
 	})
 }
@@ -311,5 +325,11 @@ func (g *gitAnswers) mergedAt(ctx context.Context, tx pgx.Tx, id uuid.UUID, revi
 			}
 		}
 		return false, nil
+	})
+}
+
+func (g *gitAnswers) openPullRequests(ctx context.Context, tx pgx.Tx, id uuid.UUID, branch string, page int) (gitAnswer[[]int], error) {
+	return askProvider(ctx, tx, g, id, true, fmt.Sprintf("open/%d/%s", page, branch), func(ctx context.Context, p *pipeline.Provider) ([]int, error) {
+		return p.OpenPullRequests(ctx, branch, page)
 	})
 }

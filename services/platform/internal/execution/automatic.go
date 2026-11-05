@@ -45,10 +45,20 @@ func (s *Service) enqueueAutomatic(ctx context.Context, tx pgx.Tx, run, ws, env,
 	return err
 }
 func (w *automaticWorker) Work(ctx context.Context, job *river.Job[automaticArgs]) error {
-	var ws, env, revision, actor, pid uuid.UUID
+	ws, err := w.service.Store.Queries.AutomaticDeploymentWorkspace(ctx, job.Args.ID)
+	if err != nil {
+		return err
+	}
+	return w.service.withGit(ctx, ws, func(git *gitAnswers) error { return w.work(ctx, git, job, ws) })
+}
+
+// work runs under the workspace turn. The branch check happens between passes, so the pass
+// that plans and deploys re-reads the draft, policy, owner and subscription it was made for.
+func (w *automaticWorker) work(ctx context.Context, git *gitAnswers, job *river.Job[automaticArgs], ws uuid.UUID) error {
+	var env, revision, actor, pid uuid.UUID
 	var planID *uuid.UUID
 	var state string
-	if err := w.service.Store.Pool.QueryRow(ctx, "SELECT workspace_id,environment_id,revision_id,actor_id,plan_id,state FROM pipeline_auto_deployments WHERE id=$1", job.Args.ID).Scan(&ws, &env, &revision, &actor, &planID, &state); err != nil {
+	if err := w.service.Store.Pool.QueryRow(ctx, "SELECT environment_id,revision_id,actor_id,plan_id,state FROM pipeline_auto_deployments WHERE id=$1", job.Args.ID).Scan(&env, &revision, &actor, &planID, &state); err != nil {
 		return err
 	}
 	if state == "queued" || state == "blocked" {
@@ -105,15 +115,17 @@ func (w *automaticWorker) Work(ctx context.Context, job *river.Job[automaticArgs
 	if err = json.Unmarshal(raw, &run); err != nil {
 		return err
 	}
-	provider, _, err := w.service.provider(ctx, tx, ws, run.Connection.ID)
+	head, err := git.head(ctx, tx, run.Connection.ID, run.Branch)
 	if err != nil {
-		return stop("Cannot authenticate the configured source; review the connection.")
+		return err
 	}
-	head, err := provider.Resolve(ctx, run.Branch)
-	if err != nil {
+	if head.Err != nil {
+		if head.Setup {
+			return stop("Cannot authenticate the configured source; review the connection.")
+		}
 		return stop("Cannot verify the current branch; review the connection.")
 	}
-	if head != run.Commit {
+	if head.Value != run.Commit {
 		return stop("A newer source commit exists; this deployment was superseded.")
 	}
 	var busy bool

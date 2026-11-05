@@ -240,15 +240,18 @@ func (s *Service) deliveryRefused(ctx context.Context, tx pgx.Tx, ws uuid.UUID, 
 	return !allowed, err
 }
 func (s *Service) populatePipeline(ctx context.Context, tx pgx.Tx, git *gitAnswers, ws, env uuid.UUID, p *pipeline.Command) error {
-	access, err := s.commandAccess(ctx, tx, git, ws, p.Connection.ID, p.Action == "submit")
+	access, err := git.access(ctx, tx, p.Connection.ID, p.Action == "submit")
 	if err != nil {
 		return err
 	}
+	if access.Err != nil {
+		return access.Err
+	}
 	p.Access = &pipeline.Access{}
 	if p.Action == "submit" {
-		p.Access.API = access.API
+		p.Access.API = access.Value.API
 	} else {
-		p.Access.Clone = access.Clone
+		p.Access.Clone = access.Value.Clone
 	}
 	if p.Build != nil {
 		p.BuildSecrets, err = s.buildInputs(ctx, tx, ws, env, *p.Build)
@@ -272,19 +275,6 @@ func (s *Service) populatePipeline(ctx context.Context, tx pgx.Tx, git *gitAnswe
 		return domain.Invalid("pipeline.payloadBudget")
 	}
 	return nil
-}
-
-// commandAccess asks git, or contacts GitHub in place for an admission path that has not
-// moved its provider calls out of its locks yet and so passes no git.
-func (s *Service) commandAccess(ctx context.Context, tx pgx.Tx, git *gitAnswers, ws, id uuid.UUID, write bool) (pipeline.Access, error) {
-	if git == nil {
-		return s.gitAccess(ctx, tx, ws, id, write)
-	}
-	access, err := git.access(ctx, tx, id, write)
-	if err != nil {
-		return pipeline.Access{}, err
-	}
-	return access.Value, access.Err
 }
 
 func (s *Service) writePipelineRevision(ctx context.Context, tx pgx.Tx, ws, env, base, actor uuid.UUID, spec domain.Specification) (uuid.UUID, error) {

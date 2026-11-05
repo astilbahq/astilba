@@ -128,18 +128,6 @@ func loadConnection(ctx context.Context, tx pgx.Tx, ws, id uuid.UUID) (pipeline.
 	}
 	return c, row.EncryptedAccess, err
 }
-func (s *Service) provider(ctx context.Context, tx pgx.Tx, ws, id uuid.UUID) (*pipeline.Provider, pipeline.Connection, error) {
-	c, _, err := loadConnection(ctx, tx, ws, id)
-	if err != nil {
-		return nil, c, err
-	}
-	access, err := s.gitAccess(ctx, tx, ws, id, false)
-	if err != nil {
-		return nil, c, err
-	}
-	provider, err := pipeline.NewProvider(c, access.API, s.Policy)
-	return provider, c, err
-}
 func (s *Service) Registries(ctx context.Context, p store.Principal, ws uuid.UUID) ([]pipeline.Registry, error) {
 	out := []pipeline.Registry{}
 	err := s.scope(ctx, p, ws, workspaceAccess{}, "", uuid.Nil, func(tx pgx.Tx) error {
