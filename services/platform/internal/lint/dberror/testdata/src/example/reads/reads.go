@@ -47,6 +47,24 @@ func handler(q *db.Queries, fail func()) {
 	}
 }
 
+func overwritten(q *db.Queries) error {
+	_, err := q.AccountByID()
+	if err != nil { // want `a failed AccountByID`
+		err = Forbidden
+	}
+	return err
+}
+
+func replacedThenRead(q *db.Queries, version int64, drop func() error) error {
+	account, e := q.AccountByID()
+	if e != nil || account.AuthVersion != version { // want `a failed AccountByID`
+		if e = drop(); e != nil {
+			return e
+		}
+	}
+	return e
+}
+
 func initialised(tx pgx.Tx) error {
 	var v string
 	if err := tx.QueryRow("x").Scan(&v); err != nil { // want `a failed Scan`

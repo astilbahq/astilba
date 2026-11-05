@@ -16,8 +16,6 @@ import (
 // handler otherwise answers every error as a refusal or an invalid request.
 type authorizationFailure struct{ error }
 
-func (f authorizationFailure) Unwrap() error { return f.error }
-
 func (s *Server) authorizeEnvironmentPurpose(ctx context.Context, in *openapi3filter.RequestValidationInput) error {
 	if in.Request.Method == http.MethodGet || in.Request.Method == http.MethodHead {
 		return nil

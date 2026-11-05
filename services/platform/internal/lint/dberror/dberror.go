@@ -147,21 +147,25 @@ func readCall(pass *analysis.Pass, call *ast.CallExpr) bool {
 }
 
 // used reports whether anything could still tell this failure apart from the branch's other
-// outcomes: another condition term, the body or, when the body can fall through, whatever
-// runs next. A variable declared outside this block can be read after it by code not in view.
+// outcomes: another condition term, the body or, when the body keeps the error and can fall
+// through, whatever runs next. A variable declared outside this block can be read after it by
+// code not in view.
 func used(pass *analysis.Pass, err types.Object, check *ast.IfStmt, terms []ast.Expr, term ast.Expr, before, after []ast.Stmt) bool {
 	for _, other := range terms {
 		if other != term && mentions(pass, err, other) {
 			return true
 		}
 	}
-	if readBeforeAssigned(pass, err, check.Body.List) {
+	switch firstUse(pass, err, check.Body.List) {
+	case read:
 		return true
+	case replaced:
+		return false
 	}
 	if returns(check.Body) {
 		return false
 	}
-	return readBeforeAssigned(pass, err, after) || declaredOutside(err, before, check)
+	return firstUse(pass, err, after) == read || declaredOutside(err, before, check)
 }
 
 func declaredOutside(err types.Object, before []ast.Stmt, check *ast.IfStmt) bool {
@@ -172,10 +176,18 @@ func declaredOutside(err types.Object, before []ast.Stmt, check *ast.IfStmt) boo
 	return err.Pos() < start
 }
 
-// readBeforeAssigned reports whether statements read the variable before replacing it, so
-// that #147's `if e = s.dropStaleSession(ctx); e != nil` does not count as using the failure.
-// A bare return reads a named result.
-func readBeforeAssigned(pass *analysis.Pass, err types.Object, stmts []ast.Stmt) bool {
+type use int
+
+const (
+	unused use = iota
+	read
+	replaced
+)
+
+// firstUse reports what statements do to the variable first, so that #147's
+// `if e = s.dropStaleSession(ctx); e != nil` does not count as using the failure. A bare
+// return reads a named result.
+func firstUse(pass *analysis.Pass, err types.Object, stmts []ast.Stmt) use {
 	for _, stmt := range stmts {
 		first := stmt
 		if check, ok := stmt.(*ast.IfStmt); ok && check.Init != nil {
@@ -185,17 +197,17 @@ func readBeforeAssigned(pass *analysis.Pass, err types.Object, stmts []ast.Stmt)
 			if _, assigns := assignment(pass, err, assign); assigns {
 				for _, value := range assign.Rhs {
 					if mentions(pass, err, value) {
-						return true
+						return read
 					}
 				}
-				return false
+				return replaced
 			}
 		}
 		if mentions(pass, err, stmt) || namedResult(err) && bareReturn(stmt) {
-			return true
+			return read
 		}
 	}
-	return false
+	return unused
 }
 
 func mentions(pass *analysis.Pass, err types.Object, n ast.Node) bool {

@@ -351,8 +351,10 @@ one-sentence explanation:
 | `wsclose` | Code outside `internal/terminal` calls `(*websocket.Conn).Close`, which a peer stalled inside a frame can hold forever. Use `terminal.Close`. | #117, #118, #131 |
 | `jsontag` | A struct field read from JSON, directly or through a package's own HTTP response helper, has no json tag naming its member. `encoding/json/v2` matches names exactly, so the field would stay zero with no error. | The JSON v2 shadow decoder, before #151 |
 
-`dberror` looks only at `err != nil` conditions, alone or as `||` terms. `jsontag` does
-not follow a helper into another package.
+These catch the shapes the defects took, so a clean run does not rule a defect out.
+`dberror` looks only at `err != nil` conditions, alone or as `||` terms, on an error set in
+the same block. `jsontag` follows one level of helper, in the same package, that handles an
+`*http.Response`.
 
 There is no suppression comment: each failure has a direct fix, and an analyzer
 that needs exceptions should change or go. Add one only for a defect that recurs,
