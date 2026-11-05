@@ -192,3 +192,35 @@ func TestHungPolicySavesLeaveThePoolServing(t *testing.T) {
 		t.Fatal("racing saves", saved, conflicted)
 	}
 }
+
+// Approving a fork's commit grants it credentials, so the approval must be for the commit
+// the request is at, and the policy it is under, when the approval commits.
+func TestPreviewApprovalRechecksAfterAHungProvider(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		during string
+	}{
+		{name: "head moved", during: "UPDATE preview_requests SET head=repeat('d',40) WHERE id=$1"},
+		{name: "policy saved", during: "UPDATE preview_policies SET generation=generation+1 WHERE id=(SELECT policy_id FROM preview_requests WHERE id=$1)"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHungPreview(t)
+			h.b.call("PUT", h.path+"/preview-policy", map[string]any{"enabled": true, "generation": 0, "configuration": h.policy}, 200, nil)
+			preview := h.waitPreview(t, "approval_required")
+			entered, release := h.provider.hold(t, "/pulls/7")
+			finished := h.b.send("POST", h.path+"/previews/"+preview.Id.String()+"/actions", map[string]any{"action": "approve", "head": preview.Head, "headRepository": preview.HeadRepository})
+			waitEntered(t, entered)
+			h.requireNothingHeld(t, uuid.Nil)
+			execSQL(t, h.hungBuild, tc.during, preview.Id)
+			release()
+			requireReply(t, <-finished, 409)
+			var approved string
+			if err := h.f.st.Pool.QueryRow(context.Background(), "SELECT approved_head FROM preview_requests WHERE id=$1", preview.Id).Scan(&approved); err != nil {
+				t.Fatal(err)
+			}
+			if approved != "" {
+				t.Fatal("an approval applied to a state that changed during the call", approved)
+			}
+		})
+	}
+}

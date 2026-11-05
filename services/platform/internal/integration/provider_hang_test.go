@@ -33,6 +33,7 @@ type heldGitea struct {
 	mu       sync.Mutex
 	match    string
 	skip     int
+	once     bool
 	failHeld bool
 	gate     chan struct{}
 	entered  chan struct{}
@@ -57,6 +58,9 @@ func newHeldGitea(t *testing.T) *heldGitea {
 		if held && h.skip > 0 {
 			h.skip--
 			held = false
+		}
+		if held && h.once {
+			h.gate = nil
 		}
 		h.mu.Unlock()
 		if held {
@@ -112,6 +116,15 @@ func (h *heldGitea) holdAfter(t *testing.T, match string, passed int) (<-chan st
 	t.Helper()
 	h.mu.Lock()
 	h.skip = passed
+	h.mu.Unlock()
+	return h.hold(t, match)
+}
+
+// holdOnce is hold for the next matching request only.
+func (h *heldGitea) holdOnce(t *testing.T, match string) (<-chan struct{}, func()) {
+	t.Helper()
+	h.mu.Lock()
+	h.once = true
 	h.mu.Unlock()
 	return h.hold(t, match)
 }
@@ -190,6 +203,7 @@ type hungBuild struct {
 	provider   *heldGitea
 	ws, app    uuid.UUID
 	connection pipeline.Connection
+	secret     string
 	prefix     string
 	path       string
 	draft      api.Revision
@@ -210,9 +224,10 @@ func newHungBuild(t *testing.T) *hungBuild {
 	h.prefix = "/api/v1/workspaces/" + h.ws.String()
 	var connection struct {
 		Connection pipeline.Connection `json:"connection"`
+		Secret     string              `json:"webhookSecret"`
 	}
 	b.call("POST", h.prefix+"/git-connections", map[string]any{"name": "Held", "provider": "gitea", "baseUrl": h.provider.server.URL, "repository": "team/app", "clone": map[string]string{"username": "reader", "password": "clone-canary"}}, 201, &connection)
-	h.connection = connection.Connection
+	h.connection, h.secret = connection.Connection, connection.Secret
 	var project api.Project
 	b.call("POST", h.prefix+"/projects", map[string]string{"name": "Held"}, 201, &project)
 	var env api.Environment
