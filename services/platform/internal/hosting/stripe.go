@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/json/jsontext"
 	"errors"
 	"fmt"
 	"io"
@@ -180,7 +181,7 @@ type Event struct {
 	ID   string `json:"id"`
 	Type string `json:"type"`
 	Data struct {
-		Object json.RawMessage `json:"object"`
+		Object jsontext.Value `json:"object"`
 	} `json:"data"`
 }
 

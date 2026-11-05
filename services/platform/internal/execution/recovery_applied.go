@@ -2,6 +2,7 @@ package execution
 
 import (
 	"encoding/json"
+	"encoding/json/jsontext"
 	"errors"
 	"time"
 
@@ -87,7 +88,7 @@ func recoveryCommandIdentity(c api.ExecutionCommand) string {
 func buildAppliedOrigin(a portability.Archive, parent uuid.UUID) (*appliedOrigin, error) {
 	out := &appliedOrigin{Parent: parent, At: a.CreatedAt, Operations: map[uuid.UUID]appliedEvidence{}, Environments: map[uuid.UUID]appliedTuple{}}
 	operations := map[uuid.UUID]portability.Row{}
-	plans := map[uuid.UUID]json.RawMessage{}
+	plans := map[uuid.UUID]jsontext.Value{}
 	generations := map[uuid.UUID]map[int64]uuid.UUID{}
 	for _, row := range a.Tables["execution_operations"] {
 		id, err := recoveryValue[uuid.UUID](row, "id")

@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/json/jsontext"
 	"errors"
 	"fmt"
 	"maps"
@@ -95,8 +96,8 @@ func RecoveryImmutable(name string) bool {
 // process, owner and expected-state guards. It never disables immutable triggers
 // or deletes history. Ciphertext is preserved with its original key identity.
 func MergeRecovery(ctx context.Context, tx pgx.Tx, a Archive, owner uuid.UUID) error {
-	links := map[string]map[string]json.RawMessage{"environments": {}, "execution_operations": {}}
-	appliedOperations := map[string]json.RawMessage{}
+	links := map[string]map[string]jsontext.Value{"environments": {}, "execution_operations": {}}
+	appliedOperations := map[string]jsontext.Value{}
 	for _, t := range tables {
 		for _, sourceRow := range a.Tables[t.Name] {
 			row := maps.Clone(sourceRow)

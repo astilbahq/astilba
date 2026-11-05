@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/json/jsontext"
 	"errors"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
@@ -221,7 +222,7 @@ func (j *Journal) writeRecoveryProofs(out io.Writer) (string, error) {
 					receipt.Observation.Resources[i].Logs = ""
 				}
 				raw, _ := stablejson.Marshal(receipt)
-				message := json.RawMessage(raw)
+				message := jsontext.Value(raw)
 				report.Crosshost = &message
 			}
 			raw, err := stablejson.Marshal(report)

@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"encoding/json"
+	"encoding/json/jsontext"
 	"errors"
 	"fmt"
 	"path"
@@ -16,11 +17,11 @@ import (
 
 const RailpackPlanLimit = 128 << 10
 
-func railpackPlanHash(plan json.RawMessage, inputs RailpackInputs) string {
+func railpackPlanHash(plan jsontext.Value, inputs RailpackInputs) string {
 	return Hash(struct {
-		Plan   json.RawMessage
+		Plan   jsontext.Value
 		Inputs RailpackInputs
-		Policy json.RawMessage
+		Policy jsontext.Value
 	}{plan, inputs, RailpackSourcePolicy(inputs)})
 }
 

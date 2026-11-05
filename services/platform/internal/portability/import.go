@@ -3,6 +3,7 @@ package portability
 import (
 	"context"
 	"encoding/json"
+	"encoding/json/jsontext"
 	jsonv2 "encoding/json/v2"
 	"fmt"
 	"math"
@@ -197,9 +198,9 @@ func (s *Service) Import(ctx context.Context, p store.Principal, passphrase stri
 			return out, e
 		}
 	}
-	applied := map[string]json.RawMessage{}
-	appliedOperations := map[string]json.RawMessage{}
-	visualPlans := map[string]json.RawMessage{}
+	applied := map[string]jsontext.Value{}
+	appliedOperations := map[string]jsontext.Value{}
+	visualPlans := map[string]jsontext.Value{}
 	for _, table := range tables {
 		for _, row := range archive.Tables[table.Name] {
 			for _, actor := range []string{"author_id", "actor_id", "policy_actor"} {
@@ -271,7 +272,7 @@ func (s *Service) Import(ctx context.Context, p store.Principal, passphrase stri
 				if table.Name == "git_sources" {
 					setValue(row, "status", "approval_required")
 				}
-				var config map[string]json.RawMessage
+				var config map[string]jsontext.Value
 				if json.Unmarshal(row["configuration"], &config) != nil || config == nil {
 					return out, ErrArchive
 				}
