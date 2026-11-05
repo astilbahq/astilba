@@ -342,36 +342,12 @@ func cancelGitHubWork(ctx context.Context, tx pgx.Tx, ws, id uuid.UUID) error {
 	return q.PauseGitHubBuildTargets(ctx, db.PauseGitHubBuildTargetsParams{WorkspaceID: ws, ConnectionID: id})
 }
 func (s *Service) gitAccess(ctx context.Context, tx pgx.Tx, ws, id uuid.UUID, write bool) (pipeline.Access, error) {
-	q := db.New(tx)
-	connection, e := q.GetGitConnection(ctx, db.GetGitConnectionParams{WorkspaceID: ws, ID: id})
+	st, e := s.loadGitState(ctx, tx, ws, id)
 	if e != nil {
 		return pipeline.Access{}, e
 	}
-	raw := connection.Configuration
-	if !appConfiguration(raw) {
-		var access pipeline.Access
-		e := s.openIntegration(ws, id, "git", connection.EncryptedAccess, &access)
-		return access, e
+	if st.unusable != nil {
+		return pipeline.Access{}, st.unusable
 	}
-	if s.GitHub == nil {
-		return pipeline.Access{}, domain.Invalid("githubApp.reauthorizationRequired")
-	}
-	binding, e := q.ShareActiveGitHubAppConnection(ctx, db.ShareActiveGitHubAppConnectionParams{WorkspaceID: ws, ConnectionID: id})
-	if e != nil {
-		return pipeline.Access{}, store.IfMissing(e, domain.Invalid("githubApp.reauthorizationRequired"))
-	}
-	installation, repo := binding.InstallationID, binding.RepositoryID
-	var c pipeline.Connection
-	if json.Unmarshal(raw, &c) != nil || c.Provider != "github" || c.BaseURL != "https://api.github.com" || c.RepositoryID != repo || binding.AppID != s.GitHub.Config.ID {
-		return pipeline.Access{}, domain.Forbidden
-	}
-	if e := s.GitHub.Validate(ctx, installation, repo, binding.Generation, c.Repository, c.Private); e != nil {
-		return pipeline.Access{}, e
-	}
-	token, e := s.GitHub.Mint(ctx, installation, repo, write)
-	if e != nil {
-		return pipeline.Access{}, e
-	}
-	credential := pipeline.Credential{Username: "x-access-token", Password: token}
-	return pipeline.Access{API: credential, Clone: credential}, nil
+	return s.openGitAccess(ctx, ws, id, st, write)
 }

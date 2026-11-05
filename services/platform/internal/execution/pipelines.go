@@ -90,7 +90,7 @@ func (s *Service) insertPipeline(ctx context.Context, tx pgx.Tx, ws, env, key, s
 		return out, domain.Invalid("pipeline")
 	}
 	hydrated := p
-	if err := s.populatePipeline(ctx, tx, ws, env, &hydrated); err != nil {
+	if err := s.populatePipeline(ctx, tx, nil, ws, env, &hydrated); err != nil {
 		return out, err
 	}
 	var count int
