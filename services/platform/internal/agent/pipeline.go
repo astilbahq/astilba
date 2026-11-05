@@ -328,8 +328,7 @@ func (e *Engine) buildPipeline(ctx context.Context, c api.ExecutionCommand, p pi
 		if host == "docker.io" {
 			host = "https://index.docker.io/v1/"
 		}
-		auth := map[string]any{"auths": map[string]any{host: map[string]string{"auth": base64.StdEncoding.EncodeToString([]byte(p.RegistryAccess.Push.Username + ":" + p.RegistryAccess.Push.Password))}}}
-		data, _ := json.Marshal(auth)
+		data, _ := buildKitAuthConfig(host, p.RegistryAccess.Push)
 		if _, err = e.pipelineCLI(ctx, pipelineName(c), nil, data, 1024, "sh", "-ec", "umask 077; cat > /workspace/auth/config.json"); err != nil {
 			return result, err
 		}
@@ -545,4 +544,9 @@ func (e *Engine) finishPipeline(c api.ExecutionCommand, state api.ExecutionState
 		return e.finish(c.Id, "needs_attention", "Runner cleanup failed. Inspect the owned container and retry this operation locally.")
 	}
 	return e.finish(c.Id, state, note)
+}
+
+// buildKitAuthConfig writes the Docker config file BuildKit reads to push an image.
+func buildKitAuthConfig(host string, push pipeline.Credential) ([]byte, error) {
+	return json.Marshal(map[string]any{"auths": map[string]any{host: map[string]string{"auth": base64.StdEncoding.EncodeToString([]byte(push.Username + ":" + push.Password))}}})
 }

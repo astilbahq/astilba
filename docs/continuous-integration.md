@@ -349,6 +349,7 @@ one-sentence explanation:
 | --- | --- | --- |
 | `dberror` | A branch on the error from a value-returning sqlc method or a row scan never looks at it, so an outage reads as a refusal or a missing row. Use `store.IfMissing` or return the error. | #122, #147 |
 | `wsclose` | Code outside `internal/terminal` calls `(*websocket.Conn).Close`, which a peer stalled inside a frame can hold forever. Use `terminal.Close`. | #117, #118, #131 |
+| `jsonguard` | Code imports `encoding/json` outside the files [JSON encoding](json-encoding.md#remaining-v1-use) gives a reason for, or calls a plain `encoding/json/v2` writer outside a named third-party function. A stored or peer value written that way would move a digest when read back. Its two lists are the decisions recorded in [JSON encoding](json-encoding.md), not suppressions. | The `encoding/json/v2` adoption |
 | `jsontag` | A struct field read from JSON, directly or through a package's own HTTP response helper, has no json tag naming its member. `encoding/json/v2` matches names exactly, so the field would stay zero with no error. | The JSON v2 shadow decoder, before #151 |
 
 These catch the shapes the defects took, so a clean run does not rule a defect out.

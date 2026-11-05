@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	jsonv1 "encoding/json"
 	"encoding/json/jsontext"
 	"errors"
 	"flag"
@@ -16,6 +15,7 @@ import (
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/automationclient"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -225,7 +225,5 @@ func run(ctx context.Context, args []string) error {
 }
 
 func output(value any) error {
-	encoder := jsonv1.NewEncoder(os.Stdout)
-	encoder.SetIndent("", "  ")
-	return encoder.Encode(value)
+	return stablejson.EncodeIndent(os.Stdout, value, "", "  ")
 }

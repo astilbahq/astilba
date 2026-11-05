@@ -1,6 +1,6 @@
 # JSON encoding
 
-Astilba's Go code reads JSON with `encoding/json/v2` and writes hashed, stored and peer-to-peer JSON through `internal/stablejson`. The owner chose full adoption while the project is in alpha; packages move across in stages, so some still call v1 until the series finishes.
+Astilba's Go code reads JSON with `encoding/json/v2` and writes everything except requests to third parties through `internal/stablejson`. The owner chose full adoption while the project is in alpha.
 
 ## The rule
 
@@ -8,12 +8,24 @@ Astilba's Go code reads JSON with `encoding/json/v2` and writes hashed, stored a
 | --- | --- |
 | Reading JSON | `encoding/json/v2`. Add `RejectUnknownMembers(true)` where unknown names must be refused. |
 | Hashing or signing a value | `stablejson.Hash`, or the package `Hash` and `Digest` helpers that call it. |
-| Writing a value that is stored, journaled, exported, sent between Astilba processes that can be on different releases (controller, agent, CLI requests), or printed by an agent or server command that scripts read | `stablejson.Marshal`, `stablejson.Encode` for a stream or `stablejson.MarshalIndent` for indented files. |
+| Writing a value that is stored, journaled, exported or sent between Astilba processes that can be on different releases, an API response, or command output that scripts read | `stablejson.Marshal`, `stablejson.Encode` for a stream, `stablejson.MarshalIndent` or `stablejson.EncodeIndent`. |
 | Cloning a value through JSON, when the clone can reach a digest | `stablejson.Marshal`, so nil collections stay nil. |
 
-Requests to third parties, alert webhooks and Docker registry credentials use plain `encoding/json/v2`, because nothing hashes, stores or compares them. Compared with v1, `&`, `<`, `>`, U+2028 and U+2029 are no longer escaped, map order is random and invalid UTF-8 is an error rather than replaced. HTTP responses and the `astilba` CLI's own output still use v1 until a later change moves them.
+Requests to third parties, alert webhooks and Docker registry credentials use plain `encoding/json/v2`, because nothing hashes, stores or compares them. Compared with v1, `&`, `<`, `>`, U+2028 and U+2029 are no longer escaped, map order is random and invalid UTF-8 is an error rather than replaced.
+
+The `jsonguard` analyzer in `make check-app` checks this: `encoding/json` only in the files listed under [Remaining v1 use](#remaining-v1-use), and plain v2 writers only in the functions it names. A named function can still add a second writer, so a clean run does not rule that out.
 
 `stablejson.Marshal` calls v2 with `encoding/json`'s `DefaultOptionsV1`, which the standard library defines as equal to v1's `Marshal`. It is the reason production code still names the v1 package.
+
+## Why API responses stay on v1 bytes
+
+Plain v2 would change what responses mean, not only how they look. Measured across the integration tests, `applications[].replicas` would appear as `0` inside specifications and plans, `omittedResources`, `coordinated`, `intervalMinutes`, `timeoutSeconds` and `networks[].internal` would appear with zero values, `PreviewPolicy.note` would disappear when empty, and nil arrays and maps would change from `null` to `[]` or `{}`.
+
+The cause is that responses share Go structs with stored and hashed values, such as `deployment.Plan`, `domain.Specification` and `backup.Policy`, so one `omitempty` tag has to mean one thing. 
+
+Moving responses to plain v2 stays possible later. It would mean retagging scalar and pointer `omitempty` fields as `omitzero`, keeping `omitempty` on slices and maps, and setting `FormatNilSliceAsNull`, `FormatNilMapAsNull`, `Deterministic` and `jsontext.AllowInvalidUTF8`. The one `jsontext.Value` field with `omitempty`, `recoveryContinuation.UpgradeStatus`, needs its own decision, because v1 writes empty and `null` raw values that v2 drops. There are up to 356 tags to review, 190 of them in `api.gen.go` and so changed through the contract, or roughly two or three days of work, and no versioned digest format would be needed. Mirrors of `deployment.Plan`, `domain.Specification` and `backup.Policy` with synthetic values wrote the same bytes this way, but that did not run against the real types or stored data, so the pinned digests would have to confirm it. The only response change left would be that `&`, `<`, `>`, U+2028 and U+2029 stop being escaped, which is the same JSON, so the owner chose not to do it now.
+
+v2 with `OmitEmptyWithLegacySemantics` was also rejected: it still changes nil collections and escaping, still names the v1 package and adds a third format.
 
 ## Why hashed JSON stays on v1 bytes
 

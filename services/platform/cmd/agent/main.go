@@ -153,12 +153,7 @@ func run() error {
 		if err != nil {
 			return err
 		}
-		raw, err := stablejson.MarshalIndent(views, "", "  ")
-		if err != nil {
-			return err
-		}
-		_, err = os.Stdout.Write(append(raw, '\n'))
-		return err
+		return stablejson.EncodeIndent(os.Stdout, views, "", "  ")
 	}
 	if command == "enroll" || command == "transfer" {
 		if e = agent.ValidateOrigin(*origin); e != nil {
