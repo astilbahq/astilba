@@ -244,15 +244,17 @@ server {
 }
 ```
 
-Caddy forwards upgrades and sets no stream limit by default. Use 2.11.8 or later: 2.11.7
-can read the rest of a large request that was refused early as a new request, and answer
-the client's next request on that HTTP/1.1 connection with a 431:
+Caddy forwards upgrades and sets no stream limit by default:
 
 ```caddyfile
 platform.example.com {
     reverse_proxy 127.0.0.1:8080
 }
 ```
+
+Use Caddy 2.11.8 or later. 2.11.7 can read the rest of a large request that was refused
+early as a new request, and answer the client's next request on that HTTP/1.1 connection
+with a 431.
 
 Traefik does too. This is its static configuration, followed by the file it loads:
 

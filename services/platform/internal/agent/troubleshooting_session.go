@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
-	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -30,9 +29,8 @@ const (
 	troubleshootingDockerWait = 30 * time.Second
 	// Well within a ticket's lifetime. Ending a shell normally takes a fraction of a second.
 	troubleshootingPlaceWait = 5 * time.Second
-	// How the shell probe says that /bin/sh runs but /bin/bash does not. It is neither of
-	// the codes for a missing executable, and nothing else in the probe can exit with it.
-	troubleshootingNoBash = 3
+	// Exits with 3, which is neither of the codes for a missing executable, if bash does not run.
+	troubleshootingBashProbe = `/bin/bash -c "exit 0" >/dev/null 2>&1 || exit 3`
 	// Input waiting for a shell that is not reading, about 1 MiB at most. Beyond this the
 	// session ends: dropping some of it could run a different command from the one sent.
 	troubleshootingInputQueue = 32
@@ -304,31 +302,37 @@ func finishTroubleshooting(ctx context.Context, conn *websocket.Conn, frame []by
 
 // findShell returns the shell to run, preferring bash, or "" if the image has neither. A
 // probe runs because starting a missing executable in an attached exec only fails after
-// the stream has been upgraded. /bin/sh is asked about bash, rather than bash being tried
-// and sh started next: Docker can stall an exec that starts just after another failed to,
-// for as long as the caller waits, with the person's input waiting for a shell.
+// the stream has been upgraded. No exec is tried just to see whether it starts, because
+// Docker can stall one that starts just after another failed to, for as long as the caller
+// waits, with the person's input waiting for a shell. So /bin/sh is looked for first, and
+// it is what finds out whether bash runs.
 func (e *Engine) findShell(ctx context.Context, container string) (string, error) {
-	missing, code, err := e.probeShell(ctx, container, []string{"/bin/sh", "-c", `/bin/bash -c "exit 0" >/dev/null 2>&1 || exit ` + strconv.Itoa(troubleshootingNoBash)})
-	if err != nil {
+	_, err := e.Docker.ContainerStatPath(ctx, container, client.ContainerStatPathOptions{Path: "/bin/sh"})
+	if err != nil && !errdefs.IsNotFound(err) {
 		return "", err
 	}
-	if missing {
-		missing, code, err = e.probeShell(ctx, container, []string{"/bin/bash", "-c", "exit 0"})
-		if err != nil || missing {
+	if err == nil {
+		missing, code, err := e.probeShell(ctx, container, []string{"/bin/sh", "-c", troubleshootingBashProbe})
+		switch {
+		case err != nil:
 			return "", err
-		}
-		if code != 0 {
+		case missing: // present but unusable, which leaves bash
+		case code == 0:
+			return "/bin/bash", nil
+		case code == 3:
+			return "/bin/sh", nil
+		default:
 			return "", errors.New("shell probe failed")
 		}
-		return "/bin/bash", nil
 	}
-	switch code {
-	case 0:
-		return "/bin/bash", nil
-	case troubleshootingNoBash:
-		return "/bin/sh", nil
+	missing, code, err := e.probeShell(ctx, container, []string{"/bin/bash", "-c", "exit 0"})
+	if err != nil || missing {
+		return "", err
 	}
-	return "", errors.New("shell probe failed")
+	if code != 0 {
+		return "", errors.New("shell probe failed")
+	}
+	return "/bin/bash", nil
 }
 
 // probeShell runs a command and reports whether its executable is missing, or else its

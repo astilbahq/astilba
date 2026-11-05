@@ -230,7 +230,8 @@ its own limits locally. Initial values:
 
 These are constants, not settings; implementation and measured use can tune
 them. Requests over a limit are refused with an explicit reason rather than
-queued. [Hosting](hosting.md#per-address-limits-at-the-reverse-proxy) asks operators
+queued. The agent's short wait for a session it is still ending is the one delay
+before a refusal. [Hosting](hosting.md#per-address-limits-at-the-reverse-proxy) asks operators
 to limit connections per address at the proxy, which also covers unauthenticated
 requests.
 

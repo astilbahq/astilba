@@ -289,6 +289,20 @@ func TestNativeTroubleshootingStalledInput(t *testing.T) {
 }
 
 // The probe's answer reaches the person when an image has no shell.
+// captureTrail collects what the agent logs for the rest of the test.
+func captureTrail(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	trail := &bytes.Buffer{}
+	previous, writer, flags := slog.Default(), log.Writer(), log.Flags()
+	slog.SetDefault(slog.New(slog.NewTextHandler(trail, nil)))
+	t.Cleanup(func() {
+		slog.SetDefault(previous)
+		log.SetOutput(writer)
+		log.SetFlags(flags)
+	})
+	return trail
+}
+
 // execute runs a command in the fixture's container and waits for it to succeed.
 func (f shellFixture) execute(t *testing.T, command ...string) {
 	t.Helper()
@@ -314,22 +328,16 @@ func (f shellFixture) execute(t *testing.T, command ...string) {
 	}
 }
 
-// Bash is preferred only if it runs. Finding that out must not start a missing executable
-// on an image with /bin/sh: Docker can stall the next exec after one that failed to start.
+// Bash is preferred only if it runs. Finding that out must not start a missing executable:
+// Docker can stall the next exec after one that failed to start.
 func TestNativeTroubleshootingShellChoice(t *testing.T) {
 	f := newShellFixture(t)
-	var trail bytes.Buffer
-	previous, writer, flags := slog.Default(), log.Writer(), log.Flags()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&trail, nil)))
-	defer func() {
-		slog.SetDefault(previous)
-		log.SetOutput(writer)
-		log.SetFlags(flags)
-	}()
+	trail := captureTrail(t)
 	for _, step := range []struct{ name, script, want string }{
 		{"no bash", "true", "/bin/sh"},
 		{"working bash", `printf '#!/bin/sh\nexec /bin/sh "$@"\n' >/bin/bash; chmod +x /bin/bash`, "/bin/bash"},
 		{"unusable bash", `printf '#!/nonexistent\n' >/bin/bash`, "/bin/sh"},
+		{"no sh", `printf '#!/bin/ash\nexec /bin/ash "$@"\n' >/bin/bash; rm /bin/sh`, "/bin/bash"},
 	} {
 		f.execute(t, "/bin/sh", "-c", step.script)
 		got, err := f.client.Engine.findShell(context.Background(), f.id)
@@ -382,14 +390,7 @@ func TestTroubleshootingOfferIsAttemptedOnce(t *testing.T) {
 
 func TestNativeTroubleshootingShellExit(t *testing.T) {
 	f := newShellFixture(t)
-	var trail bytes.Buffer
-	previous, writer, flags := slog.Default(), log.Writer(), log.Flags()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&trail, nil)))
-	defer func() {
-		slog.SetDefault(previous)
-		log.SetOutput(writer)
-		log.SetFlags(flags)
-	}()
+	trail := captureTrail(t)
 	conn, done := f.run(t, f.offer())
 	typeInto(t, conn, "exit 7\n")
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
