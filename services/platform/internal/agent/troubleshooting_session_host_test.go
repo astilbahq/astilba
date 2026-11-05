@@ -351,9 +351,11 @@ func TestNativeTroubleshootingShellChoice(t *testing.T) {
 	if strings.Contains(trail.String(), "did not start") {
 		t.Fatalf("a probe started a missing executable: %s", trail.String())
 	}
+	// Only /bin/sh is tried. Starting bash next could stall, so an image with bash alone is
+	// refused, as one with no shell is.
 	f.execute(t, "/bin/sh", "-c", `printf '#!/bin/ash\nexec /bin/ash "$@"\n' >/bin/bash; rm /bin/sh`)
-	if got, err := shell(); err != nil || got != "/bin/bash" {
-		t.Fatalf("no sh: shell %q err %v, want bash", got, err)
+	if got, err := shell(); err != nil || got != "" {
+		t.Fatalf("no sh: shell %q err %v, want none", got, err)
 	}
 }
 

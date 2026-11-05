@@ -300,35 +300,26 @@ func finishTroubleshooting(ctx context.Context, conn *websocket.Conn, frame []by
 	return terminal.Close(conn, websocket.StatusNormalClosure, "")
 }
 
-// findShell returns the shell to run, preferring bash, or "" if the image has neither. A
-// probe runs because starting a missing executable in an attached exec only fails after
-// the stream has been upgraded. /bin/sh is asked about bash, rather than bash being tried
-// and sh started next: Docker can stall an exec that starts just after another failed to,
-// for as long as the caller waits, with the person's input waiting for a shell. That risk
-// is left only for an image without a usable /bin/sh. Looking for the file first would need
-// the archive API, which has dockerd set up the container's mounts as root on the host.
+// findShell returns the shell to run, preferring bash, or "" if the image has no usable
+// /bin/sh. A probe runs because starting a missing executable in an attached exec only
+// fails after the stream has been upgraded. /bin/sh is asked about bash, rather than bash
+// being tried and sh started next, and nothing starts after /bin/sh fails to: Docker can
+// stall an exec that starts just after another failed to, for as long as the caller waits,
+// with the person's input waiting for a shell. Looking for the file first would need the
+// archive API, which has dockerd set up the container's mounts as root on the host.
 func (e *Engine) findShell(ctx context.Context, container string) (string, error) {
 	missing, code, err := e.probeShell(ctx, container, []string{"/bin/sh", "-c", troubleshootingBashProbe})
-	if err != nil {
+	switch {
+	case err != nil:
 		return "", err
+	case missing:
+		return "", nil
+	case code == 0:
+		return "/bin/bash", nil
+	case code == 3:
+		return "/bin/sh", nil
 	}
-	if !missing {
-		switch code {
-		case 0:
-			return "/bin/bash", nil
-		case 3:
-			return "/bin/sh", nil
-		}
-		return "", errors.New("shell probe failed")
-	}
-	missing, code, err = e.probeShell(ctx, container, []string{"/bin/bash", "-c", "exit 0"})
-	if err != nil || missing {
-		return "", err
-	}
-	if code != 0 {
-		return "", errors.New("shell probe failed")
-	}
-	return "/bin/bash", nil
+	return "", errors.New("shell probe failed")
 }
 
 // probeShell runs a command and reports whether its executable is missing, or else its

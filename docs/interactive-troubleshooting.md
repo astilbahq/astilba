@@ -35,10 +35,11 @@ changed kernel parameters, a mounted Docker socket or any host bind mount other
 than the read-only bundle files the agent places itself. Managed Compose already rejects several of these; the agent checks them
 again for every session. **Decided:** these containers are never eligible.
 
-The session runs the first available shell of `/bin/bash` and `/bin/sh` with a
-TTY, as the container's configured user. Many images run as root inside the
-container; the dashboard says which user the shell will run as. Images without
-a shell (for example distroless) are refused with an explicit reason.
+The session runs `/bin/bash` if `/bin/sh` finds that it runs, and otherwise `/bin/sh`,
+with a TTY, as the container's configured user. Many images run as root inside the
+container; the dashboard says which user the shell will run as. Images without a
+usable `/bin/sh` (for example distroless, or an image with only bash) are refused
+with an explicit reason.
 
 Sessions need runc 1.3.3 or later on the 1.3 branch, or a final 1.x release from
 1.4 onwards. Older branches are refused. These versions include the fixes for the
