@@ -90,8 +90,9 @@ func (s *Service) StartGitHub(ctx context.Context, p store.Principal, ws uuid.UU
 	return map[string]any{"authorizationUrl": s.GitHub.AuthorizeURL(state, verifier)}, nil
 }
 
-// The row lock serializes code exchange and selection. The session nonce survives
-// step-up, but never a new login. Neither public IDs nor an archive can grant access.
+// The row lock serializes a grant's use, and a committed claim its code exchange. The session
+// nonce survives step-up, but never a new login. Neither public IDs nor an archive can grant
+// access.
 func (s *Service) gitHubGrant(ctx context.Context, tx pgx.Tx, p store.Principal, ws, id uuid.UUID, session string) (GitHubAuthorization, githubAuthorizationSecret, error) {
 	v := GitHubAuthorization{ID: id, WorkspaceID: ws}
 	if s.GitHub == nil {
@@ -118,6 +119,10 @@ func (s *Service) lockGitHubAuthorization(ctx context.Context, tx pgx.Tx, p stor
 	}
 	return row, err
 }
+
+// githubExchangeLimit covers a code exchange's two GitHub requests and recording the result.
+const githubExchangeLimit = 45 * time.Second
+
 func (s *Service) CompleteGitHub(ctx context.Context, p store.Principal, session, state, code string) (GitHubAuthorization, error) {
 	var out GitHubAuthorization
 	if s.GitHub == nil || len(state) != 43 || code == "" || len(code) > 1024 {
@@ -128,96 +133,145 @@ func (s *Service) CompleteGitHub(ctx context.Context, p store.Principal, session
 		return out, store.IfMissing(err, domain.Forbidden)
 	}
 	ws, id := authorization.WorkspaceID, authorization.ID
-	// Record a failed exchange even if GitHub consumed the code and the HTTP result
-	// was lost; the browser must start again instead of replaying that external effect.
-	var exchangeErr error
-	err = s.scope(ctx, p, ws, workspaceAccess{Write: true, Owner: true}, "", uuid.Nil, func(tx pgx.Tx) error {
+	access := workspaceAccess{Write: true, Owner: true}
+	// GitHub accepts a code once, so the attempt is recorded as failed, with its verifier
+	// erased, before the code is sent. A lost reply, a crash or a repeated callback then
+	// leaves a failed grant for the browser to start again, never a replayed exchange, and
+	// no lock is held while GitHub answers.
+	var verifier string
+	var finished bool
+	err = s.scope(ctx, p, ws, access, "", uuid.Nil, func(tx pgx.Tx) error {
 		row, e := s.lockGitHubAuthorization(ctx, tx, p, ws, id, session)
 		if e != nil {
 			return e
 		}
-		cipher, status := row.EncryptedAccess, row.Status
-		if status == "ready" {
+		if row.Status == "ready" {
+			finished = true
 			out, _, e = s.gitHubGrant(ctx, tx, p, ws, id, session)
 			return e
 		}
-		if status != "pending" {
+		if row.Status != "pending" {
 			return domain.Conflict
 		}
 		var secret githubAuthorizationSecret
-		if e = s.openIntegration(ws, id, "github-authorization", cipher, &secret); e != nil {
+		if e = s.openIntegration(ws, id, "github-authorization", row.EncryptedAccess, &secret); e != nil {
 			return e
 		}
-		token, user, e := s.GitHub.Exchange(ctx, code, secret.Verifier)
-		if e != nil {
-			exchangeErr = domain.Invalid("githubApp.authorization")
-			secret = githubAuthorizationSecret{}
-			status = "failed"
-		} else {
-			secret = githubAuthorizationSecret{Token: token}
-			status = "ready"
-		}
-		cipher, e = s.sealIntegration(ws, id, "github-authorization", secret)
-		if e != nil {
-			return e
-		}
-		completed, e := db.New(tx).CompleteGitHubAuthorization(ctx, db.CompleteGitHubAuthorizationParams{WorkspaceID: ws, ID: id, EncryptedAccess: cipher, Status: status, GithubUserID: user.ID, GithubLogin: user.Login})
-		out.ID, out.WorkspaceID, out.ExpiresAt = completed.ID, completed.WorkspaceID, completed.ExpiresAt
+		verifier = secret.Verifier
+		_, e = s.recordGitHubExchange(ctx, tx, ws, id, "failed", githubAuthorizationSecret{}, githubapp.User{})
 		return e
 	})
-	if err == nil && exchangeErr != nil {
-		err = exchangeErr
-	}
-	if err == nil {
-		var user db.GitHubAuthorizationUserRow
-		user, err = s.Store.Queries.GitHubAuthorizationUser(ctx, db.GitHubAuthorizationUserParams{WorkspaceID: ws, ID: id})
-		out.User.ID, out.User.Login = user.GithubUserID, user.GithubLogin
+	if err == nil && !finished {
+		// The code is spent from here, so a browser going away must not leave a token GitHub
+		// issued unaccounted for: the exchange finishes, and the token is revoked below.
+		finish, cancel := context.WithTimeout(context.WithoutCancel(ctx), githubExchangeLimit)
+		defer cancel()
+		token, user, e := s.GitHub.Exchange(finish, code, verifier)
+		if e != nil {
+			if token != "" {
+				s.revokeGitHubToken(finish, token)
+			}
+			return out, domain.Invalid("githubApp.authorization")
+		}
+		// The dashboard doesn't send a callback twice, so nobody could collect this grant.
+		if ctx.Err() != nil {
+			s.revokeGitHubToken(finish, token)
+			return out, ctx.Err()
+		}
+		// Only this request can hold the claim, but its caller may have lost their role or
+		// session during the call: the scope re-checks both, and decides if the token is kept.
+		err = s.scope(finish, p, ws, access, "", uuid.Nil, func(tx pgx.Tx) error {
+			if _, e := s.lockGitHubAuthorization(finish, tx, p, ws, id, session); e != nil {
+				return e
+			}
+			out, e = s.recordGitHubExchange(finish, tx, ws, id, "ready", githubAuthorizationSecret{Token: token}, user)
+			return e
+		})
+		if err != nil {
+			s.revokeGitHubToken(finish, token)
+		}
+		out.User = user
 	}
 	return out, err
+}
+func (s *Service) recordGitHubExchange(ctx context.Context, tx pgx.Tx, ws, id uuid.UUID, status string, secret githubAuthorizationSecret, user githubapp.User) (GitHubAuthorization, error) {
+	cipher, e := s.sealIntegration(ws, id, "github-authorization", secret)
+	if e != nil {
+		return GitHubAuthorization{}, e
+	}
+	completed, e := db.New(tx).CompleteGitHubAuthorization(ctx, db.CompleteGitHubAuthorizationParams{WorkspaceID: ws, ID: id, EncryptedAccess: cipher, Status: status, GithubUserID: user.ID, GithubLogin: user.Login})
+	return GitHubAuthorization{ID: completed.ID, WorkspaceID: completed.WorkspaceID, ExpiresAt: completed.ExpiresAt}, e
+}
+
+// revokeGitHubToken is best effort, and outlives a caller who has gone away, because a user
+// token that nothing stores would otherwise stay valid at GitHub.
+func (s *Service) revokeGitHubToken(ctx context.Context, token string) {
+	revokeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
+	defer cancel()
+	_ = s.GitHub.RevokeUser(revokeCtx, token)
+}
+
+// githubGrantToken releases the grant's row before the caller lists anything with its
+// token. A listing writes nothing, so nothing has to be checked again after it.
+func (s *Service) githubGrantToken(ctx context.Context, p store.Principal, ws, id uuid.UUID, session string) (string, error) {
+	var token string
+	err := s.scope(ctx, p, ws, workspaceAccess{Owner: true}, "", uuid.Nil, func(tx pgx.Tx) error {
+		_, secret, e := s.gitHubGrant(ctx, tx, p, ws, id, session)
+		token = secret.Token
+		return e
+	})
+	return token, err
 }
 func (s *Service) GitHubInstallations(ctx context.Context, p store.Principal, ws, id uuid.UUID, session string, page int) ([]githubapp.Installation, error) {
 	if page < 1 || page > 100 {
 		return nil, domain.Invalid("page")
 	}
-	out := []githubapp.Installation{}
-	err := s.scope(ctx, p, ws, workspaceAccess{Owner: true}, "", uuid.Nil, func(tx pgx.Tx) error {
-		_, secret, e := s.gitHubGrant(ctx, tx, p, ws, id, session)
-		if e != nil {
-			return e
-		}
-		values, e := s.GitHub.Installations(ctx, secret.Token, page)
-		if e != nil {
-			return domain.Invalid("githubApp.installations")
-		}
-		out = values
-		return nil
-	})
-	return out, err
+	token, err := s.githubGrantToken(ctx, p, ws, id, session)
+	if err != nil {
+		return []githubapp.Installation{}, err
+	}
+	values, e := s.GitHub.Installations(ctx, token, page)
+	if e != nil {
+		return []githubapp.Installation{}, domain.Invalid("githubApp.installations")
+	}
+	return values, nil
 }
 func (s *Service) GitHubRepositories(ctx context.Context, p store.Principal, ws, id uuid.UUID, session string, installation int64, page int) ([]githubapp.Repository, error) {
 	if installation < 1 || page < 1 || page > 100 {
 		return nil, domain.Invalid("repository")
 	}
-	out := []githubapp.Repository{}
-	err := s.scope(ctx, p, ws, workspaceAccess{Owner: true}, "", uuid.Nil, func(tx pgx.Tx) error {
-		_, secret, e := s.gitHubGrant(ctx, tx, p, ws, id, session)
-		if e != nil {
-			return e
-		}
-		values, e := s.GitHub.Repositories(ctx, secret.Token, installation, page)
-		if e != nil {
-			return domain.Invalid("githubApp.repositories")
-		}
-		out = values
-		return nil
-	})
-	return out, err
+	token, err := s.githubGrantToken(ctx, p, ws, id, session)
+	if err != nil {
+		return []githubapp.Repository{}, err
+	}
+	values, e := s.GitHub.Repositories(ctx, token, installation, page)
+	if e != nil {
+		return []githubapp.Repository{}, domain.Invalid("githubApp.repositories")
+	}
+	return values, nil
 }
 
 type GitHubConnect struct {
 	Name, Repository             string
 	RepositoryID, InstallationID int64
 	ConnectionID                 *uuid.UUID
+}
+
+// githubRepositoryAuthority answers for the user token it was asked with. User-token
+// endpoints intersect the user's repository access and this App's access. Admin authority
+// is required for the explicit workspace delegation.
+func (s *Service) githubRepositoryAuthority(ctx context.Context, token string, in GitHubConnect) (githubapp.Repository, error) {
+	if _, e := s.GitHub.Repositories(ctx, token, in.InstallationID, 1); e != nil {
+		return githubapp.Repository{}, e
+	}
+	repo, e := s.GitHub.UserRepository(ctx, token, in.Repository)
+	if e != nil {
+		return repo, e
+	}
+	if repo.ID != in.RepositoryID || repo.FullName != in.Repository || !repo.Permissions.Admin {
+		return repo, errors.New("repository identity or authority changed")
+	}
+	return repo, s.GitHub.Authority(ctx, in.InstallationID, in.Repository)
 }
 
 func (s *Service) ConnectGitHub(ctx context.Context, p store.Principal, ws, grant uuid.UUID, session string, in GitHubConnect) (ConnectionSummary, error) {
@@ -234,23 +288,24 @@ func (s *Service) ConnectGitHub(ctx context.Context, p store.Principal, ws, gran
 		id = *in.ConnectionID
 	}
 	var consumedToken string
-	e = s.scope(ctx, p, ws, workspaceAccess{Write: true, Owner: true, Recent: true}, "git.github.connect", id, func(tx pgx.Tx) error {
+	var authority *gitAnswer[githubapp.Repository]
+	// The pass that writes re-reads the grant under its lock, so a grant consumed or
+	// invalidated during the calls stops here. A grant keeps one token until it is consumed.
+	connect := func(tx pgx.Tx) error {
 		auth, secret, e := s.gitHubGrant(ctx, tx, p, ws, grant, session)
 		if e != nil {
 			return e
 		}
-		// User-token endpoints intersect the user's repository access and this App's
-		// access. Admin authority is required for the explicit workspace delegation.
-		if _, e = s.GitHub.Repositories(ctx, secret.Token, in.InstallationID, 1); e != nil {
+		if authority == nil {
+			return &providerCall{fetch: func(ctx context.Context) {
+				repo, e := s.githubRepositoryAuthority(ctx, secret.Token, in)
+				authority = &gitAnswer[githubapp.Repository]{Value: repo, Err: e}
+			}}
+		}
+		if authority.Err != nil {
 			return domain.Forbidden
 		}
-		repo, e := s.GitHub.UserRepository(ctx, secret.Token, in.Repository)
-		if e != nil || repo.ID != in.RepositoryID || repo.FullName != in.Repository || !repo.Permissions.Admin {
-			return domain.Forbidden
-		}
-		if e = s.GitHub.Authority(ctx, in.InstallationID, in.Repository); e != nil {
-			return domain.Forbidden
-		}
+		repo := authority.Value
 		c := pipeline.Connection{ID: id, Name: name, Provider: "github", BaseURL: "https://api.github.com", Repository: repo.FullName, RepositoryID: repo.ID, Private: repo.Private}
 		q := db.New(tx)
 		if in.ConnectionID != nil {
@@ -307,11 +362,12 @@ func (s *Service) ConnectGitHub(ctx context.Context, p store.Principal, ws, gran
 		consumedToken = secret.Token
 		out = ConnectionSummary{c, "github_app", "connected"}
 		return nil
+	}
+	e = withProviderCalls(ctx, func() error {
+		return s.scope(ctx, p, ws, workspaceAccess{Write: true, Owner: true, Recent: true}, "git.github.connect", id, connect)
 	})
 	if e == nil && consumedToken != "" {
-		revokeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
-		defer cancel()
-		_ = s.GitHub.RevokeUser(revokeCtx, consumedToken)
+		s.revokeGitHubToken(ctx, consumedToken)
 	}
 	return out, e
 }
@@ -340,14 +396,4 @@ func cancelGitHubWork(ctx context.Context, tx pgx.Tx, ws, id uuid.UUID) error {
 		return e
 	}
 	return q.PauseGitHubBuildTargets(ctx, db.PauseGitHubBuildTargetsParams{WorkspaceID: ws, ConnectionID: id})
-}
-func (s *Service) gitAccess(ctx context.Context, tx pgx.Tx, ws, id uuid.UUID, write bool) (pipeline.Access, error) {
-	st, e := s.loadGitState(ctx, tx, ws, id)
-	if e != nil {
-		return pipeline.Access{}, e
-	}
-	if st.unusable != nil {
-		return pipeline.Access{}, st.unusable
-	}
-	return s.openGitAccess(ctx, ws, id, st, write)
 }

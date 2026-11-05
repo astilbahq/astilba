@@ -145,27 +145,6 @@ func (q *Queries) GitHubAuthorizationByState(ctx context.Context, stateHash []by
 	return i, err
 }
 
-const gitHubAuthorizationUser = `-- name: GitHubAuthorizationUser :one
-SELECT github_user_id::bigint AS github_user_id,github_login FROM github_app_authorizations WHERE workspace_id = $1 AND id = $2
-`
-
-type GitHubAuthorizationUserParams struct {
-	WorkspaceID uuid.UUID `json:"workspace_id"`
-	ID          uuid.UUID `json:"id"`
-}
-
-type GitHubAuthorizationUserRow struct {
-	GithubUserID int64  `json:"github_user_id"`
-	GithubLogin  string `json:"github_login"`
-}
-
-func (q *Queries) GitHubAuthorizationUser(ctx context.Context, arg GitHubAuthorizationUserParams) (GitHubAuthorizationUserRow, error) {
-	row := q.db.QueryRow(ctx, gitHubAuthorizationUser, arg.WorkspaceID, arg.ID)
-	var i GitHubAuthorizationUserRow
-	err := row.Scan(&i.GithubUserID, &i.GithubLogin)
-	return i, err
-}
-
 const insertGitHubAuthorization = `-- name: InsertGitHubAuthorization :exec
 INSERT INTO github_app_authorizations(id,workspace_id,account_id,auth_version,session_hash,state_hash,app_id,encrypted_access,status,expires_at)
 VALUES($1,$2,$3,$4,$5,$6,$7,$8,'pending',now()+interval '10 minutes')

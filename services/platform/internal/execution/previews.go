@@ -223,33 +223,6 @@ func (s *Service) SavePreviewPolicy(ctx context.Context, p store.Principal, ws, 
 	})
 	return out, err
 }
-func (s *Service) previewProvider(ctx context.Context, tx pgx.Tx, ws, id uuid.UUID) (*pipeline.Provider, pipeline.Connection, error) {
-	c, _, err := loadConnection(ctx, tx, ws, id)
-	if err != nil {
-		return nil, c, err
-	}
-	var raw []byte
-	if err = tx.QueryRow(ctx, "SELECT configuration FROM git_connections WHERE workspace_id=$1 AND id=$2", ws, id).Scan(&raw); err != nil {
-		return nil, c, err
-	}
-	access, err := s.gitAccess(ctx, tx, ws, id, false)
-	if err != nil {
-		return nil, c, err
-	}
-	if appConfiguration(raw) {
-		var installation, repo int64
-		if err = tx.QueryRow(ctx, "SELECT installation_id,repository_id FROM github_app_connections WHERE workspace_id=$1 AND connection_id=$2 AND active", ws, id).Scan(&installation, &repo); err != nil {
-			return nil, c, err
-		}
-		token, e := s.GitHub.MintPreview(ctx, installation, repo)
-		if e != nil {
-			return nil, c, e
-		}
-		access.API = pipeline.Credential{Username: "x-access-token", Password: token}
-	}
-	provider, err := pipeline.NewProvider(c, access.API, s.Policy)
-	return provider, c, err
-}
 func (s *Service) previewOwnerAuthority(ctx context.Context, tx pgx.Tx, p previewPolicy) error {
 	var valid bool
 	err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM accounts a JOIN memberships m ON m.account_id=a.id JOIN servers s ON s.workspace_id=m.workspace_id WHERE a.id=$1 AND a.auth_version=$2 AND m.workspace_id=$3 AND m.role='owner' AND s.id=$4 AND s.controller_generation=$5 AND s.preview_only AND s.role='combined' AND NOT s.revoked AND NOT s.awaiting_transfer AND COALESCE((s.capabilities->>'previews')::boolean,false))`, p.Actor, p.AuthVersion, p.Workspace, p.Server, p.Controller).Scan(&valid)

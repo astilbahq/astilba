@@ -312,7 +312,7 @@ func (w *worker) Work(ctx context.Context, job *river.Job[jobArgs]) error {
 	} else if !allowed {
 		return domain.Forbidden
 	}
-	allowed, e := w.service.previewCommandAllowed(ctx, tx, ws, c, false)
+	allowed, e := w.service.previewCommandAllowed(ctx, tx, nil, ws, c)
 	if e != nil {
 		return e
 	}

@@ -104,16 +104,8 @@ func (s *Service) poll(ctx context.Context, a Identity, out *api.AgentPoll) (*ap
 				}
 			}
 			if !cancel {
-				tx, e := s.Store.Pool.Begin(ctx)
-				if e != nil {
-					return nil, e
-				}
 				verify := state == "dispatched" && verified != c.Id
-				allowed, e := s.previewCommandAllowed(ctx, tx, a.Workspace, c, verify)
-				if e == nil && allowed {
-					allowed, e = s.maintenanceEffectAllowed(ctx, tx, a.Workspace, c)
-				}
-				_ = tx.Rollback(ctx)
+				allowed, e := s.commandAllowed(ctx, a.Workspace, c, verify)
 				if e != nil {
 					return nil, e
 				}
@@ -180,6 +172,27 @@ func (s *Service) poll(ctx context.Context, a Identity, out *api.AgentPoll) (*ap
 		case <-tick.C:
 		}
 	}
+}
+
+func (s *Service) commandAllowed(ctx context.Context, ws uuid.UUID, c api.ExecutionCommand, verify bool) (bool, error) {
+	var allowed bool
+	err := s.withGit(ctx, ws, func(git *gitAnswers) error {
+		tx, err := s.Store.Pool.Begin(ctx)
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback(ctx)
+		ask := git
+		if !verify {
+			ask = nil
+		}
+		if allowed, err = s.previewCommandAllowed(ctx, tx, ask, ws, c); err != nil || !allowed {
+			return err
+		}
+		allowed, err = s.maintenanceEffectAllowed(ctx, tx, ws, c)
+		return err
+	})
+	return allowed, err
 }
 
 // PostgreSQL cannot store NUL in text or jsonb, so host output containing one would

@@ -120,14 +120,6 @@ func (s *Service) CreateConnection(ctx context.Context, p store.Principal, ws uu
 	})
 	return c, access.Webhook, err
 }
-func loadConnection(ctx context.Context, tx pgx.Tx, ws, id uuid.UUID) (pipeline.Connection, []byte, error) {
-	var c pipeline.Connection
-	row, err := db.New(tx).GetGitConnection(ctx, db.GetGitConnectionParams{WorkspaceID: ws, ID: id})
-	if err == nil {
-		err = json.Unmarshal(row.Configuration, &c)
-	}
-	return c, row.EncryptedAccess, err
-}
 func (s *Service) Registries(ctx context.Context, p store.Principal, ws uuid.UUID) ([]pipeline.Registry, error) {
 	out := []pipeline.Registry{}
 	err := s.scope(ctx, p, ws, workspaceAccess{}, "", uuid.Nil, func(tx pgx.Tx) error {
