@@ -11,6 +11,8 @@ Burstable occupancy at speed scale 1, us-east-1 single-AZ:
 | tmpfs-idle-0100 | db.m8g.xlarge | 0.07 | 0.0 | holds | 245 |
 | tmpfs-idle-0100 | db.m8gd.large | 0.07 | 0.0 | holds | 144 |
 | tmpfs-idle-0100 | db.m8gd.xlarge | 0.07 | 0.0 | holds | 288 |
+| tmpfs-idle-0100 | db.m6i.large | 0.11 | 0.0 | holds | 130 |
+| tmpfs-idle-0100 | db.m6i.xlarge | 0.11 | 0.0 | holds | 260 |
 | tmpfs-idle-0100 | db.m9g.large | 0.07 | 0.0 | holds | 134 |
 | tmpfs-idle-0500 | db.t4g.micro | 0.25 | 0.2 | balance empty in 103 h, then +$3/mo | 14 |
 | tmpfs-idle-0500 | db.t4g.small | 0.25 | 0.4 | holds, earns credits | 23 |
@@ -21,6 +23,8 @@ Burstable occupancy at speed scale 1, us-east-1 single-AZ:
 | tmpfs-idle-0500 | db.m8g.xlarge | 0.16 | 0.0 | holds | 245 |
 | tmpfs-idle-0500 | db.m8gd.large | 0.16 | 0.0 | holds | 144 |
 | tmpfs-idle-0500 | db.m8gd.xlarge | 0.16 | 0.0 | holds | 288 |
+| tmpfs-idle-0500 | db.m6i.large | 0.25 | 0.0 | holds | 130 |
+| tmpfs-idle-0500 | db.m6i.xlarge | 0.25 | 0.0 | holds | 260 |
 | tmpfs-idle-0500 | db.m9g.large | 0.16 | 0.0 | holds | 134 |
 | tmpfs-idle-1000 | db.t4g.micro | 0.66 | 0.2 | too small | 12 |
 | tmpfs-idle-1000 | db.t4g.small | 0.66 | 0.4 | balance empty in 36 h, then +$14/mo | 38 |
@@ -31,6 +35,8 @@ Burstable occupancy at speed scale 1, us-east-1 single-AZ:
 | tmpfs-idle-1000 | db.m8g.xlarge | 0.43 | 0.0 | holds | 245 |
 | tmpfs-idle-1000 | db.m8gd.large | 0.43 | 0.0 | holds | 144 |
 | tmpfs-idle-1000 | db.m8gd.xlarge | 0.43 | 0.0 | holds | 288 |
+| tmpfs-idle-1000 | db.m6i.large | 0.66 | 0.0 | holds | 130 |
+| tmpfs-idle-1000 | db.m6i.xlarge | 0.66 | 0.0 | holds | 260 |
 | tmpfs-idle-1000 | db.m9g.large | 0.43 | 0.0 | holds | 134 |
 | tmpfs-active-1000 | db.t4g.micro | 2.14 | 0.2 | too small | 12 |
 | tmpfs-active-1000 | db.t4g.small | 2.14 | 0.4 | too small | 23 |
@@ -41,6 +47,8 @@ Burstable occupancy at speed scale 1, us-east-1 single-AZ:
 | tmpfs-active-1000 | db.m8g.xlarge | 1.38 | 0.0 | holds | 245 |
 | tmpfs-active-1000 | db.m8gd.large | 1.38 | 0.0 | too small | 144 |
 | tmpfs-active-1000 | db.m8gd.xlarge | 1.38 | 0.0 | holds | 288 |
+| tmpfs-active-1000 | db.m6i.large | 2.14 | 0.0 | too small | 130 |
+| tmpfs-active-1000 | db.m6i.xlarge | 2.14 | 0.0 | holds | 260 |
 | tmpfs-active-1000 | db.m9g.large | 1.38 | 0.0 | too small | 134 |
 | tmpfs-idle-1500 | db.t4g.micro | 0.61 | 0.2 | too small | 12 |
 | tmpfs-idle-1500 | db.t4g.small | 0.61 | 0.4 | balance empty in 45 h, then +$12/mo | 35 |
@@ -51,6 +59,8 @@ Burstable occupancy at speed scale 1, us-east-1 single-AZ:
 | tmpfs-idle-1500 | db.m8g.xlarge | 0.39 | 0.0 | holds | 245 |
 | tmpfs-idle-1500 | db.m8gd.large | 0.39 | 0.0 | holds | 144 |
 | tmpfs-idle-1500 | db.m8gd.xlarge | 0.39 | 0.0 | holds | 288 |
+| tmpfs-idle-1500 | db.m6i.large | 0.61 | 0.0 | holds | 130 |
+| tmpfs-idle-1500 | db.m6i.xlarge | 0.61 | 0.0 | holds | 260 |
 | tmpfs-idle-1500 | db.m9g.large | 0.39 | 0.0 | holds | 134 |
 | tmpfs-idle-2000 | db.t4g.micro | 0.80 | 0.2 | too small | 12 |
 | tmpfs-idle-2000 | db.t4g.small | 0.80 | 0.4 | too small | 23 |
@@ -61,6 +71,8 @@ Burstable occupancy at speed scale 1, us-east-1 single-AZ:
 | tmpfs-idle-2000 | db.m8g.xlarge | 0.52 | 0.0 | holds | 245 |
 | tmpfs-idle-2000 | db.m8gd.large | 0.52 | 0.0 | holds | 144 |
 | tmpfs-idle-2000 | db.m8gd.xlarge | 0.52 | 0.0 | holds | 288 |
+| tmpfs-idle-2000 | db.m6i.large | 0.80 | 0.0 | holds | 130 |
+| tmpfs-idle-2000 | db.m6i.xlarge | 0.80 | 0.0 | holds | 260 |
 | tmpfs-idle-2000 | db.m9g.large | 0.52 | 0.0 | holds | 134 |
 | tmpfs-idle-2000-no-tick | db.t4g.micro | 0.37 | 0.2 | too small | 12 |
 | tmpfs-idle-2000-no-tick | db.t4g.small | 0.37 | 0.4 | too small | 23 |
@@ -71,6 +83,8 @@ Burstable occupancy at speed scale 1, us-east-1 single-AZ:
 | tmpfs-idle-2000-no-tick | db.m8g.xlarge | 0.24 | 0.0 | holds | 245 |
 | tmpfs-idle-2000-no-tick | db.m8gd.large | 0.24 | 0.0 | holds | 144 |
 | tmpfs-idle-2000-no-tick | db.m8gd.xlarge | 0.24 | 0.0 | holds | 288 |
+| tmpfs-idle-2000-no-tick | db.m6i.large | 0.37 | 0.0 | holds | 130 |
+| tmpfs-idle-2000-no-tick | db.m6i.xlarge | 0.37 | 0.0 | holds | 260 |
 | tmpfs-idle-2000-no-tick | db.m9g.large | 0.24 | 0.0 | holds | 134 |
 
 us-east-1, single-AZ, cheapest class that holds:
@@ -101,25 +115,25 @@ us-east-1, single-AZ, classes AWS lists for PostgreSQL 18:
 
 | Run | Database | DB $ | Storage + backup $ | Fargate | Task $ | ALB + IPv4 $ | Internet out $ | Logs $ | Total $/mo | $/server/mo | If task and DB cross AZs, +$/server/mo |
 | --- | --- | ---: | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| tmpfs-idle-0100 | db.m9g.large (0.07 vCPU; holds) | 134 | 2.3 | 0.25 vCPU / 0.5 GB | 7 | 28 | 2.8 | 2.0 | 176 | 1.758 | 0.063 |
-| tmpfs-idle-0500 | db.m9g.large (0.16 vCPU; holds) | 134 | 2.9 | 1 vCPU / 2 GB | 29 | 30 | 14.1 | 10.1 | 219 | 0.439 | 0.060 |
-| tmpfs-idle-1000 | db.m9g.large (0.43 vCPU; holds) | 134 | 4.3 | 2 vCPU / 4 GB | 58 | 32 | 27.8 | 19.9 | 276 | 0.276 | 0.058 |
-| tmpfs-active-1000 | db.m8gd.xlarge (1.38 vCPU; holds) | 288 | 19.0 | 2 vCPU / 4 GB | 58 | 45 | 154.3 | 44.1 | 609 | 0.609 | 0.112 |
-| tmpfs-idle-1500 | db.m9g.large (0.39 vCPU; holds) | 134 | 6.5 | 2 vCPU / 4 GB | 58 | 35 | 42.5 | 30.3 | 305 | 0.204 | 0.059 |
-| tmpfs-idle-2000 | db.m9g.large (0.52 vCPU; holds) | 134 | 9.2 | 2 vCPU / 4 GB | 58 | 37 | 58.6 | 40.9 | 337 | 0.169 | 0.059 |
-| tmpfs-idle-2000-no-tick | db.m9g.large (0.24 vCPU; holds) | 134 | 9.6 | 1 vCPU / 2 GB | 29 | 37 | 55.5 | 39.8 | 304 | 0.152 | 0.011 |
+| tmpfs-idle-0100 | db.m6i.large (0.11 vCPU; holds) | 130 | 2.3 | 0.25 vCPU / 0.5 GB | 7 | 28 | 2.8 | 2.0 | 172 | 1.722 | 0.063 |
+| tmpfs-idle-0500 | db.m6i.large (0.25 vCPU; holds) | 130 | 2.9 | 1 vCPU / 2 GB | 29 | 30 | 14.1 | 10.1 | 216 | 0.432 | 0.060 |
+| tmpfs-idle-1000 | db.m6i.large (0.66 vCPU; holds) | 130 | 4.3 | 2 vCPU / 4 GB | 58 | 32 | 27.8 | 19.9 | 272 | 0.272 | 0.058 |
+| tmpfs-active-1000 | db.m6i.xlarge (2.14 vCPU; holds) | 260 | 19.0 | 2 vCPU / 4 GB | 58 | 45 | 154.3 | 44.1 | 580 | 0.580 | 0.112 |
+| tmpfs-idle-1500 | db.m6i.large (0.61 vCPU; holds) | 130 | 6.5 | 2 vCPU / 4 GB | 58 | 35 | 42.5 | 30.3 | 302 | 0.201 | 0.059 |
+| tmpfs-idle-2000 | db.m6i.large (0.80 vCPU; holds) | 130 | 9.2 | 2 vCPU / 4 GB | 58 | 37 | 58.6 | 40.9 | 334 | 0.167 | 0.059 |
+| tmpfs-idle-2000-no-tick | db.m6i.large (0.37 vCPU; holds) | 130 | 9.6 | 1 vCPU / 2 GB | 29 | 37 | 55.5 | 39.8 | 301 | 0.150 | 0.011 |
 
 us-east-1, Multi-AZ, classes AWS lists for PostgreSQL 18:
 
 | Run | Database | DB $ | Storage + backup $ | Fargate | Task $ | ALB + IPv4 $ | Internet out $ | Logs $ | Total $/mo | $/server/mo | If task and DB cross AZs, +$/server/mo |
 | --- | --- | ---: | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| tmpfs-idle-0100 | db.m9g.large (0.07 vCPU; holds) | 267 | 4.6 | 0.25 vCPU / 0.5 GB | 7 | 28 | 2.8 | 2.0 | 312 | 3.117 | 0.063 |
-| tmpfs-idle-0500 | db.m9g.large (0.16 vCPU; holds) | 267 | 5.2 | 1 vCPU / 2 GB | 29 | 30 | 14.1 | 10.1 | 355 | 0.711 | 0.060 |
-| tmpfs-idle-1000 | db.m9g.large (0.43 vCPU; holds) | 267 | 6.6 | 2 vCPU / 4 GB | 58 | 32 | 27.8 | 19.9 | 411 | 0.411 | 0.058 |
-| tmpfs-active-1000 | db.m8gd.xlarge (1.38 vCPU; holds) | 577 | 21.3 | 2 vCPU / 4 GB | 58 | 45 | 154.3 | 44.1 | 900 | 0.900 | 0.112 |
-| tmpfs-idle-1500 | db.m9g.large (0.39 vCPU; holds) | 267 | 8.8 | 2 vCPU / 4 GB | 58 | 35 | 42.5 | 30.3 | 441 | 0.294 | 0.059 |
-| tmpfs-idle-2000 | db.m9g.large (0.52 vCPU; holds) | 267 | 11.5 | 2 vCPU / 4 GB | 58 | 37 | 58.6 | 40.9 | 473 | 0.237 | 0.059 |
-| tmpfs-idle-2000-no-tick | db.m9g.large (0.24 vCPU; holds) | 267 | 11.9 | 1 vCPU / 2 GB | 29 | 37 | 55.5 | 39.8 | 440 | 0.220 | 0.011 |
+| tmpfs-idle-0100 | db.m6i.large (0.11 vCPU; holds) | 260 | 4.6 | 0.25 vCPU / 0.5 GB | 7 | 28 | 2.8 | 2.0 | 304 | 3.044 | 0.063 |
+| tmpfs-idle-0500 | db.m6i.large (0.25 vCPU; holds) | 260 | 5.2 | 1 vCPU / 2 GB | 29 | 30 | 14.1 | 10.1 | 348 | 0.696 | 0.060 |
+| tmpfs-idle-1000 | db.m6i.large (0.66 vCPU; holds) | 260 | 6.6 | 2 vCPU / 4 GB | 58 | 32 | 27.8 | 19.9 | 404 | 0.404 | 0.058 |
+| tmpfs-active-1000 | db.m6i.xlarge (2.14 vCPU; holds) | 520 | 21.3 | 2 vCPU / 4 GB | 58 | 45 | 154.3 | 44.1 | 843 | 0.843 | 0.112 |
+| tmpfs-idle-1500 | db.m6i.large (0.61 vCPU; holds) | 260 | 8.8 | 2 vCPU / 4 GB | 58 | 35 | 42.5 | 30.3 | 434 | 0.289 | 0.059 |
+| tmpfs-idle-2000 | db.m6i.large (0.80 vCPU; holds) | 260 | 11.5 | 2 vCPU / 4 GB | 58 | 37 | 58.6 | 40.9 | 466 | 0.233 | 0.059 |
+| tmpfs-idle-2000-no-tick | db.m6i.large (0.37 vCPU; holds) | 260 | 11.9 | 1 vCPU / 2 GB | 29 | 37 | 55.5 | 39.8 | 433 | 0.217 | 0.011 |
 
 eu-west-1, single-AZ, cheapest class that holds:
 
@@ -149,22 +163,22 @@ eu-west-1, single-AZ, classes AWS lists for PostgreSQL 18:
 
 | Run | Database | DB $ | Storage + backup $ | Fargate | Task $ | ALB + IPv4 $ | Internet out $ | Logs $ | Total $/mo | $/server/mo | If task and DB cross AZs, +$/server/mo |
 | --- | --- | ---: | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| tmpfs-idle-0100 | db.m8gd.large (0.07 vCPU; holds) | 166 | 2.5 | 0.25 vCPU / 0.5 GB | 7 | 30 | 2.8 | 2.3 | 211 | 2.111 | 0.063 |
-| tmpfs-idle-0500 | db.m8gd.large (0.16 vCPU; holds) | 166 | 3.1 | 1 vCPU / 2 GB | 29 | 32 | 14.1 | 11.5 | 256 | 0.512 | 0.060 |
-| tmpfs-idle-1000 | db.m8gd.large (0.43 vCPU; holds) | 166 | 4.6 | 2 vCPU / 4 GB | 58 | 34 | 27.8 | 22.5 | 313 | 0.313 | 0.058 |
-| tmpfs-active-1000 | db.m8gd.xlarge (1.38 vCPU; holds) | 333 | 19.2 | 2 vCPU / 4 GB | 58 | 47 | 154.3 | 49.9 | 661 | 0.661 | 0.112 |
-| tmpfs-idle-1500 | db.m8gd.large (0.39 vCPU; holds) | 166 | 6.8 | 2 vCPU / 4 GB | 58 | 37 | 42.5 | 34.3 | 344 | 0.230 | 0.059 |
-| tmpfs-idle-2000 | db.m8gd.large (0.52 vCPU; holds) | 166 | 9.4 | 2 vCPU / 4 GB | 58 | 39 | 58.6 | 46.3 | 378 | 0.189 | 0.059 |
-| tmpfs-idle-2000-no-tick | db.m8gd.large (0.24 vCPU; holds) | 166 | 9.8 | 1 vCPU / 2 GB | 29 | 39 | 55.5 | 45.0 | 345 | 0.172 | 0.011 |
+| tmpfs-idle-0100 | db.m6i.large (0.11 vCPU; holds) | 144 | 2.5 | 0.25 vCPU / 0.5 GB | 7 | 30 | 2.8 | 2.3 | 189 | 1.885 | 0.063 |
+| tmpfs-idle-0500 | db.m6i.large (0.25 vCPU; holds) | 144 | 3.1 | 1 vCPU / 2 GB | 29 | 32 | 14.1 | 11.5 | 233 | 0.466 | 0.060 |
+| tmpfs-idle-1000 | db.m6i.large (0.66 vCPU; holds) | 144 | 4.6 | 2 vCPU / 4 GB | 58 | 34 | 27.8 | 22.5 | 291 | 0.291 | 0.058 |
+| tmpfs-active-1000 | db.m6i.xlarge (2.14 vCPU; holds) | 288 | 19.2 | 2 vCPU / 4 GB | 58 | 47 | 154.3 | 49.9 | 616 | 0.616 | 0.112 |
+| tmpfs-idle-1500 | db.m6i.large (0.61 vCPU; holds) | 144 | 6.8 | 2 vCPU / 4 GB | 58 | 37 | 42.5 | 34.3 | 322 | 0.215 | 0.059 |
+| tmpfs-idle-2000 | db.m6i.large (0.80 vCPU; holds) | 144 | 9.4 | 2 vCPU / 4 GB | 58 | 39 | 58.6 | 46.3 | 355 | 0.178 | 0.059 |
+| tmpfs-idle-2000-no-tick | db.m6i.large (0.37 vCPU; holds) | 144 | 9.8 | 1 vCPU / 2 GB | 29 | 39 | 55.5 | 45.0 | 322 | 0.161 | 0.011 |
 
 eu-west-1, Multi-AZ, classes AWS lists for PostgreSQL 18:
 
 | Run | Database | DB $ | Storage + backup $ | Fargate | Task $ | ALB + IPv4 $ | Internet out $ | Logs $ | Total $/mo | $/server/mo | If task and DB cross AZs, +$/server/mo |
 | --- | --- | ---: | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| tmpfs-idle-0100 | db.m8gd.large (0.07 vCPU; holds) | 333 | 5.1 | 0.25 vCPU / 0.5 GB | 7 | 30 | 2.8 | 2.3 | 380 | 3.801 | 0.063 |
-| tmpfs-idle-0500 | db.m8gd.large (0.16 vCPU; holds) | 333 | 5.6 | 1 vCPU / 2 GB | 29 | 32 | 14.1 | 11.5 | 425 | 0.850 | 0.060 |
-| tmpfs-idle-1000 | db.m8gd.large (0.43 vCPU; holds) | 333 | 7.1 | 2 vCPU / 4 GB | 58 | 34 | 27.8 | 22.5 | 482 | 0.482 | 0.058 |
-| tmpfs-active-1000 | db.m8gd.xlarge (1.38 vCPU; holds) | 666 | 21.8 | 2 vCPU / 4 GB | 58 | 47 | 154.3 | 49.9 | 997 | 0.997 | 0.112 |
-| tmpfs-idle-1500 | db.m8gd.large (0.39 vCPU; holds) | 333 | 9.3 | 2 vCPU / 4 GB | 58 | 37 | 42.5 | 34.3 | 513 | 0.342 | 0.059 |
-| tmpfs-idle-2000 | db.m8gd.large (0.52 vCPU; holds) | 333 | 12.0 | 2 vCPU / 4 GB | 58 | 39 | 58.6 | 46.3 | 547 | 0.273 | 0.059 |
-| tmpfs-idle-2000-no-tick | db.m8gd.large (0.24 vCPU; holds) | 333 | 12.4 | 1 vCPU / 2 GB | 29 | 39 | 55.5 | 45.0 | 514 | 0.257 | 0.011 |
+| tmpfs-idle-0100 | db.m6i.large (0.11 vCPU; holds) | 288 | 5.1 | 0.25 vCPU / 0.5 GB | 7 | 30 | 2.8 | 2.3 | 335 | 3.349 | 0.063 |
+| tmpfs-idle-0500 | db.m6i.large (0.25 vCPU; holds) | 288 | 5.6 | 1 vCPU / 2 GB | 29 | 32 | 14.1 | 11.5 | 380 | 0.759 | 0.060 |
+| tmpfs-idle-1000 | db.m6i.large (0.66 vCPU; holds) | 288 | 7.1 | 2 vCPU / 4 GB | 58 | 34 | 27.8 | 22.5 | 437 | 0.437 | 0.058 |
+| tmpfs-active-1000 | db.m6i.xlarge (2.14 vCPU; holds) | 575 | 21.8 | 2 vCPU / 4 GB | 58 | 47 | 154.3 | 49.9 | 906 | 0.906 | 0.112 |
+| tmpfs-idle-1500 | db.m6i.large (0.61 vCPU; holds) | 288 | 9.3 | 2 vCPU / 4 GB | 58 | 37 | 42.5 | 34.3 | 468 | 0.312 | 0.059 |
+| tmpfs-idle-2000 | db.m6i.large (0.80 vCPU; holds) | 288 | 12.0 | 2 vCPU / 4 GB | 58 | 39 | 58.6 | 46.3 | 502 | 0.251 | 0.059 |
+| tmpfs-idle-2000-no-tick | db.m6i.large (0.37 vCPU; holds) | 288 | 12.4 | 1 vCPU / 2 GB | 29 | 39 | 55.5 | 45.0 | 468 | 0.234 | 0.011 |

@@ -25,7 +25,7 @@ Before the window, each server's own report is copied back over the previous 24 
 | `-slow-db` | A larger `netem` delay, about 0.8 ms round trip. |
 | `sized-` | CPU quotas matching proposed AWS sizes. |
 
-`results/tmpfs-idle-2000-contended.json` is an earlier `tmpfs-idle-2000` on a busy host, kept as evidence of how little margin the pool has. It cannot be repeated by name.
+`tmpfs-idle-2000-contended` in the published tables is an earlier `tmpfs-idle-2000` on a busy host, kept as evidence of how little margin the pool has. It cannot be repeated by name.
 
 ## CPU figures
 
@@ -48,10 +48,10 @@ go run . summary /path/to/new/results/*.json
 ```
 
 ```bash
-go run . cost results/tmpfs-idle-0100.json results/tmpfs-idle-0500.json results/tmpfs-idle-1000.json results/tmpfs-idle-1500.json results/tmpfs-idle-2000.json results/tmpfs-active-1000.json results/tmpfs-idle-2000-no-tick.json
+go run . cost /path/to/new/results/tmpfs-idle-0100.json /path/to/new/results/tmpfs-idle-0500.json /path/to/new/results/tmpfs-idle-1000.json /path/to/new/results/tmpfs-idle-1500.json /path/to/new/results/tmpfs-idle-2000.json /path/to/new/results/tmpfs-active-1000.json /path/to/new/results/tmpfs-idle-2000-no-tick.json
 ```
 
-That is the list behind [results/cost.md](results/cost.md). `run-all.sh` takes run names to repeat one run, skips results that already exist and exits non-zero if any run fails. `--speed-scale` on `cost` tests sensitivity to the CPU conversion. A full `run-all.sh` takes about four hours. Host load comes from the machine running `measure`, so it describes the Docker host only for a local VM. Repeat runs that overlap heavy work on the same machine.
+That is the list behind [results/cost.md](results/cost.md); [results/summary.md](results/summary.md) came from `summary` over all the runs. `measure` writes one JSON per run. Those files are not kept in this repository, so a repeat produces new measurements rather than the published ones. `run-all.sh` takes run names to repeat one run, skips results that already exist and exits non-zero if any run fails. `--speed-scale` on `cost` tests sensitivity to the CPU conversion. A full `run-all.sh` takes about four hours. Host load comes from the machine running `measure`, so it describes the Docker host only for a local VM. Repeat runs that overlap heavy work on the same machine.
 
 The application's database pool has `max(4, NumCPU)` connections and cannot be configured: `pool_max_conns` in the URL breaks the `database/sql` migration check. So `--app-cpuset` is how a run selects the pool size.
 

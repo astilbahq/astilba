@@ -51,11 +51,12 @@ func TestPricedPicksCheapestClassThatHolds(t *testing.T) {
 	if b := priced(load, 1, regions[0], false, false); b.dbClass != "db.t4g.small" {
 		t.Fatalf("class %s", b.dbClass)
 	}
-	// Only classes AWS lists for PostgreSQL 18 are candidates here, and only where priced.
-	if b := priced(load, 1, regions[0], false, true); b.dbClass != "db.m9g.large" {
+	// Only classes AWS lists for PostgreSQL 18 are candidates here.
+	if b := priced(load, 1, regions[1], false, true); b.dbClass != "db.m6i.large" {
 		t.Fatalf("class %s", b.dbClass)
 	}
-	if b := priced(load, 1, regions[1], false, true); b.dbClass != "db.m8gd.large" {
-		t.Fatalf("class %s", b.dbClass)
+	// A class without a price in a region is not offered there.
+	if _, _, status := classMonthly(classNamed(t, "db.m9g.large"), load, 1, regions[1], false); status != "not offered" {
+		t.Fatalf("status %q", status)
 	}
 }

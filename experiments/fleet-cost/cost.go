@@ -52,6 +52,10 @@ var classes = []class{
 	{"db.m8g.xlarge", 4, 16, 0, 0, 2.25, 0.336, 0.672, 0.372, 0.744, false},
 	{"db.m8gd.large", 2, 8, 0, 0, 2.25, 0.1976, 0.3952, 0.228, 0.456, true},
 	{"db.m8gd.xlarge", 4, 16, 0, 0, 2.25, 0.3952, 0.7904, 0.456, 0.912, true},
+	// AWS's table says "All available versions". Its vCPUs are Ice Lake hyperthreads, so they
+	// take the conservative Graviton2 ratio.
+	{"db.m6i.large", 2, 8, 0, 0, 3.5, 0.178, 0.356, 0.197, 0.394, true},
+	{"db.m6i.xlarge", 4, 16, 0, 0, 3.5, 0.356, 0.712, 0.394, 0.788, true},
 	// Graviton5 at Graviton4's ratio for want of a benchmark. The eu-west-1 list has no price.
 	{"db.m9g.large", 2, 8, 0, 0, 2.25, 0.183, 0.366, 0, 0, true},
 }
