@@ -11,14 +11,19 @@ import (
 	"encoding/hex"
 	"encoding/json/v2"
 	"encoding/pem"
+	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -49,11 +54,7 @@ func TestBootstrapOnDisposableHost(t *testing.T) {
 	}
 	run := func(env []string, args ...string) ([]byte, error) {
 		t.Helper()
-		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
-		defer cancel()
-		cmd := exec.CommandContext(ctx, "bash", append([]string{script}, args...)...)
-		cmd.Env = append(os.Environ(), env...)
-		return cmd.CombinedOutput()
+		return runBootstrap(t, env, append([]string{script}, args...)...)
 	}
 	status, e := os.ReadFile("/var/lib/dpkg/status")
 	if e != nil {
@@ -263,4 +264,114 @@ func TestBootstrapOnDisposableHost(t *testing.T) {
 		t.Fatalf("normal-PATH backup capability omitted: %s %v", out, e)
 	}
 
+}
+
+const (
+	bootstrapLimit = 8 * time.Minute
+	// How long output may stay open after the script ends, or its group is killed.
+	bootstrapDrainLimit = 15 * time.Second
+)
+
+// runBootstrap runs the script in its own process group and streams its output to the job
+// log, so a timeout still shows how far it got. A customer's terminal or log pipe waits for
+// whatever holds the script's output, so anything still running once it has ended fails the
+// test, and is named. The pipe is created here for that: only its inode identifies a holder
+// that left the group.
+func runBootstrap(t *testing.T, env []string, args ...string) ([]byte, error) {
+	t.Helper()
+	read, write, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer read.Close()
+	info, err := write.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pipe := fmt.Sprintf("pipe:[%d]", info.Sys().(*syscall.Stat_t).Ino)
+	ctx, cancel := context.WithTimeout(context.Background(), bootstrapLimit)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "bash", args...)
+	cmd.Env = append(os.Environ(), env...)
+	cmd.Stdout, cmd.Stderr = write, write
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		t.Logf("bootstrap passed its %s limit. Processes:\n%s", bootstrapLimit, processTable())
+		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	}
+	started := time.Now()
+	err = cmd.Start()
+	write.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var output bytes.Buffer
+	drained := make(chan struct{})
+	go func() {
+		defer close(drained)
+		_, _ = io.Copy(io.MultiWriter(&output, os.Stdout), read)
+	}()
+	err = cmd.Wait()
+	ended := time.Since(started).Round(time.Second)
+	select {
+	case <-drained:
+	case <-time.After(bootstrapDrainLimit):
+	}
+	left := bootstrapLeftovers(cmd.Process.Pid, pipe)
+	table := ""
+	if len(left) > 0 {
+		table = processTable()
+	}
+	// Normally nothing is left to receive this. It ends the group's own stragglers.
+	if e := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); e != nil && !errors.Is(e, syscall.ESRCH) {
+		t.Error(e)
+	}
+	read.Close()
+	<-drained
+	if len(left) > 0 {
+		t.Fatalf("bootstrap ended after %s (%v) and left running:\n%s\nProcesses:\n%s", ended, err, strings.Join(left, "\n"), table)
+	}
+	if ctx.Err() != nil {
+		t.Fatalf("bootstrap passed its %s limit: %v", bootstrapLimit, err)
+	}
+	return output.Bytes(), err
+}
+
+// bootstrapLeftovers lists processes in the script's group or holding its output.
+func bootstrapLeftovers(group int, pipe string) []string {
+	var left []string
+	entries, _ := os.ReadDir("/proc")
+	for _, entry := range entries {
+		pid, err := strconv.Atoi(entry.Name())
+		if err != nil || pid == os.Getpid() {
+			continue
+		}
+		stat, err := os.ReadFile(filepath.Join("/proc", entry.Name(), "stat"))
+		if err != nil {
+			continue
+		}
+		// The process name in stat can hold spaces, and is followed by: state ppid pgrp.
+		_, after, _ := bytes.Cut(stat, []byte(") "))
+		fields := strings.Fields(string(after))
+		held := false
+		fds, _ := os.ReadDir(filepath.Join("/proc", entry.Name(), "fd"))
+		for _, fd := range fds {
+			target, _ := os.Readlink(filepath.Join("/proc", entry.Name(), "fd", fd.Name()))
+			held = held || target == pipe
+		}
+		if !held && (len(fields) < 3 || fields[2] != strconv.Itoa(group)) {
+			continue
+		}
+		command, _ := os.ReadFile(filepath.Join("/proc", entry.Name(), "cmdline"))
+		left = append(left, fmt.Sprintf("pid %d stat=%s holds-output=%v: %s", pid, strings.Join(fields[:min(3, len(fields))], ","), held, bytes.ReplaceAll(command, []byte{0}, []byte{' '})))
+	}
+	return left
+}
+
+func processTable() string {
+	out, err := exec.Command("ps", "-eo", "pid,ppid,pgid,sid,etimes,stat,wchan:24,args", "--forest").CombinedOutput()
+	if err != nil {
+		return fmt.Sprintf("ps: %v", err)
+	}
+	return string(out)
 }

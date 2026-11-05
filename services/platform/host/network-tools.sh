@@ -16,8 +16,9 @@ fi
 printf '%s\n' 'Managed networking adds pinned WireGuard/nft tools, a persistent private-link restore service and AF_NETLINK permission for the agent. Peers, private addresses, UDP listener and workload grants require separate owner review in the dashboard. Allow the selected UDP listener through your upstream firewall. Existing firewall policies remain in effect.'
 if [[ $1 == --check ]]; then exit 0; fi
 [[ $EUID == 0 ]] || { echo 'Apply requires root.' >&2; exit 1; }
-# Ubuntu's signed package indexes authenticate these exact supported versions.
-apt-get update
+# Ubuntu's signed package indexes authenticate these exact supported versions. An apt source can
+# hang without limit or output, as a mirror list does when its first mirror drops packets.
+timeout --foreground --kill-after=30 300 apt-get update || { echo 'apt-get update failed or did not finish within 5 minutes. Check this host'"'"'s package sources, then run this script again.' >&2; exit 1; }
 DEBIAN_FRONTEND=noninteractive apt-get install --yes --no-remove --no-install-recommends wireguard-tools=1.0.20210914-1ubuntu4 nftables=1.0.9-1ubuntu0.1
 modprobe wireguard
 install -d -m 0700 /var/lib/astilba-agent
