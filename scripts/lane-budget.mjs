@@ -7,6 +7,7 @@ import { pathToFileURL } from "node:url";
 // only the Lane budget workflow reads these times.
 const budgetSeconds = 600;
 const sampledRuns = 5;
+const minimumRuns = 3;
 const api = "https://api.github.com";
 const issueTitle = "Go race lanes are past their time budget";
 
@@ -31,9 +32,9 @@ function median(values) {
     : (sorted[middle - 1] + sorted[middle]) / 2;
 }
 
-// Takes each job a lane ran, with what its log held. A median ignores one slow
-// runner. A successful job without a time means this parser no longer reads the
-// logs, so it must not read as a pass.
+// Takes each job a lane ran, with what its log held. A median of at least three runs
+// ignores one slow runner, and fewer leaves a lane undecided. A successful job without
+// a time means this parser no longer reads the logs, so it must not read as a pass.
 export function laneBudget(jobs, budget = budgetSeconds) {
   const problems = [];
   const samples = new Map();
@@ -58,11 +59,12 @@ export function laneBudget(jobs, budget = budgetSeconds) {
     })
     .toSorted((a, b) => b.seconds - a.seconds);
   for (const { lane, name, seconds, samples: count } of rows)
-    if (seconds > budget)
+    if (count >= minimumRuns && seconds > budget)
       problems.push(
-        `${lane}: ${name} has a median of ${seconds}s over ${count} runs, past the ${budget}s budget. Move a test family to another lane.`,
+        `${lane}: \`${name}\` has a median of ${seconds}s over ${count} runs, past the ${budget}s budget. Move a test family to another lane.`,
       );
-  return { problems, rows };
+  const undecided = rows.some(({ samples: count }) => count < minimumRuns);
+  return { problems, undecided, rows };
 }
 
 function github(token) {
@@ -128,10 +130,18 @@ export async function recentJobs(request, repository) {
 
 // A person hears of a failure through this issue, because a scheduled run's own
 // failure notice goes to whichever account GitHub holds responsible for the schedule.
-// It stays open, once, for as long as the budget is exceeded.
-export async function syncIssue(request, repository, problems, body) {
+// It stays open, once, for as long as the budget is exceeded, and says what is over
+// today. Only this workflow's own issues count, as anyone can open one with this title.
+export async function syncIssue(
+  request,
+  repository,
+  { problems, undecided },
+  body,
+) {
   const issues = await (
-    await request(`/repos/${repository}/issues?state=open&per_page=100`)
+    await request(
+      `/repos/${repository}/issues?state=open&creator=github-actions%5Bbot%5D&per_page=100`,
+    )
   ).json();
   const open = issues.find(({ title }) => title === issueTitle);
   if (problems.length && !open)
@@ -139,7 +149,12 @@ export async function syncIssue(request, repository, problems, body) {
       method: "POST",
       body: { title: issueTitle, body },
     });
-  else if (!problems.length && open)
+  else if (problems.length)
+    await request(`/repos/${repository}/issues/${open.number}`, {
+      method: "PATCH",
+      body: { body },
+    });
+  else if (open && !undecided)
     await request(`/repos/${repository}/issues/${open.number}`, {
       method: "PATCH",
       body: { state: "closed", state_reason: "completed" },
@@ -151,7 +166,9 @@ async function run() {
   if (!token) throw new Error("GITHUB_TOKEN must allow reading Actions");
   const repository = process.env.GITHUB_REPOSITORY ?? "astilbahq/astilba";
   const request = github(token);
-  const { problems, rows } = laneBudget(await recentJobs(request, repository));
+  const { problems, undecided, rows } = laneBudget(
+    await recentJobs(request, repository),
+  );
   const table = [
     "| Lane | Package | Median seconds | Runs |",
     "| --- | --- | --- | --- |",
@@ -169,7 +186,7 @@ async function run() {
     await syncIssue(
       request,
       repository,
-      problems,
+      { problems, undecided },
       [
         ...problems,
         "",
@@ -182,7 +199,11 @@ async function run() {
     );
   }
   if (problems.length) throw new Error(problems.join("\n"));
-  console.log(`Every lane's packages are within ${budgetSeconds}s.`);
+  console.log(
+    undecided
+      ? `No lane with ${minimumRuns} runs is past ${budgetSeconds}s, and some have fewer.`
+      : `Every lane's packages are within ${budgetSeconds}s.`,
+  );
 }
 
 if (

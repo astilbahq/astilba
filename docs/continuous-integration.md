@@ -216,12 +216,14 @@ single run says little about a lane.
 `lane-budget.yml` runs `make check-lane-budget` daily and on demand. It reads the
 last five main runs of the current lanes and fails when a lane's package has a
 median above 600 seconds, listing the times in its job summary. While that lasts it
-keeps one issue open, and closes it when the lanes recover. It is not a required
-check, so runner variance cannot remove a pull request from the queue. When it
-fails, move a test family to another lane, or add a lane by adding a variable, its
-rule and the workflow's matrix. Moving tests between existing lanes takes three main
-runs to show, because earlier runs stay in the sample; adding a lane starts a new
-sample. Locally, `GITHUB_TOKEN` must allow reading Actions, and nothing is opened.
+keeps one issue open with the latest times, and closes it when the lanes recover. It
+is not a required check, so runner variance cannot remove a pull request from the
+queue. When it fails, move a test family to another lane, or add a lane by adding a
+variable, its rule and the workflow's matrix. Moving tests between existing lanes
+takes three main runs to show, because earlier runs stay in the sample; adding a lane
+starts a new sample, and a lane with fewer than three runs neither fails the check nor
+closes the issue. Locally, `GITHUB_TOKEN` must allow reading Actions, and nothing is
+opened.
 
 ## Vulnerability scan
 

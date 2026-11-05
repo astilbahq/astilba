@@ -54,7 +54,15 @@ test("reports a lane whose median is past the budget, with its timed-out runs", 
     600,
   );
   assert.equal(problems.length, 1);
-  assert.match(problems[0], /remaining: pkg has a median of 610s over 3 runs/);
+  assert.match(problems[0], /remaining: `pkg` has a median of 610s over 3 runs/);
+});
+
+test("fewer than three runs of a lane decide nothing", () => {
+  const few = laneBudget([job(1, "new", 900), job(2, "new", 900)], 600);
+  assert.deepEqual(few.problems, []);
+  assert.equal(few.undecided, true);
+  const enough = laneBudget([1, 2, 3].map((run) => job(run, "new", 100)), 600);
+  assert.equal(enough.undecided, false);
 });
 
 test("logs it cannot read fail rather than pass", () => {
@@ -82,26 +90,40 @@ const issueRequests = (issues) => {
     sent,
     request: async (path, { method = "GET", body } = {}) => {
       if (method !== "GET") sent.push({ method, path, ...body });
+      // GitHub answers an unknown creator with an empty list, not an error.
+      else assert.match(path, /[?&]creator=github-actions%5Bbot%5D(&|$)/);
       return { json: async () => issues };
     },
   };
 };
 const title = "Go race lanes are past their time budget";
+const over = { problems: ["over"], undecided: false };
 
-test("opens one issue while over budget and closes it afterwards", async () => {
+test("keeps one current issue open while over budget and closes it afterwards", async () => {
   const none = issueRequests([]);
-  await syncIssue(none.request, "o/r", ["over"], "body");
+  await syncIssue(none.request, "o/r", over, "body");
   assert.deepEqual(none.sent, [
     { method: "POST", path: "/repos/o/r/issues", title, body: "body" },
   ]);
 
   const open = [{ number: 7, title }];
   const still = issueRequests(open);
-  await syncIssue(still.request, "o/r", ["over"], "body");
-  assert.deepEqual(still.sent, []);
+  await syncIssue(still.request, "o/r", over, "today");
+  assert.deepEqual(still.sent, [
+    { method: "PATCH", path: "/repos/o/r/issues/7", body: "today" },
+  ]);
+
+  const unsure = issueRequests(open);
+  await syncIssue(unsure.request, "o/r", { problems: [], undecided: true }, "");
+  assert.deepEqual(unsure.sent, []);
 
   const recovered = issueRequests(open);
-  await syncIssue(recovered.request, "o/r", [], "body");
+  await syncIssue(
+    recovered.request,
+    "o/r",
+    { problems: [], undecided: false },
+    "",
+  );
   assert.deepEqual(recovered.sent, [
     {
       method: "PATCH",
@@ -110,10 +132,6 @@ test("opens one issue while over budget and closes it afterwards", async () => {
       state_reason: "completed",
     },
   ]);
-
-  const quiet = issueRequests([{ number: 8, title: "Another issue" }]);
-  await syncIssue(quiet.request, "o/r", [], "body");
-  assert.deepEqual(quiet.sent, []);
 });
 
 test("samples recent runs of the current lanes in which every lane finished", async () => {
