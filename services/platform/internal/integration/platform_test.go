@@ -364,20 +364,20 @@ func TestCredentialMutationsRejectRevokedRequestSnapshot(t *testing.T) {
 	if e = f.st.Queries.BumpAuthVersion(ctx, f.owner); e != nil {
 		t.Fatal(e)
 	}
+	p := browserPrincipal(t, f.st, old, false)
 	checks := []struct {
 		name string
 		run  func() error
 	}{
 		{"password", func() error {
-			_, e := f.auth.ChangePassword(ctx, f.owner, old.AuthVersion, "replacement password here")
+			_, e := f.auth.ChangePassword(ctx, p, "replacement password here")
 			return e
 		}},
-		{"disable MFA", func() error { _, e := f.auth.DisableMFA(ctx, f.owner, old.AuthVersion); return e }},
-		{"recovery", func() error { _, _, e := f.auth.RegenerateRecovery(ctx, f.owner, old.AuthVersion); return e }},
-		{"enrollment", func() error { _, _, e := f.auth.BeginMFA(ctx, old); return e }},
-		{"confirmation", func() error { _, _, e := f.auth.ConfirmMFA(ctx, f.owner, old.AuthVersion, "123456"); return e }},
+		{"disable MFA", func() error { _, e := f.auth.DisableMFA(ctx, p); return e }},
+		{"recovery", func() error { _, _, e := f.auth.RegenerateRecovery(ctx, p); return e }},
+		{"enrollment", func() error { _, _, e := f.auth.BeginMFA(ctx, p); return e }},
+		{"confirmation", func() error { _, _, e := f.auth.ConfirmMFA(ctx, p, "123456"); return e }},
 		{"invitation", func() error {
-			p := browserPrincipal(t, f.st, old, false)
 			_, e := f.auth.AcceptInvitation(ctx, token, "", "", &p)
 			return e
 		}},

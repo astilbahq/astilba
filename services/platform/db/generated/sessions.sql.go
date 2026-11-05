@@ -24,7 +24,7 @@ type BrowserSessionAdmissionParams struct {
 }
 
 // unscoped: the hashed browser session token is the credential.
-// Revalidates an authenticated session under the workspace write lock.
+// Revalidates an authenticated session under the lock its request waited for.
 // Keep the validity predicate identical to BrowserSessionSnapshotAdmission.
 func (q *Queries) BrowserSessionAdmission(ctx context.Context, arg BrowserSessionAdmissionParams) (uuid.UUID, error) {
 	row := q.db.QueryRow(ctx, browserSessionAdmission, arg.Token, arg.AccountID, arg.AuthVersion)
@@ -102,7 +102,7 @@ func (q *Queries) MoveTroubleshootingBrowserBinding(ctx context.Context, arg Mov
 }
 
 const refreshSession = `-- name: RefreshSession :execrows
-UPDATE sessions SET data = $1,expiry = $2 WHERE token = $3
+UPDATE sessions SET data = $1,expiry = $2 WHERE token = $3 AND expiry > clock_timestamp()
 `
 
 type RefreshSessionParams struct {
@@ -113,7 +113,7 @@ type RefreshSessionParams struct {
 
 // unscoped: the hashed browser session token is the credential.
 // UPDATE serializes with logout, renewal or expiry cleanup and never recreates
-// a deleted token.
+// a deleted token. A session that expired while its request ran stays expired.
 func (q *Queries) RefreshSession(ctx context.Context, arg RefreshSessionParams) (int64, error) {
 	result, err := q.db.Exec(ctx, refreshSession, arg.Data, arg.Expiry, arg.Token)
 	if err != nil {

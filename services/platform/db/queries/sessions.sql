@@ -1,8 +1,8 @@
 -- name: RefreshSession :execrows
 -- unscoped: the hashed browser session token is the credential.
 -- UPDATE serializes with logout, renewal or expiry cleanup and never recreates
--- a deleted token.
-UPDATE sessions SET data = @data,expiry = @expiry WHERE token = @token;
+-- a deleted token. A session that expired while its request ran stays expired.
+UPDATE sessions SET data = @data,expiry = @expiry WHERE token = @token AND expiry > clock_timestamp();
 
 -- name: InsertSession :exec
 -- unscoped: the hashed browser session token is the credential.
@@ -19,7 +19,7 @@ WHERE browser_session_hash = @previous AND state <> 'closed';
 
 -- name: BrowserSessionAdmission :one
 -- unscoped: the hashed browser session token is the credential.
--- Revalidates an authenticated session under the workspace write lock.
+-- Revalidates an authenticated session under the lock its request waited for.
 -- Keep the validity predicate identical to BrowserSessionSnapshotAdmission.
 SELECT a.id FROM accounts a JOIN sessions s ON s.token = @token AND s.expiry > clock_timestamp()
 WHERE a.id = @account_id AND a.auth_version = @auth_version;
