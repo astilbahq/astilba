@@ -237,14 +237,11 @@ func (w *githubReconcileWorker) Work(ctx context.Context, job *river.Job[githubR
 	if !githubapp.Revoked(e) {
 		return e
 	}
-	tx, e := s.Store.Pool.Begin(ctx)
+	tx, done, e := s.Store.BeginWorkspaceWrite(ctx, a.Workspace)
 	if e != nil {
 		return e
 	}
-	defer tx.Rollback(ctx)
-	if _, e = tx.Exec(ctx, "SELECT id FROM workspaces WHERE id=$1 FOR UPDATE", a.Workspace); e != nil {
-		return e
-	}
+	defer done()
 	var current bool
 	if e = tx.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM github_app_connections WHERE workspace_id=$1 AND connection_id=$2 AND generation=$3 AND active)", a.Workspace, a.Connection, a.Generation).Scan(&current); e != nil {
 		return e

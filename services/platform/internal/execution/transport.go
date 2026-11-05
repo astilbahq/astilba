@@ -196,15 +196,19 @@ func (s *Service) Report(ctx context.Context, a Identity, r api.AgentReport) err
 	for _, payload := range []*json.RawMessage{r.Pipeline, r.Observation, r.Crosshost, r.Upgrade, r.Network} {
 		replaceEscapedNUL(payload)
 	}
-	tx, err := s.Store.Pool.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback(ctx)
+	var tx pgx.Tx
+	var err error
 	if r.Network != nil {
-		if _, err = tx.Exec(ctx, `SELECT id FROM workspaces WHERE id=$1 FOR UPDATE`, a.Workspace); err != nil {
+		var done func()
+		if tx, done, err = s.Store.BeginWorkspaceWrite(ctx, a.Workspace); err != nil {
 			return err
 		}
+		defer done()
+	} else {
+		if tx, err = s.Store.Pool.Begin(ctx); err != nil {
+			return err
+		}
+		defer tx.Rollback(ctx)
 	}
 	// Lock identity before operation, matching operator admission. Revocation cannot race acceptance.
 	valid, err := lockAgentCredential(ctx, tx, a)

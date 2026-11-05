@@ -46,13 +46,13 @@ func (s *Service) NotifyExpiring(ctx context.Context, mail *mailer.Mailer) error
 	return nil
 }
 func (s *Service) notifyWorkspace(ctx context.Context, mail *mailer.Mailer, id uuid.UUID) error {
-	tx, e := s.Store.Pool.Begin(ctx)
+	tx, done, e := s.Store.BeginWorkspaceWrite(ctx, id)
 	if e != nil {
 		return e
 	}
-	defer tx.Rollback(ctx)
+	defer done()
 	var name string
-	if e = tx.QueryRow(ctx, "SELECT name FROM workspaces WHERE id=$1 FOR UPDATE", id).Scan(&name); e != nil {
+	if e = tx.QueryRow(ctx, "SELECT name FROM workspaces WHERE id=$1", id).Scan(&name); e != nil {
 		return e
 	}
 	var until time.Time

@@ -112,11 +112,6 @@ func (s *Service) RefreshTroubleshootingBrowser(ctx context.Context, ws, id uuid
 // its reason and audit event, and gains the byte counts only.
 func (s *Service) EndTroubleshootingSession(ctx context.Context, ws, id uuid.UUID, reason string, input, output int64) error {
 	return s.Store.Transaction(ctx, func(q *db.Queries) error {
-		// The workspace comes first, as in every workspace operation: the audit event below
-		// needs a key lock on it, and holding the session row meanwhile can deadlock.
-		if _, err := q.LockWorkspaceByID(ctx, ws); err != nil {
-			return err
-		}
 		row, err := q.GetTroubleshootingSessionForEnd(ctx, db.GetTroubleshootingSessionForEndParams{WorkspaceID: ws, ID: id})
 		if err != nil {
 			return err

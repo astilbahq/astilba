@@ -2,9 +2,11 @@ package integration
 
 import (
 	"context"
+	"slices"
 	"testing"
 	"time"
 
+	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/terminal"
 	"github.com/google/uuid"
@@ -32,28 +34,49 @@ func TestTroubleshootingSweepClosesOnlyAbandonedOffers(t *testing.T) {
 	}
 }
 
-// An owner acting on a session while it ends on its own does not deadlock with it.
-func TestTroubleshootingEndTakesTheWorkspaceFirst(t *testing.T) {
+// A workspace whose lock is held waits for a later sweep. Waiting for it would keep every
+// other due workspace locked until its holder finished.
+func TestTroubleshootingSweepSkipsAHeldWorkspace(t *testing.T) {
 	x := relayFixture(t)
-	ctx := context.Background()
-	opened, agent, browser := x.connected(t, x.owner, 1)
-	owner, err := x.f.st.Pool.Begin(ctx)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	x.open(t, x.owner, x.app, 1, 201)
+	if _, err := x.f.st.Pool.Exec(ctx, "UPDATE troubleshooting_sessions SET ticket_expires_at=now()-interval '1 second' WHERE workspace_id=$1", x.ws); err != nil {
+		t.Fatal(err)
+	}
+	holder, err := x.f.st.Pool.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer owner.Rollback(ctx)
-	if _, err = owner.Exec(ctx, "SELECT id FROM workspaces WHERE id=$1 FOR UPDATE", x.ws); err != nil {
+	defer holder.Rollback(context.Background())
+	if _, err = db.New(holder).LockWorkspaceByID(ctx, x.ws); err != nil {
+		t.Fatal(err)
+	}
+	due, err := x.f.st.Queries.LockTroubleshootingSweepWorkspaces(ctx)
+	if err != nil {
+		t.Fatal("the sweep waited for a held workspace: ", err)
+	}
+	if slices.Contains(due, x.ws) {
+		t.Fatal("the sweep locked a held workspace")
+	}
+}
+
+// Recording how a stream ended has a short budget, so it does not wait behind a long
+// workspace lock such as an export, and cannot deadlock with an owner closing the session.
+func TestTroubleshootingEndDoesNotWaitForTheWorkspace(t *testing.T) {
+	x := relayFixture(t)
+	ctx := context.Background()
+	opened, agent, browser := x.connected(t, x.owner, 1)
+	holder, err := x.f.st.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer holder.Rollback(ctx)
+	if _, err = db.New(holder).LockWorkspaceByID(ctx, x.ws); err != nil {
 		t.Fatal(err)
 	}
 	agent.send(t, []byte{terminal.Exit})
 	browser.drained(t)
-	time.Sleep(time.Second) // the end is now waiting for the workspace
-	if _, err = owner.Exec(ctx, "SELECT id FROM troubleshooting_sessions WHERE id=$1 FOR UPDATE", opened.Session.Id); err != nil {
-		t.Fatal("the session row was held while waiting for the workspace", err)
-	}
-	if err = owner.Commit(ctx); err != nil {
-		t.Fatal(err)
-	}
 	x.waitClosed(t, opened.Session.Id, "shell exited")
 }
 

@@ -138,29 +138,26 @@ func loadPreview(ctx context.Context, tx pgx.Tx, id uuid.UUID) (previewRecord, e
 func (w *previewWorker) Work(ctx context.Context, job *river.Job[previewArgs]) error {
 	s := w.service
 	a := job.Args
-	tx, err := s.Store.Pool.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback(ctx)
 	var policyID, ws uuid.UUID
 	if a.Request != uuid.Nil {
-		if err = tx.QueryRow(ctx, "SELECT policy_id,workspace_id FROM preview_requests WHERE id=$1", a.Request).Scan(&policyID, &ws); errors.Is(err, pgx.ErrNoRows) {
+		if err := s.Store.Pool.QueryRow(ctx, "SELECT policy_id,workspace_id FROM preview_requests WHERE id=$1", a.Request).Scan(&policyID, &ws); errors.Is(err, pgx.ErrNoRows) {
 			return nil
 		} else if err != nil {
 			return err
 		}
 	} else {
 		policyID = a.Policy
-		if err = tx.QueryRow(ctx, "SELECT workspace_id FROM preview_policies WHERE id=$1", policyID).Scan(&ws); errors.Is(err, pgx.ErrNoRows) {
+		if err := s.Store.Pool.QueryRow(ctx, "SELECT workspace_id FROM preview_policies WHERE id=$1", policyID).Scan(&ws); errors.Is(err, pgx.ErrNoRows) {
 			return nil
 		} else if err != nil {
 			return err
 		}
 	}
-	if _, err = tx.Exec(ctx, "SELECT id FROM workspaces WHERE id=$1 FOR UPDATE", ws); err != nil {
+	tx, done, err := s.Store.BeginWorkspaceWrite(ctx, ws)
+	if err != nil {
 		return err
 	}
+	defer done()
 	policy, err := scanPreviewPolicy(tx.QueryRow(ctx, "SELECT "+previewPolicyColumns+" FROM preview_policies WHERE id=$1 AND workspace_id=$2", policyID, ws))
 	if err != nil {
 		return err
