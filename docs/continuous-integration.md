@@ -15,7 +15,7 @@ check is a final `always()` gate, so it is reported on every run.
 | `git-providers.yml`        | Git provider verification        | GitLab/Gitea and source-preserving Compose edits                                                                                  |
 | `ci.yml`                   | Native verification              | Selected amd64 and arm64 host suites: fresh bootstrap, Docker, builds, PostgreSQL restore, systemd agent, deployment and recovery |
 | `canvas.yml`               | Canvas browser verification      | Type/lint/build, domain tests and Chromium/WebKit journeys                                                                        |
-| `application.yml`          | Application verification         | `make verify-app-build` and three parallel Go race lanes, image smoke test, corresponding-source archive and selected vulnerability scan                             |
+| `application.yml`          | Application verification         | `make verify-app-build` and four parallel Go race lanes, image smoke test, corresponding-source archive and selected vulnerability scan                             |
 | `application-browsers.yml` | Application browser verification | Every Chromium/WebKit dashboard journey against a real API/PostgreSQL fixture                                                     |
 | `workshop.yml`             | Workshop verification            | Standalone Storybook scenarios and accessibility audits in both browsers                                                          |
 
@@ -186,20 +186,33 @@ bootstraps. Native verification remains the required check.
 
 ## Application Go verification
 
-Application verification runs four jobs in parallel: `make verify-app-build`
+Application verification runs five jobs in parallel: `make verify-app-build`
 (application checks, agent/CLI and dashboard builds and packaging, followed by
-the image smoke test and source archive) and three Go race lanes for the
-cross-host pair, preview checkpoint recovery and all remaining Go tests.
-Anchored selections in the Makefile partition every test between the lanes.
+the image smoke test and source archive) and four Go race lanes: `crosshost` for
+the cross-host pair, `preview` for preview checkpoint recovery, `operations` for
+tests named by `APP_OPERATIONS_TESTS` and `remaining` for everything else.
 Each retains race detection, uncached execution and a fifteen-minute process
 timeout, and any failure fails the Application verification gate. Locally,
-`make verify-app-core` runs the build target and then the three lanes
-concurrently.
+`make verify-app-core` runs the build target and then the lanes concurrently.
 
 Each integration process owns a separate disposable PostgreSQL container, and
 each test creates its own database and temporary resources. Preview recovery has
 a separate process budget from the cross-host pair; both are isolated from the
 remaining tests.
+
+The Makefile selects tests by name. `-run` reaches only the packages on its own
+command line, while `remaining` applies its `-skip` to every package, so a name
+it skips must be selected in that package too; `operations` runs against `./...`
+for that reason. `make check-ci` runs `scripts/app-lanes.mjs`, which fails when a
+test in the platform module is selected by no lane or by more than one, when a
+selection matches no test, or when `verify-app-core` and the workflow's matrix
+differ from the lanes. A new test lands in `remaining`, or in `operations` if its
+name has one of that lane's prefixes.
+
+The lanes run `go test -v`, so the job log has each test's time, in `--- PASS`
+lines. One commit's package time has differed by 28% between hosted runners, so
+compare several runs, and move a test family to another lane when a lane's package
+time passes about 600 seconds.
 
 ## Vulnerability scan
 
