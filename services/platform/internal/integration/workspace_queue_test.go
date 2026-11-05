@@ -54,9 +54,11 @@ func TestWorkspaceLockWaitersLeaveThePoolServing(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	principal := browserPrincipal(t, f.st, account, false)
+	invited := browserPrincipal(t, f.st, removed, false)
 	held, release, exported := make(chan struct{}), make(chan struct{}), make(chan error, 1)
 	go func() {
-		exported <- f.st.InWorkspaceSnapshot(ctx, store.Principal{Account: account, Recent: true}, ws, func(pgx.Tx, *db.Queries, store.Workspace) error {
+		exported <- f.st.InWorkspaceSnapshot(ctx, principal, ws, func(pgx.Tx, *db.Queries, store.Workspace) error {
 			close(held)
 			<-release
 			return nil
@@ -136,7 +138,7 @@ func TestWorkspaceLockWaitersLeaveThePoolServing(t *testing.T) {
 			finished <- struct{}{}
 		}()
 		go func() {
-			_, _ = f.auth.AcceptInvitation(ctx, invitation, "", "", &removed)
+			_, _ = f.auth.AcceptInvitation(ctx, invitation, "", "", &invited)
 			finished <- struct{}{}
 		}()
 	}

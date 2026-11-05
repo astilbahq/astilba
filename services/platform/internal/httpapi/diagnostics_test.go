@@ -33,7 +33,7 @@ func TestFailureDiagnosticsExcludeRequestAndErrorContents(t *testing.T) {
 		{name: "unknown", category: "internal", err: errors.New(diagnosticCanary)},
 		{name: "canceled", category: "context_canceled", err: fmt.Errorf("%s: %w", diagnosticCanary, context.Canceled)},
 		{name: "deadline", category: "context_deadline_exceeded", err: fmt.Errorf("%s: %w", diagnosticCanary, context.DeadlineExceeded)},
-		{name: "database", category: "database", sqlstate: "40001", err: fmt.Errorf("%s: %w", diagnosticCanary, &pgconn.PgError{Code: "40001", Message: diagnosticCanary, Detail: diagnosticCanary, Hint: diagnosticCanary, InternalQuery: diagnosticCanary, TableName: diagnosticCanary})},
+		{name: "database", category: "database", sqlstate: "40P01", err: fmt.Errorf("%s: %w", diagnosticCanary, &pgconn.PgError{Code: "40P01", Message: diagnosticCanary, Detail: diagnosticCanary, Hint: diagnosticCanary, InternalQuery: diagnosticCanary, TableName: diagnosticCanary})},
 		{name: "invalid database code", category: "database", err: &pgconn.PgError{Code: diagnosticCanary, Message: diagnosticCanary}},
 		{name: "network timeout", category: "network_timeout", err: &url.Error{Op: "Get", URL: diagnosticCanary, Err: &net.DNSError{Err: diagnosticCanary, Name: diagnosticCanary, IsTimeout: true}}},
 		{name: "network failure", category: "network", err: &net.DNSError{Err: diagnosticCanary, Name: diagnosticCanary}},

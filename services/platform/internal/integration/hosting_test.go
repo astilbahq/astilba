@@ -43,7 +43,7 @@ func hostedFixture(t *testing.T) (*fixture, store.Principal, uuid.UUID) {
 	if _, e = f.st.Pool.Exec(ctx, "INSERT INTO hosted_subscriptions(workspace_id,server_limit) VALUES($1,2)", ws); e != nil {
 		t.Fatal(e)
 	}
-	return f, store.Principal{Account: a, MFA: true, Recent: true}, ws
+	return f, browserPrincipal(t, f.st, a, true), ws
 }
 func TestHostedSignupRequiresOneUseWorkspaceAdmission(t *testing.T) {
 	f := setupBootstrap(t, false)

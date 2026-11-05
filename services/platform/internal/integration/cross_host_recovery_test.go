@@ -22,7 +22,6 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/hostnetwork"
 	"github.com/astilbahq/astilba/services/platform/internal/portability"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
-	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
 	"github.com/moby/moby/client"
 )
@@ -1004,7 +1003,7 @@ func TestNativeCrossHostOlderBackupRecovery(t *testing.T) {
 			if !participant {
 				continue
 			}
-			ticket, err := current.PrepareTransfer(ctx, store.Principal{Account: account, Recent: true, MFA: true}, ws, enrollments[i].ServerId)
+			ticket, err := current.PrepareTransfer(ctx, browserPrincipal(t, current.Store, account, true), ws, enrollments[i].ServerId)
 			if err != nil {
 				t.Fatal("transfer ticket", err)
 			}

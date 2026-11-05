@@ -24,7 +24,6 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/execution"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
-	"github.com/astilbahq/astilba/services/platform/internal/store"
 
 	"github.com/google/uuid"
 	"github.com/moby/moby/api/types/container"
@@ -440,9 +439,10 @@ func TestOperationAdmissionRollbackAndIsolation(t *testing.T) {
 	}
 	results := make(chan error, 2)
 	var wg sync.WaitGroup
+	principal := browserPrincipal(t, f.st, account, false)
 	for i := 0; i < 2; i++ {
 		wg.Go(func() {
-			_, e := f.execution.Apply(context.Background(), store.Principal{Account: account, Recent: true}, ws, plan.Id, uuid.New())
+			_, e := f.execution.Apply(context.Background(), principal, ws, plan.Id, uuid.New())
 			results <- e
 		})
 	}

@@ -62,7 +62,7 @@ func (s *Service) SaveTroubleshootingPolicy(ctx context.Context, p store.Princip
 			return domain.Conflict
 		}
 		widened := in.Enabled && (!old.Enabled || old.OwnersOnly && !in.OwnersOnly)
-		if widened && !p.Recent {
+		if widened && !p.Recent() {
 			return domain.RecentRequired
 		}
 		next := old.Generation + 1

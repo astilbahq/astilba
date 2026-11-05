@@ -22,6 +22,7 @@ import (
 	"time"
 
 	dbmigrate "github.com/astilbahq/astilba/services/platform/db"
+	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/auth"
 	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
@@ -251,6 +252,21 @@ type browser struct {
 	f      *fixture
 	client *http.Client
 	csrf   string
+}
+
+// browserPrincipal is a recently authenticated browser session of account, for a test that
+// drives a service without going through HTTP.
+func browserPrincipal(t *testing.T, st *store.Store, account db.Account, mfa bool) store.Principal {
+	t.Helper()
+	token, err := cryptobox.Token()
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	if err = st.Queries.InsertSession(context.Background(), db.InsertSessionParams{Token: token, Data: []byte{}, Expiry: now.Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	return store.Principal{Account: account, MFA: mfa, RecentUntil: now.Add(time.Hour), SessionHash: token}
 }
 
 func (f *fixture) browser(t *testing.T) *browser {

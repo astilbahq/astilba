@@ -301,11 +301,11 @@ func (s *Service) ApplyVisualPlan(ctx context.Context, p store.Principal, ws, pi
 			if role != "owner" {
 				return domain.Forbidden
 			}
-			if !p.Recent {
+			if !p.Recent() {
 				return domain.RecentRequired
 			}
 		}
-		out, err = s.applyVisualPlan(ctx, tx, ws, pid, env, id, key, role == "owner" && p.Recent)
+		out, err = s.applyVisualPlan(ctx, tx, ws, pid, env, id, key, role == "owner" && p.Recent())
 		return err
 	})
 	return out, err

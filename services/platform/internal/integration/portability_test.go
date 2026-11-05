@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json/v2"
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -13,6 +14,7 @@ import (
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
+	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
 	"github.com/astilbahq/astilba/services/platform/internal/portability"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
@@ -129,7 +131,7 @@ func TestEncryptedWorkspaceExportPreservesIdentityWithoutInstallationKeys(t *tes
 	if e != nil {
 		t.Fatal(e)
 	}
-	if e = destination.execution.SourcePolicy(context.Background(), store.Principal{Account: account, Recent: true}, ws, project.Id, env.Id, true); e != nil {
+	if e = destination.execution.SourcePolicy(context.Background(), browserPrincipal(t, destination.st, account, false), ws, project.Id, env.Id, true); e != nil {
 		t.Fatal(e)
 	}
 	if e = destination.st.Pool.QueryRow(context.Background(), "SELECT status FROM git_sources WHERE workspace_id=$1 AND environment_id=$2", ws, env.Id).Scan(&status); e != nil || status != "ready" {
@@ -176,8 +178,9 @@ func TestWorkspaceExportRejectsConcurrentOwnerRemoval(t *testing.T) {
 		t.Fatal(e)
 	}
 	done := make(chan error, 1)
+	principal := browserPrincipal(t, f.st, a, false)
 	go func() {
-		_, e := (&portability.Service{Store: f.st}).Export(ctx, store.Principal{Account: a, Recent: true}, ws, "unique archive passphrase for fixture")
+		_, e := (&portability.Service{Store: f.st}).Export(ctx, principal, ws, "unique archive passphrase for fixture")
 		done <- e
 	}()
 	// Observe the actual lock wait so the test proves the revocation/export
@@ -196,8 +199,8 @@ func TestWorkspaceExportRejectsConcurrentOwnerRemoval(t *testing.T) {
 	if e = removing.Commit(ctx); e != nil {
 		t.Fatal(e)
 	}
-	if e = <-done; e == nil {
-		t.Fatal("removed owner exported a stale permission snapshot")
+	if e = <-done; !errors.Is(e, domain.Conflict) {
+		t.Fatal("removed owner's export was not refused as a conflict: ", e)
 	}
 }
 
@@ -215,7 +218,7 @@ func TestManagementRecoveryFencesQueuedCommandsBeforeAgentReconnect(t *testing.T
 	if e != nil {
 		t.Fatal(e)
 	}
-	principal := store.Principal{Account: account, Recent: true}
+	principal := browserPrincipal(t, f.st, account, false)
 	plan, e := f.execution.Plan(context.Background(), principal, ws, api.PlanRequest{ServerId: enrolled.Server.Id, EnvironmentId: env, Action: "inspect"})
 	if e != nil {
 		t.Fatal(e)
@@ -288,7 +291,7 @@ func TestPrePreviewWorkspaceArchiveRemainsImportable(t *testing.T) {
 		t.Fatal(err)
 	}
 	service := portability.Service{Store: f.st}
-	imported, err := service.Import(ctx, store.Principal{Account: owner, Recent: true, MFA: true}, "legacy archive passphrase", envelope, "")
+	imported, err := service.Import(ctx, browserPrincipal(t, f.st, owner, true), "legacy archive passphrase", envelope, "")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -21,7 +21,6 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
 	"github.com/astilbahq/astilba/services/platform/internal/portability"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
-	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
 )
 
@@ -360,7 +359,7 @@ func previewIsolationJourney(t *testing.T, transfer, recoverCleanup bool) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		archive, err := (&portability.Service{Store: f.st}).Export(ctx, store.Principal{Account: account, Recent: true, MFA: true}, ws, "preview transfer passphrase")
+		archive, err := (&portability.Service{Store: f.st}).Export(ctx, browserPrincipal(t, f.st, account, true), ws, "preview transfer passphrase")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -369,7 +368,7 @@ func previewIsolationJourney(t *testing.T, transfer, recoverCleanup bool) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err = (&portability.Service{Store: destination.st}).Import(ctx, store.Principal{Account: importer, Recent: true, MFA: true}, "preview transfer passphrase", archive, ""); err != nil {
+		if _, err = (&portability.Service{Store: destination.st}).Import(ctx, browserPrincipal(t, destination.st, importer, true), "preview transfer passphrase", archive, ""); err != nil {
 			t.Fatal(err)
 		}
 		var purpose string

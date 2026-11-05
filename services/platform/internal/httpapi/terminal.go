@@ -476,7 +476,7 @@ func (s *Server) browserPrincipal(ctx context.Context) (*store.Principal, error)
 	if a.AuthVersion != s.Sessions.GetInt64(ctx, "version") {
 		return nil, domain.Unauthenticated
 	}
-	return &store.Principal{Account: a, MFA: s.Sessions.GetBool(ctx, "mfa"), Recent: store.Recent(s.Sessions.GetTime(ctx, "recent"), s.Auth.Now())}, nil
+	return s.sessionPrincipal(ctx, a), nil
 }
 
 func (s *Server) terminalAvailable(next http.Handler) http.Handler {
