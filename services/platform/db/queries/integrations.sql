@@ -13,6 +13,19 @@ VALUES(@id,@workspace_id,@configuration,@encrypted_access);
 -- name: GetGitConnection :one
 SELECT configuration,encrypted_access FROM git_connections WHERE workspace_id = @workspace_id AND id = @id;
 
+-- name: RecordGitBranchPush :exec
+INSERT INTO git_branch_pushes(workspace_id,connection_id,branch) VALUES(@workspace_id,@connection_id,@branch)
+ON CONFLICT(workspace_id,connection_id,branch) DO UPDATE SET sequence = nextval('git_branch_push_sequence'),pushed_at = now();
+
+-- name: PruneGitBranchPushes :exec
+-- unscoped: retention covers every workspace, and an answer lives far less than a day.
+DELETE FROM git_branch_pushes WHERE (workspace_id,connection_id,branch) IN (
+    SELECT workspace_id,connection_id,branch FROM git_branch_pushes
+    WHERE pushed_at < now() - interval '1 day' ORDER BY pushed_at LIMIT 1000 FOR UPDATE SKIP LOCKED);
+
+-- name: GitBranchPushes :one
+SELECT COALESCE((SELECT sequence FROM git_branch_pushes WHERE workspace_id = @workspace_id AND connection_id = @connection_id AND branch = @branch),0)::bigint;
+
 -- name: LockGitConnection :one
 SELECT configuration FROM git_connections WHERE workspace_id = @workspace_id AND id = @id FOR UPDATE;
 

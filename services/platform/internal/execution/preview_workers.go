@@ -441,7 +441,7 @@ func (s *Service) reconcilePreview(ctx context.Context, tx pgx.Tx, p previewPoli
 		}
 		cfg := r.Config.Build
 		hash := buildInputHash(connection, pr.Head, cfg)
-		op, err := s.insertPipeline(ctx, tx, p.Workspace, *r.View.EnvironmentId, uuid.New(), p.Server, pipeline.Command{Preview: &pipeline.PreviewSource{RequestID: id, Generation: r.View.Generation, Number: pr.Number, HeadRepository: pr.HeadRepository}, Action: "build-preview", Connection: connection, Commit: pr.Head, Branch: cfg.Branch, RevisionID: v.Revision, UnitID: v.Unit, AppID: *r.App, Build: &cfg, InputHash: hash, SubmittedAt: time.Now().UTC()})
+		op, err := s.insertPipeline(ctx, tx, nil, p.Workspace, *r.View.EnvironmentId, uuid.New(), p.Server, pipeline.Command{Preview: &pipeline.PreviewSource{RequestID: id, Generation: r.View.Generation, Number: pr.Number, HeadRepository: pr.HeadRepository}, Action: "build-preview", Connection: connection, Commit: pr.Head, Branch: cfg.Branch, RevisionID: v.Revision, UnitID: v.Unit, AppID: *r.App, Build: &cfg, InputHash: hash, SubmittedAt: time.Now().UTC()})
 		if err != nil {
 			return err
 		}

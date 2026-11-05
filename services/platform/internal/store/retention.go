@@ -3,6 +3,8 @@ package store
 import (
 	"context"
 	"time"
+
+	db "github.com/astilbahq/astilba/services/platform/db/generated"
 )
 
 // PruneHistory removes bounded diagnostic payloads. Configuration, ownership,
@@ -62,6 +64,9 @@ func (s *Store) PruneHistory(ctx context.Context) error {
 	}
 	_, e = tx.Exec(ctx, `DELETE FROM server_metrics WHERE (server_id,received_at) IN (SELECT server_id,received_at FROM server_metrics WHERE received_at<=now()-interval '24 hours' ORDER BY received_at LIMIT 1000 FOR UPDATE SKIP LOCKED)`)
 	if e != nil {
+		return e
+	}
+	if e = db.New(tx).PruneGitBranchPushes(ctx); e != nil {
 		return e
 	}
 	_, e = tx.Exec(ctx, `DELETE FROM github_app_authorizations WHERE id IN (SELECT id FROM github_app_authorizations WHERE expires_at<now() ORDER BY expires_at LIMIT 1000 FOR UPDATE SKIP LOCKED)`)

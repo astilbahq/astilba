@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json/v2"
 	"errors"
+	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"time"
 
@@ -27,6 +28,11 @@ func (s *Service) enqueueGitRefresh(ctx context.Context, tx pgx.Tx, ws, id uuid.
 		if errors.Is(err, store.SubscriptionRequired) {
 			return nil
 		}
+		return err
+	}
+	// An admission waiting on this branch's head from before the push must ask again, whether
+	// or not it reaches the row this job looks for before the job runs.
+	if err := db.New(tx).RecordGitBranchPush(ctx, db.RecordGitBranchPushParams{WorkspaceID: ws, ConnectionID: id, Branch: p.Branch}); err != nil {
 		return err
 	}
 	_, err := s.Queue.InsertTx(ctx, tx, refreshArgs{ws, id, p.Branch}, &river.InsertOpts{MaxAttempts: 100, UniqueOpts: river.UniqueOpts{ByArgs: true, ByState: []rivertype.JobState{rivertype.JobStateAvailable, rivertype.JobStatePending, rivertype.JobStateRunning, rivertype.JobStateRetryable, rivertype.JobStateScheduled}}})
@@ -129,7 +135,7 @@ func (w *refreshWorker) Work(ctx context.Context, job *river.Job[refreshArgs]) e
 			cfg = sourceSelection(cfg, env.Spec.Compose)
 		}
 		if !clean {
-			cfg, clean, err = mergedSourceSelection(ctx, tx, a.Workspace, v.env, env.Spec.Compose, provider, head, cfg)
+			cfg, clean, err = lockedMergedSourceSelection(ctx, tx, a.Workspace, v.env, env.Spec.Compose, provider, head, cfg)
 			if err != nil {
 				return err
 			}
@@ -144,7 +150,7 @@ func (w *refreshWorker) Work(ctx context.Context, job *river.Job[refreshArgs]) e
 		if err != nil {
 			return err
 		}
-		_, err = w.service.insertPipeline(ctx, tx, a.Workspace, v.env, uuid.New(), runner, pipeline.Command{Action: "import", Connection: connection, Commit: head, Branch: a.Branch, RevisionID: v.base, UnitID: env.Unit, Source: &cfg, SubmittedAt: time.Now().UTC()})
+		_, err = w.service.insertPipeline(ctx, tx, nil, a.Workspace, v.env, uuid.New(), runner, pipeline.Command{Action: "import", Connection: connection, Commit: head, Branch: a.Branch, RevisionID: v.base, UnitID: env.Unit, Source: &cfg, SubmittedAt: time.Now().UTC()})
 		if err != nil {
 			return err
 		}
@@ -230,7 +236,7 @@ func (w *refreshWorker) Work(ctx context.Context, job *river.Job[refreshArgs]) e
 		if err != nil {
 			return err
 		}
-		_, err = w.service.insertPipeline(ctx, target, a.Workspace, v.env, uuid.New(), runner, pipeline.Command{Action: "build", Connection: connection, CompareCommit: compare, Commit: head, Branch: a.Branch, RevisionID: v.base, UnitID: env.Unit, AppID: v.app, Build: &cfg, InputHash: hash, Registry: registry, SubmittedAt: time.Now().UTC()})
+		_, err = w.service.insertPipeline(ctx, target, nil, a.Workspace, v.env, uuid.New(), runner, pipeline.Command{Action: "build", Connection: connection, CompareCommit: compare, Commit: head, Branch: a.Branch, RevisionID: v.base, UnitID: env.Unit, AppID: v.app, Build: &cfg, InputHash: hash, Registry: registry, SubmittedAt: time.Now().UTC()})
 		if err != nil {
 			if rollbackErr := target.Rollback(ctx); rollbackErr != nil {
 				return rollbackErr

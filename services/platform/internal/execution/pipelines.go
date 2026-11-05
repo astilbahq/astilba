@@ -62,7 +62,7 @@ func selectRunner(ctx context.Context, tx pgx.Tx, ws, primary uuid.UUID, fallbac
 	}
 	return primary, nil
 }
-func (s *Service) insertPipeline(ctx context.Context, tx pgx.Tx, ws, env, key, server uuid.UUID, p pipeline.Command) (api.Operation, error) {
+func (s *Service) insertPipeline(ctx context.Context, tx pgx.Tx, git *gitAnswers, ws, env, key, server uuid.UUID, p pipeline.Command) (api.Operation, error) {
 	var out api.Operation
 	if p.Build != nil {
 		canonical := p.Build.Canonical()
@@ -90,7 +90,7 @@ func (s *Service) insertPipeline(ctx context.Context, tx pgx.Tx, ws, env, key, s
 		return out, domain.Invalid("pipeline")
 	}
 	hydrated := p
-	if err := s.populatePipeline(ctx, tx, nil, ws, env, &hydrated); err != nil {
+	if err := s.populatePipeline(ctx, tx, git, ws, env, &hydrated); err != nil {
 		return out, err
 	}
 	var count int
@@ -187,7 +187,7 @@ func (s *Service) BindSource(ctx context.Context, p store.Principal, ws, pid, en
 	if err := c.Validate(); err != nil {
 		return out, domain.Invalid("source")
 	}
-	err := s.scope(ctx, p, ws, workspaceAccess{Write: true, Owner: true, Recent: true}, "git.source.bind", env, func(tx pgx.Tx) error {
+	err := s.gitScope(ctx, p, ws, workspaceAccess{Write: true, Owner: true, Recent: true}, "git.source.bind", env, func(tx pgx.Tx, git *gitAnswers) error {
 		v, err := loadVisualEnvironment(ctx, tx, ws, pid, env)
 		if err != nil {
 			return err
@@ -195,14 +195,14 @@ func (s *Service) BindSource(ctx context.Context, p store.Principal, ws, pid, en
 		if v.Revision != base || v.Spec.Compose == nil {
 			return domain.Invalid("source")
 		}
-		provider, connection, err := s.provider(ctx, tx, ws, c.ConnectionID)
+		head, err := git.head(ctx, tx, c.ConnectionID, c.Branch)
 		if err != nil {
 			return err
 		}
-		commit, err := provider.Resolve(ctx, c.Branch)
-		if err != nil {
-			return domain.Invalid("branch")
+		if head.Err != nil {
+			return head.failure(domain.Invalid("branch"))
 		}
+		connection, commit := head.Connection, head.Value
 		server, err := selectRunner(ctx, tx, ws, c.RunnerID, c.FallbackRunnerID, "", false, false)
 		if err != nil {
 			return err
@@ -213,14 +213,14 @@ func (s *Service) BindSource(ctx context.Context, p store.Principal, ws, pid, en
 			return err
 		}
 		command := pipeline.Command{Action: "import", Connection: connection, Commit: commit, Branch: c.Branch, RevisionID: base, UnitID: v.Unit, Source: &c, SubmittedAt: time.Now().UTC()}
-		out, err = s.insertPipeline(ctx, tx, ws, env, uuid.New(), server, command)
+		out, err = s.insertPipeline(ctx, tx, git, ws, env, uuid.New(), server, command)
 		return err
 	})
 	return out, err
 }
 func (s *Service) RefreshSource(ctx context.Context, p store.Principal, ws, pid, env, base uuid.UUID, discard bool) (api.Operation, error) {
 	var out api.Operation
-	err := s.scope(ctx, p, ws, workspaceAccess{Write: true}, "git.source.refresh", env, func(tx pgx.Tx) error {
+	err := s.gitScope(ctx, p, ws, workspaceAccess{Write: true}, "git.source.refresh", env, func(tx pgx.Tx, git *gitAnswers) error {
 		v, err := loadVisualEnvironment(ctx, tx, ws, pid, env)
 		if err != nil {
 			return err
@@ -242,20 +242,20 @@ func (s *Service) RefreshSource(ctx context.Context, p store.Principal, ws, pid,
 		if err = json.Unmarshal(raw, &c); err != nil {
 			return err
 		}
-		provider, connection, err := s.provider(ctx, tx, ws, c.ConnectionID)
+		head, err := git.head(ctx, tx, c.ConnectionID, c.Branch)
 		if err != nil {
 			return err
 		}
-		commit, err := provider.Resolve(ctx, c.Branch)
-		if err != nil {
-			return domain.Invalid("branch")
+		if head.Err != nil {
+			return head.failure(domain.Invalid("branch"))
 		}
+		connection, commit := head.Connection, head.Value
 		if clean && imported != nil {
 			c = sourceSelection(c, v.Spec.Compose)
 		}
 		if !clean && !discard {
 			var merged bool
-			c, merged, err = mergedSourceSelection(ctx, tx, ws, env, v.Spec.Compose, provider, commit, c)
+			c, merged, err = mergedSourceSelection(ctx, tx, git, ws, env, v.Spec.Compose, commit, c)
 			if err != nil {
 				return err
 			}
@@ -267,14 +267,14 @@ func (s *Service) RefreshSource(ctx context.Context, p store.Principal, ws, pid,
 		if err != nil {
 			return err
 		}
-		out, err = s.insertPipeline(ctx, tx, ws, env, uuid.New(), server, pipeline.Command{Action: "import", Connection: connection, Commit: commit, Branch: c.Branch, RevisionID: base, UnitID: v.Unit, Source: &c, SubmittedAt: time.Now().UTC()})
+		out, err = s.insertPipeline(ctx, tx, git, ws, env, uuid.New(), server, pipeline.Command{Action: "import", Connection: connection, Commit: commit, Branch: c.Branch, RevisionID: base, UnitID: v.Unit, Source: &c, SubmittedAt: time.Now().UTC()})
 		return err
 	})
 	return out, err
 }
 func (s *Service) SubmitSource(ctx context.Context, p store.Principal, ws, pid, env, base, key uuid.UUID) (api.Operation, error) {
 	var out api.Operation
-	err := s.scope(ctx, p, ws, workspaceAccess{Write: true}, "git.source.submit", base, func(tx pgx.Tx) error {
+	err := s.gitScope(ctx, p, ws, workspaceAccess{Write: true}, "git.source.submit", base, func(tx pgx.Tx, git *gitAnswers) error {
 		v, err := loadVisualEnvironment(ctx, tx, ws, pid, env)
 		if err != nil {
 			return err
@@ -325,17 +325,17 @@ func (s *Service) SubmitSource(ctx context.Context, p store.Principal, ws, pid, 
 		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return err
 		}
-		provider, connection, err := s.provider(ctx, tx, ws, source.ConnectionID)
+		head, err := git.head(ctx, tx, source.ConnectionID, source.Branch)
 		if err != nil {
 			return err
 		}
-		head, err := provider.Resolve(ctx, source.Branch)
-		if err != nil {
-			return domain.Invalid("source.branch")
+		if head.Err != nil {
+			return head.failure(domain.Invalid("source.branch"))
 		}
-		if head != commit {
+		if head.Value != commit {
 			return domain.Conflict
 		}
+		connection := head.Connection
 		if err = s.rejectRuntimeSecrets(ctx, tx, ws, env, composeproject.Bundle{Files: append(append([]composeproject.File{}, baseline.Files...), v.Spec.Compose.Files...)}); err != nil {
 			return err
 		}
@@ -347,7 +347,7 @@ func (s *Service) SubmitSource(ctx context.Context, p store.Principal, ws, pid, 
 		if !prior.SubmittedAt.IsZero() {
 			submittedAt = prior.SubmittedAt
 		}
-		out, err = s.insertPipeline(ctx, tx, ws, env, key, server, pipeline.Command{SubmissionID: uuid.NewSHA1(env, []byte("source/"+base.String())), Action: "submit", Connection: connection, Commit: commit, Branch: source.Branch, RevisionID: base, UnitID: v.Unit, Bundle: v.Spec.Compose, Source: &source, SubmittedAt: submittedAt})
+		out, err = s.insertPipeline(ctx, tx, git, ws, env, key, server, pipeline.Command{SubmissionID: uuid.NewSHA1(env, []byte("source/"+base.String())), Action: "submit", Connection: connection, Commit: commit, Branch: source.Branch, RevisionID: base, UnitID: v.Unit, Bundle: v.Spec.Compose, Source: &source, SubmittedAt: submittedAt})
 		if err != nil {
 			return err
 		}
@@ -369,15 +369,15 @@ func (s *Service) CreateBuild(ctx context.Context, p store.Principal, ws, pid, e
 		}
 		return out, domain.Invalid("build")
 	}
-	err := s.scope(ctx, p, ws, workspaceAccess{Write: true, Owner: c.AutoDeploy, Recent: c.AutoDeploy}, "build.create", app, func(tx pgx.Tx) error {
+	err := s.gitScope(ctx, p, ws, workspaceAccess{Write: true, Owner: c.AutoDeploy, Recent: c.AutoDeploy}, "build.create", app, func(tx pgx.Tx, git *gitAnswers) error {
 		var err error
-		out, err = s.admitBuild(ctx, tx, p, ws, pid, env, base, app, key, c, true)
+		out, err = s.admitBuild(ctx, tx, git, p, ws, pid, env, base, app, key, c, true)
 		return err
 	})
 	return out, err
 }
 
-func (s *Service) admitBuild(ctx context.Context, tx pgx.Tx, p store.Principal, ws, pid, env, base, app, key uuid.UUID, c pipeline.BuildConfig, persist bool) (api.Operation, error) {
+func (s *Service) admitBuild(ctx context.Context, tx pgx.Tx, git *gitAnswers, p store.Principal, ws, pid, env, base, app, key uuid.UUID, c pipeline.BuildConfig, persist bool) (api.Operation, error) {
 	if persist {
 		if old, exists, err := existingBuild(ctx, tx, ws, pid, env, app, key); err != nil || exists {
 			return old, err
@@ -397,14 +397,14 @@ func (s *Service) admitBuild(ctx context.Context, tx pgx.Tx, p store.Principal, 
 	if !found {
 		return api.Operation{}, domain.Invalid("applicationId")
 	}
-	provider, connection, err := s.provider(ctx, tx, ws, c.ConnectionID)
+	head, err := git.head(ctx, tx, c.ConnectionID, c.Branch)
 	if err != nil {
 		return api.Operation{}, err
 	}
-	commit, err := provider.Resolve(ctx, c.Branch)
-	if err != nil {
-		return api.Operation{}, domain.Invalid("branch")
+	if head.Err != nil {
+		return api.Operation{}, head.failure(domain.Invalid("branch"))
 	}
+	connection, commit := head.Connection, head.Value
 	server, err := selectRunner(ctx, tx, ws, c.RunnerID, c.FallbackRunnerID, c.Architecture, c.NeedsControls(), c.UsesRailpack())
 	if err != nil {
 		return api.Operation{}, err
@@ -418,7 +418,7 @@ func (s *Service) admitBuild(ctx context.Context, tx pgx.Tx, p store.Principal, 
 		registry = &r
 	}
 	hash := buildInputHash(connection, commit, c)
-	out, err := s.insertPipeline(ctx, tx, ws, env, key, server, pipeline.Command{Action: "build", Connection: connection, Commit: commit, Branch: c.Branch, RevisionID: base, UnitID: v.Unit, AppID: app, Build: &c, InputHash: hash, Registry: registry, SubmittedAt: time.Now().UTC()})
+	out, err := s.insertPipeline(ctx, tx, git, ws, env, key, server, pipeline.Command{Action: "build", Connection: connection, Commit: commit, Branch: c.Branch, RevisionID: base, UnitID: v.Unit, AppID: app, Build: &c, InputHash: hash, Registry: registry, SubmittedAt: time.Now().UTC()})
 	if err != nil {
 		return out, err
 	}

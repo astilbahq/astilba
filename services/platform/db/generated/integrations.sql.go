@@ -133,6 +133,23 @@ func (q *Queries) GetRegistry(ctx context.Context, arg GetRegistryParams) (GetRe
 	return i, err
 }
 
+const gitBranchPushes = `-- name: GitBranchPushes :one
+SELECT COALESCE((SELECT sequence FROM git_branch_pushes WHERE workspace_id = $1 AND connection_id = $2 AND branch = $3),0)::bigint
+`
+
+type GitBranchPushesParams struct {
+	WorkspaceID  uuid.UUID `json:"workspace_id"`
+	ConnectionID uuid.UUID `json:"connection_id"`
+	Branch       string    `json:"branch"`
+}
+
+func (q *Queries) GitBranchPushes(ctx context.Context, arg GitBranchPushesParams) (int64, error) {
+	row := q.db.QueryRow(ctx, gitBranchPushes, arg.WorkspaceID, arg.ConnectionID, arg.Branch)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const gitConnectionForWebhook = `-- name: GitConnectionForWebhook :one
 SELECT workspace_id,configuration,encrypted_access FROM git_connections WHERE id = $1
 `
@@ -464,6 +481,18 @@ func (q *Queries) PageEnvironmentSecretVersions(ctx context.Context, arg PageEnv
 	return items, nil
 }
 
+const pruneGitBranchPushes = `-- name: PruneGitBranchPushes :exec
+DELETE FROM git_branch_pushes WHERE (workspace_id,connection_id,branch) IN (
+    SELECT workspace_id,connection_id,branch FROM git_branch_pushes
+    WHERE pushed_at < now() - interval '1 day' ORDER BY pushed_at LIMIT 1000 FOR UPDATE SKIP LOCKED)
+`
+
+// unscoped: retention covers every workspace, and an answer lives far less than a day.
+func (q *Queries) PruneGitBranchPushes(ctx context.Context) error {
+	_, err := q.db.Exec(ctx, pruneGitBranchPushes)
+	return err
+}
+
 const pruneGitDeliveries = `-- name: PruneGitDeliveries :exec
 DELETE FROM git_deliveries d
 WHERE d.workspace_id = $1 AND d.connection_id = $2 AND d.delivery_id NOT IN (
@@ -478,5 +507,21 @@ type PruneGitDeliveriesParams struct {
 
 func (q *Queries) PruneGitDeliveries(ctx context.Context, arg PruneGitDeliveriesParams) error {
 	_, err := q.db.Exec(ctx, pruneGitDeliveries, arg.WorkspaceID, arg.ConnectionID)
+	return err
+}
+
+const recordGitBranchPush = `-- name: RecordGitBranchPush :exec
+INSERT INTO git_branch_pushes(workspace_id,connection_id,branch) VALUES($1,$2,$3)
+ON CONFLICT(workspace_id,connection_id,branch) DO UPDATE SET sequence = nextval('git_branch_push_sequence'),pushed_at = now()
+`
+
+type RecordGitBranchPushParams struct {
+	WorkspaceID  uuid.UUID `json:"workspace_id"`
+	ConnectionID uuid.UUID `json:"connection_id"`
+	Branch       string    `json:"branch"`
+}
+
+func (q *Queries) RecordGitBranchPush(ctx context.Context, arg RecordGitBranchPushParams) error {
+	_, err := q.db.Exec(ctx, recordGitBranchPush, arg.WorkspaceID, arg.ConnectionID, arg.Branch)
 	return err
 }
