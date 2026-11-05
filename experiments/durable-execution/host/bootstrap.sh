@@ -43,9 +43,14 @@ esac
 
 scratch=$(mktemp -d)
 trap 'rm -rf "$scratch"' EXIT
+# A release host's outage can last minutes, so these attempts span at least four. Only a
+# failed download repeats; a file that fails its checksum stops the script.
 fetch() {
-  curl --fail --location --silent --show-error --retry 3 --retry-all-errors "$1" --output "$scratch/$2"
-  echo "$3  $scratch/$2" | sha256sum --check --status
+  echo "Downloading $1"
+  curl --fail --location --silent --show-error --connect-timeout 10 --speed-limit 1024 --speed-time 60 --retry 8 --retry-all-errors --retry-max-time 300 "$1" --output "$scratch/$2" ||
+    { echo "Download failed after retries: $1" >&2; exit 1; }
+  echo "$3  $scratch/$2" | sha256sum --check --status ||
+    { echo "Checksum mismatch for $1: expected $3, got $(sha256sum "$scratch/$2" | cut -d' ' -f1)" >&2; exit 1; }
 }
 fetch "https://download.docker.com/linux/static/stable/$docker_arch/docker-29.9.2.tgz" docker.tgz "$docker_sha"
 fetch "https://github.com/docker/compose/releases/download/v5.6.1/docker-compose-linux-$docker_arch" compose "$compose_sha"
