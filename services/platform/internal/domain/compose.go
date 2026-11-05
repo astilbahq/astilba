@@ -2,8 +2,8 @@ package domain
 
 import (
 	"context"
-	"encoding/json"
-	jsonv2 "encoding/json/v2"
+	jsonv1 "encoding/json"
+	"encoding/json/v2"
 	"fmt"
 	"sort"
 
@@ -102,7 +102,7 @@ func deriveCompose(spec *Specification) error {
 		// People write this YAML and revisions keep it verbatim, so every later parse
 		// repeats this decode. It stays on v1 rules so that accepted files keep loading,
 		// and on an older controller after a rollback.
-		if jsonv2.Unmarshal(b, &metadata, json.DefaultOptionsV1(), jsonv2.RejectUnknownMembers(true)) != nil {
+		if json.Unmarshal(b, &metadata, jsonv1.DefaultOptionsV1(), json.RejectUnknownMembers(true)) != nil {
 			return Invalid("compose.x-astilba")
 		}
 		for _, r := range metadata.Routes {

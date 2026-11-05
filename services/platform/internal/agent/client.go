@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
-	jsonv2 "encoding/json/v2"
+	"encoding/json/v2"
 	"errors"
 	"io"
 	"math/rand/v2"
@@ -126,7 +126,7 @@ func (c *Client) call(ctx context.Context, method, path string, body, out any, t
 		_, e = io.Copy(io.Discard, io.LimitReader(response.Body, limit))
 		return e
 	}
-	if jsonv2.UnmarshalRead(io.LimitReader(response.Body, limit), out, jsonv2.RejectUnknownMembers(true)) != nil {
+	if json.UnmarshalRead(io.LimitReader(response.Body, limit), out, json.RejectUnknownMembers(true)) != nil {
 		return errors.New("invalid management response")
 	}
 	return nil

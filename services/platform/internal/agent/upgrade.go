@@ -3,8 +3,8 @@ package agent
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"io"
@@ -317,13 +317,17 @@ func (e *Engine) prepareUpgrade(ctx context.Context, c api.ExecutionCommand, s *
 	if err != nil {
 		return err
 	}
-	dec := json.NewDecoder(bytes.NewReader(out))
-	for dec.More() {
+	dec := jsontext.NewDecoder(bytes.NewReader(out))
+	for {
 		var line struct {
 			Type     string `json:"message_type"`
 			Snapshot string `json:"snapshot_id"`
 		}
-		if err = dec.Decode(&line); err != nil {
+		err := json.UnmarshalDecode(dec, &line)
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
 			return err
 		}
 		if line.Type == "summary" {

@@ -2,7 +2,7 @@ package portability
 
 import (
 	"context"
-	"encoding/json"
+	"encoding/json/v2"
 	"fmt"
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"

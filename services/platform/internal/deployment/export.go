@@ -1,7 +1,7 @@
 package deployment
 
 import (
-	"encoding/json"
+	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"github.com/astilbahq/astilba/services/platform/internal/composeproject"

@@ -1,8 +1,8 @@
 package execution
 
 import (
-	"encoding/json"
 	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"errors"
 	"time"
 

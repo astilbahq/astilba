@@ -7,9 +7,8 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/binary"
-	"encoding/json"
 	"encoding/json/jsontext"
-	jsonv2 "encoding/json/v2"
+	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
@@ -66,6 +65,14 @@ func (h Host) tool(name string) string {
 	}
 	return name
 }
+
+// readToolJSON reads ip and nft output, which prints interface aliases and comments
+// byte for byte. Another administrator's non-UTF-8 alias must not stop this host's
+// network from converging.
+func readToolJSON(raw []byte, v any) error {
+	return json.Unmarshal(raw, v, jsontext.AllowInvalidUTF8(true))
+}
+
 func (h Host) run(ctx context.Context, name string, input []byte, args ...string) ([]byte, error) {
 	c := exec.CommandContext(ctx, h.tool(name), args...)
 	if input != nil {
@@ -208,7 +215,7 @@ func (h Host) Snapshot(id uuid.UUID) (Snapshot, error) {
 	return s, nil
 }
 func Decode(raw []byte, out any) error {
-	if jsonv2.Unmarshal(raw, out, jsonv2.RejectUnknownMembers(true)) != nil {
+	if json.Unmarshal(raw, out, json.RejectUnknownMembers(true)) != nil {
 		return errors.New("invalid managed network encoding")
 	}
 	return nil
@@ -392,7 +399,7 @@ func (h Host) inspectInterface(ctx context.Context, m Manifest, group uint32, re
 			Kind string `json:"info_kind"`
 		} `json:"linkinfo"`
 	}
-	if json.Unmarshal(raw, &links) != nil {
+	if readToolJSON(raw, &links) != nil {
 		return errors.New("cannot inspect host interfaces")
 	}
 	for _, l := range links {
@@ -427,7 +434,7 @@ func (h Host) inspectRoutes(ctx context.Context, m Manifest) error {
 		Dst string `json:"dst"`
 		Dev string `json:"dev"`
 	}
-	if json.Unmarshal(raw, &routes) != nil {
+	if readToolJSON(raw, &routes) != nil {
 		return errors.New("cannot inspect host routes")
 	}
 	prefix, _ := Prefix(m.Prefix)
@@ -464,7 +471,7 @@ func (h Host) publishRules(ctx context.Context, m Manifest, rules string) error 
 			} `json:"table"`
 		} `json:"nftables"`
 	}
-	if json.Unmarshal(raw, &state) != nil {
+	if readToolJSON(raw, &state) != nil {
 		return errors.New("cannot inspect host firewall")
 	}
 	prefix := ""

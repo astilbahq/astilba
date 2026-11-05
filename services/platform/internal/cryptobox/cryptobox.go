@@ -5,8 +5,8 @@ import (
 	"crypto/cipher"
 	"crypto/rand"
 	"encoding/base64"
-	"encoding/json"
-	jsonv2 "encoding/json/v2"
+	jsonv1 "encoding/json"
+	"encoding/json/v2"
 	"errors"
 	"io"
 	"os"
@@ -66,7 +66,7 @@ func Parse(raw []byte) (*Keyring, error) {
 	var ring Keyring
 	// Operators may build a keyring by hand, and a key value can end in an escaped
 	// newline. Refusing it would stop the control plane starting.
-	if jsonv2.Unmarshal(raw, &ring, jsonv2.RejectUnknownMembers(true), json.ParseBytesWithLooseRFC4648(true)) != nil {
+	if json.Unmarshal(raw, &ring, json.RejectUnknownMembers(true), jsonv1.ParseBytesWithLooseRFC4648(true)) != nil {
 		return nil, ErrKey
 	}
 	if err := ring.Validate(); err != nil {
@@ -155,7 +155,7 @@ func (r *Keyring) unwrap(blob []byte, identity string) (envelope, []byte, error)
 	if len(blob) > 1<<20 {
 		return env, nil, ErrKey
 	}
-	if jsonv2.Unmarshal(blob, &env, jsonv2.RejectUnknownMembers(true)) != nil || env.Version != 1 || len(r.Keys[env.KeyID]) != 32 {
+	if json.Unmarshal(blob, &env, json.RejectUnknownMembers(true)) != nil || env.Version != 1 || len(r.Keys[env.KeyID]) != 32 {
 		return env, nil, ErrKey
 	}
 	key, err := open(r.Keys[env.KeyID], env.Key, identity+":"+env.KeyID+":key")
