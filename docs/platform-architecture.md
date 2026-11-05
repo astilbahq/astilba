@@ -112,7 +112,7 @@ Measure costs before choosing the hosted beta's infrastructure or promising lowe
 | Upgrade recipe | Define supported source and target versions, preconditions, ordered steps and recovery boundaries. |
 | Audit event | Record actor, workspace, action, affected resource and outcome without secret values. |
 
-PostgreSQL is authoritative for desired configuration, approvals, identity and management history. Immutable revisions can use versioned JSON documents; ownership, identity, lifecycle and relationships use relational tables. Introduce tables for real query and integrity requirements rather than mirroring every canvas property into a separate table.
+PostgreSQL is authoritative for desired configuration, approvals, identity and management history. Immutable revisions can use versioned JSON documents, encoded as [JSON encoding](json-encoding.md) describes; ownership, identity, lifecycle and relationships use relational tables. Introduce tables for real query and integrity requirements rather than mirroring every canvas property into a separate table.
 
 The agent journal is authoritative for which local steps it accepted and what it observed during execution. Docker and Traefik provide actual runtime state. The control plane reconciles these observations; a successful HTTP response alone does not prove an operation completed.
 

@@ -10,6 +10,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/backup"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 )
 
@@ -133,7 +134,8 @@ func (p Plan) TargetGroup() deployment.Plan {
 }
 
 func (p Plan) targetPlan(source deployment.Plan, id uuid.UUID) deployment.Plan {
-	raw, _ := json.Marshal(source)
+	// The clone keeps nil collections, because recovery recomputes this hash.
+	raw, _ := stablejson.Marshal(source)
 	var target deployment.Plan
 	_ = json.Unmarshal(raw, &target)
 	target.ID, target.RevisionID = id, p.TargetRevisionID

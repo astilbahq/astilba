@@ -1,7 +1,6 @@
 package portability
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -12,6 +11,7 @@ import (
 	"strings"
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -36,7 +36,7 @@ func RecoveryStateHash(raw []byte) (string, error) {
 }
 
 func recoveryStateHash(a Archive) (string, error) {
-	b, err := json.Marshal(struct {
+	b, err := stablejson.Marshal(struct {
 		Name   string
 		MFA    bool
 		Tables map[string][]Row
@@ -48,13 +48,7 @@ func recoveryStateHash(a Archive) (string, error) {
 }
 
 func recoveryRowHash(raw []byte) string {
-	var value any
-	d := json.NewDecoder(bytes.NewReader(raw))
-	d.UseNumber()
-	if d.Decode(&value) == nil {
-		raw, _ = json.Marshal(value)
-	}
-	h := sha256.Sum256(raw)
+	h := sha256.Sum256(stablejson.Normalize(raw))
 	return hex.EncodeToString(h[:])
 }
 
