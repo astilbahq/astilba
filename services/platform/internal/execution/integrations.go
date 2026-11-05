@@ -227,7 +227,7 @@ func (s *Service) CreateBuildSecret(ctx context.Context, p store.Principal, ws u
 func (s *Service) ReceivePush(ctx context.Context, id uuid.UUID, headers http.Header, body []byte) error {
 	row, err := s.Store.Queries.GitConnectionForWebhook(ctx, id)
 	if err != nil {
-		return domain.NotFound
+		return err
 	}
 	ws := row.WorkspaceID
 	if appConfiguration(row.Configuration) {

@@ -232,10 +232,10 @@ func (p *Provider) Review(ctx context.Context, base, branch string) (Review, err
 		WebURL  string `json:"web_url"`
 		Head    struct {
 			Ref string `json:"ref"`
-		}
+		} `json:"head"`
 		Base struct {
 			Ref string `json:"ref"`
-		}
+		} `json:"base"`
 		SourceBranch string `json:"source_branch"`
 		TargetBranch string `json:"target_branch"`
 	}
@@ -326,8 +326,12 @@ func VerifyPush(kind, secret string, repositoryID int64, headers http.Header, bo
 	var data struct {
 		Ref        string `json:"ref"`
 		After      string `json:"after"`
-		Repository struct{ ID int64 }
-		Project    struct{ ID int64 }
+		Repository struct {
+			ID int64 `json:"id"`
+		} `json:"repository"`
+		Project struct {
+			ID int64 `json:"id"`
+		} `json:"project"`
 	}
 	if json.Unmarshal(body, &data) != nil || !strings.HasPrefix(data.Ref, "refs/heads/") || !ValidBranch(strings.TrimPrefix(data.Ref, "refs/heads/")) || !ValidCommit(data.After) {
 		return Push{}, invalid
@@ -349,8 +353,8 @@ func (p *Provider) MergedCommit(ctx context.Context, number int) (string, error)
 		endpoint = p.apiPath() + "/merge_requests/" + strconv.Itoa(number)
 	}
 	var r struct {
-		Merged         bool
-		State          string
+		Merged         bool   `json:"merged"`
+		State          string `json:"state"`
 		MergeCommitSHA string `json:"merge_commit_sha"`
 		SHA            string `json:"merge_commit_id"`
 	}

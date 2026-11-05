@@ -83,9 +83,9 @@ func Install(ctx context.Context, r api.AgentRelease, key ed25519.PublicKey, sou
 		return errors.New("verified agent cannot run on this host")
 	}
 	var identity struct {
-		Version  string
-		Protocol int
-		Arch     string
+		Version  string `json:"Version"`
+		Protocol int    `json:"Protocol"`
+		Arch     string `json:"Arch"`
 	}
 	if json.Unmarshal(output, &identity) != nil || identity.Version != r.Version || identity.Protocol != int(r.Protocol) || identity.Arch != string(r.Arch) {
 		return errors.New("artifact identity does not match manifest")

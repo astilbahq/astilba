@@ -1,0 +1,13 @@
+// astilba-lint runs the repository's own analyzers; see docs/continuous-integration.md.
+package main
+
+import (
+	"github.com/astilbahq/astilba/services/platform/internal/lint/dberror"
+	"github.com/astilbahq/astilba/services/platform/internal/lint/jsontag"
+	"github.com/astilbahq/astilba/services/platform/internal/lint/wsclose"
+	"golang.org/x/tools/go/analysis/multichecker"
+)
+
+func main() {
+	multichecker.Main(dberror.Analyzer, jsontag.Analyzer, wsclose.Analyzer)
+}

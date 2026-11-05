@@ -6,7 +6,7 @@ This repository contains the BYOS deployment platform and its technical-validati
 
 ## Commands
 
-- `make check-app`: Go formatting/vet/staticcheck/short tests, generated-code freshness and dashboard type/lint checks.
+- `make check-app`: Go formatting/vet/staticcheck, [the repository's own analyzers](docs/continuous-integration.md#repository-analyzers), short tests, generated-code freshness and dashboard type/lint checks.
 - `make check-vulnerabilities`: `govulncheck` for every Go module and OSV Scanner for `pnpm-lock.yaml`, against the allowlist in `.github/vulnerability-allowlist.json`; needs network access, so it is not part of `check-app`. See [the vulnerability scan](docs/continuous-integration.md#vulnerability-scan).
 - `make verify-app`: also requires `PLAT_APP_DOCKER_HOST` for owned disposable PostgreSQL and real Chromium/WebKit journeys. `make verify` includes it. `make verify-image` builds and smoke-tests the Node-free image.
 

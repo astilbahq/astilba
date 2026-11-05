@@ -62,7 +62,7 @@ func (s *Service) planArtifacts(ctx context.Context, tx pgx.Tx, ws uuid.UUID, p 
 		var raw []byte
 		if app.Source.ArtifactID != nil {
 			if err := tx.QueryRow(ctx, "SELECT identity FROM build_artifacts WHERE workspace_id=$1 AND id=$2", ws, *app.Source.ArtifactID).Scan(&raw); err != nil {
-				return domain.Invalid("artifactId")
+				return store.IfMissing(err, domain.Invalid("artifactId"))
 			}
 		} else if p.Specification.Compose != nil && app.Source.Image != nil {
 			err := tx.QueryRow(ctx, "SELECT identity FROM build_artifacts WHERE workspace_id=$1 AND identity->>'image'=$2 ORDER BY created_at DESC LIMIT 1", ws, *app.Source.Image).Scan(&raw)

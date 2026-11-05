@@ -114,30 +114,8 @@ func (s *Server) Handler(assets http.Handler) (http.Handler, error) {
 		r.Use(s.protection)
 		r.Use(s.archiveAdmission)
 		r.Use(middleware.OapiRequestValidatorWithOptions(spec, &middleware.Options{
-			Options: openapi3filter.Options{AuthenticationFunc: s.authenticateAPI},
-			ErrorHandlerWithOpts: func(ctx context.Context, err error, w http.ResponseWriter, r *http.Request, _ middleware.ErrorHandlerOpts) {
-				if p := principal(ctx); p != nil && p.Automation != nil {
-					var security *openapi3filter.SecurityRequirementsError
-					if errors.As(err, &security) {
-						s.fail(w, r, domain.Forbidden)
-						return
-					}
-				}
-				var denied *openapi3filter.SecurityRequirementsError
-				if principal(ctx) != nil && errors.As(err, &denied) {
-					if errors.Is(err, domain.NotFound) {
-						s.fail(w, r, domain.NotFound)
-						return
-					}
-					s.fail(w, r, domain.Forbidden)
-					return
-				}
-				if principal(ctx) == nil && agentIdentity(ctx).ID == uuid.Nil && !publicPath(r.URL.Path) && r.URL.Path != "/agent/v1/enroll" {
-					s.fail(w, r, domain.Unauthenticated)
-					return
-				}
-				s.fail(w, r, domain.Invalid("request"))
-			},
+			Options:              openapi3filter.Options{AuthenticationFunc: s.authenticateAPI},
+			ErrorHandlerWithOpts: s.apiRequestError,
 		}))
 		api.HandlerFromMuxWithBaseURL(s, r, "")
 	})

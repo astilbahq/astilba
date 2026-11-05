@@ -62,6 +62,15 @@ func Normalize(err error) error {
 	return err
 }
 
+// IfMissing returns missing when err reports no matching row and err otherwise, so that a
+// failed read is not answered as a refusal.
+func IfMissing(err, missing error) error {
+	if errors.Is(err, pgx.ErrNoRows) {
+		return missing
+	}
+	return err
+}
+
 func (s *Store) Transaction(ctx context.Context, fn func(*db.Queries) error) error {
 	tx, err := s.Pool.Begin(ctx)
 	if err != nil {

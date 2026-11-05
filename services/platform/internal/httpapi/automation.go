@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strings"
 
@@ -11,6 +12,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/getkin/kin-openapi/openapi3filter"
 	"github.com/google/uuid"
+	middleware "github.com/oapi-codegen/nethttp-middleware"
 )
 
 func (s *Server) automationRequest(next http.Handler) http.Handler {
@@ -58,6 +60,36 @@ func (s *Server) authenticateAPI(ctx context.Context, in *openapi3filter.Authent
 		}
 	}
 	return domain.Unauthenticated
+}
+
+// apiRequestError answers a request the OpenAPI validator stopped.
+func (s *Server) apiRequestError(ctx context.Context, err error, w http.ResponseWriter, r *http.Request, _ middleware.ErrorHandlerOpts) {
+	var failed authorizationFailure
+	if errors.As(err, &failed) {
+		s.fail(w, r, failed.error)
+		return
+	}
+	p := principal(ctx)
+	var denied *openapi3filter.SecurityRequirementsError
+	if errors.As(err, &denied) {
+		if p != nil && p.Automation != nil {
+			s.fail(w, r, domain.Forbidden)
+			return
+		}
+		if p != nil {
+			if errors.Is(err, domain.NotFound) {
+				s.fail(w, r, domain.NotFound)
+				return
+			}
+			s.fail(w, r, domain.Forbidden)
+			return
+		}
+	}
+	if p == nil && agentIdentity(ctx).ID == uuid.Nil && !publicPath(r.URL.Path) && r.URL.Path != "/agent/v1/enroll" {
+		s.fail(w, r, domain.Unauthenticated)
+		return
+	}
+	s.fail(w, r, domain.Invalid("request"))
 }
 
 // Keep this allowlist independent of browser membership: a token never gains a
