@@ -7,7 +7,9 @@ import (
 	"time"
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
+	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
+	"github.com/astilbahq/astilba/services/platform/internal/execution"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -285,7 +287,10 @@ func TestRevocationDoesNotWaitForARunningExport(t *testing.T) {
 	go func() {
 		result <- f.st.InWorkspaceSnapshot(ctx, principal, ws, func(pgx.Tx, *db.Queries, store.Workspace) error {
 			close(running)
-			<-finish
+			select {
+			case <-finish:
+			case <-ctx.Done():
+			}
 			return nil
 		})
 	}()
@@ -305,5 +310,26 @@ func TestRevocationDoesNotWaitForARunningExport(t *testing.T) {
 	// Admitted before the revocation, it still finishes.
 	if err := <-result; err != nil {
 		t.Fatal(err)
+	}
+}
+
+// A refused terminal request records the refusal in a transaction of its own, which must not
+// let a session that has ended write to the workspace's audit log.
+func TestEndedSessionLeavesNoTerminalRefusalRecord(t *testing.T) {
+	f, principal, ws := sessionFixture(t)
+	ctx := context.Background()
+	if _, err := f.st.Queries.DeleteRenewedSession(ctx, principal.SessionHash); err != nil {
+		t.Fatal(err)
+	}
+	_, err := f.execution.OpenTroubleshootingSession(ctx, principal, execution.BrowserBinding{}, ws, uuid.New(), uuid.New(), api.OpenTroubleshootingSession{})
+	if !errors.Is(err, domain.Unauthenticated) {
+		t.Fatal("ended session was admitted: ", err)
+	}
+	var refusals int
+	if err = f.st.Pool.QueryRow(ctx, "SELECT count(*) FROM audit_events WHERE workspace_id=$1 AND action LIKE 'session.refused.%'", ws).Scan(&refusals); err != nil {
+		t.Fatal(err)
+	}
+	if refusals != 0 {
+		t.Fatal("an ended session wrote to the audit log")
 	}
 }
