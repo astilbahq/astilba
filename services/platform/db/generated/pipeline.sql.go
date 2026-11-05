@@ -131,6 +131,27 @@ func (q *Queries) AllRegistryAccess(ctx context.Context) ([]AllRegistryAccessRow
 	return items, nil
 }
 
+const finishUndeliveredPipeline = `-- name: FinishUndeliveredPipeline :exec
+UPDATE execution_operations SET state = $1, note = $2 WHERE workspace_id = $3 AND id = $4
+`
+
+type FinishUndeliveredPipelineParams struct {
+	State       string    `json:"state"`
+	Note        string    `json:"note"`
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ID          uuid.UUID `json:"id"`
+}
+
+func (q *Queries) FinishUndeliveredPipeline(ctx context.Context, arg FinishUndeliveredPipelineParams) error {
+	_, err := q.db.Exec(ctx, finishUndeliveredPipeline,
+		arg.State,
+		arg.Note,
+		arg.WorkspaceID,
+		arg.ID,
+	)
+	return err
+}
+
 const markPipelineDeliveryStarted = `-- name: MarkPipelineDeliveryStarted :exec
 UPDATE pipeline_runs SET delivery_started=true WHERE workspace_id = $1 AND id = $2
 `

@@ -3,6 +3,7 @@ package execution
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
@@ -10,6 +11,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/hosting"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
+	"github.com/astilbahq/astilba/services/platform/internal/terminal"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/riverqueue/river"
@@ -49,7 +51,7 @@ func (s *Service) RedeemTroubleshootingTicket(ctx context.Context, p store.Princ
 	err := s.Store.InWorkspace(ctx, p, ws, store.WorkspaceAccess{Write: true}, func(q *db.Queries, w store.Workspace) error {
 		row, err := q.RedeemTroubleshootingTicket(ctx, db.RedeemTroubleshootingTicketParams{WorkspaceID: ws, ID: id, ActorID: p.Account.ID, TicketHash: hash(ticket), BrowserSessionHash: hash(browser.Token), AuthVersion: p.Account.AuthVersion})
 		if errors.Is(err, pgx.ErrNoRows) {
-			return domain.Forbidden
+			return domain.TroubleshootingRefused(domain.TroubleshootingTicket)
 		}
 		if err != nil {
 			return err
@@ -64,6 +66,9 @@ func (s *Service) RedeemTroubleshootingTicket(ctx context.Context, p store.Princ
 		out.TicketExpires, out.Deadline = row.TicketExpiresAt, row.DeadlineAt
 		return nil
 	})
+	if err != nil {
+		s.auditTroubleshootingRefusal(ctx, p, ws, id, err)
+	}
 	return out, err
 }
 
@@ -107,6 +112,11 @@ func (s *Service) RefreshTroubleshootingBrowser(ctx context.Context, ws, id uuid
 // its reason and audit event, and gains the byte counts only.
 func (s *Service) EndTroubleshootingSession(ctx context.Context, ws, id uuid.UUID, reason string, input, output int64) error {
 	return s.Store.Transaction(ctx, func(q *db.Queries) error {
+		// The workspace comes first, as in every workspace operation: the audit event below
+		// needs a key lock on it, and holding the session row meanwhile can deadlock.
+		if _, err := q.LockWorkspaceByID(ctx, ws); err != nil {
+			return err
+		}
 		row, err := q.GetTroubleshootingSessionForEnd(ctx, db.GetTroubleshootingSessionForEndParams{WorkspaceID: ws, ID: id})
 		if err != nil {
 			return err
@@ -117,7 +127,23 @@ func (s *Service) EndTroubleshootingSession(ctx context.Context, ws, id uuid.UUI
 		if row.State == "closed" {
 			return nil
 		}
-		return store.Audit(ctx, q, store.Principal{Account: db.Account{ID: row.ActorID}}, ws, "session.close", id)
+		actor := store.Principal{Account: db.Account{ID: row.ActorID}}
+		// Only the agent can see some refusals, such as an ineligible container, so they
+		// are audited here, coalesced as refusals at open are. An input overflow ends a
+		// shell that was running, so it refused nothing.
+		if refusal, refused := strings.CutPrefix(reason, terminal.RefusedEnding); refused && refusal != terminal.RefusedInputOverflow {
+			action := "session.refused." + refusal
+			recent, err := q.RecentlyAudited(ctx, db.RecentlyAuditedParams{WorkspaceID: ws, ActorID: row.ActorID, Action: action})
+			if err != nil {
+				return err
+			}
+			if !recent {
+				if err = store.Audit(ctx, q, actor, ws, action, id); err != nil {
+					return err
+				}
+			}
+		}
+		return store.Audit(ctx, q, actor, ws, "session.close", id)
 	})
 }
 
@@ -151,7 +177,11 @@ type troubleshootingSweepWorker struct {
 // no longer exists. A live relay ends its session at the deadline itself first.
 func (w *troubleshootingSweepWorker) Work(ctx context.Context, _ *river.Job[troubleshootingSweepArgs]) error {
 	return w.service.Store.Transaction(ctx, func(q *db.Queries) error {
-		rows, err := q.SweepTroubleshootingSessions(ctx)
+		workspaces, err := q.LockTroubleshootingSweepWorkspaces(ctx)
+		if err != nil {
+			return err
+		}
+		rows, err := q.SweepTroubleshootingSessions(ctx, workspaces)
 		if err != nil {
 			return err
 		}

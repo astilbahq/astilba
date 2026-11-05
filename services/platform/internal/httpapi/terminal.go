@@ -469,7 +469,7 @@ func (s *Server) pumpTerminalAgent(ctx context.Context, p *terminalPair, output 
 			ending = "shell exited"
 		case terminal.Refused:
 			why := terminal.Refusal(frame[1:])
-			frame, ending = append([]byte{terminal.Refused}, why...), "agent refused: "+why
+			frame, ending = append([]byte{terminal.Refused}, why...), terminal.RefusedEnding+why
 		default:
 			stop("invalid frame")
 			return
