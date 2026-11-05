@@ -48,14 +48,11 @@ func (s *Service) Sweep(ctx context.Context) error {
 	return last
 }
 func (s *Service) detect(ctx context.Context, ws uuid.UUID) error {
-	tx, err := s.Store.Pool.Begin(ctx)
+	tx, done, err := s.Store.BeginWorkspaceWrite(ctx, ws)
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
-	if _, err = tx.Exec(ctx, "SELECT id FROM workspaces WHERE id=$1 FOR UPDATE", ws); err != nil {
-		return err
-	}
+	defer done()
 	if err = s.operations(ctx, tx, ws); err != nil {
 		return err
 	}

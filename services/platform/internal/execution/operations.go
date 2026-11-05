@@ -266,18 +266,15 @@ type worker struct {
 }
 
 func (w *worker) Work(ctx context.Context, job *river.Job[jobArgs]) error {
-	tx, err := w.service.Store.Pool.Begin(ctx)
+	var ws uuid.UUID
+	if err := w.service.Store.Pool.QueryRow(ctx, "SELECT workspace_id FROM execution_operations WHERE id=$1", job.Args.ID).Scan(&ws); err != nil {
+		return err
+	}
+	tx, done, err := w.service.Store.BeginWorkspaceWrite(ctx, ws)
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
-	var ws uuid.UUID
-	if err = tx.QueryRow(ctx, "SELECT workspace_id FROM execution_operations WHERE id=$1", job.Args.ID).Scan(&ws); err != nil {
-		return err
-	}
-	if _, err = tx.Exec(ctx, "SELECT id FROM workspaces WHERE id=$1 FOR UPDATE", ws); err != nil {
-		return err
-	}
+	defer done()
 	var server uuid.UUID
 	if err = tx.QueryRow(ctx, "SELECT s.id FROM servers s JOIN execution_operations o ON o.server_id=s.id WHERE o.id=$1 FOR UPDATE OF s", job.Args.ID).Scan(&server); err != nil {
 		return err

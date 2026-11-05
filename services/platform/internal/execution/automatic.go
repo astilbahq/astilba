@@ -45,23 +45,20 @@ func (s *Service) enqueueAutomatic(ctx context.Context, tx pgx.Tx, run, ws, env,
 	return err
 }
 func (w *automaticWorker) Work(ctx context.Context, job *river.Job[automaticArgs]) error {
-	tx, err := w.service.Store.Pool.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback(ctx)
 	var ws, env, revision, actor, pid uuid.UUID
 	var planID *uuid.UUID
 	var state string
-	if err = tx.QueryRow(ctx, "SELECT workspace_id,environment_id,revision_id,actor_id,plan_id,state FROM pipeline_auto_deployments WHERE id=$1", job.Args.ID).Scan(&ws, &env, &revision, &actor, &planID, &state); err != nil {
+	if err := w.service.Store.Pool.QueryRow(ctx, "SELECT workspace_id,environment_id,revision_id,actor_id,plan_id,state FROM pipeline_auto_deployments WHERE id=$1", job.Args.ID).Scan(&ws, &env, &revision, &actor, &planID, &state); err != nil {
 		return err
 	}
 	if state == "queued" || state == "blocked" {
 		return nil
 	}
-	if _, err = tx.Exec(ctx, "SELECT id FROM workspaces WHERE id=$1 FOR UPDATE", ws); err != nil {
+	tx, done, err := w.service.Store.BeginWorkspaceWrite(ctx, ws)
+	if err != nil {
 		return err
 	}
+	defer done()
 	stop := func(note string) error {
 		_, err := tx.Exec(ctx, "UPDATE pipeline_auto_deployments SET state='blocked',note=$2 WHERE id=$1", job.Args.ID, note)
 		if err != nil {

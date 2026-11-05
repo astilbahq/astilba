@@ -261,14 +261,11 @@ func (s *Service) reconcileNetworks(ctx context.Context) error {
 	return nil
 }
 func (s *Service) reconcileNetwork(ctx context.Context, ws uuid.UUID) error {
-	tx, err := s.Store.Pool.Begin(ctx)
+	tx, done, err := s.Store.BeginWorkspaceWrite(ctx, ws)
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
-	if _, err = tx.Exec(ctx, `SELECT id FROM workspaces WHERE id=$1 FOR UPDATE`, ws); err != nil {
-		return err
-	}
+	defer done()
 	n, err := readNetwork(ctx, tx, ws)
 	if err != nil {
 		return err

@@ -49,15 +49,12 @@ func (s *Service) runCoordinatedSchedules(ctx context.Context, now time.Time) er
 }
 
 func (s *Service) runCoordinatedSchedule(ctx context.Context, ws, server, id uuid.UUID, now time.Time) error {
-	tx, err := s.Store.Pool.Begin(ctx)
+	tx, done, err := s.Store.BeginWorkspaceWrite(ctx, ws)
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
+	defer done()
 	q := db.New(tx)
-	if _, err = q.LockWorkspaceByID(ctx, ws); err != nil {
-		return err
-	}
 	// Match the server -> policy order used by authenticated schedule reports.
 	if err = s.deploymentServer(ctx, tx, ws, server); err != nil {
 		return err

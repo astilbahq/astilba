@@ -301,42 +301,12 @@ func (q *Queries) LockInvitation(ctx context.Context, tokenHash []byte) (Invitat
 	return i, err
 }
 
-const lockWorkspace = `-- name: LockWorkspace :one
-SELECT w.id, w.name, w.require_mfa, w.created_at, w.alert_scanned_at,m.role FROM workspaces w JOIN memberships m ON m.workspace_id=w.id WHERE w.id=$1 AND m.account_id=$2 FOR UPDATE OF w
-`
-
-type LockWorkspaceParams struct {
-	ID        uuid.UUID `json:"id"`
-	AccountID uuid.UUID `json:"account_id"`
-}
-
-type LockWorkspaceRow struct {
-	ID             uuid.UUID `json:"id"`
-	Name           string    `json:"name"`
-	RequireMfa     bool      `json:"require_mfa"`
-	CreatedAt      time.Time `json:"created_at"`
-	AlertScannedAt time.Time `json:"alert_scanned_at"`
-	Role           string    `json:"role"`
-}
-
-func (q *Queries) LockWorkspace(ctx context.Context, arg LockWorkspaceParams) (LockWorkspaceRow, error) {
-	row := q.db.QueryRow(ctx, lockWorkspace, arg.ID, arg.AccountID)
-	var i LockWorkspaceRow
-	err := row.Scan(
-		&i.ID,
-		&i.Name,
-		&i.RequireMfa,
-		&i.CreatedAt,
-		&i.AlertScannedAt,
-		&i.Role,
-	)
-	return i, err
-}
-
 const lockWorkspaceByID = `-- name: LockWorkspaceByID :one
-SELECT id, name, require_mfa, created_at, alert_scanned_at FROM workspaces WHERE id=$1 FOR UPDATE
+SELECT id, name, require_mfa, created_at, alert_scanned_at FROM workspaces WHERE id=$1 FOR NO KEY UPDATE
 `
 
+// FOR NO KEY UPDATE serializes writers without making inserts that reference the
+// workspace, such as a read's audit event, wait for the lock on a connection.
 func (q *Queries) LockWorkspaceByID(ctx context.Context, id uuid.UUID) (Workspace, error) {
 	row := q.db.QueryRow(ctx, lockWorkspaceByID, id)
 	var i Workspace
