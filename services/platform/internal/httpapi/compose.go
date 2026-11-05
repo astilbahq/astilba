@@ -56,7 +56,7 @@ func (s *Server) PreviewCompose(w http.ResponseWriter, r *http.Request, ws, pid,
 		}
 		for _, id := range domain.SecretReferences(spec) {
 			if _, err := q.GetSecretVersion(r.Context(), db.GetSecretVersionParams{WorkspaceID: ws, EnvironmentID: env, ID: id}); err != nil {
-				return nil, domain.Invalid("secretVersionId")
+				return nil, store.IfMissing(err, domain.Invalid("secretVersionId"))
 			}
 		}
 		if b.Edit != nil {

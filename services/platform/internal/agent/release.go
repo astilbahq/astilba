@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
@@ -466,19 +465,9 @@ func (e *Engine) runReleaseCommand(ctx context.Context, c api.ExecutionCommand, 
 		if _, err := e.Docker.ContainerInspect(ctx, name, client.ContainerInspectOptions{}); !errdefs.IsNotFound(err) {
 			return "uncertain", nil
 		}
-		body, err := deployment.Compose(p.Plan, p.Secrets, false)
+		env, err := releaseCommandEnvironment(p, p.Plan.HostName(id))
 		if err != nil {
 			return "", err
-		}
-		var rendered struct {
-			Services map[string]struct{ Environment map[string]string }
-		}
-		if err = json.Unmarshal(body, &rendered); err != nil {
-			return "", err
-		}
-		env := []string{}
-		for key, value := range rendered.Services[p.Plan.HostName(id)].Environment {
-			env = append(env, key+"="+strings.ReplaceAll(value, "$$", "$"))
 		}
 		labels := visualLabels(p.Plan, id)
 		labels[labelKind] = "release-command-v1"

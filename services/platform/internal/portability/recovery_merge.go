@@ -133,7 +133,10 @@ func MergeRecovery(ctx context.Context, tx pgx.Tx, a Archive, owner uuid.UUID) e
 					continue
 				}
 				attributed, err := db.New(tx).RecoveryRowAttribution(ctx, db.RecoveryRowAttributionParams{WorkspaceID: a.Workspace, TableName: t.Name, SourceHash: recoveryRowHash(original)})
-				if err != nil || attributed != recoveryRowHash(existing) {
+				if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+					return err
+				}
+				if attributed != recoveryRowHash(existing) {
 					return fmt.Errorf("recovery conflicts with immutable %s", t.Name)
 				}
 				continue

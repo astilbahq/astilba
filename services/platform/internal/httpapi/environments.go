@@ -214,7 +214,7 @@ func (s *Server) UpdateDraft(w http.ResponseWriter, r *http.Request, ws, pid, id
 		}
 		for _, secretID := range domain.SecretReferences(spec) {
 			if _, e := q.GetSecretVersion(ctx, db.GetSecretVersionParams{WorkspaceID: ws, EnvironmentID: id, ID: secretID}); e != nil {
-				return domain.Invalid("specification.secretVersionId")
+				return store.IfMissing(e, domain.Invalid("specification.secretVersionId"))
 			}
 		}
 		newID := uuid.New()

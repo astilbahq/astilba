@@ -328,6 +328,26 @@ line above is only that comment. Move statements into
 `services/platform/db/queries` to reduce the count; moving legacy inline SQL to
 another package counts as new SQL, so convert it to sqlc as part of the move.
 
+## Repository analyzers
+
+`make check-app` runs `services/platform/internal/lint/astilba-lint` over non-test
+code. Each analyzer turns a defect that review kept catching into a failure with a
+one-sentence explanation:
+
+| Analyzer | Fails when | Caught by review in |
+| --- | --- | --- |
+| `dberror` | A branch on the error from a value-returning sqlc method or a row scan never looks at it, so an outage reads as a refusal or a missing row. Use `store.IfMissing` or return the error. | #122, #147 |
+| `wsclose` | Code outside `internal/terminal` calls `(*websocket.Conn).Close`, which a peer stalled inside a frame can hold forever. Use `terminal.Close`. | #117, #118, #131 |
+| `jsontag` | A struct field read from JSON, directly or through a package's own HTTP response helper, has no json tag naming its member. `encoding/json/v2` matches names exactly, so the field would stay zero with no error. | The JSON v2 shadow decoder, before #151 |
+
+`dberror` looks only at `err != nil` conditions, alone or as `||` terms. `jsontag` does
+not follow a helper into another package.
+
+There is no suppression comment: each failure has a direct fix, and an analyzer
+that needs exceptions should change or go. Add one only for a defect that recurs,
+that it can detect without false alarms, and whose failure fits in a sentence.
+Test it with `analysistest` against the shape of the original defect.
+
 ## Browser shards
 
 Application and workshop workflows each run Chromium and WebKit with two shards

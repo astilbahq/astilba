@@ -2,13 +2,21 @@ package httpapi
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strings"
 
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/getkin/kin-openapi/openapi3filter"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
+
+// authorizationFailure marks a failed read during the validator's security check, whose
+// handler otherwise answers every error as a refusal or an invalid request.
+type authorizationFailure struct{ error }
+
+func (f authorizationFailure) Unwrap() error { return f.error }
 
 func (s *Server) authorizeEnvironmentPurpose(ctx context.Context, in *openapi3filter.RequestValidationInput) error {
 	if in.Request.Method == http.MethodGet || in.Request.Method == http.MethodHead {
@@ -30,8 +38,12 @@ func (s *Server) authorizeEnvironmentPurpose(ctx context.Context, in *openapi3fi
 	var purpose string
 	// This read grants no tenant access; handlers still establish membership and
 	// lock workspace state. Purpose is immutable, so it cannot race that admission.
-	if err = s.Store.Pool.QueryRow(ctx, "SELECT e.purpose FROM environments e JOIN memberships m ON m.workspace_id=e.workspace_id AND m.account_id=$4 WHERE e.workspace_id=$1 AND e.project_id=$2 AND e.id=$3", ws, pid, env, principal(ctx).Account.ID).Scan(&purpose); err != nil {
+	err = s.Store.Pool.QueryRow(ctx, "SELECT e.purpose FROM environments e JOIN memberships m ON m.workspace_id=e.workspace_id AND m.account_id=$4 WHERE e.workspace_id=$1 AND e.project_id=$2 AND e.id=$3", ws, pid, env, principal(ctx).Account.ID).Scan(&purpose)
+	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.NotFound
+	}
+	if err != nil {
+		return authorizationFailure{err}
 	}
 	if purpose == "standard" {
 		return nil

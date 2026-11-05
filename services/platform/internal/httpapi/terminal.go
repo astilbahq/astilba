@@ -96,12 +96,12 @@ func (s *Server) browserTerminal(w http.ResponseWriter, r *http.Request) {
 	// The session is only read: a hijacked response has no chance to save it.
 	ctx, err := s.Sessions.Load(context.WithValue(r.Context(), sessionLoadKey{}, &sessionLoad{}), cookie.Value)
 	if err != nil {
-		s.fail(w, r, domain.Unauthenticated)
+		s.fail(w, r, err)
 		return
 	}
-	p := s.browserPrincipal(ctx)
-	if p == nil {
-		s.fail(w, r, domain.Unauthenticated)
+	p, err := s.browserPrincipal(ctx)
+	if err != nil {
+		s.fail(w, r, err)
 		return
 	}
 	// The path can name any workspace, so only a member's stream may count against one.
@@ -463,18 +463,22 @@ func (s *Server) superviseTerminal(ctx context.Context, p *terminalPair, lastInp
 	}
 }
 
-// browserPrincipal reads the account a loaded browser session authenticates, or nil.
-func (s *Server) browserPrincipal(ctx context.Context) *store.Principal {
+// browserPrincipal reads the account a loaded browser session authenticates.
+func (s *Server) browserPrincipal(ctx context.Context) (*store.Principal, error) {
 	id, err := uuid.Parse(s.Sessions.GetString(ctx, "account"))
 	if err != nil {
-		return nil
+		return nil, domain.Unauthenticated
 	}
 	a, err := s.Store.Queries.AccountByID(ctx, id)
-	if err != nil || a.AuthVersion != s.Sessions.GetInt64(ctx, "version") {
-		return nil
+	if err != nil {
+		return nil, store.IfMissing(err, domain.Unauthenticated)
 	}
-	return &store.Principal{Account: a, MFA: s.Sessions.GetBool(ctx, "mfa"), Recent: store.Recent(s.Sessions.GetTime(ctx, "recent"), s.Auth.Now())}
+	if a.AuthVersion != s.Sessions.GetInt64(ctx, "version") {
+		return nil, domain.Unauthenticated
+	}
+	return &store.Principal{Account: a, MFA: s.Sessions.GetBool(ctx, "mfa"), Recent: store.Recent(s.Sessions.GetTime(ctx, "recent"), s.Auth.Now())}, nil
 }
+
 func (s *Server) terminalAvailable(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")

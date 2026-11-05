@@ -219,8 +219,9 @@ func (s *Service) Webhook(ctx context.Context, raw []byte, signature string) err
 		return nil
 	}
 	var obj struct {
-		ID, Customer string
-		Reference    string `json:"client_reference_id"`
+		ID        string `json:"id"`
+		Customer  string `json:"customer"`
+		Reference string `json:"client_reference_id"`
 	}
 	if json.Unmarshal(event.Data.Object, &obj) != nil {
 		return domain.Invalid("event")

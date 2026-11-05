@@ -51,7 +51,7 @@ check-inline-sql:
 check-app: check-ci check-hooks check-source-size check-inline-sql
 	@for file in scripts/platform-*.mjs; do node --check "$$file" || exit 1; done
 	node --test scripts/platform-generate-test.mjs
-	cd services/platform && test -z "$$(gofmt -l .)" && go mod verify && go vet ./... && go tool staticcheck ./... && go test -short ./...
+	cd services/platform && test -z "$$(gofmt -l .)" && go mod verify && go vet ./... && go tool staticcheck ./... && go run ./internal/lint/astilba-lint -test=false ./... && go test -short ./...
 	pnpm generate:check
 	pnpm --filter @astilba/dashboard check
 

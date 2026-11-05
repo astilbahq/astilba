@@ -163,7 +163,7 @@ func (s *Service) acceptPreviewCleanupProofs(ctx context.Context, tx pgx.Tx, ws,
 		seen[proof.OperationId] = true
 		var raw []byte
 		if err := tx.QueryRow(ctx, "SELECT command FROM execution_operations WHERE workspace_id=$1 AND server_id=$2 AND id=$3", ws, server, proof.OperationId).Scan(&raw); err != nil {
-			return domain.Forbidden
+			return store.IfMissing(err, domain.Forbidden)
 		}
 		var c api.ExecutionCommand
 		if json.Unmarshal(raw, &c) != nil || c.PlanHash != proof.Digest || c.Id != proof.OperationId || c.ServerId != server {

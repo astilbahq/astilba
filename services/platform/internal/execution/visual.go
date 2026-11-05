@@ -837,7 +837,7 @@ func (s *Service) validateVisualSecrets(ctx context.Context, tx pgx.Tx, ws, env 
 	for _, id := range domain.SecretReferences(spec) {
 		secret, err := db.New(tx).GetSecretVersion(ctx, db.GetSecretVersionParams{WorkspaceID: ws, EnvironmentID: env, ID: id})
 		if err != nil {
-			return domain.Invalid("secretVersionId")
+			return store.IfMissing(err, domain.Invalid("secretVersionId"))
 		}
 		plain, err := s.Store.Keys.Open(secret.EncryptedValue, store.SecretIdentity(ws, id))
 		if err != nil {

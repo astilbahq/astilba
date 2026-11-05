@@ -124,7 +124,7 @@ func (s *Service) CompleteGitHub(ctx context.Context, p store.Principal, session
 	}
 	authorization, err := s.Store.Queries.GitHubAuthorizationByState(ctx, hash(state))
 	if err != nil {
-		return out, domain.Forbidden
+		return out, store.IfMissing(err, domain.Forbidden)
 	}
 	ws, id := authorization.WorkspaceID, authorization.ID
 	// Record a failed exchange even if GitHub consumed the code and the HTTP result
@@ -357,7 +357,7 @@ func (s *Service) gitAccess(ctx context.Context, tx pgx.Tx, ws, id uuid.UUID, wr
 	}
 	binding, e := q.ShareActiveGitHubAppConnection(ctx, db.ShareActiveGitHubAppConnectionParams{WorkspaceID: ws, ConnectionID: id})
 	if e != nil {
-		return pipeline.Access{}, domain.Invalid("githubApp.reauthorizationRequired")
+		return pipeline.Access{}, store.IfMissing(e, domain.Invalid("githubApp.reauthorizationRequired"))
 	}
 	installation, repo := binding.InstallationID, binding.RepositoryID
 	var c pipeline.Connection

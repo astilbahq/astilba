@@ -6,7 +6,6 @@
   "services/platform/internal/agent/backup_data.go": 722,
   "services/platform/internal/agent/cross_host_host_test.go": 1274,
   "services/platform/internal/agent/pipeline.go": 651,
-  "services/platform/internal/agent/release.go": 609,
   "services/platform/internal/agent/upgrade.go": 686,
   "services/platform/internal/agent/visual.go": 1110,
   "services/platform/internal/composeproject/source.go": 844,

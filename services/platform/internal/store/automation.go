@@ -125,14 +125,17 @@ func (s *Store) AuthenticateAutomation(ctx context.Context, token string) (Princ
 		return p, domain.Unauthenticated
 	}
 	row, err := s.Queries.AuthenticateAutomationCredential(ctx, id)
+	if err != nil {
+		return p, IfMissing(err, domain.Unauthenticated)
+	}
 	hash := sha256.Sum256([]byte(secret))
-	if err != nil || subtle.ConstantTimeCompare(row.SecretHash, hash[:]) != 1 {
+	if subtle.ConstantTimeCompare(row.SecretHash, hash[:]) != 1 {
 		return p, domain.Unauthenticated
 	}
 	g := domain.AutomationGrant{ID: id, WorkspaceID: row.WorkspaceID, ProjectID: row.ProjectID, EnvironmentID: row.EnvironmentID, Capabilities: row.Capabilities, ExpiresAt: row.ExpiresAt}
 	p.Account, err = s.Queries.AccountByID(ctx, row.CreatorID)
 	if err != nil {
-		return Principal{}, domain.Unauthenticated
+		return Principal{}, IfMissing(err, domain.Unauthenticated)
 	}
 	p.Automation = &g
 	return p, nil
