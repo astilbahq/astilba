@@ -1,8 +1,6 @@
 package deployment
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,6 +14,7 @@ import (
 
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/distribution/reference"
 	"github.com/google/uuid"
 )
@@ -105,11 +104,7 @@ type Status struct {
 	Plan        *Plan     `json:"plan"`
 }
 
-func Hash(v any) string {
-	b, _ := json.Marshal(v)
-	h := sha256.Sum256(b)
-	return hex.EncodeToString(h[:])
-}
+func Hash(v any) string       { return stablejson.Hash(v) }
 func (p Plan) WithHash() Plan { p.Hash = ""; p.Hash = Hash(p); return p }
 func (p Plan) Validate(resolved bool) error {
 	h := p.Hash

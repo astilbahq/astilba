@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"io"
 	"os"
 	"path/filepath"
@@ -192,7 +193,7 @@ func (j *Journal) rootUnitHash(tx *bolt.Tx, parent uuid.UUID) (string, error) {
 
 func (j *Journal) writeRecoveryProofs(out io.Writer) (string, error) {
 	hash := sha256.New()
-	encoder := json.NewEncoder(io.MultiWriter(out, hash))
+	writer := io.MultiWriter(out, hash)
 	err := j.db.View(func(tx *bolt.Tx) error {
 		return tx.Bucket([]byte("operations")).ForEach(func(k, _ []byte) error {
 			var r Record
@@ -204,7 +205,7 @@ func (j *Journal) writeRecoveryProofs(out io.Writer) (string, error) {
 			}
 			header := r.Command
 			header.Crosshost, header.Backup, header.Upgrade = nil, nil, nil
-			frame, err := json.Marshal(header)
+			frame, err := stablejson.Marshal(header)
 			if err != nil {
 				return err
 			}
@@ -219,11 +220,11 @@ func (j *Journal) writeRecoveryProofs(out io.Writer) (string, error) {
 				for i := range receipt.Observation.Resources {
 					receipt.Observation.Resources[i].Logs = ""
 				}
-				raw, _ := json.Marshal(receipt)
+				raw, _ := stablejson.Marshal(receipt)
 				message := json.RawMessage(raw)
 				report.Crosshost = &message
 			}
-			raw, err := json.Marshal(report)
+			raw, err := stablejson.Marshal(report)
 			if err != nil {
 				return err
 			}
@@ -231,7 +232,13 @@ func (j *Journal) writeRecoveryProofs(out io.Writer) (string, error) {
 			if r.Command.ParentId != nil {
 				parent = *r.Command.ParentId
 			}
-			return encoder.Encode(deployment.RecoveryProof{ParentID: parent, ID: r.Command.Id, Header: frame, Checkpoint: r.Checkpoint, Report: raw})
+			line, err := stablejson.Marshal(deployment.RecoveryProof{ParentID: parent, ID: r.Command.Id, Header: frame, Checkpoint: r.Checkpoint, Report: raw})
+			if err != nil {
+				return err
+			}
+			// ProofDigest covers these exact lines, and host evidence keeps that digest.
+			_, err = writer.Write(append(line, '\n'))
+			return err
 		})
 	})
 	return hex.EncodeToString(hash.Sum(nil)), err

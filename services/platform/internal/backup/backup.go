@@ -1,8 +1,6 @@
 package backup
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net/url"
@@ -13,6 +11,7 @@ import (
 	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 )
 
@@ -83,11 +82,7 @@ func (c Command) Digest() string {
 	c.Installation.Next = time.Time{}
 	return Hash(c)
 }
-func Hash(v any) string {
-	b, _ := json.Marshal(v)
-	h := sha256.Sum256(b)
-	return hex.EncodeToString(h[:])
-}
+func Hash(v any) string { return stablejson.Hash(v) }
 
 type Role struct {
 	Name string `json:"name"`
