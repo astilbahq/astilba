@@ -4,6 +4,33 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+catalogs:
+  default:
+    '@pandacss/dev':
+      specifier: 2.4.0
+      version: 2.4.0
+    '@pandacss/eslint-plugin':
+      specifier: 2.4.0
+      version: 2.4.0
+    '@pandacss/preset-base':
+      specifier: 2.4.0
+      version: 2.4.0
+    '@pandacss/preset-panda':
+      specifier: 2.4.0
+      version: 2.4.0
+    '@pandacss/vite':
+      specifier: 2.4.0
+      version: 2.4.0
+    '@playwright/test':
+      specifier: 1.64.1
+      version: 1.64.1
+    vite:
+      specifier: npm:@voidzero-dev/vite-plus-core@1.4.0
+      version: 1.4.0
+    vite-plus:
+      specifier: 1.4.0
+      version: 1.4.0
+
 overrides:
   glob@13.0.6: 14.0.3
   minimatch@10.2.6: 11.0.3
@@ -16,7 +43,7 @@ importers:
   .:
     devDependencies:
       vite-plus:
-        specifier: 1.4.0
+        specifier: 'catalog:'
         version: 1.4.0(@types/node@24.19.2)(@vitest/ui@5.0.5(vitest@5.0.5))(esbuild@0.28.2)(jiti@2.7.0)(msw@3.0.3(@types/node@24.19.2)(@voidzero-dev/vite-plus-core@1.4.0(@types/node@24.19.2)(esbuild@0.28.2)(jiti@2.7.0)(typescript@7.0.2)(yaml@2.9.1))(supports-color@10.2.2)(typescript@7.0.2))(playwright@1.64.1)(typescript@7.0.2)(yaml@2.9.1)
 
   apps/platform:
@@ -71,22 +98,22 @@ importers:
         specifier: 4.14.0
         version: 4.14.0(playwright-core@1.64.1)
       '@pandacss/dev':
-        specifier: 2.4.0
+        specifier: 'catalog:'
         version: 2.4.0(@emnapi/core@1.11.3)(@emnapi/runtime@1.11.3)(postcss@8.5.31)
       '@pandacss/eslint-plugin':
-        specifier: 2.4.0
+        specifier: 'catalog:'
         version: 2.4.0(@emnapi/core@1.11.3)(@emnapi/runtime@1.11.3)(eslint@10.13.0(jiti@2.7.0)(supports-color@10.2.2))
       '@pandacss/preset-base':
-        specifier: 2.4.0
+        specifier: 'catalog:'
         version: 2.4.0
       '@pandacss/preset-panda':
-        specifier: 2.4.0
+        specifier: 'catalog:'
         version: 2.4.0
       '@pandacss/vite':
-        specifier: 2.4.0
+        specifier: 'catalog:'
         version: 2.4.0(@emnapi/core@1.11.3)(@emnapi/runtime@1.11.3)(@voidzero-dev/vite-plus-core@1.4.0(@types/node@24.19.2)(esbuild@0.28.2)(jiti@2.7.0)(typescript@7.0.2)(yaml@2.9.1))
       '@playwright/test':
-        specifier: 1.64.1
+        specifier: 'catalog:'
         version: 1.64.1
       '@storybook/addon-a11y':
         specifier: 10.6.5
@@ -125,10 +152,10 @@ importers:
         specifier: 7.0.2
         version: 7.0.2
       vite:
-        specifier: npm:@voidzero-dev/vite-plus-core@1.4.0
+        specifier: 'catalog:'
         version: '@voidzero-dev/vite-plus-core@1.4.0(@types/node@24.19.2)(esbuild@0.28.2)(jiti@2.7.0)(typescript@7.0.2)(yaml@2.9.1)'
       vite-plus:
-        specifier: 1.4.0
+        specifier: 'catalog:'
         version: 1.4.0(@types/node@24.19.2)(@vitest/ui@5.0.5)(esbuild@0.28.2)(jiti@2.7.0)(msw@3.0.3(@types/node@24.19.2)(@voidzero-dev/vite-plus-core@1.4.0(@types/node@24.19.2)(esbuild@0.28.2)(jiti@2.7.0)(typescript@7.0.2)(yaml@2.9.1))(supports-color@10.2.2)(typescript@7.0.2))(playwright@1.64.1)(typescript@7.0.2)(yaml@2.9.1)
 
   contracts/platform:
@@ -156,19 +183,19 @@ importers:
         specifier: 4.14.0
         version: 4.14.0(playwright-core@1.64.1)
       '@pandacss/dev':
-        specifier: 2.4.0
+        specifier: 'catalog:'
         version: 2.4.0(@emnapi/core@1.11.3)(@emnapi/runtime@1.11.3)(postcss@8.5.31)
       '@pandacss/preset-base':
-        specifier: 2.4.0
+        specifier: 'catalog:'
         version: 2.4.0
       '@pandacss/preset-panda':
-        specifier: 2.4.0
+        specifier: 'catalog:'
         version: 2.4.0
       '@pandacss/vite':
-        specifier: 2.4.0
+        specifier: 'catalog:'
         version: 2.4.0(@emnapi/core@1.11.3)(@emnapi/runtime@1.11.3)(@voidzero-dev/vite-plus-core@1.4.0(@types/node@24.19.2)(esbuild@0.28.2)(jiti@2.7.0)(typescript@7.0.2)(yaml@2.9.1))
       '@playwright/test':
-        specifier: 1.64.1
+        specifier: 'catalog:'
         version: 1.64.1
       '@types/node':
         specifier: 24.19.2
@@ -186,10 +213,10 @@ importers:
         specifier: 7.0.2
         version: 7.0.2
       vite:
-        specifier: npm:@voidzero-dev/vite-plus-core@1.4.0
+        specifier: 'catalog:'
         version: '@voidzero-dev/vite-plus-core@1.4.0(@types/node@24.19.2)(esbuild@0.28.2)(jiti@2.7.0)(typescript@7.0.2)(yaml@2.9.1)'
       vite-plus:
-        specifier: 1.4.0
+        specifier: 'catalog:'
         version: 1.4.0(@types/node@24.19.2)(@vitest/ui@5.0.5)(esbuild@0.28.2)(jiti@2.7.0)(msw@3.0.3(@types/node@24.19.2)(@voidzero-dev/vite-plus-core@1.4.0(@types/node@24.19.2)(esbuild@0.28.2)(jiti@2.7.0)(typescript@7.0.2)(yaml@2.9.1))(supports-color@10.2.2)(typescript@7.0.2))(playwright@1.64.1)(typescript@7.0.2)(yaml@2.9.1)
 
 packages:
@@ -1943,9 +1970,6 @@ packages:
 
   '@types/estree@1.0.10':
     resolution: {integrity: sha512-lTyOMnOcmRBzdCv6/4zUZCrEhV0xrqQiUZBZtVcbmLHBXKLnN8q89v/wKRF/Q0HbwVsqbIG3o5HDoFl9sduM+g==}
-
-  '@types/estree@1.0.9':
-    resolution: {integrity: sha512-GhdPgy1el4/ImP05X05Uw4cw2/M93BCUmnEvWZNStlCzEKME4Fkk+YpoA5OiHNQmoS7Cafb8Xa3Pya8m1Qrzeg==}
 
   '@types/json-schema@7.0.15':
     resolution: {integrity: sha512-5+fP8P8MFNC+AyZCDxrB2pkZFPGzqQWUzpSeuuVLvm8VMcorNYavBqoFcxK8bQz4Qsbn4oUEEem4wDLfcysGHA==}
@@ -5225,8 +5249,6 @@ snapshots:
 
   '@types/estree@1.0.10': {}
 
-  '@types/estree@1.0.9': {}
-
   '@types/json-schema@7.0.15': {}
 
   '@types/ms@2.1.0': {}
@@ -5834,7 +5856,7 @@ snapshots:
 
   estree-walker@3.0.3:
     dependencies:
-      '@types/estree': 1.0.9
+      '@types/estree': 1.0.10
 
   esutils@2.0.3: {}
 

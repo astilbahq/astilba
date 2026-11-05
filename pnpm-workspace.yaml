@@ -2,6 +2,17 @@ packages:
   - apps/platform
   - contracts/platform
   - experiments/canvas-editor
+# Shared pins with an alignment rule. scripts/pin-alignment.mjs checks what a catalog can't
+# reach; see docs/frontend-development.md#dependency-pins.
+catalog:
+  '@pandacss/dev': 2.4.0
+  '@pandacss/eslint-plugin': 2.4.0
+  '@pandacss/preset-base': 2.4.0
+  '@pandacss/preset-panda': 2.4.0
+  '@pandacss/vite': 2.4.0
+  '@playwright/test': 1.64.1
+  vite: npm:@voidzero-dev/vite-plus-core@1.4.0
+  vite-plus: 1.4.0
 minimumReleaseAge: 1440
 saveExact: true
 overrides:
@@ -11,7 +22,7 @@ overrides:
   # @redocly/openapi-core only calls the removed default export when fetching remote
   # refs with configured headers; platform generation reads a local contract without them.
   minimatch@5.1.9: 11.0.3
-  vite@*: npm:@voidzero-dev/vite-plus-core@1.4.0
+  vite@*: 'catalog:'
   vitest@*: 5.0.5
 allowBuilds:
   '@parcel/watcher@2.5.6': false
