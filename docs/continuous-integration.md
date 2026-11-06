@@ -248,7 +248,7 @@ and what an allowlist entry has to name:
 | `image`, `agent`, `cli` | A vulnerable function is reachable from `cmd/server`, `cmd/agent` or `cmd/cli`, for the platforms that binary ships to |
 | `dashboard` | A lockfile package in the production dependency closure of `@astilba/dashboard` |
 | `tooling` | Any other lockfile package, or Go reachable only from other `services/platform` packages |
-| `experiment` | A vulnerable function is reachable in `experiments/durable-execution`, `git-compose` or `platform-comparison/app` |
+| `experiment` | A vulnerable function is reachable in `experiments/durable-execution`, `git-compose`, `fleet-capacity` or `platform-comparison/app` |
 
 Each binary is scanned with the `GOOS`, `GOARCH` and build tags it ships with. These
 choose the source files analysed, not the advisories: an advisory limited to a

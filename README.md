@@ -33,6 +33,7 @@ The management application and host agent are fully self-hostable, without an As
 - [Container, ingress and standalone export experiment](experiments/durable-execution/HOST.md)
 - [Build artifacts and PostgreSQL restore experiment](experiments/durable-execution/BUILD_DATA.md)
 - [Git provider and source-preserving Compose experiment](experiments/git-compose/README.md)
+- [Fleet capacity measurement](experiments/fleet-capacity/RESULTS.md)
 
 ## Verify
 

@@ -1,0 +1,12 @@
+--- a/services/platform/internal/execution/transport.go
++++ b/services/platform/internal/execution/transport.go
+@@ -50,7 +50,8 @@ func (s *Service) poll(ctx context.Context, a Identity, out *api.AgentPoll) (*ap
+ 	}()
+ 	deadline := time.NewTimer(PollDuration)
+ 	defer deadline.Stop()
+-	tick := time.NewTicker(time.Second)
++	// Counterfactual for measurement only: no periodic re-check during a long poll.
++	tick := time.NewTicker(time.Hour)
+ 	defer tick.Stop()
+ 	for {
+ 		// Check revocation/expiry after each wait, not only at request entry.

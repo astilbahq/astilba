@@ -18,3 +18,5 @@ coverage/
 experiments/canvas-editor/styled-system/
 
 apps/platform/styled-system/
+
+experiments/fleet-capacity/results/*.json
