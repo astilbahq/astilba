@@ -21,7 +21,8 @@ FROM pg_catalog.pg_roles r, pg_catalog.pg_database d
 WHERE r.rolname = session_user AND d.datname = current_database()
 `
 
-// Slots this session's role can ever hold. reserved_connections arrived in PostgreSQL 16,
+// Slots this session's role should plan on. Reserved slots stay free even for a superuser,
+// so an administrator can still connect. reserved_connections arrived in PostgreSQL 16,
 // and superusers are not subject to CONNECTION LIMIT.
 func (q *Queries) ConnectionsAvailable(ctx context.Context) (int32, error) {
 	row := q.db.QueryRow(ctx, connectionsAvailable)

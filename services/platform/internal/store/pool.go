@@ -18,9 +18,9 @@ const connectionsOutsidePool = 1
 // once polls were failing.
 const poolWaitWarning = 50 * time.Millisecond
 
-// CheckConnectionLimit refuses a pool PostgreSQL could never admit, which would otherwise
-// surface as "too many connections" only once the service is busy. It reads the limits,
-// not current use, so it says nothing about other instances and clients sharing them.
+// CheckConnectionLimit refuses a pool that does not fit PostgreSQL's limits, which would
+// otherwise surface as "too many connections" only once the service is busy. It reads the
+// limits, not current use, so it says nothing about other instances and clients sharing them.
 func (s *Store) CheckConnectionLimit(ctx context.Context) error {
 	available, err := s.Queries.ConnectionsAvailable(ctx)
 	if err != nil {
@@ -28,7 +28,7 @@ func (s *Store) CheckConnectionLimit(ctx context.Context) error {
 	}
 	size := s.Pool.Config().MaxConns
 	if size+connectionsOutsidePool > available {
-		return fmt.Errorf("ASTILBA_DATABASE_POOL_SIZE is %d, and with %d more for the job listener that exceeds the %d connections PostgreSQL allows this role; lower it or raise PostgreSQL's limit", size, connectionsOutsidePool, available)
+		return fmt.Errorf("ASTILBA_DATABASE_POOL_SIZE is %d, and with %d more for the job listener that exceeds the %d connections PostgreSQL's limits leave this role; lower it or raise the limit", size, connectionsOutsidePool, available)
 	}
 	return nil
 }

@@ -1,5 +1,6 @@
 -- name: ConnectionsAvailable :one
--- Slots this session's role can ever hold. reserved_connections arrived in PostgreSQL 16,
+-- Slots this session's role should plan on. Reserved slots stay free even for a superuser,
+-- so an administrator can still connect. reserved_connections arrived in PostgreSQL 16,
 -- and superusers are not subject to CONNECTION LIMIT.
 SELECT LEAST(
   current_setting('max_connections')::int
