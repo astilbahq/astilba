@@ -823,43 +823,21 @@ func testCrossHostCoordinatedPlacement(t *testing.T, expiryPhase string) {
 	if _, err := f.st.Pool.Exec(ctx, `UPDATE servers SET awaiting_transfer=true,controller_generation=1 WHERE workspace_id=$1 AND id=$2`, blockedWorkspace.Id, blockedServer.Server.Id); err != nil {
 		t.Fatal(err)
 	}
-	configuration, _ := stablejson.Marshal(policy)
-	var blockedPolicy backup.Policy
-	if err := json.Unmarshal(configuration, &blockedPolicy); err != nil {
-		t.Fatal(err)
-	}
-	blockedPolicy.WorkspaceID, blockedPolicy.EnvironmentID, blockedPolicy.ServerID = blockedWorkspace.Id, blockedEnv, blockedServer.Server.Id
-	priorServer := blockedPolicy.Plan.ServerID
-	blockedPolicy.Plan.EnvironmentID, blockedPolicy.Plan.ServerID = blockedEnv, blockedServer.Server.Id
-	blockedPolicy.Plan.Specification.Placement.IngressServerID = blockedServer.Server.Id
-	for i := range blockedPolicy.Plan.Specification.Placement.Applications {
-		for j := range blockedPolicy.Plan.Specification.Placement.Applications[i].Targets {
-			target := &blockedPolicy.Plan.Specification.Placement.Applications[i].Targets[j]
-			if target.ServerID == priorServer {
-				target.ServerID = blockedServer.Server.Id
-			}
-		}
-	}
-	for key, endpoints := range blockedPolicy.Plan.Local.Backends {
-		for i := range endpoints {
-			if endpoints[i].ServerID == priorServer {
-				endpoints[i].ServerID = blockedServer.Server.Id
-			}
-		}
-		blockedPolicy.Plan.Local.Backends[key] = endpoints
-	}
-	blockedPolicy.Plan.Local.Network.ServerID = blockedServer.Server.Id
-	blockedPolicy.Plan = blockedPolicy.Plan.WithHash()
-	if err := blockedPolicy.Validate(); err != nil {
-		t.Fatal("invalid pending-transfer policy fixture", err)
-	}
-	configuration, _ = stablejson.Marshal(blockedPolicy)
+	blockedPolicy := coordinatedPolicyFor(t, policy, blockedWorkspace.Id, blockedEnv, blockedServer.Server.Id)
+	configuration, _ := stablejson.Marshal(blockedPolicy)
 	if _, err := f.st.Pool.Exec(ctx, `INSERT INTO backup_policies(id,workspace_id,environment_id,server_id,configuration,encrypted_access,status,status_sequence)
 	 SELECT id,$1,$2,$3,jsonb_set($4::jsonb,'{id}',to_jsonb(id::text)),$5,
 	 jsonb_build_object('policyId',id,'generation',1,'enabled',true,'next',$6::text,'runs','[]'::jsonb),1
 	 FROM (SELECT lpad(to_hex(n),32,'0')::uuid id FROM generate_series(1,100) n) seeds`, blockedWorkspace.Id, blockedEnv, blockedServer.Server.Id, configuration, []byte("unused-pending-transfer-access"), due.Format(time.RFC3339)); err != nil {
 		t.Fatal(err)
 	}
+	// Another workspace's plain failure at the head of the scan must not stop this one either.
+	var heldWorkspace api.Workspace
+	b.call("POST", "/api/v1/workspaces", map[string]string{"name": "Held"}, 201, &heldWorkspace)
+	heldEnv := envForExecution(t, f, b, heldWorkspace.Id)
+	refreshAuthentication()
+	heldServer, _, _ := enrollment(t, f, b, heldWorkspace.Id, "deployment")
+	releaseHeld := holdCoordinatedPolicyFirst(t, f, policy, heldWorkspace.Id, heldEnv, heldServer.Server.Id, due)
 	// A malformed timestamp in an imported status is isolated too; no global
 	// PostgreSQL cast may abort all tenants' scheduling.
 	var invalidDestination backup.Destination
@@ -912,6 +890,7 @@ func testCrossHostCoordinatedPlacement(t *testing.T, expiryPhase string) {
 		}
 		return ready
 	})
+	releaseHeld()
 	var scheduledCount int
 	if err := f.st.Pool.QueryRow(ctx, `SELECT count(*) FROM execution_operations WHERE workspace_id=$1 AND command->'crosshost'->'maintenance'->'effect'->'backup'->'installation'->'policy'->>'id'=$2 AND command->'crosshost'->'maintenance'->'effect'->'backup'->>'scheduledAt' IS NOT NULL`, ws, policy.ID.String()).Scan(&scheduledCount); err != nil || scheduledCount != 1 {
 		t.Fatal("scheduled occurrence created more than one parent", err)

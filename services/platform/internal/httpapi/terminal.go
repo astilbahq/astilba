@@ -9,6 +9,7 @@ import (
 	"time"
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
+	"github.com/astilbahq/astilba/services/platform/internal/diagnostic"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/execution"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
@@ -146,7 +147,7 @@ func (s *Server) browserTerminal(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		var refused *domain.Error
 		if !errors.As(err, &refused) {
-			s.Log.Error("terminal ticket redemption failed", failureDiagnostic(err))
+			s.Log.Error("terminal ticket redemption failed", diagnostic.Failure(err))
 		}
 		terminal.Close(conn, websocket.StatusPolicyViolation, "session refused")
 		return

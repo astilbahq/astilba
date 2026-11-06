@@ -43,6 +43,24 @@ type Service struct {
 	Troubleshooting bool
 }
 
+// River stops a job at 10 seconds. A pass ends itself first so that running out of time
+// is not a job failure, and no one item can take more than a share of it. Items keep
+// their turn order, so the next pass carries on where this one stopped.
+const (
+	sweepPassBudget = 8 * time.Second
+	sweepItemLimit  = 3 * time.Second
+)
+
+// sweepFailure drops the outcomes a workspace already shows its owner, leaving only
+// failures of the sweep's own work.
+func sweepFailure(err error) error {
+	var problem *domain.Error
+	if errors.As(err, &problem) || errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	return err
+}
+
 func New(st *store.Store) (*Service, error) {
 	s := &Service{Store: st, Policy: pipeline.Policy{Origins: strings.FieldsFunc(os.Getenv("ASTILBA_INTEGRATION_ORIGINS"), func(r rune) bool { return r == ',' })}}
 	workers := river.NewWorkers()

@@ -15,10 +15,11 @@ const titles: Record<Schema["Alert"]["kind"], string> = {
   disk_agent: "Agent filesystem pressure",
   service_runtime: "Managed service unavailable",
   service_health: "Managed service health check failed",
-  backup_schedule: "Scheduled backup failed",
+  backup_schedule: "Scheduled backup failed or overdue",
   deployment_problem: "Deployment needs review",
   build_problem: "Build needs review",
   backup_problem: "Backup operation needs review",
+  network_problem: "Private network updates are failing",
 };
 export function Alerts() {
   const workspace = useContext(WorkspaceContext);

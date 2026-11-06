@@ -10,7 +10,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/backup"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
-	"github.com/astilbahq/astilba/services/platform/internal/store"
+	"github.com/astilbahq/astilba/services/platform/internal/sweep"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/riverqueue/river"
@@ -30,23 +30,35 @@ func (w *coordinatedScheduleWorker) Work(ctx context.Context, _ *river.Job[coord
 }
 
 func (s *Service) runCoordinatedSchedules(ctx context.Context, now time.Time) error {
-	candidates, err := s.Store.Queries.DueCoordinatedBackupPolicies(ctx, now.UTC().Format(time.RFC3339))
+	ctx, cancel := context.WithTimeout(ctx, sweepPassBudget)
+	defer cancel()
+	started, err := s.Store.Queries.SweepPassStarted(ctx)
 	if err != nil {
 		return err
 	}
-	for _, c := range candidates {
-		err = s.runCoordinatedSchedule(ctx, c.WorkspaceID, c.ServerID, c.ID, now)
-		var problem *domain.Error
-		if err != nil && !errors.As(err, &problem) && !errors.Is(err, pgx.ErrNoRows) && !errors.Is(err, store.SubscriptionRequired) {
+	// A workspace can hold many due policies. Once they have used one item's limit between
+	// them, the rest sit out this pass and keep their place.
+	spent := map[uuid.UUID]time.Duration{}
+	stalled := []uuid.UUID{}
+	for {
+		c, err := s.Store.Queries.ClaimDueCoordinatedBackupPolicy(ctx, db.ClaimDueCoordinatedBackupPolicyParams{DueBefore: now.UTC().Format(time.RFC3339), PassStarted: started, StalledWorkspaces: stalled})
+		if errors.Is(err, pgx.ErrNoRows) || ctx.Err() != nil {
+			return nil
+		}
+		if err != nil {
 			return err
 		}
-		// A blocked policy retains its cadence cursor, but must yield its scan
-		// position so another workspace's due backup can still be considered.
-		if err = s.Store.Queries.MarkBackupPolicyChecked(ctx, db.MarkBackupPolicyCheckedParams{WorkspaceID: c.WorkspaceID, ID: c.ID}); err != nil {
-			return err
+		// A blocked policy keeps its cadence cursor, so the alert sweep sees it fall
+		// overdue however it was blocked.
+		began := time.Now()
+		_ = sweep.Item(ctx, "coordinated_backup", c.WorkspaceID, sweepItemLimit-spent[c.WorkspaceID], func(item context.Context) error {
+			return sweepFailure(s.runCoordinatedSchedule(item, c.WorkspaceID, c.ServerID, c.ID, now))
+		})
+		spent[c.WorkspaceID] += time.Since(began)
+		if spent[c.WorkspaceID] >= sweepItemLimit {
+			stalled = append(stalled, c.WorkspaceID)
 		}
 	}
-	return nil
 }
 
 func (s *Service) runCoordinatedSchedule(ctx context.Context, ws, server, id uuid.UUID, now time.Time) error {
@@ -69,7 +81,7 @@ func (s *Service) runCoordinatedSchedule(ctx context.Context, ws, server, id uui
 	if json.Unmarshal(row.Configuration, &p) != nil || json.Unmarshal(row.Status, &status) != nil || p.Validate() != nil {
 		return domain.Invalid("policy")
 	}
-	if !p.Coordinated || !p.RequiresQuiescence() || !p.Enabled || !status.Enabled || status.PolicyID != p.ID || status.Generation != p.Generation || status.Next.IsZero() || now.Before(status.Next) {
+	if !p.CoordinatedDue(status, now) {
 		return nil
 	}
 	for _, run := range status.Runs {
