@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"slices"
 	"strconv"
 	"time"
 
@@ -21,13 +20,14 @@ import (
 )
 
 func (e *Engine) executeCrossHost(ctx context.Context, c api.ExecutionCommand, r Record) error {
+	finish := func(state api.ExecutionState, note string) error { return e.finishPhase(ctx, c.Id, state, note) }
 	command, err := crossHostCommand(c)
 	if err != nil || command.Unit.Plan.Local == nil || command.Unit.Plan.Validate(command.Phase != "resolve") != nil {
-		return e.finish(c.Id, "failed", "The assigned cross-host plan is invalid.")
+		return finish("failed", "The assigned cross-host plan is invalid.")
 	}
 	p := command.Unit.Plan
 	if command.Maintenance != nil && !validMaintenance(command.Maintenance, p) {
-		return e.finish(c.Id, "failed", "The coordinated maintenance source or target is invalid.")
+		return finish("failed", "The coordinated maintenance source or target is invalid.")
 	}
 	cfg, err := e.Journal.Config()
 	if err != nil {
@@ -37,7 +37,7 @@ func (e *Engine) executeCrossHost(ctx context.Context, c api.ExecutionCommand, r
 	// the journal. Its applied source may contain a historical network manifest;
 	// no new link authority is installed by maintenance phases.
 	if cfg.PreviewOnly || cfg.Role == "build" || command.Maintenance == nil && command.Phase != "observe" && p.Local.Network.ControllerGeneration != cfg.ControllerGeneration && !e.Journal.recoveredRoot(c, p) || e.Docker == nil {
-		return e.finish(c.Id, "failed", "Cross-host execution requires the approved deployment host.")
+		return finish("failed", "Cross-host execution requires the approved deployment host.")
 	}
 	if r.Checkpoint == "accepted" {
 		if err := e.checkpoint(c.Id, "cross-host-"+command.Phase); err != nil {
@@ -56,26 +56,26 @@ func (e *Engine) executeCrossHost(ctx context.Context, c api.ExecutionCommand, r
 		}
 		o, err := e.resolveVisualImages(ctx, deployment.Payload{Plan: p, RegistryAccess: command.RegistryAccess}, retained)
 		if err != nil {
-			return e.finish(c.Id, "failed", err.Error())
+			return finish("failed", err.Error())
 		}
 		if o.InfrastructureDrift || o.ResourceDrift {
-			return e.finish(c.Id, "failed", "Host drift requires reconciliation before a cross-host plan can be reviewed.")
+			return finish("failed", "Host drift requires reconciliation before a cross-host plan can be reviewed.")
 		}
 		return e.finishCrossHost(c, command, o, "Image identities and this host's state are ready for review.", false)
 	}
 	if command.Phase == "observe" {
 		current, err := e.Journal.unit(p.UnitID)
 		if err != nil || current.Plan.Hash != p.Hash {
-			return e.finish(c.Id, "failed", "The applied local plan changed before inspection.")
+			return finish("failed", "The applied local plan changed before inspection.")
 		}
 		o, _, err := e.observeUnit(ctx, p, command.Secrets)
 		if err != nil {
-			return e.finish(c.Id, "failed", "The local runtime could not be inspected; its previous snapshot is retained.")
+			return finish("failed", "The local runtime could not be inspected; its previous snapshot is retained.")
 		}
 		return e.finishCrossHost(c, command, o, "Runtime inspected without changing resources or the applied revision.", false)
 	}
 	if err := e.Journal.requireRecoveryCheckpoint(c, p.UnitID, p.Local.Primary); err != nil {
-		return e.finish(c.Id, "needs_attention", "The frozen recovery checkpoint must be retained before this host can change resources.")
+		return finish("needs_attention", "The frozen recovery checkpoint must be retained before this host can change resources.")
 	}
 	state, err := e.Journal.crossHost()
 	if err != nil {
@@ -83,20 +83,20 @@ func (e *Engine) executeCrossHost(ctx context.Context, c api.ExecutionCommand, r
 	}
 	if command.Phase == "reserve" && state.ParentID == uuid.Nil {
 		if e.cancelled(c.Id) {
-			return e.finish(c.Id, "cancelled", "Cancelled before reserving this host.")
+			return finish("cancelled", "Cancelled before reserving this host.")
 		}
 		o, _, err := e.observeUnit(ctx, p, command.Secrets)
 		expected := p.ExpectedState
 		if command.Maintenance != nil {
 			expected = command.Maintenance.ExpectedState
 		}
-		if err != nil || o.StateHash != expected || o.InfrastructureDrift || o.ResourceDrift {
-			return e.finish(c.Id, "failed", "This host changed after review. Create a new plan.")
+		if err != nil || o.StateHash != expected || o.InfrastructureDrift {
+			return finish("failed", "This host changed after review. Create a new plan.")
 		}
 		if command.Maintenance == nil {
 			inventory, err := capacityInventory(ctx, e.Docker)
 			if err != nil || inventory.UnboundedInventoryHash != command.Unit.InventoryHash {
-				return e.finish(c.Id, "failed", "The acknowledged unbounded-workload inventory changed. Review capacity again.")
+				return finish("failed", "The acknowledged unbounded-workload inventory changed. Review capacity again.")
 			}
 		}
 		state, err = e.Journal.reserveCrossHost(c, command)
@@ -112,59 +112,58 @@ func (e *Engine) executeCrossHost(ctx context.Context, c api.ExecutionCommand, r
 	if command.Maintenance != nil && state.ParentID == uuid.Nil && (command.Phase == "resume-source" || command.Phase == "complete") {
 		current, err := e.Journal.unit(p.UnitID)
 		if err != nil || current.Plan.Hash != p.Hash {
-			return e.finish(c.Id, "needs_attention", "An unreserved maintenance source changed; reconciliation is required.")
+			return finish("needs_attention", "An unreserved maintenance source changed; reconciliation is required.")
 		}
 		o, _, err := e.observeUnit(ctx, p, command.Secrets)
 		if err != nil {
 			return err
 		}
 		if command.Phase == "complete" {
-			if command.UseTarget || o.InfrastructureDrift || o.ResourceDrift || slices.ContainsFunc(o.Resources, func(r deployment.Resource) bool { return r.Drift }) {
-				return e.finish(c.Id, "needs_attention", "An unreserved maintenance source is not ready for completion.")
+			// This host changed nothing, so whatever state it reports, it found. Holding the
+			// parent for it would strand every other host's reservation.
+			if command.UseTarget {
+				return finish("needs_attention", "An unreserved maintenance source is not ready for completion.")
 			}
-			if err = p.ValidateLocalObservation(o); err != nil {
-				return e.finish(c.Id, "needs_attention", "An unreserved maintenance source is not ready for completion: "+err.Error()+".")
+			if err = p.ValidateMaintenanceObservation(o); err != nil {
+				return finish("needs_attention", "An unreserved maintenance source is not ready for completion: "+err.Error()+".")
 			}
 			o.Applied = true
 		}
 		return e.finishCrossHost(c, command, o, "This host never installed a maintenance reservation; its source was retained.", false)
 	}
 	if state.ParentID != command.ParentID || state.GroupHash != command.GroupHash || state.Unit.Plan.Hash != p.Hash {
-		return e.finish(c.Id, "needs_attention", "The frozen host reservation requires reconciliation.")
+		return finish("needs_attention", "The frozen host reservation requires reconciliation.")
 	}
 	if command.Maintenance != nil {
 		if e.cancelled(c.Id) && command.Phase != "restore" && command.Phase != "resume-source" && command.Phase != "resume-target" && command.Phase != "complete" {
-			return e.finish(c.Id, "cancelled", "Cancelled at a maintenance checkpoint; known writers remain reserved for recovery.")
+			return finish("cancelled", "Cancelled at a maintenance checkpoint; known writers remain reserved for recovery.")
 		}
 		return e.executeMaintenancePhase(ctx, c, command, state)
 	}
 	if e.cancelled(c.Id) && command.Phase != "abort" && command.Phase != "complete" && command.Phase != "retire" && command.Phase != "publish" {
-		return e.finish(c.Id, "cancelled", "Cancelled at a coordinated checkpoint; the host reservation remains until owned cleanup is confirmed.")
+		return finish("cancelled", "Cancelled at a coordinated checkpoint; the host reservation remains until owned cleanup is confirmed.")
 	}
 	payload := deployment.Payload{Plan: p, Secrets: command.Secrets, RegistryAccess: command.RegistryAccess}
 	switch command.Phase {
 	case "reserve":
 		if err = e.ensureStorage(ctx, p); err != nil {
-			return e.finish(c.Id, "needs_attention", safeVisualError(err, command.Secrets))
+			return finish("needs_attention", safeVisualError(err, command.Secrets))
 		}
 	case "prepare":
 		if state.Phase != "reserved" && state.Phase != "prepared" {
-			return e.finish(c.Id, "needs_attention", "Candidate preparation is out of phase.")
+			return finish("needs_attention", "Candidate preparation is out of phase.")
 		}
 		snapshot, err := e.networkHost().Snapshot(p.Local.Network.NetworkID)
 		if err != nil || snapshot.AppliedHash != hostnetwork.Hash(p.Local.Network) {
-			return e.finish(c.Id, "failed", "The reviewed private-link configuration has not been acknowledged on this host.")
+			return finish("failed", "The reviewed private-link configuration has not been acknowledged on this host.")
 		}
 		if err = e.prepareCrossHost(ctx, c, payload, command.Unit.Previous); err != nil {
-			if ctx.Err() != nil {
-				return ctx.Err()
-			}
-			return e.finish(c.Id, "needs_attention", safeVisualError(err, command.Secrets))
+			return finish("needs_attention", safeVisualError(err, command.Secrets))
 		}
 		for _, app := range p.LocalApplications() {
 			if app.Health != nil {
 				if err = e.waitHTTP(ctx, c, p, app); err != nil {
-					return e.finish(c.Id, "failed", "Candidate readiness failed; previous routes and pools are retained for coordinated cleanup.")
+					return finish("failed", "Candidate readiness failed; previous routes and pools are retained for coordinated cleanup.")
 				}
 			}
 		}
@@ -174,7 +173,7 @@ func (e *Engine) executeCrossHost(ctx context.Context, c api.ExecutionCommand, r
 		}
 	case "hook":
 		if p.Release == nil || state.Phase != "prepared" && state.Phase != "hook" {
-			return e.finish(c.Id, "failed", "The release command has no prepared candidate on this host.")
+			return finish("failed", "The release command has no prepared candidate on this host.")
 		}
 		if state.Hook.OperationID == uuid.Nil {
 			state.Hook = releaseState{OperationID: c.Id, Plan: p, Phase: "ready"}
@@ -188,17 +187,17 @@ func (e *Engine) executeCrossHost(ctx context.Context, c api.ExecutionCommand, r
 			return err
 		}
 		if result == "uncertain" {
-			return e.finish(c.Id, "needs_attention", "The release command's outcome is unknown. It will not be replayed.")
+			return finish("needs_attention", "The release command's outcome is unknown. It will not be replayed.")
 		}
 		if result != "succeeded" {
-			return e.finish(c.Id, "failed", "The release command failed; old routing is retained.")
+			return finish("failed", "The release command failed; old routing is retained.")
 		}
 	case "probe":
 		if state.Phase != "prepared" && state.Phase != "hook" && state.Phase != "probed" {
-			return e.finish(c.Id, "needs_attention", "Backend probing requires a prepared pool.")
+			return finish("needs_attention", "Backend probing requires a prepared pool.")
 		}
 		if !p.Local.Primary {
-			return e.finish(c.Id, "failed", "Only the reviewed ingress host probes the complete backend vector.")
+			return finish("failed", "Only the reviewed ingress host probes the complete backend vector.")
 		}
 		for _, app := range p.Specification.Applications {
 			if app.Health == nil {
@@ -207,7 +206,7 @@ func (e *Engine) executeCrossHost(ctx context.Context, c api.ExecutionCommand, r
 			for _, endpoint := range p.Local.Backends[app.ID.String()] {
 				url := "http://" + net.JoinHostPort(endpoint.Address, strconv.Itoa(endpoint.Port)) + app.Health.Path
 				if err = e.crossHostProbe(ctx, c, p, endpoint.InstanceID, []string{"wget", "-T", "3", "-q", "--spider", url}); err != nil {
-					return e.finish(c.Id, "failed", "A reviewed backend is unreachable from the ingress unit. Old routes remain installed.")
+					return finish("failed", "A reviewed backend is unreachable from the ingress unit. Old routes remain installed.")
 				}
 			}
 		}
@@ -217,10 +216,10 @@ func (e *Engine) executeCrossHost(ctx context.Context, c api.ExecutionCommand, r
 		}
 	case "publish":
 		if state.Phase != "probed" && state.Phase != "publishing" && state.Phase != "published" {
-			return e.finish(c.Id, "needs_attention", "Publication requires confirmed backend probes.")
+			return finish("needs_attention", "Publication requires confirmed backend probes.")
 		}
 		if !p.Local.Primary {
-			return e.finish(c.Id, "failed", "Only the primary unit owns public ingress.")
+			return finish("failed", "Only the primary unit owns public ingress.")
 		}
 		if !state.Publication {
 			state.Phase = "publishing"
@@ -228,7 +227,7 @@ func (e *Engine) executeCrossHost(ctx context.Context, c api.ExecutionCommand, r
 				return err
 			}
 			if err = e.publishVisualRoutes(ctx, p); err != nil {
-				return e.finish(c.Id, "needs_attention", "Ingress publication requires reconciliation; no old pool may be retired.")
+				return finish("needs_attention", "Ingress publication requires reconciliation; no old pool may be retired.")
 			}
 			state.Publication = true
 			state.Phase = "published"
@@ -241,12 +240,12 @@ func (e *Engine) executeCrossHost(ctx context.Context, c api.ExecutionCommand, r
 				return err
 			}
 			if err = e.verifyRoutes(ctx, routing.Current); err != nil {
-				return e.finish(c.Id, "needs_attention", "The acknowledged ingress revision can no longer be confirmed.")
+				return finish("needs_attention", "The acknowledged ingress revision can no longer be confirmed.")
 			}
 		}
 	case "retire":
 		if p.Local.Primary && !state.Publication {
-			return e.finish(c.Id, "needs_attention", "Ingress acknowledgement is required before retirement.")
+			return finish("needs_attention", "Ingress acknowledgement is required before retirement.")
 		}
 		if state.DrainUntil.IsZero() {
 			seconds := 10
@@ -268,7 +267,7 @@ func (e *Engine) executeCrossHost(ctx context.Context, c api.ExecutionCommand, r
 			}
 		}
 		if err = e.retainCrossHostPool(ctx, p, &state); err != nil {
-			return e.finish(c.Id, "needs_attention", "An old instance could not be retired with exact ownership. Retained data and the reservation require inspection.")
+			return finish("needs_attention", "An old instance could not be retired with exact ownership. Retained data and the reservation require inspection.")
 		}
 		state.Phase = "retired"
 		if err = e.Journal.saveCrossHost(state); err != nil {
@@ -276,14 +275,14 @@ func (e *Engine) executeCrossHost(ctx context.Context, c api.ExecutionCommand, r
 		}
 	case "complete":
 		if state.Phase != "retired" {
-			return e.finish(c.Id, "needs_attention", "Retirement must be confirmed before releasing the host reservation.")
+			return finish("needs_attention", "Retirement must be confirmed before releasing the host reservation.")
 		}
 		o, expected, err := e.observeVisualPlan(ctx, p, command.Secrets, true)
 		if err != nil {
 			return err
 		}
 		if err = p.ValidateLocalObservation(o); err != nil {
-			return e.finish(c.Id, "needs_attention", "The selected local instance inventory is incomplete: "+err.Error()+". The reservation is retained.")
+			return finish("needs_attention", "The selected local instance inventory is incomplete: "+err.Error()+". The reservation is retained.")
 		}
 		if err = e.Journal.saveUnit(unitState{Plan: p, Expected: expected}); err != nil {
 			return err
@@ -296,17 +295,17 @@ func (e *Engine) executeCrossHost(ctx context.Context, c api.ExecutionCommand, r
 		return e.finishCrossHost(c, command, o, "The selected local pool is recorded and retirement is confirmed.", true)
 	case "abort":
 		if state.Publication || state.Phase == "publishing" || state.Phase == "published" || state.Phase == "retired" {
-			return e.finish(c.Id, "needs_attention", "Publication may have happened. Reconcile ingress before any candidate cleanup.")
+			return finish("needs_attention", "Publication may have happened. Reconcile ingress before any candidate cleanup.")
 		}
 		if p.Release != nil && state.Hook.OperationID != uuid.Nil {
 			hookCommand := c
 			hookCommand.Id = state.Hook.OperationID
 			if err = e.removeReleaseCommand(ctx, hookCommand, payload); err != nil {
-				return e.finish(c.Id, "needs_attention", "Release command cleanup requires inspection.")
+				return finish("needs_attention", "Release command cleanup requires inspection.")
 			}
 		}
 		if err = e.removeCrossHostCandidates(ctx, p, command.Unit.Previous); err != nil {
-			return e.finish(c.Id, "needs_attention", "Candidate cleanup requires ownership reconciliation. Previous pools and data are retained.")
+			return finish("needs_attention", "Candidate cleanup requires ownership reconciliation. Previous pools and data are retained.")
 		}
 		o, _, err := e.observeUnit(ctx, p, command.Secrets)
 		if err != nil {
@@ -314,7 +313,7 @@ func (e *Engine) executeCrossHost(ctx context.Context, c api.ExecutionCommand, r
 		}
 		return e.finishCrossHost(c, command, o, "Owned candidates were removed; previous serving pools and data remain.", true)
 	default:
-		return e.finish(c.Id, "failed", "Unsupported coordinated phase.")
+		return finish("failed", "Unsupported coordinated phase.")
 	}
 	o, _, err := e.observeVisualPlan(ctx, p, command.Secrets, command.Phase == "prepare" || command.Phase == "retire")
 	if err != nil {

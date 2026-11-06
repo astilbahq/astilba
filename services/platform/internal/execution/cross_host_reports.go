@@ -73,7 +73,7 @@ func (s *Service) crossHostReport(ctx context.Context, tx pgx.Tx, c api.Executio
 			}
 			plan = *command.Maintenance.Target
 		}
-		if !receipt.Observation.Applied || plan.ValidateLocalObservation(receipt.Observation) != nil {
+		if !receipt.Observation.Applied || command.ValidateCompletion(plan, receipt.Observation) != nil {
 			return domain.Invalid("crosshost.inventory")
 		}
 	}

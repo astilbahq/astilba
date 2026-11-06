@@ -142,6 +142,14 @@ func (e *Engine) activateRestoreCutover(ctx context.Context, c api.ExecutionComm
 				if writer, ok := s.Pause.Writers[id.String()]; ok {
 					running = writer.Running
 				}
+				// A restored database starts even if its source was stopped, and must be ready
+				// even if its source was failing: serving it is what the cutover is for, and
+				// starting it is the only proof that it boots.
+				if app.Postgres != nil {
+					running = true
+					delete(s.Pause.Writers, id.String())
+					delete(s.Unready, id.String())
+				}
 				state.Original[id.String()] = pausedWriter{ContainerID: v.Container.ID, Running: running}
 			}
 		}

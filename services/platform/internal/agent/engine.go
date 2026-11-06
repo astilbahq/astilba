@@ -75,6 +75,16 @@ func (e *Engine) finish(id uuid.UUID, state api.ExecutionState, note string) err
 		}
 	})
 }
+
+// finishPhase records a coordinated phase's outcome, unless the agent is stopping: it reruns
+// the phase when it restarts, as it does after a crash, so what a cancelled context made of
+// the phase is not its outcome. docs/cross-host-placement.md says why each is safe to rerun.
+func (e *Engine) finishPhase(ctx context.Context, id uuid.UUID, state api.ExecutionState, note string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return e.finish(id, state, note)
+}
 func (e *Engine) cancelled(id uuid.UUID) bool {
 	r, err := e.Journal.Record(id)
 	return err == nil && r.Command.CancelRequested
@@ -225,7 +235,7 @@ func (e *Engine) Execute(ctx context.Context, c api.ExecutionCommand) error {
 		return e.executeCrossHost(ctx, c, r)
 	}
 	if c.Kind == "network" {
-		return e.executeNetwork(ctx, c)
+		return e.executeNetwork(ctx, c, r)
 	}
 	if c.Kind == "backup" || c.Kind == "schedule" {
 		return e.executeBackup(ctx, c, r)
