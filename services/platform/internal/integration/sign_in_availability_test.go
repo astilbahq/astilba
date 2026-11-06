@@ -6,8 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log/slog"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -23,7 +21,6 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/auth"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/hosting"
-	"github.com/astilbahq/astilba/services/platform/internal/mailer"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 	"github.com/pquerna/otp/totp"
@@ -339,34 +336,17 @@ func TestResetRequestIsNotRefusedByOthersSpendingTheEmailsBudget(t *testing.T) {
 	if status := a.post(owner, "198.51.100.1", "/api/v1/auth/reset/request", map[string]string{"email": "owner@example.test"}); status != 202 {
 		t.Fatal("the owner's reset request answered", status)
 	}
+	waitForResetJobsToFinish(t, f)
 	select {
 	case <-f.mail:
 		t.Fatal("a spent email budget still sent mail")
-	case <-time.After(200 * time.Millisecond):
+	default:
 	}
 	if status := a.post(owner, "198.51.100.1", "/api/v1/auth/reset/complete", map[string]string{"token": newest, "password": "replacement password for this test"}); status != 204 {
 		t.Fatal("the newest link answered", status)
 	}
 }
 
-func unreachableMail(t *testing.T) *mailer.Mailer {
-	t.Helper()
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	closed := listener.Addr().String()
-	if err := listener.Close(); err != nil {
-		t.Fatal(err)
-	}
-	unreachable, err := mailer.New(mailer.Config{Address: closed, From: "Astilba <accounts@example.test>", Mode: "plain", Development: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return unreachable
-}
-
-// lockedLog collects what the server logs, which background work can write to at any time.
 type lockedLog struct {
 	mu   sync.Mutex
 	text strings.Builder
@@ -382,87 +362,6 @@ func (l *lockedLog) String() string {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return l.text.String()
-}
-
-func TestFailedResetUndoIsLogged(t *testing.T) {
-	f := setup(t)
-	a := newAvailability(t, f)
-	owner := f.browser(t)
-	if _, err := f.st.Pool.Exec(context.Background(), `CREATE FUNCTION refuse_refund() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'refused'; END $$;
-		CREATE TRIGGER refuse_refund BEFORE UPDATE ON auth_attempts FOR EACH ROW WHEN (NEW.attempts < OLD.attempts) EXECUTE FUNCTION refuse_refund()`); err != nil {
-		t.Fatal(err)
-	}
-	log := &lockedLog{}
-	f.apiServer.Log = slog.New(slog.NewTextHandler(log, nil))
-	f.auth.Mail = unreachableMail(t)
-	if status := a.post(owner, "198.51.100.1", "/api/v1/auth/reset/request", map[string]string{"email": "owner@example.test"}); status != 202 {
-		t.Fatal("reset request answered", status)
-	}
-	if got := attemptCount(t, f, "reset:email:owner@example.test"); got != 1 {
-		t.Fatalf("the refused refund left %d attempts, want 1", got)
-	}
-	logged := log.String()
-	if !strings.Contains(logged, "password reset could not be undone") {
-		t.Fatalf("a failed undo was not logged: %q", logged)
-	}
-	if strings.Contains(logged, "owner@example.test") {
-		t.Fatal("the log named the email")
-	}
-}
-
-func TestFailedResetDeliveryDoesNotSpendTheEmailsBudget(t *testing.T) {
-	f := setup(t)
-	a := newAvailability(t, f)
-	owner := f.browser(t)
-	working := f.auth.Mail
-	f.auth.Mail = unreachableMail(t)
-	for range 4 {
-		if status := a.post(owner, "198.51.100.1", "/api/v1/auth/reset/request", map[string]string{"email": "owner@example.test"}); status != 202 {
-			t.Fatal("reset request answered", status)
-		}
-	}
-	f.auth.Mail = working
-	if status := a.post(owner, "198.51.100.1", "/api/v1/auth/reset/request", map[string]string{"email": "owner@example.test"}); status != 202 {
-		t.Fatal("reset request answered", status)
-	}
-	if status := a.post(owner, "198.51.100.1", "/api/v1/auth/reset/complete", map[string]string{"token": tokenFromLinkMail(t, f, "/reset"), "password": "replacement password for this test"}); status != 204 {
-		t.Fatal("the link sent after delivery recovered answered", status)
-	}
-}
-
-func TestResetLinkIsSentAfterTheRequesterHangsUp(t *testing.T) {
-	f := setup(t)
-	ctx, hangUp := context.WithCancel(context.Background())
-	defer hangUp()
-	held, err := f.st.Pool.Begin(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer held.Rollback(context.Background())
-	if _, err := held.Exec(ctx, "SELECT id FROM accounts WHERE id=$1 FOR UPDATE", f.owner); err != nil {
-		t.Fatal(err)
-	}
-	result := make(chan error, 1)
-	go func() { result <- f.auth.RequestReset(ctx, "owner@example.test", "test", f.apiServer.Origin) }()
-	waiting := false
-	for deadline := time.Now().Add(10 * time.Second); !waiting && time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
-		if err := f.st.Pool.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE wait_event_type='Lock' AND query LIKE '%-- name: LockAccount%')").Scan(&waiting); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if !waiting {
-		t.Fatal("reset request did not reach the account lock")
-	}
-	hangUp()
-	if err := held.Commit(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if err := <-result; err != nil {
-		t.Fatal("the request ended with the client", err)
-	}
-	if tokenFromLinkMail(t, f, "/reset") == "" {
-		t.Fatal("no link was sent")
-	}
 }
 
 // Nothing is installation-wide, so this is what bounds trying one password across every account:

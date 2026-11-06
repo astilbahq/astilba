@@ -8,6 +8,7 @@ import (
 	"net"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestConsoleDeliveryIsExplicitAndDevelopmentOnly(t *testing.T) {
@@ -58,7 +59,8 @@ type failingWriter struct{}
 
 func (failingWriter) Write([]byte) (int, error) { return 0, errors.New("closed output") }
 
-// relay answers one message with endOfData, then drops the connection when asked to quit.
+// relay answers one message with endOfData, then drops the connection when asked to quit. With
+// no endOfData it drops the connection instead of answering the message.
 func relay(t *testing.T, endOfData string) string {
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -83,6 +85,9 @@ func relay(t *testing.T, endOfData string) string {
 			}
 			switch {
 			case inData && line == ".\r\n":
+				if endOfData == "" {
+					return
+				}
 				inData = false
 				reply(endOfData)
 			case inData:
@@ -99,7 +104,7 @@ func relay(t *testing.T, endOfData string) string {
 	return listener.Addr().String()
 }
 
-// Callers delete a link or retry when told a message failed, so accepted mail must not be
+// Callers retry when told a message failed, so accepted mail must not be
 // reported as failed, and refused mail must not be reported as sent.
 func TestSendReportsWhatTheRelayDidWithTheMessage(t *testing.T) {
 	for _, test := range []struct {
@@ -119,5 +124,62 @@ func TestSendReportsWhatTheRelayDidWithTheMessage(t *testing.T) {
 				t.Fatalf("Send returned %v, want %v", err, test.want)
 			}
 		})
+	}
+}
+
+// The reset budget bounds what may arrive, so a relay that read the message and gave no answer
+// must be told apart from one that refused it.
+func TestSendTellsAnUnansweredMessageFromARefusedOne(t *testing.T) {
+	for _, test := range []struct {
+		name, endOfData string
+		unconfirmed     bool
+	}{
+		{"no answer", "", true},
+		{"refused", "554 rejected", false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			m, err := New(Config{Address: relay(t, test.endOfData), From: "accounts@example.test", Mode: "plain", Development: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = m.Send(context.Background(), "owner@example.test", "Subject", "Body")
+			if !errors.Is(err, ErrUnavailable) || errors.Is(err, ErrUnconfirmed) != test.unconfirmed {
+				t.Fatalf("Send returned %v", err)
+			}
+		})
+	}
+}
+
+// A server stopping cancels sends and waits for them, so one must not sit out its connection deadline.
+func TestCancellingEndsASendAtOnce(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		if conn, err := listener.Accept(); err == nil {
+			accepted <- conn
+		}
+	}()
+	sender, err := New(Config{Address: listener.Addr().String(), From: "from@example.test", Mode: "plain", Development: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	result := make(chan error, 1)
+	go func() { result <- sender.Send(ctx, "to@example.test", "Subject", "Body") }()
+	conn := <-accepted
+	defer conn.Close()
+	cancel()
+	select {
+	case err := <-result:
+		if !errors.Is(err, ErrUnavailable) {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the send outlived its context")
 	}
 }

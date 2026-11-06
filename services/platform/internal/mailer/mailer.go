@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/mail"
 	"net/smtp"
+	"net/textproto"
 	"os"
 	"strings"
 	"time"
@@ -24,6 +25,10 @@ type Mailer struct {
 }
 
 var ErrUnavailable = errors.New("email is unavailable; configure SMTP and retry")
+
+// ErrUnconfirmed is an ErrUnavailable where the relay was given the whole message and gave no
+// answer, so it may deliver it.
+var ErrUnconfirmed = fmt.Errorf("%w: the relay did not answer after the message", ErrUnavailable)
 
 func New(c Config) (*Mailer, error) {
 	if c.Mode == "console" {
@@ -78,6 +83,10 @@ func (m *Mailer) Send(ctx context.Context, to, subject, body string) error {
 		return ErrUnavailable
 	}
 	defer conn.Close()
+	// Cancelling ends the session at once, because stopping a server waits for its sends. Closing
+	// the socket also ends the TLS session wrapped around it below.
+	socket := conn
+	defer context.AfterFunc(ctx, func() { _ = socket.Close() })()
 	deadline := time.Now().Add(10 * time.Second)
 	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
 		deadline = d
@@ -120,8 +129,12 @@ func (m *Mailer) Send(ctx context.Context, to, subject, body string) error {
 	if err != nil {
 		return ErrUnavailable
 	}
-	if w.Close() != nil {
-		return ErrUnavailable
+	if err := w.Close(); err != nil {
+		var reply *textproto.Error
+		if errors.As(err, &reply) {
+			return ErrUnavailable
+		}
+		return ErrUnconfirmed
 	}
 	// The relay has taken responsibility for the message, so a failed goodbye changes nothing.
 	_ = client.Quit()

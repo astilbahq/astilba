@@ -94,6 +94,8 @@ func (s *Server) Handler(assets http.Handler) (http.Handler, error) {
 		if e != nil {
 			return nil, e
 		}
+		s.Execution.ResetMail.Accounts, s.Execution.ResetMail.Origin, s.Execution.ResetMail.Log = s.Auth, s.Origin, s.Log
+		s.Auth.Queue = s.Execution.Queue
 	}
 	s.Execution.Policy.Development = s.Development
 	if s.Execution.GitHub == nil {
@@ -451,15 +453,13 @@ func (s *Server) RequestPasswordReset(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, e)
 		return
 	}
-	e = s.Auth.RequestReset(r.Context(), string(b.Email), s.clientSourceKey(r), s.Origin)
+	e = s.Auth.RequestReset(r.Context(), string(b.Email), s.clientSource(r))
 	if errors.Is(e, domain.RateLimited) {
 		s.fail(w, r, e)
 		return
 	}
-	if errors.Is(e, auth.ErrResetUndo) {
-		s.Log.Error("password reset could not be undone", diagnostic.Failure(e))
-	} else if e != nil {
-		s.Log.Warn("password reset delivery unavailable")
+	if e != nil {
+		s.Log.Warn("password reset request could not be queued", diagnostic.Failure(e))
 	}
 	w.WriteHeader(202)
 }

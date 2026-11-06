@@ -124,6 +124,7 @@ type fixture struct {
 	owner     uuid.UUID
 	execution *execution.Service
 	apiServer *httpapi.Server
+	log       *lockedLog
 }
 
 func setup(t *testing.T) *fixture { return setupBootstrap(t, true) }
@@ -187,7 +188,8 @@ func setupStore(t *testing.T, bootstrap, hosted bool) *fixture {
 		t.Fatal(e)
 	}
 	service := &auth.Service{Store: st, Passwords: passwords, Mail: sender, Now: time.Now}
-	apiServer, cleanup := httpapi.New(st, service, "http://127.0.0.1", true, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	log := &lockedLog{}
+	apiServer, cleanup := httpapi.New(st, service, "http://127.0.0.1", true, slog.New(slog.NewTextHandler(log, nil)))
 	t.Cleanup(cleanup)
 	handler, e := apiServer.Handler(http.NotFoundHandler())
 	if e != nil {
@@ -207,8 +209,9 @@ func setupStore(t *testing.T, bootstrap, hosted bool) *fixture {
 	})
 	server := httptest.NewServer(handler)
 	apiServer.Origin = server.URL
+	apiServer.Execution.ResetMail.Origin = server.URL
 	t.Cleanup(server.Close)
-	return &fixture{st, service, server, mail, password, owner, apiServer.Execution, apiServer}
+	return &fixture{st, service, server, mail, password, owner, apiServer.Execution, apiServer, log}
 }
 func smtpFixture(t *testing.T) (chan string, string) {
 	t.Helper()
@@ -350,7 +353,7 @@ func tokenFromMail(t *testing.T, messages chan string) string {
 	case m := <-messages:
 		fields := strings.Fields(m)
 		return fields[len(fields)-1]
-	case <-time.After(2 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("email missing")
 		return ""
 	}
@@ -362,5 +365,20 @@ func tokenFromLinkMail(t *testing.T, f *fixture, path string) string {
 	if err != nil || link.Scheme+"://"+link.Host != f.apiServer.Origin || link.Path != path || link.Query().Get("token") == "" {
 		t.Fatal("email must contain a link to the configured origin and expected page with its token")
 	}
-	return link.Query().Get("token")
+	token := link.Query().Get("token")
+	if path == "/reset" {
+		waitForResetLink(t, f, token)
+	}
+	return token
+}
+
+// A reset link starts working just after the relay accepts its mail.
+func waitForResetLink(t *testing.T, f *fixture, token string) {
+	t.Helper()
+	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
+		if _, err := f.st.Queries.PeekPasswordReset(context.Background(), auth.Hash(token)); err == nil {
+			return
+		}
+	}
+	t.Fatal("the mailed reset link was not saved")
 }

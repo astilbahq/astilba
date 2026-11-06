@@ -183,7 +183,9 @@ func (s *Server) InviteMember(w http.ResponseWriter, r *http.Request, ws uuid.UU
 	if e == nil {
 		e = s.Auth.Mail.Send(r.Context(), email, "Join an Astilba workspace", "Open this one-use link to join the Astilba workspace within 24 hours:\n\n"+s.Origin+"/invitation?"+url.Values{"token": {token}}.Encode())
 		if e != nil {
-			_ = s.Store.Queries.DeleteInvitation(r.Context(), db.DeleteInvitationParams{WorkspaceID: ws, ID: id})
+			undo, cancel := auth.Detached(r.Context())
+			defer cancel()
+			_ = s.Store.Queries.DeleteInvitation(undo, db.DeleteInvitationParams{WorkspaceID: ws, ID: id})
 		}
 	}
 	if e != nil {

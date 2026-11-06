@@ -6,12 +6,10 @@ import (
 	"crypto/sha256"
 	"encoding/base32"
 	"errors"
-	"net/url"
 	"strings"
 	"time"
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
-	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/mailer"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
@@ -19,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/pquerna/otp"
 	"github.com/pquerna/otp/totp"
+	"github.com/riverqueue/river"
 )
 
 type Service struct {
@@ -26,6 +25,8 @@ type Service struct {
 	Passwords *Passwords
 	Mail      *mailer.Mailer
 	Now       func() time.Time
+	// Queue takes reset requests. Only a serving process has one.
+	Queue *river.Client[pgx.Tx]
 }
 
 func Hash(value string) []byte { hash := sha256.Sum256([]byte(value)); return hash[:] }
@@ -325,76 +326,6 @@ func (s *Service) ChangePassword(ctx context.Context, p store.Principal, passwor
 	return account, err
 }
 
-// ErrResetUndo reports a failed reset request whose charge or unsent link is still in place, so
-// that email's next requests can be answered without sending mail until the window ends.
-var ErrResetUndo = errors.New("failed password reset could not be undone")
-
-func (s *Service) RequestReset(ctx context.Context, email, ip, origin string) error {
-	if err := s.Limit(ctx, "reset:ip:"+ip, 20, 15*time.Minute); err != nil {
-		return err
-	}
-	email, err := domain.Email(email)
-	if err != nil {
-		return nil
-	}
-	// Anyone can name an email, so refusing here would let them refuse its owner. A failed send
-	// is refunded, so with the database healthy a spent budget means a link has gone out.
-	scope := "reset:email:" + email
-	err = s.charge(ctx, []budget{{scope, 3, attemptWindow}})
-	if errors.Is(err, domain.RateLimited) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	// Whoever asked may hang up, and that must not spend the owner's budget with no mail sent.
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 25*time.Second)
-	defer cancel()
-	account, err := s.Store.Queries.AccountByEmail(ctx, email)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil
-	}
-	if err == nil {
-		err = s.sendReset(ctx, account, origin)
-	}
-	if err != nil {
-		undo, stop := undoContext(ctx)
-		defer stop()
-		if refund := s.Store.Queries.RefundAuthAttempt(undo, Hash(scope)); refund != nil {
-			return errors.Join(err, ErrResetUndo, refund)
-		}
-	}
-	return err
-}
-
-// undoContext gives undoing a failed send its own time, since that failure may be the deadline.
-func undoContext(ctx context.Context) (context.Context, context.CancelFunc) {
-	return context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-}
-
-func (s *Service) sendReset(ctx context.Context, account db.Account, origin string) error {
-	token, err := cryptobox.Token()
-	if err != nil {
-		return err
-	}
-	if err := s.Store.Transaction(ctx, func(q *db.Queries) error {
-		if _, err := q.LockAccount(ctx, account.ID); err != nil {
-			return err
-		}
-		return q.InsertPasswordReset(ctx, db.InsertPasswordResetParams{AccountID: account.ID, TokenHash: Hash(token), ExpiresAt: s.Now().Add(30 * time.Minute)})
-	}); err != nil {
-		return err
-	}
-	if err := s.Mail.Send(ctx, account.Email, "Reset your Astilba password", "Open this one-use link to reset your password within 30 minutes:\n\n"+origin+"/reset?"+url.Values{"token": {token}}.Encode()); err != nil {
-		undo, stop := undoContext(ctx)
-		defer stop()
-		if remove := s.Store.Queries.DeleteUnsentReset(undo, db.DeleteUnsentResetParams{AccountID: account.ID, TokenHash: Hash(token)}); remove != nil {
-			return errors.Join(err, ErrResetUndo, remove)
-		}
-		return err
-	}
-	return nil
-}
 func (s *Service) ValidateReset(ctx context.Context, token, ip string) error {
 	if err := s.Limit(ctx, "reset-validate:ip:"+ip, 60, 15*time.Minute); err != nil {
 		return err
