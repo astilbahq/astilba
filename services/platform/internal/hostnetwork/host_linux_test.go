@@ -5,6 +5,7 @@ package hostnetwork
 import (
 	"context"
 	"encoding/json/jsontext"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -261,6 +262,26 @@ func TestNativeManagedLinks(t *testing.T) {
 	}
 	if err = b.Apply(ctx, next, bb, true); err != nil {
 		t.Fatal("lost receipt restriction retry", err)
+	}
+	// A host keeps what it holds against its own controller's older generations, and a newer
+	// controller's manifest replaces it whatever generation that controller has reached.
+	behind := next
+	behind.Generation--
+	behind.Peers = nil
+	if err = b.Apply(ctx, behind, bb, false); !errors.Is(err, ErrGenerationConflict) {
+		t.Fatal("an older generation was not refused as a conflict", err)
+	}
+	if held, err := b.Snapshot(next.NetworkID); err != nil || Hash(held.Manifest) != Hash(next) {
+		t.Fatal("a refused manifest changed what the host holds", err)
+	}
+	restored := next
+	restored.ControllerGeneration++
+	restored.Generation = 1
+	if err = b.Apply(ctx, restored, bb, false); err != nil {
+		t.Fatal("a newer controller's lower generation was refused", err)
+	}
+	if err = b.Apply(ctx, next, bb, false); !errors.Is(err, ErrGenerationConflict) {
+		t.Fatal("the older controller's manifest was accepted after the newer one", err)
 	}
 	for _, key := range []string{"a", "b"} {
 		raw := in(key, "nft", "-j", "list", "table", "ip", "fixture")

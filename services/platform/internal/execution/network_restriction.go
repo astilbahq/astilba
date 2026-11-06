@@ -2,11 +2,14 @@ package execution
 
 import (
 	"context"
+	"encoding/json/jsontext"
 	"encoding/json/v2"
 
+	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/hostnetwork"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -40,6 +43,20 @@ func networkRestrictionScope(ctx context.Context, tx pgx.Tx, c api.ExecutionComm
 	return hostnetwork.Manifest{}, uuid.Nil, domain.Invalid("network.unit")
 }
 
+// networkRefusal stops the sweep repeating a command a host refused without changing anything. A
+// refusal can only hold back the member that sent it, so a compromised host gains nothing from one.
+func networkRefusal(ctx context.Context, tx pgx.Tx, ws uuid.UUID, c api.ExecutionCommand, cmd hostnetwork.Command, raw jsontext.Value) error {
+	var receipt hostnetwork.Receipt
+	if hostnetwork.Decode(raw, &receipt) != nil || !receipt.Refused || c.ParentId != nil || cmd.Manifest == nil || receipt.NetworkID != cmd.NetworkID || receipt.Identity.MembershipID != cmd.MembershipID {
+		return domain.Invalid("network.refusal")
+	}
+	q := db.New(tx)
+	if cmd.Action == "restrict" {
+		return q.ForgetInstalledNetwork(ctx, db.ForgetInstalledNetworkParams{WorkspaceID: ws, ServerID: c.ServerId, MembershipID: cmd.MembershipID})
+	}
+	return q.NoteRefusedNetworkConfigure(ctx, db.NoteRefusedNetworkConfigureParams{Note: refusedNetworkConfigureNote, WorkspaceID: ws, ServerID: c.ServerId, MembershipID: cmd.MembershipID, Generation: cmd.Manifest.Generation})
+}
+
 func reconciledNetworkReceipt(ctx context.Context, tx pgx.Tx, c api.ExecutionCommand, cmd hostnetwork.Command, receipt hostnetwork.Receipt) (hostnetwork.Manifest, error) {
 	m := *cmd.Manifest
 	if receipt.Before == nil && receipt.Effective == nil {
@@ -64,3 +81,22 @@ func reconciledNetworkReceipt(ctx context.Context, tx pgx.Tx, c api.ExecutionCom
 	}
 	return effective, nil
 }
+
+func sameNetworkConfiguration(a, b hostnetwork.Manifest) bool {
+	// Empty grant lists mean the same thing after either JSON null or [] decoding.
+	// Normalize copies only; frozen command and receipt digests retain their encoding.
+	for _, m := range []*hostnetwork.Manifest{&a, &b} {
+		if len(m.Peers) == 0 {
+			m.Peers = nil
+		}
+		if len(m.Exports) == 0 {
+			m.Exports = nil
+		}
+		if len(m.Egress) == 0 {
+			m.Egress = nil
+		}
+	}
+	return hostnetwork.Hash(a) == hostnetwork.Hash(b)
+}
+
+func mustJSON(v any) []byte { b, _ := stablejson.Marshal(v); return b }

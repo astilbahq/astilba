@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 
-	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/hostnetwork"
 	"github.com/astilbahq/astilba/services/platform/internal/portability"
@@ -15,24 +14,29 @@ import (
 )
 
 // Hosts can honestly be ahead of management's counters, so their claims are bounded rather than
-// ignored, in three tiers. A compromised host can spend whatever is accepted, so what a host may
-// spend live is far less than what an honest host's export may need to show.
+// ignored. A compromised host can spend whatever is accepted, so what a host may spend live is far
+// less than what an honest host's export may need to show.
 const (
-	// networkReceiptMargin is how far ahead a host can be while management has forgotten nothing.
-	// A restriction it has applied but not yet reported can add one generation, and an agent holds
-	// at most 128 unacknowledged outcomes.
+	// networkReceiptMargin is how far ahead a host can be under its current controller. A
+	// restriction it has applied but not yet reported can add one generation, and an agent holds
+	// at most 128 unacknowledged outcomes. A later controller counts for itself, so nothing a host
+	// held before a restore reaches this limit.
 	networkReceiptMargin = 128
-	// networkHistoryAllowance is what a member may claim once per controller generation. A restore
-	// always raises that generation, and the backup has forgotten what was issued since. It takes
-	// far longer than any backup's age for margins repeated every network sweep to add up to this.
-	networkHistoryAllowance = 1 << 32
 	// exportClaimAllowance bounds a host export against the issued counters. It is larger because
-	// an honest host's export must still pass after a compromised peer spent the history allowance.
+	// the backup being recovered has forgotten what was issued since.
 	exportClaimAllowance = 1 << 44
 	// generationClaimCeiling keeps counters that hosts raise below the limit an import accepts,
 	// with room for ordinary increments, so a workspace's export stays importable.
 	generationClaimCeiling = portability.MaxCounter - exportClaimAllowance
 )
+
+const unaccountedNetworkGenerationNote = "This server reported a private network generation far beyond what this installation issued, so private links cannot finish. " + aheadNetworkMemberAdvice
+
+// refusedNetworkConfigureNote keeps a member to removals until the owner saves the network, because
+// the host would refuse anything else the same way.
+const refusedNetworkConfigureNote = "This server holds a later private network generation than this installation issued and refused a change, so only removals can reach it. " + aheadNetworkMemberAdvice
+
+const aheadNetworkMemberAdvice = "A compromised server can cause this, and so can restoring management without fencing the server. Revoke the server if you do not trust it. Otherwise fence it with prepare-recovery, transfer it, then approve the network again."
 
 // generationClaimLimit is the highest generation a host may claim while management has issued up
 // to the given counter. What management issued is never refused, even past the ceiling.
@@ -41,18 +45,6 @@ func generationClaimLimit(issued, allowance int64) int64 {
 		return issued
 	}
 	return min(issued+allowance, generationClaimCeiling)
-}
-
-// acceptNetworkReceiptClaim reports whether a live receipt's generation may move the counter, and
-// records a member's use of its allowance for this controller generation.
-func acceptNetworkReceiptClaim(ctx context.Context, tx pgx.Tx, ws uuid.UUID, n managedNetwork, member networkMember, controller, claimed int64) (bool, error) {
-	if claimed <= generationClaimLimit(n.Generation, networkReceiptMargin) {
-		return true, nil
-	}
-	if controller <= member.HistoryClaim || claimed > generationClaimLimit(n.Generation, networkHistoryAllowance) {
-		return false, nil
-	}
-	return true, db.New(tx).RecordNetworkHistoryClaim(ctx, db.RecordNetworkHistoryClaimParams{Controller: controller, WorkspaceID: ws, ServerID: member.ServerID})
 }
 
 // issuedRecoveryCounters holds the highest value this installation is known to have issued,

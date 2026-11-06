@@ -29,6 +29,9 @@ import (
 const WireGuardVersion = "1.0.20210914"
 const NFTVersion = "1.0.9"
 
+// ErrGenerationConflict means the host refused a manifest before changing anything.
+var ErrGenerationConflict = errors.New("managed network generation conflict")
+
 // Bridge identities are observed from owned Docker resources, never supplied by a peer.
 type ProxyPath struct {
 	Name   string `json:"name"`
@@ -282,8 +285,8 @@ func (h Host) apply(ctx context.Context, m Manifest, bridges []Bridge, restrict 
 	}
 	old, err := h.Snapshot(m.NetworkID)
 	if err == nil {
-		if old.Manifest.ServerID != m.ServerID || old.Manifest.ControllerGeneration > m.ControllerGeneration || old.Manifest.Generation > m.Generation || old.Manifest.Generation == m.Generation && Hash(old.Manifest) != Hash(m) {
-			return errors.New("managed network generation conflict")
+		if !Admits(old.Manifest, m) {
+			return ErrGenerationConflict
 		}
 	} else if !os.IsNotExist(err) {
 		return err

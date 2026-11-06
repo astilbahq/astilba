@@ -21,9 +21,8 @@ import (
 
 // The agreed limits on what a host's word can do. One step past each is refused.
 const (
-	receiptMargin    = 128
-	historyAllowance = 1 << 32
-	exportAllowance  = 1 << 44
+	receiptMargin   = 128
+	exportAllowance = 1 << 44
 )
 
 func claimStatus(t *testing.T, f *fixture, path, token string, body any) int {
@@ -116,6 +115,9 @@ func TestAgentCannotSpendNetworkGeneration(t *testing.T) {
 			// Runs one honest round for every host, and hands back the attacker's restriction when armed.
 			round := func(armed bool) *api.ExecutionCommand {
 				t.Helper()
+				if err := f.execution.SweepNetworks(ctx); err != nil {
+					t.Fatal(err)
+				}
 				if time.Since(beat) > 10*time.Second {
 					for _, h := range hosts {
 						if _, err := f.execution.Heartbeat(ctx, h.identity, api.AgentHeartbeat{Capabilities: h.input.Capabilities, Preflight: h.input.Preflight}); err != nil {
@@ -125,7 +127,7 @@ func TestAgentCannotSpendNetworkGeneration(t *testing.T) {
 					beat = time.Now()
 				}
 				for _, h := range hosts {
-					poll, done := context.WithTimeout(ctx, 250*time.Millisecond)
+					poll, done := context.WithTimeout(ctx, aheadPollWait)
 					c, err := f.execution.Poll(poll, h.identity)
 					expired := poll.Err()
 					done()
@@ -202,7 +204,7 @@ func TestAgentCannotSpendNetworkGeneration(t *testing.T) {
 				return claimCounter(t, f, `SELECT generation FROM workspace_networks WHERE workspace_id=$1`, ws)
 			}
 			issued := counter()
-			for _, claim := range []func() int64{func() int64 { return math.MaxInt64 - 1 }, func() int64 { return issued + historyAllowance }, func() int64 { return issued + receiptMargin + 1 }} {
+			for _, claim := range []func() int64{func() int64 { return math.MaxInt64 - 1 }, func() int64 { return issued + 1<<32 }, func() int64 { return issued + receiptMargin + 1 }} {
 				claimed := claim()
 				restriction()
 				// The report stands, because refusing it would also stop an honest host.
@@ -221,7 +223,7 @@ func TestAgentCannotSpendNetworkGeneration(t *testing.T) {
 				}
 				// It would answer the same again, so nothing more goes to it until something changes.
 				sent := claimCounter(t, f, `SELECT count(*) FROM execution_operations WHERE server_id=$1 AND kind='network'`, attacker.id)
-				for until := time.Now().Add(6 * time.Second); time.Now().Before(until); {
+				for range 3 {
 					round(false)
 				}
 				if got := claimCounter(t, f, `SELECT count(*) FROM execution_operations WHERE server_id=$1 AND kind='network'`, attacker.id); got != sent {
@@ -420,10 +422,9 @@ func TestRevocationSurvivesSpentGeneration(t *testing.T) {
 	}
 }
 
-// A host holding more than its in-flight work explains is one a restored management has forgotten.
-// That can only be true once per controller generation, or a forged receipt could repeat it on
-// every sweep and carry honest hosts beyond what the next restore accepts from them.
-func TestReceiptHistoryAllowancePerController(t *testing.T) {
+// A forged receipt repeated on every sweep could otherwise carry honest hosts beyond what the next
+// restore accepts from them, so a host may claim only what its in-flight work explains.
+func TestReceiptClaimsStayWithinMargin(t *testing.T) {
 	f := setup(t)
 	ctx := context.Background()
 	b := f.browser(t)
@@ -489,15 +490,11 @@ func TestReceiptHistoryAllowancePerController(t *testing.T) {
 		return strings.Contains(note, "far beyond")
 	}
 	claim := func(controller, claimed int64) bool { return report(controller, counter(), claimed) }
-	// Management has forgotten nothing yet, so the allowance is not available at all.
 	if !claim(0, start+receiptMargin+1) {
-		t.Fatal("a claim past the margin was accounted for before any restore")
-	}
-	if !claim(1, start+historyAllowance+1) {
-		t.Fatal("a claim past the allowance was accounted for")
+		t.Fatal("a claim past the margin was accounted for")
 	}
 	if got := counter(); got != start {
-		t.Fatalf("unaccounted claims moved the counter to %d", got)
+		t.Fatalf("an unaccounted claim moved the counter to %d", got)
 	}
 	// A command the owner has since moved past must not make the member wait, or a removal
 	// issued after it would never be sent.
@@ -507,24 +504,20 @@ func TestReceiptHistoryAllowancePerController(t *testing.T) {
 	if got := counter(); got != start {
 		t.Fatalf("an unaccounted claim on a superseded command moved the counter to %d", got)
 	}
-	if claim(1, start+historyAllowance) {
-		t.Fatal("the first claim after a restore was not accounted for")
+	// A later controller entitles a host to nothing. It counts for itself, so a real host
+	// reports the generation it was sent, and only a forged before-state claims more.
+	for _, controller := range []int64{1, 2} {
+		if !claim(controller, counter()+receiptMargin+1) {
+			t.Fatalf("controller %d's first claim past the margin was accounted for", controller)
+		}
 	}
-	spent := counter()
-	if spent != start+historyAllowance+1 {
-		t.Fatalf("counter = %d", spent)
+	if got := counter(); got != start {
+		t.Fatalf("a later controller's claim moved the counter to %d", got)
 	}
-	if !claim(1, spent+receiptMargin+1) {
-		t.Fatal("a second large claim under the same controller generation was accounted for")
-	}
-	if got := counter(); got != spent {
-		t.Fatalf("an unaccounted claim moved the counter to %d", got)
-	}
-	if claim(1, spent+receiptMargin) {
+	if claim(2, start+receiptMargin) {
 		t.Fatal("a claim within the margin was not accounted for")
 	}
-	spent = counter()
-	if claim(2, spent+receiptMargin+1) {
-		t.Fatal("the next restore's allowance was not available")
+	if got := counter(); got != start+receiptMargin+1 {
+		t.Fatalf("counter = %d", got)
 	}
 }

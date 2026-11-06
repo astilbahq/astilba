@@ -67,6 +67,9 @@ func (e *Engine) executeNetwork(ctx context.Context, c api.ExecutionCommand, r R
 			}
 			m, err = hostnetwork.ReconcileRestriction(prior.Manifest, baseline, m, unit, cfg.ControllerGeneration)
 			if err != nil {
+				if c.ParentId == nil {
+					return e.refuseNetwork(ctx, c.Id, receipt, "This removal no longer fits this host's private links, so nothing changed.")
+				}
 				return finish("needs_attention", "Private-link identity changed outside this removal scope.")
 			}
 			if hostnetwork.Hash(m) != hostnetwork.Hash(*command.Manifest) {
@@ -90,6 +93,9 @@ func (e *Engine) executeNetwork(ctx context.Context, c api.ExecutionCommand, r R
 			return err
 		}
 		if err = host.Apply(ctx, m, bridges, command.Action == "restrict"); err != nil {
+			if c.ParentId == nil && errors.Is(err, hostnetwork.ErrGenerationConflict) {
+				return e.refuseNetwork(ctx, c.Id, receipt, "This host holds a later private-link generation than this controller issued, so nothing changed. Fence this server with prepare-recovery, transfer it, then approve the network again.")
+			}
 			return finish("needs_attention", "Private-link configuration has an uncertain result. Inspect owned network state before reconciliation.")
 		}
 		receipt.Generation = m.Generation
@@ -107,6 +113,24 @@ func (e *Engine) executeNetwork(ctx context.Context, c api.ExecutionCommand, r R
 		r.Report.Network = &message
 	})
 }
+
+// refuseNetwork ends a standalone command the host refused before changing anything. An unfinished
+// record would block other commands and controller transfer, the way out of a generation conflict.
+// A coordinated parent's phases keep needs_attention, which its own recovery resolves.
+func (e *Engine) refuseNetwork(ctx context.Context, id uuid.UUID, receipt hostnetwork.Receipt, note string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	receipt.Refused = true
+	raw, _ := stablejson.Marshal(receipt)
+	return e.Journal.Mutate(id, func(r *Record) {
+		r.Report.State = "failed"
+		r.Report.Note = note
+		message := jsontext.Value(raw)
+		r.Report.Network = &message
+	})
+}
+
 func (e *Engine) networkBridges(ctx context.Context, m hostnetwork.Manifest) ([]hostnetwork.Bridge, error) {
 	cfg, err := e.Journal.Config()
 	if err != nil {
