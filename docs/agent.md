@@ -149,12 +149,12 @@ only after opening their local state and negotiating
 cannot introduce a new maintenance command on these agents. Exact commands
 already accepted still reconcile locally while management is unavailable.
 
-Writer resumptions retain their original commands and deadlines. Queued consumer
-resumptions wait for the matching primary resumption to succeed; cancellation does
-not discard them. A delayed first delivery passes through the existing frozen
-reservation, retained recovery root, selected target, writer ownership and
-readiness checks. An uncertain primary holds consumers and reservations for
-reconciliation.
+Writer resumptions and maintenance completions retain their original commands and
+deadlines. Queued consumer resumptions wait for the matching primary resumption to
+succeed; cancellation does not discard them. A delayed first delivery passes through
+the existing frozen reservation, retained recovery root, selected target, writer
+ownership and readiness checks. An uncertain primary holds consumers and reservations
+for reconciliation.
 
 ## Protected application releases
 

@@ -167,7 +167,10 @@ func (e *Engine) Execute(ctx context.Context, c api.ExecutionCommand) error {
 		metadataContinuation = bodyErr == nil && descriptorErr == nil && body.Phase == "checkpoint" && d.Sequence > 0
 		// The maintenance executor validates the retained checkpoint, frozen
 		// reservation, chosen target and exact writer ownership before effects.
-		maintenanceContinuation = bodyErr == nil && body.Maintenance != nil && (body.Phase == "resume-source" || body.Phase == "resume-target")
+		// These phases change no data and cannot be issued again, so cancelling one
+		// would strand the reservation. A restore replaces data, so its deadline holds:
+		// see docs/cross-host-placement.md.
+		maintenanceContinuation = bodyErr == nil && body.Maintenance != nil && (body.Phase == "resume-source" || body.Phase == "resume-target" || body.Phase == "complete")
 	}
 	updateContinuation := c.Kind == "update" && e.Journal.startupUpdates[c.Id] && (r.AcceptedAt == nil || !r.AcceptedAt.After(c.Deadline)) && !e.cancelled(c.Id) && c.Release != nil && execution.Hash(c.Release) == c.PlanHash
 	if c.Kind != "upgrade" && !updateContinuation && !metadataContinuation && !maintenanceContinuation && !networkRestriction(c) && r.Checkpoint == "accepted" && time.Now().After(c.Deadline) {

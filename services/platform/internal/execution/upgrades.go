@@ -359,7 +359,7 @@ func undeliveredUpgrade(ctx context.Context, tx pgx.Tx, ws uuid.UUID, c api.Exec
 	default:
 		status.Phase = "attention"
 	}
-	status.Note = "This upgrade action stopped before reaching the host and changed nothing. The operation's note says why."
+	status.Note = "This upgrade action stopped before changing anything on the host."
 	raw, _ = stablejson.Marshal(status)
 	return q.SaveSupportedUpgradeStatus(ctx, db.SaveSupportedUpgradeStatusParams{WorkspaceID: ws, ID: c.ResourceId, Status: raw})
 }
