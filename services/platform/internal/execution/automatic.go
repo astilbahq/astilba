@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json/v2"
 	"errors"
+	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"reflect"
 	"slices"
@@ -14,6 +15,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/compose-spec/compose-go/v2/types"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -146,6 +148,13 @@ func (w *automaticWorker) work(ctx context.Context, git *gitAnswers, job *river.
 	if err != nil {
 		return err
 	}
+	own, err := automaticOwnChangeOnly(ctx, tx, ws, env, job.Args.ID, run, appliedRaw, v.Spec)
+	if err != nil {
+		return err
+	}
+	if !own {
+		return stop("Not deployed: the draft also holds changes that were never deployed, such as saved variables, routes or services, or an image from an earlier run that did not deploy. This run's image or source is saved in the draft. Prepare and apply a deployment plan to review everything in the draft; automatic deployment then resumes with the next push.")
+	}
 	allowHost, err := automaticChanges(previous, v.Spec)
 	if err != nil {
 		return stop("Automatic deployment needs interactive review for stateful changes or new host permissions.")
@@ -225,6 +234,46 @@ func (w *automaticWorker) work(ctx context.Context, git *gitAnswers, job *river.
 		return err
 	}
 	return tx.Commit(ctx)
+}
+
+// automaticOwnChangeOnly reports whether the draft is exactly the applied specification plus this run's
+// change. The owner's policy covers a built image or merged source. Anything else in the draft, whoever
+// saved it, has had no plan review, and a credential without deployment capabilities can save it. A change
+// that cannot be rebuilt from the applied specification did not come from this run alone.
+func automaticOwnChangeOnly(ctx context.Context, tx pgx.Tx, ws, env, id uuid.UUID, run pipeline.Command, applied []byte, draft domain.Specification) (bool, error) {
+	expected, _, err := domain.ParseSpec(applied)
+	if err != nil {
+		return false, err
+	}
+	switch run.Action {
+	case "import":
+		// Refresh reuses the draft's entrypoints, so only the files and their origin are the commit's.
+		if expected.Compose == nil {
+			return false, nil
+		}
+		expected.Compose.Files, expected.Compose.Origin = draft.Compose.Files, draft.Compose.Origin
+	case "build":
+		raw, err := db.New(tx).AutomaticBuildArtifact(ctx, db.AutomaticBuildArtifactParams{WorkspaceID: ws, EnvironmentID: env, ID: id})
+		if err != nil {
+			return false, err
+		}
+		var artifact pipeline.Artifact
+		if err = json.Unmarshal(raw, &artifact); err != nil {
+			return false, err
+		}
+		if err = promoteSpecification(ctx, &expected, run.AppID, artifact); err != nil {
+			return false, ctx.Err()
+		}
+	}
+	raw, err := stablejson.Marshal(expected)
+	if err != nil {
+		return false, err
+	}
+	parsed, _, err := domain.ParseSpec(raw)
+	if err != nil {
+		return false, nil
+	}
+	return deployment.Hash(parsed) == deployment.Hash(draft), nil
 }
 
 // Automatic policy carries forward existing permissions, never grants new ones.

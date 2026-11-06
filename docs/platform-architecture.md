@@ -184,7 +184,7 @@ Changes to a reviewed input invalidate the plan. Replayed apply requests return 
 
 Each environment initially permits one active mutation. Host-wide changes, including Traefik configuration, also require agent-side serialisation. Generation checks and the agent journal fence out duplicate or stale execution after a control-plane worker loses its lease. A replacement worker follows the existing operation before it can create a conflicting one.
 
-Automatic deployment is opt-in per environment. A merged configuration change or successful build can trigger the same plan and policy checks as a manual deployment, but cannot authorise volume deletion or a stateful major upgrade. Those operations require separate review even when their source change has merged.
+Automatic deployment is opt-in per environment. A merged configuration change or successful build can trigger the same plan and policy checks as a manual deployment. The configuration it deploys is the applied revision plus that change, so any other saved draft change waits for review. It cannot authorise volume deletion or a stateful major upgrade. Those operations require separate review even when their source change has merged.
 
 Promote a built artifact between environments by reusing its immutable image identity. Resolve runtime variables and secrets for the destination environment. A change to build-time inputs requires a new build and is not promotion of the same artifact. Repository configuration changes follow their own source review rather than bypassing Git ownership during promotion.
 
