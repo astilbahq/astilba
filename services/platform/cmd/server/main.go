@@ -84,6 +84,7 @@ func run() error {
 	if e != nil {
 		return errors.New("cannot configure database")
 	}
+	poolConfig.MaxConns = c.DatabasePoolSize
 	if os.Args[1] == "serve" {
 		store.ConfigureServingPool(poolConfig)
 	}
@@ -198,6 +199,10 @@ func run() error {
 		if err := pool.Ping(ctx); err != nil {
 			return errors.New("serving database is unavailable or excluded by offline recovery")
 		}
+		if e = st.CheckConnectionLimit(ctx); e != nil {
+			return e
+		}
+		go st.LogPoolUse(ctx)
 		if e = c.ValidateServer(); e != nil {
 			return e
 		}

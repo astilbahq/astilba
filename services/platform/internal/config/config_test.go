@@ -33,6 +33,39 @@ func TestTrustedProxyConfiguration(t *testing.T) {
 	}
 }
 
+func TestDatabasePoolSize(t *testing.T) {
+	t.Setenv("ASTILBA_DATABASE_URL", "postgres://example.invalid/platform")
+	t.Setenv("ASTILBA_KEYRING", "keyring.json")
+	t.Setenv("ASTILBA_KEYRING_JSON", "")
+	t.Setenv("ASTILBA_HOSTED", "false")
+	for _, tc := range []struct {
+		value string
+		want  int32
+		bad   bool
+	}{
+		{value: "", want: defaultDatabasePoolSize},
+		{value: "4", want: 4},
+		{value: "48", want: 48},
+		{value: "1000", want: 1000},
+		{value: "3", bad: true},
+		{value: "0", bad: true},
+		{value: "-12", bad: true},
+		{value: "1001", bad: true},
+		{value: "99999999999", bad: true},
+		{value: "12.5", bad: true},
+		{value: "twelve", bad: true},
+		{value: " 12", bad: true},
+	} {
+		t.Run(tc.value, func(t *testing.T) {
+			t.Setenv("ASTILBA_DATABASE_POOL_SIZE", tc.value)
+			c, err := Load()
+			if (err != nil) != tc.bad || (!tc.bad && c.DatabasePoolSize != tc.want) {
+				t.Fatalf("pool size %d, error %v", c.DatabasePoolSize, err)
+			}
+		})
+	}
+}
+
 func TestConsoleEmailRequiresLocalDevelopment(t *testing.T) {
 	t.Setenv("ASTILBA_DATABASE_URL", "postgres://example.invalid/platform")
 	t.Setenv("ASTILBA_KEYRING", "keyring.json")

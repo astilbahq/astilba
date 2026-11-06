@@ -2,6 +2,7 @@ package config
 
 import (
 	"errors"
+	"fmt"
 	"github.com/astilbahq/astilba/services/platform/internal/applicationdns"
 	"github.com/astilbahq/astilba/services/platform/internal/hosting"
 	"net"
@@ -15,8 +16,16 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/mailer"
 )
 
+const (
+	// defaultDatabasePoolSize is explained in docs/hosting.md#database-connections.
+	defaultDatabasePoolSize = 12
+	minDatabasePoolSize     = 4
+	maxDatabasePoolSize     = 1000
+)
+
 type Config struct {
 	LogRetention                                      time.Duration
+	DatabasePoolSize                                  int32
 	DatabaseURL, Keyring, KeyringJSON, Listen, Origin string
 	Development, Hosted, Troubleshooting              bool
 	ApplicationDNS                                    applicationdns.Config
@@ -44,6 +53,14 @@ func Load() (Config, error) {
 		days = n
 	}
 	c.LogRetention = time.Duration(days) * 24 * time.Hour
+	c.DatabasePoolSize = defaultDatabasePoolSize
+	if raw := os.Getenv("ASTILBA_DATABASE_POOL_SIZE"); raw != "" {
+		n, e := strconv.Atoi(raw)
+		if e != nil || n < minDatabasePoolSize || n > maxDatabasePoolSize {
+			return c, fmt.Errorf("ASTILBA_DATABASE_POOL_SIZE must be between %d and %d", minDatabasePoolSize, maxDatabasePoolSize)
+		}
+		c.DatabasePoolSize = int32(n)
+	}
 	if raw := os.Getenv("ASTILBA_TRUSTED_PROXIES"); raw != "" {
 		for _, value := range strings.Split(raw, ",") {
 			prefix, err := netip.ParsePrefix(strings.TrimSpace(value))
