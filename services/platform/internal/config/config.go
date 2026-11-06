@@ -17,8 +17,8 @@ import (
 )
 
 const (
-	// DefaultDatabasePoolSize is explained in docs/hosting.md#database-connections.
-	DefaultDatabasePoolSize = 12
+	// defaultDatabasePoolSize is explained in docs/hosting.md#database-connections.
+	defaultDatabasePoolSize = 12
 	minDatabasePoolSize     = 4
 	maxDatabasePoolSize     = 1000
 )
@@ -53,7 +53,7 @@ func Load() (Config, error) {
 		days = n
 	}
 	c.LogRetention = time.Duration(days) * 24 * time.Hour
-	c.DatabasePoolSize = DefaultDatabasePoolSize
+	c.DatabasePoolSize = defaultDatabasePoolSize
 	if raw := os.Getenv("ASTILBA_DATABASE_POOL_SIZE"); raw != "" {
 		n, e := strconv.Atoi(raw)
 		if e != nil || n < minDatabasePoolSize || n > maxDatabasePoolSize {

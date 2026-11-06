@@ -36,7 +36,7 @@ run() {
     tmpfs-idle-????) measure --name "$1" --agents "$((10#$count))" --db-tmpfs ;;
     tmpfs-idle-????-pool12) count=${count%12}; measure --name "$1" --agents "$((10#$count))" --db-tmpfs "${pool12[@]}" ;;
     tmpfs-idle-????-pool??) count=${1#tmpfs-idle-}; measure --name "$1" --agents "$((10#${count%%-*}))" --db-tmpfs --pool-size "$((10#${1##*pool}))" ;;
-    # A database about 3 ms away. Each fleet is chosen against the pool's expected ceiling.
+    # A database about 3.5 ms away, with the VM's own delay. Each fleet is chosen against the pool's expected ceiling.
     tmpfs-idle-????-rtt3-pool??) count=${1#tmpfs-idle-}; measure --name "$1" --agents "$((10#${count%%-*}))" --db-tmpfs --db-rtt 2800us --pool-size "$((10#${1##*pool}))" ;;
     tmpfs-idle-????-slow-db) measure --name "$1" --agents "$((10#$count))" --db-tmpfs --db-rtt 500us ;;
     tmpfs-idle-????-no-tick)

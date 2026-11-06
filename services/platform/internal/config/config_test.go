@@ -43,7 +43,7 @@ func TestDatabasePoolSize(t *testing.T) {
 		want  int32
 		bad   bool
 	}{
-		{value: "", want: DefaultDatabasePoolSize},
+		{value: "", want: defaultDatabasePoolSize},
 		{value: "4", want: 4},
 		{value: "48", want: 48},
 		{value: "1000", want: 1000},

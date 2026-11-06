@@ -21,7 +21,7 @@ Before the window, each server's own report is copied back over the previous 24 
 | `idle-` | PostgreSQL on the VM's disk. Used for PostgreSQL's memory, because tmpfs pages are charged to its cgroup, and for the zero-agent baseline. |
 | `tmpfs-idle-`, `tmpfs-active-` | PostgreSQL's files in tmpfs with `commit_delay=1000` and `commit_siblings=0`. This replaces the host's disk with a fixed 1 ms commit that resembles gp3. |
 | `-pool12` | A pool of 12, with all 12 CPUs shared between the containers, as the first pool of 12 was measured. |
-| `-poolNN` after `tmpfs-idle-` | A pool of `NN` with the default CPU split. Other runs use a pool of 4 unless the name says otherwise. |
+| `-poolNN` after `tmpfs-idle-` | A pool of `NN` with the default CPU split. Runs use a pool of 4 unless the name says otherwise, or the name starts `sized-`, which use 12. |
 | `-rtt3-poolNN` | A pool of `NN` with 2.8 ms of `netem` delay, about 3.5 ms measured. |
 | `-no-tick` | A throwaway build with [no-tick.patch](no-tick.patch) applied to a temporary copy of the working tree. It bounds what a wake-up could save and is not usable: commands wait up to 25 s. |
 | `-slow-db` | A larger `netem` delay, about 0.8 ms round trip. |
