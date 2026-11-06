@@ -17,7 +17,7 @@ const minTrimmedSecret = 12
 var (
 	// A line break however a file writes it, with the indentation around it: real, as `\n`
 	// or `\\n` inside a string, or after a `\` that continues a line.
-	secretLineBreak = regexp.MustCompile(`\s*(?:(?:\\*[\r\n]|\\+[rn])(?:\s|\\+t)*)+`)
+	secretLineBreak = regexp.MustCompile(`(?:\s|\\+t)*(?:(?:\\*[\r\n]|\\+[rn])(?:\s|\\+t)*)+`)
 	secretTab       = regexp.MustCompile(`\\+t`)
 	secretEscape    = regexp.MustCompile(`\\+`)
 	// What wrapping or commenting out adds between the lines of a run of base64, which has

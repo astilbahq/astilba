@@ -69,6 +69,7 @@ func TestSecretTextExposes(t *testing.T) {
 		{"multi-line value with an escaped slash", `https:\/\/db.internal\npassword`, "https://db.internal\npassword", true},
 		{"multi-line value continued with a backslash", "first-line\\\n  second-line", "first-line\nsecond-line", true},
 		{"multi-line value with an escaped tab", `col-one\tcol-two\nsecond-line`, "col-one\tcol-two\nsecond-line", true},
+		{"multi-line value with an escaped tab before a line break", `first-line\t\nsecond-line`, "first-line\t\nsecond-line", true},
 		{"single-line value with an escaped tab", `col-one\tcol-two-three`, "col-one\tcol-two-three", true},
 		{"single-line value with an escaped quote", `pa\"ss-word-123`, `pa"ss-word-123`, true},
 
