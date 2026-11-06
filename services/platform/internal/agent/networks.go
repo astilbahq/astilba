@@ -22,57 +22,58 @@ func networkRestriction(c api.ExecutionCommand) bool {
 	var n hostnetwork.Command
 	return c.Kind == "network" && c.Network != nil && hostnetwork.Decode(*c.Network, &n) == nil && n.Action == "restrict" && n.Validate() == nil
 }
-func (e *Engine) executeNetwork(ctx context.Context, c api.ExecutionCommand) error {
+func (e *Engine) executeNetwork(ctx context.Context, c api.ExecutionCommand, r Record) error {
+	finish := func(state api.ExecutionState, note string) error { return e.finishPhase(ctx, c.Id, state, note) }
 	var command hostnetwork.Command
 	if c.Network == nil || hostnetwork.Decode(*c.Network, &command) != nil || command.Validate() != nil || hostnetwork.Hash(command) != c.PlanHash || command.NetworkID != c.ResourceId {
-		return e.finish(c.Id, "failed", "Managed network command identity is invalid.")
+		return finish("failed", "Managed network command identity is invalid.")
 	}
 	cfg, err := e.Journal.Config()
 	if err != nil {
 		return err
 	}
 	if cfg.Role == "build" || cfg.PreviewOnly {
-		return e.finish(c.Id, "failed", "This host role cannot join a managed deployment network.")
+		return finish("failed", "This host role cannot join a managed deployment network.")
 	}
 	marker, err := os.Lstat(filepath.Join(e.Journal.dir, "network-enabled"))
 	if err != nil || !marker.Mode().IsRegular() || marker.Mode().Perm()&0077 != 0 {
-		return e.finish(c.Id, "failed", "Managed networking requires explicit supported-host preparation.")
+		return finish("failed", "Managed networking requires explicit supported-host preparation.")
 	}
-	if e.cancelled(c.Id) {
-		return e.finish(c.Id, "cancelled", "Cancelled before changing managed networking.")
+	if e.cancelled(c.Id) && r.Checkpoint == "accepted" {
+		return finish("cancelled", "Cancelled before changing managed networking.")
 	}
 	host := e.networkHost()
 	if !host.Supported(ctx) {
-		return e.finish(c.Id, "failed", "Managed networking tools, kernel support or service permissions are unavailable.")
+		return finish("failed", "Managed networking tools, kernel support or service permissions are unavailable.")
 	}
 	identity, err := host.Identity(command.MembershipID)
 	if err != nil {
-		return e.finish(c.Id, "needs_attention", "Local network identity requires inspection.")
+		return finish("needs_attention", "Local network identity requires inspection.")
 	}
 	receipt := hostnetwork.Receipt{Identity: identity, NetworkID: command.NetworkID}
 	if command.Manifest != nil {
 		m := *command.Manifest
 		if m.ServerID != cfg.ServerID {
-			return e.finish(c.Id, "failed", "Managed network controller identity changed.")
+			return finish("failed", "Managed network controller identity changed.")
 		}
 		if command.Action == "restrict" {
 			prior, err := host.Snapshot(m.NetworkID)
 			if err != nil {
-				return e.finish(c.Id, "needs_attention", "The admitted private-link authority requires inspection.")
+				return finish("needs_attention", "The admitted private-link authority requires inspection.")
 			}
 			baseline, unit, err := e.Journal.networkRestrictionScope(c, command)
 			if err != nil {
-				return e.finish(c.Id, "needs_attention", "The frozen private-link removal scope requires inspection.")
+				return finish("needs_attention", "The frozen private-link removal scope requires inspection.")
 			}
 			m, err = hostnetwork.ReconcileRestriction(prior.Manifest, baseline, m, unit, cfg.ControllerGeneration)
 			if err != nil {
-				return e.finish(c.Id, "needs_attention", "Private-link identity changed outside this removal scope.")
+				return finish("needs_attention", "Private-link identity changed outside this removal scope.")
 			}
 			if hostnetwork.Hash(m) != hostnetwork.Hash(*command.Manifest) {
 				receipt.Before, receipt.Effective = &prior.Manifest, &m
 			}
 		} else if m.ControllerGeneration != cfg.ControllerGeneration && !e.recoveredNetwork(c, m) {
-			return e.finish(c.Id, "failed", "Managed network controller identity changed.")
+			return finish("failed", "Managed network controller identity changed.")
 		}
 		bridges, err := e.networkBridges(ctx, m)
 		if err != nil && command.Action == "restrict" {
@@ -82,10 +83,14 @@ func (e *Engine) executeNetwork(ctx context.Context, c api.ExecutionCommand) err
 			}
 		}
 		if err != nil {
-			return e.finish(c.Id, "needs_attention", "Owned network bridges require inspection before changing private links.")
+			return finish("needs_attention", "Owned network bridges require inspection before changing private links.")
+		}
+		// Once begun, an apply finishes even past its admission deadline, as a phase's rerun.
+		if err = e.checkpoint(c.Id, "network-apply"); err != nil {
+			return err
 		}
 		if err = host.Apply(ctx, m, bridges, command.Action == "restrict"); err != nil {
-			return e.finish(c.Id, "needs_attention", "Private-link configuration has an uncertain result. Inspect owned network state before reconciliation.")
+			return finish("needs_attention", "Private-link configuration has an uncertain result. Inspect owned network state before reconciliation.")
 		}
 		receipt.Generation = m.Generation
 		receipt.Hash = hostnetwork.Hash(m)
@@ -94,6 +99,9 @@ func (e *Engine) executeNetwork(ctx context.Context, c api.ExecutionCommand) err
 	raw, _ := stablejson.Marshal(receipt)
 	return e.Journal.Mutate(c.Id, func(r *Record) {
 		r.Report.State = "succeeded"
+		for i := range r.Report.Steps {
+			r.Report.Steps[i].State = "done"
+		}
 		r.Report.Note = "Managed network configuration acknowledged; deployment separately verifies endpoint reachability."
 		message := jsontext.Value(raw)
 		r.Report.Network = &message

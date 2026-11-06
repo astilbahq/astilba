@@ -69,6 +69,8 @@ sudo astilba-agent retry --operation OPERATION_UUID
 sudo systemctl start astilba-agent
 ```
 
+A writer that does not come back after coordinated maintenance can instead be accepted as it is, so that the maintenance can finish and release its reservation. See [maintenance and compatibility](cross-host-placement.md#maintenance-and-compatibility).
+
 The journal retains one unresolved command and up to 128 acknowledged outcomes, with generation fencing after eviction. Probe records are limited to 32 KiB; visual/pipeline records and the host registry to 512 KiB. Reports retain at most 16 steps, 1 KiB of diagnostic text and a bounded 24 KiB observation. Agent report bodies are limited to 192 KiB for bounded source results; other agent requests remain limited to 16 KiB; visual command responses have a 256 KiB bound. Visual logs are bounded and known environment values are redacted. Slow or disconnected management does not block local execution. Revocation rejects subsequent agent requests but does not stop containers or undo accepted effects. Re-enroll the same state directory to report and reconcile outstanding work.
 
 ## Terminal session consent

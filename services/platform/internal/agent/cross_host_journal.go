@@ -30,6 +30,9 @@ type crossHostState struct {
 	ResumeTarget *bool
 	Restore      *restoreCutoverState
 	Retiring     *retainedPool
+	// Unready names the running instances that maintenance does not expect to be ready: see
+	// recordUnready and AcceptUnreadyWriters.
+	Unready map[string]bool
 }
 
 func (j *Journal) crossHostIn(tx *bolt.Tx) (crossHostState, error) {

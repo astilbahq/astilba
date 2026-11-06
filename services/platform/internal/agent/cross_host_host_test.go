@@ -31,29 +31,6 @@ import (
 	"github.com/moby/moby/client"
 )
 
-type hostRequest struct {
-	Command     *api.ExecutionCommand `json:"command,omitempty"`
-	Acknowledge *api.AgentReport      `json:"acknowledge,omitempty"`
-	Membership  *uuid.UUID            `json:"membership,omitempty"`
-	Inventory   bool                  `json:"inventory,omitempty"`
-	Policy      *uuid.UUID            `json:"policy,omitempty"`
-	Upgrade     *uuid.UUID            `json:"upgrade,omitempty"`
-	Transfer    bool                  `json:"transfer,omitempty"`
-	Barrier     bool                  `json:"barrier,omitempty"`
-	Retry       *uuid.UUID            `json:"retry,omitempty"`
-	Reject      *uuid.UUID            `json:"reject,omitempty"`
-	CrashAt     string                `json:"crashAt,omitempty"`
-}
-type hostReply struct {
-	Report    *api.AgentReport        `json:"report,omitempty"`
-	Identity  *hostnetwork.Identity   `json:"identity,omitempty"`
-	Inventory *api.CrossHostInventory `json:"inventory,omitempty"`
-	Status    *backup.Status          `json:"status,omitempty"`
-	Upgrade   *upgrade.Status         `json:"upgrade,omitempty"`
-	Barrier   *bool                   `json:"barrier,omitempty"`
-	Error     string                  `json:"error,omitempty"`
-}
-
 // Each helper runs inside its deployment host's network namespace and talks to
 // that namespace's real Docker daemon. Commands still cross the production
 // journal, identity, plan, secret and ownership boundaries.
@@ -98,9 +75,16 @@ func TestNativeCrossHostHelper(t *testing.T) {
 			t.Fatal(err)
 		}
 		reply := hostReply{}
+		ctx, cancel := context.WithCancel(context.Background())
+		if request.CancelAt == "start" {
+			cancel()
+		}
 		engine.Point = func(point string) {
 			if point == request.CrashAt && point != "" {
 				os.Exit(77)
+			}
+			if point == request.CancelAt {
+				cancel()
 			}
 		}
 		if request.Retry != nil {
@@ -131,13 +115,15 @@ func TestNativeCrossHostHelper(t *testing.T) {
 		} else if request.Acknowledge != nil {
 			err = j.Acknowledge(request.Acknowledge.Id, request.Acknowledge.Sequence)
 		} else if request.Command != nil {
-			err = engine.Execute(context.Background(), *request.Command)
-			if err == nil {
+			err = engine.Execute(ctx, *request.Command)
+			// A cancelled phase's own error is what its report must not record.
+			if err == nil || ctx.Err() != nil {
 				record, x := j.Record(request.Command.Id)
 				err = x
 				reply.Report = &record.Report
 			}
 		}
+		cancel()
 		if err != nil {
 			reply.Error = err.Error()
 		}
@@ -161,10 +147,6 @@ type nativePlacementHost struct {
 	checkpoints                   map[uuid.UUID]deployment.RecoveryDescriptor
 	checkpointReady               map[uuid.UUID]bool
 	checkpointEnvironments        map[uuid.UUID]uuid.UUID
-}
-
-func nativeRecoveryEnvelope(parent uuid.UUID) []byte {
-	return []byte("native-fixture-opaque-metadata:" + parent.String())
 }
 
 func (h *nativePlacementHost) start(t *testing.T) {
@@ -251,15 +233,6 @@ func (h *nativePlacementHost) command(t *testing.T, c api.ExecutionCommand) api.
 	h.call(t, hostRequest{Acknowledge: reply.Report})
 	return *reply.Report
 }
-func (h *nativePlacementHost) visual(t *testing.T, action string, p deployment.Plan, secrets map[string]string) api.AgentReport {
-	t.Helper()
-	h.generation++
-	body := deployment.Payload{Action: action, Plan: p, Secrets: secrets}
-	raw, _ := stablejson.Marshal(body)
-	message := jsontext.Value(raw)
-	return h.command(t, api.ExecutionCommand{Id: uuid.New(), ServerId: h.server, EnvironmentId: p.EnvironmentID, ResourceId: p.UnitID, Generation: h.generation, Kind: "visual", Action: "inspect", PlanHash: body.Digest(), Deadline: time.Now().Add(5 * time.Minute), Visual: &message})
-}
-
 func nativePlacementHosts(t *testing.T) (context.Context, []*nativePlacementHost) {
 	t.Helper()
 	if testing.Short() || os.Getenv("ASTILBA_NATIVE_AGENT") != "1" {
@@ -268,7 +241,7 @@ func nativePlacementHosts(t *testing.T) (context.Context, []*nativePlacementHost
 	if runtime.GOOS != "linux" || os.Geteuid() != 0 {
 		t.Fatal("owned disposable Linux host required")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Minute)
 	t.Cleanup(cancel)
 	root, err := os.MkdirTemp("/opt", "astilba-cross-host-")
 	if err != nil {
@@ -589,10 +562,18 @@ exec httpd -f -p 8080 -h /tmp/www`
 		t.Fatal("upgrade mutated its source group or lost the target group identity")
 	}
 	for index, host := range hosts {
-		host.crossHost(t, parent, groupHash, "reserve", units[index], secretsForPlan(units[index].Plan, secrets))
+		reserve := host.crossHostCommand(parent, groupHash, "reserve", units[index], secretsForPlan(units[index].Plan, secrets))
+		host.interrupted(t, reserve, "start")
+		host.interrupted(t, reserve, "cross-host-reserved")
+		host.command(t, reserve)
 		host.stop()
 		host.start(t)
-		host.network(t, &parent, manifests[index], false)
+		links := host.networkCommand(&parent, manifests[index], false, nil)
+		links.Deadline = time.Now().Add(10 * time.Second)
+		host.interrupted(t, links, "start")
+		host.interrupted(t, links, "network-apply")
+		time.Sleep(time.Until(links.Deadline) + time.Millisecond)
+		host.command(t, links)
 	}
 	t.Run("expired_continuation_checkpoint", func(t *testing.T) {
 		d := primary.checkpoints[parent]
@@ -608,10 +589,15 @@ exec httpd -f -p 8080 -h /tmp/www`
 		}
 	})
 	for index, host := range hosts {
-		host.crossHost(t, parent, groupHash, "prepare", units[index], secretsForPlan(units[index].Plan, secrets))
+		prepare := host.crossHostCommand(parent, groupHash, "prepare", units[index], secretsForPlan(units[index].Plan, secrets))
+		host.interrupted(t, prepare, "cross-host-candidate")
+		host.command(t, prepare)
 	}
-	primary.crossHost(t, parent, groupHash, "probe", units[0], secrets)
+	probe := primary.crossHostCommand(parent, groupHash, "probe", units[0], secrets)
+	primary.interrupted(t, probe, "start")
+	primary.command(t, probe)
 	publication := primary.crossHostCommand(parent, groupHash, "publish", units[0], secrets)
+	primary.interrupted(t, publication, "start")
 	if err = stablejson.Encode(primary.input, hostRequest{Command: &publication, CrashAt: "route-published"}); err != nil {
 		t.Fatal(err)
 	}
@@ -638,7 +624,11 @@ exec httpd -f -p 8080 -h /tmp/www`
 	var fileInstallation backup.Installation
 	var fileSnapshot string
 	for index, host := range hosts {
-		host.crossHost(t, parent, groupHash, "retire", units[index], secretsForPlan(units[index].Plan, secrets))
+		retire := host.crossHostCommand(parent, groupHash, "retire", units[index], secretsForPlan(units[index].Plan, secrets))
+		host.interrupted(t, retire, "start")
+		time.Sleep(1100 * time.Millisecond) // The drain has passed, so this stop lands in the retirement itself.
+		host.interrupted(t, retire, "start")
+		host.command(t, retire)
 		r := host.crossHost(t, parent, groupHash, "complete", units[index], secretsForPlan(units[index].Plan, secrets))
 		var receipt deployment.CrossHostReceipt
 		if err = json.Unmarshal(*r.Crosshost, &receipt); err != nil {
@@ -716,7 +706,9 @@ exec httpd -f -p 8080 -h /tmp/www`
 			t.Fatal("local release-command rejection was not recorded")
 		}
 		primary.call(t, hostRequest{Acknowledge: reply.Report})
-		primary.crossHost(t, parent, strings.Repeat("1", 64), "abort", candidate, secretsForPlan(candidate.Plan, secrets))
+		abort := primary.crossHostCommand(parent, strings.Repeat("1", 64), "abort", candidate, secretsForPlan(candidate.Plan, secrets))
+		primary.interrupted(t, abort, "start")
+		primary.command(t, abort)
 	})
 	for _, interrupted := range []bool{true, false} {
 		t.Run(fmt.Sprintf("maintenance_pause_restart_and_resume_interrupted_%t", interrupted), func(t *testing.T) {
@@ -821,6 +813,9 @@ exec httpd -f -p 8080 -h /tmp/www`
 			nativeWaitPlacementRecovery(t)
 		})
 	}
+	t.Run("coordinated_backup_of_a_stopped_writer", func(t *testing.T) {
+		nativeBackupOfStoppedWriter(t, hosts, units, completed, app, secrets, fileInstallation)
+	})
 	t.Run("coordinated_postgres_major_upgrade", func(t *testing.T) {
 		parent := uuid.New()
 		policy := backup.Policy{ID: upgradePlan.PolicyID, Name: "Upgrade recovery", WorkspaceID: uuid.New(), EnvironmentID: initial.EnvironmentID, ServerID: primary.server, DestinationID: uuid.New(), ResourceID: pg, Generation: 1, Method: "postgres-logical", Schedule: backup.Schedule{Timezone: "UTC"}, Retain: 7, Enabled: true, Plan: upgradePlan.Source}
@@ -894,8 +889,12 @@ exec httpd -f -p 8080 -h /tmp/www`
 		nativeWaitPlacementRecovery(t)
 		currentGroup = upgradePlan.TargetGroup()
 	})
-	for _, method := range []string{backup.QuiescedFiles, "postgres-logical"} {
-		t.Run("coordinated_"+method+"_restore_cutover", func(t *testing.T) {
+	for _, restore := range []struct {
+		method, name string
+		stopped      bool
+	}{{backup.QuiescedFiles, backup.QuiescedFiles, false}, {"postgres-logical", "postgres-logical", false}, {"postgres-logical", "stopped_postgres-logical", true}} {
+		method := restore.method
+		t.Run("coordinated_"+restore.name+"_restore_cutover", func(t *testing.T) {
 			installation := fileInstallation
 			installation.Policy.Generation++
 			consumer, oldVolume, snapshot := files, fileVolume, fileSnapshot
@@ -941,6 +940,9 @@ exec httpd -f -p 8080 -h /tmp/www`
 			target, err := deployment.RestoredGroup(currentGroup, boundary, uuid.New(), uuid.New(), time.Now().Add(time.Hour))
 			if err != nil || target.Validate(true) != nil {
 				t.Fatal("invalid restored target", err)
+			}
+			if restore.stopped {
+				nativeStopDatabaseBeforeRestore(t, hosts, currentGroup, completed, pg, secrets)
 			}
 			parent := uuid.New()
 			coordinationHash := deployment.Hash([]any{parent, currentGroup.Hash, target.Hash})
@@ -1178,12 +1180,4 @@ exec httpd -f -p 8080 -h /tmp/www`
 		}
 	})
 
-}
-
-func secretsForPlan(p deployment.Plan, secrets map[string]string) map[string]string {
-	out := map[string]string{}
-	for _, id := range p.SecretReferences() {
-		out[id.String()] = secrets[id.String()]
-	}
-	return out
 }

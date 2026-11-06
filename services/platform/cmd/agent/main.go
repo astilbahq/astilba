@@ -44,7 +44,7 @@ func main() {
 }
 func run() error {
 	if len(os.Args) < 2 {
-		return errors.New("usage: astilba-agent describe|network-support|network-restore|preflight|enroll|transfer|troubleshooting-enable|troubleshooting-disable|run|retry|resolve-run|reject-cross-host-effect|inspect-upgrades|inspect-cross-host|inspect-controller|export-recovery|update-local|release-keygen|release-sign")
+		return errors.New("usage: astilba-agent describe|network-support|network-restore|preflight|enroll|transfer|troubleshooting-enable|troubleshooting-disable|run|retry|resolve-run|reject-cross-host-effect|accept-unready-writers|inspect-upgrades|inspect-cross-host|inspect-controller|export-recovery|update-local|release-keygen|release-sign")
 	}
 	command := os.Args[1]
 	if command == "describe" {
@@ -267,6 +267,13 @@ func run() error {
 			return err
 		}
 		return (&agent.Engine{Journal: j, Docker: docker}).RejectCrossHostEffect(ctx, id)
+	}
+	if command == "accept-unready-writers" {
+		id, err := uuid.Parse(*operation)
+		if err != nil {
+			return err
+		}
+		return (&agent.Engine{Journal: j, Docker: docker}).AcceptUnreadyWriters(ctx, id)
 	}
 	if command == "update-local" {
 		if err := j.RequireUnreservedHost(); err != nil {

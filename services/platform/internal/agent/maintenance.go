@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"maps"
 	"os"
-	"slices"
 	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
@@ -19,6 +18,8 @@ import (
 	"github.com/moby/moby/client"
 )
 
+// pausedWriter records an instance maintenance stopped (Running) or found stopped and so
+// leaves stopped. A database is recorded only in the second case.
 type pausedWriter struct {
 	ContainerID string
 	Running     bool
@@ -61,11 +62,12 @@ func maintenanceLeafMatches(c api.ExecutionCommand, s crossHostState) bool {
 func (e *Engine) executeMaintenancePhase(ctx context.Context, c api.ExecutionCommand, command deployment.CrossHostCommand, s crossHostState) error {
 	p := s.Unit.Plan
 	fail := func(err error) error {
-		// A stopping agent runs this phase again when it restarts, so it is not an outcome.
-		if ctx.Err() != nil {
-			return err
-		}
-		return e.finish(c.Id, "needs_attention", safeVisualError(err, command.Secrets))
+		return e.finishPhase(ctx, c.Id, "needs_attention", safeVisualError(err, command.Secrets))
+	}
+	// Nothing has stopped on this host, so the parent can resume every other host's writers
+	// and complete, rather than waiting for someone to reconcile an uncertain outcome.
+	refuse := func(err error) error {
+		return e.finishPhase(ctx, c.Id, "failed", safeVisualError(err, command.Secrets))
 	}
 	switch command.Phase {
 	case "reserve":
@@ -73,6 +75,12 @@ func (e *Engine) executeMaintenancePhase(ctx context.Context, c api.ExecutionCom
 			if _, err := e.validateLocalRestore(s); err != nil {
 				return fail(err)
 			}
+		}
+		if _, err := e.maintenanceWriters(ctx, s); err != nil {
+			return refuse(err)
+		}
+		if err := e.recordUnready(ctx, c, &s); err != nil {
+			return refuse(err)
 		}
 	case "restore":
 		if s.Maintenance.Kind != "restore" || !p.Local.Primary || s.Phase != "paused" && s.Phase != "restoring" && s.Phase != "restored" {
@@ -84,6 +92,11 @@ func (e *Engine) executeMaintenancePhase(ctx context.Context, c api.ExecutionCom
 	case "pause":
 		if s.Phase != "reserved" && s.Phase != "pausing" && s.Phase != "paused" {
 			return fail(errors.New("writer pause is out of phase"))
+		}
+		if s.Pause == nil {
+			if err := e.recordPause(ctx, &s); err != nil {
+				return refuse(err)
+			}
 		}
 		if err := e.pauseMaintenanceWriters(ctx, &s); err != nil {
 			return fail(err)
@@ -147,18 +160,31 @@ func (e *Engine) executeMaintenancePhase(ctx context.Context, c api.ExecutionCom
 		if s.ResumeTarget == nil || *s.ResumeTarget != command.UseTarget || current.Plan.Hash != expected.Hash {
 			return fail(errors.New("maintenance completion differs from the confirmed recovery target"))
 		}
-		if err = e.waitLocalHealth(ctx, s, expected); err != nil {
-			return fail(err)
+		// A host whose reservation never reached its pause has changed nothing.
+		if s.Pause != nil {
+			if err = e.waitLocalHealth(ctx, s, expected); err != nil {
+				return fail(err)
+			}
+			if _, err = e.inspectMaintenanceWriters(ctx, s, expected, current.Expected); err != nil {
+				return fail(fmt.Errorf("the resumed unit changed before maintenance completion: %w", err))
+			}
 		}
 		o, _, err := e.observeUnit(ctx, current.Plan, command.Secrets)
-		if err != nil || o.InfrastructureDrift || o.ResourceDrift || slices.ContainsFunc(o.Resources, func(r deployment.Resource) bool { return r.Drift }) {
+		if err != nil || s.Pause != nil && o.InfrastructureDrift {
 			return fail(errors.New("the resumed unit changed before maintenance completion"))
 		}
-		if err = expected.ValidateLocalObservation(o); err != nil {
+		waived, err := completionInventory(expected, o, s)
+		if err != nil {
 			return fail(fmt.Errorf("the resumed local inventory is not ready for maintenance completion: %w", err))
 		}
 		o.Applied = true
-		return e.finishCrossHost(c, command, o, "Writer resumption is confirmed; this host's maintenance reservation is released.", true)
+		note := "Writer resumption is confirmed; this host's maintenance reservation is released."
+		if s.Pause == nil {
+			note = "This host stopped nothing; its maintenance reservation is released."
+		} else if waived > 0 {
+			note = fmt.Sprintf("This host's maintenance reservation is released. %d instances were not required to be ready: they were already stopped or failing, or an operator accepted them.", waived)
+		}
+		return e.finishCrossHost(c, command, o, note, true)
 	default:
 		return fail(errors.New("unsupported maintenance phase"))
 	}
@@ -173,36 +199,52 @@ func (e *Engine) executeMaintenancePhase(ctx context.Context, c api.ExecutionCom
 	return e.finishCrossHost(c, command, o, "Coordinated maintenance phase acknowledged: "+command.Phase+".", false)
 }
 
+// maintenanceWriters works out what a pause would record, and refuses a source that changed
+// in anything but whether its instances run.
+func (e *Engine) maintenanceWriters(ctx context.Context, s crossHostState) (*writerPause, error) {
+	p := s.Unit.Plan
+	current, err := e.Journal.unit(p.UnitID)
+	if err != nil || current.Plan.Hash != p.Hash {
+		return nil, errors.New("maintenance source plan changed")
+	}
+	pause := &writerPause{Serving: maps.Clone(current.Expected), Writers: map[string]pausedWriter{}}
+	for _, app := range p.LocalApplications() {
+		for _, id := range p.InstanceIDs(app.ID) {
+			v, err := e.Docker.ContainerInspect(ctx, deployment.UnitName(id), client.ContainerInspectOptions{})
+			if err != nil || !visualOwned(v.Container.Config.Labels, p) || v.Container.Config.Labels[labelResource] != app.ID.String() {
+				return nil, errors.New("maintenance writer ownership changed")
+			}
+			if app.Postgres == nil || !v.Container.State.Running {
+				pause.Writers[id.String()] = pausedWriter{ContainerID: v.Container.ID, Running: v.Container.State.Running}
+			}
+		}
+	}
+	s.Pause = pause
+	if _, err = e.inspectMaintenanceWriters(ctx, s, p, pause.Serving); err != nil {
+		return nil, err
+	}
+	return pause, nil
+}
+
+func (e *Engine) recordPause(ctx context.Context, s *crossHostState) error {
+	o, _, err := e.observeUnit(ctx, s.Unit.Plan, nil)
+	if err != nil || o.InfrastructureDrift || o.StateHash != s.Maintenance.ExpectedState {
+		return errors.New("maintenance source drift requires review")
+	}
+	s.Pause, err = e.maintenanceWriters(ctx, *s)
+	if err != nil {
+		return err
+	}
+	s.Phase = "pausing"
+	if err = e.Journal.saveCrossHost(*s); err != nil {
+		return err
+	}
+	e.point("maintenance-writers-recorded")
+	return nil
+}
+
 func (e *Engine) pauseMaintenanceWriters(ctx context.Context, s *crossHostState) error {
 	p := s.Unit.Plan
-	if s.Pause == nil {
-		current, err := e.Journal.unit(p.UnitID)
-		if err != nil || current.Plan.Hash != p.Hash {
-			return errors.New("maintenance source plan changed")
-		}
-		o, _, err := e.observeUnit(ctx, p, nil)
-		if err != nil || o.InfrastructureDrift || o.ResourceDrift || o.StateHash != s.Maintenance.ExpectedState {
-			return errors.New("maintenance source drift requires review")
-		}
-		s.Pause = &writerPause{Serving: maps.Clone(current.Expected), Writers: map[string]pausedWriter{}}
-		for _, app := range p.LocalApplications() {
-			if app.Postgres != nil {
-				continue
-			}
-			for _, id := range p.InstanceIDs(app.ID) {
-				v, err := e.Docker.ContainerInspect(ctx, deployment.UnitName(id), client.ContainerInspectOptions{})
-				if err != nil || !visualOwned(v.Container.Config.Labels, p) || v.Container.Config.Labels[labelResource] != app.ID.String() {
-					return errors.New("maintenance writer ownership changed")
-				}
-				s.Pause.Writers[id.String()] = pausedWriter{ContainerID: v.Container.ID, Running: v.Container.State.Running}
-			}
-		}
-		s.Phase = "pausing"
-		if err := e.Journal.saveCrossHost(*s); err != nil {
-			return err
-		}
-		e.point("maintenance-writers-recorded")
-	}
 	if _, err := e.inspectMaintenanceWriters(ctx, *s, p, s.Pause.Serving); err != nil {
 		return err
 	}
@@ -231,8 +273,9 @@ func (e *Engine) pauseMaintenanceWriters(ctx context.Context, s *crossHostState)
 	return e.Journal.saveCrossHost(*s)
 }
 
-// Only the recorded Running transition is exempt from the serving fingerprint.
-// The exact container identity and all other configuration must still match.
+// Only the recorded Running transition is exempt from the serving fingerprint, which
+// describes a running writer even for one found stopped. The exact container identity and
+// all other configuration must still match.
 func (e *Engine) inspectMaintenanceWriters(ctx context.Context, s crossHostState, p deployment.Plan, baseline map[string]string) (map[string]string, error) {
 	expected := map[string]string{}
 	for _, app := range p.LocalApplications() {
@@ -252,7 +295,7 @@ func (e *Engine) inspectMaintenanceWriters(ctx context.Context, s crossHostState
 				if writer.ContainerID != v.Container.ID || !writer.Running && running {
 					return nil, errors.New("maintenance writer identity or running state changed")
 				}
-				running, want = writer.Running, s.Pause.Serving[key]
+				running, want = true, s.Pause.Serving[key]
 			}
 			if want == "" || visualFingerprint(v.Container, running) != want {
 				return nil, errors.New("maintenance resource configuration drift requires review")
@@ -282,25 +325,35 @@ func (e *Engine) resumeMaintenanceWriters(ctx context.Context, c api.ExecutionCo
 	if err = e.Journal.saveCrossHost(*s); err != nil {
 		return err
 	}
+	// One writer that cannot start does not keep the others from serving, and leaves only
+	// its own state for an operator to accept. One that was already failing needs no
+	// acceptance: maintenance cannot have broken it, and it records below as left stopped.
+	var started error
 	for key, writer := range s.Pause.Writers {
 		if replacement, ok := maintenanceReplacement(*s, target, key); ok {
 			writer.ContainerID = replacement.ContainerID
 		}
 		if writer.Running {
 			if _, err = e.Docker.ContainerStart(ctx, writer.ContainerID, client.ContainerStartOptions{}); err != nil {
-				return err
+				if !s.Unready[key] {
+					started = errors.Join(started, err)
+				}
+				continue
 			}
 			e.point("maintenance-writer-resumed")
 		}
+	}
+	if started != nil {
+		return started
 	}
 	for _, app := range target.LocalApplications() {
 		if app.Health == nil {
 			continue
 		}
 		for _, id := range target.InstanceIDs(app.ID) {
-			if writer, ok := s.Pause.Writers[id.String()]; ok && writer.Running {
+			if writer, ok := s.Pause.Writers[id.String()]; ok && writer.Running && !s.Unready[id.String()] {
 				if err = e.waitHTTPInstance(ctx, c, target, app, id); err != nil {
-					return errors.New("a resumed writer has not passed readiness")
+					return fmt.Errorf("resumed writer %s has not passed readiness: %w", id, err)
 				}
 			}
 		}
@@ -314,8 +367,16 @@ func (e *Engine) resumeMaintenanceWriters(ctx context.Context, c api.ExecutionCo
 			writer.ContainerID = replacement.ContainerID
 		}
 		v, err := e.Docker.ContainerInspect(ctx, writer.ContainerID, client.ContainerInspectOptions{})
+		if err == nil && writer.Running && !v.Container.State.Running && s.Unready[key] {
+			writer.Running = false
+			s.Pause.Writers[key] = writer
+		}
 		if err != nil || v.Container.State.Running != writer.Running {
 			return errors.New("recorded writer resumption is incomplete")
+		}
+		// Starting it by hand later is not drift, so it keeps describing the running writer.
+		if !writer.Running {
+			expected[key] = visualFingerprint(v.Container, true)
 		}
 	}
 	if err = e.Journal.saveUnit(unitState{Plan: target, Expected: expected}); err != nil {
@@ -327,15 +388,13 @@ func (e *Engine) resumeMaintenanceWriters(ctx context.Context, c api.ExecutionCo
 
 // waitLocalHealth waits at completion rather than in resumption, which every host must
 // finish first: until the primary's has succeeded, other hosts' writers stay stopped. It
-// covers every instance a restart of the host could also have left starting, except a
-// writer that was not running before maintenance.
+// covers every instance a restart of the host could also have left starting, except one
+// that maintenance leaves stopped or that is not expected to be ready.
 func (e *Engine) waitLocalHealth(ctx context.Context, s crossHostState, p deployment.Plan) error {
 	for _, app := range p.LocalApplications() {
 		for _, id := range p.InstanceIDs(app.ID) {
-			if s.Pause != nil {
-				if writer, ok := s.Pause.Writers[id.String()]; ok && !writer.Running {
-					continue
-				}
+			if !s.mustBeReady(id) {
+				continue
 			}
 			if err := e.waitContainerHealthy(ctx, deployment.UnitName(id)); err != nil {
 				return err

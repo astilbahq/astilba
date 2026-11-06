@@ -174,6 +174,7 @@ profile if fixtures remain. The rest must be asked for by name:
 
 | Test | Also needs |
 | --- | --- |
+| `TestNativeBackupOfStoppedWriter`, `TestNativeRefusedReservationOfStoppedWriterCompletes`, `TestNativeBackupOfWriterFailingItsHealthCheck`, `TestNativeBackupOfWriterFailingItsReadiness`, `TestNativeReservationRefusesChangedConfiguration`, `TestNativePauseRefusesAWriterStoppedSinceReserving`, `TestNativeWriterAlreadyFailingThatCannotRestart`, `TestNativeAcceptingAWriterThatCannotStart`, `TestNativeAcceptingAWriterThatDoesNotComeBack` | Nothing more, but they wait out readiness probes for about a minute and a half in all |
 | `TestNativeComposeDeployment` | Publishes a loopback host port; the pinned Compose plugin and PostgreSQL image |
 | `TestNativePipeline` | `/opt/astilba-plat5/bin/zot` and Git `http-backend`; writes `/etc/docker/certs.d` |
 | `TestNativeVisualDeployment` | Ingress publishes host ports 80, 443 and 15432; the pinned Compose plugin and `/opt/astilba-platform-tools/restic` |

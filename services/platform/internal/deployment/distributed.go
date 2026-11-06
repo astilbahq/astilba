@@ -371,6 +371,16 @@ func (p Plan) ValidateMaintenanceObservation(o Observation) error {
 	return p.validateLocalInventory(o, false)
 }
 
+// ValidateCompletion checks the inventory in a host's completion receipt for plan. A
+// deployment makes every instance run, so each must be. Maintenance leaves an application as
+// it found it, and only its host knows what that was, so the host enforces readiness.
+func (c CrossHostCommand) ValidateCompletion(plan Plan, o Observation) error {
+	if c.Maintenance != nil {
+		return plan.ValidateMaintenanceObservation(o)
+	}
+	return plan.ValidateLocalObservation(o)
+}
+
 func (p Plan) validateLocalInventory(o Observation, running bool) error {
 	if o.OmittedResources != 0 || len(o.Resources) != len(p.LocalApplications()) {
 		return errors.New("incomplete inventory")
