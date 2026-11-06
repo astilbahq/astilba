@@ -310,7 +310,7 @@ func (s *Service) applyReport(ctx context.Context, git *gitAnswers, received tim
 	if err = s.crossHostReport(ctx, tx, c, &r); err != nil {
 		return err
 	}
-	if err = s.networkReport(ctx, tx, c, &r); err != nil {
+	if err = s.networkReport(ctx, tx, a.Workspace, c, &r); err != nil {
 		return err
 	}
 	steps, _ := stablejson.Marshal(r.Steps)

@@ -786,9 +786,10 @@ type Workspace struct {
 }
 
 type WorkspaceNetwork struct {
-	ID          uuid.UUID    `json:"id"`
-	WorkspaceID uuid.UUID    `json:"workspace_id"`
-	Prefix      netip.Prefix `json:"prefix"`
-	Generation  int64        `json:"generation"`
-	CheckedAt   time.Time    `json:"checked_at"`
+	ID                    uuid.UUID    `json:"id"`
+	WorkspaceID           uuid.UUID    `json:"workspace_id"`
+	Prefix                netip.Prefix `json:"prefix"`
+	Generation            int64        `json:"generation"`
+	CheckedAt             time.Time    `json:"checked_at"`
+	ReconcileFailingSince *time.Time   `json:"reconcile_failing_since"`
 }

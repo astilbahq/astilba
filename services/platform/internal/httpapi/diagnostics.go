@@ -1,17 +1,12 @@
 package httpapi
 
 import (
-	"context"
-	"errors"
-	"log/slog"
-	"net"
 	"net/http"
 	"path/filepath"
 	"runtime"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 )
 
 func requestRoute(r *http.Request) string {
@@ -21,42 +16,6 @@ func requestRoute(r *http.Request) string {
 		}
 	}
 	return "unmatched"
-}
-
-func failureDiagnostic(err error) slog.Attr {
-	category := "internal"
-	var database *pgconn.PgError
-	var network net.Error
-	switch {
-	case errors.Is(err, context.Canceled):
-		category = "context_canceled"
-	case errors.Is(err, context.DeadlineExceeded):
-		category = "context_deadline_exceeded"
-	case errors.As(err, &database):
-		// PostgreSQL text fields can contain query values; only retain its code.
-		if validSQLState(database.Code) {
-			return slog.Group("error", "category", "database", "sqlstate", database.Code)
-		}
-		category = "database"
-	case errors.As(err, &network):
-		category = "network"
-		if network.Timeout() {
-			category = "network_timeout"
-		}
-	}
-	return slog.Group("error", "category", category)
-}
-
-func validSQLState(code string) bool {
-	if len(code) != 5 {
-		return false
-	}
-	for _, c := range code {
-		if !(c >= '0' && c <= '9' || c >= 'A' && c <= 'Z') {
-			return false
-		}
-	}
-	return true
 }
 
 type panicFrame struct {

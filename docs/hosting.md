@@ -349,6 +349,16 @@ workspace limit returns backpressure before another operation is queued. Archive
 operations are serialized per management replica, limited to 32 MiB and 10,000
 records, and use fixed 64 MiB Argon2id derivation parameters.
 
+The private network, coordinated backup and operational alert sweeps take one workspace
+at a time, each under its own deadline, and carry on past a failure. A failure costs that
+workspace its turn, and each failing workspace delays the others by no more than that
+deadline, though many failing at once add up because sweep capacity is shared. Each is logged
+as `background sweep item failed` with the sweep name and the workspace; the log keeps the
+failure's category rather than its text, which can contain stored values. Alert on that
+message. The workspace's owner also sees an [operational alert](operational-alerts.md) if a
+network or coordinated backup stays blocked, unless a held workspace lock is the cause: that
+stops alert evaluation for the workspace too, so only the log shows it.
+
 `ASTILBA_LOG_RETENTION_DAYS` controls terminal operation diagnostics and build log
 retention, defaulting to 30 days. Cleanup processes at most 100 records from each
 category per minute, including historical cross-host receipt logs, and leaves
