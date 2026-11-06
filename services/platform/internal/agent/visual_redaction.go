@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/moby/moby/api/pkg/stdcopy"
 )
 
@@ -15,7 +16,7 @@ func redactValues(text string, values map[string]string) string {
 		if value == "" {
 			continue
 		}
-		for _, part := range append([]string{value}, strings.Split(value, "\n")...) {
+		for _, part := range append([]string{value, domain.SecretSearchForm(value)}, strings.Split(value, "\n")...) {
 			if part == "" {
 				continue
 			}
