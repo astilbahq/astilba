@@ -37,10 +37,11 @@ func stoppedSubmissionNote(id uuid.UUID) string {
 func (s *Service) rejectRuntimeSecrets(ctx context.Context, tx pgx.Tx, ws, env uuid.UUID, bundle composeproject.Bundle) error {
 	q := db.New(tx)
 	// A submission pushes both: the path names a tree entry, the content fills its blob.
-	searched := make([]domain.SecretText, 0, 2*len(bundle.Files))
+	texts := make([]string, 0, 2*len(bundle.Files))
 	for _, file := range bundle.Files {
-		searched = append(searched, domain.NewSecretText(file.Path), domain.NewSecretText(file.Content))
+		texts = append(texts, file.Path, file.Content)
 	}
+	searched := domain.NewSecretText(texts...)
 	total := 0
 	// Pages bound the ciphertext in memory; versions per environment are unbounded.
 	var after uuid.UUID
@@ -58,11 +59,8 @@ func (s *Service) rejectRuntimeSecrets(ctx context.Context, tx pgx.Tx, ws, env u
 			if total > 1<<20 {
 				return domain.Invalid("source.secretBudget")
 			}
-			secret := string(value)
-			for _, text := range searched {
-				if text.Exposes(secret) {
-					return &domain.Error{Code: "invalid_input", Message: "A file's name or contents include a known runtime secret value.", Fields: []string{"source.containsRuntimeSecret"}}
-				}
+			if searched.Exposes(string(value)) {
+				return &domain.Error{Code: "invalid_input", Message: "A file's name or contents include a known runtime secret value.", Fields: []string{"source.containsRuntimeSecret"}}
 			}
 			after = row.ID
 		}

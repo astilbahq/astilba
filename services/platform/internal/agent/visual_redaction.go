@@ -15,9 +15,12 @@ func redactValues(text string, values map[string]string) string {
 		if value == "" {
 			continue
 		}
-		for _, part := range append([]string{value, domain.SecretSearchForm(value)}, domain.SecretLines(value)...) {
-			if part != "" {
-				patterns[part] = true
+		for _, part := range append([]string{value, domain.SecretSearchForm(value)}, strings.Split(strings.ReplaceAll(value, "\r\n", "\n"), "\n")...) {
+			if part == "" {
+				continue
+			}
+			for _, form := range domain.SecretForms(part) {
+				patterns[form] = true
 			}
 		}
 	}

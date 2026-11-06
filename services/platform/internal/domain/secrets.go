@@ -1,28 +1,30 @@
 package domain
 
 import (
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
 )
 
-// minTrimmedSecret is the shortest value searched for without its surrounding whitespace,
-// or across line breaks. Below it the form is likely to be ordinary text such as `postgres`
-// or `production`, and since every stored version counts, a match on a word a file needs
-// could not be cleared.
+// minTrimmedSecret is the shortest value searched for in any form other than as stored.
+// Below it the form is likely to be ordinary text such as `postgres` or `production`, and
+// since every stored version counts, a match on a word a file needs could not be cleared.
 const minTrimmedSecret = 12
 
 var (
-	// A line break as stored or as JSON and .env files write it, `\n` or `\\n` inside a string.
-	secretLineBreak = regexp.MustCompile(`(?:\\+[rn]|[\r\n])+`)
-	// Everything that wrapping, indenting or escaping a value can add between its bytes.
-	secretLayout = regexp.MustCompile(`(?:\\+[rnt]|\s)+`)
-	// The shape of a PEM or OpenSSH body line. A line like this means nothing outside the
-	// value. Other lines of a multi-line value don't count alone: PEM armour, a config line
-	// such as `NODE_ENV=production` and a service account's token URI are shared by ordinary
-	// files, which could then never be submitted. Those bodies wrap at 64 and 70 bytes, so
-	// 32 skips only a body's short last line.
-	secretKeyLine = regexp.MustCompile(`^[A-Za-z0-9+/]{32,}={0,2}$`)
+	// A line break however a file writes it, with the indentation around it: real, as `\n`
+	// or `\\n` inside a string, or after a `\` that continues a line.
+	secretLineBreak = regexp.MustCompile(`\s*(?:(?:\\*[\r\n]|\\+[rn])(?:\s|\\+t)*)+`)
+	secretEscape    = regexp.MustCompile(`\\+`)
+	secretSpace     = regexp.MustCompile(`\s+`)
+	// Text with no meaning apart from its value, which a long enough run of base64 can be
+	// assumed to have. Wrapping such a value changes nothing about it.
+	secretOpaque = regexp.MustCompile(`^[A-Za-z0-9+/]{32,}={0,2}$`)
+	// Only these bodies count in part. Other lines of a stored value are shared by ordinary
+	// files: `NODE_ENV=production`, a service account's token URI, or the body of a public
+	// certificate stored beside its key.
+	secretPrivateKey = regexp.MustCompile(`(?s)-----BEGIN [A-Z0-9 ]*PRIVATE KEY[A-Z0-9 ]*-----(.*?)-----END `)
 )
 
 // SecretSearchForm is the text that exposes a stored value: `prod-key-123\n` is exposed by
@@ -35,9 +37,10 @@ func SecretSearchForm(value string) string {
 	return value
 }
 
-// SecretLines splits a stored value on its line endings.
-func SecretLines(value string) []string {
-	return strings.Split(strings.ReplaceAll(value, "\r\n", "\n"), "\n")
+// SecretForms returns part as written and as the standard URL encoders write it. SecretViews
+// finds these too, unless a stray `%` before the value is read as an escape of its first bytes.
+func SecretForms(part string) []string {
+	return []string{part, url.QueryEscape(part), strings.TrimPrefix(url.UserPassword("", part).String(), ":")}
 }
 
 // SecretView is one reading of a text: as written, or with its URL encoding undone.
@@ -93,51 +96,86 @@ func urlDecodedView(text string, plusIsSpace bool) SecretView {
 	return SecretView{Text: out.String(), offsets: append(offsets, len(text))}
 }
 
-// SecretText is a text prepared for checking against stored values, which a submission
-// repeats for every stored version.
-type SecretText struct {
-	views  []SecretView
-	layout []string
+// secretLineForm removes what quoting and indenting add, keeping where each line ends so
+// that `admin\npassword` isn't found in the words `admin password`.
+func secretLineForm(text string) string {
+	return secretEscape.ReplaceAllString(secretLineBreak.ReplaceAllString(text, "\n"), "")
 }
 
-func NewSecretText(text string) SecretText {
-	t := SecretText{views: SecretViews(text)}
-	for _, view := range t.views {
-		t.layout = append(t.layout, secretLayout.ReplaceAllString(view.Text, ""))
+// SecretText holds the texts a stored value must not appear in, prepared once because a
+// check repeats for every stored version. A match in one text can't span two.
+type SecretText struct {
+	written, views, lined, bare []string
+}
+
+func NewSecretText(texts ...string) SecretText {
+	var t SecretText
+	for _, text := range texts {
+		if text == "" {
+			continue
+		}
+		t.written = append(t.written, text)
+		for _, view := range SecretViews(text) {
+			lined := secretLineForm(view.Text)
+			t.views = append(t.views, view.Text)
+			t.lined = append(t.lined, lined)
+			t.bare = append(t.bare, secretSpace.ReplaceAllString(lined, ""))
+		}
 	}
 	return t
 }
 
-// Exposes reports whether the text holds a stored value, so that it must not leave for a
-// Git provider or a public build argument. A match may be blocked for good, because every
-// stored version counts, so anything beyond the value itself has to be unmistakable: the
-// whole of a multi-line value however it is laid out, or a line that is key material.
+// Exposes reports whether a text holds a stored value, so that it must not leave for a Git
+// provider or a public build argument. A match may block a file for good, so anything other
+// than the whole value has to be unmistakably private.
 func (t SecretText) Exposes(value string) bool {
 	form := SecretSearchForm(value)
 	if form == "" {
 		return false
 	}
-	for _, view := range t.views {
-		if strings.Contains(view.Text, form) {
+	// Whitespace kept below the floor is part of what is searched for, and may be all that
+	// separates it from ordinary text, so only the stored bytes count.
+	if form != strings.TrimSpace(form) {
+		return containsSecretForm(t.written, form)
+	}
+	for _, encoded := range SecretForms(form) {
+		if containsSecretForm(t.views, encoded) {
 			return true
 		}
 	}
-	trimmed := strings.TrimSpace(value)
-	lines := secretLineBreak.Split(trimmed, -1)
-	if whole := secretLayout.ReplaceAllString(trimmed, ""); len(lines) > 1 && len(whole) >= minTrimmedSecret && t.containsIgnoringLayout(whole) {
+	lined := secretLineForm(form)
+	if len(lined) >= minTrimmedSecret && containsSecretForm(t.lined, lined) {
 		return true
 	}
-	for _, line := range lines {
-		if line = strings.TrimSpace(line); secretKeyLine.MatchString(line) && t.containsIgnoringLayout(line) {
+	if bare := secretSpace.ReplaceAllString(lined, ""); secretOpaque.MatchString(bare) && containsSecretForm(t.bare, bare) {
+		return true
+	}
+	for _, block := range secretPrivateKey.FindAllStringSubmatch(form, -1) {
+		if t.exposesPrivateKeyBody(block[1]) {
 			return true
 		}
 	}
 	return false
 }
 
-func (t SecretText) containsIgnoringLayout(value string) bool {
-	for _, text := range t.layout {
-		if strings.Contains(text, value) {
+// exposesPrivateKeyBody finds a key without its armour, wrapped any way, or a full line of
+// it. The first line is left out alone: an OpenSSH key's is the same in every key of a type.
+func (t SecretText) exposesPrivateKeyBody(body string) bool {
+	lines := strings.Fields(secretLineForm(body))
+	if joined := strings.Join(lines, ""); secretOpaque.MatchString(joined) && containsSecretForm(t.bare, joined) {
+		return true
+	}
+	for i, line := range lines {
+		if i > 0 && secretOpaque.MatchString(line) && containsSecretForm(t.bare, line) {
+			return true
+		}
+	}
+	return false
+}
+
+func containsSecretForm(texts []string, form string) bool {
+	for _, text := range texts {
+		if strings.Contains(text, form) {
 			return true
 		}
 	}

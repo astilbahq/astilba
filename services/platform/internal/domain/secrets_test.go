@@ -11,6 +11,9 @@ const (
 	testKeyLine2 = "MzEfYyjiWA4R4/M2bS1GB4t7NXp98C3SC6dVMvDuictGeurT8jNbvJZHtCSuYEvu"
 	testKeyLast  = "NXp98C3SC6dV"
 	testKey      = "-----BEGIN PRIVATE KEY-----\n" + testKeyLine1 + "\n" + testKeyLine2 + "\n" + testKeyLast + "\n-----END PRIVATE KEY-----\n"
+
+	testCertificate = "-----BEGIN CERTIFICATE-----\nMIIDdzCCAl+gAwIBAgIEbF2Wqz7kYcYwDQYJKoZIhvcNAQELBQAwbDEQMA4GA1UE\nBhMCVVMxEDAOBgNVBAgTB1Vua25vd24xEDAOBgNVBAcTB1Vua25vd24xEDAOBgNV\n-----END CERTIFICATE-----\n"
+	testDigest      = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
 )
 
 func TestSecretTextExposes(t *testing.T) {
@@ -43,15 +46,29 @@ func TestSecretTextExposes(t *testing.T) {
 		{"key rewrapped", "-----BEGIN PRIVATE KEY-----\n" + testKeyLine1[:30] + "\n" + testKeyLine1[30:] + testKeyLine2 + testKeyLast + "\n-----END PRIVATE KEY-----", testKey, true},
 		{"key body without its armour", "KEY=" + testKeyLine1 + testKeyLine2 + testKeyLast + "\n", testKey, true},
 		{"one line of a key's body", "# " + testKeyLine2 + "\n", testKey, true},
+		{"key stored flattened with spaces against real lines", testKey, strings.ReplaceAll(testKey, "\n", " "), true},
+		{"key stored beside a certificate", "KEY=" + testKeyLine2 + "\n", testCertificate + testKey, true},
 		{"commented-out key", "# " + testKeyLine1 + "\n# " + testKeyLine2 + "\n", testKey, true},
 		{"single-line key wrapped in a file", "key: >-\n    " + wrappedLine + "\n", testKeyLine1, true},
 		{"multi-line value in an indented block", "config: |\n    host: db.internal\n    password: hunter2\n", "host: db.internal\npassword: hunter2\n", true},
 		{"multi-line value URL encoded", "url=line-one-value%0Aline-two-value", "line-one-value\nline-two-value", true},
+		{"multi-line value as a JSON string", `"{\n  \"user\": \"app\",\n  \"password\": \"hunter2\"\n}"`, "{\n  \"user\": \"app\",\n  \"password\": \"hunter2\"\n}\n", true},
+		{"multi-line value with a backslash as a JSON string", `DOMAIN\\svc-account\npassword`, "DOMAIN\\svc-account\npassword", true},
+		{"multi-line value with an escaped slash", `https:\/\/db.internal\npassword`, "https://db.internal\npassword", true},
+		{"multi-line value continued with a backslash", "first-line\\\n  second-line", "first-line\nsecond-line", true},
+		{"single-line value with an escaped quote", `pa\"ss-word-123`, `pa"ss-word-123`, true},
 
 		{"another key's armour", "-----BEGIN PRIVATE KEY-----\nb3RoZXI=\n-----END PRIVATE KEY-----\n", testKey, false},
 		{"a config line shared with a stored file", "environment:\n  NODE_ENV=production\n", "NODE_ENV=production\nAPI_KEY=abcdef\n", false},
 		{"a long ordinary line shared with a stored file", `"token_uri": "https://oauth2.example.com/token/endpoint",`, "{\n" + `"token_uri": "https://oauth2.example.com/token/endpoint",` + "\n" + `"key": "x"` + "\n}\n", false},
 		{"a key's short last line", "# " + testKeyLast + "\n", testKey, false},
+		{"another key sharing a first line", testKeyLine1 + "\n", testKey, false},
+		{"the public certificate stored beside a key", testCertificate, testCertificate + testKey, false},
+		{"a path line in a multi-line value", "- db:/var/lib/postgresql/data/pgdata/main\n", "user\n/var/lib/postgresql/data/pgdata/main\npass", false},
+		{"a digest line in a multi-line value", "image: postgres@sha256:" + testDigest + "\n", "user\n" + testDigest + "\npass", false},
+		{"lines of a value as ordinary words", "# admin password is required", "admin\npassword", false},
+		{"lines of a value run together", "# adminpassword is required", "admin\npassword", false},
+		{"a backslash-n in a single-line value is not a line break", "password-123", `pass\nword-123`, false},
 		{"multi-line value below the floor", "abcdef", "abc\ndef", false},
 		{"lines of a value in another order", "second-line-of-it first-line-of-it", "first-line-of-it\nsecond-line-of-it", false},
 		{"short single-line value split by a line break", "password\nreset", "passwordreset", false},
@@ -68,6 +85,10 @@ func TestSecretTextExposes(t *testing.T) {
 		{"stored whitespace around an encoded value", "p%40ss-word-123", "p@ss-word-123\n", true},
 		{"short encoded value", "postgres://app:p%40ss@db/app", "p@ss", true},
 		{"other encoded text", "url=p%40ss-word-456", "p@ss-word-123", false},
+		{"after a stray percent sign", "rate=100%ab%40c-word-12345;", "ab@c-word-12345", true},
+		{"short value with whitespace is exact, not a query string", "TAGS=prod+staging", "prod ", false},
+		{"short value with whitespace is exact, not encoded", "x=prod%20x", "prod ", false},
+		{"only whitespace is exact in a file name", "c++/app.yaml", " ", false},
 		{"percent sign without hex", "100%zz p@ss-word-12", "p@ss-word-123", false},
 		{"percent sign at the end", "a%", "a%", true},
 		{"truncated escape at the end", "p@ss%4", "p@ss@", false},
@@ -78,9 +99,9 @@ func TestSecretTextExposes(t *testing.T) {
 	}
 }
 
-// The check and redaction read encoded text through the same views, which must recognise
-// what the standard encoders produce for any byte a value can hold.
-func TestSecretViewsReadEveryEncoderOutput(t *testing.T) {
+// The check and redaction read encoded text the same way, which must recognise what the
+// standard encoders produce for any byte a value can hold.
+func TestSecretFormsAreFoundForEveryEncoder(t *testing.T) {
 	value := "a b+c/d:e@f?g&h=i%j!k'l(m)n*o;p,q$r~s-t_u.v\"w\\xé"
 	for name, encoded := range map[string]string{
 		"query":    url.QueryEscape(value),
@@ -90,24 +111,5 @@ func TestSecretViewsReadEveryEncoderOutput(t *testing.T) {
 		if !NewSecretText("x=" + encoded + ";").Exposes(value) {
 			t.Errorf("%s form %q was not found", name, encoded)
 		}
-	}
-}
-
-func TestSecretViewOffsetsCoverEncodedBytes(t *testing.T) {
-	text := "x=p%40ss+y"
-	views := SecretViews(text)
-	if len(views) != 3 {
-		t.Fatalf("got %d views", len(views))
-	}
-	view := views[1]
-	if view.Text != "x=p@ss+y" {
-		t.Fatalf("decoded to %q", view.Text)
-	}
-	start := strings.Index(view.Text, "@")
-	if got := text[view.Offset(start):view.Offset(start+1)]; got != "%40" {
-		t.Fatalf("offsets cover %q", got)
-	}
-	if view.Offset(len(view.Text)) != len(text) {
-		t.Fatal("end of the view does not map to the end of the text")
 	}
 }
