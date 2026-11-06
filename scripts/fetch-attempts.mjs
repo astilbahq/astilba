@@ -18,10 +18,15 @@ const threeAttempts = (attempt) => [20_000, 40_000][attempt];
 const outlastOutage = (_attempt, elapsed) =>
   elapsed < 240_000 ? 15_000 : undefined;
 
+// A command that ran and failed, or a download that did not arrive. Only these repeat:
+// anything else, such as a command that could not start or a bug in the step, would
+// fail the same way again.
+class FetchFailure extends Error {}
+
 // Runs a step that fetches over the network until it succeeds or `delay` gives up.
 // With a time limit, the attempts share it and each receives what remains. A step
-// that used up the limit is stuck rather than dropped, so it stops, as do a failed
-// integrity check and a command that could not start. The final error names the step.
+// that used up the limit is stuck rather than dropped, so it stops, as does a failed
+// integrity check. The final error names the step.
 export async function withFetchAttempts(
   name,
   step,
@@ -39,14 +44,13 @@ export async function withFetchAttempts(
       // A timeout of 0 would mean no limit, and a sleep can overrun what remains.
       return await step(Math.max(deadline - now(), 1));
     } catch (error) {
-      const wait = delay(attempt, now() - started);
-      if (
-        wait === undefined ||
-        error.code === "ETIMEDOUT" ||
-        error.syscall?.startsWith("spawn") ||
-        integrityFailure.test(error.stderr ?? error.message) ||
-        now() + wait >= deadline
-      ) {
+      const wait =
+        error instanceof FetchFailure &&
+        error.code !== "ETIMEDOUT" &&
+        !integrityFailure.test(error.stderr ?? error.message)
+          ? delay(attempt, now() - started)
+          : undefined;
+      if (wait === undefined || now() + wait >= deadline) {
         error.message = `${name} failed: ${error.message}`;
         throw error;
       }
@@ -87,7 +91,7 @@ export function runLogged(
       const reason =
         stderr.trim().split("\n").at(-1) || `exited with ${code ?? signal}`;
       reject(
-        Object.assign(new Error(reason), {
+        Object.assign(new FetchFailure(reason), {
           stderr,
           code: child.killed ? "ETIMEDOUT" : code,
         }),
@@ -141,7 +145,9 @@ async function fetchBytes(url, idleMs) {
   } catch (error) {
     // fetch reports a dropped connection only in its cause, whose message is
     // empty when every address of a host refused.
-    throw new Error(error.cause?.message || error.cause?.code || error.message);
+    throw new FetchFailure(
+      error.cause?.message || error.cause?.code || error.message,
+    );
   } finally {
     clearTimeout(idle);
   }

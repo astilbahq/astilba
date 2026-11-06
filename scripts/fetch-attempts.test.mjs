@@ -22,11 +22,16 @@ import {
 mock.method(console, "warn", () => {});
 mock.method(process.stderr, "write", () => true);
 
+// A command failing for real, so these exercise what a step actually throws.
 const failing = (count, value = "built") => {
   const limits = [];
-  const step = (limit) => {
+  const step = async (limit) => {
     limits.push(limit);
-    if (limits.length <= count) throw new Error(`failure ${limits.length}`);
+    if (limits.length <= count)
+      await runLogged("sh", [
+        "-c",
+        `echo failure ${limits.length} >&2; exit 1`,
+      ]);
     return value;
   };
   return { limits, step };
@@ -88,6 +93,25 @@ test("a command that used up the limit is not started again", async () => {
       { limitMs: 60_000, ...clock() },
     ),
     { code: "ETIMEDOUT" },
+  );
+  assert.equal(attempts, 1);
+});
+
+test("a bug in the step fails at once under its name, unretried", async () => {
+  let attempts = 0;
+  await assert.rejects(
+    withFetchAttempts(
+      "Step",
+      () => {
+        attempts++;
+        throw new ReferenceError("Cannot access 'root' before initialization");
+      },
+      clock(),
+    ),
+    {
+      name: "ReferenceError",
+      message: "Step failed: Cannot access 'root' before initialization",
+    },
   );
   assert.equal(attempts, 1);
 });
