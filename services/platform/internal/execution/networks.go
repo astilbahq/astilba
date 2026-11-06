@@ -7,11 +7,13 @@ import (
 	"sort"
 	"time"
 
+	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/hostnetwork"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
+	"github.com/astilbahq/astilba/services/platform/internal/sweep"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/riverqueue/river"
@@ -231,35 +233,28 @@ func (w *networkSweepWorker) Work(ctx context.Context, _ *river.Job[networkSweep
 	return w.service.reconcileNetworks(ctx)
 }
 func (s *Service) reconcileNetworks(ctx context.Context) error {
-	rows, err := s.Store.Pool.Query(ctx, `SELECT workspace_id FROM workspace_networks ORDER BY checked_at,workspace_id LIMIT 1000`)
+	ctx, cancel := context.WithTimeout(ctx, sweepPassBudget)
+	defer cancel()
+	started, err := s.Store.Queries.SweepPassStarted(ctx)
 	if err != nil {
 		return err
 	}
-	ids := []uuid.UUID{}
-	for rows.Next() {
-		var id uuid.UUID
-		if err = rows.Scan(&id); err != nil {
-			rows.Close()
+	for {
+		ws, err := s.Store.Queries.ClaimNetworkForSweep(ctx, started)
+		if errors.Is(err, pgx.ErrNoRows) || ctx.Err() != nil {
+			return nil
+		}
+		if err != nil {
 			return err
 		}
-		ids = append(ids, id)
-	}
-	err = rows.Err()
-	rows.Close()
-	if err != nil {
-		return err
-	}
-	for _, ws := range ids {
-		err = s.reconcileNetwork(ctx, ws)
-		var problem *domain.Error
-		if err != nil && !errors.As(err, &problem) && !errors.Is(err, pgx.ErrNoRows) {
-			return err
+		err = sweep.Item(ctx, "network", ws, sweepItemLimit, func(item context.Context) error { return sweepFailure(s.reconcileNetwork(item, ws)) })
+		if ctx.Err() != nil {
+			return nil
 		}
-		if _, err = s.Store.Pool.Exec(ctx, `UPDATE workspace_networks SET checked_at=clock_timestamp() WHERE workspace_id=$1`, ws); err != nil {
+		if err = s.Store.Queries.RecordNetworkSweepOutcome(ctx, db.RecordNetworkSweepOutcomeParams{Failed: err != nil, WorkspaceID: ws}); err != nil && ctx.Err() == nil {
 			return err
 		}
 	}
-	return nil
 }
 func (s *Service) reconcileNetwork(ctx context.Context, ws uuid.UUID) error {
 	tx, done, err := s.Store.BeginWorkspaceWrite(ctx, ws)
@@ -389,25 +384,27 @@ func networkManifest(ctx context.Context, tx pgx.Tx, ws uuid.UUID, n managedNetw
 	if err != nil {
 		return p, false, err
 	}
+	sources, err := tx.Query(ctx, `SELECT s.endpoint_id,s.server_id,s.unit_id FROM network_endpoint_sources s JOIN network_endpoints e ON e.workspace_id=s.workspace_id AND e.id=s.endpoint_id JOIN network_members m ON m.workspace_id=s.workspace_id AND m.server_id=s.server_id WHERE s.workspace_id=$1 AND e.server_id=$2 AND NOT e.retired AND m.enabled AND m.public_key<>'' AND s.active ORDER BY s.endpoint_id,s.server_id,s.unit_id`, ws, m.ServerID)
+	if err != nil {
+		return p, false, err
+	}
+	bySource := map[uuid.UUID][]hostnetwork.Source{}
+	for sources.Next() {
+		var endpoint uuid.UUID
+		var source hostnetwork.Source
+		if err = sources.Scan(&endpoint, &source.ServerID, &source.UnitID); err != nil {
+			sources.Close()
+			return p, false, err
+		}
+		bySource[endpoint] = append(bySource[endpoint], source)
+	}
+	err = sources.Err()
+	sources.Close()
+	if err != nil {
+		return p, false, err
+	}
 	for i := range p.Exports {
-		e := &p.Exports[i]
-		sources, e2 := tx.Query(ctx, `SELECT s.server_id,s.unit_id FROM network_endpoint_sources s JOIN network_members m ON m.workspace_id=s.workspace_id AND m.server_id=s.server_id WHERE s.workspace_id=$1 AND s.endpoint_id=$2 AND m.enabled AND m.public_key<>'' AND s.active ORDER BY s.server_id,s.unit_id`, ws, e.ID)
-		if e2 != nil {
-			return p, false, e2
-		}
-		for sources.Next() {
-			var source hostnetwork.Source
-			if e2 = sources.Scan(&source.ServerID, &source.UnitID); e2 != nil {
-				sources.Close()
-				return p, false, e2
-			}
-			e.Sources = append(e.Sources, source)
-		}
-		e2 = sources.Err()
-		sources.Close()
-		if e2 != nil {
-			return p, false, e2
-		}
+		p.Exports[i].Sources = bySource[p.Exports[i].ID]
 	}
 	filtered := p.Exports[:0]
 	for _, endpoint := range p.Exports {
@@ -434,7 +431,13 @@ func networkManifest(ctx context.Context, tx pgx.Tx, ws uuid.UUID, n managedNetw
 	p.Sort()
 	return p, ready, p.Validate()
 }
-func (s *Service) networkReport(ctx context.Context, tx pgx.Tx, c api.ExecutionCommand, r *api.AgentReport) error {
+
+// duplicateNetworkKeyNote is also written by migration 00027. Agents generate a key per
+// membership, so a repeated key means a modified agent, and peers could not tell its
+// holders apart. The key stays with the member that already holds it.
+const duplicateNetworkKeyNote = "This server reported the same private network key as another member. It must report its own key before private links can finish."
+
+func (s *Service) networkReport(ctx context.Context, tx pgx.Tx, ws uuid.UUID, c api.ExecutionCommand, r *api.AgentReport) error {
 	if c.Kind != "network" {
 		if r.Network != nil {
 			return domain.Invalid("network")
@@ -459,8 +462,16 @@ func (s *Service) networkReport(ctx context.Context, tx pgx.Tx, c api.ExecutionC
 		return domain.Invalid("network")
 	}
 	if cmd.Action == "identify" {
-		_, err := tx.Exec(ctx, `UPDATE network_members SET public_key=$3,note='' WHERE server_id=$1 AND membership_id=$2 AND enabled AND public_key=''`, c.ServerId, cmd.MembershipID, receipt.Identity.PublicKey)
-		return err
+		q := db.New(tx)
+		taken, err := q.NetworkKeyHeldByAnotherMember(ctx, db.NetworkKeyHeldByAnotherMemberParams{WorkspaceID: ws, NetworkID: cmd.NetworkID, PublicKey: receipt.Identity.PublicKey, MembershipID: cmd.MembershipID})
+		if err != nil {
+			return err
+		}
+		if taken {
+			r.State, r.Note = "failed", duplicateNetworkKeyNote
+			return q.RefuseNetworkMemberKey(ctx, db.RefuseNetworkMemberKeyParams{Note: duplicateNetworkKeyNote, WorkspaceID: ws, ServerID: c.ServerId, MembershipID: cmd.MembershipID})
+		}
+		return q.RecordNetworkMemberKey(ctx, db.RecordNetworkMemberKeyParams{PublicKey: receipt.Identity.PublicKey, WorkspaceID: ws, ServerID: c.ServerId, MembershipID: cmd.MembershipID})
 	}
 	if cmd.Manifest.ServerID != c.ServerId || receipt.Identity.PublicKey != cmd.Manifest.PublicKey {
 		return domain.Invalid("network.receipt")
@@ -469,9 +480,8 @@ func (s *Service) networkReport(ctx context.Context, tx pgx.Tx, c api.ExecutionC
 	if err != nil {
 		return err
 	}
-	var ws uuid.UUID
 	var installed []byte
-	if err = tx.QueryRow(ctx, `SELECT workspace_id,installed_manifest FROM network_members WHERE server_id=$1 AND membership_id=$2 AND public_key=$3 FOR UPDATE`, c.ServerId, cmd.MembershipID, receipt.Identity.PublicKey).Scan(&ws, &installed); errors.Is(err, pgx.ErrNoRows) {
+	if err = tx.QueryRow(ctx, `SELECT installed_manifest FROM network_members WHERE workspace_id=$1 AND server_id=$2 AND membership_id=$3 AND public_key=$4 FOR UPDATE`, ws, c.ServerId, cmd.MembershipID, receipt.Identity.PublicKey).Scan(&installed); errors.Is(err, pgx.ErrNoRows) {
 		return nil
 	} else if err != nil {
 		return err

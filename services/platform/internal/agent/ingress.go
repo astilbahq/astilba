@@ -115,7 +115,7 @@ func renderSnapshot(s routeSnapshot) ([]byte, error) {
 		}
 		routers["activation-"+s.Revision] = map[string]any{"entryPoints": []string{"traefik"}, "rule": "Path(`/__astilba_activation`)", "service": "api@internal"}
 	}
-	return stablejson.Marshal(out)
+	return deployment.RouteFile(out)
 }
 func atomicRouteFile(path string, raw []byte) error {
 	dir := filepath.Dir(path)

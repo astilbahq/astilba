@@ -37,6 +37,7 @@ an owner-only environment file outside source control:
 | `ASTILBA_KEYRING_JSON` | Alternative keyring JSON supplied directly by a secret manager or container environment. Configure exactly one keyring source. |
 | `ASTILBA_ORIGIN` | Exact public HTTPS origin, without a path or trailing slash. |
 | `ASTILBA_LISTEN` | Listener, normally `0.0.0.0:8080` inside the container. |
+| `ASTILBA_DATABASE_POOL_SIZE` | Optional. Connections each process may hold, 4 to 1000. Defaults to 12. See [database connections](#database-connections). |
 | `ASTILBA_TROUBLESHOOTING` | Optional. `single-instance` declares that one instance serves this installation, which [interactive troubleshooting](interactive-troubleshooting.md) requires. Off by default. |
 | `ASTILBA_TRUSTED_PROXIES` | Optional comma-separated proxy IP CIDRs, for example `192.0.2.10/32,2001:db8::10/128`. Empty by default; forwarding headers are then ignored. |
 | `ASTILBA_SMTP_ADDRESS`, `ASTILBA_SMTP_MODE`, `ASTILBA_SMTP_FROM` | SMTP delivery settings. Use `tls` or `starttls` outside local development. |
@@ -65,6 +66,78 @@ previously encrypted data.
 
 The served `/source/NOTICE.txt` identifies the corresponding source. Keep the
 matching source archive available with every distributed or hosted version.
+
+### Database connections
+
+Each `astilba serve` process holds up to `ASTILBA_DATABASE_POOL_SIZE` connections,
+plus one for the job listener. The default of 12 suits a database about a millisecond
+away and most self-hosted installations need not change it.
+
+**Size it from the round trip.** Every query holds a connection for at least one round
+trip between the service and PostgreSQL, so a pool carries about pool size ÷ round
+trip queries a second. An idle server's agent makes about 3.4. To keep about a third
+of the pool spare:
+
+```text
+pool size = servers x round trip in milliseconds / 200
+```
+
+So the default suits about 800 servers at 3 ms and 480 at 5 ms. Use 130 in place of 200
+if servers deploy about hourly. Measure the round trip from where the service runs.
+The [capacity measurement](../experiments/fleet-capacity/RESULTS.md#a-configurable-pool)
+tested this up to a pool of 24 at about 3.5 ms and up to 2,000 servers, on a local VM
+with a simulated network rather than a managed database.
+
+**Stay within PostgreSQL's limit.** Budget the whole pool: at 100 servers a pool of 12
+had already opened nearly all its connections. Count every process that can run at once, including the overlap
+during a rolling replacement, and leave room for migrations, one-off commands and
+your own monitoring:
+
+```text
+processes x (pool size + 1) + other clients <= max_connections - superuser_reserved_connections - reserved_connections
+```
+
+A `CONNECTION LIMIT` on the role or database also applies, and is the lower bound if it
+is smaller. `astilba serve` refuses to start if one process alone could never fit within
+any of these, but it cannot see other processes or clients. PostgreSQL's `max_connections` is usually 100 and changing it requires a restart; a
+small managed instance may set it lower, so check yours.
+
+**Do not make it larger than you need.** When the pool is too small, work queues in the
+service, which is bounded and visible. When the total passes a limit, new connections
+fail outright. Measured under idle polling, each connection had added about 4 to 6 MiB
+of PostgreSQL private memory after ten minutes, still rising slowly on larger pools. A
+pool of 48 also appeared to use more database CPU than a pool of 4 for the same queries,
+though one pair of runs on a shared host cannot say how much. Past the point where PostgreSQL's CPUs are busy,
+more active connections reduce throughput rather than add to it
+([PostgreSQL wiki](https://wiki.postgresql.org/wiki/Number_Of_Database_Connections)).
+The minimum of 4 leaves no room to spare: the four background job workers can hold all
+of them while an application DNS provider is slow.
+
+**Connections must keep their session.** Job notifications use `LISTEN`, and offline
+recovery relies on a session advisory lock on each connection. Connect directly or
+through session pooling, not transaction pooling. Set the size with this setting, not
+`pool_max_conns` in `ASTILBA_DATABASE_URL`, which the startup schema check sends to
+PostgreSQL as an unknown setting and fails.
+
+**Reading the log.** Each process logs one line a minute, with counts for that minute:
+
+```text
+INFO database pool size=12 open=12 inUse=7 acquires=117621 waited=4366 waitSeconds=3.08 canceled=0
+```
+
+Divide `waitSeconds` by `acquires` for the mean wait for a connection. With a third of
+the pool spare it was usually under 3 ms, near the limit 2 to 12 ms, and past it over
+400 ms with `waited` equal to `acquires`. The share that `waited` alone is a poor signal,
+since a pool of 4 waited half the time with a third spare. `canceled` alone is too,
+because it also counts queries started after their client disconnected, however idle the
+pool. The line becomes a warning when the mean wait passes 50 ms, or when `canceled`
+exceeds `acquires`, as it does when the pool is too stuck to complete work. If warnings
+persist, raise the pool size or check that PostgreSQL itself has not slowed down, because
+a slower database fills a pool of any size.
+
+**Upgrading.** Earlier versions used the larger of 4 and the host's CPU count. A host with
+fewer than 12 CPUs now opens more connections, so recheck the budget above. A host with
+more than 12 opens fewer, so set the size if it carries many servers.
 
 ### Client addresses behind a reverse proxy
 
@@ -348,6 +421,16 @@ The existing per-server and per-environment exclusion still applies; reaching th
 workspace limit returns backpressure before another operation is queued. Archive
 operations are serialized per management replica, limited to 32 MiB and 10,000
 records, and use fixed 64 MiB Argon2id derivation parameters.
+
+The private network, coordinated backup and operational alert sweeps take one workspace
+at a time, each under its own deadline, and carry on past a failure. A failure costs that
+workspace its turn, and each failing workspace delays the others by no more than that
+deadline, though many failing at once add up because sweep capacity is shared. Each is logged
+as `background sweep item failed` with the sweep name and the workspace; the log keeps the
+failure's category rather than its text, which can contain stored values. Alert on that
+message. The workspace's owner also sees an [operational alert](operational-alerts.md) if a
+network or coordinated backup stays blocked, unless a held workspace lock is the cause: that
+stops alert evaluation for the workspace too, so only the log shows it.
 
 `ASTILBA_LOG_RETENTION_DAYS` controls terminal operation diagnostics and build log
 retention, defaulting to 30 days. Cleanup processes at most 100 records from each

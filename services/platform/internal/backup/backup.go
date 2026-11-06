@@ -224,3 +224,9 @@ func Prunable(runs []Run, retain int) []string {
 }
 
 func (p Policy) RequiresQuiescence() bool { return p.Method == QuiescedFiles }
+
+// CoordinatedDue reports whether the management sweep owes p an occurrence at now.
+// Agents skip these policies in their own schedule, so nothing else would start it.
+func (p Policy) CoordinatedDue(status Status, now time.Time) bool {
+	return p.Coordinated && p.RequiresQuiescence() && p.Enabled && status.Enabled && status.PolicyID == p.ID && status.Generation == p.Generation && !status.Next.IsZero() && !now.Before(status.Next)
+}

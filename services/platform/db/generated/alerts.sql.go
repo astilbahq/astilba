@@ -254,6 +254,27 @@ func (q *Queries) ListAlerts(ctx context.Context, arg ListAlertsParams) ([]ListA
 	return items, nil
 }
 
+const networkSweepHealth = `-- name: NetworkSweepHealth :one
+SELECT id,(reconcile_failing_since IS NOT NULL)::boolean AS failing,
+    COALESCE(checked_at >= reconcile_failing_since + interval '2 minutes',false)::boolean AS persistent
+FROM workspace_networks WHERE workspace_id = $1
+`
+
+type NetworkSweepHealthRow struct {
+	ID         uuid.UUID `json:"id"`
+	Failing    bool      `json:"failing"`
+	Persistent bool      `json:"persistent"`
+}
+
+// Persistent once the sweep has come back at least two minutes into a run of failures.
+// Comparing with its own last visit keeps time the sweep was not running from raising this alone.
+func (q *Queries) NetworkSweepHealth(ctx context.Context, workspaceID uuid.UUID) (NetworkSweepHealthRow, error) {
+	row := q.db.QueryRow(ctx, networkSweepHealth, workspaceID)
+	var i NetworkSweepHealthRow
+	err := row.Scan(&i.ID, &i.Failing, &i.Persistent)
+	return i, err
+}
+
 const rewrapAlertWebhook = `-- name: RewrapAlertWebhook :exec
 UPDATE alert_settings SET encrypted_webhook=$2 WHERE workspace_id=$1
 `

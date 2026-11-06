@@ -7,6 +7,7 @@ package db
 
 import (
 	"context"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -212,6 +213,41 @@ func (q *Queries) BackupPolicyStatus(ctx context.Context, arg BackupPolicyStatus
 	return status, err
 }
 
+const claimDueCoordinatedBackupPolicy = `-- name: ClaimDueCoordinatedBackupPolicy :one
+UPDATE backup_policies SET coordinated_checked_at=clock_timestamp()
+WHERE id=(SELECT p.id FROM backup_policies p
+    WHERE p.configuration->>'coordinated'='true' AND p.configuration->>'enabled'='true'
+        AND p.status->>'enabled'='true' AND p.status->>'generation'=p.configuration->>'generation'
+        AND p.status->>'next'>'0001-01-01T00:00:00Z' AND p.status->>'next'<= $1::text
+        AND p.coordinated_checked_at < $2::timestamptz
+        AND p.workspace_id <> ALL($3::uuid[])
+    ORDER BY p.coordinated_checked_at,p.id LIMIT 1 FOR UPDATE SKIP LOCKED)
+RETURNING workspace_id,server_id,id
+`
+
+type ClaimDueCoordinatedBackupPolicyParams struct {
+	DueBefore         string      `json:"due_before"`
+	PassStarted       time.Time   `json:"pass_started"`
+	StalledWorkspaces []uuid.UUID `json:"stalled_workspaces"`
+}
+
+type ClaimDueCoordinatedBackupPolicyRow struct {
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ServerID    uuid.UUID `json:"server_id"`
+	ID          uuid.UUID `json:"id"`
+}
+
+// unscoped: the coordinated scheduler sweeps every workspace and moves each policy to the
+// back of the scan before handling it within its own workspace, so a policy that fails
+// cannot hold the head of the scan. pass_started gives each policy one turn per pass.
+// A workspace this pass has stalled on keeps its place, so its other policies go first next time.
+func (q *Queries) ClaimDueCoordinatedBackupPolicy(ctx context.Context, arg ClaimDueCoordinatedBackupPolicyParams) (ClaimDueCoordinatedBackupPolicyRow, error) {
+	row := q.db.QueryRow(ctx, claimDueCoordinatedBackupPolicy, arg.DueBefore, arg.PassStarted, arg.StalledWorkspaces)
+	var i ClaimDueCoordinatedBackupPolicyRow
+	err := row.Scan(&i.WorkspaceID, &i.ServerID, &i.ID)
+	return i, err
+}
+
 const countBackupDestinations = `-- name: CountBackupDestinations :one
 SELECT count(*) FROM backup_destinations WHERE workspace_id = $1
 `
@@ -247,42 +283,6 @@ type DisableEnvironmentBackupPoliciesParams struct {
 func (q *Queries) DisableEnvironmentBackupPolicies(ctx context.Context, arg DisableEnvironmentBackupPoliciesParams) error {
 	_, err := q.db.Exec(ctx, disableEnvironmentBackupPolicies, arg.WorkspaceID, arg.EnvironmentID)
 	return err
-}
-
-const dueCoordinatedBackupPolicies = `-- name: DueCoordinatedBackupPolicies :many
-SELECT workspace_id,server_id,id FROM backup_policies
-WHERE configuration->>'coordinated'='true' AND configuration->>'enabled'='true'
-    AND status->>'enabled'='true' AND status->>'generation'=configuration->>'generation'
-    AND status->>'next'>'0001-01-01T00:00:00Z' AND status->>'next'<= $1::text
-ORDER BY coordinated_checked_at,id LIMIT 100
-`
-
-type DueCoordinatedBackupPoliciesRow struct {
-	WorkspaceID uuid.UUID `json:"workspace_id"`
-	ServerID    uuid.UUID `json:"server_id"`
-	ID          uuid.UUID `json:"id"`
-}
-
-// unscoped: the coordinated scheduler sweeps every workspace and yields the scan
-// position per policy, then handles each candidate within its own workspace.
-func (q *Queries) DueCoordinatedBackupPolicies(ctx context.Context, dueBefore string) ([]DueCoordinatedBackupPoliciesRow, error) {
-	rows, err := q.db.Query(ctx, dueCoordinatedBackupPolicies, dueBefore)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []DueCoordinatedBackupPoliciesRow{}
-	for rows.Next() {
-		var i DueCoordinatedBackupPoliciesRow
-		if err := rows.Scan(&i.WorkspaceID, &i.ServerID, &i.ID); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
 }
 
 const insertBackupCutover = `-- name: InsertBackupCutover :exec
@@ -484,21 +484,6 @@ func (q *Queries) LockCoordinatedBackupPolicy(ctx context.Context, arg LockCoord
 	var i LockCoordinatedBackupPolicyRow
 	err := row.Scan(&i.Configuration, &i.Status)
 	return i, err
-}
-
-const markBackupPolicyChecked = `-- name: MarkBackupPolicyChecked :exec
-UPDATE backup_policies SET coordinated_checked_at=clock_timestamp()
-WHERE workspace_id = $1 AND id = $2
-`
-
-type MarkBackupPolicyCheckedParams struct {
-	WorkspaceID uuid.UUID `json:"workspace_id"`
-	ID          uuid.UUID `json:"id"`
-}
-
-func (q *Queries) MarkBackupPolicyChecked(ctx context.Context, arg MarkBackupPolicyCheckedParams) error {
-	_, err := q.db.Exec(ctx, markBackupPolicyChecked, arg.WorkspaceID, arg.ID)
-	return err
 }
 
 const operationCommandByRequestKey = `-- name: OperationCommandByRequestKey :one

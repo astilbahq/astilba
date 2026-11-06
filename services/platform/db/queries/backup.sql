@@ -72,18 +72,20 @@ WHERE workspace_id = @workspace_id AND environment_id = @environment_id;
 -- name: ListServerBackupStatuses :many
 SELECT id,status FROM backup_policies WHERE workspace_id = @workspace_id AND server_id = @server_id;
 
--- name: DueCoordinatedBackupPolicies :many
--- unscoped: the coordinated scheduler sweeps every workspace and yields the scan
--- position per policy, then handles each candidate within its own workspace.
-SELECT workspace_id,server_id,id FROM backup_policies
-WHERE configuration->>'coordinated'='true' AND configuration->>'enabled'='true'
-    AND status->>'enabled'='true' AND status->>'generation'=configuration->>'generation'
-    AND status->>'next'>'0001-01-01T00:00:00Z' AND status->>'next'<= @due_before::text
-ORDER BY coordinated_checked_at,id LIMIT 100;
-
--- name: MarkBackupPolicyChecked :exec
+-- name: ClaimDueCoordinatedBackupPolicy :one
+-- unscoped: the coordinated scheduler sweeps every workspace and moves each policy to the
+-- back of the scan before handling it within its own workspace, so a policy that fails
+-- cannot hold the head of the scan. pass_started gives each policy one turn per pass.
+-- A workspace this pass has stalled on keeps its place, so its other policies go first next time.
 UPDATE backup_policies SET coordinated_checked_at=clock_timestamp()
-WHERE workspace_id = @workspace_id AND id = @id;
+WHERE id=(SELECT p.id FROM backup_policies p
+    WHERE p.configuration->>'coordinated'='true' AND p.configuration->>'enabled'='true'
+        AND p.status->>'enabled'='true' AND p.status->>'generation'=p.configuration->>'generation'
+        AND p.status->>'next'>'0001-01-01T00:00:00Z' AND p.status->>'next'<= @due_before::text
+        AND p.coordinated_checked_at < @pass_started::timestamptz
+        AND p.workspace_id <> ALL(@stalled_workspaces::uuid[])
+    ORDER BY p.coordinated_checked_at,p.id LIMIT 1 FOR UPDATE SKIP LOCKED)
+RETURNING workspace_id,server_id,id;
 
 -- name: LockCoordinatedBackupPolicy :one
 SELECT configuration,status FROM backup_policies

@@ -24,6 +24,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/auth"
 	"github.com/astilbahq/astilba/services/platform/internal/billing"
 	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
+	"github.com/astilbahq/astilba/services/platform/internal/diagnostic"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/execution"
 	"github.com/astilbahq/astilba/services/platform/internal/githubapp"
@@ -241,7 +242,7 @@ func (s *Server) respond(w http.ResponseWriter, status int, value any) {
 	body, err := stablejson.Marshal(value)
 	if err != nil {
 		id := w.Header().Get("X-Request-ID")
-		s.Log.Error("response could not be encoded", "request_id", id, "type", fmt.Sprintf("%T", value), failureDiagnostic(err))
+		s.Log.Error("response could not be encoded", "request_id", id, "type", fmt.Sprintf("%T", value), diagnostic.Failure(err))
 		status = http.StatusInternalServerError
 		body, _ = stablejson.Marshal(api.Error{Code: "internal_error", Message: "The request could not be completed.", RequestId: id})
 	}
@@ -274,7 +275,7 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 			status = 400
 		}
 	} else {
-		s.Log.Error("request failed", "request_id", out.RequestId, "route", requestRoute(r), failureDiagnostic(err))
+		s.Log.Error("request failed", "request_id", out.RequestId, "route", requestRoute(r), diagnostic.Failure(err))
 	}
 	if status == 429 {
 		w.Header().Set("Retry-After", "300")
