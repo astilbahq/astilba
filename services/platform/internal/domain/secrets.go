@@ -3,6 +3,7 @@ package domain
 import (
 	"net/url"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -17,6 +18,7 @@ var (
 	// A line break however a file writes it, with the indentation around it: real, as `\n`
 	// or `\\n` inside a string, or after a `\` that continues a line.
 	secretLineBreak = regexp.MustCompile(`\s*(?:(?:\\*[\r\n]|\\+[rn])(?:\s|\\+t)*)+`)
+	secretTab       = regexp.MustCompile(`\\+t`)
 	secretEscape    = regexp.MustCompile(`\\+`)
 	// What wrapping or commenting out adds between the lines of a run of base64, which has
 	// neither whitespace nor `#` of its own.
@@ -26,6 +28,9 @@ var (
 	// an EC key's its public point, word for word in its public key and certificate, and an
 	// OpenSSH key's first line is the same in every key of a type.
 	secretPrivateKey = regexp.MustCompile(`(?s)-----BEGIN [A-Z0-9 ]*PRIVATE KEY[A-Z0-9 ]*-----(.*?)-----END `)
+	// The lines of an armoured body that aren't key: `Proc-Type:` or `Version:` headers and
+	// a PGP checksum.
+	secretArmourMetadata = regexp.MustCompile(`(?m)^(?:[A-Za-z0-9-]+:.*|=[A-Za-z0-9+/]{4})$`)
 )
 
 // SecretSearchForm is the text that exposes a stored value: `prod-key-123\n` is exposed by
@@ -41,7 +46,7 @@ func SecretSearchForm(value string) string {
 // SecretForms returns part as written and as the standard URL encoders write it. SecretViews
 // finds these too, unless a stray `%` before the value is read as an escape of its first bytes.
 func SecretForms(part string) []string {
-	return []string{part, url.QueryEscape(part), strings.TrimPrefix(url.UserPassword("", part).String(), ":")}
+	return slices.Compact([]string{part, url.QueryEscape(part), strings.TrimPrefix(url.UserPassword("", part).String(), ":")})
 }
 
 // SecretView is one reading of a text: as written, or with its URL encoding undone.
@@ -100,7 +105,7 @@ func urlDecodedView(text string, plusIsSpace bool) SecretView {
 // secretLineForm removes what quoting and indenting add, keeping where each line ends so
 // that `admin\npassword` isn't found in the words `admin password`.
 func secretLineForm(text string) string {
-	return secretEscape.ReplaceAllString(secretLineBreak.ReplaceAllString(text, "\n"), "")
+	return secretEscape.ReplaceAllString(secretTab.ReplaceAllString(secretLineBreak.ReplaceAllString(text, "\n"), "\t"), "")
 }
 
 // SecretText holds the texts a stored value must not appear in, prepared once because a
@@ -144,27 +149,25 @@ func (t SecretText) Exposes(value string) bool {
 			return true
 		}
 	}
-	if lined := secretLineForm(form); len(lined) >= minTrimmedSecret && containsSecretForm(t.lined, lined) {
+	lined := secretLineForm(form)
+	if len(lined) >= minTrimmedSecret && containsSecretForm(t.lined, lined) {
 		return true
 	}
-	if t.containsWrapped(form) {
+	// A long first line is what shows a value is a run of base64: `postgres\nredis\nnginx`
+	// could pass for one once joined. The armour shows it for a key.
+	if lines := strings.Fields(lined); len(lines) > 0 && secretOpaque.MatchString(lines[0]) && t.containsBase64(lines) {
 		return true
 	}
 	for _, block := range secretPrivateKey.FindAllStringSubmatch(form, -1) {
-		if t.containsWrapped(block[1]) {
+		if t.containsBase64(strings.Fields(secretArmourMetadata.ReplaceAllString(secretLineForm(block[1]), ""))) {
 			return true
 		}
 	}
 	return false
 }
 
-// containsWrapped finds a run of base64 however it is wrapped or commented out. A long first
-// line is what shows it is one: `postgres\nredis\nnginx` could pass for it once joined.
-func (t SecretText) containsWrapped(form string) bool {
-	lines := strings.Fields(secretLineForm(form))
-	if len(lines) == 0 || !secretOpaque.MatchString(lines[0]) {
-		return false
-	}
+// containsBase64 finds a run of base64 however it is wrapped or commented out.
+func (t SecretText) containsBase64(lines []string) bool {
 	joined := strings.Join(lines, "")
 	return secretOpaque.MatchString(joined) && containsSecretForm(t.bare, joined)
 }
