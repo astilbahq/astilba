@@ -44,23 +44,6 @@ func (q *Queries) AdoptRecoveredNetworkManifest(ctx context.Context, arg AdoptRe
 	return result.RowsAffected(), nil
 }
 
-const advanceRecoveredNetworkGeneration = `-- name: AdvanceRecoveredNetworkGeneration :one
-UPDATE workspace_networks SET generation=GREATEST(generation, $1::bigint)+1
-WHERE workspace_id = $2 RETURNING generation
-`
-
-type AdvanceRecoveredNetworkGenerationParams struct {
-	ObservedGeneration int64     `json:"observed_generation"`
-	WorkspaceID        uuid.UUID `json:"workspace_id"`
-}
-
-func (q *Queries) AdvanceRecoveredNetworkGeneration(ctx context.Context, arg AdvanceRecoveredNetworkGenerationParams) (int64, error) {
-	row := q.db.QueryRow(ctx, advanceRecoveredNetworkGeneration, arg.ObservedGeneration, arg.WorkspaceID)
-	var generation int64
-	err := row.Scan(&generation)
-	return generation, err
-}
-
 const agentRecoveryCheckpointEnvelope = `-- name: AgentRecoveryCheckpointEnvelope :one
 SELECT c.envelope FROM cross_host_checkpoints c
 JOIN execution_operations o ON o.workspace_id=c.workspace_id AND o.id=c.parent_id

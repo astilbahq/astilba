@@ -261,7 +261,7 @@ func loadRecoveryProofs(ctx context.Context, tx pgx.Tx, dir string, host deploym
 		var proof deployment.RecoveryProof
 		var header api.ExecutionCommand
 		var report api.AgentReport
-		if recoveryDecode(scanner.Bytes(), &proof) != nil || recoveryDecode(proof.Header, &header) != nil || recoveryDecode(proof.Report, &report) != nil || header.Id != proof.ID || header.ServerId != host.ServerID || header.Id != report.Id || header.PlanHash != report.PlanHash || header.Generation != report.Generation || report.Sequence < 1 || header.Crosshost != nil || header.Backup != nil || header.Upgrade != nil || header.Visual != nil || header.Pipeline != nil || generation(header.ControllerGeneration) > host.Controller {
+		if recoveryDecode(scanner.Bytes(), &proof) != nil || recoveryDecode(proof.Header, &header) != nil || recoveryDecode(proof.Report, &report) != nil || header.Id != proof.ID || header.ServerId != host.ServerID || header.Id != report.Id || header.PlanHash != report.PlanHash || header.Generation != report.Generation || report.Sequence < 1 || report.Sequence >= portability.MaxCounter || header.Crosshost != nil || header.Backup != nil || header.Upgrade != nil || header.Visual != nil || header.Pipeline != nil || generation(header.ControllerGeneration) > host.Controller {
 			return errors.New("host proof identity or redacted frame is invalid")
 		}
 		if header.ParentId == nil {

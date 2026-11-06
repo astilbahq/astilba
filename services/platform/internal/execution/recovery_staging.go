@@ -87,7 +87,7 @@ func (s *Service) finishRecoveryStaging(ctx context.Context, tx pgx.Tx, in Recov
 		}
 	}
 	if observedNetworkGeneration > 0 {
-		generation, err := q.AdvanceRecoveredNetworkGeneration(ctx, db.AdvanceRecoveredNetworkGenerationParams{ObservedGeneration: observedNetworkGeneration, WorkspaceID: in.WorkspaceID})
+		generation, err := q.AdvanceNetworkGeneration(ctx, db.AdvanceNetworkGenerationParams{ObservedGeneration: observedNetworkGeneration, WorkspaceID: in.WorkspaceID})
 		if err != nil {
 			return err
 		}

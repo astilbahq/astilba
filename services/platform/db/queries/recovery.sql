@@ -246,10 +246,6 @@ UPDATE network_members SET installed_manifest = @installed_manifest,manifest_has
     note='Controller recovery preserves the installed private links; general network mutation requires renewed approval.'
 WHERE workspace_id = @workspace_id AND server_id = @server_id AND membership_id = @membership_id AND network_id = @network_id AND public_key = @public_key;
 
--- name: AdvanceRecoveredNetworkGeneration :one
-UPDATE workspace_networks SET generation=GREATEST(generation, @observed_generation::bigint)+1
-WHERE workspace_id = @workspace_id RETURNING generation;
-
 -- name: ResetRecoveredNetworkMembers :exec
 UPDATE network_members SET generation = @generation,acknowledged_generation=0 WHERE workspace_id = @workspace_id;
 

@@ -81,6 +81,9 @@ func (s *Service) RecoverCrossHost(ctx context.Context, in RecoveryImport) (Reco
 	if err = s.recoverSavedCheckpoints(ctx, tx, before, &source); err != nil {
 		return out, err
 	}
+	if err = checkRecoveryGenerationClaims(ctx, tx, before, source); err != nil {
+		return out, err
+	}
 	roots, err := requiredRecoveryRoots(source)
 	if err != nil {
 		return out, err
