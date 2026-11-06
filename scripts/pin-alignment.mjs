@@ -90,7 +90,17 @@ function allPins(catalog, manifests) {
   return pins;
 }
 
-export function pinProblems({ workspace, lockfile, manifests, workflows }) {
+// The usual routes that would skip the hash. A plain download is not told apart.
+const unverifiedPnpmInstall =
+  /\b(?:npm|yarn|bun)\s[^\n]*\b(?:install|i|add)\b[^\n]*\bpnpm\b|\bnpx\s[^\n]*\bpnpm\b|\bcorepack\s+(?:enable|prepare|use|install)\b|pnpm\/action-setup|get\.pnpm\.io/;
+
+export function pinProblems({
+  workspace,
+  lockfile,
+  manifests,
+  workflows,
+  installers,
+}) {
   const problems = [];
   const catalog = workspace.catalog ?? {};
   const pins = allPins(catalog, manifests);
@@ -198,6 +208,19 @@ export function pinProblems({ workspace, lockfile, manifests, workflows }) {
       `.github/workflows: Playwright images differ: ${[...images].join(", ")}`,
     );
 
+  // Dependabot moves the catalog and the lockfile but never packageManager, which is
+  // what chooses the version and so which lockfile entry the install is checked against.
+  const { packageManager } = manifests["package.json"];
+  if (packageManager !== `pnpm@${catalog.pnpm}`)
+    problems.push(
+      `package.json: packageManager must be pnpm@${catalog.pnpm} to match the catalog, found ${packageManager}`,
+    );
+  for (const [path, text] of Object.entries({ ...workflows, ...installers }))
+    if (unverifiedPnpmInstall.test(text.replaceAll("\\\n", " ")))
+      problems.push(
+        `${path}: install pnpm with scripts/install-pnpm.mjs, which checks its hash`,
+      );
+
   // Each approval names one release, so a new release's scripts need a fresh decision.
   // Lockfile keys are all name@exact, so a bare name or a range can't match.
   for (const key of Object.keys(workspace.allowBuilds ?? {}))
@@ -220,7 +243,18 @@ function read(root) {
   const workflows = {};
   for (const name of readdirSync(join(root, ".github/workflows")))
     workflows[`.github/workflows/${name}`] = text(`.github/workflows/${name}`);
-  return { workspace, lockfile: text("pnpm-lock.yaml"), manifests, workflows };
+  const installers = { Dockerfile: text("Dockerfile") };
+  for (const name of readdirSync(join(root, ".github/actions"))) {
+    const path = `.github/actions/${name}/action.yml`;
+    installers[path] = text(path);
+  }
+  return {
+    workspace,
+    lockfile: text("pnpm-lock.yaml"),
+    manifests,
+    workflows,
+    installers,
+  };
 }
 
 if (

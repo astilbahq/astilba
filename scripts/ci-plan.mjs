@@ -27,8 +27,14 @@ const javascript = (path) =>
     "package.json",
     "pnpm-lock.yaml",
     "pnpm-workspace.yaml",
+    "scripts/fetch-attempts.mjs",
+    "scripts/install-pnpm.mjs",
     "vite.config.ts",
   ].includes(path);
+// Every suite with fixture images pulls them through these.
+const imagePulls = (path) =>
+  path.startsWith(".github/actions/pull-images/") ||
+  path === "scripts/fetch-attempts.mjs";
 
 const vulnerabilityInputs = (path) =>
   path.endsWith(".go") ||
@@ -49,8 +55,11 @@ const affects = {
     !(docs(path) || dashboard(path) || serverOnly(path)),
   go: (path) => !(docs(path) || dashboard(path)),
   browser: (path) => !docs(path),
-  durable: owns("experiments/durable-execution/", "go.yml"),
-  git: owns("experiments/git-compose/", "git-providers.yml"),
+  durable: (path) =>
+    owns("experiments/durable-execution/", "go.yml")(path) || imagePulls(path),
+  git: (path) =>
+    owns("experiments/git-compose/", "git-providers.yml")(path) ||
+    imagePulls(path),
   canvas: (path) =>
     owns("experiments/canvas-editor/", "canvas.yml")(path) || javascript(path),
   vulnerabilities: vulnerabilityInputs,

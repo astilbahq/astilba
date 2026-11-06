@@ -22,6 +22,7 @@
     "storybook:test": "pnpm --filter @astilba/dashboard storybook:test"
   },
   "devDependencies": {
+    "pnpm": "catalog:",
     "vite-plus": "catalog:"
   },
   "engines": {

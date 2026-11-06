@@ -190,6 +190,26 @@ test("each suite runs only for paths that can affect it", async (t) => {
       [".github/actions/install-pnpm/action.yml"],
       ["native", "go", "browser", "canvas", "vulnerabilities"],
     ],
+    [
+      ["scripts/install-pnpm.mjs"],
+      ["native", "go", "browser", "canvas", "vulnerabilities"],
+    ],
+    [
+      [".github/actions/pull-images/action.yml"],
+      ["native", "go", "browser", "durable", "git"],
+    ],
+    [
+      ["scripts/fetch-attempts.mjs"],
+      [
+        "native",
+        "go",
+        "browser",
+        "durable",
+        "git",
+        "canvas",
+        "vulnerabilities",
+      ],
+    ],
   ];
   for (const [paths, selected] of cases)
     await t.test(paths.join(", "), (t) => {
