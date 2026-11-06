@@ -20,7 +20,9 @@ Before the window, each server's own report is copied back over the previous 24 
 | --- | --- |
 | `idle-` | PostgreSQL on the VM's disk. Used for PostgreSQL's memory, because tmpfs pages are charged to its cgroup, and for the zero-agent baseline. |
 | `tmpfs-idle-`, `tmpfs-active-` | PostgreSQL's files in tmpfs with `commit_delay=1000` and `commit_siblings=0`. This replaces the host's disk with a fixed 1 ms commit that resembles gp3. |
-| `-pool12` | The application sees 12 CPUs, so its pool has 12 connections. |
+| `-pool12` | A pool of 12, with all 12 CPUs shared between the containers, as the first pool of 12 was measured. |
+| `-poolNN` after `tmpfs-idle-` | A pool of `NN` with the default CPU split. Other runs use a pool of 4 unless the name says otherwise. |
+| `-rtt3-poolNN` | A pool of `NN` with 2.8 ms of `netem` delay, about 3.5 ms measured. |
 | `-no-tick` | A throwaway build with [no-tick.patch](no-tick.patch) applied to a temporary copy of the working tree. It bounds what a wake-up could save and is not usable: commands wait up to 25 s. |
 | `-slow-db` | A larger `netem` delay, about 0.8 ms round trip. |
 | `sized-` | CPU quotas matching proposed sizes. |
@@ -47,9 +49,9 @@ colima start astilba-fleet-capacity --activate=false --mount none --port-forward
 go run . summary /path/to/new/results/*.json
 ```
 
-[results/summary.md](results/summary.md) came from `summary` over the published runs, not the discarded first versions that RESULTS.md quotes. `measure` writes one JSON per run. Those files are not kept in this repository, so a repeat produces new measurements rather than the published ones. `run-all.sh` takes run names to repeat one run, skips results that already exist and exits non-zero if any run fails. A full `run-all.sh` takes about four hours. Host load comes from the machine running `measure`, so it describes the Docker host only for a local VM. Repeat runs that overlap heavy work on the same machine.
+[results/summary.md](results/summary.md) came from `summary` over the published runs, not the discarded first versions that RESULTS.md quotes. `tmpfs-idle-1500-repeat` there is a later run of `tmpfs-idle-1500`, renamed so that both can be listed. `measure` writes one JSON per run. Those files are not kept in this repository, so a repeat produces new measurements rather than the published ones. `run-all.sh` takes run names to repeat one run, skips results that already exist and exits non-zero if any run fails. A full `run-all.sh` takes about six hours. Host load comes from the machine running `measure`, so it describes the Docker host only for a local VM. Repeat runs that overlap heavy work on the same machine.
 
-The application's database pool has `max(4, NumCPU)` connections and cannot be configured: `pool_max_conns` in the URL breaks the `database/sql` migration check. So `--app-cpuset` is how a run selects the pool size.
+`--pool-size` sets `ASTILBA_DATABASE_POOL_SIZE`. `run-all.sh` names a pool in every run, so a later change of the application's default does not change what a run measures. Each result keeps the application's minute-by-minute pool log lines from its window.
 
 ## Limits
 

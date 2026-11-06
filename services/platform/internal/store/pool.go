@@ -40,6 +40,9 @@ func readPoolUse(stat *pgxpool.Stat) poolUse {
 }
 
 // LogPoolUse logs each minute how often work had to wait for a connection, until ctx ends.
+// docs/hosting.md#database-connections explains how to read the line. A cancelled acquire
+// is a warning because the caller gave up waiting: every measured run past the pool's
+// ceiling had them, and none had them with room to spare.
 func (s *Store) LogPoolUse(ctx context.Context) {
 	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
@@ -52,7 +55,12 @@ func (s *Store) LogPoolUse(ctx context.Context) {
 		}
 		stat := s.Pool.Stat()
 		now := readPoolUse(stat)
-		slog.Info("database pool", "size", stat.MaxConns(), "open", stat.TotalConns(), "inUse", stat.AcquiredConns(), "acquires", now.acquires-last.acquires, "waited", now.waited-last.waited, "waitSeconds", (now.waiting - last.waiting).Seconds(), "canceled", now.canceled-last.canceled)
+		canceled := now.canceled - last.canceled
+		level := slog.LevelInfo
+		if canceled > 0 {
+			level = slog.LevelWarn
+		}
+		slog.Log(ctx, level, "database pool", "size", stat.MaxConns(), "open", stat.TotalConns(), "inUse", stat.AcquiredConns(), "acquires", now.acquires-last.acquires, "waited", now.waited-last.waited, "waitSeconds", (now.waiting - last.waiting).Seconds(), "canceled", canceled)
 		last = now
 	}
 }

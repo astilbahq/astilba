@@ -1,19 +1,19 @@
 # Fleet capacity results
 
-Measured on 5 November 2026 against application revision `35aa720`, with synthetic agents and PostgreSQL 18.4. Method and limits are in the [README](README.md). Tables generated from the runs are in [summary.md](results/summary.md). The per-run JSON they came from is not in this repository; `run-all.sh` produces it again, as described in the README.
+Measured on 5 November 2026 against application revision `35aa720`, with synthetic agents and PostgreSQL 18.4. [A configurable pool](#a-configurable-pool) was measured on 6 November against `d1a9b46`. Method and limits are in the [README](README.md). Tables generated from the runs are in [summary.md](results/summary.md). The per-run JSON they came from is not in this repository; `run-all.sh` produces it again, as described in the README.
 
 **Read the CPU and sizing as estimates.** Query counts, bytes, rows and pool behaviour are direct measurements. CPU was measured on Apple M5 Pro cores in a shared VM, and sizing converts it to AWS vCPUs by benchmark ratios. CPU varied by up to about two times between comparable runs of the same fleet, depending on host load and pool size. Nothing ran on RDS, Fargate or Graviton.
 
 ## Findings
 
 1. **Load is close to linear per agent.** An idle agent makes about 3.4 queries a second and exchanges about 235 B/s with the application and 1.1 KB/s of database traffic. On a quiet host, 1,000 idle agents used about 0.15 core of PostgreSQL and 0.19 core of the application.
-2. **The application's database pool, not CPU, limits a deployment first.** The pool is fixed at `max(4, NumCPU)`, so we expect 4 on any Fargate task up to 4 vCPU. It can carry about 4 ÷ round trip queries a second, so its ceiling is roughly 1,170 idle agents ÷ the round trip in milliseconds. With other project work held, it carried 2,000 agents at 0.56 ms and 1,500 at 0.75 ms with no failures, but it runs close to the limit: demand was 95–96% of the ceiling, and achieved queries were already 2–3% short of it. At 0.79 ms, 1,500 agents sat at about 100% and heartbeats took about 1 s with 189 failed polls. Other work on the host caused timeouts at 2,000 agents even below the ceiling. CPU at that point is only about 0.2–0.3 core each.
+2. **The application's database pool, not CPU, limits a deployment first.** A pool carries about its connections ÷ round trip queries a second, so its ceiling is roughly 290 idle agents × connections ÷ the round trip in milliseconds: 1,170 ÷ round trip at the 4 connections measured here. The size is now `ASTILBA_DATABASE_POOL_SIZE`, 12 by default. [A later run](#a-configurable-pool) confirmed the ceiling moves with it. With other project work held, 4 connections carried 2,000 agents at 0.56 ms and 1,500 at 0.75 ms with no failures, but it runs close to the limit: demand was 95–96% of the ceiling, and achieved queries were already 2–3% short of it. At 0.79 ms, 1,500 agents sat at about 100% and heartbeats took about 1 s with 189 failed polls. Other work on the host caused timeouts at 2,000 agents even below the ceiling. CPU at that point is only about 0.2–0.3 core each.
 3. **Replacing the one-second tick removes 86% of queries and about half of CPU, and it halves the task at 2,000 servers.** It also leaves the pool far below its ceiling. Details are [below](#replacing-the-one-second-tick).
 4. **Operations in progress are far heavier than idle polling.** An agent with a running command re-polls every 250 ms, and the server re-reads and re-sends the whole command each time.
 
 ## Idle and active load
 
-Each row is one 8-minute window with 5 servers a workspace, on the shipped pool of 4 unless the name says `pool12` or `sized-`. `tmpfs-` and `sized-` runs have a 1 ms commit and a 0.41–0.56 ms database ping, except `slow-db` at 0.75 ms. CPU is raw: a guest counts time its vCPU was preempted by the host, so a busier host inflates it.
+Each row is one 8-minute window with 5 servers a workspace, on a pool of 4 unless the name says `pool12` or `sized-`. `tmpfs-` and `sized-` runs have a 1 ms commit and a 0.41–0.56 ms database ping, except `slow-db` at 0.75 ms. CPU is raw: a guest counts time its vCPU was preempted by the host, so a busier host inflates it.
 
 | Run | Window start, UTC | Agents | q/s | q/s per agent | DB cores | App cores | App MiB | Clients | Heartbeat p50 / p99 | Failed in window | Host load start → end |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | ---: | --- |
@@ -127,11 +127,11 @@ So an idle server stops growing after its first day. One deployment a day adds 0
 
 Each deployment in flight adds about as much database CPU as 90 idle servers, so bursts drain credits well before these sustained figures. RDS's own overhead is not included.
 
-**CPU quota check.** The `sized-` runs limited the database to 0.8 core and the application to 0.1 core at 100 servers, 0.4 at 1,000 and 0.8 at 2,000: the vCPUs of a Fargate task proposed at the time ÷ 3.5 × an assumed 1.4 slowdown. All had no failures and heartbeat p99 under 66 ms. They were set before the final sizing, which proposes 2 vCPU at 1,000 servers, so that fleet was tested at half of it. They used a pool of 12, because quotas do not change `NumCPU`, and they do not test memory limits.
+**CPU quota check.** The `sized-` runs limited the database to 0.8 core and the application to 0.1 core at 100 servers, 0.4 at 1,000 and 0.8 at 2,000: the vCPUs of a Fargate task proposed at the time ÷ 3.5 × an assumed 1.4 slowdown. All had no failures and heartbeat p99 under 66 ms. They were set before the final sizing, which proposes 2 vCPU at 1,000 servers, so that fleet was tested at half of it. They used a pool of 12, because the pool then followed `NumCPU`, which quotas do not change, and they do not test memory limits.
 
 ## The pool limit
 
-Every query holds one of the pool's connections for at least its network round trip, so the pool can carry about 4 ÷ round trip queries a second. An idle agent needs 3.41, and commits and deployments need more. Measured, with a 1 ms commit:
+Every query holds one of the pool's connections for at least its network round trip, so a pool of 4 can carry about 4 ÷ round trip queries a second. An idle agent needs 3.41, and commits and deployments need more. Measured, with a 1 ms commit:
 
 | Database ping | Pool | Agents | Host | q/s demanded → achieved | Heartbeat p50 | Failed polls |
 | ---: | ---: | ---: | --- | --- | ---: | ---: |
@@ -146,7 +146,38 @@ Every query holds one of the pool's connections for at least its network round t
 
 The limit has little margin. In the held runs, demand was 95–96% of the ceiling: nothing failed, but achieved queries were already 2–3% short of demand. In the overlapped 0.79 ms run, demand was about 100% of the ceiling, and heartbeats took about 1 s. The overlapped 2,000-agent run shows host contention can hurt even at 84% of the ceiling. At load 18 to 33, polls waited in the queue past the agent's 30-second limit, and the leases they left behind refused the retries, producing 509 lease conflicts. Same-AZ placement should help and a Multi-AZ instance's synchronous commit should hurt; neither was measured.
 
-`pool_max_conns` in `ASTILBA_DATABASE_URL` does not help: `migrate` failed with it, and both `migrate` and the startup schema check open that URL through `database/sql`, where pgx sends the parameter to PostgreSQL as a setting. Plan on about 1,000 servers per deployment until the pool is configurable. By the same arithmetic, untested at this size, 1,000 agents reach the ceiling at about 1.2 ms when idle and 0.8 ms with hourly deployments.
+`pool_max_conns` in `ASTILBA_DATABASE_URL` does not help: `migrate` failed with it, and both `migrate` and the startup schema check open that URL through `database/sql`, where pgx sends the parameter to PostgreSQL as a setting. By the same arithmetic, untested at this size, 1,000 agents reach the ceiling of a pool of 4 at about 1.2 ms when idle and 0.8 ms with hourly deployments.
+
+## A configurable pool
+
+Runs on 6 November with `ASTILBA_DATABASE_POOL_SIZE`, on a 12 CPU VM on a shared 18 CPU host. `netem` delay of 2.8 ms gives the `rtt3` runs a measured ping of about 3.5 ms. Other sessions were active and asked to avoid full test suites, not stopped, so load is shown per run.
+
+| Run | Pool | Agents | Ping | q/s demanded → achieved | Heartbeat p50 / p99 | Failed polls | Waited | Mean wait for a connection | Canceled | Host load start → end | Quiet |
+| --- | ---: | ---: | ---: | --- | --- | ---: | ---: | ---: | ---: | --- | --- |
+| `tmpfs-idle-0300-rtt3-pool04` | 4 | 300 | 3.57 ms | 1,023 → 1,005 | 16 ms / 1.0 s | 16 | 55% | 19 ms | 10 | 5 → 4 | Yes |
+| `tmpfs-idle-0600-rtt3-pool04` | 4 | 600 | 3.52 ms | 2,046 → 1,255 | 2.1 s / 2.1 s | 2,384 | 100% | 530 ms | 1,588 | 4 → 3 | Yes |
+| `tmpfs-idle-0600-rtt3-pool12` | 12 | 600 | 3.54 ms | 2,046 → 2,014 | 8 ms / 16 ms | 0 | 3% | under 0.1 ms | 0 | 5 → 6 | Yes |
+| `tmpfs-idle-1100-rtt3-pool12` | 12 | 1,100 | 3.54 ms | 3,751 → 3,669 | 16 ms / 262 ms | 0 | 74% | 6.7 ms | 0 | 9 → 6 | No |
+| `tmpfs-idle-1500-rtt3-pool12` | 12 | 1,500 | 3.48 ms | 5,115 → 3,877 | 1.0 s / 2.1 s | 3,368 | 100% | 422 ms | 2,447 | 15 → 7 | No |
+| `tmpfs-idle-1500-rtt3-pool24` | 24 | 1,500 | 3.48 ms | 5,115 → 5,008 | 8 ms / 66 ms | 0 | 13% | 0.3 ms | 0 | 10 → 6 | No |
+| `tmpfs-idle-1500-repeat` | 4 | 1,500 | 0.49 ms | 5,115 → 5,014 | 4 ms / 131 ms | 0 | 50% | 2.2 ms | 0 | 5 → 4 | Yes |
+| `tmpfs-idle-2000-pool48` | 48 | 2,000 | 0.42 ms | 6,820 → 6,691 | 4 ms / 33 ms | 0 | 4% | 0.1 ms | 0 | 5 → 15 | No |
+
+Quiet means load stayed below 9 (half the host's CPUs) and the `pgbench` calibration stayed within 10% of the best run. Latency tails are only worth comparing between quiet runs. Throughput and failed polls held the same pattern in both.
+
+**The ceiling moves with the pool.** At about 3.5 ms, the plateau where achieved queries stopped following demand was 1,255 q/s with 4 connections and 3,877 with 12: 3.09 times as much for 3 times the connections, or 314 and 323 q/s per connection. That is 12% above connections ÷ ping, equivalent to about 3.1 ms a query, so the rule leans conservative here. With 24 connections, 1,500 agents needed about two thirds of the expected ceiling and got it. No run saturated 24 or 48, so those ceilings are arithmetic.
+
+**Margin.** A third spare ran clean at any load seen here, as in the 600, 1,500 and 2,000 agent runs above. At about 97% of the plateau, 1,100 agents on 12 connections had no failures, but achieved queries were 2% short of demand, as the first runs found. At about 80%, 300 agents on 4 connections lost 16 polls during a 75-second slowdown on a quiet host, when database CPU almost doubled with the same traffic and no autovacuum. Its cause was not found and may have been other work on the host. This is why [the sizing rule](../../docs/hosting.md#database-connections) leaves about a third spare.
+
+**The default.** 12 replaces `max(4, NumCPU)`, which tied the pool to the host, ignored CPU quotas and could exceed `max_connections` on a large host. 12 has the most evidence, including the `sized-` runs at 0.8 database core with no failures. It adds about 50 MiB of PostgreSQL memory over a pool of 4, and it leaves 8 connections while background jobs hold their maximum of 4. Measured private memory was about 28, 75, 123 and 216 MiB for 4, 12, 24 and 48 connections, so about 4 to 6 MiB each.
+
+**What too large costs.** At the same 2,000 agents and a similar link, a pool of 48 used 0.36–0.49 database core where a pool of 4 used 0.22, and 0.33–0.43 application core against 0.28. The lower end of each range comes from the start of the window, before host load rose, so read the size of the increase as approximate. No throughput was gained, since the pool of 4 had carried that load, though p99 fell. This workload is short queries on an idle system, so it does not show the fall in throughput that PostgreSQL's own guidance warns of when many connections are active at once.
+
+**The log line.** `canceled` was non-zero in all 16 minutes of the two saturated runs and the 2 minutes of the slowdown, and in none of the other 46, so that is what raises the line to a warning. The share that `waited` is not a usable signal alone, because it reached 50% at a third spare on a pool of 4: smaller pools queue sooner at the same utilisation.
+
+**Repeatability.** `tmpfs-idle-1500-repeat` reproduces the published `tmpfs-idle-1500` a day later, through the renamed harness: 5,014 against 5,127 q/s, 0.177 against 0.175 database core, no failures in either. `run-all.sh` and the generator ran end to end for these eight runs and needed no fixes beyond the new options. Failed polls before each window, as described [above](#idle-and-active-load), recur in these runs except `tmpfs-idle-0300-rtt3-pool04` and `tmpfs-idle-0600-rtt3-pool12`, and are not counted.
+
+This does not show a real network, TLS, a managed database or long-lived behaviour. `netem` adds a fixed delay with no jitter or loss, agents are synthetic and idle, and each window is eight minutes on a shared VM. It shows the ceiling's arithmetic holds across a threefold change in pool size at one round trip.
 
 ## Replacing the one-second tick
 
@@ -164,7 +195,7 @@ A throwaway build with the tick removed ([no-tick.patch](no-tick.patch)) measure
 
 At 2,000 agents the database falls below every `db.t4g` baseline above `micro`, the task halves, and the pool of 4 carries the fleet at about one seventh of the query rate, far below its ceiling. A sensible order:
 
-1. **When a deployment nears 1,000 servers:** make the pool size configurable. It is a small change, and it moves the limit to CPU.
+1. **Done:** the pool size is configurable, which moves the limit towards CPU. Size it from the [round trip](../../docs/hosting.md#database-connections).
 2. **Before a deployment passes about 2,000 servers, or if PostgreSQL needs fewer connections:** build the wake-up. Lengthening the tick to 5 s is a one-line intermediate step, estimated (not measured) to remove about 70% of queries while mean command delivery rises from about 0.5 s to about 2.5 s.
 
 Separately, not re-reading and re-sending an unchanged command every 250 ms would reduce load in busy fleets, where the tick is not the main contributor.

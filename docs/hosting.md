@@ -37,6 +37,7 @@ an owner-only environment file outside source control:
 | `ASTILBA_KEYRING_JSON` | Alternative keyring JSON supplied directly by a secret manager or container environment. Configure exactly one keyring source. |
 | `ASTILBA_ORIGIN` | Exact public HTTPS origin, without a path or trailing slash. |
 | `ASTILBA_LISTEN` | Listener, normally `0.0.0.0:8080` inside the container. |
+| `ASTILBA_DATABASE_POOL_SIZE` | Optional. Connections each process may hold, 4 to 1000. Defaults to 12. See [database connections](#database-connections). |
 | `ASTILBA_TROUBLESHOOTING` | Optional. `single-instance` declares that one instance serves this installation, which [interactive troubleshooting](interactive-troubleshooting.md) requires. Off by default. |
 | `ASTILBA_TRUSTED_PROXIES` | Optional comma-separated proxy IP CIDRs, for example `192.0.2.10/32,2001:db8::10/128`. Empty by default; forwarding headers are then ignored. |
 | `ASTILBA_SMTP_ADDRESS`, `ASTILBA_SMTP_MODE`, `ASTILBA_SMTP_FROM` | SMTP delivery settings. Use `tls` or `starttls` outside local development. |
@@ -65,6 +66,72 @@ previously encrypted data.
 
 The served `/source/NOTICE.txt` identifies the corresponding source. Keep the
 matching source archive available with every distributed or hosted version.
+
+### Database connections
+
+Each `astilba serve` process holds up to `ASTILBA_DATABASE_POOL_SIZE` connections,
+plus one for the job listener. The default of 12 suits a database about a millisecond
+away and most self-hosted installations need not change it.
+
+**Size it from the round trip.** Every query holds a connection for at least one round
+trip between the service and PostgreSQL, so a pool carries about pool size ÷ round
+trip queries a second. An idle server's agent makes about 3.4. To keep about a third
+of the pool spare:
+
+```text
+pool size = servers x round trip in milliseconds / 200
+```
+
+So the default suits about 800 servers at 3 ms and 480 at 5 ms. Use 130 in place of 200
+if servers deploy about hourly. Measure the round trip from where the service runs.
+The [capacity measurement](../experiments/fleet-capacity/RESULTS.md#a-configurable-pool)
+tested this up to a pool of 24 at about 3.5 ms and up to 2,000 servers, on a local VM
+with a simulated network rather than a managed database.
+
+**Stay within PostgreSQL's limit.** Budget the whole pool, because it reached its limit
+even at 100 servers. Count every process that can run at once, including the overlap
+during a rolling replacement, and leave room for migrations, one-off commands and
+your own monitoring:
+
+```text
+processes x (pool size + 1) + other clients <= max_connections - superuser_reserved_connections - reserved_connections
+```
+
+`astilba serve` refuses to start if one process alone could never fit. That check does
+not see other processes or clients, or a `CONNECTION LIMIT` on the role or database.
+PostgreSQL's `max_connections` is usually 100 and changing it requires a restart; a
+small managed instance may set it lower, so check yours.
+
+**Do not make it larger than you need.** When the pool is too small, work queues in the
+service, which is bounded and visible. When the total passes `max_connections`, new
+connections fail outright. Measured under idle polling, each connection added 4 to 6
+MiB of PostgreSQL private memory, and a pool of 48 used at least 60% more database CPU
+than a pool of 4 for the same queries. Past the point where PostgreSQL's CPUs are busy,
+more active connections reduce throughput rather than add to it
+([PostgreSQL wiki](https://wiki.postgresql.org/wiki/Number_Of_Database_Connections)).
+The minimum of 4 leaves no room to spare: the four background job workers can hold all
+of them while an application DNS provider is slow.
+
+**Connections must keep their session.** Job notifications use `LISTEN`, and offline
+recovery relies on a session advisory lock on each connection. Connect directly or
+through session pooling, not transaction pooling. Set the size with this setting, not
+`pool_max_conns` in `ASTILBA_DATABASE_URL`, which the startup schema check sends to
+PostgreSQL as an unknown setting and fails.
+
+**Reading the log.** Each process logs one line a minute, with counts for that minute:
+
+```text
+INFO database pool size=12 open=12 inUse=7 acquires=117621 waited=4366 waitSeconds=3.08 canceled=0
+```
+
+Divide `waitSeconds` by `acquires` for the mean wait for a connection. With room to
+spare it was usually under 3 ms, near the limit 2 to 12 ms, and past it over 400 ms with
+`waited` equal to `acquires`. The share that `waited` alone is a poor signal, since a
+pool of 4 waited half the time with a third spare. The line becomes a warning when
+`canceled` is above zero, meaning requests gave up waiting for a connection: this
+happened in every minute past the limit and in none with room to spare. If it persists,
+raise the pool size or check that PostgreSQL itself has not slowed down, because a
+slower database fills a pool of any size.
 
 ### Client addresses behind a reverse proxy
 
