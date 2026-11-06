@@ -25,7 +25,8 @@ updates:
       default-days: 7
     groups:
       # These can need an edit Dependabot won't make: the Playwright image in the workflows,
-      # the Vite+ pins and allowBuilds in pnpm-workspace.yaml, or regenerated API types.
+      # the Vite+ pins and allowBuilds in pnpm-workspace.yaml, packageManager in package.json,
+      # or regenerated API types.
       # make check-app fails until that's done. They stay apart so the rest can land.
       needs-review:
         patterns:
@@ -34,6 +35,7 @@ updates:
           - "@storybook/*"
           - i18next-cli
           - openapi-typescript
+          - pnpm
           - storybook
           - vite-plus
         update-types: [minor, patch]

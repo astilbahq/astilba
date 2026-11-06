@@ -101,8 +101,12 @@ jobs:
         with:
           go-version-file: services/platform/go.mod
           cache-dependency-path: services/platform/go.sum
-      - name: Pull pinned probe image
-        run: docker pull busybox:1.37.0@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e
+      - name: Pull pinned images
+        uses: ./.github/actions/pull-images
+        with:
+          images: |
+            postgres:18.4-alpine3.23@sha256:996d0920e4ff9df1fc19dacb904492f3c1ec0ec1cc338f0ad7123be7731c5f5e
+            busybox:1.37.0@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e
       - run: make verify-app-go-${{ matrix.lane }}
         env:
           PLAT_APP_DOCKER_HOST: unix:///var/run/docker.sock

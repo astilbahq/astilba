@@ -3,7 +3,11 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { withFetchAttempts } from "./image-fetch.mjs";
+import {
+  pullImages,
+  runLogged,
+  withFetchAttempts,
+} from "./fetch-attempts.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const host = process.env.PLAT_APP_DOCKER_HOST;
@@ -81,20 +85,26 @@ const extraVolumes = [];
 try {
   console.log("Building application image…");
   // Repeats the whole build for the fetches inside it; see docs/continuous-integration.md#image-downloads.
-  await withFetchAttempts("Building the image", 600000, (timeout) =>
-    docker(
-      [
-        "build",
-        "--build-arg",
-        `SOURCE_REVISION=${process.env.SOURCE_REVISION ?? "development"}`,
-        "--label",
-        label,
-        "-t",
-        image,
-        ".",
-      ],
-      { stdio: "inherit", timeout },
-    ),
+  await withFetchAttempts(
+    "Building the image",
+    (timeoutMs) =>
+      runLogged(
+        "docker",
+        [
+          "--host",
+          host,
+          "build",
+          "--build-arg",
+          `SOURCE_REVISION=${process.env.SOURCE_REVISION ?? "development"}`,
+          "--label",
+          label,
+          "-t",
+          image,
+          ".",
+        ],
+        { cwd: root, timeoutMs },
+      ),
+    { limitMs: 600000 },
   );
   if (
     docker([
@@ -116,9 +126,9 @@ try {
     "! command -v node",
   ]);
   checkTrustRoots();
-  await withFetchAttempts("Pulling PostgreSQL", 300000, (timeout) =>
-    docker(["pull", postgresImage], { stdio: "inherit", timeout }),
-  );
+  await pullImages([postgresImage], ["docker", "--host", host], {
+    limitMs: 300000,
+  });
   docker(["network", "create", "--label", label, network]);
   madeNetwork = true;
   docker(["volume", "create", "--label", label, volume]);

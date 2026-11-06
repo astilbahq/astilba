@@ -42,8 +42,8 @@ only when every changed path is known not to affect it:
 | Native hosts | Markdown under `docs/` other than `docs/hosting.md`, whose proxy configurations the native tests run, or the root README, dashboard source, theme, public assets, browser tests, Storybook or Panda configuration, or the server-only `auth`, `alerts`, `mailer`, `billing` and `automationclient` packages or the CLI |
 | Application Go race lanes | documentation or dashboard paths above |
 | Application and workshop browsers | documentation |
-| Durable execution, Git providers, canvas | outside that experiment, its workflow and the Makefile (canvas also follows the root JavaScript manifests and lockfile, and the pnpm install action) |
-| Vulnerability scan | not a Go file, `go.mod`, `go.sum`, `package.json`, root JavaScript manifest or lockfile, the pnpm install action, the Makefile, the allowlist, the scanner script or its workflows |
+| Durable execution, Git providers, canvas | outside that experiment, its workflow and the Makefile (durable execution and Git providers also follow the image pull action, canvas the root JavaScript manifests and lockfile, the pnpm install action and script, and all three `scripts/fetch-attempts.mjs`) |
+| Vulnerability scan | not a Go file, `go.mod`, `go.sum`, `package.json`, root JavaScript manifest or lockfile, the pnpm install action or script, `scripts/fetch-attempts.mjs`, the Makefile, the allowlist, the scanner script or its workflows |
 
 `AGENTS.md`, `REVIEW.md`, runtime, contracts, migrations, package/lock files, CI,
 scripts, toolchain and unknown paths select the native suite. A change to the
@@ -240,6 +240,15 @@ follows the rules in [Host downloads](#host-downloads): it repeats for at least 
 minutes, a stall repeats while a slow download finishes, a file failing its hash stops
 the scan, and a 404 also takes four minutes to report.
 
+`go tool -n govulncheck` fetches modules on a cache miss, and `govulncheck` reads the Go
+vulnerability database with one request per file, so one reset stops either. Each repeats
+for at least four minutes when it exits non-zero, and a Go checksum failure stops at once.
+A finding exits 0, so a completed scan never repeats. If the database stays unreachable the
+scan fails, naming `https://vuln.go.dev` and the scan: measured against a database that
+resets or returns 404 or 502 on its index or an advisory, `govulncheck` always exits 1. A
+connection that stalls with its peer alive is not retried and uses up the job's limit.
+OSV Scanner retries its own API calls.
+
 A selected run can fail on an advisory the pull request did not introduce. That
 holds up the merge group too, so land the bump or allowlist entry first.
 
@@ -377,8 +386,8 @@ Test it with `analysistest` against the shape of the original defect.
 ## Pin alignment
 
 `make check-ci` runs `scripts/pin-alignment.mjs`, which reads the workspace file,
-manifests, lockfile and workflows without installing anything and fails when pins
-that must move together differ. [Dependency pins](frontend-development.md#dependency-pins)
+manifests, lockfile, workflows, local actions and Dockerfile without installing anything
+and fails when pins that must move together differ. [Dependency pins](frontend-development.md#dependency-pins)
 lists them.
 
 ## Browser shards
@@ -476,7 +485,7 @@ limits its own `apt-get update` to 5 minutes for any source that hangs.
 | Fetch | From | Its own retry |
 | --- | --- | --- |
 | The three `FROM` images | Docker Hub | None for the metadata request: one reset stops the build |
-| `npm install --global pnpm` | npm registry | Three attempts over 70 seconds |
+| pnpm, in `scripts/install-pnpm.mjs` | npm registry | At least four minutes; a hash failure stops the build |
 | `pnpm install --frozen-lockfile` | npm registry | About three and a half minutes |
 | Go modules, in `pnpm app:build` | `proxy.golang.org` | None: one reset stops `go` |
 | PostgreSQL, for the smoke test | Docker Hub | None for the manifest request: one reset stops the pull |
@@ -488,15 +497,39 @@ the completed layers, and the job has already built these sources. The attempts 
 build's 10-minute limit, and a build that reaches it stops, so a Go or registry connection
 that stalls with its peer alive still fails the check; none has been seen in CI.
 
-The loop also repeats what is not a fetch, such as a compile error or a failed integrity
-check, because these tools exit alike for all of them. Every attempt still enforces the
-digests, lockfile integrity and `go.sum`, so an image that passes was verified, and each
-repeat leaves a warning on the run page to diagnose. This differs from the Host and OSV
-Scanner downloads, which are single files whose hash the script checks itself.
+The loop also repeats what is not a fetch, such as a compile error, because these tools
+exit alike for all of them. It reads the build's error output and stops on a failed
+integrity check. Every attempt still enforces the digests, lockfile integrity and `go.sum`,
+so an image that passes was verified, and each repeat leaves a warning on the run page to
+diagnose. This differs from the Host and OSV Scanner downloads, which are single files
+whose hash the script checks itself.
 
 `.github/actions/install-pnpm` does not apply: it runs on the runner, and around
 `make verify-image` it would repeat the smoke test, which is never retried. The smoke
 test's HTTPS probe makes its own attempts.
+
+## Image pulls
+
+One reset on a registry's manifest request stops `docker pull` and an implicit pull in
+`docker run`; the daemon's own retries cover only some layer downloads. A reset on
+`mcr.microsoft.com` failed a required browser job on 6 November 2026 in exactly this way.
+So every job that needs a pinned image pulls it first through
+`.github/actions/pull-images`, which shares `pullImages` in `scripts/fetch-attempts.mjs`
+with the image smoke test's PostgreSQL pull.
+
+- Each image repeats for at least four minutes. The failure names it, and an image without
+  a digest is refused.
+- Bytes that fail their digest stop at once. These were measured with a registry serving
+  changed manifests, configs and layers, and the wording differs by image store. Everything
+  else repeats, because a reset can read as anything: on the containerd store, one on a
+  pinned manifest reports `not found`. So a pin removed upstream also takes four minutes to
+  report.
+- The action runs on the runner's own Node, because Host jobs set up no Node of their own.
+
+Not covered: Canvas and Workshop name their image in `container:`, which the runner pulls
+with its own short retries before any step can run. Pulls made during a test, such as
+BuildKit's in `TestNativePipeline`, are not retried either. A pull that stalls with its
+peer alive uses up the job's limit, or 5 minutes in the smoke test.
 
 ## Comparing changes
 

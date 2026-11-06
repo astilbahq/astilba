@@ -77,10 +77,17 @@ jobs:
           node-version: 24.18.1
       - uses: ./.github/actions/install-pnpm
       - run: pnpm install --frozen-lockfile
+      # The test database comes from the same outage-prone pull as the browsers.
+      - name: Pull pinned images
+        uses: ./.github/actions/pull-images
+        with:
+          images: |
+            mcr.microsoft.com/playwright:v1.64.1-noble@sha256:47b510dd9230bf0b9bfc9b20102241e577ea7a99334ab4c3ca19f19770e9b8ea
+            postgres:18.4-alpine3.23@sha256:996d0920e4ff9df1fc19dacb904492f3c1ec0ec1cc338f0ad7123be7731c5f5e
       - name: Start preinstalled browsers
         id: browsers
         run: |
-          container=$(docker run --detach --interactive --init --shm-size=1g \
+          container=$(docker run --pull=never --detach --interactive --init --shm-size=1g \
             --publish 127.0.0.1:54190:54190 \
             --label "com.astilba.ci-browsers=${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
             --volume "$GITHUB_WORKSPACE:/workspace:ro" \

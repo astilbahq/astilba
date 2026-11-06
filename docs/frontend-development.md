@@ -111,16 +111,19 @@ Existing `make check-app` invokes the dashboard check, and `make verify-canvas` 
 
 ### Dependency pins
 
-The `catalog` in `pnpm-workspace.yaml` holds the Vite+, Panda and Playwright versions, and manifests refer to it with `catalog:`. `make check-ci` runs `scripts/pin-alignment.mjs`, which fails when these drift, as a catalog can't reach all of them:
+The `catalog` in `pnpm-workspace.yaml` holds the Vite+, Panda, Playwright and pnpm versions, and manifests refer to it with `catalog:`. `make check-ci` runs `scripts/pin-alignment.mjs`, which fails when these drift, as a catalog can't reach all of them:
 
 - **Vite+:** `vite-plus` and the `vite` alias in the catalog, the `vitest@*` override (Vite+'s bundled runner), and both `peerDependencyRules.allowedVersions` entries. The `storybook@<major>>vite-plus` key names Storybook's current major.
 - **Playwright:** `@playwright/test` in the catalog, and the image tag and digest in the Canvas, Workshop and Application browsers workflows. The check can't tell offline that a digest belongs to its tag; the browser jobs run from the digest, so a wrong one shows up there.
 - **Panda and Storybook:** every package in each family has the same version.
 - **`allowBuilds`:** each key names an exact version from the lockfile, so a new release's install scripts need a fresh decision.
+- **pnpm:** `pnpm` in the catalog and `packageManager` in `package.json`. The Dockerfile and `.github/actions/install-pnpm` hold no version: they run `scripts/install-pnpm.mjs`, which downloads the tarball `packageManager` names, checks it against pnpm's SHA-512 in `pnpm-lock.yaml` and installs those bytes offline without scripts. The check also refuses any other way of installing pnpm in those files and the workflows.
+
+pnpm is a root development dependency so that its hash lives in the lockfile, Dependabot updates it and the [vulnerability scan](continuous-integration.md#vulnerability-scan) covers it. Dependabot does not read `packageManager` as a dependency. A separate lockfile for the bootstrap would need its own Dependabot entry beside a parent `pnpm-lock.yaml`, which Dependabot's fetcher also picks up. Corepack was ruled out because Node stopped shipping it in version 25, so installing it would need the same unverified step. To check a pin against the registry, compare `npm view pnpm@<version> dist.integrity` with the lockfile entry; `npm view pnpm@<version> dist.attestations` shows its provenance.
 
 `contracts/platform` keeps its own TypeScript 5 through an `npm:` alias, because `openapi-typescript` 7.13.0 can't load TypeScript 7: 7.0's root module has no compiler API. Dependabot skips aliases and updates the catalog's `typescript` without touching the alias, while it would merge two plain pins and move this one to 7. That leaves the [vulnerability scan](continuous-integration.md#vulnerability-scan) to report an advisory on the alias, which is bumped by hand. Replace the alias with `catalog:` once a generator release supports the catalog's version and `pnpm generate:check` still passes.
 
-Dependabot moves the catalog's `vite-plus` line and not the rest, so its `needs-review` pull requests can need these edits by hand. Preserve the release-age gate when making them.
+Dependabot moves the catalog's `vite-plus` and `pnpm` lines and not the rest, so its `needs-review` pull requests can need these edits by hand, including `packageManager` for pnpm. Preserve the release-age gate when making them.
 
 ## Panda CSS conventions
 

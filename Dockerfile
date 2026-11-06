@@ -8,7 +8,8 @@ COPY apps/platform/package.json apps/platform/panda.config.ts apps/platform/
 COPY apps/platform/theme/ apps/platform/theme/
 COPY contracts/platform/package.json contracts/platform/package.json
 COPY experiments/canvas-editor/package.json experiments/canvas-editor/panda.config.ts experiments/canvas-editor/
-RUN npm install --global pnpm@11.17.0 && pnpm install --frozen-lockfile
+COPY scripts/fetch-attempts.mjs scripts/install-pnpm.mjs scripts/
+RUN node scripts/install-pnpm.mjs && pnpm install --frozen-lockfile
 COPY . .
 ARG TARGETOS
 ARG TARGETARCH

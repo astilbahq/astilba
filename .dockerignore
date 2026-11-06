@@ -12,6 +12,8 @@
 !contracts/**
 !scripts/
 !scripts/platform-*.mjs
+!scripts/fetch-attempts.mjs
+!scripts/install-pnpm.mjs
 !experiments/
 !experiments/**
 **/node_modules
