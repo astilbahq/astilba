@@ -3,6 +3,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { withFetchAttempts } from "./image-fetch.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const host = process.env.PLAT_APP_DOCKER_HOST;
@@ -17,6 +18,8 @@ const id = randomUUID(),
   db = `astilba-db-${id}`,
   app = `astilba-app-${id}`,
   password = randomBytes(32).toString("hex");
+const postgresImage =
+  "postgres:18.4-alpine3.23@sha256:996d0920e4ff9df1fc19dacb904492f3c1ec0ec1cc338f0ad7123be7731c5f5e";
 const docker = (args, options = {}) =>
   execFileSync("docker", ["--host", host, ...args], {
     cwd: root,
@@ -77,18 +80,21 @@ const containers = [];
 const extraVolumes = [];
 try {
   console.log("Building application image…");
-  docker(
-    [
-      "build",
-      "--build-arg",
-      `SOURCE_REVISION=${process.env.SOURCE_REVISION ?? "development"}`,
-      "--label",
-      label,
-      "-t",
-      image,
-      ".",
-    ],
-    { stdio: "inherit", timeout: 600000 },
+  // Repeats the whole build for the fetches inside it; see docs/continuous-integration.md#image-downloads.
+  await withFetchAttempts("Building the image", 600000, (timeout) =>
+    docker(
+      [
+        "build",
+        "--build-arg",
+        `SOURCE_REVISION=${process.env.SOURCE_REVISION ?? "development"}`,
+        "--label",
+        label,
+        "-t",
+        image,
+        ".",
+      ],
+      { stdio: "inherit", timeout },
+    ),
   );
   if (
     docker([
@@ -110,6 +116,9 @@ try {
     "! command -v node",
   ]);
   checkTrustRoots();
+  await withFetchAttempts("Pulling PostgreSQL", 300000, (timeout) =>
+    docker(["pull", postgresImage], { stdio: "inherit", timeout }),
+  );
   docker(["network", "create", "--label", label, network]);
   madeNetwork = true;
   docker(["volume", "create", "--label", label, volume]);
@@ -129,7 +138,7 @@ try {
     "database",
     "--env-file",
     envfile,
-    "postgres:18.4-alpine3.23@sha256:996d0920e4ff9df1fc19dacb904492f3c1ec0ec1cc338f0ad7123be7731c5f5e",
+    postgresImage,
   ]);
   containers.push(db);
   let ready = false;
@@ -259,7 +268,7 @@ try {
   docker(["stop", app]);
   const databaseBackup = docker(["exec", db, "pg_dump", "--username", "postgres", "--format=custom", "--no-owner", "postgres"], { encoding: null });
   const restoredDatabase = `astilba-restored-db-${id}`;
-  docker(["run", "-d", "--name", restoredDatabase, "--label", label, "--network", network, "--network-alias", "restored-database", "--env-file", envfile, "postgres:18.4-alpine3.23@sha256:996d0920e4ff9df1fc19dacb904492f3c1ec0ec1cc338f0ad7123be7731c5f5e"]);
+  docker(["run", "-d", "--name", restoredDatabase, "--label", label, "--network", network, "--network-alias", "restored-database", "--env-file", envfile, postgresImage]);
   containers.push(restoredDatabase);
   let restoredReady = false;
   for (let attempt = 0; attempt < 100; attempt++) {
