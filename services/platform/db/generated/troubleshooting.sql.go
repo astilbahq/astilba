@@ -227,7 +227,7 @@ func (q *Queries) EndTroubleshootingSession(ctx context.Context, arg EndTroubles
 
 const expireTroubleshootingSessions = `-- name: ExpireTroubleshootingSessions :many
 UPDATE troubleshooting_sessions SET state = 'closed',closed_at = now(),close_reason = 'expired',ticket_hash = NULL,browser_session_hash = NULL
-WHERE workspace_id = $1 AND state <> 'closed' AND (deadline_at <= now() OR (state = 'offered' AND ticket_expires_at <= now()))
+WHERE workspace_id = $1 AND state <> 'closed' AND (deadline_at <= now() OR (state = 'offered' AND (ticket_expires_at <= now() - interval '1 minute' OR (ticket_expires_at <= now() AND agent_attached_at IS NULL AND browser_attached_at IS NULL))))
 RETURNING id,actor_id
 `
 
@@ -236,6 +236,7 @@ type ExpireTroubleshootingSessionsRow struct {
 	ActorID uuid.UUID `json:"actor_id"`
 }
 
+// A stream that attached has a relay waiting, as in SweepTroubleshootingSessions.
 func (q *Queries) ExpireTroubleshootingSessions(ctx context.Context, workspaceID uuid.UUID) ([]ExpireTroubleshootingSessionsRow, error) {
 	rows, err := q.db.Query(ctx, expireTroubleshootingSessions, workspaceID)
 	if err != nil {
@@ -567,7 +568,7 @@ func (q *Queries) LockTroubleshootingAdmission(ctx context.Context) error {
 const lockTroubleshootingSweepWorkspaces = `-- name: LockTroubleshootingSweepWorkspaces :many
 SELECT w.id FROM workspaces w
 WHERE EXISTS(SELECT 1 FROM troubleshooting_sessions t WHERE t.workspace_id = w.id AND t.state <> 'closed'
- AND (t.deadline_at <= now() - interval '1 minute' OR (t.state = 'offered' AND t.ticket_expires_at <= now())))
+ AND (t.deadline_at <= now() - interval '1 minute' OR (t.state = 'offered' AND (t.ticket_expires_at <= now() - interval '1 minute' OR (t.ticket_expires_at <= now() AND t.agent_attached_at IS NULL AND t.browser_attached_at IS NULL)))))
 ORDER BY w.id FOR NO KEY UPDATE OF w SKIP LOCKED
 `
 
@@ -752,7 +753,7 @@ func (q *Queries) SaveTroubleshootingPolicy(ctx context.Context, arg SaveTrouble
 
 const sweepTroubleshootingSessions = `-- name: SweepTroubleshootingSessions :many
 UPDATE troubleshooting_sessions SET state = 'closed',closed_at = now(),close_reason = 'expired',ticket_hash = NULL,browser_session_hash = NULL
-WHERE workspace_id = ANY($1::uuid[]) AND state <> 'closed' AND (deadline_at <= now() - interval '1 minute' OR (state = 'offered' AND ticket_expires_at <= now()))
+WHERE workspace_id = ANY($1::uuid[]) AND state <> 'closed' AND (deadline_at <= now() - interval '1 minute' OR (state = 'offered' AND (ticket_expires_at <= now() - interval '1 minute' OR (ticket_expires_at <= now() AND agent_attached_at IS NULL AND browser_attached_at IS NULL))))
 RETURNING workspace_id,id,actor_id
 `
 
@@ -763,6 +764,7 @@ type SweepTroubleshootingSessionsRow struct {
 }
 
 // unscoped: an installation-wide sweeper ends expired sessions in every workspace.
+// A stream that attached has a relay waiting, which ends the session itself and records why; the minute covers a relay that could not.
 func (q *Queries) SweepTroubleshootingSessions(ctx context.Context, workspaceIds []uuid.UUID) ([]SweepTroubleshootingSessionsRow, error) {
 	rows, err := q.db.Query(ctx, sweepTroubleshootingSessions, workspaceIds)
 	if err != nil {
