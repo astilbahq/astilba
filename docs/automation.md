@@ -6,11 +6,13 @@ Owners can issue expiring credentials for CI, the Go CLI and a stdio MCP client 
 | --- | --- |
 | `environment:read` | Saved configuration, revisions, runtime, releases and environment operation status |
 | `configuration:write` | Save drafts using an explicit base revision |
-| `deployment:plan` | Prepare and inspect normal deployment plans |
+| `deployment:plan` | Prepare and inspect normal deployment plans. A release command or drift acceptance also needs `configuration:write` |
 | `deployment:apply` | Inspect and apply an existing reviewed plan with an explicit idempotency key |
 | `build:run` | List and re-run owner-configured build targets; read their operation status |
 
 Select only the capabilities the caller needs. Build-only callers can discover their scope and targets without configuration-read permission. A credential cannot manage accounts, memberships, other credentials, secrets, integrations, host permissions, recovery or controller transfers. Normal owner/recent-identity requirements still gate privileged deployment changes. There is no arbitrary request or remote-shell tool.
+
+A plan request naming a release command or accepting drift returns 403 unless the credential also holds `configuration:write`. A release command runs with the environment's secrets and drift acceptance overrides a safety refusal, so a credential that can only plan and apply deploys what is saved. It can still set release timeouts with an empty command. A credential with `configuration:write`, `deployment:plan` and `deployment:apply` together can deploy any stateless configuration, so grant that combination only where a caller needs it.
 
 ## Credential lifetime
 
@@ -40,7 +42,7 @@ astilba-cli build targets
 astilba-cli build run --application UUID --base UUID --target-hash HASH --key UUID
 ```
 
-Replace `UUID` and `HASH` with the returned identities. Saving a draft does not deploy it. Inspect the completed plan before applying. Use a new UUID for each distinct build/apply request; after a transport failure, reuse that same key to recover the accepted operation while the credential and normal workspace admission remain valid. The CLI never retries mutations automatically. Responses have a size limit and requests time out after one minute; durable work can continue after a client disconnects.
+Replace `UUID` and `HASH` with the returned identities. Saving a draft does not deploy it, and a saved change [stops automatic deployment](git-builds.md) until a plan containing it is reviewed and applied. Inspect the completed plan before applying. Use a new UUID for each distinct build/apply request; after a transport failure, reuse that same key to recover the accepted operation while the credential and normal workspace admission remain valid. The CLI never retries mutations automatically. Responses have a size limit and requests time out after one minute; durable work can continue after a client disconnects.
 
 Specifications contain secret-version references, not values from the secret store. Ordinary plaintext configuration remains visible to callers granted configuration-read access. Store sensitive application values as secrets before using automation.
 

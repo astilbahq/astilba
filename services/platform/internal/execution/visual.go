@@ -68,6 +68,11 @@ func requiredPorts(spec domain.Specification) []int {
 }
 func (s *Service) CreateVisualPlan(ctx context.Context, p store.Principal, ws, pid, env uuid.UUID, in api.VisualPlanRequest) (deployment.Status, error) {
 	var out deployment.Status
+	// A release command runs a chosen argv with the environment's secrets, and drift acceptance overrides
+	// the refusal that protects reviewed manual changes, so the plan capability alone covers neither.
+	if g := p.Automation; g != nil && !g.Allows(domain.ConfigurationWrite) && (in.AcceptDrift || in.ReleaseOptions != nil && len(in.ReleaseOptions.Command) > 0) {
+		return out, domain.Forbidden
+	}
 	err := s.scope(ctx, p, ws, workspaceAccess{Write: true, Owner: in.AllowHostChanges, Recent: in.AllowHostChanges}, "deployment.plan", env, func(tx pgx.Tx) error {
 		var err error
 		out, err = s.createVisualPlan(ctx, tx, ws, pid, env, in)
@@ -171,6 +176,9 @@ func (s *Service) createVisualPlan(ctx context.Context, tx pgx.Tx, ws, pid, env 
 			}
 		}
 		plan := deployment.Plan{ID: uuid.New(), ServerID: in.ServerId, EnvironmentID: env, UnitID: v.Unit, RevisionID: v.Revision, ExpectedAppliedID: v.Applied, Recipe: deployment.Recipe, Specification: v.Spec, Images: map[string]string{}, HostChanges: hostChanges, AcceptDrift: in.AcceptDrift, Effects: deployment.Effects(v.Spec, previous, hostChanges), ExpiresAt: time.Now().UTC().Add(15 * time.Minute)}.WithHash()
+		if in.AcceptDrift {
+			plan.Effects = append(plan.Effects, "Accept reported drift: changes made outside Astilba to its managed resources are replaced by this plan instead of stopping it.")
+		}
 		if v.Purpose == "preview" {
 			plan.Recipe = deployment.PreviewRecipe
 			plan.Preview, err = s.previewPlanIdentity(ctx, tx, ws, env)

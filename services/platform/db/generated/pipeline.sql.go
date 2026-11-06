@@ -131,6 +131,23 @@ func (q *Queries) AllRegistryAccess(ctx context.Context) ([]AllRegistryAccessRow
 	return items, nil
 }
 
+const automaticBuildArtifact = `-- name: AutomaticBuildArtifact :one
+SELECT identity FROM build_artifacts WHERE workspace_id = $1 AND environment_id = $2 AND id = $3
+`
+
+type AutomaticBuildArtifactParams struct {
+	WorkspaceID   uuid.UUID `json:"workspace_id"`
+	EnvironmentID uuid.UUID `json:"environment_id"`
+	ID            uuid.UUID `json:"id"`
+}
+
+func (q *Queries) AutomaticBuildArtifact(ctx context.Context, arg AutomaticBuildArtifactParams) ([]byte, error) {
+	row := q.db.QueryRow(ctx, automaticBuildArtifact, arg.WorkspaceID, arg.EnvironmentID, arg.ID)
+	var identity []byte
+	err := row.Scan(&identity)
+	return identity, err
+}
+
 const automaticDeploymentWorkspace = `-- name: AutomaticDeploymentWorkspace :one
 SELECT workspace_id FROM pipeline_auto_deployments WHERE id = $1
 `
@@ -142,6 +159,27 @@ func (q *Queries) AutomaticDeploymentWorkspace(ctx context.Context, id uuid.UUID
 	var workspace_id uuid.UUID
 	err := row.Scan(&workspace_id)
 	return workspace_id, err
+}
+
+const environmentHoldsAutomaticWork = `-- name: EnvironmentHoldsAutomaticWork :one
+SELECT (EXISTS(SELECT 1 FROM execution_operations o WHERE o.workspace_id = $1 AND o.environment_id = $2::uuid AND o.state NOT IN ('succeeded','failed','cancelled'))
+    OR EXISTS(SELECT 1 FROM pipeline_auto_deployments d JOIN pipeline_runs r ON r.workspace_id = d.workspace_id AND r.id = d.id
+              WHERE d.workspace_id = $1 AND d.environment_id = $2::uuid AND d.state = 'pending' AND r.created_at > now() - interval '1 hour'))::boolean AS busy
+`
+
+type EnvironmentHoldsAutomaticWorkParams struct {
+	WorkspaceID   uuid.UUID `json:"workspace_id"`
+	EnvironmentID uuid.UUID `json:"environment_id"`
+}
+
+// An automatic deployment has no active operation between its passes, and a build admitted in that gap
+// would stack its image on a draft still waiting to deploy. The age limit keeps a job stuck in retries
+// from stopping automatic work for the environment indefinitely; a run admitted after it blocks for review.
+func (q *Queries) EnvironmentHoldsAutomaticWork(ctx context.Context, arg EnvironmentHoldsAutomaticWorkParams) (bool, error) {
+	row := q.db.QueryRow(ctx, environmentHoldsAutomaticWork, arg.WorkspaceID, arg.EnvironmentID)
+	var busy bool
+	err := row.Scan(&busy)
+	return busy, err
 }
 
 const finishUndeliveredPipeline = `-- name: FinishUndeliveredPipeline :exec

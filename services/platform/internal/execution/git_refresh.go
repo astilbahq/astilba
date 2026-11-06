@@ -123,8 +123,8 @@ func (w *refreshWorker) work(ctx context.Context, git *gitAnswers, job *river.Jo
 		if err = json.Unmarshal(v.raw, &cfg); err != nil {
 			return err
 		}
-		var busy bool
-		if err = tx.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM execution_operations WHERE workspace_id=$1 AND environment_id=$2 AND state NOT IN ('succeeded','failed','cancelled'))", a.Workspace, v.env).Scan(&busy); err != nil {
+		busy, err := db.New(tx).EnvironmentHoldsAutomaticWork(ctx, db.EnvironmentHoldsAutomaticWorkParams{WorkspaceID: a.Workspace, EnvironmentID: v.env})
+		if err != nil {
 			return err
 		}
 		if busy {
@@ -208,8 +208,8 @@ func (w *refreshWorker) work(ctx context.Context, git *gitAnswers, job *river.Jo
 			waiting = true
 			continue
 		}
-		var busy bool
-		if err = tx.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM execution_operations WHERE environment_id=$1 AND state NOT IN ('succeeded','failed','cancelled'))", v.env).Scan(&busy); err != nil {
+		busy, err := db.New(tx).EnvironmentHoldsAutomaticWork(ctx, db.EnvironmentHoldsAutomaticWorkParams{WorkspaceID: a.Workspace, EnvironmentID: v.env})
+		if err != nil {
 			return err
 		}
 		if busy {
