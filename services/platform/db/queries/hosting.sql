@@ -67,3 +67,13 @@ SELECT EXISTS(SELECT 1 FROM email_verifications
 DELETE FROM email_verifications
 WHERE account_id = @account_id AND token_hash = @token_hash AND expires_at > @valid_at
 RETURNING account_id;
+
+-- name: ClaimExpiryNotice :one
+-- unscoped: expiry notices span workspaces. Moving each to the back of the scan before
+-- sending means a notice that keeps failing cannot hold the others behind it.
+UPDATE hosted_subscriptions SET notice_checked_at=clock_timestamp()
+WHERE workspace_id=(SELECT h.workspace_id FROM hosted_subscriptions h
+    WHERE h.management_until <= @expiring_by::timestamptz AND (h.notified_until IS NULL OR h.notified_until<>h.management_until)
+        AND h.notice_checked_at < @pass_started::timestamptz
+    ORDER BY h.notice_checked_at,h.management_until LIMIT 1 FOR UPDATE SKIP LOCKED)
+RETURNING workspace_id;

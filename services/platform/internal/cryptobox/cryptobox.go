@@ -16,6 +16,15 @@ import (
 )
 
 var ErrKey = errors.New("secret key is unavailable or ciphertext is invalid")
+
+// ErrTooLarge reports a value whose sealed form exceeds what Open accepts.
+var ErrTooLarge = errors.New("sealed value exceeds its size limit")
+
+const (
+	maxBlob  = 1 << 20
+	maxKeyID = 64
+)
+
 var keyID = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`)
 
 type Keyring struct {
@@ -147,12 +156,21 @@ func (r *Keyring) Seal(value []byte, identity string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	return stablejson.Marshal(envelope{Version: 1, KeyID: r.Active, Key: wrapped, Data: data})
+	blob, err := stablejson.Marshal(envelope{Version: 1, KeyID: r.Active, Key: wrapped, Data: data})
+	if err != nil {
+		return nil, err
+	}
+	// Rewrap has to read and rewrite every stored value, and a longer key ID grows each
+	// one. Leaving room for the longest means no stored value can stop a rotation.
+	if len(blob) > maxBlob-maxKeyID {
+		return nil, ErrTooLarge
+	}
+	return blob, nil
 }
 
 func (r *Keyring) unwrap(blob []byte, identity string) (envelope, []byte, error) {
 	var env envelope
-	if len(blob) > 1<<20 {
+	if len(blob) > maxBlob {
 		return env, nil, ErrKey
 	}
 	if json.Unmarshal(blob, &env, json.RejectUnknownMembers(true)) != nil || env.Version != 1 || len(r.Keys[env.KeyID]) != 32 {
@@ -187,7 +205,15 @@ func (r *Keyring) Rewrap(blob []byte, identity string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	return stablejson.Marshal(env)
+	blob, err = stablejson.Marshal(env)
+	if err != nil {
+		return nil, err
+	}
+	// A value sealed before Seal left room for rotation can still outgrow what Open accepts.
+	if len(blob) > maxBlob {
+		return nil, ErrTooLarge
+	}
+	return blob, nil
 }
 
 func Token() (string, error) {

@@ -406,6 +406,7 @@ type HostedSubscription struct {
 	ServerLimit     int32       `json:"server_limit"`
 	NotifiedUntil   *time.Time  `json:"notified_until"`
 	UpdatedAt       time.Time   `json:"updated_at"`
+	NoticeCheckedAt time.Time   `json:"notice_checked_at"`
 }
 
 type Invitation struct {
