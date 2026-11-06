@@ -256,6 +256,42 @@ func TestSubmitDeliveryRechecksRuntimeSecrets(t *testing.T) {
 		})
 	}
 
+	// A form only counts if both checks recognise it through the draft API: delivery because
+	// the value can become a secret while queued, admission when the draft is retried.
+	key := "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7VJTUt9Us8cKj\nMzEfYyjiWA4R4/M2bS1GB4t7NXp98C3SC6dVMvDuictGeurT8jNbvJZHtCSuYEvu\n-----END PRIVATE KEY-----\n"
+	for name, form := range map[string]struct {
+		plant        func(*composeproject.Bundle)
+		value, leaks string
+	}{
+		"a key in an indented block": {func(bundle *composeproject.Bundle) {
+			bundle.Files = append(bundle.Files, composeproject.File{Path: "config/key.yaml", Content: "key: |\n  " + strings.ReplaceAll(strings.TrimSpace(key), "\n", "\n  ") + "\n"})
+		}, key, "MzEfYyjiWA4R4"},
+		"a URL-encoded file name": {inFileName("p%40ss-word-123"), "p@ss-word-123", "ss-word-123"},
+	} {
+		t.Run("delivery and admission refuse "+name, func(t *testing.T) {
+			b := *b
+			b.t = t
+			path, draft := prepare(t, "Reformatted "+name, form.plant)
+			healthyPath, healthyDraft := prepare(t, "Healthy after "+name, inContent("not-a-secret"))
+			rejected := dispatched(t, path, draft)
+			b.call("POST", path+"/secrets", map[string]string{"name": "TOKEN", "value": form.value}, 201, nil)
+			healthy := submit(t, healthyPath, healthyDraft)
+			command := poll(t)
+			if command == nil || command.Id != healthy.Id {
+				t.Fatal("reformatted secret held the queue or reached the runner")
+			}
+			state, note, _, _, started := operation(t, rejected.Id)
+			if state != "failed" || started == nil || *started || !strings.Contains(note, "runtime secret") || strings.Contains(note, form.leaks) {
+				t.Fatal("delivery did not refuse the reformatted secret cleanly", state, note, started)
+			}
+			report(t, command, 1, "cancelled", "", nil)
+			refusal := string(b.call("POST", path+"/source/submit", map[string]any{"baseRevisionId": draft.Id, "requestKey": uuid.New()}, 400, nil))
+			if !strings.Contains(refusal, "source.containsRuntimeSecret") || strings.Contains(refusal, form.leaks) {
+				t.Fatal("admission did not refuse the reformatted secret, or echoed it", refusal)
+			}
+		})
+	}
+
 	// These run last because an accepted submission holds the runner from here on.
 	t.Run("admission refuses a file name holding a runtime secret", func(t *testing.T) {
 		b := *b

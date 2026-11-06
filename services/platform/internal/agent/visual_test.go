@@ -130,6 +130,25 @@ func TestKnownValuesAreRedactedBeforeLogTruncation(t *testing.T) {
 			t.Fatalf("value stored as %q leaked: %s", stored, got)
 		}
 	}
+	for input, want := range map[string]string{
+		"pw=p%40ss!word-123;":     "pw=[redacted];",
+		"pw=p%40SS!word-123;":     "pw=p%40SS!word-123;",
+		"pw=%70%40ss%21word-123;": "pw=[redacted];",
+		"pw=p%40ss%21word%2d123;": "pw=[redacted];",
+		"pw=p%40ss!word-123":      "pw=[redacted]",
+	} {
+		if got := redactValues(input, map[string]string{"encoded": "p@ss!word-123"}); got != want {
+			t.Fatalf("encoded value in %q redacted to %q", input, got)
+		}
+	}
+	// A stray `%` reads as an escape of the value's first bytes, which decoding alone misses.
+	if got := redactValues("rate=100%ab%40c-word-12345;", map[string]string{"encoded": "ab@c-word-12345"}); got != "rate=100%[redacted];" {
+		t.Fatalf("value after a stray percent sign leaked: %q", got)
+	}
+	// A value pasted with CRLF is still printed line by line with LF.
+	if got := redactValues("first-line\nsecond-line\n", map[string]string{"lines": "first-line\r\nsecond-line\r\n"}); got != "[redacted]\n[redacted]\n" {
+		t.Fatalf("lines of a CRLF value leaked: %q", got)
+	}
 	// Plain configuration is redacted too, so a short padded value must not mask ordinary text.
 	for stored, c := range map[string]struct{ input, want string }{
 		" ":    {"a b", "a[redacted]b"},
