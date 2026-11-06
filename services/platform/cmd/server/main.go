@@ -189,7 +189,7 @@ func run() error {
 		if e != nil {
 			return e
 		}
-		hash, e := passwords.Hash(ctx, password)
+		hash, e := passwords.Hash(password)
 		if e != nil {
 			return e
 		}

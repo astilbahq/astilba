@@ -123,8 +123,7 @@ func (m *Mailer) Send(ctx context.Context, to, subject, body string) error {
 	if w.Close() != nil {
 		return ErrUnavailable
 	}
-	if client.Quit() != nil {
-		return ErrUnavailable
-	}
+	// The relay has taken responsibility for the message, so a failed goodbye changes nothing.
+	_ = client.Quit()
 	return nil
 }

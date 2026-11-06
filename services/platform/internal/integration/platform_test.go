@@ -178,7 +178,7 @@ func TestCredentialAndInvitationLifecycle(t *testing.T) {
 func TestBootstrapAndOwnerRaces(t *testing.T) {
 	f := setupBootstrap(t, false)
 	ctx := context.Background()
-	hash, e := f.auth.Passwords.Hash(ctx, f.password)
+	hash, e := f.auth.Passwords.Hash(f.password)
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -378,7 +378,7 @@ func TestCredentialMutationsRejectRevokedRequestSnapshot(t *testing.T) {
 		{"enrollment", func() error { _, _, e := f.auth.BeginMFA(ctx, p); return e }},
 		{"confirmation", func() error { _, _, e := f.auth.ConfirmMFA(ctx, p, "123456"); return e }},
 		{"invitation", func() error {
-			_, e := f.auth.AcceptInvitation(ctx, token, "", "", &p)
+			_, e := f.auth.AcceptInvitation(ctx, token, "", "", auth.Source{Key: "test", Network: "test"}, &p)
 			return e
 		}},
 	}
@@ -410,7 +410,10 @@ func TestResetLocksAccountBeforeToken(t *testing.T) {
 		t.Fatal(e)
 	}
 	done := make(chan error, 1)
-	go func() { done <- f.auth.CompleteReset(ctx, token, "replacement password here", "test") }()
+	go func() {
+		_, e := f.auth.CompleteReset(ctx, token, "replacement password here", "test")
+		done <- e
+	}()
 	waiting := false
 	for i := 0; i < 100; i++ {
 		var count int

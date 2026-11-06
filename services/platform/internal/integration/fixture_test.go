@@ -169,7 +169,7 @@ func setupStore(t *testing.T, bootstrap, hosted bool) *fixture {
 		t.Fatal(e)
 	}
 	password := "correct horse battery staple"
-	hash, e := passwords.Hash(ctx, password)
+	hash, e := passwords.Hash(password)
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -283,6 +283,16 @@ func browserPrincipal(t *testing.T, st *store.Store, account db.Account, mfa boo
 	return store.Principal{Account: account, MFA: mfa, RecentUntil: now.Add(time.Hour), SessionHash: token}
 }
 
+// sessionCookies leaves out the device cookie that goes with a completed sign-in.
+func sessionCookies(cookies []*http.Cookie) []*http.Cookie {
+	var sessions []*http.Cookie
+	for _, cookie := range cookies {
+		if cookie.Name == "astilba_session" {
+			sessions = append(sessions, cookie)
+		}
+	}
+	return sessions
+}
 func (f *fixture) browser(t *testing.T) *browser {
 	jar, _ := cookiejar.New(nil)
 	b := &browser{t, f, &http.Client{Jar: jar}, ""}

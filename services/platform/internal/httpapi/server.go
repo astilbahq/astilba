@@ -271,6 +271,9 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 			status = 409
 		case "rate_limited":
 			status = 429
+		case "temporarily_busy":
+			status = 503
+			w.Header().Set("Retry-After", "5")
 		default:
 			status = 400
 		}
@@ -317,7 +320,7 @@ func (s *Server) establish(ctx context.Context, a db.Account, mfa bool) error {
 	s.Sessions.Put(ctx, "csrf", csrf)
 	// Authenticated values stay fixed within a token; idle refreshes may overlap.
 	s.Sessions.Put(ctx, "github-session", nonce)
-	return nil
+	return s.issueDevice(ctx, a)
 }
 func (s *Server) session(ctx context.Context) (api.Session, error) {
 	token := s.csrfToken(ctx)
@@ -365,7 +368,7 @@ func (s *Server) Login(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, e)
 		return
 	}
-	a, e := s.Auth.Login(r.Context(), string(b.Email), value(b.Password), s.clientSourceKey(r))
+	a, e := s.Auth.Login(r.Context(), string(b.Email), value(b.Password), s.clientSource(r), s.presentedDevices(r))
 	if e != nil {
 		s.fail(w, r, e)
 		return
@@ -453,7 +456,9 @@ func (s *Server) RequestPasswordReset(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, e)
 		return
 	}
-	if e != nil {
+	if errors.Is(e, auth.ErrResetUndo) {
+		s.Log.Error("password reset could not be undone", diagnostic.Failure(e))
+	} else if e != nil {
 		s.Log.Warn("password reset delivery unavailable")
 	}
 	w.WriteHeader(202)
@@ -473,10 +478,14 @@ func (s *Server) ValidatePasswordReset(w http.ResponseWriter, r *http.Request) {
 func (s *Server) CompletePasswordReset(w http.ResponseWriter, r *http.Request) {
 	b, e := decode[api.ResetComplete](r)
 	if e == nil {
-		e = s.Auth.CompleteReset(r.Context(), b.Token, value(b.Password), s.clientSourceKey(r))
-	}
-	if e == nil {
-		e = s.Sessions.Destroy(r.Context())
+		var a db.Account
+		a, e = s.Auth.CompleteReset(r.Context(), b.Token, value(b.Password), s.clientSourceKey(r))
+		if e == nil {
+			e = s.Sessions.Destroy(r.Context())
+		}
+		if e == nil {
+			e = s.issueDevice(r.Context(), a)
+		}
 	}
 	if e != nil {
 		s.fail(w, r, e)
@@ -498,15 +507,12 @@ func (s *Server) ValidateInvitation(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) AcceptInvitation(w http.ResponseWriter, r *http.Request) {
 	b, e := decode[api.AcceptInvitation](r)
-	if e == nil {
-		e = s.Auth.Limit(r.Context(), "invite:"+s.clientSourceKey(r), 20, 15*time.Minute)
-	}
 	if e != nil {
 		s.fail(w, r, e)
 		return
 	}
 	current := principal(r.Context())
-	a, e := s.Auth.AcceptInvitation(r.Context(), b.Token, value(b.Name), value(b.Password), current)
+	a, e := s.Auth.AcceptInvitation(r.Context(), b.Token, value(b.Name), value(b.Password), s.clientSource(r), current)
 	if e == nil && (current == nil || current.Account.ID != a.ID) {
 		e = s.establish(r.Context(), a, false)
 	}

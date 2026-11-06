@@ -48,66 +48,6 @@ func (s *Service) recordAttempt(ctx context.Context, q *db.Queries, scope string
 	return nil
 }
 
-func (s *Service) admitLogin(ctx context.Context, email, source string) (string, error) {
-	if err := s.Store.Queries.PruneAuthAttempts(ctx); err != nil {
-		return "", err
-	}
-	var localErr error
-	err := s.Store.Transaction(ctx, func(q *db.Queries) error {
-		localErr = s.recordAttempt(ctx, q, "password:ip:"+source, 50, 15*time.Minute)
-		if localErr == nil {
-			var err error
-			email, err = domain.Email(email)
-			if err != nil {
-				localErr = domain.Credentials
-			}
-		}
-		if localErr == nil {
-			localErr = s.recordAttempt(ctx, q, "password:account:"+email, 5, 15*time.Minute)
-		}
-		if localErr != nil {
-			if errors.Is(localErr, domain.RateLimited) || errors.Is(localErr, domain.Credentials) {
-				// Local refusals retain their existing attempt accounting.
-				return nil
-			}
-			return localErr
-		}
-		// A global refusal rolls back local charges; concurrent admissions
-		// serialize on the shared global counter before any password work.
-		return s.recordAttempt(ctx, q, "password:global", 1000, 15*time.Minute)
-	})
-	if err != nil {
-		return "", err
-	}
-	return email, localErr
-}
-
-func (s *Service) Login(ctx context.Context, email, password, source string) (db.Account, error) {
-	var zero db.Account
-	email, err := s.admitLogin(ctx, email, source)
-	if err != nil {
-		return zero, err
-	}
-	account, err := s.Store.Queries.AccountByEmail(ctx, email)
-	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-		return zero, err
-	}
-	hash := account.PasswordHash
-	if err != nil {
-		hash = s.Passwords.Dummy
-	}
-	if err := s.Passwords.Compare(ctx, password, hash); err != nil {
-		return zero, err
-	}
-	if account.ID == uuid.Nil {
-		return zero, domain.Credentials
-	}
-	if err := s.Store.Queries.ClearAuthAttempts(ctx, Hash("password:account:"+email)); err != nil {
-		return zero, err
-	}
-	return account, nil
-}
-
 func matchTOTP(code, secret string, now time.Time, last int64) (int64, bool) {
 	step := now.Unix() / 30
 	for _, candidate := range []int64{step, step - 1, step + 1} {
@@ -169,17 +109,30 @@ func (s *Service) VerifyCode(ctx context.Context, id uuid.UUID, expectedVersion 
 }
 func (s *Service) Reauthenticate(ctx context.Context, id uuid.UUID, password, code string) (db.Account, error) {
 	var account db.Account
-	if err := s.Limit(ctx, "reauth:"+id.String(), 5, 15*time.Minute); err != nil {
+	share := passwordShare{"account:" + id.String(), true}
+	budgets := []budget{{"reauth:" + id.String(), 5, attemptWindow}}
+	var checked string
+	err := s.withPassword(ctx, share, budgets, func() error {
+		current, err := s.Store.Queries.AccountByID(ctx, id)
+		if err != nil {
+			return err
+		}
+		checked = current.PasswordHash
+		return passwordMatches(password, checked)
+	})
+	if err != nil {
 		return account, err
 	}
-	err := s.Store.Transaction(ctx, func(q *db.Queries) error {
+	// The hash runs outside the transaction, because it can wait for capacity and must not
+	// hold the account row or a connection meanwhile. A password changed during it decides.
+	err = s.Store.Transaction(ctx, func(q *db.Queries) error {
 		var err error
 		account, err = q.LockAccount(ctx, id)
 		if err != nil {
 			return err
 		}
-		if err = s.Passwords.Compare(ctx, password, account.PasswordHash); err != nil {
-			return err
+		if account.PasswordHash != checked {
+			return domain.Credentials
 		}
 		if len(account.TotpSecret) > 0 {
 			return s.checkCode(ctx, q, &account, code)
@@ -340,7 +293,18 @@ func (s *Service) RegenerateRecovery(ctx context.Context, p store.Principal) (db
 func (s *Service) ChangePassword(ctx context.Context, p store.Principal, password string) (db.Account, error) {
 	id := p.Account.ID
 	var account db.Account
-	hash, err := s.Passwords.Hash(ctx, password)
+	if err := domain.Password(password); err != nil {
+		return account, err
+	}
+	// A session that has already ended pays nothing. lockCurrent still decides, after the hash.
+	if err := store.AdmitBrowserSession(ctx, s.Store.Queries, p); err != nil {
+		return account, err
+	}
+	budgets := []budget{{"password-change:" + id.String(), 5, attemptWindow}}
+	if err := s.refuseSpent(ctx, budgets); err != nil {
+		return account, err
+	}
+	hash, err := s.hashNewPassword(ctx, passwordShare{"account:" + id.String(), true}, budgets, password)
 	if err != nil {
 		return account, err
 	}
@@ -360,6 +324,11 @@ func (s *Service) ChangePassword(ctx context.Context, p store.Principal, passwor
 	})
 	return account, err
 }
+
+// ErrResetUndo reports a failed reset request whose charge or unsent link is still in place, so
+// that email's next requests can be answered without sending mail until the window ends.
+var ErrResetUndo = errors.New("failed password reset could not be undone")
+
 func (s *Service) RequestReset(ctx context.Context, email, ip, origin string) error {
 	if err := s.Limit(ctx, "reset:ip:"+ip, 20, 15*time.Minute); err != nil {
 		return err
@@ -368,16 +337,42 @@ func (s *Service) RequestReset(ctx context.Context, email, ip, origin string) er
 	if err != nil {
 		return nil
 	}
-	if err := s.Limit(ctx, "reset:email:"+email, 3, 15*time.Minute); err != nil {
-		return err
-	}
-	account, err := s.Store.Queries.AccountByEmail(ctx, email)
-	if errors.Is(err, pgx.ErrNoRows) {
+	// Anyone can name an email, so refusing here would let them refuse its owner. A failed send
+	// is refunded, so with the database healthy a spent budget means a link has gone out.
+	scope := "reset:email:" + email
+	err = s.charge(ctx, []budget{{scope, 3, attemptWindow}})
+	if errors.Is(err, domain.RateLimited) {
 		return nil
 	}
 	if err != nil {
 		return err
 	}
+	// Whoever asked may hang up, and that must not spend the owner's budget with no mail sent.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 25*time.Second)
+	defer cancel()
+	account, err := s.Store.Queries.AccountByEmail(ctx, email)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err == nil {
+		err = s.sendReset(ctx, account, origin)
+	}
+	if err != nil {
+		undo, stop := undoContext(ctx)
+		defer stop()
+		if refund := s.Store.Queries.RefundAuthAttempt(undo, Hash(scope)); refund != nil {
+			return errors.Join(err, ErrResetUndo, refund)
+		}
+	}
+	return err
+}
+
+// undoContext gives undoing a failed send its own time, since that failure may be the deadline.
+func undoContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+}
+
+func (s *Service) sendReset(ctx context.Context, account db.Account, origin string) error {
 	token, err := cryptobox.Token()
 	if err != nil {
 		return err
@@ -390,8 +385,12 @@ func (s *Service) RequestReset(ctx context.Context, email, ip, origin string) er
 	}); err != nil {
 		return err
 	}
-	if err := s.Mail.Send(ctx, email, "Reset your Astilba password", "Open this one-use link to reset your password within 30 minutes:\n\n"+origin+"/reset?"+url.Values{"token": {token}}.Encode()); err != nil {
-		_ = s.Store.Queries.DeleteUnsentReset(ctx, db.DeleteUnsentResetParams{AccountID: account.ID, TokenHash: Hash(token)})
+	if err := s.Mail.Send(ctx, account.Email, "Reset your Astilba password", "Open this one-use link to reset your password within 30 minutes:\n\n"+origin+"/reset?"+url.Values{"token": {token}}.Encode()); err != nil {
+		undo, stop := undoContext(ctx)
+		defer stop()
+		if remove := s.Store.Queries.DeleteUnsentReset(undo, db.DeleteUnsentResetParams{AccountID: account.ID, TokenHash: Hash(token)}); remove != nil {
+			return errors.Join(err, ErrResetUndo, remove)
+		}
 		return err
 	}
 	return nil
@@ -407,23 +406,31 @@ func (s *Service) ValidateReset(ctx context.Context, token, ip string) error {
 	return err
 }
 
-func (s *Service) CompleteReset(ctx context.Context, token, password, ip string) error {
-	if err := s.Limit(ctx, "reset-complete:ip:"+ip, 20, 15*time.Minute); err != nil {
-		return err
+// CompleteReset proves control of the account's email, so it also lifts what guessing has
+// done to the account's sign-in budgets.
+func (s *Service) CompleteReset(ctx context.Context, token, password, ip string) (db.Account, error) {
+	var account db.Account
+	if err := domain.Password(password); err != nil {
+		return account, err
 	}
-	hash, err := s.Passwords.Hash(ctx, password)
-	if err != nil {
-		return err
+	budgets := []budget{{"reset-complete:ip:" + ip, 20, attemptWindow}}
+	if err := s.refuseSpent(ctx, budgets); err != nil {
+		return account, err
 	}
 	peek, err := s.Store.Queries.PeekPasswordReset(ctx, Hash(token))
 	if errors.Is(err, pgx.ErrNoRows) {
-		return domain.Credentials
+		return account, s.refuseLink(ctx, budgets)
 	}
 	if err != nil {
-		return err
+		return account, err
 	}
-	return s.Store.Transaction(ctx, func(q *db.Queries) error {
-		if _, err := q.LockAccount(ctx, peek.AccountID); err != nil {
+	hash, err := s.hashNewPassword(ctx, passwordShare{"account:" + peek.AccountID.String(), true}, budgets, password)
+	if err != nil {
+		return account, err
+	}
+	err = s.Store.Transaction(ctx, func(q *db.Queries) error {
+		locked, err := q.LockAccount(ctx, peek.AccountID)
+		if err != nil {
 			return err
 		}
 		reset, err := q.LockPasswordReset(ctx, Hash(token))
@@ -439,8 +446,16 @@ func (s *Service) CompleteReset(ctx context.Context, token, password, ip string)
 		if err := q.UpdatePassword(ctx, db.UpdatePasswordParams{ID: reset.AccountID, PasswordHash: hash}); err != nil {
 			return err
 		}
-		return q.DeletePasswordReset(ctx, reset.AccountID)
+		if err := q.DeletePasswordReset(ctx, reset.AccountID); err != nil {
+			return err
+		}
+		if err := s.clearLoginFailures(ctx, q, locked.Email, ip); err != nil {
+			return err
+		}
+		account, err = q.AccountByID(ctx, reset.AccountID)
+		return err
 	})
+	return account, err
 }
 
 func (s *Service) ValidateInvitation(ctx context.Context, token, ip string) error {
@@ -454,11 +469,33 @@ func (s *Service) ValidateInvitation(ctx context.Context, token, ip string) erro
 	return err
 }
 
-func (s *Service) AcceptInvitation(ctx context.Context, token, name, password string, current *store.Principal) (db.Account, error) {
+func (s *Service) AcceptInvitation(ctx context.Context, token, name, password string, from Source, current *store.Principal) (db.Account, error) {
 	var account db.Account
+	budgets := []budget{{"invite:" + from.Key, 20, attemptWindow}}
+	if err := s.refuseSpent(ctx, budgets); err != nil {
+		return account, err
+	}
 	peek, err := s.Store.Queries.PeekInvitation(ctx, Hash(token))
 	if errors.Is(err, pgx.ErrNoRows) {
-		return account, domain.Credentials
+		return account, s.refuseLink(ctx, budgets)
+	}
+	if err != nil {
+		return account, err
+	}
+	// The hash runs before the workspace's write lock, because it can wait for capacity.
+	var hash string
+	_, err = s.Store.Queries.AccountByEmail(ctx, peek.Email)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		if name, err = domain.Name(name); err != nil {
+			return account, err
+		}
+		if err = domain.Password(password); err != nil {
+			return account, err
+		}
+		hash, err = s.hashNewPassword(ctx, passwordShare{from.principal(), true}, budgets, password)
+	case err == nil:
+		err = s.charge(ctx, budgets)
 	}
 	if err != nil {
 		return account, err
@@ -473,13 +510,9 @@ func (s *Service) AcceptInvitation(ctx context.Context, token, name, password st
 		}
 		account, err = q.AccountByEmail(ctx, invite.Email)
 		if errors.Is(err, pgx.ErrNoRows) {
-			name, err = domain.Name(name)
-			if err != nil {
-				return err
-			}
-			hash, err := s.Passwords.Hash(ctx, password)
-			if err != nil {
-				return err
+			// The account the invitation found has gone since, so no password was set for this.
+			if hash == "" {
+				return domain.Conflict
 			}
 			account, err = q.InsertAccount(ctx, db.InsertAccountParams{ID: uuid.New(), Name: name, Email: invite.Email, PasswordHash: hash})
 			if err != nil {

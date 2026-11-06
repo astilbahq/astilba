@@ -218,7 +218,7 @@ func TestStaleRequestsLeaveRenewedCookieAlone(t *testing.T) {
 	// The cookie must outlast the idle window, since activity no longer rewrites it.
 	guest := f.browser(t)
 	response, data := send("POST", "/api/v1/auth/login", guest.csrf, guest.client.Jar.Cookies(target)[0], `{"email":"owner@example.test","password":"`+f.password+`"}`)
-	if response.StatusCode != 200 || len(response.Cookies()) != 1 || response.Cookies()[0].MaxAge < int((11*time.Hour).Seconds()) {
+	if cookies := sessionCookies(response.Cookies()); response.StatusCode != 200 || len(cookies) != 1 || cookies[0].MaxAge < int((11*time.Hour).Seconds()) {
 		t.Fatalf("login: status %d, cookies %v: %s", response.StatusCode, response.Cookies(), data)
 	}
 	guest.client.Jar.SetCookies(target, response.Cookies())

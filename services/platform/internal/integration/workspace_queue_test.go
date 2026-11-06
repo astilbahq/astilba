@@ -26,7 +26,7 @@ func TestWorkspaceLockWaitersLeaveThePoolServing(t *testing.T) {
 	defer cancel()
 	owner := f.browser(t)
 	ws := owner.login("owner@example.test", f.password).Workspaces[0].Id
-	hash, err := f.auth.Passwords.Hash(ctx, f.password)
+	hash, err := f.auth.Passwords.Hash(f.password)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -138,7 +138,7 @@ func TestWorkspaceLockWaitersLeaveThePoolServing(t *testing.T) {
 			finished <- struct{}{}
 		}()
 		go func() {
-			_, _ = f.auth.AcceptInvitation(ctx, invitation, "", "", &invited)
+			_, _ = f.auth.AcceptInvitation(ctx, invitation, "", "", auth.Source{Key: "test", Network: "test"}, &invited)
 			finished <- struct{}{}
 		}()
 	}

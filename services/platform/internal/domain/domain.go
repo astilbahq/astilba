@@ -34,6 +34,10 @@ var RecentRequired = &Error{Code: "recent_auth_required", Message: "Confirm your
 var Conflict = &Error{Code: "conflict", Message: "The resource changed. Review the current version before saving."}
 var RateLimited = &Error{Code: "rate_limited", Message: "Too many attempts. Try again later."}
 
+// PasswordsBusy says the server could not check a password in time. It costs the client no
+// attempts, so unlike RateLimited it invites an early retry.
+var PasswordsBusy = &Error{Code: "temporarily_busy", Message: "Too many sign-ins are in progress. Try again in a few seconds."}
+
 func Name(value string) (string, error) {
 	value = strings.TrimSpace(value)
 	if utf8.RuneCountInString(value) < 1 || utf8.RuneCountInString(value) > 80 || strings.ContainsAny(value, "\r\n\x00") {

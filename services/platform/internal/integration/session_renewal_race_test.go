@@ -282,7 +282,7 @@ func TestSignInSucceedsWithoutThePresentedSession(t *testing.T) {
 			release()
 			result := finish()
 
-			if result.status != 200 || len(result.cookies) != 1 {
+			if result.status != 200 || len(sessionCookies(result.cookies)) != 1 {
 				t.Fatalf("status %d, cookies %d: %s", result.status, len(result.cookies), result.body)
 			}
 			if session := sessionFromCookies(t, b, result.cookies); session.User == nil || session.User.Id != f.owner {
@@ -309,7 +309,7 @@ func TestAccountChangeSurvivesStaleRequestWithOldCookie(t *testing.T) {
 	release()
 	result := finish()
 
-	if result.status != 200 || len(result.cookies) != 1 {
+	if result.status != 200 || len(sessionCookies(result.cookies)) != 1 {
 		t.Fatalf("status %d, cookies %d: %s", result.status, len(result.cookies), result.body)
 	}
 	if session := sessionFromCookies(t, b, result.cookies); session.User == nil || session.User.Id != f.owner {

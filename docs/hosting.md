@@ -161,8 +161,67 @@ For example, a proxy connecting directly from IPv4 loopback uses
 `ASTILBA_TRUSTED_PROXIES=127.0.0.1/32`. A containerized proxy will usually have a
 different source address; do not copy this example without checking the network.
 With no configured proxies, direct-host requests continue to use their TCP peer.
-Clients sharing a real public IP still share an IP budget; account and global
-authentication limits remain in place.
+Clients sharing a real public IP still share an IP budget. See
+[sign-in under attack](#sign-in-under-attack) for how the budgets work together.
+
+### Sign-in under attack
+
+Astilba applies these limits itself, in PostgreSQL, so they hold across replicas. Each is
+per 15 minutes and counts only attempts that reach a password check. A refused attempt costs
+nothing.
+
+| Who | Limit |
+| --- | --- |
+| Each IPv4 address or IPv6 /64 | 50 sign-in attempts |
+| Each IPv6 /48 | 200 sign-in attempts |
+| One account from one address | 5 attempts |
+| One account from all addresses | 10 attempts |
+| A browser that has signed in to the account before | 5 attempts, on its own budget |
+| One account from all such browsers | 20 attempts, correct or not |
+
+A successful sign-in from a new browser clears that account's shared limit and the one for its
+own address. A browser that completes sign-in, including any second factor, holds a cookie sent
+only to the sign-in path. The cookie names no account and lasts 90 days from its last sign-in. It
+stops counting when anything ends the account's sessions, such as a password change, turning
+two-factor authentication on or off, or using or regenerating recovery codes. A browser holds
+one, for the account it signed in to last. The cookie skips no check, and
+an attacker without it cannot spend its budget, so guessing at an account does not lock its owner
+out of the browser they last used for it.
+
+Someone on another browser is refused while the account's limit of 10 is spent, which takes two
+addresses and the email address. Password reset keeps working during an attack: anyone can make
+Astilba send the link, up to 3 times per 15 minutes per email, and a request beyond that is
+answered as usual and sends nothing. A delivery that fails does not count. Each link replaces the one before, so use the newest.
+Completing a reset clears the shared limit and makes that browser a known one.
+
+There is no installation-wide limit, because anyone could spend it to refuse everyone. Trying a
+password across many accounts is bounded by each account's limit, each address's limit and how
+fast a replica can hash.
+
+Each replica runs two password hashes at once, and one IPv4 address or IPv6 /48 runs one at a
+time. It can have four requests in progress, and more are refused at once. Others wait up to 5
+seconds, with up to 32 waiting. Browsers with the cookie, valid links and signed-in users have
+their own queue, which goes first. A request that cannot be served gets a 503 with
+`Retry-After: 5` and spends no attempts.
+
+Your proxy needs to do three things for this to hold:
+
+- **Limit requests per address.** The [general limits](#per-address-limits-at-the-reverse-proxy)
+  are enough: an address that has spent its limits is refused after one database read and never
+  waits for a hash. Those reads are what the proxy's limit bounds.
+- **Group IPv6 clients.** Traefik counts each IPv6 address separately unless you set
+  `sourceCriterion.ipStrategy.ipv6Subnet: 64`. nginx's `$binary_remote_addr` also counts each
+  address and has no such setting, so a client with a /64 is not limited by it; if that matters,
+  group addresses at a firewall or CDN in front of nginx, or do not publish an IPv6 address.
+  Astilba's own limits group IPv6 at /64 either way, and sign-in also at /48.
+- **Pass on the client's address**, as [described above](#client-addresses-behind-a-reverse-proxy).
+  Without it every client shares one address's limits, so one guesser refuses everyone, and only
+  one hash runs at a time for people without the cookie.
+
+No per-address limit stops a flood from hundreds of addresses, each staying within its limits.
+That delays or refuses sign-in on browsers without the cookie, with a 503, for as long as it
+runs, while live sessions and known browsers keep working. Stop it upstream, with a CDN or
+firewall that can challenge or block that traffic.
 
 ### Per-address limits at the reverse proxy
 

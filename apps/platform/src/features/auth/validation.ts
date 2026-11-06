@@ -90,6 +90,8 @@ export function createAuthValidation(messages: AuthMessages) {
             return messages.mfaRequired;
           case "rate_limited":
             return messages.rateLimited;
+          case "temporarily_busy":
+            return messages.temporarilyBusy;
           case "recent_auth_required":
             return messages.recentRequired;
           case "conflict":
