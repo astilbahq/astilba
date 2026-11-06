@@ -256,6 +256,43 @@ func TestSubmitDeliveryRechecksRuntimeSecrets(t *testing.T) {
 		})
 	}
 
+	// Each form reaches the provider as written unless both checks recognise it: delivery
+	// because the value can become a secret while queued, admission when the draft is retried.
+	key := "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7VJTUt9Us8cKj\nMzEfYyjiWA4R4/M2bS1GB4t7NXp98C3SC6dVMvDuictGeurT8jNbvJZHtCSuYEvu\n-----END PRIVATE KEY-----\n"
+	inFile := func(path, content string) func(*composeproject.Bundle) {
+		return func(bundle *composeproject.Bundle) {
+			bundle.Files = append(bundle.Files, composeproject.File{Path: path, Content: content})
+		}
+	}
+	for name, form := range map[string]struct {
+		plant        func(*composeproject.Bundle)
+		value, leaks string
+	}{
+		"a key in an indented block": {inFile("config/key.yaml", "key: |\n  "+strings.ReplaceAll(strings.TrimSpace(key), "\n", "\n  ")+"\n"), key, "MzEfYyjiWA4R4"},
+		"a key with CRLF endings":    {inFile("config/key.pem", strings.ReplaceAll(key, "\n", "\r\n")), key, "MzEfYyjiWA4R4"},
+		"a URL-encoded password":     {inContent("postgres://app:p%40ss-word-123@db/app"), "p@ss-word-123", "ss-word-123"},
+		"a URL-encoded file name":    {inFileName("p%40ss-word-123"), "p@ss-word-123", "ss-word-123"},
+	} {
+		t.Run("delivery and admission refuse "+name, func(t *testing.T) {
+			b := *b
+			b.t = t
+			path, draft := prepare(t, "Reformatted "+name, form.plant)
+			rejected := dispatched(t, path, draft)
+			b.call("POST", path+"/secrets", map[string]string{"name": "TOKEN", "value": form.value}, 201, nil)
+			if command := poll(t); command != nil {
+				t.Fatal("reformatted secret reached the runner", command.Id)
+			}
+			state, note, _, _, started := operation(t, rejected.Id)
+			if state != "failed" || started == nil || *started || !strings.Contains(note, "runtime secret") || strings.Contains(note, form.leaks) {
+				t.Fatal("delivery did not refuse the reformatted secret cleanly", state, note, started)
+			}
+			refusal := string(b.call("POST", path+"/source/submit", map[string]any{"baseRevisionId": draft.Id, "requestKey": uuid.New()}, 400, nil))
+			if !strings.Contains(refusal, "source.containsRuntimeSecret") || strings.Contains(refusal, form.leaks) {
+				t.Fatal("admission did not refuse the reformatted secret, or echoed it", refusal)
+			}
+		})
+	}
+
 	// These run last because an accepted submission holds the runner from here on.
 	t.Run("admission refuses a file name holding a runtime secret", func(t *testing.T) {
 		b := *b

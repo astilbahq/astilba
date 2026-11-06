@@ -3,7 +3,6 @@ package agent
 import (
 	"errors"
 	"io"
-	"net/url"
 	"strings"
 
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
@@ -16,28 +15,28 @@ func redactValues(text string, values map[string]string) string {
 		if value == "" {
 			continue
 		}
-		for _, part := range append([]string{value, domain.SecretSearchForm(value)}, strings.Split(value, "\n")...) {
-			if part == "" {
-				continue
+		for _, part := range append([]string{value, domain.SecretSearchForm(value)}, domain.SecretLines(value)...) {
+			if part != "" {
+				patterns[part] = true
 			}
-			patterns[part] = true
-			patterns[url.QueryEscape(part)] = true
-			patterns[strings.TrimPrefix(url.UserPassword("", part).String(), ":")] = true
 		}
 	}
+	views := domain.SecretViews(text)
 	// Mark every matching interval before replacing. Consuming one match first can
 	// hide the start of another secret and expose its suffix.
 	coverage := make([]int, len(text)+1)
 	for value := range patterns {
-		for start := 0; start < len(text); {
-			index := strings.Index(text[start:], value)
-			if index < 0 {
-				break
+		for _, view := range views {
+			for start := 0; start < len(view.Text); {
+				index := strings.Index(view.Text[start:], value)
+				if index < 0 {
+					break
+				}
+				index += start
+				coverage[view.Offset(index)]++
+				coverage[view.Offset(index+len(value))]--
+				start = index + 1
 			}
-			index += start
-			coverage[index]++
-			coverage[index+len(value)]--
-			start = index + 1
 		}
 	}
 	var out strings.Builder

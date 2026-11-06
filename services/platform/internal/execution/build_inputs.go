@@ -67,6 +67,10 @@ func (e *buildInputRejection) note() string {
 // checks again at delivery, when the environment's runtime secrets may differ.
 func (s *Service) buildInputs(ctx context.Context, tx pgx.Tx, ws, env uuid.UUID, build pipeline.BuildConfig) (map[string]string, error) {
 	secrets := make(map[string]string, len(build.Secrets))
+	arguments := make([]domain.SecretText, 0, len(build.Arguments))
+	for _, value := range build.Arguments {
+		arguments = append(arguments, domain.NewSecretText(value))
+	}
 	total := 0
 	for name, id := range build.Secrets {
 		cipher, err := db.New(tx).GetBuildSecretValue(ctx, db.GetBuildSecretValueParams{WorkspaceID: ws, ID: id})
@@ -84,8 +88,8 @@ func (s *Service) buildInputs(ctx context.Context, tx pgx.Tx, ws, env uuid.UUID,
 		if total > 32768 {
 			return nil, &buildInputRejection{"build_secret_budget", "build.secrets"}
 		}
-		for _, value := range build.Arguments {
-			if containsSecret(value, string(plain)) {
+		for _, argument := range arguments {
+			if argument.Exposes(string(plain)) {
 				return nil, &buildInputRejection{"arguments_contain_secret", "build.argumentsContainSecret"}
 			}
 		}

@@ -13,6 +13,7 @@ import (
 	"maps"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -297,7 +298,7 @@ func TestGitImportBuildIsolationAndArtifactAdmission(t *testing.T) {
 		for name, id := range cfg.Secrets {
 			declared[name] = id
 		}
-		for _, value := range []string{"build-only-canary", "runtime-only-canary", escaped, "build-pasted-canary"} {
+		for _, value := range []string{"build-only-canary", "runtime-only-canary", escaped, "build-pasted-canary", url.QueryEscape(escaped), strings.ReplaceAll(escaped, "\n", "\r\n")} {
 			invalid := cfg
 			invalid.Secrets = declared
 			invalid.Arguments = map[string]string{"TOKEN": value}
