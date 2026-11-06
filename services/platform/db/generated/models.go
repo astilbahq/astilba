@@ -483,7 +483,6 @@ type NetworkMember struct {
 	ManifestHash           string     `json:"manifest_hash"`
 	InstalledManifest      []byte     `json:"installed_manifest"`
 	Note                   string     `json:"note"`
-	HistoryClaimController int64      `json:"history_claim_controller"`
 }
 
 type NetworkPlanEndpoint struct {

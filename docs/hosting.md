@@ -566,6 +566,10 @@ only after reviewing the recovered state. A stale database or incomplete archive
 can fail this comparison; keep the host running and reconcile the discrepancy
 instead of overwriting its journal or deleting volumes.
 
+Private networks take only removals until you approve them again. That approval
+replaces what each host holds, including peers the backup does not know about. See
+[cross-host placement](cross-host-placement.md).
+
 ## Transfer a workspace between installations
 
 1. Finish or reconcile active operations and database upgrades. Export the

@@ -68,6 +68,23 @@ func (q *Queries) DisableNetworkMember(ctx context.Context, arg DisableNetworkMe
 	return result.RowsAffected(), nil
 }
 
+const forgetInstalledNetwork = `-- name: ForgetInstalledNetwork :exec
+UPDATE network_members SET installed_manifest=NULL,manifest_hash=''
+WHERE workspace_id = $1 AND server_id = $2 AND membership_id = $3
+`
+
+type ForgetInstalledNetworkParams struct {
+	WorkspaceID  uuid.UUID `json:"workspace_id"`
+	ServerID     uuid.UUID `json:"server_id"`
+	MembershipID uuid.UUID `json:"membership_id"`
+}
+
+// The host refused a removal built from this record, so the record does not describe the host.
+func (q *Queries) ForgetInstalledNetwork(ctx context.Context, arg ForgetInstalledNetworkParams) error {
+	_, err := q.db.Exec(ctx, forgetInstalledNetwork, arg.WorkspaceID, arg.ServerID, arg.MembershipID)
+	return err
+}
+
 const markNetworkGenerationExhausted = `-- name: MarkNetworkGenerationExhausted :exec
 UPDATE network_members SET acknowledged_generation=0,note=CASE WHEN enabled THEN $1 ELSE note END
 WHERE workspace_id = $2
@@ -110,19 +127,28 @@ func (q *Queries) NetworkKeyHeldByAnotherMember(ctx context.Context, arg Network
 	return exists, err
 }
 
-const recordNetworkHistoryClaim = `-- name: RecordNetworkHistoryClaim :exec
-UPDATE network_members SET history_claim_controller = $1
-WHERE workspace_id = $2 AND server_id = $3
+const noteRefusedNetworkConfigure = `-- name: NoteRefusedNetworkConfigure :exec
+UPDATE network_members SET note = $1
+WHERE workspace_id = $2 AND server_id = $3 AND membership_id = $4 AND generation = $5
 `
 
-type RecordNetworkHistoryClaimParams struct {
-	Controller  int64     `json:"controller"`
-	WorkspaceID uuid.UUID `json:"workspace_id"`
-	ServerID    uuid.UUID `json:"server_id"`
+type NoteRefusedNetworkConfigureParams struct {
+	Note         string    `json:"note"`
+	WorkspaceID  uuid.UUID `json:"workspace_id"`
+	ServerID     uuid.UUID `json:"server_id"`
+	MembershipID uuid.UUID `json:"membership_id"`
+	Generation   int64     `json:"generation"`
 }
 
-func (q *Queries) RecordNetworkHistoryClaim(ctx context.Context, arg RecordNetworkHistoryClaimParams) error {
-	_, err := q.db.Exec(ctx, recordNetworkHistoryClaim, arg.Controller, arg.WorkspaceID, arg.ServerID)
+// Only for the member's latest command: anything newer has not been refused.
+func (q *Queries) NoteRefusedNetworkConfigure(ctx context.Context, arg NoteRefusedNetworkConfigureParams) error {
+	_, err := q.db.Exec(ctx, noteRefusedNetworkConfigure,
+		arg.Note,
+		arg.WorkspaceID,
+		arg.ServerID,
+		arg.MembershipID,
+		arg.Generation,
+	)
 	return err
 }
 

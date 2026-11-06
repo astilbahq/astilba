@@ -54,6 +54,9 @@ func fixtureNetworkReceipt(host hostnetwork.Host, c api.ExecutionCommand, curren
 				receipt.Before, receipt.Effective = &before, &next
 			}
 		}
+		if current.NetworkID != uuid.Nil && !hostnetwork.Admits(*current, next) {
+			return receipt, hostnetwork.ErrGenerationConflict
+		}
 		*current = next
 		receipt.Generation, receipt.Hash, receipt.Disabled = next.Generation, hostnetwork.Hash(next), next.Disabled
 	}

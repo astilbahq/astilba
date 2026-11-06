@@ -14,7 +14,7 @@ Each workspace network has a stable identity, owner-selected nonoverlapping priv
 
 Peer membership is not authorization to reach arbitrary host ports or containers. Freeze endpoint grants naming network epoch, source/destination server and unit, destination instance/resource, transport and port. Export a container port only on the managed private IP and only to named peer addresses through an Astilba-owned firewall chain installed before the endpoint becomes reachable. Inspect Docker DNAT and DOCKER-USER/nft hook behavior on both native architectures. Enforce source-unit egress before Docker SNAT: match the exact owned bridge and container source identity against its frozen destination/port grants; drop every ungranted route into the private prefix. A different unit on the same source host must be denied even if the host peer is authorized. Enforce destination admission using both the managed WireGuard input interface and the authenticated peer /32 plus the endpoint port; a source IP arriving on another interface is never sufficient. Drop decrypted traffic to all ungranted host services, unapproved endpoint ports and non-network destinations. Preserve unrelated Docker/firewall rules; refuse unsupported firewall modes. Bindings/ingress create reviewed endpoint grants, not an unrestricted host mesh.
 
-Membership removal/key replacement is a generation-fenced desired-state operation. Existing server revocation atomically invalidates its membership/key epoch and marks desired peer/grant removal on all remaining members before revoking API credentials; their reconciliation remains deliverable to unaffected members. Renewed enrollment invalidates prior machine/network identity and requires fresh owner network admission, even when the server UUID survives. Credential rotation alone preserves the approved machine identity; key replacement is an explicit distinct action. Remove authorization at each reachable member before claiming completion; unreachable acknowledgements remain pending and visibly incomplete. Existing traffic is not put on a management availability lease. A stale isolated member can retain its previously installed peer permissions; do not describe an unacknowledged revocation as complete. A failure reconciling one workspace's network costs that workspace its turn and delays each other workspace by no more than that turn's deadline; it raises an operational alert if it continues, unless a held workspace lock is the cause, which only the management log shows. A host's receipt can move the network generation only as far as its unreported work explains, plus one larger allowance for each member in each controller generation, because a management restored from a backup has forgotten what it issued since. A receipt beyond that moves nothing: the member stays pending with a note, and later removals still reach it. Revocation does not depend on the generation being able to rise. If the generation has already reached the bigint limit, the credential is still cleared and the membership disabled, but a peer that already holds that generation cannot be told. Those members stay pending with a note, and network configuration and new placement are refused. Agents generate a key per membership, so management refuses a key that another member of the network holds, and that member stays pending with a note until it reports its own. Explicit key replacement may interrupt that member's connections. Controller transfer freezes network mutations and requires renewed owner approval; host private keys do not enter export archives. New controller approval reconciles all member generations before new placement. Old controllers cannot mutate after host transfer generation advances.
+Membership removal/key replacement is a generation-fenced desired-state operation. Existing server revocation atomically invalidates its membership/key epoch and marks desired peer/grant removal on all remaining members before revoking API credentials; their reconciliation remains deliverable to unaffected members. Renewed enrollment invalidates prior machine/network identity and requires fresh owner network admission, even when the server UUID survives. Credential rotation alone preserves the approved machine identity; key replacement is an explicit distinct action. Remove authorization at each reachable member before claiming completion; unreachable acknowledgements remain pending and visibly incomplete. Existing traffic is not put on a management availability lease. A stale isolated member can retain its previously installed peer permissions; do not describe an unacknowledged revocation as complete. A failure reconciling one workspace's network costs that workspace its turn and delays each other workspace by no more than that turn's deadline; it raises an operational alert if it continues, unless a held workspace lock is the cause, which only the management log shows. Network generations are ordered by controller generation first, and each controller counts for itself, so what a host holds cannot stand in the way of a restored management, and no live receipt can move its counter on the strength of it. Offline recovery does raise the counter from host exports, within the fixed allowance below. Under one controller, a host's receipt can move the network generation only as far as its unreported work explains. A receipt beyond that moves nothing: the member stays pending with a note, and later removals still reach it. Revocation does not depend on the generation being able to rise. If the generation has already reached the bigint limit, the credential is still cleared and the membership disabled, but a peer that already holds that generation cannot be told. Those members stay pending with a note, and network configuration and new placement are refused. Agents generate a key per membership, so management refuses a key that another member of the network holds, and that member stays pending with a note until it reports its own. Explicit key replacement may interrupt that member's connections. Controller transfer freezes network additions and requires renewed owner approval, while removals still reach a transferred host; host private keys do not enter export archives. New controller approval reconciles all member generations before new placement. Old controllers cannot mutate after host transfer generation advances.
 
 ## Placement and frozen plans
 
@@ -128,22 +128,29 @@ sealed capsules record. The error names the host. Inspect that host before
 including its export.
 
 A host can hold a later network generation than a management restored from a
-backup. Until management has caught up, a `configure` below that generation stops
-the host at `needs_attention`, and no supported route clears it: `retry` repeats
-the same command, and transfer, recovery handover and re-enrollment all keep or
-refuse the record, while renewing enrollment also disables the member. Removals
-can still reach it, but no other command can start. A `configure` is sent whenever
-a member's desired network is not a subset of what management last recorded for
-it, so changing a peer's endpoint or deploying new grants causes one as well as
-adding a peer.
+backup, and peers that backup does not know about. Neither needs any special
+step. Recovery moves the host to a new controller generation, and only its local
+transfer can do that. Removals reach it straight away if management has a record
+of what the host holds, and otherwise with the approval. After you approve the
+network again, each free member receives the whole approved manifest for that
+controller. It replaces what the host holds, whatever generation the host has
+reached, and removes those unknown peers. A busy member receives only removals
+until it is free, and the whole manifest follows.
 
-To avoid this after restoring a backup, first save the network unchanged, provided
-each member's recorded network already holds what it should and its identity has
-not changed. That sends restrictions, and each member's receipt moves the counter
-past it, once per member in each controller generation and up to a fixed allowance.
-Make other changes only after every member has reported. A host beyond that
-allowance stays pending with a note, and keeps any peer the restored backup does
-not know about.
+If management was restored without fencing a host, the host stays on the same
+controller and ahead of management. It may ignore a `configure` as stale, leaving
+that operation unfinished, or refuse it without changing anything, in which case
+the member is noted and receives only removals until the network is saved. Management
+needs a record of what the host holds to send a removal, and it drops that record if
+the host refuses one. Nothing the host reports moves the counter by more than its
+unreported work explains. Stop management, run `astilba prepare-recovery`
+for that server with a generation above the one it has installed, and start
+management again. Then prepare its transfer, transfer it locally and approve the
+network again.
+
+A member noted as reporting a generation far beyond what this installation issued
+has the same way out. A modified agent can also cause that note, so revoke the
+server instead if you do not trust it.
 
 Preserve private recovery exports and handovers until recovery is confirmed.
 

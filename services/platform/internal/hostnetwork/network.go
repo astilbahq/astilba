@@ -81,6 +81,9 @@ type Receipt struct {
 	Disabled   bool      `json:"disabled"`
 	Before     *Manifest `json:"before,omitempty"`
 	Effective  *Manifest `json:"effective,omitempty"`
+	// Refused marks a failed report whose command changed nothing and would fail the same way
+	// again, so management stops repeating it.
+	Refused bool `json:"refused,omitempty"`
 }
 
 func Hash(v any) string { return stablejson.Hash(v) }
@@ -174,6 +177,23 @@ func (c Command) Validate() error {
 	return c.Manifest.Validate()
 }
 
+// Later orders manifests by controller generation, then network generation. Each controller
+// counts for itself: a management restored from a backup has forgotten what it issued, and a
+// host's number says nothing about the new controller's. A host only takes a manifest for the
+// controller its local owner transferred it to, so nothing else can reach this ordering's reset.
+func Later(old, next Manifest) bool {
+	if next.ControllerGeneration != old.ControllerGeneration {
+		return next.ControllerGeneration > old.ControllerGeneration
+	}
+	return next.Generation > old.Generation
+}
+
+// Admits reports whether a host holding old may install next. Reapplying exactly what it holds is
+// always allowed, because a restart or a lost receipt repeats a manifest.
+func Admits(old, next Manifest) bool {
+	return old.ServerID == next.ServerID && (Later(old, next) || Hash(old) == Hash(next))
+}
+
 // Restricts permits recovery admission only when the installed authority shrinks.
 func Restricts(old, next Manifest) bool {
 	// An identical persisted intent may be replayed after effects or a receipt
@@ -182,7 +202,7 @@ func Restricts(old, next Manifest) bool {
 		return next.Validate() == nil
 	}
 
-	if !sameLocalIdentity(old, next) || old.ControllerGeneration > next.ControllerGeneration || next.Generation <= old.Generation || next.Validate() != nil {
+	if !sameLocalIdentity(old, next) || !Later(old, next) || next.Validate() != nil {
 		return false
 	}
 	for _, p := range next.Peers {

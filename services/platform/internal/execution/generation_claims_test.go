@@ -10,7 +10,6 @@ import (
 func TestGenerationClaimLimit(t *testing.T) {
 	for _, test := range []struct{ issued, allowance, want int64 }{
 		{0, networkReceiptMargin, networkReceiptMargin},
-		{7, networkHistoryAllowance, 7 + networkHistoryAllowance},
 		{generationClaimCeiling - 1, exportClaimAllowance, generationClaimCeiling},
 		{generationClaimCeiling, exportClaimAllowance, generationClaimCeiling},
 		{portability.MaxCounter, networkReceiptMargin, portability.MaxCounter},

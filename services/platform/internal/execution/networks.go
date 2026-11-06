@@ -44,7 +44,6 @@ type networkMember struct {
 	Note          string    `json:"note"`
 	Controller    int64     `json:"-"`
 	ManifestHash  string    `json:"-"`
-	HistoryClaim  int64     `json:"-"`
 }
 
 func readNetwork(ctx context.Context, tx pgx.Tx, ws uuid.UUID) (managedNetwork, error) {
@@ -56,7 +55,7 @@ func readNetwork(ctx context.Context, tx pgx.Tx, ws uuid.UUID) (managedNetwork, 
 	if err != nil {
 		return n, err
 	}
-	rows, err := tx.Query(ctx, `SELECT server_id,membership_id,host(address),endpoint,listen_port,cpu_millis,memory_mib,unbounded_inventory_hash,public_key,enabled,generation,acknowledged_generation,note,approved_controller,manifest_hash,history_claim_controller FROM network_members WHERE workspace_id=$1 ORDER BY server_id`, ws)
+	rows, err := tx.Query(ctx, `SELECT server_id,membership_id,host(address),endpoint,listen_port,cpu_millis,memory_mib,unbounded_inventory_hash,public_key,enabled,generation,acknowledged_generation,note,approved_controller,manifest_hash FROM network_members WHERE workspace_id=$1 ORDER BY server_id`, ws)
 	if err != nil {
 		return n, err
 	}
@@ -64,7 +63,7 @@ func readNetwork(ctx context.Context, tx pgx.Tx, ws uuid.UUID) (managedNetwork, 
 	n.State = "ready"
 	for rows.Next() {
 		var m networkMember
-		if err = rows.Scan(&m.ServerID, &m.MembershipID, &m.Address, &m.Endpoint, &m.ListenPort, &m.CPUMillis, &m.MemoryMiB, &m.InventoryHash, &m.PublicKey, &m.Enabled, &m.Generation, &m.Acknowledged, &m.Note, &m.Controller, &m.ManifestHash, &m.HistoryClaim); err != nil {
+		if err = rows.Scan(&m.ServerID, &m.MembershipID, &m.Address, &m.Endpoint, &m.ListenPort, &m.CPUMillis, &m.MemoryMiB, &m.InventoryHash, &m.PublicKey, &m.Enabled, &m.Generation, &m.Acknowledged, &m.Note, &m.Controller, &m.ManifestHash); err != nil {
 			return n, err
 		}
 		m.State = "removed"
@@ -192,7 +191,9 @@ func (s *Service) ConfigureManagedNetwork(ctx context.Context, p store.Principal
 		if _, e = tx.Exec(ctx, `INSERT INTO workspace_networks(id,workspace_id,prefix,generation) VALUES($1,$2,$3,$4) ON CONFLICT(workspace_id) DO UPDATE SET generation=$4`, id, ws, in.Prefix, generation); e != nil {
 			return e
 		}
-		if _, e = tx.Exec(ctx, `UPDATE network_members SET enabled=false,generation=$2,note='' WHERE workspace_id=$1`, ws, generation); e != nil {
+		// Removing a member is approval for its current controller to tell it. Without this, a
+		// member removed by the first save after a restore would keep what it holds.
+		if _, e = tx.Exec(ctx, `UPDATE network_members m SET enabled=false,generation=$2,note='',approved_controller=s.controller_generation FROM servers s WHERE m.workspace_id=$1 AND s.id=m.server_id`, ws, generation); e != nil {
 			return e
 		}
 		for _, a := range members {
@@ -294,13 +295,16 @@ func (s *Service) reconcileNetwork(ctx context.Context, ws uuid.UUID) error {
 		if err != nil {
 			return err
 		}
-		if !ready || controller != m.Controller || restriction {
+		if !ready || restriction {
 			continue
 		}
+		// While a host is occupied, or until the owner approves its new controller, only removals
+		// go out. They need no approval and must reach it.
+		held := reserved || busy || controller != m.Controller
 		command := hostnetwork.Command{Action: "identify", NetworkID: n.ID, MembershipID: m.MembershipID}
 		var removal *hostnetwork.Command
 		if m.PublicKey != "" {
-			manifest, ready, e := networkManifest(ctx, tx, ws, n, m)
+			manifest, complete, e := networkManifest(ctx, tx, ws, n, m)
 			if e != nil {
 				return e
 			}
@@ -311,13 +315,19 @@ func (s *Service) reconcileNetwork(ctx context.Context, ws uuid.UUID) error {
 				return e
 			}
 			var prior hostnetwork.Manifest
-			known := json.Unmarshal(installed, &prior) == nil && prior.Validate() == nil
+			// A re-added member has a new membership, and a record of the old one cannot scope it.
+			known := json.Unmarshal(installed, &prior) == nil && prior.Validate() == nil && prior.MembershipID == m.MembershipID
+			sameController := known && prior.ControllerGeneration == manifest.ControllerGeneration
 			// Hosts refuse changed content at a generation they already hold, and this one
 			// cannot rise. The member stays pending, with a note, rather than fail on every pass.
-			if known && prior.Generation == math.MaxInt64 && manifest.Generation == math.MaxInt64 && hostnetwork.Hash(prior) != hostnetwork.Hash(manifest) {
+			if sameController && prior.Generation == math.MaxInt64 && manifest.Generation == math.MaxInt64 && hostnetwork.Hash(prior) != hostnetwork.Hash(manifest) {
 				continue
 			}
-			if reserved || busy || !ready {
+			// After a restore the record of what this host holds is out of date, so it cannot scope
+			// a removal. The owner approved this controller's whole manifest, which replaces
+			// whatever the host holds, including peers the restored backup never knew about, and
+			// must not wait for a new peer that may never report a key.
+			if held || m.Note == refusedNetworkConfigureNote || !complete && sameController {
 				if !known {
 					continue
 				}
@@ -331,10 +341,8 @@ func (s *Service) reconcileNetwork(ctx context.Context, ws uuid.UUID) error {
 				}
 				command.Action = "restrict"
 			}
-			if known && hostnetwork.Restricts(prior, manifest) {
+			if known && (command.Action == "restrict" || sameController && hostnetwork.Restricts(prior, manifest)) {
 				command.Action = "restrict"
-			}
-			if command.Action == "restrict" {
 				command.Baseline = &prior
 			} else if known {
 				reduced := hostnetwork.Restriction(prior, manifest)
@@ -343,7 +351,7 @@ func (s *Service) reconcileNetwork(ctx context.Context, ws uuid.UUID) error {
 				}
 			}
 		}
-		if (reserved || busy) && command.Action != "restrict" {
+		if held && command.Action != "restrict" {
 			continue
 		}
 		var generation int64
@@ -455,8 +463,6 @@ func networkManifest(ctx context.Context, tx pgx.Tx, ws uuid.UUID, n managedNetw
 
 const exhaustedNetworkGenerationNote = "This network's generation has reached its limit, so a server that already holds it cannot receive further changes."
 
-const unaccountedNetworkGenerationNote = "This server reported a private network generation far beyond what this installation issued, so private links cannot finish. A compromised server can cause this, directly or through a peer. Revoke any server you do not trust."
-
 // duplicateNetworkKeyNote is also written by migration 00027. Agents generate a key per
 // membership, so a repeated key means a modified agent, and peers could not tell its
 // holders apart. The key stays with the member that already holds it.
@@ -478,6 +484,9 @@ func (s *Service) networkReport(ctx context.Context, tx pgx.Tx, ws uuid.UUID, c 
 	if hostnetwork.Decode(*c.Network, &cmd) != nil || cmd.Validate() != nil || hostnetwork.Hash(cmd) != c.PlanHash {
 		return domain.Invalid("network")
 	}
+	if r.State == "failed" && r.Network != nil && live {
+		return networkRefusal(ctx, tx, ws, c, cmd, *r.Network)
+	}
 	if r.State != "succeeded" {
 		return nil
 	}
@@ -485,7 +494,7 @@ func (s *Service) networkReport(ctx context.Context, tx pgx.Tx, ws uuid.UUID, c 
 		return domain.Invalid("network")
 	}
 	var receipt hostnetwork.Receipt
-	if hostnetwork.Decode(*r.Network, &receipt) != nil || receipt.NetworkID != cmd.NetworkID || receipt.Identity.MembershipID != cmd.MembershipID || !hostnetwork.PublicKey(receipt.Identity.PublicKey) {
+	if hostnetwork.Decode(*r.Network, &receipt) != nil || receipt.Refused || receipt.NetworkID != cmd.NetworkID || receipt.Identity.MembershipID != cmd.MembershipID || !hostnetwork.PublicKey(receipt.Identity.PublicKey) {
 		return domain.Invalid("network")
 	}
 	if cmd.Action == "identify" {
@@ -515,10 +524,10 @@ func (s *Service) networkReport(ctx context.Context, tx pgx.Tx, ws uuid.UUID, c 
 	}
 	var known hostnetwork.Manifest
 	if json.Unmarshal(installed, &known) == nil && known.Validate() == nil {
-		if observed.ControllerGeneration < known.ControllerGeneration || observed.Generation < known.Generation {
-			return nil
-		}
-		if observed.Generation == known.Generation && hostnetwork.Hash(observed) != hostnetwork.Hash(known) {
+		if !hostnetwork.Later(known, observed) && hostnetwork.Hash(observed) != hostnetwork.Hash(known) {
+			if hostnetwork.Later(observed, known) {
+				return nil
+			}
 			return domain.Invalid("network.generation")
 		}
 	}
@@ -531,16 +540,11 @@ func (s *Service) networkReport(ctx context.Context, tx pgx.Tx, ws uuid.UUID, c 
 			continue
 		}
 		if live {
-			accepted, err := acceptNetworkReceiptClaim(ctx, tx, ws, n, member, generation(c.ControllerGeneration), observed.Generation)
-			if err != nil {
-				return err
-			}
-			// An honest host carried this far by a compromised peer did apply the change. Its
-			// report stands: refusing it would stop the host taking commands, and any other
+			// The report stands: refusing it would stop the host taking commands, and any other
 			// outcome would contradict the host's journal when recovery reads its export. Only
 			// the counter and the record of what the host holds ignore the claim. The member
 			// waits only if this command was its latest; otherwise the next sweep sends newer.
-			if !accepted {
+			if observed.Generation > generationClaimLimit(n.Generation, networkReceiptMargin) {
 				r.Note = unaccountedNetworkGenerationNote
 				if cmd.Manifest.Generation < member.Generation {
 					return nil

@@ -86,10 +86,14 @@ func ReconcileRestriction(current, baseline, wanted Manifest, unit uuid.UUID, co
 	if Hash(next) == Hash(current) && (unit != uuid.Nil || wanted.Generation <= current.Generation) {
 		return current, nil
 	}
-	if current.Generation == math.MaxInt64 {
+	switch {
+	case controller > current.ControllerGeneration:
+		next.Generation = wanted.Generation
+	case current.Generation == math.MaxInt64:
 		return Manifest{}, errors.New("network generation exhausted")
+	default:
+		next.Generation = max(current.Generation+1, wanted.Generation)
 	}
-	next.Generation = max(current.Generation+1, wanted.Generation)
 	if !Restricts(current, next) {
 		return Manifest{}, errors.New("network restriction expands admitted authority")
 	}
