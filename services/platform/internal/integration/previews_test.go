@@ -359,6 +359,9 @@ func previewIsolationJourney(t *testing.T, transfer, recoverCleanup bool) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		if _, err = f.st.Pool.Exec(ctx, "UPDATE preview_requests SET next_check_at='2000-01-01' WHERE workspace_id=$1", ws); err != nil {
+			t.Fatal(err)
+		}
 		archive, err := (&portability.Service{Store: f.st}).Export(ctx, browserPrincipal(t, f.st, account, true), ws, "preview transfer passphrase")
 		if err != nil {
 			t.Fatal(err)
@@ -373,6 +376,10 @@ func previewIsolationJourney(t *testing.T, transfer, recoverCleanup bool) {
 		}
 		var purpose string
 		var enabled, reserved bool
+		var scheduled bool
+		if err = destination.st.Pool.QueryRow(ctx, "SELECT bool_and(next_check_at>now()) FROM preview_requests WHERE workspace_id=$1", ws).Scan(&scheduled); err != nil || !scheduled {
+			t.Fatal("import kept the archive's place in the shared preview sweep", err)
+		}
 		if err = destination.st.Pool.QueryRow(ctx, "SELECT purpose FROM environments WHERE workspace_id=$1 AND id=$2", ws, *preview.EnvironmentId).Scan(&purpose); err != nil || purpose != "preview" {
 			t.Fatal("import lost preview restriction", purpose, err)
 		}

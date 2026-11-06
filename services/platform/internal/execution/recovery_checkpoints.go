@@ -12,6 +12,7 @@ import (
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
+	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/portability"
@@ -61,14 +62,17 @@ func (s *Service) createRecoveryBase(ctx context.Context, tx pgx.Tx, ws uuid.UUI
 		return d, err
 	}
 	envelope, err := s.Store.Keys.Seal(compressed.Bytes(), recoveryIdentity(d))
+	if errors.Is(err, cryptobox.ErrTooLarge) {
+		return d, errRecoverySize
+	}
 	if err != nil {
 		return d, err
 	}
 	if len(envelope) > deployment.RecoveryEnvelopeLimit {
 		return d, errRecoverySize
 	}
-	// Seal accepts more data than Open. Admission checks the final serialized
-	// envelope, including base64 overhead, against the actual recovery reader.
+	// Admission checks the final serialized envelope, including base64 overhead,
+	// against the actual recovery reader.
 	verified, err := s.Store.Keys.Open(envelope, recoveryIdentity(d))
 	if err != nil {
 		return d, err
@@ -173,6 +177,9 @@ func (s *Service) stageRecoveryPhase(ctx context.Context, tx pgx.Tx, ws uuid.UUI
 	d.CheckpointID, d.PreviousHash = uuid.New(), previous.Digest
 	envelope, err := s.Store.Keys.Seal(raw, recoveryIdentity(d))
 	clear(raw)
+	if errors.Is(err, cryptobox.ErrTooLarge) {
+		return errRecoverySize
+	}
 	if err != nil {
 		return err
 	}

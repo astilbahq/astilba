@@ -5,7 +5,6 @@ import (
 	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"fmt"
-	"math"
 	"strings"
 	"time"
 
@@ -82,6 +81,18 @@ func decodeArchiveMode(raw []byte, recovery bool) (Archive, error) {
 			ws, e := rowString(row, "workspace_id")
 			if e != nil || ws != archive.Workspace.String() {
 				return archive, ErrArchive
+			}
+			// A recovery checkpoint is management's own record and must stay restorable. Any
+			// other archive gets what an export would have written, so retention, which
+			// rebuilds rows with logs inside the shared database, only ever handles values
+			// whose size agents had to respect.
+			if !recovery {
+				if e = checkImportedRow(table.Name, row); e != nil {
+					return archive, e
+				}
+				if e = omitExportLogs(table.Name, row); e != nil {
+					return archive, e
+				}
 			}
 		}
 	}
@@ -232,9 +243,11 @@ func (s *Service) Import(ctx context.Context, p store.Principal, passphrase stri
 				setValue(row, "cleanup_actor", nil)
 				setValue(row, "cleanup_auth_version", nil)
 				setValue(row, "cleanup_controller", nil)
+				// The archive does not get to choose its place in the shared sweep.
+				setValue(row, "next_check_at", time.Now().UTC().Add(5*time.Minute))
 			case "servers":
 				var old int64
-				if json.Unmarshal(row["controller_generation"], &old) != nil || old < 0 || old == math.MaxInt64 {
+				if json.Unmarshal(row["controller_generation"], &old) != nil {
 					return out, ErrArchive
 				}
 				setValue(row, "controller_generation", old+1)

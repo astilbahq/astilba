@@ -422,7 +422,7 @@ workspace limit returns backpressure before another operation is queued. Archive
 operations are serialized per management replica, limited to 32 MiB and 10,000
 records, and use fixed 64 MiB Argon2id derivation parameters.
 
-The private network, coordinated backup and operational alert sweeps take one workspace
+The private network, coordinated backup, operational alert and expiry notice sweeps take one workspace
 at a time, each under its own deadline, and carry on past a failure. A failure costs that
 workspace its turn, and each failing workspace delays the others by no more than that
 deadline, though many failing at once add up because sweep capacity is shared. Each is logged
@@ -431,6 +431,10 @@ failure's category rather than its text, which can contain stored values. Alert 
 message. The workspace's owner also sees an [operational alert](operational-alerts.md) if a
 network or coordinated backup stays blocked, unless a held workspace lock is the cause: that
 stops alert evaluation for the workspace too, so only the log shows it.
+
+Each class of retention cleanup commits separately, so one that fails does not stop the
+others, and logs `retention cleanup failed` with the class. The preview sweep takes every workspace's oldest due work before any
+workspace's second, though its jobs still share one queue with all other background work.
 
 `ASTILBA_LOG_RETENTION_DAYS` controls terminal operation diagnostics and build log
 retention, defaulting to 30 days. Cleanup processes at most 100 records from each

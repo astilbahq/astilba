@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -284,6 +285,12 @@ func TOTPIdentity(id uuid.UUID, pending bool) string {
 	return p + id.String()
 }
 
+// rewrapFailed names the row, because rotation stops until an operator deals with it and
+// the keyring's own error is deliberately the same for every cause.
+func rewrapFailed(table string, workspace, id uuid.UUID, err error) error {
+	return fmt.Errorf("cannot rewrap %s row %s in workspace %s: %w", table, id, workspace, err)
+}
+
 func (s *Store) Rewrap(ctx context.Context) error {
 	return s.Transaction(ctx, func(q *db.Queries) error {
 		if err := q.LockBootstrap(ctx); err != nil {
@@ -296,7 +303,7 @@ func (s *Store) Rewrap(ctx context.Context) error {
 		for _, v := range versions {
 			blob, err := s.Keys.Rewrap(v.EncryptedValue, SecretIdentity(v.WorkspaceID, v.ID))
 			if err != nil {
-				return err
+				return rewrapFailed("secret_versions", v.WorkspaceID, v.ID, err)
 			}
 			if err := q.RewrapSecretVersion(ctx, db.RewrapSecretVersionParams{WorkspaceID: v.WorkspaceID, ID: v.ID, EncryptedValue: blob}); err != nil {
 				return err
@@ -310,7 +317,7 @@ func (s *Store) Rewrap(ctx context.Context) error {
 		for _, v := range git {
 			blob, err := s.Keys.Rewrap(v.EncryptedAccess, pipeline.EncryptionIdentity(v.WorkspaceID, v.ID, "git"))
 			if err != nil {
-				return err
+				return rewrapFailed("git_connections", v.WorkspaceID, v.ID, err)
 			}
 			if err = q.RewrapGitAccess(ctx, db.RewrapGitAccessParams{WorkspaceID: v.WorkspaceID, ID: v.ID, EncryptedAccess: blob}); err != nil {
 				return err
@@ -323,7 +330,7 @@ func (s *Store) Rewrap(ctx context.Context) error {
 		for _, v := range authorizations {
 			blob, err := s.Keys.Rewrap(v.EncryptedAccess, pipeline.EncryptionIdentity(v.WorkspaceID, v.ID, "github-authorization"))
 			if err != nil {
-				return err
+				return rewrapFailed("github_app_authorizations", v.WorkspaceID, v.ID, err)
 			}
 			if err = q.RewrapGitHubAuthorization(ctx, db.RewrapGitHubAuthorizationParams{WorkspaceID: v.WorkspaceID, ID: v.ID, EncryptedAccess: blob}); err != nil {
 				return err
@@ -336,7 +343,7 @@ func (s *Store) Rewrap(ctx context.Context) error {
 		for _, v := range registries {
 			blob, err := s.Keys.Rewrap(v.EncryptedAccess, pipeline.EncryptionIdentity(v.WorkspaceID, v.ID, "registry"))
 			if err != nil {
-				return err
+				return rewrapFailed("registries", v.WorkspaceID, v.ID, err)
 			}
 			if err = q.RewrapRegistryAccess(ctx, db.RewrapRegistryAccessParams{WorkspaceID: v.WorkspaceID, ID: v.ID, EncryptedAccess: blob}); err != nil {
 				return err
@@ -349,7 +356,7 @@ func (s *Store) Rewrap(ctx context.Context) error {
 		for _, v := range build {
 			blob, err := s.Keys.Rewrap(v.EncryptedValue, pipeline.EncryptionIdentity(v.WorkspaceID, v.ID, "build-secret"))
 			if err != nil {
-				return err
+				return rewrapFailed("build_secret_versions", v.WorkspaceID, v.ID, err)
 			}
 			if err = q.RewrapBuildSecret(ctx, db.RewrapBuildSecretParams{WorkspaceID: v.WorkspaceID, ID: v.ID, EncryptedValue: blob}); err != nil {
 				return err
@@ -363,7 +370,7 @@ func (s *Store) Rewrap(ctx context.Context) error {
 		for _, v := range rowsBackupDestination {
 			blob, err := s.Keys.Rewrap(v.EncryptedAccess, pipeline.EncryptionIdentity(v.WorkspaceID, v.ID, "backup-destination"))
 			if err != nil {
-				return err
+				return rewrapFailed("backup_destinations", v.WorkspaceID, v.ID, err)
 			}
 			if err = q.RewrapBackupDestinationAccess(ctx, db.RewrapBackupDestinationAccessParams{WorkspaceID: v.WorkspaceID, ID: v.ID, EncryptedAccess: blob}); err != nil {
 				return err
@@ -377,7 +384,7 @@ func (s *Store) Rewrap(ctx context.Context) error {
 		for _, v := range rowsBackupPolicy {
 			blob, err := s.Keys.Rewrap(v.EncryptedAccess, pipeline.EncryptionIdentity(v.WorkspaceID, v.ID, "backup-policy"))
 			if err != nil {
-				return err
+				return rewrapFailed("backup_policies", v.WorkspaceID, v.ID, err)
 			}
 			if err = q.RewrapBackupPolicyAccess(ctx, db.RewrapBackupPolicyAccessParams{WorkspaceID: v.WorkspaceID, ID: v.ID, EncryptedAccess: blob}); err != nil {
 				return err
@@ -390,7 +397,7 @@ func (s *Store) Rewrap(ctx context.Context) error {
 		for _, v := range hooks {
 			blob, err := s.Keys.Rewrap(v.EncryptedWebhook, AlertWebhookIdentity(v.WorkspaceID))
 			if err != nil {
-				return err
+				return rewrapFailed("alert_settings", v.WorkspaceID, v.WorkspaceID, err)
 			}
 			if err = q.RewrapAlertWebhook(ctx, db.RewrapAlertWebhookParams{WorkspaceID: v.WorkspaceID, EncryptedWebhook: blob}); err != nil {
 				return err
@@ -405,13 +412,13 @@ func (s *Store) Rewrap(ctx context.Context) error {
 			if active != nil {
 				active, err = s.Keys.Rewrap(active, TOTPIdentity(a.ID, false))
 				if err != nil {
-					return err
+					return rewrapFailed("accounts", uuid.Nil, a.ID, err)
 				}
 			}
 			if pending != nil {
 				pending, err = s.Keys.Rewrap(pending, TOTPIdentity(a.ID, true))
 				if err != nil {
-					return err
+					return rewrapFailed("accounts", uuid.Nil, a.ID, err)
 				}
 			}
 			if err = q.RewrapTOTP(ctx, db.RewrapTOTPParams{ID: a.ID, TotpSecret: active, TotpPending: pending}); err != nil {

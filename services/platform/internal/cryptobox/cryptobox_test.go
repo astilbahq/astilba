@@ -3,6 +3,7 @@ package cryptobox
 import (
 	"bytes"
 	"encoding/json/v2"
+	"errors"
 	"strings"
 	"testing"
 
@@ -97,5 +98,43 @@ func TestParseAcceptsLineBreaksInKeyValues(t *testing.T) {
 	}
 	if !bytes.Equal(parsed.Keys["key"], ring.Keys["key"]) {
 		t.Fatal("key bytes changed")
+	}
+}
+
+// A stored value Open refuses, or that rotation would push past what Open accepts, would
+// stop a rewrap, which has to read and rewrite every value.
+func TestSealLeavesRoomForAnyRotation(t *testing.T) {
+	ring, e := New("a")
+	if e != nil {
+		t.Fatal(e)
+	}
+	if _, e = ring.Seal(bytes.Repeat([]byte("x"), 1<<20), "identity"); !errors.Is(e, ErrTooLarge) {
+		t.Fatal("sealed a value that could not be opened", e)
+	}
+	size := 786000
+	sealed, e := ring.Seal(bytes.Repeat([]byte("x"), size), "identity")
+	if e != nil {
+		t.Fatal(e)
+	}
+	for {
+		next, e := ring.Seal(bytes.Repeat([]byte("x"), size+1), "identity")
+		if errors.Is(e, ErrTooLarge) {
+			break
+		}
+		if e != nil {
+			t.Fatal(e)
+		}
+		sealed, size = next, size+1
+	}
+	longest := strings.Repeat("z", maxKeyID)
+	ring.Keys[longest] = bytes.Repeat([]byte{7}, 32)
+	ring.Active = longest
+	rotated, e := ring.Rewrap(sealed, "identity")
+	if e != nil {
+		t.Fatal("rotation failed on the largest value Seal accepts", e)
+	}
+	opened, e := ring.Open(rotated, "identity")
+	if e != nil || len(opened) != size {
+		t.Fatal("largest value did not survive rotation", e)
 	}
 }

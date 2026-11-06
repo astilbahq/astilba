@@ -7,7 +7,9 @@ import (
 	"github.com/jackc/pgx/v5"
 	"time"
 
+	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/mailer"
+	"github.com/astilbahq/astilba/services/platform/internal/sweep"
 	"github.com/google/uuid"
 )
 
@@ -17,31 +19,21 @@ func (s *Service) NotifyExpiring(ctx context.Context, mail *mailer.Mailer) error
 	if !s.Store.Hosted {
 		return nil
 	}
-	rows, e := s.Store.Pool.Query(ctx, `SELECT workspace_id FROM hosted_subscriptions WHERE management_until<=$1 AND (notified_until IS NULL OR notified_until<>management_until) ORDER BY management_until LIMIT 20`, s.Now().Add(24*time.Hour))
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
+	started, e := s.Store.Queries.SweepPassStarted(ctx)
 	if e != nil {
 		return e
 	}
-	ids := []uuid.UUID{}
-	for rows.Next() {
-		var id uuid.UUID
-		if e = rows.Scan(&id); e != nil {
-			rows.Close()
-			return e
+	for range 20 {
+		id, e := s.Store.Queries.ClaimExpiryNotice(ctx, db.ClaimExpiryNoticeParams{ExpiringBy: s.Now().Add(24 * time.Hour), PassStarted: started})
+		if errors.Is(e, pgx.ErrNoRows) || ctx.Err() != nil {
+			return nil
 		}
-		ids = append(ids, id)
-	}
-	e = rows.Err()
-	rows.Close()
-	if e != nil {
-		return e
-	}
-	for _, id := range ids {
-		noticeCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		e = s.notifyWorkspace(noticeCtx, mail, id)
-		cancel()
 		if e != nil {
 			return e
 		}
+		_ = sweep.Item(ctx, "expiry_notice", id, 30*time.Second, func(item context.Context) error { return s.notifyWorkspace(item, mail, id) })
 	}
 	return nil
 }

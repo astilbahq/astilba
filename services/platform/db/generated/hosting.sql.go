@@ -12,6 +12,29 @@ import (
 	"github.com/google/uuid"
 )
 
+const claimExpiryNotice = `-- name: ClaimExpiryNotice :one
+UPDATE hosted_subscriptions SET notice_checked_at=clock_timestamp()
+WHERE workspace_id=(SELECT h.workspace_id FROM hosted_subscriptions h
+    WHERE h.management_until <= $1::timestamptz AND (h.notified_until IS NULL OR h.notified_until<>h.management_until)
+        AND h.notice_checked_at < $2::timestamptz
+    ORDER BY h.notice_checked_at,h.management_until LIMIT 1 FOR UPDATE SKIP LOCKED)
+RETURNING workspace_id
+`
+
+type ClaimExpiryNoticeParams struct {
+	ExpiringBy  time.Time `json:"expiring_by"`
+	PassStarted time.Time `json:"pass_started"`
+}
+
+// unscoped: expiry notices span workspaces. Moving each to the back of the scan before
+// sending means a notice that keeps failing cannot hold the others behind it.
+func (q *Queries) ClaimExpiryNotice(ctx context.Context, arg ClaimExpiryNoticeParams) (uuid.UUID, error) {
+	row := q.db.QueryRow(ctx, claimExpiryNotice, arg.ExpiringBy, arg.PassStarted)
+	var workspace_id uuid.UUID
+	err := row.Scan(&workspace_id)
+	return workspace_id, err
+}
+
 const claimHostedInvitation = `-- name: ClaimHostedInvitation :exec
 UPDATE hosted_invitations SET claimed_at = $1 WHERE id = $2
 `

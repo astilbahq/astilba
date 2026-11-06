@@ -6,6 +6,7 @@ import (
 	"errors"
 	"time"
 
+	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
@@ -50,21 +51,8 @@ func (w *previewSweepWorker) Work(ctx context.Context, _ *river.Job[previewSweep
 		return err
 	}
 	defer tx.Rollback(ctx)
-	rows, err := tx.Query(ctx, "SELECT id FROM preview_policies WHERE enabled AND next_discovery_at<=now() ORDER BY next_discovery_at,id LIMIT 10 FOR UPDATE SKIP LOCKED")
-	if err != nil {
-		return err
-	}
-	ids := []uuid.UUID{}
-	for rows.Next() {
-		var id uuid.UUID
-		if err = rows.Scan(&id); err != nil {
-			rows.Close()
-			return err
-		}
-		ids = append(ids, id)
-	}
-	err = rows.Err()
-	rows.Close()
+	q := db.New(tx)
+	ids, err := q.DuePreviewPolicies(ctx)
 	if err != nil {
 		return err
 	}
@@ -76,22 +64,7 @@ func (w *previewSweepWorker) Work(ctx context.Context, _ *river.Job[previewSweep
 			return err
 		}
 	}
-	rows, err = tx.Query(ctx, "SELECT id FROM preview_requests WHERE state<>'deleted' AND next_check_at<=now() ORDER BY next_check_at,id LIMIT 20 FOR UPDATE SKIP LOCKED")
-	if err != nil {
-		return err
-	}
-	ids = nil
-	for rows.Next() {
-		var id uuid.UUID
-		if err = rows.Scan(&id); err != nil {
-			rows.Close()
-			return err
-		}
-		ids = append(ids, id)
-	}
-	err = rows.Err()
-	rows.Close()
-	if err != nil {
+	if ids, err = q.DuePreviewRequests(ctx); err != nil {
 		return err
 	}
 	for _, id := range ids {
