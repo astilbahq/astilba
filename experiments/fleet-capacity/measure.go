@@ -31,7 +31,7 @@ const (
 
 type options struct {
 	context, out, name, platform, appCpuset, dbCpuset, genCpuset, rtt, dbCPUs, appCPUs, serverPackage, sharedBuffers string
-	agents, services, perWorkspace                                                                                   int
+	agents, services, perWorkspace, poolSize                                                                         int
 	deploysPerDay                                                                                                    float64
 	warm, window, sample, deployDuration                                                                             time.Duration
 	calibrate, keep, tmpfs                                                                                           bool
@@ -146,6 +146,7 @@ type result struct {
 	LoadBefore  string          `json:"hostLoadBefore"`
 	LoadAfter   string          `json:"hostLoadAfter"`
 	AppErrors   string          `json:"applicationErrorLines,omitempty"`
+	PoolLines   string          `json:"databasePoolLines,omitempty"`
 }
 
 func runMeasure(args []string) error {
@@ -163,7 +164,8 @@ func runMeasure(args []string) error {
 	f.DurationVar(&o.warm, "warm", 3*time.Minute, "time between the last agent starting and the window")
 	f.DurationVar(&o.window, "window", 10*time.Minute, "measurement window")
 	f.DurationVar(&o.sample, "sample", 15*time.Second, "time series interval")
-	f.StringVar(&o.appCpuset, "app-cpuset", "0-3", "application CPUs; the database pool has max(4, this count) connections, and Fargate reports 2 or 4")
+	f.StringVar(&o.appCpuset, "app-cpuset", "0-3", "application CPUs")
+	f.IntVar(&o.poolSize, "pool-size", 0, "ASTILBA_DATABASE_POOL_SIZE; 0 leaves the application's default")
 	f.StringVar(&o.dbCpuset, "db-cpuset", "4-7", "PostgreSQL CPUs")
 	f.StringVar(&o.genCpuset, "generator-cpuset", "8-11", "load generator CPUs")
 	f.StringVar(&o.rtt, "db-rtt", "300us", "netem delay on PostgreSQL's replies, empty for none; each run records the resulting ping")
@@ -200,7 +202,7 @@ func runMeasure(args []string) error {
 	if err = build(ctx, o, work); err != nil {
 		return err
 	}
-	res := &result{Name: o.name, StartedAt: time.Now().UTC(), Options: map[string]any{"agents": o.agents, "services": o.services, "perWorkspace": o.perWorkspace, "deploysPerDay": o.deploysPerDay, "deployDuration": o.deployDuration.String(), "appCpuset": o.appCpuset, "dbCpuset": o.dbCpuset, "dbRTT": o.rtt, "dbCPUs": o.dbCPUs, "appCPUs": o.appCPUs, "serverPatched": o.serverPackage != defaultServerSource, "warm": o.warm.String(), "dbTmpfs": o.tmpfs, "sharedBuffers": o.sharedBuffers}}
+	res := &result{Name: o.name, StartedAt: time.Now().UTC(), Options: map[string]any{"agents": o.agents, "services": o.services, "perWorkspace": o.perWorkspace, "deploysPerDay": o.deploysPerDay, "deployDuration": o.deployDuration.String(), "appCpuset": o.appCpuset, "dbCpuset": o.dbCpuset, "dbRTT": o.rtt, "dbCPUs": o.dbCPUs, "appCPUs": o.appCPUs, "poolSize": o.poolSize, "serverPatched": o.serverPackage != defaultServerSource, "warm": o.warm.String(), "dbTmpfs": o.tmpfs, "sharedBuffers": o.sharedBuffers}}
 	if rev, e := exec.Command("git", "describe", "--always", "--dirty").Output(); e == nil {
 		res.Revision = strings.TrimSpace(string(rev))
 	}
@@ -260,6 +262,9 @@ func runMeasure(args []string) error {
 	}
 	dsn := fmt.Sprintf("postgres://astilba:%s@%s:5432/astilba?sslmode=disable", password, names.db)
 	env := []string{"-e", "ASTILBA_DATABASE_URL=" + dsn, "-e", "ASTILBA_KEYRING=/root/keyring.json", "-e", "ASTILBA_ORIGIN=" + publicOrigin, "-e", "ASTILBA_LISTEN=0.0.0.0:8080", "-e", "ASTILBA_TRUSTED_PROXIES=0.0.0.0/0"}
+	if o.poolSize != 0 {
+		env = append(env, "-e", fmt.Sprintf("ASTILBA_DATABASE_POOL_SIZE=%d", o.poolSize))
+	}
 	exec1 := func(stdin string, args ...string) error {
 		_, e := d.run(ctx, stdin, append(append(append([]string{"exec", "-i"}, env...), names.app, "astilba"), args...)...)
 		return e
@@ -320,7 +325,7 @@ func runMeasure(args []string) error {
 	if err = measureWindow(ctx, d, o, res); err != nil {
 		return err
 	}
-	res.AppErrors, _ = d.run(ctx, "", "exec", names.app, "sh", "-c", `grep -iE '"level":"(WARN|ERROR)"|level=(WARN|ERROR)' /tmp/app.log | cut -c1-240 | sort | uniq -c | sort -rn | head -20`)
+	res.AppErrors, _ = d.run(ctx, "", "exec", names.app, "sh", "-c", `grep -E 'level=(WARN|ERROR)| (WARN|ERROR) ' /tmp/app.log | cut -c1-240 | sort | uniq -c | sort -rn | head -20`)
 	if err = os.MkdirAll(o.out, 0o755); err != nil {
 		return err
 	}
@@ -464,6 +469,7 @@ func measureWindow(ctx context.Context, d docker, o options, res *result) error 
 	}
 	res.Seconds = time.Since(begin).Seconds()
 	res.AppLogBytes = logBytes() - logsBefore
+	res.PoolLines, _ = d.run(ctx, "", "exec", names.app, "sh", "-c", fmt.Sprintf("tail -c +%d /tmp/app.log | grep ' database pool '", logsBefore+1))
 	if res.DBAfter, err = d.counters(ctx, names.db); err != nil {
 		return err
 	}

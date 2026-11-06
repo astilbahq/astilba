@@ -214,6 +214,9 @@ func runSummary(args []string) error {
 		if len(after.Errors) > 0 {
 			fmt.Fprintf(&details, "Oldest kept error: %.200s\n", after.Errors[0])
 		}
+		if r.PoolLines != "" {
+			fmt.Fprintf(&details, "\nPool log in the window:\n\n```\n%s\n```\n", r.PoolLines)
+		}
 		if r.AppErrors != "" {
 			fmt.Fprintf(&details, "\nApplication warnings:\n\n```\n%s\n```\n", r.AppErrors)
 		}
