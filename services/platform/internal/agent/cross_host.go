@@ -119,8 +119,11 @@ func (e *Engine) executeCrossHost(ctx context.Context, c api.ExecutionCommand, r
 			return err
 		}
 		if command.Phase == "complete" {
-			if command.UseTarget || o.InfrastructureDrift || o.ResourceDrift || slices.ContainsFunc(o.Resources, func(r deployment.Resource) bool { return r.Drift }) || p.ValidateLocalObservation(o) != nil {
+			if command.UseTarget || o.InfrastructureDrift || o.ResourceDrift || slices.ContainsFunc(o.Resources, func(r deployment.Resource) bool { return r.Drift }) {
 				return e.finish(c.Id, "needs_attention", "An unreserved maintenance source is not ready for completion.")
+			}
+			if err = p.ValidateLocalObservation(o); err != nil {
+				return e.finish(c.Id, "needs_attention", "An unreserved maintenance source is not ready for completion: "+err.Error()+".")
 			}
 			o.Applied = true
 		}
@@ -280,7 +283,7 @@ func (e *Engine) executeCrossHost(ctx context.Context, c api.ExecutionCommand, r
 			return err
 		}
 		if err = p.ValidateLocalObservation(o); err != nil {
-			return e.finish(c.Id, "needs_attention", "The selected local instance inventory is incomplete; the reservation is retained.")
+			return e.finish(c.Id, "needs_attention", "The selected local instance inventory is incomplete: "+err.Error()+". The reservation is retained.")
 		}
 		if err = e.Journal.saveUnit(unitState{Plan: p, Expected: expected}); err != nil {
 			return err

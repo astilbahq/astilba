@@ -378,16 +378,25 @@ func (p Plan) validateLocalInventory(o Observation, running bool) error {
 	seen := map[uuid.UUID]bool{}
 	for _, res := range o.Resources {
 		ids := p.InstanceIDs(res.ID)
-		if len(ids) == 0 || seen[res.ID] || len(ids) != len(res.Instances) || res.Image != p.Images[res.ID.String()] || running && res.State != "running" && res.State != "healthy" {
-			return errors.New("invalid selected resource")
+		if len(ids) == 0 || seen[res.ID] || len(ids) != len(res.Instances) {
+			return fmt.Errorf("resource %s has %d of %d instances, or appears twice", res.ID, len(res.Instances), len(ids))
+		}
+		if res.Image != p.Images[res.ID.String()] {
+			return fmt.Errorf("resource %s runs an image other than the plan's", res.ID)
 		}
 		seen[res.ID] = true
 		instances := map[uuid.UUID]bool{}
 		for _, v := range res.Instances {
-			if !slices.Contains(ids, v.InstanceID) || instances[v.InstanceID] || running && v.State != "running" && v.State != "healthy" {
-				return errors.New("invalid selected instance")
+			if !slices.Contains(ids, v.InstanceID) || instances[v.InstanceID] {
+				return fmt.Errorf("instance %s of resource %s is unexpected or appears twice", v.InstanceID, res.ID)
+			}
+			if running && v.State != "running" && v.State != "healthy" {
+				return fmt.Errorf("instance %s of resource %s is %s", v.InstanceID, res.ID, v.State)
 			}
 			instances[v.InstanceID] = true
+		}
+		if running && res.State != "running" && res.State != "healthy" {
+			return fmt.Errorf("resource %s is %s", res.ID, res.State)
 		}
 	}
 	return nil

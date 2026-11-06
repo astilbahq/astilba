@@ -4,15 +4,18 @@ import (
 	"context"
 	"encoding/json/v2"
 	"errors"
+	"fmt"
 	"maps"
 	"os"
 	"slices"
+	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/backup"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/upgrade"
 	"github.com/google/uuid"
+	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/client"
 )
 
@@ -57,7 +60,13 @@ func maintenanceLeafMatches(c api.ExecutionCommand, s crossHostState) bool {
 
 func (e *Engine) executeMaintenancePhase(ctx context.Context, c api.ExecutionCommand, command deployment.CrossHostCommand, s crossHostState) error {
 	p := s.Unit.Plan
-	fail := func(err error) error { return e.finish(c.Id, "needs_attention", safeVisualError(err, command.Secrets)) }
+	fail := func(err error) error {
+		// A stopping agent runs this phase again when it restarts, so it is not an outcome.
+		if ctx.Err() != nil {
+			return err
+		}
+		return e.finish(c.Id, "needs_attention", safeVisualError(err, command.Secrets))
+	}
 	switch command.Phase {
 	case "reserve":
 		if s.Maintenance.Kind == "restore" && p.Local.Primary {
@@ -138,12 +147,15 @@ func (e *Engine) executeMaintenancePhase(ctx context.Context, c api.ExecutionCom
 		if s.ResumeTarget == nil || *s.ResumeTarget != command.UseTarget || current.Plan.Hash != expected.Hash {
 			return fail(errors.New("maintenance completion differs from the confirmed recovery target"))
 		}
+		if err = e.waitLocalHealth(ctx, s, expected); err != nil {
+			return fail(err)
+		}
 		o, _, err := e.observeUnit(ctx, current.Plan, command.Secrets)
 		if err != nil || o.InfrastructureDrift || o.ResourceDrift || slices.ContainsFunc(o.Resources, func(r deployment.Resource) bool { return r.Drift }) {
 			return fail(errors.New("the resumed unit changed before maintenance completion"))
 		}
-		if expected.ValidateLocalObservation(o) != nil {
-			return fail(errors.New("the resumed local inventory is not ready for maintenance completion"))
+		if err = expected.ValidateLocalObservation(o); err != nil {
+			return fail(fmt.Errorf("the resumed local inventory is not ready for maintenance completion: %w", err))
 		}
 		o.Applied = true
 		return e.finishCrossHost(c, command, o, "Writer resumption is confirmed; this host's maintenance reservation is released.", true)
@@ -311,6 +323,50 @@ func (e *Engine) resumeMaintenanceWriters(ctx context.Context, c api.ExecutionCo
 	}
 	s.Phase = "resumed"
 	return e.Journal.saveCrossHost(*s)
+}
+
+// waitLocalHealth waits at completion rather than in resumption, which every host must
+// finish first: until the primary's has succeeded, other hosts' writers stay stopped. It
+// covers every instance a restart of the host could also have left starting, except a
+// writer that was not running before maintenance.
+func (e *Engine) waitLocalHealth(ctx context.Context, s crossHostState, p deployment.Plan) error {
+	for _, app := range p.LocalApplications() {
+		for _, id := range p.InstanceIDs(app.ID) {
+			if s.Pause != nil {
+				if writer, ok := s.Pause.Writers[id.String()]; ok && !writer.Running {
+					continue
+				}
+			}
+			if err := e.waitContainerHealthy(ctx, deployment.UnitName(id)); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// waitContainerHealthy waits for Docker's verdict on a container started directly, as
+// compose up --wait does for one started that way. A health check restarts with its
+// container, whether it comes from the plan or the image, and until its first probe the
+// state reads starting, which completion refuses. An unhealthy container can still recover
+// on its next probe, so only the limit, the same as compose's, ends the wait.
+func (e *Engine) waitContainerHealthy(ctx context.Context, name string) error {
+	status := container.Starting
+	for range 60 {
+		v, err := e.Docker.ContainerInspect(ctx, name, client.ContainerInspectOptions{})
+		if err != nil {
+			return err
+		}
+		health := v.Container.State.Health
+		if health == nil || health.Status == container.Healthy {
+			return nil
+		}
+		status = health.Status
+		if !wait(ctx, time.Second) {
+			return ctx.Err()
+		}
+	}
+	return fmt.Errorf("the health check of %s is still %s after 60 seconds", name, status)
 }
 
 func (e *Engine) maintenanceOutcome(s crossHostState, target bool) error {
