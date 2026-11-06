@@ -74,26 +74,40 @@ func TestMain(m *testing.M) {
 	port, e := run("port", name, "5432/tcp")
 	if e != nil {
 		cleanup()
+		fmt.Fprintln(os.Stderr, "cannot read the test database's port:", e, string(port))
 		os.Exit(1)
 	}
 	databaseURL = "postgres://postgres:" + password + "@" + strings.TrimSpace(string(port)) + "/postgres?sslmode=disable"
 	pool, e := pgxpool.New(context.Background(), databaseURL)
 	if e != nil {
 		cleanup()
+		fmt.Fprintln(os.Stderr, "cannot configure the test database's pool:", e)
 		os.Exit(1)
 	}
-	ready := false
+	var ping error
+	started := time.Now()
 	for i := 0; i < 100; i++ {
-		if pool.Ping(context.Background()) == nil {
-			ready = true
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		ping = pool.Ping(ctx)
+		cancel()
+		if ping == nil {
 			break
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
 	pool.Close()
-	if !ready {
+	if ping != nil {
+		// Printed first and in turn: a stalled daemon can hold each of these for minutes.
+		fmt.Fprintf(os.Stderr, "test PostgreSQL did not become ready after %s at %s: %v\n", time.Since(started).Round(time.Millisecond), strings.TrimSpace(string(port)), ping)
+		for _, args := range [][]string{
+			{"inspect", "--format", "{{.State.Status}} {{json .NetworkSettings.Ports}}", name},
+			{"exec", name, "pg_isready", "--host", "127.0.0.1"},
+			{"logs", "--tail", "20", name},
+		} {
+			out, e := run(args...)
+			fmt.Fprintf(os.Stderr, "docker %s (%v):\n%s\n", args[0], e, out)
+		}
 		cleanup()
-		fmt.Fprintln(os.Stderr, "test PostgreSQL did not become ready")
 		os.Exit(1)
 	}
 	code := m.Run()
