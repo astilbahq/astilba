@@ -564,10 +564,5 @@ func projectCrossHostGrants(ctx context.Context, tx pgx.Tx, ws, env uuid.UUID, p
 	if _, err := tx.Exec(ctx, `UPDATE network_endpoints e SET retired=NOT EXISTS(SELECT 1 FROM network_plan_endpoints p WHERE p.plan_id=ANY($3::uuid[]) AND p.workspace_id=$1 AND p.endpoint_id=e.id) WHERE e.workspace_id=$1 AND e.environment_id=$2`, ws, env, plans); err != nil {
 		return err
 	}
-	var generation int64
-	if err := tx.QueryRow(ctx, `UPDATE workspace_networks SET generation=generation+1 WHERE workspace_id=$1 RETURNING generation`, ws).Scan(&generation); err != nil {
-		return err
-	}
-	_, err := tx.Exec(ctx, `UPDATE network_members SET generation=$2 WHERE workspace_id=$1`, ws, generation)
-	return err
+	return advanceNetworkGeneration(ctx, tx, ws, 0)
 }

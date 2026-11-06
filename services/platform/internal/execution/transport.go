@@ -12,6 +12,7 @@ import (
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
+	"github.com/astilbahq/astilba/services/platform/internal/portability"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
@@ -214,7 +215,7 @@ func replaceEscapedNUL(payload *jsontext.Value) {
 }
 
 func (s *Service) Report(ctx context.Context, a Identity, r api.AgentReport) error {
-	if r.Sequence < 1 || r.Sequence > 1<<53 || len(r.Steps) > 16 {
+	if r.Sequence < 1 || r.Sequence >= portability.MaxCounter || len(r.Steps) > 16 {
 		return domain.Invalid("report")
 	}
 	// Agents bound notes in raw bytes; invalid UTF-8 from host output grows when encoded.
@@ -310,7 +311,7 @@ func (s *Service) applyReport(ctx context.Context, git *gitAnswers, received tim
 	if err = s.crossHostReport(ctx, tx, c, &r); err != nil {
 		return err
 	}
-	if err = s.networkReport(ctx, tx, a.Workspace, c, &r); err != nil {
+	if err = s.networkReport(ctx, tx, a.Workspace, c, &r, true); err != nil {
 		return err
 	}
 	steps, _ := stablejson.Marshal(r.Steps)

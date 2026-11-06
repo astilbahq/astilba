@@ -9,10 +9,10 @@ import (
 	"strings"
 )
 
-// maxImportedCounter matches the bound on agent report sequences. Later statements add
-// to these counters across workspaces' shared sweeps, so one near the bigint limit would
-// fail every time it was used. No real installation gets anywhere close.
-const maxImportedCounter = 1 << 53
+// MaxCounter is the largest counter an agent report or an import may carry. Later statements
+// add to counters across workspaces' shared sweeps, so one near the bigint limit would fail
+// every time it was used. No real installation gets anywhere close.
+const MaxCounter = 1 << 53
 
 // Limits on one imported value. Background work decodes these columns in the server process
 // or rebuilds them in the database, using up to hundreds of times their size, and an archive
@@ -78,7 +78,7 @@ func checkImportedRow(table string, row Row) error {
 			continue
 		}
 		var value *int64
-		if json.Unmarshal(raw, &value) != nil || value != nil && (*value < 0 || *value > maxImportedCounter) {
+		if json.Unmarshal(raw, &value) != nil || value != nil && (*value < 0 || *value > MaxCounter) {
 			return ErrArchive
 		}
 	}

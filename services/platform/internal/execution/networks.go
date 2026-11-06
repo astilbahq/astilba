@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json/v2"
 	"errors"
+	"math"
 	"sort"
 	"time"
 
@@ -43,6 +44,7 @@ type networkMember struct {
 	Note          string    `json:"note"`
 	Controller    int64     `json:"-"`
 	ManifestHash  string    `json:"-"`
+	HistoryClaim  int64     `json:"-"`
 }
 
 func readNetwork(ctx context.Context, tx pgx.Tx, ws uuid.UUID) (managedNetwork, error) {
@@ -54,7 +56,7 @@ func readNetwork(ctx context.Context, tx pgx.Tx, ws uuid.UUID) (managedNetwork, 
 	if err != nil {
 		return n, err
 	}
-	rows, err := tx.Query(ctx, `SELECT server_id,membership_id,host(address),endpoint,listen_port,cpu_millis,memory_mib,unbounded_inventory_hash,public_key,enabled,generation,acknowledged_generation,note,approved_controller,manifest_hash FROM network_members WHERE workspace_id=$1 ORDER BY server_id`, ws)
+	rows, err := tx.Query(ctx, `SELECT server_id,membership_id,host(address),endpoint,listen_port,cpu_millis,memory_mib,unbounded_inventory_hash,public_key,enabled,generation,acknowledged_generation,note,approved_controller,manifest_hash,history_claim_controller FROM network_members WHERE workspace_id=$1 ORDER BY server_id`, ws)
 	if err != nil {
 		return n, err
 	}
@@ -62,7 +64,7 @@ func readNetwork(ctx context.Context, tx pgx.Tx, ws uuid.UUID) (managedNetwork, 
 	n.State = "ready"
 	for rows.Next() {
 		var m networkMember
-		if err = rows.Scan(&m.ServerID, &m.MembershipID, &m.Address, &m.Endpoint, &m.ListenPort, &m.CPUMillis, &m.MemoryMiB, &m.InventoryHash, &m.PublicKey, &m.Enabled, &m.Generation, &m.Acknowledged, &m.Note, &m.Controller, &m.ManifestHash); err != nil {
+		if err = rows.Scan(&m.ServerID, &m.MembershipID, &m.Address, &m.Endpoint, &m.ListenPort, &m.CPUMillis, &m.MemoryMiB, &m.InventoryHash, &m.PublicKey, &m.Enabled, &m.Generation, &m.Acknowledged, &m.Note, &m.Controller, &m.ManifestHash, &m.HistoryClaim); err != nil {
 			return n, err
 		}
 		m.State = "removed"
@@ -111,6 +113,9 @@ func (s *Service) ConfigureManagedNetwork(ctx context.Context, p store.Principal
 		id := old.ID
 		if id == uuid.Nil {
 			id = uuid.New()
+		}
+		if old.Generation == math.MaxInt64 {
+			return domain.Invalid("network.generation")
 		}
 		generation := old.Generation + 1
 		prior := map[uuid.UUID]networkMember{}
@@ -202,22 +207,31 @@ func (s *Service) ConfigureManagedNetwork(ctx context.Context, p store.Principal
 	return out, err
 }
 
-// Invalidate network authority in the same transaction as bearer revocation.
-func invalidateNetworkMember(ctx context.Context, tx pgx.Tx, ws, server uuid.UUID) error {
-	var id uuid.UUID
-	err := tx.QueryRow(ctx, `UPDATE network_members SET enabled=false,note='Server authority revoked; peer removals await acknowledgement.' WHERE workspace_id=$1 AND server_id=$2 AND enabled RETURNING network_id`, ws, server).Scan(&id)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil
-	}
+// advanceNetworkGeneration moves the workspace's counter past observed and stamps every member
+// with the result. A counter at its limit stays there rather than fail, because revocation runs
+// in the same transaction, and every member goes back to pending, since none can be assumed to
+// hold what changed.
+func advanceNetworkGeneration(ctx context.Context, tx pgx.Tx, ws uuid.UUID, observed int64) error {
+	q := db.New(tx)
+	next, err := q.AdvanceNetworkGeneration(ctx, db.AdvanceNetworkGenerationParams{ObservedGeneration: observed, WorkspaceID: ws})
 	if err != nil {
 		return err
 	}
-	var generation int64
-	if err = tx.QueryRow(ctx, `UPDATE workspace_networks SET generation=generation+1 WHERE id=$1 RETURNING generation`, id).Scan(&generation); err != nil {
+	if err = q.SetNetworkMemberGenerations(ctx, db.SetNetworkMemberGenerationsParams{Generation: next, UnaccountedNote: unaccountedNetworkGenerationNote, WorkspaceID: ws}); err != nil || next != math.MaxInt64 {
 		return err
 	}
-	_, err = tx.Exec(ctx, `UPDATE network_members SET generation=$2 WHERE network_id=$1`, id, generation)
-	return err
+	return q.MarkNetworkGenerationExhausted(ctx, db.MarkNetworkGenerationExhaustedParams{Note: exhaustedNetworkGenerationNote, WorkspaceID: ws})
+}
+
+// Invalidate network authority in the same transaction as bearer revocation. It has to succeed
+// whatever the counter holds: peers learn about the removal through a later generation, but the
+// credential must stop working now, so a counter at its limit costs only the peer update.
+func invalidateNetworkMember(ctx context.Context, tx pgx.Tx, ws, server uuid.UUID) error {
+	disabled, err := db.New(tx).DisableNetworkMember(ctx, db.DisableNetworkMemberParams{WorkspaceID: ws, ServerID: server})
+	if err != nil || disabled == 0 {
+		return err
+	}
+	return advanceNetworkGeneration(ctx, tx, ws, 0)
 }
 
 type networkSweepArgs struct{}
@@ -267,7 +281,9 @@ func (s *Service) reconcileNetwork(ctx context.Context, ws uuid.UUID) error {
 		return err
 	}
 	for _, m := range n.Members {
-		if m.Acknowledged == m.Generation && m.PublicKey != "" || !m.Enabled && m.PublicKey == "" {
+		// A member whose claim was not accounted for would answer the same again. Anything new for
+		// it advances the generation, which clears the note.
+		if m.Acknowledged == m.Generation && m.PublicKey != "" || !m.Enabled && m.PublicKey == "" || m.Note == unaccountedNetworkGenerationNote {
 			continue
 		}
 		var ready bool
@@ -296,6 +312,11 @@ func (s *Service) reconcileNetwork(ctx context.Context, ws uuid.UUID) error {
 			}
 			var prior hostnetwork.Manifest
 			known := json.Unmarshal(installed, &prior) == nil && prior.Validate() == nil
+			// Hosts refuse changed content at a generation they already hold, and this one
+			// cannot rise. The member stays pending, with a note, rather than fail on every pass.
+			if known && prior.Generation == math.MaxInt64 && manifest.Generation == math.MaxInt64 && hostnetwork.Hash(prior) != hostnetwork.Hash(manifest) {
+				continue
+			}
 			if reserved || busy || !ready {
 				if !known {
 					continue
@@ -432,12 +453,18 @@ func networkManifest(ctx context.Context, tx pgx.Tx, ws uuid.UUID, n managedNetw
 	return p, ready, p.Validate()
 }
 
+const exhaustedNetworkGenerationNote = "This network's generation has reached its limit, so a server that already holds it cannot receive further changes."
+
+const unaccountedNetworkGenerationNote = "This server reported a private network generation far beyond what this installation issued, so private links cannot finish. A compromised server can cause this, directly or through a peer. Revoke any server you do not trust."
+
 // duplicateNetworkKeyNote is also written by migration 00027. Agents generate a key per
 // membership, so a repeated key means a modified agent, and peers could not tell its
 // holders apart. The key stays with the member that already holds it.
 const duplicateNetworkKeyNote = "This server reported the same private network key as another member. It must report its own key before private links can finish."
 
-func (s *Service) networkReport(ctx context.Context, tx pgx.Tx, ws uuid.UUID, c api.ExecutionCommand, r *api.AgentReport) error {
+// networkReport applies a network command's outcome. live is false when recovery replays a host's
+// proofs, whose claims checkRecoveryGenerationClaims has already held to its fixed limit.
+func (s *Service) networkReport(ctx context.Context, tx pgx.Tx, ws uuid.UUID, c api.ExecutionCommand, r *api.AgentReport, live bool) error {
 	if c.Kind != "network" {
 		if r.Network != nil {
 			return domain.Invalid("network")
@@ -503,6 +530,24 @@ func (s *Service) networkReport(ctx context.Context, tx pgx.Tx, ws uuid.UUID, c 
 		if member.ServerID != c.ServerId {
 			continue
 		}
+		if live {
+			accepted, err := acceptNetworkReceiptClaim(ctx, tx, ws, n, member, generation(c.ControllerGeneration), observed.Generation)
+			if err != nil {
+				return err
+			}
+			// An honest host carried this far by a compromised peer did apply the change. Its
+			// report stands: refusing it would stop the host taking commands, and any other
+			// outcome would contradict the host's journal when recovery reads its export. Only
+			// the counter and the record of what the host holds ignore the claim. The member
+			// waits only if this command was its latest; otherwise the next sweep sends newer.
+			if !accepted {
+				r.Note = unaccountedNetworkGenerationNote
+				if cmd.Manifest.Generation < member.Generation {
+					return nil
+				}
+				return db.New(tx).SetNetworkMemberNote(ctx, db.SetNetworkMemberNoteParams{Note: unaccountedNetworkGenerationNote, WorkspaceID: ws, ServerID: c.ServerId})
+			}
+		}
 		desired, ready, err := networkManifest(ctx, tx, ws, n, member)
 		if err != nil {
 			return err
@@ -523,12 +568,7 @@ func (s *Service) networkReport(ctx context.Context, tx pgx.Tx, ws uuid.UUID, c 
 		}
 		// Partial removals can preserve additions whose configure receipt was
 		// lost. The next full intent must not collide with observed authority.
-		var next int64
-		if err = tx.QueryRow(ctx, `UPDATE workspace_networks SET generation=GREATEST(generation,$2)+1 WHERE workspace_id=$1 RETURNING generation`, ws, observed.Generation).Scan(&next); err != nil {
-			return err
-		}
-		_, err = tx.Exec(ctx, `UPDATE network_members SET generation=$2 WHERE workspace_id=$1`, ws, next)
-		return err
+		return advanceNetworkGeneration(ctx, tx, ws, observed.Generation)
 	}
 	return nil
 }

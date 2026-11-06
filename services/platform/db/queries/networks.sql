@@ -30,3 +30,33 @@ WHERE workspace_id = @workspace_id AND server_id = @server_id AND membership_id 
 -- name: RefuseNetworkMemberKey :exec
 UPDATE network_members SET note = @note
 WHERE workspace_id = @workspace_id AND server_id = @server_id AND membership_id = @membership_id AND enabled AND public_key='';
+
+-- name: AdvanceNetworkGeneration :one
+-- Moves past @observed_generation, or by one when that is lower than the counter. At the bigint
+-- limit it stays put rather than fail, because revoking a server runs in the same transaction
+-- and must not depend on a counter a host can have moved.
+UPDATE workspace_networks SET generation=CASE WHEN GREATEST(generation, @observed_generation::bigint)=9223372036854775807
+    THEN 9223372036854775807 ELSE GREATEST(generation, @observed_generation::bigint)+1 END
+WHERE workspace_id = @workspace_id RETURNING generation;
+
+-- name: SetNetworkMemberGenerations :exec
+-- A new generation is news for a member that was waiting on @unaccounted_note, so it tries again.
+UPDATE network_members SET generation = @generation,note=CASE WHEN note = @unaccounted_note THEN '' ELSE note END
+WHERE workspace_id = @workspace_id;
+
+-- name: MarkNetworkGenerationExhausted :exec
+-- A generation that cannot advance leaves members looking acknowledged while they still hold
+-- what was just removed, so every member goes back to pending and the enabled ones say why.
+UPDATE network_members SET acknowledged_generation=0,note=CASE WHEN enabled THEN @note ELSE note END
+WHERE workspace_id = @workspace_id;
+
+-- name: SetNetworkMemberNote :exec
+UPDATE network_members SET note = @note WHERE workspace_id = @workspace_id AND server_id = @server_id;
+
+-- name: RecordNetworkHistoryClaim :exec
+UPDATE network_members SET history_claim_controller = @controller
+WHERE workspace_id = @workspace_id AND server_id = @server_id;
+
+-- name: DisableNetworkMember :execrows
+UPDATE network_members SET enabled=false,note='Server authority revoked; peer removals await acknowledgement.'
+WHERE workspace_id = @workspace_id AND server_id = @server_id AND enabled;

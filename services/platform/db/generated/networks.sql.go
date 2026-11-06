@@ -12,6 +12,27 @@ import (
 	"github.com/google/uuid"
 )
 
+const advanceNetworkGeneration = `-- name: AdvanceNetworkGeneration :one
+UPDATE workspace_networks SET generation=CASE WHEN GREATEST(generation, $1::bigint)=9223372036854775807
+    THEN 9223372036854775807 ELSE GREATEST(generation, $1::bigint)+1 END
+WHERE workspace_id = $2 RETURNING generation
+`
+
+type AdvanceNetworkGenerationParams struct {
+	ObservedGeneration int64     `json:"observed_generation"`
+	WorkspaceID        uuid.UUID `json:"workspace_id"`
+}
+
+// Moves past @observed_generation, or by one when that is lower than the counter. At the bigint
+// limit it stays put rather than fail, because revoking a server runs in the same transaction
+// and must not depend on a counter a host can have moved.
+func (q *Queries) AdvanceNetworkGeneration(ctx context.Context, arg AdvanceNetworkGenerationParams) (int64, error) {
+	row := q.db.QueryRow(ctx, advanceNetworkGeneration, arg.ObservedGeneration, arg.WorkspaceID)
+	var generation int64
+	err := row.Scan(&generation)
+	return generation, err
+}
+
 const claimNetworkForSweep = `-- name: ClaimNetworkForSweep :one
 UPDATE workspace_networks SET checked_at=clock_timestamp()
 WHERE id=(SELECT n.id FROM workspace_networks n WHERE n.checked_at < $1::timestamptz
@@ -27,6 +48,41 @@ func (q *Queries) ClaimNetworkForSweep(ctx context.Context, passStarted time.Tim
 	var workspace_id uuid.UUID
 	err := row.Scan(&workspace_id)
 	return workspace_id, err
+}
+
+const disableNetworkMember = `-- name: DisableNetworkMember :execrows
+UPDATE network_members SET enabled=false,note='Server authority revoked; peer removals await acknowledgement.'
+WHERE workspace_id = $1 AND server_id = $2 AND enabled
+`
+
+type DisableNetworkMemberParams struct {
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ServerID    uuid.UUID `json:"server_id"`
+}
+
+func (q *Queries) DisableNetworkMember(ctx context.Context, arg DisableNetworkMemberParams) (int64, error) {
+	result, err := q.db.Exec(ctx, disableNetworkMember, arg.WorkspaceID, arg.ServerID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const markNetworkGenerationExhausted = `-- name: MarkNetworkGenerationExhausted :exec
+UPDATE network_members SET acknowledged_generation=0,note=CASE WHEN enabled THEN $1 ELSE note END
+WHERE workspace_id = $2
+`
+
+type MarkNetworkGenerationExhaustedParams struct {
+	Note        string    `json:"note"`
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+}
+
+// A generation that cannot advance leaves members looking acknowledged while they still hold
+// what was just removed, so every member goes back to pending and the enabled ones say why.
+func (q *Queries) MarkNetworkGenerationExhausted(ctx context.Context, arg MarkNetworkGenerationExhaustedParams) error {
+	_, err := q.db.Exec(ctx, markNetworkGenerationExhausted, arg.Note, arg.WorkspaceID)
+	return err
 }
 
 const networkKeyHeldByAnotherMember = `-- name: NetworkKeyHeldByAnotherMember :one
@@ -52,6 +108,22 @@ func (q *Queries) NetworkKeyHeldByAnotherMember(ctx context.Context, arg Network
 	var exists bool
 	err := row.Scan(&exists)
 	return exists, err
+}
+
+const recordNetworkHistoryClaim = `-- name: RecordNetworkHistoryClaim :exec
+UPDATE network_members SET history_claim_controller = $1
+WHERE workspace_id = $2 AND server_id = $3
+`
+
+type RecordNetworkHistoryClaimParams struct {
+	Controller  int64     `json:"controller"`
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ServerID    uuid.UUID `json:"server_id"`
+}
+
+func (q *Queries) RecordNetworkHistoryClaim(ctx context.Context, arg RecordNetworkHistoryClaimParams) error {
+	_, err := q.db.Exec(ctx, recordNetworkHistoryClaim, arg.Controller, arg.WorkspaceID, arg.ServerID)
+	return err
 }
 
 const recordNetworkMemberKey = `-- name: RecordNetworkMemberKey :exec
@@ -113,6 +185,38 @@ func (q *Queries) RefuseNetworkMemberKey(ctx context.Context, arg RefuseNetworkM
 		arg.ServerID,
 		arg.MembershipID,
 	)
+	return err
+}
+
+const setNetworkMemberGenerations = `-- name: SetNetworkMemberGenerations :exec
+UPDATE network_members SET generation = $1,note=CASE WHEN note = $2 THEN '' ELSE note END
+WHERE workspace_id = $3
+`
+
+type SetNetworkMemberGenerationsParams struct {
+	Generation      int64     `json:"generation"`
+	UnaccountedNote string    `json:"unaccounted_note"`
+	WorkspaceID     uuid.UUID `json:"workspace_id"`
+}
+
+// A new generation is news for a member that was waiting on @unaccounted_note, so it tries again.
+func (q *Queries) SetNetworkMemberGenerations(ctx context.Context, arg SetNetworkMemberGenerationsParams) error {
+	_, err := q.db.Exec(ctx, setNetworkMemberGenerations, arg.Generation, arg.UnaccountedNote, arg.WorkspaceID)
+	return err
+}
+
+const setNetworkMemberNote = `-- name: SetNetworkMemberNote :exec
+UPDATE network_members SET note = $1 WHERE workspace_id = $2 AND server_id = $3
+`
+
+type SetNetworkMemberNoteParams struct {
+	Note        string    `json:"note"`
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ServerID    uuid.UUID `json:"server_id"`
+}
+
+func (q *Queries) SetNetworkMemberNote(ctx context.Context, arg SetNetworkMemberNoteParams) error {
+	_, err := q.db.Exec(ctx, setNetworkMemberNote, arg.Note, arg.WorkspaceID, arg.ServerID)
 	return err
 }
 
