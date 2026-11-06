@@ -31,22 +31,20 @@ type authorityAgent struct {
 	t     *testing.T
 	f     *fixture
 	token string
+	in    api.AgentEnrollment
 }
 
-// next waits across polls, because a refresh snooze can outlast one poll while another test's River
-// leadership lease expires.
+// next heartbeats as a real agent does: dispatch treats a server unseen for 45 seconds as offline, and
+// polling does not count as being seen.
 func (a authorityAgent) next() api.ExecutionCommand {
 	a.t.Helper()
-	deadline := time.Now().Add(2 * time.Minute)
-	for time.Now().Before(deadline) {
-		var out api.AgentPoll
-		agentRequest(a.t, a.f.server.Client(), a.f.server.URL, "/agent/v1/poll", a.token, nil, 200, &out)
-		if out.Command != nil {
-			return *out.Command
-		}
+	agentRequest(a.t, a.f.server.Client(), a.f.server.URL, "/agent/v1/heartbeat", a.token, api.AgentHeartbeat{Capabilities: a.in.Capabilities, Preflight: a.in.Preflight}, 200, nil)
+	var out api.AgentPoll
+	agentRequest(a.t, a.f.server.Client(), a.f.server.URL, "/agent/v1/poll", a.token, nil, 200, &out)
+	if out.Command == nil {
+		a.t.Fatal("expected a command")
 	}
-	a.t.Fatal("expected a command")
-	return api.ExecutionCommand{}
+	return *out.Command
 }
 
 func (a authorityAgent) observe(c api.ExecutionCommand, observation deployment.Observation) {
@@ -109,7 +107,7 @@ func (a authorityAgent) expectAutomaticDeploy(images map[string]string) deployme
 // an owner sees, once the worker has decided it.
 func waitBlocked(t *testing.T, b *browser, path string, run uuid.UUID) string {
 	t.Helper()
-	deadline := time.Now().Add(time.Minute)
+	deadline := time.Now().Add(15 * time.Second)
 	for time.Now().Before(deadline) {
 		var runs []struct {
 			ID                  uuid.UUID `json:"id"`
@@ -238,7 +236,7 @@ func TestAutomationPlanNeedsConfigurationForCommandAndDrift(t *testing.T) {
 	yes := true
 	in.Capabilities.Visual, in.Capabilities.SafeReleases = &yes, &yes
 	agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/enroll", "", in, 200, nil)
-	agent := authorityAgent{t, f, agentToken}
+	agent := authorityAgent{t, f, agentToken, in}
 	digest := func(c string) map[string]string {
 		return map[string]string{app.String(): "busybox@sha256:" + strings.Repeat(c, 64)}
 	}
@@ -310,7 +308,7 @@ func TestAutomationPlanNeedsConfigurationForCommandAndDrift(t *testing.T) {
 
 // A credential denied every deployment capability could still deploy: it saved a draft and the next
 // push planned and applied that whole draft under the owner's policy.
-func TestAutomaticBuildDeploysOnlyItsOwnImage(t *testing.T) {
+func TestAutomationBuildDeploysOnlyItsOwnImage(t *testing.T) {
 	f := setup(t)
 	b, scope, env, path := automationEnvironment(t, f)
 	source := newGitSource(t, f, b, "/api/v1/workspaces/"+scope.WorkspaceId.String())
@@ -318,7 +316,7 @@ func TestAutomaticBuildDeploysOnlyItsOwnImage(t *testing.T) {
 	yes := true
 	in.Capabilities.Build, in.Capabilities.BuildControls, in.Capabilities.Visual = &yes, &yes, &yes
 	agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/enroll", "", in, 200, nil)
-	agent := authorityAgent{t, f, agentToken}
+	agent := authorityAgent{t, f, agentToken, in}
 	var secret api.SecretVersion
 	b.call("POST", path+"/secrets", map[string]string{"name": "API key", "value": "dummy-runtime-canary"}, 201, &secret)
 	app := uuid.New()
@@ -393,7 +391,7 @@ func TestAutomaticBuildDeploysOnlyItsOwnImage(t *testing.T) {
 
 // A build target on a Compose service changes the image inside a source file, so the comparison has
 // to rebuild that same edit from the applied files.
-func TestAutomaticBuildOnComposeServiceComparesItsEditedFile(t *testing.T) {
+func TestAutomationBuildOnComposeServiceComparesItsEditedFile(t *testing.T) {
 	f := setup(t)
 	b := f.browser(t)
 	ws, prefix, env, path := composeEnvironment(t, f, b)
@@ -402,7 +400,7 @@ func TestAutomaticBuildOnComposeServiceComparesItsEditedFile(t *testing.T) {
 	yes := true
 	in.Capabilities.Build, in.Capabilities.BuildControls, in.Capabilities.Visual, in.Capabilities.Compose = &yes, &yes, &yes, &yes
 	agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/enroll", "", in, 200, nil)
-	agent := authorityAgent{t, f, agentToken}
+	agent := authorityAgent{t, f, agentToken, in}
 	files := []composeproject.File{{Path: "compose.yaml", Content: "# retained comment\nservices:\n  web:\n    image: " + pipelineTestImage + "\n"}}
 	spec := domain.Specification{Version: 1, Applications: []domain.Application{}, Variables: []domain.Variable{}, Compose: &composeproject.Bundle{Namespace: env.DeploymentUnit.Id, Entrypoints: []string{"compose.yaml"}, Files: files}}
 	var draft api.Revision
@@ -440,7 +438,7 @@ func TestAutomaticBuildOnComposeServiceComparesItsEditedFile(t *testing.T) {
 
 // An imported commit replaces only the source files. Saved runtime settings are not part of what
 // the owner's policy covers, even when an owner saved them.
-func TestAutomaticImportDeploysOnlyItsOwnSource(t *testing.T) {
+func TestAutomationImportDeploysOnlyItsOwnSource(t *testing.T) {
 	f := setup(t)
 	b := f.browser(t)
 	ws, prefix, env, path := composeEnvironment(t, f, b)
@@ -449,7 +447,7 @@ func TestAutomaticImportDeploysOnlyItsOwnSource(t *testing.T) {
 	yes := true
 	in.Capabilities.Build, in.Capabilities.Visual, in.Capabilities.Compose = &yes, &yes, &yes
 	agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/enroll", "", in, 200, nil)
-	agent := authorityAgent{t, f, agentToken}
+	agent := authorityAgent{t, f, agentToken, in}
 	files := func(revision string) []composeproject.File {
 		return []composeproject.File{
 			{Path: "compose.yaml", Content: "# " + revision + "\nservices:\n  web:\n    image: " + pipelineTestImage + "\n"},
@@ -512,7 +510,7 @@ func TestAutomaticImportDeploysOnlyItsOwnSource(t *testing.T) {
 // A push builds each target in turn. A later target admitted while an earlier one's automatic deployment
 // was undecided stacked its image on that draft, and neither could then deploy. That deployment has no
 // active operation between its passes, so the test holds its job there for longer than a refresh takes.
-func TestAutomaticBuildsOfOnePushDeployInTurn(t *testing.T) {
+func TestAutomationBuildsOfOnePushDeployInTurn(t *testing.T) {
 	f := setup(t)
 	b, scope, env, path := automationEnvironment(t, f)
 	source := newGitSource(t, f, b, "/api/v1/workspaces/"+scope.WorkspaceId.String())
@@ -520,7 +518,7 @@ func TestAutomaticBuildsOfOnePushDeployInTurn(t *testing.T) {
 	yes := true
 	in.Capabilities.Build, in.Capabilities.BuildControls, in.Capabilities.Visual = &yes, &yes, &yes
 	agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/enroll", "", in, 200, nil)
-	agent := authorityAgent{t, f, agentToken}
+	agent := authorityAgent{t, f, agentToken, in}
 	apps := []uuid.UUID{uuid.New(), uuid.New()}
 	image := pipelineTestImage
 	spec := domain.Specification{Version: 1, Variables: []domain.Variable{}, Applications: []domain.Application{}}
