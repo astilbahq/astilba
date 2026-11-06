@@ -81,7 +81,7 @@ func TestAlertInboxIsolationDeduplicationAndRetention(t *testing.T) {
 	b.call("POST", "/api/v1/workspaces", map[string]string{"name": "Other"}, 201, &other)
 	b.call("POST", "/api/v1/workspaces/"+other.Id.String()+"/alerts/"+id.String()+"/acknowledge", nil, 404, nil)
 	viewerID := uuid.New()
-	hash, _ := f.auth.Passwords.Hash(ctx, f.password)
+	hash, _ := f.auth.Passwords.Hash(f.password)
 	if _, err := f.st.Pool.Exec(ctx, "INSERT INTO accounts(id,email,name,password_hash) VALUES($1,'alert-viewer@example.test','Viewer',$2)", viewerID, hash); err != nil {
 		t.Fatal(err)
 	}

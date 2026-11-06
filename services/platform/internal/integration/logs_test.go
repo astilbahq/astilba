@@ -67,7 +67,7 @@ func TestLogExportBoundsAndScope(t *testing.T) {
 	b.call("GET", strings.Replace(path, project.Id.String(), uuid.NewString(), 1), nil, 404, nil)
 	b.call("GET", strings.Replace(path, ws.String(), uuid.NewString(), 1), nil, 404, nil)
 	stranger := uuid.New()
-	hash, _ := f.auth.Passwords.Hash(ctx, f.password)
+	hash, _ := f.auth.Passwords.Hash(f.password)
 	if _, err := f.st.Pool.Exec(ctx, `INSERT INTO accounts(id,email,name,password_hash) VALUES($1,'log-reader@example.test','Reader',$2)`, stranger, hash); err != nil {
 		t.Fatal(err)
 	}

@@ -1,9 +1,11 @@
 package mailer
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"errors"
+	"net"
 	"strings"
 	"testing"
 )
@@ -55,3 +57,67 @@ func TestConsoleEmailIncludesPlaintextAndReportsWriteFailure(t *testing.T) {
 type failingWriter struct{}
 
 func (failingWriter) Write([]byte) (int, error) { return 0, errors.New("closed output") }
+
+// relay answers one message with endOfData, then drops the connection when asked to quit.
+func relay(t *testing.T, endOfData string) string {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		reader := bufio.NewReader(conn)
+		reply := func(line string) { _, _ = conn.Write([]byte(line + "\r\n")) }
+		reply("220 test")
+		inData := false
+		for {
+			line, err := reader.ReadString('\n')
+			if err != nil {
+				return
+			}
+			switch {
+			case inData && line == ".\r\n":
+				inData = false
+				reply(endOfData)
+			case inData:
+			case strings.HasPrefix(line, "DATA"):
+				inData = true
+				reply("354 go ahead")
+			case strings.HasPrefix(line, "QUIT"):
+				return
+			default:
+				reply("250 ok")
+			}
+		}
+	}()
+	return listener.Addr().String()
+}
+
+// Callers delete a link or retry when told a message failed, so accepted mail must not be
+// reported as failed, and refused mail must not be reported as sent.
+func TestSendReportsWhatTheRelayDidWithTheMessage(t *testing.T) {
+	for _, test := range []struct {
+		name, endOfData string
+		want            error
+	}{
+		{"accepted, then the connection drops at sign-off", "250 queued", nil},
+		{"refused for now", "451 try later", ErrUnavailable},
+		{"refused", "554 rejected", ErrUnavailable},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			m, err := New(Config{Address: relay(t, test.endOfData), From: "accounts@example.test", Mode: "plain", Development: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := m.Send(context.Background(), "owner@example.test", "Subject", "Body"); !errors.Is(err, test.want) {
+				t.Fatalf("Send returned %v, want %v", err, test.want)
+			}
+		})
+	}
+}

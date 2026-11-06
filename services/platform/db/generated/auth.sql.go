@@ -261,6 +261,35 @@ func (q *Queries) InsertRecoveryCode(ctx context.Context, arg InsertRecoveryCode
 	return err
 }
 
+const liveAuthAttempts = `-- name: LiveAuthAttempts :many
+SELECT scope_hash,attempts FROM auth_attempts WHERE scope_hash=ANY($1::bytea[]) AND expires_at>now()
+`
+
+type LiveAuthAttemptsRow struct {
+	ScopeHash []byte `json:"scope_hash"`
+	Attempts  int32  `json:"attempts"`
+}
+
+func (q *Queries) LiveAuthAttempts(ctx context.Context, scopes [][]byte) ([]LiveAuthAttemptsRow, error) {
+	rows, err := q.db.Query(ctx, liveAuthAttempts, scopes)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []LiveAuthAttemptsRow{}
+	for rows.Next() {
+		var i LiveAuthAttemptsRow
+		if err := rows.Scan(&i.ScopeHash, &i.Attempts); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const lockAccount = `-- name: LockAccount :one
 SELECT id, email, name, password_hash, auth_version, totp_secret, totp_pending, totp_pending_expiry, totp_last_step, created_at, email_verified_at, recovery_codes_saved, recovery_codes_generation FROM accounts WHERE id = $1 FOR UPDATE
 `
@@ -356,6 +385,15 @@ func (q *Queries) RecordAuthAttempt(ctx context.Context, arg RecordAuthAttemptPa
 	var attempts int32
 	err := row.Scan(&attempts)
 	return attempts, err
+}
+
+const refundAuthAttempt = `-- name: RefundAuthAttempt :exec
+UPDATE auth_attempts SET attempts=attempts-1 WHERE scope_hash=$1 AND attempts>0
+`
+
+func (q *Queries) RefundAuthAttempt(ctx context.Context, scopeHash []byte) error {
+	_, err := q.db.Exec(ctx, refundAuthAttempt, scopeHash)
+	return err
 }
 
 const setPendingTOTP = `-- name: SetPendingTOTP :exec

@@ -59,29 +59,45 @@ func (s *Service) InviteHosted(ctx context.Context, email, origin string) error 
 	return e
 }
 
-func (s *Service) AcceptHosted(ctx context.Context, token, name, password, workspace string, existing *store.Principal) (db.Account, uuid.UUID, error) {
+// AcceptHosted charges only the source's budgets. Invitations are unguessable and few, so
+// nothing about them needs an installation-wide limit that invalid ones could spend.
+func (s *Service) AcceptHosted(ctx context.Context, token, name, password, workspace string, from Source, existing *store.Principal) (db.Account, uuid.UUID, error) {
 	var account db.Account
 	var ws uuid.UUID
 	if !s.Store.Hosted {
 		return account, ws, domain.Forbidden
 	}
-	if err := s.Limit(ctx, "hosted-signup:global", 100, 15*time.Minute); err != nil {
-		return account, ws, err
-	}
 	workspace, e := domain.Name(workspace)
 	if e != nil {
 		return account, ws, domain.Invalid("workspace")
 	}
+	if existing == nil {
+		if name, e = domain.Name(name); e != nil {
+			return account, ws, e
+		}
+		if e = domain.Password(password); e != nil {
+			return account, ws, e
+		}
+	}
+	budgets := sourceBudgets("hosted-signup", from, 10)
+	if e = s.refuseSpent(ctx, budgets); e != nil {
+		return account, ws, e
+	}
+	open, e := s.Store.Queries.HostedInvitationOpen(ctx, db.HostedInvitationOpenParams{TokenHash: Hash(token), ValidAt: s.Now()})
+	if e != nil {
+		return account, ws, e
+	}
+	if !open {
+		return account, ws, s.refuseLink(ctx, budgets)
+	}
 	var passwordHash string
 	if existing == nil {
-		name, e = domain.Name(name)
-		if e != nil {
-			return account, ws, e
-		}
-		passwordHash, e = s.Passwords.Hash(ctx, password)
-		if e != nil {
-			return account, ws, e
-		}
+		passwordHash, e = s.hashNewPassword(ctx, passwordShare{from.principal(), true}, budgets, password)
+	} else {
+		e = s.charge(ctx, budgets)
+	}
+	if e != nil {
+		return account, ws, e
 	}
 	tx, e := s.Store.Pool.Begin(ctx)
 	if e != nil {

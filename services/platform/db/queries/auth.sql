@@ -36,6 +36,10 @@ ON CONFLICT(scope_hash) DO UPDATE SET
     attempts=CASE WHEN auth_attempts.expires_at <= now() THEN 1 ELSE auth_attempts.attempts+1 END,
     expires_at=CASE WHEN auth_attempts.expires_at <= now() THEN EXCLUDED.expires_at ELSE auth_attempts.expires_at END
 RETURNING attempts;
+-- name: LiveAuthAttempts :many
+SELECT scope_hash,attempts FROM auth_attempts WHERE scope_hash=ANY(@scopes::bytea[]) AND expires_at>now();
+-- name: RefundAuthAttempt :exec
+UPDATE auth_attempts SET attempts=attempts-1 WHERE scope_hash=$1 AND attempts>0;
 -- name: ClearAuthAttempts :exec
 DELETE FROM auth_attempts WHERE scope_hash=$1;
 -- name: PruneAuthAttempts :exec

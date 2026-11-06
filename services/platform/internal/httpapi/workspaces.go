@@ -48,7 +48,7 @@ func (s *Server) CreateWorkspace(w http.ResponseWriter, r *http.Request) {
 	}
 	p := *principal(r.Context())
 	if s.Store.Hosted {
-		_, id, e := s.Auth.AcceptHosted(r.Context(), value(b.Invitation), "", "", name, &p)
+		_, id, e := s.Auth.AcceptHosted(r.Context(), value(b.Invitation), "", "", name, s.clientSource(r), &p)
 		if e != nil {
 			s.fail(w, r, e)
 			return

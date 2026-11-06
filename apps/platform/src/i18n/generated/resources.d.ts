@@ -273,6 +273,7 @@ export default interface Resources {
       "setupConflict": "This setup changed in another session. Check the current state and try again.",
       "signupAccount": "Sign in with the invited email address before accepting this invitation.",
       "signupUnavailable": "This invitation cannot create a workspace right now. Try again or contact the person who invited you.",
+      "temporarilyBusy": "Too many sign-ins are in progress. Try again in a few seconds.",
       "workspaceInvalid": "Enter a workspace name without line breaks or control characters.",
       "workspaceRequired": "Enter a workspace name.",
       "workspaceTooLong": "Use {{count}} character or fewer for the workspace name." | "Use {{count}} characters or fewer for the workspace name."

@@ -82,7 +82,7 @@ func TestMetricHistoryIsolationRetentionAndRateBound(t *testing.T) {
 	agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/metrics", token, sample, 403, nil)
 	b.call("GET", route+"?hours=2", nil, 400, nil)
 	viewerID := uuid.New()
-	hash, _ := f.auth.Passwords.Hash(ctx, f.password)
+	hash, _ := f.auth.Passwords.Hash(f.password)
 	if _, e = f.st.Pool.Exec(ctx, "INSERT INTO accounts(id,email,name,password_hash) VALUES($1,'metric-viewer@example.test','Viewer',$2)", viewerID, hash); e != nil {
 		t.Fatal(e)
 	}

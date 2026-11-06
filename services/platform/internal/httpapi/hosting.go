@@ -3,7 +3,6 @@ package httpapi
 import (
 	"io"
 	"net/http"
-	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/billing"
@@ -22,16 +21,12 @@ func (s *Server) HostingInfo(w http.ResponseWriter, r *http.Request) {
 	s.respond(w, 200, api.HostedInfo{Enabled: s.Store.Hosted, BillingEnabled: s.Store.Hosting.BillingEnabled(), Support: s.Store.Hosting.Support})
 }
 func (s *Server) HostedSignup(w http.ResponseWriter, r *http.Request) {
-	if e := s.Auth.Limit(r.Context(), "hosted-signup:ip:"+s.clientSourceKey(r), 10, 15*time.Minute); e != nil {
-		s.fail(w, r, e)
-		return
-	}
 	b, e := decode[api.HostedSignup](r)
 	if e != nil {
 		s.fail(w, r, e)
 		return
 	}
-	a, workspace, e := s.Auth.AcceptHosted(r.Context(), value(b.Token), value(b.Name), value(b.Password), b.Workspace, principal(r.Context()))
+	a, workspace, e := s.Auth.AcceptHosted(r.Context(), value(b.Token), value(b.Name), value(b.Password), b.Workspace, s.clientSource(r), principal(r.Context()))
 	if e == nil && principal(r.Context()) == nil {
 		e = s.establish(r.Context(), a, false)
 	}
