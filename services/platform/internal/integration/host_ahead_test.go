@@ -17,6 +17,10 @@ import (
 	"github.com/google/uuid"
 )
 
+// aheadPollWait is short because a command the sweep just queued reaches a poll within a round or
+// two, and an idle host would otherwise hold up the others in the same round.
+const aheadPollWait = 100 * time.Millisecond
+
 // aheadHost answers management as an agent does, by the host's own rule for what it may install.
 type aheadHost struct {
 	id         uuid.UUID
@@ -68,9 +72,13 @@ func newAheadNetwork(t *testing.T, count int) *aheadNetwork {
 	return n
 }
 
-// round answers one poll for every host that is listening.
+// round sweeps, then answers one poll for every host that is listening. Sweeping here keeps each
+// step from waiting on the worker's five second interval.
 func (n *aheadNetwork) round(t *testing.T) {
 	t.Helper()
+	if err := n.f.execution.SweepNetworks(n.ctx); err != nil {
+		t.Fatal(err)
+	}
 	if time.Since(n.beat) > 10*time.Second {
 		for _, h := range n.hosts {
 			if h.silent {
@@ -86,7 +94,7 @@ func (n *aheadNetwork) round(t *testing.T) {
 		if h.silent {
 			continue
 		}
-		poll, done := context.WithTimeout(n.ctx, 250*time.Millisecond)
+		poll, done := context.WithTimeout(n.ctx, aheadPollWait)
 		c, err := n.f.execution.Poll(poll, h.identity)
 		expired := poll.Err()
 		done()
@@ -420,7 +428,7 @@ func TestHostileClaimsAfterRestoreMoveNothing(t *testing.T) {
 				if _, err := n.f.execution.Heartbeat(n.ctx, a.identity, api.AgentHeartbeat{Capabilities: a.input.Capabilities, Preflight: a.input.Preflight}); err != nil {
 					t.Fatal(err)
 				}
-				poll, done := context.WithTimeout(n.ctx, 250*time.Millisecond)
+				poll, done := context.WithTimeout(n.ctx, aheadPollWait)
 				delivered, err := n.f.execution.Poll(poll, a.identity)
 				expired := poll.Err()
 				done()
@@ -499,18 +507,18 @@ func TestUnfencedHostAheadRecoversThroughFencing(t *testing.T) {
 				if !strings.Contains(n.note(t, a), "prepare-recovery") {
 					t.Fatalf("note = %q", n.note(t, a))
 				}
-				// It would answer the same again, so nothing more goes to it.
+				// It would answer the same again, so nothing more goes to it, however many sweeps pass.
 				sent := claimCounter(t, n.f, `SELECT count(*) FROM execution_operations WHERE server_id=$1 AND kind='network'`, a.id)
-				for until := time.Now().Add(6 * time.Second); time.Now().Before(until); {
+				for range 3 {
 					n.round(t)
 				}
 				if got := claimCounter(t, n.f, `SELECT count(*) FROM execution_operations WHERE server_id=$1 AND kind='network'`, a.id); got != sent {
 					t.Fatalf("%d more network commands went to the host after it refused", got-sent)
 				}
 			} else {
-				for until := time.Now().Add(6 * time.Second); time.Now().Before(until); {
-					n.round(t)
-				}
+				n.until(t, func() bool {
+					return claimCounter(t, n.f, `SELECT count(*) FROM execution_operations WHERE server_id=$1 AND kind='network' AND state='dispatched'`, a.id) > 0
+				})
 			}
 			issued := n.counter(t)
 			// A revocation reaches the host while the change that adds a peer cannot.

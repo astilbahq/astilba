@@ -15,7 +15,7 @@ check is a final `always()` gate, so it is reported on every run.
 | `git-providers.yml`        | Git provider verification        | GitLab/Gitea and source-preserving Compose edits                                                                                  |
 | `ci.yml`                   | Native verification              | Selected amd64 and arm64 host suites: fresh bootstrap, Docker, builds, PostgreSQL restore, systemd agent, deployment and recovery |
 | `canvas.yml`               | Canvas browser verification      | Type/lint/build, domain tests and Chromium/WebKit journeys                                                                        |
-| `application.yml`          | Application verification         | `make verify-app-build` and four parallel Go race lanes, image smoke test, corresponding-source archive and selected vulnerability scan                             |
+| `application.yml`          | Application verification         | `make verify-app-build` and five parallel Go race lanes, image smoke test, corresponding-source archive and selected vulnerability scan                             |
 | `application-browsers.yml` | Application browser verification | Every Chromium/WebKit dashboard journey against a real API/PostgreSQL fixture                                                     |
 | `workshop.yml`             | Workshop verification            | Standalone Storybook scenarios and accessibility audits in both browsers                                                          |
 
@@ -188,10 +188,11 @@ bootstraps. Native verification remains the required check.
 
 ## Application Go verification
 
-Application verification runs five jobs in parallel: `make verify-app-build`
+Application verification runs six jobs in parallel: `make verify-app-build`
 (application checks, agent/CLI and dashboard builds and packaging, followed by
-the image smoke test and source archive) and four Go race lanes: `crosshost` for
-the cross-host pair, `preview` for preview checkpoint recovery, `operations` for
+the image smoke test and source archive) and five Go race lanes: `crosshost` for
+the cross-host pair, `preview` for preview checkpoint recovery, `network` for the
+private network generation tests named by `APP_NETWORK_TESTS`, `operations` for
 tests named by `APP_OPERATIONS_TESTS` and `remaining` for everything else.
 Each retains race detection, uncached execution and a fifteen-minute process
 timeout, and any failure fails the Application verification gate. Locally,

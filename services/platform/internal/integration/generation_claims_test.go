@@ -115,6 +115,9 @@ func TestAgentCannotSpendNetworkGeneration(t *testing.T) {
 			// Runs one honest round for every host, and hands back the attacker's restriction when armed.
 			round := func(armed bool) *api.ExecutionCommand {
 				t.Helper()
+				if err := f.execution.SweepNetworks(ctx); err != nil {
+					t.Fatal(err)
+				}
 				if time.Since(beat) > 10*time.Second {
 					for _, h := range hosts {
 						if _, err := f.execution.Heartbeat(ctx, h.identity, api.AgentHeartbeat{Capabilities: h.input.Capabilities, Preflight: h.input.Preflight}); err != nil {
@@ -124,7 +127,7 @@ func TestAgentCannotSpendNetworkGeneration(t *testing.T) {
 					beat = time.Now()
 				}
 				for _, h := range hosts {
-					poll, done := context.WithTimeout(ctx, 250*time.Millisecond)
+					poll, done := context.WithTimeout(ctx, aheadPollWait)
 					c, err := f.execution.Poll(poll, h.identity)
 					expired := poll.Err()
 					done()
@@ -220,7 +223,7 @@ func TestAgentCannotSpendNetworkGeneration(t *testing.T) {
 				}
 				// It would answer the same again, so nothing more goes to it until something changes.
 				sent := claimCounter(t, f, `SELECT count(*) FROM execution_operations WHERE server_id=$1 AND kind='network'`, attacker.id)
-				for until := time.Now().Add(6 * time.Second); time.Now().Before(until); {
+				for range 3 {
 					round(false)
 				}
 				if got := claimCounter(t, f, `SELECT count(*) FROM execution_operations WHERE server_id=$1 AND kind='network'`, attacker.id); got != sent {

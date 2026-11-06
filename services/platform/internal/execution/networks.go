@@ -245,9 +245,11 @@ type networkSweepWorker struct {
 }
 
 func (w *networkSweepWorker) Work(ctx context.Context, _ *river.Job[networkSweepArgs]) error {
-	return w.service.reconcileNetworks(ctx)
+	return w.service.SweepNetworks(ctx)
 }
-func (s *Service) reconcileNetworks(ctx context.Context) error {
+
+// SweepNetworks gives each workspace's network a turn. The worker runs it every five seconds.
+func (s *Service) SweepNetworks(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, sweepPassBudget)
 	defer cancel()
 	started, err := s.Store.Queries.SweepPassStarted(ctx)
