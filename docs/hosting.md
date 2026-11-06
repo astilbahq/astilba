@@ -191,7 +191,8 @@ out of the browser they last used for it.
 Someone on another browser is refused while the account's limit of 10 is spent, which takes two
 addresses and the email address. Password reset keeps working during an attack: anyone can make
 Astilba send the link, up to 3 times per 15 minutes per email, and a request beyond that is
-answered as usual and sends nothing. A delivery that fails does not count. Each link replaces the one before, so use the newest.
+answered as usual and sends nothing. A delivery that fails does not count, and a request for an
+email with no account counts for nothing. Each link replaces the one before, so use the newest.
 Completing a reset clears the shared limit and makes that browser a known one.
 
 There is no installation-wide limit, because anyone could spend it to refuse everyone. Trying a
@@ -213,7 +214,7 @@ Your proxy needs to do three things for this to hold:
   `sourceCriterion.ipStrategy.ipv6Subnet: 64`. nginx's `$binary_remote_addr` also counts each
   address and has no such setting, so a client with a /64 is not limited by it; if that matters,
   group addresses at a firewall or CDN in front of nginx, or do not publish an IPv6 address.
-  Astilba's own limits group IPv6 at /64 either way, and sign-in also at /48.
+  Astilba's own limits group IPv6 at /64 either way, and sign-in and reset requests also at /48.
 - **Pass on the client's address**, as [described above](#client-addresses-behind-a-reverse-proxy).
   Without it every client shares one address's limits, so one guesser refuses everyone, and only
   one hash runs at a time for people without the cookie.
@@ -222,6 +223,42 @@ No per-address limit stops a flood from hundreds of addresses, each staying with
 That delays or refuses sign-in on browsers without the cookie, with a 503, for as long as it
 runs, while live sessions and known browsers keep working. Stop it upstream, with a CDN or
 firewall that can challenge or block that traffic.
+
+### When password reset mail fails
+
+A reset request answers the same way for every email and sends its mail afterwards, in a
+background job, so its response cannot show whether an account exists. That also means the
+person asking is never told about a failed send. They see "a password reset link will arrive
+shortly", and then no mail arrives.
+
+Astilba retries for about 15 minutes, starting after 15 seconds and at most 5 minutes apart. A
+request waiting in the queue or being retried survives a restart. Any earlier link keeps working
+until a new one has been accepted by the relay, and a send the relay refuses or that never reached
+it does not count towards the limit of 3. A send the relay read but never answered does count,
+because that mail may still arrive. No mail goes out for a request more than 15 minutes old, so
+mail never arrives hours later, and the person has to ask again. A retry is also dropped if a
+newer link has gone out by then, so it cannot replace a link someone is using. Should the account's
+password have changed in the meantime, though, a retry still sends a link, as a new request would.
+
+Only you can see the failure, in the server log, and no log line names the email:
+
+| Log message | Level | Meaning |
+| --- | --- | --- |
+| `password reset mail could not be sent` | warning | One attempt failed and will be retried. |
+| `password reset mail could not be prepared` | warning | The database stopped one attempt before sending, and it will be retried. |
+| `password reset mail abandoned` | error | The request ran out of time, so whoever asked got no mail. It appears at the next attempt, normally within 20 minutes of the request, or about an hour after a server was killed during the send. |
+| `password reset link could not be saved after sending` | error | Mail went out with a link that does not work. A retry sends another, unless the limit of 3 is spent. |
+| `password reset charge could not be refunded` | error | That email can send fewer links until its 15 minutes end. |
+| `password reset request could not be opened` | error | The request cannot be read, for example because its key was removed, so it was dropped. |
+| `password reset request could not be queued` | warning | The request was lost before it was queued, though it was answered as usual. |
+
+Without SMTP, every request for an account ends in `password reset mail abandoned`. A request for
+an email with no account logs nothing, so test with a real account. If the server is killed during
+a send rather than stopped, that one request is dropped, because Astilba finds it only about an
+hour later, and it counts towards the limit until its 15 minutes end. Asking again works straight
+away, because each request is its own job. A flood of requests from thousands of addresses can
+delay this mail, and requests that wait over 15 minutes are dropped. Deployments and other
+background work have their own queue and are not delayed by it.
 
 ### Per-address limits at the reverse proxy
 
