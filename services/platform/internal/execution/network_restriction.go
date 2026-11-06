@@ -9,6 +9,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/hostnetwork"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -80,3 +81,22 @@ func reconciledNetworkReceipt(ctx context.Context, tx pgx.Tx, c api.ExecutionCom
 	}
 	return effective, nil
 }
+
+func sameNetworkConfiguration(a, b hostnetwork.Manifest) bool {
+	// Empty grant lists mean the same thing after either JSON null or [] decoding.
+	// Normalize copies only; frozen command and receipt digests retain their encoding.
+	for _, m := range []*hostnetwork.Manifest{&a, &b} {
+		if len(m.Peers) == 0 {
+			m.Peers = nil
+		}
+		if len(m.Exports) == 0 {
+			m.Exports = nil
+		}
+		if len(m.Egress) == 0 {
+			m.Egress = nil
+		}
+	}
+	return hostnetwork.Hash(a) == hostnetwork.Hash(b)
+}
+
+func mustJSON(v any) []byte { b, _ := stablejson.Marshal(v); return b }

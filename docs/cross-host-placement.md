@@ -135,7 +135,9 @@ of what the host holds, and otherwise with the approval. After you approve the
 network again, each free member receives the whole approved manifest for that
 controller. It replaces what the host holds, whatever generation the host has
 reached, and removes those unknown peers. A busy member receives only removals
-until it is free, and the whole manifest follows.
+until it is free, and the whole manifest follows. A manifest already on its way
+carries any removal at its generation, so that removal goes separately only if the
+manifest has not landed within 30 seconds.
 
 If management was restored without fencing a host, the host stays on the same
 controller and ahead of management. It may ignore a `configure` as stale, leaving

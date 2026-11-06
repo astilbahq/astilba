@@ -333,6 +333,13 @@ func (s *Service) reconcileNetwork(ctx context.Context, ws uuid.UUID) error {
 				if !known {
 					continue
 				}
+				landing, e := db.New(tx).NetworkManifestLanding(ctx, db.NetworkManifestLandingParams{WorkspaceID: ws, ServerID: m.ServerID, Generation: m.Generation})
+				if e != nil {
+					return e
+				}
+				if landing {
+					continue
+				}
 				manifest = hostnetwork.Restriction(prior, manifest)
 				if manifest.Generation == prior.Generation {
 					continue
@@ -578,22 +585,3 @@ func (s *Service) networkReport(ctx context.Context, tx pgx.Tx, ws uuid.UUID, c 
 	}
 	return nil
 }
-
-func sameNetworkConfiguration(a, b hostnetwork.Manifest) bool {
-	// Empty grant lists mean the same thing after either JSON null or [] decoding.
-	// Normalize copies only; frozen command and receipt digests retain their encoding.
-	for _, m := range []*hostnetwork.Manifest{&a, &b} {
-		if len(m.Peers) == 0 {
-			m.Peers = nil
-		}
-		if len(m.Exports) == 0 {
-			m.Exports = nil
-		}
-		if len(m.Egress) == 0 {
-			m.Egress = nil
-		}
-	}
-	return hostnetwork.Hash(a) == hostnetwork.Hash(b)
-}
-
-func mustJSON(v any) []byte { b, _ := stablejson.Marshal(v); return b }

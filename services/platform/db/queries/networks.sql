@@ -53,6 +53,15 @@ WHERE workspace_id = @workspace_id;
 -- name: SetNetworkMemberNote :exec
 UPDATE network_members SET note = @note WHERE workspace_id = @workspace_id AND server_id = @server_id;
 
+-- name: NetworkManifestLanding :one
+-- A whole manifest at this generation already carries any removal, and a removal sent alongside it
+-- would reach the host first and make the host refuse it. One that has not landed within this long
+-- is held up, so a removal goes without it.
+SELECT EXISTS(SELECT 1 FROM execution_operations WHERE workspace_id = @workspace_id AND server_id = @server_id AND kind='network'
+    AND command->'network'->>'action'='configure'
+    AND (command->'network'->'manifest'->>'generation')::bigint = @generation::bigint
+    AND state NOT IN ('succeeded','failed','cancelled') AND created_at > now()-interval '30 seconds');
+
 -- name: NoteRefusedNetworkConfigure :exec
 -- Only for the member's latest command: anything newer has not been refused.
 UPDATE network_members SET note = @note

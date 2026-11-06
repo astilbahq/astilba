@@ -597,3 +597,48 @@ func TestReAddedMemberReceivesItsWholeManifest(t *testing.T) {
 		t.Fatalf("the members did not reach the approved peers: %+v", c.held.Peers)
 	}
 }
+
+// A manifest on its way already carries any removal. A sweep that also sent the removal, at the same
+// generation, would reach the host first, because removals are delivered first, and the host would
+// then refuse the manifest for changing what that generation holds.
+func TestSweepWaitsForAManifestOnItsWay(t *testing.T) {
+	n := newAheadNetwork(t, 2)
+	a, b := n.hosts[0], n.hosts[1]
+	n.save(t, a, b)
+	n.converge(t)
+	sent := func(action string) int64 {
+		return claimCounter(t, n.f, `SELECT count(*) FROM execution_operations WHERE server_id=$1 AND kind='network' AND command->'network'->>'action'=$2`, a.id, action)
+	}
+	removals := sent("restrict")
+	// Changing a peer's endpoint removes the old peer and adds the new one.
+	b.member.Endpoint = "192.0.2.77:51820"
+	a.silent = true
+	n.save(t, a, b)
+	for range 3 {
+		if err := n.f.execution.SweepNetworks(n.ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := sent("restrict"); got != removals {
+		t.Fatalf("%d removals went out alongside the manifest that carries them", got-removals)
+	}
+	a.silent = false
+	n.converge(t)
+	if a.refused != 0 {
+		t.Fatalf("the host refused %d commands", a.refused)
+	}
+	// A manifest that has not landed must not hold a removal back for long.
+	b.member.Endpoint = "192.0.2.78:51820"
+	a.stale = true
+	n.save(t, a, b)
+	n.until(t, func() bool {
+		return claimCounter(t, n.f, `SELECT count(*) FROM execution_operations WHERE server_id=$1 AND kind='network' AND state='dispatched'`, a.id) > 0
+	})
+	if !holdsPeer(a, b.id) {
+		t.Fatal("the host lost the peer before the wait ended")
+	}
+	if _, err := n.f.st.Pool.Exec(n.ctx, `UPDATE execution_operations SET created_at=created_at-interval '1 minute' WHERE server_id=$1 AND state='dispatched'`, a.id); err != nil {
+		t.Fatal(err)
+	}
+	n.until(t, func() bool { return !holdsPeer(a, b.id) })
+}

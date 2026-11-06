@@ -127,6 +127,29 @@ func (q *Queries) NetworkKeyHeldByAnotherMember(ctx context.Context, arg Network
 	return exists, err
 }
 
+const networkManifestLanding = `-- name: NetworkManifestLanding :one
+SELECT EXISTS(SELECT 1 FROM execution_operations WHERE workspace_id = $1 AND server_id = $2 AND kind='network'
+    AND command->'network'->>'action'='configure'
+    AND (command->'network'->'manifest'->>'generation')::bigint = $3::bigint
+    AND state NOT IN ('succeeded','failed','cancelled') AND created_at > now()-interval '30 seconds')
+`
+
+type NetworkManifestLandingParams struct {
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ServerID    uuid.UUID `json:"server_id"`
+	Generation  int64     `json:"generation"`
+}
+
+// A whole manifest at this generation already carries any removal, and a removal sent alongside it
+// would reach the host first and make the host refuse it. One that has not landed within this long
+// is held up, so a removal goes without it.
+func (q *Queries) NetworkManifestLanding(ctx context.Context, arg NetworkManifestLandingParams) (bool, error) {
+	row := q.db.QueryRow(ctx, networkManifestLanding, arg.WorkspaceID, arg.ServerID, arg.Generation)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
 const noteRefusedNetworkConfigure = `-- name: NoteRefusedNetworkConfigure :exec
 UPDATE network_members SET note = $1
 WHERE workspace_id = $2 AND server_id = $3 AND membership_id = $4 AND generation = $5
