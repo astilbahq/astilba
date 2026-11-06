@@ -51,7 +51,7 @@ func (q *Queries) ClaimNetworkForSweep(ctx context.Context, passStarted time.Tim
 }
 
 const disableNetworkMember = `-- name: DisableNetworkMember :execrows
-UPDATE network_members SET enabled=false,note='Server authority revoked; peer removals await acknowledgement.'
+UPDATE network_members SET enabled=false,note='Server authority revoked; this server has not confirmed its removal. If it will not return, revoke it.'
 WHERE workspace_id = $1 AND server_id = $2 AND enabled
 `
 

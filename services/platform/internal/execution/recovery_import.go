@@ -301,6 +301,13 @@ func requiredRecoveryRoots(source recoverySource) (map[uuid.UUID]recoveringRoot,
 
 func recoveryControllers(before portability.Archive, source recoverySource) (map[uuid.UUID]int64, error) {
 	out := map[uuid.UUID]int64{}
+	// Fencing clears the credential of every server here. A revoked host may be gone or untrusted,
+	// so recovery cannot wait for it to export anything, but an export that is supplied must still
+	// be its own. The merged archive holds every server and every revocation.
+	revoked, err := recoveryRevokedServers(source.Archive)
+	if err != nil {
+		return out, err
+	}
 	for _, archive := range []portability.Archive{before, source.Archive} {
 		for _, row := range archive.Tables["servers"] {
 			var id uuid.UUID
@@ -310,7 +317,7 @@ func recoveryControllers(before portability.Archive, source recoverySource) (map
 				return out, portability.ErrArchive
 			}
 			host, exists := source.Hosts[id]
-			if machine != nil && (!exists || *machine != host.MachineID) {
+			if machine != nil && (exists && *machine != host.MachineID || !exists && !revoked[id]) {
 				return out, errors.New("every captured enrolled server needs matching machine evidence")
 			}
 			if prior, exists := out[id]; !exists || epoch > prior {

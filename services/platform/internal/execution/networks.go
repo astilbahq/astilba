@@ -44,6 +44,7 @@ type networkMember struct {
 	Note          string    `json:"note"`
 	Controller    int64     `json:"-"`
 	ManifestHash  string    `json:"-"`
+	revoked       bool
 }
 
 func readNetwork(ctx context.Context, tx pgx.Tx, ws uuid.UUID) (managedNetwork, error) {
@@ -55,7 +56,7 @@ func readNetwork(ctx context.Context, tx pgx.Tx, ws uuid.UUID) (managedNetwork, 
 	if err != nil {
 		return n, err
 	}
-	rows, err := tx.Query(ctx, `SELECT server_id,membership_id,host(address),endpoint,listen_port,cpu_millis,memory_mib,unbounded_inventory_hash,public_key,enabled,generation,acknowledged_generation,note,approved_controller,manifest_hash FROM network_members WHERE workspace_id=$1 ORDER BY server_id`, ws)
+	rows, err := tx.Query(ctx, `SELECT m.server_id,m.membership_id,host(m.address),m.endpoint,m.listen_port,m.cpu_millis,m.memory_mib,m.unbounded_inventory_hash,m.public_key,m.enabled,m.generation,m.acknowledged_generation,m.note,m.approved_controller,m.manifest_hash,s.revoked,s.controller_generation FROM network_members m JOIN servers s ON s.workspace_id=m.workspace_id AND s.id=m.server_id WHERE m.workspace_id=$1 ORDER BY m.server_id`, ws)
 	if err != nil {
 		return n, err
 	}
@@ -63,25 +64,50 @@ func readNetwork(ctx context.Context, tx pgx.Tx, ws uuid.UUID) (managedNetwork, 
 	n.State = "ready"
 	for rows.Next() {
 		var m networkMember
-		if err = rows.Scan(&m.ServerID, &m.MembershipID, &m.Address, &m.Endpoint, &m.ListenPort, &m.CPUMillis, &m.MemoryMiB, &m.InventoryHash, &m.PublicKey, &m.Enabled, &m.Generation, &m.Acknowledged, &m.Note, &m.Controller, &m.ManifestHash); err != nil {
+		var controller int64
+		if err = rows.Scan(&m.ServerID, &m.MembershipID, &m.Address, &m.Endpoint, &m.ListenPort, &m.CPUMillis, &m.MemoryMiB, &m.InventoryHash, &m.PublicKey, &m.Enabled, &m.Generation, &m.Acknowledged, &m.Note, &m.Controller, &m.ManifestHash, &m.revoked, &controller); err != nil {
 			return n, err
 		}
+		// A restored or imported acknowledgement says what the host held under an earlier controller.
+		// It may hold more now, so only the owner's renewed approval and a fresh answer count.
+		approved := m.Controller == controller
+		acknowledged := approved && m.Acknowledged == m.Generation
 		m.State = "removed"
-		if !m.Enabled && m.PublicKey != "" && m.Acknowledged != m.Generation {
+		// A revoked server can never answer, and what removes its access is its peers dropping its
+		// key, so only they hold the network for it.
+		if !m.Enabled && !m.revoked && m.PublicKey != "" && !acknowledged {
 			m.State = "revocation_pending"
 			n.State = "pending"
 		}
 		if m.Enabled {
 			m.State = "pending"
-			if m.Acknowledged == m.Generation && m.PublicKey != "" {
+			if acknowledged && m.PublicKey != "" {
 				m.State = "ready"
 			} else {
 				n.State = "pending"
 			}
+			if !approved && m.Note == "" {
+				m.Note = renewedNetworkApprovalNote
+			}
 		}
 		n.Members = append(n.Members, m)
 	}
-	return n, rows.Err()
+	if err = rows.Err(); err != nil {
+		return n, err
+	}
+	for i := range n.Members {
+		if m := &n.Members[i]; !m.Enabled && m.revoked {
+			m.Note = revokedMemberRemovedNote
+			// Only a member's acknowledgement of the current generation proves what it holds: its
+			// record can miss a peer that a lost receipt added. So while anything is pending, and
+			// each new generation makes everything pending, this cannot claim the key is gone.
+			if n.State == "pending" {
+				m.State = "revocation_pending"
+				m.Note = revokedMemberPendingNote
+			}
+		}
+	}
+	return n, nil
 }
 func (s *Service) ManagedNetwork(ctx context.Context, p store.Principal, ws uuid.UUID) (managedNetwork, error) {
 	var n managedNetwork
@@ -470,118 +496,13 @@ func networkManifest(ctx context.Context, tx pgx.Tx, ws uuid.UUID, n managedNetw
 	return p, ready, p.Validate()
 }
 
+// Revoking a server takes away its management credential and its peers' trust, but nothing can
+// reach the host itself, so these say what is and is not known about it.
+const (
+	revokedMemberPendingNote = "This revoked host may still hold its own private network configuration, and it cannot confirm removing it. Not every remaining member has confirmed the current configuration, so some may still accept its key."
+	revokedMemberRemovedNote = "This revoked host may still hold its own private network configuration, and it cannot confirm removing it. Every remaining member has confirmed a configuration without its key, so none of them accepts it."
+)
+
+const renewedNetworkApprovalNote = "Controller recovery preserves private links; general network mutation requires renewed approval."
+
 const exhaustedNetworkGenerationNote = "This network's generation has reached its limit, so a server that already holds it cannot receive further changes."
-
-// duplicateNetworkKeyNote is also written by migration 00027. Agents generate a key per
-// membership, so a repeated key means a modified agent, and peers could not tell its
-// holders apart. The key stays with the member that already holds it.
-const duplicateNetworkKeyNote = "This server reported the same private network key as another member. It must report its own key before private links can finish."
-
-// networkReport applies a network command's outcome. live is false when recovery replays a host's
-// proofs, whose claims checkRecoveryGenerationClaims has already held to its fixed limit.
-func (s *Service) networkReport(ctx context.Context, tx pgx.Tx, ws uuid.UUID, c api.ExecutionCommand, r *api.AgentReport, live bool) error {
-	if c.Kind != "network" {
-		if r.Network != nil {
-			return domain.Invalid("network")
-		}
-		return nil
-	}
-	if c.Network == nil {
-		return domain.Invalid("network")
-	}
-	var cmd hostnetwork.Command
-	if hostnetwork.Decode(*c.Network, &cmd) != nil || cmd.Validate() != nil || hostnetwork.Hash(cmd) != c.PlanHash {
-		return domain.Invalid("network")
-	}
-	if r.State == "failed" && r.Network != nil && live {
-		return networkRefusal(ctx, tx, ws, c, cmd, *r.Network)
-	}
-	if r.State != "succeeded" {
-		return nil
-	}
-	if r.Network == nil {
-		return domain.Invalid("network")
-	}
-	var receipt hostnetwork.Receipt
-	if hostnetwork.Decode(*r.Network, &receipt) != nil || receipt.Refused || receipt.NetworkID != cmd.NetworkID || receipt.Identity.MembershipID != cmd.MembershipID || !hostnetwork.PublicKey(receipt.Identity.PublicKey) {
-		return domain.Invalid("network")
-	}
-	if cmd.Action == "identify" {
-		q := db.New(tx)
-		taken, err := q.NetworkKeyHeldByAnotherMember(ctx, db.NetworkKeyHeldByAnotherMemberParams{WorkspaceID: ws, NetworkID: cmd.NetworkID, PublicKey: receipt.Identity.PublicKey, MembershipID: cmd.MembershipID})
-		if err != nil {
-			return err
-		}
-		if taken {
-			r.State, r.Note = "failed", duplicateNetworkKeyNote
-			return q.RefuseNetworkMemberKey(ctx, db.RefuseNetworkMemberKeyParams{Note: duplicateNetworkKeyNote, WorkspaceID: ws, ServerID: c.ServerId, MembershipID: cmd.MembershipID})
-		}
-		return q.RecordNetworkMemberKey(ctx, db.RecordNetworkMemberKeyParams{PublicKey: receipt.Identity.PublicKey, WorkspaceID: ws, ServerID: c.ServerId, MembershipID: cmd.MembershipID})
-	}
-	if cmd.Manifest.ServerID != c.ServerId || receipt.Identity.PublicKey != cmd.Manifest.PublicKey {
-		return domain.Invalid("network.receipt")
-	}
-	observed, err := reconciledNetworkReceipt(ctx, tx, c, cmd, receipt)
-	if err != nil {
-		return err
-	}
-	var installed []byte
-	if err = tx.QueryRow(ctx, `SELECT installed_manifest FROM network_members WHERE workspace_id=$1 AND server_id=$2 AND membership_id=$3 AND public_key=$4 FOR UPDATE`, ws, c.ServerId, cmd.MembershipID, receipt.Identity.PublicKey).Scan(&installed); errors.Is(err, pgx.ErrNoRows) {
-		return nil
-	} else if err != nil {
-		return err
-	}
-	var known hostnetwork.Manifest
-	if json.Unmarshal(installed, &known) == nil && known.Validate() == nil {
-		if !hostnetwork.Later(known, observed) && hostnetwork.Hash(observed) != hostnetwork.Hash(known) {
-			if hostnetwork.Later(observed, known) {
-				return nil
-			}
-			return domain.Invalid("network.generation")
-		}
-	}
-	n, err := readNetwork(ctx, tx, ws)
-	if err != nil {
-		return err
-	}
-	for _, member := range n.Members {
-		if member.ServerID != c.ServerId {
-			continue
-		}
-		if live {
-			// The report stands: refusing it would stop the host taking commands, and any other
-			// outcome would contradict the host's journal when recovery reads its export. Only
-			// the counter and the record of what the host holds ignore the claim. The member
-			// waits only if this command was its latest; otherwise the next sweep sends newer.
-			if observed.Generation > generationClaimLimit(n.Generation, networkReceiptMargin) {
-				r.Note = unaccountedNetworkGenerationNote
-				if cmd.Manifest.Generation < member.Generation {
-					return nil
-				}
-				return db.New(tx).SetNetworkMemberNote(ctx, db.SetNetworkMemberNoteParams{Note: unaccountedNetworkGenerationNote, WorkspaceID: ws, ServerID: c.ServerId})
-			}
-		}
-		desired, ready, err := networkManifest(ctx, tx, ws, n, member)
-		if err != nil {
-			return err
-		}
-		converged := ready && sameNetworkConfiguration(desired, observed) && member.Controller == observed.ControllerGeneration && member.Controller == generation(c.ControllerGeneration)
-		ack := int64(0)
-		note := ""
-		if converged {
-			ack = member.Generation
-		} else if member.Controller != observed.ControllerGeneration || member.Controller != generation(c.ControllerGeneration) {
-			note = "Controller recovery preserves private links; general network mutation requires renewed approval."
-		}
-		if _, err = tx.Exec(ctx, `UPDATE network_members SET acknowledged_generation=$3,manifest_hash=$4,note=$5,installed_manifest=$6 WHERE server_id=$1 AND membership_id=$2`, c.ServerId, cmd.MembershipID, ack, receipt.Hash, note, mustJSON(observed)); err != nil {
-			return err
-		}
-		if converged || observed.Generation < member.Generation {
-			return nil
-		}
-		// Partial removals can preserve additions whose configure receipt was
-		// lost. The next full intent must not collide with observed authority.
-		return advanceNetworkGeneration(ctx, tx, ws, observed.Generation)
-	}
-	return nil
-}

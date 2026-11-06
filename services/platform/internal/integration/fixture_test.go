@@ -33,6 +33,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/pquerna/otp/totp"
 )
 
 const postgresImage = "postgres:18.4-alpine3.23@sha256:996d0920e4ff9df1fc19dacb904492f3c1ec0ec1cc338f0ad7123be7731c5f5e"
@@ -363,4 +364,28 @@ func tokenFromLinkMail(t *testing.T, f *fixture, path string) string {
 		t.Fatal("email must contain a link to the configured origin and expected page with its token")
 	}
 	return link.Query().Get("token")
+}
+
+// stayRecentlyAuthenticated returns a step that renews the owner's recent authentication with a
+// minute of margin, for a journey that can outlive it without exhausting its rate limit.
+func stayRecentlyAuthenticated(t *testing.T, f *fixture, b *browser, mfaSecret string) func() {
+	confirmedAt := time.Now()
+	return func() {
+		t.Helper()
+		if time.Since(confirmedAt) < 4*time.Minute {
+			return
+		}
+		var session api.Session
+		credentials := map[string]string{"password": f.password}
+		if mfaSecret != "" {
+			code, err := totp.GenerateCode(mfaSecret, time.Now())
+			if err != nil {
+				t.Fatal(err)
+			}
+			credentials["code"] = code
+		}
+		b.call("POST", "/api/v1/auth/reauthenticate", credentials, 200, &session)
+		b.csrf = session.CsrfToken
+		confirmedAt = time.Now()
+	}
 }

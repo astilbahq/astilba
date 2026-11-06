@@ -50,7 +50,8 @@ const (
 	claimUpdateGeneration      = 3
 )
 
-func newClaimRecovery(t *testing.T, networkGeneration int64) *claimRecovery {
+// newClaimRecovery can take steps that add to what the sealed capsule records.
+func newClaimRecovery(t *testing.T, networkGeneration int64, capture ...func(f *fixture, b *browser, ws, network uuid.UUID)) *claimRecovery {
 	t.Helper()
 	ctx := context.Background()
 	f := setup(t)
@@ -128,6 +129,9 @@ func newClaimRecovery(t *testing.T, networkGeneration int64) *claimRecovery {
 	exec(`INSERT INTO execution_operations(id,workspace_id,server_id,environment_id,generation,request_key,command,kind,state) VALUES($1,$2,$3,$4,$5,$6,$7,'crosshost','running')`, root.Id, ws, a.ServerId, env, root.Generation, uuid.New(), claimBytes(t, root))
 	exec(`INSERT INTO visual_requests(id,workspace_id,server_id,environment_id,unit_id,revision_id,operation_id,candidate) VALUES($1,$2,$3,$4,$5,$6,$7,'{}')`, group.ID, ws, a.ServerId, env, unit, draft.Id, root.Id)
 	exec(`INSERT INTO cross_host_operations(id,workspace_id,environment_id,plan_id,phase) VALUES($1,$2,$3,$4,'checkpoint')`, root.Id, ws, env, group.ID)
+	for _, step := range capture {
+		step(f, b, ws, network)
+	}
 	// Sealed as createRecoveryBase seals it: the keyring refuses a capsule under any other identity.
 	id := uuid.New()
 	descriptor := deployment.RecoveryDescriptor{Version: 1, WorkspaceID: ws, ParentID: root.Id, RootHash: root.PlanHash, GroupID: group.ID, GroupHash: group.Hash, BaseID: id, CheckpointID: id, Participants: []uuid.UUID{a.ServerId}}
