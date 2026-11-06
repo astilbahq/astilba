@@ -12,13 +12,14 @@ import (
 	"encoding/pem"
 	"io"
 	"math/big"
-	"net"
 	"net/http"
 	"net/http/cookiejar"
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -96,18 +97,13 @@ func startTerminalProxy(t *testing.T, docker *client.Client, definition proxyDef
 		t.Fatal(err)
 	}
 	writeProxyCertificate(t, certificates)
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	address := listener.Addr().String()
-	_, port, _ := net.SplitHostPort(address)
-	listener.Close()
+	port := strconv.Itoa(20000 + int(proxyPorts.Add(1)))
+	address := "127.0.0.1:" + port
 	localize := strings.NewReplacer("127.0.0.1:8080", upstream, "platform.example.com:443", "localhost:"+port, "platform.example.com", "localhost", "listen 443 ssl", "listen "+address+" ssl", `":443"`, `"`+address+`"`)
 	binds := []string{certificates + ":" + proxyCertificates + ":ro"}
 	for path, content := range definition.files(snippets) {
 		local := filepath.Join(root, strings.ReplaceAll(strings.TrimPrefix(path, "/"), "/", "-"))
-		if err = os.WriteFile(local, []byte(change(localize.Replace(content))), 0600); err != nil {
+		if err := os.WriteFile(local, []byte(change(localize.Replace(content))), 0600); err != nil {
 			t.Fatal(err)
 		}
 		binds = append(binds, local+":"+path+":ro")
@@ -151,6 +147,11 @@ func startTerminalProxy(t *testing.T, docker *client.Client, definition proxyDef
 		}
 	}
 }
+
+// The proxies share the host's network. A port the kernel handed out, then released, can go
+// to the next listener or outgoing connection before the proxy binds it, so each proxy in
+// this process takes its own from below Linux's default range for such ports.
+var proxyPorts atomic.Int32
 
 func writeProxyCertificate(t *testing.T, directory string) {
 	t.Helper()
