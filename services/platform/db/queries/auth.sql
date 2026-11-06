@@ -52,10 +52,10 @@ INSERT INTO password_resets(account_id,token_hash,expires_at) VALUES($1,$2,$3)
 ON CONFLICT(account_id) DO UPDATE SET token_hash=EXCLUDED.token_hash,expires_at=EXCLUDED.expires_at;
 -- name: LockPasswordReset :one
 SELECT * FROM password_resets WHERE token_hash=$1 AND expires_at > now() FOR UPDATE;
+-- name: PasswordResetExpiry :one
+SELECT expires_at FROM password_resets WHERE account_id=$1;
 -- name: DeletePasswordReset :exec
 DELETE FROM password_resets WHERE account_id=$1;
--- name: DeleteUnsentReset :exec
-DELETE FROM password_resets WHERE account_id=$1 AND token_hash=$2;
 -- name: LockBootstrap :exec
 SELECT pg_advisory_xact_lock(4281642301);
 

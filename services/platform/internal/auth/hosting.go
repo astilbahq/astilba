@@ -54,7 +54,9 @@ func (s *Service) InviteHosted(ctx context.Context, email, origin string) error 
 	}
 	e = s.Mail.Send(ctx, email, "Your Astilba beta invitation", "Open this one-use link to create your Astilba workspace within 48 hours:\n\n"+origin+"/signup?"+url.Values{"token": {token}}.Encode())
 	if e != nil {
-		_ = s.Store.Queries.DeleteUnsentHostedInvitation(ctx, Hash(token))
+		undo, cancel := Detached(ctx)
+		defer cancel()
+		_ = s.Store.Queries.DeleteUnsentHostedInvitation(undo, Hash(token))
 	}
 	return e
 }
@@ -161,7 +163,9 @@ func (s *Service) RequestEmailVerification(ctx context.Context, p store.Principa
 	}
 	e = s.Mail.Send(ctx, p.Account.Email, "Verify your Astilba email", "Sign in to your Astilba account and open this one-use link to verify your email within one hour:\n\n"+origin+"/verify-email?"+url.Values{"token": {token}}.Encode())
 	if e != nil {
-		_ = s.Store.Queries.DeleteUnsentEmailVerification(ctx, db.DeleteUnsentEmailVerificationParams{AccountID: p.Account.ID, TokenHash: Hash(token)})
+		undo, cancel := Detached(ctx)
+		defer cancel()
+		_ = s.Store.Queries.DeleteUnsentEmailVerification(undo, db.DeleteUnsentEmailVerificationParams{AccountID: p.Account.ID, TokenHash: Hash(token)})
 	}
 	return e
 }

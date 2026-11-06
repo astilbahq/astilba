@@ -168,20 +168,6 @@ func (q *Queries) DeleteRecoveryCodes(ctx context.Context, accountID uuid.UUID) 
 	return err
 }
 
-const deleteUnsentReset = `-- name: DeleteUnsentReset :exec
-DELETE FROM password_resets WHERE account_id=$1 AND token_hash=$2
-`
-
-type DeleteUnsentResetParams struct {
-	AccountID uuid.UUID `json:"account_id"`
-	TokenHash []byte    `json:"token_hash"`
-}
-
-func (q *Queries) DeleteUnsentReset(ctx context.Context, arg DeleteUnsentResetParams) error {
-	_, err := q.db.Exec(ctx, deleteUnsentReset, arg.AccountID, arg.TokenHash)
-	return err
-}
-
 const disableTOTP = `-- name: DisableTOTP :one
 UPDATE accounts SET totp_secret=NULL, totp_pending=NULL, totp_pending_expiry=NULL,
     totp_last_step=-1, auth_version=auth_version+1, recovery_codes_saved=true, recovery_codes_generation=NULL WHERE id=$1 RETURNING auth_version
@@ -342,6 +328,17 @@ UPDATE accounts SET recovery_codes_saved=true WHERE id=$1
 func (q *Queries) MarkRecoveryCodesSaved(ctx context.Context, id uuid.UUID) error {
 	_, err := q.db.Exec(ctx, markRecoveryCodesSaved, id)
 	return err
+}
+
+const passwordResetExpiry = `-- name: PasswordResetExpiry :one
+SELECT expires_at FROM password_resets WHERE account_id=$1
+`
+
+func (q *Queries) PasswordResetExpiry(ctx context.Context, accountID uuid.UUID) (time.Time, error) {
+	row := q.db.QueryRow(ctx, passwordResetExpiry, accountID)
+	var expires_at time.Time
+	err := row.Scan(&expires_at)
+	return expires_at, err
 }
 
 const peekPasswordReset = `-- name: PeekPasswordReset :one

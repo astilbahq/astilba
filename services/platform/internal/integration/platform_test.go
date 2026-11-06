@@ -397,7 +397,7 @@ func TestCredentialMutationsRejectRevokedRequestSnapshot(t *testing.T) {
 func TestResetLocksAccountBeforeToken(t *testing.T) {
 	f := setup(t)
 	ctx := context.Background()
-	if e := f.auth.RequestReset(ctx, "owner@example.test", "test", f.apiServer.Origin); e != nil {
+	if e := f.auth.RequestReset(ctx, "owner@example.test", auth.Source{Key: "test", Network: "test"}); e != nil {
 		t.Fatal(e)
 	}
 	token := tokenFromLinkMail(t, f, "/reset")
