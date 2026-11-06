@@ -129,6 +129,49 @@ func TestExpiredMaintenanceFirstDeliveryReconcilesAndPreservesTerminalResult(t *
 	}
 }
 
+// Completion on a host that paused nothing, and on one that never reserved, releases or
+// acknowledges whatever its deadline. One that has not resumed keeps its reservation.
+func TestExpiredMaintenanceCompletion(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		reserved      bool
+		phase         string
+		state         api.ExecutionState
+		keepsTheHosts bool
+	}{
+		{name: "resumed-without-pause", reserved: true, phase: "resumed", state: "succeeded"},
+		{name: "unreserved-source", state: "succeeded"},
+		{name: "not-resumed", reserved: true, phase: "paused", state: "needs_attention", keepsTheHosts: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := expiredMaintenance(t, tc.reserved)
+			f.body.Phase = "complete"
+			f.freezeBody()
+			if tc.reserved {
+				s, err := f.journal.crossHost()
+				if err != nil {
+					t.Fatal(err)
+				}
+				source := false
+				s.Phase, s.ResumeTarget = tc.phase, &source
+				if err = f.journal.saveCrossHost(s); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := f.engine.Execute(context.Background(), f.command); err != nil {
+				t.Fatal(err)
+			}
+			r, err := f.journal.Record(f.command.Id)
+			if err != nil || r.Report.State != tc.state {
+				t.Fatal("expired completion ended wrongly", r.Report.State, r.Report.Note, err)
+			}
+			if held, err := f.journal.hasCrossHostBarrier(); err != nil || held != tc.keepsTheHosts {
+				t.Fatal("expired completion changed the reservation wrongly", held, err)
+			}
+		})
+	}
+}
+
 func TestExpiredMaintenanceKeepsUncertainPrimaryStopped(t *testing.T) {
 	f := expiredMaintenance(t, true)
 	target := f.body.Unit.Plan

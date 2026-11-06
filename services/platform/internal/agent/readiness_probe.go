@@ -25,12 +25,14 @@ func (e *Engine) waitHTTPInstance(ctx context.Context, c api.ExecutionCommand, p
 		probe = instance
 	}
 	name := "astilba-health-" + c.Id.String() + "-" + probe.String()
+	// A stopping agent may not reach this probe again, and nothing else removes it.
+	cleanup := context.WithoutCancel(ctx)
 	v, err := e.Docker.ContainerInspect(ctx, name, client.ContainerInspectOptions{})
 	if err == nil {
 		if v.Container.Config.Labels["com.astilba.health"] != c.Id.String() || (v.Container.Config.Labels[labelServer] != p.ServerID.String() || v.Container.Config.Labels["com.astilba.unit"] != p.UnitID.String() || v.Container.Config.Labels[labelKind] != "health-v1") {
 			return errors.New("health-check ownership conflict")
 		}
-		_, _ = e.Docker.ContainerRemove(ctx, v.Container.ID, client.ContainerRemoveOptions{Force: true})
+		_, _ = e.Docker.ContainerRemove(cleanup, v.Container.ID, client.ContainerRemoveOptions{Force: true})
 	} else if !errdefs.IsNotFound(err) {
 		return err
 	}
@@ -51,7 +53,7 @@ func (e *Engine) waitHTTPInstance(ctx context.Context, c api.ExecutionCommand, p
 			select {
 			case s := <-wait.Result:
 				if s.StatusCode == 0 {
-					_, _ = e.Docker.ContainerRemove(ctx, v.ID, client.ContainerRemoveOptions{})
+					_, _ = e.Docker.ContainerRemove(cleanup, v.ID, client.ContainerRemoveOptions{})
 					return nil
 				}
 				outcome = errNotReady
@@ -59,7 +61,7 @@ func (e *Engine) waitHTTPInstance(ctx context.Context, c api.ExecutionCommand, p
 			case <-ctx.Done():
 			}
 		}
-		_, _ = e.Docker.ContainerRemove(ctx, v.ID, client.ContainerRemoveOptions{Force: true})
+		_, _ = e.Docker.ContainerRemove(cleanup, v.ID, client.ContainerRemoveOptions{Force: true})
 		select {
 		case <-ctx.Done():
 			return ctx.Err()

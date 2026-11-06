@@ -103,6 +103,7 @@ func testCrossHostCoordinatedPlacement(t *testing.T, expiryPhase string) {
 	var holdPrimaryResume atomic.Bool
 	var unsupportedMaintenanceHost atomic.Int32
 	var failCandidate atomic.Bool
+	var expirePhase atomic.Value
 	var revokePrimary atomic.Bool
 	var holdCheckpoint atomic.Bool
 	var holdClosure atomic.Bool
@@ -230,6 +231,9 @@ func testCrossHostCoordinatedPlacement(t *testing.T, expiryPhase string) {
 					}
 					if i == 1 && command.Phase == "prepare" && failCandidate.Load() {
 						report.State = "failed"
+					}
+					if i == 0 && expirePhase.Load() == command.Phase {
+						report.State = "cancelled"
 					}
 					if i == 0 && command.Maintenance != nil && (command.Phase == "resume-source" || command.Phase == "resume-target") && holdPrimaryResume.Load() {
 						time.Sleep(100 * time.Millisecond)
@@ -1039,6 +1043,7 @@ func testCrossHostCoordinatedPlacement(t *testing.T, expiryPhase string) {
 	var preservedTargetDraft api.Revision
 	b.call("PUT", databasePath+"/draft", map[string]any{"baseRevisionId": databaseDraft.Id, "specification": view.Plan.TargetGroup().Specification}, 200, &preservedTargetDraft)
 	cancelCoordinatedCutover(t, f, b, refreshAuthentication, wait, actions, parent.Id, view.Plan.ID)
+	lateCoordinatedCutover(t, f, b, refreshAuthentication, wait, &expirePhase, actions, parent.Id, view.Plan.ID)
 	holdRemoteResume.Store(true)
 	holdPrimaryResume.Store(true)
 	cutover := api.UpgradeActionRequest{Action: "cutover", ExpectedPhase: "ready", RequestKey: uuid.New()}
@@ -1177,14 +1182,7 @@ func testCrossHostCoordinatedPlacement(t *testing.T, expiryPhase string) {
 	waitNetworkIdle()
 	refreshAuthentication()
 	b.call("PUT", databasePath+"/backup-policies/"+recovery.ID.String(), api.BackupPolicyRequest{BaseGeneration: recovery.Generation, Name: "Recovery", ResourceId: pg, DestinationId: destination.ID, Method: "postgres-logical", Schedule: api.DailySchedule{Timezone: "UTC"}, Retain: 7, Enabled: true, Command: []string{}, Password: &password}, 200, &recovery)
-	restoredAt := time.Now().UTC()
-	manifest := backup.Manifest{Recipe: backup.Recipe, PolicyID: recovery.ID, RunID: uuid.New(), EnvironmentID: databaseEnv.Id, ResourceID: pg, Method: "postgres-logical", Image: domain.PostgresImage, Database: "app", Username: "app", CreatedAt: restoredAt, Roles: []backup.Role{}, Extensions: []string{}, SHA256: strings.Repeat("f", 64), Bytes: 100}
-	restored := backup.Run{ID: uuid.New(), PolicyID: recovery.ID, Generation: recovery.Generation, ScheduledAt: restoredAt, StartedAt: restoredAt, FinishedAt: &restoredAt, State: "succeeded", Snapshot: strings.Repeat("e", 64), Verified: true, TargetID: uuid.New(), Manifest: &manifest, ManifestHash: backup.Hash(manifest)}
-	historicalManifest := manifest
-	historicalManifest.Image = domain.Postgres17Image
-	historical := restored
-	historical.ID, historical.TargetID = uuid.New(), uuid.New()
-	historical.Manifest, historical.ManifestHash = &historicalManifest, backup.Hash(historicalManifest)
+	restored, historical := recoveryRuns(recovery, databaseEnv.Id, pg)
 	if err := f.execution.ScheduleReport(ctx, identities[0], 1, backup.Status{PolicyID: recovery.ID, Generation: recovery.Generation, Runs: []backup.Run{restored, historical}}); err != nil {
 		t.Fatal(err)
 	}
@@ -1193,6 +1191,7 @@ func testCrossHostCoordinatedPlacement(t *testing.T, expiryPhase string) {
 	var restoreDraft api.Revision
 	refreshAuthentication()
 	b.call("POST", databasePath+"/backup-policies/"+recovery.ID.String()+"/cutover", api.BackupCutoverRequest{BaseRevisionId: restoreBase.Id, RunId: restored.ID}, 200, &restoreDraft)
+	lateCoordinatedRestores(t, f, b, refreshAuthentication, waitNetworkReady, wait, &expirePhase, &holdRemotePause, databasePath, restoreDraft.Id, servers[0].Server.Id)
 	var restoreReview deployment.Status
 	waitNetworkReady()
 	refreshAuthentication()

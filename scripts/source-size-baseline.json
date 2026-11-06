@@ -10,5 +10,5 @@
   "services/platform/internal/deployment/plan.go": 664,
   "services/platform/internal/integration/cross_host_physical_recovery_test.go": 970,
   "services/platform/internal/integration/cross_host_recovery_test.go": 1343,
-  "services/platform/internal/integration/cross_host_test.go": 1350
+  "services/platform/internal/integration/cross_host_test.go": 1349
 }
