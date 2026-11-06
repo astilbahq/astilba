@@ -1,0 +1,13 @@
+name: Pull images
+description: Pulls digest-pinned images one at a time, repeating each for at least four minutes so a registry outage does not fail the job. Bytes that fail their digest stop at once.
+inputs:
+  images:
+    description: The images, whitespace separated, each with a digest.
+    required: true
+  docker:
+    description: The command that runs Docker, with any arguments before the subcommand.
+    default: docker
+runs:
+  # Runs on the runner's own Node, so a job with no Node of its own needs no setup step.
+  using: node24
+  main: pull.mjs
