@@ -194,11 +194,11 @@ func (s *Store) inWorkspaceIsolation(ctx context.Context, p Principal, id uuid.U
 	return Normalize(tx.Commit(ctx))
 }
 
-// AdmitBrowserSession revalidates a session in a transaction holding the workspace lock, so
-// that a credential change or logout committed while the request waited, or the session's
-// expiry, wins. It covers MFA too: every change to it advances the account's version. A
-// refusal rolls back and leaves no audit record, as a refused automation credential does.
-// It takes no locks, so it cannot deadlock or make a revocation wait.
+// AdmitBrowserSession revalidates a session in a transaction holding the lock its request
+// waited for, so that a credential change or logout committed during the wait, or the
+// session's expiry, wins. It covers MFA too: every change to it advances the account's
+// version. A refusal rolls back and leaves no audit record, as a refused automation
+// credential does. It takes no locks, so it cannot deadlock or make a revocation wait.
 func AdmitBrowserSession(ctx context.Context, q *db.Queries, p Principal) error {
 	_, err := q.BrowserSessionAdmission(ctx, db.BrowserSessionAdmissionParams{Token: p.SessionHash, AccountID: p.Account.ID, AuthVersion: p.Account.AuthVersion})
 	return IfMissing(err, domain.Unauthenticated)

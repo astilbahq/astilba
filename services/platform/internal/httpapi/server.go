@@ -431,7 +431,7 @@ func (s *Server) ChangePassword(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, e)
 		return
 	}
-	a, e := s.Auth.ChangePassword(r.Context(), principal(r.Context()).Account.ID, principal(r.Context()).Account.AuthVersion, value(b.Password))
+	a, e := s.Auth.ChangePassword(r.Context(), *principal(r.Context()), value(b.Password))
 	if e == nil {
 		e = s.rotate(r.Context(), a, len(a.TotpSecret) > 0)
 	}
@@ -520,7 +520,7 @@ func (s *Server) EnrollMFA(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, e)
 		return
 	}
-	secret, uri, e := s.Auth.BeginMFA(r.Context(), principal(r.Context()).Account)
+	secret, uri, e := s.Auth.BeginMFA(r.Context(), *principal(r.Context()))
 	if e != nil {
 		s.fail(w, r, e)
 		return
@@ -536,7 +536,7 @@ func (s *Server) ConfirmMFA(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, e)
 		return
 	}
-	a, codes, e := s.Auth.ConfirmMFA(r.Context(), principal(r.Context()).Account.ID, principal(r.Context()).Account.AuthVersion, b.Code)
+	a, codes, e := s.Auth.ConfirmMFA(r.Context(), *principal(r.Context()), b.Code)
 	s.sendCodes(w, r, a, codes, e)
 }
 func (s *Server) RegenerateRecoveryCodes(w http.ResponseWriter, r *http.Request) {
@@ -544,7 +544,7 @@ func (s *Server) RegenerateRecoveryCodes(w http.ResponseWriter, r *http.Request)
 		s.fail(w, r, e)
 		return
 	}
-	a, codes, e := s.Auth.RegenerateRecovery(r.Context(), principal(r.Context()).Account.ID, principal(r.Context()).Account.AuthVersion)
+	a, codes, e := s.Auth.RegenerateRecovery(r.Context(), *principal(r.Context()))
 	s.sendCodes(w, r, a, codes, e)
 }
 func (s *Server) sendCodes(w http.ResponseWriter, r *http.Request, a db.Account, codes []string, e error) {
@@ -567,7 +567,7 @@ func (s *Server) DisableMFA(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, e)
 		return
 	}
-	a, e := s.Auth.DisableMFA(r.Context(), principal(r.Context()).Account.ID, principal(r.Context()).Account.AuthVersion)
+	a, e := s.Auth.DisableMFA(r.Context(), *principal(r.Context()))
 	if e == nil {
 		e = s.rotate(r.Context(), a, false)
 	}

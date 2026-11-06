@@ -99,8 +99,9 @@ func (s *sessionStore) CommitCtx(ctx context.Context, token string, data []byte,
 		return errSessionContext
 	}
 	if loaded.token == token {
-		// A concurrent logout/renewal or expiry cleanup may have deleted the row.
-		// UPDATE serializes with that deletion and never recreates its authority.
+		// A concurrent logout/renewal or expiry cleanup may have deleted the row, or the
+		// session may have expired during this request. UPDATE serializes with that
+		// deletion and never restores its authority.
 		n, err := s.queries.RefreshSession(ctx, db.RefreshSessionParams{Token: token, Data: data, Expiry: expiry})
 		if err != nil {
 			return err

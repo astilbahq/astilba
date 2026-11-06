@@ -210,22 +210,23 @@ func recoveryCodes(ctx context.Context, q *db.Queries, id uuid.UUID) ([]string, 
 	return codes, nil
 }
 
-// lockCurrent fences requests authorized before a concurrent credential change.
-func lockCurrent(ctx context.Context, q *db.Queries, id uuid.UUID, version int64) (db.Account, error) {
-	account, err := q.LockAccount(ctx, id)
+// lockCurrent locks the account for a browser session's change to it, then checks that the
+// session still stands. The request may have spent a long time hashing a password or queued
+// behind an import, and a logout neither changes the account's version nor waits for this
+// lock, so only reading the session after the wait sees one. A logout that lands after this
+// check, while the few statements of the change run, does not stop it.
+func lockCurrent(ctx context.Context, q *db.Queries, p store.Principal) (db.Account, error) {
+	account, err := q.LockAccount(ctx, p.Account.ID)
 	if err != nil {
 		return account, err
 	}
-	if account.AuthVersion != version {
-		return account, domain.Unauthenticated
-	}
-	return account, nil
+	return account, store.AdmitBrowserSession(ctx, q, p)
 }
 
-func (s *Service) BeginMFA(ctx context.Context, expected db.Account) (string, string, error) {
+func (s *Service) BeginMFA(ctx context.Context, p store.Principal) (string, string, error) {
 	var secret, uri string
 	err := s.Store.Transaction(ctx, func(q *db.Queries) error {
-		account, err := lockCurrent(ctx, q, expected.ID, expected.AuthVersion)
+		account, err := lockCurrent(ctx, q, p)
 		if err != nil {
 			return err
 		}
@@ -249,7 +250,8 @@ func (s *Service) BeginMFA(ctx context.Context, expected db.Account) (string, st
 	})
 	return secret, uri, err
 }
-func (s *Service) ConfirmMFA(ctx context.Context, id uuid.UUID, version int64, code string) (db.Account, []string, error) {
+func (s *Service) ConfirmMFA(ctx context.Context, p store.Principal, code string) (db.Account, []string, error) {
+	id := p.Account.ID
 	var account db.Account
 	var codes []string
 	if err := s.Limit(ctx, "mfa-confirm:"+id.String(), 5, 5*time.Minute); err != nil {
@@ -257,7 +259,7 @@ func (s *Service) ConfirmMFA(ctx context.Context, id uuid.UUID, version int64, c
 	}
 	err := s.Store.Transaction(ctx, func(q *db.Queries) error {
 		var err error
-		account, err = lockCurrent(ctx, q, id, version)
+		account, err = lockCurrent(ctx, q, p)
 		if err != nil {
 			return err
 		}
@@ -288,10 +290,11 @@ func (s *Service) ConfirmMFA(ctx context.Context, id uuid.UUID, version int64, c
 	})
 	return account, codes, err
 }
-func (s *Service) DisableMFA(ctx context.Context, id uuid.UUID, version int64) (db.Account, error) {
+func (s *Service) DisableMFA(ctx context.Context, p store.Principal) (db.Account, error) {
+	id := p.Account.ID
 	var account db.Account
 	err := s.Store.Transaction(ctx, func(q *db.Queries) error {
-		current, err := lockCurrent(ctx, q, id, version)
+		current, err := lockCurrent(ctx, q, p)
 		if err != nil {
 			return err
 		}
@@ -309,12 +312,13 @@ func (s *Service) DisableMFA(ctx context.Context, id uuid.UUID, version int64) (
 	})
 	return account, err
 }
-func (s *Service) RegenerateRecovery(ctx context.Context, id uuid.UUID, version int64) (db.Account, []string, error) {
+func (s *Service) RegenerateRecovery(ctx context.Context, p store.Principal) (db.Account, []string, error) {
+	id := p.Account.ID
 	var account db.Account
 	var codes []string
 	err := s.Store.Transaction(ctx, func(q *db.Queries) error {
 		var err error
-		account, err = lockCurrent(ctx, q, id, version)
+		account, err = lockCurrent(ctx, q, p)
 		if err != nil {
 			return err
 		}
@@ -333,14 +337,15 @@ func (s *Service) RegenerateRecovery(ctx context.Context, id uuid.UUID, version 
 	})
 	return account, codes, err
 }
-func (s *Service) ChangePassword(ctx context.Context, id uuid.UUID, version int64, password string) (db.Account, error) {
+func (s *Service) ChangePassword(ctx context.Context, p store.Principal, password string) (db.Account, error) {
+	id := p.Account.ID
 	var account db.Account
 	hash, err := s.Passwords.Hash(ctx, password)
 	if err != nil {
 		return account, err
 	}
 	err = s.Store.Transaction(ctx, func(q *db.Queries) error {
-		if _, err := lockCurrent(ctx, q, id, version); err != nil {
+		if _, err := lockCurrent(ctx, q, p); err != nil {
 			return err
 		}
 		if err := q.UpdatePassword(ctx, db.UpdatePasswordParams{ID: id, PasswordHash: hash}); err != nil {
@@ -486,11 +491,8 @@ func (s *Service) AcceptInvitation(ctx context.Context, token, name, password st
 			if current == nil || current.Account.ID != account.ID {
 				return &domain.Error{Code: "invitation_signin_required", Message: "Sign in as the invited account before accepting."}
 			}
-			account, err = lockCurrent(ctx, q, current.Account.ID, current.Account.AuthVersion)
+			account, err = lockCurrent(ctx, q, *current)
 			if err != nil {
-				return err
-			}
-			if err = store.AdmitBrowserSession(ctx, q, *current); err != nil {
 				return err
 			}
 		}
@@ -515,7 +517,7 @@ func (s *Service) AcknowledgeRecoveryCodes(ctx context.Context, p store.Principa
 		return domain.MFARequired
 	}
 	return s.Store.Transaction(ctx, func(q *db.Queries) error {
-		account, err := lockCurrent(ctx, q, p.Account.ID, p.Account.AuthVersion)
+		account, err := lockCurrent(ctx, q, p)
 		if err != nil {
 			return err
 		}

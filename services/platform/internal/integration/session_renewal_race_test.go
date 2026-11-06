@@ -34,7 +34,7 @@ func holdSessions(t *testing.T, f *fixture) (*heldSessionStore, func()) {
 
 // sendHeld sends a request with these cookies, returning once an armed store is
 // holding it. The returned function waits for the response after the release.
-func sendHeld(t *testing.T, b *browser, gate *heldSessionStore, cookies []*http.Cookie, path string, body any) func() heldResponse {
+func sendHeld(t *testing.T, b *browser, gate *heldSessionStore, cookies []*http.Cookie, method, path string, body any) func() heldResponse {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	t.Cleanup(cancel)
@@ -45,7 +45,7 @@ func sendHeld(t *testing.T, b *browser, gate *heldSessionStore, cookies []*http.
 			t.Fatal(err)
 		}
 	}
-	request, err := http.NewRequestWithContext(ctx, "POST", b.f.server.URL+path, bytes.NewReader(raw))
+	request, err := http.NewRequestWithContext(ctx, method, b.f.server.URL+path, bytes.NewReader(raw))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,8 +132,18 @@ func enableMFA(t *testing.T, b *browser) api.RecoveryCodes {
 	return codes
 }
 
-// The account change passes its version check because logout does not bump it,
-// so only the session save can stop it recreating what logout deleted.
+// accountCredentials is everything an account change could alter, as text to compare.
+func accountCredentials(t *testing.T, f *fixture) string {
+	t.Helper()
+	var state string
+	if err := f.st.Pool.QueryRow(context.Background(), `SELECT a::text || ' ' || coalesce((SELECT string_agg(code_hash::text, ',' ORDER BY code_hash) FROM recovery_codes r WHERE r.account_id = a.id), '') FROM accounts a WHERE a.id = $1`, f.owner).Scan(&state); err != nil {
+		t.Fatal(err)
+	}
+	return state
+}
+
+// Logout does not change the account's version, so a request already under way passes
+// that check. It must still leave the account as it was and not recreate the session.
 func TestAccountChangeDoesNotRecreateLoggedOutSession(t *testing.T) {
 	for _, change := range []struct {
 		name, path string
@@ -157,6 +167,14 @@ func TestAccountChangeDoesNotRecreateLoggedOutSession(t *testing.T) {
 			enableMFA(t, b)
 			return nil
 		}},
+		{"begin MFA enrollment", "/api/v1/auth/mfa/enroll", func(*testing.T, *browser) any { return nil }},
+		// Proving the password needs no live session until the save, which must not recreate it.
+		{"confirm identity", "/api/v1/auth/reauthenticate", func(_ *testing.T, b *browser) any {
+			return map[string]string{"password": b.f.password}
+		}},
+		{"acknowledge recovery codes", "/api/v1/auth/mfa/recovery-codes/acknowledge", func(t *testing.T, b *browser) any {
+			return map[string]any{"generation": enableMFA(t, b).Generation}
+		}},
 	} {
 		t.Run(change.name, func(t *testing.T) {
 			f := setup(t)
@@ -164,9 +182,10 @@ func TestAccountChangeDoesNotRecreateLoggedOutSession(t *testing.T) {
 			b := f.browser(t)
 			b.login("owner@example.test", f.password)
 			body := change.body(t, b)
+			before := accountCredentials(t, f)
 
 			gate.armed.Store(true)
-			finish := sendHeld(t, b, gate, b.client.Jar.Cookies(mustURL(f.server.URL)), change.path, body)
+			finish := sendHeld(t, b, gate, b.client.Jar.Cookies(mustURL(f.server.URL)), "POST", change.path, body)
 			b.call("POST", "/api/v1/auth/logout", nil, 204, nil)
 			release()
 			result := finish()
@@ -181,6 +200,49 @@ func TestAccountChangeDoesNotRecreateLoggedOutSession(t *testing.T) {
 			var rows int
 			if err := f.st.Pool.QueryRow(context.Background(), "SELECT count(*) FROM sessions").Scan(&rows); err != nil || rows != 0 {
 				t.Fatalf("%d session rows after logout: %v", rows, err)
+			}
+			if after := accountCredentials(t, f); after != before {
+				t.Fatalf("a logged-out session's change committed:\n%s\n%s", before, after)
+			}
+		})
+	}
+}
+
+// An idle refresh extends a session, so a request that outlasts its session must not bring it back,
+// whether or not the request itself was refused.
+func TestExpiredSessionStaysExpired(t *testing.T) {
+	for _, request := range []struct {
+		name, method, path string
+		body               any
+	}{
+		{"read", "GET", "/api/v1/session", nil},
+		{"refused change", "POST", "/api/v1/auth/password", map[string]string{"password": "replacement password here"}},
+	} {
+		t.Run(request.name, func(t *testing.T) {
+			f := setup(t)
+			gate, release := holdSessions(t, f)
+			b := f.browser(t)
+			b.login("owner@example.test", f.password)
+			cookies := b.client.Jar.Cookies(mustURL(f.server.URL))
+
+			gate.armed.Store(true)
+			finish := sendHeld(t, b, gate, cookies, request.method, request.path, request.body)
+			ctx := context.Background()
+			if _, err := f.st.Pool.Exec(ctx, "UPDATE sessions SET expiry=clock_timestamp()"); err != nil {
+				t.Fatal(err)
+			}
+			release()
+			result := finish()
+
+			if result.status != 401 || len(result.cookies) != 0 {
+				t.Fatalf("status %d, cookies %d: %s", result.status, len(result.cookies), result.body)
+			}
+			var live int
+			if err := f.st.Pool.QueryRow(ctx, "SELECT count(*) FROM sessions WHERE expiry > clock_timestamp()").Scan(&live); err != nil || live != 0 {
+				t.Fatalf("%d live sessions after expiry: %v", live, err)
+			}
+			if session := sessionFromCookies(t, b, cookies); session.User != nil {
+				t.Fatal("the expired cookie still authenticates")
 			}
 		})
 	}
@@ -213,7 +275,7 @@ func TestSignInSucceedsWithoutThePresentedSession(t *testing.T) {
 			body := step.prepare(t, f, b)
 
 			gate.armed.Store(true)
-			finish := sendHeld(t, b, gate, b.client.Jar.Cookies(mustURL(f.server.URL)), step.path, body)
+			finish := sendHeld(t, b, gate, b.client.Jar.Cookies(mustURL(f.server.URL)), "POST", step.path, body)
 			if _, err := f.st.Pool.Exec(context.Background(), "DELETE FROM sessions"); err != nil {
 				t.Fatal(err)
 			}
@@ -240,7 +302,7 @@ func TestAccountChangeSurvivesStaleRequestWithOldCookie(t *testing.T) {
 	old := b.client.Jar.Cookies(mustURL(f.server.URL))
 
 	gate.armedCommit.Store(true)
-	finish := sendHeld(t, b, gate, old, "/api/v1/auth/password", map[string]string{"password": "replacement password here"})
+	finish := sendHeld(t, b, gate, old, "POST", "/api/v1/auth/password", map[string]string{"password": "replacement password here"})
 	if stale := sessionFromCookies(t, b, old); stale.User != nil {
 		t.Fatal("the old cookie survived the password change")
 	}

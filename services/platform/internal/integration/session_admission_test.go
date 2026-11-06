@@ -31,20 +31,26 @@ func holdWorkspaceRow(t *testing.T, f *fixture, ws uuid.UUID) (pgx.Tx, func()) {
 	}
 	return held, func() {
 		t.Helper()
-		deadline := time.Now().Add(5 * time.Second)
-		for {
-			var waiting bool
-			if err := f.st.Pool.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND query LIKE '%name: LockWorkspaceByID%')").Scan(&waiting); err != nil {
-				t.Fatal(err)
-			}
-			if waiting {
-				return
-			}
-			if time.Now().After(deadline) {
-				t.Fatal("the request never reached the workspace lock")
-			}
-			time.Sleep(10 * time.Millisecond)
+		awaitLockWait(t, f, "name: LockWorkspaceByID")
+	}
+}
+
+// awaitLockWait blocks until a statement containing this text is waiting for a lock.
+func awaitLockWait(t *testing.T, f *fixture, statement string) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		var waiting bool
+		if err := f.st.Pool.QueryRow(context.Background(), "SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND query LIKE $1)", "%"+statement+"%").Scan(&waiting); err != nil {
+			t.Fatal(err)
 		}
+		if waiting {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the request never waited at ", statement)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
@@ -54,7 +60,7 @@ func changePassword(t *testing.T, ctx context.Context, f *fixture) error {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = f.auth.ChangePassword(ctx, f.owner, account.AuthVersion, "replacement password here")
+	_, err = f.auth.ChangePassword(ctx, browserPrincipal(t, f.st, account, false), "replacement password here")
 	return err
 }
 
@@ -77,7 +83,7 @@ func TestBrowserWriteWaitingBehindWorkspaceLock(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err = f.auth.DisableMFA(ctx, f.owner, account.AuthVersion); err != nil {
+			if _, err = f.auth.DisableMFA(ctx, browserPrincipal(t, f.st, account, true)); err != nil {
 				t.Fatal(err)
 			}
 		}},
@@ -176,6 +182,78 @@ func TestInvitationWaitingBehindWorkspaceLockAfterLogout(t *testing.T) {
 	}
 	if members != 0 {
 		t.Fatal("a logged-out session accepted the invitation")
+	}
+}
+
+// A stolen session's credential change can queue behind an import that holds the account.
+// A logout neither waits for that lock nor changes the account's version, so only a check
+// after the wait stops the change committing.
+func TestCredentialChangeWaitingBehindAccountLock(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	attacker := f.browser(t)
+	attacker.login("owner@example.test", f.password)
+	before := accountCredentials(t, f)
+
+	held, err := f.st.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { held.Rollback(ctx) })
+	if _, err = held.Exec(ctx, "SELECT id FROM accounts WHERE id=$1 FOR UPDATE", f.owner); err != nil {
+		t.Fatal(err)
+	}
+	change := attacker.send("POST", "/api/v1/auth/password", map[string]string{"password": "replacement password here"})
+	awaitLockWait(t, f, "name: LockAccount")
+	attacker.call("POST", "/api/v1/auth/logout", nil, 204, nil)
+	if err = held.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	requireReply(t, <-change, 401)
+	if after := accountCredentials(t, f); after != before {
+		t.Fatalf("a logged-out session's change committed:\n%s\n%s", before, after)
+	}
+}
+
+// An import runs long enough that a logout can land while it is inserting. It holds the
+// account throughout, but a logout does not wait for that.
+func TestImportStopsAfterLogout(t *testing.T) {
+	ctx := context.Background()
+	const passphrase = "unique archive passphrase for fixture"
+	source := setup(t)
+	exporter := source.browser(t)
+	ws := exporter.login("owner@example.test", source.password).Workspaces[0].Id
+	var archive api.WorkspaceArchive
+	exporter.call("POST", "/api/v1/workspaces/"+ws.String()+"/export", map[string]string{"passphrase": passphrase}, 200, &archive)
+
+	f := setup(t)
+	b := f.browser(t)
+	b.login("owner@example.test", f.password)
+	// The archive's audit records are among the rows it inserts, so this pauses the import
+	// part-way through them.
+	held, err := f.st.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { held.Rollback(ctx) })
+	if _, err = held.Exec(ctx, "LOCK TABLE audit_events IN SHARE MODE"); err != nil {
+		t.Fatal(err)
+	}
+	request := b.send("POST", "/api/v1/workspaces/import", map[string]any{"archive": archive.Archive, "passphrase": passphrase})
+	awaitLockWait(t, f, "INSERT INTO audit_events")
+	b.call("POST", "/api/v1/auth/logout", nil, 204, nil)
+	if err = held.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	requireReply(t, <-request, 401)
+	var imported bool
+	if err = f.st.Pool.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM workspaces WHERE id=$1)", ws).Scan(&imported); err != nil {
+		t.Fatal(err)
+	}
+	if imported {
+		t.Fatal("a logged-out session's import committed")
 	}
 }
 

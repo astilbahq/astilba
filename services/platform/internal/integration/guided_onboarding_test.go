@@ -12,7 +12,6 @@ import (
 	dbmigrate "github.com/astilbahq/astilba/services/platform/db"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
-	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
 	"github.com/pquerna/otp/totp"
 	"github.com/pressly/goose/v3"
@@ -66,7 +65,7 @@ func TestRecoveryCodeConfirmationIsGenerationBoundAndDoesNotReauthenticate(t *te
 	if replacement.Generation == nil || *replacement.Generation == *codes.Generation || replacement.Session.User.RecoveryCodesSaved {
 		t.Fatal("replacement did not reset confirmation and generation")
 	}
-	if err := f.auth.AcknowledgeRecoveryCodes(ctx, store.Principal{Account: before, MFA: true}, *codes.Generation); !errors.Is(err, domain.Unauthenticated) {
+	if err := f.auth.AcknowledgeRecoveryCodes(ctx, browserPrincipal(t, f.st, before, true), *codes.Generation); !errors.Is(err, domain.Unauthenticated) {
 		t.Fatal("revoked request snapshot acknowledged replacement", err)
 	}
 	owner.call("POST", path, map[string]string{"generation": codes.Generation.String()}, 409, nil)

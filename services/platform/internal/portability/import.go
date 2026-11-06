@@ -176,12 +176,13 @@ func (s *Service) Import(ctx context.Context, p store.Principal, passphrase stri
 		}
 	}
 	q := db.New(tx)
-	account, e := q.LockAccount(ctx, p.Account.ID)
-	if e != nil {
+	if _, e = q.LockAccount(ctx, p.Account.ID); e != nil {
 		return out, e
 	}
-	if account.AuthVersion != p.Account.AuthVersion {
-		return out, domain.Unauthenticated
+	// Opening the archive is slow, so the session may have ended by now. Refuse before
+	// holding the account through the insert.
+	if e = store.AdmitBrowserSession(ctx, q, p); e != nil {
+		return out, e
 	}
 	if e = q.InsertWorkspace(ctx, db.InsertWorkspaceParams{ID: archive.Workspace, Name: archive.Name}); e != nil {
 		return out, store.Normalize(e)
@@ -321,6 +322,10 @@ func (s *Service) Import(ctx context.Context, p store.Principal, passphrase stri
 		}
 	}
 	if e = store.Audit(ctx, q, p, archive.Workspace, "workspace.import_owner_attribution", archive.Workspace); e != nil {
+		return out, e
+	}
+	// The account lock stops a credential change during the insert, but not a logout.
+	if e = store.AdmitBrowserSession(ctx, q, p); e != nil {
 		return out, e
 	}
 	out = store.Workspace{ID: archive.Workspace, Name: archive.Name, Role: "owner", RequireMFA: archive.RequireMFA}
