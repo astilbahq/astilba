@@ -108,7 +108,7 @@ func (s *Server) Handler(assets http.Handler) (http.Handler, error) {
 	if s.Execution.GitHub != nil {
 		s.Execution.Policy.GitHubFixture = s.Execution.GitHub.FixtureAPI()
 	}
-	spec, err := api.GetSpec()
+	spec, err := loadSpec()
 	if err != nil {
 		return nil, err
 	}

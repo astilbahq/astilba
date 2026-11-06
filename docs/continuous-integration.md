@@ -15,7 +15,7 @@ check is a final `always()` gate, so it is reported on every run.
 | `git-providers.yml`        | Git provider verification        | GitLab/Gitea and source-preserving Compose edits                                                                                  |
 | `ci.yml`                   | Native verification              | Selected amd64 and arm64 host suites: fresh bootstrap, Docker, builds, PostgreSQL restore, systemd agent, deployment and recovery |
 | `canvas.yml`               | Canvas browser verification      | Type/lint/build, domain tests and Chromium/WebKit journeys                                                                        |
-| `application.yml`          | Application verification         | `make verify-app-build` and five parallel Go race lanes, image smoke test, corresponding-source archive and selected vulnerability scan                             |
+| `application.yml`          | Application verification         | `make verify-app-build` and six parallel Go race lanes, image smoke test, corresponding-source archive and selected vulnerability scan                             |
 | `application-browsers.yml` | Application browser verification | Every Chromium/WebKit dashboard journey against a real API/PostgreSQL fixture                                                     |
 | `workshop.yml`             | Workshop verification            | Standalone Storybook scenarios and accessibility audits in both browsers                                                          |
 
@@ -188,29 +188,33 @@ bootstraps. Native verification remains the required check.
 
 ## Application Go verification
 
-Application verification runs six jobs in parallel: `make verify-app-build`
+Application verification runs seven jobs in parallel: `make verify-app-build`
 (application checks, agent/CLI and dashboard builds and packaging, followed by
-the image smoke test and source archive) and five Go race lanes: `crosshost` for
-the cross-host pair, `preview` for preview checkpoint recovery, `network` for the
-private network generation tests named by `APP_NETWORK_TESTS`, `operations` for
-tests named by `APP_OPERATIONS_TESTS` and `remaining` for everything else.
+the image smoke test and source archive) and six Go race lanes: `crosshost` for
+the coordinated placement journey, `preview` for preview checkpoint recovery,
+`network` for the private network generation tests named by `APP_NETWORK_TESTS`,
+`operations` for tests named by `APP_OPERATIONS_TESTS`, `m-to-z` for other tests
+whose names start `TestM` to `TestZ` and `remaining` for everything else.
 Each retains race detection, uncached execution and a fifteen-minute process
 timeout, and any failure fails the Application verification gate. Locally,
 `make verify-app-core` runs the build target and then the lanes concurrently.
 
 Each integration process owns a separate disposable PostgreSQL container, and
-each test creates its own database and temporary resources. Preview recovery has
-a separate process budget from the cross-host pair; both are isolated from the
-remaining tests.
+each test creates its own database and temporary resources. The database copies one
+that the process migrates and checks once, and every fixture shares one password
+hash and one loaded API specification, because those cost about 1.6 seconds per
+fixture under the race detector. Preview recovery has a separate process budget from
+coordinated placement; both are isolated from the remaining tests.
 
 The Makefile selects tests by name. `-run` reaches only the packages on its own
 command line, while `remaining` applies its `-skip` to every package, so a name
-it skips must be selected in that package too; `operations` runs against `./...`
-for that reason. `make check-ci` runs `scripts/app-lanes.mjs`, which fails when a
-test in the platform module is selected by no lane or by more than one, when a
-selection matches no test, or when `verify-app-core` and the workflow's matrix
-differ from the lanes. A new test lands in `remaining`, or in `operations` if its
-name has one of that lane's prefixes.
+it skips must be selected in that package too; `operations` and `m-to-z` run
+against `./...` for that reason. `make check-ci` runs `scripts/app-lanes.mjs`, which
+fails when a test in the platform module is selected by no lane or by more than one,
+when a selection matches no test, or when `verify-app-core` and the workflow's matrix
+differ from the lanes. A new test needs no lane change: it lands in `remaining` or
+`m-to-z` by its name's first letter, or in `operations` if its name has one of that
+lane's prefixes.
 
 The lanes run `go test -v`, so the job log has each test's time, in `--- PASS`
 lines. One commit's package time has differed by 28% between hosted runners, so a
@@ -221,8 +225,13 @@ last five main runs of the current lanes and fails when a lane's package has a
 median above 600 seconds, listing the times in its job summary. While that lasts it
 keeps one issue open with the latest times, and closes it when the lanes recover. It
 is not a required check, so runner variance cannot remove a pull request from the
-queue. When it fails, move a test family to another lane, or add a lane by adding a
-variable, its rule and the workflow's matrix. Moving tests between existing lanes
+queue. The integration package also adds a warning to any run past that budget, so
+the pull request that crosses it shows it in its own checks. When a lane is past its
+budget, first look for time every test shares, because the fixture is the only place
+one change reaches every test. Then move the letter boundary and rename the lane to
+match, move a test family to another lane, or add a lane by adding a variable, its
+rule and the workflow's matrix. A lane of one test, such as `crosshost`, can only
+come down by shortening or splitting that test. Moving tests between existing lanes
 takes three main runs to show, because earlier runs stay in the sample; adding a lane
 starts a new sample, and a lane with fewer than three runs neither fails the check nor
 closes the issue. Locally, `GITHUB_TOKEN` must allow reading Actions, and nothing is

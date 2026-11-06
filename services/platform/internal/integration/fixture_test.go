@@ -18,6 +18,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -35,9 +36,55 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// laneBudget is budgetSeconds in scripts/lane-budget.mjs, whose test holds the two together.
+const laneBudget = 600 * time.Second
+
 const postgresImage = "postgres:18.4-alpine3.23@sha256:996d0920e4ff9df1fc19dacb904492f3c1ec0ec1cc338f0ad7123be7731c5f5e"
 
 var databaseURL string
+
+// A test's database copies this one, because migrating and checking a new database for
+// each of hundreds of fixtures costs minutes of a lane's time budget. A copy matches what
+// running the migrations again would give once setupStore replaces any value they make up.
+const migratedDatabase = "test_migrated"
+
+// Migrating here rather than in TestMain leaves a test that takes no database, or a
+// helper process, with nothing to wait for. Nothing may stay connected to the database
+// afterwards, because PostgreSQL only copies a database that nothing else is using.
+var migrated = sync.OnceValue(func() error {
+	ctx := context.Background()
+	admin, e := pgxpool.New(ctx, databaseURL)
+	if e != nil {
+		return e
+	}
+	defer admin.Close()
+	if _, e = admin.Exec(ctx, "CREATE DATABASE "+migratedDatabase); e != nil {
+		return e
+	}
+	dsn := databaseDSN(migratedDatabase)
+	if e = dbmigrate.Up(ctx, dsn); e != nil {
+		return e
+	}
+	return dbmigrate.Check(ctx, dsn)
+})
+
+// A fixture's password is the same in each test, so one hash serves them all and takes
+// one Argon2 run rather than one per fixture. Each sign-in still verifies it in full.
+var fixturePasswordHash = sync.OnceValues(func() (string, error) {
+	passwords, e := auth.NewPasswords()
+	if e != nil {
+		return "", e
+	}
+	return passwords.Hash(fixturePassword)
+})
+
+const fixturePassword = "correct horse battery staple"
+
+func databaseDSN(name string) string {
+	u, _ := url.Parse(databaseURL)
+	u.Path = "/" + name
+	return u.String()
+}
 
 func TestMain(m *testing.M) {
 	flag.Parse()
@@ -47,6 +94,7 @@ func TestMain(m *testing.M) {
 	if testing.Short() {
 		os.Exit(m.Run())
 	}
+	began := time.Now()
 	host := os.Getenv("PLAT_APP_DOCKER_HOST")
 	if !strings.HasPrefix(host, "unix:///") {
 		fmt.Fprintln(os.Stderr, "PLAT_APP_DOCKER_HOST must explicitly select a disposable local Unix socket")
@@ -112,7 +160,17 @@ func TestMain(m *testing.M) {
 	}
 	code := m.Run()
 	cleanup()
+	warnPastBudget(time.Since(began))
 	os.Exit(code)
+}
+
+// warnPastBudget annotates the run that crosses the budget, so the pull request taking a
+// lane there shows it in its own checks. The Lane budget workflow only sees it after it
+// lands, and only as a median.
+func warnPastBudget(took time.Duration) {
+	if os.Getenv("GITHUB_ACTIONS") == "true" && took > laneBudget {
+		fmt.Printf("::warning title=Go race lane past its budget::internal/integration took %.0fs against a %.0fs budget, and go test stops at 900s. See docs/continuous-integration.md.\n", took.Seconds(), laneBudget.Seconds())
+	}
 }
 
 type fixture struct {
@@ -142,24 +200,22 @@ func setupStore(t *testing.T, bootstrap, hosted bool) *fixture {
 		t.Fatal(e)
 	}
 	t.Cleanup(admin.Close)
+	if e = migrated(); e != nil {
+		t.Fatal(e)
+	}
 	name := "test_" + strings.ReplaceAll(uuid.NewString(), "-", "")
-	if _, e = admin.Exec(ctx, "CREATE DATABASE "+name); e != nil {
+	if _, e = admin.Exec(ctx, "CREATE DATABASE "+name+" TEMPLATE "+migratedDatabase); e != nil {
 		t.Fatal(e)
 	}
-	u, _ := url.Parse(databaseURL)
-	u.Path = "/" + name
-	dsn := u.String()
-	if e = dbmigrate.Up(ctx, dsn); e != nil {
-		t.Fatal(e)
-	}
-	if e = dbmigrate.Check(ctx, dsn); e != nil {
-		t.Fatal(e)
-	}
-	pool, e := pgxpool.New(ctx, dsn)
+	pool, e := pgxpool.New(ctx, databaseDSN(name))
 	if e != nil {
 		t.Fatal(e)
 	}
 	t.Cleanup(pool.Close)
+	// The one value a migration makes up. Each installation has its own.
+	if _, e = pool.Exec(ctx, "UPDATE dns_installation SET id=gen_random_uuid()"); e != nil {
+		t.Fatal(e)
+	}
 	keys, _ := cryptobox.New("test")
 	st := store.New(pool, keys, hosted)
 	if hosted {
@@ -169,8 +225,7 @@ func setupStore(t *testing.T, bootstrap, hosted bool) *fixture {
 	if e != nil {
 		t.Fatal(e)
 	}
-	password := "correct horse battery staple"
-	hash, e := passwords.Hash(password)
+	hash, e := fixturePasswordHash()
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -211,7 +266,7 @@ func setupStore(t *testing.T, bootstrap, hosted bool) *fixture {
 	apiServer.Origin = server.URL
 	apiServer.Execution.ResetMail.Origin = server.URL
 	t.Cleanup(server.Close)
-	return &fixture{st, service, server, mail, password, owner, apiServer.Execution, apiServer, log}
+	return &fixture{st, service, server, mail, fixturePassword, owner, apiServer.Execution, apiServer, log}
 }
 func smtpFixture(t *testing.T) (chan string, string) {
 	t.Helper()

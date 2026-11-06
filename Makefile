@@ -1,9 +1,11 @@
-.PHONY: check verify verify-host verify-build verify-git verify-canvas check-app verify-app verify-app-core verify-app-build verify-app-go-remaining verify-app-go-operations verify-app-go-crosshost verify-app-go-preview verify-app-go-network verify-image verify-agent-host verify-agent-host-core verify-agent-host-recovery verify-agent-host-visual verify-agent-host-upgrade verify-troubleshooting-soak verify-agent-colima check-ci check-hooks check-source-size check-inline-sql check-vulnerabilities check-lane-budget
+.PHONY: check verify verify-host verify-build verify-git verify-canvas check-app verify-app verify-app-core verify-app-build verify-app-go-remaining verify-app-go-operations verify-app-go-crosshost verify-app-go-preview verify-app-go-network verify-app-go-m-to-z verify-image verify-agent-host verify-agent-host-core verify-agent-host-recovery verify-agent-host-visual verify-agent-host-upgrade verify-troubleshooting-soak verify-agent-colima check-ci check-hooks check-source-size check-inline-sql check-vulnerabilities check-lane-budget
 
-APP_COORDINATION_TESTS = ^(TestCrossHostCoordinatedPlacement|TestCrossHostSubscriptionExpiry)$$
+APP_COORDINATION_TESTS = ^TestCrossHostCoordinatedPlacement$$
 APP_PREVIEW_RECOVERY_TESTS = ^TestPreviewRemovalSurvivesCheckpointUnion$$
 APP_OPERATIONS_TESTS = ^Test(Troubleshooting|ManagedNetwork|Maintenance|Automation|Git)
 APP_NETWORK_TESTS = ^(TestAgentCannotSpendNetworkGeneration|TestRevocationSurvivesSpentGeneration|TestReceiptClaimsStayWithinMargin|TestRecoveryRefusesGenerationsNeverIssued|TestRecoveryKeepsRestoredGenerationHistory|TestUnaccountedReceiptDoesNotConflictWithItsHostsExport|TestRestoredManagementRecoversAHostAhead|TestHostileClaimsAfterRestoreMoveNothing|TestUnfencedHostAheadRecoversThroughFencing|TestRefusedRemovalFallsBackToTheWholeManifest|TestReAddedMemberReceivesItsWholeManifest|TestSweepWaitsForAManifestOnItsWay)$$
+APP_FAMILY_TESTS = $(APP_COORDINATION_TESTS)|$(APP_PREVIEW_RECOVERY_TESTS)|$(APP_OPERATIONS_TESTS)|$(APP_NETWORK_TESTS)
+APP_M_TO_Z_TESTS = ^Test[M-Z]
 NATIVE_GO = sudo --preserve-env=GOCACHE,GOMODCACHE env PATH=/opt/astilba-plat4/go/bin:/opt/astilba-plat4/bin:/usr/sbin:/usr/bin:/sbin:/bin CGO_ENABLED=1
 NATIVE_AGENT_GO = $(NATIVE_GO) PLAT_APP_DOCKER_HOST=unix:///run/astilba-plat4/docker.sock ASTILBA_NATIVE_AGENT=1 /opt/astilba-plat4/go/bin/go test -race -count=1 -v
 
@@ -67,7 +69,7 @@ verify-app: verify-app-core
 	pnpm --filter @astilba/dashboard storybook:test
 
 verify-app-core: verify-app-build
-	$(MAKE) -j5 verify-app-go-remaining verify-app-go-operations verify-app-go-crosshost verify-app-go-preview verify-app-go-network
+	$(MAKE) -j6 verify-app-go-remaining verify-app-go-m-to-z verify-app-go-operations verify-app-go-crosshost verify-app-go-preview verify-app-go-network
 
 verify-app-build: check-app
 	pnpm agent:build
@@ -75,9 +77,12 @@ verify-app-build: check-app
 	pnpm --filter @astilba/dashboard build
 
 verify-app-go-remaining:
-	cd services/platform && go test -race -count=1 -v -timeout=15m -skip '$(APP_COORDINATION_TESTS)|$(APP_PREVIEW_RECOVERY_TESTS)|$(APP_OPERATIONS_TESTS)|$(APP_NETWORK_TESTS)' ./...
+	cd services/platform && go test -race -count=1 -v -timeout=15m -skip '$(APP_FAMILY_TESTS)|$(APP_M_TO_Z_TESTS)' ./...
 
-# Selects across every package, because the -skip above also reaches every package.
+# These select across every package, because the -skip above also reaches every package.
+verify-app-go-m-to-z:
+	cd services/platform && go test -race -count=1 -v -timeout=15m -run '$(APP_M_TO_Z_TESTS)' -skip '$(APP_FAMILY_TESTS)' ./...
+
 verify-app-go-operations:
 	cd services/platform && go test -race -count=1 -v -timeout=15m -run '$(APP_OPERATIONS_TESTS)' ./...
 
