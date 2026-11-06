@@ -1,7 +1,6 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { pnpmPin } from "./install-pnpm.mjs";
 
 const dependencyFields = ["dependencies", "devDependencies"];
 // openapi-typescript 7 can't load TypeScript 7. The contract keeps its own compiler, as
@@ -90,6 +89,10 @@ function allPins(catalog, manifests) {
         if (version !== "catalog:") pins.push({ path, name, version });
   return pins;
 }
+
+// The usual routes that would skip the hash. A plain download is not told apart.
+const unverifiedPnpmInstall =
+  /\b(?:npm|yarn|bun)\s[^\n]*\b(?:install|i|add)\b[^\n]*\bpnpm\b|\bnpx\s[^\n]*\bpnpm\b|\bcorepack\s+(?:enable|prepare|use|install)\b|pnpm\/action-setup|get\.pnpm\.io/;
 
 export function pinProblems({
   workspace,
@@ -212,14 +215,8 @@ export function pinProblems({
     problems.push(
       `package.json: packageManager must be pnpm@${catalog.pnpm} to match the catalog, found ${packageManager}`,
     );
-  else
-    try {
-      pnpmPin({ manifest: manifests["package.json"], lockfile });
-    } catch (error) {
-      problems.push(error.message);
-    }
   for (const [path, text] of Object.entries({ ...workflows, ...installers }))
-    if (/\b(?:npm|npx|corepack)\s[^\n]*\bpnpm\b|\bcorepack\s+enable/.test(text))
+    if (unverifiedPnpmInstall.test(text.replaceAll("\\\n", " ")))
       problems.push(
         `${path}: install pnpm with scripts/install-pnpm.mjs, which checks its hash`,
       );

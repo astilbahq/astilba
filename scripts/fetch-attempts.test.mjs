@@ -158,6 +158,7 @@ for (const message of [
   `manifest verification failed for digest sha256:${digest}`,
   `filesystem layer verification failed for digest sha256:${digest}`,
   `error pulling image configuration: image config verification failed for digest sha256:${digest}`,
+  `failed commit on ref "layer-sha256:${digest}": commit failed: "layer-sha256:${digest}" failed size validation: 105 != 101: failed precondition`,
 ])
   test(`a pull stops at once on ${message.slice(0, 40)}`, async (t) => {
     const docker = fakeCommand(t, `echo '${message}' >&2; exit 1`);
@@ -230,7 +231,18 @@ test("a command that cannot complete fails under its name, after four minutes", 
   assert.ok(time.now() >= 240_000, `gave up after ${time.now()} ms`);
 });
 
+test("a tarball pnpm recovered does not stop a later failure repeating", async (t) => {
+  const command = fakeCommand(
+    t,
+    `echo '[WARN] GET https://registry.npmjs.org/a.tgz error (ERR_PNPM_TARBALL_INTEGRITY). Will retry in 10 seconds' >&2
+${failFirst("read: connection reset by peer")}`,
+  );
+  await fetchingCommand("Building", command.path, ["build"], {}, clock());
+  assert.equal(command.calls().length, 2);
+});
+
 for (const message of [
+  " ERR_PNPM_TARBALL_INTEGRITY  Got unexpected checksum for a.tgz",
   "verifying golang.org/x/vuln@v1.3.0: checksum mismatch",
   "SECURITY ERROR\nThis download does NOT match an earlier download recorded in go.sum.",
 ])

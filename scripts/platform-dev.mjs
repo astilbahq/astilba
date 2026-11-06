@@ -24,16 +24,21 @@ const { values } = parseArgs({
 });
 if (values.help) {
   console.log(
-    "pnpm dev [--port 54182] [--reset]\nStarts a local demo. API uses port - 1; PostgreSQL gets a free loopback port.\n--reset deletes this checkout's demo database before starting.\nRequires PLAT_APP_DOCKER_HOST, Node 24.18.1, pnpm 11.17.0 and Go 1.27.3.",
+    "pnpm dev [--port 54182] [--reset]\nStarts a local demo. API uses port - 1; PostgreSQL gets a free loopback port.\n--reset deletes this checkout's demo database before starting.\nRequires PLAT_APP_DOCKER_HOST, Node 24.18.1, the pinned pnpm and Go 1.27.3.",
   );
   process.exit(0);
 }
+const { packageManager } = JSON.parse(
+  readFileSync(new URL("../package.json", import.meta.url), "utf8"),
+);
 if (
   process.versions.node !== "24.18.1" ||
   !process.env.npm_execpath ||
-  !process.env.npm_config_user_agent?.startsWith("pnpm/11.17.0 ")
+  !process.env.npm_config_user_agent?.startsWith(
+    `${packageManager.replace("@", "/")} `,
+  )
 )
-  throw new Error("Run pnpm dev with Node 24.18.1 and pnpm 11.17.0");
+  throw new Error(`Run pnpm dev with Node 24.18.1 and ${packageManager}`);
 const port = Number(values.port);
 if (!Number.isInteger(port) || port < 1025 || port > 65535)
   throw new Error("--port must be an integer from 1025 to 65535");

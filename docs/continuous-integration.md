@@ -243,11 +243,13 @@ the scan, and a 404 also takes four minutes to report.
 `go tool -n govulncheck` fetches modules on a cache miss, and `govulncheck` reads the Go
 vulnerability database with one request per file, so one reset stops either. Each repeats
 for at least four minutes when it exits non-zero, and a Go checksum failure stops at once.
-A finding exits 0, so a completed scan never repeats. If the database stays unreachable the
-scan fails, naming `https://vuln.go.dev` and the scan: measured against a database that
-resets or returns 404 or 502 on its index or an advisory, `govulncheck` always exits 1. A
-connection that stalls with its peer alive is not retried and uses up the job's limit.
-OSV Scanner retries its own API calls.
+A finding exits 0, so a completed scan never repeats, while any other failure repeats too,
+so a package that does not compile takes four minutes to report. If the database stays
+unreachable the scan fails, naming the scan and the URL: measured against a database that
+resets or returns 404 or 502 on `index/modules.json` or an advisory, `govulncheck` always
+exits 1. It tolerates only `index/db.json`, which holds no advisories, and never requests
+`index/vulns.json`. A connection that stalls with its peer alive is not retried and uses up
+the job's limit. OSV Scanner retries its own API calls.
 
 A selected run can fail on an advisory the pull request did not introduce. That
 holds up the merge group too, so land the bump or allowlist entry first.
@@ -490,8 +492,8 @@ limits its own `apt-get update` to 5 minutes for any source that hangs.
 | Go modules, in `pnpm app:build` | `proxy.golang.org` | None: one reset stops `go` |
 | PostgreSQL, for the smoke test | Docker Hub | None for the manifest request: one reset stops the pull |
 
-The script makes up to three attempts at the whole `docker build` and at the PostgreSQL
-`docker pull`. One loop around the build covers the fetches without a retry of their own,
+The script makes up to three attempts at the whole `docker build`, and repeats the
+PostgreSQL pull as in [Image pulls](#image-pulls) within a 5-minute limit. One loop around the build covers the fetches without a retry of their own,
 whichever `FROM` or `RUN` they are in, including any added later. A second attempt reuses
 the completed layers, and the job has already built these sources. The attempts share the
 build's 10-minute limit, and a build that reaches it stops, so a Go or registry connection
@@ -519,11 +521,11 @@ with the image smoke test's PostgreSQL pull.
 
 - Each image repeats for at least four minutes. The failure names it, and an image without
   a digest is refused.
-- Bytes that fail their digest stop at once. These were measured with a registry serving
-  changed manifests, configs and layers, and the wording differs by image store. Everything
-  else repeats, because a reset can read as anything: on the containerd store, one on a
-  pinned manifest reports `not found`. So a pin removed upstream also takes four minutes to
-  report.
+- Bytes that fail their digest or a longer layer stop at once. These were measured with a
+  registry serving changed manifests, configs and layers, and the wording differs by image
+  store. Everything else repeats, because a reset can read as anything: on the containerd
+  store, one on a pinned manifest reports `not found` and a short layer a short read. So a
+  pin removed upstream also takes four minutes to report.
 - The action runs on the runner's own Node, because Host jobs set up no Node of their own.
 
 Not covered: Canvas and Workshop name their image in `container:`, which the runner pulls

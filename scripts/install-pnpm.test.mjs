@@ -38,7 +38,16 @@ test("refuses a pin it could not check against", () => {
       { manifest: { packageManager: "pnpm@11.18.0" }, lockfile: lockfile() },
       /no sha512 integrity for pnpm@11\.18\.0/,
     ],
-    [{ manifest, lockfile: lockfile("c2hvcnQ=") }, /malformed sha512/],
+    [
+      {
+        manifest,
+        lockfile: lockfile().replace(
+          "pnpm@11.17.0: {}",
+          "pnpm@11.17.0:\n    optionalDependencies:\n      '@pnpm/exe.linux-x64': 11.17.0",
+        ),
+      },
+      /has dependencies/,
+    ],
   ])
     assert.throws(() => pnpmPin(input), expected);
 });

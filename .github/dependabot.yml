@@ -15,9 +15,13 @@ updates:
   # pnpm-workspace.yaml brings the other workspace packages into this entry.
   - package-ecosystem: npm
     directory: /
-    # @types/node's major follows the Node version pinned in package.json's engines.
     ignore:
+      # @types/node's major follows the Node version pinned in package.json's engines.
       - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
+      # pnpm 12 ships as a wrapper with optional dependencies, which scripts/install-pnpm.mjs
+      # refuses because it checks only one tarball. Moving to it means changing that script.
+      - dependency-name: pnpm
         update-types: ["version-update:semver-major"]
     schedule:
       interval: weekly

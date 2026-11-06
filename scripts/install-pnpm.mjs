@@ -7,7 +7,9 @@ import { downloadVerified } from "./fetch-attempts.mjs";
 
 // The version comes from package.json's packageManager and the hash from pnpm's own
 // lockfile entry, which Dependabot moves with the catalog. See
-// docs/frontend-development.md#dependency-pins.
+// docs/frontend-development.md#dependency-pins. A release with dependencies is refused:
+// only its own tarball is checked here, and from pnpm 12 that tarball is a wrapper
+// that fetches the real executable for itself when its optional dependencies are absent.
 export function pnpmPin({ manifest, lockfile }) {
   const version = /^pnpm@(\d+\.\d+\.\d+)$/.exec(manifest.packageManager)?.[1];
   if (!version)
@@ -20,14 +22,15 @@ export function pnpmPin({ manifest, lockfile }) {
   ).exec(lockfile);
   if (!entry)
     throw new Error(`pnpm-lock.yaml: no sha512 integrity for pnpm@${version}`);
-  const hash = Buffer.from(entry[1], "base64").toString("hex");
-  if (hash.length !== 128)
-    throw new Error(`pnpm-lock.yaml: pnpm@${version} has a malformed sha512`);
-  return { version, hash };
+  if (!lockfile.includes(`\n  pnpm@${version}: {}\n`))
+    throw new Error(
+      `pnpm-lock.yaml: pnpm@${version} has dependencies, which scripts/install-pnpm.mjs would not check`,
+    );
+  return { version, hash: Buffer.from(entry[1], "base64").toString("hex") };
 }
 
-// pnpm has no dependencies, so an offline install contacts nothing else, and it
-// installs the bytes just checked rather than asking the registry again.
+// An offline install contacts nothing else, and installs the bytes just checked rather
+// than asking the registry again.
 export async function installPnpm({
   manifest,
   lockfile,

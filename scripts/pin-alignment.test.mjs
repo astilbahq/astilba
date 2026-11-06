@@ -34,11 +34,6 @@ packages:
   esbuild@0.28.2:
     resolution: {integrity: sha512-b}
 
-  pnpm@11.17.0:
-    resolution: {integrity: sha512-${"A".repeat(86)}==}
-    engines: {node: '>=22.13'}
-    hasBin: true
-
   vite-plus@1.4.0:
     resolution: {integrity: sha512-c}
     peerDependencies:
@@ -257,18 +252,14 @@ const misalignments = [
     },
     /packageManager must be pnpm@11\.17\.0 to match the catalog, found pnpm@11$/,
   ],
-  [
-    "a pnpm version with no hash in the lockfile",
-    (v) => {
-      v.manifests["package.json"].packageManager = "pnpm@11.18.0";
-      v.workspace.catalog.pnpm = "11.18.0";
-    },
-    /no sha512 integrity for pnpm@11\.18\.0/,
-  ],
   ...[
     ["Dockerfile", "RUN npm install --global pnpm@11.17.0\n"],
     [".github/actions/install-pnpm/action.yml", "run: npm i -g pnpm\n"],
     [".github/actions/install-pnpm/action.yml", "run: corepack enable\n"],
+    ["Dockerfile", "RUN npm install --global \\\n  pnpm@11.17.0\n"],
+    [".github/actions/install-pnpm/action.yml", "uses: pnpm/action-setup@a\n"],
+    ["Dockerfile", "RUN curl https://get.pnpm.io/install.sh | sh\n"],
+    ["Dockerfile", "RUN yarn global add pnpm\n"],
   ].map(([path, text]) => [
     `an unverified pnpm install in ${text.trim()}`,
     (v) => {
@@ -315,3 +306,14 @@ for (const [name, change, expected] of misalignments)
       problems.join("\n"),
     );
   });
+
+test("a command that only reads pnpm's metadata is not an install", () => {
+  assert.deepEqual(
+    pinProblems(
+      inputs((v) => {
+        v.installers.Dockerfile = "RUN npm view pnpm dist.integrity\n";
+      }),
+    ),
+    [],
+  );
+});

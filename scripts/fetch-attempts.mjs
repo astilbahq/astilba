@@ -6,9 +6,10 @@ import { setTimeout as pause } from "node:timers/promises";
 // Asking again cannot help, so these stop at once. The Docker wording was measured
 // against a registry serving changed bytes, on both image stores. Anything else
 // repeats, because a reset can read as anything: the containerd store reports one
-// on a pinned manifest as "not found".
+// on a pinned manifest as "not found", and a short layer as a short read. pnpm also
+// logs "(ERR_PNPM_TARBALL_INTEGRITY). Will retry" for a tarball it then recovers.
 const integrityFailure =
-  /unexpected commit digest|verification failed for digest|checksum mismatch|SECURITY ERROR|EINTEGRITY|ERR_PNPM_TARBALL_INTEGRITY|does not match its pinned hash/;
+  /unexpected commit digest|failed size validation|verification failed for digest|checksum mismatch|SECURITY ERROR|ERR_PNPM_TARBALL_INTEGRITY(?!\))|does not match its pinned hash/;
 
 const threeAttempts = (attempt) => [20_000, 40_000][attempt];
 
@@ -96,11 +97,7 @@ export function runLogged(
 }
 
 // Pulls one at a time. A pinned digest makes every attempt verify the same bytes.
-export async function pullImages(
-  images,
-  docker = ["docker"],
-  { limitMs, ...options } = {},
-) {
+export async function pullImages(images, docker = ["docker"], options = {}) {
   const [command, ...args] = docker;
   for (const image of images) {
     if (!/@sha256:[0-9a-f]{64}$/.test(image))
@@ -109,7 +106,7 @@ export async function pullImages(
       `Pulling ${image}`,
       (timeoutMs) =>
         runLogged(command, [...args, "pull", image], { timeoutMs }),
-      { limitMs, delay: outlastOutage, ...options },
+      { delay: outlastOutage, ...options },
     );
   }
 }

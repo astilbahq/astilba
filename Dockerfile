@@ -9,7 +9,8 @@ COPY apps/platform/theme/ apps/platform/theme/
 COPY contracts/platform/package.json contracts/platform/package.json
 COPY experiments/canvas-editor/package.json experiments/canvas-editor/panda.config.ts experiments/canvas-editor/
 COPY scripts/fetch-attempts.mjs scripts/install-pnpm.mjs scripts/
-RUN node scripts/install-pnpm.mjs && pnpm install --frozen-lockfile
+# Node's fetch ignores HTTPS_PROXY unless told otherwise; npm and pnpm do not.
+RUN NODE_USE_ENV_PROXY=1 node scripts/install-pnpm.mjs && pnpm install --frozen-lockfile
 COPY . .
 ARG TARGETOS
 ARG TARGETARCH
