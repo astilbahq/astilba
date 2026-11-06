@@ -175,13 +175,15 @@ func Title(kind api.AlertKind) string {
 	case api.ServiceHealth:
 		return "Managed service health check failed"
 	case api.BackupSchedule:
-		return "Scheduled backup failed"
+		return "Scheduled backup failed or overdue"
 	case api.DeploymentProblem:
 		return "Deployment needs review"
 	case api.BuildProblem:
 		return "Build needs review"
 	case api.BackupProblem:
 		return "Backup operation needs review"
+	case api.NetworkProblem:
+		return "Private network updates are failing"
 	default:
 		return "Operational alert"
 	}

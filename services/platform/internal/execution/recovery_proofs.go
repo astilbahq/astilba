@@ -61,7 +61,7 @@ func (s *Service) applyRecoveryProof(ctx context.Context, tx pgx.Tx, ws uuid.UUI
 	}
 	reportCommand := c
 	reportCommand.ControllerGeneration = header.ControllerGeneration
-	if err = s.networkReport(ctx, tx, reportCommand, &report); err != nil {
+	if err = s.networkReport(ctx, tx, ws, reportCommand, &report); err != nil {
 		return err
 	}
 	steps, _ := stablejson.Marshal(report.Steps)

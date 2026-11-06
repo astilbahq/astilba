@@ -51,3 +51,10 @@ SELECT a.kind,a.resource_id,a.reason,
     (s.encrypted_webhook IS NOT NULL)::boolean AS webhook_enabled,s.revision,s.encrypted_webhook
 FROM operational_alerts a JOIN alert_settings s ON s.workspace_id=a.workspace_id
 WHERE a.workspace_id = @workspace_id AND a.id = @id;
+
+-- name: NetworkSweepHealth :one
+-- Persistent once the sweep has come back at least two minutes into a run of failures.
+-- Comparing with its own last visit keeps time the sweep was not running from raising this alone.
+SELECT id,(reconcile_failing_since IS NOT NULL)::boolean AS failing,
+    COALESCE(checked_at >= reconcile_failing_since + interval '2 minutes',false)::boolean AS persistent
+FROM workspace_networks WHERE workspace_id = @workspace_id;

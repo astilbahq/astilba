@@ -32,10 +32,20 @@ running; it is not an external uptime service.
 - **Service health check failed:** three consecutive explicit unhealthy readings.
   Recovery requires an explicit healthy reading. Missing or starting health is
   inconclusive; an explicit removal of the health check ends that monitoring.
-- **Scheduled backup failed:** the latest backup-producing outcome failed
+- **Scheduled backup failed or overdue:** the latest backup-producing outcome failed
   or needs attention, including an interrupted run without a finish time. A
   later successful backup establishes recovery. Restoring
-  an older snapshot is not a successful backup and cannot recover this alert.
+  an older snapshot is not a successful backup and cannot recover this alert. A
+  coordinated backup also raises this alert when the scheduler has tried and its occurrence
+  is more than 15 minutes late with no run under way, because one that never starts leaves
+  no outcome to judge. It can't start while its environment no longer matches the plan its
+  policy was saved with; saving the policy again rebinds it. An overdue alert ends once a
+  later occurrence has started and the latest finished backup succeeded. If that run fails,
+  the alert fires again.
+- **Private network updates are failing:** the management sweep has kept failing to
+  reconcile the workspace's network for two minutes, so its members, including removals of
+  revoked peers, are not receiving changes. A successful pass establishes recovery. Network
+  members show as pending throughout; a removal is not complete until peers acknowledge it.
 - **Operation problem:** a deployment, image build or backup operation failed or
   needs attention. One record is created per operation, including when a
   needs-attention operation later fails. This is a historical event, not a claim

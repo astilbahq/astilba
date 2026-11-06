@@ -4,14 +4,24 @@ import (
 	"context"
 	"encoding/json/v2"
 	"errors"
+	"slices"
 	"time"
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/backup"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
+	"github.com/astilbahq/astilba/services/platform/internal/sweep"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+)
+
+// A coordinated occurrence is overdue late enough that a brief lock wait does not page
+// anyone. A run counts as under way for no longer than a policy's longest run allows: one
+// can stay marked running after it stopped, and it blocks later occurrences while it does.
+const (
+	coordinatedOverdueAfter = 15 * time.Minute
+	coordinatedRunLimit     = time.Hour
 )
 
 type evidence int
@@ -29,9 +39,9 @@ type target struct {
 	environment *uuid.UUID
 }
 
-// Sweep claims work before evaluation so an invalid source cannot starve the fleet.
+// Sweep claims work before evaluation so an invalid source or a held workspace lock
+// cannot starve the fleet.
 func (s *Service) Sweep(ctx context.Context) error {
-	var last error
 	for range 20 {
 		var ws uuid.UUID
 		err := s.Store.Pool.QueryRow(ctx, `UPDATE workspaces SET alert_scanned_at=$1 WHERE id=(SELECT id FROM workspaces WHERE alert_scanned_at<$1::timestamptz-interval '30 seconds' ORDER BY alert_scanned_at,id LIMIT 1 FOR UPDATE SKIP LOCKED) RETURNING id`, s.Now()).Scan(&ws)
@@ -41,11 +51,9 @@ func (s *Service) Sweep(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		if err = s.detect(ctx, ws); err != nil {
-			last = err
-		}
+		_ = sweep.Item(ctx, "alerts", ws, 10*time.Second, func(item context.Context) error { return s.detect(item, ws) })
 	}
-	return last
+	return nil
 }
 func (s *Service) detect(ctx context.Context, ws uuid.UUID) error {
 	tx, done, err := s.Store.BeginWorkspaceWrite(ctx, ws)
@@ -60,6 +68,9 @@ func (s *Service) detect(ctx context.Context, ws uuid.UUID) error {
 		return err
 	}
 	if err = s.backups(ctx, tx, ws); err != nil {
+		return err
+	}
+	if err = s.networks(ctx, tx, ws); err != nil {
 		return err
 	}
 	// Active incidents remain visible until observation establishes recovery or monitoring ends.
@@ -470,8 +481,25 @@ func (s *Service) services(ctx context.Context, tx pgx.Tx, ws, server uuid.UUID,
 	}
 	return nil
 }
+func (s *Service) networks(ctx context.Context, tx pgx.Tx, ws uuid.UUID) error {
+	network, err := db.New(tx).NetworkSweepHealth(ctx, ws)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	value := good
+	if network.Failing {
+		value = unknown
+		if network.Persistent {
+			value = bad
+		}
+	}
+	return s.condition(ctx, tx, ws, api.NetworkProblem, target{resource: network.ID}, value)
+}
 func (s *Service) backups(ctx context.Context, tx pgx.Tx, ws uuid.UUID) error {
-	rows, err := tx.Query(ctx, `SELECT p.id,p.server_id,p.environment_id,p.status,p.configuration,s.revoked OR s.awaiting_transfer FROM backup_policies p JOIN servers s ON s.id=p.server_id WHERE p.workspace_id=$1 ORDER BY p.id LIMIT 2000`, ws)
+	rows, err := tx.Query(ctx, `SELECT p.id,p.server_id,p.environment_id,p.status,p.configuration,s.revoked OR s.awaiting_transfer,GREATEST(p.coordinated_checked_at,'epoch'::timestamptz) FROM backup_policies p JOIN servers s ON s.id=p.server_id WHERE p.workspace_id=$1 ORDER BY p.id LIMIT 2000`, ws)
 	if err != nil {
 		return err
 	}
@@ -479,11 +507,12 @@ func (s *Service) backups(ctx context.Context, tx pgx.Tx, ws uuid.UUID) error {
 		t              target
 		status, config []byte
 		disabled       bool
+		checked        time.Time
 	}
 	list := []item{}
 	for rows.Next() {
 		var v item
-		if err = rows.Scan(&v.t.resource, &v.t.server, &v.t.environment, &v.status, &v.config, &v.disabled); err != nil {
+		if err = rows.Scan(&v.t.resource, &v.t.server, &v.t.environment, &v.status, &v.config, &v.disabled, &v.checked); err != nil {
 			rows.Close()
 			return err
 		}
@@ -530,6 +559,12 @@ func (s *Service) backups(ctx context.Context, tx pgx.Tx, ws uuid.UUID) error {
 				case "succeeded":
 					value = good
 				}
+			}
+			// A due occurrence that never starts leaves no run to judge. The scheduler must
+			// have tried since it fell due, so an outage alone does not count against it.
+			underWay := slices.ContainsFunc(status.Runs, func(r backup.Run) bool { return r.State == "running" && s.Now().Sub(r.StartedAt) < coordinatedRunLimit })
+			if policy.CoordinatedDue(status, s.Now().Add(-coordinatedOverdueAfter)) && v.checked.After(status.Next) && !underWay {
+				value = bad
 			}
 		}
 		if err = s.condition(ctx, tx, ws, api.BackupSchedule, v.t, value); err != nil {
