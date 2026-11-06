@@ -50,6 +50,26 @@ func (h HealthCheck) Valid() bool {
 	return h.Port >= 1 && h.Port <= 65535 && len(h.Path) <= 256 && strings.HasPrefix(h.Path, "/") && !strings.ContainsAny(h.Path, "\r\n\x00")
 }
 
+// ValidateNewDraft refuses a health path that would open a template action in the proxy's
+// route file on an agent too old to encode it. ParseSpec cannot refuse this: it also
+// re-reads stored drafts and frozen plans, which recovery, restores, cleanup and backups
+// rely on. A path the applied specification holds stays allowed, because an application
+// outside a cross-host placement cannot differ from it.
+func ValidateNewDraft(next, applied Specification) error {
+	held := map[uuid.UUID]string{}
+	for _, a := range applied.Applications {
+		if a.Health != nil {
+			held[a.ID] = a.Health.Path
+		}
+	}
+	for _, a := range next.Applications {
+		if a.Health != nil && strings.Contains(a.Health.Path, "{{") && held[a.ID] != a.Health.Path {
+			return Invalid("applications.health")
+		}
+	}
+	return nil
+}
+
 type Postgres struct {
 	Database                string    `json:"database"`
 	Username                string    `json:"username"`

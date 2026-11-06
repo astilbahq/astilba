@@ -214,6 +214,19 @@ func (s *Server) UpdateDraft(w http.ResponseWriter, r *http.Request, ws, pid, id
 			}
 			return domain.Conflict
 		}
+		var applied domain.Specification
+		if env.AppliedRevisionID != nil {
+			v, e := q.GetRevision(ctx, db.GetRevisionParams{WorkspaceID: ws, EnvironmentID: id, ID: *env.AppliedRevisionID})
+			if e != nil {
+				return e
+			}
+			if e = json.Unmarshal(v.Specification, &applied); e != nil {
+				return e
+			}
+		}
+		if e = domain.ValidateNewDraft(spec, applied); e != nil {
+			return e
+		}
 		for _, secretID := range domain.SecretReferences(spec) {
 			if _, e := q.GetSecretVersion(ctx, db.GetSecretVersionParams{WorkspaceID: ws, EnvironmentID: id, ID: secretID}); e != nil {
 				return store.IfMissing(e, domain.Invalid("specification.secretVersionId"))

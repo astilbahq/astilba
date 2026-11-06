@@ -645,7 +645,7 @@ func RouteConfig(sets map[string]RouteSet) ([]byte, error) {
 			out[kind] = group
 		}
 	}
-	return stablejson.Marshal(out)
+	return RouteFile(out)
 }
 
 // An image change cannot reinterpret an existing PostgreSQL data directory.
