@@ -7,9 +7,10 @@ import (
 	"strings"
 )
 
-// minTrimmedSecret is the shortest value searched for in any form other than as stored.
-// Below it the form is likely to be ordinary text such as `postgres` or `production`, and
-// since every stored version counts, a match on a word a file needs could not be cleared.
+// minTrimmedSecret is the shortest value searched for without its surrounding whitespace or
+// with its lines laid out differently. Below it the form is likely to be ordinary text such
+// as `postgres` or `production`, and since every stored version counts, a match on a word a
+// file needs could not be cleared. A URL-encoded form needs no floor: it decodes to the value.
 const minTrimmedSecret = 12
 
 var (
@@ -17,13 +18,13 @@ var (
 	// or `\\n` inside a string, or after a `\` that continues a line.
 	secretLineBreak = regexp.MustCompile(`\s*(?:(?:\\*[\r\n]|\\+[rn])(?:\s|\\+t)*)+`)
 	secretEscape    = regexp.MustCompile(`\\+`)
-	secretSpace     = regexp.MustCompile(`\s+`)
-	// Text with no meaning apart from its value, which a long enough run of base64 can be
-	// assumed to have. Wrapping such a value changes nothing about it.
-	secretOpaque = regexp.MustCompile(`^[A-Za-z0-9+/]{32,}={0,2}$`)
-	// Only these bodies count in part. Other lines of a stored value are shared by ordinary
-	// files: `NODE_ENV=production`, a service account's token URI, or the body of a public
-	// certificate stored beside its key.
+	// What wrapping or commenting out adds between the lines of a run of base64, which has
+	// neither whitespace nor `#` of its own.
+	secretBareLayout = regexp.MustCompile(`[\s#]+`)
+	secretOpaque     = regexp.MustCompile(`^[A-Za-z0-9+/]{32,}={0,2}$`)
+	// A key's body is private only as a whole. An RSA key's lines hold its public modulus and
+	// an EC key's its public point, word for word in its public key and certificate, and an
+	// OpenSSH key's first line is the same in every key of a type.
 	secretPrivateKey = regexp.MustCompile(`(?s)-----BEGIN [A-Z0-9 ]*PRIVATE KEY[A-Z0-9 ]*-----(.*?)-----END `)
 )
 
@@ -119,15 +120,15 @@ func NewSecretText(texts ...string) SecretText {
 			lined := secretLineForm(view.Text)
 			t.views = append(t.views, view.Text)
 			t.lined = append(t.lined, lined)
-			t.bare = append(t.bare, secretSpace.ReplaceAllString(lined, ""))
+			t.bare = append(t.bare, secretBareLayout.ReplaceAllString(lined, ""))
 		}
 	}
 	return t
 }
 
 // Exposes reports whether a text holds a stored value, so that it must not leave for a Git
-// provider or a public build argument. A match may block a file for good, so anything other
-// than the whole value has to be unmistakably private.
+// provider or a public build argument. Only a whole value or key body counts: a match may
+// block a file for good, and a part of a value can be shared with ordinary or public files.
 func (t SecretText) Exposes(value string) bool {
 	form := SecretSearchForm(value)
 	if form == "" {
@@ -143,34 +144,29 @@ func (t SecretText) Exposes(value string) bool {
 			return true
 		}
 	}
-	lined := secretLineForm(form)
-	if len(lined) >= minTrimmedSecret && containsSecretForm(t.lined, lined) {
+	if lined := secretLineForm(form); len(lined) >= minTrimmedSecret && containsSecretForm(t.lined, lined) {
 		return true
 	}
-	if bare := secretSpace.ReplaceAllString(lined, ""); secretOpaque.MatchString(bare) && containsSecretForm(t.bare, bare) {
+	if t.containsWrapped(form) {
 		return true
 	}
 	for _, block := range secretPrivateKey.FindAllStringSubmatch(form, -1) {
-		if t.exposesPrivateKeyBody(block[1]) {
+		if t.containsWrapped(block[1]) {
 			return true
 		}
 	}
 	return false
 }
 
-// exposesPrivateKeyBody finds a key without its armour, wrapped any way, or a full line of
-// it. The first line is left out alone: an OpenSSH key's is the same in every key of a type.
-func (t SecretText) exposesPrivateKeyBody(body string) bool {
-	lines := strings.Fields(secretLineForm(body))
-	if joined := strings.Join(lines, ""); secretOpaque.MatchString(joined) && containsSecretForm(t.bare, joined) {
-		return true
+// containsWrapped finds a run of base64 however it is wrapped or commented out. A long first
+// line is what shows it is one: `postgres\nredis\nnginx` could pass for it once joined.
+func (t SecretText) containsWrapped(form string) bool {
+	lines := strings.Fields(secretLineForm(form))
+	if len(lines) == 0 || !secretOpaque.MatchString(lines[0]) {
+		return false
 	}
-	for i, line := range lines {
-		if i > 0 && secretOpaque.MatchString(line) && containsSecretForm(t.bare, line) {
-			return true
-		}
-	}
-	return false
+	joined := strings.Join(lines, "")
+	return secretOpaque.MatchString(joined) && containsSecretForm(t.bare, joined)
 }
 
 func containsSecretForm(texts []string, form string) bool {

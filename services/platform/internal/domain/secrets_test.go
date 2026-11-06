@@ -1,9 +1,18 @@
 package domain
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
+	"math/big"
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 )
 
 const (
@@ -45,10 +54,10 @@ func TestSecretTextExposes(t *testing.T) {
 		{"key stored JSON-escaped against real lines", testKey, jsonEscapedKey, true},
 		{"key rewrapped", "-----BEGIN PRIVATE KEY-----\n" + testKeyLine1[:30] + "\n" + testKeyLine1[30:] + testKeyLine2 + testKeyLast + "\n-----END PRIVATE KEY-----", testKey, true},
 		{"key body without its armour", "KEY=" + testKeyLine1 + testKeyLine2 + testKeyLast + "\n", testKey, true},
-		{"one line of a key's body", "# " + testKeyLine2 + "\n", testKey, true},
 		{"key stored flattened with spaces against real lines", testKey, strings.ReplaceAll(testKey, "\n", " "), true},
-		{"key stored beside a certificate", "KEY=" + testKeyLine2 + "\n", testCertificate + testKey, true},
-		{"commented-out key", "# " + testKeyLine1 + "\n# " + testKeyLine2 + "\n", testKey, true},
+		{"key stored beside a certificate", "KEY=" + testKeyLine1 + testKeyLine2 + testKeyLast + "\n", testCertificate + testKey, true},
+		{"commented-out key", "# " + testKeyLine1 + "\n# " + testKeyLine2 + "\n# " + testKeyLast + "\n", testKey, true},
+		{"wrapped base64 joined in a file", "KEY=" + testKeyLine1 + testKeyLine2 + "\n", testKeyLine1 + "\n" + testKeyLine2 + "\n", true},
 		{"single-line key wrapped in a file", "key: >-\n    " + wrappedLine + "\n", testKeyLine1, true},
 		{"multi-line value in an indented block", "config: |\n    host: db.internal\n    password: hunter2\n", "host: db.internal\npassword: hunter2\n", true},
 		{"multi-line value URL encoded", "url=line-one-value%0Aline-two-value", "line-one-value\nline-two-value", true},
@@ -62,7 +71,9 @@ func TestSecretTextExposes(t *testing.T) {
 		{"a config line shared with a stored file", "environment:\n  NODE_ENV=production\n", "NODE_ENV=production\nAPI_KEY=abcdef\n", false},
 		{"a long ordinary line shared with a stored file", `"token_uri": "https://oauth2.example.com/token/endpoint",`, "{\n" + `"token_uri": "https://oauth2.example.com/token/endpoint",` + "\n" + `"key": "x"` + "\n}\n", false},
 		{"a key's short last line", "# " + testKeyLast + "\n", testKey, false},
+		{"one line of a key's body", "# " + testKeyLine2 + "\n", testKey, false},
 		{"another key sharing a first line", testKeyLine1 + "\n", testKey, false},
+		{"a long list of ordinary words", "environments: postgres redis nginx prometheus grafana\n", "postgres\nredis\nnginx\nprometheus\ngrafana\n", false},
 		{"the public certificate stored beside a key", testCertificate, testCertificate + testKey, false},
 		{"a path line in a multi-line value", "- db:/var/lib/postgresql/data/pgdata/main\n", "user\n/var/lib/postgresql/data/pgdata/main\npass", false},
 		{"a digest line in a multi-line value", "image: postgres@sha256:" + testDigest + "\n", "user\n" + testDigest + "\npass", false},
@@ -110,6 +121,72 @@ func TestSecretFormsAreFoundForEveryEncoder(t *testing.T) {
 	} {
 		if !NewSecretText("x=" + encoded + ";").Exposes(value) {
 			t.Errorf("%s form %q was not found", name, encoded)
+		}
+	}
+}
+
+// A private key's body holds its public key's bytes, so whether a line of it appears in the
+// public key or certificate depends on alignment. Those files must never be blocked, while
+// the private key itself is found.
+func TestSecretTextFindsKeysButNotTheirPublicFiles(t *testing.T) {
+	encode := func(kind string, der []byte, err error) string {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(pem.EncodeToMemory(&pem.Block{Type: kind, Bytes: der}))
+	}
+	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ecKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	certificates := func(public, private any) []string {
+		var out []string
+		for length := 1; length <= 9; length++ {
+			template := x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: strings.Repeat("a", length)}, NotAfter: time.Now().Add(time.Hour)}
+			der, err := x509.CreateCertificate(rand.Reader, &template, &template, public, private)
+			out = append(out, encode("CERTIFICATE", der, err))
+		}
+		return out
+	}
+	rsaSPKI, rsaSPKIErr := x509.MarshalPKIXPublicKey(&rsaKey.PublicKey)
+	ecSPKI, ecSPKIErr := x509.MarshalPKIXPublicKey(&ecKey.PublicKey)
+	rsaPKCS8, rsaPKCS8Err := x509.MarshalPKCS8PrivateKey(rsaKey)
+	ecSEC1, ecSEC1Err := x509.MarshalECPrivateKey(ecKey)
+	ecPKCS8, ecPKCS8Err := x509.MarshalPKCS8PrivateKey(ecKey)
+	rsaPublic := append(certificates(&rsaKey.PublicKey, rsaKey), encode("PUBLIC KEY", rsaSPKI, rsaSPKIErr), encode("RSA PUBLIC KEY", x509.MarshalPKCS1PublicKey(&rsaKey.PublicKey), nil))
+	ecPublic := append(certificates(&ecKey.PublicKey, ecKey), encode("PUBLIC KEY", ecSPKI, ecSPKIErr))
+	for name, c := range map[string]struct {
+		private string
+		public  []string
+	}{
+		"RSA PKCS#1": {encode("RSA PRIVATE KEY", x509.MarshalPKCS1PrivateKey(rsaKey), nil), rsaPublic},
+		"RSA PKCS#8": {encode("PRIVATE KEY", rsaPKCS8, rsaPKCS8Err), rsaPublic},
+		"EC SEC1":    {encode("EC PRIVATE KEY", ecSEC1, ecSEC1Err), ecPublic},
+		"EC PKCS#8":  {encode("PRIVATE KEY", ecPKCS8, ecPKCS8Err), ecPublic},
+	} {
+		for _, public := range c.public {
+			if NewSecretText(public).Exposes(c.private) {
+				t.Errorf("%s blocked its own public file:\n%s", name, public)
+			}
+			if NewSecretText(public).Exposes(public + c.private) {
+				t.Errorf("%s stored beside a public file blocked that file:\n%s", name, public)
+			}
+		}
+		lines := strings.Split(strings.TrimSpace(c.private), "\n")
+		body := strings.Join(lines[1:len(lines)-1], "")
+		for form, text := range map[string]string{
+			"indented":       "key: |\n  " + strings.ReplaceAll(c.private, "\n", "\n  "),
+			"without armour": "KEY=" + body,
+			"as stored":      c.private,
+		} {
+			if !NewSecretText(text).Exposes(c.public[0] + c.private) {
+				t.Errorf("%s stored beside a certificate was not found %s", name, form)
+			}
 		}
 	}
 }
