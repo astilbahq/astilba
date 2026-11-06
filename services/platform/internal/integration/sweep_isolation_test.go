@@ -627,7 +627,10 @@ func TestCoordinatedSweepWaitsOnceForAStalledWorkspace(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer current.Stop(ctx)
-	waitFor(t, "a stalled workspace's policies held another tenant's behind them", 7*time.Second, func() bool {
+	// The first pass can wait over 20 seconds for the stopped client's leadership lease to end.
+	// Without the rule a pass tries about three stalled policies every 30 seconds, so this limit
+	// still ends well before the other tenant's turn.
+	waitFor(t, "a stalled workspace's policies held another tenant's behind them", time.Minute, func() bool {
 		var reached bool
 		if err := f.st.Pool.QueryRow(ctx, `SELECT coordinated_checked_at>'-infinity' FROM backup_policies WHERE workspace_id=$1`, other).Scan(&reached); err != nil {
 			t.Fatal(err)
