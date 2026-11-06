@@ -464,6 +464,11 @@ so a cache could not remove the wait for an outage. It would save under 30 secon
 lane, and a pinned file removed upstream would go unnoticed until the cache expired.
 An outage longer than the retries still fails the job, with the URL in its log.
 
+`prepare-bootstrap-test.sh` replaces the runner image's `mirror+file` apt source with its
+first two mirrors. With that source, `apt-get update` hangs without output when the first
+mirror drops packets; with the mirrors listed directly it warns and uses the other. The bootstrap
+limits its own `apt-get update` to 5 minutes for any source that hangs.
+
 ## Image downloads
 
 `make verify-image` fetches these, and each was measured against a connection that resets:
