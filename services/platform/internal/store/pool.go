@@ -2,7 +2,6 @@ package store
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -25,7 +24,7 @@ const poolWaitWarning = 50 * time.Millisecond
 func (s *Store) CheckConnectionLimit(ctx context.Context) error {
 	available, err := s.Queries.ConnectionsAvailable(ctx)
 	if err != nil {
-		return errors.New("cannot read PostgreSQL's connection limit")
+		return fmt.Errorf("cannot read PostgreSQL's connection limit: %w", err)
 	}
 	size := s.Pool.Config().MaxConns
 	if size+connectionsOutsidePool > available {
