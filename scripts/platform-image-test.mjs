@@ -3,7 +3,11 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { withFetchAttempts } from "./image-fetch.mjs";
+import {
+  pullImages,
+  runLogged,
+  withFetchAttempts,
+} from "./fetch-attempts.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const host = process.env.PLAT_APP_DOCKER_HOST;
@@ -81,20 +85,26 @@ const extraVolumes = [];
 try {
   console.log("Building application image…");
   // Repeats the whole build for the fetches inside it; see docs/continuous-integration.md#image-downloads.
-  await withFetchAttempts("Building the image", 600000, (timeout) =>
-    docker(
-      [
-        "build",
-        "--build-arg",
-        `SOURCE_REVISION=${process.env.SOURCE_REVISION ?? "development"}`,
-        "--label",
-        label,
-        "-t",
-        image,
-        ".",
-      ],
-      { stdio: "inherit", timeout },
-    ),
+  await withFetchAttempts(
+    "Building the image",
+    (timeoutMs) =>
+      runLogged(
+        "docker",
+        [
+          "--host",
+          host,
+          "build",
+          "--build-arg",
+          `SOURCE_REVISION=${process.env.SOURCE_REVISION ?? "development"}`,
+          "--label",
+          label,
+          "-t",
+          image,
+          ".",
+        ],
+        { cwd: root, timeoutMs },
+      ),
+    { limitMs: 600000 },
   );
   if (
     docker([
@@ -116,9 +126,9 @@ try {
     "! command -v node",
   ]);
   checkTrustRoots();
-  await withFetchAttempts("Pulling PostgreSQL", 300000, (timeout) =>
-    docker(["pull", postgresImage], { stdio: "inherit", timeout }),
-  );
+  await pullImages([postgresImage], ["docker", "--host", host], {
+    limitMs: 300000,
+  });
   docker(["network", "create", "--label", label, network]);
   madeNetwork = true;
   docker(["volume", "create", "--label", label, volume]);
@@ -256,15 +266,15 @@ try {
   await original("/api/v1/session");
   const session = await original("/api/v1/auth/login", { email: "owner@example.test", password: "correct horse battery staple" });
   const workspace = session.workspaces[0].id;
-  const root = `/api/v1/workspaces/${workspace}`;
-  const project = await original(`${root}/projects`, { name: "Recovery" }, 201);
-  const environment = await original(`${root}/projects/${project.id}/environments`, { name: "Production" }, 201);
-  const secret = await original(`${root}/projects/${project.id}/environments/${environment.id}/secrets`, { name: "RESTORE_TOKEN", value: "packaged-restore-canary" }, 201);
-  const server = await original(`${root}/servers`, { name: "Recovery host", role: "deployment" }, 201);
+  const workspacePath = `/api/v1/workspaces/${workspace}`;
+  const project = await original(`${workspacePath}/projects`, { name: "Recovery" }, 201);
+  const environment = await original(`${workspacePath}/projects/${project.id}/environments`, { name: "Production" }, 201);
+  const secret = await original(`${workspacePath}/projects/${project.id}/environments/${environment.id}/secrets`, { name: "RESTORE_TOKEN", value: "packaged-restore-canary" }, 201);
+  const server = await original(`${workspacePath}/servers`, { name: "Recovery host", role: "deployment" }, 201);
   const credential = randomBytes(32).toString("base64url");
   await original("/agent/v1/enroll", { serverId: server.server.id, token: server.token, credential, machineId: randomUUID(), capabilities: { protocol: 1, version: "fixture", os: "linux", arch: "arm64", docker: true }, preflight: { ready: true, osRelease: "Ubuntu 24.04", dockerVersion: "fixture", port80Busy: false, port443Busy: false, freeBytes: 10000000000, existingContainers: 0, notes: [] } });
-  const plan = await original(`${root}/plans`, { serverId: server.server.id, environmentId: environment.id, action: "inspect" }, 201);
-  const operation = await original(`${root}/plans/${plan.id}/apply`, { idempotencyKey: randomUUID() }, 201);
+  const plan = await original(`${workspacePath}/plans`, { serverId: server.server.id, environmentId: environment.id, action: "inspect" }, 201);
+  const operation = await original(`${workspacePath}/plans/${plan.id}/apply`, { idempotencyKey: randomUUID() }, 201);
   docker(["stop", app]);
   const databaseBackup = docker(["exec", db, "pg_dump", "--username", "postgres", "--format=custom", "--no-owner", "postgres"], { encoding: null });
   const restoredDatabase = `astilba-restored-db-${id}`;
@@ -300,9 +310,9 @@ try {
   await restored("/api/v1/session");
   const restoredSession = await restored("/api/v1/auth/login", { email: "owner@example.test", password: "correct horse battery staple" });
   if (restoredSession.workspaces[0].id !== workspace) throw new Error("Restored workspace identity changed");
-  const secrets = await restored(`${root}/projects/${project.id}/environments/${environment.id}/secrets`);
+  const secrets = await restored(`${workspacePath}/projects/${project.id}/environments/${environment.id}/secrets`);
   if (!secrets.some((value) => value.id === secret.id && value.secretId === secret.secretId)) throw new Error("Restored secret metadata missing");
-  const operations = await restored(`${root}/operations`);
+  const operations = await restored(`${workspacePath}/operations`);
   if (!operations.some((value) => value.id === operation.id && value.state === "cancelled")) throw new Error("Restored pending operation was replayable");
   const denied = await fetch(`http://${restoredAddress}/agent/v1/heartbeat`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${server.server.id}.${credential}` }, body: JSON.stringify({ capabilities: { protocol: 1, version: "fixture", os: "linux", arch: "arm64", docker: true }, preflight: { ready: true, osRelease: "Ubuntu 24.04", dockerVersion: "fixture", port80Busy: false, port443Busy: false, freeBytes: 10000000000, existingContainers: 0, notes: [] } }) });
   if (denied.status !== 401) throw new Error("Restored controller accepted old agent credentials");

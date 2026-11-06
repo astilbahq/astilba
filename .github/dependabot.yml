@@ -15,9 +15,13 @@ updates:
   # pnpm-workspace.yaml brings the other workspace packages into this entry.
   - package-ecosystem: npm
     directory: /
-    # @types/node's major follows the Node version pinned in package.json's engines.
     ignore:
+      # @types/node's major follows the Node version pinned in package.json's engines.
       - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
+      # pnpm 12 ships as a wrapper with optional dependencies, which scripts/install-pnpm.mjs
+      # refuses because it checks only one tarball. Moving to it means changing that script.
+      - dependency-name: pnpm
         update-types: ["version-update:semver-major"]
     schedule:
       interval: weekly
@@ -25,7 +29,8 @@ updates:
       default-days: 7
     groups:
       # These can need an edit Dependabot won't make: the Playwright image in the workflows,
-      # the Vite+ pins and allowBuilds in pnpm-workspace.yaml, or regenerated API types.
+      # the Vite+ pins and allowBuilds in pnpm-workspace.yaml, packageManager in package.json,
+      # or regenerated API types.
       # make check-app fails until that's done. They stay apart so the rest can land.
       needs-review:
         patterns:
@@ -34,6 +39,7 @@ updates:
           - "@storybook/*"
           - i18next-cli
           - openapi-typescript
+          - pnpm
           - storybook
           - vite-plus
         update-types: [minor, patch]

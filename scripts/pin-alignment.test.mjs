@@ -10,6 +10,7 @@ catalog:
   # A comment.
   '@pandacss/dev': 2.4.0
   '@playwright/test': 1.64.1
+  pnpm: 11.17.0
   vite: npm:@voidzero-dev/vite-plus-core@1.4.0
   vite-plus: 1.4.0
 overrides:
@@ -45,7 +46,10 @@ const inputs = (change = () => {}) => {
     workspace: parseWorkspace(workspaceText),
     lockfile,
     manifests: {
-      "package.json": { devDependencies: { "vite-plus": "catalog:" } },
+      "package.json": {
+        packageManager: "pnpm@11.17.0",
+        devDependencies: { pnpm: "catalog:", "vite-plus": "catalog:" },
+      },
       "apps/platform/package.json": {
         devDependencies: {
           "@pandacss/dev": "catalog:",
@@ -61,6 +65,11 @@ const inputs = (change = () => {}) => {
     workflows: {
       ".github/workflows/canvas.yml": `image: ${image}\n`,
       ".github/workflows/application-browsers.yml": `  ${image} \\\n`,
+    },
+    installers: {
+      Dockerfile: "RUN node scripts/install-pnpm.mjs && pnpm install\n",
+      ".github/actions/install-pnpm/action.yml":
+        "run: node scripts/install-pnpm.mjs\n",
     },
   };
   change(value);
@@ -230,6 +239,43 @@ const misalignments = [
     /no Playwright image found/,
   ],
   [
+    "a pnpm version Dependabot moved without packageManager",
+    (v) => {
+      v.workspace.catalog.pnpm = "11.18.0";
+    },
+    /packageManager must be pnpm@11\.18\.0 to match the catalog, found pnpm@11\.17\.0/,
+  ],
+  [
+    "a packageManager without an exact version",
+    (v) => {
+      v.manifests["package.json"].packageManager = "pnpm@11";
+    },
+    /packageManager must be pnpm@11\.17\.0 to match the catalog, found pnpm@11$/,
+  ],
+  ...[
+    ["Dockerfile", "RUN npm install --global pnpm@11.17.0\n"],
+    [".github/actions/install-pnpm/action.yml", "run: npm i -g pnpm\n"],
+    [".github/actions/install-pnpm/action.yml", "run: corepack enable\n"],
+    ["Dockerfile", "RUN npm install --global \\\n  pnpm@11.17.0\n"],
+    [".github/actions/install-pnpm/action.yml", "uses: pnpm/action-setup@a\n"],
+    ["Dockerfile", "RUN curl https://get.pnpm.io/install.sh | sh\n"],
+    ["Dockerfile", "RUN yarn global add pnpm\n"],
+  ].map(([path, text]) => [
+    `an unverified pnpm install in ${text.trim()}`,
+    (v) => {
+      v.installers[path] = text;
+    },
+    /install pnpm with scripts\/install-pnpm\.mjs/,
+  ]),
+  [
+    "an unverified pnpm install in a workflow",
+    (v) => {
+      v.workflows[".github/workflows/canvas.yml"] +=
+        "run: npx pnpm@11.17.0 install\n";
+    },
+    /install pnpm with scripts\/install-pnpm\.mjs/,
+  ],
+  [
     "an allowBuilds key without a version",
     (v) => {
       v.workspace.allowBuilds.esbuild = "true";
@@ -260,3 +306,14 @@ for (const [name, change, expected] of misalignments)
       problems.join("\n"),
     );
   });
+
+test("a command that only reads pnpm's metadata is not an install", () => {
+  assert.deepEqual(
+    pinProblems(
+      inputs((v) => {
+        v.installers.Dockerfile = "RUN npm view pnpm dist.integrity\n";
+      }),
+    ),
+    [],
+  );
+});
