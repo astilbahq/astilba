@@ -139,6 +139,42 @@ func TestFrozenPlanAdmittedBeforeTheComposeRulesStillCompiles(t *testing.T) {
 	}
 }
 
+// The reserved names are the runtime's own: what it compiles from a visual or Compose
+// source declares them, and neither a plan's checks nor a host's compile may refuse that.
+func TestCompiledOutputKeepsTheRuntimesOwnNames(t *testing.T) {
+	visual := testPlan()
+	visual.Images = map[string]string{}
+	for _, app := range visual.Specification.Applications {
+		visual.Images[app.ID.String()] = *app.Source.Image
+	}
+	unit := uuid.New()
+	image := "registry.example.test/web@sha256:" + strings.Repeat("a", 64)
+	raw, _ := stablejson.Marshal(map[string]any{"version": 1, "applications": []any{}, "variables": []any{}, "compose": composeproject.Bundle{Namespace: unit, Entrypoints: []string{"compose.yaml"}, Files: []composeproject.File{{Path: "compose.yaml", Content: "services:\n  web:\n    image: " + image + "\n"}}}})
+	spec, _, err := domain.ParseSpec(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	app := composeproject.ResourceID(unit, "service", "web")
+	source := Plan{ID: uuid.New(), ServerID: uuid.New(), EnvironmentID: uuid.New(), UnitID: unit, RevisionID: uuid.New(), Recipe: Recipe, Specification: spec, Images: map[string]string{app.String(): image}, Effects: []string{}}.WithHash()
+	for name, p := range map[string]Plan{"visual": visual.WithHash(), "compose": source} {
+		if err := p.Validate(true); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if err := domain.ValidateNewDraft(p.Specification, domain.Specification{}); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		compiled, err := Compose(p, nil, true)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		for _, a := range p.Specification.Applications {
+			if p.Images[a.ID.String()] != "" && !strings.Contains(string(compiled), `"`+ServiceName(a.ID)+`"`) {
+				t.Fatalf("%s: compiled output lost the runtime's name for %s: %s", name, a.Name, compiled)
+			}
+		}
+	}
+}
+
 // Every kind of local backend is dialled on its own unit's network, while a private
 // address stays as it is. A bare file must keep its old bytes until a host converts.
 func TestRouteConfigQualifiesEveryLocalBackend(t *testing.T) {
