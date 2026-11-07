@@ -5,6 +5,7 @@ import (
 	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"errors"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -62,27 +63,7 @@ func testCrossHostCoordinatedPlacement(t *testing.T, expiryPhase string) {
 		b.call("POST", "/api/v1/auth/mfa/confirm", map[string]string{"code": code}, 200, &codes)
 		b.csrf = codes.Session.CsrfToken
 	}
-	confirmedAt := time.Now()
-	// This journey can outlive step-up authentication. Renew with a minute of
-	// margin without exhausting the reauthentication rate limit.
-	refreshAuthentication := func() {
-		t.Helper()
-		if time.Since(confirmedAt) < 4*time.Minute {
-			return
-		}
-		var session api.Session
-		credentials := map[string]string{"password": f.password}
-		if mfaSecret != "" {
-			code, err := totp.GenerateCode(mfaSecret, time.Now())
-			if err != nil {
-				t.Fatal(err)
-			}
-			credentials["code"] = code
-		}
-		b.call("POST", "/api/v1/auth/reauthenticate", credentials, 200, &session)
-		b.csrf = session.CsrfToken
-		confirmedAt = time.Now()
-	}
+	refreshAuthentication := stayRecentlyAuthenticated(t, f, b, mfaSecret)
 	base := "/api/v1/workspaces/" + ws.String()
 	var project api.Project
 	b.call("POST", base+"/projects", map[string]string{"name": "Placement"}, 201, &project)
@@ -404,8 +385,11 @@ func testCrossHostCoordinatedPlacement(t *testing.T, expiryPhase string) {
 		Generation int64     `json:"generation"`
 		State      string    `json:"state"`
 	}
+	// A third member that is revoked before any placement. Everything below, through the import at
+	// the end, runs with it in the network and must not wait on it.
 	refreshAuthentication()
-	b.call("PUT", base+"/network", api.ConfigureManagedNetwork{Prefix: "10.251.0.0/24", Members: members}, 200, &network)
+	revokedServer, revokedMember := startRevocableMember(ctx, t, f, b, ws, &wg)
+	b.call("PUT", base+"/network", api.ConfigureManagedNetwork{Prefix: "10.251.0.0/24", Members: append(slices.Clone(members), revokedMember)}, 200, &network)
 	wait := func(test func() bool) {
 		t.Helper()
 		deadline := time.Now().Add(65 * time.Second)
@@ -436,6 +420,13 @@ func testCrossHostCoordinatedPlacement(t *testing.T, expiryPhase string) {
 			}
 			return network.State == "ready" && !active
 		})
+	}
+	waitNetworkReady()
+	refreshAuthentication()
+	b.call("POST", base+"/servers/"+revokedServer.String()+"/revoke", nil, 204, nil)
+	b.call("GET", base+"/network", nil, 200, &network)
+	if network.State == "ready" {
+		t.Fatal("the network is ready before its members removed the revoked key")
 	}
 	waitNetworkReady()
 	app := uuid.New()

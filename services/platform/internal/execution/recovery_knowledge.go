@@ -54,6 +54,10 @@ func (s *Service) prepareRecoveryKnowledge(ctx context.Context, tx pgx.Tx, befor
 	if err != nil {
 		return err
 	}
+	revoked, err := recoveryRevokedServers(before, source.Archive)
+	if err != nil {
+		return err
+	}
 	// inline-sql: recovery session temporary table
 	if _, err = tx.Exec(ctx, `CREATE TEMP TABLE recovery_known_operations(id uuid PRIMARY KEY,report_sequence bigint NOT NULL,state text NOT NULL) ON COMMIT DROP`); err != nil {
 		return err
@@ -107,7 +111,7 @@ func (s *Service) prepareRecoveryKnowledge(ctx context.Context, tx pgx.Tx, befor
 					}
 					err = recoveryMonotonic(selected, prior, row, nil, []string{"generation"})
 				case "network_members":
-					selected, err = recoveryMemberKnowledge(prior, row, source)
+					selected, err = recoveryMemberKnowledge(prior, row, source, revoked)
 				case "managed_volumes":
 					err = recoveryMonotonic(selected, prior, row, []string{"deleted"}, nil)
 				case "supported_upgrades":
@@ -173,6 +177,9 @@ func (s *Service) prepareRecoveryKnowledge(ctx context.Context, tx pgx.Tx, befor
 		}
 	}
 	if err = appendRecoveryProjectionRows(&prepared, projections); err != nil {
+		return err
+	}
+	if err = settleRevokedServers(prepared, revoked, source.Hosts); err != nil {
 		return err
 	}
 	source.Archive = prepared
@@ -248,7 +255,69 @@ func recoveryOperationKnowledge(prior, incoming portability.Row) (portability.Ro
 	}
 	return out, nil
 }
-func recoveryMemberKnowledge(prior, incoming portability.Row, source *recoverySource) (portability.Row, error) {
+
+// recoveryRevokedServers names every server revoked in any of the archives. Recovery keeps a
+// revocation whichever side knew of it.
+func recoveryRevokedServers(archives ...portability.Archive) (map[uuid.UUID]bool, error) {
+	out := map[uuid.UUID]bool{}
+	for _, archive := range archives {
+		for _, row := range archive.Tables["servers"] {
+			id, err := recoveryValue[uuid.UUID](row, "id")
+			if err != nil {
+				return nil, err
+			}
+			value, err := recoveryValue[bool](row, "revoked")
+			if err != nil {
+				return nil, err
+			}
+			out[id] = out[id] || value
+		}
+	}
+	return out, nil
+}
+
+// settleRevokedServers makes the merged history agree with the revocations it carries. A revoked
+// server stays out of the network, whichever row was selected for it. A removal waiting on one
+// that supplied no export ends here, because nothing can deliver it or report on it, and a host
+// that stalled on purpose must not be able to hold recovery back.
+func settleRevokedServers(a portability.Archive, revoked map[uuid.UUID]bool, hosts map[uuid.UUID]deployment.RecoveryEvidence) error {
+	for _, row := range a.Tables["network_members"] {
+		server, err := recoveryValue[uuid.UUID](row, "server_id")
+		if err != nil {
+			return err
+		}
+		if revoked[server] {
+			recoverySet(row, "enabled", false)
+		}
+	}
+	for _, row := range a.Tables["execution_operations"] {
+		server, err := recoveryValue[uuid.UUID](row, "server_id")
+		if err != nil {
+			return err
+		}
+		if _, exported := hosts[server]; !revoked[server] || exported {
+			continue
+		}
+		state, err := recoveryValue[api.ExecutionState](row, "state")
+		if err != nil {
+			return err
+		}
+		command, err := recoveryValue[api.ExecutionCommand](row, "command")
+		if err != nil {
+			return err
+		}
+		if !Terminal(state) && standaloneRestrictionFrame(command) {
+			recoverySet(row, "state", api.ExecutionState("cancelled"))
+		}
+	}
+	return nil
+}
+
+func recoveryMemberKnowledge(prior, incoming portability.Row, source *recoverySource, revoked map[uuid.UUID]bool) (portability.Row, error) {
+	server, err := recoveryValue[uuid.UUID](prior, "server_id")
+	if err != nil {
+		return nil, err
+	}
 	oldID, err := recoveryValue[uuid.UUID](prior, "membership_id")
 	if err != nil {
 		return nil, err
@@ -267,10 +336,12 @@ func recoveryMemberKnowledge(prior, incoming portability.Row, source *recoverySo
 		if err != nil {
 			return nil, err
 		}
-		if oldMatch == newMatch {
+		// A revoked host may be gone or untrusted, so nothing can say which membership or key it holds,
+		// and it no longer matters: the member stays disabled either way.
+		if oldMatch == newMatch && !revoked[server] {
 			return nil, errors.New("network membership differs without matching installed host evidence")
 		}
-		if newMatch {
+		if newMatch && !oldMatch {
 			out = maps.Clone(incoming)
 		}
 	} else {
@@ -298,7 +369,7 @@ func recoveryMemberKnowledge(prior, incoming portability.Row, source *recoverySo
 			if err != nil {
 				return nil, err
 			}
-			if oldMatch == newMatch {
+			if oldMatch == newMatch && !revoked[server] {
 				return nil, errors.New("network key differs without matching installed host evidence")
 			}
 			if newMatch {

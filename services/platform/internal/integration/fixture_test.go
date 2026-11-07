@@ -34,6 +34,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/pquerna/otp/totp"
 )
 
 // laneBudget is budgetSeconds in scripts/lane-budget.mjs, whose test holds the two together.
@@ -436,4 +437,28 @@ func waitForResetLink(t *testing.T, f *fixture, token string) {
 		}
 	}
 	t.Fatal("the mailed reset link was not saved")
+}
+
+// stayRecentlyAuthenticated returns a step that renews the owner's recent authentication with a
+// minute of margin, for a journey that can outlive it without exhausting its rate limit.
+func stayRecentlyAuthenticated(t *testing.T, f *fixture, b *browser, mfaSecret string) func() {
+	confirmedAt := time.Now()
+	return func() {
+		t.Helper()
+		if time.Since(confirmedAt) < 4*time.Minute {
+			return
+		}
+		var session api.Session
+		credentials := map[string]string{"password": f.password}
+		if mfaSecret != "" {
+			code, err := totp.GenerateCode(mfaSecret, time.Now())
+			if err != nil {
+				t.Fatal(err)
+			}
+			credentials["code"] = code
+		}
+		b.call("POST", "/api/v1/auth/reauthenticate", credentials, 200, &session)
+		b.csrf = session.CsrfToken
+		confirmedAt = time.Now()
+	}
 }
