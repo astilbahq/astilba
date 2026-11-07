@@ -129,7 +129,7 @@ func (w *refreshWorker) work(ctx context.Context, git *gitAnswers, job *river.Jo
 	expired := time.Since(job.CreatedAt) > sourceWaitLimit
 	for _, v := range sources {
 		if v.commit == head {
-			if _, err = tx.Exec(ctx, "UPDATE git_sources SET pending_commit='' WHERE workspace_id=$1 AND environment_id=$2 AND status<>'conflict' AND pending_commit<>''", a.Workspace, v.env); err != nil {
+			if err = db.New(tx).ClearGitSourcePendingCommit(ctx, db.ClearGitSourcePendingCommitParams{WorkspaceID: a.Workspace, EnvironmentID: v.env}); err != nil {
 				return err
 			}
 			continue
@@ -137,8 +137,8 @@ func (w *refreshWorker) work(ctx context.Context, git *gitAnswers, job *river.Jo
 		// A retry or wait must not repeat an import this job already started, whatever became of
 		// it, and needs no more of the provider's time for this source. Only the job's latest
 		// counts, so a branch moved back to an earlier commit imports that commit again.
-		var started bool
-		if err = tx.QueryRow(ctx, "SELECT COALESCE((SELECT configuration->>'commit' FROM pipeline_runs WHERE workspace_id=$1 AND environment_id=$2 AND configuration->>'action'='import' AND created_at>=$4 ORDER BY created_at DESC LIMIT 1)=$3,false)", a.Workspace, v.env, head, job.CreatedAt).Scan(&started); err != nil {
+		started, err := db.New(tx).LatestImportIsAtCommit(ctx, db.LatestImportIsAtCommitParams{WorkspaceID: a.Workspace, EnvironmentID: v.env, Since: job.CreatedAt, Commit: head})
+		if err != nil {
 			return err
 		}
 		if started {
@@ -208,7 +208,7 @@ func (w *refreshWorker) work(ctx context.Context, git *gitAnswers, job *river.Jo
 			if errors.Is(blobs.Err, errSourceBlobsNotAsked) && !expired {
 				continue
 			}
-			if _, err = tx.Exec(ctx, "UPDATE git_sources SET pending_commit=$3 WHERE workspace_id=$1 AND environment_id=$2", a.Workspace, v.env, head); err != nil {
+			if err = db.New(tx).SetGitSourcePendingCommit(ctx, db.SetGitSourcePendingCommitParams{WorkspaceID: a.Workspace, EnvironmentID: v.env, Commit: head}); err != nil {
 				return err
 			}
 			continue
@@ -221,7 +221,7 @@ func (w *refreshWorker) work(ctx context.Context, git *gitAnswers, job *river.Jo
 		if err != nil {
 			return err
 		}
-		if _, err = tx.Exec(ctx, "UPDATE git_sources SET pending_commit='' WHERE workspace_id=$1 AND environment_id=$2 AND status<>'conflict'", a.Workspace, v.env); err != nil {
+		if err = db.New(tx).ClearGitSourcePendingCommit(ctx, db.ClearGitSourcePendingCommitParams{WorkspaceID: a.Workspace, EnvironmentID: v.env}); err != nil {
 			return err
 		}
 		capacity--
