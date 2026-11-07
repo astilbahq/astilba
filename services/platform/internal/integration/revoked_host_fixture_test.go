@@ -50,8 +50,27 @@ func newRevokedGroup(t *testing.T, count int) *revokedGroup {
 	for _, h := range g.hosts {
 		g.wg.Go(func() { g.answer(ctx, t, h) })
 	}
+	g.wg.Go(func() { g.hurryCoordinators(ctx, t) })
 	t.Cleanup(func() { cancel(); g.wg.Wait() })
 	return g
+}
+
+// hurryCoordinators brings snoozed execution jobs forward. A coordinator only looks again 2 seconds
+// after each pass, and a deployment takes dozens of passes, which is nearly all of these tests'
+// time. Every pass is still the real job. Should River ignore the notification, its 1 second poll
+// picks the job up anyway.
+func (g *revokedGroup) hurryCoordinators(ctx context.Context, t *testing.T) {
+	for ctx.Err() == nil {
+		_, err := g.f.st.Pool.Exec(ctx, `WITH due AS (UPDATE river_job SET scheduled_at=now() WHERE kind='platform_execution_v1' AND state='available' AND scheduled_at>now() RETURNING id) SELECT pg_notify(current_schema()||'.river_insert','{"queue":"default"}') FROM (SELECT 1 FROM due LIMIT 1) woken`)
+		if err != nil && ctx.Err() == nil {
+			t.Error(err)
+			return
+		}
+		select {
+		case <-ctx.Done():
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
 }
 
 // hold makes the host stop answering a phase, and forgets any earlier plan's use of it.

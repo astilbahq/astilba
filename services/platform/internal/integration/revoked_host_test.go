@@ -76,7 +76,7 @@ func TestRevocationReleasesAHeldDeployment(t *testing.T) {
 	g.waitFor(t, "the hosts to receive prepare", func() bool { return g.received(gone, "prepare") && g.received(b, "prepare") })
 	g.revoke(t, gone)
 	// Cancelling a healthy host's preparation parks it for a local retry, so it's left to finish.
-	time.Sleep(3 * time.Second)
+	time.Sleep(time.Second)
 	g.release(b, "prepare")
 	if state := g.finished(t, op.Id); state != "failed" {
 		t.Fatalf("a deployment that lost a host before publication ended %s", state)
