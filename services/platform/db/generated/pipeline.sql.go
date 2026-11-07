@@ -7,6 +7,7 @@ package db
 
 import (
 	"context"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -161,6 +162,22 @@ func (q *Queries) AutomaticDeploymentWorkspace(ctx context.Context, id uuid.UUID
 	return workspace_id, err
 }
 
+const clearGitSourcePendingCommit = `-- name: ClearGitSourcePendingCommit :exec
+UPDATE git_sources SET pending_commit = ''
+WHERE workspace_id = $1 AND environment_id = $2 AND status <> 'conflict' AND pending_commit <> ''
+`
+
+type ClearGitSourcePendingCommitParams struct {
+	WorkspaceID   uuid.UUID `json:"workspace_id"`
+	EnvironmentID uuid.UUID `json:"environment_id"`
+}
+
+// A conflict keeps its commit until an owner's refresh settles the draft.
+func (q *Queries) ClearGitSourcePendingCommit(ctx context.Context, arg ClearGitSourcePendingCommitParams) error {
+	_, err := q.db.Exec(ctx, clearGitSourcePendingCommit, arg.WorkspaceID, arg.EnvironmentID)
+	return err
+}
+
 const environmentHoldsAutomaticWork = `-- name: EnvironmentHoldsAutomaticWork :one
 SELECT (EXISTS(SELECT 1 FROM execution_operations o WHERE o.workspace_id = $1 AND o.environment_id = $2::uuid AND o.state NOT IN ('succeeded','failed','cancelled'))
     OR EXISTS(SELECT 1 FROM pipeline_auto_deployments d JOIN pipeline_runs r ON r.workspace_id = d.workspace_id AND r.id = d.id
@@ -201,6 +218,34 @@ func (q *Queries) FinishUndeliveredPipeline(ctx context.Context, arg FinishUndel
 		arg.ID,
 	)
 	return err
+}
+
+const latestImportIsAtCommit = `-- name: LatestImportIsAtCommit :one
+SELECT COALESCE((
+    SELECT configuration->>'commit' FROM pipeline_runs
+    WHERE workspace_id = $1 AND environment_id = $2
+        AND configuration->>'action' = 'import' AND created_at >= $3::timestamptz
+    ORDER BY created_at DESC LIMIT 1
+) = $4::text, false)::boolean AS started
+`
+
+type LatestImportIsAtCommitParams struct {
+	WorkspaceID   uuid.UUID `json:"workspace_id"`
+	EnvironmentID uuid.UUID `json:"environment_id"`
+	Since         time.Time `json:"since"`
+	Commit        string    `json:"commit"`
+}
+
+func (q *Queries) LatestImportIsAtCommit(ctx context.Context, arg LatestImportIsAtCommitParams) (bool, error) {
+	row := q.db.QueryRow(ctx, latestImportIsAtCommit,
+		arg.WorkspaceID,
+		arg.EnvironmentID,
+		arg.Since,
+		arg.Commit,
+	)
+	var started bool
+	err := row.Scan(&started)
+	return started, err
 }
 
 const markPipelineDeliveryStarted = `-- name: MarkPipelineDeliveryStarted :exec
@@ -274,6 +319,22 @@ type RewrapRegistryAccessParams struct {
 
 func (q *Queries) RewrapRegistryAccess(ctx context.Context, arg RewrapRegistryAccessParams) error {
 	_, err := q.db.Exec(ctx, rewrapRegistryAccess, arg.WorkspaceID, arg.ID, arg.EncryptedAccess)
+	return err
+}
+
+const setGitSourcePendingCommit = `-- name: SetGitSourcePendingCommit :exec
+UPDATE git_sources SET pending_commit = $1
+WHERE workspace_id = $2 AND environment_id = $3
+`
+
+type SetGitSourcePendingCommitParams struct {
+	Commit        string    `json:"commit"`
+	WorkspaceID   uuid.UUID `json:"workspace_id"`
+	EnvironmentID uuid.UUID `json:"environment_id"`
+}
+
+func (q *Queries) SetGitSourcePendingCommit(ctx context.Context, arg SetGitSourcePendingCommitParams) error {
+	_, err := q.db.Exec(ctx, setGitSourcePendingCommit, arg.Commit, arg.WorkspaceID, arg.EnvironmentID)
 	return err
 }
 

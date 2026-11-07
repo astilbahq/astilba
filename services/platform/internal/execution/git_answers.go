@@ -6,6 +6,7 @@ import (
 	json "encoding/json/v2"
 	"errors"
 	"fmt"
+	"time"
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
@@ -151,6 +152,13 @@ func (s *Service) openProvider(ctx context.Context, ws, id uuid.UUID, st gitStat
 	return pipeline.NewProvider(st.connection, access.API, s.Policy)
 }
 
+// sourceBlobsMargin is what a background job keeps to record its answers and admit other work.
+const sourceBlobsMargin = 3 * time.Second
+
+// errSourceBlobsNotAsked says a job's time ran out before its turn, which is no fault of the
+// source or its provider.
+var errSourceBlobsNotAsked = errors.New("no time left to ask about this source's files")
+
 // gitAnswer separates what a provider said from whether the transaction can go on: a
 // question's error return means a failed read or an answer still to fetch, and goes back up
 // unchanged, while Err is the provider's failure for the caller to judge.
@@ -236,7 +244,12 @@ func askGit[T any](ctx context.Context, tx pgx.Tx, g *gitAnswers, id uuid.UUID, 
 		out = stored.(gitAnswer[T])
 	} else {
 		state := known.state
-		return out, &providerCall{fetch: func(ctx context.Context) { known.values[question] = fetch(ctx, state) }}
+		// Questions joined by and can repeat, such as sources selecting the same files.
+		return out, &providerCall{fetch: func(ctx context.Context) {
+			if _, answered := known.values[question]; !answered {
+				known.values[question] = fetch(ctx, state)
+			}
+		}}
 	}
 	out.Connection = known.state.connection
 	return out, nil
@@ -293,6 +306,24 @@ func (g *gitAnswers) head(ctx context.Context, tx pgx.Tx, id uuid.UUID, branch s
 	}
 	return askProvider(ctx, tx, g, id, false, fmt.Sprintf("head/%d/%s", pushes, branch), func(ctx context.Context, p *pipeline.Provider) (string, error) {
 		return p.Resolve(ctx, branch)
+	})
+}
+
+// sourceBlobs reads what the provider's tree holds at a commit, which is true for good, so an
+// import freezes the answer when it is admitted and its runner's report needs no network. A
+// background job keeps some of its time, so that running out becomes an answer it can record
+// instead of the job's own failure.
+func (g *gitAnswers) sourceBlobs(ctx context.Context, tx pgx.Tx, id uuid.UUID, commit string, paths []string) (gitAnswer[map[string]string], error) {
+	return askProvider(ctx, tx, g, id, false, fmt.Sprintf("blobs/%s/%q", commit, paths), func(ctx context.Context, p *pipeline.Provider) (map[string]string, error) {
+		if deadline, bounded := ctx.Deadline(); bounded {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithDeadline(ctx, deadline.Add(-sourceBlobsMargin))
+			defer cancel()
+			if ctx.Err() != nil {
+				return nil, errSourceBlobsNotAsked
+			}
+		}
+		return p.SourceBlobs(ctx, commit, paths)
 	})
 }
 

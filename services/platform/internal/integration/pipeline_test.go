@@ -42,11 +42,15 @@ func TestGitImportBuildIsolationAndArtifactAdmission(t *testing.T) {
 	var providerHead, mergeHead atomic.Value
 	providerHead.Store(head)
 	mergeHead.Store("")
+	var tree gitTree
 	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		apiCalls.Add(1)
 		w.Header().Set("Content-Type", "application/json")
 		if r.Header.Get("Authorization") != "token api-write-canary" {
 			w.WriteHeader(401)
+			return
+		}
+		if tree.answer(w, r) {
 			return
 		}
 		if strings.Contains(r.URL.Path, "/branches/") {
@@ -102,6 +106,9 @@ func TestGitImportBuildIsolationAndArtifactAdmission(t *testing.T) {
 	agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/enroll", "", in, 200, nil)
 	var op api.Operation
 	source := pipeline.Source{ConnectionID: connection.Connection.ID, Branch: "main", RunnerID: enrolled.Server.Id, Paths: []string{"compose.yaml"}, Entrypoints: []string{"compose.yaml"}}
+	files := []composeproject.File{{Path: "compose.yaml", Content: "# preserve me\nservices:\n  web:\n    image: " + pipelineTestImage + "\n"}}
+	badFiles := []composeproject.File{{Path: "compose.yaml", Content: files[0].Content + "x-astilba:\n  routes:\n    - name: web\n      service: web\n      protocol: http\n      domain: other.apps.example.test\n      port: 8080\n      tls: \"off\"\n      allowCidrs: []\n"}}
+	tree.record(head, badFiles)
 	b.call("PUT", path+"/source", map[string]any{"baseRevisionId": env.DraftRevisionId, "configuration": source}, 202, &op)
 	poll := func(id uuid.UUID) api.ExecutionCommand {
 		t.Helper()
@@ -127,14 +134,13 @@ func TestGitImportBuildIsolationAndArtifactAdmission(t *testing.T) {
 	if !strings.Contains(string(*c.Pipeline), "clone-read-canary") {
 		t.Fatal("import omitted clone access")
 	}
-	files := []composeproject.File{{Path: "compose.yaml", Content: "# preserve me\nservices:\n  web:\n    image: " + pipelineTestImage + "\n"}}
-	badFiles := []composeproject.File{{Path: "compose.yaml", Content: files[0].Content + "x-astilba:\n  routes:\n    - name: web\n      service: web\n      protocol: http\n      domain: other.apps.example.test\n      port: 8080\n      tls: \"off\"\n      allowCidrs: []\n"}}
 	report(c, pipeline.Result{Commit: head, Files: badFiles})
 	var rejected api.Revision
 	b.call("GET", path+"/draft", nil, 200, &rejected)
 	if rejected.Id != env.DraftRevisionId {
 		t.Fatal("Git import saved another generated namespace")
 	}
+	tree.record(head, files)
 	b.call("POST", path+"/source/refresh", map[string]any{"baseRevisionId": env.DraftRevisionId}, 202, &op)
 	c = poll(op.Id)
 	report(c, pipeline.Result{Commit: head, Files: files})
@@ -454,6 +460,7 @@ func TestGitImportBuildIsolationAndArtifactAdmission(t *testing.T) {
 			body, _ := stablejson.Marshal(map[string]any{"ref": "refs/heads/main", "after": commit, "repository": map[string]int{"id": 12}})
 			send(body, true, 202)
 		}
+		tree.record(strings.Repeat("c", 40), files)
 		push(strings.Repeat("c", 40), "conflict")
 		waitSource("conflict")
 		var current api.Revision
@@ -511,6 +518,7 @@ func TestGitImportBuildIsolationAndArtifactAdmission(t *testing.T) {
 
 		b.call("POST", path+"/deployment-plans", api.VisualPlanRequest{BaseRevisionId: current.Id, ServerId: enrolled.Server.Id}, 400, nil)
 		mergeHead.Store(merge)
+		tree.record(merge, edited.Compose.Files)
 		push(merge, "merge")
 		// Wait for the background refresh to enqueue, then the assigned runner imports the authoritative merge.
 		var polled api.AgentPoll
@@ -539,6 +547,7 @@ func TestGitImportBuildIsolationAndArtifactAdmission(t *testing.T) {
 		}
 		b.call("PUT", path+"/source/policy", map[string]bool{"autoDeploy": true}, 204, nil)
 		latest := strings.Repeat("e", 40)
+		tree.record(latest, edited.Compose.Files)
 		push(latest, "automatic")
 		agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/poll", token, nil, 200, &polled)
 		if polled.Command == nil || polled.Command.Kind != "pipeline" {
@@ -581,8 +590,9 @@ func TestGitImportBuildIsolationAndArtifactAdmission(t *testing.T) {
 		b.call("POST", prefix+"/projects/"+project.Id.String()+"/environments", map[string]string{"name": "Contaminated source", "configurationOwner": "compose"}, 201, &contaminated)
 		contaminatedPath := prefix + "/projects/" + project.Id.String() + "/environments/" + contaminated.Id.String()
 		b.call("POST", contaminatedPath+"/secrets", map[string]string{"name": "TOKEN", "value": "baseline-secret-canary"}, 201, nil)
-		b.call("PUT", contaminatedPath+"/source", map[string]any{"baseRevisionId": contaminated.DraftRevisionId, "configuration": source}, 202, &op)
 		contaminatedFiles := []composeproject.File{{Path: "compose.yaml", Content: files[0].Content + "# baseline-secret-canary\n"}}
+		tree.record(latest, contaminatedFiles)
+		b.call("PUT", contaminatedPath+"/source", map[string]any{"baseRevisionId": contaminated.DraftRevisionId, "configuration": source}, 202, &op)
 		report(poll(op.Id), pipeline.Result{Commit: latest, Files: contaminatedFiles})
 		b.call("GET", contaminatedPath+"/draft", nil, 200, &current)
 		_ = json.Unmarshal(current.Specification, &edited)

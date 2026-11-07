@@ -47,7 +47,11 @@ func TestGitHubOnboardingDelegationAndRecoveryBoundaries(t *testing.T) {
 	var exchanged, minted, metadata atomic.Int64
 	var revoked, notAdmin atomic.Bool
 	var challenge string
+	var tree gitTree
 	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if tree.answer(w, r) {
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case r.URL.Path == "/login/oauth/access_token":

@@ -364,6 +364,13 @@ func (s *Service) pipelineReport(ctx context.Context, tx pgx.Tx, git *gitAnswers
 				}
 				delete(wanted, f.Path)
 			}
+			// A build-only runner has no authority over what a deployment server runs, so its
+			// files count only if they are the repository's.
+			if !p.SourceMatches(result.Files) {
+				r.State = "failed"
+				r.Note = "Refused: the files this runner reported differ from what the Git provider holds at commit " + p.Commit + ". Nothing was saved. Check that the connection can read these files. If it can, treat the runner as compromised until you can explain this."
+				break
+			}
 			var raw []byte
 			var current uuid.UUID
 			var actor uuid.UUID

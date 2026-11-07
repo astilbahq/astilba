@@ -63,8 +63,22 @@ func selectRunner(ctx context.Context, tx pgx.Tx, ws, primary uuid.UUID, fallbac
 	}
 	return primary, nil
 }
+
+// sourceFilesUnavailable refuses to start an import that could not be checked afterwards.
+var sourceFilesUnavailable = &domain.Error{Code: "temporarily_busy", Message: "The Git provider did not answer for the selected files. Check that the connection can read repository contents, then try again."}
+
 func (s *Service) insertPipeline(ctx context.Context, tx pgx.Tx, git *gitAnswers, ws, env, key, server uuid.UUID, p pipeline.Command) (api.Operation, error) {
 	var out api.Operation
+	if p.Action == "import" {
+		blobs, err := git.sourceBlobs(ctx, tx, p.Connection.ID, p.Commit, p.Source.Paths)
+		if err != nil {
+			return out, err
+		}
+		if blobs.Err != nil {
+			return out, blobs.failure(sourceFilesUnavailable)
+		}
+		p.SourceBlobs = blobs.Value
+	}
 	if p.Build != nil {
 		canonical := p.Build.Canonical()
 		p.Build = &canonical

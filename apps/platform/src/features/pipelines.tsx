@@ -282,9 +282,9 @@ export function Pipelines({
               )}
               {source.data.pendingCommit && (
                 <p className={s.notice}>
-                  The branch changed while your draft was pending. Compare the
-                  source and your draft, then explicitly refresh to replace the
-                  draft.
+                  {source.data.status === "conflict"
+                    ? "The branch changed while your draft was pending. Compare the source and your draft, then explicitly refresh to replace the draft."
+                    : `Commit ${source.data.pendingCommit.slice(0, 12)} has not been imported. Refresh the source to try now.`}
                 </p>
               )}
               {write && (
