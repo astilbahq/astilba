@@ -31,6 +31,11 @@ import (
 
 const proxyName = "astilba-ingress"
 
+// maxProxyObservation is above what the proxy can report for the most routes a host may
+// have with what the journal's routing record can hold, about 1 MiB, so no unit's routes
+// can make a host's route checks fail.
+const maxProxyObservation = 2 << 20
+
 type routeSnapshot struct {
 	ManagedEgress bool                           `json:"managedEgress,omitempty"`
 	Sets          map[string]deployment.RouteSet `json:"sets"`
@@ -38,6 +43,9 @@ type routeSnapshot struct {
 	Revision      string                         `json:"revision"`
 	Email         string                         `json:"email"`
 	ProxyHash     string                         `json:"proxyHash"`
+	// QualifiedBackends is false only in a snapshot an older agent wrote, whose route
+	// file must keep comparing equal until QualifyRouteBackends replaces it.
+	QualifiedBackends bool `json:"qualifiedBackends,omitempty"`
 }
 type routeAttempt struct {
 	Previous  routeSnapshot `json:"previous"`
@@ -93,69 +101,6 @@ func (j *Journal) saveRouting(v routeState) error {
 	return j.db.Update(func(tx *bolt.Tx) error { return j.put(tx, "routing", "host", v) })
 }
 func (e *Engine) routePath() string { return filepath.Join(e.Journal.dir, "ingress", "runtime.yaml") }
-func renderSnapshot(s routeSnapshot) ([]byte, error) {
-	raw, err := deployment.RouteConfig(s.Sets)
-	if err != nil {
-		return nil, err
-	}
-	var out map[string]any
-	if err = json.Unmarshal(raw, &out); err != nil {
-		return nil, err
-	}
-	if s.Revision != "" {
-		http, _ := out["http"].(map[string]any)
-		if http == nil {
-			http = map[string]any{}
-			out["http"] = http
-		}
-		routers, _ := http["routers"].(map[string]any)
-		if routers == nil {
-			routers = map[string]any{}
-			http["routers"] = routers
-		}
-		routers["activation-"+s.Revision] = map[string]any{"entryPoints": []string{"traefik"}, "rule": "Path(`/__astilba_activation`)", "service": "api@internal"}
-	}
-	return deployment.RouteFile(out)
-}
-func atomicRouteFile(path string, raw []byte) error {
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0700); err != nil {
-		return err
-	}
-	info, err := os.Lstat(dir)
-	if err != nil || !info.IsDir() || info.Mode().Perm()&0077 != 0 {
-		return errors.New("ingress directory must be private")
-	}
-	if info, err := os.Lstat(path); err == nil && !info.Mode().IsRegular() {
-		return errors.New("ingress file must be regular")
-	} else if err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	f, err := os.CreateTemp(dir, ".route-")
-	if err != nil {
-		return err
-	}
-	defer os.Remove(f.Name())
-	if _, err = f.Write(raw); err == nil {
-		err = f.Sync()
-	}
-	closeErr := f.Close()
-	if err != nil {
-		return err
-	}
-	if closeErr != nil {
-		return closeErr
-	}
-	if err = os.Rename(f.Name(), path); err != nil {
-		return err
-	}
-	d, err := os.Open(dir)
-	if err != nil {
-		return err
-	}
-	defer d.Close()
-	return d.Sync()
-}
 func routePorts(s routeSnapshot) []int {
 	set := map[int]bool{}
 	for _, p := range s.Ports {
@@ -312,6 +257,7 @@ func (e *Engine) publishRoutes(ctx context.Context, p deployment.Plan, stablePro
 	if p.HostChanges {
 		next.ManagedEgress = true
 	}
+	next.QualifiedBackends = true
 	next.Revision = uuid.NewString()
 	if _, err = renderSnapshot(next); err != nil {
 		return err
@@ -359,23 +305,12 @@ func (e *Engine) applyRoutes(ctx context.Context, s routeSnapshot, rebuild bool)
 	if len(s.Ports) == 0 {
 		return nil
 	}
-	deadline, cancel := context.WithTimeout(ctx, 15*time.Second)
-	defer cancel()
-	for {
-		if err = e.verifyRoutes(deadline, s); err == nil {
-			current, readErr := os.ReadFile(e.routePath())
-			if readErr != nil || !bytes.Equal(current, raw) {
-				return errors.New("published route file changed before activation")
-			}
-			return e.verifyCertificates(ctx, s)
-		}
-		select {
-		case <-deadline.Done():
-			return fmt.Errorf("route runtime verification failed: %w", err)
-		case <-time.After(200 * time.Millisecond):
-		}
+	if err = e.awaitRoutes(ctx, s, raw); err != nil {
+		return err
 	}
+	return e.verifyCertificates(ctx, s)
 }
+
 func proxyArgs(s routeSnapshot) []string {
 	args := []string{"--providers.file.filename=/etc/astilba/runtime.yaml", "--providers.file.watch=true", "--providers.providersThrottleDuration=100ms", "--entrypoints.web.address=:80", "--entrypoints.websecure.address=:443", "--api.insecure=true", "--api.dashboard=false", "--entrypoints.traefik.address=127.0.0.1:8080"}
 	for _, p := range s.Ports {
@@ -535,11 +470,13 @@ func (e *Engine) verifyRoutes(ctx context.Context, s routeSnapshot) error {
 		return err
 	}
 	defer attached.Close()
+	// The client doesn't tie a hijacked stream to ctx, and a frozen exec holds the engine lock.
+	defer context.AfterFunc(ctx, func() { attached.Close() })()
 	var output bytes.Buffer
-	if _, err = stdcopy.StdCopy(&output, io.Discard, io.LimitReader(attached.Reader, 524289)); err != nil {
+	if _, err = stdcopy.StdCopy(&output, io.Discard, io.LimitReader(attached.Reader, maxProxyObservation+1)); err != nil {
 		return err
 	}
-	if output.Len() > 524288 {
+	if output.Len() > maxProxyObservation {
 		return errors.New("ingress observation exceeds limit")
 	}
 	status, err := e.Docker.ExecInspect(ctx, exec.ID, client.ExecInspectOptions{})
