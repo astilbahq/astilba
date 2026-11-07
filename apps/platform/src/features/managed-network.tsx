@@ -34,6 +34,7 @@ export function ManagedNetwork({
   const action = useAction();
   const [draft, setDraft] = useState<Schema["ConfigureManagedNetwork"]>();
   const [notice, setNotice] = useState("");
+  const serverOf = (id: string) => servers.find((server) => server.id === id);
   const eligible = servers.filter(
     (server) =>
       !server.previewOnly &&
@@ -77,8 +78,7 @@ export function ManagedNetwork({
             {network.data.members.map((member) => (
               <li key={member.serverId}>
                 <strong>
-                  {servers.find((server) => server.id === member.serverId)
-                    ?.name ?? member.serverId}
+                  {serverOf(member.serverId)?.name ?? member.serverId}
                 </strong>
                 :{" "}
                 {member.enabled
@@ -86,11 +86,12 @@ export function ManagedNetwork({
                     ? "configured"
                     : "awaiting acknowledgement"
                   : member.state === "revocation_pending"
-                    ? "removal awaits host acknowledgement"
+                    ? serverOf(member.serverId)?.status === "revoked"
+                      ? "removal awaits remaining members"
+                      : "removal awaits host acknowledgement"
                     : "removed"}{" "}
                 · {member.address} ·{" "}
-                {servers.find((server) => server.id === member.serverId)
-                  ?.status ?? "unknown host state"}
+                {serverOf(member.serverId)?.status ?? "unknown host state"}
                 {member.note && <p>{member.note}</p>}
               </li>
             ))}

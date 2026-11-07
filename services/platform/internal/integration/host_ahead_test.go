@@ -33,6 +33,7 @@ type aheadHost struct {
 	member     api.ManagedNetworkMemberInput
 	refused    int
 	silent     bool
+	revoked    bool
 	// stale drops what it polls, as a journal does for a counter it has passed.
 	stale bool
 }
@@ -61,7 +62,8 @@ func newAheadNetwork(t *testing.T, count int) *aheadNetwork {
 		enrolled, in, token := enrollment(t, f, b, ws, "deployment")
 		yes := true
 		in.Capabilities.CrossHost, in.Capabilities.MaintenanceContinuation, in.Capabilities.Visual = &yes, &yes, &yes
-		in.Preflight.CrossHostInventory = &api.CrossHostInventory{CpuMillis: 4000, MemoryMiB: 8192, UnboundedInventoryHash: hostnetwork.StableInventory(nil)}
+		in.Capabilities.SafeReleases, in.Capabilities.Replicas, in.Capabilities.ServiceOutputs = &yes, &yes, &yes
+		in.Preflight.CrossHostInventory = &api.CrossHostInventory{IngressReady: &yes, CpuMillis: 4000, MemoryMiB: 8192, UnboundedInventoryHash: hostnetwork.StableInventory(nil)}
 		agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/enroll", "", in, 200, nil)
 		identity, err := f.execution.Authenticate(n.ctx, enrolled.Server.Id, strings.SplitN(token, ".", 2)[1])
 		if err != nil {
@@ -221,6 +223,13 @@ func (n *aheadNetwork) restore(t *testing.T) {
 		}
 	}
 	for _, h := range n.hosts {
+		// A revoked host is fenced like any other, but transferring it would lift its revocation.
+		if h.revoked {
+			if err := n.f.st.PrepareRecovery(n.ctx, h.id, h.controller+1); err != nil {
+				t.Fatal(err)
+			}
+			continue
+		}
 		n.fence(t, h)
 	}
 	if err := n.f.execution.Start(n.ctx); err != nil {
@@ -234,6 +243,12 @@ func (n *aheadNetwork) fence(t *testing.T, h *aheadHost) {
 	if err := n.f.st.PrepareRecovery(n.ctx, h.id, h.controller+1); err != nil {
 		t.Fatal(err)
 	}
+	n.transfer(t, h)
+}
+
+// transfer re-enrolls a host that is awaiting its new controller.
+func (n *aheadNetwork) transfer(t *testing.T, h *aheadHost) {
+	t.Helper()
 	var ticket api.TransferTicket
 	n.b.call("POST", n.base+"/servers/"+h.id.String()+"/transfer", nil, 201, &ticket)
 	credential, err := cryptobox.Token()
@@ -269,7 +284,7 @@ func (n *aheadNetwork) revoke(t *testing.T, h *aheadHost) {
 	if status := claimStatus(t, n.f, "/agent/v1/heartbeat", h.token, api.AgentHeartbeat{Capabilities: h.input.Capabilities, Preflight: h.input.Preflight}); status != 401 {
 		t.Fatalf("revoked credential heartbeat = %d", status)
 	}
-	h.silent = true
+	h.silent, h.revoked = true, true
 }
 
 // until answers polls until the condition holds.
@@ -328,8 +343,7 @@ func TestRestoredManagementRecoversAHostAhead(t *testing.T) {
 				n.revoke(t, b)
 				n.until(t, func() bool { return !holdsPeer(a, b.id) })
 				n.save(t, a)
-				// A revoked server can never acknowledge, so the network stays visibly pending
-				// and only the member that remains can finish.
+				// A revoked server can never acknowledge, so only the member that remains can finish.
 				n.until(t, func() bool { return !holdsPeer(a, n.hosts[2].id) && a.held.Generation == n.member(t, a) })
 			},
 		},
