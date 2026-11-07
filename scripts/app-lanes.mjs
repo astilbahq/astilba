@@ -35,8 +35,8 @@ function workflowProblems(workflow, lanes) {
 }
 
 // Every Go test in the platform module runs in exactly one application lane. A lane
-// without -run takes whatever the others leave, through its -skip, so a new test
-// lands there.
+// without -run takes whatever the others leave, through its -skip, so a new test needs
+// no lane change unless its name is one a lane selects only in another package.
 export function appLaneProblems({ makefile, workflow, tests }) {
   // `make check-ci` runs the native guard first, which reports what this cannot read.
   const { recipes, expand } = parseMakefile(makefile);

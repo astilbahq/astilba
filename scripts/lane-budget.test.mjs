@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import {
+  budgetSeconds,
   laneBudget,
   packageTimes,
   recentJobs,
@@ -8,6 +10,17 @@ import {
 } from "./lane-budget.mjs";
 
 const integration = "github.com/astilbahq/astilba/services/platform/internal/integration";
+
+test("the integration package warns at the same budget", () => {
+  const fixture = readFileSync(
+    "services/platform/internal/integration/fixture_test.go",
+    "utf8",
+  );
+  assert.match(
+    fixture,
+    new RegExp(`^const laneBudget = ${budgetSeconds} \\* time\\.Second$`, "m"),
+  );
+});
 
 test("reads what go test prints for a package, passed, failed or empty", () => {
   const log = [

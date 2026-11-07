@@ -50,10 +50,15 @@ type Passwords struct {
 
 var passwordParams = argon2id.Params{Memory: 64 * 1024, Iterations: 3, Parallelism: 2, SaltLength: 16, KeyLength: 32}
 
+// dummyHash only has to cost what comparing a real hash costs, so one process needs one.
+var dummyHash = sync.OnceValues(func() (string, error) {
+	return newPasswordHash("unused random-account comparison password")
+})
+
 func NewPasswords() (*Passwords, error) {
 	p := &Passwords{running: map[string]struct{}{}, requests: map[string]int{}}
 	var err error
-	p.Dummy, err = p.Hash("unused random-account comparison password")
+	p.Dummy, err = dummyHash()
 	return p, err
 }
 

@@ -5,7 +5,7 @@ import { pathToFileURL } from "node:url";
 // differed by 28% between hosted runners, so a lane is moved well before a slow
 // runner can reach the limit. A failure here cannot eject a pull request, because
 // only the Lane budget workflow reads these times.
-const budgetSeconds = 600;
+export const budgetSeconds = 600;
 const sampledRuns = 5;
 const minimumRuns = 3;
 const api = "https://api.github.com";
@@ -61,7 +61,7 @@ export function laneBudget(jobs, budget = budgetSeconds) {
   for (const { lane, name, seconds, samples: count } of rows)
     if (count >= minimumRuns && seconds > budget)
       problems.push(
-        `${lane}: \`${name}\` has a median of ${seconds}s over ${count} runs, past the ${budget}s budget. Move a test family to another lane.`,
+        `${lane}: \`${name}\` has a median of ${seconds}s over ${count} runs, past the ${budget}s budget. Rebalance the lanes, as docs/continuous-integration.md describes.`,
       );
   const undecided = rows.some(({ samples: count }) => count < minimumRuns);
   return { problems, undecided, rows };
