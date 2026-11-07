@@ -207,6 +207,11 @@ func (s *Service) RenewEnrollment(ctx context.Context, p store.Principal, ws, id
 		if e := s.Store.ManagedServerAdmission(ctx, tx, ws, id); e != nil {
 			return e
 		}
+		if held, e := db.New(tx).RevokedServerInActiveRoot(ctx, db.RevokedServerInActiveRootParams{WorkspaceID: ws, ServerID: id}); e != nil {
+			return e
+		} else if held {
+			return domain.Conflict
+		}
 		if e := invalidateNetworkMember(ctx, tx, ws, id); e != nil {
 			return e
 		}
@@ -246,6 +251,9 @@ func (s *Service) Control(ctx context.Context, p store.Principal, ws, id uuid.UU
 		}
 		if n != 1 {
 			return domain.NotFound
+		}
+		if revoke {
+			return s.settleRevokedWork(ctx, tx, ws, id)
 		}
 		return nil
 	})

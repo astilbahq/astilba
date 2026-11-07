@@ -484,7 +484,7 @@ func recoveryPolicyKnowledge(prior, incoming portability.Row) (portability.Row, 
 func preflightRecoveryKnownProofs(ctx context.Context, tx pgx.Tx) error {
 	var conflict bool
 	// inline-sql: recovery session temporary table
-	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM recovery_known_operations k JOIN recovery_input_proofs p ON p.id=k.id WHERE k.report_sequence>(p.report->>'sequence')::bigint OR k.report_sequence=(p.report->>'sequence')::bigint AND k.state IN ('succeeded','failed','cancelled') AND k.state<>p.report->>'state')`).Scan(&conflict); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM recovery_known_operations k JOIN recovery_input_proofs p ON p.id=k.id WHERE k.report_sequence<>$1 AND (k.report_sequence>(p.report->>'sequence')::bigint OR k.report_sequence=(p.report->>'sequence')::bigint AND k.state IN ('succeeded','failed','cancelled') AND k.state<>p.report->>'state'))`, settledReportSequence).Scan(&conflict); err != nil {
 		return err
 	}
 	if conflict {

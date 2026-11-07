@@ -26,6 +26,9 @@ func (s *Service) closeUnreservedCheckpoint(ctx context.Context, tx pgx.Tx, ws u
 		if !unit.Plan.Local.Primary {
 			continue
 		}
+		if gone, err := serverRevoked(ctx, tx, ws, unit.Plan.ServerID); err != nil || gone {
+			return err
+		}
 		id := deployment.RecoveryCloseID(parent.Id, unit.Plan.UnitID)
 		exists, err := db.New(tx).OperationExists(ctx, db.OperationExistsParams{WorkspaceID: ws, ID: id})
 		if err != nil {
