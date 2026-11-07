@@ -48,6 +48,13 @@ func (w *refreshWorker) Work(ctx context.Context, job *river.Job[refreshArgs]) e
 	return w.service.withGit(ctx, job.Args.Workspace, func(git *gitAnswers) error { return w.work(ctx, git, job) })
 }
 
+// A later push for the branch joins this job rather than starting another, so a source waiting
+// to be read looks again often, and gives up in time for a new refresh to take over.
+const (
+	sourceRetryDelay = time.Minute
+	sourceWaitLimit  = 24 * time.Hour
+)
+
 // work holds the workspace turn and the connection only between provider calls. The pass
 // that admits work re-reads the sources, drafts, capacity and policy the head was fetched for.
 func (w *refreshWorker) work(ctx context.Context, git *gitAnswers, job *river.Job[refreshArgs]) error {
@@ -80,10 +87,11 @@ func (w *refreshWorker) work(ctx context.Context, git *gitAnswers, job *river.Jo
 		return resolved.Err
 	}
 	connection, head := resolved.Connection, resolved.Value
-	rows, err := tx.Query(ctx, `SELECT g.environment_id,g.configuration,g.imported_revision_id,g.imported_commit,e.project_id,e.draft_revision_id,g.policy_actor
+	rows, err := tx.Query(ctx, `SELECT g.environment_id,g.configuration,g.imported_revision_id,g.imported_commit,e.project_id,e.draft_revision_id,g.policy_actor,g.pending_commit
  FROM git_sources g JOIN environments e ON e.workspace_id=g.workspace_id AND e.id=g.environment_id
  JOIN memberships m ON m.workspace_id=g.workspace_id AND m.account_id=g.policy_actor
- WHERE g.workspace_id=$1 AND g.connection_id=$2 AND g.status<>'approval_required' AND g.configuration->>'branch'=$3 AND m.role IN ('owner','operator')`, a.Workspace, a.Connection, a.Branch)
+ WHERE g.workspace_id=$1 AND g.connection_id=$2 AND g.status<>'approval_required' AND g.configuration->>'branch'=$3 AND m.role IN ('owner','operator')
+ ORDER BY g.pending_commit=$4,g.environment_id`, a.Workspace, a.Connection, a.Branch, head)
 	if err != nil {
 		return err
 	}
@@ -91,12 +99,12 @@ func (w *refreshWorker) work(ctx context.Context, git *gitAnswers, job *river.Jo
 		env, pid, base, actor uuid.UUID
 		imported              *uuid.UUID
 		raw                   []byte
-		commit                string
+		commit, pending       string
 	}
 	sources := []source{}
 	for rows.Next() {
 		var v source
-		if err = rows.Scan(&v.env, &v.raw, &v.imported, &v.commit, &v.pid, &v.base, &v.actor); err != nil {
+		if err = rows.Scan(&v.env, &v.raw, &v.imported, &v.commit, &v.pid, &v.base, &v.actor, &v.pending); err != nil {
 			rows.Close()
 			return err
 		}
@@ -108,11 +116,32 @@ func (w *refreshWorker) work(ctx context.Context, git *gitAnswers, job *river.Jo
 		return err
 	}
 	waiting := false
-	// Sources share the operation's pass limit however many there are, so each edited source's
+	// Sources share the operation's time in this order, so one that used it up last time goes
+	// after those it held back. Sources also share the operation's pass limit however many there are, so each edited source's
 	// question joins one call instead of taking a pass.
 	var unanswered *providerCall
+	// A source whose files cannot be read waits for this job to look again. Work elsewhere starts now,
+	// but its environment's builds wait for it, because they build on the imported draft.
+	var unreadable error
+	waitingToImport := map[uuid.UUID]bool{}
+	// Past its limit the job stops reading a source already shown as waiting, whatever else keeps
+	// it alive, and shows any source it did not reach before it ends.
+	expired := time.Since(job.CreatedAt) > sourceWaitLimit
 	for _, v := range sources {
 		if v.commit == head {
+			if _, err = tx.Exec(ctx, "UPDATE git_sources SET pending_commit='' WHERE workspace_id=$1 AND environment_id=$2 AND status<>'conflict' AND pending_commit<>''", a.Workspace, v.env); err != nil {
+				return err
+			}
+			continue
+		}
+		// A retry or wait must not repeat an import this job already started, whatever became of
+		// it, and needs no more of the provider's time for this source. Only the job's latest
+		// counts, so a branch moved back to an earlier commit imports that commit again.
+		var started bool
+		if err = tx.QueryRow(ctx, "SELECT COALESCE((SELECT configuration->>'commit' FROM pipeline_runs WHERE workspace_id=$1 AND environment_id=$2 AND configuration->>'action'='import' AND created_at>=$4 ORDER BY created_at DESC LIMIT 1)=$3,false)", a.Workspace, v.env, head, job.CreatedAt).Scan(&started); err != nil {
+			return err
+		}
+		if started {
 			continue
 		}
 		if capacity <= 0 {
@@ -160,12 +189,39 @@ func (w *refreshWorker) work(ctx context.Context, git *gitAnswers, job *river.Jo
 			}
 			continue
 		}
+		if expired && v.pending == head {
+			waitingToImport[v.env] = true
+			continue
+		}
+		blobs, err := git.sourceBlobs(ctx, tx, a.Connection, head, cfg.Paths)
+		var call *providerCall
+		if errors.As(err, &call) {
+			unanswered = unanswered.and(call)
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if blobs.Err != nil {
+			unreadable = blobs.Err
+			waitingToImport[v.env] = true
+			if errors.Is(blobs.Err, errSourceBlobsNotAsked) && !expired {
+				continue
+			}
+			if _, err = tx.Exec(ctx, "UPDATE git_sources SET pending_commit=$3 WHERE workspace_id=$1 AND environment_id=$2", a.Workspace, v.env, head); err != nil {
+				return err
+			}
+			continue
+		}
 		runner, err := selectRunner(ctx, tx, a.Workspace, cfg.RunnerID, cfg.FallbackRunnerID, "", false, false)
 		if err != nil {
 			return err
 		}
 		_, err = w.service.insertPipeline(ctx, tx, git, a.Workspace, v.env, uuid.New(), runner, pipeline.Command{Action: "import", Connection: connection, Commit: head, Branch: a.Branch, RevisionID: v.base, UnitID: env.Unit, Source: &cfg, SubmittedAt: time.Now().UTC()})
 		if err != nil {
+			return err
+		}
+		if _, err = tx.Exec(ctx, "UPDATE git_sources SET pending_commit='' WHERE workspace_id=$1 AND environment_id=$2 AND status<>'conflict'", a.Workspace, v.env); err != nil {
 			return err
 		}
 		capacity--
@@ -201,7 +257,7 @@ func (w *refreshWorker) work(ctx context.Context, git *gitAnswers, job *river.Jo
 		return err
 	}
 	for _, v := range targets {
-		if v.commit == head {
+		if v.commit == head || waitingToImport[v.env] {
 			continue
 		}
 		if capacity <= 0 {
@@ -275,13 +331,18 @@ func (w *refreshWorker) work(ctx context.Context, git *gitAnswers, job *river.Jo
 		}
 		capacity--
 	}
-	if !waiting {
+	if !waiting && (unreadable == nil || expired) {
 		if _, err = river.JobCompleteTx[*riverpgxv5.Driver](ctx, tx, job); err != nil {
 			return err
 		}
 	}
 	if err = tx.Commit(ctx); err != nil {
 		return err
+	}
+	// Each look reads the unreadable source again, so its wait comes first even if other work
+	// could start sooner: a waiting job would otherwise read it every few seconds.
+	if unreadable != nil && (waiting || !expired) {
+		return river.JobSnooze(sourceRetryDelay)
 	}
 	if waiting {
 		return river.JobSnooze(5 * time.Second)

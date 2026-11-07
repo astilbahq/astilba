@@ -111,8 +111,11 @@ type Command struct {
 	CompareCommit string                 `json:"compareCommit,omitempty"`
 	CacheScope    string                 `json:"cacheScope,omitempty"`
 	Railpack      *RailpackInputs        `json:"railpack,omitempty"`
-	Registry      *Registry              `json:"registry,omitempty"`
-	SubmittedAt   time.Time              `json:"submittedAt"`
+	// SourceBlobs is the provider's Git blob for each selected file at Commit, read by
+	// management when it admits an import. A path holding no file there has no entry.
+	SourceBlobs map[string]string `json:"sourceBlobs,omitempty"`
+	Registry    *Registry         `json:"registry,omitempty"`
+	SubmittedAt time.Time         `json:"submittedAt"`
 	// Values exist only in the assigned agent's transport and encrypted journal.
 	Access         *Access           `json:"access,omitempty"`
 	BuildSecrets   map[string]string `json:"buildSecrets,omitempty"`
@@ -121,6 +124,8 @@ type Command struct {
 
 func Hash(value any) string { return stablejson.Hash(value) }
 func (c Command) Digest() string {
+	// An agent repeats this digest with its own Command, which an older one has without this field.
+	c.SourceBlobs = nil
 	c.Access = nil
 	c.BuildSecrets = nil
 	c.RegistryAccess = nil

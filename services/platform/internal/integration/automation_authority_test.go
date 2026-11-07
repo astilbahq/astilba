@@ -1,18 +1,11 @@
 package integration
 
 import (
-	"bytes"
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
-	"net/http"
-	"net/http/httptest"
 	"slices"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -155,58 +148,6 @@ func composeEnvironment(t *testing.T, f *fixture, b *browser) (uuid.UUID, string
 	var env api.Environment
 	b.call("POST", prefix+"/projects/"+project.Id.String()+"/environments", map[string]string{"name": "Files", "configurationOwner": "compose"}, 201, &env)
 	return ws, prefix, env, prefix + "/projects/" + project.Id.String() + "/environments/" + env.Id.String()
-}
-
-// gitSource is a provider whose branch head the test moves, with signed webhook delivery.
-type gitSource struct {
-	t          *testing.T
-	f          *fixture
-	head       atomic.Value
-	connection pipeline.Connection
-	secret     string
-}
-
-func newGitSource(t *testing.T, f *fixture, b *browser, prefix string) *gitSource {
-	t.Helper()
-	g := &gitSource{t: t, f: f}
-	g.head.Store(strings.Repeat("a", 40))
-	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		if strings.Contains(r.URL.Path, "/branches/") {
-			_ = stablejson.Encode(w, map[string]any{"commit": map[string]string{"sha": g.head.Load().(string)}})
-			return
-		}
-		_ = stablejson.Encode(w, map[string]any{"id": 12, "private": false})
-	}))
-	t.Cleanup(provider.Close)
-	var created struct {
-		Connection    pipeline.Connection `json:"connection"`
-		WebhookSecret string              `json:"webhookSecret"`
-	}
-	b.call("POST", prefix+"/git-connections", map[string]string{"name": "Source", "provider": "gitea", "baseUrl": provider.URL, "repository": "team/app"}, 201, &created)
-	g.connection, g.secret = created.Connection, created.WebhookSecret
-	return g
-}
-
-func (g *gitSource) push(commit string) {
-	g.t.Helper()
-	g.head.Store(commit)
-	raw, _ := stablejson.Marshal(map[string]any{"ref": "refs/heads/main", "after": commit, "repository": map[string]int{"id": 12}})
-	mac := hmac.New(sha256.New, []byte(g.secret))
-	mac.Write(raw)
-	r, _ := http.NewRequest("POST", g.f.server.URL+"/hooks/git/"+g.connection.ID.String(), bytes.NewReader(raw))
-	r.Header.Set("Content-Type", "application/json")
-	r.Header.Set("X-Gitea-Event", "push")
-	r.Header.Set("X-Gitea-Delivery", uuid.NewString())
-	r.Header.Set("X-Gitea-Signature", hex.EncodeToString(mac.Sum(nil)))
-	res, err := g.f.server.Client().Do(r)
-	if err != nil {
-		g.t.Fatal(err)
-	}
-	res.Body.Close()
-	if res.StatusCode != 202 {
-		g.t.Fatal("webhook rejected", res.StatusCode)
-	}
 }
 
 func draftSpec(t *testing.T, b *browser, path string) (api.Revision, domain.Specification) {
@@ -454,6 +395,7 @@ func TestAutomationImportDeploysOnlyItsOwnSource(t *testing.T) {
 			{Path: "debug.yaml", Content: "services:\n  web:\n    command: [\"/bin/sh\"]\n"},
 		}
 	}
+	source.tree.record(strings.Repeat("a", 40), files("first"))
 	var op api.Operation
 	b.call("PUT", path+"/source", map[string]any{"baseRevisionId": env.DraftRevisionId, "configuration": pipeline.Source{ConnectionID: source.connection.ID, Branch: "main", RunnerID: enrolled.Server.Id, Paths: []string{"compose.yaml", "debug.yaml"}, Entrypoints: []string{"compose.yaml"}}}, 202, &op)
 	agent.finishPipeline(agent.next(), "succeeded", pipeline.Result{Commit: strings.Repeat("a", 40), Files: files("first")})
@@ -464,6 +406,7 @@ func TestAutomationImportDeploysOnlyItsOwnSource(t *testing.T) {
 
 	importCommit := func(commit, revision string) uuid.UUID {
 		t.Helper()
+		source.tree.record(commit, files(revision))
 		source.push(commit)
 		c := agent.next()
 		if c.Kind != "pipeline" {

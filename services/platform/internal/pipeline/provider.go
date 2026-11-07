@@ -104,6 +104,8 @@ func (p *Provider) apiPath() string {
 
 type ProviderError struct{ Status int }
 
+var errProviderResponseSize = errors.New("provider response exceeds its limit")
+
 func (e *ProviderError) Error() string { return fmt.Sprintf("provider returned HTTP %d", e.Status) }
 func (p *Provider) request(ctx context.Context, method, path string, body, out any) error {
 	var reader io.Reader
@@ -145,8 +147,11 @@ func (p *Provider) request(ctx context.Context, method, path string, body, out a
 		return nil
 	}
 	raw, err := io.ReadAll(io.LimitReader(response.Body, 1<<20+1))
-	if err != nil || len(raw) > 1<<20 {
-		return errors.New("provider response exceeds its limit")
+	if err != nil {
+		return errors.New("provider request failed")
+	}
+	if len(raw) > 1<<20 {
+		return errProviderResponseSize
 	}
 	if json.Unmarshal(raw, out) != nil {
 		return errors.New("invalid provider response")
