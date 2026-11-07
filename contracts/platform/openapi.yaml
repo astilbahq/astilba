@@ -8824,7 +8824,7 @@
 
     DistributedUnit: {"type":"object","additionalProperties":false,"required":["plan","previous","cpuMillis","memoryMiB","inventoryHash"],"properties":{"plan":{"$ref":"#/components/schemas/VisualPlan"},"previous":{"type":"object","additionalProperties":true},"cpuMillis":{"type":"integer"},"memoryMiB":{"type":"integer"},"inventoryHash":{"type":"string"}}}
 
-    DistributedPlan: {"type":"object","additionalProperties":false,"required":["networkId","networkGeneration","units"],"properties":{"networkId":{"type":"string","format":"uuid"},"networkGeneration":{"type":"integer"},"units":{"type":"array","maxItems":4,"items":{"$ref":"#/components/schemas/DistributedUnit"}}}}
+    DistributedPlan: {"type":"object","additionalProperties":false,"required":["networkId","networkGeneration","units"],"properties":{"networkId":{"type":"string","format":"uuid"},"networkGeneration":{"type":"integer"},"units":{"type":"array","maxItems":4,"items":{"$ref":"#/components/schemas/DistributedUnit"}},"abandoned":{"type":"array","maxItems":4,"items":{"type":"string","format":"uuid"}}}}
     RestoreCutover:
       type: object
       additionalProperties: false

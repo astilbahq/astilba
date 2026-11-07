@@ -129,3 +129,54 @@ func TestCrossHostReservationSurvivesChildAcknowledgementAndRestart(t *testing.T
 		t.Fatal("confirmed completion did not release ordinary admission", err)
 	}
 }
+
+// Management can release a secondary held in preparation, so one host's failure doesn't wait on an
+// operator while the rest stay reserved. A primary, or a failure nobody cancelled, still waits.
+func TestCancellationEndsAHeldPreparation(t *testing.T) {
+	for name, primary := range map[string]bool{"secondary": false, "primary": true} {
+		t.Run(name, func(t *testing.T) {
+			j, p := testVisualJournal(t)
+			p.Local = &deployment.LocalPlacement{GroupID: uuid.New(), Primary: primary}
+			p = p.WithHash()
+			parent := uuid.New()
+			body := deployment.CrossHostCommand{ParentID: parent, GroupHash: strings.Repeat("a", 64), Phase: "prepare", Unit: deployment.DistributedUnit{Plan: p}}
+			raw, _ := stablejson.Marshal(body)
+			message := jsontext.Value(raw)
+			c := api.ExecutionCommand{Id: uuid.New(), ParentId: &parent, ServerId: p.ServerID, EnvironmentId: p.EnvironmentID, ResourceId: p.UnitID, Kind: "crosshost", Action: "inspect", Generation: 1, PlanHash: body.Digest(), Crosshost: &message}
+			if _, err := j.Accept(c); err != nil {
+				t.Fatal(err)
+			}
+			e := &Engine{Journal: j}
+			if err := e.finish(c.Id, "needs_attention", "A private binding is unreachable from its assigned unit"); err != nil {
+				t.Fatal(err)
+			}
+			held, err := j.Record(c.Id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if heldPreparationCancelled(held) {
+				t.Fatal("a failure nobody cancelled was released")
+			}
+			// As the poll delivers it. The client's pending loop then picks up what this selects.
+			c.CancelRequested = true
+			if _, err = j.Accept(c); err != nil {
+				t.Fatal(err)
+			}
+			pending, err := j.Pending()
+			if err != nil || len(pending) != 1 {
+				t.Fatalf("pending %d %v", len(pending), err)
+			}
+			if released := heldPreparationCancelled(pending[0]); released == primary {
+				t.Fatalf("release of a held %s = %v", name, released)
+			}
+			if !primary {
+				if err = e.Execute(context.Background(), pending[0].Command); err != nil {
+					t.Fatal(err)
+				}
+				if r, _ := j.Record(c.Id); r.Report.State != "cancelled" {
+					t.Fatalf("a cancelled preparation stayed held: %s", r.Report.State)
+				}
+			}
+		})
+	}
+}

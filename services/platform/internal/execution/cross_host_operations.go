@@ -6,6 +6,7 @@ import (
 	"errors"
 	"time"
 
+	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
@@ -22,7 +23,11 @@ import (
 func (s *Service) insertCoordination(ctx context.Context, tx pgx.Tx, ws, key uuid.UUID, action string, p deployment.Plan) (api.Operation, error) {
 	units := p.Distributed.Units
 	if action == "observe" {
-		units = p.ActiveUnits()
+		revoked, err := revokedParticipants(ctx, tx, ws, p.ActiveUnits())
+		if err != nil {
+			return api.Operation{}, err
+		}
+		units = withoutRevoked(p.ActiveUnits(), revoked)
 	}
 	return s.insertCoordinationCommand(ctx, tx, ws, key, coordinationCommand{Action: action, Plan: p}, units)
 }
@@ -310,16 +315,38 @@ func (s *Service) coordinate(ctx context.Context, tx pgx.Tx, job *river.Job[jobA
 	if err != nil {
 		return err
 	}
-	all := true
-	uncertain := false
-	failed := false
-	children := []uuid.UUID{}
-	for _, u := range phaseUnits(p, phase) {
-		if err := s.insertCrossHostChild(ctx, tx, ws, c, p, phase, u); err != nil {
+	revoked, err := revokedParticipants(ctx, tx, ws, p.Distributed.Units)
+	if err != nil {
+		return err
+	}
+	stopping, err := revokedStopsDeployment(ctx, tx, ws, c.Id, p, phase, revoked)
+	if err != nil {
+		return err
+	}
+	if stopping {
+		if err := db.New(tx).CancelHeldPreparation(ctx, db.CancelHeldPreparationParams{WorkspaceID: ws, ParentID: &c.Id}); err != nil {
 			return err
 		}
+	}
+	all := true
+	uncertain := false
+	failed := stopping
+	children := []uuid.UUID{}
+	for _, u := range phaseUnits(p, phase) {
+		if revoked[u.Plan.ServerID] {
+			continue
+		}
+		if !stopping {
+			if err := s.insertCrossHostChild(ctx, tx, ws, c, p, phase, u); err != nil {
+				return err
+			}
+		}
 		var child api.ExecutionState
-		if err := tx.QueryRow(ctx, `SELECT state FROM execution_operations WHERE workspace_id=$1 AND id=$2 AND parent_id=$3 AND server_id=$4`, ws, phaseKey(c.Id, phase, u.Plan.UnitID), c.Id, u.Plan.ServerID).Scan(&child); err != nil {
+		err := tx.QueryRow(ctx, `SELECT state FROM execution_operations WHERE workspace_id=$1 AND id=$2 AND parent_id=$3 AND server_id=$4`, ws, phaseKey(c.Id, phase, u.Plan.UnitID), c.Id, u.Plan.ServerID).Scan(&child)
+		if stopping && errors.Is(err, pgx.ErrNoRows) {
+			continue
+		}
+		if err != nil {
 			return err
 		}
 		all = all && Terminal(child)
@@ -350,9 +377,22 @@ func (s *Service) coordinate(ctx context.Context, tx pgx.Tx, job *river.Job[jobA
 	}
 	if failed {
 		if phase == "checkpoint" || phase == "resolve" || phase == "observe" {
+			if phase == "checkpoint" {
+				if err := s.retireCrossHostGrants(ctx, tx, ws, p, true); err != nil {
+					return err
+				}
+				if stopping {
+					if err := s.closeUnreservedCheckpoint(ctx, tx, ws, c, command); err != nil {
+						return err
+					}
+				}
+			}
+			if stopping {
+				return completeCoordination(ctx, tx, job, c.Id, "failed", revokedBeforeChangesNote)
+			}
 			return completeCoordination(ctx, tx, job, c.Id, "failed", "A placement host could not resolve the frozen inputs.")
 		}
-		if phase == "reserve" || phase == "links" || phase == "prepare" || phase == "hook" || phase == "probe" {
+		if phase == "reserve" || phase == "links" || phase == "prepare" || phase == "hook" || phase == "probe" || stopping {
 			phase = "abort"
 		} else {
 			if _, err := tx.Exec(ctx, `UPDATE execution_operations SET state='needs_attention',note='Cross-host publication or cleanup requires reconciliation. No unknown outcome was treated as failure.' WHERE id=$1`, c.Id); err != nil {
@@ -368,8 +408,11 @@ func (s *Service) coordinate(ctx context.Context, tx pgx.Tx, job *river.Job[jobA
 		case "checkpoint":
 			phase = "reserve"
 		case "observe":
-			if err := s.recordCrossHostObservations(ctx, tx, ws, uuid.Nil, p, receipts, p.ActiveUnits(), "observe", false); err != nil {
+			if err := s.recordCrossHostObservations(ctx, tx, ws, uuid.Nil, p, receipts, withoutRevoked(p.ActiveUnits(), revoked), "observe", false); err != nil {
 				return err
+			}
+			if len(revoked) > 0 {
+				return completeCoordination(ctx, tx, job, c.Id, "succeeded", "Every placement that can still answer was inspected. "+revokedServersNote)
 			}
 			return completeCoordination(ctx, tx, job, c.Id, "succeeded", "Every active placement was inspected; resources and the applied revision are unchanged.")
 		case "resolve":
@@ -425,10 +468,16 @@ func (s *Service) coordinate(ctx context.Context, tx pgx.Tx, job *river.Job[jobA
 			if cancelled {
 				outcome = "cancelled"
 			}
+			if len(revoked) > 0 {
+				return completeCoordination(ctx, tx, job, c.Id, outcome, revokedDeploymentNote)
+			}
 			return completeCoordination(ctx, tx, job, c.Id, outcome, "Candidate pools were removed with owned cleanup receipts; previous serving pools are retained.")
 		case "complete":
-			if err := s.finalizeCrossHost(ctx, tx, ws, c.Id, p, receipts); err != nil {
+			if err := s.finalizeCrossHostUnits(ctx, tx, ws, c.Id, p, receipts, withoutRevoked(p.Distributed.Units, revoked)); err != nil {
 				return err
+			}
+			if len(revoked) > 0 {
+				return completeCoordination(ctx, tx, job, c.Id, "succeeded", "The remaining hosts confirmed this placement. "+revokedServersNote)
 			}
 			return completeCoordination(ctx, tx, job, c.Id, "succeeded", "All placement and ingress receipts are confirmed; previous pools were retired.")
 		default:

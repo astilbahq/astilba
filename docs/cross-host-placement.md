@@ -36,6 +36,37 @@ Each unit retains its two most recent stopped application pools. Their container
 
 If a peer disappears before publication, preserve old routing and candidate uncertainty; do not mark successful or schedule an unfenced replacement. If ingress acknowledgement is lost, reconcile its actual registry before retrying or retiring old pools. A management or agent restart resumes the same parent and children. Stopping an agent records no outcome for a coordinated or private-link phase: it reruns when the agent restarts, exactly as after a crash. Reservation, storage, private links, candidate startup and probes repeat against the same frozen identities, publication first recovers its pending route attempt, retirement resumes its recorded drain deadline and exact containers, candidate cleanup removes only what is still owned, and a release command keeps its run-once state. A data effect under a parent keeps its own interruption rules. Cancellation stops at safe checkpoints and never interprets a missing response as failure. Partition after publication uses Traefik backend readiness to exclude unreachable endpoints, with a convergence window; it does not relocate state or promise uninterrupted requests. The single ingress host and DNS remain failure boundaries. A rollback is a new complete reviewed group deployment; it does not roll back external data.
 
+## Moving off a revoked server
+
+Revoking a server ends what it was doing and lets you plan around it. Nothing the server reports affects either, and renewing it later doesn't reopen anything. Renewal is refused while an operation that names the server is still running.
+
+Whatever you do next, a revoked server keeps what it was given. It may keep running containers and it still holds its secrets, registry access and TLS material, so rotate those. Management can't confirm or change any of it.
+
+Renewal is a poor way back. It accepts only the machine that was enrolled, with its journal, so a rebuilt or replaced machine needs a new server record. It doesn't undo a mistaken revocation either. Work already settled stays settled. A host that held a reservation for an operation that has since ended keeps refusing ordinary work, and nothing online can release it. A mistaken revocation of such a host may only be recoverable offline, through [recovering management](#recovering-management-from-an-older-backup), and we have not established that this works, so plan to replace the host.
+
+### Work in flight
+
+Revocation cancels the server's unfinished commands in the same transaction, with a note that what it did is unknown. An operation that involved other hosts then carries on without it:
+
+| When the server was revoked | What happens |
+| --- | --- |
+| A deployment, before publication | The remaining hosts finish what they're doing, then remove their candidates and keep their previous pools. A release command that hasn't started is cancelled. A secondary held in preparation, for example because a service it binds to was on the revoked server, is released. The deployment fails. A primary stays held, because its preparation may have recreated a shared service: inspect it and run `astilba-agent retry`, which ends the preparation. |
+| A deployment, while publishing | If the publication hadn't been sent, or the primary was revoked before reporting it, the same as above. Otherwise the publication finishes first. |
+| A deployment, after publication | The remaining hosts finish. The deployment succeeds, with a note, and its plan still names the revoked server until you plan it away. |
+| Maintenance, before its data effect is sent | The effect doesn't start, because a stopped writer can't be confirmed. The remaining writers resume and the operation fails. |
+| Maintenance, after its data effect is sent | A consumer's loss doesn't stop the effect. If the primary was revoked before reporting it, the remaining writers resume and the outcome of the effect is unknown. |
+| An upgrade waiting for your choice | If the primary was revoked, the upgrade is rejected with a note and the remaining writers resume. If a consumer was, your choice still stands. |
+
+Another case also needs you. If the primary is revoked after publication and a healthy secondary's application then exits or turns unhealthy, because it depended on that primary, the secondary reports `needs_attention` when asked to complete, and the deployment holds. Nothing has been lost. Fix the application and run `astilba-agent retry` on that host, or revoke that host too.
+
+Consumers normally wait for their provider before resuming. They don't wait for a revoked one, so a consumer whose readiness depends on that provider can come back unready. The reservation is then held as for any other unready writer, and `astilba-agent accept-unready-writers` releases it.
+
+### A revoked secondary
+
+A secondary holds no durable data, because a distributed application can't have volumes, so nothing durable is lost. Save a placement that no longer targets the server and deploy it. The plan leaves the server out and says so in its effects. It sends the server nothing, and the server's runtime record goes when the plan is applied. If the server is renewed before you apply the plan, the plan is refused, because that server could now answer. To remove placement, consolidate on the primary first, as usual.
+
+A member removed from the network but not revoked can still answer, so it keeps blocking the plan until it answers or you revoke it.
+
 ## Maintenance and compatibility
 
 Cross-host binding introduces remote writers. Existing backup/upgrade quiescence must use the same durable parent barrier to stop and confirm every active writer across units, preserving stop/restart receipts and unknown-outcome fences. No supported upgrade, restore cutover or quiescing backup may proceed with an unreachable writer. Logical database dumps may retain their existing consistency guarantee when no stop is needed. Installed schedules must not silently run a local-only maintenance procedure after distribution; network-independent jobs remain local, but cross-host quiescing maintenance needs an explicit supported policy or is rejected before installation. Every participant must explicitly advertise `maintenanceContinuation` before a new maintenance parent or reservation is created. Freeze every resumption child together, but deliver queued consumer `resume-source` and `resume-target` commands only after the primary succeeds in that exact parent phase. Already-dispatched children retain reconciliation delivery. Primary failure, cancellation or uncertainty keeps consumers stopped and surfaces `needs_attention` before all-child completion. Terminal outcomes remain terminal.

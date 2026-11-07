@@ -75,8 +75,14 @@ func (s *Service) createCrossHostPlan(ctx context.Context, tx pgx.Tx, ws, pid, e
 			selected[target.ServerID] = true
 		}
 	}
+	abandoned, err := abandonedServers(ctx, tx, ws, prior)
+	if err != nil {
+		return out, err
+	}
 	for server := range prior {
-		selected[server] = true
+		if _, gone := abandoned[server]; !gone {
+			selected[server] = true
+		}
 	}
 	if len(selected) > 4 {
 		return out, domain.Invalid("placement.servers")
@@ -122,6 +128,8 @@ func (s *Service) createCrossHostPlan(ctx context.Context, tx pgx.Tx, ws, pid, e
 	}
 
 	parent := deployment.Plan{ID: uuid.New(), ServerID: in.ServerId, EnvironmentID: env, UnitID: v.Unit, RevisionID: v.Revision, ExpectedAppliedID: v.Applied, Recipe: deployment.CrossHostRecipe, Specification: v.Spec, Images: map[string]string{}, HostChanges: true, Effects: []string{"Prepare explicit cross-host pools; publish only after every host and private endpoint is ready; retain old pools while outcomes are uncertain.", "First publication of an existing private service port can restart that service on its owning host."}, ExpiresAt: time.Now().UTC().Add(15 * time.Minute), Distributed: &deployment.DistributedPlan{NetworkID: network.ID, NetworkGeneration: network.Generation + 1, Units: []deployment.DistributedUnit{}}}
+	parent.Effects = append(parent.Effects, abandonedEffects(abandoned)...)
+	parent.Distributed.Abandoned = abandonedIDs(abandoned)
 	if in.ReleaseOptions != nil {
 		parent.ReleaseOptions = &deployment.ReleaseOptions{Command: in.ReleaseOptions.Command, CommandTimeoutSeconds: in.ReleaseOptions.CommandTimeoutSeconds, DrainSeconds: in.ReleaseOptions.DrainSeconds}
 		if err = parent.ReleaseOptions.Validate(); err != nil {
@@ -482,6 +490,9 @@ func (s *Service) admitCrossHostApply(ctx context.Context, tx pgx.Tx, ws uuid.UU
 	}
 	if n.ID != p.Distributed.NetworkID || n.Generation+1 != p.Distributed.NetworkGeneration || n.State != "ready" {
 		return domain.Conflict
+	}
+	if err = requireStillRevoked(ctx, tx, ws, p.Distributed.Abandoned); err != nil {
+		return err
 	}
 	for _, u := range p.Distributed.Units {
 		if _, err = s.visualServer(ctx, tx, ws, u.Plan.ServerID); err != nil {

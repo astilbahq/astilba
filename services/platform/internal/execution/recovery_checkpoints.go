@@ -109,7 +109,7 @@ func reserveRecoveryGeneration(ctx context.Context, tx pgx.Tx, ws uuid.UUID, par
 }
 
 func (s *Service) stageRecoveryPhase(ctx context.Context, tx pgx.Tx, ws uuid.UUID, parent api.ExecutionCommand, command coordinationCommand, phase string, ids []uuid.UUID, generation int64) error {
-	if parent.RecoveryCheckpoint == nil || phase == "checkpoint" || phase == "maintenance-checkpoint" || command.Action == "resolve" || command.Action == "observe" {
+	if parent.RecoveryCheckpoint == nil || phase == "checkpoint" || phase == "maintenance-checkpoint" || command.Action == "resolve" || command.Action == "observe" || len(ids) == 0 {
 		return nil
 	}
 	var previous deployment.RecoveryDescriptor
@@ -221,6 +221,10 @@ func (s *Service) stageRecoveryPhase(ctx context.Context, tx pgx.Tx, ws uuid.UUI
 	payload, _ := stablejson.Marshal(body)
 	if generation < 1 {
 		return domain.Invalid("recovery.generation")
+	}
+	// Management keeps the segment either way. A revoked primary isn't given any more of it.
+	if gone, err := serverRevoked(ctx, tx, ws, primary.Plan.ServerID); err != nil || gone {
+		return err
 	}
 	c := api.ExecutionCommand{Id: uuid.NewSHA1(d.CheckpointID, []byte("recovery-delivery")), ParentId: &parent.Id, ServerId: primary.Plan.ServerID, EnvironmentId: parent.EnvironmentId, ResourceId: primary.Plan.UnitID, Kind: "crosshost", Action: "inspect", Generation: generation, Deadline: time.Now().Add(30 * time.Minute), PlanHash: body.Digest(), Crosshost: rawMessage(payload), RecoveryCheckpoint: rawMessage(descriptor)}
 	_, err = s.insert(ctx, tx, ws, uuid.New(), nil, c)

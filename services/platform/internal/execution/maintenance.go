@@ -275,9 +275,10 @@ func (s *Service) insertMaintenanceChild(ctx context.Context, tx pgx.Tx, ws uuid
 // leaveUnstartedEffect moves a parent on from a data effect that will not start, and returns
 // its next phase: the source writers resume, unless an upgrade has already run on the host, in
 // which case only the owner can choose what happens to them.
-func leaveUnstartedEffect(ctx context.Context, tx pgx.Tx, ws, parent uuid.UUID, m *coordinatedMaintenance, phase string) (string, error) {
+func leaveUnstartedEffect(ctx context.Context, tx pgx.Tx, ws, parent uuid.UUID, m *coordinatedMaintenance, phase string, primaryLost bool) (string, error) {
 	next := "maintenance-resume-source"
-	if m.Effect.Upgrade != nil {
+	// Whatever a lost primary had started is gone with it, so there's no choice left for the owner.
+	if m.Effect.Upgrade != nil && !primaryLost {
 		var attempted bool
 		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM execution_operations WHERE parent_id=$1 AND kind='upgrade')`, parent).Scan(&attempted); err != nil {
 			return "", err
@@ -338,6 +339,11 @@ func (s *Service) coordinateMaintenance(ctx context.Context, tx pgx.Tx, job *riv
 			return err
 		}
 	}
+	revoked, err := revokedParticipants(ctx, tx, ws, command.Plan.ActiveUnits())
+	if err != nil {
+		return err
+	}
+	primaryLost := revoked[command.Plan.ServerID]
 	beforeEffect := phase == "maintenance-checkpoint" || phase == "maintenance-reserve" || phase == "maintenance-pause" || strings.HasPrefix(phase, "maintenance-effect:")
 	if phase == "maintenance-restore" {
 		var attempted bool
@@ -378,11 +384,11 @@ func (s *Service) coordinateMaintenance(ctx context.Context, tx pgx.Tx, job *riv
 			}
 			return completeBeforeEffects(ctx, tx, job, ws, parent.Id, m, "cancelled", "Cancelled before host reservation or writer maintenance began.")
 		}
-		next, err := leaveUnstartedEffect(ctx, tx, ws, parent.Id, m, phase)
+		next, err := leaveUnstartedEffect(ctx, tx, ws, parent.Id, m, phase, primaryLost)
 		if err != nil {
 			return err
 		}
-		phase = next
+		phase, beforeEffect = next, false
 		if phase == "maintenance-owner" {
 			return wait("needs_attention", "Cancellation retains stopped writers after the data boundary. Choose an explicit upgrade recovery action.")
 		}
@@ -391,15 +397,35 @@ func (s *Service) coordinateMaintenance(ctx context.Context, tx pgx.Tx, job *riv
 	if err != nil {
 		return err
 	}
-	all, failed := true, false
+	// A writer that can't be confirmed stopped rules out starting a data effect. Once an upgrade has
+	// reached the owner's choice, a lost consumer has no say in it, but a lost primary ends it.
+	uncrossed := beforeEffect
+	if strings.HasPrefix(phase, "maintenance-run:") {
+		crossed, err := crossedBoundary(ctx, tx, ws, phaseKey(parent.Id, phase, command.Plan.UnitID), primaryLost)
+		if err != nil {
+			return err
+		}
+		uncrossed = !crossed
+	}
+	stopping := uncrossed && (primaryLost || len(revoked) > 0 && initial)
+	all, failed := true, stopping
 	uncertain, primaryBlocked := false, false
 	children := []uuid.UUID{}
 	for _, u := range maintenancePhaseUnits(m, phase) {
-		if err := s.insertMaintenanceChild(ctx, tx, ws, parent, phase, m, u); err != nil {
-			return err
+		if revoked[u.Unit.Plan.ServerID] {
+			continue
+		}
+		if !stopping {
+			if err := s.insertMaintenanceChild(ctx, tx, ws, parent, phase, m, u); err != nil {
+				return err
+			}
 		}
 		var state api.ExecutionState
-		if err := tx.QueryRow(ctx, `SELECT state FROM execution_operations WHERE workspace_id=$1 AND id=$2 AND parent_id=$3 AND server_id=$4`, ws, phaseKey(parent.Id, phase, u.Unit.Plan.UnitID), parent.Id, u.Unit.Plan.ServerID).Scan(&state); err != nil {
+		err := tx.QueryRow(ctx, `SELECT state FROM execution_operations WHERE workspace_id=$1 AND id=$2 AND parent_id=$3 AND server_id=$4`, ws, phaseKey(parent.Id, phase, u.Unit.Plan.UnitID), parent.Id, u.Unit.Plan.ServerID).Scan(&state)
+		if stopping && errors.Is(err, pgx.ErrNoRows) {
+			continue
+		}
+		if err != nil {
 			return err
 		}
 		uncertain = uncertain || state == "needs_attention"
@@ -420,14 +446,20 @@ func (s *Service) coordinateMaintenance(ctx context.Context, tx pgx.Tx, job *riv
 	if !all {
 		return wait("running", "Coordinated "+phase+"; the primary data effect waits for every required host receipt.")
 	}
+	if stopping && phase == "maintenance-checkpoint" {
+		if err := s.closeUnreservedCheckpoint(ctx, tx, ws, parent, command); err != nil {
+			return err
+		}
+		return completeBeforeEffects(ctx, tx, job, ws, parent.Id, m, "failed", revokedBeforeChangesNote)
+	}
 	if failed && phase == "maintenance-checkpoint" {
 		return completeBeforeEffects(ctx, tx, job, ws, parent.Id, m, "failed", "The primary did not acknowledge recovery metadata; no host was reserved or paused.")
 	}
 	// A host reports these only without having started the effect, usually because the command
 	// reached it after its deadline. Nothing can issue it again, so holding here would strand
 	// every host. Should it have begun after all, its journal refuses to resume the source.
-	if failed && (phase == "maintenance-restore" || strings.HasPrefix(phase, "maintenance-effect:")) {
-		next, err := leaveUnstartedEffect(ctx, tx, ws, parent.Id, m, phase)
+	if (failed || primaryLost) && (phase == "maintenance-restore" || strings.HasPrefix(phase, "maintenance-effect:")) || stopping && strings.HasPrefix(phase, "maintenance-run:") {
+		next, err := leaveUnstartedEffect(ctx, tx, ws, parent.Id, m, phase, primaryLost)
 		if err != nil {
 			return err
 		}
@@ -495,7 +527,7 @@ func (s *Service) coordinateMaintenance(ctx context.Context, tx pgx.Tx, job *riv
 					return domain.Invalid("maintenance.target")
 				}
 			}
-			if err := s.finalizeCrossHostUnits(ctx, tx, ws, parent.Id, target, receipts, target.ActiveUnits()); err != nil {
+			if err := s.finalizeCrossHostUnits(ctx, tx, ws, parent.Id, target, receipts, withoutRevoked(target.ActiveUnits(), revoked)); err != nil {
 				return err
 			}
 			// A parent can leave for the source with every child having succeeded, when its own
@@ -503,18 +535,17 @@ func (s *Service) coordinateMaintenance(ctx context.Context, tx pgx.Tx, job *riv
 			// backup ran only if its command succeeded.
 			skippable := phase == "maintenance-complete-source" && m.Effect.Upgrade == nil
 			var effectFailed bool
-			if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM execution_operations WHERE parent_id=$1 AND state IN ('failed','cancelled')) OR ($2 AND NOT EXISTS(SELECT 1 FROM execution_operations WHERE parent_id=$1 AND kind IN ('backup','schedule') AND state='succeeded'))`, parent.Id, skippable).Scan(&effectFailed); err != nil {
+			if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM execution_operations o JOIN servers host ON host.id=o.server_id WHERE o.parent_id=$1 AND o.state IN ('failed','cancelled') AND NOT host.revoked) OR ($2 AND NOT EXISTS(SELECT 1 FROM execution_operations WHERE parent_id=$1 AND kind IN ('backup','schedule') AND state='succeeded'))`, parent.Id, skippable).Scan(&effectFailed); err != nil {
 				return err
 			}
 			if m.Effect.Upgrade != nil {
-				var known bool
-				if err := tx.QueryRow(ctx, `SELECT status->>'phase' IN ('complete','returned') FROM supported_upgrades WHERE workspace_id=$1 AND id=$2`, ws, m.Effect.Upgrade.Plan.ID).Scan(&known); err != nil {
+				var upgradePhase string
+				if err := tx.QueryRow(ctx, `SELECT status->>'phase' FROM supported_upgrades WHERE workspace_id=$1 AND id=$2`, ws, m.Effect.Upgrade.Plan.ID).Scan(&upgradePhase); err != nil {
 					return err
 				}
-				if known {
-					effectFailed = false
-				} else {
-					effectFailed = true
+				effectFailed = upgradePhase != "complete" && upgradePhase != "returned"
+				// An upgrade already rejected keeps its own account of what happened.
+				if effectFailed && upgradePhase != "rejected" {
 					if _, err := tx.Exec(ctx, `UPDATE supported_upgrades SET status=jsonb_set(jsonb_set(status,'{phase}','"rejected"'),'{note}','"Writer coordination ended before a database effect completed. The source is retained."') WHERE workspace_id=$1 AND id=$2`, ws, m.Effect.Upgrade.Plan.ID); err != nil {
 						return err
 					}
@@ -530,6 +561,9 @@ func (s *Service) coordinateMaintenance(ctx context.Context, tx pgx.Tx, job *riv
 			note := "The maintenance outcome is recorded and every owned writer is reconciled."
 			if skippable && effectFailed {
 				note = "The maintenance effect did not complete. The source is retained and every owned writer is reconciled."
+			}
+			if len(revoked) > 0 {
+				note = "The remaining hosts' writers are reconciled. " + revokedServersNote
 			}
 			return completeCoordination(ctx, tx, job, parent.Id, outcome, note)
 		default:
