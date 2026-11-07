@@ -286,8 +286,34 @@ func (c *Client) Run(ctx context.Context) error {
 			})
 		})
 	}
+	// Nothing that reads ingress runs before the first attempt, which finishes a conversion
+	// a crash interrupted before a command could read it as drift. Heartbeats and polling
+	// carry on regardless, because a host must report while Docker is failing. Repeats
+	// because Docker may not be up yet. Once converted, this reads the journal and returns.
+	attempted := make(chan struct{})
 	wg.Go(func() {
-		c.loop(ctx, time.Second, func() error { return c.Engine.TickSchedules(ctx) })
+		first := true
+		c.loop(ctx, time.Minute, func() error {
+			c.Engine.qualifyRouteBackends(ctx)
+			if first {
+				first = false
+				close(attempted)
+			}
+			return nil
+		})
+	})
+	afterAttempt := func() bool {
+		select {
+		case <-attempted:
+			return true
+		case <-ctx.Done():
+			return false
+		}
+	}
+	wg.Go(func() {
+		if afterAttempt() {
+			c.loop(ctx, time.Second, func() error { return c.Engine.TickSchedules(ctx) })
+		}
 	})
 	wg.Go(func() {
 		sent := map[string]int64{}
@@ -366,6 +392,9 @@ func (c *Client) Run(ctx context.Context) error {
 		})
 	})
 	wg.Go(func() {
+		if !afterAttempt() {
+			return
+		}
 		var retry <-chan time.Time
 		for {
 			select {

@@ -21,7 +21,7 @@ func EditImage(ctx context.Context, b Bundle, environment map[string]string, ser
 	if _, err := reference.ParseNormalizedNamed(image); err != nil {
 		return b, fail("", nil, "invalid image reference")
 	}
-	p, err := Load(ctx, b, environment)
+	p, err := LoadStored(ctx, b, environment)
 	if err != nil {
 		return b, err
 	}
@@ -66,7 +66,7 @@ func EditImage(ctx context.Context, b Bundle, environment map[string]string, ser
 	result := b
 	result.Files = append([]File(nil), b.Files...)
 	result.Files[index].Content = f.Content[:start] + replacement + f.Content[end:]
-	check, err := Load(ctx, result, environment)
+	check, err := LoadStored(ctx, result, environment)
 	if err != nil {
 		return b, err
 	}
@@ -143,7 +143,7 @@ func scalarSpan(data []byte, n *yaml.Node) (int, int, error) {
 // RenameVolume edits explicit volume scalars only. Includes and comments are
 // preserved; ambiguous aliases, interpolation and inherited mounts are refused.
 func RenameVolume(ctx context.Context, b Bundle, environment map[string]string, old, next string) (Bundle, error) {
-	p, err := Load(ctx, b, environment)
+	p, err := LoadStored(ctx, b, environment)
 	if err != nil {
 		return b, err
 	}
@@ -234,7 +234,7 @@ func RenameVolume(ctx context.Context, b Bundle, environment map[string]string, 
 		}
 		result.Files[i] = f
 	}
-	after, err := Load(ctx, result, environment)
+	after, err := LoadStored(ctx, result, environment)
 	if err != nil {
 		return b, err
 	}

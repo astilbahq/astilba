@@ -90,6 +90,9 @@ func (s *Service) createVisualPlan(ctx context.Context, tx pgx.Tx, ws, pid, env 
 		if v.Revision != in.BaseRevisionId || (v.Server != nil && *v.Server != in.ServerId) {
 			return domain.Conflict
 		}
+		if err = domain.ValidateNewCompose(v.Spec); err != nil {
+			return err
+		}
 		var imported *uuid.UUID
 		err = tx.QueryRow(ctx, "SELECT imported_revision_id FROM git_sources WHERE workspace_id=$1 AND environment_id=$2", ws, env).Scan(&imported)
 		if err != nil && !errors.Is(err, pgx.ErrNoRows) {

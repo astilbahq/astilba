@@ -213,7 +213,7 @@ func stringList(v any) []string {
 }
 
 // Load receives every interpolation value explicitly and never reads the host environment or files.
-func Load(ctx context.Context, b Bundle, environment map[string]string) (*Project, error) {
+func load(ctx context.Context, b Bundle, environment map[string]string) (*Project, error) {
 	if err := b.Validate(); err != nil {
 		return nil, err
 	}

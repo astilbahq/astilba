@@ -56,6 +56,9 @@ func (h HealthCheck) Valid() bool {
 // rely on. A path the applied specification holds stays allowed, because an application
 // outside a cross-host placement cannot differ from it.
 func ValidateNewDraft(next, applied Specification) error {
+	if err := ValidateNewCompose(next); err != nil {
+		return err
+	}
 	held := map[uuid.UUID]string{}
 	for _, a := range applied.Applications {
 		if a.Health != nil {
