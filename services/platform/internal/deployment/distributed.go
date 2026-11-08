@@ -359,11 +359,11 @@ func (p Plan) validateDistributed(resolved bool) error {
 	}
 	return nil
 }
-func endpointAddress(e PrivateEndpoint) string {
+func endpointAddress(e PrivateEndpoint, unit uuid.UUID, host func(uuid.UUID, string) string) string {
 	if ip, err := netip.ParseAddr(e.Address); err == nil {
 		return netip.AddrPortFrom(ip, uint16(e.Port)).String()
 	}
-	return e.Address + ":" + strconv.Itoa(e.Port)
+	return host(unit, e.Address) + ":" + strconv.Itoa(e.Port)
 }
 
 func (p Plan) ValidateLocalObservation(o Observation) error {

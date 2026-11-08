@@ -33,11 +33,26 @@ func VariableValues(variables []Variable, secrets map[string]string) map[string]
 	}
 	return out
 }
+func composeError(err error) error {
+	d := composeproject.ParseDiagnostic(err)
+	return &Error{Code: "invalid_input", Message: d.Message, Fields: []string{fmt.Sprintf("%s:%d:%d", d.Path, d.Line, d.Column)}}
+}
+
+// ValidateNewCompose refuses what a new draft or plan's Compose file must not declare.
+// ParseSpec cannot: it also re-reads stored files, as ValidateNewDraft explains.
+func ValidateNewCompose(spec Specification) error {
+	if spec.Compose == nil {
+		return nil
+	}
+	if _, err := composeproject.Load(context.Background(), *spec.Compose, VariableValues(spec.Variables, nil)); err != nil {
+		return composeError(err)
+	}
+	return nil
+}
 func deriveCompose(spec *Specification) error {
-	project, err := composeproject.Load(context.Background(), *spec.Compose, VariableValues(spec.Variables, nil))
+	project, err := composeproject.LoadStored(context.Background(), *spec.Compose, VariableValues(spec.Variables, nil))
 	if err != nil {
-		d := composeproject.ParseDiagnostic(err)
-		return &Error{Code: "invalid_input", Message: d.Message, Fields: []string{fmt.Sprintf("%s:%d:%d", d.Path, d.Line, d.Column)}}
+		return composeError(err)
 	}
 	for name, secret := range project.Model.Secrets {
 		found := false

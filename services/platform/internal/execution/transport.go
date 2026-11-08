@@ -214,18 +214,21 @@ func replaceEscapedNUL(payload *jsontext.Value) {
 	}
 }
 
+// boundedNote keeps an operation's note to what the API promises and PostgreSQL can store:
+// host output and Compose errors can hold any bytes, and invalid UTF-8 grows when encoded.
+func boundedNote(note string) string {
+	note = note[:min(len(note), 1024)]
+	return strings.ReplaceAll(strings.ToValidUTF8(note, ""), "\x00", " ")
+}
+
 func (s *Service) Report(ctx context.Context, a Identity, r api.AgentReport) error {
 	if r.Sequence < 1 || r.Sequence >= portability.MaxCounter || len(r.Steps) > 16 {
 		return domain.Invalid("report")
 	}
-	// Agents bound notes in raw bytes; invalid UTF-8 from host output grows when encoded.
-	if len(r.Note) > 1024 {
-		r.Note = strings.ToValidUTF8(r.Note[:1024], "")
-	}
+	r.Note = boundedNote(r.Note)
 	if r.State != "running" && r.State != "needs_attention" && !Terminal(r.State) {
 		return domain.Invalid("state")
 	}
-	r.Note = strings.ReplaceAll(r.Note, "\x00", " ")
 	for _, payload := range []*jsontext.Value{r.Pipeline, r.Observation, r.Crosshost, r.Upgrade, r.Network} {
 		replaceEscapedNUL(payload)
 	}
