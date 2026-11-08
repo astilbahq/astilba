@@ -116,10 +116,6 @@ func (s *Service) crossHostReport(ctx context.Context, tx pgx.Tx, c api.Executio
 	return err
 }
 
-func (s *Service) finalizeCrossHost(ctx context.Context, tx pgx.Tx, ws, operation uuid.UUID, p deployment.Plan, receipts map[string]deployment.CrossHostReceipt) error {
-	return s.finalizeCrossHostUnits(ctx, tx, ws, operation, p, receipts, p.Distributed.Units)
-}
-
 func (s *Service) finalizeCrossHostUnits(ctx context.Context, tx pgx.Tx, ws, operation uuid.UUID, p deployment.Plan, receipts map[string]deployment.CrossHostReceipt, units []deployment.DistributedUnit) error {
 	return s.recordCrossHostObservations(ctx, tx, ws, operation, p, receipts, units, "complete", true)
 }
@@ -177,6 +173,11 @@ func (s *Service) recordCrossHostObservations(ctx context.Context, tx pgx.Tx, ws
 			resources[res.ID] = current
 		}
 	}
+	lost, err := revokedUnitsAsUnknown(ctx, tx, ws, p, units, resources, apply)
+	if err != nil {
+		return err
+	}
+	hosts = append(hosts, lost...)
 	observation := deployment.Observation{Hosts: hosts, ObservedAt: time.Now().UTC(), Applied: true, Resources: []deployment.Resource{}, StateHash: p.Hash, InfrastructureDrift: infrastructureDrift}
 	for _, app := range p.Specification.Applications {
 		res, ok := resources[app.ID]
@@ -223,6 +224,9 @@ func (s *Service) recordCrossHostObservations(ctx context.Context, tx pgx.Tx, ws
 	}
 	if !apply {
 		return nil
+	}
+	if err := deleteAbandonedRuntime(ctx, tx, ws, p); err != nil {
+		return err
 	}
 	claims, err := deployment.Claims(p)
 	if err != nil {

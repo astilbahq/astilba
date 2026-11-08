@@ -25,7 +25,7 @@ func SourceProject(p Plan, secrets map[string]string) (*composeproject.Project, 
 			return nil, errors.New("secret values cannot contain NUL")
 		}
 	}
-	return composeproject.Load(context.Background(), *p.Specification.Compose, domain.VariableValues(p.Specification.Variables, secrets))
+	return composeproject.LoadStored(context.Background(), *p.Specification.Compose, domain.VariableValues(p.Specification.Variables, secrets))
 }
 func sourceCompose(p Plan, secrets map[string]string, root string, export bool) ([]byte, error) {
 	project, err := SourceProject(p, secrets)

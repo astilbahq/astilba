@@ -156,6 +156,14 @@ type proxyStatus struct {
 // and returns what it loaded once it reports every reviewed route enabled.
 func loadRouteFile(t *testing.T, docker *client.Client, snapshot routeSnapshot, raw []byte) proxyRuntime {
 	t.Helper()
+	_, runtime := startRouteProxy(t, docker, snapshot, raw, "none")
+	return runtime
+}
+
+// startRouteProxy joins the proxy to its first network and connects the rest before it
+// starts, so it resolves names through all of them as the shared proxy does.
+func startRouteProxy(t *testing.T, docker *client.Client, snapshot routeSnapshot, raw []byte, networks ...string) (string, proxyRuntime) {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
 	defer cancel()
 	const ownerLabel = "com.astilba.route-file-fixture"
@@ -163,7 +171,7 @@ func loadRouteFile(t *testing.T, docker *client.Client, snapshot routeSnapshot, 
 	created, err := docker.ContainerCreate(ctx, client.ContainerCreateOptions{
 		Name:       "astilba-route-file-" + owner,
 		Config:     &container.Config{Image: deployment.ProxyImage, Cmd: proxyArgs(snapshot), Labels: map[string]string{ownerLabel: owner}},
-		HostConfig: &container.HostConfig{NetworkMode: "none"},
+		HostConfig: &container.HostConfig{NetworkMode: container.NetworkMode(networks[0])},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -197,6 +205,11 @@ func loadRouteFile(t *testing.T, docker *client.Client, snapshot routeSnapshot, 
 	if _, err = docker.CopyToContainer(ctx, created.ID, client.CopyToContainerOptions{DestinationPath: "/", Content: &archive}); err != nil {
 		t.Fatal(err)
 	}
+	for _, name := range networks[1:] {
+		if _, err = docker.NetworkConnect(ctx, name, client.NetworkConnectOptions{Container: created.ID}); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if _, err = docker.ContainerStart(ctx, created.ID, client.ContainerStartOptions{}); err != nil {
 		t.Fatal(err)
 	}
@@ -206,7 +219,7 @@ func loadRouteFile(t *testing.T, docker *client.Client, snapshot routeSnapshot, 
 			err = reviewedRoutesEnabled(snapshot, runtime)
 		}
 		if err == nil {
-			return runtime
+			return created.ID, runtime
 		}
 		select {
 		case <-ctx.Done():

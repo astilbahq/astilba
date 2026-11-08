@@ -381,6 +381,12 @@ func (w *worker) Work(ctx context.Context, job *river.Job[jobArgs]) error {
 						return err
 					}
 					if !ready {
+						// A revoked provider will never reconcile anything, so nothing is worth waiting for.
+						if ready, err = serverRevoked(ctx, tx, ws, body.Unit.Plan.Specification.Placement.IngressServerID); err != nil {
+							return err
+						}
+					}
+					if !ready {
 						if err = tx.Commit(ctx); err != nil {
 							return err
 						}

@@ -18,6 +18,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/execution"
 	"github.com/astilbahq/astilba/services/platform/internal/hostnetwork"
+	"github.com/astilbahq/astilba/services/platform/internal/portability"
 	"github.com/google/uuid"
 )
 
@@ -501,5 +502,33 @@ func TestRecoveryKeepsARevokedServersExportedOutcome(t *testing.T) {
 	r.recoverAll(t, append(r.exports(t, claimExport{}), thirdExport(t, third, third.MachineId, proof)))
 	if count := claimCounter(t, r.f, `SELECT count(*) FROM execution_operations WHERE id=$1 AND state='failed'`, header.Id); count != 1 {
 		t.Fatal("recovery replaced the outcome the host reported")
+	}
+}
+
+// Work a revocation ended stays ended, and what the host says about it later, once renewed, neither
+// changes that nor stands in the way of recovering anything else.
+func TestRecoveryKeepsWorkARevocationSettled(t *testing.T) {
+	r, third := revokedRecovery(t)
+	root, hash := uuid.New(), strings.Repeat("d", 64)
+	settled := api.ExecutionCommand{Id: uuid.New(), ParentId: &root, ServerId: third.ServerId, ResourceId: uuid.New(), Kind: "crosshost", Action: "inspect", Generation: 1, PlanHash: hash, Deadline: time.Now().Add(time.Hour)}
+	for _, row := range []struct {
+		id     uuid.UUID
+		parent *uuid.UUID
+		state  string
+		seq    int64
+		body   api.ExecutionCommand
+	}{
+		{root, nil, "failed", 0, api.ExecutionCommand{Id: root, ServerId: third.ServerId, ResourceId: settled.ResourceId, Kind: "crosshost", Action: "inspect", Generation: 1, PlanHash: hash, Deadline: settled.Deadline}},
+		{settled.Id, &root, "cancelled", portability.MaxCounter - 1, settled},
+	} {
+		if _, err := r.f.st.Pool.Exec(r.ctx, `INSERT INTO execution_operations(id,parent_id,workspace_id,server_id,generation,request_key,command,kind,state,report_sequence) VALUES($1,$2,$3,$4,1,$5,$6,'crosshost',$7,$8)`, row.id, row.parent, r.ws, third.ServerId, uuid.New(), claimBytes(t, row.body), row.state, row.seq); err != nil {
+			t.Fatal(err)
+		}
+	}
+	report := api.AgentReport{Id: settled.Id, Generation: settled.Generation, PlanHash: hash, Sequence: 2, State: "succeeded", Steps: []api.ExecutionStep{}}
+	proof := append(claimBytes(t, deployment.RecoveryProof{ParentID: root, ID: settled.Id, Header: claimBytes(t, settled), Report: claimBytes(t, report), Checkpoint: "accepted"}), '\n')
+	r.recoverAll(t, append(r.exports(t, claimExport{}), thirdExport(t, third, third.MachineId, proof)))
+	if count := claimCounter(t, r.f, `SELECT count(*) FROM execution_operations WHERE id=$1 AND state='cancelled'`, settled.Id); count != 1 {
+		t.Fatal("a late proof reopened work the revocation settled")
 	}
 }

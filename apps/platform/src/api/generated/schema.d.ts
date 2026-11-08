@@ -4167,6 +4167,7 @@ export interface components {
             networkId: string;
             networkGeneration: number;
             units: components["schemas"]["DistributedUnit"][];
+            abandoned?: string[];
         };
         RestoreCutover: {
             /** Format: uuid */

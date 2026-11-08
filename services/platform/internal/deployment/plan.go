@@ -498,7 +498,7 @@ type RouteSet struct {
 	Backends      map[string]Backend `json:"backends"`
 }
 
-func RouteConfig(sets map[string]RouteSet) ([]byte, error) {
+func routeConfig(sets map[string]RouteSet, host func(unit uuid.UUID, service string) string) ([]byte, error) {
 	hr, hs, hm, tr, ts, tm := map[string]any{}, map[string]any{}, map[string]any{}, map[string]any{}, map[string]any{}, map[string]any{}
 	domains, ports := map[string]bool{}, map[int]bool{}
 	ids := make([]string, 0, len(sets))
@@ -538,7 +538,7 @@ func RouteConfig(sets map[string]RouteSet) ([]byte, error) {
 						return nil, errors.New("invalid local endpoint address")
 					}
 					seen[endpoint.InstanceID] = true
-					addresses = append(addresses, endpointAddress(endpoint))
+					addresses = append(addresses, endpointAddress(endpoint, set.UnitID, host))
 				}
 			} else if len(backend.InstanceIDs) > 0 {
 				if backend.Address != "" || backend.InstanceID != nil || len(backend.InstanceIDs) > domain.MaxReplicas {
@@ -550,7 +550,7 @@ func RouteConfig(sets map[string]RouteSet) ([]byte, error) {
 						return nil, errors.New("invalid replica backend identity")
 					}
 					seen[instance] = true
-					addresses = append(addresses, fmt.Sprintf("%s:%d", ServiceName(instance), r.Port))
+					addresses = append(addresses, fmt.Sprintf("%s:%d", host(set.UnitID, ServiceName(instance)), r.Port))
 				}
 				if len(addresses) > 1 && (r.Protocol != "http" || backend.Health == nil || !backend.Health.Valid()) {
 					return nil, errors.New("replica pools require HTTP readiness")
@@ -563,7 +563,7 @@ func RouteConfig(sets map[string]RouteSet) ([]byte, error) {
 				if backend.Address != ServiceName(expected) || backend.Health != nil {
 					return nil, errors.New("foreign backend reference")
 				}
-				addresses = append(addresses, fmt.Sprintf("%s:%d", backend.Address, r.Port))
+				addresses = append(addresses, fmt.Sprintf("%s:%d", host(set.UnitID, backend.Address), r.Port))
 			}
 			if r.Protocol == "http" {
 				if domains[r.Domain] {

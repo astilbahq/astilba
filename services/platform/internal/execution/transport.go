@@ -81,7 +81,7 @@ func (s *Service) poll(ctx context.Context, a Identity, out *api.AgentPoll) (*ap
 		var raw []byte
 		var cancel bool
 		var state string
-		err = s.Store.Pool.QueryRow(ctx, `SELECT command,cancel_requested,state FROM execution_operations WHERE server_id=$1 AND NOT(kind='crosshost' AND parent_id IS NULL) AND state IN ('dispatched','running','needs_attention') AND NOT EXISTS(SELECT 1 FROM cross_host_recoveries r WHERE r.parent_id=execution_operations.parent_id AND NOT r.opened AND COALESCE(command->'crosshost'->>'phase','')<>'recovery-open') AND (parent_id IS NULL OR command->'recoveryCheckpoint' IS NULL OR command->'crosshost'->>'phase' IN ('checkpoint','checkpoint-closed') OR EXISTS(SELECT 1 FROM cross_host_checkpoints cp WHERE cp.parent_id=execution_operations.parent_id AND cp.id::text=command->'recoveryCheckpoint'->>'checkpointId' AND cp.acknowledged)) ORDER BY COALESCE(command->'crosshost'->>'phase'='checkpoint',false) DESC, (kind='network' AND COALESCE(command->'network'->>'action','')='restrict') DESC,created_at LIMIT 1`, a.ID).Scan(&raw, &cancel, &state)
+		err = s.Store.Pool.QueryRow(ctx, `SELECT command,cancel_requested,state FROM execution_operations WHERE server_id=$1 AND NOT(kind='crosshost' AND parent_id IS NULL) AND state IN ('dispatched','running','needs_attention') AND NOT EXISTS(SELECT 1 FROM cross_host_recoveries r WHERE r.parent_id=execution_operations.parent_id AND NOT r.opened AND COALESCE(command->'crosshost'->>'phase','')<>'recovery-open') AND (parent_id IS NULL OR command->'recoveryCheckpoint' IS NULL OR command->'crosshost'->>'phase' IN ('checkpoint','checkpoint-closed') OR EXISTS(SELECT 1 FROM cross_host_checkpoints cp WHERE cp.parent_id=execution_operations.parent_id AND cp.id::text=command->'recoveryCheckpoint'->>'checkpointId' AND cp.acknowledged) OR EXISTS(SELECT 1 FROM execution_operations root JOIN servers primary_server ON primary_server.id=root.server_id WHERE root.id=execution_operations.parent_id AND primary_server.revoked)) ORDER BY COALESCE(command->'crosshost'->>'phase'='checkpoint',false) DESC, (kind='network' AND COALESCE(command->'network'->>'action','')='restrict') DESC,created_at LIMIT 1`, a.ID).Scan(&raw, &cancel, &state)
 		if err == nil {
 			var c api.ExecutionCommand
 			if err = json.Unmarshal(raw, &c); err != nil {
@@ -214,18 +214,21 @@ func replaceEscapedNUL(payload *jsontext.Value) {
 	}
 }
 
+// boundedNote keeps an operation's note to what the API promises and PostgreSQL can store:
+// host output and Compose errors can hold any bytes, and invalid UTF-8 grows when encoded.
+func boundedNote(note string) string {
+	note = note[:min(len(note), 1024)]
+	return strings.ReplaceAll(strings.ToValidUTF8(note, ""), "\x00", " ")
+}
+
 func (s *Service) Report(ctx context.Context, a Identity, r api.AgentReport) error {
 	if r.Sequence < 1 || r.Sequence >= portability.MaxCounter || len(r.Steps) > 16 {
 		return domain.Invalid("report")
 	}
-	// Agents bound notes in raw bytes; invalid UTF-8 from host output grows when encoded.
-	if len(r.Note) > 1024 {
-		r.Note = strings.ToValidUTF8(r.Note[:1024], "")
-	}
+	r.Note = boundedNote(r.Note)
 	if r.State != "running" && r.State != "needs_attention" && !Terminal(r.State) {
 		return domain.Invalid("state")
 	}
-	r.Note = strings.ReplaceAll(r.Note, "\x00", " ")
 	for _, payload := range []*jsontext.Value{r.Pipeline, r.Observation, r.Crosshost, r.Upgrade, r.Network} {
 		replaceEscapedNUL(payload)
 	}

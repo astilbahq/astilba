@@ -387,6 +387,13 @@ func (s *Service) pipelineReport(ctx context.Context, tx pgx.Tx, git *gitAnswers
 				return err
 			}
 			spec.Compose = &composeproject.Bundle{Namespace: p.UnitID, Entrypoints: p.Source.Entrypoints, Files: result.Files, Origin: &composeproject.Origin{Provider: p.Connection.Provider, Repository: pipeline.GitURL(p.Connection), Commit: p.Commit}}
+			var refused *domain.Error
+			if errors.As(domain.ValidateNewCompose(spec), &refused) {
+				r.State = "failed"
+				// Compose reports what it was given, so this can hold a secret's placeholder.
+				r.Note = boundedNote("Imported source needs a change at " + strings.Join(refused.Fields, ", ") + ": " + refused.Message)
+				break
+			}
 			id, err := s.writePipelineRevision(ctx, tx, ws, c.EnvironmentId, current, actor, spec)
 			if err != nil {
 				r.State = "failed"
