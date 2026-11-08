@@ -10,6 +10,7 @@ import (
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
+	"github.com/astilbahq/astilba/services/platform/internal/hostnetwork"
 	"github.com/containerd/errdefs"
 	"github.com/google/uuid"
 	"github.com/moby/moby/api/types/network"
@@ -80,8 +81,9 @@ func (e *Engine) pool() netip.Prefix {
 // avoids only directly connected routes itself, and accepts an explicit subnet over the
 // host's own LAN, so the agent chooses. Docker's IPAM remains the record: it refuses a
 // subnet overlapping any of its networks, so a creator outside the agent cannot collide.
-// Subnets for every request are found before any network is created.
-func (e *Engine) createNetworks(ctx context.Context, requests []networkRequest) error {
+// Subnets for every request are found before any network is created. Joining names managed
+// prefixes the plan will hold but the host may not yet.
+func (e *Engine) createNetworks(ctx context.Context, requests []networkRequest, joining ...netip.Prefix) error {
 	if len(requests) == 0 {
 		return nil
 	}
@@ -92,6 +94,7 @@ func (e *Engine) createNetworks(ctx context.Context, requests []networkRequest) 
 	if err != nil {
 		return err
 	}
+	managed = append(managed, joining...)
 	subnets, ok := freeSubnets(pool, networkBits, slices.Concat(managed, routes, docker), len(requests))
 	if !ok {
 		return poolFull(pool, managed, routes, docker, len(requests))
@@ -173,7 +176,14 @@ func (e *Engine) ensureUnitNetworks(ctx context.Context, p deployment.Plan) erro
 			return errors.New("Ingress network ownership or settings do not match.")
 		}
 	}
-	if err := e.createNetworks(ctx, missing); err != nil {
+	// A cross-host candidate creates its networks before it joins the plan's managed network.
+	joining := []netip.Prefix{}
+	if p.Local != nil {
+		if prefix, err := hostnetwork.Prefix(p.Local.Network.Prefix); err == nil {
+			joining = append(joining, prefix)
+		}
+	}
+	if err := e.createNetworks(ctx, missing, joining...); err != nil {
 		if errors.Is(err, errNetworkPoolFull) || errors.Is(err, errHostRangesUnknown) {
 			return err
 		}

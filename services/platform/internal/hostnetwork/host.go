@@ -32,6 +32,10 @@ const NFTVersion = "1.0.9"
 // ErrGenerationConflict means the host refused a manifest before changing anything.
 var ErrGenerationConflict = errors.New("managed network generation conflict")
 
+// ErrRouteConflict means the host refused a manifest before changing anything, because its
+// prefix overlaps a route or container network the host already has.
+var ErrRouteConflict = errors.New("managed network conflicts with an existing host route")
+
 // Bridge identities are observed from owned Docker resources, never supplied by a peer.
 type ProxyPath struct {
 	Name   string `json:"name"`
@@ -454,7 +458,7 @@ func (h Host) inspectRoutes(ctx context.Context, m Manifest) error {
 			}
 		}
 		if prefix.Overlaps(p) {
-			return errors.New("managed network conflicts with an existing host route")
+			return ErrRouteConflict
 		}
 	}
 	return nil
