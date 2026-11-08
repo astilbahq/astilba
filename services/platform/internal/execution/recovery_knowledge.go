@@ -169,7 +169,7 @@ func (s *Service) prepareRecoveryKnowledge(ctx context.Context, tx pgx.Tx, befor
 	if err = recoveryUnitOwnership(prepared); err != nil {
 		return err
 	}
-	if err = settleRevokedServers(prepared, revoked, source.Hosts); err != nil {
+	if err = settleRevokedServers(prepared, revoked); err != nil {
 		return err
 	}
 	source.Archive = prepared
@@ -267,10 +267,10 @@ func recoveryRevokedServers(archives ...portability.Archive) (map[uuid.UUID]bool
 }
 
 // settleRevokedServers makes the merged history agree with the revocations it carries. A revoked
-// server stays out of the network, whichever row was selected for it. A removal waiting on one
-// that supplied no export ends here, because nothing can deliver it or report on it, and a host
-// that stalled on purpose must not be able to hold recovery back.
-func settleRevokedServers(a portability.Archive, revoked map[uuid.UUID]bool, hosts map[uuid.UUID]deployment.RecoveryEvidence) error {
+// server stays out of the network, whichever row was selected for it. A removal waiting on one ends
+// here, because nothing can deliver it and nothing it reports counts, and a host that stalled on
+// purpose must not be able to hold recovery back.
+func settleRevokedServers(a portability.Archive, revoked map[uuid.UUID]bool) error {
 	for _, row := range a.Tables["network_members"] {
 		server, err := recoveryValue[uuid.UUID](row, "server_id")
 		if err != nil {
@@ -285,7 +285,7 @@ func settleRevokedServers(a portability.Archive, revoked map[uuid.UUID]bool, hos
 		if err != nil {
 			return err
 		}
-		if _, exported := hosts[server]; !revoked[server] || exported {
+		if !revoked[server] {
 			continue
 		}
 		state, err := recoveryValue[api.ExecutionState](row, "state")

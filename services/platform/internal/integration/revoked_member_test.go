@@ -492,16 +492,17 @@ func TestRecoveryRefusesAnotherMachinesExportForARevokedServer(t *testing.T) {
 	}
 }
 
-// What a revoked host did report still counts when it supplies an export.
-func TestRecoveryKeepsARevokedServersExportedOutcome(t *testing.T) {
+// Nothing a revoked host writes in its export counts, because it could write anything: its work
+// ends as revocation ends it.
+func TestRecoveryIgnoresARevokedServersExportedOutcome(t *testing.T) {
 	r, third := revokedRecovery(t)
 	r.revokeThird(t, third)
 	header := r.removalOnThird(t, third, "running", 1)
 	report := api.AgentReport{Id: header.Id, Generation: header.Generation, PlanHash: header.PlanHash, Sequence: 2, State: "failed", Steps: []api.ExecutionStep{}}
 	proof := append(claimBytes(t, deployment.RecoveryProof{ParentID: uuid.Nil, ID: header.Id, Header: claimBytes(t, header), Report: claimBytes(t, report), Checkpoint: "accepted"}), '\n')
 	r.recoverAll(t, append(r.exports(t, claimExport{}), thirdExport(t, third, third.MachineId, proof)))
-	if count := claimCounter(t, r.f, `SELECT count(*) FROM execution_operations WHERE id=$1 AND state='failed'`, header.Id); count != 1 {
-		t.Fatal("recovery replaced the outcome the host reported")
+	if count := claimCounter(t, r.f, `SELECT count(*) FROM execution_operations WHERE id=$1 AND state='cancelled'`, header.Id); count != 1 {
+		t.Fatal("recovery took the revoked host's word for its outcome")
 	}
 }
 

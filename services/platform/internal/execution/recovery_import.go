@@ -74,11 +74,14 @@ func (s *Service) RecoverCrossHost(ctx context.Context, in RecoveryImport) (Reco
 		return out, err
 	}
 	out.StateHash = stateHash
-	source, err := loadRecoverySource(ctx, tx, s.Store.Keys, in.WorkspaceID, in.HostExports)
+	source, err := loadRecoverySource(ctx, tx, s.Store.Keys, in.WorkspaceID, before, in.HostExports)
 	if err != nil {
 		return out, err
 	}
 	if err = s.recoverSavedCheckpoints(ctx, tx, before, &source); err != nil {
+		return out, err
+	}
+	if err = ignoreRevokedExports(ctx, tx, before, &source); err != nil {
 		return out, err
 	}
 	if err = checkRecoveryGenerationClaims(ctx, tx, before, source); err != nil {
@@ -137,12 +140,16 @@ func (s *Service) RecoverCrossHost(ctx context.Context, in RecoveryImport) (Reco
 	if err != nil {
 		return out, err
 	}
+	revoked, err := recoveryRevokedServers(source.Archive)
+	if err != nil {
+		return out, err
+	}
 	for parent, root := range roots {
-		units := root.Body.Plan.Distributed.Units
-		if root.Body.Maintenance != nil {
-			units = root.Body.Plan.ActiveUnits()
-		}
-		for _, unit := range units {
+		for _, unit := range recoveredUnits(root) {
+			// A revoked participant gets no authority back; the remaining hosts carry on without it.
+			if revoked[unit.Plan.ServerID] {
+				continue
+			}
 			host, exists := source.Hosts[unit.Plan.ServerID]
 			if !exists {
 				return out, errors.New("a required participant export is missing")
@@ -202,6 +209,9 @@ func (s *Service) RecoverCrossHost(ctx context.Context, in RecoveryImport) (Reco
 		return out, err
 	}
 	if err = restoreRecoveryGrants(ctx, tx, in.WorkspaceID, source.Projections, roots); err != nil {
+		return out, err
+	}
+	if err = s.settleRevokedParticipants(ctx, tx, in.WorkspaceID, roots); err != nil {
 		return out, err
 	}
 	// inline-sql: recovery session temporary tables

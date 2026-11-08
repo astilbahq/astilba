@@ -11,6 +11,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -43,7 +44,20 @@ type claimRecovery struct {
 	descriptor    deployment.RecoveryDescriptor
 	envelope      []byte
 	frameID       uuid.UUID
+	// The peer's own unit, when the root also places the application on the peer.
+	peerUnit uuid.UUID
+	peerPlan deployment.DistributedUnit
+	// former is the unit the root replaces, on the revoked peer, when the root is a replacement.
+	former uuid.UUID
 }
+
+type claimShape int
+
+const (
+	claimOneUnit claimShape = iota
+	claimWithParticipant
+	claimAfterReplacement
+)
 
 const (
 	claimEnvironmentGeneration = 2
@@ -53,6 +67,27 @@ const (
 // newClaimRecovery can take steps that add to what the sealed capsule records.
 func newClaimRecovery(t *testing.T, networkGeneration int64, capture ...func(f *fixture, b *browser, ws, network uuid.UUID)) *claimRecovery {
 	t.Helper()
+	return buildClaimRecovery(t, networkGeneration, claimOneUnit, capture...)
+}
+
+// newParticipantRecovery is a claim recovery whose root also runs the application on the peer, so
+// the peer is a participant with a unit of its own.
+func newParticipantRecovery(t *testing.T, capture ...func(f *fixture, b *browser, ws, network uuid.UUID)) *claimRecovery {
+	t.Helper()
+	return buildClaimRecovery(t, 1, claimWithParticipant, capture...)
+}
+
+// newReplacementRecovery is a claim recovery whose root replaces the environment's primary on the
+// peer, which the owner revoked: the peer's unit is detached, and the root deploys a new primary
+// unit on A, as applying a replacement leaves things before its deployment finishes.
+func newReplacementRecovery(t *testing.T) *claimRecovery {
+	t.Helper()
+	return buildClaimRecovery(t, 1, claimAfterReplacement)
+}
+
+func buildClaimRecovery(t *testing.T, networkGeneration int64, shape claimShape, capture ...func(f *fixture, b *browser, ws, network uuid.UUID)) *claimRecovery {
+	t.Helper()
+	participant, replacement := shape == claimWithParticipant, shape == claimAfterReplacement
 	ctx := context.Background()
 	f := setup(t)
 	b := f.browser(t)
@@ -85,16 +120,20 @@ func newClaimRecovery(t *testing.T, networkGeneration int64, capture ...func(f *
 	var draft api.Revision
 	b.call("PUT", base+"/projects/"+project.Id.String()+"/environments/"+env.String()+"/draft", map[string]any{"baseRevisionId": environment.DraftRevisionId, "specification": spec}, 200, &draft)
 	unit := claimUUID(t, f, `SELECT id FROM deployment_units WHERE workspace_id=$1 AND environment_id=$2`, ws, env)
-	exec(`UPDATE deployment_units SET server_id=$1 WHERE id=$2`, a.ServerId, unit)
+	host := a.ServerId
+	if replacement {
+		host = member.ServerId
+	}
+	exec(`UPDATE deployment_units SET server_id=$1 WHERE id=$2`, host, unit)
 	// The source plan this root replaces, already applied.
-	source := deployment.Plan{ID: uuid.New(), ServerID: a.ServerId, EnvironmentID: env, UnitID: unit, RevisionID: draft.Id, Recipe: deployment.Recipe, ExpiresAt: time.Now().Add(time.Hour), Specification: spec, Images: map[string]string{app.String(): image}}.WithHash()
+	source := deployment.Plan{ID: uuid.New(), ServerID: host, EnvironmentID: env, UnitID: unit, RevisionID: draft.Id, Recipe: deployment.Recipe, ExpiresAt: time.Now().Add(time.Hour), Specification: spec, Images: map[string]string{app.String(): image}}.WithHash()
 	body := deployment.Payload{Action: "deploy", Plan: source}
-	applied := api.ExecutionCommand{Id: uuid.New(), ServerId: a.ServerId, EnvironmentId: env, ResourceId: unit, Generation: 1, Kind: "visual", Action: "inspect", PlanHash: body.Digest(), Deadline: time.Now().Add(time.Hour), Visual: claimMessage(t, body)}
-	exec(`INSERT INTO execution_operations(id,workspace_id,server_id,environment_id,generation,request_key,command,kind,state,report_sequence) VALUES($1,$2,$3,$4,1,$5,$6,'visual','succeeded',1)`, applied.Id, ws, a.ServerId, env, uuid.New(), claimBytes(t, applied))
-	exec(`INSERT INTO visual_requests(id,workspace_id,server_id,environment_id,unit_id,revision_id,operation_id,candidate) VALUES($1,$2,$3,$4,$5,$6,$7,'{}')`, source.ID, ws, a.ServerId, env, unit, draft.Id, applied.Id)
+	applied := api.ExecutionCommand{Id: uuid.New(), ServerId: host, EnvironmentId: env, ResourceId: unit, Generation: 1, Kind: "visual", Action: "inspect", PlanHash: body.Digest(), Deadline: time.Now().Add(time.Hour), Visual: claimMessage(t, body)}
+	exec(`INSERT INTO execution_operations(id,workspace_id,server_id,environment_id,generation,request_key,command,kind,state,report_sequence) VALUES($1,$2,$3,$4,1,$5,$6,'visual','succeeded',1)`, applied.Id, ws, host, env, uuid.New(), claimBytes(t, applied))
+	exec(`INSERT INTO visual_requests(id,workspace_id,server_id,environment_id,unit_id,revision_id,operation_id,candidate) VALUES($1,$2,$3,$4,$5,$6,$7,'{}')`, source.ID, ws, host, env, unit, draft.Id, applied.Id)
 	exec(`INSERT INTO visual_plans(id,workspace_id,environment_id,plan) VALUES($1,$2,$3,$4)`, source.ID, ws, env, claimBytes(t, source))
 	exec(`UPDATE execution_operations SET runtime_outcome='applied',runtime_plan_id=$2 WHERE id=$1`, applied.Id, source.ID)
-	exec(`INSERT INTO visual_runtime(workspace_id,environment_id,unit_id,server_id,plan_id,observation) VALUES($1,$2,$3,$4,$5,'{}')`, ws, env, unit, a.ServerId, source.ID)
+	exec(`INSERT INTO visual_runtime(workspace_id,environment_id,unit_id,server_id,plan_id,observation) VALUES($1,$2,$3,$4,$5,'{}')`, ws, env, unit, host, source.ID)
 	exec(`UPDATE environments SET applied_revision_id=$2,runtime_operation_id=$3,execution_generation=$4 WHERE id=$1`, env, draft.Id, applied.Id, claimEnvironmentGeneration)
 	exec(`UPDATE servers SET update_generation=$2 WHERE id=ANY($1)`, []uuid.UUID{a.ServerId, member.ServerId}, claimUpdateGeneration)
 	network, memberA, memberB := uuid.New(), uuid.New(), uuid.New()
@@ -105,6 +144,15 @@ func newClaimRecovery(t *testing.T, networkGeneration int64, capture ...func(f *
 	}{{a.ServerId, memberA, "10.249.0.1", claimKey("a")}, {member.ServerId, memberB, "10.249.0.2", claimKey("b")}} {
 		exec(`INSERT INTO network_members(workspace_id,network_id,server_id,membership_id,address,endpoint,listen_port,cpu_millis,memory_mib,unbounded_inventory_hash,public_key,enabled,approved_controller,generation) VALUES($1,$2,$3,$4,$5,'192.0.2.1:51820',51820,100,64,$6,$7,true,0,$8)`, ws, network, row.server, row.membership, row.address, strings.Repeat("a", 64), row.key, networkGeneration)
 	}
+	var former uuid.UUID
+	if replacement {
+		// The owner revoked the primary and applied a replacement onto A, which detached its unit.
+		exec(`UPDATE servers SET revoked=true,credential_hash=NULL WHERE id=$1`, member.ServerId)
+		exec(`UPDATE network_members SET enabled=false WHERE server_id=$1`, member.ServerId)
+		former, unit = unit, uuid.New()
+		exec(`UPDATE deployment_units SET primary_unit=false,server_id=NULL WHERE id=$1`, former)
+		exec(`INSERT INTO deployment_units(workspace_id,id,environment_id,server_id,primary_unit) VALUES($1,$2,$3,$4,true)`, ws, unit, env, a.ServerId)
+	}
 	coordinated := spec
 	coordinated.Volumes = []domain.Volume{{ID: uuid.New(), Name: "Data"}}
 	coordinated.Routes = []domain.Route{{ID: uuid.New(), TargetID: app, Protocol: "http", Domain: "test.example.test", Port: 8080, TLS: "off"}}
@@ -113,10 +161,46 @@ func newClaimRecovery(t *testing.T, networkGeneration int64, capture ...func(f *
 	local := group
 	local.ID = uuid.New()
 	local.Images = map[string]string{app.String(): image}
-	local.Local = &deployment.LocalPlacement{GroupID: group.ID, Primary: true, Network: hostnetwork.Manifest{Version: 1, NetworkID: network, MembershipID: memberA, ServerID: a.ServerId, Generation: 1, Prefix: "10.249.0.0/24", Address: "10.249.0.1", PublicKey: claimKey("a"), ListenPort: 51820}, Instances: map[string][]uuid.UUID{app.String(): {uuid.New()}}, Requests: map[string]deployment.ResourceRequest{app.String(): {CPUMillis: 100, MemoryMiB: 64}}}
+	primaryInstance := uuid.New()
+	local.Local = &deployment.LocalPlacement{GroupID: group.ID, Primary: true, Network: hostnetwork.Manifest{Version: 1, NetworkID: network, MembershipID: memberA, ServerID: a.ServerId, Generation: 1, Prefix: "10.249.0.0/24", Address: "10.249.0.1", PublicKey: claimKey("a"), ListenPort: 51820}, Instances: map[string][]uuid.UUID{app.String(): {primaryInstance}}, Requests: map[string]deployment.ResourceRequest{app.String(): {CPUMillis: 100, MemoryMiB: 64}}}
+	var peerUnit uuid.UUID
+	var peerPlan deployment.DistributedUnit
+	if participant {
+		peerUnit = uuid.New()
+		exec(`INSERT INTO deployment_units(workspace_id,id,environment_id,server_id,primary_unit) VALUES($1,$2,$3,$4,false)`, ws, peerUnit, env, member.ServerId)
+		endpoint, peerInstance := uuid.New(), uuid.New()
+		coordinated.Applications = []domain.Application{coordinated.Applications[0]}
+		coordinated.Applications[0].Replicas = 2
+		coordinated.Placement.Applications[0].Targets = []domain.PlacementTarget{{ServerID: a.ServerId, Count: 1}, {ServerID: member.ServerId, Count: 1}}
+		group.Specification, local.Specification = coordinated, coordinated
+		peerManifest := hostnetwork.Manifest{Version: 1, NetworkID: network, MembershipID: memberB, ServerID: member.ServerId, Generation: 1, Prefix: "10.249.0.0/24", Address: "10.249.0.2", PublicKey: claimKey("b"), ListenPort: 51820,
+			Peers:   []hostnetwork.Peer{{ServerID: a.ServerId, MembershipID: memberA, Address: "10.249.0.1", PublicKey: claimKey("a"), Endpoint: "192.0.2.1:51820"}},
+			Exports: []hostnetwork.Endpoint{{ID: endpoint, UnitID: peerUnit, ResourceID: app, InstanceID: peerInstance, Port: 20001, ContainerPort: 8080, Sources: []hostnetwork.Source{{ServerID: a.ServerId, UnitID: unit}}}}}
+		local.Local.Network.Peers = []hostnetwork.Peer{{ServerID: member.ServerId, MembershipID: memberB, Address: "10.249.0.2", PublicKey: claimKey("b"), Endpoint: "192.0.2.1:51820"}}
+		local.Local.Network.Egress = []hostnetwork.Egress{{Ingress: true, UnitID: unit, ServerID: member.ServerId, EndpointID: endpoint, Port: 20001}}
+		local.Local.Backends = map[string][]deployment.PrivateEndpoint{app.String(): {
+			{ServerID: a.ServerId, UnitID: unit, ResourceID: app, InstanceID: primaryInstance, Address: deployment.ServiceName(primaryInstance), Port: 8080, ContainerPort: 8080},
+			{ServerID: member.ServerId, UnitID: peerUnit, ResourceID: app, InstanceID: peerInstance, Address: "10.249.0.2", Port: 20001, ContainerPort: 8080},
+		}}
+		peer := group
+		peer.ID, peer.ServerID, peer.UnitID = uuid.New(), member.ServerId, peerUnit
+		peer.Images = map[string]string{app.String(): image}
+		peer.Local = &deployment.LocalPlacement{GroupID: group.ID, Network: peerManifest, Instances: map[string][]uuid.UUID{app.String(): {peerInstance}}, Requests: map[string]deployment.ResourceRequest{app.String(): {CPUMillis: 100, MemoryMiB: 64}}}
+		peerPlan = deployment.DistributedUnit{Plan: peer.WithHash(), CPUMillis: 100, MemoryMiB: 64, InventoryHash: strings.Repeat("a", 64)}
+	}
 	local = local.WithHash()
 	unitPlan := deployment.DistributedUnit{Plan: local, CPUMillis: 100, MemoryMiB: 64, InventoryHash: strings.Repeat("a", 64)}
 	group.Distributed = &deployment.DistributedPlan{NetworkID: network, NetworkGeneration: 1, Units: []deployment.DistributedUnit{unitPlan}}
+	if replacement {
+		group.Replacement = &deployment.Replacement{Server: member.ServerId, AbandonedVolumes: []uuid.UUID{}}
+		group.Distributed.Abandoned = []uuid.UUID{member.ServerId}
+	}
+	participants := []uuid.UUID{a.ServerId}
+	if participant {
+		group.Distributed.Units = append(group.Distributed.Units, peerPlan)
+		participants = append(participants, member.ServerId)
+		slices.SortFunc(participants, func(x, y uuid.UUID) int { return strings.Compare(x.String(), y.String()) })
+	}
 	group = group.WithHash()
 	if err := group.Validate(true); err != nil {
 		t.Fatal(err)
@@ -134,7 +218,7 @@ func newClaimRecovery(t *testing.T, networkGeneration int64, capture ...func(f *
 	}
 	// Sealed as createRecoveryBase seals it: the keyring refuses a capsule under any other identity.
 	id := uuid.New()
-	descriptor := deployment.RecoveryDescriptor{Version: 1, WorkspaceID: ws, ParentID: root.Id, RootHash: root.PlanHash, GroupID: group.ID, GroupHash: group.Hash, BaseID: id, CheckpointID: id, Participants: []uuid.UUID{a.ServerId}}
+	descriptor := deployment.RecoveryDescriptor{Version: 1, WorkspaceID: ws, ParentID: root.Id, RootHash: root.PlanHash, GroupID: group.ID, GroupHash: group.Hash, BaseID: id, CheckpointID: id, Participants: participants}
 	tx, err := f.st.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead})
 	if err != nil {
 		t.Fatal(err)
@@ -172,7 +256,7 @@ func newClaimRecovery(t *testing.T, networkGeneration int64, capture ...func(f *
 	if err = f.execution.Stop(ctx); err != nil {
 		t.Fatal(err)
 	}
-	return &claimRecovery{f: f, b: b, ctx: ctx, ws: ws, env: env, unit: unit, network: network, memberA: memberA, a: a, peer: member, root: root, group: group, local: local, unitPlan: unitPlan, descriptor: descriptor, envelope: envelope, frameID: uuid.NewSHA1(root.Id, []byte("crosshost:checkpoint:"+unit.String()))}
+	return &claimRecovery{f: f, b: b, ctx: ctx, ws: ws, env: env, unit: unit, network: network, memberA: memberA, a: a, peer: member, root: root, group: group, local: local, unitPlan: unitPlan, descriptor: descriptor, envelope: envelope, frameID: uuid.NewSHA1(root.Id, []byte("crosshost:checkpoint:"+unit.String())), peerUnit: peerUnit, peerPlan: peerPlan, former: former}
 }
 
 func claimUUID(t *testing.T, f *fixture, query string, args ...any) uuid.UUID {
@@ -254,7 +338,12 @@ func (r *claimRecovery) exports(t *testing.T, claims claimExport) []string {
 	write(dirA, "proofs.jsonl", proofs)
 	write(dirA, r.descriptor.CheckpointID.String()+".capsule", r.envelope)
 	write(dirA, r.descriptor.CheckpointID.String()+".json", claimBytes(t, r.descriptor))
-	write(dirB, "host.json", claimBytes(t, deployment.RecoveryEvidence{Version: 1, ServerID: r.peer.ServerId, MachineID: r.peer.MachineId, Units: map[string]string{}, Schedules: map[string]int64{}, Roots: []deployment.RecoveryRoot{}, ProofDigest: hex.EncodeToString(sumB[:]), Networks: []hostnetwork.Manifest{}}))
+	peerUnits, peerRoots := map[string]string{}, []deployment.RecoveryRoot{}
+	if r.peerUnit != uuid.Nil {
+		peerUnits[r.peerUnit.String()] = r.peerPlan.Plan.Hash
+		peerRoots = append(peerRoots, deployment.RecoveryRoot{Descriptor: r.descriptor, EnvironmentID: r.env, UnitID: r.peerUnit, UnitHash: r.peerPlan.Plan.Hash})
+	}
+	write(dirB, "host.json", claimBytes(t, deployment.RecoveryEvidence{Version: 1, ServerID: r.peer.ServerId, MachineID: r.peer.MachineId, Units: peerUnits, Schedules: map[string]int64{}, Roots: peerRoots, ProofDigest: hex.EncodeToString(sumB[:]), Networks: []hostnetwork.Manifest{}}))
 	write(dirB, "proofs.jsonl", nil)
 	return []string{dirA, dirB}
 }
@@ -290,11 +379,22 @@ func (r *claimRecovery) recoverAll(t *testing.T, exports []string) {
 // the host after that, with whatever the recovery left the counters holding.
 func (r *claimRecovery) revokeAfterTransfer(t *testing.T) {
 	t.Helper()
-	base := "/api/v1/workspaces/" + r.ws.String() + "/servers/" + r.a.ServerId.String()
+	credential := r.transfer(t, r.a)
+	r.b.call("POST", "/api/v1/workspaces/"+r.ws.String()+"/servers/"+r.a.ServerId.String()+"/revoke", nil, 204, nil)
+	if _, err := r.f.execution.Authenticate(r.ctx, r.a.ServerId, credential); err == nil {
+		t.Fatal("the revoked credential still authenticates")
+	}
+}
+
+// transfer re-enrolls a recovered host under the controller recovery staged for it, with the
+// inventory it staged, as the documented recovery has every participant do. It returns the new
+// credential.
+func (r *claimRecovery) transfer(t *testing.T, host api.AgentEnrollment) string {
+	t.Helper()
 	var ticket api.TransferTicket
-	r.b.call("POST", base+"/transfer", nil, 201, &ticket)
+	r.b.call("POST", "/api/v1/workspaces/"+r.ws.String()+"/servers/"+host.ServerId.String()+"/transfer", nil, 201, &ticket)
 	var staged []byte
-	if err := r.f.st.Pool.QueryRow(r.ctx, `SELECT inventory FROM cross_host_recovery_servers WHERE server_id=$1`, r.a.ServerId).Scan(&staged); err != nil {
+	if err := r.f.st.Pool.QueryRow(r.ctx, `SELECT inventory FROM cross_host_recovery_servers WHERE server_id=$1`, host.ServerId).Scan(&staged); err != nil {
 		t.Fatal(err)
 	}
 	var inventory api.ControllerInventory
@@ -306,18 +406,15 @@ func (r *claimRecovery) revokeAfterTransfer(t *testing.T) {
 		t.Fatal(err)
 	}
 	generation := int64(ticket.Generation)
-	input := r.a
+	input := host
 	input.Token, input.Credential, input.ControllerGeneration, input.Inventory = ticket.Token, credential, &generation, &inventory
 	if _, err = r.f.execution.Enroll(r.ctx, input); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = r.f.execution.Authenticate(r.ctx, r.a.ServerId, credential); err != nil {
+	if _, err = r.f.execution.Authenticate(r.ctx, host.ServerId, credential); err != nil {
 		t.Fatal(err)
 	}
-	r.b.call("POST", base+"/revoke", nil, 204, nil)
-	if _, err = r.f.execution.Authenticate(r.ctx, r.a.ServerId, credential); err == nil {
-		t.Fatal("the revoked credential still authenticates")
-	}
+	return credential
 }
 
 func TestRecoveryRefusesGenerationsNeverIssued(t *testing.T) {

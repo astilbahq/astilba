@@ -144,6 +144,13 @@ func (s *Service) PrepareTransfer(ctx context.Context, p store.Principal, ws, id
 		if e := s.Store.ManagedServerAdmission(ctx, tx, ws, id); e != nil {
 			return e
 		}
+		// A transfer lifts a revocation, so, as with renewal, not while a root still running decided
+		// to carry on without the server: it would wait for a host it never handed anything.
+		if held, e := db.New(tx).RevokedServerInActiveRoot(ctx, db.RevokedServerInActiveRootParams{WorkspaceID: ws, ServerID: id}); e != nil {
+			return e
+		} else if held {
+			return domain.Conflict
+		}
 		generation, e := db.New(tx).PrepareServerTransfer(ctx, db.PrepareServerTransferParams{WorkspaceID: ws, ID: id, EnrollmentHash: hash(token), EnrollmentExpires: &out.ExpiresAt})
 		out.Generation = generation
 		return e

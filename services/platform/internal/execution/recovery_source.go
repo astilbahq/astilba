@@ -49,7 +49,7 @@ func recoveryDecode(raw []byte, out any) error {
 
 // Records are bounded individually and streamed through temporary SQL tables.
 // Repeated owner recovery actions do not consume the workspace archive ceiling.
-func loadRecoverySource(ctx context.Context, tx pgx.Tx, keys *cryptobox.Keyring, ws uuid.UUID, dirs []string) (recoverySource, error) {
+func loadRecoverySource(ctx context.Context, tx pgx.Tx, keys *cryptobox.Keyring, ws uuid.UUID, before portability.Archive, dirs []string) (recoverySource, error) {
 	var bases portability.RecoveryBases
 	out := recoverySource{Hosts: map[uuid.UUID]deployment.RecoveryEvidence{}, Roots: map[uuid.UUID]deployment.RecoveryDescriptor{}, KnownSequences: map[uuid.UUID]int64{}}
 	if len(dirs) == 0 || len(dirs) > 100 {
@@ -58,6 +58,25 @@ func loadRecoverySource(ctx context.Context, tx pgx.Tx, keys *cryptobox.Keyring,
 	// inline-sql: recovery session temporary table
 	if _, err := tx.Exec(ctx, `CREATE TEMP TABLE recovery_input_checkpoints(id uuid PRIMARY KEY,parent_id uuid NOT NULL,sequence bigint NOT NULL,descriptor jsonb NOT NULL,envelope bytea NOT NULL,decoded bytea NOT NULL,PRIMARY_SOURCE uuid NOT NULL,retained boolean NOT NULL DEFAULT true,UNIQUE(parent_id,sequence)) ON COMMIT DROP; CREATE TEMP TABLE recovery_input_proofs(server_id uuid NOT NULL,id uuid NOT NULL,parent_id uuid NOT NULL,header jsonb NOT NULL,report jsonb NOT NULL,checkpoint text NOT NULL,applied boolean NOT NULL DEFAULT false,PRIMARY KEY(server_id,id)) ON COMMIT DROP`); err != nil {
 		return out, err
+	}
+	// A server revoked in the restored management may be gone or hostile, so its export counts only
+	// as proof of which machine it is, and for the sealed capsules it holds of its roots: beyond
+	// what management kept of them, or of roots management never saw. What it claims is not read. An export that can't be read at all still stops recovery; leave it
+	// out, since a revoked server's export is never required.
+	revoked, err := recoveryRevokedServers(before)
+	if err != nil {
+		return out, err
+	}
+	// The roots whose sealed checkpoints management kept, which it supplies itself.
+	held := map[uuid.UUID][]heldCapsule{}
+	for _, row := range before.Tables["execution_operations"] {
+		command, err := recoveryValue[api.ExecutionCommand](row, "command")
+		if err != nil {
+			return out, err
+		}
+		if command.RecoveryCheckpoint != nil {
+			held[command.Id] = nil
+		}
 	}
 	for _, dir := range dirs {
 		info, err := os.Lstat(dir)
@@ -69,11 +88,25 @@ func loadRecoverySource(ctx context.Context, tx pgx.Tx, keys *cryptobox.Keyring,
 			return out, err
 		}
 		var host deployment.RecoveryEvidence
-		if recoveryDecode(raw, &host) != nil || host.Version != 1 || host.ServerID == uuid.Nil || host.MachineID == uuid.Nil || host.Controller < 0 || len(host.ProofDigest) != 64 || len(host.Units) > 100 || len(host.Schedules) > 100 {
+		if recoveryDecode(raw, &host) != nil || host.ServerID == uuid.Nil || host.MachineID == uuid.Nil {
 			return out, errors.New("invalid host recovery evidence")
 		}
 		if _, duplicate := out.Hosts[host.ServerID]; duplicate {
 			return out, errors.New("duplicate host recovery evidence")
+		}
+		if revoked[host.ServerID] {
+			out.Hosts[host.ServerID] = revokedEvidence(host)
+			// Management's own chain is the floor for a revoked primary's roots it kept, so the host
+			// can't truncate them; what the host holds beyond it is set aside to extend it. For any
+			// other root the host holds the only copy. Management sealed both, so the host can only
+			// replay them.
+			if err = loadExportCapsules(ctx, tx, keys, ws, dir, host, false, held, &out, &bases); err != nil {
+				return out, err
+			}
+			continue
+		}
+		if host.Version != 1 || host.Controller < 0 || len(host.ProofDigest) != 64 || len(host.Units) > 100 || len(host.Schedules) > 100 {
+			return out, errors.New("invalid host recovery evidence")
 		}
 		out.Hosts[host.ServerID] = host
 		for _, network := range host.Networks {
@@ -84,111 +117,12 @@ func loadRecoverySource(ctx context.Context, tx pgx.Tx, keys *cryptobox.Keyring,
 		if err = loadRecoveryProofs(ctx, tx, dir, host); err != nil {
 			return out, err
 		}
-		paths, err := filepath.Glob(filepath.Join(dir, "*.capsule"))
-		if err != nil {
+		if err = loadExportCapsules(ctx, tx, keys, ws, dir, host, true, nil, &out, &bases); err != nil {
 			return out, err
 		}
-		for _, path := range paths {
-			id, err := uuid.Parse(strings.TrimSuffix(filepath.Base(path), ".capsule"))
-			if err != nil {
-				return out, err
-			}
-			raw, err := recoveryPrivateFile(filepath.Join(dir, id.String()+".json"), 8192)
-			if err != nil {
-				return out, err
-			}
-			var d deployment.RecoveryDescriptor
-			if recoveryDecode(raw, &d) != nil || d.Validate() != nil || d.CheckpointID != id || d.WorkspaceID != ws || !slices.Contains(d.Participants, host.ServerID) {
-				return out, errors.New("capsule descriptor differs from the requested workspace or host")
-			}
-			primary := false
-			for _, root := range host.Roots {
-				if root.Primary && deployment.SameRecoveryRoot(root.Descriptor, d) {
-					primary = true
-				}
-			}
-			if !primary {
-				return out, errors.New("recovery capsule was not exported by its assigned primary")
-			}
-			envelope, err := recoveryPrivateFile(path, deployment.RecoveryEnvelopeLimit)
-			if err != nil || len(envelope) != d.Bytes || deployment.RecoveryDigest(envelope) != d.Digest {
-				return out, errors.New("recovery capsule differs from its descriptor")
-			}
-			decoded, err := keys.Open(envelope, recoveryIdentity(d))
-			if err != nil {
-				return out, errors.New("the original management recovery keyring is required")
-			}
-			if d.Sequence == 0 {
-				reader, err := gzip.NewReader(bytes.NewReader(decoded))
-				if err != nil {
-					clear(decoded)
-					return out, err
-				}
-				uncompressed, err := io.ReadAll(io.LimitReader(reader, portability.MaxArchiveBytes+1))
-				reader.Close()
-				clear(decoded)
-				if err != nil || len(uncompressed) > portability.MaxArchiveBytes {
-					return out, portability.ErrArchive
-				}
-				decoded = uncompressed
-				a, err := portability.DecodeRecovery(decoded)
-				if err != nil {
-					clear(decoded)
-					return out, err
-				}
-				if a.Workspace != ws {
-					return out, errors.New("capsule archive belongs to another workspace")
-				}
-				var parent api.ExecutionCommand
-				found := false
-				for _, row := range a.Tables["execution_operations"] {
-					var operation uuid.UUID
-					if json.Unmarshal(row["id"], &operation) != nil {
-						return out, portability.ErrArchive
-					}
-					if operation == d.ParentID {
-						if json.Unmarshal(row["command"], &parent) != nil {
-							return out, portability.ErrArchive
-						}
-						found = true
-					}
-				}
-				var root coordinationCommand
-				if !found || parent.Crosshost == nil || json.Unmarshal(*parent.Crosshost, &root) != nil || Hash(root) != parent.PlanHash || parent.PlanHash != d.RootHash || parent.ServerId != host.ServerID || root.Plan.ID != d.GroupID || root.Plan.Hash != d.GroupHash || root.Plan.Distributed == nil || root.Plan.Validate(true) != nil {
-					return out, errors.New("base capsule does not contain its frozen root")
-				}
-				units := root.Plan.Distributed.Units
-				if root.Maintenance != nil {
-					units = root.Plan.ActiveUnits()
-				}
-				if len(units) != len(d.Participants) {
-					return out, errors.New("recovery participant set differs from the frozen root")
-				}
-				for _, unit := range units {
-					if !slices.Contains(d.Participants, unit.Plan.ServerID) {
-						return out, errors.New("recovery participant is absent from its descriptor")
-					}
-				}
-				if err = out.Origins.add(a, d.ParentID); err != nil {
-					return out, err
-				}
-				if err = bases.Add(a); err != nil {
-					return out, err
-				}
-			} else {
-				var segment recoveryContinuation
-				if recoveryDecode(decoded, &segment) != nil || len(segment.Phase) > 128 || segment.Phase == "" || len(segment.Children) == 0 || len(segment.Children) > 4 || len(segment.Approvals) > 1 {
-					clear(decoded)
-					return out, errors.New("invalid bounded recovery continuation")
-				}
-			}
-			// inline-sql: recovery session temporary table
-			_, err = tx.Exec(ctx, `INSERT INTO recovery_input_checkpoints(id,parent_id,sequence,descriptor,envelope,decoded,PRIMARY_SOURCE) VALUES($1,$2,$3,$4,$5,$6,$7)`, d.CheckpointID, d.ParentID, d.Sequence, raw, envelope, decoded, host.ServerID)
-			clear(decoded)
-			if err != nil {
-				return out, err
-			}
-		}
+	}
+	if err = loadRevokedPrimaryRoots(ctx, tx, keys, ws, before, revoked, held, &out, &bases); err != nil {
+		return out, err
 	}
 	// inline-sql: recovery session temporary table
 	rows, err := tx.Query(ctx, `SELECT descriptor,primary_source FROM recovery_input_checkpoints ORDER BY parent_id,sequence`)
@@ -221,11 +155,18 @@ func loadRecoverySource(ctx context.Context, tx pgx.Tx, keys *cryptobox.Keyring,
 	if err != nil {
 		return out, err
 	}
+	if err = requireRecoverableRoots(out, revoked); err != nil {
+		return out, err
+	}
 	out.Archive = bases.Archive()
 	if out.Archive.Workspace != ws {
 		return out, errors.New("no compatible base recovery capsule was supplied")
 	}
 	for _, host := range out.Hosts {
+		// A revoked host's export decides nothing, so it can't demand a chain either.
+		if revoked[host.ServerID] {
+			continue
+		}
 		for _, root := range host.Roots {
 			if !root.Primary {
 				continue
@@ -241,6 +182,139 @@ func loadRecoverySource(ctx context.Context, tx pgx.Tx, keys *cryptobox.Keyring,
 		}
 	}
 	return out, nil
+}
+
+// loadExportCapsules stages the sealed capsules in one host export. Those of a root in held are set
+// aside there instead, for management's own chain to decide on. A capsule must come from its root's
+// primary: as the host claims, when claims is set, and in any case as the sealed base's frozen root
+// says.
+func loadExportCapsules(ctx context.Context, tx pgx.Tx, keys *cryptobox.Keyring, ws uuid.UUID, dir string, host deployment.RecoveryEvidence, claims bool, held map[uuid.UUID][]heldCapsule, out *recoverySource, bases *portability.RecoveryBases) error {
+	paths, err := filepath.Glob(filepath.Join(dir, "*.capsule"))
+	if err != nil {
+		return err
+	}
+	for _, path := range paths {
+		id, err := uuid.Parse(strings.TrimSuffix(filepath.Base(path), ".capsule"))
+		if err != nil {
+			return err
+		}
+		raw, err := recoveryPrivateFile(filepath.Join(dir, id.String()+".json"), 8192)
+		if err != nil {
+			return err
+		}
+		var d deployment.RecoveryDescriptor
+		if recoveryDecode(raw, &d) != nil || d.Validate() != nil || d.CheckpointID != id || d.WorkspaceID != ws || !slices.Contains(d.Participants, host.ServerID) {
+			return errors.New("capsule descriptor differs from the requested workspace or host")
+		}
+		if candidates, kept := held[d.ParentID]; kept {
+			envelope, err := recoveryPrivateFile(path, deployment.RecoveryEnvelopeLimit)
+			if err != nil {
+				return err
+			}
+			// A copy that isn't what its descriptor says can't extend anything, like any forgery.
+			if len(envelope) == d.Bytes && deployment.RecoveryDigest(envelope) == d.Digest {
+				held[d.ParentID] = append(candidates, heldCapsule{descriptor: d, raw: raw, envelope: envelope, host: host.ServerID})
+			}
+			continue
+		}
+		primary := !claims
+		for _, root := range host.Roots {
+			if claims && root.Primary && deployment.SameRecoveryRoot(root.Descriptor, d) {
+				primary = true
+			}
+		}
+		if !primary {
+			return errors.New("recovery capsule was not exported by its assigned primary")
+		}
+		envelope, err := recoveryPrivateFile(path, deployment.RecoveryEnvelopeLimit)
+		if err != nil || len(envelope) != d.Bytes || deployment.RecoveryDigest(envelope) != d.Digest {
+			return errors.New("recovery capsule differs from its descriptor")
+		}
+		if err = addRecoveryCheckpoint(ctx, tx, keys, ws, out, bases, d, raw, envelope, host.ServerID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// addRecoveryCheckpoint opens one sealed checkpoint of a root whose primary is primary, checks it
+// against its descriptor and frozen root, and stages it for the chain.
+func addRecoveryCheckpoint(ctx context.Context, tx pgx.Tx, keys *cryptobox.Keyring, ws uuid.UUID, out *recoverySource, bases *portability.RecoveryBases, d deployment.RecoveryDescriptor, raw, envelope []byte, primary uuid.UUID) error {
+	decoded, err := keys.Open(envelope, recoveryIdentity(d))
+	if err != nil {
+		return errors.New("the original management recovery keyring is required")
+	}
+	if d.Sequence == 0 {
+		reader, err := gzip.NewReader(bytes.NewReader(decoded))
+		if err != nil {
+			clear(decoded)
+			return err
+		}
+		uncompressed, err := io.ReadAll(io.LimitReader(reader, portability.MaxArchiveBytes+1))
+		reader.Close()
+		clear(decoded)
+		if err != nil || len(uncompressed) > portability.MaxArchiveBytes {
+			return portability.ErrArchive
+		}
+		decoded = uncompressed
+		a, err := portability.DecodeRecovery(decoded)
+		if err != nil {
+			clear(decoded)
+			return err
+		}
+		if a.Workspace != ws {
+			return errors.New("capsule archive belongs to another workspace")
+		}
+		var parent api.ExecutionCommand
+		found := false
+		for _, row := range a.Tables["execution_operations"] {
+			var operation uuid.UUID
+			if json.Unmarshal(row["id"], &operation) != nil {
+				return portability.ErrArchive
+			}
+			if operation == d.ParentID {
+				if json.Unmarshal(row["command"], &parent) != nil {
+					return portability.ErrArchive
+				}
+				found = true
+			}
+		}
+		var root coordinationCommand
+		if !found || parent.Crosshost == nil || json.Unmarshal(*parent.Crosshost, &root) != nil || Hash(root) != parent.PlanHash || parent.PlanHash != d.RootHash || parent.ServerId != primary || root.Plan.ID != d.GroupID || root.Plan.Hash != d.GroupHash || root.Plan.Distributed == nil || root.Plan.Validate(true) != nil {
+			return errors.New("base capsule does not contain its frozen root")
+		}
+		units := root.Plan.Distributed.Units
+		if root.Maintenance != nil {
+			units = root.Plan.ActiveUnits()
+		}
+		if len(units) != len(d.Participants) {
+			return errors.New("recovery participant set differs from the frozen root")
+		}
+		for _, unit := range units {
+			if !slices.Contains(d.Participants, unit.Plan.ServerID) {
+				return errors.New("recovery participant is absent from its descriptor")
+			}
+		}
+		if err = out.Origins.add(a, d.ParentID); err != nil {
+			return err
+		}
+		if err = bases.Add(a); err != nil {
+			return err
+		}
+	} else {
+		var segment recoveryContinuation
+		if recoveryDecode(decoded, &segment) != nil || len(segment.Phase) > 128 || segment.Phase == "" || len(segment.Children) == 0 || len(segment.Children) > 4 || len(segment.Approvals) > 1 {
+			clear(decoded)
+			return errors.New("invalid bounded recovery continuation")
+		}
+	}
+	// inline-sql: recovery session temporary table
+	_, err = tx.Exec(ctx, `INSERT INTO recovery_input_checkpoints(id,parent_id,sequence,descriptor,envelope,decoded,PRIMARY_SOURCE) VALUES($1,$2,$3,$4,$5,$6,$7)`, d.CheckpointID, d.ParentID, d.Sequence, raw, envelope, decoded, primary)
+	clear(decoded)
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
 func loadRecoveryProofs(ctx context.Context, tx pgx.Tx, dir string, host deployment.RecoveryEvidence) error {

@@ -23,11 +23,13 @@ func (s *Service) repeatedRecovery(ctx context.Context, tx pgx.Tx, in RecoveryIm
 		if !matches {
 			return false, nil
 		}
-		units := root.Body.Plan.Distributed.Units
-		if root.Body.Maintenance != nil {
-			units = root.Body.Plan.ActiveUnits()
+		units := recoveredUnits(root)
+		revoked, err := revokedParticipants(ctx, tx, in.WorkspaceID, units)
+		if err != nil {
+			return false, err
 		}
-		for _, unit := range units {
+		// A revoked participant was handed nothing.
+		for _, unit := range withoutRevoked(units, revoked) {
 			stored, err := q.RecoveryServerHandover(ctx, db.RecoveryServerHandoverParams{WorkspaceID: in.WorkspaceID, ParentID: parent, ServerID: unit.Plan.ServerID})
 			if err != nil {
 				return false, err

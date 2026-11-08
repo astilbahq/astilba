@@ -31,6 +31,13 @@ func (s *Service) recoveryGate(ctx context.Context, tx pgx.Tx, ws uuid.UUID, par
 	if root.Maintenance != nil {
 		units = root.Plan.ActiveUnits()
 	}
+	// A revoked participant never proves itself, and its work is settled, so the root opens for
+	// the remaining hosts. Revocation is read here so one made after recovery counts too.
+	revoked, err := revokedParticipants(ctx, tx, ws, units)
+	if err != nil {
+		return false, err
+	}
+	units = withoutRevoked(units, revoked)
 	proven, err := q.CountProvenRecoveryServers(ctx, db.CountProvenRecoveryServersParams{WorkspaceID: ws, ParentID: parent.Id})
 	if err != nil {
 		return false, err
