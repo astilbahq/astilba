@@ -1067,8 +1067,10 @@ func (q *Queries) SaveSupportedUpgradeStatus(ctx context.Context, arg SaveSuppor
 const serverControllerInventory = `-- name: ServerControllerInventory :many
 SELECT r.unit_id,p.plan FROM visual_runtime r
 JOIN visual_plans p ON p.id=r.plan_id AND p.workspace_id=r.workspace_id
+JOIN environments e ON e.workspace_id=r.workspace_id AND e.id=r.environment_id
 WHERE r.workspace_id = $1 AND r.server_id = $2
     AND NOT EXISTS(SELECT 1 FROM cross_host_runtime c WHERE c.workspace_id=r.workspace_id AND c.unit_id=r.unit_id)
+    AND (e.purpose<>'preview' OR EXISTS(SELECT 1 FROM preview_requests q WHERE q.workspace_id=r.workspace_id AND q.environment_id=r.environment_id AND q.state<>'deleted'))
 UNION ALL
 SELECT unit_id,inventory->'plan' FROM cross_host_runtime WHERE workspace_id = $1 AND server_id = $2
 `
@@ -1083,6 +1085,8 @@ type ServerControllerInventoryRow struct {
 	Plan   []byte    `json:"plan"`
 }
 
+// Confirmed cleanup retires a preview's runtime, so a preview no open request owns was released when
+// its host was revoked. Nothing confirmed its removal, and a host that still carries it isn't clean.
 func (q *Queries) ServerControllerInventory(ctx context.Context, arg ServerControllerInventoryParams) ([]ServerControllerInventoryRow, error) {
 	rows, err := q.db.Query(ctx, serverControllerInventory, arg.WorkspaceID, arg.ServerID)
 	if err != nil {

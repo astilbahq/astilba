@@ -99,7 +99,8 @@ type previewRecord struct {
 func loadPreview(ctx context.Context, tx pgx.Tx, id uuid.UUID) (previewRecord, error) {
 	var r previewRecord
 	var raw []byte
-	err := tx.QueryRow(ctx, "SELECT "+previewColumns+",policy_id,application_id,policy_generation,configuration,approved_head,approved_repository,approved_generation,build_id,plan_id,built_head,closed_at,cleanup_requested,cleanup_actor,cleanup_auth_version,cleanup_controller,resume_after_cancel,updated_at FROM preview_requests WHERE id=$1", id).Scan(&r.View.Id, &r.View.Number, &r.View.Head, &r.View.HeadRepository, &r.View.Fork, &r.View.State, &r.View.Note, &r.View.Generation, &r.View.EnvironmentId, &r.View.OperationId, &r.View.CleanupAt, &r.Policy, &r.App, &r.PolicyGeneration, &raw, &r.ApprovedHead, &r.ApprovedRepo, &r.ApprovedGeneration, &r.Build, &r.Plan, &r.BuiltHead, &r.Closed, &r.Cleanup, &r.CleanupActor, &r.CleanupAuth, &r.CleanupController, &r.ResumeAfterCancel, &r.Updated)
+	var released bool
+	err := tx.QueryRow(ctx, "SELECT "+previewColumns+",policy_id,application_id,policy_generation,configuration,approved_head,approved_repository,approved_generation,build_id,plan_id,built_head,closed_at,cleanup_requested,cleanup_actor,cleanup_auth_version,cleanup_controller,resume_after_cancel,updated_at FROM preview_requests WHERE id=$1", id).Scan(&r.View.Id, &r.View.Number, &r.View.Head, &r.View.HeadRepository, &r.View.Fork, &r.View.State, &r.View.Note, &r.View.Generation, &r.View.EnvironmentId, &r.View.OperationId, &r.View.CleanupAt, &released, &r.Policy, &r.App, &r.PolicyGeneration, &raw, &r.ApprovedHead, &r.ApprovedRepo, &r.ApprovedGeneration, &r.Build, &r.Plan, &r.BuiltHead, &r.Closed, &r.Cleanup, &r.CleanupActor, &r.CleanupAuth, &r.CleanupController, &r.ResumeAfterCancel, &r.Updated)
 	if err == nil && len(raw) > 0 {
 		var c previewConfig
 		err = json.Unmarshal(raw, &c)
@@ -302,7 +303,7 @@ func (s *Service) reconcilePreview(ctx context.Context, tx pgx.Tx, git *gitAnswe
 			return err
 		}
 		if r.View.State == "deleted" {
-			return s.previewState(ctx, tx, id, "deleted", "", 5*time.Minute)
+			return s.previewState(ctx, tx, id, "deleted", r.View.Note, 5*time.Minute)
 		}
 		if r.View.EnvironmentId == nil {
 			return s.previewState(ctx, tx, id, "deleted", "Request closed before resources were allocated.", 5*time.Minute)

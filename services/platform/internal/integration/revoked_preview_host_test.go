@@ -67,8 +67,7 @@ func TestRevokedPreviewHostReleasesItsPreviews(t *testing.T) {
 	}
 
 	// A provider event while the policy still names the revoked host keeps the note.
-	h.pullRequestHook(t)
-	waitPreviewJobs(t, h)
+	previewEvent(t, h, policy.Id)
 	if after := previewAt(t, h, h.path); after.State != "deleted" || after.Note != preview.Note {
 		t.Fatal("a provider event replaced the released preview's note", after.State, after.Note)
 	}
@@ -89,20 +88,25 @@ func TestRevokedPreviewHostReleasesItsPreviews(t *testing.T) {
 	}
 }
 
-// waitPreviewJobs waits until no preview job is waiting or running.
-func waitPreviewJobs(t *testing.T, h *hungPreview) {
+// previewEvent sends a pull-request webhook and waits for the policy's job it starts to finish.
+func previewEvent(t *testing.T, h *hungPreview, policy uuid.UUID) {
 	t.Helper()
+	var before int64
+	if err := h.f.st.Pool.QueryRow(t.Context(), "SELECT COALESCE(max(id),0) FROM river_job").Scan(&before); err != nil {
+		t.Fatal(err)
+	}
+	h.pullRequestHook(t)
 	deadline := time.Now().Add(15 * time.Second)
 	for {
-		var pending int
-		if err := h.f.st.Pool.QueryRow(t.Context(), "SELECT count(*) FROM river_job WHERE kind='platform_preview_v1' AND state NOT IN ('completed','discarded','cancelled')").Scan(&pending); err != nil {
+		var done bool
+		if err := h.f.st.Pool.QueryRow(t.Context(), "SELECT EXISTS(SELECT 1 FROM river_job WHERE id>$1 AND kind='platform_preview_v1' AND args->>'policy'=$2 AND state='completed')", before, policy.String()).Scan(&done); err != nil {
 			t.Fatal(err)
 		}
-		if pending == 0 {
+		if done {
 			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("preview jobs never finished", pending)
+			t.Fatal("the provider event's preview job never finished")
 		}
 		time.Sleep(30 * time.Millisecond)
 	}

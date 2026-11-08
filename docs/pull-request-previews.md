@@ -44,7 +44,9 @@ Their services, data and test databases may still be on that host, along with co
 
 The policy stays bound to the revoked host until you save it with another preview host. Requests that are still open then get new previews there, and fork requests need approval again. Their notes say they're new previews until they're deleted again. Requests an owner had asked to clean up stay deleted until refreshed.
 
-Renewing a revoked preview host's enrollment brings it back only as a clean host: like a new preview host, it's refused while it has any containers, and it may enroll from a rebuilt machine. Renewing any other server, or a preview host that wasn't revoked, still needs the same machine.
+Renewing a revoked preview host's enrollment brings it back only as a clean host: like a new preview host, it's refused while it has any containers, and it may enroll from a rebuilt machine. Renewing any other server, or a preview host that wasn't revoked, still needs the same machine. Once a renewed host enrolls, a policy still bound to it resumes there. Its saved generation hasn't changed, so fork commits approved before the revocation don't need approval again.
+
+After a management recovery, a revoked preview host's transfer is refused while its agent still lists any released preview, so it also comes back only without them.
 
 ## Verification
 

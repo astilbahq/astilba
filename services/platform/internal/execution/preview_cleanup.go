@@ -36,14 +36,16 @@ func (s *Service) previewCleanupAuthority(ctx context.Context, tx pgx.Tx, p prev
 }
 func (s *Service) reconcilePreviewCleanup(ctx context.Context, tx pgx.Tx, p previewPolicy, r previewRecord) error {
 	id := r.View.Id
+	// A deleted request has nothing left to remove. Blocking it for want of authority would give it
+	// back its slot, which a request its revoked host released could then never lose.
+	if r.View.State == "deleted" {
+		return nil
+	}
 	if err := s.previewCleanupAuthority(ctx, tx, p, r); err != nil {
 		if !errors.Is(err, domain.Forbidden) {
 			return err
 		}
 		return s.previewState(ctx, tx, id, "blocked", "Cleanup needs renewed owner approval or a verified agent transfer.", 5*time.Minute)
-	}
-	if r.View.State == "deleted" {
-		return nil
 	}
 	if err := s.cancelPreviewEnvironment(ctx, tx, p.Workspace, r.View.EnvironmentId); err != nil {
 		return err

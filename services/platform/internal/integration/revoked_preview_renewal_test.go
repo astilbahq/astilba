@@ -47,7 +47,8 @@ func TestRenewingARevokedPreviewHostNeedsACleanHost(t *testing.T) {
 func TestRevokedPreviewHostCannotConfirmARemovalLater(t *testing.T) {
 	h := newHungPreview(t)
 	ctx := t.Context()
-	h.b.call("PUT", h.path+"/preview-policy", map[string]any{"enabled": true, "generation": 0, "configuration": h.policy}, 200, nil)
+	var policy api.PreviewPolicy
+	h.b.call("PUT", h.path+"/preview-policy", map[string]any{"enabled": true, "generation": 0, "configuration": h.policy}, 200, &policy)
 	preview := readyPreview(t, h)
 	h.b.call("POST", h.path+"/previews/"+preview.Id.String()+"/actions", map[string]any{"action": "cleanup", "head": preview.Head, "headRepository": preview.HeadRepository}, 200, nil)
 	waitPreviewAt(t, h, h.path, "deleting")
@@ -57,6 +58,11 @@ func TestRevokedPreviewHostCannotConfirmARemovalLater(t *testing.T) {
 	released := previewAt(t, h, h.path)
 	if released.State != "deleted" || released.Note == "" {
 		t.Fatal("revocation didn't release the preview", released.State, released.Note)
+	}
+	// The owner's cleanup request can no longer be authorized, which must not take the slot back.
+	previewEvent(t, h, policy.Id)
+	if after := previewAt(t, h, h.path); after.State != released.State || after.Note != released.Note {
+		t.Fatal("a provider event took back the released preview's slot", after.State, after.Note)
 	}
 	runtime := func() map[string]string {
 		t.Helper()
@@ -90,8 +96,12 @@ func TestRevokedPreviewHostCannotConfirmARemovalLater(t *testing.T) {
 	in := h.enrolled
 	in.Credential, _ = cryptobox.Token()
 	in.Token, in.ControllerGeneration = ticket.Token, &ticket.Generation
+	// A host that still lists the released preview isn't clean.
+	in.Inventory = &api.ControllerInventory{Units: units, Schedules: map[string]int64{}}
+	agentRequest(t, h.f.server.Client(), h.f.server.URL, "/agent/v1/enroll", "", in, 409, nil)
+	// An agent that finished the cleanup dropped the unit and kept only the receipt.
 	receipts := []api.PreviewCleanupReceipt{{OperationId: cleanup.Id, Digest: cleanup.PlanHash}}
-	in.Inventory = &api.ControllerInventory{Units: units, Schedules: map[string]int64{}, PreviewCleanups: &receipts}
+	in.Inventory = &api.ControllerInventory{Units: map[string]string{}, Schedules: map[string]int64{}, PreviewCleanups: &receipts}
 	agentRequest(t, h.f.server.Client(), h.f.server.URL, "/agent/v1/enroll", "", in, 200, nil)
 
 	if after := previewAt(t, h, h.path); after.State != released.State || after.Note != released.Note {

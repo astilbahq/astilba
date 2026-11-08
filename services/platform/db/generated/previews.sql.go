@@ -93,7 +93,8 @@ type ReleaseRevokedHostPreviewsParams struct {
 
 // A policy runs every preview on its reserved host, and once that host is revoked nothing it says
 // can be accepted, so these could never be confirmed removed and would hold their slots for good.
-// Only allocated previews hold a slot. Management's runtime records stay as last known.
+// Only allocated previews hold a slot. Management's runtime records stay as last known, but
+// ServerControllerInventory no longer expects them on the host.
 func (q *Queries) ReleaseRevokedHostPreviews(ctx context.Context, arg ReleaseRevokedHostPreviewsParams) ([]uuid.UUID, error) {
 	rows, err := q.db.Query(ctx, releaseRevokedHostPreviews, arg.Note, arg.WorkspaceID, arg.ServerID)
 	if err != nil {

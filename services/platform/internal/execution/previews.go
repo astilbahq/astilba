@@ -302,16 +302,27 @@ func (s *Service) cancelPreviewWork(ctx context.Context, tx pgx.Tx, ws, policy u
 	return err
 }
 
-// A request that comes back after its preview was released by revocation says so until it's
-// deleted again, so the owner can tell it's a new preview on another host.
-const previewColumns = `id,number,head,head_repository,fork,state,
- CASE WHEN released_by_revocation AND state<>'deleted' THEN concat_ws(' ',NULLIF(note,''),'` + replacedPreviewNote + `') ELSE note END,
- generation,environment_id,operation_id,cleanup_at`
+const previewColumns = `id,number,head,head_repository,fork,state,note,generation,environment_id,operation_id,cleanup_at,released_by_revocation`
 
 func scanPreview(row pgx.Row) (api.PullRequestPreview, error) {
 	var v api.PullRequestPreview
-	err := row.Scan(&v.Id, &v.Number, &v.Head, &v.HeadRepository, &v.Fork, &v.State, &v.Note, &v.Generation, &v.EnvironmentId, &v.OperationId, &v.CleanupAt)
+	var released bool
+	err := row.Scan(&v.Id, &v.Number, &v.Head, &v.HeadRepository, &v.Fork, &v.State, &v.Note, &v.Generation, &v.EnvironmentId, &v.OperationId, &v.CleanupAt, &released)
+	noteReplacement(&v, released)
 	return v, err
+}
+
+// noteReplacement says so on a request that came back after its preview was released by
+// revocation, until it's deleted again, so the owner can tell it's a new preview on another host.
+func noteReplacement(v *api.PullRequestPreview, released bool) {
+	if !released || v.State == "deleted" {
+		return
+	}
+	if v.Note == "" {
+		v.Note = replacedPreviewNote
+	} else {
+		v.Note += " " + replacedPreviewNote
+	}
 }
 func (s *Service) Previews(ctx context.Context, p store.Principal, ws, pid, env uuid.UUID) ([]api.PullRequestPreview, error) {
 	out := []api.PullRequestPreview{}

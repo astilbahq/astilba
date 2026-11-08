@@ -10,7 +10,7 @@ import (
 
 const replacedPreviewNote = "This is a new preview: the one before it was released when its preview host was revoked."
 
-const revokedPreviewNote = "Released because its preview host was revoked. That host can't confirm removal, so this preview's services, data and copies of the template's preview secrets may remain on it: rotate those secrets. Save the policy with another preview host to continue."
+const revokedPreviewNote = "Released because its preview host was revoked. That host can't confirm removal, so this preview's services, data and copies of the template's preview secrets may remain on it: rotate those secrets. To continue, save the policy with another preview host or renew this one on a clean machine."
 
 // releaseRevokedPreviews frees the slots of previews on a revoked reserved host. Their removal can
 // never be confirmed, so waiting would hold the slots and the policy's host for good. Management's
