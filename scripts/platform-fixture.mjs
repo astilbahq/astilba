@@ -36,8 +36,9 @@ const gitProvider=createServer((request,response)=>{
    catch {response.writeHead(400).end()}
   });return
  }
- if(request.url.includes("/branches/")){const branch=decodeURIComponent(request.url.split("/branches/")[1]);response.end(JSON.stringify({commit:{sha:gitHeads.get(branch)??"a".repeat(40)}}));return}
- response.end(JSON.stringify({id:12,private:true}));
+ if(request.url.includes("/branches/")){const branch=decodeURIComponent(request.url.split("/branches/")[1]);response.end(JSON.stringify({name:branch,commit:{id:gitHeads.get(branch)??"a".repeat(40)}}));return}
+ // Gitea names a branch's commit id, and counts a repository private unless its owner is public too.
+ response.end(JSON.stringify({id:12,private:true,owner:{login:"team",visibility:"public"}}));
 });
 
 // Separate localhost OAuth site exercises SameSite=Strict on the return journey.

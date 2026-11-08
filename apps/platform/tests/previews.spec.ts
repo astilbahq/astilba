@@ -12,7 +12,8 @@ test("preview policy retains failed inputs and approves only the displayed fork 
   const provider = createServer((request, response) => {
     response.setHeader("Content-Type", "application/json");
     if (request.url?.includes("/branches/")) {
-      response.end(JSON.stringify({ commit: { sha } }));
+      // Gitea names a branch's commit id.
+      response.end(JSON.stringify({ commit: { id: sha } }));
       return;
     }
     if (request.url?.endsWith("/pulls/7")) {
@@ -30,7 +31,13 @@ test("preview policy retains failed inputs and approves only the displayed fork 
       response.end(JSON.stringify([{ number: 7 }]));
       return;
     }
-    response.end(JSON.stringify({ id: 12, private: true }));
+    response.end(
+      JSON.stringify({
+        id: 12,
+        private: true,
+        owner: { visibility: "public" },
+      }),
+    );
   });
   await new Promise<void>((resolve, reject) => {
     provider.once("error", reject);
