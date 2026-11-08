@@ -429,31 +429,13 @@ func (h Host) inspectInterface(ctx context.Context, m Manifest, group uint32, re
 	return nil
 }
 func (h Host) inspectRoutes(ctx context.Context, m Manifest) error {
-	raw, err := h.run(ctx, "ip", nil, "-j", "-4", "route", "show", "table", "all")
+	routes, err := h.routes(ctx)
 	if err != nil {
 		return err
 	}
-	var routes []struct {
-		Dst string `json:"dst"`
-		Dev string `json:"dev"`
-	}
-	if readToolJSON(raw, &routes) != nil {
-		return errors.New("cannot inspect host routes")
-	}
 	prefix, _ := Prefix(m.Prefix)
 	for _, r := range routes {
-		if r.Dst == "default" || r.Dst == "" || r.Dev == m.Interface() {
-			continue
-		}
-		p, e := netip.ParsePrefix(r.Dst)
-		if e != nil {
-			if a, e2 := netip.ParseAddr(r.Dst); e2 == nil {
-				p = netip.PrefixFrom(a, 32)
-			} else {
-				continue
-			}
-		}
-		if prefix.Overlaps(p) {
+		if r.dev != m.Interface() && prefix.Overlaps(r.prefix) {
 			return errors.New("managed network conflicts with an existing host route")
 		}
 	}

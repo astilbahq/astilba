@@ -147,7 +147,7 @@ func (e *Engine) executeCrossHost(ctx context.Context, c api.ExecutionCommand, r
 	switch command.Phase {
 	case "reserve":
 		if err = e.ensureStorage(ctx, p); err != nil {
-			return finish("needs_attention", safeVisualError(err, command.Secrets))
+			return finish(storageState(err), safeVisualError(err, command.Secrets))
 		}
 	case "prepare":
 		if state.Phase != "reserved" && state.Phase != "prepared" {

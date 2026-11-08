@@ -114,6 +114,21 @@ A failed route publication restores the previous route file in place, so other e
 
 Backup recipes, operator filesystem roots, the pinned restic prerequisite, daily/cron/interval schedules, bounded job timeouts and local interruption recovery are documented in [Backups and restoration](backups.md). Use those instructions before enabling backup policies on an enrolled server.
 
+## Container networks
+
+The agent gives every network it creates its own /24 from 10.252.0.0/14. That covers each environment's network, any Compose networks and the ingress network. The range holds 1,024 networks, for example 50 routed environments with 20 networks each. The agent doesn't use Docker's `default-address-pools`, whose built-in pools run out after about 30 networks, so the host's own containers keep those pools.
+
+Before creating a network, the agent skips any range that overlaps:
+
+- another Docker network on the host, Astilba's or not
+- an IPv4 route in any routing table, including gateway, VPN and `unreachable` routes; routes shorter than /8, such as a VPN's replacement for the default route, are ignored
+- a nameserver in `/etc/resolv.conf` or systemd-resolved's upstream list
+- the prefix of a managed private network the host holds
+
+Networks that already exist keep their addresses, including those created before agents chose them. A host with no range left refuses the deployment before creating any of it: remove an environment from the host or choose another server.
+
+The agent can't see a private network the host reaches only through its default gateway, such as a peered VPC. If one uses part of 10.252.0.0/14, add a persistent route to it through that gateway before deploying, for example `10.252.0.0/16 via 192.0.2.1` in the host's netplan configuration. To keep a range free that nothing should reach, use an `unreachable` route instead. When choosing a managed network prefix, avoid ranges the workspace's hosts already use for container networks: a host refuses to join a managed network whose prefix overlaps any of its routes.
+
 ## Optional cross-host networking
 
 Install a signed cross-host-capable agent before preparing private links. In

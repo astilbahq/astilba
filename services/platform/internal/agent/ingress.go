@@ -413,7 +413,7 @@ func (e *Engine) ensureProxy(ctx context.Context, s routeSnapshot, rebuild bool)
 	bridgeName := "astilba-ingress-network"
 	bridge, bridgeErr := e.Docker.NetworkInspect(ctx, bridgeName, client.NetworkInspectOptions{})
 	if errdefs.IsNotFound(bridgeErr) {
-		_, bridgeErr = e.Docker.NetworkCreate(ctx, bridgeName, client.NetworkCreateOptions{Driver: "bridge", Labels: map[string]string{labelServer: cfg.ServerID.String(), labelKind: "ingress-v1"}})
+		bridgeErr = e.createNetworks(ctx, []networkRequest{{bridgeName, client.NetworkCreateOptions{Driver: "bridge", Labels: map[string]string{labelServer: cfg.ServerID.String(), labelKind: "ingress-v1"}}}})
 		if bridgeErr == nil {
 			bridge, bridgeErr = e.Docker.NetworkInspect(ctx, bridgeName, client.NetworkInspectOptions{})
 		}

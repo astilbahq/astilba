@@ -7,6 +7,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
 	"io"
+	"net/netip"
 	"sync"
 	"time"
 
@@ -36,6 +37,11 @@ type Engine struct {
 	BackupRoots           []string
 	TroubleshootingIdle   time.Duration
 	mu                    sync.Mutex
+	// networkPool replaces DefaultNetworkPool in tests.
+	networkPool netip.Prefix
+	// networkMu orders choosing a network's subnet with joining a managed network, so a
+	// subnet is never chosen inside a prefix this host is about to hold.
+	networkMu sync.Mutex
 }
 
 func (e *Engine) point(p string) {

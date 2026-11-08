@@ -143,7 +143,9 @@ func (e *Engine) executeRelease(ctx context.Context, c api.ExecutionCommand, p d
 				return e.abortRelease(ctx, c, p, &s, "failed", "Image-declared storage is incompatible with a stateless release.")
 			}
 		}
-		if err = e.ensureStorage(ctx, p.Plan); err != nil {
+		if err = e.ensureStorage(ctx, p.Plan); errors.Is(err, ErrNetworkPoolFull) {
+			return e.abortRelease(ctx, c, p, &s, "failed", err.Error())
+		} else if err != nil {
 			return e.abortRelease(ctx, c, p, &s, "failed", "The owned network or storage differs from the plan.")
 		}
 		if _, err = e.candidateContainers(ctx, p.Plan, app.ID); err != nil {
