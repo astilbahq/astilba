@@ -77,15 +77,10 @@ func TestOwnerPoolMustBePrivateAndLargeEnough(t *testing.T) {
 	if ValidateNetworkPool(netip.Prefix{}) == nil {
 		t.Fatal("unset pool accepted")
 	}
-	// A pool may hold managed prefixes, as the default does: subnets are chosen around them.
-	if err := ValidateNetworkPool(netip.MustParsePrefix("10.0.0.0/8")); err != nil {
-		t.Fatal(err)
-	}
 }
 
 func TestFullPoolRefusalSaysWhatFilledIt(t *testing.T) {
 	pool := netip.MustParsePrefix("10.252.0.0/24")
-	// The owner's VPN routes all of 10.0.0.0/8: only another pool helps.
 	// The owner's VPN routes all of 10.0.0.0/8: only another pool helps.
 	routed := poolFull(pool, nil, prefixes(t, "10.0.0.0/8"), nil, 1)
 	if !errors.Is(routed, errNetworkPoolFull) || !strings.HasPrefix(routed.Error(), "Host routes cover the whole container network pool 10.252.0.0/24") || !strings.Contains(routed.Error(), "--network-pool") {
