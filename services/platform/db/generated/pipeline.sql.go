@@ -200,7 +200,8 @@ func (q *Queries) EnvironmentHoldsAutomaticWork(ctx context.Context, arg Environ
 }
 
 const finishUndeliveredPipeline = `-- name: FinishUndeliveredPipeline :exec
-UPDATE execution_operations SET state = $1, note = $2 WHERE workspace_id = $3 AND id = $4
+UPDATE execution_operations o SET state = $1, note = COALESCE((SELECT r.reason || ' ' FROM pipeline_runs r WHERE r.workspace_id = o.workspace_id AND r.id = o.id AND r.reason <> ''), '') || $2::text
+WHERE o.workspace_id = $3 AND o.id = $4
 `
 
 type FinishUndeliveredPipelineParams struct {
@@ -248,6 +249,38 @@ func (q *Queries) LatestImportIsAtCommit(ctx context.Context, arg LatestImportIs
 	return started, err
 }
 
+const latestImportedCommits = `-- name: LatestImportedCommits :many
+SELECT (r.configuration->>'commit')::text FROM pipeline_runs r JOIN execution_operations o ON o.workspace_id = r.workspace_id AND o.id = r.id
+WHERE r.workspace_id = $1 AND r.environment_id = $2 AND r.configuration->>'action' = 'import' AND o.state = 'succeeded'
+ORDER BY r.created_at DESC LIMIT 2
+`
+
+type LatestImportedCommitsParams struct {
+	WorkspaceID   uuid.UUID `json:"workspace_id"`
+	EnvironmentID uuid.UUID `json:"environment_id"`
+}
+
+// The commits of an environment's two latest saved imports, newest first.
+func (q *Queries) LatestImportedCommits(ctx context.Context, arg LatestImportedCommitsParams) ([]string, error) {
+	rows, err := q.db.Query(ctx, latestImportedCommits, arg.WorkspaceID, arg.EnvironmentID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var column_1 string
+		if err := rows.Scan(&column_1); err != nil {
+			return nil, err
+		}
+		items = append(items, column_1)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const markPipelineDeliveryStarted = `-- name: MarkPipelineDeliveryStarted :exec
 UPDATE pipeline_runs SET delivery_started=true WHERE workspace_id = $1 AND id = $2
 `
@@ -260,6 +293,22 @@ type MarkPipelineDeliveryStartedParams struct {
 func (q *Queries) MarkPipelineDeliveryStarted(ctx context.Context, arg MarkPipelineDeliveryStartedParams) error {
 	_, err := q.db.Exec(ctx, markPipelineDeliveryStarted, arg.WorkspaceID, arg.ID)
 	return err
+}
+
+const pipelineRunReason = `-- name: PipelineRunReason :one
+SELECT COALESCE((SELECT reason FROM pipeline_runs WHERE workspace_id = $1 AND id = $2), '')::text
+`
+
+type PipelineRunReasonParams struct {
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ID          uuid.UUID `json:"id"`
+}
+
+func (q *Queries) PipelineRunReason(ctx context.Context, arg PipelineRunReasonParams) (string, error) {
+	row := q.db.QueryRow(ctx, pipelineRunReason, arg.WorkspaceID, arg.ID)
+	var column_1 string
+	err := row.Scan(&column_1)
+	return column_1, err
 }
 
 const rewrapBuildSecret = `-- name: RewrapBuildSecret :exec
@@ -335,6 +384,23 @@ type SetGitSourcePendingCommitParams struct {
 
 func (q *Queries) SetGitSourcePendingCommit(ctx context.Context, arg SetGitSourcePendingCommitParams) error {
 	_, err := q.db.Exec(ctx, setGitSourcePendingCommit, arg.Commit, arg.WorkspaceID, arg.EnvironmentID)
+	return err
+}
+
+const setPipelineRunReason = `-- name: SetPipelineRunReason :exec
+WITH run AS (UPDATE pipeline_runs r SET reason = $1 WHERE r.workspace_id = $2 AND r.id = $3 RETURNING r.id)
+UPDATE execution_operations o SET note = $1 WHERE o.workspace_id = $2 AND o.id IN (SELECT id FROM run)
+`
+
+type SetPipelineRunReasonParams struct {
+	Reason      string    `json:"reason"`
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ID          uuid.UUID `json:"id"`
+}
+
+// The operation shows the reason until its runner first reports, which keeps it in front.
+func (q *Queries) SetPipelineRunReason(ctx context.Context, arg SetPipelineRunReasonParams) error {
+	_, err := q.db.Exec(ctx, setPipelineRunReason, arg.Reason, arg.WorkspaceID, arg.ID)
 	return err
 }
 

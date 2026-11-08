@@ -544,6 +544,7 @@ type PipelineRun struct {
 	ArtifactID      *uuid.UUID  `json:"artifact_id"`
 	CreatedAt       time.Time   `json:"created_at"`
 	DeliveryStarted pgtype.Bool `json:"delivery_started"`
+	Reason          string      `json:"reason"`
 }
 
 type PreviewPolicy struct {
