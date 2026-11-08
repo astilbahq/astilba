@@ -18,7 +18,8 @@ UPDATE github_app_authorizations SET encrypted_access=$3 WHERE workspace_id=$1 A
 -- name: MarkPipelineDeliveryStarted :exec
 UPDATE pipeline_runs SET delivery_started=true WHERE workspace_id = @workspace_id AND id = @id;
 -- name: FinishUndeliveredPipeline :exec
-UPDATE execution_operations SET state = @state, note = @note WHERE workspace_id = @workspace_id AND id = @id;
+UPDATE execution_operations o SET state = @state, note = COALESCE((SELECT r.reason || ' ' FROM pipeline_runs r WHERE r.workspace_id = o.workspace_id AND r.id = o.id AND r.reason <> ''), '') || @note::text
+WHERE o.workspace_id = @workspace_id AND o.id = @id;
 -- name: StopPossiblyDeliveredPipeline :exec
 UPDATE execution_operations SET cancel_requested = true, note = @note::text || CASE WHEN state = 'needs_attention' AND note <> '' THEN ' ' || note ELSE '' END WHERE workspace_id = @workspace_id AND id = @id;
 
@@ -54,3 +55,17 @@ SELECT COALESCE((
         AND configuration->>'action' = 'import' AND created_at >= @since::timestamptz
     ORDER BY created_at DESC LIMIT 1
 ) = @commit::text, false)::boolean AS started;
+
+-- name: SetPipelineRunReason :exec
+-- The operation shows the reason until its runner first reports, which keeps it in front.
+WITH run AS (UPDATE pipeline_runs r SET reason = @reason WHERE r.workspace_id = @workspace_id AND r.id = @id RETURNING r.id)
+UPDATE execution_operations o SET note = @reason WHERE o.workspace_id = @workspace_id AND o.id IN (SELECT id FROM run);
+
+-- name: PipelineRunReason :one
+SELECT COALESCE((SELECT reason FROM pipeline_runs WHERE workspace_id = @workspace_id AND id = @id), '')::text;
+
+-- name: LatestImportedCommits :many
+-- The commits of an environment's two latest saved imports, newest first.
+SELECT (r.configuration->>'commit')::text FROM pipeline_runs r JOIN execution_operations o ON o.workspace_id = r.workspace_id AND o.id = r.id
+WHERE r.workspace_id = @workspace_id AND r.environment_id = @environment_id AND r.configuration->>'action' = 'import' AND o.state = 'succeeded'
+ORDER BY r.created_at DESC LIMIT 2;

@@ -128,7 +128,7 @@ func (w *automaticWorker) work(ctx context.Context, git *gitAnswers, job *river.
 		return stop("Cannot verify the current branch; review the connection.")
 	}
 	if head.Value != run.Commit {
-		return stop("A newer source commit exists; this deployment was superseded.")
+		return stop("The branch no longer points at this commit; this deployment was superseded.")
 	}
 	var busy bool
 	if err = tx.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM execution_operations WHERE workspace_id=$1 AND environment_id=$2 AND state NOT IN ('succeeded','failed','cancelled'))", ws, env).Scan(&busy); err != nil {

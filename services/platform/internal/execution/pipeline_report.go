@@ -331,6 +331,14 @@ func (s *Service) pipelineReport(ctx context.Context, tx pgx.Tx, git *gitAnswers
 			r.Note = stopped
 		}
 	}
+	reason, err := db.New(tx).PipelineRunReason(ctx, db.PipelineRunReasonParams{WorkspaceID: ws, ID: c.Id})
+	if err != nil {
+		return err
+	}
+	// The controller's reason for the run stays in front of whatever its runner reports.
+	if reason != "" {
+		defer func() { r.Note = boundedNote(strings.TrimSpace(reason + " " + r.Note)) }()
+	}
 	if r.Pipeline == nil {
 		if r.State == "succeeded" {
 			return domain.Invalid("pipeline")
@@ -506,7 +514,7 @@ func (s *Service) pipelineReport(ctx context.Context, tx pgx.Tx, git *gitAnswers
 	if len(raw) > 150000 {
 		return domain.Invalid("pipeline")
 	}
-	_, err := tx.Exec(ctx, "UPDATE pipeline_runs SET result=$2 WHERE id=$1", c.Id, raw)
+	_, err = tx.Exec(ctx, "UPDATE pipeline_runs SET result=$2 WHERE id=$1", c.Id, raw)
 	return err
 }
 func validImageDigest(v string) bool {
