@@ -8,9 +8,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
+	"github.com/astilbahq/astilba/services/platform/host"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/hostnetwork"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
@@ -41,6 +43,7 @@ func TestNativeHostRunsFiftyRoutedEnvironments(t *testing.T) {
 		t.Fatalf("reserve a range: %s", out)
 	}
 	t.Cleanup(func() { _ = exec.Command("ip", "route", "del", "unreachable", routed.String()).Run() })
+	nativeHostRangesUnderTheUnitSandbox(t, routed)
 	// A managed network installs only /32 routes, so nothing on the host shows its prefix.
 	managed := netip.MustParsePrefix("10.252.1.0/24")
 	held := hostnetwork.Manifest{Version: hostnetwork.Version, NetworkID: uuid.New(), MembershipID: uuid.New(), ServerID: f.server, Generation: 1, Prefix: managed.String(), Address: "10.252.1.7", PublicKey: base64.StdEncoding.EncodeToString([]byte(strings.Repeat("k", 32))), ListenPort: 51820, Peers: []hostnetwork.Peer{}, Exports: []hostnetwork.Endpoint{}, Egress: []hostnetwork.Egress{}}
@@ -98,33 +101,88 @@ func TestNativeHostRunsFiftyRoutedEnvironments(t *testing.T) {
 	}
 }
 
-// A host with no range left refuses the environment before creating any of it, and the
+// A host with no range left refuses an environment before creating any of it, and the
 // environments it has keep serving.
 func TestNativeFullHostRefusesAnotherEnvironment(t *testing.T) {
 	f := newNativeVisualFixture(t)
 	ctx := context.Background()
-	// Room for one unit network and the ingress network.
-	f.engine.networkPool = netip.MustParsePrefix("10.253.254.0/23")
+	refused := func(p deployment.Plan) {
+		t.Helper()
+		c := f.command("deploy", p, map[string]string{})
+		if err := f.engine.Execute(ctx, c); err != nil {
+			t.Fatal(err)
+		}
+		r, err := f.engine.Journal.Record(c.Id)
+		if err != nil || r.Report.State != "failed" || !strings.Contains(r.Report.Note, "pool "+f.engine.NetworkPool.String()+" has no free range left") {
+			t.Fatalf("full host: %s %q %v", r.Report.State, r.Report.Note, err)
+		}
+		if err = f.engine.Journal.Acknowledge(c.Id, r.Report.Sequence); err != nil {
+			t.Fatal(err)
+		}
+		if _, err = f.docker.NetworkInspect(ctx, deployment.NetworkName(p.UnitID), client.NetworkInspectOptions{}); err == nil {
+			t.Fatal("a refused environment created its network")
+		}
+		containers, err := f.engine.ownedContainers(ctx, p)
+		if err != nil || len(containers) != 0 {
+			t.Fatalf("a refused environment created containers: %d %v", len(containers), err)
+		}
+	}
 	first, _ := f.plan("first", false)
 	first = f.resolve(first)
+	// The host's first routed environment needs its own network and the ingress network,
+	// and one range holds only one of them.
+	f.engine.NetworkPool = netip.MustParsePrefix("10.253.254.0/25")
+	refused(first)
+	if _, err := f.docker.NetworkInspect(ctx, "astilba-ingress-network", client.NetworkInspectOptions{}); err == nil {
+		t.Fatal("a refused environment created the ingress network")
+	}
+	f.engine.NetworkPool = netip.MustParsePrefix("10.253.254.0/24")
+	first.ID = uuid.New()
+	first = first.WithHash()
 	f.finish(f.command("deploy", first, map[string]string{}))
 
 	second, _ := f.plan("second", false)
-	second = f.resolve(second)
-	c := f.command("deploy", second, map[string]string{})
-	if err := f.engine.Execute(ctx, c); err != nil {
-		t.Fatal(err)
-	}
-	r, err := f.engine.Journal.Record(c.Id)
-	if err != nil || r.Report.State != "failed" || r.Report.Note != ErrNetworkPoolFull.Error() {
-		t.Fatalf("full host: %s %q %v", r.Report.State, r.Report.Note, err)
-	}
-	if _, err = f.docker.NetworkInspect(ctx, deployment.NetworkName(second.UnitID), client.NetworkInspectOptions{}); err == nil {
-		t.Fatal("a refused environment created its network")
-	}
-	containers, err := f.engine.ownedContainers(ctx, second)
-	if err != nil || len(containers) != 0 {
-		t.Fatalf("a refused environment created containers: %d %v", len(containers), err)
-	}
+	refused(f.resolve(second))
 	f.request("first.example.test", "v1")
+}
+
+// The agent reads the host's ranges under the shipped unit's sandbox, which has no netlink
+// socket until the owner prepares managed networking.
+func nativeHostRangesUnderTheUnitSandbox(t *testing.T, want netip.Prefix) {
+	t.Helper()
+	sandbox := []string{"--wait", "--pipe", "--quiet", "--collect"}
+	section := ""
+	for _, line := range strings.Split(string(host.AgentService()), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "[") {
+			section = line
+		}
+		key, _, _ := strings.Cut(line, "=")
+		if section == "[Service]" && slices.Contains([]string{"NoNewPrivileges", "ProtectHome", "ProtectSystem", "RestrictAddressFamilies"}, key) {
+			sandbox = append(sandbox, "-p", line)
+		}
+	}
+	if !slices.ContainsFunc(sandbox, func(v string) bool { return strings.HasPrefix(v, "RestrictAddressFamilies=") }) {
+		t.Fatal("the agent unit no longer restricts address families")
+	}
+	if exec.Command("systemd-run", append(sandbox, "ip", "-4", "route", "show")...).Run() == nil {
+		t.Fatal("the unit sandbox allows netlink, so this check would prove nothing")
+	}
+	args := append(sandbox, "-E", "ASTILBA_HOST_RANGES_HELPER=1", "-E", "ASTILBA_HOST_RANGES_WANT="+want.String(), os.Args[0], "-test.v", "-test.run=^TestHostRangesSandboxHelper$")
+	out, err := exec.Command("systemd-run", args...).CombinedOutput()
+	if err != nil || !strings.Contains(string(out), "--- PASS: TestHostRangesSandboxHelper") {
+		t.Fatalf("host ranges under the unit sandbox: %v\n%s", err, out)
+	}
+}
+
+// Re-executed under the agent unit's sandbox by TestNativeHostRunsFiftyRoutedEnvironments.
+func TestHostRangesSandboxHelper(t *testing.T) {
+	if os.Getenv("ASTILBA_HOST_RANGES_HELPER") != "1" {
+		t.Skip("host range sandbox helper")
+	}
+	// No managed network state: the helper reads only what the host routes.
+	got, err := (hostnetwork.Host{Dir: "/nonexistent-astilba-state"}).Occupied(context.Background())
+	if err != nil || !slices.Contains(got, netip.MustParsePrefix(os.Getenv("ASTILBA_HOST_RANGES_WANT"))) {
+		t.Fatalf("occupied: %v %v", got, err)
+	}
 }

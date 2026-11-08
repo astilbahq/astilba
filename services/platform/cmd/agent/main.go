@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"io"
 	"net/mail"
+	"net/netip"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -65,6 +66,7 @@ func run() error {
 	host := flags.String("docker", "unix:///var/run/docker.sock", "local Docker Unix socket")
 	dockerCLI := flags.String("docker-cli", "docker", "Docker CLI with the supported Compose plugin")
 	acmeEmail := flags.String("acme-email", "", "certificate contact email, applied only by owner-reviewed host changes")
+	networkPool := flags.String("network-pool", "", "private IPv4 range for the networks the agent creates, instead of "+agent.DefaultNetworkPool.String())
 	resticCLI := flags.String("restic-cli", "restic", "pinned restic executable")
 	backupRoots := flags.String("backup-roots", "", "comma-separated operator-approved filesystem roots")
 	policyID := flags.String("policy", "", "backup policy UUID for local reconciliation")
@@ -333,6 +335,21 @@ func run() error {
 		return errors.New("unknown command")
 	}
 	engine := &agent.Engine{Journal: j, Docker: docker, DockerCLI: *dockerCLI, ACMEEmail: *acmeEmail, ResticCLI: *resticCLI, BackupRoots: strings.Split(*backupRoots, ",")}
+	// A pool that can't work is refused at start, not at the first deployment.
+	if *networkPool != "" {
+		pool, err := netip.ParsePrefix(*networkPool)
+		if err != nil {
+			pool = netip.Prefix{}
+		}
+		managed, err := (hostnetwork.Host{Dir: *dir}).ManagedPrefixes()
+		if err != nil {
+			return errors.New("The managed network state could not be read to check --network-pool.")
+		}
+		if err = agent.ValidateNetworkPool(pool, managed); err != nil {
+			return err
+		}
+		engine.NetworkPool = pool
+	}
 	c := agent.NewClient(j, engine)
 	collector := &agent.MetricCollector{Journal: j}
 	c.Metrics = func(ctx context.Context) api.MetricReport {

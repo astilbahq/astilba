@@ -8,6 +8,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/google/uuid"
@@ -18,44 +19,44 @@ import (
 // nothing about which private ranges are in use, like the default route itself.
 const defaultLikeBits = 8
 
-type hostRoute struct {
-	prefix netip.Prefix
-	dev    string
-}
-
-// routes reads every IPv4 route in every table, of every type, including local addresses.
-func (h Host) routes(ctx context.Context) ([]hostRoute, error) {
-	raw, err := h.run(ctx, "ip", nil, "-j", "-4", "route", "show", "table", "all")
-	if err != nil {
-		return nil, err
-	}
-	return parseRoutes(raw)
-}
-
-func parseRoutes(raw []byte) ([]hostRoute, error) {
-	var routes []struct {
-		Dst string `json:"dst"`
-		Dev string `json:"dev"`
-	}
-	if readToolJSON(raw, &routes) != nil {
-		return nil, errors.New("cannot inspect host routes")
-	}
-	out := []hostRoute{}
-	for _, r := range routes {
-		if r.Dst == "default" || r.Dst == "" {
+// parseFIB reads /proc/net/fib_trie, which lists every IPv4 route of every type in every
+// table, local addresses included, without a netlink socket. Each leaf line names an
+// address and is followed by one line per prefix length routed at it:
+//
+//	|-- 10.252.9.0
+//	   /24 universe UNREACHABLE
+//
+// The +-- lines are the trie's internal nodes, not routes.
+func parseFIB(raw []byte) ([]netip.Prefix, error) {
+	out := []netip.Prefix{}
+	var leaf netip.Addr
+	lines := bufio.NewScanner(bytes.NewReader(raw))
+	for lines.Scan() {
+		line := strings.TrimSpace(lines.Text())
+		if address, ok := strings.CutPrefix(line, "|-- "); ok {
+			a, err := netip.ParseAddr(address)
+			if err != nil || !a.Is4() {
+				return nil, errors.New("cannot read the host's routes")
+			}
+			leaf = a
 			continue
 		}
-		p, err := netip.ParsePrefix(r.Dst)
+		rest, ok := strings.CutPrefix(line, "/")
+		if !ok {
+			continue
+		}
+		bits, err := strconv.Atoi(strings.Fields(rest + " ")[0])
+		if !leaf.IsValid() || err != nil {
+			return nil, errors.New("cannot read the host's routes")
+		}
+		p, err := leaf.Prefix(bits)
 		if err != nil {
-			a, e := netip.ParseAddr(r.Dst)
-			if e != nil {
-				continue
-			}
-			p = netip.PrefixFrom(a, a.BitLen())
+			return nil, errors.New("cannot read the host's routes")
 		}
-		if p.Addr().Is4() {
-			out = append(out, hostRoute{prefix: p.Masked(), dev: r.Dev})
-		}
+		out = append(out, p)
+	}
+	if lines.Err() != nil {
+		return nil, errors.New("cannot read the host's routes")
 	}
 	return out, nil
 }
@@ -100,10 +101,8 @@ func (h Host) ManagedPrefixes() ([]netip.Prefix, error) {
 		if err != nil {
 			return nil, err
 		}
-		p, err := Prefix(s.Manifest.Prefix)
-		if err != nil {
-			return nil, err
-		}
+		// Snapshot has validated the prefix.
+		p, _ := Prefix(s.Manifest.Prefix)
 		out = append(out, p)
 	}
 	return out, nil
@@ -120,18 +119,18 @@ func (h Host) Occupied(ctx context.Context) ([]netip.Prefix, error) {
 	if err != nil {
 		return nil, err
 	}
-	host, err := h.hostOccupied(ctx)
+	host, err := hostOccupied(ctx)
 	if err != nil {
 		return nil, err
 	}
 	return append(out, host...), nil
 }
 
-func occupiedFrom(routes []hostRoute, resolvers ...[]byte) []netip.Prefix {
+func occupiedFrom(routes []netip.Prefix, resolvers ...[]byte) []netip.Prefix {
 	out := []netip.Prefix{}
 	for _, r := range routes {
-		if r.prefix.Bits() >= defaultLikeBits {
-			out = append(out, r.prefix)
+		if r.Bits() >= defaultLikeBits {
+			out = append(out, r)
 		}
 	}
 	for _, raw := range resolvers {

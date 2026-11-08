@@ -36,9 +36,10 @@ type Engine struct {
 	ResticCLI             string
 	BackupRoots           []string
 	TroubleshootingIdle   time.Duration
-	mu                    sync.Mutex
-	// networkPool replaces DefaultNetworkPool in tests.
-	networkPool netip.Prefix
+	// NetworkPool is the owner's container network pool, checked by ValidateNetworkPool;
+	// DefaultNetworkPool when unset.
+	NetworkPool netip.Prefix
+	mu          sync.Mutex
 	// networkMu orders choosing a network's subnet with joining a managed network, so a
 	// subnet is never chosen inside a prefix this host is about to hold.
 	networkMu sync.Mutex

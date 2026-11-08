@@ -12,35 +12,55 @@ import (
 )
 
 func TestOccupiedReadsEveryRouteThatNamesANetwork(t *testing.T) {
-	// Captured from `ip -j -4 route show table all` with a gateway route, an unreachable
-	// route, a route in another table, a VPN's default replacement and local addresses.
-	raw := []byte(`[
-{"dst":"default","gateway":"192.168.5.2","dev":"eth0","protocol":"dhcp","prefsrc":"192.168.5.32","metric":200,"flags":[]},
-{"dst":"0.0.0.0/1","gateway":"10.8.0.1","dev":"tun0","flags":[]},
-{"dst":"128.0.0.0/1","gateway":"10.8.0.1","dev":"tun0","flags":[]},
-{"dst":"172.17.0.0/16","dev":"docker0","protocol":"kernel","scope":"link","prefsrc":"172.17.0.1","flags":["linkdown"]},
-{"dst":"10.40.0.0/16","gateway":"192.168.5.2","dev":"eth0","flags":[]},
-{"type":"unreachable","dst":"10.252.9.0/24","flags":[]},
-{"dst":"100.101.102.103","dev":"tailscale0","table":"52","flags":[]},
-{"type":"local","dst":"192.168.5.32","table":"local","dev":"eth0","protocol":"kernel","scope":"host","prefsrc":"192.168.5.32","flags":[]},
-{"type":"broadcast","dst":"192.168.5.255","table":"local","dev":"eth0","flags":[]},
-{"dst":"not-an-address","dev":"x","flags":[]}
-]`)
-	routes, err := parseRoutes(raw)
+	// /proc/net/fib_trie from Ubuntu 24.04 with a gateway route, an unreachable route, a
+	// Tailscale-style route in table 52 and a VPN's default replacement in table 77.
+	raw := []byte(`Id 52:
+  |-- 100.101.102.103
+     /32 link UNICAST
+Id 77:
+  |-- 0.0.0.0
+     /1 universe UNICAST
+Main:
+  +-- 0.0.0.0/0 3 0 4
+     +-- 0.0.0.0/4 2 0 2
+        |-- 0.0.0.0
+           /0 universe UNICAST
+        +-- 10.0.0.0/8 2 0 2
+           |-- 10.40.0.0
+              /16 universe UNICAST
+           |-- 10.252.9.0
+              /24 universe UNREACHABLE
+     +-- 172.16.0.0/14 3 0 6
+        +-- 172.17.0.0/31 1 0 0
+           |-- 172.17.0.0
+              /16 link UNICAST
+           |-- 172.17.0.1
+              /32 host LOCAL
+        |-- 172.17.255.255
+           /32 link BROADCAST
+     +-- 192.168.5.0/24 2 1 2
+        |-- 192.168.5.32
+           /32 host LOCAL
+           /24 link UNICAST
+`)
+	routes, err := parseFIB(raw)
 	if err != nil {
 		t.Fatal(err)
 	}
 	resolv := []byte("# comment\nnameserver 127.0.0.53\nnameserver 10.252.7.2\nnameserver fd00::1\nsearch example.test\n")
 	got := occupiedFrom(routes, resolv)
 	want := []netip.Prefix{}
-	for _, v := range []string{"172.17.0.0/16", "10.40.0.0/16", "10.252.9.0/24", "100.101.102.103/32", "192.168.5.32/32", "192.168.5.255/32", "10.252.7.2/32"} {
+	for _, v := range []string{"100.101.102.103/32", "10.40.0.0/16", "10.252.9.0/24", "172.17.0.0/16", "172.17.0.1/32", "172.17.255.255/32", "192.168.5.32/32", "192.168.5.0/24", "10.252.7.2/32"} {
 		want = append(want, netip.MustParsePrefix(v))
 	}
 	if !slices.Equal(got, want) {
 		t.Fatalf("got %v", got)
 	}
-	if _, err = parseRoutes([]byte("not json")); err == nil {
-		t.Fatal("unreadable routes accepted")
+	// A list the agent can't read could hide a route, so nothing may be placed.
+	for _, bad := range []string{"Main:\n     /24 link UNICAST\n", "Main:\n  |-- not-an-address\n", "Main:\n  |-- 10.0.0.0\n     /33 link UNICAST\n"} {
+		if _, err = parseFIB([]byte(bad)); err == nil {
+			t.Fatalf("unreadable routes accepted: %q", bad)
+		}
 	}
 }
 
