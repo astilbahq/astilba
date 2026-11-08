@@ -47,7 +47,7 @@ test("two-factor sign-in separates authenticator and recovery modes and preserve
   // Both browser projects share the loopback login allowance; start this
   // multi-login journey without attempts accumulated by earlier tests.
   const loginIPScope = createHash("sha256")
-    .update("password:ip:127.0.0.1")
+    .update("login:ip:127.0.0.1")
     .digest("hex");
   // Own a separate account; enrolling MFA must not change the shared fixture owner.
   await authFixtureSQL(

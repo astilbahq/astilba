@@ -12,7 +12,7 @@ const GracePeriod = 30 * 24 * time.Hour
 // expose the same product without subscription admission.
 type Config struct {
 	CohortLimit   int
-	ServerLimit   int
+	ServerLimit   int32 // the hosted subscription row's column type
 	PriceID       string
 	SecretKey     string
 	WebhookSecret string

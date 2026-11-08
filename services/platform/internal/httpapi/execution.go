@@ -8,7 +8,6 @@ import (
 	"encoding/pem"
 	"github.com/go-chi/chi/v5"
 	"net/http"
-	"path/filepath"
 	"strings"
 
 	hostassets "github.com/astilbahq/astilba/services/platform/host"
@@ -219,53 +218,60 @@ func (s *Server) executionResponse(w http.ResponseWriter, r *http.Request, statu
 	s.respond(w, status, v)
 }
 
-func (s *Server) agentArtifact(w http.ResponseWriter, r *http.Request) {
+// agentRelease finds the loaded release a request names by digest. Handlers use the release's
+// own fields from here on, never the request's text.
+func (s *Server) agentRelease(r *http.Request) (api.AgentRelease, bool) {
 	sha := chi.URLParam(r, "sha")
 	for _, release := range s.Execution.Releases {
-		if release.Sha256 == sha && s.ArtifactDirectory != "" {
-			w.Header().Set("Content-Type", "application/octet-stream")
-			http.ServeFile(w, r, filepath.Join(s.ArtifactDirectory, sha))
-			return
+		if release.Sha256 == sha {
+			return release, true
 		}
 	}
-	http.NotFound(w, r)
+	return api.AgentRelease{}, false
+}
+
+func (s *Server) agentArtifact(w http.ResponseWriter, r *http.Request) {
+	release, ok := s.agentRelease(r)
+	if !ok || s.ArtifactDirectory == "" {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Content-Type", "application/octet-stream")
+	http.ServeFile(w, r, agentrelease.ArtifactPath(s.ArtifactDirectory, release))
 }
 
 func (s *Server) agentManifest(w http.ResponseWriter, r *http.Request) {
-	for _, release := range s.Execution.Releases {
-		if release.Sha256 == chi.URLParam(r, "sha") {
-			s.respond(w, 200, release)
-			return
-		}
+	release, ok := s.agentRelease(r)
+	if !ok {
+		http.NotFound(w, r)
+		return
 	}
-	http.NotFound(w, r)
+	s.respond(w, 200, release)
 }
 
 func (s *Server) agentReleaseMessage(w http.ResponseWriter, r *http.Request) {
-	for _, release := range s.Execution.Releases {
-		if release.Sha256 == chi.URLParam(r, "sha") {
-			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-			_, _ = w.Write(agentrelease.Message(release))
-			return
-		}
+	release, ok := s.agentRelease(r)
+	if !ok {
+		http.NotFound(w, r)
+		return
 	}
-	http.NotFound(w, r)
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	_, _ = w.Write(agentrelease.Message(release))
 }
 
 func (s *Server) agentReleaseSignature(w http.ResponseWriter, r *http.Request) {
-	for _, release := range s.Execution.Releases {
-		if release.Sha256 == chi.URLParam(r, "sha") {
-			raw, err := base64.StdEncoding.DecodeString(release.Signature)
-			if err != nil || len(raw) != 64 {
-				http.Error(w, "Release signature unavailable", http.StatusInternalServerError)
-				return
-			}
-			w.Header().Set("Content-Type", "application/octet-stream")
-			_, _ = w.Write(raw)
-			return
-		}
+	release, ok := s.agentRelease(r)
+	if !ok {
+		http.NotFound(w, r)
+		return
 	}
-	http.NotFound(w, r)
+	raw, err := base64.StdEncoding.DecodeString(release.Signature)
+	if err != nil || len(raw) != 64 {
+		http.Error(w, "Release signature unavailable", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/octet-stream")
+	_, _ = w.Write(raw)
 }
 
 func (s *Server) agentPublicKey(w http.ResponseWriter, r *http.Request) {

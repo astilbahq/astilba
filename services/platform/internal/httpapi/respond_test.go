@@ -1,11 +1,12 @@
 package httpapi
 
 import (
+	"bytes"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
-	"io"
 	"log/slog"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
@@ -37,7 +38,13 @@ func TestRespondWithoutBodySendsOnlyTheStatus(t *testing.T) {
 func TestRespondReportsAValueThatCannotBeEncoded(t *testing.T) {
 	w := httptest.NewRecorder()
 	w.Header().Set("X-Request-ID", "request")
-	(&Server{Log: slog.New(slog.NewTextHandler(io.Discard, nil))}).respond(w, 200, jsontext.Value(`{"truncated"`))
+	var log bytes.Buffer
+	(&Server{Log: slog.New(slog.NewTextHandler(&log, nil))}).respond(w, 200, jsontext.Value(`{"value-in-response"`))
+	// The log names the type so the failure can be found, and never the value, which may be
+	// anything a response carries.
+	if !strings.Contains(log.String(), "type=jsontext.Value") || strings.Contains(log.String(), "value-in-response") {
+		t.Fatalf("log %q", log.String())
+	}
 	var got api.Error
 	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
 		t.Fatalf("body %q: %v", w.Body.String(), err)

@@ -66,6 +66,41 @@ func TestDatabasePoolSize(t *testing.T) {
 	}
 }
 
+// The server limit is written to a 32-bit column, so a value that would wrap there must be
+// refused rather than truncated.
+func TestHostedServerLimit(t *testing.T) {
+	t.Setenv("ASTILBA_DATABASE_URL", "postgres://example.invalid/platform")
+	t.Setenv("ASTILBA_KEYRING", "keyring.json")
+	t.Setenv("ASTILBA_KEYRING_JSON", "")
+	t.Setenv("ASTILBA_HOSTED", "true")
+	t.Setenv("ASTILBA_HOSTED_COHORT_LIMIT", "10")
+	t.Setenv("ASTILBA_HOSTED_SUPPORT", "support@example.test")
+	for _, tc := range []struct {
+		value string
+		want  int32
+		bad   bool
+	}{
+		{value: "1", want: 1},
+		{value: "100", want: 100},
+		{value: "", bad: true},
+		{value: "0", bad: true},
+		{value: "101", bad: true},
+		{value: "-1", bad: true},
+		{value: "4294967298", bad: true},
+		{value: "2147483648", bad: true},
+		{value: "99999999999", bad: true},
+		{value: "two", bad: true},
+	} {
+		t.Run(tc.value, func(t *testing.T) {
+			t.Setenv("ASTILBA_HOSTED_SERVER_LIMIT", tc.value)
+			c, err := Load()
+			if (err != nil) != tc.bad || (!tc.bad && c.Hosting.ServerLimit != tc.want) {
+				t.Fatalf("server limit %d, error %v", c.Hosting.ServerLimit, err)
+			}
+		})
+	}
+}
+
 func TestConsoleEmailRequiresLocalDevelopment(t *testing.T) {
 	t.Setenv("ASTILBA_DATABASE_URL", "postgres://example.invalid/platform")
 	t.Setenv("ASTILBA_KEYRING", "keyring.json")
@@ -113,7 +148,15 @@ func TestEmailLinkOriginValidation(t *testing.T) {
 		{"https://app.example.test?host=other", false, true, false},
 		{"http://app.example.test", false, true, false},
 		{"http://127.0.0.1:54182", true, false, true},
+		{"http://localhost:54182", true, false, true},
+		{"http://[::1]:54182", true, false, true},
+		// Development mode turns off Secure cookies, so it must stay on loopback HTTP.
 		{"http://127.0.0.1:54182", true, true, false},
+		{"http://app.example.test", true, false, false},
+		{"http://192.0.2.10:54182", true, false, false},
+		{"http://localhost.example.test:54182", true, false, false},
+		{"https://127.0.0.1:54182", true, false, false},
+		{"https://app.example.test", true, false, false},
 	} {
 		c := Config{Origin: tc.origin, Development: tc.development, Hosted: tc.hosted}
 		if err := c.ValidateOrigin(); (err == nil) != tc.allowed {

@@ -91,7 +91,7 @@ func (s *Service) presentedDevice(ctx context.Context, email string, tokens []st
 	return nil, nil
 }
 
-func accountBudget(email string) string { return "password:account:" + email }
+func accountBudget(email string) string { return "login:account:" + email }
 func accountSourceBudget(email, source string) string {
 	return accountBudget(email) + ":source:" + source
 }
@@ -105,11 +105,11 @@ func accountSourceBudget(email, source string) string {
 func loginAttempt(email string, from Source, device *deviceToken) (passwordShare, []budget) {
 	if device != nil {
 		return passwordShare{"account:" + device.Account.String(), true}, []budget{
-			{fmt.Sprintf("password:device-account:%s:%d", device.Account, device.Version), 20, attemptWindow},
-			{"password:device:" + device.Nonce, 5, attemptWindow},
+			{fmt.Sprintf("login:device-account:%s:%d", device.Account, device.Version), 20, attemptWindow},
+			{"login:device:" + device.Nonce, 5, attemptWindow},
 		}
 	}
-	return passwordShare{from.principal(), false}, append(sourceBudgets("password", from, 50),
+	return passwordShare{from.principal(), false}, append(sourceBudgets("login", from, 50),
 		budget{accountSourceBudget(email, from.Key), 5, attemptWindow},
 		budget{accountBudget(email), 10, attemptWindow},
 	)

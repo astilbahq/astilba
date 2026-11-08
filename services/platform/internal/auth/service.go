@@ -29,6 +29,11 @@ type Service struct {
 	Queue *river.Client[pgx.Tx]
 }
 
+// Hash is the stored lookup key for two kinds of value, neither a secret a person chose. Link
+// and invitation tokens and recovery codes carry at least 128 random bits, so their keys cannot
+// be reversed by guessing. Rate-limit scopes are labels naming an operation and an address,
+// account, email or device. They are not secret, and a key can be matched by guessing its label.
+// Passwords never come here: Passwords stores them with Argon2id.
 func Hash(value string) []byte { hash := sha256.Sum256([]byte(value)); return hash[:] }
 
 func (s *Service) Limit(ctx context.Context, scope string, max int32, window time.Duration) error {

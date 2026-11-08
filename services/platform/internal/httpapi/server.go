@@ -7,11 +7,11 @@ import (
 	"encoding/gob"
 	"encoding/json/v2"
 	"errors"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"net/netip"
 	"os"
+	"reflect"
 	"strings"
 	"time"
 
@@ -244,7 +244,8 @@ func (s *Server) respond(w http.ResponseWriter, status int, value any) {
 	body, err := stablejson.Marshal(value)
 	if err != nil {
 		id := w.Header().Get("X-Request-ID")
-		s.Log.Error("response could not be encoded", "request_id", id, "type", fmt.Sprintf("%T", value), diagnostic.Failure(err))
+		// Only the type is logged: the value may hold anything the response does.
+		s.Log.Error("response could not be encoded", "request_id", id, "type", reflect.TypeOf(value).String(), diagnostic.Failure(err))
 		status = http.StatusInternalServerError
 		body, _ = stablejson.Marshal(api.Error{Code: "internal_error", Message: "The request could not be completed.", RequestId: id})
 	}

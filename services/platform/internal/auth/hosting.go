@@ -136,7 +136,7 @@ func (s *Service) AcceptHosted(ctx context.Context, token, name, password, works
 	if e = q.InsertMembership(ctx, db.InsertMembershipParams{WorkspaceID: ws, AccountID: account.ID, Role: "owner"}); e != nil {
 		return account, ws, e
 	}
-	if e = q.InsertHostedSubscription(ctx, db.InsertHostedSubscriptionParams{WorkspaceID: ws, ServerLimit: int32(s.Store.Hosting.ServerLimit)}); e != nil {
+	if e = q.InsertHostedSubscription(ctx, db.InsertHostedSubscriptionParams{WorkspaceID: ws, ServerLimit: s.Store.Hosting.ServerLimit}); e != nil {
 		return account, ws, e
 	}
 
