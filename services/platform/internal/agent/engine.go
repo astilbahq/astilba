@@ -128,6 +128,9 @@ func (e *Engine) Execute(ctx context.Context, c api.ExecutionCommand) error {
 		return err
 	}
 	e.point("accepted")
+	if heldPreparationCancelled(r) {
+		return e.finish(c.Id, "cancelled", "Cancelled while preparation was held; coordinated cleanup removes this host's candidates.")
+	}
 	if execution.Terminal(r.Report.State) || r.Report.State == "needs_attention" {
 		return nil
 	}

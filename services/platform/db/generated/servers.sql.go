@@ -35,6 +35,21 @@ func (q *Queries) AdvanceServerUpdateGeneration(ctx context.Context, arg Advance
 	return i, err
 }
 
+const attachOperationJob = `-- name: AttachOperationJob :exec
+UPDATE execution_operations SET state='running',job_id = $1::bigint WHERE workspace_id = $2 AND id = $3
+`
+
+type AttachOperationJobParams struct {
+	JobID       int64     `json:"job_id"`
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ID          uuid.UUID `json:"id"`
+}
+
+func (q *Queries) AttachOperationJob(ctx context.Context, arg AttachOperationJobParams) error {
+	_, err := q.db.Exec(ctx, attachOperationJob, arg.JobID, arg.WorkspaceID, arg.ID)
+	return err
+}
+
 const authenticateAgent = `-- name: AuthenticateAgent :one
 SELECT workspace_id,role,(credential_hash <> $1)::boolean AS previous,
     COALESCE((capabilities->>'credentialFreeVisualCancel')::boolean,false)::boolean AS credential_free_visual_cancel
@@ -66,6 +81,41 @@ func (q *Queries) AuthenticateAgent(ctx context.Context, arg AuthenticateAgentPa
 		&i.CredentialFreeVisualCancel,
 	)
 	return i, err
+}
+
+const cancelHeldPreparation = `-- name: CancelHeldPreparation :exec
+UPDATE execution_operations SET cancel_requested=true
+WHERE workspace_id = $1 AND parent_id = $2 AND state='needs_attention' AND command->'crosshost'->>'phase'='prepare'
+`
+
+type CancelHeldPreparationParams struct {
+	WorkspaceID uuid.UUID  `json:"workspace_id"`
+	ParentID    *uuid.UUID `json:"parent_id"`
+}
+
+// This releases a held secondary. A held primary waits for a local retry, which this also ends.
+func (q *Queries) CancelHeldPreparation(ctx context.Context, arg CancelHeldPreparationParams) error {
+	_, err := q.db.Exec(ctx, cancelHeldPreparation, arg.WorkspaceID, arg.ParentID)
+	return err
+}
+
+const cancelUnstartedReleaseCommands = `-- name: CancelUnstartedReleaseCommands :exec
+UPDATE execution_operations child SET cancel_requested=true FROM execution_operations root
+WHERE child.workspace_id = $1 AND root.workspace_id = $1 AND child.parent_id=root.id
+    AND child.state NOT IN ('succeeded','failed','cancelled') AND child.command->'crosshost'->>'phase'='hook'
+    AND root.command->'crosshost'->'plan'->'distributed'->'units' @> jsonb_build_array(jsonb_build_object('plan',jsonb_build_object('serverId',$2::text)))
+`
+
+type CancelUnstartedReleaseCommandsParams struct {
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ServerID    string    `json:"server_id"`
+}
+
+// Every root naming the server now ends before publication, and a release command runs once and
+// can't be taken back. This shares the revocation's transaction so none can start in between.
+func (q *Queries) CancelUnstartedReleaseCommands(ctx context.Context, arg CancelUnstartedReleaseCommandsParams) error {
+	_, err := q.db.Exec(ctx, cancelUnstartedReleaseCommands, arg.WorkspaceID, arg.ServerID)
+	return err
 }
 
 const completeAgentEnrollment = `-- name: CompleteAgentEnrollment :one
@@ -113,6 +163,22 @@ func (q *Queries) CountServers(ctx context.Context, workspaceID uuid.UUID) (int6
 	var count int64
 	err := row.Scan(&count)
 	return count, err
+}
+
+const deleteAbandonedCrossHostRuntime = `-- name: DeleteAbandonedCrossHostRuntime :exec
+DELETE FROM cross_host_runtime WHERE workspace_id = $1 AND environment_id = $2 AND NOT(unit_id = ANY($3::uuid[]))
+`
+
+type DeleteAbandonedCrossHostRuntimeParams struct {
+	WorkspaceID   uuid.UUID   `json:"workspace_id"`
+	EnvironmentID uuid.UUID   `json:"environment_id"`
+	Units         []uuid.UUID `json:"units"`
+}
+
+// A unit that a plan left behind on a revoked server can't report its own removal.
+func (q *Queries) DeleteAbandonedCrossHostRuntime(ctx context.Context, arg DeleteAbandonedCrossHostRuntimeParams) error {
+	_, err := q.db.Exec(ctx, deleteAbandonedCrossHostRuntime, arg.WorkspaceID, arg.EnvironmentID, arg.Units)
+	return err
 }
 
 const insertServer = `-- name: InsertServer :one
@@ -287,6 +353,39 @@ func (q *Queries) LockAgentEnrollment(ctx context.Context, arg LockAgentEnrollme
 	return i, err
 }
 
+const parkedMaintenanceOnPrimary = `-- name: ParkedMaintenanceOnPrimary :many
+SELECT o.id FROM execution_operations o JOIN cross_host_operations c ON c.id=o.id AND c.workspace_id=o.workspace_id
+WHERE o.workspace_id = $1 AND o.server_id = $2 AND o.parent_id IS NULL AND o.kind='crosshost'
+    AND o.state NOT IN ('succeeded','failed','cancelled') AND c.phase='maintenance-owner'
+`
+
+type ParkedMaintenanceOnPrimaryParams struct {
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ServerID    uuid.UUID `json:"server_id"`
+}
+
+// A parent waiting for the owner's choice has no running job. With its primary gone there is no
+// choice left to make.
+func (q *Queries) ParkedMaintenanceOnPrimary(ctx context.Context, arg ParkedMaintenanceOnPrimaryParams) ([]uuid.UUID, error) {
+	rows, err := q.db.Query(ctx, parkedMaintenanceOnPrimary, arg.WorkspaceID, arg.ServerID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []uuid.UUID{}
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const prepareServerTransfer = `-- name: PrepareServerTransfer :one
 UPDATE servers SET enrollment_hash = $1,enrollment_expires = $2,
     credential_hash=NULL,previous_hash=NULL,previous_until=NULL,poll_id=NULL,poll_until=NULL,revoked=false
@@ -345,6 +444,53 @@ func (q *Queries) RecordAgentHeartbeat(ctx context.Context, arg RecordAgentHeart
 	var i RecordAgentHeartbeatRow
 	err := row.Scan(&i.Role, &i.RotationRequested, &i.PreviewOnly)
 	return i, err
+}
+
+const recordRevokedUnitRuntime = `-- name: RecordRevokedUnitRuntime :exec
+INSERT INTO cross_host_runtime(workspace_id,environment_id,unit_id,server_id,plan_id,inventory,cpu_millis,memory_mib)
+VALUES($1,$2,$3,$4,$5,$6,$7,$8)
+ON CONFLICT(workspace_id,unit_id) DO UPDATE SET plan_id=EXCLUDED.plan_id,inventory=EXCLUDED.inventory,observed_at=now()
+`
+
+type RecordRevokedUnitRuntimeParams struct {
+	WorkspaceID   uuid.UUID `json:"workspace_id"`
+	EnvironmentID uuid.UUID `json:"environment_id"`
+	UnitID        uuid.UUID `json:"unit_id"`
+	ServerID      uuid.UUID `json:"server_id"`
+	PlanID        uuid.UUID `json:"plan_id"`
+	Inventory     []byte    `json:"inventory"`
+	CpuMillis     int64     `json:"cpu_millis"`
+	MemoryMib     int64     `json:"memory_mib"`
+}
+
+// Every active unit of an applied plan has a runtime row, which recovery relies on.
+func (q *Queries) RecordRevokedUnitRuntime(ctx context.Context, arg RecordRevokedUnitRuntimeParams) error {
+	_, err := q.db.Exec(ctx, recordRevokedUnitRuntime,
+		arg.WorkspaceID,
+		arg.EnvironmentID,
+		arg.UnitID,
+		arg.ServerID,
+		arg.PlanID,
+		arg.Inventory,
+		arg.CpuMillis,
+		arg.MemoryMib,
+	)
+	return err
+}
+
+const rejectRevokedServerUpgrades = `-- name: RejectRevokedServerUpgrades :exec
+UPDATE supported_upgrades SET status=jsonb_set(jsonb_set(status,'{phase}','"rejected"'),'{note}','"The server was revoked, so the outcome of this upgrade is unknown."')
+WHERE workspace_id = $1 AND server_id = $2 AND status->>'phase' NOT IN ('planned','rejected','complete','returned')
+`
+
+type RejectRevokedServerUpgradesParams struct {
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ServerID    uuid.UUID `json:"server_id"`
+}
+
+func (q *Queries) RejectRevokedServerUpgrades(ctx context.Context, arg RejectRevokedServerUpgradesParams) error {
+	_, err := q.db.Exec(ctx, rejectRevokedServerUpgrades, arg.WorkspaceID, arg.ServerID)
+	return err
 }
 
 const renewServerEnrollment = `-- name: RenewServerEnrollment :one
@@ -415,6 +561,20 @@ func (q *Queries) RequestServerRotation(ctx context.Context, arg RequestServerRo
 	return result.RowsAffected(), nil
 }
 
+const resumeMaintenanceSource = `-- name: ResumeMaintenanceSource :exec
+UPDATE cross_host_operations SET phase='maintenance-resume-source' WHERE workspace_id = $1 AND id = $2
+`
+
+type ResumeMaintenanceSourceParams struct {
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ID          uuid.UUID `json:"id"`
+}
+
+func (q *Queries) ResumeMaintenanceSource(ctx context.Context, arg ResumeMaintenanceSourceParams) error {
+	_, err := q.db.Exec(ctx, resumeMaintenanceSource, arg.WorkspaceID, arg.ID)
+	return err
+}
+
 const revokeServer = `-- name: RevokeServer :execrows
 UPDATE servers SET revoked=true,credential_hash=NULL,previous_hash=NULL,enrollment_hash=NULL,rotation_requested=false
 WHERE workspace_id = $1 AND id = $2
@@ -431,6 +591,62 @@ func (q *Queries) RevokeServer(ctx context.Context, arg RevokeServerParams) (int
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const revokedServerInActiveRoot = `-- name: RevokedServerInActiveRoot :one
+SELECT EXISTS(SELECT 1 FROM execution_operations o JOIN servers s ON s.workspace_id=o.workspace_id
+    WHERE o.workspace_id = $1 AND s.id = $2 AND s.revoked AND o.parent_id IS NULL AND o.kind='crosshost'
+        AND o.state NOT IN ('succeeded','failed','cancelled')
+        AND (o.command->'crosshost'->'plan'->'distributed'->'units' @> jsonb_build_array(jsonb_build_object('plan',jsonb_build_object('serverId',$2::text)))
+            OR o.command->'crosshost'->'plan'->'distributed'->'abandoned' @> jsonb_build_array($2::text)))
+`
+
+type RevokedServerInActiveRootParams struct {
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ServerID    uuid.UUID `json:"server_id"`
+}
+
+// Coordinators decide what to skip from the revocation itself, and a plan that leaves the server
+// behind decided on it too, so it must hold until they finish.
+func (q *Queries) RevokedServerInActiveRoot(ctx context.Context, arg RevokedServerInActiveRootParams) (bool, error) {
+	row := q.db.QueryRow(ctx, revokedServerInActiveRoot, arg.WorkspaceID, arg.ServerID)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
+const revokedServersAmong = `-- name: RevokedServersAmong :many
+SELECT id,name FROM servers WHERE workspace_id = $1 AND id = ANY($2::uuid[]) AND revoked
+`
+
+type RevokedServersAmongParams struct {
+	WorkspaceID uuid.UUID   `json:"workspace_id"`
+	Ids         []uuid.UUID `json:"ids"`
+}
+
+type RevokedServersAmongRow struct {
+	ID   uuid.UUID `json:"id"`
+	Name string    `json:"name"`
+}
+
+func (q *Queries) RevokedServersAmong(ctx context.Context, arg RevokedServersAmongParams) ([]RevokedServersAmongRow, error) {
+	rows, err := q.db.Query(ctx, revokedServersAmong, arg.WorkspaceID, arg.Ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []RevokedServersAmongRow{}
+	for rows.Next() {
+		var i RevokedServersAmongRow
+		if err := rows.Scan(&i.ID, &i.Name); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const rotateAgentCredential = `-- name: RotateAgentCredential :execrows
@@ -497,6 +713,27 @@ func (q *Queries) ServerHasActiveOperations(ctx context.Context, arg ServerHasAc
 	var exists bool
 	err := row.Scan(&exists)
 	return exists, err
+}
+
+const settleRevokedServerOperations = `-- name: SettleRevokedServerOperations :exec
+UPDATE execution_operations SET state='cancelled',cancel_requested=true,report_sequence = $1,note='The server was revoked before reporting, so what it did is unknown.'
+WHERE workspace_id = $2 AND server_id = $3 AND state NOT IN ('succeeded','failed','cancelled')
+    AND (parent_id IS NOT NULL OR kind NOT IN ('crosshost','network'))
+`
+
+type SettleRevokedServerOperationsParams struct {
+	ReportSequence int64     `json:"report_sequence"`
+	WorkspaceID    uuid.UUID `json:"workspace_id"`
+	ServerID       uuid.UUID `json:"server_id"`
+}
+
+// A revoked server will never report again. Roots are left to the coordinator, which still has the
+// remaining hosts to release, and a standalone network removal stays visible until peers converge.
+// The sequence answers any later report from a renewed host without letting it change the outcome,
+// so that host can acknowledge its journal and take work again.
+func (q *Queries) SettleRevokedServerOperations(ctx context.Context, arg SettleRevokedServerOperationsParams) error {
+	_, err := q.db.Exec(ctx, settleRevokedServerOperations, arg.ReportSequence, arg.WorkspaceID, arg.ServerID)
+	return err
 }
 
 const stagedRecoveryInventory = `-- name: StagedRecoveryInventory :one

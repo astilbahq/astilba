@@ -104,3 +104,64 @@ SELECT capabilities FROM servers WHERE workspace_id = @workspace_id AND id = @id
 -- name: ServerHasActiveOperations :one
 SELECT EXISTS(SELECT 1 FROM execution_operations
     WHERE workspace_id = @workspace_id AND server_id = @server_id AND state NOT IN ('succeeded','failed','cancelled'));
+
+-- name: SettleRevokedServerOperations :exec
+-- A revoked server will never report again. Roots are left to the coordinator, which still has the
+-- remaining hosts to release, and a standalone network removal stays visible until peers converge.
+-- The sequence answers any later report from a renewed host without letting it change the outcome,
+-- so that host can acknowledge its journal and take work again.
+UPDATE execution_operations SET state='cancelled',cancel_requested=true,report_sequence = @report_sequence,note='The server was revoked before reporting, so what it did is unknown.'
+WHERE workspace_id = @workspace_id AND server_id = @server_id AND state NOT IN ('succeeded','failed','cancelled')
+    AND (parent_id IS NOT NULL OR kind NOT IN ('crosshost','network'));
+
+-- name: RejectRevokedServerUpgrades :exec
+UPDATE supported_upgrades SET status=jsonb_set(jsonb_set(status,'{phase}','"rejected"'),'{note}','"The server was revoked, so the outcome of this upgrade is unknown."')
+WHERE workspace_id = @workspace_id AND server_id = @server_id AND status->>'phase' NOT IN ('planned','rejected','complete','returned');
+
+-- name: ParkedMaintenanceOnPrimary :many
+-- A parent waiting for the owner's choice has no running job. With its primary gone there is no
+-- choice left to make.
+SELECT o.id FROM execution_operations o JOIN cross_host_operations c ON c.id=o.id AND c.workspace_id=o.workspace_id
+WHERE o.workspace_id = @workspace_id AND o.server_id = @server_id AND o.parent_id IS NULL AND o.kind='crosshost'
+    AND o.state NOT IN ('succeeded','failed','cancelled') AND c.phase='maintenance-owner';
+
+-- name: ResumeMaintenanceSource :exec
+UPDATE cross_host_operations SET phase='maintenance-resume-source' WHERE workspace_id = @workspace_id AND id = @id;
+
+-- name: AttachOperationJob :exec
+UPDATE execution_operations SET state='running',job_id = @job_id::bigint WHERE workspace_id = @workspace_id AND id = @id;
+
+-- name: RevokedServersAmong :many
+SELECT id,name FROM servers WHERE workspace_id = @workspace_id AND id = ANY(@ids::uuid[]) AND revoked;
+
+-- name: DeleteAbandonedCrossHostRuntime :exec
+-- A unit that a plan left behind on a revoked server can't report its own removal.
+DELETE FROM cross_host_runtime WHERE workspace_id = @workspace_id AND environment_id = @environment_id AND NOT(unit_id = ANY(@units::uuid[]));
+
+-- name: RecordRevokedUnitRuntime :exec
+-- Every active unit of an applied plan has a runtime row, which recovery relies on.
+INSERT INTO cross_host_runtime(workspace_id,environment_id,unit_id,server_id,plan_id,inventory,cpu_millis,memory_mib)
+VALUES(@workspace_id,@environment_id,@unit_id,@server_id,@plan_id,@inventory,@cpu_millis,@memory_mib)
+ON CONFLICT(workspace_id,unit_id) DO UPDATE SET plan_id=EXCLUDED.plan_id,inventory=EXCLUDED.inventory,observed_at=now();
+
+-- name: RevokedServerInActiveRoot :one
+-- Coordinators decide what to skip from the revocation itself, and a plan that leaves the server
+-- behind decided on it too, so it must hold until they finish.
+SELECT EXISTS(SELECT 1 FROM execution_operations o JOIN servers s ON s.workspace_id=o.workspace_id
+    WHERE o.workspace_id = @workspace_id AND s.id = @server_id AND s.revoked AND o.parent_id IS NULL AND o.kind='crosshost'
+        AND o.state NOT IN ('succeeded','failed','cancelled')
+        AND (o.command->'crosshost'->'plan'->'distributed'->'units' @> jsonb_build_array(jsonb_build_object('plan',jsonb_build_object('serverId',@server_id::text)))
+            OR o.command->'crosshost'->'plan'->'distributed'->'abandoned' @> jsonb_build_array(@server_id::text)));
+
+-- name: CancelUnstartedReleaseCommands :exec
+-- Every root naming the server now ends before publication, and a release command runs once and
+-- can't be taken back. This shares the revocation's transaction so none can start in between.
+UPDATE execution_operations child SET cancel_requested=true FROM execution_operations root
+WHERE child.workspace_id = @workspace_id AND root.workspace_id = @workspace_id AND child.parent_id=root.id
+    AND child.state NOT IN ('succeeded','failed','cancelled') AND child.command->'crosshost'->>'phase'='hook'
+    AND root.command->'crosshost'->'plan'->'distributed'->'units' @> jsonb_build_array(jsonb_build_object('plan',jsonb_build_object('serverId',@server_id::text)));
+
+-- name: CancelHeldPreparation :exec
+-- This releases a held secondary. A held primary waits for a local retry, which this also ends.
+UPDATE execution_operations SET cancel_requested=true
+WHERE workspace_id = @workspace_id AND parent_id = @parent_id AND state='needs_attention' AND command->'crosshost'->>'phase'='prepare';

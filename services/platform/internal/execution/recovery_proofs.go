@@ -37,6 +37,11 @@ func (s *Service) applyRecoveryProof(ctx context.Context, tx pgx.Tx, ws uuid.UUI
 		return err
 	}
 	knownSequence, knownState := known.ReportSequence, api.ExecutionState(known.State)
+	if knownSequence == settledReportSequence {
+		// inline-sql: recovery session temporary table
+		_, err = tx.Exec(ctx, `UPDATE recovery_input_proofs SET applied=true WHERE server_id=$1 AND id=$2`, c.ServerId, c.Id)
+		return err
+	}
 	if knownSequence > report.Sequence || knownSequence == report.Sequence && Terminal(knownState) && knownState != report.State {
 		return errors.New("host proof conflicts with newer management knowledge of this operation")
 	}

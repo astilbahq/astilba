@@ -381,7 +381,7 @@ func (c *Client) Run(ctx context.Context) error {
 				continue
 			}
 			for _, r := range pending {
-				if r.Report.State == "running" {
+				if r.Report.State == "running" || heldPreparationCancelled(r) {
 					if err := c.Engine.Execute(ctx, r.Command); err != nil && ctx.Err() == nil {
 						retry = time.After(time.Second)
 					}

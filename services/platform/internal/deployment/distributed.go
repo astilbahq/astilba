@@ -50,6 +50,9 @@ type DistributedPlan struct {
 	NetworkID         uuid.UUID         `json:"networkId"`
 	NetworkGeneration int64             `json:"networkGeneration"`
 	Units             []DistributedUnit `json:"units"`
+	// Abandoned names revoked servers the plan leaves behind. It can't be told anything, so its
+	// revocation is what the plan relies on.
+	Abandoned []uuid.UUID `json:"abandoned,omitempty"`
 }
 
 func (p Plan) ActiveUnits() []DistributedUnit {

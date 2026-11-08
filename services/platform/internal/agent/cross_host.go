@@ -376,6 +376,19 @@ func (e *Engine) prepareCrossHost(ctx context.Context, c api.ExecutionCommand, p
 	return nil
 }
 
+// heldPreparationCancelled lets management release a secondary held in candidate preparation, so
+// one host's failure doesn't wait for an operator while the rest stay reserved. A secondary prepares
+// only this deployment's new candidates, which abort removes. A primary stays held, because its
+// preparation can recreate a shared service that abort doesn't restore. So does a failure nobody
+// cancelled.
+func heldPreparationCancelled(r Record) bool {
+	if r.Report.State != "needs_attention" || !r.Command.CancelRequested || r.Command.Kind != "crosshost" {
+		return false
+	}
+	body, err := crossHostCommand(r.Command)
+	return err == nil && body.Phase == "prepare" && body.Maintenance == nil && body.Unit.Plan.Local != nil && !body.Unit.Plan.Local.Primary
+}
+
 // Shared primary services keep their existing containers when only the new
 // plan label differs. The initial private-port publication still reconciles.
 func unchangedCrossHostServices(p deployment.Payload, previous deployment.Plan, body []byte) (map[uuid.UUID]bool, error) {
