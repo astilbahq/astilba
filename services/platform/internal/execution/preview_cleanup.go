@@ -36,14 +36,16 @@ func (s *Service) previewCleanupAuthority(ctx context.Context, tx pgx.Tx, p prev
 }
 func (s *Service) reconcilePreviewCleanup(ctx context.Context, tx pgx.Tx, p previewPolicy, r previewRecord) error {
 	id := r.View.Id
+	// A deleted request has nothing left to remove. Blocking it for want of authority would give it
+	// back its slot, which a request its revoked host released could then never lose.
+	if r.View.State == "deleted" {
+		return nil
+	}
 	if err := s.previewCleanupAuthority(ctx, tx, p, r); err != nil {
 		if !errors.Is(err, domain.Forbidden) {
 			return err
 		}
 		return s.previewState(ctx, tx, id, "blocked", "Cleanup needs renewed owner approval or a verified agent transfer.", 5*time.Minute)
-	}
-	if r.View.State == "deleted" {
-		return nil
 	}
 	if err := s.cancelPreviewEnvironment(ctx, tx, p.Workspace, r.View.EnvironmentId); err != nil {
 		return err
@@ -99,6 +101,15 @@ func (s *Service) finalizePreviewCleanup(ctx context.Context, tx pgx.Tx, ws uuid
 	if c.Visual == nil || json.Unmarshal(*c.Visual, &p) != nil || p.Action != "preview-cleanup" || p.Plan.Preview == nil || p.Digest() != c.PlanHash || p.Plan.ServerID != c.ServerId || p.Plan.EnvironmentID != c.EnvironmentId || p.Plan.UnitID != c.ResourceId || p.Plan.Validate(false) != nil {
 		return domain.Forbidden
 	}
+	// A revocation ended this cleanup and released its preview, so a receipt the revoked host
+	// kept is answered without changing what the owner was told.
+	known, err := db.New(tx).OperationReportState(ctx, db.OperationReportStateParams{WorkspaceID: ws, ID: c.Id})
+	if err != nil {
+		return err
+	}
+	if known.ReportSequence == settledReportSequence {
+		return nil
+	}
 	var purpose string
 	if err := tx.QueryRow(ctx, "SELECT purpose FROM environments WHERE workspace_id=$1 AND id=$2", ws, c.EnvironmentId).Scan(&purpose); err != nil {
 		return err
@@ -145,7 +156,7 @@ func (s *Service) finalizePreviewCleanup(ctx context.Context, tx pgx.Tx, ws uuid
 	if err := db.New(tx).DeleteEnvironmentSecrets(ctx, db.DeleteEnvironmentSecretsParams{WorkspaceID: ws, EnvironmentID: c.EnvironmentId}); err != nil {
 		return err
 	}
-	_, err := tx.Exec(ctx, "UPDATE preview_requests SET state='deleted',note='Preview resources and owned data were removed.',cleanup_at=NULL,updated_at=now(),next_check_at=now()+interval '1 day' WHERE workspace_id=$1 AND id=$2 AND environment_id=$3 AND generation=$4", ws, p.Plan.Preview.RequestID, c.EnvironmentId, p.Plan.Preview.Generation)
+	_, err = tx.Exec(ctx, "UPDATE preview_requests SET state='deleted',note='Preview resources and owned data were removed.',released_by_revocation=false,cleanup_at=NULL,updated_at=now(),next_check_at=now()+interval '1 day' WHERE workspace_id=$1 AND id=$2 AND environment_id=$3 AND generation=$4", ws, p.Plan.Preview.RequestID, c.EnvironmentId, p.Plan.Preview.Generation)
 	return err
 }
 func (s *Service) acceptPreviewCleanupProofs(ctx context.Context, tx pgx.Tx, ws, server uuid.UUID, receipts *[]api.PreviewCleanupReceipt) error {

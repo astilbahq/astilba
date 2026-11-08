@@ -643,7 +643,8 @@ func (q *Queries) ReleaseRevokedRouteClaims(ctx context.Context, arg ReleaseRevo
 
 const renewServerEnrollment = `-- name: RenewServerEnrollment :one
 UPDATE servers SET enrollment_hash = $1,enrollment_expires = $2,
-    credential_hash=NULL,previous_hash=NULL,previous_until=NULL,revoked=false,rotation_requested=false
+    credential_hash=NULL,previous_hash=NULL,previous_until=NULL,revoked=false,rotation_requested=false,
+    machine_id=CASE WHEN revoked AND preview_only THEN NULL ELSE machine_id END
 WHERE workspace_id = $3 AND id = $4
 RETURNING id,name,role,last_seen,capabilities,preflight,revoked,rotation_requested,awaiting_transfer,preview_only
 `
@@ -668,6 +669,9 @@ type RenewServerEnrollmentRow struct {
 	PreviewOnly       bool       `json:"preview_only"`
 }
 
+// Revoking a preview host released its previews without anything confirming their removal, so it
+// comes back only as a clean host: without a machine binding, enrollment checks it has no
+// containers. Every other renewal keeps the same machine.
 func (q *Queries) RenewServerEnrollment(ctx context.Context, arg RenewServerEnrollmentParams) (RenewServerEnrollmentRow, error) {
 	row := q.db.QueryRow(ctx, renewServerEnrollment,
 		arg.EnrollmentHash,

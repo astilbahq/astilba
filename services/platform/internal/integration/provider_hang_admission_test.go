@@ -13,18 +13,7 @@ import (
 
 func (h *hungPreview) waitPreview(t *testing.T, state string) api.PullRequestPreview {
 	t.Helper()
-	deadline := time.Now().Add(20 * time.Second)
-	for {
-		var list []api.PullRequestPreview
-		h.b.call("GET", h.path+"/previews", nil, 200, &list)
-		if len(list) > 0 && list[0].State == state {
-			return list[0]
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the preview never reached", state, list)
-		}
-		time.Sleep(30 * time.Millisecond)
-	}
+	return waitPreviewAt(t, h, h.path, state)
 }
 
 // approvedPreviewBuild leaves an approved fork's build dispatched.

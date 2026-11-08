@@ -36,7 +36,8 @@ UPDATE preview_policies SET enabled=false WHERE workspace_id = @workspace_id AND
 
 -- name: BlockServerPreviewRequests :exec
 UPDATE preview_requests SET state=CASE WHEN state='deleted' THEN state ELSE 'blocked' END,resume_after_cancel=false,
-    cleanup_actor=NULL,cleanup_auth_version=NULL,cleanup_controller=NULL,note='Management recovery requires renewed preview approval.'
+    cleanup_actor=NULL,cleanup_auth_version=NULL,cleanup_controller=NULL,
+    note=CASE WHEN state='deleted' THEN note ELSE 'Management recovery requires renewed preview approval.' END
 WHERE preview_requests.workspace_id = @workspace_id AND preview_requests.policy_id IN (
     SELECT p.id FROM preview_policies p WHERE p.workspace_id = @workspace_id AND p.server_id = @server_id);
 
@@ -45,7 +46,8 @@ UPDATE preview_policies SET enabled=false WHERE workspace_id = @workspace_id;
 
 -- name: BlockWorkspacePreviewRequests :exec
 UPDATE preview_requests SET state=CASE WHEN state='deleted' THEN state ELSE 'blocked' END,resume_after_cancel=false,cleanup_requested=false,
-    cleanup_actor=NULL,cleanup_auth_version=NULL,cleanup_controller=NULL,note='Offline recovery requires renewed preview approval.'
+    cleanup_actor=NULL,cleanup_auth_version=NULL,cleanup_controller=NULL,
+    note=CASE WHEN state='deleted' THEN note ELSE 'Offline recovery requires renewed preview approval.' END
 WHERE workspace_id = @workspace_id;
 
 -- name: RevokeWorkspaceAutomationCredentials :exec
@@ -282,10 +284,14 @@ SELECT pg_try_advisory_lock_shared(@key::bigint) AS acquired;
 SELECT pg_try_advisory_xact_lock(@key::bigint) AS acquired;
 
 -- name: ServerControllerInventory :many
+-- Confirmed cleanup retires a preview's runtime, so a preview no open request owns was released when
+-- its host was revoked. Nothing confirmed its removal, and a host that still carries it isn't clean.
 SELECT r.unit_id,p.plan FROM visual_runtime r
 JOIN visual_plans p ON p.id=r.plan_id AND p.workspace_id=r.workspace_id
+JOIN environments e ON e.workspace_id=r.workspace_id AND e.id=r.environment_id
 WHERE r.workspace_id = @workspace_id AND r.server_id = @server_id
     AND NOT EXISTS(SELECT 1 FROM cross_host_runtime c WHERE c.workspace_id=r.workspace_id AND c.unit_id=r.unit_id)
+    AND (e.purpose<>'preview' OR EXISTS(SELECT 1 FROM preview_requests q WHERE q.workspace_id=r.workspace_id AND q.environment_id=r.environment_id AND q.state<>'deleted'))
 UNION ALL
 SELECT unit_id,inventory->'plan' FROM cross_host_runtime WHERE workspace_id = @workspace_id AND server_id = @server_id;
 

@@ -116,7 +116,13 @@ func (s *Service) SavePreviewPolicy(ctx context.Context, p store.Principal, ws, 
 			return err
 		}
 		exists := err == nil
-		if !exists && in.Generation != 0 || exists && old.Generation != in.Generation {
+		if !exists && in.Generation != 0 {
+			return domain.Conflict
+		}
+		if exists && old.Generation != in.Generation {
+			if old.Note == revokedPolicyNote {
+				return revokedPolicyConflict
+			}
 			return domain.Conflict
 		}
 		// Pausing and resuming keep the generation, because retained previews and approvals
@@ -214,7 +220,7 @@ func (s *Service) SavePreviewPolicy(ctx context.Context, p store.Principal, ws, 
 		raw, _ = stablejson.Marshal(cfg)
 		_, err = tx.Exec(ctx, `INSERT INTO preview_policies(id,workspace_id,project_id,environment_id,revision_id,application_id,connection_id,server_id,actor_id,auth_version,controller_generation,generation,enabled,configuration)
    VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
-   ON CONFLICT(workspace_id,environment_id) DO UPDATE SET revision_id=EXCLUDED.revision_id,application_id=EXCLUDED.application_id,connection_id=EXCLUDED.connection_id,server_id=EXCLUDED.server_id,actor_id=EXCLUDED.actor_id,auth_version=EXCLUDED.auth_version,controller_generation=EXCLUDED.controller_generation,generation=EXCLUDED.generation,enabled=EXCLUDED.enabled,configuration=EXCLUDED.configuration,discovery_page=1,next_discovery_at=now()`, id, ws, pid, env, cfg.Revision, cfg.App, cfg.Build.ConnectionID, cfg.Build.RunnerID, p.Account.ID, p.Account.AuthVersion, controller, gen, in.Enabled, raw)
+   ON CONFLICT(workspace_id,environment_id) DO UPDATE SET revision_id=EXCLUDED.revision_id,application_id=EXCLUDED.application_id,connection_id=EXCLUDED.connection_id,server_id=EXCLUDED.server_id,actor_id=EXCLUDED.actor_id,auth_version=EXCLUDED.auth_version,controller_generation=EXCLUDED.controller_generation,generation=EXCLUDED.generation,enabled=EXCLUDED.enabled,configuration=EXCLUDED.configuration,note='',discovery_page=1,next_discovery_at=now()`, id, ws, pid, env, cfg.Revision, cfg.App, cfg.Build.ConnectionID, cfg.Build.RunnerID, p.Account.ID, p.Account.AuthVersion, controller, gen, in.Enabled, raw)
 		if err != nil {
 			return err
 		}
@@ -302,12 +308,27 @@ func (s *Service) cancelPreviewWork(ctx context.Context, tx pgx.Tx, ws, policy u
 	return err
 }
 
-const previewColumns = `id,number,head,head_repository,fork,state,note,generation,environment_id,operation_id,cleanup_at`
+const previewColumns = `id,number,head,head_repository,fork,state,note,generation,environment_id,operation_id,cleanup_at,released_by_revocation`
 
 func scanPreview(row pgx.Row) (api.PullRequestPreview, error) {
 	var v api.PullRequestPreview
-	err := row.Scan(&v.Id, &v.Number, &v.Head, &v.HeadRepository, &v.Fork, &v.State, &v.Note, &v.Generation, &v.EnvironmentId, &v.OperationId, &v.CleanupAt)
+	var released bool
+	err := row.Scan(&v.Id, &v.Number, &v.Head, &v.HeadRepository, &v.Fork, &v.State, &v.Note, &v.Generation, &v.EnvironmentId, &v.OperationId, &v.CleanupAt, &released)
+	noteReplacement(&v, released)
 	return v, err
+}
+
+// noteReplacement says so on a request that came back after its preview was released by
+// revocation, until it's deleted again, so the owner can tell it's a new preview on another host.
+func noteReplacement(v *api.PullRequestPreview, released bool) {
+	if !released || v.State == "deleted" {
+		return
+	}
+	if v.Note == "" {
+		v.Note = replacedPreviewNote
+	} else {
+		v.Note += " " + replacedPreviewNote
+	}
 }
 func (s *Service) Previews(ctx context.Context, p store.Principal, ws, pid, env uuid.UUID) ([]api.PullRequestPreview, error) {
 	out := []api.PullRequestPreview{}

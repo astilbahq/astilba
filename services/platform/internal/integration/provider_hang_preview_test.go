@@ -27,19 +27,25 @@ func newHungPreview(t *testing.T) *hungPreview {
 	h.b.call("POST", h.prefix+"/projects/"+project.Id.String()+"/environments", map[string]string{"name": "PR template", "purpose": "preview_template"}, 201, &template)
 	h.path = h.prefix + "/projects/" + project.Id.String() + "/environments/" + template.Id.String()
 	h.b.call("PUT", h.path+"/draft", map[string]any{"baseRevisionId": template.DraftRevisionId, "specification": h.spec}, 200, &h.draft)
-	var enrollment api.Enrollment
-	h.b.call("POST", h.prefix+"/servers", map[string]any{"name": "Preview host", "role": "combined", "previewOnly": true}, 201, &enrollment)
-	credential, _ := cryptobox.Token()
-	yes := true
-	input := api.AgentEnrollment{ServerId: enrollment.Server.Id, Token: enrollment.Token, Credential: credential, MachineId: uuid.New(), Capabilities: api.AgentCapabilities{Protocol: 1, Version: "preview-fixture", Os: "linux", Arch: "arm64", Docker: true, Build: &yes, BuildControls: &yes, BuildCache: &yes, Visual: &yes, Previews: &yes, ServiceOutputs: &yes, SafeReleases: &yes, CredentialFreeVisualCancel: &yes}, Preflight: api.HostPreflight{Ready: true, OsRelease: "ubuntu 24.04", FreeBytes: 8 << 30, Notes: []string{}}}
-	agentRequest(t, h.f.server.Client(), h.f.server.URL, "/agent/v1/enroll", "", input, 200, nil)
-	h.server, h.enrolled, h.token = enrollment.Server.Id, input, enrollment.Server.Id.String()+"."+credential
+	h.server, h.token, h.enrolled = enrollPreviewHost(t, h, "Preview host")
 	var err error
-	if h.identity, err = h.f.execution.Authenticate(t.Context(), h.server, credential); err != nil {
+	if h.identity, err = h.f.execution.Authenticate(t.Context(), h.server, h.enrolled.Credential); err != nil {
 		t.Fatal(err)
 	}
 	build := pipeline.BuildConfig{Builder: "dockerfile", ConnectionID: h.connection.ID, Branch: "main", RunnerID: h.server, Context: ".", Dockerfile: "Dockerfile", Architecture: "arm64", Arguments: map[string]string{}, Secrets: map[string]uuid.UUID{}, Budget: &pipeline.BuildBudget{CPUs: 1, MemoryMiB: 1024, SourceMiB: 128, StateMiB: 512, Minutes: 5}}
 	return &hungPreview{h, map[string]any{"baseRevisionId": h.draft.Id, "applicationId": h.app, "build": build, "maxActive": 1, "maxConcurrentBuilds": 1, "limits": map[string]int{"cpus": 1, "memoryMiB": 256, "pids": 64}, "closeGraceHours": 24, "generatedDomains": false}}
+}
+
+// enrollPreviewHost enrolls a clean preview-only server and returns its id, agent token and enrollment.
+func enrollPreviewHost(t *testing.T, h *hungBuild, name string) (uuid.UUID, string, api.AgentEnrollment) {
+	t.Helper()
+	var enrollment api.Enrollment
+	h.b.call("POST", h.prefix+"/servers", map[string]any{"name": name, "role": "combined", "previewOnly": true}, 201, &enrollment)
+	credential, _ := cryptobox.Token()
+	yes := true
+	input := api.AgentEnrollment{ServerId: enrollment.Server.Id, Token: enrollment.Token, Credential: credential, MachineId: uuid.New(), Capabilities: api.AgentCapabilities{Protocol: 1, Version: "preview-fixture", Os: "linux", Arch: "arm64", Docker: true, Build: &yes, BuildControls: &yes, BuildCache: &yes, Visual: &yes, Previews: &yes, ServiceOutputs: &yes, SafeReleases: &yes, CredentialFreeVisualCancel: &yes}, Preflight: api.HostPreflight{Ready: true, OsRelease: "ubuntu 24.04", FreeBytes: 8 << 30, Notes: []string{}}}
+	agentRequest(t, h.f.server.Client(), h.f.server.URL, "/agent/v1/enroll", "", input, 200, nil)
+	return enrollment.Server.Id, enrollment.Server.Id.String() + "." + credential, input
 }
 
 // Saving a policy checks its branch while holding the runner's row: the original report of
