@@ -148,7 +148,7 @@ func (e *Engine) executeCrossHost(ctx context.Context, c api.ExecutionCommand, r
 	case "reserve":
 		if p.Local.PrepareIngress {
 			if err = e.prepareIngress(ctx); err != nil {
-				return finish("needs_attention", safeVisualError(err, command.Secrets))
+				return finish(storageState(err), safeVisualError(err, command.Secrets))
 			}
 		}
 		if err = e.ensureStorage(ctx, p); err != nil {

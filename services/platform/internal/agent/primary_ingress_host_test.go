@@ -1,11 +1,16 @@
 package agent
 
 import (
+	"context"
+	"errors"
+	"net/netip"
 	"strings"
 	"testing"
 
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
+	"github.com/containerd/errdefs"
 	"github.com/google/uuid"
+	"github.com/moby/moby/api/types/network"
 	"github.com/moby/moby/client"
 )
 
@@ -184,4 +189,34 @@ func TestNativeInterruptedTakeoverIsPutBack(t *testing.T) {
 		t.Fatalf("the journal doesn't record the retried takeover: %+v", state.Current)
 	}
 	h.f.answers(proxyName, steady.domain, "steady")
+}
+
+// A host whose container network pool has no room refuses the takeover as a full host refuses a
+// deployment, and keeps the routes it had.
+func TestNativeTakeoverOnAFullHostChangesNothing(t *testing.T) {
+	h := newIsolationHost(t)
+	h.removeProxy()
+	pool := netip.MustParsePrefix("10.253.254.0/25")
+	if _, err := h.f.docker.NetworkCreate(t.Context(), "astilba-test-filler", client.NetworkCreateOptions{Driver: "bridge", IPAM: &network.IPAM{Config: []network.IPAMConfig{{Subnet: pool}}}}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if _, err := h.f.docker.NetworkRemove(context.Background(), "astilba-test-filler", client.NetworkRemoveOptions{}); err != nil {
+			t.Error(err)
+		}
+	})
+	h.e.NetworkPool = pool
+	err := h.e.prepareIngress(t.Context())
+	if !errors.Is(err, errNetworkPoolFull) || storageState(err) != "failed" {
+		t.Fatalf("the full host's takeover = %v", err)
+	}
+	if _, err = h.f.docker.ContainerInspect(t.Context(), proxyName, client.ContainerInspectOptions{}); !errdefs.IsNotFound(err) {
+		t.Fatal("the refused takeover left a proxy:", err)
+	}
+	if _, err = h.f.docker.NetworkInspect(t.Context(), "astilba-ingress-network", client.NetworkInspectOptions{}); err == nil {
+		t.Fatal("the refused takeover created the ingress network")
+	}
+	if state := h.settled(); state.Current.PrivateIngress {
+		t.Fatal("the journal records the refused takeover")
+	}
 }
