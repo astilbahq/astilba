@@ -114,7 +114,7 @@ func (g *revokedGroup) answer(ctx context.Context, t *testing.T, h *aheadHost) {
 		c, err := g.f.execution.Poll(poll, h.identity)
 		expired := poll.Err()
 		done()
-		if errors.Is(err, domain.Unauthenticated) {
+		if revokedHost(ctx, g.f, h.identity, err) {
 			return
 		}
 		if err != nil {
@@ -137,6 +137,21 @@ func (g *revokedGroup) answer(ctx context.Context, t *testing.T, h *aheadHost) {
 			return
 		}
 	}
+}
+
+// revokedHost says whether management refused a host's poll because it was revoked. A poll checks
+// the credential before it reads the host's work, and hydrating a cross-host command checks the
+// server again, so a revocation that commits in between is refused as forbidden rather than
+// unauthenticated. An agent backs off from either alike.
+func revokedHost(ctx context.Context, f *fixture, identity execution.Identity, err error) bool {
+	if errors.Is(err, domain.Unauthenticated) {
+		return true
+	}
+	if !errors.Is(err, domain.Forbidden) {
+		return false
+	}
+	_, err = f.execution.Authenticate(ctx, identity.ID, identity.Token)
+	return errors.Is(err, domain.Unauthenticated)
 }
 
 func (g *revokedGroup) respond(t *testing.T, h *aheadHost, c api.ExecutionCommand, scopes map[uuid.UUID]deployment.Plan) (api.AgentReport, bool) {
