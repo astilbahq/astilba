@@ -337,10 +337,8 @@ func run() error {
 	engine := &agent.Engine{Journal: j, Docker: docker, DockerCLI: *dockerCLI, ACMEEmail: *acmeEmail, ResticCLI: *resticCLI, BackupRoots: strings.Split(*backupRoots, ",")}
 	// A pool that can't work is refused at start, not at the first deployment.
 	if *networkPool != "" {
-		pool, err := netip.ParsePrefix(*networkPool)
-		if err != nil {
-			pool = netip.Prefix{}
-		}
+		// An unparsable value is the zero prefix, which validation refuses.
+		pool, _ := netip.ParsePrefix(*networkPool)
 		managed, err := (hostnetwork.Host{Dir: *dir}).ManagedPrefixes()
 		if err != nil {
 			return errors.New("The managed network state could not be read to check --network-pool.")

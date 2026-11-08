@@ -38,7 +38,7 @@ func hostOccupied(context.Context) ([]netip.Prefix, error) {
 		}
 		contents = append(contents, raw)
 	}
-	return occupiedFrom(routes, contents...), nil
+	return occupiedFrom(routes, contents...)
 }
 
 // readBounded refuses a file past its bound: a truncated route list would hide routes.

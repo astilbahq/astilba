@@ -86,13 +86,17 @@ func TestOwnerPoolMustBePrivateLargeEnoughAndClearOfManagedNetworks(t *testing.T
 func TestFullPoolRefusalSaysWhatFilledIt(t *testing.T) {
 	pool := netip.MustParsePrefix("10.252.0.0/24")
 	// The owner's VPN routes all of 10.0.0.0/8: only another pool helps.
-	covered := poolFull(pool, prefixes(t, "10.0.0.0/8"), nil)
+	covered := poolFull(pool, prefixes(t, "10.0.0.0/8"), nil, 1)
 	if !errors.Is(covered, errNetworkPoolFull) || !strings.Contains(covered.Error(), "cover the whole container network pool 10.252.0.0/24") || !strings.Contains(covered.Error(), "--network-pool") {
 		t.Fatalf("covered: %v", covered)
 	}
-	// Networks used it up: the count tells running out from a misconfigured range.
-	full := poolFull(pool, prefixes(t, "10.252.0.0/25"), prefixes(t, "10.252.0.128/25", "172.18.0.0/16"))
-	if !errors.Is(full, errNetworkPoolFull) || !strings.Contains(full.Error(), "pool 10.252.0.0/24 has no free range left: 1 networks") {
+	// Networks used part of it: the counts tell running out from a misconfigured range.
+	full := poolFull(pool, prefixes(t, "10.252.0.0/26"), prefixes(t, "10.252.0.128/25", "172.18.0.0/16"), 2)
+	if !errors.Is(full, errNetworkPoolFull) || !strings.Contains(full.Error(), "needs 2 networks, but the container network pool 10.252.0.0/24 has 0 free ranges and 1 networks") {
 		t.Fatalf("full: %v", full)
+	}
+	short := poolFull(pool, nil, prefixes(t, "10.252.0.0/25"), 2)
+	if !strings.Contains(short.Error(), "needs 2 networks, but the container network pool 10.252.0.0/24 has 1 free ranges and 1 networks") {
+		t.Fatalf("short: %v", short)
 	}
 }

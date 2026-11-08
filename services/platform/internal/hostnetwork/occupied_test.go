@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
@@ -48,7 +49,10 @@ Main:
 		t.Fatal(err)
 	}
 	resolv := []byte("# comment\nnameserver 127.0.0.53\nnameserver 10.252.7.2\nnameserver fd00::1\nsearch example.test\n")
-	got := occupiedFrom(routes, resolv)
+	got, err := occupiedFrom(routes, resolv)
+	if err != nil {
+		t.Fatal(err)
+	}
 	want := []netip.Prefix{}
 	for _, v := range []string{"100.101.102.103/32", "10.40.0.0/16", "10.252.9.0/24", "172.17.0.0/16", "172.17.0.1/32", "172.17.255.255/32", "192.168.5.32/32", "192.168.5.0/24", "10.252.7.2/32"} {
 		want = append(want, netip.MustParsePrefix(v))
@@ -57,7 +61,10 @@ Main:
 		t.Fatalf("got %v", got)
 	}
 	// A list the agent can't read could hide a route, so nothing may be placed.
-	for _, bad := range []string{"Main:\n     /24 link UNICAST\n", "Main:\n  |-- not-an-address\n", "Main:\n  |-- 10.0.0.0\n     /33 link UNICAST\n"} {
+	if _, err = occupiedFrom(routes, []byte("search "+strings.Repeat("a", 70000)+"\nnameserver 10.252.7.2\n")); err == nil {
+		t.Fatal("a nameserver past an unreadable line was skipped")
+	}
+	for _, bad := range []string{"Main:\n  |-- 10.0.0.0\n     /\n", "Main:\n     /24 link UNICAST\n", "Main:\n  |-- not-an-address\n", "Main:\n  |-- 10.0.0.0\n     /33 link UNICAST\n"} {
 		if _, err = parseFIB([]byte(bad)); err == nil {
 			t.Fatalf("unreadable routes accepted: %q", bad)
 		}

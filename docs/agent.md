@@ -125,7 +125,7 @@ Before creating a network, the agent skips any range that overlaps:
 - a nameserver in `/etc/resolv.conf` or systemd-resolved's upstream list
 - the prefix of a managed private network the host holds
 
-A deployment that needs networks the pool can't supply is refused before it changes anything. The refusal names the pool and says either how many networks use it, or that the host's routes cover all of it, which only a different pool resolves.
+A deployment that needs networks the pool can't supply is refused before it changes anything. The refusal names the pool. It says either that the host's routes cover all of it, which only a different pool resolves, or how many networks the deployment needs, how many ranges are free and how many networks use the pool.
 
 ### Choosing another pool
 

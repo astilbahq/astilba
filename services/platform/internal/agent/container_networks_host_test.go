@@ -113,7 +113,7 @@ func TestNativeFullHostRefusesAnotherEnvironment(t *testing.T) {
 			t.Fatal(err)
 		}
 		r, err := f.engine.Journal.Record(c.Id)
-		if err != nil || r.Report.State != "failed" || !strings.Contains(r.Report.Note, "pool "+f.engine.NetworkPool.String()+" has no free range left") {
+		if err != nil || r.Report.State != "failed" || !strings.Contains(r.Report.Note, "but the container network pool "+f.engine.NetworkPool.String()+" has") {
 			t.Fatalf("full host: %s %q %v", r.Report.State, r.Report.Note, err)
 		}
 		if err = f.engine.Journal.Acknowledge(c.Id, r.Report.Sequence); err != nil {
@@ -157,8 +157,10 @@ func nativeHostRangesUnderTheUnitSandbox(t *testing.T, want netip.Prefix) {
 		if strings.HasPrefix(line, "[") {
 			section = line
 		}
-		key, _, _ := strings.Cut(line, "=")
-		if section == "[Service]" && slices.Contains([]string{"NoNewPrivileges", "ProtectHome", "ProtectSystem", "RestrictAddressFamilies"}, key) {
+		// Every directive but how the service runs, so new hardening is tested too. PrivateTmp
+		// would hide this test binary and ReadWritePaths only widens access.
+		key, _, ok := strings.Cut(line, "=")
+		if section == "[Service]" && ok && !slices.Contains([]string{"Type", "ExecStart", "Restart", "RestartSec", "TimeoutStopSec", "PrivateTmp", "ReadWritePaths"}, key) {
 			sandbox = append(sandbox, "-p", line)
 		}
 	}

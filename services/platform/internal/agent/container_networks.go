@@ -28,9 +28,9 @@ var DefaultNetworkPool = netip.MustParsePrefix("10.252.0.0/14")
 // Compose project declares, and the ingress network need 1,051.
 const networkBits = 25
 
-// MinimumNetworkPoolBits is the smallest pool an owner may set: 128 networks, room for 50
+// minimumNetworkPoolBits is the smallest pool an owner may set: 128 networks, room for 50
 // routed environments with one network each and the ingress network, twice over.
-const MinimumNetworkPoolBits = 18
+const minimumNetworkPoolBits = 18
 
 var privateRanges = []netip.Prefix{netip.MustParsePrefix("10.0.0.0/8"), netip.MustParsePrefix("172.16.0.0/12"), netip.MustParsePrefix("192.168.0.0/16")}
 
@@ -41,8 +41,8 @@ func ValidateNetworkPool(pool netip.Prefix, managed []netip.Prefix) error {
 	for _, r := range privateRanges {
 		inside = inside || pool.IsValid() && pool.Bits() >= r.Bits() && r.Contains(pool.Addr())
 	}
-	if !inside || pool != pool.Masked() || pool.Bits() > MinimumNetworkPoolBits {
-		return fmt.Errorf("The network pool must be a private IPv4 range from /8 to /%d, such as 10.252.0.0/14, written as the range itself.", MinimumNetworkPoolBits)
+	if !inside || pool != pool.Masked() || pool.Bits() > minimumNetworkPoolBits {
+		return fmt.Errorf("The network pool must be a private IPv4 range from /8 to /%d, such as 10.252.0.0/14, written as the range itself.", minimumNetworkPoolBits)
 	}
 	for _, m := range managed {
 		if m.Overlaps(pool) {
@@ -96,7 +96,7 @@ func (e *Engine) createNetworks(ctx context.Context, requests []networkRequest) 
 	}
 	subnets, ok := freeSubnets(pool, networkBits, append(host, docker...), len(requests))
 	if !ok {
-		return poolFull(pool, host, docker)
+		return poolFull(pool, host, docker, len(requests))
 	}
 	for i, r := range requests {
 		options := r.options
@@ -109,18 +109,19 @@ func (e *Engine) createNetworks(ctx context.Context, requests []networkRequest) 
 }
 
 // poolFull says whether the host's own ranges cover the whole pool, which only a different
-// pool resolves, or the pool's networks have used it up.
-func poolFull(pool netip.Prefix, host, docker []netip.Prefix) error {
+// pool resolves, or how much of the pool is left for a deployment that needs more.
+func poolFull(pool netip.Prefix, host, docker []netip.Prefix, needed int) error {
 	if _, ok := freeSubnets(pool, networkBits, host, 1); !ok {
 		return poolFullError{fmt.Sprintf("Host routes or managed networks cover the whole container network pool %s, so no deployment network can be created and nothing changed. Set --network-pool to a private range this host doesn't route.", pool)}
 	}
+	free, _ := freeSubnets(pool, networkBits, append(host, docker...), needed)
 	used := 0
 	for _, d := range docker {
 		if d.Overlaps(pool) {
 			used++
 		}
 	}
-	return poolFullError{fmt.Sprintf("The container network pool %s has no free range left: %d networks on this host use it, and host routes cover the rest. Nothing changed. Deploy to another server, or set a larger --network-pool.", pool, used)}
+	return poolFullError{fmt.Sprintf("This deployment needs %d networks, but the container network pool %s has %d free ranges and %d networks on this host use it. Nothing changed. Deploy to another server, or set a larger --network-pool.", needed, pool, len(free), used)}
 }
 
 // ensureUnitNetworks creates the unit's missing networks together and checks every one is

@@ -45,8 +45,12 @@ func parseFIB(raw []byte) ([]netip.Prefix, error) {
 		if !ok {
 			continue
 		}
-		bits, err := strconv.Atoi(strings.Fields(rest + " ")[0])
-		if !leaf.IsValid() || err != nil {
+		fields := strings.Fields(rest)
+		if !leaf.IsValid() || len(fields) == 0 {
+			return nil, errors.New("cannot read the host's routes")
+		}
+		bits, err := strconv.Atoi(fields[0])
+		if err != nil {
 			return nil, errors.New("cannot read the host's routes")
 		}
 		p, err := leaf.Prefix(bits)
@@ -61,8 +65,9 @@ func parseFIB(raw []byte) ([]netip.Prefix, error) {
 	return out, nil
 }
 
-// parseNameservers reads the IPv4 nameservers from resolv.conf content.
-func parseNameservers(raw []byte) []netip.Prefix {
+// parseNameservers reads the IPv4 nameservers from resolv.conf content. A line it can't
+// read could hide a nameserver, so it refuses rather than skip the rest.
+func parseNameservers(raw []byte) ([]netip.Prefix, error) {
 	out := []netip.Prefix{}
 	lines := bufio.NewScanner(bytes.NewReader(raw))
 	for lines.Scan() {
@@ -74,7 +79,10 @@ func parseNameservers(raw []byte) []netip.Prefix {
 			out = append(out, netip.PrefixFrom(a, 32))
 		}
 	}
-	return out
+	if lines.Err() != nil {
+		return nil, errors.New("cannot read the host's nameservers")
+	}
+	return out, nil
 }
 
 // ManagedPrefixes returns the prefix of every managed network this host holds, enabled
@@ -126,7 +134,7 @@ func (h Host) Occupied(ctx context.Context) ([]netip.Prefix, error) {
 	return append(out, host...), nil
 }
 
-func occupiedFrom(routes []netip.Prefix, resolvers ...[]byte) []netip.Prefix {
+func occupiedFrom(routes []netip.Prefix, resolvers ...[]byte) ([]netip.Prefix, error) {
 	out := []netip.Prefix{}
 	for _, r := range routes {
 		if r.Bits() >= defaultLikeBits {
@@ -134,7 +142,11 @@ func occupiedFrom(routes []netip.Prefix, resolvers ...[]byte) []netip.Prefix {
 		}
 	}
 	for _, raw := range resolvers {
-		out = append(out, parseNameservers(raw)...)
+		servers, err := parseNameservers(raw)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, servers...)
 	}
-	return out
+	return out, nil
 }
