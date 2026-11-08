@@ -92,13 +92,13 @@ func newHeldGitea(t *testing.T) *heldGitea {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case strings.Contains(r.URL.Path, "/branches/"):
-			_ = stablejson.Encode(w, map[string]any{"commit": map[string]string{"sha": head}})
+			answerBranch(w, "gitea", head)
 		case strings.HasSuffix(r.URL.Path, "/pulls/7"):
-			_ = stablejson.Encode(w, map[string]any{"number": 7, "state": pullState, "base": map[string]any{"ref": "main", "repo": map[string]any{"id": 12}}, "head": map[string]any{"sha": pullHead, "repo": map[string]any{"id": 99}}})
+			answerPull(w, 7, pullState, 12, pullHead, 99)
 		case strings.HasSuffix(r.URL.Path, "/pulls"):
 			_ = stablejson.Encode(w, []map[string]int{{"number": 7}})
 		default:
-			_ = stablejson.Encode(w, map[string]any{"id": repository, "private": false})
+			answerRepository(w, "gitea", repository, false)
 		}
 	}))
 	t.Cleanup(h.server.Close)
