@@ -76,3 +76,40 @@ func (q *Queries) DuePreviewRequests(ctx context.Context) ([]uuid.UUID, error) {
 	}
 	return items, nil
 }
+
+const releaseRevokedHostPreviews = `-- name: ReleaseRevokedHostPreviews :many
+UPDATE preview_requests r SET state='deleted',note = $1,released_by_revocation=true,cleanup_at=NULL,updated_at=now(),next_check_at=now()+interval '1 day'
+FROM preview_policies p
+WHERE p.workspace_id=r.workspace_id AND p.id=r.policy_id AND r.workspace_id = $2 AND p.server_id = $3
+    AND r.environment_id IS NOT NULL AND r.state<>'deleted'
+RETURNING r.environment_id::uuid AS environment_id
+`
+
+type ReleaseRevokedHostPreviewsParams struct {
+	Note        string    `json:"note"`
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ServerID    uuid.UUID `json:"server_id"`
+}
+
+// A policy runs every preview on its reserved host, and once that host is revoked nothing it says
+// can be accepted, so these could never be confirmed removed and would hold their slots for good.
+// Only allocated previews hold a slot. Management's runtime records stay as last known.
+func (q *Queries) ReleaseRevokedHostPreviews(ctx context.Context, arg ReleaseRevokedHostPreviewsParams) ([]uuid.UUID, error) {
+	rows, err := q.db.Query(ctx, releaseRevokedHostPreviews, arg.Note, arg.WorkspaceID, arg.ServerID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []uuid.UUID{}
+	for rows.Next() {
+		var environment_id uuid.UUID
+		if err := rows.Scan(&environment_id); err != nil {
+			return nil, err
+		}
+		items = append(items, environment_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}

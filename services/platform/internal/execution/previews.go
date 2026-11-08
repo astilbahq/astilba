@@ -302,7 +302,11 @@ func (s *Service) cancelPreviewWork(ctx context.Context, tx pgx.Tx, ws, policy u
 	return err
 }
 
-const previewColumns = `id,number,head,head_repository,fork,state,note,generation,environment_id,operation_id,cleanup_at`
+// A request that comes back after its preview was released by revocation says so until it's
+// deleted again, so the owner can tell it's a new preview on another host.
+const previewColumns = `id,number,head,head_repository,fork,state,
+ CASE WHEN released_by_revocation AND state<>'deleted' THEN concat_ws(' ',NULLIF(note,''),'` + replacedPreviewNote + `') ELSE note END,
+ generation,environment_id,operation_id,cleanup_at`
 
 func scanPreview(row pgx.Row) (api.PullRequestPreview, error) {
 	var v api.PullRequestPreview

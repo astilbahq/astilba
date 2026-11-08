@@ -217,7 +217,7 @@ func (w *previewWorker) work(ctx context.Context, git *gitAnswers, a previewArgs
 			if err = s.cancelPreviewEnvironment(ctx, tx, ws, record.View.EnvironmentId); err != nil {
 				return err
 			}
-			_, err = tx.Exec(ctx, "UPDATE preview_requests SET state=CASE WHEN state='deleted' THEN state ELSE 'blocked' END,note='Preview policy needs owner approval.',next_check_at=now()+interval '5 minutes' WHERE id=$1", record.View.Id)
+			_, err = tx.Exec(ctx, "UPDATE preview_requests SET state=CASE WHEN state='deleted' THEN state ELSE 'blocked' END,note=CASE WHEN state='deleted' THEN note ELSE 'Preview policy needs owner approval.' END,next_check_at=now()+interval '5 minutes' WHERE id=$1", record.View.Id)
 			if err != nil {
 				return err
 			}
@@ -270,7 +270,8 @@ func (w *previewWorker) work(ctx context.Context, git *gitAnswers, a previewArgs
 	return tx.Commit(ctx)
 }
 func (s *Service) previewState(ctx context.Context, tx pgx.Tx, id uuid.UUID, state, note string, delay time.Duration) error {
-	_, err := tx.Exec(ctx, "UPDATE preview_requests SET state=$2,note=$3,updated_at=now(),next_check_at=now()+$4::interval WHERE id=$1", id, state, note, delay.String())
+	// A deletion ends whatever replaced a preview released by revocation.
+	_, err := tx.Exec(ctx, "UPDATE preview_requests SET state=$2,note=$3,released_by_revocation=released_by_revocation AND $2<>'deleted',updated_at=now(),next_check_at=now()+$4::interval WHERE id=$1", id, state, note, delay.String())
 	return err
 }
 func (s *Service) cancelPreviewEnvironment(ctx context.Context, tx pgx.Tx, ws uuid.UUID, env *uuid.UUID) error {

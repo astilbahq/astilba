@@ -128,7 +128,8 @@ func (q *Queries) AttachRecoveryCheckpoint(ctx context.Context, arg AttachRecove
 
 const blockServerPreviewRequests = `-- name: BlockServerPreviewRequests :exec
 UPDATE preview_requests SET state=CASE WHEN state='deleted' THEN state ELSE 'blocked' END,resume_after_cancel=false,
-    cleanup_actor=NULL,cleanup_auth_version=NULL,cleanup_controller=NULL,note='Management recovery requires renewed preview approval.'
+    cleanup_actor=NULL,cleanup_auth_version=NULL,cleanup_controller=NULL,
+    note=CASE WHEN state='deleted' THEN note ELSE 'Management recovery requires renewed preview approval.' END
 WHERE preview_requests.workspace_id = $1 AND preview_requests.policy_id IN (
     SELECT p.id FROM preview_policies p WHERE p.workspace_id = $1 AND p.server_id = $2)
 `
@@ -159,7 +160,8 @@ func (q *Queries) BlockWorkspaceAutoDeployments(ctx context.Context, arg BlockWo
 
 const blockWorkspacePreviewRequests = `-- name: BlockWorkspacePreviewRequests :exec
 UPDATE preview_requests SET state=CASE WHEN state='deleted' THEN state ELSE 'blocked' END,resume_after_cancel=false,cleanup_requested=false,
-    cleanup_actor=NULL,cleanup_auth_version=NULL,cleanup_controller=NULL,note='Offline recovery requires renewed preview approval.'
+    cleanup_actor=NULL,cleanup_auth_version=NULL,cleanup_controller=NULL,
+    note=CASE WHEN state='deleted' THEN note ELSE 'Offline recovery requires renewed preview approval.' END
 WHERE workspace_id = $1
 `
 

@@ -36,7 +36,8 @@ UPDATE preview_policies SET enabled=false WHERE workspace_id = @workspace_id AND
 
 -- name: BlockServerPreviewRequests :exec
 UPDATE preview_requests SET state=CASE WHEN state='deleted' THEN state ELSE 'blocked' END,resume_after_cancel=false,
-    cleanup_actor=NULL,cleanup_auth_version=NULL,cleanup_controller=NULL,note='Management recovery requires renewed preview approval.'
+    cleanup_actor=NULL,cleanup_auth_version=NULL,cleanup_controller=NULL,
+    note=CASE WHEN state='deleted' THEN note ELSE 'Management recovery requires renewed preview approval.' END
 WHERE preview_requests.workspace_id = @workspace_id AND preview_requests.policy_id IN (
     SELECT p.id FROM preview_policies p WHERE p.workspace_id = @workspace_id AND p.server_id = @server_id);
 
@@ -45,7 +46,8 @@ UPDATE preview_policies SET enabled=false WHERE workspace_id = @workspace_id;
 
 -- name: BlockWorkspacePreviewRequests :exec
 UPDATE preview_requests SET state=CASE WHEN state='deleted' THEN state ELSE 'blocked' END,resume_after_cancel=false,cleanup_requested=false,
-    cleanup_actor=NULL,cleanup_auth_version=NULL,cleanup_controller=NULL,note='Offline recovery requires renewed preview approval.'
+    cleanup_actor=NULL,cleanup_auth_version=NULL,cleanup_controller=NULL,
+    note=CASE WHEN state='deleted' THEN note ELSE 'Offline recovery requires renewed preview approval.' END
 WHERE workspace_id = @workspace_id;
 
 -- name: RevokeWorkspaceAutomationCredentials :exec
