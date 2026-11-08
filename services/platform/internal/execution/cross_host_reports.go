@@ -219,7 +219,7 @@ func (s *Service) recordCrossHostObservations(ctx context.Context, tx pgx.Tx, ws
 			return err
 		}
 	}
-	if _, err := tx.Exec(ctx, `INSERT INTO visual_runtime(workspace_id,environment_id,unit_id,server_id,plan_id,observation) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(workspace_id,environment_id) DO UPDATE SET plan_id=$5,observation=$6,observed_at=now()`, ws, p.EnvironmentID, p.UnitID, p.ServerID, p.ID, raw); err != nil {
+	if _, err := tx.Exec(ctx, `INSERT INTO visual_runtime(workspace_id,environment_id,unit_id,server_id,plan_id,observation) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(workspace_id,environment_id) DO UPDATE SET plan_id=$5,observation=$6,observed_at=now(),unit_id=$3,server_id=$4`, ws, p.EnvironmentID, p.UnitID, p.ServerID, p.ID, raw); err != nil {
 		return err
 	}
 	if !apply {

@@ -203,6 +203,6 @@ func (s *Service) visualReport(ctx context.Context, tx pgx.Tx, c api.ExecutionCo
 	}
 	observed.Images = nil
 	raw, _ := stablejson.Marshal(observed)
-	_, err = tx.Exec(ctx, `INSERT INTO visual_runtime(workspace_id,environment_id,unit_id,server_id,plan_id,observation) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(workspace_id,environment_id) DO UPDATE SET observation=EXCLUDED.observation,observed_at=now(),plan_id=EXCLUDED.plan_id`, ws, c.EnvironmentId, plan.UnitID, c.ServerId, previous, raw)
+	_, err = tx.Exec(ctx, `INSERT INTO visual_runtime(workspace_id,environment_id,unit_id,server_id,plan_id,observation) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(workspace_id,environment_id) DO UPDATE SET observation=EXCLUDED.observation,observed_at=now(),plan_id=EXCLUDED.plan_id,unit_id=CASE WHEN EXCLUDED.plan_id IS DISTINCT FROM visual_runtime.plan_id THEN EXCLUDED.unit_id ELSE visual_runtime.unit_id END,server_id=CASE WHEN EXCLUDED.plan_id IS DISTINCT FROM visual_runtime.plan_id THEN EXCLUDED.server_id ELSE visual_runtime.server_id END`, ws, c.EnvironmentId, plan.UnitID, c.ServerId, previous, raw)
 	return err
 }

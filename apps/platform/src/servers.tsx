@@ -371,7 +371,7 @@ function ServerWorkspace({ workspace }: { workspace: Schema["Workspace"] }) {
                   onClick={() => {
                     if (
                       confirm(
-                        `Disconnect ${server.name}? Existing workloads keep running. Re-enrollment requires resolving active operations.`,
+                        `Revoke ${server.name}? Its credential stops working and its unfinished work ends. It may keep running what it was given and it keeps its secrets, registry access and TLS keys, so rotate them. Renewing it later doesn't undo this. A host that held a reservation for work that has since ended may only come back through offline recovery, which isn't established.`,
                       )
                     )
                       run(() =>
