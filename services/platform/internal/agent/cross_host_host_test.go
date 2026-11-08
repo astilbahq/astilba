@@ -389,15 +389,15 @@ func nativePlacementHosts(t *testing.T) (context.Context, []*nativePlacementHost
 	return ctx, hosts
 }
 
-func TestNativeCrossHostDeployment(t *testing.T) {
-	ctx, hosts := nativePlacementHosts(t)
-	primary, remote := hosts[0], hosts[1]
+// loadNativeImages copies pinned images from the source daemon into each fixture host.
+func loadNativeImages(ctx context.Context, t *testing.T, hosts []*nativePlacementHost, images ...string) {
+	t.Helper()
 	source, err := client.New(client.WithHost(os.Getenv("PLAT_APP_DOCKER_HOST")))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer source.Close()
-	for _, image := range []string{execution.TestImage, domain.Postgres17Image, domain.PostgresImage, deployment.ProxyImage} {
+	for _, image := range images {
 		if _, err = source.ImageInspect(ctx, image); err != nil {
 			if err = (&Engine{Docker: source}).pullImage(ctx, image); err != nil {
 				t.Fatal(err)
@@ -434,6 +434,13 @@ func TestNativeCrossHostDeployment(t *testing.T) {
 			}
 		}
 	}
+}
+
+func TestNativeCrossHostDeployment(t *testing.T) {
+	ctx, hosts := nativePlacementHosts(t)
+	primary, remote := hosts[0], hosts[1]
+	loadNativeImages(ctx, t, hosts, execution.TestImage, domain.Postgres17Image, domain.PostgresImage, deployment.ProxyImage)
+	var err error
 	app, pg, volume, secret := uuid.New(), uuid.New(), uuid.New(), uuid.New()
 	files, fileVolume := uuid.New(), uuid.New()
 	webImage, pgImage := execution.TestImage, domain.Postgres17Image

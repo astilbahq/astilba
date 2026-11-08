@@ -180,7 +180,7 @@ profile if fixtures remain. The rest must be asked for by name:
 | `TestNativePipeline` | `/opt/astilba-plat5/bin/zot` and Git `http-backend`; writes `/etc/docker/certs.d` |
 | `TestNativeVisualDeployment` | Ingress publishes host ports 80, 443 and 15432; the pinned Compose plugin and `/opt/astilba-platform-tools/restic` |
 | `TestNativePreviewEnvironment` | Ingress publishes host ports 80 and 443; the pinned Compose plugin and Git `http-backend` |
-| `TestNativeCrossHostDeployment` | Creates host namespaces, bridges and WireGuard links; the WireGuard module, pinned Compose plugin, `wg` and `nft`, `dockerd` and `docker` under `/opt/astilba-plat4` and restic |
+| `TestNativeCrossHostDeployment`, `TestNativeCrossHostTakeover` | Creates host namespaces, bridges and WireGuard links; the WireGuard module, pinned Compose plugin, `wg` and `nft`, `dockerd` and `docker` under `/opt/astilba-plat4` and restic |
 
 This does not replace CI. `CGO_ENABLED=0` rules out the race detector, the run
 covers only the VM's architecture, and the VM is not the Ubuntu host image CI
