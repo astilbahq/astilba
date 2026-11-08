@@ -37,6 +37,7 @@ type heldGitea struct {
 	skip     int
 	once     bool
 	failHeld bool
+	failing  string
 	gate     chan struct{}
 	entered  chan struct{}
 	asked    map[string]int
@@ -60,6 +61,7 @@ func newHeldGitea(t *testing.T) *heldGitea {
 		h.asked[r.URL.Path]++
 		gate, entered := h.gate, h.entered
 		held := gate != nil && strings.HasSuffix(r.URL.Path, h.match)
+		failing := h.failing != "" && strings.HasSuffix(r.URL.Path, h.failing)
 		if held && h.skip > 0 {
 			h.skip--
 			held = false
@@ -82,6 +84,10 @@ func newHeldGitea(t *testing.T) *heldGitea {
 				w.WriteHeader(http.StatusBadGateway)
 				return
 			}
+		}
+		if failing {
+			w.WriteHeader(http.StatusBadGateway)
+			return
 		}
 		w.Header().Set("Content-Type", "application/json")
 		switch {
@@ -138,6 +144,21 @@ func (h *heldGitea) failReleased() {
 	h.mu.Lock()
 	h.failHeld = true
 	h.mu.Unlock()
+}
+
+// fail makes every request whose path ends with match fail at once, until the returned restore runs.
+func (h *heldGitea) fail(t *testing.T, match string) func() {
+	t.Helper()
+	h.mu.Lock()
+	h.failing = match
+	h.mu.Unlock()
+	end := sync.OnceFunc(func() {
+		h.mu.Lock()
+		h.failing = ""
+		h.mu.Unlock()
+	})
+	t.Cleanup(end)
+	return end
 }
 
 func (h *heldGitea) requests(match string) int {
