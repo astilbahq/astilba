@@ -321,6 +321,12 @@ func TestRevocationSurvivesSpentGeneration(t *testing.T) {
 	if _, err := f.st.Pool.Exec(ctx, `UPDATE environments SET execution_generation=$2 WHERE id=$1`, env, limit); err != nil {
 		t.Fatal(err)
 	}
+	// The peers look offline until they heartbeat below, so the five-second network sweep can't
+	// tell them anything between the revocation and the renewal. A removal sent between the two
+	// would still admit the renewed server, and at this limit nothing could correct it later.
+	if _, err := f.st.Pool.Exec(ctx, `UPDATE servers SET last_seen=now()-interval '1 hour' WHERE workspace_id=$1`, ws); err != nil {
+		t.Fatal(err)
+	}
 	for _, m := range members {
 		installed := limit
 		if m == behind {
@@ -402,8 +408,8 @@ func TestRevocationSurvivesSpentGeneration(t *testing.T) {
 		t.Fatalf("delivered generation = %d", command.Manifest.Generation)
 	}
 	for _, peer := range command.Manifest.Peers {
-		if peer.ServerID == revoked.id {
-			t.Fatal("the delivered manifest still admits the revoked server")
+		if peer.ServerID == revoked.id || peer.ServerID == renewed.id {
+			t.Fatal("the delivered manifest still admits an invalidated server", peer.ServerID)
 		}
 	}
 	identity := hostnetwork.Identity{MembershipID: behind.membership, PublicKey: behind.key}

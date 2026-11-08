@@ -87,7 +87,10 @@ func (w *refreshWorker) work(ctx context.Context, git *gitAnswers, job *river.Jo
 		return resolved.Err
 	}
 	connection, head := resolved.Connection, resolved.Value
-	rows, err := tx.Query(ctx, `SELECT g.environment_id,g.configuration,g.imported_revision_id,g.imported_commit,e.project_id,e.draft_revision_id,g.policy_actor,g.pending_commit
+	// One statement, so a source and the import that is saving it are read as of one moment.
+	rows, err := tx.Query(ctx, `SELECT g.environment_id,g.configuration,g.imported_revision_id,g.imported_commit,e.project_id,e.draft_revision_id,g.policy_actor,g.pending_commit,
+ EXISTS(SELECT 1 FROM pipeline_runs r JOIN execution_operations o ON o.workspace_id=r.workspace_id AND o.id=r.id WHERE r.workspace_id=g.workspace_id AND r.environment_id=g.environment_id
+  AND r.configuration->>'action'='import' AND r.configuration->>'commit'<>$4 AND o.state NOT IN ('succeeded','failed','cancelled'))
  FROM git_sources g JOIN environments e ON e.workspace_id=g.workspace_id AND e.id=g.environment_id
  JOIN memberships m ON m.workspace_id=g.workspace_id AND m.account_id=g.policy_actor
  WHERE g.workspace_id=$1 AND g.connection_id=$2 AND g.status<>'approval_required' AND g.configuration->>'branch'=$3 AND m.role IN ('owner','operator')
@@ -100,11 +103,13 @@ func (w *refreshWorker) work(ctx context.Context, git *gitAnswers, job *river.Jo
 		imported              *uuid.UUID
 		raw                   []byte
 		commit, pending       string
+		// importing is whether an import of a commit other than the head is running.
+		importing bool
 	}
 	sources := []source{}
 	for rows.Next() {
 		var v source
-		if err = rows.Scan(&v.env, &v.raw, &v.imported, &v.commit, &v.pid, &v.base, &v.actor, &v.pending); err != nil {
+		if err = rows.Scan(&v.env, &v.raw, &v.imported, &v.commit, &v.pid, &v.base, &v.actor, &v.pending, &v.importing); err != nil {
 			rows.Close()
 			return err
 		}
@@ -128,6 +133,13 @@ func (w *refreshWorker) work(ctx context.Context, git *gitAnswers, job *river.Jo
 	// it alive, and shows any source it did not reach before it ends.
 	expired := time.Since(job.CreatedAt) > sourceWaitLimit
 	for _, v := range sources {
+		// The branch can move back to the source's commit while another commit imports, as
+		// when a force-push removes it. That import would leave the source on a commit the
+		// branch no longer holds, so the job waits for it and then imports the head.
+		if v.commit == head && v.importing {
+			waiting = true
+			continue
+		}
 		if v.commit == head {
 			if err = db.New(tx).ClearGitSourcePendingCommit(ctx, db.ClearGitSourcePendingCommitParams{WorkspaceID: a.Workspace, EnvironmentID: v.env}); err != nil {
 				return err
@@ -217,8 +229,11 @@ func (w *refreshWorker) work(ctx context.Context, git *gitAnswers, job *river.Jo
 		if err != nil {
 			return err
 		}
-		_, err = w.service.insertPipeline(ctx, tx, git, a.Workspace, v.env, uuid.New(), runner, pipeline.Command{Action: "import", Connection: connection, Commit: head, Branch: a.Branch, RevisionID: v.base, UnitID: env.Unit, Source: &cfg, SubmittedAt: time.Now().UTC()})
+		op, err := w.service.insertPipeline(ctx, tx, git, a.Workspace, v.env, uuid.New(), runner, pipeline.Command{Action: "import", Connection: connection, Commit: head, Branch: a.Branch, RevisionID: v.base, UnitID: env.Unit, Source: &cfg, SubmittedAt: time.Now().UTC()})
 		if err != nil {
+			return err
+		}
+		if err = explainImportAgain(ctx, tx, a.Workspace, v.env, op.Id, v.commit, head); err != nil {
 			return err
 		}
 		if err = db.New(tx).ClearGitSourcePendingCommit(ctx, db.ClearGitSourcePendingCommitParams{WorkspaceID: a.Workspace, EnvironmentID: v.env}); err != nil {
@@ -372,4 +387,16 @@ func successfulBuildBaseline(ctx context.Context, tx pgx.Tx, ws, env, app uuid.U
 		return "", nil
 	}
 	return previous.Commit, nil
+}
+
+// explainImportAgain says why an import of a commit the source held before its latest import
+// runs, which job history would otherwise show as an unexplained repeat: the branch moved
+// back, as a force-push that removes a commit does.
+func explainImportAgain(ctx context.Context, tx pgx.Tx, ws, env, op uuid.UUID, imported, head string) error {
+	commits, err := db.New(tx).LatestImportedCommits(ctx, db.LatestImportedCommitsParams{WorkspaceID: ws, EnvironmentID: env})
+	if err != nil || len(commits) < 2 || commits[0] != imported || commits[1] != head {
+		return err
+	}
+	reason := "Imports commit " + head + " again because the branch moved back to it from commit " + imported + "."
+	return db.New(tx).SetPipelineRunReason(ctx, db.SetPipelineRunReasonParams{Reason: reason, WorkspaceID: ws, ID: op})
 }

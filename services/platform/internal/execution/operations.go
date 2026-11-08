@@ -332,7 +332,7 @@ func (w *worker) Work(ctx context.Context, job *river.Job[jobArgs]) error {
 			return e
 		}
 		if state == "queued" {
-			_, err = tx.Exec(ctx, "UPDATE execution_operations SET state='cancelled',cancel_requested=true,note='Subscription expired before dispatch.' WHERE id=$1", c.Id)
+			_, err = tx.Exec(ctx, "UPDATE execution_operations SET state='cancelled',cancel_requested=true,note=COALESCE((SELECT reason||' ' FROM pipeline_runs WHERE id=$1 AND reason<>''),'')||'Subscription expired before dispatch.' WHERE id=$1", c.Id)
 			if err == nil && c.Kind == "upgrade" {
 				err = undeliveredUpgrade(ctx, tx, ws, c)
 			}
@@ -345,8 +345,9 @@ func (w *worker) Work(ctx context.Context, job *river.Job[jobArgs]) error {
 		return tx.Commit(ctx)
 	}
 	if c.Kind == "pipeline" && state == "queued" {
+		// A run's reason stays in front of its note however it ends, as a report keeps it.
 		if cancelled || time.Now().After(c.Deadline) {
-			if _, err = tx.Exec(ctx, "UPDATE execution_operations SET state='cancelled',note='Cancelled or expired before dispatch.' WHERE id=$1", c.Id); err != nil {
+			if _, err = tx.Exec(ctx, "UPDATE execution_operations SET state='cancelled',note=COALESCE((SELECT reason||' ' FROM pipeline_runs WHERE id=$1 AND reason<>''),'')||'Cancelled or expired before dispatch.' WHERE id=$1", c.Id); err != nil {
 				return err
 			}
 			return tx.Commit(ctx)
