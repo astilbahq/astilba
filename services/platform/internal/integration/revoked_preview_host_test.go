@@ -41,6 +41,10 @@ func TestRevokedPreviewHostReleasesItsPreviews(t *testing.T) {
 	preview := readyPreview(t, h)
 	released := *preview.EnvironmentId
 
+	// Checks queued earlier, by the sweep or a second discovery, can still rewrite the healthy
+	// preview's note, so it's judged from after they've finished.
+	waitPreviewChecks(t, h)
+	healthy = previewAt(t, h, healthyPath)
 	h.b.call("POST", h.prefix+"/servers/"+h.server.String()+"/revoke", nil, 204, nil)
 
 	preview = previewAt(t, h, h.path)
@@ -96,17 +100,24 @@ func TestRevokedPreviewHostReleasesItsPreviews(t *testing.T) {
 		t.Fatal("the moved policy still says its host was revoked:", *current.Note)
 	}
 
-	// The first check after the move can't reach the provider, which leaves the request released.
-	entered, release := h.provider.hold(t, "/pulls/7")
-	h.provider.failReleased()
+	// A check after the move that can't reach the provider leaves the request released. Enabling
+	// makes the policy due, so the sweep's discovery can check the request a second time, and the
+	// provider fails every check until the test has looked. A discovery the paused save queued
+	// would do the same, so the test waits for it first. Then nothing else is queued to ask the
+	// provider, and a new request is this policy's.
+	waitPreviewChecks(t, h)
+	asked := h.provider.requests("/pulls/7")
+	restore := h.provider.fail(t, "/pulls/7")
 	marker := previewJobMarker(t, h)
 	h.b.call("PUT", h.path+"/preview-policy", map[string]any{"enabled": true, "generation": current.Generation, "configuration": h.policy}, 200, nil)
-	waitEntered(t, entered)
-	release()
 	waitPreviewJob(t, h, policy.Id, marker)
+	if h.provider.requests("/pulls/7") == asked {
+		t.Fatal("the check after the move never asked the provider")
+	}
 	if after := previewAt(t, h, h.path); after.State != "deleted" || after.Note != preview.Note {
 		t.Fatal("a provider error took back the released preview's slot", after.State, after.Note)
 	}
+	restore()
 	previewEvent(t, h, policy.Id)
 	moved := approvePreview(t, h, h.path)
 	var server uuid.UUID
@@ -124,6 +135,26 @@ func previewEvent(t *testing.T, h *hungPreview, policy uuid.UUID) {
 	marker := previewJobMarker(t, h)
 	h.pullRequestHook(t)
 	waitPreviewJob(t, h, policy, marker)
+}
+
+// waitPreviewChecks waits until no preview check or sweep is queued or running. The sweep doesn't
+// check a request again for at least a minute after its last check.
+func waitPreviewChecks(t *testing.T, h *hungPreview) {
+	t.Helper()
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		var busy bool
+		if err := h.f.st.Pool.QueryRow(t.Context(), "SELECT EXISTS(SELECT 1 FROM river_job WHERE kind IN ('platform_preview_v1','platform_preview_sweep_v1') AND state NOT IN ('completed','cancelled','discarded'))").Scan(&busy); err != nil {
+			t.Fatal(err)
+		}
+		if !busy {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("preview checks never finished")
+		}
+		time.Sleep(30 * time.Millisecond)
+	}
 }
 
 func previewJobMarker(t *testing.T, h *hungPreview) int64 {
