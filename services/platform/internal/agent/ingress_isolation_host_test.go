@@ -486,3 +486,62 @@ func TestNativeFailedPublishRestoresTheProxyGateway(t *testing.T) {
 	}
 	h.f.answers(proxyName, steady.domain, "steady")
 }
+
+// A release or preview publish never recreates the proxy. When one that accepted a changed
+// proxy fails before replacing it, the changed proxy must not be recorded as the host's:
+// recovery fails and leaves the attempt pending, as release recovery does for a changed
+// proxy, so drift stays reported until a visual reconciliation rebuilds it.
+func TestNativeFailedReleaseKeepsAChangedProxyUntrusted(t *testing.T) {
+	h := newIsolationHost(t)
+	steady, preview := h.f.unit("1", "steady"), h.f.unit("2", "preview")
+	h.removeProxy()
+	if err := h.e.publishVisualRoutes(t.Context(), h.plan(steady, steady.set().Routes)); err != nil {
+		t.Fatal(err)
+	}
+	recorded, err := h.j.routing()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = h.f.docker.ContainerUpdate(t.Context(), proxyName, client.ContainerUpdateOptions{RestartPolicy: &container.RestartPolicy{Name: container.RestartPolicyDisabled}}); err != nil {
+		t.Fatal(err)
+	}
+	calls := h.watchProxyCalls()
+	armed := false
+	h.e.Point = func(point string) {
+		if point == "route-published" && !armed {
+			armed = true
+			calls.fail.Store(true)
+		}
+	}
+	accept := h.plan(preview, preview.set().Routes)
+	accept.AcceptDrift = true
+	err = h.e.publishReleaseRoutes(t.Context(), accept)
+	h.e.Point = nil
+	if err == nil || !strings.Contains(err.Error(), "require attention") {
+		t.Fatalf("recovery trusted the changed proxy: %v", err)
+	}
+	state, err := h.j.routing()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !state.Pending || state.Current.ProxyHash != recorded.Current.ProxyHash {
+		t.Fatal("the changed proxy was recorded as the host's")
+	}
+	if drifted, err := h.e.ingressDrift(t.Context(), state); err != nil || !drifted {
+		t.Fatalf("the changed proxy is no longer reported: %v", err)
+	}
+	// A visual reconciliation settles the attempt and rebuilds the proxy.
+	reconcile := h.plan(steady, steady.set().Routes)
+	reconcile.AcceptDrift = true
+	if err = h.e.publishVisualRoutes(t.Context(), reconcile); err != nil {
+		t.Fatal(err)
+	}
+	proxy, err := h.f.docker.ContainerInspect(t.Context(), proxyName, client.ContainerInspectOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if proxy.Container.HostConfig.RestartPolicy.Name != container.RestartPolicyUnlessStopped {
+		t.Fatalf("the reconciliation kept the changed proxy, with restart policy %q", proxy.Container.HostConfig.RestartPolicy.Name)
+	}
+	h.f.answers(proxyName, steady.domain, "steady")
+}

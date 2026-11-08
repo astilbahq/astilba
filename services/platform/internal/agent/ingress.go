@@ -287,14 +287,15 @@ func (e *Engine) candidateRoutes(current routeSnapshot, p deployment.Plan) (rout
 // restoreRoutes puts back routes the journal records as working after an attempt to
 // change them failed or was interrupted. Rewriting the file reloads the proxy in place, so
 // environments the attempt did not change keep their connections, and a proxy setting the
-// attempt changed recreates it only as ensureProxy decides. A visual publish recreates the
-// proxy as well only when the proxy did not load the file, or when the proxy left running
-// is not vouched for and differs from the one the journal recorded. A route the proxy
-// loaded but left disabled is not the proxy's fault, and recreating it would interrupt
-// every environment again without changing that.
+// attempt changed recreates it only as ensureProxy decides. A proxy left running that is
+// not vouched for must be the one the journal recorded: otherwise a visual publish
+// recreates it, and a release, which never recreates the proxy, fails and leaves the
+// attempt pending. A visual publish also recreates a proxy that did not load the file. A
+// route the proxy loaded but left disabled is not the proxy's fault, and recreating it
+// would interrupt every environment again without changing that.
 func (e *Engine) restoreRoutes(ctx context.Context, previous routeSnapshot, vouched, stableProxy bool) error {
 	created, err := e.applyRoutes(ctx, previous, false, "")
-	if stableProxy || errors.Is(err, errRouteDisabled) {
+	if errors.Is(err, errRouteDisabled) || err != nil && stableProxy {
 		return err
 	}
 	if err == nil {
@@ -308,6 +309,9 @@ func (e *Engine) restoreRoutes(ctx context.Context, previous routeSnapshot, vouc
 		}
 		if proxyFingerprint(v) == previous.ProxyHash {
 			return nil
+		}
+		if stableProxy {
+			return errors.New("release proxy recovery requires an unchanged owned proxy")
 		}
 	}
 	_, err = e.applyRoutes(ctx, previous, true, "")
