@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/cgi"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -120,14 +121,19 @@ func TestNativePipeline(t *testing.T) {
 				return
 			}
 			w.Header().Set("Content-Type", "application/json")
-			// Gitea lists every open request whatever head names, so the review is known by
-			// the branch it was created from.
+			// As Gitea does: a branch's request is looked up by base and head, which answers
+			// 404 until one exists, and a second open request for the branch is refused.
+			branch, _ := reviewed.Load().(string)
 			if r.Method == "GET" {
-				if branch, _ := reviewed.Load().(string); branch != "" {
-					_ = stablejson.Encode(w, []map[string]any{{"number": 1, "html_url": "http://127.0.0.1/review/1", "head": map[string]any{"ref": branch, "repo": map[string]int{"id": 12}}, "base": map[string]any{"ref": "main", "repo": map[string]int{"id": 12}}}})
-				} else {
-					_, _ = w.Write([]byte("[]"))
+				if branch == "" || r.URL.EscapedPath() != "/api/v1/repos/team/app/pulls/main/"+url.PathEscape(branch) {
+					w.WriteHeader(404)
+					return
 				}
+				_ = stablejson.Encode(w, map[string]any{"number": 1, "state": "open", "html_url": "http://127.0.0.1/review/1", "head": map[string]any{"ref": branch, "repo": map[string]int{"id": 12}}, "base": map[string]any{"ref": "main", "repo": map[string]int{"id": 12}}})
+				return
+			}
+			if branch != "" {
+				w.WriteHeader(409)
 				return
 			}
 			var created struct {
