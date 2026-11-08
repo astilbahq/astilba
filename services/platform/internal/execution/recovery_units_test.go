@@ -1,8 +1,6 @@
 package execution
 
 import (
-	"encoding/json/jsontext"
-	"encoding/json/v2"
 	"testing"
 
 	"github.com/astilbahq/astilba/services/platform/internal/portability"
@@ -11,15 +9,7 @@ import (
 
 func unitRow(t *testing.T, server *uuid.UUID, primary bool) portability.Row {
 	t.Helper()
-	row := portability.Row{}
-	for key, value := range map[string]any{"server_id": server, "primary_unit": primary} {
-		raw, err := json.Marshal(value)
-		if err != nil {
-			t.Fatal(err)
-		}
-		row[key] = jsontext.Value(raw)
-	}
-	return row
+	return appliedTestRow(map[string]any{"server_id": server, "primary_unit": primary})
 }
 
 // Replacing a revoked primary promotes one unit and detaches another. Either archive can be the

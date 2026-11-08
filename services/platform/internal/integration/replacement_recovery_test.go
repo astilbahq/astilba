@@ -111,8 +111,7 @@ func (r replacedEnvironment) want(t *testing.T, f *fixture) {
 func TestRecoveryKeepsAReplacedPrimaryDetached(t *testing.T) {
 	t.Run("only the capsule knows", func(t *testing.T) {
 		var replaced replacedEnvironment
-		var r *claimRecovery
-		r = newClaimRecovery(t, 1, func(f *fixture, b *browser, ws, _ uuid.UUID) {
+		r := newClaimRecovery(t, 1, func(f *fixture, b *browser, ws, _ uuid.UUID) {
 			peer := claimUUID(t, f, `SELECT id FROM servers WHERE workspace_id=$1 AND NOT revoked ORDER BY id DESC LIMIT 1`, ws)
 			replaced = seedReplacedEnvironment(t, f, b, ws, peer)
 			replaced.replace(t, f)
