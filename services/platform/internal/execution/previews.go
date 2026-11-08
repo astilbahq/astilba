@@ -220,7 +220,7 @@ func (s *Service) SavePreviewPolicy(ctx context.Context, p store.Principal, ws, 
 		raw, _ = stablejson.Marshal(cfg)
 		_, err = tx.Exec(ctx, `INSERT INTO preview_policies(id,workspace_id,project_id,environment_id,revision_id,application_id,connection_id,server_id,actor_id,auth_version,controller_generation,generation,enabled,configuration)
    VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
-   ON CONFLICT(workspace_id,environment_id) DO UPDATE SET revision_id=EXCLUDED.revision_id,application_id=EXCLUDED.application_id,connection_id=EXCLUDED.connection_id,server_id=EXCLUDED.server_id,actor_id=EXCLUDED.actor_id,auth_version=EXCLUDED.auth_version,controller_generation=EXCLUDED.controller_generation,generation=EXCLUDED.generation,enabled=EXCLUDED.enabled,configuration=EXCLUDED.configuration,discovery_page=1,next_discovery_at=now()`, id, ws, pid, env, cfg.Revision, cfg.App, cfg.Build.ConnectionID, cfg.Build.RunnerID, p.Account.ID, p.Account.AuthVersion, controller, gen, in.Enabled, raw)
+   ON CONFLICT(workspace_id,environment_id) DO UPDATE SET revision_id=EXCLUDED.revision_id,application_id=EXCLUDED.application_id,connection_id=EXCLUDED.connection_id,server_id=EXCLUDED.server_id,actor_id=EXCLUDED.actor_id,auth_version=EXCLUDED.auth_version,controller_generation=EXCLUDED.controller_generation,generation=EXCLUDED.generation,enabled=EXCLUDED.enabled,configuration=EXCLUDED.configuration,note='',discovery_page=1,next_discovery_at=now()`, id, ws, pid, env, cfg.Revision, cfg.App, cfg.Build.ConnectionID, cfg.Build.RunnerID, p.Account.ID, p.Account.AuthVersion, controller, gen, in.Enabled, raw)
 		if err != nil {
 			return err
 		}

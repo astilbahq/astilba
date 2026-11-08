@@ -89,6 +89,13 @@ func TestRevokedPreviewHostReleasesItsPreviews(t *testing.T) {
 		t.Fatal("revocation didn't withdraw the policy's approvals or say so", current.Generation, current.Note)
 	}
 
+	// Moving it, even paused so nothing else runs, ends the revocation's note.
+	h.b.call("PUT", h.path+"/preview-policy", map[string]any{"enabled": false, "generation": current.Generation, "configuration": h.policy}, 200, nil)
+	h.b.call("GET", h.path+"/preview-policy", nil, 200, &current)
+	if current.Note != nil && *current.Note != "" {
+		t.Fatal("the moved policy still says its host was revoked:", *current.Note)
+	}
+
 	// The first check after the move can't reach the provider, which leaves the request released.
 	entered, release := h.provider.hold(t, "/pulls/7")
 	h.provider.failReleased()
