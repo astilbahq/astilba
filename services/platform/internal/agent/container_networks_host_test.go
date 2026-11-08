@@ -20,6 +20,20 @@ import (
 	"github.com/moby/moby/client"
 )
 
+// nativeHoldManagedNetwork records a managed network on the fixture's host, as joining one
+// does before it changes anything.
+func nativeHoldManagedNetwork(t *testing.T, f *nativeVisualFixture, prefix netip.Prefix) {
+	t.Helper()
+	held := hostnetwork.Manifest{Version: hostnetwork.Version, NetworkID: uuid.New(), MembershipID: uuid.New(), ServerID: f.server, Generation: 1, Prefix: prefix.String(), Address: prefix.Addr().Next().Next().String(), PublicKey: base64.StdEncoding.EncodeToString([]byte(strings.Repeat("k", 32))), ListenPort: 51820, Peers: []hostnetwork.Peer{}, Exports: []hostnetwork.Endpoint{}, Egress: []hostnetwork.Egress{}}
+	raw, _ := stablejson.Marshal(hostnetwork.Snapshot{Manifest: held, Bridges: []hostnetwork.Bridge{}})
+	if err := os.MkdirAll(filepath.Join(f.state, "network"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(f.state, "network", held.NetworkID.String()+".json"), raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func nativeSubnet(t *testing.T, f *nativeVisualFixture, name string) (string, netip.Prefix) {
 	t.Helper()
 	n, err := f.docker.NetworkInspect(context.Background(), name, client.NetworkInspectOptions{})
@@ -46,14 +60,7 @@ func TestNativeHostRunsFiftyRoutedEnvironments(t *testing.T) {
 	nativeHostRangesUnderTheUnitSandbox(t, routed)
 	// A managed network installs only /32 routes, so nothing on the host shows its prefix.
 	managed := netip.MustParsePrefix("10.252.1.0/24")
-	held := hostnetwork.Manifest{Version: hostnetwork.Version, NetworkID: uuid.New(), MembershipID: uuid.New(), ServerID: f.server, Generation: 1, Prefix: managed.String(), Address: "10.252.1.7", PublicKey: base64.StdEncoding.EncodeToString([]byte(strings.Repeat("k", 32))), ListenPort: 51820, Peers: []hostnetwork.Peer{}, Exports: []hostnetwork.Endpoint{}, Egress: []hostnetwork.Egress{}}
-	raw, _ := stablejson.Marshal(hostnetwork.Snapshot{Manifest: held, Bridges: []hostnetwork.Bridge{}})
-	if err := os.MkdirAll(filepath.Join(f.state, "network"), 0700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(f.state, "network", held.NetworkID.String()+".json"), raw, 0600); err != nil {
-		t.Fatal(err)
-	}
+	nativeHoldManagedNetwork(t, f, managed)
 
 	plans := []deployment.Plan{}
 	for i := range 50 {
@@ -98,6 +105,29 @@ func TestNativeHostRunsFiftyRoutedEnvironments(t *testing.T) {
 	}
 	if _, subnet := nativeSubnet(t, f, "astilba-ingress-network"); !DefaultNetworkPool.Contains(subnet.Addr()) || seen[subnet] || subnet.Overlaps(routed) || subnet.Overlaps(managed) {
 		t.Fatalf("ingress network %s", subnet)
+	}
+}
+
+// An owner's pool may hold managed prefixes, as the default pool does: networks are placed
+// around every prefix the host holds. Here the owner writes the default pool out, and later
+// widens it to 10.0.0.0/8 on a host holding a managed network inside it.
+func TestNativeOwnerPoolHoldsManagedNetworks(t *testing.T) {
+	f := newNativeVisualFixture(t)
+	for _, c := range []struct{ pool, managed string }{{"10.252.0.0/14", "10.252.0.0/24"}, {"10.0.0.0/8", "10.0.0.0/24"}} {
+		pool, managed := netip.MustParsePrefix(c.pool), netip.MustParsePrefix(c.managed)
+		if err := ValidateNetworkPool(pool); err != nil {
+			t.Fatal(err)
+		}
+		f.engine.NetworkPool = pool
+		nativeHoldManagedNetwork(t, f, managed)
+		p, _ := f.plan("pool"+strings.ReplaceAll(pool.Addr().String(), ".", ""), false)
+		p = f.resolve(p)
+		f.finish(f.command("deploy", p, map[string]string{}))
+		for _, name := range []string{deployment.NetworkName(p.UnitID), "astilba-ingress-network"} {
+			if _, subnet := nativeSubnet(t, f, name); subnet.Overlaps(managed) || subnet.Bits() != networkBits || name != "astilba-ingress-network" && !pool.Contains(subnet.Addr()) {
+				t.Fatalf("%s in pool %s: %s", name, pool, subnet)
+			}
+		}
 	}
 }
 
@@ -183,7 +213,7 @@ func TestHostRangesSandboxHelper(t *testing.T) {
 		t.Skip("host range sandbox helper")
 	}
 	// No managed network state: the helper reads only what the host routes.
-	got, err := (hostnetwork.Host{Dir: "/nonexistent-astilba-state"}).Occupied(context.Background())
+	_, got, err := (hostnetwork.Host{Dir: "/nonexistent-astilba-state"}).Occupied(context.Background())
 	if err != nil || !slices.Contains(got, netip.MustParsePrefix(os.Getenv("ASTILBA_HOST_RANGES_WANT"))) {
 		t.Fatalf("occupied: %v %v", got, err)
 	}

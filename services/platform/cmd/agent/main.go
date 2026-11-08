@@ -339,11 +339,7 @@ func run() error {
 	if *networkPool != "" {
 		// An unparsable value is the zero prefix, which validation refuses.
 		pool, _ := netip.ParsePrefix(*networkPool)
-		managed, err := (hostnetwork.Host{Dir: *dir}).ManagedPrefixes()
-		if err != nil {
-			return errors.New("The managed network state could not be read to check --network-pool.")
-		}
-		if err = agent.ValidateNetworkPool(pool, managed); err != nil {
+		if err := agent.ValidateNetworkPool(pool); err != nil {
 			return err
 		}
 		engine.NetworkPool = pool

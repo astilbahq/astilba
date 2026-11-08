@@ -125,11 +125,11 @@ Before creating a network, the agent skips any range that overlaps:
 - a nameserver in `/etc/resolv.conf` or systemd-resolved's upstream list
 - the prefix of a managed private network the host holds
 
-A deployment that needs networks the pool can't supply is refused before it changes anything. The refusal names the pool. It says either that the host's routes cover all of it, which only a different pool resolves, or how many networks the deployment needs, how many ranges are free and how many networks use the pool.
+A deployment that needs networks the pool can't supply is refused before it changes anything. The refusal names the pool. It says either that the host's routes or managed network prefixes cover all of it, naming the prefixes, which only a different pool or prefix resolves, or how many networks the deployment needs, how many ranges are free and how many networks use the pool.
 
 ### Choosing another pool
 
-Set `--network-pool 10.100.0.0/16` on the agent's `run` command when the default overlaps a network the host must reach, for example a VPN or cloud network that routes all of 10.0.0.0/8, a peered network reached only through the default gateway, or a range used on the host's LAN. Use an inspected `ExecStart` override that keeps the existing arguments, as for [certificate contact](#certificate-contact). The pool must be a private IPv4 range of /18 or larger, written as the range itself, and must not overlap a managed network prefix the host holds. Otherwise the agent refuses to start and says why. A managed network whose prefix overlaps the pool is refused when it is approved.
+Set `--network-pool 10.100.0.0/16` on the agent's `run` command when the default overlaps a network the host must reach, for example a VPN or cloud network that routes all of 10.0.0.0/8, a peered network reached only through the default gateway, or a range used on the host's LAN. Use an inspected `ExecStart` override that keeps the existing arguments, as for [certificate contact](#certificate-contact). The pool must be a private IPv4 range of /18 or larger, written as the range itself. Otherwise the agent refuses to start and says why. The pool may contain managed network prefixes, as the default can: the agent places networks around every prefix the host holds.
 
 Changing the pool never moves an existing network. Running environments keep their addresses, including networks created before agents chose them and networks outside the new pool. New networks come only from the new pool, and the old range stays in use until the networks in it are removed. Restart the agent after changing the setting.
 

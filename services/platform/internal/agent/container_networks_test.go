@@ -57,45 +57,54 @@ func TestDefaultPoolHoldsEveryNetworkTheHostCapsAllow(t *testing.T) {
 			t.Fatalf("default pool overlaps %s", docker)
 		}
 	}
-	if err := ValidateNetworkPool(DefaultNetworkPool, nil); err != nil {
+	if err := ValidateNetworkPool(DefaultNetworkPool); err != nil {
 		t.Fatal(err)
 	}
 }
 
-func TestOwnerPoolMustBePrivateLargeEnoughAndClearOfManagedNetworks(t *testing.T) {
+func TestOwnerPoolMustBePrivateAndLargeEnough(t *testing.T) {
 	for _, ok := range []string{"10.0.0.0/8", "172.16.0.0/12", "172.20.0.0/16", "192.168.64.0/18"} {
-		if err := ValidateNetworkPool(netip.MustParsePrefix(ok), prefixes(t, "192.168.200.0/24")); err != nil {
+		if err := ValidateNetworkPool(netip.MustParsePrefix(ok)); err != nil {
 			t.Fatalf("%s: %v", ok, err)
 		}
 	}
 	// Public, wider than a private range, too small, not written as a range, IPv6, unset.
 	for _, bad := range []string{"100.64.0.0/10", "172.0.0.0/8", "192.168.0.0/19", "10.252.0.1/14", "fd00::/8"} {
-		if ValidateNetworkPool(netip.MustParsePrefix(bad), nil) == nil {
+		if ValidateNetworkPool(netip.MustParsePrefix(bad)) == nil {
 			t.Fatalf("%s accepted", bad)
 		}
 	}
-	if ValidateNetworkPool(netip.Prefix{}, nil) == nil {
+	if ValidateNetworkPool(netip.Prefix{}) == nil {
 		t.Fatal("unset pool accepted")
 	}
-	err := ValidateNetworkPool(netip.MustParsePrefix("10.0.0.0/8"), prefixes(t, "10.251.0.0/24"))
-	if err == nil || !strings.Contains(err.Error(), "10.251.0.0/24") {
-		t.Fatalf("pool over a managed network: %v", err)
+	// A pool may hold managed prefixes, as the default does: subnets are chosen around them.
+	if err := ValidateNetworkPool(netip.MustParsePrefix("10.0.0.0/8")); err != nil {
+		t.Fatal(err)
 	}
 }
 
 func TestFullPoolRefusalSaysWhatFilledIt(t *testing.T) {
 	pool := netip.MustParsePrefix("10.252.0.0/24")
 	// The owner's VPN routes all of 10.0.0.0/8: only another pool helps.
-	covered := poolFull(pool, prefixes(t, "10.0.0.0/8"), nil, 1)
-	if !errors.Is(covered, errNetworkPoolFull) || !strings.Contains(covered.Error(), "cover the whole container network pool 10.252.0.0/24") || !strings.Contains(covered.Error(), "--network-pool") {
-		t.Fatalf("covered: %v", covered)
+	// The owner's VPN routes all of 10.0.0.0/8: only another pool helps.
+	routed := poolFull(pool, nil, prefixes(t, "10.0.0.0/8"), nil, 1)
+	if !errors.Is(routed, errNetworkPoolFull) || !strings.HasPrefix(routed.Error(), "Host routes cover the whole container network pool 10.252.0.0/24") || !strings.Contains(routed.Error(), "--network-pool") {
+		t.Fatalf("routed: %v", routed)
+	}
+	held := poolFull(pool, prefixes(t, "10.252.0.0/24"), nil, nil, 1)
+	if !strings.HasPrefix(held.Error(), "The managed network prefixes 10.252.0.0/24 cover the whole") {
+		t.Fatalf("held: %v", held)
+	}
+	both := poolFull(pool, prefixes(t, "10.252.0.0/25", "10.251.0.0/24"), prefixes(t, "10.252.0.128/25"), nil, 1)
+	if !strings.HasPrefix(both.Error(), "Host routes and the managed network prefixes 10.252.0.0/25 together cover the whole") {
+		t.Fatalf("both: %v", both)
 	}
 	// Networks used part of it: the counts tell running out from a misconfigured range.
-	full := poolFull(pool, prefixes(t, "10.252.0.0/26"), prefixes(t, "10.252.0.128/25", "172.18.0.0/16"), 2)
+	full := poolFull(pool, nil, prefixes(t, "10.252.0.0/26"), prefixes(t, "10.252.0.128/25", "172.18.0.0/16"), 2)
 	if !errors.Is(full, errNetworkPoolFull) || !strings.Contains(full.Error(), "needs 2 networks, but the container network pool 10.252.0.0/24 has 0 free ranges and 1 networks") {
 		t.Fatalf("full: %v", full)
 	}
-	short := poolFull(pool, nil, prefixes(t, "10.252.0.0/25"), 2)
+	short := poolFull(pool, nil, nil, prefixes(t, "10.252.0.0/25"), 2)
 	if !strings.Contains(short.Error(), "needs 2 networks, but the container network pool 10.252.0.0/24 has 1 free ranges and 1 networks") {
 		t.Fatalf("short: %v", short)
 	}

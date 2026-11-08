@@ -118,7 +118,7 @@ verify-agent-host-recovery:
 	cd services/platform && $(NATIVE_AGENT_GO) -timeout=15m -run '^TestNative(AgentService|TroubleshootingEndToEnd|CrossHostOlderBackupRecovery|CrossHostDrainedRecovery|CrossHostUpgradeRecovery)$$' ./internal/integration
 
 verify-agent-host-visual:
-	cd services/platform && $(NATIVE_AGENT_GO) -timeout=30m -run '^TestNative(VisualDeployment|HostRunsFiftyRoutedEnvironments|FullHostRefusesAnotherEnvironment)$$' ./internal/agent
+	cd services/platform && $(NATIVE_AGENT_GO) -timeout=30m -run '^TestNative(VisualDeployment|HostRunsFiftyRoutedEnvironments|OwnerPoolHoldsManagedNetworks|FullHostRefusesAnotherEnvironment)$$' ./internal/agent
 
 verify-agent-host-upgrade:
 	cd services/platform && $(NATIVE_AGENT_GO) -timeout=30m -run '^TestNativeSupportedMajorUpgrades$$' ./internal/agent

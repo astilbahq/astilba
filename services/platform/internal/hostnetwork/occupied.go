@@ -116,22 +116,20 @@ func (h Host) ManagedPrefixes() ([]netip.Prefix, error) {
 	return out, nil
 }
 
-// Occupied returns the IPv4 ranges a new container network on this host must not overlap:
-// every route that names a network, in any table, so a LAN, a VPN, a static route through
-// a gateway or a blackhole the owner installed; the host's nameservers; and the prefix of
-// each managed network the host holds, which installs only /32 routes for its members.
-// Docker's own subnet choice skips only directly connected routes. Docker refuses overlaps
-// with its own networks, which callers add.
-func (h Host) Occupied(ctx context.Context) ([]netip.Prefix, error) {
-	out, err := h.ManagedPrefixes()
-	if err != nil {
-		return nil, err
+// Occupied returns the IPv4 ranges a new container network on this host must not overlap.
+// Managed are the prefixes of the managed networks the host holds, which install only /32
+// routes for their members. Routes are every route that names a network, in any table, so a
+// LAN, a VPN, a static route through a gateway or a blackhole the owner installed, and the
+// host's nameservers. Docker's own subnet choice skips only directly connected routes.
+// Docker refuses overlaps with its own networks, which callers add.
+func (h Host) Occupied(ctx context.Context) (managed, routes []netip.Prefix, err error) {
+	if managed, err = h.ManagedPrefixes(); err != nil {
+		return nil, nil, err
 	}
-	host, err := hostOccupied(ctx)
-	if err != nil {
-		return nil, err
+	if routes, err = hostOccupied(ctx); err != nil {
+		return nil, nil, err
 	}
-	return append(out, host...), nil
+	return managed, routes, nil
 }
 
 func occupiedFrom(routes []netip.Prefix, resolvers ...[]byte) ([]netip.Prefix, error) {

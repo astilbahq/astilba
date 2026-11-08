@@ -88,16 +88,6 @@ func (e *Engine) executeNetwork(ctx context.Context, c api.ExecutionCommand, r R
 		if err != nil {
 			return finish("needs_attention", "Owned network bridges require inspection before changing private links.")
 		}
-		// The owner reserved their pool for container networks, so a managed network may not
-		// take part of it; an agent with the pool and this prefix would refuse to start. A
-		// restriction removes authority from a held network, which start already checked.
-		if prefix, _ := hostnetwork.Prefix(m.Prefix); command.Action != "restrict" && e.NetworkPool.IsValid() && e.NetworkPool.Overlaps(prefix) {
-			note := "This managed network's prefix overlaps the container network pool " + e.NetworkPool.String() + " set on this host, so nothing changed. Choose another prefix, or set --network-pool outside it."
-			if c.ParentId == nil {
-				return e.refuseNetwork(ctx, c.Id, receipt, note)
-			}
-			return finish("needs_attention", note)
-		}
 		// Once begun, an apply finishes even past its admission deadline, as a phase's rerun.
 		if err = e.checkpoint(c.Id, "network-apply"); err != nil {
 			return err

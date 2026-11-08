@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/netip"
 	"slices"
+	"strings"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
@@ -34,20 +35,17 @@ const minimumNetworkPoolBits = 18
 
 var privateRanges = []netip.Prefix{netip.MustParsePrefix("10.0.0.0/8"), netip.MustParsePrefix("172.16.0.0/12"), netip.MustParsePrefix("192.168.0.0/16")}
 
-// ValidateNetworkPool checks a pool an owner sets: a private IPv4 range of at least
-// /18, written as the range itself, that overlaps no managed network prefix the host holds.
-func ValidateNetworkPool(pool netip.Prefix, managed []netip.Prefix) error {
+// ValidateNetworkPool checks a pool an owner sets: a private IPv4 range of at least /18,
+// written as the range itself. It may hold managed network prefixes, as the default pool
+// may: subnets are never chosen inside one the host holds, and a host refuses to join a
+// managed network over one of its container networks.
+func ValidateNetworkPool(pool netip.Prefix) error {
 	inside := false
 	for _, r := range privateRanges {
 		inside = inside || pool.IsValid() && pool.Bits() >= r.Bits() && r.Contains(pool.Addr())
 	}
 	if !inside || pool != pool.Masked() || pool.Bits() > minimumNetworkPoolBits {
 		return fmt.Errorf("The network pool must be a private IPv4 range from /8 to /%d, such as 10.252.0.0/14, written as the range itself.", minimumNetworkPoolBits)
-	}
-	for _, m := range managed {
-		if m.Overlaps(pool) {
-			return fmt.Errorf("The network pool %s overlaps the managed network prefix %s this host holds. Choose a pool outside it.", pool, m)
-		}
 	}
 	return nil
 }
@@ -90,13 +88,13 @@ func (e *Engine) createNetworks(ctx context.Context, requests []networkRequest) 
 	e.networkMu.Lock()
 	defer e.networkMu.Unlock()
 	pool := e.pool()
-	host, docker, err := e.occupiedRanges(ctx)
+	managed, routes, docker, err := e.occupiedRanges(ctx)
 	if err != nil {
 		return err
 	}
-	subnets, ok := freeSubnets(pool, networkBits, append(host, docker...), len(requests))
+	subnets, ok := freeSubnets(pool, networkBits, slices.Concat(managed, routes, docker), len(requests))
 	if !ok {
-		return poolFull(pool, host, docker, len(requests))
+		return poolFull(pool, managed, routes, docker, len(requests))
 	}
 	for i, r := range requests {
 		options := r.options
@@ -109,12 +107,26 @@ func (e *Engine) createNetworks(ctx context.Context, requests []networkRequest) 
 }
 
 // poolFull says whether the host's own ranges cover the whole pool, which only a different
-// pool resolves, or how much of the pool is left for a deployment that needs more.
-func poolFull(pool netip.Prefix, host, docker []netip.Prefix, needed int) error {
-	if _, ok := freeSubnets(pool, networkBits, host, 1); !ok {
-		return poolFullError{fmt.Sprintf("Host routes or managed networks cover the whole container network pool %s, so no deployment network can be created and nothing changed. Set --network-pool to a private range this host doesn't route.", pool)}
+// pool or managed prefix resolves, naming what covers it, or how much of the pool is left
+// for a deployment that needs more.
+func poolFull(pool netip.Prefix, managed, routes, docker []netip.Prefix, needed int) error {
+	if _, ok := freeSubnets(pool, networkBits, slices.Concat(managed, routes), 1); !ok {
+		held := []string{}
+		for _, m := range managed {
+			if m.Overlaps(pool) {
+				held = append(held, m.String())
+			}
+		}
+		routed := slices.ContainsFunc(routes, pool.Overlaps)
+		cause := "Host routes cover"
+		if len(held) > 0 && routed {
+			cause = "Host routes and the managed network prefixes " + strings.Join(held, ", ") + " together cover"
+		} else if len(held) > 0 {
+			cause = "The managed network prefixes " + strings.Join(held, ", ") + " cover"
+		}
+		return poolFullError{fmt.Sprintf("%s the whole container network pool %s, so no deployment network can be created and nothing changed. Set --network-pool to a private range outside them.", cause, pool)}
 	}
-	free, _ := freeSubnets(pool, networkBits, append(host, docker...), needed)
+	free, _ := freeSubnets(pool, networkBits, slices.Concat(managed, routes, docker), needed)
 	used := 0
 	for _, d := range docker {
 		if d.Overlaps(pool) {
@@ -189,17 +201,17 @@ func storageState(err error) api.ExecutionState {
 	return "needs_attention"
 }
 
-// occupiedRanges lists what a new network must avoid: the host's own ranges, and every
-// IPv4 subnet of every Docker network on the host, Astilba's or not. They are kept apart so
-// a refusal can tell a pool the host routes from one its networks have used up.
-func (e *Engine) occupiedRanges(ctx context.Context) (host, docker []netip.Prefix, err error) {
-	host, err = e.networkHost().Occupied(ctx)
+// occupiedRanges lists what a new network must avoid: the host's managed prefixes and
+// routes, and every IPv4 subnet of every Docker network on the host, Astilba's or not. They
+// are kept apart so a refusal can say what fills the pool.
+func (e *Engine) occupiedRanges(ctx context.Context) (managed, routes, docker []netip.Prefix, err error) {
+	managed, routes, err = e.networkHost().Occupied(ctx)
 	if err != nil {
-		return nil, nil, errHostRangesUnknown
+		return nil, nil, nil, errHostRangesUnknown
 	}
 	list, err := e.Docker.NetworkList(ctx, client.NetworkListOptions{})
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	docker = []netip.Prefix{}
 	for _, n := range list.Items {
@@ -210,13 +222,10 @@ func (e *Engine) occupiedRanges(ctx context.Context) (host, docker []netip.Prefi
 		}
 	}
 	// A bridge's own routes and addresses are its network's, not the host's.
-	own := []netip.Prefix{}
-	for _, h := range host {
-		if !slices.ContainsFunc(docker, func(d netip.Prefix) bool { return d.Bits() <= h.Bits() && d.Contains(h.Addr()) }) {
-			own = append(own, h)
-		}
-	}
-	return own, docker, nil
+	routes = slices.DeleteFunc(routes, func(r netip.Prefix) bool {
+		return slices.ContainsFunc(docker, func(d netip.Prefix) bool { return d.Bits() <= r.Bits() && d.Contains(r.Addr()) })
+	})
+	return managed, routes, docker, nil
 }
 
 // freeSubnets returns the lowest count subnets of the given size inside pool that overlap

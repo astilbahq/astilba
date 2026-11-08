@@ -95,3 +95,24 @@ func TestManagedPrefixesIncludeEveryHeldNetwork(t *testing.T) {
 		t.Fatal("unreadable managed network state ignored")
 	}
 }
+
+// With container networks from an owner pool of 10.0.0.0/8, the dashboard's suggested
+// managed prefix joins beside them, and a prefix over one of them is refused: the join's
+// route check keeps the two apart, so the pool needs no rule against managed prefixes.
+func TestJoinRefusesOnlyAPrefixOverAContainerNetwork(t *testing.T) {
+	dir := t.TempDir()
+	ip := filepath.Join(dir, "ip")
+	routes := `[{"dst":"default","gateway":"192.168.5.2","dev":"eth0"},{"dst":"192.168.5.0/24","dev":"eth0"},{"dst":"10.0.0.0/25","dev":"br-0123456789ab"}]`
+	if err := os.WriteFile(ip, []byte("#!/bin/sh\nprintf '%s' '"+routes+"'\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	h := Host{Dir: dir, IP: ip}
+	m := Manifest{NetworkID: uuid.New(), Prefix: "10.251.0.0/24"}
+	if err := h.inspectRoutes(t.Context(), m); err != nil {
+		t.Fatalf("suggested prefix beside container networks: %v", err)
+	}
+	m.Prefix = "10.0.0.0/24"
+	if err := h.inspectRoutes(t.Context(), m); err == nil {
+		t.Fatal("joined a managed network over a container network")
+	}
+}
