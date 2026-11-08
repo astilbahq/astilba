@@ -92,7 +92,10 @@ func (e *Engine) executeNetwork(ctx context.Context, c api.ExecutionCommand, r R
 		if err = e.checkpoint(c.Id, "network-apply"); err != nil {
 			return err
 		}
-		if err = host.Apply(ctx, m, bridges, command.Action == "restrict"); err != nil {
+		e.networkMu.Lock()
+		err = host.Apply(ctx, m, bridges, command.Action == "restrict")
+		e.networkMu.Unlock()
+		if err != nil {
 			if c.ParentId == nil && errors.Is(err, hostnetwork.ErrGenerationConflict) {
 				return e.refuseNetwork(ctx, c.Id, receipt, "This host holds a later private-link generation than this controller issued, so nothing changed. Fence this server with prepare-recovery, transfer it, then approve the network again.")
 			}

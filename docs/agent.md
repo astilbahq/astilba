@@ -114,6 +114,27 @@ A failed route publication restores the previous route file in place, so other e
 
 Backup recipes, operator filesystem roots, the pinned restic prerequisite, daily/cron/interval schedules, bounded job timeouts and local interruption recovery are documented in [Backups and restoration](backups.md). Use those instructions before enabling backup policies on an enrolled server.
 
+## Container networks
+
+The agent gives every network it creates its own /25 from a container network pool, 10.252.0.0/14 unless you set another. That covers each environment's network, any Compose networks and the ingress network. The default pool holds 2,048 networks, enough for 50 routed environments that each use the most networks a Compose project can declare. The agent doesn't use Docker's `default-address-pools`, whose built-in pools run out after about 30 networks, so the host's own containers keep those pools.
+
+Before creating a network, the agent skips any range that overlaps:
+
+- another Docker network on the host, Astilba's or not
+- an IPv4 route in any routing table, including gateway, VPN and `unreachable` routes; routes shorter than /8, such as a VPN's replacement for the default route, are ignored
+- a nameserver in `/etc/resolv.conf` or systemd-resolved's upstream list
+- the prefix of a managed private network the host holds
+
+A deployment that needs networks the pool can't supply is refused before it changes anything. The refusal names the pool. It says either that the host's routes or managed network prefixes cover all of it, naming the prefixes, which only a different pool or prefix resolves, or how many networks the deployment needs, how many ranges are free and how many networks use the pool.
+
+### Choosing another pool
+
+Set `--network-pool 10.100.0.0/16` on the agent's `run` command when the default overlaps a network the host must reach, for example a VPN or cloud network that routes all of 10.0.0.0/8, a peered network reached only through the default gateway, or a range used on the host's LAN. Use an inspected `ExecStart` override that keeps the existing arguments, as for [certificate contact](#certificate-contact). The pool must be a private IPv4 range of /18 or larger, written as the range itself. Otherwise the agent refuses to start and says why. The pool may contain managed network prefixes, as the default can: the agent places networks around every prefix the host holds.
+
+Changing the pool never moves an existing network. Running environments keep their addresses, including networks created before agents chose them and networks outside the new pool. New networks come only from the new pool, and the old range stays in use until the networks in it are removed. Restart the agent after changing the setting.
+
+The agent checks routes only when it creates a network. If a route appears later, for example when a VPN connects, any container network inside it takes precedence on the host: traffic from the host and its containers to those addresses goes to the containers, not through the VPN. Give the host a persistent route for networks it must reach, or set a pool outside them, before deploying. When choosing a managed network prefix, avoid ranges the workspace's hosts already use for container networks: a host won't join a managed network whose prefix overlaps any of its routes, including its container networks' routes. A host that is about to join a managed network for a cross-host placement keeps the new environment's networks out of that prefix.
+
 ## Optional cross-host networking
 
 Install a signed cross-host-capable agent before preparing private links. In

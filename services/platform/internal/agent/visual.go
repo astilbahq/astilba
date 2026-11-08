@@ -253,7 +253,7 @@ func (e *Engine) executeVisual(ctx context.Context, c api.ExecutionCommand, r Re
 		return err
 	}
 	if err = e.ensureStorage(ctx, p.Plan); err != nil {
-		return e.visualFinish(ctx, c, p, "needs_attention", safeVisualError(err, p.Secrets))
+		return e.visualFinish(ctx, c, p, storageState(err), safeVisualError(err, p.Secrets))
 	}
 	if err = e.checkpoint(c.Id, "services"); err != nil {
 		return err
@@ -468,31 +468,8 @@ func (e *Engine) activeContainers(ctx context.Context, p deployment.Plan) ([]con
 	return out, nil
 }
 func (e *Engine) ensureStorage(ctx context.Context, p deployment.Plan) error {
-	type desiredNetwork struct {
-		name     string
-		id       uuid.UUID
-		internal bool
-	}
-	networks := []desiredNetwork{{deployment.NetworkName(p.UnitID), p.UnitID, false}}
-	for _, network := range p.Specification.Networks {
-		if network.Name == "default" {
-			networks[0].internal = network.Internal
-			continue
-		}
-		networks = append(networks, desiredNetwork{deployment.NetworkName(network.ID), network.ID, network.Internal})
-	}
-	for _, network := range networks {
-		n, err := e.Docker.NetworkInspect(ctx, network.name, client.NetworkInspectOptions{})
-		if errdefs.IsNotFound(err) {
-			_, err = e.Docker.NetworkCreate(ctx, network.name, client.NetworkCreateOptions{Driver: "bridge", Internal: network.internal, Labels: visualLabels(p, network.id)})
-			if err != nil {
-				return errors.New("Cannot create the deployment network.")
-			}
-			n, err = e.Docker.NetworkInspect(ctx, network.name, client.NetworkInspectOptions{})
-		}
-		if err != nil || !visualOwned(n.Network.Labels, p) || n.Network.Driver != "bridge" || n.Network.Internal != network.internal {
-			return errors.New("Deployment network ownership or settings do not match.")
-		}
+	if err := e.ensureUnitNetworks(ctx, p); err != nil {
+		return err
 	}
 	if p.Local != nil && !p.Local.Primary {
 		return nil
