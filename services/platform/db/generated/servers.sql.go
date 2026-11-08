@@ -181,6 +181,95 @@ func (q *Queries) DeleteAbandonedCrossHostRuntime(ctx context.Context, arg Delet
 	return err
 }
 
+const demotePrimaryUnit = `-- name: DemotePrimaryUnit :exec
+UPDATE deployment_units SET primary_unit=false,server_id=NULL WHERE workspace_id = $1 AND id = $2 AND primary_unit
+`
+
+type DemotePrimaryUnitParams struct {
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ID          uuid.UUID `json:"id"`
+}
+
+// The former primary is detached from its revoked server, so nothing reuses its identity there and
+// picks up the data its volumes still hold on that host.
+func (q *Queries) DemotePrimaryUnit(ctx context.Context, arg DemotePrimaryUnitParams) error {
+	_, err := q.db.Exec(ctx, demotePrimaryUnit, arg.WorkspaceID, arg.ID)
+	return err
+}
+
+const dropUnusedAbandonedVolumes = `-- name: DropUnusedAbandonedVolumes :exec
+UPDATE managed_volumes SET deleted=true WHERE workspace_id = $1 AND environment_id = $2 AND id = ANY($3::uuid[]) AND NOT(id = ANY($4::uuid[]))
+`
+
+type DropUnusedAbandonedVolumesParams struct {
+	WorkspaceID   uuid.UUID   `json:"workspace_id"`
+	EnvironmentID uuid.UUID   `json:"environment_id"`
+	Abandoned     []uuid.UUID `json:"abandoned"`
+	Declared      []uuid.UUID `json:"declared"`
+}
+
+// A volume the plan doesn't declare isn't created on the new primary, and the revoked server holds the only copy.
+func (q *Queries) DropUnusedAbandonedVolumes(ctx context.Context, arg DropUnusedAbandonedVolumesParams) error {
+	_, err := q.db.Exec(ctx, dropUnusedAbandonedVolumes,
+		arg.WorkspaceID,
+		arg.EnvironmentID,
+		arg.Abandoned,
+		arg.Declared,
+	)
+	return err
+}
+
+const environmentVolumes = `-- name: EnvironmentVolumes :many
+SELECT id FROM managed_volumes WHERE workspace_id = $1 AND environment_id = $2 AND unit_id = $3 AND NOT deleted ORDER BY id
+`
+
+type EnvironmentVolumesParams struct {
+	WorkspaceID   uuid.UUID `json:"workspace_id"`
+	EnvironmentID uuid.UUID `json:"environment_id"`
+	UnitID        uuid.UUID `json:"unit_id"`
+}
+
+func (q *Queries) EnvironmentVolumes(ctx context.Context, arg EnvironmentVolumesParams) ([]uuid.UUID, error) {
+	rows, err := q.db.Query(ctx, environmentVolumes, arg.WorkspaceID, arg.EnvironmentID, arg.UnitID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []uuid.UUID{}
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const insertSecondaryUnit = `-- name: InsertSecondaryUnit :exec
+INSERT INTO deployment_units(workspace_id,id,environment_id,server_id,primary_unit) VALUES($1,$2,$3,$4,false)
+`
+
+type InsertSecondaryUnitParams struct {
+	WorkspaceID   uuid.UUID  `json:"workspace_id"`
+	ID            uuid.UUID  `json:"id"`
+	EnvironmentID uuid.UUID  `json:"environment_id"`
+	ServerID      *uuid.UUID `json:"server_id"`
+}
+
+func (q *Queries) InsertSecondaryUnit(ctx context.Context, arg InsertSecondaryUnitParams) error {
+	_, err := q.db.Exec(ctx, insertSecondaryUnit,
+		arg.WorkspaceID,
+		arg.ID,
+		arg.EnvironmentID,
+		arg.ServerID,
+	)
+	return err
+}
+
 const insertServer = `-- name: InsertServer :one
 INSERT INTO servers(id,workspace_id,name,role,enrollment_hash,enrollment_expires,preview_only)
 VALUES($1,$2,$3,$4,$5,$6,$7)
@@ -353,6 +442,36 @@ func (q *Queries) LockAgentEnrollment(ctx context.Context, arg LockAgentEnrollme
 	return i, err
 }
 
+const moveEnvironmentResources = `-- name: MoveEnvironmentResources :exec
+UPDATE managed_resources SET unit_id = $1 WHERE workspace_id = $2 AND environment_id = $3
+`
+
+type MoveEnvironmentResourcesParams struct {
+	UnitID        uuid.UUID `json:"unit_id"`
+	WorkspaceID   uuid.UUID `json:"workspace_id"`
+	EnvironmentID uuid.UUID `json:"environment_id"`
+}
+
+func (q *Queries) MoveEnvironmentResources(ctx context.Context, arg MoveEnvironmentResourcesParams) error {
+	_, err := q.db.Exec(ctx, moveEnvironmentResources, arg.UnitID, arg.WorkspaceID, arg.EnvironmentID)
+	return err
+}
+
+const moveEnvironmentVolumes = `-- name: MoveEnvironmentVolumes :exec
+UPDATE managed_volumes SET unit_id = $1 WHERE workspace_id = $2 AND environment_id = $3
+`
+
+type MoveEnvironmentVolumesParams struct {
+	UnitID        uuid.UUID `json:"unit_id"`
+	WorkspaceID   uuid.UUID `json:"workspace_id"`
+	EnvironmentID uuid.UUID `json:"environment_id"`
+}
+
+func (q *Queries) MoveEnvironmentVolumes(ctx context.Context, arg MoveEnvironmentVolumesParams) error {
+	_, err := q.db.Exec(ctx, moveEnvironmentVolumes, arg.UnitID, arg.WorkspaceID, arg.EnvironmentID)
+	return err
+}
+
 const parkedMaintenanceOnPrimary = `-- name: ParkedMaintenanceOnPrimary :many
 SELECT o.id FROM execution_operations o JOIN cross_host_operations c ON c.id=o.id AND c.workspace_id=o.workspace_id
 WHERE o.workspace_id = $1 AND o.server_id = $2 AND o.parent_id IS NULL AND o.kind='crosshost'
@@ -410,6 +529,20 @@ func (q *Queries) PrepareServerTransfer(ctx context.Context, arg PrepareServerTr
 	var controller_generation int64
 	err := row.Scan(&controller_generation)
 	return controller_generation, err
+}
+
+const promoteUnit = `-- name: PromoteUnit :exec
+UPDATE deployment_units SET primary_unit=true WHERE workspace_id = $1 AND id = $2 AND NOT primary_unit
+`
+
+type PromoteUnitParams struct {
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ID          uuid.UUID `json:"id"`
+}
+
+func (q *Queries) PromoteUnit(ctx context.Context, arg PromoteUnitParams) error {
+	_, err := q.db.Exec(ctx, promoteUnit, arg.WorkspaceID, arg.ID)
+	return err
 }
 
 const recordAgentHeartbeat = `-- name: RecordAgentHeartbeat :one
@@ -490,6 +623,21 @@ type RejectRevokedServerUpgradesParams struct {
 
 func (q *Queries) RejectRevokedServerUpgrades(ctx context.Context, arg RejectRevokedServerUpgradesParams) error {
 	_, err := q.db.Exec(ctx, rejectRevokedServerUpgrades, arg.WorkspaceID, arg.ServerID)
+	return err
+}
+
+const releaseRevokedRouteClaims = `-- name: ReleaseRevokedRouteClaims :exec
+DELETE FROM route_claims c WHERE c.workspace_id = $1 AND c.environment_id = $2
+    AND c.server_id IN (SELECT s.id FROM servers s WHERE s.workspace_id = $1 AND s.revoked)
+`
+
+type ReleaseRevokedRouteClaimsParams struct {
+	WorkspaceID   uuid.UUID `json:"workspace_id"`
+	EnvironmentID uuid.UUID `json:"environment_id"`
+}
+
+func (q *Queries) ReleaseRevokedRouteClaims(ctx context.Context, arg ReleaseRevokedRouteClaimsParams) error {
+	_, err := q.db.Exec(ctx, releaseRevokedRouteClaims, arg.WorkspaceID, arg.EnvironmentID)
 	return err
 }
 
@@ -682,6 +830,23 @@ func (q *Queries) RotateAgentCredential(ctx context.Context, arg RotateAgentCred
 	return result.RowsAffected(), nil
 }
 
+const secondaryUnitOnServer = `-- name: SecondaryUnitOnServer :one
+SELECT id FROM deployment_units WHERE workspace_id = $1 AND environment_id = $2 AND server_id = $3 AND NOT primary_unit
+`
+
+type SecondaryUnitOnServerParams struct {
+	WorkspaceID   uuid.UUID  `json:"workspace_id"`
+	EnvironmentID uuid.UUID  `json:"environment_id"`
+	ServerID      *uuid.UUID `json:"server_id"`
+}
+
+func (q *Queries) SecondaryUnitOnServer(ctx context.Context, arg SecondaryUnitOnServerParams) (uuid.UUID, error) {
+	row := q.db.QueryRow(ctx, secondaryUnitOnServer, arg.WorkspaceID, arg.EnvironmentID, arg.ServerID)
+	var id uuid.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
 const serverCapabilities = `-- name: ServerCapabilities :one
 SELECT capabilities FROM servers WHERE workspace_id = $1 AND id = $2
 `
@@ -713,6 +878,22 @@ func (q *Queries) ServerHasActiveOperations(ctx context.Context, arg ServerHasAc
 	var exists bool
 	err := row.Scan(&exists)
 	return exists, err
+}
+
+const serverName = `-- name: ServerName :one
+SELECT name FROM servers WHERE workspace_id = $1 AND id = $2
+`
+
+type ServerNameParams struct {
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ID          uuid.UUID `json:"id"`
+}
+
+func (q *Queries) ServerName(ctx context.Context, arg ServerNameParams) (string, error) {
+	row := q.db.QueryRow(ctx, serverName, arg.WorkspaceID, arg.ID)
+	var name string
+	err := row.Scan(&name)
+	return name, err
 }
 
 const settleRevokedServerOperations = `-- name: SettleRevokedServerOperations :exec

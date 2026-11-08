@@ -13,6 +13,7 @@ import { Select } from "../components/select";
 import { Textarea } from "../components/textarea";
 import * as s from "../styles";
 import { ErrorNotice, Field, Form, text, useAction } from "../ui";
+import { DeploymentTarget } from "./deployment-target";
 import { ReviewedPlacements } from "./reviewed-placements";
 import type { EnvironmentPath } from "./visual-editor";
 
@@ -140,6 +141,15 @@ export function Deployments({
                       serverId,
                       allowHostChanges: d.has("host"),
                       acceptDrift: d.has("drift"),
+                      ...(d.has("replacement")
+                        ? {
+                            replacement: {
+                              abandonedVolumeIds: d
+                                .getAll("abandonedVolume")
+                                .map(String),
+                            },
+                          }
+                        : {}),
                       ...(requireRelease
                         ? {
                             releaseOptions: {
@@ -164,36 +174,14 @@ export function Deployments({
               })
             }
           >
-            <Label>
-              Deployment server
-              <Select
-                value={serverId}
-                onChange={(e) => setServerId(e.target.value)}
-                required
-              >
-                <option value="">Choose an enrolled server</option>
-                {servers.data
-                  ?.filter((v) => v.role !== "build" && v.status !== "revoked")
-                  .map((v) => (
-                    <option
-                      key={v.id}
-                      value={v.id}
-                      disabled={
-                        !v.capabilities?.visual ||
-                        (!!revision.specification.compose &&
-                          !v.capabilities?.compose)
-                      }
-                    >
-                      {v.name}
-                      {v.capabilities?.visual &&
-                      (!revision.specification.compose ||
-                        v.capabilities?.compose)
-                        ? ""
-                        : " — supported Compose required"}
-                    </option>
-                  ))}
-              </Select>
-            </Label>
+            <DeploymentTarget
+              path={path}
+              servers={servers.data}
+              specification={revision.specification}
+              serverId={serverId}
+              setServerId={setServerId}
+              owner={owner}
+            />
             {owner && (
               <Label className={s.row}>
                 <Checkbox name="host" />

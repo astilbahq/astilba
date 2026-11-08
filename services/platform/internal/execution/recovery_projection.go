@@ -24,7 +24,7 @@ type recoveryProjection struct {
 	tuple       appliedTuple
 }
 
-func recoveryProjections(ctx context.Context, tx pgx.Tx, before, incoming portability.Archive, roots map[uuid.UUID]recoveringRoot, origins appliedOrigins) (map[uuid.UUID]recoveryProjection, error) {
+func recoveryProjections(ctx context.Context, tx pgx.Tx, before, incoming portability.Archive, roots map[uuid.UUID]recoveringRoot, origins appliedOrigins, revoked map[uuid.UUID]bool) (map[uuid.UUID]recoveryProjection, error) {
 	out := map[uuid.UUID]recoveryProjection{}
 	own := map[uuid.UUID]portability.Archive{}
 	ownParents := map[uuid.UUID]uuid.UUID{}
@@ -150,7 +150,7 @@ func recoveryProjections(ctx context.Context, tx pgx.Tx, before, incoming portab
 			row = oldRow
 			origin, next = previousOrigin, old
 		}
-		projection, err := recoveryProjectionFrom(candidate, env, row)
+		projection, err := recoveryProjectionFrom(candidate, env, row, revoked)
 		if err != nil {
 			return nil, err
 		}
@@ -175,7 +175,10 @@ func recoveryRuntimePlan(a portability.Archive, env uuid.UUID) (uuid.UUID, error
 	}
 	return uuid.Nil, nil
 }
-func recoveryProjectionFrom(a portability.Archive, env uuid.UUID, row portability.Row) (recoveryProjection, error) {
+
+// revoked names the servers revoked in any recovery input, since a checkpoint's base carries no
+// servers of its own.
+func recoveryProjectionFrom(a portability.Archive, env uuid.UUID, row portability.Row, revoked map[uuid.UUID]bool) (recoveryProjection, error) {
 	out := recoveryProjection{environment: row, runtime: []portability.Row{}, units: []portability.Row{}}
 	for _, r := range a.Tables["visual_runtime"] {
 		id, err := recoveryValue[uuid.UUID](r, "environment_id")
@@ -231,6 +234,7 @@ func recoveryProjectionFrom(a portability.Archive, env uuid.UUID, row portabilit
 			active[unit.Plan.UnitID] = unit.Plan
 		}
 	}
+	bound := 0
 	for _, r := range a.Tables["deployment_units"] {
 		unit, err := recoveryValue[uuid.UUID](r, "id")
 		if err != nil {
@@ -245,13 +249,19 @@ func recoveryProjectionFrom(a portability.Archive, env uuid.UUID, row portabilit
 			if err != nil {
 				return out, err
 			}
+			bound++
+			// A replacement that hasn't finished has already detached the revoked primary's unit,
+			// which keeps its applied plan until the new one succeeds. It stays detached.
+			if server == nil && revoked[expected.ServerID] && environment == env {
+				continue
+			}
 			if server == nil || *server != expected.ServerID || environment != env {
 				return out, errors.New("applied runtime has incompatible unit ownership")
 			}
 			out.units = append(out.units, r)
 		}
 	}
-	if len(out.units) != len(active) {
+	if bound != len(active) {
 		return out, errors.New("applied runtime unit bindings are incomplete")
 	}
 	if plan.Distributed != nil {
@@ -316,6 +326,14 @@ func appendRecoveryProjectionRows(a *portability.Archive, projections map[uuid.U
 					return err
 				}
 				if key == id {
+					// A unit the merge knows was detached stays detached, whichever source is applied.
+					stage, _, err := recoveryUnitStage(row)
+					if err != nil {
+						return err
+					}
+					if stage == 2 {
+						continue
+					}
 					old, err := recoveryValue[*uuid.UUID](row, "server_id")
 					if err != nil {
 						return err

@@ -17,6 +17,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/hostnetwork"
 	"github.com/astilbahq/astilba/services/platform/internal/upgrade"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // revokedGroup runs protocol peers that answer every coordinated phase through the real management
@@ -32,13 +33,15 @@ type revokedGroup struct {
 	// attention names phases a host reports as needing attention, until they're cancelled. It's set
 	// before the phase starts and read by the host alone afterwards.
 	attention map[string]bool
+	// failing names visual actions a host reports as failed. Set while the host isn't polling for one.
+	failing map[string]bool
 	// heldCheckpoint is a parent phase whose recovery metadata the primary won't acknowledge.
 	heldCheckpoint string
 }
 
 func newRevokedGroup(t *testing.T, count int) *revokedGroup {
 	t.Helper()
-	g := &revokedGroup{aheadNetwork: newAheadNetwork(t, count), held: map[string]bool{}, seen: map[string]bool{}, attention: map[string]bool{}}
+	g := &revokedGroup{aheadNetwork: newAheadNetwork(t, count), held: map[string]bool{}, seen: map[string]bool{}, attention: map[string]bool{}, failing: map[string]bool{}}
 	g.save(t, g.hosts...)
 	g.converge(t)
 	yes := true
@@ -158,6 +161,10 @@ func (g *revokedGroup) respond(t *testing.T, h *aheadHost, c api.ExecutionComman
 		}
 		if !g.note(h, "visual-"+payload.Action) {
 			return report, false
+		}
+		if g.failing["visual-"+payload.Action+"/"+h.id.String()] {
+			report.State = "failed"
+			return report, true
 		}
 		observation := deployment.Observation{ObservedAt: time.Now().UTC(), Resources: []deployment.Resource{}, StateHash: strings.Repeat("b", 64)}
 		if payload.Action == "resolve" {
@@ -340,28 +347,42 @@ func (g *revokedGroup) finished(t *testing.T, id uuid.UUID) string {
 // two passes of the coordinator, which nothing else can arrange deterministically.
 func (g *revokedGroup) revokeBetweenTicks(t *testing.T, parent uuid.UUID, gone *aheadHost, phase, next string) {
 	t.Helper()
+	// The coordinator's own transaction can take these rows in a different order, so a deadlock is
+	// retried rather than treated as a failure.
+	for attempt := 0; ; attempt++ {
+		err := g.revokeInOneTransaction(parent, gone, phase, next)
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "40P01" && attempt < 5 {
+			continue
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		break
+	}
+	gone.silent, gone.revoked = true, true
+}
+
+func (g *revokedGroup) revokeInOneTransaction(parent uuid.UUID, gone *aheadHost, phase, next string) error {
 	tx, err := g.f.st.Pool.Begin(g.ctx)
 	if err != nil {
-		t.Fatal(err)
+		return err
 	}
 	defer tx.Rollback(g.ctx)
 	for _, statement := range []struct {
 		query string
 		args  []any
 	}{
-		{`UPDATE execution_operations SET state='succeeded',report_sequence=2 WHERE parent_id=$1 AND command->'crosshost'->>'phase'=$2`, []any{parent, phase}},
-		{`UPDATE cross_host_operations SET phase=$2 WHERE id=$1`, []any{parent, next}},
 		{`UPDATE servers SET revoked=true,credential_hash=NULL WHERE id=$1`, []any{gone.id}},
 		{`UPDATE network_members SET enabled=false WHERE server_id=$1`, []any{gone.id}},
+		{`UPDATE execution_operations SET state='succeeded',report_sequence=2 WHERE parent_id=$1 AND command->'crosshost'->>'phase'=$2`, []any{parent, phase}},
+		{`UPDATE cross_host_operations SET phase=$2 WHERE id=$1`, []any{parent, next}},
 	} {
 		if _, err = tx.Exec(g.ctx, statement.query, statement.args...); err != nil {
-			t.Fatal(err)
+			return err
 		}
 	}
-	if err = tx.Commit(g.ctx); err != nil {
-		t.Fatal(err)
-	}
-	gone.silent, gone.revoked = true, true
+	return tx.Commit(g.ctx)
 }
 
 // dumpOperation shows how far a stuck parent got.

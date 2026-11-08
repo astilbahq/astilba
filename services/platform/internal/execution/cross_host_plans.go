@@ -38,13 +38,20 @@ func previousUnits(p deployment.Plan) map[uuid.UUID]deployment.Plan {
 	}
 	return out
 }
-func (s *Service) createCrossHostPlan(ctx context.Context, tx pgx.Tx, ws, pid, env uuid.UUID, in api.VisualPlanRequest, v visualEnvironment, previous deployment.Plan) (deployment.Status, error) {
+func (s *Service) createCrossHostPlan(ctx context.Context, tx pgx.Tx, ws, pid, env uuid.UUID, in api.VisualPlanRequest, v visualEnvironment, previous deployment.Plan, replacement *deployment.Replacement) (deployment.Status, error) {
 	out := deployment.Status{}
 	if v.Purpose == "preview" || v.Spec.Compose != nil || in.AcceptDrift || v.Spec.Placement == nil {
 		return out, domain.Invalid("placement")
 	}
-	if v.Spec.Placement.IngressServerID != in.ServerId || v.Server != nil && *v.Server != in.ServerId {
+	if v.Spec.Placement.IngressServerID != in.ServerId || replacement == nil && v.Server != nil && *v.Server != in.ServerId {
 		return out, domain.Conflict
+	}
+	primaryUnit := v.Unit
+	if replacement != nil {
+		var err error
+		if primaryUnit, err = primaryUnitFor(ctx, tx, ws, env, v, in.ServerId); err != nil {
+			return out, err
+		}
 	}
 	if err := s.Store.ValidateApplicationRoutes(ctx, tx, ws, env, v.Spec, &in.ServerId); err != nil {
 		return out, err
@@ -127,9 +134,10 @@ func (s *Service) createCrossHostPlan(ctx context.Context, tx pgx.Tx, ws, pid, e
 		return out, domain.Invalid("placement.ingressPorts")
 	}
 
-	parent := deployment.Plan{ID: uuid.New(), ServerID: in.ServerId, EnvironmentID: env, UnitID: v.Unit, RevisionID: v.Revision, ExpectedAppliedID: v.Applied, Recipe: deployment.CrossHostRecipe, Specification: v.Spec, Images: map[string]string{}, HostChanges: true, Effects: []string{"Prepare explicit cross-host pools; publish only after every host and private endpoint is ready; retain old pools while outcomes are uncertain.", "First publication of an existing private service port can restart that service on its owning host."}, ExpiresAt: time.Now().UTC().Add(15 * time.Minute), Distributed: &deployment.DistributedPlan{NetworkID: network.ID, NetworkGeneration: network.Generation + 1, Units: []deployment.DistributedUnit{}}}
-	parent.Effects = append(parent.Effects, abandonedEffects(abandoned)...)
-	parent.Distributed.Abandoned = abandonedIDs(abandoned)
+	parent := deployment.Plan{ID: uuid.New(), ServerID: in.ServerId, EnvironmentID: env, UnitID: primaryUnit, RevisionID: v.Revision, ExpectedAppliedID: v.Applied, Recipe: deployment.CrossHostRecipe, Specification: v.Spec, Images: map[string]string{}, HostChanges: true, Effects: []string{"Prepare explicit cross-host pools; publish only after every host and private endpoint is ready; retain old pools while outcomes are uncertain.", "First publication of an existing private service port can restart that service on its owning host."}, ExpiresAt: time.Now().UTC().Add(15 * time.Minute), Distributed: &deployment.DistributedPlan{NetworkID: network.ID, NetworkGeneration: network.Generation + 1, Units: []deployment.DistributedUnit{}}}
+	if err = leaveBehind(ctx, tx, ws, &parent, abandoned, replacement); err != nil {
+		return out, err
+	}
 	if in.ReleaseOptions != nil {
 		parent.ReleaseOptions = &deployment.ReleaseOptions{Command: in.ReleaseOptions.Command, CommandTimeoutSeconds: in.ReleaseOptions.CommandTimeoutSeconds, DrainSeconds: in.ReleaseOptions.DrainSeconds}
 		if err = parent.ReleaseOptions.Validate(); err != nil {
@@ -164,9 +172,12 @@ func (s *Service) createCrossHostPlan(ctx context.Context, tx pgx.Tx, ws, pid, e
 			return out, domain.Invalid("placement.capacity")
 		}
 		if server == in.ServerId && (host.CrossHostInventory.IngressReady == nil || !*host.CrossHostInventory.IngressReady) {
+			if replacement != nil {
+				return out, replacementNeedsIngress
+			}
 			return out, domain.Invalid("placement.preparePrimaryIngress")
 		}
-		unitID := v.Unit
+		unitID := primaryUnit
 		if server != in.ServerId {
 			err = tx.QueryRow(ctx, `SELECT id FROM deployment_units WHERE workspace_id=$1 AND environment_id=$2 AND server_id=$3 AND NOT primary_unit`, ws, env, server).Scan(&unitID)
 			if errors.Is(err, pgx.ErrNoRows) {

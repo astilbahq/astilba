@@ -2805,6 +2805,44 @@
           "schema":
             "type": "string"
             "format": "uuid"
+  "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/primary-replacement":
+    "get":
+      "operationId": "getPrimaryReplacement"
+      "responses":
+        "200":
+          "description": "Success"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/PrimaryReplacementView"
+        "default":
+          "description": "Error"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Error"
+      "parameters":
+        -
+          "name": "workspaceId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+        -
+          "name": "projectId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+        -
+          "name": "environmentId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
   "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/compose/preview":
     "post":
       "operationId": "previewCompose"
@@ -6531,6 +6569,7 @@
       "additionalProperties": false
       properties:
         restore: {$ref: "#/components/schemas/RestoreCutover"}
+        replacement: {$ref: "#/components/schemas/PrimaryReplacement"}
         distributed: {$ref: "#/components/schemas/DistributedPlan"}
         local: {$ref: "#/components/schemas/LocalPlacement"}
         replicaInstances:
@@ -6784,12 +6823,38 @@
         - "plan"
       "x-go-type": "jsontext.Value"
       "x-go-type-import": {"path": "encoding/json/jsontext"}
+    PrimaryReplacement:
+      type: object
+      additionalProperties: false
+      required: [server, abandonedVolumes]
+      properties:
+        server: {type: string, format: uuid}
+        abandonedVolumes: {type: array, maxItems: 1000, items: {type: string, format: uuid}}
+    PrimaryReplacementView:
+      description: Whether the environment's primary was revoked and needs replacing, which server an unfinished replacement must continue on, and the volumes a replacement has to leave behind.
+      type: object
+      additionalProperties: false
+      required: [required, abandonedVolumeIds]
+      properties:
+        required: {type: boolean}
+        revokedServerId: {type: string, format: uuid}
+        continueOnServerId: {type: string, format: uuid}
+        abandonedVolumeIds: {type: array, maxItems: 1000, items: {type: string, format: uuid}}
+    PrimaryReplacementRequest:
+      description: Replaces the environment's revoked primary. The volumes named are every volume on it, which start empty on the new server.
+      type: object
+      additionalProperties: false
+      required: [abandonedVolumeIds]
+      properties:
+        abandonedVolumeIds: {type: array, maxItems: 1000, items: {type: string, format: uuid}}
     "VisualPlanRequest":
       "type": "object"
       "additionalProperties": false
       "properties":
         releaseOptions:
           $ref: "#/components/schemas/ReleaseOptions"
+        replacement:
+          $ref: "#/components/schemas/PrimaryReplacementRequest"
         "serverId":
           "type": "string"
           "format": "uuid"

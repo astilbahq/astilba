@@ -165,3 +165,37 @@ WHERE child.workspace_id = @workspace_id AND root.workspace_id = @workspace_id A
 -- This releases a held secondary. A held primary waits for a local retry, which this also ends.
 UPDATE execution_operations SET cancel_requested=true
 WHERE workspace_id = @workspace_id AND parent_id = @parent_id AND state='needs_attention' AND command->'crosshost'->>'phase'='prepare';
+
+-- name: EnvironmentVolumes :many
+SELECT id FROM managed_volumes WHERE workspace_id = @workspace_id AND environment_id = @environment_id AND unit_id = @unit_id AND NOT deleted ORDER BY id;
+
+-- name: SecondaryUnitOnServer :one
+SELECT id FROM deployment_units WHERE workspace_id = @workspace_id AND environment_id = @environment_id AND server_id = @server_id AND NOT primary_unit;
+
+-- name: DemotePrimaryUnit :exec
+-- The former primary is detached from its revoked server, so nothing reuses its identity there and
+-- picks up the data its volumes still hold on that host.
+UPDATE deployment_units SET primary_unit=false,server_id=NULL WHERE workspace_id = @workspace_id AND id = @id AND primary_unit;
+
+-- name: InsertSecondaryUnit :exec
+INSERT INTO deployment_units(workspace_id,id,environment_id,server_id,primary_unit) VALUES(@workspace_id,@id,@environment_id,@server_id,false);
+
+-- name: PromoteUnit :exec
+UPDATE deployment_units SET primary_unit=true WHERE workspace_id = @workspace_id AND id = @id AND NOT primary_unit;
+
+-- name: MoveEnvironmentVolumes :exec
+UPDATE managed_volumes SET unit_id = @unit_id WHERE workspace_id = @workspace_id AND environment_id = @environment_id;
+
+-- name: MoveEnvironmentResources :exec
+UPDATE managed_resources SET unit_id = @unit_id WHERE workspace_id = @workspace_id AND environment_id = @environment_id;
+
+-- name: DropUnusedAbandonedVolumes :exec
+-- A volume the plan doesn't declare isn't created on the new primary, and the revoked server holds the only copy.
+UPDATE managed_volumes SET deleted=true WHERE workspace_id = @workspace_id AND environment_id = @environment_id AND id = ANY(@abandoned::uuid[]) AND NOT(id = ANY(@declared::uuid[]));
+
+-- name: ReleaseRevokedRouteClaims :exec
+DELETE FROM route_claims c WHERE c.workspace_id = @workspace_id AND c.environment_id = @environment_id
+    AND c.server_id IN (SELECT s.id FROM servers s WHERE s.workspace_id = @workspace_id AND s.revoked);
+
+-- name: ServerName :one
+SELECT name FROM servers WHERE workspace_id = @workspace_id AND id = @id;
