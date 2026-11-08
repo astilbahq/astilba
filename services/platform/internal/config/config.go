@@ -84,7 +84,11 @@ func Load() (Config, error) {
 	}
 	if c.Hosted {
 		cohort, _ := strconv.Atoi(os.Getenv("ASTILBA_HOSTED_COHORT_LIMIT"))
-		servers, _ := strconv.Atoi(os.Getenv("ASTILBA_HOSTED_SERVER_LIMIT"))
+		// A server limit that is not a 32-bit integer stays zero, which Validate refuses.
+		var servers int32
+		if n, e := strconv.ParseInt(os.Getenv("ASTILBA_HOSTED_SERVER_LIMIT"), 10, 32); e == nil {
+			servers = int32(n)
+		}
 		c.Hosting = hosting.Config{CohortLimit: cohort, ServerLimit: servers, PriceID: os.Getenv("ASTILBA_STRIPE_PRICE"), SecretKey: os.Getenv("ASTILBA_STRIPE_SECRET"), WebhookSecret: os.Getenv("ASTILBA_STRIPE_WEBHOOK_SECRET"), Support: os.Getenv("ASTILBA_HOSTED_SUPPORT")}
 		if e := c.Hosting.Validate(); e != nil {
 			return c, e

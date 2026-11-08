@@ -33,8 +33,8 @@ func attemptCount(t *testing.T, f *fixture, scope string) int32 {
 func TestLoginRefusalChargesNoBudget(t *testing.T) {
 	const email = "owner@example.test"
 	for _, test := range []struct{ name, spent string }{
-		{"account", "password:account:" + email},
-		{"account from this source", "password:account:" + email + ":source:192.0.2.1"},
+		{"account", "login:account:" + email},
+		{"account from this source", "login:account:" + email + ":source:192.0.2.1"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f := setup(t)
@@ -49,7 +49,7 @@ func TestLoginRefusalChargesNoBudget(t *testing.T) {
 					t.Fatal("spent budget admitted a login", err)
 				}
 			}
-			if got := attemptCount(t, f, "password:ip:192.0.2.1"); got != 0 {
+			if got := attemptCount(t, f, "login:ip:192.0.2.1"); got != 0 {
 				t.Fatalf("refusals charged the source %d times", got)
 			}
 			if got := attemptCount(t, f, test.spent); int(got) != limit {
@@ -63,7 +63,7 @@ func TestLoginBudgetIsSharedByConcurrentReplicas(t *testing.T) {
 	f := setup(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	seedAttempts(t, f, "password:account:unknown@example.test", 9)
+	seedAttempts(t, f, "login:account:unknown@example.test", 9)
 	// Two service instances share PostgreSQL, as management replicas do, but not hash slots.
 	passwords, err := auth.NewPasswords()
 	if err != nil {
@@ -103,8 +103,8 @@ func TestLoginExpiryCleanupDoesNotBlockAdmission(t *testing.T) {
 	f := setup(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	sourceScope := auth.Hash("password:ip:192.0.2.1")
-	account := auth.Hash("password:account:owner@example.test")
+	sourceScope := auth.Hash("login:ip:192.0.2.1")
+	account := auth.Hash("login:account:owner@example.test")
 	if _, err := f.st.Pool.Exec(ctx, "INSERT INTO auth_attempts(scope_hash,attempts,expires_at) VALUES($1,50,now()-interval '1 second'),($2,10,now()-interval '1 second')", sourceScope, account); err != nil {
 		t.Fatal(err)
 	}

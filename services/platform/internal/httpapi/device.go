@@ -36,7 +36,14 @@ func (s *Server) issueDevice(ctx context.Context, a db.Account) error {
 	if err != nil {
 		return err
 	}
-	ctx.Value(sessionLoadKey{}).(*sessionLoad).device = &http.Cookie{
+	ctx.Value(sessionLoadKey{}).(*sessionLoad).deviceToken = token
+	return nil
+}
+
+// deviceCookie carries a device token. Scripts never need it, so it is always HttpOnly, and it
+// is Secure whenever the session cookie is, which is everywhere but loopback development.
+func (s *Server) deviceCookie(token string) *http.Cookie {
+	return &http.Cookie{
 		Name:     s.deviceCookieName(),
 		Value:    token,
 		Path:     deviceCookiePath,
@@ -45,5 +52,4 @@ func (s *Server) issueDevice(ctx context.Context, a db.Account) error {
 		HttpOnly: true,
 		SameSite: http.SameSiteStrictMode,
 	}
-	return nil
 }

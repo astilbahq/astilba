@@ -262,7 +262,7 @@ func (s *Store) Bootstrap(ctx context.Context, email, name, passwordHash, worksp
 			return err
 		}
 		if s.Hosted {
-			if err := q.InsertHostedSubscription(ctx, db.InsertHostedSubscriptionParams{WorkspaceID: w, ServerLimit: int32(s.Hosting.ServerLimit)}); err != nil {
+			if err := q.InsertHostedSubscription(ctx, db.InsertHostedSubscriptionParams{WorkspaceID: w, ServerLimit: s.Hosting.ServerLimit}); err != nil {
 				return err
 			}
 		}

@@ -205,7 +205,7 @@ func (s *Service) Import(ctx context.Context, p store.Principal, passphrase stri
 		return out, e
 	}
 	if s.Store.Hosted {
-		if e = q.InsertHostedSubscription(ctx, db.InsertHostedSubscriptionParams{WorkspaceID: archive.Workspace, ServerLimit: int32(s.Store.Hosting.ServerLimit)}); e != nil {
+		if e = q.InsertHostedSubscription(ctx, db.InsertHostedSubscriptionParams{WorkspaceID: archive.Workspace, ServerLimit: s.Store.Hosting.ServerLimit}); e != nil {
 			return out, e
 		}
 	}

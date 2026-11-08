@@ -78,6 +78,14 @@ func Verify(r api.AgentRelease, key ed25519.PublicKey, reader io.Reader) error {
 	}
 	return nil
 }
+
+// ArtifactPath is where a release's artifact lives in its catalog directory. The file is named
+// by the release's digest, which Validate requires to be 64 lowercase hex characters, so the
+// path never leaves dir.
+func ArtifactPath(dir string, r api.AgentRelease) string {
+	return filepath.Join(dir, r.Sha256)
+}
+
 func Load(dir string, key ed25519.PublicKey) ([]api.AgentRelease, error) {
 	out := []api.AgentRelease{}
 	entries, e := os.ReadDir(dir)
@@ -105,7 +113,7 @@ func Load(dir string, key ed25519.PublicKey) ([]api.AgentRelease, error) {
 		if e = Validate(r, key); e != nil {
 			return nil, e
 		}
-		file, e := os.Open(filepath.Join(dir, r.Sha256))
+		file, e := os.Open(ArtifactPath(dir, r))
 		if e != nil {
 			return nil, e
 		}

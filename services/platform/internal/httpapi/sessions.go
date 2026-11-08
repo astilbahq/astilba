@@ -34,8 +34,8 @@ type sessionLoad struct {
 	keepCookie bool
 	// keepRow leaves a destroyed session's row in place. See dropStaleSession.
 	keepRow bool
-	// device is sent unless saving the session failed. See issueDevice.
-	device *http.Cookie
+	// deviceToken is sent as the device cookie unless saving the session failed. See issueDevice.
+	deviceToken string
 }
 
 type sessionStore struct {
@@ -159,8 +159,8 @@ func (w *sessionResponseGuard) save() {
 			sessions.WriteSessionCookie(ctx, w, "", time.Time{})
 		}
 	}
-	if w.loaded.device != nil && !w.failed {
-		http.SetCookie(w, w.loaded.device)
+	if w.loaded.deviceToken != "" && !w.failed {
+		http.SetCookie(w, w.server.deviceCookie(w.loaded.deviceToken))
 	}
 }
 

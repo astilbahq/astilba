@@ -21,7 +21,7 @@ func TestAuthenticationLimitsBehindTrustedProxy(t *testing.T) {
 	// Start at the limit so the test exercises HTTP admission without spending
 	// fifty password hashes on unrelated credential checks.
 	for range 50 {
-		if err := f.auth.Limit(context.Background(), "password:ip:198.51.100.10", 50, 15*time.Minute); err != nil {
+		if err := f.auth.Limit(context.Background(), "login:ip:198.51.100.10", 50, 15*time.Minute); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -56,7 +56,7 @@ func TestAuthenticationLimitsBehindTrustedProxy(t *testing.T) {
 	// of the common forwarding headers.
 	f.apiServer.TrustedProxies = nil
 	for range 50 {
-		if err := f.auth.Limit(context.Background(), "password:ip:127.0.0.1", 50, 15*time.Minute); err != nil {
+		if err := f.auth.Limit(context.Background(), "login:ip:127.0.0.1", 50, 15*time.Minute); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -72,7 +72,7 @@ func TestLoginIPv6RotationSharesSourceBudget(t *testing.T) {
 	// Leave one admission so real HTTP attempts cross the shared /64 boundary
 	// without spending fifty password comparisons on fixture setup.
 	for range 49 {
-		if err := f.auth.Limit(context.Background(), "password:ip:2001:db8:1::/64", 50, 15*time.Minute); err != nil {
+		if err := f.auth.Limit(context.Background(), "login:ip:2001:db8:1::/64", 50, 15*time.Minute); err != nil {
 			t.Fatal(err)
 		}
 	}

@@ -145,7 +145,7 @@ func TestAccountBudgetBoundsGuessingAcrossSources(t *testing.T) {
 	stranger := f.browser(t)
 	a.wantLogin(stranger, "198.51.100.1", "owner@example.test", wrongPassword, 429, "another guessing address")
 	a.wantLogin(stranger, "198.51.100.2", "owner@example.test", f.password, 429, "no device cookie while the account budget is spent")
-	if got := attemptCount(t, f, "password:account:owner@example.test"); got != 10 {
+	if got := attemptCount(t, f, "login:account:owner@example.test"); got != 10 {
 		t.Fatalf("guesses reached the account budget %d times, want 10", got)
 	}
 }
@@ -197,7 +197,7 @@ func TestDeviceCookieIsLimitedToItsPurpose(t *testing.T) {
 
 	// A device cookie for one account gives nothing on another.
 	seedOtherAccount(t, f, "other@example.test")
-	seedAttempts(t, f, "password:account:other@example.test", 10)
+	seedAttempts(t, f, "login:account:other@example.test", 10)
 	stolen := f.browser(t)
 	login, _ := url.Parse(f.server.URL + "/api/v1/auth/login")
 	stolen.client.Jar.SetCookies(login, []*http.Cookie{{Name: device.Name, Value: device.Value, Path: "/api/v1/auth/login"}})
@@ -256,7 +256,7 @@ func TestDeviceTokensHaveACapAcrossTheAccount(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	seedAttempts(t, f, fmt.Sprintf("password:device-account:%s:%d", f.owner, account.AuthVersion), 20)
+	seedAttempts(t, f, fmt.Sprintf("login:device-account:%s:%d", f.owner, account.AuthVersion), 20)
 	a.wantLogin(owner, "198.51.100.1", "owner@example.test", f.password, 429, "tokens over their shared cap")
 
 	// A reset starts a new cap, so whoever spent this one cannot keep the owner out.
@@ -395,7 +395,7 @@ func TestSprayingIsBoundedWithoutAnInstallationBudget(t *testing.T) {
 	t.Run("each address across many accounts", func(t *testing.T) {
 		f := setup(t)
 		a := newAvailability(t, f)
-		seedAttempts(t, f, "password:ip:203.0.113.1", 48)
+		seedAttempts(t, f, "login:ip:203.0.113.1", 48)
 		sprayer := f.browser(t)
 		want := []int{400, 400, 429, 429}
 		for i, status := range want {
@@ -439,7 +439,7 @@ func TestCompletedResetLiftsLockoutWhileGuessingContinues(t *testing.T) {
 	if status := a.post(owner, "198.51.100.1", "/api/v1/auth/reset/complete", map[string]string{"token": token, "password": replacement}); status != 204 {
 		t.Fatal("reset refused during the attack", status)
 	}
-	if got := attemptCount(t, f, "password:account:owner@example.test"); got != 0 {
+	if got := attemptCount(t, f, "login:account:owner@example.test"); got != 0 {
 		t.Fatalf("completed reset left %d failures on the account", got)
 	}
 	// Attackers spend the budget again at once, and the reset's browser still gets in.
@@ -535,10 +535,10 @@ func TestCapacityRefusalChargesNothing(t *testing.T) {
 	if counts[503] == 0 {
 		t.Fatalf("one principal's requests were never over its limit: %v", counts)
 	}
-	if got := attemptCount(t, f, "password:ip:"+address); got != counts[400] {
+	if got := attemptCount(t, f, "login:ip:"+address); got != counts[400] {
 		t.Fatalf("source charged %d times for %d checked attempts: %v", got, counts[400], counts)
 	}
-	if got := attemptCount(t, f, "password:account:owner@example.test"); got != counts[400] {
+	if got := attemptCount(t, f, "login:account:owner@example.test"); got != counts[400] {
 		t.Fatalf("account charged %d times for %d checked attempts: %v", got, counts[400], counts)
 	}
 }
@@ -601,7 +601,7 @@ func TestPasswordChangeLoopCannotRefuseOtherSignIns(t *testing.T) {
 	if got := attemptCount(t, f, "password-change:"+f.owner.String()); got != 5 {
 		t.Fatalf("password changes charged %d times, want the whole budget of 5", got)
 	}
-	if got := attemptCount(t, f, "password:account:victim@example.test"); got != 0 {
+	if got := attemptCount(t, f, "login:account:victim@example.test"); got != 0 {
 		t.Fatalf("other account's budget holds %d attempts", got)
 	}
 }
@@ -636,7 +636,7 @@ func TestPasswordChangeHasBudgetAndSkipsEndedSessions(t *testing.T) {
 func TestIPv6NetworkSharesWiderBudget(t *testing.T) {
 	f := setup(t)
 	a := newAvailability(t, f)
-	seedAttempts(t, f, "password:network:2001:db8:1::/48", 200)
+	seedAttempts(t, f, "login:network:2001:db8:1::/48", 200)
 	b := f.browser(t)
 	a.wantLogin(b, "2001:db8:1:2::1", "owner@example.test", f.password, 429, "another /64 of a spent /48")
 	a.wantLogin(b, "2001:db8:2:2::1", "owner@example.test", f.password, 200, "another /48")
