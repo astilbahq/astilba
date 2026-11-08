@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/cgi"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -111,6 +112,7 @@ func TestNativePipeline(t *testing.T) {
 	}
 	backend := &cgi.Handler{Path: gitPath, Args: []string{"http-backend"}, Env: []string{"GIT_PROJECT_ROOT=" + root, "GIT_HTTP_EXPORT_ALL=1"}}
 	var reviews atomic.Int32
+	var reviewed atomic.Value
 	var publicMode atomic.Bool
 	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/api/") {
@@ -119,15 +121,29 @@ func TestNativePipeline(t *testing.T) {
 				return
 			}
 			w.Header().Set("Content-Type", "application/json")
+			// As Gitea does: a branch's request is looked up by base and head, which answers
+			// 404 until one exists, and a second open request for the branch is refused.
+			branch, _ := reviewed.Load().(string)
 			if r.Method == "GET" {
-				if reviews.Load() > 0 {
-					_, branch, _ := strings.Cut(r.URL.Query().Get("head"), ":")
-					_ = stablejson.Encode(w, []map[string]any{{"number": 1, "html_url": "http://127.0.0.1/review/1", "head": map[string]string{"ref": branch}, "base": map[string]string{"ref": "main"}}})
-				} else {
-					_, _ = w.Write([]byte("[]"))
+				if branch == "" || r.URL.EscapedPath() != "/api/v1/repos/team/app/pulls/main/"+url.PathEscape(branch) {
+					w.WriteHeader(404)
+					return
 				}
+				_ = stablejson.Encode(w, map[string]any{"number": 1, "state": "open", "html_url": "http://127.0.0.1/review/1", "head": map[string]any{"ref": branch, "repo": map[string]int{"id": 12}}, "base": map[string]any{"ref": "main", "repo": map[string]int{"id": 12}}})
 				return
 			}
+			if branch != "" {
+				w.WriteHeader(409)
+				return
+			}
+			var created struct {
+				Head string `json:"head"`
+			}
+			if json.UnmarshalRead(r.Body, &created) != nil {
+				w.WriteHeader(400)
+				return
+			}
+			reviewed.Store(created.Head)
 			reviews.Add(1)
 			// Simulate a provider accepting the review before losing its response.
 			w.WriteHeader(503)

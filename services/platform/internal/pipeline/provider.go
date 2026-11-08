@@ -163,6 +163,9 @@ func (p *Provider) Repository(ctx context.Context) (int64, bool, error) {
 		ID         int64  `json:"id"`
 		Private    bool   `json:"private"`
 		Visibility string `json:"visibility"`
+		Owner      struct {
+			Visibility string `json:"visibility"`
+		} `json:"owner"`
 	}
 	if err := p.request(ctx, "GET", p.apiPath(), nil, &data); err != nil {
 		return 0, false, err
@@ -170,7 +173,13 @@ func (p *Provider) Repository(ctx context.Context) (int64, bool, error) {
 	if data.ID < 1 {
 		return 0, false, errors.New("repository identity is missing")
 	}
-	return data.ID, data.Private || data.Visibility == "private" || data.Visibility == "internal", nil
+	private := data.Private || data.Visibility == "private" || data.Visibility == "internal"
+	// Gitea answers private: false for a repository whose owner only signed-in users or members
+	// can see, and nobody can clone it anonymously.
+	if p.Connection.Provider == "gitea" && data.Owner.Visibility != "public" {
+		private = true
+	}
+	return data.ID, private, nil
 }
 func (p *Provider) verifyRepository(ctx context.Context) error {
 	id, private, err := p.Repository(ctx)
@@ -202,9 +211,10 @@ func (p *Provider) Resolve(ctx context.Context, branch string) (string, error) {
 	if err := p.request(ctx, "GET", endpoint, nil, &data); err != nil {
 		return "", err
 	}
-	commit := data.Commit.SHA
-	if p.Connection.Provider == "gitlab" {
-		commit = data.Commit.ID
+	// GitLab and Gitea name a branch's commit id, and GitHub names it sha.
+	commit := data.Commit.ID
+	if p.Connection.Provider == "github" {
+		commit = data.Commit.SHA
 	}
 	if !ValidCommit(commit) {
 		return "", errors.New("provider omitted exact commit")
@@ -213,65 +223,6 @@ func (p *Provider) Resolve(ctx context.Context, branch string) (string, error) {
 		return "", err
 	}
 	return commit, nil
-}
-
-type Review struct {
-	Number int    `json:"number"`
-	URL    string `json:"url"`
-}
-
-func (p *Provider) Review(ctx context.Context, base, branch string) (Review, error) {
-	if !ValidBranch(base) || !ValidBranch(branch) {
-		return Review{}, errors.New("invalid review branch")
-	}
-	endpoint := p.apiPath() + "/pulls"
-	query := "?state=open&head=" + url.QueryEscape(strings.Split(p.Connection.Repository, "/")[0]+":"+branch)
-	if p.Connection.Provider == "gitlab" {
-		endpoint = p.apiPath() + "/merge_requests"
-		query = "?state=opened&source_branch=" + url.QueryEscape(branch)
-	}
-	var existing []struct {
-		Number  int    `json:"number"`
-		IID     int    `json:"iid"`
-		HTMLURL string `json:"html_url"`
-		WebURL  string `json:"web_url"`
-		Head    struct {
-			Ref string `json:"ref"`
-		} `json:"head"`
-		Base struct {
-			Ref string `json:"ref"`
-		} `json:"base"`
-		SourceBranch string `json:"source_branch"`
-		TargetBranch string `json:"target_branch"`
-	}
-	if err := p.request(ctx, "GET", endpoint+query, nil, &existing); err != nil {
-		return Review{}, err
-	}
-	for _, r := range existing {
-		if p.Connection.Provider == "gitlab" && r.SourceBranch == branch && r.TargetBranch == base {
-			return Review{r.IID, r.WebURL}, nil
-		}
-		if r.Head.Ref == branch && r.Base.Ref == base {
-			return Review{r.Number, r.HTMLURL}, nil
-		}
-	}
-	body := map[string]any{"title": "Update deployment configuration", "body": "Update the reviewed deployment source files.", "base": base, "head": branch}
-	if p.Connection.Provider == "gitlab" {
-		body = map[string]any{"title": "Update deployment configuration", "description": "Update the reviewed deployment source files.", "target_branch": base, "source_branch": branch}
-	}
-	var r struct {
-		Number  int    `json:"number"`
-		IID     int    `json:"iid"`
-		HTMLURL string `json:"html_url"`
-		WebURL  string `json:"web_url"`
-	}
-	if err := p.request(ctx, "POST", endpoint, body, &r); err != nil {
-		return Review{}, err
-	}
-	if p.Connection.Provider == "gitlab" {
-		return Review{r.IID, r.WebURL}, nil
-	}
-	return Review{r.Number, r.HTMLURL}, nil
 }
 
 type Push struct{ Delivery, Branch, Commit string }
@@ -358,10 +309,11 @@ func (p *Provider) MergedCommit(ctx context.Context, number int) (string, error)
 		endpoint = p.apiPath() + "/merge_requests/" + strconv.Itoa(number)
 	}
 	var r struct {
-		Merged         bool   `json:"merged"`
-		State          string `json:"state"`
-		MergeCommitSHA string `json:"merge_commit_sha"`
-		SHA            string `json:"merge_commit_id"`
+		Merged          bool   `json:"merged"`
+		State           string `json:"state"`
+		MergeCommitSHA  string `json:"merge_commit_sha"`
+		SquashCommitSHA string `json:"squash_commit_sha"`
+		SHA             string `json:"sha"`
 	}
 	if err := p.request(ctx, "GET", endpoint, nil, &r); err != nil {
 		return "", err
@@ -370,8 +322,13 @@ func (p *Provider) MergedCommit(ctx context.Context, number int) (string, error)
 		return "", nil
 	}
 	commit := r.MergeCommitSHA
-	if commit == "" {
-		commit = r.SHA
+	// A GitLab project that merges by fast-forward makes no merge commit, so the branch ends on
+	// the squashed commit, or else on the request's own head.
+	if p.Connection.Provider == "gitlab" && commit == "" {
+		commit = r.SquashCommitSHA
+		if commit == "" {
+			commit = r.SHA
+		}
 	}
 	if !ValidCommit(commit) {
 		return "", errors.New("provider omitted merge commit")

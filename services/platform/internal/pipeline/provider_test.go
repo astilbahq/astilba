@@ -78,11 +78,14 @@ func TestProviderExactHeadReviewAndRedirectBoundary(t *testing.T) {
 				w.Header().Set("Content-Type", "application/json")
 				switch {
 				case strings.Contains(r.URL.Path, "/branches/"):
-					if kind == "gitlab" {
-						_ = stablejson.Encode(w, map[string]any{"commit": map[string]string{"id": head}})
-					} else {
+					if kind == "github" {
 						_ = stablejson.Encode(w, map[string]any{"commit": map[string]string{"sha": head}})
+					} else {
+						_ = stablejson.Encode(w, map[string]any{"commit": map[string]string{"id": head}})
 					}
+				case strings.Contains(r.URL.Path, "/pulls/"):
+					// Gitea's lookup of a branch's request, when there is none.
+					w.WriteHeader(404)
 				case strings.HasSuffix(r.URL.Path, "/pulls") || strings.HasSuffix(r.URL.Path, "/merge_requests"):
 					if r.Method == "GET" {
 						_, _ = w.Write([]byte("[]"))
@@ -90,7 +93,7 @@ func TestProviderExactHeadReviewAndRedirectBoundary(t *testing.T) {
 					}
 					_ = stablejson.Encode(w, map[string]any{"number": 5, "iid": 5, "html_url": "https://example.test/review/5", "web_url": "https://example.test/review/5"})
 				default:
-					_ = stablejson.Encode(w, map[string]any{"id": repositoryID, "private": true})
+					_ = stablejson.Encode(w, map[string]any{"id": repositoryID, "private": true, "owner": map[string]string{"visibility": "public"}})
 				}
 			}))
 			defer server.Close()

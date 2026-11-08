@@ -54,14 +54,14 @@ func TestGitImportBuildIsolationAndArtifactAdmission(t *testing.T) {
 			return
 		}
 		if strings.Contains(r.URL.Path, "/branches/") {
-			_ = stablejson.Encode(w, map[string]any{"commit": map[string]string{"sha": providerHead.Load().(string)}})
+			answerBranch(w, "gitea", providerHead.Load().(string))
 			return
 		}
 		if strings.HasSuffix(r.URL.Path, "/pulls/5") {
-			_ = stablejson.Encode(w, map[string]any{"merged": mergeHead.Load().(string) != "", "merge_commit_sha": mergeHead.Load().(string)})
+			_ = stablejson.Encode(w, mergedAnswer(5, mergeHead.Load().(string)))
 			return
 		}
-		_ = stablejson.Encode(w, map[string]any{"id": repositoryIdentity.Load(), "private": true})
+		answerRepository(w, "gitea", repositoryIdentity.Load(), true)
 	}))
 	defer provider.Close()
 	var connection struct {
@@ -616,10 +616,10 @@ func TestGitWebhookBurstMakesBoundedProgress(t *testing.T) {
 	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if strings.Contains(r.URL.Path, "/branches/") {
-			_ = stablejson.Encode(w, map[string]any{"commit": map[string]string{"sha": commit}})
+			answerBranch(w, "gitea", commit)
 			return
 		}
-		_ = stablejson.Encode(w, map[string]any{"id": 12, "private": false})
+		answerRepository(w, "gitea", 12, false)
 	}))
 	defer provider.Close()
 	var connection struct {

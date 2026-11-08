@@ -108,9 +108,12 @@ func (p *Provider) OpenPullRequests(ctx context.Context, branch string, page int
 	if err := p.verifyRepository(ctx); err != nil {
 		return nil, err
 	}
-	query := url.Values{"state": {"open"}, "base": {branch}, "sort": {"created"}, "direction": {"asc"}, "per_page": {"50"}, "limit": {"50"}, "page": {strconv.Itoa(page)}}
-	if p.Connection.Provider == "gitlab" {
+	query := url.Values{"state": {"open"}, "base": {branch}, "sort": {"created"}, "direction": {"asc"}, "per_page": {"50"}, "page": {strconv.Itoa(page)}}
+	switch p.Connection.Provider {
+	case "gitlab":
 		query = url.Values{"state": {"opened"}, "target_branch": {branch}, "order_by": {"created_at"}, "sort": {"asc"}, "per_page": {"50"}, "page": {strconv.Itoa(page)}}
+	case "gitea":
+		query = url.Values{"state": {"open"}, "base_branch": {branch}, "sort": {"oldest"}, "limit": {"50"}, "page": {strconv.Itoa(page)}}
 	}
 	var rows []struct {
 		Number int `json:"number"`

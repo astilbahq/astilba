@@ -27,3 +27,5 @@ func NetworkPreparation() []byte {
 }
 
 func NetworkService() []byte { return []byte(networkUnit) }
+
+func AgentService() []byte { return []byte(unit) }

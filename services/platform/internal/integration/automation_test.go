@@ -226,10 +226,10 @@ func TestAutomationConfiguredBuildPreservesAutomaticDeployment(t *testing.T) {
 	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if strings.Contains(r.URL.Path, "/branches/") {
-			stablejson.Encode(w, map[string]any{"commit": map[string]string{"sha": head.Load().(string)}})
+			answerBranch(w, "gitea", head.Load().(string))
 			return
 		}
-		stablejson.Encode(w, map[string]any{"id": 12, "private": false})
+		answerRepository(w, "gitea", 12, false)
 	}))
 	defer provider.Close()
 	var connection struct {
