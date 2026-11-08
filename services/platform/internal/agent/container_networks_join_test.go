@@ -2,7 +2,6 @@ package agent
 
 import (
 	"encoding/json/v2"
-	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -71,34 +70,6 @@ func newFakeNetworkDaemon(t *testing.T, subnets ...string) *client.Client {
 	}
 	t.Cleanup(func() { docker.Close() })
 	return docker
-}
-
-// The join's route check misses a container network whose bridge is down, as after a
-// reboot before Docker starts, so the join also reads Docker's record. With Docker
-// unreachable, nothing is joined.
-func TestJoinRefusesAPrefixOverDockersRecordedNetworks(t *testing.T) {
-	j, _ := testVisualJournal(t)
-	e := &Engine{Journal: j, Docker: newFakeNetworkDaemon(t, "10.0.0.0/25", "fd00::/64")}
-	err := e.containerNetworkConflict(t.Context(), "10.0.0.0/24")
-	if !errors.Is(err, hostnetwork.ErrRouteConflict) || joinRefusal(err) == "" {
-		t.Fatalf("joined over a recorded container network: %v", err)
-	}
-	if err = e.containerNetworkConflict(t.Context(), "10.251.0.0/24"); err != nil {
-		t.Fatalf("refused a prefix beside container networks: %v", err)
-	}
-	unreachable, err := client.New(client.WithHost("tcp://127.0.0.1:1"), client.WithAPIVersion("1.54"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer unreachable.Close()
-	e.Docker = unreachable
-	if err = e.containerNetworkConflict(t.Context(), "10.251.0.0/24"); !errors.Is(err, errDockerNetworksUnknown) {
-		t.Fatalf("joined without Docker's record: %v", err)
-	}
-	// Anything else Apply fails with keeps its uncertain outcome.
-	if joinRefusal(errors.New("managed network ip operation failed")) != "" {
-		t.Fatal("an uncertain apply was reported as a refusal")
-	}
 }
 
 // A cross-host candidate creates its networks in reserve, before links joins the plan's

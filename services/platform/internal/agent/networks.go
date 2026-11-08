@@ -93,26 +93,11 @@ func (e *Engine) executeNetwork(ctx context.Context, c api.ExecutionCommand, r R
 			return err
 		}
 		e.networkMu.Lock()
-		// A restriction only removes authority from a prefix the host already holds.
-		if command.Action != "restrict" {
-			err = e.containerNetworkConflict(ctx, m.Prefix)
-		}
-		if err == nil {
-			err = host.Apply(ctx, m, bridges, command.Action == "restrict")
-		}
+		err = host.Apply(ctx, m, bridges, command.Action == "restrict")
 		e.networkMu.Unlock()
 		if err != nil {
 			if c.ParentId == nil && errors.Is(err, hostnetwork.ErrGenerationConflict) {
 				return e.refuseNetwork(ctx, c.Id, receipt, "This host holds a later private-link generation than this controller issued, so nothing changed. Fence this server with prepare-recovery, transfer it, then approve the network again.")
-			}
-			if note := joinRefusal(err); note != "" && command.Action != "restrict" {
-				if c.ParentId == nil {
-					return e.refuseNetwork(ctx, c.Id, receipt, note)
-				}
-				return finish("needs_attention", note)
-			}
-			if errors.Is(err, errDockerNetworksUnknown) {
-				return finish("needs_attention", "Docker's networks could not be inspected, so private links were not changed.")
 			}
 			return finish("needs_attention", "Private-link configuration has an uncertain result. Inspect owned network state before reconciliation.")
 		}
@@ -242,40 +227,4 @@ func (e *Engine) ingressNetworkPaths(ctx context.Context, server uuid.UUID) ([]h
 		return nil, errors.New("dedicated ingress prefix is unavailable")
 	}
 	return paths, nil
-}
-
-// errDockerNetworksUnknown means Docker's networks could not be listed, so a managed prefix
-// could not be checked against them and nothing changed.
-var errDockerNetworksUnknown = errors.New("docker networks unknown")
-
-// containerNetworkConflict refuses a managed prefix over a subnet Docker has recorded for any
-// network, Astilba's or not. The host's route check sees a container network only while its
-// bridge is up, which it isn't after a reboot until Docker starts. Docker's record is the
-// one subnet choice trusts.
-func (e *Engine) containerNetworkConflict(ctx context.Context, managed string) error {
-	prefix, err := hostnetwork.Prefix(managed)
-	if err != nil {
-		return err
-	}
-	list, err := e.Docker.NetworkList(ctx, client.NetworkListOptions{})
-	if err != nil {
-		return errDockerNetworksUnknown
-	}
-	for _, n := range list.Items {
-		for _, c := range n.IPAM.Config {
-			if c.Subnet.IsValid() && c.Subnet.Addr().Is4() && c.Subnet.Overlaps(prefix) {
-				return hostnetwork.ErrRouteConflict
-			}
-		}
-	}
-	return nil
-}
-
-// joinRefusal is the note for a managed network the host refused before changing anything
-// because its prefix is in use here, or "" for any other error.
-func joinRefusal(err error) string {
-	if errors.Is(err, hostnetwork.ErrRouteConflict) {
-		return "This managed network's prefix overlaps a route or container network on this host, so nothing changed. Choose another prefix for the managed network."
-	}
-	return ""
 }

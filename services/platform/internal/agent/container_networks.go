@@ -38,8 +38,8 @@ var privateRanges = []netip.Prefix{netip.MustParsePrefix("10.0.0.0/8"), netip.Mu
 
 // ValidateNetworkPool checks a pool an owner sets: a private IPv4 range of at least /18,
 // written as the range itself. It may hold managed network prefixes, as the default pool
-// may: subnets are never chosen inside one the host holds, and a host refuses to join a
-// managed network over one of its container networks.
+// may: subnets are never chosen inside one the host holds, and a host won't join a managed
+// network over a route it has, a container network's included while its bridge is up.
 func ValidateNetworkPool(pool netip.Prefix) error {
 	inside := false
 	for _, r := range privateRanges {
@@ -179,9 +179,9 @@ func (e *Engine) ensureUnitNetworks(ctx context.Context, p deployment.Plan) erro
 	// A cross-host candidate creates its networks before it joins the plan's managed network.
 	joining := []netip.Prefix{}
 	if p.Local != nil {
-		if prefix, err := hostnetwork.Prefix(p.Local.Network.Prefix); err == nil {
-			joining = append(joining, prefix)
-		}
+		// Plan.Validate has checked the prefix.
+		prefix, _ := hostnetwork.Prefix(p.Local.Network.Prefix)
+		joining = append(joining, prefix)
 	}
 	if err := e.createNetworks(ctx, missing, joining...); err != nil {
 		if errors.Is(err, errNetworkPoolFull) || errors.Is(err, errHostRangesUnknown) {

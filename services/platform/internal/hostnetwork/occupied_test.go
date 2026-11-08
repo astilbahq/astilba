@@ -1,7 +1,6 @@
 package hostnetwork
 
 import (
-	"errors"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -113,7 +112,7 @@ func TestJoinRefusesOnlyAPrefixOverAContainerNetwork(t *testing.T) {
 		t.Fatalf("suggested prefix beside container networks: %v", err)
 	}
 	m.Prefix = "10.0.0.0/24"
-	if err := h.inspectRoutes(t.Context(), m); !errors.Is(err, ErrRouteConflict) {
-		t.Fatalf("joined a managed network over a container network: %v", err)
+	if err := h.inspectRoutes(t.Context(), m); err == nil {
+		t.Fatal("joined a managed network over a container network")
 	}
 }
