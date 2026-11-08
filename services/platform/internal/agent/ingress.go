@@ -26,15 +26,24 @@ import (
 	"github.com/moby/moby/api/types/mount"
 	"github.com/moby/moby/api/types/network"
 	"github.com/moby/moby/client"
-	bolt "go.etcd.io/bbolt"
 )
 
 const proxyName = "astilba-ingress"
 
+// A host routes at most maxRoutedUnits units, each holding at most maxUnitRoutes bytes of
+// routes. No limit counts routes across units, so one environment at its limits leaves
+// every other environment's room as it was. A specification holds at most 128 KiB and a
+// unit's routes add only their backends to it, so no reviewed plan reaches maxUnitRoutes;
+// it keeps every routing journal record within its limit.
+const (
+	maxRoutedUnits = 50
+	maxUnitRoutes  = 256 << 10
+)
+
 // maxProxyObservation is above what the proxy can report for the most routes a host may
-// have with what the journal's routing record can hold, about 1 MiB, so no unit's routes
-// can make a host's route checks fail.
-const maxProxyObservation = 2 << 20
+// have, which it reports in at most about twice the bytes they are recorded in, so no
+// unit's routes can make a host's route checks fail.
+const maxProxyObservation = 2 * maxRoutedUnits * maxUnitRoutes
 
 type routeSnapshot struct {
 	ManagedEgress bool                           `json:"managedEgress,omitempty"`
@@ -52,22 +61,8 @@ type routeAttempt struct {
 	Candidate routeSnapshot `json:"candidate"`
 }
 
-// A replica attempt must also fence older recovery of a legacy or empty Previous.
-// Older agents expect an object here and refuse the tuple before any effects.
-func (a routeAttempt) MarshalJSON() ([]byte, error) {
-	for _, snapshot := range []routeSnapshot{a.Previous, a.Candidate} {
-		for _, set := range snapshot.Sets {
-			for _, backend := range set.Backends {
-				if len(backend.InstanceIDs) > 0 || len(backend.Endpoints) > 0 {
-					return stablejson.Marshal([]routeSnapshot{a.Previous, a.Candidate})
-				}
-			}
-		}
-	}
-	type object routeAttempt
-	return stablejson.Marshal(object(a))
-}
-
+// A preceding agent stored a replica attempt as a tuple, so that agents before it refused
+// the record. Only such stored records are read now; see route_journal.go.
 func (a *routeAttempt) UnmarshalJSON(raw []byte) error {
 	if bytes.HasPrefix(bytes.TrimSpace(raw), []byte("[")) {
 		var pair []routeSnapshot
@@ -89,17 +84,6 @@ type routeState struct {
 	Pending *routeAttempt `json:"pending,omitempty"`
 }
 
-func (j *Journal) routing() (routeState, error) {
-	var v routeState
-	err := j.db.View(func(tx *bolt.Tx) error { return j.get(tx, "routing", "host", &v) })
-	if errors.Is(err, os.ErrNotExist) {
-		return routeState{Current: routeSnapshot{Sets: map[string]deployment.RouteSet{}, Ports: []int{}}}, nil
-	}
-	return v, err
-}
-func (j *Journal) saveRouting(v routeState) error {
-	return j.db.Update(func(tx *bolt.Tx) error { return j.put(tx, "routing", "host", v) })
-}
 func (e *Engine) routePath() string { return filepath.Join(e.Journal.dir, "ingress", "runtime.yaml") }
 func routePorts(s routeSnapshot) []int {
 	set := map[int]bool{}
@@ -193,7 +177,7 @@ func (e *Engine) publishRoutes(ctx context.Context, p deployment.Plan, stablePro
 				return errors.New("release proxy recovery requires an unchanged owned proxy")
 			}
 		}
-		if err = e.applyRoutes(ctx, state.Pending.Previous, !stableProxy); err != nil {
+		if err = e.restoreRoutes(ctx, state.Pending.Previous, true, stableProxy); err != nil {
 			return fmt.Errorf("previous ingress recovery requires attention: %w", err)
 		}
 		state.Current = state.Pending.Previous
@@ -215,60 +199,21 @@ func (e *Engine) publishRoutes(ctx context.Context, p deployment.Plan, stablePro
 	if len(p.Specification.Routes) == 0 && len(state.Current.Sets) == 0 {
 		return nil
 	}
-	// The clone keeps nil collections, because route sets enter StateHash.
-	raw, _ := stablejson.Marshal(state.Current)
-	var next routeSnapshot
-	if err = json.Unmarshal(raw, &next); err != nil {
+	next, err := e.candidateRoutes(state.Current, p)
+	if err != nil {
 		return err
 	}
-	if next.Sets == nil {
-		next.Sets = map[string]deployment.RouteSet{}
-	}
-	if len(p.Specification.Routes) == 0 {
-		delete(next.Sets, p.UnitID.String())
-	} else {
-		set := deployment.RouteSet{UnitID: p.UnitID, EnvironmentID: p.EnvironmentID, Routes: p.Specification.Routes, Backends: map[string]deployment.Backend{}}
-		for _, a := range p.Specification.Applications {
-			set.Backends[a.ID.String()] = p.Backend(a.ID)
-		}
-		next.Sets[p.UnitID.String()] = set
-	}
-	count := 0
-	for _, s := range next.Sets {
-		count += len(s.Routes)
-	}
-	if count > 100 || len(next.Sets) > 50 {
-		return errors.New("host ingress limit exceeded")
-	}
-	next.Ports = routePorts(next)
-	if !reflect.DeepEqual(next.Ports, state.Current.Ports) && !p.HostChanges {
-		return errors.New("host port changes require owner review")
-	}
-	if p.HostChanges && e.ACMEEmail != "" {
-		next.Email = e.ACMEEmail
-	}
-	for _, set := range next.Sets {
-		for _, r := range set.Routes {
-			if r.TLS == "managed" && next.Email == "" {
-				return errors.New("configure the host certificate contact email and review host changes before enabling TLS")
-			}
-		}
-	}
-	if p.HostChanges {
-		next.ManagedEgress = true
-	}
-	next.QualifiedBackends = true
-	next.Revision = uuid.NewString()
-	if _, err = renderSnapshot(next); err != nil {
+	changed, err := changedSets(state.Current.Sets, next.Sets)
+	if err != nil {
 		return err
 	}
 	state.Pending = &routeAttempt{Previous: state.Current, Candidate: next}
 	if err = e.Journal.saveRouting(state); err != nil {
 		return err
 	}
-	if err = e.applyRoutes(ctx, next, drift); err != nil {
+	if err = e.applyRoutes(ctx, next, drift, changed); err != nil {
 		reloadErr := err
-		recovery := e.applyRoutes(ctx, state.Current, !stableProxy)
+		recovery := e.restoreRoutes(ctx, state.Current, false, stableProxy)
 		if recovery != nil {
 			return fmt.Errorf("ingress reload and previous-route recovery require attention: %w", recovery)
 		}
@@ -289,7 +234,95 @@ func (e *Engine) publishRoutes(ctx context.Context, p deployment.Plan, stablePro
 	e.point("route-verified")
 	return e.Journal.saveRouting(state)
 }
-func (e *Engine) applyRoutes(ctx context.Context, s routeSnapshot, rebuild bool) error {
+
+// candidateRoutes is current with p's routes in place of its unit's, checked against the
+// host's limits and settings before anything is written.
+func (e *Engine) candidateRoutes(current routeSnapshot, p deployment.Plan) (routeSnapshot, error) {
+	// The clone keeps nil collections, because route sets enter StateHash.
+	raw, _ := stablejson.Marshal(current)
+	var next routeSnapshot
+	if err := json.Unmarshal(raw, &next); err != nil {
+		return routeSnapshot{}, err
+	}
+	if next.Sets == nil {
+		next.Sets = map[string]deployment.RouteSet{}
+	}
+	if len(p.Specification.Routes) == 0 {
+		delete(next.Sets, p.UnitID.String())
+	} else {
+		set := deployment.RouteSet{UnitID: p.UnitID, EnvironmentID: p.EnvironmentID, Routes: p.Specification.Routes, Backends: map[string]deployment.Backend{}}
+		for _, a := range p.Specification.Applications {
+			set.Backends[a.ID.String()] = p.Backend(a.ID)
+		}
+		raw, err := stablejson.Marshal(set)
+		if err != nil {
+			return routeSnapshot{}, err
+		}
+		if len(raw) > maxUnitRoutes {
+			return routeSnapshot{}, errors.New("this environment's routes exceed what a host can record")
+		}
+		next.Sets[p.UnitID.String()] = set
+	}
+	if len(next.Sets) > maxRoutedUnits && len(next.Sets) > len(current.Sets) {
+		return routeSnapshot{}, errors.New("host ingress limit exceeded: the host already routes the most environments it can")
+	}
+	next.Ports = routePorts(next)
+	if !reflect.DeepEqual(next.Ports, current.Ports) && !p.HostChanges {
+		return routeSnapshot{}, errors.New("host port changes require owner review")
+	}
+	if p.HostChanges && e.ACMEEmail != "" {
+		next.Email = e.ACMEEmail
+	}
+	for _, set := range next.Sets {
+		for _, r := range set.Routes {
+			if r.TLS == "managed" && next.Email == "" {
+				return routeSnapshot{}, errors.New("configure the host certificate contact email and review host changes before enabling TLS")
+			}
+		}
+	}
+	if p.HostChanges {
+		next.ManagedEgress = true
+	}
+	next.QualifiedBackends = true
+	next.Revision = uuid.NewString()
+	if _, err := renderSnapshot(next); err != nil {
+		return routeSnapshot{}, err
+	}
+	return next, nil
+}
+
+// restoreRoutes puts back routes the journal records as working after an attempt to
+// change them failed or was interrupted. Rewriting the file reloads the proxy in place, so
+// environments the attempt did not change keep their connections, and a proxy setting the
+// attempt changed recreates it only as ensureProxy decides. A visual publish recreates the
+// proxy as well only when the proxy did not load the file, or, after an interruption, when
+// it is not the proxy the journal vouched for: an interrupted agent cannot tell what
+// changed it since. A route the proxy loaded but left disabled is not the proxy's fault,
+// and recreating it would interrupt every environment again without changing that.
+func (e *Engine) restoreRoutes(ctx context.Context, previous routeSnapshot, interrupted, stableProxy bool) error {
+	err := e.applyRoutes(ctx, previous, false, nil)
+	if stableProxy || errors.Is(err, errRouteDisabled) {
+		return err
+	}
+	if err == nil {
+		if !interrupted || len(previous.Ports) == 0 {
+			return nil
+		}
+		v, err := e.Docker.ContainerInspect(ctx, proxyName, client.ContainerInspectOptions{})
+		if err != nil {
+			return err
+		}
+		if proxyFingerprint(v) == previous.ProxyHash {
+			return nil
+		}
+	}
+	return e.applyRoutes(ctx, previous, true, nil)
+}
+
+// applyRoutes publishes s and waits for the proxy to report it. It waits for the
+// certificates of the units in certificates only: one environment's certificate, which
+// depends on where its domain points, must not stop another environment's publish.
+func (e *Engine) applyRoutes(ctx context.Context, s routeSnapshot, rebuild bool, certificates map[string]*deployment.RouteSet) error {
 	raw, err := renderSnapshot(s)
 	if err != nil {
 		return err
@@ -308,7 +341,7 @@ func (e *Engine) applyRoutes(ctx context.Context, s routeSnapshot, rebuild bool)
 	if err = e.awaitRoutes(ctx, s, raw); err != nil {
 		return err
 	}
-	return e.verifyCertificates(ctx, s)
+	return e.verifyCertificates(ctx, s, certificates)
 }
 
 func proxyArgs(s routeSnapshot) []string {
@@ -460,6 +493,11 @@ func (e *Engine) ensureProxy(ctx context.Context, s routeSnapshot, rebuild bool)
 	}
 	return err
 }
+
+// errRouteDisabled is a route the running proxy loaded from the published file and did
+// not enable.
+var errRouteDisabled = errors.New("reviewed route is not enabled")
+
 func (e *Engine) verifyRoutes(ctx context.Context, s routeSnapshot) error {
 	exec, err := e.Docker.ExecCreate(ctx, proxyName, client.ExecCreateOptions{AttachStdout: true, AttachStderr: true, Cmd: []string{"wget", "-T", "2", "-qO-", "http://127.0.0.1:8080/api/rawdata"}})
 	if err != nil {
@@ -501,15 +539,18 @@ func (e *Engine) verifyRoutes(ctx context.Context, s routeSnapshot) error {
 				serviceKey = "tcpServices"
 			}
 			if runtime[routerKey][name].Status != "enabled" || runtime[serviceKey][name].Status != "enabled" {
-				return fmt.Errorf("reviewed route %s is not enabled (%s/%s)", name, runtime[routerKey][name].Status, runtime[serviceKey][name].Status)
+				return fmt.Errorf("%w: %s (%s/%s)", errRouteDisabled, name, runtime[routerKey][name].Status, runtime[serviceKey][name].Status)
 			}
 		}
 	}
 	return nil
 }
 
-func (e *Engine) verifyCertificates(ctx context.Context, s routeSnapshot) error {
-	for _, set := range s.Sets {
+func (e *Engine) verifyCertificates(ctx context.Context, s routeSnapshot, units map[string]*deployment.RouteSet) error {
+	for unit, set := range s.Sets {
+		if _, ok := units[unit]; !ok {
+			continue
+		}
 		for _, route := range set.Routes {
 			if route.TLS != "managed" {
 				continue

@@ -11,6 +11,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
+	"go.yaml.in/yaml/v3"
 )
 
 // The proxy runs each file through text/template with the default delimiters, so the
@@ -39,7 +40,8 @@ func TestRouteFileOpensNoTemplateActionAndKeepsItsValues(t *testing.T) {
 
 // A changed byte here would report ingress drift on every host once its agent updates.
 func TestRouteFileLeavesOtherOutputUnchanged(t *testing.T) {
-	config := map[string]any{"a": map[string]any{"b": map[string]string{"c": "{x} }} `y` {"}}}
+	// Characters YAML reads as JSON does stay raw.
+	config := map[string]any{"a": map[string]any{"b": map[string]string{"c": "{x} }} `y` {", "d": string([]rune{0x7e, 0xa0, 0xfeff, 0xfffd, 0x1fffe, 0xe9})}}}
 	want, err := stablejson.Marshal(config)
 	if err != nil {
 		t.Fatal(err)
@@ -47,6 +49,26 @@ func TestRouteFileLeavesOtherOutputUnchanged(t *testing.T) {
 	got, err := RouteFile(config)
 	if err != nil || !bytes.Equal(got, want) {
 		t.Fatalf("got %s, want %s: %v", got, want, err)
+	}
+}
+
+// The proxy reads the file as YAML after JSON has left some characters raw. A character
+// that YAML refuses would make the proxy reject every environment's routes, and one that
+// it folds would reach the proxy as a different value from the one reviewed.
+func TestRouteFileReadsTheSameAsYAML(t *testing.T) {
+	for _, r := range []rune{0x7f, 0x80, 0x84, 0x85, 0x86, 0x9f, 0x2028, 0x2029, 0xfffe, 0xffff, 0x7e, 0xa0, 0xfeff, 0xfffd, 0x1fffe} {
+		value := "a" + string(r) + "b"
+		raw, err := RouteFile(map[string]string{value: value})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var fromJSON, fromYAML map[string]string
+		if err = json.Unmarshal(raw, &fromJSON); err != nil || fromJSON[value] != value {
+			t.Fatalf("U+%04X did not survive JSON: %v: %q", r, err, fromJSON)
+		}
+		if err = yaml.Unmarshal(raw, &fromYAML); err != nil || fromYAML[value] != value {
+			t.Fatalf("U+%04X did not survive YAML: %v: %q", r, err, fromYAML)
+		}
 	}
 }
 

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"fmt"
 	"net/http"
@@ -18,6 +19,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 	"github.com/moby/moby/client"
+	bolt "go.etcd.io/bbolt"
 )
 
 func TestReplicaObservationsDoNotHideMissingOrWrongImageMembers(t *testing.T) {
@@ -131,14 +133,16 @@ func TestReplicaMetricInventoryIncludesSecondariesAndAbsentGroups(t *testing.T) 
 	}
 }
 
-// Pending recovery must refuse an older consumer even before the first replica
-// route has been committed; rendering only Previous cannot establish that fence.
-func TestPendingReplicaRoutingRejectsLegacyReaderBeforeRecovery(t *testing.T) {
+// A preceding agent that read a host's routes as one record would see no routes in the
+// per-unit layout and publish a file holding only its own unit's. Every record this agent
+// stores must make it refuse instead, whatever the routes hold, and pending recovery must
+// still read back exactly what was attempted.
+func TestRoutingRecordsRefusePrecedingReaders(t *testing.T) {
 	j, p := testVisualJournal(t)
 	app := uuid.New()
 	route := domain.Route{ID: uuid.New(), TargetID: app, Protocol: "http", Domain: "pending.example.test", Port: 8080, TLS: "off"}
-	legacy := routeSnapshot{Sets: map[string]deployment.RouteSet{p.UnitID.String(): {UnitID: p.UnitID, EnvironmentID: p.EnvironmentID, Routes: []domain.Route{route}, Backends: map[string]deployment.Backend{app.String(): {Address: deployment.ServiceName(app)}}}}}
-	candidate := routeSnapshot{Sets: map[string]deployment.RouteSet{p.UnitID.String(): {UnitID: p.UnitID, EnvironmentID: p.EnvironmentID, Routes: []domain.Route{route}, Backends: map[string]deployment.Backend{app.String(): {InstanceIDs: []uuid.UUID{app, uuid.New()}, Health: &domain.HealthCheck{Port: 8080, Path: "/"}}}}}}
+	single := routeSnapshot{Sets: map[string]deployment.RouteSet{p.UnitID.String(): {UnitID: p.UnitID, EnvironmentID: p.EnvironmentID, Routes: []domain.Route{route}, Backends: map[string]deployment.Backend{app.String(): {Address: deployment.ServiceName(app)}}}}}
+	replicas := routeSnapshot{Sets: map[string]deployment.RouteSet{p.UnitID.String(): {UnitID: p.UnitID, EnvironmentID: p.EnvironmentID, Routes: []domain.Route{route}, Backends: map[string]deployment.Backend{app.String(): {InstanceIDs: []uuid.UUID{app, uuid.New()}, Health: &domain.HealthCheck{Port: 8080, Path: "/"}}}}}}
 	type oldAttempt struct {
 		Previous  routeSnapshot `json:"previous"`
 		Candidate routeSnapshot `json:"candidate"`
@@ -147,38 +151,44 @@ func TestPendingReplicaRoutingRejectsLegacyReaderBeforeRecovery(t *testing.T) {
 		Current routeSnapshot `json:"current"`
 		Pending *oldAttempt   `json:"pending"`
 	}
-	for _, previous := range []routeSnapshot{{Sets: map[string]deployment.RouteSet{}}, legacy, candidate} {
-		state := routeState{Current: previous, Pending: &routeAttempt{Previous: previous, Candidate: candidate}}
-		raw, err := stablejson.Marshal(state)
-		if err != nil {
-			t.Fatal(err)
-		}
-		var old oldState
-		if err = json.Unmarshal(raw, &old); err == nil {
-			t.Fatal("older reader accepted pending replica routes")
-		}
-		if err = j.saveRouting(state); err != nil {
-			t.Fatal(err)
-		}
-		restored, err := j.routing()
-		if err != nil || restored.Pending == nil {
-			t.Fatal("current reader could not recover pending routes", err)
-		}
-		for i, snapshot := range []routeSnapshot{restored.Pending.Previous, restored.Pending.Candidate} {
-			want := previous
-			if i == 1 {
-				want = candidate
+	empty := routeSnapshot{Sets: map[string]deployment.RouteSet{}}
+	for _, previous := range []routeSnapshot{empty, single, replicas} {
+		for _, candidate := range []routeSnapshot{empty, single, replicas} {
+			for _, state := range []routeState{{Current: previous}, {Current: previous, Pending: &routeAttempt{Previous: previous, Candidate: candidate}}} {
+				if err := j.saveRouting(state); err != nil {
+					t.Fatal(err)
+				}
+				var stored jsontext.Value
+				if err := j.db.View(func(tx *bolt.Tx) error { return j.get(tx, "routing", routeHostKey, &stored) }); err != nil {
+					t.Fatal(err)
+				}
+				var old oldState
+				if err := json.Unmarshal(stored, &old); err == nil {
+					t.Fatalf("a preceding reader accepted %s", stored)
+				}
+				restored, err := j.routing()
+				if err != nil {
+					t.Fatal(err)
+				}
+				want := []routeSnapshot{state.Current}
+				got := []routeSnapshot{restored.Current}
+				if state.Pending != nil {
+					if restored.Pending == nil {
+						t.Fatal("the attempt was not recovered")
+					}
+					want = append(want, state.Pending.Previous, state.Pending.Candidate)
+					got = append(got, restored.Pending.Previous, restored.Pending.Candidate)
+				} else if restored.Pending != nil {
+					t.Fatal("an attempt appeared")
+				}
+				for i := range want {
+					actual, e1 := renderSnapshot(got[i])
+					expected, e2 := renderSnapshot(want[i])
+					if e1 != nil || e2 != nil || string(actual) != string(expected) {
+						t.Fatal("pending recovery changed runtime routing", e1, e2)
+					}
+				}
 			}
-			actual, e1 := renderSnapshot(snapshot)
-			expected, e2 := renderSnapshot(want)
-			if e1 != nil || e2 != nil || string(actual) != string(expected) {
-				t.Fatal("pending recovery changed runtime routing", e1, e2)
-			}
 		}
-	}
-	raw, err := stablejson.Marshal(routeState{Current: legacy, Pending: &routeAttempt{Previous: legacy, Candidate: legacy}})
-	var old oldState
-	if err != nil || json.Unmarshal(raw, &old) != nil || old.Pending == nil {
-		t.Fatal("legacy singleton pending encoding changed", err)
 	}
 }

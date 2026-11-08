@@ -237,7 +237,7 @@ func TestNativeRouteBackendConversion(t *testing.T) {
 	publishLegacy := func() routeState {
 		t.Helper()
 		legacy := routeSnapshot{Revision: uuid.NewString(), Ports: []int{80, 443}, Sets: map[string]deployment.RouteSet{one.id.String(): one.set(), two.id.String(): two.set()}}
-		if err := e.applyRoutes(ctx, legacy, false); err != nil {
+		if err := e.applyRoutes(ctx, legacy, false, nil); err != nil {
 			t.Fatal(err)
 		}
 		if err := e.rememberProxy(ctx, &legacy); err != nil {
@@ -403,7 +403,7 @@ func TestNativeRouteBackendConversion(t *testing.T) {
 	set := large.Sets[one.id.String()]
 	set.Routes, set.Backends = routes, map[string]deployment.Backend{one.app.String(): {InstanceIDs: instances, Health: &domain.HealthCheck{Port: 8080, Path: "/"}}}
 	large.Sets[one.id.String()] = set
-	if err = e.applyRoutes(ctx, large, false); err != nil {
+	if err = e.applyRoutes(ctx, large, false, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err = e.rememberProxy(ctx, &large); err != nil {
