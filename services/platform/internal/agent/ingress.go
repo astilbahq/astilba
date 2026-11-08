@@ -46,16 +46,26 @@ const (
 const maxProxyObservation = 2 * maxRoutedUnits * maxUnitRoutes
 
 type routeSnapshot struct {
-	ManagedEgress bool                           `json:"managedEgress,omitempty"`
-	Sets          map[string]deployment.RouteSet `json:"sets"`
-	Ports         []int                          `json:"ports"`
-	Revision      string                         `json:"revision"`
-	Email         string                         `json:"email"`
-	ProxyHash     string                         `json:"proxyHash"`
+	ManagedEgress bool `json:"managedEgress,omitempty"`
+	// PrivateIngress keeps the proxy running on the egress gateway, which a coordinated
+	// primary's private links need, even while no route needs a port. It implies
+	// ManagedEgress.
+	PrivateIngress bool                           `json:"privateIngress,omitempty"`
+	Sets           map[string]deployment.RouteSet `json:"sets"`
+	Ports          []int                          `json:"ports"`
+	Revision       string                         `json:"revision"`
+	Email          string                         `json:"email"`
+	ProxyHash      string                         `json:"proxyHash"`
 	// QualifiedBackends is false only in a snapshot an older agent wrote, whose route
 	// file must keep comparing equal until QualifyRouteBackends replaces it.
 	QualifiedBackends bool `json:"qualifiedBackends,omitempty"`
 }
+
+// proxyWanted says whether s needs the proxy running: for its routes' ports, or for a
+// coordinated primary's private links, which reach other hosts through it before it
+// routes anything.
+func proxyWanted(s routeSnapshot) bool { return len(s.Ports) > 0 || s.PrivateIngress }
+
 type routeAttempt struct {
 	Previous  routeSnapshot `json:"previous"`
 	Candidate routeSnapshot `json:"candidate"`
@@ -123,12 +133,12 @@ func (e *Engine) ingressDrift(ctx context.Context, state routeState) (bool, erro
 		return false, renderErr
 	}
 	fileDrift := err != nil || !bytes.Equal(raw, expected)
-	if len(state.Current.Ports) == 0 && os.IsNotExist(err) {
+	if !proxyWanted(state.Current) && os.IsNotExist(err) {
 		fileDrift = false
 	}
 	v, err := e.Docker.ContainerInspect(ctx, proxyName, client.ContainerInspectOptions{})
 	if errdefs.IsNotFound(err) {
-		return fileDrift || len(state.Current.Ports) > 0, nil
+		return fileDrift || proxyWanted(state.Current), nil
 	}
 	if err != nil {
 		return false, err
@@ -144,7 +154,7 @@ func (e *Engine) ingressDrift(ctx context.Context, state routeState) (bool, erro
 }
 func (e *Engine) rememberProxy(ctx context.Context, s *routeSnapshot) error {
 	s.ProxyHash = ""
-	if len(s.Ports) == 0 {
+	if !proxyWanted(*s) {
 		return nil
 	}
 	v, err := e.Docker.ContainerInspect(ctx, proxyName, client.ContainerInspectOptions{})
@@ -161,28 +171,9 @@ func (e *Engine) publishReleaseRoutes(ctx context.Context, p deployment.Plan) er
 	return e.publishRoutes(ctx, p, true)
 }
 func (e *Engine) publishRoutes(ctx context.Context, p deployment.Plan, stableProxy bool) error {
-	state, err := e.Journal.routing()
+	state, err := e.settledRoutes(ctx, stableProxy)
 	if err != nil {
 		return err
-	}
-	if state.Pending {
-		if stableProxy {
-			v, err := e.Docker.ContainerInspect(ctx, proxyName, client.ContainerInspectOptions{})
-			if err != nil || proxyFingerprint(v) != state.Current.ProxyHash {
-				return errors.New("release proxy recovery requires an unchanged owned proxy")
-			}
-		}
-		// An interrupted agent cannot tell what changed the proxy since it was recorded.
-		if err = e.restoreRoutes(ctx, state.Current, false, stableProxy); err != nil {
-			return fmt.Errorf("previous ingress recovery requires attention: %w", err)
-		}
-		if err = e.rememberProxy(ctx, &state.Current); err != nil {
-			return err
-		}
-		state.Pending = false
-		if err = e.Journal.saveRouting(state); err != nil {
-			return err
-		}
 	}
 	drift, err := e.ingressDrift(ctx, state)
 	if err != nil {
@@ -198,43 +189,14 @@ func (e *Engine) publishRoutes(ctx context.Context, p deployment.Plan, stablePro
 	if err != nil {
 		return err
 	}
-	state.Pending = true
-	if err = e.Journal.saveRouting(state); err != nil {
-		return err
-	}
-	if created, err := e.applyRoutes(ctx, next, drift, p.UnitID.String()); err != nil {
-		reloadErr := err
-		// The proxy is the one the journal records unless drift was accepted, and one this
-		// attempt created is new.
-		recovery := e.restoreRoutes(ctx, state.Current, !drift || created, stableProxy)
-		if recovery != nil {
-			return fmt.Errorf("ingress reload and previous-route recovery require attention: %w", recovery)
-		}
-		state.Pending = false
-		if err = e.rememberProxy(ctx, &state.Current); err != nil {
-			return err
-		}
-		if e2 := e.Journal.saveRouting(state); e2 != nil {
-			return e2
-		}
-		return fmt.Errorf("ingress reload was rejected; previous routes were restored: %w", reloadErr)
-	}
-	if err = e.rememberProxy(ctx, &next); err != nil {
-		return err
-	}
-	state.Current = next
-	state.Pending = false
-	e.point("route-verified")
-	return e.Journal.saveRouting(state)
+	return e.attemptRoutes(ctx, state, next, drift, p.UnitID.String(), stableProxy)
 }
 
 // candidateRoutes is current with p's routes in place of its unit's, checked against the
 // host's limits and settings before anything is written.
 func (e *Engine) candidateRoutes(current routeSnapshot, p deployment.Plan) (routeSnapshot, error) {
-	// The clone keeps nil collections, because route sets enter StateHash.
-	raw, _ := stablejson.Marshal(current)
-	var next routeSnapshot
-	if err := json.Unmarshal(raw, &next); err != nil {
+	next, err := cloneRoutes(current)
+	if err != nil {
 		return routeSnapshot{}, err
 	}
 	if next.Sets == nil {
@@ -284,38 +246,11 @@ func (e *Engine) candidateRoutes(current routeSnapshot, p deployment.Plan) (rout
 	return next, nil
 }
 
-// restoreRoutes puts back routes the journal records as working after an attempt to
-// change them failed or was interrupted. Rewriting the file reloads the proxy in place, so
-// environments the attempt did not change keep their connections, and a proxy setting the
-// attempt changed recreates it only as ensureProxy decides. A proxy left running that is
-// not vouched for must be the one the journal recorded: otherwise a visual publish
-// recreates it, and a release or preview, whose recovery never recreates the proxy, fails
-// and leaves the attempt pending. A visual publish also recreates a proxy that did not load the file. A
-// route the proxy loaded but left disabled is not the proxy's fault, and recreating it
-// would interrupt every environment again without changing that.
-func (e *Engine) restoreRoutes(ctx context.Context, previous routeSnapshot, vouched, stableProxy bool) error {
-	created, err := e.applyRoutes(ctx, previous, false, "")
-	if errors.Is(err, errRouteDisabled) || err != nil && stableProxy {
-		return err
-	}
-	if err == nil {
-		// A proxy just created from previous is the one a rebuild would create.
-		if vouched || created || len(previous.Ports) == 0 {
-			return nil
-		}
-		v, err := e.Docker.ContainerInspect(ctx, proxyName, client.ContainerInspectOptions{})
-		if err != nil {
-			return err
-		}
-		if proxyFingerprint(v) == previous.ProxyHash {
-			return nil
-		}
-		if stableProxy {
-			return errors.New("release proxy recovery requires an unchanged owned proxy")
-		}
-	}
-	_, err = e.applyRoutes(ctx, previous, true, "")
-	return err
+// cloneRoutes keeps nil collections, because route sets enter StateHash.
+func cloneRoutes(current routeSnapshot) (routeSnapshot, error) {
+	raw, _ := stablejson.Marshal(current)
+	var next routeSnapshot
+	return next, json.Unmarshal(raw, &next)
 }
 
 // applyRoutes publishes s and waits for the proxy to report it, and says whether it
@@ -382,7 +317,7 @@ func (e *Engine) ensureProxy(ctx context.Context, s routeSnapshot, rebuild bool)
 		exposed[port] = struct{}{}
 		bindings[port] = []network.PortBinding{{HostIP: netip.MustParseAddr("0.0.0.0"), HostPort: strconv.Itoa(p)}}
 	}
-	if len(s.Ports) == 0 {
+	if !proxyWanted(s) {
 		if exists {
 			_, err = e.Docker.ContainerRemove(ctx, v.Container.ID, client.ContainerRemoveOptions{Force: true})
 			if err != nil {

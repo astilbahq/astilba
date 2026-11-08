@@ -105,9 +105,6 @@ func primaryReplacement(ctx context.Context, tx pgx.Tx, ws, env uuid.UUID, v vis
 	return &deployment.Replacement{Server: primary, AbandonedVolumes: volumes}, nil
 }
 
-// A host that has only run secondaries has no ingress, and a placement can't yet prepare one.
-var replacementNeedsIngress = &domain.Error{Code: "invalid_input", Message: "This server has no managed ingress yet, so it can't take over as primary. Taking over without one isn't supported yet. Meanwhile, deploy any environment to it as a single-server deployment with host changes approved, which prepares its ingress, then plan the replacement again.", Fields: []string{"placement.preparePrimaryIngress"}}
-
 func compareUUID(a, b uuid.UUID) int { return strings.Compare(a.String(), b.String()) }
 
 // replacementEffects says what the owner is approving, in the plan's review.

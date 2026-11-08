@@ -30,6 +30,7 @@ func TestBuildCapabilityNegotiatesWithControllerVersions(t *testing.T) {
 			var scheduleExtensions atomic.Int32
 			var replicaExtensions atomic.Int32
 			var continuationExtensions atomic.Int32
+			var ingressExtensions atomic.Int32
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if !modern.Load() {
 					// Every controller marks its responses; this one offers no extension.
@@ -45,6 +46,13 @@ func TestBuildCapabilityNegotiatesWithControllerVersions(t *testing.T) {
 				}
 				if _, present := body.Capabilities["maintenanceContinuation"]; present {
 					continuationExtensions.Add(1)
+					if !modern.Load() {
+						w.WriteHeader(400)
+						return
+					}
+				}
+				if _, present := body.Capabilities["primaryIngress"]; present {
+					ingressExtensions.Add(1)
 					if !modern.Load() {
 						w.WriteHeader(400)
 						return
@@ -110,6 +118,7 @@ func TestBuildCapabilityNegotiatesWithControllerVersions(t *testing.T) {
 					w.Header().Set("Astilba-Agent-Replicas", "v1")
 					w.Header().Set("Astilba-Agent-Cross-Host", "v1")
 					w.Header().Set("Astilba-Agent-Maintenance-Continuation", "v1")
+					w.Header().Set("Astilba-Agent-Primary-Ingress", "v1")
 				}
 				w.Header().Set("Content-Type", "application/json")
 				_, _ = w.Write([]byte(`{"role":"combined","rotationRequested":false}`))
@@ -127,7 +136,7 @@ func TestBuildCapabilityNegotiatesWithControllerVersions(t *testing.T) {
 			c.HTTP = server.Client()
 			c.Observe = func(context.Context) api.AgentHeartbeat {
 				version := "0.43.0"
-				return api.AgentHeartbeat{Capabilities: api.AgentCapabilities{Build: &capable, BuildControls: &capable, BuildCache: &capable, RailpackVersion: &version, SafeReleases: &capable, ServiceOutputs: &capable, Schedules: &capable, Replicas: &capable, CrossHost: &capable, MaintenanceContinuation: &capable}}
+				return api.AgentHeartbeat{Capabilities: api.AgentCapabilities{Build: &capable, BuildControls: &capable, BuildCache: &capable, RailpackVersion: &version, SafeReleases: &capable, ServiceOutputs: &capable, Schedules: &capable, Replicas: &capable, CrossHost: &capable, MaintenanceContinuation: &capable, PrimaryIngress: &capable}}
 			}
 			if err = c.Enroll(context.Background(), strings.Repeat("a", 43)); err != nil {
 				t.Fatal("older controller enrollment", err)
@@ -135,21 +144,21 @@ func TestBuildCapabilityNegotiatesWithControllerVersions(t *testing.T) {
 			heartbeat := func() error {
 				return c.call(context.Background(), "POST", "/agent/v1/heartbeat", c.Observe(context.Background()), &api.AgentStatus{}, "fixture")
 			}
-			if err = heartbeat(); err != nil || extensions.Load() != 0 || cacheExtensions.Load() != 0 || railpackExtensions.Load() != 0 || releaseExtensions.Load() != 0 || outputExtensions.Load() != 0 || scheduleExtensions.Load() != 0 || replicaExtensions.Load() != 0 || continuationExtensions.Load() != 0 {
+			if err = heartbeat(); err != nil || extensions.Load() != 0 || cacheExtensions.Load() != 0 || railpackExtensions.Load() != 0 || releaseExtensions.Load() != 0 || outputExtensions.Load() != 0 || scheduleExtensions.Load() != 0 || replicaExtensions.Load() != 0 || continuationExtensions.Load() != 0 || ingressExtensions.Load() != 0 {
 				t.Fatal("older controller received capability extension", err)
 			}
 			modern.Store(true)
-			if err = heartbeat(); err != nil || extensions.Load() != 0 || cacheExtensions.Load() != 0 || railpackExtensions.Load() != 0 || releaseExtensions.Load() != 0 || outputExtensions.Load() != 0 || scheduleExtensions.Load() != 0 || replicaExtensions.Load() != 0 || continuationExtensions.Load() != 0 {
+			if err = heartbeat(); err != nil || extensions.Load() != 0 || cacheExtensions.Load() != 0 || railpackExtensions.Load() != 0 || releaseExtensions.Load() != 0 || outputExtensions.Load() != 0 || scheduleExtensions.Load() != 0 || replicaExtensions.Load() != 0 || continuationExtensions.Load() != 0 || ingressExtensions.Load() != 0 {
 				t.Fatal("advertised before negotiation", err)
 			}
-			if err = heartbeat(); err != nil || extensions.Load() != 1 || cacheExtensions.Load() != 1 || railpackExtensions.Load() != 1 || releaseExtensions.Load() != 1 || outputExtensions.Load() != 1 || scheduleExtensions.Load() != 1 || replicaExtensions.Load() != 1 || continuationExtensions.Load() != 1 {
+			if err = heartbeat(); err != nil || extensions.Load() != 1 || cacheExtensions.Load() != 1 || railpackExtensions.Load() != 1 || releaseExtensions.Load() != 1 || outputExtensions.Load() != 1 || scheduleExtensions.Load() != 1 || replicaExtensions.Load() != 1 || continuationExtensions.Load() != 1 || ingressExtensions.Load() != 1 {
 				t.Fatal("supported extension not advertised", err)
 			}
 			modern.Store(false)
 			if heartbeat() == nil {
 				t.Fatal("old request schema fixture did not reject unsupported field")
 			}
-			if err = heartbeat(); err != nil || releaseExtensions.Load() != 1 || outputExtensions.Load() != 1 || scheduleExtensions.Load() != 1 || replicaExtensions.Load() != 1 || continuationExtensions.Load() != 2 {
+			if err = heartbeat(); err != nil || releaseExtensions.Load() != 1 || outputExtensions.Load() != 1 || scheduleExtensions.Load() != 1 || replicaExtensions.Load() != 1 || continuationExtensions.Load() != 2 || ingressExtensions.Load() != 1 {
 				t.Fatal("controller downgrade did not clear negotiation", err)
 			}
 		})
@@ -348,5 +357,62 @@ func TestPollResponsesStayStrictAcrossControllerVersions(t *testing.T) {
 		if err = c.call(context.Background(), "GET", "/agent/v1/poll", nil, &api.ExecutionCommand{}, "fixture"); err == nil {
 			t.Fatalf("accepted a %s", name)
 		}
+	}
+}
+
+// A controller that coordinates cross-host deployments but predates ingress takeover rejects the
+// capability it doesn't know, so the agent leaves it out until that controller offers it.
+func TestPrimaryIngressWaitsForItsOwnNegotiation(t *testing.T) {
+	j, _ := testVisualJournal(t)
+	var offered atomic.Bool
+	var received, rejected atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Capabilities map[string]jsontext.Value `json:"capabilities"`
+		}
+		if json.UnmarshalDecode(jsontext.NewDecoder(r.Body), &body) != nil {
+			w.WriteHeader(400)
+			return
+		}
+		w.Header().Set("Astilba-Agent-Features", "build-controls")
+		w.Header().Set("Astilba-Agent-Cross-Host", "v1")
+		if offered.Load() {
+			w.Header().Set("Astilba-Agent-Primary-Ingress", "v1")
+		}
+		if _, present := body.Capabilities["primaryIngress"]; present {
+			received.Add(1)
+			if !offered.Load() {
+				rejected.Add(1)
+				w.WriteHeader(400)
+				return
+			}
+		}
+		_, _ = w.Write([]byte(`{"role":"combined","rotationRequested":false}`))
+	}))
+	defer server.Close()
+	cfg, _ := j.Config()
+	cfg.Origin = server.URL
+	if err := j.SetConfig(cfg); err != nil {
+		t.Fatal(err)
+	}
+	c := NewClient(j, &Engine{Journal: j})
+	c.HTTP = server.Client()
+	yes := true
+	heartbeat := func() error {
+		return c.call(context.Background(), "POST", "/agent/v1/heartbeat", api.AgentHeartbeat{Capabilities: api.AgentCapabilities{CrossHost: &yes, PrimaryIngress: &yes}}, &api.AgentStatus{}, "fixture")
+	}
+	for range 2 {
+		if err := heartbeat(); err != nil || received.Load() != 0 {
+			t.Fatal("a cross-host controller without ingress takeover received the capability", err)
+		}
+	}
+	offered.Store(true)
+	for range 2 {
+		if err := heartbeat(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if received.Load() != 1 || rejected.Load() != 0 {
+		t.Fatalf("capability advertised %d times after negotiation, %d rejected", received.Load(), rejected.Load())
 	}
 }

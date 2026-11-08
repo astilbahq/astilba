@@ -76,6 +76,19 @@ func (g *revokedGroup) hurryCoordinators(ctx context.Context, t *testing.T) {
 	}
 }
 
+// reports changes what a host tells management about itself, and tells it at once. change
+// replaces any pointer it alters, because the host's own heartbeats read them.
+func (g *revokedGroup) reports(t *testing.T, h *aheadHost, change func(*api.AgentCapabilities, *api.HostPreflight)) {
+	t.Helper()
+	g.mu.Lock()
+	change(&h.input.Capabilities, &h.input.Preflight)
+	heartbeat := api.AgentHeartbeat{Capabilities: h.input.Capabilities, Preflight: h.input.Preflight}
+	g.mu.Unlock()
+	if _, err := g.f.execution.Heartbeat(g.ctx, h.identity, heartbeat); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // hold makes the host stop answering a phase, and forgets any earlier plan's use of it.
 func (g *revokedGroup) hold(h *aheadHost, phase string) {
 	g.mu.Lock()
@@ -102,7 +115,10 @@ func (g *revokedGroup) answer(ctx context.Context, t *testing.T, h *aheadHost) {
 	scopes := map[uuid.UUID]deployment.Plan{}
 	for ctx.Err() == nil {
 		if time.Since(beat) >= 10*time.Second {
-			if _, err := g.f.execution.Heartbeat(ctx, h.identity, api.AgentHeartbeat{Capabilities: h.input.Capabilities, Preflight: h.input.Preflight}); err != nil {
+			g.mu.Lock()
+			heartbeat := api.AgentHeartbeat{Capabilities: h.input.Capabilities, Preflight: h.input.Preflight}
+			g.mu.Unlock()
+			if _, err := g.f.execution.Heartbeat(ctx, h.identity, heartbeat); err != nil {
 				if !errors.Is(err, domain.Unauthenticated) && ctx.Err() == nil {
 					t.Error(err)
 				}

@@ -38,6 +38,9 @@ type LocalPlacement struct {
 	Requests       map[string]ResourceRequest   `json:"requests"`
 	Outputs        map[string]PrivateEndpoint   `json:"outputs"`
 	Backends       map[string][]PrivateEndpoint `json:"backends"`
+	// PrepareIngress has the primary's agent move its ingress proxy onto the dedicated gateway
+	// during reserve, which its private links need. The owner reviewed the proxy restart.
+	PrepareIngress bool `json:"prepareIngress,omitempty"`
 }
 type DistributedUnit struct {
 	Plan          Plan   `json:"plan"`
@@ -185,7 +188,7 @@ func (p Plan) SecretReferences() []uuid.UUID {
 func (p Plan) validateLocal() error {
 	bad := errors.New("invalid local cross-host projection")
 	l := p.Local
-	if l == nil || p.Distributed != nil || p.Specification.Placement == nil || l.GroupID == uuid.Nil || l.Network.Validate() != nil || l.Network.ServerID != p.ServerID || l.Network.NetworkID != p.Specification.Placement.NetworkID || l.Network.Disabled {
+	if l == nil || p.Distributed != nil || p.Specification.Placement == nil || l.GroupID == uuid.Nil || l.Network.Validate() != nil || l.Network.ServerID != p.ServerID || l.Network.NetworkID != p.Specification.Placement.NetworkID || l.Network.Disabled || l.PrepareIngress && !l.Primary {
 		return bad
 	}
 	apps := map[string]domain.Application{}

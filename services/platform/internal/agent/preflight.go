@@ -145,6 +145,9 @@ func Preflight(ctx context.Context, docker *client.Client, version, dir string, 
 		}
 	}
 	h.Capabilities.CrossHost = &crossHost
+	if crossHost {
+		h.Capabilities.PrimaryIngress = &crossHost
+	}
 	return h
 }
 
@@ -168,11 +171,6 @@ func capacityInventory(ctx context.Context, docker *client.Client) (api.CrossHos
 	if !known {
 		return api.CrossHostInventory{}, errors.New("capacity inventory unavailable")
 	}
-	ingressReady := false
-	if proxy, err := docker.ContainerInspect(ctx, proxyName, client.ContainerInspectOptions{}); err == nil && proxy.Container.State.Running && proxy.Container.Config.Labels[labelKind] == "ingress-v1" && proxy.Container.NetworkSettings != nil {
-		if network := proxy.Container.NetworkSettings.Networks["astilba-ingress-network"]; network != nil {
-			ingressReady = network.GwPriority == 100
-		}
-	}
+	ingressReady := ingressOnGateway(ctx, docker)
 	return api.CrossHostInventory{IngressReady: &ingressReady, CpuMillis: info.Info.NCPU * 1000, MemoryMiB: int(info.Info.MemTotal >> 20), UnboundedInventoryHash: hostnetwork.StableInventory(unbounded)}, nil
 }

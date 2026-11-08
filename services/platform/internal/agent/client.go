@@ -39,6 +39,7 @@ type Client struct {
 	replicas                atomic.Bool
 	crossHost               atomic.Bool
 	maintenanceContinuation atomic.Bool
+	primaryIngress          atomic.Bool
 	troubleshooting         atomic.Bool
 	terminalOffers          sync.Map
 	terminalActive          atomic.Int64
@@ -113,6 +114,7 @@ func (c *Client) call(ctx context.Context, method, path string, body, out any, t
 		c.replicas.Store(response.Header.Get("Astilba-Agent-Replicas") == "v1")
 		c.crossHost.Store(response.Header.Get("Astilba-Agent-Cross-Host") == "v1")
 		c.maintenanceContinuation.Store(response.Header.Get("Astilba-Agent-Maintenance-Continuation") == "v1")
+		c.primaryIngress.Store(response.Header.Get("Astilba-Agent-Primary-Ingress") == "v1")
 		c.troubleshooting.Store(response.Header.Get("Astilba-Agent-Troubleshooting") == "v2")
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
@@ -155,6 +157,9 @@ func (c *Client) advertisedCapabilities(v api.AgentCapabilities) api.AgentCapabi
 	}
 	if !c.replicas.Load() {
 		v.Replicas = nil
+	}
+	if !c.primaryIngress.Load() || !c.crossHost.Load() {
+		v.PrimaryIngress = nil
 	}
 	if !c.troubleshooting.Load() {
 		v.Troubleshooting, v.TroubleshootingEnabled, v.TroubleshootingUnavailable = nil, nil, nil

@@ -900,6 +900,43 @@ func (q *Queries) ServerName(ctx context.Context, arg ServerNameParams) (string,
 	return name, err
 }
 
+const serverRoutedEnvironments = `-- name: ServerRoutedEnvironments :many
+SELECT p.name AS project, e.name AS environment, e.purpose FROM environments e JOIN projects p ON p.workspace_id = e.workspace_id AND p.id = e.project_id
+WHERE e.workspace_id = $1 AND EXISTS(SELECT 1 FROM route_claims c WHERE c.workspace_id = e.workspace_id AND c.environment_id = e.id AND c.server_id = $2)
+ORDER BY p.name, e.name
+`
+
+type ServerRoutedEnvironmentsParams struct {
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ServerID    uuid.UUID `json:"server_id"`
+}
+
+type ServerRoutedEnvironmentsRow struct {
+	Project     string `json:"project"`
+	Environment string `json:"environment"`
+	Purpose     string `json:"purpose"`
+}
+
+func (q *Queries) ServerRoutedEnvironments(ctx context.Context, arg ServerRoutedEnvironmentsParams) ([]ServerRoutedEnvironmentsRow, error) {
+	rows, err := q.db.Query(ctx, serverRoutedEnvironments, arg.WorkspaceID, arg.ServerID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ServerRoutedEnvironmentsRow{}
+	for rows.Next() {
+		var i ServerRoutedEnvironmentsRow
+		if err := rows.Scan(&i.Project, &i.Environment, &i.Purpose); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const settleRevokedServerOperations = `-- name: SettleRevokedServerOperations :exec
 UPDATE execution_operations SET state='cancelled',cancel_requested=true,report_sequence = $1,note='The server was revoked before reporting, so what it did is unknown.'
 WHERE workspace_id = $2 AND server_id = $3 AND state NOT IN ('succeeded','failed','cancelled')
