@@ -84,7 +84,18 @@ type Receipt struct {
 	// Refused marks a failed report whose command changed nothing and would fail the same way
 	// again, so management stops repeating it.
 	Refused bool `json:"refused,omitempty"`
+	// Reason says why, when it is not a configure's generation conflict or a removal that no
+	// longer fits. Only management that advertises reasons is sent one: older management
+	// refuses a receipt with members it does not know.
+	Reason Refusal `json:"reason,omitempty"`
 }
+
+// Refusal is why a host refused a command before changing anything.
+type Refusal string
+
+// RouteConflict means part of the network's prefix is already in use on the host, by a route
+// or a container network, so a configure would make those addresses unreachable.
+const RouteConflict Refusal = "route-conflict"
 
 func Hash(v any) string { return stablejson.Hash(v) }
 func (m Manifest) Interface() string {

@@ -36,6 +36,11 @@ const unaccountedNetworkGenerationNote = "This server reported a private network
 // the host would refuse anything else the same way.
 const refusedNetworkConfigureNote = "This server holds a later private network generation than this installation issued and refused a change, so only removals can reach it. " + aheadNetworkMemberAdvice
 
+// routeConflictNetworkNote holds a member to removals at the generation it refused, which would
+// be refused the same way again. The next generation tries the whole manifest again, since only
+// the host's own ranges stand in its way.
+const routeConflictNetworkNote = "This server refused the network change because a container network or route on it overlaps the network prefix. Nothing changed on the server, and removals still reach it. Remove the overlapping network or route on that server, then save the network again."
+
 const aheadNetworkMemberAdvice = "A compromised server can cause this, and so can restoring management without fencing the server. Revoke the server if you do not trust it. Otherwise fence it with prepare-recovery, transfer it, then approve the network again."
 
 // generationClaimLimit is the highest generation a host may claim while management has issued up

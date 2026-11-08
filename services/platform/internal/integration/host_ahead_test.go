@@ -33,7 +33,17 @@ type aheadHost struct {
 	member     api.ManagedNetworkMemberInput
 	refused    int
 	silent     bool
-	revoked    bool
+	// conflict refuses a configure because a range in use on the host overlaps the prefix, and
+	// says what the host holds, which claim may misstate. conflictRemovals claims a conflict
+	// for a removal too, and claimMembership in another member's name, which only a modified
+	// agent would. claimRefused expects management to refuse what claim says.
+	conflict, conflictRemovals, claimRefused bool
+	claim                                    func(held, sent hostnetwork.Manifest) hostnetwork.Manifest
+	claimMembership                          uuid.UUID
+	// forgeRemoval acknowledges a configure that adds the host as its removal, unapplied.
+	forgeRemoval bool
+	rejected     int
+	revoked      bool
 	// stale drops what it polls, as a journal does for a counter it has passed.
 	stale bool
 }
@@ -125,6 +135,60 @@ func (n *aheadNetwork) round(t *testing.T) {
 			t.Fatalf("host at controller %d was sent a manifest for controller %d", h.controller, command.Manifest.ControllerGeneration)
 		}
 		report := api.AgentReport{Id: c.Id, Generation: c.Generation, PlanHash: c.PlanHash, State: "succeeded", Sequence: 1, Steps: []api.ExecutionStep{}}
+		// As the agent does, a host that never joined acknowledges a removal without applying it.
+		if command.Manifest != nil && h.held.NetworkID == uuid.Nil && (command.Manifest.Disabled || h.forgeRemoval && command.Action == "configure") {
+			identity, err := h.store.Identity(command.MembershipID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			report.Network = claimMessage(t, hostnetwork.Receipt{Identity: identity, NetworkID: command.NetworkID, Generation: command.Manifest.Generation, Hash: hostnetwork.Hash(*command.Manifest), Disabled: true})
+			if err = n.f.execution.Report(n.ctx, h.identity, report); err == nil && !command.Manifest.Disabled {
+				t.Fatal("management accepted an addition acknowledged as a removal")
+			} else if err != nil && command.Manifest.Disabled {
+				t.Fatal(err)
+			} else if err != nil {
+				h.rejected++
+			}
+			continue
+		}
+		if h.conflict && (command.Action == "configure" || h.conflictRemovals) {
+			identity, err := h.store.Identity(command.MembershipID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if h.claimMembership != uuid.Nil {
+				identity.MembershipID = h.claimMembership
+			}
+			refusal := hostnetwork.Receipt{Identity: identity, NetworkID: command.NetworkID, Refused: true, Reason: hostnetwork.RouteConflict}
+			if h.held.NetworkID != uuid.Nil && h.held.MembershipID == command.MembershipID {
+				held := h.held
+				if h.claim != nil {
+					held = h.claim(held, *command.Manifest)
+				}
+				refusal.Before = &held
+			}
+			h.refused++
+			report.State = "failed"
+			report.Network = claimMessage(t, refusal)
+			err = n.f.execution.Report(n.ctx, h.identity, report)
+			if command.Action == "restrict" || h.claimMembership != uuid.Nil || h.claimRefused {
+				if err == nil {
+					t.Fatalf("management accepted a route conflict for %s claimed for membership %s", command.Action, identity.MembershipID)
+				}
+				h.rejected++
+			} else if err != nil {
+				t.Fatal(err)
+			}
+			continue
+		}
+		// The agent has no state to restrict, which it can't settle by itself.
+		if command.Action == "restrict" && h.held.NetworkID == uuid.Nil {
+			report.State = "needs_attention"
+			if err = n.f.execution.Report(n.ctx, h.identity, report); err != nil {
+				t.Fatal(err)
+			}
+			continue
+		}
 		receipt, err := fixtureNetworkReceipt(h.store, *c, &h.held, nil, h.controller)
 		if errors.Is(err, hostnetwork.ErrGenerationConflict) || err != nil && command.Action == "restrict" {
 			h.refused++

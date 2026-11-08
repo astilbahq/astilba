@@ -216,6 +216,27 @@ A member noted as reporting a generation far beyond what this installation issue
 has the same way out. A modified agent can also cause that note, so revoke the
 server instead if you do not trust it.
 
+A host also refuses a network change, before changing anything, when the prefix
+overlaps a route or local container network it already uses. While it holds no
+enabled network for it, it checks Docker's record as well as its routes, because a bridge has no route
+until Docker starts, or at all in isolated gateway mode. A coordinated `links`
+phase then fails, and its deployment aborts and releases its reservations.
+Otherwise the member is noted with the remedy and receives only removals at that
+generation, and the next generation tries the whole manifest again. The refusal
+says what the host holds for its membership, so management can scope those removals
+even when it had no record of the host, and a revoked peer still leaves it.
+Management refuses a refusal claiming a later generation than it sent. It keeps a
+refusal naming a peer or grant it never made for that host, which an honest host
+can hold after management is restored from an older backup, but it doesn't store
+that description. Restrictions never check
+routes: they keep the prefix the host holds, and taking authority away must not
+wait on a conflict. A host that never joined holds nothing, so it acknowledges each
+removal without applying it. A whole disabled manifest for a host that holds the
+network, which removes a member management has no record of, checks routes but not
+Docker's record. So a host removed, added again behind a route it can't join over,
+and removed again can't confirm that removal until the route goes or the server is
+revoked, and the network waits on it until then.
+
 Preserve private recovery exports and handovers until recovery is confirmed.
 
 Recovery orders runtime changes by the operation that actually committed them,

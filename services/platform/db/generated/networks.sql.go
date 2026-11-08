@@ -102,6 +102,61 @@ func (q *Queries) MarkNetworkGenerationExhausted(ctx context.Context, arg MarkNe
 	return err
 }
 
+const memberInstalledManifest = `-- name: MemberInstalledManifest :one
+SELECT installed_manifest FROM network_members
+WHERE workspace_id = $1 AND server_id = $2 AND membership_id = $3 FOR UPDATE
+`
+
+type MemberInstalledManifestParams struct {
+	WorkspaceID  uuid.UUID `json:"workspace_id"`
+	ServerID     uuid.UUID `json:"server_id"`
+	MembershipID uuid.UUID `json:"membership_id"`
+}
+
+func (q *Queries) MemberInstalledManifest(ctx context.Context, arg MemberInstalledManifestParams) ([]byte, error) {
+	row := q.db.QueryRow(ctx, memberInstalledManifest, arg.WorkspaceID, arg.ServerID, arg.MembershipID)
+	var installed_manifest []byte
+	err := row.Scan(&installed_manifest)
+	return installed_manifest, err
+}
+
+const networkGrantsIssuedTo = `-- name: NetworkGrantsIssuedTo :one
+WITH m AS (SELECT $1::jsonb AS doc),
+peers AS (SELECT jsonb_array_elements(CASE WHEN jsonb_typeof(doc->'peers')='array' THEN doc->'peers' ELSE '[]' END) AS p FROM m),
+exports AS (SELECT jsonb_array_elements(CASE WHEN jsonb_typeof(doc->'exports')='array' THEN doc->'exports' ELSE '[]' END) AS x FROM m),
+sources AS (SELECT x, jsonb_array_elements(CASE WHEN jsonb_typeof(x->'sources')='array' THEN x->'sources' ELSE '[]' END) AS s FROM exports),
+egress AS (SELECT jsonb_array_elements(CASE WHEN jsonb_typeof(doc->'egress')='array' THEN doc->'egress' ELSE '[]' END) AS g FROM m),
+unissued AS (
+    SELECT 1 FROM peers WHERE NOT EXISTS(SELECT 1 FROM network_members n WHERE n.workspace_id = $2 AND n.server_id = (p->>'serverId')::uuid)
+    UNION ALL
+    SELECT 1 FROM exports WHERE NOT EXISTS(SELECT 1 FROM network_endpoints e WHERE e.workspace_id = $2 AND e.id = (x->>'id')::uuid AND e.server_id = $3
+        AND e.unit_id = (x->>'unitId')::uuid AND e.resource_id = (x->>'resourceId')::uuid AND e.instance_id = (x->>'instanceId')::uuid AND e.listen_port = (x->>'port')::integer AND e.container_port = (x->>'containerPort')::integer)
+    UNION ALL
+    SELECT 1 FROM sources WHERE NOT EXISTS(SELECT 1 FROM network_endpoint_sources r WHERE r.workspace_id = $2 AND r.endpoint_id = (x->>'id')::uuid AND r.server_id = (s->>'serverId')::uuid AND r.unit_id = (s->>'unitId')::uuid)
+    UNION ALL
+    SELECT 1 FROM egress WHERE NOT EXISTS(SELECT 1 FROM network_endpoint_sources r JOIN network_endpoints e ON e.workspace_id = r.workspace_id AND e.id = r.endpoint_id
+        WHERE r.workspace_id = $2 AND e.id = (g->>'endpointId')::uuid AND e.server_id = (g->>'serverId')::uuid AND e.listen_port = (g->>'port')::integer AND r.server_id = $3 AND r.unit_id = (g->>'unitId')::uuid)
+)
+SELECT NOT EXISTS(SELECT 1 FROM unissued) AS issued
+`
+
+type NetworkGrantsIssuedToParams struct {
+	Manifest    []byte    `json:"manifest"`
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ServerID    uuid.UUID `json:"server_id"`
+}
+
+// Whether every peer and grant in a manifest a host says it holds is one this management made for
+// the workspace's network and this host. Members, endpoints and their sources are never deleted, so
+// all it sent is still here unless management was restored from an older backup. A peer's
+// membership and key, and a source's ingress, may since have changed.
+func (q *Queries) NetworkGrantsIssuedTo(ctx context.Context, arg NetworkGrantsIssuedToParams) (bool, error) {
+	row := q.db.QueryRow(ctx, networkGrantsIssuedTo, arg.Manifest, arg.WorkspaceID, arg.ServerID)
+	var issued bool
+	err := row.Scan(&issued)
+	return issued, err
+}
+
 const networkKeyHeldByAnotherMember = `-- name: NetworkKeyHeldByAnotherMember :one
 SELECT EXISTS(SELECT 1 FROM network_members
     WHERE workspace_id = $1 AND network_id = $2 AND public_key = $3 AND membership_id <> $4)
@@ -215,6 +270,33 @@ func (q *Queries) RecordNetworkSweepOutcome(ctx context.Context, arg RecordNetwo
 	return err
 }
 
+const recordRefusingNetworkMember = `-- name: RecordRefusingNetworkMember :exec
+UPDATE network_members SET installed_manifest = $1
+WHERE workspace_id = $2 AND server_id = $3 AND membership_id = $4 AND generation = $5
+`
+
+type RecordRefusingNetworkMemberParams struct {
+	InstalledManifest []byte    `json:"installed_manifest"`
+	WorkspaceID       uuid.UUID `json:"workspace_id"`
+	ServerID          uuid.UUID `json:"server_id"`
+	MembershipID      uuid.UUID `json:"membership_id"`
+	Generation        int64     `json:"generation"`
+}
+
+// A host that refused a configure over a route conflict says what it holds, so removals can be
+// scoped from it although management had no record. Only for the member's latest command, as
+// with its note.
+func (q *Queries) RecordRefusingNetworkMember(ctx context.Context, arg RecordRefusingNetworkMemberParams) error {
+	_, err := q.db.Exec(ctx, recordRefusingNetworkMember,
+		arg.InstalledManifest,
+		arg.WorkspaceID,
+		arg.ServerID,
+		arg.MembershipID,
+		arg.Generation,
+	)
+	return err
+}
+
 const refuseNetworkMemberKey = `-- name: RefuseNetworkMemberKey :exec
 UPDATE network_members SET note = $1
 WHERE workspace_id = $2 AND server_id = $3 AND membership_id = $4 AND enabled AND public_key=''
@@ -238,19 +320,26 @@ func (q *Queries) RefuseNetworkMemberKey(ctx context.Context, arg RefuseNetworkM
 }
 
 const setNetworkMemberGenerations = `-- name: SetNetworkMemberGenerations :exec
-UPDATE network_members SET generation = $1,note=CASE WHEN note = $2 THEN '' ELSE note END
-WHERE workspace_id = $3
+UPDATE network_members SET generation = $1,note=CASE WHEN note IN ($2, $3) THEN '' ELSE note END
+WHERE workspace_id = $4
 `
 
 type SetNetworkMemberGenerationsParams struct {
-	Generation      int64     `json:"generation"`
-	UnaccountedNote string    `json:"unaccounted_note"`
-	WorkspaceID     uuid.UUID `json:"workspace_id"`
+	Generation        int64     `json:"generation"`
+	UnaccountedNote   string    `json:"unaccounted_note"`
+	RouteConflictNote string    `json:"route_conflict_note"`
+	WorkspaceID       uuid.UUID `json:"workspace_id"`
 }
 
-// A new generation is news for a member that was waiting on @unaccounted_note, so it tries again.
+// A new generation is news for a member that was waiting on @unaccounted_note or that refused
+// the last one over @route_conflict_note, so it tries again.
 func (q *Queries) SetNetworkMemberGenerations(ctx context.Context, arg SetNetworkMemberGenerationsParams) error {
-	_, err := q.db.Exec(ctx, setNetworkMemberGenerations, arg.Generation, arg.UnaccountedNote, arg.WorkspaceID)
+	_, err := q.db.Exec(ctx, setNetworkMemberGenerations,
+		arg.Generation,
+		arg.UnaccountedNote,
+		arg.RouteConflictNote,
+		arg.WorkspaceID,
+	)
 	return err
 }
 

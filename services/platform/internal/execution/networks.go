@@ -244,7 +244,7 @@ func advanceNetworkGeneration(ctx context.Context, tx pgx.Tx, ws uuid.UUID, obse
 	if err != nil {
 		return err
 	}
-	if err = q.SetNetworkMemberGenerations(ctx, db.SetNetworkMemberGenerationsParams{Generation: next, UnaccountedNote: unaccountedNetworkGenerationNote, WorkspaceID: ws}); err != nil || next != math.MaxInt64 {
+	if err = q.SetNetworkMemberGenerations(ctx, db.SetNetworkMemberGenerationsParams{Generation: next, UnaccountedNote: unaccountedNetworkGenerationNote, RouteConflictNote: routeConflictNetworkNote, WorkspaceID: ws}); err != nil || next != math.MaxInt64 {
 		return err
 	}
 	return q.MarkNetworkGenerationExhausted(ctx, db.MarkNetworkGenerationExhaustedParams{Note: exhaustedNetworkGenerationNote, WorkspaceID: ws})
@@ -355,7 +355,7 @@ func (s *Service) reconcileNetwork(ctx context.Context, ws uuid.UUID) error {
 			// a removal. The owner approved this controller's whole manifest, which replaces
 			// whatever the host holds, including peers the restored backup never knew about, and
 			// must not wait for a new peer that may never report a key.
-			if held || m.Note == refusedNetworkConfigureNote || !complete && sameController {
+			if held || m.Note == refusedNetworkConfigureNote || m.Note == routeConflictNetworkNote || !complete && sameController {
 				if !known {
 					continue
 				}
