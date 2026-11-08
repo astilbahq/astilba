@@ -112,7 +112,7 @@ func (e *Engine) executePreviewCleanup(ctx context.Context, c api.ExecutionComma
 	if set, ok := routing.Current.Sets[p.Plan.UnitID.String()]; ok && set.EnvironmentID != p.Plan.EnvironmentID {
 		return fail()
 	}
-	if routing.Pending != nil && r.Checkpoint == "accepted" {
+	if routing.Pending && r.Checkpoint == "accepted" {
 		return fail()
 	}
 	if err = e.checkpoint(c.Id, "preview-routes"); err != nil {

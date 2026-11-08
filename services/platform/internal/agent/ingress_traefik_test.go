@@ -124,6 +124,59 @@ func TestPinnedProxyReadsHealthPathsAsPlainStrings(t *testing.T) {
 	}
 }
 
+// The proxy reads the route file as YAML, which refuses characters JSON leaves raw and
+// folds U+0085 into a space. Values holding them must reach the proxy as reviewed, and
+// must never cost a neighbouring environment its routes, whether the proxy is starting
+// on the file or reloading it.
+func TestPinnedProxyReadsControlCharactersAsReviewed(t *testing.T) {
+	if testing.Short() {
+		t.Skip("real Docker proxy")
+	}
+	host := os.Getenv("PLAT_APP_DOCKER_HOST")
+	if host == "" {
+		t.Fatal("PLAT_APP_DOCKER_HOST must explicitly select a disposable daemon")
+	}
+	docker, err := client.New(client.WithHost(host))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { docker.Close() })
+	if _, err = docker.ImageInspect(t.Context(), deployment.ProxyImage); errdefs.IsNotFound(err) {
+		pull, cancel := context.WithTimeout(t.Context(), 5*time.Minute)
+		defer cancel()
+		err = (&Engine{Docker: docker}).pullImage(pull, deployment.ProxyImage)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, r := range map[string]rune{"DEL": 0x7f, "NEL": 0x85, "C1": 0x80, "noncharacter": 0xffff} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			value := "a" + string(r) + "b"
+			snapshot := templateSnapshot("/ready" + value)
+			unit := uuid.MustParse("99999999-9999-4999-8999-999999999999")
+			set := snapshot.Sets[unit.String()]
+			set.Routes[0].Advanced = &domain.RouteOptions{ResponseHeaders: map[string]string{"X-Value": value}, StripPrefix: "/p" + value}
+			snapshot.Sets[unit.String()] = set
+			raw, err := renderSnapshot(snapshot)
+			if err != nil {
+				t.Fatal(err)
+			}
+			runtime := loadRouteFile(t, docker, snapshot, raw)
+			route := "astilba-99999999-9999-4999-8999-999999999999-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+			if got := runtime.Middlewares[route+"-headers@file"].Headers.CustomResponseHeaders["X-Value"]; got != value {
+				t.Errorf("header reached the proxy as %q, want %q", got, value)
+			}
+			if got := runtime.Middlewares[route+"-prefix@file"].StripPrefix.Prefixes; len(got) != 1 || got[0] != "/p"+value {
+				t.Errorf("prefix reached the proxy as %q", got)
+			}
+			if got := runtime.Services[route+"@file"].LoadBalancer.HealthCheck.Path; got != "/ready"+value {
+				t.Errorf("health path reached the proxy as %q", got)
+			}
+		})
+	}
+}
+
 // Traefik adds internal routers of its own, under other provider names.
 func fileRouters(runtime proxyRuntime) []string {
 	names := []string{}
@@ -136,6 +189,14 @@ func fileRouters(runtime proxyRuntime) []string {
 }
 
 type proxyRuntime struct {
+	Middlewares map[string]struct {
+		Headers struct {
+			CustomResponseHeaders map[string]string `json:"customResponseHeaders"`
+		} `json:"headers"`
+		StripPrefix struct {
+			Prefixes []string `json:"prefixes"`
+		} `json:"stripPrefix"`
+	} `json:"middlewares"`
 	Routers     map[string]proxyStatus `json:"routers"`
 	TCPRouters  map[string]proxyStatus `json:"tcpRouters"`
 	TCPServices map[string]proxyStatus `json:"tcpServices"`
