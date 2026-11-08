@@ -30,8 +30,12 @@ func TestSubmitDeliveryRechecksRuntimeSecrets(t *testing.T) {
 	ws := b.login("owner@example.test", f.password).Workspaces[0].Id
 	prefix := "/api/v1/workspaces/" + ws.String()
 	head := strings.Repeat("a", 40)
+	var tree gitTree
 	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		if tree.answer(w, r) {
+			return
+		}
 		if strings.Contains(r.URL.Path, "/branches/") {
 			_ = stablejson.Encode(w, map[string]any{"commit": map[string]string{"sha": head}})
 			return
@@ -95,6 +99,9 @@ func TestSubmitDeliveryRechecksRuntimeSecrets(t *testing.T) {
 		for _, file := range baseline {
 			source.Paths = append(source.Paths, file.Path)
 		}
+		original := "services:\n  web:\n    image: " + pipelineTestImage + "\n"
+		files := append([]composeproject.File{{Path: "compose.yaml", Content: original}}, baseline...)
+		tree.record(head, files)
 		var imported api.Operation
 		b.call("PUT", path+"/source", map[string]any{"baseRevisionId": env.DraftRevisionId, "configuration": source}, 202, &imported)
 		heartbeat(t)
@@ -103,8 +110,7 @@ func TestSubmitDeliveryRechecksRuntimeSecrets(t *testing.T) {
 		if command == nil || command.Id != imported.Id {
 			t.Fatal("import did not reach the runner", command)
 		}
-		original := "services:\n  web:\n    image: " + pipelineTestImage + "\n"
-		report(t, command, 2, "succeeded", "", &pipeline.Result{Commit: head, Files: append([]composeproject.File{{Path: "compose.yaml", Content: original}}, baseline...)})
+		report(t, command, 2, "succeeded", "", &pipeline.Result{Commit: head, Files: files})
 		var draft api.Revision
 		b.call("GET", path+"/draft", nil, 200, &draft)
 		var spec domain.Specification

@@ -39,6 +39,8 @@ type heldGitHub struct {
 	userFails          atomic.Bool
 	previewMints       atomic.Int64
 	challenge          atomic.Value
+	tree               gitTree
+	fileToken          atomic.Value
 	mu                 sync.Mutex
 	match              string
 	gate               chan struct{}
@@ -76,6 +78,11 @@ func heldGitHubFor(t *testing.T, f *fixture, b *browser, ws uuid.UUID) *heldGitH
 			}
 		}
 		w.Header().Set("Content-Type", "application/json")
+		if strings.Contains(r.URL.Path, "/contents/") {
+			h.fileToken.Store(r.Header.Get("Authorization"))
+			h.tree.answer(w, r)
+			return
+		}
 		switch r.URL.Path {
 		case "/login/oauth/access_token":
 			_ = r.ParseForm()

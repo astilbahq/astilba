@@ -103,15 +103,21 @@ func TestGitImportOfARefusedFileNamesTheFix(t *testing.T) {
 	agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/enroll", "", in, 200, nil)
 	agent := authorityAgent{t, f, agentToken, in}
 	web := "services:\n  web:\n    image: " + pipelineTestImage + "\n"
-	var op api.Operation
-	b.call("PUT", path+"/source", map[string]any{"baseRevisionId": env.DraftRevisionId, "configuration": pipeline.Source{ConnectionID: source.connection.ID, Branch: "main", RunnerID: enrolled.Server.Id, Paths: []string{"compose.yaml"}, Entrypoints: []string{"compose.yaml"}}}, 202, &op)
 	long := strings.Repeat("x", 4096)
-	for commit, test := range []struct{ file, note string }{
+	tests := []struct{ file, note string }{
 		{web + "    logging:\n      driver: syslog\n", "compose.yaml:5:7"},
 		{web + "    ports: [\"\\0:80\"]\n", "needs a change"},
 		{web + "    ports: [!!binary /w==]\n", "needs a change"},
 		{web + "    user: \"${MISSING:?" + long + "}\"\n", "needs a change"},
-	} {
+	}
+	// The repository holds each refused file at its own commit, and the fixed file at the last.
+	commitHolding := func(content string) {
+		source.tree.record(source.head.Load().(string), []composeproject.File{{Path: "compose.yaml", Content: content}})
+	}
+	commitHolding(tests[0].file)
+	var op api.Operation
+	b.call("PUT", path+"/source", map[string]any{"baseRevisionId": env.DraftRevisionId, "configuration": pipeline.Source{ConnectionID: source.connection.ID, Branch: "main", RunnerID: enrolled.Server.Id, Paths: []string{"compose.yaml"}, Entrypoints: []string{"compose.yaml"}}}, 202, &op)
+	for commit, test := range tests {
 		refused := agent.next()
 		agent.finishPipeline(refused, "succeeded", pipeline.Result{Commit: source.head.Load().(string), Files: []composeproject.File{{Path: "compose.yaml", Content: test.file}}})
 		var report api.Operation
@@ -128,6 +134,11 @@ func TestGitImportOfARefusedFileNamesTheFix(t *testing.T) {
 			t.Fatal("a refused import moved the draft")
 		}
 		source.head.Store(strings.Repeat(strconv.Itoa(commit+1), 40))
+		next := web
+		if commit+1 < len(tests) {
+			next = tests[commit+1].file
+		}
+		commitHolding(next)
 		b.call("POST", path+"/source/refresh", map[string]any{"baseRevisionId": draft.Id}, 202, &op)
 	}
 	var draft api.Revision

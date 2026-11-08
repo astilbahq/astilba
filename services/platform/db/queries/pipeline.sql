@@ -37,3 +37,20 @@ SELECT (EXISTS(SELECT 1 FROM execution_operations o WHERE o.workspace_id = @work
 -- unscoped: queued jobs carry only the deployment, as the other job lookups by ID do; the row
 -- establishes the workspace. Remove this when jobs carry the workspace in their arguments.
 SELECT workspace_id FROM pipeline_auto_deployments WHERE id = @id;
+
+-- name: SetGitSourcePendingCommit :exec
+UPDATE git_sources SET pending_commit = @commit
+WHERE workspace_id = @workspace_id AND environment_id = @environment_id;
+
+-- name: ClearGitSourcePendingCommit :exec
+-- A conflict keeps its commit until an owner's refresh settles the draft.
+UPDATE git_sources SET pending_commit = ''
+WHERE workspace_id = @workspace_id AND environment_id = @environment_id AND status <> 'conflict' AND pending_commit <> '';
+
+-- name: LatestImportIsAtCommit :one
+SELECT COALESCE((
+    SELECT configuration->>'commit' FROM pipeline_runs
+    WHERE workspace_id = @workspace_id AND environment_id = @environment_id
+        AND configuration->>'action' = 'import' AND created_at >= @since::timestamptz
+    ORDER BY created_at DESC LIMIT 1
+) = @commit::text, false)::boolean AS started;
