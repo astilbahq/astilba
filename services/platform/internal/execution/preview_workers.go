@@ -236,6 +236,10 @@ func (w *previewWorker) work(ctx context.Context, git *gitAnswers, a previewArgs
 		return err
 	}
 	if answer.Err != nil {
+		// A deleted request retains nothing, and blocking it would hand its old environment a slot.
+		if exists && record.View.State == "deleted" {
+			return nil
+		}
 		if exists {
 			if e := s.previewState(ctx, tx, record.View.Id, "blocked", "Cannot verify the request with its provider. Existing preview resources are retained; check the Git connection.", time.Minute); e != nil {
 				return e
@@ -293,6 +297,9 @@ func previewBusy(ctx context.Context, tx pgx.Tx, ws uuid.UUID, env *uuid.UUID) (
 func (s *Service) reconcilePreview(ctx context.Context, tx pgx.Tx, git *gitAnswers, p previewPolicy, r *previewRecord, pr pipeline.PullRequest, connection pipeline.Connection) error {
 	id := r.View.Id
 	if pr.Open && pr.BaseBranch != p.Config.Build.Branch {
+		if r.View.State == "deleted" {
+			return nil
+		}
 		if err := s.cancelPreviewEnvironment(ctx, tx, p.Workspace, r.View.EnvironmentId); err != nil {
 			return err
 		}

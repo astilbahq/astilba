@@ -77,7 +77,18 @@ func TestRevokedPreviewHostReleasesItsPreviews(t *testing.T) {
 	build := h.policy["build"].(pipeline.BuildConfig)
 	build.RunnerID = replacement
 	h.policy["build"] = build
+	// The first check after the move can't reach the provider, which leaves the request released.
+	entered, release := h.provider.hold(t, "/pulls/7")
+	h.provider.failReleased()
+	marker := previewJobMarker(t, h)
 	h.b.call("PUT", h.path+"/preview-policy", map[string]any{"enabled": true, "generation": policy.Generation, "configuration": h.policy}, 200, nil)
+	waitEntered(t, entered)
+	release()
+	waitPreviewJob(t, h, policy.Id, marker)
+	if after := previewAt(t, h, h.path); after.State != "deleted" || after.Note != preview.Note {
+		t.Fatal("a provider error took back the released preview's slot", after.State, after.Note)
+	}
+	previewEvent(t, h, policy.Id)
 	moved := approvePreview(t, h, h.path)
 	var server uuid.UUID
 	if err := h.f.st.Pool.QueryRow(ctx, "SELECT server_id FROM execution_operations WHERE id=$1", *moved.OperationId).Scan(&server); err != nil || server != replacement || *moved.EnvironmentId == released {
@@ -91,22 +102,34 @@ func TestRevokedPreviewHostReleasesItsPreviews(t *testing.T) {
 // previewEvent sends a pull-request webhook and waits for the policy's job it starts to finish.
 func previewEvent(t *testing.T, h *hungPreview, policy uuid.UUID) {
 	t.Helper()
-	var before int64
-	if err := h.f.st.Pool.QueryRow(t.Context(), "SELECT COALESCE(max(id),0) FROM river_job").Scan(&before); err != nil {
+	marker := previewJobMarker(t, h)
+	h.pullRequestHook(t)
+	waitPreviewJob(t, h, policy, marker)
+}
+
+func previewJobMarker(t *testing.T, h *hungPreview) int64 {
+	t.Helper()
+	var marker int64
+	if err := h.f.st.Pool.QueryRow(t.Context(), "SELECT COALESCE(max(id),0) FROM river_job").Scan(&marker); err != nil {
 		t.Fatal(err)
 	}
-	h.pullRequestHook(t)
+	return marker
+}
+
+// waitPreviewJob waits for a job checking request 7 under policy, queued after marker, to finish.
+func waitPreviewJob(t *testing.T, h *hungPreview, policy uuid.UUID, marker int64) {
+	t.Helper()
 	deadline := time.Now().Add(15 * time.Second)
 	for {
 		var done bool
-		if err := h.f.st.Pool.QueryRow(t.Context(), "SELECT EXISTS(SELECT 1 FROM river_job WHERE id>$1 AND kind='platform_preview_v1' AND args->>'policy'=$2 AND state='completed')", before, policy.String()).Scan(&done); err != nil {
+		if err := h.f.st.Pool.QueryRow(t.Context(), "SELECT EXISTS(SELECT 1 FROM river_job WHERE id>$1 AND kind='platform_preview_v1' AND args->>'policy'=$2 AND args->>'number'='7' AND state='completed')", marker, policy.String()).Scan(&done); err != nil {
 			t.Fatal(err)
 		}
 		if done {
 			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("the provider event's preview job never finished")
+			t.Fatal("the request's preview job never finished")
 		}
 		time.Sleep(30 * time.Millisecond)
 	}
