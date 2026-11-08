@@ -152,6 +152,8 @@ func (s *Service) createCrossHostPlan(ctx context.Context, tx pgx.Tx, ws, pid, e
 		servers = append(servers, server)
 	}
 	sort.Slice(servers, func(i, j int) bool { return servers[i].String() < servers[j].String() })
+	var primaryCaps api.AgentCapabilities
+	var primaryHost api.CrossHostInventory
 	for _, server := range servers {
 		member, ok := members[server]
 		if !ok {
@@ -171,11 +173,8 @@ func (s *Service) createCrossHostPlan(ctx context.Context, tx pgx.Tx, ws, pid, e
 		if busy || controller != member.Controller || json.Unmarshal(cap, &caps) != nil || caps.CrossHost == nil || !*caps.CrossHost || json.Unmarshal(pre, &host) != nil || host.CrossHostInventory == nil || host.CrossHostInventory.UnboundedInventoryHash != member.InventoryHash {
 			return out, domain.Invalid("placement.capacity")
 		}
-		if server == in.ServerId && (host.CrossHostInventory.IngressReady == nil || !*host.CrossHostInventory.IngressReady) {
-			if replacement != nil {
-				return out, replacementNeedsIngress
-			}
-			return out, domain.Invalid("placement.preparePrimaryIngress")
+		if server == in.ServerId {
+			primaryCaps, primaryHost = caps, *host.CrossHostInventory
 		}
 		unitID := primaryUnit
 		if server != in.ServerId {
@@ -250,6 +249,9 @@ func (s *Service) createCrossHostPlan(ctx context.Context, tx pgx.Tx, ws, pid, e
 		parent.Distributed.Units = append(parent.Distributed.Units, deployment.DistributedUnit{Plan: plan, Previous: old, CPUMillis: cpu, MemoryMiB: mem, InventoryHash: member.InventoryHash})
 	}
 	if err = s.preparePrivateEndpoints(ctx, tx, ws, &parent); err != nil {
+		return out, err
+	}
+	if err = preparePrimaryIngress(ctx, tx, ws, &parent, primaryCaps, primaryHost); err != nil {
 		return out, err
 	}
 	if parent.ReleaseOptions != nil && len(parent.ReleaseOptions.Command) > 0 {

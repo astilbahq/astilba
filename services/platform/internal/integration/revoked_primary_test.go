@@ -95,8 +95,8 @@ func TestSecondaryTakesOverFromARevokedPrimary(t *testing.T) {
 		if unit.Plan.ServerID == gone.id {
 			t.Fatal("the revoked primary still takes part")
 		}
-		if unit.Plan.ServerID == b.id && (!unit.Plan.Local.Primary || unit.Previous.UnitID != secondary) {
-			t.Fatal("the host's own unit didn't take the primary role over its previous placement")
+		if unit.Plan.ServerID == b.id && (!unit.Plan.Local.Primary || unit.Previous.UnitID != secondary || unit.Plan.Local.PrepareIngress) {
+			t.Fatal("the host's own unit didn't take the primary role over its previous placement, with the ingress it has")
 		}
 	}
 	if unit, server := g.unitOf(t, &e, true); unit != secondary || server != b.id {
@@ -160,23 +160,63 @@ func TestReplacementNeedsThePrimaryStillRevoked(t *testing.T) {
 	wantRefusedField(t, g.replace(&e, b.id, volume), "replacement")
 }
 
-// A host that has only run secondaries has no ingress for the planner to take over with. Until a
-// placement can prepare one, the refusal says what to do instead.
-func TestReplacementExplainsAMissingIngress(t *testing.T) {
+// A host that has only run secondaries has no dedicated ingress, which a primary needs to reach
+// the secondaries left. Its agent prepares one during reserve, which restarts its proxy, so the
+// plan names whose traffic drops. A host whose agent can't is refused before anything starts.
+func TestReplacementPreparesTheNewPrimarysIngress(t *testing.T) {
+	g := newRevokedGroup(t, 3)
+	gone, b, c := g.hosts[0], g.hosts[1], g.hosts[2]
+	e, volume := g.filesStack(t, gone)
+	e.spec.Applications[0].Replicas = 2
+	g.applied(t, &e, g.place(t, &e, gone.id, b.id, c.id))
+	g.revoke(t, gone)
+	g.networkReady(t)
+	no, yes := false, true
+	g.reports(t, b, func(_ *api.AgentCapabilities, preflight *api.HostPreflight) {
+		inventory := *preflight.CrossHostInventory
+		inventory.IngressReady = &no
+		preflight.CrossHostInventory = &inventory
+	})
+	wantRefusedField(t, g.place(t, &e, b.id, b.id, c.id), "replacement")
+	wantRefusedField(t, g.replace(&e, b.id, volume), "placement.preparePrimaryIngress")
+	g.reports(t, b, func(capabilities *api.AgentCapabilities, _ *api.HostPreflight) { capabilities.PrimaryIngress = &yes })
+	var project api.Project
+	g.b.call("POST", g.base+"/projects", map[string]string{"name": "Neighbours"}, 201, &project)
+	var neighbour api.Environment
+	g.b.call("POST", g.base+"/projects/"+project.Id.String()+"/environments", map[string]string{"name": "Shop"}, 201, &neighbour)
+	if _, err := g.f.st.Pool.Exec(g.ctx, `INSERT INTO route_claims(server_id,claim,workspace_id,environment_id) VALUES($1,'shop.example.com',$2,$3)`, b.id, g.ws, neighbour.Id); err != nil {
+		t.Fatal(err)
+	}
+	status := g.applied(t, &e, g.replace(&e, b.id, volume))
+	for _, unit := range status.Plan.Distributed.Units {
+		if unit.Plan.Local.PrepareIngress != (unit.Plan.ServerID == b.id) {
+			t.Fatalf("server %s prepares ingress: %v", unit.Plan.ServerID, unit.Plan.Local.PrepareIngress)
+		}
+	}
+	if !slices.ContainsFunc(status.Plan.Effects, func(effect string) bool { return strings.Contains(effect, "Traffic to Neighbours / Shop drops") }) {
+		t.Fatalf("the plan doesn't name whose traffic drops: %q", status.Plan.Effects)
+	}
+}
+
+// A primary whose proxy reaches no other host needs no dedicated ingress, so its proxy is left as
+// it is.
+func TestReplacementLeavesALoneIngressAlone(t *testing.T) {
 	g := newRevokedGroup(t, 2)
 	gone, b := g.hosts[0], g.hosts[1]
 	e, volume := g.filesStack(t, gone)
 	g.applied(t, &e, g.place(t, &e, gone.id, b.id))
 	g.revoke(t, gone)
 	g.networkReady(t)
-	if _, err := g.f.st.Pool.Exec(g.ctx, `UPDATE servers SET preflight=jsonb_set(preflight,'{crossHostInventory,ingressReady}','false') WHERE id=$1`, b.id); err != nil {
-		t.Fatal(err)
-	}
+	no := false
+	g.reports(t, b, func(_ *api.AgentCapabilities, preflight *api.HostPreflight) {
+		inventory := *preflight.CrossHostInventory
+		inventory.IngressReady = &no
+		preflight.CrossHostInventory = &inventory
+	})
 	wantRefusedField(t, g.place(t, &e, b.id, b.id), "replacement")
-	got := g.replace(&e, b.id, volume)
-	wantRefusedField(t, got, "placement.preparePrimaryIngress")
-	if !strings.Contains(string(got.body), "single-server deployment with host changes approved") {
-		t.Fatalf("the refusal doesn't say what to do meanwhile: %s", got.body)
+	status := g.applied(t, &e, g.replace(&e, b.id, volume))
+	if status.Plan.Distributed.Units[0].Plan.Local.PrepareIngress {
+		t.Fatal("a lone primary prepares ingress it doesn't need")
 	}
 }
 

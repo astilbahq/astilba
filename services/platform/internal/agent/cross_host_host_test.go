@@ -25,7 +25,6 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/hostnetwork"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/astilbahq/astilba/services/platform/internal/upgrade"
-	"github.com/distribution/reference"
 	"github.com/google/uuid"
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/client"
@@ -392,48 +391,8 @@ func nativePlacementHosts(t *testing.T) (context.Context, []*nativePlacementHost
 func TestNativeCrossHostDeployment(t *testing.T) {
 	ctx, hosts := nativePlacementHosts(t)
 	primary, remote := hosts[0], hosts[1]
-	source, err := client.New(client.WithHost(os.Getenv("PLAT_APP_DOCKER_HOST")))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer source.Close()
-	for _, image := range []string{execution.TestImage, domain.Postgres17Image, domain.PostgresImage, deployment.ProxyImage} {
-		if _, err = source.ImageInspect(ctx, image); err != nil {
-			if err = (&Engine{Docker: source}).pullImage(ctx, image); err != nil {
-				t.Fatal(err)
-			}
-		}
-		for _, host := range hosts {
-			archive, err := source.ImageSave(ctx, []string{image})
-			if err != nil {
-				t.Fatal(err)
-			}
-			loaded, err := host.docker.ImageLoad(ctx, archive)
-			if err != nil {
-				archive.Close()
-				t.Fatal(err)
-			}
-			body, readErr := io.ReadAll(loaded)
-			loaded.Close()
-			archive.Close()
-			if readErr != nil {
-				t.Fatal(readErr)
-			}
-			if _, err = host.docker.ImageInspect(ctx, image); err != nil {
-				// Docker's OCI export retains the content digest but drops its
-				// repository name. Restore that name without changing the content.
-				named, parseErr := reference.ParseNormalizedNamed(image)
-				digested, ok := named.(reference.Digested)
-				if parseErr != nil || !ok {
-					t.Fatal("fixture requires pinned registry images")
-				}
-				alias, aliasErr := exec.CommandContext(ctx, "/opt/astilba-plat4/bin/ctr", "--address", filepath.Join(host.root, "exec/containerd/containerd.sock"), "--namespace", "moby", "images", "tag", "moby-dangling@"+digested.Digest().String(), named.Name()+"@"+digested.Digest().String()).CombinedOutput()
-				if _, err = host.docker.ImageInspect(ctx, image); aliasErr != nil || err != nil {
-					t.Fatalf("fixture pinned image %s: %s %s (%v, %v)", image, body, alias, aliasErr, err)
-				}
-			}
-		}
-	}
+	loadNativeImages(ctx, t, hosts, execution.TestImage, domain.Postgres17Image, domain.PostgresImage, deployment.ProxyImage)
+	var err error
 	app, pg, volume, secret := uuid.New(), uuid.New(), uuid.New(), uuid.New()
 	files, fileVolume := uuid.New(), uuid.New()
 	webImage, pgImage := execution.TestImage, domain.Postgres17Image

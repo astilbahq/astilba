@@ -5004,6 +5004,7 @@
         troubleshootingEnabled: {type: boolean, description: The host owner has opted in to terminal sessions. Advertised only after Astilba-Agent-Troubleshooting v2.}
         troubleshootingUnavailable: {type: string, enum: [runtime, host], description: Why a current agent cannot offer terminal sessions on this host. Advertised only after Astilba-Agent-Troubleshooting v2.}
         crossHost: {type: boolean, description: Supports versioned managed private links and coordinated cross-host commands.}
+        primaryIngress: {type: boolean, description: Moves its ingress proxy onto the dedicated gateway when a reviewed coordinated plan makes this host primary. Advertised only after Astilba-Agent-Primary-Ingress v1.}
         maintenanceContinuation: {type: boolean, description: Supports stateful maintenance writer resumption after its admission deadline with primary-first delivery.}
         previews:
           type: boolean

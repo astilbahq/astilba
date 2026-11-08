@@ -2494,6 +2494,8 @@ export interface components {
             troubleshootingUnavailable?: "runtime" | "host";
             /** @description Supports versioned managed private links and coordinated cross-host commands. */
             crossHost?: boolean;
+            /** @description Moves its ingress proxy onto the dedicated gateway when a reviewed coordinated plan makes this host primary. Advertised only after Astilba-Agent-Primary-Ingress v1. */
+            primaryIngress?: boolean;
             /** @description Supports stateful maintenance writer resumption after its admission deadline with primary-first delivery. */
             maintenanceContinuation?: boolean;
             /** @description Supports bounded preview plans and ownership-verified cleanup. */

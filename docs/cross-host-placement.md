@@ -86,7 +86,15 @@ The new server needs an agent from this release. An older agent refuses the plan
 
 Offline recovery keeps whichever side knows of the replacement, whether the management backup or a host's capsule is the newer.
 
-A new primary must already run managed ingress, because its private-link configuration depends on it. A server that has only run secondaries has none. Taking over without it isn't supported yet. Meanwhile, deploy any environment to that server as a single-server deployment with host changes approved, which prepares its ingress, then plan the replacement again.
+### A primary's ingress
+
+A primary's ingress proxy reaches the secondaries over private links, which need the proxy to use a dedicated network as its gateway. A server that has only run secondaries, or only published routes without host changes, has no such proxy. When a coordinated plan, including a replacement, makes it the primary, its agent moves its proxy onto that gateway while the hosts reserve capacity, before any application changes. A server that routes nothing gets a proxy with no public ports.
+
+Moving the proxy restarts it, so the plan names the environments, previews and the planned environment included, whose traffic through that server drops for a few seconds. When there are too many to list, it names as many as fit and counts the rest. Choose a quiet time to apply it. A server whose proxy already uses the gateway keeps it running untouched, and a primary with no secondaries needs no gateway.
+
+If the move fails, the proxy goes back to the routes it served and the deployment needs attention on that server. An interrupted move is put back the same way before it's tried again. Once moved, the proxy stays on the gateway, even if the deployment is then cancelled or fails.
+
+The server's agent must advertise `primaryIngress` (`Astilba-Agent-Primary-Ingress: v1`). Otherwise the plan is refused before anything changes, asking you to update that agent.
 
 ## Maintenance and compatibility
 
@@ -240,6 +248,7 @@ The acceptance fixtures exercise different boundaries:
 | `TestNativeManagedLinks` | Real WireGuard and firewall rules through the installed systemd network service, including denied sources, host ports, ingress interfaces and revocation. |
 | `TestCrossHostCoordinatedPlacement` | Real PostgreSQL/River admission, capacity, cancellation and deployment/maintenance coordination with controlled agent protocol peers. Host effects are separate. |
 | `TestNativeCrossHostDeployment` | Two isolated Docker hosts with real private links, ingress, process interruption, writer barriers, backups, restore cutovers and a supported PostgreSQL upgrade. Quiesced backups stop a primary file-serving provider used by remote health checks, then deliver the frozen resumptions after their admission deadlines. |
+| `TestNativeCrossHostTakeover` | A host that has only run a secondary becomes primary on the same two isolated hosts: its real reserve moves a proxy it never had onto the dedicated gateway, it reports its ingress ready, its private links install, and its ingress then reaches both hosts. The former primary's host stands in for a remaining secondary, since a replacement with one would take a third host. |
 | `TestCrossHostRetainedPools` | Docker container identity, crash/replay, bounded stopped-pool eviction and image retention. |
 | `TestNativeCrossHostOlderBackupRecovery` | SQL reconstruction, journal transfer, disjoint parents and preservation of newer management knowledge. Its network receipts are controlled fixture inputs. |
 | `TestNativeCrossHostDrainedRecovery` / `TestNativeCrossHostUpgradeRecovery` | Two-host SQL/journal/private-link recovery after a secondary has completed, or after an interrupted PostgreSQL cutover with a distinct write on the new database. |

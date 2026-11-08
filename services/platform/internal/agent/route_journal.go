@@ -48,6 +48,7 @@ type routeHostRecord struct {
 // routeHost is a snapshot without its sets.
 type routeHost struct {
 	ManagedEgress     bool   `json:"managedEgress,omitempty"`
+	PrivateIngress    bool   `json:"privateIngress,omitempty"`
 	Ports             []int  `json:"ports"`
 	Revision          string `json:"revision"`
 	Email             string `json:"email"`
@@ -116,7 +117,7 @@ func (j *Journal) routingIn(tx *bolt.Tx) (routeState, error) {
 		sets[unit] = set
 	}
 	h := record.Host
-	return routeState{Current: routeSnapshot{ManagedEgress: h.ManagedEgress, Sets: sets, Ports: h.Ports, Revision: h.Revision, Email: h.Email, ProxyHash: h.ProxyHash, QualifiedBackends: h.QualifiedBackends}, Pending: record.Pending}, nil
+	return routeState{Current: routeSnapshot{ManagedEgress: h.ManagedEgress, PrivateIngress: h.PrivateIngress, Sets: sets, Ports: h.Ports, Revision: h.Revision, Email: h.Email, ProxyHash: h.ProxyHash, QualifiedBackends: h.QualifiedBackends}, Pending: record.Pending}, nil
 }
 
 // saveRouting stores v and removes the records of units it no longer routes. It writes
@@ -124,7 +125,7 @@ func (j *Journal) routingIn(tx *bolt.Tx) (routeState, error) {
 // whatever else the host routes.
 func (j *Journal) saveRouting(v routeState) error {
 	s := v.Current
-	record := routeHostRecord{Layout: routeLayout, Host: routeHost{ManagedEgress: s.ManagedEgress, Ports: s.Ports, Revision: s.Revision, Email: s.Email, ProxyHash: s.ProxyHash, QualifiedBackends: s.QualifiedBackends}, Units: []string{}, Pending: v.Pending}
+	record := routeHostRecord{Layout: routeLayout, Host: routeHost{ManagedEgress: s.ManagedEgress, PrivateIngress: s.PrivateIngress, Ports: s.Ports, Revision: s.Revision, Email: s.Email, ProxyHash: s.ProxyHash, QualifiedBackends: s.QualifiedBackends}, Units: []string{}, Pending: v.Pending}
 	for unit := range s.Sets {
 		record.Units = append(record.Units, unit)
 	}
