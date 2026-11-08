@@ -108,6 +108,12 @@ jobs:
             postgres:18.4-alpine3.23@sha256:996d0920e4ff9df1fc19dacb904492f3c1ec0ec1cc338f0ad7123be7731c5f5e
             busybox:1.37.0@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e
             traefik:v3.7.16@sha256:22a759fb803abb5c3a7ba5d5a55a201c5fb0fc8993d5c72c47a89075e64f1953
+      - name: Pull the pinned Gitea image
+        # Only the operations lane runs the test against a real Gitea.
+        if: matrix.lane == 'operations'
+        uses: ./.github/actions/pull-images
+        with:
+          images: gitea/gitea:28.2.0@sha256:30777c91280d973fa02be48b1ade735bd6859e8f6f7af3b4444d519437852504
       - run: make verify-app-go-${{ matrix.lane }}
         env:
           PLAT_APP_DOCKER_HOST: unix:///var/run/docker.sock

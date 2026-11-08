@@ -37,10 +37,10 @@ func TestSubmitDeliveryRechecksRuntimeSecrets(t *testing.T) {
 			return
 		}
 		if strings.Contains(r.URL.Path, "/branches/") {
-			_ = stablejson.Encode(w, map[string]any{"commit": map[string]string{"sha": head}})
+			answerBranch(w, "gitea", head)
 			return
 		}
-		_ = stablejson.Encode(w, map[string]any{"id": 12, "private": true})
+		answerRepository(w, "gitea", 12, true)
 	}))
 	defer provider.Close()
 	const writeCredential = "submit-write-canary"

@@ -178,14 +178,10 @@ func newGitSourceOf(t *testing.T, f *fixture, b *browser, prefix, kind string) *
 			return
 		}
 		if strings.Contains(r.URL.Path, "/branches/") {
-			key := "sha"
-			if kind == "gitlab" {
-				key = "id"
-			}
-			_ = stablejson.Encode(w, map[string]any{"commit": map[string]string{key: g.head.Load().(string)}})
+			answerBranch(w, kind, g.head.Load().(string))
 			return
 		}
-		_ = stablejson.Encode(w, map[string]any{"id": 12, "private": false})
+		answerRepository(w, kind, 12, false)
 	}))
 	t.Cleanup(provider.Close)
 	base := provider.URL

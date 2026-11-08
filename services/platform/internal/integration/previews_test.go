@@ -47,13 +47,13 @@ func previewIsolationJourney(t *testing.T, transfer, recoverCleanup bool) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case strings.Contains(r.URL.Path, "/branches/"):
-			stablejson.Encode(w, map[string]any{"commit": map[string]string{"sha": head.Load().(string)}})
+			answerBranch(w, "gitea", head.Load().(string))
 		case strings.HasSuffix(r.URL.Path, "/pulls/7"):
 			state := "open"
 			if !open.Load() {
 				state = "closed"
 			}
-			stablejson.Encode(w, map[string]any{"number": 7, "state": state, "base": map[string]any{"ref": "main", "repo": map[string]any{"id": 12}}, "head": map[string]any{"sha": head.Load().(string), "repo": map[string]any{"id": 99}}})
+			answerPull(w, 7, state, 12, head.Load().(string), 99)
 		case strings.HasSuffix(r.URL.Path, "/pulls"):
 			rows := []map[string]int{}
 			if open.Load() {
@@ -61,7 +61,7 @@ func previewIsolationJourney(t *testing.T, transfer, recoverCleanup bool) {
 			}
 			stablejson.Encode(w, rows)
 		default:
-			stablejson.Encode(w, map[string]any{"id": 12, "private": true})
+			answerRepository(w, "gitea", 12, true)
 		}
 	}))
 	defer provider.Close()

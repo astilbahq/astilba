@@ -73,10 +73,10 @@ func dispatchBuild(t *testing.T, ctx context.Context, f *fixture, arguments map[
 	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if strings.Contains(r.URL.Path, "/branches/") {
-			_ = stablejson.Encode(w, map[string]any{"commit": map[string]string{"sha": strings.Repeat("a", 40)}})
+			answerBranch(w, "gitea", strings.Repeat("a", 40))
 			return
 		}
-		_ = stablejson.Encode(w, map[string]any{"id": 12, "private": false})
+		answerRepository(w, "gitea", 12, false)
 	}))
 	t.Cleanup(provider.Close)
 	var connection struct {
