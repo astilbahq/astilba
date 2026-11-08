@@ -141,7 +141,7 @@ func testCrossHostCoordinatedPlacement(t *testing.T, expiryPhase string) {
 				pollErr := poll.Err()
 				done()
 				if err != nil {
-					if i == 0 && revokePrimary.Load() && errors.Is(err, domain.Unauthenticated) {
+					if i == 0 && revokePrimary.Load() && revokedHost(ctx, f, identity, err) {
 						return
 					}
 					if waitForFixturePollLease(ctx, err) || pollErr != nil || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
