@@ -67,6 +67,27 @@ A secondary holds no durable data, because a distributed application can't have 
 
 A member removed from the network but not revoked can still answer, so it keeps blocking the plan until it answers or you revoke it.
 
+### A revoked primary
+
+The primary holds the environment's volumes and databases, so moving off it loses their data. Nothing is copied from a revoked server.
+
+The deployment panel says when the environment's primary was revoked. Choose a healthy server and plan a deployment to it. The plan is refused until you name every volume on the revoked primary, and the panel asks you to accept each one. The plan's effects list what you're giving up. Only an owner can do this. Applying it:
+
+- makes the chosen server the primary. If it already holds this environment's unit, that unit takes the role, so the host keeps a single unit. Otherwise the server gets a new unit. The former primary's unit is detached and never reused, so its old volumes on that host can't come back by accident
+- starts the volumes the revision declares empty, with the same identities, and drops the others
+- moves the route claims, so point custom domains at the new server, and change generated domains, which name their server
+- leaves the environment's backup policies with the revoked server, where they can't run. Create new ones.
+
+The plan applies only while the old primary is still revoked. If the deployment doesn't finish, the environment is already on its way to that server, and the panel continues there. Other servers are refused while that server is healthy, because the first attempt may have left containers and volumes on it. If it's revoked too, choose any healthy server.
+
+To get the data back, restore a snapshot by hand, as [Backups](backups.md#recovery-without-the-management-database) describes, into the new empty volumes. Filesystem backup destinations on the revoked server are lost with it.
+
+The new server needs an agent from this release. An older agent refuses the plan before changing anything. Deploying back onto a renewed former primary fails, because its old volumes are labelled for the detached unit. Replace that host rather than reuse it.
+
+Offline recovery keeps whichever side knows of the replacement, whether the management backup or a host's capsule is the newer.
+
+A new primary must already run managed ingress, because its private-link configuration depends on it. A server that has only run secondaries has none. Taking over without it isn't supported yet. Meanwhile, deploy any environment to that server as a single-server deployment with host changes approved, which prepares its ingress, then plan the replacement again.
+
 ## Maintenance and compatibility
 
 Cross-host binding introduces remote writers. Existing backup/upgrade quiescence must use the same durable parent barrier to stop and confirm every active writer across units, preserving stop/restart receipts and unknown-outcome fences. No supported upgrade, restore cutover or quiescing backup may proceed with an unreachable writer. Logical database dumps may retain their existing consistency guarantee when no stop is needed. Installed schedules must not silently run a local-only maintenance procedure after distribution; network-independent jobs remain local, but cross-host quiescing maintenance needs an explicit supported policy or is rejected before installation. Every participant must explicitly advertise `maintenanceContinuation` before a new maintenance parent or reservation is created. Freeze every resumption child together, but deliver queued consumer `resume-source` and `resume-target` commands only after the primary succeeds in that exact parent phase. Already-dispatched children retain reconciliation delivery. Primary failure, cancellation or uncertainty keeps consumers stopped and surfaces `needs_attention` before all-child completion. Terminal outcomes remain terminal.

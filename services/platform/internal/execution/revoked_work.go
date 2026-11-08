@@ -43,6 +43,9 @@ func (s *Service) settleRevokedWork(ctx context.Context, tx pgx.Tx, ws, server u
 	if err := q.CancelUnstartedReleaseCommands(ctx, db.CancelUnstartedReleaseCommandsParams{WorkspaceID: ws, ServerID: server.String()}); err != nil {
 		return err
 	}
+	if err := releaseRevokedPreviews(ctx, tx, ws, server); err != nil {
+		return err
+	}
 	parked, err := q.ParkedMaintenanceOnPrimary(ctx, db.ParkedMaintenanceOnPrimaryParams{WorkspaceID: ws, ServerID: server})
 	if err != nil {
 		return err

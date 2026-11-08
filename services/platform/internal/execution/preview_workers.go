@@ -99,7 +99,8 @@ type previewRecord struct {
 func loadPreview(ctx context.Context, tx pgx.Tx, id uuid.UUID) (previewRecord, error) {
 	var r previewRecord
 	var raw []byte
-	err := tx.QueryRow(ctx, "SELECT "+previewColumns+",policy_id,application_id,policy_generation,configuration,approved_head,approved_repository,approved_generation,build_id,plan_id,built_head,closed_at,cleanup_requested,cleanup_actor,cleanup_auth_version,cleanup_controller,resume_after_cancel,updated_at FROM preview_requests WHERE id=$1", id).Scan(&r.View.Id, &r.View.Number, &r.View.Head, &r.View.HeadRepository, &r.View.Fork, &r.View.State, &r.View.Note, &r.View.Generation, &r.View.EnvironmentId, &r.View.OperationId, &r.View.CleanupAt, &r.Policy, &r.App, &r.PolicyGeneration, &raw, &r.ApprovedHead, &r.ApprovedRepo, &r.ApprovedGeneration, &r.Build, &r.Plan, &r.BuiltHead, &r.Closed, &r.Cleanup, &r.CleanupActor, &r.CleanupAuth, &r.CleanupController, &r.ResumeAfterCancel, &r.Updated)
+	var released bool
+	err := tx.QueryRow(ctx, "SELECT "+previewColumns+",policy_id,application_id,policy_generation,configuration,approved_head,approved_repository,approved_generation,build_id,plan_id,built_head,closed_at,cleanup_requested,cleanup_actor,cleanup_auth_version,cleanup_controller,resume_after_cancel,updated_at FROM preview_requests WHERE id=$1", id).Scan(&r.View.Id, &r.View.Number, &r.View.Head, &r.View.HeadRepository, &r.View.Fork, &r.View.State, &r.View.Note, &r.View.Generation, &r.View.EnvironmentId, &r.View.OperationId, &r.View.CleanupAt, &released, &r.Policy, &r.App, &r.PolicyGeneration, &raw, &r.ApprovedHead, &r.ApprovedRepo, &r.ApprovedGeneration, &r.Build, &r.Plan, &r.BuiltHead, &r.Closed, &r.Cleanup, &r.CleanupActor, &r.CleanupAuth, &r.CleanupController, &r.ResumeAfterCancel, &r.Updated)
 	if err == nil && len(raw) > 0 {
 		var c previewConfig
 		err = json.Unmarshal(raw, &c)
@@ -217,7 +218,7 @@ func (w *previewWorker) work(ctx context.Context, git *gitAnswers, a previewArgs
 			if err = s.cancelPreviewEnvironment(ctx, tx, ws, record.View.EnvironmentId); err != nil {
 				return err
 			}
-			_, err = tx.Exec(ctx, "UPDATE preview_requests SET state=CASE WHEN state='deleted' THEN state ELSE 'blocked' END,note='Preview policy needs owner approval.',next_check_at=now()+interval '5 minutes' WHERE id=$1", record.View.Id)
+			_, err = tx.Exec(ctx, "UPDATE preview_requests SET state=CASE WHEN state='deleted' THEN state ELSE 'blocked' END,note=CASE WHEN state='deleted' THEN note ELSE 'Preview policy needs owner approval.' END,next_check_at=now()+interval '5 minutes' WHERE id=$1", record.View.Id)
 			if err != nil {
 				return err
 			}
@@ -235,6 +236,10 @@ func (w *previewWorker) work(ctx context.Context, git *gitAnswers, a previewArgs
 		return err
 	}
 	if answer.Err != nil {
+		// A deleted request retains nothing, and blocking it would hand its old environment a slot.
+		if exists && record.View.State == "deleted" {
+			return nil
+		}
 		if exists {
 			if e := s.previewState(ctx, tx, record.View.Id, "blocked", "Cannot verify the request with its provider. Existing preview resources are retained; check the Git connection.", time.Minute); e != nil {
 				return e
@@ -270,7 +275,8 @@ func (w *previewWorker) work(ctx context.Context, git *gitAnswers, a previewArgs
 	return tx.Commit(ctx)
 }
 func (s *Service) previewState(ctx context.Context, tx pgx.Tx, id uuid.UUID, state, note string, delay time.Duration) error {
-	_, err := tx.Exec(ctx, "UPDATE preview_requests SET state=$2,note=$3,updated_at=now(),next_check_at=now()+$4::interval WHERE id=$1", id, state, note, delay.String())
+	// A deletion ends whatever replaced a preview released by revocation.
+	_, err := tx.Exec(ctx, "UPDATE preview_requests SET state=$2,note=$3,released_by_revocation=released_by_revocation AND $2<>'deleted',updated_at=now(),next_check_at=now()+$4::interval WHERE id=$1", id, state, note, delay.String())
 	return err
 }
 func (s *Service) cancelPreviewEnvironment(ctx context.Context, tx pgx.Tx, ws uuid.UUID, env *uuid.UUID) error {
@@ -291,6 +297,9 @@ func previewBusy(ctx context.Context, tx pgx.Tx, ws uuid.UUID, env *uuid.UUID) (
 func (s *Service) reconcilePreview(ctx context.Context, tx pgx.Tx, git *gitAnswers, p previewPolicy, r *previewRecord, pr pipeline.PullRequest, connection pipeline.Connection) error {
 	id := r.View.Id
 	if pr.Open && pr.BaseBranch != p.Config.Build.Branch {
+		if r.View.State == "deleted" {
+			return nil
+		}
 		if err := s.cancelPreviewEnvironment(ctx, tx, p.Workspace, r.View.EnvironmentId); err != nil {
 			return err
 		}
@@ -301,7 +310,7 @@ func (s *Service) reconcilePreview(ctx context.Context, tx pgx.Tx, git *gitAnswe
 			return err
 		}
 		if r.View.State == "deleted" {
-			return s.previewState(ctx, tx, id, "deleted", "", 5*time.Minute)
+			return s.previewState(ctx, tx, id, "deleted", r.View.Note, 5*time.Minute)
 		}
 		if r.View.EnvironmentId == nil {
 			return s.previewState(ctx, tx, id, "deleted", "Request closed before resources were allocated.", 5*time.Minute)

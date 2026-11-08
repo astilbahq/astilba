@@ -81,7 +81,7 @@ func (s *Service) prepareRecoveryKnowledge(ctx context.Context, tx pgx.Tx, befor
 	if _, err = tx.CopyFrom(ctx, pgx.Identifier{"recovery_known_operations"}, []string{"id", "report_sequence", "state"}, pgx.CopyFromRows(progress)); err != nil {
 		return err
 	}
-	projections, err := recoveryProjections(ctx, tx, before, source.Archive, roots, source.Origins)
+	projections, err := recoveryProjections(ctx, tx, before, source.Archive, roots, source.Origins, revoked)
 	if err != nil {
 		return err
 	}
@@ -133,20 +133,7 @@ func (s *Service) prepareRecoveryKnowledge(ctx context.Context, tx pgx.Tx, befor
 						}
 					}
 				case "deployment_units":
-					oldServer, err2 := recoveryValue[*uuid.UUID](prior, "server_id")
-					if err2 != nil {
-						return err2
-					}
-					newServer, err2 := recoveryValue[*uuid.UUID](row, "server_id")
-					if err2 != nil {
-						return err2
-					}
-					if oldServer != nil && newServer != nil && *oldServer != *newServer {
-						return errors.New("recovery cannot move an existing deployment unit to another server")
-					}
-					if oldServer == nil {
-						selected["server_id"] = row["server_id"]
-					}
+					err = recoveryUnitKnowledge(selected, prior, row)
 				}
 				if err != nil {
 					return err
@@ -177,6 +164,9 @@ func (s *Service) prepareRecoveryKnowledge(ctx context.Context, tx pgx.Tx, befor
 		}
 	}
 	if err = appendRecoveryProjectionRows(&prepared, projections); err != nil {
+		return err
+	}
+	if err = recoveryUnitOwnership(prepared); err != nil {
 		return err
 	}
 	if err = settleRevokedServers(prepared, revoked, source.Hosts); err != nil {
@@ -514,6 +504,79 @@ func validateRecoveryUpgradeKnowledge(ctx context.Context, tx pgx.Tx, archives .
 			terminal := known.Phase == "complete" || known.Phase == "returned" || known.Phase == "rejected"
 			if known.WritesPossible && !current.WritesPossible || terminal && (known.Phase != current.Phase || known.Serving != current.Serving) {
 				return errors.New("recovered upgrade would discard a known data outcome")
+			}
+		}
+	}
+	return nil
+}
+
+// A unit only moves forward: created on a server, made primary, then, once a revoked primary is
+// replaced, detached for good. Whichever archive has a unit further along knows more about it.
+func recoveryUnitStage(row portability.Row) (int, *uuid.UUID, error) {
+	server, err := recoveryValue[*uuid.UUID](row, "server_id")
+	if err != nil {
+		return 0, nil, err
+	}
+	primary, err := recoveryValue[bool](row, "primary_unit")
+	if err != nil {
+		return 0, nil, err
+	}
+	switch {
+	case primary:
+		return 1, server, nil
+	case server == nil:
+		return 2, nil, nil
+	}
+	return 0, server, nil
+}
+
+// recoveryUnitKnowledge keeps the unit's furthest stage. Within one stage a unit can gain a server
+// but never change it.
+func recoveryUnitKnowledge(selected, prior, incoming portability.Row) error {
+	oldStage, oldServer, err := recoveryUnitStage(prior)
+	if err != nil {
+		return err
+	}
+	newStage, newServer, err := recoveryUnitStage(incoming)
+	if err != nil {
+		return err
+	}
+	switch {
+	case newStage > oldStage:
+		selected["server_id"], selected["primary_unit"] = incoming["server_id"], incoming["primary_unit"]
+	case newStage < oldStage:
+	case oldServer != nil && newServer != nil && *oldServer != *newServer:
+		return errors.New("recovery cannot move an existing deployment unit to another server")
+	case oldServer == nil:
+		selected["server_id"] = incoming["server_id"]
+	}
+	return nil
+}
+
+// recoveryUnitOwnership gives an environment's managed volumes and resources to its primary unit,
+// which is where every apply records them, once the merge has settled which unit that is.
+func recoveryUnitOwnership(a portability.Archive) error {
+	primary := map[uuid.UUID]jsontext.Value{}
+	for _, row := range a.Tables["deployment_units"] {
+		if isPrimary, err := recoveryValue[bool](row, "primary_unit"); err != nil {
+			return err
+		} else if !isPrimary {
+			continue
+		}
+		env, err := recoveryValue[uuid.UUID](row, "environment_id")
+		if err != nil {
+			return err
+		}
+		primary[env] = row["id"]
+	}
+	for _, table := range []string{"managed_volumes", "managed_resources"} {
+		for _, row := range a.Tables[table] {
+			env, err := recoveryValue[uuid.UUID](row, "environment_id")
+			if err != nil {
+				return err
+			}
+			if unit, ok := primary[env]; ok {
+				row["unit_id"] = unit
 			}
 		}
 	}

@@ -53,6 +53,28 @@ func recoveryRowHash(raw []byte) string {
 	return hex.EncodeToString(h[:])
 }
 
+// recoveryMergeOrder applies a table's rows in an order its unique indexes accept one row at a
+// time. Replacing a primary demotes one unit and promotes another, and primary_environment_unit
+// allows one primary per environment, so demotions go first.
+func recoveryMergeOrder(name string, rows []Row) ([]Row, error) {
+	if name != "deployment_units" {
+		return rows, nil
+	}
+	demotions, promotions := []Row{}, []Row{}
+	for _, row := range rows {
+		var primary bool
+		if json.Unmarshal(row["primary_unit"], &primary) != nil {
+			return nil, ErrArchive
+		}
+		if primary {
+			promotions = append(promotions, row)
+		} else {
+			demotions = append(demotions, row)
+		}
+	}
+	return append(demotions, promotions...), nil
+}
+
 func recoveryKeys(name string) string {
 	switch name {
 	case "environment_layouts", "visual_runtime", "git_sources":
@@ -99,7 +121,11 @@ func MergeRecovery(ctx context.Context, tx pgx.Tx, a Archive, owner uuid.UUID) e
 	links := map[string]map[string]jsontext.Value{"environments": {}, "execution_operations": {}}
 	appliedOperations := map[string]jsontext.Value{}
 	for _, t := range tables {
-		for _, sourceRow := range a.Tables[t.Name] {
+		rows, err := recoveryMergeOrder(t.Name, a.Tables[t.Name])
+		if err != nil {
+			return err
+		}
+		for _, sourceRow := range rows {
 			row := maps.Clone(sourceRow)
 			original, err := stablejson.Marshal(row)
 			if err != nil {

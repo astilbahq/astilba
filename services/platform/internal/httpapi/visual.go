@@ -56,6 +56,10 @@ func (s *Server) ExportEnvironment(w http.ResponseWriter, r *http.Request, ws, p
 	s.executionResponse(w, r, 200, v, e)
 }
 
+func (s *Server) GetPrimaryReplacement(w http.ResponseWriter, r *http.Request, ws, pid, env uuid.UUID) {
+	v, e := s.Execution.PrimaryReplacement(r.Context(), *principal(r.Context()), ws, pid, env)
+	s.executionResponse(w, r, 200, v, e)
+}
 func (s *Server) ListManagedVolumes(w http.ResponseWriter, r *http.Request, ws, pid, env uuid.UUID) {
 	v, e := s.Execution.ManagedVolumes(r.Context(), *principal(r.Context()), ws, pid, env)
 	s.executionResponse(w, r, 200, v, e)

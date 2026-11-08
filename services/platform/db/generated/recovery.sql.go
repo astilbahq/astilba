@@ -128,7 +128,8 @@ func (q *Queries) AttachRecoveryCheckpoint(ctx context.Context, arg AttachRecove
 
 const blockServerPreviewRequests = `-- name: BlockServerPreviewRequests :exec
 UPDATE preview_requests SET state=CASE WHEN state='deleted' THEN state ELSE 'blocked' END,resume_after_cancel=false,
-    cleanup_actor=NULL,cleanup_auth_version=NULL,cleanup_controller=NULL,note='Management recovery requires renewed preview approval.'
+    cleanup_actor=NULL,cleanup_auth_version=NULL,cleanup_controller=NULL,
+    note=CASE WHEN state='deleted' THEN note ELSE 'Management recovery requires renewed preview approval.' END
 WHERE preview_requests.workspace_id = $1 AND preview_requests.policy_id IN (
     SELECT p.id FROM preview_policies p WHERE p.workspace_id = $1 AND p.server_id = $2)
 `
@@ -159,7 +160,8 @@ func (q *Queries) BlockWorkspaceAutoDeployments(ctx context.Context, arg BlockWo
 
 const blockWorkspacePreviewRequests = `-- name: BlockWorkspacePreviewRequests :exec
 UPDATE preview_requests SET state=CASE WHEN state='deleted' THEN state ELSE 'blocked' END,resume_after_cancel=false,cleanup_requested=false,
-    cleanup_actor=NULL,cleanup_auth_version=NULL,cleanup_controller=NULL,note='Offline recovery requires renewed preview approval.'
+    cleanup_actor=NULL,cleanup_auth_version=NULL,cleanup_controller=NULL,
+    note=CASE WHEN state='deleted' THEN note ELSE 'Offline recovery requires renewed preview approval.' END
 WHERE workspace_id = $1
 `
 
@@ -1065,8 +1067,10 @@ func (q *Queries) SaveSupportedUpgradeStatus(ctx context.Context, arg SaveSuppor
 const serverControllerInventory = `-- name: ServerControllerInventory :many
 SELECT r.unit_id,p.plan FROM visual_runtime r
 JOIN visual_plans p ON p.id=r.plan_id AND p.workspace_id=r.workspace_id
+JOIN environments e ON e.workspace_id=r.workspace_id AND e.id=r.environment_id
 WHERE r.workspace_id = $1 AND r.server_id = $2
     AND NOT EXISTS(SELECT 1 FROM cross_host_runtime c WHERE c.workspace_id=r.workspace_id AND c.unit_id=r.unit_id)
+    AND (e.purpose<>'preview' OR EXISTS(SELECT 1 FROM preview_requests q WHERE q.workspace_id=r.workspace_id AND q.environment_id=r.environment_id AND q.state<>'deleted'))
 UNION ALL
 SELECT unit_id,inventory->'plan' FROM cross_host_runtime WHERE workspace_id = $1 AND server_id = $2
 `
@@ -1081,6 +1085,8 @@ type ServerControllerInventoryRow struct {
 	Plan   []byte    `json:"plan"`
 }
 
+// Confirmed cleanup retires a preview's runtime, so a preview no open request owns was released when
+// its host was revoked. Nothing confirmed its removal, and a host that still carries it isn't clean.
 func (q *Queries) ServerControllerInventory(ctx context.Context, arg ServerControllerInventoryParams) ([]ServerControllerInventoryRow, error) {
 	rows, err := q.db.Query(ctx, serverControllerInventory, arg.WorkspaceID, arg.ServerID)
 	if err != nil {

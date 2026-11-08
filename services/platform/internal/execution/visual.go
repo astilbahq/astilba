@@ -87,7 +87,15 @@ func (s *Service) createVisualPlan(ctx context.Context, tx pgx.Tx, ws, pid, env 
 		if err != nil {
 			return err
 		}
-		if v.Revision != in.BaseRevisionId || (v.Server != nil && *v.Server != in.ServerId) {
+		previousPlan, err := appliedVisualPlan(ctx, tx, ws, env)
+		if err != nil {
+			return err
+		}
+		replacement, err := primaryReplacement(ctx, tx, ws, env, v, previousPlan, in)
+		if err != nil {
+			return err
+		}
+		if v.Revision != in.BaseRevisionId || replacement == nil && v.Server != nil && *v.Server != in.ServerId {
 			return domain.Conflict
 		}
 		if err = domain.ValidateNewCompose(v.Spec); err != nil {
@@ -193,13 +201,20 @@ func (s *Service) createVisualPlan(ctx context.Context, tx pgx.Tx, ws, pid, env 
 			return err
 		}
 
-		previousPlan, err := appliedVisualPlan(ctx, tx, ws, env)
-		if err != nil {
+		if v.Spec.Placement != nil {
+			out, err = s.createCrossHostPlan(ctx, tx, ws, pid, env, in, v, previousPlan, replacement)
 			return err
 		}
-		if v.Spec.Placement != nil {
-			out, err = s.createCrossHostPlan(ctx, tx, ws, pid, env, in, v, previousPlan)
-			return err
+		if replacement != nil {
+			effects, err := replacementEffects(ctx, tx, ws, *replacement, in.ServerId, v.Spec)
+			if err != nil {
+				return err
+			}
+			if plan.UnitID, err = primaryUnitFor(ctx, tx, ws, env, v, in.ServerId); err != nil {
+				return err
+			}
+			plan.Replacement, plan.HostChanges = replacement, true
+			plan.Effects = append(plan.Effects, effects...)
 		}
 		if previousPlan.Distributed != nil {
 			if previousPlan.Specification.HasRemotePlacement() {
@@ -248,7 +263,7 @@ func (s *Service) createVisualPlan(ctx context.Context, tx pgx.Tx, ws, pid, env 
 		if len(raw) > 100000 {
 			return domain.Invalid("specification")
 		}
-		_, err = tx.Exec(ctx, `INSERT INTO visual_requests(id,workspace_id,server_id,environment_id,unit_id,revision_id,operation_id,candidate) VALUES($1,$2,$3,$4,$5,$6,$7,$8)`, plan.ID, ws, in.ServerId, env, v.Unit, v.Revision, op.Id, raw)
+		_, err = tx.Exec(ctx, `INSERT INTO visual_requests(id,workspace_id,server_id,environment_id,unit_id,revision_id,operation_id,candidate) VALUES($1,$2,$3,$4,$5,$6,$7,$8)`, plan.ID, ws, in.ServerId, env, plan.UnitID, v.Revision, op.Id, raw)
 		out = deployment.Status{ID: plan.ID, OperationID: op.Id, State: string(op.State)}
 		return err
 	}()
@@ -344,7 +359,14 @@ func (s *Service) applyVisualPlan(ctx context.Context, tx pgx.Tx, ws, pid, env, 
 		if err != nil {
 			return err
 		}
-		if time.Now().After(plan.ExpiresAt) || plan.RevisionID != v.Revision || plan.UnitID != v.Unit || (v.Server != nil && *v.Server != plan.ServerID) || !sameID(v.Applied, plan.ExpectedAppliedID) {
+		if time.Now().After(plan.ExpiresAt) || plan.RevisionID != v.Revision || !sameID(v.Applied, plan.ExpectedAppliedID) {
+			return domain.Conflict
+		}
+		if plan.Replacement != nil {
+			if err = adoptReplacement(ctx, tx, ws, v, plan); err != nil {
+				return err
+			}
+		} else if plan.UnitID != v.Unit || v.Server != nil && *v.Server != plan.ServerID {
 			return domain.Conflict
 		}
 		if err = s.Store.ValidateApplicationRoutes(ctx, tx, ws, env, plan.Specification, &plan.ServerID); err != nil {
@@ -396,12 +418,12 @@ func (s *Service) applyVisualPlan(ctx context.Context, tx pgx.Tx, ws, pid, env, 
 				return domain.Conflict
 			}
 		}
-		if _, err = tx.Exec(ctx, "UPDATE deployment_units SET server_id=$3 WHERE workspace_id=$1 AND id=$2", ws, v.Unit, plan.ServerID); err != nil {
+		if _, err = tx.Exec(ctx, "UPDATE deployment_units SET server_id=$3 WHERE workspace_id=$1 AND id=$2", ws, plan.UnitID, plan.ServerID); err != nil {
 			return err
 		}
 		for _, a := range plan.Specification.Applications {
 			var owner uuid.UUID
-			err = tx.QueryRow(ctx, `INSERT INTO managed_resources(workspace_id,environment_id,unit_id,id) VALUES($1,$2,$3,$4) ON CONFLICT(workspace_id,id) DO UPDATE SET id=EXCLUDED.id RETURNING environment_id`, ws, env, v.Unit, a.ID).Scan(&owner)
+			err = tx.QueryRow(ctx, `INSERT INTO managed_resources(workspace_id,environment_id,unit_id,id) VALUES($1,$2,$3,$4) ON CONFLICT(workspace_id,id) DO UPDATE SET id=EXCLUDED.id RETURNING environment_id`, ws, env, plan.UnitID, a.ID).Scan(&owner)
 			if err != nil {
 				return err
 			}
@@ -419,7 +441,7 @@ func (s *Service) applyVisualPlan(ctx context.Context, tx pgx.Tx, ws, pid, env, 
 					initial = &value
 				}
 			}
-			err = tx.QueryRow(ctx, `INSERT INTO managed_volumes(workspace_id,environment_id,unit_id,id,postgres_init_hash) VALUES($1,$2,$3,$4,$5) ON CONFLICT(workspace_id,id) DO UPDATE SET id=EXCLUDED.id RETURNING environment_id,deleted,postgres_init_hash`, ws, env, v.Unit, vol.ID, initial).Scan(&owner, &deleted, &stored)
+			err = tx.QueryRow(ctx, `INSERT INTO managed_volumes(workspace_id,environment_id,unit_id,id,postgres_init_hash) VALUES($1,$2,$3,$4,$5) ON CONFLICT(workspace_id,id) DO UPDATE SET id=EXCLUDED.id RETURNING environment_id,deleted,postgres_init_hash`, ws, env, plan.UnitID, vol.ID, initial).Scan(&owner, &deleted, &stored)
 			if err != nil {
 				return err
 			}

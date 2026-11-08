@@ -1331,6 +1331,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/primary-replacement": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getPrimaryReplacement"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/compose/preview": {
         parameters: {
             query?: never;
@@ -3092,6 +3108,7 @@ export interface components {
         };
         VisualPlan: {
             restore?: components["schemas"]["RestoreCutover"];
+            replacement?: components["schemas"]["PrimaryReplacement"];
             distributed?: components["schemas"]["DistributedPlan"];
             local?: components["schemas"]["LocalPlacement"];
             replicaInstances?: {
@@ -3195,8 +3212,27 @@ export interface components {
             state: string;
             plan: components["schemas"]["VisualPlan"] | null;
         };
+        PrimaryReplacement: {
+            /** Format: uuid */
+            server: string;
+            abandonedVolumes: string[];
+        };
+        /** @description Whether the environment's primary was revoked and needs replacing, which server an unfinished replacement must continue on, and the volumes a replacement has to leave behind. */
+        PrimaryReplacementView: {
+            required: boolean;
+            /** Format: uuid */
+            revokedServerId?: string;
+            /** Format: uuid */
+            continueOnServerId?: string;
+            abandonedVolumeIds: string[];
+        };
+        /** @description Replaces the environment's revoked primary. The volumes named are every volume on it, which start empty on the new server. */
+        PrimaryReplacementRequest: {
+            abandonedVolumeIds: string[];
+        };
         VisualPlanRequest: {
             releaseOptions?: components["schemas"]["ReleaseOptions"];
+            replacement?: components["schemas"]["PrimaryReplacementRequest"];
             /** Format: uuid */
             serverId: string;
             /** Format: uuid */
@@ -7354,6 +7390,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ManagedVolumes"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    getPrimaryReplacement: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                projectId: string;
+                environmentId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Success */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PrimaryReplacementView"];
                 };
             };
             /** @description Error */
