@@ -487,8 +487,9 @@ func TestNativeFailedPublishRestoresTheProxyGateway(t *testing.T) {
 	h.f.answers(proxyName, steady.domain, "steady")
 }
 
-// A release or preview publish never recreates the proxy. When one that accepted a changed
-// proxy fails before replacing it, the changed proxy must not be recorded as the host's:
+// Recovering a release or preview publish never recreates the proxy. When one that
+// accepted a changed proxy fails before replacing it, the changed proxy must not be
+// recorded as the host's:
 // recovery fails and leaves the attempt pending, as release recovery does for a changed
 // proxy, so drift stays reported until a visual reconciliation rebuilds it.
 func TestNativeFailedReleaseKeepsAChangedProxyUntrusted(t *testing.T) {

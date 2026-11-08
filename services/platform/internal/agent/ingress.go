@@ -289,8 +289,8 @@ func (e *Engine) candidateRoutes(current routeSnapshot, p deployment.Plan) (rout
 // environments the attempt did not change keep their connections, and a proxy setting the
 // attempt changed recreates it only as ensureProxy decides. A proxy left running that is
 // not vouched for must be the one the journal recorded: otherwise a visual publish
-// recreates it, and a release, which never recreates the proxy, fails and leaves the
-// attempt pending. A visual publish also recreates a proxy that did not load the file. A
+// recreates it, and a release or preview, whose recovery never recreates the proxy, fails
+// and leaves the attempt pending. A visual publish also recreates a proxy that did not load the file. A
 // route the proxy loaded but left disabled is not the proxy's fault, and recreating it
 // would interrupt every environment again without changing that.
 func (e *Engine) restoreRoutes(ctx context.Context, previous routeSnapshot, vouched, stableProxy bool) error {
