@@ -65,10 +65,27 @@ func sameRoutes(t *testing.T, got, want routeSnapshot) {
 	}
 }
 
+// sealedRecords returns each routing record as stored, encrypted with a fresh nonce on
+// every write.
+func sealedRecords(t *testing.T, j *Journal) map[string]string {
+	t.Helper()
+	sealed := map[string]string{}
+	if err := j.db.View(func(tx *bolt.Tx) error {
+		return tx.Bucket([]byte("routing")).ForEach(func(k, v []byte) error {
+			sealed[string(k)] = string(v)
+			return nil
+		})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return sealed
+}
+
 // Each environment's routes are recorded on their own, so a host's routing records do not
-// grow with its environments. When one record held the whole host, three times over while
-// an attempt was pending, two such environments stopped every later publish on the host,
-// including one for an environment with no routes.
+// grow with its environments, and a save writes only what changed. When one record held
+// the whole host, three times over while an attempt was pending, two such environments
+// stopped every later publish on the host, including one for an environment with no
+// routes.
 func TestRoutingRecordsDoNotGrowWithTheHost(t *testing.T) {
 	j, _ := testVisualJournal(t)
 	current := routeSnapshot{Revision: uuid.NewString(), Ports: []int{80, 443}, Sets: map[string]deployment.RouteSet{}, QualifiedBackends: true}
@@ -79,43 +96,44 @@ func TestRoutingRecordsDoNotGrowWithTheHost(t *testing.T) {
 	if err := j.saveRouting(routeState{Current: current}); err != nil {
 		t.Fatal(err)
 	}
-	// An environment without routes leaves the routes as they are.
-	if err := j.saveRouting(routeState{Current: current, Pending: &routeAttempt{Previous: current, Candidate: current}}); err != nil {
-		t.Fatalf("an unchanged attempt could not be recorded: %v", err)
+	if err := j.saveRouting(routeState{Current: current, Pending: true}); err != nil {
+		t.Fatalf("an attempt could not be recorded: %v", err)
 	}
+	before := sealedRecords(t, j)
 	added := headerHeavySet(15)
-	candidate := current
-	candidate.Sets = map[string]deployment.RouteSet{added.UnitID.String(): added}
+	next := current
+	next.Sets = map[string]deployment.RouteSet{added.UnitID.String(): added}
 	for unit, set := range current.Sets {
-		candidate.Sets[unit] = set
+		next.Sets[unit] = set
 	}
-	candidate.Revision = uuid.NewString()
-	if err := j.saveRouting(routeState{Current: current, Pending: &routeAttempt{Previous: current, Candidate: candidate}}); err != nil {
+	next.Revision = uuid.NewString()
+	if err := j.saveRouting(routeState{Current: next}); err != nil {
 		t.Fatalf("another environment's routes could not be recorded: %v", err)
+	}
+	after := sealedRecords(t, j)
+	for unit := range current.Sets {
+		if after[routeSetPrefix+unit] != before[routeSetPrefix+unit] {
+			t.Errorf("an unchanged environment's routes were written again")
+		}
 	}
 	set, err := stablejson.Marshal(added)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for key, size := range routingRecords(t, j) {
-		if size > len(set)+4096 {
+		if size > len(set) {
 			t.Errorf("record %s holds %d bytes, more than one environment's routes", key, size)
 		}
 	}
 	restored, err := j.routing()
-	if err != nil || restored.Pending == nil {
-		t.Fatal("the attempt was not recorded", err)
+	if err != nil || restored.Pending {
+		t.Fatal("the routes were not recorded as settled", err)
 	}
-	sameRoutes(t, restored.Current, current)
-	sameRoutes(t, restored.Pending.Previous, current)
-	sameRoutes(t, restored.Pending.Candidate, candidate)
+	sameRoutes(t, restored.Current, next)
 
-	// Committing the attempt, then removing an environment, leaves no record behind.
-	if err = j.saveRouting(routeState{Current: candidate}); err != nil {
-		t.Fatal(err)
-	}
-	delete(candidate.Sets, added.UnitID.String())
-	if err = j.saveRouting(routeState{Current: candidate}); err != nil {
+	// Removing an environment leaves no record behind.
+	delete(next.Sets, added.UnitID.String())
+	if err = j.saveRouting(routeState{Current: next}); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := routingRecords(t, j)[routeSetPrefix+added.UnitID.String()]; ok {
@@ -124,19 +142,7 @@ func TestRoutingRecordsDoNotGrowWithTheHost(t *testing.T) {
 	if restored, err = j.routing(); err != nil {
 		t.Fatal(err)
 	}
-	sameRoutes(t, restored.Current, candidate)
-}
-
-// Every attempt starts from the current routes, so an attempt stored as its changes can
-// recover its previous routes only if that holds.
-func TestRouteAttemptMustStartFromTheCurrentRoutes(t *testing.T) {
-	j, _ := testVisualJournal(t)
-	set := headerHeavySet(1)
-	current := routeSnapshot{Ports: []int{80, 443}, Sets: map[string]deployment.RouteSet{set.UnitID.String(): set}}
-	other := routeSnapshot{Ports: []int{}, Sets: map[string]deployment.RouteSet{}}
-	if err := j.saveRouting(routeState{Current: current, Pending: &routeAttempt{Previous: other, Candidate: current}}); err == nil {
-		t.Fatal("an attempt from other routes was recorded")
-	}
+	sameRoutes(t, restored.Current, next)
 }
 
 // legacyRouting stores a host's routes as preceding agents did, in one record.
@@ -158,6 +164,7 @@ func TestRoutingUpgradesFromOneRecord(t *testing.T) {
 		Previous  routeSnapshot `json:"previous"`
 		Candidate routeSnapshot `json:"candidate"`
 	}
+	// A preceding agent's attempt always started from its current routes.
 	one, two := headerHeavySet(2), headerHeavySet(1)
 	app := uuid.New()
 	replicas := two
@@ -179,15 +186,11 @@ func TestRoutingUpgradesFromOneRecord(t *testing.T) {
 				t.Fatal(err)
 			}
 			sameRoutes(t, state.Current, current)
-			if (state.Pending != nil) != (name != "settled") {
+			if state.Pending != (name != "settled") {
 				t.Fatal("the attempt in progress was not read")
 			}
-			if state.Pending != nil {
-				sameRoutes(t, state.Pending.Previous, current)
-				sameRoutes(t, state.Pending.Candidate, candidate)
-				// Recovery settles the attempt before anything else is saved.
-				state.Current, state.Pending = state.Pending.Previous, nil
-			}
+			// Recovery settles the attempt on its previous routes before anything else.
+			state.Pending = false
 			if err = j.saveRouting(state); err != nil {
 				t.Fatal(err)
 			}

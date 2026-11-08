@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -10,6 +11,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -18,6 +20,8 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/execution"
 	"github.com/containerd/errdefs"
 	"github.com/google/uuid"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/network"
 	"github.com/moby/moby/client"
 	bolt "go.etcd.io/bbolt"
 )
@@ -209,7 +213,7 @@ func TestNativeFailedPublishKeepsOtherTraffic(t *testing.T) {
 		t.Fatal("the interrupted publish succeeded")
 	}
 	h.e.Point = nil
-	if state, err := h.j.routing(); err != nil || state.Pending == nil {
+	if state, err := h.j.routing(); err != nil || !state.Pending {
 		t.Fatalf("the interrupted publish left no attempt: %v", err)
 	}
 	if err = h.e.publishVisualRoutes(t.Context(), h.plan(steady, steady.set().Routes)); err != nil {
@@ -232,7 +236,7 @@ func TestNativeFailedPublishKeepsOtherTraffic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if state.Pending != nil || len(state.Current.Sets) != 1 || !reflect.DeepEqual(state.Current.Sets, settled.Current.Sets) {
+	if state.Pending || len(state.Current.Sets) != 1 || !reflect.DeepEqual(state.Current.Sets, settled.Current.Sets) {
 		t.Fatalf("recovery did not settle on the previous routes: %+v", state)
 	}
 	if drifted, err := h.e.ingressDrift(t.Context(), state); err != nil || drifted {
@@ -278,7 +282,6 @@ func TestNativeUpgradedHostKeepsItsRoutes(t *testing.T) {
 		t.Fatal(err)
 	}
 	legacyRouting(t, h.j, map[string]any{"current": current.Current, "pending": map[string]routeSnapshot{"previous": current.Current, "candidate": candidate}})
-	h.f.answers(proxyName, interrupted.domain, "interrupted")
 	before, err := h.f.docker.ContainerInspect(t.Context(), proxyName, client.ContainerInspectOptions{})
 	if err != nil {
 		t.Fatal(err)
@@ -318,5 +321,168 @@ func TestNativeUpgradedHostKeepsItsRoutes(t *testing.T) {
 		t.Fatalf("the upgraded host reports drift: %v", err)
 	}
 	h.f.answers(proxyName, next.domain, "next")
+	h.f.answers(proxyName, steady.domain, "steady")
+}
+
+// proxyCalls watches the agent's Docker calls about the proxy: it counts the proxy
+// containers created, and fails the next inspection of the proxy once armed.
+type proxyCalls struct {
+	base    http.RoundTripper
+	creates atomic.Int32
+	fail    atomic.Bool
+}
+
+func (c *proxyCalls) RoundTrip(r *http.Request) (*http.Response, error) {
+	if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/containers/create") && r.URL.Query().Get("name") == proxyName {
+		c.creates.Add(1)
+	}
+	if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/containers/"+proxyName+"/json") && c.fail.CompareAndSwap(true, false) {
+		return nil, errors.New("injected Docker failure")
+	}
+	return c.base.RoundTrip(r)
+}
+
+// watchProxyCalls gives the agent a Docker client that reports to the returned calls.
+func (h isolationHost) watchProxyCalls() *proxyCalls {
+	h.t.Helper()
+	host, err := client.ParseHostURL(os.Getenv("PLAT_APP_DOCKER_HOST"))
+	if err != nil || host.Scheme != "unix" {
+		h.t.Fatalf("a Unix socket daemon is required: %v", err)
+	}
+	calls := &proxyCalls{base: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, "unix", host.Host)
+	}}}
+	docker, err := client.New(client.WithHost(os.Getenv("PLAT_APP_DOCKER_HOST")), client.WithHTTPClient(&http.Client{Transport: calls}))
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	h.t.Cleanup(func() { docker.Close() })
+	h.e.Docker = docker
+	return calls
+}
+
+// A reconciliation that accepts a changed proxy and then fails before replacing it must
+// not record the changed proxy as the one the host runs: restoring the previous routes
+// rebuilds it, and drift stays truthful.
+func TestNativeFailedReconciliationReplacesAChangedProxy(t *testing.T) {
+	h := newIsolationHost(t)
+	steady, next := h.f.unit("a", "steady"), h.f.unit("b", "next")
+	h.removeProxy()
+	if err := h.e.publishVisualRoutes(t.Context(), h.plan(steady, steady.set().Routes)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.f.docker.ContainerUpdate(t.Context(), proxyName, client.ContainerUpdateOptions{RestartPolicy: &container.RestartPolicy{Name: container.RestartPolicyDisabled}}); err != nil {
+		t.Fatal(err)
+	}
+	state, err := h.j.routing()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if drifted, err := h.e.ingressDrift(t.Context(), state); err != nil || !drifted {
+		t.Fatalf("the changed proxy was not reported: %v", err)
+	}
+	calls := h.watchProxyCalls()
+	armed := false
+	h.e.Point = func(point string) {
+		if point == "route-published" && !armed {
+			armed = true
+			calls.fail.Store(true)
+		}
+	}
+	reconcile := h.plan(next, next.set().Routes)
+	reconcile.AcceptDrift = true
+	if err = h.e.publishVisualRoutes(t.Context(), reconcile); err == nil || !strings.Contains(err.Error(), "previous routes were restored") {
+		t.Fatalf("the failed reconciliation was not recovered: %v", err)
+	}
+	h.e.Point = nil
+	proxy, err := h.f.docker.ContainerInspect(t.Context(), proxyName, client.ContainerInspectOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if proxy.Container.HostConfig.RestartPolicy.Name != container.RestartPolicyUnlessStopped {
+		t.Fatalf("the changed proxy was kept, with restart policy %q", proxy.Container.HostConfig.RestartPolicy.Name)
+	}
+	if state, err = h.j.routing(); err != nil {
+		t.Fatal(err)
+	}
+	if drifted, err := h.e.ingressDrift(t.Context(), state); err != nil || drifted {
+		t.Fatalf("the rebuilt proxy reports drift: %v", err)
+	}
+	h.f.answers(proxyName, steady.domain, "steady")
+}
+
+// Recovering an attempt interrupted after it recreated the proxy for a new port recreates
+// it once more, for the previous ports, and not again: a proxy just created from the
+// previous routes is the one a rebuild would create.
+func TestNativeInterruptedHostChangeRecreatesTheProxyOnce(t *testing.T) {
+	h := newIsolationHost(t)
+	steady, tcp := h.f.unit("c", "steady"), h.f.unit("d", "tcp")
+	h.removeProxy()
+	if err := h.e.publishVisualRoutes(t.Context(), h.plan(steady, steady.set().Routes)); err != nil {
+		t.Fatal(err)
+	}
+	route := domain.Route{ID: uuid.New(), TargetID: tcp.app, Protocol: "tcp", Domain: tcp.domain, Port: 8080, ListenPort: 15480, TLS: "off", AllowCIDRs: []string{"127.0.0.0/8"}}
+	h.e.Point = func(point string) {
+		if point == "route-verified" {
+			panic("simulated process exit")
+		}
+	}
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Fatal("the publish was not interrupted")
+			}
+		}()
+		_ = h.e.publishVisualRoutes(t.Context(), h.plan(tcp, []domain.Route{route}))
+	}()
+	h.e.Point = nil
+	if state, err := h.j.routing(); err != nil || !state.Pending {
+		t.Fatalf("the interrupted publish left no attempt: %v", err)
+	}
+	calls := h.watchProxyCalls()
+	if err := h.e.publishVisualRoutes(t.Context(), h.plan(steady, steady.set().Routes)); err != nil {
+		t.Fatal(err)
+	}
+	if n := calls.creates.Load(); n != 1 {
+		t.Fatalf("recovery created the proxy %d times", n)
+	}
+	proxy, err := h.f.docker.ContainerInspect(t.Context(), proxyName, client.ContainerInspectOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := proxy.Container.HostConfig.PortBindings[network.MustParsePort("15480/tcp")]; ok {
+		t.Fatal("the interrupted attempt's port is still published")
+	}
+	h.f.answers(proxyName, steady.domain, "steady")
+}
+
+// Restoring routes from before managed egress also takes the egress gateway away, so the
+// proxy runs what the routes it serves say.
+func TestNativeFailedPublishRestoresTheProxyGateway(t *testing.T) {
+	h := newIsolationHost(t)
+	steady, failing := h.f.unit("e", "steady"), h.f.unit("f", "failing")
+	h.removeProxy()
+	previous := routeSnapshot{Revision: uuid.NewString(), Ports: []int{80, 443}, QualifiedBackends: true, Sets: map[string]deployment.RouteSet{steady.id.String(): steady.set()}}
+	if _, err := h.e.applyRoutes(t.Context(), previous, false, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.e.rememberProxy(t.Context(), &previous); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.j.saveRouting(routeState{Current: previous}); err != nil {
+		t.Fatal(err)
+	}
+	broken := h.plan(failing, failing.set().Routes)
+	broken.EnvironmentID = uuid.New()
+	if err := h.e.publishVisualRoutes(t.Context(), broken); err == nil || !strings.Contains(err.Error(), "previous routes were restored") {
+		t.Fatalf("the failing publish was not recovered: %v", err)
+	}
+	proxy, err := h.f.docker.ContainerInspect(t.Context(), proxyName, client.ContainerInspectOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if endpoint := proxy.Container.NetworkSettings.Networks["astilba-ingress-network"]; endpoint == nil || endpoint.GwPriority != 0 {
+		t.Fatalf("the proxy kept the failed attempt's egress gateway: %+v", endpoint)
+	}
 	h.f.answers(proxyName, steady.domain, "steady")
 }

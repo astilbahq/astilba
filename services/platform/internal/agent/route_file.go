@@ -121,7 +121,7 @@ func (e *Engine) QualifyRouteBackends(ctx context.Context) error {
 		return err
 	}
 	current := state.Current
-	if state.Pending != nil || current.QualifiedBackends || len(current.Sets) == 0 {
+	if state.Pending || current.QualifiedBackends || len(current.Sets) == 0 {
 		return nil
 	}
 	if held, err := e.Journal.recoveryHeld(); err != nil || held {

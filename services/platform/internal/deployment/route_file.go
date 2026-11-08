@@ -43,10 +43,11 @@ func RouteFile(config any) ([]byte, error) {
 }
 
 // yamlEscaped is a character that the YAML 1.1 reader the proxy uses refuses, or reads
-// as a line break and so folds to a space inside a quoted string. JSON already escapes
-// characters below U+0020, U+2028 and U+2029, and valid UTF-8 holds no surrogates.
+// as a line break and so folds to a space inside a quoted string. stablejson already
+// escapes characters below U+0020 and the other line breaks, U+2028 and U+2029, and
+// valid UTF-8 holds no surrogates.
 func yamlEscaped(r rune) bool {
-	return r >= 0x7f && r <= 0x9f || r == 0x2028 || r == 0x2029 || r == 0xfffe || r == 0xffff
+	return r >= 0x7f && r <= 0x9f || r == 0xfffe || r == 0xffff
 }
 
 // BackendHost is the name a proxy dials to reach a service in unit. The proxy shares

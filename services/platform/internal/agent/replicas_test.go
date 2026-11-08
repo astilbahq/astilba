@@ -135,8 +135,8 @@ func TestReplicaMetricInventoryIncludesSecondariesAndAbsentGroups(t *testing.T) 
 
 // A preceding agent that read a host's routes as one record would see no routes in the
 // per-unit layout and publish a file holding only its own unit's. Every record this agent
-// stores must make it refuse instead, whatever the routes hold, and pending recovery must
-// still read back exactly what was attempted.
+// stores must make it refuse instead, whatever the routes hold, with or without an
+// attempt in progress.
 func TestRoutingRecordsRefusePrecedingReaders(t *testing.T) {
 	j, p := testVisualJournal(t)
 	app := uuid.New()
@@ -152,42 +152,28 @@ func TestRoutingRecordsRefusePrecedingReaders(t *testing.T) {
 		Pending *oldAttempt   `json:"pending"`
 	}
 	empty := routeSnapshot{Sets: map[string]deployment.RouteSet{}}
-	for _, previous := range []routeSnapshot{empty, single, replicas} {
-		for _, candidate := range []routeSnapshot{empty, single, replicas} {
-			for _, state := range []routeState{{Current: previous}, {Current: previous, Pending: &routeAttempt{Previous: previous, Candidate: candidate}}} {
-				if err := j.saveRouting(state); err != nil {
-					t.Fatal(err)
-				}
-				var stored jsontext.Value
-				if err := j.db.View(func(tx *bolt.Tx) error { return j.get(tx, "routing", routeHostKey, &stored) }); err != nil {
-					t.Fatal(err)
-				}
-				var old oldState
-				if err := json.Unmarshal(stored, &old); err == nil {
-					t.Fatalf("a preceding reader accepted %s", stored)
-				}
-				restored, err := j.routing()
-				if err != nil {
-					t.Fatal(err)
-				}
-				want := []routeSnapshot{state.Current}
-				got := []routeSnapshot{restored.Current}
-				if state.Pending != nil {
-					if restored.Pending == nil {
-						t.Fatal("the attempt was not recovered")
-					}
-					want = append(want, state.Pending.Previous, state.Pending.Candidate)
-					got = append(got, restored.Pending.Previous, restored.Pending.Candidate)
-				} else if restored.Pending != nil {
-					t.Fatal("an attempt appeared")
-				}
-				for i := range want {
-					actual, e1 := renderSnapshot(got[i])
-					expected, e2 := renderSnapshot(want[i])
-					if e1 != nil || e2 != nil || string(actual) != string(expected) {
-						t.Fatal("pending recovery changed runtime routing", e1, e2)
-					}
-				}
+	for _, current := range []routeSnapshot{empty, single, replicas} {
+		for _, pending := range []bool{false, true} {
+			state := routeState{Current: current, Pending: pending}
+			if err := j.saveRouting(state); err != nil {
+				t.Fatal(err)
+			}
+			var stored jsontext.Value
+			if err := j.db.View(func(tx *bolt.Tx) error { return j.get(tx, "routing", routeHostKey, &stored) }); err != nil {
+				t.Fatal(err)
+			}
+			var old oldState
+			if err := json.Unmarshal(stored, &old); err == nil {
+				t.Fatalf("a preceding reader accepted %s", stored)
+			}
+			restored, err := j.routing()
+			if err != nil {
+				t.Fatal(err)
+			}
+			actual, e1 := renderSnapshot(restored.Current)
+			expected, e2 := renderSnapshot(current)
+			if e1 != nil || e2 != nil || string(actual) != string(expected) || restored.Pending != pending {
+				t.Fatal("the routes or the attempt changed", e1, e2)
 			}
 		}
 	}

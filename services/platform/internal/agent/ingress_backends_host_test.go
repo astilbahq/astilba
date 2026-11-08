@@ -237,7 +237,7 @@ func TestNativeRouteBackendConversion(t *testing.T) {
 	publishLegacy := func() routeState {
 		t.Helper()
 		legacy := routeSnapshot{Revision: uuid.NewString(), Ports: []int{80, 443}, Sets: map[string]deployment.RouteSet{one.id.String(): one.set(), two.id.String(): two.set()}}
-		if err := e.applyRoutes(ctx, legacy, false, nil); err != nil {
+		if _, err := e.applyRoutes(ctx, legacy, false, ""); err != nil {
 			t.Fatal(err)
 		}
 		if err := e.rememberProxy(ctx, &legacy); err != nil {
@@ -287,7 +287,7 @@ func TestNativeRouteBackendConversion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !state.Current.QualifiedBackends || state.Current.Revision == legacy.Current.Revision || state.Pending != nil {
+	if !state.Current.QualifiedBackends || state.Current.Revision == legacy.Current.Revision || state.Pending {
 		t.Fatalf("conversion was not recorded: %+v", state)
 	}
 	if !reflect.DeepEqual(state.Current.Sets, legacy.Current.Sets) {
@@ -403,7 +403,7 @@ func TestNativeRouteBackendConversion(t *testing.T) {
 	set := large.Sets[one.id.String()]
 	set.Routes, set.Backends = routes, map[string]deployment.Backend{one.app.String(): {InstanceIDs: instances, Health: &domain.HealthCheck{Port: 8080, Path: "/"}}}
 	large.Sets[one.id.String()] = set
-	if err = e.applyRoutes(ctx, large, false, nil); err != nil {
+	if _, err = e.applyRoutes(ctx, large, false, ""); err != nil {
 		t.Fatal(err)
 	}
 	if err = e.rememberProxy(ctx, &large); err != nil {
@@ -446,7 +446,7 @@ func TestRouteBackendConversionWaits(t *testing.T) {
 	unit := uuid.New()
 	legacy := routeSnapshot{Revision: uuid.NewString(), Ports: []int{80, 443}, Sets: map[string]deployment.RouteSet{unit.String(): {UnitID: unit, EnvironmentID: uuid.New()}}}
 	for name, state := range map[string]routeState{
-		"pending":   {Current: legacy, Pending: &routeAttempt{Previous: legacy, Candidate: legacy}},
+		"pending":   {Current: legacy, Pending: true},
 		"converted": {Current: routeSnapshot{QualifiedBackends: true, Sets: legacy.Sets}},
 		"no routes": {Current: routeSnapshot{Sets: map[string]deployment.RouteSet{}, Ports: []int{}}},
 	} {
