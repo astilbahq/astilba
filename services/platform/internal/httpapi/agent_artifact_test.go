@@ -26,11 +26,10 @@ func TestAgentArtifactServesOnlyLoadedReleases(t *testing.T) {
 	sum := sha256.Sum256(artifact)
 	digest := hex.EncodeToString(sum[:])
 	for name, body := range map[string][]byte{
-		filepath.Join(dir, digest):          artifact,
-		filepath.Join(dir, digest+".json"):  []byte("{}"),
-		filepath.Join(dir, "unlisted"):      []byte("not a release"),
-		filepath.Join(root, "outside"):      []byte("outside the catalog"),
-		filepath.Join(root, "releases.txt"): []byte("beside the catalog"),
+		filepath.Join(dir, digest):         artifact,
+		filepath.Join(dir, digest+".json"): []byte("{}"),
+		filepath.Join(dir, "unlisted"):     []byte("not a release"),
+		filepath.Join(root, "outside"):     []byte("outside the catalog"),
 	} {
 		if err := os.WriteFile(name, body, 0o600); err != nil {
 			t.Fatal(err)
