@@ -25,7 +25,6 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/hostnetwork"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/astilbahq/astilba/services/platform/internal/upgrade"
-	"github.com/distribution/reference"
 	"github.com/google/uuid"
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/client"
@@ -387,53 +386,6 @@ func nativePlacementHosts(t *testing.T) (context.Context, []*nativePlacementHost
 	}
 	run("nsenter", "--net=/run/netns/"+hosts[1].namespace, "ping", "-c", "1", "-W", "2", "10.218.0.1")
 	return ctx, hosts
-}
-
-// loadNativeImages copies pinned images from the source daemon into each fixture host.
-func loadNativeImages(ctx context.Context, t *testing.T, hosts []*nativePlacementHost, images ...string) {
-	t.Helper()
-	source, err := client.New(client.WithHost(os.Getenv("PLAT_APP_DOCKER_HOST")))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer source.Close()
-	for _, image := range images {
-		if _, err = source.ImageInspect(ctx, image); err != nil {
-			if err = (&Engine{Docker: source}).pullImage(ctx, image); err != nil {
-				t.Fatal(err)
-			}
-		}
-		for _, host := range hosts {
-			archive, err := source.ImageSave(ctx, []string{image})
-			if err != nil {
-				t.Fatal(err)
-			}
-			loaded, err := host.docker.ImageLoad(ctx, archive)
-			if err != nil {
-				archive.Close()
-				t.Fatal(err)
-			}
-			body, readErr := io.ReadAll(loaded)
-			loaded.Close()
-			archive.Close()
-			if readErr != nil {
-				t.Fatal(readErr)
-			}
-			if _, err = host.docker.ImageInspect(ctx, image); err != nil {
-				// Docker's OCI export retains the content digest but drops its
-				// repository name. Restore that name without changing the content.
-				named, parseErr := reference.ParseNormalizedNamed(image)
-				digested, ok := named.(reference.Digested)
-				if parseErr != nil || !ok {
-					t.Fatal("fixture requires pinned registry images")
-				}
-				alias, aliasErr := exec.CommandContext(ctx, "/opt/astilba-plat4/bin/ctr", "--address", filepath.Join(host.root, "exec/containerd/containerd.sock"), "--namespace", "moby", "images", "tag", "moby-dangling@"+digested.Digest().String(), named.Name()+"@"+digested.Digest().String()).CombinedOutput()
-				if _, err = host.docker.ImageInspect(ctx, image); aliasErr != nil || err != nil {
-					t.Fatalf("fixture pinned image %s: %s %s (%v, %v)", image, body, alias, aliasErr, err)
-				}
-			}
-		}
-	}
 }
 
 func TestNativeCrossHostDeployment(t *testing.T) {
