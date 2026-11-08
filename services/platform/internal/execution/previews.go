@@ -116,7 +116,13 @@ func (s *Service) SavePreviewPolicy(ctx context.Context, p store.Principal, ws, 
 			return err
 		}
 		exists := err == nil
-		if !exists && in.Generation != 0 || exists && old.Generation != in.Generation {
+		if !exists && in.Generation != 0 {
+			return domain.Conflict
+		}
+		if exists && old.Generation != in.Generation {
+			if old.Note == revokedPolicyNote {
+				return revokedPolicyConflict
+			}
 			return domain.Conflict
 		}
 		// Pausing and resuming keep the generation, because retained previews and approvals

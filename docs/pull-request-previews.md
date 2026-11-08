@@ -40,13 +40,15 @@ Pausing stops new builds and cancels outstanding work; existing runtime/data rem
 
 Revoking a preview host releases its previews at once. Each one reads `deleted`, with a note that the host can't confirm removal, and stops counting against the active-preview limits. Nothing the revoked host reports later changes this, including a cleanup receipt it kept.
 
+Revocation also advances the generation of every policy bound to that host, which withdraws its fork approvals, because an approved fork commit may be what compromised the host. The policy's note says so, and a save from a form loaded before the revocation is refused with a message asking you to reload.
+
 Their services, data and test databases may still be on that host, along with copies of the template's preview secrets and the Git clone credentials used for builds. Astilba can't remove them, so rotate those secrets and credentials yourself. Management erases its own copies of each released preview's secrets.
 
 The policy stays bound to the revoked host until you save it with another preview host. Requests that are still open then get new previews there, and fork requests need approval again. Their notes say they're new previews until they're deleted again. Requests an owner had asked to clean up stay deleted until refreshed.
 
-Renewing a revoked preview host's enrollment brings it back only as a clean host: like a new preview host, it's refused while it has any containers, and it may enroll from a rebuilt machine. Renewing any other server, or a preview host that wasn't revoked, still needs the same machine. Once a renewed host enrolls, a policy still bound to it resumes there. Its saved generation hasn't changed, so fork commits approved before the revocation don't need approval again.
+Renewing a revoked preview host's enrollment brings it back only as a clean host: like a new preview host, it's refused while it has any containers, and it may enroll from a rebuilt machine. Rebuild the machine or reinstall the agent with fresh state; removing the containers isn't enough, because the agent's journal still lists the released previews and a later transfer after management recovery refuses a host that does. Renewing any other server, or a preview host that wasn't revoked, still needs the same machine. Once a renewed host enrolls, a policy still bound to it resumes there, and fork requests need approval again. A fresh agent can't enroll a server that a management recovery has fenced, because it doesn't know the server's controller generation; in that case enroll a new preview host and save the policy with it.
 
-After a management recovery, a revoked preview host's transfer is refused while its agent still lists any released preview, so it also comes back only without them.
+After a management recovery, a revoked preview host's transfer is likewise refused while its agent still lists any released preview.
 
 ## Verification
 

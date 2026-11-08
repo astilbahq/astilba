@@ -114,3 +114,21 @@ func (q *Queries) ReleaseRevokedHostPreviews(ctx context.Context, arg ReleaseRev
 	}
 	return items, nil
 }
+
+const withdrawRevokedHostPreviewApprovals = `-- name: WithdrawRevokedHostPreviewApprovals :exec
+UPDATE preview_policies SET generation=generation+1,note = $1
+WHERE workspace_id = $2 AND server_id = $3
+`
+
+type WithdrawRevokedHostPreviewApprovalsParams struct {
+	Note        string    `json:"note"`
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ServerID    uuid.UUID `json:"server_id"`
+}
+
+// An approved fork commit may be what compromised the host. Fork approvals are bound to the policy
+// generation, so advancing it means neither renewal nor a move runs one again without approval.
+func (q *Queries) WithdrawRevokedHostPreviewApprovals(ctx context.Context, arg WithdrawRevokedHostPreviewApprovalsParams) error {
+	_, err := q.db.Exec(ctx, withdrawRevokedHostPreviewApprovals, arg.Note, arg.WorkspaceID, arg.ServerID)
+	return err
+}

@@ -11,10 +11,14 @@ import (
 )
 
 // Revocation released the host's previews without anything confirming their removal, so renewing
-// it must not let it carry on beside unmanaged copies of them. An ordinary server's renewal still
-// needs the same machine.
+// it must not let it carry on beside unmanaged copies of them. An approved fork commit may be what
+// compromised it, so the renewed host doesn't run it again unapproved. An ordinary server's renewal
+// still needs the same machine.
 func TestRenewingARevokedPreviewHostNeedsACleanHost(t *testing.T) {
 	h := newHungPreview(t)
+	var policy api.PreviewPolicy
+	h.b.call("PUT", h.path+"/preview-policy", map[string]any{"enabled": true, "generation": 0, "configuration": h.policy}, 200, &policy)
+	approvePreview(t, h, h.path)
 	ordinary, ordinaryInput, _ := enrollment(t, h.f, h.b, h.ws, "deployment")
 	agentRequest(t, h.f.server.Client(), h.f.server.URL, "/agent/v1/enroll", "", ordinaryInput, 200, nil)
 	renew := func(server uuid.UUID, in api.AgentEnrollment) api.AgentEnrollment {
@@ -33,6 +37,10 @@ func TestRenewingARevokedPreviewHostNeedsACleanHost(t *testing.T) {
 	preview.Preflight.ExistingContainers = 0
 	preview.MachineId = uuid.New()
 	agentRequest(t, h.f.server.Client(), h.f.server.URL, "/agent/v1/enroll", "", preview, 200, nil)
+	previewEvent(t, h, policy.Id)
+	if after := previewAt(t, h, h.path); after.State != "approval_required" {
+		t.Fatal("the renewed host ran a fork approved before its revocation", after.State, after.Note)
+	}
 
 	in := renew(ordinary.Server.Id, ordinaryInput)
 	other := in

@@ -77,11 +77,23 @@ func TestRevokedPreviewHostReleasesItsPreviews(t *testing.T) {
 	build := h.policy["build"].(pipeline.BuildConfig)
 	build.RunnerID = replacement
 	h.policy["build"] = build
+	// Revocation withdrew the policy's fork approvals, so a form loaded before it is told why it's stale.
+	var refused api.Error
+	h.b.call("PUT", h.path+"/preview-policy", map[string]any{"enabled": true, "generation": policy.Generation, "configuration": h.policy}, 409, &refused)
+	if !strings.Contains(refused.Message, "revoked") {
+		t.Fatal("a stale save wasn't told the host was revoked:", refused.Message)
+	}
+	var current api.PreviewPolicy
+	h.b.call("GET", h.path+"/preview-policy", nil, 200, &current)
+	if current.Generation <= policy.Generation || current.Note == nil || !strings.Contains(*current.Note, "revoked") {
+		t.Fatal("revocation didn't withdraw the policy's approvals or say so", current.Generation, current.Note)
+	}
+
 	// The first check after the move can't reach the provider, which leaves the request released.
 	entered, release := h.provider.hold(t, "/pulls/7")
 	h.provider.failReleased()
 	marker := previewJobMarker(t, h)
-	h.b.call("PUT", h.path+"/preview-policy", map[string]any{"enabled": true, "generation": policy.Generation, "configuration": h.policy}, 200, nil)
+	h.b.call("PUT", h.path+"/preview-policy", map[string]any{"enabled": true, "generation": current.Generation, "configuration": h.policy}, 200, nil)
 	waitEntered(t, entered)
 	release()
 	waitPreviewJob(t, h, policy.Id, marker)

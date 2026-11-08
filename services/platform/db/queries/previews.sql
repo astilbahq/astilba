@@ -32,3 +32,9 @@ FROM preview_policies p
 WHERE p.workspace_id=r.workspace_id AND p.id=r.policy_id AND r.workspace_id = @workspace_id AND p.server_id = @server_id
     AND r.environment_id IS NOT NULL AND r.state<>'deleted'
 RETURNING r.environment_id::uuid AS environment_id;
+
+-- name: WithdrawRevokedHostPreviewApprovals :exec
+-- An approved fork commit may be what compromised the host. Fork approvals are bound to the policy
+-- generation, so advancing it means neither renewal nor a move runs one again without approval.
+UPDATE preview_policies SET generation=generation+1,note = @note
+WHERE workspace_id = @workspace_id AND server_id = @server_id;
