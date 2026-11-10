@@ -38,7 +38,7 @@ If a peer disappears before publication, preserve old routing and candidate unce
 
 ## Moving off a revoked server
 
-Revoking a server ends what it was doing and lets you plan around it. Nothing the server reports affects either, and renewing it later doesn't reopen anything. Renewal is refused while an operation that names the server is still running.
+Revoking a server ends what it was doing and lets you plan around it. Nothing the server reports affects either, and renewing it later doesn't reopen anything. Renewal, and a transfer that would lift the revocation, are refused while an operation that names the server is still running.
 
 Whatever you do next, a revoked server keeps what it was given. It may keep running containers and it still holds its secrets, registry access and TLS material, so rotate those. Management can't confirm or change any of it.
 
@@ -181,7 +181,9 @@ status `attention`; once target writes are possible, returning to the source is
 forbidden. Explicit target reconciliation preserves that boundary. The globally
 applied revision changes only after all hosts confirm their target resumption.
 
-Recovery needs an export from every enrolled server except a revoked one, which may be gone or untrusted. An export supplied for a revoked server must still match its machine, and a revoked server that took part in an interrupted root is still a required participant. Recovery keeps the revocation until an owner lifts it, keeps the server out of the network whichever membership record it selects, and cancels any standalone removal still waiting on a revoked server that supplied no export.
+Recovery needs an export from every enrolled server except a revoked one, which may be gone or untrusted. Revoke a server in the restored management before recovering if you can't trust it or reach it. An export supplied for a revoked server must still match its machine, but nothing it claims counts: not its proofs, inventory, roots, private links or generation claims, which it could make up. Only its sealed capsules can count, for an interrupted root it was primary of, beyond the checkpoints management kept, because management sealed them and the server can only replay them. An export that can't be read at all still stops recovery, so leave it out; a revoked server's export is never required. Recovery keeps the revocation until an owner lifts it, keeps the server out of the network whichever membership record it selects, and ends its work as revoking it does, including any standalone removal still waiting on it.
+
+A revoked server that took part in an interrupted root gets no authority back. The root opens once the remaining participants prove themselves, and they end it as they would after any revocation, following the table in [Moving off a revoked server](#moving-off-a-revoked-server). When the revoked server was the root's primary, whose export normally carries the root's checkpoints, recovery uses the checkpoints management sealed for it instead. If the revoked server's export holds later checkpoints, recovery takes them too, but only in order, each following the last, and only while each opens under management's key, so the server can replay progress management recorded but can't invent, reorder or withhold any below what management kept. Where it holds two different checkpoints for the same step, recovery takes neither. If the root is newer than anything management kept, include the revoked server's export if you can, since its sealed capsules are then the only copy of the root. Without them nothing holds its frozen plan, and recovery refuses with what to do: revoke the root's other servers too, leave out their exports, then deploy the environment to healthy servers.
 
 Host exports are unsigned, so recovery refuses, on the preview and before writing
 anything, an export that claims a network, environment, update or controller

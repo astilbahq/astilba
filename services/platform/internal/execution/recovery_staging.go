@@ -24,11 +24,12 @@ func (s *Service) finishRecoveryStaging(ctx context.Context, tx pgx.Tx, in Recov
 		return err
 	}
 	for parent, root := range roots {
-		units := root.Body.Plan.Distributed.Units
-		if root.Body.Maintenance != nil {
-			units = root.Body.Plan.ActiveUnits()
+		units := recoveredUnits(root)
+		revoked, err := revokedParticipants(ctx, tx, in.WorkspaceID, units)
+		if err != nil {
+			return err
 		}
-		for _, unit := range units {
+		for _, unit := range withoutRevoked(units, revoked) {
 			reserved, err := q.ReserveRecoveredServer(ctx, db.ReserveRecoveredServerParams{ServerID: unit.Plan.ServerID, WorkspaceID: in.WorkspaceID, ParentID: parent, CpuMillis: unit.CPUMillis, MemoryMib: unit.MemoryMiB})
 			if err != nil {
 				return err
@@ -40,6 +41,13 @@ func (s *Service) finishRecoveryStaging(ctx context.Context, tx pgx.Tx, in Recov
 	}
 	var observedNetworkGeneration int64
 	for server, host := range source.Hosts {
+		// What a revoked host holds decides nothing; ignoreRevokedExports dropped its claims.
+		if revoked, err := serverRevoked(ctx, tx, in.WorkspaceID, server); err != nil || revoked {
+			if err != nil {
+				return err
+			}
+			continue
+		}
 		expected, err := transferInventory(ctx, tx, in.WorkspaceID, server)
 		if err != nil {
 			return err
