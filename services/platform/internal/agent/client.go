@@ -82,6 +82,14 @@ func (c *Client) call(ctx context.Context, method, path string, body, out any, t
 			value.Preflight.CrossHostInventory = nil
 		}
 		body = value
+	case api.AgentReport:
+		// A refusal's reason was recorded while management read reasons. A controller that no
+		// longer does would refuse the report for good, so it gets the plain failure every
+		// controller reads, and sends the change again.
+		if c.Engine != nil && c.Engine.networkRefusals.Load() == refusalsUnread {
+			value.Network = withoutRefusalReason(value.Network)
+		}
+		body = value
 	}
 	raw, e := stablejson.Marshal(body)
 	if e != nil {
@@ -116,6 +124,13 @@ func (c *Client) call(ctx context.Context, method, path string, body, out any, t
 		c.maintenanceContinuation.Store(response.Header.Get("Astilba-Agent-Maintenance-Continuation") == "v1")
 		c.primaryIngress.Store(response.Header.Get("Astilba-Agent-Primary-Ingress") == "v1")
 		c.troubleshooting.Store(response.Header.Get("Astilba-Agent-Troubleshooting") == "v2")
+		if c.Engine != nil {
+			read := refusalsUnread
+			if response.Header.Get("Astilba-Agent-Network-Refusals") == "v1" {
+				read = refusalsRead
+			}
+			c.Engine.networkRefusals.Store(read)
+		}
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		return errors.New("management rejected request; check enrollment, credentials and operation status")

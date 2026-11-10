@@ -40,8 +40,9 @@ UPDATE workspace_networks SET generation=CASE WHEN GREATEST(generation, @observe
 WHERE workspace_id = @workspace_id RETURNING generation;
 
 -- name: SetNetworkMemberGenerations :exec
--- A new generation is news for a member that was waiting on @unaccounted_note, so it tries again.
-UPDATE network_members SET generation = @generation,note=CASE WHEN note = @unaccounted_note THEN '' ELSE note END
+-- A new generation is news for a member that was waiting on @unaccounted_note or that refused
+-- the last one over @route_conflict_note, so it tries again.
+UPDATE network_members SET generation = @generation,note=CASE WHEN note IN (@unaccounted_note, @route_conflict_note) THEN '' ELSE note END
 WHERE workspace_id = @workspace_id;
 
 -- name: MarkNetworkGenerationExhausted :exec
@@ -65,6 +66,40 @@ SELECT EXISTS(SELECT 1 FROM execution_operations WHERE workspace_id = @workspace
 -- name: NoteRefusedNetworkConfigure :exec
 -- Only for the member's latest command: anything newer has not been refused.
 UPDATE network_members SET note = @note
+WHERE workspace_id = @workspace_id AND server_id = @server_id AND membership_id = @membership_id AND generation = @generation;
+
+-- name: NetworkGrantsIssuedTo :one
+-- Whether every peer and grant in a manifest a host says it holds is one this management made for
+-- the workspace's network and this host. Members, endpoints and their sources are never deleted, so
+-- all it sent is still here unless management was restored from an older backup. A peer's
+-- membership and key, and a source's ingress, may since have changed.
+WITH m AS (SELECT @manifest::jsonb AS doc),
+peers AS (SELECT jsonb_array_elements(CASE WHEN jsonb_typeof(doc->'peers')='array' THEN doc->'peers' ELSE '[]' END) AS p FROM m),
+exports AS (SELECT jsonb_array_elements(CASE WHEN jsonb_typeof(doc->'exports')='array' THEN doc->'exports' ELSE '[]' END) AS x FROM m),
+sources AS (SELECT x, jsonb_array_elements(CASE WHEN jsonb_typeof(x->'sources')='array' THEN x->'sources' ELSE '[]' END) AS s FROM exports),
+egress AS (SELECT jsonb_array_elements(CASE WHEN jsonb_typeof(doc->'egress')='array' THEN doc->'egress' ELSE '[]' END) AS g FROM m),
+unissued AS (
+    SELECT 1 FROM peers WHERE NOT EXISTS(SELECT 1 FROM network_members n WHERE n.workspace_id = @workspace_id AND n.server_id = (p->>'serverId')::uuid)
+    UNION ALL
+    SELECT 1 FROM exports WHERE NOT EXISTS(SELECT 1 FROM network_endpoints e WHERE e.workspace_id = @workspace_id AND e.id = (x->>'id')::uuid AND e.server_id = @server_id
+        AND e.unit_id = (x->>'unitId')::uuid AND e.resource_id = (x->>'resourceId')::uuid AND e.instance_id = (x->>'instanceId')::uuid AND e.listen_port = (x->>'port')::integer AND e.container_port = (x->>'containerPort')::integer)
+    UNION ALL
+    SELECT 1 FROM sources WHERE NOT EXISTS(SELECT 1 FROM network_endpoint_sources r WHERE r.workspace_id = @workspace_id AND r.endpoint_id = (x->>'id')::uuid AND r.server_id = (s->>'serverId')::uuid AND r.unit_id = (s->>'unitId')::uuid)
+    UNION ALL
+    SELECT 1 FROM egress WHERE NOT EXISTS(SELECT 1 FROM network_endpoint_sources r JOIN network_endpoints e ON e.workspace_id = r.workspace_id AND e.id = r.endpoint_id
+        WHERE r.workspace_id = @workspace_id AND e.id = (g->>'endpointId')::uuid AND e.server_id = (g->>'serverId')::uuid AND e.listen_port = (g->>'port')::integer AND r.server_id = @server_id AND r.unit_id = (g->>'unitId')::uuid)
+)
+SELECT NOT EXISTS(SELECT 1 FROM unissued) AS issued;
+
+-- name: MemberInstalledManifest :one
+SELECT installed_manifest FROM network_members
+WHERE workspace_id = @workspace_id AND server_id = @server_id AND membership_id = @membership_id FOR UPDATE;
+
+-- name: RecordRefusingNetworkMember :exec
+-- A host that refused a configure over a route conflict says what it holds, so removals can be
+-- scoped from it although management had no record. Only for the member's latest command, as
+-- with its note.
+UPDATE network_members SET installed_manifest = @installed_manifest
 WHERE workspace_id = @workspace_id AND server_id = @server_id AND membership_id = @membership_id AND generation = @generation;
 
 -- name: ForgetInstalledNetwork :exec

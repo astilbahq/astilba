@@ -240,6 +240,21 @@ func TestNativeManagedLinks(t *testing.T) {
 	if out, err := request("u"); err != nil || !strings.Contains(string(out), "private-endpoint-canary") {
 		t.Fatal("restored link unavailable", err)
 	}
+	// A container network can come up inside the prefix after the host joined, as its bridge
+	// route shows. It stops new authority, but not removals: a revoked grant must not stay
+	// reachable while an operator finds that network.
+	in("b", "ip", "link", "add", "overlap", "type", "bridge")
+	in("b", "ip", "address", "add", "10.251.0.129/25", "dev", "overlap")
+	in("b", "ip", "link", "set", "overlap", "up")
+	grown := mb
+	grown.Generation++
+	var conflict RouteConflictError
+	if err = b.Apply(ctx, grown, bb, false); !errors.As(err, &conflict) || conflict.Range.String() != "10.251.0.128/25" {
+		t.Fatal("a configure over a container network was not refused as a route conflict", err)
+	}
+	if held, err := b.Snapshot(mb.NetworkID); err != nil || held.AppliedHash != Hash(mb) {
+		t.Fatal("a refused configure changed what the host holds", err)
+	}
 	next := mb
 	next.Generation++
 	next.Exports = nil
@@ -263,6 +278,7 @@ func TestNativeManagedLinks(t *testing.T) {
 	if err = b.Apply(ctx, next, bb, true); err != nil {
 		t.Fatal("lost receipt restriction retry", err)
 	}
+	in("b", "ip", "link", "delete", "overlap")
 	// A host keeps what it holds against its own controller's older generations, and a newer
 	// controller's manifest replaces it whatever generation that controller has reached.
 	behind := next

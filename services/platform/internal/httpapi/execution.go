@@ -57,6 +57,8 @@ func (s *Server) protection(next http.Handler) http.Handler {
 		w.Header().Set("Astilba-Agent-Cross-Host", "v1")
 		w.Header().Set("Astilba-Agent-Maintenance-Continuation", "v1")
 		w.Header().Set("Astilba-Agent-Primary-Ingress", "v1")
+		// v1 receipts may say why a host refused a network command.
+		w.Header().Set("Astilba-Agent-Network-Refusals", "v1")
 		// v2 adds session streams; agents advertise support only when they can run them.
 		w.Header().Set("Astilba-Agent-Troubleshooting", "v2")
 		limit := int64(16384)
