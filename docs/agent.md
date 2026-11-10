@@ -133,7 +133,7 @@ Set `--network-pool 10.100.0.0/16` on the agent's `run` command when the default
 
 Changing the pool never moves an existing network. Running environments keep their addresses, including networks created before agents chose them and networks outside the new pool. New networks come only from the new pool, and the old range stays in use until the networks in it are removed. Restart the agent after changing the setting.
 
-The agent checks routes only when it creates a network. If a route appears later, for example when a VPN connects, any container network inside it takes precedence on the host: traffic from the host and its containers to those addresses goes to the containers, not through the VPN. Give the host a persistent route for networks it must reach, or set a pool outside them, before deploying. When choosing a managed network prefix, avoid ranges the workspace's hosts already use for container networks: a host won't join a managed network whose prefix overlaps any of its routes, including its container networks' routes. A host that is about to join a managed network for a cross-host placement keeps the new environment's networks out of that prefix.
+The agent checks routes only when it creates a network. If a route appears later, for example when a VPN connects, any container network inside it takes precedence on the host: traffic from the host and its containers to those addresses goes to the containers, not through the VPN. Give the host a persistent route for networks it must reach, or set a pool outside them, before deploying. When choosing a managed network prefix, avoid ranges the workspace's hosts already use for container networks. A host won't join a managed network whose prefix overlaps any of its routes, or any of its local bridge, macvlan or ipvlan L2 networks, routed or not. It changes nothing and the member's note names the conflict. Remove the overlapping network or route on that host, then save the network again. Until then the host still receives removals, and the network's next change tries the whole configuration again. A host reserved for a cross-host placement keeps every network created on it out of that placement's prefix until it joins.
 
 ## Optional cross-host networking
 
@@ -171,6 +171,13 @@ only after opening their local state and negotiating
 `Astilba-Agent-Maintenance-Continuation: v1`. An older or restored older controller
 cannot introduce a new maintenance command on these agents. Exact commands
 already accepted still reconcile locally while management is unavailable.
+
+A host that refuses a managed network change over a range it already uses says why
+in its receipt only while its controller advertises `Astilba-Agent-Network-Refusals:
+v1`. Older controllers reject receipt members they don't know, so for them the
+command ends needing attention, as it did with older agents. After the agent starts,
+such a command waits until management has answered. A refusal recorded just before
+a controller downgrade reaches the older controller as a plain failure.
 
 Writer resumptions and maintenance completions retain their original commands and
 deadlines. Queued consumer resumptions wait for the matching primary resumption to

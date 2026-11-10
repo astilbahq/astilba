@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/netip"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
@@ -43,6 +44,12 @@ type Engine struct {
 	// networkMu orders choosing a network's subnet with joining a managed network, so a
 	// subnet is never chosen inside a prefix this host is about to hold.
 	networkMu sync.Mutex
+	// networkRefusals is whether management reads a refusal's reason, which it advertises
+	// with Astilba-Agent-Network-Refusals v1. It is unknown until management first answers.
+	networkRefusals atomic.Int32
+	// managed stands in for the host's managed networking in tests, which only a prepared
+	// Linux host has. Nil is the host itself.
+	managed managedHost
 }
 
 func (e *Engine) point(p string) {

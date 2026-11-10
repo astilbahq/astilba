@@ -38,8 +38,8 @@ var privateRanges = []netip.Prefix{netip.MustParsePrefix("10.0.0.0/8"), netip.Mu
 
 // ValidateNetworkPool checks a pool an owner sets: a private IPv4 range of at least /18,
 // written as the range itself. It may hold managed network prefixes, as the default pool
-// may: subnets are never chosen inside one the host holds, and a host won't join a managed
-// network over a route it has, a container network's included while its bridge is up.
+// may: subnets are never chosen inside one the host holds or has reserved, and a host won't
+// join a managed network over a route it has or over a container network on it.
 func ValidateNetworkPool(pool netip.Prefix) error {
 	inside := false
 	for _, r := range privateRanges {
@@ -81,9 +81,8 @@ func (e *Engine) pool() netip.Prefix {
 // avoids only directly connected routes itself, and accepts an explicit subnet over the
 // host's own LAN, so the agent chooses. Docker's IPAM remains the record: it refuses a
 // subnet overlapping any of its networks, so a creator outside the agent cannot collide.
-// Subnets for every request are found before any network is created. Joining names managed
-// prefixes the plan will hold but the host may not yet.
-func (e *Engine) createNetworks(ctx context.Context, requests []networkRequest, joining ...netip.Prefix) error {
+// Subnets for every request are found before any network is created.
+func (e *Engine) createNetworks(ctx context.Context, requests []networkRequest) error {
 	if len(requests) == 0 {
 		return nil
 	}
@@ -94,7 +93,6 @@ func (e *Engine) createNetworks(ctx context.Context, requests []networkRequest, 
 	if err != nil {
 		return err
 	}
-	managed = append(managed, joining...)
 	subnets, ok := freeSubnets(pool, networkBits, slices.Concat(managed, routes, docker), len(requests))
 	if !ok {
 		return poolFull(pool, managed, routes, docker, len(requests))
@@ -176,14 +174,7 @@ func (e *Engine) ensureUnitNetworks(ctx context.Context, p deployment.Plan) erro
 			return errors.New("Ingress network ownership or settings do not match.")
 		}
 	}
-	// A cross-host candidate creates its networks before it joins the plan's managed network.
-	joining := []netip.Prefix{}
-	if p.Local != nil {
-		// Plan.Validate has checked the prefix.
-		prefix, _ := hostnetwork.Prefix(p.Local.Network.Prefix)
-		joining = append(joining, prefix)
-	}
-	if err := e.createNetworks(ctx, missing, joining...); err != nil {
+	if err := e.createNetworks(ctx, missing); err != nil {
 		if errors.Is(err, errNetworkPoolFull) || errors.Is(err, errHostRangesUnknown) {
 			return err
 		}
@@ -211,13 +202,28 @@ func storageState(err error) api.ExecutionState {
 	return "needs_attention"
 }
 
-// occupiedRanges lists what a new network must avoid: the host's managed prefixes and
-// routes, and every IPv4 subnet of every Docker network on the host, Astilba's or not. They
-// are kept apart so a refusal can say what fills the pool.
+// occupiedRanges lists what a new network must avoid: the host's managed prefixes, including
+// one it has reserved for a cross-host candidate, and its routes, and every IPv4 subnet of
+// every Docker network on the host, Astilba's or not. They are kept apart so a refusal can say
+// what fills the pool.
 func (e *Engine) occupiedRanges(ctx context.Context) (managed, routes, docker []netip.Prefix, err error) {
 	managed, routes, err = e.networkHost().Occupied(ctx)
 	if err != nil {
 		return nil, nil, nil, errHostRangesUnknown
+	}
+	// A reserved host joins the plan's managed network in the links phase. Until then the
+	// reservation is its only record of that prefix, so any network made meanwhile, such as
+	// the candidate's own, must keep out of it.
+	reserved, err := e.Journal.crossHost()
+	if err != nil {
+		return nil, nil, nil, errHostRangesUnknown
+	}
+	if reserved.ParentID != uuid.Nil && reserved.Unit.Plan.Local != nil {
+		prefix, err := hostnetwork.Prefix(reserved.Unit.Plan.Local.Network.Prefix)
+		if err != nil {
+			return nil, nil, nil, errHostRangesUnknown
+		}
+		managed = append(managed, prefix)
 	}
 	list, err := e.Docker.NetworkList(ctx, client.NetworkListOptions{})
 	if err != nil {

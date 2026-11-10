@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
+	"errors"
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
@@ -45,16 +46,58 @@ func networkRestrictionScope(ctx context.Context, tx pgx.Tx, c api.ExecutionComm
 
 // networkRefusal stops the sweep repeating a command a host refused without changing anything. A
 // refusal can only hold back the member that sent it, so a compromised host gains nothing from one.
+// Whatever the reason, the member is still sent removals. A host checks routes only for a
+// configure, so a reason on a removal is refused. A route conflict comes with what the host holds,
+// which scopes those removals when management has no record: without one a revoked peer would
+// keep its access to this host for as long as the conflict stands. The claim is the host's
+// about itself, which a modified agent could misstate anyway by ignoring a removal.
 func networkRefusal(ctx context.Context, tx pgx.Tx, ws uuid.UUID, c api.ExecutionCommand, cmd hostnetwork.Command, raw jsontext.Value) error {
 	var receipt hostnetwork.Receipt
 	if hostnetwork.Decode(raw, &receipt) != nil || !receipt.Refused || c.ParentId != nil || cmd.Manifest == nil || receipt.NetworkID != cmd.NetworkID || receipt.Identity.MembershipID != cmd.MembershipID {
 		return domain.Invalid("network.refusal")
 	}
 	q := db.New(tx)
-	if cmd.Action == "restrict" {
+	note := refusedNetworkConfigureNote
+	switch {
+	case receipt.Reason == "" && cmd.Action == "restrict":
 		return q.ForgetInstalledNetwork(ctx, db.ForgetInstalledNetworkParams{WorkspaceID: ws, ServerID: c.ServerId, MembershipID: cmd.MembershipID})
+	case receipt.Reason == hostnetwork.RouteConflict && cmd.Action == "configure":
+		note = routeConflictNetworkNote
+		if receipt.Before != nil {
+			held := *receipt.Before
+			// A host describes only what it holds for this membership, which it admitted under
+			// this or an earlier controller and generation, so anything else is not a refusal.
+			if held.Validate() != nil || held.NetworkID != cmd.NetworkID || held.MembershipID != cmd.MembershipID || held.ServerID != c.ServerId || held.PublicKey != cmd.Manifest.PublicKey || hostnetwork.Later(*cmd.Manifest, held) {
+				return domain.Invalid("network.refusal")
+			}
+			raw := mustJSON(held)
+			issued, err := q.NetworkGrantsIssuedTo(ctx, db.NetworkGrantsIssuedToParams{Manifest: raw, WorkspaceID: ws, ServerID: c.ServerId})
+			if err != nil {
+				return err
+			}
+			// A peer or grant this management never made can't be one it sent. An honest host
+			// can still hold one after management is restored from an older backup, so the
+			// refusal stands and only the description is not kept. Nor is one older than the
+			// record management has, which no host holds after confirming that record: replayed
+			// on every refusal, it would have management send the same removal again, and the
+			// generation advance that follows it, without end.
+			stale := false
+			if record, err := q.MemberInstalledManifest(ctx, db.MemberInstalledManifestParams{WorkspaceID: ws, ServerID: c.ServerId, MembershipID: cmd.MembershipID}); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+				return err
+			} else {
+				var known hostnetwork.Manifest
+				stale = json.Unmarshal(record, &known) == nil && known.Validate() == nil && known.MembershipID == cmd.MembershipID && hostnetwork.Later(held, known)
+			}
+			if issued && !stale {
+				if err := q.RecordRefusingNetworkMember(ctx, db.RecordRefusingNetworkMemberParams{InstalledManifest: raw, WorkspaceID: ws, ServerID: c.ServerId, MembershipID: cmd.MembershipID, Generation: cmd.Manifest.Generation}); err != nil {
+					return err
+				}
+			}
+		}
+	case receipt.Reason != "":
+		return domain.Invalid("network.refusal")
 	}
-	return q.NoteRefusedNetworkConfigure(ctx, db.NoteRefusedNetworkConfigureParams{Note: refusedNetworkConfigureNote, WorkspaceID: ws, ServerID: c.ServerId, MembershipID: cmd.MembershipID, Generation: cmd.Manifest.Generation})
+	return q.NoteRefusedNetworkConfigure(ctx, db.NoteRefusedNetworkConfigureParams{Note: note, WorkspaceID: ws, ServerID: c.ServerId, MembershipID: cmd.MembershipID, Generation: cmd.Manifest.Generation})
 }
 
 func reconciledNetworkReceipt(ctx context.Context, tx pgx.Tx, c api.ExecutionCommand, cmd hostnetwork.Command, receipt hostnetwork.Receipt) (hostnetwork.Manifest, error) {
