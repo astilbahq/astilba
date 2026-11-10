@@ -92,7 +92,7 @@ export function concerns(next, previous) {
 }
 
 const manifestUrl = (name, version) =>
-  `${registry}/${name.replace("/", "%2f")}/${encodeURIComponent(version)}`;
+  `${registry}/${name.replaceAll("/", "%2f")}/${encodeURIComponent(version)}`;
 
 function lockfileAt(base) {
   return execFileSync("git", ["show", `${base}:pnpm-lock.yaml`], {
