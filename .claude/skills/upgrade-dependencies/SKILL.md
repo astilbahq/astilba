@@ -27,7 +27,7 @@ If other sessions share the machine, give pnpm a store of your own: put `pnpm_co
 
 Start from a fresh branch off `origin/main`.
 
-1. **Open Dependabot pull requests:** `gh pr list --author app/dependabot`. For npm and Go, `.github/dependabot.yml` allows only security updates: put each one's fix in the Security group. Dependabot closes its own pull request once main has the version, so do not close them by hand; say in your pull request which ones it supersedes. Docker and GitHub Actions pull requests are outside this skill; list them in your report.
+1. **Open Dependabot pull requests:** `gh pr list --author app/dependabot`. For npm and Go, `.github/dependabot.yml` allows only security updates; one matches an open alert from step 2, and its fix goes in the Security group. Any other npm or Go pull request is a version update left from before, which this run replaces. Dependabot closes its own pull request once main has the version, so do not close them by hand; say in your pull request which ones it supersedes. Docker and GitHub Actions pull requests are outside this skill; list them in your report.
 2. **Known advisories:** `gh api 'repos/{owner}/{repo}/dependabot/alerts?state=open'` and `make check-vulnerabilities`. Anything either reports is the first group.
 3. **pnpm candidates:** after `pnpm install --frozen-lockfile`, run `pnpm outdated -r --format json`. Its `latest` already skips versions younger than the gate, but it is the newest release of any major. For the newest release within the current major, read the package's versions from the registry (`curl -s https://registry.npmjs.org/<name>`, `versions` and `time`).
 4. **Go candidates**, in each module directory:

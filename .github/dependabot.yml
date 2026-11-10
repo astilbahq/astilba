@@ -2,7 +2,8 @@ version: 2
 # npm and Go modules get security updates only: routine bumps follow the
 # upgrade-dependencies skill in .claude/skills, which makes the coupled edits Dependabot
 # can't and covers every Go module and tool. A limit of 0 stops version updates; security
-# updates have their own limit and still follow each entry's ignore rules.
+# updates have their own limit, and follow only the ignore rules that name `versions`, so
+# the rules below use version ranges rather than update types.
 # Version updates of images and actions wait a week for a bad release to be caught.
 updates:
   - package-ecosystem: gomod
@@ -14,13 +15,14 @@ updates:
   - package-ecosystem: npm
     directory: /
     ignore:
-      # @types/node's major follows the Node version pinned in package.json's engines.
+      # @types/node's major follows the Node version pinned in package.json's engines;
+      # move this range when engines moves.
       - dependency-name: "@types/node"
-        update-types: ["version-update:semver-major"]
+        versions: [">=25"]
       # pnpm 12 ships as a wrapper with optional dependencies, which scripts/install-pnpm.mjs
       # refuses because it checks only one tarball. Moving to it means changing that script.
       - dependency-name: pnpm
-        update-types: ["version-update:semver-major"]
+        versions: [">=12"]
     schedule:
       interval: weekly
     open-pull-requests-limit: 0
