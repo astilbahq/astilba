@@ -21,7 +21,7 @@ Covers `pnpm-workspace.yaml` with its packages, and the Go modules found by `git
 5. **No global CLIs and no install scripts by default.** Use the repository's pnpm (`packageManager`), Go and `fnm exec --using=<engines.node> --` for Node. A new `allowBuilds` entry is a decision for the PR description, not a default.
 6. **Peer review before each pull request.** Run the `pd-iterative-peer-review` skill, as `AGENTS.md` requires. Do not merge or enable auto-merge unless whoever started you said to.
 
-If other sessions share the machine, give pnpm a store of your own for the whole run by exporting `pnpm_config_store_dir` before the first install (a `--store-dir` flag on one command makes later commands without it fail), and use a disposable Docker daemon of your own for `make verify`.
+If other sessions share the machine, give pnpm a store of your own: put `pnpm_config_store_dir=<your directory>` in front of every command that runs pnpm or a `make` target that does. An agent's shell may not keep an exported variable from one command to the next, and a store that changes between commands makes pnpm refuse to touch `node_modules`. Never set the variable with `pnpm config set --location project`, which writes to the tracked `pnpm-workspace.yaml`. In a checkout another store installed, delete every `node_modules` directory first (`find . -name node_modules -type d -prune -exec rm -rf {} +` from the repository root). Use a disposable Docker daemon of your own for `make verify`.
 
 ## 1. Survey
 
