@@ -41,6 +41,20 @@ test("a replacement is checked instead of what it replaces", () => {
   assert.deepEqual([...downloadedVersions(undefined)], []);
 });
 
+test("a replacement for the required version wins over one for every version", () => {
+  const versions = downloadedVersions({
+    Require: [{ Path: "example.test/m", Version: "v1.3.0" }],
+    Replace: [
+      { Old: { Path: "example.test/m" }, New: { Path: "example.test/fork", Version: "v1.0.0" } },
+      {
+        Old: { Path: "example.test/m", Version: "v1.3.0" },
+        New: { Path: "example.test/other", Version: "v0.2.0" },
+      },
+    ],
+  });
+  assert.deepEqual([...versions], ["example.test/other@v0.2.0"]);
+});
+
 const now = Date.parse("2026-11-10T12:00:00Z");
 const minimumMs = 86_400_000;
 

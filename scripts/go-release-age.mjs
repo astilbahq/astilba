@@ -26,14 +26,15 @@ export function minimumAgeMs(workspaceText) {
 }
 
 // The module versions a go.mod makes Go download, from `go mod edit -json`. A
-// replacement takes the place of what it replaces, and one by a local directory
-// downloads nothing.
+// replacement takes the place of what it replaces, one naming the version over one
+// for every version as Go chooses, and one by a local directory downloads nothing.
 export function downloadedVersions(modfile) {
   const versions = new Set();
+  const replaces = modfile?.Replace ?? [];
   for (const { Path, Version } of modfile?.Require ?? []) {
-    const replacement = (modfile.Replace ?? []).find(
-      ({ Old }) =>
-        Old.Path === Path && (Old.Version === undefined || Old.Version === Version),
+    const replacement = (
+      replaces.find(({ Old }) => Old.Path === Path && Old.Version === Version) ??
+      replaces.find(({ Old }) => Old.Path === Path && Old.Version === undefined)
     )?.New;
     if (!replacement) versions.add(`${Path}@${Version}`);
     else if (replacement.Version)
