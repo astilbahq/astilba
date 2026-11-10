@@ -151,20 +151,12 @@ func TestPushDuringBuildAdmissionIsNotLost(t *testing.T) {
 	waitEntered(t, entered)
 	newer := strings.Repeat("c", 40)
 	h.provider.head.Store(newer)
+	// No target tracks the branch until the admission commits, so the push starts no refresh;
+	// the admission must notice it.
 	h.push(t, "main", newer)
-	deadline := time.Now().Add(15 * time.Second)
-	for {
-		var unfinished, finished int
-		if err := h.f.st.Pool.QueryRow(t.Context(), "SELECT count(*) FILTER(WHERE finalized_at IS NULL),count(*) FILTER(WHERE finalized_at IS NOT NULL) FROM river_job WHERE kind='platform_git_refresh_v1'").Scan(&unfinished, &finished); err != nil {
-			t.Fatal(err)
-		}
-		if unfinished == 0 && finished == 1 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the push's refresh never finished", unfinished, finished)
-		}
-		time.Sleep(10 * time.Millisecond)
+	var refreshes int
+	if err := h.f.st.Pool.QueryRow(t.Context(), "SELECT count(*) FROM river_job WHERE kind='platform_git_refresh_v1'").Scan(&refreshes); err != nil || refreshes != 0 {
+		t.Fatal("a push for an untracked branch started a refresh", refreshes, err)
 	}
 	release()
 	requireReply(t, <-finished, 202)

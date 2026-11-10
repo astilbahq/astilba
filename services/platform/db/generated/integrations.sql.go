@@ -150,6 +150,27 @@ func (q *Queries) GitBranchPushes(ctx context.Context, arg GitBranchPushesParams
 	return column_1, err
 }
 
+const gitBranchTracked = `-- name: GitBranchTracked :one
+SELECT (EXISTS(SELECT 1 FROM git_sources g WHERE g.workspace_id = $1 AND g.connection_id = $2
+        AND g.configuration->>'branch' = $3::text)
+    OR EXISTS(SELECT 1 FROM build_targets t WHERE t.workspace_id = $1 AND t.connection_id = $2
+        AND t.configuration->>'branch' = $3::text AND t.configuration->>'autoBuild' = 'true'))::boolean
+`
+
+type GitBranchTrackedParams struct {
+	WorkspaceID  uuid.UUID `json:"workspace_id"`
+	ConnectionID uuid.UUID `json:"connection_id"`
+	Branch       string    `json:"branch"`
+}
+
+// Whether a push for this branch has work to start: a source importing it, or a target building it automatically.
+func (q *Queries) GitBranchTracked(ctx context.Context, arg GitBranchTrackedParams) (bool, error) {
+	row := q.db.QueryRow(ctx, gitBranchTracked, arg.WorkspaceID, arg.ConnectionID, arg.Branch)
+	var column_1 bool
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const gitConnectionForWebhook = `-- name: GitConnectionForWebhook :one
 SELECT workspace_id,configuration,encrypted_access FROM git_connections WHERE id = $1
 `
@@ -523,5 +544,21 @@ type RecordGitBranchPushParams struct {
 
 func (q *Queries) RecordGitBranchPush(ctx context.Context, arg RecordGitBranchPushParams) error {
 	_, err := q.db.Exec(ctx, recordGitBranchPush, arg.WorkspaceID, arg.ConnectionID, arg.Branch)
+	return err
+}
+
+const shareGitConnectionDeliveries = `-- name: ShareGitConnectionDeliveries :exec
+SELECT id FROM git_connections WHERE workspace_id = $1 AND id = $2 FOR SHARE
+`
+
+type ShareGitConnectionDeliveriesParams struct {
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ID          uuid.UUID `json:"id"`
+}
+
+// Saving what tracks a branch holds this from before it asks for the branch's head. A push then
+// either commits first, so the head is asked for again, or waits and finds what was saved.
+func (q *Queries) ShareGitConnectionDeliveries(ctx context.Context, arg ShareGitConnectionDeliveriesParams) error {
+	_, err := q.db.Exec(ctx, shareGitConnectionDeliveries, arg.WorkspaceID, arg.ID)
 	return err
 }

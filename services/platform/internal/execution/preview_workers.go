@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json/v2"
 	"errors"
+	"net/http"
 	"time"
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
@@ -23,7 +24,8 @@ type previewArgs struct {
 	Number  int       `json:"number"`
 }
 
-func (previewArgs) Kind() string { return "platform_preview_v1" }
+func (previewArgs) Kind() string                 { return "platform_preview_v1" }
+func (previewArgs) InsertOpts() river.InsertOpts { return river.InsertOpts{Queue: gitQueue} }
 
 type previewSweepArgs struct{}
 
@@ -41,10 +43,6 @@ type previewSweepWorker struct {
 	service *Service
 }
 
-func (s *Service) enqueuePreview(ctx context.Context, tx pgx.Tx, args previewArgs) error {
-	_, err := s.Queue.InsertTx(ctx, tx, args, &river.InsertOpts{MaxAttempts: 20})
-	return err
-}
 func (w *previewSweepWorker) Work(ctx context.Context, _ *river.Job[previewSweepArgs]) error {
 	tx, err := w.service.Store.Pool.Begin(ctx)
 	if err != nil {
@@ -52,26 +50,27 @@ func (w *previewSweepWorker) Work(ctx context.Context, _ *river.Job[previewSweep
 	}
 	defer tx.Rollback(ctx)
 	q := db.New(tx)
-	ids, err := q.DuePreviewPolicies(ctx)
+	policies, err := q.DuePreviewPolicies(ctx)
 	if err != nil {
 		return err
 	}
-	for _, id := range ids {
-		if _, err = tx.Exec(ctx, "UPDATE preview_policies SET next_discovery_at=now()+interval '1 minute' WHERE id=$1", id); err != nil {
+	for _, due := range policies {
+		if _, err = tx.Exec(ctx, "UPDATE preview_policies SET next_discovery_at=now()+interval '1 minute' WHERE id=$1", due.ID); err != nil {
 			return err
 		}
-		if err = w.service.enqueuePreview(ctx, tx, previewArgs{Policy: id}); err != nil {
+		if err = w.service.enqueuePreview(ctx, tx, due.WorkspaceID, previewArgs{Policy: due.ID}); err != nil {
 			return err
 		}
 	}
-	if ids, err = q.DuePreviewRequests(ctx); err != nil {
+	requests, err := q.DuePreviewRequests(ctx)
+	if err != nil {
 		return err
 	}
-	for _, id := range ids {
-		if _, err = tx.Exec(ctx, "UPDATE preview_requests SET next_check_at=now()+interval '1 minute' WHERE id=$1", id); err != nil {
+	for _, due := range requests {
+		if _, err = tx.Exec(ctx, "UPDATE preview_requests SET next_check_at=now()+interval '1 minute' WHERE id=$1", due.ID); err != nil {
 			return err
 		}
-		if err = w.service.enqueuePreview(ctx, tx, previewArgs{Request: id}); err != nil {
+		if err = w.service.enqueuePreview(ctx, tx, due.WorkspaceID, previewArgs{Request: due.ID}); err != nil {
 			return err
 		}
 	}
@@ -126,14 +125,18 @@ func (w *previewWorker) Work(ctx context.Context, job *river.Job[previewArgs]) e
 			return err
 		}
 	}
-	return s.withGit(ctx, ws, func(git *gitAnswers) error { return w.work(ctx, git, a, policyID, ws) })
+	if err := s.workspaceTurn(ctx, job.JobRow, ws); err != nil {
+		return err
+	}
+	return s.withGit(ctx, ws, func(git *gitAnswers) error { return w.work(ctx, git, job, policyID, ws) })
 }
 
 // work holds the workspace turn only between provider calls. The pass that acts re-reads the
 // policy, its authority and the request, so an answer cannot apply to a generation, owner or
 // cleanup decision it was not asked for.
-func (w *previewWorker) work(ctx context.Context, git *gitAnswers, a previewArgs, policyID, ws uuid.UUID) error {
+func (w *previewWorker) work(ctx context.Context, git *gitAnswers, job *river.Job[previewArgs], policyID, ws uuid.UUID) error {
 	s := w.service
+	a := job.Args
 	tx, done, err := s.Store.BeginWorkspaceWrite(ctx, ws)
 	if err != nil {
 		return err
@@ -154,6 +157,18 @@ func (w *previewWorker) work(ctx context.Context, git *gitAnswers, a previewArgs
 		if err = tx.QueryRow(ctx, "SELECT discovery_page FROM preview_policies WHERE id=$1", policyID).Scan(&page); err != nil {
 			return err
 		}
+		// Each run can add a page of request jobs. While its workspace already has a backlog of
+		// them, discovery leaves its page for the next cycle, so a provider that answers slowly
+		// gathers no more than that.
+		if full, err := s.previewBacklogFull(ctx, tx, ws); err != nil || full {
+			if err == nil {
+				err = db.New(tx).DelayPreviewDiscovery(ctx, db.DelayPreviewDiscoveryParams{WorkspaceID: ws, ID: policyID})
+			}
+			if err != nil {
+				return err
+			}
+			return tx.Commit(ctx)
+		}
 		open, err := git.openPullRequests(ctx, tx, policy.Connection, policy.Config.Build.Branch, page)
 		if err != nil {
 			return err
@@ -170,7 +185,7 @@ func (w *previewWorker) work(ctx context.Context, git *gitAnswers, a previewArgs
 		}
 		numbers := open.Value
 		for _, n := range numbers {
-			if err = s.enqueuePreview(ctx, tx, previewArgs{Policy: policy.ID, Number: n}); err != nil {
+			if err = s.enqueuePreview(ctx, tx, ws, previewArgs{Policy: policy.ID, Number: n}); err != nil {
 				return err
 			}
 		}
@@ -245,6 +260,12 @@ func (w *previewWorker) work(ctx context.Context, git *gitAnswers, a previewArgs
 				return e
 			}
 			return tx.Commit(ctx)
+		}
+		// A number the provider has no request for, asked about twice in case the provider had
+		// not caught up with a request just opened, has nothing to preview.
+		var status *pipeline.ProviderError
+		if errors.As(answer.Err, &status) && status.Status == http.StatusNotFound && job.Attempt > 1 {
+			return nil
 		}
 		return answer.Err
 	}
@@ -529,42 +550,4 @@ func (s *Service) reconcilePreview(ctx context.Context, tx pgx.Tx, git *gitAnswe
 		return s.previewState(ctx, tx, id, "failed", "Preview deployment needs attention. Inspect its operation.", 5*time.Minute)
 	}
 	return s.previewState(ctx, tx, id, "ready", "", 5*time.Minute)
-}
-func (s *Service) enqueueConnectionPreviews(ctx context.Context, tx pgx.Tx, ws, connection uuid.UUID, number int) error {
-	rows, err := tx.Query(ctx, "SELECT id FROM preview_policies WHERE workspace_id=$1 AND connection_id=$2 AND enabled ORDER BY id LIMIT 100", ws, connection)
-	if err != nil {
-		return err
-	}
-	ids := []uuid.UUID{}
-	for rows.Next() {
-		var id uuid.UUID
-		if err = rows.Scan(&id); err != nil {
-			rows.Close()
-			return err
-		}
-		ids = append(ids, id)
-	}
-	err = rows.Err()
-	rows.Close()
-	if err != nil {
-		return err
-	}
-	for _, id := range ids {
-		if err = s.enqueuePreview(ctx, tx, previewArgs{Policy: id, Number: number}); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (s *Service) enqueuePreviewForEnvironment(ctx context.Context, tx pgx.Tx, ws, env uuid.UUID) error {
-	var id uuid.UUID
-	err := tx.QueryRow(ctx, "SELECT id FROM preview_requests WHERE workspace_id=$2 AND environment_id=$1", env, ws).Scan(&id)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	return s.enqueuePreview(ctx, tx, previewArgs{Request: id})
 }

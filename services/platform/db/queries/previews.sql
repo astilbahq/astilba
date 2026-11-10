@@ -6,7 +6,7 @@ WITH due AS (
     SELECT id,next_discovery_at,row_number() OVER (PARTITION BY workspace_id ORDER BY next_discovery_at,id) AS turn
     FROM preview_policies WHERE enabled AND next_discovery_at<=now()
 )
-SELECT p.id FROM preview_policies p JOIN due ON due.id=p.id
+SELECT p.id,p.workspace_id FROM preview_policies p JOIN due ON due.id=p.id
 WHERE p.enabled AND p.next_discovery_at<=now()
 ORDER BY due.turn,due.next_discovery_at,due.id LIMIT 10 FOR UPDATE OF p SKIP LOCKED;
 
@@ -18,7 +18,7 @@ WITH due AS (
     SELECT id,next_check_at,row_number() OVER (PARTITION BY workspace_id ORDER BY next_check_at,id) AS turn
     FROM preview_requests WHERE state<>'deleted' AND next_check_at<=now()
 )
-SELECT r.id FROM preview_requests r JOIN due ON due.id=r.id
+SELECT r.id,r.workspace_id FROM preview_requests r JOIN due ON due.id=r.id
 WHERE r.state<>'deleted' AND r.next_check_at<=now()
 ORDER BY due.turn,due.next_check_at,due.id LIMIT 20 FOR UPDATE OF r SKIP LOCKED;
 
@@ -38,3 +38,7 @@ RETURNING r.environment_id::uuid AS environment_id;
 -- generation, so advancing it means neither renewal nor a move runs one again without approval.
 UPDATE preview_policies SET generation=generation+1,note = @note
 WHERE workspace_id = @workspace_id AND server_id = @server_id;
+
+-- name: DelayPreviewDiscovery :exec
+-- Discovery waits a cycle while its workspace has a backlog of request jobs.
+UPDATE preview_policies SET next_discovery_at = now() + interval '5 minutes' WHERE workspace_id = @workspace_id AND id = @id;

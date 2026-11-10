@@ -516,7 +516,37 @@ Admission permits at most 50 unfinished execution operations in one workspace.
 The existing per-server and per-environment exclusion still applies; reaching the
 workspace limit returns backpressure before another operation is queued. Archive
 operations are serialized per management replica, limited to 32 MiB and 10,000
-records, and use fixed 64 MiB Argon2id derivation parameters.
+records, and use fixed 64 MiB Argon2id derivation parameters. An account can make
+five exports and five imports an hour, and each request is charged before its body is
+read, so one whose body never finishes, or does not parse, still pays. An import's
+account is checked for recent sign-in, and in hosted mode a second factor and verified
+email, before its body is read, and its body then waits for one of two places per
+replica, so a replica holds at most two import bodies. An export's authority is checked
+before it waits. Either then waits for the replica's archive turn, in arrival order,
+for up to ten seconds each time, and gets a 503 asking it to retry in a few seconds if
+the wait runs out. Neither wait shortens the time it has to send its body or to
+finish once its turn comes. An account has one export or import in progress on a replica at a time, and
+another gets a 503 at once without being charged.
+
+Work that Git webhooks start runs in a background queue of its own, with four workers
+per replica: source refreshes, pull-request previews and GitHub App events. A burst of
+it never delays deployments, DNS or the sweeps. A signed push starts a refresh only for
+a branch that one of the workspace's sources or automatic build targets tracks, and
+pushes for a branch with a refresh pending join it, so a workspace has at most one
+refresh per tracked branch. A pull-request event adds nothing when the same preview job
+is about to run at the same priority or sooner. Once a workspace has 50 jobs for request
+events waiting, further events add nothing, and discovery, which finds only the
+provider's open requests, picks them up on its cycle of about five minutes, a page of 50
+requests at a time. Discovery itself waits for its next cycle while the workspace has 100
+request jobs waiting.
+
+The queue takes jobs oldest first, except that a workspace's jobs queued while it already
+has four waiting go behind every other workspace's first four. A workspace uses at most
+three of the four workers, and one with jobs running lets a workspace with none go first.
+A workspace with nothing running therefore starts each of its first four waiting jobs on
+the free worker, or after at most a few other jobs, however much another has queued; jobs
+it queues beyond those wait, oldest first, with other workspaces' backlogs. Replicas that
+start jobs at the same moment can briefly exceed these shares. Waiting on a provider holds a worker but not a database connection.
 
 The private network, coordinated backup, operational alert and expiry notice sweeps take one workspace
 at a time, each under its own deadline, and carry on past a failure. A failure costs that
@@ -530,7 +560,7 @@ stops alert evaluation for the workspace too, so only the log shows it.
 
 Each class of retention cleanup commits separately, so one that fails does not stop the
 others, and logs `retention cleanup failed` with the class. The preview sweep takes every workspace's oldest due work before any
-workspace's second, though its jobs still share one queue with all other background work.
+workspace's second, and its jobs run in the Git queue described above, sharing it by workspace.
 
 `ASTILBA_LOG_RETENTION_DAYS` controls terminal operation diagnostics and build log
 retention, defaulting to 30 days. Cleanup processes at most 100 records from each

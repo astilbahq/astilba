@@ -26,7 +26,7 @@ SELECT opened_at FROM operational_alerts WHERE workspace_id = @workspace_id AND 
 -- name: ListAlerts :many
 SELECT a.id,a.kind,a.resource_id,a.server_id,a.environment_id,a.state,a.reason,a.opened_at,a.resolved_at,a.acknowledged_at,
     COALESCE((SELECT jsonb_agg(d.value) FROM (
-        SELECT jsonb_build_object('channel',channel,'phase',phase,'state',state,'attempts',attempts) AS value
+        SELECT jsonb_build_object('channel',channel,'phase',phase,'state',state,'attempts',attempts,'failure',failure) AS value
         FROM alert_deliveries WHERE workspace_id=a.workspace_id AND alert_id=a.id ORDER BY created_at,id LIMIT 202
     ) d),'[]'::jsonb)::jsonb AS deliveries
 FROM operational_alerts a
@@ -58,3 +58,29 @@ WHERE a.workspace_id = @workspace_id AND a.id = @id;
 SELECT id,(reconcile_failing_since IS NOT NULL)::boolean AS failing,
     COALESCE(checked_at >= reconcile_failing_since + interval '2 minutes',false)::boolean AS persistent
 FROM workspace_networks WHERE workspace_id = @workspace_id;
+
+-- name: FailSpentAlertDeliveries :exec
+-- unscoped: delivery serves every workspace, and this only ends deliveries past their age or attempt limit.
+UPDATE alert_deliveries o SET state = 'failed' WHERE o.id IN (
+    SELECT s.id FROM alert_deliveries s WHERE s.state IN ('pending','leased') AND s.next_attempt_at <= sqlc.arg(now)::timestamptz
+        AND (s.created_at < sqlc.arg(now)::timestamptz - interval '24 hours' OR s.attempts >= 5)
+    ORDER BY s.next_attempt_at,s.id LIMIT 1000 FOR UPDATE SKIP LOCKED);
+
+-- name: LeaseAlertDelivery :one
+-- unscoped: delivery claims across workspaces, oldest first. It passes over the webhook of a workspace
+-- while an attempt on it holds an unexpired lease, so a receiver that is slow to answer delays only
+-- the later deliveries of that workspace to it. Mail goes through the operator relay, so is not held back.
+WITH due AS (
+    SELECT d.id FROM alert_deliveries d
+    WHERE d.state IN ('pending','leased') AND d.next_attempt_at <= sqlc.arg(now)::timestamptz
+        AND d.created_at >= sqlc.arg(now)::timestamptz - interval '24 hours' AND d.attempts < 5
+        AND (d.channel = 'email' OR NOT EXISTS(SELECT 1 FROM alert_deliveries f WHERE f.workspace_id = d.workspace_id AND f.channel = d.channel
+            AND f.state = 'leased' AND f.next_attempt_at > sqlc.arg(now)::timestamptz))
+    ORDER BY d.next_attempt_at,d.id LIMIT 1 FOR UPDATE OF d SKIP LOCKED)
+UPDATE alert_deliveries l SET state = 'leased',attempts = l.attempts + 1,next_attempt_at = sqlc.arg(leased_until)::timestamptz
+FROM due WHERE l.id = due.id
+RETURNING l.id,l.workspace_id,l.alert_id,l.recipient_id,l.channel,l.phase,l.settings_revision,l.attempts;
+
+-- name: FinishAlertDelivery :exec
+-- unscoped: the lease names the delivery, and the attempt count fences a lease that expired and was taken again.
+UPDATE alert_deliveries SET state = @state,next_attempt_at = @next_attempt_at,failure = @failure WHERE id = @id AND state='leased' AND attempts = @attempts;

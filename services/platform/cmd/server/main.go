@@ -248,22 +248,7 @@ func run() error {
 			}
 		}()
 
-		go func() {
-			ticker := time.NewTicker(10 * time.Second)
-			defer ticker.Stop()
-			for {
-				deliveryCtx, deliveryCancel := context.WithTimeout(ctx, 30*time.Second)
-				if err := api.Alerts.Deliver(deliveryCtx); err != nil && ctx.Err() == nil {
-					slog.Warn("operational alert delivery failed")
-				}
-				deliveryCancel()
-				select {
-				case <-ctx.Done():
-					return
-				case <-ticker.C:
-				}
-			}
-		}()
+		go api.Alerts.RunDeliveries(ctx)
 
 		handler, e := api.Handler(webassets.Handler())
 		if e != nil {
