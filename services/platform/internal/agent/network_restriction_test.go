@@ -96,8 +96,12 @@ func TestRestrictiveNetworkRecordsFitJournalAndRecoveryTransport(t *testing.T) {
 	raw, _ = stablejson.Marshal(body)
 	message = jsontext.Value(raw)
 	c.Id, c.Generation, c.Network, c.PlanHash = uuid.New(), 4, &message, hostnetwork.Hash(body)
-	if _, err := j.Accept(c); err == nil {
-		t.Fatal("restrictive replay lowered the stale-configure fence")
+	// It ends unrun rather than being refused, so management stops delivering it.
+	if superseded, err := j.Accept(c); err != nil || superseded.Report.State != "failed" || superseded.Checkpoint != "superseded" {
+		t.Fatal("restrictive replay lowered the stale-configure fence", superseded.Report.State, err)
+	}
+	if again, err := j.Accept(c); err != nil || again.Report.State != "failed" || again.Report.Sequence != 1 {
+		t.Fatal("a redelivered superseded configure changed its outcome", again.Report, err)
 	}
 	body.Action, body.Baseline = "restrict", &before
 	raw, _ = stablejson.Marshal(body)

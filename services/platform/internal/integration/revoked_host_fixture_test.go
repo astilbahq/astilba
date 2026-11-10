@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/astilbahq/astilba/services/platform/internal/agent"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/backup"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
@@ -37,11 +38,17 @@ type revokedGroup struct {
 	failing map[string]bool
 	// heldCheckpoint is a parent phase whose recovery metadata the primary won't acknowledge.
 	heldCheckpoint string
+	// journals holds the real agent journal of a host that takes its commands through one, and
+	// refused counts the commands that journal refused.
+	journals    map[uuid.UUID]*agent.Journal
+	journalDirs map[uuid.UUID]string
+	refused     map[uuid.UUID]int
+	journalMu   sync.Mutex
 }
 
 func newRevokedGroup(t *testing.T, count int) *revokedGroup {
 	t.Helper()
-	g := &revokedGroup{aheadNetwork: newAheadNetwork(t, count), held: map[string]bool{}, seen: map[string]bool{}, attention: map[string]bool{}, failing: map[string]bool{}}
+	g := &revokedGroup{aheadNetwork: newAheadNetwork(t, count), held: map[string]bool{}, seen: map[string]bool{}, attention: map[string]bool{}, failing: map[string]bool{}, journals: map[uuid.UUID]*agent.Journal{}, journalDirs: map[uuid.UUID]string{}, refused: map[uuid.UUID]int{}}
 	g.save(t, g.hosts...)
 	g.converge(t)
 	yes := true
@@ -143,6 +150,15 @@ func (g *revokedGroup) answer(ctx context.Context, t *testing.T, h *aheadHost) {
 		if c == nil {
 			continue
 		}
+		g.mu.Lock()
+		_, journaled := g.journals[h.id]
+		g.mu.Unlock()
+		if journaled {
+			if !g.answerThroughJournal(ctx, t, h, *c, scopes) {
+				return
+			}
+			continue
+		}
 		report, answered := g.respond(t, h, *c, scopes)
 		if !answered {
 			time.Sleep(50 * time.Millisecond)
@@ -153,6 +169,120 @@ func (g *revokedGroup) answer(ctx context.Context, t *testing.T, h *aheadHost) {
 			return
 		}
 	}
+}
+
+// answerThroughJournal is the agent's accept, report and acknowledge for one polled command. It
+// holds the journal for all of them, so the test can stop and restart the agent in between.
+func (g *revokedGroup) answerThroughJournal(ctx context.Context, t *testing.T, h *aheadHost, c api.ExecutionCommand, scopes map[uuid.UUID]deployment.Plan) bool {
+	g.journalMu.Lock()
+	defer g.journalMu.Unlock()
+	g.mu.Lock()
+	journal := g.journals[h.id]
+	g.mu.Unlock()
+	report, answered := g.respondThroughJournal(t, h, journal, c, scopes)
+	if !answered {
+		time.Sleep(50 * time.Millisecond)
+		return true
+	}
+	err := g.f.execution.Report(ctx, h.identity, report)
+	if err != nil {
+		if !errors.Is(err, domain.Unauthenticated) && ctx.Err() == nil {
+			t.Error("report", c.Kind, err)
+			return false
+		}
+		return true
+	}
+	if err = journal.Acknowledge(report.Id, report.Sequence); err != nil {
+		t.Error(err)
+		return false
+	}
+	return true
+}
+
+// restartJournal stops the host's agent cleanly, runs between on its state directory while it is
+// down, and starts it again on the same journal.
+func (g *revokedGroup) restartJournal(t *testing.T, h *aheadHost, between func(dir string)) *agent.Journal {
+	t.Helper()
+	g.journalMu.Lock()
+	defer g.journalMu.Unlock()
+	g.mu.Lock()
+	journal, dir := g.journals[h.id], g.journalDirs[h.id]
+	g.mu.Unlock()
+	if err := journal.Close(); err != nil {
+		t.Fatal(err)
+	}
+	between(dir)
+	restarted, err := agent.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = restarted.Close() })
+	g.mu.Lock()
+	g.journals[h.id] = restarted
+	g.mu.Unlock()
+	return restarted
+}
+
+// journaled makes the host take every command through the real agent's journal, which decides
+// what it accepts, as the agent's client does, and holds what it reports.
+func (g *revokedGroup) journaled(t *testing.T, h *aheadHost) *agent.Journal {
+	t.Helper()
+	dir := t.TempDir() + "/state"
+	journal, err := agent.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = journal.Close() })
+	if err = journal.SetConfig(agent.Config{Origin: g.f.server.URL, ControllerGeneration: h.controller, ServerID: h.id, Credential: strings.SplitN(h.token, ".", 2)[1], Enrolled: true, Role: "deployment"}); err != nil {
+		t.Fatal(err)
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.journals[h.id], g.journalDirs[h.id] = journal, dir
+	return journal
+}
+
+// respondThroughJournal answers as the agent does. A command its journal refuses gets no report,
+// and the agent polls again. One it accepts but has already ended reports that ending. Anything
+// else runs as respond answers it, and the outcome is recorded in the journal first.
+func (g *revokedGroup) respondThroughJournal(t *testing.T, h *aheadHost, journal *agent.Journal, c api.ExecutionCommand, scopes map[uuid.UUID]deployment.Plan) (api.AgentReport, bool) {
+	// A coordinated links phase is the only network command with a parent that isn't a restriction.
+	if c.Kind == "network" && c.ParentId != nil && !fixtureRestriction(t, c) && !g.note(h, "links") {
+		return api.AgentReport{}, false
+	}
+	record, err := journal.Accept(c)
+	if err != nil {
+		g.mu.Lock()
+		g.refused[h.id]++
+		g.mu.Unlock()
+		return api.AgentReport{}, false
+	}
+	if !execution.Terminal(record.Report.State) {
+		answer, answered := g.respond(t, h, c, scopes)
+		if !answered {
+			return answer, false
+		}
+		if err = journal.Mutate(c.Id, func(r *agent.Record) {
+			r.Report.State, r.Report.Note, r.Report.Network, r.Report.Crosshost, r.Report.Observation, r.Report.Upgrade = answer.State, answer.Note, answer.Network, answer.Crosshost, answer.Observation, answer.Upgrade
+		}); err != nil {
+			t.Error(err)
+			return answer, false
+		}
+		if record, err = journal.Record(c.Id); err != nil {
+			t.Error(err)
+			return answer, false
+		}
+	}
+	return record.Report, true
+}
+
+func fixtureRestriction(t *testing.T, c api.ExecutionCommand) bool {
+	var command hostnetwork.Command
+	if c.Network == nil || hostnetwork.Decode(*c.Network, &command) != nil {
+		t.Error("invalid network command")
+		return false
+	}
+	return command.Action == "restrict"
 }
 
 // revokedHost says whether management refused a host's poll because it was revoked. A poll checks
