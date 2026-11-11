@@ -80,14 +80,14 @@ func TestComposeIsolationRulesApplyToNewDraftsAndPlans(t *testing.T) {
 		if read.Id != saved {
 			t.Fatal("a stored draft could not be read")
 		}
-		body := b.call("POST", path+"/deployment-plans", api.VisualPlanRequest{BaseRevisionId: saved, ServerId: enrolled.Server.Id, AllowHostChanges: true}, 400, nil)
+		body := b.call("POST", path+"/deployment-plans", api.VisualPlanRequest{BaseRevisionId: saved, ServerId: enrolled.Server.Id}, 400, nil)
 		if !strings.Contains(string(body), message) {
 			t.Fatalf("a plan from a stored file did not say %q: %s", message, body)
 		}
 		draft = read
 	}
 	b.call("PUT", path+"/draft", map[string]any{"baseRevisionId": draft.Id, "specification": spec(web)}, 200, &draft)
-	b.call("POST", path+"/deployment-plans", api.VisualPlanRequest{BaseRevisionId: draft.Id, ServerId: enrolled.Server.Id, AllowHostChanges: true}, 201, nil)
+	b.call("POST", path+"/deployment-plans", api.VisualPlanRequest{BaseRevisionId: draft.Id, ServerId: enrolled.Server.Id}, 201, nil)
 }
 
 // A Git import is a new draft: its author learns what to change from the import itself, and

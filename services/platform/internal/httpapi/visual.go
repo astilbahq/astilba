@@ -21,12 +21,12 @@ func (s *Server) GetVisualPlan(w http.ResponseWriter, r *http.Request, ws, pid, 
 	s.executionResponse(w, r, 200, v, e)
 }
 func (s *Server) ApplyVisualPlan(w http.ResponseWriter, r *http.Request, ws, pid, env, id uuid.UUID) {
-	b, e := decode[api.ApplyPlan](r)
+	b, e := decode[api.ApplyVisualPlan](r)
 	if e != nil {
 		s.fail(w, r, e)
 		return
 	}
-	v, e := s.Execution.ApplyVisualPlan(r.Context(), *principal(r.Context()), ws, pid, env, id, b.IdempotencyKey)
+	v, e := s.Execution.ApplyVisualPlan(r.Context(), *principal(r.Context()), ws, pid, env, id, b.IdempotencyKey, b.ApproveHostChanges != nil && *b.ApproveHostChanges)
 	s.executionResponse(w, r, 201, v, e)
 }
 func (s *Server) GetRuntime(w http.ResponseWriter, r *http.Request, ws, pid, env uuid.UUID) {

@@ -31,7 +31,7 @@ func staleOwner(t *testing.T, f *fixture, mfa bool) (*browser, api.Workspace, st
 		b.call("POST", "/api/v1/auth/mfa/confirm", map[string]string{"code": code}, 200, &codes)
 		b.csrf = codes.Session.CsrfToken
 	}
-	later := time.Now().Add(6 * time.Minute)
+	later := time.Now().Add(16 * time.Minute)
 	f.auth.Now = func() time.Time { return later }
 	if b.session().RecentAuth {
 		t.Fatal("the session stayed recent past the window")

@@ -77,9 +77,9 @@ func TestAccountChangesRotateWithoutRenewingSessionLimits(t *testing.T) {
 		token = rotated
 	}
 
-	// Every change above ran within five minutes of this instant, so any refresh
+	// Every change above ran within fifteen minutes of this instant, so any refresh
 	// would still count as recent here.
-	at(5*time.Minute + time.Second)
+	at(15*time.Minute + time.Second)
 	if owner.session().RecentAuth {
 		t.Fatal("an account change refreshed recent authentication")
 	}

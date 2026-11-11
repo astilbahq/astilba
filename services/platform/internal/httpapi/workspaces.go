@@ -86,7 +86,7 @@ func (s *Server) UpdateWorkspace(w http.ResponseWriter, r *http.Request, id uuid
 		s.fail(w, r, e)
 		return
 	}
-	s.scope(w, r, id, store.WorkspaceAccess{Write: true, Owner: true, Recent: true}, func(q *db.Queries, ws store.Workspace) (any, error) {
+	s.scope(w, r, id, store.WorkspaceAccess{Write: true, Owner: true, Credential: true}, func(q *db.Queries, ws store.Workspace) (any, error) {
 		if b.RequireMfa && !principal(r.Context()).MFA {
 			return nil, domain.MFARequired
 		}
@@ -109,7 +109,7 @@ func (s *Server) ListMembers(w http.ResponseWriter, r *http.Request, id uuid.UUI
 	})
 }
 func (s *Server) member(w http.ResponseWriter, r *http.Request, ws, account uuid.UUID, role *api.Role) {
-	s.scope(w, r, ws, store.WorkspaceAccess{Write: true, Owner: true, Recent: true}, func(q *db.Queries, _ store.Workspace) (any, error) {
+	s.scope(w, r, ws, store.WorkspaceAccess{Write: true, Owner: true, Credential: true}, func(q *db.Queries, _ store.Workspace) (any, error) {
 		ctx := r.Context()
 		m, e := q.GetMembership(ctx, db.GetMembershipParams{WorkspaceID: ws, AccountID: account})
 		if e != nil {
@@ -174,7 +174,7 @@ func (s *Server) InviteMember(w http.ResponseWriter, r *http.Request, ws uuid.UU
 	}
 	id := uuid.New()
 	expiry := s.Auth.Now().Add(24 * time.Hour)
-	e = s.Store.InWorkspace(r.Context(), *principal(r.Context()), ws, store.WorkspaceAccess{Write: true, Owner: true, Recent: true}, func(q *db.Queries, _ store.Workspace) error {
+	e = s.Store.InWorkspace(r.Context(), *principal(r.Context()), ws, store.WorkspaceAccess{Write: true, Owner: true, Credential: true}, func(q *db.Queries, _ store.Workspace) error {
 		if e := q.InsertInvitation(r.Context(), db.InsertInvitationParams{WorkspaceID: ws, ID: id, Email: email, Role: string(b.Role), TokenHash: auth.Hash(token), ExpiresAt: expiry}); e != nil {
 			return e
 		}

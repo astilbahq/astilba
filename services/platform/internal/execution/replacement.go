@@ -87,9 +87,6 @@ func primaryReplacement(ctx context.Context, tx pgx.Tx, ws, env uuid.UUID, v vis
 	if in.Replacement == nil {
 		return nil, domain.Invalid("replacement")
 	}
-	if !in.AllowHostChanges {
-		return nil, domain.Invalid("allowHostChanges")
-	}
 	if continueOn != nil && *continueOn != in.ServerId {
 		return nil, &domain.Error{Code: "invalid_input", Message: "An earlier replacement started on another server. Continue it there.", Fields: []string{"serverId"}}
 	}

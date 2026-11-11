@@ -260,6 +260,16 @@ func (s *Server) csrfToken(ctx context.Context) string {
 	return base64.RawURLEncoding.EncodeToString(derived[:])
 }
 
+// credentialRecent admits a change to the account's own credentials, which needs the shorter
+// recent window: whoever holds the session could otherwise keep the account after it.
+func (s *Server) credentialRecent(r *http.Request) error {
+	if p := principal(r.Context()); p == nil {
+		return domain.Unauthenticated
+	} else if !p.CredentialRecent() {
+		return domain.RecentRequired
+	}
+	return nil
+}
 func (s *Server) Reauthenticate(w http.ResponseWriter, r *http.Request) {
 	b, e := decode[api.Reauthenticate](r)
 	if e != nil {

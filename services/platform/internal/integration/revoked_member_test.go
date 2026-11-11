@@ -166,7 +166,7 @@ func (n *aheadNetwork) place(t *testing.T, e *primaryEnvironment, ingress uuid.U
 	}
 	spec.Placement = &domain.Placement{NetworkID: network.ID, IngressServerID: ingress, Applications: []domain.ApplicationPlacement{{ApplicationID: spec.Applications[0].ID, CPUMillis: 100, MemoryMiB: 64, Targets: placed}}}
 	n.b.call("PUT", e.path+"/draft", map[string]any{"baseRevisionId": e.draft.Id, "specification": spec}, 200, &e.draft)
-	return <-n.b.send("POST", e.path+"/deployment-plans", api.VisualPlanRequest{BaseRevisionId: e.draft.Id, ServerId: ingress, AllowHostChanges: true})
+	return <-n.b.send("POST", e.path+"/deployment-plans", api.VisualPlanRequest{BaseRevisionId: e.draft.Id, ServerId: ingress})
 }
 
 // wantPlacementRefused requires the plan to be refused because of the network.

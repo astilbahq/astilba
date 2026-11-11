@@ -695,3 +695,38 @@ func (q *Queries) RewrapTOTP(ctx context.Context, arg RewrapTOTPParams) error {
 	_, err := q.db.Exec(ctx, rewrapTOTP, arg.ID, arg.TotpSecret, arg.TotpPending)
 	return err
 }
+
+const visualPlanHostReview = `-- name: VisualPlanHostReview :one
+SELECT host_review FROM visual_plans WHERE workspace_id=$1 AND environment_id=$2 AND id=$3
+`
+
+type VisualPlanHostReviewParams struct {
+	WorkspaceID   uuid.UUID `json:"workspace_id"`
+	EnvironmentID uuid.UUID `json:"environment_id"`
+	ID            uuid.UUID `json:"id"`
+}
+
+// Whether applying the plan needs an owner's approval of its host changes.
+func (q *Queries) VisualPlanHostReview(ctx context.Context, arg VisualPlanHostReviewParams) (bool, error) {
+	row := q.db.QueryRow(ctx, visualPlanHostReview, arg.WorkspaceID, arg.EnvironmentID, arg.ID)
+	var host_review bool
+	err := row.Scan(&host_review)
+	return host_review, err
+}
+
+const visualRequestHostReview = `-- name: VisualRequestHostReview :one
+SELECT host_review FROM visual_requests WHERE workspace_id=$1 AND id=$2
+`
+
+type VisualRequestHostReviewParams struct {
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ID          uuid.UUID `json:"id"`
+}
+
+// Whether the planner found host changes the applied deployment does not already have.
+func (q *Queries) VisualRequestHostReview(ctx context.Context, arg VisualRequestHostReviewParams) (bool, error) {
+	row := q.db.QueryRow(ctx, visualRequestHostReview, arg.WorkspaceID, arg.ID)
+	var host_review bool
+	err := row.Scan(&host_review)
+	return host_review, err
+}

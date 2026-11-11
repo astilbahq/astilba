@@ -130,6 +130,18 @@ func (c *Client) send(ctx context.Context, method, path string, body, out any, t
 		if c.Engine != nil && c.Engine.networkRefusals.Load() == refusalsUnread {
 			value.Network = withoutRefusalReason(value.Network)
 		}
+		// A controller that does not review host changes refuses an observation naming them,
+		// so it gets the plan resolution older agents report. Until management has answered
+		// since the agent started, which a journaled report can precede, the report waits
+		// rather than lose them.
+		if c.Engine != nil && withHostChanges(value.Observation) {
+			switch c.Engine.hostChangeReviews.Load() {
+			case refusalsUnknown:
+				return errors.New("management has not yet said whether it reviews host changes")
+			case refusalsUnread:
+				value.Observation = withoutHostChanges(value.Observation)
+			}
+		}
 		body = value
 	}
 	raw, e := stablejson.Marshal(body)
@@ -174,6 +186,11 @@ func (c *Client) send(ctx context.Context, method, path string, body, out any, t
 				read = refusalsRead
 			}
 			c.Engine.networkRefusals.Store(read)
+			reviews := refusalsUnread
+			if response.Header.Get("Astilba-Agent-Host-Changes") == "v1" {
+				reviews = refusalsRead
+			}
+			c.Engine.hostChangeReviews.Store(reviews)
 		}
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {

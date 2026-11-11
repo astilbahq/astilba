@@ -57,7 +57,7 @@ func TestReplicaCapabilityInventoryAndRollbackAdmission(t *testing.T) {
 		agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/report", token, api.AgentReport{Id: c.Id, Generation: c.Generation, PlanHash: c.PlanHash, Sequence: 2, State: "succeeded", Steps: []api.ExecutionStep{}, Observation: &value}, status, nil)
 	}
 	input := func(host bool) api.VisualPlanRequest {
-		return api.VisualPlanRequest{BaseRevisionId: draft.Id, ServerId: enrolled.Server.Id, AllowHostChanges: host}
+		return api.VisualPlanRequest{BaseRevisionId: draft.Id, ServerId: enrolled.Server.Id}
 	}
 	b.call("POST", path+"/deployment-plans", input(true), 400, nil)
 	heartbeat(true)
@@ -76,10 +76,10 @@ func TestReplicaCapabilityInventoryAndRollbackAdmission(t *testing.T) {
 	}
 	applyURL := path + "/deployment-plans/" + first.ID.String() + "/apply"
 	heartbeat(false)
-	b.call("POST", applyURL, api.ApplyPlan{IdempotencyKey: uuid.New()}, 400, nil)
+	b.call("POST", applyURL, api.ApplyVisualPlan{IdempotencyKey: uuid.New(), ApproveHostChanges: approved()}, 400, nil)
 	heartbeat(true)
 	var op api.Operation
-	b.call("POST", applyURL, api.ApplyPlan{IdempotencyKey: uuid.New()}, 201, &op)
+	b.call("POST", applyURL, api.ApplyVisualPlan{IdempotencyKey: uuid.New(), ApproveHostChanges: approved()}, 201, &op)
 	// Capability loss after admission must also refuse credential hydration.
 	heartbeat(false)
 	agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/poll", token, nil, 400, nil)
@@ -114,7 +114,7 @@ func TestReplicaCapabilityInventoryAndRollbackAdmission(t *testing.T) {
 			t.Fatal("replacement group reused a serving instance")
 		}
 	}
-	b.call("POST", path+"/deployment-plans/"+next.ID.String()+"/apply", api.ApplyPlan{IdempotencyKey: uuid.New()}, 201, &op)
+	b.call("POST", path+"/deployment-plans/"+next.ID.String()+"/apply", api.ApplyVisualPlan{IdempotencyKey: uuid.New(), ApproveHostChanges: approved()}, 201, &op)
 	report(poll(), observation(*next.Plan), 204)
 	var rolled api.Revision
 	b.call("POST", path+"/releases/"+first.ID.String()+"/rollback", api.RollbackRelease{BaseRevisionId: draft.Id, ApplicationId: app}, 201, &rolled)

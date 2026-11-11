@@ -266,7 +266,7 @@ chmod +x /tmp/www/cgi-bin/health
 		}
 		b.call("PUT", path+"/draft", map[string]any{"baseRevisionId": revision.Id, "specification": spec}, 200, &revision)
 		var view deployment.Status
-		b.call("POST", path+"/deployment-plans", api.VisualPlanRequest{BaseRevisionId: revision.Id, ServerId: inputs[0].ServerId, AllowHostChanges: true}, 201, &view)
+		b.call("POST", path+"/deployment-plans", api.VisualPlanRequest{BaseRevisionId: revision.Id, ServerId: inputs[0].ServerId}, 201, &view)
 		wait("physical plan", 90*time.Second, func() bool {
 			b.call("GET", path+"/deployment-plans/"+view.ID.String(), nil, 200, &view)
 			if view.State == "failed" || view.State == "needs_attention" {
@@ -275,7 +275,7 @@ chmod +x /tmp/www/cgi-bin/health
 			return view.Plan != nil
 		})
 		var operation api.Operation
-		b.call("POST", path+"/deployment-plans/"+view.ID.String()+"/apply", api.ApplyPlan{IdempotencyKey: uuid.New()}, 201, &operation)
+		b.call("POST", path+"/deployment-plans/"+view.ID.String()+"/apply", api.ApplyVisualPlan{IdempotencyKey: uuid.New(), ApproveHostChanges: approved()}, 201, &operation)
 		return *view.Plan, operation
 	}
 	complete := func(id uuid.UUID) bool {

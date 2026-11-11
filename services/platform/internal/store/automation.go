@@ -44,7 +44,7 @@ func (s *Store) CreateAutomation(ctx context.Context, p Principal, ws, project, 
 	}
 	out = AutomationCredential{ID: uuid.New(), CreatorID: p.Account.ID, Name: name, Capabilities: capabilities, CreatedAt: now, ExpiresAt: expires}
 	hash := sha256.Sum256([]byte(secret))
-	err = s.InWorkspace(ctx, p, ws, WorkspaceAccess{Write: true, Owner: true, Recent: true}, func(q *db.Queries, _ Workspace) error {
+	err = s.InWorkspace(ctx, p, ws, WorkspaceAccess{Write: true, Owner: true, Credential: true}, func(q *db.Queries, _ Workspace) error {
 		v, err := q.GetEnvironment(ctx, db.GetEnvironmentParams{WorkspaceID: ws, ProjectID: project, ID: env})
 		if err != nil {
 			return err

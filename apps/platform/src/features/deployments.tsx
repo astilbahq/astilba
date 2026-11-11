@@ -13,8 +13,8 @@ import { Select } from "../components/select";
 import { Textarea } from "../components/textarea";
 import * as s from "../styles";
 import { ErrorNotice, Field, Form, text, useAction } from "../ui";
+import { ApplyReviewedPlan } from "./apply-reviewed-plan";
 import { DeploymentTarget } from "./deployment-target";
-import { HostApproval } from "./host-approval";
 import { ReviewedPlacements } from "./reviewed-placements";
 import type { EnvironmentPath } from "./visual-editor";
 
@@ -140,7 +140,6 @@ export function Deployments({
                     body: {
                       baseRevisionId: revision.id,
                       serverId,
-                      allowHostChanges: d.has("host"),
                       acceptDrift: d.has("drift"),
                       ...(d.has("replacement")
                         ? {
@@ -183,7 +182,6 @@ export function Deployments({
               setServerId={setServerId}
               owner={owner}
             />
-            {owner && <HostApproval />}
             <Label className={s.row}>
               <Checkbox name="drift" />
               Reconcile reviewed manual changes to Astilba-managed resources
@@ -342,43 +340,23 @@ export function Deployments({
                 The saved revision changed. Prepare a new plan.
               </p>
             )}
-            {write && (
-              <Button
-                type="button"
-                variant="primary"
-                disabled={
-                  dirty ||
-                  stale ||
-                  action.isPending ||
-                  Date.now() > Date.parse(ready.expiresAt)
-                }
-                onClick={() =>
-                  action.run(async () => {
-                    const op = await result(
-                      client.POST(`${root}/deployment-plans/{planId}/apply`, {
-                        params: { path: { ...path, planId } },
-                        body: { idempotencyKey: key },
-                      }),
-                    );
-                    setMessage(
-                      `Deployment ${op.state}. It continues if this page closes.`,
-                    );
-                    await queries.invalidateQueries({
-                      queryKey: ["operations", path.workspaceId],
-                    });
-                    await queries.invalidateQueries({
-                      queryKey: [
-                        "environments",
-                        path.workspaceId,
-                        path.projectId,
-                      ],
-                    });
-                  })
-                }
-              >
-                Apply reviewed plan
-              </Button>
-            )}
+            <ApplyReviewedPlan
+              key={planId}
+              path={path}
+              planId={planId}
+              plan={ready}
+              review={!!plan.data?.hostReview}
+              idempotencyKey={key}
+              owner={owner}
+              write={write}
+              blocked={dirty || stale}
+              action={action}
+              onApplied={(op) =>
+                setMessage(
+                  `Deployment ${op.state}. It continues if this page closes.`,
+                )
+              }
+            />
           </section>
         )}
       </section>

@@ -68,6 +68,8 @@ func (s *Server) protection(next http.Handler) http.Handler {
 		w.Header().Set("Astilba-Agent-Machine-Rotation", "v1")
 		// v1 agents authenticate with a key they hold: challenge, token, refresh, keys and bind.
 		w.Header().Set(agentidentity.KeysHeader, "v1")
+		// v1 reviews the host changes a plan resolution reports.
+		w.Header().Set("Astilba-Agent-Host-Changes", "v1")
 		limit := int64(16384)
 		if r.URL.Path == "/agent/v1/enroll" {
 			limit = 32768
