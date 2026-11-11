@@ -4,7 +4,7 @@ PLAT-1 validates React Flow with small Astilba controls, real properties and a s
 
 ## Reproduce
 
-Use Node 24.18.1 and pnpm 11.17.0 from the repository root:
+Use Node 24.18.1 and pnpm 11.28.11 from the repository root:
 
 ```sh
 pnpm install --frozen-lockfile
