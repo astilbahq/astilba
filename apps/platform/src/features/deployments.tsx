@@ -189,6 +189,14 @@ export function Deployments({
                 proxy, ports, certificates and elevated container privileges
               </Label>
             )}
+            {owner && (
+              <p className={s.muted}>
+                Automatic deployments carry approved published ports forward. A
+                privileged or added-capability service is carried forward only
+                while its definition and image digest stay exactly as approved
+                here; any other change to it stops for review.
+              </p>
+            )}
             <Label className={s.row}>
               <Checkbox name="drift" />
               Reconcile reviewed manual changes to Astilba-managed resources

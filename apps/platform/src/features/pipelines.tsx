@@ -12,6 +12,7 @@ import { Textarea } from "../components/textarea";
 import * as s from "../styles";
 import { ErrorNotice, Field, Form, text, useAction } from "../ui";
 import { IntegrationSettings } from "./integrations";
+import { AutomaticDeploymentScope } from "./pipelines/automatic-deployment-scope";
 import { BuildServiceForm } from "./pipelines/build-service-form";
 import { PipelineJobs } from "./pipelines/pipeline-jobs";
 
@@ -280,6 +281,7 @@ export function Pipelines({
                     : "Enable automatic source deployments"}
                 </Button>
               )}
+              {owner && <AutomaticDeploymentScope />}
               {source.data.pendingCommit && (
                 <p className={s.notice}>
                   {source.data.status === "conflict"
@@ -404,6 +406,7 @@ export function Pipelines({
                     Automatically deploy future imported commits after the first
                     reviewed deployment
                   </Label>
+                  <AutomaticDeploymentScope />
                   <Button type="submit" disabled={dirty || action.isPending}>
                     Import source
                   </Button>

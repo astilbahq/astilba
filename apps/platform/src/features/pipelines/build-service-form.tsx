@@ -9,6 +9,7 @@ import { Select } from "../../components/select";
 import { Textarea } from "../../components/textarea";
 import * as s from "../../styles";
 import { Form, text, type useAction } from "../../ui";
+import { AutomaticDeploymentScope } from "./automatic-deployment-scope";
 
 const root =
   "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}" as const;
@@ -482,11 +483,14 @@ export function BuildServiceForm({
             : "One distinct repository-relative file or directory per line, up to 16. Omit trailing slashes; directories include their contents. Wildcards are unsupported. Leave empty to build every change. Include shared configuration and lockfiles. Manual builds always run. Automatic builds compare with the last compatible successful build and rebuild when comparison is unavailable. Requires an updated agent."}
         </p>
         {owner && (
-          <Label>
-            <Checkbox name="autoDeploy" />
-            Promote successful builds and automatically deploy after the first
-            reviewed deployment
-          </Label>
+          <>
+            <Label>
+              <Checkbox name="autoDeploy" />
+              Promote successful builds and automatically deploy after the first
+              reviewed deployment
+            </Label>
+            <AutomaticDeploymentScope />
+          </>
         )}
         <Button type="submit" disabled={dirty || action.isPending}>
           Queue build

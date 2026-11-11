@@ -76,11 +76,17 @@ func TestAutomaticStatefulEffectiveInputsAndResolvedImages(t *testing.T) {
 	if _, err := automaticChanges(parse(configCompose, "old"), parse(configCompose, "new")); err == nil {
 		t.Fatal("top-level stateful config file changed without review")
 	}
-	id := previous.Applications[0].ID.String()
-	if err := automaticStatefulImages(previous, map[string]string{id: "postgres@sha256:old"}, map[string]string{id: "postgres@sha256:new"}); err == nil {
+	db, web := previous.Applications[0], previous.Applications[1]
+	images := func(dbImage string) map[string]string {
+		return map[string]string{db.ID.String(): dbImage, web.ID.String(): "nginx@sha256:web"}
+	}
+	if err := automaticImages(previous, previous, uuid.Nil, images("postgres@sha256:old"), images("postgres@sha256:new")); err == nil {
 		t.Fatal("mutable stateful tag changed resolved image without review")
 	}
-	if err := automaticStatefulImages(previous, map[string]string{id: "postgres@sha256:old"}, map[string]string{id: "postgres@sha256:old"}); err != nil {
+	if err := automaticImages(previous, previous, db.ID, images("postgres@sha256:old"), images("postgres@sha256:new")); err == nil {
+		t.Fatal("a stateful build target changed resolved image without review")
+	}
+	if err := automaticImages(previous, previous, uuid.Nil, images("postgres@sha256:old"), images("postgres@sha256:old")); err != nil {
 		t.Fatal("unchanged resolved stateful image blocked", err)
 	}
 	app := domain.Application{ID: uuid.New(), Name: "db", Source: domain.ApplicationSource{Kind: "image"}, Mounts: []domain.VolumeMount{{VolumeID: uuid.New(), Target: "/data"}}}
