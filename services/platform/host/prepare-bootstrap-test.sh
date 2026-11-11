@@ -6,13 +6,6 @@ set -euo pipefail
 [[ "$ASTILBA_DISPOSABLE_HOST" == 1 && "$EUID" == 0 ]]
 if [[ "${GITHUB_ACTIONS:-}" == true && "${RUNNER_ENVIRONMENT:-}" == github-hosted ]]; then
   [[ "${GITHUB_RUN_ID:-}" =~ ^[0-9]+$ ]]
-  # The runner image's mirror list hangs apt-get update without limit or output when its first
-  # mirror drops packets. Listed directly, as on a customer's host, apt warns and uses the other.
-  if [[ -r /etc/apt/apt-mirrors.txt ]]; then
-    mirrors=$(cut -f1 /etc/apt/apt-mirrors.txt | head -n 2 | tr '\n' ' ')
-    mapfile -d '' sources < <(grep -rlZ 'URIs: mirror+file:/etc/apt/apt-mirrors.txt' /etc/apt)
-    ((${#sources[@]} == 0)) || sed -i "s|URIs: mirror+file:/etc/apt/apt-mirrors.txt|URIs: $mirrors|" "${sources[@]}"
-  fi
 else
   [[ -f /etc/astilba-p14-owner && $(cat /etc/astilba-p14-owner) == "$ASTILBA_BOOTSTRAP_OWNER" ]] || { echo 'Disposable VM ownership is not established.' >&2; exit 1; }
 fi

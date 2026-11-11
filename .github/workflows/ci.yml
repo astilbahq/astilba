@@ -98,6 +98,9 @@ jobs:
             echo "::warning::Loading native Go packages failed; see the error above"
           done
           exit 1
+      - name: Choose a current Ubuntu archive
+        # Canonical first, then independent mirrors. Every one is verified against Ubuntu's key.
+        run: sudo env GITHUB_ACTIONS="$GITHUB_ACTIONS" RUNNER_ENVIRONMENT="$RUNNER_ENVIRONMENT" bash scripts/ci-ubuntu-archive.sh
       - name: Verify fresh production host bootstrap
         run: |
           owner=$(cat /proc/sys/kernel/random/uuid)
