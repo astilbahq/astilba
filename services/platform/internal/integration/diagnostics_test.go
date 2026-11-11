@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json/v2"
 	"testing"
+	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/portability"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
@@ -176,5 +177,54 @@ func TestCrossHostReceiptLogRetentionIsBounded(t *testing.T) {
 	var live int
 	if err := f.st.Pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM visual_runtime WHERE environment_id=$1 AND jsonb_path_exists(observation,'$.resources[*].logs'))+(SELECT count(*) FROM cross_host_runtime WHERE environment_id=$1 AND jsonb_path_exists(inventory,'$.observation.resources[*].logs'))`, env).Scan(&live); err != nil || live != 2 {
 		t.Fatal("retention changed current runtime diagnostics", live, err)
+	}
+}
+
+// A retention pass reads only cross-host operations whose receipts still carry logs, through an
+// index that leaves out the ones it has already cleaned, so its cost doesn't grow with history.
+// Statistics reach pg_stat_user_indexes when the cleaning connection goes idle, within seconds.
+func TestReceiptRetentionReadsOnlyReceiptsThatStillCarryLogs(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	ws, _, parent := seedDiagnosticHistory(t, f)
+	if _, err := f.st.Pool.Exec(ctx, `UPDATE execution_operations SET created_at=now()-interval '31 days' WHERE id=$1`, parent); err != nil {
+		t.Fatal(err)
+	}
+	// Five thousand older operations a pass has already cleaned.
+	if _, err := f.st.Pool.Exec(ctx, `WITH inserted AS (INSERT INTO execution_operations(id,workspace_id,server_id,environment_id,generation,request_key,command,kind,state,created_at) SELECT gen_random_uuid(),workspace_id,server_id,environment_id,g,gen_random_uuid(),'{}','crosshost','succeeded',now()-interval '40 days' FROM execution_operations CROSS JOIN generate_series(2,5001) g WHERE id=$1 RETURNING id,workspace_id,environment_id) INSERT INTO cross_host_operations(id,workspace_id,environment_id,plan_id,phase,receipts) SELECT i.id,i.workspace_id,i.environment_id,h.plan_id,h.phase,'{"complete/fixture":{"planHash":"cleaned","observation":{"resources":[{"state":"healthy"}]}}}' FROM inserted i CROSS JOIN cross_host_operations h WHERE h.id=$1`, parent); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.st.Pool.Exec(ctx, `ANALYZE cross_host_operations, execution_operations`); err != nil {
+		t.Fatal(err)
+	}
+	usage := func() (scans, read int64) {
+		t.Helper()
+		if err := f.st.Pool.QueryRow(ctx, `SELECT idx_scan,idx_tup_read FROM pg_stat_user_indexes WHERE indexrelname='cross_host_receipt_retention'`).Scan(&scans, &read); err != nil {
+			t.Fatal("no index of operations whose receipts carry logs", err)
+		}
+		return scans, read
+	}
+	scans, read := usage()
+	if err := f.st.PruneHistory(ctx); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		s, r := usage()
+		if s > scans {
+			// Each pass reads at most the one operation that still carried logs.
+			if r-read > s-scans {
+				t.Fatalf("%d passes read %d index entries", s-scans, r-read)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("retention did not read the index of operations whose receipts carry logs")
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	var logs int
+	if err := f.st.Pool.QueryRow(ctx, `SELECT count(*) FROM cross_host_operations WHERE workspace_id=$1 AND jsonb_path_exists(receipts,'$.*.observation.resources[*].logs')`, ws).Scan(&logs); err != nil || logs != 0 {
+		t.Fatal("retention left receipt logs", logs, err)
 	}
 }

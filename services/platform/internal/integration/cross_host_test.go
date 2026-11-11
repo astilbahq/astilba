@@ -1089,8 +1089,7 @@ func testCrossHostCoordinatedPlacement(t *testing.T, expiryPhase string) {
 		t.Fatal("preserved target draft did not become the newer applied runtime", err, applied, upgradedGeneration, preservedGeneration)
 	}
 	appliedSnapshot := captureRecoveryOrderingSnapshot(t, f, ws)
-	var nextDraft api.Revision
-	b.call("PUT", databasePath+"/draft", map[string]any{"baseRevisionId": preservedTargetDraft.Id, "specification": preservedPlan.Specification}, 200, &nextDraft)
+	nextDraft := resaveDraft(t, b, databasePath, preservedTargetDraft.Id, preservedPlan.Specification)
 	var nextPlan deployment.Status
 	waitNetworkReady()
 	refreshAuthentication()

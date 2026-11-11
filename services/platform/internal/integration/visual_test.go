@@ -81,8 +81,7 @@ func TestVisualPlanAdmissionAndPortability(t *testing.T) {
 	}
 	b.call("POST", path+"/deployment-plans", api.VisualPlanRequest{ServerId: enrolled.Server.Id, BaseRevisionId: draft.Id}, 400, nil)
 	stale := create()
-	old := draft.Id
-	b.call("PUT", path+"/draft", map[string]any{"baseRevisionId": old, "specification": spec}, 200, &draft)
+	draft = resaveDraft(t, b, path, draft.Id, spec)
 	b.call("POST", path+"/deployment-plans/"+stale.ID.String()+"/apply", api.ApplyPlan{IdempotencyKey: uuid.New()}, 409, nil)
 	ready := create()
 	applyPath := path + "/deployment-plans/" + ready.ID.String() + "/apply"
@@ -260,6 +259,6 @@ func TestEnvironmentEventsAreScopedInvalidationHints(t *testing.T) {
 		}
 	}
 	hint()
-	b.call("PUT", path+"/draft", map[string]any{"baseRevisionId": env.DraftRevisionId, "specification": domain.Specification{Version: 1, Applications: []domain.Application{}, Variables: []domain.Variable{}}}, 200, nil)
+	b.call("PUT", path+"/draft", map[string]any{"baseRevisionId": env.DraftRevisionId, "specification": domain.Specification{Version: 1, Applications: []domain.Application{}, Variables: []domain.Variable{{Name: "CHANGED", Value: new("set")}}}}, 200, nil)
 	hint()
 }
