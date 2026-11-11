@@ -112,21 +112,21 @@ func (j *Journal) pruneRecovery() error {
 				return err
 			}
 		}
-		var records [][]byte
+		keys, records := [][]byte{}, []Record{}
 		if err = tx.Bucket([]byte("operations")).ForEach(func(k, _ []byte) error {
 			var r Record
 			if err := j.get(tx, "operations", string(k), &r); err != nil {
 				return err
 			}
 			if r.Command.ParentId != nil && remove[*r.Command.ParentId] {
-				records = append(records, append([]byte(nil), k...))
+				keys, records = append(keys, append([]byte(nil), k...)), append(records, r)
 			}
 			return nil
 		}); err != nil {
 			return err
 		}
-		for _, k := range records {
-			if err = tx.Bucket([]byte("operations")).Delete(k); err != nil {
+		for i, k := range keys {
+			if err = j.forget(tx, k, records[i]); err != nil {
 				return err
 			}
 		}

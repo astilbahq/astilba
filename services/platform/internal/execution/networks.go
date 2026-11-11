@@ -396,6 +396,13 @@ func (s *Service) reconcileNetwork(ctx context.Context, ws uuid.UUID) error {
 		commands := []hostnetwork.Command{command}
 		if removal != nil {
 			commands = append(commands, *removal)
+			missed, e := db.New(tx).NetworkManifestMissed(ctx, db.NetworkManifestMissedParams{WorkspaceID: ws, ServerID: m.ServerID, MembershipID: m.MembershipID.String(), Generation: m.Generation})
+			if e != nil {
+				return e
+			}
+			if missed {
+				commands[0], commands[1] = commands[1], commands[0]
+			}
 		}
 		for _, candidate := range commands {
 			raw, _ := stablejson.Marshal(candidate)

@@ -44,8 +44,11 @@ type aheadHost struct {
 	forgeRemoval bool
 	rejected     int
 	revoked      bool
-	// stale drops what it polls, as a journal does for a counter it has passed.
-	stale bool
+	// taken is the generation the host's journal holds for network commands. Like the journal, it
+	// ends any other command at or below it unrun, and always takes a restriction. A transfer
+	// clears it. superseded counts the commands it ended that way.
+	taken      int64
+	superseded int
 }
 
 type aheadNetwork struct {
@@ -127,9 +130,15 @@ func (n *aheadNetwork) round(t *testing.T) {
 		if err = command.Validate(); err != nil {
 			t.Fatalf("host was sent an invalid command: %+v: %v", command, err)
 		}
-		if h.stale && command.Action == "configure" {
+		if command.Action != "restrict" && c.Generation <= h.taken {
+			h.superseded++
+			report := api.AgentReport{Id: c.Id, Generation: c.Generation, PlanHash: c.PlanHash, State: "failed", Sequence: 1, Steps: []api.ExecutionStep{}}
+			if err = n.f.execution.Report(n.ctx, h.identity, report); err != nil {
+				t.Fatal(err)
+			}
 			continue
 		}
+		h.taken = max(h.taken, c.Generation)
 		// The agent's own fence: it takes a manifest only for the controller it was transferred to.
 		if command.Action == "configure" && command.Manifest.ControllerGeneration != h.controller {
 			t.Fatalf("host at controller %d was sent a manifest for controller %d", h.controller, command.Manifest.ControllerGeneration)
@@ -329,7 +338,7 @@ func (n *aheadNetwork) transfer(t *testing.T, h *aheadHost) {
 	if h.identity, err = n.f.execution.Authenticate(n.ctx, h.id, credential); err != nil {
 		t.Fatal(err)
 	}
-	h.input, h.controller, h.token = input, generation, h.id.String()+"."+credential
+	h.input, h.controller, h.token, h.taken = input, generation, h.id.String()+"."+credential, 0
 }
 
 func (n *aheadNetwork) note(t *testing.T, h *aheadHost) string {
@@ -568,17 +577,20 @@ func TestHostileClaimsAfterRestoreMoveNothing(t *testing.T) {
 }
 
 // Restoring management without fencing a host leaves it ahead under the same controller. Depending
-// on the counters, it refuses a configure or drops it as stale. Either way removals still reach it
-// and the sweep stops repeating itself, and fencing is the way out.
+// on the counters, it refuses a configure or ends it unrun as stale. Either way removals still reach it,
+// and fencing is the way out. After a refusal the sweep stops repeating itself; a stale configure is
+// tried again until management's counter passes the host's.
 func TestUnfencedHostAheadRecoversThroughFencing(t *testing.T) {
-	for name, stale := range map[string]bool{"refuses the configure": false, "drops the configure as stale": true} {
+	for name, stale := range map[string]bool{"refuses the configure": false, "ends the configure as stale": true} {
 		t.Run(name, func(t *testing.T) {
 			n := newAheadNetwork(t, 3)
 			a, b, added := n.hosts[0], n.hosts[1], n.hosts[2]
 			n.save(t, a, b)
 			n.converge(t)
 			a.held.Generation += 1 << 40
-			a.stale = stale
+			if stale {
+				a.taken = math.MaxInt64
+			}
 			n.save(t, a, b, added)
 			if !stale {
 				n.until(t, func() bool { return a.refused > 0 && n.note(t, a) != "" })
@@ -594,9 +606,7 @@ func TestUnfencedHostAheadRecoversThroughFencing(t *testing.T) {
 					t.Fatalf("%d more network commands went to the host after it refused", got-sent)
 				}
 			} else {
-				n.until(t, func() bool {
-					return claimCounter(t, n.f, `SELECT count(*) FROM execution_operations WHERE server_id=$1 AND kind='network' AND state='dispatched'`, a.id) > 0
-				})
+				n.until(t, func() bool { return a.superseded > 0 })
 			}
 			issued := n.counter(t)
 			// A revocation reaches the host while the change that adds a peer cannot.
@@ -616,7 +626,6 @@ func TestUnfencedHostAheadRecoversThroughFencing(t *testing.T) {
 				t.Fatal(err)
 			}
 			n.beat = time.Time{}
-			a.stale = false
 			refused := a.refused
 			held := a.held.Generation
 			n.save(t, a, added)
@@ -705,18 +714,37 @@ func TestSweepWaitsForAManifestOnItsWay(t *testing.T) {
 	if a.refused != 0 {
 		t.Fatalf("the host refused %d commands", a.refused)
 	}
-	// A manifest that has not landed must not hold a removal back for long.
+	// A manifest that has not landed, because its host is offline, must not hold a removal back for
+	// long.
 	b.member.Endpoint = "192.0.2.78:51820"
-	a.stale = true
+	a.silent = true
 	n.save(t, a, b)
-	n.until(t, func() bool {
-		return claimCounter(t, n.f, `SELECT count(*) FROM execution_operations WHERE server_id=$1 AND kind='network' AND state='dispatched'`, a.id) > 0
-	})
-	if !holdsPeer(a, b.id) {
-		t.Fatal("the host lost the peer before the wait ended")
+	// Commands are queued until dispatched, and only a dispatched one is delivered.
+	dispatched := func(action string) {
+		t.Helper()
+		for until := time.Now().Add(20 * time.Second); claimCounter(t, n.f, `SELECT count(*) FROM execution_operations WHERE server_id=$1 AND kind='network' AND command->'network'->>'action'=$2 AND state='dispatched'`, a.id, action) == 0; time.Sleep(25 * time.Millisecond) {
+			if time.Now().After(until) {
+				t.Fatalf("the %s was never dispatched", action)
+			}
+		}
 	}
+	n.round(t)
+	dispatched("configure")
+	removals = sent("restrict")
 	if _, err := n.f.st.Pool.Exec(n.ctx, `UPDATE execution_operations SET created_at=created_at-interval '1 minute' WHERE server_id=$1 AND state='dispatched'`, a.id); err != nil {
 		t.Fatal(err)
 	}
+	n.round(t)
+	if sent("restrict") == removals {
+		t.Fatal("the removal still waits for a manifest that has not landed")
+	}
+	dispatched("restrict")
+	// Back online, the host takes the removal first. The manifest is then behind what its journal
+	// holds, so it ends unrun, and the next one sent brings the host back.
+	a.silent = false
 	n.until(t, func() bool { return !holdsPeer(a, b.id) })
+	n.converge(t)
+	if a.superseded != 1 || a.refused != 0 || !slices.ContainsFunc(a.held.Peers, func(p hostnetwork.Peer) bool { return p.Endpoint == b.member.Endpoint }) {
+		t.Fatalf("superseded %d, refused %d, host holds %+v", a.superseded, a.refused, a.held.Peers)
+	}
 }
