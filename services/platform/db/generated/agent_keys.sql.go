@@ -626,13 +626,15 @@ func (q *Queries) RecordIdentityConflict(ctx context.Context, arg RecordIdentity
 
 const refreshLineage = `-- name: RefreshLineage :one
 SELECT l.id,l.workspace_id,l.key_hash,l.epoch,l.superseded_at,k.public_key
-FROM agent_lineages l JOIN agent_keys k ON k.server_id = l.server_id AND k.key_hash = l.key_hash
+FROM agent_lineages l JOIN agent_keys k ON k.workspace_id = l.workspace_id AND k.server_id = l.server_id AND k.key_hash = l.key_hash
 WHERE l.server_id = $1 AND l.refresh_hash = $2
+    AND l.token_expires_at + make_interval(secs => $3::int) > now()
 `
 
 type RefreshLineageParams struct {
 	ServerID    uuid.UUID `json:"server_id"`
 	RefreshHash []byte    `json:"refresh_hash"`
+	IdleSeconds int32     `json:"idle_seconds"`
 }
 
 type RefreshLineageRow struct {
@@ -644,9 +646,11 @@ type RefreshLineageRow struct {
 	PublicKey    []byte     `json:"public_key"`
 }
 
-// unscoped: the refresh secret establishes the workspace.
+// unscoped: the refresh secret establishes the workspace. A secret renews its session only until
+// the session has been idle for the given time past its token's expiry, so one copied from memory
+// and left unused stops working.
 func (q *Queries) RefreshLineage(ctx context.Context, arg RefreshLineageParams) (RefreshLineageRow, error) {
-	row := q.db.QueryRow(ctx, refreshLineage, arg.ServerID, arg.RefreshHash)
+	row := q.db.QueryRow(ctx, refreshLineage, arg.ServerID, arg.RefreshHash, arg.IdleSeconds)
 	var i RefreshLineageRow
 	err := row.Scan(
 		&i.ID,

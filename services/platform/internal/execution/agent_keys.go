@@ -26,9 +26,14 @@ import (
 )
 
 const (
-	agentTokenSeconds  = 15 * 60
-	agentNonceLifetime = 60 * time.Second
-	agentKeyMaxAge     = 30 * 24 * time.Hour
+	agentTokenSeconds = 15 * 60
+	// A refresh secret renews its session until an hour after its token expired. An agent keeps
+	// trying it through an outage rather than starting a new session, which would end its terminal
+	// sessions, and an hour covers ordinary deploys and restarts. Past it, the agent starts a new
+	// session with a signed challenge, and a secret copied from its memory is useless.
+	agentRefreshIdleSeconds = 60 * 60
+	agentNonceLifetime      = 60 * time.Second
+	agentKeyMaxAge          = 30 * 24 * time.Hour
 )
 
 // Refusals tell an agent why its credential was refused. Each is a 401.
@@ -349,7 +354,7 @@ func rotationDue(ctx context.Context, q *db.Queries, ws, server uuid.UUID, rotat
 func (s *Service) Refresh(ctx context.Context, in api.AgentRefreshRequest, source string) (api.AgentToken, error) {
 	var out api.AgentToken
 	presented := hash(in.Refresh)
-	lineage, err := s.Store.Queries.RefreshLineage(ctx, db.RefreshLineageParams{ServerID: in.ServerId, RefreshHash: presented})
+	lineage, err := s.Store.Queries.RefreshLineage(ctx, db.RefreshLineageParams{ServerID: in.ServerId, RefreshHash: presented, IdleSeconds: agentRefreshIdleSeconds})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return out, refreshReused
 	}
@@ -397,8 +402,8 @@ func (s *Service) Refresh(ctx context.Context, in api.AgentRefreshRequest, sourc
 		out.PreviewOnly = &server.PreviewOnly
 	}
 	// The update itself decides whether the presented secret is still current, so two requests
-	// racing with the same secret can't both succeed. The agent never presents one twice: after any
-	// failure it starts a new session instead.
+	// racing with the same secret can't both succeed. The agent presents a secret again only after
+	// a failure management didn't answer, so a refusal here proves nothing and only records it.
 	n, err := q.RotateLineageTokens(ctx, db.RotateLineageTokensParams{WorkspaceID: server.WorkspaceID, ID: lineage.ID, Presented: presented, RefreshHash: hash(refresh), TokenHash: hash(out.Token), LifetimeSeconds: agentTokenSeconds})
 	if err != nil {
 		return out, err

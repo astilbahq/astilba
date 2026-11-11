@@ -43,9 +43,13 @@ type Client struct {
 	primaryIngress          atomic.Bool
 	troubleshooting         atomic.Bool
 	machineRotation         atomic.Bool
-	// Keys seals this agent's keys; KeyStoreErr says why there is none here.
+	// Keys seals this agent's keys; KeyStoreErr says why there is none here. OpenKeys, when set,
+	// opens the store, and opens it again while it is unavailable. Read them through keyStore.
 	Keys               KeyStore
 	KeyStoreErr        error
+	OpenKeys           func(context.Context) (KeyStore, error)
+	keysMu             sync.Mutex
+	keysTried          time.Time
 	keysSupported      atomic.Bool
 	tokens             tokenSource
 	needsEnrollment    atomic.Bool
@@ -246,9 +250,9 @@ func (c *Client) advertisedCapabilities(v api.AgentCapabilities) api.AgentCapabi
 	if !c.railpack.Load() {
 		v.RailpackVersion = nil
 	}
-	v.KeyProtection = nil
+	v.KeyProtection, v.KeyStoreProblem = nil, nil
 	if c.keysSupported.Load() {
-		v.KeyProtection = c.keyProtection()
+		v.KeyProtection, v.KeyStoreProblem = c.keyProtection()
 	}
 	if !c.machineRotation.Load() {
 		v.MachineBoundRotation = nil
@@ -286,23 +290,6 @@ func (c *Client) Heartbeat(ctx context.Context) (api.AgentStatus, error) {
 	var status api.AgentStatus
 	err := c.heartbeat(ctx, authAgent, &status)
 	return status, err
-}
-
-// keyProtection is what this agent reports about how it protects its key.
-func (c *Client) keyProtection() *api.AgentCapabilitiesKeyProtection {
-	if c.Keys != nil {
-		p := c.Keys.Protection()
-		return &p
-	}
-	if errors.Is(c.KeyStoreErr, errKeyStoreSetup) {
-		p := api.SetupRequired
-		return &p
-	}
-	if c.KeyStoreErr != nil {
-		p := api.SealFailed
-		return &p
-	}
-	return nil
 }
 
 // heartbeat reports this host. A response that changes what this controller reads is followed at

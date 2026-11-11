@@ -32,6 +32,7 @@ func (c *Client) enrollCode(ctx context.Context, code string) (api.AgentStatus, 
 	}
 	entry, ok := cfg.Enrollments[codeHash]
 	if !ok {
+		keys := c.keyStore(ctx)
 		if len(cfg.Enrollments) >= 4 {
 			return status, sent, false, errors.New("four enrollment codes are already outstanding; use one of them, or remove the state directory and enroll this host as a new server")
 		}
@@ -40,7 +41,7 @@ func (c *Client) enrollCode(ctx context.Context, code string) (api.AgentStatus, 
 		case !cfg.Enrolled && cfg.Credential != "" && cfg.EnrollmentToken == code:
 			// An earlier agent sent its credential with this code.
 			entry.Credential = cfg.Credential
-		case c.keysSupported.Load() && c.Keys != nil:
+		case c.keysSupported.Load() && keys != nil:
 			if entry.Key, err = c.newSealedKey(ctx); err != nil {
 				return status, sent, false, err
 			}
@@ -50,8 +51,8 @@ func (c *Client) enrollCode(ctx context.Context, code string) (api.AgentStatus, 
 				return status, sent, false, err
 			}
 		}
-		if c.Keys != nil {
-			if entry.SealedCode, err = c.Keys.Seal(ctx, []byte(code)); err != nil {
+		if keys != nil {
+			if entry.SealedCode, err = keys.Seal(ctx, []byte(code)); err != nil {
 				return status, sent, false, err
 			}
 		} else {
@@ -163,10 +164,11 @@ func (c *Client) retryEnrollments(ctx context.Context) (api.AgentStatus, api.Age
 	for _, e := range entries {
 		code := e.Code
 		if e.SealedCode != nil {
-			if c.Keys == nil {
+			keys := c.keyStore(ctx)
+			if keys == nil {
 				continue
 			}
-			plain, err := c.Keys.Unseal(ctx, e.SealedCode)
+			plain, err := keys.Unseal(ctx, e.SealedCode)
 			if err != nil {
 				return api.AgentStatus{}, api.AgentCapabilities{}, false, err
 			}

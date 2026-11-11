@@ -274,3 +274,26 @@ func TestServersPageKeepsTheKeyThroughReKeyingAndRevocation(t *testing.T) {
 		t.Fatal("revocation hid the key, or kept a conflict whose alert it ended", identity.KeyBound)
 	}
 }
+
+func TestRefreshSecretLeftUnusedStopsWorking(t *testing.T) {
+	f, _, _, v, a := keyedServer(t)
+	ctx := context.Background()
+	key := agentKey(t, a)
+	idle := func(minutes int) {
+		t.Helper()
+		if _, err := f.st.Pool.Exec(ctx, `UPDATE agent_lineages SET token_expires_at=now()-make_interval(mins => $2) WHERE server_id=$1 AND superseded_at IS NULL`, v.Server.Id, minutes); err != nil {
+			t.Fatal(err)
+		}
+	}
+	session := coldStart(t, a.tls, v.Server.Id, key, 100, 200)
+	// An agent keeps trying its secret through an outage, and an hour past its token's expiry
+	// covers ordinary deploys.
+	idle(50)
+	renewed := refresh(t, a.tls, v.Server.Id, key, session.Refresh, 200)
+	// Past that, a secret copied from the agent's memory is useless, and nothing is recorded.
+	idle(61)
+	refresh(t, a.tls, v.Server.Id, key, renewed.Refresh, 401)
+	if n := identityEvents(t, f, v.Server.Id, "refused", "refresh"); n != 0 {
+		t.Fatal("an expired refresh secret was recorded as a refusal", n)
+	}
+}

@@ -57,14 +57,16 @@ Enrollment and run use the same protected `/var/lib/astilba-agent` directory. It
 
 The agent authenticates with an ECDSA P-256 key it generates at enrollment. Management keeps only the public key. For each request the agent uses a 15-minute access token, which it gets by signing a one-time challenge and keeps only in memory. The key never leaves the host.
 
+The agent renews its token with a signed refresh secret. Through an outage it keeps trying the same secret rather than starting a new session, which would end its terminal sessions. Management accepts a secret until an hour after its token expired: long enough for ordinary deploys and restarts, and short enough that a secret copied from the agent's memory and left unused stops working. After that, the agent starts a new session with a signed challenge.
+
 How well the key is protected depends on the host, and the Servers page says which applies:
 
 - **TPM:** the key is sealed with `systemd-creds` to the host's TPM, without binding it to firmware measurements, so firmware and Secure Boot updates don't lock the agent out. A copy of the disk can't use the key.
 - **Host key:** without a TPM, the key is sealed with systemd's host key, `/var/lib/systemd/credential.secret`, which lives outside the state directory. A copy of the state directory alone can't use the key. **A copy of the whole disk can**, because it includes the host key.
 - **Setup required:** the host has no systemd host key yet, and the agent service's sandbox can't create one. Run `sudo systemd-creds setup` once, then restart the agent service; it registers a key when it starts. `astilba-agent enroll` and `transfer` do this themselves.
-- **Sealing failed:** `systemd-creds` is missing or couldn't read back what it sealed. The agent logs why at start.
+- **Sealing failed:** `systemd-creds` is missing or couldn't read back what it sealed. The Servers page shows the reason the agent reports.
 
-The agent registers a key only after it has sealed a value and read it back. Until then it keeps authenticating with its bearer credential.
+The agent registers a key only after it has sealed a value and read it back. Until then it keeps authenticating with its bearer credential. While its key store is unavailable, the agent opens it again every minute and keeps running local work, such as scheduled backups. An agent that already holds a key can't authenticate until its store opens, so the server shows as offline; `journalctl -u astilba-agent` shows why.
 
 A copy of the state directory still holds the journal, which its keyring decrypts, and the host's private network keys. Treat a copied state directory as a leak of the host's secrets and network keys even when it can't authenticate.
 

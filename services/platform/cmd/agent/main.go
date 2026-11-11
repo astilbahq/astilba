@@ -14,7 +14,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/mail"
 	"net/netip"
 	"os"
@@ -253,7 +252,7 @@ func run() error {
 		if err := agent.SetupSystemKeyStore(ctx); err != nil {
 			fmt.Fprintln(os.Stderr, "Could not set up systemd credentials, so the agent can't seal a key here:", err)
 		}
-		c.Keys, c.KeyStoreErr = agent.SystemKeyStore(ctx)
+		c.OpenKeys = agent.SystemKeyStore
 		if e = c.Enroll(ctx, string(token)); e != nil {
 			return e
 		}
@@ -352,19 +351,9 @@ func run() error {
 		engine.NetworkPool = pool
 	}
 	c := agent.NewClient(j, engine)
-	c.Keys, c.KeyStoreErr = agent.SystemKeyStore(ctx)
-	if c.KeyStoreErr != nil {
-		cfg, err := j.Config()
-		if err != nil {
-			return err
-		}
-		// An agent that holds a key can't work without its store. Exiting lets the service manager
-		// try again, which recovers from a store that wasn't ready, such as a TPM early in boot.
-		if cfg.Key != nil || cfg.BindKey != nil || cfg.PendingRotation != nil {
-			return fmt.Errorf("the agent can't unseal its key on this host: %w", c.KeyStoreErr)
-		}
-		slog.Warn("the agent can't seal a key on this host, so it keeps its bearer credential", "error", c.KeyStoreErr)
-	}
+	// The key store is opened when first needed, and again while it is unavailable, so a store
+	// that isn't ready never stops the agent's local work.
+	c.OpenKeys = agent.SystemKeyStore
 	collector := &agent.MetricCollector{Journal: j}
 	c.Metrics = func(ctx context.Context) api.MetricReport {
 		cfg, err := j.Config()

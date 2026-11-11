@@ -89,7 +89,7 @@ export function ServerCredentials({
           )}
           {!keyed &&
             kept === "seal_failed" &&
-            "The agent can't seal a key with systemd-creds on this host; its log says why. "}
+            `The agent can't seal a key with systemd-creds on this host${server.capabilities?.keyStoreProblem ? `: ${server.capabilities.keyStoreProblem}` : ""}. It tries again every minute. `}
           {leak}
         </p>
       )}

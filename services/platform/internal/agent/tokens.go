@@ -60,10 +60,11 @@ func (c *Client) unseal(ctx context.Context, sealed []byte) (*ecdsa.PrivateKey, 
 	if k, ok := c.tokens.keys[string(sealed)]; ok {
 		return k, nil
 	}
-	if c.Keys == nil {
-		return nil, errors.New("this agent holds a key but can't unseal it here")
+	keys := c.keyStore(ctx)
+	if keys == nil {
+		return nil, errors.New("this agent holds a key but its key store is unavailable")
 	}
-	der, err := c.Keys.Unseal(ctx, sealed)
+	der, err := keys.Unseal(ctx, sealed)
 	if err != nil {
 		return nil, err
 	}
@@ -79,7 +80,8 @@ func (c *Client) unseal(ctx context.Context, sealed []byte) (*ecdsa.PrivateKey, 
 }
 
 func (c *Client) newSealedKey(ctx context.Context) ([]byte, error) {
-	if c.Keys == nil {
+	keys := c.keyStore(ctx)
+	if keys == nil {
 		return nil, errors.New("this agent can't seal a key here")
 	}
 	k, err := agentidentity.GenerateKey()
@@ -90,13 +92,13 @@ func (c *Client) newSealedKey(ctx context.Context) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	return c.Keys.Seal(ctx, der)
+	return keys.Seal(ctx, der)
 }
 
 // bindable reports whether a legacy agent should replace its bearer with a key now.
-func (c *Client) bindable(cfg Config) bool {
+func (c *Client) bindable(ctx context.Context, cfg Config) bool {
 	return cfg.Enrolled && cfg.Key == nil && cfg.BindKey == nil && cfg.Credential != "" && cfg.Pending == "" &&
-		c.keysSupported.Load() && c.Keys != nil
+		c.keysSupported.Load() && c.keyStore(ctx) != nil
 }
 
 // authorization returns the credential for this server's next request.
@@ -105,7 +107,7 @@ func (c *Client) authorization(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if cfg.Key == nil && cfg.BindKey == nil && !c.bindable(cfg) {
+	if cfg.Key == nil && cfg.BindKey == nil && !c.bindable(ctx, cfg) {
 		return cfg.Credential, nil
 	}
 	c.tokens.mu.Lock()
@@ -113,13 +115,18 @@ func (c *Client) authorization(ctx context.Context) (string, error) {
 	if c.tokens.token != "" && time.Now().Before(c.tokens.renewAt) {
 		return c.tokens.token, nil
 	}
-	if c.tokens.refresh != "" && time.Now().Before(c.tokens.expires) {
+	if c.tokens.refresh != "" {
 		err := c.refreshToken(ctx)
 		// A refresh that also rotated the key may end without a session; one then starts below.
-		// One that failed without management refusing it keeps the session while its token is
-		// valid, so a management restart doesn't end the terminal sessions attached through it.
+		// One that failed without management refusing it keeps the token while it is valid.
 		if c.tokens.token != "" && (err == nil || time.Now().Add(time.Minute).Before(c.tokens.expires)) {
 			return c.tokens.token, nil
+		}
+		// Management didn't refuse the secret, so it is tried again rather than starting a new
+		// session, which would end the terminal sessions attached through this one. Management
+		// refuses a secret left unused for long, and the agent then starts a new session.
+		if err != nil && c.tokens.refresh != "" {
+			return "", err
 		}
 	}
 	c.tokens.forget()
@@ -151,10 +158,15 @@ func (c *Client) accept(out api.AgentToken) {
 
 // refreshToken renews the session. Management's own refusal ends it: the next request starts a new
 // one, which management never takes for a fork. After any other failure the secret is kept and
-// tried again; if management did renew it and the answer was lost, that try is refused.
+// tried again, whatever the token's expiry; if management did renew it and the answer was lost,
+// that try is refused.
 func (c *Client) refreshToken(ctx context.Context) error {
 	cfg, err := c.Journal.Config()
-	if err != nil || cfg.Key == nil {
+	if err != nil {
+		return err
+	}
+	if cfg.Key == nil {
+		c.tokens.forget()
 		return errors.New("no key")
 	}
 	key, err := c.unseal(ctx, cfg.Key)
@@ -217,7 +229,7 @@ func (c *Client) startSession(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if c.bindable(cfg) {
+	if c.bindable(ctx, cfg) {
 		if err = c.bind(ctx); err != nil {
 			return err
 		}
@@ -348,7 +360,7 @@ func (c *Client) maybeRotate(ctx context.Context, out api.AgentToken) {
 		return
 	}
 	cfg, err := c.Journal.Config()
-	if err != nil || cfg.Key == nil || c.Keys == nil {
+	if err != nil || cfg.Key == nil || c.keyStore(ctx) == nil {
 		return
 	}
 	if cfg.PendingRotation != nil {

@@ -5207,6 +5207,10 @@
           type: string
           enum: [tpm, host_key, unsealed, setup_required, seal_failed]
           description: How the agent protects its key. setup_required and seal_failed mean it holds none yet, so it keeps its bearer credential. Advertised only after Astilba-Agent-Keys v1.
+        keyStoreProblem:
+          type: string
+          maxLength: 200
+          description: Why the agent's key store is unavailable, as the agent logs it. Advertised only after Astilba-Agent-Keys v1.
     "HostPreflight":
       "type": "object"
       "additionalProperties": false

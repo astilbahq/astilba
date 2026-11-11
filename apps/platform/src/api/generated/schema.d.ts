@@ -2633,6 +2633,8 @@ export interface components {
              * @enum {string}
              */
             keyProtection?: "tpm" | "host_key" | "unsealed" | "setup_required" | "seal_failed";
+            /** @description Why the agent's key store is unavailable, as the agent logs it. Advertised only after Astilba-Agent-Keys v1. */
+            keyStoreProblem?: string;
         };
         HostPreflight: {
             crossHostInventory?: components["schemas"]["CrossHostInventory"];

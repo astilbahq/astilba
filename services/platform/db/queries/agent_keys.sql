@@ -119,10 +119,13 @@ UPDATE agent_keys SET successor_seen_seq = @seq
 WHERE workspace_id = @workspace_id AND server_id = @server_id AND epoch = @epoch AND superseded_at IS NOT NULL AND successor_seen_seq IS NULL;
 
 -- name: RefreshLineage :one
--- unscoped: the refresh secret establishes the workspace.
+-- unscoped: the refresh secret establishes the workspace. A secret renews its session only until
+-- the session has been idle for the given time past its token's expiry, so one copied from memory
+-- and left unused stops working.
 SELECT l.id,l.workspace_id,l.key_hash,l.epoch,l.superseded_at,k.public_key
-FROM agent_lineages l JOIN agent_keys k ON k.server_id = l.server_id AND k.key_hash = l.key_hash
-WHERE l.server_id = @server_id AND l.refresh_hash = @refresh_hash;
+FROM agent_lineages l JOIN agent_keys k ON k.workspace_id = l.workspace_id AND k.server_id = l.server_id AND k.key_hash = l.key_hash
+WHERE l.server_id = @server_id AND l.refresh_hash = @refresh_hash
+    AND l.token_expires_at + make_interval(secs => sqlc.arg(idle_seconds)::int) > now();
 
 -- name: RotateLineageTokens :execrows
 -- Only the current secret renews a live session, once. The previous token stays valid until it
