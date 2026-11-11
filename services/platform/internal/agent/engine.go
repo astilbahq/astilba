@@ -190,7 +190,9 @@ func (e *Engine) Execute(ctx context.Context, c api.ExecutionCommand) error {
 		maintenanceContinuation = bodyErr == nil && body.Maintenance != nil && (body.Phase == "resume-source" || body.Phase == "resume-target" || body.Phase == "complete")
 	}
 	updateContinuation := c.Kind == "update" && e.Journal.startupUpdates[c.Id] && (r.AcceptedAt == nil || !r.AcceptedAt.After(c.Deadline)) && !e.cancelled(c.Id) && c.Release != nil && execution.Hash(c.Release) == c.PlanHash
-	if c.Kind != "upgrade" && !updateContinuation && !metadataContinuation && !maintenanceContinuation && !networkRestriction(c) && r.Checkpoint == "accepted" && time.Now().After(c.Deadline) {
+	// A retirement stays deliverable until a server that was offline returns: it only removes, every
+	// step tolerates what is already gone, and nothing else may run for its environment meanwhile.
+	if c.Kind != "upgrade" && !updateContinuation && !metadataContinuation && !maintenanceContinuation && !networkRestriction(c) && !retirement(c) && r.Checkpoint == "accepted" && time.Now().After(c.Deadline) {
 		return e.finish(c.Id, "cancelled", "The admission deadline passed before execution.")
 	}
 	upgrades, err := e.Journal.upgrades()
