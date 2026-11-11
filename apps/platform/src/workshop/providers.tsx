@@ -5,6 +5,7 @@ import { setSession, type Session } from "../api/client";
 import { sessionOptions } from "../api/session";
 import { ToastProvider } from "../components/toast";
 import { TooltipProvider } from "../components/tooltip";
+import { StepUpProvider } from "../features/auth/step-up";
 import { initializeI18n } from "../i18n/instance";
 import { resolveLocale, type LocalePreference } from "../i18n/locale";
 import { LocaleContext, LocaleProvider } from "../i18n/provider";
@@ -129,7 +130,9 @@ export function WorkshopProviders({
             onLocaleChange={onLocaleChange}
           >
             <ToastProvider>
-              <TooltipProvider delay={300}>{children}</TooltipProvider>
+              <TooltipProvider delay={300}>
+                <StepUpProvider>{children}</StepUpProvider>
+              </TooltipProvider>
             </ToastProvider>
           </CanvasPreferences>
         </ThemeProvider>

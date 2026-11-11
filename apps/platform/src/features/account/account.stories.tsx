@@ -174,35 +174,148 @@ export const PasswordRequestFailure: Story = {
     await expect(password).toHaveValue("a long example password");
   },
 };
+// A stale session confirms when the change is submitted, then the change goes through.
+let passwordChanges = 0;
+let confirmations: unknown[] = [];
+const staleEnabled: Session = { ...enabled, recentAuth: false };
+const confirmation = (canvas: HTMLElement) =>
+  within(canvas.ownerDocument.body).findByRole("alertdialog", {
+    name: "Confirm your identity",
+  });
 export const ConfirmIdentity: Story = {
-  parameters: scenario({ ...enabled, recentAuth: false }),
-  play: async ({ canvasElement }) => {
+  beforeEach: () => {
+    passwordChanges = 0;
+    confirmations = [];
+  },
+  parameters: scenario(
+    staleEnabled,
+    http.post("/api/v1/auth/password", () => {
+      passwordChanges++;
+      return HttpResponse.json(enabled);
+    }),
+    http.post("/api/v1/auth/reauthenticate", async ({ request }) => {
+      confirmations.push(await request.json());
+      return HttpResponse.json(enabled);
+    }),
+  ),
+  play: async (context) => {
+    const { canvasElement } = context;
+    await PasswordChange.play!(context);
+    await userEvent.type(
+      within(canvasElement).getByLabelText("New password", {}),
+      "a long example password",
+    );
     await userEvent.click(
-      within(canvasElement).getByRole("button", {
-        name: "Change password",
-      }),
+      within(canvasElement).getByRole("button", { name: "Update password" }),
     );
+    const dialog = await confirmation(canvasElement);
+    // Known to be stale, so nothing is sent before the confirmation.
+    await expect(passwordChanges).toBe(0);
     await waitFor(() =>
-      expect(
-        within(canvasElement).getByRole("heading", {
-          name: "Confirm your identity",
-        }),
-      ).toHaveFocus(),
+      expect(within(dialog).getAllByRole("textbox")[0]).toHaveFocus(),
     );
+    await userEvent.keyboard("123456");
+    await userEvent.click(
+      within(dialog).getByRole("button", { name: "Confirm" }),
+    );
+    await expect(
+      await within(canvasElement).findByText(
+        "Password updated. Your other sessions have been signed out.",
+      ),
+    ).toBeVisible();
+    await expect(passwordChanges).toBe(1);
+    await expect(confirmations).toEqual([{ code: "123456" }]);
   },
 };
 export const ConfirmWithRecoveryCode: Story = {
-  ...ConfirmIdentity,
+  parameters: scenario(staleEnabled),
   play: async (context) => {
-    await ConfirmIdentity.play!(context);
+    const { canvasElement } = context;
+    await PasswordChange.play!(context);
+    await userEvent.type(
+      within(canvasElement).getByLabelText("New password", {}),
+      "a long example password",
+    );
     await userEvent.click(
-      within(context.canvasElement).getByRole("button", {
-        name: "Use recovery code",
+      within(canvasElement).getByRole("button", { name: "Update password" }),
+    );
+    const dialog = await confirmation(canvasElement);
+    await userEvent.click(
+      within(dialog).getByRole("button", { name: "Use a recovery code" }),
+    );
+    const code = within(dialog).getByLabelText("Recovery code", {});
+    await waitFor(() => expect(code).toHaveFocus());
+    await userEvent.click(
+      within(dialog).getByRole("button", {
+        name: "Use your authenticator app",
       }),
     );
+    await waitFor(() =>
+      expect(within(dialog).getAllByRole("textbox")[0]).toHaveFocus(),
+    );
+  },
+};
+// Account security has its own way to confirm, for someone about to do several things.
+export const StandaloneConfirmation: Story = {
+  ...sessionMutation(staleEnabled, enabled, "reauthenticate"),
+  play: async (context) => {
+    const { canvasElement } = context;
+    const button = within(canvasElement).getByRole("button", {
+      name: "Confirm identity",
+    });
+    await userEvent.click(button);
+    const dialog = await confirmation(canvasElement);
+    await waitFor(() =>
+      expect(within(dialog).getAllByRole("textbox")[0]).toHaveFocus(),
+    );
+    await userEvent.keyboard("123456");
+    await userEvent.keyboard("{Enter}");
     await expect(
-      within(context.canvasElement).getByLabelText("Recovery code", {}),
+      await within(canvasElement).findByText("Identity confirmed."),
+    ).toHaveAttribute("role", "status");
+    await waitFor(() => expect(button).toHaveFocus());
+    // The status stays once the session has been read again after confirming.
+    const queries = context.loaded.workshop.queryClient as QueryClient;
+    await waitFor(() => expect(queries.isFetching()).toBe(0));
+    await expect(
+      within(canvasElement).getByText("Identity confirmed."),
     ).toBeVisible();
+  },
+};
+// Confirmation opens over the disable dialog. Escape closes only the confirmation, and
+// focus returns to the control that asked.
+export const ConfirmationOverDialog: Story = {
+  parameters: scenario(
+    staleEnabled,
+    reject("mfa/disable", "network_error", 503),
+  ),
+  play: async ({ canvasElement }) => {
+    await userEvent.click(
+      within(canvasElement).getByRole("button", {
+        name: "Disable two-factor authentication",
+      }),
+    );
+    const body = within(canvasElement.ownerDocument.body);
+    const disable = await body.findByRole("alertdialog", {
+      name: "Disable two-factor authentication?",
+    });
+    const confirm = within(disable).getByRole("button", {
+      name: "Disable two-factor",
+    });
+    await userEvent.click(confirm);
+    const stacked = await confirmation(canvasElement);
+    await waitFor(() =>
+      expect(within(stacked).getAllByRole("textbox")[0]).toHaveFocus(),
+    );
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() =>
+      expect(
+        body.queryByRole("alertdialog", { name: "Confirm your identity" }),
+      ).toBeNull(),
+    );
+    await expect(disable).toBeVisible();
+    await waitFor(() => expect(confirm).toHaveFocus());
+    await expect(within(disable).queryByRole("alert")).toBeNull();
   },
 };
 export const ScanAuthenticator: Story = {
@@ -371,6 +484,8 @@ export const AccountChangedWithRecoveryCodes: Story = {
   },
 };
 let passwordAttempts = 0;
+// A refusal the cached session did not predict opens the confirmation, keeps the draft and
+// retries once. This server refuses again, so the second refusal is shown, not retried.
 export const ExpiredIdentityKeepsPasswordDraft: Story = {
   beforeEach: () => {
     passwordAttempts = 0;
@@ -401,54 +516,50 @@ export const ExpiredIdentityKeepsPasswordDraft: Story = {
         name: "Update password",
       }),
     );
+    const dialog = await confirmation(context.canvasElement);
     await userEvent.type(
-      await within(context.canvasElement).findByLabelText(
-        "Current password",
-        {},
-      ),
+      within(dialog).getByLabelText("Password"),
       "existing example password",
     );
     await userEvent.click(
-      within(context.canvasElement).getByRole("button", {
-        name: "Confirm identity",
-      }),
+      within(dialog).getByRole("button", { name: "Confirm" }),
     );
     await expect(
-      await within(context.canvasElement).findByLabelText("New password", {}),
+      await within(context.canvasElement).findByRole("alert"),
+    ).toHaveTextContent("Confirm your identity to continue.");
+    await expect(
+      within(context.canvasElement).getByLabelText("New password", {}),
     ).toHaveValue("a long preserved password");
-    await expect(passwordAttempts).toBe(1);
+    await expect(passwordAttempts).toBe(2);
   },
 };
+// Recent authentication lapsing in the background does not interrupt typing.
 export const BackgroundExpiryKeepsUnsubmittedDraft: Story = {
-  parameters: scenario(
-    disabled,
-    http.post("/api/v1/auth/reauthenticate", () => HttpResponse.json(disabled)),
-  ),
+  parameters: scenario(disabled),
   play: async (context) => {
     await PasswordChange.play!(context);
-    await userEvent.type(
-      within(context.canvasElement).getByLabelText("New password"),
-      "a current unsent password",
+    const password = within(context.canvasElement).getByLabelText(
+      "New password",
     );
+    await userEvent.type(password, "a current unsent password");
     const queries = context.loaded.workshop.queryClient as QueryClient;
     queries.setQueryData(sessionOptions.queryKey, {
       ...disabled,
       recentAuth: false,
     });
-    await userEvent.type(
-      await within(context.canvasElement).findByLabelText("Current password"),
-      "existing example password",
-    );
-    await userEvent.click(
-      within(context.canvasElement).getByRole("button", {
-        name: "Confirm identity",
-      }),
+    await userEvent.type(password, " still typing");
+    await expect(password).toHaveValue(
+      "a current unsent password still typing",
     );
     await expect(
-      await within(context.canvasElement).findByLabelText("New password"),
-    ).toHaveValue("a current unsent password");
+      within(context.canvasElement.ownerDocument.body).queryByRole(
+        "alertdialog",
+      ),
+    ).toBeNull();
   },
 };
+// Declining after a refusal mid-enrollment returns focus to the enable button once it
+// is usable again.
 export const AuthenticatorIdentityExpired: Story = {
   parameters: scenario(
     disabled,
@@ -459,15 +570,19 @@ export const AuthenticatorIdentityExpired: Story = {
     await ScanAuthenticator.play!(context);
     const first = within(context.canvasElement).getAllByRole("textbox")[0];
     await userEvent.type(first, "123456");
+    const enable = within(context.canvasElement).getByRole("button", {
+      name: "Enable two-factor authentication",
+    });
+    await userEvent.click(enable);
+    const dialog = await confirmation(context.canvasElement);
+    await expect(within(dialog).getByLabelText("Password")).toBeVisible();
     await userEvent.click(
-      within(context.canvasElement).getByRole("button", {
-        name: "Enable two-factor authentication",
-      }),
+      within(dialog).getByRole("button", { name: "Cancel" }),
     );
     await waitFor(() =>
       expect(
-        within(context.canvasElement).getByRole("heading", {
-          name: "Confirm your identity",
+        within(context.canvasElement).getByRole("button", {
+          name: "Enable two-factor authentication",
         }),
       ).toHaveFocus(),
     );

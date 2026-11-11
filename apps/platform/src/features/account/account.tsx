@@ -1,14 +1,9 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type RefObject, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import {
-  ApiError,
-  client,
-  result,
-  type Schema,
-  setSession,
-} from "../../api/client";
+import { client, result, type Schema, setSession } from "../../api/client";
 import { sessionOptions } from "../../api/session";
+import { useRequiredStepUp } from "../../api/step-up";
 import { useSessionRequest } from "../../api/use-session-request";
 import {
   AlertDialogActions,
@@ -26,24 +21,15 @@ import * as s from "../../styles";
 import { BusyButton, Field, Form, text, useAction } from "../../ui";
 import { AuthenticatorSetup } from "../auth/authenticator-setup";
 import { EmailVerification } from "../auth/email-verification";
-import { IdentityConfirmation } from "../auth/identity-confirmation";
 import { RecoveryCodesConfirmation } from "../auth/recovery-codes-confirmation";
 import { useAuthValidation } from "../auth/use-auth-validation";
 import * as styles from "./account.styles";
 
-function needsRecentIdentity(recentAuth: boolean | undefined, error: unknown) {
-  return (
-    !recentAuth ||
-    (error instanceof ApiError && error.detail.code === "recent_auth_required")
-  );
-}
-
 function PasswordSection() {
   const { t } = useTranslation("account");
   const queries = useQueryClient();
-  const session = useQuery(sessionOptions).data;
   const request = useSessionRequest({ renewal: true });
-  const action = useAction();
+  const action = useAction({ recentAuth: true });
   const validation = useAuthValidation();
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
@@ -75,58 +61,49 @@ function PasswordSection() {
         </div>
       ) : (
         <div className={styles.task}>
-          {needsRecentIdentity(session?.recentAuth, action.error) ? (
-            <IdentityConfirmation
-              onConfirmed={() => {
-                action.reset();
-                focusHeading();
-              }}
+          <Form
+            action={action}
+            label={t(($) => $.password.change)}
+            validation={validation.changePassword}
+            onSubmit={(data) => {
+              const password = text(data, "password");
+              setDraft(password);
+              action.run(() =>
+                request(
+                  (signal) =>
+                    result(
+                      client.POST("/api/v1/auth/password", {
+                        signal,
+                        body: { password },
+                      }),
+                    ),
+                  (next) => {
+                    queries.setQueryData(
+                      sessionOptions.queryKey,
+                      setSession(next),
+                    );
+                    setDraft("");
+                    setEditing(false);
+                    setSaved(true);
+                    focusHeading();
+                  },
+                ),
+              );
+            }}
+          >
+            <Field
+              name="password"
+              label={t(($) => $.password.newPassword)}
+              type="password"
+              inputComponent={PasswordInput}
+              autoComplete="new-password"
+              defaultValue={draft}
+              onChange={(event) => setDraft(event.currentTarget.value)}
             />
-          ) : (
-            <Form
-              action={action}
-              label={t(($) => $.password.change)}
-              validation={validation.changePassword}
-              onSubmit={(data) => {
-                const password = text(data, "password");
-                setDraft(password);
-                action.run(() =>
-                  request(
-                    (signal) =>
-                      result(
-                        client.POST("/api/v1/auth/password", {
-                          signal,
-                          body: { password },
-                        }),
-                      ),
-                    (next) => {
-                      queries.setQueryData(
-                        sessionOptions.queryKey,
-                        setSession(next),
-                      );
-                      setDraft("");
-                      setEditing(false);
-                      setSaved(true);
-                      focusHeading();
-                    },
-                  ),
-                );
-              }}
-            >
-              <Field
-                name="password"
-                label={t(($) => $.password.newPassword)}
-                type="password"
-                inputComponent={PasswordInput}
-                autoComplete="new-password"
-                defaultValue={draft}
-                onChange={(event) => setDraft(event.currentTarget.value)}
-              />
-              <BusyButton busy={action.isPending}>
-                {t(($) => $.password.save)}
-              </BusyButton>
-            </Form>
-          )}
+            <BusyButton busy={action.isPending}>
+              {t(($) => $.password.save)}
+            </BusyButton>
+          </Form>
           <LinkButton
             disabled={action.isPending}
             onClick={() => {
@@ -161,14 +138,11 @@ function CredentialDialog({
   fallbackFocus: RefObject<HTMLHeadingElement | null>;
 }) {
   const { t } = useTranslation("account");
-  const session = useQuery(sessionOptions).data;
   const queries = useQueryClient();
-  const action = useAction();
+  const action = useAction({ recentAuth: true });
   const request = useSessionRequest({ renewal: true });
   const validation = useAuthValidation();
   const cancel = useRef<HTMLButtonElement>(null);
-  const title = useRef<HTMLHeadingElement>(null);
-  const identity = needsRecentIdentity(session?.recentAuth, action.error);
   const dismiss = () => {
     action.reset();
     close();
@@ -215,7 +189,7 @@ function CredentialDialog({
             : fallbackFocus.current
         }
       >
-        <AlertDialogTitle ref={title} tabIndex={-1}>
+        <AlertDialogTitle>
           {task === "disable"
             ? t(($) => $.mfa.disableTitle)
             : t(($) => $.mfa.replaceTitle)}
@@ -225,14 +199,7 @@ function CredentialDialog({
             ? t(($) => $.mfa.disableDescription)
             : t(($) => $.mfa.replaceDescription)}
         </AlertDialogDescription>
-        {identity ? (
-          <IdentityConfirmation
-            onConfirmed={() => {
-              action.reset();
-              title.current?.focus();
-            }}
-          />
-        ) : action.error ? (
+        {action.error ? (
           <p className={s.error} role="alert">
             {validation.setup.message(action.error)}
           </p>
@@ -245,21 +212,19 @@ function CredentialDialog({
               </Button>
             }
           />
-          {!identity && (
-            <Button
-              variant={task === "disable" ? "danger" : "primary"}
-              disabled={action.isPending}
-              onClick={confirm}
-            >
-              {action.isPending
-                ? task === "disable"
-                  ? t(($) => $.mfa.disabling)
-                  : t(($) => $.mfa.replacing)
-                : task === "disable"
-                  ? t(($) => $.mfa.disableConfirm)
-                  : t(($) => $.mfa.replaceConfirm)}
-            </Button>
-          )}
+          <Button
+            variant={task === "disable" ? "danger" : "primary"}
+            disabled={action.isPending}
+            onClick={confirm}
+          >
+            {action.isPending
+              ? task === "disable"
+                ? t(($) => $.mfa.disabling)
+                : t(($) => $.mfa.replacing)
+              : task === "disable"
+                ? t(($) => $.mfa.disableConfirm)
+                : t(($) => $.mfa.replaceConfirm)}
+          </Button>
         </AlertDialogActions>
       </AlertDialogContent>
     </AlertDialogRoot>
@@ -348,7 +313,6 @@ function MFASection({ user }: { user: Schema["Account"] }) {
       ) : (
         <div className={styles.task}>
           <AuthenticatorSetup
-            deferIdentity
             onEnrolled={(next) => {
               setCodes(next);
               setMessage(undefined);
@@ -377,6 +341,41 @@ function MFASection({ user }: { user: Schema["Account"] }) {
   );
 }
 
+function IdentitySection() {
+  const { t } = useTranslation("account");
+  const stepUp = useRequiredStepUp();
+  const recent = useQuery(sessionOptions).data?.recentAuth;
+  const [confirmed, setConfirmed] = useState(false);
+  const lifetime = useRef<AbortController>(null);
+  useEffect(() => {
+    const controller = new AbortController();
+    lifetime.current = controller;
+    return () => controller.abort();
+  }, []);
+  return (
+    <section className={styles.section} aria-labelledby="account-identity">
+      <div className={styles.intro}>
+        <h2 id="account-identity">{t(($) => $.identity.title)}</h2>
+        <p className={s.muted}>{t(($) => $.identity.description)}</p>
+      </div>
+      {/* The confirmation lapses with the session's recent authentication. */}
+      {confirmed && recent && (
+        <p role="status">{t(($) => $.identity.confirmed)}</p>
+      )}
+      <div className={styles.actions}>
+        <Button
+          onClick={async () => {
+            setConfirmed(false);
+            setConfirmed(await stepUp({ signal: lifetime.current?.signal }));
+          }}
+        >
+          {t(($) => $.identity.confirm)}
+        </Button>
+      </div>
+    </section>
+  );
+}
+
 function AccountContent({ user }: { user: Schema["Account"] }) {
   const { t } = useTranslation("account");
   usePageTitle(t(($) => $.title));
@@ -393,6 +392,7 @@ function AccountContent({ user }: { user: Schema["Account"] }) {
       </section>
       <PasswordSection />
       <MFASection user={user} />
+      <IdentitySection />
     </div>
   );
 }

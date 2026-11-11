@@ -11,9 +11,8 @@ import {
   hostedWorkspaceId,
   guest,
   scenario,
-  sessionHandlers,
 } from "../../workshop/fixtures";
-import { authenticationCode, fill, submit } from "../../workshop/interactions";
+import { authenticationCode } from "../../workshop/interactions";
 import { AuthFrame } from "./auth-frame";
 import { HostedOnboarding } from "./hosted-onboarding";
 
@@ -222,17 +221,71 @@ export const ChangedRecoveryCodes: Story = {
     ).not.toBeInTheDocument();
   },
 };
-export const IdentityConfirmation: Story = {
-  parameters: hostedScenario(
-    { ...unprotected, recentAuth: false },
-    subscription(),
-  ),
+// A stale session confirms in the shared dialog, and the step it was asked from continues.
+let confirmations: unknown[] = [];
+function staleScenario(
+  session: typeof hostedMember,
+  ...handlers: ReturnType<typeof http.post>[]
+) {
+  return {
+    beforeEach: () => {
+      confirmations = [];
+    },
+    parameters: hostedScenario(
+      { ...session, recentAuth: false },
+      subscription(),
+      ...handlers,
+      http.post("/api/v1/auth/reauthenticate", async ({ request }) => {
+        confirmations.push(await request.json());
+        return HttpResponse.json({ ...session, recentAuth: true });
+      }),
+    ),
+  };
+}
+async function startStep(canvasElement: HTMLElement) {
+  const main = within(canvasElement).getByRole("main");
+  await userEvent.click(await within(main).findByRole("button"));
+  return within(canvasElement.ownerDocument.body).findByRole("alertdialog", {
+    name: "Confirm your identity",
+  });
+}
+export const AuthenticatorSetupConfirmsIdentity: Story = {
+  ...staleScenario(unprotected, enrollment),
+  play: async ({ canvasElement }) => {
+    const confirmation = await startStep(canvasElement);
+    const password = within(confirmation).getByLabelText("Password");
+    await waitFor(() => expect(password).toHaveFocus());
+    await userEvent.type(password, "correct horse battery staple");
+    await userEvent.keyboard("{Enter}");
+    // The page is hidden from assistive technology until the confirmation has closed.
+    await waitFor(() =>
+      expect(
+        within(canvasElement.ownerDocument.body).queryByRole("alertdialog"),
+      ).toBeNull(),
+    );
+    const main = within(canvasElement).getByRole("main");
+    await expect(await within(main).findByRole("group")).toBeVisible();
+    await expect(confirmations).toEqual([
+      { password: "correct horse battery staple" },
+    ]);
+  },
 };
-export const IdentityWithAuthenticator: Story = {
-  parameters: hostedScenario(
-    { ...hostedMember, recentAuth: false },
-    subscription(),
-  ),
+export const RecoveryCodesConfirmIdentity: Story = {
+  ...staleScenario(enrolled, regenerate),
+  play: async ({ canvasElement }) => {
+    const confirmation = await startStep(canvasElement);
+    await waitFor(() =>
+      expect(within(confirmation).getAllByRole("textbox")[0]).toHaveFocus(),
+    );
+    await userEvent.keyboard("123456");
+    await userEvent.click(
+      within(confirmation).getByRole("button", { name: "Confirm" }),
+    );
+    await waitFor(() =>
+      expect(canvasElement.querySelector("li code")).toBeInTheDocument(),
+    );
+    await expect(confirmations).toEqual([{ code: "123456" }]);
+  },
 };
 export const Subscription: Story = {
   parameters: hostedScenario(hostedMember, subscription()),
@@ -270,44 +323,6 @@ export const ConnectionFailure: Story = {
       HttpResponse.error(),
     ),
   ),
-};
-
-function confirmationScenario(session: typeof hostedMember) {
-  const fresh = { ...session, recentAuth: true };
-  const configured = hostedScenario(
-    { ...session, recentAuth: false },
-    subscription(),
-    http.post("/api/v1/auth/reauthenticate", () => HttpResponse.json(fresh)),
-  );
-  configured.msw.handlers.session = sessionHandlers(fresh, true);
-  return configured;
-}
-async function confirmIdentity(
-  context: Parameters<NonNullable<Story["play"]>>[0],
-  mfa: boolean,
-) {
-  const main = within(context.canvasElement).getByRole("main");
-  await waitFor(() =>
-    expect(within(main).getByRole("heading", { level: 2 })).toHaveFocus(),
-  );
-  await fill(context.canvasElement, "password", "correct horse battery staple");
-  if (mfa) await authenticationCode(context.canvasElement);
-  else await submit(context.canvasElement);
-  await waitFor(() =>
-    expect(within(main).getByRole("heading", { level: 1 })).toHaveFocus(),
-  );
-}
-export const AuthenticatorIdentityReturn: Story = {
-  parameters: confirmationScenario(unprotected),
-  play: (context) => confirmIdentity(context, false),
-};
-export const RecoveryIdentityReturn: Story = {
-  parameters: confirmationScenario(enrolled),
-  play: (context) => confirmIdentity(context, true),
-};
-export const SubscriptionIdentityReturn: Story = {
-  parameters: confirmationScenario(hostedMember),
-  play: (context) => confirmIdentity(context, true),
 };
 
 let restartAttempts = 0;

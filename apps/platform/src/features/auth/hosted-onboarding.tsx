@@ -1,13 +1,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import {
-  ApiError,
-  client,
-  result,
-  type Schema,
-  setSession,
-} from "../../api/client";
+import { client, result, type Schema, setSession } from "../../api/client";
 import { sessionOptions } from "../../api/session";
 import { subscriptionOptions } from "../../api/subscription";
 import { useSessionRequest } from "../../api/use-session-request";
@@ -20,7 +14,6 @@ import * as s from "../../styles";
 import { useAction } from "../../ui";
 import * as auth from "./auth.styles";
 import { AuthenticatorSetup } from "./authenticator-setup";
-import { IdentityConfirmation } from "./identity-confirmation";
 import { RecoveryCodesConfirmation } from "./recovery-codes-confirmation";
 import { useAuthValidation } from "./use-auth-validation";
 
@@ -38,9 +31,8 @@ function RecoveryStep({
   onResume: () => void;
 }) {
   const { t } = useTranslation("auth");
-  const session = useQuery(sessionOptions).data;
   const queries = useQueryClient();
-  const action = useAction();
+  const action = useAction({ recentAuth: true });
   const request = useSessionRequest({ renewal: true });
   const validation = useAuthValidation();
   const regenerate = () => {
@@ -60,19 +52,6 @@ function RecoveryStep({
       ),
     );
   };
-  const needsIdentity =
-    !session?.recentAuth ||
-    (action.error instanceof ApiError &&
-      action.error.detail.code === "recent_auth_required");
-  if (!data && needsIdentity)
-    return (
-      <IdentityConfirmation
-        onConfirmed={() => {
-          action.reset();
-          onResume();
-        }}
-      />
-    );
   return (
     <div className={s.stack}>
       <ErrorToast
@@ -104,34 +83,16 @@ function SubscriptionStep({
   status,
   billing,
   refresh,
-  onResume,
 }: {
   workspaceId: string;
   status: Schema["Subscription"];
   billing?: BillingReturn;
   refresh: () => Promise<unknown>;
-  onResume: () => void;
 }) {
   const { t } = useTranslation("auth");
-  const session = useQuery(sessionOptions).data;
   const action = useAction();
   const request = useSessionRequest();
   const validation = useAuthValidation();
-  if (
-    status.billingEnabled &&
-    billing !== "returned" &&
-    (!session?.recentAuth ||
-      (action.error instanceof ApiError &&
-        action.error.detail.code === "recent_auth_required"))
-  )
-    return (
-      <IdentityConfirmation
-        onConfirmed={() => {
-          action.reset();
-          onResume();
-        }}
-      />
-    );
   return (
     <div className={s.stack}>
       {billing === "cancelled" && (
@@ -371,7 +332,6 @@ function Onboarding({
           status={subscription.data}
           workspaceId={workspaceId}
           billing={billing}
-          onResume={() => heading.current?.focus()}
           refresh={async () => {
             const next = await subscription.refetch();
             if (next.error) throw next.error;

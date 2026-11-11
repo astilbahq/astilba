@@ -28,5 +28,11 @@
     "disabledStatus": "Two-factor authentication disabled.",
     "saved": "Your recovery codes are saved. Keep them somewhere private."
   },
+  "identity": {
+    "title": "Identity confirmation",
+    "description": "Security-sensitive actions, such as changing workspace settings or exporting secrets, ask you to confirm your identity if you haven’t done so in the last few minutes. Confirm now to skip that step for a few minutes.",
+    "confirm": "Confirm identity",
+    "confirmed": "Identity confirmed."
+  },
   "cancel": "Cancel"
 }

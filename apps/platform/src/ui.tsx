@@ -6,14 +6,17 @@ import {
   type FormEvent,
   type ReactNode,
   useContext,
+  useEffect,
   useId,
   useMemo,
+  useRef,
   useState,
 } from "react";
 import { useTranslation } from "react-i18next";
 import { field } from "../styled-system/recipes";
 import { ApiError } from "./api/client";
 import { sessionOptions } from "./api/session";
+import { isRecentAuthRequired, useStepUp } from "./api/step-up";
 import { Button } from "./components/button";
 import type { FormValidation } from "./components/form-validation";
 import { Input, type InputProps } from "./components/input";
@@ -46,11 +49,54 @@ export function ErrorNotice({
     </div>
   );
 }
-export function useAction() {
+/**
+ * Runs a request on behalf of a control. A refusal for lack of recent authentication opens
+ * the identity confirmation, and once it succeeds the request runs again, once. Every such
+ * refusal comes before the server acts, so the first run changed nothing. Declining ends the
+ * action quietly, leaving the person's input as it was.
+ *
+ * `recentAuth` marks an action that always needs recent authentication, so the confirmation
+ * opens before the first request when the session is known not to have it.
+ */
+export function useAction({
+  recentAuth = false,
+}: { recentAuth?: boolean } = {}) {
   const queries = useQueryClient();
+  const stepUp = useStepUp();
+  // An action outlives its screen, so a confirmation it asked for ends with the screen.
+  const lifetime = useRef<AbortController>(null);
+  useEffect(() => {
+    const controller = new AbortController();
+    lifetime.current = controller;
+    return () => controller.abort();
+  }, []);
   const [formId, setFormId] = useState<string>();
   const mutation = useMutation({
-    mutationFn: async (fn: () => Promise<unknown>) => fn(),
+    mutationFn: async ({
+      fn,
+      origin,
+    }: {
+      fn: () => Promise<unknown>;
+      origin: Element | null;
+    }) => {
+      const signal = lifetime.current?.signal;
+      const confirm = async () =>
+        !!stepUp && (await stepUp({ origin, signal })) && !signal?.aborted;
+      if (
+        recentAuth &&
+        stepUp &&
+        queries.getQueryData(sessionOptions.queryKey)?.recentAuth === false &&
+        !(await confirm())
+      )
+        return undefined;
+      try {
+        return await fn();
+      } catch (error) {
+        if (!stepUp || !isRecentAuthRequired(error)) throw error;
+        if (!(await confirm())) return undefined;
+        return fn();
+      }
+    },
     onSettled: () =>
       queries.invalidateQueries({ queryKey: sessionOptions.queryKey }),
   });
@@ -58,7 +104,9 @@ export function useAction() {
     ...mutation,
     formId,
     setFormId,
-    run: (fn: () => Promise<unknown>) => mutation.mutate(fn),
+    // The control is read now: a busy control is disabled, which drops its focus.
+    run: (fn: () => Promise<unknown>) =>
+      mutation.mutate({ fn, origin: document.activeElement }),
   };
 }
 const FormErrorContext = createContext<{
