@@ -579,11 +579,12 @@ workspace's second, and its jobs run in the Git queue described above, sharing i
 `ASTILBA_LOG_RETENTION_DAYS` controls terminal operation diagnostics and build log
 retention, defaulting to 30 days. Cleanup processes at most 100 records from each
 category per minute, including historical cross-host receipt logs, and leaves
-active operations and current runtime snapshots alone. Public workspace archives
+active operations and current runtime snapshots alone. Receipt cleanup reads only operations
+whose receipts still carry logs, so it doesn't slow as cleaned history grows. Public workspace archives
 omit application/build logs and free-text operation/upgrade notes, which can contain
 captured output; machine states and recovery metadata remain. Internal recovery
-checkpoints preserve their original payloads. Configuration revisions,
-audit events, artifact identities and backup metadata are retained for recovery;
+checkpoints preserve their original payloads. Configuration revisions (a save
+that leaves the draft unchanged adds none), audit events, artifact identities and backup metadata are retained for recovery;
 this is not a claim of constant total database size. Monitor their storage growth
 and set the hosted cohort, allowance and price from measured usage. Billing event
 IDs are retained for 90 days; processing a later redelivery still retrieves current

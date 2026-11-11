@@ -110,8 +110,9 @@ func TestAutomationScopeLifecycleAndAttribution(t *testing.T) {
 	}
 	var draft api.Revision
 	bearerCall(t, f, *grant.Token, "GET", path+"/draft", nil, 200, &draft)
-	bearerCall(t, f, *grant.Token, "PUT", path+"/draft", api.DraftUpdate{BaseRevisionId: env.DraftRevisionId, Specification: draft.Specification}, 200, &draft)
-	bearerCall(t, f, *grant.Token, "PUT", path+"/draft", api.DraftUpdate{BaseRevisionId: env.DraftRevisionId, Specification: draft.Specification}, 409, nil)
+	edited := withVariable(t, draft.Specification, "ATTRIBUTED")
+	bearerCall(t, f, *grant.Token, "PUT", path+"/draft", api.DraftUpdate{BaseRevisionId: env.DraftRevisionId, Specification: edited}, 200, &draft)
+	bearerCall(t, f, *grant.Token, "PUT", path+"/draft", api.DraftUpdate{BaseRevisionId: env.DraftRevisionId, Specification: edited}, 409, nil)
 	var attribution uuid.UUID
 	if err := f.st.Pool.QueryRow(ctx, "SELECT automation_credential_id FROM audit_events WHERE workspace_id=$1 AND action='draft.save' ORDER BY created_at DESC LIMIT 1", scope.WorkspaceId).Scan(&attribution); err != nil || attribution != grant.Credential.Id {
 		t.Fatal("mutation lost credential attribution", err)
@@ -308,7 +309,8 @@ func TestAutomationConfiguredBuildPreservesAutomaticDeployment(t *testing.T) {
 	if replay.State != "succeeded" {
 		t.Fatal("branch advance rejected a completed one-shot artifact", replay.State)
 	}
-	b.call("PUT", path+"/draft", api.DraftUpdate{BaseRevisionId: draft.Id, Specification: draft.Specification}, 200, &draft)
+	// The configuration stays as applied, which leaves automatic deployment free to run.
+	draft = resaveDraft(t, b, path, draft.Id, draft.Specification)
 	bearerCall(t, f, *grant.Token, "POST", route, request, 202, &replay)
 	if replay.Id != run.Id {
 		t.Fatal("draft advancement lost accepted-key recovery")

@@ -31,6 +31,9 @@ func (s *Store) PruneHistory(ctx context.Context) error {
 		{"build_logs", statement(`UPDATE pipeline_runs SET result=result-'logs' WHERE id IN (SELECT p.id FROM pipeline_runs p JOIN execution_operations o ON o.id=p.id WHERE p.created_at<$1 AND o.state IN ('succeeded','failed','cancelled') AND jsonb_typeof(p.result)='object' AND p.result ? 'logs' ORDER BY p.created_at LIMIT 100 FOR UPDATE OF p SKIP LOCKED)`, cutoff)},
 		// Imported receipt JSON can contain older, unchecked shapes. Only recognized
 		// resource objects participate; malformed branches must not block other cleanup.
+		// cross_host_receipts_hold_logs is that shape check, and the cross_host_receipt_retention
+		// index holds only operations it matches, so a pass doesn't read operations it already
+		// cleaned. Every one it finds is cleaned, so order only decides which batch goes first.
 		{"cross_host_receipts", statement(`UPDATE cross_host_operations h SET receipts=(
  SELECT jsonb_object_agg(receipt.key, CASE WHEN jsonb_typeof(receipt.value->'observation'->'resources')='array' THEN
   jsonb_set(receipt.value,'{observation,resources}',COALESCE((
@@ -40,13 +43,8 @@ func (s *Store) PruneHistory(ctx context.Context) error {
  FROM jsonb_each(h.receipts) receipt
 ) WHERE h.id IN (
  SELECT h.id FROM cross_host_operations h JOIN execution_operations o ON o.id=h.id
- WHERE o.created_at<$1 AND o.state IN ('succeeded','failed','cancelled')
- AND EXISTS (
-  SELECT 1 FROM jsonb_each(CASE WHEN jsonb_typeof(h.receipts)='object' THEN h.receipts ELSE '{}'::jsonb END) receipt
-  CROSS JOIN LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(receipt.value->'observation'->'resources')='array' THEN receipt.value->'observation'->'resources' ELSE '[]'::jsonb END) resource
-  WHERE jsonb_typeof(resource.value)='object' AND resource.value ? 'logs'
- )
- ORDER BY o.created_at,h.id LIMIT 100 FOR UPDATE OF h SKIP LOCKED
+ WHERE cross_host_receipts_hold_logs(h.receipts) AND o.created_at<$1 AND o.state IN ('succeeded','failed','cancelled')
+ ORDER BY h.id LIMIT 100 FOR UPDATE OF h SKIP LOCKED
 )`, cutoff)},
 		{"billing_events", statement(`DELETE FROM hosted_billing_events WHERE id IN (SELECT id FROM hosted_billing_events WHERE received_at<now()-interval '90 days' LIMIT 1000 FOR UPDATE SKIP LOCKED)`)},
 		{"invitations", statement(`DELETE FROM hosted_invitations WHERE id IN (SELECT id FROM hosted_invitations WHERE expires_at<now()-interval '1 day' LIMIT 1000 FOR UPDATE SKIP LOCKED)`)},
