@@ -8,8 +8,8 @@ export function AutomaticDeploymentScope() {
       review if anything else in the draft changed, if the change adds host
       permissions or alters a service with a volume, privileged mode or added
       Linux capabilities, or if another service's image tag now points at a
-      different image than the last reviewed deployment ran. Pin images by
-      digest so that only your commits change them.
+      different image than the last reviewed deployment ran. Pinning images by
+      digest keeps their tags from moving under later deployments.
     </p>
   );
 }

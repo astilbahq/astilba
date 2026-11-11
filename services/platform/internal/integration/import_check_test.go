@@ -85,13 +85,7 @@ func newImportedEnvironment(t *testing.T, kind string) *importedEnvironment {
 // what lets a later import's policy deploy without a person.
 func (i *importedEnvironment) reviewed(t *testing.T) {
 	t.Helper()
-	ctx := context.Background()
-	if _, err := i.f.st.Pool.Exec(ctx, "UPDATE environments SET applied_revision_id=$3 WHERE workspace_id=$1 AND id=$2", i.ws, i.env.Id, i.draft.Id); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := i.f.st.Pool.Exec(ctx, "UPDATE deployment_units SET server_id=$3 WHERE workspace_id=$1 AND environment_id=$2", i.ws, i.env.Id, i.server.Server.Id); err != nil {
-		t.Fatal(err)
-	}
+	recordReviewedDeployment(t, i.f, i.ws, i.env.Id, i.draft.Id, i.server.Server.Id, nil)
 	i.b.call("PUT", i.path+"/source/policy", map[string]bool{"autoDeploy": true}, 204, nil)
 }
 

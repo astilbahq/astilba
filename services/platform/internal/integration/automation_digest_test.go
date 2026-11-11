@@ -16,6 +16,7 @@ import (
 
 // recordReviewedDeployment models a reviewed deployment of a revision that resolved to images, for
 // tests that start from one without driving it. Automatic deployment compares every service with it.
+// Without images, each service is recorded as running the image its revision names.
 func recordReviewedDeployment(t *testing.T, f *fixture, ws, env, revision, server uuid.UUID, images map[string]string) {
 	t.Helper()
 	ctx := t.Context()
@@ -27,6 +28,12 @@ func recordReviewedDeployment(t *testing.T, f *fixture, ws, env, revision, serve
 	spec, _, err := domain.ParseSpec(raw)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if images == nil {
+		images = map[string]string{}
+		for _, app := range spec.Applications {
+			images[app.ID.String()] = *app.Source.Image
+		}
 	}
 	var generation int64
 	if err := f.st.Pool.QueryRow(ctx, "UPDATE environments SET execution_generation=execution_generation+1 WHERE workspace_id=$1 AND id=$2 RETURNING execution_generation", ws, env).Scan(&generation); err != nil {
@@ -193,7 +200,7 @@ func TestAutomationImportStopsForMovedTagOnAnotherService(t *testing.T) {
 
 	run := a.push("# unrelated change\n" + compose)
 	note := a.blockedAfterResolve(run, with(reviewed, a.id("cache"), "redis"+digest('3')))
-	if !strings.Contains(note, "image tag for cache") || !strings.Contains(note, "pin the image by digest") {
+	if !strings.Contains(note, "image tag for cache") || !strings.Contains(note, "Pinning the image by digest") {
 		t.Fatalf("note does not explain the moved tag: %q", note)
 	}
 	expectReviewNote(t, note)

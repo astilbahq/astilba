@@ -72,12 +72,7 @@ func TestGiteaRunsTheGitPathAsFixturesDo(t *testing.T) {
 			t.Fatalf("the build of Gitea's head was refused: %s %q", op.State, op.Note)
 		}
 		// Deployed once by a person, so the next import's policy deploys without one.
-		if _, err := f.st.Pool.Exec(t.Context(), "UPDATE environments SET applied_revision_id=$3 WHERE workspace_id=$1 AND id=$2", ws, env.Id, draft.Id); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := f.st.Pool.Exec(t.Context(), "UPDATE deployment_units SET server_id=$3 WHERE workspace_id=$1 AND environment_id=$2", ws, env.Id, server.Server.Id); err != nil {
-			t.Fatal(err)
-		}
+		recordReviewedDeployment(t, f, ws, env.Id, draft.Id, server.Server.Id, nil)
 		b.call("PUT", path+"/source/policy", map[string]bool{"autoDeploy": true}, 204, nil)
 
 		next := []composeproject.File{{Path: "compose.yaml", Content: "# next\n" + importHonest[0].Content}}
