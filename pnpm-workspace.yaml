@@ -29,7 +29,7 @@ overrides:
 allowBuilds:
   '@parcel/watcher@2.5.6': false
   # i18next-cli uses the pinned platform binary; no postinstall fallback download.
-  '@swc/core@1.16.20': false
+  '@swc/core@1.16.22': false
   esbuild@0.28.2: true
 # The core alias reports the Vite+ version while bundling Vite 8.3.5.
 peerDependencyRules:
