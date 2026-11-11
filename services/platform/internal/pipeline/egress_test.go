@@ -1,6 +1,11 @@
 package pipeline
 
-import "testing"
+import (
+	"strings"
+	"testing"
+
+	"github.com/google/uuid"
+)
 
 // The allowlist is the one way an owner widens what build code reaches, so it must never
 // open metadata, loopback or anything not private, whatever form an entry takes.
@@ -43,5 +48,27 @@ func TestEgressCovers(t *testing.T) {
 	}
 	if EgressCovers(current[1:], current) || EgressCovers(current, []EgressRule{{"10.0.4.12/32", 444}}) || EgressCovers(current, []EgressRule{{"10.0.0.0/16", 8081}}) {
 		t.Fatal("a build kept a destination the owner removed")
+	}
+}
+
+// Agents apply the build network to every build, so one from a controller that predates the
+// marker runs; a marker or allowlist never rides on other work, and an unknown marker stops.
+func TestBuildNetworkMarker(t *testing.T) {
+	build := Command{Action: "build", Commit: strings.Repeat("a", 40), Branch: "main", RevisionID: uuid.New(), UnitID: uuid.New(), AppID: uuid.New(), InputHash: strings.Repeat("b", 64), Connection: Connection{Repository: "team/app"}, Build: &BuildConfig{ConnectionID: uuid.New(), Branch: "main", RunnerID: uuid.New(), Context: ".", Dockerfile: "Dockerfile", Architecture: "arm64", Arguments: map[string]string{}, Secrets: map[string]uuid.UUID{}}}
+	for marker, valid := range map[string]bool{"": true, BuildNetworkV1: true, "v2": false} {
+		build.BuildNetwork = marker
+		if err := build.Validate(); (err == nil) != valid {
+			t.Errorf("build with marker %q: %v", marker, err)
+		}
+	}
+	other := build
+	other.Action, other.Build, other.Source = "import", nil, &Source{ConnectionID: uuid.New(), Branch: "main", RunnerID: uuid.New(), Paths: []string{"compose.yaml"}, Entrypoints: []string{"compose.yaml"}}
+	other.BuildNetwork = BuildNetworkV1
+	if other.Validate() == nil {
+		t.Error("an import carried the build network marker")
+	}
+	other.BuildNetwork, other.BuildEgress = "", []EgressRule{{"10.0.4.12/32", 443}}
+	if other.Validate() == nil {
+		t.Error("an import carried a build allowlist")
 	}
 }
