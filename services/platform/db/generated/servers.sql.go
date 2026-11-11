@@ -549,7 +549,10 @@ const recordAgentHeartbeat = `-- name: RecordAgentHeartbeat :one
 UPDATE servers SET last_seen=now(),capabilities = $1,preflight = $2
 WHERE workspace_id = $3 AND id = $4 AND NOT revoked AND NOT awaiting_transfer
     AND (credential_hash = $5 OR (previous_hash = $5 AND previous_until>now()))
-RETURNING role,rotation_requested,preview_only
+RETURNING role,
+    -- An agent that can't prove its machine binding isn't told about a request it can't complete.
+    (rotation_requested AND COALESCE((capabilities->>'machineBoundRotation')::boolean,false))::boolean AS rotation_requested,
+    preview_only
 `
 
 type RecordAgentHeartbeatParams struct {
@@ -695,9 +698,10 @@ func (q *Queries) RenewServerEnrollment(ctx context.Context, arg RenewServerEnro
 	return i, err
 }
 
-const requestServerRotation = `-- name: RequestServerRotation :execrows
+const requestServerRotation = `-- name: RequestServerRotation :one
 UPDATE servers SET rotation_requested=true
 WHERE workspace_id = $1 AND id = $2 AND NOT revoked AND credential_hash IS NOT NULL
+RETURNING COALESCE((capabilities->>'machineBoundRotation')::boolean,false)::boolean AS supported
 `
 
 type RequestServerRotationParams struct {
@@ -705,12 +709,13 @@ type RequestServerRotationParams struct {
 	ID          uuid.UUID `json:"id"`
 }
 
-func (q *Queries) RequestServerRotation(ctx context.Context, arg RequestServerRotationParams) (int64, error) {
-	result, err := q.db.Exec(ctx, requestServerRotation, arg.WorkspaceID, arg.ID)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
+// Only an agent that names its machine can complete a rotation. The caller refuses, and so rolls
+// back, a request for one that can't: it would keep presenting a candidate management refuses.
+func (q *Queries) RequestServerRotation(ctx context.Context, arg RequestServerRotationParams) (bool, error) {
+	row := q.db.QueryRow(ctx, requestServerRotation, arg.WorkspaceID, arg.ID)
+	var supported bool
+	err := row.Scan(&supported)
+	return supported, err
 }
 
 const resumeMaintenanceSource = `-- name: ResumeMaintenanceSource :exec
@@ -807,25 +812,28 @@ UPDATE servers SET
     previous_until=CASE WHEN credential_hash = $1 THEN previous_until ELSE now()+interval '2 minutes' END,
     credential_hash = $1,rotation_requested=false
 WHERE workspace_id = $2 AND id = $3 AND NOT revoked AND NOT awaiting_transfer
-    AND ((credential_hash = $4 AND rotation_requested)
+    AND machine_id = $4
+    AND ((credential_hash = $5 AND rotation_requested)
         OR (credential_hash = $1
-            AND (credential_hash = $4 OR (previous_hash = $4 AND previous_until>now()))))
+            AND (credential_hash = $5 OR (previous_hash = $5 AND previous_until>now()))))
 `
 
 type RotateAgentCredentialParams struct {
-	CandidateHash  []byte    `json:"candidate_hash"`
-	WorkspaceID    uuid.UUID `json:"workspace_id"`
-	ServerID       uuid.UUID `json:"server_id"`
-	CredentialHash []byte    `json:"credential_hash"`
+	CandidateHash  []byte     `json:"candidate_hash"`
+	WorkspaceID    uuid.UUID  `json:"workspace_id"`
+	ServerID       uuid.UUID  `json:"server_id"`
+	MachineID      *uuid.UUID `json:"machine_id"`
+	CredentialHash []byte     `json:"credential_hash"`
 }
 
 // The same candidate is an idempotent retry. A previous credential cannot
-// initiate a new exchange.
+// initiate a new exchange. The caller must also name the machine that enrolled.
 func (q *Queries) RotateAgentCredential(ctx context.Context, arg RotateAgentCredentialParams) (int64, error) {
 	result, err := q.db.Exec(ctx, rotateAgentCredential,
 		arg.CandidateHash,
 		arg.WorkspaceID,
 		arg.ServerID,
+		arg.MachineID,
 		arg.CredentialHash,
 	)
 	if err != nil {

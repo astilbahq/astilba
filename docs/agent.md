@@ -51,7 +51,16 @@ sudo astilba-agent enroll --management https://platform.example.com \
 sudo systemctl enable --now astilba-agent
 ```
 
-Enrollment and run use the same protected `/var/lib/astilba-agent` directory. It holds a bbolt journal and a separate encryption key, both required for recovery. Only one process may open the directory. Preserve it during upgrades; do not clone it to a different machine. A lost enrollment response can be retried with the same directory and code. A new code preserves the original machine binding and allows that host to reconnect after revocation.
+Enrollment and run use the same protected `/var/lib/astilba-agent` directory. It holds a bbolt journal and a separate encryption key, both required for recovery. Only one process may open the directory. Preserve it during upgrades; do not clone it to a different machine. A lost enrollment response can be retried with the same directory and code. A new code preserves the original machine binding and allows that host to reconnect after revocation. Enrolling again sends the credential already in the directory, so a copy of the directory taken earlier, for example from a backup or a disk snapshot, works again too.
+
+### Rotating and revoking credentials
+
+**Rotate credential (routine)** on the Servers page replaces the agent's credential with one it generates. The agent proves the credential it has and the machine that enrolled, and both live in the state directory. So rotating is upkeep, not a response to a leak: anyone holding a copy of the directory can finish a requested rotation before this agent does, and this agent is then locked out. The Servers page offers rotation only for an agent that names its machine; update older agents first. An older agent that was part way through a rotation when management was upgraded can't finish it and shows as offline, although it still receives commands; update it from the Servers page.
+
+If you suspect the credential or the state directory leaked:
+
+1. Revoke the connection. The credential stops working at once. Read the dialog first: unfinished work ends, and the host keeps the secrets, registry access and TLS keys it was given, so rotate those at their source.
+2. Enroll a rebuilt host, or this host with a fresh state directory. Don't enroll the same state directory again: it sends the credential it already holds, which brings every copy of it back. A fresh directory doesn't carry the journal, so the agent no longer knows what the earlier one ran on this host.
 
 Deployment/build roles are fixed at server creation. Build-only agents cannot receive test deployment commands or runtime secrets. The current platform does not issue build commands. Create a new server record for a different role; disconnect the old identity explicitly.
 

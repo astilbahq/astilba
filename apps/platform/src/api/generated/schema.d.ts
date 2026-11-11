@@ -2528,6 +2528,8 @@ export interface components {
             upgrades?: boolean;
             /** @description Agent accepts visual cancellation without re-sending hydrated credentials. */
             credentialFreeVisualCancel?: boolean;
+            /** @description Agent names its enrolled machine when rotating its credential. Advertised only after Astilba-Agent-Machine-Rotation v1. */
+            machineBoundRotation?: boolean;
         };
         HostPreflight: {
             crossHostInventory?: components["schemas"]["CrossHostInventory"];
@@ -2596,6 +2598,11 @@ export interface components {
         };
         AgentRotation: {
             credential: string;
+            /**
+             * Format: uuid
+             * @description The machine that enrolled this server. Agents send it only after a controller response advertises Astilba-Agent-Machine-Rotation with v1; earlier controllers reject it.
+             */
+            machineId: string;
         };
         /** @enum {string} */
         TestAction: "start" | "inspect" | "remove";

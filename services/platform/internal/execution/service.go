@@ -244,7 +244,15 @@ func (s *Service) Control(ctx context.Context, p store.Principal, ws, id uuid.UU
 		if revoke {
 			n, e = q.RevokeServer(ctx, db.RevokeServerParams{WorkspaceID: ws, ID: id})
 		} else {
-			n, e = q.RequestServerRotation(ctx, db.RequestServerRotationParams{WorkspaceID: ws, ID: id})
+			supported, err := q.RequestServerRotation(ctx, db.RequestServerRotationParams{WorkspaceID: ws, ID: id})
+			if errors.Is(err, pgx.ErrNoRows) {
+				return domain.NotFound
+			} else if err != nil {
+				return err
+			} else if !supported {
+				return rotationUnsupported
+			}
+			n = 1
 		}
 		if e != nil {
 			return e
@@ -310,11 +318,22 @@ func (s *Service) Heartbeat(ctx context.Context, a Identity, in api.AgentHeartbe
 	}
 	return out, err
 }
-func (s *Service) Rotate(ctx context.Context, a Identity, candidate string) error {
-	if len(candidate) != 43 {
+
+// rotationUnsupported refuses a rotation request for an agent that can't name its machine.
+var rotationUnsupported = &domain.Error{Code: "conflict", Message: "This server's agent can't rotate its credential safely. Update the agent on this server, then rotate."}
+
+// Rotate exchanges the agent's credential for a candidate it chose. Holding the current credential
+// isn't enough: the caller must also name the machine that enrolled, which a credential leaked on
+// its own doesn't carry. A copy of the agent's state directory carries both, so after a suspected
+// leak an owner revokes and renews enrollment instead.
+func (s *Service) Rotate(ctx context.Context, a Identity, in api.AgentRotation) error {
+	if len(in.Credential) != 43 {
 		return domain.Invalid("credential")
 	}
-	n, err := s.Store.Queries.RotateAgentCredential(ctx, db.RotateAgentCredentialParams{WorkspaceID: a.Workspace, ServerID: a.ID, CredentialHash: hash(a.Token), CandidateHash: hash(candidate)})
+	if in.MachineId == uuid.Nil {
+		return domain.Invalid("machineId")
+	}
+	n, err := s.Store.Queries.RotateAgentCredential(ctx, db.RotateAgentCredentialParams{WorkspaceID: a.Workspace, ServerID: a.ID, CredentialHash: hash(a.Token), CandidateHash: hash(in.Credential), MachineID: &in.MachineId})
 	if err == nil && n != 1 {
 		return domain.Unauthenticated
 	}
