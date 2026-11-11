@@ -38,7 +38,7 @@ x-astilba:
 
 ## Runtime identities and export
 
-Service, network and volume identities derive from their source names within the environment. Editing an image preserves its identities; renaming a resource creates a new identity. Removing a service retains its data. Review removals and renames carefully, including any backup attachment, before deployment. Backup policy management arrives in P6. Delete unused data only through the separate destructive volume action, then remove its declaration from the source before deploying again.
+Service, network and volume identities derive from their source names within the environment. Editing an image preserves its identities; renaming a resource creates a new identity. Removing a service retains its data. A project with no services (`services: {}`) is valid: its plan stops and removes every service and route and keeps the named volumes. Review removals and renames carefully, including any backup attachment, before deployment. Backup policy management arrives in P6. Delete unused data only through the separate destructive volume action, then remove its declaration from the source before deploying again.
 
 The same operation history, logs, stale-plan checks, drift review and interrupted-deployment recovery apply as for visual environments. Supporting files are materialized in the agent's private journal directory and checked against the frozen plan on retry. Keep this directory with the journal during recovery; old revision bundles are retained and contain the source supplied by users. During partial replacement, logs from containers belonging to another plan are withheld until their own revision can supply matching secret values for redaction.
 

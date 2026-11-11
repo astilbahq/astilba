@@ -57,6 +57,12 @@ export function ComposeEditor({
   serializedRef.current = serialized;
   const previewSequence = useRef(0);
   const { workspaceId, projectId, environmentId } = path;
+  // An action's error describes the source it ran against, so it ends with that
+  // source. Otherwise a failed image edit outlives the preview that later passes.
+  const { reset } = action;
+  useEffect(() => {
+    reset();
+  }, [serialized, reset]);
   useEffect(() => {
     if (!write) {
       setGraph(JSON.parse(serialized) as Schema["Specification"]);
