@@ -2754,8 +2754,8 @@ export interface components {
         AgentToken: {
             token: string;
             refresh: string;
-            /** Format: date-time */
-            expiresAt: string;
+            /** @description Seconds the token stays valid from when it was issued. A duration, so the agent's clock doesn't matter. */
+            expiresIn: number;
             rotateKey: boolean;
             role: components["schemas"]["ServerRole"];
             previewOnly?: boolean;

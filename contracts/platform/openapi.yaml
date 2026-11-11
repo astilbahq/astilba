@@ -5450,11 +5450,15 @@
     "AgentToken":
       "type": "object"
       "additionalProperties": false
-      "required": ["token", "refresh", "expiresAt", "rotateKey", "role"]
+      "required": ["token", "refresh", "expiresIn", "rotateKey", "role"]
       "properties":
         "token": {"type": "string", "minLength": 47, "maxLength": 47}
         "refresh": {"type": "string", "minLength": 43, "maxLength": 43}
-        "expiresAt": {"type": "string", "format": "date-time"}
+        "expiresIn":
+          "description": "Seconds the token stays valid from when it was issued. A duration, so the agent's clock doesn't matter."
+          "type": "integer"
+          "minimum": 1
+          "maximum": 3600
         "rotateKey": {"type": "boolean"}
         "role": {"$ref": "#/components/schemas/ServerRole"}
         "previewOnly": {"type": "boolean"}

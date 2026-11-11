@@ -27,17 +27,36 @@ const credentialName = "astilba-agent-key"
 // SystemKeyStore seals with systemd-creds. With a TPM it binds to the chip alone: no PCRs, since
 // systemd 255 otherwise binds to PCR 7, which Secure Boot and firmware updates change. Without one
 // it uses the host key in /var/lib/systemd, which lives outside the agent's state directory.
-func SystemKeyStore() (KeyStore, error) {
+//
+// The store is used only once a value it sealed has been read back, so a host where sealing fails
+// keeps the credential it has rather than holding a key it can't use.
+func SystemKeyStore(ctx context.Context) (KeyStore, error) {
 	if _, err := exec.LookPath("systemd-creds"); err != nil {
 		return nil, errors.New("systemd-creds is not available; the agent needs it to seal its key")
 	}
+	store := systemdCreds{}
 	if _, err := os.Stat("/dev/tpmrm0"); err == nil {
-		return systemdCreds{tpm: true}, nil
-	}
-	if _, err := os.Stat("/var/lib/systemd/credential.secret"); err != nil {
+		store.tpm = true
+	} else if _, err := os.Stat("/var/lib/systemd/credential.secret"); err != nil {
 		return nil, errKeyStoreSetup
 	}
-	return systemdCreds{}, nil
+	if err := probe(ctx, store); err != nil {
+		return nil, err
+	}
+	return store, nil
+}
+
+func probe(ctx context.Context, store KeyStore) error {
+	plain := []byte("astilba key store probe")
+	sealed, err := store.Seal(ctx, plain)
+	if err != nil {
+		return err
+	}
+	read, err := store.Unseal(ctx, sealed)
+	if err != nil || !bytes.Equal(read, plain) {
+		return errors.New("systemd-creds could not read back what it sealed")
+	}
+	return nil
 }
 
 // SetupSystemKeyStore creates systemd's host key when a host without a TPM lacks one. It needs to
@@ -63,12 +82,11 @@ func (s systemdCreds) Protection() api.AgentCapabilitiesKeyProtection {
 }
 
 func (s systemdCreds) Seal(ctx context.Context, plain []byte) ([]byte, error) {
-	key := "--with-key=host"
 	args := []string{"encrypt", "--name=" + credentialName}
 	if s.tpm {
 		args = append(args, "--with-key=tpm2", "--tpm2-pcrs=")
 	} else {
-		args = append(args, key)
+		args = append(args, "--with-key=host")
 	}
 	return capture(ctx, plain, "systemd-creds", append(args, "-", "-")...)
 }

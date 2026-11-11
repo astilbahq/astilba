@@ -9,8 +9,10 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"time"
 
+	"github.com/astilbahq/astilba/services/platform/internal/agentidentity"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/hostnetwork"
@@ -217,17 +219,34 @@ func (c *Client) downloadCheckpoint(ctx context.Context, d deployment.RecoveryDe
 		return nil, errors.New("enrolled controller authority is required for checkpoint delivery")
 	}
 	path := "/agent/v1/operations/" + d.ParentID.String() + "/checkpoints/" + d.CheckpointID.String()
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, cfg.Origin+path, nil)
-	if err != nil {
-		return nil, err
-	}
-	request.Header.Set("Authorization", "Bearer "+cfg.ServerID.String()+"."+cfg.Credential)
-	response, err := c.HTTP.Do(request)
-	if err != nil {
-		return nil, err
+	var response *http.Response
+	// As with every other request, a session management has ended is replaced once.
+	for attempt := 0; ; attempt++ {
+		credential, err := c.authorization(ctx)
+		if err != nil {
+			return nil, err
+		}
+		request, err := http.NewRequestWithContext(ctx, http.MethodGet, cfg.Origin+path, nil)
+		if err != nil {
+			return nil, err
+		}
+		request.Header.Set("Authorization", "Bearer "+cfg.ServerID.String()+"."+credential)
+		if response, err = c.HTTP.Do(request); err != nil {
+			return nil, err
+		}
+		if response.StatusCode != http.StatusOK {
+			refused := refusal(response)
+			response.Body.Close()
+			if attempt == 0 && strings.HasPrefix(credential, agentidentity.TokenPrefix) && refusedAs(refused, agentidentity.KeyNotCurrent) {
+				c.invalidate(credential)
+				continue
+			}
+			return nil, errors.New("checkpoint delivery was rejected or oversized")
+		}
+		break
 	}
 	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK || response.ContentLength > int64(d.Bytes) {
+	if response.ContentLength > int64(d.Bytes) {
 		return nil, errors.New("checkpoint delivery was rejected or oversized")
 	}
 	body, err := io.ReadAll(io.LimitReader(response.Body, int64(d.Bytes)+1))

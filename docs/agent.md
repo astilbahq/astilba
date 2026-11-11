@@ -63,13 +63,17 @@ How well the key is protected depends on the host, and the Servers page says whi
 - **Host key:** without a TPM, the key is sealed with systemd's host key, `/var/lib/systemd/credential.secret`, which lives outside the state directory. A copy of the state directory alone can't use the key. **A copy of the whole disk can**, because it includes the host key.
 - **Setup required:** the host has no systemd host key yet, and the agent service's sandbox can't create one. Run `sudo systemd-creds setup` once; the agent then registers a key at its next start. `astilba-agent enroll` and `transfer` do this themselves.
 
+The agent registers a key only after it has sealed a value and read it back. Where sealing fails, it keeps authenticating with its bearer credential and the Servers page shows why.
+
 A copy of the state directory still holds the journal, which its keyring decrypts, and the host's private network keys. Treat a copied state directory as a leak of the host's secrets and network keys even when it can't authenticate.
 
 The agent replaces its key every 30 days, or when an owner asks with **Rotate key now**, proving that it holds both the old and the new key. Rotation waits while a terminal session is open, because a new key ends it.
 
 ### Identity conflicts
 
-Management looks for proof that a second copy of an agent is using the server's key: the same start counter presented twice, a key the agent replaced used after its replacement, the credential a key replaced used again after the key was in use, or a consumed enrollment code presented with another key. An honest agent never produces these, whatever its retries, restarts or lost answers. Management then raises an **identity conflict** alert and shows it on the Servers page. Anything ambiguous, such as a late or duplicated request, is refused without raising one. Nothing that someone who knows only the server's ID can send raises a conflict or stops the server.
+Management looks for proof that a second copy of an agent is using the server's key: session starts whose counters don't rise in the order management issued their challenges, a key the agent replaced used after its replacement, the credential a key replaced used again after the key was in use, or a consumed enrollment code presented with another key. An honest agent never produces these, whatever its retries, restarts or lost answers. Management then raises an **identity conflict** alert and shows it on the Servers page. Anything ambiguous, such as a late or duplicated request, is refused without raising one. A key that a new enrollment code replaced is refused and recorded once, without an alert. Nothing that someone who knows only the server's ID can send raises a conflict or stops the server.
+
+Only a new enrollment code clears a conflict; an agent replacing its bearer with a key doesn't. Management keeps the keys a code replaced for 30 days, so a copy that presents one is recorded.
 
 By default a conflict only alerts, and both copies can keep authenticating until you act. Set `ASTILBA_AGENT_FORK_FENCING=true` on management to also clear the server's credential when a conflict is proven, which stops both copies until the host is re-keyed.
 
@@ -90,6 +94,8 @@ Until a host is updated, the response to a suspected leak is to revoke it and en
 ### Rollback and downgrade
 
 Once an agent holds a key, it refuses to install a release that can't authenticate with one, and its journal is marked so that an earlier agent, restored by hand, refuses to start rather than presenting a retired credential. Don't replace the agent with an earlier release while an enrollment is waiting for its answer: it can't send what the newer agent sent with that code, so you'd need a new code. Running `enroll` again with a code already used fails and leaves the agent's key as it was.
+
+Upgrade every management replica before updating agents: a replica from before keys refuses the access tokens an updated agent presents.
 
 Downgrading management below this release clears the credential of every key-bound server, because earlier releases can only check bearers. Those servers then need a new enrollment code each.
 

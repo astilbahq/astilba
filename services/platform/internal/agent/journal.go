@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
@@ -41,6 +42,9 @@ type Config struct {
 	// Enrollments are the outstanding enrollment codes by code hash, each with what was first sent
 	// with it, so a retry presents what management may already hold.
 	Enrollments map[string]Enrollment `json:",omitempty"`
+	// EnrolledCode is the hash of the code that enrolled this identity. The agent never sends it
+	// again, since management would read a new key with it as a second holder.
+	EnrolledCode string `json:",omitempty"`
 }
 
 // Enrollment is one outstanding enrollment code.
@@ -67,7 +71,7 @@ type Journal struct {
 	keys           *cryptobox.Keyring
 	dir            string
 	recoveryMu     sync.Mutex
-	formatVersion  int
+	formatVersion  atomic.Int64
 	startupUpdates map[uuid.UUID]bool
 }
 
@@ -121,9 +125,7 @@ func openJournal(dir string, point func(string) error) (*Journal, error) {
 	if err = j.pruneRecovery(); err != nil {
 		return fail(err)
 	}
-	if j.formatVersion == 0 {
-		j.formatVersion = localStateVersion
-	}
+	j.formatVersion.CompareAndSwap(0, localStateVersion)
 	j.startupUpdates = map[uuid.UUID]bool{}
 	pending, err := j.Pending()
 	if err != nil {

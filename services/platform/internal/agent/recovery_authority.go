@@ -167,7 +167,7 @@ func (j *Journal) TransferRecovery(origin string, key []byte, token string, h de
 		}
 		cfg.Origin, cfg.PublicKey, cfg.ControllerGeneration = origin, append([]byte(nil), key...), a.Controller
 		cfg.Enrolled, cfg.Credential, cfg.Pending, cfg.EnrollmentToken = false, "", "", strings.TrimSpace(token)
-		cfg.Key, cfg.PendingRotation, cfg.BindKey, cfg.Enrollments = nil, nil, nil, nil
+		cfg.Key, cfg.PendingRotation, cfg.BindKey, cfg.Enrollments, cfg.EnrolledCode = nil, nil, nil, nil, ""
 		if err = j.put(tx, "identity", "config", cfg); err != nil {
 			return err
 		}

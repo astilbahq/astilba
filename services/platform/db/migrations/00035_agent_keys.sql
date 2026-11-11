@@ -8,8 +8,6 @@ ALTER TABLE servers
     ADD COLUMN retired_bearer_hash bytea,
     ADD COLUMN bound_at timestamptz,
     ADD COLUMN consumed_code_hash bytea,
-    ADD COLUMN start_counter_floor bigint,
-    ADD COLUMN start_counter_floor_seq bigint,
     ADD COLUMN identity_conflict_at timestamptz,
     ADD COLUMN identity_conflict_epoch bigint,
     ADD COLUMN identity_conflict jsonb;
@@ -25,7 +23,6 @@ CREATE TABLE agent_keys (
     created_at timestamptz NOT NULL DEFAULT now(),
     first_used_at timestamptz,
     superseded_at timestamptz,
-    superseded_seq bigint,
     successor_seen_seq bigint,
     PRIMARY KEY (server_id, key_hash),
     FOREIGN KEY (workspace_id, server_id) REFERENCES servers(workspace_id, id) ON DELETE CASCADE
@@ -73,6 +70,7 @@ CREATE TABLE agent_nonces_consumed (
     nonce_hash bytea PRIMARY KEY,
     expires_at timestamptz NOT NULL
 );
+CREATE INDEX agent_nonces_consumed_expiry ON agent_nonces_consumed(expires_at);
 CREATE SEQUENCE agent_nonce_seq;
 
 -- What happened to a server's agent identity, for its owners: there is no account to attribute
@@ -91,8 +89,10 @@ CREATE TABLE agent_identity_events (
     FOREIGN KEY (workspace_id, server_id) REFERENCES servers(workspace_id, id) ON DELETE CASCADE
 );
 CREATE INDEX agent_identity_events_server ON agent_identity_events(server_id, created_at DESC);
+CREATE INDEX agent_identity_events_created ON agent_identity_events(created_at);
+-- Refusals and conflicts are recorded once per key, signal and epoch, however often they recur.
 CREATE UNIQUE INDEX agent_identity_events_once ON agent_identity_events(server_id, epoch, kind, signal, key_hash)
-    WHERE kind = 'refused';
+    WHERE kind IN ('refused','conflict');
 
 -- A troubleshooting session follows the agent session it attached through, not just its key.
 ALTER TABLE troubleshooting_sessions ADD COLUMN agent_lineage uuid;
@@ -118,6 +118,6 @@ DROP SEQUENCE agent_nonce_seq;
 ALTER TABLE troubleshooting_sessions DROP COLUMN agent_lineage;
 ALTER TABLE servers
     DROP COLUMN identity_conflict, DROP COLUMN identity_conflict_epoch, DROP COLUMN identity_conflict_at,
-    DROP COLUMN start_counter_floor_seq, DROP COLUMN start_counter_floor, DROP COLUMN consumed_code_hash,
+    DROP COLUMN consumed_code_hash,
     DROP COLUMN bound_at, DROP COLUMN retired_bearer_hash, DROP COLUMN rotate_key_requested,
     DROP COLUMN key_rotated_at, DROP COLUMN enrollment_epoch;

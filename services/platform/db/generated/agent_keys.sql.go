@@ -85,11 +85,30 @@ func (q *Queries) AuthenticateAgentToken(ctx context.Context, arg AuthenticateAg
 	return i, err
 }
 
+const bearerKnown = `-- name: BearerKnown :one
+SELECT COALESCE(credential_hash = $1 OR retired_bearer_hash = $1,false)::boolean
+FROM servers WHERE id = $2
+`
+
+type BearerKnownParams struct {
+	BearerHash []byte    `json:"bearer_hash"`
+	ServerID   uuid.UUID `json:"server_id"`
+}
+
+// unscoped: an unlocked check that a bind's bearer is this server's, or the one its bind retired,
+// before anything takes the row lock. A stranger's guess costs nothing.
+func (q *Queries) BearerKnown(ctx context.Context, arg BearerKnownParams) (bool, error) {
+	row := q.db.QueryRow(ctx, bearerKnown, arg.BearerHash, arg.ServerID)
+	var column_1 bool
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const bindServerKey = `-- name: BindServerKey :exec
 UPDATE servers SET credential_hash = $1,previous_hash = NULL,previous_until = NULL,
     retired_bearer_hash = $2,bound_at = now(),key_rotated_at = now(),rotation_requested = false,
     rotate_key_requested = false,enrollment_epoch = enrollment_epoch + 1,
-    start_counter_floor = NULL,start_counter_floor_seq = NULL
+    identity_conflict_epoch = CASE WHEN identity_conflict_epoch = enrollment_epoch THEN enrollment_epoch + 1 ELSE identity_conflict_epoch END
 WHERE workspace_id = $3 AND id = $4
 `
 
@@ -100,7 +119,8 @@ type BindServerKeyParams struct {
 	ServerID    uuid.UUID `json:"server_id"`
 }
 
-// Binding retires the bearer and starts a new epoch.
+// Binding retires the bearer and starts a new epoch. A conflict raised in the epoch it ends stays
+// current: only a one-time code clears one.
 func (q *Queries) BindServerKey(ctx context.Context, arg BindServerKeyParams) error {
 	_, err := q.db.Exec(ctx, bindServerKey,
 		arg.KeyHash,
@@ -111,16 +131,23 @@ func (q *Queries) BindServerKey(ctx context.Context, arg BindServerKeyParams) er
 	return err
 }
 
-const boundKeyFirstUse = `-- name: BoundKeyFirstUse :one
-SELECT k.first_used_at FROM servers s JOIN agent_keys k ON k.server_id = s.id AND k.key_hash = s.credential_hash
-WHERE s.id = $1
+const codeTakenByAnotherKey = `-- name: CodeTakenByAnotherKey :one
+SELECT COALESCE(consumed_code_hash = $1 AND credential_hash IS NOT NULL AND credential_hash <> $2,false)::boolean
+FROM servers WHERE id = $3
 `
 
-func (q *Queries) BoundKeyFirstUse(ctx context.Context, serverID uuid.UUID) (*time.Time, error) {
-	row := q.db.QueryRow(ctx, boundKeyFirstUse, serverID)
-	var first_used_at *time.Time
-	err := row.Scan(&first_used_at)
-	return first_used_at, err
+type CodeTakenByAnotherKeyParams struct {
+	CodeHash  []byte    `json:"code_hash"`
+	Candidate []byte    `json:"candidate"`
+	ServerID  uuid.UUID `json:"server_id"`
+}
+
+// unscoped: an unlocked check before anything takes the row lock.
+func (q *Queries) CodeTakenByAnotherKey(ctx context.Context, arg CodeTakenByAnotherKeyParams) (bool, error) {
+	row := q.db.QueryRow(ctx, codeTakenByAnotherKey, arg.CodeHash, arg.Candidate, arg.ServerID)
+	var column_1 bool
+	err := row.Scan(&column_1)
+	return column_1, err
 }
 
 const consumeAgentNonce = `-- name: ConsumeAgentNonce :execrows
@@ -140,21 +167,11 @@ func (q *Queries) ConsumeAgentNonce(ctx context.Context, arg ConsumeAgentNoncePa
 	return result.RowsAffected(), nil
 }
 
-const consumedCode = `-- name: ConsumedCode :one
-SELECT consumed_code_hash FROM servers WHERE id = $1
-`
-
-func (q *Queries) ConsumedCode(ctx context.Context, serverID uuid.UUID) ([]byte, error) {
-	row := q.db.QueryRow(ctx, consumedCode, serverID)
-	var consumed_code_hash []byte
-	err := row.Scan(&consumed_code_hash)
-	return consumed_code_hash, err
-}
-
 const counterConflict = `-- name: CounterConflict :one
 SELECT EXISTS(SELECT 1 FROM agent_counter_values a
     WHERE a.server_id = $1::uuid AND a.epoch = $2::bigint
       AND ((a.value >= $3::bigint AND a.nonce_seq < $4::bigint)
+        OR (a.value <= $3::bigint AND a.nonce_seq > $4::bigint)
         OR (a.value = $3::bigint AND a.nonce_hash <> $5::bytea)))::boolean AS conflict,
     EXISTS(SELECT 1 FROM agent_counter_values b
     WHERE b.server_id = $1::uuid AND b.epoch = $2::bigint AND b.value >= $3::bigint)::boolean AS stale
@@ -173,8 +190,9 @@ type CounterConflictRow struct {
 	Stale    bool `json:"stale"`
 }
 
-// Proof of a second holder: one holder's counters only rise with its nonces, so a value at or above
-// this one with an older nonce, or this value with a different nonce, came from someone else.
+// Proof of a second holder: one holder takes a nonce, then its next counter, so its counters rise
+// with its nonces. A value at or above this one with an older nonce, one at or below it with a newer
+// nonce, or this value with a different nonce, came from someone else.
 func (q *Queries) CounterConflict(ctx context.Context, arg CounterConflictParams) (CounterConflictRow, error) {
 	row := q.db.QueryRow(ctx, counterConflict,
 		arg.ServerID,
@@ -279,7 +297,7 @@ func (q *Queries) InsertAgentIdentityEvent(ctx context.Context, arg InsertAgentI
 const insertAgentKey = `-- name: InsertAgentKey :exec
 INSERT INTO agent_keys(workspace_id,server_id,key_hash,public_key,epoch)
 VALUES($1,$2,$3,$4,$5)
-ON CONFLICT (server_id,key_hash) DO UPDATE SET epoch = EXCLUDED.epoch,superseded_at = NULL,superseded_seq = NULL,successor_seen_seq = NULL,first_used_at = NULL
+ON CONFLICT (server_id,key_hash) DO UPDATE SET epoch = EXCLUDED.epoch,superseded_at = NULL,successor_seen_seq = NULL,first_used_at = NULL
 `
 
 type InsertAgentKeyParams struct {
@@ -303,20 +321,21 @@ func (q *Queries) InsertAgentKey(ctx context.Context, arg InsertAgentKeyParams) 
 
 const insertAgentLineage = `-- name: InsertAgentLineage :exec
 INSERT INTO agent_lineages(id,workspace_id,server_id,key_hash,epoch,refresh_hash,token_hash,token_expires_at)
-VALUES($1,$2,$3,$4,$5,$6,$7,$8)
+VALUES($1,$2,$3,$4,$5,$6,$7,now() + make_interval(secs => $8::int))
 `
 
 type InsertAgentLineageParams struct {
-	ID             uuid.UUID `json:"id"`
-	WorkspaceID    uuid.UUID `json:"workspace_id"`
-	ServerID       uuid.UUID `json:"server_id"`
-	KeyHash        []byte    `json:"key_hash"`
-	Epoch          int64     `json:"epoch"`
-	RefreshHash    []byte    `json:"refresh_hash"`
-	TokenHash      []byte    `json:"token_hash"`
-	TokenExpiresAt time.Time `json:"token_expires_at"`
+	ID              uuid.UUID `json:"id"`
+	WorkspaceID     uuid.UUID `json:"workspace_id"`
+	ServerID        uuid.UUID `json:"server_id"`
+	KeyHash         []byte    `json:"key_hash"`
+	Epoch           int64     `json:"epoch"`
+	RefreshHash     []byte    `json:"refresh_hash"`
+	TokenHash       []byte    `json:"token_hash"`
+	LifetimeSeconds int32     `json:"lifetime_seconds"`
 }
 
+// Token lifetimes run on the database clock, as the checks that read them do.
 func (q *Queries) InsertAgentLineage(ctx context.Context, arg InsertAgentLineageParams) error {
 	_, err := q.db.Exec(ctx, insertAgentLineage,
 		arg.ID,
@@ -326,7 +345,7 @@ func (q *Queries) InsertAgentLineage(ctx context.Context, arg InsertAgentLineage
 		arg.Epoch,
 		arg.RefreshHash,
 		arg.TokenHash,
-		arg.TokenExpiresAt,
+		arg.LifetimeSeconds,
 	)
 	return err
 }
@@ -356,31 +375,60 @@ func (q *Queries) InstallationSecret(ctx context.Context, name string) ([]byte, 
 	return secret, err
 }
 
+const lockRetiredBearer = `-- name: LockRetiredBearer :one
+SELECT s.workspace_id,s.enrollment_epoch,
+    COALESCE(s.retired_bearer_hash = $1 AND s.credential_hash IS NOT NULL,false)::boolean AS retired,
+    COALESCE(k.first_used_at + interval '2 minutes' < now() AND s.bound_at + interval '24 hours' > now(),false)::boolean AS in_window
+FROM servers s LEFT JOIN agent_keys k ON k.server_id = s.id AND k.key_hash = s.credential_hash
+WHERE s.id = $2 FOR UPDATE OF s
+`
+
+type LockRetiredBearerParams struct {
+	BearerHash []byte    `json:"bearer_hash"`
+	ServerID   uuid.UUID `json:"server_id"`
+}
+
+type LockRetiredBearerRow struct {
+	WorkspaceID     uuid.UUID `json:"workspace_id"`
+	EnrollmentEpoch int64     `json:"enrollment_epoch"`
+	Retired         bool      `json:"retired"`
+	InWindow        bool      `json:"in_window"`
+}
+
+// unscoped: reached only with the bearer this server's bind retired. The window is read from the
+// database clock: from two minutes after the bound key's first use, longer than any request takes,
+// until a day after the bind.
+func (q *Queries) LockRetiredBearer(ctx context.Context, arg LockRetiredBearerParams) (LockRetiredBearerRow, error) {
+	row := q.db.QueryRow(ctx, lockRetiredBearer, arg.BearerHash, arg.ServerID)
+	var i LockRetiredBearerRow
+	err := row.Scan(
+		&i.WorkspaceID,
+		&i.EnrollmentEpoch,
+		&i.Retired,
+		&i.InWindow,
+	)
+	return i, err
+}
+
 const lockServerIdentity = `-- name: LockServerIdentity :one
 SELECT workspace_id,role,preview_only,machine_id,revoked,awaiting_transfer,credential_hash,enrollment_epoch,
-    retired_bearer_hash,bound_at,start_counter_floor,start_counter_floor_seq,key_rotated_at,rotate_key_requested,
-    identity_conflict_epoch,
-    COALESCE((capabilities->>'credentialFreeVisualCancel')::boolean,false)::boolean AS credential_free_visual_cancel
+    retired_bearer_hash,consumed_code_hash,key_rotated_at,rotate_key_requested
 FROM servers WHERE id = $1 FOR UPDATE
 `
 
 type LockServerIdentityRow struct {
-	WorkspaceID                uuid.UUID   `json:"workspace_id"`
-	Role                       string      `json:"role"`
-	PreviewOnly                bool        `json:"preview_only"`
-	MachineID                  *uuid.UUID  `json:"machine_id"`
-	Revoked                    bool        `json:"revoked"`
-	AwaitingTransfer           bool        `json:"awaiting_transfer"`
-	CredentialHash             []byte      `json:"credential_hash"`
-	EnrollmentEpoch            int64       `json:"enrollment_epoch"`
-	RetiredBearerHash          []byte      `json:"retired_bearer_hash"`
-	BoundAt                    *time.Time  `json:"bound_at"`
-	StartCounterFloor          pgtype.Int8 `json:"start_counter_floor"`
-	StartCounterFloorSeq       pgtype.Int8 `json:"start_counter_floor_seq"`
-	KeyRotatedAt               *time.Time  `json:"key_rotated_at"`
-	RotateKeyRequested         bool        `json:"rotate_key_requested"`
-	IdentityConflictEpoch      pgtype.Int8 `json:"identity_conflict_epoch"`
-	CredentialFreeVisualCancel bool        `json:"credential_free_visual_cancel"`
+	WorkspaceID        uuid.UUID  `json:"workspace_id"`
+	Role               string     `json:"role"`
+	PreviewOnly        bool       `json:"preview_only"`
+	MachineID          *uuid.UUID `json:"machine_id"`
+	Revoked            bool       `json:"revoked"`
+	AwaitingTransfer   bool       `json:"awaiting_transfer"`
+	CredentialHash     []byte     `json:"credential_hash"`
+	EnrollmentEpoch    int64      `json:"enrollment_epoch"`
+	RetiredBearerHash  []byte     `json:"retired_bearer_hash"`
+	ConsumedCodeHash   []byte     `json:"consumed_code_hash"`
+	KeyRotatedAt       *time.Time `json:"key_rotated_at"`
+	RotateKeyRequested bool       `json:"rotate_key_requested"`
 }
 
 // unscoped: the caller has proved possession of a key or credential of this server.
@@ -397,46 +445,50 @@ func (q *Queries) LockServerIdentity(ctx context.Context, serverID uuid.UUID) (L
 		&i.CredentialHash,
 		&i.EnrollmentEpoch,
 		&i.RetiredBearerHash,
-		&i.BoundAt,
-		&i.StartCounterFloor,
-		&i.StartCounterFloorSeq,
+		&i.ConsumedCodeHash,
 		&i.KeyRotatedAt,
 		&i.RotateKeyRequested,
-		&i.IdentityConflictEpoch,
-		&i.CredentialFreeVisualCancel,
 	)
 	return i, err
 }
 
 const markAgentKeyUsed = `-- name: MarkAgentKeyUsed :exec
-UPDATE agent_keys SET first_used_at = COALESCE(first_used_at,now()) WHERE server_id = $1 AND key_hash = $2
+UPDATE agent_keys SET first_used_at = COALESCE(first_used_at,now())
+WHERE workspace_id = $1 AND server_id = $2 AND key_hash = $3
 `
 
 type MarkAgentKeyUsedParams struct {
-	ServerID uuid.UUID `json:"server_id"`
-	KeyHash  []byte    `json:"key_hash"`
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ServerID    uuid.UUID `json:"server_id"`
+	KeyHash     []byte    `json:"key_hash"`
 }
 
 // A key's first use is the moment its predecessors' holders, and a bind's retired bearer, can
 // only be someone else.
 func (q *Queries) MarkAgentKeyUsed(ctx context.Context, arg MarkAgentKeyUsedParams) error {
-	_, err := q.db.Exec(ctx, markAgentKeyUsed, arg.ServerID, arg.KeyHash)
+	_, err := q.db.Exec(ctx, markAgentKeyUsed, arg.WorkspaceID, arg.ServerID, arg.KeyHash)
 	return err
 }
 
 const markSuccessorSeen = `-- name: MarkSuccessorSeen :exec
 UPDATE agent_keys SET successor_seen_seq = $1
-WHERE server_id = $2 AND epoch = $3 AND superseded_at IS NOT NULL AND successor_seen_seq IS NULL
+WHERE workspace_id = $2 AND server_id = $3 AND epoch = $4 AND superseded_at IS NOT NULL AND successor_seen_seq IS NULL
 `
 
 type MarkSuccessorSeenParams struct {
-	Seq      pgtype.Int8 `json:"seq"`
-	ServerID uuid.UUID   `json:"server_id"`
-	Epoch    int64       `json:"epoch"`
+	Seq         pgtype.Int8 `json:"seq"`
+	WorkspaceID uuid.UUID   `json:"workspace_id"`
+	ServerID    uuid.UUID   `json:"server_id"`
+	Epoch       int64       `json:"epoch"`
 }
 
 func (q *Queries) MarkSuccessorSeen(ctx context.Context, arg MarkSuccessorSeenParams) error {
-	_, err := q.db.Exec(ctx, markSuccessorSeen, arg.Seq, arg.ServerID, arg.Epoch)
+	_, err := q.db.Exec(ctx, markSuccessorSeen,
+		arg.Seq,
+		arg.WorkspaceID,
+		arg.ServerID,
+		arg.Epoch,
+	)
 	return err
 }
 
@@ -474,19 +526,56 @@ func (q *Queries) PruneAgentCounters(ctx context.Context, arg PruneAgentCounters
 	return err
 }
 
-const pruneAgentLineages = `-- name: PruneAgentLineages :exec
-DELETE FROM agent_lineages WHERE server_id = $1 AND superseded_at < now() - interval '24 hours'
+const pruneAgentIdentityEvents = `-- name: PruneAgentIdentityEvents :exec
+DELETE FROM agent_identity_events WHERE id IN (
+    SELECT e.id FROM agent_identity_events e JOIN servers s ON s.id = e.server_id
+    WHERE e.created_at < now() - interval '30 days' AND e.epoch < s.enrollment_epoch
+    ORDER BY e.created_at LIMIT 1000 FOR UPDATE OF e SKIP LOCKED)
 `
 
-func (q *Queries) PruneAgentLineages(ctx context.Context, serverID uuid.UUID) error {
-	_, err := q.db.Exec(ctx, pruneAgentLineages, serverID)
+// unscoped: retention covers every workspace. Events of the current epoch are bounded, since
+// refusals and conflicts are recorded once each; those of earlier epochs are kept 30 days.
+func (q *Queries) PruneAgentIdentityEvents(ctx context.Context) error {
+	_, err := q.db.Exec(ctx, pruneAgentIdentityEvents)
+	return err
+}
+
+const pruneAgentKeys = `-- name: PruneAgentKeys :exec
+DELETE FROM agent_keys WHERE (server_id,key_hash) IN (
+    SELECT k.server_id,k.key_hash FROM agent_keys k JOIN servers s ON s.id = k.server_id
+    WHERE k.created_at < now() - interval '30 days' AND k.epoch < s.enrollment_epoch
+    ORDER BY k.created_at LIMIT 1000 FOR UPDATE OF k SKIP LOCKED)
+`
+
+// unscoped: retention covers every workspace. Keys of earlier epochs can no longer authenticate;
+// they are kept 30 days so a copy that presents one is recorded.
+func (q *Queries) PruneAgentKeys(ctx context.Context) error {
+	_, err := q.db.Exec(ctx, pruneAgentKeys)
+	return err
+}
+
+const pruneAgentLineages = `-- name: PruneAgentLineages :exec
+DELETE FROM agent_lineages
+WHERE workspace_id = $1 AND server_id = $2 AND superseded_at < now() - interval '24 hours'
+`
+
+type PruneAgentLineagesParams struct {
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ServerID    uuid.UUID `json:"server_id"`
+}
+
+// A superseded session is kept a day, so a refused request can still be traced to it.
+func (q *Queries) PruneAgentLineages(ctx context.Context, arg PruneAgentLineagesParams) error {
+	_, err := q.db.Exec(ctx, pruneAgentLineages, arg.WorkspaceID, arg.ServerID)
 	return err
 }
 
 const pruneAgentNonces = `-- name: PruneAgentNonces :exec
-DELETE FROM agent_nonces_consumed WHERE expires_at < now()
+DELETE FROM agent_nonces_consumed WHERE nonce_hash IN (
+    SELECT nonce_hash FROM agent_nonces_consumed WHERE expires_at < now() ORDER BY expires_at LIMIT 1000 FOR UPDATE SKIP LOCKED)
 `
 
+// unscoped: retention covers every workspace, and a consumed nonce is needed only until it expires.
 func (q *Queries) PruneAgentNonces(ctx context.Context) error {
 	_, err := q.db.Exec(ctx, pruneAgentNonces)
 	return err
@@ -517,8 +606,10 @@ func (q *Queries) RecordAgentCounter(ctx context.Context, arg RecordAgentCounter
 }
 
 const recordIdentityConflict = `-- name: RecordIdentityConflict :exec
-UPDATE servers SET identity_conflict_at = COALESCE(identity_conflict_at,now()),identity_conflict_epoch = enrollment_epoch,
-    identity_conflict = COALESCE(identity_conflict,$1)
+UPDATE servers SET
+    identity_conflict = CASE WHEN identity_conflict_epoch = enrollment_epoch THEN identity_conflict ELSE $1 END,
+    identity_conflict_at = CASE WHEN identity_conflict_epoch = enrollment_epoch THEN identity_conflict_at ELSE now() END,
+    identity_conflict_epoch = enrollment_epoch
 WHERE workspace_id = $2 AND id = $3
 `
 
@@ -528,23 +619,21 @@ type RecordIdentityConflictParams struct {
 	ServerID    uuid.UUID `json:"server_id"`
 }
 
+// The first conflict of an epoch is kept; one from an earlier epoch is replaced.
 func (q *Queries) RecordIdentityConflict(ctx context.Context, arg RecordIdentityConflictParams) error {
 	_, err := q.db.Exec(ctx, recordIdentityConflict, arg.Detail, arg.WorkspaceID, arg.ServerID)
 	return err
 }
 
 const refreshLineage = `-- name: RefreshLineage :one
-SELECT l.id,l.workspace_id,l.key_hash,l.epoch,l.superseded_at,
-    (l.refresh_hash = $1)::boolean AS current,
-    (l.previous_refresh_hash = $1 AND l.previous_refresh_until > now())::boolean AS grace,
-    k.public_key
+SELECT l.id,l.workspace_id,l.key_hash,l.epoch,l.superseded_at,k.public_key
 FROM agent_lineages l JOIN agent_keys k ON k.server_id = l.server_id AND k.key_hash = l.key_hash
-WHERE l.server_id = $2 AND (l.refresh_hash = $1 OR l.previous_refresh_hash = $1)
+WHERE l.server_id = $1 AND (l.refresh_hash = $2 OR l.previous_refresh_hash = $2)
 `
 
 type RefreshLineageParams struct {
-	RefreshHash []byte    `json:"refresh_hash"`
 	ServerID    uuid.UUID `json:"server_id"`
+	RefreshHash []byte    `json:"refresh_hash"`
 }
 
 type RefreshLineageRow struct {
@@ -553,14 +642,12 @@ type RefreshLineageRow struct {
 	KeyHash      []byte     `json:"key_hash"`
 	Epoch        int64      `json:"epoch"`
 	SupersededAt *time.Time `json:"superseded_at"`
-	Current      bool       `json:"current"`
-	Grace        bool       `json:"grace"`
 	PublicKey    []byte     `json:"public_key"`
 }
 
 // unscoped: the refresh secret establishes the workspace.
 func (q *Queries) RefreshLineage(ctx context.Context, arg RefreshLineageParams) (RefreshLineageRow, error) {
-	row := q.db.QueryRow(ctx, refreshLineage, arg.RefreshHash, arg.ServerID)
+	row := q.db.QueryRow(ctx, refreshLineage, arg.ServerID, arg.RefreshHash)
 	var i RefreshLineageRow
 	err := row.Scan(
 		&i.ID,
@@ -568,8 +655,6 @@ func (q *Queries) RefreshLineage(ctx context.Context, arg RefreshLineageParams) 
 		&i.KeyHash,
 		&i.Epoch,
 		&i.SupersededAt,
-		&i.Current,
-		&i.Grace,
 		&i.PublicKey,
 	)
 	return i, err
@@ -593,61 +678,53 @@ func (q *Queries) RequestKeyRotation(ctx context.Context, arg RequestKeyRotation
 	return key_bound, err
 }
 
-const retiredBearer = `-- name: RetiredBearer :one
-SELECT s.workspace_id,s.retired_bearer_hash,s.bound_at,s.enrollment_epoch,s.credential_hash,k.first_used_at
-FROM servers s LEFT JOIN agent_keys k ON k.server_id = s.id AND k.key_hash = s.credential_hash
-WHERE s.id = $1
+const retiredBearerKnown = `-- name: RetiredBearerKnown :one
+SELECT COALESCE(retired_bearer_hash = $1 AND credential_hash IS NOT NULL,false)::boolean
+FROM servers WHERE id = $2
 `
 
-type RetiredBearerRow struct {
-	WorkspaceID       uuid.UUID  `json:"workspace_id"`
-	RetiredBearerHash []byte     `json:"retired_bearer_hash"`
-	BoundAt           *time.Time `json:"bound_at"`
-	EnrollmentEpoch   int64      `json:"enrollment_epoch"`
-	CredentialHash    []byte     `json:"credential_hash"`
-	FirstUsedAt       *time.Time `json:"first_used_at"`
+type RetiredBearerKnownParams struct {
+	BearerHash []byte    `json:"bearer_hash"`
+	ServerID   uuid.UUID `json:"server_id"`
 }
 
-// unscoped: only compared with the bearer the caller presented, and read only to raise a conflict.
-func (q *Queries) RetiredBearer(ctx context.Context, serverID uuid.UUID) (RetiredBearerRow, error) {
-	row := q.db.QueryRow(ctx, retiredBearer, serverID)
-	var i RetiredBearerRow
-	err := row.Scan(
-		&i.WorkspaceID,
-		&i.RetiredBearerHash,
-		&i.BoundAt,
-		&i.EnrollmentEpoch,
-		&i.CredentialHash,
-		&i.FirstUsedAt,
-	)
-	return i, err
+// unscoped: an unlocked check that a refused bearer is the one this server's bind retired.
+func (q *Queries) RetiredBearerKnown(ctx context.Context, arg RetiredBearerKnownParams) (bool, error) {
+	row := q.db.QueryRow(ctx, retiredBearerKnown, arg.BearerHash, arg.ServerID)
+	var column_1 bool
+	err := row.Scan(&column_1)
+	return column_1, err
 }
 
 const rotateLineageTokens = `-- name: RotateLineageTokens :execrows
 UPDATE agent_lineages SET
-    previous_refresh_hash = CASE WHEN refresh_hash = $1 THEN refresh_hash ELSE previous_refresh_hash END,
-    previous_refresh_until = CASE WHEN refresh_hash = $1 THEN now() + interval '60 seconds' ELSE previous_refresh_until END,
+    previous_refresh_hash = CASE WHEN refresh_hash = $1 THEN refresh_hash END,
+    previous_refresh_until = CASE WHEN refresh_hash = $1 THEN now() + interval '60 seconds' END,
     refresh_hash = $2,
-    previous_token_hash = token_hash, previous_token_expires_at = token_expires_at,
-    token_hash = $3, token_expires_at = $4
-WHERE id = $5 AND superseded_at IS NULL
+    previous_token_hash = token_hash,previous_token_expires_at = token_expires_at,
+    token_hash = $3,token_expires_at = now() + make_interval(secs => $4::int)
+WHERE workspace_id = $5 AND id = $6 AND superseded_at IS NULL
+    AND (refresh_hash = $1 OR (previous_refresh_hash = $1 AND previous_refresh_until > now()))
 `
 
 type RotateLineageTokensParams struct {
-	Presented      []byte    `json:"presented"`
-	RefreshHash    []byte    `json:"refresh_hash"`
-	TokenHash      []byte    `json:"token_hash"`
-	TokenExpiresAt time.Time `json:"token_expires_at"`
-	ID             uuid.UUID `json:"id"`
+	Presented       []byte    `json:"presented"`
+	RefreshHash     []byte    `json:"refresh_hash"`
+	TokenHash       []byte    `json:"token_hash"`
+	LifetimeSeconds int32     `json:"lifetime_seconds"`
+	WorkspaceID     uuid.UUID `json:"workspace_id"`
+	ID              uuid.UUID `json:"id"`
 }
 
-// The previous token stays valid until it expires, so requests in flight across a refresh succeed.
+// The current secret, or once within a minute the one it replaced, renews a live session. The
+// previous token stays valid until it expires, so requests in flight across a refresh succeed.
 func (q *Queries) RotateLineageTokens(ctx context.Context, arg RotateLineageTokensParams) (int64, error) {
 	result, err := q.db.Exec(ctx, rotateLineageTokens,
 		arg.Presented,
 		arg.RefreshHash,
 		arg.TokenHash,
-		arg.TokenExpiresAt,
+		arg.LifetimeSeconds,
+		arg.WorkspaceID,
 		arg.ID,
 	)
 	if err != nil {
@@ -725,7 +802,7 @@ func (q *Queries) SetServerKey(ctx context.Context, arg SetServerKeyParams) erro
 
 const startNewEpoch = `-- name: StartNewEpoch :one
 UPDATE servers SET enrollment_epoch = enrollment_epoch + 1,consumed_code_hash = $1,
-    retired_bearer_hash = NULL,bound_at = NULL,start_counter_floor = NULL,start_counter_floor_seq = NULL,
+    retired_bearer_hash = NULL,bound_at = NULL,
     identity_conflict_at = NULL,identity_conflict_epoch = NULL,identity_conflict = NULL,
     key_rotated_at = CASE WHEN $2::boolean THEN now() ELSE NULL END,rotate_key_requested = false
 WHERE workspace_id = $3 AND id = $4
@@ -754,35 +831,46 @@ func (q *Queries) StartNewEpoch(ctx context.Context, arg StartNewEpochParams) (i
 }
 
 const supersedeAgentKey = `-- name: SupersedeAgentKey :exec
-UPDATE agent_keys SET superseded_at = now(),superseded_seq = $1 WHERE server_id = $2 AND key_hash = $3
+UPDATE agent_keys SET superseded_at = now() WHERE workspace_id = $1 AND server_id = $2 AND key_hash = $3
 `
 
 type SupersedeAgentKeyParams struct {
-	Seq      pgtype.Int8 `json:"seq"`
-	ServerID uuid.UUID   `json:"server_id"`
-	KeyHash  []byte      `json:"key_hash"`
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ServerID    uuid.UUID `json:"server_id"`
+	KeyHash     []byte    `json:"key_hash"`
 }
 
 func (q *Queries) SupersedeAgentKey(ctx context.Context, arg SupersedeAgentKeyParams) error {
-	_, err := q.db.Exec(ctx, supersedeAgentKey, arg.Seq, arg.ServerID, arg.KeyHash)
+	_, err := q.db.Exec(ctx, supersedeAgentKey, arg.WorkspaceID, arg.ServerID, arg.KeyHash)
 	return err
 }
 
 const supersedeAgentLineages = `-- name: SupersedeAgentLineages :exec
-UPDATE agent_lineages SET superseded_at = now() WHERE server_id = $1 AND superseded_at IS NULL
+UPDATE agent_lineages SET superseded_at = now()
+WHERE workspace_id = $1 AND server_id = $2 AND superseded_at IS NULL
 `
 
-func (q *Queries) SupersedeAgentLineages(ctx context.Context, serverID uuid.UUID) error {
-	_, err := q.db.Exec(ctx, supersedeAgentLineages, serverID)
+type SupersedeAgentLineagesParams struct {
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ServerID    uuid.UUID `json:"server_id"`
+}
+
+func (q *Queries) SupersedeAgentLineages(ctx context.Context, arg SupersedeAgentLineagesParams) error {
+	_, err := q.db.Exec(ctx, supersedeAgentLineages, arg.WorkspaceID, arg.ServerID)
 	return err
 }
 
 const troubleshootingAttached = `-- name: TroubleshootingAttached :one
-SELECT EXISTS(SELECT 1 FROM troubleshooting_sessions WHERE server_id = $1 AND state IN ('offered','active'))::boolean
+SELECT EXISTS(SELECT 1 FROM troubleshooting_sessions WHERE workspace_id = $1 AND server_id = $2 AND state IN ('offered','active'))::boolean
 `
 
-func (q *Queries) TroubleshootingAttached(ctx context.Context, serverID uuid.UUID) (bool, error) {
-	row := q.db.QueryRow(ctx, troubleshootingAttached, serverID)
+type TroubleshootingAttachedParams struct {
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ServerID    uuid.UUID `json:"server_id"`
+}
+
+func (q *Queries) TroubleshootingAttached(ctx context.Context, arg TroubleshootingAttachedParams) (bool, error) {
+	row := q.db.QueryRow(ctx, troubleshootingAttached, arg.WorkspaceID, arg.ServerID)
 	var column_1 bool
 	err := row.Scan(&column_1)
 	return column_1, err

@@ -65,6 +65,7 @@ func enrollment(t *testing.T, f *fixture, b *browser, ws uuid.UUID, role string)
 	in := api.AgentEnrollment{ServerId: v.Server.Id, Token: v.Token, Credential: &credential, MachineId: uuid.New(), Capabilities: api.AgentCapabilities{Protocol: 1, Version: "test", Os: "linux", Arch: "arm64", Docker: true, MachineBoundRotation: &machineBoundRotation}, Preflight: api.HostPreflight{Ready: true, OsRelease: "ubuntu 24.04", FreeBytes: 1 << 30, Notes: []string{}}}
 	return v, in, v.Server.Id.String() + "." + credential
 }
+
 // credentialToken makes a legacy bearer credential for an enrollment request.
 func credentialToken() (*string, error) {
 	token, err := cryptobox.Token()

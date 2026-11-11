@@ -179,6 +179,15 @@ func (s *Service) enroll(ctx context.Context, in api.AgentEnrollment, source str
 // codeTaken checks a refused key enrollment: a valid proof for the code this epoch already
 // consumed, with a key other than the one it registered, is a second holder of that code.
 func (s *Service) codeTaken(ctx context.Context, in api.AgentEnrollment, candidate []byte, source string) error {
+	code := hash(in.Token)
+	// Any other refused code takes no lock and records nothing.
+	taken, err := s.Store.Queries.CodeTakenByAnotherKey(ctx, db.CodeTakenByAnotherKeyParams{CodeHash: code, Candidate: candidate, ServerID: in.ServerId})
+	if errors.Is(err, pgx.ErrNoRows) || (err == nil && !taken) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
 	tx, err := s.Store.Pool.Begin(ctx)
 	if err != nil {
 		return err
@@ -189,11 +198,7 @@ func (s *Service) codeTaken(ctx context.Context, in api.AgentEnrollment, candida
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil
 	}
-	if err != nil {
-		return err
-	}
-	code, err := q.ConsumedCode(ctx, in.ServerId)
-	if err != nil || code == nil || !bytes.Equal(code, hash(in.Token)) || row.CredentialHash == nil || bytes.Equal(row.CredentialHash, candidate) {
+	if err != nil || !bytes.Equal(row.ConsumedCodeHash, code) || row.CredentialHash == nil || bytes.Equal(row.CredentialHash, candidate) {
 		return err
 	}
 	if err = s.conflict(ctx, q, row.WorkspaceID, in.ServerId, row.EnrollmentEpoch, signalCode, candidate, source); err != nil {

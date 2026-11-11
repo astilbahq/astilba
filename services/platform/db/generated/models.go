@@ -58,7 +58,6 @@ type AgentKey struct {
 	CreatedAt        time.Time   `json:"created_at"`
 	FirstUsedAt      *time.Time  `json:"first_used_at"`
 	SupersededAt     *time.Time  `json:"superseded_at"`
-	SupersededSeq    pgtype.Int8 `json:"superseded_seq"`
 	SuccessorSeenSeq pgtype.Int8 `json:"successor_seen_seq"`
 }
 
@@ -736,8 +735,6 @@ type Server struct {
 	RetiredBearerHash     []byte      `json:"retired_bearer_hash"`
 	BoundAt               *time.Time  `json:"bound_at"`
 	ConsumedCodeHash      []byte      `json:"consumed_code_hash"`
-	StartCounterFloor     pgtype.Int8 `json:"start_counter_floor"`
-	StartCounterFloorSeq  pgtype.Int8 `json:"start_counter_floor_seq"`
 	IdentityConflictAt    *time.Time  `json:"identity_conflict_at"`
 	IdentityConflictEpoch pgtype.Int8 `json:"identity_conflict_epoch"`
 	IdentityConflict      []byte      `json:"identity_conflict"`

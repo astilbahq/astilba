@@ -62,7 +62,7 @@ func (j *Journal) openLocalKeys(point func(string) error) error {
 			if envelope.Version != localStateVersion && envelope.Version != keyedStateVersion {
 				return errors.New("unsupported agent local state version; use a compatible agent")
 			}
-			j.formatVersion = envelope.Version
+			j.formatVersion.Store(int64(envelope.Version))
 			j.keys, err = cryptobox.Parse(envelope.Keyring)
 			if err != nil {
 				return err
@@ -212,9 +212,10 @@ func syncLocalStateDirectory(dir string) error {
 	return parent.Sync()
 }
 
-// markKeyed raises the journal's format version once its agent holds a key.
+// markKeyed raises the journal's format version once its agent holds a key. Callers hold the
+// token source's lock, or run before anything else starts, so only one writes the keyring.
 func (j *Journal) markKeyed() error {
-	if j.formatVersion == keyedStateVersion {
+	if j.formatVersion.Load() == keyedStateVersion {
 		return nil
 	}
 	raw, err := stablejson.Marshal(j.keys)
@@ -228,6 +229,12 @@ func (j *Journal) markKeyed() error {
 	if err = writeLocalState(j.dir, filepath.Join(j.dir, "keyring.json"), body, nil); err != nil {
 		return err
 	}
-	j.formatVersion = keyedStateVersion
+	j.formatVersion.Store(keyedStateVersion)
 	return nil
+}
+
+// HoldsKey reports whether this agent authenticates with a key, or once did: either way, an agent
+// from before keys can't run on this journal.
+func (j *Journal) HoldsKey(cfg Config) bool {
+	return cfg.Key != nil || cfg.BindKey != nil || cfg.PendingRotation != nil || j.formatVersion.Load() == keyedStateVersion
 }

@@ -252,7 +252,7 @@ func run() error {
 		if err := agent.SetupSystemKeyStore(ctx); err != nil {
 			fmt.Fprintln(os.Stderr, "Could not set up systemd credentials, so the agent can't seal a key here:", err)
 		}
-		c.Keys, c.KeyStoreErr = agent.SystemKeyStore()
+		c.Keys, c.KeyStoreErr = agent.SystemKeyStore(ctx)
 		if e = c.Enroll(ctx, string(token)); e != nil {
 			return e
 		}
@@ -323,7 +323,7 @@ func run() error {
 			return e
 		}
 		defer f.Close()
-		return agent.Install(ctx, release, cfg.PublicKey, f, *executable, cfg.Key != nil || cfg.BindKey != nil)
+		return agent.Install(ctx, release, cfg.PublicKey, f, *executable, j.HoldsKey(cfg))
 	}
 	if command == "resolve-run" {
 		policy, err := uuid.Parse(*policyID)
@@ -351,7 +351,7 @@ func run() error {
 		engine.NetworkPool = pool
 	}
 	c := agent.NewClient(j, engine)
-	c.Keys, c.KeyStoreErr = agent.SystemKeyStore()
+	c.Keys, c.KeyStoreErr = agent.SystemKeyStore(ctx)
 	collector := &agent.MetricCollector{Journal: j}
 	c.Metrics = func(ctx context.Context) api.MetricReport {
 		cfg, err := j.Config()

@@ -139,5 +139,5 @@ func RemoteUpdate(ctx context.Context, c *Client, r api.AgentRelease, executable
 	if response.StatusCode != 200 {
 		return errors.New("artifact unavailable")
 	}
-	return Install(ctx, r, key, response.Body, executable, cfg.Key != nil || cfg.BindKey != nil)
+	return Install(ctx, r, key, response.Body, executable, c.Journal.HoldsKey(cfg))
 }

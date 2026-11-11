@@ -26,14 +26,9 @@ import (
 )
 
 const (
-	agentTokenLifetime = 15 * time.Minute
+	agentTokenSeconds  = 15 * 60
 	agentNonceLifetime = 60 * time.Second
 	agentKeyMaxAge     = 30 * 24 * time.Hour
-	// A retired bearer proves a second holder only once the bound key has been in use for longer
-	// than any request can take, and only for as long as an agent that never updated would still
-	// be presenting it.
-	retiredBearerFrom  = 2 * time.Minute
-	retiredBearerUntil = 24 * time.Hour
 )
 
 // Refusals tell an agent why its credential was refused. Each is a 401.
@@ -53,6 +48,8 @@ const (
 	signalRetiredBearer = "retired_bearer"
 	signalBindKey       = "bind_other_key"
 	signalCode          = "code_other_key"
+	// Not a fork signal: a key of an earlier epoch, which a one-time code or a bind replaced.
+	signalEarlierEpoch = "earlier_epoch_key"
 )
 
 type nonceSecret struct {
@@ -87,7 +84,6 @@ func (s *Service) nonceKey(ctx context.Context) ([]byte, error) {
 }
 
 type agentNonce struct {
-	server uuid.UUID
 	seq    int64
 	issued time.Time
 	hash   []byte
@@ -134,7 +130,7 @@ func (s *Service) parseNonce(ctx context.Context, server uuid.UUID, encoded stri
 		return agentNonce{}, nonceInvalid
 	}
 	sum := sha256.Sum256(raw)
-	return agentNonce{server: server, seq: int64(binary.BigEndian.Uint64(raw[16:])), issued: time.UnixMilli(int64(binary.BigEndian.Uint64(raw[24:]))), hash: sum[:]}, nil
+	return agentNonce{seq: int64(binary.BigEndian.Uint64(raw[16:])), issued: time.UnixMilli(int64(binary.BigEndian.Uint64(raw[24:]))), hash: sum[:]}, nil
 }
 
 // redeem consumes a nonce inside the transaction that acts on it. Only a known key's valid
@@ -194,7 +190,7 @@ func (s *Service) conflict(ctx context.Context, q *db.Queries, ws, server uuid.U
 	if err = q.FenceServerIdentity(ctx, db.FenceServerIdentityParams{WorkspaceID: ws, ServerID: server}); err != nil {
 		return err
 	}
-	if err = q.SupersedeAgentLineages(ctx, server); err != nil {
+	if err = q.SupersedeAgentLineages(ctx, db.SupersedeAgentLineagesParams{WorkspaceID: ws, ServerID: server}); err != nil {
 		return err
 	}
 	return identityEvent(ctx, q, ws, server, epoch, "fenced", signal, key, source)
@@ -264,7 +260,12 @@ func (s *Service) ColdStart(ctx context.Context, in api.AgentTokenRequest, sourc
 			}
 			return out, commitRefusal(ctx, tx, keyNotCurrent)
 		}
-		return out, keyNotCurrent
+		// A key that a one-time code or a bind replaced. It is recorded once, without an alert: the
+		// owner already chose to replace it.
+		if err = identityEvent(ctx, q, ws, in.ServerId, epoch, "refused", signalEarlierEpoch, keyHash, source); err != nil {
+			return out, err
+		}
+		return out, commitRefusal(ctx, tx, keyNotCurrent)
 	}
 	// F2: one holder's start counters rise with its nonces.
 	counter, err := q.CounterConflict(ctx, db.CounterConflictParams{ServerID: in.ServerId, Epoch: epoch, Value: in.StartCounter, NonceSeq: n.seq, NonceHash: n.hash})
@@ -292,17 +293,17 @@ func (s *Service) ColdStart(ctx context.Context, in api.AgentTokenRequest, sourc
 		return out, err
 	}
 	if key.FirstUsedAt == nil {
-		if err = q.MarkAgentKeyUsed(ctx, db.MarkAgentKeyUsedParams{ServerID: in.ServerId, KeyHash: keyHash}); err != nil {
+		if err = q.MarkAgentKeyUsed(ctx, db.MarkAgentKeyUsedParams{WorkspaceID: ws, ServerID: in.ServerId, KeyHash: keyHash}); err != nil {
 			return out, err
 		}
-		if err = q.MarkSuccessorSeen(ctx, db.MarkSuccessorSeenParams{Seq: pgtype.Int8{Int64: n.seq, Valid: true}, ServerID: in.ServerId, Epoch: epoch}); err != nil {
+		if err = q.MarkSuccessorSeen(ctx, db.MarkSuccessorSeenParams{Seq: pgtype.Int8{Int64: n.seq, Valid: true}, WorkspaceID: ws, ServerID: in.ServerId, Epoch: epoch}); err != nil {
 			return out, err
 		}
 	}
-	if err = q.SupersedeAgentLineages(ctx, in.ServerId); err != nil {
+	if err = q.SupersedeAgentLineages(ctx, db.SupersedeAgentLineagesParams{WorkspaceID: ws, ServerID: in.ServerId}); err != nil {
 		return out, err
 	}
-	if err = q.PruneAgentLineages(ctx, in.ServerId); err != nil {
+	if err = q.PruneAgentLineages(ctx, db.PruneAgentLineagesParams{WorkspaceID: ws, ServerID: in.ServerId}); err != nil {
 		return out, err
 	}
 	out, err = s.issueTokens(ctx, q, ws, in.ServerId, keyHash, epoch, server.Role, server.PreviewOnly, server.KeyRotatedAt, server.RotateKeyRequested)
@@ -313,7 +314,7 @@ func (s *Service) ColdStart(ctx context.Context, in api.AgentTokenRequest, sourc
 }
 
 func (s *Service) issueTokens(ctx context.Context, q *db.Queries, ws, server uuid.UUID, keyHash []byte, epoch int64, role string, previewOnly bool, rotatedAt *time.Time, rotateRequested bool) (api.AgentToken, error) {
-	out := api.AgentToken{Role: api.ServerRole(role), ExpiresAt: time.Now().Add(agentTokenLifetime)}
+	out := api.AgentToken{Role: api.ServerRole(role), ExpiresIn: agentTokenSeconds}
 	secret, err := cryptobox.Token()
 	if err != nil {
 		return out, err
@@ -326,19 +327,21 @@ func (s *Service) issueTokens(ctx context.Context, q *db.Queries, ws, server uui
 	if previewOnly {
 		out.PreviewOnly = &previewOnly
 	}
-	if err = q.InsertAgentLineage(ctx, db.InsertAgentLineageParams{ID: uuid.New(), WorkspaceID: ws, ServerID: server, KeyHash: keyHash, Epoch: epoch, RefreshHash: hash(refresh), TokenHash: hash(out.Token), TokenExpiresAt: out.ExpiresAt}); err != nil {
+	if err = q.InsertAgentLineage(ctx, db.InsertAgentLineageParams{ID: uuid.New(), WorkspaceID: ws, ServerID: server, KeyHash: keyHash, Epoch: epoch, RefreshHash: hash(refresh), TokenHash: hash(out.Token), LifetimeSeconds: agentTokenSeconds}); err != nil {
 		return out, err
 	}
-	due := rotateRequested || rotatedAt == nil || time.Since(*rotatedAt) > agentKeyMaxAge
-	if due {
-		// A rotation ends any terminal session attached through the old key, so it waits for them.
-		attached, err := q.TroubleshootingAttached(ctx, server)
-		if err != nil {
-			return out, err
-		}
-		out.RotateKey = !attached
+	out.RotateKey, err = rotationDue(ctx, q, ws, server, rotatedAt, rotateRequested)
+	return out, err
+}
+
+// rotationDue says whether to ask the agent to rotate its key now. A rotation ends any terminal
+// session attached through the old key, so it waits for them.
+func rotationDue(ctx context.Context, q *db.Queries, ws, server uuid.UUID, rotatedAt *time.Time, requested bool) (bool, error) {
+	if !requested && rotatedAt != nil && time.Since(*rotatedAt) <= agentKeyMaxAge {
+		return false, nil
 	}
-	return out, nil
+	attached, err := q.TroubleshootingAttached(ctx, db.TroubleshootingAttachedParams{WorkspaceID: ws, ServerID: server})
+	return !attached, err
 }
 
 // Refresh renews a live session's token. Anything ambiguous, such as a reused or superseded
@@ -367,15 +370,19 @@ func (s *Service) Refresh(ctx context.Context, in api.AgentRefreshRequest, sourc
 	if err != nil {
 		return out, err
 	}
-	live := !server.Revoked && !server.AwaitingTransfer && bytes.Equal(server.CredentialHash, lineage.KeyHash) && lineage.Epoch == server.EnrollmentEpoch
-	if !live || lineage.SupersededAt != nil || !(lineage.Current || lineage.Grace) {
-		if live {
-			if err = identityEvent(ctx, q, server.WorkspaceID, in.ServerId, server.EnrollmentEpoch, "refused", "refresh", lineage.KeyHash, source); err != nil {
-				return out, err
-			}
-			return out, commitRefusal(ctx, tx, refreshReused)
-		}
+	live := !server.Revoked && !server.AwaitingTransfer && server.WorkspaceID == lineage.WorkspaceID &&
+		bytes.Equal(server.CredentialHash, lineage.KeyHash) && lineage.Epoch == server.EnrollmentEpoch
+	if !live {
 		return out, refreshReused
+	}
+	refused := func() error {
+		if err := identityEvent(ctx, q, server.WorkspaceID, in.ServerId, server.EnrollmentEpoch, "refused", "refresh", lineage.KeyHash, source); err != nil {
+			return err
+		}
+		return commitRefusal(ctx, tx, refreshReused)
+	}
+	if lineage.SupersededAt != nil {
+		return out, refused()
 	}
 	secret, err := cryptobox.Token()
 	if err != nil {
@@ -385,23 +392,21 @@ func (s *Service) Refresh(ctx context.Context, in api.AgentRefreshRequest, sourc
 	if err != nil {
 		return out, err
 	}
-	out = api.AgentToken{Token: agentidentity.TokenPrefix + secret, Refresh: refresh, ExpiresAt: time.Now().Add(agentTokenLifetime), Role: api.ServerRole(server.Role)}
+	out = api.AgentToken{Token: agentidentity.TokenPrefix + secret, Refresh: refresh, ExpiresIn: agentTokenSeconds, Role: api.ServerRole(server.Role)}
 	if server.PreviewOnly {
 		out.PreviewOnly = &server.PreviewOnly
 	}
-	n, err := q.RotateLineageTokens(ctx, db.RotateLineageTokensParams{ID: lineage.ID, Presented: presented, RefreshHash: hash(refresh), TokenHash: hash(out.Token), TokenExpiresAt: out.ExpiresAt})
+	// The update itself decides whether the presented secret may still renew the session, so two
+	// requests racing with the same secret can't both succeed.
+	n, err := q.RotateLineageTokens(ctx, db.RotateLineageTokensParams{WorkspaceID: server.WorkspaceID, ID: lineage.ID, Presented: presented, RefreshHash: hash(refresh), TokenHash: hash(out.Token), LifetimeSeconds: agentTokenSeconds})
 	if err != nil {
 		return out, err
 	}
 	if n != 1 {
-		return out, refreshReused
+		return out, refused()
 	}
-	if server.RotateKeyRequested || server.KeyRotatedAt == nil || time.Since(*server.KeyRotatedAt) > agentKeyMaxAge {
-		attached, err := q.TroubleshootingAttached(ctx, in.ServerId)
-		if err != nil {
-			return out, err
-		}
-		out.RotateKey = !attached
+	if out.RotateKey, err = rotationDue(ctx, q, server.WorkspaceID, in.ServerId, server.KeyRotatedAt, server.RotateKeyRequested); err != nil {
+		return out, err
 	}
 	return out, tx.Commit(ctx)
 }
@@ -421,8 +426,11 @@ func (s *Service) RotateKey(ctx context.Context, a Identity, in api.AgentKeyRota
 		return err
 	}
 	current, err := s.Store.Queries.AgentKey(ctx, db.AgentKeyParams{ServerID: a.ID, KeyHash: a.Credential})
-	if err != nil {
+	if errors.Is(err, pgx.ErrNoRows) {
 		return keyNotCurrent
+	}
+	if err != nil {
+		return err
 	}
 	oldPublic, _, err := agentidentity.ParsePublicKey(base64.RawURLEncoding.EncodeToString(current.PublicKey))
 	newHash := agentidentity.KeyHash(newDER)
@@ -440,7 +448,7 @@ func (s *Service) RotateKey(ctx context.Context, a Identity, in api.AgentKeyRota
 	if err != nil {
 		return err
 	}
-	if server.Revoked || server.AwaitingTransfer || !bytes.Equal(server.CredentialHash, a.Credential) || server.EnrollmentEpoch != current.Epoch || bytes.Equal(newHash, a.Credential) {
+	if server.Revoked || server.AwaitingTransfer || server.WorkspaceID != a.Workspace || current.WorkspaceID != a.Workspace || !bytes.Equal(server.CredentialHash, a.Credential) || server.EnrollmentEpoch != current.Epoch || bytes.Equal(newHash, a.Credential) {
 		return keyNotCurrent
 	}
 	if valid, err := q.LockAgentCredential(ctx, db.LockAgentCredentialParams{WorkspaceID: server.WorkspaceID, ServerID: a.ID, CredentialHash: a.Credential, Lineage: &a.Lineage}); err != nil || !valid {
@@ -455,104 +463,13 @@ func (s *Service) RotateKey(ctx context.Context, a Identity, in api.AgentKeyRota
 	if err = q.InsertAgentKey(ctx, db.InsertAgentKeyParams{WorkspaceID: server.WorkspaceID, ServerID: a.ID, KeyHash: newHash, PublicKey: newDER, Epoch: server.EnrollmentEpoch}); err != nil {
 		return err
 	}
-	if err = q.SupersedeAgentKey(ctx, db.SupersedeAgentKeyParams{Seq: pgtype.Int8{Int64: n.seq, Valid: true}, ServerID: a.ID, KeyHash: a.Credential}); err != nil {
+	if err = q.SupersedeAgentKey(ctx, db.SupersedeAgentKeyParams{WorkspaceID: server.WorkspaceID, ServerID: a.ID, KeyHash: a.Credential}); err != nil {
 		return err
 	}
 	if err = q.SetServerKey(ctx, db.SetServerKeyParams{KeyHash: newHash, WorkspaceID: server.WorkspaceID, ServerID: a.ID}); err != nil {
 		return err
 	}
 	if err = identityEvent(ctx, q, server.WorkspaceID, a.ID, server.EnrollmentEpoch, "rotated", "", newHash, source); err != nil {
-		return err
-	}
-	return tx.Commit(ctx)
-}
-
-// Bind registers a key for a server that has so far held a bearer credential. The current bearer
-// itself authenticates it, so a bound server's retired bearer can never bind again.
-func (s *Service) Bind(ctx context.Context, server uuid.UUID, bearer string, in api.AgentKeyBind, source string) error {
-	if len(bearer) != 43 {
-		return domain.Unauthenticated
-	}
-	public, der, err := agentidentity.ParsePublicKey(in.PublicKey)
-	if err != nil {
-		return domain.Invalid("publicKey")
-	}
-	keyHash := agentidentity.KeyHash(der)
-	if !agentidentity.Verify(public, agentidentity.BindMessage(server, in.MachineId, keyHash), in.Proof) {
-		return domain.Unauthenticated
-	}
-	tx, err := s.Store.Pool.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback(ctx)
-	q := db.New(tx)
-	row, err := q.LockServerIdentity(ctx, server)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return domain.Unauthenticated
-	}
-	if err != nil {
-		return err
-	}
-	presented := hash(bearer)
-	if row.Revoked || row.AwaitingTransfer || row.CredentialHash == nil || row.MachineID == nil || *row.MachineID != in.MachineId {
-		return domain.Unauthenticated
-	}
-	if row.RetiredBearerHash != nil && bytes.Equal(presented, row.RetiredBearerHash) {
-		if bytes.Equal(row.CredentialHash, keyHash) {
-			// A retry of the bind that retired this bearer.
-			return nil
-		}
-		// The honest agent's bind key is fixed before it sends: another key is another holder.
-		if err = s.conflict(ctx, q, row.WorkspaceID, server, row.EnrollmentEpoch, signalBindKey, keyHash, source); err != nil {
-			return err
-		}
-		return commitRefusal(ctx, tx, keyNotCurrent)
-	}
-	if !bytes.Equal(row.CredentialHash, presented) {
-		return domain.Unauthenticated
-	}
-	if err = q.BindServerKey(ctx, db.BindServerKeyParams{KeyHash: keyHash, BearerHash: presented, WorkspaceID: row.WorkspaceID, ServerID: server}); err != nil {
-		return err
-	}
-	epoch := row.EnrollmentEpoch + 1
-	if err = q.InsertAgentKey(ctx, db.InsertAgentKeyParams{WorkspaceID: row.WorkspaceID, ServerID: server, KeyHash: keyHash, PublicKey: der, Epoch: epoch}); err != nil {
-		return err
-	}
-	if err = identityEvent(ctx, q, row.WorkspaceID, server, epoch, "bound", "", keyHash, source); err != nil {
-		return err
-	}
-	return tx.Commit(ctx)
-}
-
-// RetiredBearer checks a refused bearer against the one its server's bind retired. Inside the
-// window where only another holder can present it, that proves a second holder.
-func (s *Service) RetiredBearer(ctx context.Context, server uuid.UUID, bearer, source string) error {
-	if len(bearer) != 43 {
-		return nil
-	}
-	row, err := s.Store.Queries.RetiredBearer(ctx, server)
-	if err != nil || row.RetiredBearerHash == nil || !bytes.Equal(row.RetiredBearerHash, hash(bearer)) || row.CredentialHash == nil {
-		return nil
-	}
-	tx, err := s.Store.Pool.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback(ctx)
-	q := db.New(tx)
-	locked, err := q.LockServerIdentity(ctx, server)
-	if err != nil || locked.RetiredBearerHash == nil || !bytes.Equal(locked.RetiredBearerHash, hash(bearer)) || locked.CredentialHash == nil || locked.BoundAt == nil {
-		return err
-	}
-	now := time.Now()
-	inWindow := row.FirstUsedAt != nil && now.After(row.FirstUsedAt.Add(retiredBearerFrom)) && now.Before(locked.BoundAt.Add(retiredBearerUntil))
-	if inWindow {
-		err = s.conflict(ctx, q, locked.WorkspaceID, server, locked.EnrollmentEpoch, signalRetiredBearer, nil, source)
-	} else {
-		err = identityEvent(ctx, q, locked.WorkspaceID, server, locked.EnrollmentEpoch, "refused", signalRetiredBearer, nil, source)
-	}
-	if err != nil {
 		return err
 	}
 	return tx.Commit(ctx)

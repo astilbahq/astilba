@@ -115,12 +115,16 @@ func (c *Client) authorization(ctx context.Context) (string, error) {
 	if c.tokens.token != "" && time.Now().Before(c.tokens.renewAt) {
 		return c.tokens.token, nil
 	}
-	if c.tokens.refresh != "" && time.Now().Before(c.tokens.expires) && c.refreshToken(ctx) == nil {
+	// A refresh that also rotated the key may end without a session; one then starts below.
+	if c.tokens.refresh != "" && time.Now().Before(c.tokens.expires) && c.refreshToken(ctx) == nil && c.tokens.token != "" {
 		return c.tokens.token, nil
 	}
 	c.tokens.forget()
 	if err = c.startSession(ctx); err != nil {
 		return "", err
+	}
+	if c.tokens.token == "" {
+		return "", errors.New("management started no session")
 	}
 	return c.tokens.token, nil
 }
@@ -134,9 +138,12 @@ func (c *Client) invalidate(token string) {
 	}
 }
 
+// accept holds a new session. Its lifetime counts from when the answer arrived, by this host's
+// clock, so a host whose clock is wrong still renews on time.
 func (c *Client) accept(out api.AgentToken) {
-	c.tokens.token, c.tokens.refresh, c.tokens.expires = out.Token, out.Refresh, out.ExpiresAt
-	c.tokens.renewAt = time.Now().Add(min(10*time.Minute, time.Until(out.ExpiresAt)*2/3))
+	now, lifetime := time.Now(), time.Duration(out.ExpiresIn)*time.Second
+	c.tokens.token, c.tokens.refresh = out.Token, out.Refresh
+	c.tokens.expires, c.tokens.renewAt = now.Add(lifetime), now.Add(min(10*time.Minute, lifetime*2/3))
 }
 
 // refreshToken renews the session. Any failure, a lost answer included, ends the session: the
@@ -270,11 +277,6 @@ func (c *Client) startSession(ctx context.Context) error {
 		return err
 	}
 	c.accept(out)
-	if cfg.PendingRotation != nil {
-		// The successor wasn't current: the rotation may never have reached management. Retry it
-		// with the same successor before choosing another.
-		return c.sendRotation(ctx, cfg, cfg.PendingRotation)
-	}
 	c.maybeRotate(ctx, out)
 	return nil
 }
@@ -330,14 +332,20 @@ func (c *Client) sendBind(ctx context.Context, cfg Config) error {
 	return c.call(ctx, "POST", "/agent/v1/bind", api.AgentKeyBind{PublicKey: public, MachineId: cfg.MachineID, Proof: proof}, nil, cfg.Credential)
 }
 
-// maybeRotate starts a key rotation management asked for. A failure leaves the successor stored,
-// to be retried with the next session.
+// maybeRotate finishes a rotation that never reached management, with the same successor, or
+// starts one management asked for. A failure leaves the successor stored, to be retried with the
+// next session. If the rotation reached management but no session started with the successor,
+// the old key's session has ended and the next request starts one.
 func (c *Client) maybeRotate(ctx context.Context, out api.AgentToken) {
-	if !out.RotateKey || c.Keys == nil {
+	cfg, err := c.Journal.Config()
+	if err != nil || cfg.Key == nil || c.Keys == nil {
 		return
 	}
-	cfg, err := c.Journal.Config()
-	if err != nil || cfg.Key == nil || cfg.PendingRotation != nil {
+	if cfg.PendingRotation != nil {
+		_ = c.sendRotation(ctx, cfg, cfg.PendingRotation)
+		return
+	}
+	if !out.RotateKey {
 		return
 	}
 	sealed, err := c.newSealedKey(ctx)
@@ -425,6 +433,10 @@ func (c *Client) enrollCode(ctx context.Context, code string) (api.AgentStatus, 
 	// Learn whether this controller authenticates keys before choosing what to send.
 	_ = c.call(ctx, "POST", "/agent/v1/challenge", api.AgentChallengeRequest{ServerId: cfg.ServerID}, nil, "")
 	codeHash := agentidentity.HashHex(code)
+	if cfg.Enrolled && cfg.EnrolledCode == codeHash {
+		// Sending it with a new key would look, to management, like a second holder of the code.
+		return status, sent, false, errors.New("this agent is already enrolled with this code; to enroll it again, create a new enrollment code")
+	}
 	entry, ok := cfg.Enrollments[codeHash]
 	if !ok {
 		if len(cfg.Enrollments) >= 4 {
@@ -522,7 +534,7 @@ func (c *Client) enrollCode(ctx context.Context, code string) (api.AgentStatus, 
 			next.Key, next.Credential = nil, entry.Credential
 		}
 		next.PendingRotation, next.BindKey, next.Pending = nil, nil, ""
-		next.Enrollments, next.EnrollmentToken = nil, ""
+		next.Enrollments, next.EnrollmentToken, next.EnrolledCode = nil, "", codeHash
 		next.PreviewOnly = status.PreviewOnly != nil && *status.PreviewOnly
 		next.Role = status.Role
 		next.Enrolled = true
