@@ -528,6 +528,17 @@ the wait runs out. Neither wait shortens the time it has to send its body or to
 finish once its turn comes. An account has one export or import in progress on a replica at a time, and
 another gets a 503 at once without being charged.
 
+The database keeps every operation, but an export and a cross-host recovery checkpoint
+carry only the operation history recovery and the app need. That is unfinished work,
+every operation that applied or removed a runtime, every standalone private network
+removal, every operation another archived record names, and the newest 100. Older
+finished housekeeping, such as other private network, agent update and single-host
+backup commands, stays out, so a long history doesn't stop exports or cross-host
+deployments. A workspace imported from an export, or recovered from a management
+backup older than that housekeeping, doesn't get it back. Deployment history,
+configuration revisions and audit events are all carried, so a very active workspace
+can still reach the record limit.
+
 Work that Git webhooks start runs in a background queue of its own, with four workers
 per replica: source refreshes, pull-request previews and GitHub App events. A burst of
 it never delays deployments, DNS or the sweeps. A signed push starts a refresh only for

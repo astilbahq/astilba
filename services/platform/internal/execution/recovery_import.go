@@ -208,6 +208,8 @@ func (s *Service) RecoverCrossHost(ctx context.Context, in RecoveryImport) (Reco
 	if err = s.restoreRecoveryProofs(ctx, tx, in.WorkspaceID, roots, source.Hosts); err != nil {
 		return out, err
 	}
+	// Projecting grants advances the network generation, which also releases any sweep hold the
+	// restored database recorded: recovery rewrites the members it described.
 	if err = restoreRecoveryGrants(ctx, tx, in.WorkspaceID, source.Projections, roots); err != nil {
 		return out, err
 	}

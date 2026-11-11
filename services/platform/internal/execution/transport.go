@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/portability"
@@ -242,7 +243,16 @@ func (s *Service) Report(ctx context.Context, a Identity, r api.AgentReport) err
 func (s *Service) applyReport(ctx context.Context, git *gitAnswers, received time.Time, a Identity, r api.AgentReport) error {
 	var tx pgx.Tx
 	var err error
-	if r.Network != nil {
+	// A network command's report can write network members, which revocation and the sweep write
+	// under the workspace lock, so it takes the workspace's write turn whether or not it carries a
+	// receipt. Taking servers before network members here and the reverse there would deadlock.
+	network := r.Network != nil
+	if !network {
+		if network, err = s.Store.Queries.ReportsOnNetworkCommand(ctx, db.ReportsOnNetworkCommandParams{ID: r.Id, ServerID: a.ID}); err != nil {
+			return err
+		}
+	}
+	if network {
 		var done func()
 		if tx, done, err = s.Store.BeginWorkspaceWrite(ctx, a.Workspace); err != nil {
 			return err

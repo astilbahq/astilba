@@ -466,24 +466,25 @@ type NetworkEndpointSource struct {
 }
 
 type NetworkMember struct {
-	WorkspaceID            uuid.UUID  `json:"workspace_id"`
-	NetworkID              uuid.UUID  `json:"network_id"`
-	ServerID               uuid.UUID  `json:"server_id"`
-	MembershipID           uuid.UUID  `json:"membership_id"`
-	Address                netip.Addr `json:"address"`
-	Endpoint               string     `json:"endpoint"`
-	ListenPort             int32      `json:"listen_port"`
-	CpuMillis              int32      `json:"cpu_millis"`
-	MemoryMib              int32      `json:"memory_mib"`
-	UnboundedInventoryHash string     `json:"unbounded_inventory_hash"`
-	PublicKey              string     `json:"public_key"`
-	Enabled                bool       `json:"enabled"`
-	ApprovedController     int64      `json:"approved_controller"`
-	Generation             int64      `json:"generation"`
-	AcknowledgedGeneration int64      `json:"acknowledged_generation"`
-	ManifestHash           string     `json:"manifest_hash"`
-	InstalledManifest      []byte     `json:"installed_manifest"`
-	Note                   string     `json:"note"`
+	WorkspaceID            uuid.UUID   `json:"workspace_id"`
+	NetworkID              uuid.UUID   `json:"network_id"`
+	ServerID               uuid.UUID   `json:"server_id"`
+	MembershipID           uuid.UUID   `json:"membership_id"`
+	Address                netip.Addr  `json:"address"`
+	Endpoint               string      `json:"endpoint"`
+	ListenPort             int32       `json:"listen_port"`
+	CpuMillis              int32       `json:"cpu_millis"`
+	MemoryMib              int32       `json:"memory_mib"`
+	UnboundedInventoryHash string      `json:"unbounded_inventory_hash"`
+	PublicKey              string      `json:"public_key"`
+	Enabled                bool        `json:"enabled"`
+	ApprovedController     int64       `json:"approved_controller"`
+	Generation             int64       `json:"generation"`
+	AcknowledgedGeneration int64       `json:"acknowledged_generation"`
+	ManifestHash           string      `json:"manifest_hash"`
+	InstalledManifest      []byte      `json:"installed_manifest"`
+	Note                   string      `json:"note"`
+	SweepHold              pgtype.Text `json:"sweep_hold"`
 }
 
 type NetworkPlanEndpoint struct {

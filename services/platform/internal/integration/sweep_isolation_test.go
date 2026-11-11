@@ -306,7 +306,26 @@ func TestNetworkMembersCannotShareAKey(t *testing.T) {
 	if _, err := f.st.Pool.Exec(ctx, `UPDATE network_members SET public_key=$2 WHERE server_id=$1`, members[1].server, key(1)); !errors.As(err, &database) || database.Code != "23505" {
 		t.Fatalf("second holder of a key was stored: %v", err)
 	}
-	// A member that reports its own key carries on.
+	// Asked again, it would report the same key, so the sweep sends it nothing until the network
+	// changes, rather than a new identify on every pass.
+	for range 3 {
+		if err := f.execution.SweepNetworks(ctx); err != nil {
+			t.Fatal(err)
+		}
+		poll, done := context.WithTimeout(ctx, 200*time.Millisecond)
+		command, err := f.execution.Poll(poll, members[1].identity)
+		expired := poll.Err()
+		done()
+		if err != nil && expired == nil {
+			t.Fatal(err)
+		}
+		if command != nil {
+			t.Fatalf("a member refused for another member's key was sent %s again", command.Kind)
+		}
+	}
+	// Revoking the key's holder changes the network, and a member that then reports its own key
+	// carries on.
+	b.call("POST", "/api/v1/workspaces/"+ws.String()+"/servers/"+members[0].server.String()+"/revoke", nil, 204, nil)
 	identify(members[1], 2, key(2))
 	if public, note = stored(members[1]); public != key(2) || note != "" {
 		t.Fatalf("own key: stored %q with note %q", public, note)
