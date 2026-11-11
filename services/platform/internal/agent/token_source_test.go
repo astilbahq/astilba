@@ -146,6 +146,10 @@ func TestUnavailableKeyStoreIsOpenedAgain(t *testing.T) {
 		return InsecureKeyStore(), nil
 	}
 	ctx := context.Background()
+	// Until the store has been tried, an outstanding code isn't sent: it would go without a key.
+	if _, _, _, err := c.retryEnrollments(ctx); err == nil || opened != 0 {
+		t.Fatal("an enrollment code was retried before the key store was tried", opened)
+	}
 	if c.OpenKeyStore(ctx) != nil || opened != 1 {
 		t.Fatal("an unavailable store was reported open", opened)
 	}

@@ -148,6 +148,12 @@ func (c *Client) enrollCode(ctx context.Context, code string) (api.AgentStatus, 
 
 // retryEnrollments retries the outstanding codes, newest first.
 func (c *Client) retryEnrollments(ctx context.Context) (api.AgentStatus, api.AgentCapabilities, bool, error) {
+	// A code is sent with a key only if the store has opened, and whatever is first sent with a code
+	// is sent with every retry of it. So nothing is retried until the store has been tried at
+	// least once, and codes sealed by it aren't passed over while it opens.
+	if !c.keyStoreSettled() {
+		return api.AgentStatus{}, api.AgentCapabilities{}, false, errors.New("the agent's key store is still opening")
+	}
 	cfg, err := c.Journal.Config()
 	if err != nil {
 		return api.AgentStatus{}, api.AgentCapabilities{}, false, err

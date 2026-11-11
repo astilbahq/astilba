@@ -50,6 +50,7 @@ type Client struct {
 	KeyStoreErr        error
 	OpenKeys           func(context.Context) (KeyStore, error)
 	keysMu             sync.Mutex
+	keysTried          bool
 	keysSupported      atomic.Bool
 	tokens             tokenSource
 	needsEnrollment    atomic.Bool

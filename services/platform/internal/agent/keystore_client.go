@@ -20,6 +20,14 @@ func (c *Client) keyStore() KeyStore {
 	return c.Keys
 }
 
+// keyStoreSettled reports whether the key store has been tried, so that its absence means it is
+// unavailable rather than still opening.
+func (c *Client) keyStoreSettled() bool {
+	c.keysMu.Lock()
+	defer c.keysMu.Unlock()
+	return c.Keys != nil || c.OpenKeys == nil || c.keysTried
+}
+
 // OpenKeyStore opens this host's key store unless it is open already, and returns it, or nil while
 // it is unavailable.
 func (c *Client) OpenKeyStore(ctx context.Context) KeyStore {
@@ -32,6 +40,7 @@ func (c *Client) OpenKeyStore(ctx context.Context) KeyStore {
 	}
 	c.keysMu.Lock()
 	defer c.keysMu.Unlock()
+	c.keysTried = true
 	if c.Keys == nil {
 		c.Keys, c.KeyStoreErr = opened, err
 	}
