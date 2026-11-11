@@ -168,10 +168,15 @@ type troubleshootingSweepWorker struct {
 	service *Service
 }
 
-// Work closes offers nobody attached to and sessions past their deadline whose stream
-// no longer exists. A live relay ends its session at the deadline itself first.
 func (w *troubleshootingSweepWorker) Work(ctx context.Context, _ *river.Job[troubleshootingSweepArgs]) error {
-	return w.service.Store.Transaction(ctx, func(q *db.Queries) error {
+	return w.service.SweepTroubleshootingSessions(ctx)
+}
+
+// SweepTroubleshootingSessions closes offers nobody attached to and sessions past their
+// deadline whose stream no longer exists. A live relay ends its session at the deadline
+// itself first. The worker runs it every 30 seconds.
+func (s *Service) SweepTroubleshootingSessions(ctx context.Context) error {
+	return s.Store.Transaction(ctx, func(q *db.Queries) error {
 		workspaces, err := q.LockTroubleshootingSweepWorkspaces(ctx)
 		if err != nil {
 			return err

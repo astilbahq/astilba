@@ -8,6 +8,7 @@ import (
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
+	"github.com/astilbahq/astilba/services/platform/internal/execution"
 	"github.com/astilbahq/astilba/services/platform/internal/terminal"
 	"github.com/google/uuid"
 )
@@ -28,18 +29,17 @@ func TestTroubleshootingSweepClosesOnlyAbandonedOffers(t *testing.T) {
 			t.Fatalf("agent stream refused: %d", status)
 		}
 	}
-	if _, err := x.f.st.Pool.Exec(ctx, "UPDATE troubleshooting_sessions SET ticket_expires_at=now()-interval '1 second' WHERE workspace_id=$1", x.ws); err != nil {
+	// One statement, so the worker's own pass never sees only some tickets expired.
+	if _, err := x.f.st.Pool.Exec(ctx, "UPDATE troubleshooting_sessions SET ticket_expires_at=CASE WHEN id=$2 THEN now()-interval '2 minutes' ELSE now()-interval '1 second' END WHERE workspace_id=$1", x.ws, stranded.Session.Id); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := x.f.st.Pool.Exec(ctx, "UPDATE troubleshooting_sessions SET ticket_expires_at=now()-interval '2 minutes' WHERE id=$1", stranded.Session.Id); err != nil {
+	// Run here rather than waiting for the worker: the waiting relay ends its own session
+	// when the ticket it redeemed runs out, 30 seconds after opening, and the worker's next
+	// pass can land after that.
+	if err := x.f.execution.SweepTroubleshootingSessions(ctx); err != nil {
 		t.Fatal(err)
 	}
 	var state string
-	for deadline := time.Now().Add(45 * time.Second); state != "closed" && time.Now().Before(deadline); time.Sleep(100 * time.Millisecond) {
-		if err := x.f.st.Pool.QueryRow(ctx, "SELECT state FROM troubleshooting_sessions WHERE id=$1", abandoned.Session.Id).Scan(&state); err != nil {
-			t.Fatal(err)
-		}
-	}
 	x.waitClosed(t, abandoned.Session.Id, "expired")
 	x.waitClosed(t, stranded.Session.Id, "expired")
 	if err := x.f.st.Pool.QueryRow(ctx, "SELECT state FROM troubleshooting_sessions WHERE id=$1", live.Session.Id).Scan(&state); err != nil || state != "active" {
@@ -47,6 +47,34 @@ func TestTroubleshootingSweepClosesOnlyAbandonedOffers(t *testing.T) {
 	}
 	if err := x.f.st.Pool.QueryRow(ctx, "SELECT state FROM troubleshooting_sessions WHERE id=$1", waiting.Session.Id).Scan(&state); err != nil || state != "offered" {
 		t.Fatal("the sweep closed a relay waiting for its other side", state, err)
+	}
+}
+
+// Nobody has to ask for an abandoned offer to close: the running service sweeps by itself.
+func TestTroubleshootingSweepRunsInTheBackground(t *testing.T) {
+	x := relayFixture(t)
+	ctx := context.Background()
+	abandoned := x.open(t, x.owner, x.app, 1, 201)
+	if _, err := x.f.st.Pool.Exec(ctx, "UPDATE troubleshooting_sessions SET ticket_expires_at=now()-interval '1 second' WHERE id=$1", abandoned.Session.Id); err != nil {
+		t.Fatal(err)
+	}
+	// A service sweeps as it starts, rather than up to 30 seconds later.
+	if err := x.f.execution.Stop(ctx); err != nil {
+		t.Fatal(err)
+	}
+	restarted, err := execution.New(x.f.st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = restarted.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer restarted.Stop(ctx)
+	// The stopped service gives up leadership, so the new one is usually elected at once.
+	// Should that be lost, election waits out River's 15-second leader TTL and an
+	// election interval of up to 6 seconds.
+	if reason := x.closeReason(t, abandoned.Session.Id, 30*time.Second); reason != "expired" {
+		t.Fatalf("session closed %q, want %q", reason, "expired")
 	}
 }
 

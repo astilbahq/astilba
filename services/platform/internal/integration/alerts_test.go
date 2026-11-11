@@ -35,14 +35,26 @@ func alertOperation(t *testing.T, f *fixture, ws, server, env uuid.UUID, state s
 	}
 	return id
 }
+
+// alertSweep runs the alert sweep until a pass has claimed ws, which that pass examines before
+// it returns. A pass skips a workspace whose lock is held, as a background sweep's often
+// is, and leaves it due for the next pass.
 func alertSweep(t *testing.T, f *fixture, ws uuid.UUID) {
 	t.Helper()
-	if _, err := f.st.Pool.Exec(context.Background(), "UPDATE workspaces SET alert_scanned_at='1970-01-01' WHERE id=$1", ws); err != nil {
+	ctx := context.Background()
+	if _, err := f.st.Pool.Exec(ctx, "UPDATE workspaces SET alert_scanned_at='epoch' WHERE id=$1", ws); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.apiServer.Alerts.Sweep(context.Background()); err != nil {
-		t.Fatal(err)
-	}
+	waitFor(t, "the alert sweep never reached the workspace", 10*time.Second, func() bool {
+		if err := f.apiServer.Alerts.Sweep(ctx); err != nil {
+			t.Fatal(err)
+		}
+		var claimed bool
+		if err := f.st.Pool.QueryRow(ctx, "SELECT alert_scanned_at>'epoch' FROM workspaces WHERE id=$1", ws).Scan(&claimed); err != nil {
+			t.Fatal(err)
+		}
+		return claimed
+	})
 }
 func TestAlertInboxIsolationDeduplicationAndRetention(t *testing.T) {
 	f := setup(t)
