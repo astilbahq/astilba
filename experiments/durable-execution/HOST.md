@@ -53,7 +53,7 @@ Compose command strings escape container-side variables with `$$`; otherwise Com
 
 ## Versions and results
 
-Pinned runtime: Go 1.27.3, Docker Engine/CLI 29.9.2 (API 1.56), Compose 5.6.1, Traefik 3.7.16, PostgreSQL 18.4 on Alpine 3.23 and BusyBox 1.37.0. Bootstrap checks SHA-256 for the tool archives and binaries. Image references pin the multi-platform manifest digest. Docker archive hashes were calculated from official HTTPS downloads; Compose and Go hashes were checked against their official release metadata.
+Pinned runtime: Go 1.27.4, Docker Engine/CLI 29.9.2 (API 1.56), Compose 5.6.1, Traefik 3.7.16, PostgreSQL 18.4 on Alpine 3.23 and BusyBox 1.37.0. Bootstrap checks SHA-256 for the tool archives and binaries. Image references pin the multi-platform manifest digest. Docker archive hashes were calculated from official HTTPS downloads; Compose and Go hashes were checked against their official release metadata.
 
 Local native arm64 validation passed on 22 October 2026: Ubuntu 24.04.5, kernel 6.8.0-142-generic, systemd 255.4-1ubuntu8.17, and the pinned runtime above. All six host scenarios passed under the race detector in 43 seconds. This run used the dedicated Lima VM, not a Docker container on macOS.
 

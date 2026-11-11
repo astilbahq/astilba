@@ -4,7 +4,7 @@ PLAT-7 is a disposable validation module, separate from the future platform. It 
 
 ## Reproduce
 
-Use Go 1.27.3, Git, Docker and a disposable local daemon with at least 6 GiB available memory (8 GiB used for the two-CPU compatibility run). The fixture starts one provider at a time, binds a random loopback port, creates synthetic credentials and private repositories, and removes only its labelled container and volumes, including their repository state. The hosted GitHub test separately deletes its identity-checked repository and confirms its absence. No host directories are mounted. Containers use the daemon's available CPUs, including [two-core private GitHub runners](https://docs.github.com/en/actions/reference/runners/github-hosted-runners), and retain a 6 GiB memory limit. Do not target a server with existing workloads.
+Use Go 1.27.4, Git, Docker and a disposable local daemon with at least 6 GiB available memory (8 GiB used for the two-CPU compatibility run). The fixture starts one provider at a time, binds a random loopback port, creates synthetic credentials and private repositories, and removes only its labelled container and volumes, including their repository state. The hosted GitHub test separately deletes its identity-checked repository and confirms its absence. No host directories are mounted. Containers use the daemon's available CPUs, including [two-core private GitHub runners](https://docs.github.com/en/actions/reference/runners/github-hosted-runners), and retain a 6 GiB memory limit. Do not target a server with existing workloads.
 
 ```sh
 docker --host "$PLAT7_DOCKER_HOST" pull gitlab/gitlab-ce:19.5.1-ce.0@sha256:bb79dc86267c557fd11e7feb0cd9dd506dd02e991ecdd6cae11ca7d7e5d36fc3
