@@ -10,7 +10,7 @@ description: >-
 
 # Upgrade dependencies
 
-Covers `pnpm-workspace.yaml` with its packages, and the Go modules found by `git ls-files '*go.mod'`. Docker base images and GitHub Actions are left to Dependabot; Go and Node toolchains are reported, not bumped (see [Toolchains](#toolchains)).
+Covers `pnpm-workspace.yaml` with its packages, the Go modules found by `git ls-files '*go.mod'`, and the pinned Public Suffix List. Docker base images and GitHub Actions are left to Dependabot; Go and Node toolchains are reported, not bumped (see [Toolchains](#toolchains)).
 
 ## Rules
 
@@ -28,7 +28,7 @@ If other sessions share the machine, give pnpm a store of your own: put `pnpm_co
 Start from a fresh branch off `origin/main`.
 
 1. **Open Dependabot pull requests:** `gh pr list --author app/dependabot`. For npm and Go, `.github/dependabot.yml` allows only security updates; one matches an open alert from step 2, and its fix goes in the Security group. Any other npm or Go pull request is a version update left from before, which this run replaces. Dependabot closes its own pull request once main has the version, so do not close them by hand; say in your pull request which ones it supersedes. Docker and GitHub Actions pull requests are outside this skill; list them in your report.
-2. **Known advisories:** `gh api 'repos/{owner}/{repo}/dependabot/alerts?state=open'` and `make check-vulnerabilities`. Anything either reports is the first group.
+2. **Known advisories:** `gh api 'repos/{owner}/{repo}/dependabot/alerts?state=open'` and `GITHUB_TOKEN="$(gh auth token)" make check-vulnerabilities`. Anything either reports is the first group.
 3. **pnpm candidates:** after `pnpm install --frozen-lockfile`, run `pnpm outdated -r --format json`. Its `latest` already skips versions younger than the gate, but it is the newest release of any major. For the newest release within the current major, read the package's versions from the registry (`curl -s https://registry.npmjs.org/<name>`, `versions` and `time`).
 4. **Go candidates**, in each module directory:
 
@@ -53,6 +53,7 @@ Each group below is its own pull request. Skip a group with nothing to move.
 | Go: experiments | The same for every module under `experiments/`. |
 | pnpm: routine | Patch and minor updates of packages outside the coupled families below. |
 | pnpm: coupled | One pull request per family that moved, with the edits [Coupled pins](#coupled-pins) lists. |
+| Public Suffix List | `node scripts/public-suffix-list.mjs` moves the copy pinned in `services/platform/internal/publicsuffix` to the newest commit past the release-age gate. Read the diff of `public_suffix_list.dat` and note any removed or changed rule; see [the pinned list](../../../docs/hosting.md#the-pinned-list). |
 | Majors | One pull request per major, and only when the person running you agreed to it. Otherwise list them in your report with what they would need. |
 
 ## Coupled pins
@@ -107,7 +108,7 @@ For each group, against `origin/main`:
 
 For every group:
 
-- `make check-app` and `make check-vulnerabilities`. A scan can fail on an advisory published since main last passed; that belongs in the Security group.
+- `make check-app` and `GITHUB_TOKEN="$(gh auth token)" make check-vulnerabilities` (the token is for GitHub's API limit). A scan can fail on an advisory published since main last passed; that belongs in the Security group.
 - `make verify`, as `AGENTS.md` requires before proposing a commit. It covers both experiments' Go suites, the canvas experiment (`make verify-canvas`) and the application (`make verify-app`), and needs the disposable Docker hosts and Playwright browsers those name. `make check-app` alone never checks `experiments/canvas-editor`.
 - `make check` when `experiments/fleet-capacity` moved, and `go vet ./... && go build ./...` in `experiments/platform-comparison/app`, which no make target covers.
 

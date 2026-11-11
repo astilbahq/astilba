@@ -25,6 +25,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/githubapp"
 	"github.com/astilbahq/astilba/services/platform/internal/httpapi"
 	"github.com/astilbahq/astilba/services/platform/internal/mailer"
+	"github.com/astilbahq/astilba/services/platform/internal/publicsuffix"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/astilbahq/astilba/services/platform/internal/webassets"
 	"github.com/google/uuid"
@@ -205,6 +206,9 @@ func run() error {
 		go st.LogPoolUse(ctx)
 		if e = c.ValidateServer(); e != nil {
 			return e
+		}
+		if c.ApplicationDNS.Base != "" && !c.ApplicationDNS.Isolated() {
+			slog.Warn("generated application names share one browser site; see docs/hosting.md#generated-application-names", "applicationDomain", c.ApplicationDNS.Base, "publicSuffixList", publicsuffix.Version())
 		}
 		mail, e := mailer.New(c.SMTP)
 		if e != nil {

@@ -158,6 +158,10 @@ test("each suite runs only for paths that can affect it", async (t) => {
       ["native", "go", "browser", "vulnerabilities"],
     ],
     [
+      ["services/platform/internal/publicsuffix/public_suffix_list.dat"],
+      ["native", "go", "browser", "vulnerabilities"],
+    ],
+    [
       [".github/vulnerability-allowlist.json"],
       ["native", "go", "browser", "vulnerabilities"],
     ],

@@ -234,6 +234,8 @@ try {
   docker(["exec", name, "createdb", "--username", "postgres", hostedDatabase]);
   const hostedEnv = {
     ...env,
+    // Hosted refuses generated names on a base the Public Suffix List does not isolate.
+    ASTILBA_APPLICATION_DOMAIN: "",
     ASTILBA_DATABASE_URL: `postgres://postgres:${password}@${address}/${hostedDatabase}?sslmode=disable`,
     ASTILBA_KEYRING: join(directory, "hosted-keyring.json"),
     ASTILBA_DEVELOPMENT: "false", ASTILBA_HOSTED: "true",
