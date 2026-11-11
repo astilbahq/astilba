@@ -93,9 +93,19 @@ configured secret. Receivers should enforce a timestamp tolerance and deduplicat
 delivery IDs. A retry retains its delivery ID but receives a fresh signature.
 
 Delivery uses a persisted queue, at most five attempts and a 24-hour expiry.
-Attempts have a ten-second network budget; retry delays are 1, 2, 4, 8 and
-16 minutes, with no retry after the fifth failure. The delivery worker attempts
-at most 20 due records per ten-second cycle, within a 30-second cycle budget.
+A webhook attempt has five seconds to connect and receive a 2xx response, so
+acknowledge at once and do any slower work afterwards. An email attempt has ten
+seconds. Retry delays are 1, 2, 4, 8 and 16 minutes, with no retry after the
+fifth failure. Each management replica makes up to eight attempts at once,
+oldest due first, and looks for due deliveries whenever an attempt finishes and
+every ten seconds. A workspace has at most one webhook attempt in flight, so a
+webhook that is slow to answer delays only that workspace's later webhook
+notifications, not its email or any other workspace's. Replicas that claim at
+the same moment can briefly each have one in flight. Each delivery shows why
+its latest attempt failed, such as a receiver that did not answer within five
+seconds or answered with an error status. A failed email
+attempt logs `operational alert mail delivery failed`, since mail goes through
+the operator's relay; webhook failures show only on the alert.
 A crashed lease becomes eligible after 30 seconds and retains its attempt
 count. External acceptance followed by a crash can duplicate a notification;
 there is no exactly-once SMTP promise.

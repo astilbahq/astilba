@@ -22,7 +22,13 @@ type refreshArgs struct {
 	Branch     string    `json:"branch" river:"unique"`
 }
 
-func (refreshArgs) Kind() string { return "platform_git_refresh_v1" }
+func (refreshArgs) Kind() string                 { return "platform_git_refresh_v1" }
+func (refreshArgs) InsertOpts() river.InsertOpts { return river.InsertOpts{Queue: gitQueue} }
+
+// enqueueGitRefresh starts a refresh for a pushed branch that a source imports or a target builds
+// automatically. The caller holds the connection's delivery lock. A workspace can sign pushes for
+// any branch name, so one that nothing tracks starts nothing, and the jobs a workspace can have
+// are one per branch its own configuration tracks.
 func (s *Service) enqueueGitRefresh(ctx context.Context, tx pgx.Tx, ws, id uuid.UUID, p pipeline.Push) error {
 	if err := s.Store.ManagementAdmission(ctx, tx, ws); err != nil {
 		if errors.Is(err, store.SubscriptionRequired) {
@@ -35,8 +41,11 @@ func (s *Service) enqueueGitRefresh(ctx context.Context, tx pgx.Tx, ws, id uuid.
 	if err := db.New(tx).RecordGitBranchPush(ctx, db.RecordGitBranchPushParams{WorkspaceID: ws, ConnectionID: id, Branch: p.Branch}); err != nil {
 		return err
 	}
-	_, err := s.Queue.InsertTx(ctx, tx, refreshArgs{ws, id, p.Branch}, &river.InsertOpts{MaxAttempts: 100, UniqueOpts: river.UniqueOpts{ByArgs: true, ByState: []rivertype.JobState{rivertype.JobStateAvailable, rivertype.JobStatePending, rivertype.JobStateRunning, rivertype.JobStateRetryable, rivertype.JobStateScheduled}}})
-	return err
+	tracked, err := db.New(tx).GitBranchTracked(ctx, db.GitBranchTrackedParams{WorkspaceID: ws, ConnectionID: id, Branch: p.Branch})
+	if err != nil || !tracked {
+		return err
+	}
+	return s.insertGitJob(ctx, tx, workspaceMetadata{Workspace: ws}, refreshArgs{ws, id, p.Branch}, river.InsertOpts{MaxAttempts: 100, UniqueOpts: river.UniqueOpts{ByArgs: true, ByState: []rivertype.JobState{rivertype.JobStateAvailable, rivertype.JobStatePending, rivertype.JobStateRunning, rivertype.JobStateRetryable, rivertype.JobStateScheduled}}}, false)
 }
 
 type refreshWorker struct {
@@ -45,6 +54,9 @@ type refreshWorker struct {
 }
 
 func (w *refreshWorker) Work(ctx context.Context, job *river.Job[refreshArgs]) error {
+	if err := w.service.workspaceTurn(ctx, job.JobRow, job.Args.Workspace); err != nil {
+		return err
+	}
 	return w.service.withGit(ctx, job.Args.Workspace, func(git *gitAnswers) error { return w.work(ctx, git, job) })
 }
 
@@ -82,6 +94,16 @@ func (w *refreshWorker) work(ctx context.Context, git *gitAnswers, job *river.Jo
 	resolved, err := git.head(ctx, tx, a.Connection, a.Branch)
 	if err != nil {
 		return err
+	}
+	// A branch that is gone has nothing to import or build. The job asks once more, since a
+	// provider can briefly miss a branch that a push has just created, and then ends. It ends in
+	// this transaction, under the connection lock, so a push that recreates the branch while it
+	// ends waits for it and then starts a refresh of its own.
+	if errors.Is(resolved.Err, pipeline.ErrBranchNotFound) && job.Attempt > 1 {
+		if _, err = river.JobCompleteTx[*riverpgxv5.Driver](ctx, tx, job); err != nil {
+			return err
+		}
+		return tx.Commit(ctx)
 	}
 	if resolved.Err != nil {
 		return resolved.Err

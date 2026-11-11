@@ -168,7 +168,7 @@ func (s *Service) SavePreviewPolicy(ctx context.Context, p store.Principal, ws, 
 			}
 			old.Enabled = true
 			out = old.response()
-			return s.enqueuePreview(ctx, tx, previewArgs{Policy: old.ID})
+			return s.enqueuePreview(ctx, tx, ws, previewArgs{Policy: old.ID})
 		}
 		if v.Revision != cfg.Revision {
 			return domain.Conflict
@@ -225,7 +225,7 @@ func (s *Service) SavePreviewPolicy(ctx context.Context, p store.Principal, ws, 
 			return err
 		}
 		out = previewPolicy{ID: id, Generation: gen, Enabled: in.Enabled, Config: cfg}.response()
-		return s.enqueuePreview(ctx, tx, previewArgs{Policy: id})
+		return s.enqueuePreview(ctx, tx, ws, previewArgs{Policy: id})
 	})
 	return out, err
 }
@@ -429,7 +429,7 @@ func (s *Service) ActOnPreview(ctx context.Context, p store.Principal, ws, pid, 
 		default:
 			return domain.Invalid("preview.action")
 		}
-		if err = s.enqueuePreview(ctx, tx, previewArgs{Request: id}); err != nil {
+		if err = s.enqueuePreview(ctx, tx, ws, previewArgs{Request: id}); err != nil {
 			return err
 		}
 		return nil

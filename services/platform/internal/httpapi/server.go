@@ -67,6 +67,7 @@ type Server struct {
 	TerminalIdle        time.Duration
 	TerminalReviewEvery time.Duration
 	terminals           *terminalHub
+	archives            *archiveTurns
 }
 
 func New(st *store.Store, service *auth.Service, origin string, development bool, log *slog.Logger) (*Server, func()) {
@@ -85,7 +86,7 @@ func New(st *store.Store, service *auth.Service, origin string, development bool
 		sessions.Cookie.Name = "astilba_session"
 		sessions.Cookie.Secure = false
 	}
-	return &Server{TerminalIdle: domain.TroubleshootingIdle, TerminalReviewEvery: domain.TroubleshootingReview, terminals: newTerminalHub(), Alerts: alerts.New(st, service.Mail, origin, development, strings.Split(os.Getenv("ASTILBA_ALERT_WEBHOOK_ORIGINS"), ",")), Store: st, Auth: service, Sessions: sessions, Origin: origin, Log: log, Development: development}, backend.StopCleanup
+	return &Server{TerminalIdle: domain.TroubleshootingIdle, TerminalReviewEvery: domain.TroubleshootingReview, terminals: newTerminalHub(), archives: newArchiveTurns(), Alerts: alerts.New(st, service.Mail, origin, development, strings.Split(os.Getenv("ASTILBA_ALERT_WEBHOOK_ORIGINS"), ",")), Store: st, Auth: service, Sessions: sessions, Origin: origin, Log: log, Development: development}, backend.StopCleanup
 }
 func (s *Server) Handler(assets http.Handler) (http.Handler, error) {
 	if s.Execution == nil {

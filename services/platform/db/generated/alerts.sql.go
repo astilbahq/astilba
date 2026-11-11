@@ -183,10 +183,95 @@ func (q *Queries) CancelWorkspaceAlertDeliveries(ctx context.Context, workspaceI
 	return err
 }
 
+const failSpentAlertDeliveries = `-- name: FailSpentAlertDeliveries :exec
+UPDATE alert_deliveries o SET state = 'failed' WHERE o.id IN (
+    SELECT s.id FROM alert_deliveries s WHERE s.state IN ('pending','leased') AND s.next_attempt_at <= $1::timestamptz
+        AND (s.created_at < $1::timestamptz - interval '24 hours' OR s.attempts >= 5)
+    ORDER BY s.next_attempt_at,s.id LIMIT 1000 FOR UPDATE SKIP LOCKED)
+`
+
+// unscoped: delivery serves every workspace, and this only ends deliveries past their age or attempt limit.
+func (q *Queries) FailSpentAlertDeliveries(ctx context.Context, now time.Time) error {
+	_, err := q.db.Exec(ctx, failSpentAlertDeliveries, now)
+	return err
+}
+
+const finishAlertDelivery = `-- name: FinishAlertDelivery :exec
+UPDATE alert_deliveries SET state = $1,next_attempt_at = $2,failure = $3 WHERE id = $4 AND state='leased' AND attempts = $5
+`
+
+type FinishAlertDeliveryParams struct {
+	State         string    `json:"state"`
+	NextAttemptAt time.Time `json:"next_attempt_at"`
+	Failure       string    `json:"failure"`
+	ID            uuid.UUID `json:"id"`
+	Attempts      int32     `json:"attempts"`
+}
+
+// unscoped: the lease names the delivery, and the attempt count fences a lease that expired and was taken again.
+func (q *Queries) FinishAlertDelivery(ctx context.Context, arg FinishAlertDeliveryParams) error {
+	_, err := q.db.Exec(ctx, finishAlertDelivery,
+		arg.State,
+		arg.NextAttemptAt,
+		arg.Failure,
+		arg.ID,
+		arg.Attempts,
+	)
+	return err
+}
+
+const leaseAlertDelivery = `-- name: LeaseAlertDelivery :one
+WITH due AS (
+    SELECT d.id FROM alert_deliveries d
+    WHERE d.state IN ('pending','leased') AND d.next_attempt_at <= $2::timestamptz
+        AND d.created_at >= $2::timestamptz - interval '24 hours' AND d.attempts < 5
+        AND (d.channel = 'email' OR NOT EXISTS(SELECT 1 FROM alert_deliveries f WHERE f.workspace_id = d.workspace_id AND f.channel = d.channel
+            AND f.state = 'leased' AND f.next_attempt_at > $2::timestamptz))
+    ORDER BY d.next_attempt_at,d.id LIMIT 1 FOR UPDATE OF d SKIP LOCKED)
+UPDATE alert_deliveries l SET state = 'leased',attempts = l.attempts + 1,next_attempt_at = $1::timestamptz
+FROM due WHERE l.id = due.id
+RETURNING l.id,l.workspace_id,l.alert_id,l.recipient_id,l.channel,l.phase,l.settings_revision,l.attempts
+`
+
+type LeaseAlertDeliveryParams struct {
+	LeasedUntil time.Time `json:"leased_until"`
+	Now         time.Time `json:"now"`
+}
+
+type LeaseAlertDeliveryRow struct {
+	ID               uuid.UUID `json:"id"`
+	WorkspaceID      uuid.UUID `json:"workspace_id"`
+	AlertID          uuid.UUID `json:"alert_id"`
+	RecipientID      uuid.UUID `json:"recipient_id"`
+	Channel          string    `json:"channel"`
+	Phase            string    `json:"phase"`
+	SettingsRevision int64     `json:"settings_revision"`
+	Attempts         int32     `json:"attempts"`
+}
+
+// unscoped: delivery claims across workspaces, oldest first. It passes over the webhook of a workspace
+// while an attempt on it holds an unexpired lease, so a receiver that is slow to answer delays only
+// the later deliveries of that workspace to it. Mail goes through the operator relay, so is not held back.
+func (q *Queries) LeaseAlertDelivery(ctx context.Context, arg LeaseAlertDeliveryParams) (LeaseAlertDeliveryRow, error) {
+	row := q.db.QueryRow(ctx, leaseAlertDelivery, arg.LeasedUntil, arg.Now)
+	var i LeaseAlertDeliveryRow
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.AlertID,
+		&i.RecipientID,
+		&i.Channel,
+		&i.Phase,
+		&i.SettingsRevision,
+		&i.Attempts,
+	)
+	return i, err
+}
+
 const listAlerts = `-- name: ListAlerts :many
 SELECT a.id,a.kind,a.resource_id,a.server_id,a.environment_id,a.state,a.reason,a.opened_at,a.resolved_at,a.acknowledged_at,
     COALESCE((SELECT jsonb_agg(d.value) FROM (
-        SELECT jsonb_build_object('channel',channel,'phase',phase,'state',state,'attempts',attempts) AS value
+        SELECT jsonb_build_object('channel',channel,'phase',phase,'state',state,'attempts',attempts,'failure',failure) AS value
         FROM alert_deliveries WHERE workspace_id=a.workspace_id AND alert_id=a.id ORDER BY created_at,id LIMIT 202
     ) d),'[]'::jsonb)::jsonb AS deliveries
 FROM operational_alerts a

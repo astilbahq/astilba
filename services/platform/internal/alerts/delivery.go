@@ -9,8 +9,10 @@ import (
 	"encoding/json/v2"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strconv"
+	"sync"
 	"time"
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
@@ -38,46 +40,137 @@ type payload struct {
 	OccurredAt  time.Time     `json:"occurredAt"`
 }
 
+// Delivery runs attempts side by side, each on its own deadline, so that one destination that
+// is slow to answer delays no other. A claim passes over a workspace's webhook while an attempt
+// on it holds a lease, so that receiver holds one of these on a replica. Replicas that claim at the
+// same moment do not see each other's leases, and can each start one. Mail goes through the
+// operator's own relay, so a workspace's emails, one per owner, go out side by side.
+const (
+	deliveryConcurrency = 8
+	// webhookDeadline bounds a webhook attempt, connecting included. Receivers are expected to
+	// answer at once and do their own work afterwards.
+	webhookDeadline = 5 * time.Second
+	// attemptDeadline bounds any attempt. The lease outlasts it, so no attempt is still running
+	// when its delivery can be claimed again.
+	attemptDeadline = 10 * time.Second
+	deliveryLease   = 30 * time.Second
+	// deliveryPoll is how often a loop with nothing to send looks for deliveries that came due.
+	deliveryPoll = 10 * time.Second
+)
+
 func (s *Service) claim(ctx context.Context) (*delivery, error) {
 	now := s.Now()
-	_, err := s.Store.Pool.Exec(ctx, `UPDATE alert_deliveries SET state='failed' WHERE id IN (SELECT id FROM alert_deliveries WHERE state IN ('pending','leased') AND next_attempt_at<=$1 AND (created_at<$1::timestamptz-interval '24 hours' OR attempts>=5) ORDER BY next_attempt_at,id LIMIT 1000 FOR UPDATE SKIP LOCKED)`, now)
-	if err != nil {
+	if err := s.Store.Queries.FailSpentAlertDeliveries(ctx, now); err != nil {
 		return nil, err
 	}
-	var d delivery
-	err = s.Store.Pool.QueryRow(ctx, `UPDATE alert_deliveries SET state='leased',attempts=attempts+1,next_attempt_at=$1::timestamptz+interval '30 seconds' WHERE id=(SELECT id FROM alert_deliveries WHERE state IN ('pending','leased') AND next_attempt_at<=$1 AND created_at>=$1::timestamptz-interval '24 hours' AND attempts<5 ORDER BY next_attempt_at,id LIMIT 1 FOR UPDATE SKIP LOCKED) RETURNING id,workspace_id,alert_id,recipient_id,channel,phase,settings_revision,attempts`, now).Scan(&d.id, &d.workspace, &d.alert, &d.recipient, &d.channel, &d.phase, &d.revision, &d.attempt)
+	row, err := s.Store.Queries.LeaseAlertDelivery(ctx, db.LeaseAlertDeliveryParams{Now: now, LeasedUntil: now.Add(deliveryLease)})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
-	return &d, err
+	if err != nil {
+		return nil, err
+	}
+	return &delivery{id: row.ID, workspace: row.WorkspaceID, alert: row.AlertID, recipient: row.RecipientID, channel: row.Channel, phase: row.Phase, revision: row.SettingsRevision, attempt: int(row.Attempts)}, nil
 }
+
+// Deliver makes every attempt that is due, and returns once none is due and none is running.
+// The error is the last to happen of any attempt's, claim's or record's.
 func (s *Service) Deliver(ctx context.Context) error {
-	var last error
-	for range 20 {
-		d, err := s.claim(ctx)
-		if err != nil {
-			return err
-		}
-		if d == nil {
-			break
-		}
-		attempt, cancel := context.WithTimeout(ctx, 10*time.Second)
-		state, err := s.send(attempt, *d)
-		cancel()
-		if err != nil {
-			last = err
-			state = "pending"
-			if d.attempt >= 5 {
-				state = "failed"
+	return s.deliver(ctx, false)
+}
+
+// RunDeliveries delivers until ctx ends, looking for due deliveries whenever an attempt
+// finishes and every deliveryPoll otherwise.
+func (s *Service) RunDeliveries(ctx context.Context) {
+	_ = s.deliver(ctx, true)
+}
+
+func (s *Service) deliver(ctx context.Context, continuous bool) error {
+	var (
+		attempts sync.WaitGroup
+		mu       sync.Mutex
+		last     error
+	)
+	failed := func(err error) {
+		mu.Lock()
+		last = err
+		mu.Unlock()
+	}
+	finished := make(chan struct{}, deliveryConcurrency)
+	poll := time.NewTicker(deliveryPoll)
+	defer poll.Stop()
+	defer attempts.Wait()
+	running, claiming := 0, true
+	for {
+		for claiming && running < deliveryConcurrency && ctx.Err() == nil {
+			d, err := s.claim(ctx)
+			if err != nil {
+				failed(err)
+				if !continuous {
+					claiming = false
+				} else if ctx.Err() == nil {
+					slog.Warn("operational alert delivery could not claim work")
+				}
+				break
 			}
+			if d == nil {
+				break
+			}
+			running++
+			attempts.Go(func() {
+				defer func() { finished <- struct{}{} }()
+				sent, recorded := s.attempt(ctx, *d)
+				if recorded != nil {
+					failed(recorded)
+					if continuous && ctx.Err() == nil {
+						slog.Warn("operational alert delivery could not record an attempt")
+					}
+				} else if sent != nil {
+					failed(sent)
+					// Mail goes through the operator's own relay, so its failures are the operator's
+					// to see. A webhook is its workspace's to fix, and shows in its alerts.
+					if continuous && d.channel == "email" && ctx.Err() == nil {
+						slog.Warn("operational alert mail delivery failed")
+					}
+				}
+			})
 		}
-		delay := time.Minute * time.Duration(1<<(d.attempt-1))
-		_, finish := s.Store.Pool.Exec(ctx, `UPDATE alert_deliveries SET state=$2,next_attempt_at=$3 WHERE id=$1 AND state='leased' AND attempts=$4`, d.id, state, s.Now().Add(delay), d.attempt)
-		if finish != nil {
-			return finish
+		if !continuous && running == 0 {
+			mu.Lock()
+			defer mu.Unlock()
+			return last
+		}
+		select {
+		case <-ctx.Done():
+			attempts.Wait()
+			return ctx.Err()
+		case <-finished:
+			running--
+		case <-poll.C:
 		}
 	}
-	return last
+}
+
+// attempt sends one claimed delivery and records the outcome under its lease. It returns the
+// send's error and the record's apart, since only the second is the controller's own failure.
+func (s *Service) attempt(ctx context.Context, d delivery) (error, error) {
+	attempt, cancel := context.WithTimeout(ctx, attemptDeadline)
+	state, err := s.send(attempt, d)
+	cancel()
+	failure := ""
+	if err != nil {
+		state = "pending"
+		if d.attempt >= 5 {
+			state = "failed"
+		}
+		failure = "The attempt could not be completed."
+		var known *deliveryFailure
+		if errors.As(err, &known) {
+			failure = known.note
+		}
+	}
+	delay := time.Minute * time.Duration(1<<(d.attempt-1))
+	return err, s.Store.Queries.FinishAlertDelivery(ctx, db.FinishAlertDeliveryParams{ID: d.id, State: state, NextAttemptAt: s.Now().Add(delay), Attempts: int32(d.attempt), Failure: failure})
 }
 func (s *Service) send(ctx context.Context, d delivery) (string, error) {
 	var p payload
@@ -110,11 +203,11 @@ func (s *Service) send(ctx context.Context, d delivery) (string, error) {
 			return "", err
 		}
 		if s.Mail == nil {
-			return "", errors.New("alert mail unavailable")
+			return "", &deliveryFailure{"Mail is not configured for this installation."}
 		}
 		body := fmt.Sprintf("%s\nState: %s\nReason: %s\nWorkspace: %s\nResource: %s\nObserved: %s\nDelivery: %s\n\nOpen Alerts in your workspace dashboard: %s/alerts\n\nThis records an observation. It does not change your workloads.", Title(p.Kind), p.State, p.Reason, p.WorkspaceID, p.ResourceID, p.OccurredAt.UTC().Format(time.RFC3339), p.DeliveryID, s.Origin)
 		if err = s.Mail.Send(ctx, address, "Astilba: "+Title(p.Kind), body); err != nil {
-			return "", errors.New("alert mail delivery failed")
+			return "", &deliveryFailure{"The mail relay did not accept the message."}
 		}
 		return "sent", nil
 	}
@@ -131,7 +224,7 @@ func (s *Service) send(ctx context.Context, d delivery) (string, error) {
 	}
 	private, err := s.destination(hook.URL)
 	if err != nil {
-		return "", err
+		return "", &deliveryFailure{"The webhook address is no longer allowed. Save the alert settings again."}
 	}
 	raw, err = json.Marshal(p)
 	if err != nil {
@@ -150,18 +243,28 @@ func (s *Service) send(ctx context.Context, d delivery) (string, error) {
 	req.Header.Set("X-Astilba-Delivery", d.id.String())
 	req.Header.Set("X-Astilba-Timestamp", timestamp)
 	req.Header.Set("X-Astilba-Signature", "sha256="+hex.EncodeToString(signature.Sum(nil)))
-	client := outbound.Client(private, 10*time.Second)
+	client := outbound.Client(private, webhookDeadline)
 	defer client.CloseIdleConnections()
 	response, err := client.Do(req)
+	var timeout interface{ Timeout() bool }
+	if errors.Is(err, context.DeadlineExceeded) || errors.As(err, &timeout) && timeout.Timeout() {
+		return "", &deliveryFailure{fmt.Sprintf("The receiver did not answer within %d seconds.", int(webhookDeadline/time.Second))}
+	}
 	if err != nil {
-		return "", errors.New("alert webhook delivery failed")
+		return "", &deliveryFailure{"The receiver could not be reached."}
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return "", errors.New("alert webhook delivery failed")
+		return "", &deliveryFailure{fmt.Sprintf("The receiver answered with HTTP %d.", response.StatusCode)}
 	}
 	return "sent", nil
 }
+
+// deliveryFailure is a failed attempt as the workspace's owners see it on the delivery: what
+// happened, in the controller's words, never the destination or what a receiver said.
+type deliveryFailure struct{ note string }
+
+func (f *deliveryFailure) Error() string { return f.note }
 func Title(kind api.AlertKind) string {
 	switch kind {
 	case api.ServerOffline:

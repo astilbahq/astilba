@@ -17,6 +17,18 @@ SELECT configuration,encrypted_access FROM git_connections WHERE workspace_id = 
 INSERT INTO git_branch_pushes(workspace_id,connection_id,branch) VALUES(@workspace_id,@connection_id,@branch)
 ON CONFLICT(workspace_id,connection_id,branch) DO UPDATE SET sequence = nextval('git_branch_push_sequence'),pushed_at = now();
 
+-- name: ShareGitConnectionDeliveries :exec
+-- Saving what tracks a branch holds this from before it asks for the branch's head. A push then
+-- either commits first, so the head is asked for again, or waits and finds what was saved.
+SELECT id FROM git_connections WHERE workspace_id = @workspace_id AND id = @id FOR SHARE;
+
+-- name: GitBranchTracked :one
+-- Whether a push for this branch has work to start: a source importing it, or a target building it automatically.
+SELECT (EXISTS(SELECT 1 FROM git_sources g WHERE g.workspace_id = sqlc.arg(workspace_id) AND g.connection_id = sqlc.arg(connection_id)
+        AND g.configuration->>'branch' = sqlc.arg(branch)::text)
+    OR EXISTS(SELECT 1 FROM build_targets t WHERE t.workspace_id = sqlc.arg(workspace_id) AND t.connection_id = sqlc.arg(connection_id)
+        AND t.configuration->>'branch' = sqlc.arg(branch)::text AND t.configuration->>'autoBuild' = 'true'))::boolean;
+
 -- name: PruneGitBranchPushes :exec
 -- unscoped: retention covers every workspace, and an answer lives far less than a day.
 DELETE FROM git_branch_pushes WHERE (workspace_id,connection_id,branch) IN (

@@ -152,13 +152,22 @@ func decodeArchiveMode(raw []byte, recovery bool) (Archive, error) {
 	return archive, nil
 }
 
-func (s *Service) Import(ctx context.Context, p store.Principal, passphrase string, envelope []byte, invitation string) (store.Workspace, error) {
-	var out store.Workspace
+// AdmitImport refuses an account that Import would refuse whatever its archive holds, so that
+// such a request is refused before its body is read.
+func (s *Service) AdmitImport(p store.Principal) error {
 	if !p.Recent() {
-		return out, domain.RecentRequired
+		return domain.RecentRequired
 	}
 	if s.Store.Hosted && (!p.MFA || p.Account.EmailVerifiedAt == nil) {
-		return out, domain.Forbidden
+		return domain.Forbidden
+	}
+	return nil
+}
+
+func (s *Service) Import(ctx context.Context, p store.Principal, passphrase string, envelope []byte, invitation string) (store.Workspace, error) {
+	var out store.Workspace
+	if e := s.AdmitImport(p); e != nil {
+		return out, e
 	}
 	plaintext, e := Open(ctx, passphrase, envelope)
 	if e != nil {

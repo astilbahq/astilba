@@ -4037,6 +4037,8 @@ export interface components {
             /** @enum {string} */
             state: "pending" | "leased" | "sent" | "failed" | "cancelled";
             attempts: number;
+            /** @description Why the latest attempt failed */
+            failure: string;
         };
         AlertInbox: {
             alerts: components["schemas"]["Alert"][];

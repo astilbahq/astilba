@@ -8,6 +8,7 @@ import (
 	"slices"
 	"time"
 
+	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/composeproject"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
@@ -209,6 +210,10 @@ func (s *Service) BindSource(ctx context.Context, p store.Principal, ws, pid, en
 		}
 		if v.Revision != base || v.Spec.Compose == nil {
 			return domain.Invalid("source")
+		}
+		// A push that finds no source tracking its branch starts no refresh.
+		if err = db.New(tx).ShareGitConnectionDeliveries(ctx, db.ShareGitConnectionDeliveriesParams{WorkspaceID: ws, ID: c.ConnectionID}); err != nil {
+			return err
 		}
 		head, err := git.head(ctx, tx, c.ConnectionID, c.Branch)
 		if err != nil {
@@ -417,6 +422,12 @@ func (s *Service) admitBuild(ctx context.Context, tx pgx.Tx, git *gitAnswers, p 
 	}
 	if !found {
 		return api.Operation{}, domain.Invalid("applicationId")
+	}
+	// A push that finds no target tracking its branch starts no refresh.
+	if persist {
+		if err = db.New(tx).ShareGitConnectionDeliveries(ctx, db.ShareGitConnectionDeliveriesParams{WorkspaceID: ws, ID: c.ConnectionID}); err != nil {
+			return api.Operation{}, err
+		}
 	}
 	head, err := git.head(ctx, tx, c.ConnectionID, c.Branch)
 	if err != nil {

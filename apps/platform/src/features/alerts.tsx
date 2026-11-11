@@ -161,7 +161,7 @@ function Inbox({ workspace }: { workspace: Schema["Workspace"] }) {
                       {Object.entries(
                         alert.deliveries.reduce<Record<string, number>>(
                           (groups, delivery) => {
-                            const label = `${delivery.channel} · ${delivery.phase} · ${delivery.state} · ${delivery.attempts} attempts`;
+                            const label = `${delivery.channel} · ${delivery.phase} · ${delivery.state} · ${delivery.attempts} attempts${delivery.failure ? ` · ${delivery.failure}` : ""}`;
                             groups[label] = (groups[label] ?? 0) + 1;
                             return groups;
                           },
