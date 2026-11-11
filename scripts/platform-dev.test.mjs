@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { checkProfile } from "./platform-dev-host.mjs";
+import { backupRoot, checkProfile } from "./platform-dev-host.mjs";
 import { allowed } from "./platform-dev-proxy.mjs";
 
 const read = (path) =>
@@ -59,6 +59,21 @@ test("the VM's management link carries only agent paths", () => {
 
 test("the stack refuses Colima's default profile and unsafe names", () => {
   assert.doesNotThrow(() => checkProfile("astilba-dev"));
-  for (const name of ["default", "colima", "", "Astilba", "a b", "-x", "a;b"])
+  // Colima reads `colima-NAME` as profile NAME, so it would reach someone else's VM.
+  for (const name of [
+    "default",
+    "colima",
+    "colima-astilba-dev",
+    "",
+    "Astilba",
+    "a b",
+    "-x",
+    "a;b",
+  ])
     assert.throws(() => checkProfile(name), name);
+});
+
+test("the agent's allowed backup root is the one the seed's destination uses", () => {
+  const local = read("scripts/platform-dev-host.sh");
+  assert.match(local, new RegExp(`^backups=${backupRoot}$`, "m"));
 });

@@ -46,14 +46,17 @@ export function supervisor({ root, lock }) {
   async function shutdown() {
     stop();
     const children = [...new Set([...active, ...services])];
-    const first = children.filter((child) => !child.last);
-    const kill = setTimeout(() => {
-      for (const child of first) signalGroup(child, "SIGKILL");
-    }, 5000);
-    await Promise.all(first.map((child) => child.done));
-    clearTimeout(kill);
-    for (const child of children) if (child.last) signalGroup(child, "SIGTERM");
-    await Promise.all(children.map((child) => child.done));
+    const ended = async (group) => {
+      const kill = setTimeout(() => {
+        for (const child of group) signalGroup(child, "SIGKILL");
+      }, 5000);
+      await Promise.all(group.map((child) => child.done));
+      clearTimeout(kill);
+    };
+    await ended(children.filter((child) => !child.last));
+    const last = children.filter((child) => child.last);
+    for (const child of last) signalGroup(child, "SIGTERM");
+    await ended(last);
   }
 
   function start(

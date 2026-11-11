@@ -32,23 +32,29 @@ const slow = 900000;
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 export function checkProfile(profile) {
-  if (!profilePattern.test(profile) || reserved.has(profile))
+  // Colima also reads `colima-NAME` as profile NAME, which would bypass the checks below.
+  if (
+    !profilePattern.test(profile) ||
+    reserved.has(profile) ||
+    profile.startsWith("colima-")
+  )
     throw new Error(
       "Name a disposable Colima profile for the local stack, such as astilba-dev; Colima's default profile is refused",
     );
 }
 
 export function devHost({ profile, owner, root, run }) {
-  checkProfile(profile);
   if (!uuid.test(owner)) throw new Error("Invalid local stack owner");
   // Values cross the VM's shell as arguments, so only fixed tokens and validated
   // identifiers go there; anything else travels on stdin.
   const vm = (args, options = {}) =>
     run("colima", ["ssh", "--profile", profile, "--", ...args], options);
   const sudo = (args, options) => vm(["sudo", ...args], options);
+  // Scripts may download and install packages, within their own retry limits.
   const script = (path, args) =>
     sudo(["env", "ASTILBA_DISPOSABLE_HOST=1", "bash", "-s", "--", ...args], {
       input: readFileSync(join(root, path)),
+      timeout: slow,
     });
 
   async function status(options) {
@@ -64,17 +70,20 @@ export function devHost({ profile, owner, root, run }) {
   return {
     profile,
     status,
+    // Creates the profile with the stack's settings; claim() then marks it as this stack's.
     async create() {
       await run("colima", ["start", profile, ...vmFlags], {
         inherit: true,
         timeout: slow,
       });
+    },
+    async claim() {
       await script("scripts/platform-dev-host.sh", ["claim", owner]);
     },
+    // Starts an existing profile as it is configured; its ownership is checked next.
     async start() {
-      // Repeating the flags keeps a profile someone restarted by hand on the stack's settings.
       if ((await status()) !== "Running")
-        await run("colima", ["start", profile, ...vmFlags], {
+        await run("colima", ["start", profile, "--activate=false"], {
           inherit: true,
           timeout: slow,
         });
@@ -130,6 +139,34 @@ export function devHost({ profile, owner, root, run }) {
       if (machine === "aarch64") return "arm64";
       if (machine === "x86_64") return "amd64";
       throw new Error(`Unsupported VM architecture: ${machine}`);
+    },
+    // One SSH connection, independent of Lima's own control connection, carrying the
+    // database and routes to Mac loopback and the agent's management link into the VM's.
+    tunnel({ config, alias, databasePort, ingressPort, proxyPort }) {
+      return [
+        "-F",
+        config,
+        "-N",
+        "-o",
+        "ControlMaster=no",
+        "-o",
+        "ControlPath=none",
+        "-o",
+        "ExitOnForwardFailure=yes",
+        "-o",
+        "ServerAliveInterval=10",
+        "-o",
+        "ServerAliveCountMax=3",
+        "-o",
+        "LogLevel=ERROR",
+        "-L",
+        `127.0.0.1:${databasePort}:127.0.0.1:${vmPorts.postgres}`,
+        "-L",
+        `127.0.0.1:${ingressPort}:127.0.0.1:${vmPorts.ingress}`,
+        "-R",
+        `127.0.0.1:${vmPorts.management}:127.0.0.1:${proxyPort}`,
+        alias,
+      ];
     },
     // Writes a file the launcher produced into the VM's staging directory.
     async stage(name, data) {

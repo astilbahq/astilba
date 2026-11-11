@@ -15,6 +15,8 @@ backups=/var/lib/astilba-dev-backups
 
 # Every later step changes this VM, so it must belong to this checkout's stack.
 if [[ "$mode" == claim ]]; then
+  # Claiming again finishes a claim an interrupted start began.
+  [[ -f "$marker" && "$(cat "$marker")" == "$owner" ]] && exit 0
   [[ ! -e /etc/astilba-dev && ! -e /var/lib/astilba-agent && ! -e /usr/local/bin/astilba-agent ]] ||
     { echo 'This VM already holds Astilba state; refusing to claim it.' >&2; exit 1; }
   install -d -m 0755 /etc/astilba-dev
@@ -75,13 +77,48 @@ if [[ "${compose#v}" != 5.6.1 ]]; then
   [[ "$(docker compose version --short)" == 5.6.1 || "$(docker compose version --short)" == v5.6.1 ]]
 fi
 
-# Lima answers on its gateway address for every port the Mac has open on loopback. Deployed
-# containers must not reach the developer's own services that way. The agent itself
-# reaches management through a tunnel to this VM's loopback, not through the gateway.
+# Lima answers on its gateway address for every port the Mac has open on loopback. Nothing
+# in this VM may reach the developer's own services that way: not deployed containers, and
+# not a privileged one that escapes to the VM. The agent reaches management through the
+# tunnel on this VM's loopback instead. Only DNS, which dnsmasq forwards to Lima's resolver
+# on the gateway, stays open. The rules load at boot before Docker, so workloads that
+# restart with the VM never run without them.
 gateway=$(getent ahostsv4 host.lima.internal | awk 'NR == 1 { print $1 }')
 [[ "$gateway" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'Cannot resolve the Lima gateway.' >&2; exit 1; }
-iptables -C DOCKER-USER -d "$gateway" -j REJECT 2>/dev/null ||
-  iptables -I DOCKER-USER -d "$gateway" -j REJECT
+cat > /etc/astilba-dev/gateway.nft <<NFT
+table inet astilba_dev_gateway
+delete table inet astilba_dev_gateway
+table inet astilba_dev_gateway {
+  chain forward {
+    type filter hook forward priority filter - 10; policy accept;
+    ip daddr $gateway reject
+  }
+  chain output {
+    type filter hook output priority filter - 10; policy accept;
+    ip daddr $gateway meta l4proto { tcp, udp } th dport 53 accept
+    ip daddr $gateway ct state new reject
+  }
+}
+NFT
+cat > /etc/systemd/system/astilba-dev-gateway.service <<'UNIT'
+[Unit]
+Description=Keep the local development VM off the Mac's loopback services
+Before=docker.service containerd.service
+DefaultDependencies=no
+After=local-fs.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/nft -f /etc/astilba-dev/gateway.nft
+
+[Install]
+WantedBy=multi-user.target docker.service
+UNIT
+chmod 0644 /etc/astilba-dev/gateway.nft /etc/systemd/system/astilba-dev-gateway.service
+systemctl daemon-reload
+systemctl enable astilba-dev-gateway.service >/dev/null 2>&1
+systemctl restart astilba-dev-gateway.service
 
 # The repository's restic installer needs bzip2, which Colima's image leaves out.
 if ! command -v bzip2 >/dev/null; then

@@ -1,9 +1,11 @@
 import { setTimeout as delay } from "node:timers/promises";
+import { backupRoot } from "./platform-dev-host.mjs";
 
 // Brings the local stack's workspace to a known starting point through the real API, as
 // its owner would from the dashboard. Every step looks for what an earlier run created
-// first, so running it again changes nothing. It stops short of deploying, so the
-// developer can plan, apply and observe the first deployment themselves.
+// first and leaves anything the developer changed alone; only something missing by name
+// is created again. It stops short of deploying, so the developer can plan, apply and
+// observe the first deployment themselves.
 export const names = {
   project: "Local app",
   environment: "production",
@@ -82,6 +84,10 @@ export async function seed({ api, origin, email, password, signal }) {
     { email, password },
     [200],
   );
+  if (session.mfaPending)
+    throw new Error(
+      "The local owner now signs in with two-factor authentication, so the seed cannot sign in",
+    );
   const workspace = session.workspaces?.[0];
   if (!workspace) throw new Error("The local owner has no workspace");
   const ws = `/api/v1/workspaces/${workspace.id}`;
@@ -131,35 +137,44 @@ export async function seed({ api, origin, email, password, signal }) {
     await http.post(`${ws}/backup-destinations`, {
       name: names.destination,
       kind: "filesystem",
-      root: "/var/lib/astilba-dev-backups",
+      root: backupRoot,
       endpoint: "",
       bucket: "",
       region: "",
       access: { accessKey: "", secretKey: "", password: "" },
     });
 
+  // Only a policy nobody has saved yet, so turning sessions off stays off.
   const policy = await http.get(`${base}/troubleshooting`);
-  if (policy.available && !policy.enabled)
+  if (policy.available && !policy.enabled && policy.generation === 0)
     await http.put(`${base}/troubleshooting`, {
       enabled: true,
       ownersOnly: false,
       generation: policy.generation,
     });
 
+  // The agent's state directory belongs to its server, so losing it means starting over.
+  async function present(serverId) {
+    const server = (await http.get(`${ws}/servers`)).find(
+      (item) => item.id === serverId,
+    );
+    if (!server || server.status === "revoked")
+      throw new Error(
+        `The ${names.server} server was revoked or deleted; start over with --reset`,
+      );
+    return server;
+  }
+
   return {
     workspace: workspace.id,
     environment: environment.id,
-    // The server is created only when the launcher has none enrolled, because a code is
-    // valid for ten minutes and each one is a credential.
+    // A server is created only when the launcher has none, because a code is valid for
+    // ten minutes and each one is a credential. An enrollment that was interrupted renews
+    // the same server's code: the agent's state directory stays bound to that server.
     async enrollment(serverId) {
       if (serverId) {
-        const servers = await http.get(`${ws}/servers`);
-        if (
-          servers.some(
-            (server) => server.id === serverId && server.status !== "revoked",
-          )
-        )
-          return http.post(`${ws}/servers/${serverId}/enrollment`);
+        await present(serverId);
+        return http.post(`${ws}/servers/${serverId}/enrollment`);
       }
       return http.post(`${ws}/servers`, {
         name: names.server,
@@ -168,10 +183,8 @@ export async function seed({ api, origin, email, password, signal }) {
     },
     async awaitServer(serverId) {
       for (let i = 0; i < 90; i++) {
-        const server = (await http.get(`${ws}/servers`)).find(
-          (s) => s.id === serverId,
-        );
-        if (server?.status === "online" && server.capabilities?.compose)
+        const server = await present(serverId);
+        if (server.status === "online" && server.capabilities?.compose)
           return server;
         await delay(1000, undefined, { signal });
       }

@@ -62,10 +62,12 @@ if (
   )
 )
   throw new Error(`Run pnpm dev with Node 24.18.1 and ${packageManager}`);
-const port = Number(values.port);
-if (!Number.isInteger(port) || port < 1027 || port > 65535)
-  throw new Error("--port must be an integer from 1027 to 65535");
 const stack = values.vm !== undefined;
+// The full stack also uses port - 2 for routes.
+const lowest = stack ? 1027 : 1025;
+const port = Number(values.port);
+if (!Number.isInteger(port) || port < lowest || port > 65535)
+  throw new Error(`--port must be an integer from ${lowest} to 65535`);
 if (stack) checkProfile(values.vm);
 if (values.reset && values.wipe) throw new Error("Choose --reset or --wipe");
 let host = stack ? undefined : process.env.PLAT_APP_DOCKER_HOST;
@@ -90,12 +92,17 @@ const email = "owner@example.test";
 const password = "correct horse battery staple";
 let state;
 let vm;
+// Set once this run has read the VM's ownership marker, or started a VM to read it.
+let vmOwned = false;
+let vmStarted = false;
 let agent;
 let locked = false;
 let cleanupError;
 const processes = supervisor({ root, lock });
 const { run, serve, waitFor, httpReady, stop } = processes;
-for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => stop());
+// Closing the terminal sends SIGHUP; the children are detached and would outlive it.
+for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"])
+  process.on(signal, () => stop());
 
 const docker = (args, cleanup = false) =>
   run("docker", ["--host", host, ...args], { cleanup });
@@ -124,9 +131,10 @@ let env;
 function startManagement() {
   management = serve(binary, ["serve"], env);
 }
+// Migrations run before the running process stops, so a failed one leaves it serving.
 async function restartManagement() {
-  await processes.replace(management);
   await run(binary, ["migrate"], { env, inherit: true });
+  await processes.replace(management);
   startManagement();
   await waitFor(
     () => httpReady(`http://127.0.0.1:${port - 1}/healthz`, 204),
@@ -140,6 +148,10 @@ function watchSources(arch) {
   let timer;
   let running = false;
   let again = false;
+  // Work a failed step left undone is retried on the next change, even if no binary
+  // changes again.
+  let restart = false;
+  let install = false;
   const rebuild = async () => {
     if (running) {
       again = true;
@@ -150,23 +162,25 @@ function watchSources(arch) {
       do {
         again = false;
         console.log("\nGo sources changed; rebuilding…");
-        const server = await buildServer();
-        const built = stack && (await agent.build(arch));
-        if (built) {
+        if (await buildServer()) restart = true;
+        // The release catalog is read at startup, so a new agent restarts management too.
+        if (stack && (await agent.build(arch))) restart = install = true;
+        if (!restart && !install) console.log("No binary changed.");
+        if (install) {
           await agent.install(vm, true);
+          install = false;
           console.log(`Agent ${state.agentVersion} installed in the VM.`);
         }
-        // The release catalog is read at startup, so a new agent restarts management too.
-        if (server || built) {
+        if (restart) {
           await restartManagement();
+          restart = false;
           console.log("Management restarted.");
         }
-        if (!server && !built) console.log("No binary changed.");
       } while (again && !processes.stopping);
     } catch (error) {
       if (!processes.stopping)
         console.error(
-          `Rebuild failed; still running the previous build.\n${error.message}`,
+          `Rebuild failed; the next change tries again.\n${error.message}`,
         );
     } finally {
       running = false;
@@ -185,6 +199,7 @@ function watchSources(arch) {
 }
 
 let proxy;
+let agentNote = "";
 try {
   mkdirSync(join(root, ".artifacts"), { recursive: true });
   try {
@@ -225,40 +240,45 @@ try {
       throw new Error(
         "Demo state belongs to another Docker daemon; use its original PLAT_APP_DOCKER_HOST",
       );
-    if (stack && saved.profile !== values.vm)
-      throw new Error(
-        `This checkout's stack runs in Colima profile ${saved.profile}; pass --vm ${saved.profile}, or --wipe it first`,
-      );
-    state = saved;
+    if (stack && saved.profile !== values.vm) {
+      // State that never reached a VM holds nothing worth keeping.
+      if (saved.vm)
+        throw new Error(
+          `This checkout's stack runs in Colima profile ${saved.profile}; pass --vm ${saved.profile}, or --wipe it first`,
+        );
+    } else state = saved;
   }
-  if ((values.reset || values.wipe) && state) {
-    if (stack) {
+  if (values.reset || values.wipe) {
+    if (stack && state?.vm) {
       vm = devHost({ profile: state.profile, owner: state.owner, root, run });
       const status = await vm.status();
       if (status !== "absent") {
-        // Only a VM this stack claimed is deleted, after reading its marker.
-        if (!state.vm)
-          throw new Error(
-            `Colima profile ${state.profile} was not created by this stack; delete it yourself if it is disposable`,
-          );
+        vmStarted = status !== "Running";
         await vm.start();
-        if (!(await vm.owned()))
+        // Only a VM this stack claimed is deleted, after reading its marker, or one it
+        // was creating when it stopped, before it could write one.
+        if (!(await vm.owned()) && state.vm !== "creating")
           throw new Error(
             `Colima profile ${state.profile} belongs to another stack; refusing to delete it`,
           );
         console.log(`Deleting Colima profile ${state.profile}…`);
         await vm.remove();
+        vmStarted = false;
       }
-    } else {
+    } else if (state && !stack) {
       const id = await container();
       if (id) await docker(["rm", "--force", "--volumes", id]);
     }
+    console.log(
+      state
+        ? "Local data deleted."
+        : "This checkout has no local data to delete.",
+    );
     rmSync(directory, { recursive: true });
     mkdirSync(directory, { mode: 0o700 });
     state = undefined;
   }
-  if (values.wipe) console.log("Local data deleted.");
-  else {
+  if (!values.wipe) {
     if (!state) {
       state = {
         version: 1,
@@ -279,12 +299,21 @@ try {
           throw new Error(
             "The local stack's VM is missing; start over with --reset",
           );
+        // Recorded first, so an interrupted creation can be finished or wiped later.
+        state.vm = "creating";
+        saveState();
         console.log(
           `Creating Colima profile ${state.profile}; the first start takes a few minutes…`,
         );
         await vm.create();
-        state.vm = true;
-        saveState();
+      } else if (state.vm === "creating") {
+        // An interrupted creation may have stopped part way through provisioning, and a
+        // VM that was never claimed holds nothing to keep, so it is made again.
+        console.log(
+          `Creating Colima profile ${state.profile} again; its first start was interrupted…`,
+        );
+        await vm.remove();
+        await vm.create();
       } else {
         if (!state.vm)
           throw new Error(
@@ -293,10 +322,16 @@ try {
         console.log(`Starting Colima profile ${state.profile}…`);
         await vm.start();
       }
+      if (state.vm === "creating") {
+        await vm.claim();
+        state.vm = true;
+        saveState();
+      }
       if (!(await vm.owned()))
         throw new Error(
           `Colima profile ${state.profile} belongs to another stack; refusing to change it`,
         );
+      vmOwned = true;
       await vm.prepare();
       host = await vm.dockerHost();
       arch = await vm.arch();
@@ -392,30 +427,13 @@ try {
       proxyPort = await anyPort();
       serve(
         "ssh",
-        [
-          "-F",
+        vm.tunnel({
           config,
-          "-N",
-          "-o",
-          "ControlMaster=no",
-          "-o",
-          "ControlPath=none",
-          "-o",
-          "ExitOnForwardFailure=yes",
-          "-o",
-          "ServerAliveInterval=10",
-          "-o",
-          "ServerAliveCountMax=3",
-          "-o",
-          "LogLevel=ERROR",
-          "-L",
-          `127.0.0.1:${databasePort}:127.0.0.1:${vmPorts.postgres}`,
-          "-L",
-          `127.0.0.1:${ingressPort}:127.0.0.1:${vmPorts.ingress}`,
-          "-R",
-          `127.0.0.1:${vmPorts.management}:127.0.0.1:${proxyPort}`,
-          ssh.alias,
-        ],
+          alias: ssh.alias,
+          databasePort,
+          ingressPort,
+          proxyPort,
+        }),
         process.env,
         { last: true },
       );
@@ -481,13 +499,21 @@ try {
     );
     if (stack) {
       console.log("Seeding the workspace and enrolling the agent…");
-      const seeded = await seed({
-        api: `http://127.0.0.1:${port - 1}`,
-        origin: `http://127.0.0.1:${port}`,
-        email,
-        password,
-        signal: processes.signal,
-      });
+      let seeded;
+      try {
+        seeded = await seed({
+          api: `http://127.0.0.1:${port - 1}`,
+          origin: `http://127.0.0.1:${port}`,
+          email,
+          password,
+          signal: processes.signal,
+        });
+      } catch (error) {
+        // Once the agent is enrolled the seed is a convenience: a developer who changed
+        // the owner's password or turned on two-factor sign-in keeps a working stack.
+        if (!state.enrolled || processes.stopping) throw error;
+        console.warn(`Skipped the seed: ${error.message}`);
+      }
       await agent.install(vm, false);
       if (!state.enrolled) {
         const enrollment = await seeded.enrollment(state.server);
@@ -514,13 +540,16 @@ try {
       }
       await vm.sudo(["systemctl", "enable", "astilba-agent"]);
       await vm.sudo(["systemctl", "restart", "astilba-agent"]);
-      await seeded.awaitServer(state.server);
+      if (seeded) await seeded.awaitServer(state.server);
+      agentNote = seeded
+        ? `The agent in Colima profile ${state.profile} is online.`
+        : `The agent in Colima profile ${state.profile} was restarted; check the Servers page for its status.`;
     }
     if (values.watch) watchSources(arch);
     console.log(
       `\nReady: http://127.0.0.1:${port}/login\nSign in: ${email} / ${password}\nLocal email is printed here instead of being sent.${
         stack
-          ? `\nThe agent in Colima profile ${state.profile} is online. Deployed routes answer at http://${routeDomain}:${ingressPort}/`
+          ? `\n${agentNote} Deployed routes answer at http://${routeDomain}:${ingressPort}/`
           : ""
       }\n${values.watch ? "Go changes rebuild and restart what they affect; dashboard changes reload in place.\n" : ""}Ctrl-C stops everything and keeps its data. --reset starts over; --wipe deletes it.\n`,
     );
@@ -534,18 +563,18 @@ try {
     proxy?.closeAllConnections?.();
     await processes.shutdown();
     try {
-      if (state && host && !values.wipe) {
+      if (state && host) {
         const id = await container(true);
         if (id) await docker(["stop", "--time", "5", id], true);
       }
-      // The VM keeps its data and workloads, which start again with it.
+      // The VM keeps its data and workloads, which start again with it. Only a VM whose
+      // marker this run read, one it started just to read it, or one it was creating is
+      // stopped.
       if (
-        stack &&
-        state?.vm &&
-        !values.wipe &&
-        (await vm?.status({ cleanup: true })) === "Running"
+        (vmOwned || vmStarted || state?.vm === "creating") &&
+        (await vm.status({ cleanup: true })) === "Running"
       ) {
-        console.log(`Stopping Colima profile ${state.profile}…`);
+        console.log(`Stopping Colima profile ${vm.profile}…`);
         await vm.stop();
       }
     } catch (error) {

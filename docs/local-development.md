@@ -13,7 +13,7 @@ pnpm install --frozen-lockfile
 make dev
 ```
 
-The first run creates the Colima profile `astilba-dev` and takes a few minutes; later runs start it in about half a minute. Name another profile with `make dev PLAT_DEV_COLIMA_PROFILE=<profile>`, or run `pnpm dev --vm <profile> [--port 54182]` directly. The launcher creates the profile itself and claims it with a marker inside the VM. It refuses Colima's `default` profile and any existing profile it did not create, and it never selects a Docker context: every command names the profile or its socket. Colima itself adds a `colima-<profile>` context without selecting it.
+The first run creates the Colima profile `astilba-dev` and takes a few minutes; later runs start it in about half a minute. Name another profile with `make dev PLAT_DEV_COLIMA_PROFILE=<profile>`, or run `pnpm dev --vm <profile> [--port 54182]` directly. The launcher creates the profile itself and claims it with a marker inside the VM. It refuses Colima's `default` profile, names starting with `colima-` (Colima reads `colima-foo` as profile `foo`) and any existing profile it did not create, and it never selects a Docker context: every command names the profile or its socket. Colima itself adds a `colima-<profile>` context without selecting it.
 
 When it prints **Ready**, open `http://127.0.0.1:54182/login` and sign in as `owner@example.test` / `correct horse battery staple`. That account, the PostgreSQL password, the keyring, the agent's release key and the management certificate exist only in this checkout's private `.artifacts/dev-stack`, which nothing serves. The password is a published local-only test value; management listens on loopback in development mode only.
 
@@ -35,7 +35,7 @@ Each start signs in through the API and makes sure the **Local stack** workspace
 - terminal sessions enabled for that environment;
 - the **Local VM** deployment server, enrolled and online.
 
-The seed fills in the draft only while it still holds the initial empty bundle, and finds everything else by name, so a restart never undoes your edits. It does not deploy: the first plan is yours.
+The seed fills in the draft only while it still holds the initial empty bundle, turns terminal sessions on only before anyone has saved that setting, and finds everything else by name: a restart keeps your changes, though it creates again anything above you deleted or renamed. It does not deploy: the first plan is yours. Once the agent is enrolled, a seed that cannot sign in, because you changed the owner's password or turned on two-factor sign-in, is skipped with a warning and the stack still starts.
 
 ## Try the product
 
@@ -58,9 +58,9 @@ The agent's journal moves forward with the code. Running an older checkout again
 
 Ctrl-C stops the dashboard, management, the tunnel and the database, then stops the VM. Data, the enrolled agent and deployed workloads stay. When the VM starts again, services come back as they would after a host reboot: those with a Compose `restart` policy, like the seeded app's `unless-stopped`, start with Docker, and the others stay stopped until the next deployment.
 
-After the VM restarts, the agent currently reports ingress drift and refuses the next plan until you prepare it as a reconciliation (accept drift). Docker reports the restarted proxy's empty DNS settings differently, which changes the fingerprint the agent compares. A rebooted production host behaves the same way.
+After the VM restarts, the agent currently reports ingress drift and refuses the next plan until you prepare it as a reconciliation (accept drift). Docker reports the restarted proxy's empty DNS settings differently, which changes the fingerprint the agent compares. This has been seen only in this VM so far; whether a rebooted production host does the same is still to be checked.
 
-`make dev-wipe` (`pnpm dev --vm <profile> --wipe`) deletes the VM with its Docker data, after checking its marker, and this checkout's `.artifacts/dev-stack`. `pnpm dev --vm <profile> --reset` does the same and then starts afresh.
+`make dev-wipe` (`pnpm dev --vm <profile> --wipe`) deletes the VM with its Docker data, after checking its marker, and this checkout's `.artifacts/dev-stack`. It also deletes a VM whose first start was interrupted before it was marked, and leaves alone any profile this stack never created. If you interrupt the first start, the next `make dev` deletes that half-made VM and creates it again. `pnpm dev --vm <profile> --reset` does the same and then starts afresh.
 
 A launcher holds `.artifacts/dev.lock` while it runs, shared with `pnpm dev`, because both use the same ports. If a forced kill leaves it behind, follow the [recovery steps](frontend-development.md#local-commands): stop the recorded process groups, including the `ssh` tunnel, confirm the listeners are gone, then remove only the lock. `colima stop --profile <profile>` stops a VM left running.
 
@@ -77,11 +77,11 @@ Mac (127.0.0.1 only)                         Colima VM (profile astilba-dev)
 - **The VM** has no Mac folders mounted and no Colima port forwarding: Colima would otherwise forward the VM's published ports to every Mac interface. One SSH connection, using Lima's own configuration for the VM, carries everything above.
 - **The agent** is installed with the product's `install.sh` and systemd unit, plus a drop-in that sets the restic path and backup root. It enrolls through stdin like a real host. The VM gets the exact Compose 5.6.1 package that [guided onboarding](server-onboarding.md) pins, and restic from `services/platform/host/backup-tools.sh`.
 - **Management's HTTPS for the agent.** The agent accepts only an HTTPS management origin, and development management serves loopback HTTP. A small proxy in the launcher terminates TLS with a certificate generated for `localhost` and forwards only the agent's paths (`/agent/v1/`, `/agent-artifacts/`, `/agent-public-key.pem`). The certificate goes into the VM's trust store only. The Mac's trust store, DNS and hosts file are never touched.
-- **Containers stay off the Mac.** Lima's gateway address forwards to every port the Mac has open on loopback. A firewall rule in the VM's `DOCKER-USER` chain rejects deployed containers' traffic to it, so a workload cannot reach your own local services. Containers keep internet access.
+- **The VM stays off the Mac.** Lima's gateway address forwards to every port the Mac has open on loopback. An nftables table in the VM rejects traffic to that address from deployed containers and from the VM itself, so neither a workload nor a privileged one that escapes to the VM can reach your own local services. Only DNS to Lima's resolver there stays open. A systemd unit loads the table at boot, before Docker starts, so workloads that restart with the VM never run without it. Containers keep internet access.
 
 ## Ingress and TLS
 
-Routes use `tls: 'off'` and answer over HTTP on port 54180 under any `*.localhost` name. Managed TLS needs a public ACME HTTP-01 challenge and a publicly trusted certificate, which the agent checks before it reports a route ready, so it cannot work here. Nothing in the stack asks you to trust a local CA. If you want HTTPS in the browser for your own testing, put your own TLS proxy in front of port 54180; that is your opt-in and outside the stack.
+Routes use `tls: 'off'` and answer over HTTP on port 54180 under any `*.localhost` name. Use a `*.localhost` name, not `127.0.0.1`: browsers share cookies across ports on one host, so a route on `127.0.0.1` would receive the dashboard's session cookie. Managed TLS needs a public ACME HTTP-01 challenge and a publicly trusted certificate, which the agent checks before it reports a route ready, so it cannot work here. Nothing in the stack asks you to trust a local CA. If you want HTTPS in the browser for your own testing, put your own TLS proxy in front of port 54180; that is your opt-in and outside the stack.
 
 ## What stays with the VM dogfood
 
