@@ -69,7 +69,20 @@ func (e *Engine) buildNetwork(ctx context.Context) (netip.Prefix, error) {
 // private, the frozen Git provider and registry this build uses. Management's origin, when
 // private, is refused ahead of every allowance.
 func (e *Engine) buildPolicy(ctx context.Context, p pipeline.Command, subnet netip.Prefix) (hostnetwork.BuildPolicy, error) {
-	policy := hostnetwork.BuildPolicy{Subnet: subnet, Contained: []netip.Prefix{e.pool()}}
+	policy := hostnetwork.BuildPolicy{Subnet: subnet}
+	// The ranges of this host's container bridges, by address rather than interface name,
+	// which a host's own bridges can share. Macvlan and ipvlan networks are the LAN itself.
+	networks, err := e.Docker.NetworkList(ctx, client.NetworkListOptions{})
+	if err != nil {
+		return policy, errors.New("cannot list the host's container networks")
+	}
+	for _, n := range networks.Items {
+		for _, c := range n.IPAM.Config {
+			if n.Driver == "bridge" && c.Subnet.IsValid() && c.Subnet.Addr().Is4() {
+				policy.Contained = append(policy.Contained, c.Subnet.Masked())
+			}
+		}
+	}
 	resolvers, err := hostnetwork.BuildResolvers()
 	if err != nil {
 		return policy, errors.New("cannot read the host's nameservers for builds")
@@ -86,10 +99,11 @@ func (e *Engine) buildPolicy(ctx context.Context, p pipeline.Command, subnet net
 		return policy, errors.New("invalid management origin")
 	}
 	// Builds never reach management through the private network, whatever the runner allows.
-	if policy.Denied, err = privateOrigins(lookup, management.Host, management.Scheme); err != nil {
+	resolved, err := resolveOrigin(lookup, management.Host, management.Scheme)
+	if err != nil {
 		return policy, errors.New("cannot resolve management's address, which builds must not reach")
 	}
-	if len(policy.Denied) > hostnetwork.MaxDenied {
+	if policy.Denied = private(resolved); len(policy.Denied) > hostnetwork.MaxDenied {
 		return policy, fmt.Errorf("management resolves to more than %d private addresses, too many to keep builds from", hostnetwork.MaxDenied)
 	}
 	for _, r := range p.BuildEgress {
@@ -106,12 +120,21 @@ func (e *Engine) buildPolicy(ctx context.Context, p pipeline.Command, subnet net
 			origins = append(origins, origin{host, "https"})
 		}
 	}
+	local, err := localAddresses()
+	if err != nil {
+		return policy, errors.New("cannot read this host's addresses")
+	}
 	for _, o := range origins {
-		allowed, err := privateOrigins(lookup, o.host, o.scheme)
+		resolved, err := resolveOrigin(lookup, o.host, o.scheme)
 		if err != nil {
 			return policy, fmt.Errorf("cannot resolve %s for the build network", o.host)
 		}
-		for i, a := range allowed {
+		// Builds never reach their own runner, so they can't use a Git provider or registry
+		// it serves. Saying so now beats a refused clone or push after the build.
+		if slices.ContainsFunc(resolved, func(a netip.AddrPort) bool { return slices.Contains(local, a.Addr()) }) {
+			return policy, fmt.Errorf("%s is on this server, which builds can't reach; use a Git provider or registry on another host", o.host)
+		}
+		for i, a := range private(resolved) {
 			// Builds never reach management, so they can't use a service at its address and port.
 			if slices.Contains(policy.Denied, a) {
 				return policy, fmt.Errorf("%s shares management's private address and port, which builds can't reach; serve it from another address or port", o.host)
@@ -124,9 +147,9 @@ func (e *Engine) buildPolicy(ctx context.Context, p pipeline.Command, subnet net
 	return policy, nil
 }
 
-// privateOrigins resolves an origin's host, a name or address with an optional port, to the
-// private IPv4 addresses and port a connection to it uses.
-func privateOrigins(ctx context.Context, host, scheme string) ([]netip.AddrPort, error) {
+// resolveOrigin resolves an origin's host, a name or address with an optional port, to the
+// IPv4 addresses and port a connection to it uses. A name that doesn't exist resolves to none.
+func resolveOrigin(ctx context.Context, host, scheme string) ([]netip.AddrPort, error) {
 	name, rawPort, err := net.SplitHostPort(host)
 	if err != nil {
 		name, rawPort = strings.Trim(host, "[]"), "443"
@@ -138,39 +161,50 @@ func privateOrigins(ctx context.Context, host, scheme string) ([]netip.AddrPort,
 	if err != nil || port == 0 {
 		return nil, errors.New("invalid origin port")
 	}
-	addresses, err := privateAddresses(ctx, name)
 	out := []netip.AddrPort{}
-	for _, a := range addresses {
-		out = append(out, netip.AddrPortFrom(a, uint16(port)))
+	if name == "" {
+		return out, nil
 	}
-	return out, err
-}
-
-// privateAddresses resolves host and keeps the IPv4 addresses an allowance could open,
-// those in pipeline.AllowableRanges: builds reach public ones anyway, and never the rest.
-func privateAddresses(ctx context.Context, host string) ([]netip.Addr, error) {
-	if host == "" {
-		return []netip.Addr{}, nil
-	}
-	var addresses []netip.Addr
-	if a, err := netip.ParseAddr(host); err == nil {
-		addresses = []netip.Addr{a}
+	addresses := []netip.Addr{}
+	if a, err := netip.ParseAddr(name); err == nil {
+		addresses = append(addresses, a)
 	} else {
-		var err error
-		addresses, err = net.DefaultResolver.LookupNetIP(ctx, "ip4", host)
+		addresses, err = net.DefaultResolver.LookupNetIP(ctx, "ip4", name)
 		var dns *net.DNSError
 		if errors.As(err, &dns) && dns.IsNotFound {
-			return []netip.Addr{}, nil
+			return out, nil
 		}
 		if err != nil {
 			return nil, err
 		}
 	}
-	out := []netip.Addr{}
 	for _, a := range addresses {
-		a = a.Unmap()
-		if a.Is4() && !slices.ContainsFunc(pipeline.NeverAllowed, func(p netip.Prefix) bool { return p.Contains(a) }) && slices.ContainsFunc(pipeline.AllowableRanges, func(p netip.Prefix) bool { return p.Contains(a) }) && !slices.Contains(out, a) {
-			out = append(out, a)
+		if a = a.Unmap(); a.Is4() && !slices.Contains(out, netip.AddrPortFrom(a, uint16(port))) {
+			out = append(out, netip.AddrPortFrom(a, uint16(port)))
+		}
+	}
+	return out, nil
+}
+
+// private keeps the origins an allowance could open, those in pipeline.AllowableRanges:
+// builds reach public ones anyway, and never the rest.
+func private(origins []netip.AddrPort) []netip.AddrPort {
+	return slices.DeleteFunc(slices.Clone(origins), func(o netip.AddrPort) bool {
+		a := o.Addr()
+		return slices.ContainsFunc(pipeline.NeverAllowed, func(p netip.Prefix) bool { return p.Contains(a) }) || !slices.ContainsFunc(pipeline.AllowableRanges, func(p netip.Prefix) bool { return p.Contains(a) })
+	})
+}
+
+// localAddresses lists this host's IPv4 addresses.
+func localAddresses() ([]netip.Addr, error) {
+	interfaces, err := net.InterfaceAddrs()
+	if err != nil {
+		return nil, err
+	}
+	out := []netip.Addr{}
+	for _, i := range interfaces {
+		if prefix, err := netip.ParsePrefix(i.String()); err == nil && prefix.Addr().Unmap().Is4() {
+			out = append(out, prefix.Addr().Unmap())
 		}
 	}
 	return out, nil

@@ -2,6 +2,7 @@ package integration
 
 import (
 	"context"
+	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"fmt"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 )
 
@@ -182,16 +184,33 @@ func TestBuildNetworkAllowlist(t *testing.T) {
 	}
 	finish(*poll())
 
-	// A runner that stops reporting build isolation, such as one rolled back to an older
-	// agent, is never handed a queued build, which would run on its host's network.
+	// A build queued before builds carried the build network would run on the host's network
+	// at an agent that predates it, so it never reaches the runner.
 	narrow()
-	rolledBack := build()
-	awaitDispatch(t, ctx, f, rolledBack.Id)
-	in.Capabilities.BuildNetwork = nil
-	if c := poll(); c != nil {
-		t.Fatal("a build reached a runner without build isolation", c.Id)
+	legacy := build()
+	awaitDispatch(t, ctx, f, legacy.Id)
+	var stored api.ExecutionCommand
+	var raw []byte
+	if err := f.st.Pool.QueryRow(ctx, "SELECT command FROM execution_operations WHERE id=$1", legacy.Id).Scan(&raw); err != nil || json.Unmarshal(raw, &stored) != nil {
+		t.Fatal("cannot read the queued build", err)
 	}
-	if got, note := state(rolledBack.Id); got != "failed" || !strings.Contains(note, "no longer reports build network isolation") {
-		t.Fatal("build for a runner without isolation was not settled", got, note)
+	old := frozen(stored)
+	if old.BuildNetwork != pipeline.BuildNetworkV1 {
+		t.Fatal("a build was queued without the build network", old.BuildNetwork)
+	}
+	old.BuildNetwork = ""
+	payload, _ := stablejson.Marshal(old)
+	message := jsontext.Value(payload)
+	stored.Pipeline, stored.PlanHash = &message, old.Digest()
+	if raw, err := stablejson.Marshal(stored); err != nil {
+		t.Fatal(err)
+	} else if _, err = f.st.Pool.Exec(ctx, "UPDATE execution_operations SET command=$2 WHERE id=$1", legacy.Id, raw); err != nil {
+		t.Fatal(err)
+	}
+	if c := poll(); c != nil {
+		t.Fatal("a build queued before the build network reached the runner", c.Id)
+	}
+	if got, note := state(legacy.Id); got != "failed" || !strings.Contains(note, "queued before builds ran on an isolated network") {
+		t.Fatal("build queued before the build network was not settled", got, note)
 	}
 }

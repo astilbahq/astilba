@@ -119,6 +119,11 @@ func TestNativeBuildNetwork(t *testing.T) {
 		return server
 	}
 	host := nativeHostAddress(t)
+	// The test allows a port on the host to prove that no entry opens it, and only private
+	// addresses can be allowed.
+	if a := netip.MustParseAddr(host); !slices.ContainsFunc(pipeline.AllowableRanges, func(p netip.Prefix) bool { return p.Contains(a) }) {
+		t.Fatalf("this test needs a private primary address, not %s", host)
+	}
 	listenHost := func() net.Listener {
 		listener, err := net.Listen("tcp", host+":0")
 		if err != nil {
@@ -216,7 +221,7 @@ func TestNativeBuildNetwork(t *testing.T) {
 
 	port := func(server *httptest.Server) int { return server.Listener.Addr().(*net.TCPAddr).Port }
 	connection := uuid.New()
-	command := pipeline.Command{Action: "build", Connection: pipeline.Connection{ID: connection, Provider: "gitea", BaseURL: provider.URL, Repository: "team/app", RepositoryID: 12}, Commit: commit, Branch: "main", RevisionID: uuid.New(), UnitID: uuid.New(), AppID: uuid.New(), InputHash: strings.Repeat("a", 64), SubmittedAt: time.Now().UTC().Truncate(time.Second)}
+	command := pipeline.Command{Action: "build", BuildNetwork: pipeline.BuildNetworkV1, Connection: pipeline.Connection{ID: connection, Provider: "gitea", BaseURL: provider.URL, Repository: "team/app", RepositoryID: 12}, Commit: commit, Branch: "main", RevisionID: uuid.New(), UnitID: uuid.New(), AppID: uuid.New(), InputHash: strings.Repeat("a", 64), SubmittedAt: time.Now().UTC().Truncate(time.Second)}
 	command.Build = &pipeline.BuildConfig{ConnectionID: connection, Branch: "main", RunnerID: serverID, Context: ".", Dockerfile: "Dockerfile", Architecture: runtime.GOARCH, Arguments: map[string]string{}, Secrets: map[string]uuid.UUID{}}
 	// The runner and management are allowed too, and must stay refused: no allowlist reaches
 	// either.
@@ -322,6 +327,13 @@ func TestNativeBuildNetwork(t *testing.T) {
 	added.Build.Dockerfile = "Dockerfile.add"
 	if _, record := execute(added); record.Report.State != "failed" {
 		t.Fatal("a build fetched instance metadata through ADD", record.Report.Note)
+	}
+
+	// A Git provider on the runner itself can't be reached, so the build stops before it starts.
+	onRunner := command
+	onRunner.Connection.BaseURL = refusedHost.URL
+	if _, record := execute(onRunner); record.Report.State != "failed" || !strings.Contains(record.Report.Note, "is on this server") {
+		t.Fatal("a build with its Git provider on the runner was not refused up front", record.Report.State, record.Report.Note)
 	}
 
 	interrupt = true

@@ -30,7 +30,8 @@ type BuildPolicy struct {
 	Resolvers []netip.Addr
 	// Denied are private origins refused ahead of any allowance, such as management's.
 	Denied []netip.AddrPort
-	// Contained are the ranges of this host's container networks, refused like the host.
+	// Contained are the ranges of this host's container networks, refused like the host,
+	// whatever the runner allows.
 	Contained []netip.Prefix
 	Allowed   []Destination
 }
@@ -40,6 +41,7 @@ type BuildPolicy struct {
 const (
 	MaxOriginAddresses = 4
 	MaxDenied          = 16
+	maxContained       = 4096
 	maxAllowed         = pipeline.MaxEgressRules + 2*MaxOriginAddresses
 )
 
@@ -59,7 +61,7 @@ func BuildRules(p BuildPolicy) (string, error) {
 	if !p.Subnet.IsValid() || !p.Subnet.Addr().Is4() || p.Subnet != p.Subnet.Masked() || !slices.ContainsFunc(pipeline.AllowableRanges, func(r netip.Prefix) bool { return r.Contains(p.Subnet.Addr()) }) {
 		return "", errors.New("invalid build network range")
 	}
-	if len(p.Resolvers) > 3 || len(p.Denied) > MaxDenied || len(p.Contained) > 4 || len(p.Allowed) > maxAllowed {
+	if len(p.Resolvers) > 3 || len(p.Denied) > MaxDenied || len(p.Contained) > maxContained || len(p.Allowed) > maxAllowed {
 		return "", errors.New("build network policy exceeds its bounds")
 	}
 	addresses := func(list []netip.Addr) (string, error) {
@@ -141,13 +143,10 @@ fib daddr type local %[2]s
 chain input {
 type filter hook input priority filter - 5; policy accept;
 iifname != %[1]q accept
-ct state established,related accept
 meta nfproto ipv4 ip daddr @resolvers meta l4proto { tcp, udp } th dport 53 accept
 %[2]s
 }
 `, BuildBridge, refuse)
-	// Docker's own isolation keeps bridges apart; refusing its interfaces here keeps a broad
-	// allowance from reaching a container on another bridge if that changes.
 	fmt.Fprintf(&b, `chain forward {
 type filter hook forward priority filter - 5; policy accept;
 oifname %[1]q ct state established,related accept
@@ -158,8 +157,6 @@ meta nfproto != ipv4 %[2]s
 ip daddr @resolvers meta l4proto { tcp, udp } th dport 53 accept
 ct original ip daddr @denied %[2]s
 ip daddr @denied %[2]s
-oifname "docker0" %[2]s
-oifname "br-*" %[2]s
 meta l4proto tcp ct original ip daddr . ct original proto-dst @origins %[2]s
 meta l4proto tcp ct original ip daddr . ct original proto-dst @allowed accept
 ct original ip daddr @private %[2]s

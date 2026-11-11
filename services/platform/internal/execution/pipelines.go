@@ -94,6 +94,7 @@ func (s *Service) insertPipeline(ctx context.Context, tx pgx.Tx, git *gitAnswers
 			return out, err
 		}
 		p.BuildEgress = egress
+		p.BuildNetwork = pipeline.BuildNetworkV1
 		var project uuid.UUID
 		var raw []byte
 		if err := tx.QueryRow(ctx, "SELECT e.project_id,s.capabilities FROM environments e JOIN servers s ON s.workspace_id=e.workspace_id AND s.id=$3 WHERE e.workspace_id=$1 AND e.id=$2", ws, env, server).Scan(&project, &raw); err != nil {

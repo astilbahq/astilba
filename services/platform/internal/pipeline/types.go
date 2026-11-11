@@ -17,6 +17,9 @@ import (
 const BuilderImage = "moby/buildkit:v0.34.1@sha256:99368f3e46177c6405b9740e4461d91cee004128daeecca78d4ceac50ec1da5c"
 const BuilderVersion = "v0.34.1"
 
+// BuildNetworkV1 marks a build that must run behind the agent's build network policy.
+const BuildNetworkV1 = "v1"
+
 type Credential struct {
 	Username string `json:"username"`
 	Password string `json:"password"`
@@ -117,7 +120,11 @@ type Command struct {
 	Registry    *Registry         `json:"registry,omitempty"`
 	// BuildEgress is the runner's build network allowlist when management queued the build.
 	BuildEgress []EgressRule `json:"buildEgress,omitempty"`
-	SubmittedAt time.Time    `json:"submittedAt"`
+	// BuildNetwork is BuildNetworkV1 on every build. An agent that predates the build network
+	// drops it when it recomputes the digest, so it refuses the build instead of running it
+	// on its host's network.
+	BuildNetwork string    `json:"buildNetwork,omitempty"`
+	SubmittedAt  time.Time `json:"submittedAt"`
 	// Values exist only in the assigned agent's transport and encrypted journal.
 	Access         *Access           `json:"access,omitempty"`
 	BuildSecrets   map[string]string `json:"buildSecrets,omitempty"`
@@ -266,8 +273,11 @@ func (c Command) Validate() error {
 	if !ValidCommit(c.Commit) || !ValidBranch(c.Branch) || !ValidRepository(c.Connection.Repository) || c.RevisionID == uuid.Nil || c.UnitID == uuid.Nil {
 		return errors.New("invalid pipeline identity")
 	}
-	if !c.IsBuild() && c.BuildEgress != nil {
-		return errors.New("only builds carry a build network allowlist")
+	if !c.IsBuild() && (c.BuildEgress != nil || c.BuildNetwork != "") {
+		return errors.New("only builds carry a build network")
+	}
+	if c.IsBuild() && c.BuildNetwork != BuildNetworkV1 {
+		return errors.New("build predates the build network; start it again")
 	}
 	switch c.Action {
 	case "import":

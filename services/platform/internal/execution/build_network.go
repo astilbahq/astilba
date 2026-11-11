@@ -87,24 +87,20 @@ func serverBuildEgress(ctx context.Context, tx pgx.Tx, ws, id uuid.UUID) ([]pipe
 	return rules, nil
 }
 
-// settleBuildNetwork stops a build its runner can no longer run as it was queued: on an
-// agent that would build on the host's network, or with a destination the owner removed since.
-// It reports whether it settled the command, committing tx when it did. An undelivered build
-// fails here; one the runner may hold is stopped and sent as cancelled. Returning an error
-// instead would fail every poll and hold the runner's queue.
+// settleBuildNetwork stops a build its runner must not run as it was queued: one queued
+// before builds carried the build network, which an agent that predates it would run on its
+// host's network, or one with a destination the owner removed since. It reports whether it
+// settled the command, committing tx when it did. An undelivered build fails here; one the
+// runner may hold is stopped and sent as cancelled. Returning an error instead would fail
+// every poll and hold the runner's queue.
 func (s *Service) settleBuildNetwork(ctx context.Context, tx pgx.Tx, ws uuid.UUID, c *api.ExecutionCommand, p pipeline.Command, undelivered bool) (bool, error) {
 	if !p.IsBuild() {
 		return false, nil
 	}
 	q := db.New(tx)
-	raw, err := q.ServerCapabilities(ctx, db.ServerCapabilitiesParams{WorkspaceID: ws, ID: c.ServerId})
-	if err != nil {
-		return false, err
-	}
-	var capabilities api.AgentCapabilities
 	note := ""
-	if json.Unmarshal(raw, &capabilities) != nil || capabilities.BuildNetwork == nil || !*capabilities.BuildNetwork {
-		note = "Build stopped: the runner no longer reports build network isolation. Check its preflight notes, then start the build again."
+	if p.BuildNetwork != pipeline.BuildNetworkV1 {
+		note = "Build stopped: it was queued before builds ran on an isolated network. Start the build again."
 	} else if len(p.BuildEgress) > 0 {
 		current, err := serverBuildEgress(ctx, tx, ws, c.ServerId)
 		if err != nil {
@@ -117,6 +113,7 @@ func (s *Service) settleBuildNetwork(ctx context.Context, tx pgx.Tx, ws uuid.UUI
 	if note == "" {
 		return false, nil
 	}
+	var err error
 	if undelivered {
 		if err = q.FinishUndeliveredPipeline(ctx, db.FinishUndeliveredPipelineParams{WorkspaceID: ws, ID: c.Id, State: "failed", Note: note}); err != nil {
 			return false, err

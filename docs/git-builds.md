@@ -132,13 +132,13 @@ A build reaches:
 
 - public IPv4 addresses, such as package registries and Git hosts;
 - the runner's DNS resolvers, on port 53 only. The agent gives BuildKit systemd-resolved's upstream servers, since builds can't use the loopback stub;
-- its own Git provider and registry, on their ports, when they are on private addresses off the runner;
+- its own Git provider and registry, on their ports, when they are on private addresses off the runner. A Git provider or registry on the build server itself isn't reachable from builds, and the build fails before it starts with a note saying so: use a separate host, or a public address that isn't the build server's;
 - the private destinations the runner allows (see below).
 
 A build never reaches:
 
 - the runner itself, on any of its addresses, including ports Docker publishes there, whatever the runner allows;
-- other containers, including services on a Combined server, whatever the runner allows;
+- other containers on the runner, including services on a Combined server, whatever the runner allows;
 - link-local addresses, which hold most clouds' instance metadata (`169.254.169.254`), Alibaba Cloud's metadata (`100.100.100.200`), Azure's host endpoint (`168.63.129.16`), loopback or multicast;
 - private and shared ranges (`10.0.0.0/8`, `100.64.0.0/10`, `172.16.0.0/12`, `192.0.0.0/24`, `192.168.0.0/16`, `198.18.0.0/15`), which include the container network pool, the LAN, a VPC and private links;
 - management's origin when it is on a private address, whatever the runner allows. A Git provider or registry that shares management's private address and port fails the build with a note saying so: give it its own address or port;
@@ -154,7 +154,7 @@ To let builds use a private package mirror or registry on your network, an owner
 
 ### Host requirements and firewalls
 
-The policy needs nftables 1.0.9, which Ubuntu 24.04 installs by default and the bootstrap script installs if it is missing, and netlink access for the agent, which its systemd unit grants. A server without them reports builds as unavailable, with a note, and management stops builds already queued for it. Agent updates replace only the executable, so a host prepared with an earlier unit needs the permission added once:
+The policy needs nftables 1.0.9, which Ubuntu 24.04 installs by default and the bootstrap script installs if it is missing, and netlink access for the agent, which its systemd unit grants. A server without them reports builds as unavailable, with a note, and refuses a build it receives. Builds carry a marker that an agent predating the build network can't account for, so such an agent refuses them too, and management stops a build queued before the marker existed rather than send it. Agent updates replace only the executable, so a host prepared with an earlier unit needs the permission added once:
 
 ```bash
 sudo apt-get install --no-install-recommends nftables=1.0.9-1ubuntu0.1

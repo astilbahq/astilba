@@ -306,7 +306,7 @@ func TestNativePipeline(t *testing.T) {
 		t.Fatal("submission changed unselected file")
 	}
 	build := base
-	build.Action = "build"
+	build.Action, build.BuildNetwork = "build", pipeline.BuildNetworkV1
 	build.Connection.BaseURL = buildProvider.URL
 	build.Source = nil
 	build.AppID = uuid.New()
@@ -646,7 +646,7 @@ func TestNativePipeline(t *testing.T) {
 			git("-C", work, "commit", "-m", "Railpack "+fixture.name)
 			git("-C", work, "push", repo, "main")
 			command := base
-			command.Action, command.Source, command.AppID = "build", nil, uuid.New()
+			command.Action, command.BuildNetwork, command.Source, command.AppID = "build", pipeline.BuildNetworkV1, nil, uuid.New()
 			command.Connection.BaseURL = buildProvider.URL
 			command.Commit = git("-C", work, "rev-parse", "HEAD")
 			command.InputHash = strings.Repeat("a", 64)
