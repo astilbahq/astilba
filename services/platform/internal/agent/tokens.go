@@ -60,7 +60,7 @@ func (c *Client) unseal(ctx context.Context, sealed []byte) (*ecdsa.PrivateKey, 
 	if k, ok := c.tokens.keys[string(sealed)]; ok {
 		return k, nil
 	}
-	keys := c.keyStore(ctx)
+	keys := c.keyStore()
 	if keys == nil {
 		return nil, errors.New("this agent holds a key but its key store is unavailable")
 	}
@@ -80,7 +80,7 @@ func (c *Client) unseal(ctx context.Context, sealed []byte) (*ecdsa.PrivateKey, 
 }
 
 func (c *Client) newSealedKey(ctx context.Context) ([]byte, error) {
-	keys := c.keyStore(ctx)
+	keys := c.keyStore()
 	if keys == nil {
 		return nil, errors.New("this agent can't seal a key here")
 	}
@@ -98,7 +98,7 @@ func (c *Client) newSealedKey(ctx context.Context) ([]byte, error) {
 // bindable reports whether a legacy agent should replace its bearer with a key now.
 func (c *Client) bindable(ctx context.Context, cfg Config) bool {
 	return cfg.Enrolled && cfg.Key == nil && cfg.BindKey == nil && cfg.Credential != "" && cfg.Pending == "" &&
-		c.keysSupported.Load() && c.keyStore(ctx) != nil
+		c.keysSupported.Load() && c.keyStore() != nil
 }
 
 // authorization returns the credential for this server's next request.
@@ -360,7 +360,7 @@ func (c *Client) maybeRotate(ctx context.Context, out api.AgentToken) {
 		return
 	}
 	cfg, err := c.Journal.Config()
-	if err != nil || cfg.Key == nil || c.keyStore(ctx) == nil {
+	if err != nil || cfg.Key == nil || c.keyStore() == nil {
 		return
 	}
 	if cfg.PendingRotation != nil {

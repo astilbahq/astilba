@@ -32,7 +32,7 @@ func (c *Client) enrollCode(ctx context.Context, code string) (api.AgentStatus, 
 	}
 	entry, ok := cfg.Enrollments[codeHash]
 	if !ok {
-		keys := c.keyStore(ctx)
+		keys := c.keyStore()
 		if len(cfg.Enrollments) >= 4 {
 			return status, sent, false, errors.New("four enrollment codes are already outstanding; use one of them, or remove the state directory and enroll this host as a new server")
 		}
@@ -164,7 +164,7 @@ func (c *Client) retryEnrollments(ctx context.Context) (api.AgentStatus, api.Age
 	for _, e := range entries {
 		code := e.Code
 		if e.SealedCode != nil {
-			keys := c.keyStore(ctx)
+			keys := c.keyStore()
 			if keys == nil {
 				continue
 			}

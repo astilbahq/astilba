@@ -44,12 +44,12 @@ type Client struct {
 	troubleshooting         atomic.Bool
 	machineRotation         atomic.Bool
 	// Keys seals this agent's keys; KeyStoreErr says why there is none here. OpenKeys, when set,
-	// opens the store, and opens it again while it is unavailable. Read them through keyStore.
+	// opens the store; Run opens it again in the background while it is unavailable. Read them
+	// through keyStore.
 	Keys               KeyStore
 	KeyStoreErr        error
 	OpenKeys           func(context.Context) (KeyStore, error)
 	keysMu             sync.Mutex
-	keysTried          time.Time
 	keysSupported      atomic.Bool
 	tokens             tokenSource
 	needsEnrollment    atomic.Bool
@@ -324,6 +324,7 @@ func (c *Client) Run(ctx context.Context) error {
 	wake := make(chan struct{}, 1)
 	wake <- struct{}{}
 	var wg sync.WaitGroup
+	wg.Go(func() { c.keepKeyStoreOpen(ctx) })
 	if c.Metrics != nil {
 		wg.Go(func() {
 			c.loop(ctx, time.Minute, func() error {

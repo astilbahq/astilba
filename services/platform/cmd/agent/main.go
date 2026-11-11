@@ -253,6 +253,7 @@ func run() error {
 			fmt.Fprintln(os.Stderr, "Could not set up systemd credentials, so the agent can't seal a key here:", err)
 		}
 		c.OpenKeys = agent.SystemKeyStore
+		c.OpenKeyStore(ctx)
 		if e = c.Enroll(ctx, string(token)); e != nil {
 			return e
 		}
@@ -351,7 +352,7 @@ func run() error {
 		engine.NetworkPool = pool
 	}
 	c := agent.NewClient(j, engine)
-	// The key store is opened when first needed, and again while it is unavailable, so a store
+	// Run opens the key store in the background, and again while it is unavailable, so a store
 	// that isn't ready never stops the agent's local work.
 	c.OpenKeys = agent.SystemKeyStore
 	collector := &agent.MetricCollector{Journal: j}

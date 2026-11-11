@@ -146,23 +146,28 @@ func TestUnavailableKeyStoreIsOpenedAgain(t *testing.T) {
 		return InsecureKeyStore(), nil
 	}
 	ctx := context.Background()
-	first, second := c.keyStore(ctx), c.keyStore(ctx)
-	if first != nil || second != nil || opened != 1 {
-		t.Fatal("an unavailable store wasn't opened at most once a minute", opened)
+	if c.OpenKeyStore(ctx) != nil || opened != 1 {
+		t.Fatal("an unavailable store was reported open", opened)
+	}
+	// Requests only read the store, so none waits on opening it or caches a failure.
+	if c.keyStore() != nil || opened != 1 {
+		t.Fatal("a request opened the key store", opened)
 	}
 	if p, problem := c.keyProtection(); p == nil || *p != api.SealFailed || problem == nil || *problem != failure.Error() {
 		t.Fatal("the agent didn't report why its key store is unavailable")
 	}
-	c.keysTried = time.Now().Add(-keyStoreRetry)
-	if c.keyStore(ctx) == nil || opened != 2 {
+	if c.OpenKeyStore(ctx) == nil || c.keyStore() == nil || opened != 2 {
 		t.Fatal("the store wasn't opened again", opened)
+	}
+	if c.OpenKeyStore(ctx) == nil || opened != 2 {
+		t.Fatal("an open store was opened again", opened)
 	}
 	if p, problem := c.keyProtection(); p == nil || *p != api.Unsealed || problem != nil {
 		t.Fatal("the agent still reports a problem with a store that opened")
 	}
 	setup := NewClient(nil, nil)
 	setup.OpenKeys = func(context.Context) (KeyStore, error) { return nil, errKeyStoreSetup }
-	setup.keyStore(ctx)
+	setup.OpenKeyStore(ctx)
 	if p, _ := setup.keyProtection(); p == nil || *p != api.SetupRequired {
 		t.Fatal("a host without systemd's host key wasn't reported as needing setup")
 	}
