@@ -354,6 +354,15 @@ func run() error {
 	c := agent.NewClient(j, engine)
 	c.Keys, c.KeyStoreErr = agent.SystemKeyStore(ctx)
 	if c.KeyStoreErr != nil {
+		cfg, err := j.Config()
+		if err != nil {
+			return err
+		}
+		// An agent that holds a key can't work without its store. Exiting lets the service manager
+		// try again, which recovers from a store that wasn't ready, such as a TPM early in boot.
+		if cfg.Key != nil || cfg.BindKey != nil || cfg.PendingRotation != nil {
+			return fmt.Errorf("the agent can't unseal its key on this host: %w", c.KeyStoreErr)
+		}
 		slog.Warn("the agent can't seal a key on this host, so it keeps its bearer credential", "error", c.KeyStoreErr)
 	}
 	collector := &agent.MetricCollector{Journal: j}

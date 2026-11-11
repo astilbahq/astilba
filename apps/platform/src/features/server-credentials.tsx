@@ -47,6 +47,8 @@ export function ServerCredentials({
   const path = { workspaceId, serverId: server.id };
   const identity = server.identity;
   const keyed = identity?.keyBound === true;
+  // Revocation, a new enrollment code or fencing clears the key without making this a bearer agent.
+  const current = keyed && identity?.keyCurrent === true;
   const kept = server.capabilities?.keyProtection;
   // An updated agent that can't seal a key yet reports why; only an earlier one needs updating.
   const unsealable = kept === "setup_required" || kept === "seal_failed";
@@ -69,9 +71,13 @@ export function ServerCredentials({
       )}
       {server.status !== "pending" && server.capabilities && (
         <p className={s.muted}>
-          {keyed &&
+          {current &&
             `The agent holds a key${kept && protection[kept] ? `, ${protection[kept]}` : ""}. Registered ${age(identity?.keyRotatedAt ?? identity?.keyCreatedAt)}; it is replaced every 30 days.${identity?.lineageStartedAt ? ` The agent's current session started ${age(identity.lineageStartedAt)}.` : ""} `}
           {keyed &&
+            !current &&
+            server.status !== "revoked" &&
+            "The agent's key no longer authenticates. It registers a new one when the host enrolls with a new code. "}
+          {current &&
             identity?.rotateKeyRequested &&
             "You asked for a new key: the agent registers one within 10 minutes, or once open terminal sessions end. "}
           {!keyed && kept === "setup_required" && (
@@ -95,7 +101,7 @@ export function ServerCredentials({
             server.status === "pending" ||
             server.status === "revoked" ||
             server.transferRequired ||
-            !keyed
+            !current
           }
           onClick={() =>
             run(() =>

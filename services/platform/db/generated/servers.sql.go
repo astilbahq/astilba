@@ -666,7 +666,7 @@ func (q *Queries) ReleaseRevokedRouteClaims(ctx context.Context, arg ReleaseRevo
 
 const renewServerEnrollment = `-- name: RenewServerEnrollment :one
 UPDATE servers SET enrollment_hash = $1,enrollment_expires = $2,
-    credential_hash=NULL,previous_hash=NULL,previous_until=NULL,revoked=false,rotation_requested=false,
+    credential_hash=NULL,previous_hash=NULL,previous_until=NULL,revoked=false,rotation_requested=false,rotate_key_requested=false,
     machine_id=CASE WHEN revoked AND preview_only THEN NULL ELSE machine_id END
 WHERE workspace_id = $3 AND id = $4
 RETURNING id,name,role,last_seen,capabilities,preflight,revoked,rotation_requested,awaiting_transfer,preview_only
@@ -733,7 +733,7 @@ func (q *Queries) ResumeMaintenanceSource(ctx context.Context, arg ResumeMainten
 }
 
 const revokeServer = `-- name: RevokeServer :execrows
-UPDATE servers SET revoked=true,credential_hash=NULL,previous_hash=NULL,enrollment_hash=NULL,rotation_requested=false
+UPDATE servers SET revoked=true,credential_hash=NULL,previous_hash=NULL,enrollment_hash=NULL,rotation_requested=false,rotate_key_requested=false
 WHERE workspace_id = $1 AND id = $2
 `
 

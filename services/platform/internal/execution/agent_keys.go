@@ -499,10 +499,13 @@ func identityViews(ctx context.Context, q *db.Queries, ws uuid.UUID) (map[uuid.U
 	out := make(map[uuid.UUID]*api.ServerIdentity, len(rows))
 	for _, r := range rows {
 		v := &api.ServerIdentity{KeyBound: r.KeyCreatedAt != nil, KeyCreatedAt: r.KeyCreatedAt, KeyRotatedAt: r.KeyRotatedAt, LineageStartedAt: r.LineageStartedAt}
+		if r.KeyCurrent {
+			v.KeyCurrent = &r.KeyCurrent
+		}
 		if r.RotateKeyRequested {
 			v.RotateKeyRequested = &r.RotateKeyRequested
 		}
-		if !r.Revoked && r.IdentityConflictAt != nil && r.IdentityConflictEpoch.Valid && r.IdentityConflictEpoch.Int64 == r.EnrollmentEpoch {
+		if !r.Disabled && r.IdentityConflictAt != nil && r.IdentityConflictEpoch.Valid && r.IdentityConflictEpoch.Int64 == r.EnrollmentEpoch {
 			v.ConflictAt = r.IdentityConflictAt
 			var detail struct {
 				Signal string `json:"signal"`

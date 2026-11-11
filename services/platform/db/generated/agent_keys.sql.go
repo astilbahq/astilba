@@ -220,7 +220,7 @@ func (q *Queries) DatabaseNowMillis(ctx context.Context) (int64, error) {
 }
 
 const fenceServerIdentity = `-- name: FenceServerIdentity :exec
-UPDATE servers SET credential_hash = NULL,previous_hash = NULL,previous_until = NULL
+UPDATE servers SET credential_hash = NULL,previous_hash = NULL,previous_until = NULL,rotate_key_requested = false
 WHERE workspace_id = $1 AND id = $2
 `
 
@@ -662,7 +662,7 @@ func (q *Queries) RefreshLineage(ctx context.Context, arg RefreshLineageParams) 
 const requestKeyRotation = `-- name: RequestKeyRotation :one
 UPDATE servers s SET rotate_key_requested = true
 WHERE s.workspace_id = $1::uuid AND s.id = $2::uuid AND NOT s.revoked AND s.credential_hash IS NOT NULL
-RETURNING EXISTS(SELECT 1 FROM agent_keys k WHERE k.server_id = s.id AND k.key_hash = s.credential_hash)::boolean AS key_bound
+RETURNING EXISTS(SELECT 1 FROM agent_keys k WHERE k.workspace_id = s.workspace_id AND k.server_id = s.id AND k.key_hash = s.credential_hash)::boolean AS key_bound
 `
 
 type RequestKeyRotationParams struct {
@@ -730,12 +730,15 @@ func (q *Queries) RotateLineageTokens(ctx context.Context, arg RotateLineageToke
 }
 
 const serverIdentities = `-- name: ServerIdentities :many
-SELECT s.id,s.key_rotated_at,s.rotate_key_requested,s.revoked,s.identity_conflict_at,s.identity_conflict,s.identity_conflict_epoch,s.enrollment_epoch,
-    k.created_at AS key_created_at,l.created_at AS lineage_started_at
+SELECT s.id,s.key_rotated_at,s.rotate_key_requested,(s.revoked OR s.awaiting_transfer)::boolean AS disabled,
+    s.identity_conflict_at,s.identity_conflict,s.identity_conflict_epoch,s.enrollment_epoch,
+    k.created_at AS key_created_at,COALESCE(k.key_hash = s.credential_hash,false)::boolean AS key_current,
+    l.created_at AS lineage_started_at
 FROM servers s
-LEFT JOIN agent_keys k ON k.server_id = s.id AND k.epoch = s.enrollment_epoch
-    AND NOT EXISTS(SELECT 1 FROM agent_keys n WHERE n.server_id = k.server_id AND n.epoch = k.epoch AND n.created_at > k.created_at)
-LEFT JOIN agent_lineages l ON l.server_id = s.id AND l.superseded_at IS NULL
+LEFT JOIN agent_keys k ON k.workspace_id = s.workspace_id AND k.server_id = s.id AND k.epoch = s.enrollment_epoch
+    AND NOT EXISTS(SELECT 1 FROM agent_keys n WHERE n.workspace_id = k.workspace_id AND n.server_id = k.server_id AND n.epoch = k.epoch AND n.created_at > k.created_at)
+LEFT JOIN agent_lineages l ON l.workspace_id = s.workspace_id AND l.server_id = s.id AND l.superseded_at IS NULL
+    AND l.epoch = s.enrollment_epoch AND l.key_hash = s.credential_hash AND NOT s.revoked AND NOT s.awaiting_transfer
 WHERE s.workspace_id = $1::uuid
 `
 
@@ -743,18 +746,20 @@ type ServerIdentitiesRow struct {
 	ID                    uuid.UUID   `json:"id"`
 	KeyRotatedAt          *time.Time  `json:"key_rotated_at"`
 	RotateKeyRequested    bool        `json:"rotate_key_requested"`
-	Revoked               bool        `json:"revoked"`
+	Disabled              bool        `json:"disabled"`
 	IdentityConflictAt    *time.Time  `json:"identity_conflict_at"`
 	IdentityConflict      []byte      `json:"identity_conflict"`
 	IdentityConflictEpoch pgtype.Int8 `json:"identity_conflict_epoch"`
 	EnrollmentEpoch       int64       `json:"enrollment_epoch"`
 	KeyCreatedAt          *time.Time  `json:"key_created_at"`
+	KeyCurrent            bool        `json:"key_current"`
 	LineageStartedAt      *time.Time  `json:"lineage_started_at"`
 }
 
-// A server has at most one live lineage. Its key is the newest of the current epoch, which stays
-// known while revocation, a new code or fencing has cleared the credential. A conflict is shown only
-// in the epoch it was raised in, and not once the server is revoked.
+// Its key is the newest of the current epoch, which stays known while revocation, a new code or
+// fencing has cleared the credential; key_current says whether it still authenticates. The session
+// shown is the one that can still authenticate. A conflict is shown only in the epoch it was raised
+// in, and not once the server is revoked or awaiting transfer, as its alert isn't.
 func (q *Queries) ServerIdentities(ctx context.Context, workspaceID uuid.UUID) ([]ServerIdentitiesRow, error) {
 	rows, err := q.db.Query(ctx, serverIdentities, workspaceID)
 	if err != nil {
@@ -768,12 +773,13 @@ func (q *Queries) ServerIdentities(ctx context.Context, workspaceID uuid.UUID) (
 			&i.ID,
 			&i.KeyRotatedAt,
 			&i.RotateKeyRequested,
-			&i.Revoked,
+			&i.Disabled,
 			&i.IdentityConflictAt,
 			&i.IdentityConflict,
 			&i.IdentityConflictEpoch,
 			&i.EnrollmentEpoch,
 			&i.KeyCreatedAt,
+			&i.KeyCurrent,
 			&i.LineageStartedAt,
 		); err != nil {
 			return nil, err

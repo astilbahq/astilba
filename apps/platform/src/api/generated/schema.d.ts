@@ -2668,6 +2668,8 @@ export interface components {
         ServerIdentity: {
             /** @description The agent registered a key in the current enrollment, rather than a bearer credential. It stays true while the server is revoked, re-coded or fenced. */
             keyBound: boolean;
+            /** @description The key still authenticates: revocation, a new enrollment code or fencing hasn't cleared it. */
+            keyCurrent?: boolean;
             /** @description An owner asked for a key rotation the agent hasn't made yet. It waits while a terminal session is open. */
             rotateKeyRequested?: boolean;
             /** Format: date-time */

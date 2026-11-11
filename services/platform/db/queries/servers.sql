@@ -15,13 +15,13 @@ RETURNING id,name,role,last_seen,capabilities,preflight,revoked,rotation_request
 -- comes back only as a clean host: without a machine binding, enrollment checks it has no
 -- containers. Every other renewal keeps the same machine.
 UPDATE servers SET enrollment_hash = @enrollment_hash,enrollment_expires = @enrollment_expires,
-    credential_hash=NULL,previous_hash=NULL,previous_until=NULL,revoked=false,rotation_requested=false,
+    credential_hash=NULL,previous_hash=NULL,previous_until=NULL,revoked=false,rotation_requested=false,rotate_key_requested=false,
     machine_id=CASE WHEN revoked AND preview_only THEN NULL ELSE machine_id END
 WHERE workspace_id = @workspace_id AND id = @id
 RETURNING id,name,role,last_seen,capabilities,preflight,revoked,rotation_requested,awaiting_transfer,preview_only;
 
 -- name: RevokeServer :execrows
-UPDATE servers SET revoked=true,credential_hash=NULL,previous_hash=NULL,enrollment_hash=NULL,rotation_requested=false
+UPDATE servers SET revoked=true,credential_hash=NULL,previous_hash=NULL,enrollment_hash=NULL,rotation_requested=false,rotate_key_requested=false
 WHERE workspace_id = @workspace_id AND id = @id;
 
 -- name: AdvanceServerUpdateGeneration :one

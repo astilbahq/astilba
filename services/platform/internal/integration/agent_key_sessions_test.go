@@ -253,16 +253,21 @@ func TestServersPageKeepsTheKeyThroughReKeyingAndRevocation(t *testing.T) {
 		t.Fatal(err)
 	}
 	b.call("POST", route+"/rotate", nil, 204, nil)
-	if requested := view().RotateKeyRequested; requested == nil || !*requested {
-		t.Fatal("a requested rotation isn't shown")
+	if live := view(); live.RotateKeyRequested == nil || live.KeyCurrent == nil || live.LineageStartedAt == nil {
+		t.Fatal("a live key, its session or a requested rotation isn't shown")
 	}
 	if _, err := f.st.Pool.Exec(ctx, `UPDATE servers SET identity_conflict_at=now(),identity_conflict_epoch=enrollment_epoch,identity_conflict='{"signal":"start_counter"}' WHERE id=$1`, v.Server.Id); err != nil {
 		t.Fatal(err)
 	}
 	// A new code clears the credential, but the server still held a key: it isn't a bearer agent.
 	b.call("POST", route+"/enrollment", nil, 201, nil)
-	if identity := view(); !identity.KeyBound || identity.ConflictAt == nil {
+	identity := view()
+	if !identity.KeyBound || identity.ConflictAt == nil {
 		t.Fatal("a new code made a key-bound server look like a bearer agent, or hid its conflict", identity.KeyBound)
+	}
+	// Nothing on the page says the cleared key, its session or the requested rotation is live.
+	if identity.KeyCurrent != nil || identity.LineageStartedAt != nil || identity.RotateKeyRequested != nil {
+		t.Fatal("the page still shows a cleared key as live")
 	}
 	b.call("POST", route+"/revoke", nil, 204, nil)
 	if identity := view(); !identity.KeyBound || identity.ConflictAt != nil {

@@ -223,7 +223,7 @@ func (s *Service) RenewEnrollment(ctx context.Context, p store.Principal, ws, id
 		} else if held {
 			return domain.Conflict
 		}
-		if e := invalidateNetworkMember(ctx, tx, ws, id, memberRevokedNote); e != nil {
+		if e := invalidateNetworkMember(ctx, tx, ws, id, memberRenewedNote); e != nil {
 			return e
 		}
 		row, e := db.New(tx).RenewServerEnrollment(ctx, db.RenewServerEnrollmentParams{WorkspaceID: ws, ID: id, EnrollmentHash: hash(out.Token), EnrollmentExpires: &out.ExpiresAt})
