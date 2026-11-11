@@ -55,8 +55,7 @@ func (s *Store) PruneHistory(ctx context.Context) error {
 		{"server_metrics", statement(`DELETE FROM server_metrics WHERE (server_id,received_at) IN (SELECT server_id,received_at FROM server_metrics WHERE received_at<=now()-interval '24 hours' ORDER BY received_at LIMIT 1000 FOR UPDATE SKIP LOCKED)`)},
 		{"git_branch_pushes", s.Queries.PruneGitBranchPushes},
 		{"agent_nonces", s.Queries.PruneAgentNonces},
-		{"agent_identity_events", s.Queries.PruneAgentIdentityEvents},
-		{"agent_keys", s.Queries.PruneAgentKeys},
+		{"agent_identity_history", s.Queries.PruneAgentIdentityHistory},
 		{"github_authorizations", statement(`DELETE FROM github_app_authorizations WHERE id IN (SELECT id FROM github_app_authorizations WHERE expires_at<now() ORDER BY expires_at LIMIT 1000 FOR UPDATE SKIP LOCKED)`)},
 	}
 	var failed []error

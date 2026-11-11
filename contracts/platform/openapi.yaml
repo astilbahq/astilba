@@ -5205,8 +5205,8 @@
           description: Agent names its enrolled machine when rotating its credential. Advertised only after Astilba-Agent-Machine-Rotation v1.
         keyProtection:
           type: string
-          enum: [tpm, host_key, unsealed, setup_required]
-          description: How the agent protects its key. Advertised only after Astilba-Agent-Keys v1.
+          enum: [tpm, host_key, unsealed, setup_required, seal_failed]
+          description: How the agent protects its key. setup_required and seal_failed mean it holds none yet, so it keeps its bearer credential. Advertised only after Astilba-Agent-Keys v1.
     "HostPreflight":
       "type": "object"
       "additionalProperties": false
@@ -5304,7 +5304,8 @@
       additionalProperties: false
       required: [keyBound]
       properties:
-        keyBound: {type: boolean, description: "The agent authenticates with a key it holds, not a bearer credential."}
+        keyBound: {type: boolean, description: "The agent registered a key in the current enrollment, rather than a bearer credential. It stays true while the server is revoked, re-coded or fenced."}
+        rotateKeyRequested: {type: boolean, description: "An owner asked for a key rotation the agent hasn't made yet. It waits while a terminal session is open."}
         keyCreatedAt: {type: string, format: date-time, nullable: true}
         keyRotatedAt: {type: string, format: date-time, nullable: true}
         lineageStartedAt: {type: string, format: date-time, nullable: true, description: "When the agent process now authenticating started its session."}

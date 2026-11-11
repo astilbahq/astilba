@@ -298,6 +298,10 @@ func (c *Client) keyProtection() *api.AgentCapabilitiesKeyProtection {
 		p := api.SetupRequired
 		return &p
 	}
+	if c.KeyStoreErr != nil {
+		p := api.SealFailed
+		return &p
+	}
 	return nil
 }
 

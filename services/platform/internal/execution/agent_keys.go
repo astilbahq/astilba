@@ -268,7 +268,7 @@ func (s *Service) ColdStart(ctx context.Context, in api.AgentTokenRequest, sourc
 		return out, commitRefusal(ctx, tx, keyNotCurrent)
 	}
 	// F2: one holder's start counters rise with its nonces.
-	counter, err := q.CounterConflict(ctx, db.CounterConflictParams{ServerID: in.ServerId, Epoch: epoch, Value: in.StartCounter, NonceSeq: n.seq, NonceHash: n.hash})
+	counter, err := q.CounterConflict(ctx, db.CounterConflictParams{WorkspaceID: ws, ServerID: in.ServerId, Epoch: epoch, Value: in.StartCounter, NonceSeq: n.seq, NonceHash: n.hash})
 	if err != nil {
 		return out, err
 	}
@@ -286,10 +286,10 @@ func (s *Service) ColdStart(ctx context.Context, in api.AgentTokenRequest, sourc
 		}
 		return out, commitRefusal(ctx, tx, counterStale)
 	}
-	if err = q.RecordAgentCounter(ctx, db.RecordAgentCounterParams{ServerID: in.ServerId, Epoch: epoch, Value: in.StartCounter, NonceSeq: n.seq, NonceHash: n.hash}); err != nil {
+	if err = q.RecordAgentCounter(ctx, db.RecordAgentCounterParams{WorkspaceID: ws, ServerID: in.ServerId, Epoch: epoch, Value: in.StartCounter, NonceSeq: n.seq, NonceHash: n.hash}); err != nil {
 		return out, err
 	}
-	if err = q.PruneAgentCounters(ctx, db.PruneAgentCountersParams{ServerID: in.ServerId, Epoch: epoch}); err != nil {
+	if err = q.PruneAgentCounters(ctx, db.PruneAgentCountersParams{WorkspaceID: ws, ServerID: in.ServerId, Epoch: epoch}); err != nil {
 		return out, err
 	}
 	if key.FirstUsedAt == nil {
@@ -396,8 +396,9 @@ func (s *Service) Refresh(ctx context.Context, in api.AgentRefreshRequest, sourc
 	if server.PreviewOnly {
 		out.PreviewOnly = &server.PreviewOnly
 	}
-	// The update itself decides whether the presented secret may still renew the session, so two
-	// requests racing with the same secret can't both succeed.
+	// The update itself decides whether the presented secret is still current, so two requests
+	// racing with the same secret can't both succeed. The agent never presents one twice: after any
+	// failure it starts a new session instead.
 	n, err := q.RotateLineageTokens(ctx, db.RotateLineageTokensParams{WorkspaceID: server.WorkspaceID, ID: lineage.ID, Presented: presented, RefreshHash: hash(refresh), TokenHash: hash(out.Token), LifetimeSeconds: agentTokenSeconds})
 	if err != nil {
 		return out, err
@@ -485,7 +486,7 @@ func (s *Service) RemoveFromNetworks(ctx context.Context, p store.Principal, ws,
 			}
 			return err
 		}
-		return invalidateNetworkMember(ctx, tx, ws, id)
+		return invalidateNetworkMember(ctx, tx, ws, id, memberRemovedNote)
 	})
 }
 
@@ -498,7 +499,10 @@ func identityViews(ctx context.Context, q *db.Queries, ws uuid.UUID) (map[uuid.U
 	out := make(map[uuid.UUID]*api.ServerIdentity, len(rows))
 	for _, r := range rows {
 		v := &api.ServerIdentity{KeyBound: r.KeyCreatedAt != nil, KeyCreatedAt: r.KeyCreatedAt, KeyRotatedAt: r.KeyRotatedAt, LineageStartedAt: r.LineageStartedAt}
-		if r.IdentityConflictAt != nil && r.IdentityConflictEpoch.Valid && r.IdentityConflictEpoch.Int64 == r.EnrollmentEpoch {
+		if r.RotateKeyRequested {
+			v.RotateKeyRequested = &r.RotateKeyRequested
+		}
+		if !r.Revoked && r.IdentityConflictAt != nil && r.IdentityConflictEpoch.Valid && r.IdentityConflictEpoch.Int64 == r.EnrollmentEpoch {
 			v.ConflictAt = r.IdentityConflictAt
 			var detail struct {
 				Signal string `json:"signal"`

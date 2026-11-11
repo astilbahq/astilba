@@ -332,20 +332,21 @@ func (c *Client) sendBind(ctx context.Context, cfg Config) error {
 	return c.call(ctx, "POST", "/agent/v1/bind", api.AgentKeyBind{PublicKey: public, MachineId: cfg.MachineID, Proof: proof}, nil, cfg.Credential)
 }
 
-// maybeRotate finishes a rotation that never reached management, with the same successor, or
-// starts one management asked for. A failure leaves the successor stored, to be retried with the
-// next session. If the rotation reached management but no session started with the successor,
-// the old key's session has ended and the next request starts one.
+// maybeRotate rotates the key when management asks: with the successor already stored, if an
+// earlier rotation never reached management, or with a new one. Management asks only while no
+// terminal session would end. A failure leaves the successor stored, to be retried when management
+// next asks. If the rotation reached management but no session started with the successor, the
+// old key's session has ended and the next request starts one.
 func (c *Client) maybeRotate(ctx context.Context, out api.AgentToken) {
+	if !out.RotateKey {
+		return
+	}
 	cfg, err := c.Journal.Config()
 	if err != nil || cfg.Key == nil || c.Keys == nil {
 		return
 	}
 	if cfg.PendingRotation != nil {
 		_ = c.sendRotation(ctx, cfg, cfg.PendingRotation)
-		return
-	}
-	if !out.RotateKey {
 		return
 	}
 	sealed, err := c.newSealedKey(ctx)

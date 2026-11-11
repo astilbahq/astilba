@@ -61,9 +61,10 @@ How well the key is protected depends on the host, and the Servers page says whi
 
 - **TPM:** the key is sealed with `systemd-creds` to the host's TPM, without binding it to firmware measurements, so firmware and Secure Boot updates don't lock the agent out. A copy of the disk can't use the key.
 - **Host key:** without a TPM, the key is sealed with systemd's host key, `/var/lib/systemd/credential.secret`, which lives outside the state directory. A copy of the state directory alone can't use the key. **A copy of the whole disk can**, because it includes the host key.
-- **Setup required:** the host has no systemd host key yet, and the agent service's sandbox can't create one. Run `sudo systemd-creds setup` once; the agent then registers a key at its next start. `astilba-agent enroll` and `transfer` do this themselves.
+- **Setup required:** the host has no systemd host key yet, and the agent service's sandbox can't create one. Run `sudo systemd-creds setup` once, then restart the agent service; it registers a key when it starts. `astilba-agent enroll` and `transfer` do this themselves.
+- **Sealing failed:** `systemd-creds` is missing or couldn't read back what it sealed. The agent logs why at start.
 
-The agent registers a key only after it has sealed a value and read it back. Where sealing fails, it keeps authenticating with its bearer credential and the Servers page shows why.
+The agent registers a key only after it has sealed a value and read it back. Until then it keeps authenticating with its bearer credential.
 
 A copy of the state directory still holds the journal, which its keyring decrypts, and the host's private network keys. Treat a copied state directory as a leak of the host's secrets and network keys even when it can't authenticate.
 
@@ -71,23 +72,32 @@ The agent replaces its key every 30 days, or when an owner asks with **Rotate ke
 
 ### Identity conflicts
 
-Management looks for proof that a second copy of an agent is using the server's key: session starts whose counters don't rise in the order management issued their challenges, a key the agent replaced used after its replacement, the credential a key replaced used again after the key was in use, or a consumed enrollment code presented with another key. An honest agent never produces these, whatever its retries, restarts or lost answers. Management then raises an **identity conflict** alert and shows it on the Servers page. Anything ambiguous, such as a late or duplicated request, is refused without raising one. A key that a new enrollment code replaced is refused and recorded once, without an alert. Nothing that someone who knows only the server's ID can send raises a conflict or stops the server.
+Management looks for proof that a second copy of an agent is using the server's key:
 
-Only a new enrollment code clears a conflict; an agent replacing its bearer with a key doesn't. Management keeps the keys a code replaced for 30 days, so a copy that presents one is recorded.
+- session starts whose counters don't rise in the order management issued their challenges;
+- a key the agent replaced, used after its replacement;
+- the credential a key replaced, used again from two minutes after the key's first use until a day after the agent replaced it. Outside that window, it is only refused;
+- a consumed enrollment code presented with another key.
+
+Management then raises an **identity conflict** alert and shows it on the Servers page. A running agent never produces these, whatever its retries, restarts or lost answers. **Restoring the state directory from a backup or snapshot does**, because the restored agent repeats what the live one already sent: re-key the host after a restore. Anything ambiguous, such as a late or duplicated request, is refused without raising one. A key that a new enrollment code replaced is refused and recorded once, without an alert. Nothing that someone who knows only the server's ID can send raises a conflict or stops the server.
+
+Only a new enrollment code clears a conflict; an agent replacing its bearer with a key doesn't. Management keeps the keys a code replaced for 30 days after it replaced them, so a copy that presents one is recorded.
+
+**Remove from private networks** cuts the server's network key at once, without re-keying, for example while you investigate. Workloads on it lose their private connections to other servers until you add it back.
 
 By default a conflict only alerts, and both copies can keep authenticating until you act. Set `ASTILBA_AGENT_FORK_FENCING=true` on management to also clear the server's credential when a conflict is proven, which stops both copies until the host is re-keyed.
 
 If you see a conflict, or suspect the state directory leaked:
 
-1. Select **Remove from private networks**: a copy of the state directory holds the server's private network key. Adding the server back gives it a new key.
-2. Create a **New enrollment code** and enroll this host again with its existing state directory. It registers a new key, and every copy of the old one stops working.
+1. Stop the agent service (`sudo systemctl stop astilba-agent`), since `enroll` can't open the state directory while the service has it.
+2. Create a **New enrollment code**, enroll this host again with its existing state directory, and start the service. The agent registers a new key, and every copy of the old one stops working. A new code also takes the server out of its private networks, since a copy of the state directory holds its network key; add it back to give it a new one.
 3. If the host itself may be compromised, revoke the connection instead and enroll a rebuilt host as a new server; then [move the work off the revoked server](cross-host-placement.md#moving-off-a-revoked-server). Renewal accepts only the machine that enrolled. After a whole-disk copy of a host without a TPM, the systemd host key leaked too: rebuild the host, or regenerate that key before re-keying.
 
 Revoking still ends unfinished work, and the host keeps the secrets, registry access and TLS keys it was given, so rotate those at their source.
 
 ### Agents that still use a bearer credential
 
-Agents released before keys authenticate with a 256-bit bearer credential, which a copy of the state directory can use from anywhere. After an update, the agent registers a key at its next start and deletes the bearer; that bearer then stops working. Management can't safely rotate a bearer, so **Rotate key now** waits for the agent to be updated. An older agent that was part way through rotating its bearer when management was upgraded can't finish, and shows as offline although it still receives commands; update it.
+Agents released before keys authenticate with a 256-bit bearer credential, which a copy of the state directory can use from anywhere. After an update, the agent registers a key at its next start and deletes the bearer; that bearer then stops working. Management can't safely rotate a bearer, so it refuses **Rotate key now** until the agent is updated and has registered a key. An older agent that was part way through rotating its bearer when management was upgraded can't finish, and shows as offline although it still receives commands; update it.
 
 Until a host is updated, the response to a suspected leak is to revoke it and enroll a rebuilt host or a fresh state directory as a new server: renewing it with the same state directory sends the leaked bearer again.
 

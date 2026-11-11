@@ -83,6 +83,11 @@ func (s *Service) enroll(ctx context.Context, in api.AgentEnrollment, source str
 	locked, e := q.LockAgentEnrollment(ctx, db.LockAgentEnrollmentParams{ServerID: in.ServerId, EnrollmentHash: hash(in.Token), CredentialHash: candidate, MachineID: &in.MachineId})
 	if errors.Is(e, pgx.ErrNoRows) {
 		if keyDER != nil {
+			// Release this request's connection before checking, so refused requests can't hold one
+			// each while they wait for another.
+			if e = tx.Rollback(ctx); e != nil {
+				return out, e
+			}
 			if e = s.codeTaken(ctx, in, candidate, source); e != nil {
 				return out, e
 			}

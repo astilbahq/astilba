@@ -10,7 +10,10 @@ ALTER TABLE servers
     ADD COLUMN consumed_code_hash bytea,
     ADD COLUMN identity_conflict_at timestamptz,
     ADD COLUMN identity_conflict_epoch bigint,
-    ADD COLUMN identity_conflict jsonb;
+    ADD COLUMN identity_conflict jsonb,
+    -- When the record of earlier epochs may go: 30 days after the latest epoch ended.
+    ADD COLUMN identity_history_until timestamptz;
+CREATE INDEX servers_identity_history_until ON servers(identity_history_until) WHERE identity_history_until IS NOT NULL;
 
 -- Every key a server has held in an epoch. A key superseded by rotation in the current epoch is
 -- proof of a second holder once its successor has been used.
@@ -37,8 +40,6 @@ CREATE TABLE agent_lineages (
     key_hash bytea NOT NULL,
     epoch bigint NOT NULL,
     refresh_hash bytea NOT NULL,
-    previous_refresh_hash bytea,
-    previous_refresh_until timestamptz,
     token_hash bytea NOT NULL,
     token_expires_at timestamptz NOT NULL,
     previous_token_hash bytea,
@@ -55,13 +56,15 @@ CREATE INDEX agent_lineages_server ON agent_lineages(server_id, superseded_at);
 -- Start counters seen in an epoch, with the order of the nonce each came with. One holder's
 -- counters rise with its nonces, so a pair that doesn't is proof of a second holder.
 CREATE TABLE agent_counter_values (
-    server_id uuid NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
+    workspace_id uuid NOT NULL,
+    server_id uuid NOT NULL,
     epoch bigint NOT NULL,
     value bigint NOT NULL,
     nonce_seq bigint NOT NULL,
     nonce_hash bytea NOT NULL,
     seen_at timestamptz NOT NULL DEFAULT now(),
-    PRIMARY KEY (server_id, epoch, nonce_seq)
+    PRIMARY KEY (server_id, epoch, nonce_seq),
+    FOREIGN KEY (workspace_id, server_id) REFERENCES servers(workspace_id, id) ON DELETE CASCADE
 );
 CREATE INDEX agent_counter_values_value ON agent_counter_values(server_id, epoch, value);
 
@@ -89,7 +92,6 @@ CREATE TABLE agent_identity_events (
     FOREIGN KEY (workspace_id, server_id) REFERENCES servers(workspace_id, id) ON DELETE CASCADE
 );
 CREATE INDEX agent_identity_events_server ON agent_identity_events(server_id, created_at DESC);
-CREATE INDEX agent_identity_events_created ON agent_identity_events(created_at);
 -- Refusals and conflicts are recorded once per key, signal and epoch, however often they recur.
 CREATE UNIQUE INDEX agent_identity_events_once ON agent_identity_events(server_id, epoch, kind, signal, key_hash)
     WHERE kind IN ('refused','conflict');
@@ -117,7 +119,7 @@ DROP TABLE installation_secrets, agent_identity_events, agent_nonces_consumed, a
 DROP SEQUENCE agent_nonce_seq;
 ALTER TABLE troubleshooting_sessions DROP COLUMN agent_lineage;
 ALTER TABLE servers
-    DROP COLUMN identity_conflict, DROP COLUMN identity_conflict_epoch, DROP COLUMN identity_conflict_at,
+    DROP COLUMN identity_history_until, DROP COLUMN identity_conflict, DROP COLUMN identity_conflict_epoch, DROP COLUMN identity_conflict_at,
     DROP COLUMN consumed_code_hash,
     DROP COLUMN bound_at, DROP COLUMN retired_bearer_hash, DROP COLUMN rotate_key_requested,
     DROP COLUMN key_rotated_at, DROP COLUMN enrollment_epoch;

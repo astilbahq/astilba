@@ -20,7 +20,8 @@ work or accepting reports. Detection requires the management application to be
 running; it is not an external uptime service.
 
 - **Identity conflict:** management saw proof that a second copy of a server's agent uses
-  its key in its current enrollment. It stays firing until the server is enrolled again with
+  its key in its current enrollment, which a restored backup of its state directory also
+  produces. It stays firing until the server is enrolled again with
   a new code, or revoked. See [the agent's key](agent.md#identity-conflicts).
 - **Server disconnected:** an enrolled server has not sent a heartbeat for more
   than two minutes. A heartbeat less than 45 seconds old establishes recovery.

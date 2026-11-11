@@ -51,17 +51,18 @@ func (q *Queries) ClaimNetworkForSweep(ctx context.Context, passStarted time.Tim
 }
 
 const disableNetworkMember = `-- name: DisableNetworkMember :execrows
-UPDATE network_members SET enabled=false,note='Server authority revoked; this server has not confirmed its removal. If it will not return, revoke it.'
-WHERE workspace_id = $1 AND server_id = $2 AND enabled
+UPDATE network_members SET enabled=false,note = $1
+WHERE workspace_id = $2 AND server_id = $3 AND enabled
 `
 
 type DisableNetworkMemberParams struct {
+	Note        string    `json:"note"`
 	WorkspaceID uuid.UUID `json:"workspace_id"`
 	ServerID    uuid.UUID `json:"server_id"`
 }
 
 func (q *Queries) DisableNetworkMember(ctx context.Context, arg DisableNetworkMemberParams) (int64, error) {
-	result, err := q.db.Exec(ctx, disableNetworkMember, arg.WorkspaceID, arg.ServerID)
+	result, err := q.db.Exec(ctx, disableNetworkMember, arg.Note, arg.WorkspaceID, arg.ServerID)
 	if err != nil {
 		return 0, err
 	}

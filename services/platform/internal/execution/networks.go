@@ -255,8 +255,14 @@ func advanceNetworkGeneration(ctx context.Context, tx pgx.Tx, ws uuid.UUID, obse
 // Invalidate network authority in the same transaction as bearer revocation. It has to succeed
 // whatever the counter holds: peers learn about the removal through a later generation, but the
 // credential must stop working now, so a counter at its limit costs only the peer update.
-func invalidateNetworkMember(ctx context.Context, tx pgx.Tx, ws, server uuid.UUID) error {
-	disabled, err := db.New(tx).DisableNetworkMember(ctx, db.DisableNetworkMemberParams{WorkspaceID: ws, ServerID: server})
+// Notes shown on a member taken out of its networks, by why it was.
+const (
+	memberRevokedNote = "Server authority revoked; this server has not confirmed its removal. If it will not return, revoke it."
+	memberRemovedNote = "Removed from private networks by an owner; this server has not confirmed its removal. Add it back to restore its access."
+)
+
+func invalidateNetworkMember(ctx context.Context, tx pgx.Tx, ws, server uuid.UUID, note string) error {
+	disabled, err := db.New(tx).DisableNetworkMember(ctx, db.DisableNetworkMemberParams{Note: note, WorkspaceID: ws, ServerID: server})
 	if err != nil || disabled == 0 {
 		return err
 	}

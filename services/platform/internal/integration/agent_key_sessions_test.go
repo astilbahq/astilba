@@ -47,7 +47,7 @@ func identityEvents(t *testing.T, f *fixture, server uuid.UUID, kind, signal str
 	return n
 }
 
-func TestRefreshRenewsTheSessionAndALostAnswerOnce(t *testing.T) {
+func TestRefreshRenewsTheSessionOncePerSecret(t *testing.T) {
 	_, _, _, v, a := keyedServer(t)
 	key := agentKey(t, a)
 	first := coldStart(t, a.tls, v.Server.Id, key, 100, 200)
@@ -59,12 +59,11 @@ func TestRefreshRenewsTheSessionAndALostAnswerOnce(t *testing.T) {
 	agentRequest(t, a.tls.Client(), a.tls.URL, "/agent/v1/heartbeat", v.Server.Id.String()+"."+renewed.Token, heartbeat, 200, nil)
 	// Requests in flight across a refresh still succeed with the token it replaced.
 	agentRequest(t, a.tls.Client(), a.tls.URL, "/agent/v1/heartbeat", v.Server.Id.String()+"."+first.Token, heartbeat, 200, nil)
-	// The answer was lost: the secret it replaced renews the session once more, and only once.
-	again := refresh(t, a.tls, v.Server.Id, key, first.Refresh, 200)
+	// A secret renews the session once. The agent starts a new session after any failure, so it
+	// never presents a secret again.
 	refresh(t, a.tls, v.Server.Id, key, first.Refresh, 401)
-	refresh(t, a.tls, v.Server.Id, key, renewed.Refresh, 401)
+	again := refresh(t, a.tls, v.Server.Id, key, renewed.Refresh, 200)
 	agentRequest(t, a.tls.Client(), a.tls.URL, "/agent/v1/heartbeat", v.Server.Id.String()+"."+again.Token, heartbeat, 200, nil)
-	refresh(t, a.tls, v.Server.Id, key, again.Refresh, 200)
 }
 
 func TestDelayedSessionStartIsStaleNotAConflict(t *testing.T) {
@@ -116,9 +115,16 @@ func TestKeyReplacedByANewCodeIsRecordedOnceWithoutAnAlert(t *testing.T) {
 	if _, err := a.c.Heartbeat(ctx); err != nil {
 		t.Fatal(err)
 	}
-	// Retention keeps the current key and drops the replaced one after 30 days, with the nonces
-	// that have expired.
-	if _, err := f.st.Pool.Exec(ctx, `UPDATE agent_keys SET created_at=now()-interval '31 days' WHERE server_id=$1`, v.Server.Id); err != nil {
+	// Retention keeps a replaced key for 30 days from its replacement, however old the key is,
+	// then drops it and its epoch's events. It keeps the current key, and drops expired nonces.
+	count := func(sql string) int {
+		var n int
+		if err := f.st.Pool.QueryRow(ctx, sql, v.Server.Id).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	if _, err := f.st.Pool.Exec(ctx, `UPDATE agent_keys SET created_at=now()-interval '90 days' WHERE server_id=$1`, v.Server.Id); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := f.st.Pool.Exec(ctx, `UPDATE agent_nonces_consumed SET expires_at=now()-interval '1 second'`); err != nil {
@@ -127,11 +133,23 @@ func TestKeyReplacedByANewCodeIsRecordedOnceWithoutAnAlert(t *testing.T) {
 	if err := f.st.PruneHistory(ctx); err != nil {
 		t.Fatal(err)
 	}
-	var keys, nonces int
-	_ = f.st.Pool.QueryRow(ctx, `SELECT count(*) FROM agent_keys WHERE server_id=$1`, v.Server.Id).Scan(&keys)
-	_ = f.st.Pool.QueryRow(ctx, `SELECT count(*) FROM agent_nonces_consumed`).Scan(&nonces)
-	if keys != 1 || nonces != 0 {
-		t.Fatal("retention kept what it should drop, or dropped the current key", keys, nonces)
+	if keys := count(`SELECT count(*) FROM agent_keys WHERE server_id=$1`); keys != 2 {
+		t.Fatal("retention dropped a key replaced less than 30 days ago", keys)
+	}
+	if count(`SELECT count(*) FROM agent_nonces_consumed WHERE $1::uuid IS NOT NULL`) != 0 {
+		t.Fatal("retention kept expired nonces")
+	}
+	if _, err := f.st.Pool.Exec(ctx, `UPDATE servers SET identity_history_until=now()-interval '1 second' WHERE id=$1`, v.Server.Id); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.st.PruneHistory(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if keys := count(`SELECT count(*) FROM agent_keys WHERE server_id=$1`); keys != 1 {
+		t.Fatal("retention kept a replaced key past its 30 days, or dropped the current one", keys)
+	}
+	if count(`SELECT count(*) FROM agent_identity_events e JOIN servers s ON s.id=e.server_id WHERE e.server_id=$1 AND e.epoch<s.enrollment_epoch`) != 0 {
+		t.Fatal("retention kept an earlier epoch's events past its 30 days")
 	}
 	a.client()
 	if _, err := a.c.Heartbeat(ctx); err != nil {
@@ -212,5 +230,42 @@ func TestStrangerCannotBindOrEnrollAKey(t *testing.T) {
 	}
 	if _, err := a.c.Heartbeat(context.Background()); err != nil {
 		t.Fatal("a stranger blocked the server", err)
+	}
+}
+
+func TestServersPageKeepsTheKeyThroughReKeyingAndRevocation(t *testing.T) {
+	f, b, ws, v, a := keyedServer(t)
+	ctx := context.Background()
+	route := "/api/v1/workspaces/" + ws.String() + "/servers/" + v.Server.Id.String()
+	view := func() *api.ServerIdentity {
+		t.Helper()
+		var servers []api.Server
+		b.call("GET", "/api/v1/workspaces/"+ws.String()+"/servers", nil, 200, &servers)
+		for _, s := range servers {
+			if s.Id == v.Server.Id && s.Identity != nil {
+				return s.Identity
+			}
+		}
+		t.Fatal("the server has no identity view")
+		return nil
+	}
+	if _, err := a.c.Heartbeat(ctx); err != nil {
+		t.Fatal(err)
+	}
+	b.call("POST", route+"/rotate", nil, 204, nil)
+	if requested := view().RotateKeyRequested; requested == nil || !*requested {
+		t.Fatal("a requested rotation isn't shown")
+	}
+	if _, err := f.st.Pool.Exec(ctx, `UPDATE servers SET identity_conflict_at=now(),identity_conflict_epoch=enrollment_epoch,identity_conflict='{"signal":"start_counter"}' WHERE id=$1`, v.Server.Id); err != nil {
+		t.Fatal(err)
+	}
+	// A new code clears the credential, but the server still held a key: it isn't a bearer agent.
+	b.call("POST", route+"/enrollment", nil, 201, nil)
+	if identity := view(); !identity.KeyBound || identity.ConflictAt == nil {
+		t.Fatal("a new code made a key-bound server look like a bearer agent, or hid its conflict", identity.KeyBound)
+	}
+	b.call("POST", route+"/revoke", nil, 204, nil)
+	if identity := view(); !identity.KeyBound || identity.ConflictAt != nil {
+		t.Fatal("revocation hid the key, or kept a conflict whose alert it ended", identity.KeyBound)
 	}
 }

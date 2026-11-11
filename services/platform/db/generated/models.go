@@ -29,12 +29,13 @@ type Account struct {
 }
 
 type AgentCounterValue struct {
-	ServerID  uuid.UUID `json:"server_id"`
-	Epoch     int64     `json:"epoch"`
-	Value     int64     `json:"value"`
-	NonceSeq  int64     `json:"nonce_seq"`
-	NonceHash []byte    `json:"nonce_hash"`
-	SeenAt    time.Time `json:"seen_at"`
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ServerID    uuid.UUID `json:"server_id"`
+	Epoch       int64     `json:"epoch"`
+	Value       int64     `json:"value"`
+	NonceSeq    int64     `json:"nonce_seq"`
+	NonceHash   []byte    `json:"nonce_hash"`
+	SeenAt      time.Time `json:"seen_at"`
 }
 
 type AgentIdentityEvent struct {
@@ -68,8 +69,6 @@ type AgentLineage struct {
 	KeyHash                []byte     `json:"key_hash"`
 	Epoch                  int64      `json:"epoch"`
 	RefreshHash            []byte     `json:"refresh_hash"`
-	PreviousRefreshHash    []byte     `json:"previous_refresh_hash"`
-	PreviousRefreshUntil   *time.Time `json:"previous_refresh_until"`
 	TokenHash              []byte     `json:"token_hash"`
 	TokenExpiresAt         time.Time  `json:"token_expires_at"`
 	PreviousTokenHash      []byte     `json:"previous_token_hash"`
@@ -738,6 +737,7 @@ type Server struct {
 	IdentityConflictAt    *time.Time  `json:"identity_conflict_at"`
 	IdentityConflictEpoch pgtype.Int8 `json:"identity_conflict_epoch"`
 	IdentityConflict      []byte      `json:"identity_conflict"`
+	IdentityHistoryUntil  *time.Time  `json:"identity_history_until"`
 }
 
 type ServerDomain struct {

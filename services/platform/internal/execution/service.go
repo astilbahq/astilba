@@ -223,7 +223,7 @@ func (s *Service) RenewEnrollment(ctx context.Context, p store.Principal, ws, id
 		} else if held {
 			return domain.Conflict
 		}
-		if e := invalidateNetworkMember(ctx, tx, ws, id); e != nil {
+		if e := invalidateNetworkMember(ctx, tx, ws, id, memberRevokedNote); e != nil {
 			return e
 		}
 		row, e := db.New(tx).RenewServerEnrollment(ctx, db.RenewServerEnrollmentParams{WorkspaceID: ws, ID: id, EnrollmentHash: hash(out.Token), EnrollmentExpires: &out.ExpiresAt})
@@ -242,7 +242,7 @@ func (s *Service) Control(ctx context.Context, p store.Principal, ws, id uuid.UU
 	}
 	return s.scope(ctx, p, ws, workspaceAccess{Write: true, Owner: true, Recent: true, Recovery: revoke}, action, id, func(tx pgx.Tx) error {
 		if revoke {
-			if e := invalidateNetworkMember(ctx, tx, ws, id); e != nil {
+			if e := invalidateNetworkMember(ctx, tx, ws, id, memberRevokedNote); e != nil {
 				return e
 			}
 			if e := store.LockServerDNS(ctx, tx, id); e != nil {

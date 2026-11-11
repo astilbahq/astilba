@@ -7,9 +7,12 @@ const protection: Record<string, string> = {
   host_key:
     "sealed to this machine's systemd host key; a copy of its state directory can't use it, but a copy of its whole disk can",
   unsealed: "not sealed (development build)",
-  setup_required:
-    "not yet sealed: run `sudo systemd-creds setup` on the host once, then the agent registers a key",
 };
+
+// Re-keying runs the agent's enroll command, which can't open the state directory while the
+// service has it open.
+const rekey =
+  "stop the agent service, create a new enrollment code, enroll this host again and start the service. It registers a new key, every copy of the old one stops working, and the server leaves its private networks until you add it back";
 
 const signals: Record<string, string> = {
   start_counter: "two copies of the agent started sessions with the same key",
@@ -45,9 +48,11 @@ export function ServerCredentials({
   const identity = server.identity;
   const keyed = identity?.keyBound === true;
   const kept = server.capabilities?.keyProtection;
+  // An updated agent that can't seal a key yet reports why; only an earlier one needs updating.
+  const unsealable = kept === "setup_required" || kept === "seal_failed";
   const leak = keyed
-    ? "If you suspect its state directory leaked, create a new enrollment code and enroll this host again: it registers a new key, and every copy of the old one stops working. A copy also holds the server's private network key, so remove it from private networks too. If the host itself may be compromised, revoke it and enroll a rebuilt host as a new server."
-    : "This agent still uses a bearer credential, which a copy of its state directory can use from anywhere. Update the agent: it then registers a key it holds. Until then, after a suspected leak, revoke the connection and enroll a rebuilt host or a fresh state directory as a new server.";
+    ? `If you suspect its state directory leaked, ${rekey}. Restoring the state directory from a backup or snapshot looks the same as a copy, so re-key after one. If the host itself may be compromised, revoke it and enroll a rebuilt host as a new server.`
+    : `This agent still uses a bearer credential, which a copy of its state directory can use from anywhere.${unsealable ? "" : " Update the agent: it then registers a key it holds."} Until then, after a suspected leak, revoke the connection and enroll a rebuilt host or a fresh state directory as a new server.`;
   return (
     <>
       {identity?.conflictAt && (
@@ -56,20 +61,29 @@ export function ServerCredentials({
             Another copy of this server's agent key is in use:{" "}
             {signals[identity.conflictSignal ?? ""] ??
               "management saw proof of a second holder"}
-            , {age(identity.conflictAt)}. A copy of its state directory also
-            holds its private network key, so remove it from private networks.
-            Then create a new enrollment code and enroll this host again, or
-            revoke it if the host itself may be compromised.
+            , {age(identity.conflictAt)}. A restored backup or snapshot of its
+            state directory also looks like this. To end it, {rekey}. If the
+            host itself may be compromised, revoke it instead.
           </p>
         </div>
       )}
       {server.status !== "pending" && server.capabilities && (
         <p className={s.muted}>
-          {keyed
-            ? `The agent holds a key${kept ? `, ${protection[kept] ?? kept}` : ""}. Registered ${age(identity?.keyRotatedAt ?? identity?.keyCreatedAt)}; it is replaced every 30 days.${identity?.lineageStartedAt ? ` The agent's current session started ${age(identity.lineageStartedAt)}.` : ""} `
-            : kept === "setup_required"
-              ? `The agent's key is ${protection.setup_required}. `
-              : ""}
+          {keyed &&
+            `The agent holds a key${kept && protection[kept] ? `, ${protection[kept]}` : ""}. Registered ${age(identity?.keyRotatedAt ?? identity?.keyCreatedAt)}; it is replaced every 30 days.${identity?.lineageStartedAt ? ` The agent's current session started ${age(identity.lineageStartedAt)}.` : ""} `}
+          {keyed &&
+            identity?.rotateKeyRequested &&
+            "You asked for a new key: the agent registers one within 10 minutes, or once open terminal sessions end. "}
+          {!keyed && kept === "setup_required" && (
+            <>
+              The agent can't register a key until this host has a systemd host
+              key. Run <code className={s.code}>sudo systemd-creds setup</code>{" "}
+              on the host once, then restart the agent service.{" "}
+            </>
+          )}
+          {!keyed &&
+            kept === "seal_failed" &&
+            "The agent can't seal a key with systemd-creds on this host; its log says why. "}
           {leak}
         </p>
       )}
@@ -141,7 +155,7 @@ export function ServerCredentials({
           onClick={() => {
             if (
               confirm(
-                `Remove ${server.name} from every private network? Its peers stop accepting its network key. Adding it back needs your approval, and it gets a new key.`,
+                `Remove ${server.name} from every private network? Its peers stop accepting its network key, and workloads on it lose their private connections to other servers. Adding it back needs your approval, and it gets a new key.`,
               )
             )
               run(() =>

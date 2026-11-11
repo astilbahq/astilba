@@ -61,21 +61,21 @@ DELETE FROM agent_nonces_consumed WHERE nonce_hash IN (
 -- with its nonces. A value at or above this one with an older nonce, one at or below it with a newer
 -- nonce, or this value with a different nonce, came from someone else.
 SELECT EXISTS(SELECT 1 FROM agent_counter_values a
-    WHERE a.server_id = sqlc.arg(server_id)::uuid AND a.epoch = sqlc.arg(epoch)::bigint
+    WHERE a.workspace_id = sqlc.arg(workspace_id)::uuid AND a.server_id = sqlc.arg(server_id)::uuid AND a.epoch = sqlc.arg(epoch)::bigint
       AND ((a.value >= sqlc.arg(value)::bigint AND a.nonce_seq < sqlc.arg(nonce_seq)::bigint)
         OR (a.value <= sqlc.arg(value)::bigint AND a.nonce_seq > sqlc.arg(nonce_seq)::bigint)
         OR (a.value = sqlc.arg(value)::bigint AND a.nonce_hash <> sqlc.arg(nonce_hash)::bytea)))::boolean AS conflict,
     EXISTS(SELECT 1 FROM agent_counter_values b
-    WHERE b.server_id = sqlc.arg(server_id)::uuid AND b.epoch = sqlc.arg(epoch)::bigint AND b.value >= sqlc.arg(value)::bigint)::boolean AS stale;
+    WHERE b.workspace_id = sqlc.arg(workspace_id)::uuid AND b.server_id = sqlc.arg(server_id)::uuid AND b.epoch = sqlc.arg(epoch)::bigint AND b.value >= sqlc.arg(value)::bigint)::boolean AS stale;
 
 -- name: RecordAgentCounter :exec
-INSERT INTO agent_counter_values(server_id,epoch,value,nonce_seq,nonce_hash) VALUES(@server_id,@epoch,@value,@nonce_seq,@nonce_hash)
+INSERT INTO agent_counter_values(workspace_id,server_id,epoch,value,nonce_seq,nonce_hash) VALUES(@workspace_id,@server_id,@epoch,@value,@nonce_seq,@nonce_hash)
 ON CONFLICT DO NOTHING;
 
 -- name: PruneAgentCounters :exec
-DELETE FROM agent_counter_values c WHERE c.server_id = sqlc.arg(server_id)::uuid
+DELETE FROM agent_counter_values c WHERE c.workspace_id = sqlc.arg(workspace_id)::uuid AND c.server_id = sqlc.arg(server_id)::uuid
     AND (c.epoch <> sqlc.arg(epoch)::bigint OR c.nonce_seq < (SELECT COALESCE(min(r.nonce_seq),0) FROM (
-        SELECT v.nonce_seq FROM agent_counter_values v WHERE v.server_id = sqlc.arg(server_id)::uuid AND v.epoch = sqlc.arg(epoch)::bigint
+        SELECT v.nonce_seq FROM agent_counter_values v WHERE v.workspace_id = sqlc.arg(workspace_id)::uuid AND v.server_id = sqlc.arg(server_id)::uuid AND v.epoch = sqlc.arg(epoch)::bigint
         ORDER BY v.nonce_seq DESC LIMIT 256) r));
 
 -- name: SupersedeAgentLineages :exec
@@ -92,21 +92,21 @@ VALUES(@id,@workspace_id,@server_id,@key_hash,@epoch,@refresh_hash,@token_hash,n
 DELETE FROM agent_lineages
 WHERE workspace_id = @workspace_id AND server_id = @server_id AND superseded_at < now() - interval '24 hours';
 
--- name: PruneAgentIdentityEvents :exec
--- unscoped: retention covers every workspace. Events of the current epoch are bounded, since
--- refusals and conflicts are recorded once each; those of earlier epochs are kept 30 days.
-DELETE FROM agent_identity_events WHERE id IN (
-    SELECT e.id FROM agent_identity_events e JOIN servers s ON s.id = e.server_id
-    WHERE e.created_at < now() - interval '30 days' AND e.epoch < s.enrollment_epoch
-    ORDER BY e.created_at LIMIT 1000 FOR UPDATE OF e SKIP LOCKED);
-
--- name: PruneAgentKeys :exec
--- unscoped: retention covers every workspace. Keys of earlier epochs can no longer authenticate;
--- they are kept 30 days so a copy that presents one is recorded.
-DELETE FROM agent_keys WHERE (server_id,key_hash) IN (
-    SELECT k.server_id,k.key_hash FROM agent_keys k JOIN servers s ON s.id = k.server_id
-    WHERE k.created_at < now() - interval '30 days' AND k.epoch < s.enrollment_epoch
-    ORDER BY k.created_at LIMIT 1000 FOR UPDATE OF k SKIP LOCKED);
+-- name: PruneAgentIdentityHistory :exec
+-- unscoped: retention covers every workspace. The keys and events of earlier epochs are kept until
+-- 30 days after the latest epoch ended, and while a conflict is current, so a copy presenting a
+-- replaced key is still recorded and the owner can still see what raised the conflict. Events of
+-- the current epoch are bounded, since refusals and conflicts are recorded once each.
+WITH due AS (
+    SELECT id,workspace_id,enrollment_epoch FROM servers
+    WHERE identity_history_until < now() AND NOT COALESCE(identity_conflict_epoch = enrollment_epoch,false)
+    ORDER BY identity_history_until LIMIT 100 FOR UPDATE SKIP LOCKED
+), keys AS (
+    DELETE FROM agent_keys k USING due WHERE k.workspace_id = due.workspace_id AND k.server_id = due.id AND k.epoch < due.enrollment_epoch
+), events AS (
+    DELETE FROM agent_identity_events e USING due WHERE e.workspace_id = due.workspace_id AND e.server_id = due.id AND e.epoch < due.enrollment_epoch
+)
+UPDATE servers s SET identity_history_until = NULL FROM due WHERE s.id = due.id;
 
 -- name: MarkAgentKeyUsed :exec
 -- A key's first use is the moment its predecessors' holders, and a bind's retired bearer, can
@@ -122,19 +122,16 @@ WHERE workspace_id = @workspace_id AND server_id = @server_id AND epoch = @epoch
 -- unscoped: the refresh secret establishes the workspace.
 SELECT l.id,l.workspace_id,l.key_hash,l.epoch,l.superseded_at,k.public_key
 FROM agent_lineages l JOIN agent_keys k ON k.server_id = l.server_id AND k.key_hash = l.key_hash
-WHERE l.server_id = @server_id AND (l.refresh_hash = @refresh_hash OR l.previous_refresh_hash = @refresh_hash);
+WHERE l.server_id = @server_id AND l.refresh_hash = @refresh_hash;
 
 -- name: RotateLineageTokens :execrows
--- The current secret, or once within a minute the one it replaced, renews a live session. The
--- previous token stays valid until it expires, so requests in flight across a refresh succeed.
+-- Only the current secret renews a live session, once. The previous token stays valid until it
+-- expires, so requests in flight across a refresh succeed.
 UPDATE agent_lineages SET
-    previous_refresh_hash = CASE WHEN refresh_hash = @presented THEN refresh_hash END,
-    previous_refresh_until = CASE WHEN refresh_hash = @presented THEN now() + interval '60 seconds' END,
     refresh_hash = @refresh_hash,
     previous_token_hash = token_hash,previous_token_expires_at = token_expires_at,
     token_hash = @token_hash,token_expires_at = now() + make_interval(secs => sqlc.arg(lifetime_seconds)::int)
-WHERE workspace_id = @workspace_id AND id = @id AND superseded_at IS NULL
-    AND (refresh_hash = @presented OR (previous_refresh_hash = @presented AND previous_refresh_until > now()));
+WHERE workspace_id = @workspace_id AND id = @id AND superseded_at IS NULL AND refresh_hash = @presented;
 
 -- name: AuthenticateAgentToken :one
 -- unscoped: the presented token establishes the workspace. A token is live only while its lineage
@@ -165,7 +162,7 @@ WHERE workspace_id = @workspace_id AND id = @server_id;
 -- current: only a one-time code clears one.
 UPDATE servers SET credential_hash = @key_hash,previous_hash = NULL,previous_until = NULL,
     retired_bearer_hash = @bearer_hash,bound_at = now(),key_rotated_at = now(),rotation_requested = false,
-    rotate_key_requested = false,enrollment_epoch = enrollment_epoch + 1,
+    rotate_key_requested = false,enrollment_epoch = enrollment_epoch + 1,identity_history_until = now() + interval '30 days',
     identity_conflict_epoch = CASE WHEN identity_conflict_epoch = enrollment_epoch THEN enrollment_epoch + 1 ELSE identity_conflict_epoch END
 WHERE workspace_id = @workspace_id AND id = @server_id;
 
@@ -173,6 +170,7 @@ WHERE workspace_id = @workspace_id AND id = @server_id;
 -- Consuming a one-time code is the only thing besides a bind that starts an epoch, and the only
 -- thing that clears an identity conflict.
 UPDATE servers SET enrollment_epoch = enrollment_epoch + 1,consumed_code_hash = @code_hash,
+    identity_history_until = now() + interval '30 days',
     retired_bearer_hash = NULL,bound_at = NULL,
     identity_conflict_at = NULL,identity_conflict_epoch = NULL,identity_conflict = NULL,
     key_rotated_at = CASE WHEN @key_bound::boolean THEN now() ELSE NULL END,rotate_key_requested = false
@@ -205,11 +203,14 @@ RETURNING EXISTS(SELECT 1 FROM agent_keys k WHERE k.server_id = s.id AND k.key_h
 SELECT EXISTS(SELECT 1 FROM troubleshooting_sessions WHERE workspace_id = @workspace_id AND server_id = @server_id AND state IN ('offered','active'))::boolean;
 
 -- name: ServerIdentities :many
--- A server has at most one live lineage. A conflict is shown only in the epoch it was raised in.
-SELECT s.id,s.key_rotated_at,s.identity_conflict_at,s.identity_conflict,s.identity_conflict_epoch,s.enrollment_epoch,
+-- A server has at most one live lineage. Its key is the newest of the current epoch, which stays
+-- known while revocation, a new code or fencing has cleared the credential. A conflict is shown only
+-- in the epoch it was raised in, and not once the server is revoked.
+SELECT s.id,s.key_rotated_at,s.rotate_key_requested,s.revoked,s.identity_conflict_at,s.identity_conflict,s.identity_conflict_epoch,s.enrollment_epoch,
     k.created_at AS key_created_at,l.created_at AS lineage_started_at
 FROM servers s
-LEFT JOIN agent_keys k ON k.server_id = s.id AND k.key_hash = s.credential_hash
+LEFT JOIN agent_keys k ON k.server_id = s.id AND k.epoch = s.enrollment_epoch
+    AND NOT EXISTS(SELECT 1 FROM agent_keys n WHERE n.server_id = k.server_id AND n.epoch = k.epoch AND n.created_at > k.created_at)
 LEFT JOIN agent_lineages l ON l.server_id = s.id AND l.superseded_at IS NULL
 WHERE s.workspace_id = sqlc.arg(workspace_id)::uuid;
 

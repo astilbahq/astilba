@@ -129,7 +129,7 @@ UPDATE network_members SET installed_manifest=NULL,manifest_hash=''
 WHERE workspace_id = @workspace_id AND server_id = @server_id AND membership_id = @membership_id;
 
 -- name: DisableNetworkMember :execrows
-UPDATE network_members SET enabled=false,note='Server authority revoked; this server has not confirmed its removal. If it will not return, revoke it.'
+UPDATE network_members SET enabled=false,note = @note
 WHERE workspace_id = @workspace_id AND server_id = @server_id AND enabled;
 
 -- name: ReportsOnNetworkCommand :one

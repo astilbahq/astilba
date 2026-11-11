@@ -2629,10 +2629,10 @@ export interface components {
             /** @description Agent names its enrolled machine when rotating its credential. Advertised only after Astilba-Agent-Machine-Rotation v1. */
             machineBoundRotation?: boolean;
             /**
-             * @description How the agent protects its key. Advertised only after Astilba-Agent-Keys v1.
+             * @description How the agent protects its key. setup_required and seal_failed mean it holds none yet, so it keeps its bearer credential. Advertised only after Astilba-Agent-Keys v1.
              * @enum {string}
              */
-            keyProtection?: "tpm" | "host_key" | "unsealed" | "setup_required";
+            keyProtection?: "tpm" | "host_key" | "unsealed" | "setup_required" | "seal_failed";
         };
         HostPreflight: {
             crossHostInventory?: components["schemas"]["CrossHostInventory"];
@@ -2666,8 +2666,10 @@ export interface components {
             identity?: components["schemas"]["ServerIdentity"];
         };
         ServerIdentity: {
-            /** @description The agent authenticates with a key it holds, not a bearer credential. */
+            /** @description The agent registered a key in the current enrollment, rather than a bearer credential. It stays true while the server is revoked, re-coded or fenced. */
             keyBound: boolean;
+            /** @description An owner asked for a key rotation the agent hasn't made yet. It waits while a terminal session is open. */
+            rotateKeyRequested?: boolean;
             /** Format: date-time */
             keyCreatedAt?: string | null;
             /** Format: date-time */

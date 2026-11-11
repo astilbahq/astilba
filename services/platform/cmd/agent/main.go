@@ -14,6 +14,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/mail"
 	"net/netip"
 	"os"
@@ -352,6 +353,9 @@ func run() error {
 	}
 	c := agent.NewClient(j, engine)
 	c.Keys, c.KeyStoreErr = agent.SystemKeyStore(ctx)
+	if c.KeyStoreErr != nil {
+		slog.Warn("the agent can't seal a key on this host, so it keeps its bearer credential", "error", c.KeyStoreErr)
+	}
 	collector := &agent.MetricCollector{Journal: j}
 	c.Metrics = func(ctx context.Context) api.MetricReport {
 		cfg, err := j.Config()
