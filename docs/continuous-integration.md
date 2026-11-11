@@ -254,9 +254,11 @@ follows the rules in [Host downloads](#host-downloads): it repeats for at least 
 minutes, a stall repeats while a slow download finishes, a file failing its hash stops
 the scan, and a 404 also takes four minutes to report.
 
-The target also runs `node scripts/public-suffix-list.mjs --check`, which downloads the
-[pinned Public Suffix List](hosting.md#the-pinned-list) at its recorded commit and fails
-if the committed copy differs, so a hand edit cannot pass as upstream's list.
+The target also runs `node scripts/public-suffix-list.mjs --check`. It fails unless the
+[pinned Public Suffix List](hosting.md#the-pinned-list)'s commit was on upstream's main
+branch 24 hours ago and the committed copy matches that commit byte for byte, so
+neither a hand edit nor a commit from a fork can pass as upstream's list. The step gets
+the workflow's `GITHUB_TOKEN`, since runners share GitHub's unauthenticated API limit.
 
 `go tool -n govulncheck` fetches modules on a cache miss, and `govulncheck` reads the Go
 vulnerability database with one request per file, so one reset stops either. Each repeats

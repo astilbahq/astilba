@@ -574,12 +574,15 @@ warning name that commit. `golang.org/x/net` has its own copy, but refreshes it 
 about once a year, too slowly for a new entry.
 
 To bring in a newly merged entry, run `node scripts/public-suffix-list.mjs` from the
-repository root. It pins the newest commit that has been the tip of the list's main
-branch for longer than the 24-hour release-age gate, timed from when GitHub recorded
-the push rather than from the commit's own dates, and records it in `source.go`.
+repository root, with `GITHUB_TOKEN` set if GitHub's unauthenticated rate limit is
+in the way. It pins the commit that was the tip of the list's main branch 24 hours
+ago, the release-age gate, timed from GitHub's record of each push rather than from
+the commit's own dates. The commit must still be on main, and is recorded in
+`source.go`.
 Check that the diff of `public_suffix_list.dat` adds the expected entry, and open a
 pull request. The [vulnerability scan](continuous-integration.md#vulnerability-scan)
-confirms that the committed files match upstream at that commit. The entry reaches
+confirms that the commit was on upstream's main branch before the gate and that the
+committed files match it. The entry reaches
 operators in the next release built from it. Routine dependency upgrades move the
 pin as well.
 

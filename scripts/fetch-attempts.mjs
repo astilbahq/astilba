@@ -124,14 +124,14 @@ export const fetchingCommand = (name, command, args, run, attempts) =>
     { delay: outlastOutage, ...attempts },
   );
 
-async function fetchBytes(url, idleMs) {
+async function fetchBytes(url, idleMs, headers) {
   const stalled = new AbortController();
   const idle = setTimeout(
     () => stalled.abort(new Error(`no data for ${idleMs} ms`)),
     idleMs,
   );
   try {
-    const response = await fetch(url, { signal: stalled.signal });
+    const response = await fetch(url, { headers, signal: stalled.signal });
     if (!response.ok) {
       await response.body?.cancel();
       throw new Error(`HTTP ${response.status}`);
@@ -154,8 +154,11 @@ async function fetchBytes(url, idleMs) {
 }
 
 // A stall repeats and a slow download finishes.
-export const download = (url, { idleMs = 60_000, ...options } = {}) =>
-  withFetchAttempts(`Download from ${url}`, () => fetchBytes(url, idleMs), {
+export const download = (
+  url,
+  { idleMs = 60_000, headers, ...options } = {},
+) =>
+  withFetchAttempts(`Download from ${url}`, () => fetchBytes(url, idleMs, headers), {
     delay: outlastOutage,
     ...options,
   });

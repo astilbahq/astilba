@@ -9,7 +9,7 @@ import { minimumAgeMs } from "./go-release-age.mjs";
 // entry to reach a release. See docs/hosting.md#the-pinned-list.
 //
 //   node scripts/public-suffix-list.mjs          pin the newest eligible commit
-//   node scripts/public-suffix-list.mjs --check  confirm the files match the pin
+//   node scripts/public-suffix-list.mjs --check  confirm the pin is upstream's
 //
 // The list's header asks for routine pulls from publicsuffix.org, which serves only
 // the latest copy. This takes a reviewed commit a few times a year instead, so the pin
@@ -61,19 +61,34 @@ export function pinnedCommit(source) {
   return sha;
 }
 
-const json = async (url) => JSON.parse((await download(url)).toString("utf8"));
+// A token, when set, lifts GitHub's unauthenticated rate limit, which CI runners share.
+const headers = process.env.GITHUB_TOKEN
+  ? { authorization: `Bearer ${process.env.GITHUB_TOKEN}` }
+  : {};
+const json = async (url) =>
+  JSON.parse((await download(url, { headers })).toString("utf8"));
 const upstream = (sha) =>
   Promise.all(files.map(([, path]) => download(`${raw}/${sha}/${path}`)));
+const contains = async (descendant, sha) =>
+  ["ahead", "identical"].includes(
+    (await json(`${api}/compare/${sha}...${descendant}`)).status,
+  );
 
-async function pin() {
+// Main's tip from before the release-age gate, still on main. raw.githubusercontent.com
+// serves a commit pushed to any fork under the upstream name, and a force push can
+// drop a commit that was once main's tip, so both modes measure against this.
+async function gatedMain() {
   const now = Date.now();
   const minimumMs = minimumAgeMs(readFileSync(resolve(root, "pnpm-workspace.yaml"), "utf8"));
   const activities = await json(`${api}/activity?ref=refs/heads/main&per_page=100`);
   const { after: sha, timestamp: pushed } = chooseCommit(activities, now, minimumMs);
-  // A later force push can drop a commit that was once main's tip.
-  const { status } = await json(`${api}/compare/${sha}...main`);
-  if (!["ahead", "identical"].includes(status))
+  if (!(await contains("main", sha)))
     throw new Error(`${sha} is no longer on publicsuffix/list main`);
+  return { sha, pushed };
+}
+
+async function pin() {
+  const { sha, pushed } = await gatedMain();
   const downloaded = await upstream(sha);
   if (!downloaded[0].includes("// ===BEGIN PRIVATE DOMAINS==="))
     throw new Error("the downloaded list has no private section");
@@ -82,10 +97,12 @@ async function pin() {
   console.log(`Public Suffix List pinned to ${sha}, main's tip since ${pushed}`);
 }
 
-// The pin is only as good as the files' match with upstream; a hand edit to both the
-// list and source.go would otherwise pass every offline check.
+// A hand edit to the list and source.go would otherwise pass every offline check.
 async function check() {
   const sha = pinnedCommit(readFileSync(resolve(target, "source.go"), "utf8"));
+  const gated = await gatedMain();
+  if (!(await contains(gated.sha, sha)))
+    throw new Error(`${sha} was not on publicsuffix/list main before the release-age gate`);
   const downloaded = await upstream(sha);
   files.forEach(([name], i) => {
     if (!readFileSync(resolve(target, name)).equals(downloaded[i]))
