@@ -157,19 +157,19 @@ func shellLeaderAlive(shell shellIdentity) bool {
 // endShellSession kills every process in the shell's Linux session, not just its process
 // group, because interactive shells place jobs in their own groups. Each signal goes
 // through a pidfd, opened and then checked against the process found, so a PID reused in
-// between is not signalled.
-func endShellSession(shell shellIdentity) error {
+// between is not signalled. It reports whether any process was left to end.
+func endShellSession(shell shellIdentity) (bool, error) {
 	gone, err := shellGone(shell)
 	if err != nil || gone {
-		return err
+		return false, err
 	}
-	for range 20 {
+	for attempt := range 20 {
 		members, err := sessionMembers(shell)
 		if err != nil {
-			return err
+			return attempt > 0, err
 		}
 		if len(members) == 0 {
-			return nil
+			return attempt > 0, nil
 		}
 		for pid, start := range members {
 			fd, err := unix.PidfdOpen(pid, 0)
@@ -183,5 +183,5 @@ func endShellSession(shell shellIdentity) error {
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	return errors.New("terminal session processes survived")
+	return true, errors.New("terminal session processes survived")
 }

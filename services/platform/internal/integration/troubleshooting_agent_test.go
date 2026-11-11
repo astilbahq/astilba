@@ -2,6 +2,7 @@ package integration
 
 import (
 	"context"
+	"log/slog"
 	"os"
 	"strings"
 	"testing"
@@ -62,6 +63,11 @@ func TestNativeTroubleshootingEndToEnd(t *testing.T) {
 	if err = journal.SetTroubleshooting(true); err != nil {
 		t.Fatal(err)
 	}
+	// The host's journal, as the agent writes it.
+	trail := &lockedLog{}
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(trail, nil)))
+	defer slog.SetDefault(previous)
 	host := agent.NewClient(journal, &agent.Engine{Journal: journal, Docker: docker})
 	host.HTTP = x.f.server.Client()
 	yes := true
@@ -88,6 +94,7 @@ func TestNativeTroubleshootingEndToEnd(t *testing.T) {
 	browser.send(t, terminal.ResizeFrame(80, 24))
 	browser.send(t, append([]byte{terminal.Input}, "echo end''to''end; exit 3\n"...))
 	output := strings.Builder{}
+exited:
 	for deadline := time.After(60 * time.Second); ; {
 		select {
 		case frame, open := <-browser.frames:
@@ -102,9 +109,46 @@ func TestNativeTroubleshootingEndToEnd(t *testing.T) {
 				t.Fatalf("frame %v after %q", frame, output.String())
 			}
 			x.waitClosed(t, opened.Session.Id, "shell exited")
-			return
+			break exited
 		case <-deadline:
 			t.Fatalf("no exit: %q", output.String())
 		}
 	}
+	journaled(t, trail, opened.Session.Id.String(), `reason="shell exited"`)
+
+	// A session management ends is journaled with management's reason, not as a lost stream.
+	opened = x.open(t, x.owner, x.app, 1, 201)
+	browser = x.attachBrowser(t, x.owner, opened)
+	browser.send(t, append([]byte{terminal.Input}, "echo run''ning\n"...))
+	output.Reset()
+	for deadline := time.After(60 * time.Second); !strings.Contains(output.String(), "running"); {
+		select {
+		case frame, open := <-browser.frames:
+			if !open || frame[0] != terminal.Output {
+				t.Fatalf("frame %v open=%v after %q", frame, open, output.String())
+			}
+			output.Write(frame[1:])
+		case <-deadline:
+			t.Fatalf("shell did not run: %q", output.String())
+		}
+	}
+	x.owner.call("POST", x.prefix+"/troubleshooting-sessions/"+opened.Session.Id.String()+"/close", nil, 204, nil)
+	x.waitClosed(t, opened.Session.Id, "closed")
+	journaled(t, trail, opened.Session.Id.String(), `reason="ended by management: closed"`)
+}
+
+// journaled waits for the agent to record a session's end in the host's journal.
+func journaled(t *testing.T, trail *lockedLog, session, reason string) {
+	t.Helper()
+	for deadline := time.Now().Add(20 * time.Second); time.Now().Before(deadline); time.Sleep(100 * time.Millisecond) {
+		for line := range strings.Lines(trail.String()) {
+			if strings.Contains(line, `msg="terminal session ended"`) && strings.Contains(line, session) {
+				if !strings.Contains(line, reason) {
+					t.Fatalf("journaled %q, want %s", line, reason)
+				}
+				return
+			}
+		}
+	}
+	t.Fatalf("no end journaled for %s:\n%s", session, trail.String())
 }

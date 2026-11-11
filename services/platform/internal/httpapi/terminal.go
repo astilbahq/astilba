@@ -191,10 +191,12 @@ func (s *Server) attachTerminal(stream execution.TroubleshootingStream, agent, b
 		<-p.done
 		return
 	}
-	for _, conn := range []*websocket.Conn{agent, browser} {
-		if conn != nil {
-			terminal.Close(conn, websocket.StatusPolicyViolation, "the other side did not attach")
-		}
+	// The agent is told the reason the session records, for the host's journal.
+	if agent != nil {
+		terminal.Close(agent, websocket.StatusPolicyViolation, reason)
+	}
+	if browser != nil {
+		terminal.Close(browser, websocket.StatusPolicyViolation, "the other side did not attach")
 	}
 	s.endUnattachedTerminal(stream, reason)
 }
@@ -235,9 +237,8 @@ func (s *Server) relayTerminal(p *terminalPair) {
 		})
 	}
 	var input, output atomic.Int64
-	var lastInput atomic.Int64
 	var refreshDue atomic.Bool
-	lastInput.Store(time.Now().UnixNano())
+	activity := terminal.NewActivity()
 	ws, id := p.stream.Workspace, p.stream.Session
 
 	// The first stream may have waited up to a ticket's lifetime, so the conditions are
@@ -258,13 +259,15 @@ func (s *Server) relayTerminal(p *terminalPair) {
 	}
 
 	var workers sync.WaitGroup
-	workers.Go(func() { s.pumpTerminalBrowser(ctx, p, &input, &lastInput, &refreshDue, stop) })
+	workers.Go(func() { s.pumpTerminalBrowser(ctx, p, &input, activity, &refreshDue, stop) })
 	workers.Go(func() { s.pumpTerminalAgent(ctx, p, &output, stop) })
-	workers.Go(func() { s.superviseTerminal(ctx, p, &lastInput, &refreshDue, stop) })
+	workers.Go(func() { s.superviseTerminal(ctx, p, activity, &refreshDue, stop) })
 	<-ctx.Done()
 	once.Do(func() {})
-	// Concurrently, so a peer that does not answer cannot delay the other stream's end.
-	workers.Go(func() { terminal.Close(p.agent, websocket.StatusNormalClosure, "") })
+	// Concurrently, so a peer that does not answer cannot delay the other stream's end. The
+	// agent is told the reason the session records, so the host's journal can say why
+	// management ended it.
+	workers.Go(func() { terminal.Close(p.agent, websocket.StatusNormalClosure, reason) })
 	workers.Go(func() { terminal.Close(p.browser, websocket.StatusNormalClosure, "") })
 	workers.Wait()
 
@@ -290,7 +293,7 @@ func (s *Server) recordTerminalEnd(stream execution.TroubleshootingStream, reaso
 	}
 }
 
-func (s *Server) pumpTerminalBrowser(ctx context.Context, p *terminalPair, input, lastInput *atomic.Int64, refreshDue *atomic.Bool, stop func(string)) {
+func (s *Server) pumpTerminalBrowser(ctx context.Context, p *terminalPair, input *atomic.Int64, activity *terminal.Activity, refreshDue *atomic.Bool, stop func(string)) {
 	// Waiting on a limit stops this read, which is the backpressure: beyond the frames held
 	// during the wait, nothing is buffered.
 	inputRate := rate.NewLimiter(terminalInputRate, terminal.MaxFrame)
@@ -322,8 +325,7 @@ func (s *Server) pumpTerminalBrowser(ctx context.Context, p *terminalPair, input
 		switch frame[0] {
 		case terminal.Input:
 			input.Add(int64(len(frame) - 1))
-			now := time.Now()
-			lastInput.Store(now.UnixNano())
+			now := activity.Touch()
 			if now.Sub(lastRefresh) >= time.Minute {
 				lastRefresh = now
 				refreshDue.Store(true)
@@ -396,7 +398,7 @@ func (s *Server) pumpTerminalAgent(ctx context.Context, p *terminalPair, output 
 // connections alive, re-reads the conditions a session depends on and keeps the browser
 // session alive while the person types. A session whose conditions cannot be read for
 // terminalReviewLimit intervals ends: it may no longer be allowed.
-func (s *Server) superviseTerminal(ctx context.Context, p *terminalPair, lastInput *atomic.Int64, refreshDue *atomic.Bool, stop func(string)) {
+func (s *Server) superviseTerminal(ctx context.Context, p *terminalPair, activity *terminal.Activity, refreshDue *atomic.Bool, stop func(string)) {
 	tick := time.NewTicker(time.Second)
 	defer tick.Stop()
 	nextReview, nextPing := time.Now().Add(s.TerminalReviewEvery), time.Now().Add(terminalPing)
@@ -406,12 +408,12 @@ func (s *Server) superviseTerminal(ctx context.Context, p *terminalPair, lastInp
 		case <-ctx.Done():
 			return
 		case now := <-tick.C:
-			activity := time.Unix(0, lastInput.Load())
-			if now.Sub(activity) >= s.TerminalIdle {
+			last := activity.Last()
+			if time.Since(last) >= s.TerminalIdle {
 				stop("idle timeout")
 				return
 			}
-			end := activity.Add(s.TerminalIdle)
+			end := last.Add(s.TerminalIdle)
 			if p.stream.Deadline.Before(end) {
 				end = p.stream.Deadline
 			}

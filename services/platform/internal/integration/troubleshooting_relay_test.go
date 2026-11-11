@@ -79,6 +79,16 @@ func (p *terminalPeer) drained(t *testing.T) {
 	}
 }
 
+// toldWhy waits for management to close the agent's stream, and checks that it gave the
+// reason the session records, which the agent writes to the host's journal.
+func (p *terminalPeer) toldWhy(t *testing.T, reason string) {
+	t.Helper()
+	p.drained(t)
+	if got, closed := terminal.Ending(p.err); !closed || got != reason {
+		t.Fatalf("agent stream ended with %v, want a close saying %q", p.err, reason)
+	}
+}
+
 func (x troubleshootingFixture) websocketURL(path string) string {
 	return "ws" + strings.TrimPrefix(x.f.server.URL, "http") + path
 }
@@ -255,7 +265,7 @@ func TestTroubleshootingStalledBrowserCannotHoldASessionOpen(t *testing.T) {
 	}
 	agent.expect(t, []byte{terminal.Start})
 	started := time.Now()
-	agent.drained(t)
+	agent.toldWhy(t, "idle timeout")
 	if elapsed := time.Since(started); elapsed > 5*time.Second {
 		t.Fatalf("agent stream ended after %s, waiting on the browser", elapsed)
 	}
@@ -521,7 +531,7 @@ func TestTroubleshootingOpenSessionsEndWhenConditionsChange(t *testing.T) {
 			opened, agent, browser := x.connected(t, operator, 1)
 			test.change(t, x, x.owner, operator, opened.Session.Id, operatorID)
 			x.waitClosed(t, opened.Session.Id, test.reason)
-			agent.drained(t)
+			agent.toldWhy(t, test.reason)
 			browser.drained(t)
 		})
 	}
@@ -577,6 +587,7 @@ func TestTroubleshootingIdleLimitCountsOnlyTypedInput(t *testing.T) {
 					t.Fatal("no warning before the limit")
 				}
 				x.waitClosed(t, opened.Session.Id, "idle timeout")
+				agent.toldWhy(t, "idle timeout")
 				return
 			}
 			warned = warned || frame[0] == terminal.Warning
@@ -602,6 +613,7 @@ func TestTroubleshootingDeadlineEndsTheRelay(t *testing.T) {
 	agent.expect(t, []byte{terminal.Start})
 	browser.drained(t)
 	x.waitClosed(t, opened.Session.Id, "deadline")
+	agent.toldWhy(t, "deadline")
 }
 
 func browserSessionExpiry(expiry string) string {
@@ -728,6 +740,7 @@ func TestTroubleshootingAbandonedSessionsClose(t *testing.T) {
 		t.Fatalf("agent stream refused: %d", status)
 	}
 	x.waitClosed(t, opened.Session.Id, "not attached")
+	agent.toldWhy(t, "not attached")
 	x.audited(t, "session.close", 1)
 
 	left := x.open(t, x.owner, x.app, 2, 201)

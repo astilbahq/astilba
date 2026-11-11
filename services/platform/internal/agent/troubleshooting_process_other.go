@@ -12,5 +12,5 @@ type shellIdentity struct {
 }
 
 func identifyShell(pid int) (shellIdentity, error) { return shellIdentity{PID: pid}, nil }
-func endShellSession(shellIdentity) error          { return nil }
+func endShellSession(shellIdentity) (bool, error)  { return false, nil }
 func shellLeaderAlive(shellIdentity) bool          { return false }
