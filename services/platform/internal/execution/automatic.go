@@ -302,13 +302,6 @@ func automaticReviewNote(err error, fallback string) string {
 
 const resumeNote = "Prepare and apply a deployment plan to review it; automatic deployment then resumes with the next push."
 
-// elevatedService reports whether a Compose service has host-level access. Privileged mode and
-// added capabilities are the only host permissions other than published ports that Compose
-// sources may request.
-func elevatedService(service types.ServiceConfig) bool {
-	return service.Privileged || len(service.CapAdd) > 0
-}
-
 func statefulService(service types.ServiceConfig) bool {
 	for _, mount := range service.Volumes {
 		if mount.Type == "volume" {
@@ -325,8 +318,8 @@ func statefulService(service types.ServiceConfig) bool {
 // that changes it would otherwise run new code with host-level access. Only published
 // ports carry forward for services whose definitions change. It returns whether reviewed host
 // permissions carry forward, and the privileged and cap_add services.
-func automaticChanges(previous, next domain.Specification) (bool, map[uuid.UUID]bool, error) {
-	elevatedIDs := map[uuid.UUID]bool{}
+func automaticChanges(previous, next domain.Specification) (bool, map[uuid.UUID]elevatedReview, error) {
+	elevated := map[uuid.UUID]elevatedReview{}
 	if (previous.Compose == nil) != (next.Compose == nil) {
 		return false, nil, needsReview("Not deployed: the environment changed between Compose files and visual services. %s", resumeNote)
 	}
@@ -355,29 +348,21 @@ func automaticChanges(previous, next domain.Specification) (bool, map[uuid.UUID]
 		}
 	}
 	if previous.Compose != nil {
-		names := slices.Sorted(maps.Keys(oldProject.Model.Services))
-		for name := range nextProject.Model.Services {
-			if !slices.Contains(names, name) {
-				names = append(names, name)
+		elevated = compareElevatedServices(oldProject, nextProject, previous, next)
+		names := serviceNames(oldProject, nextProject)
+		for _, name := range names {
+			if review, ok := elevated[composeproject.ResourceID(next.Compose.Namespace, "service", name)]; ok && !review.Unchanged {
+				return false, nil, needsReview("Not deployed: %s runs privileged or with added Linux capabilities, and this change alters or removes it, such as its image, command, environment or files. Automatic deployment never changes a service with host-level access. %s", name, resumeNote)
 			}
 		}
-		slices.Sort(names)
 		for _, name := range names {
 			old, oldOK := oldProject.Model.Services[name]
 			now, nowOK := nextProject.Model.Services[name]
-			elevated := oldOK && elevatedService(old) || nowOK && elevatedService(now)
-			stateful := oldOK && statefulService(old) || nowOK && statefulService(now)
-			if !elevated && !stateful {
+			if _, ok := elevated[composeproject.ResourceID(next.Compose.Namespace, "service", name)]; ok || !(oldOK && statefulService(old) || nowOK && statefulService(now)) {
 				continue
 			}
-			if elevated {
-				elevatedIDs[composeproject.ResourceID(previous.Compose.Namespace, "service", name)] = true
-			}
-			if oldOK && nowOK && reflect.DeepEqual(composeServiceInputs(oldProject, name, previous, elevated), composeServiceInputs(nextProject, name, next, elevated)) {
+			if oldOK && nowOK && reflect.DeepEqual(composeServiceInputs(oldProject, name, previous, false), composeServiceInputs(nextProject, name, next, false)) {
 				continue
-			}
-			if elevated {
-				return false, nil, needsReview("Not deployed: %s runs privileged or with added Linux capabilities, and this change alters or removes it, such as its image, command, environment or files. Automatic deployment never changes a service with host-level access. %s", name, resumeNote)
 			}
 			return false, nil, needsReview("Not deployed: %s keeps data in a volume, and this change alters or removes it, such as its image, command, environment or files. %s", name, resumeNote)
 		}
@@ -401,7 +386,7 @@ func automaticChanges(previous, next domain.Specification) (bool, map[uuid.UUID]
 			}
 		}
 	}
-	return len(nextPermissions) > 0, elevatedIDs, nil
+	return len(nextPermissions) > 0, elevated, nil
 }
 
 // composeServiceInputs is what decides what a Compose service runs: its merged and interpolated
@@ -487,7 +472,7 @@ func statefulVisualInputs(spec domain.Specification, app domain.Application) map
 // run changed is its build target or, for an imported commit, one whose image reference the
 // commit edited. Stateful and privileged (elevated) services must keep their reviewed image
 // even then.
-func automaticImages(previous, next domain.Specification, elevated map[uuid.UUID]bool, target uuid.UUID, applied, candidate map[string]string) error {
+func automaticImages(previous, next domain.Specification, elevated map[uuid.UUID]elevatedReview, target uuid.UUID, applied, candidate map[string]string) error {
 	for _, app := range next.Applications {
 		index := slices.IndexFunc(previous.Applications, func(a domain.Application) bool { return a.ID == app.ID })
 		if index < 0 {
@@ -497,18 +482,18 @@ func automaticImages(previous, next domain.Specification, elevated map[uuid.UUID
 		}
 		old := previous.Applications[index]
 		stateful := len(old.Mounts) > 0 || len(app.Mounts) > 0
-		sensitive := stateful || elevated[app.ID]
-		if !sensitive && (app.ID == target || !sameImageReference(old.Source.Image, app.Source.Image)) {
+		_, privileged := elevated[app.ID]
+		if !stateful && !privileged && (app.ID == target || !sameImageReference(old.Source.Image, app.Source.Image)) {
+			continue
+		}
+		if resolvedImageStands(applied, candidate, app.ID) {
 			continue
 		}
 		id := app.ID.String()
-		if applied[id] != "" && applied[id] == candidate[id] {
-			continue
-		}
 		switch {
 		case applied[id] == "" || candidate[id] == "":
 			return needsReview("Not deployed: %s has no single resolved image in both the last reviewed deployment and this plan to compare. %s", app.Name, resumeNote)
-		case elevated[app.ID]:
+		case privileged:
 			return needsReview("Not deployed: %s runs privileged or with added Linux capabilities, and its image now resolves to a different digest than the last reviewed deployment ran. %s", app.Name, resumeNote)
 		case stateful:
 			return needsReview("Not deployed: %s keeps data in a volume, and its image now resolves to a different digest than the last reviewed deployment ran. %s", app.Name, resumeNote)

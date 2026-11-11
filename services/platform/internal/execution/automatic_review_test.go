@@ -247,3 +247,41 @@ func TestAutomaticChangesCompareRoutesOnlyForPrivilegedServices(t *testing.T) {
 		t.Fatalf("note does not explain the privileged review: %q", note)
 	}
 }
+
+// Manual plan preparation and automatic deployment share this answer to whether a privileged
+// service still stands as reviewed.
+func TestReviewElevatedServicesReportsEachPrivilegedService(t *testing.T) {
+	namespace := uuid.New()
+	base := reviewSource{compose: reviewCompose, conf: "x", rules: "y", token: "z"}
+	reviewed := base.spec(t, namespace)
+	id := func(name string) uuid.UUID { return composeproject.ResourceID(namespace, "service", name) }
+	same, err := reviewElevatedServices(reviewed, base.spec(t, namespace))
+	if err != nil || len(same) != 2 || !same[id("agent")].Unchanged || !same[id("tuner")].Unchanged {
+		t.Fatalf("identical privileged services do not stand: %v %v", same, err)
+	}
+	changed := base
+	changed.compose = strings.Replace(reviewCompose, "[tune]", "[tune, --all]", 1)
+	got, err := reviewElevatedServices(reviewed, changed.spec(t, namespace))
+	if err != nil || !got[id("agent")].Unchanged || got[id("tuner")].Unchanged || got[id("tuner")].Name != "tuner" {
+		t.Fatalf("a changed cap_add service was not told apart: %v %v", got, err)
+	}
+	if _, ok := got[id("web")]; ok {
+		t.Fatal("a service without host-level access was reported")
+	}
+	// A first deployment, or a switch from visual services, has no reviewed Compose files.
+	for _, previous := range []domain.Specification{{}, {Applications: []domain.Application{}}} {
+		first, err := reviewElevatedServices(previous, reviewed)
+		if err != nil || len(first) != 2 || first[id("agent")].Unchanged || first[id("tuner")].Unchanged {
+			t.Fatalf("privileged services without a reviewed definition stood: %v %v", first, err)
+		}
+	}
+	removed, err := reviewElevatedServices(reviewed, domain.Specification{})
+	if err != nil || len(removed) != 2 || removed[id("agent")].Unchanged {
+		t.Fatalf("privileged services removed by a switch to visual services stood: %v %v", removed, err)
+	}
+	if !resolvedImageStands(map[string]string{id("agent").String(): "m@sha256:1"}, map[string]string{id("agent").String(): "m@sha256:1"}, id("agent")) ||
+		resolvedImageStands(map[string]string{id("agent").String(): "m@sha256:1"}, map[string]string{id("agent").String(): "m@sha256:2"}, id("agent")) ||
+		resolvedImageStands(map[string]string{}, map[string]string{}, id("agent")) {
+		t.Fatal("resolved images were not compared as reviewed")
+	}
+}
