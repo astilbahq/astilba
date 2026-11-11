@@ -2,6 +2,7 @@ package integration
 
 import (
 	"context"
+	"log"
 	"log/slog"
 	"os"
 	"strings"
@@ -63,11 +64,16 @@ func TestNativeTroubleshootingEndToEnd(t *testing.T) {
 	if err = journal.SetTroubleshooting(true); err != nil {
 		t.Fatal(err)
 	}
-	// The host's journal, as the agent writes it.
+	// The host's journal, as the agent writes it. Setting slog's default also redirects the
+	// log package, which restoring slog's own default does not undo.
 	trail := &lockedLog{}
-	previous := slog.Default()
+	previous, writer, flags := slog.Default(), log.Writer(), log.Flags()
 	slog.SetDefault(slog.New(slog.NewTextHandler(trail, nil)))
-	defer slog.SetDefault(previous)
+	defer func() {
+		slog.SetDefault(previous)
+		log.SetOutput(writer)
+		log.SetFlags(flags)
+	}()
 	host := agent.NewClient(journal, &agent.Engine{Journal: journal, Docker: docker})
 	host.HTTP = x.f.server.Client()
 	yes := true

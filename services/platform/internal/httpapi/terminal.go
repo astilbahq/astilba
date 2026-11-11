@@ -156,12 +156,17 @@ func (s *Server) browserTerminal(w http.ResponseWriter, r *http.Request) {
 	s.attachTerminal(stream, nil, conn)
 }
 
-func (s *Server) endUnattachedTerminal(stream execution.TroubleshootingStream, reason string) {
+// endUnattachedTerminal records the end of a session that never ran, and returns the
+// reason the session keeps: one closed elsewhere keeps its own.
+func (s *Server) endUnattachedTerminal(stream execution.TroubleshootingStream, reason string) string {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := s.Execution.EndTroubleshootingSession(ctx, stream.Workspace, stream.Session, reason, 0, 0); err != nil {
+	kept, err := s.Execution.EndTroubleshootingSession(ctx, stream.Workspace, stream.Session, reason, 0, 0)
+	if err != nil {
 		s.Log.Error("terminal session end failed", "error", err)
+		return reason
 	}
+	return kept
 }
 
 // attachTerminal registers one side. The second side to arrive runs the relay; the
@@ -191,14 +196,15 @@ func (s *Server) attachTerminal(stream execution.TroubleshootingStream, agent, b
 		<-p.done
 		return
 	}
-	// The agent is told the reason the session records, for the host's journal.
+	// The end is recorded first, so that the agent is told the reason the session keeps,
+	// for the host's journal.
+	reason = s.endUnattachedTerminal(stream, reason)
 	if agent != nil {
 		terminal.Close(agent, websocket.StatusPolicyViolation, reason)
 	}
 	if browser != nil {
 		terminal.Close(browser, websocket.StatusPolicyViolation, "the other side did not attach")
 	}
-	s.endUnattachedTerminal(stream, reason)
 }
 
 // watchTerminalBrowser reads a browser that is waiting for its agent. Frames wait for the
@@ -264,11 +270,21 @@ func (s *Server) relayTerminal(p *terminalPair) {
 	workers.Go(func() { s.superviseTerminal(ctx, p, activity, &refreshDue, stop) })
 	<-ctx.Done()
 	once.Do(func() {})
-	// Concurrently, so a peer that does not answer cannot delay the other stream's end. The
-	// agent is told the reason the session records, so the host's journal can say why
-	// management ended it.
-	workers.Go(func() { terminal.Close(p.agent, websocket.StatusNormalClosure, reason) })
+	// Concurrently, so a peer that does not answer cannot delay the other stream's end.
 	workers.Go(func() { terminal.Close(p.browser, websocket.StatusNormalClosure, "") })
+	// The agent is told the reason the session keeps, so the host's journal agrees with
+	// management's record. A session already closed elsewhere, by an owner for example,
+	// keeps that reason, which the relay may not have read yet. So the end is recorded
+	// before the agent's stream closes, and again with the final byte counts below.
+	told := reason
+	end, ended := context.WithTimeout(context.Background(), terminalQuery)
+	if kept, err := s.Execution.EndTroubleshootingSession(end, ws, id, reason, input.Load(), output.Load()); err == nil {
+		told = kept
+	} else {
+		s.Log.Error("terminal session end failed", "error", err)
+	}
+	ended()
+	workers.Go(func() { terminal.Close(p.agent, websocket.StatusNormalClosure, told) })
 	workers.Wait()
 
 	s.recordTerminalEnd(p.stream, reason, input.Load(), output.Load())
@@ -280,7 +296,7 @@ func (s *Server) relayTerminal(p *terminalPair) {
 func (s *Server) recordTerminalEnd(stream execution.TroubleshootingStream, reason string, input, output int64) {
 	for wait := time.Second; ; wait = min(wait*2, terminalEndRetry) {
 		ctx, cancel := context.WithTimeout(context.Background(), terminalQuery)
-		err := s.Execution.EndTroubleshootingSession(ctx, stream.Workspace, stream.Session, reason, input, output)
+		_, err := s.Execution.EndTroubleshootingSession(ctx, stream.Workspace, stream.Session, reason, input, output)
 		cancel()
 		if err == nil {
 			return

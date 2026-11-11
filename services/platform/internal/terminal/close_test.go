@@ -45,12 +45,15 @@ func TestEndingReadsWhyThePeerClosed(t *testing.T) {
 	}{
 		"with a reason": {func(c *websocket.Conn) { Close(c, websocket.StatusNormalClosure, "idle timeout") }, "idle timeout", true},
 		"without one":   {func(c *websocket.Conn) { Close(c, websocket.StatusNormalClosure, "") }, "", true},
-		// The library refuses a reason longer than a close frame holds, and would then
-		// send no reason at all.
+		// The library would drop the connection, sending no close at all, for a reason
+		// longer than a close frame holds.
 		"too long":       {func(c *websocket.Conn) { Close(c, websocket.StatusNormalClosure, long) }, long[:maxCloseReason], true},
 		"not printable":  {func(c *websocket.Conn) { Close(c, websocket.StatusNormalClosure, "idle\ntimeout") }, "", true},
-		"another status": {func(c *websocket.Conn) { Close(c, websocket.StatusPolicyViolation, "not attached") }, "not attached", true},
-		"dropped":        {func(c *websocket.Conn) { c.CloseNow() }, "", false},
+		"never attached": {func(c *websocket.Conn) { Close(c, websocket.StatusPolicyViolation, "not attached") }, "not attached", true},
+		// Caddy says this to both sides as it reloads: management ended nothing.
+		"a proxy going away": {func(c *websocket.Conn) { Close(c, websocket.StatusGoingAway, "") }, "", false},
+		"no status":          {func(c *websocket.Conn) { Close(c, websocket.StatusNoStatusRcvd, "") }, "", false},
+		"dropped":            {func(c *websocket.Conn) { c.CloseNow() }, "", false},
 	} {
 		t.Run(name, func(t *testing.T) {
 			err := closedWith(t, test.end)

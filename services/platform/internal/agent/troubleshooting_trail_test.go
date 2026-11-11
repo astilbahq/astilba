@@ -162,7 +162,9 @@ func TestTroubleshootingTrailNamesManagementsEnding(t *testing.T) {
 		"management without reasons":      {closedBy(""), false, "ended by management", 1},
 		"reason not printable":            {closedBy("idle\x1b[2J"), false, "ended by management", 1},
 		"stream lost":                     {func(conn *websocket.Conn) { conn.CloseNow() }, false, "stream lost", 1},
-		"stream lost while printing":      {func(conn *websocket.Conn) { conn.CloseNow() }, true, "stream lost", 5},
+		// Caddy says this to both sides as it reloads its configuration.
+		"a proxy going away":         {func(conn *websocket.Conn) { terminal.Close(conn, websocket.StatusGoingAway, "") }, false, "stream lost", 1},
+		"stream lost while printing": {func(conn *websocket.Conn) { conn.CloseNow() }, true, "stream lost", 5},
 	} {
 		t.Run(name, func(t *testing.T) {
 			e := &Engine{Docker: execDaemon(t, map[string]string{"exec": `{"ID":"exec","Running":true,"Pid":0}`})}

@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"cmp"
 	"context"
 	"errors"
 	"log/slog"
@@ -364,7 +363,7 @@ func (e *Engine) pumpShell(parent context.Context, conn *websocket.Conn, exec st
 			kind, frame, err := conn.Read(ctx)
 			if err != nil {
 				told = managementEnding(err)
-				stop(cmp.Or(told, "stream lost"))
+				stop(streamLost)
 				return
 			}
 			if kind != websocket.MessageBinary || len(frame) == 0 {
@@ -404,7 +403,7 @@ func (e *Engine) pumpShell(parent context.Context, conn *websocket.Conn, exec st
 			n, err := attached.Reader.Read(buffer[1:])
 			if n > 0 {
 				if writeTroubleshooting(ctx, conn, buffer[:n+1]) != nil {
-					stop("stream lost")
+					stop(streamLost)
 					return
 				}
 			}
@@ -440,7 +439,7 @@ func (e *Engine) pumpShell(parent context.Context, conn *websocket.Conn, exec st
 					err := conn.Ping(ping)
 					done()
 					if err != nil && ctx.Err() == nil {
-						stop("stream lost")
+						stop(streamLost)
 						return
 					}
 				}
@@ -454,11 +453,16 @@ func (e *Engine) pumpShell(parent context.Context, conn *websocket.Conn, exec st
 	if parent.Err() != nil {
 		return "agent stopped"
 	}
-	if told != "" && reason == "stream lost" {
+	if told != "" && reason == streamLost {
 		return told
 	}
 	return reason
 }
+
+// streamLost names a stream that ended without management closing it. Management's close
+// can also surface first as a failed write or ping, so pumpShell replaces this reason with
+// the one management gave whenever the reader received that close.
+const streamLost = "stream lost"
 
 // managementEnding names a session that management ended by closing its stream, or is ""
 // for a stream that was lost. Management gives the reason it recorded for the session,

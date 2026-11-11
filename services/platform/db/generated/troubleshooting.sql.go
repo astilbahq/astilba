@@ -299,7 +299,7 @@ func (q *Queries) GetTroubleshootingSessionActor(ctx context.Context, arg GetTro
 }
 
 const getTroubleshootingSessionForEnd = `-- name: GetTroubleshootingSessionForEnd :one
-SELECT actor_id,state FROM troubleshooting_sessions
+SELECT actor_id,state,close_reason FROM troubleshooting_sessions
 WHERE workspace_id = $1 AND id = $2
 FOR UPDATE
 `
@@ -310,14 +310,15 @@ type GetTroubleshootingSessionForEndParams struct {
 }
 
 type GetTroubleshootingSessionForEndRow struct {
-	ActorID uuid.UUID `json:"actor_id"`
-	State   string    `json:"state"`
+	ActorID     uuid.UUID   `json:"actor_id"`
+	State       string      `json:"state"`
+	CloseReason pgtype.Text `json:"close_reason"`
 }
 
 func (q *Queries) GetTroubleshootingSessionForEnd(ctx context.Context, arg GetTroubleshootingSessionForEndParams) (GetTroubleshootingSessionForEndRow, error) {
 	row := q.db.QueryRow(ctx, getTroubleshootingSessionForEnd, arg.WorkspaceID, arg.ID)
 	var i GetTroubleshootingSessionForEndRow
-	err := row.Scan(&i.ActorID, &i.State)
+	err := row.Scan(&i.ActorID, &i.State, &i.CloseReason)
 	return i, err
 }
 

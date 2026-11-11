@@ -432,7 +432,7 @@ func TestNativeTroubleshootingService(t *testing.T) {
 	browser.drained(t)
 	x.waitClosed(t, opened.Session.Id, "agent stream lost")
 	a.jobEnded(t, job)
-	a.journaled(t, "terminal session cleanup finished after restart", "session="+opened.Session.Id.String())
+	a.journaled(t, "terminal session cleanup after restart ended the shell's processes", "session="+opened.Session.Id.String())
 	if restarts := string(a.systemctl("show", a.unit, "--property=NRestarts")); restarts != "NRestarts=1\n" {
 		t.Fatalf("systemd restarts: %s", restarts)
 	}
