@@ -28,7 +28,7 @@ If other sessions share the machine, give pnpm a store of your own: put `pnpm_co
 Start from a fresh branch off `origin/main`.
 
 1. **Open Dependabot pull requests:** `gh pr list --author app/dependabot`. For npm and Go, `.github/dependabot.yml` allows only security updates; one matches an open alert from step 2, and its fix goes in the Security group. Any other npm or Go pull request is a version update left from before, which this run replaces. Dependabot closes its own pull request once main has the version, so do not close them by hand; say in your pull request which ones it supersedes. Docker and GitHub Actions pull requests are outside this skill; list them in your report.
-2. **Known advisories:** `gh api 'repos/{owner}/{repo}/dependabot/alerts?state=open'` and `make check-vulnerabilities`. Anything either reports is the first group.
+2. **Known advisories:** `gh api 'repos/{owner}/{repo}/dependabot/alerts?state=open'` and `GITHUB_TOKEN="$(gh auth token)" make check-vulnerabilities`. Anything either reports is the first group.
 3. **pnpm candidates:** after `pnpm install --frozen-lockfile`, run `pnpm outdated -r --format json`. Its `latest` already skips versions younger than the gate, but it is the newest release of any major. For the newest release within the current major, read the package's versions from the registry (`curl -s https://registry.npmjs.org/<name>`, `versions` and `time`).
 4. **Go candidates**, in each module directory:
 
@@ -108,7 +108,7 @@ For each group, against `origin/main`:
 
 For every group:
 
-- `make check-app` and `make check-vulnerabilities`. A scan can fail on an advisory published since main last passed; that belongs in the Security group.
+- `make check-app` and `GITHUB_TOKEN="$(gh auth token)" make check-vulnerabilities` (the token is for GitHub's API limit). A scan can fail on an advisory published since main last passed; that belongs in the Security group.
 - `make verify`, as `AGENTS.md` requires before proposing a commit. It covers both experiments' Go suites, the canvas experiment (`make verify-canvas`) and the application (`make verify-app`), and needs the disposable Docker hosts and Playwright browsers those name. `make check-app` alone never checks `experiments/canvas-editor`.
 - `make check` when `experiments/fleet-capacity` moved, and `go vet ./... && go build ./...` in `experiments/platform-comparison/app`, which no make target covers.
 
