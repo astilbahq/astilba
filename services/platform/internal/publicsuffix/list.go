@@ -8,9 +8,10 @@ import (
 	_ "embed"
 	"errors"
 	"fmt"
+	"net/netip"
+	"slices"
 	"strings"
 	"sync"
-	"unicode/utf8"
 
 	"golang.org/x/net/idna"
 )
@@ -50,12 +51,9 @@ func parse(text string) (rules, error) {
 		case strings.HasPrefix(rule, "*."):
 			rule, set = rule[2:], r.wildcards
 		}
-		ascii := rule
-		if !isASCII(rule) {
-			var e error
-			if ascii, e = idna.ToASCII(rule); e != nil {
-				return rules{}, fmt.Errorf("public suffix rule %q: %w", fields[0], e)
-			}
+		ascii, e := idna.ToASCII(rule)
+		if e != nil {
+			return rules{}, fmt.Errorf("public suffix rule %q: %w", fields[0], e)
 		}
 		if ascii == "" || strings.Contains(ascii, "*") || strings.Contains(ascii, "..") || ascii != strings.ToLower(ascii) {
 			return rules{}, fmt.Errorf("unsupported public suffix rule %q", fields[0])
@@ -68,27 +66,15 @@ func parse(text string) (rules, error) {
 	return r, nil
 }
 
-func isASCII(s string) bool {
-	for i := 0; i < len(s); i++ {
-		if s[i] >= utf8.RuneSelf {
-			return false
-		}
-	}
-	return true
-}
-
-// PublicSuffix returns the public suffix of domain, a lowercase ASCII name with no
-// empty labels, under the algorithm at https://publicsuffix.org/list/. listed reports
-// whether a rule on the list decided it; when none matches, the default rule makes
-// the last label the suffix. It returns "" for a name with an empty label.
-func PublicSuffix(domain string) (suffix string, listed bool) {
+// publicSuffix returns the public suffix of domain, a lowercase ASCII name, under the
+// algorithm at https://publicsuffix.org/list/. listed reports whether a rule on the
+// list decided it; when none matches, the default rule makes the last label the
+// suffix. An IP address, or a name with an empty label, is its own suffix.
+func (r rules) publicSuffix(domain string) (suffix string, listed bool) {
 	labels := strings.Split(domain, ".")
-	for _, l := range labels {
-		if l == "" {
-			return "", false
-		}
+	if _, e := netip.ParseAddr(domain); e == nil || slices.Contains(labels, "") {
+		return domain, false
 	}
-	r := loaded()
 	// An exception rule wins over every other rule, and its suffix drops its first label.
 	for i := range labels {
 		if r.exceptions[strings.Join(labels[i:], ".")] {
@@ -104,11 +90,27 @@ func PublicSuffix(domain string) (suffix string, listed bool) {
 	return labels[len(labels)-1], false
 }
 
-// RegistrableDomain returns the public suffix of domain and the label before it, the
-// name browsers treat as one site. It fails for a public suffix itself.
+// isolates reports whether every name below domain has a public suffix at or below
+// domain. That holds when domain is itself a public suffix, listed exactly or by a
+// wildcard on its parent, or when a "*.domain" rule makes each name directly below it
+// one, and no exception rule undoes it. The child label "*" stands for every label:
+// parse refuses a rule key containing "*", so no rule can single the child out.
+func (r rules) isolates(domain string) bool {
+	suffix, listed := r.publicSuffix("*." + domain)
+	return listed && (suffix == domain || strings.HasSuffix(suffix, "."+domain))
+}
+
+// Isolates reports whether browsers put every name below domain, a lowercase ASCII
+// name, in a site of its own below domain rather than in one site shared with the
+// rest of domain.
+func Isolates(domain string) bool { return loaded().isolates(domain) }
+
+// RegistrableDomain returns the public suffix of domain, a lowercase ASCII name, and
+// the label before it: the name browsers treat as one site. It fails for a public
+// suffix itself and for an IP address.
 func RegistrableDomain(domain string) (string, error) {
-	suffix, _ := PublicSuffix(domain)
-	if suffix == "" || suffix == domain {
+	suffix, _ := loaded().publicSuffix(domain)
+	if suffix == domain {
 		return "", fmt.Errorf("%q has no registrable domain", domain)
 	}
 	rest := strings.TrimSuffix(domain, "."+suffix)
@@ -117,5 +119,5 @@ func RegistrableDomain(domain string) (string, error) {
 
 // Version names the pinned list for logs and errors.
 func Version() string {
-	return "publicsuffix/list@" + listCommit[:12] + " (" + listCommitted + ")"
+	return "publicsuffix/list@" + listCommit[:12] + " (pushed " + listPushed + ")"
 }

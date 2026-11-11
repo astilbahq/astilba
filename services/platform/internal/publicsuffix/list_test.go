@@ -1,9 +1,7 @@
 package publicsuffix
 
 import (
-	"crypto/sha256"
 	_ "embed"
-	"encoding/hex"
 	"regexp"
 	"strings"
 	"testing"
@@ -14,21 +12,7 @@ import (
 //go:embed test_psl.txt
 var officialTests string
 
-// The pin is only as good as its record: the files must be the ones the script wrote
-// with source.go, not a later hand edit.
-func TestEmbeddedFilesMatchTheirPin(t *testing.T) {
-	for name, c := range map[string][2]string{"list": {listData, listSHA256}, "tests": {officialTests, testsSHA256}} {
-		sum := sha256.Sum256([]byte(c[0]))
-		if hex.EncodeToString(sum[:]) != c[1] {
-			t.Errorf("%s does not match source.go; run scripts/public-suffix-list.mjs", name)
-		}
-	}
-	if _, e := parse(listData); e != nil {
-		t.Fatal(e)
-	}
-}
-
-// The list's own conformance vectors, from tests/test_psl.txt at the same commit.
+// The list's own conformance vectors, from tests/test_psl.txt at the pinned commit.
 func TestOfficialVectors(t *testing.T) {
 	check := regexp.MustCompile(`^checkPublicSuffix\((null|'[^']*'), (null|'[^']*')\);$`)
 	ascii := func(t *testing.T, quoted string) string {
@@ -60,19 +44,40 @@ func TestOfficialVectors(t *testing.T) {
 	}
 }
 
-func TestListedReportsWhetherARuleMatched(t *testing.T) {
-	for _, c := range []struct {
-		domain, suffix string
-		listed         bool
-	}{
-		{"a.example.com", "com", true},
-		{"a.github.io", "github.io", true},
-		{"a.b.compute.amazonaws.com", "b.compute.amazonaws.com", true},
-		// No rule names "internal", so only the default rule makes it a suffix.
-		{"a.example.internal", "internal", false},
+// An IP address is no site's name, as browsers and golang.org/x/net treat it.
+func TestAddressesHaveNoRegistrableDomain(t *testing.T) {
+	for _, a := range []string{"127.0.0.1", "203.0.113.10", "::1"} {
+		if got, e := RegistrableDomain(a); e == nil {
+			t.Errorf("RegistrableDomain(%q) = %q, want none", a, got)
+		}
+	}
+}
+
+// PLAT-125: isolation must hold for every name below the base, so a rule that names one
+// child, or an exception that undoes a wildcard, must not count.
+func TestIsolates(t *testing.T) {
+	r, e := parse(`net
+*.wild.net
+!wild.net
+exact.net
+*.parent.net
+s.unlisted.net
+*.children.net
+!one.children.net
+`)
+	if e != nil {
+		t.Fatal(e)
+	}
+	for domain, want := range map[string]bool{
+		"exact.net":        true,
+		"child.parent.net": true,
+		"children.net":     true,
+		"unlisted.net":     false,
+		"wild.net":         false,
+		"a.exact.net":      false,
 	} {
-		if s, l := PublicSuffix(c.domain); s != c.suffix || l != c.listed {
-			t.Errorf("PublicSuffix(%q) = %q, %v, want %q, %v", c.domain, s, l, c.suffix, c.listed)
+		if got := r.isolates(domain); got != want {
+			t.Errorf("isolates(%q) = %v, want %v", domain, got, want)
 		}
 	}
 }

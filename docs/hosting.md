@@ -530,10 +530,11 @@ an application can:
   certificates per registered domain, and block other workspaces' certificates.
 
 The base is isolated when it is itself a public suffix, listed exactly as
-`astilba.app` would be or matched by a wildcard rule on its parent, or when a
-`*.<base>` rule makes each server's name a public suffix. Each server's name
-`s<server>.<base>` is then its own site. A server belongs to one workspace, so the
-applications that share its site belong to one workspace too.
+`astilba.app` would be or matched by a wildcard rule on its parent. Each server's
+name `s<server>.<base>` is then its own site. A server belongs to one workspace, so
+the applications that share its site belong to one workspace too. A `*.<base>` rule
+also isolates the base, more finely: each server's name becomes a public suffix and
+each application's name its own site.
 
 ### Hosted installations
 
@@ -542,9 +543,9 @@ domain that the list does not isolate. Leave `ASTILBA_APPLICATION_DOMAIN` empty
 until all of these are true:
 
 1. The base's entry has merged into the private section of the list. Follow
-   [the list's guidelines](https://github.com/publicsuffix/list/wiki/Guidelines),
-   and keep the `_psl` TXT record and at least a year of registration for as long
-   as the entry stays listed.
+   [the list's guidelines](https://github.com/publicsuffix/list/wiki/Guidelines):
+   the domain needs more than two years of registration left when you apply, then
+   more than one year and the `_psl` TXT record for as long as it stays listed.
 2. A release of Astilba carries a [pinned list](#the-pinned-list) with the entry.
 3. Browsers your customers use have shipped the entry. Each browser and operating
    system copies the list into its own releases, so this takes weeks to months
@@ -573,12 +574,14 @@ warning name that commit. `golang.org/x/net` has its own copy, but refreshes it 
 about once a year, too slowly for a new entry.
 
 To bring in a newly merged entry, run `node scripts/public-suffix-list.mjs` from the
-repository root. It pins the newest commit on the list's main branch that is older
-than the 24-hour release-age gate. It refuses a commit that main does not contain,
-and records the commit and the files' hashes in `source.go`. Check that the diff of
-`public_suffix_list.dat` adds the expected entry, and open a pull request. The entry
-reaches operators in the next release built from it. Routine dependency upgrades
-move the pin as well.
+repository root. It pins the newest commit that has been the tip of the list's main
+branch for longer than the 24-hour release-age gate, timed from when GitHub recorded
+the push rather than from the commit's own dates, and records it in `source.go`.
+Check that the diff of `public_suffix_list.dat` adds the expected entry, and open a
+pull request. The [vulnerability scan](continuous-integration.md#vulnerability-scan)
+confirms that the committed files match upstream at that commit. The entry reaches
+operators in the next release built from it. Routine dependency upgrades move the
+pin as well.
 
 ## Operational bounds and retention
 

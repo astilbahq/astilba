@@ -14,19 +14,11 @@ type Config struct{ Base, Zone, Token string }
 
 var cloudflareID = regexp.MustCompile(`^[a-f0-9]{32}$`)
 
-// Isolated reports whether the Public Suffix List puts every generated name's site
-// below the base, so browsers keep one server's applications from setting cookies
-// for, or counting as same-site with, another's. That holds when the base is itself
-// a public suffix, listed or matched by a wildcard, or when a "*.base" rule makes each
-// server's name one. See docs/hosting.md#generated-application-names.
-func (c Config) Isolated() bool {
-	if c.Base == "" {
-		return false
-	}
-	// Any child stands for every server's name: no rule picks out one server ID.
-	suffix, listed := publicsuffix.PublicSuffix("s." + c.Base)
-	return listed && (suffix == c.Base || strings.HasSuffix(suffix, "."+c.Base))
-}
+// Isolated reports whether the Public Suffix List gives each server's generated names
+// a site of their own below the base, so browsers keep one workspace's applications
+// from setting cookies for, or counting as same-site with, another's. See
+// docs/hosting.md#generated-application-names.
+func (c Config) Isolated() bool { return publicsuffix.Isolates(c.Base) }
 
 func (c Config) Validate(origin string, hosted bool) error {
 	if c.Base == "" {
@@ -43,7 +35,7 @@ func (c Config) Validate(origin string, hosted bool) error {
 		return errors.New("invalid management origin")
 	}
 	// Neither domain may share a site with the other. An origin without a registrable
-	// domain, such as a loopback address in development, has no site to share.
+	// domain, such as an IP address in development, has no site to share.
 	host := strings.ToLower(u.Hostname())
 	accountRoot, ae := publicsuffix.RegistrableDomain(host)
 	if host == c.Base || strings.HasSuffix(host, "."+c.Base) || ae == nil && (c.Base == accountRoot || strings.HasSuffix(c.Base, "."+accountRoot)) {

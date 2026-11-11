@@ -42,6 +42,7 @@ check-ci:
 
 check-vulnerabilities:
 	node scripts/vulnerability-scan.mjs
+	node scripts/public-suffix-list.mjs --check
 
 check-lane-budget:
 	node scripts/lane-budget.mjs

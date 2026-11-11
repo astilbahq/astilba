@@ -61,10 +61,9 @@ func TestValidateKeepsAccountAndApplicationSitesApart(t *testing.T) {
 	}
 }
 
-func TestIsolatedNeedsABase(t *testing.T) {
-	if (Config{}).Isolated() {
-		t.Fatal("no base cannot be isolated")
-	}
+// Hosted keeps generated names off until the list isolates the base, so it must start
+// without one.
+func TestHostedStartsWithoutGeneratedNames(t *testing.T) {
 	if e := (Config{}).Validate("https://console.example.com", true); e != nil {
 		t.Fatalf("hosted without generated names: %v", e)
 	}
