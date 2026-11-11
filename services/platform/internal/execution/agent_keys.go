@@ -426,8 +426,8 @@ func (s *Service) RotateKey(ctx context.Context, a Identity, in api.AgentKeyRota
 	}
 	oldPublic, _, err := agentidentity.ParsePublicKey(base64.RawURLEncoding.EncodeToString(current.PublicKey))
 	newHash := agentidentity.KeyHash(newDER)
-	if err != nil || !agentidentity.Verify(oldPublic, agentidentity.KeysMessage(false, a.ID, current.Epoch, in.Nonce, newHash), in.OldSignature) ||
-		!agentidentity.Verify(newPublic, agentidentity.KeysMessage(true, a.ID, current.Epoch, in.Nonce, newHash), in.NewSignature) {
+	if err != nil || !agentidentity.Verify(oldPublic, agentidentity.KeysMessage(false, a.ID, in.Nonce, newHash), in.OldSignature) ||
+		!agentidentity.Verify(newPublic, agentidentity.KeysMessage(true, a.ID, in.Nonce, newHash), in.NewSignature) {
 		return keyNotCurrent
 	}
 	tx, err := s.Store.Pool.Begin(ctx)

@@ -101,13 +101,14 @@ func BindMessage(server, machine uuid.UUID, keyHash []byte) []byte {
 	return message("astilba agent bind v1", server.String(), machine.String(), Hex(keyHash))
 }
 
-// KeysMessage is signed by both the current key and its successor.
-func KeysMessage(newKey bool, server uuid.UUID, epoch int64, nonce string, keyHash []byte) []byte {
+// KeysMessage is signed by both the current key and its successor. The nonce makes each signature
+// good for one rotation of this server.
+func KeysMessage(newKey bool, server uuid.UUID, nonce string, keyHash []byte) []byte {
 	label := "astilba agent keys v1"
 	if newKey {
 		label = "astilba agent keys new v1"
 	}
-	return message(label, server.String(), strconv.FormatInt(epoch, 10), nonce, Hex(keyHash))
+	return message(label, server.String(), nonce, Hex(keyHash))
 }
 
 // Sign signs a message with an agent key.

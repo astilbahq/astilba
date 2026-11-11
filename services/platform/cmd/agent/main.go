@@ -49,7 +49,8 @@ func run() error {
 	}
 	command := os.Args[1]
 	if command == "describe" {
-		return stablejson.Encode(os.Stdout, map[string]any{"Version": version, "Protocol": 1, "Arch": runtime.GOARCH})
+		// KeyAuth 1: this release authenticates with a key it holds, so an agent that holds one may install it.
+		return stablejson.Encode(os.Stdout, map[string]any{"Version": version, "Protocol": 1, "Arch": runtime.GOARCH, "KeyAuth": 1})
 	}
 	if command == "release-keygen" || command == "release-sign" {
 		return releaseCommand(command, os.Args[2:])
@@ -247,6 +248,11 @@ func run() error {
 		c.Observe = func(ctx context.Context) api.AgentHeartbeat {
 			return preflight(ctx)
 		}
+		// The service's sandbox can't create systemd's host key, so enrollment does, outside it.
+		if err := agent.SetupSystemKeyStore(ctx); err != nil {
+			fmt.Fprintln(os.Stderr, "Could not set up systemd credentials, so the agent can't seal a key here:", err)
+		}
+		c.Keys, c.KeyStoreErr = agent.SystemKeyStore()
 		if e = c.Enroll(ctx, string(token)); e != nil {
 			return e
 		}
@@ -317,7 +323,7 @@ func run() error {
 			return e
 		}
 		defer f.Close()
-		return agent.Install(ctx, release, cfg.PublicKey, f, *executable)
+		return agent.Install(ctx, release, cfg.PublicKey, f, *executable, cfg.Key != nil || cfg.BindKey != nil)
 	}
 	if command == "resolve-run" {
 		policy, err := uuid.Parse(*policyID)
@@ -345,6 +351,7 @@ func run() error {
 		engine.NetworkPool = pool
 	}
 	c := agent.NewClient(j, engine)
+	c.Keys, c.KeyStoreErr = agent.SystemKeyStore()
 	collector := &agent.MetricCollector{Journal: j}
 	c.Metrics = func(ctx context.Context) api.MetricReport {
 		cfg, err := j.Config()

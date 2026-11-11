@@ -32,6 +32,27 @@ type Config struct {
 	Enrolled             bool
 	Role                 api.ServerRole
 	PublicKey            []byte
+	// Key is the agent's private key, sealed to this machine. A key-bound agent has no bearer.
+	Key []byte `json:",omitempty"`
+	// PendingRotation is the successor key while its rotation is unconfirmed.
+	PendingRotation []byte `json:",omitempty"`
+	// BindKey is the key a bind registers. It is kept beside the bearer until the key is in use.
+	BindKey []byte `json:",omitempty"`
+	// Enrollments are the outstanding enrollment codes by code hash, each with what was first sent
+	// with it, so a retry presents what management may already hold.
+	Enrollments map[string]Enrollment `json:",omitempty"`
+}
+
+// Enrollment is one outstanding enrollment code.
+type Enrollment struct {
+	// Keyed codes send Key; legacy codes, for controllers without keys, send Credential.
+	Keyed      bool
+	Key        []byte `json:",omitempty"`
+	Credential string `json:",omitempty"`
+	// SealedCode is the code sealed like the key; Code is used only where nothing can seal.
+	SealedCode []byte `json:",omitempty"`
+	Code       string `json:",omitempty"`
+	FirstSent  time.Time
 }
 type Record struct {
 	Command      api.ExecutionCommand
@@ -100,7 +121,9 @@ func openJournal(dir string, point func(string) error) (*Journal, error) {
 	if err = j.pruneRecovery(); err != nil {
 		return fail(err)
 	}
-	j.formatVersion = localStateVersion
+	if j.formatVersion == 0 {
+		j.formatVersion = localStateVersion
+	}
 	j.startupUpdates = map[uuid.UUID]bool{}
 	pending, err := j.Pending()
 	if err != nil {
@@ -185,6 +208,23 @@ func (j *Journal) put(tx *bolt.Tx, bucket, key string, value any) error {
 	}
 	return tx.Bucket([]byte(bucket)).Put([]byte(key), data)
 }
+
+// NextStartCounter raises the counter an agent presents with each new session, in its own
+// transaction, before the request goes out. A copy or a restored backup of this directory then
+// presents a value management has already seen, or a lower one.
+func (j *Journal) NextStartCounter() (int64, error) {
+	var next int64
+	err := j.db.Update(func(tx *bolt.Tx) error {
+		var current int64
+		if e := j.get(tx, "identity", "start-counter", &current); e != nil && !errors.Is(e, os.ErrNotExist) {
+			return e
+		}
+		next = current + 1
+		return j.put(tx, "identity", "start-counter", next)
+	})
+	return next, err
+}
+
 func (j *Journal) Config() (Config, error) {
 	var c Config
 	e := j.db.View(func(tx *bolt.Tx) error { return j.get(tx, "identity", "config", &c) })
@@ -192,6 +232,21 @@ func (j *Journal) Config() (Config, error) {
 }
 func (j *Journal) SetConfig(c Config) error {
 	return j.db.Update(func(tx *bolt.Tx) error { return j.put(tx, "identity", "config", c) })
+}
+
+// UpdateConfig changes the configuration in one transaction, so concurrent changes to other fields
+// survive.
+func (j *Journal) UpdateConfig(change func(*Config) error) error {
+	return j.db.Update(func(tx *bolt.Tx) error {
+		var c Config
+		if e := j.get(tx, "identity", "config", &c); e != nil {
+			return e
+		}
+		if e := change(&c); e != nil {
+			return e
+		}
+		return j.put(tx, "identity", "config", c)
+	})
 }
 func (j *Journal) Record(id uuid.UUID) (Record, error) {
 	var r Record

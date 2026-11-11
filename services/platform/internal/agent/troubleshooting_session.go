@@ -96,6 +96,10 @@ func (c *Client) dialTroubleshootingStream(ctx context.Context, session uuid.UUI
 	if err != nil {
 		return nil, err
 	}
+	credential, err := c.authorization(ctx)
+	if err != nil {
+		return nil, err
+	}
 	// A dedicated connection without the polling client's overall timeout. Nothing reuses
 	// this transport, so a refused upgrade must not leave a connection idle in it.
 	configured, ok := c.HTTP.Transport.(*http.Transport)
@@ -106,7 +110,7 @@ func (c *Client) dialTroubleshootingStream(ctx context.Context, session uuid.UUI
 	transport.DisableKeepAlives = true
 	dial, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	conn, _, err := websocket.Dial(dial, cfg.Origin+"/agent/v1/troubleshooting/"+session.String()+"/stream", &websocket.DialOptions{HTTPClient: &http.Client{Transport: transport, CheckRedirect: c.HTTP.CheckRedirect}, HTTPHeader: http.Header{"Authorization": {"Bearer " + cfg.ServerID.String() + "." + cfg.Credential}}})
+	conn, _, err := websocket.Dial(dial, cfg.Origin+"/agent/v1/troubleshooting/"+session.String()+"/stream", &websocket.DialOptions{HTTPClient: &http.Client{Transport: transport, CheckRedirect: c.HTTP.CheckRedirect}, HTTPHeader: http.Header{"Authorization": {"Bearer " + cfg.ServerID.String() + "." + credential}}})
 	if err != nil {
 		return nil, err
 	}

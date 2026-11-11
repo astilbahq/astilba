@@ -157,6 +157,8 @@ func (j *Journal) Transfer(origin string, key []byte, generation int64, token st
 		cfg.PublicKey = append([]byte(nil), key...)
 		cfg.Credential = ""
 		cfg.Pending = ""
+		// A transfer is a new identity at a new controller: nothing from the old one carries over.
+		cfg.Key, cfg.PendingRotation, cfg.BindKey, cfg.Enrollments = nil, nil, nil, nil
 		cfg.Enrolled = false
 		cfg.EnrollmentToken = strings.TrimSpace(token)
 		cfg.ControllerGeneration = generation

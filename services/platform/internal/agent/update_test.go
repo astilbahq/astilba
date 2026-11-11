@@ -31,20 +31,20 @@ func TestAtomicVerifiedReplacement(t *testing.T) {
 	r.Signature = base64.StdEncoding.EncodeToString(ed25519.Sign(key, agentrelease.Message(r)))
 	corrupt := append([]byte{}, body...)
 	corrupt[0] ^= 1
-	if Install(context.Background(), r, pub, bytes.NewReader(corrupt), path) == nil {
+	if Install(context.Background(), r, pub, bytes.NewReader(corrupt), path, false) == nil {
 		t.Fatal("tampered executable installed")
 	}
 	if got, _ := os.ReadFile(path); !bytes.Equal(got, old) {
 		t.Fatal("failed update changed installed agent")
 	}
-	if e := Install(context.Background(), r, pub, bytes.NewReader(body), path); e != nil {
+	if e := Install(context.Background(), r, pub, bytes.NewReader(body), path, false); e != nil {
 		t.Fatal(e)
 	}
 	if previous, _ := os.ReadFile(path + ".previous"); !bytes.Equal(previous, old) {
 		t.Fatal("previous executable unavailable")
 	}
 	// Recover an effect-before-ack interruption by recognizing the installed digest.
-	if e := Install(context.Background(), r, pub, bytes.NewReader(nil), path); e != nil {
+	if e := Install(context.Background(), r, pub, bytes.NewReader(nil), path, false); e != nil {
 		t.Fatal(e)
 	}
 }

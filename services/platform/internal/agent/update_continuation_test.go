@@ -66,7 +66,7 @@ func TestLegacySignedUpdateRestartPreservesEvidenceAndReconcilesInstalledArtifac
 				if err := j.db.Update(func(tx *bolt.Tx) error { return j.put(tx, "operations", c.Id.String(), original) }); err != nil {
 					t.Fatal(err)
 				}
-				if err := Install(context.Background(), release, pub, bytes.NewReader(body), executable); err != nil {
+				if err := Install(context.Background(), release, pub, bytes.NewReader(body), executable, false); err != nil {
 					t.Fatal(err)
 				}
 			})
@@ -232,7 +232,7 @@ func TestInstalledUpdateCrashHelper(t *testing.T) {
 			return err
 		}
 		defer artifact.Close()
-		if err = Install(ctx, release, cfg.PublicKey, artifact, path); err != nil {
+		if err = Install(ctx, release, cfg.PublicKey, artifact, path, false); err != nil {
 			return err
 		}
 		os.Exit(88) // Replacement is durable; no success has been recorded.
@@ -342,7 +342,7 @@ func TestSucceededUpdateAcknowledgesAfterLaterSignedLocalInstall(t *testing.T) {
 		t.Fatal(err)
 	}
 	e := Engine{Journal: j, Update: func(ctx context.Context, r api.AgentRelease) error {
-		return Install(ctx, r, pub, bytes.NewReader(firstBody), path)
+		return Install(ctx, r, pub, bytes.NewReader(firstBody), path, false)
 	}, VerifyInstalledUpdate: func(r api.AgentRelease) error { return VerifyInstalledUpdate(r, pub, path) }}
 	if err = e.Execute(context.Background(), command); err != nil {
 		t.Fatal(err)
@@ -356,7 +356,7 @@ func TestSucceededUpdateAcknowledgesAfterLaterSignedLocalInstall(t *testing.T) {
 	if err = j.RequireUnreservedHost(); err != nil {
 		t.Fatal(err)
 	}
-	if err = Install(context.Background(), next, pub, bytes.NewReader(nextBody), path); err != nil {
+	if err = Install(context.Background(), next, pub, bytes.NewReader(nextBody), path, false); err != nil {
 		t.Fatal(err)
 	}
 	if VerifyInstalledUpdate(first, pub, path) == nil || VerifyInstalledUpdate(next, pub, path) != nil {
