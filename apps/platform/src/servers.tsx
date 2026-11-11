@@ -9,6 +9,7 @@ import { Anchor } from "./components/link";
 import { Select } from "./components/select";
 import { ManagedNetwork } from "./features/managed-network";
 import { ServerMetrics } from "./features/metrics";
+import { ServerCredentials } from "./features/server-credentials";
 import { ServerOnboarding } from "./features/server-onboarding";
 import { ServerSettings } from "./features/server-settings";
 import * as s from "./styles";
@@ -335,82 +336,13 @@ function ServerWorkspace({ workspace }: { workspace: Schema["Workspace"] }) {
               </>
             )}
             {owner && (
-              <div className={s.row}>
-                <Button
-                  type="button"
-                  disabled={
-                    action.isPending ||
-                    server.status === "pending" ||
-                    server.status === "revoked" ||
-                    server.transferRequired
-                  }
-                  onClick={() =>
-                    run(() =>
-                      result(
-                        client.POST(
-                          "/api/v1/workspaces/{workspaceId}/servers/{serverId}/rotate",
-                          {
-                            params: {
-                              path: { workspaceId, serverId: server.id },
-                            },
-                          },
-                        ),
-                      ),
-                    )
-                  }
-                >
-                  {server.rotationRequested
-                    ? "Rotation requested"
-                    : "Rotate credential"}
-                </Button>
-                <Button
-                  type="button"
-                  disabled={action.isPending}
-                  onClick={() => {
-                    if (
-                      confirm(
-                        `Revoke ${server.name}? Its credential stops working and its unfinished work ends. It may keep running what it was given and it keeps its secrets, registry access and TLS keys, so rotate them. Renewing it later doesn't undo this. A host that held a reservation for work that has since ended may only come back through offline recovery, which isn't established.`,
-                      )
-                    )
-                      run(() =>
-                        result(
-                          client.POST(
-                            "/api/v1/workspaces/{workspaceId}/servers/{serverId}/revoke",
-                            {
-                              params: {
-                                path: { workspaceId, serverId: server.id },
-                              },
-                            },
-                          ),
-                        ),
-                      );
-                  }}
-                >
-                  Revoke connection
-                </Button>
-                <Button
-                  type="button"
-                  disabled={action.isPending || server.transferRequired}
-                  onClick={() =>
-                    run(async () =>
-                      setEnrollment(
-                        await result(
-                          client.POST(
-                            "/api/v1/workspaces/{workspaceId}/servers/{serverId}/enrollment",
-                            {
-                              params: {
-                                path: { workspaceId, serverId: server.id },
-                              },
-                            },
-                          ),
-                        ),
-                      ),
-                    )
-                  }
-                >
-                  New enrollment code
-                </Button>
-              </div>
+              <ServerCredentials
+                workspaceId={workspaceId}
+                server={server}
+                busy={action.isPending}
+                run={run}
+                onEnrollment={setEnrollment}
+              />
             )}
             {owner &&
               releases.data?.some(

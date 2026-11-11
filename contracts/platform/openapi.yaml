@@ -5101,6 +5101,9 @@
         credentialFreeVisualCancel:
           type: boolean
           description: Agent accepts visual cancellation without re-sending hydrated credentials.
+        machineBoundRotation:
+          type: boolean
+          description: Agent names its enrolled machine when rotating its credential. Advertised only after Astilba-Agent-Machine-Rotation v1.
     "HostPreflight":
       "type": "object"
       "additionalProperties": false
@@ -5284,11 +5287,16 @@
       "additionalProperties": false
       "required":
         - "credential"
+        - "machineId"
       "properties":
         "credential":
           "type": "string"
           "minLength": 43
           "maxLength": 43
+        "machineId":
+          "type": "string"
+          "format": "uuid"
+          "description": "The machine that enrolled this server. Agents send it only after a controller response advertises Astilba-Agent-Machine-Rotation with v1; earlier controllers reject it."
     "TestAction":
       "type": "string"
       "enum":

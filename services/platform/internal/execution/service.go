@@ -239,23 +239,25 @@ func (s *Service) Control(ctx context.Context, p store.Principal, ws, id uuid.UU
 			}
 		}
 		q := db.New(tx)
-		var n int64
-		var e error
-		if revoke {
-			n, e = q.RevokeServer(ctx, db.RevokeServerParams{WorkspaceID: ws, ID: id})
-		} else {
-			n, e = q.RequestServerRotation(ctx, db.RequestServerRotationParams{WorkspaceID: ws, ID: id})
+		if !revoke {
+			supported, err := q.RequestServerRotation(ctx, db.RequestServerRotationParams{WorkspaceID: ws, ID: id})
+			if errors.Is(err, pgx.ErrNoRows) {
+				return domain.NotFound
+			} else if err != nil {
+				return err
+			} else if !supported {
+				return rotationUnsupported
+			}
+			return nil
 		}
+		n, e := q.RevokeServer(ctx, db.RevokeServerParams{WorkspaceID: ws, ID: id})
 		if e != nil {
 			return e
 		}
 		if n != 1 {
 			return domain.NotFound
 		}
-		if revoke {
-			return s.settleRevokedWork(ctx, tx, ws, id)
-		}
-		return nil
+		return s.settleRevokedWork(ctx, tx, ws, id)
 	})
 }
 
@@ -310,11 +312,19 @@ func (s *Service) Heartbeat(ctx context.Context, a Identity, in api.AgentHeartbe
 	}
 	return out, err
 }
-func (s *Service) Rotate(ctx context.Context, a Identity, candidate string) error {
-	if len(candidate) != 43 {
+
+// rotationUnsupported refuses a rotation request for an agent that can't name its machine.
+var rotationUnsupported = &domain.Error{Code: "conflict", Message: "This server's agent can't rotate its credential safely. Update the agent on this server, then rotate."}
+
+// Rotate exchanges the agent's credential for a candidate it chose. The caller must also name the
+// machine that enrolled. That stops someone holding only a leaked credential, but the machine ID
+// isn't secret, so this is routine upkeep: after a suspected leak an owner revokes the server and
+// enrolls a new one.
+func (s *Service) Rotate(ctx context.Context, a Identity, in api.AgentRotation) error {
+	if len(in.Credential) != 43 {
 		return domain.Invalid("credential")
 	}
-	n, err := s.Store.Queries.RotateAgentCredential(ctx, db.RotateAgentCredentialParams{WorkspaceID: a.Workspace, ServerID: a.ID, CredentialHash: hash(a.Token), CandidateHash: hash(candidate)})
+	n, err := s.Store.Queries.RotateAgentCredential(ctx, db.RotateAgentCredentialParams{WorkspaceID: a.Workspace, ServerID: a.ID, CredentialHash: hash(a.Token), CandidateHash: hash(in.Credential), MachineID: &in.MachineId})
 	if err == nil && n != 1 {
 		return domain.Unauthenticated
 	}

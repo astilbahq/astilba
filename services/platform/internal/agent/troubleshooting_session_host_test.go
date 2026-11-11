@@ -496,7 +496,9 @@ func TestNativeTroubleshootingCrashCleanup(t *testing.T) {
 		}
 		return created.ID, identity
 	}
-	clean := func(entry troubleshootingShell) {
+	trail := captureTrail(t)
+	// clean runs the startup cleanup on one entry and checks what the host's trail says.
+	clean := func(entry troubleshootingShell, said string) {
 		t.Helper()
 		entry.Session, entry.ContainerID = uuid.New(), f.id
 		if err := f.client.Journal.saveTroubleshootingShell(entry); err != nil {
@@ -506,32 +508,39 @@ func TestNativeTroubleshootingCrashCleanup(t *testing.T) {
 		if shells, err := f.client.Journal.troubleshootingShells(); err != nil || len(shells) != 0 {
 			t.Fatal("journal entry left behind", shells, err)
 		}
+		if lines := trailFor(trail.String(), entry.Session); len(lines) != 1 || !strings.Contains(lines[0], said) {
+			t.Fatalf("trail %q, want one line saying %q", lines, said)
+		}
 	}
+	const ended, nothing, untraceable = "ended the shell's processes", "found nothing left to end", "cannot be identified"
 	exec, identity := start()
 	host, err := os.Readlink("/proc/self/ns/pid")
 	if err != nil {
 		t.Fatal(err)
 	}
 	// An identity that no longer names the shell must not kill, whatever the daemon says.
-	for name, stale := range map[string]func(*troubleshootingShell){
-		"reused PID":     func(e *troubleshootingShell) { e.Identity.StartTime++ },
-		"other boot":     func(e *troubleshootingShell) { e.Identity.Boot = "another-boot" },
-		"host namespace": func(e *troubleshootingShell) { e.Identity.PIDNS = host },
-		"unknown exec":   func(e *troubleshootingShell) { e.Identity.StartTime++; e.ExecID = "unknown" },
+	for name, stale := range map[string]struct {
+		change func(*troubleshootingShell)
+		said   string
+	}{
+		"reused PID":     {func(e *troubleshootingShell) { e.Identity.StartTime++ }, nothing},
+		"other boot":     {func(e *troubleshootingShell) { e.Identity.Boot = "another-boot" }, nothing},
+		"host namespace": {func(e *troubleshootingShell) { e.Identity.PIDNS = host }, nothing},
+		"unknown exec":   {func(e *troubleshootingShell) { e.Identity.StartTime++; e.ExecID = "unknown" }, untraceable},
 	} {
 		entry := troubleshootingShell{ExecID: exec, Identity: identity}
-		stale(&entry)
-		clean(entry)
+		stale.change(&entry)
+		clean(entry, stale.said)
 		if !strings.Contains(f.processes(t), "sleep 4545") {
 			t.Fatalf("%s: killed a process that only shares a journaled PID", name)
 		}
 	}
 	// A matching identity needs nothing from the daemon, which may be restarting.
-	clean(troubleshootingShell{ExecID: "unknown", Identity: identity})
+	clean(troubleshootingShell{ExecID: "unknown", Identity: identity}, ended)
 	f.waitGone(t, "sleep 4545")
 	// An entry written before the shell was identified is resolved through its exec.
 	exec, _ = start()
-	clean(troubleshootingShell{ExecID: exec})
+	clean(troubleshootingShell{ExecID: exec}, ended)
 	f.waitGone(t, "sleep 4545")
 	// The agent ends leftovers when it starts, before doing anything else.
 	exec, identity = start()

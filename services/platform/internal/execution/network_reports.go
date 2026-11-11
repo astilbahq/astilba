@@ -13,9 +13,14 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// duplicateNetworkKeyNote is also written by migration 00027. Agents generate a key per
-// membership, so a repeated key means a modified agent, and peers could not tell its
-// holders apart. The key stays with the member that already holds it.
+// unpreparedNetworkNote explains the sweep's 'unprepared' hold, which lasts until the host reports,
+// in its heartbeat, that it is prepared for managed networking, or the network changes.
+const unpreparedNetworkNote = "This server reports that it is not prepared for managed networking or lacks the tools it needs, so it could not run a private network command. Nothing more is sent to it until it reports that it is ready or the network changes."
+
+// duplicateNetworkKeyNote is also written by migration 00027, whose members identify again because
+// it set no 'duplicate-key' hold. Agents generate a key per membership, so a repeated key means a
+// modified agent, and peers could not tell its holders apart. The key stays with the member that
+// already holds it.
 const duplicateNetworkKeyNote = "This server reported the same private network key as another member. It must report its own key before private links can finish."
 
 // networkReport applies a network command's outcome. live is false when recovery replays a host's
@@ -36,6 +41,13 @@ func (s *Service) networkReport(ctx context.Context, tx pgx.Tx, ws uuid.UUID, c 
 	}
 	if r.State == "failed" && r.Network != nil && live {
 		return networkRefusal(ctx, tx, ws, c, cmd, *r.Network)
+	}
+	// A failure with no receipt changed nothing on the host. Agents end a command this way when
+	// the host is not prepared for managed networking or lacks what it needs. While its heartbeat
+	// says so, the same command would fail the same way, so the sweep holds the member until the
+	// host reports it is ready.
+	if r.State == "failed" && live {
+		return db.New(tx).HoldUnpreparedNetworkMember(ctx, db.HoldUnpreparedNetworkMemberParams{Note: unpreparedNetworkNote, RenewedNote: renewedNetworkApprovalNote, WorkspaceID: ws, ServerID: c.ServerId, MembershipID: cmd.MembershipID})
 	}
 	if r.State != "succeeded" {
 		return nil
@@ -114,7 +126,7 @@ func (s *Service) networkReport(ctx context.Context, tx pgx.Tx, ws uuid.UUID, c 
 		} else if member.Controller != observed.ControllerGeneration || member.Controller != generation(c.ControllerGeneration) {
 			note = renewedNetworkApprovalNote
 		}
-		if _, err = tx.Exec(ctx, `UPDATE network_members SET acknowledged_generation=$3,manifest_hash=$4,note=$5,installed_manifest=$6 WHERE server_id=$1 AND membership_id=$2`, c.ServerId, cmd.MembershipID, ack, receipt.Hash, note, mustJSON(observed)); err != nil {
+		if _, err = tx.Exec(ctx, `UPDATE network_members SET acknowledged_generation=$3,manifest_hash=$4,note=$5,installed_manifest=$6,sweep_hold=NULL WHERE server_id=$1 AND membership_id=$2`, c.ServerId, cmd.MembershipID, ack, receipt.Hash, note, mustJSON(observed)); err != nil {
 			return err
 		}
 		if converged || observed.Generation < member.Generation {

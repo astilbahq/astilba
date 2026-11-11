@@ -108,13 +108,18 @@ func (s *Service) RefreshTroubleshootingBrowser(ctx context.Context, ws, id uuid
 	return s.Store.Queries.RefreshTroubleshootingBrowser(ctx, db.RefreshTroubleshootingBrowserParams{IdleSeconds: idle.Seconds(), DeadlineAt: deadline, WorkspaceID: ws, ID: id})
 }
 
-// EndTroubleshootingSession records how a stream ended. A session already closed keeps
-// its reason and audit event, and gains the byte counts only.
-func (s *Service) EndTroubleshootingSession(ctx context.Context, ws, id uuid.UUID, reason string, input, output int64) error {
-	return s.Store.Transaction(ctx, func(q *db.Queries) error {
+// EndTroubleshootingSession records how a stream ended, and returns the reason the
+// session keeps. A session already closed keeps its reason and audit event, and gains the
+// byte counts only.
+func (s *Service) EndTroubleshootingSession(ctx context.Context, ws, id uuid.UUID, reason string, input, output int64) (string, error) {
+	kept := reason
+	err := s.Store.Transaction(ctx, func(q *db.Queries) error {
 		row, err := q.GetTroubleshootingSessionForEnd(ctx, db.GetTroubleshootingSessionForEndParams{WorkspaceID: ws, ID: id})
 		if err != nil {
 			return err
+		}
+		if row.CloseReason.Valid {
+			kept = row.CloseReason.String
 		}
 		if err = q.EndTroubleshootingSession(ctx, db.EndTroubleshootingSessionParams{CloseReason: reason, InputBytes: input, OutputBytes: output, WorkspaceID: ws, ID: id}); err != nil {
 			return err
@@ -140,6 +145,7 @@ func (s *Service) EndTroubleshootingSession(ctx context.Context, ws, id uuid.UUI
 		}
 		return store.Audit(ctx, q, actor, ws, "session.close", id)
 	})
+	return kept, err
 }
 
 // CloseAbandonedTroubleshootingSessions runs at startup: the single instance holds no
@@ -168,10 +174,15 @@ type troubleshootingSweepWorker struct {
 	service *Service
 }
 
-// Work closes offers nobody attached to and sessions past their deadline whose stream
-// no longer exists. A live relay ends its session at the deadline itself first.
 func (w *troubleshootingSweepWorker) Work(ctx context.Context, _ *river.Job[troubleshootingSweepArgs]) error {
-	return w.service.Store.Transaction(ctx, func(q *db.Queries) error {
+	return w.service.SweepTroubleshootingSessions(ctx)
+}
+
+// SweepTroubleshootingSessions closes offers nobody attached to and sessions past their
+// deadline whose stream no longer exists. A live relay ends its session at the deadline
+// itself first. The worker runs it every 30 seconds.
+func (s *Service) SweepTroubleshootingSessions(ctx context.Context) error {
+	return s.Store.Transaction(ctx, func(q *db.Queries) error {
 		workspaces, err := q.LockTroubleshootingSweepWorkspaces(ctx)
 		if err != nil {
 			return err

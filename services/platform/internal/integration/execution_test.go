@@ -61,7 +61,8 @@ func enrollment(t *testing.T, f *fixture, b *browser, ws uuid.UUID, role string)
 	var v api.Enrollment
 	b.call("POST", "/api/v1/workspaces/"+ws.String()+"/servers", map[string]string{"name": "Test server", "role": role}, 201, &v)
 	credential, _ := cryptobox.Token()
-	in := api.AgentEnrollment{ServerId: v.Server.Id, Token: v.Token, Credential: credential, MachineId: uuid.New(), Capabilities: api.AgentCapabilities{Protocol: 1, Version: "test", Os: "linux", Arch: "arm64", Docker: true}, Preflight: api.HostPreflight{Ready: true, OsRelease: "ubuntu 24.04", FreeBytes: 1 << 30, Notes: []string{}}}
+	machineBoundRotation := true
+	in := api.AgentEnrollment{ServerId: v.Server.Id, Token: v.Token, Credential: credential, MachineId: uuid.New(), Capabilities: api.AgentCapabilities{Protocol: 1, Version: "test", Os: "linux", Arch: "arm64", Docker: true, MachineBoundRotation: &machineBoundRotation}, Preflight: api.HostPreflight{Ready: true, OsRelease: "ubuntu 24.04", FreeBytes: 1 << 30, Notes: []string{}}}
 	return v, in, v.Server.Id.String() + "." + credential
 }
 func envForExecution(t *testing.T, f *fixture, b *browser, ws uuid.UUID) uuid.UUID {
@@ -109,19 +110,19 @@ func TestServerIdentityLifecycle(t *testing.T) {
 	route := "/api/v1/workspaces/" + ws.String() + "/servers/" + v.Server.Id.String()
 	b.call("POST", route+"/rotate", nil, 204, nil)
 	next, _ := cryptobox.Token()
-	agentRequest(t, httpClient, tlsServer.URL, "/agent/v1/rotate", token, api.AgentRotation{Credential: next}, 204, nil)
+	agentRequest(t, httpClient, tlsServer.URL, "/agent/v1/rotate", token, api.AgentRotation{Credential: next, MachineId: in.MachineId}, 204, nil)
 	var expiry time.Time
 	if e := f.st.Pool.QueryRow(context.Background(), "SELECT previous_until FROM servers WHERE id=$1", v.Server.Id).Scan(&expiry); e != nil {
 		t.Fatal(e)
 	}
-	agentRequest(t, httpClient, tlsServer.URL, "/agent/v1/rotate", token, api.AgentRotation{Credential: next}, 204, nil)
+	agentRequest(t, httpClient, tlsServer.URL, "/agent/v1/rotate", token, api.AgentRotation{Credential: next, MachineId: in.MachineId}, 204, nil)
 	var after time.Time
 	_ = f.st.Pool.QueryRow(context.Background(), "SELECT previous_until FROM servers WHERE id=$1", v.Server.Id).Scan(&after)
 	if !after.Equal(expiry) {
 		t.Fatal("retry extended rotation overlap")
 	}
 	another, _ := cryptobox.Token()
-	agentRequest(t, httpClient, tlsServer.URL, "/agent/v1/rotate", token, api.AgentRotation{Credential: another}, 401, nil)
+	agentRequest(t, httpClient, tlsServer.URL, "/agent/v1/rotate", token, api.AgentRotation{Credential: another, MachineId: in.MachineId}, 401, nil)
 	_, _ = f.st.Pool.Exec(context.Background(), "UPDATE servers SET previous_until=now()-interval '1 second' WHERE id=$1", v.Server.Id)
 	heartbeat := api.AgentHeartbeat{Capabilities: in.Capabilities, Preflight: in.Preflight}
 	agentRequest(t, httpClient, tlsServer.URL, "/agent/v1/heartbeat", token, heartbeat, 401, nil)

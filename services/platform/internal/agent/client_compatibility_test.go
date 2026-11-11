@@ -446,7 +446,7 @@ func TestFirstHeartbeatResendsWhatTheControllerAccepts(t *testing.T) {
 		return api.AgentHeartbeat{Capabilities: api.AgentCapabilities{Build: &yes, BuildNetwork: &yes}, Preflight: api.HostPreflight{Notes: []string{}}}
 	}
 	for range 2 {
-		if _, err := c.heartbeat(context.Background(), "fixture"); err != nil {
+		if err := c.heartbeat(context.Background(), "fixture", &api.AgentStatus{}); err != nil {
 			t.Fatal(err)
 		}
 	}

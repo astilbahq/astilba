@@ -23,6 +23,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/terminal"
 	"github.com/coder/websocket"
@@ -229,7 +230,13 @@ func TestNativeTroubleshootingProxies(t *testing.T) {
 		x.f.apiServer.TerminalIdle = proxySilence
 		origin, caPath := startTerminalProxy(t, docker, definition, x.f.server.Listener.Addr().String(), snippets, change)
 		b := x.proxied(t, origin, caPath)
-		return x, b, x.startServiceAgent(t, b, binary, origin, caPath)
+		a := x.startServiceAgent(t, b, binary, origin, caPath)
+		t.Cleanup(func() {
+			if t.Failed() {
+				t.Logf("sessions: %q\nagent journal:\n%s", x.closeReasons(t), a.journal(t))
+			}
+		})
+		return x, b, a
 	}
 	carries := func(t *testing.T, x troubleshootingFixture, b *browser, a *serviceAgent) {
 		t.Helper()
@@ -246,7 +253,7 @@ func TestNativeTroubleshootingProxies(t *testing.T) {
 
 		// The shell's own end: its last frame and the close handshake pass through.
 		opened := x.open(t, b, x.app, 1, 201)
-		peer := x.attachBrowser(t, b, opened)
+		peer := x.attachActive(t, b, opened)
 		peer.send(t, terminal.ResizeFrame(100, 30))
 		peer.send(t, append([]byte{terminal.Input}, "stty size; echo through''proxy\n"...))
 		if output := peer.waitOutput(t, "throughproxy"); !strings.Contains(output, "30 100") {
@@ -262,7 +269,7 @@ func TestNativeTroubleshootingProxies(t *testing.T) {
 		// Silence, with only the relay's pings on the wire, reaches the idle limit and not
 		// a proxy's. The warning before it and the close after it pass through.
 		opened = x.open(t, b, x.app, 1, 201)
-		peer = x.attachBrowser(t, b, opened)
+		peer = x.attachActive(t, b, opened)
 		job = a.startJob(t, peer, 4322)
 		if !peer.closedWithin(t, proxySilence+30*time.Second) {
 			t.Fatal("no warning before the idle limit")
@@ -275,7 +282,7 @@ func TestNativeTroubleshootingProxies(t *testing.T) {
 
 		// A person who disappears takes the shell and its jobs along.
 		opened = x.open(t, b, x.app, 1, 201)
-		peer = x.attachBrowser(t, b, opened)
+		peer = x.attachActive(t, b, opened)
 		job = a.startJob(t, peer, 4323)
 		peer.conn.CloseNow()
 		x.waitClosed(t, opened.Session.Id, "browser stream lost")
@@ -303,7 +310,7 @@ func TestNativeTroubleshootingProxies(t *testing.T) {
 			return strings.NewReplacer("proxy_read_timeout 120s", "proxy_read_timeout 20s", "proxy_send_timeout 120s", "proxy_send_timeout 20s").Replace(text)
 		})
 		opened := x.open(t, b, x.app, 1, 201)
-		peer := x.attachBrowser(t, b, opened)
+		peer := x.attachActive(t, b, opened)
 		job := a.startJob(t, peer, 4321)
 		peer.closedWithin(t, 30*time.Second)
 		a.jobEnded(t, job)
@@ -321,6 +328,28 @@ func TestNativeTroubleshootingProxies(t *testing.T) {
 		}
 		x.waitClosed(t, opened.Session.Id, "agent stream failed")
 	})
+}
+
+// attachActive attaches the browser and waits for the relay to start the shell, so that a
+// session that ends straight away fails here, with how it ended, rather than as input
+// that never ran.
+func (x troubleshootingFixture) attachActive(t *testing.T, b *browser, opened api.OpenedTroubleshootingSession) *terminalPeer {
+	t.Helper()
+	peer := x.attachBrowser(t, b, opened)
+	var state, reason string
+	for deadline := time.Now().Add(domain.TroubleshootingTicketLifetime + 5*time.Second); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
+		if err := x.f.st.Pool.QueryRow(context.Background(), "SELECT state,COALESCE(close_reason,'') FROM troubleshooting_sessions WHERE id=$1", opened.Session.Id).Scan(&state, &reason); err != nil {
+			t.Fatal(err)
+		}
+		switch state {
+		case "active":
+			return peer
+		case "closed":
+			t.Fatalf("the session ended on attaching: %q", reason)
+		}
+	}
+	t.Fatalf("the session was still %s after its ticket ran out", state)
+	return nil
 }
 
 // closeReason waits for a session to close, for a reason the test does not fix in advance.

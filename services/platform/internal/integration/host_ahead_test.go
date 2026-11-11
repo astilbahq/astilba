@@ -44,6 +44,11 @@ type aheadHost struct {
 	forgeRemoval bool
 	rejected     int
 	revoked      bool
+	// unprepared fails every network command without a receipt and reports in its heartbeat that
+	// it can't take part, as an agent does without its preparation marker or the tools it needs.
+	unprepared bool
+	// copiesKey answers identify with that host's key, as a cloned or modified agent would.
+	copiesKey *aheadHost
 	// taken is the generation the host's journal holds for network commands. Like the journal, it
 	// ends any other command at or below it unrun, and always takes a restriction. A transfer
 	// clears it. superseded counts the commands it ended that way.
@@ -99,7 +104,12 @@ func (n *aheadNetwork) round(t *testing.T) {
 			if h.silent {
 				continue
 			}
-			if _, err := n.f.execution.Heartbeat(n.ctx, h.identity, api.AgentHeartbeat{Capabilities: h.input.Capabilities, Preflight: h.input.Preflight}); err != nil {
+			capabilities := h.input.Capabilities
+			if h.unprepared {
+				no := false
+				capabilities.CrossHost = &no
+			}
+			if _, err := n.f.execution.Heartbeat(n.ctx, h.identity, api.AgentHeartbeat{Capabilities: capabilities, Preflight: h.input.Preflight}); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -144,6 +154,13 @@ func (n *aheadNetwork) round(t *testing.T) {
 			t.Fatalf("host at controller %d was sent a manifest for controller %d", h.controller, command.Manifest.ControllerGeneration)
 		}
 		report := api.AgentReport{Id: c.Id, Generation: c.Generation, PlanHash: c.PlanHash, State: "succeeded", Sequence: 1, Steps: []api.ExecutionStep{}}
+		if h.unprepared {
+			report.State, report.Note = "failed", "Managed networking requires explicit supported-host preparation."
+			if err = n.f.execution.Report(n.ctx, h.identity, report); err != nil {
+				t.Fatal(err)
+			}
+			continue
+		}
 		// As the agent does, a host that never joined acknowledges a removal without applying it.
 		if command.Manifest != nil && h.held.NetworkID == uuid.Nil && (command.Manifest.Disabled || h.forgeRemoval && command.Action == "configure") {
 			identity, err := h.store.Identity(command.MembershipID)
@@ -206,6 +223,9 @@ func (n *aheadNetwork) round(t *testing.T) {
 		} else if err != nil {
 			t.Fatal(err)
 		} else {
+			if h.copiesKey != nil && command.Action == "identify" {
+				receipt.Identity.PublicKey = n.key(t, h.copiesKey)
+			}
 			report.Network = claimMessage(t, receipt)
 		}
 		if err = n.f.execution.Report(n.ctx, h.identity, report); err != nil {
@@ -339,6 +359,16 @@ func (n *aheadNetwork) transfer(t *testing.T, h *aheadHost) {
 		t.Fatal(err)
 	}
 	h.input, h.controller, h.token, h.taken = input, generation, h.id.String()+"."+credential, 0
+}
+
+// key is the public key management holds for a host's membership.
+func (n *aheadNetwork) key(t *testing.T, h *aheadHost) string {
+	t.Helper()
+	var key string
+	if err := n.f.st.Pool.QueryRow(n.ctx, `SELECT public_key FROM network_members WHERE server_id=$1`, h.id).Scan(&key); err != nil {
+		t.Fatal(err)
+	}
+	return key
 }
 
 func (n *aheadNetwork) note(t *testing.T, h *aheadHost) string {

@@ -67,14 +67,14 @@ const (
 // newClaimRecovery can take steps that add to what the sealed capsule records.
 func newClaimRecovery(t *testing.T, networkGeneration int64, capture ...func(f *fixture, b *browser, ws, network uuid.UUID)) *claimRecovery {
 	t.Helper()
-	return buildClaimRecovery(t, networkGeneration, claimOneUnit, capture...)
+	return buildClaimRecovery(t, networkGeneration, claimOneUnit, nil, capture...)
 }
 
 // newParticipantRecovery is a claim recovery whose root also runs the application on the peer, so
 // the peer is a participant with a unit of its own.
 func newParticipantRecovery(t *testing.T, capture ...func(f *fixture, b *browser, ws, network uuid.UUID)) *claimRecovery {
 	t.Helper()
-	return buildClaimRecovery(t, 1, claimWithParticipant, capture...)
+	return buildClaimRecovery(t, 1, claimWithParticipant, nil, capture...)
 }
 
 // newReplacementRecovery is a claim recovery whose root replaces the environment's primary on the
@@ -82,10 +82,16 @@ func newParticipantRecovery(t *testing.T, capture ...func(f *fixture, b *browser
 // unit on A, as applying a replacement leaves things before its deployment finishes.
 func newReplacementRecovery(t *testing.T) *claimRecovery {
 	t.Helper()
-	return buildClaimRecovery(t, 1, claimAfterReplacement)
+	return buildClaimRecovery(t, 1, claimAfterReplacement, nil)
 }
 
-func buildClaimRecovery(t *testing.T, networkGeneration int64, shape claimShape, capture ...func(f *fixture, b *browser, ws, network uuid.UUID)) *claimRecovery {
+// newClaimRecoveryCaptured seals what snapshot returns in place of what CaptureRecovery would.
+func newClaimRecoveryCaptured(t *testing.T, networkGeneration int64, snapshot func(context.Context, pgx.Tx, uuid.UUID) ([]byte, error), capture ...func(f *fixture, b *browser, ws, network uuid.UUID)) *claimRecovery {
+	t.Helper()
+	return buildClaimRecovery(t, networkGeneration, claimOneUnit, snapshot, capture...)
+}
+
+func buildClaimRecovery(t *testing.T, networkGeneration int64, shape claimShape, snapshot func(context.Context, pgx.Tx, uuid.UUID) ([]byte, error), capture ...func(f *fixture, b *browser, ws, network uuid.UUID)) *claimRecovery {
 	t.Helper()
 	participant, replacement := shape == claimWithParticipant, shape == claimAfterReplacement
 	ctx := context.Background()
@@ -224,7 +230,10 @@ func buildClaimRecovery(t *testing.T, networkGeneration int64, shape claimShape,
 		t.Fatal(err)
 	}
 	defer tx.Rollback(ctx)
-	captured, err := portability.CaptureRecovery(ctx, tx, ws)
+	if snapshot == nil {
+		snapshot = portability.CaptureRecovery
+	}
+	captured, err := snapshot(ctx, tx, ws)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -20,9 +20,12 @@ UPDATE servers SET enrollment_hash = @enrollment_hash,enrollment_expires = @enro
 WHERE workspace_id = @workspace_id AND id = @id
 RETURNING id,name,role,last_seen,capabilities,preflight,revoked,rotation_requested,awaiting_transfer,preview_only;
 
--- name: RequestServerRotation :execrows
+-- name: RequestServerRotation :one
+-- Only an agent that names its machine can complete a rotation. The caller refuses, and so rolls
+-- back, a request for one that can't: it would keep presenting a candidate management refuses.
 UPDATE servers SET rotation_requested=true
-WHERE workspace_id = @workspace_id AND id = @id AND NOT revoked AND credential_hash IS NOT NULL;
+WHERE workspace_id = @workspace_id AND id = @id AND NOT revoked AND credential_hash IS NOT NULL
+RETURNING COALESCE((capabilities->>'machineBoundRotation')::boolean,false)::boolean AS supported;
 
 -- name: RevokeServer :execrows
 UPDATE servers SET revoked=true,credential_hash=NULL,previous_hash=NULL,enrollment_hash=NULL,rotation_requested=false
@@ -51,16 +54,20 @@ WHERE id = @server_id AND NOT revoked AND NOT awaiting_transfer
 UPDATE servers SET last_seen=now(),capabilities = @capabilities,preflight = @preflight
 WHERE workspace_id = @workspace_id AND id = @server_id AND NOT revoked AND NOT awaiting_transfer
     AND (credential_hash = @credential_hash OR (previous_hash = @credential_hash AND previous_until>now()))
-RETURNING role,rotation_requested,preview_only;
+RETURNING role,
+    -- An agent that can't prove its machine binding isn't told about a request it can't complete.
+    (rotation_requested AND COALESCE((capabilities->>'machineBoundRotation')::boolean,false))::boolean AS rotation_requested,
+    preview_only;
 
 -- name: RotateAgentCredential :execrows
 -- The same candidate is an idempotent retry. A previous credential cannot
--- initiate a new exchange.
+-- initiate a new exchange. The caller must also name the machine that enrolled.
 UPDATE servers SET
     previous_hash=CASE WHEN credential_hash = @candidate_hash THEN previous_hash ELSE credential_hash END,
     previous_until=CASE WHEN credential_hash = @candidate_hash THEN previous_until ELSE now()+interval '2 minutes' END,
     credential_hash = @candidate_hash,rotation_requested=false
 WHERE workspace_id = @workspace_id AND id = @server_id AND NOT revoked AND NOT awaiting_transfer
+    AND machine_id = @machine_id
     AND ((credential_hash = @credential_hash AND rotation_requested)
         OR (credential_hash = @candidate_hash
             AND (credential_hash = @credential_hash OR (previous_hash = @credential_hash AND previous_until>now()))));

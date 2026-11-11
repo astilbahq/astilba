@@ -43,6 +43,7 @@ type Client struct {
 	maintenanceContinuation atomic.Bool
 	primaryIngress          atomic.Bool
 	troubleshooting         atomic.Bool
+	machineRotation         atomic.Bool
 	terminalOffers          sync.Map
 	terminalActive          atomic.Int64
 	terminalSessions        sync.WaitGroup
@@ -127,6 +128,7 @@ func (c *Client) call(ctx context.Context, method, path string, body, out any, t
 		c.maintenanceContinuation.Store(response.Header.Get("Astilba-Agent-Maintenance-Continuation") == "v1")
 		c.primaryIngress.Store(response.Header.Get("Astilba-Agent-Primary-Ingress") == "v1")
 		c.troubleshooting.Store(response.Header.Get("Astilba-Agent-Troubleshooting") == "v2")
+		c.machineRotation.Store(response.Header.Get("Astilba-Agent-Machine-Rotation") == "v1")
 		if c.Engine != nil {
 			read := refusalsUnread
 			if response.Header.Get("Astilba-Agent-Network-Refusals") == "v1" {
@@ -206,6 +208,9 @@ func (c *Client) advertisedCapabilities(v api.AgentCapabilities) api.AgentCapabi
 	if !c.railpack.Load() {
 		v.RailpackVersion = nil
 	}
+	if !c.machineRotation.Load() {
+		v.MachineBoundRotation = nil
+	}
 	return v
 }
 func (c *Client) Enroll(ctx context.Context, token string) error {
@@ -242,6 +247,7 @@ func (c *Client) Enroll(ctx context.Context, token string) error {
 		enrollment.ControllerGeneration = &cfg.ControllerGeneration
 		enrollment.Inventory = &inventory
 	}
+	sent := c.advertisedCapabilities(h.Capabilities)
 	if e = c.call(ctx, "POST", "/agent/v1/enroll", enrollment, &status, ""); e != nil {
 		return e
 	}
@@ -255,7 +261,29 @@ func (c *Client) Enroll(ctx context.Context, token string) error {
 	cfg.Pending = ""
 	cfg.Enrolled = true
 	cfg.EnrollmentToken = ""
-	return c.Journal.SetConfig(cfg)
+	if e = c.Journal.SetConfig(cfg); e != nil {
+		return e
+	}
+	// The enrollment was this process's first request, so it went out before negotiation. Report
+	// what the agent supports now rather than when the service first heartbeats.
+	if !reflect.DeepEqual(sent, c.advertisedCapabilities(h.Capabilities)) {
+		_ = c.heartbeat(ctx, cfg.Credential, &api.AgentStatus{})
+	}
+	return nil
+}
+
+// heartbeat reports this host. A response that changes what this controller reads is followed at
+// once by another report, so management doesn't wait an interval to learn what the agent supports.
+func (c *Client) heartbeat(ctx context.Context, credential string, status *api.AgentStatus) error {
+	h := c.Observe(ctx)
+	sent := c.advertisedCapabilities(h.Capabilities)
+	if err := c.call(ctx, "POST", "/agent/v1/heartbeat", h, status, credential); err != nil {
+		return err
+	}
+	if reflect.DeepEqual(sent, c.advertisedCapabilities(h.Capabilities)) {
+		return nil
+	}
+	return c.call(ctx, "POST", "/agent/v1/heartbeat", h, status, credential)
 }
 func (c *Client) rotate(ctx context.Context) error {
 	cfg, e := c.Journal.Config()
@@ -274,7 +302,12 @@ func (c *Client) rotate(ctx context.Context) error {
 	// A lost exchange response is recovered by trying the persisted candidate first.
 	var status api.AgentStatus
 	if e = c.call(ctx, "POST", "/agent/v1/heartbeat", c.Observe(ctx), &status, cfg.Pending); e != nil {
-		if e = c.call(ctx, "POST", "/agent/v1/rotate", api.AgentRotation{Credential: cfg.Pending}, nil, cfg.Credential); e != nil {
+		// That heartbeat's response said whether this controller takes the machine.
+		var rotation any = api.AgentRotation{Credential: cfg.Pending, MachineId: cfg.MachineID}
+		if !c.machineRotation.Load() {
+			rotation = legacyRotation{Credential: cfg.Pending}
+		}
+		if e = c.call(ctx, "POST", "/agent/v1/rotate", rotation, nil, cfg.Credential); e != nil {
 			return e
 		}
 	}
@@ -283,21 +316,9 @@ func (c *Client) rotate(ctx context.Context) error {
 	return c.Journal.SetConfig(cfg)
 }
 
-// heartbeat reports this host's state. The first heartbeat after a start can precede
-// learning this controller's features, and management replaces capabilities with each one,
-// so a feature it left out would stay unavailable until the next. It sends again at once
-// with what the controller turned out to accept.
-func (c *Client) heartbeat(ctx context.Context, credential string) (api.AgentStatus, error) {
-	var status api.AgentStatus
-	observed := c.Observe(ctx)
-	advertised := c.advertisedCapabilities(observed.Capabilities)
-	if err := c.call(ctx, "POST", "/agent/v1/heartbeat", observed, &status, credential); err != nil {
-		return status, err
-	}
-	if reflect.DeepEqual(advertised, c.advertisedCapabilities(observed.Capabilities)) {
-		return status, nil
-	}
-	return status, c.call(ctx, "POST", "/agent/v1/heartbeat", observed, &status, credential)
+// legacyRotation is the request earlier controllers accept: they reject a machine they don't read.
+type legacyRotation struct {
+	Credential string `json:"credential"`
 }
 
 func (c *Client) Run(ctx context.Context) error {
@@ -398,8 +419,8 @@ func (c *Client) Run(ctx context.Context) error {
 			if cfg.Pending != "" {
 				return c.rotate(ctx)
 			}
-			status, e := c.heartbeat(ctx, cfg.Credential)
-			if e != nil {
+			var status api.AgentStatus
+			if e = c.heartbeat(ctx, cfg.Credential, &status); e != nil {
 				return e
 			}
 			if status.RotationRequested {
