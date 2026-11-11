@@ -5,13 +5,13 @@ packages:
 # Shared pins with an alignment rule. scripts/pin-alignment.mjs checks what a catalog can't
 # reach; see docs/frontend-development.md#dependency-pins.
 catalog:
-  '@pandacss/dev': 2.4.0
-  '@pandacss/eslint-plugin': 2.4.0
-  '@pandacss/preset-base': 2.4.0
-  '@pandacss/preset-panda': 2.4.0
-  '@pandacss/vite': 2.4.0
+  '@pandacss/dev': 2.5.0
+  '@pandacss/eslint-plugin': 2.5.0
+  '@pandacss/preset-base': 2.5.0
+  '@pandacss/preset-panda': 2.5.0
+  '@pandacss/vite': 2.5.0
   '@playwright/test': 1.64.1
-  pnpm: 11.17.0
+  pnpm: 11.28.10
   typescript: 7.0.2
   vite: npm:@voidzero-dev/vite-plus-core@1.4.0
   vite-plus: 1.4.0
