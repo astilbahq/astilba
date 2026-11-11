@@ -41,7 +41,7 @@ export function ComposeEditor({
   const [selectedService, setService] = useState("");
   const savedFiles = baseFiles;
   const [proposalBase, setProposalBase] = useState("");
-  const action = useAction();
+  const mutation = useAction();
   const secrets = useQuery({
     queryKey: ["secrets", path],
     queryFn: () =>
@@ -57,12 +57,17 @@ export function ComposeEditor({
   serializedRef.current = serialized;
   const previewSequence = useRef(0);
   const { workspaceId, projectId, environmentId } = path;
-  // An action's error describes the source it ran against, so it ends with that
-  // source. Otherwise a failed image edit outlives the preview that later passes.
-  const { reset } = action;
-  useEffect(() => {
-    reset();
-  }, [serialized, reset]);
+  // An action's error describes the source it ran against, so it applies only while
+  // the source is unchanged. Otherwise a refused image edit outlives later previews.
+  const [actionSource, setActionSource] = useState("");
+  const action = {
+    ...mutation,
+    error: actionSource === serialized ? mutation.error : null,
+    run: (fn: () => Promise<unknown>) => {
+      setActionSource(serialized);
+      mutation.run(fn);
+    },
+  };
   useEffect(() => {
     if (!write) {
       setGraph(JSON.parse(serialized) as Schema["Specification"]);

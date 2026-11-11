@@ -97,7 +97,14 @@ test("Compose files remain authoritative through graph edits and independent lay
     .getByRole("alert")
     .filter({ hasText: "Fields: request" });
   await expect(refused).toBeVisible();
+  const previewed = page.waitForResponse(
+    (response) =>
+      response.url().endsWith("/compose/preview") &&
+      response.request().method() === "POST" &&
+      response.ok(),
+  );
   await editor.fill(`${source}# reviewed\n`);
+  await previewed;
   await expect(
     page.getByText("Source validated.", { exact: true }),
   ).toBeVisible();

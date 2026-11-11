@@ -116,6 +116,25 @@ func TestLoadRejectsNamesTheRuntimeOwns(t *testing.T) {
 	}
 }
 
+// A revision's derived networks carry these names back to clients, and the API holds a
+// network name to 80 characters, so a longer one would make the saved revision unsendable.
+func TestLoadRefusesNetworkNamesTheAPICannotReturn(t *testing.T) {
+	source := func(name string) string {
+		return "services:\n  web:\n    image: busybox:1.37.0\n    networks: [" + name + "]\nnetworks:\n  " + name + ": {}\n"
+	}
+	long := strings.Repeat("n", maxNetworkName+1)
+	_, err := Load(context.Background(), fixture(source(long)), nil)
+	if d := ParseDiagnostic(err); err == nil || !strings.Contains(d.Message, "at most 80 characters") || d.Line < 2 {
+		t.Fatalf("a network name the API cannot return was accepted or not located: %v", err)
+	}
+	if _, err := LoadStored(context.Background(), fixture(source(long)), nil); err != nil {
+		t.Fatalf("a stored bundle stopped loading: %v", err)
+	}
+	if _, err := Load(context.Background(), fixture(source(long[:maxNetworkName])), nil); err != nil {
+		t.Fatalf("an 80-character network name was refused: %v", err)
+	}
+}
+
 // Other drivers make the root Docker daemon connect to an address the file chooses, from
 // the host's own network, with no owner review.
 func TestLoadAcceptsOnlyBoundedLocalLogging(t *testing.T) {

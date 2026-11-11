@@ -22,12 +22,13 @@ func Effects(spec, previous domain.Specification, hostChanges bool) []string {
 			out = append(out, "Remove service "+a.Name+"; retain its named volumes.")
 		}
 	}
-	routes := map[uuid.UUID]bool{}
+	// A renamed Compose route has a new identity but keeps its endpoint, so compare endpoints.
+	endpoints := map[string]bool{}
 	for _, r := range spec.Routes {
-		routes[r.ID] = true
+		endpoints[routeClaim(r)] = true
 	}
 	for _, r := range previous.Routes {
-		if !routes[r.ID] {
+		if !endpoints[routeClaim(r)] {
 			out = append(out, "Remove route "+routeLabel(r)+"; this server stops accepting its traffic.")
 		}
 	}

@@ -2,7 +2,9 @@ package composeproject
 
 import (
 	"context"
+	"maps"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -31,6 +33,13 @@ func LoadStored(ctx context.Context, b Bundle, environment map[string]string) (*
 }
 
 func (p *Project) admit() error {
+	// A revision returns each network's name, and a client sends that revision back, so a
+	// name must fit what the API accepts. Services and volumes are already held to 80.
+	for _, name := range slices.Sorted(maps.Keys(p.Model.Networks)) {
+		if len(name) > maxNetworkName {
+			return p.At("networks", name, "", "use a network name of at most 80 characters")
+		}
+	}
 	for _, name := range p.Model.ServiceNames() {
 		service := p.Model.Services[name]
 		// The compiler adds the service name as an alias, and Docker DNS answers for a
@@ -57,6 +66,8 @@ func (p *Project) admit() error {
 	}
 	return nil
 }
+
+const maxNetworkName = 80
 
 var reservedRuntimeNames = regexp.MustCompile(`^(service-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|astilba-)`)
 
