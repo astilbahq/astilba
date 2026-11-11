@@ -10,7 +10,7 @@ description: >-
 
 # Upgrade dependencies
 
-Covers `pnpm-workspace.yaml` with its packages, and the Go modules found by `git ls-files '*go.mod'`. Docker base images and GitHub Actions are left to Dependabot; Go and Node toolchains are reported, not bumped (see [Toolchains](#toolchains)).
+Covers `pnpm-workspace.yaml` with its packages, the Go modules found by `git ls-files '*go.mod'`, and the pinned Public Suffix List. Docker base images and GitHub Actions are left to Dependabot; Go and Node toolchains are reported, not bumped (see [Toolchains](#toolchains)).
 
 ## Rules
 
@@ -53,6 +53,7 @@ Each group below is its own pull request. Skip a group with nothing to move.
 | Go: experiments | The same for every module under `experiments/`. |
 | pnpm: routine | Patch and minor updates of packages outside the coupled families below. |
 | pnpm: coupled | One pull request per family that moved, with the edits [Coupled pins](#coupled-pins) lists. |
+| Public Suffix List | `node scripts/public-suffix-list.mjs` moves the copy pinned in `services/platform/internal/publicsuffix` to the newest commit past the release-age gate. Read the diff of `public_suffix_list.dat` and note any removed or changed rule; see [the pinned list](../../../docs/hosting.md#the-pinned-list). |
 | Majors | One pull request per major, and only when the person running you agreed to it. Otherwise list them in your report with what they would need. |
 
 ## Coupled pins

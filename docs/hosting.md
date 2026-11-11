@@ -39,6 +39,7 @@ an owner-only environment file outside source control:
 | `ASTILBA_LISTEN` | Listener, normally `0.0.0.0:8080` inside the container. |
 | `ASTILBA_DATABASE_POOL_SIZE` | Optional. Connections each process may hold, 4 to 1000. Defaults to 12. See [database connections](#database-connections). |
 | `ASTILBA_TROUBLESHOOTING` | Optional. `single-instance` declares that one instance serves this installation, which [interactive troubleshooting](interactive-troubleshooting.md) requires. Off by default. |
+| `ASTILBA_APPLICATION_DOMAIN` | Optional. Base domain for generated application names; empty turns them off. Hosted installations need it on the Public Suffix List. See [generated application names](#generated-application-names). |
 | `ASTILBA_TRUSTED_PROXIES` | Optional comma-separated proxy IP CIDRs, for example `192.0.2.10/32,2001:db8::10/128`. Empty by default; forwarding headers are then ignored. |
 | `ASTILBA_SMTP_ADDRESS`, `ASTILBA_SMTP_MODE`, `ASTILBA_SMTP_FROM` | SMTP delivery settings. Use `tls` or `starttls` outside local development. |
 | `ASTILBA_SMTP_USERNAME`, `ASTILBA_SMTP_PASSWORD` | Optional SMTP credentials. |
@@ -511,6 +512,73 @@ encrypted export remain available for 30 days after the entitlement ends. Owners
 receive a durable expiry notice; a failed delivery is retried. This first beta does
 not automatically delete workspaces. Any later deletion policy needs a separate
 announced retention period and a preceding owner notification.
+
+## Generated application names
+
+`ASTILBA_APPLICATION_DOMAIN` turns on
+[generated application names](server-onboarding.md#optional-generated-names) of the
+form `a<hash>.s<server>.<base>`. Browsers group names into sites using the
+[Public Suffix List](https://publicsuffix.org/) (PSL). Unless the list isolates the
+base, every generated name belongs to one site, the base's registrable domain. Then
+an application can:
+
+- set cookies that the same browser sends to every other workspace's applications,
+  which allows cookie injection and session fixation;
+- make same-site requests to them, so `SameSite` cookies no longer protect them
+  from cross-site request forgery;
+- use up certificate limits counted per registered domain, such as Let's Encrypt's
+  certificates per registered domain, and block other workspaces' certificates.
+
+The base is isolated when it is itself a public suffix, listed exactly as
+`astilba.app` would be or matched by a wildcard rule on its parent, or when a
+`*.<base>` rule makes each server's name a public suffix. Each server's name
+`s<server>.<base>` is then its own site. A server belongs to one workspace, so the
+applications that share its site belong to one workspace too.
+
+### Hosted installations
+
+With `ASTILBA_HOSTED=true`, `astilba serve` refuses to start with an application
+domain that the list does not isolate. Leave `ASTILBA_APPLICATION_DOMAIN` empty
+until all of these are true:
+
+1. The base's entry has merged into the private section of the list. Follow
+   [the list's guidelines](https://github.com/publicsuffix/list/wiki/Guidelines),
+   and keep the `_psl` TXT record and at least a year of registration for as long
+   as the entry stays listed.
+2. A release of Astilba carries a [pinned list](#the-pinned-list) with the entry.
+3. Browsers your customers use have shipped the entry. Each browser and operating
+   system copies the list into its own releases, so this takes weeks to months
+   after the merge, and longer for clients that update rarely. The startup check
+   cannot see what browsers have shipped.
+
+Hosted Astilba uses `astilba.app` and keeps generated names off until its entry
+has shipped.
+
+### Self-hosted installations
+
+A self-hosted installation starts with any base and logs a warning when the list
+does not isolate it. Cookie and same-site sharing across workspaces is acceptable
+when everyone who can deploy to the installation trusts each other, such as the
+members of one organisation. If its workspaces belong to parties that do not trust
+each other, either leave generated names off and give each application a custom
+domain, or use a base the list isolates. The list accepts private entries only for
+services with thousands of users, so most installations should not apply.
+
+### The pinned list
+
+Astilba checks against its own copy of the list in
+`services/platform/internal/publicsuffix`, pinned to one commit of
+[publicsuffix/list](https://github.com/publicsuffix/list). The startup refusal and
+warning name that commit. `golang.org/x/net` has its own copy, but refreshes it only
+about once a year, too slowly for a new entry.
+
+To bring in a newly merged entry, run `node scripts/public-suffix-list.mjs` from the
+repository root. It pins the newest commit on the list's main branch that is older
+than the 24-hour release-age gate. It refuses a commit that main does not contain,
+and records the commit and the files' hashes in `source.go`. Check that the diff of
+`public_suffix_list.dat` adds the expected entry, and open a pull request. The entry
+reaches operators in the next release built from it. Routine dependency upgrades
+move the pin as well.
 
 ## Operational bounds and retention
 

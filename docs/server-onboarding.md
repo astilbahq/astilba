@@ -26,7 +26,7 @@ Connection status, role capabilities, certificate contact and workload health ar
 
 ## Optional generated names
 
-Set `ASTILBA_APPLICATION_DOMAIN` on the management installation to a dedicated application domain, such as `apps.example.net`. It must use a different registrable root from the dashboard/account origin. Leave it empty to disable generated names. Custom application routes continue to work.
+Set `ASTILBA_APPLICATION_DOMAIN` on the management installation to a dedicated application domain, such as `apps.example.net`. It must use a different registrable root from the dashboard/account origin. Leave it empty to disable generated names. Unless the base is on the Public Suffix List, all generated names share one browser site, and hosted installations refuse to start; see [generated application names](hosting.md#generated-application-names). Custom application routes continue to work.
 
 An owner confirms each deployment server's public IPv4 and/or IPv6 address using recent authentication. Addresses are never inferred from the management connection. Each server uses one wildcard:
 
