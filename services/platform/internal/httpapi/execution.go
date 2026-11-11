@@ -61,6 +61,8 @@ func (s *Server) protection(next http.Handler) http.Handler {
 		w.Header().Set("Astilba-Agent-Network-Refusals", "v1")
 		// v2 adds session streams; agents advertise support only when they can run them.
 		w.Header().Set("Astilba-Agent-Troubleshooting", "v2")
+		// v1 rotation requests name the machine that enrolled.
+		w.Header().Set("Astilba-Agent-Machine-Rotation", "v1")
 		limit := int64(16384)
 		if r.URL.Path == "/agent/v1/enroll" {
 			limit = 32768
@@ -187,7 +189,7 @@ func (s *Server) AgentHeartbeat(w http.ResponseWriter, r *http.Request) {
 func (s *Server) RotateAgentCredential(w http.ResponseWriter, r *http.Request) {
 	b, e := decode[api.AgentRotation](r)
 	if e == nil {
-		e = s.Execution.Rotate(r.Context(), agentIdentity(r.Context()), b.Credential)
+		e = s.Execution.Rotate(r.Context(), agentIdentity(r.Context()), b)
 	}
 	s.executionResponse(w, r, 204, nil, e)
 }
