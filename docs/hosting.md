@@ -516,7 +516,17 @@ Admission permits at most 50 unfinished execution operations in one workspace.
 The existing per-server and per-environment exclusion still applies; reaching the
 workspace limit returns backpressure before another operation is queued. Archive
 operations are serialized per management replica, limited to 32 MiB and 10,000
-records, and use fixed 64 MiB Argon2id derivation parameters.
+records, and use fixed 64 MiB Argon2id derivation parameters. The database keeps
+every operation, but an export and a cross-host recovery checkpoint carry only the
+operation history recovery and the app need. That is unfinished work, every
+operation that applied or removed a runtime, every standalone private network
+removal, every operation another archived record names, and the newest 100.
+Older finished housekeeping, such as other private network, agent update and
+single-host backup commands, stays out, so a long history doesn't stop exports or
+cross-host deployments. A workspace imported from an export, or recovered from a
+management backup older than that housekeeping, doesn't get it back. Deployment
+history, configuration revisions and audit events are all carried, so a very
+active workspace can still reach the record limit.
 
 The private network, coordinated backup, operational alert and expiry notice sweeps take one workspace
 at a time, each under its own deadline, and carry on past a failure. A failure costs that

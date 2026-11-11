@@ -85,6 +85,35 @@ func (q *Queries) ForgetInstalledNetwork(ctx context.Context, arg ForgetInstalle
 	return err
 }
 
+const holdUnpreparedNetworkMember = `-- name: HoldUnpreparedNetworkMember :exec
+UPDATE network_members m SET sweep_hold='unprepared',note=CASE WHEN m.note IN ('', $1) THEN $2 ELSE m.note END
+FROM servers s
+WHERE m.workspace_id = $3 AND m.server_id = $4 AND m.membership_id = $5
+    AND s.id = m.server_id AND NOT COALESCE((s.capabilities->>'crossHost')::boolean,false)
+`
+
+type HoldUnpreparedNetworkMemberParams struct {
+	RenewedNote  string    `json:"renewed_note"`
+	Note         string    `json:"note"`
+	WorkspaceID  uuid.UUID `json:"workspace_id"`
+	ServerID     uuid.UUID `json:"server_id"`
+	MembershipID uuid.UUID `json:"membership_id"`
+}
+
+// A host that could not run a command for this membership, while its heartbeat says it is not
+// prepared for managed networking. Otherwise the failure had another cause and the next pass tries
+// again. The note explains the hold only when it has nothing else to say.
+func (q *Queries) HoldUnpreparedNetworkMember(ctx context.Context, arg HoldUnpreparedNetworkMemberParams) error {
+	_, err := q.db.Exec(ctx, holdUnpreparedNetworkMember,
+		arg.RenewedNote,
+		arg.Note,
+		arg.WorkspaceID,
+		arg.ServerID,
+		arg.MembershipID,
+	)
+	return err
+}
+
 const markNetworkGenerationExhausted = `-- name: MarkNetworkGenerationExhausted :exec
 UPDATE network_members SET acknowledged_generation=0,note=CASE WHEN enabled THEN $1 ELSE note END
 WHERE workspace_id = $2
@@ -231,7 +260,7 @@ func (q *Queries) NoteRefusedNetworkConfigure(ctx context.Context, arg NoteRefus
 }
 
 const recordNetworkMemberKey = `-- name: RecordNetworkMemberKey :exec
-UPDATE network_members SET public_key = $1,note=''
+UPDATE network_members SET public_key = $1,note='',sweep_hold=NULL
 WHERE workspace_id = $2 AND server_id = $3 AND membership_id = $4 AND enabled AND public_key=''
 `
 
@@ -298,7 +327,7 @@ func (q *Queries) RecordRefusingNetworkMember(ctx context.Context, arg RecordRef
 }
 
 const refuseNetworkMemberKey = `-- name: RefuseNetworkMemberKey :exec
-UPDATE network_members SET note = $1
+UPDATE network_members SET note = $1,sweep_hold='duplicate-key'
 WHERE workspace_id = $2 AND server_id = $3 AND membership_id = $4 AND enabled AND public_key=''
 `
 
@@ -309,6 +338,7 @@ type RefuseNetworkMemberKeyParams struct {
 	MembershipID uuid.UUID `json:"membership_id"`
 }
 
+// Asked again, it would report the same key, so the sweep holds it until the network changes.
 func (q *Queries) RefuseNetworkMemberKey(ctx context.Context, arg RefuseNetworkMemberKeyParams) error {
 	_, err := q.db.Exec(ctx, refuseNetworkMemberKey,
 		arg.Note,
@@ -319,25 +349,48 @@ func (q *Queries) RefuseNetworkMemberKey(ctx context.Context, arg RefuseNetworkM
 	return err
 }
 
+const reportsOnNetworkCommand = `-- name: ReportsOnNetworkCommand :one
+SELECT EXISTS(SELECT 1 FROM execution_operations WHERE id = $1 AND server_id = $2 AND kind='network')
+`
+
+type ReportsOnNetworkCommandParams struct {
+	ID       uuid.UUID `json:"id"`
+	ServerID uuid.UUID `json:"server_id"`
+}
+
+// A command's kind never changes, so this is read before the report's transaction to choose its
+// locks. Reading nothing leaves the report to be refused as it would be anyway.
+func (q *Queries) ReportsOnNetworkCommand(ctx context.Context, arg ReportsOnNetworkCommandParams) (bool, error) {
+	row := q.db.QueryRow(ctx, reportsOnNetworkCommand, arg.ID, arg.ServerID)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
 const setNetworkMemberGenerations = `-- name: SetNetworkMemberGenerations :exec
-UPDATE network_members SET generation = $1,note=CASE WHEN note IN ($2, $3) THEN '' ELSE note END
-WHERE workspace_id = $4
+UPDATE network_members SET generation = $1,sweep_hold=NULL,note=CASE WHEN note IN ($2, $3, $4, $5) THEN '' ELSE note END
+WHERE workspace_id = $6
 `
 
 type SetNetworkMemberGenerationsParams struct {
 	Generation        int64     `json:"generation"`
 	UnaccountedNote   string    `json:"unaccounted_note"`
 	RouteConflictNote string    `json:"route_conflict_note"`
+	UnpreparedNote    string    `json:"unprepared_note"`
+	DuplicateKeyNote  string    `json:"duplicate_key_note"`
 	WorkspaceID       uuid.UUID `json:"workspace_id"`
 }
 
-// A new generation is news for a member that was waiting on @unaccounted_note or that refused
-// the last one over @route_conflict_note, so it tries again.
+// A new generation is news for a member that was waiting on @unaccounted_note, that refused the
+// last one over @route_conflict_note, or that the sweep held, so it tries again. A removal can have
+// resolved a key another member held, and a held host is told about a revocation if it can apply it.
 func (q *Queries) SetNetworkMemberGenerations(ctx context.Context, arg SetNetworkMemberGenerationsParams) error {
 	_, err := q.db.Exec(ctx, setNetworkMemberGenerations,
 		arg.Generation,
 		arg.UnaccountedNote,
 		arg.RouteConflictNote,
+		arg.UnpreparedNote,
+		arg.DuplicateKeyNote,
 		arg.WorkspaceID,
 	)
 	return err

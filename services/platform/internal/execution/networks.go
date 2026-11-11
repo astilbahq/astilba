@@ -45,6 +45,8 @@ type networkMember struct {
 	Controller    int64     `json:"-"`
 	ManifestHash  string    `json:"-"`
 	revoked       bool
+	// hold is why the sweep holds the member back, if it does.
+	hold string
 }
 
 func readNetwork(ctx context.Context, tx pgx.Tx, ws uuid.UUID) (managedNetwork, error) {
@@ -56,7 +58,7 @@ func readNetwork(ctx context.Context, tx pgx.Tx, ws uuid.UUID) (managedNetwork, 
 	if err != nil {
 		return n, err
 	}
-	rows, err := tx.Query(ctx, `SELECT m.server_id,m.membership_id,host(m.address),m.endpoint,m.listen_port,m.cpu_millis,m.memory_mib,m.unbounded_inventory_hash,m.public_key,m.enabled,m.generation,m.acknowledged_generation,m.note,m.approved_controller,m.manifest_hash,s.revoked,s.controller_generation FROM network_members m JOIN servers s ON s.workspace_id=m.workspace_id AND s.id=m.server_id WHERE m.workspace_id=$1 ORDER BY m.server_id`, ws)
+	rows, err := tx.Query(ctx, `SELECT m.server_id,m.membership_id,host(m.address),m.endpoint,m.listen_port,m.cpu_millis,m.memory_mib,m.unbounded_inventory_hash,m.public_key,m.enabled,m.generation,m.acknowledged_generation,m.note,m.approved_controller,m.manifest_hash,s.revoked,s.controller_generation,COALESCE(m.sweep_hold,'') FROM network_members m JOIN servers s ON s.workspace_id=m.workspace_id AND s.id=m.server_id WHERE m.workspace_id=$1 ORDER BY m.server_id`, ws)
 	if err != nil {
 		return n, err
 	}
@@ -65,7 +67,7 @@ func readNetwork(ctx context.Context, tx pgx.Tx, ws uuid.UUID) (managedNetwork, 
 	for rows.Next() {
 		var m networkMember
 		var controller int64
-		if err = rows.Scan(&m.ServerID, &m.MembershipID, &m.Address, &m.Endpoint, &m.ListenPort, &m.CPUMillis, &m.MemoryMiB, &m.InventoryHash, &m.PublicKey, &m.Enabled, &m.Generation, &m.Acknowledged, &m.Note, &m.Controller, &m.ManifestHash, &m.revoked, &controller); err != nil {
+		if err = rows.Scan(&m.ServerID, &m.MembershipID, &m.Address, &m.Endpoint, &m.ListenPort, &m.CPUMillis, &m.MemoryMiB, &m.InventoryHash, &m.PublicKey, &m.Enabled, &m.Generation, &m.Acknowledged, &m.Note, &m.Controller, &m.ManifestHash, &m.revoked, &controller, &m.hold); err != nil {
 			return n, err
 		}
 		// A restored or imported acknowledgement says what the host held under an earlier controller.
@@ -219,7 +221,7 @@ func (s *Service) ConfigureManagedNetwork(ctx context.Context, p store.Principal
 		}
 		// Removing a member is approval for its current controller to tell it. Without this, a
 		// member removed by the first save after a restore would keep what it holds.
-		if _, e = tx.Exec(ctx, `UPDATE network_members m SET enabled=false,generation=$2,note='',approved_controller=s.controller_generation FROM servers s WHERE m.workspace_id=$1 AND s.id=m.server_id`, ws, generation); e != nil {
+		if _, e = tx.Exec(ctx, `UPDATE network_members m SET enabled=false,generation=$2,note='',sweep_hold=NULL,approved_controller=s.controller_generation FROM servers s WHERE m.workspace_id=$1 AND s.id=m.server_id`, ws, generation); e != nil {
 			return e
 		}
 		for _, a := range members {
@@ -244,7 +246,7 @@ func advanceNetworkGeneration(ctx context.Context, tx pgx.Tx, ws uuid.UUID, obse
 	if err != nil {
 		return err
 	}
-	if err = q.SetNetworkMemberGenerations(ctx, db.SetNetworkMemberGenerationsParams{Generation: next, UnaccountedNote: unaccountedNetworkGenerationNote, RouteConflictNote: routeConflictNetworkNote, WorkspaceID: ws}); err != nil || next != math.MaxInt64 {
+	if err = q.SetNetworkMemberGenerations(ctx, db.SetNetworkMemberGenerationsParams{Generation: next, UnaccountedNote: unaccountedNetworkGenerationNote, RouteConflictNote: routeConflictNetworkNote, UnpreparedNote: unpreparedNetworkNote, DuplicateKeyNote: duplicateNetworkKeyNote, WorkspaceID: ws}); err != nil || next != math.MaxInt64 {
 		return err
 	}
 	return q.MarkNetworkGenerationExhausted(ctx, db.MarkNetworkGenerationExhaustedParams{Note: exhaustedNetworkGenerationNote, WorkspaceID: ws})
@@ -310,20 +312,23 @@ func (s *Service) reconcileNetwork(ctx context.Context, ws uuid.UUID) error {
 		return err
 	}
 	for _, m := range n.Members {
-		// A member whose claim was not accounted for would answer the same again. Anything new for
-		// it advances the generation, which clears the note.
-		if m.Acknowledged == m.Generation && m.PublicKey != "" || !m.Enabled && m.PublicKey == "" || m.Note == unaccountedNetworkGenerationNote {
+		// A member whose claim was not accounted for, or whose key another member holds, would
+		// answer the same again. Anything new for it advances the generation, which clears the note
+		// and the hold.
+		if m.Acknowledged == m.Generation && m.PublicKey != "" || !m.Enabled && m.PublicKey == "" || m.Note == unaccountedNetworkGenerationNote || m.hold == "duplicate-key" {
 			continue
 		}
-		var ready bool
+		var ready, prepared bool
 		var controller int64
 		var reserved bool
 		var busy, restriction bool
-		err = tx.QueryRow(ctx, `SELECT NOT revoked AND NOT awaiting_transfer AND NOT preview_only AND role<>'build' AND last_seen>now()-interval '45 seconds',controller_generation,EXISTS(SELECT 1 FROM cross_host_reservations WHERE server_id=$1),EXISTS(SELECT 1 FROM execution_operations WHERE server_id=$1 AND NOT(kind='crosshost' AND parent_id IS NULL) AND state NOT IN ('succeeded','failed','cancelled')),EXISTS(SELECT 1 FROM execution_operations WHERE server_id=$1 AND kind='network' AND command->'network'->>'action'='restrict' AND state NOT IN ('succeeded','failed','cancelled')) FROM servers WHERE id=$1 FOR UPDATE`, m.ServerID).Scan(&ready, &controller, &reserved, &busy, &restriction)
+		err = tx.QueryRow(ctx, `SELECT NOT revoked AND NOT awaiting_transfer AND NOT preview_only AND role<>'build' AND last_seen>now()-interval '45 seconds',COALESCE((capabilities->>'crossHost')::boolean,false),controller_generation,EXISTS(SELECT 1 FROM cross_host_reservations WHERE server_id=$1),EXISTS(SELECT 1 FROM execution_operations WHERE server_id=$1 AND NOT(kind='crosshost' AND parent_id IS NULL) AND state NOT IN ('succeeded','failed','cancelled')),EXISTS(SELECT 1 FROM execution_operations WHERE server_id=$1 AND kind='network' AND command->'network'->>'action'='restrict' AND state NOT IN ('succeeded','failed','cancelled')) FROM servers WHERE id=$1 FOR UPDATE`, m.ServerID).Scan(&ready, &prepared, &controller, &reserved, &busy, &restriction)
 		if err != nil {
 			return err
 		}
-		if !ready || restriction {
+		// A host that could not run a command would fail the next the same way until it reports
+		// that it is prepared again, which its heartbeat does as soon as it is.
+		if !ready || restriction || m.hold == "unprepared" && !prepared {
 			continue
 		}
 		// While a host is occupied, or until the owner approves its new controller, only removals

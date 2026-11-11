@@ -204,3 +204,67 @@ func TestRecoveryHashesKeepTheirReleasedValues(t *testing.T) {
 		t.Errorf("state hash changed to %s, %v", state, err)
 	}
 }
+
+// Every base keeps unfinished work, so one an earlier base holds unfinished and a later base leaves
+// out had ended by then. Its stale copy must not come back as unfinished. An operation every base
+// keeps whatever its state can only be missing from a base made on another history, so it stays.
+func TestRecoveryBasesDropUnfinishedWorkALaterBaseLeftOut(t *testing.T) {
+	ws, server := uuid.New(), uuid.New()
+	operation := func(kind, action string, parent *uuid.UUID) (Row, string) {
+		id := uuid.New()
+		command := api.ExecutionCommand{Id: id, ServerId: server, Kind: api.ExecutionCommandKind(kind), Generation: 1, Deadline: time.Date(2026, 1, 1, 1, 0, 0, 0, time.UTC)}
+		if action != "" {
+			network := jsontext.Value(`{"action":"` + action + `"}`)
+			command.Network = &network
+		}
+		row := Row{}
+		for key, value := range map[string]any{"id": id, "workspace_id": ws, "server_id": server, "environment_id": nil, "generation": 1, "plan_id": nil, "request_key": uuid.New(), "kind": kind, "parent_id": parent, "command": command, "state": "running", "report_sequence": 1, "steps": []any{}, "cancel_requested": false, "runtime_outcome": nil, "runtime_plan_id": nil} {
+			setValue(row, key, value)
+		}
+		key, err := RecoveryRowKey("execution_operations", row)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return row, key
+	}
+	ended, endedKey := operation("network", "configure", nil)
+	root, rootKey := operation("crosshost", "", nil)
+	removal, removalKey := operation("network", "restrict", nil)
+	named, namedKey := operation("visual", "", nil)
+	applied, appliedKey := operation("visual", "", nil)
+	setValue(applied, "runtime_outcome", "removed")
+	child, childKey := operation("network", "restrict", nil)
+	setValue(child, "parent_id", root["id"])
+	request := Row{}
+	setValue(request, "id", uuid.New())
+	setValue(request, "operation_id", named["id"])
+	older := Archive{Version: 6, Workspace: ws, Name: "Recovery", CreatedAt: time.Date(2026, 1, 1, 0, 1, 0, 0, time.UTC), Tables: map[string][]Row{"execution_operations": {ended, root, removal, named, applied, child}, "visual_requests": {request}}}
+	newer := Archive{Version: 6, Workspace: ws, Name: "Recovery", CreatedAt: time.Date(2026, 1, 1, 0, 2, 0, 0, time.UTC), Tables: map[string][]Row{}}
+	for _, order := range [][]Archive{{older, newer}, {newer, older}} {
+		var combined RecoveryBases
+		for _, a := range order {
+			if err := combined.Add(a); err != nil {
+				t.Fatal(err)
+			}
+		}
+		kept := map[string]bool{}
+		for _, row := range combined.Archive().Tables["execution_operations"] {
+			key, _ := RecoveryRowKey("execution_operations", row)
+			kept[key] = true
+		}
+		if kept[endedKey] {
+			t.Fatal("an unfinished copy a later base contradicts came back")
+		}
+		if !kept[rootKey] || !kept[removalKey] || !kept[namedKey] || !kept[appliedKey] || !kept[childKey] {
+			t.Fatal("a later fork erased work every base keeps")
+		}
+	}
+	// With no later base, the unfinished copy is all there is to go on.
+	var alone RecoveryBases
+	if err := alone.Add(older); err != nil {
+		t.Fatal(err)
+	}
+	if len(alone.Archive().Tables["execution_operations"]) != 6 {
+		t.Fatal("a single base lost unfinished work")
+	}
+}

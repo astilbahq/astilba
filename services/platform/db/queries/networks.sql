@@ -24,11 +24,12 @@ SELECT EXISTS(SELECT 1 FROM network_members
     WHERE workspace_id = @workspace_id AND network_id = @network_id AND public_key = @public_key AND membership_id <> @membership_id);
 
 -- name: RecordNetworkMemberKey :exec
-UPDATE network_members SET public_key = @public_key,note=''
+UPDATE network_members SET public_key = @public_key,note='',sweep_hold=NULL
 WHERE workspace_id = @workspace_id AND server_id = @server_id AND membership_id = @membership_id AND enabled AND public_key='';
 
 -- name: RefuseNetworkMemberKey :exec
-UPDATE network_members SET note = @note
+-- Asked again, it would report the same key, so the sweep holds it until the network changes.
+UPDATE network_members SET note = @note,sweep_hold='duplicate-key'
 WHERE workspace_id = @workspace_id AND server_id = @server_id AND membership_id = @membership_id AND enabled AND public_key='';
 
 -- name: AdvanceNetworkGeneration :one
@@ -40,9 +41,10 @@ UPDATE workspace_networks SET generation=CASE WHEN GREATEST(generation, @observe
 WHERE workspace_id = @workspace_id RETURNING generation;
 
 -- name: SetNetworkMemberGenerations :exec
--- A new generation is news for a member that was waiting on @unaccounted_note or that refused
--- the last one over @route_conflict_note, so it tries again.
-UPDATE network_members SET generation = @generation,note=CASE WHEN note IN (@unaccounted_note, @route_conflict_note) THEN '' ELSE note END
+-- A new generation is news for a member that was waiting on @unaccounted_note, that refused the
+-- last one over @route_conflict_note, or that the sweep held, so it tries again. A removal can have
+-- resolved a key another member held, and a held host is told about a revocation if it can apply it.
+UPDATE network_members SET generation = @generation,sweep_hold=NULL,note=CASE WHEN note IN (@unaccounted_note, @route_conflict_note, @unprepared_note, @duplicate_key_note) THEN '' ELSE note END
 WHERE workspace_id = @workspace_id;
 
 -- name: MarkNetworkGenerationExhausted :exec
@@ -50,6 +52,15 @@ WHERE workspace_id = @workspace_id;
 -- what was just removed, so every member goes back to pending and the enabled ones say why.
 UPDATE network_members SET acknowledged_generation=0,note=CASE WHEN enabled THEN @note ELSE note END
 WHERE workspace_id = @workspace_id;
+
+-- name: HoldUnpreparedNetworkMember :exec
+-- A host that could not run a command for this membership, while its heartbeat says it is not
+-- prepared for managed networking. Otherwise the failure had another cause and the next pass tries
+-- again. The note explains the hold only when it has nothing else to say.
+UPDATE network_members m SET sweep_hold='unprepared',note=CASE WHEN m.note IN ('', @renewed_note) THEN @note ELSE m.note END
+FROM servers s
+WHERE m.workspace_id = @workspace_id AND m.server_id = @server_id AND m.membership_id = @membership_id
+    AND s.id = m.server_id AND NOT COALESCE((s.capabilities->>'crossHost')::boolean,false);
 
 -- name: SetNetworkMemberNote :exec
 UPDATE network_members SET note = @note WHERE workspace_id = @workspace_id AND server_id = @server_id;
@@ -110,3 +121,8 @@ WHERE workspace_id = @workspace_id AND server_id = @server_id AND membership_id 
 -- name: DisableNetworkMember :execrows
 UPDATE network_members SET enabled=false,note='Server authority revoked; this server has not confirmed its removal. If it will not return, revoke it.'
 WHERE workspace_id = @workspace_id AND server_id = @server_id AND enabled;
+
+-- name: ReportsOnNetworkCommand :one
+-- A command's kind never changes, so this is read before the report's transaction to choose its
+-- locks. Reading nothing leaves the report to be refused as it would be anyway.
+SELECT EXISTS(SELECT 1 FROM execution_operations WHERE id = @id AND server_id = @server_id AND kind='network');
