@@ -8,9 +8,10 @@ This repository contains the BYOS deployment platform and its technical-validati
 
 - `make check-app`: Go formatting/vet/staticcheck, [the repository's own analyzers](docs/continuous-integration.md#repository-analyzers), short tests, generated-code freshness and dashboard type/lint checks.
 - `make check-vulnerabilities`: `govulncheck` for every Go module and OSV Scanner for `pnpm-lock.yaml`, against the allowlist in `.github/vulnerability-allowlist.json`; needs network access, so it is not part of `check-app`. See [the vulnerability scan](docs/continuous-integration.md#vulnerability-scan).
+- Dependency upgrades follow the `upgrade-dependencies` skill in `.claude/skills`, which runs `scripts/go-release-age.mjs` and `scripts/npm-release-changes.mjs` against `origin/main`.
 - `make verify-app`: also requires `PLAT_APP_DOCKER_HOST` for owned disposable PostgreSQL and real Chromium/WebKit journeys. `make verify` includes it. `make verify-image` builds and smoke-tests the Node-free image.
 
-- Go: 1.27.3. Dependency versions and image digests are pinned in the experiment.
+- Go: 1.27.4. Dependency versions and image digests are pinned in the experiment.
 - `make verify`: formatting, module verification, vet and all host tests with the race detector, PLAT-7 provider fixtures using `PLAT7_DOCKER_HOST`, then the PLAT-1 production-build browser suite. Requires `PLAT2_DOCKER_HOST` to name a disposable local Docker Unix socket, the images listed in the experiment READMEs, pnpm dependencies and the pinned Playwright browsers. The HTTPS fixture cross-compiles its controller helper for the Docker host.
 - `make verify-host PLAT4_ARCH=amd64` (or `arm64`): native Ubuntu host checks after the disposable setup in `experiments/durable-execution/HOST.md`. Runs inside the VM, never on an existing deployment server.
 - `make verify-build PLAT4_ARCH=amd64` (or `arm64`): build/registry and PostgreSQL restore checks after the additional setup in `experiments/durable-execution/BUILD_DATA.md`.

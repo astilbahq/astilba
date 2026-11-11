@@ -74,6 +74,16 @@ SELECT EXISTS(SELECT 1 FROM execution_operations WHERE workspace_id = @workspace
     AND (command->'network'->'manifest'->>'generation')::bigint = @generation::bigint
     AND state NOT IN ('succeeded','failed','cancelled') AND created_at > now()-interval '30 seconds');
 
+-- name: NetworkManifestMissed :one
+-- A whole manifest at this generation that ended without landing, for instance because the host had
+-- already taken a later command, carried no removal there. Another may not land either, so the
+-- removal goes first, on its own.
+SELECT EXISTS(SELECT 1 FROM execution_operations WHERE workspace_id = @workspace_id AND server_id = @server_id AND kind='network'
+    AND command->'network'->>'action'='configure'
+    AND command->'network'->>'membershipId' = @membership_id::text
+    AND (command->'network'->'manifest'->>'generation')::bigint = @generation::bigint
+    AND state IN ('failed','cancelled'));
+
 -- name: NoteRefusedNetworkConfigure :exec
 -- Only for the member's latest command: anything newer has not been refused.
 UPDATE network_members SET note = @note

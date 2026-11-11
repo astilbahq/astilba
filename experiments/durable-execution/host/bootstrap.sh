@@ -29,14 +29,14 @@ case "$(uname -m)" in
     docker_arch=x86_64
     docker_sha=9ac225999fd5e863f7694c728ef23d480616b1e5639328fa309befd4243d69eb
     compose_sha=47737f4236e6d3ccea7291995203f8f018058783b4c3a9469119811a0b5db8c0
-    go_sha=65efbc80fdc1fa2cd2631cad5b481777a68e8725f34e89f50fc6ac714e379b40
+    go_sha=7226736c2339719cda28fbf3a54d71aa63bcefe376e98cef00034268dab24840
     ;;
   aarch64)
     arch=arm64
     docker_arch=aarch64
     docker_sha=873b3e0207857c3b2f28392fb922f3ea6efe37620c16d4d4aaf2fef409c90b73
     compose_sha=42cfa75f51ad0ccf290bad37899e0038a8c10a0069e85233ecc1d53e3ff1347d
-    go_sha=a06e99309dbcbdca1a8ccd2282c3ee146e55930886e26b4f1193269587165f49
+    go_sha=3392582988a273a87ab5043ee1b2c9c17a2c3c00580bf9326c47a2e0aaaeac92
     ;;
   *) echo "Only amd64 and arm64 are in this experiment." >&2; exit 1 ;;
 esac
@@ -54,7 +54,7 @@ fetch() {
 }
 fetch "https://download.docker.com/linux/static/stable/$docker_arch/docker-29.9.2.tgz" docker.tgz "$docker_sha"
 fetch "https://github.com/docker/compose/releases/download/v5.6.1/docker-compose-linux-$docker_arch" compose "$compose_sha"
-fetch "https://go.dev/dl/go1.27.3.linux-$arch.tar.gz" go.tgz "$go_sha"
+fetch "https://go.dev/dl/go1.27.4.linux-$arch.tar.gz" go.tgz "$go_sha"
 install -d -m 0755 "$base/bin" "$base/cli-plugins"
 tar -xzf "$scratch/docker.tgz" -C "$scratch"
 install -m 0755 "$scratch"/docker/* "$base/bin/"

@@ -40,6 +40,7 @@ type AlertDelivery struct {
 	Attempts         int32     `json:"attempts"`
 	NextAttemptAt    time.Time `json:"next_attempt_at"`
 	CreatedAt        time.Time `json:"created_at"`
+	Failure          string    `json:"failure"`
 }
 
 type AlertSetting struct {

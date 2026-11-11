@@ -97,6 +97,23 @@ func (s *Service) transformCredential(table string, row Row, ws uuid.UUID, expor
 	clear(value)
 	return nil
 }
+
+// AdmitExport refuses what Export would refuse before reading the workspace: an account that
+// may not export it, or a workspace with a reservation. A request is refused this way before it
+// waits for the archive turn, and Export checks again once it has the turn.
+func (s *Service) AdmitExport(ctx context.Context, p store.Principal, ws uuid.UUID) error {
+	return s.Store.InWorkspaceSnapshot(ctx, p, ws, func(_ pgx.Tx, q *db.Queries, _ store.Workspace) error {
+		reserved, err := q.WorkspaceHasReservations(ctx, ws)
+		if err != nil {
+			return err
+		}
+		if reserved {
+			return domain.Conflict
+		}
+		return nil
+	})
+}
+
 func (s *Service) Export(ctx context.Context, p store.Principal, ws uuid.UUID, passphrase string) ([]byte, error) {
 	archive := Archive{Version: 6, Workspace: ws, CreatedAt: time.Now().UTC(), Tables: map[string][]Row{}}
 	e := s.Store.InWorkspaceSnapshot(ctx, p, ws, func(tx pgx.Tx, q *db.Queries, w store.Workspace) error {

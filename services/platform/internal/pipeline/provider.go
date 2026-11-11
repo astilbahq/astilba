@@ -106,6 +106,9 @@ type ProviderError struct{ Status int }
 
 var errProviderResponseSize = errors.New("provider response exceeds its limit")
 
+// ErrBranchNotFound is Resolve's error when the repository answers and has no such branch.
+var ErrBranchNotFound = errors.New("branch not found")
+
 func (e *ProviderError) Error() string { return fmt.Sprintf("provider returned HTTP %d", e.Status) }
 func (p *Provider) request(ctx context.Context, method, path string, body, out any) error {
 	var reader io.Reader
@@ -209,6 +212,10 @@ func (p *Provider) Resolve(ctx context.Context, branch string) (string, error) {
 		} `json:"commit"`
 	}
 	if err := p.request(ctx, "GET", endpoint, nil, &data); err != nil {
+		var status *ProviderError
+		if errors.As(err, &status) && status.Status == http.StatusNotFound {
+			return "", fmt.Errorf("%w: %w", ErrBranchNotFound, err)
+		}
 		return "", err
 	}
 	// GitLab and Gitea name a branch's commit id, and GitHub names it sha.

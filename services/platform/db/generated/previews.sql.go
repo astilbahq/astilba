@@ -11,32 +11,52 @@ import (
 	"github.com/google/uuid"
 )
 
+const delayPreviewDiscovery = `-- name: DelayPreviewDiscovery :exec
+UPDATE preview_policies SET next_discovery_at = now() + interval '5 minutes' WHERE workspace_id = $1 AND id = $2
+`
+
+type DelayPreviewDiscoveryParams struct {
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ID          uuid.UUID `json:"id"`
+}
+
+// Discovery waits a cycle while its workspace has a backlog of request jobs.
+func (q *Queries) DelayPreviewDiscovery(ctx context.Context, arg DelayPreviewDiscoveryParams) error {
+	_, err := q.db.Exec(ctx, delayPreviewDiscovery, arg.WorkspaceID, arg.ID)
+	return err
+}
+
 const duePreviewPolicies = `-- name: DuePreviewPolicies :many
 WITH due AS (
     SELECT id,next_discovery_at,row_number() OVER (PARTITION BY workspace_id ORDER BY next_discovery_at,id) AS turn
     FROM preview_policies WHERE enabled AND next_discovery_at<=now()
 )
-SELECT p.id FROM preview_policies p JOIN due ON due.id=p.id
+SELECT p.id,p.workspace_id FROM preview_policies p JOIN due ON due.id=p.id
 WHERE p.enabled AND p.next_discovery_at<=now()
 ORDER BY due.turn,due.next_discovery_at,due.id LIMIT 10 FOR UPDATE OF p SKIP LOCKED
 `
 
+type DuePreviewPoliciesRow struct {
+	ID          uuid.UUID `json:"id"`
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+}
+
 // unscoped: the preview sweep spans workspaces. It takes every workspace's oldest due
 // policy before any workspace's second, so a backlog in one does not take another's slots.
 // The outer filter applies to the row as locked, which may have changed since the snapshot.
-func (q *Queries) DuePreviewPolicies(ctx context.Context) ([]uuid.UUID, error) {
+func (q *Queries) DuePreviewPolicies(ctx context.Context) ([]DuePreviewPoliciesRow, error) {
 	rows, err := q.db.Query(ctx, duePreviewPolicies)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []uuid.UUID{}
+	items := []DuePreviewPoliciesRow{}
 	for rows.Next() {
-		var id uuid.UUID
-		if err := rows.Scan(&id); err != nil {
+		var i DuePreviewPoliciesRow
+		if err := rows.Scan(&i.ID, &i.WorkspaceID); err != nil {
 			return nil, err
 		}
-		items = append(items, id)
+		items = append(items, i)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -49,27 +69,32 @@ WITH due AS (
     SELECT id,next_check_at,row_number() OVER (PARTITION BY workspace_id ORDER BY next_check_at,id) AS turn
     FROM preview_requests WHERE state<>'deleted' AND next_check_at<=now()
 )
-SELECT r.id FROM preview_requests r JOIN due ON due.id=r.id
+SELECT r.id,r.workspace_id FROM preview_requests r JOIN due ON due.id=r.id
 WHERE r.state<>'deleted' AND r.next_check_at<=now()
 ORDER BY due.turn,due.next_check_at,due.id LIMIT 20 FOR UPDATE OF r SKIP LOCKED
 `
 
+type DuePreviewRequestsRow struct {
+	ID          uuid.UUID `json:"id"`
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+}
+
 // unscoped: the preview sweep spans workspaces. It takes every workspace's oldest due
 // request before any workspace's second, so a backlog in one does not take another's slots.
 // The outer filter applies to the row as locked, which may have changed since the snapshot.
-func (q *Queries) DuePreviewRequests(ctx context.Context) ([]uuid.UUID, error) {
+func (q *Queries) DuePreviewRequests(ctx context.Context) ([]DuePreviewRequestsRow, error) {
 	rows, err := q.db.Query(ctx, duePreviewRequests)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []uuid.UUID{}
+	items := []DuePreviewRequestsRow{}
 	for rows.Next() {
-		var id uuid.UUID
-		if err := rows.Scan(&id); err != nil {
+		var i DuePreviewRequestsRow
+		if err := rows.Scan(&i.ID, &i.WorkspaceID); err != nil {
 			return nil, err
 		}
-		items = append(items, id)
+		items = append(items, i)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err

@@ -29,7 +29,8 @@ type githubFanoutArgs struct {
 	Delivery string `json:"delivery"`
 }
 
-func (githubFanoutArgs) Kind() string { return "platform_github_app_fanout_v1" }
+func (githubFanoutArgs) Kind() string                 { return "platform_github_app_fanout_v1" }
+func (githubFanoutArgs) InsertOpts() river.InsertOpts { return river.InsertOpts{Queue: gitQueue} }
 
 type githubReconcileArgs struct {
 	Workspace  uuid.UUID `json:"workspace"`
@@ -37,7 +38,8 @@ type githubReconcileArgs struct {
 	Generation int64     `json:"generation"`
 }
 
-func (githubReconcileArgs) Kind() string { return "platform_github_app_reconcile_v1" }
+func (githubReconcileArgs) Kind() string                 { return "platform_github_app_reconcile_v1" }
+func (githubReconcileArgs) InsertOpts() river.InsertOpts { return river.InsertOpts{Queue: gitQueue} }
 func (s *Service) ReceiveGitHub(ctx context.Context, headers http.Header, body []byte) error {
 	if s.GitHub == nil || s.GitHub.VerifyWebhook(headers, body) != nil {
 		return domain.Forbidden
@@ -196,7 +198,7 @@ func (w *githubFanoutWorker) Work(ctx context.Context, job *river.Job[githubFano
 			}
 		} else {
 			// Separate durable events cannot be lost behind an already-running check.
-			if _, e = s.Queue.InsertTx(ctx, tx, a, &river.InsertOpts{MaxAttempts: 100}); e != nil {
+			if e = s.insertGitJob(ctx, tx, workspaceMetadata{Workspace: a.Workspace}, a, river.InsertOpts{MaxAttempts: 100}, false); e != nil {
 				return e
 			}
 		}
@@ -225,6 +227,9 @@ type githubReconcileWorker struct {
 func (w *githubReconcileWorker) Work(ctx context.Context, job *river.Job[githubReconcileArgs]) error {
 	s := w.service
 	a := job.Args
+	if e := s.workspaceTurn(ctx, job.JobRow, a.Workspace); e != nil {
+		return e
+	}
 	if s.GitHub == nil {
 		return errors.New("GitHub App is not configured")
 	}

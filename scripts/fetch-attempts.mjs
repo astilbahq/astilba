@@ -153,19 +153,17 @@ async function fetchBytes(url, idleMs) {
   }
 }
 
-// A stall repeats and a slow download finishes. A file that arrives and fails its
-// hash stops at once, because a download did not fail.
-export async function downloadVerified(
-  url,
-  algorithm,
-  expected,
-  { idleMs = 60_000, ...options } = {},
-) {
-  const bytes = await withFetchAttempts(
-    `Download from ${url}`,
-    () => fetchBytes(url, idleMs),
-    { delay: outlastOutage, ...options },
-  );
+// A stall repeats and a slow download finishes.
+export const download = (url, { idleMs = 60_000, ...options } = {}) =>
+  withFetchAttempts(`Download from ${url}`, () => fetchBytes(url, idleMs), {
+    delay: outlastOutage,
+    ...options,
+  });
+
+// A file that arrives and fails its hash stops at once, because a download did not
+// fail.
+export async function downloadVerified(url, algorithm, expected, options) {
+  const bytes = await download(url, options);
   const actual = createHash(algorithm).update(bytes).digest("hex");
   if (actual !== expected)
     throw new Error(

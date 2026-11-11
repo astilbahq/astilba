@@ -60,6 +60,25 @@ func encryptedJournalRows(t *testing.T, dir string) map[string][]byte {
 	return out
 }
 
+// unchangedRows requires every earlier row to be byte-for-byte the same, except the journal's own
+// bookkeeping, which a restart writes: where it closed, and what it may have forgotten.
+func unchangedRows(before, after map[string][]byte) bool {
+	bookkeeping := func(k string) bool {
+		return k == "identity:closed-at" || strings.HasPrefix(k, "generations:forgotten:")
+	}
+	for k, v := range before {
+		if !bookkeeping(k) && !bytes.Equal(after[k], v) {
+			return false
+		}
+	}
+	for k := range after {
+		if _, ok := before[k]; !ok && !bookkeeping(k) {
+			return false
+		}
+	}
+	return true
+}
+
 func TestLocalStateMigrationPreservesKeysCiphertextAndRecoveryEvidence(t *testing.T) {
 	var expected Config
 	var capsule deployment.RecoveryDescriptor
@@ -133,7 +152,7 @@ func TestLocalStateMigrationPreservesKeysCiphertextAndRecoveryEvidence(t *testin
 		}
 		j.Close()
 		after := encryptedJournalRows(t, dir)
-		if deployment.Hash(before) != deployment.Hash(after) {
+		if !unchangedRows(before, after) {
 			t.Fatal("migration or restart rewrote encrypted journal records")
 		}
 	}
@@ -237,7 +256,7 @@ func TestLocalStateMigrationSurvivesProcessCrash(t *testing.T) {
 				t.Fatal("crashed migration could not reopen", err)
 			}
 			j.Close()
-			if deployment.Hash(before) != deployment.Hash(encryptedJournalRows(t, dir)) {
+			if !unchangedRows(before, encryptedJournalRows(t, dir)) {
 				t.Fatal("crash/restart changed ciphertext")
 			}
 		})

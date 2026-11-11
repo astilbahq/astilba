@@ -234,6 +234,36 @@ func (q *Queries) NetworkManifestLanding(ctx context.Context, arg NetworkManifes
 	return exists, err
 }
 
+const networkManifestMissed = `-- name: NetworkManifestMissed :one
+SELECT EXISTS(SELECT 1 FROM execution_operations WHERE workspace_id = $1 AND server_id = $2 AND kind='network'
+    AND command->'network'->>'action'='configure'
+    AND command->'network'->>'membershipId' = $3::text
+    AND (command->'network'->'manifest'->>'generation')::bigint = $4::bigint
+    AND state IN ('failed','cancelled'))
+`
+
+type NetworkManifestMissedParams struct {
+	WorkspaceID  uuid.UUID `json:"workspace_id"`
+	ServerID     uuid.UUID `json:"server_id"`
+	MembershipID string    `json:"membership_id"`
+	Generation   int64     `json:"generation"`
+}
+
+// A whole manifest at this generation that ended without landing, for instance because the host had
+// already taken a later command, carried no removal there. Another may not land either, so the
+// removal goes first, on its own.
+func (q *Queries) NetworkManifestMissed(ctx context.Context, arg NetworkManifestMissedParams) (bool, error) {
+	row := q.db.QueryRow(ctx, networkManifestMissed,
+		arg.WorkspaceID,
+		arg.ServerID,
+		arg.MembershipID,
+		arg.Generation,
+	)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
 const noteRefusedNetworkConfigure = `-- name: NoteRefusedNetworkConfigure :exec
 UPDATE network_members SET note = $1
 WHERE workspace_id = $2 AND server_id = $3 AND membership_id = $4 AND generation = $5

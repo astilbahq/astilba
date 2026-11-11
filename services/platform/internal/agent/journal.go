@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -68,11 +69,28 @@ func openJournal(dir string, point func(string) error) (*Journal, error) {
 	if err = j.openLocalKeys(point); err != nil {
 		return fail(err)
 	}
+	// Only a clean close vouches that nothing wrote since: not an earlier agent, which forgets
+	// commands without recording it, and not this one cut short.
+	clean := false
+	if err = db.View(func(tx *bolt.Tx) error {
+		var closed int64
+		e := j.get(tx, "identity", "closed-at", &closed)
+		clean = e == nil && closed == int64(tx.ID())
+		if errors.Is(e, os.ErrNotExist) {
+			return nil
+		}
+		return e
+	}); err != nil {
+		return fail(err)
+	}
 	err = db.Update(func(tx *bolt.Tx) error {
 		for _, b := range []string{"identity", "operations", "generations", "units", "routing", "schedules", "schedules-v2", "upgrades", "releases", "preview-cleanups", "cross-host", "distributed-fences", "retained-pools", "recovery-heads", "recovery-checkpoints", "recovery-authority", "recovery-gc", "troubleshooting-shells"} {
 			if _, e := tx.CreateBucketIfNotExists([]byte(b)); e != nil {
 				return e
 			}
+		}
+		if !clean {
+			return j.seedForgotten(tx)
 		}
 		return nil
 	})
@@ -95,7 +113,42 @@ func openJournal(dir string, point func(string) error) (*Journal, error) {
 	}
 	return j, nil
 }
-func (j *Journal) Close() error { return j.db.Close() }
+
+// Close records the transaction it closes at, so the next open can tell whether anything else
+// wrote in between. Every later commit, even an empty one, moves past it.
+func (j *Journal) Close() error {
+	mark := j.db.Update(func(tx *bolt.Tx) error { return j.put(tx, "identity", "closed-at", int64(tx.ID())) })
+	return errors.Join(mark, j.db.Close())
+}
+
+// seedForgotten raises each forgotten ceiling to its counter, because any command up to it may have
+// been forgotten without a record.
+func (j *Journal) seedForgotten(tx *bolt.Tx) error {
+	counters := map[string]int64{}
+	if e := tx.Bucket([]byte("generations")).ForEach(func(k, _ []byte) error {
+		if strings.HasPrefix(string(k), "forgotten:") {
+			return nil
+		}
+		var generation int64
+		if e := j.get(tx, "generations", string(k), &generation); e != nil {
+			return e
+		}
+		counters[string(k)] = generation
+		return nil
+	}); e != nil {
+		return e
+	}
+	for scope, generation := range counters {
+		var ceiling int64
+		if e := j.get(tx, "generations", "forgotten:"+scope, &ceiling); e != nil && !errors.Is(e, os.ErrNotExist) {
+			return e
+		}
+		if e := j.put(tx, "generations", "forgotten:"+scope, max(ceiling, generation)); e != nil {
+			return e
+		}
+	}
+	return nil
+}
 func (j *Journal) get(tx *bolt.Tx, bucket, key string, out any) error {
 	bucketValue := tx.Bucket([]byte(bucket))
 	if bucketValue == nil {
@@ -214,6 +267,55 @@ func sameCommand(a, b api.ExecutionCommand) bool {
 	bj, _ := stablejson.Marshal(b)
 	return bytes.Equal(aj, bj)
 }
+
+// supersededNote ends a command the host received only after a later one for the same scope.
+const supersededNote = "This host had already taken a later command for the same scope, so it did not run this one and changed nothing."
+
+// forgottenCancelNote ends a cancelled command that this host may have run before it lost the record.
+const forgottenCancelNote = "Cancelled without running it now. This host had already taken a later command for the same scope and has no record of this one, so an earlier delivery may have run it."
+
+// generationScope names the counter that orders a command against others of its kind.
+func generationScope(c api.ExecutionCommand) string {
+	switch {
+	case recoveryOpen(c):
+		return "recovery-open:" + c.ParentId.String()
+	case recoveryClose(c):
+		return "recovery-close:" + c.ParentId.String()
+	case c.Kind == "network":
+		return "host-network"
+	case c.Kind == "update":
+		return "agent-update"
+	}
+	return c.EnvironmentId.String()
+}
+
+// forget deletes a finished record and remembers the highest generation forgotten in its scope. A
+// command delivered again at or below it may have run here before, so it can't be called unrun.
+// Restrictions don't count: one is always taken, so none is ever called unrun. Nor does a record
+// from an earlier controller: none of its commands is taken again, and its generations may be
+// above anything the current one has issued. The ceiling sits beside the counters, so whatever
+// resets them resets it too.
+func (j *Journal) forget(tx *bolt.Tx, key []byte, r Record) error {
+	var cfg Config
+	if e := j.get(tx, "identity", "config", &cfg); e != nil && !errors.Is(e, os.ErrNotExist) {
+		return e
+	}
+	if networkRestriction(r.Command) || commandGeneration(r.Command) != cfg.ControllerGeneration {
+		return tx.Bucket([]byte("operations")).Delete(key)
+	}
+	scope := "forgotten:" + generationScope(r.Command)
+	var ceiling int64
+	if e := j.get(tx, "generations", scope, &ceiling); e != nil && !errors.Is(e, os.ErrNotExist) {
+		return e
+	}
+	if r.Command.Generation > ceiling {
+		if e := j.put(tx, "generations", scope, r.Command.Generation); e != nil {
+			return e
+		}
+	}
+	return tx.Bucket([]byte("operations")).Delete(key)
+}
+
 func (j *Journal) Accept(c api.ExecutionCommand) (Record, error) {
 	var out Record
 	err := j.db.Update(func(tx *bolt.Tx) error {
@@ -234,8 +336,15 @@ func (j *Journal) Accept(c api.ExecutionCommand) (Record, error) {
 		if err := j.crossHostAdmission(tx, c); err != nil {
 			return err
 		}
+		// Read before this acceptance forgets anything: the record it forgets isn't this command's.
+		key := generationScope(c)
+		var forgotten int64
+		if e := j.get(tx, "generations", "forgotten:"+key, &forgotten); e != nil && !errors.Is(e, os.ErrNotExist) {
+			return e
+		}
 		count := 0
-		var oldest string
+		var oldest Record
+		var oldestKey string
 		if e := tx.Bucket([]byte("operations")).ForEach(func(k, v []byte) error {
 			var r Record
 			if e := j.get(tx, "operations", string(k), &r); e != nil {
@@ -252,41 +361,48 @@ func (j *Journal) Accept(c api.ExecutionCommand) (Record, error) {
 				return nil
 			}
 			count++
-			if oldest == "" && r.Acknowledged {
-				oldest = string(k)
+			if oldestKey == "" && r.Acknowledged {
+				oldest, oldestKey = r, string(k)
 			}
 			return nil
 		}); e != nil {
 			return e
 		}
 		if count >= 128 {
-			if oldest == "" {
+			if oldestKey == "" {
 				return errors.New("journal contains too many unacknowledged commands")
 			}
-			if e := tx.Bucket([]byte("operations")).Delete([]byte(oldest)); e != nil {
+			if e := j.forget(tx, []byte(oldestKey), oldest); e != nil {
 				return e
 			}
 		}
 		var generation int64
-		key := c.EnvironmentId.String()
-		if c.Kind == "update" {
-			key = "agent-update"
-		}
-		if c.Kind == "network" {
-			key = "host-network"
-		}
-		if recoveryOpen(c) {
-			key = "recovery-open:" + c.ParentId.String()
-		}
-		if recoveryClose(c) {
-			key = "recovery-close:" + c.ParentId.String()
-		}
 		e := j.get(tx, "generations", key, &generation)
 		if e != nil && !errors.Is(e, os.ErrNotExist) {
 			return e
 		}
 		if c.Generation <= generation && !networkRestriction(c) {
-			return errors.New("stale generation")
+			// This host ran it and has since forgotten it, or never ran it. Only a restored management
+			// that wasn't fenced delivers a finished command again, and its outcome is unknown here.
+			// Management cancelling it needs only that it doesn't run now, and its parent can then
+			// end and release its peers.
+			if c.Generation <= forgotten {
+				if !c.CancelRequested {
+					return errors.New("stale generation")
+				}
+				out = Record{Command: c, Report: api.AgentReport{Id: c.Id, Generation: c.Generation, PlanHash: c.PlanHash, Sequence: 1, State: "cancelled", Steps: []api.ExecutionStep{}, Note: forgottenCancelNote}, Checkpoint: "superseded"}
+				return j.put(tx, "operations", c.Id.String(), out)
+			}
+			// A later command for the same scope reached this host first, so this one must never run.
+			// Refusing it would leave management delivering it on every poll, and whatever waits on
+			// it, such as a deployment holding its peers, waiting for good. It ends here instead,
+			// untouched, and the counter keeps the later command's value. Restrictions never end
+			// this way: one is always taken, whatever its generation.
+			out = Record{Command: c, Report: api.AgentReport{Id: c.Id, Generation: c.Generation, PlanHash: c.PlanHash, Sequence: 1, State: "failed", Steps: []api.ExecutionStep{}, Note: supersededNote}, Checkpoint: "superseded"}
+			if c.CancelRequested {
+				out.Report.State = "cancelled"
+			}
+			return j.put(tx, "operations", c.Id.String(), out)
 		}
 		if e := j.put(tx, "generations", key, max(generation, c.Generation)); e != nil {
 			return e

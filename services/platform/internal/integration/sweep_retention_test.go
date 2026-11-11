@@ -5,10 +5,12 @@ import (
 	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/billing"
 	"github.com/astilbahq/astilba/services/platform/internal/portability"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
@@ -113,26 +115,18 @@ func TestPreviewSweepTakesEveryWorkspacesOldestFirst(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	contains := func(ids []uuid.UUID, table string) bool {
-		t.Helper()
-		var found bool
-		if err := f.st.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM `+table+` WHERE workspace_id=$1 AND id=ANY($2))`, other, ids).Scan(&found); err != nil {
-			t.Fatal(err)
-		}
-		return found
-	}
 	policies, err := f.st.Queries.DuePreviewPolicies(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(policies) != 10 || !contains(policies, "preview_policies") {
+	if len(policies) != 10 || !slices.ContainsFunc(policies, func(p db.DuePreviewPoliciesRow) bool { return p.WorkspaceID == other }) {
 		t.Fatalf("selected %d policies without the other workspace's", len(policies))
 	}
 	requests, err := f.st.Queries.DuePreviewRequests(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(requests) != 20 || !contains(requests, "preview_requests") {
+	if len(requests) != 20 || !slices.ContainsFunc(requests, func(r db.DuePreviewRequestsRow) bool { return r.WorkspaceID == other }) {
 		t.Fatalf("selected %d requests without the other workspace's", len(requests))
 	}
 }

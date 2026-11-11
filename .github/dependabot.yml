@@ -1,52 +1,31 @@
 version: 2
-# Version updates wait a week for a bad release to be caught. Security updates do not.
+# npm and Go modules get security updates only: routine bumps follow the
+# upgrade-dependencies skill in .claude/skills, which makes the coupled edits Dependabot
+# can't and covers every Go module and tool. A limit of 0 stops version updates; security
+# updates have their own limit, and follow only the ignore rules that name `versions`, so
+# the rules below use version ranges rather than update types.
+# Version updates of images and actions wait a week for a bad release to be caught.
 updates:
   - package-ecosystem: gomod
     directory: /services/platform
     schedule:
       interval: weekly
-    cooldown:
-      default-days: 7
-    groups:
-      # Majors stay out so each one gets its own review.
-      platform-go:
-        patterns: ["*"]
-        update-types: [minor, patch]
+    open-pull-requests-limit: 0
   # pnpm-workspace.yaml brings the other workspace packages into this entry.
   - package-ecosystem: npm
     directory: /
     ignore:
-      # @types/node's major follows the Node version pinned in package.json's engines.
+      # @types/node's major follows the Node version pinned in package.json's engines;
+      # move this range when engines moves.
       - dependency-name: "@types/node"
-        update-types: ["version-update:semver-major"]
+        versions: [">=25"]
       # pnpm 12 ships as a wrapper with optional dependencies, which scripts/install-pnpm.mjs
       # refuses because it checks only one tarball. Moving to it means changing that script.
       - dependency-name: pnpm
-        update-types: ["version-update:semver-major"]
+        versions: [">=12"]
     schedule:
       interval: weekly
-    cooldown:
-      default-days: 7
-    groups:
-      # These can need an edit Dependabot won't make: the Playwright image in the workflows,
-      # the Vite+ pins and allowBuilds in pnpm-workspace.yaml, packageManager in package.json,
-      # or regenerated API types.
-      # make check-app fails until that's done. They stay apart so the rest can land.
-      needs-review:
-        patterns:
-          - "@pandacss/*"
-          - "@playwright/test"
-          - "@storybook/*"
-          - i18next-cli
-          - openapi-typescript
-          - pnpm
-          - storybook
-          - vite-plus
-        update-types: [minor, patch]
-      # Majors stay out so each one gets its own review.
-      npm-dependencies:
-        patterns: ["*"]
-        update-types: [minor, patch]
+    open-pull-requests-limit: 0
   # Alpine is the shipped image's base, and its CA bundle is the one the image trusts. The
   # Go and Node build images stay in step with go.mod, engines and CI's pins, so they change
   # by hand. Dependabot has no Docker security updates, so Alpine fixes wait here too.
@@ -63,11 +42,7 @@ updates:
     directory: /experiments/durable-execution
     schedule:
       interval: weekly
-    cooldown:
-      default-days: 7
-    groups:
-      go-dependencies:
-        patterns: ["*"]
+    open-pull-requests-limit: 0
   - package-ecosystem: github-actions
     directory: /
     schedule:
