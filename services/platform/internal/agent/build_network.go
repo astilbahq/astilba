@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"maps"
@@ -233,6 +234,19 @@ func (e *Engine) prepareBuildNetwork(ctx context.Context, c api.ExecutionCommand
 
 // buildPolicyUnsupported names what a host lacks to build, and where the fix is described.
 const buildPolicyUnsupported = "Builds need nftables " + hostnetwork.NFTVersion + " and netlink access for the agent; see the build network host requirements in the Git builds documentation."
+
+// dockerFirewallOffNote warns that builds would rely on firewall rules Docker isn't writing.
+const dockerFirewallOffNote = "Docker's iptables setting is off in /etc/docker/daemon.json, so it doesn't keep container networks apart. Build servers need it on."
+
+// dockerFirewallOff reports whether a Docker daemon configuration turns off its firewall
+// rules, which keep one bridge's containers from another's, builds' included. A daemon flag
+// can do the same; only the configuration file is read.
+func dockerFirewallOff(raw []byte) bool {
+	var config struct {
+		IPTables *bool `json:"iptables"`
+	}
+	return json.Unmarshal(raw, &config) == nil && config.IPTables != nil && !*config.IPTables
+}
 
 // buildRefusalNote says how often the policy refused this build, so an owner can tell a
 // blocked private mirror from a failing one.

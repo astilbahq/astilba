@@ -165,6 +165,8 @@ sudo systemctl daemon-reload && sudo systemctl restart astilba-agent
 
 A host prepared for [cross-host networking](agent.md#optional-cross-host-networking) already has both.
 
+A build server also needs Docker to write its firewall rules, as it does by default. The policy refuses the container networks that exist when a build starts, and Docker's own rules keep a build away from containers on networks created during it. With `"iptables": false` in Docker's configuration that second guard is gone, so such a server isn't supported for builds; the preflight warns when `/etc/docker/daemon.json` sets it.
+
 Docker's forwarding rules come before ufw's, so builds reach the internet, their Git provider and allowed destinations on the LAN with ufw's `DEFAULT_FORWARD_POLICY="DROP"`. ufw's `deny incoming` also applies to builds' DNS queries to a resolver that listens on the runner itself, other than systemd-resolved's stub, which builds don't use. Such a resolver needs a matching rule: `sudo ufw allow in on astilba-build0 to any port 53`. The agent's policy still refuses everything else from builds to the runner.
 
 ## Verification

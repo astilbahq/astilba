@@ -209,3 +209,12 @@ esac
 		t.Fatalf("combined phase logs are not reportable: bytes=%d, build=%v", len(decoded.Logs), buildErr)
 	}
 }
+
+// Builds rely on Docker keeping bridges apart, so an owner who turned that off is told.
+func TestDockerFirewallOff(t *testing.T) {
+	for raw, want := range map[string]bool{`{"iptables": false}`: true, `{"iptables": true}`: false, `{"log-driver": "local"}`: false, `not json`: false} {
+		if dockerFirewallOff([]byte(raw)) != want {
+			t.Errorf("%s: want %v", raw, want)
+		}
+	}
+}

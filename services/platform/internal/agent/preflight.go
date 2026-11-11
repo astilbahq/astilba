@@ -99,6 +99,9 @@ func Preflight(ctx context.Context, docker *client.Client, version, dir string, 
 		h.Preflight.Notes = append(h.Preflight.Notes, buildPolicyUnsupported)
 	}
 	build := h.Preflight.Ready && buildNetwork && dockerFreeBytes(ctx, docker) >= 4<<30
+	if raw, err := os.ReadFile("/etc/docker/daemon.json"); build && err == nil && dockerFirewallOff(raw) {
+		h.Preflight.Notes = append(h.Preflight.Notes, dockerFirewallOffNote)
+	}
 	if runtime.GOOS == "linux" && instanceMetadataAnswers(ctx, instanceMetadataEndpoints, time.Now()) {
 		h.Preflight.Notes = append(h.Preflight.Notes, instanceMetadataNote)
 	}
