@@ -54,6 +54,16 @@ func (s *Service) SaveTroubleshootingPolicy(ctx context.Context, p store.Princip
 		if !exists {
 			return domain.NotFound
 		}
+		state, err := q.EnvironmentState(ctx, db.EnvironmentStateParams{WorkspaceID: ws, ID: env})
+		if err != nil {
+			return err
+		}
+		// Turning sessions off stays possible; retirement already did.
+		if in.Enabled {
+			if err = requireActive(state); err != nil {
+				return err
+			}
+		}
 		old, err := q.GetTroubleshootingPolicy(ctx, db.GetTroubleshootingPolicyParams{WorkspaceID: ws, EnvironmentID: env})
 		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return err
@@ -97,6 +107,9 @@ func (s *Service) OpenTroubleshootingSession(ctx context.Context, p store.Princi
 		}
 		row, err := q.TroubleshootingEnvironment(ctx, db.TroubleshootingEnvironmentParams{WorkspaceID: ws, ProjectID: pid, EnvironmentID: env})
 		if err != nil {
+			return err
+		}
+		if err = requireActive(row.State); err != nil {
 			return err
 		}
 		policy, err := q.GetTroubleshootingPolicy(ctx, db.GetTroubleshootingPolicyParams{WorkspaceID: ws, EnvironmentID: env})

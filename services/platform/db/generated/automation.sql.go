@@ -17,6 +17,7 @@ SELECT c.workspace_id,e.project_id,c.environment_id,c.creator_id,c.secret_hash,c
 FROM automation_credentials c JOIN environments e ON e.workspace_id=c.workspace_id AND e.id=c.environment_id
 JOIN accounts a ON a.id=c.creator_id JOIN memberships m ON m.workspace_id=c.workspace_id AND m.account_id=c.creator_id
 WHERE c.id = $1 AND c.revoked_at IS NULL AND c.expires_at>clock_timestamp() AND c.auth_version=a.auth_version AND m.role='owner'
+    AND e.state='active'
 `
 
 type AuthenticateAutomationCredentialRow struct {
@@ -51,8 +52,10 @@ const automationCredentialAdmission = `-- name: AutomationCredentialAdmission :o
 SELECT (c.mfa_approved AND a.totp_secret IS NOT NULL)::boolean AS mfa
 FROM automation_credentials c JOIN accounts a ON a.id=c.creator_id
 JOIN memberships m ON m.workspace_id=c.workspace_id AND m.account_id=c.creator_id
+JOIN environments e ON e.workspace_id=c.workspace_id AND e.id=c.environment_id
 WHERE c.id = $1 AND c.workspace_id = $2 AND c.environment_id = $3 AND c.creator_id = $4
     AND c.revoked_at IS NULL AND c.expires_at>clock_timestamp() AND c.auth_version=a.auth_version AND m.role='owner'
+    AND e.state='active'
 `
 
 type AutomationCredentialAdmissionParams struct {

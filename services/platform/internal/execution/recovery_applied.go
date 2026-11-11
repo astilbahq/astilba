@@ -209,7 +209,9 @@ func committedApplied(c api.ExecutionCommand, e appliedEvidence) (appliedTuple, 
 			return appliedTuple{}, "", ""
 		}
 		if e.Runtime.Kind == "removed" {
-			if body.Action != "preview-cleanup" || body.Plan.Preview == nil || body.Plan.Validate(false) != nil || !Terminal(e.State) {
+			cleanup := body.Action == "preview-cleanup" && body.Plan.Preview != nil
+			retirement := body.Action == retireAction && body.Plan.Preview == nil
+			if !cleanup && !retirement || body.Plan.Validate(false) != nil || !Terminal(e.State) {
 				return appliedTuple{}, "", ""
 			}
 			tuple := appliedTuple{Operation: c.Id}

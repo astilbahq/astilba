@@ -291,17 +291,22 @@ type EmailVerification struct {
 }
 
 type Environment struct {
-	WorkspaceID         uuid.UUID  `json:"workspace_id"`
-	ProjectID           uuid.UUID  `json:"project_id"`
-	ID                  uuid.UUID  `json:"id"`
-	Name                string     `json:"name"`
-	ConfigurationOwner  string     `json:"configuration_owner"`
-	DraftRevisionID     uuid.UUID  `json:"draft_revision_id"`
-	CreatedAt           time.Time  `json:"created_at"`
-	ExecutionGeneration int64      `json:"execution_generation"`
-	AppliedRevisionID   *uuid.UUID `json:"applied_revision_id"`
-	Purpose             string     `json:"purpose"`
-	RuntimeOperationID  *uuid.UUID `json:"runtime_operation_id"`
+	WorkspaceID           uuid.UUID  `json:"workspace_id"`
+	ProjectID             uuid.UUID  `json:"project_id"`
+	ID                    uuid.UUID  `json:"id"`
+	Name                  string     `json:"name"`
+	ConfigurationOwner    string     `json:"configuration_owner"`
+	DraftRevisionID       uuid.UUID  `json:"draft_revision_id"`
+	CreatedAt             time.Time  `json:"created_at"`
+	ExecutionGeneration   int64      `json:"execution_generation"`
+	AppliedRevisionID     *uuid.UUID `json:"applied_revision_id"`
+	Purpose               string     `json:"purpose"`
+	RuntimeOperationID    *uuid.UUID `json:"runtime_operation_id"`
+	State                 string     `json:"state"`
+	RetiredAt             *time.Time `json:"retired_at"`
+	RetiredBy             *uuid.UUID `json:"retired_by"`
+	RetirementOperationID *uuid.UUID `json:"retirement_operation_id"`
+	RetiredWithoutHost    bool       `json:"retired_without_host"`
 }
 
 type EnvironmentLayout struct {

@@ -89,6 +89,9 @@ func (s *Service) SaveBackupPolicy(ctx context.Context, p store.Principal, ws, p
 		if err != nil {
 			return err
 		}
+		if err = requireActive(v.State); err != nil {
+			return err
+		}
 		if v.Server == nil || v.Applied == nil {
 			return domain.Invalid("deployment")
 		}

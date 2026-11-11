@@ -24,7 +24,9 @@ func project(v db.Project) api.Project {
 }
 func environment(v db.GetEnvironmentRow) api.Environment {
 	purpose := api.EnvironmentPurpose(v.Purpose)
-	return api.Environment{Purpose: &purpose, Id: v.ID, ProjectId: v.ProjectID, Name: v.Name, ConfigurationOwner: api.EnvironmentConfigurationOwner(v.ConfigurationOwner), DraftRevisionId: v.DraftRevisionID, AppliedRevisionId: v.AppliedRevisionID, DeploymentUnit: api.DeploymentUnit{Id: v.UnitID, Runtime: api.Docker, ServerId: v.ServerID}}
+	withoutHost := v.RetiredWithoutHost
+	return api.Environment{Purpose: &purpose, Id: v.ID, ProjectId: v.ProjectID, Name: v.Name, ConfigurationOwner: api.EnvironmentConfigurationOwner(v.ConfigurationOwner), DraftRevisionId: v.DraftRevisionID, AppliedRevisionId: v.AppliedRevisionID, DeploymentUnit: api.DeploymentUnit{Id: v.UnitID, Runtime: api.Docker, ServerId: v.ServerID},
+		State: api.EnvironmentState(v.State), RetiredAt: v.RetiredAt, RetiredBy: v.RetiredBy, RetirementOperationId: v.RetirementOperationID, RetiredWithoutHost: &withoutHost}
 }
 func revision(v db.SpecificationRevision) api.Revision {
 	return api.Revision{Id: v.ID, AuthorId: v.AuthorID, CreatedAt: v.CreatedAt, Hash: hex.EncodeToString(v.ContentHash), Specification: jsontext.Value(v.Specification)}
@@ -151,6 +153,10 @@ func (s *Server) envScope(w http.ResponseWriter, r *http.Request, ws, pid, id uu
 		if e != nil {
 			return nil, e
 		}
+		// Rechecked under the workspace lock that retirement also takes.
+		if access.Write && v.State != "active" {
+			return nil, domain.EnvironmentInactive
+		}
 		return fn(q, v)
 	})
 }
@@ -181,6 +187,9 @@ func (s *Server) UpdateDraft(w http.ResponseWriter, r *http.Request, ws, pid, id
 		env, e := q.GetEnvironment(ctx, db.GetEnvironmentParams{WorkspaceID: ws, ProjectID: pid, ID: id})
 		if e != nil {
 			return e
+		}
+		if env.State != "active" {
+			return domain.EnvironmentInactive
 		}
 		// The base revision is checked before anything that compares the save with the environment or
 		// its draft. A credential that may write but not read would otherwise learn from which error it

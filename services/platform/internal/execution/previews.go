@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json/v2"
 	"errors"
+	db "github.com/astilbahq/astilba/services/platform/db/generated"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
@@ -110,6 +111,9 @@ func (s *Service) SavePreviewPolicy(ctx context.Context, p store.Principal, ws, 
 		}
 		if v.Purpose != "preview_template" {
 			return domain.Conflict
+		}
+		if err = requireActive(v.State); err != nil {
+			return err
 		}
 		old, err := scanPreviewPolicy(tx.QueryRow(ctx, "SELECT "+previewPolicyColumns+" FROM preview_policies WHERE workspace_id=$1 AND environment_id=$2", ws, env))
 		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
@@ -242,6 +246,14 @@ func (s *Service) previewOwnerAuthority(ctx context.Context, tx pgx.Tx, p previe
 }
 func (s *Service) previewAuthority(ctx context.Context, tx pgx.Tx, p previewPolicy) error {
 	if !p.Enabled {
+		return domain.Forbidden
+	}
+	// Retirement turns the policy off; this also refuses one turned on while it was retiring.
+	state, err := db.New(tx).EnvironmentState(ctx, db.EnvironmentStateParams{WorkspaceID: p.Workspace, ID: p.Template})
+	if err != nil {
+		return err
+	}
+	if state != "active" {
 		return domain.Forbidden
 	}
 	if err := s.previewOwnerAuthority(ctx, tx, p); err != nil {

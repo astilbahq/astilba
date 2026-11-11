@@ -841,7 +841,7 @@ func (q *Queries) TroubleshootingAdmissionCounts(ctx context.Context, arg Troubl
 }
 
 const troubleshootingEnvironment = `-- name: TroubleshootingEnvironment :one
-SELECT e.applied_revision_id,d.server_id AS primary_server_id,r.specification
+SELECT e.applied_revision_id,e.state,d.server_id AS primary_server_id,r.specification
 FROM environments e
 JOIN deployment_units d ON d.workspace_id = e.workspace_id AND d.environment_id = e.id AND d.primary_unit
 LEFT JOIN specification_revisions r ON r.workspace_id = e.workspace_id AND r.environment_id = e.id AND r.id = e.applied_revision_id
@@ -856,6 +856,7 @@ type TroubleshootingEnvironmentParams struct {
 
 type TroubleshootingEnvironmentRow struct {
 	AppliedRevisionID *uuid.UUID `json:"applied_revision_id"`
+	State             string     `json:"state"`
 	PrimaryServerID   *uuid.UUID `json:"primary_server_id"`
 	Specification     []byte     `json:"specification"`
 }
@@ -863,7 +864,12 @@ type TroubleshootingEnvironmentRow struct {
 func (q *Queries) TroubleshootingEnvironment(ctx context.Context, arg TroubleshootingEnvironmentParams) (TroubleshootingEnvironmentRow, error) {
 	row := q.db.QueryRow(ctx, troubleshootingEnvironment, arg.WorkspaceID, arg.ProjectID, arg.EnvironmentID)
 	var i TroubleshootingEnvironmentRow
-	err := row.Scan(&i.AppliedRevisionID, &i.PrimaryServerID, &i.Specification)
+	err := row.Scan(
+		&i.AppliedRevisionID,
+		&i.State,
+		&i.PrimaryServerID,
+		&i.Specification,
+	)
 	return i, err
 }
 
