@@ -47,6 +47,9 @@ type importedEnvironment struct {
 	server   api.Enrollment
 	deploy   authorityAgent
 	draft    api.Revision
+	// delivered counts the deployment server's operations before the test acts, such as the
+	// reviewed deployment that reviewed records.
+	delivered int
 }
 
 func newImportedEnvironment(t *testing.T, kind string) *importedEnvironment {
@@ -86,6 +89,9 @@ func newImportedEnvironment(t *testing.T, kind string) *importedEnvironment {
 func (i *importedEnvironment) reviewed(t *testing.T) {
 	t.Helper()
 	recordReviewedDeployment(t, i.f, i.ws, i.env.Id, i.draft.Id, i.server.Server.Id, nil)
+	if err := i.f.st.Pool.QueryRow(t.Context(), "SELECT count(*) FROM execution_operations WHERE server_id=$1", i.server.Server.Id).Scan(&i.delivered); err != nil {
+		t.Fatal(err)
+	}
 	i.b.call("PUT", i.path+"/source/policy", map[string]bool{"autoDeploy": true}, 204, nil)
 }
 
@@ -131,7 +137,7 @@ func (i *importedEnvironment) requireUnchanged(t *testing.T) {
 	if err := i.f.st.Pool.QueryRow(ctx, "SELECT count(*) FROM execution_operations WHERE server_id=$1", i.server.Server.Id).Scan(&delivered); err != nil {
 		t.Fatal(err)
 	}
-	if imported != strings.Repeat("a", 40) || runs != 0 || delivered != 0 {
+	if imported != strings.Repeat("a", 40) || runs != 0 || delivered != i.delivered {
 		t.Fatalf("a refused import had effects: imported=%s automatic=%d delivered=%d", imported, runs, delivered)
 	}
 }
