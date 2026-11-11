@@ -108,5 +108,69 @@
     "networkDescription": "This network is defined in the Compose files. Edit them to change which services join it.",
     "selectTitle": "Select a resource",
     "selectDescription": "Choose a service or data volume to inspect its configuration."
+  },
+  "lifecycle": {
+    "retireTitle": "Retire environment",
+    "retireDescription": "Take this environment off its server and make it read-only. Its configuration and data volumes are kept, so you can restore it later.",
+    "retire": "Retire environment",
+    "retryRetirement": "Retry retirement",
+    "restore": "Restore environment",
+    "retireDialogTitle": "Retire <name/>?",
+    "retireDialogDescription": "Retiring makes this environment read-only until it is restored. When you retire it:",
+    "retireEffects": {
+      "routes": "Its routes and domains stop being served from its server.",
+      "services": "Its services (containers) and networks are removed from the server.",
+      "volumes": "Its named data volumes are kept on the server.",
+      "credentials": "Its automation tokens are revoked. Restoring it does not bring them back.",
+      "policies": "Its preview, terminal session and backup policies are turned off, and open terminal sessions are closed.",
+      "previews": "Live pull-request previews created from this template are cleaned up.",
+      "kept": "Its configuration, revisions, history and secrets are kept."
+    },
+    "restoreDialogTitle": "Restore <name/>?",
+    "restoreDialogDescription": "Restoring makes this environment active again as configuration only:",
+    "restoreEffects": {
+      "nothingDeployed": "Nothing is deployed. Review and apply a deployment plan to run it again.",
+      "staysOff": "Automation tokens stay revoked, and its preview, terminal session and backup policies stay off until you turn them back on.",
+      "volumes": "The next deployment reuses its kept volumes. It stops with a conflict if another environment now uses one of its hostnames."
+    },
+    "confirmLabel": "Environment name",
+    "confirmHint": "Type <name/> to confirm.",
+    "cancel": "Cancel",
+    "retiring": "Retiring…",
+    "restoring": "Restoring…",
+    "nameMismatch": "The name does not match this environment’s current name. Check it and try again.",
+    "forbidden": "Only workspace owners can retire or restore environments.",
+    "retired": "Environment retired.",
+    "retirementStarted": "Retirement started. The environment is read-only while its server removes it.",
+    "restored": "Environment restored. Nothing has been deployed.",
+    "status": {
+      "retiredTitle": "This environment is retired",
+      "retiringTitle": "This environment is being retired",
+      "retiredDescription": "It is read-only. Its routes, services and networks are no longer on its server.",
+      "retiringDescription": "It is read-only while its server removes its routes, services and networks.",
+      "requestedByYou": "You retired it on {{date}}.",
+      "requestedBy": "<person/> retired it on {{date}}.",
+      "requestedByOwner": "An owner retired it on {{date}}.",
+      "withoutHost": "Its server had been revoked, so it was not contacted. This environment’s containers may still be running there.",
+      "operation": "Removal from the server: {{state}}",
+      "operationLoading": "Checking removal from the server…",
+      "operationFailed": "The state of the removal could not be loaded.",
+      "retryHint": "Removal did not finish. Retry retirement to queue it again.",
+      "volumesTitle": "Kept volumes",
+      "volumesLoading": "Loading kept volumes…",
+      "volumesFailed": "Kept volumes could not be loaded.",
+      "volumesEmpty": "This environment has no kept volumes.",
+      "ownersOnly": "Only workspace owners can restore it."
+    },
+    "operationState": {
+      "queued": "queued",
+      "dispatched": "sent to the server",
+      "running": "in progress",
+      "waiting_for_agent": "waiting for the server’s agent",
+      "needs_attention": "needs attention",
+      "succeeded": "finished",
+      "failed": "failed",
+      "cancelled": "cancelled"
+    }
   }
 }

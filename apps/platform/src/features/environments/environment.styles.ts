@@ -22,6 +22,7 @@ export const title = css({
   lineHeight: "heading",
   letterSpacing: "heading",
   overflowWrap: "anywhere",
+  outline: "none",
 });
 export const heading = css({
   fontSize: "lg",
@@ -224,3 +225,36 @@ export const configurationHeading = css({
   lineHeight: "heading",
   outline: "none",
 });
+
+export const retirement = css({
+  display: "grid",
+  gap: "4",
+  padding: "5",
+  marginBlockEnd: "6",
+  borderWidth: "1px",
+  borderStyle: "solid",
+  borderColor: "border",
+  borderRadius: "panel",
+  overflowWrap: "anywhere",
+});
+export const retirementHeading = css({
+  fontSize: "md",
+  fontWeight: "semibold",
+  lineHeight: "heading",
+  outline: "none",
+});
+export const retirementSubheading = css({
+  fontSize: "sm",
+  fontWeight: "semibold",
+  lineHeight: "heading",
+});
+export const retainedVolumes = css({ display: "grid", gap: "1" });
+export const effects = css({
+  display: "grid",
+  gap: "2",
+  paddingInlineStart: "5",
+  listStyleType: "disc",
+  overflowWrap: "anywhere",
+});
+export const dialogTitle = css({ outline: "none", overflowWrap: "anywhere" });
+export const confirmField = css({ display: "grid", gap: "2" });
