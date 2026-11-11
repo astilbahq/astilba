@@ -155,7 +155,7 @@ WHERE t.workspace_id = @workspace_id AND t.id = @id AND t.state <> 'closed'
  AND b.token = translate(rtrim(encode(t.browser_session_hash,'base64'),'='),'+/','-_');
 
 -- name: GetTroubleshootingSessionForEnd :one
-SELECT actor_id,state FROM troubleshooting_sessions
+SELECT actor_id,state,close_reason FROM troubleshooting_sessions
 WHERE workspace_id = @workspace_id AND id = @id
 FOR UPDATE;
 

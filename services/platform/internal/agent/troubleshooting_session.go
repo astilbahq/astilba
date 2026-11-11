@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"os"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
@@ -17,7 +16,6 @@ import (
 	"github.com/containerd/errdefs"
 	"github.com/google/uuid"
 	"github.com/moby/moby/client"
-	bolt "go.etcd.io/bbolt"
 )
 
 const (
@@ -39,108 +37,6 @@ const (
 	// Nobody types this sequence, and each key but the last only waits for the next one.
 	troubleshootingDetachKeys = "ctrl-@,ctrl-@,ctrl-@,ctrl-@,ctrl-@,ctrl-@"
 )
-
-// troubleshootingShell is journaled, without terminal content, so a restarted agent can
-// end a shell left by a crash.
-type troubleshootingShell struct {
-	Session     uuid.UUID
-	ContainerID string
-	ExecID      string
-	Identity    shellIdentity
-}
-
-func (j *Journal) saveTroubleshootingShell(shell troubleshootingShell) error {
-	return j.db.Update(func(tx *bolt.Tx) error { return j.put(tx, "troubleshooting-shells", shell.Session.String(), shell) })
-}
-
-func (j *Journal) removeTroubleshootingShell(session uuid.UUID) error {
-	return j.db.Update(func(tx *bolt.Tx) error {
-		return tx.Bucket([]byte("troubleshooting-shells")).Delete([]byte(session.String()))
-	})
-}
-
-func (j *Journal) troubleshootingShells() ([]troubleshootingShell, error) {
-	shells := []troubleshootingShell{}
-	err := j.db.View(func(tx *bolt.Tx) error {
-		return tx.Bucket([]byte("troubleshooting-shells")).ForEach(func(k, _ []byte) error {
-			var shell troubleshootingShell
-			if err := j.get(tx, "troubleshooting-shells", string(k), &shell); err != nil {
-				return err
-			}
-			shells = append(shells, shell)
-			return nil
-		})
-	})
-	return shells, err
-}
-
-// EndJournaledShells runs at startup. No stream survives a restart, so any journaled
-// shell is left over from a crash or an upgrade. A failure is logged and its entry kept
-// for the next start: cleaning up a session must not stop the agent deploying.
-func (e *Engine) EndJournaledShells(ctx context.Context) {
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-	shells, err := e.Journal.troubleshootingShells()
-	if err != nil {
-		slog.Error("terminal session cleanup failed", "error", err)
-		return
-	}
-	for _, shell := range shells {
-		if err = e.endShell(ctx, shell); err != nil {
-			slog.Error("terminal session cleanup failed", "session", shell.Session, "error", err)
-			continue
-		}
-		slog.Info("terminal session cleanup finished after restart", "session", shell.Session, "container", shell.ContainerID)
-	}
-}
-
-// endShell ends a shell's session and forgets it. A leader still matching its identity
-// needs nothing from the daemon, which may be restarting. Otherwise the daemon knows
-// every exec until shortly after it exits, so an unknown exec means nothing of this
-// session is left to trust: its PID may belong to something else by now.
-func (e *Engine) endShell(ctx context.Context, shell troubleshootingShell) error {
-	if shell.Identity.PID > 0 && shellLeaderAlive(shell.Identity) {
-		if err := endShellSession(shell.Identity); err != nil {
-			return err
-		}
-		return e.Journal.removeTroubleshootingShell(shell.Session)
-	}
-	state, err := e.Docker.ExecInspect(ctx, shell.ExecID, client.ExecInspectOptions{})
-	if errdefs.IsNotFound(err) {
-		slog.Warn("terminal session entry dropped: the daemon no longer knows its exec, so any survivors cannot be identified", "session", shell.Session, "container", shell.ContainerID)
-		return e.Journal.removeTroubleshootingShell(shell.Session)
-	}
-	if err != nil {
-		return err
-	}
-	if shell.Identity.PID == 0 {
-		// A starting shell is running before it has a PID.
-		for range 50 {
-			if !state.Running || state.PID > 0 {
-				break
-			}
-			time.Sleep(100 * time.Millisecond)
-			if state, err = e.Docker.ExecInspect(ctx, shell.ExecID, client.ExecInspectOptions{}); err != nil {
-				return err
-			}
-		}
-		if state.Running && state.PID == 0 {
-			return errors.New("terminal shell has not reported its process")
-		}
-		// An exited exec keeps its PID, which may since have been reused.
-		if state.Running {
-			if shell.Identity, err = identifyShell(state.PID); err != nil && !errors.Is(err, os.ErrNotExist) {
-				return err
-			}
-		}
-	}
-	if shell.Identity.PID > 0 {
-		if err = endShellSession(shell.Identity); err != nil {
-			return err
-		}
-	}
-	return e.Journal.removeTroubleshootingShell(shell.Session)
-}
 
 // troubleshootingRefusal re-checks locally what management decided from the last
 // heartbeat: consent, the runtime floor and eligibility can all have changed since.
@@ -273,6 +169,12 @@ func (c *Client) runTroubleshootingSession(ctx context.Context, offer api.AgentT
 	wait, cancel := context.WithTimeout(ctx, troubleshootingStartWait)
 	_, frame, err := conn.Read(wait)
 	cancel()
+	if why := managementEnding(err); why != "" {
+		// Management can end a session before its shell starts: the person left, or the
+		// session's conditions no longer held when both streams were attached.
+		slog.Info("terminal session ended before its shell started", "session", offer.SessionId, "actor", offer.ActorId, "reason", why)
+		return nil
+	}
 	if err != nil {
 		return err
 	}
@@ -377,7 +279,7 @@ func (e *Engine) runShell(ctx context.Context, conn *websocket.Conn, offer api.A
 	defer func() {
 		cleanup, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		if err := e.endShell(cleanup, record); err != nil {
+		if _, err := e.endShell(cleanup, record); err != nil {
 			slog.Error("terminal session cleanup failed", "session", offer.SessionId, "error", err)
 		}
 	}()
@@ -436,8 +338,10 @@ func (e *Engine) pumpShell(parent context.Context, conn *websocket.Conn, exec st
 		name(why)
 		cancel()
 	}
-	var lastInput atomic.Int64
-	lastInput.Store(time.Now().UnixNano())
+	activity := terminal.NewActivity()
+	// Why management closed the stream, set by the reader alone. A write or ping can fail
+	// first, because the library closes the connection while it answers the close.
+	var told string
 	var workers sync.WaitGroup
 	// Stdin has its own goroutine because pongs are only handled while reading the stream:
 	// a shell that stops reading must not look like a lost connection.
@@ -458,7 +362,8 @@ func (e *Engine) pumpShell(parent context.Context, conn *websocket.Conn, exec st
 		for {
 			kind, frame, err := conn.Read(ctx)
 			if err != nil {
-				stop("stream lost")
+				told = managementEnding(err)
+				stop(streamLost)
 				return
 			}
 			if kind != websocket.MessageBinary || len(frame) == 0 {
@@ -467,7 +372,7 @@ func (e *Engine) pumpShell(parent context.Context, conn *websocket.Conn, exec st
 			}
 			switch frame[0] {
 			case terminal.Input:
-				lastInput.Store(time.Now().UnixNano())
+				activity.Touch()
 				select {
 				case stdin <- frame[1:]:
 				default:
@@ -498,7 +403,7 @@ func (e *Engine) pumpShell(parent context.Context, conn *websocket.Conn, exec st
 			n, err := attached.Reader.Read(buffer[1:])
 			if n > 0 {
 				if writeTroubleshooting(ctx, conn, buffer[:n+1]) != nil {
-					stop("stream lost")
+					stop(streamLost)
 					return
 				}
 			}
@@ -524,7 +429,7 @@ func (e *Engine) pumpShell(parent context.Context, conn *websocket.Conn, exec st
 			case <-ctx.Done():
 				return
 			case now := <-tick.C:
-				if now.Sub(time.Unix(0, lastInput.Load())) >= e.troubleshootingIdle() {
+				if time.Since(activity.Last()) >= e.troubleshootingIdle() {
 					stop("idle timeout")
 					return
 				}
@@ -534,7 +439,7 @@ func (e *Engine) pumpShell(parent context.Context, conn *websocket.Conn, exec st
 					err := conn.Ping(ping)
 					done()
 					if err != nil && ctx.Err() == nil {
-						stop("stream lost")
+						stop(streamLost)
 						return
 					}
 				}
@@ -548,7 +453,30 @@ func (e *Engine) pumpShell(parent context.Context, conn *websocket.Conn, exec st
 	if parent.Err() != nil {
 		return "agent stopped"
 	}
+	if told != "" && reason == streamLost {
+		return told
+	}
 	return reason
+}
+
+// streamLost names a stream that ended without management closing it. Management's close
+// can also surface first as a failed write or ping, so pumpShell replaces this reason with
+// the one management gave whenever the reader received that close.
+const streamLost = "stream lost"
+
+// managementEnding names a session that management ended by closing its stream, or is ""
+// for a stream that was lost. Management gives the reason it recorded for the session,
+// unless it predates doing so.
+func managementEnding(err error) string {
+	why, closed := terminal.Ending(err)
+	switch {
+	case !closed:
+		return ""
+	case why == "":
+		return "ended by management"
+	default:
+		return "ended by management: " + why
+	}
 }
 
 // shellExitCode reports how the shell exited, if the daemon can confirm that it did. It

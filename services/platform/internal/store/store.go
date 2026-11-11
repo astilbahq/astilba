@@ -429,17 +429,30 @@ func (s *Store) Rewrap(ctx context.Context) error {
 	})
 }
 
-const recentAuthentication = 5 * time.Minute
+const (
+	recentAuthentication = 5 * time.Minute
+	// recentAuthenticationSkew is how far ahead of the reading clock a proof's recorded
+	// time may be and still count. A session records the wall-clock time, which loses
+	// Go's monotonic reading, so a small backwards step of the clock, or a second process
+	// whose clock is slightly ahead, can put a proof made moments ago in the future. A
+	// time further ahead than this is not trusted, and does not count as recent.
+	recentAuthenticationSkew = 5 * time.Second
+)
 
+// Recent reports whether a proof of credentials recorded at the given time still counts.
 func Recent(at time.Time, now time.Time) bool {
-	return !at.IsZero() && !at.After(now) && now.Sub(at) <= recentAuthentication
+	return !at.IsZero() && !at.After(now.Add(recentAuthenticationSkew)) && now.Sub(at) <= recentAuthentication
 }
 
 // RecentUntil is Principal.RecentUntil for a session that last proved its credentials at
-// the given time.
+// the given time. A time ahead of now is taken as now, so the skew allowed can never
+// lengthen the window beyond recentAuthentication from this reading.
 func RecentUntil(at time.Time, now time.Time) time.Time {
 	if !Recent(at, now) {
 		return time.Time{}
+	}
+	if at.After(now) {
+		at = now
 	}
 	return at.Add(recentAuthentication)
 }

@@ -155,7 +155,8 @@ also notifies the workspace's owners. It defaults to
    minute while the person types, which reissues the browser's cookie. The agent enforces the idle
    timeout and deadline itself as well, measuring both as durations from
    when the shell starts so clock differences between management and the host do not
-   matter. It ends every process in the shell's
+   matter. Both sides measure idle time on the monotonic clock, so stepping the wall
+   clock does not move the limit. It ends every process in the shell's
    Linux session, not just its process group, because interactive shells place
    jobs in their own groups. It identifies those processes by the boot, the start time and
    the container's PID namespace, never by a bare host PID that could be reused,
@@ -244,7 +245,11 @@ does not apply to a hijacked connection). Message types are input, output,
 resize (with bounded dimensions), ping, refused and exit. Stream handlers clear
 the server's ordinary read and write deadlines and send pings every 30 seconds.
 The relay ends both streams together with a close handshake, so the exit or
-refused frame reaches the browser while it is still sending input. Frames read
+refused frame reaches the browser while it is still sending input. The close it
+sends the agent carries the reason the session keeps, such as `idle timeout`,
+`deadline` or `closed by owner`, cut to the 123 bytes a close frame holds. The relay
+records the end before closing the agent's stream, so a session an owner closed
+just before the relay ended for another reason is still reported as closed by its owner. Frames read
 after a session has ended are discarded. Every close handshake, on management
 or the agent, including one that refuses a ticket or ends a side whose other
 side never attached, drops a peer that has not finished it within 10 seconds.
@@ -306,8 +311,17 @@ keeps who opened which session and when, but not close reasons or byte counts.
 
 The agent also writes a local journald record of each session (session ID, actor
 ID as supplied, container ID, start, end and reason), giving the host owner a
-trail outside the management database. After a crash there is no end record; the
-restarted agent records its cleanup, with the session and container IDs.
+trail outside the management database. When management ends a session, the reason
+is `ended by management: ` followed by the reason management recorded, as its close
+said; a reason that is not printable ASCII, or a management version that gives none,
+leaves `ended by management`. `stream lost` means the connection broke without such a
+close, for example because management stopped. Only a normal closure or a policy
+violation counts as management's close: a proxy can send its own, as Caddy does with
+"going away" when it reloads, and that is a lost stream too. A session management ends before its
+shell starts is recorded as such, with the reason. After a crash there is no end
+record; the restarted agent records its cleanup, with the session and container IDs,
+and says whether it ended processes, found nothing left, or, with a warning, could no
+longer identify the shell.
 
 Terminal input and output are not recorded or logged by default: they can
 contain secrets and customer data. Management logs only metadata. Recording would
