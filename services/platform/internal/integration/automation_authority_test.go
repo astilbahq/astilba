@@ -256,6 +256,7 @@ func TestAutomationBuildDeploysOnlyItsOwnImage(t *testing.T) {
 	enrolled, in, agentToken := enrollment(t, f, b, scope.WorkspaceId, "combined")
 	yes := true
 	in.Capabilities.Build, in.Capabilities.BuildControls, in.Capabilities.Visual = &yes, &yes, &yes
+	in.Capabilities.BuildNetwork = &yes
 	agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/enroll", "", in, 200, nil)
 	agent := authorityAgent{t, f, agentToken, in}
 	var secret api.SecretVersion
@@ -340,6 +341,7 @@ func TestAutomationBuildOnComposeServiceComparesItsEditedFile(t *testing.T) {
 	enrolled, in, agentToken := enrollment(t, f, b, ws, "combined")
 	yes := true
 	in.Capabilities.Build, in.Capabilities.BuildControls, in.Capabilities.Visual, in.Capabilities.Compose = &yes, &yes, &yes, &yes
+	in.Capabilities.BuildNetwork = &yes
 	agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/enroll", "", in, 200, nil)
 	agent := authorityAgent{t, f, agentToken, in}
 	files := []composeproject.File{{Path: "compose.yaml", Content: "# retained comment\nservices:\n  web:\n    image: " + pipelineTestImage + "\n"}}
@@ -387,6 +389,7 @@ func TestAutomationImportDeploysOnlyItsOwnSource(t *testing.T) {
 	enrolled, in, agentToken := enrollment(t, f, b, ws, "combined")
 	yes := true
 	in.Capabilities.Build, in.Capabilities.Visual, in.Capabilities.Compose = &yes, &yes, &yes
+	in.Capabilities.BuildNetwork = &yes
 	agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/enroll", "", in, 200, nil)
 	agent := authorityAgent{t, f, agentToken, in}
 	files := func(revision string) []composeproject.File {
@@ -460,6 +463,7 @@ func TestAutomationBuildsOfOnePushDeployInTurn(t *testing.T) {
 	enrolled, in, agentToken := enrollment(t, f, b, scope.WorkspaceId, "combined")
 	yes := true
 	in.Capabilities.Build, in.Capabilities.BuildControls, in.Capabilities.Visual = &yes, &yes, &yes
+	in.Capabilities.BuildNetwork = &yes
 	agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/enroll", "", in, 200, nil)
 	agent := authorityAgent{t, f, agentToken, in}
 	apps := []uuid.UUID{uuid.New(), uuid.New()}

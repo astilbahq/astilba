@@ -4119,6 +4119,42 @@
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Error'}
+  /api/v1/workspaces/{workspaceId}/servers/{serverId}/build-network:
+    parameters:
+      - {name: workspaceId, in: path, required: true, schema: {type: string, format: uuid}}
+      - {name: serverId, in: path, required: true, schema: {type: string, format: uuid}}
+    get:
+      operationId: getServerBuildNetwork
+      responses:
+        '200':
+          description: Private destinations builds on this runner may reach
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/BuildNetwork'}
+        default:
+          description: Error
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+    put:
+      operationId: configureServerBuildNetwork
+      description: Replaces the runner's build network allowlist. Requires the workspace owner with recent authentication. Builds queued earlier keep only destinations still allowed.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/BuildNetwork'}
+      responses:
+        '200':
+          description: The stored allowlist, sorted and without duplicates
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/BuildNetwork'}
+        default:
+          description: Error
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
   /api/v1/workspaces/{workspaceId}/servers/{serverId}/transfer:
     parameters:
       - {name: workspaceId, in: path, required: true, schema: {type: string, format: uuid}}
@@ -5052,6 +5088,9 @@
           description: Supported Railpack planner/frontend version. Agents send this extension only after a controller response advertises Astilba-Agent-Railpack with v1.
         build:
           type: boolean
+        buildNetwork:
+          type: boolean
+          description: Runs builds on its owned build network behind the build egress policy. Advertised only after Astilba-Agent-Build-Network v1.
         schedules:
           type: boolean
           description: Supports general schedule formats and bounded job cleanup. Advertised only after Astilba-Agent-Schedules v1.
@@ -5361,6 +5400,23 @@
         "signature":
           "type": "string"
           "maxLength": 128
+    BuildNetwork:
+      type: object
+      additionalProperties: false
+      required: [allow]
+      description: Private IPv4 TCP destinations, such as a package mirror, that builds on this runner may reach. Builds always reach public addresses, and never loopback, link-local or cloud metadata addresses, the host itself or IPv6.
+      properties:
+        allow:
+          type: array
+          maxItems: 32
+          items: {$ref: '#/components/schemas/BuildDestination'}
+    BuildDestination:
+      type: object
+      additionalProperties: false
+      required: [prefix, port]
+      properties:
+        prefix: {type: string, maxLength: 18, description: 'An IPv4 address or range in a private range, such as 10.0.4.12 or 10.0.4.0/24.'}
+        port: {type: integer, minimum: 1, maximum: 65535}
     "UpdateAgent":
       "type": "object"
       "additionalProperties": false

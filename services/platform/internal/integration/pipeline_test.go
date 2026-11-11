@@ -101,6 +101,7 @@ func TestGitImportBuildIsolationAndArtifactAdmission(t *testing.T) {
 	enrolled, in, token := enrollment(t, f, b, ws, "combined")
 	yes := true
 	in.Capabilities.Build = &yes
+	in.Capabilities.BuildNetwork = &yes
 	in.Capabilities.Visual = &yes
 	in.Capabilities.Compose = &yes
 	agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/enroll", "", in, 200, nil)
@@ -380,6 +381,7 @@ func TestGitImportBuildIsolationAndArtifactAdmission(t *testing.T) {
 	t.Run("explicit fallback selects only an eligible runner", func(t *testing.T) {
 		fallback, enroll, fallbackToken := enrollment(t, f, b, ws, "build")
 		enroll.Capabilities.Build = &yes
+		enroll.Capabilities.BuildNetwork = &yes
 		agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/enroll", "", enroll, 200, nil)
 		cfg.FallbackRunnerID = &fallback.Server.Id
 		b.call("POST", path+"/builds", map[string]any{"baseRevisionId": promoted.Id, "applicationId": app, "requestKey": uuid.New(), "configuration": cfg}, 202, &op)
@@ -630,6 +632,7 @@ func TestGitWebhookBurstMakesBoundedProgress(t *testing.T) {
 	enrolled, in, _ := enrollment(t, f, b, ws, "build")
 	yes := true
 	in.Capabilities.Build = &yes
+	in.Capabilities.BuildNetwork = &yes
 	agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/enroll", "", in, 200, nil)
 	if _, err := f.st.Pool.Exec(context.Background(), "UPDATE servers SET last_seen=now()-interval '2 minutes' WHERE id=$1", enrolled.Server.Id); err != nil {
 		t.Fatal(err)

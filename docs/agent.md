@@ -40,7 +40,7 @@ Inspect `services/platform/host/install.sh` and `astilba-agent.service`, then ru
 sudo bash install.sh ./astilba-agent ./release-public.pem ./astilba-agent.service
 ```
 
-The installer prepares files and prints the read-only preflight. It does not install Docker, change ingress, adopt existing workloads or start the service. A deployment target requires a working local Docker socket and at least 256 MiB available disk. Visual deployment additionally requires Docker Compose 5.6.1. Review existing containers and occupied ingress ports; only owner-approved visual plans may publish the owned proxy. Rootful Docker access gives the agent authority over the host, so use only trusted workloads.
+The installer prepares files and prints the read-only preflight. It does not install Docker, change ingress, adopt existing workloads or start the service. A deployment target requires a working local Docker socket and at least 256 MiB available disk. Visual deployment additionally requires Docker Compose 5.6.1. Review existing containers and occupied ingress ports; only owner-approved visual plans may publish the owned proxy. Rootful Docker access gives the agent authority over the host, so use only trusted workloads. Builds also need nftables 1.0.9, which Ubuntu installs by default, because the agent fences each build off the host and private networks with an nftables policy; its systemd unit allows netlink sockets for that. The preflight says when a server can't build for this reason. If the host's metadata service answers, which it does on most cloud instances, the preflight also warns that deployed services and host processes can reach it.
 
 Create a server in the dashboard with its deployment, build or combined role. Paste the one-use, ten-minute code into stdin; never put it in process arguments or shell history:
 
@@ -127,7 +127,7 @@ Backup recipes, operator filesystem roots, the pinned restic prerequisite, daily
 
 ## Container networks
 
-The agent gives every network it creates its own /25 from a container network pool, 10.252.0.0/14 unless you set another. That covers each environment's network, any Compose networks and the ingress network. The default pool holds 2,048 networks, enough for 50 routed environments that each use the most networks a Compose project can declare. The agent doesn't use Docker's `default-address-pools`, whose built-in pools run out after about 30 networks, so the host's own containers keep those pools.
+The agent gives every network it creates its own /25 from a container network pool, 10.252.0.0/14 unless you set another. That covers each environment's network, any Compose networks, the ingress network and, on a server that builds, the [build network](git-builds.md#build-network). The default pool holds 2,048 networks, enough for 50 routed environments that each use the most networks a Compose project can declare. The agent doesn't use Docker's `default-address-pools`, whose built-in pools run out after about 30 networks, so the host's own containers keep those pools.
 
 Before creating a network, the agent skips any range that overlaps:
 

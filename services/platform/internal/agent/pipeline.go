@@ -123,15 +123,28 @@ func (e *Engine) pipelineContainer(ctx context.Context, c api.ExecutionCommand, 
 		host.ReadonlyRootfs = false
 		host.CapDrop = nil
 		host.SecurityOpt = nil
-		config.Entrypoint = []string{"buildkitd"}
-		config.Cmd = []string{"--addr", "unix:///run/buildkit/buildkitd.sock", "--oci-worker-gc", "--oci-worker-gc-keepstorage", strconv.Itoa(limits.StateMiB / 2)}
-		if p.Registry != nil {
-			config.Env = []string{"ASTILBA_REGISTRY_HOST=" + strings.Split(p.Registry.Repository, "/")[0]}
-			config.Entrypoint = []string{"sh", "-ec"}
-			config.Env = append(config.Env, "ASTILBA_GC_MIB="+strconv.Itoa(limits.StateMiB/2))
-			config.Cmd = []string{`mkdir -p /etc/buildkit; printf '[registry."%s"]\n  http = false\n  insecure = false\n' "$ASTILBA_REGISTRY_HOST" > /etc/buildkit/buildkitd.toml; exec buildkitd --config /etc/buildkit/buildkitd.toml --addr unix:///run/buildkit/buildkitd.sock --oci-worker-gc --oci-worker-gc-keepstorage "$ASTILBA_GC_MIB"`}
+		// The policy is in place before the build container exists, so nothing in it runs
+		// on a network without one.
+		resolvers, err := e.prepareBuildNetwork(ctx, c, p)
+		if err != nil {
+			return err
 		}
-
+		host.NetworkMode = container.NetworkMode(buildNetworkName)
+		nameservers := []string{}
+		for _, r := range resolvers {
+			nameservers = append(nameservers, strconv.Quote(r.String()))
+		}
+		config.Env = []string{"ASTILBA_GC_MIB=" + strconv.Itoa(limits.StateMiB/2), "ASTILBA_NAMESERVERS=" + strings.Join(nameservers, ", ")}
+		if p.Registry != nil {
+			config.Env = append(config.Env, "ASTILBA_REGISTRY_HOST="+strings.Split(p.Registry.Repository, "/")[0])
+		}
+		// RUN steps share the build container's network, which the policy filters on the host.
+		// BuildKit replaces Docker's loopback resolver for them, so it is given the host's.
+		config.Entrypoint = []string{"sh", "-ec"}
+		config.Cmd = []string{`mkdir -p /etc/buildkit; : > /etc/buildkit/buildkitd.toml
+if [ -n "$ASTILBA_REGISTRY_HOST" ]; then printf '[registry."%s"]\n  http = false\n  insecure = false\n' "$ASTILBA_REGISTRY_HOST" >> /etc/buildkit/buildkitd.toml; fi
+if [ -n "$ASTILBA_NAMESERVERS" ]; then printf '[dns]\n  nameservers = [%s]\n' "$ASTILBA_NAMESERVERS" >> /etc/buildkit/buildkitd.toml; fi
+exec buildkitd --config /etc/buildkit/buildkitd.toml --addr unix:///run/buildkit/buildkitd.sock --oci-worker-net host --oci-worker-gc --oci-worker-gc-keepstorage "$ASTILBA_GC_MIB"`}
 	}
 	made, err := e.Docker.ContainerCreate(ctx, client.ContainerCreateOptions{Name: pipelineName(c), Config: config, HostConfig: host})
 	if err != nil {
@@ -337,7 +350,7 @@ func (e *Engine) buildPipeline(ctx context.Context, c api.ExecutionCommand, p pi
 		args = append(args, "--output", "type=docker,name="+image+",dest=/workspace/image.tar")
 	}
 	logs, err := e.pipelineLog(ctx, c, p, []string{"DOCKER_CONFIG=/workspace/auth"}, args)
-	result.Logs = pipelineLogTail(result.Logs + logs)
+	result.Logs = pipelineLogTail(result.Logs + logs + e.buildRefusalNote(ctx))
 	if err != nil {
 		return result, errors.New("BuildKit failed or exceeded its memory/storage budget; existing workloads are unchanged")
 	}
@@ -463,8 +476,13 @@ func (e *Engine) loadPipelineImage(ctx context.Context, c api.ExecutionCommand) 
 }
 func (e *Engine) executePipeline(ctx context.Context, c api.ExecutionCommand, r Record) error {
 	var p pipeline.Command
-	if c.Pipeline == nil || json.Unmarshal(*c.Pipeline, &p) != nil || p.Digest() != c.PlanHash || p.Validate() != nil {
+	if c.Pipeline == nil || json.Unmarshal(*c.Pipeline, &p) != nil || p.Digest() != c.PlanHash {
 		return e.finish(c.Id, "failed", "Pipeline identity or inputs do not match the assigned operation.")
+	}
+	// An earlier agent may have started this operation's containers before refusing it now,
+	// such as a build queued before builds carried the build network, so they are removed.
+	if err := p.Validate(); err != nil {
+		return e.finishPipeline(c, "failed", "Pipeline inputs are not supported: "+err.Error()+".")
 	}
 	if e.Docker == nil {
 		return e.finish(c.Id, "failed", "Docker is unavailable.")

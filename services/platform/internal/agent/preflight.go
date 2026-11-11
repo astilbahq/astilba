@@ -92,8 +92,23 @@ func Preflight(ctx context.Context, docker *client.Client, version, dir string, 
 	compose, err := composeVersion(check, dockerCLI)
 	h.Preflight.ComposeVersion = &compose
 	visual := h.Preflight.Ready && err == nil
-	build := h.Preflight.Ready && dockerFreeBytes(ctx, docker) >= 4<<30
+	// A build runs only behind the build network policy, so a host that can't install it
+	// offers none. The check has its own time, so a slow Docker can't make it look missing.
+	policyCtx, policyDone := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+	buildNetwork := (hostnetwork.Host{Dir: dir}).BuildPolicySupported(policyCtx)
+	policyDone()
+	if h.Preflight.Ready && !buildNetwork {
+		h.Preflight.Notes = append(h.Preflight.Notes, buildPolicyUnsupported)
+	}
+	build := h.Preflight.Ready && buildNetwork && dockerFreeBytes(ctx, docker) >= 4<<30
+	if raw, err := os.ReadFile("/etc/docker/daemon.json"); build && err == nil && dockerFirewallOff(raw) {
+		h.Preflight.Notes = append(h.Preflight.Notes, dockerFirewallOffNote)
+	}
+	if runtime.GOOS == "linux" && instanceMetadataAnswers(ctx, instanceMetadataEndpoints, time.Now()) {
+		h.Preflight.Notes = append(h.Preflight.Notes, instanceMetadataNote)
+	}
 	h.Capabilities.Build = &build
+	h.Capabilities.BuildNetwork = &buildNetwork
 	h.Capabilities.BuildControls = &build
 	h.Capabilities.BuildCache = &build
 	if build {

@@ -47,6 +47,7 @@ test("repository setup, Git service, queued build and cancellation use the real 
           arch: "arm64",
           docker: true,
           build: true,
+          buildNetwork: true,
           buildControls: true,
           railpackVersion: "0.43.0",
         },

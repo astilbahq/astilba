@@ -53,6 +53,7 @@ func TestSubmitDeliveryRechecksRuntimeSecrets(t *testing.T) {
 	enrolled, in, token := enrollment(t, f, b, ws, "build")
 	yes := true
 	in.Capabilities.Build = &yes
+	in.Capabilities.BuildNetwork = &yes
 	agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/enroll", "", in, 200, nil)
 	heartbeat := func(t *testing.T) {
 		t.Helper()

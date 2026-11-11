@@ -240,6 +240,7 @@ func TestAutomationConfiguredBuildPreservesAutomaticDeployment(t *testing.T) {
 	enrolled, in, agentToken := enrollment(t, f, b, scope.WorkspaceId, "combined")
 	yes := true
 	in.Capabilities.Build, in.Capabilities.BuildControls, in.Capabilities.Visual = &yes, &yes, &yes
+	in.Capabilities.BuildNetwork = &yes
 	agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/enroll", "", in, 200, nil)
 	app := uuid.New()
 	image := pipelineTestImage
