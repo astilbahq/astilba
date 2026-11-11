@@ -4,6 +4,10 @@ import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
 import { openEnvironmentSection } from "./environment-section";
 import { signInAsOwner } from "./fixtures/owner-sign-in";
+import {
+  confirmIdentityWithPassword,
+  lapseRecentConfirmationFor,
+} from "./fixtures/step-up";
 
 test("preview policy retains failed inputs and approves only the displayed fork commit", async ({
   page,
@@ -211,8 +215,10 @@ test("preview policy retains failed inputs and approves only the displayed fork 
     const panel = page.getByRole("region", { name: "Pull-request previews" });
     await panel.getByText("Set up automatic previews", { exact: true }).click();
     await expect(
-      panel.getByRole("link", { name: "Open Account security", exact: true }),
-    ).toHaveAttribute("href", `/account?workspace=${ws}`);
+      panel.getByText(
+        "You’ll be asked to confirm your identity before enabling, approving or removing previews.",
+      ),
+    ).toBeVisible();
     const form = panel.getByRole("form", { name: "Preview policy" });
     await form
       .getByRole("combobox", { name: "Git-built service", exact: true })
@@ -255,9 +261,12 @@ test("preview policy retains failed inputs and approves only the displayed fork 
     await form
       .getByLabel("Maximum concurrent builds", { exact: true })
       .fill("1");
+    // A lapsed confirmation asks for identity in place, then saves the policy as entered.
+    await lapseRecentConfirmationFor(page, "PUT", /\/preview-policy$/);
     await form
       .getByRole("button", { name: "Enable automatic previews", exact: true })
       .click();
+    await confirmIdentityWithPassword(page);
     await expect(
       panel.getByText("Automatic previews enabled", { exact: false }),
     ).toBeVisible();
