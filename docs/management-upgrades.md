@@ -25,13 +25,13 @@ Upgrade management before the agents. These steps assume
 2. **Read what changed** between the two commits, especially
    `services/platform/db/migrations`, these docs and the agent: notes on agent compatibility
    tell you whether hosts need anything.
-3. **Pick a quiet moment**, with no deployment, backup or other operation running. Stopping
-   management does not wait for requests in progress. This shows how many operations are
-   unfinished:
+3. **Pick a quiet moment**, with no deployment, backup or other operation running, and none
+   waiting for attention: agents still receive those. Stopping management does not wait for
+   requests in progress. This shows how many operations are unfinished:
 
    ```sh
    docker exec astilba-database-1 psql -U astilba -d astilba -Atc \
-     "SELECT count(*) FROM execution_operations WHERE state IN ('queued','dispatched','running')"
+     "SELECT count(*) FROM execution_operations WHERE state IN ('queued','dispatched','running','needs_attention')"
    ```
 
 ## Upgrade
