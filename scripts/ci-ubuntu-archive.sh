@@ -22,7 +22,8 @@ case "$architecture" in
   *) echo "No Ubuntu archive list for $architecture." >&2; exit 1 ;;
 esac
 # The sources a runner image uses for Ubuntu itself: its mirror list or a Canonical archive.
-canonical='^(mirror\+file:/etc/apt/apt-mirrors\.txt|https?://([a-z0-9-]+\.)*(archive|security|ports)\.ubuntu\.com/ubuntu(-ports)?/?)$'
+# Bracket expressions, not backslashes: awk -v would turn `\.` into `.` and `\+` into `+`.
+canonical='^(mirror[+]file:/etc/apt/apt-mirrors[.]txt|https?://([a-z0-9-]+[.])*(archive|security|ports)[.]ubuntu[.]com/ubuntu(-ports)?/?)$'
 
 scratch=$(mktemp -d)
 trap 'rm -rf "$scratch"' EXIT
