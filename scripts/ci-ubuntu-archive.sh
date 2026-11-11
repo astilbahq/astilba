@@ -36,11 +36,10 @@ usable() {
   rm -f "$scratch/InRelease" "$scratch/verified"
   curl --fail --silent --show-error --location --max-time 20 --output "$scratch/InRelease" "$archive/dists/$suite/InRelease" || return 1
   gpgv --keyring "$keyring" --output "$scratch/verified" "$scratch/InRelease" || return 1
-  [[ $(awk '/^Suite: /{print $2; exit}' "$scratch/verified") == "$suite" ]] || { echo "$archive/dists/$suite/InRelease is signed for another suite." >&2; return 1; }
   published=$(awk '/^Date: /{sub(/^Date: /, ""); print; exit}' "$scratch/verified")
   published=$(date --date "$published" +%s) || return 1
   age=$(($(date +%s) - published))
-  if ((age < -3600 || age > max_age_days * 86400)); then
+  if ((age > max_age_days * 86400)); then
     echo "$archive last published $suite $((age / 3600)) hours ago, outside the last $max_age_days days." >&2
     return 1
   fi

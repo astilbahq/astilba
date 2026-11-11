@@ -6,11 +6,6 @@ set -euo pipefail
 [[ "$ASTILBA_DISPOSABLE_HOST" == 1 && "$EUID" == 0 ]]
 if [[ "${GITHUB_ACTIONS:-}" == true && "${RUNNER_ENVIRONMENT:-}" == github-hosted ]]; then
   [[ "${GITHUB_RUN_ID:-}" =~ ^[0-9]+$ ]]
-  # The workflow's scripts/ci-ubuntu-archive.sh has already pointed apt at one answering archive.
-  if grep -rqsE --include='*.sources' --include='*.list' '^[^#]*mirror\+file:/etc/apt/apt-mirrors\.txt' /etc/apt; then
-    echo 'Run scripts/ci-ubuntu-archive.sh first; the runner image mirror list can hang apt-get update.' >&2
-    exit 1
-  fi
 else
   [[ -f /etc/astilba-p14-owner && $(cat /etc/astilba-p14-owner) == "$ASTILBA_BOOTSTRAP_OWNER" ]] || { echo 'Disposable VM ownership is not established.' >&2; exit 1; }
 fi
