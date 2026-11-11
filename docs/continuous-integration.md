@@ -488,10 +488,41 @@ so a cache could not remove the wait for an outage. It would save under 30 secon
 lane, and a pinned file removed upstream would go unnoticed until the cache expired.
 An outage longer than the retries still fails the job, with the URL in its log.
 
-`prepare-bootstrap-test.sh` replaces the runner image's `mirror+file` apt source with its
-first two mirrors. With that source, `apt-get update` hangs without output when the first
-mirror drops packets; with the mirrors listed directly it warns and uses the other. The bootstrap
-limits its own `apt-get update` to 5 minutes for any source that hangs.
+## Ubuntu archive
+
+Before any Host step installs a package, `scripts/ci-ubuntu-archive.sh` points the
+runner's Ubuntu apt sources at one archive, the first in this list that answers:
+
+| Architecture | Archives, in order |
+| --- | --- |
+| amd64 | `azure.archive.ubuntu.com`, `archive.ubuntu.com`, `mirrors.edge.kernel.org/ubuntu`, `mirrors.mit.edu/ubuntu` |
+| arm64 | `ports.ubuntu.com`, `mirrors.mit.edu/ubuntu-ports`, `ftp.tu-chemnitz.de/pub/linux/ubuntu-ports` |
+
+An archive answers when, within 20 seconds, it serves `noble-security`'s `InRelease`
+signed by Ubuntu's archive key and published in the last 7 days. The step warns when
+it uses a mirror instead of Canonical, and fails when none answers.
+
+- **Why.** On 11 November 2026 Canonical's DNS went down, and each lookup on a runner
+  took about 20 seconds to fail. With any Canonical source listed, the bootstrap's
+  `apt-get update` used its whole 5-minute limit on retries, and every Host job failed.
+  The mirrors use their own DNS.
+- **One archive, not a list.** apt's `mirror+file` method hangs without output when its
+  first mirror drops packets, and a second source in the list still waits out every
+  failing lookup. Checking first and listing one archive avoids both.
+- **What stays verified.** Only the source URIs change. `Signed-By` and Ubuntu's keyring
+  are untouched, so apt verifies every index and package against Ubuntu's archive key,
+  whichever archive serves them. The 7-day check turns away a mirror that has stopped
+  syncing; on that day one listed mirror was 3 days behind.
+- **What it does not cover.** Ubuntu's metadata has no expiry, so apt itself would
+  accept an older but correctly signed index from a mirror. The check runs once, on one
+  file. This is acceptable for a disposable runner, not for a customer's host.
+- **Retries.** The step sets `Acquire::Retries "5"`, up from apt's default of 3.
+
+This is CI only. The production bootstrap is unchanged and uses whatever sources its
+host has, which in CI are the ones this step chose. A fresh customer install still
+depends on that host's own mirrors during an outage like this one. Whether the product should offer a fallback is a separate
+decision. The bootstrap limits its own `apt-get update` to 5 minutes for any source
+that hangs.
 
 ## Image downloads
 
