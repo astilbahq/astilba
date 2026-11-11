@@ -1,5 +1,5 @@
 {
-  "apps/platform/src/features/deployments.tsx": 833,
+  "apps/platform/src/features/deployments.tsx": 828,
   "apps/platform/src/features/previews.tsx": 625,
   "apps/platform/tests/auth.spec.ts": 922,
   "services/platform/internal/agent/backup_data.go": 722,
