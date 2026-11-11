@@ -206,12 +206,16 @@ export async function freePort(value) {
   });
 }
 
-export async function anyPort() {
-  const server = createServer();
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const { port } = server.address();
-  await new Promise((resolve) => server.close(resolve));
-  return port;
+// A free loopback port other than the ones named, which the launcher checked but does not
+// hold until its own services bind them.
+export async function anyPort(reserved = []) {
+  for (;;) {
+    const server = createServer();
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const { port } = server.address();
+    await new Promise((resolve) => server.close(resolve));
+    if (!reserved.includes(port)) return port;
+  }
 }
 
 export const sha256 = (path) =>

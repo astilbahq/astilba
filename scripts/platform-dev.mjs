@@ -77,6 +77,7 @@ if (!stack && !host?.startsWith("unix:///"))
     "Set PLAT_APP_DOCKER_HOST to a disposable local Docker Unix socket, or use --vm PROFILE",
   );
 const ingressPort = port - 2;
+const fixedPorts = [port, port - 1, ingressPort];
 
 const root = resolve(import.meta.dirname, "..");
 const platform = join(root, "services/platform");
@@ -386,13 +387,13 @@ try {
         cert: readFileSync(agent.certificate),
         apiPort: port - 1,
       });
+      const proxyPort = await anyPort(fixedPorts);
       await new Promise((resolve, reject) => {
         proxy.once("error", reject);
-        proxy.listen(0, "127.0.0.1", resolve);
+        proxy.listen(proxyPort, "127.0.0.1", resolve);
       });
-      const proxyPort = proxy.address().port;
       // Chosen while the proxy holds its port, so the two cannot coincide.
-      const databasePort = await anyPort();
+      const databasePort = await anyPort(fixedPorts);
       serve(
         "ssh",
         vm.tunnel({

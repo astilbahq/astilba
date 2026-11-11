@@ -13,11 +13,27 @@ export function stackVM({ vm, state, saveState }) {
   };
   const start = async (status) => {
     started = status !== "Running";
-    await vm.start();
+    try {
+      await vm.start();
+    } catch (error) {
+      if (state.vm !== "creating") throw error;
+      throw new Error(
+        `Colima profile ${vm.profile} was left half made by an interrupted first start and does not boot. If it is this checkout's, delete it with \`colima delete ${vm.profile} --data\` and run this again.\n${error.message}`,
+      );
+    }
   };
   const create = async () => {
     created = true;
-    await vm.create();
+    try {
+      await vm.create();
+    } catch (error) {
+      // "creating" names only a profile this checkout brought into existence.
+      if ((await vm.status({ cleanup: true })) === "absent") {
+        delete state.vm;
+        saveState();
+      }
+      throw error;
+    }
   };
 
   return {
@@ -47,16 +63,7 @@ export function stackVM({ vm, state, saveState }) {
         console.log(
           `Creating Colima profile ${vm.profile}; the first start takes a few minutes…`,
         );
-        try {
-          await create();
-        } catch (error) {
-          // "creating" names only a profile this checkout brought into existence.
-          if ((await vm.status({ cleanup: true })) === "absent") {
-            delete state.vm;
-            saveState();
-          }
-          throw error;
-        }
+        await create();
       } else if (state.vm === "creating") {
         // An interrupted creation may have stopped part way through provisioning, and a
         // VM that was never claimed holds nothing to keep, so it is made again.
@@ -91,14 +98,18 @@ export function stackVM({ vm, state, saveState }) {
       owned = true;
     },
     // On the way out. The VM keeps its data and workloads, which start again with it. One
-    // this run tried to create is stopped unless another stack won the race to claim it.
+    // this run tried to create is stopped unless another stack won the race to claim it;
+    // if its marker cannot be read yet, nothing shows it is anyone else's.
     async release() {
       if ((await vm.status({ cleanup: true })) !== "Running") return;
-      if (
-        owned ||
-        started ||
-        (created && (await vm.marker({ cleanup: true })) !== "other")
-      ) {
+      const claimedElsewhere = async () => {
+        try {
+          return (await vm.marker({ cleanup: true })) === "other";
+        } catch {
+          return false;
+        }
+      };
+      if (owned || started || (created && !(await claimedElsewhere()))) {
         console.log(`Stopping Colima profile ${vm.profile}…`);
         await vm.stop();
       }
