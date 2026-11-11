@@ -126,7 +126,7 @@ func (s *Service) Export(ctx context.Context, p store.Principal, ws uuid.UUID, p
 		}
 		archive.Name = w.Name
 		archive.RequireMFA = w.RequireMFA
-		archive, err = captureArchive(ctx, tx, archive, true)
+		archive, err = captureArchive(ctx, tx, archive, captureExport)
 		if err != nil {
 			return err
 		}

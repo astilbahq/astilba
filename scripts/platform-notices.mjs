@@ -7,7 +7,7 @@ import {
   stat,
   writeFile,
 } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 
 const root = resolve(import.meta.dirname, "..");
 const target = resolve(
@@ -23,16 +23,26 @@ const output = execFileSync(
     "list",
     "-deps",
     "-f",
-    "{{if .Module}}{{.Module.Path}}|{{.Module.Version}}|{{.Module.Dir}}{{end}}",
+    "{{if .Module}}{{.Module.Path}}|{{.Module.Version}}|{{.Module.Dir}}|{{.Dir}}{{end}}",
     "./cmd/server",
     "./cmd/agent",
     "./cmd/cli",
   ],
   { cwd: join(root, "services/platform"), encoding: "utf8" },
 );
+// A module can vendor code under another licence in a package of its own, such as a copy of
+// xxhash inside klauspost/compress, so a linked package's own licence files are listed too.
+const licensed = (names) =>
+  names.filter((n) => /^(licen[cs]e|copying|notice)(\.|$)/i.test(n));
 for (const line of output.split("\n")) {
-  const [name, version, dir] = line.split("|");
-  if (version && dir) modules.set(`${name}@${version}`, dir);
+  const [name, version, dir, packageDir] = line.split("|");
+  if (!version || !dir) continue;
+  modules.set(`${name}@${version}`, dir);
+  if (packageDir && packageDir !== dir) {
+    const files = licensed(await readdir(packageDir));
+    if (files.length > 0)
+      modules.set(`${name}@${version}/${relative(dir, packageDir)}`, packageDir);
+  }
 }
 async function locate(name, from) {
   let dir = from;
@@ -62,9 +72,7 @@ const pkg = JSON.parse(await readFile(join(app, "package.json"), "utf8"));
 for (const name of Object.keys(pkg.dependencies)) await visit(name, app);
 let notice = `Astilba platform\nCopyright Astilba contributors. Licensed under GNU AGPL version 3.\nRevision: ${revision}\nCorresponding source: ${revision === "development" ? "This development checkout" : `https://github.com/astilbahq/astilba/tree/${revision}`}\nReproduce with the repository Dockerfile, pinned lockfile and scripts.\n\nThird-party runtime notices follow.\n\n`;
 for (const [name, dir] of [...modules].sort(([a], [b]) => a.localeCompare(b))) {
-  const files = (await readdir(dir)).filter((n) =>
-    /^(licen[cs]e|copying|notice)(\.|$)/i.test(n),
-  );
+  const files = licensed(await readdir(dir));
   if (files.length === 0) throw new Error(`Missing runtime licence: ${name}`);
   notice += `===== ${name} =====\n`;
   for (const file of files.sort()) {

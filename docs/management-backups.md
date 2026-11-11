@@ -179,7 +179,9 @@ which the manifest records.
 
 6. **Fence the hosts before starting.** If any servers were enrolled, keep management stopped
    and follow [installation backup and recovery](hosting.md#installation-backup-and-recovery)
-   to fence each one first.
+   to fence each one first. If you'll recover cross-host work, use an image at least as new as
+   the one that last ran management: hosts' recovery checkpoints can only be read by the release
+   that sealed them or a newer one.
 
 7. **Start and check.** Start `astilba serve`, sign in with your second factor, and check that
    the workspaces, servers and recent history are what you expect. A second factor that works

@@ -2,8 +2,6 @@ package execution
 
 import (
 	"bufio"
-	"bytes"
-	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -245,16 +243,10 @@ func addRecoveryCheckpoint(ctx context.Context, tx pgx.Tx, keys *cryptobox.Keyri
 		return errors.New("the original management recovery keyring is required")
 	}
 	if d.Sequence == 0 {
-		reader, err := gzip.NewReader(bytes.NewReader(decoded))
-		if err != nil {
-			clear(decoded)
-			return err
-		}
-		uncompressed, err := io.ReadAll(io.LimitReader(reader, portability.MaxArchiveBytes+1))
-		reader.Close()
+		uncompressed, err := portability.DecompressRecovery(decoded)
 		clear(decoded)
-		if err != nil || len(uncompressed) > portability.MaxArchiveBytes {
-			return portability.ErrArchive
+		if err != nil {
+			return err
 		}
 		decoded = uncompressed
 		a, err := portability.DecodeRecovery(decoded)

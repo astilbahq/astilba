@@ -937,7 +937,7 @@ func TestNativeCrossHostOlderBackupRecovery(t *testing.T) {
 	}
 	// Imported compatible bases may exceed the admission ceiling together.
 	// Lost-response recovery still needs to inspect that trusted database.
-	if _, err = destination.st.Pool.Exec(ctx, `INSERT INTO audit_events(workspace_id,id,actor_id,action,resource_id) SELECT $1,gen_random_uuid(),$2,'fixture.retained_history',$1 FROM generate_series(1,10001)`, ws, owner); err != nil {
+	if _, err = destination.st.Pool.Exec(ctx, `INSERT INTO projects(workspace_id,id,name) SELECT $1,gen_random_uuid(),'Retained '||i FROM generate_series(1,10001) i`, ws); err != nil {
 		t.Fatal(err)
 	}
 	bounded, err := destination.st.Pool.Begin(ctx)
