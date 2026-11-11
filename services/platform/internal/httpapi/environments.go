@@ -233,14 +233,17 @@ func (s *Server) UpdateDraft(w http.ResponseWriter, r *http.Request, ws, pid, id
 				return store.IfMissing(e, domain.Invalid("specification.secretVersionId"))
 			}
 		}
-		// Saving the draft unchanged adds no revision.
-		same, e := q.GetRevisionHolding(ctx, db.GetRevisionHoldingParams{WorkspaceID: ws, EnvironmentID: id, ID: env.DraftRevisionID, Specification: canonical})
-		if e == nil {
-			out = revision(same)
-			return nil
-		}
-		if !errors.Is(e, pgx.ErrNoRows) {
-			return e
+		// Saving the draft unchanged adds no revision. The kept revision shows who saved it and when,
+		// so only a principal that may read the environment gets it, as on a conflict.
+		if p := principal(ctx); p.Automation == nil || p.Automation.Allows(domain.EnvironmentRead) {
+			same, e := q.GetRevisionHolding(ctx, db.GetRevisionHoldingParams{WorkspaceID: ws, EnvironmentID: id, ID: env.DraftRevisionID, Specification: canonical})
+			if e == nil {
+				out = revision(same)
+				return nil
+			}
+			if !errors.Is(e, pgx.ErrNoRows) {
+				return e
+			}
 		}
 		newID := uuid.New()
 		rev, e := insertRevision(r, q, ws, id, newID, canonical)

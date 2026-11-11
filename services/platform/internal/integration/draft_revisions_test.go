@@ -104,4 +104,13 @@ func TestSavingAnUnchangedDraftAddsNoRevision(t *testing.T) {
 	}
 	// An unchanged save still has to name the current draft as its base.
 	b.call("PUT", path+"/draft", map[string]any{"baseRevisionId": stored, "specification": changed}, 409, nil)
+
+	// A credential that may not read the environment isn't shown who saved the draft or when, so
+	// its unchanged save adds a revision of its own.
+	writer := issueAutomation(t, b, path, domain.ConfigurationWrite)
+	var written api.Revision
+	bearerCall(t, f, *writer.Token, "PUT", path+"/draft", api.DraftUpdate{BaseRevisionId: second.Id, Specification: changed}, 200, &written)
+	if c, _ := revisions(); written.Id == second.Id || c != count+2 {
+		t.Fatalf("a write-only credential's unchanged save answered with %s and added %d revisions", written.Id, c-count-1)
+	}
 }
