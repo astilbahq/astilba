@@ -64,6 +64,8 @@ previously encrypted data.
 6. Follow [agent installation](agent.md), then exercise a deployment and restore
    on disposable infrastructure before admitting customer workloads.
 
+To move to a newer version later, follow [upgrading management](management-upgrades.md).
+
 The served `/source/NOTICE.txt` identifies the corresponding source. Keep the
 matching source archive available with every distributed or hosted version.
 
@@ -606,6 +608,9 @@ docker compose exec -T database pg_dump --username astilba --format=custom astil
 Use the actual database service/name configured for the installation. Keep database
 credentials out of command-line arguments and terminal transcripts. Test restoring
 both pieces; a successful upload alone is not a verified backup.
+[Management backups](management-backups.md) has a reference script and timer that
+encrypt and upload the database nightly to storage the server cannot erase, with an
+alert when it fails, and the full restore procedure.
 
 Restore with the matching application version into a clean database and private
 keyring mount. Keep the restored management process stopped while fencing every

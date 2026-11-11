@@ -1,0 +1,11 @@
+[Unit]
+Description=Nightly Astilba management database backup
+Documentation=https://github.com/astilbahq/astilba/blob/main/docs/management-backups.md
+
+[Timer]
+OnCalendar=*-*-* 02:30:00 UTC
+RandomizedDelaySec=30m
+Persistent=true
+
+[Install]
+WantedBy=timers.target
