@@ -103,8 +103,10 @@ check-in.
 The script reaches PostgreSQL with `docker exec` into the container named in
 `ASTILBA_BACKUP_DATABASE_CONTAINER`, so its `pg_dump` always matches the server. For a database
 elsewhere, leave that empty and install the PostgreSQL client for the server's major version,
-or newer, on the host, and set libpq's variables, such as `PGHOST`, `PGSSLMODE=verify-full`
-and `PGPASSFILE`, in the environment file. Give the password through a `PGPASSFILE`, never
+or newer, on the host, and set libpq's variables, such as `PGHOST`, `PGSSLMODE=verify-full`,
+`PGSSLROOTCERT` and `PGPASSFILE`, in the environment file. The service hides `/root`, so libpq
+cannot use `~/.postgresql/root.crt` or `~/.pgpass` there: set `PGSSLROOTCERT=system` (libpq 16
+or newer) or a CA file under `/etc`, and give the password through a `PGPASSFILE`, never
 `PGPASSWORD`.
 
 ## The keyring
@@ -188,7 +190,8 @@ backup interval is how much you can lose.
 
 ## Restore drills
 
-Restore a backup on a disposable machine before you rely on it, and again every quarter. A
+Restore a backup on a disposable machine before you rely on it, and again every quarter. Never
+run a drill on the management host: the restore steps name the real database container. A
 drill copy holds the same Git, provider and webhook credentials as the real installation, so it
 must not be able to use them. Give it an environment file of its own that holds only the
 database password, keyring path, origin and image, with no SMTP, DNS provider or GitHub App
@@ -208,8 +211,7 @@ networks:
     internal: true
 ```
 
-Run it under a project name of its own, such as `docker compose -p astilba-drill`, so it
-cannot touch the real installation's containers or volume.
+If your drill's containers have other names, use them in the restore steps.
 
 To sign in to it, run the client in the management container's network namespace, where it
 can reach `http://127.0.0.1:8080`, for example with

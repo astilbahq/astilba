@@ -37,7 +37,8 @@ Upgrade management before the agents. These steps assume
 ## Upgrade
 
 1. **Stop management**, so nothing changes after the backup: `docker compose stop platform`.
-   Check the count above is still 0.
+   Check the count above is still 0. If it is not, start management, wait for those
+   operations to finish, and stop it again.
 2. **Back up.** Run the off-site backup and check that it succeeded, then also keep a local
    dump, which is quicker to restore and needs no keys from elsewhere:
 
