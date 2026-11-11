@@ -214,3 +214,9 @@ SELECT name FROM servers WHERE workspace_id = @workspace_id AND id = @id;
 SELECT p.name AS project, e.name AS environment, e.purpose FROM environments e JOIN projects p ON p.workspace_id = e.workspace_id AND p.id = e.project_id
 WHERE e.workspace_id = @workspace_id AND EXISTS(SELECT 1 FROM route_claims c WHERE c.workspace_id = e.workspace_id AND c.environment_id = e.id AND c.server_id = @server_id)
 ORDER BY p.name, e.name;
+
+-- name: ServerBuildEgress :one
+SELECT role,build_egress FROM servers WHERE workspace_id=$1 AND id=$2;
+
+-- name: SetServerBuildEgress :execrows
+UPDATE servers SET build_egress=$3 WHERE workspace_id=$1 AND id=$2 AND NOT revoked AND role<>'deployment';

@@ -210,6 +210,7 @@ func TestGitPushFloodDelaysNoOtherWorkspace(t *testing.T) {
 		enrolled, in, _ := enrollment(t, f, b, ws, "build")
 		yes := true
 		in.Capabilities.Build = &yes
+		in.Capabilities.BuildNetwork = &yes
 		agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/enroll", "", in, 200, nil)
 		for _, branch := range branches {
 			autoBuildTarget(t, f, b, ws, c.Connection.ID, enrolled.Server.Id, branch)
@@ -412,6 +413,7 @@ func TestCrashedGitJobReleasesItsWorkspacesTurn(t *testing.T) {
 	enrolled, in, _ := enrollment(t, f, b, ws, "build")
 	yes := true
 	in.Capabilities.Build = &yes
+	in.Capabilities.BuildNetwork = &yes
 	agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/enroll", "", in, 200, nil)
 	autoBuildTarget(t, f, b, ws, c.Connection.ID, enrolled.Server.Id, "main")
 	// Three of the workspace's jobs were running when their client stopped, longer ago than any

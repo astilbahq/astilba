@@ -96,6 +96,7 @@ func dispatchBuild(t *testing.T, ctx context.Context, f *fixture, arguments map[
 	enrolled, in, token := enrollment(t, f, b, ws, "build")
 	yes := true
 	in.Capabilities.Build = &yes
+	in.Capabilities.BuildNetwork = &yes
 	agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/enroll", "", in, 200, nil)
 	agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/heartbeat", token, api.AgentHeartbeat{Capabilities: in.Capabilities, Preflight: in.Preflight}, 200, nil)
 	config := pipeline.BuildConfig{ConnectionID: connection.Connection.ID, Branch: "main", RunnerID: enrolled.Server.Id, Context: ".", Dockerfile: "Dockerfile", Architecture: "arm64", Arguments: arguments, Secrets: map[string]uuid.UUID{}}

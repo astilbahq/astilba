@@ -473,9 +473,29 @@ func (h Host) inspectRoutes(ctx context.Context, m Manifest) error {
 }
 func table(m Manifest) string { return "astilba_" + strings.ReplaceAll(m.NetworkID.String(), "-", "") }
 func (h Host) publishRules(ctx context.Context, m Manifest, rules string) error {
-	raw, err := h.run(ctx, "nft", nil, "-j", "list", "tables")
+	return h.publishTable(ctx, table(m), m.Alias(), rules)
+}
+
+// publishTable replaces the inet table name, which rules define, in one transaction. A table
+// of that name without the owner's comment is someone else's and is never replaced.
+func (h Host) publishTable(ctx context.Context, name, comment, rules string) error {
+	owned, err := h.ownedTable(ctx, name, comment)
 	if err != nil {
 		return err
+	}
+	prefix := ""
+	if owned {
+		prefix = "delete table inet " + name + "\n"
+	}
+	_, err = h.run(ctx, "nft", []byte(prefix+rules), "-f", "-")
+	return err
+}
+
+// ownedTable reports whether the inet table name exists, refusing one another owner made.
+func (h Host) ownedTable(ctx context.Context, name, comment string) (bool, error) {
+	raw, err := h.run(ctx, "nft", nil, "-j", "list", "tables")
+	if err != nil {
+		return false, err
 	}
 	var state struct {
 		Items []struct {
@@ -487,19 +507,17 @@ func (h Host) publishRules(ctx context.Context, m Manifest, rules string) error 
 		} `json:"nftables"`
 	}
 	if readToolJSON(raw, &state) != nil {
-		return errors.New("cannot inspect host firewall")
+		return false, errors.New("cannot inspect host firewall")
 	}
-	prefix := ""
 	for _, item := range state.Items {
-		if item.Table != nil && item.Table.Family == "inet" && item.Table.Name == table(m) {
-			if item.Table.Comment != m.Alias() {
-				return errors.New("managed firewall name is occupied by unrelated state")
+		if item.Table != nil && item.Table.Family == "inet" && item.Table.Name == name {
+			if item.Table.Comment != comment {
+				return false, errors.New("managed firewall name is occupied by unrelated state")
 			}
-			prefix = "delete table inet " + table(m) + "\n"
+			return true, nil
 		}
 	}
-	_, err = h.run(ctx, "nft", []byte(prefix+rules), "-f", "-")
-	return err
+	return false, nil
 }
 
 var bridgeName = regexp.MustCompile(`^(br-[a-f0-9]{12}|as[a-f0-9]{12})$`)

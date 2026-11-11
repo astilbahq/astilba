@@ -1,0 +1,32 @@
+[Unit]
+Description=Astilba management database backup
+Documentation=https://github.com/astilbahq/astilba/blob/main/docs/management-backups.md
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+UMask=0077
+ExecStart=/usr/local/sbin/astilba-management-backup
+LoadCredential=s3:/etc/astilba/management-backup.s3
+# The home directory is hidden, so give the Docker CLI an empty configuration of its own.
+Environment=DOCKER_CONFIG=%S/astilba-management-backup/.docker
+StateDirectory=astilba-management-backup
+StateDirectoryMode=0700
+TimeoutStartSec=3h
+Nice=10
+IOSchedulingClass=idle
+CapabilityBoundingSet=
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=yes
+LockPersonality=yes
+SystemCallArchitectures=native

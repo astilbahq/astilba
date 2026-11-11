@@ -728,6 +728,7 @@ type Server struct {
 	ControllerGeneration  int64       `json:"controller_generation"`
 	AwaitingTransfer      bool        `json:"awaiting_transfer"`
 	PreviewOnly           bool        `json:"preview_only"`
+	BuildEgress           []byte      `json:"build_egress"`
 	EnrollmentEpoch       int64       `json:"enrollment_epoch"`
 	KeyRotatedAt          *time.Time  `json:"key_rotated_at"`
 	RotateKeyRequested    bool        `json:"rotate_key_requested"`

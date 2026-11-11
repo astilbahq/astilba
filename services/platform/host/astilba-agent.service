@@ -16,7 +16,8 @@ ProtectHome=yes
 ProtectSystem=strict
 ReadWritePaths=/var/lib/astilba-agent /usr/local/bin
 PrivateTmp=yes
-RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+# Netlink lets the agent install the nftables policy that fences builds off the host.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
 
 [Install]
 WantedBy=multi-user.target

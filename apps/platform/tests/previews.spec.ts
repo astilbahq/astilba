@@ -80,6 +80,7 @@ test("preview policy retains failed inputs and approves only the displayed fork 
           arch: "arm64",
           docker: true,
           build: true,
+          buildNetwork: true,
           buildControls: true,
           visual: true,
           previews: true,

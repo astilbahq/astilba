@@ -2013,6 +2013,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/workspaces/{workspaceId}/servers/{serverId}/build-network": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                serverId: string;
+            };
+            cookie?: never;
+        };
+        get: operations["getServerBuildNetwork"];
+        /** @description Replaces the runner's build network allowlist. Requires the workspace owner with recent authentication. Builds queued earlier keep only destinations still allowed. */
+        put: operations["configureServerBuildNetwork"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/workspaces/{workspaceId}/servers/{serverId}/transfer": {
         parameters: {
             query?: never;
@@ -2620,6 +2640,8 @@ export interface components {
             /** @description Supported Railpack planner/frontend version. Agents send this extension only after a controller response advertises Astilba-Agent-Railpack with v1. */
             railpackVersion?: string;
             build?: boolean;
+            /** @description Runs builds on its owned build network behind the build egress policy. Advertised only after Astilba-Agent-Build-Network v1. */
+            buildNetwork?: boolean;
             /** @description Supports general schedule formats and bounded job cleanup. Advertised only after Astilba-Agent-Schedules v1. */
             schedules?: boolean;
             backups?: boolean;
@@ -2826,6 +2848,15 @@ export interface components {
             size: number;
             sha256: string;
             signature: string;
+        };
+        /** @description Private IPv4 TCP destinations, such as a package mirror, that builds on this runner may reach. Builds always reach public addresses, and never loopback, link-local or cloud metadata addresses, the host itself or IPv6. */
+        BuildNetwork: {
+            allow: components["schemas"]["BuildDestination"][];
+        };
+        BuildDestination: {
+            /** @description An IPv4 address or range in a private range, such as 10.0.4.12 or 10.0.4.0/24. */
+            prefix: string;
+            port: number;
         };
         UpdateAgent: {
             version: string;
@@ -9264,6 +9295,74 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["WorkspaceArchive"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    getServerBuildNetwork: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                serverId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Private destinations builds on this runner may reach */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BuildNetwork"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    configureServerBuildNetwork: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                serverId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BuildNetwork"];
+            };
+        };
+        responses: {
+            /** @description The stored allowlist, sorted and without duplicates */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BuildNetwork"];
                 };
             };
             /** @description Error */

@@ -193,6 +193,14 @@ if ! "$docker_ready"; then
   [[ $(docker --host unix:///var/run/docker.sock version --format '{{.Server.Version}}') == 29.9.2 ]]
   [[ $(docker compose version --short) == 5.6.1 || $(docker compose version --short) == v5.6.1 ]]
 fi
+# The agent fences every build off this host and private networks with nftables, which
+# Ubuntu installs by default; a minimal image may lack it.
+if ! command -v nft >/dev/null; then
+  step='install nftables for build isolation'
+  printf '%s\n' 'Installing Ubuntu'"'"'s nftables 1.0.9, which the agent uses to keep builds away from this host and private networks.'
+  timeout --foreground --kill-after=30 300 env DEBIAN_FRONTEND=noninteractive apt-get update || die 'apt-get update failed or did not finish within 5 minutes; no packages were changed. Check this host'"'"'s package sources, then run this script again.'
+  DEBIAN_FRONTEND=noninteractive apt-get install --yes --no-remove --no-install-recommends nftables=1.0.9-1ubuntu0.1
+fi
 inspect_agent_targets
 step='prepare the verified agent service'
 install -d -m 0700 /var/lib/astilba-agent

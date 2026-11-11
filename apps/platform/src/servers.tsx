@@ -10,8 +10,8 @@ import { Select } from "./components/select";
 import { ManagedNetwork } from "./features/managed-network";
 import { ServerMetrics } from "./features/metrics";
 import { ServerCredentials } from "./features/server-credentials";
-import { ServerDomains } from "./features/server-domains";
 import { ServerOnboarding } from "./features/server-onboarding";
+import { ServerSettings } from "./features/server-settings";
 import * as s from "./styles";
 import { BusyButton, ErrorNotice, Form, text, useAction } from "./ui";
 import { WorkspaceContext } from "./workspace-context";
@@ -286,13 +286,11 @@ function ServerWorkspace({ workspace }: { workspace: Schema["Workspace"] }) {
                 · protocol {server.capabilities.protocol}
               </p>
             )}
-            {server.role !== "build" && server.status !== "revoked" && (
-              <ServerDomains
-                workspaceId={workspaceId}
-                server={server}
-                owner={owner}
-              />
-            )}
+            <ServerSettings
+              workspaceId={workspaceId}
+              server={server}
+              owner={owner}
+            />
             {server.capabilities && (
               <p>
                 Role capabilities:{" "}

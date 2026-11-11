@@ -416,3 +416,41 @@ func TestPrimaryIngressWaitsForItsOwnNegotiation(t *testing.T) {
 		t.Fatalf("capability advertised %d times after negotiation, %d rejected", received.Load(), rejected.Load())
 	}
 }
+
+// Management refuses builds to a runner whose stored capabilities lack build isolation, and
+// a heartbeat replaces them, so the first one after a start must not leave it out for long.
+func TestFirstHeartbeatResendsWhatTheControllerAccepts(t *testing.T) {
+	j, _ := testVisualJournal(t)
+	var heartbeats []bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body api.AgentHeartbeat
+		if json.UnmarshalDecode(jsontext.NewDecoder(r.Body), &body) != nil {
+			w.WriteHeader(400)
+			return
+		}
+		heartbeats = append(heartbeats, body.Capabilities.BuildNetwork != nil && *body.Capabilities.BuildNetwork)
+		w.Header().Set("Astilba-Agent-Features", "build-controls")
+		w.Header().Set("Astilba-Agent-Build-Network", "v1")
+		_, _ = w.Write([]byte(`{"role":"combined","rotationRequested":false}`))
+	}))
+	defer server.Close()
+	cfg, _ := j.Config()
+	cfg.Origin = server.URL
+	if err := j.SetConfig(cfg); err != nil {
+		t.Fatal(err)
+	}
+	c := NewClient(j, &Engine{Journal: j})
+	c.HTTP = server.Client()
+	yes := true
+	c.Observe = func(context.Context) api.AgentHeartbeat {
+		return api.AgentHeartbeat{Capabilities: api.AgentCapabilities{Build: &yes, BuildNetwork: &yes}, Preflight: api.HostPreflight{Notes: []string{}}}
+	}
+	for range 2 {
+		if err := c.heartbeat(context.Background(), "fixture", &api.AgentStatus{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(heartbeats) != 3 || heartbeats[0] || !heartbeats[1] || !heartbeats[2] {
+		t.Fatal("heartbeats advertised build isolation as", heartbeats)
+	}
+}

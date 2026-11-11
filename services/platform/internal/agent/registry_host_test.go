@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"net/http/httptest"
 	"net/http/httputil"
 	"net/url"
 	"os"
@@ -27,7 +26,7 @@ type nativeRegistry struct {
 }
 
 // Zot is pinned and installed by the disposable-host build-tools fixture.
-func startNativeRegistry(t *testing.T) *nativeRegistry {
+func startNativeRegistry(t *testing.T, lan nativeLAN) *nativeRegistry {
 	t.Helper()
 	binary := "/opt/astilba-plat5/bin/zot"
 	if _, err := os.Stat(binary); err != nil {
@@ -105,9 +104,9 @@ func startNativeRegistry(t *testing.T) *nativeRegistry {
 		}
 		return nil
 	}
-	server := httptest.NewTLSServer(proxy)
+	// Builds push from their own network, which reaches a private registry on the LAN but never the host.
+	server := nativeFixtureTLSServer(t, lan, proxy)
 	origin = server.URL
-	t.Cleanup(server.Close)
 	certificate := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw})
 	address := strings.TrimPrefix(origin, "https://")
 	trust := filepath.Join("/etc/docker/certs.d", address)
