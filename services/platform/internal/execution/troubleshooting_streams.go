@@ -36,7 +36,7 @@ func (s *Service) troubleshootingOffers(ctx context.Context, a Identity) ([]api.
 // AdmitTroubleshootingAgent admits the agent stream once, for a session offered to
 // this server under its current controller generation.
 func (s *Service) AdmitTroubleshootingAgent(ctx context.Context, a Identity, id uuid.UUID) (TroubleshootingStream, error) {
-	row, err := s.Store.Queries.AdmitTroubleshootingAgent(ctx, db.AdmitTroubleshootingAgentParams{CredentialHash: hash(a.Token), WorkspaceID: a.Workspace, ID: id, ServerID: a.ID})
+	row, err := s.Store.Queries.AdmitTroubleshootingAgent(ctx, db.AdmitTroubleshootingAgentParams{CredentialHash: a.Credential, Lineage: a.lineage(), WorkspaceID: a.Workspace, ID: id, ServerID: a.ID})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return TroubleshootingStream{}, domain.NotFound
 	}

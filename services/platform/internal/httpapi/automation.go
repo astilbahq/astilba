@@ -85,7 +85,7 @@ func (s *Server) apiRequestError(ctx context.Context, err error, w http.Response
 			return
 		}
 	}
-	if p == nil && agentIdentity(ctx).ID == uuid.Nil && !publicPath(r.URL.Path) && r.URL.Path != "/agent/v1/enroll" {
+	if p == nil && agentIdentity(ctx).ID == uuid.Nil && !publicPath(r.URL.Path) && !agentSelfAuthenticated(r.URL.Path) {
 		s.fail(w, r, domain.Unauthenticated)
 		return
 	}

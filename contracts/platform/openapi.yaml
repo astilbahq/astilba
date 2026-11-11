@@ -2017,6 +2017,34 @@
           "schema":
             "type": "string"
             "format": "uuid"
+  "/api/v1/workspaces/{workspaceId}/servers/{serverId}/network-removal":
+    "post":
+      "operationId": "removeServerFromNetworks"
+      "description": "Removes the server from every private network it belongs to, so its peers drop its key."
+      "responses":
+        "204":
+          "description": "Success"
+        "default":
+          "description": "Error"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Error"
+      "parameters":
+        -
+          "name": "workspaceId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+        -
+          "name": "serverId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
   "/api/v1/workspaces/{workspaceId}/servers/{serverId}/update":
     "post":
       "operationId": "updateAgent"
@@ -2302,6 +2330,117 @@
           "application/json":
             "schema":
               "$ref": "#/components/schemas/AgentRotation"
+      "security":
+        -
+          "agentBearer": []
+  "/agent/v1/challenge":
+    "post":
+      "operationId": "agentChallenge"
+      "responses":
+        "200":
+          "description": "Success"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/AgentChallenge"
+        "default":
+          "description": "Error"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Error"
+      "requestBody":
+        "required": true
+        "content":
+          "application/json":
+            "schema":
+              "$ref": "#/components/schemas/AgentChallengeRequest"
+      "security": []
+  "/agent/v1/token":
+    "post":
+      "operationId": "agentToken"
+      "responses":
+        "200":
+          "description": "Success"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/AgentToken"
+        "default":
+          "description": "Error"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Error"
+      "requestBody":
+        "required": true
+        "content":
+          "application/json":
+            "schema":
+              "$ref": "#/components/schemas/AgentTokenRequest"
+      "security": []
+  "/agent/v1/token/refresh":
+    "post":
+      "operationId": "refreshAgentToken"
+      "responses":
+        "200":
+          "description": "Success"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/AgentToken"
+        "default":
+          "description": "Error"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Error"
+      "requestBody":
+        "required": true
+        "content":
+          "application/json":
+            "schema":
+              "$ref": "#/components/schemas/AgentRefreshRequest"
+      "security": []
+  "/agent/v1/keys":
+    "post":
+      "operationId": "rotateAgentKey"
+      "responses":
+        "204":
+          "description": "Success"
+        "default":
+          "description": "Error"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Error"
+      "requestBody":
+        "required": true
+        "content":
+          "application/json":
+            "schema":
+              "$ref": "#/components/schemas/AgentKeyRotation"
+      "security":
+        -
+          "agentBearer": []
+  "/agent/v1/bind":
+    "post":
+      "operationId": "bindAgentKey"
+      "responses":
+        "204":
+          "description": "Success"
+        "default":
+          "description": "Error"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Error"
+      "requestBody":
+        "required": true
+        "content":
+          "application/json":
+            "schema":
+              "$ref": "#/components/schemas/AgentKeyBind"
       "security":
         -
           "agentBearer": []
@@ -5065,6 +5204,10 @@
         machineBoundRotation:
           type: boolean
           description: Agent names its enrolled machine when rotating its credential. Advertised only after Astilba-Agent-Machine-Rotation v1.
+        keyProtection:
+          type: string
+          enum: [tpm, host_key, unsealed, setup_required]
+          description: How the agent protects its key. Advertised only after Astilba-Agent-Keys v1.
     "HostPreflight":
       "type": "object"
       "additionalProperties": false
@@ -5155,6 +5298,19 @@
           "nullable": true
         "rotationRequested":
           "type": "boolean"
+        identity:
+          $ref: "#/components/schemas/ServerIdentity"
+    "ServerIdentity":
+      type: object
+      additionalProperties: false
+      required: [keyBound]
+      properties:
+        keyBound: {type: boolean, description: "The agent authenticates with a key it holds, not a bearer credential."}
+        keyCreatedAt: {type: string, format: date-time, nullable: true}
+        keyRotatedAt: {type: string, format: date-time, nullable: true}
+        lineageStartedAt: {type: string, format: date-time, nullable: true, description: "When the agent process now authenticating started its session."}
+        conflictAt: {type: string, format: date-time, nullable: true, description: "When management saw proof that a second holder has this server's key, in the current enrollment."}
+        conflictSignal: {type: string, maxLength: 40}
     "CreateServer":
       "type": "object"
       "additionalProperties": false
@@ -5194,7 +5350,6 @@
         - "serverId"
         - "token"
         - "machineId"
-        - "credential"
         - "capabilities"
         - "preflight"
       "properties":
@@ -5213,6 +5368,11 @@
           "type": "string"
           "minLength": 43
           "maxLength": 43
+          "description": "A legacy bearer credential. Agents send either this or publicKey with proof."
+        "publicKey":
+          "$ref": "#/components/schemas/AgentPublicKey"
+        "proof":
+          "$ref": "#/components/schemas/AgentSignature"
         "capabilities":
           "$ref": "#/components/schemas/AgentCapabilities"
         "preflight":
@@ -5243,6 +5403,79 @@
           "$ref": "#/components/schemas/ServerRole"
         "rotationRequested":
           "type": "boolean"
+    "AgentPublicKey":
+      "type": "string"
+      "description": "Base64url (unpadded) SPKI DER of an ECDSA P-256 public key."
+      "minLength": 80
+      "maxLength": 160
+    "AgentSignature":
+      "type": "string"
+      "description": "Base64url (unpadded) ASN.1 ECDSA signature."
+      "minLength": 8
+      "maxLength": 120
+    "AgentNonce":
+      "type": "string"
+      "minLength": 40
+      "maxLength": 120
+    "AgentChallengeRequest":
+      "type": "object"
+      "additionalProperties": false
+      "required": ["serverId"]
+      "properties":
+        "serverId": {"type": "string", "format": "uuid"}
+    "AgentChallenge":
+      "type": "object"
+      "additionalProperties": false
+      "required": ["nonce", "expiresAt"]
+      "properties":
+        "nonce": {"$ref": "#/components/schemas/AgentNonce"}
+        "expiresAt": {"type": "string", "format": "date-time"}
+    "AgentTokenRequest":
+      "type": "object"
+      "additionalProperties": false
+      "required": ["serverId", "publicKey", "nonce", "startCounter", "signature"]
+      "properties":
+        "serverId": {"type": "string", "format": "uuid"}
+        "publicKey": {"$ref": "#/components/schemas/AgentPublicKey"}
+        "nonce": {"$ref": "#/components/schemas/AgentNonce"}
+        "startCounter": {"type": "integer", "format": "int64", "minimum": 1}
+        "signature": {"$ref": "#/components/schemas/AgentSignature"}
+    "AgentRefreshRequest":
+      "type": "object"
+      "additionalProperties": false
+      "required": ["serverId", "refresh", "signature"]
+      "properties":
+        "serverId": {"type": "string", "format": "uuid"}
+        "refresh": {"type": "string", "minLength": 43, "maxLength": 43}
+        "signature": {"$ref": "#/components/schemas/AgentSignature"}
+    "AgentToken":
+      "type": "object"
+      "additionalProperties": false
+      "required": ["token", "refresh", "expiresAt", "rotateKey", "role"]
+      "properties":
+        "token": {"type": "string", "minLength": 47, "maxLength": 47}
+        "refresh": {"type": "string", "minLength": 43, "maxLength": 43}
+        "expiresAt": {"type": "string", "format": "date-time"}
+        "rotateKey": {"type": "boolean"}
+        "role": {"$ref": "#/components/schemas/ServerRole"}
+        "previewOnly": {"type": "boolean"}
+    "AgentKeyRotation":
+      "type": "object"
+      "additionalProperties": false
+      "required": ["publicKey", "nonce", "oldSignature", "newSignature"]
+      "properties":
+        "publicKey": {"$ref": "#/components/schemas/AgentPublicKey"}
+        "nonce": {"$ref": "#/components/schemas/AgentNonce"}
+        "oldSignature": {"$ref": "#/components/schemas/AgentSignature"}
+        "newSignature": {"$ref": "#/components/schemas/AgentSignature"}
+    "AgentKeyBind":
+      "type": "object"
+      "additionalProperties": false
+      "required": ["publicKey", "machineId", "proof"]
+      "properties":
+        "publicKey": {"$ref": "#/components/schemas/AgentPublicKey"}
+        "machineId": {"type": "string", "format": "uuid"}
+        "proof": {"$ref": "#/components/schemas/AgentSignature"}
     "AgentRotation":
       "type": "object"
       "additionalProperties": false
@@ -8787,7 +9020,7 @@
       required: [id, kind, resourceId, state, reason, openedAt, deliveries]
       properties:
         id: {type: string, format: uuid}
-        kind: {type: string, enum: [server_offline, disk_docker, disk_agent, service_runtime, service_health, backup_schedule, deployment_problem, build_problem, backup_problem, network_problem]}
+        kind: {type: string, enum: [server_offline, disk_docker, disk_agent, service_runtime, service_health, backup_schedule, deployment_problem, build_problem, backup_problem, network_problem, identity_conflict]}
         resourceId: {type: string, format: uuid}
         serverId: {type: string, format: uuid}
         environmentId: {type: string, format: uuid}

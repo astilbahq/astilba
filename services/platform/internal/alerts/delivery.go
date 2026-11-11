@@ -287,6 +287,8 @@ func Title(kind api.AlertKind) string {
 		return "Backup operation needs review"
 	case api.NetworkProblem:
 		return "Private network updates are failing"
+	case api.IdentityConflict:
+		return "Another copy of a server's agent key is in use"
 	default:
 		return "Operational alert"
 	}

@@ -20,13 +20,6 @@ UPDATE servers SET enrollment_hash = @enrollment_hash,enrollment_expires = @enro
 WHERE workspace_id = @workspace_id AND id = @id
 RETURNING id,name,role,last_seen,capabilities,preflight,revoked,rotation_requested,awaiting_transfer,preview_only;
 
--- name: RequestServerRotation :one
--- Only an agent that names its machine can complete a rotation. The caller refuses, and so rolls
--- back, a request for one that can't: it would keep presenting a candidate management refuses.
-UPDATE servers SET rotation_requested=true
-WHERE workspace_id = @workspace_id AND id = @id AND NOT revoked AND credential_hash IS NOT NULL
-RETURNING COALESCE((capabilities->>'machineBoundRotation')::boolean,false)::boolean AS supported;
-
 -- name: RevokeServer :execrows
 UPDATE servers SET revoked=true,credential_hash=NULL,previous_hash=NULL,enrollment_hash=NULL,rotation_requested=false
 WHERE workspace_id = @workspace_id AND id = @id;
@@ -51,9 +44,11 @@ WHERE id = @server_id AND NOT revoked AND NOT awaiting_transfer
     AND (credential_hash = @credential_hash OR (previous_hash = @credential_hash AND previous_until>now()));
 
 -- name: RecordAgentHeartbeat :one
-UPDATE servers SET last_seen=now(),capabilities = @capabilities,preflight = @preflight
-WHERE workspace_id = @workspace_id AND id = @server_id AND NOT revoked AND NOT awaiting_transfer
-    AND (credential_hash = @credential_hash OR (previous_hash = @credential_hash AND previous_until>now()))
+-- A token is honoured only while its lineage is the server's current one.
+UPDATE servers SET last_seen=now(),capabilities = sqlc.arg(capabilities)::jsonb,preflight = sqlc.arg(preflight)::jsonb
+WHERE servers.workspace_id = sqlc.arg(workspace_id)::uuid AND servers.id = sqlc.arg(server_id)::uuid AND NOT servers.revoked AND NOT servers.awaiting_transfer
+    AND (servers.credential_hash = sqlc.arg(credential_hash)::bytea OR (servers.previous_hash = sqlc.arg(credential_hash)::bytea AND servers.previous_until>now()))
+    AND (sqlc.narg(lineage)::uuid IS NULL OR EXISTS(SELECT 1 FROM agent_lineages l WHERE l.id = sqlc.narg(lineage)::uuid AND l.server_id = servers.id AND l.superseded_at IS NULL AND l.epoch = servers.enrollment_epoch))
 RETURNING role,
     -- An agent that can't prove its machine binding isn't told about a request it can't complete.
     (rotation_requested AND COALESCE((capabilities->>'machineBoundRotation')::boolean,false))::boolean AS rotation_requested,
@@ -76,16 +71,20 @@ WHERE workspace_id = @workspace_id AND id = @server_id AND NOT revoked AND NOT a
 -- Locks an authenticated agent's server row before it acts on an operation, so
 -- revocation, rotation and controller transfer cannot race acceptance.
 -- A cleared credential compares as NULL and is reported as invalid.
-SELECT COALESCE(NOT revoked AND NOT awaiting_transfer
-    AND (credential_hash = @credential_hash OR (previous_hash = @credential_hash AND previous_until>now())),
+SELECT COALESCE(NOT servers.revoked AND NOT servers.awaiting_transfer
+    AND (servers.credential_hash = sqlc.arg(credential_hash)::bytea OR (servers.previous_hash = sqlc.arg(credential_hash)::bytea AND servers.previous_until>now()))
+    AND (sqlc.narg(lineage)::uuid IS NULL OR EXISTS(SELECT 1 FROM agent_lineages l WHERE l.id = sqlc.narg(lineage)::uuid AND l.server_id = servers.id AND l.superseded_at IS NULL AND l.epoch = servers.enrollment_epoch)),
     false)::boolean AS valid
-FROM servers WHERE workspace_id = @workspace_id AND id = @server_id FOR UPDATE;
+FROM servers WHERE servers.workspace_id = sqlc.arg(workspace_id)::uuid AND servers.id = sqlc.arg(server_id)::uuid FOR UPDATE OF servers;
 
 -- name: LockAgentEnrollment :one
 -- unscoped: the enrollment token or existing credential establishes the workspace.
 -- Accepts an unexpired enrollment token or the credential already issued for
--- this server, so an interrupted exchange can be retried.
-SELECT workspace_id,controller_generation,awaiting_transfer,preview_only,(machine_id IS NULL)::boolean AS fresh
+-- this server, so an interrupted exchange can be retried. Only the code consumes anything: a retry
+-- through the credential changes nothing.
+SELECT workspace_id,controller_generation,awaiting_transfer,preview_only,(machine_id IS NULL)::boolean AS fresh,
+    (enrollment_hash = @enrollment_hash AND enrollment_expires>now() AND credential_hash IS NULL)::boolean AS consuming,
+    role,rotation_requested
 FROM servers
 WHERE id = @server_id AND NOT revoked AND (machine_id IS NULL OR machine_id = @machine_id)
     AND ((enrollment_hash = @enrollment_hash AND enrollment_expires>now() AND credential_hash IS NULL)

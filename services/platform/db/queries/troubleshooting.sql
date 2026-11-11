@@ -104,12 +104,13 @@ WHERE t.workspace_id = @workspace_id AND t.server_id = @server_id AND t.state = 
 ORDER BY t.created_at LIMIT 4;
 
 -- name: AdmitTroubleshootingAgent :one
-UPDATE troubleshooting_sessions t SET agent_attached_at = now(),agent_credential_hash = @credential_hash
+UPDATE troubleshooting_sessions t SET agent_attached_at = now(),agent_credential_hash = @credential_hash,agent_lineage = sqlc.narg(lineage)::uuid
 FROM servers s
 WHERE t.workspace_id = @workspace_id AND t.id = @id AND t.server_id = @server_id AND t.state = 'offered'
  AND t.agent_attached_at IS NULL AND t.ticket_expires_at > now()
  AND s.workspace_id = t.workspace_id AND s.id = t.server_id AND s.controller_generation = t.controller_generation
  AND s.credential_hash = @credential_hash
+ AND (sqlc.narg(lineage)::uuid IS NULL OR EXISTS(SELECT 1 FROM agent_lineages l WHERE l.id = sqlc.narg(lineage)::uuid AND l.server_id = s.id AND l.superseded_at IS NULL AND l.epoch = s.enrollment_epoch))
 RETURNING t.ticket_expires_at,t.deadline_at;
 
 -- name: RedeemTroubleshootingTicket :one
@@ -135,7 +136,9 @@ SELECT t.workspace_id,
   WHEN NOT EXISTS(SELECT 1 FROM sessions b WHERE b.expiry > now()
    AND b.token = translate(rtrim(encode(t.browser_session_hash,'base64'),'='),'+/','-_')) THEN 'browser session ended'
   WHEN s.revoked OR s.awaiting_transfer OR s.credential_hash IS DISTINCT FROM t.agent_credential_hash
-   OR s.controller_generation <> t.controller_generation THEN 'server credential changed'
+   OR s.controller_generation <> t.controller_generation
+   OR (t.agent_lineage IS NOT NULL AND NOT EXISTS(SELECT 1 FROM agent_lineages l WHERE l.id = t.agent_lineage
+    AND l.superseded_at IS NULL AND l.epoch = s.enrollment_epoch)) THEN 'server credential changed'
   ELSE ''
  END::text AS end_reason,
  h.status AS subscription_status,h.management_until AS subscription_until

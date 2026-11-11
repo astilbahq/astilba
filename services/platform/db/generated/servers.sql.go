@@ -375,41 +375,50 @@ func (q *Queries) ListServers(ctx context.Context, workspaceID uuid.UUID) ([]Lis
 }
 
 const lockAgentCredential = `-- name: LockAgentCredential :one
-SELECT COALESCE(NOT revoked AND NOT awaiting_transfer
-    AND (credential_hash = $1 OR (previous_hash = $1 AND previous_until>now())),
+SELECT COALESCE(NOT servers.revoked AND NOT servers.awaiting_transfer
+    AND (servers.credential_hash = $1::bytea OR (servers.previous_hash = $1::bytea AND servers.previous_until>now()))
+    AND ($2::uuid IS NULL OR EXISTS(SELECT 1 FROM agent_lineages l WHERE l.id = $2::uuid AND l.server_id = servers.id AND l.superseded_at IS NULL AND l.epoch = servers.enrollment_epoch)),
     false)::boolean AS valid
-FROM servers WHERE workspace_id = $2 AND id = $3 FOR UPDATE
+FROM servers WHERE servers.workspace_id = $3::uuid AND servers.id = $4::uuid FOR UPDATE OF servers
 `
 
 type LockAgentCredentialParams struct {
-	CredentialHash []byte    `json:"credential_hash"`
-	WorkspaceID    uuid.UUID `json:"workspace_id"`
-	ServerID       uuid.UUID `json:"server_id"`
+	CredentialHash []byte     `json:"credential_hash"`
+	Lineage        *uuid.UUID `json:"lineage"`
+	WorkspaceID    uuid.UUID  `json:"workspace_id"`
+	ServerID       uuid.UUID  `json:"server_id"`
 }
 
 // Locks an authenticated agent's server row before it acts on an operation, so
 // revocation, rotation and controller transfer cannot race acceptance.
 // A cleared credential compares as NULL and is reported as invalid.
 func (q *Queries) LockAgentCredential(ctx context.Context, arg LockAgentCredentialParams) (bool, error) {
-	row := q.db.QueryRow(ctx, lockAgentCredential, arg.CredentialHash, arg.WorkspaceID, arg.ServerID)
+	row := q.db.QueryRow(ctx, lockAgentCredential,
+		arg.CredentialHash,
+		arg.Lineage,
+		arg.WorkspaceID,
+		arg.ServerID,
+	)
 	var valid bool
 	err := row.Scan(&valid)
 	return valid, err
 }
 
 const lockAgentEnrollment = `-- name: LockAgentEnrollment :one
-SELECT workspace_id,controller_generation,awaiting_transfer,preview_only,(machine_id IS NULL)::boolean AS fresh
+SELECT workspace_id,controller_generation,awaiting_transfer,preview_only,(machine_id IS NULL)::boolean AS fresh,
+    (enrollment_hash = $1 AND enrollment_expires>now() AND credential_hash IS NULL)::boolean AS consuming,
+    role,rotation_requested
 FROM servers
-WHERE id = $1 AND NOT revoked AND (machine_id IS NULL OR machine_id = $2)
-    AND ((enrollment_hash = $3 AND enrollment_expires>now() AND credential_hash IS NULL)
+WHERE id = $2 AND NOT revoked AND (machine_id IS NULL OR machine_id = $3)
+    AND ((enrollment_hash = $1 AND enrollment_expires>now() AND credential_hash IS NULL)
         OR credential_hash = $4)
 FOR UPDATE
 `
 
 type LockAgentEnrollmentParams struct {
+	EnrollmentHash []byte     `json:"enrollment_hash"`
 	ServerID       uuid.UUID  `json:"server_id"`
 	MachineID      *uuid.UUID `json:"machine_id"`
-	EnrollmentHash []byte     `json:"enrollment_hash"`
 	CredentialHash []byte     `json:"credential_hash"`
 }
 
@@ -419,16 +428,20 @@ type LockAgentEnrollmentRow struct {
 	AwaitingTransfer     bool      `json:"awaiting_transfer"`
 	PreviewOnly          bool      `json:"preview_only"`
 	Fresh                bool      `json:"fresh"`
+	Consuming            bool      `json:"consuming"`
+	Role                 string    `json:"role"`
+	RotationRequested    bool      `json:"rotation_requested"`
 }
 
 // unscoped: the enrollment token or existing credential establishes the workspace.
 // Accepts an unexpired enrollment token or the credential already issued for
-// this server, so an interrupted exchange can be retried.
+// this server, so an interrupted exchange can be retried. Only the code consumes anything: a retry
+// through the credential changes nothing.
 func (q *Queries) LockAgentEnrollment(ctx context.Context, arg LockAgentEnrollmentParams) (LockAgentEnrollmentRow, error) {
 	row := q.db.QueryRow(ctx, lockAgentEnrollment,
+		arg.EnrollmentHash,
 		arg.ServerID,
 		arg.MachineID,
-		arg.EnrollmentHash,
 		arg.CredentialHash,
 	)
 	var i LockAgentEnrollmentRow
@@ -438,6 +451,9 @@ func (q *Queries) LockAgentEnrollment(ctx context.Context, arg LockAgentEnrollme
 		&i.AwaitingTransfer,
 		&i.PreviewOnly,
 		&i.Fresh,
+		&i.Consuming,
+		&i.Role,
+		&i.RotationRequested,
 	)
 	return i, err
 }
@@ -546,9 +562,10 @@ func (q *Queries) PromoteUnit(ctx context.Context, arg PromoteUnitParams) error 
 }
 
 const recordAgentHeartbeat = `-- name: RecordAgentHeartbeat :one
-UPDATE servers SET last_seen=now(),capabilities = $1,preflight = $2
-WHERE workspace_id = $3 AND id = $4 AND NOT revoked AND NOT awaiting_transfer
-    AND (credential_hash = $5 OR (previous_hash = $5 AND previous_until>now()))
+UPDATE servers SET last_seen=now(),capabilities = $1::jsonb,preflight = $2::jsonb
+WHERE servers.workspace_id = $3::uuid AND servers.id = $4::uuid AND NOT servers.revoked AND NOT servers.awaiting_transfer
+    AND (servers.credential_hash = $5::bytea OR (servers.previous_hash = $5::bytea AND servers.previous_until>now()))
+    AND ($6::uuid IS NULL OR EXISTS(SELECT 1 FROM agent_lineages l WHERE l.id = $6::uuid AND l.server_id = servers.id AND l.superseded_at IS NULL AND l.epoch = servers.enrollment_epoch))
 RETURNING role,
     -- An agent that can't prove its machine binding isn't told about a request it can't complete.
     (rotation_requested AND COALESCE((capabilities->>'machineBoundRotation')::boolean,false))::boolean AS rotation_requested,
@@ -556,11 +573,12 @@ RETURNING role,
 `
 
 type RecordAgentHeartbeatParams struct {
-	Capabilities   []byte    `json:"capabilities"`
-	Preflight      []byte    `json:"preflight"`
-	WorkspaceID    uuid.UUID `json:"workspace_id"`
-	ServerID       uuid.UUID `json:"server_id"`
-	CredentialHash []byte    `json:"credential_hash"`
+	Capabilities   []byte     `json:"capabilities"`
+	Preflight      []byte     `json:"preflight"`
+	WorkspaceID    uuid.UUID  `json:"workspace_id"`
+	ServerID       uuid.UUID  `json:"server_id"`
+	CredentialHash []byte     `json:"credential_hash"`
+	Lineage        *uuid.UUID `json:"lineage"`
 }
 
 type RecordAgentHeartbeatRow struct {
@@ -569,6 +587,7 @@ type RecordAgentHeartbeatRow struct {
 	PreviewOnly       bool   `json:"preview_only"`
 }
 
+// A token is honoured only while its lineage is the server's current one.
 func (q *Queries) RecordAgentHeartbeat(ctx context.Context, arg RecordAgentHeartbeatParams) (RecordAgentHeartbeatRow, error) {
 	row := q.db.QueryRow(ctx, recordAgentHeartbeat,
 		arg.Capabilities,
@@ -576,6 +595,7 @@ func (q *Queries) RecordAgentHeartbeat(ctx context.Context, arg RecordAgentHeart
 		arg.WorkspaceID,
 		arg.ServerID,
 		arg.CredentialHash,
+		arg.Lineage,
 	)
 	var i RecordAgentHeartbeatRow
 	err := row.Scan(&i.Role, &i.RotationRequested, &i.PreviewOnly)
@@ -696,26 +716,6 @@ func (q *Queries) RenewServerEnrollment(ctx context.Context, arg RenewServerEnro
 		&i.PreviewOnly,
 	)
 	return i, err
-}
-
-const requestServerRotation = `-- name: RequestServerRotation :one
-UPDATE servers SET rotation_requested=true
-WHERE workspace_id = $1 AND id = $2 AND NOT revoked AND credential_hash IS NOT NULL
-RETURNING COALESCE((capabilities->>'machineBoundRotation')::boolean,false)::boolean AS supported
-`
-
-type RequestServerRotationParams struct {
-	WorkspaceID uuid.UUID `json:"workspace_id"`
-	ID          uuid.UUID `json:"id"`
-}
-
-// Only an agent that names its machine can complete a rotation. The caller refuses, and so rolls
-// back, a request for one that can't: it would keep presenting a candidate management refuses.
-func (q *Queries) RequestServerRotation(ctx context.Context, arg RequestServerRotationParams) (bool, error) {
-	row := q.db.QueryRow(ctx, requestServerRotation, arg.WorkspaceID, arg.ID)
-	var supported bool
-	err := row.Scan(&supported)
-	return supported, err
 }
 
 const resumeMaintenanceSource = `-- name: ResumeMaintenanceSource :exec

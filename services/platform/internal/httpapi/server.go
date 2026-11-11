@@ -19,6 +19,7 @@ import (
 	"github.com/alexedwards/scs/v2"
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/host"
+	"github.com/astilbahq/astilba/services/platform/internal/agentidentity"
 	"github.com/astilbahq/astilba/services/platform/internal/alerts"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/auth"
@@ -265,7 +266,7 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 			out.Fields = &de.Fields
 		}
 		switch de.Code {
-		case "unauthenticated":
+		case "unauthenticated", agentidentity.KeyNotCurrent, agentidentity.NonceInvalid, agentidentity.CounterStale, agentidentity.RefreshReused, agentidentity.CodeNotAccepted:
 			status = 401
 		case "forbidden", "mfa_required", "recent_auth_required", "invitation_signin_required":
 			status = 403

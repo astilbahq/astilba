@@ -335,8 +335,25 @@ func (s *Service) servers(ctx context.Context, tx pgx.Tx, ws uuid.UUID) error {
 	if err != nil {
 		return err
 	}
+	conflicts, err := db.New(tx).IdentityConflicts(ctx, ws)
+	if err != nil {
+		return err
+	}
+	conflicted := make(map[uuid.UUID]bool, len(conflicts))
+	for _, c := range conflicts {
+		conflicted[c.ID] = true
+	}
 	for _, v := range servers {
 		t := target{resource: v.id, server: &v.id}
+		// Proof that a second holder has this server's agent key, in its current enrollment. A new
+		// enrollment code, or revocation, ends it.
+		identity := good
+		if conflicted[v.id] && !v.disabled {
+			identity = bad
+		}
+		if err = s.condition(ctx, tx, ws, api.IdentityConflict, t, identity); err != nil {
+			return err
+		}
 		value := unknown
 		if v.disabled {
 			value = stopped
