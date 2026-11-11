@@ -27,6 +27,7 @@ import {
 } from "./platform-dev-process.mjs";
 import { agentProxy } from "./platform-dev-proxy.mjs";
 import { routeDomain, seed } from "./platform-dev-seed.mjs";
+import { stackVM } from "./platform-dev-vm.mjs";
 
 const { values } = parseArgs({
   allowNegative: true,
@@ -92,9 +93,7 @@ const email = "owner@example.test";
 const password = "correct horse battery staple";
 let state;
 let vm;
-// Set once this run has read the VM's ownership marker, or started a VM to read it.
-let vmOwned = false;
-let vmStarted = false;
+let lifecycle;
 let agent;
 let locked = false;
 let cleanupError;
@@ -251,19 +250,13 @@ try {
   if (values.reset || values.wipe) {
     if (stack && state?.vm) {
       vm = devHost({ profile: state.profile, owner: state.owner, root, run });
-      const status = await vm.status();
-      if (status !== "absent") {
-        vmStarted = status !== "Running";
-        await vm.start();
-        // Only a VM this stack claimed is deleted, after reading its marker, or one it
-        // was creating when it stopped, before it could write one.
-        if (!(await vm.owned()) && state.vm !== "creating")
-          throw new Error(
-            `Colima profile ${state.profile} belongs to another stack; refusing to delete it`,
-          );
-        console.log(`Deleting Colima profile ${state.profile}…`);
-        await vm.remove();
-        vmStarted = false;
+      lifecycle = stackVM({ vm, state, saveState });
+      if (!(await lifecycle.remove())) {
+        console.log(
+          `Leaving Colima profile ${state.profile} alone: another stack has claimed it.`,
+        );
+        // Stops it again if it was started only to read its marker.
+        await lifecycle.release();
       }
     } else if (state && !stack) {
       const id = await container();
@@ -293,45 +286,8 @@ try {
     let arch;
     if (stack) {
       vm = devHost({ profile: state.profile, owner: state.owner, root, run });
-      const status = await vm.status();
-      if (status === "absent") {
-        if (state.initialized)
-          throw new Error(
-            "The local stack's VM is missing; start over with --reset",
-          );
-        // Recorded first, so an interrupted creation can be finished or wiped later.
-        state.vm = "creating";
-        saveState();
-        console.log(
-          `Creating Colima profile ${state.profile}; the first start takes a few minutes…`,
-        );
-        await vm.create();
-      } else if (state.vm === "creating") {
-        // An interrupted creation may have stopped part way through provisioning, and a
-        // VM that was never claimed holds nothing to keep, so it is made again.
-        console.log(
-          `Creating Colima profile ${state.profile} again; its first start was interrupted…`,
-        );
-        await vm.remove();
-        await vm.create();
-      } else {
-        if (!state.vm)
-          throw new Error(
-            `Colima profile ${state.profile} already exists and was not created by this stack; choose another --vm profile`,
-          );
-        console.log(`Starting Colima profile ${state.profile}…`);
-        await vm.start();
-      }
-      if (state.vm === "creating") {
-        await vm.claim();
-        state.vm = true;
-        saveState();
-      }
-      if (!(await vm.owned()))
-        throw new Error(
-          `Colima profile ${state.profile} belongs to another stack; refusing to change it`,
-        );
-      vmOwned = true;
+      lifecycle = stackVM({ vm, state, saveState });
+      await lifecycle.bring();
       await vm.prepare();
       host = await vm.dockerHost();
       arch = await vm.arch();
@@ -414,7 +370,6 @@ try {
     let address = await docker(["port", id, "5432/tcp"]);
     if (!/^127\.0\.0\.1:\d+$/.test(address))
       throw new Error("Local PostgreSQL must publish one loopback port");
-    let proxyPort;
     if (stack) {
       if (address !== `127.0.0.1:${vmPorts.postgres}`)
         throw new Error("The stack's PostgreSQL is not on its VM port");
@@ -423,8 +378,21 @@ try {
       const ssh = await vm.sshConfig();
       const config = join(directory, "ssh.config");
       writeFileSync(config, ssh.config, { mode: 0o600 });
+      // Listening before the tunnel opens, so the agent finds it; until management is up
+      // it answers 502 and the agent retries.
+      await agent.ensureCertificate();
+      proxy = agentProxy({
+        key: readFileSync(agent.certificateKey),
+        cert: readFileSync(agent.certificate),
+        apiPort: port - 1,
+      });
+      await new Promise((resolve, reject) => {
+        proxy.once("error", reject);
+        proxy.listen(0, "127.0.0.1", resolve);
+      });
+      const proxyPort = proxy.address().port;
+      // Chosen while the proxy holds its port, so the two cannot coincide.
       const databasePort = await anyPort();
-      proxyPort = await anyPort();
       serve(
         "ssh",
         vm.tunnel({
@@ -472,18 +440,6 @@ try {
       () => httpReady(`http://127.0.0.1:${port - 1}/healthz`, 204),
       "API",
     );
-    if (stack) {
-      await agent.ensureCertificate();
-      proxy = agentProxy({
-        key: readFileSync(agent.certificateKey),
-        cert: readFileSync(agent.certificate),
-        apiPort: port - 1,
-      });
-      await new Promise((resolve, reject) => {
-        proxy.once("error", reject);
-        proxy.listen(proxyPort, "127.0.0.1", resolve);
-      });
-    }
     serve(
       process.execPath,
       [process.env.npm_execpath, "--filter", "@astilba/dashboard", "dev"],
@@ -567,16 +523,7 @@ try {
         const id = await container(true);
         if (id) await docker(["stop", "--time", "5", id], true);
       }
-      // The VM keeps its data and workloads, which start again with it. Only a VM whose
-      // marker this run read, one it started just to read it, or one it was creating is
-      // stopped.
-      if (
-        (vmOwned || vmStarted || state?.vm === "creating") &&
-        (await vm.status({ cleanup: true })) === "Running"
-      ) {
-        console.log(`Stopping Colima profile ${vm.profile}…`);
-        await vm.stop();
-      }
+      await lifecycle?.release();
     } catch (error) {
       cleanupError = error;
     }

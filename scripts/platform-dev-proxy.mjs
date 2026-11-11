@@ -3,7 +3,7 @@ import { createServer } from "node:https";
 
 // The agent only speaks HTTPS to management, and the local API serves loopback HTTP. This
 // proxy terminates TLS with the stack's own certificate, which only the VM trusts, and
-// forwards just the paths an agent uses. The browser API stays out of the VM's reach.
+// forwards just the paths an agent uses, so the browser API is not reachable over this link.
 const agentPaths = /^\/(agent\/v1\/|agent-artifacts\/|agent-public-key\.pem$)/;
 
 // Agent paths hold only UUIDs and hex digests, so anything encoded or dotted is refused

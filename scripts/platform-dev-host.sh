@@ -15,8 +15,6 @@ backups=/var/lib/astilba-dev-backups
 
 # Every later step changes this VM, so it must belong to this checkout's stack.
 if [[ "$mode" == claim ]]; then
-  # Claiming again finishes a claim an interrupted start began.
-  [[ -f "$marker" && "$(cat "$marker")" == "$owner" ]] && exit 0
   [[ ! -e /etc/astilba-dev && ! -e /var/lib/astilba-agent && ! -e /usr/local/bin/astilba-agent ]] ||
     { echo 'This VM already holds Astilba state; refusing to claim it.' >&2; exit 1; }
   install -d -m 0755 /etc/astilba-dev
@@ -77,10 +75,10 @@ if [[ "${compose#v}" != 5.6.1 ]]; then
   [[ "$(docker compose version --short)" == 5.6.1 || "$(docker compose version --short)" == v5.6.1 ]]
 fi
 
-# Lima answers on its gateway address for every port the Mac has open on loopback. Nothing
-# in this VM may reach the developer's own services that way: not deployed containers, and
-# not a privileged one that escapes to the VM. The agent reaches management through the
-# tunnel on this VM's loopback instead. Only DNS, which dnsmasq forwards to Lima's resolver
+# Lima answers on its gateway address for every port the Mac has open on loopback. Deployed
+# containers and the VM's own processes must not reach the developer's services that way;
+# root in the VM could remove these rules, which the docs say. The agent reaches management
+# through the tunnel on this VM's loopback instead. Only DNS, which dnsmasq forwards to Lima's resolver
 # on the gateway, stays open. The rules load at boot before Docker, so workloads that
 # restart with the VM never run without them.
 gateway=$(getent ahostsv4 host.lima.internal | awk 'NR == 1 { print $1 }')

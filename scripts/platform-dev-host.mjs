@@ -98,13 +98,14 @@ export function devHost({ profile, owner, root, run }) {
       if (restic !== "present")
         await script("services/platform/host/backup-tools.sh", []);
     },
-    async owned() {
-      const marker = await sudo([
-        "sh",
-        "-c",
-        "cat /etc/astilba-dev/owner 2>/dev/null || true",
-      ]);
-      return marker === owner;
+    // Whose marker the VM carries: "ours", "none" or "other".
+    async marker(options) {
+      const value = await sudo(
+        ["sh", "-c", "cat /etc/astilba-dev/owner 2>/dev/null || true"],
+        options,
+      );
+      if (value === owner) return "ours";
+      return value ? "other" : "none";
     },
     async stop() {
       await run("colima", ["stop", "--profile", profile], {

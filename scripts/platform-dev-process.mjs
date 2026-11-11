@@ -29,7 +29,8 @@ export function supervisor({ root, lock }) {
     try {
       process.kill(-child.pid, signal);
     } catch (error) {
-      if (error.code !== "ESRCH") throw error;
+      // macOS answers EPERM, not ESRCH, for a group whose members have all exited.
+      if (error.code !== "ESRCH" && error.code !== "EPERM") throw error;
     }
   }
   // Children marked `last`, such as the tunnel that carries management's database, keep
