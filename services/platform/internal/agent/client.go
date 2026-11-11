@@ -310,6 +310,7 @@ func (c *Client) rotate(ctx context.Context) error {
 	cfg.Pending = ""
 	return c.Journal.SetConfig(cfg)
 }
+
 // legacyRotation is the request earlier controllers accept: they reject a machine they don't read.
 type legacyRotation struct {
 	Credential string `json:"credential"`

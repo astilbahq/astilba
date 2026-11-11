@@ -15,10 +15,11 @@ import (
 	"github.com/google/uuid"
 )
 
-// credentialController behaves like management's credential exchange: it holds one credential per
-// server, accepts enrollment only with an unspent code or the credential it already holds, and
-// reads requests with the schema of the controller version it plays, refusing what that version
-// doesn't know.
+// credentialController behaves like management's credential exchange for one server: enrollment
+// takes an unspent code, or retries with the credential it stored, and only from the machine that
+// first enrolled; rotation needs the current credential and, from a controller that reads it, that
+// machine. It reads requests with the schema of the controller version it plays, refusing what that
+// version doesn't know.
 type credentialController struct {
 	machineRotation  atomic.Bool
 	mu               sync.Mutex
@@ -73,12 +74,13 @@ func (m *credentialController) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	switch r.URL.Path {
 	case "/agent/v1/enroll":
 		token, credential := text("token"), text("credential")
-		if !m.codes[token] && (m.credential == "" || credential != m.credential) {
+		var machine uuid.UUID
+		_ = json.Unmarshal(body["machineId"], &machine)
+		unspent := m.codes[token] && m.credential == ""
+		if (m.machine != uuid.Nil && machine != m.machine) || (!unspent && (m.credential == "" || credential != m.credential)) {
 			answer(401)
 			return
 		}
-		var machine uuid.UUID
-		_ = json.Unmarshal(body["machineId"], &machine)
 		m.codes[token], m.credential, m.machine = false, credential, machine
 	case "/agent/v1/heartbeat":
 		if presented == "" || presented != m.credential {

@@ -44,12 +44,14 @@ func TestRotationNeedsTheEnrolledMachine(t *testing.T) {
 }
 
 // An agent that can't name its machine is neither offered a rotation nor told about one: it would
-// keep presenting a candidate management refuses.
+// keep presenting a candidate management refuses. A real agent enrolls before negotiation, so
+// management learns that it can only from the heartbeat that follows.
 func TestRotationWaitsForAnAgentThatNamesItsMachine(t *testing.T) {
 	f := setup(t)
 	b := f.browser(t)
 	ws := b.login("owner@example.test", f.password).Workspaces[0].Id
 	v, in, token := enrollment(t, f, b, ws, "deployment")
+	supported := in.Capabilities.MachineBoundRotation
 	in.Capabilities.MachineBoundRotation = nil
 	tlsServer := httptest.NewTLSServer(f.server.Config.Handler)
 	defer tlsServer.Close()
@@ -57,20 +59,33 @@ func TestRotationWaitsForAnAgentThatNamesItsMachine(t *testing.T) {
 	agentRequest(t, client, tlsServer.URL, "/agent/v1/enroll", "", in, 200, nil)
 	route := "/api/v1/workspaces/" + ws.String() + "/servers/" + v.Server.Id.String()
 	b.call("POST", route+"/rotate", nil, 409, nil)
+	var requested bool
+	if e := f.st.Pool.QueryRow(context.Background(), "SELECT rotation_requested FROM servers WHERE id=$1", v.Server.Id).Scan(&requested); e != nil || requested {
+		t.Fatal("a refused rotation request was kept", e)
+	}
 
 	// A request made before the agent was replaced by an older one.
 	if _, e := f.st.Pool.Exec(context.Background(), "UPDATE servers SET rotation_requested=true WHERE id=$1", v.Server.Id); e != nil {
 		t.Fatal(e)
 	}
 	var status api.AgentStatus
-	agentRequest(t, client, tlsServer.URL, "/agent/v1/heartbeat", token, api.AgentHeartbeat{Capabilities: in.Capabilities, Preflight: in.Preflight}, 200, &status)
+	heartbeat := func() {
+		t.Helper()
+		agentRequest(t, client, tlsServer.URL, "/agent/v1/heartbeat", token, api.AgentHeartbeat{Capabilities: in.Capabilities, Preflight: in.Preflight}, 200, &status)
+	}
+	heartbeat()
 	if status.RotationRequested {
 		t.Fatal("an agent that can't finish a rotation was asked to start one")
 	}
-	yes := true
-	in.Capabilities.MachineBoundRotation = &yes
-	agentRequest(t, client, tlsServer.URL, "/agent/v1/heartbeat", token, api.AgentHeartbeat{Capabilities: in.Capabilities, Preflight: in.Preflight}, 200, &status)
+	if _, e := f.st.Pool.Exec(context.Background(), "UPDATE servers SET rotation_requested=false WHERE id=$1", v.Server.Id); e != nil {
+		t.Fatal(e)
+	}
+
+	in.Capabilities.MachineBoundRotation = supported
+	heartbeat()
+	b.call("POST", route+"/rotate", nil, 204, nil)
+	heartbeat()
 	if !status.RotationRequested {
-		t.Fatal("an updated agent wasn't told about the rotation it was asked for")
+		t.Fatal("an agent that names its machine wasn't told about the rotation it was asked for")
 	}
 }

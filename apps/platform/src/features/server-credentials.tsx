@@ -20,7 +20,7 @@ export function ServerCredentials({
   const path = { workspaceId, serverId: server.id };
   const rotatable = server.capabilities?.machineBoundRotation === true;
   const leak =
-    "If you suspect a leak, revoke the connection, then enroll a rebuilt host, or this host with a fresh state directory. Enrolling the same state directory again with a new code brings back the credential a copy of it holds.";
+    "If you suspect a leak, revoke the connection, then add a new server, enroll a rebuilt host or a fresh state directory as that server, and move the work across. Renewing this server with the same state directory sends the leaked credential again, and renewing it with a new machine is refused.";
   return (
     <>
       {server.status !== "pending" && server.capabilities && (
@@ -28,7 +28,7 @@ export function ServerCredentials({
           {server.status === "revoked"
             ? leak
             : rotatable
-              ? `Rotating is routine upkeep, not a response to a leak: whoever holds the credential can finish the rotation first. ${leak}`
+              ? `Rotating is routine upkeep, not a response to a leak: whoever holds a copy of this server's state directory can finish the rotation first. ${leak}`
               : `This server's agent can't rotate its credential safely; update it to rotate. ${leak}`}
         </p>
       )}

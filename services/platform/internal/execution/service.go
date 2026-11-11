@@ -239,11 +239,7 @@ func (s *Service) Control(ctx context.Context, p store.Principal, ws, id uuid.UU
 			}
 		}
 		q := db.New(tx)
-		var n int64
-		var e error
-		if revoke {
-			n, e = q.RevokeServer(ctx, db.RevokeServerParams{WorkspaceID: ws, ID: id})
-		} else {
+		if !revoke {
 			supported, err := q.RequestServerRotation(ctx, db.RequestServerRotationParams{WorkspaceID: ws, ID: id})
 			if errors.Is(err, pgx.ErrNoRows) {
 				return domain.NotFound
@@ -252,18 +248,16 @@ func (s *Service) Control(ctx context.Context, p store.Principal, ws, id uuid.UU
 			} else if !supported {
 				return rotationUnsupported
 			}
-			n = 1
+			return nil
 		}
+		n, e := q.RevokeServer(ctx, db.RevokeServerParams{WorkspaceID: ws, ID: id})
 		if e != nil {
 			return e
 		}
 		if n != 1 {
 			return domain.NotFound
 		}
-		if revoke {
-			return s.settleRevokedWork(ctx, tx, ws, id)
-		}
-		return nil
+		return s.settleRevokedWork(ctx, tx, ws, id)
 	})
 }
 
@@ -322,16 +316,13 @@ func (s *Service) Heartbeat(ctx context.Context, a Identity, in api.AgentHeartbe
 // rotationUnsupported refuses a rotation request for an agent that can't name its machine.
 var rotationUnsupported = &domain.Error{Code: "conflict", Message: "This server's agent can't rotate its credential safely. Update the agent on this server, then rotate."}
 
-// Rotate exchanges the agent's credential for a candidate it chose. Holding the current credential
-// isn't enough: the caller must also name the machine that enrolled, which a credential leaked on
-// its own doesn't carry. A copy of the agent's state directory carries both, so after a suspected
-// leak an owner revokes and renews enrollment instead.
+// Rotate exchanges the agent's credential for a candidate it chose. The caller must also name the
+// machine that enrolled. That stops someone holding only a leaked credential, but the machine ID
+// isn't secret, so this is routine upkeep: after a suspected leak an owner revokes the server and
+// enrolls a new one.
 func (s *Service) Rotate(ctx context.Context, a Identity, in api.AgentRotation) error {
 	if len(in.Credential) != 43 {
 		return domain.Invalid("credential")
-	}
-	if in.MachineId == uuid.Nil {
-		return domain.Invalid("machineId")
 	}
 	n, err := s.Store.Queries.RotateAgentCredential(ctx, db.RotateAgentCredentialParams{WorkspaceID: a.Workspace, ServerID: a.ID, CredentialHash: hash(a.Token), CandidateHash: hash(in.Credential), MachineID: &in.MachineId})
 	if err == nil && n != 1 {
