@@ -4,7 +4,7 @@ The application stores accounts, workspaces and revisioned environment configura
 
 ## Development
 
-Use Go 1.27.3, Node 24.18.1, pnpm 11.17.0 and PostgreSQL 18.4. From the repository root:
+Use Go 1.27.4, Node 24.18.1, pnpm 11.17.0 and PostgreSQL 18.4. From the repository root:
 
 ```sh
 pnpm install --frozen-lockfile

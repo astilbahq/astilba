@@ -7,8 +7,8 @@ case "$PLAT7_DOCKER_HOST" in
   unix://*) ;;
   *) echo "Only an explicit local Docker Unix socket is supported." >&2; exit 1 ;;
 esac
-if [[ "$(go env GOVERSION)" != "go1.27.3" ]]; then
-  echo "This experiment is pinned to Go 1.27.3." >&2
+if [[ "$(go env GOVERSION)" != "go1.27.4" ]]; then
+  echo "This experiment is pinned to Go 1.27.4." >&2
   exit 1
 fi
 unformatted="$(gofmt -l .)"
