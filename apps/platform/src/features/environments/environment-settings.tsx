@@ -124,8 +124,8 @@ function Secrets({ workspaceId, projectId, environment, write }: EnvProps) {
             autoComplete="off"
           />
           <small>
-            Reusing a name adds a version. Confirm your identity in Account
-            security if requested.
+            Reusing a name adds a version. You’ll be asked to confirm your
+            identity before saving.
           </small>
           <BusyButton busy={action.isPending}>Save secret version</BusyButton>
         </Form>

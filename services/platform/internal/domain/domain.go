@@ -30,7 +30,7 @@ var NotFound = &Error{Code: "not_found", Message: "The requested resource was no
 var Unauthenticated = &Error{Code: "unauthenticated", Message: "Sign in to continue."}
 var Credentials = &Error{Code: "invalid_credentials", Message: "The credentials could not be verified."}
 var MFARequired = &Error{Code: "mfa_required", Message: "Set up two-factor authentication before changing this workspace."}
-var RecentRequired = &Error{Code: "recent_auth_required", Message: "Confirm your credentials before this action."}
+var RecentRequired = &Error{Code: "recent_auth_required", Message: "Confirm your identity before this action."}
 var Conflict = &Error{Code: "conflict", Message: "The resource changed. Review the current version before saving."}
 var RateLimited = &Error{Code: "rate_limited", Message: "Too many attempts. Try again later."}
 

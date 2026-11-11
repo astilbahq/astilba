@@ -24,7 +24,7 @@
     "forbidden": "You no longer have permission to create projects in this workspace.",
     "mfa": "Set up two-factor authentication in Account security before creating a project.",
     "verifyEmail": "Verify your email address in Account security before creating a project.",
-    "recentAuth": "Confirm your identity in Account security, then try again.",
+    "recentAuth": "Confirm your identity to create a project.",
     "subscription": "An active workspace subscription is required. Open Workspace to finish setup."
   },
   "emptyViewerTitle": "No projects yet",
@@ -69,7 +69,7 @@
     "forbidden": "You no longer have permission to create environments in this workspace.",
     "mfa": "Set up two-factor authentication in Account security before creating an environment.",
     "verifyEmail": "Verify your email address in Account security before creating an environment.",
-    "recentAuth": "Confirm your identity in Account security, then try again.",
+    "recentAuth": "Confirm your identity to create an environment.",
     "subscription": "An active workspace subscription is required. Open Workspace to finish setup."
   }
 }

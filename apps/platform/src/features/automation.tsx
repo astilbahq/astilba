@@ -5,7 +5,6 @@ import { Button } from "../components/button";
 import { Checkbox } from "../components/checkbox";
 import { Input } from "../components/input";
 import { Label } from "../components/label";
-import { Link } from "../components/link";
 import { Select } from "../components/select";
 import { Textarea } from "../components/textarea";
 import * as s from "../styles";
@@ -58,16 +57,8 @@ export function AutomationCredentials({
         </p>
       )}
       <p className={s.muted}>
-        Creating or revoking a token requires recent identity confirmation.{" "}
-        <Link
-          to="/account"
-          search={{ workspace: path.workspaceId }}
-          target="_blank"
-          rel="noreferrer"
-        >
-          Open Account security in a new tab
-        </Link>{" "}
-        to confirm, then return here and retry.
+        You’ll be asked to confirm your identity before creating or revoking a
+        token.
       </p>
       <ErrorNotice error={action.error ?? credentials.error} />
       {message && <p role="status">{message}</p>}

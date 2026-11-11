@@ -99,12 +99,12 @@ export function WorkspaceSubscription({
       )}
       {owner && (
         <p>
-          Billing changes require verified email, two-factor authentication and
-          recent identity confirmation in{" "}
+          Billing changes require a verified email and two-factor
+          authentication, set up in{" "}
           <Link to="/account" search={{ workspace: workspaceId }}>
             account security
           </Link>
-          .
+          . You’ll be asked to confirm your identity before each change.
         </p>
       )}
     </section>

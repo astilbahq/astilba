@@ -23,6 +23,7 @@ import { Invitation } from "./features/auth/invitation";
 import { PasswordReset } from "./features/auth/password-reset";
 import { SignIn } from "./features/auth/sign-in";
 import { Signup } from "./features/auth/signup";
+import { StepUpProvider } from "./features/auth/step-up";
 import { GitHubCallback, GitHubInstalled } from "./features/github-app";
 import { CreateEnvironment } from "./features/projects/create-environment";
 import {
@@ -45,38 +46,40 @@ function Root() {
     <ThemeProvider>
       <ToastProvider>
         <TooltipProvider delay={300}>
-          <Anchor href="#main" className="skip-link">
-            {t(($) => $.skipContent)}
-          </Anchor>
-          {session.isPending && session.errorUpdateCount === 0 ? (
-            // The page that follows brings its own controls. Offering them here would let its
-            // arrival close an open menu and lose keyboard focus.
-            <AuthPage>
-              <p role="status">{t(($) => $.loading)}</p>
-            </AuthPage>
-          ) : session.isPending ? (
-            // A refetch without data is pending again, and the failure screen's controls stay.
-            <AuthFrame>
-              <p role="status">{t(($) => $.loading)}</p>
-            </AuthFrame>
-          ) : session.error && !session.data ? (
-            <AuthFrame>
-              <h1>{t(($) => $.connectionUnavailable)}</h1>
-              <ErrorToast
-                error={session.error}
-                message={t(($) => $.requestFailed)}
-              />
-              <Button
-                type="button"
-                disabled={session.isFetching}
-                onClick={() => void session.refetch()}
-              >
-                {t(($) => $.retryConnection)}
-              </Button>
-            </AuthFrame>
-          ) : (
-            <Outlet />
-          )}
+          <StepUpProvider>
+            <Anchor href="#main" className="skip-link">
+              {t(($) => $.skipContent)}
+            </Anchor>
+            {session.isPending && session.errorUpdateCount === 0 ? (
+              // The page that follows brings its own controls. Offering them here would let its
+              // arrival close an open menu and lose keyboard focus.
+              <AuthPage>
+                <p role="status">{t(($) => $.loading)}</p>
+              </AuthPage>
+            ) : session.isPending ? (
+              // A refetch without data is pending again, and the failure screen's controls stay.
+              <AuthFrame>
+                <p role="status">{t(($) => $.loading)}</p>
+              </AuthFrame>
+            ) : session.error && !session.data ? (
+              <AuthFrame>
+                <h1>{t(($) => $.connectionUnavailable)}</h1>
+                <ErrorToast
+                  error={session.error}
+                  message={t(($) => $.requestFailed)}
+                />
+                <Button
+                  type="button"
+                  disabled={session.isFetching}
+                  onClick={() => void session.refetch()}
+                >
+                  {t(($) => $.retryConnection)}
+                </Button>
+              </AuthFrame>
+            ) : (
+              <Outlet />
+            )}
+          </StepUpProvider>
         </TooltipProvider>
       </ToastProvider>
     </ThemeProvider>

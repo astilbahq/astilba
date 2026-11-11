@@ -1,6 +1,6 @@
 # Environment automation
 
-Owners can issue expiring credentials for CI, the Go CLI and a stdio MCP client from an environment’s **Automation** section. Each credential grants selected capabilities for exactly one workspace, project and environment. Create and revoke require ordinary recent identity confirmation in Account security. Save the returned token privately; it is shown once.
+Owners can issue expiring credentials for CI, the Go CLI and a stdio MCP client from an environment’s **Automation** section. Each credential grants selected capabilities for exactly one workspace, project and environment. Create and revoke require recent identity confirmation; the dashboard asks for it when needed. Save the returned token privately; it is shown once.
 
 | Capability | Access |
 | --- | --- |

@@ -6,10 +6,8 @@ import type { EnvironmentPath } from "../../api/environment";
 import { Button } from "../../components/button";
 import { Checkbox } from "../../components/checkbox";
 import { Label } from "../../components/label";
-import { LinkButton } from "../../components/link";
 import * as s from "../../styles";
 import { BusyButton, Form, useAction } from "../../ui";
-import { IdentityConfirmation } from "../auth/identity-confirmation";
 import { policyOptions, policyPath, sessionsKey } from "./session-queries";
 import { SessionErrorNotice, SessionLoadFailed } from "./session-text";
 import * as styles from "./troubleshooting.styles";
@@ -86,27 +84,6 @@ export function SessionSetting({ path }: { path: EnvironmentPath }) {
           heading={heading}
           retry={() => void policy.refetch()}
         />
-      ) : hasCode(action.error, "recent_auth_required") ? (
-        <div className={styles.part}>
-          <IdentityConfirmation
-            heading="h4"
-            onConfirmed={() => {
-              action.reset();
-              heading.current?.focus();
-              if (draft) save(draft);
-            }}
-          />
-          <div>
-            <LinkButton
-              onClick={() => {
-                action.reset();
-                heading.current?.focus();
-              }}
-            >
-              {t(($) => $.setting.cancel)}
-            </LinkButton>
-          </div>
-        </div>
       ) : (
         <Form
           action={action}

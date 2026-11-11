@@ -2,6 +2,10 @@ import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
 import { openEnvironmentSection } from "./environment-section";
 import { signInAsOwner } from "./fixtures/owner-sign-in";
+import {
+  confirmIdentityWithPassword,
+  lapseRecentConfirmationFor,
+} from "./fixtures/step-up";
 
 test("GitHub App authorization returns across sites, selects a repository and disconnects", async ({
   page,
@@ -58,8 +62,13 @@ test("GitHub App authorization returns across sites, selects a repository and di
   await expect(page).toHaveURL(/\/github\/callback$/);
   await expect(page.getByText("Authorized as", { exact: false })).toBeVisible();
   await expect(
-    page.getByRole("link", { name: "confirm in Account security" }),
-  ).toHaveAttribute("href", `/account?workspace=${workspace.id}`);
+    page.getByText(
+      "You’ll be asked to confirm your identity before connecting.",
+      {
+        exact: false,
+      },
+    ),
+  ).toBeVisible();
   await expect(page.getByLabel("Workspace navigation")).toHaveCount(0);
   await expect(page.getByRole("button", { name: /^Workspace:/ })).toHaveCount(
     0,
@@ -103,9 +112,12 @@ test("GitHub App authorization returns across sites, selects a repository and di
     path: `../../.artifacts/plat46/github-${info.project.name}-mobile.png`,
     fullPage: true,
   });
+  // A lapsed confirmation asks for identity in place, then connects the selected repository.
+  await lapseRecentConfirmationFor(page, "POST", /\/connections$/);
   await page
     .getByRole("button", { name: "Connect selected repository" })
     .click();
+  await confirmIdentityWithPassword(page);
   await expect(
     page.getByText("Repository connected.", { exact: false }),
   ).toBeVisible();

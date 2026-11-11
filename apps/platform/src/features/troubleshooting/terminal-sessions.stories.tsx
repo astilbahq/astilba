@@ -316,7 +316,7 @@ const identityStory = {
       if (!identityConfirmed)
         return workshopFailure(
           "recent_auth_required",
-          "Confirm your credentials before this action.",
+          "Confirm your identity before this action.",
           403,
         );
       const body =
@@ -343,32 +343,26 @@ async function requestIdentity(canvasElement: HTMLElement) {
   });
   await userEvent.click(allow);
   await userEvent.click(canvas.getByRole("button", { name: "Save setting" }));
-  await expect(
-    await canvas.findByRole("heading", {
-      level: 4,
-      name: "Confirm your identity",
-    }),
-  ).toHaveFocus();
-  return canvas;
+  const confirmation = await within(
+    canvasElement.ownerDocument.body,
+  ).findByRole("alertdialog", { name: "Confirm your identity" });
+  return { canvas, confirmation };
 }
 
+// Widening access asks for identity in place, then saves the same choice without a resubmit.
 export const ConfirmsIdentityBeforeEnabling: Story = {
   ...identityStory,
   play: async ({ canvasElement }) => {
-    const canvas = await requestIdentity(canvasElement);
-    await userEvent.type(
-      canvas.getByLabelText("Current password"),
-      "workshop password",
-    );
+    const { canvas, confirmation } = await requestIdentity(canvasElement);
+    const password = within(confirmation).getByLabelText("Password");
+    await waitFor(() => expect(password).toHaveFocus());
+    await userEvent.type(password, "workshop password");
     await userEvent.click(
-      canvas.getByRole("button", { name: "Confirm identity" }),
+      within(confirmation).getByRole("button", { name: "Confirm" }),
     );
     await expect(
       await canvas.findByText("Terminal session setting saved."),
     ).toBeVisible();
-    await expect(
-      canvas.getByRole("heading", { name: "Access in this environment" }),
-    ).toHaveFocus();
     await expect(
       canvas.getByRole("checkbox", {
         name: "Allow terminal sessions in this environment",
@@ -377,22 +371,24 @@ export const ConfirmsIdentityBeforeEnabling: Story = {
   },
 };
 
+// Declining keeps the unsaved choice and leaves it ready to save again.
 export const CancelsIdentityConfirmation: Story = {
   ...identityStory,
   play: async ({ canvasElement }) => {
-    const canvas = await requestIdentity(canvasElement);
-    await userEvent.click(canvas.getByRole("button", { name: "Cancel" }));
-    await expect(
-      canvas.getByRole("heading", { name: "Access in this environment" }),
-    ).toHaveFocus();
+    const { canvas, confirmation } = await requestIdentity(canvasElement);
+    await userEvent.click(
+      within(confirmation).getByRole("button", { name: "Cancel" }),
+    );
+    // The button reads "Working…" until the declined save settles.
+    const save = await canvas.findByRole("button", { name: "Save setting" });
+    await waitFor(() => expect(save).toHaveFocus());
     await expect(
       canvas.getByRole("checkbox", {
         name: "Allow terminal sessions in this environment",
       }),
     ).toBeChecked();
-    await expect(
-      canvas.getByRole("button", { name: "Save setting" }),
-    ).toBeEnabled();
+    await expect(save).toBeEnabled();
+    await expect(canvas.queryByRole("alert")).toBeNull();
   },
 };
 

@@ -1,14 +1,8 @@
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQueryClient } from "@tanstack/react-query";
 import { QRCodeSVG } from "qrcode.react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import {
-  ApiError,
-  client,
-  result,
-  type Schema,
-  setSession,
-} from "../../api/client";
+import { client, result, type Schema, setSession } from "../../api/client";
 import { sessionOptions } from "../../api/session";
 import { useSessionRequest } from "../../api/use-session-request";
 import { Button } from "../../components/button";
@@ -18,36 +12,23 @@ import * as s from "../../styles";
 import { BusyButton, Field, Form, text, useAction } from "../../ui";
 import * as auth from "./auth.styles";
 import { AuthenticatorInput } from "./authenticator-input";
-import { IdentityConfirmation } from "./identity-confirmation";
 import { useAuthValidation } from "./use-auth-validation";
 
 export function AuthenticatorSetup({
   onEnrolled,
   onResume,
-  deferIdentity = false,
 }: {
   onEnrolled: (data: Schema["RecoveryCodes"]) => void;
   onResume: () => void;
-  deferIdentity?: boolean;
 }) {
   const { t } = useTranslation("auth");
-  const session = useQuery(sessionOptions).data;
   const queries = useQueryClient();
-  const begin = useAction();
+  const begin = useAction({ recentAuth: true });
   const request = useSessionRequest({ renewal: true });
-  const confirm = useAction();
+  const confirm = useAction({ recentAuth: true });
   const validation = useAuthValidation();
-  const [requested, setRequested] = useState(false);
   const [enrollment, setEnrollment] = useState<Schema["MFAEnrollment"]>();
-  const error = confirm.error ?? begin.error;
-  const needsIdentity =
-    !session?.recentAuth ||
-    (error instanceof ApiError && error.detail.code === "recent_auth_required");
   const startEnrollment = () => {
-    setRequested(true);
-    if (needsIdentity) {
-      return;
-    }
     confirm.reset();
     setEnrollment(undefined);
     onResume();
@@ -58,16 +39,6 @@ export function AuthenticatorSetup({
       ),
     );
   };
-  if (needsIdentity && (!deferIdentity || requested))
-    return (
-      <IdentityConfirmation
-        onConfirmed={() => {
-          begin.reset();
-          confirm.reset();
-          onResume();
-        }}
-      />
-    );
   return (
     <div className={s.stack}>
       <ErrorToast

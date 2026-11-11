@@ -101,7 +101,7 @@ export function Members() {
                 Require two-factor authentication for changes
               </Label>
               <small>
-                Confirm your identity in Account security before changing these
+                You’ll be asked to confirm your identity before changing these
                 settings.
               </small>
               <BusyButton busy={action.isPending}>Save settings</BusyButton>

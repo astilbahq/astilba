@@ -56,8 +56,10 @@ func (s *Service) createCrossHostPlan(ctx context.Context, tx pgx.Tx, ws, pid, e
 	if err := s.Store.ValidateApplicationRoutes(ctx, tx, ws, env, v.Spec, &in.ServerId); err != nil {
 		return out, err
 	}
+	// Cross-host placement always changes hosts, so the plan must opt in. Recent
+	// authentication was checked when the request asked for host changes.
 	if !in.AllowHostChanges {
-		return out, domain.RecentRequired
+		return out, domain.Invalid("allowHostChanges")
 	}
 	if err := s.validateVisualSecrets(ctx, tx, ws, env, v.Spec); err != nil {
 		return out, err
