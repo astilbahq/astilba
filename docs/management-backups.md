@@ -18,9 +18,10 @@ the database: a script with a systemd service and timer. Each run:
 The keyring is not part of it: you back that up by hand when you create it, as
 [described below](#the-keyring).
 
-The server can write backups but cannot read, list or delete them, so a compromised server
-cannot destroy the history it has already uploaded. That also means the server cannot check
-what it uploaded: only a [restore drill](#restore-drills) shows that a backup works.
+Set up as below, the server can add backups but cannot delete or replace the ones it has
+uploaded, so a compromised server cannot destroy that history. On AWS, B2 and MinIO it cannot
+read or list them either; on Cloudflare R2 it can, so there age encryption is what keeps them
+private. Either way only a [restore drill](#restore-drills) shows that a backup works.
 
 ## What you need
 
@@ -54,9 +55,10 @@ the second. Expire old backups with the provider's lifecycle rules, not from the
 | Backblaze B2 | An application key restricted to the bucket, with `listBuckets`, `listAllBucketNames` and `writeFiles` only. Without `deleteFiles` it cannot delete a version. Check that the key can upload before relying on it | B2 keeps every version of a name, but `writeFiles` can still hide a file, and a lifecycle rule may then delete hidden versions. Turn on [Object Lock](https://www.backblaze.com/docs/cloud-storage-object-lock) with a default retention period | URL `https://s3.REGION.backblazeb2.com/BUCKET/PREFIX`, region such as `eu-central-003` |
 | AWS S3, MinIO and others | A user whose policy allows only `s3:PutObject` on `arn:aws:s3:::BUCKET/PREFIX/*` | Create the bucket with Object Lock, which also turns on versioning, and a default retention period | URL `https://ENDPOINT/BUCKET/PREFIX` (path-style), the bucket's region |
 
-With versioning but no lock, the server's key can add a new version over a backup but not
-remove the original. That is why restores [use the oldest version](#restore) of each object.
-Keep management backups in a bucket, and under a key, of their own, separate from application
+Use the lock, not versioning alone: without it, the server's key can overwrite a backup, and a
+lifecycle rule that expires old versions then deletes the original. Even with the lock, a
+retried upload can leave a second version, so restores [use the oldest version](#restore) of
+each object. Keep management backups in a bucket, and under a key, of their own, separate from application
 backups.
 
 Make the restore key separately, with read and list permissions only, and keep it with the age
@@ -76,15 +78,15 @@ install -m 0600 services/platform/management/management-backup.env.example /etc/
 
 Edit `/etc/astilba/management-backup.env`; the example explains each setting. Then write the
 server key as a curl configuration file, which the service loads as a systemd credential, so
-the secret never appears in the environment or a process's arguments:
+the secret never appears in the environment or a process's arguments. Create it empty and
+private, and type the key into it with an editor, not on a command line your shell records:
 
 ```sh
-umask 077
-printf 'user = "%s:%s"\n' 'ACCESS_KEY_ID' 'SECRET_ACCESS_KEY' > /etc/astilba/management-backup.s3
+install -m 0600 /dev/null /etc/astilba/management-backup.s3
+editor /etc/astilba/management-backup.s3   # one line: user = "ACCESS_KEY_ID:SECRET_ACCESS_KEY"
 ```
 
-Type the values in an editor rather than on a command line that your shell records. Then run a
-backup at once, and turn on the timer, which runs nightly at a random time between 02:30 and
+Then run a backup at once, and turn on the timer, which runs nightly at a random time between 02:30 and
 03:00 UTC and catches up after a missed run:
 
 ```sh
@@ -101,8 +103,9 @@ check-in.
 The script reaches PostgreSQL with `docker exec` into the container named in
 `ASTILBA_BACKUP_DATABASE_CONTAINER`, so its `pg_dump` always matches the server. For a database
 elsewhere, leave that empty and install the PostgreSQL client for the server's major version,
-or newer, on the host; the script then uses libpq's environment variables, which you can add to
-the service with a drop-in.
+or newer, on the host, and set libpq's variables, such as `PGHOST`, `PGSSLMODE=verify-full`
+and `PGPASSFILE`, in the environment file. Give the password through a `PGPASSFILE`, never
+`PGPASSWORD`.
 
 ## The keyring
 
@@ -125,17 +128,22 @@ These steps assume the PostgreSQL container is `astilba-database-1`, the managem
 is a Compose service called `platform`, and the same major version of PostgreSQL as the backup,
 which the manifest records.
 
-1. **Fetch.** With the restore key, list the backup prefix and take the newest `.json`
-   manifest and the `.pgdump.age` it names. If either object has more than one version, take
-   the oldest: something rewrote it after the backup, and you should find out what. Check the
-   dump against the manifest:
+1. **Choose and fetch.** With the restore key, list the backup prefix and choose a `.json`
+   manifest by the time the store says it was written, not by its name, then fetch it and the
+   `.pgdump.age` with the same stamp. If either object has more than one version, take the
+   oldest, and find out what wrote the others. Check the dump against the manifest:
 
    ```sh
    echo "$(jq -r .sha256 STAMP.json)  STAMP.pgdump.age" | sha256sum -c -
    ```
 
-2. **Decrypt** the dump, and the keyring from your password manager or offline copy, on a
-   private machine:
+   Anyone with the server's key can upload a backup, and the recipients are public, so a
+   backup is only as trustworthy as the server was when it was written. After a suspected
+   compromise, choose one written before it. Restoring runs the archive's SQL as a database
+   superuser, so an untrusted archive can run commands in the database container.
+
+2. **Decrypt** the dump, and the keyring from your password manager or offline copy, on the
+   machine you are restoring to or a private one you copy them from:
 
    ```sh
    umask 077
@@ -158,7 +166,7 @@ which the manifest records.
    ```sh
    docker cp management.pgdump astilba-database-1:/tmp/management.pgdump
    docker exec astilba-database-1 pg_restore --username astilba --dbname astilba \
-     --no-owner --no-privileges --exit-on-error --single-transaction /tmp/management.pgdump
+     --no-owner --no-privileges --single-transaction /tmp/management.pgdump
    docker exec astilba-database-1 rm /tmp/management.pgdump
    ```
 
@@ -182,18 +190,26 @@ backup interval is how much you can lose.
 
 Restore a backup on a disposable machine before you rely on it, and again every quarter. A
 drill copy holds the same Git, provider and webhook credentials as the real installation, so it
-must not be able to use them. Start it with no SMTP or DNS provider settings, attach it only to
-a Docker network created with `internal: true` and publish no ports. With Compose, an override
-does this:
+must not be able to use them. Give it an environment file of its own that holds only the
+database password, keyring path, origin and image, with no SMTP, DNS provider or GitHub App
+settings. Put it and its database only on a Docker network created with `internal: true`,
+which has no route off the host, and publish no ports. With PostgreSQL as a Compose service
+called `database`, an override does this:
 
 ```yaml
 services:
+  database:
+    networks: !override [drill]
   platform:
-    networks: !override [internal]
+    networks: !override [drill]
     ports: !reset []
-    environment:
-      ASTILBA_SMTP_ADDRESS: ""
+networks:
+  drill:
+    internal: true
 ```
+
+Run it under a project name of its own, such as `docker compose -p astilba-drill`, so it
+cannot touch the real installation's containers or volume.
 
 To sign in to it, run the client in the management container's network namespace, where it
 can reach `http://127.0.0.1:8080`, for example with
@@ -207,4 +223,5 @@ with an object-locked bucket. The server's key could upload but was refused read
 and deletion; an overwrite added a version and left the original locked. A failed connection,
 a refused upload and a storage outage were each reported, or retried, as above. A drill
 restored a backup with the offline identity into an isolated copy that had no route out, and
-signed in with a second factor, as did an in-place restore with the previous image.
+signed in with a second factor, as did an in-place restore with the previous image. A backup
+killed by its timeout reported failure too.

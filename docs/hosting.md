@@ -612,8 +612,8 @@ both pieces; a successful upload alone is not a verified backup.
 encrypt and upload the database nightly to storage the server cannot erase, with an
 alert when it fails, and the full restore procedure.
 
-Restore with the matching application version into a clean database and private
-keyring mount. Keep the restored management process stopped while fencing every
+Restore with the matching application version, or a newer one after `astilba migrate`,
+into a clean database and private keyring mount. Keep the restored management process stopped while fencing every
 restored server:
 
 ```sh

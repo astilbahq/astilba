@@ -2,7 +2,7 @@
 # Backs up an Astilba management database: a custom-format pg_dump, encrypted with age
 # and uploaded with a manifest to S3-compatible storage. The keyring is not included;
 # back it up separately. See docs/management-backups.md.
-set -Eeuo pipefail
+set -euo pipefail
 umask 077
 
 config=${ASTILBA_BACKUP_CONFIG:-/etc/astilba/management-backup.env}
@@ -28,10 +28,17 @@ finish() {
   exit "$status"
 }
 trap finish EXIT
+# A signal, such as systemd's stop at TimeoutStartSec, would otherwise reach the EXIT
+# trap with status 0 and skip the failure report.
+trap 'exit 143' TERM
+trap 'exit 130' INT
 
 [[ -r "$config" ]] || { printf 'Cannot read %s.\n' "$config" >&2; exit 1; }
+# Exported, so that libpq settings such as PGHOST reach psql and pg_dump in host mode.
+set -a
 # shellcheck source=/dev/null
 source "$config"
+set +a
 : "${ASTILBA_BACKUP_RECIPIENTS:?Set the age recipients file}"
 : "${ASTILBA_BACKUP_S3_URL:?Set the S3 URL of the bucket and prefix}"
 : "${ASTILBA_BACKUP_S3_REGION:?Set the S3 signing region}"
@@ -41,9 +48,6 @@ credentials=${ASTILBA_BACKUP_S3_CREDENTIALS:-${CREDENTIALS_DIRECTORY:+$CREDENTIA
 [[ "$ASTILBA_BACKUP_S3_URL" =~ ^https?://[^[:space:]\"]+[^/]$ ]] ||
   { printf 'ASTILBA_BACKUP_S3_URL must be an http(s) URL without a trailing slash.\n' >&2; exit 1; }
 [[ "$ASTILBA_BACKUP_S3_REGION" =~ ^[a-z0-9-]+$ ]] || { printf 'Invalid ASTILBA_BACKUP_S3_REGION.\n' >&2; exit 1; }
-for url in "${ASTILBA_BACKUP_CHECKIN_URL:-}" "${ASTILBA_BACKUP_FAILURE_URL:-}"; do
-  [[ -z "$url" || "$url" =~ ^https?://[^[:space:]\"]+$ ]] || { printf 'Invalid check-in URL.\n' >&2; exit 1; }
-done
 for tool in age curl openssl sha256sum base64; do
   command -v "$tool" >/dev/null || { printf 'Install %s.\n' "$tool" >&2; exit 1; }
 done
@@ -76,7 +80,7 @@ server_version=${server_version%% *}
 revision=unknown
 if [[ -n "${ASTILBA_BACKUP_APP_CONTAINER:-}" ]]; then
   step='read the running image revision'
-  revision=$(docker inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$ASTILBA_BACKUP_APP_CONTAINER")
+  revision=$(docker inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$ASTILBA_BACKUP_APP_CONTAINER") || revision=unknown
   [[ "$revision" =~ ^[0-9A-Za-z._-]{1,64}$ ]] || revision=unknown
 fi
 
@@ -91,6 +95,9 @@ manifest="$stamp.json"
 step='dump and encrypt the database'
 postgres pg_dump --no-password --format=custom --username "$database_user" --dbname "$database_name" |
   age --encrypt --recipients-file "$ASTILBA_BACKUP_RECIPIENTS" --output "$work/$dump"
+# A migration that ran during the dump would leave the manifest naming the wrong schema.
+step='confirm the schema did not change during the dump'
+[[ "$(query 'SELECT max(version_id) FROM goose_db_version WHERE is_applied')" == "$schema" ]] || exit 1
 
 step='describe the backup'
 digest=$(sha256sum "$work/$dump" | cut -d' ' -f1)
@@ -100,7 +107,7 @@ printf '{"format":1,"created":"%s","dump":"%s","sha256":"%s","size":%s,"schemaVe
   "$dump" "$digest" "$size" "$schema" "$server_version" "$revision" > "$work/$manifest"
 
 upload() {
-  local file=$1 type=$2
+  local file=$1 type=$2 sha=$3
   # Content-MD5 lets the store reject a corrupted body and is required by buckets with
   # object lock; the signed SHA-256 binds the body to the request.
   curl --config "$credentials" --fail-with-body --silent --show-error \
@@ -108,15 +115,14 @@ upload() {
     --aws-sigv4 "aws:amz:$ASTILBA_BACKUP_S3_REGION:s3" \
     --header "Content-Type: $type" \
     --header "Content-MD5: $(openssl dgst -md5 -binary "$work/$file" | base64)" \
-    --header "x-amz-content-sha256: $(sha256sum "$work/$file" | cut -d' ' -f1)" \
+    --header "x-amz-content-sha256: $sha" \
     --upload-file "$work/$file" --output /dev/null "$ASTILBA_BACKUP_S3_URL/$file"
 }
 # The manifest goes last, so its presence marks a complete backup.
 step="upload $dump"
-upload "$dump" application/octet-stream
+upload "$dump" application/octet-stream "$digest"
 step="upload $manifest"
-upload "$manifest" application/json
+upload "$manifest" application/json "$(sha256sum "$work/$manifest" | cut -d' ' -f1)"
 
 printf 'Uploaded %s (%s bytes, schema version %s).\n' "$dump" "$size" "$schema"
-step='report success to the monitor'
 checkin "${ASTILBA_BACKUP_CHECKIN_URL:-}" "Uploaded $dump"
