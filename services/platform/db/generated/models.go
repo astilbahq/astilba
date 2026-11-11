@@ -668,6 +668,7 @@ type Server struct {
 	ControllerGeneration int64      `json:"controller_generation"`
 	AwaitingTransfer     bool       `json:"awaiting_transfer"`
 	PreviewOnly          bool       `json:"preview_only"`
+	BuildEgress          []byte     `json:"build_egress"`
 }
 
 type ServerDomain struct {

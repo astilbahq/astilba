@@ -42,6 +42,7 @@ const workflow = `        lane: [core, visual]
 const tests = [
   ...[
     "TestNativeCrossHostHelper",
+    "TestNativeBuildNetworkHelper",
     "TestNativeComposeDeployment",
     "TestNativeCrossHostDeployment",
     "TestNativePipeline",
@@ -456,6 +457,7 @@ test("the check asks Go which tests each Linux architecture can run", async (t) 
   write("services/platform/go.mod", "module example.invalid/platform\n");
   agentTest("agent_test.go", [
     "TestNativeCrossHostHelper",
+    "TestNativeBuildNetworkHelper",
     "TestNativeComposeDeployment",
     "TestNativeCrossHostDeployment",
     "TestNativeVisualDeployment",
@@ -498,7 +500,7 @@ test("the check asks Go which tests each Linux architecture can run", async (t) 
 
   const passed = check();
   assert.equal(passed.status, 0, passed.stderr);
-  assert.match(passed.stdout, /5 selected, 2 helpers/);
+  assert.match(passed.stdout, /5 selected, 3 helpers/);
 
   agentTest("new_test.go", ["TestNativeNewlyAdded"]);
   const missing = check();

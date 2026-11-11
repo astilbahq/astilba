@@ -378,7 +378,7 @@ func TestNativeTroubleshootingService(t *testing.T) {
 	// Sessions would still pass without these, so the sessions below prove nothing about
 	// the sandbox unless it is known to be on.
 	sandbox := string(a.systemctl("show", a.unit, "--property=NoNewPrivileges,ProtectHome,ProtectSystem,PrivateTmp,RestrictAddressFamilies,UMask"))
-	for _, want := range []string{"NoNewPrivileges=yes", "ProtectHome=yes", "ProtectSystem=strict", "PrivateTmp=yes", "RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX", "UMask=0077"} {
+	for _, want := range []string{"NoNewPrivileges=yes", "ProtectHome=yes", "ProtectSystem=strict", "PrivateTmp=yes", "RestrictAddressFamilies=AF_INET AF_INET6 AF_NETLINK AF_UNIX", "UMask=0077"} {
 		if !strings.Contains(sandbox, want+"\n") {
 			t.Fatalf("unit in force lacks %s:\n%s", want, sandbox)
 		}

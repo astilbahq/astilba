@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"net/http/httptest"
 	"net/http/httputil"
 	"net/url"
 	"os"
@@ -105,9 +104,9 @@ func startNativeRegistry(t *testing.T) *nativeRegistry {
 		}
 		return nil
 	}
-	server := httptest.NewTLSServer(proxy)
+	// Builds push from their own network, which reaches the host only at a private registry.
+	server := nativeFixtureTLSServer(t, proxy)
 	origin = server.URL
-	t.Cleanup(server.Close)
 	certificate := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw})
 	address := strings.TrimPrefix(origin, "https://")
 	trust := filepath.Join("/etc/docker/certs.d", address)

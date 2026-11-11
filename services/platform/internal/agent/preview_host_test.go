@@ -7,7 +7,6 @@ import (
 	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"net/http/cgi"
-	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -137,8 +136,7 @@ func TestNativePreviewEnvironment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	provider := httptest.NewServer(&cgi.Handler{Path: gitPath, Args: []string{"http-backend"}, Env: []string{"GIT_PROJECT_ROOT=" + root, "GIT_HTTP_EXPORT_ALL=1"}})
-	defer provider.Close()
+	provider := nativeFixtureServer(t, &cgi.Handler{Path: gitPath, Args: []string{"http-backend"}, Env: []string{"GIT_PROJECT_ROOT=" + root, "GIT_HTTP_EXPORT_ALL=1"}})
 	env, unit, app, pg, volume, request := uuid.New(), uuid.New(), uuid.New(), uuid.New(), uuid.New(), uuid.New()
 	cfg := pipeline.BuildConfig{Builder: "dockerfile", ConnectionID: uuid.New(), Branch: "main", RunnerID: server, Context: ".", Dockerfile: "Dockerfile", Architecture: runtime.GOARCH, Arguments: map[string]string{}, Secrets: map[string]uuid.UUID{}, Budget: &pipeline.BuildBudget{CPUs: 1, MemoryMiB: 1024, SourceMiB: 128, StateMiB: 512, Minutes: 5}}
 	build := pipeline.Command{Action: "build-preview", Preview: &pipeline.PreviewSource{RequestID: request, Generation: 1, Number: 7, HeadRepository: 12}, Connection: pipeline.Connection{ID: cfg.ConnectionID, Provider: "gitea", BaseURL: provider.URL, Repository: "team/app", RepositoryID: 12}, Commit: sha, Branch: "main", RevisionID: uuid.New(), UnitID: unit, AppID: app, Build: &cfg, InputHash: strings.Repeat("a", 64), SubmittedAt: time.Now().UTC()}

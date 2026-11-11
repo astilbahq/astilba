@@ -31,6 +31,7 @@ type Client struct {
 	Metrics                 func(context.Context) api.MetricReport
 	buildControls           atomic.Bool
 	buildCache              atomic.Bool
+	buildNetwork            atomic.Bool
 	railpack                atomic.Bool
 	safeReleases            atomic.Bool
 	serviceOutputs          atomic.Bool
@@ -114,6 +115,7 @@ func (c *Client) call(ctx context.Context, method, path string, body, out any, t
 	if response.Header.Get("Astilba-Agent-Features") != "" {
 		c.buildControls.Store(response.Header.Get("Astilba-Agent-Features") == "build-controls")
 		c.buildCache.Store(response.Header.Get("Astilba-Agent-Build-Cache") == "v1")
+		c.buildNetwork.Store(response.Header.Get("Astilba-Agent-Build-Network") == "v1")
 		c.railpack.Store(response.Header.Get("Astilba-Agent-Railpack") == "v1")
 		c.safeReleases.Store(response.Header.Get("Astilba-Agent-Safe-Releases") == "v1")
 		c.serviceOutputs.Store(response.Header.Get("Astilba-Agent-Service-Outputs") == "v1")
@@ -196,6 +198,9 @@ func (c *Client) advertisedCapabilities(v api.AgentCapabilities) api.AgentCapabi
 	}
 	if !c.buildCache.Load() {
 		v.BuildCache = nil
+	}
+	if !c.buildNetwork.Load() {
+		v.BuildNetwork = nil
 	}
 	if !c.railpack.Load() {
 		v.RailpackVersion = nil

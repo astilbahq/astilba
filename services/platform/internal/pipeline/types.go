@@ -115,7 +115,9 @@ type Command struct {
 	// management when it admits an import. A path holding no file there has no entry.
 	SourceBlobs map[string]string `json:"sourceBlobs,omitempty"`
 	Registry    *Registry         `json:"registry,omitempty"`
-	SubmittedAt time.Time         `json:"submittedAt"`
+	// BuildEgress is the runner's build network allowlist when management queued the build.
+	BuildEgress []EgressRule `json:"buildEgress,omitempty"`
+	SubmittedAt time.Time    `json:"submittedAt"`
 	// Values exist only in the assigned agent's transport and encrypted journal.
 	Access         *Access           `json:"access,omitempty"`
 	BuildSecrets   map[string]string `json:"buildSecrets,omitempty"`
@@ -264,6 +266,9 @@ func (c Command) Validate() error {
 	if !ValidCommit(c.Commit) || !ValidBranch(c.Branch) || !ValidRepository(c.Connection.Repository) || c.RevisionID == uuid.Nil || c.UnitID == uuid.Nil {
 		return errors.New("invalid pipeline identity")
 	}
+	if !c.IsBuild() && c.BuildEgress != nil {
+		return errors.New("only builds carry a build network allowlist")
+	}
 	switch c.Action {
 	case "import":
 		if c.Source == nil {
@@ -281,6 +286,9 @@ func (c Command) Validate() error {
 		}
 		if c.CompareCommit != "" && (!ValidCommit(c.CompareCommit) || len(c.Build.WatchPaths) == 0) {
 			return errors.New("invalid watched-build baseline")
+		}
+		if err := ValidateEgress(c.BuildEgress); err != nil {
+			return err
 		}
 		if c.CacheScope != "" && (!ValidCacheID(c.CacheScope) || !c.Build.CanCache()) {
 			return errors.New("invalid project cache scope")

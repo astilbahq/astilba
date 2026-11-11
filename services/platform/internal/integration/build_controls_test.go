@@ -80,6 +80,7 @@ func TestBuildControlsAndSuccessfulWatchBaseline(t *testing.T) {
 	enrolled, in, token := enrollment(t, f, b, ws, "build")
 	yes := true
 	in.Capabilities.Build = &yes
+	in.Capabilities.BuildNetwork = &yes
 	agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/enroll", "", in, 200, nil)
 	cfg := pipeline.BuildConfig{ConnectionID: connection.Connection.ID, Branch: "main", RunnerID: enrolled.Server.Id, Context: ".", Dockerfile: "Dockerfile", Architecture: "arm64", Arguments: map[string]string{}, Secrets: map[string]uuid.UUID{}, AutoBuild: true, WatchPaths: []string{"apps/web", "lockfile"}, Budget: &pipeline.BuildBudget{CPUs: 1, MemoryMiB: 1024, SourceMiB: 128, StateMiB: 512, Minutes: 2}}
 	create := func(status int) api.Operation {

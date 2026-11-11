@@ -10,8 +10,8 @@ import (
 	"os"
 )
 
-// Routes come from procfs, not from ip(8): the agent's unit has no AF_NETLINK until the
-// owner prepares managed networking, and every deployment host must place networks.
+// Routes come from procfs, not from ip(8), so placing networks needs neither a netlink
+// socket nor the managed networking tools.
 const fibPath = "/proc/net/fib_trie"
 
 // resolvers are read the way Docker reads them: systemd-resolved's upstream list as well

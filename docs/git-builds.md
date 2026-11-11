@@ -120,12 +120,46 @@ The agent bounds captured tool output before parsing or redaction. Build stdout 
 
 When the agent observes cancellation or expiry after a build command returns, it retains available redacted diagnostics without artifact fields. Cancellation does not make an image eligible for deployment. It does not reconstruct logs from stages that produced no captured output or from discarded overflow captures.
 
-A runner uses privileged BuildKit and host networking. Treat a Build/Combined runner as a trusted host for the selected repository's build code, particularly when it shares a server with workloads. The builder receives no Docker socket, host data mounts or runtime secrets. Checkout metadata and private auth files stay outside the build context. Initial build contexts reject symlinks and submodules. Failed fetches, failed uploads, cancellation and builder storage exhaustion do not mark an artifact applied or remove workload volumes. Completed artifacts are retained; cache/container cleanup does not prune deployment images or database storage.
+**The builder is root-equivalent on its runner.** BuildKit runs in a privileged container, so code that escapes a build step's sandbox, including a dependency's install script, is root on the host. From there it can use the Docker socket, read every container's environment on that server, read the agent's state and credential, and alter later builds' caches. The builder has no Docker socket or host data mounts of its own, but a privileged container doesn't need them: it can reach the host's devices directly. Treat a Build/Combined runner as a trusted host for the selected repositories and their dependencies. Prefer a dedicated Build server to a Combined one, and don't give the runner's machine a cloud instance role or other credentials it doesn't need. Checkout metadata and private auth files stay outside the build context. Initial build contexts reject symlinks and submodules. Failed fetches, failed uploads, cancellation and builder storage exhaustion do not mark an artifact applied or remove workload volumes. Completed artifacts are retained; cache/container cleanup does not prune deployment images or database storage.
 
 The encrypted host journal records command inputs and outcome before acknowledgement. An operation becomes terminal only after its owned builder container has been removed. Cleanup failure reports **needs attention** for explicit local reconciliation; process interruption replays the running journal entry. Replays fetch the same commit, reconcile only the operation's owned container, and reuse a deterministic submission branch/review. Follow the [agent recovery procedure](agent.md) for an interrupted host. Key rewrapping covers Git access, registry access and build-secret versions as well as runtime secrets.
 
+## Build network
+
+Each build runs in its own network namespace on the agent's build network, `astilba-build-network`, whose bridge is `astilba-build0` and whose range comes from the agent's [container network pool](agent.md#container-networks). Before it creates each build container, the agent installs the build network policy, the nftables table `inet astilba_builds`, and reads it back. It applies to everything in the build container, including BuildKit's own requests for `ADD` URLs, Git contexts and base images, not only `RUN` steps.
+
+A build reaches:
+
+- public IPv4 addresses, such as package registries and Git hosts;
+- the runner's DNS resolvers, on port 53 only. The agent gives BuildKit systemd-resolved's upstream servers, since builds can't use the loopback stub;
+- its own Git provider and registry, on their ports, when they are on private addresses;
+- the private destinations the runner allows (see below).
+
+A build never reaches:
+
+- the runner itself, on any of its addresses;
+- other containers, including services on a Combined server;
+- link-local addresses, which hold most clouds' instance metadata (`169.254.169.254`), Alibaba Cloud's metadata (`100.100.100.200`), Azure's host endpoint (`168.63.129.16`), loopback or multicast;
+- private and shared ranges (`10.0.0.0/8`, `100.64.0.0/10`, `172.16.0.0/12`, `192.0.0.0/24`, `192.168.0.0/16`, `198.18.0.0/15`), which include the container network pool, the LAN, a VPC and private links;
+- management's origin when it is on a private address, whatever the runner allows;
+- anything over IPv6, including AWS's metadata at `fd00:ec2::254`. Builds use IPv4 only.
+
+Docker translates no addresses for the build network: the policy does, after its rules. Without the policy, builds can't reach the internet. A rebooted host runs no build until the agent has installed the policy again. When the policy refuses a build's connections, the build log says how many packets it refused.
+
+Builds leave with the runner's address. If management is on a public address, a build can reach it like anyone on the internet. So don't trust runner addresses at management's firewall, or at anything else's.
+
+### Allowing private destinations
+
+To let builds use a private package mirror or registry, an owner adds it under **Build network** on the server's page. Each entry is an IPv4 address or range and a TCP port, such as `10.0.4.12:443` or `10.0.5.0/24:8081`, up to 32. Only private and shared ranges can be added: link-local addresses, loopback and multicast can't, and public addresses need no entry. Saving needs the owner, recently signed in, and is audited. Removing an entry stops builds queued with it, including one the runner has started. Every build on that runner can reach every entry, including code from its dependencies. The allowlist isn't part of a workspace export, so set it again after an import.
+
+### Host requirements and firewalls
+
+The policy needs nftables 1.0.9, which Ubuntu 24.04 installs by default and the bootstrap script installs if it is missing, and netlink access for the agent, which the agent's systemd unit grants. A server without them reports builds as unavailable, with a note.
+
+Docker's forwarding rules come before ufw's, so builds reach the internet, their Git provider and allowed destinations on the LAN with ufw's `DEFAULT_FORWARD_POLICY="DROP"`. ufw's `deny incoming` also applies to builds' connections to the runner itself. A resolver that listens on the runner (other than systemd-resolved's stub), or an allowed mirror or Git provider on the runner, then needs a matching ufw rule, such as `sudo ufw allow in on astilba-build0 to any port 53 proto udp`. The agent's policy still refuses every other connection from builds to the runner, so a rule for `astilba-build0` widens nothing else.
+
 ## Verification
 
-**make verify** runs provider API/signature contract fixtures, real PostgreSQL admission/background-policy journeys, the import, build, webhook, report and automatic deployment path against a real disposable Gitea, against which the integration fixtures' Gitea repository, branch, tree and pull-request answers are also checked, browser journeys in Chromium/WebKit, and the earlier live disposable GitLab/Gitea spike fixtures. It does not imply a live hosted GitHub pass. **make verify-agent-host** additionally runs private Git HTTP import/submission, real BuildKit builds, a TLS Zot registry with separate push/pull policies, image-layer credential checks, cancellation and builder-only storage exhaustion. Native CI requires amd64 and arm64.
+**make verify** runs provider API/signature contract fixtures, real PostgreSQL admission/background-policy journeys, the import, build, webhook, report and automatic deployment path against a real disposable Gitea, against which the integration fixtures' Gitea repository, branch, tree and pull-request answers are also checked, browser journeys in Chromium/WebKit, and the earlier live disposable GitLab/Gitea spike fixtures. It does not imply a live hosted GitHub pass. **make verify-agent-host** additionally runs private Git HTTP import/submission, real BuildKit builds, the build network policy against metadata, LAN, host, container and management destinations (also replayed after the policy is removed, as a reboot does), a TLS Zot registry with separate push/pull policies, image-layer credential checks, cancellation and builder-only storage exhaustion. Native CI requires amd64 and arm64.
 
 Pull/merge-request previews use separately approved templates, canonical provider request refs and preview-only hosts. Signed request events and paginated discovery feed authoritative reconciliation. See [Pull-request previews](pull-request-previews.md) for repository permissions, isolation and lifecycle.

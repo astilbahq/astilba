@@ -91,7 +91,17 @@ func Preflight(ctx context.Context, docker *client.Client, version, dir string, 
 	h.Preflight.ComposeVersion = &compose
 	visual := h.Preflight.Ready && err == nil
 	build := h.Preflight.Ready && dockerFreeBytes(ctx, docker) >= 4<<30
+	// A build runs only behind the build network policy, so a host that can't install it
+	// offers none.
+	if build && !(hostnetwork.Host{Dir: dir}).BuildPolicySupported(ctx) {
+		build = false
+		h.Preflight.Notes = append(h.Preflight.Notes, "Builds need nftables "+hostnetwork.NFTVersion+" and netlink access for the agent. Run the agent install again to add them.")
+	}
+	if runtime.GOOS == "linux" && instanceMetadataAnswers(ctx, instanceMetadataEndpoints, time.Now()) {
+		h.Preflight.Notes = append(h.Preflight.Notes, instanceMetadataNote)
+	}
 	h.Capabilities.Build = &build
+	h.Capabilities.BuildNetwork = &build
 	h.Capabilities.BuildControls = &build
 	h.Capabilities.BuildCache = &build
 	if build {

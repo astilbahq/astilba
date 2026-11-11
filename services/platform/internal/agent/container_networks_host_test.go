@@ -176,8 +176,7 @@ func TestNativeFullHostRefusesAnotherEnvironment(t *testing.T) {
 	f.request("first.example.test", "v1")
 }
 
-// The agent reads the host's ranges under the shipped unit's sandbox, which has no netlink
-// socket until the owner prepares managed networking.
+// The agent reads the host's ranges under the shipped unit's sandbox.
 func nativeHostRangesUnderTheUnitSandbox(t *testing.T, want netip.Prefix) {
 	t.Helper()
 	sandbox := []string{"--wait", "--pipe", "--quiet", "--collect"}
@@ -196,9 +195,6 @@ func nativeHostRangesUnderTheUnitSandbox(t *testing.T, want netip.Prefix) {
 	}
 	if !slices.ContainsFunc(sandbox, func(v string) bool { return strings.HasPrefix(v, "RestrictAddressFamilies=") }) {
 		t.Fatal("the agent unit no longer restricts address families")
-	}
-	if exec.Command("systemd-run", append(sandbox, "ip", "-4", "route", "show")...).Run() == nil {
-		t.Fatal("the unit sandbox allows netlink, so this check would prove nothing")
 	}
 	args := append(sandbox, "-E", "ASTILBA_HOST_RANGES_HELPER=1", "-E", "ASTILBA_HOST_RANGES_WANT="+want.String(), os.Args[0], "-test.v", "-test.run=^TestHostRangesSandboxHelper$")
 	out, err := exec.Command("systemd-run", args...).CombinedOutput()

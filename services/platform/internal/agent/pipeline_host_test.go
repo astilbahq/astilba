@@ -114,7 +114,7 @@ func TestNativePipeline(t *testing.T) {
 	var reviews atomic.Int32
 	var reviewed atomic.Value
 	var publicMode atomic.Bool
-	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/api/") {
 			if r.Header.Get("Authorization") != "token writer-token" {
 				w.WriteHeader(401)
@@ -156,8 +156,12 @@ func TestNativePipeline(t *testing.T) {
 			return
 		}
 		backend.ServeHTTP(w, r)
-	}))
+	})
+	// Source work runs on the host's network, where a provider on loopback is a development one.
+	// Builds have their own network, which reaches the host only at a private provider's address.
+	provider := httptest.NewServer(handler)
 	defer provider.Close()
+	buildProvider := nativeFixtureServer(t, handler)
 	source := pipeline.Source{ConnectionID: uuid.New(), Branch: "main", RunnerID: serverID, Paths: []string{"compose.yaml"}, Entrypoints: []string{"compose.yaml"}}
 	base := pipeline.Command{Action: "import", Connection: pipeline.Connection{ID: source.ConnectionID, Provider: "gitea", BaseURL: provider.URL, Repository: "team/app", RepositoryID: 12, Private: true}, Commit: commit, Branch: "main", RevisionID: uuid.New(), UnitID: uuid.New(), Source: &source, SubmittedAt: time.Now().UTC().Truncate(time.Second), Access: &pipeline.Access{Clone: pipeline.Credential{Username: "fixture", Password: "reader-token"}}}
 	var active api.ExecutionCommand
@@ -302,6 +306,7 @@ func TestNativePipeline(t *testing.T) {
 	}
 	build := base
 	build.Action = "build"
+	build.Connection.BaseURL = buildProvider.URL
 	build.Source = nil
 	build.AppID = uuid.New()
 	build.InputHash = strings.Repeat("a", 64)
@@ -641,6 +646,7 @@ func TestNativePipeline(t *testing.T) {
 			git("-C", work, "push", repo, "main")
 			command := base
 			command.Action, command.Source, command.AppID = "build", nil, uuid.New()
+			command.Connection.BaseURL = buildProvider.URL
 			command.Commit = git("-C", work, "rev-parse", "HEAD")
 			command.InputHash = strings.Repeat("a", 64)
 			command.Build = &pipeline.BuildConfig{ConnectionID: source.ConnectionID, Branch: "main", RunnerID: serverID, Builder: "railpack", Context: folder, Architecture: runtime.GOARCH, Railpack: &pipeline.RailpackOptions{BuildCommand: fixture.build, StartCommand: fixture.start}, Budget: &pipeline.BuildBudget{CPUs: 2, MemoryMiB: 6144, SourceMiB: 1024, StateMiB: 4096, Minutes: 10}, Arguments: map[string]string{"EMPTY": "", "PUBLIC": "hello"}, Secrets: map[string]uuid.UUID{"NPM_TOKEN": uuid.New()}}

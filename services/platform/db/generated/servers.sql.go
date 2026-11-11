@@ -851,6 +851,27 @@ func (q *Queries) SecondaryUnitOnServer(ctx context.Context, arg SecondaryUnitOn
 	return id, err
 }
 
+const serverBuildEgress = `-- name: ServerBuildEgress :one
+SELECT role,build_egress FROM servers WHERE workspace_id=$1 AND id=$2
+`
+
+type ServerBuildEgressParams struct {
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ID          uuid.UUID `json:"id"`
+}
+
+type ServerBuildEgressRow struct {
+	Role        string `json:"role"`
+	BuildEgress []byte `json:"build_egress"`
+}
+
+func (q *Queries) ServerBuildEgress(ctx context.Context, arg ServerBuildEgressParams) (ServerBuildEgressRow, error) {
+	row := q.db.QueryRow(ctx, serverBuildEgress, arg.WorkspaceID, arg.ID)
+	var i ServerBuildEgressRow
+	err := row.Scan(&i.Role, &i.BuildEgress)
+	return i, err
+}
+
 const serverCapabilities = `-- name: ServerCapabilities :one
 SELECT capabilities FROM servers WHERE workspace_id = $1 AND id = $2
 `
@@ -935,6 +956,24 @@ func (q *Queries) ServerRoutedEnvironments(ctx context.Context, arg ServerRouted
 		return nil, err
 	}
 	return items, nil
+}
+
+const setServerBuildEgress = `-- name: SetServerBuildEgress :execrows
+UPDATE servers SET build_egress=$3 WHERE workspace_id=$1 AND id=$2 AND NOT revoked AND role<>'deployment'
+`
+
+type SetServerBuildEgressParams struct {
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ID          uuid.UUID `json:"id"`
+	BuildEgress []byte    `json:"build_egress"`
+}
+
+func (q *Queries) SetServerBuildEgress(ctx context.Context, arg SetServerBuildEgressParams) (int64, error) {
+	result, err := q.db.Exec(ctx, setServerBuildEgress, arg.WorkspaceID, arg.ID, arg.BuildEgress)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const settleRevokedServerOperations = `-- name: SettleRevokedServerOperations :exec

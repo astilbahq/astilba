@@ -187,6 +187,9 @@ func (s *Service) decidePipelineDelivery(ctx context.Context, git *gitAnswers, a
 			return false, err
 		}
 	}
+	if settled, err := settleNarrowedEgress(ctx, tx, ws, c, p, undelivered); settled || err != nil {
+		return settled && c.CancelRequested, err
+	}
 	if p.CacheScope != "" {
 		var raw []byte
 		if err = tx.QueryRow(ctx, "SELECT capabilities FROM servers WHERE id=$1", c.ServerId).Scan(&raw); err != nil {
