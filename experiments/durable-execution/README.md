@@ -18,7 +18,7 @@ Once the agent has durably recorded a terminal result, that result wins a later 
 
 ## Reproduce
 
-Use a disposable Docker engine and Go 1.27.4. The fixture accepts only an explicit local Unix socket, creates randomly labelled resources and removes only resources carrying its own run label. On macOS, the environment used for development was installed through Homebrew: Go 1.27.3, Docker CLI 29.9.2, Colima 0.10.3 and Lima 2.2.1. No Docker Hub account or Docker Desktop is required.
+Use a disposable Docker engine and Go 1.27.4. The fixture accepts only an explicit local Unix socket, creates randomly labelled resources and removes only resources carrying its own run label. On macOS, the environment used for development was installed through Homebrew: Go, Docker CLI 29.9.2, Colima 0.10.3 and Lima 2.2.1. No Docker Hub account or Docker Desktop is required.
 
 ```sh
 colima start --profile astilba-plat-2 --activate=false --cpu 4 --memory 4 --disk 20 --vm-type vz --runtime docker
