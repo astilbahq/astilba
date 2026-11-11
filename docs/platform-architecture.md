@@ -50,7 +50,7 @@ React Flow is a renderer and interaction library; it does not define Astilba's d
 
 The [PLAT-1 editor experiment](../experiments/canvas-editor/README.md) retains React Flow 12.12.0, React 19.3.1 and Panda 2.4.0 after exercising custom service cards, typed connections, keyboard/list editing and independent layout/configuration saves in Chromium and WebKit. Its 250-node synthetic probe avoids graph-wide custom-node and property rerenders during dragging. These are pinned experiment versions and measured feasibility, not a production capacity or complete accessibility claim. The fixture's browser storage and small controls remain separate from the production application.
 
-The [P1 application](../services/platform/README.md) uses React 19.3.1, Vite 8.3.5, Panda 2.4.0, TanStack Router 1.170.46 and Query 5.105.0. Its Go 1.27.3 module pins SCS 2.9.0 with the pgx session store, Argon2id 1.0.0 and OTP 1.5.0. OpenAPI and sqlc output are generated and checked deterministically. The initial versioned specification stores application source descriptors and variables; the richer visual resource catalogue and deployment planner remain P3. Production code does not import the validation experiments.
+The [P1 application](../services/platform/README.md) uses React 19.3.1, Vite 8.3.5, Panda 2.4.0, TanStack Router 1.170.46 and Query 5.105.0. Its Go 1.27.4 module pins SCS 2.9.0 with the pgx session store, Argon2id 1.0.0 and OTP 1.5.0. OpenAPI and sqlc output are generated and checked deterministically. The initial versioned specification stores application source descriptors and variables; the richer visual resource catalogue and deployment planner remain P3. Production code does not import the validation experiments.
 
 ## Runtime topology
 
