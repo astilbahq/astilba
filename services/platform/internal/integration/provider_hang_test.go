@@ -268,7 +268,7 @@ func newHungBuild(t *testing.T) *hungBuild {
 	agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/enroll", "", in, 200, nil)
 	h.server, h.token, h.enrolled = enrolled.Server.Id, token, in
 	var err error
-	if h.identity, err = f.execution.Authenticate(t.Context(), h.server, in.Credential); err != nil {
+	if h.identity, err = f.execution.Authenticate(t.Context(), h.server, *in.Credential); err != nil {
 		t.Fatal(err)
 	}
 	h.config = pipeline.BuildConfig{ConnectionID: h.connection.ID, Branch: "main", RunnerID: h.server, Context: ".", Dockerfile: "Dockerfile", Architecture: "arm64", Arguments: map[string]string{}, Secrets: map[string]uuid.UUID{}}

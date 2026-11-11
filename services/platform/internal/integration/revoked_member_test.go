@@ -366,7 +366,7 @@ func revokedRecovery(t *testing.T) (*claimRecovery, api.AgentEnrollment) {
 	var third api.AgentEnrollment
 	r := newClaimRecovery(t, 1, func(f *fixture, b *browser, ws, network uuid.UUID) {
 		_, third, _ = enrollment(t, f, b, ws, "deployment")
-		if _, err := f.execution.Enroll(context.Background(), third); err != nil {
+		if _, err := f.execution.Enroll(context.Background(), third, "test"); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := f.st.Pool.Exec(context.Background(), `INSERT INTO network_members(workspace_id,network_id,server_id,membership_id,address,endpoint,listen_port,cpu_millis,memory_mib,unbounded_inventory_hash,public_key,enabled,approved_controller,generation) VALUES($1,$2,$3,$4,'10.249.0.3','192.0.2.3:51820',51820,1000,1024,$5,$6,true,0,1)`, ws, network, third.ServerId, uuid.New(), strings.Repeat("a", 64), claimKey("c")); err != nil {

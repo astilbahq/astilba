@@ -15,7 +15,6 @@ import (
 
 	"github.com/astilbahq/astilba/services/platform/internal/agent"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
-	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/execution"
@@ -93,7 +92,7 @@ func TestNativeCrossHostOlderBackupRecovery(t *testing.T) {
 		in.Capabilities.ServiceOutputs, in.Capabilities.SafeReleases = &yes, &yes
 		inventory := hostnetwork.StableInventory(nil)
 		in.Preflight.CrossHostInventory = &api.CrossHostInventory{IngressReady: &yes, CpuMillis: 4000, MemoryMiB: 8192, UnboundedInventoryHash: inventory}
-		if _, err := source.execution.Enroll(ctx, in); err != nil {
+		if _, err := source.execution.Enroll(ctx, in, "test"); err != nil {
 			t.Fatal(err)
 		}
 		identity, err := source.execution.Authenticate(ctx, in.ServerId, strings.SplitN(token, ".", 2)[1])
@@ -126,7 +125,7 @@ func TestNativeCrossHostOlderBackupRecovery(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { j.Close() })
-		if err = j.SetConfig(agent.Config{Origin: "https://source.example.test", ServerID: in.ServerId, MachineID: in.MachineId, Role: "deployment", Enrolled: true, Credential: in.Credential}); err != nil {
+		if err = j.SetConfig(agent.Config{Origin: "https://source.example.test", ServerID: in.ServerId, MachineID: in.MachineId, Role: "deployment", Enrolled: true, Credential: *in.Credential}); err != nil {
 			t.Fatal(err)
 		}
 		journals = append(journals, j)
@@ -269,7 +268,7 @@ func TestNativeCrossHostOlderBackupRecovery(t *testing.T) {
 				input = candidate
 			}
 		}
-		identity, err := source.execution.Authenticate(ctx, input.ServerId, input.Credential)
+		identity, err := source.execution.Authenticate(ctx, input.ServerId, *input.Credential)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -483,7 +482,7 @@ func TestNativeCrossHostOlderBackupRecovery(t *testing.T) {
 			if err = j.SetConfig(cfg); err != nil {
 				t.Fatal(err)
 			}
-			identity, err := fork.execution.Authenticate(ctx, input.ServerId, input.Credential)
+			identity, err := fork.execution.Authenticate(ctx, input.ServerId, *input.Credential)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1026,7 +1025,7 @@ func TestNativeCrossHostOlderBackupRecovery(t *testing.T) {
 			}
 			input := enrollments[i]
 			input.Inventory, input.ControllerGeneration, input.Token = &inventory, &ticket.Generation, ticket.Token
-			input.Credential, err = cryptobox.Token()
+			input.Credential, err = credentialToken()
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1034,10 +1033,10 @@ func TestNativeCrossHostOlderBackupRecovery(t *testing.T) {
 			wrongInventory := inventory
 			wrongInventory.Units = map[string]string{uuid.NewString(): strings.Repeat("a", 64)}
 			wrong.Inventory = &wrongInventory
-			if _, err = current.Enroll(ctx, wrong); !errors.Is(err, domain.Conflict) {
+			if _, err = current.Enroll(ctx, wrong, "test"); !errors.Is(err, domain.Conflict) {
 				t.Fatal("incompatible inventory admitted", err)
 			}
-			if _, err = current.Enroll(ctx, input); err != nil {
+			if _, err = current.Enroll(ctx, input, "test"); err != nil {
 				var stagedRaw []byte
 				if probeErr := destination.st.Pool.QueryRow(ctx, `SELECT inventory FROM cross_host_recovery_servers WHERE server_id=$1`, input.ServerId).Scan(&stagedRaw); probeErr != nil {
 					t.Fatal(probeErr)
@@ -1059,11 +1058,11 @@ func TestNativeCrossHostOlderBackupRecovery(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			cfg.Enrolled, cfg.Credential, cfg.EnrollmentToken = true, input.Credential, ""
+			cfg.Enrolled, cfg.Credential, cfg.EnrollmentToken = true, *input.Credential, ""
 			if err = j.SetConfig(cfg); err != nil {
 				t.Fatal(err)
 			}
-			identity, err := current.Authenticate(ctx, input.ServerId, input.Credential)
+			identity, err := current.Authenticate(ctx, input.ServerId, *input.Credential)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1072,7 +1071,7 @@ func TestNativeCrossHostOlderBackupRecovery(t *testing.T) {
 				t.Fatal("handover retry", err)
 			}
 			retried, err := j.Config()
-			if err != nil || !retried.Enrolled || retried.Credential != input.Credential {
+			if err != nil || !retried.Enrolled || retried.Credential != *input.Credential {
 				t.Fatal("handover retry replaced enrolled credentials", err)
 			}
 			if i == 0 {

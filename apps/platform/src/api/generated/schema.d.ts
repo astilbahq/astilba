@@ -1196,6 +1196,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
+        /** @description Authenticated by the server's current legacy bearer, which the bind retires. */
         post: operations["bindAgentKey"];
         delete?: never;
         options?: never;

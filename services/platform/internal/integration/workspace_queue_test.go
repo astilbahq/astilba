@@ -38,7 +38,7 @@ func TestWorkspaceLockWaitersLeaveThePoolServing(t *testing.T) {
 	outsider.login("removed@example.test", f.password)
 	server, enrollInput, _ := enrollment(t, f, owner, ws, "deployment")
 	agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/enroll", "", enrollInput, 200, nil)
-	agent, err := f.execution.Authenticate(ctx, server.Server.Id, enrollInput.Credential)
+	agent, err := f.execution.Authenticate(ctx, server.Server.Id, *enrollInput.Credential)
 	if err != nil {
 		t.Fatal(err)
 	}

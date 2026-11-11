@@ -350,9 +350,9 @@ func (n *aheadNetwork) transfer(t *testing.T, h *aheadHost) {
 	}
 	generation := int64(ticket.Generation)
 	input := h.input
-	input.Token, input.Credential, input.ControllerGeneration = ticket.Token, credential, &generation
+	input.Token, input.Credential, input.ControllerGeneration = ticket.Token, &credential, &generation
 	input.Inventory = &api.ControllerInventory{Units: map[string]string{}, Schedules: map[string]int64{}}
-	if _, err = n.f.execution.Enroll(n.ctx, input); err != nil {
+	if _, err = n.f.execution.Enroll(n.ctx, input, "test"); err != nil {
 		t.Fatal(err)
 	}
 	if h.identity, err = n.f.execution.Authenticate(n.ctx, h.id, credential); err != nil {

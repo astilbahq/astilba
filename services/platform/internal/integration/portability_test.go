@@ -13,7 +13,6 @@ import (
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
-	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
 	"github.com/astilbahq/astilba/services/platform/internal/portability"
@@ -37,7 +36,7 @@ func TestEncryptedWorkspaceExportPreservesIdentityWithoutInstallationKeys(t *tes
 	var secret api.SecretVersion
 	browser.call("POST", base+"/"+env.Id.String()+"/secrets", map[string]string{"name": "PORTABLE_TOKEN", "value": "portable-secret-canary"}, 201, &secret)
 	server, enroll, _ := enrollment(t, f, browser, ws, "combined")
-	if _, e := f.execution.Enroll(context.Background(), enroll); e != nil {
+	if _, e := f.execution.Enroll(context.Background(), enroll, "test"); e != nil {
 		t.Fatal(e)
 	}
 	browser.call("PUT", "/api/v1/workspaces/"+ws.String()+"/servers/"+server.Server.Id.String()+"/domain", api.ConfigureServerDomain{Ipv4: "198.51.100.7"}, 200, nil)
@@ -210,7 +209,7 @@ func TestManagementRecoveryFencesQueuedCommandsBeforeAgentReconnect(t *testing.T
 	session := browser.login("owner@example.test", f.password)
 	ws := session.Workspaces[0].Id
 	enrolled, input, oldBearer := enrollment(t, f, browser, ws, "deployment")
-	if _, e := f.execution.Enroll(context.Background(), input); e != nil {
+	if _, e := f.execution.Enroll(context.Background(), input, "test"); e != nil {
 		t.Fatal(e)
 	}
 	env := envForExecution(t, f, browser, ws)
@@ -245,16 +244,16 @@ func TestManagementRecoveryFencesQueuedCommandsBeforeAgentReconnect(t *testing.T
 		t.Fatal(e)
 	}
 	input.Token = ticket.Token
-	input.Credential, _ = cryptobox.Token()
-	if _, e = f.execution.Enroll(context.Background(), input); e == nil {
+	input.Credential, _ = credentialToken()
+	if _, e = f.execution.Enroll(context.Background(), input, "test"); e == nil {
 		t.Fatal("old-generation enrollment accepted")
 	}
 	input.ControllerGeneration = &ticket.Generation
 	input.Inventory = &api.ControllerInventory{Units: map[string]string{}, Schedules: map[string]int64{}}
-	if _, e = f.execution.Enroll(context.Background(), input); e != nil {
+	if _, e = f.execution.Enroll(context.Background(), input, "test"); e != nil {
 		t.Fatal(e)
 	}
-	if _, e = f.execution.Enroll(context.Background(), input); e != nil {
+	if _, e = f.execution.Enroll(context.Background(), input, "test"); e != nil {
 		t.Fatal("lost enrollment response was not retryable", e)
 	}
 	plan, e = f.execution.Plan(context.Background(), principal, ws, api.PlanRequest{ServerId: enrolled.Server.Id, EnvironmentId: env, Action: "inspect"})
@@ -265,7 +264,7 @@ func TestManagementRecoveryFencesQueuedCommandsBeforeAgentReconnect(t *testing.T
 	if e != nil {
 		t.Fatal(e)
 	}
-	identity, e := f.execution.Authenticate(context.Background(), enrolled.Server.Id, input.Credential)
+	identity, e := f.execution.Authenticate(context.Background(), enrolled.Server.Id, *input.Credential)
 	if e != nil {
 		t.Fatal(e)
 	}

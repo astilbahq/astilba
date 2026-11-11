@@ -39,7 +39,7 @@ func queuedPreparation(t *testing.T, primaryState, childState api.ExecutionState
 		yes := true
 		in.Capabilities.CrossHost = &yes
 		in.Capabilities.MaintenanceContinuation = &yes
-		if _, err := f.execution.Enroll(ctx, in); err != nil {
+		if _, err := f.execution.Enroll(ctx, in, "test"); err != nil {
 			t.Fatal(err)
 		}
 		servers = append(servers, in)
@@ -47,7 +47,7 @@ func queuedPreparation(t *testing.T, primaryState, childState api.ExecutionState
 	if err := f.execution.Stop(ctx); err != nil {
 		t.Fatal(err)
 	}
-	identity, err := f.execution.Authenticate(ctx, servers[1].ServerId, servers[1].Credential)
+	identity, err := f.execution.Authenticate(ctx, servers[1].ServerId, *servers[1].Credential)
 	if err != nil {
 		t.Fatal(err)
 	}

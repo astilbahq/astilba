@@ -274,6 +274,13 @@ func (c *Client) Enroll(ctx context.Context, token string) error {
 	return nil
 }
 
+// Heartbeat reports this host once.
+func (c *Client) Heartbeat(ctx context.Context) (api.AgentStatus, error) {
+	var status api.AgentStatus
+	err := c.heartbeat(ctx, authAgent, &status)
+	return status, err
+}
+
 // keyProtection is what this agent reports about how it protects its key.
 func (c *Client) keyProtection() *api.AgentCapabilitiesKeyProtection {
 	if c.Keys != nil {

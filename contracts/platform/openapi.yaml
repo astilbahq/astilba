@@ -2441,9 +2441,8 @@
           "application/json":
             "schema":
               "$ref": "#/components/schemas/AgentKeyBind"
-      "security":
-        -
-          "agentBearer": []
+      "description": "Authenticated by the server's current legacy bearer, which the bind retires."
+      "security": []
   "/agent/v1/poll":
     "get":
       "operationId": "pollAgent"

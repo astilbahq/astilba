@@ -37,7 +37,7 @@ func TestFixturePollRecoversAfterLeaseContention(t *testing.T) {
 	agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/enroll", "", in, 200, nil)
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
-	identity, err := f.execution.Authenticate(ctx, v.Server.Id, in.Credential)
+	identity, err := f.execution.Authenticate(ctx, v.Server.Id, *in.Credential)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,7 +90,7 @@ func TestCancelledPollLeavesNoLease(t *testing.T) {
 	ws := b.login("owner@example.test", f.password).Workspaces[0].Id
 	v, in, _ := enrollment(t, f, b, ws, "deployment")
 	agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/enroll", "", in, 200, nil)
-	identity, err := f.execution.Authenticate(t.Context(), v.Server.Id, in.Credential)
+	identity, err := f.execution.Authenticate(t.Context(), v.Server.Id, *in.Credential)
 	if err != nil {
 		t.Fatal(err)
 	}

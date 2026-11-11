@@ -17,7 +17,6 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/agent"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/backup"
-	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/execution"
@@ -93,7 +92,7 @@ func testNativePhysicalRecovery(t *testing.T, upgradeRecovery bool) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := journal.SetConfig(agent.Config{Origin: "https://source.example.test", ServerID: in.ServerId, MachineID: in.MachineId, Credential: in.Credential, Role: "deployment", Enrolled: true}); err != nil {
+		if err := journal.SetConfig(agent.Config{Origin: "https://source.example.test", ServerID: in.ServerId, MachineID: in.MachineId, Credential: *in.Credential, Role: "deployment", Enrolled: true}); err != nil {
 			journal.Close()
 			t.Fatal(err)
 		}
@@ -109,10 +108,10 @@ func testNativePhysicalRecovery(t *testing.T, upgradeRecovery bool) {
 			t.Fatal("physical host preflight", err, heartbeat.Preflight.Notes)
 		}
 		in.Capabilities, in.Preflight = heartbeat.Capabilities, heartbeat.Preflight
-		if _, err := source.execution.Enroll(ctx, in); err != nil {
+		if _, err := source.execution.Enroll(ctx, in, "test"); err != nil {
 			t.Fatal(err)
 		}
-		identity, err := source.execution.Authenticate(ctx, in.ServerId, in.Credential)
+		identity, err := source.execution.Authenticate(ctx, in.ServerId, *in.Credential)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -631,24 +630,24 @@ chmod +x /tmp/www/cgi-bin/health
 		}
 		input := inputs[i]
 		input.Inventory, input.ControllerGeneration, input.Token = &inventory, &ticket.Generation, ticket.Token
-		input.Credential, err = cryptobox.Token()
+		input.Credential, err = credentialToken()
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := current.Enroll(ctx, input); err != nil {
+		if _, err := current.Enroll(ctx, input, "test"); err != nil {
 			t.Fatal("enroll recovered host", i, err)
 		}
 		host.mu.Lock()
 		cfg, cfgErr := host.engine.Journal.Config()
 		if cfgErr == nil {
-			cfg.Enrolled, cfg.Credential, cfg.EnrollmentToken = true, input.Credential, ""
+			cfg.Enrolled, cfg.Credential, cfg.EnrollmentToken = true, *input.Credential, ""
 			cfgErr = host.engine.Journal.SetConfig(cfg)
 		}
 		host.mu.Unlock()
 		if cfgErr != nil {
 			t.Fatal(cfgErr)
 		}
-		identity, err := current.Authenticate(ctx, input.ServerId, input.Credential)
+		identity, err := current.Authenticate(ctx, input.ServerId, *input.Credential)
 		if err != nil {
 			t.Fatal(err)
 		}

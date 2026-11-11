@@ -14,7 +14,6 @@ import (
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/backup"
-	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/execution"
@@ -1306,7 +1305,7 @@ func testCrossHostCoordinatedPlacement(t *testing.T, expiryPhase string) {
 		owner.call("POST", base+"/servers/"+server.Server.Id.String()+"/transfer", nil, 201, &ticket)
 		input := enrollments[index]
 		input.Token, input.ControllerGeneration = ticket.Token, &ticket.Generation
-		input.Credential, err = cryptobox.Token()
+		input.Credential, err = credentialToken()
 		if err != nil {
 			t.Fatal(err)
 		}

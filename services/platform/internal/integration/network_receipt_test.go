@@ -69,10 +69,10 @@ func TestManagedNetworkLostConfigureReceiptDoesNotBlockRemoval(t *testing.T) {
 	b := f.browser(t)
 	ws := b.login("owner@example.test", f.password).Workspaces[0].Id
 	_, in, _ := enrollment(t, f, b, ws, "deployment")
-	if _, err := f.execution.Enroll(ctx, in); err != nil {
+	if _, err := f.execution.Enroll(ctx, in, "test"); err != nil {
 		t.Fatal(err)
 	}
-	identity, err := f.execution.Authenticate(ctx, in.ServerId, in.Credential)
+	identity, err := f.execution.Authenticate(ctx, in.ServerId, *in.Credential)
 	if err != nil {
 		t.Fatal(err)
 	}

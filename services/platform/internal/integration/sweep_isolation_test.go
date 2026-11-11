@@ -35,7 +35,7 @@ func networkWithPendingRevocation(t *testing.T, f *fixture, b *browser, ws uuid.
 	var prior []hostnetwork.Manifest
 	for _, address := range []string{"10.251.0.2", "10.251.0.3", "10.251.0.4"} {
 		_, in, _ := enrollment(t, f, b, ws, "deployment")
-		if _, err := f.execution.Enroll(ctx, in); err != nil {
+		if _, err := f.execution.Enroll(ctx, in, "test"); err != nil {
 			t.Fatal(err)
 		}
 		membership := uuid.New()
@@ -246,10 +246,10 @@ func TestNetworkMembersCannotShareAKey(t *testing.T) {
 	members := []member{}
 	for i, address := range []string{"10.251.0.2", "10.251.0.3"} {
 		_, in, _ := enrollment(t, f, b, ws, "deployment")
-		if _, err := f.execution.Enroll(ctx, in); err != nil {
+		if _, err := f.execution.Enroll(ctx, in, "test"); err != nil {
 			t.Fatal(err)
 		}
-		identity, err := f.execution.Authenticate(ctx, in.ServerId, in.Credential)
+		identity, err := f.execution.Authenticate(ctx, in.ServerId, *in.Credential)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -381,7 +381,7 @@ func TestMigrationKeepsAProvenKeyAndClearsOtherHolders(t *testing.T) {
 	manifests := make([]hostnetwork.Manifest, len(rows))
 	for i, r := range rows {
 		_, in, _ := enrollment(t, f, b, ws, "deployment")
-		if _, err = f.execution.Enroll(ctx, in); err != nil {
+		if _, err = f.execution.Enroll(ctx, in, "test"); err != nil {
 			t.Fatal(err)
 		}
 		manifests[i] = hostnetwork.Manifest{Version: 1, NetworkID: ws, MembershipID: uuid.New(), ServerID: in.ServerId, Generation: 6, Prefix: "10.251.0.0/24", Address: r.address, PublicKey: r.key, ListenPort: 51820}
