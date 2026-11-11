@@ -246,6 +246,39 @@ func (q *Queries) GetRevision(ctx context.Context, arg GetRevisionParams) (Speci
 	return i, err
 }
 
+const getRevisionHolding = `-- name: GetRevisionHolding :one
+SELECT workspace_id, environment_id, id, author_id, specification, content_hash, created_at FROM specification_revisions WHERE workspace_id = $1 AND environment_id = $2 AND id = $3 AND specification = $4::jsonb
+`
+
+type GetRevisionHoldingParams struct {
+	WorkspaceID   uuid.UUID `json:"workspace_id"`
+	EnvironmentID uuid.UUID `json:"environment_id"`
+	ID            uuid.UUID `json:"id"`
+	Specification []byte    `json:"specification"`
+}
+
+// The revision only if it holds this specification. It compares the documents, not the stored
+// content hash, which an import carries as the archive gave it.
+func (q *Queries) GetRevisionHolding(ctx context.Context, arg GetRevisionHoldingParams) (SpecificationRevision, error) {
+	row := q.db.QueryRow(ctx, getRevisionHolding,
+		arg.WorkspaceID,
+		arg.EnvironmentID,
+		arg.ID,
+		arg.Specification,
+	)
+	var i SpecificationRevision
+	err := row.Scan(
+		&i.WorkspaceID,
+		&i.EnvironmentID,
+		&i.ID,
+		&i.AuthorID,
+		&i.Specification,
+		&i.ContentHash,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const getSecret = `-- name: GetSecret :one
 SELECT workspace_id, environment_id, id, name FROM secrets WHERE workspace_id=$1 AND environment_id=$2 AND id=$3
 `

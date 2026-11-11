@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
+	"errors"
 	"github.com/astilbahq/astilba/services/platform/internal/composeproject"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"net/http"
@@ -231,6 +232,15 @@ func (s *Server) UpdateDraft(w http.ResponseWriter, r *http.Request, ws, pid, id
 			if _, e := q.GetSecretVersion(ctx, db.GetSecretVersionParams{WorkspaceID: ws, EnvironmentID: id, ID: secretID}); e != nil {
 				return store.IfMissing(e, domain.Invalid("specification.secretVersionId"))
 			}
+		}
+		// Saving the draft unchanged adds no revision.
+		same, e := q.GetRevisionHolding(ctx, db.GetRevisionHoldingParams{WorkspaceID: ws, EnvironmentID: id, ID: env.DraftRevisionID, Specification: canonical})
+		if e == nil {
+			out = revision(same)
+			return nil
+		}
+		if !errors.Is(e, pgx.ErrNoRows) {
+			return e
 		}
 		newID := uuid.New()
 		rev, e := insertRevision(r, q, ws, id, newID, canonical)

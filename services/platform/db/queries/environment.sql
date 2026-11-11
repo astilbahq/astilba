@@ -15,6 +15,10 @@ ON d.workspace_id=e.workspace_id AND d.environment_id=e.id AND d.primary_unit WH
 INSERT INTO deployment_units(workspace_id,id,environment_id) VALUES($1,$2,$3);
 -- name: GetRevision :one
 SELECT * FROM specification_revisions WHERE workspace_id=$1 AND environment_id=$2 AND id=$3;
+-- name: GetRevisionHolding :one
+-- The revision only if it holds this specification. It compares the documents, not the stored
+-- content hash, which an import carries as the archive gave it.
+SELECT * FROM specification_revisions WHERE workspace_id = @workspace_id AND environment_id = @environment_id AND id = @id AND specification = @specification::jsonb;
 -- name: ListRevisions :many
 SELECT id,author_id,content_hash,created_at FROM specification_revisions WHERE workspace_id=$1 AND environment_id=$2 ORDER BY created_at DESC,id DESC LIMIT 50;
 -- name: InsertRevision :one

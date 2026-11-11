@@ -106,6 +106,7 @@ func TestAutomationCLIAndRealStdioMCP(t *testing.T) {
 	}
 	var spec map[string]any
 	json.Unmarshal(draft.Specification, &spec)
+	spec["variables"] = append(spec["variables"].([]any), map[string]any{"name": "CHANGED", "value": "set"})
 	update := map[string]any{"baseRevisionId": draft.Id, "specification": spec}
 	call("draft_update", update, false)
 	call("draft_update", update, true)
