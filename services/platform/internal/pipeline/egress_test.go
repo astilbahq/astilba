@@ -38,10 +38,10 @@ func TestParseEgressRule(t *testing.T) {
 
 func TestEgressCovers(t *testing.T) {
 	current := []EgressRule{{"10.0.4.12/32", 443}, {"10.0.5.0/24", 8081}}
-	if !EgressCovers(current, current[1:]) || !EgressCovers(current, nil) {
+	if !EgressCovers(current, current[1:]) || !EgressCovers(current, nil) || !EgressCovers(current, []EgressRule{{"10.0.5.7/32", 8081}}) || !EgressCovers([]EgressRule{{"10.0.4.0/24", 443}}, current[:1]) {
 		t.Fatal("a build within the current allowlist was refused")
 	}
-	if EgressCovers(current[1:], current) || EgressCovers(current, []EgressRule{{"10.0.4.12/32", 444}}) {
+	if EgressCovers(current[1:], current) || EgressCovers(current, []EgressRule{{"10.0.4.12/32", 444}}) || EgressCovers(current, []EgressRule{{"10.0.0.0/16", 8081}}) {
 		t.Fatal("a build kept a destination the owner removed")
 	}
 }

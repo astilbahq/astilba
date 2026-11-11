@@ -90,18 +90,19 @@ func Preflight(ctx context.Context, docker *client.Client, version, dir string, 
 	compose, err := composeVersion(check, dockerCLI)
 	h.Preflight.ComposeVersion = &compose
 	visual := h.Preflight.Ready && err == nil
-	build := h.Preflight.Ready && dockerFreeBytes(ctx, docker) >= 4<<30
 	// A build runs only behind the build network policy, so a host that can't install it
-	// offers none.
-	if build && !(hostnetwork.Host{Dir: dir}).BuildPolicySupported(ctx) {
-		build = false
-		h.Preflight.Notes = append(h.Preflight.Notes, "Builds need nftables "+hostnetwork.NFTVersion+" and netlink access for the agent. Run the agent install again to add them.")
+	// offers none. Management also stops queued builds for a runner without it, so it reports
+	// the policy alone, not passing conditions such as free space.
+	buildNetwork := h.Preflight.Ready && (hostnetwork.Host{Dir: dir}).BuildPolicySupported(ctx)
+	if h.Preflight.Ready && !buildNetwork {
+		h.Preflight.Notes = append(h.Preflight.Notes, buildPolicyUnsupported)
 	}
+	build := buildNetwork && dockerFreeBytes(ctx, docker) >= 4<<30
 	if runtime.GOOS == "linux" && instanceMetadataAnswers(ctx, instanceMetadataEndpoints, time.Now()) {
 		h.Preflight.Notes = append(h.Preflight.Notes, instanceMetadataNote)
 	}
 	h.Capabilities.Build = &build
-	h.Capabilities.BuildNetwork = &build
+	h.Capabilities.BuildNetwork = &buildNetwork
 	h.Capabilities.BuildControls = &build
 	h.Capabilities.BuildCache = &build
 	if build {

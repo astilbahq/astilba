@@ -69,7 +69,7 @@ func (e *Engine) buildNetwork(ctx context.Context) (netip.Prefix, error) {
 // private, the frozen Git provider and registry this build uses. Management's origin, when
 // private, is refused ahead of every allowance.
 func (e *Engine) buildPolicy(ctx context.Context, p pipeline.Command, subnet netip.Prefix) (hostnetwork.BuildPolicy, error) {
-	policy := hostnetwork.BuildPolicy{Subnet: subnet}
+	policy := hostnetwork.BuildPolicy{Subnet: subnet, Contained: []netip.Prefix{e.pool()}}
 	resolvers, err := hostnetwork.BuildResolvers()
 	if err != nil {
 		return policy, errors.New("cannot read the host's nameservers for builds")
@@ -88,6 +88,9 @@ func (e *Engine) buildPolicy(ctx context.Context, p pipeline.Command, subnet net
 	// Builds never reach management through the private network, whatever the runner allows.
 	if policy.Denied, err = privateOrigins(lookup, management.Host, management.Scheme); err != nil {
 		return policy, errors.New("cannot resolve management's address, which builds must not reach")
+	}
+	if len(policy.Denied) > hostnetwork.MaxDenied {
+		return policy, fmt.Errorf("management resolves to more than %d private addresses, too many to keep builds from", hostnetwork.MaxDenied)
 	}
 	for _, r := range p.BuildEgress {
 		prefix, _ := netip.ParsePrefix(r.Prefix) // validated with the command
@@ -108,8 +111,12 @@ func (e *Engine) buildPolicy(ctx context.Context, p pipeline.Command, subnet net
 		if err != nil {
 			return policy, fmt.Errorf("cannot resolve %s for the build network", o.host)
 		}
-		for _, a := range allowed {
-			if !slices.Contains(policy.Denied, a) {
+		for i, a := range allowed {
+			// Builds never reach management, so they can't use a service at its address and port.
+			if slices.Contains(policy.Denied, a) {
+				return policy, fmt.Errorf("%s shares management's private address and port, which builds can't reach; serve it from another address or port", o.host)
+			}
+			if i < hostnetwork.MaxOriginAddresses {
 				policy.Allowed = append(policy.Allowed, hostnetwork.Destination{Prefix: netip.PrefixFrom(a.Addr(), 32), Port: a.Port()})
 			}
 		}
@@ -162,7 +169,7 @@ func privateAddresses(ctx context.Context, host string) ([]netip.Addr, error) {
 	out := []netip.Addr{}
 	for _, a := range addresses {
 		a = a.Unmap()
-		if a.Is4() && !slices.ContainsFunc(pipeline.NeverAllowed, func(p netip.Prefix) bool { return p.Contains(a) }) && slices.ContainsFunc(pipeline.AllowableRanges, func(p netip.Prefix) bool { return p.Contains(a) }) && !slices.Contains(out, a) && len(out) < 4 {
+		if a.Is4() && !slices.ContainsFunc(pipeline.NeverAllowed, func(p netip.Prefix) bool { return p.Contains(a) }) && slices.ContainsFunc(pipeline.AllowableRanges, func(p netip.Prefix) bool { return p.Contains(a) }) && !slices.Contains(out, a) {
 			out = append(out, a)
 		}
 	}
@@ -174,7 +181,7 @@ func privateAddresses(ctx context.Context, host string) ([]netip.Addr, error) {
 func (e *Engine) prepareBuildNetwork(ctx context.Context, c api.ExecutionCommand, p pipeline.Command) ([]netip.Addr, error) {
 	host := e.networkHost()
 	if !host.BuildPolicySupported(ctx) {
-		return nil, errors.New("builds need nftables " + hostnetwork.NFTVersion + " and the agent's netlink permission; rerun the agent install")
+		return nil, errors.New(buildPolicyUnsupported)
 	}
 	subnet, err := e.buildNetwork(ctx)
 	if err != nil {
@@ -190,6 +197,9 @@ func (e *Engine) prepareBuildNetwork(ctx context.Context, c api.ExecutionCommand
 	return policy.Resolvers, nil
 }
 
+// buildPolicyUnsupported names what a host lacks to build, and where the fix is described.
+const buildPolicyUnsupported = "Builds need nftables " + hostnetwork.NFTVersion + " and netlink access for the agent; see the build network host requirements in the Git builds documentation."
+
 // buildRefusalNote says how often the policy refused this build, so an owner can tell a
 // blocked private mirror from a failing one.
 func (e *Engine) buildRefusalNote(ctx context.Context) string {
@@ -197,5 +207,5 @@ func (e *Engine) buildRefusalNote(ctx context.Context) string {
 	if err != nil || n == 0 {
 		return ""
 	}
-	return fmt.Sprintf("\nThe build network refused %d packets to private, host or cloud metadata addresses. Allow a private destination in the runner's build network settings if the build needs it.\n", n)
+	return fmt.Sprintf("\nThe build network refused %d packets to private, host or cloud metadata addresses. To use a private mirror off this server, allow it in the runner's build network settings.\n", n)
 }

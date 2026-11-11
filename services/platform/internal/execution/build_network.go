@@ -30,9 +30,6 @@ func (s *Service) ServerBuildNetwork(ctx context.Context, p store.Principal, ws,
 // build code can reach on the owner's network, so it needs the owner, recently signed in.
 func (s *Service) ConfigureServerBuildNetwork(ctx context.Context, p store.Principal, ws, id uuid.UUID, in api.BuildNetwork) (api.BuildNetwork, error) {
 	var out api.BuildNetwork
-	if len(in.Allow) > pipeline.MaxEgressRules {
-		return out, domain.Invalid("allow")
-	}
 	rules := []pipeline.EgressRule{}
 	for _, d := range in.Allow {
 		rule, err := pipeline.ParseEgressRule(d.Prefix, d.Port)
@@ -90,29 +87,48 @@ func serverBuildEgress(ctx context.Context, tx pgx.Tx, ws, id uuid.UUID) ([]pipe
 	return rules, nil
 }
 
-// narrowedBuildNote explains a build stopped because its runner's allowlist shrank.
-const narrowedBuildNote = "Build stopped: the runner's build network allowlist no longer includes a private destination this build was queued with. Start the build again."
-
-// settleNarrowedEgress stops a build that would reach a destination the owner removed after
-// it was queued. It reports whether it settled the command, committing tx when it did. An
-// undelivered build fails here; one a runner may hold is stopped and sent as cancelled.
-func settleNarrowedEgress(ctx context.Context, tx pgx.Tx, ws uuid.UUID, c *api.ExecutionCommand, p pipeline.Command, undelivered bool) (bool, error) {
-	if len(p.BuildEgress) == 0 {
+// settleBuildNetwork stops a build its runner can no longer run as it was queued: on an
+// agent that would build on the host's network, or with a destination the owner removed since.
+// It reports whether it settled the command, committing tx when it did. An undelivered build
+// fails here; one the runner may hold is stopped and sent as cancelled. Returning an error
+// instead would fail every poll and hold the runner's queue.
+func (s *Service) settleBuildNetwork(ctx context.Context, tx pgx.Tx, ws uuid.UUID, c *api.ExecutionCommand, p pipeline.Command, undelivered bool) (bool, error) {
+	if !p.IsBuild() {
 		return false, nil
 	}
-	current, err := serverBuildEgress(ctx, tx, ws, c.ServerId)
-	if err != nil || pipeline.EgressCovers(current, p.BuildEgress) {
-		return false, err
-	}
 	q := db.New(tx)
-	if undelivered {
-		err = q.FinishUndeliveredPipeline(ctx, db.FinishUndeliveredPipelineParams{WorkspaceID: ws, ID: c.Id, State: "failed", Note: narrowedBuildNote})
-	} else {
-		err = q.StopPossiblyDeliveredPipeline(ctx, db.StopPossiblyDeliveredPipelineParams{WorkspaceID: ws, ID: c.Id, Note: narrowedBuildNote})
-		c.CancelRequested = true
-	}
+	raw, err := q.ServerCapabilities(ctx, db.ServerCapabilitiesParams{WorkspaceID: ws, ID: c.ServerId})
 	if err != nil {
 		return false, err
+	}
+	var capabilities api.AgentCapabilities
+	note := ""
+	if json.Unmarshal(raw, &capabilities) != nil || capabilities.BuildNetwork == nil || !*capabilities.BuildNetwork {
+		note = "Build stopped: the runner no longer reports build network isolation. Check its preflight notes, then start the build again."
+	} else if len(p.BuildEgress) > 0 {
+		current, err := serverBuildEgress(ctx, tx, ws, c.ServerId)
+		if err != nil {
+			return false, err
+		}
+		if !pipeline.EgressCovers(current, p.BuildEgress) {
+			note = "Build stopped: the runner's build network allowlist no longer includes a private destination this build was queued with. Start the build again."
+		}
+	}
+	if note == "" {
+		return false, nil
+	}
+	if undelivered {
+		if err = q.FinishUndeliveredPipeline(ctx, db.FinishUndeliveredPipelineParams{WorkspaceID: ws, ID: c.Id, State: "failed", Note: note}); err != nil {
+			return false, err
+		}
+		if err = s.enqueuePreviewForEnvironment(ctx, tx, ws, c.EnvironmentId); err != nil {
+			return false, err
+		}
+	} else {
+		if err = q.StopPossiblyDeliveredPipeline(ctx, db.StopPossiblyDeliveredPipelineParams{WorkspaceID: ws, ID: c.Id, Note: note}); err != nil {
+			return false, err
+		}
+		c.CancelRequested = true
 	}
 	return true, tx.Commit(ctx)
 }

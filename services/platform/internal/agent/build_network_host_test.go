@@ -37,89 +37,54 @@ import (
 	"github.com/moby/moby/client"
 )
 
-// nativeFixtureAddress is the host's primary IPv4 address. A build reaches the host only at
-// its own Git provider or registry, and only when those are private, so native fixtures
-// serve them here rather than on loopback, which a build's network doesn't share.
-func nativeFixtureAddress(t *testing.T) string {
+// nativeHostAddress is the host's primary IPv4 address.
+func nativeHostAddress(t *testing.T) string {
 	t.Helper()
 	probe, err := net.Dial("udp4", "192.0.2.1:9")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer probe.Close()
-	address := probe.LocalAddr().(*net.UDPAddr).AddrPort().Addr().Unmap()
-	if !slices.ContainsFunc(pipeline.AllowableRanges, func(p netip.Prefix) bool { return p.Contains(address) }) {
-		t.Fatalf("native build fixtures need a private primary address, not %s", address)
-	}
-	return address.String()
+	return probe.LocalAddr().(*net.UDPAddr).AddrPort().Addr().Unmap().String()
 }
 
-// nativeFixtureServer serves handler on the fixture address.
-func nativeFixtureServer(t *testing.T, handler http.Handler) *httptest.Server {
+// nativeFixtureServer serves handler from the fixture LAN, where builds can reach a
+// private Git provider or registry. They never reach one on the runner itself.
+func nativeFixtureServer(t *testing.T, lan nativeLAN, handler http.Handler) *httptest.Server {
 	t.Helper()
 	server := httptest.NewUnstartedServer(handler)
 	server.Listener.Close()
-	listener, err := net.Listen("tcp", nativeFixtureAddress(t)+":0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	server.Listener = listener
+	server.Listener = lan.listen(t, lan.Address+":0")
 	server.Start()
 	t.Cleanup(server.Close)
 	return server
 }
 
-// nativeFixtureTLSServer serves handler over TLS on the fixture address, with a certificate
-// for that address.
-func nativeFixtureTLSServer(t *testing.T, handler http.Handler) *httptest.Server {
+// nativeFixtureTLSServer serves handler over TLS from the fixture LAN, with a certificate for
+// its address.
+func nativeFixtureTLSServer(t *testing.T, lan nativeLAN, handler http.Handler) *httptest.Server {
 	t.Helper()
-	address := nativeFixtureAddress(t)
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
-	template := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "astilba native fixture"}, NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(24 * time.Hour), IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}, IPAddresses: []net.IP{net.ParseIP(address)}}
+	template := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "astilba native fixture"}, NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(24 * time.Hour), IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}, IPAddresses: []net.IP{net.ParseIP(lan.Address)}}
 	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
 	if err != nil {
 		t.Fatal(err)
 	}
 	server := httptest.NewUnstartedServer(handler)
 	server.Listener.Close()
-	if server.Listener, err = net.Listen("tcp", address+":0"); err != nil {
-		t.Fatal(err)
-	}
+	server.Listener = lan.listen(t, lan.Address+":0")
 	server.TLS = &tls.Config{Certificates: []tls.Certificate{{Certificate: [][]byte{der}, PrivateKey: key}}}
 	server.StartTLS()
 	t.Cleanup(server.Close)
 	return server
 }
 
-// TestNativeBuildNetworkHelper stands in for a VPC neighbour and a cloud metadata service,
-// in a network namespace the host routes to as it would to either.
-func TestNativeBuildNetworkHelper(t *testing.T) {
-	if os.Getenv("ASTILBA_BUILD_NETWORK_HELPER") != "1" {
-		t.Skip("network namespace helper")
-	}
-	errs := make(chan error, 4)
-	for _, address := range []string{"10.199.42.2:8080", "10.199.42.2:8081", "169.254.42.42:80"} {
-		go func() {
-			errs <- http.ListenAndServe(address, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { fmt.Fprint(w, "canary") }))
-		}()
-	}
-	// A self-hosted Git provider on the LAN, which builds reach because they clone from it.
-	gitPath, err := exec.LookPath("git")
-	if err != nil {
-		t.Fatal(err)
-	}
-	go func() {
-		errs <- http.ListenAndServe("10.199.42.2:3000", &cgi.Handler{Path: gitPath, Args: []string{"http-backend"}, Env: []string{"GIT_PROJECT_ROOT=" + os.Getenv("ASTILBA_BUILD_NETWORK_GIT_ROOT"), "GIT_HTTP_EXPORT_ALL=1"}})
-	}()
-	t.Fatal(<-errs)
-}
-
 // Builds reach the public internet and the destinations their runner allows, and nothing
 // else on the host's networks: not cloud metadata, the LAN, the host, its containers or
-// management. The policy is back in force before a build replayed after a reboot runs.
+// management, even when allowed. The policy is back before a build replayed after a reboot.
 func TestNativeBuildNetwork(t *testing.T) {
 	if testing.Short() || os.Getenv("ASTILBA_NATIVE_AGENT") != "1" {
 		t.Skip("requires disposable native Linux host")
@@ -141,48 +106,30 @@ func TestNativeBuildNetwork(t *testing.T) {
 		}
 		return strings.TrimSpace(string(out))
 	}
-	host := nativeFixtureAddress(t)
-
-	suffix := strings.ReplaceAll(uuid.NewString(), "-", "")[:6]
-	ns, veth := "astilba-egress-"+suffix, "asegr"+suffix
-	run("ip", "netns", "add", ns)
-	t.Cleanup(func() { _ = exec.Command("ip", "netns", "delete", ns).Run() })
-	run("ip", "link", "add", veth, "type", "veth", "peer", "name", veth+"p")
-	t.Cleanup(func() { _ = exec.Command("ip", "link", "delete", veth).Run() })
-	run("ip", "link", "set", veth+"p", "netns", ns)
-	run("ip", "address", "add", "10.199.42.1/30", "dev", veth)
-	run("ip", "link", "set", veth, "up")
-	run("ip", "route", "add", "169.254.42.42/32", "dev", veth)
-	for _, args := range [][]string{{"address", "add", "10.199.42.2/30", "dev", veth + "p"}, {"address", "add", "169.254.42.42/32", "dev", veth + "p"}, {"link", "set", veth + "p", "up"}, {"link", "set", "lo", "up"}} {
-		run(append([]string{"ip", "netns", "exec", ns, "ip"}, args...)...)
-	}
-	executable, err := os.Executable()
-	if err != nil {
-		t.Fatal(err)
-	}
-	root := t.TempDir()
-	helper := exec.Command("ip", "netns", "exec", ns, executable, "-test.run=^TestNativeBuildNetworkHelper$")
-	helper.Env = append(os.Environ(), "ASTILBA_BUILD_NETWORK_HELPER=1", "ASTILBA_BUILD_NETWORK_GIT_ROOT="+root)
-	if err = helper.Start(); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = helper.Process.Kill(); _ = helper.Wait() })
-
+	// A neighbour on the LAN, which also answers at a link-local address as a cloud's
+	// metadata service does, through the host's routes.
+	lan := startNativeLAN(t, "169.254.42.42")
 	canary := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { fmt.Fprint(w, "canary") })
-	refusedHost, allowedHost, management := nativeFixtureServer(t, canary), nativeFixtureServer(t, canary), nativeFixtureServer(t, canary)
-	for _, url := range []string{"http://10.199.42.2:8080/", "http://10.199.42.2:3000/", "http://169.254.42.42/", refusedHost.URL} {
-		var response *http.Response
-		for range 50 {
-			if response, err = http.Get(url); err == nil {
-				response.Body.Close()
-				break
-			}
-			time.Sleep(100 * time.Millisecond)
-		}
-		if err != nil {
-			t.Fatal("fixture destination unavailable from the host", url, err)
-		}
+	serve := func(listener net.Listener) *httptest.Server {
+		server := httptest.NewUnstartedServer(canary)
+		server.Listener.Close()
+		server.Listener = listener
+		server.Start()
+		t.Cleanup(server.Close)
+		return server
 	}
+	host := nativeHostAddress(t)
+	listenHost := func() net.Listener {
+		listener, err := net.Listen("tcp", host+":0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return listener
+	}
+	metadata := serve(lan.listen(t, "169.254.42.42:0"))
+	refusedLAN, allowedLAN, management := serve(lan.listen(t, lan.Address+":0")), serve(lan.listen(t, lan.Address+":0")), serve(lan.listen(t, lan.Address+":0"))
+	refusedHost, allowedHost := serve(listenHost()), serve(listenHost())
+	suffix := strings.ReplaceAll(uuid.NewString(), "-", "")[:6]
 	fixtureNetwork := "astilba-egress-fixture-" + suffix
 	if _, err = docker.NetworkCreate(ctx, fixtureNetwork, client.NetworkCreateOptions{Driver: "bridge"}); err != nil {
 		t.Fatal(err)
@@ -224,9 +171,9 @@ func TestNativeBuildNetwork(t *testing.T) {
 	engine := &Engine{Journal: journal, Docker: docker, DockerCLI: dockerCLI}
 
 	destinations := map[string]string{
-		"metadata":     "http://169.254.42.42/",
-		"lan":          "http://10.199.42.2:8080/",
-		"lan-allowed":  "http://10.199.42.2:8081/",
+		"metadata":     metadata.URL + "/",
+		"lan":          refusedLAN.URL + "/",
+		"lan-allowed":  allowedLAN.URL + "/",
 		"host":         refusedHost.URL + "/",
 		"host-allowed": allowedHost.URL + "/",
 		"management":   management.URL + "/",
@@ -246,9 +193,10 @@ func TestNativeBuildNetwork(t *testing.T) {
 		probe += "; probe " + name + " " + destinations[name]
 	}
 	probe += "; ip -o -4 address show | awk '{print \"IFACE\", $2, $4}'"
+	root := t.TempDir()
 	work, repo := filepath.Join(root, "work"), filepath.Join(root, "team", "app.git")
 	run("git", "init", "--initial-branch=main", work)
-	files := map[string]string{"Dockerfile": "FROM " + execution.TestImage + "\nRUN " + probe + "\n", "Dockerfile.add": "FROM " + execution.TestImage + "\nADD http://169.254.42.42/ /metadata\n"}
+	files := map[string]string{"Dockerfile": "FROM " + execution.TestImage + "\nRUN " + probe + "\n", "Dockerfile.add": "FROM " + execution.TestImage + "\nADD " + metadata.URL + "/ /metadata\n"}
 	for name, value := range files {
 		if err = os.WriteFile(filepath.Join(work, name), []byte(value), 0600); err != nil {
 			t.Fatal(err)
@@ -259,13 +207,20 @@ func TestNativeBuildNetwork(t *testing.T) {
 	commit := run("git", "-C", work, "rev-parse", "HEAD")
 	_ = os.Mkdir(filepath.Dir(repo), 0700)
 	run("git", "clone", "--bare", work, repo)
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A self-hosted Git provider on the LAN, which builds reach because they clone from it.
+	provider := nativeFixtureServer(t, lan, &cgi.Handler{Path: gitPath, Args: []string{"http-backend"}, Env: []string{"GIT_PROJECT_ROOT=" + root, "GIT_HTTP_EXPORT_ALL=1"}})
 
 	port := func(server *httptest.Server) int { return server.Listener.Addr().(*net.TCPAddr).Port }
 	connection := uuid.New()
-	command := pipeline.Command{Action: "build", Connection: pipeline.Connection{ID: connection, Provider: "gitea", BaseURL: "http://10.199.42.2:3000", Repository: "team/app", RepositoryID: 12}, Commit: commit, Branch: "main", RevisionID: uuid.New(), UnitID: uuid.New(), AppID: uuid.New(), InputHash: strings.Repeat("a", 64), SubmittedAt: time.Now().UTC().Truncate(time.Second)}
+	command := pipeline.Command{Action: "build", Connection: pipeline.Connection{ID: connection, Provider: "gitea", BaseURL: provider.URL, Repository: "team/app", RepositoryID: 12}, Commit: commit, Branch: "main", RevisionID: uuid.New(), UnitID: uuid.New(), AppID: uuid.New(), InputHash: strings.Repeat("a", 64), SubmittedAt: time.Now().UTC().Truncate(time.Second)}
 	command.Build = &pipeline.BuildConfig{ConnectionID: connection, Branch: "main", RunnerID: serverID, Context: ".", Dockerfile: "Dockerfile", Architecture: runtime.GOARCH, Arguments: map[string]string{}, Secrets: map[string]uuid.UUID{}}
-	// Management is allowed too, and must stay refused: no allowlist reaches it.
-	command.BuildEgress = pipeline.CanonicalEgress([]pipeline.EgressRule{{Prefix: "10.199.42.2/32", Port: 8081}, {Prefix: host + "/32", Port: port(allowedHost)}, {Prefix: host + "/32", Port: port(management)}})
+	// The runner and management are allowed too, and must stay refused: no allowlist reaches
+	// either.
+	command.BuildEgress = pipeline.CanonicalEgress([]pipeline.EgressRule{{Prefix: lan.Address + "/32", Port: port(allowedLAN)}, {Prefix: host + "/32", Port: port(allowedHost)}, {Prefix: lan.Address + "/32", Port: port(management)}})
 	if err = command.Validate(); err != nil {
 		t.Fatal(err)
 	}
@@ -324,7 +279,7 @@ func TestNativeBuildNetwork(t *testing.T) {
 		}
 		return c, record
 	}
-	want := map[string]string{"metadata": "refused", "lan": "refused", "lan-allowed": "reached", "host": "refused", "host-allowed": "reached", "management": "refused", "neighbour": "refused", "public": "reached"}
+	want := map[string]string{"metadata": "refused", "lan": "refused", "lan-allowed": "reached", "host": "refused", "host-allowed": "refused", "management": "refused", "neighbour": "refused", "public": "reached"}
 	check := func(record Record, c api.ExecutionCommand) {
 		t.Helper()
 		var result pipeline.Result

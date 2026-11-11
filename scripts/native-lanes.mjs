@@ -12,7 +12,6 @@ const architectures = ["amd64", "arm64"];
 // that needs them; run directly they only skip.
 const helpers = new Map([
   ["TestNativeCrossHostHelper", "services/platform/internal/agent"],
-  ["TestNativeBuildNetworkHelper", "services/platform/internal/agent"],
   ["TestNativeEndpointHelper", "services/platform/internal/hostnetwork"],
 ]);
 

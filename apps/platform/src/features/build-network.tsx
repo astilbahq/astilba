@@ -5,19 +5,26 @@ import { Textarea } from "../components/textarea";
 import * as s from "../styles";
 import { BusyButton, ErrorNotice, Form, text, useAction } from "../ui";
 
-// One entry per line: an IPv4 address or range, a colon and a TCP port.
+const entry = /^(\d{1,3}(?:\.\d{1,3}){3}(?:\/\d{1,2})?):(\d{1,5})$/;
+
+// One entry per line: an IPv4 address or range, a colon and a TCP port. The server checks
+// what each entry may reach; this names the line whose form it can't read.
 export function parseDestinations(value: string) {
-  return value
+  const lines = value
     .split("\n")
     .map((line) => line.trim())
-    .filter(Boolean)
-    .map((line) => {
-      const at = line.lastIndexOf(":");
-      return {
-        prefix: at < 0 ? line : line.slice(0, at),
-        port: at < 0 ? 0 : Number(line.slice(at + 1)),
-      };
-    });
+    .filter(Boolean);
+  if (lines.length > 32)
+    throw new Error("Allow at most 32 private destinations.");
+  return lines.map((line, index) => {
+    const match = entry.exec(line);
+    const port = Number(match?.[2]);
+    if (!match || port < 1 || port > 65535)
+      throw new Error(
+        `Line ${index + 1}, “${line}”: write an IPv4 address or range and a TCP port from 1 to 65535, such as 10.0.4.12:443.`,
+      );
+    return { prefix: match[1], port };
+  });
 }
 
 function formatDestination(d: Schema["BuildDestination"]) {
@@ -78,7 +85,9 @@ export function BuildNetwork({
                       "/api/v1/workspaces/{workspaceId}/servers/{serverId}/build-network",
                       {
                         params: { path },
-                        body: { allow: parseDestinations(text(d, "allow")) },
+                        body: {
+                          allow: parseDestinations(text(d, "allow")),
+                        },
                       },
                     ),
                   );
@@ -102,10 +111,12 @@ export function BuildNetwork({
               />
             </Label>
             <p className={s.muted}>
-              One per line, such as a private package mirror: an IPv4 address or
-              range and a TCP port, up to 32. Any build on this server,
-              including code from its dependencies, can reach them. Changes are
-              audited. Removing one stops builds queued before the change.
+              One per line, such as a private package mirror on your network: an
+              IPv4 address or range and a TCP port, up to 32. This server and
+              its containers can’t be allowed. Any build on this server,
+              including code from its dependencies, can reach the destinations
+              you allow. Changes are audited. Removing one stops builds queued
+              before the change.
             </p>
             <BusyButton
               busy={action.isPending}

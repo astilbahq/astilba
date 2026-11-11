@@ -158,10 +158,11 @@ func TestNativePipeline(t *testing.T) {
 		backend.ServeHTTP(w, r)
 	})
 	// Source work runs on the host's network, where a provider on loopback is a development one.
-	// Builds have their own network, which reaches the host only at a private provider's address.
+	// Builds have their own network, which reaches a private provider on the LAN, never the host.
 	provider := httptest.NewServer(handler)
 	defer provider.Close()
-	buildProvider := nativeFixtureServer(t, handler)
+	lan := startNativeLAN(t)
+	buildProvider := nativeFixtureServer(t, lan, handler)
 	source := pipeline.Source{ConnectionID: uuid.New(), Branch: "main", RunnerID: serverID, Paths: []string{"compose.yaml"}, Entrypoints: []string{"compose.yaml"}}
 	base := pipeline.Command{Action: "import", Connection: pipeline.Connection{ID: source.ConnectionID, Provider: "gitea", BaseURL: provider.URL, Repository: "team/app", RepositoryID: 12, Private: true}, Commit: commit, Branch: "main", RevisionID: uuid.New(), UnitID: uuid.New(), Source: &source, SubmittedAt: time.Now().UTC().Truncate(time.Second), Access: &pipeline.Access{Clone: pipeline.Credential{Username: "fixture", Password: "reader-token"}}}
 	var active api.ExecutionCommand
@@ -402,7 +403,7 @@ func TestNativePipeline(t *testing.T) {
 		t.Fatal("public build used a different commit")
 	}
 	defer docker.ImageRemove(ctx, publicResult.Image, client.ImageRemoveOptions{Force: true})
-	registry := startNativeRegistry(t)
+	registry := startNativeRegistry(t, lan)
 	registryCA = registry.ca
 	remote := build
 	remote.Registry = &pipeline.Registry{ID: uuid.New(), Name: "Fixture", Repository: registry.repository}

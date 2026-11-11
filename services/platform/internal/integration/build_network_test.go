@@ -134,7 +134,7 @@ func TestBuildNetworkAllowlist(t *testing.T) {
 		return state, note
 	}
 	narrow := func(keep ...api.BuildDestination) {
-		b.call("PUT", route, api.BuildNetwork{Allow: keep}, 200, nil)
+		b.call("PUT", route, api.BuildNetwork{Allow: append([]api.BuildDestination{}, keep...)}, 200, nil)
 	}
 	// Queued and never delivered: it fails, and the runner's queue moves on.
 	queued := build()
@@ -170,5 +170,28 @@ func TestBuildNetworkAllowlist(t *testing.T) {
 	}
 	if got, _ := state(delivered.Id); got != "cancelled" {
 		t.Fatal("stopped build did not finish cancelled", got)
+	}
+
+	// A wider entry that still covers a queued build's destination leaves it to run.
+	narrow(api.BuildDestination{Prefix: "10.0.4.12", Port: 443})
+	widened := build()
+	awaitDispatch(t, ctx, f, widened.Id)
+	narrow(api.BuildDestination{Prefix: "10.0.4.0/24", Port: 443})
+	if c := poll(); c == nil || c.Id != widened.Id || c.CancelRequested {
+		t.Fatal("a build was stopped although its destination is still allowed", c)
+	}
+	finish(*poll())
+
+	// A runner that stops reporting build isolation, such as one rolled back to an older
+	// agent, is never handed a queued build, which would run on its host's network.
+	narrow()
+	rolledBack := build()
+	awaitDispatch(t, ctx, f, rolledBack.Id)
+	in.Capabilities.BuildNetwork = nil
+	if c := poll(); c != nil {
+		t.Fatal("a build reached a runner without build isolation", c.Id)
+	}
+	if got, note := state(rolledBack.Id); got != "failed" || !strings.Contains(note, "no longer reports build network isolation") {
+		t.Fatal("build for a runner without isolation was not settled", got, note)
 	}
 }

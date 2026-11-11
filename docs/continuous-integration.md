@@ -177,9 +177,10 @@ profile if fixtures remain. The rest must be asked for by name:
 | --- | --- |
 | `TestNativeBackupOfStoppedWriter`, `TestNativeRefusedReservationOfStoppedWriterCompletes`, `TestNativeBackupOfWriterFailingItsHealthCheck`, `TestNativeBackupOfWriterFailingItsReadiness`, `TestNativeReservationRefusesChangedConfiguration`, `TestNativePauseRefusesAWriterStoppedSinceReserving`, `TestNativeWriterAlreadyFailingThatCannotRestart`, `TestNativeAcceptingAWriterThatCannotStart`, `TestNativeAcceptingAWriterThatDoesNotComeBack` | Nothing more, but they wait out readiness probes for about a minute and a half in all |
 | `TestNativeComposeDeployment` | Publishes a loopback host port; the pinned Compose plugin and PostgreSQL image |
-| `TestNativePipeline` | `/opt/astilba-plat5/bin/zot` and Git `http-backend`; writes `/etc/docker/certs.d` |
+| `TestNativePipeline` | `/opt/astilba-plat5/bin/zot` and Git `http-backend`; writes `/etc/docker/certs.d`; nftables 1.0.9; creates a host namespace and veth pair for its private fixtures |
+| `TestNativeBuildNetwork` | nftables 1.0.9, Git `http-backend` and access to `registry-1.docker.io`; creates a host namespace, veth pair and Docker network |
 | `TestNativeVisualDeployment` | Ingress publishes host ports 80, 443 and 15432; the pinned Compose plugin and `/opt/astilba-platform-tools/restic` |
-| `TestNativePreviewEnvironment` | Ingress publishes host ports 80 and 443; the pinned Compose plugin and Git `http-backend` |
+| `TestNativePreviewEnvironment` | Ingress publishes host ports 80 and 443; the pinned Compose plugin, Git `http-backend` and nftables 1.0.9; creates a host namespace and veth pair for its private fixtures |
 | `TestNativeCrossHostDeployment`, `TestNativeCrossHostTakeover` | Creates host namespaces, bridges and WireGuard links; the WireGuard module, pinned Compose plugin, `wg` and `nft`, `dockerd` and `docker` under `/opt/astilba-plat4` and restic |
 
 This does not replace CI. `CGO_ENABLED=0` rules out the race detector, the run

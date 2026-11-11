@@ -132,16 +132,16 @@ A build reaches:
 
 - public IPv4 addresses, such as package registries and Git hosts;
 - the runner's DNS resolvers, on port 53 only. The agent gives BuildKit systemd-resolved's upstream servers, since builds can't use the loopback stub;
-- its own Git provider and registry, on their ports, when they are on private addresses;
+- its own Git provider and registry, on their ports, when they are on private addresses off the runner;
 - the private destinations the runner allows (see below).
 
 A build never reaches:
 
-- the runner itself, on any of its addresses;
-- other containers, including services on a Combined server;
+- the runner itself, on any of its addresses, including ports Docker publishes there, whatever the runner allows;
+- other containers, including services on a Combined server, whatever the runner allows;
 - link-local addresses, which hold most clouds' instance metadata (`169.254.169.254`), Alibaba Cloud's metadata (`100.100.100.200`), Azure's host endpoint (`168.63.129.16`), loopback or multicast;
 - private and shared ranges (`10.0.0.0/8`, `100.64.0.0/10`, `172.16.0.0/12`, `192.0.0.0/24`, `192.168.0.0/16`, `198.18.0.0/15`), which include the container network pool, the LAN, a VPC and private links;
-- management's origin when it is on a private address, whatever the runner allows;
+- management's origin when it is on a private address, whatever the runner allows. A Git provider or registry that shares management's private address and port fails the build with a note saying so: give it its own address or port;
 - anything over IPv6, including AWS's metadata at `fd00:ec2::254`. Builds use IPv4 only.
 
 Docker translates no addresses for the build network: the policy does, after its rules. Without the policy, builds can't reach the internet. A rebooted host runs no build until the agent has installed the policy again. When the policy refuses a build's connections, the build log says how many packets it refused.
@@ -150,13 +150,22 @@ Builds leave with the runner's address. If management is on a public address, a 
 
 ### Allowing private destinations
 
-To let builds use a private package mirror or registry, an owner adds it under **Build network** on the server's page. Each entry is an IPv4 address or range and a TCP port, such as `10.0.4.12:443` or `10.0.5.0/24:8081`, up to 32. Only private and shared ranges can be added: link-local addresses, loopback and multicast can't, and public addresses need no entry. Saving needs the owner, recently signed in, and is audited. Removing an entry stops builds queued with it, including one the runner has started. Every build on that runner can reach every entry, including code from its dependencies. The allowlist isn't part of a workspace export, so set it again after an import.
+To let builds use a private package mirror or registry on your network, an owner adds it under **Build network** on the server's page. Each entry is an IPv4 address or range and a TCP port, such as `10.0.4.12:443` or `10.0.5.0/24:8081`, up to 32. Only private and shared ranges can be added: link-local addresses, loopback and multicast can't, and public addresses need no entry. An entry never opens the runner itself or its containers, even when its range covers their addresses, so a mirror for builds runs on another server. Saving needs the owner, recently signed in, and is audited. Removing an entry stops builds queued with it, including one the runner has started; replacing it with a range that still covers it does not. Every build on that runner can reach every entry, including code from its dependencies. The allowlist isn't part of a workspace export, so set it again after an import.
 
 ### Host requirements and firewalls
 
-The policy needs nftables 1.0.9, which Ubuntu 24.04 installs by default and the bootstrap script installs if it is missing, and netlink access for the agent, which the agent's systemd unit grants. A server without them reports builds as unavailable, with a note.
+The policy needs nftables 1.0.9, which Ubuntu 24.04 installs by default and the bootstrap script installs if it is missing, and netlink access for the agent, which its systemd unit grants. A server without them reports builds as unavailable, with a note, and management stops builds already queued for it. Agent updates replace only the executable, so a host prepared with an earlier unit needs the permission added once:
 
-Docker's forwarding rules come before ufw's, so builds reach the internet, their Git provider and allowed destinations on the LAN with ufw's `DEFAULT_FORWARD_POLICY="DROP"`. ufw's `deny incoming` also applies to builds' connections to the runner itself. A resolver that listens on the runner (other than systemd-resolved's stub), or an allowed mirror or Git provider on the runner, then needs a matching ufw rule, such as `sudo ufw allow in on astilba-build0 to any port 53 proto udp`. The agent's policy still refuses every other connection from builds to the runner, so a rule for `astilba-build0` widens nothing else.
+```bash
+sudo apt-get install --no-install-recommends nftables=1.0.9-1ubuntu0.1
+sudo install -d -m 0755 /etc/systemd/system/astilba-agent.service.d
+printf '[Service]\nRestrictAddressFamilies=\nRestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK\n' | sudo tee /etc/systemd/system/astilba-agent.service.d/build-network.conf
+sudo systemctl daemon-reload && sudo systemctl restart astilba-agent
+```
+
+A host prepared for [cross-host networking](agent.md#optional-cross-host-networking) already has both.
+
+Docker's forwarding rules come before ufw's, so builds reach the internet, their Git provider and allowed destinations on the LAN with ufw's `DEFAULT_FORWARD_POLICY="DROP"`. ufw's `deny incoming` also applies to builds' DNS queries to a resolver that listens on the runner itself, other than systemd-resolved's stub, which builds don't use. Such a resolver needs a matching rule: `sudo ufw allow in on astilba-build0 to any port 53`. The agent's policy still refuses everything else from builds to the runner.
 
 ## Verification
 

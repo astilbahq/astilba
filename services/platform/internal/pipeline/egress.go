@@ -95,11 +95,19 @@ func ValidateEgress(rules []EgressRule) error {
 	return nil
 }
 
-// EgressCovers reports whether every rule in frozen is still in current, so a build
-// queued before the owner removed a destination can't reach it.
+// EgressCovers reports whether every rule in frozen is still allowed by a rule in current,
+// on the same port and a range containing it, so a build queued before the owner removed a
+// destination can't reach it, and one queued before a wider entry replaced it still runs.
 func EgressCovers(current, frozen []EgressRule) bool {
-	for _, r := range frozen {
-		if !slices.Contains(current, r) {
+	for _, f := range frozen {
+		inner, err := netip.ParsePrefix(f.Prefix)
+		if err != nil {
+			return false
+		}
+		if !slices.ContainsFunc(current, func(c EgressRule) bool {
+			outer, err := netip.ParsePrefix(c.Prefix)
+			return err == nil && c.Port == f.Port && outer.Bits() <= inner.Bits() && outer.Contains(inner.Addr())
+		}) {
 			return false
 		}
 	}

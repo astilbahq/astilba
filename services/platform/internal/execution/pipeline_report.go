@@ -182,13 +182,13 @@ func (s *Service) decidePipelineDelivery(ctx context.Context, git *gitAnswers, a
 			return true, tx.Commit(ctx)
 		}
 	}
+	if settled, err := s.settleBuildNetwork(ctx, tx, ws, c, p, undelivered); settled || err != nil {
+		return settled && c.CancelRequested, err
+	}
 	if p.Build != nil && (p.Build.NeedsControls() || p.Build.UsesRailpack()) {
 		if _, err = runnerEligible(ctx, tx, ws, c.ServerId, p.Build.Architecture, p.Build.NeedsControls(), p.Build.UsesRailpack()); err != nil {
 			return false, err
 		}
-	}
-	if settled, err := settleNarrowedEgress(ctx, tx, ws, c, p, undelivered); settled || err != nil {
-		return settled && c.CancelRequested, err
 	}
 	if p.CacheScope != "" {
 		var raw []byte

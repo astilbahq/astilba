@@ -31,6 +31,11 @@ test("an owner allows a private build destination but never cloud metadata", asy
   const field = form.getByLabel("Allowed private destinations");
   const save = form.getByRole("button", { name: "Save build network" });
 
+  await field.fill("10.0.4.12:443\n10.0.5.0/24");
+  await save.click();
+  await expect(form.getByRole("alert")).toContainText("Line 2, “10.0.5.0/24”");
+  await expect(field).toHaveValue("10.0.4.12:443\n10.0.5.0/24");
+
   await field.fill("10.0.4.12:443\n169.254.169.254:80");
   await save.click();
   await expect(form.getByRole("alert")).toContainText(

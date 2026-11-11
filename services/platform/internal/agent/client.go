@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -281,6 +282,24 @@ func (c *Client) rotate(ctx context.Context) error {
 	cfg.Pending = ""
 	return c.Journal.SetConfig(cfg)
 }
+
+// heartbeat reports this host's state. The first heartbeat after a start can precede
+// learning this controller's features, and management replaces capabilities with each one,
+// so a feature it left out would stay unavailable until the next. It sends again at once
+// with what the controller turned out to accept.
+func (c *Client) heartbeat(ctx context.Context, credential string) (api.AgentStatus, error) {
+	var status api.AgentStatus
+	observed := c.Observe(ctx)
+	advertised := c.advertisedCapabilities(observed.Capabilities)
+	if err := c.call(ctx, "POST", "/agent/v1/heartbeat", observed, &status, credential); err != nil {
+		return status, err
+	}
+	if reflect.DeepEqual(advertised, c.advertisedCapabilities(observed.Capabilities)) {
+		return status, nil
+	}
+	return status, c.call(ctx, "POST", "/agent/v1/heartbeat", observed, &status, credential)
+}
+
 func (c *Client) Run(ctx context.Context) error {
 	cfg, e := c.Journal.Config()
 	if e != nil {
@@ -379,8 +398,8 @@ func (c *Client) Run(ctx context.Context) error {
 			if cfg.Pending != "" {
 				return c.rotate(ctx)
 			}
-			var status api.AgentStatus
-			if e = c.call(ctx, "POST", "/agent/v1/heartbeat", c.Observe(ctx), &status, cfg.Credential); e != nil {
+			status, e := c.heartbeat(ctx, cfg.Credential)
+			if e != nil {
 				return e
 			}
 			if status.RotationRequested {
