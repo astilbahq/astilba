@@ -29,7 +29,8 @@ export default defineConfig({
       ],
     },
     proxy: {
-      "/api": { target: `http://127.0.0.1:${apiPort}` },
+      // Terminal sessions stream over a WebSocket under /api.
+      "/api": { target: `http://127.0.0.1:${apiPort}`, ws: true },
       "/hooks/git": { target: `http://127.0.0.1:${apiPort}` },
     },
   },
