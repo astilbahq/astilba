@@ -1,4 +1,4 @@
-.PHONY: check verify verify-host verify-build verify-git verify-canvas check-app verify-app verify-app-core verify-app-build verify-app-go-remaining verify-app-go-operations verify-app-go-crosshost verify-app-go-preview verify-app-go-network verify-app-go-m-to-z verify-app-go-revoked-host verify-image verify-agent-host verify-agent-host-core verify-agent-host-recovery verify-agent-host-visual verify-agent-host-upgrade verify-troubleshooting-soak verify-agent-colima check-ci check-hooks check-source-size check-inline-sql check-vulnerabilities check-lane-budget
+.PHONY: check verify verify-host verify-build verify-git verify-canvas check-app verify-app verify-app-core verify-app-build verify-app-go-remaining verify-app-go-operations verify-app-go-crosshost verify-app-go-preview verify-app-go-network verify-app-go-m-to-z verify-app-go-revoked-host verify-image verify-agent-host verify-agent-host-core verify-agent-host-recovery verify-agent-host-visual verify-agent-host-upgrade verify-troubleshooting-soak verify-agent-colima check-ci check-hooks check-source-size check-inline-sql check-vulnerabilities check-lane-budget dev dev-wipe
 
 APP_COORDINATION_TESTS = ^TestCrossHostCoordinatedPlacement$$
 APP_PREVIEW_RECOVERY_TESTS = ^TestPreviewRemovalSurvivesCheckpointUnion$$
@@ -59,7 +59,7 @@ check-inline-sql:
 
 check-app: check-ci check-hooks check-source-size check-inline-sql
 	@for file in scripts/platform-*.mjs; do node --check "$$file" || exit 1; done
-	node --test scripts/platform-generate-test.mjs
+	node --test scripts/platform-generate-test.mjs scripts/platform-dev.test.mjs
 	cd services/platform && test -z "$$(gofmt -l .)" && go mod verify && go vet ./... && go tool staticcheck ./... && go run ./internal/lint/astilba-lint -test=false ./... && go run ./internal/lint/astilba-lint -jsonguard -jsontag ./... && go test -short ./...
 	pnpm generate:check
 	pnpm --filter @astilba/dashboard check
@@ -129,3 +129,13 @@ verify-troubleshooting-soak:
 
 verify-agent-colima:
 	bash scripts/native-agent-colima.sh '$(value PLAT_AGENT_COLIMA_PROFILE)' '$(value PLAT_AGENT_TESTS)'
+
+# The local stack: management, dashboard and an enrolled agent in a disposable Colima VM.
+# See docs/local-development.md.
+PLAT_DEV_COLIMA_PROFILE ?= astilba-dev
+
+dev:
+	pnpm dev --vm '$(value PLAT_DEV_COLIMA_PROFILE)'
+
+dev-wipe:
+	pnpm dev --vm '$(value PLAT_DEV_COLIMA_PROFILE)' --wipe
