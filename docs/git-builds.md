@@ -154,7 +154,7 @@ To let builds use a private package mirror or registry on your network, an owner
 
 ### Host requirements and firewalls
 
-The policy needs nftables 1.0.9, which Ubuntu 24.04 installs by default and the bootstrap script installs if it is missing, and netlink access for the agent, which its systemd unit grants. A server without them reports builds as unavailable, with a note, and refuses a build it receives. Builds carry a marker that an agent predating the build network can't account for, so such an agent refuses them too, and management stops a build queued before the marker existed rather than send it. Agent updates replace only the executable, so a host prepared with an earlier unit needs the permission added once:
+The policy needs nftables 1.0.9, which Ubuntu 24.04 installs by default and the bootstrap script installs if it is missing, and netlink access for the agent, which its systemd unit grants. A server without them reports builds as unavailable, with a note, and refuses a build it receives. Builds carry a marker that an agent predating the build network can't account for, so such an agent refuses them too, and management stops a build queued before the marker existed rather than send it. A current agent applies its policy to every build, so it still builds for a controller that predates the marker. Agent updates replace only the executable, so a host prepared with an earlier unit needs the permission added once:
 
 ```bash
 sudo apt-get install --no-install-recommends nftables=1.0.9-1ubuntu0.1

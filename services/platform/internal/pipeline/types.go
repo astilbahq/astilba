@@ -120,9 +120,9 @@ type Command struct {
 	Registry    *Registry         `json:"registry,omitempty"`
 	// BuildEgress is the runner's build network allowlist when management queued the build.
 	BuildEgress []EgressRule `json:"buildEgress,omitempty"`
-	// BuildNetwork is BuildNetworkV1 on every build. An agent that predates the build network
-	// drops it when it recomputes the digest, so it refuses the build instead of running it
-	// on its host's network.
+	// BuildNetwork is BuildNetworkV1 on every build management queues. An agent that predates
+	// the build network drops it when it recomputes the digest, so it refuses the build
+	// instead of running it on its host's network.
 	BuildNetwork string    `json:"buildNetwork,omitempty"`
 	SubmittedAt  time.Time `json:"submittedAt"`
 	// Values exist only in the assigned agent's transport and encrypted journal.
@@ -276,8 +276,10 @@ func (c Command) Validate() error {
 	if !c.IsBuild() && (c.BuildEgress != nil || c.BuildNetwork != "") {
 		return errors.New("only builds carry a build network")
 	}
-	if c.IsBuild() && c.BuildNetwork != BuildNetworkV1 {
-		return errors.New("build predates the build network; start it again")
+	// An agent enforces its own policy, so it runs a build from a controller that predates
+	// the marker too. Management sets it on every build and stops one queued without it.
+	if c.IsBuild() && c.BuildNetwork != "" && c.BuildNetwork != BuildNetworkV1 {
+		return errors.New("unsupported build network")
 	}
 	switch c.Action {
 	case "import":

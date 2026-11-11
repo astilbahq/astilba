@@ -93,7 +93,7 @@ func Preflight(ctx context.Context, docker *client.Client, version, dir string, 
 	// A build runs only behind the build network policy, so a host that can't install it
 	// offers none. The check has its own time, so a slow Docker can't make it look missing.
 	policyCtx, policyDone := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
-	buildNetwork := runtime.GOOS == "linux" && (hostnetwork.Host{Dir: dir}).BuildPolicySupported(policyCtx)
+	buildNetwork := (hostnetwork.Host{Dir: dir}).BuildPolicySupported(policyCtx)
 	policyDone()
 	if h.Preflight.Ready && !buildNetwork {
 		h.Preflight.Notes = append(h.Preflight.Notes, buildPolicyUnsupported)

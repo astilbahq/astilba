@@ -476,8 +476,13 @@ func (e *Engine) loadPipelineImage(ctx context.Context, c api.ExecutionCommand) 
 }
 func (e *Engine) executePipeline(ctx context.Context, c api.ExecutionCommand, r Record) error {
 	var p pipeline.Command
-	if c.Pipeline == nil || json.Unmarshal(*c.Pipeline, &p) != nil || p.Digest() != c.PlanHash || p.Validate() != nil {
+	if c.Pipeline == nil || json.Unmarshal(*c.Pipeline, &p) != nil || p.Digest() != c.PlanHash {
 		return e.finish(c.Id, "failed", "Pipeline identity or inputs do not match the assigned operation.")
+	}
+	// An earlier agent may have started this operation's containers before refusing it now,
+	// such as a build queued before builds carried the build network, so they are removed.
+	if err := p.Validate(); err != nil {
+		return e.finishPipeline(c, "failed", "Pipeline inputs are not supported: "+err.Error()+".")
 	}
 	if e.Docker == nil {
 		return e.finish(c.Id, "failed", "Docker is unavailable.")
