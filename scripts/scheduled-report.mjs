@@ -101,7 +101,9 @@ async function main() {
     const result = process.env[`${prefix}_RESULT`];
     const path = process.env[`${prefix}_REPORT`];
     const written =
-      path && existsSync(path) ? readReport(readFileSync(path, "utf8")) : undefined;
+      path && existsSync(path)
+        ? readReport(readFileSync(path, "utf8"))
+        : undefined;
     if (path && existsSync(path) && !written)
       console.warn(`::warning::${path} is not a report; ignoring it`);
     const decision = decide(result, written, report.what);
@@ -124,8 +126,5 @@ async function main() {
   if (failed) process.exitCode = 1;
 }
 
-if (
-  process.argv[1] &&
-  import.meta.url === pathToFileURL(process.argv[1]).href
-)
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href)
   await main();

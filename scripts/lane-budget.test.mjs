@@ -8,7 +8,8 @@ import {
   recentJobs,
 } from "./lane-budget.mjs";
 
-const integration = "github.com/astilbahq/astilba/services/platform/internal/integration";
+const integration =
+  "github.com/astilbahq/astilba/services/platform/internal/integration";
 
 test("the integration package warns at the same budget", () => {
   const fixture = readFileSync(
@@ -66,7 +67,10 @@ test("reports a lane whose median is past the budget, with its timed-out runs", 
     600,
   );
   assert.equal(problems.length, 1);
-  assert.match(problems[0].line, /remaining: `pkg` has a median of 610s over 3 runs/);
+  assert.match(
+    problems[0].line,
+    /remaining: `pkg` has a median of 610s over 3 runs/,
+  );
   // Today's median is not part of the key, so the issue does not comment every day.
   assert.equal(problems[0].key, "over\tremaining\tpkg");
 });
@@ -75,7 +79,10 @@ test("fewer than three runs of a lane decide nothing", () => {
   const few = laneBudget([job(1, "new", 900), job(2, "new", 900)], 600);
   assert.deepEqual(few.problems, []);
   assert.equal(few.undecided, true);
-  const enough = laneBudget([1, 2, 3].map((run) => job(run, "new", 100)), 600);
+  const enough = laneBudget(
+    [1, 2, 3].map((run) => job(run, "new", 100)),
+    600,
+  );
   assert.equal(enough.undecided, false);
 });
 
@@ -119,7 +126,9 @@ test("samples recent runs of the current lanes in which every lane finished", as
   const jobs = await recentJobs(async (path) => {
     if (path.includes("/workflows/"))
       return {
-        json: async () => ({ workflow_runs: [...runs.keys()].map((id) => ({ id })) }),
+        json: async () => ({
+          workflow_runs: [...runs.keys()].map((id) => ({ id })),
+        }),
       };
     const run = /runs\/(\d+)\/jobs/.exec(path)?.[1];
     if (run) return { json: async () => runs.get(Number(run)) };

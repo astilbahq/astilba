@@ -26,13 +26,22 @@ test("a passed job closes, a failed one reports, and a skipped one decides nothi
     info: [],
     undecided: false,
   });
-  assert.deepEqual(decide("failure", report, "scan"), { ...report, undecided: false });
+  assert.deepEqual(decide("failure", report, "scan"), {
+    ...report,
+    undecided: false,
+  });
   for (const result of ["failure", "cancelled"]) {
     const unfinished = decide(result, undefined, "scan");
     assert.equal(unfinished.undecided, false);
-    assert.deepEqual(unfinished.problems.map(({ key }) => key), ["unfinished"]);
+    assert.deepEqual(
+      unfinished.problems.map(({ key }) => key),
+      ["unfinished"],
+    );
   }
-  assert.equal(decide("failure", { problems: [], info: [] }, "scan").problems[0].key, "unfinished");
+  assert.equal(
+    decide("failure", { problems: [], info: [] }, "scan").problems[0].key,
+    "unfinished",
+  );
   assert.equal(decide("skipped", undefined, "scan").undecided, true);
   assert.equal(decide(undefined, undefined, "scan").undecided, true);
 });
@@ -58,11 +67,18 @@ const fakeGitHub = () => {
 // The report job's own steps for the dependency scan, against a fake GitHub.
 async function scheduledRun(github, result, written, date) {
   const [dependencies] = reports;
-  const decision = decide(result, written && readReport(JSON.stringify(written)), dependencies.what);
+  const decision = decide(
+    result,
+    written && readReport(JSON.stringify(written)),
+    dependencies.what,
+  );
   return syncIssue(github.request, "o/r", {
     title: dependencies.title,
     undecided: decision.undecided,
-    problems: decision.problems.map(({ key, text }) => ({ key, line: `- ${inert(text, 600)}` })),
+    problems: decision.problems.map(({ key, text }) => ({
+      key,
+      line: `- ${inert(text, 600)}`,
+    })),
     body: issueBody(dependencies, decision, "https://github.test/run", date),
   });
 }
@@ -82,7 +98,10 @@ test("a seeded scan failure opens one issue, a repeat updates it, recovery close
   const seeded = reportProblems({ blocked: [blocked], stale: [] });
   const github = fakeGitHub();
 
-  assert.equal(await scheduledRun(github, "failure", seeded, "2026-11-12"), "opened");
+  assert.equal(
+    await scheduledRun(github, "failure", seeded, "2026-11-12"),
+    "opened",
+  );
   const [opened] = github.sent;
   assert.equal(opened.title, "Scheduled vulnerability scan failed");
   assert.match(opened.body, /### Blocking \(1\)/);
@@ -92,23 +111,44 @@ test("a seeded scan failure opens one issue, a repeat updates it, recovery close
   );
   assert.match(opened.body, /Run: https:\/\/github\.test\/run/);
 
-  assert.equal(await scheduledRun(github, "failure", seeded, "2026-11-13"), "updated");
+  assert.equal(
+    await scheduledRun(github, "failure", seeded, "2026-11-13"),
+    "updated",
+  );
   assert.equal(github.sent.at(-1).method, "PATCH");
   assert.match(github.sent.at(-1).body, /on 2026-11-13 found problems/);
 
   // A download failure the next day is a different problem, so it is announced.
-  assert.equal(await scheduledRun(github, "failure", undefined, "2026-11-14"), "commented");
-  assert.match(github.sent.at(-1).body, /New since the last report \(1\):\n\n- `The scheduled dependency/);
+  assert.equal(
+    await scheduledRun(github, "failure", undefined, "2026-11-14"),
+    "commented",
+  );
+  assert.match(
+    github.sent.at(-1).body,
+    /New since the last report \(1\):\n\n- `The scheduled dependency/,
+  );
 
-  assert.equal(await scheduledRun(github, "skipped", undefined, "2026-11-15"), "unchanged");
+  assert.equal(
+    await scheduledRun(github, "skipped", undefined, "2026-11-15"),
+    "unchanged",
+  );
 
-  assert.equal(await scheduledRun(github, "success", undefined, "2026-11-16"), "closed");
+  assert.equal(
+    await scheduledRun(github, "success", undefined, "2026-11-16"),
+    "closed",
+  );
   assert.deepEqual(
     [github.sent.at(-1).state, github.sent.at(-1).state_reason],
     ["closed", "completed"],
   );
-  assert.match(github.sent.at(-1).body, /passed on 2026-11-16: https:\/\/github\.test\/run/);
+  assert.match(
+    github.sent.at(-1).body,
+    /passed on 2026-11-16: https:\/\/github\.test\/run/,
+  );
 
   // The next failure opens a new issue rather than reviving the closed one.
-  assert.equal(await scheduledRun(github, "failure", seeded, "2026-11-17"), "opened");
+  assert.equal(
+    await scheduledRun(github, "failure", seeded, "2026-11-17"),
+    "opened",
+  );
 });

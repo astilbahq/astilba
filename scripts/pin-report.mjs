@@ -1,5 +1,4 @@
 import { execFile, execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
 import {
   appendFileSync,
   mkdtempSync,
@@ -19,6 +18,7 @@ import {
   withFetchAttempts,
 } from "./fetch-attempts.mjs";
 import { escapeModule } from "./go-release-age.mjs";
+import { platformManifests, platforms, registry } from "./image-registry.mjs";
 import { renderSections } from "./report-issue.mjs";
 import { osvScanner } from "./vulnerability-scan.mjs";
 
@@ -32,14 +32,6 @@ const run = promisify(execFile);
 const maxBuffer = 512 * 1024 * 1024;
 const maximumAllowlistDays = 90;
 const imageEntryFields = ["expires", "id", "image", "package", "reason"];
-// Every host and CI runner is one of these.
-const platforms = ["linux/amd64", "linux/arm64"];
-const manifestTypes = [
-  "application/vnd.oci.image.index.v1+json",
-  "application/vnd.docker.distribution.manifest.list.v2+json",
-  "application/vnd.oci.image.manifest.v1+json",
-  "application/vnd.docker.distribution.manifest.v2+json",
-].join(", ");
 
 export const sections = {
   problems: "Could not check",
@@ -63,7 +55,8 @@ export function parseName(name) {
       ? first
       : undefined;
   let repository = host ? rest.join("/") : name;
-  const registry = host === "index.docker.io" ? "docker.io" : (host ?? "docker.io");
+  const registry =
+    host === "index.docker.io" ? "docker.io" : (host ?? "docker.io");
   if (registry === "docker.io" && !repository.includes("/"))
     repository = `library/${repository}`;
   const image =
@@ -119,22 +112,25 @@ export function findGoTools(modules) {
   const tools = [];
   for (const { dir, text } of modules) {
     const plain = text.replace(/\/\/.*$/gm, "");
-    const block = (keyword) => [
-      ...[...plain.matchAll(new RegExp(`^${keyword}\\s*\\(([^)]*)\\)`, "gm"))]
-        .flatMap(([, body]) => body.split("\n")),
-      ...[...plain.matchAll(new RegExp(`^${keyword}\\s+([^(\\s].*)$`, "gm"))].map(
-        ([, line]) => line,
-      ),
-    ]
-      .map((line) => line.trim().split(/\s+/))
-      .filter(([first]) => first);
+    const block = (keyword) =>
+      [
+        ...[
+          ...plain.matchAll(new RegExp(`^${keyword}\\s*\\(([^)]*)\\)`, "gm")),
+        ].flatMap(([, body]) => body.split("\n")),
+        ...[
+          ...plain.matchAll(new RegExp(`^${keyword}\\s+([^(\\s].*)$`, "gm")),
+        ].map(([, line]) => line),
+      ]
+        .map((line) => line.trim().split(/\s+/))
+        .filter(([first]) => first);
     const requires = block("require");
     for (const [tool] of block("tool")) {
       const [path, version] =
         requires
           .filter(([path]) => tool === path || tool.startsWith(`${path}/`))
           .toSorted((a, b) => b[0].length - a[0].length)[0] ?? [];
-      if (!path) throw new Error(`${dir}/go.mod: no requirement provides ${tool}`);
+      if (!path)
+        throw new Error(`${dir}/go.mod: no requirement provides ${tool}`);
       tools.push({ dir, tool, module: path, version });
     }
   }
@@ -155,9 +151,9 @@ export function findReleases(files) {
     )) {
       const version =
         literal ??
-        new RegExp(`\\b(?:const|let|var)\\s+${constant}\\s*=\\s*"([^"]+)"`).exec(
-          text,
-        )?.[1];
+        new RegExp(
+          `\\b(?:const|let|var)\\s+${constant}\\s*=\\s*"([^"]+)"`,
+        ).exec(text)?.[1];
       if (!version)
         throw new Error(`${path}: cannot read the version of ${repository}`);
       const key = `${repository}@${prefix}${version}`;
@@ -224,7 +220,9 @@ export function parseImageAllowlist(document, today) {
   return entries.map((entry) => {
     const label = `Image allowlist entry ${entry.id ?? "without id"}`;
     if (Object.keys(entry).toSorted().join() !== imageEntryFields.join())
-      throw new Error(`${label} must have exactly: ${imageEntryFields.join(", ")}`);
+      throw new Error(
+        `${label} must have exactly: ${imageEntryFields.join(", ")}`,
+      );
     for (const field of ["id", "image", "package", "reason"])
       if (typeof entry[field] !== "string" || !entry[field].trim())
         throw new Error(`${label} needs a ${field}`);
@@ -277,14 +275,16 @@ export function imageFindings(report) {
           version: pkg.version,
           fixed: [...new Set(fixed)].join(", "),
           severity: group.max_severity ?? "",
-          summary: advisories.find((advisory) => advisory.summary)?.summary ?? "",
+          summary:
+            advisories.find((advisory) => advisory.summary)?.summary ?? "",
         };
       }),
     );
 }
 
 const short = (digest) => digest.slice(0, 19);
-const where = (pin) => `${pin.runtime ? "runtime" : "CI"}: ${pin.paths.join(", ")}`;
+const where = (pin) =>
+  `${pin.runtime ? "runtime" : "CI"}: ${pin.paths.join(", ")}`;
 
 // Turns what was found into report entries. A problem has a key that stays the same
 // while it does, so the issue comments only on what is new; anything that was not
@@ -298,7 +298,11 @@ export function assemble({ images, tools, entries, today }) {
   for (const pin of images) {
     const name = `${pin.image}:${pin.tag}`;
     for (const error of pin.errors)
-      problem(sections.problems, `error|${name}|${pin.digest}|${error.step}`, `${name}: ${error.step} failed: ${error.message}`);
+      problem(
+        sections.problems,
+        `error|${name}|${pin.digest}|${error.step}`,
+        `${name}: ${error.step} failed: ${error.message}`,
+      );
     if (pin.errors.some(({ step }) => step.startsWith("scan")))
       unscanned.add(pin.image);
     if (pin.moved)
@@ -372,7 +376,11 @@ export function assemble({ images, tools, entries, today }) {
       );
   for (const tool of tools) {
     if (tool.error)
-      problem(sections.problems, `error|${tool.name}`, `${tool.name}: ${tool.error}`);
+      problem(
+        sections.problems,
+        `error|${tool.name}`,
+        `${tool.name}: ${tool.error}`,
+      );
     else if (tool.newer)
       problem(
         sections.tools,
@@ -383,136 +391,6 @@ export function assemble({ images, tools, entries, today }) {
   return { problems, info };
 }
 
-const sha256 = (bytes) =>
-  `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
-
-// Asks a registry's distribution API as an anonymous client, taking the bearer token
-// its challenge offers. A dropped connection, a rate limit or a server error repeats
-// as other downloads do.
-export function registry(fetchImpl = fetch) {
-  const tokens = new Map();
-  const host = (name) =>
-    name === "docker.io" ? "registry-1.docker.io" : name;
-  const attempt = async (url, init) => {
-    let response;
-    try {
-      response = await fetchImpl(url, init);
-    } catch (error) {
-      throw new FetchFailure(error.cause?.message || error.message);
-    }
-    if (response.status === 429 || response.status >= 500) {
-      await response.body?.cancel();
-      throw new FetchFailure(`${url} returned ${response.status}`);
-    }
-    return response;
-  };
-  async function token(challenge, repository) {
-    const fields = Object.fromEntries(
-      [...challenge.matchAll(/(\w+)="([^"]*)"/g)].map(([, key, value]) => [
-        key,
-        value,
-      ]),
-    );
-    if (!/^bearer /i.test(challenge) || !fields.realm?.startsWith("https://"))
-      throw new Error(`unexpected registry challenge: ${challenge}`);
-    const url = new URL(fields.realm);
-    if (fields.service) url.searchParams.set("service", fields.service);
-    url.searchParams.set("scope", fields.scope ?? `repository:${repository}:pull`);
-    const response = await attempt(url, {});
-    if (!response.ok)
-      throw new Error(`${url.origin} refused a token: ${response.status}`);
-    const body = await response.json();
-    return body.token ?? body.access_token;
-  }
-  async function request(pin, path, { method = "GET", accept } = {}) {
-    const url = `https://${host(pin.registry)}/v2/${pin.repository}/${path}`;
-    const key = `${pin.registry}/${pin.repository}`;
-    return withFetchAttempts(`${method} ${url}`, async () => {
-      for (let tries = 0; ; tries++) {
-        const headers = { ...(accept && { accept }) };
-        if (tokens.has(key)) headers.authorization = `Bearer ${tokens.get(key)}`;
-        const response = await attempt(url, { method, headers });
-        if (response.status === 401 && tries === 0) {
-          await response.body?.cancel();
-          tokens.set(
-            key,
-            await token(response.headers.get("www-authenticate") ?? "", pin.repository),
-          );
-          continue;
-        }
-        if (!response.ok) {
-          await response.body?.cancel();
-          throw new Error(`${url} returned ${response.status}`);
-        }
-        return response;
-      }
-    }, { delay: (_attempt, elapsed) => (elapsed < 240_000 ? 15_000 : undefined) });
-  }
-  return {
-    // A manifest by digest is checked against that digest, so the registry cannot
-    // describe different contents.
-    async manifest(pin, digest) {
-      const bytes = Buffer.from(
-        await (await request(pin, `manifests/${digest}`, { accept: manifestTypes })).arrayBuffer(),
-      );
-      if (sha256(bytes) !== digest)
-        throw new Error(`${pin.image}@${digest} returned other bytes`);
-      return JSON.parse(bytes);
-    },
-    async tagDigest(pin) {
-      const response = await request(pin, `manifests/${pin.tag}`, {
-        method: "HEAD",
-        accept: manifestTypes,
-      });
-      const digest = response.headers.get("docker-content-digest");
-      if (/^sha256:[0-9a-f]{64}$/.test(digest ?? "")) return digest;
-      const bytes = Buffer.from(
-        await (await request(pin, `manifests/${pin.tag}`, { accept: manifestTypes })).arrayBuffer(),
-      );
-      return sha256(bytes);
-    },
-    async blob(pin, digest) {
-      const bytes = Buffer.from(
-        await (await request(pin, `blobs/${digest}`)).arrayBuffer(),
-      );
-      if (sha256(bytes) !== digest)
-        throw new Error(`${pin.image} blob ${digest} returned other bytes`);
-      return JSON.parse(bytes);
-    },
-    async tags(pin) {
-      const tags = [];
-      for (let path = "tags/list?n=1000"; path; ) {
-        const response = await request(pin, path);
-        tags.push(...((await response.json()).tags ?? []));
-        const next = /<[^>]*\/tags\/list(\?[^>]*)>;\s*rel="?next"?/.exec(
-          response.headers.get("link") ?? "",
-        )?.[1];
-        path = next && `tags/list${next}`;
-      }
-      return tags;
-    },
-  };
-}
-
-// The single-platform manifests a pin stands for on the platforms Astilba runs.
-export async function platformManifests(client, pin, manifest) {
-  if (!manifest.manifests) {
-    const config = await client.blob(pin, manifest.config.digest);
-    const platform = `${config.os}/${config.architecture}`;
-    return platforms.includes(platform) ? [{ platform, digest: pin.digest }] : [];
-  }
-  return platforms.flatMap((platform) => {
-    const [os, architecture] = platform.split("/");
-    const entry = manifest.manifests.find(
-      ({ platform: p }) =>
-        p?.os === os &&
-        p?.architecture === architecture &&
-        (architecture !== "arm64" || [undefined, "v8"].includes(p.variant)),
-    );
-    return entry ? [{ platform, digest: entry.digest }] : [];
-  });
-}
-
 async function scanImage(scanner, pin, { platform, digest }, directory) {
   const ref = `${pin.registry === "docker.io" ? "docker.io" : pin.registry}/${pin.repository}@${digest}`;
   const archive = join(directory, "image.tar");
@@ -521,13 +399,19 @@ async function scanImage(scanner, pin, { platform, digest }, directory) {
     await runLogged("docker", ["save", "--output", archive, ref]);
     // Exit status 1 means findings; anything else is a scan that did not complete.
     const stdout = await withFetchAttempts(`Scanning ${ref}`, () =>
-      run(scanner, ["scan", "image", "--archive", archive, "--format", "json"], {
-        maxBuffer,
-      }).then(
+      run(
+        scanner,
+        ["scan", "image", "--archive", archive, "--format", "json"],
+        {
+          maxBuffer,
+        },
+      ).then(
         (result) => result.stdout,
         (error) => {
           if (error.code === 1) return error.stdout;
-          throw new FetchFailure(error.stderr?.trim().split("\n").at(-1) || error.message);
+          throw new FetchFailure(
+            error.stderr?.trim().split("\n").at(-1) || error.message,
+          );
         },
       ),
     );
@@ -600,10 +484,16 @@ async function checkRelease(release) {
       release.version,
       listed.map(({ tag_name }) => tag_name),
     );
-    const published = listed.find(({ tag_name }) => tag_name === newer)?.published_at;
+    const published = listed.find(
+      ({ tag_name }) => tag_name === newer,
+    )?.published_at;
     return { ...release, name, newer, published };
   } catch (error) {
-    return { ...release, name, error: `checking releases failed: ${error.message}` };
+    return {
+      ...release,
+      name,
+      error: `checking releases failed: ${error.message}`,
+    };
   }
 }
 
@@ -621,18 +511,28 @@ async function checkGoTool({ dir, tool, module, version }) {
       JSON.parse(await download(`${proxy}/${escapeModule(newer)}.info`)).Time;
     return { name, version, paths, newer, published };
   } catch (error) {
-    return { name, version, paths, error: `checking the Go proxy failed: ${error.message}` };
+    return {
+      name,
+      version,
+      paths,
+      error: `checking the Go proxy failed: ${error.message}`,
+    };
   }
 }
 
 function trackedFiles() {
-  return execFileSync("git", ["ls-files", "-z"], { cwd: root, encoding: "utf8" })
+  return execFileSync("git", ["ls-files", "-z"], {
+    cwd: root,
+    encoding: "utf8",
+  })
     .split("\0")
     .filter(Boolean)
     .flatMap((path) => {
       try {
         const bytes = readFileSync(join(root, path));
-        return bytes.includes(0) ? [] : [{ path, text: bytes.toString("utf8") }];
+        return bytes.includes(0)
+          ? []
+          : [{ path, text: bytes.toString("utf8") }];
       } catch {
         // A path deleted from the working tree but still in the index.
         return [];
@@ -681,7 +581,10 @@ if (
   ];
   const report = assemble({ images, tools, entries, today });
   const text = renderSections(report);
-  console.log(text || "Every pinned image and tool is current, with no known vulnerability.");
+  console.log(
+    text ||
+      "Every pinned image and tool is current, with no known vulnerability.",
+  );
   if (process.env.GITHUB_STEP_SUMMARY)
     appendFileSync(
       process.env.GITHUB_STEP_SUMMARY,

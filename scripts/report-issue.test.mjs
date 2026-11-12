@@ -30,7 +30,10 @@ test("opens one issue for the first problem, keeping its keys", async () => {
   assert.equal(none.sent.length, 1);
   const [{ method, path, body }] = none.sent;
   assert.deepEqual([method, path], ["POST", "/repos/o/r/issues"]);
-  assert.match(body, /^<!-- report keys: [0-9a-f]{16} [0-9a-f]{16} -->\ntoday$/);
+  assert.match(
+    body,
+    /^<!-- report keys: [0-9a-f]{16} [0-9a-f]{16} -->\ntoday$/,
+  );
   assert.equal(none.sent[0].title, title);
 });
 
