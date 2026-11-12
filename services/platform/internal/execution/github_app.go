@@ -106,7 +106,7 @@ func (s *Service) githubKeys(p store.Principal, ws uuid.UUID, items ...secretbro
 }
 
 func grantItem(id uuid.UUID) secretbroker.Item {
-	return grantItem(id)
+	return secretbroker.Item{Kind: secretbroker.GitHubAuthorization, ID: id}
 }
 
 // The row lock serializes a grant's use, and a committed claim its code exchange. The session

@@ -120,6 +120,18 @@ func (w *automaticWorker) work(ctx context.Context, git *gitAnswers, job *river.
 	if err = json.Unmarshal(raw, &run); err != nil {
 		return err
 	}
+	// A busy environment waits before anything asks its provider, so waiting costs no call and
+	// opens no credential.
+	var busy bool
+	if err = tx.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM execution_operations WHERE workspace_id=$1 AND environment_id=$2 AND state NOT IN ('succeeded','failed','cancelled'))", ws, env).Scan(&busy); err != nil {
+		return err
+	}
+	if busy {
+		if err = tx.Commit(ctx); err != nil {
+			return err
+		}
+		return river.JobSnooze(2 * time.Second)
+	}
 	head, err := git.head(ctx, tx, run.Connection.ID, run.Branch)
 	if err != nil {
 		return err
@@ -132,16 +144,6 @@ func (w *automaticWorker) work(ctx context.Context, git *gitAnswers, job *river.
 	}
 	if head.Value != run.Commit {
 		return stop("The branch no longer points at this commit; this deployment was superseded.")
-	}
-	var busy bool
-	if err = tx.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM execution_operations WHERE workspace_id=$1 AND environment_id=$2 AND state NOT IN ('succeeded','failed','cancelled'))", ws, env).Scan(&busy); err != nil {
-		return err
-	}
-	if busy {
-		if err = tx.Commit(ctx); err != nil {
-			return err
-		}
-		return river.JobSnooze(2 * time.Second)
 	}
 	var appliedRaw []byte
 	if err = tx.QueryRow(ctx, "SELECT specification FROM specification_revisions WHERE workspace_id=$1 AND environment_id=$2 AND id=$3", ws, env, *v.Applied).Scan(&appliedRaw); err != nil {

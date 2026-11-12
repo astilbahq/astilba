@@ -305,7 +305,8 @@ func (g *gitAnswers) access(ctx context.Context, tx pgx.Tx, id uuid.UUID, write 
 	if known.state.binding == nil && known.state.unusable == nil {
 		access, err := g.stored(id, known.state)
 		var call *providerCall
-		if errors.As(err, &call) || secretbroker.SessionFailure(err) {
+		var refused *keysUnavailable
+		if errors.As(err, &call) || errors.As(err, &refused) || secretbroker.SessionFailure(err) {
 			return gitAnswer[pipeline.Access]{}, err
 		}
 		return gitAnswer[pipeline.Access]{Value: access, Err: err, Setup: err != nil}, nil

@@ -26,7 +26,8 @@ func (s *Service) passKeys(r secretbroker.Request) *passKeys {
 
 func (k *passKeys) get() (*secretbroker.Session, error) {
 	if k.err != nil {
-		return nil, k.err
+		// The broker refused, which says nothing about the value or its connection.
+		return nil, &keysUnavailable{k.err}
 	}
 	if k.session != nil && k.session.Live() {
 		return k.session, nil
@@ -82,7 +83,6 @@ func (k *passKeys) open(item secretbroker.Item, cipher []byte) ([]byte, error) {
 func (k *passKeys) openBetweenPasses(ctx context.Context, item secretbroker.Item, cipher []byte) ([]byte, error) {
 	session, err := k.ensure(ctx)
 	if err != nil {
-		// The broker refused, which says nothing about the value or its connection.
 		return nil, &keysUnavailable{err}
 	}
 	return k.opened(session, item, cipher)
