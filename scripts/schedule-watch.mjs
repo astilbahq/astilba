@@ -9,67 +9,91 @@ import { github, syncIssue } from "./report-issue.mjs";
 // a day and a half.
 export const windowMs = 36 * 3_600_000;
 
-// What is wrong with a workflow's runs on main, newest first: none lately, one that
-// could not start, or a job that had to succeed and did not. A workflow with no runs
-// yet, such as one just added, decides nothing.
-export function stopped({ runs, jobs = [], job, now }) {
-  if (!runs.length) return { problems: [], undecided: true };
+// What is wrong with a workflow, given its own scheduled and manual runs on main, newest
+// first: disabled, no run lately (or ever, once it has existed that long), a run that
+// could not start, or a job or step that had to succeed and did not. A run the
+// concurrency group cancelled says nothing either way. A workflow added within the
+// window, with no run yet, decides nothing.
+export function stopped({ workflow, runs, jobs = [], job, step, now }) {
   const problems = [];
-  const [newest] = runs;
-  if (now - Date.parse(newest.created_at) > windowMs)
-    problems.push({
-      key: "no run",
-      line: `- No run since ${newest.created_at}: ${newest.html_url}`,
-    });
-  const finished = runs.find(({ status }) => status === "completed");
+  const problem = (key, line) => problems.push({ key, line: `- ${line}` });
+  if (workflow.state !== "active")
+    problem("disabled", `GitHub reports the workflow as ${workflow.state}`);
+  const counted = runs.filter(({ conclusion }) => conclusion !== "cancelled");
+  const [newest] = counted;
+  const since = newest?.created_at ?? workflow.created_at;
+  if (now - Date.parse(since) > windowMs)
+    problem(
+      "no run",
+      newest
+        ? `No run since ${since}: ${newest.html_url}`
+        : `No run since it was added on ${since}`,
+    );
+  else if (!newest) return { problems, undecided: !problems.length };
+  const finished = counted.find(({ status }) => status === "completed");
   if (finished?.conclusion === "startup_failure")
-    problems.push({
-      key: "startup failure",
-      line: `- The run could not start: ${finished.html_url}`,
-    });
+    problem("startup failure", `The run could not start: ${finished.html_url}`);
   else if (job && finished) {
-    const conclusion = jobs.find(({ name }) => name === job)?.conclusion;
+    const found = jobs.find(({ name }) => name === job);
+    const conclusion = step
+      ? found?.steps?.find(({ name }) => name === step)?.conclusion
+      : found?.conclusion;
     if (conclusion !== "success")
-      problems.push({
-        key: "job failed",
-        line: `- ${job} ended ${conclusion ?? "without running"}: ${finished.html_url}`,
-      });
+      problem(
+        "job failed",
+        `${step ?? job} ended ${conclusion ?? "without running"}: ${finished.html_url}`,
+      );
   }
   return { problems, undecided: false, finished };
 }
 
 async function main() {
-  const [workflow, title, job] = process.argv.slice(2);
+  const [file, title, job, step] = process.argv.slice(2);
   const token = process.env.GITHUB_TOKEN;
   const repository = process.env.GITHUB_REPOSITORY;
-  if (!workflow || !title || !token || !repository)
+  if (!file || !title || !token || !repository)
     throw new Error(
-      "usage: GITHUB_TOKEN=… GITHUB_REPOSITORY=… schedule-watch.mjs <workflow file> <issue title> [job name]",
+      "usage: GITHUB_TOKEN=… GITHUB_REPOSITORY=… schedule-watch.mjs <workflow file> <issue title> [job name [step name]]",
     );
   const request = github(token);
-  const { workflow_runs: runs } = await (
-    await request(
-      `/repos/${repository}/actions/workflows/${workflow}/runs?branch=main&per_page=20`,
+  const get = async (path) => (await request(path)).json();
+  const base = `/repos/${repository}/actions/workflows/${file}`;
+  const workflow = await get(base);
+  // Asked for by event, so other runs, such as a fork's pull requests from a branch it
+  // calls main, cannot push these off the page.
+  const runs = (
+    await Promise.all(
+      ["event=schedule", "event=workflow_dispatch&branch=main"].map(
+        async (query) =>
+          (await get(`${base}/runs?${query}&per_page=20`)).workflow_runs,
+      ),
     )
-  ).json();
-  const scheduled = runs.filter(({ event }) =>
-    ["schedule", "workflow_dispatch"].includes(event),
+  )
+    .flat()
+    .filter(
+      (run) =>
+        run.head_branch === "main" &&
+        run.head_repository?.full_name === repository,
+    )
+    .toSorted((a, b) => b.created_at.localeCompare(a.created_at));
+  const finished = runs.find(
+    ({ status, conclusion }) =>
+      status === "completed" && conclusion !== "cancelled",
   );
-  const finished = scheduled.find(({ status }) => status === "completed");
   const jobs =
     job && finished
       ? (
-          await (
-            await request(
-              `/repos/${repository}/actions/runs/${finished.id}/jobs?per_page=100`,
-            )
-          ).json()
+          await get(
+            `/repos/${repository}/actions/runs/${finished.id}/jobs?per_page=100`,
+          )
         ).jobs
       : [];
   const { problems, undecided } = stopped({
-    runs: scheduled,
+    workflow,
+    runs,
     jobs,
     job,
+    step,
     now: Date.now(),
   });
   const outcome = await syncIssue(request, repository, {
@@ -78,15 +102,15 @@ async function main() {
     undecided,
     body: problems.length
       ? [
-          `\`${workflow}\` has stopped reporting, so its own issues may be out of date.`,
+          `\`${file}\` has stopped reporting, so its own issues may be out of date.`,
           "",
           ...problems.map(({ line }) => line),
           "",
           "See `docs/continuous-integration.md#scheduled-reports`. This closes itself once it runs and reports again.",
         ].join("\n")
-      : `\`${workflow}\` ran and reported again.`,
+      : `\`${file}\` ran and reported again.`,
   });
-  console.log(`${workflow}: ${problems.length} problems, issue ${outcome}`);
+  console.log(`${file}: ${problems.length} problems, issue ${outcome}`);
 }
 
 if (

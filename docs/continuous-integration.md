@@ -434,14 +434,23 @@ requests. The lane budget guard keeps its issue the same way. `make check-ci` se
 failure offline and follows its issue through a repeat, a new problem and recovery.
 
 A workflow that cannot start, or whose report job fails, cannot say so itself, so the two
-daily workflows check on each other with `scripts/schedule-watch.mjs`. The lane budget
-workflow opens `Scheduled scans stopped reporting` when `scheduled-scans.yml` has had no
-run on `main` for 36 hours, its newest finished run could not start, or that run's
-`Report to issues` job did not succeed. The scheduled scans' report job opens `Lane
-budget stopped running` on the first two for `lane-budget.yml`. Each closes once the
-other runs again. GitHub starts a daily schedule hours late under load, hence the 36
-hours. If GitHub disables both schedules at once, such as after 60 days without
-repository activity, neither can tell.
+daily workflows check on each other with `scripts/schedule-watch.mjs`. Each reads only the
+other's own scheduled and manual runs on `main`, so other runs, such as a fork's pull
+requests from a branch it calls `main`, cannot hide them. The lane budget workflow opens
+`Scheduled scans stopped reporting` when `scheduled-scans.yml`:
+
+- is disabled;
+- has had no run for 36 hours, or none since it was added that long ago;
+- has a newest finished run that could not start;
+- or has a newest finished run whose `Report to issues` job did not succeed.
+
+The scheduled scans' report job opens `Lane budget stopped running` on the same checks for
+`lane-budget.yml`, judging that workflow's `Check the scheduled scans` step rather than its
+job, which fails by design while a lane is over budget. A run that the concurrency group
+cancelled counts for neither. Each issue closes once the other workflow runs and reports
+again. GitHub starts a daily schedule hours late under load, hence the 36 hours. If GitHub
+disables both schedules at once, such as after 60 days without repository activity,
+neither can tell.
 
 ## Source-size ratchet
 

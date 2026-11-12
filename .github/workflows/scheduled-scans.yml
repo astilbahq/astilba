@@ -75,8 +75,9 @@ jobs:
           DEPENDENCIES_REPORT: ${{ runner.temp }}/reports/dependency-report/dependency-report.json
           PINS_RESULT: ${{ needs.pins.result }}
           PINS_REPORT: ${{ runner.temp }}/reports/pin-report/pin-report.json
-      # The lane budget workflow checks this one the same way.
+      # The lane budget workflow checks this one the same way. Its job fails by design
+      # while a lane is over budget, so only its step that checks this workflow counts.
       - if: always()
-        run: node scripts/schedule-watch.mjs lane-budget.yml "Lane budget stopped running"
+        run: node scripts/schedule-watch.mjs lane-budget.yml "Lane budget stopped running" "Compare Go race lane times" "Check the scheduled scans"
         env:
           GITHUB_TOKEN: ${{ github.token }}
