@@ -10,6 +10,7 @@ import (
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
+	"github.com/astilbahq/astilba/services/platform/internal/secretbroker"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
@@ -164,7 +165,7 @@ func (s *Service) AdmitImport(p store.Principal) error {
 	return nil
 }
 
-func (s *Service) Import(ctx context.Context, p store.Principal, passphrase string, envelope []byte, invitation string) (store.Workspace, error) {
+func (s *Service) Import(ctx context.Context, p store.Principal, passphrase string, envelope []byte, invitation string) (_ store.Workspace, failure error) {
 	var out store.Workspace
 	if e := s.AdmitImport(p); e != nil {
 		return out, e
@@ -181,6 +182,12 @@ func (s *Service) Import(ctx context.Context, p store.Principal, passphrase stri
 	if archive.RequireMFA && !p.MFA {
 		return out, domain.MFARequired
 	}
+	// The credentials are sealed again for the workspace this import creates.
+	keys, e := s.Store.Broker.Begin(ctx, secretbroker.Request{Workspace: archive.Workspace, Purpose: secretbroker.Seal, Principal: p.Secrets(), Kinds: secretbroker.CredentialKinds, NewWorkspace: true})
+	if e != nil {
+		return out, e
+	}
+	defer func() { keys.Close(ctx, secretbroker.Done(failure)) }()
 	tx, e := s.Store.Pool.Begin(ctx)
 	if e != nil {
 		return out, e
@@ -304,7 +311,7 @@ func (s *Service) Import(ctx context.Context, p store.Principal, passphrase stri
 				}
 				setValue(row, "configuration", config)
 			}
-			if e = s.transformCredential(table.Name, row, archive.Workspace, false); e != nil {
+			if e = transformCredential(keys, table.Name, row, false); e != nil {
 				return out, e
 			}
 			raw, e := stablejson.Marshal(row)

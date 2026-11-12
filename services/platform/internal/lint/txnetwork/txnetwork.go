@@ -1,5 +1,7 @@
-// Package txnetwork reports a Git provider or GitHub call made with a transaction in hand,
-// where a tenant's slow server would hold that transaction's locks and connection.
+// Package txnetwork reports a Git provider or GitHub call, or a request to the secret broker
+// for keys, made with a transaction in hand, where a tenant's slow server or the key service
+// would hold that transaction's locks and connection. The broker also commits a record of its
+// own before it gives keys out, which a caller's transaction must not contain.
 package txnetwork
 
 import (
@@ -13,7 +15,7 @@ import (
 
 var Analyzer = &analysis.Analyzer{
 	Name: "txnetwork",
-	Doc:  "reports a Git provider or GitHub call, direct or through a function in the same package, from a function holding a transaction",
+	Doc:  "reports a Git provider or GitHub call, or a secret broker session begun, directly or through a function in the same package, from a function holding a transaction",
 	Run:  run,
 }
 
@@ -22,7 +24,11 @@ const (
 	queriesType  = "github.com/astilbahq/astilba/services/platform/db/generated.Queries"
 	providerType = "github.com/astilbahq/astilba/services/platform/internal/pipeline.Provider"
 	clientType   = "github.com/astilbahq/astilba/services/platform/internal/githubapp.Client"
+	brokerType   = "github.com/astilbahq/astilba/services/platform/internal/secretbroker.Broker"
 )
+
+// brokerMethods are the Broker methods that record and give out keys.
+var brokerMethods = map[string]bool{"Begin": true, "BeginRotation": true, "Tokens": true}
 
 // offlineClientMethods are the Client methods that only compute or check a value locally.
 var offlineClientMethods = map[string]bool{"FixtureAPI": true, "InstallURL": true, "AuthorizeURL": true, "VerifyWebhook": true}
@@ -80,7 +86,7 @@ func run(pass *analysis.Pass) (any, error) {
 		inspectOwn(fn.body, func(n ast.Node) {
 			if call, ok := n.(*ast.CallExpr); ok && call.Pos() > held && !reported[call] && contacts(call) {
 				reported[call] = true
-				pass.Reportf(call.Pos(), "this contacts a Git provider or GitHub with a transaction in hand, holding its locks and connection; ask between passes with a providerCall")
+				pass.Reportf(call.Pos(), "this contacts a Git provider, GitHub or the secret broker with a transaction in hand, holding its locks and connection; ask between passes with a providerCall, or begin keys before the transaction")
 			}
 		})
 	}
@@ -204,6 +210,8 @@ func networkMethod(callee types.Object) bool {
 		return true
 	case clientType:
 		return !offlineClientMethods[fn.Name()]
+	case brokerType:
+		return brokerMethods[fn.Name()]
 	}
 	return false
 }

@@ -276,7 +276,7 @@ func (s *Service) populatePipeline(ctx context.Context, tx pgx.Tx, git *gitAnswe
 				return err
 			}
 			var access pipeline.RegistryAccess
-			if err = s.openIntegration(ws, p.Registry.ID, "registry", cipher, &access); err != nil {
+			if err = s.legacyOpenIntegration(ws, p.Registry.ID, "registry", cipher, &access); err != nil {
 				return err
 			}
 			p.RegistryAccess = &pipeline.RegistryAccess{Push: access.Push}

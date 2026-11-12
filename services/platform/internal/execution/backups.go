@@ -14,6 +14,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/composeproject"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
+	"github.com/astilbahq/astilba/services/platform/internal/secretbroker"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
@@ -44,7 +45,14 @@ func (s *Service) CreateBackupDestination(ctx context.Context, p store.Principal
 	if backup.ValidateDestination(d, a) != nil {
 		return d, domain.Invalid("destination")
 	}
-	err := s.scope(ctx, p, ws, workspaceAccess{Write: true, Owner: true, Recent: true}, "backup.destination.create", d.ID, func(tx pgx.Tx) error {
+	item := secretbroker.Item{Kind: secretbroker.BackupDestination, ID: d.ID}
+	keys, done, err := s.sealing(ctx, p, ws, item)
+	if err != nil {
+		return d, err
+	}
+	sealed := false
+	defer func() { done(sealed) }()
+	err = s.scope(ctx, p, ws, workspaceAccess{Write: true, Owner: true, Recent: true}, "backup.destination.create", d.ID, func(tx pgx.Tx) error {
 		n, err := db.New(tx).CountBackupDestinations(ctx, ws)
 		if err != nil {
 			return err
@@ -52,10 +60,11 @@ func (s *Service) CreateBackupDestination(ctx context.Context, p store.Principal
 		if n >= 100 {
 			return domain.Conflict
 		}
-		secret, err := s.sealIntegration(ws, d.ID, "backup-destination", a)
+		secret, err := sealIntegration(keys, item, a)
 		if err != nil {
 			return err
 		}
+		sealed = true
 		raw, _ := stablejson.Marshal(d)
 		return db.New(tx).InsertBackupDestination(ctx, db.InsertBackupDestinationParams{ID: d.ID, WorkspaceID: ws, Configuration: raw, EncryptedAccess: secret})
 	})
@@ -84,7 +93,14 @@ func (s *Service) BackupPolicies(ctx context.Context, p store.Principal, ws, pid
 }
 func (s *Service) SaveBackupPolicy(ctx context.Context, p store.Principal, ws, pid, env, id uuid.UUID, in api.BackupPolicyRequest) (backup.Policy, error) {
 	var out backup.Policy
-	err := s.scope(ctx, p, ws, workspaceAccess{Write: true, Owner: true, Recent: true}, "backup.policy.save", id, func(tx pgx.Tx) error {
+	item := secretbroker.Item{Kind: secretbroker.BackupPolicy, ID: id}
+	keys, done, err := s.sealing(ctx, p, ws, item)
+	if err != nil {
+		return out, err
+	}
+	sealed := false
+	defer func() { done(sealed) }()
+	err = s.scope(ctx, p, ws, workspaceAccess{Write: true, Owner: true, Recent: true}, "backup.policy.save", id, func(tx pgx.Tx) error {
 		v, err := loadVisualEnvironment(ctx, tx, ws, pid, env)
 		if err != nil {
 			return err
@@ -196,10 +212,11 @@ func (s *Service) SaveBackupPolicy(ctx context.Context, p store.Principal, ws, p
 		if in.Password != nil {
 			a.Password = *in.Password
 		}
-		cipher, err := s.sealIntegration(ws, id, "backup-policy", a)
+		cipher, err := sealIntegration(keys, item, a)
 		if err != nil {
 			return err
 		}
+		sealed = true
 		raw, _ := stablejson.Marshal(out)
 		_, err = db.New(tx).UpsertBackupPolicy(ctx, db.UpsertBackupPolicyParams{ID: id, WorkspaceID: ws, EnvironmentID: env, ServerID: out.ServerID, Configuration: raw, EncryptedAccess: cipher})
 		return err
@@ -326,7 +343,7 @@ func (s *Service) hydrateBackup(ctx context.Context, c *api.ExecutionCommand) er
 	if json.Unmarshal(stored.Configuration, &policy) != nil || policy.Generation != b.Installation.Policy.Generation {
 		return domain.Conflict
 	}
-	if err = s.openIntegration(b.Installation.Policy.WorkspaceID, c.ResourceId, "backup-policy", stored.EncryptedAccess, &b.Installation.Access); err != nil {
+	if err = s.legacyOpenIntegration(b.Installation.Policy.WorkspaceID, c.ResourceId, "backup-policy", stored.EncryptedAccess, &b.Installation.Access); err != nil {
 		return err
 	}
 	if b.Installation.Policy.Method != "container-job" {
@@ -338,7 +355,7 @@ func (s *Service) hydrateBackup(ctx context.Context, c *api.ExecutionCommand) er
 			return err
 		}
 		var a backup.Access
-		if err = s.openIntegration(b.Installation.Policy.WorkspaceID, b.Installation.Policy.DestinationID, "backup-destination", destination.EncryptedAccess, &a); err != nil {
+		if err = s.legacyOpenIntegration(b.Installation.Policy.WorkspaceID, b.Installation.Policy.DestinationID, "backup-destination", destination.EncryptedAccess, &a); err != nil {
 			return err
 		}
 		b.Installation.Access.AccessKey = a.AccessKey

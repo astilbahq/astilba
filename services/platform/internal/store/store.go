@@ -11,7 +11,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/hosting"
-	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
+	"github.com/astilbahq/astilba/services/platform/internal/secretbroker"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -19,8 +19,12 @@ import (
 )
 
 type Store struct {
-	Pool              *pgxpool.Pool
-	Queries           *db.Queries
+	Pool    *pgxpool.Pool
+	Queries *db.Queries
+	// Broker is the one path to stored values.
+	Broker *secretbroker.Broker
+	// Keys is read only by the agent delivery paths that have not moved to the broker yet. The
+	// secretkeys analyzer allows no other use.
 	Keys              *cryptobox.Keyring
 	Hosted            bool
 	Hosting           hosting.Config
@@ -40,6 +44,15 @@ type Principal struct {
 	// changing the account.
 	SessionHash string
 	Automation  *domain.AutomationGrant
+}
+
+// Secrets is who the secret broker records for this principal: the account, or the automation
+// credential acting for it in the one workspace it was issued for.
+func (p Principal) Secrets() secretbroker.Principal {
+	if p.Automation != nil {
+		return secretbroker.Automation(p.Account.ID, p.Automation.ID, p.Automation.WorkspaceID)
+	}
+	return secretbroker.Account(p.Account.ID)
 }
 
 // Recent is decided when it is asked, because a request can wait for the workspace lock
@@ -67,8 +80,8 @@ type WorkspaceAccess struct {
 	Lock bool
 }
 
-func New(pool *pgxpool.Pool, keys *cryptobox.Keyring, hosted bool) *Store {
-	return &Store{Pool: pool, Queries: db.New(pool), Keys: keys, Hosted: hosted, LogRetention: 30 * 24 * time.Hour}
+func New(pool *pgxpool.Pool, broker *secretbroker.Broker, hosted bool) *Store {
+	return &Store{Pool: pool, Queries: db.New(pool), Broker: broker, Hosted: hosted, LogRetention: 30 * 24 * time.Hour}
 }
 
 func Normalize(err error) error {
@@ -281,27 +294,30 @@ func (s *Store) Bootstrap(ctx context.Context, email, name, passwordHash, worksp
 	return id, err
 }
 
+// SecretIdentity is a secret version's identity, for the delivery paths that have not moved to
+// the broker yet, which builds its own.
 func SecretIdentity(workspace, id uuid.UUID) string {
 	return "secret:v1:" + workspace.String() + ":" + id.String()
 }
-func AlertWebhookIdentity(workspace uuid.UUID) string {
-	return "astilba/alert-webhook/" + workspace.String()
-}
-func TOTPIdentity(id uuid.UUID, pending bool) string {
-	p := "totp:v1:"
-	if pending {
-		p = "totp-pending:v1:"
-	}
-	return p + id.String()
-}
-
 // rewrapFailed names the row, because rotation stops until an operator deals with it and
 // the keyring's own error is deliberately the same for every cause.
 func rewrapFailed(table string, workspace, id uuid.UUID, err error) error {
 	return fmt.Errorf("cannot rewrap %s row %s in workspace %s: %w", table, id, workspace, err)
 }
 
-func (s *Store) Rewrap(ctx context.Context) error {
+// Rewrap moves every stored value onto the active key, for an operator, as one recorded run.
+func (s *Store) Rewrap(ctx context.Context, operator string) (err error) {
+	rotation, err := s.Broker.BeginRotation(ctx, operator)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		outcome := secretbroker.Used
+		if err != nil {
+			outcome = secretbroker.Failed
+		}
+		rotation.Close(ctx, outcome)
+	}()
 	return s.Transaction(ctx, func(q *db.Queries) error {
 		if err := q.LockBootstrap(ctx); err != nil {
 			return err
@@ -311,7 +327,7 @@ func (s *Store) Rewrap(ctx context.Context) error {
 			return err
 		}
 		for _, v := range versions {
-			blob, err := s.Keys.Rewrap(v.EncryptedValue, SecretIdentity(v.WorkspaceID, v.ID))
+			blob, err := rotation.Rewrap(v.WorkspaceID, secretbroker.Item{Kind: secretbroker.SecretVersion, ID: v.ID}, v.EncryptedValue)
 			if err != nil {
 				return rewrapFailed("secret_versions", v.WorkspaceID, v.ID, err)
 			}
@@ -325,7 +341,7 @@ func (s *Store) Rewrap(ctx context.Context) error {
 			return err
 		}
 		for _, v := range git {
-			blob, err := s.Keys.Rewrap(v.EncryptedAccess, pipeline.EncryptionIdentity(v.WorkspaceID, v.ID, "git"))
+			blob, err := rotation.Rewrap(v.WorkspaceID, secretbroker.Item{Kind: secretbroker.Git, ID: v.ID}, v.EncryptedAccess)
 			if err != nil {
 				return rewrapFailed("git_connections", v.WorkspaceID, v.ID, err)
 			}
@@ -338,7 +354,7 @@ func (s *Store) Rewrap(ctx context.Context) error {
 			return err
 		}
 		for _, v := range authorizations {
-			blob, err := s.Keys.Rewrap(v.EncryptedAccess, pipeline.EncryptionIdentity(v.WorkspaceID, v.ID, "github-authorization"))
+			blob, err := rotation.Rewrap(v.WorkspaceID, secretbroker.Item{Kind: secretbroker.GitHubAuthorization, ID: v.ID}, v.EncryptedAccess)
 			if err != nil {
 				return rewrapFailed("github_app_authorizations", v.WorkspaceID, v.ID, err)
 			}
@@ -351,7 +367,7 @@ func (s *Store) Rewrap(ctx context.Context) error {
 			return err
 		}
 		for _, v := range registries {
-			blob, err := s.Keys.Rewrap(v.EncryptedAccess, pipeline.EncryptionIdentity(v.WorkspaceID, v.ID, "registry"))
+			blob, err := rotation.Rewrap(v.WorkspaceID, secretbroker.Item{Kind: secretbroker.Registry, ID: v.ID}, v.EncryptedAccess)
 			if err != nil {
 				return rewrapFailed("registries", v.WorkspaceID, v.ID, err)
 			}
@@ -364,7 +380,7 @@ func (s *Store) Rewrap(ctx context.Context) error {
 			return err
 		}
 		for _, v := range build {
-			blob, err := s.Keys.Rewrap(v.EncryptedValue, pipeline.EncryptionIdentity(v.WorkspaceID, v.ID, "build-secret"))
+			blob, err := rotation.Rewrap(v.WorkspaceID, secretbroker.Item{Kind: secretbroker.BuildSecret, ID: v.ID}, v.EncryptedValue)
 			if err != nil {
 				return rewrapFailed("build_secret_versions", v.WorkspaceID, v.ID, err)
 			}
@@ -378,7 +394,7 @@ func (s *Store) Rewrap(ctx context.Context) error {
 			return err
 		}
 		for _, v := range rowsBackupDestination {
-			blob, err := s.Keys.Rewrap(v.EncryptedAccess, pipeline.EncryptionIdentity(v.WorkspaceID, v.ID, "backup-destination"))
+			blob, err := rotation.Rewrap(v.WorkspaceID, secretbroker.Item{Kind: secretbroker.BackupDestination, ID: v.ID}, v.EncryptedAccess)
 			if err != nil {
 				return rewrapFailed("backup_destinations", v.WorkspaceID, v.ID, err)
 			}
@@ -392,7 +408,7 @@ func (s *Store) Rewrap(ctx context.Context) error {
 			return err
 		}
 		for _, v := range rowsBackupPolicy {
-			blob, err := s.Keys.Rewrap(v.EncryptedAccess, pipeline.EncryptionIdentity(v.WorkspaceID, v.ID, "backup-policy"))
+			blob, err := rotation.Rewrap(v.WorkspaceID, secretbroker.Item{Kind: secretbroker.BackupPolicy, ID: v.ID}, v.EncryptedAccess)
 			if err != nil {
 				return rewrapFailed("backup_policies", v.WorkspaceID, v.ID, err)
 			}
@@ -405,7 +421,7 @@ func (s *Store) Rewrap(ctx context.Context) error {
 			return err
 		}
 		for _, v := range hooks {
-			blob, err := s.Keys.Rewrap(v.EncryptedWebhook, AlertWebhookIdentity(v.WorkspaceID))
+			blob, err := rotation.Rewrap(v.WorkspaceID, secretbroker.Item{Kind: secretbroker.AlertWebhook, ID: v.WorkspaceID}, v.EncryptedWebhook)
 			if err != nil {
 				return rewrapFailed("alert_settings", v.WorkspaceID, v.WorkspaceID, err)
 			}
@@ -420,13 +436,13 @@ func (s *Store) Rewrap(ctx context.Context) error {
 		for _, a := range accounts {
 			active, pending := a.TotpSecret, a.TotpPending
 			if active != nil {
-				active, err = s.Keys.Rewrap(active, TOTPIdentity(a.ID, false))
+				active, err = rotation.Rewrap(uuid.Nil, secretbroker.Item{Kind: secretbroker.TOTP, ID: a.ID}, active)
 				if err != nil {
 					return rewrapFailed("accounts", uuid.Nil, a.ID, err)
 				}
 			}
 			if pending != nil {
-				pending, err = s.Keys.Rewrap(pending, TOTPIdentity(a.ID, true))
+				pending, err = rotation.Rewrap(uuid.Nil, secretbroker.Item{Kind: secretbroker.TOTPPending, ID: a.ID}, pending)
 				if err != nil {
 					return rewrapFailed("accounts", uuid.Nil, a.ID, err)
 				}

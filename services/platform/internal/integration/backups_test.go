@@ -174,7 +174,7 @@ func TestBackupScopeHydrationReportsAndCutover(t *testing.T) {
 	status.PolicyID = uuid.New()
 	send(3, 404)
 	status.PolicyID = foreign
-	if err := f.st.Rewrap(context.Background()); err != nil {
+	if err := f.st.Rewrap(context.Background(), "test"); err != nil {
 		t.Fatal(err)
 	}
 	b.call("POST", prefix+"/invitations", map[string]string{"email": "backup-viewer@example.test", "role": "viewer"}, 201, nil)

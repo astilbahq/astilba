@@ -27,9 +27,11 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/auth"
 	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
+	"github.com/astilbahq/astilba/services/platform/internal/custody"
 	"github.com/astilbahq/astilba/services/platform/internal/execution"
 	"github.com/astilbahq/astilba/services/platform/internal/httpapi"
 	"github.com/astilbahq/astilba/services/platform/internal/mailer"
+	"github.com/astilbahq/astilba/services/platform/internal/secretbroker"
 	"github.com/astilbahq/astilba/services/platform/internal/randtoken"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
@@ -191,6 +193,18 @@ func setup(t *testing.T) *fixture { return setupBootstrap(t, true) }
 func setupBootstrap(t *testing.T, bootstrap bool) *fixture {
 	return setupStore(t, bootstrap, false)
 }
+// testStore is a store whose broker holds keys, as the server's does.
+func testStore(t *testing.T, pool *pgxpool.Pool, keys *cryptobox.Keyring, hosted bool) *store.Store {
+	t.Helper()
+	backend, e := custody.NewFile(keys)
+	if e != nil {
+		t.Fatal(e)
+	}
+	st := store.New(pool, secretbroker.New(db.New(pool), backend, nil), hosted)
+	st.Keys = keys
+	return st
+}
+
 func setupStore(t *testing.T, bootstrap, hosted bool) *fixture {
 	t.Helper()
 	if testing.Short() {
@@ -219,7 +233,7 @@ func setupStore(t *testing.T, bootstrap, hosted bool) *fixture {
 		t.Fatal(e)
 	}
 	keys, _ := cryptobox.New("test")
-	st := store.New(pool, keys, hosted)
+	st := testStore(t, pool, keys, hosted)
 	if hosted {
 		st.Hosting.ServerLimit = 100
 	}
@@ -244,7 +258,11 @@ func setupStore(t *testing.T, bootstrap, hosted bool) *fixture {
 	if e != nil {
 		t.Fatal(e)
 	}
-	service := &auth.Service{Store: st, Passwords: passwords, Mail: sender, Now: time.Now}
+	tokens, e := st.Broker.Tokens(ctx)
+	if e != nil {
+		t.Fatal(e)
+	}
+	service := &auth.Service{Store: st, Passwords: passwords, Mail: sender, Now: time.Now, Tokens: tokens}
 	log := &lockedLog{}
 	apiServer, cleanup := httpapi.New(st, service, "http://127.0.0.1", true, slog.New(slog.NewTextHandler(log, nil)))
 	t.Cleanup(cleanup)
