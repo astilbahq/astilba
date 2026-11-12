@@ -89,7 +89,7 @@ export async function holdCheckout(checkout, suite) {
   const owner = statSync(directory);
   if (owner.uid !== process.getuid() || (owner.mode & 0o077) !== 0)
     throw new Error(`${directory} must belong to this user alone`);
-  for (let n = 0; n < 100; n++) {
+  for (let n = 0, tries = 0; n < 100 && tries < 200; tries++) {
     const path = join(directory, `suite-${key}-${n}.sock`);
     const lock = createServer((connection) => connection.destroy());
     const taken = await new Promise((resolve, reject) => {
@@ -102,24 +102,32 @@ export async function holdCheckout(checkout, suite) {
       lock.unref();
       return () => close(lock);
     }
-    if (await answers(path))
+    const state = await probe(path);
+    if (state === "held")
       throw new Error(
         `${suite} is already running in this checkout; wait for it, or run the other from a separate checkout`,
       );
+    // Past a killed run's socket, try the next path. A holder that released between
+    // the bind and the probe has freed this one, so try it again.
+    if (state === "stale") n++;
   }
   throw new Error(
-    `Killed runs left 100 locks in ${directory}; remove the suite-${key}-* files there when no suite is running`,
+    `Cannot take a lock in ${directory} past the sockets killed runs left; remove its suite-${key}-* files when no suite is running`,
   );
 }
 
-function answers(path) {
+// probe says whether a lock path is held, left by a killed run (nothing listens), or
+// gone.
+function probe(path) {
   return new Promise((resolve) => {
     const socket = connect(path);
     socket.once("connect", () => {
       socket.destroy();
-      resolve(true);
+      resolve("held");
     });
-    socket.once("error", () => resolve(false));
+    socket.once("error", (error) =>
+      resolve(error.code === "ENOENT" ? "gone" : "stale"),
+    );
   });
 }
 
