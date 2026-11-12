@@ -183,6 +183,13 @@ func (s *Service) GitSource(ctx context.Context, p store.Principal, ws, pid, env
 		if err != nil {
 			return err
 		}
+		// Each statement here sees the latest commit. A submission's outcome and the source's
+		// status commit together, so reading the submission first means the status read after it
+		// is never older: a succeeded submission always comes with the status it set.
+		submission, err := latestSubmission(ctx, tx, ws, env)
+		if err != nil {
+			return err
+		}
 		var cfg []byte
 		var revision *uuid.UUID
 		var commit, pending, status string
@@ -200,10 +207,6 @@ func (s *Service) GitSource(ctx context.Context, p store.Principal, ws, pid, env
 		clean := baseline != nil && sameSourceFiles(v.Spec.Compose, baseline)
 		if clean {
 			configuration = sourceSelection(configuration, v.Spec.Compose)
-		}
-		submission, err := latestSubmission(ctx, tx, ws, env)
-		if err != nil {
-			return err
 		}
 		out = map[string]any{"clean": clean, "configuration": configuration, "importedRevisionId": revision, "importedCommit": commit, "pendingCommit": pending, "status": status, "submission": submission}
 		return nil
