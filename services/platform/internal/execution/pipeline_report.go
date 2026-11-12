@@ -282,7 +282,7 @@ func (s *Service) writePipelineRevision(ctx context.Context, tx pgx.Tx, ws, env,
 	}
 	id := uuid.New()
 	h := sha256.Sum256(canonical)
-	if _, err = db.New(tx).InsertRevision(ctx, db.InsertRevisionParams{WorkspaceID: ws, EnvironmentID: env, ID: id, AuthorID: actor, Specification: canonical, ContentHash: h[:]}); err != nil {
+	if _, err = store.InsertRevision(ctx, db.New(tx), db.InsertRevisionParams{WorkspaceID: ws, EnvironmentID: env, ID: id, AuthorID: actor, Specification: canonical, ContentHash: h[:]}); err != nil {
 		return uuid.Nil, err
 	}
 	changed, err := tx.Exec(ctx, "UPDATE environments SET draft_revision_id=$4 WHERE workspace_id=$1 AND id=$2 AND draft_revision_id=$3", ws, env, base, id)
