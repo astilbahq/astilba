@@ -566,6 +566,25 @@ each other, either leave generated names off and give each application a custom
 domain, or use a base the list isolates. The list accepts private entries only for
 services with thousands of users, so most installations should not apply.
 
+### Removing generated records
+
+With automatic Cloudflare DNS, Astilba removes a server's records when the server
+is revoked, when the application domain changes and, on hosted installations, when
+the workspace's management stops being active. A customer who leaves therefore
+leaves no record pointing at an address they may give up. Removal happens when
+management ends, not when the 30-day recovery period after it ends (see
+[hosted admission and billing](#hosted-admission-and-billing)). The owner's address
+approval is kept, so the records come back within a few minutes of management
+resuming. See
+[server onboarding](server-onboarding.md#when-automatic-records-are-removed).
+
+A server revoked while automatic DNS is off has its records removed once automation
+is back in the same zone. Astilba removes records only in the zone it has credentials for. If you change
+`ASTILBA_DNS_CLOUDFLARE_ZONE`, or turn automatic DNS off, the old zone keeps every
+record Astilba made there, for live and revoked servers alike. Delete them yourself:
+their comment starts with `astilba:` followed by the installation's ID. At startup,
+management logs a warning with the number of names it can no longer clean up.
+
 ### The pinned list
 
 Astilba checks against its own copy of the list in

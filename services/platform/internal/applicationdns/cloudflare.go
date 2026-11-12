@@ -73,18 +73,34 @@ func (c *Cloudflare) request(ctx context.Context, method, path string, in, out a
 	return nil
 }
 
-// Reconcile only changes exact-name A/AAAA records bearing this installation's
-// marker. Listing first also recovers a successful mutation whose response was lost.
-func (c *Cloudflare) Reconcile(ctx context.Context, name, marker, ipv4, ipv6 string) (map[string]string, error) {
+// Removed is a provider record Astilba is about to delete. Deleting is told about each one
+// before its deletion is sent, and an error from it stops the deletion.
+type Removed struct{ ID, Type, Content string }
+type Deleting func(Removed) error
+
+// list returns the records at exactly name, refusing a response that names anything else.
+func (c *Cloudflare) list(ctx context.Context, name string) ([]record, error) {
 	var records []record
 	if e := c.request(ctx, "GET", "?name="+url.QueryEscape(name)+"&per_page=100", nil, &records); e != nil {
 		return nil, e
 	}
-	existing := map[string]record{}
 	for _, r := range records {
 		if r.Name != name || !cloudflareID.MatchString(r.ID) {
 			return nil, ErrProvider
 		}
+	}
+	return records, nil
+}
+
+// Reconcile only changes exact-name A/AAAA records bearing this installation's
+// marker. Listing first also recovers a successful mutation whose response was lost.
+func (c *Cloudflare) Reconcile(ctx context.Context, name, marker, ipv4, ipv6 string, deleting Deleting) (map[string]string, error) {
+	records, e := c.list(ctx, name)
+	if e != nil {
+		return nil, e
+	}
+	existing := map[string]record{}
+	for _, r := range records {
 		if r.Type == "CNAME" || r.Type == "NS" {
 			return nil, ErrOwnership
 		}
@@ -105,7 +121,7 @@ func (c *Cloudflare) Reconcile(ctx context.Context, name, marker, ipv4, ipv6 str
 		old := existing[kind]
 		if address == "" {
 			if old.ID != "" {
-				if e := c.request(ctx, "DELETE", "/"+old.ID, nil, nil); e != nil {
+				if e := c.delete(ctx, old, deleting); e != nil {
 					return nil, e
 				}
 			}
@@ -130,4 +146,32 @@ func (c *Cloudflare) Reconcile(ctx context.Context, name, marker, ipv4, ipv6 str
 		out[kind] = result.ID
 	}
 	return out, nil
+}
+
+func (c *Cloudflare) delete(ctx context.Context, r record, deleting Deleting) error {
+	if e := deleting(Removed{r.ID, r.Type, r.Content}); e != nil {
+		return e
+	}
+	return c.request(ctx, "DELETE", "/"+r.ID, nil, nil)
+}
+
+// Remove deletes the exact-name A/AAAA records that carry this installation's marker
+// and leaves every other record at that name alone. It never matches by name alone:
+// a record someone else created, or another installation's, survives. Run again after
+// a failure, it lists afresh, so a deletion whose response was lost is not repeated.
+// It returns nil only once none of the installation's records are left at the name.
+func (c *Cloudflare) Remove(ctx context.Context, name, marker string, deleting Deleting) error {
+	records, e := c.list(ctx, name)
+	if e != nil {
+		return e
+	}
+	for _, r := range records {
+		if r.Type != "A" && r.Type != "AAAA" || r.Comment != marker {
+			continue
+		}
+		if e := c.delete(ctx, r, deleting); e != nil {
+			return e
+		}
+	}
+	return nil
 }
