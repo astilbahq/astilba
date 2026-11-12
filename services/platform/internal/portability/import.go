@@ -362,7 +362,7 @@ func (s *Service) Import(ctx context.Context, p store.Principal, passphrase stri
 			return out, store.Normalize(e)
 		}
 	}
-	if e = q.BackfillPostgresMajors(ctx, archive.Workspace); e != nil {
+	if e = backfillPostgresMajors(ctx, q, archive.Workspace); e != nil {
 		return out, e
 	}
 	for id, raw := range visualPlans {

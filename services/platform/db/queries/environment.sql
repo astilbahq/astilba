@@ -61,7 +61,7 @@ WHERE workspace_id = @workspace_id AND id = @id RETURNING execution_generation;
 -- name: BackfillPostgresMajors :exec
 -- Records, for each in-use volume with none, the PostgreSQL major its environment's applied revision
 -- runs on it, as migration 00039 did for volumes that existed then. An archive from before version 7
--- records none.
+-- records none. Run BackfillUpgradeTargetMajors after it.
 UPDATE managed_volumes v SET postgres_major = substring(a->'source'->>'image' FROM '^postgres:([0-9]{1,3})[.@-]')
 FROM environments e
 JOIN specification_revisions r ON r.workspace_id = e.workspace_id AND r.environment_id = e.id AND r.id = e.applied_revision_id
@@ -69,3 +69,18 @@ CROSS JOIN LATERAL jsonb_array_elements(r.specification->'applications') a
 WHERE v.workspace_id = @workspace_id AND e.workspace_id = @workspace_id AND v.environment_id = e.id
  AND v.postgres_major IS NULL AND v.postgres_init_hash IS NOT NULL AND NOT v.deleted
  AND jsonb_typeof(a->'postgres') = 'object' AND a->'mounts'->0->>'volumeId' = v.id::text;
+
+-- name: BackfillUpgradeTargetMajors :exec
+-- Records PostgreSQL 18 on each supported upgrade's target volume with none, as migration 00039 did.
+-- Planning an upgrade records its target's major from archive version 7; every upgrade planned
+-- before then targeted PostgreSQL 18. It runs after BackfillPostgresMajors, so an applied revision
+-- decides a volume that both name.
+UPDATE managed_volumes v SET postgres_major = '18'
+FROM supported_upgrades u
+WHERE v.workspace_id = @workspace_id AND u.workspace_id = @workspace_id AND v.environment_id = u.environment_id
+ AND v.id::text = u.plan->>'targetVolumeId' AND v.postgres_major IS NULL AND NOT v.deleted;
+
+-- name: RecordUpgradeTargetMajor :exec
+-- Records the major a completed upgrade's target runs on its volume, where planning it recorded none.
+UPDATE managed_volumes SET postgres_major = @postgres_major
+WHERE workspace_id = @workspace_id AND environment_id = @environment_id AND id = @id AND postgres_major IS NULL AND NOT deleted;

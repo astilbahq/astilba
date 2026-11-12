@@ -17,6 +17,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/upgrade"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 func noActiveUpgrade(ctx context.Context, tx pgx.Tx, server uuid.UUID) error {
@@ -486,6 +487,16 @@ func (s *Service) saveUpgradeTarget(ctx context.Context, tx pgx.Tx, cmd upgrade.
 	}
 	if _, err = tx.Exec(ctx, "UPDATE environments SET draft_revision_id=$4 WHERE workspace_id=$1 AND id=$2 AND draft_revision_id=$3", ws, env, cmd.Plan.Source.RevisionID, target.RevisionID); err != nil {
 		return err
+	}
+	// The target now runs on its volume. One planned before volumes recorded their major has none.
+	for _, a := range target.Specification.Applications {
+		if a.ID == cmd.Plan.ResourceID && a.Source.Image != nil {
+			if major := domain.PostgresMajor(*a.Source.Image); major != "" {
+				if err = db.New(tx).RecordUpgradeTargetMajor(ctx, db.RecordUpgradeTargetMajorParams{PostgresMajor: pgtype.Text{String: major, Valid: true}, WorkspaceID: ws, EnvironmentID: env, ID: cmd.Plan.TargetVolumeID}); err != nil {
+					return err
+				}
+			}
+		}
 	}
 	return db.New(tx).DisableEnvironmentBackupPolicies(ctx, db.DisableEnvironmentBackupPoliciesParams{WorkspaceID: ws, EnvironmentID: env})
 }

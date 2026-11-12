@@ -31,6 +31,12 @@ JOIN specification_revisions r ON r.workspace_id = e.workspace_id AND r.environm
 CROSS JOIN LATERAL jsonb_array_elements(r.specification->'applications') a
 WHERE v.workspace_id = e.workspace_id AND v.environment_id = e.id AND v.postgres_init_hash IS NOT NULL AND NOT v.deleted
  AND jsonb_typeof(a->'postgres') = 'object' AND a->'mounts'->0->>'volumeId' = v.id::text;
+-- A supported upgrade's target volume is recorded when the upgrade is planned, before any applied
+-- revision mounts it. Every upgrade planned before this migration targeted PostgreSQL 18.
+UPDATE managed_volumes v SET postgres_major = '18'
+FROM supported_upgrades u
+WHERE v.workspace_id = u.workspace_id AND v.environment_id = u.environment_id
+ AND v.id::text = u.plan->>'targetVolumeId' AND v.postgres_major IS NULL AND NOT v.deleted;
 
 -- +goose Down
 ALTER TABLE managed_volumes DROP COLUMN postgres_major;

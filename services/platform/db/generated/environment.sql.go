@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const advanceDraft = `-- name: AdvanceDraft :one
@@ -124,9 +125,25 @@ WHERE v.workspace_id = $1 AND e.workspace_id = $1 AND v.environment_id = e.id
 
 // Records, for each in-use volume with none, the PostgreSQL major its environment's applied revision
 // runs on it, as migration 00039 did for volumes that existed then. An archive from before version 7
-// records none.
+// records none. Run BackfillUpgradeTargetMajors after it.
 func (q *Queries) BackfillPostgresMajors(ctx context.Context, workspaceID uuid.UUID) error {
 	_, err := q.db.Exec(ctx, backfillPostgresMajors, workspaceID)
+	return err
+}
+
+const backfillUpgradeTargetMajors = `-- name: BackfillUpgradeTargetMajors :exec
+UPDATE managed_volumes v SET postgres_major = '18'
+FROM supported_upgrades u
+WHERE v.workspace_id = $1 AND u.workspace_id = $1 AND v.environment_id = u.environment_id
+ AND v.id::text = u.plan->>'targetVolumeId' AND v.postgres_major IS NULL AND NOT v.deleted
+`
+
+// Records PostgreSQL 18 on each supported upgrade's target volume with none, as migration 00039 did.
+// Planning an upgrade records its target's major from archive version 7; every upgrade planned
+// before then targeted PostgreSQL 18. It runs after BackfillPostgresMajors, so an applied revision
+// decides a volume that both name.
+func (q *Queries) BackfillUpgradeTargetMajors(ctx context.Context, workspaceID uuid.UUID) error {
+	_, err := q.db.Exec(ctx, backfillUpgradeTargetMajors, workspaceID)
 	return err
 }
 
@@ -702,6 +719,29 @@ func (q *Queries) PutLayout(ctx context.Context, arg PutLayoutParams) (Environme
 		&i.UpdatedAt,
 	)
 	return i, err
+}
+
+const recordUpgradeTargetMajor = `-- name: RecordUpgradeTargetMajor :exec
+UPDATE managed_volumes SET postgres_major = $1
+WHERE workspace_id = $2 AND environment_id = $3 AND id = $4 AND postgres_major IS NULL AND NOT deleted
+`
+
+type RecordUpgradeTargetMajorParams struct {
+	PostgresMajor pgtype.Text `json:"postgres_major"`
+	WorkspaceID   uuid.UUID   `json:"workspace_id"`
+	EnvironmentID uuid.UUID   `json:"environment_id"`
+	ID            uuid.UUID   `json:"id"`
+}
+
+// Records the major a completed upgrade's target runs on its volume, where planning it recorded none.
+func (q *Queries) RecordUpgradeTargetMajor(ctx context.Context, arg RecordUpgradeTargetMajorParams) error {
+	_, err := q.db.Exec(ctx, recordUpgradeTargetMajor,
+		arg.PostgresMajor,
+		arg.WorkspaceID,
+		arg.EnvironmentID,
+		arg.ID,
+	)
+	return err
 }
 
 const rewrapSecretVersion = `-- name: RewrapSecretVersion :exec

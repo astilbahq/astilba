@@ -13,6 +13,7 @@ import (
 	"time"
 
 	dbmigrate "github.com/astilbahq/astilba/services/platform/db"
+	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/agent"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/backup"
@@ -200,7 +201,14 @@ func TestUpgradeApprovalRecoveryAndTenantBoundary(t *testing.T) {
 	rawStatus, _ := stablejson.Marshal(status)
 	emptyObservation, _ := stablejson.Marshal(deployment.Observation{ObservedAt: time.Now(), Resources: []deployment.Resource{}, StateHash: strings.Repeat("d", 64)})
 	agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/report", token, api.AgentReport{Id: completed.Id, Generation: completed.Generation, PlanHash: completed.PlanHash, Sequence: 1, State: "succeeded", Steps: []api.ExecutionStep{}, Upgrade: (*jsontext.Value)(&rawStatus), Observation: (*jsontext.Value)(&emptyObservation)}, 400, nil)
+	// As for an upgrade planned before volumes recorded their PostgreSQL major.
+	if _, err := f.st.Pool.Exec(context.Background(), "UPDATE managed_volumes SET postgres_major=NULL WHERE id=$1", view.Plan.TargetVolumeID); err != nil {
+		t.Fatal(err)
+	}
 	report(completed, "succeeded", &deployment.Observation{ObservedAt: time.Now(), Applied: true, Resources: []deployment.Resource{{ID: pg, Kind: "service", State: "healthy", Image: domain.PostgresImage}}, StateHash: strings.Repeat("d", 64)}, &status)
+	if major := volumeMajor(t, f, view.Plan.TargetVolumeID); major == nil || *major != domain.PostgresMajor(domain.PostgresImage) {
+		t.Fatal("the completed upgrade did not record its target's PostgreSQL major", major)
+	}
 	b.call("GET", path+"/draft", nil, 200, &draft)
 	var final domain.Specification
 	if json.Unmarshal(draft.Specification, &final) != nil || draft.Id != view.Plan.TargetRevisionID || final.Applications[0].Mounts[0].VolumeID != view.Plan.TargetVolumeID {
@@ -495,6 +503,62 @@ func TestUpgradeEndedWithoutStatusSettlesPlan(t *testing.T) {
 }
 
 // Plans stranded before these were settled stop blocking their servers on upgrade.
+func volumeMajor(t *testing.T, f *fixture, volume uuid.UUID) *string {
+	t.Helper()
+	var major *string
+	if err := f.st.Pool.QueryRow(context.Background(), "SELECT postgres_major FROM managed_volumes WHERE id=$1", volume).Scan(&major); err != nil {
+		t.Fatal(err)
+	}
+	return major
+}
+
+// An upgrade planned before volumes recorded their PostgreSQL major has a target volume that no
+// applied revision mounts yet. Migration 00039 and the backfill after an older archive's import or
+// recovery record the major its target runs.
+func TestUpgradeTargetMajorBackfill(t *testing.T) {
+	f := setup(t)
+	h := newUpgradeHost(t, f)
+	view, _ := h.plan(t)
+	ctx := context.Background()
+	if major := volumeMajor(t, f, view.Plan.TargetVolumeID); major == nil || *major != domain.PostgresMajor(domain.PostgresImage) {
+		t.Fatal("planning the upgrade did not record its target's major", major)
+	}
+	forget := func() {
+		t.Helper()
+		if _, err := f.st.Pool.Exec(ctx, "UPDATE managed_volumes SET postgres_major=NULL WHERE id=$1", view.Plan.TargetVolumeID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	forget()
+	if err := db.New(f.st.Pool).BackfillUpgradeTargetMajors(ctx, h.ws); err != nil {
+		t.Fatal(err)
+	}
+	if major := volumeMajor(t, f, view.Plan.TargetVolumeID); major == nil || *major != "18" {
+		t.Fatal("the archive backfill missed an upgrade's target", major)
+	}
+	conn, err := sql.Open("pgx", f.st.Pool.Config().ConnString())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	provider, err := goose.NewProvider(goose.DialectPostgres, conn, os.DirFS("../../db/migrations"), goose.WithDisableGlobalRegistry(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = provider.ApplyVersion(ctx, 39, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = provider.ApplyVersion(ctx, 39, true); err != nil {
+		t.Fatal(err)
+	}
+	if major := volumeMajor(t, f, view.Plan.TargetVolumeID); major == nil || *major != "18" {
+		t.Fatal("migration 00039 missed an upgrade's target", major)
+	}
+	if err = dbmigrate.Check(ctx, f.st.Pool.Config().ConnString()); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestStrandedUpgradeMigration(t *testing.T) {
 	f := setup(t)
 	h := newUpgradeHost(t, f)
