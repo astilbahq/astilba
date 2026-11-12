@@ -479,7 +479,8 @@ func (s *Server) secret(w http.ResponseWriter, r *http.Request, ws, pid, env, id
 			return nil, e
 		}
 		sealed = true
-		v, e := q.InsertSecretVersion(ctx, db.InsertSecretVersionParams{WorkspaceID: ws, SecretID: id, ID: versionID, EncryptedValue: cipher, AuthorID: principal(ctx).Account.ID})
+		plain, encoded := store.SecretLengths([]byte(value))
+		v, e := q.InsertSecretVersion(ctx, db.InsertSecretVersionParams{WorkspaceID: ws, SecretID: id, ID: versionID, EncryptedValue: cipher, AuthorID: principal(ctx).Account.ID, PlaintextBytes: plain, JsonBytes: encoded})
 		if e != nil {
 			return nil, e
 		}

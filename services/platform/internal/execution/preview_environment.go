@@ -9,6 +9,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/randtoken"
 	"github.com/astilbahq/astilba/services/platform/internal/secretbroker"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
+	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -79,7 +80,8 @@ func (s *Service) createPreviewEnvironment(ctx context.Context, tx pgx.Tx, copyK
 		if err != nil {
 			return err
 		}
-		if _, err = q.InsertSecretVersion(ctx, db.InsertSecretVersionParams{WorkspaceID: p.Workspace, SecretID: sid, ID: id, EncryptedValue: cipher, AuthorID: p.Actor}); err != nil {
+		plain, encoded := store.SecretLengths([]byte(value))
+		if _, err = q.InsertSecretVersion(ctx, db.InsertSecretVersionParams{WorkspaceID: p.Workspace, SecretID: sid, ID: id, EncryptedValue: cipher, AuthorID: p.Actor, PlaintextBytes: plain, JsonBytes: encoded}); err != nil {
 			return err
 		}
 		copyKeys.use()

@@ -84,7 +84,8 @@ func (s *Service) CloneVisual(ctx context.Context, p store.Principal, ws, pid, s
 				return uuid.Nil, err
 			}
 			used = true
-			_, err = q.InsertSecretVersion(ctx, db.InsertSecretVersionParams{WorkspaceID: ws, SecretID: sid, ID: id, EncryptedValue: encrypted, AuthorID: p.Account.ID})
+			plain, encoded := store.SecretLengths([]byte(value))
+			_, err = q.InsertSecretVersion(ctx, db.InsertSecretVersionParams{WorkspaceID: ws, SecretID: sid, ID: id, EncryptedValue: encrypted, AuthorID: p.Account.ID, PlaintextBytes: plain, JsonBytes: encoded})
 			return id, err
 		}
 		if in.CopySecrets {

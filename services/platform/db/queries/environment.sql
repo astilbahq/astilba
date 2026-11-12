@@ -41,7 +41,8 @@ SELECT * FROM secrets WHERE workspace_id=$1 AND environment_id=$2 AND id=$3;
 -- name: InsertSecret :exec
 INSERT INTO secrets(workspace_id,environment_id,id,name) VALUES($1,$2,$3,$4);
 -- name: InsertSecretVersion :one
-INSERT INTO secret_versions(workspace_id,secret_id,id,encrypted_value,author_id) VALUES($1,$2,$3,$4,$5) RETURNING id,created_at;
+INSERT INTO secret_versions(workspace_id,secret_id,id,encrypted_value,author_id,plaintext_bytes,json_bytes)
+VALUES(@workspace_id,@secret_id,@id,@encrypted_value,@author_id,sqlc.narg(plaintext_bytes)::integer,sqlc.narg(json_bytes)::integer) RETURNING id,created_at;
 -- name: GetSecretVersion :one
 SELECT v.* FROM secret_versions v JOIN secrets s ON s.workspace_id=v.workspace_id AND s.id=v.secret_id
 WHERE v.workspace_id=$1 AND s.environment_id=$2 AND v.id=$3;
@@ -71,3 +72,13 @@ SELECT host_review FROM visual_requests WHERE workspace_id=$1 AND id=$2;
 -- Takes the environment's row lock that writing a revision or admitting a pipeline takes first, so
 -- a transaction that then locks a build target keeps their order and can't deadlock with them.
 SELECT id FROM environments WHERE workspace_id = @workspace_id AND id = @id FOR NO KEY UPDATE;
+
+-- name: UnmeasuredSecretVersions :many
+-- unscoped: the job that measures values goes through every workspace's, a batch at a time.
+SELECT workspace_id,id,encrypted_value FROM secret_versions
+WHERE (plaintext_bytes IS NULL OR json_bytes IS NULL) AND (workspace_id,id) > (@after_workspace::uuid,@after_id::uuid)
+ORDER BY workspace_id,id LIMIT @batch;
+
+-- name: MeasureSecretVersion :exec
+UPDATE secret_versions SET plaintext_bytes = @plaintext_bytes::integer, json_bytes = @json_bytes::integer
+WHERE workspace_id = @workspace_id AND id = @id;

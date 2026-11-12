@@ -780,12 +780,14 @@ type SecretRelease struct {
 }
 
 type SecretVersion struct {
-	WorkspaceID    uuid.UUID `json:"workspace_id"`
-	SecretID       uuid.UUID `json:"secret_id"`
-	ID             uuid.UUID `json:"id"`
-	EncryptedValue []byte    `json:"encrypted_value"`
-	AuthorID       uuid.UUID `json:"author_id"`
-	CreatedAt      time.Time `json:"created_at"`
+	WorkspaceID    uuid.UUID   `json:"workspace_id"`
+	SecretID       uuid.UUID   `json:"secret_id"`
+	ID             uuid.UUID   `json:"id"`
+	EncryptedValue []byte      `json:"encrypted_value"`
+	AuthorID       uuid.UUID   `json:"author_id"`
+	CreatedAt      time.Time   `json:"created_at"`
+	PlaintextBytes pgtype.Int4 `json:"plaintext_bytes"`
+	JsonBytes      pgtype.Int4 `json:"json_bytes"`
 }
 
 type Server struct {

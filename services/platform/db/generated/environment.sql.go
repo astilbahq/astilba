@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const advanceDraft = `-- name: AdvanceDraft :one
@@ -302,7 +303,7 @@ func (q *Queries) GetSecret(ctx context.Context, arg GetSecretParams) (Secret, e
 }
 
 const getSecretVersion = `-- name: GetSecretVersion :one
-SELECT v.workspace_id, v.secret_id, v.id, v.encrypted_value, v.author_id, v.created_at FROM secret_versions v JOIN secrets s ON s.workspace_id=v.workspace_id AND s.id=v.secret_id
+SELECT v.workspace_id, v.secret_id, v.id, v.encrypted_value, v.author_id, v.created_at, v.plaintext_bytes, v.json_bytes FROM secret_versions v JOIN secrets s ON s.workspace_id=v.workspace_id AND s.id=v.secret_id
 WHERE v.workspace_id=$1 AND s.environment_id=$2 AND v.id=$3
 `
 
@@ -322,6 +323,8 @@ func (q *Queries) GetSecretVersion(ctx context.Context, arg GetSecretVersionPara
 		&i.EncryptedValue,
 		&i.AuthorID,
 		&i.CreatedAt,
+		&i.PlaintextBytes,
+		&i.JsonBytes,
 	)
 	return i, err
 }
@@ -461,15 +464,18 @@ func (q *Queries) InsertSecret(ctx context.Context, arg InsertSecretParams) erro
 }
 
 const insertSecretVersion = `-- name: InsertSecretVersion :one
-INSERT INTO secret_versions(workspace_id,secret_id,id,encrypted_value,author_id) VALUES($1,$2,$3,$4,$5) RETURNING id,created_at
+INSERT INTO secret_versions(workspace_id,secret_id,id,encrypted_value,author_id,plaintext_bytes,json_bytes)
+VALUES($1,$2,$3,$4,$5,$6::integer,$7::integer) RETURNING id,created_at
 `
 
 type InsertSecretVersionParams struct {
-	WorkspaceID    uuid.UUID `json:"workspace_id"`
-	SecretID       uuid.UUID `json:"secret_id"`
-	ID             uuid.UUID `json:"id"`
-	EncryptedValue []byte    `json:"encrypted_value"`
-	AuthorID       uuid.UUID `json:"author_id"`
+	WorkspaceID    uuid.UUID   `json:"workspace_id"`
+	SecretID       uuid.UUID   `json:"secret_id"`
+	ID             uuid.UUID   `json:"id"`
+	EncryptedValue []byte      `json:"encrypted_value"`
+	AuthorID       uuid.UUID   `json:"author_id"`
+	PlaintextBytes pgtype.Int4 `json:"plaintext_bytes"`
+	JsonBytes      pgtype.Int4 `json:"json_bytes"`
 }
 
 type InsertSecretVersionRow struct {
@@ -484,6 +490,8 @@ func (q *Queries) InsertSecretVersion(ctx context.Context, arg InsertSecretVersi
 		arg.ID,
 		arg.EncryptedValue,
 		arg.AuthorID,
+		arg.PlaintextBytes,
+		arg.JsonBytes,
 	)
 	var i InsertSecretVersionRow
 	err := row.Scan(&i.ID, &i.CreatedAt)
@@ -661,6 +669,28 @@ func (q *Queries) LockEnvironmentForUpdate(ctx context.Context, arg LockEnvironm
 	return id, err
 }
 
+const measureSecretVersion = `-- name: MeasureSecretVersion :exec
+UPDATE secret_versions SET plaintext_bytes = $1::integer, json_bytes = $2::integer
+WHERE workspace_id = $3 AND id = $4
+`
+
+type MeasureSecretVersionParams struct {
+	PlaintextBytes int32     `json:"plaintext_bytes"`
+	JsonBytes      int32     `json:"json_bytes"`
+	WorkspaceID    uuid.UUID `json:"workspace_id"`
+	ID             uuid.UUID `json:"id"`
+}
+
+func (q *Queries) MeasureSecretVersion(ctx context.Context, arg MeasureSecretVersionParams) error {
+	_, err := q.db.Exec(ctx, measureSecretVersion,
+		arg.PlaintextBytes,
+		arg.JsonBytes,
+		arg.WorkspaceID,
+		arg.ID,
+	)
+	return err
+}
+
 const putLayout = `-- name: PutLayout :one
 INSERT INTO environment_layouts(workspace_id,environment_id,positions) VALUES($1,$2,$3)
 ON CONFLICT(workspace_id,environment_id) DO UPDATE SET positions=EXCLUDED.positions,updated_at=now() RETURNING workspace_id, environment_id, positions, updated_at
@@ -724,6 +754,45 @@ func (q *Queries) SpecificationTextSize(ctx context.Context, specification []byt
 	var size int32
 	err := row.Scan(&size)
 	return size, err
+}
+
+const unmeasuredSecretVersions = `-- name: UnmeasuredSecretVersions :many
+SELECT workspace_id,id,encrypted_value FROM secret_versions
+WHERE (plaintext_bytes IS NULL OR json_bytes IS NULL) AND (workspace_id,id) > ($1::uuid,$2::uuid)
+ORDER BY workspace_id,id LIMIT $3
+`
+
+type UnmeasuredSecretVersionsParams struct {
+	AfterWorkspace uuid.UUID `json:"after_workspace"`
+	AfterID        uuid.UUID `json:"after_id"`
+	Batch          int32     `json:"batch"`
+}
+
+type UnmeasuredSecretVersionsRow struct {
+	WorkspaceID    uuid.UUID `json:"workspace_id"`
+	ID             uuid.UUID `json:"id"`
+	EncryptedValue []byte    `json:"encrypted_value"`
+}
+
+// unscoped: the job that measures values goes through every workspace's, a batch at a time.
+func (q *Queries) UnmeasuredSecretVersions(ctx context.Context, arg UnmeasuredSecretVersionsParams) ([]UnmeasuredSecretVersionsRow, error) {
+	rows, err := q.db.Query(ctx, unmeasuredSecretVersions, arg.AfterWorkspace, arg.AfterID, arg.Batch)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []UnmeasuredSecretVersionsRow{}
+	for rows.Next() {
+		var i UnmeasuredSecretVersionsRow
+		if err := rows.Scan(&i.WorkspaceID, &i.ID, &i.EncryptedValue); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const visualPlanHostReview = `-- name: VisualPlanHostReview :one
