@@ -7,11 +7,14 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
+	"github.com/astilbahq/astilba/services/platform/internal/backup"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/execution"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
+	"github.com/astilbahq/astilba/services/platform/internal/upgrade"
 	"github.com/google/uuid"
 	bolt "go.etcd.io/bbolt"
 )
@@ -88,5 +91,38 @@ func TestRetirementForgetsTheEnvironmentsFinishedRecords(t *testing.T) {
 		return j.get(tx, "generations", "forgotten:"+plan.EnvironmentID.String(), &ceiling)
 	}); err != nil || ceiling < deployed.Generation {
 		t.Fatal("the removed deployment is not below the forgotten ceiling", ceiling, err)
+	}
+}
+
+// Retirement drops the credentials the environment's ended upgrades kept, even while the host's own
+// clock says their retention has not ended: management has already waited for it. An upgrade that
+// is still running and another environment's keep theirs.
+func TestRetirementDropsEndedUpgradeCredentials(t *testing.T) {
+	j, plan := testVisualJournal(t)
+	saved := func(environment uuid.UUID, phase string) uuid.UUID {
+		t.Helper()
+		s := upgradeState{Command: upgrade.Command{Plan: upgrade.Plan{ID: uuid.New()}, Installation: backup.Installation{Policy: backup.Policy{ServerID: plan.ServerID, EnvironmentID: environment}, Access: backup.Access{Password: "retired-repository-password"}}, Secrets: map[string]string{uuid.NewString(): "retired-secret-value"}},
+			Status: upgrade.Status{Phase: phase, KeepUntil: time.Now().Add(24 * time.Hour)}}
+		if err := j.saveUpgrade(s); err != nil {
+			t.Fatal(err)
+		}
+		return s.Command.Plan.ID
+	}
+	ended, running, other := saved(plan.EnvironmentID, "complete"), saved(plan.EnvironmentID, "running"), saved(uuid.New(), "complete")
+	retire := visualCommand(plan, "retire", 2)
+	if _, err := j.Accept(retire); err != nil {
+		t.Fatal(err)
+	}
+	if err := j.retireUnit(retire); err != nil {
+		t.Fatal(err)
+	}
+	for id, kept := range map[uuid.UUID]bool{ended: false, running: true, other: true} {
+		s, err := j.upgrade(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if held := len(s.Command.Secrets) > 0 || s.Command.Installation.Access != (backup.Access{}); held != kept {
+			t.Fatalf("upgrade %s in phase %s kept its credentials: %t, want %t", id, s.Status.Phase, held, kept)
+		}
 	}
 }

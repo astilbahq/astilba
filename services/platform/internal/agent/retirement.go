@@ -6,7 +6,6 @@ import (
 	"encoding/json/v2"
 	"errors"
 	"os"
-	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/backup"
@@ -251,8 +250,9 @@ func (j *Journal) retireRecords(tx *bolt.Tx, c api.ExecutionCommand) error {
 	return nil
 }
 
-// retireUpgrades drops the credentials an ended database upgrade of the environment kept. Retirement
-// waits for an upgrade's retention to end, so none of them can be returned to.
+// retireUpgrades drops the credentials an ended database upgrade of the environment kept. Management
+// refuses retirement until an upgrade's retention has ended by its own clock, so none of them can be
+// returned to. The host's clock is not asked again: one that lags would keep them for good.
 func (j *Journal) retireUpgrades(tx *bolt.Tx, c api.ExecutionCommand) error {
 	ended := map[string]upgradeState{}
 	if err := tx.Bucket([]byte("upgrades")).ForEach(func(k, _ []byte) error {
@@ -261,7 +261,7 @@ func (j *Journal) retireUpgrades(tx *bolt.Tx, c api.ExecutionCommand) error {
 			return err
 		}
 		policy := s.Command.Installation.Policy
-		if policy.ServerID == c.ServerId && policy.EnvironmentID == c.EnvironmentId && !s.Status.Active() && time.Now().After(s.Status.KeepUntil) &&
+		if policy.ServerID == c.ServerId && policy.EnvironmentID == c.EnvironmentId && !s.Status.Active() &&
 			(len(s.Command.Secrets) > 0 || s.Command.Installation.Access != (backup.Access{})) {
 			s.Command.Secrets, s.Command.Installation.Access = nil, backup.Access{}
 			ended[string(k)] = s
