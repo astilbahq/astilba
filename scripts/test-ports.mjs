@@ -6,7 +6,7 @@
 // Blocks sit below the default ephemeral ranges (32768 on Linux, 49152 on macOS), so an
 // outgoing connection never takes a port between the check here and a server's bind.
 import { createHash } from "node:crypto";
-import { mkdirSync, rmSync, statSync } from "node:fs";
+import { mkdirSync, statSync } from "node:fs";
 import { connect, createServer } from "node:net";
 import { join, resolve } from "node:path";
 
@@ -73,10 +73,15 @@ export async function reservePortBlock({
 // holdCheckout refuses a second run of a suite in one checkout, where both would build
 // into the same directories; separate checkouts each have their own. The lock is a Unix
 // socket this process listens on, so the kernel releases it with the process, however
-// it ends, and a socket file left by a killed run answers no one and is taken over.
-// It returns a function that releases the lock.
+// it ends. A killed run leaves its socket file, which answers no one; the next run
+// moves on to the next numbered path rather than removing it, because removing a path
+// could remove the socket another run has just made there. Binding is atomic, so of
+// runs starting together only one takes each path. It returns a release function.
 export async function holdCheckout(checkout, suite) {
-  const key = createHash("sha256").update(resolve(checkout)).digest("hex");
+  const key = createHash("sha256")
+    .update(resolve(checkout))
+    .digest("hex")
+    .slice(0, 16);
   // A socket path must stay under about 100 bytes, which TMPDIR need not, so the lock
   // lives in a directory of this user's under /tmp, as tmux's do.
   const directory = `/tmp/astilba-${process.getuid()}`;
@@ -84,8 +89,8 @@ export async function holdCheckout(checkout, suite) {
   const owner = statSync(directory);
   if (owner.uid !== process.getuid() || (owner.mode & 0o077) !== 0)
     throw new Error(`${directory} must belong to this user alone`);
-  const path = join(directory, `suite-${key.slice(0, 16)}.sock`);
-  for (let attempt = 0; attempt < 2; attempt++) {
+  for (let n = 0; n < 100; n++) {
+    const path = join(directory, `suite-${key}-${n}.sock`);
     const lock = createServer((connection) => connection.destroy());
     const taken = await new Promise((resolve, reject) => {
       lock.once("error", (error) =>
@@ -101,10 +106,9 @@ export async function holdCheckout(checkout, suite) {
       throw new Error(
         `${suite} is already running in this checkout; wait for it, or run the other from a separate checkout`,
       );
-    rmSync(path, { force: true });
   }
   throw new Error(
-    `${suite} is already starting in this checkout; wait for it, or run the other from a separate checkout`,
+    `Killed runs left 100 locks in ${directory}; remove the suite-${key}-* files there when no suite is running`,
   );
 }
 
