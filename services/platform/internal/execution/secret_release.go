@@ -18,6 +18,9 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+// claimTimeout bounds a release's claim, which runs on after its poll has ended.
+const claimTimeout = 5 * time.Second
+
 const (
 	// releaseLease is how long a release waits for its acknowledgement before it is made
 	// again, as a response that was lost would need. It matches the poll's own lease.
@@ -130,7 +133,16 @@ func (s *Service) releaseValues(ctx context.Context, a Identity, key db.SecretRe
 		return sendCommand, nil
 	}
 	digest := keys.digest(c.Id, key.DispatchEpoch)
-	claimed, err := s.claimRelease(ctx, a, key, digest)
+	// A poll that has ended claims nothing: its response could not leave.
+	if err := ctx.Err(); err != nil {
+		return waitForRelease, err
+	}
+	// A poll that ends while the claim commits would not know whether it did, and a release
+	// committed but not returned waits out its lease. So a claim once started finishes, briefly,
+	// whatever becomes of the poll, and the poll then returns what it claimed.
+	claimCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), claimTimeout)
+	defer cancel()
+	claimed, err := s.claimRelease(claimCtx, a, key, digest)
 	if err != nil || !claimed {
 		outcome = secretbroker.Refused
 		return waitForRelease, err
