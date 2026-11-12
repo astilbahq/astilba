@@ -62,8 +62,8 @@ func (s *sessionStore) DeleteCtx(ctx context.Context, token string) error {
 // endLineage ends a logged-out session together with any token that has renewed it since
 // this request loaded it, such as a password change from another tab. The lock orders this
 // with a renewal of the lineage: one that committed first has its new token deleted here,
-// and one that comes after finds its old token gone and refuses. A token that a later sign-in
-// issued starts its own lineage, so it stays signed in.
+// and one that comes after finds its old token gone and refuses. A later sign-in stays signed
+// in: it starts its own lineage, or completes a pending one after this delete has run.
 func endLineage(ctx context.Context, st *store.Store, lineage uuid.UUID) error {
 	return st.Transaction(ctx, func(q *db.Queries) error {
 		if err := q.LockSessionLineage(ctx, lineage); err != nil {
@@ -147,7 +147,7 @@ func (s *sessionStore) CommitCtx(ctx context.Context, token string, data []byte,
 		// A new sign-in starts a lineage of its own, even in a browser that had a session,
 		// unless it completes the sign-in that session began.
 		lineage := uuid.New()
-		if loaded.continueLineage && loaded.lineage != uuid.Nil {
+		if loaded.continueLineage {
 			lineage = loaded.lineage
 		}
 		if err := s.queries.InsertSession(ctx, db.InsertSessionParams{Token: token, Data: data, Expiry: expiry, Lineage: lineage}); err != nil {
