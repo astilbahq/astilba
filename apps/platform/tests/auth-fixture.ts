@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { expect } from "@playwright/test";
+import { fixtureInfo } from "./fixtures/ports";
 
 export async function resetLinkFixture() {
   const accountId = randomUUID();
@@ -42,15 +43,7 @@ export async function invitationLinkFixture(
 
 export async function authFixtureSQL(statement: string) {
   const fixture: { host: string; container: string; owner: string } =
-    JSON.parse(
-      await readFile(
-        new URL(
-          "../../../.artifacts/p8/browser/hosted-fixture.json",
-          import.meta.url,
-        ),
-        "utf8",
-      ),
-    );
+    JSON.parse(await readFile(fixtureInfo, "utf8"));
   const ownership = execFileSync(
     "docker",
     [
