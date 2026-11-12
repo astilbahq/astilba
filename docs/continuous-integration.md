@@ -383,8 +383,10 @@ match its digest is reported as a check that failed.
 
 Much of what the report finds waits on upstream, so closing its issue accepts what it
 lists. A later run opens a new issue only for something the closed one did not have:
-a new advisory, a new release, or the same advisory in a newly pinned digest. Say why
-in a comment before closing. Locally, the report needs Docker through `DOCKER_HOST`
+a new advisory, a new release, or the same advisory in a newly pinned digest. A problem
+accepted and then gone is new again if it returns, and a check that could not run is
+never accepted, so a broken report opens a new issue each day until it is fixed. Say
+why in a comment before closing. Locally, the report needs Docker through `DOCKER_HOST`
 and the network: `GITHUB_TOKEN="$(gh auth token)" make report-pins`. It writes nothing
 to GitHub.
 
@@ -409,9 +411,11 @@ issue.
 tools need attention`. A failure opens it. Each later run replaces the body with what is
 wrong that day, which notifies nobody, and comments with only the problems that are new.
 Each problem has a key that leaves out the day's details, kept in the body, so a problem
-already reported stays quiet. A job that failed without a report, timed out or was
-cancelled is itself a problem. A passing job closes the issue and clears its keys, and
-a skipped one leaves it as it is. Closing the dependency scan's issue by hand accepts
+already reported stays quiet. The comment goes before the body changes, so one that
+fails is sent again the next day. A job that failed without a report, timed out or was
+cancelled, or a check that could not run, is itself a problem; the earlier keys stay
+with it, so what that run could not see is not announced again when it is seen. A
+passing job closes the issue and clears its keys, and a skipped one leaves it as it is. Closing the dependency scan's issue by hand accepts
 nothing: the next failing run opens another, because the same failure also stops pull
 requests. The lane budget guard keeps its issue the same way. `make check-ci` seeds a
 failure offline and follows its issue through a repeat, a new problem and recovery.

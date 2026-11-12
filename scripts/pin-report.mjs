@@ -13,6 +13,7 @@ import { promisify } from "node:util";
 import {
   download,
   FetchFailure,
+  outlastOutage,
   pullImages,
   runLogged,
   withFetchAttempts,
@@ -47,7 +48,8 @@ export const sections = {
 
 // One finding per advisory group and package in OSV Scanner's report on an image.
 // The fixed version comes from the advisory's range for the package's own ecosystem,
-// such as Alpine:v3.23, so another release branch's fix is not shown.
+// such as Alpine:v3.23, so another release branch's fix is not shown. The CVE may be
+// an alias, or inside a distribution's id such as ALPINE-CVE-2026-1.
 export function imageFindings(report) {
   return (report.results ?? [])
     .flatMap((result) => result.packages ?? [])
@@ -61,17 +63,18 @@ export function imageFindings(report) {
             (entry) => entry.package?.name === pkg.name,
           ),
         );
-        const own = affected.filter(
-          (entry) => entry.package.ecosystem === pkg.ecosystem,
-        );
-        const fixed = (own.length ? own : affected)
+        const fixed = affected
+          .filter((entry) => entry.package.ecosystem === pkg.ecosystem)
           .flatMap((entry) => entry.ranges ?? [])
           .flatMap((range) => range.events ?? [])
           .flatMap((event) => event.fixed ?? []);
         const ids = [...new Set([...group.ids, ...(group.aliases ?? [])])];
         return {
           id: group.ids[0],
-          cve: ids.find((id) => /^CVE-\d+-\d+$/.test(id)) ?? "",
+          cve:
+            ids
+              .map((id) => /(?:^|-)(CVE-\d+-\d+)$/.exec(id)?.[1])
+              .find(Boolean) ?? "",
           ids,
           package: pkg.name,
           ecosystem: pkg.ecosystem ?? "",
@@ -100,9 +103,9 @@ const band = (finding) =>
         : "lower";
 
 function describe(finding) {
-  const label = [finding.cve, finding.cve === finding.id ? "" : finding.id]
-    .filter(Boolean)
-    .join(" ");
+  const label = finding.id.endsWith(finding.cve)
+    ? finding.id
+    : `${finding.cve} ${finding.id}`;
   return [
     `${label} in ${finding.package} ${finding.version}`,
     finding.fixed ? `, fixed in ${finding.fixed}` : ", no fix listed",
@@ -150,7 +153,9 @@ export function assemble({ images, tools }) {
   const summary = [];
   const info = [];
   const problem = (section, key, text, summarized = false) => {
-    problems.push({ section, key, text });
+    // A check that did not run leaves what it would have found unknown.
+    const check = section === sections.problems;
+    problems.push({ section, key, text, ...(check && { check }) });
     if (!summarized) summary.push({ section, text });
   };
   for (const pin of images) {
@@ -158,19 +163,19 @@ export function assemble({ images, tools }) {
     for (const error of pin.errors)
       problem(
         sections.problems,
-        `error|${name}|${pin.digest}|${error.step}`,
+        `image-error|${pin.image}|${pin.digest}|${error.step}`,
         `${name}: ${error.step} failed: ${error.message}`,
       );
     if (pin.moved)
       problem(
         sections.images,
-        `moved|${name}|${pin.moved}`,
+        `image-moved|${pin.image}|${pin.digest}|${pin.moved}`,
         `${name} was rebuilt upstream: the tag now points to ${short(pin.moved)}, pinned at ${short(pin.digest)} (${where(pin)})`,
       );
     if (pin.newer)
       problem(
         sections.images,
-        `newer|${pin.image}|${pin.tag}|${pin.newer}`,
+        `image-newer|${pin.image}|${pin.digest}|${pin.newer}`,
         `${name} has a newer release in its line: ${pin.newer} (${where(pin)})`,
       );
     const findings = mergeScans(pin.scans);
@@ -182,7 +187,7 @@ export function assemble({ images, tools }) {
     for (const finding of act)
       problem(
         sections.vulnerabilities,
-        `vulnerable|${pin.image}|${pin.digest}|${finding.id}|${finding.package}|${finding.version}`,
+        `image-vulnerable|${pin.image}|${pin.digest}|${finding.id}|${finding.package}|${finding.version}`,
         `${label} (${[...finding.platforms].join(", ")}): ${describe(finding)}${finding.summary ? `: ${finding.summary}` : ""}`,
         true,
       );
@@ -217,13 +222,13 @@ export function assemble({ images, tools }) {
     if (tool.error)
       problem(
         sections.problems,
-        `error|${tool.name}`,
+        `tool-error|${tool.name}|${tool.version}`,
         `${tool.name}: ${tool.error}`,
       );
     else if (tool.newer)
       problem(
         sections.tools,
-        `newer|${tool.name}|${tool.version}|${tool.newer}`,
+        `tool-newer|${tool.name}|${tool.version}|${tool.newer}`,
         `${tool.name} ${tool.version} has a newer release in its line: ${tool.newer}${tool.published ? `, published ${tool.published.slice(0, 10)}` : ""} (${tool.paths.join(", ")})`,
       );
   }
@@ -231,30 +236,34 @@ export function assemble({ images, tools }) {
 }
 
 async function scanImage(scanner, pin, { platform, digest }, directory) {
-  const ref = `${pin.registry === "docker.io" ? "docker.io" : pin.registry}/${pin.repository}@${digest}`;
+  const ref = `${pin.registry}/${pin.repository}@${digest}`;
   const archive = join(directory, "image.tar");
   try {
     await pullImages([ref]);
     await runLogged("docker", ["save", "--output", archive, ref]);
     // Exit status 1 means findings; anything else is a scan that did not complete.
-    const stdout = await withFetchAttempts(`Scanning ${ref}`, () =>
-      run(
-        scanner,
-        ["scan", "image", "--archive", archive, "--format", "json"],
-        {
-          maxBuffer,
-        },
-      ).then(
-        (result) => result.stdout,
-        (error) => {
-          if (error.code === 1) return error.stdout;
-          // An image of one static binary, such as busybox, has nothing to read.
-          if (/No package sources found/.test(error.stderr ?? "")) return "";
-          throw new FetchFailure(
-            error.stderr?.trim().split("\n").at(-1) || error.message,
-          );
-        },
-      ),
+    // The scan asks OSV's API, so it outlasts an outage as downloads do.
+    const stdout = await withFetchAttempts(
+      `Scanning ${ref}`,
+      () =>
+        run(
+          scanner,
+          ["scan", "image", "--archive", archive, "--format", "json"],
+          {
+            maxBuffer,
+          },
+        ).then(
+          (result) => result.stdout,
+          (error) => {
+            if (error.code === 1) return error.stdout;
+            // An image of one static binary, such as busybox, has nothing to read.
+            if (/No package sources found/.test(error.stderr ?? "")) return "";
+            throw new FetchFailure(
+              error.stderr?.trim().split("\n").at(-1) || error.message,
+            );
+          },
+        ),
+      { delay: outlastOutage },
     );
     if (!stdout) return { platform, findings: [], empty: true };
     return { platform, findings: imageFindings(JSON.parse(stdout)) };
@@ -439,6 +448,7 @@ if (
       clip(
         `## Pinned images and tools\n\n${text || "Nothing to report."}\n`,
         900_000,
+        "\n\n…cut to fit the summary. The job's log has the rest.\n",
       ),
     );
   if (process.env.PIN_REPORT)

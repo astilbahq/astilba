@@ -32,6 +32,7 @@ const entry = (value, keyed) =>
   value !== null &&
   typeof value === "object" &&
   (value.section === undefined || typeof value.section === "string") &&
+  (value.check === undefined || typeof value.check === "boolean") &&
   typeof value.text === "string" &&
   value.text.length <= limits.text &&
   (!keyed ||
@@ -67,6 +68,7 @@ export function decide(result, report, what) {
   const unfinished = {
     section: "Did not finish",
     key: "unfinished",
+    check: true,
     text: `The ${what} ${result === "cancelled" ? "was cancelled or timed out" : "failed without a finding to report, for example on a download, a check or a crash"}. Its log has the reason.`,
   };
   return {
@@ -103,8 +105,9 @@ export function syncReport(request, repository, report, result, written, run) {
     title: report.title,
     undecided: decision.undecided,
     acknowledge: report.acknowledge ?? false,
-    problems: decision.problems.map(({ key, text }) => ({
+    problems: decision.problems.map(({ key, text, check }) => ({
       key,
+      check,
       line: `- ${inert(text, 600)}`,
     })),
     body: issueBody(report, decision, run.url, run.date),

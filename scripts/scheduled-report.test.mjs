@@ -127,13 +127,19 @@ test("a seeded scan failure opens one issue, a repeat updates it, recovery close
     "commented",
   );
   assert.match(
-    github.sent.at(-1).body,
+    github.sent.at(-2).body,
     /New since the last report \(1\):\n\n- `The scheduled dependency/,
   );
 
   assert.equal(
     await scheduledRun(github, "skipped", undefined, "2026-11-15"),
     "unchanged",
+  );
+
+  // The advisory the failed run could not see is not news when the scan sees it again.
+  assert.equal(
+    await scheduledRun(github, "failure", seeded, "2026-11-15"),
+    "updated",
   );
 
   assert.equal(

@@ -1,5 +1,9 @@
 import { createHash } from "node:crypto";
-import { FetchFailure, withFetchAttempts } from "./fetch-attempts.mjs";
+import {
+  FetchFailure,
+  outlastOutage,
+  withFetchAttempts,
+} from "./fetch-attempts.mjs";
 
 // Reads image manifests, tags and configs through a registry's distribution API. See
 // scripts/pin-report.mjs.
@@ -12,6 +16,9 @@ const manifestTypes = [
   "application/vnd.oci.image.manifest.v1+json",
   "application/vnd.docker.distribution.manifest.v2+json",
 ].join(", ");
+
+// GitLab's repository, the largest pinned, has fewer than 20 pages of 1000 tags.
+const maxTagPages = 100;
 
 const sha256 = (bytes) =>
   `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
@@ -85,9 +92,7 @@ export function registry(fetchImpl = fetch) {
           return response;
         }
       },
-      {
-        delay: (_attempt, elapsed) => (elapsed < 240_000 ? 15_000 : undefined),
-      },
+      { delay: outlastOutage },
     );
   }
   return {
@@ -125,9 +130,15 @@ export function registry(fetchImpl = fetch) {
         throw new Error(`${pin.image} blob ${digest} returned other bytes`);
       return JSON.parse(bytes);
     },
+    // A registry that keeps naming a next page, or the same one, stops here rather
+    // than holding up every other image.
     async tags(pin) {
       const tags = [];
+      const seen = new Set();
       for (let path = "tags/list?n=1000"; path;) {
+        if (seen.has(path) || seen.size === maxTagPages)
+          throw new Error(`${pin.image} lists tags past ${seen.size} pages`);
+        seen.add(path);
         const response = await request(pin, path);
         tags.push(...((await response.json()).tags ?? []));
         const next = /<[^>]*\/tags\/list(\?[^>]*)>;\s*rel="?next"?/.exec(

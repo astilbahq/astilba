@@ -37,9 +37,12 @@ export function inert(text, limit = 300) {
   return cut ? `\`${cut}\`` : "";
 }
 
-export function clip(text, limit = textLimit) {
+export function clip(
+  text,
+  limit = textLimit,
+  note = "\n\n…cut to fit the issue. The run's summary has the rest.",
+) {
   if (text.length <= limit) return text;
-  const note = "\n\n…cut to fit the issue. The run's summary has the rest.";
   return text.slice(0, text.lastIndexOf("\n", limit - note.length)) + note;
 }
 
@@ -53,86 +56,110 @@ const keysIn = (body) =>
       .split(" ")
       .filter(Boolean) ?? [],
   );
+const markerFor = (keys) => `<!-- report keys: ${[...keys].join(" ")} -->`;
+const pageSize = 100;
+const maxPages = 20;
+
+// The newest issue this workflow opened with the title. Only this workflow's own
+// issues count, as anyone can open one with the same title.
+async function newest(request, repository, title, state) {
+  for (let page = 1; page <= maxPages; page++) {
+    const issues = await (
+      await request(
+        `/repos/${repository}/issues?state=${state}&creator=github-actions%5Bbot%5D&sort=created&direction=desc&per_page=${pageSize}&page=${page}`,
+      )
+    ).json();
+    const match = issues.find(
+      (issue) => issue.title === title && !issue.pull_request,
+    );
+    if (match || issues.length < pageSize) return match;
+  }
+}
 
 // Takes each problem as a stable key and a line of markdown that names it. Keys are
 // kept in the issue body, so a later run comments only on problems that are new, and
 // the same problem on the next day changes the body without notifying anyone. A
-// report that could not tell passes `undecided` to leave an open issue alone. Only
-// this workflow's own issues count, as anyone can open one with the same title.
+// problem marked `check` is a check that did not run: earlier problems may still be
+// there unseen, so their keys stay too, and they are not new when it runs again. A
+// report that could not tell passes `undecided` to leave the issue alone.
 //
 // With `acknowledge`, a person closing the issue accepts what it listed: a later run
-// opens a new issue only for a problem the closed one did not have. Closing it here
-// clears its keys, so a problem that returns after a recovery is new again.
+// opens a new issue only for a problem the closed one did not have. A check that did
+// not run is never accepted, so closing the issue cannot silence the report, and a
+// problem accepted and then gone is new again if it returns.
 export async function syncIssue(
   request,
   repository,
   { title, problems, body, undecided = false, acknowledge = false },
 ) {
-  const list = async (state) =>
-    (
-      await (
-        await request(
-          `/repos/${repository}/issues?state=${state}&creator=github-actions%5Bbot%5D&sort=updated&direction=desc&per_page=100`,
-        )
-      ).json()
-    ).filter((issue) => issue.title === title && !issue.pull_request);
-  const open = (await list("open")).toSorted((a, b) => a.number - b.number)[0];
   const unique = problems.filter(
     ({ key }, index) =>
       problems.findIndex((other) => other.key === key) === index,
   );
-  const mark = (text) =>
-    clip(
-      `<!-- report keys: ${unique.map(({ key }) => digest(key)).join(" ")} -->\n${text}`,
-    );
-  const newSince = (known) =>
-    unique.filter(({ key }) => !known.has(digest(key)));
+  const current = new Set(unique.map(({ key }) => digest(key)));
+  const complete = !unique.some(({ check }) => check);
+  const kept = (known) => (complete ? current : current.union(known));
+  const write = (keys, text) => clip(`${markerFor(keys)}\n${text}`);
   const announce = (heading, fresh) =>
     [
       `${heading} (${fresh.length}):`,
       "",
       ...fresh.map(({ line }) => line),
     ].join("\n");
-  if (unique.length && !open) {
-    let text = body;
-    if (acknowledge) {
-      const [closed] = (await list("closed")).toSorted((a, b) =>
-        (b.closed_at ?? "").localeCompare(a.closed_at ?? ""),
-      );
-      const accepted = keysIn(closed?.body);
-      const fresh = newSince(accepted);
-      if (!fresh.length) return "acknowledged";
-      if (accepted.size)
-        text = `${announce(`New since #${closed.number} was closed`, fresh)}\n\n${body}`;
-    }
-    await request(`/repos/${repository}/issues`, {
-      method: "POST",
-      body: { title, body: mark(text) },
-    });
-    return "opened";
-  }
-  if (unique.length) {
-    const fresh = newSince(keysIn(open.body));
+  if (undecided && !unique.length) return "unchanged";
+  const open = await newest(request, repository, title, "open");
+  if (open && !unique.length) {
     await request(`/repos/${repository}/issues/${open.number}`, {
       method: "PATCH",
-      body: { body: mark(body) },
+      body: {
+        body: write([], body),
+        state: "closed",
+        state_reason: "completed",
+      },
     });
-    // An edited body notifies nobody, so what is new is said in a comment.
+    return "closed";
+  }
+  if (open) {
+    const known = keysIn(open.body);
+    const fresh = unique.filter(({ key }) => !known.has(digest(key)));
+    // An edited body notifies nobody, so what is new is said in a comment, first: if
+    // the comment fails, the next run still finds these new.
     if (fresh.length)
       await request(`/repos/${repository}/issues/${open.number}/comments`, {
         method: "POST",
         body: { body: clip(announce("New since the last report", fresh)) },
       });
-    return fresh.length ? "commented" : "updated";
-  }
-  if (open && !undecided) {
     await request(`/repos/${repository}/issues/${open.number}`, {
       method: "PATCH",
-      body: { body: mark(body), state: "closed", state_reason: "completed" },
+      body: { body: write(kept(known), body) },
     });
-    return "closed";
+    return fresh.length ? "commented" : "updated";
   }
-  return "unchanged";
+  const closed = acknowledge
+    ? await newest(request, repository, title, "closed")
+    : undefined;
+  const accepted = keysIn(closed?.body);
+  const fresh = unique.filter(
+    ({ key, check }) => check || !accepted.has(digest(key)),
+  );
+  if (!fresh.length) {
+    // Only what is still there stays accepted.
+    const still = accepted.intersection(current);
+    if (still.size < accepted.size)
+      await request(`/repos/${repository}/issues/${closed.number}`, {
+        method: "PATCH",
+        body: { body: closed.body.replace(marker, markerFor(still)) },
+      });
+    return unique.length ? "acknowledged" : "unchanged";
+  }
+  const text = accepted.size
+    ? `${announce(`New since #${closed.number} was closed`, fresh)}\n\n${body}`
+    : body;
+  await request(`/repos/${repository}/issues`, {
+    method: "POST",
+    body: { title, body: write(kept(accepted), text) },
+  });
+  return "opened";
 }
 
 // A section's title comes from the report, so anything but plain words is replaced.

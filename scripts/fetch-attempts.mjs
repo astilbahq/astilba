@@ -15,7 +15,7 @@ const threeAttempts = (attempt) => [20_000, 40_000][attempt];
 
 // A partial outage lasts minutes, so asking again for seconds does not outlast it;
 // see docs/continuous-integration.md#host-downloads.
-const outlastOutage = (_attempt, elapsed) =>
+export const outlastOutage = (_attempt, elapsed) =>
   elapsed < 240_000 ? 15_000 : undefined;
 
 // A command that ran and failed, or a download that did not arrive. Only these repeat:

@@ -2,18 +2,39 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { clip, inert, syncIssue } from "./report-issue.mjs";
 
-const fakeGitHub = (issues) => {
+// Keeps the issues it is given, applies what syncIssue sends, and lists them newest
+// first a page at a time, as GitHub does.
+const fakeGitHub = (issues = [], { fail = () => false } = {}) => {
   const sent = [];
   return {
     sent,
+    issues,
     request: async (path, { method = "GET", body } = {}) => {
+      if (fail(method, path)) throw new Error(`${method} ${path} returned 502`);
       if (method !== "GET") sent.push({ method, path, ...body });
       // GitHub answers an unknown creator with an empty list, not an error.
       else assert.match(path, /[?&]creator=github-actions%5Bbot%5D(&|$)/);
-      const state = /[?&]state=(\w+)/.exec(path)?.[1];
+      if (method === "POST" && path.endsWith("/issues"))
+        issues.push({
+          number: Math.max(0, ...issues.map(({ number }) => number)) + 1,
+          state: "open",
+          ...body,
+        });
+      const number = Number(/\/issues\/(\d+)$/.exec(path)?.[1]);
+      if (method === "PATCH")
+        Object.assign(
+          issues.find((issue) => issue.number === number),
+          body,
+        );
+      const query = new URLSearchParams(path.split("?")[1]);
+      const size = Number(query.get("per_page") ?? 30);
+      const page = Number(query.get("page") ?? 1);
       return {
         json: async () =>
-          issues.filter((issue) => (issue.state ?? "open") === state),
+          issues
+            .filter((issue) => (issue.state ?? "open") === query.get("state"))
+            .toSorted((a, b) => b.number - a.number)
+            .slice((page - 1) * size, page * size),
       };
     },
   };
@@ -85,7 +106,7 @@ test("a new problem is announced in one comment, naming only what is new", async
     "commented",
   );
   assert.equal(more.sent.length, 2);
-  assert.deepEqual(more.sent[1], {
+  assert.deepEqual(more.sent[0], {
     method: "POST",
     path: "/repos/o/r/issues/7/comments",
     body: "New since the last report (1):\n\n- b",
@@ -142,14 +163,14 @@ test("closes the issue once nothing is wrong, unless the report could not tell",
   assert.deepEqual(nothing.sent, []);
 });
 
-test("ignores pull requests and other titles, and keeps the oldest of two", async () => {
+test("ignores pull requests and other titles, and keeps the newest of two", async () => {
   const github = fakeGitHub([
     { number: 9, title, body: "", pull_request: {} },
     { number: 8, title, body: "" },
     { number: 5, title, body: "" },
   ]);
   await syncIssue(github.request, "o/r", { title, problems: [], body: "" });
-  assert.equal(github.sent[0].path, "/repos/o/r/issues/5");
+  assert.equal(github.sent[0].path, "/repos/o/r/issues/8");
 });
 
 test("scanner text cannot mention, link or break out of its code span", () => {
@@ -256,4 +277,99 @@ test("a recovery clears the keys, so a problem that returns is new again", async
     }),
     "opened",
   );
+});
+
+const closeByHand = (github) => {
+  for (const issue of github.issues) issue.state = "closed";
+};
+const run = (github, problems, fields = {}) =>
+  syncIssue(github.request, "o/r", {
+    title,
+    problems,
+    body: "",
+    acknowledge: true,
+    ...fields,
+  });
+
+test("an accepted problem that goes away is new again when it returns", async () => {
+  const partly = fakeGitHub();
+  await run(partly, [problem("a"), problem("b")]);
+  closeByHand(partly);
+  assert.equal(await run(partly, [problem("a")]), "acknowledged");
+  assert.equal(await run(partly, [problem("a"), problem("b")]), "opened");
+  assert.match(
+    partly.issues.at(-1).body,
+    /\nNew since #1 was closed \(1\):\n\n- b\n/,
+  );
+
+  const recovered = fakeGitHub();
+  await run(recovered, [problem("a")]);
+  closeByHand(recovered);
+  assert.equal(await run(recovered, []), "unchanged");
+  assert.equal(await run(recovered, [problem("a")]), "opened");
+});
+
+test("closing the issue never accepts a check that did not run", async () => {
+  const unchecked = { ...problem("unfinished"), check: true };
+  const github = fakeGitHub();
+  await run(github, [unchecked]);
+  closeByHand(github);
+  assert.equal(await run(github, [unchecked]), "opened");
+  closeByHand(github);
+  assert.equal(await run(github, [unchecked]), "opened");
+});
+
+test("a run that could not check keeps the keys, so nothing is announced twice", async () => {
+  const unchecked = { ...problem("unfinished"), check: true };
+  const gate = fakeGitHub();
+  await run(gate, [problem("a"), problem("b")], { acknowledge: false });
+  assert.equal(
+    await run(gate, [unchecked], { acknowledge: false }),
+    "commented",
+  );
+  assert.equal(
+    await run(gate, [problem("a"), problem("b")], { acknowledge: false }),
+    "updated",
+  );
+
+  const accepted = fakeGitHub();
+  await run(accepted, [problem("a"), problem("b")]);
+  closeByHand(accepted);
+  assert.equal(await run(accepted, [unchecked]), "opened");
+  assert.equal(await run(accepted, [problem("a"), problem("b")]), "updated");
+  assert.equal(
+    accepted.sent.filter(({ path }) => path.endsWith("/comments")).length,
+    0,
+  );
+});
+
+test("a comment that fails leaves its problem new for the next run", async () => {
+  const issues = [];
+  await run(fakeGitHub(issues), [problem("a")], { acknowledge: false });
+  const failing = fakeGitHub(issues, {
+    fail: (method, path) => method === "POST" && path.endsWith("/comments"),
+  });
+  await assert.rejects(
+    run(failing, [problem("a"), problem("b")], { acknowledge: false }),
+  );
+  assert.equal(
+    await run(fakeGitHub(issues), [problem("a"), problem("b")], {
+      acknowledge: false,
+    }),
+    "commented",
+  );
+});
+
+test("finds the accepted issue behind a page of newer ones", async () => {
+  const github = fakeGitHub();
+  await run(github, [problem("a")]);
+  closeByHand(github);
+  for (let number = 2; number < 160; number++)
+    github.issues.push({
+      number,
+      title: "Another report",
+      state: "closed",
+      body: "",
+    });
+  assert.equal(await run(github, [problem("a")]), "acknowledged");
 });

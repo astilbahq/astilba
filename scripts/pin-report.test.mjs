@@ -282,6 +282,28 @@ test("reads OSV Scanner's image report, taking the fix from the package's own br
           {
             package: { name: "zlib", version: "1", ecosystem: "Alpine:v3.23" },
           },
+          // Fixed only on another branch: nothing to bump to on this one.
+          {
+            package: {
+              name: "musl",
+              version: "1.2.6-r2",
+              ecosystem: "Alpine:v3.23",
+            },
+            groups: [{ ids: ["ALPINE-CVE-2026-9"], aliases: [] }],
+            vulnerabilities: [
+              {
+                id: "ALPINE-CVE-2026-9",
+                affected: [
+                  {
+                    package: { name: "musl", ecosystem: "Alpine:v3.22" },
+                    ranges: [
+                      { events: [{ introduced: "0" }, { fixed: "1.2.5-r9" }] },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
         ],
       },
     ],
@@ -308,6 +330,17 @@ test("reads OSV Scanner's image report, taking the fix from the package's own br
       fixed: "",
       severity: "",
       summary: "net/http",
+    },
+    {
+      id: "ALPINE-CVE-2026-9",
+      cve: "CVE-2026-9",
+      ids: ["ALPINE-CVE-2026-9"],
+      package: "musl",
+      ecosystem: "Alpine:v3.23",
+      version: "1.2.6-r2",
+      fixed: "",
+      severity: "",
+      summary: "",
     },
   ]);
 });
@@ -373,22 +406,38 @@ test("a serious fixable vulnerability in a runtime image is to act on, one line 
     tools: [],
   });
   assert.deepEqual(info, []);
-  assert.deepEqual(problems, [
-    {
-      section: sections.vulnerabilities,
-      key: `vulnerable|postgres|sha256:${digest("a")}|ALPINE-CVE-2026-1|openssl|3.5.4-r0`,
-      text: "[runtime] postgres:18.4-alpine3.23 (linux/amd64, linux/arm64): CVE-2026-1 ALPINE-CVE-2026-1 in openssl 3.5.4-r0, fixed in 3.5.4-r1, CVSS 7.5",
-    },
-    {
-      section: sections.vulnerabilities,
-      key: `vulnerable|postgres|sha256:${digest("a")}|GO-2026-3|stdlib|1.25.1`,
-      text: "[runtime] postgres:18.4-alpine3.23 (linux/amd64): GO-2026-3 in stdlib 1.25.1, fixed in 1.25.2",
-    },
-  ]);
+  assert.deepEqual(
+    problems.map(({ section, text }) => ({ section, text })),
+    [
+      {
+        section: sections.vulnerabilities,
+        text: "[runtime] postgres:18.4-alpine3.23 (linux/amd64, linux/arm64): ALPINE-CVE-2026-1 in openssl 3.5.4-r0, fixed in 3.5.4-r1, CVSS 7.5",
+      },
+      {
+        section: sections.vulnerabilities,
+        text: "[runtime] postgres:18.4-alpine3.23 (linux/amd64): GO-2026-3 in stdlib 1.25.1, fixed in 1.25.2",
+      },
+    ],
+  );
+  // A key names the advisory in the pinned digest, not today's score or wording, so
+  // the issue does not announce it again; a bumped digest is new.
+  const keys = (pin) =>
+    assemble({ images: [pin], tools: [] }).problems.map(({ key }) => key);
+  const rescored = {
+    platform: "linux/amd64",
+    findings: [finding({ severity: "8.1", summary: "reworded" })],
+  };
+  assert.deepEqual(keys(checked({ scans: [rescored] })), keys(checked()));
+  assert.notDeepEqual(
+    keys(checked({ digest: `sha256:${digest("c")}` })),
+    keys(checked()),
+  );
+  assert.notEqual(problems[0].key, problems[1].key);
+  assert.ok(problems.every(({ check }) => !check));
   assert.deepEqual(summary, [
     {
       section: sections.vulnerabilities,
-      text: "[runtime] postgres:18.4-alpine3.23: 2 to act on (1 high, 1 unscored), and 1 more with a fix (1 lower), 1 without a fix (1 high). Worst: CVE-2026-1 ALPINE-CVE-2026-1 in openssl 3.5.4-r0, fixed in 3.5.4-r1, CVSS 7.5; GO-2026-3 in stdlib 1.25.1, fixed in 1.25.2",
+      text: "[runtime] postgres:18.4-alpine3.23: 2 to act on (1 high, 1 unscored), and 1 more with a fix (1 lower), 1 without a fix (1 high). Worst: ALPINE-CVE-2026-1 in openssl 3.5.4-r0, fixed in 3.5.4-r1, CVSS 7.5; GO-2026-3 in stdlib 1.25.1, fixed in 1.25.2",
     },
   ]);
 });
@@ -412,7 +461,7 @@ test("a CI image's vulnerabilities, and an image with nothing to read, are for i
   assert.deepEqual(info, [
     {
       section: sections.other,
-      text: "[CI] gitea/gitea:28.2.0: 1 more with a fix (1 critical). Worst: CVE-2026-1 ALPINE-CVE-2026-1 in openssl 3.5.4-r0, fixed in 3.5.4-r1, CVSS 9.8",
+      text: "[CI] gitea/gitea:28.2.0: 1 more with a fix (1 critical). Worst: ALPINE-CVE-2026-1 in openssl 3.5.4-r0, fixed in 3.5.4-r1, CVSS 9.8",
     },
     {
       section: sections.other,
@@ -449,27 +498,57 @@ test("an upstream rebuild, a newer tag or tool, and anything not checked need at
     ],
   });
   assert.deepEqual(
-    problems.map(({ section, key }) => [section, key]),
+    problems.map(({ section, check }) => [section, Boolean(check)]),
     [
-      [
-        sections.problems,
-        `error|postgres:18.4-alpine3.23|sha256:${digest("a")}|listing tags`,
-      ],
-      [sections.images, `moved|postgres:18.4-alpine3.23|sha256:${digest("b")}`],
-      [sections.images, "newer|postgres|18.4-alpine3.23|18.5-alpine3.23"],
-      [sections.tools, "newer|o/tool|v1.2.3|v1.2.4"],
-      [sections.problems, "error|o/unreachable"],
+      [sections.problems, true],
+      [sections.images, false],
+      [sections.images, false],
+      [sections.tools, false],
+      [sections.problems, true],
     ],
   );
   assert.match(
     problems[3].text,
     /o\/tool v1.2.3 has a newer release in its line: v1.2.4, published 2026-11-09 \(a.sh\)/,
   );
+  assert.equal(new Set(problems.map(({ key }) => key)).size, problems.length);
   // Each of these is its own line in the issue too.
   assert.deepEqual(
     summary.map(({ text }) => text),
     problems.map(({ text }) => text),
   );
+});
+
+test("an image and a tool of one name, or two pins of one tag, are separate problems", () => {
+  const pin = (fill, runtime) =>
+    checked({
+      image: "nginx",
+      tag: "1.30.6-alpine3.24",
+      digest: `sha256:${digest(fill)}`,
+      runtime,
+      scans: [],
+      moved: `sha256:${digest("f")}`,
+      newer: "1.30.7-alpine3.24",
+    });
+  const buildkit = checked({
+    image: "moby/buildkit",
+    tag: "v0.34.1",
+    scans: [],
+    newer: "v0.35.0",
+  });
+  const { problems } = assemble({
+    images: [pin("a", true), pin("b", false), buildkit],
+    tools: [
+      {
+        name: "moby/buildkit",
+        version: "v0.34.1",
+        newer: "v0.35.0",
+        paths: ["build-tools.sh"],
+      },
+    ],
+  });
+  assert.equal(problems.length, 6);
+  assert.equal(new Set(problems.map(({ key }) => key)).size, 6);
 });
 
 const response = (status, body = "", headers = {}) =>
@@ -544,6 +623,23 @@ test("takes the registry's anonymous token and checks every manifest against its
     docker.manifest(pin, sha256(index)),
     /unexpected registry challenge/,
   );
+});
+
+test("a registry that keeps naming the same next page of tags is cut off", async () => {
+  let calls = 0;
+  const client = registry(async () => {
+    calls++;
+    return response(200, JSON.stringify({ tags: ["1.0"] }), {
+      link: '</v2/team/app/tags/list?n=1000&last=1.0>; rel="next"',
+    });
+  });
+  const pin = {
+    registry: "r.test",
+    repository: "team/app",
+    image: "r.test/team/app",
+  };
+  await assert.rejects(client.tags(pin), /lists tags past 2 pages/);
+  assert.equal(calls, 2);
 });
 
 test("scans the amd64 and arm64 images an index holds, or the one platform pinned", async () => {
