@@ -87,6 +87,7 @@ func (j *Journal) openLocalKeys(point func(string) error) error {
 // Migration keeps the update-admission boundary and does not change any command,
 // checkpoint, report, ciphertext or key. Pending updates reconcile their original
 // signed artifact after restart, including a replacement before success recording.
+// The open that migrates then redacts finished records, as every open does.
 func (j *Journal) legacyMigrationAllowed() error {
 	return j.db.View(func(tx *bolt.Tx) error {
 		refuse := errors.New("legacy agent state has unfinished host work; finish it with the previous agent before upgrading")

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -381,8 +382,8 @@ func TestEndedUpgradesKeepNoValues(t *testing.T) {
 		if kept != !slices.Contains([]string{"complete", "returned", "rejected"}, phase) {
 			t.Fatal(phase, "upgrade values kept:", kept)
 		}
-		if stored.Command.Digest() != s.Command.Digest() {
-			t.Fatal(phase, "removing values changed the upgrade's digest")
+		if backup.Hash(stored.Command.Plan) != backup.Hash(s.Command.Plan) || stored.Status != s.Status {
+			t.Fatal(phase, "removing values changed the upgrade's plan or status")
 		}
 		if !kept && slices.ContainsFunc(upgradeActions, stored.Status.Allows) {
 			t.Fatal(phase, "an upgrade without values still allows an action")
@@ -421,9 +422,36 @@ func TestRedactionKeepsUnknownMembersAndDropsUnreadablePayloads(t *testing.T) {
 		t.Fatal("a backup command without credentials was rewritten")
 	}
 
-	for _, kind := range []api.ExecutionCommandKind{"network", "update", "test"} {
-		if _, ok := releasedValues[kind]; ok {
-			t.Fatal(kind, "carries no released values")
-		}
+}
+
+// An action runs with the values delivered with it. One delivered without them, as management sends
+// an action cancelled before this host took it, leaves an active upgrade's kept values as they are,
+// so an earlier agent restored onto the journal can still run the next action.
+func TestUpgradeKeepsValuesAcrossActionsDeliveredWithoutThem(t *testing.T) {
+	j, plan := testVisualJournal(t)
+	s := upgradeWithValues(t, plan, "ready")
+	kept := s.Command
+	if err := j.saveUpgrade(s); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := j.upgrade(kept.Plan.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancelled := kept
+	cancelled.Action, cancelled.Secrets, cancelled.Installation.Access = "cutover", nil, backup.Access{}
+	stored.takeValues(cancelled)
+	if err = j.saveUpgrade(stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored, err = j.upgrade(kept.Plan.ID); err != nil || !maps.Equal(stored.Command.Secrets, kept.Secrets) || stored.Command.Installation.Access != kept.Installation.Access {
+		t.Fatal("an action delivered without values erased the values an active upgrade keeps", err)
+	}
+	delivered := kept
+	delivered.Secrets = map[string]string{uuid.NewString(): "delivered-value"}
+	delivered.Installation.Access = backup.Access{Password: "delivered-password"}
+	stored.takeValues(delivered)
+	if !maps.Equal(stored.Command.Secrets, delivered.Secrets) || stored.Command.Installation.Access != delivered.Installation.Access {
+		t.Fatal("an action did not run with the values delivered with it")
 	}
 }

@@ -181,7 +181,8 @@ func withoutReleasedValues(bucket string, value any) any {
 // journal, as an earlier agent left them. It runs on every open, inside the open's transaction, so a
 // crash leaves each record as it was or redacted, never in between, and records an earlier agent
 // wrote after a rollback are redacted when this one returns. Unfinished records keep their values
-// for the work and redelivery that still need them, and sentinels and fences are left alone.
+// for the work and redelivery that still need them. Sentinels and fences are never finished and
+// carry no payload, so they are left as they are.
 func (j *Journal) redactFinished(tx *bolt.Tx) error {
 	keys := []string{}
 	if err := tx.Bucket([]byte("operations")).ForEach(func(k, _ []byte) error {
@@ -191,9 +192,6 @@ func (j *Journal) redactFinished(tx *bolt.Tx) error {
 		return err
 	}
 	for _, k := range keys {
-		if j.isCrossHostSentinel(tx, k) || j.isDistributedFence(tx, k) || j.isRecoverySentinel(tx, k) {
-			continue
-		}
 		var r Record
 		if err := j.get(tx, "operations", k, &r); err != nil {
 			return err
