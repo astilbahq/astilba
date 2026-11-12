@@ -69,18 +69,8 @@ const read = (pattern, body) =>
 const line = (name, keys) => `<!-- report ${name}: ${[...keys].join(" ")} -->`;
 // Each key takes 9 characters of the body, so the markers stay well inside its limit.
 const maxKeys = 5000;
-// Each problem's aliases are capped, and primary keys come first, so a cap can only
-// drop aliases.
+// The most aliases a problem carries, so a report stays within what the report job reads.
 export const maxAliases = 10;
-const keysOf = (problems) =>
-  new Set(
-    [
-      ...problems.map(({ key }) => digest(key)),
-      ...problems.flatMap(({ aliases = [] }) =>
-        aliases.slice(0, maxAliases).map(digest),
-      ),
-    ].slice(0, maxKeys),
-  );
 const pageSize = 100;
 const maxPages = 20;
 
@@ -120,9 +110,22 @@ export async function syncIssue(
     ({ key }, index) =>
       problems.findIndex((other) => other.key === key) === index,
   );
-  const current = keysOf(unique);
   const known = (keys) => (problem) =>
     digests(problem).some((key) => keys.has(key));
+  // The stored keys this run's problems answer to: a problem's own key when it is
+  // stored or new, and any stored key one of its aliases matches. A report's aliases only
+  // recognise what is stored and never add to it, so a run cannot get a problem nobody
+  // was shown remembered or accepted.
+  const recognise = (stored) => {
+    const keys = [];
+    for (const problem of unique) {
+      const [own, ...aliases] = digests(problem);
+      const matched = aliases.filter((key) => stored.has(key));
+      if (stored.has(own) || !matched.length) keys.push(own);
+      keys.push(...matched);
+    }
+    return new Set(keys.slice(0, maxKeys));
+  };
   const complete = !unique.some(({ check }) => check);
   const write = (seen, carried, text) =>
     clip(
@@ -161,6 +164,7 @@ export async function syncIssue(
   // not new when it sees them again. Those a person accepted stay accepted; the rest
   // are kept apart, so closing the issue does not accept what it did not list.
   const carry = (earlier) => {
+    const current = recognise(earlier);
     if (complete) return [current, new Set()];
     const missed = earlier.difference(current);
     const seen = new Set(
@@ -172,7 +176,7 @@ export async function syncIssue(
   // A run's own keys never widen what a person accepted: an alias in a scan's report
   // could otherwise make an advisory nobody saw accepted. So what stays accepted only
   // narrows to what is still there.
-  const still = accepted.intersection(current);
+  const still = recognise(accepted).intersection(accepted);
   // An issue opened for a check that has since run again, or for a problem now gone,
   // goes back to what a person accepted, rather than staying open over it.
   if (open && complete && unique.every(known(accepted))) {

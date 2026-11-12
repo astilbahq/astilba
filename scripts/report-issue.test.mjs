@@ -459,3 +459,37 @@ test("past the key limit only aliases are dropped, never a problem's own key", a
   await run(github, many, { acknowledge: false });
   assert.equal(await run(github, many, { acknowledge: false }), "updated");
 });
+
+test("an alias a report adds is never remembered or accepted in its own right", async () => {
+  const github = fakeGitHub();
+  await run(github, [problem("P")]);
+  // A report gives a listed problem an alias of something nobody was shown.
+  assert.equal(
+    await run(github, [{ ...problem("P"), aliases: ["A"] }]),
+    "updated",
+  );
+  closeByHand(github);
+  assert.equal(await run(github, [problem("P"), problem("A")]), "opened");
+  assert.match(
+    github.issues.at(-1).body,
+    /New since #1 was closed \(1\):\n\n- A/,
+  );
+});
+
+test("an alias a report adds does not quiet the problem when it really appears", async () => {
+  const unchecked = { ...problem("unfinished"), check: true };
+  const github = fakeGitHub();
+  await run(github, [problem("P")], { acknowledge: false });
+  await run(github, [{ ...problem("P"), aliases: ["A"] }, unchecked], {
+    acknowledge: false,
+  });
+  await run(github, [unchecked], { acknowledge: false });
+  assert.equal(
+    await run(github, [problem("P"), problem("A")], { acknowledge: false }),
+    "commented",
+  );
+  assert.match(
+    github.sent.filter(({ path }) => path.endsWith("/comments")).at(-1).body,
+    /\(1\):\n\n- A$/,
+  );
+});

@@ -394,8 +394,10 @@ accepted, so closing the issue while one cannot run opens a new issue on the nex
 once nothing but accepted problems remain, that issue closes itself. An advisory keeps
 its place when another id joins it, such as a `GO-` id beside a `GHSA-` one, and a newer
 release stays accepted when its tag is pinned again at a rebuilt digest. What a person
-accepted only ever narrows, never widens through a report's own ids, so an advisory
-whose every accepted id leaves its group is announced once more. Say why in a
+accepted only ever narrows: a report's ids only recognise keys already kept, and an
+issue keeps only the keys of problems it announced or already knew, so a report cannot
+get something accepted that no issue showed. An advisory whose every accepted id leaves
+its group is therefore announced once more. Say why in a
 comment before closing. Locally, the report needs Docker through `DOCKER_HOST`
 and the network: `GITHUB_TOKEN="$(gh auth token)" make report-pins`. It writes nothing
 to GitHub.
