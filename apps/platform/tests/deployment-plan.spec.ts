@@ -55,6 +55,22 @@ test("a prepared plan is withdrawn once another revision is saved", async ({
     await expect(stale).toHaveCount(0);
   };
 
+  // Another tab, member or automation saves; this page learns of it only from the server.
+  const saveElsewhere = async (value: string) => {
+    const planned = await (await page.request.get(`${f.path}/draft`)).json();
+    const saved = await page.request.put(`${f.path}/draft`, {
+      headers: f.headers,
+      data: {
+        baseRevisionId: planned.id,
+        specification: {
+          ...planned.specification,
+          variables: [{ name: "SAVED_ELSEWHERE", value }],
+        },
+      },
+    });
+    expect(saved.status(), await saved.text()).toBe(200);
+  };
+
   await prepare();
   await openEnvironmentSection(page, "Configuration");
   await page.getByRole("button", { name: "Service list", exact: true }).click();
@@ -76,19 +92,7 @@ test("a prepared plan is withdrawn once another revision is saved", async ({
 
   await prepare();
   await apply.focus();
-  const planned = await (await page.request.get(`${f.path}/draft`)).json();
-  // Another tab, member or automation saves; this page learns of it only from the event stream.
-  const elsewhere = await page.request.put(`${f.path}/draft`, {
-    headers: f.headers,
-    data: {
-      baseRevisionId: planned.id,
-      specification: {
-        ...planned.specification,
-        variables: [{ name: "SAVED_ELSEWHERE", value: "yes" }],
-      },
-    },
-  });
-  expect(elsewhere.status(), await elsewhere.text()).toBe(200);
+  await saveElsewhere("first");
   await expect(stale).toBeVisible({ timeout: 15000 });
   await expect(stale).toBeFocused();
   await expect(reviewed).toHaveCount(0);
@@ -109,4 +113,16 @@ test("a prepared plan is withdrawn once another revision is saved", async ({
     .click();
   await openEnvironmentSection(page, "Deployments");
   await prepare();
+  // Focus moves to the notice only from the withdrawn plan's own controls.
+  await page.evaluate(() => (document.activeElement as HTMLElement).blur());
+  await saveElsewhere("second");
+  await expect(stale).toBeVisible({ timeout: 15000 });
+  // A move would happen on the frame after the plan is withdrawn.
+  await page.evaluate(
+    () =>
+      new Promise((done) =>
+        requestAnimationFrame(() => requestAnimationFrame(done)),
+      ),
+  );
+  await expect(stale).not.toBeFocused();
 });
