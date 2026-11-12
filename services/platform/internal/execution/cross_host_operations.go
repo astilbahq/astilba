@@ -392,7 +392,10 @@ func (s *Service) coordinate(ctx context.Context, tx pgx.Tx, job *river.Job[jobA
 			}
 			return completeCoordination(ctx, tx, job, c.Id, "failed", "A placement host could not resolve the frozen inputs.")
 		}
-		if phase == "reserve" || phase == "links" || phase == "prepare" || phase == "hook" || phase == "probe" || stopping {
+		// A publication ends failed or cancelled only before it changes ingress, such as when it
+		// reaches its host after its deadline. Once ingress may have changed, it needs attention
+		// instead, and abort refuses to remove candidates the routes could use.
+		if phase == "reserve" || phase == "links" || phase == "prepare" || phase == "hook" || phase == "probe" || phase == "publish" || stopping {
 			phase = "abort"
 		} else {
 			if _, err := tx.Exec(ctx, `UPDATE execution_operations SET state='needs_attention',note='Cross-host publication or cleanup requires reconciliation. No unknown outcome was treated as failure.' WHERE id=$1`, c.Id); err != nil {

@@ -182,21 +182,8 @@ func (e *Engine) Execute(ctx context.Context, c api.ExecutionCommand) error {
 	if err := e.distributedRuntimeAdmission(c); err != nil {
 		return e.finish(c.Id, "failed", err.Error())
 	}
-	// An already accepted command continues after its admission deadline.
-	metadataContinuation, maintenanceContinuation := false, false
-	if c.Kind == "crosshost" {
-		body, bodyErr := crossHostCommand(c)
-		d, descriptorErr := commandCheckpoint(c)
-		metadataContinuation = bodyErr == nil && descriptorErr == nil && body.Phase == "checkpoint" && d.Sequence > 0
-		// The maintenance executor validates the retained checkpoint, frozen
-		// reservation, chosen target and exact writer ownership before effects.
-		// These phases change no data and cannot be issued again, so cancelling one
-		// would strand the reservation. A restore replaces data, so its deadline holds:
-		// see docs/cross-host-placement.md.
-		maintenanceContinuation = bodyErr == nil && body.Maintenance != nil && (body.Phase == "resume-source" || body.Phase == "resume-target" || body.Phase == "complete")
-	}
 	updateContinuation := c.Kind == "update" && e.Journal.startupUpdates[c.Id] && (r.AcceptedAt == nil || !r.AcceptedAt.After(c.Deadline)) && !e.cancelled(c.Id) && c.Release != nil && execution.Hash(c.Release) == c.PlanHash
-	if c.Kind != "upgrade" && !updateContinuation && !metadataContinuation && !maintenanceContinuation && !networkRestriction(c) && r.Checkpoint == "accepted" && time.Now().After(c.Deadline) {
+	if c.Kind != "upgrade" && !updateContinuation && !ContinuesAfterDeadline(c) && r.Checkpoint == "accepted" && time.Now().After(c.Deadline) {
 		return e.finish(c.Id, "cancelled", "The admission deadline passed before execution.")
 	}
 	upgrades, err := e.Journal.upgrades()
@@ -286,6 +273,46 @@ func (e *Engine) Execute(ctx context.Context, c api.ExecutionCommand) error {
 	}
 	return e.inspectOrRemove(ctx, c)
 }
+
+// ContinuesAfterDeadline says whether a command runs however long after its admission deadline it
+// first arrives. The deadline decides whether a host may start something new, never whether a
+// coordinated reservation ends. Nothing can issue a parent's phase again, so a phase that only
+// carries a reservation to its end, or records what it already holds, runs late through the
+// executor's own checks of the frozen reservation; cancelling it would strand every host the
+// parent reserved. Lateness is not evidence for these checks either way. A phase that would start
+// an effect keeps its deadline, and its parent treats the cancellation as a known outcome: nothing
+// started. See docs/cross-host-placement.md.
+func ContinuesAfterDeadline(c api.ExecutionCommand) bool {
+	if networkRestriction(c) {
+		return true
+	}
+	if c.Kind != "crosshost" {
+		return false
+	}
+	body, err := crossHostCommand(c)
+	if err != nil {
+		return false
+	}
+	if body.Phase == "checkpoint" {
+		// A later checkpoint records metadata the host already holds part of.
+		d, err := commandCheckpoint(c)
+		return err == nil && d.Sequence > 0
+	}
+	if body.Maintenance != nil {
+		// Resumption and completion change no data. A restore or other data effect keeps its deadline.
+		return body.Phase == "resume-source" || body.Phase == "resume-target" || body.Phase == "complete"
+	}
+	switch body.Phase {
+	case "retire", "complete":
+		// Publication has happened, and these finish what it began.
+		return true
+	case "abort":
+		// It removes only the candidates this parent made, and refuses once publication may have happened.
+		return true
+	}
+	return false
+}
+
 func (e *Engine) inspect(ctx context.Context, c api.ExecutionCommand) (client.ContainerInspectResult, bool, error) {
 	v, err := e.Docker.ContainerInspect(ctx, Name(c), client.ContainerInspectOptions{})
 	if errdefs.IsNotFound(err) {
