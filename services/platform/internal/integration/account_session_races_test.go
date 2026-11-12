@@ -3,6 +3,7 @@ package integration
 import (
 	"context"
 	"errors"
+	"net/http"
 	"testing"
 	"time"
 
@@ -10,6 +11,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/portability"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -68,6 +70,7 @@ func TestLogoutBetweenCredentialChangeAndRenewal(t *testing.T) {
 	b := f.browser(t)
 	b.login("owner@example.test", f.password)
 	loaded := b.client.Jar.Cookies(mustURL(f.server.URL))
+	lineage := sessionLineage(t, f, loaded[0])
 
 	gate.armedCommit.Store(true)
 	finish := sendHeld(t, b, gate, loaded, "POST", "/api/v1/auth/password", map[string]string{"password": "replacement password here"})
@@ -77,8 +80,8 @@ func TestLogoutBetweenCredentialChangeAndRenewal(t *testing.T) {
 	if result := finish(); result.status != 401 || len(sessionCookies(result.cookies)) != 0 {
 		t.Fatalf("the renewal after logout answered %d with cookies %v: %s", result.status, result.cookies, result.body)
 	}
-	if session := sessionFromCookies(t, b, loaded); session.User != nil {
-		t.Fatal("the logged-out token is still signed in")
+	if remaining := lineageRows(t, f, lineage); remaining != 0 {
+		t.Fatal("the logout left sessions of its lineage: ", remaining)
 	}
 	if session := other.session(); session.User != nil {
 		t.Fatal("the password change did not end the other sign-in")
@@ -96,6 +99,7 @@ func TestLogoutBeforeSecondFactorCompletes(t *testing.T) {
 		t.Fatal("expected the sign-in to wait for its second factor")
 	}
 	loaded := b.client.Jar.Cookies(mustURL(f.server.URL))
+	lineage := sessionLineage(t, f, loaded[0])
 
 	gate.armedCommit.Store(true)
 	finish := sendHeld(t, b, gate, loaded, "POST", "/api/v1/auth/mfa", map[string]string{"code": codes.Codes[0]})
@@ -105,8 +109,8 @@ func TestLogoutBeforeSecondFactorCompletes(t *testing.T) {
 	if result := finish(); result.status != 401 || len(sessionCookies(result.cookies)) != 0 {
 		t.Fatalf("the second factor after logout answered %d with cookies %v: %s", result.status, result.cookies, result.body)
 	}
-	if session := sessionFromCookies(t, b, loaded); session.User != nil || session.MfaPending {
-		t.Fatal("the logged-out sign-in is still open")
+	if remaining := lineageRows(t, f, lineage); remaining != 0 {
+		t.Fatal("the logout left sessions of its lineage: ", remaining)
 	}
 }
 
@@ -118,11 +122,7 @@ func TestLogoutWaitsForARenewalInProgress(t *testing.T) {
 	ctx := context.Background()
 	b := f.browser(t)
 	b.login("owner@example.test", f.password)
-	var lineage string
-	cookie := b.client.Jar.Cookies(mustURL(f.server.URL))[0]
-	if err := f.st.Pool.QueryRow(ctx, "SELECT lineage::text FROM sessions WHERE token=$1", hashedSessionToken(cookie.Value)).Scan(&lineage); err != nil {
-		t.Fatal(err)
-	}
+	lineage := sessionLineage(t, f, b.client.Jar.Cookies(mustURL(f.server.URL))[0])
 	// Writes to the sessions table wait here, which stops the renewal after it has taken the
 	// lineage's lock and before it deletes the old token.
 	held, err := f.st.Pool.Begin(ctx)
@@ -143,11 +143,7 @@ func TestLogoutWaitsForARenewalInProgress(t *testing.T) {
 
 	requireReply(t, <-renewal, 200)
 	requireReply(t, <-logout, 204)
-	var remaining int
-	if err = f.st.Pool.QueryRow(ctx, "SELECT count(*) FROM sessions WHERE lineage=$1::uuid", lineage).Scan(&remaining); err != nil {
-		t.Fatal(err)
-	}
-	if remaining != 0 {
+	if remaining := lineageRows(t, f, lineage); remaining != 0 {
 		t.Fatal("the logout left the renewal's token signed in")
 	}
 }
@@ -331,6 +327,26 @@ func TestCredentialRecencyLapsesBehindAccountLock(t *testing.T) {
 			}
 		})
 	}
+}
+
+// sessionLineage is the lineage of the session a cookie holds.
+func sessionLineage(t *testing.T, f *fixture, cookie *http.Cookie) uuid.UUID {
+	t.Helper()
+	var lineage uuid.UUID
+	if err := f.st.Pool.QueryRow(context.Background(), "SELECT lineage FROM sessions WHERE token=$1", hashedSessionToken(cookie.Value)).Scan(&lineage); err != nil {
+		t.Fatal(err)
+	}
+	return lineage
+}
+
+// lineageRows counts the sessions left in a lineage, live or not.
+func lineageRows(t *testing.T, f *fixture, lineage uuid.UUID) int {
+	t.Helper()
+	var rows int
+	if err := f.st.Pool.QueryRow(context.Background(), "SELECT count(*) FROM sessions WHERE lineage=$1", lineage).Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	return rows
 }
 
 // holdAccount locks the fixture owner's account row until the returned transaction ends.
