@@ -1,8 +1,6 @@
 package execution
 
 import (
-	"slices"
-
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 )
@@ -15,8 +13,8 @@ const WithheldNote = "Details withheld: they can quote the environment's configu
 // build output can carry image names, ports, paths and plaintext variable values. So, as with a
 // plan, only a principal that may read the environment gets them. Any other gets WithheldNote in
 // place of a note and no step details; the state, kind and step names stay, since they are what
-// following an operation needs. Every operation a credential that may not read can reach goes
-// through here.
+// following an operation needs. Every exported function that gives a principal an operation returns it
+// through here or operationsFor, which the operationview analyzer checks.
 func operationFor(p store.Principal, op api.Operation) api.Operation {
 	if p.MayReadEnvironment() {
 		return op
@@ -24,9 +22,16 @@ func operationFor(p store.Principal, op api.Operation) api.Operation {
 	if op.Note != "" {
 		op.Note = WithheldNote
 	}
-	op.Steps = slices.Clone(op.Steps)
 	for i := range op.Steps {
 		op.Steps[i].Detail = ""
 	}
 	return op
+}
+
+// operationsFor is operationFor for each of a list of operations.
+func operationsFor(p store.Principal, ops []api.Operation) []api.Operation {
+	for i := range ops {
+		ops[i] = operationFor(p, ops[i])
+	}
+	return ops
 }
