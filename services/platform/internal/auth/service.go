@@ -71,16 +71,6 @@ func matchTOTP(code, secret string, now time.Time, last int64) (int64, bool) {
 	return 0, false
 }
 
-// secondFactor gives out the keys to one account's own second factor, recorded first. It runs
-// before the transaction that uses them.
-func (s *Service) secondFactor(ctx context.Context, account uuid.UUID, purpose secretbroker.Purpose, kinds ...secretbroker.Kind) (*secretbroker.Session, error) {
-	items := []secretbroker.Item{}
-	for _, kind := range kinds {
-		items = append(items, secretbroker.Item{Kind: kind, ID: account})
-	}
-	return s.Store.Broker.Begin(ctx, secretbroker.Request{Purpose: purpose, Principal: secretbroker.Account(account), Items: items})
-}
-
 func (s *Service) checkCode(ctx context.Context, q *db.Queries, keys *secretbroker.Session, account *db.Account, code string) error {
 	code = strings.TrimSpace(code)
 	if len(account.TotpSecret) == 0 {
