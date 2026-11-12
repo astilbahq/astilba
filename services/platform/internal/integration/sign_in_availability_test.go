@@ -207,7 +207,7 @@ func TestDeviceCookieIsLimitedToItsPurpose(t *testing.T) {
 	holder := a.signedIn("198.51.100.1")
 	b.csrf = b.session().CsrfToken
 	const replacement = "replacement password for this test"
-	b.call("POST", "/api/v1/auth/password", map[string]string{"password": replacement}, 200, nil)
+	b.call("POST", "/api/v1/auth/password", map[string]any{"password": replacement, "current": map[string]string{"password": f.password}}, 200, nil)
 	a.spendAccount(1)
 	a.wantLogin(holder, "198.51.100.1", "owner@example.test", replacement, 429, "token from before the password change")
 }
@@ -300,7 +300,7 @@ func TestReauthenticationFailsWhenThePasswordChangesDuringIt(t *testing.T) {
 	}
 	result := make(chan error, 1)
 	go func() {
-		_, err := f.auth.Reauthenticate(ctx, principal, f.password, "")
+		_, err := f.auth.Reauthenticate(ctx, principal, auth.Credential{Password: f.password})
 		result <- err
 	}()
 	waiting := false
@@ -423,7 +423,7 @@ func TestDeviceCookieWaitsForSecondFactor(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	b.call("POST", "/api/v1/auth/mfa/confirm", map[string]string{"code": code}, 200, nil)
+	b.call("POST", "/api/v1/auth/mfa/confirm", map[string]any{"code": code, "current": map[string]string{"password": f.password}}, 200, nil)
 
 	partial := f.browser(t)
 	a.wantLogin(partial, "198.51.100.1", "owner@example.test", f.password, 200, "password step")
@@ -558,7 +558,7 @@ func TestPasswordChangeLoopCannotRefuseOtherSignIns(t *testing.T) {
 	var csrf atomic.Pointer[string]
 	csrf.Store(&account.csrf)
 	change := func(i int) {
-		raw, _ := stablejson.Marshal(map[string]string{"password": fmt.Sprintf("a replacement password number %d", i)})
+		raw, _ := stablejson.Marshal(map[string]any{"password": f.password, "current": map[string]string{"password": f.password}})
 		request, err := newRequest(account, "POST", "/api/v1/auth/password", raw)
 		if err != nil {
 			t.Error(err)
@@ -604,8 +604,13 @@ func TestPasswordChangeLoopCannotRefuseOtherSignIns(t *testing.T) {
 		signOut(victim)
 	}
 	stop()
-	if got := attemptCount(t, f, "password-change:"+f.owner.String()); got != 5 {
-		t.Fatalf("password changes charged %d times, want the whole budget of 5", got)
+	// Each change proves the current password before hashing the new one, so the loops spend
+	// the account's confirmation attempts, and at most as many changes.
+	if got := attemptCount(t, f, "reauth:"+f.owner.String()); got != 5 {
+		t.Fatalf("password changes charged %d confirmations, want the whole budget of 5", got)
+	}
+	if got := attemptCount(t, f, "password-change:"+f.owner.String()); got < 1 || got > 5 {
+		t.Fatalf("password changes charged %d times, want between 1 and 5", got)
 	}
 	if got := attemptCount(t, f, "login:account:victim@example.test"); got != 0 {
 		t.Fatalf("other account's budget holds %d attempts", got)
@@ -623,7 +628,7 @@ func TestPasswordChangeHasBudgetAndSkipsEndedSessions(t *testing.T) {
 	if _, err := f.st.Pool.Exec(ctx, "DELETE FROM sessions"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.auth.ChangePassword(ctx, ended, "a replacement password for this test"); err == nil {
+	if _, err := f.auth.ChangePassword(ctx, ended, auth.Credential{Password: f.password}, "a replacement password for this test"); err == nil {
 		t.Fatal("ended session changed the password")
 	}
 	if got := attemptCount(t, f, "password-change:"+f.owner.String()); got != 0 {
@@ -631,12 +636,14 @@ func TestPasswordChangeHasBudgetAndSkipsEndedSessions(t *testing.T) {
 	}
 	b := f.browser(t)
 	b.login("owner@example.test", f.password)
+	current := f.password
 	for i := range 5 {
 		var session api.Session
-		b.call("POST", "/api/v1/auth/password", map[string]string{"password": fmt.Sprintf("a replacement password number %d", i)}, 200, &session)
-		b.csrf = session.CsrfToken
+		replacement := fmt.Sprintf("a replacement password number %d", i)
+		b.call("POST", "/api/v1/auth/password", map[string]any{"password": replacement, "current": map[string]string{"password": current}}, 200, &session)
+		b.csrf, current = session.CsrfToken, replacement
 	}
-	b.call("POST", "/api/v1/auth/password", map[string]string{"password": "one replacement password too many"}, 429, nil)
+	b.call("POST", "/api/v1/auth/password", map[string]any{"password": "one replacement password too many", "current": map[string]string{"password": current}}, 429, nil)
 }
 
 func TestIPv6NetworkSharesWiderBudget(t *testing.T) {

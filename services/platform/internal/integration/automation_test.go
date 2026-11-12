@@ -420,7 +420,7 @@ func TestAutomationDelegatedMFAAndHostedAdmission(t *testing.T) {
 		t.Fatal(err)
 	}
 	var recovery api.RecoveryCodes
-	b.call("POST", "/api/v1/auth/mfa/confirm", map[string]string{"code": code}, 200, &recovery)
+	b.call("POST", "/api/v1/auth/mfa/confirm", map[string]any{"code": code, "current": map[string]string{"password": f.password}}, 200, &recovery)
 	b.csrf = recovery.Session.CsrfToken
 	bearerCall(t, f, *grant.Token, "GET", path+"/draft", nil, 401, nil)
 	delegated := issueAutomation(t, b, path, domain.EnvironmentRead, domain.ConfigurationWrite)

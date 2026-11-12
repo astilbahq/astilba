@@ -175,10 +175,12 @@ func warnPastBudget(took time.Duration) {
 }
 
 type fixture struct {
-	st        *store.Store
-	auth      *auth.Service
-	server    *httptest.Server
-	mail      chan string
+	st     *store.Store
+	auth   *auth.Service
+	server *httptest.Server
+	mail   chan string
+	// notices holds the account security notices sent, apart from other mail.
+	notices   chan string
 	password  string
 	owner     uuid.UUID
 	execution *execution.Service
@@ -238,7 +240,7 @@ func setupStore(t *testing.T, bootstrap, hosted bool) *fixture {
 		}
 	}
 
-	mail, address := smtpFixture(t)
+	mail, notices, address := smtpFixture(t)
 	sender, e := mailer.New(mailer.Config{Address: address, From: "Astilba <accounts@example.test>", Mode: "plain", Development: true})
 	if e != nil {
 		t.Fatal(e)
@@ -266,17 +268,22 @@ func setupStore(t *testing.T, bootstrap, hosted bool) *fixture {
 	server := httptest.NewServer(handler)
 	apiServer.Origin = server.URL
 	apiServer.Execution.ResetMail.Origin = server.URL
+	apiServer.Execution.SecurityNotice.Origin = server.URL
 	t.Cleanup(server.Close)
-	return &fixture{st, service, server, mail, fixturePassword, owner, apiServer.Execution, apiServer, log}
+	return &fixture{st, service, server, mail, notices, fixturePassword, owner, apiServer.Execution, apiServer, log}
 }
-func smtpFixture(t *testing.T) (chan string, string) {
+
+// securityNoticeMarker is in every account security notice, which smtpFixture keeps apart.
+const securityNoticeMarker = "If this was you, there is nothing to do."
+
+func smtpFixture(t *testing.T) (chan string, chan string, string) {
 	t.Helper()
 	listener, e := net.Listen("tcp", "127.0.0.1:0")
 	if e != nil {
 		t.Fatal(e)
 	}
 	t.Cleanup(func() { _ = listener.Close() })
-	messages := make(chan string, 10)
+	messages, notices := make(chan string, 10), make(chan string, 32)
 	go func() {
 		for {
 			conn, e := listener.Accept()
@@ -305,7 +312,11 @@ func smtpFixture(t *testing.T) (chan string, string) {
 						if e != nil {
 							return
 						}
-						messages <- string(body)
+						if strings.Contains(string(body), securityNoticeMarker) {
+							notices <- string(body)
+						} else {
+							messages <- string(body)
+						}
 						reply("250 queued")
 					case strings.HasPrefix(line, "QUIT"):
 						reply("221 bye")
@@ -317,7 +328,7 @@ func smtpFixture(t *testing.T) (chan string, string) {
 			}()
 		}
 	}()
-	return messages, listener.Addr().String()
+	return messages, notices, listener.Addr().String()
 }
 
 type browser struct {

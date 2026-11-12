@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
 import { authFixtureSQL } from "./auth-fixture";
+import { confirmCredential } from "./confirm-credential";
 import { totp } from "./fixtures/totp";
 
 test("a cancelled session refresh cannot replace renewed credentials", async ({
@@ -81,6 +82,7 @@ test("a cancelled session refresh cannot replace renewed credentials", async ({
   await page
     .getByRole("button", { name: "Update password", exact: true })
     .click();
+  await confirmCredential(page, { password: "correct horse battery staple" });
   await expect(page.getByRole("status")).toHaveText(
     "Password updated. Your other sessions have been signed out.",
   );
@@ -147,6 +149,7 @@ test("account credentials use shared forms and clear secrets and drafts after a 
   await page
     .getByRole("button", { name: "Update password", exact: true })
     .click();
+  await confirmCredential(page, { password: "correct horse battery staple" });
   await expect(page.getByRole("status")).toHaveText(
     "Password updated. Your other sessions have been signed out.",
   );
@@ -167,6 +170,9 @@ test("account credentials use shared forms and clear secrets and drafts after a 
   await page
     .getByRole("button", { name: "Enable two-factor authentication" })
     .click();
+  await confirmCredential(page, {
+    password: "updated private browser password",
+  });
   const codes = page.getByRole("list", { name: "Recovery codes", exact: true });
   await expect(codes.locator("li")).toHaveCount(10);
   const firstCode = await codes.locator("code").first().innerText();
@@ -198,6 +204,8 @@ test("account credentials use shared forms and clear secrets and drafts after a 
   await dialog
     .getByRole("button", { name: "Replace codes", exact: true })
     .click();
+  // Enrolment spent the authenticator's current step, so this confirms with a recovery code.
+  await confirmCredential(page, { recoveryCode: firstCode });
   await expect(codes.locator("li")).toHaveCount(10);
   await expect(codes.locator("code").first()).not.toHaveText(firstCode);
   const shownCode = await codes.locator("code").first().innerText();

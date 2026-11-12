@@ -45,6 +45,8 @@ type Service struct {
 	Troubleshooting bool
 	// ResetMail shares this River client, since each client must know every job kind it may rescue.
 	ResetMail *auth.ResetMailWorker
+	// SecurityNotice emails account holders about changes to how their account signs in.
+	SecurityNotice *auth.SecurityNoticeWorker
 	// ForkFencing clears a server's credential when management sees proof that a second holder has
 	// its key. Off, the proof only raises the owner's alert.
 	ForkFencing bool
@@ -85,7 +87,9 @@ func New(st *store.Store) (*Service, error) {
 	river.AddWorker(workers, &githubReconcileWorker{service: s})
 	s.ResetMail = &auth.ResetMailWorker{}
 	river.AddWorker(workers, s.ResetMail)
-	q, err := river.NewClient(riverpgxv5.New(st.Pool), &river.Config{PeriodicJobs: []*river.PeriodicJob{river.NewPeriodicJob(river.PeriodicInterval(5*time.Second), func() (river.JobArgs, *river.InsertOpts) { return networkSweepArgs{}, nil }, &river.PeriodicJobOpts{RunOnStart: true}), river.NewPeriodicJob(river.PeriodicInterval(30*time.Second), func() (river.JobArgs, *river.InsertOpts) { return coordinatedScheduleArgs{}, nil }, &river.PeriodicJobOpts{RunOnStart: true}), river.NewPeriodicJob(river.PeriodicInterval(30*time.Second), func() (river.JobArgs, *river.InsertOpts) { return previewSweepArgs{}, nil }, &river.PeriodicJobOpts{RunOnStart: true}), river.NewPeriodicJob(river.PeriodicInterval(30*time.Second), func() (river.JobArgs, *river.InsertOpts) { return troubleshootingSweepArgs{}, nil }, &river.PeriodicJobOpts{RunOnStart: true})}, Workers: workers, Queues: map[string]river.QueueConfig{river.QueueDefault: {MaxWorkers: 4}, gitQueue: {MaxWorkers: gitQueueWorkers}, auth.ResetMailQueue: {MaxWorkers: 4}}, JobTimeout: 10 * time.Second})
+	s.SecurityNotice = &auth.SecurityNoticeWorker{}
+	river.AddWorker(workers, s.SecurityNotice)
+	q, err := river.NewClient(riverpgxv5.New(st.Pool), &river.Config{PeriodicJobs: []*river.PeriodicJob{river.NewPeriodicJob(river.PeriodicInterval(5*time.Second), func() (river.JobArgs, *river.InsertOpts) { return networkSweepArgs{}, nil }, &river.PeriodicJobOpts{RunOnStart: true}), river.NewPeriodicJob(river.PeriodicInterval(30*time.Second), func() (river.JobArgs, *river.InsertOpts) { return coordinatedScheduleArgs{}, nil }, &river.PeriodicJobOpts{RunOnStart: true}), river.NewPeriodicJob(river.PeriodicInterval(30*time.Second), func() (river.JobArgs, *river.InsertOpts) { return previewSweepArgs{}, nil }, &river.PeriodicJobOpts{RunOnStart: true}), river.NewPeriodicJob(river.PeriodicInterval(30*time.Second), func() (river.JobArgs, *river.InsertOpts) { return troubleshootingSweepArgs{}, nil }, &river.PeriodicJobOpts{RunOnStart: true})}, Workers: workers, Queues: map[string]river.QueueConfig{river.QueueDefault: {MaxWorkers: 4}, gitQueue: {MaxWorkers: gitQueueWorkers}, auth.ResetMailQueue: {MaxWorkers: 4}, auth.SecurityMailQueue: {MaxWorkers: 2}}, JobTimeout: 10 * time.Second})
 	s.Queue = q
 	return s, err
 }

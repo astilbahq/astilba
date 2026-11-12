@@ -248,6 +248,9 @@ export default interface Resources {
     "stepUp": {
       "authenticatorDescription": "Security-sensitive actions need a recent confirmation. Enter the six-digit code from your authenticator app.",
       "cancel": "Cancel",
+      "changeAuthenticatorDescription": "Changing how you sign in needs your current credential. Enter the six-digit code from your authenticator app.",
+      "changePasswordDescription": "Changing how you sign in needs your current credential. Enter your current password.",
+      "changeRecoveryDescription": "Changing how you sign in needs your current credential. Enter one of your saved recovery codes. Each code works once.",
       "code": "Authentication code",
       "confirm": "Confirm",
       "password": "Password",

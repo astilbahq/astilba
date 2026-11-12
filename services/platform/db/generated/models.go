@@ -28,6 +28,13 @@ type Account struct {
 	RecoveryCodesGeneration *uuid.UUID `json:"recovery_codes_generation"`
 }
 
+type AccountSecurityEvent struct {
+	ID        uuid.UUID `json:"id"`
+	AccountID uuid.UUID `json:"account_id"`
+	Kind      string    `json:"kind"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
 type AgentCounterValue struct {
 	WorkspaceID uuid.UUID `json:"workspace_id"`
 	ServerID    uuid.UUID `json:"server_id"`

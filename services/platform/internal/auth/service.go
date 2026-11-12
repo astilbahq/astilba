@@ -67,7 +67,8 @@ func matchTOTP(code, secret string, now time.Time, last int64) (int64, bool) {
 	}
 	return 0, false
 }
-func (s *Service) checkCode(ctx context.Context, q *db.Queries, account *db.Account, code string) error {
+func (s *Service) checkCode(ctx context.Context, tx pgx.Tx, account *db.Account, code string) error {
+	q := db.New(tx)
 	code = strings.TrimSpace(code)
 	if len(account.TotpSecret) == 0 {
 		return domain.Credentials
@@ -93,14 +94,14 @@ func (s *Service) checkCode(ctx context.Context, q *db.Queries, account *db.Acco
 		return err
 	}
 	account.AuthVersion++
-	return nil
+	return s.securityEvent(ctx, tx, account.ID, RecoveryCodeUsed)
 }
 func (s *Service) VerifyCode(ctx context.Context, id uuid.UUID, expectedVersion int64, code string) (db.Account, error) {
 	var account db.Account
 	if err := s.Limit(ctx, "mfa:"+id.String(), 5, 5*time.Minute); err != nil {
 		return account, err
 	}
-	err := s.Store.Transaction(ctx, func(q *db.Queries) error {
+	err := s.Store.TransactionTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
 		var err error
 		account, err = q.LockAccount(ctx, id)
 		if err != nil {
@@ -109,108 +110,11 @@ func (s *Service) VerifyCode(ctx context.Context, id uuid.UUID, expectedVersion 
 		if account.AuthVersion != expectedVersion {
 			return domain.Credentials
 		}
-		return s.checkCode(ctx, q, &account, code)
+		return s.checkCode(ctx, tx, &account, code)
 	})
 	return account, err
 }
 
-// Reauthentication budgets. Every attempt spends one of the five in attemptWindow and one
-// of a daily allowance of failures, both before its credential is checked, so concurrent
-// attempts cannot exceed either together: a holder of a stolen session can check at most
-// reauthDailyFailures guesses in each daily window at the account's authenticator code,
-// wherever they come from. Like every budget here, the windows are fixed, not sliding. An
-// attempt that does not fail on its credential gets its failure back, so confirming often
-// costs nothing. Only a holder of one of the account's live sessions can spend either, and
-// signing in again restarts recent authentication without them.
-const (
-	reauthAttempts      = 5
-	reauthDailyFailures = 20
-	reauthFailureWindow = 24 * time.Hour
-)
-
-func reauthBudgets(id uuid.UUID) (attempts, failures budget) {
-	return budget{"reauth:" + id.String(), reauthAttempts, attemptWindow},
-		budget{"reauth-failures:" + id.String(), reauthDailyFailures, reauthFailureWindow}
-}
-
-// Reauthenticate renews a session's recent authentication with a fresh proof of one factor.
-// The session already proved every factor the account has when it signed in, so the step-up
-// asks for the strongest one alone: an account with two-factor authentication presents an
-// authenticator or recovery code, and one without presents its password. A password adds
-// little beside a code: a browser left signed in often fills it in by itself, while the
-// authenticator stays with its owner. The request schema admits exactly one non-empty
-// credential, so a client cannot believe a value was checked when it was not.
-//
-// The principal's account is the row at the session's version, and every change to the
-// password or to two-factor authentication advances that version, so it decides which
-// credential applies. lockCurrent refuses once the version has moved, so a credential change
-// or logout that landed while this request waited wins. A code is checked exactly as at
-// sign-in: a time step is accepted once, and a recovery code is consumed and ends every other
-// session.
-func (s *Service) Reauthenticate(ctx context.Context, p store.Principal, password, code string) (db.Account, error) {
-	mfa := len(p.Account.TotpSecret) > 0
-	if mfa && code == "" {
-		return db.Account{}, domain.Invalid("code")
-	}
-	if !mfa && password == "" {
-		return db.Account{}, domain.Invalid("password")
-	}
-	attempts, failures := reauthBudgets(p.Account.ID)
-	budgets := []budget{attempts, failures}
-	var account db.Account
-	var charged bool
-	var err error
-	if mfa {
-		account, charged, err = s.reauthenticateCode(ctx, p, code, budgets)
-	} else {
-		account, charged, err = s.reauthenticatePassword(ctx, p, password, budgets)
-	}
-	if charged && !errors.Is(err, domain.Credentials) {
-		// A refund that does not land leaves one more failure counted, which only refuses sooner.
-		undo, cancel := Detached(ctx)
-		defer cancel()
-		_ = s.Store.Queries.RefundAuthAttempt(undo, Hash(failures.scope))
-	}
-	return account, err
-}
-
-func (s *Service) reauthenticateCode(ctx context.Context, p store.Principal, code string, budgets []budget) (db.Account, bool, error) {
-	var account db.Account
-	if err := s.refuseSpent(ctx, budgets); err != nil {
-		return account, false, err
-	}
-	if err := s.charge(ctx, budgets); err != nil {
-		return account, false, err
-	}
-	err := s.Store.Transaction(ctx, func(q *db.Queries) error {
-		var err error
-		if account, err = lockCurrent(ctx, q, p); err != nil {
-			return err
-		}
-		return s.checkCode(ctx, q, &account, code)
-	})
-	return account, true, err
-}
-
-func (s *Service) reauthenticatePassword(ctx context.Context, p store.Principal, password string, budgets []budget) (db.Account, bool, error) {
-	var account db.Account
-	var charged bool
-	// The hash runs outside the transaction, because it can wait for capacity and must not
-	// hold the account row or a connection meanwhile.
-	err := s.withPassword(ctx, passwordShare{"account:" + p.Account.ID.String(), true}, budgets, func() error {
-		charged = true
-		return passwordMatches(password, p.Account.PasswordHash)
-	})
-	if err != nil {
-		return account, charged, err
-	}
-	err = s.Store.Transaction(ctx, func(q *db.Queries) error {
-		var err error
-		account, err = lockCurrent(ctx, q, p)
-		return err
-	})
-	return account, charged, err
-}
 func recoveryCodes(ctx context.Context, q *db.Queries, id uuid.UUID) ([]string, error) {
 	generation := uuid.New()
 	if err := q.StartRecoveryCodes(ctx, db.StartRecoveryCodesParams{ID: id, RecoveryCodesGeneration: &generation}); err != nil {
@@ -246,18 +150,6 @@ func lockCurrent(ctx context.Context, q *db.Queries, p store.Principal) (db.Acco
 	return account, store.AdmitBrowserSession(ctx, q, p)
 }
 
-// lockCredential is lockCurrent for a change to the account's own credentials, which also
-// needs the session's authentication to be recent once the lock is held. The handler checked
-// it before the request hashed a password or waited behind an import or another change, and
-// the shorter window can lapse during either.
-func lockCredential(ctx context.Context, q *db.Queries, p store.Principal) (db.Account, error) {
-	account, err := lockCurrent(ctx, q, p)
-	if err == nil && !p.CredentialRecent() {
-		err = domain.RecentRequired
-	}
-	return account, err
-}
-
 func (s *Service) BeginMFA(ctx context.Context, p store.Principal) (string, string, error) {
 	var secret, uri string
 	err := s.Store.Transaction(ctx, func(q *db.Queries) error {
@@ -285,21 +177,24 @@ func (s *Service) BeginMFA(ctx context.Context, p store.Principal) (string, stri
 	})
 	return secret, uri, err
 }
-func (s *Service) ConfirmMFA(ctx context.Context, p store.Principal, code string) (db.Account, []string, error) {
+
+// ConfirmMFA turns on two-factor authentication with the authenticator BeginMFA gave, once the
+// session's holder has given the password. Without it a stolen session could enrol its own
+// authenticator, and the account's owner could not sign in again even after resetting the
+// password.
+func (s *Service) ConfirmMFA(ctx context.Context, p store.Principal, current Credential, code string) (db.Account, []string, error) {
 	id := p.Account.ID
 	var account db.Account
 	var codes []string
 	if err := s.Limit(ctx, "mfa-confirm:"+id.String(), 5, 5*time.Minute); err != nil {
 		return account, nil, err
 	}
-	err := s.Store.Transaction(ctx, func(q *db.Queries) error {
-		var err error
-		account, err = lockCredential(ctx, q, p)
-		if err != nil {
-			return err
-		}
+	err := s.withCredential(ctx, p, current, nil, func(tx pgx.Tx, q *db.Queries, locked *db.Account) error {
+		account = *locked
+		// The new authenticator's code is not the credential that confirms identity, so a
+		// wrong one, or an enrolment that has lapsed, is refused as input to try again.
 		if len(account.TotpSecret) > 0 || account.TotpPendingExpiry == nil || !account.TotpPendingExpiry.After(s.Now()) {
-			return domain.Credentials
+			return domain.Invalid("code")
 		}
 		secret, err := s.Store.Keys.Open(account.TotpPending, store.TOTPIdentity(id, true))
 		if err != nil {
@@ -307,7 +202,7 @@ func (s *Service) ConfirmMFA(ctx context.Context, p store.Principal, code string
 		}
 		step, ok := matchTOTP(strings.TrimSpace(code), string(secret), s.Now(), -1)
 		if !ok {
-			return domain.Credentials
+			return domain.Invalid("code")
 		}
 		active, err := s.Store.Keys.Seal(secret, store.TOTPIdentity(id, false))
 		if err != nil {
@@ -320,20 +215,19 @@ func (s *Service) ConfirmMFA(ctx context.Context, p store.Principal, code string
 		if err != nil {
 			return err
 		}
+		if err = s.securityEvent(ctx, tx, id, MFAEnabled); err != nil {
+			return err
+		}
 		account, err = q.AccountByID(ctx, id)
 		return err
 	})
-	return account, codes, err
+	return account, codes, credentialError(err, currentField)
 }
-func (s *Service) DisableMFA(ctx context.Context, p store.Principal) (db.Account, error) {
+func (s *Service) DisableMFA(ctx context.Context, p store.Principal, current Credential) (db.Account, error) {
 	id := p.Account.ID
 	var account db.Account
-	err := s.Store.Transaction(ctx, func(q *db.Queries) error {
-		current, err := lockCredential(ctx, q, p)
-		if err != nil {
-			return err
-		}
-		if len(current.TotpSecret) == 0 {
+	err := s.withCredential(ctx, p, current, nil, func(tx pgx.Tx, q *db.Queries, locked *db.Account) error {
+		if len(locked.TotpSecret) == 0 {
 			return domain.Conflict
 		}
 		if _, err := q.DisableTOTP(ctx, id); err != nil {
@@ -342,24 +236,24 @@ func (s *Service) DisableMFA(ctx context.Context, p store.Principal) (db.Account
 		if err := q.DeleteRecoveryCodes(ctx, id); err != nil {
 			return err
 		}
+		if err := s.securityEvent(ctx, tx, id, MFADisabled); err != nil {
+			return err
+		}
+		var err error
 		account, err = q.AccountByID(ctx, id)
 		return err
 	})
-	return account, err
+	return account, credentialError(err, currentField)
 }
-func (s *Service) RegenerateRecovery(ctx context.Context, p store.Principal) (db.Account, []string, error) {
+func (s *Service) RegenerateRecovery(ctx context.Context, p store.Principal, current Credential) (db.Account, []string, error) {
 	id := p.Account.ID
 	var account db.Account
 	var codes []string
-	err := s.Store.Transaction(ctx, func(q *db.Queries) error {
-		var err error
-		account, err = lockCredential(ctx, q, p)
-		if err != nil {
-			return err
-		}
-		if len(account.TotpSecret) == 0 {
+	err := s.withCredential(ctx, p, current, nil, func(tx pgx.Tx, q *db.Queries, locked *db.Account) error {
+		if len(locked.TotpSecret) == 0 {
 			return domain.Conflict
 		}
+		var err error
 		codes, err = recoveryCodes(ctx, q, id)
 		if err != nil {
 			return err
@@ -367,12 +261,15 @@ func (s *Service) RegenerateRecovery(ctx context.Context, p store.Principal) (db
 		if err := q.BumpAuthVersion(ctx, id); err != nil {
 			return err
 		}
+		if err := s.securityEvent(ctx, tx, id, RecoveryCodesRegenerated); err != nil {
+			return err
+		}
 		account, err = q.AccountByID(ctx, id)
 		return err
 	})
-	return account, codes, err
+	return account, codes, credentialError(err, currentField)
 }
-func (s *Service) ChangePassword(ctx context.Context, p store.Principal, password string) (db.Account, error) {
+func (s *Service) ChangePassword(ctx context.Context, p store.Principal, current Credential, password string) (db.Account, error) {
 	id := p.Account.ID
 	var account db.Account
 	if err := domain.Password(password); err != nil {
@@ -386,25 +283,27 @@ func (s *Service) ChangePassword(ctx context.Context, p store.Principal, passwor
 	if err := s.refuseSpent(ctx, budgets); err != nil {
 		return account, err
 	}
-	hash, err := s.hashNewPassword(ctx, passwordShare{"account:" + id.String(), true}, budgets, password)
-	if err != nil {
-		return account, err
+	var hash string
+	hashNew := func() error {
+		var err error
+		hash, err = s.hashNewPassword(ctx, passwordShare{"account:" + id.String(), true}, budgets, password)
+		return err
 	}
-	err = s.Store.Transaction(ctx, func(q *db.Queries) error {
-		if _, err := lockCredential(ctx, q, p); err != nil {
-			return err
-		}
+	err := s.withCredential(ctx, p, current, hashNew, func(tx pgx.Tx, q *db.Queries, _ *db.Account) error {
 		if err := q.UpdatePassword(ctx, db.UpdatePasswordParams{ID: id, PasswordHash: hash}); err != nil {
 			return err
 		}
 		if err := q.DeletePasswordReset(ctx, id); err != nil {
 			return err
 		}
+		if err := s.securityEvent(ctx, tx, id, PasswordChanged); err != nil {
+			return err
+		}
 		var err error
 		account, err = q.AccountByID(ctx, id)
 		return err
 	})
-	return account, err
+	return account, credentialError(err, currentField)
 }
 
 func (s *Service) ValidateReset(ctx context.Context, token, ip string) error {
@@ -440,7 +339,7 @@ func (s *Service) CompleteReset(ctx context.Context, token, password, ip string)
 	if err != nil {
 		return account, err
 	}
-	err = s.Store.Transaction(ctx, func(q *db.Queries) error {
+	err = s.Store.TransactionTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
 		locked, err := q.LockAccount(ctx, peek.AccountID)
 		if err != nil {
 			return err
@@ -462,6 +361,9 @@ func (s *Service) CompleteReset(ctx context.Context, token, password, ip string)
 			return err
 		}
 		if err := s.clearLoginFailures(ctx, q, locked.Email, ip); err != nil {
+			return err
+		}
+		if err := s.securityEvent(ctx, tx, reset.AccountID, PasswordReset); err != nil {
 			return err
 		}
 		account, err = q.AccountByID(ctx, reset.AccountID)
