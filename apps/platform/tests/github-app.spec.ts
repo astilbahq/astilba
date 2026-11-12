@@ -2,6 +2,7 @@ import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
 import { openEnvironmentSection } from "./environment-section";
 import { signInAsOwner } from "./fixtures/owner-sign-in";
+import { api } from "./fixtures/ports";
 import {
   confirmIdentityWithPassword,
   lapseRecentConfirmationFor,
@@ -137,7 +138,7 @@ test("GitHub App authorization returns across sites, selects a repository and di
     `/api/v1/workspaces/${ws}/git-connections/${connection.id}/disconnect`,
     {
       headers: {
-        Origin: "http://127.0.0.1:15181",
+        Origin: api,
         "X-CSRF-Token": session.csrfToken,
       },
     },

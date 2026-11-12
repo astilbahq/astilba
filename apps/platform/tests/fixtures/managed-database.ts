@@ -1,5 +1,6 @@
 import { type APIRequestContext, expect, type Page } from "@playwright/test";
 import { signInAsOwner } from "./owner-sign-in";
+import { api } from "./ports";
 
 export async function managedDatabase(
   page: Page,
@@ -16,7 +17,7 @@ export async function managedDatabase(
   const session = await (await page.request.get("/api/v1/session")).json();
   const headers = {
     "X-CSRF-Token": session.csrfToken,
-    Origin: "http://127.0.0.1:15181",
+    Origin: api,
   };
   const post = async (path: string, data: unknown) => {
     const response = await page.request.post(path, { headers, data });

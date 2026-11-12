@@ -16,19 +16,24 @@ import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { test } from "node:test";
 import { promisify } from "node:util";
+import { dashboardPorts, reservePortBlock } from "./test-ports.mjs";
 
 const execute = promisify(execFile);
+// The block stays this process's while it runs, so other suites cannot take it.
+const base = await reservePortBlock();
+const ports = dashboardPorts(base);
 
 async function fixture(t) {
   const root = await mkdtemp(join(tmpdir(), "astilba-fixture-startup-"));
   t.after(() => rm(root, { recursive: true, force: true }));
-  for (const directory of ["scripts", "bin", "tmp", ".artifacts/p8/browser"])
+  for (const directory of ["scripts", "bin", "tmp", `.artifacts/p8/browser/${base}`])
     await mkdir(join(root, directory), { recursive: true });
-  await copyFile(
-    new URL("platform-fixture.mjs", import.meta.url),
-    join(root, "scripts/platform-fixture.mjs"),
-  );
-  const marker = join(root, ".artifacts/p8/browser/hosted-fixture.json");
+  for (const script of ["platform-fixture.mjs", "docker-forward.mjs", "test-ports.mjs"])
+    await copyFile(
+      new URL(script, import.meta.url),
+      join(root, "scripts", script),
+    );
+  const marker = join(root, `.artifacts/p8/browser/${base}/hosted-fixture.json`);
   const probe = join(root, "probe.json");
   const docker = join(root, "bin/docker");
   // The runtime boundary fails deliberately after probing the real proxy socket.
@@ -37,7 +42,7 @@ async function fixture(t) {
     `#!/usr/bin/env node
 const net = require("node:net");
 const fs = require("node:fs");
-const socket = net.connect(15186, "127.0.0.1");
+const socket = net.connect(Number(process.env.ASTILBA_FIXTURE_PROBE_PORT), "127.0.0.1");
 const finish = (bound) => {
   socket.destroy();
   fs.writeFileSync(process.env.ASTILBA_FIXTURE_PROBE, JSON.stringify({ bound }));
@@ -58,6 +63,8 @@ socket.setTimeout(3000, () => finish(false));
           TMPDIR: join(root, "tmp"),
           PLAT_APP_DOCKER_HOST: `unix://${join(root, "unused.sock")}`,
           ASTILBA_FIXTURE_PROBE: probe,
+          ASTILBA_FIXTURE_PROBE_PORT: String(ports.hosted),
+          PLAT_BROWSER_PORT_BASE: String(base),
         },
         timeout: 15000,
       }),
@@ -67,7 +74,7 @@ socket.setTimeout(3000, () => finish(false));
   return { root, marker, probe, run };
 }
 
-for (const port of [15185, 15186]) {
+for (const port of [ports.gitProvider, ports.hosted]) {
   test(`startup conflict on ${port} preserves another fixture's metadata and cleans owned files`, async (t) => {
     const existing = createServer();
     existing.listen(port, "127.0.0.1");
@@ -94,7 +101,7 @@ test("fixture holds the HTTPS proxy port before starting the external runtime", 
   });
   assert.deepEqual(await readdir(join(f.root, "tmp")), []);
   const released = createServer();
-  released.listen(15186, "127.0.0.1");
+  released.listen(ports.hosted, "127.0.0.1");
   await once(released, "listening");
   await new Promise((resolve) => released.close(resolve));
 });

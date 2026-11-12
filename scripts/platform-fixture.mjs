@@ -4,12 +4,16 @@ import { execFileSync, spawn } from "node:child_process";
 import { randomBytes, randomUUID, generateKeyPairSync, createHash, sign } from "node:crypto";
 import { mkdtemp, rm, writeFile, mkdir, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { forward } from "./docker-forward.mjs";
+import { dashboardPorts, portBlock } from "./test-ports.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const host = process.env.PLAT_APP_DOCKER_HOST;
 if (!host?.startsWith("unix:///"))
   throw new Error("PLAT_APP_DOCKER_HOST must select a disposable local daemon");
+// Playwright's configuration reserved this run's ports.
+const ports = dashboardPorts();
 const owned = randomUUID();
 const name = `astilba-p1-browser-${owned}`;
 const password = randomBytes(32).toString("hex");
@@ -23,8 +27,9 @@ const docker = (args) =>
 let created = false;
 let stopping = false;
 let hostedProxy;
+let database;
 let ownsHostedInfo = false;
-const hostedInfo = join(root, ".artifacts/p8/browser/hosted-fixture.json");
+const hostedInfo = join(root, `.artifacts/p8/browser/${portBlock()}/hosted-fixture.json`);
 // External provider boundary; all product requests still use the real API and PostgreSQL.
 const gitHeads = new Map();
 const gitProvider=createServer((request,response)=>{
@@ -46,7 +51,7 @@ const githubKeys = generateKeyPairSync("rsa", { modulusLength: 2048 });
 const githubCodes = new Map();
 const githubHandler = async (request, response) => {
   response.setHeader("Content-Type", "application/json");
-  const u = new URL(request.url, "http://localhost:15188");
+  const u = new URL(request.url, `http://localhost:${ports.github}`);
   if (u.pathname === "/login/oauth/authorize") {
     const code = randomUUID();
     githubCodes.set(code, { challenge: u.searchParams.get("code_challenge"), redirect: u.searchParams.get("redirect_uri") });
@@ -79,7 +84,7 @@ const githubEnv = {
  ASTILBA_GITHUB_APP_ID:"1",ASTILBA_GITHUB_APP_CLIENT_ID:"fixture-client",ASTILBA_GITHUB_APP_SLUG:"fixture-app",
  ASTILBA_GITHUB_APP_CLIENT_SECRET:"github-browser-client-secret-fixture", ASTILBA_GITHUB_APP_WEBHOOK_SECRET:"github-browser-webhook-secret-fixture",
  ASTILBA_GITHUB_APP_PRIVATE_KEY:githubKeys.privateKey.export({type:"pkcs8",format:"pem"}),
- ASTILBA_GITHUB_APP_FIXTURE_API:"http://127.0.0.1:15188",ASTILBA_GITHUB_APP_FIXTURE_WEB:"http://localhost:15188",
+ ASTILBA_GITHUB_APP_FIXTURE_API:`http://127.0.0.1:${ports.github}`,ASTILBA_GITHUB_APP_FIXTURE_WEB:`http://localhost:${ports.github}`,
 };
 
 async function cleanup() {
@@ -106,6 +111,7 @@ async function cleanup() {
         }),
     ),
   );
+  await database?.close();
   if (created) {
     const label = docker([
       "inspect",
@@ -120,18 +126,17 @@ async function cleanup() {
 for (const sig of ["SIGINT", "SIGTERM"])
   process.on(sig, () => void cleanup().then(() => process.exit(0)));
 try {
-  // Keep isolated test listeners below the default ephemeral port ranges.
   // Claim the proxy ports before allocating external runtime resources.
-  await new Promise((resolve,reject)=>{gitProvider.once("error",reject);gitProvider.listen(15185,"127.0.0.1",resolve)});
-  await new Promise((resolve,reject)=>{githubProvider.once("error",reject);githubProvider.listen(15188,"127.0.0.1",resolve)});
-  await new Promise((resolve,reject)=>{githubIPv6.once("error",reject);githubIPv6.listen(15188,"::1",resolve)});
+  await new Promise((resolve,reject)=>{gitProvider.once("error",reject);gitProvider.listen(ports.gitProvider,"127.0.0.1",resolve)});
+  await new Promise((resolve,reject)=>{githubProvider.once("error",reject);githubProvider.listen(ports.github,"127.0.0.1",resolve)});
+  await new Promise((resolve,reject)=>{githubIPv6.once("error",reject);githubIPv6.listen(ports.github,"::1",resolve)});
   const certificate=join(directory,"loopback.crt"), certificateKey=join(directory,"loopback.key");
   execFileSync("openssl",["req","-x509","-newkey","rsa:2048","-nodes","-keyout",certificateKey,"-out",certificate,"-days","1","-subj","/CN=127.0.0.1","-addext","subjectAltName=IP:127.0.0.1"],{stdio:"ignore"});
   hostedProxy=createHttpsServer({key:await readFile(certificateKey),cert:await readFile(certificate)},(incoming,outgoing)=>{
-    const upstream=httpRequest({host:"127.0.0.1",port:15187,path:incoming.url,method:incoming.method,headers:incoming.headers},response=>{outgoing.writeHead(response.statusCode,response.headers);response.pipe(outgoing)});
+    const upstream=httpRequest({host:"127.0.0.1",port:ports.hostedBackend,path:incoming.url,method:incoming.method,headers:incoming.headers},response=>{outgoing.writeHead(response.statusCode,response.headers);response.pipe(outgoing)});
     upstream.on("error",()=>outgoing.writeHead(502).end());incoming.pipe(upstream);
   });
-  await new Promise((resolve,reject)=>{hostedProxy.once("error",reject);hostedProxy.listen(15186,"127.0.0.1",resolve)});
+  await new Promise((resolve,reject)=>{hostedProxy.once("error",reject);hostedProxy.listen(ports.hosted,"127.0.0.1",resolve)});
 
   const envfile = join(directory, "postgres.env");
   await writeFile(envfile, `POSTGRES_PASSWORD=${password}\n`, { mode: 0o600 });
@@ -142,8 +147,6 @@ try {
     name,
     "--label",
     `com.astilba.p1-test=${owned}`,
-    "-p",
-    "127.0.0.1::5432",
     "--env-file",
     envfile,
     "postgres:18.4-alpine3.23@sha256:996d0920e4ff9df1fc19dacb904492f3c1ec0ec1cc338f0ad7123be7731c5f5e",
@@ -160,8 +163,11 @@ try {
     }
   }
   if (!ready) throw new Error("PostgreSQL did not become ready");
-  const address = docker(["port", name, "5432/tcp"]).trim();
-  const binary = join(root, ".artifacts/p1/browser/astilba");
+  // Nothing is published: management reaches the database through the Docker API.
+  database = await forward({ host, container: name, address: "127.0.0.1", port: 5432 });
+  const address = `127.0.0.1:${database.port}`;
+  // Each run builds its own server, so its operator commands use the one it started.
+  const binary = join(directory, "astilba");
   execFileSync(
     process.execPath,
     [join(root, "scripts/platform-build.mjs"), binary],
@@ -224,11 +230,10 @@ try {
   };
   // Vite exercises dev-only localisation against the same real API/database,
   // with its own permitted browser origin rather than bypassing CSRF checks.
-  // Port 15188 belongs to the separate OAuth provider fixture.
   start(binary, ["serve"], {
     ...env,
-    ASTILBA_LISTEN: "127.0.0.1:15189",
-    ASTILBA_ORIGIN: "http://127.0.0.1:15182",
+    ASTILBA_LISTEN: `127.0.0.1:${ports.devApi}`,
+    ASTILBA_ORIGIN: `http://127.0.0.1:${ports.dev}`,
   });
   const hostedDatabase = `hosted_${owned.replaceAll("-", "")}`;
   docker(["exec", name, "createdb", "--username", "postgres", hostedDatabase]);
@@ -241,7 +246,7 @@ try {
     ASTILBA_DEVELOPMENT: "false", ASTILBA_HOSTED: "true",
     ASTILBA_HOSTED_COHORT_LIMIT: "5", ASTILBA_HOSTED_SERVER_LIMIT: "2",
     ASTILBA_HOSTED_SUPPORT: "Fixture: asynchronous support weekdays.",
-    ASTILBA_LISTEN: "127.0.0.1:15187", ASTILBA_ORIGIN: "https://127.0.0.1:15186",
+    ASTILBA_LISTEN: `127.0.0.1:${ports.hostedBackend}`, ASTILBA_ORIGIN: `https://127.0.0.1:${ports.hosted}`,
   };
   execFileSync(binary,["keygen","--out",hostedEnv.ASTILBA_KEYRING],{env:hostedEnv,stdio:"inherit"});
   execFileSync(binary,["migrate"],{env:hostedEnv,stdio:"inherit"});
@@ -253,7 +258,7 @@ try {
     }
   }
   start(binary,["serve"],hostedEnv);
-  await mkdir(join(root,".artifacts/p8/browser"),{recursive:true});
+  await mkdir(dirname(hostedInfo),{recursive:true});
   const operatorEnv=Object.fromEntries(["ASTILBA_DATABASE_URL","ASTILBA_KEYRING","ASTILBA_HOSTED","ASTILBA_HOSTED_COHORT_LIMIT","ASTILBA_HOSTED_SERVER_LIMIT","ASTILBA_HOSTED_SUPPORT"].map(key=>[key,hostedEnv[key]]));
   ownsHostedInfo = true;
   await writeFile(hostedInfo,JSON.stringify({binary,env:operatorEnv,host,container:name,owner:owned,database:hostedDatabase}),{mode:0o600});
@@ -271,8 +276,8 @@ try {
     }
     if (!ready) throw new Error("API fixture did not become ready");
   };
-  await waitReady(15187);
-  await waitReady(15189);
+  await waitReady(ports.hostedBackend);
+  await waitReady(ports.devApi);
   // Playwright waits for this server, so it starts after every other fixture is ready.
   start(binary, ["serve"], {
     ...env,
@@ -281,11 +286,11 @@ try {
     ASTILBA_SMTP_MODE: "console",
     ASTILBA_SMTP_ADDRESS: "", ASTILBA_SMTP_USERNAME: "", ASTILBA_SMTP_PASSWORD: "",
     ASTILBA_SMTP_FROM: "accounts@localhost",
-    ASTILBA_LISTEN: "127.0.0.1:15181",
-    ASTILBA_ORIGIN: "http://127.0.0.1:15181",
+    ASTILBA_LISTEN: `127.0.0.1:${ports.api}`,
+    ASTILBA_ORIGIN: `http://127.0.0.1:${ports.api}`,
     ASTILBA_TROUBLESHOOTING: "single-instance",
   });
-  await waitReady(15181);
+  await waitReady(ports.api);
   await new Promise(() => {});
 } catch (error) {
   await cleanup();
