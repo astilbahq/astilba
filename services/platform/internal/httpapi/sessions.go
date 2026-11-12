@@ -40,8 +40,8 @@ type sessionLoad struct {
 	deviceToken string
 	// lineage is the loaded session's chain of renewed tokens, which a logout ends.
 	lineage uuid.UUID
-	// logout makes deleting the loaded token end its whole lineage. See endLineage.
-	logout bool
+	// staleCSRF is the CSRF token of a loaded session that dropStaleSession ended. See csrfToken.
+	staleCSRF string
 }
 
 type sessionStore struct {
@@ -51,14 +51,8 @@ type sessionStore struct {
 }
 
 func (s *sessionStore) DeleteCtx(ctx context.Context, token string) error {
-	loaded, _ := ctx.Value(sessionLoadKey{}).(*sessionLoad)
-	if loaded != nil && loaded.token == token {
-		if loaded.replaceLive || loaded.keepRow {
-			return nil
-		}
-		if loaded.logout {
-			return s.endLineage(ctx, loaded.lineage)
-		}
+	if loaded, _ := ctx.Value(sessionLoadKey{}).(*sessionLoad); loaded != nil && (loaded.replaceLive || loaded.keepRow) && loaded.token == token {
+		return nil
 	}
 	return s.PostgresStore.DeleteCtx(ctx, token)
 }
@@ -68,8 +62,8 @@ func (s *sessionStore) DeleteCtx(ctx context.Context, token string) error {
 // with a renewal of the lineage: one that committed first has its new token deleted here,
 // and one that comes after finds its old token gone and refuses. A token that a later sign-in
 // issued starts its own lineage, so it stays signed in.
-func (s *sessionStore) endLineage(ctx context.Context, lineage uuid.UUID) error {
-	return s.store.Transaction(ctx, func(q *db.Queries) error {
+func endLineage(ctx context.Context, st *store.Store, lineage uuid.UUID) error {
+	return st.Transaction(ctx, func(q *db.Queries) error {
 		if err := q.LockSessionLineage(ctx, lineage); err != nil {
 			return err
 		}
@@ -93,7 +87,7 @@ func (s *sessionStore) renewLive(ctx context.Context, previous, token string, li
 			return err
 		}
 		// A logout or another renewal may have won: never recreate its authority.
-		if n, err := q.DeleteRenewedSession(ctx, db.DeleteRenewedSessionParams{Token: previous, Lineage: lineage}); err != nil {
+		if n, err := q.DeleteRenewedSession(ctx, previous); err != nil {
 			return err
 		} else if n == 0 {
 			return errSessionRevoked
@@ -276,20 +270,26 @@ func (s *Server) rotate(ctx context.Context, a db.Account, mfa bool) error {
 func (s *Server) dropStaleSession(ctx context.Context, keepRow bool) error {
 	loaded := ctx.Value(sessionLoadKey{}).(*sessionLoad)
 	loaded.keepCookie, loaded.keepRow = true, keepRow
+	loaded.staleCSRF = s.Sessions.GetString(ctx, "csrf")
 	return s.Sessions.Destroy(ctx)
 }
 
 // csrfToken returns the token a mutation must present. With no live session it derives
 // from the cookie the browser already holds, so a request carrying a dead token can be
-// answered without replacing a cookie that may have been renewed meanwhile. It authorizes
-// only what an anonymous session may do. Like a stored token it reaches only same-origin
-// script, and knowing it requires the unguessable cookie, which __Host- stops another
-// host planting; the hash keeps that cookie from script.
+// answered without replacing a cookie that may have been renewed meanwhile. A session whose
+// account moved on while its row remains keeps its stored token instead, which the page
+// already holds, so it can still log out the renewal that a credential change is about to
+// make. Either authorizes only what an anonymous session may do. Like a stored token it
+// reaches only same-origin script, and knowing it requires the unguessable cookie, which
+// __Host- stops another host planting; the hash keeps that cookie from script.
 func (s *Server) csrfToken(ctx context.Context) string {
 	token := s.Sessions.GetString(ctx, "csrf")
 	loaded := ctx.Value(sessionLoadKey{}).(*sessionLoad)
 	if token != "" || s.Sessions.Token(ctx) != "" || loaded.presented == "" {
 		return token
+	}
+	if loaded.staleCSRF != "" {
+		return loaded.staleCSRF
 	}
 	derived := sha256.Sum256([]byte("astilba dead session csrf\x00" + loaded.presented))
 	return base64.RawURLEncoding.EncodeToString(derived[:])

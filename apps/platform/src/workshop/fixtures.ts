@@ -35,11 +35,18 @@ export function scenario(session: Session, ...actions: AnyHandler[]) {
   };
 }
 
+// Signing out reads the session again to confirm that it ended. Stories share handlers, so
+// each story starts signed in again (see createWorkshopState).
+let signedOut = false;
+export function resetWorkshopSignOut() {
+  signedOut = false;
+}
+
 export function sessionHandlers(session = guest, hosted = false) {
-  // Signing out reads the session again to confirm that it ended.
-  let current = session;
   return [
-    http.get("/api/v1/session", () => HttpResponse.json(current)),
+    http.get("/api/v1/session", () =>
+      HttpResponse.json(signedOut ? guest : session),
+    ),
     http.get("/api/v1/hosting", () =>
       HttpResponse.json({
         enabled: hosted,
@@ -48,7 +55,7 @@ export function sessionHandlers(session = guest, hosted = false) {
       }),
     ),
     http.post("/api/v1/auth/logout", () => {
-      current = guest;
+      signedOut = true;
       return new HttpResponse(null, { status: 204 });
     }),
   ];

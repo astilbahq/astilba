@@ -57,6 +57,101 @@ func TestLogoutEndsARenewalThatRacedIt(t *testing.T) {
 	}
 }
 
+// A credential change commits to the account before it renews the session's token, and the
+// session is stale meanwhile. A logout in that gap must still win: the renewal is refused and
+// the browser ends signed out.
+func TestLogoutBetweenCredentialChangeAndRenewal(t *testing.T) {
+	f := setup(t)
+	other := f.browser(t)
+	other.login("owner@example.test", f.password)
+	gate, release := holdSessions(t, f)
+	b := f.browser(t)
+	b.login("owner@example.test", f.password)
+	loaded := b.client.Jar.Cookies(mustURL(f.server.URL))
+
+	gate.armedCommit.Store(true)
+	finish := sendHeld(t, b, gate, loaded, "POST", "/api/v1/auth/password", map[string]string{"password": "replacement password here"})
+	b.call("POST", "/api/v1/auth/logout", nil, 204, nil)
+	release()
+
+	if result := finish(); result.status != 401 || len(sessionCookies(result.cookies)) != 0 {
+		t.Fatalf("the renewal after logout answered %d with cookies %v: %s", result.status, result.cookies, result.body)
+	}
+	if session := sessionFromCookies(t, b, loaded); session.User != nil {
+		t.Fatal("the logged-out token is still signed in")
+	}
+	if session := other.session(); session.User != nil {
+		t.Fatal("the password change did not end the other sign-in")
+	}
+}
+
+// Choosing another account at the second-factor step logs out the pending sign-in. A code
+// submitted from another tab at the same moment must not complete it afterwards.
+func TestLogoutBeforeSecondFactorCompletes(t *testing.T) {
+	f := setup(t)
+	codes := enableMFA(t, f.browser(t).withLogin("owner@example.test", f.password))
+	gate, release := holdSessions(t, f)
+	b := f.browser(t)
+	if pending := b.login("owner@example.test", f.password); !pending.MfaPending {
+		t.Fatal("expected the sign-in to wait for its second factor")
+	}
+	loaded := b.client.Jar.Cookies(mustURL(f.server.URL))
+
+	gate.armedCommit.Store(true)
+	finish := sendHeld(t, b, gate, loaded, "POST", "/api/v1/auth/mfa", map[string]string{"code": codes.Codes[0]})
+	b.call("POST", "/api/v1/auth/logout", nil, 204, nil)
+	release()
+
+	if result := finish(); result.status != 401 || len(sessionCookies(result.cookies)) != 0 {
+		t.Fatalf("the second factor after logout answered %d with cookies %v: %s", result.status, result.cookies, result.body)
+	}
+	if session := sessionFromCookies(t, b, loaded); session.User != nil || session.MfaPending {
+		t.Fatal("the logged-out sign-in is still open")
+	}
+}
+
+// A logout that reaches a lineage while a renewal of it is still in its transaction waits for
+// the renewal, then ends the token it inserted. Without the shared lock the logout's delete
+// would wait on the old row only and miss the new one.
+func TestLogoutWaitsForARenewalInProgress(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	b := f.browser(t)
+	b.login("owner@example.test", f.password)
+	var lineage string
+	cookie := b.client.Jar.Cookies(mustURL(f.server.URL))[0]
+	if err := f.st.Pool.QueryRow(ctx, "SELECT lineage::text FROM sessions WHERE token=$1", hashedSessionToken(cookie.Value)).Scan(&lineage); err != nil {
+		t.Fatal(err)
+	}
+	// Writes to the sessions table wait here, which stops the renewal after it has taken the
+	// lineage's lock and before it deletes the old token.
+	held, err := f.st.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { held.Rollback(ctx) })
+	if _, err = held.Exec(ctx, "LOCK TABLE sessions IN SHARE MODE"); err != nil {
+		t.Fatal(err)
+	}
+	renewal := b.send("POST", "/api/v1/auth/reauthenticate", map[string]string{"password": f.password})
+	awaitLockWait(t, f, "name: DeleteRenewedSession")
+	logout := b.send("POST", "/api/v1/auth/logout", nil)
+	awaitLockWait(t, f, "name: LockSessionLineage")
+	if err = held.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	requireReply(t, <-renewal, 200)
+	requireReply(t, <-logout, 204)
+	var remaining int
+	if err = f.st.Pool.QueryRow(ctx, "SELECT count(*) FROM sessions WHERE lineage=$1::uuid", lineage).Scan(&remaining); err != nil {
+		t.Fatal(err)
+	}
+	if remaining != 0 {
+		t.Fatal("the logout left the renewal's token signed in")
+	}
+}
+
 // Logging out with a token that has already ended still answers 204 and ends nothing else.
 func TestLogoutWithAnEndedTokenSucceeds(t *testing.T) {
 	f := setup(t)

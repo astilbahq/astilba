@@ -330,6 +330,31 @@ test("login preserves the destination and sign-out hides the application", async
   await expect(page.getByLabel("Workspace navigation")).toHaveCount(0);
 });
 
+test("sign-out still signs out after another tab renewed the session", async ({
+  page,
+  baseURL,
+}) => {
+  await page.goto("/login");
+  await signIn(page);
+  await expect(page.getByLabel("Workspace navigation")).toBeVisible();
+
+  // Confirming identity elsewhere replaces the cookie and its CSRF token, so this page's
+  // first logout is refused.
+  const session = await (await page.request.get("/api/v1/session")).json();
+  const renewal = await page.request.post("/api/v1/auth/reauthenticate", {
+    data: { password: "correct horse battery staple" },
+    headers: { "X-CSRF-Token": session.csrfToken, Origin: baseURL! },
+  });
+  expect(renewal.status()).toBe(200);
+
+  await page.getByRole("button", { name: /^Account menu for/ }).click();
+  await page.getByRole("menuitem", { name: "Sign out", exact: true }).click();
+  await expect(page).toHaveURL(`${baseURL}/login`);
+  expect(
+    (await (await page.request.get("/api/v1/session")).json()).user,
+  ).toBeFalsy();
+});
+
 test("public auth pages share an accessible layout without application navigation", async ({
   page,
   baseURL,

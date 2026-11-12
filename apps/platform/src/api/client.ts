@@ -85,7 +85,15 @@ export async function signOut({ signal }: { signal?: AbortSignal } = {}) {
       if (!(error instanceof ApiError) || error.status !== 403) throw error;
       refused = error;
     }
-    const session = setSession(await loadSession({ signal }));
+    let session: Session;
+    try {
+      session = setSession(await loadSession({ signal }));
+    } catch (error) {
+      // The page that follows a sign-out reads the session itself, so an accepted logout
+      // need not wait for this check.
+      if (refused === undefined) return;
+      throw error;
+    }
     if (!session.user && !session.mfaPending) return;
   }
   throw refused ?? new Error("The session is still signed in.");

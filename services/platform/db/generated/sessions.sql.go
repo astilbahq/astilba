@@ -57,17 +57,12 @@ func (q *Queries) BrowserSessionSnapshotAdmission(ctx context.Context, arg Brows
 }
 
 const deleteRenewedSession = `-- name: DeleteRenewedSession :execrows
-DELETE FROM sessions WHERE token = $1 AND lineage = $2
+DELETE FROM sessions WHERE token = $1
 `
 
-type DeleteRenewedSessionParams struct {
-	Token   string    `json:"token"`
-	Lineage uuid.UUID `json:"lineage"`
-}
-
 // unscoped: the hashed browser session token is the credential.
-func (q *Queries) DeleteRenewedSession(ctx context.Context, arg DeleteRenewedSessionParams) (int64, error) {
-	result, err := q.db.Exec(ctx, deleteRenewedSession, arg.Token, arg.Lineage)
+func (q *Queries) DeleteRenewedSession(ctx context.Context, token string) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteRenewedSession, token)
 	if err != nil {
 		return 0, err
 	}
