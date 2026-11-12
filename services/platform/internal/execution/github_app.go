@@ -372,7 +372,8 @@ func (s *Service) ConnectGitHub(ctx context.Context, p store.Principal, ws, gran
 	return out, e
 }
 func (s *Service) DisconnectGitHub(ctx context.Context, p store.Principal, ws, id uuid.UUID) error {
-	return s.scope(ctx, p, ws, workspaceAccess{Write: true, Owner: true, Recent: true}, "git.github.disconnect", id, func(tx pgx.Tx) error {
+	// Disconnecting only takes access away, so a lapsed workspace can still do it.
+	return s.scope(ctx, p, ws, workspaceAccess{Write: true, Owner: true, Recent: true, Revocation: true}, "git.github.disconnect", id, func(tx pgx.Tx) error {
 		q := db.New(tx)
 		connection, e := q.GetGitConnection(ctx, db.GetGitConnectionParams{WorkspaceID: ws, ID: id})
 		if e != nil {
