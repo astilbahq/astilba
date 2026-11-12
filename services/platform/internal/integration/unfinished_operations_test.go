@@ -18,27 +18,40 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/execution"
 )
 
+// operationStates is every state the operations table allows, read from its CHECK constraint.
+func operationStates(t *testing.T, f *fixture) []string {
+	t.Helper()
+	var check string
+	if err := f.st.Pool.QueryRow(context.Background(), `SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conrelid='execution_operations'::regclass AND conname='execution_operations_state_check'`).Scan(&check); err != nil {
+		t.Fatal(err)
+	}
+	states := []string{}
+	for _, state := range regexp.MustCompile(`'([a-z_]+)'::text`).FindAllStringSubmatch(check, -1) {
+		states = append(states, state[1])
+	}
+	if len(states) == 0 {
+		t.Fatalf("no states in %s", check)
+	}
+	return states
+}
+
 // execution_unfinished_server holds a host's unfinished operations, so its predicate admits exactly
 // the states the table allows that don't end an operation. A state added to the table, or a change
 // to which states end one, fails here until the index agrees.
 func TestUnfinishedIndexHoldsExactlyTheStatesThatHaveNotEnded(t *testing.T) {
 	ctx := context.Background()
 	f := setup(t)
-	var check, predicate string
-	if err := f.st.Pool.QueryRow(ctx, `SELECT pg_get_constraintdef(c.oid),(SELECT pg_get_expr(i.indpred,i.indrelid) FROM pg_index i WHERE i.indexrelid='execution_unfinished_server'::regclass) FROM pg_constraint c WHERE c.conrelid='execution_operations'::regclass AND c.conname='execution_operations_state_check'`).Scan(&check, &predicate); err != nil {
+	var predicate string
+	if err := f.st.Pool.QueryRow(ctx, `SELECT pg_get_expr(indpred,indrelid) FROM pg_index WHERE indexrelid='execution_unfinished_server'::regclass`).Scan(&predicate); err != nil {
 		t.Fatal(err)
 	}
-	states := regexp.MustCompile(`'([a-z_]+)'::text`).FindAllStringSubmatch(check, -1)
-	if len(states) == 0 {
-		t.Fatalf("no states in %s", check)
-	}
-	for _, state := range states {
+	for _, state := range operationStates(t, f) {
 		var indexed bool
-		if err := f.st.Pool.QueryRow(ctx, `SELECT `+predicate+` FROM (SELECT $1::text AS state) operation`, state[1]).Scan(&indexed); err != nil {
+		if err := f.st.Pool.QueryRow(ctx, `SELECT `+predicate+` FROM (SELECT $1::text AS state) operation`, state).Scan(&indexed); err != nil {
 			t.Fatal(err)
 		}
-		if ended := execution.Terminal(api.ExecutionState(state[1])); indexed == ended {
-			t.Errorf("state %s ends an operation: %v; the index holds it: %v", state[1], ended, indexed)
+		if ended := execution.Terminal(api.ExecutionState(state)); indexed == ended {
+			t.Errorf("state %s ends an operation: %v; the index holds it: %v", state, ended, indexed)
 		}
 	}
 }
@@ -57,6 +70,36 @@ func TestHostOperationQueriesDoNotReadHistory(t *testing.T) {
 	}
 	t.Logf("%d queries read a host's unfinished operations", len(queries))
 	f := setup(t)
+	// Each lists the states it reads, so each list is one of these exactly, and a state added to
+	// the table fails here until every query agrees. Excluding states would read history: the
+	// planner estimates NOT IN as if most rows matched.
+	unfinished, started := []string{}, []string{}
+	for _, state := range operationStates(t, f) {
+		if !execution.Terminal(api.ExecutionState(state)) {
+			unfinished = append(unfinished, state)
+			if state != "queued" {
+				started = append(started, state)
+			}
+		}
+	}
+	slices.Sort(unfinished)
+	slices.Sort(started)
+	for _, q := range queries {
+		for _, list := range stateLists.FindAllStringSubmatch(q.sql, -1) {
+			states := []string{}
+			for _, state := range quotedState.FindAllStringSubmatch(list[2], -1) {
+				states = append(states, state[1])
+			}
+			slices.Sort(states)
+			ended := !slices.ContainsFunc(states, func(state string) bool { return !execution.Terminal(api.ExecutionState(state)) })
+			switch {
+			case list[1] != "":
+				t.Errorf("%s excludes states; list the unfinished ones: %s", q.at, list[0])
+			case !ended && !slices.Equal(states, unfinished) && !slices.Equal(states, started):
+				t.Errorf("%s reads %v, not the unfinished states %v or the started ones %v", q.at, states, unfinished, started)
+			}
+		}
+	}
 	b := f.browser(t)
 	ws := b.login("owner@example.test", f.password).Workspaces[0].Id
 	_, in, _ := enrollment(t, f, b, ws, "deployment")
@@ -72,11 +115,11 @@ func TestHostOperationQueriesDoNotReadHistory(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer conn.Release()
-	// Ended operations on the one host, in every ended state.
+	// Ended operations on the one host, of several kinds and in every ended state.
 	history := func(count int) {
 		t.Helper()
 		if _, err := f.st.Pool.Exec(ctx, `INSERT INTO execution_operations(id,workspace_id,server_id,generation,request_key,command,kind,state,report_sequence,created_at)
-SELECT gen_random_uuid(),$1,$2,1,gen_random_uuid(),'{}','network',(ARRAY['succeeded','failed','cancelled'])[1+i%3],1,now()-interval '1 day'-i*interval '1 second' FROM generate_series(1,$3::int) i`, ws, in.ServerId, count); err != nil {
+SELECT gen_random_uuid(),$1,$2,1,gen_random_uuid(),'{}',(ARRAY['network','visual','crosshost','backup'])[1+i%4],(ARRAY['succeeded','failed','cancelled'])[1+i%3],1,now()-interval '1 day'-i*interval '1 second' FROM generate_series(1,$3::int) i`, ws, in.ServerId, count); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := f.st.Pool.Exec(ctx, `ANALYZE execution_operations`); err != nil {
@@ -137,19 +180,23 @@ SELECT gen_random_uuid(),$1,$2,1,gen_random_uuid(),'{}','network',(ARRAY['succee
 
 type hostOperationQuery struct{ at, sql string }
 
+var (
+	stateLists  = regexp.MustCompile(`\bstate (NOT )?IN ?\(([^)]*)\)`)
+	quotedState = regexp.MustCompile(`'([a-z_]+)'`)
+)
+
 // hostOperationQueries is every SQL literal in the module's code, sqlc's included, that reads a
 // host's operations for unfinished ones: it excludes states, or names one that hasn't ended.
 // Lookups of ended operations alone read history by design, and PLAT-317 bounds them.
 func hostOperationQueries(t *testing.T) []hostOperationQuery {
 	t.Helper()
 	host := regexp.MustCompile(`\bserver_id ?= ?\$\d`)
-	states := regexp.MustCompile(`\bstate (NOT )?IN ?\(([^)]*)\)`)
 	unfinished := func(sql string) bool {
-		for _, list := range states.FindAllStringSubmatch(sql, -1) {
+		for _, list := range stateLists.FindAllStringSubmatch(sql, -1) {
 			if list[1] != "" {
 				return true
 			}
-			for _, state := range regexp.MustCompile(`'([a-z_]+)'`).FindAllStringSubmatch(list[2], -1) {
+			for _, state := range quotedState.FindAllStringSubmatch(list[2], -1) {
 				if !execution.Terminal(api.ExecutionState(state[1])) {
 					return true
 				}

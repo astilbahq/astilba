@@ -139,7 +139,7 @@ WHERE workspace_id = @workspace_id AND server_id = @server_id AND status->>'phas
 -- choice left to make.
 SELECT o.id FROM execution_operations o JOIN cross_host_operations c ON c.id=o.id AND c.workspace_id=o.workspace_id
 WHERE o.workspace_id = @workspace_id AND o.server_id = @server_id AND o.parent_id IS NULL AND o.kind='crosshost'
-    AND o.state NOT IN ('succeeded','failed','cancelled') AND c.phase='maintenance-owner';
+    AND o.state IN ('queued','dispatched','running','needs_attention') AND c.phase='maintenance-owner';
 
 -- name: ResumeMaintenanceSource :exec
 UPDATE cross_host_operations SET phase='maintenance-resume-source' WHERE workspace_id = @workspace_id AND id = @id;
