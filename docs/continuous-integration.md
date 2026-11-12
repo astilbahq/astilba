@@ -376,6 +376,29 @@ line above is only that comment. Move statements into
 `services/platform/db/queries` to reduce the count; moving legacy inline SQL to
 another package counts as new SQL, so convert it to sqlc as part of the move.
 
+## Migration numbers
+
+A new migration in `services/platform/db/migrations` takes `main`'s highest number
+plus one, and `Version` in `db/migrate.go` changes to match. Goose runs without
+out-of-order migrations. A number below the highest a database has applied makes
+`migrate up` refuse that database, although a fresh test database migrates without
+complaint. A number already used stops goose loading the migrations at all, but only
+the slow database tests show that.
+
+`TestMigrationNumbersAreConsecutive` in `db/migration_numbers_test.go` runs in
+`make check-app`'s short Go tests. It fails, naming the files, when a file is not
+named `NNNNN_lower_case_words.sql`, when two files share a number, when the numbers
+do not run from `00001` without a gap, or when `Version` is not the highest. It
+ignores hidden files that are not `.sql`, such as `.DS_Store`.
+
+Pull requests and merge groups test the merge with `main`, where a stale number
+shows up as one of these. Two branches that both took the next number become a
+duplicate once the first lands. A pull request that reserves a later number while
+earlier ones are still in review leaves a gap, so its own runs fail until it is
+renumbered to `main`'s highest plus one, normally just before it is queued. So there
+is no separate comparison with `origin/main`. A pull request's run tests `main` as
+it was when the run started; the merge group's run is the one that counts.
+
 ## Repository analyzers
 
 `make check-app` runs `services/platform/internal/lint/astilba-lint` over non-test
