@@ -583,6 +583,7 @@ export default interface Resources {
       "activity": "Terminal session refused: {{reason}}",
       "activityUnknown": "Terminal session refused.",
       "agentUpdate": "This server’s agent needs updating before it can open terminal sessions.",
+      "elevated": "This service is privileged or shares a volume or network with a privileged service, so a terminal in it could control the server.",
       "emailVerificationRequired": "This person needs a verified email address to open terminal sessions.",
       "environment": "An owner has not allowed terminal sessions in this environment.",
       "forbidden": "This person is not allowed to open terminal sessions here.",
