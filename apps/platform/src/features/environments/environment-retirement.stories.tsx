@@ -345,7 +345,8 @@ export const RetireAnnounced: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await canvas.findByRole("heading", { level: 1, name: "Development" });
+    // The tabs are the loaded page, not its loading fallback.
+    await canvas.findByRole("tab", { name: "Settings" });
     const regions = canvas.getAllByRole("status");
     const dialog = within(await openRetireDialog(canvasElement));
     await userEvent.type(

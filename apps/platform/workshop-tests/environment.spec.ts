@@ -155,9 +155,12 @@ test("local sections retain specification and layout drafts without a leave prom
   await position.fill("25");
   await position.press("Tab");
   await overview.click();
-  await expect(page.getByRole("status")).toContainText(
-    "You have unsaved configuration or layout changes.",
-  );
+  // The page's lifecycle status region is always there too, empty.
+  await expect(
+    page.getByRole("status").filter({
+      hasText: "You have unsaved configuration or layout changes.",
+    }),
+  ).toBeVisible();
   await configuration.click();
   await expect(position).toHaveValue("25");
   await page.getByText("Advanced specification", { exact: true }).click();
@@ -257,7 +260,9 @@ test("reload confirmation preserves focus, supports cancellation and keeps the d
     .getByRole("button", { name: "Reload current", exact: true })
     .click();
   await dialog.getByRole("button", { name: "Discard and reload" }).click();
-  await expect(page.getByRole("status")).toHaveText("Current revision loaded.");
+  await expect(
+    page.getByRole("status").filter({ hasText: "Current revision loaded." }),
+  ).toHaveText("Current revision loaded.");
   await expect(
     page.getByRole("button", { name: "Save revision", exact: true }),
   ).toBeDisabled();
