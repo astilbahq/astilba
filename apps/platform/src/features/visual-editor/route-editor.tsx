@@ -156,7 +156,7 @@ export function RouteEditor({
             Allowed client networks (CIDRs, required for TCP)
             <Textarea
               name="cidrs"
-              defaultValue={route?.allowCidrs.join("\n") ?? ""}
+              defaultValue={route?.allowCidrs?.join("\n") ?? ""}
             />
           </Label>
           <details className={s.workspaceUtility}>

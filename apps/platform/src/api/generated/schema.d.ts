@@ -3109,7 +3109,8 @@ export interface components {
             listenPort: number;
             /** @enum {string} */
             tls: "off" | "managed" | "passthrough";
-            allowCidrs: string[];
+            /** @description Source ranges allowed to reach the route. Null and an empty list both mean no allowlist; revisions derived from a Compose file without one keep null, because stored revisions and plan digests depend on that encoding. */
+            allowCidrs: string[] | null;
             advanced?: components["schemas"]["RouteOptions"];
         };
         ReleaseOptions: {

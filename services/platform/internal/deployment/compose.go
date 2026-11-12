@@ -150,14 +150,19 @@ func SourceNetworkName(unit, id uuid.UUID, name string) string {
 	return NetworkName(id)
 }
 
+// routeClaim is the endpoint a route takes on its server: an HTTP host name, or a TCP
+// listen port, which TCP routes match on whatever name a client sends.
+func routeClaim(r domain.Route) string {
+	if r.Protocol == "tcp" {
+		return fmt.Sprintf("tcp:%d", r.ListenPort)
+	}
+	return "http:" + r.Domain
+}
+
 func Claims(p Plan) ([]string, error) {
 	out := []string{}
 	for _, r := range p.Specification.Routes {
-		claim := "http:" + r.Domain
-		if r.Protocol == "tcp" {
-			claim = fmt.Sprintf("tcp:%d", r.ListenPort)
-		}
-		out = append(out, claim)
+		out = append(out, routeClaim(r))
 	}
 	if p.Specification.Compose != nil {
 		source, err := SourceProject(p, nil)
