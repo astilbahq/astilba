@@ -14,7 +14,7 @@ Select only the capabilities the caller needs. Build-only callers can discover t
 
 A plan request naming a release command or accepting drift returns 403 unless the credential also holds `configuration:write`. A release command runs with the environment's secrets and drift acceptance overrides a safety refusal, so a credential that can only plan and apply deploys what is saved. It can still set release timeouts with an empty command. A credential with `configuration:write`, `deployment:plan` and `deployment:apply` together can deploy any stateless configuration, so grant that combination only where a caller needs it.
 
-Draft saves and plan requests check the base revision before anything else. A stale base returns 409, and the current revision comes with it only for a credential holding `environment:read`. A credential without that capability therefore learns nothing about the draft or environment until it names the current revision.
+Draft saves and plan requests check the base revision before comparing the request with the draft or environment. A stale base returns 409. On a draft save, the current revision comes with it only for a browser or a credential holding `environment:read`. A credential without that capability therefore learns nothing about the draft or environment from these requests until it names the current revision. Listing build targets shows the current revision, so this doesn't hold for a credential that also holds `build:run`. A credential that can plan sees the whole draft in its plans.
 
 ## Credential lifetime
 
