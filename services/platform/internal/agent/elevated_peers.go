@@ -248,8 +248,14 @@ func (e *Engine) fenceTerminals(ctx context.Context, p deployment.Plan, args []s
 		}
 	}
 	up := slices.Index(args, "up")
-	if up >= 0 && !slices.Contains(args, "--force-recreate") && slices.ContainsFunc(slices.Collect(maps.Values(entered)), func(c enteredContainer) bool { return len(targets) == 0 || targets[c.App] }) {
-		args = slices.Insert(slices.Clone(args), up+1, "--force-recreate")
+	if up >= 0 && !slices.Contains(args, "--force-recreate") {
+		recreate, err := e.enteredStill(ctx, entered, func(app uuid.UUID) bool { return len(targets) == 0 || targets[app] })
+		if err != nil {
+			return nil, err
+		}
+		if recreate {
+			args = slices.Insert(slices.Clone(args), up+1, "--force-recreate")
+		}
 	}
 	starts := up >= 0 && !slices.Contains(args, "--no-start") && (next.unreadable || len(targets) == 0 || slices.ContainsFunc(slices.Collect(maps.Keys(targets)), func(app uuid.UUID) bool { return next.elevation.Privileged[app] }))
 	if !starts {
@@ -318,6 +324,29 @@ func (e *Engine) fenceTerminals(ctx context.Context, p deployment.Plan, args []s
 		slog.Info("stopped a container a terminal session entered, because a privileged service can reach it", "container", id, "service", entered[id].App)
 	}
 	return args, nil
+}
+
+// enteredStill reports whether a container a session entered, of a service chosen by include,
+// still exists. It forgets those that are gone, such as one Compose has already replaced, so a
+// service is recreated only while a container a session entered remains. A container that
+// cannot be inspected counts as remaining.
+func (e *Engine) enteredStill(ctx context.Context, entered map[string]enteredContainer, include func(uuid.UUID) bool) (bool, error) {
+	still := false
+	for _, id := range slices.Sorted(maps.Keys(entered)) {
+		if !include(entered[id].App) {
+			continue
+		}
+		_, err := e.Docker.ContainerInspect(ctx, id, client.ContainerInspectOptions{})
+		if !errdefs.IsNotFound(err) {
+			still = true
+			continue
+		}
+		if err = e.Journal.forgetEnteredContainer(id); err != nil {
+			return false, err
+		}
+		delete(entered, id)
+	}
+	return still, nil
 }
 
 // incomingRefuses reports whether the plan a unit's Compose project last ran with refuses a

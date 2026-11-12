@@ -424,6 +424,14 @@ func TestFenceRecreatesEnteredServicesAndSkipsStoppedContainers(t *testing.T) {
 	if args, err = e.fenceTerminals(context.Background(), elevated, upService(ids["web"])); err != nil || slices.Contains(args, "--force-recreate") {
 		t.Fatalf("a service no session entered was recreated: %v %v", args, err)
 	}
+	// Once Compose has replaced the entered container, later runs leave the service alone.
+	gone := d.find("runner")
+	d.containers = slices.DeleteFunc(d.containers, func(c map[string]any) bool { return c["Id"] == "runner" })
+	if args, err = e.fenceTerminals(context.Background(), elevated, upService(ids["runner"])); err != nil || slices.Contains(args, "--force-recreate") {
+		t.Fatalf("a replaced container's service was recreated again: %v %v", args, err)
+	}
+	d.containers = append(d.containers, gone)
+	admit(t, e, plan.UnitID, ids["runner"], "runner")
 	d.find("runner")["State"] = map[string]any{"Running": false, "Status": "exited"}
 	d.find("runner")["HostConfig"] = map[string]any{"RestartPolicy": map[string]any{"Name": "no"}}
 	d.find("client")["State"] = map[string]any{"Running": false, "Dead": true, "Status": "dead"}
