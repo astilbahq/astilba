@@ -6,10 +6,10 @@ import {
   laneBudget,
   packageTimes,
   recentJobs,
-  syncIssue,
 } from "./lane-budget.mjs";
 
-const integration = "github.com/astilbahq/astilba/services/platform/internal/integration";
+const integration =
+  "github.com/astilbahq/astilba/services/platform/internal/integration";
 
 test("the integration package warns at the same budget", () => {
   const fixture = readFileSync(
@@ -67,24 +67,34 @@ test("reports a lane whose median is past the budget, with its timed-out runs", 
     600,
   );
   assert.equal(problems.length, 1);
-  assert.match(problems[0], /remaining: `pkg` has a median of 610s over 3 runs/);
+  assert.match(
+    problems[0].line,
+    /remaining: `pkg` has a median of 610s over 3 runs/,
+  );
+  // Today's median is not part of the key, so the issue does not comment every day.
+  assert.equal(problems[0].key, "over\tremaining\tpkg");
 });
 
 test("fewer than three runs of a lane decide nothing", () => {
   const few = laneBudget([job(1, "new", 900), job(2, "new", 900)], 600);
   assert.deepEqual(few.problems, []);
   assert.equal(few.undecided, true);
-  const enough = laneBudget([1, 2, 3].map((run) => job(run, "new", 100)), 600);
+  const enough = laneBudget(
+    [1, 2, 3].map((run) => job(run, "new", 100)),
+    600,
+  );
   assert.equal(enough.undecided, false);
 });
 
 test("logs it cannot read fail rather than pass", () => {
   assert.match(
     laneBudget([{ run: 1, lane: "a", conclusion: "success", times: [] }])
-      .problems[0],
+      .problems[0].line,
     /run 1: a succeeded with no package times/,
   );
-  assert.match(laneBudget([]).problems[0], /found no lane times/);
+  assert.match(laneBudget([]).problems[0].line, /found no lane times/);
+  // Unread logs are a check that did not run, so the issue keeps its earlier problems.
+  assert.ok(laneBudget([]).problems.every(({ check }) => check));
 });
 
 test("a failed job with no times is a build failure, not an unreadable log", () => {
@@ -95,60 +105,6 @@ test("a failed job with no times is a build failure, not an unreadable log", () 
     ]).problems,
     [],
   );
-});
-
-const issueRequests = (issues) => {
-  const sent = [];
-  return {
-    sent,
-    request: async (path, { method = "GET", body } = {}) => {
-      if (method !== "GET") sent.push({ method, path, ...body });
-      // GitHub answers an unknown creator with an empty list, not an error.
-      else assert.match(path, /[?&]creator=github-actions%5Bbot%5D(&|$)/);
-      return { json: async () => issues };
-    },
-  };
-};
-const title = "Go race lanes are past their time budget";
-const over = { problems: ["over"], undecided: false };
-
-test("keeps one current issue open while over budget and closes it afterwards", async () => {
-  const none = issueRequests([]);
-  await syncIssue(none.request, "o/r", over, "body");
-  assert.deepEqual(none.sent, [
-    { method: "POST", path: "/repos/o/r/issues", title, body: "body" },
-  ]);
-
-  const open = [{ number: 7, title }];
-  const still = issueRequests(open);
-  await syncIssue(still.request, "o/r", over, "today");
-  assert.deepEqual(still.sent, [
-    { method: "PATCH", path: "/repos/o/r/issues/7", body: "today" },
-  ]);
-
-  const unsure = issueRequests(open);
-  await syncIssue(unsure.request, "o/r", { problems: [], undecided: true }, "");
-  assert.deepEqual(unsure.sent, []);
-
-  const other = issueRequests([{ number: 8, title: "Another issue" }]);
-  await syncIssue(other.request, "o/r", { problems: [], undecided: false }, "");
-  assert.deepEqual(other.sent, []);
-
-  const recovered = issueRequests(open);
-  await syncIssue(
-    recovered.request,
-    "o/r",
-    { problems: [], undecided: false },
-    "",
-  );
-  assert.deepEqual(recovered.sent, [
-    {
-      method: "PATCH",
-      path: "/repos/o/r/issues/7",
-      state: "closed",
-      state_reason: "completed",
-    },
-  ]);
 });
 
 test("samples recent runs of the current lanes in which every lane finished", async () => {
@@ -172,7 +128,9 @@ test("samples recent runs of the current lanes in which every lane finished", as
   const jobs = await recentJobs(async (path) => {
     if (path.includes("/workflows/"))
       return {
-        json: async () => ({ workflow_runs: [...runs.keys()].map((id) => ({ id })) }),
+        json: async () => ({
+          workflow_runs: [...runs.keys()].map((id) => ({ id })),
+        }),
       };
     const run = /runs\/(\d+)\/jobs/.exec(path)?.[1];
     if (run) return { json: async () => runs.get(Number(run)) };
