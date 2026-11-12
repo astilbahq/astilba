@@ -16,8 +16,8 @@ import (
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/agentidentity"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
-	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
+	"github.com/astilbahq/astilba/services/platform/internal/randtoken"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
@@ -320,11 +320,11 @@ func (s *Service) ColdStart(ctx context.Context, in api.AgentTokenRequest, sourc
 
 func (s *Service) issueTokens(ctx context.Context, q *db.Queries, ws, server uuid.UUID, keyHash []byte, epoch int64, role string, previewOnly bool, rotatedAt *time.Time, rotateRequested bool) (api.AgentToken, error) {
 	out := api.AgentToken{Role: api.ServerRole(role), ExpiresIn: agentTokenSeconds}
-	secret, err := cryptobox.Token()
+	secret, err := randtoken.New()
 	if err != nil {
 		return out, err
 	}
-	refresh, err := cryptobox.Token()
+	refresh, err := randtoken.New()
 	if err != nil {
 		return out, err
 	}
@@ -389,11 +389,11 @@ func (s *Service) Refresh(ctx context.Context, in api.AgentRefreshRequest, sourc
 	if lineage.SupersededAt != nil {
 		return out, refused()
 	}
-	secret, err := cryptobox.Token()
+	secret, err := randtoken.New()
 	if err != nil {
 		return out, err
 	}
-	refresh, err := cryptobox.Token()
+	refresh, err := randtoken.New()
 	if err != nil {
 		return out, err
 	}

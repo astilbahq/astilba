@@ -11,9 +11,9 @@ import (
 	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
-	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
 	"github.com/astilbahq/astilba/services/platform/internal/execution"
 	"github.com/astilbahq/astilba/services/platform/internal/hostnetwork"
+	"github.com/astilbahq/astilba/services/platform/internal/randtoken"
 	"github.com/google/uuid"
 )
 
@@ -344,7 +344,7 @@ func (n *aheadNetwork) transfer(t *testing.T, h *aheadHost) {
 	t.Helper()
 	var ticket api.TransferTicket
 	n.b.call("POST", n.base+"/servers/"+h.id.String()+"/transfer", nil, 201, &ticket)
-	credential, err := cryptobox.Token()
+	credential, err := randtoken.New()
 	if err != nil {
 		t.Fatal(err)
 	}

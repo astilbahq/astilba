@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
-	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
+	"github.com/astilbahq/astilba/services/platform/internal/randtoken"
 	"github.com/google/uuid"
 )
 
@@ -29,7 +29,7 @@ func TestRotationNeedsTheEnrolledMachine(t *testing.T) {
 		t.Fatal(e)
 	}
 
-	stolen, _ := cryptobox.Token()
+	stolen, _ := randtoken.New()
 	agentRequest(t, client, tlsServer.URL, "/agent/v1/rotate", token, api.AgentRotation{Credential: stolen, MachineId: uuid.New()}, 401, nil)
 	agentRequest(t, client, tlsServer.URL, "/agent/v1/rotate", token, map[string]string{"credential": stolen}, 400, nil)
 	heartbeat := api.AgentHeartbeat{Capabilities: in.Capabilities, Preflight: in.Preflight}
@@ -40,7 +40,7 @@ func TestRotationNeedsTheEnrolledMachine(t *testing.T) {
 	}
 	agentRequest(t, client, tlsServer.URL, "/agent/v1/heartbeat", v.Server.Id.String()+"."+stolen, heartbeat, 401, nil)
 
-	next, _ := cryptobox.Token()
+	next, _ := randtoken.New()
 	agentRequest(t, client, tlsServer.URL, "/agent/v1/rotate", token, api.AgentRotation{Credential: next, MachineId: in.MachineId}, 204, nil)
 	agentRequest(t, client, tlsServer.URL, "/agent/v1/heartbeat", v.Server.Id.String()+"."+next, heartbeat, 200, &status)
 	if status.RotationRequested {

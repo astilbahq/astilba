@@ -1,9 +1,14 @@
 # Upgrading management
 
-Database migrations only go forward, and each version of Astilba runs only on its own schema
-version: a newer image refuses the database until you migrate it, and an older one refuses it
-afterwards. So you cannot undo an upgrade by starting the old image again. Rolling back means
-restoring the database you backed up just before migrating, with the image you ran before.
+Database migrations only go forward. A newer image refuses the database until you migrate it.
+An older image refuses it afterwards, unless every migration it lacks only added to the schema:
+new tables, columns that may be empty, and indexes. Such a migration records that it is
+additive, and an older image then starts on the newer schema unchanged. A release whose notes
+say its migrations are all additive can be rolled back by starting the old image again, as
+long as that image is recent enough to check for additive migrations itself. For
+any other release, rolling back means restoring the database you backed up just before
+migrating, with the image you ran before. Migrations for River, the job queue, are never
+additive, so a release that changes River's schema is one of these.
 
 Upgrade management before the agents. These steps assume
 [the Compose example](../services/platform/compose.example.yaml), with the image chosen by
@@ -68,6 +73,11 @@ Upgrade management before the agents. These steps assume
 If any check fails, roll back now: the longer the new version runs, the more you lose.
 
 ## Roll back
+
+If the old image starts on the migrated database, which it does only when every migration it
+lacks is additive, set `ASTILBA_IMAGE` back to it and run `docker compose up -d --wait platform`.
+Nothing is lost, and you can upgrade again later. If it refuses with "database schema is newer
+than this release", restore instead:
 
 1. Stop management.
 2. Before you replace the database, see whether the new version sent work to any server. This

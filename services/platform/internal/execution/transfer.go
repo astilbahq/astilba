@@ -5,7 +5,7 @@ import (
 	"context"
 	"encoding/json/v2"
 	"errors"
-	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
+	"github.com/astilbahq/astilba/services/platform/internal/randtoken"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"reflect"
@@ -214,7 +214,7 @@ func (s *Service) codeTaken(ctx context.Context, in api.AgentEnrollment, candida
 
 func (s *Service) PrepareTransfer(ctx context.Context, p store.Principal, ws, id uuid.UUID) (api.TransferTicket, error) {
 	out := api.TransferTicket{ServerId: id, ExpiresAt: time.Now().Add(10 * time.Minute)}
-	token, e := cryptobox.Token()
+	token, e := randtoken.New()
 	if e != nil {
 		return out, e
 	}
