@@ -294,7 +294,7 @@ func leaveUnstartedEffect(ctx context.Context, tx pgx.Tx, ws, parent uuid.UUID, 
 	return next, err
 }
 
-func (s *Service) coordinateMaintenance(ctx context.Context, tx pgx.Tx, job *river.Job[jobArgs], ws uuid.UUID, parent api.ExecutionCommand, command coordinationCommand, cancelled bool) error {
+func (s *Service) coordinateMaintenance(ctx context.Context, tx pgx.Tx, keys *passKeys, job *river.Job[jobArgs], ws uuid.UUID, parent api.ExecutionCommand, command coordinationCommand, cancelled bool) error {
 	m := command.Maintenance
 	var phase string
 	var raw []byte
@@ -434,7 +434,7 @@ func (s *Service) coordinateMaintenance(ctx context.Context, tx pgx.Tx, job *riv
 		failed = failed || state == "failed" || state == "cancelled"
 		children = append(children, phaseKey(parent.Id, phase, u.Unit.Plan.UnitID))
 	}
-	if err := s.stageRecoveryPhase(ctx, tx, ws, parent, command, phase, children, recoveryGeneration); err != nil {
+	if err := s.stageRecoveryPhase(ctx, tx, keys, ws, parent, command, phase, children, recoveryGeneration); err != nil {
 		return err
 	}
 	if uncertain {

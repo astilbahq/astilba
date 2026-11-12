@@ -11,6 +11,7 @@ import (
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
+	"github.com/astilbahq/astilba/services/platform/internal/secretbroker"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -113,18 +114,50 @@ func (s *Service) loadGitState(ctx context.Context, tx pgx.Tx, ws, id uuid.UUID)
 	return st, nil
 }
 
-func (s *Service) openStoredAccess(ws, id uuid.UUID, st gitState) (pipeline.Access, error) {
+// stored opens a connection's stored access in a pass. A pass without keys returns the call
+// that begins them between passes, and is made again. Without keys of its own, the run is on the
+// agent delivery path, which moves to the broker with release records.
+func (g *gitAnswers) stored(id uuid.UUID, st gitState) (pipeline.Access, error) {
 	var access pipeline.Access
-	err := s.legacyOpenIntegration(ws, id, "git", st.encrypted, &access)
-	return access, err
+	if g.keys == nil {
+		return access, g.service.legacyOpenIntegration(g.ws, id, "git", st.encrypted, &access)
+	}
+	keys, err := g.keys.get()
+	if err != nil {
+		return access, err
+	}
+	return access, g.openStored(keys, id, st, &access)
 }
 
-// openGitAccess opens a stored credential or, for a GitHub App, validates the grant and
-// mints a token. Minting contacts GitHub, so this belongs inside a providerCall.
-func (s *Service) openGitAccess(ctx context.Context, ws, id uuid.UUID, st gitState, write bool) (pipeline.Access, error) {
-	if st.binding == nil {
-		return s.openStoredAccess(ws, id, st)
+// storedBetweenPasses is stored for a provider call, which holds nothing, so it may begin the
+// keys itself.
+func (g *gitAnswers) storedBetweenPasses(ctx context.Context, id uuid.UUID, st gitState) (pipeline.Access, error) {
+	var access pipeline.Access
+	if g.keys == nil {
+		return access, g.service.legacyOpenIntegration(g.ws, id, "git", st.encrypted, &access)
 	}
+	keys, err := g.keys.ensure(ctx)
+	if err != nil {
+		return access, err
+	}
+	return access, g.openStored(keys, id, st, &access)
+}
+
+func (g *gitAnswers) openStored(keys *secretbroker.Session, id uuid.UUID, st gitState, access *pipeline.Access) error {
+	err := openIntegration(keys, secretbroker.Item{Kind: secretbroker.Git, ID: id}, st.encrypted, access)
+	if err == nil {
+		g.keys.use()
+	}
+	return err
+}
+
+// gitAccess opens a stored credential or, for a GitHub App, validates the grant and mints a
+// token. Minting contacts GitHub, so this belongs inside a providerCall.
+func (g *gitAnswers) gitAccess(ctx context.Context, id uuid.UUID, st gitState, write bool) (pipeline.Access, error) {
+	if st.binding == nil {
+		return g.storedBetweenPasses(ctx, id, st)
+	}
+	s := g.service
 	b := st.binding
 	if err := s.GitHub.Validate(ctx, b.InstallationID, b.RepositoryID, b.Generation, st.connection.Repository, st.connection.Private); err != nil {
 		return pipeline.Access{}, err
@@ -137,19 +170,19 @@ func (s *Service) openGitAccess(ctx context.Context, ws, id uuid.UUID, st gitSta
 	return pipeline.Access{API: credential, Clone: credential}, nil
 }
 
-func (s *Service) openProvider(ctx context.Context, ws, id uuid.UUID, st gitState, preview bool) (*pipeline.Provider, error) {
-	access, err := s.openGitAccess(ctx, ws, id, st, false)
+func (g *gitAnswers) provider(ctx context.Context, id uuid.UUID, st gitState, preview bool) (*pipeline.Provider, error) {
+	access, err := g.gitAccess(ctx, id, st, false)
 	if err != nil {
 		return nil, err
 	}
 	if preview && st.binding != nil {
-		token, err := s.GitHub.MintPreview(ctx, st.binding.InstallationID, st.binding.RepositoryID)
+		token, err := g.service.GitHub.MintPreview(ctx, st.binding.InstallationID, st.binding.RepositoryID)
 		if err != nil {
 			return nil, err
 		}
 		access.API = pipeline.Credential{Username: "x-access-token", Password: token}
 	}
-	return pipeline.NewProvider(st.connection, access.API, s.Policy)
+	return pipeline.NewProvider(st.connection, access.API, g.service.Policy)
 }
 
 // sourceBlobsMargin is what a background job keeps to record its answers and admit other work.
@@ -190,19 +223,28 @@ type gitAnswers struct {
 	service     *Service
 	ws          uuid.UUID
 	connections map[uuid.UUID]*connectionAnswers
+	// keys opens connections' stored access for whoever the run is for.
+	keys *passKeys
+}
+
+// gitKeys are the keys a run asking Git providers questions uses for its connections' stored
+// access, for principal.
+func (s *Service) gitKeys(principal secretbroker.Principal, ws uuid.UUID) *passKeys {
+	return s.passKeys(secretbroker.Request{Workspace: ws, Purpose: secretbroker.Operate, Principal: principal, Kinds: []secretbroker.Kind{secretbroker.Git}})
 }
 
 // withGit runs a transaction body that can ask Git providers questions through its
 // gitAnswers. Body must open its transaction itself, and must not commit before asking.
-func (s *Service) withGit(ctx context.Context, ws uuid.UUID, body func(*gitAnswers) error) error {
-	git := &gitAnswers{service: s, ws: ws, connections: map[uuid.UUID]*connectionAnswers{}}
+func (s *Service) withGit(ctx context.Context, ws uuid.UUID, keys *passKeys, body func(*gitAnswers) error) error {
+	git := &gitAnswers{service: s, ws: ws, connections: map[uuid.UUID]*connectionAnswers{}, keys: keys}
+	defer keys.close(ctx)
 	return withProviderCalls(ctx, func() error { return body(git) })
 }
 
 // gitScope is scope for an operation that asks Git providers questions. Only the finishing
 // pass writes its audit record.
 func (s *Service) gitScope(ctx context.Context, p store.Principal, ws uuid.UUID, access workspaceAccess, action string, id uuid.UUID, fn func(pgx.Tx, *gitAnswers) error) error {
-	return s.withGit(ctx, ws, func(git *gitAnswers) error {
+	return s.withGit(ctx, ws, s.gitKeys(p.Secrets(), ws), func(git *gitAnswers) error {
 		return s.scope(ctx, p, ws, access, action, id, func(tx pgx.Tx) error { return fn(tx, git) })
 	})
 }
@@ -257,7 +299,7 @@ func askGit[T any](ctx context.Context, tx pgx.Tx, g *gitAnswers, id uuid.UUID, 
 
 func askProvider[T any](ctx context.Context, tx pgx.Tx, g *gitAnswers, id uuid.UUID, preview bool, question string, call func(context.Context, *pipeline.Provider) (T, error)) (gitAnswer[T], error) {
 	return askGit(ctx, tx, g, id, fmt.Sprintf("provider/%t/%s", preview, question), func(ctx context.Context, st gitState) gitAnswer[T] {
-		provider, err := g.service.openProvider(ctx, g.ws, id, st, preview)
+		provider, err := g.provider(ctx, id, st, preview)
 		if err != nil {
 			return gitAnswer[T]{Err: err, Setup: true}
 		}
@@ -274,11 +316,15 @@ func (g *gitAnswers) access(ctx context.Context, tx pgx.Tx, id uuid.UUID, write 
 		return gitAnswer[pipeline.Access]{}, err
 	}
 	if known.state.binding == nil && known.state.unusable == nil {
-		access, err := g.service.openStoredAccess(g.ws, id, known.state)
+		access, err := g.stored(id, known.state)
+		var call *providerCall
+		if errors.As(err, &call) || secretbroker.SessionFailure(err) {
+			return gitAnswer[pipeline.Access]{}, err
+		}
 		return gitAnswer[pipeline.Access]{Value: access, Err: err, Setup: err != nil}, nil
 	}
 	return askGit(ctx, tx, g, id, fmt.Sprintf("access/%t", write), func(ctx context.Context, st gitState) gitAnswer[pipeline.Access] {
-		access, err := g.service.openGitAccess(ctx, g.ws, id, st, write)
+		access, err := g.gitAccess(ctx, id, st, write)
 		return gitAnswer[pipeline.Access]{Value: access, Err: err, Setup: err != nil}
 	})
 }

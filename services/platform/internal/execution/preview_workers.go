@@ -11,6 +11,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
+	"github.com/astilbahq/astilba/services/platform/internal/secretbroker"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
@@ -128,13 +129,16 @@ func (w *previewWorker) Work(ctx context.Context, job *river.Job[previewArgs]) e
 	if err := s.workspaceTurn(ctx, job.JobRow, ws); err != nil {
 		return err
 	}
-	return s.withGit(ctx, ws, func(git *gitAnswers) error { return w.work(ctx, git, job, policyID, ws) })
+	// A preview environment copies its template's secrets, under keys of its own.
+	copyKeys := s.passKeys(secretbroker.Request{Workspace: ws, Purpose: secretbroker.Copy, Principal: secretbroker.System("preview"), Kinds: []secretbroker.Kind{secretbroker.SecretVersion}})
+	defer copyKeys.close(ctx)
+	return s.withGit(ctx, ws, s.gitKeys(secretbroker.System("preview"), ws), func(git *gitAnswers) error { return w.work(ctx, git, copyKeys, job, policyID, ws) })
 }
 
 // work holds the workspace turn only between provider calls. The pass that acts re-reads the
 // policy, its authority and the request, so an answer cannot apply to a generation, owner or
 // cleanup decision it was not asked for.
-func (w *previewWorker) work(ctx context.Context, git *gitAnswers, job *river.Job[previewArgs], policyID, ws uuid.UUID) error {
+func (w *previewWorker) work(ctx context.Context, git *gitAnswers, copyKeys *passKeys, job *river.Job[previewArgs], policyID, ws uuid.UUID) error {
 	s := w.service
 	a := job.Args
 	tx, done, err := s.Store.BeginWorkspaceWrite(ctx, ws)
@@ -290,7 +294,7 @@ func (w *previewWorker) work(ctx context.Context, git *gitAnswers, job *river.Jo
 			return err
 		}
 	}
-	if err = s.reconcilePreview(ctx, tx, git, policy, &record, request, connection); err != nil {
+	if err = s.reconcilePreview(ctx, tx, git, copyKeys, policy, &record, request, connection); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
@@ -315,7 +319,7 @@ func previewBusy(ctx context.Context, tx pgx.Tx, ws uuid.UUID, env *uuid.UUID) (
 	err := tx.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM execution_operations WHERE workspace_id=$2 AND environment_id=$1 AND state NOT IN ('succeeded','failed','cancelled'))", *env, ws).Scan(&busy)
 	return busy, err
 }
-func (s *Service) reconcilePreview(ctx context.Context, tx pgx.Tx, git *gitAnswers, p previewPolicy, r *previewRecord, pr pipeline.PullRequest, connection pipeline.Connection) error {
+func (s *Service) reconcilePreview(ctx context.Context, tx pgx.Tx, git *gitAnswers, copyKeys *passKeys, p previewPolicy, r *previewRecord, pr pipeline.PullRequest, connection pipeline.Connection) error {
 	id := r.View.Id
 	if pr.Open && pr.BaseBranch != p.Config.Build.Branch {
 		if r.View.State == "deleted" {
@@ -412,7 +416,7 @@ func (s *Service) reconcilePreview(ctx context.Context, tx pgx.Tx, git *gitAnswe
 		if allocation, err = tx.Begin(ctx); err != nil {
 			return err
 		}
-		if err = s.createPreviewEnvironment(ctx, tx, p, r); err != nil {
+		if err = s.createPreviewEnvironment(ctx, tx, copyKeys, p, r); err != nil {
 			return err
 		}
 	}

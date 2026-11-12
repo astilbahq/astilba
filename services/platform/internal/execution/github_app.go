@@ -11,6 +11,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/githubapp"
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
 	"github.com/astilbahq/astilba/services/platform/internal/randtoken"
+	"github.com/astilbahq/astilba/services/platform/internal/secretbroker"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
@@ -66,23 +67,32 @@ func (s *Service) StartGitHub(ctx context.Context, p store.Principal, ws uuid.UU
 		return nil, err
 	}
 	id := uuid.New()
-	err = s.scope(ctx, p, ws, workspaceAccess{Write: true, Owner: true, Recent: true}, "git.github.authorize", id, func(tx pgx.Tx) error {
-		q := db.New(tx)
-		if e := q.DeleteExpiredGitHubAuthorizations(ctx, ws); e != nil {
-			return e
-		}
-		count, e := q.CountGitHubAuthorizations(ctx, db.CountGitHubAuthorizationsParams{WorkspaceID: ws, AccountID: p.Account.ID})
-		if e != nil {
-			return e
-		}
-		if count.Total >= 100 || count.Active >= 5 {
-			return domain.Conflict
-		}
-		secret, e := s.legacySealIntegration(ws, id, "github-authorization", githubAuthorizationSecret{Verifier: verifier})
-		if e != nil {
-			return e
-		}
-		return q.InsertGitHubAuthorization(ctx, db.InsertGitHubAuthorizationParams{ID: id, WorkspaceID: ws, AccountID: p.Account.ID, AuthVersion: p.Account.AuthVersion, SessionHash: hash(session), StateHash: hash(state), AppID: s.GitHub.Config.ID, EncryptedAccess: secret})
+	keys := s.githubKeys(p, ws)
+	defer keys.close(ctx)
+	err = withProviderCalls(ctx, func() error {
+		return s.scope(ctx, p, ws, workspaceAccess{Write: true, Owner: true, Recent: true}, "git.github.authorize", id, func(tx pgx.Tx) error {
+			q := db.New(tx)
+			if e := q.DeleteExpiredGitHubAuthorizations(ctx, ws); e != nil {
+				return e
+			}
+			count, e := q.CountGitHubAuthorizations(ctx, db.CountGitHubAuthorizationsParams{WorkspaceID: ws, AccountID: p.Account.ID})
+			if e != nil {
+				return e
+			}
+			if count.Total >= 100 || count.Active >= 5 {
+				return domain.Conflict
+			}
+			opened, e := keys.get()
+			if e != nil {
+				return e
+			}
+			secret, e := sealIntegration(opened, secretbroker.Item{Kind: secretbroker.GitHubAuthorization, ID: id}, githubAuthorizationSecret{Verifier: verifier})
+			if e != nil {
+				return e
+			}
+			keys.use()
+			return q.InsertGitHubAuthorization(ctx, db.InsertGitHubAuthorizationParams{ID: id, WorkspaceID: ws, AccountID: p.Account.ID, AuthVersion: p.Account.AuthVersion, SessionHash: hash(session), StateHash: hash(state), AppID: s.GitHub.Config.ID, EncryptedAccess: secret})
+		})
 	})
 	if err != nil {
 		return nil, err
@@ -90,10 +100,16 @@ func (s *Service) StartGitHub(ctx context.Context, p store.Principal, ws uuid.UU
 	return map[string]any{"authorizationUrl": s.GitHub.AuthorizeURL(state, verifier)}, nil
 }
 
+// githubKeys gives a GitHub flow the keys to its grants and its connection's stored access,
+// once a pass has admitted p.
+func (s *Service) githubKeys(p store.Principal, ws uuid.UUID) *passKeys {
+	return s.passKeys(secretbroker.Request{Workspace: ws, Purpose: secretbroker.Operate, Principal: p.Secrets(), Kinds: []secretbroker.Kind{secretbroker.GitHubAuthorization, secretbroker.Git}})
+}
+
 // The row lock serializes a grant's use, and a committed claim its code exchange. The session
 // nonce survives step-up, but never a new login. Neither public IDs nor an archive can grant
 // access.
-func (s *Service) gitHubGrant(ctx context.Context, tx pgx.Tx, p store.Principal, ws, id uuid.UUID, session string) (GitHubAuthorization, githubAuthorizationSecret, error) {
+func (s *Service) gitHubGrant(ctx context.Context, tx pgx.Tx, keys *passKeys, p store.Principal, ws, id uuid.UUID, session string) (GitHubAuthorization, githubAuthorizationSecret, error) {
 	v := GitHubAuthorization{ID: id, WorkspaceID: ws}
 	if s.GitHub == nil {
 		return v, githubAuthorizationSecret{}, domain.Invalid("githubApp.notConfigured")
@@ -105,7 +121,11 @@ func (s *Service) gitHubGrant(ctx context.Context, tx pgx.Tx, p store.Principal,
 	var secret githubAuthorizationSecret
 	if err == nil {
 		v.User.ID, v.User.Login, v.ExpiresAt = row.GithubUserID, row.GithubLogin, row.ExpiresAt
-		err = s.legacyOpenIntegration(ws, id, "github-authorization", row.EncryptedAccess, &secret)
+		var opened *secretbroker.Session
+		if opened, err = keys.get(); err == nil {
+			err = openIntegration(opened, secretbroker.Item{Kind: secretbroker.GitHubAuthorization, ID: id}, row.EncryptedAccess, &secret)
+			keys.use()
+		}
 	}
 	return v, secret, err
 }
@@ -140,26 +160,35 @@ func (s *Service) CompleteGitHub(ctx context.Context, p store.Principal, session
 	// no lock is held while GitHub answers.
 	var verifier string
 	var finished bool
-	err = s.scope(ctx, p, ws, access, "", uuid.Nil, func(tx pgx.Tx) error {
-		row, e := s.lockGitHubAuthorization(ctx, tx, p, ws, id, session)
-		if e != nil {
+	keys := s.githubKeys(p, ws)
+	defer keys.close(ctx)
+	err = withProviderCalls(ctx, func() error {
+		return s.scope(ctx, p, ws, access, "", uuid.Nil, func(tx pgx.Tx) error {
+			row, e := s.lockGitHubAuthorization(ctx, tx, p, ws, id, session)
+			if e != nil {
+				return e
+			}
+			if row.Status == "ready" {
+				finished = true
+				out, _, e = s.gitHubGrant(ctx, tx, keys, p, ws, id, session)
+				return e
+			}
+			if row.Status != "pending" {
+				return domain.Conflict
+			}
+			opened, e := keys.get()
+			if e != nil {
+				return e
+			}
+			var secret githubAuthorizationSecret
+			if e = openIntegration(opened, secretbroker.Item{Kind: secretbroker.GitHubAuthorization, ID: id}, row.EncryptedAccess, &secret); e != nil {
+				return e
+			}
+			verifier = secret.Verifier
+			_, e = recordGitHubExchange(ctx, tx, opened, ws, id, "failed", githubAuthorizationSecret{}, githubapp.User{})
+			keys.use()
 			return e
-		}
-		if row.Status == "ready" {
-			finished = true
-			out, _, e = s.gitHubGrant(ctx, tx, p, ws, id, session)
-			return e
-		}
-		if row.Status != "pending" {
-			return domain.Conflict
-		}
-		var secret githubAuthorizationSecret
-		if e = s.legacyOpenIntegration(ws, id, "github-authorization", row.EncryptedAccess, &secret); e != nil {
-			return e
-		}
-		verifier = secret.Verifier
-		_, e = s.recordGitHubExchange(ctx, tx, ws, id, "failed", githubAuthorizationSecret{}, githubapp.User{})
-		return e
+		})
 	})
 	if err == nil && !finished {
 		// The code is spent from here, so a browser going away must not leave a token GitHub
@@ -180,12 +209,18 @@ func (s *Service) CompleteGitHub(ctx context.Context, p store.Principal, session
 		}
 		// Only this request can hold the claim, but its caller may have lost their role or
 		// session during the call: the scope re-checks both, and decides if the token is kept.
-		err = s.scope(finish, p, ws, access, "", uuid.Nil, func(tx pgx.Tx) error {
-			if _, e := s.lockGitHubAuthorization(finish, tx, p, ws, id, session); e != nil {
+		err = withProviderCalls(finish, func() error {
+			return s.scope(finish, p, ws, access, "", uuid.Nil, func(tx pgx.Tx) error {
+				if _, e := s.lockGitHubAuthorization(finish, tx, p, ws, id, session); e != nil {
+					return e
+				}
+				opened, e := keys.get()
+				if e != nil {
+					return e
+				}
+				out, e = recordGitHubExchange(finish, tx, opened, ws, id, "ready", githubAuthorizationSecret{Token: token}, user)
 				return e
-			}
-			out, e = s.recordGitHubExchange(finish, tx, ws, id, "ready", githubAuthorizationSecret{Token: token}, user)
-			return e
+			})
 		})
 		if err != nil {
 			s.revokeGitHubToken(finish, token)
@@ -194,8 +229,8 @@ func (s *Service) CompleteGitHub(ctx context.Context, p store.Principal, session
 	}
 	return out, err
 }
-func (s *Service) recordGitHubExchange(ctx context.Context, tx pgx.Tx, ws, id uuid.UUID, status string, secret githubAuthorizationSecret, user githubapp.User) (GitHubAuthorization, error) {
-	cipher, e := s.legacySealIntegration(ws, id, "github-authorization", secret)
+func recordGitHubExchange(ctx context.Context, tx pgx.Tx, keys *secretbroker.Session, ws, id uuid.UUID, status string, secret githubAuthorizationSecret, user githubapp.User) (GitHubAuthorization, error) {
+	cipher, e := sealIntegration(keys, secretbroker.Item{Kind: secretbroker.GitHubAuthorization, ID: id}, secret)
 	if e != nil {
 		return GitHubAuthorization{}, e
 	}
@@ -215,10 +250,14 @@ func (s *Service) revokeGitHubToken(ctx context.Context, token string) {
 // token. A listing writes nothing, so nothing has to be checked again after it.
 func (s *Service) githubGrantToken(ctx context.Context, p store.Principal, ws, id uuid.UUID, session string) (string, error) {
 	var token string
-	err := s.scope(ctx, p, ws, workspaceAccess{Owner: true}, "", uuid.Nil, func(tx pgx.Tx) error {
-		_, secret, e := s.gitHubGrant(ctx, tx, p, ws, id, session)
-		token = secret.Token
-		return e
+	keys := s.githubKeys(p, ws)
+	defer keys.close(ctx)
+	err := withProviderCalls(ctx, func() error {
+		return s.scope(ctx, p, ws, workspaceAccess{Owner: true}, "", uuid.Nil, func(tx pgx.Tx) error {
+			_, secret, e := s.gitHubGrant(ctx, tx, keys, p, ws, id, session)
+			token = secret.Token
+			return e
+		})
 	})
 	return token, err
 }
@@ -289,10 +328,12 @@ func (s *Service) ConnectGitHub(ctx context.Context, p store.Principal, ws, gran
 	}
 	var consumedToken string
 	var authority *gitAnswer[githubapp.Repository]
+	keys := s.githubKeys(p, ws)
+	defer keys.close(ctx)
 	// The pass that writes re-reads the grant under its lock, so a grant consumed or
 	// invalidated during the calls stops here. A grant keeps one token until it is consumed.
 	connect := func(tx pgx.Tx) error {
-		auth, secret, e := s.gitHubGrant(ctx, tx, p, ws, grant, session)
+		auth, secret, e := s.gitHubGrant(ctx, tx, keys, p, ws, grant, session)
 		if e != nil {
 			return e
 		}
@@ -326,7 +367,11 @@ func (s *Service) ConnectGitHub(ctx context.Context, p store.Principal, ws, gran
 				return domain.Conflict
 			}
 		}
-		empty, e := s.legacySealIntegration(ws, id, "git", pipeline.Access{})
+		opened, e := keys.get()
+		if e != nil {
+			return e
+		}
+		empty, e := sealIntegration(opened, secretbroker.Item{Kind: secretbroker.Git, ID: id}, pipeline.Access{})
 		if e != nil {
 			return e
 		}
@@ -352,7 +397,7 @@ func (s *Service) ConnectGitHub(ctx context.Context, p store.Principal, ws, gran
 		if e != nil {
 			return e
 		}
-		erased, e := s.legacySealIntegration(ws, grant, "github-authorization", githubAuthorizationSecret{})
+		erased, e := sealIntegration(opened, secretbroker.Item{Kind: secretbroker.GitHubAuthorization, ID: grant}, githubAuthorizationSecret{})
 		if e != nil {
 			return e
 		}

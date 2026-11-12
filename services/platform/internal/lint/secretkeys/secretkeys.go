@@ -45,51 +45,44 @@ var keyPackages = map[string]bool{
 	"internal/agent":                   true,
 }
 
-// pending are the files that still hold keys without the broker, as package/file. None may be
-// added; each goes when its path moves to the broker: Git access in multi-pass work, GitHub
-// grants, previews and recovery checkpoints with "need keys" passes, and the agent delivery
-// path with release records (PLAT-243, PLAT-196).
+// pending are the files that still hold keys without the broker, as package/file: the agent
+// delivery path, which moves to the broker with release records (PLAT-196), and the plan-time
+// size check, which moves to stored lengths. None may be added.
 var pending = map[string]bool{
-	"internal/store/store.go":                    true,
-	"internal/execution/legacy_keys.go":          true,
 	"internal/execution/build_inputs.go":         true,
 	"internal/execution/cross_host_hydration.go": true,
-	"internal/execution/visual_hydration.go":     true,
+	"internal/execution/legacy_keys.go":          true,
 	"internal/execution/pipeline_report.go":      true,
-	"internal/execution/preview_environment.go":  true,
-	"internal/execution/recovery_checkpoints.go": true,
+	"internal/execution/visual_hydration.go":     true,
+	"internal/store/store.go":                    true,
 }
 
-// legacyCallers are the files that reach, through any chain of calls, a function in a pending
-// file that uses keys. Those paths open values without a record, so a call into one from
-// anywhere else is reported: the files below move to the broker with them (mostly Git access
-// through gitAnswers, and the handlers that reach it), and none may be added.
+// legacyCallers are the files that may reach, through any chain of calls, a function in a
+// pending file that uses keys. The analysis does not follow which branch runs: most of these
+// reach it only through gitAnswers, whose legacy branch serves the delivery path alone. They
+// leave the list with that path, and none may be added.
 var legacyCallers = map[string]bool{
-	"internal/execution/automatic.go":             true,
-	"internal/execution/automation.go":            true,
-	"internal/execution/backups.go":               true,
-	"internal/execution/cross_host_operations.go": true,
-	"internal/execution/cross_host_plans.go":      true,
-	"internal/execution/git_answers.go":           true,
-	"internal/execution/git_refresh.go":           true,
-	"internal/execution/github_app.go":            true,
-	"internal/execution/maintenance.go":           true,
-	"internal/execution/operations.go":            true,
-	"internal/execution/pipelines.go":             true,
-	"internal/execution/preview_cleanup.go":       true,
-	"internal/execution/preview_workers.go":       true,
-	"internal/execution/previews.go":              true,
-	"internal/execution/source_state.go":          true,
-	"internal/execution/transport.go":             true,
-	"internal/execution/upgrades.go":              true,
-	"internal/execution/visual.go":                true,
-	"internal/httpapi/automation.go":              true,
-	"internal/httpapi/execution.go":               true,
-	"internal/httpapi/github_app.go":              true,
-	"internal/httpapi/pipelines.go":               true,
-	"internal/httpapi/previews.go":                true,
-	"internal/httpapi/upgrades.go":                true,
-	"internal/httpapi/visual.go":                  true,
+	"internal/execution/automatic.go":        true,
+	"internal/execution/automation.go":       true,
+	"internal/execution/backups.go":          true,
+	"internal/execution/cross_host_plans.go": true,
+	"internal/execution/git_answers.go":      true,
+	"internal/execution/git_refresh.go":      true,
+	"internal/execution/operations.go":       true,
+	"internal/execution/pipelines.go":        true,
+	"internal/execution/preview_cleanup.go":  true,
+	"internal/execution/preview_workers.go":  true,
+	"internal/execution/previews.go":         true,
+	"internal/execution/source_state.go":     true,
+	"internal/execution/transport.go":        true,
+	"internal/execution/upgrades.go":         true,
+	"internal/execution/visual.go":           true,
+	"internal/httpapi/automation.go":         true,
+	"internal/httpapi/execution.go":          true,
+	"internal/httpapi/pipelines.go":          true,
+	"internal/httpapi/previews.go":           true,
+	"internal/httpapi/upgrades.go":           true,
+	"internal/httpapi/visual.go":             true,
 }
 
 // harmless are the cryptobox names that hold no key.

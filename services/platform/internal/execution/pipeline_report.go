@@ -15,6 +15,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/composeproject"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
+	"github.com/astilbahq/astilba/services/platform/internal/secretbroker"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
@@ -27,6 +28,20 @@ const secretVersionPage = 64
 // only the controller knows the runner may already have sent these files onward. Reports
 // recognise a stopped run by this exact text, including on a replica or rollback still
 // running an older release, so extend the note below rather than rewording this.
+// openSecretVersion opens a secret version for a check, with keys or, without them, on the
+// legacy delivery path.
+func (s *Service) openSecretVersion(keys *passKeys, ws, id uuid.UUID, cipher []byte) ([]byte, error) {
+	if keys == nil {
+		return s.Store.Keys.Open(cipher, store.SecretIdentity(ws, id))
+	}
+	session, err := keys.get()
+	if err != nil {
+		return nil, err
+	}
+	keys.use()
+	return session.Open(secretbroker.Item{Kind: secretbroker.SecretVersion, ID: id}, cipher)
+}
+
 func stoppedSubmissionWarning(id uuid.UUID) string {
 	return "Stopped: these files contain a known runtime secret value, or runtime secrets exceed the limit for checking them. A runner may already have pushed them to branch astilba/" + id.String() + " at the Git provider: check it and any review, and rotate any exposed secret."
 }
@@ -34,7 +49,10 @@ func stoppedSubmissionNote(id uuid.UUID) string {
 	return stoppedSubmissionWarning(id) + " The value may be in a file's name rather than its contents."
 }
 
-func (s *Service) rejectRuntimeSecrets(ctx context.Context, tx pgx.Tx, ws, env uuid.UUID, bundle composeproject.Bundle) error {
+// rejectRuntimeSecrets opens the environment's runtime secrets with keys, asked for only once
+// there is one to read. Without keys of its own the check is the agent delivery path's, which
+// moves to the broker with release records.
+func (s *Service) rejectRuntimeSecrets(ctx context.Context, tx pgx.Tx, keys *passKeys, ws, env uuid.UUID, bundle composeproject.Bundle) error {
 	q := db.New(tx)
 	// A submission pushes both: the path names a tree entry, the content fills its blob.
 	texts := make([]string, 0, 2*len(bundle.Files))
@@ -51,7 +69,7 @@ func (s *Service) rejectRuntimeSecrets(ctx context.Context, tx pgx.Tx, ws, env u
 			return err
 		}
 		for _, row := range rows {
-			value, err := s.Store.Keys.Open(row.EncryptedValue, store.SecretIdentity(ws, row.ID))
+			value, err := s.openSecretVersion(keys, ws, row.ID, row.EncryptedValue)
 			if err != nil {
 				return err
 			}
@@ -89,7 +107,7 @@ func sourceSecretRejection(err error) (string, bool) {
 // or a changed connection all stop the credential after the call as they would before it.
 func (s *Service) hydratePipeline(ctx context.Context, a Identity, c *api.ExecutionCommand) (bool, error) {
 	var deliver bool
-	err := s.withGit(ctx, a.Workspace, func(git *gitAnswers) error {
+	err := s.withGit(ctx, a.Workspace, nil, func(git *gitAnswers) error {
 		var err error
 		deliver, err = s.decidePipelineDelivery(ctx, git, a, c)
 		return err
@@ -162,7 +180,7 @@ func (s *Service) decidePipelineDelivery(ctx context.Context, git *gitAnswers, a
 	// A plain Invalid would fail every poll and hold the runner queue. This runs before
 	// provider calls and credential minting, so neither can delay or outlive a rejection.
 	if p.Action == "submit" {
-		if err = s.rejectRuntimeSecrets(ctx, tx, ws, c.EnvironmentId, *p.Bundle); err != nil {
+		if err = s.rejectRuntimeSecrets(ctx, tx, nil, ws, c.EnvironmentId, *p.Bundle); err != nil {
 			note, rejected := sourceSecretRejection(err)
 			if !rejected {
 				return false, err
@@ -266,7 +284,7 @@ func (s *Service) populatePipeline(ctx context.Context, tx pgx.Tx, git *gitAnswe
 		p.Access.Clone = access.Value.Clone
 	}
 	if p.Build != nil {
-		p.BuildSecrets, err = s.buildInputs(ctx, tx, ws, env, *p.Build)
+		p.BuildSecrets, err = s.buildInputs(ctx, tx, nil, ws, env, *p.Build)
 		if err != nil {
 			return err
 		}

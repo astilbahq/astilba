@@ -5,6 +5,7 @@ import (
 	"encoding/json/v2"
 	"errors"
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
+	"github.com/astilbahq/astilba/services/platform/internal/secretbroker"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"time"
 
@@ -57,7 +58,7 @@ func (w *refreshWorker) Work(ctx context.Context, job *river.Job[refreshArgs]) e
 	if err := w.service.workspaceTurn(ctx, job.JobRow, job.Args.Workspace); err != nil {
 		return err
 	}
-	return w.service.withGit(ctx, job.Args.Workspace, func(git *gitAnswers) error { return w.work(ctx, git, job) })
+	return w.service.withGit(ctx, job.Args.Workspace, w.service.gitKeys(secretbroker.System("git-refresh"), job.Args.Workspace), func(git *gitAnswers) error { return w.work(ctx, git, job) })
 }
 
 // A later push for the branch joins this job rather than starting another, so a source waiting

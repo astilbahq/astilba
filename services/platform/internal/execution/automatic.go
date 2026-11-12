@@ -15,6 +15,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
+	"github.com/astilbahq/astilba/services/platform/internal/secretbroker"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/compose-spec/compose-go/v2/types"
@@ -53,7 +54,7 @@ func (w *automaticWorker) Work(ctx context.Context, job *river.Job[automaticArgs
 	if err != nil {
 		return err
 	}
-	return w.service.withGit(ctx, ws, func(git *gitAnswers) error { return w.work(ctx, git, job, ws) })
+	return w.service.withGit(ctx, ws, w.service.gitKeys(secretbroker.System("automatic-deploy"), ws), func(git *gitAnswers) error { return w.work(ctx, git, job, ws) })
 }
 
 // work runs under the workspace turn. The branch check happens between passes, so the pass

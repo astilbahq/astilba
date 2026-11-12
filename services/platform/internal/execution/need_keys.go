@@ -29,13 +29,24 @@ func (k *passKeys) get() (*secretbroker.Session, error) {
 	if k.session != nil && k.session.Live() {
 		return k.session, nil
 	}
-	return nil, &providerCall{fetch: func(ctx context.Context) {
-		if k.session != nil {
-			k.session.Close(ctx, secretbroker.UsedIf(k.used))
-		}
-		k.session, k.err = k.service.Store.Broker.Begin(ctx, k.request)
-		k.used = false
-	}}
+	return nil, &providerCall{fetch: k.begin}
+}
+
+// ensure is get for code that runs between passes, with nothing held, such as a provider call:
+// it begins the session itself when it needs one.
+func (k *passKeys) ensure(ctx context.Context) (*secretbroker.Session, error) {
+	if k.err == nil && (k.session == nil || !k.session.Live()) {
+		k.begin(ctx)
+	}
+	return k.session, k.err
+}
+
+func (k *passKeys) begin(ctx context.Context) {
+	if k.session != nil {
+		k.session.Close(ctx, secretbroker.UsedIf(k.used))
+	}
+	k.session, k.err = k.service.Store.Broker.Begin(ctx, k.request)
+	k.used = false
 }
 
 // use marks the current session as having done its work.
@@ -43,7 +54,7 @@ func (k *passKeys) use() { k.used = true }
 
 // close records how the last session ended. Call it once the passes are over.
 func (k *passKeys) close(ctx context.Context) {
-	if k.session != nil {
+	if k != nil && k.session != nil {
 		k.session.Close(ctx, secretbroker.UsedIf(k.used))
 	}
 }
