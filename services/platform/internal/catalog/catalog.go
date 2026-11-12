@@ -28,9 +28,13 @@ type Recipe struct {
 	Support       Maintenance          `json:"support"`
 }
 
-const NginxImage = "nginx:1.30.6-alpine3.24@sha256:47928bf67eb62a1863cb08d9ecb52d3e704304ba614eaee17884204677702951"
-const ValkeyImage = "valkey/valkey:9.1.2-alpine3.24@sha256:48332870af354a799964c0012ae1194a0bf2bf894eb508f945810596dc2d8d11"
-const UptimeKumaImage = "louislam/uptime-kuma:2.5.7@sha256:4b95dbe7ac5343b768f8e04e3035ccd59997872b1a35ab9b0f082d2cc279070e"
+const NginxImage = "nginx:1.30.6-alpine3.24@sha256:583b7f2fce1cdb8da5ad5c39ebd3c33b98b87d493190e548bdee1fa8c619c311"
+const ValkeyImage = "valkey/valkey:9.1.3-alpine3.24@sha256:bf09d58e96d6b4524a15396b65b242bbe18beebbcc15a04d8ee75ddac62fae0b"
+
+// The slim image leaves out Chromium and the embedded MariaDB, which the recipe does not
+// use and which carry most of the full image's advisories. The rootless image runs as
+// node (uid 1000) and ships /app/data owned by it, so a new volume is writable.
+const UptimeKumaImage = "louislam/uptime-kuma:2.5.9-slim-rootless@sha256:053a48927ee714b1da78c6810041a44a266bd8c06dc30ead5b3f459d0f219fb0"
 const RegistryImage = "registry:3.1.2@sha256:01cd312e67026f06f5d89c3e133a4a9adc7cb9eeb9b1194e0b2954dfd770efd2"
 
 // Template identities are public placeholders. Staging replaces them with fresh
@@ -73,7 +77,7 @@ func Recipes() []Recipe {
 	cache.Support.Backup, cache.Support.Restore = stateless, stateless
 	nginx := Recipe{ID: "nginx", Name: "Nginx", Description: "A static HTTP server with the upstream welcome page and HTTP readiness.", Documentation: "https://hub.docker.com/_/nginx", Prerequisites: []string{private, "Add your own image or reviewed configuration to serve application content."}, Specification: template("nginx", "Nginx", "web", NginxImage, 80, "/", ""), Support: base}
 	nginx.Support.Backup, nginx.Support.Restore = stateless, stateless
-	kuma := Recipe{ID: "uptime-kuma", Name: "Uptime Kuma", Description: "Uptime monitoring with a retained local data volume.", Documentation: "https://github.com/louislam/uptime-kuma/wiki/%F0%9F%94%A7-How-to-Install", Prerequisites: []string{private, "Create the initial administrator through a restricted route before granting public access. Docker socket monitoring is not enabled."}, Specification: template("uptime-kuma", "Uptime Kuma", "web", UptimeKumaImage, 3001, "/", "/app/data"), Support: base}
+	kuma := Recipe{ID: "uptime-kuma", Name: "Uptime Kuma", Description: "Uptime monitoring with a retained local data volume.", Documentation: "https://github.com/louislam/uptime-kuma/wiki/%F0%9F%94%A7-How-to-Install", Prerequisites: []string{private, "Create the initial administrator through a restricted route before granting public access. Docker socket monitoring is not enabled.", "Choose SQLite or an external MariaDB at setup. The image has no embedded MariaDB or local browser for Real Browser monitors."}, Specification: template("uptime-kuma", "Uptime Kuma", "web", UptimeKumaImage, 3001, "/", "/app/data"), Support: base}
 	registry := Recipe{ID: "oci-registry", Name: "OCI registry", Description: "A private Distribution registry with retained local storage; separate from Astilba build registry credentials.", Documentation: "https://distribution.github.io/distribution/about/deploying/", Prerequisites: []string{private, "The template is unauthenticated. Configure registry authentication and TLS before publishing; the Docker host cannot use a private container hostname as a remote build registry.", "As a build registry, deploy it on a different server from the one that builds: builds can't reach the server they run on."}, Specification: template("oci-registry", "OCI registry", "web", RegistryImage, 5000, "/v2/", "/var/lib/registry"), Support: base}
 	none := "none"
 	registry.Specification.Applications[0].Variables = []domain.Variable{{Name: "OTEL_TRACES_EXPORTER", Value: &none}}
