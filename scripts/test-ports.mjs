@@ -33,7 +33,7 @@ function listen(port, host) {
           : undefined,
       ),
     );
-    server.listen({ port, host, exclusive: true }, () => resolve(server));
+    server.listen({ port, host }, () => resolve(server));
   });
 }
 
@@ -89,10 +89,11 @@ export function holdCheckout(path, suite) {
         linkSync(claim, path);
         break;
       } catch (error) {
-        if (error.code !== "EEXIST" || attempt > 0) throw error;
+        if (error.code !== "EEXIST") throw error;
       }
       const holder = Number(readFileSync(path, "utf8"));
-      if (alive(holder))
+      // A second refusal means another run took over the same stale lock first.
+      if (alive(holder) || attempt > 0)
         throw new Error(
           `${suite} is already running in this checkout (process ${holder}); wait for it, or run the other from a separate checkout`,
         );
