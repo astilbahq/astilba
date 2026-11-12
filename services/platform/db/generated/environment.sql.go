@@ -714,6 +714,18 @@ func (q *Queries) RewrapTOTP(ctx context.Context, arg RewrapTOTPParams) error {
 	return err
 }
 
+const specificationTextSize = `-- name: SpecificationTextSize :one
+SELECT octet_length($1::jsonb::text)::int AS size
+`
+
+// The bytes a specification takes as specification_revisions' size check measures them.
+func (q *Queries) SpecificationTextSize(ctx context.Context, specification []byte) (int32, error) {
+	row := q.db.QueryRow(ctx, specificationTextSize, specification)
+	var size int32
+	err := row.Scan(&size)
+	return size, err
+}
+
 const visualPlanHostReview = `-- name: VisualPlanHostReview :one
 SELECT host_review FROM visual_plans WHERE workspace_id=$1 AND environment_id=$2 AND id=$3
 `

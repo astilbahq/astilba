@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json/jsontext"
@@ -10,6 +11,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/composeproject"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"net/http"
+	"strings"
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
@@ -169,13 +171,9 @@ func (s *Server) UpdateDraft(w http.ResponseWriter, r *http.Request, ws, pid, id
 		s.fail(w, r, e)
 		return
 	}
-	spec, canonical, e := domain.ParseSpec(b.Specification)
-	if e != nil {
-		s.fail(w, r, e)
-		return
-	}
 	var out api.Revision
 	var current *api.Revision
+	reader := principal(r.Context()).MayReadEnvironment()
 	e = s.Store.InWorkspaceTx(r.Context(), *principal(r.Context()), ws, store.WorkspaceAccess{Write: true}, func(tx pgx.Tx, q *db.Queries, _ store.Workspace) error {
 		ctx := r.Context()
 		env, e := q.GetEnvironment(ctx, db.GetEnvironmentParams{WorkspaceID: ws, ProjectID: pid, ID: id})
@@ -186,8 +184,7 @@ func (s *Server) UpdateDraft(w http.ResponseWriter, r *http.Request, ws, pid, id
 		// its draft. A credential that may write but not read would otherwise learn from which error it
 		// gets, without naming the current draft, whether its guesses about them are right.
 		if env.DraftRevisionID != b.BaseRevisionId {
-			p := principal(ctx)
-			if p.Automation == nil || p.Automation.Allows(domain.EnvironmentRead) {
+			if reader {
 				v, e := q.GetRevision(ctx, db.GetRevisionParams{WorkspaceID: ws, EnvironmentID: id, ID: env.DraftRevisionID})
 				if e != nil {
 					return e
@@ -197,26 +194,12 @@ func (s *Server) UpdateDraft(w http.ResponseWriter, r *http.Request, ws, pid, id
 			}
 			return domain.Conflict
 		}
-		if e := s.Store.ValidateApplicationRoutes(ctx, tx, ws, id, spec, nil); e != nil {
+		spec, canonical, e := parseDraft(ctx, q, env, b.Specification, reader)
+		if e != nil {
 			return e
 		}
-		if (env.ConfigurationOwner == "compose") != (spec.Compose != nil) || spec.Compose != nil && spec.Compose.Namespace != env.UnitID {
-			return domain.Invalid("configurationOwner")
-		}
-		if spec.Compose != nil {
-			previous, e := q.GetRevision(ctx, db.GetRevisionParams{WorkspaceID: ws, EnvironmentID: id, ID: env.DraftRevisionID})
-			if e != nil {
-				return e
-			}
-			var old domain.Specification
-			if json.Unmarshal(previous.Specification, &old) != nil || old.Compose == nil {
-				return domain.Conflict
-			}
-			before, _ := stablejson.Marshal(old.Compose.Origin)
-			after, _ := stablejson.Marshal(spec.Compose.Origin)
-			if !bytes.Equal(before, after) {
-				return domain.Invalid("compose.origin")
-			}
+		if e := s.Store.ValidateApplicationRoutes(ctx, tx, ws, id, spec, nil); e != nil {
+			return e
 		}
 		var applied domain.Specification
 		if env.AppliedRevisionID != nil {
@@ -238,7 +221,7 @@ func (s *Server) UpdateDraft(w http.ResponseWriter, r *http.Request, ws, pid, id
 		}
 		// Saving the draft unchanged adds no revision. The kept revision shows who saved it and when,
 		// so only a principal that may read the environment gets it, as on a conflict.
-		if p := principal(ctx); p.Automation == nil || p.Automation.Allows(domain.EnvironmentRead) {
+		if reader {
 			same, e := q.GetRevisionHolding(ctx, db.GetRevisionHoldingParams{WorkspaceID: ws, EnvironmentID: id, ID: env.DraftRevisionID, Specification: canonical})
 			if e == nil {
 				out = revision(same)
@@ -267,7 +250,131 @@ func (s *Server) UpdateDraft(w http.ResponseWriter, r *http.Request, ws, pid, id
 		s.fail(w, r, e)
 		return
 	}
-	s.respond(w, 200, out)
+	// The saved revision holds what the save kept from the draft, a Compose source's origin included,
+	// and its hash covers them, so only a principal that may read the environment gets either.
+	saved := api.SavedDraft{Id: out.Id, AuthorId: out.AuthorId, CreatedAt: out.CreatedAt}
+	if reader {
+		saved.Hash, saved.Specification = &out.Hash, &out.Specification
+	}
+	s.respond(w, 200, saved)
+}
+
+// parseDraft parses a draft save for the environment. A Compose bundle's namespace and Git origin
+// belong to the environment, not to the save: the namespace is its deployment unit, and only an import
+// sets the origin. So a save may leave both out and the draft keeps its own. A principal that may read
+// the environment may send them unchanged. A credential that may not can't know them, and comparing
+// what it sent would confirm its guesses, so it must leave them out and gets the same refusal whatever
+// it sends.
+func parseDraft(ctx context.Context, q *db.Queries, env db.GetEnvironmentRow, raw []byte, reader bool) (domain.Specification, []byte, error) {
+	var sent struct {
+		Compose *struct {
+			Namespace uuid.UUID              `json:"namespace"`
+			Origin    *composeproject.Origin `json:"origin"`
+		} `json:"compose"`
+	}
+	// This reads only the Compose identity; ParseSpec checks the whole specification.
+	if json.Unmarshal(raw, &sent) != nil {
+		return domain.Specification{}, nil, domain.Invalid("specification")
+	}
+	if (env.ConfigurationOwner == "compose") != (sent.Compose != nil) {
+		return domain.Specification{}, nil, domain.Invalid("configurationOwner")
+	}
+	if sent.Compose == nil {
+		return domain.ParseSpec(raw)
+	}
+	if !reader && sent.Compose.Namespace != uuid.Nil {
+		return domain.Specification{}, nil, domain.Invalid("compose.namespace")
+	}
+	if !reader && sent.Compose.Origin != nil {
+		return domain.Specification{}, nil, domain.Invalid("compose.origin")
+	}
+	if sent.Compose.Namespace != uuid.Nil && sent.Compose.Namespace != env.UnitID {
+		return domain.Specification{}, nil, domain.Invalid("configurationOwner")
+	}
+	previous, e := q.GetRevision(ctx, db.GetRevisionParams{WorkspaceID: env.WorkspaceID, EnvironmentID: env.ID, ID: env.DraftRevisionID})
+	if e != nil {
+		return domain.Specification{}, nil, e
+	}
+	var old domain.Specification
+	if json.Unmarshal(previous.Specification, &old) != nil || old.Compose == nil {
+		return domain.Specification{}, nil, domain.Conflict
+	}
+	before, _ := stablejson.Marshal(old.Compose.Origin)
+	after, _ := stablejson.Marshal(sent.Compose.Origin)
+	if sent.Compose.Origin != nil && !bytes.Equal(before, after) {
+		return domain.Specification{}, nil, domain.Invalid("compose.origin")
+	}
+	kept, e := withComposeIdentity(raw, env.UnitID)
+	if e != nil {
+		return domain.Specification{}, nil, e
+	}
+	spec, canonical, e := domain.ParseSpec(kept)
+	if e != nil {
+		return spec, nil, e
+	}
+	// The origin counts towards the size limits. So that whether a save fits can't show whether the
+	// draft has an origin or how long it is, a credential that may not read the environment must leave
+	// room for the longest origin an import can record, whatever the draft holds.
+	if !reader {
+		fits, e := fitsAnyOrigin(ctx, q, spec)
+		if e != nil {
+			return domain.Specification{}, nil, e
+		}
+		if !fits {
+			return domain.Specification{}, nil, domain.Invalid("specification")
+		}
+	}
+	if old.Compose.Origin == nil {
+		return spec, canonical, nil
+	}
+	// Nothing ParseSpec derives depends on the origin, so the draft's is added to what it parsed.
+	spec.Compose.Origin = old.Compose.Origin
+	if canonical, e = stablejson.Marshal(spec); e == nil && len(canonical) > domain.SpecificationLimit {
+		e = domain.Invalid("specification")
+	}
+	return spec, canonical, e
+}
+
+// fitsAnyOrigin is whether a Compose specification stays within both size limits, canonical JSON
+// and the stored column's jsonb text, with any origin an import can record. The longest repository
+// URL takes the most room when every byte is one each form escapes most: '<' in canonical JSON and
+// '"' in jsonb text.
+func fitsAnyOrigin(ctx context.Context, q *db.Queries, spec domain.Specification) (bool, error) {
+	for _, char := range []string{"<", `"`} {
+		bundle := *spec.Compose
+		bundle.Origin = &composeproject.Origin{Provider: "github", Repository: strings.Repeat(char, 2048), Commit: strings.Repeat("0", 64)}
+		spec.Compose = &bundle
+		raw, e := stablejson.Marshal(spec)
+		if e != nil {
+			return false, e
+		}
+		size, e := q.SpecificationTextSize(ctx, raw)
+		if e != nil {
+			return false, e
+		}
+		if len(raw) > domain.SpecificationLimit || int(size) > domain.SpecificationLimit {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+// withComposeIdentity sets the namespace of a specification's Compose bundle, removes any origin and
+// leaves the rest as sent, for ParseSpec to check.
+func withComposeIdentity(raw []byte, namespace uuid.UUID) ([]byte, error) {
+	var spec, bundle map[string]jsontext.Value
+	if json.Unmarshal(raw, &spec) != nil || json.Unmarshal(spec["compose"], &bundle) != nil {
+		return nil, domain.Invalid("specification")
+	}
+	var e error
+	if bundle["namespace"], e = stablejson.Marshal(namespace); e != nil {
+		return nil, e
+	}
+	delete(bundle, "origin")
+	if spec["compose"], e = stablejson.Marshal(bundle); e != nil {
+		return nil, e
+	}
+	return stablejson.Marshal(spec)
 }
 func (s *Server) ListRevisions(w http.ResponseWriter, r *http.Request, ws, pid, id uuid.UUID) {
 	s.envScope(w, r, ws, pid, id, store.WorkspaceAccess{}, func(q *db.Queries, _ db.GetEnvironmentRow) (any, error) {

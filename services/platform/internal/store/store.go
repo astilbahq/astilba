@@ -49,6 +49,13 @@ func (p Principal) Recent() bool { return time.Now().Before(p.RecentUntil) }
 // CredentialRecent is Recent for the changes that need the shorter window.
 func (p Principal) CredentialRecent() bool { return time.Now().Before(p.CredentialRecentUntil) }
 
+// MayReadEnvironment is whether the principal may read the environment it acts on: every browser
+// member, and an automation credential holding environment:read. Only such a principal is shown the
+// environment's configuration.
+func (p Principal) MayReadEnvironment() bool {
+	return p.Automation == nil || p.Automation.Allows(domain.EnvironmentRead)
+}
+
 type Workspace struct {
 	ID         uuid.UUID
 	Name, Role string
