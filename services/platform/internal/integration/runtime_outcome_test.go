@@ -38,7 +38,7 @@ func TestVisualRuntimeOutcomeRequiresAppliedReport(t *testing.T) {
 	input.Capabilities.Visual = &yes
 	agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/enroll", "", input, 200, nil)
 	var plan deployment.Status
-	b.call("POST", path+"/deployment-plans", api.VisualPlanRequest{ServerId: server.Server.Id, BaseRevisionId: draft.Id, AllowHostChanges: true}, 201, &plan)
+	b.call("POST", path+"/deployment-plans", api.VisualPlanRequest{ServerId: server.Server.Id, BaseRevisionId: draft.Id}, 201, &plan)
 	var polled api.AgentPoll
 	agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/poll", token, nil, 200, &polled)
 	if polled.Command == nil {
@@ -57,7 +57,7 @@ func TestVisualRuntimeOutcomeRequiresAppliedReport(t *testing.T) {
 	send(f, *polled.Command, false, true)
 	b.call("GET", path+"/deployment-plans/"+plan.ID.String(), nil, 200, &plan)
 	var operation api.Operation
-	b.call("POST", path+"/deployment-plans/"+plan.ID.String()+"/apply", api.ApplyPlan{IdempotencyKey: uuid.New()}, 201, &operation)
+	b.call("POST", path+"/deployment-plans/"+plan.ID.String()+"/apply", api.ApplyVisualPlan{IdempotencyKey: uuid.New(), ApproveHostChanges: approved()}, 201, &operation)
 	agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/poll", token, nil, 200, &polled)
 	if polled.Command == nil || polled.Command.Id != operation.Id {
 		t.Fatal("apply missing")

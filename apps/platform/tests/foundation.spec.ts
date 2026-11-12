@@ -496,11 +496,6 @@ test("visual services stay staged until a reviewed plan is applied", async ({
   ).toBeVisible();
   await openEnvironmentSection(page, "Deployments");
   await page.getByLabel("Deployment server").selectOption(enrollment.server.id);
-  await page
-    .getByLabel(
-      "Approve the host permissions listed in the plan, including proxy, ports, certificates and elevated container privileges",
-    )
-    .check();
   await page.getByRole("button", { name: "Prepare plan", exact: true }).click();
   // A protocol fixture acts as the remote host; the native test covers Docker effects.
   const poll = async () => {
@@ -557,9 +552,18 @@ test("visual services stay staged until a reviewed plan is applied", async ({
   expect(await page.locator("body").textContent()).not.toContain(
     "visual-browser-canary",
   );
+  // A first route publishes the server's web ports, so the plan waits for the owner's approval.
+  const apply = page.getByRole("button", {
+    name: "Apply reviewed plan",
+    exact: true,
+  });
+  await expect(apply).toBeDisabled();
   await page
-    .getByRole("button", { name: "Apply reviewed plan", exact: true })
-    .click();
+    .getByLabel("Approve the host changes listed in this plan", {
+      exact: true,
+    })
+    .check();
+  await apply.click();
   const deploy = await poll();
   expect(deploy.visual.action).toBe("deploy");
   expect(Object.values(deploy.visual.secrets)).toContain(

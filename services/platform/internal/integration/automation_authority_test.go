@@ -77,9 +77,9 @@ func (a authorityAgent) applied(c api.ExecutionCommand, images map[string]string
 func (a authorityAgent) reviewAndApply(b *browser, path string, server, revision uuid.UUID, images map[string]string) {
 	a.t.Helper()
 	var plan deployment.Status
-	b.call("POST", path+"/deployment-plans", api.VisualPlanRequest{ServerId: server, BaseRevisionId: revision, AllowHostChanges: true}, 201, &plan)
-	a.observe(a.next(), deployment.Observation{Images: images, StateHash: strings.Repeat("f", 64)})
-	b.call("POST", path+"/deployment-plans/"+plan.ID.String()+"/apply", api.ApplyPlan{IdempotencyKey: uuid.New()}, 201, nil)
+	b.call("POST", path+"/deployment-plans", api.VisualPlanRequest{ServerId: server, BaseRevisionId: revision}, 201, &plan)
+	a.observe(a.next(), deployment.Observation{Images: images, StateHash: strings.Repeat("f", 64), HostChangesReported: true})
+	b.call("POST", path+"/deployment-plans/"+plan.ID.String()+"/apply", api.ApplyVisualPlan{IdempotencyKey: uuid.New(), ApproveHostChanges: approved()}, 201, nil)
 	a.applied(a.next(), images)
 }
 
@@ -92,7 +92,7 @@ func (a authorityAgent) expectAutomaticDeploy(images map[string]string) deployme
 	if c.Kind != "visual" || c.Visual == nil || json.Unmarshal(*c.Visual, &payload) != nil || payload.Action != "resolve" {
 		a.t.Fatal("automatic deployment did not start with image review", c.Kind, payload.Action)
 	}
-	a.observe(c, deployment.Observation{Images: images, StateHash: strings.Repeat("d", 64)})
+	a.observe(c, deployment.Observation{Images: images, StateHash: strings.Repeat("d", 64), HostChangesReported: true})
 	return a.applied(a.next(), images)
 }
 
@@ -204,7 +204,7 @@ func TestAutomationPlanNeedsConfigurationForCommandAndDrift(t *testing.T) {
 	if plain.Plan == nil || plain.Plan.Release == nil || len(plain.Plan.Release.Options.Command) != 0 || plain.Plan.Release.Options.DrainSeconds != 5 {
 		t.Fatalf("a plain protected release was lost: %+v", plain)
 	}
-	bearerCall(t, f, deployer, "POST", path+"/deployment-plans/"+plain.ID.String()+"/apply", api.ApplyPlan{IdempotencyKey: uuid.New()}, 201, nil)
+	bearerCall(t, f, deployer, "POST", path+"/deployment-plans/"+plain.ID.String()+"/apply", api.ApplyVisualPlan{IdempotencyKey: uuid.New(), ApproveHostChanges: approved()}, 201, nil)
 	if delivered := agent.applied(agent.next(), digest("b")); delivered.Release == nil || len(delivered.Release.Options.Command) != 0 {
 		t.Fatal("a plain release did not deploy without a command")
 	}
@@ -519,7 +519,7 @@ func TestAutomationBuildsOfOnePushDeployInTurn(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	agent.observe(c, deployment.Observation{Images: images, StateHash: strings.Repeat("d", 64)})
+	agent.observe(c, deployment.Observation{Images: images, StateHash: strings.Repeat("d", 64), HostChangesReported: true})
 	// A job stuck in retries must not stop automatic work for the environment indefinitely.
 	aged, err := f.st.Pool.Begin(t.Context())
 	if err != nil {

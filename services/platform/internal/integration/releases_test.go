@@ -52,7 +52,7 @@ func TestReleasePlanHistoryAndRollbackAdmission(t *testing.T) {
 	prepare := func(host bool, options *api.ReleaseOptions) deployment.Status {
 		t.Helper()
 		var status deployment.Status
-		b.call("POST", path+"/deployment-plans", api.VisualPlanRequest{ServerId: enrollment.Server.Id, BaseRevisionId: draft.Id, AllowHostChanges: host, ReleaseOptions: options}, 201, &status)
+		b.call("POST", path+"/deployment-plans", api.VisualPlanRequest{ServerId: enrollment.Server.Id, BaseRevisionId: draft.Id, ReleaseOptions: options}, 201, &status)
 		report(poll(), deployment.Observation{ObservedAt: time.Now(), Resources: []deployment.Resource{}, Images: map[string]string{app.String(): digest}, StateHash: strings.Repeat("f", 64)})
 		b.call("GET", path+"/deployment-plans/"+status.ID.String(), nil, 200, &status)
 		return status
@@ -62,9 +62,9 @@ func TestReleasePlanHistoryAndRollbackAdmission(t *testing.T) {
 		var op api.Operation
 		key := uuid.New()
 		url := path + "/deployment-plans/" + status.ID.String() + "/apply"
-		b.call("POST", url, api.ApplyPlan{IdempotencyKey: key}, 201, &op)
+		b.call("POST", url, api.ApplyVisualPlan{IdempotencyKey: key, ApproveHostChanges: approved()}, 201, &op)
 		var again api.Operation
-		b.call("POST", url, api.ApplyPlan{IdempotencyKey: key}, 201, &again)
+		b.call("POST", url, api.ApplyVisualPlan{IdempotencyKey: key, ApproveHostChanges: approved()}, 201, &again)
 		if op.Id != again.Id {
 			t.Fatal("release duplicated")
 		}
@@ -110,5 +110,5 @@ func TestReleasePlanHistoryAndRollbackAdmission(t *testing.T) {
 	no := false
 	in.Capabilities.SafeReleases = &no
 	agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/heartbeat", token, api.AgentHeartbeat{Capabilities: in.Capabilities, Preflight: in.Preflight}, 200, nil)
-	b.call("POST", path+"/deployment-plans/"+rollback.ID.String()+"/apply", api.ApplyPlan{IdempotencyKey: uuid.New()}, 400, nil)
+	b.call("POST", path+"/deployment-plans/"+rollback.ID.String()+"/apply", api.ApplyVisualPlan{IdempotencyKey: uuid.New(), ApproveHostChanges: approved()}, 400, nil)
 }

@@ -372,10 +372,6 @@ func (e *Engine) executeVisual(ctx context.Context, c api.ExecutionCommand, r Re
 	return e.finish(c.Id, "succeeded", "The reviewed revision is running and its routes were verified.")
 }
 
-func (e *Engine) resolveVisual(ctx context.Context, p deployment.Payload) (deployment.Observation, error) {
-	return e.resolveVisualImages(ctx, p, nil)
-}
-
 func (e *Engine) resolveVisualImages(ctx context.Context, p deployment.Payload, retained map[string]string) (deployment.Observation, error) {
 	observed, _, err := e.observeUnit(ctx, p.Plan, nil)
 	if err != nil {

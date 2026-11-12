@@ -22,13 +22,19 @@ const reviewCompose = `services:
       TOKEN: ${TOKEN}
     volumes: ['./agent.conf:/etc/agent.conf:ro']
     configs: [agent_rules]
+    networks: [ops]
   tuner:
     image: tuner:1
     cap_add: [NET_ADMIN]
     command: [tune]
+    networks: [ops]
   web:
     image: nginx:latest
     ports: [127.0.0.1:9011:80]
+    networks: [front]
+networks:
+  ops: {}
+  front: {}
 configs:
   agent_rules:
     file: rules.txt
@@ -66,17 +72,17 @@ func TestAutomaticChangesStopForChangedPrivilegedServices(t *testing.T) {
 	base := reviewSource{compose: reviewCompose, conf: "mode=strict\n", rules: "allow all\n", token: "first"}
 	previous := base.spec(t, namespace)
 	t.Run("identical definition carries forward its approval", func(t *testing.T) {
-		carry, _, err := automaticChanges(previous, base.spec(t, namespace))
-		if err != nil || !carry {
-			t.Fatalf("identical privileged definition was not deployable: carry=%v err=%v", carry, err)
+		_, err := automaticChanges(previous, base.spec(t, namespace))
+		if err != nil {
+			t.Fatalf("identical privileged definition was not deployable: %v", err)
 		}
 	})
 	t.Run("a stateless port-only service still carries forward", func(t *testing.T) {
 		next := base
 		next.compose = strings.ReplaceAll(reviewCompose, "nginx:latest", "nginx:2")
-		carry, _, err := automaticChanges(previous, next.spec(t, namespace))
-		if err != nil || !carry {
-			t.Fatalf("port-only change was refused: carry=%v err=%v", carry, err)
+		_, err := automaticChanges(previous, next.spec(t, namespace))
+		if err != nil {
+			t.Fatalf("port-only change was refused: %v", err)
 		}
 	})
 	edit := func(old, replacement string) func(reviewSource) reviewSource {
@@ -107,9 +113,9 @@ func TestAutomaticChangesStopForChangedPrivilegedServices(t *testing.T) {
 		{"cap_add service image", "tuner", edit("tuner:1", "tuner:2")},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, _, err := automaticChanges(previous, tc.change(base).spec(t, namespace))
+			_, err := automaticChanges(previous, tc.change(base).spec(t, namespace))
 			note := reviewNote(t, err)
-			if !strings.Contains(note, tc.service+" runs privileged or with added Linux capabilities") {
+			if !strings.Contains(note, tc.service+" has host-level access") {
 				t.Fatalf("note does not explain the privileged review: %q", note)
 			}
 		})
@@ -117,7 +123,7 @@ func TestAutomaticChangesStopForChangedPrivilegedServices(t *testing.T) {
 	t.Run("new privileged service is a new permission", func(t *testing.T) {
 		next := base
 		next.compose = strings.Replace(reviewCompose, "  web:", "  shell:\n    image: busybox:1\n    privileged: true\n  web:", 1)
-		note := reviewNote(t, func() error { _, _, err := automaticChanges(previous, next.spec(t, namespace)); return err }())
+		note := reviewNote(t, func() error { _, err := automaticChanges(previous, next.spec(t, namespace)); return err }())
 		if !strings.Contains(note, "shell: privileged container") {
 			t.Fatalf("note does not name the new permission: %q", note)
 		}
@@ -128,7 +134,7 @@ func TestAutomaticImagesStopForMovedTagsOnOtherServices(t *testing.T) {
 	namespace := uuid.New()
 	base := reviewSource{compose: reviewCompose, conf: "x", rules: "y", token: "z"}
 	spec := base.spec(t, namespace)
-	_, elevated, err := automaticChanges(spec, spec)
+	elevated, err := automaticChanges(spec, spec)
 	if err != nil || len(elevated) != 2 {
 		t.Fatalf("privileged services were not identified: %v %v", elevated, err)
 	}
@@ -177,7 +183,7 @@ func TestAutomaticImagesStopForMovedTagsOnOtherServices(t *testing.T) {
 		t.Run("moved tag on privileged "+name, func(t *testing.T) {
 			for _, target := range []uuid.UUID{uuid.Nil, id(name)} {
 				note := reviewNote(t, automaticImages(spec, spec, elevated, target, reviewed, with(name, "moved@sha256:m")))
-				if !strings.Contains(note, name+" runs privileged") {
+				if !strings.Contains(note, name+" has host-level access") {
 					t.Fatalf("note does not explain the privileged digest: %q", note)
 				}
 			}
@@ -238,12 +244,12 @@ func TestAutomaticChangesCompareRoutesOnlyForPrivilegedServices(t *testing.T) {
 		return reviewSource{compose: "services:\n  app:\n    image: app:1\n" + settings + "volumes:\n  data: {}\nx-astilba:\n  routes:\n    - name: public\n      service: app\n      protocol: http\n      domain: " + domain + "\n      port: 8080\n      tls: 'off'\n", conf: "x", rules: "y", token: "z"}
 	}
 	stateful := "    volumes: [data:/data]\n"
-	if _, _, err := automaticChanges(compose(stateful, "a.example.test").spec(t, namespace), compose(stateful, "b.example.test").spec(t, namespace)); err != nil {
+	if _, err := automaticChanges(compose(stateful, "a.example.test").spec(t, namespace), compose(stateful, "b.example.test").spec(t, namespace)); err != nil {
 		t.Fatal("a route change on a stateful service was refused", err)
 	}
 	privileged := "    privileged: true\n"
-	_, _, err := automaticChanges(compose(privileged, "a.example.test").spec(t, namespace), compose(privileged, "b.example.test").spec(t, namespace))
-	if note := reviewNote(t, err); !strings.Contains(note, "app runs privileged") {
+	_, err := automaticChanges(compose(privileged, "a.example.test").spec(t, namespace), compose(privileged, "b.example.test").spec(t, namespace))
+	if note := reviewNote(t, err); !strings.Contains(note, "app has host-level access") {
 		t.Fatalf("note does not explain the privileged review: %q", note)
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"sort"
 	"time"
 
+	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
@@ -83,6 +84,10 @@ func (s *Service) visualReport(ctx context.Context, tx pgx.Tx, c api.ExecutionCo
 	if payload.Action == "resolve" && r.State == "succeeded" {
 		plan.Images = observed.Images
 		plan.ExpectedState = observed.StateHash
+		review, err := reviewHostChanges(ctx, tx, ws, &plan, observed)
+		if err != nil {
+			return err
+		}
 		if observed.InfrastructureDrift && !plan.AcceptDrift {
 			r.State = "failed"
 			r.Note = "Ingress drift requires an explicit reconciliation plan."
@@ -96,6 +101,9 @@ func (s *Service) visualReport(ctx context.Context, tx pgx.Tx, c api.ExecutionCo
 		if err := configureRelease(ctx, tx, ws, &plan); err != nil {
 			r.State = "failed"
 			r.Note = "Protected release is unavailable for this resolved change. Review its compatibility and agent capabilities."
+			if len(observed.HostChanges) > 0 {
+				r.Note = "Protected release is unavailable because this change also changes its server's host configuration. Prepare a standard plan to review and apply the host change first."
+			}
 			return nil
 		}
 		plan = plan.WithHash()
@@ -103,7 +111,7 @@ func (s *Service) visualReport(ctx context.Context, tx pgx.Tx, c api.ExecutionCo
 			return domain.Invalid("images")
 		}
 		raw, _ := stablejson.Marshal(plan)
-		_, err := tx.Exec(ctx, "INSERT INTO visual_plans(id,workspace_id,environment_id,plan) VALUES($1,$2,$3,$4) ON CONFLICT(id) DO NOTHING", plan.ID, ws, c.EnvironmentId, raw)
+		_, err = tx.Exec(ctx, "INSERT INTO visual_plans(id,workspace_id,environment_id,plan,host_review) VALUES($1,$2,$3,$4,$5) ON CONFLICT(id) DO NOTHING", plan.ID, ws, c.EnvironmentId, raw, review)
 		return err
 	}
 
@@ -205,4 +213,42 @@ func (s *Service) visualReport(ctx context.Context, tx pgx.Tx, c api.ExecutionCo
 	raw, _ := stablejson.Marshal(observed)
 	_, err = tx.Exec(ctx, `INSERT INTO visual_runtime(workspace_id,environment_id,unit_id,server_id,plan_id,observation) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(workspace_id,environment_id) DO UPDATE SET observation=EXCLUDED.observation,observed_at=now(),plan_id=EXCLUDED.plan_id,unit_id=CASE WHEN EXCLUDED.plan_id IS DISTINCT FROM visual_runtime.plan_id THEN EXCLUDED.unit_id ELSE visual_runtime.unit_id END,server_id=CASE WHEN EXCLUDED.plan_id IS DISTINCT FROM visual_runtime.plan_id THEN EXCLUDED.server_id ELSE visual_runtime.server_id END`, ws, c.EnvironmentId, plan.UnitID, c.ServerId, previous, raw)
 	return err
+}
+
+// reviewHostChanges adds what the agent found applying the plan would change on its host to
+// the plan, and says whether applying it needs an owner's approval: for host changes the planner
+// found, any the agent reported, or a privileged or cap_add service that does not stand as the
+// applied deployment ran it, which needs the images the agent just resolved. A preview policy
+// already approves its previews' host changes. A plan that lets the agent change its host is
+// reviewed unless the resolving agent's own report says it worked out what that would change,
+// because an agent too old to do so would apply it unseen. The answer is kept beside the plan,
+// so the plan the agent verifies gains no field.
+func reviewHostChanges(ctx context.Context, tx pgx.Tx, ws uuid.UUID, plan *deployment.Plan, observed deployment.Observation) (bool, error) {
+	review, err := db.New(tx).VisualRequestHostReview(ctx, db.VisualRequestHostReviewParams{WorkspaceID: ws, ID: plan.ID})
+	if err != nil || plan.Preview != nil {
+		return review, err
+	}
+	if len(observed.HostChanges) > 0 {
+		plan.HostChanges, review = true, true
+		for _, change := range observed.HostChanges {
+			plan.Effects = append(plan.Effects, deployment.HostChangeEffect(change))
+		}
+	}
+	if review {
+		return true, nil
+	}
+	if plan.HostChanges && !observed.HostChangesReported {
+		plan.Effects = append(plan.Effects, deployment.UnreportedHostChangesEffect)
+		return true, nil
+	}
+	applied, err := appliedVisualPlan(ctx, tx, ws, plan.EnvironmentID)
+	if err != nil {
+		return false, err
+	}
+	changed, err := unapprovedElevatedServices(applied, *plan)
+	if err != nil || len(changed) == 0 {
+		return false, err
+	}
+	plan.Effects = append(plan.Effects, deployment.ElevatedServicesEffect(changed))
+	return true, nil
 }

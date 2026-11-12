@@ -95,13 +95,13 @@ func TestExportAndBaseCarryWhatTheAppLists(t *testing.T) {
 		agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/report", token, api.AgentReport{Id: c.Id, Generation: c.Generation, PlanHash: c.PlanHash, Sequence: 1, State: "succeeded", Steps: []api.ExecutionStep{}, Observation: (*jsontext.Value)(&raw)}, 204, nil)
 	}
 	var plan deployment.Status
-	b.call("POST", path+"/deployment-plans", api.VisualPlanRequest{ServerId: server.Server.Id, BaseRevisionId: draft.Id, AllowHostChanges: true}, 201, &plan)
+	b.call("POST", path+"/deployment-plans", api.VisualPlanRequest{ServerId: server.Server.Id, BaseRevisionId: draft.Id}, 201, &plan)
 	var polled api.AgentPoll
 	agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/poll", token, nil, 200, &polled)
 	resolve := *polled.Command
 	report(resolve, true)
 	var operation api.Operation
-	b.call("POST", path+"/deployment-plans/"+plan.ID.String()+"/apply", api.ApplyPlan{IdempotencyKey: uuid.New()}, 201, &operation)
+	b.call("POST", path+"/deployment-plans/"+plan.ID.String()+"/apply", api.ApplyVisualPlan{IdempotencyKey: uuid.New(), ApproveHostChanges: approved()}, 201, &operation)
 	agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/poll", token, nil, 200, &polled)
 	report(*polled.Command, false)
 	if !rowExists(t, f, `SELECT 1 FROM environments WHERE id=$1 AND applied_revision_id=$2`, env.Id, draft.Id) {

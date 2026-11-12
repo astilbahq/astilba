@@ -10,9 +10,11 @@ Owners can issue expiring credentials for CI, the Go CLI and a stdio MCP client 
 | `deployment:apply` | Inspect and apply an existing reviewed plan with an explicit idempotency key |
 | `build:run` | List and re-run owner-configured build targets; read their operation status |
 
-Select only the capabilities the caller needs. Build-only callers can discover their scope and targets without configuration-read permission. A credential cannot manage accounts, memberships, other credentials, secrets, integrations, host permissions, recovery or controller transfers. Normal owner/recent-identity requirements still gate privileged deployment changes. There is no arbitrary request or remote-shell tool.
+Select only the capabilities the caller needs. Build-only callers can discover their scope and targets without configuration-read permission. A credential cannot manage accounts, memberships, other credentials, secrets, integrations, host permissions, recovery or controller transfers. Normal owner/recent-identity requirements still gate privileged deployment changes. A credential can prepare any plan its capabilities allow, but cannot apply one whose host changes need review: those need an owner in the dashboard to approve them and confirm their identity. There is no arbitrary request or remote-shell tool.
 
 A plan request naming a release command or accepting drift returns 403 unless the credential also holds `configuration:write`. A release command runs with the environment's secrets and drift acceptance overrides a safety refusal, so a credential that can only plan and apply deploys what is saved. It can still set release timeouts with an empty command. A credential with `configuration:write`, `deployment:plan` and `deployment:apply` together can deploy any stateless configuration, so grant that combination only where a caller needs it.
+
+Draft saves and plan requests check the base revision before comparing the request with the draft or environment. A stale base returns 409. On a draft save, the current revision comes with it only for a browser or a credential holding `environment:read`. A credential without that capability therefore learns nothing about the draft or environment from these requests until it names the current revision. Listing build targets shows the current revision, so this doesn't hold for a credential that also holds `build:run`. A credential that can plan sees the whole draft in its plans.
 
 ## Credential lifetime
 

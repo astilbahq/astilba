@@ -33,6 +33,9 @@ type Principal struct {
 	MFA     bool
 	// RecentUntil is when this session's last proof of its credentials stops counting.
 	RecentUntil time.Time
+	// CredentialRecentUntil is when it stops counting for the changes that need the shorter
+	// window (WorkspaceAccess.Credential).
+	CredentialRecentUntil time.Time
 	// SessionHash is the stored token of the browser session, which a logout ends without
 	// changing the account.
 	SessionHash string
@@ -43,6 +46,9 @@ type Principal struct {
 // for longer than its authentication stays recent.
 func (p Principal) Recent() bool { return time.Now().Before(p.RecentUntil) }
 
+// CredentialRecent is Recent for the changes that need the shorter window.
+func (p Principal) CredentialRecent() bool { return time.Now().Before(p.CredentialRecentUntil) }
+
 type Workspace struct {
 	ID         uuid.UUID
 	Name, Role string
@@ -52,6 +58,10 @@ type Workspace struct {
 // WorkspaceAccess controls admission and locking, not SQL read-only mode.
 type WorkspaceAccess struct {
 	Write, Owner, Recent bool
+	// Credential needs the shorter recent window, for a change that lets a session holder keep
+	// or widen access beyond the session, or take the workspace or its secrets elsewhere. It
+	// implies Recent.
+	Credential bool
 	// Lock takes the workspace lock without the write requirements, for an operation that
 	// only reduces access and so must not be harder than granting it.
 	Lock bool
@@ -111,7 +121,7 @@ func (s *Store) inWorkspaceTx(ctx context.Context, p Principal, id uuid.UUID, ac
 // InWorkspaceSnapshot holds a consistent view across all exported tables while
 // serializing permission changes and interactive workspace mutations.
 func (s *Store) InWorkspaceSnapshot(ctx context.Context, p Principal, id uuid.UUID, fn func(pgx.Tx, *db.Queries, Workspace) error) error {
-	return s.inWorkspaceIsolation(ctx, p, id, WorkspaceAccess{Write: true, Owner: true, Recent: true}, "recovery", pgx.RepeatableRead, fn)
+	return s.inWorkspaceIsolation(ctx, p, id, WorkspaceAccess{Write: true, Owner: true, Credential: true}, "recovery", pgx.RepeatableRead, fn)
 }
 func (s *Store) inWorkspaceIsolation(ctx context.Context, p Principal, id uuid.UUID, access WorkspaceAccess, mode string, isolation pgx.TxIsoLevel, fn func(pgx.Tx, *db.Queries, Workspace) error) error {
 	var tx pgx.Tx
@@ -152,7 +162,7 @@ func (s *Store) inWorkspaceIsolation(ctx context.Context, p Principal, id uuid.U
 		w = Workspace{r.ID, r.Name, r.Role, r.RequireMfa}
 		mfa := p.MFA
 		if p.Automation != nil {
-			if access.Owner || access.Recent {
+			if access.Owner || access.Recent || access.Credential {
 				return domain.Forbidden
 			}
 			var e error
@@ -184,7 +194,7 @@ func (s *Store) inWorkspaceIsolation(ctx context.Context, p Principal, id uuid.U
 				return SubscriptionRequired
 			}
 		}
-		if access.Recent && !p.Recent() {
+		if access.Recent && !p.Recent() || access.Credential && !p.CredentialRecent() {
 			return domain.RecentRequired
 		}
 		return fn(tx, q, w)
@@ -430,7 +440,19 @@ func (s *Store) Rewrap(ctx context.Context) error {
 }
 
 const (
-	recentAuthentication = 5 * time.Minute
+	// recentAuthentication is how long a confirmation of identity lets a session make
+	// security-sensitive changes: long enough to prepare, review and apply a deployment plan
+	// on one confirmation. It runs from the confirmation and is not extended by use.
+	recentAuthentication = 15 * time.Minute
+	// recentCredentialAuthentication is the shorter window for changes that let whoever holds
+	// the session keep or widen access beyond it, or take the workspace or its secrets
+	// elsewhere: account credentials, access grants, the workspace's MFA requirement,
+	// transfer and encrypted export. A session left unattended after a confirmation for an
+	// ordinary change gives less time for those.
+	recentCredentialAuthentication = 5 * time.Minute
+	// pendingSignIn is how long a sign-in whose password was accepted waits for its second
+	// factor.
+	pendingSignIn = 5 * time.Minute
 	// recentAuthenticationSkew is how far ahead of the reading clock a proof's recorded
 	// time may be and still count. A session records the wall-clock time, which loses
 	// Go's monotonic reading, so a small backwards step of the clock, or a second process
@@ -439,20 +461,36 @@ const (
 	recentAuthenticationSkew = 5 * time.Second
 )
 
-// Recent reports whether a proof of credentials recorded at the given time still counts.
-func Recent(at time.Time, now time.Time) bool {
-	return !at.IsZero() && !at.After(now.Add(recentAuthenticationSkew)) && now.Sub(at) <= recentAuthentication
+func within(at, now time.Time, window time.Duration) bool {
+	return !at.IsZero() && !at.After(now.Add(recentAuthenticationSkew)) && now.Sub(at) <= window
 }
 
-// RecentUntil is Principal.RecentUntil for a session that last proved its credentials at
-// the given time. A time ahead of now is taken as now, so the skew allowed can never
-// lengthen the window beyond recentAuthentication from this reading.
-func RecentUntil(at time.Time, now time.Time) time.Time {
-	if !Recent(at, now) {
+// Recent reports whether a proof of credentials recorded at the given time still counts.
+func Recent(at time.Time, now time.Time) bool { return within(at, now, recentAuthentication) }
+
+// PendingSignIn reports whether a sign-in whose password was accepted at the given time may
+// still complete with its second factor.
+func PendingSignIn(at time.Time, now time.Time) bool { return within(at, now, pendingSignIn) }
+
+func until(at, now time.Time, window time.Duration) time.Time {
+	if !within(at, now, window) {
 		return time.Time{}
 	}
+	// A time ahead of now is taken as now, so the skew allowed never lengthens the window.
 	if at.After(now) {
 		at = now
 	}
-	return at.Add(recentAuthentication)
+	return at.Add(window)
+}
+
+// RecentUntil is Principal.RecentUntil for a session that last proved its credentials at
+// the given time.
+func RecentUntil(at time.Time, now time.Time) time.Time {
+	return until(at, now, recentAuthentication)
+}
+
+// CredentialRecentUntil is Principal.CredentialRecentUntil for a session that last proved
+// its credentials at the given time.
+func CredentialRecentUntil(at time.Time, now time.Time) time.Time {
+	return until(at, now, recentCredentialAuthentication)
 }

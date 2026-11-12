@@ -153,7 +153,6 @@ export async function managedDatabase(
   const plan = await post(`${path}/deployment-plans`, {
     baseRevisionId: draft.id,
     serverId: enrollment.server.id,
-    allowHostChanges: false,
     acceptDrift: false,
   });
   await report(await poll(), {
@@ -166,6 +165,7 @@ export async function managedDatabase(
   });
   await post(`${path}/deployment-plans/${plan.id}/apply`, {
     idempotencyKey: crypto.randomUUID(),
+    approveHostChanges: true,
   });
   await report(await poll(), {
     observedAt: new Date().toISOString(),

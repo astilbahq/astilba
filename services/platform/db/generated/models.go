@@ -840,6 +840,7 @@ type VisualPlan struct {
 	WorkspaceID   uuid.UUID `json:"workspace_id"`
 	EnvironmentID uuid.UUID `json:"environment_id"`
 	Plan          []byte    `json:"plan"`
+	HostReview    bool      `json:"host_review"`
 }
 
 type VisualRequest struct {
@@ -851,6 +852,7 @@ type VisualRequest struct {
 	RevisionID    uuid.UUID `json:"revision_id"`
 	OperationID   uuid.UUID `json:"operation_id"`
 	Candidate     []byte    `json:"candidate"`
+	HostReview    bool      `json:"host_review"`
 }
 
 type VisualRuntime struct {
