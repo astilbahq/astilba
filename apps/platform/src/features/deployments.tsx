@@ -1,8 +1,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { client, result, type Schema } from "../api/client";
-import { runtimeOptions } from "../api/environment";
-import { publishDraft } from "../api/environment";
+import { draftOptions, publishDraft, runtimeOptions } from "../api/environment";
 import { serversOptions } from "../api/servers";
 import { Button } from "../components/button";
 import { Checkbox } from "../components/checkbox";
@@ -20,6 +19,10 @@ import type { EnvironmentPath } from "./visual-editor";
 
 const root =
   "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}" as const;
+
+/** A plan prepared in this panel, with the saved revision it was prepared from. */
+type PreparedPlan = { id: string; revisionId: string; idempotencyKey: string };
+
 export function Deployments({
   path,
   revision,
@@ -40,8 +43,7 @@ export function Deployments({
   const [requireRelease, setRequireRelease] = useState(false);
   const [releaseCommand, setReleaseCommand] = useState("");
   const [serverId, setServerId] = useState("");
-  const [planId, setPlanId] = useState("");
-  const [key, setKey] = useState("");
+  const [prepared, setPrepared] = useState<PreparedPlan>();
   const [message, setMessage] = useState("");
   const [bundle, setBundle] = useState<Schema["ConfigurationExport"]>();
   const [logHours, setLogHours] = useState<1 | 6 | 24>(1);
@@ -54,9 +56,49 @@ export function Deployments({
     ...serversOptions(path.workspaceId),
     refetchInterval: 15000,
   });
+  // Events below usually report a save made elsewhere within seconds; polling covers a stream
+  // that has failed for good.
+  const saved = useQuery({
+    ...draftOptions(path),
+    select: (d) => d.id,
+    refetchInterval: 10000,
+  });
+  // A plan freezes the revision it was prepared from, and the server refuses to apply it once
+  // another revision is saved. It stays this panel's plan only while that revision is still
+  // the saved one: the one being edited here and the environment's latest draft, which a save
+  // from another tab, member or automation changes.
+  const current =
+    prepared?.revisionId === revision.id && prepared.revisionId === saved.data
+      ? prepared
+      : undefined;
+  // The server only plans the latest saved revision, which the editor must load first.
+  const behind = saved.data !== undefined && saved.data !== revision.id;
+  const withdrawn = !!prepared && !current;
+  // A save elsewhere can withdraw the plan while focus is on its controls. Focus then moves to
+  // the notice that says why, rather than to the page body; it is never taken from elsewhere.
+  const withdrawnNotice = useRef<HTMLParagraphElement>(null);
+  const focusWasInPlan = useRef(false);
+  const trackPlanFocus = useCallback((section: HTMLElement) => {
+    focusWasInPlan.current = false;
+    return () => {
+      focusWasInPlan.current = section.contains(document.activeElement);
+    };
+  }, []);
+  useEffect(() => {
+    const restore = withdrawn && focusWasInPlan.current;
+    focusWasInPlan.current = false;
+    if (!restore) return;
+    // WebKit ignores focus() in the task that removed the focused control, so wait a frame.
+    const frame = requestAnimationFrame(() => {
+      if (document.activeElement === document.body)
+        withdrawnNotice.current?.focus();
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [withdrawn]);
+  const planId = current?.id ?? "";
   const plan = useQuery({
     queryKey: ["visual-plan", path, planId],
-    enabled: !!planId,
+    enabled: !!current,
     queryFn: () =>
       result(
         client.GET(`${root}/deployment-plans/{planId}`, {
@@ -95,6 +137,12 @@ export function Deployments({
       `/api/v1/workspaces/${workspaceId}/projects/${projectId}/environments/${environmentId}/events`,
     );
     events.addEventListener("changed", () => {
+      // Includes the saved revision, so a plan prepared for an earlier one stops being shown.
+      void queries.invalidateQueries({
+        queryKey: draftOptions({ workspaceId, projectId, environmentId })
+          .queryKey,
+        exact: true,
+      });
       void queries.invalidateQueries({
         queryKey: ["runtime", { workspaceId, projectId, environmentId }],
       });
@@ -105,7 +153,6 @@ export function Deployments({
     return () => events.close();
   }, [workspaceId, projectId, environmentId, queries]);
   const ready = plan.data?.plan;
-  const stale = !!ready && ready.revisionId !== revision.id;
   const download = (
     name: string,
     data: string,
@@ -166,8 +213,11 @@ export function Deployments({
                     },
                   }),
                 );
-                setPlanId(next.id);
-                setKey(crypto.randomUUID());
+                setPrepared({
+                  id: next.id,
+                  revisionId: revision.id,
+                  idempotencyKey: crypto.randomUUID(),
+                });
                 setMessage(
                   "Resolving image identities and inspecting current state. No deployment has started.",
                 );
@@ -247,7 +297,7 @@ export function Deployments({
             </details>
             <Button
               type="submit"
-              disabled={dirty || action.isPending || !serverId}
+              disabled={dirty || behind || action.isPending || !serverId}
             >
               Prepare plan
             </Button>
@@ -256,16 +306,31 @@ export function Deployments({
                 Save your staged changes before preparing or applying a plan.
               </small>
             )}
+            {behind && (
+              <small>
+                A newer revision was saved. Use Reload current in Configuration
+                before preparing a plan.
+              </small>
+            )}
           </Form>
         )}
-        {plan.data && !ready && (
+        {withdrawn && (
+          <p role="alert" ref={withdrawnNotice} tabIndex={-1}>
+            The saved revision changed. Prepare a new plan.
+          </p>
+        )}
+        {current && plan.data && !ready && (
           <p role="status">
             Plan: {plan.data.state}. View the resolution operation below for
             details.
           </p>
         )}
-        {ready && (
-          <section className={s.stack} aria-label="Reviewed deployment plan">
+        {current && ready && (
+          <section
+            ref={trackPlanFocus}
+            className={s.stack}
+            aria-label="Reviewed deployment plan"
+          >
             <h3>Plan ready</h3>
             <p>
               <strong>
@@ -335,21 +400,16 @@ export function Deployments({
                 {JSON.stringify(ready.specification, null, 2)}
               </pre>
             </details>
-            {stale && (
-              <p role="alert">
-                The saved revision changed. Prepare a new plan.
-              </p>
-            )}
             <ApplyReviewedPlan
               key={planId}
               path={path}
               planId={planId}
               plan={ready}
               review={!!plan.data?.hostReview}
-              idempotencyKey={key}
+              idempotencyKey={current.idempotencyKey}
               owner={owner}
               write={write}
-              blocked={dirty || stale}
+              blocked={dirty}
               action={action}
               onApplied={(op) =>
                 setMessage(
@@ -408,7 +468,8 @@ export function Deployments({
                           loadRevision(next);
                           setRequireRelease(true);
                           setReleaseCommand("");
-                          setPlanId("");
+                          // Its message already asks for a new plan.
+                          setPrepared(undefined);
                           setMessage(
                             "Rollback draft created. Review its effective configuration and prepare a new deployment plan; nothing has been deployed.",
                           );
