@@ -30,10 +30,12 @@ WHERE server_id = @server_id AND base = @base AND zone = @zone;
 DELETE FROM dns_publications WHERE server_id = @server_id AND base = @base AND zone = @zone;
 
 -- name: InsertDNSRecordRemoval :exec
--- Written before the deletion is sent. A retry of the same deletion keeps the first row.
+-- Written before the deletion is sent. An unconfirmed row is from an attempt that may have
+-- failed, and the record may since have been published again, so the latest attempt replaces it.
 INSERT INTO dns_record_removals(workspace_id,server_id,name,zone,record_id,record_type,content,reason)
 VALUES(@workspace_id,@server_id,@name,@zone,@record_id,@record_type,@content,@reason)
-ON CONFLICT(zone,record_id) DO NOTHING;
+ON CONFLICT(zone,record_id) DO UPDATE SET content=EXCLUDED.content,reason=EXCLUDED.reason,requested_at=EXCLUDED.requested_at
+WHERE dns_record_removals.confirmed_at IS NULL;
 
 -- name: ConfirmDNSRecordRemovals :exec
 -- unscoped: a DNS job names the server. Called once the provider lists none of these records
