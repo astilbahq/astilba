@@ -50,7 +50,21 @@ func (j *Journal) saveUpgrade(s upgradeState) error {
 	})
 }
 
-// UpgradeViews omits credentials retained for disconnected recovery.
+// takeValues gives the upgrade the values a command for its plan was delivered with, so each action
+// runs with its own. The journal keeps an upgrade's values only while an action can still run on
+// it, and only for an earlier agent restored onto it, which reads them from here. A command
+// delivered without them, such as one cancelled before this host took it, needs none and leaves
+// those kept as they are.
+func (s *upgradeState) takeValues(cmd upgrade.Command) {
+	if len(cmd.Secrets) > 0 {
+		s.Command.Secrets = cmd.Secrets
+	}
+	if cmd.Installation.Access != (backup.Access{}) {
+		s.Command.Installation.Access = cmd.Installation.Access
+	}
+}
+
+// UpgradeViews omits the values an active upgrade keeps.
 func (j *Journal) UpgradeViews() ([]upgrade.View, error) {
 	states, err := j.upgrades()
 	if err != nil {
@@ -110,6 +124,7 @@ func (e *Engine) executeUpgrade(ctx context.Context, c api.ExecutionCommand, r R
 	if backup.Hash(s.Command.Plan) != backup.Hash(cmd.Plan) {
 		return e.finish(c.Id, "failed", "Upgrade plan changed.")
 	}
+	s.takeValues(cmd)
 	// Completed host effects can be acknowledged after a crash without repeating them.
 	if (cmd.Action == "prepare" && s.Status.Phase == "ready") || (cmd.Action == "return" && s.Status.Phase == "returned") || ((cmd.Action == "cutover" || cmd.Action == "reconcile") && s.Status.Phase == "complete") {
 		return e.upgradeReport(c, s, true)

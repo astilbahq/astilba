@@ -5946,9 +5946,11 @@
         "note":
           "type": "string"
           "maxLength": 1024
+          "description": "Free text from management, the host or the build runner, such as why the operation failed. It can quote the environment's configuration, so an automation credential without environment:read gets a fixed note saying the details were withheld in its place."
         "steps":
           "type": "array"
           "maxItems": 16
+          "description": "Each step's detail is withheld from an automation credential without environment:read, as the note is."
           "items":
             "$ref": "#/components/schemas/ExecutionStep"
         "createdAt":
