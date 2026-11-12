@@ -26,7 +26,8 @@ func (g *revokedGroup) retiringHosts(t *testing.T) {
 func (g *revokedGroup) retired(t *testing.T, e *primaryEnvironment) (deployment.Payload, api.Environment) {
 	t.Helper()
 	var retiring api.Environment
-	g.b.call("POST", e.path+"/retire", api.EnvironmentLifecycleRequest{ConfirmName: "Stack"}, 201, &retiring)
+	g.b.call("GET", e.path, nil, 200, &retiring)
+	g.b.call("POST", e.path+"/retire", api.EnvironmentLifecycleRequest{ConfirmName: retiring.Name}, 201, &retiring)
 	if retiring.State != api.EnvironmentStateRetiring || retiring.RetirementOperationId == nil {
 		t.Fatalf("retirement was not sent to a host: %+v", retiring)
 	}
@@ -69,11 +70,11 @@ func TestRetirementAfterConsolidatingAndRemovingPlacement(t *testing.T) {
 	g := newRevokedGroup(t, 2)
 	a, b := g.hosts[0], g.hosts[1]
 	g.retiringHosts(t)
-	e, _ := g.filesStack(t, a)
+	e := g.primaryEnvironment(t, a)
 	g.applied(t, &e, g.place(t, &e, a.id, b.id))
 	g.applied(t, &e, g.place(t, &e, a.id, a.id))
 	var refused api.Error
-	g.b.call("POST", e.path+"/retire", api.EnvironmentLifecycleRequest{ConfirmName: "Stack"}, 409, &refused)
+	g.b.call("POST", e.path+"/retire", api.EnvironmentLifecycleRequest{ConfirmName: "Web"}, 409, &refused)
 	if refused.Fields == nil || len(*refused.Fields) != 1 || (*refused.Fields)[0] != "retirement."+domain.RetirementCrossHost {
 		t.Fatalf("a consolidated placement was not refused as one across servers: %+v", refused)
 	}
