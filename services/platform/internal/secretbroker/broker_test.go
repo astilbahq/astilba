@@ -246,7 +246,8 @@ func TestBudgets(t *testing.T) {
 	hooked := uuid.New()
 	connection := uuid.New()
 	hook := Request{Workspace: hooked, Purpose: Operate, Principal: System("webhook"), Items: []Item{{Kind: Git, ID: connection}}, Connection: &connection}
-	for range webhookBurst + 50 {
+	// More than the workspace's whole burst, so a shared bucket would be empty.
+	for range workspaceBurst + 1 {
 		_, _ = b.Begin(ctx, hook)
 	}
 	if _, err := b.Begin(ctx, hook); !errors.Is(err, domain.RateLimited) {

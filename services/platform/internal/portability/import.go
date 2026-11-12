@@ -165,6 +165,27 @@ func (s *Service) AdmitImport(p store.Principal) error {
 	return nil
 }
 
+// admitImportTransaction makes the checks Import's transaction makes before it writes, in a
+// transaction that never commits: the session is still current and, when hosted, the invitation
+// is valid and for this account. The transaction itself decides again.
+func (s *Service) admitImportTransaction(ctx context.Context, p store.Principal, invitation string) error {
+	tx, e := s.Store.Pool.Begin(ctx)
+	if e != nil {
+		return e
+	}
+	defer tx.Rollback(ctx)
+	if s.Store.Hosted {
+		email, e := s.Store.ConsumeWorkspaceInvitation(ctx, tx, invitation, time.Now())
+		if e != nil {
+			return e
+		}
+		if email != p.Account.Email {
+			return domain.Forbidden
+		}
+	}
+	return store.AdmitBrowserSession(ctx, db.New(tx), p)
+}
+
 func (s *Service) Import(ctx context.Context, p store.Principal, passphrase string, envelope []byte, invitation string) (_ store.Workspace, failure error) {
 	var out store.Workspace
 	if e := s.AdmitImport(p); e != nil {
@@ -182,7 +203,11 @@ func (s *Service) Import(ctx context.Context, p store.Principal, passphrase stri
 	if archive.RequireMFA && !p.MFA {
 		return out, domain.MFARequired
 	}
-	// The credentials are sealed again for the workspace this import creates.
+	// The credentials are sealed again for the workspace this import creates, once the import
+	// would be admitted: no record is made for a session or invitation it would refuse.
+	if e := s.admitImportTransaction(ctx, p, invitation); e != nil {
+		return out, e
+	}
 	keys, e := s.Store.Broker.Begin(ctx, secretbroker.Request{Workspace: archive.Workspace, Purpose: secretbroker.Seal, Principal: p.Secrets(), Kinds: secretbroker.CredentialKinds, NewWorkspace: true})
 	if e != nil {
 		return out, e

@@ -25,10 +25,15 @@ const (
 	providerType = "github.com/astilbahq/astilba/services/platform/internal/pipeline.Provider"
 	clientType   = "github.com/astilbahq/astilba/services/platform/internal/githubapp.Client"
 	brokerType   = "github.com/astilbahq/astilba/services/platform/internal/secretbroker.Broker"
+	storeType    = "github.com/astilbahq/astilba/services/platform/internal/store.Store"
 )
 
-// brokerMethods are the Broker methods that record and give out keys.
-var brokerMethods = map[string]bool{"Begin": true, "BeginRotation": true, "Tokens": true}
+// brokerMethods are the Broker methods that record and give out keys, and storeKeyMethods the
+// Store methods that admit a caller in a transaction of their own and then do the same.
+var (
+	brokerMethods   = map[string]bool{"Begin": true, "BeginRotation": true, "Tokens": true}
+	storeKeyMethods = map[string]bool{"Admit": true, "BeginKeys": true}
+)
 
 // offlineClientMethods are the Client methods that only compute or check a value locally.
 var offlineClientMethods = map[string]bool{"FixtureAPI": true, "InstallURL": true, "AuthorizeURL": true, "VerifyWebhook": true}
@@ -212,6 +217,8 @@ func networkMethod(callee types.Object) bool {
 		return !offlineClientMethods[fn.Name()]
 	case brokerType:
 		return brokerMethods[fn.Name()]
+	case storeType:
+		return storeKeyMethods[fn.Name()]
 	}
 	return false
 }

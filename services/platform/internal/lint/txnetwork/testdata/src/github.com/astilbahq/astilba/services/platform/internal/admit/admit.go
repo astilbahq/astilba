@@ -5,6 +5,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/githubapp"
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
 	"github.com/astilbahq/astilba/services/platform/internal/secretbroker"
+	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -371,4 +372,10 @@ func (k *keyed) keysFirst(run func(func(pgx.Tx) error) error) error {
 func (k *keyed) keysUnderTransaction(tx pgx.Tx) error {
 	_, err := k.broker.Begin() // want `the secret broker`
 	return err
+}
+
+// The store admits a caller in a transaction of its own before asking for keys.
+func keysThroughStore(st *store.Store, tx pgx.Tx) error {
+	_ = st.Audit()
+	return st.BeginKeys() // want `the secret broker`
 }

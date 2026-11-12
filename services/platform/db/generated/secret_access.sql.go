@@ -15,7 +15,8 @@ import (
 const abandonSecretAccess = `-- name: AbandonSecretAccess :execrows
 INSERT INTO secret_access_outcomes(access_id,outcome)
 SELECT a.id,'abandoned' FROM secret_access a
-WHERE a.at < now() - make_interval(secs => $1::double precision)
+WHERE a.purpose <> 'rotate'
+    AND a.at < now() - make_interval(secs => $1::double precision)
     AND a.at > now() - interval '1 day'
     AND NOT EXISTS(SELECT 1 FROM secret_access_outcomes o WHERE o.access_id = a.id)
 ORDER BY a.at LIMIT 1000
@@ -24,7 +25,9 @@ ORDER BY a.at LIMIT 1000
 // A session never outlives its cap, so a record older than that with no outcome is one whose
 // process stopped before closing it. Each run marks a bounded batch, and looks back only a day:
 // the sweep runs every minute, so anything older was either marked or missed while management
-// was down for a day, and scanning all history every minute would not finish.
+// was down for a day, and scanning all history every minute would not finish; a record it
+// missed has no outcome, which reads as unknown. An operator's rotation has no time limit, so it
+// is never presumed abandoned.
 func (q *Queries) AbandonSecretAccess(ctx context.Context, olderThanSeconds float64) (int64, error) {
 	result, err := q.db.Exec(ctx, abandonSecretAccess, olderThanSeconds)
 	if err != nil {

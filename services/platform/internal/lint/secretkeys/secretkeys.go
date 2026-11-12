@@ -52,14 +52,22 @@ var pending = map[string]bool{
 	"internal/execution/recovery_checkpoints.go": true,
 }
 
-// legacyFile holds the transitional functions that open and seal integrations without the
-// broker. Only pending files and these callers, which move with them, may call them.
-const legacyFile = "internal/execution/legacy_keys.go"
-
+// legacyCallers are the files that call functions in pending files which use keys. Those
+// functions open values without a record, so a call from anywhere else is reported: the files
+// below move to the broker with them, and none may be added.
 var legacyCallers = map[string]bool{
-	"internal/execution/backups.go":     true,
-	"internal/execution/git_answers.go": true,
-	"internal/execution/github_app.go":  true,
+	"internal/execution/backups.go":               true,
+	"internal/execution/cross_host_operations.go": true,
+	"internal/execution/cross_host_plans.go":      true,
+	"internal/execution/git_answers.go":           true,
+	"internal/execution/github_app.go":            true,
+	"internal/execution/maintenance.go":           true,
+	"internal/execution/pipelines.go":             true,
+	"internal/execution/preview_workers.go":       true,
+	"internal/execution/previews.go":              true,
+	"internal/execution/transport.go":             true,
+	"internal/execution/upgrades.go":              true,
+	"internal/execution/visual.go":                true,
 }
 
 // harmless are the cryptobox names that hold no key.
@@ -83,6 +91,35 @@ func run(pass *analysis.Pass) (any, error) {
 	report := func(pos token.Pos, what string) {
 		pass.Reportf(pos, "%s gives keys outside the secret broker; ask secretbroker for a session instead", what)
 	}
+	uses := func(id *ast.Ident) string {
+		if why := holdsKeys(pass.TypesInfo.Uses[id]); why != "" {
+			return why
+		}
+		if keyring(pass.TypesInfo.TypeOf(id)) {
+			// A field or variable holding the keyring, such as a store's.
+			return id.Name + ", a keyring,"
+		}
+		return ""
+	}
+	// Functions in pending files that use keys open values without a record.
+	legacy := map[types.Object]bool{}
+	for _, file := range pass.Files {
+		if !pending[pkg+"/"+path.Base(pass.Fset.Position(file.Pos()).Filename)] {
+			continue
+		}
+		for _, decl := range file.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Body == nil {
+				continue
+			}
+			ast.Inspect(fn.Body, func(n ast.Node) bool {
+				if id, ok := n.(*ast.Ident); ok && uses(id) != "" {
+					legacy[pass.TypesInfo.Defs[fn.Name]] = true
+				}
+				return true
+			})
+		}
+	}
 	for _, file := range pass.Files {
 		name := pkg + "/" + path.Base(pass.Fset.Position(file.Pos()).Filename)
 		if pending[name] {
@@ -98,27 +135,15 @@ func run(pass *analysis.Pass) (any, error) {
 			if !ok {
 				return true
 			}
-			object := pass.TypesInfo.Uses[id]
-			if why := holdsKeys(object); why != "" {
+			if why := uses(id); why != "" {
 				report(id.Pos(), why)
-			} else if keyring(pass.TypesInfo.TypeOf(id)) {
-				// A field or variable holding the keyring, such as a store's.
-				report(id.Pos(), id.Name+", a keyring,")
-			} else if fn, ok := object.(*types.Func); ok && !legacyCallers[name] && declaredIn(pass, fn) == legacyFile {
-				report(id.Pos(), fn.Name()+", which opens values without a record,")
+			} else if object := pass.TypesInfo.Uses[id]; object != nil && legacy[object] && !legacyCallers[name] {
+				report(id.Pos(), object.Name()+", which opens values without a record,")
 			}
 			return true
 		})
 	}
 	return nil, nil
-}
-
-// declaredIn is the package/file an object is declared in.
-func declaredIn(pass *analysis.Pass, object types.Object) string {
-	if object.Pkg() == nil {
-		return ""
-	}
-	return trimmed(object.Pkg().Path()) + "/" + path.Base(pass.Fset.Position(object.Pos()).Filename)
 }
 
 func keyring(t types.Type) bool {
