@@ -1,6 +1,7 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
 import { signInAsOwner } from "./fixtures/owner-sign-in";
+import { api } from "./fixtures/ports";
 
 test("an owner allows a private build destination but never cloud metadata", async ({
   page,
@@ -16,7 +17,7 @@ test("an owner allows a private build destination but never cloud metadata", asy
   const created = await page.request.post(`/api/v1/workspaces/${ws}/servers`, {
     headers: {
       "X-CSRF-Token": session.csrfToken,
-      Origin: "http://127.0.0.1:15181",
+      Origin: api,
     },
     data: { name, role: "build" },
   });

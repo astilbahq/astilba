@@ -7,8 +7,9 @@ import {
 import type { AddressInfo } from "node:net";
 import { expect, type Page, test } from "@playwright/test";
 import { authFixtureSQL } from "./auth-fixture";
+import { ports } from "./fixtures/ports";
 
-const api = "127.0.0.1:15181";
+const api = `127.0.0.1:${ports.api}`;
 
 // Holding the reply in a real proxy keeps the browser's own abort and cookie handling under test.
 function renewalProxy() {
@@ -24,7 +25,7 @@ function renewalProxy() {
     const upstream = forward(
       {
         host: "127.0.0.1",
-        port: 15181,
+        port: ports.api,
         path: incoming.url,
         method: incoming.method,
         headers,
