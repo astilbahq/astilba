@@ -304,7 +304,6 @@ test("private network and placement retain failed drafts and review both hosts",
   const sourcePlan = await f.post(`${f.path}/deployment-plans`, {
     baseRevisionId: draft.id,
     serverId: primary.id,
-    allowHostChanges: true,
     acceptDrift: false,
   });
   await f.report(await f.poll(), {
@@ -317,6 +316,7 @@ test("private network and placement retain failed drafts and review both hosts",
   });
   await f.post(`${f.path}/deployment-plans/${sourcePlan.id}/apply`, {
     idempotencyKey: crypto.randomUUID(),
+    approveHostChanges: true,
   });
   await f.report(await f.poll(), {
     observedAt: new Date().toISOString(),
@@ -437,7 +437,6 @@ test("private network and placement retain failed drafts and review both hosts",
   await runtime
     .getByRole("combobox", { name: "Deployment server", exact: true })
     .selectOption(primary.id);
-  await runtime.getByLabel(/Approve the host permissions listed/).check();
   await runtime
     .getByRole("button", { name: "Prepare plan", exact: true })
     .click();

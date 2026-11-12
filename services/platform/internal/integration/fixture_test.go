@@ -339,7 +339,7 @@ func browserPrincipal(t *testing.T, st *store.Store, account db.Account, mfa boo
 	if err = st.Queries.InsertSession(context.Background(), db.InsertSessionParams{Token: token, Data: []byte{}, Expiry: now.Add(time.Hour)}); err != nil {
 		t.Fatal(err)
 	}
-	return store.Principal{Account: account, MFA: mfa, RecentUntil: now.Add(time.Hour), SessionHash: token}
+	return store.Principal{Account: account, MFA: mfa, RecentUntil: now.Add(time.Hour), CredentialRecentUntil: now.Add(time.Hour), SessionHash: token}
 }
 
 // sessionCookies leaves out the device cookie that goes with a completed sign-in.

@@ -40,7 +40,7 @@ func testCrossHostExpiry(t *testing.T, f *fixture, b *browser, ws uuid.UUID, pat
 		t.Fatal(err)
 	}
 	var parent api.Operation
-	b.call("POST", path+"/deployment-plans/"+plan.ID.String()+"/apply", api.ApplyPlan{IdempotencyKey: uuid.New()}, 201, &parent)
+	b.call("POST", path+"/deployment-plans/"+plan.ID.String()+"/apply", api.ApplyVisualPlan{IdempotencyKey: uuid.New(), ApproveHostChanges: approved()}, 201, &parent)
 	if phase == "probe" {
 		wait(func() bool {
 			var cancelled bool

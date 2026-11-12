@@ -187,7 +187,7 @@ func TestRetireDeployedEnvironmentAndRestore(t *testing.T) {
 	if restored.State != api.EnvironmentStateActive || restored.RetiredAt != nil || restored.RetirementOperationId != nil {
 		t.Fatalf("restored environment: %+v", restored)
 	}
-	x.refusal(x.owner, "POST", path+"/deployment-plans", api.VisualPlanRequest{ServerId: x.server, BaseRevisionId: draft.Id, AllowHostChanges: true}, "routes.claimed")
+	x.refusal(x.owner, "POST", path+"/deployment-plans", api.VisualPlanRequest{ServerId: x.server, BaseRevisionId: draft.Id}, "routes.claimed")
 	// Credentials stay revoked after restore.
 	bearerCall(t, x.f, token, "GET", path, nil, 401, nil)
 
@@ -225,7 +225,7 @@ func TestRetirementWithoutHostAndPreconditions(t *testing.T) {
 	_, path, draft := x.environment("Production", "failed.example.test")
 	// An operation in flight is never cancelled by retirement.
 	var plan deployment.Status
-	x.owner.call("POST", path+"/deployment-plans", api.VisualPlanRequest{ServerId: x.server, BaseRevisionId: draft.Id, AllowHostChanges: true}, 201, &plan)
+	x.owner.call("POST", path+"/deployment-plans", api.VisualPlanRequest{ServerId: x.server, BaseRevisionId: draft.Id}, 201, &plan)
 	x.refusal(x.owner, "POST", path+"/retire", api.EnvironmentLifecycleRequest{ConfirmName: "Production"}, "retirement."+domain.RetirementActiveOperation)
 	images := map[string]string{}
 	_, spec := draftSpec(t, x.owner, path)
@@ -319,7 +319,7 @@ func TestApplyRefusesARouteClaimedAfterReview(t *testing.T) {
 			images[app.ID.String()] = "busybox@sha256:" + strings.Repeat("c", 64)
 		}
 		var plan deployment.Status
-		x.owner.call("POST", path+"/deployment-plans", api.VisualPlanRequest{ServerId: x.server, BaseRevisionId: draft.Id, AllowHostChanges: true}, 201, &plan)
+		x.owner.call("POST", path+"/deployment-plans", api.VisualPlanRequest{ServerId: x.server, BaseRevisionId: draft.Id}, 201, &plan)
 		x.agent.observe(x.agent.next(), deployment.Observation{Images: images, StateHash: strings.Repeat("f", 64)})
 		return path, plan.ID, images
 	}
@@ -436,7 +436,7 @@ func TestRetiredPostgresVolumeKeepsItsMajor(t *testing.T) {
 	var upgraded api.Revision
 	x.owner.call("PUT", path+"/draft", map[string]any{"baseRevisionId": draft.Id, "specification": spec}, 200, &upgraded)
 	var refused api.Error
-	if err := json.Unmarshal(x.owner.call("POST", path+"/deployment-plans", api.VisualPlanRequest{ServerId: x.server, BaseRevisionId: upgraded.Id, AllowHostChanges: true}, 400, nil), &refused); err != nil {
+	if err := json.Unmarshal(x.owner.call("POST", path+"/deployment-plans", api.VisualPlanRequest{ServerId: x.server, BaseRevisionId: upgraded.Id}, 400, nil), &refused); err != nil {
 		t.Fatal(err)
 	}
 	if refused.Fields == nil || !slices.Contains(*refused.Fields, "applications.postgres.upgrade") {

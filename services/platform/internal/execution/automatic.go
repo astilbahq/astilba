@@ -5,7 +5,6 @@ import (
 	"encoding/json/v2"
 	"errors"
 	"fmt"
-	"maps"
 	"reflect"
 	"slices"
 	"time"
@@ -161,7 +160,7 @@ func (w *automaticWorker) work(ctx context.Context, git *gitAnswers, job *river.
 	if !own {
 		return stop("Not deployed: the draft also holds changes that were never deployed, such as saved variables, routes or services, or an image from an earlier run that did not deploy. This run's image or source is saved in the draft. Prepare and apply a deployment plan to review everything in the draft; automatic deployment then resumes with the next push.")
 	}
-	allowHost, elevated, err := automaticChanges(previous, v.Spec)
+	elevated, err := automaticChanges(previous, v.Spec)
 	if err != nil {
 		return stop(automaticReviewNote(err, "Automatic deployment needs interactive review for stateful changes or new host permissions."))
 	}
@@ -171,7 +170,7 @@ func (w *automaticWorker) work(ctx context.Context, git *gitAnswers, job *river.
 		if err != nil {
 			return err
 		}
-		status, err := w.service.createVisualPlan(ctx, nested, ws, pid, env, api.VisualPlanRequest{BaseRevisionId: revision, ServerId: *v.Server, AllowHostChanges: allowHost})
+		status, err := w.service.createVisualPlan(ctx, nested, ws, pid, env, api.VisualPlanRequest{BaseRevisionId: revision, ServerId: *v.Server}, false)
 		if err != nil {
 			_ = nested.Rollback(ctx)
 			if _, ok := err.(*domain.Error); ok {
@@ -224,11 +223,24 @@ func (w *automaticWorker) work(ctx context.Context, git *gitAnswers, job *river.
 	if err = automaticImages(previous, v.Spec, elevated, target, planImages(applied), planImages(candidate)); err != nil {
 		return stop(err.Error())
 	}
+	// The policy covers what the environment's applied deployment already has on its host,
+	// nothing new. The checks above name what changed; this also stops for what the agent
+	// reported when it resolved the plan, such as a proxy change.
+	review, err := db.New(tx).VisualPlanHostReview(ctx, db.VisualPlanHostReviewParams{WorkspaceID: ws, EnvironmentID: env, ID: *planID})
+	if err != nil {
+		return err
+	}
+	if review && slices.Contains(candidate.Effects, deployment.UnreportedHostChangesEffect) {
+		return stop("Not deployed: this server's agent does not report what deployments would change on its host, so every deployment that keeps host permissions needs an owner's review. Update the agent; automatic deployment then resumes with the next push.")
+	}
+	if review {
+		return stop("Not deployed: this change also changes its server's host configuration. Prepare and apply a deployment plan to review and approve it; automatic deployment then resumes with the next push.")
+	}
 	nested, err := tx.Begin(ctx)
 	if err != nil {
 		return err
 	}
-	op, err := w.service.applyVisualPlan(ctx, nested, ws, pid, env, *planID, job.Args.ID, allowHost)
+	op, err := w.service.applyVisualPlan(ctx, nested, ws, pid, env, *planID, job.Args.ID)
 	if err != nil {
 		_ = nested.Rollback(ctx)
 		if _, ok := err.(*domain.Error); ok {
@@ -319,12 +331,12 @@ func statefulService(service types.ServiceConfig) bool {
 // establish storage compatibility or migration safety. A privileged or cap_add service
 // must stay exactly as reviewed: its approval covered what it ran, so a pushed commit
 // that changes it would otherwise run new code with host-level access. Only published
-// ports carry forward for services whose definitions change. It returns whether reviewed host
-// permissions carry forward, and the privileged and cap_add services.
-func automaticChanges(previous, next domain.Specification) (bool, map[uuid.UUID]elevatedReview, error) {
+// ports carry forward for services whose definitions change. It returns the privileged and
+// cap_add services.
+func automaticChanges(previous, next domain.Specification) (map[uuid.UUID]elevatedReview, error) {
 	elevated := map[uuid.UUID]elevatedReview{}
 	if (previous.Compose == nil) != (next.Compose == nil) {
-		return false, nil, needsReview("Not deployed: the environment changed between Compose files and visual services. %s", resumeNote)
+		return nil, needsReview("Not deployed: the environment changed between Compose files and visual services. %s", resumeNote)
 	}
 	oldPermissions, nextPermissions := []string{}, []string{}
 	var oldProject, nextProject *composeproject.Project
@@ -332,22 +344,22 @@ func automaticChanges(previous, next domain.Specification) (bool, map[uuid.UUID]
 		var err error
 		oldProject, err = deployment.SourceProject(deployment.Plan{Specification: previous}, nil)
 		if err != nil {
-			return false, nil, err
+			return nil, err
 		}
 		nextProject, err = deployment.SourceProject(deployment.Plan{Specification: next}, nil)
 		if err != nil {
-			return false, nil, err
+			return nil, err
 		}
 		oldPermissions, nextPermissions = oldProject.Permissions, nextProject.Permissions
 	}
 	for _, permission := range nextPermissions {
 		if !slices.Contains(oldPermissions, permission) {
-			return false, nil, needsReview("Not deployed: this change requests a host permission that was never approved (%s). %s", permission, resumeNote)
+			return nil, needsReview("Not deployed: this change requests a host permission that was never approved (%s). %s", permission, resumeNote)
 		}
 	}
 	for _, port := range requiredPorts(next) {
 		if !slices.Contains(requiredPorts(previous), port) {
-			return false, nil, needsReview("Not deployed: this change needs proxy port %d, which was never approved. %s", port, resumeNote)
+			return nil, needsReview("Not deployed: this change needs proxy port %d, which was never approved. %s", port, resumeNote)
 		}
 	}
 	if previous.Compose != nil {
@@ -355,7 +367,7 @@ func automaticChanges(previous, next domain.Specification) (bool, map[uuid.UUID]
 		names := serviceNames(oldProject, nextProject)
 		for _, name := range names {
 			if review, ok := elevated[composeproject.ResourceID(next.Compose.Namespace, "service", name)]; ok && !review.Unchanged {
-				return false, nil, needsReview("Not deployed: %s runs privileged or with added Linux capabilities, and this change alters or removes it, such as its image, command, environment or files. Automatic deployment never changes a service with host-level access. %s", name, resumeNote)
+				return nil, needsReview("Not deployed: %s has host-level access, because it runs privileged or with added Linux capabilities or shares a volume or network with a service that does, and this change alters or removes it, such as its image, command, environment or files. Automatic deployment never changes a service with host-level access. %s", name, resumeNote)
 			}
 		}
 		for _, name := range names {
@@ -367,7 +379,7 @@ func automaticChanges(previous, next domain.Specification) (bool, map[uuid.UUID]
 			if oldOK && nowOK && reflect.DeepEqual(composeServiceInputs(oldProject, name, previous, false), composeServiceInputs(nextProject, name, next, false)) {
 				continue
 			}
-			return false, nil, needsReview("Not deployed: %s keeps data in a volume, and this change alters or removes it, such as its image, command, environment or files. %s", name, resumeNote)
+			return nil, needsReview("Not deployed: %s keeps data in a volume, and this change alters or removes it, such as its image, command, environment or files. %s", name, resumeNote)
 		}
 	} else {
 		for _, app := range previous.Applications {
@@ -376,7 +388,7 @@ func automaticChanges(previous, next domain.Specification) (bool, map[uuid.UUID]
 			}
 			index := slices.IndexFunc(next.Applications, func(a domain.Application) bool { return a.ID == app.ID })
 			if index < 0 || (!reflect.DeepEqual(app, next.Applications[index]) || !reflect.DeepEqual(statefulVisualInputs(previous, app), statefulVisualInputs(next, next.Applications[index]))) {
-				return false, nil, needsReview("Not deployed: %s keeps data in a volume, and this change alters or removes it, or the variables and outputs it reads. %s", app.Name, resumeNote)
+				return nil, needsReview("Not deployed: %s keeps data in a volume, and this change alters or removes it, or the variables and outputs it reads. %s", app.Name, resumeNote)
 			}
 		}
 		for _, app := range next.Applications {
@@ -385,11 +397,11 @@ func automaticChanges(previous, next domain.Specification) (bool, map[uuid.UUID]
 			}
 			index := slices.IndexFunc(previous.Applications, func(a domain.Application) bool { return a.ID == app.ID })
 			if index < 0 || (!reflect.DeepEqual(app, previous.Applications[index]) || !reflect.DeepEqual(statefulVisualInputs(next, app), statefulVisualInputs(previous, previous.Applications[index]))) {
-				return false, nil, needsReview("Not deployed: %s keeps data in a volume, and this change adds or alters it, or the variables and outputs it reads. %s", app.Name, resumeNote)
+				return nil, needsReview("Not deployed: %s keeps data in a volume, and this change adds or alters it, or the variables and outputs it reads. %s", app.Name, resumeNote)
 			}
 		}
 	}
-	return len(nextPermissions) > 0, elevated, nil
+	return elevated, nil
 }
 
 // composeServiceInputs is what decides what a Compose service runs: its merged and interpolated
@@ -426,11 +438,7 @@ func composeServiceInputs(project *composeproject.Project, name string, spec dom
 			inputs["volume:"+mount.Source] = project.Model.Volumes[mount.Source]
 		}
 	}
-	networks := slices.Collect(maps.Keys(service.Networks))
-	if len(networks) == 0 {
-		networks = []string{"default"}
-	}
-	for _, network := range networks {
+	for _, network := range serviceNetworks(spec, name, service) {
 		inputs["network:"+network] = project.Model.Networks[network]
 	}
 	id := composeproject.ResourceID(spec.Compose.Namespace, "service", name)
@@ -497,7 +505,7 @@ func automaticImages(previous, next domain.Specification, elevated map[uuid.UUID
 		case applied[id] == "" || candidate[id] == "":
 			return needsReview("Not deployed: %s has no single resolved image in both the last reviewed deployment and this plan to compare. %s", app.Name, resumeNote)
 		case privileged:
-			return needsReview("Not deployed: %s runs privileged or with added Linux capabilities, and its image now resolves to a different digest than the last reviewed deployment ran. %s", app.Name, resumeNote)
+			return needsReview("Not deployed: %s has host-level access, because it runs privileged or with added Linux capabilities or shares a volume or network with a service that does, and its image now resolves to a different digest than the last reviewed deployment ran. %s", app.Name, resumeNote)
 		case stateful:
 			return needsReview("Not deployed: %s keeps data in a volume, and its image now resolves to a different digest than the last reviewed deployment ran. %s", app.Name, resumeNote)
 		default:

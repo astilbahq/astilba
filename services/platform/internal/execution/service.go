@@ -98,7 +98,7 @@ func Terminal(s api.ExecutionState) bool {
 }
 
 type workspaceAccess struct {
-	Write, Owner, Recent, Recovery bool
+	Write, Owner, Recent, Credential, Recovery bool
 }
 
 func (s *Service) scope(ctx context.Context, p store.Principal, ws uuid.UUID, access workspaceAccess, action string, id uuid.UUID, fn func(pgx.Tx) error) error {
@@ -111,7 +111,7 @@ func (s *Service) scope(ctx context.Context, p store.Principal, ws uuid.UUID, ac
 		}
 		return nil
 	}
-	admission := store.WorkspaceAccess{Write: access.Write, Owner: access.Owner, Recent: access.Recent}
+	admission := store.WorkspaceAccess{Write: access.Write, Owner: access.Owner, Recent: access.Recent, Credential: access.Credential}
 	if access.Recovery {
 		return s.Store.InWorkspaceRecovery(ctx, p, ws, admission, fnScope)
 	}
@@ -186,7 +186,7 @@ func (s *Service) CreateServer(ctx context.Context, p store.Principal, ws uuid.U
 		return out, err
 	}
 	id := uuid.New()
-	err = s.scope(ctx, p, ws, workspaceAccess{Write: true, Owner: true, Recent: true}, "server.create", id, func(tx pgx.Tx) error {
+	err = s.scope(ctx, p, ws, workspaceAccess{Write: true, Owner: true, Credential: true}, "server.create", id, func(tx pgx.Tx) error {
 		q := db.New(tx)
 		count, e := q.CountServers(ctx, ws)
 		if e != nil {
@@ -214,7 +214,7 @@ func (s *Service) RenewEnrollment(ctx context.Context, p store.Principal, ws, id
 	if err != nil {
 		return out, err
 	}
-	err = s.scope(ctx, p, ws, workspaceAccess{Write: true, Owner: true, Recent: true}, "server.enrollment", id, func(tx pgx.Tx) error {
+	err = s.scope(ctx, p, ws, workspaceAccess{Write: true, Owner: true, Credential: true}, "server.enrollment", id, func(tx pgx.Tx) error {
 		if e := s.Store.ManagedServerAdmission(ctx, tx, ws, id); e != nil {
 			return e
 		}

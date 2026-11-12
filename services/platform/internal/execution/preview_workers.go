@@ -508,7 +508,7 @@ func (s *Service) reconcilePreview(ctx context.Context, tx pgx.Tx, git *gitAnswe
 		if err != nil {
 			return err
 		}
-		status, err := s.createVisualPlan(ctx, tx, p.Workspace, p.Project, *r.View.EnvironmentId, api.VisualPlanRequest{BaseRevisionId: rev, ServerId: p.Server, AllowHostChanges: true})
+		status, err := s.createVisualPlan(ctx, tx, p.Workspace, p.Project, *r.View.EnvironmentId, api.VisualPlanRequest{BaseRevisionId: rev, ServerId: p.Server}, true)
 		if err != nil {
 			return err
 		}
@@ -530,7 +530,7 @@ func (s *Service) reconcilePreview(ctx context.Context, tx pgx.Tx, git *gitAnswe
 	var deployed *uuid.UUID
 	err = tx.QueryRow(ctx, "SELECT id FROM execution_operations WHERE visual_plan_id=$1", *r.Plan).Scan(&deployed)
 	if errors.Is(err, pgx.ErrNoRows) {
-		op, e := s.applyVisualPlan(ctx, tx, p.Workspace, p.Project, *r.View.EnvironmentId, *r.Plan, uuid.New(), true)
+		op, e := s.applyVisualPlan(ctx, tx, p.Workspace, p.Project, *r.View.EnvironmentId, *r.Plan, uuid.New())
 		if e != nil {
 			return e
 		}

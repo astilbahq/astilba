@@ -162,7 +162,7 @@ Executable rollback does not imply persisted-format compatibility. An upgraded a
 
 ## Certificate contact
 
-For managed HTTP TLS, the host operator sets `--acme-email operator@example.com` on the agent's `run` command (for systemd, use an inspected `ExecStart` override retaining the existing arguments). An owner must then prepare a plan with host changes approved. The agent persists that reviewed contact in the host route registry. Changing the flag alone does not change running ingress. Public DNS must point at this host and TCP ports 80/443 must be reachable for HTTP-01 validation. The agent waits only for the certificates of the environment being deployed. It reports an unready or untrusted certificate as that deployment's failure and restores the previous routes.
+For managed HTTP TLS, the host operator sets `--acme-email operator@example.com` on the agent's `run` command (for systemd, use an inspected `ExecStart` override retaining the existing arguments). The next plan reports the new contact as a host change, which an owner approves when applying it. On an agent from before host-change reporting, every plan that lets it change its host needs that approval instead, so update the agent first. The agent persists that reviewed contact in the host route registry. Changing the flag alone does not change running ingress. Public DNS must point at this host and TCP ports 80/443 must be reachable for HTTP-01 validation. The agent waits only for the certificates of the environment being deployed. It reports an unready or untrusted certificate as that deployment's failure and restores the previous routes.
 
 A failed route publication restores the previous route file in place, so other environments on the host keep their connections. The agent recreates the shared proxy only when restoring needs it: when the failed publication changed the proxy's ports, certificate contact or egress setting, when the proxy can't load the previous file, or when a publication that was interrupted, or that accepted drift, left a proxy that differs from the one the agent recorded. A proxy moved onto the dedicated gateway for a coordinated primary keeps running when the host routes nothing, because the primary's private links reach the secondaries through it. An agent from before that change, restored afterwards, removes such a proxy at its next route change, and the primary's private links then refuse until a new plan prepares it again. Recovering a release or preview never recreates the proxy: if it finds a proxy that differs from the recorded one, the publication needs attention and the host keeps reporting drift until a visual reconciliation plan is applied. Route values are written so that the proxy reads exactly the reviewed value, including control characters, and one environment's value can't make the proxy reject the file. A host whose routes hold U+0085 in a header, path prefix or health path, which earlier agents let the proxy read as a space, reports ingress drift once after the upgrade. Apply a reconciliation plan to publish the reviewed value.
 
@@ -227,6 +227,19 @@ only after opening their local state and negotiating
 `Astilba-Agent-Maintenance-Continuation: v1`. An older or restored older controller
 cannot introduce a new maintenance command on these agents. Exact commands
 already accepted still reconcile locally while management is unavailable.
+
+When an agent resolves a deployment plan, it reports what applying it would change on the
+host beyond the environment's own unit: newly published ports, the certificate contact email
+and turning on managed egress. It reports them as kinds, not text, so a host cannot word its
+own review. It does so only while its controller advertises `Astilba-Agent-Host-Changes: v1`.
+Older controllers reject observation members they don't know, so they get the resolution
+older agents send. After the agent starts, a report naming host changes waits until
+management has answered. The report says it worked out the host changes even when there are
+none. A plan that lets an agent change its host needs an owner's review whenever the resolving
+report does not say so, because an older agent would apply those changes unreported.
+Whether a plan needs an owner's review is kept beside the plan, not
+in it, so the plan an agent verifies is unchanged and restoring the previous agent keeps
+working.
 
 A host that refuses a managed network change over a range it already uses says why
 in its receipt only while its controller advertises `Astilba-Agent-Network-Refusals:

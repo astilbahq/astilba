@@ -134,7 +134,8 @@ func (c *Client) Plan(ctx context.Context, v api.AutomationContext, id uuid.UUID
 
 func (c *Client) ApplyPlan(ctx context.Context, v api.AutomationContext, id, key uuid.UUID) (api.Operation, error) {
 	var out api.Operation
-	err := c.request(ctx, "POST", scope(v)+"/deployment-plans/"+id.String()+"/apply", api.ApplyPlan{IdempotencyKey: key}, &out)
+	// Automation never approves host changes; a plan with them needs an owner in the dashboard.
+	err := c.request(ctx, "POST", scope(v)+"/deployment-plans/"+id.String()+"/apply", api.ApplyVisualPlan{IdempotencyKey: key}, &out)
 	return out, err
 }
 

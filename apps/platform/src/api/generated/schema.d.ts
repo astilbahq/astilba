@@ -2874,6 +2874,17 @@ export interface components {
             /** Format: uuid */
             idempotencyKey: string;
         };
+        HostChange: {
+            /** @enum {string} */
+            kind: "ports" | "certificateEmail" | "managedEgress";
+            ports?: number[];
+        };
+        ApplyVisualPlan: {
+            /** Format: uuid */
+            idempotencyKey: string;
+            /** @description Approves the host changes the plan lists. Needed for a plan whose status has hostReview, which only an owner who confirmed their identity recently can apply. */
+            approveHostChanges?: boolean;
+        };
         AgentRelease: {
             version: string;
             /** @enum {integer} */
@@ -3485,6 +3496,10 @@ export interface components {
             infrastructureDrift?: boolean;
             resourceDrift?: boolean;
             omittedResources?: number;
+            /** @description What applying a resolved plan would change on the host itself. Agents send it only after a controller response advertises Astilba-Agent-Host-Changes v1. */
+            hostChanges?: components["schemas"]["HostChange"][];
+            /** @description The agent worked out what applying the resolved plan would change on the host, and hostChanges lists all of it. Sent with hostChanges, only after a controller response advertises Astilba-Agent-Host-Changes v1. */
+            hostChangesReported?: boolean;
         };
         VisualPlanStatus: {
             /** Format: uuid */
@@ -3493,6 +3508,8 @@ export interface components {
             operationId: string;
             state: string;
             plan: components["schemas"]["VisualPlan"] | null;
+            /** @description Whether applying the plan needs an owner to approve host changes the environment's applied deployment does not already have. */
+            hostReview?: boolean;
         };
         PrimaryReplacement: {
             /** Format: uuid */
@@ -3519,8 +3536,12 @@ export interface components {
             serverId: string;
             /** Format: uuid */
             baseRevisionId: string;
-            allowHostChanges: boolean;
             acceptDrift: boolean;
+            /**
+             * @deprecated
+             * @description Ignored. Host changes are approved when a plan is applied.
+             */
+            allowHostChanges?: boolean;
         };
         EnvironmentLifecycleRequest: {
             /** @description The environment's exact current name. */
@@ -7660,7 +7681,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["ApplyPlan"];
+                "application/json": components["schemas"]["ApplyVisualPlan"];
             };
         };
         responses: {

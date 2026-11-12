@@ -60,7 +60,7 @@ WHERE workspace_id = @workspace_id AND id = @id RETURNING execution_generation;
 
 -- name: BackfillPostgresMajors :exec
 -- Records, for each in-use volume with none, the PostgreSQL major its environment's applied revision
--- runs on it, as migration 00039 did for volumes that existed then. An archive from before version 7
+-- runs on it, as migration 00040 did for volumes that existed then. An archive from before version 7
 -- records none. Run BackfillUpgradeTargetMajors after it.
 UPDATE managed_volumes v SET postgres_major = substring(a->'source'->>'image' FROM '^postgres:([0-9]{1,3})[.@-]')
 FROM environments e
@@ -71,7 +71,7 @@ WHERE v.workspace_id = @workspace_id AND e.workspace_id = @workspace_id AND v.en
  AND jsonb_typeof(a->'postgres') = 'object' AND a->'mounts'->0->>'volumeId' = v.id::text;
 
 -- name: BackfillUpgradeTargetMajors :exec
--- Records PostgreSQL 18 on each supported upgrade's target volume with none, as migration 00039 did.
+-- Records PostgreSQL 18 on each supported upgrade's target volume with none, as migration 00040 did.
 -- Planning an upgrade records its target's major from archive version 7; every upgrade planned
 -- before then targeted PostgreSQL 18. It runs after BackfillPostgresMajors, so an applied revision
 -- decides a volume that both name.
@@ -79,3 +79,9 @@ UPDATE managed_volumes v SET postgres_major = '18'
 FROM supported_upgrades u
 WHERE v.workspace_id = @workspace_id AND u.workspace_id = @workspace_id AND v.environment_id = u.environment_id
  AND v.id::text = u.plan->>'targetVolumeId' AND v.postgres_major IS NULL AND NOT v.deleted;
+-- name: VisualPlanHostReview :one
+-- Whether applying the plan needs an owner's approval of its host changes.
+SELECT host_review FROM visual_plans WHERE workspace_id=$1 AND environment_id=$2 AND id=$3;
+-- name: VisualRequestHostReview :one
+-- Whether the planner found host changes the applied deployment does not already have.
+SELECT host_review FROM visual_requests WHERE workspace_id=$1 AND id=$2;

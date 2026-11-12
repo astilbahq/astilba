@@ -135,7 +135,7 @@ func TestTroubleshootingAdmissionDecisions(t *testing.T) {
 
 	enable := api.SaveTroubleshootingPolicy{Enabled: true}
 	operator.call("PUT", x.path+"/troubleshooting", enable, 403, nil)
-	x.f.auth.Now = func() time.Time { return time.Now().Add(6 * time.Minute) }
+	x.f.auth.Now = func() time.Time { return time.Now().Add(16 * time.Minute) }
 	x.owner.call("PUT", x.path+"/troubleshooting", enable, 403, nil)
 	x.f.auth.Now = time.Now
 	x.owner.call("PUT", x.path+"/troubleshooting", api.SaveTroubleshootingPolicy{Enabled: true, Generation: 7}, 409, nil)
@@ -164,7 +164,7 @@ func TestTroubleshootingAdmissionDecisions(t *testing.T) {
 	x.owner.call("POST", x.path+"/troubleshooting/sessions", api.OpenTroubleshootingSession{ApplicationId: x.app, Instance: 5}, 400, nil)
 	other := uuid.New()
 	x.owner.call("POST", x.path+"/troubleshooting/sessions", api.OpenTroubleshootingSession{ApplicationId: x.app, Instance: 1, ServerId: &other}, 400, nil)
-	x.f.auth.Now = func() time.Time { return time.Now().Add(6 * time.Minute) }
+	x.f.auth.Now = func() time.Time { return time.Now().Add(16 * time.Minute) }
 	x.open(t, x.owner, x.app, 1, 403)
 	x.f.auth.Now = time.Now
 
@@ -201,7 +201,7 @@ func TestTroubleshootingAdmissionDecisions(t *testing.T) {
 	x.audited(t, "session.close", 1)
 
 	// Widening again needs recent authentication; narrowing did not.
-	x.f.auth.Now = func() time.Time { return time.Now().Add(6 * time.Minute) }
+	x.f.auth.Now = func() time.Time { return time.Now().Add(16 * time.Minute) }
 	x.owner.call("PUT", x.path+"/troubleshooting", api.SaveTroubleshootingPolicy{Enabled: true, Generation: policy.Generation}, 403, nil)
 	x.owner.call("PUT", x.path+"/troubleshooting", api.SaveTroubleshootingPolicy{Enabled: false, OwnersOnly: true, Generation: policy.Generation}, 200, &policy)
 	x.f.auth.Now = time.Now

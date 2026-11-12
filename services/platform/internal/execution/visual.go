@@ -5,6 +5,7 @@ import (
 	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"errors"
+	"slices"
 	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
@@ -73,14 +74,19 @@ func (s *Service) CreateVisualPlan(ctx context.Context, p store.Principal, ws, p
 	if g := p.Automation; g != nil && !g.Allows(domain.ConfigurationWrite) && (in.AcceptDrift || in.ReleaseOptions != nil && len(in.ReleaseOptions.Command) > 0) {
 		return out, domain.Forbidden
 	}
-	err := s.scope(ctx, p, ws, workspaceAccess{Write: true, Owner: in.AllowHostChanges, Recent: in.AllowHostChanges}, "deployment.plan", env, func(tx pgx.Tx) error {
+	// Preparing a plan changes nothing: it records what applying it would do, including any
+	// host changes, for review. Approving those is part of applying it.
+	err := s.scope(ctx, p, ws, workspaceAccess{Write: true}, "deployment.plan", env, func(tx pgx.Tx) error {
 		var err error
-		out, err = s.createVisualPlan(ctx, tx, ws, pid, env, in)
+		out, err = s.createVisualPlan(ctx, tx, ws, pid, env, in, false)
 		return err
 	})
 	return out, err
 }
-func (s *Service) createVisualPlan(ctx context.Context, tx pgx.Tx, ws, pid, env uuid.UUID, in api.VisualPlanRequest) (deployment.Status, error) {
+
+// createVisualPlan prepares a plan for review. hostApproved is a standing policy's approval of
+// any host change, as a preview policy gives, so the plan carries host changes without review.
+func (s *Service) createVisualPlan(ctx context.Context, tx pgx.Tx, ws, pid, env uuid.UUID, in api.VisualPlanRequest, hostApproved bool) (deployment.Status, error) {
 	var out deployment.Status
 	err := func() error {
 		v, err := loadVisualEnvironment(ctx, tx, ws, pid, env)
@@ -143,23 +149,29 @@ func (s *Service) createVisualPlan(ctx context.Context, tx pgx.Tx, ws, pid, env 
 		for _, port := range ports {
 			known[port] = true
 		}
-		hostChanges := in.AllowHostChanges
+		// Host changes are what the plan lets the agent change on the server beyond the
+		// environment's own services. Review is what an owner must approve: those changes the
+		// environment's applied deployment on this server does not already have. The planner
+		// sees ports and Compose permissions. Once the plan resolves, the agent adds what only
+		// it can see, and a privileged or cap_add service must also stand exactly as applied,
+		// image digest included: see reviewHostChanges.
+		newPorts := false
 		for _, port := range requiredPorts(v.Spec) {
-			hostChanges = hostChanges || !known[port]
+			newPorts = newPorts || !known[port]
 		}
-		if hostChanges && !in.AllowHostChanges {
-			return domain.Invalid("allowHostChanges")
-		}
+		hostChanges, review := newPorts || hostApproved, newPorts
 		if v.Spec.Compose != nil {
 			source, err := deployment.SourceProject(deployment.Plan{Specification: v.Spec}, nil)
 			if err != nil {
 				return err
 			}
-			if len(source.Permissions) > 0 {
-				if !in.AllowHostChanges {
-					return domain.Invalid("allowHostChanges")
-				}
-				hostChanges = true
+			standing, err := standingHostPermissions(previousPlan, in.ServerId)
+			if err != nil {
+				return err
+			}
+			hostChanges = hostChanges || len(source.Permissions) > 0
+			for _, permission := range source.Permissions {
+				review = review || !slices.Contains(standing, permission)
 			}
 		}
 		if err := s.validateVisualSecrets(ctx, tx, ws, env, v.Spec); err != nil {
@@ -196,7 +208,7 @@ func (s *Service) createVisualPlan(ctx context.Context, tx pgx.Tx, ws, pid, env 
 				return domain.Invalid("applications.postgres.upgrade")
 			}
 		}
-		plan := deployment.Plan{ID: uuid.New(), ServerID: in.ServerId, EnvironmentID: env, UnitID: v.Unit, RevisionID: v.Revision, ExpectedAppliedID: v.Applied, Recipe: deployment.Recipe, Specification: v.Spec, Images: map[string]string{}, HostChanges: hostChanges, AcceptDrift: in.AcceptDrift, Effects: deployment.Effects(v.Spec, previous, hostChanges), ExpiresAt: time.Now().UTC().Add(15 * time.Minute)}.WithHash()
+		plan := deployment.Plan{ID: uuid.New(), ServerID: in.ServerId, EnvironmentID: env, UnitID: v.Unit, RevisionID: v.Revision, ExpectedAppliedID: v.Applied, Recipe: deployment.Recipe, Specification: v.Spec, Images: map[string]string{}, HostChanges: hostChanges, AcceptDrift: in.AcceptDrift, Effects: deployment.Effects(v.Spec, previous, newPorts), ExpiresAt: time.Now().UTC().Add(15 * time.Minute)}.WithHash()
 		if in.AcceptDrift {
 			plan.Effects = append(plan.Effects, "Accept reported drift: changes made outside Astilba to its managed resources are replaced by this plan instead of stopping it.")
 		}
@@ -223,15 +235,12 @@ func (s *Service) createVisualPlan(ctx context.Context, tx pgx.Tx, ws, pid, env 
 			if plan.UnitID, err = primaryUnitFor(ctx, tx, ws, env, v, in.ServerId); err != nil {
 				return err
 			}
-			plan.Replacement, plan.HostChanges = replacement, true
+			plan.Replacement, plan.HostChanges, review = replacement, true, true
 			plan.Effects = append(plan.Effects, effects...)
 		}
 		if previousPlan.Distributed != nil {
 			if previousPlan.Specification.HasRemotePlacement() {
 				return domain.Invalid("placement.consolidateFirst")
-			}
-			if !in.AllowHostChanges {
-				return domain.Invalid("allowHostChanges")
 			}
 			for _, unit := range previousPlan.Distributed.Units {
 				if unit.Plan.Local.Primary {
@@ -239,7 +248,7 @@ func (s *Service) createVisualPlan(ctx context.Context, tx pgx.Tx, ws, pid, env 
 					break
 				}
 			}
-			plan.HostChanges = true
+			plan.HostChanges, review = true, true
 			plan.Effects = append(plan.Effects, "Remove the consolidated placement configuration and private port publications. Persistent services can restart on their existing volumes.")
 		}
 		plan.PrepareInstances(previousPlan)
@@ -276,7 +285,7 @@ func (s *Service) createVisualPlan(ctx context.Context, tx pgx.Tx, ws, pid, env 
 		if len(raw) > 100000 {
 			return domain.Invalid("specification")
 		}
-		_, err = tx.Exec(ctx, `INSERT INTO visual_requests(id,workspace_id,server_id,environment_id,unit_id,revision_id,operation_id,candidate) VALUES($1,$2,$3,$4,$5,$6,$7,$8)`, plan.ID, ws, in.ServerId, env, plan.UnitID, v.Revision, op.Id, raw)
+		_, err = tx.Exec(ctx, `INSERT INTO visual_requests(id,workspace_id,server_id,environment_id,unit_id,revision_id,operation_id,candidate,host_review) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`, plan.ID, ws, in.ServerId, env, plan.UnitID, v.Revision, op.Id, raw, review && !hostApproved)
 		out = deployment.Status{ID: plan.ID, OperationID: op.Id, State: string(op.State)}
 		return err
 	}()
@@ -302,7 +311,7 @@ func (s *Service) VisualPlan(ctx context.Context, p store.Principal, ws, pid, en
 			return err
 		}
 		var raw []byte
-		err := tx.QueryRow(ctx, `SELECT r.id,r.operation_id,o.state,p.plan FROM visual_requests r JOIN execution_operations o ON o.id=r.operation_id LEFT JOIN visual_plans p ON p.id=r.id WHERE r.workspace_id=$1 AND r.environment_id=$2 AND r.id=$3`, ws, env, id).Scan(&out.ID, &out.OperationID, &out.State, &raw)
+		err := tx.QueryRow(ctx, `SELECT r.id,r.operation_id,o.state,p.plan,COALESCE(p.host_review,r.host_review) FROM visual_requests r JOIN execution_operations o ON o.id=r.operation_id LEFT JOIN visual_plans p ON p.id=r.id WHERE r.workspace_id=$1 AND r.environment_id=$2 AND r.id=$3`, ws, env, id).Scan(&out.ID, &out.OperationID, &out.State, &raw, &out.HostReview)
 		if err == nil && raw != nil {
 			var plan deployment.Plan
 			if err = json.Unmarshal(raw, &plan); err == nil {
@@ -325,31 +334,8 @@ func readPlan(ctx context.Context, tx pgx.Tx, ws, env, id uuid.UUID) (deployment
 	}
 	return p, err
 }
-func (s *Service) ApplyVisualPlan(ctx context.Context, p store.Principal, ws, pid, env, id, key uuid.UUID) (api.Operation, error) {
-	var out api.Operation
-	err := s.scope(ctx, p, ws, workspaceAccess{Write: true}, "deployment.apply", id, func(tx pgx.Tx) error {
-		var role string
-		if err := tx.QueryRow(ctx, "SELECT role FROM memberships WHERE workspace_id=$1 AND account_id=$2", ws, p.Account.ID).Scan(&role); err != nil {
-			return err
-		}
-		plan, err := readPlan(ctx, tx, ws, env, id)
-		if err != nil {
-			return err
-		}
-		if plan.HostChanges {
-			if role != "owner" {
-				return domain.Forbidden
-			}
-			if !p.Recent() {
-				return domain.RecentRequired
-			}
-		}
-		out, err = s.applyVisualPlan(ctx, tx, ws, pid, env, id, key, role == "owner" && p.Recent())
-		return err
-	})
-	return out, err
-}
-func (s *Service) applyVisualPlan(ctx context.Context, tx pgx.Tx, ws, pid, env, id, key uuid.UUID, allowHost bool) (api.Operation, error) {
+
+func (s *Service) applyVisualPlan(ctx context.Context, tx pgx.Tx, ws, pid, env, id, key uuid.UUID) (api.Operation, error) {
 	var out api.Operation
 	err := func() error {
 		v, err := loadVisualEnvironment(ctx, tx, ws, pid, env)
@@ -384,9 +370,6 @@ func (s *Service) applyVisualPlan(ctx context.Context, tx pgx.Tx, ws, pid, env, 
 		}
 		if err = s.Store.ValidateApplicationRoutes(ctx, tx, ws, env, plan.Specification, &plan.ServerID); err != nil {
 			return err
-		}
-		if plan.HostChanges && !allowHost {
-			return domain.RecentRequired
 		}
 		if _, err = s.visualServer(ctx, tx, ws, plan.ServerID); err != nil {
 			return err

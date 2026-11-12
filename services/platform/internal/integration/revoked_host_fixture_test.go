@@ -475,7 +475,7 @@ func (g *revokedGroup) reviewed(t *testing.T, e *primaryEnvironment, got reply) 
 func (g *revokedGroup) apply(t *testing.T, e *primaryEnvironment, status deployment.Status) api.Operation {
 	t.Helper()
 	var op api.Operation
-	g.b.call("POST", e.path+"/deployment-plans/"+status.ID.String()+"/apply", api.ApplyPlan{IdempotencyKey: uuid.New()}, 201, &op)
+	g.b.call("POST", e.path+"/deployment-plans/"+status.ID.String()+"/apply", api.ApplyVisualPlan{IdempotencyKey: uuid.New(), ApproveHostChanges: approved()}, 201, &op)
 	return op
 }
 
@@ -608,7 +608,7 @@ func (g *revokedGroup) deployed(t *testing.T, primary *aheadHost, spec func(path
 	e := primaryEnvironment{path: g.base + "/projects/" + project.Id.String() + "/environments/" + environment.Id.String()}
 	e.spec = spec(e.path)
 	g.b.call("PUT", e.path+"/draft", map[string]any{"baseRevisionId": environment.DraftRevisionId, "specification": e.spec}, 200, &e.draft)
-	g.applied(t, &e, <-g.b.send("POST", e.path+"/deployment-plans", api.VisualPlanRequest{BaseRevisionId: e.draft.Id, ServerId: primary.id, AllowHostChanges: true}))
+	g.applied(t, &e, <-g.b.send("POST", e.path+"/deployment-plans", api.VisualPlanRequest{BaseRevisionId: e.draft.Id, ServerId: primary.id}))
 	return e
 }
 

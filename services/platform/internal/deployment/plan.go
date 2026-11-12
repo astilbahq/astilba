@@ -80,28 +80,13 @@ type InstanceState struct {
 	InstanceID uuid.UUID  `json:"instanceId"`
 	State      string     `json:"state"`
 }
-type HostObservation struct {
-	ServerID   uuid.UUID `json:"serverId"`
-	UnitID     uuid.UUID `json:"unitId"`
-	State      string    `json:"state"`
-	ObservedAt time.Time `json:"observedAt"`
-}
-type Observation struct {
-	Hosts               []HostObservation `json:"hosts,omitempty"`
-	ObservedAt          time.Time         `json:"observedAt"`
-	Resources           []Resource        `json:"resources"`
-	Images              map[string]string `json:"images,omitempty"`
-	Applied             bool              `json:"applied"`
-	StateHash           string            `json:"stateHash"`
-	OmittedResources    int               `json:"omittedResources,omitempty"`
-	ResourceDrift       bool              `json:"resourceDrift"`
-	InfrastructureDrift bool              `json:"infrastructureDrift"`
-}
 type Status struct {
 	ID          uuid.UUID `json:"id"`
 	OperationID uuid.UUID `json:"operationId"`
 	State       string    `json:"state"`
 	Plan        *Plan     `json:"plan"`
+	// HostReview is whether applying the plan needs an owner to approve its host changes.
+	HostReview bool `json:"hostReview"`
 }
 
 func Hash(v any) string       { return stablejson.Hash(v) }

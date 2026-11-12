@@ -63,7 +63,7 @@ func TestVisualPlanAdmissionAndPortability(t *testing.T) {
 	create := func() deployment.Status {
 		t.Helper()
 		var s deployment.Status
-		b.call("POST", path+"/deployment-plans", api.VisualPlanRequest{ServerId: enrolled.Server.Id, BaseRevisionId: draft.Id, AllowHostChanges: true}, 201, &s)
+		b.call("POST", path+"/deployment-plans", api.VisualPlanRequest{ServerId: enrolled.Server.Id, BaseRevisionId: draft.Id}, 201, &s)
 		c := poll(s.OperationID)
 		if strings.Contains(string(*c.Visual), "visual-secret-canary") {
 			t.Fatal("resolution received secret values")
@@ -79,16 +79,15 @@ func TestVisualPlanAdmissionAndPortability(t *testing.T) {
 		}
 		return s
 	}
-	b.call("POST", path+"/deployment-plans", api.VisualPlanRequest{ServerId: enrolled.Server.Id, BaseRevisionId: draft.Id}, 400, nil)
 	stale := create()
 	draft = resaveDraft(t, b, path, draft.Id, spec)
-	b.call("POST", path+"/deployment-plans/"+stale.ID.String()+"/apply", api.ApplyPlan{IdempotencyKey: uuid.New()}, 409, nil)
+	b.call("POST", path+"/deployment-plans/"+stale.ID.String()+"/apply", api.ApplyVisualPlan{IdempotencyKey: uuid.New(), ApproveHostChanges: approved()}, 409, nil)
 	ready := create()
 	applyPath := path + "/deployment-plans/" + ready.ID.String() + "/apply"
 	key := uuid.New()
 	var op, again api.Operation
-	b.call("POST", applyPath, api.ApplyPlan{IdempotencyKey: key}, 201, &op)
-	b.call("POST", applyPath, api.ApplyPlan{IdempotencyKey: key}, 201, &again)
+	b.call("POST", applyPath, api.ApplyVisualPlan{IdempotencyKey: key, ApproveHostChanges: approved()}, 201, &op)
+	b.call("POST", applyPath, api.ApplyVisualPlan{IdempotencyKey: key, ApproveHostChanges: approved()}, 201, &again)
 	if op.Id != again.Id {
 		t.Fatal("apply duplicated operation")
 	}
@@ -129,11 +128,11 @@ func TestVisualPlanAdmissionAndPortability(t *testing.T) {
 	report(inspectionCommand, deployment.Observation{ObservedAt: time.Now(), Resources: []deployment.Resource{}, StateHash: strings.Repeat("a", 64)}, "succeeded")
 	spec.Applications[1].Postgres.Username = "different"
 	b.call("PUT", path+"/draft", map[string]any{"baseRevisionId": draft.Id, "specification": spec}, 200, &draft)
-	b.call("POST", path+"/deployment-plans", api.VisualPlanRequest{ServerId: enrolled.Server.Id, BaseRevisionId: draft.Id, AllowHostChanges: true}, 400, nil)
+	b.call("POST", path+"/deployment-plans", api.VisualPlanRequest{ServerId: enrolled.Server.Id, BaseRevisionId: draft.Id}, 400, nil)
 	spec.Applications[1].Postgres.Username = "app"
 	b.call("PUT", path+"/draft", map[string]any{"baseRevisionId": draft.Id, "specification": spec}, 200, &draft)
 	ready = create()
-	b.call("POST", path+"/deployment-plans/"+ready.ID.String()+"/apply", api.ApplyPlan{IdempotencyKey: uuid.New()}, 201, &op)
+	b.call("POST", path+"/deployment-plans/"+ready.ID.String()+"/apply", api.ApplyVisualPlan{IdempotencyKey: uuid.New(), ApproveHostChanges: approved()}, 201, &op)
 	command = poll(op.Id)
 	report(command, deployment.Observation{ObservedAt: time.Now(), Resources: []deployment.Resource{{ID: app, Kind: "service", State: "running", Image: image}, {ID: pg, Kind: "service", State: "healthy", Image: pgimage}}, Applied: true, StateHash: strings.Repeat("b", 64)}, "succeeded")
 	var exported struct {
@@ -168,7 +167,7 @@ func TestVisualPlanAdmissionAndPortability(t *testing.T) {
 	b.call("PUT", clonePath+"/draft", map[string]any{"baseRevisionId": cloneRevision.Id, "specification": cloneSpec}, 200, &collisionRevision)
 	// The plan is refused before review, naming the claim, rather than at apply.
 	var collision api.Error
-	b.call("POST", clonePath+"/deployment-plans", api.VisualPlanRequest{ServerId: enrolled.Server.Id, BaseRevisionId: collisionRevision.Id, AllowHostChanges: true}, 409, &collision)
+	b.call("POST", clonePath+"/deployment-plans", api.VisualPlanRequest{ServerId: enrolled.Server.Id, BaseRevisionId: collisionRevision.Id}, 409, &collision)
 	if collision.Fields == nil || len(*collision.Fields) != 1 || (*collision.Fields)[0] != "routes.claimed" {
 		t.Fatalf("route collision was not named: %+v", collision)
 	}
@@ -184,7 +183,7 @@ func TestVisualPlanAdmissionAndPortability(t *testing.T) {
 	var session api.Session
 	viewer.call("POST", "/api/v1/auth/invitations/accept", map[string]string{"token": invite, "name": "Viewer", "password": f.password}, 200, &session)
 	viewer.csrf = session.CsrfToken
-	viewer.call("POST", applyPath, api.ApplyPlan{IdempotencyKey: uuid.New()}, 403, nil)
+	viewer.call("POST", applyPath, api.ApplyVisualPlan{IdempotencyKey: uuid.New(), ApproveHostChanges: approved()}, 403, nil)
 	viewer.call("DELETE", path+"/volumes/"+volume.String(), nil, 403, nil)
 	// Failed deletion does not mark storage as deleted; success is recorded only from its own operation.
 	retainedPG := spec.Applications[1]
@@ -192,13 +191,13 @@ func TestVisualPlanAdmissionAndPortability(t *testing.T) {
 	spec.Bindings = nil
 	b.call("PUT", path+"/draft", map[string]any{"baseRevisionId": draft.Id, "specification": spec}, 200, &draft)
 	removed := create()
-	b.call("POST", path+"/deployment-plans/"+removed.ID.String()+"/apply", api.ApplyPlan{IdempotencyKey: uuid.New()}, 201, &op)
+	b.call("POST", path+"/deployment-plans/"+removed.ID.String()+"/apply", api.ApplyVisualPlan{IdempotencyKey: uuid.New(), ApproveHostChanges: approved()}, 201, &op)
 	report(poll(op.Id), deployment.Observation{ObservedAt: time.Now(), Resources: []deployment.Resource{{ID: app, Kind: "service", State: "running", Image: image}}, Applied: true, StateHash: strings.Repeat("b", 64)}, "succeeded")
 	// Removing the service does not erase the retained volume's initialization contract.
 	retainedPG.Postgres.Username = "different"
 	spec.Applications = append(spec.Applications, retainedPG)
 	b.call("PUT", path+"/draft", map[string]any{"baseRevisionId": draft.Id, "specification": spec}, 200, &draft)
-	b.call("POST", path+"/deployment-plans", api.VisualPlanRequest{ServerId: enrolled.Server.Id, BaseRevisionId: draft.Id, AllowHostChanges: true}, 400, nil)
+	b.call("POST", path+"/deployment-plans", api.VisualPlanRequest{ServerId: enrolled.Server.Id, BaseRevisionId: draft.Id}, 400, nil)
 	spec.Applications = spec.Applications[:1]
 	b.call("PUT", path+"/draft", map[string]any{"baseRevisionId": draft.Id, "specification": spec}, 200, &draft)
 	var removal api.Operation

@@ -112,12 +112,12 @@ test("protected release review and rollback draft remain separate from deploymen
   const first = await f.post(`${f.path}/deployment-plans`, {
     baseRevisionId: draft.id,
     serverId: server.id,
-    allowHostChanges: true,
     acceptDrift: false,
   });
   await f.report(await f.poll(), observed());
   await f.post(`${f.path}/deployment-plans/${first.id}/apply`, {
     idempotencyKey: crypto.randomUUID(),
+    approveHostChanges: true,
   });
   await f.report(await f.poll(), observed(true));
   specification.applications[1].variables[0].value = "v2";

@@ -123,7 +123,7 @@ WHERE v.workspace_id = $1 AND e.workspace_id = $1 AND v.environment_id = e.id
 `
 
 // Records, for each in-use volume with none, the PostgreSQL major its environment's applied revision
-// runs on it, as migration 00039 did for volumes that existed then. An archive from before version 7
+// runs on it, as migration 00040 did for volumes that existed then. An archive from before version 7
 // records none. Run BackfillUpgradeTargetMajors after it.
 func (q *Queries) BackfillPostgresMajors(ctx context.Context, workspaceID uuid.UUID) error {
 	_, err := q.db.Exec(ctx, backfillPostgresMajors, workspaceID)
@@ -137,7 +137,7 @@ WHERE v.workspace_id = $1 AND u.workspace_id = $1 AND v.environment_id = u.envir
  AND v.id::text = u.plan->>'targetVolumeId' AND v.postgres_major IS NULL AND NOT v.deleted
 `
 
-// Records PostgreSQL 18 on each supported upgrade's target volume with none, as migration 00039 did.
+// Records PostgreSQL 18 on each supported upgrade's target volume with none, as migration 00040 did.
 // Planning an upgrade records its target's major from archive version 7; every upgrade planned
 // before then targeted PostgreSQL 18. It runs after BackfillPostgresMajors, so an applied revision
 // decides a volume that both name.
@@ -748,4 +748,39 @@ type RewrapTOTPParams struct {
 func (q *Queries) RewrapTOTP(ctx context.Context, arg RewrapTOTPParams) error {
 	_, err := q.db.Exec(ctx, rewrapTOTP, arg.ID, arg.TotpSecret, arg.TotpPending)
 	return err
+}
+
+const visualPlanHostReview = `-- name: VisualPlanHostReview :one
+SELECT host_review FROM visual_plans WHERE workspace_id=$1 AND environment_id=$2 AND id=$3
+`
+
+type VisualPlanHostReviewParams struct {
+	WorkspaceID   uuid.UUID `json:"workspace_id"`
+	EnvironmentID uuid.UUID `json:"environment_id"`
+	ID            uuid.UUID `json:"id"`
+}
+
+// Whether applying the plan needs an owner's approval of its host changes.
+func (q *Queries) VisualPlanHostReview(ctx context.Context, arg VisualPlanHostReviewParams) (bool, error) {
+	row := q.db.QueryRow(ctx, visualPlanHostReview, arg.WorkspaceID, arg.EnvironmentID, arg.ID)
+	var host_review bool
+	err := row.Scan(&host_review)
+	return host_review, err
+}
+
+const visualRequestHostReview = `-- name: VisualRequestHostReview :one
+SELECT host_review FROM visual_requests WHERE workspace_id=$1 AND id=$2
+`
+
+type VisualRequestHostReviewParams struct {
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ID          uuid.UUID `json:"id"`
+}
+
+// Whether the planner found host changes the applied deployment does not already have.
+func (q *Queries) VisualRequestHostReview(ctx context.Context, arg VisualRequestHostReviewParams) (bool, error) {
+	row := q.db.QueryRow(ctx, visualRequestHostReview, arg.WorkspaceID, arg.ID)
+	var host_review bool
+	err := row.Scan(&host_review)
+	return host_review, err
 }

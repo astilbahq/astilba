@@ -2660,7 +2660,7 @@
         "content":
           "application/json":
             "schema":
-              "$ref": "#/components/schemas/ApplyPlan"
+              "$ref": "#/components/schemas/ApplyVisualPlan"
       "parameters":
         -
           "name": "workspaceId"
@@ -5661,6 +5661,37 @@
         "idempotencyKey":
           "type": "string"
           "format": "uuid"
+    "HostChange":
+      "type": "object"
+      "additionalProperties": false
+      "required":
+        - "kind"
+      "properties":
+        "kind":
+          "type": "string"
+          "enum":
+            - "ports"
+            - "certificateEmail"
+            - "managedEgress"
+        "ports":
+          "type": "array"
+          "maxItems": 64
+          "items":
+            "type": "integer"
+            "minimum": 1
+            "maximum": 65535
+    "ApplyVisualPlan":
+      "type": "object"
+      "additionalProperties": false
+      "required":
+        - "idempotencyKey"
+      "properties":
+        "idempotencyKey":
+          "type": "string"
+          "format": "uuid"
+        "approveHostChanges":
+          "type": "boolean"
+          "description": "Approves the host changes the plan lists. Needed for a plan whose status has hostReview, which only an owner who confirmed their identity recently can apply."
     "AgentRelease":
       "type": "object"
       "additionalProperties": false
@@ -7163,6 +7194,15 @@
         "omittedResources":
           "type": "integer"
           "minimum": 0
+        "hostChanges":
+          "type": "array"
+          "description": "What applying a resolved plan would change on the host itself. Agents send it only after a controller response advertises Astilba-Agent-Host-Changes v1."
+          "maxItems": 3
+          "items":
+            "$ref": "#/components/schemas/HostChange"
+        "hostChangesReported":
+          "type": "boolean"
+          "description": "The agent worked out what applying the resolved plan would change on the host, and hostChanges lists all of it. Sent with hostChanges, only after a controller response advertises Astilba-Agent-Host-Changes v1."
       "required":
         - "observedAt"
         - "resources"
@@ -7188,6 +7228,9 @@
             -
               "$ref": "#/components/schemas/VisualPlan"
           "nullable": true
+        "hostReview":
+          "type": "boolean"
+          "description": "Whether applying the plan needs an owner to approve host changes the environment's applied deployment does not already have."
       "required":
         - "id"
         - "operationId"
@@ -7233,14 +7276,15 @@
         "baseRevisionId":
           "type": "string"
           "format": "uuid"
-        "allowHostChanges":
-          "type": "boolean"
         "acceptDrift":
           "type": "boolean"
+        "allowHostChanges":
+          "type": "boolean"
+          "deprecated": true
+          "description": "Ignored. Host changes are approved when a plan is applied."
       "required":
         - "serverId"
         - "baseRevisionId"
-        - "allowHostChanges"
         - "acceptDrift"
     EnvironmentLifecycleRequest:
       type: object

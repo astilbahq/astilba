@@ -104,7 +104,9 @@ func (s *Service) SavePreviewPolicy(ctx context.Context, p store.Principal, ws, 
 	var enabledWhenAsked *bool
 	// The runner's row and the workspace are free during the branch check. The pass that
 	// saves re-reads the draft, generation, runner and connection the check was made for.
-	err := s.gitScope(ctx, p, ws, workspaceAccess{Write: true, Owner: true, Recent: in.Enabled}, "preview.policy", env, func(tx pgx.Tx, git *gitAnswers) error {
+	// Enabling approves every preview's host changes in advance, so it takes the window for
+	// approving host changes.
+	err := s.gitScope(ctx, p, ws, workspaceAccess{Write: true, Owner: true, Credential: in.Enabled}, "preview.policy", env, func(tx pgx.Tx, git *gitAnswers) error {
 		v, err := loadVisualEnvironment(ctx, tx, ws, pid, env)
 		if err != nil {
 			return err

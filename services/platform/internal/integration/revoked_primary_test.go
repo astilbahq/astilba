@@ -15,7 +15,7 @@ import (
 // replace asks for a plan that moves the environment's primary to the server, naming the volumes
 // the owner accepts starting empty.
 func (g *revokedGroup) replace(e *primaryEnvironment, server uuid.UUID, volumes ...uuid.UUID) reply {
-	request := api.VisualPlanRequest{BaseRevisionId: e.draft.Id, ServerId: server, AllowHostChanges: true}
+	request := api.VisualPlanRequest{BaseRevisionId: e.draft.Id, ServerId: server}
 	if volumes != nil {
 		request.Replacement = &api.PrimaryReplacementRequest{AbandonedVolumeIds: volumes}
 	}
@@ -49,11 +49,12 @@ func TestReplacingARevokedPrimaryStartsItsVolumesEmpty(t *testing.T) {
 	e, volume := g.filesStack(t, gone)
 	g.revoke(t, gone)
 	wantRefusedField(t, g.replace(&e, b.id), "replacement")
-	withoutHostChanges := <-g.b.send("POST", e.path+"/deployment-plans", api.VisualPlanRequest{BaseRevisionId: e.draft.Id, ServerId: b.id, Replacement: &api.PrimaryReplacementRequest{AbandonedVolumeIds: []uuid.UUID{volume}}})
-	wantRefusedField(t, withoutHostChanges, "allowHostChanges")
 	wantRefusedField(t, g.replace(&e, b.id, uuid.New()), "replacement.abandonedVolumeIds")
 	wantRefusedField(t, g.replace(&e, b.id, []uuid.UUID{}...), "replacement.abandonedVolumeIds")
 	status := g.applied(t, &e, g.replace(&e, b.id, volume))
+	if !status.Plan.HostChanges {
+		t.Fatal("moving the primary was not reviewed as a host change")
+	}
 	if status.Plan.Replacement == nil || status.Plan.Replacement.Server != gone.id || !slices.Equal(status.Plan.Replacement.AbandonedVolumes, []uuid.UUID{volume}) {
 		t.Fatalf("the plan doesn't record what it replaces: %+v", status.Plan.Replacement)
 	}
@@ -72,7 +73,7 @@ func TestReplacingARevokedPrimaryStartsItsVolumesEmpty(t *testing.T) {
 		t.Fatalf("runtime on %s, %d claims left on the revoked server, %d volumes kept", runtimeServer, claims, kept)
 	}
 	// Once moved, the environment is planned like any other.
-	g.applied(t, &e, <-g.b.send("POST", e.path+"/deployment-plans", api.VisualPlanRequest{BaseRevisionId: e.draft.Id, ServerId: b.id, AllowHostChanges: true}))
+	g.applied(t, &e, <-g.b.send("POST", e.path+"/deployment-plans", api.VisualPlanRequest{BaseRevisionId: e.draft.Id, ServerId: b.id}))
 }
 
 // The common two-host case: the secondary that's left takes over, keeping its single unit, which
@@ -155,7 +156,7 @@ func TestReplacementNeedsThePrimaryStillRevoked(t *testing.T) {
 	g.revoke(t, gone)
 	status := g.reviewed(t, &e, g.replace(&e, b.id, volume))
 	g.b.call("POST", g.base+"/servers/"+gone.id.String()+"/enrollment", nil, 201, nil)
-	g.b.call("POST", e.path+"/deployment-plans/"+status.ID.String()+"/apply", api.ApplyPlan{IdempotencyKey: uuid.New()}, 409, nil)
+	g.b.call("POST", e.path+"/deployment-plans/"+status.ID.String()+"/apply", api.ApplyVisualPlan{IdempotencyKey: uuid.New(), ApproveHostChanges: approved()}, 409, nil)
 	// A healthy primary needs no replacement and can't be given one.
 	wantRefusedField(t, g.replace(&e, b.id, volume), "replacement")
 }
@@ -287,7 +288,7 @@ func TestStaleReplacementDoesNotUndoANewerOne(t *testing.T) {
 	g.revoke(t, gone)
 	stale := g.reviewed(t, &e, g.replace(&e, b.id, volume))
 	g.applied(t, &e, g.replace(&e, c.id, volume))
-	g.b.call("POST", e.path+"/deployment-plans/"+stale.ID.String()+"/apply", api.ApplyPlan{IdempotencyKey: uuid.New()}, 409, nil)
+	g.b.call("POST", e.path+"/deployment-plans/"+stale.ID.String()+"/apply", api.ApplyVisualPlan{IdempotencyKey: uuid.New(), ApproveHostChanges: approved()}, 409, nil)
 	if _, server := g.unitOf(t, &e, true); server != c.id {
 		t.Fatal("a stale replacement moved the environment again")
 	}

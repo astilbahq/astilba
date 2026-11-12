@@ -76,7 +76,7 @@ func TestApplicationDomainScopeAndRecovery(t *testing.T) {
 	spec.Routes[0].Domain = domain.ApplicationHostname(f.st.ApplicationDomain, ws, uuid.New(), app, enrolled.Server.Id)
 	bearerCall(t, f, *grant.Token, "PUT", path+"/draft", map[string]any{"baseRevisionId": draft.Id, "specification": spec}, 400, nil)
 	spec.Routes[0].Domain = suggestion.Hostname
-	b.call("POST", path+"/deployment-plans", api.VisualPlanRequest{ServerId: other.Server.Id, BaseRevisionId: draft.Id, AllowHostChanges: true}, 400, nil)
+	b.call("POST", path+"/deployment-plans", api.VisualPlanRequest{ServerId: other.Server.Id, BaseRevisionId: draft.Id}, 400, nil)
 	// Ownership/recent authentication stay on the domain mutation itself.
 	account, e := f.st.Queries.AccountByID(ctx, f.owner)
 	if e != nil {

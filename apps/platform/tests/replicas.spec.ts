@@ -107,12 +107,12 @@ test("replica staging retains failed and conflicting drafts and reviews a comple
   const first = await f.post(`${f.path}/deployment-plans`, {
     baseRevisionId: draft.id,
     serverId: server.id,
-    allowHostChanges: true,
     acceptDrift: false,
   });
   await f.report(await f.poll(), observed());
   await f.post(`${f.path}/deployment-plans/${first.id}/apply`, {
     idempotencyKey: crypto.randomUUID(),
+    approveHostChanges: true,
   });
   const initial = await f.poll();
   await f.report(initial, observed(initial.visual.plan));

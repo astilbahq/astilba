@@ -54,14 +54,14 @@ func lateCoordinatedRestores(t *testing.T, f *fixture, b *browser, refresh, netw
 		var review deployment.Status
 		networkReady()
 		refresh()
-		b.call("POST", path+"/deployment-plans", api.VisualPlanRequest{BaseRevisionId: draft, ServerId: server, AllowHostChanges: true}, 201, &review)
+		b.call("POST", path+"/deployment-plans", api.VisualPlanRequest{BaseRevisionId: draft, ServerId: server}, 201, &review)
 		wait(func() bool {
 			b.call("GET", path+"/deployment-plans/"+review.ID.String(), nil, 200, &review)
 			return review.Plan != nil
 		})
 		var operation api.Operation
 		refresh()
-		b.call("POST", path+"/deployment-plans/"+review.ID.String()+"/apply", api.ApplyPlan{IdempotencyKey: uuid.New()}, 201, &operation)
+		b.call("POST", path+"/deployment-plans/"+review.ID.String()+"/apply", api.ApplyVisualPlan{IdempotencyKey: uuid.New(), ApproveHostChanges: approved()}, 201, &operation)
 		return operation.Id
 	}
 	settled := func(operation uuid.UUID) {

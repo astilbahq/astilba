@@ -68,7 +68,7 @@ func newUpgradeHost(t *testing.T, f *fixture) *upgradeHost {
 	h.report(t, h.poll(t, h.deploymentPlan.OperationID), "succeeded", &deployment.Observation{ObservedAt: time.Now(), Resources: []deployment.Resource{}, Images: map[string]string{pg.String(): image}, StateHash: strings.Repeat("a", 64)}, nil)
 	b.call("GET", path+"/deployment-plans/"+h.deploymentPlan.ID.String(), nil, 200, &h.deploymentPlan)
 	var op api.Operation
-	b.call("POST", path+"/deployment-plans/"+h.deploymentPlan.ID.String()+"/apply", api.ApplyPlan{IdempotencyKey: uuid.New()}, 201, &op)
+	b.call("POST", path+"/deployment-plans/"+h.deploymentPlan.ID.String()+"/apply", api.ApplyVisualPlan{IdempotencyKey: uuid.New(), ApproveHostChanges: approved()}, 201, &op)
 	h.report(t, h.poll(t, op.Id), "succeeded", &deployment.Observation{ObservedAt: time.Now(), Applied: true, Resources: []deployment.Resource{{ID: pg, Kind: "service", State: "healthy", Image: image}}, StateHash: strings.Repeat("b", 64)}, nil)
 	return h
 }
@@ -184,7 +184,7 @@ func TestUpgradeApprovalRecoveryAndTenantBoundary(t *testing.T) {
 	b.call("POST", actionPath, api.UpgradeActionRequest{Action: "cutover", RequestKey: uuid.New(), ExpectedPhase: "running"}, 409, nil)
 	status := upgrade.Status{Phase: "ready", Serving: "none", Step: "verified", KeepUntil: time.Now().Add(30 * 24 * time.Hour), Snapshot: strings.Repeat("c", 64)}
 	report(c, "succeeded", nil, &status)
-	b.call("POST", path+"/deployment-plans/"+deploymentPlan.ID.String()+"/apply", api.ApplyPlan{IdempotencyKey: uuid.New()}, 409, nil)
+	b.call("POST", path+"/deployment-plans/"+deploymentPlan.ID.String()+"/apply", api.ApplyVisualPlan{IdempotencyKey: uuid.New(), ApproveHostChanges: approved()}, 409, nil)
 	b.call("POST", actionPath, api.UpgradeActionRequest{Action: "cutover", RequestKey: uuid.New(), ExpectedPhase: "ready"}, 202, &op)
 	c = poll(op.Id)
 	status.Phase = "attention"
@@ -505,8 +505,12 @@ func volumeMajor(t *testing.T, f *fixture, volume uuid.UUID) *string {
 	return major
 }
 
+// retirementMigration is the version of 00040_environment_retirement.sql, which adds and backfills
+// postgres_major. Keep it with that file's number.
+const retirementMigration = 40
+
 // An upgrade planned before volumes recorded their PostgreSQL major has a target volume that no
-// applied revision mounts yet. Migration 00039 and the backfill after an older archive's import or
+// applied revision mounts yet. Migration 00040 and the backfill after an older archive's import or
 // recovery record the major its target runs.
 func TestUpgradeTargetMajorBackfill(t *testing.T) {
 	f := setup(t)
@@ -538,14 +542,14 @@ func TestUpgradeTargetMajorBackfill(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = provider.ApplyVersion(ctx, 39, false); err != nil {
+	if _, err = provider.ApplyVersion(ctx, retirementMigration, false); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = provider.ApplyVersion(ctx, 39, true); err != nil {
+	if _, err = provider.ApplyVersion(ctx, retirementMigration, true); err != nil {
 		t.Fatal(err)
 	}
 	if major := volumeMajor(t, f, view.Plan.TargetVolumeID); major == nil || *major != "18" {
-		t.Fatal("migration 00039 missed an upgrade's target", major)
+		t.Fatal("migration 00040 missed an upgrade's target", major)
 	}
 	if err = dbmigrate.Check(ctx, f.st.Pool.Config().ConnString()); err != nil {
 		t.Fatal(err)

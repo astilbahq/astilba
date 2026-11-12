@@ -61,7 +61,7 @@ func TestBackupScopeHydrationReportsAndCutover(t *testing.T) {
 	report(poll(plan.OperationID), &deployment.Observation{ObservedAt: time.Now(), Resources: []deployment.Resource{}, Images: map[string]string{pg.String(): image}, StateHash: strings.Repeat("a", 64)})
 	b.call("GET", path+"/deployment-plans/"+plan.ID.String(), nil, 200, &plan)
 	var op api.Operation
-	b.call("POST", path+"/deployment-plans/"+plan.ID.String()+"/apply", api.ApplyPlan{IdempotencyKey: uuid.New()}, 201, &op)
+	b.call("POST", path+"/deployment-plans/"+plan.ID.String()+"/apply", api.ApplyVisualPlan{IdempotencyKey: uuid.New(), ApproveHostChanges: approved()}, 201, &op)
 	report(poll(op.Id), &deployment.Observation{ObservedAt: time.Now(), Applied: true, Resources: []deployment.Resource{{ID: pg, Kind: "service", State: "healthy", Image: image}}, StateHash: strings.Repeat("b", 64)})
 	var dest backup.Destination
 	b.call("POST", prefix+"/backup-destinations", map[string]any{"name": "Recovery bucket", "kind": "s3", "root": "", "endpoint": "https://storage.example.test", "bucket": "recovery-fixture", "region": "test-1", "access": map[string]string{"accessKey": "storage-key-canary", "secretKey": "storage-secret-canary", "password": ""}}, 201, &dest)
