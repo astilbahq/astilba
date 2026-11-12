@@ -48,10 +48,6 @@ func (s *Service) retire(ctx context.Context, tx pgx.Tx, p store.Principal, ws, 
 	if err != nil {
 		return err
 	}
-	// Preview environments keep their own cleanup, which also releases their resource slot.
-	if e.Purpose == "preview" {
-		return domain.Forbidden
-	}
 	if e.Name != confirmName {
 		return domain.Invalid("confirmName")
 	}
@@ -87,7 +83,7 @@ func (s *Service) retire(ctx context.Context, tx pgx.Tx, p store.Principal, ws, 
 	var plan deployment.Plan
 	contact := e.ServerID != nil
 	if contact {
-		if plan, err = retirementPlan(ctx, tx, ws, env, e); err != nil {
+		if plan, next.RetiredWithoutHost, err = retirementPlan(ctx, tx, ws, env, e); err != nil {
 			return err
 		}
 		server, err := q.RetirementServer(ctx, db.RetirementServerParams{WorkspaceID: ws, ID: *e.ServerID})
@@ -123,37 +119,59 @@ func (s *Service) retire(ctx context.Context, tx pgx.Tx, p store.Principal, ws, 
 	return q.SetEnvironmentRetirement(ctx, next)
 }
 
-// retirementPlan is the plan the environment last applied, which names everything it put on its
-// server. A unit whose first deployment never succeeded gets an identity-only plan: the agent finds
-// what such an attempt left by its ownership labels, not by the plan's services.
-func retirementPlan(ctx context.Context, tx pgx.Tx, ws, env uuid.UUID, e db.LockRetirementEnvironmentRow) (deployment.Plan, error) {
-	id, err := db.New(tx).EnvironmentRuntimePlan(ctx, db.EnvironmentRuntimePlanParams{WorkspaceID: ws, EnvironmentID: env})
-	var plan deployment.Plan
+// retirementPlan is what the retirement command removes from the server of the environment's unit:
+// the plan the environment last applied there, which names everything it put on that server. A unit
+// whose first deployment never succeeded gets an identity-only plan: the agent finds what such an
+// attempt left by its ownership labels, not by the plan's services.
+//
+// A primary replacement moves the unit to its new server when it is applied, but the runtime keeps
+// naming the plan on the revoked server until the replacement's deployment succeeds. If it failed,
+// the new server gets the identity-only plan for whatever the attempt left there, and the revoked
+// server, which nothing can reach, is recorded as not contacted.
+func retirementPlan(ctx context.Context, tx pgx.Tx, ws, env uuid.UUID, e db.LockRetirementEnvironmentRow) (plan deployment.Plan, withoutHost bool, err error) {
+	q := db.New(tx)
+	id, err := q.EnvironmentRuntimePlan(ctx, db.EnvironmentRuntimePlanParams{WorkspaceID: ws, EnvironmentID: env})
 	switch {
 	case err == nil:
 		if plan, err = readPlan(ctx, tx, ws, env, id); err != nil {
-			return plan, err
+			return plan, false, err
 		}
 		if plan.Distributed != nil || plan.Local != nil || plan.Specification.Placement != nil {
-			return plan, domain.RetirementRefused(domain.RetirementCrossHost)
+			return plan, false, domain.RetirementRefused(domain.RetirementCrossHost)
 		}
-		if plan.ServerID != *e.ServerID || plan.UnitID != e.UnitID {
-			return plan, domain.RetirementRefused(domain.RetirementState)
+		if plan.ServerID == *e.ServerID && plan.UnitID == e.UnitID {
+			break
 		}
+		applied, err := q.RetirementServer(ctx, db.RetirementServerParams{WorkspaceID: ws, ID: plan.ServerID})
+		if err != nil {
+			return plan, false, err
+		}
+		// Only an unfinished replacement leaves the runtime on another server, and only off a revoked
+		// one. A server renewed since then may still run that plan, beside whatever the attempt left on
+		// the unit's new server: that is two servers, which one command cannot retire.
+		if !applied.Revoked {
+			return plan, false, domain.RetirementRefused(domain.RetirementCrossHost)
+		}
+		plan, withoutHost = identityPlan(env, e), true
 	case errors.Is(err, pgx.ErrNoRows):
-		revision := e.DraftRevisionID
-		if e.AppliedRevisionID != nil {
-			revision = *e.AppliedRevisionID
-		}
-		spec := domain.Specification{Version: 1, Applications: []domain.Application{}, Variables: []domain.Variable{}}
-		plan = deployment.Plan{ID: uuid.New(), ServerID: *e.ServerID, EnvironmentID: env, UnitID: e.UnitID, RevisionID: revision, Recipe: deployment.Recipe, Specification: spec, Images: map[string]string{}, ExpiresAt: time.Now().UTC().Add(30 * time.Minute)}.WithHash()
+		plan = identityPlan(env, e)
 	default:
-		return plan, err
+		return plan, false, err
 	}
 	if plan.Validate(false) != nil {
-		return plan, domain.Invalid("deployment.plan")
+		return plan, false, domain.Invalid("deployment.plan")
 	}
-	return plan, nil
+	return plan, withoutHost, nil
+}
+
+// identityPlan names only the environment's unit on its server, with nothing to deploy.
+func identityPlan(env uuid.UUID, e db.LockRetirementEnvironmentRow) deployment.Plan {
+	revision := e.DraftRevisionID
+	if e.AppliedRevisionID != nil {
+		revision = *e.AppliedRevisionID
+	}
+	spec := domain.Specification{Version: 1, Applications: []domain.Application{}, Variables: []domain.Variable{}}
+	return deployment.Plan{ID: uuid.New(), ServerID: *e.ServerID, EnvironmentID: env, UnitID: e.UnitID, RevisionID: revision, Recipe: deployment.Recipe, Specification: spec, Images: map[string]string{}, ExpiresAt: time.Now().UTC().Add(30 * time.Minute)}.WithHash()
 }
 
 // retireDependents stops everything that would act for the environment on its own: automation

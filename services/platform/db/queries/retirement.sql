@@ -3,7 +3,7 @@ SELECT state FROM environments WHERE workspace_id = @workspace_id AND id = @id;
 
 -- name: LockRetirementEnvironment :one
 -- The primary unit's server is where a deployed environment's resources are.
-SELECT e.name,e.state,e.purpose,e.draft_revision_id,e.applied_revision_id,e.retirement_operation_id,
+SELECT e.name,e.state,e.draft_revision_id,e.applied_revision_id,e.retirement_operation_id,
  d.id AS unit_id,d.server_id
 FROM environments e
 JOIN deployment_units d ON d.workspace_id = e.workspace_id AND d.environment_id = e.id AND d.primary_unit
@@ -12,7 +12,11 @@ FOR UPDATE OF e;
 
 -- name: RetirementHolds :one
 -- What stops an environment being retired now. server_busy mirrors execution_active_server, which
--- the retirement command would otherwise meet as a bare conflict.
+-- the retirement command would otherwise meet as a bare conflict. cross_host is what management
+-- expects the environment to run across servers now: a unit a cross-host deployment recorded, as
+-- ServerControllerInventory lists it, or a private endpoint its applied placement still publishes.
+-- A consolidation removes both, and a replaced primary is detached from its revoked server, so
+-- neither leaves a lasting hold; the secondary unit rows themselves are never deleted.
 SELECT
  EXISTS(SELECT 1 FROM execution_operations o WHERE o.workspace_id = @workspace_id AND o.environment_id = sqlc.arg(environment_id)::uuid
   AND o.parent_id IS NULL AND o.state NOT IN ('succeeded','failed','cancelled'))::boolean AS active_operation,
@@ -24,8 +28,8 @@ SELECT
  EXISTS(SELECT 1 FROM backup_cutovers c JOIN environments e ON e.workspace_id = c.workspace_id AND e.id = c.environment_id
   WHERE c.workspace_id = @workspace_id AND c.environment_id = @environment_id AND c.revision_id = e.draft_revision_id
   AND e.applied_revision_id IS DISTINCT FROM c.revision_id)::boolean AS cutover_hold,
- (EXISTS(SELECT 1 FROM deployment_units d WHERE d.workspace_id = @workspace_id AND d.environment_id = @environment_id AND NOT d.primary_unit)
-  OR EXISTS(SELECT 1 FROM cross_host_runtime r WHERE r.workspace_id = @workspace_id AND r.environment_id = @environment_id))::boolean AS cross_host;
+ (EXISTS(SELECT 1 FROM cross_host_runtime r WHERE r.workspace_id = @workspace_id AND r.environment_id = @environment_id)
+  OR EXISTS(SELECT 1 FROM network_endpoints n WHERE n.workspace_id = @workspace_id AND n.environment_id = @environment_id AND NOT n.retired))::boolean AS cross_host;
 
 -- name: RetirementServer :one
 SELECT revoked,awaiting_transfer,capabilities FROM servers WHERE workspace_id = @workspace_id AND id = @id;

@@ -208,7 +208,6 @@ func TestRetireDeployedEnvironmentAndRestore(t *testing.T) {
 // cannot be reached, so both finish without a command. A failed retirement can be asked again.
 func TestRetirementWithoutHostAndPreconditions(t *testing.T) {
 	x := newRetirementFixture(t)
-	ctx := context.Background()
 
 	var fresh api.Environment
 	x.owner.call("POST", x.prefix, map[string]string{"name": "Draft only"}, 201, &fresh)
@@ -222,7 +221,7 @@ func TestRetirementWithoutHostAndPreconditions(t *testing.T) {
 		t.Fatalf("listed environments: %+v", listed)
 	}
 
-	env, path, draft := x.environment("Production", "failed.example.test")
+	_, path, draft := x.environment("Production", "failed.example.test")
 	// An operation in flight is never cancelled by retirement.
 	var plan deployment.Status
 	x.owner.call("POST", path+"/deployment-plans", api.VisualPlanRequest{ServerId: x.server, BaseRevisionId: draft.Id, AllowHostChanges: true}, 201, &plan)
@@ -233,15 +232,6 @@ func TestRetirementWithoutHostAndPreconditions(t *testing.T) {
 	x.agent.observe(x.agent.next(), deployment.Observation{Images: images, StateHash: strings.Repeat("f", 64)})
 	x.owner.call("POST", path+"/deployment-plans/"+plan.ID.String()+"/apply", api.ApplyPlan{IdempotencyKey: uuid.New()}, 201, nil)
 	x.agent.applied(x.agent.next(), images)
-
-	// A cross-host unit has to be consolidated first.
-	if _, err := x.f.st.Pool.Exec(ctx, "INSERT INTO deployment_units(workspace_id,id,environment_id,server_id,primary_unit) VALUES($1,$2,$3,$4,false)", x.ws, uuid.New(), env.Id, x.server); err != nil {
-		t.Fatal(err)
-	}
-	x.refusal(x.owner, "POST", path+"/retire", api.EnvironmentLifecycleRequest{ConfirmName: "Production"}, "retirement."+domain.RetirementCrossHost)
-	if _, err := x.f.st.Pool.Exec(ctx, "DELETE FROM deployment_units WHERE workspace_id=$1 AND environment_id=$2 AND NOT primary_unit", x.ws, env.Id); err != nil {
-		t.Fatal(err)
-	}
 
 	// A host that could not finish leaves it retiring; asking again queues a new command.
 	first := x.lifecycle(x.owner, path, "retire", "Production", 201)

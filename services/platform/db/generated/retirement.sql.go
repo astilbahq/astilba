@@ -127,7 +127,7 @@ func (q *Queries) EnvironmentState(ctx context.Context, arg EnvironmentStatePara
 }
 
 const lockRetirementEnvironment = `-- name: LockRetirementEnvironment :one
-SELECT e.name,e.state,e.purpose,e.draft_revision_id,e.applied_revision_id,e.retirement_operation_id,
+SELECT e.name,e.state,e.draft_revision_id,e.applied_revision_id,e.retirement_operation_id,
  d.id AS unit_id,d.server_id
 FROM environments e
 JOIN deployment_units d ON d.workspace_id = e.workspace_id AND d.environment_id = e.id AND d.primary_unit
@@ -144,7 +144,6 @@ type LockRetirementEnvironmentParams struct {
 type LockRetirementEnvironmentRow struct {
 	Name                  string     `json:"name"`
 	State                 string     `json:"state"`
-	Purpose               string     `json:"purpose"`
 	DraftRevisionID       uuid.UUID  `json:"draft_revision_id"`
 	AppliedRevisionID     *uuid.UUID `json:"applied_revision_id"`
 	RetirementOperationID *uuid.UUID `json:"retirement_operation_id"`
@@ -159,7 +158,6 @@ func (q *Queries) LockRetirementEnvironment(ctx context.Context, arg LockRetirem
 	err := row.Scan(
 		&i.Name,
 		&i.State,
-		&i.Purpose,
 		&i.DraftRevisionID,
 		&i.AppliedRevisionID,
 		&i.RetirementOperationID,
@@ -278,8 +276,8 @@ SELECT
  EXISTS(SELECT 1 FROM backup_cutovers c JOIN environments e ON e.workspace_id = c.workspace_id AND e.id = c.environment_id
   WHERE c.workspace_id = $1 AND c.environment_id = $2 AND c.revision_id = e.draft_revision_id
   AND e.applied_revision_id IS DISTINCT FROM c.revision_id)::boolean AS cutover_hold,
- (EXISTS(SELECT 1 FROM deployment_units d WHERE d.workspace_id = $1 AND d.environment_id = $2 AND NOT d.primary_unit)
-  OR EXISTS(SELECT 1 FROM cross_host_runtime r WHERE r.workspace_id = $1 AND r.environment_id = $2))::boolean AS cross_host
+ (EXISTS(SELECT 1 FROM cross_host_runtime r WHERE r.workspace_id = $1 AND r.environment_id = $2)
+  OR EXISTS(SELECT 1 FROM network_endpoints n WHERE n.workspace_id = $1 AND n.environment_id = $2 AND NOT n.retired))::boolean AS cross_host
 `
 
 type RetirementHoldsParams struct {
@@ -297,7 +295,11 @@ type RetirementHoldsRow struct {
 }
 
 // What stops an environment being retired now. server_busy mirrors execution_active_server, which
-// the retirement command would otherwise meet as a bare conflict.
+// the retirement command would otherwise meet as a bare conflict. cross_host is what management
+// expects the environment to run across servers now: a unit a cross-host deployment recorded, as
+// ServerControllerInventory lists it, or a private endpoint its applied placement still publishes.
+// A consolidation removes both, and a replaced primary is detached from its revoked server, so
+// neither leaves a lasting hold; the secondary unit rows themselves are never deleted.
 func (q *Queries) RetirementHolds(ctx context.Context, arg RetirementHoldsParams) (RetirementHoldsRow, error) {
 	row := q.db.QueryRow(ctx, retirementHolds, arg.WorkspaceID, arg.EnvironmentID, arg.ServerID)
 	var i RetirementHoldsRow
