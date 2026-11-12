@@ -20,7 +20,7 @@ var migrations embed.FS
 
 // Version is the newest migration this binary carries. It runs on a database at this version,
 // or ahead of it when every newer migration recorded itself as additive.
-const Version int64 = 39
+const Version int64 = 43
 
 func provider(dsn string) (*goose.Provider, *sql.DB, error) {
 	db, err := sql.Open("pgx", dsn)
@@ -67,8 +67,9 @@ func Check(ctx context.Context, dsn string) error {
 	}
 	if version > Version {
 		var unmarked int64
+		// Goose's provider deletes a migration's row when it is taken back, so every row is applied.
 		// inline-sql: goose owns its version table, which sqlc does not know.
-		err = db.QueryRowContext(ctx, `SELECT count(*) FROM (SELECT DISTINCT ON (version_id) version_id, is_applied FROM goose_db_version WHERE version_id>$1 ORDER BY version_id, id DESC) v WHERE v.is_applied AND NOT EXISTS (SELECT 1 FROM schema_additive_migrations a WHERE a.version=v.version_id)`, Version).Scan(&unmarked)
+		err = db.QueryRowContext(ctx, `SELECT count(*) FROM goose_db_version v WHERE v.version_id>$1 AND NOT EXISTS (SELECT 1 FROM schema_additive_migrations a WHERE a.version=v.version_id)`, Version).Scan(&unmarked)
 		if err != nil || unmarked != 0 {
 			return errors.New("database schema is newer than this release and not only added to; restore the backup taken before the upgrade to run this release")
 		}
@@ -100,14 +101,11 @@ func riverSchema(ctx context.Context, dsn string, apply bool) error {
 		_, err = m.Migrate(ctx, rivermigrate.DirectionUp, nil)
 		return err
 	}
+	// River's migrations carry no marker, so a release that moves River's schema on is never
+	// additive: ExistingVersions refuses a version this binary does not know.
 	existing, err := m.ExistingVersions(ctx)
 	if err != nil {
 		return errors.New("run the matching migration command")
-	}
-	// River's migrations are not marked, so a release that moves River's schema on is never
-	// additive: an older binary refuses it.
-	if len(existing) > len(m.AllVersions()) {
-		return errors.New("River schema is newer than this release; restore the backup taken before the upgrade to run this release")
 	}
 	if len(existing) != len(m.AllVersions()) {
 		return errors.New("River schema is incompatible; run the matching migration command")

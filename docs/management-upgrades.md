@@ -74,10 +74,11 @@ If any check fails, roll back now: the longer the new version runs, the more you
 
 ## Roll back
 
-If the old image starts on the migrated database, which it does only when every migration it
-lacks is additive, set `ASTILBA_IMAGE` back to it and run `docker compose up -d --wait platform`.
-Nothing is lost, and you can upgrade again later. If it refuses with "database schema is newer
-than this release", restore instead:
+If every migration since the old image was recorded as additive, set `ASTILBA_IMAGE` back to it
+and run `docker compose up -d --wait platform`. The database is kept, so whatever the newer
+version did stays done. What it kept only in its new tables and columns is ignored until you
+upgrade again, and jobs of kinds the old version does not know wait in the queue and fail
+there. If the old image refuses to start, for whatever reason, restore instead:
 
 1. Stop management.
 2. Before you replace the database, see whether the new version sent work to any server. This

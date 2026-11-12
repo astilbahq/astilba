@@ -9,25 +9,21 @@ import (
 )
 
 // firstMarked is the first migration that could record itself as additive.
-const firstMarked = 39
+const firstMarked = 43
 
 var (
 	migrationName = regexp.MustCompile(`^(\d+)_[a-z0-9_]+\.sql$`)
 	marker        = regexp.MustCompile(`^INSERT INTO schema_additive_migrations \(version\) VALUES \((\d+)\)$`)
 	notAdditive   = regexp.MustCompile(`(?m)^-- astilba: not additive: \S`)
-	dollarQuoted  = regexp.MustCompile(`(?s)(\$[A-Za-z_]*\$).*?(\$[A-Za-z_]*\$)`)
-	lineComment   = regexp.MustCompile(`--[^\n]*`)
 	space         = regexp.MustCompile(`\s+`)
 
-	createTable   = regexp.MustCompile(`^CREATE TABLE (?:IF NOT EXISTS )?([a-z_][a-z0-9_]*)\b`)
-	createIndex   = regexp.MustCompile(`^CREATE (UNIQUE )?INDEX (?:IF NOT EXISTS )?[a-z0-9_]+ ON ([a-z_][a-z0-9_]*)\b`)
-	createFunc    = regexp.MustCompile(`^CREATE (?:OR REPLACE )?FUNCTION `)
-	createTrigger = regexp.MustCompile(`^CREATE (?:OR REPLACE )?TRIGGER [a-z0-9_]+ .* ON ([a-z_][a-z0-9_]*)\b`)
-	alterTable    = regexp.MustCompile(`^ALTER TABLE (?:IF EXISTS )?(?:ONLY )?([a-z_][a-z0-9_]*) (.*)$`)
-	addColumn     = regexp.MustCompile(`^ADD COLUMN (?:IF NOT EXISTS )?[a-z_][a-z0-9_]* `)
-	insertInto    = regexp.MustCompile(`^INSERT INTO ([a-z_][a-z0-9_]*)\b`)
-	references    = regexp.MustCompile(`\bREFERENCES\b[^,)]*(?:\)[^,]*)?`)
-	safeDelete    = regexp.MustCompile(`\bON DELETE (?:CASCADE|SET NULL)\b`)
+	// Each form is anchored at both ends, so anything it does not name is not additive.
+	createTable   = regexp.MustCompile(`^CREATE TABLE ([a-z_][a-z0-9_]*) \((.*)\)$`)
+	createIndex   = regexp.MustCompile(`^CREATE (UNIQUE )?INDEX [a-z0-9_]+ ON ([a-z_][a-z0-9_]*) [^;]*$`)
+	createFunc    = regexp.MustCompile(`^CREATE FUNCTION [a-z_][a-z0-9_]*\(`)
+	createTrigger = regexp.MustCompile(`^CREATE TRIGGER [a-z0-9_]+ (?:BEFORE|AFTER) .*? ON ([a-z_][a-z0-9_]*) FOR EACH ROW EXECUTE FUNCTION [a-z_][a-z0-9_]*\(\)$`)
+	addColumn     = regexp.MustCompile(`^ALTER TABLE ([a-z_][a-z0-9_]*) ADD COLUMN [a-z_][a-z0-9_]* (.*)$`)
+	insertValues  = regexp.MustCompile(`^INSERT INTO ([a-z_][a-z0-9_]*) (?:\([a-z0-9_, ]*\) )?VALUES `)
 )
 
 // Each migration from firstMarked on either records itself as additive, and then holds only
@@ -52,12 +48,8 @@ func TestMigrationsClaimOnlyWhatTheyDo(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		up, ok := upSection(string(raw))
-		if !ok {
-			t.Fatalf("%s: no goose Up section", entry.Name())
-		}
-		if err := checkClaim(version, up); err != "" {
-			t.Errorf("%s: %s", entry.Name(), err)
+		if why := checkClaim(version, string(raw)); why != "" {
+			t.Errorf("%s: %s", entry.Name(), why)
 		}
 	}
 	if newest != Version {
@@ -65,17 +57,13 @@ func TestMigrationsClaimOnlyWhatTheyDo(t *testing.T) {
 	}
 }
 
-func upSection(text string) (string, bool) {
+// checkClaim returns why a migration does not match what it claims, or "".
+func checkClaim(version int64, text string) string {
 	_, rest, ok := strings.Cut(text, "-- +goose Up")
 	if !ok {
-		return "", false
+		return "no goose Up section"
 	}
-	up, _, _ := strings.Cut(rest, "-- +goose Down")
-	return up, true
-}
-
-// checkClaim returns why a migration's Up section does not match what it claims, or "".
-func checkClaim(version int64, up string) string {
+	up, down, _ := strings.Cut(rest, "-- +goose Down")
 	declared := notAdditive.MatchString(up)
 	statements := splitStatements(up)
 	marked := 0
@@ -106,109 +94,224 @@ func checkClaim(version int64, up string) string {
 			return why + ": " + s
 		}
 	}
+	// Goose's Down deletes only its own version row, so going down and up again would find the
+	// marker still there. The migration that creates the table drops it instead.
+	unmark := "DELETE FROM schema_additive_migrations WHERE version = " + strconv.FormatInt(version, 10)
+	if !created["schema_additive_migrations"] && !contains(splitStatements(down), unmark) {
+		return "its Down section must say `" + unmark + ";`"
+	}
 	return ""
 }
 
 // additive returns why one statement is not additive, or "".
 func additive(s string, created map[string]bool) string {
-	unsafeReference := func(clause string) bool {
-		for _, ref := range references.FindAllString(clause, -1) {
-			if !safeDelete.MatchString(ref) {
-				return true
+	if marker.MatchString(s) || strings.HasPrefix(s, "COMMENT ON ") || strings.HasPrefix(s, "GRANT ") || createFunc.MatchString(s) {
+		// A function is created, never replaced: one that exists already makes the migration fail.
+		return ""
+	}
+	if m := createTable.FindStringSubmatch(s); m != nil {
+		for _, element := range topLevel(m[2]) {
+			if why := reference(element); why != "" {
+				return why
 			}
 		}
-		return false
+		return ""
 	}
-	switch {
-	case marker.MatchString(s):
-		return ""
-	case createTable.MatchString(s):
-		// An older release that deletes a referenced row must not be refused for rows it
-		// never wrote.
-		if unsafeReference(s) {
-			return "a new table's reference must say ON DELETE CASCADE or SET NULL"
-		}
-		return ""
-	case createIndex.MatchString(s):
-		m := createIndex.FindStringSubmatch(s)
+	if m := createIndex.FindStringSubmatch(s); m != nil {
 		if m[1] != "" && !created[m[2]] {
 			return "a unique index on an existing table can refuse an older release's writes"
 		}
 		return ""
-	case createFunc.MatchString(s):
-		return ""
-	case createTrigger.MatchString(s):
-		if !created[createTrigger.FindStringSubmatch(s)[1]] {
+	}
+	if m := createTrigger.FindStringSubmatch(s); m != nil {
+		if !created[m[1]] {
 			return "a trigger on an existing table changes what an older release's writes do"
 		}
 		return ""
-	case alterTable.MatchString(s):
-		m := alterTable.FindStringSubmatch(s)
-		if created[m[1]] {
-			return ""
+	}
+	if m := addColumn.FindStringSubmatch(s); m != nil {
+		definition := m[2]
+		switch {
+		case created[m[1]]:
+			return "define a new table's columns in its CREATE TABLE"
+		case len(topLevel(definition)) != 1:
+			return "add one column per statement, and nothing else"
+		case strings.Contains(definition, "NOT NULL") && !strings.Contains(definition, "DEFAULT "),
+			strings.Contains(definition, "CHECK"), strings.Contains(definition, "UNIQUE"), strings.Contains(definition, "PRIMARY KEY"):
+			return "a column added to an existing table must accept every row an older release inserts"
 		}
-		for _, clause := range strings.Split(m[2], ", ADD ") {
-			if !strings.HasPrefix(clause, "ADD ") {
-				clause = "ADD " + clause
-			}
-			if !addColumn.MatchString(clause) {
-				return "only ADD COLUMN may change an existing table"
-			}
-			if strings.Contains(clause, " NOT NULL") && !strings.Contains(clause, " DEFAULT ") || strings.Contains(clause, " UNIQUE") || strings.Contains(clause, " PRIMARY KEY") || unsafeReference(clause) {
-				return "a column added to an existing table must accept an older release's inserts and deletes"
-			}
-		}
-		return ""
-	case insertInto.MatchString(s):
-		if !created[insertInto.FindStringSubmatch(s)[1]] {
+		return reference(definition)
+	}
+	if m := insertValues.FindStringSubmatch(s); m != nil {
+		switch {
+		case !created[m[1]]:
 			return "rows written into an existing table are data an older release did not expect"
+		case strings.Contains(s, "SELECT"):
+			// Rows an older release writes after a rollback would never be copied: goose does not
+			// run the migration again. Copying belongs in a job that runs again.
+			return "a new table may be seeded with constants, not filled from existing rows"
 		}
-		return ""
-	case strings.HasPrefix(s, "COMMENT ON "), strings.HasPrefix(s, "GRANT "):
 		return ""
 	}
 	return "not recognised as additive"
 }
 
-// splitStatements drops comments and function bodies, and normalises white space.
-func splitStatements(up string) []string {
-	up = lineComment.ReplaceAllString(up, "")
-	up = dollarQuoted.ReplaceAllString(up, "$$body$$")
+// reference returns why a column or constraint's foreign key could refuse an older release's
+// delete of the row it refers to, or "".
+func reference(element string) string {
+	switch {
+	case !strings.Contains(element, "REFERENCES "):
+		return ""
+	case strings.Contains(element, " ON DELETE CASCADE"):
+		return ""
+	case strings.Contains(element, " ON DELETE SET NULL") && !strings.Contains(element, "NOT NULL") && !strings.Contains(element, "PRIMARY KEY") && !strings.HasPrefix(element, "FOREIGN KEY") && !strings.HasPrefix(element, "CONSTRAINT "):
+		// Only a column's own reference shows that the column may be null.
+		return ""
+	}
+	return "a reference must say ON DELETE CASCADE, or ON DELETE SET NULL on a column that may be null"
+}
+
+// topLevel splits a list on the commas outside parentheses.
+func topLevel(list string) []string {
 	var out []string
-	for _, s := range strings.Split(up, ";") {
-		s = strings.TrimSpace(space.ReplaceAllString(s, " "))
-		if s != "" {
-			out = append(out, s)
+	depth, start := 0, 0
+	for i, r := range list {
+		switch r {
+		case '(':
+			depth++
+		case ')':
+			depth--
+		case ',':
+			if depth == 0 {
+				out = append(out, strings.TrimSpace(list[start:i]))
+				start = i + 1
+			}
 		}
 	}
+	return append(out, strings.TrimSpace(list[start:]))
+}
+
+// splitStatements splits SQL on semicolons outside quotes, dropping comments, replacing string
+// constants with 'x' and dollar-quoted bodies with $$x$$, and normalising white space.
+func splitStatements(sql string) []string {
+	var out []string
+	var b strings.Builder
+	flush := func() {
+		if s := strings.TrimSpace(space.ReplaceAllString(b.String(), " ")); s != "" {
+			out = append(out, s)
+		}
+		b.Reset()
+	}
+	skipTo := func(i int, end string) int {
+		j := strings.Index(sql[i:], end)
+		if j < 0 {
+			return len(sql)
+		}
+		return i + j + len(end)
+	}
+	for i := 0; i < len(sql); {
+		switch {
+		case strings.HasPrefix(sql[i:], "--"):
+			i = skipTo(i, "\n")
+			b.WriteByte(' ')
+		case strings.HasPrefix(sql[i:], "/*"):
+			i = skipTo(i+2, "*/")
+			b.WriteByte(' ')
+		case sql[i] == '\'':
+			// A doubled quote inside a constant ends one scan and starts the next, harmlessly.
+			i = skipTo(i+1, "'")
+			b.WriteString("'x'")
+		case sql[i] == '"':
+			j := skipTo(i+1, `"`)
+			b.WriteString(sql[i:j])
+			i = j
+		case sql[i] == '$':
+			if tag := dollarTag(sql[i:]); tag != "" {
+				i = skipTo(i+len(tag), tag)
+				b.WriteString("$$x$$")
+				continue
+			}
+			b.WriteByte(sql[i])
+			i++
+		case sql[i] == ';':
+			flush()
+			i++
+		default:
+			b.WriteByte(sql[i])
+			i++
+		}
+	}
+	flush()
 	return out
 }
 
+var tagPattern = regexp.MustCompile(`^\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$`)
+
+func dollarTag(s string) string { return tagPattern.FindString(s) }
+
+func contains(list []string, s string) bool {
+	for _, item := range list {
+		if item == s {
+			return true
+		}
+	}
+	return false
+}
+
 func TestAdditiveClaims(t *testing.T) {
+	const mark = "\nINSERT INTO schema_additive_migrations (version) VALUES (40);\n-- +goose Down\nDELETE FROM schema_additive_migrations WHERE version = 40;\n"
 	for _, test := range []struct {
 		name, up string
 		ok       bool
 	}{
-		{"new table", "CREATE TABLE a (id uuid PRIMARY KEY, w uuid REFERENCES workspaces(id) ON DELETE CASCADE);\nINSERT INTO schema_additive_migrations (version) VALUES (40);", true},
-		{"unmarked", "CREATE TABLE a (id uuid);", false},
-		{"declared", "-- astilba: not additive: drops a column\nALTER TABLE a DROP COLUMN b;", true},
-		{"declared and marked", "-- astilba: not additive: x\nINSERT INTO schema_additive_migrations (version) VALUES (40);", false},
-		{"other version", "INSERT INTO schema_additive_migrations (version) VALUES (41);", false},
-		{"marked twice", "INSERT INTO schema_additive_migrations (version) VALUES (40);\nINSERT INTO schema_additive_migrations (version) VALUES (40);", false},
-		{"restricting reference", "CREATE TABLE a (w uuid REFERENCES workspaces(id));\nINSERT INTO schema_additive_migrations (version) VALUES (40);", false},
-		{"nullable column", "ALTER TABLE secret_versions ADD COLUMN plaintext_bytes integer, ADD COLUMN json_bytes integer CHECK (json_bytes >= 0);\nINSERT INTO schema_additive_migrations (version) VALUES (40);", true},
-		{"required column", "ALTER TABLE secret_versions ADD COLUMN n integer NOT NULL;\nINSERT INTO schema_additive_migrations (version) VALUES (40);", false},
-		{"defaulted column", "ALTER TABLE secret_versions ADD COLUMN n integer NOT NULL DEFAULT 0;\nINSERT INTO schema_additive_migrations (version) VALUES (40);", true},
-		{"dropped column", "ALTER TABLE secret_versions DROP COLUMN n;\nINSERT INTO schema_additive_migrations (version) VALUES (40);", false},
-		{"unique index on existing table", "CREATE UNIQUE INDEX i ON secret_versions (id);\nINSERT INTO schema_additive_migrations (version) VALUES (40);", false},
-		{"index on existing table", "CREATE INDEX i ON secret_versions (id);\nINSERT INTO schema_additive_migrations (version) VALUES (40);", true},
-		{"trigger on new table", "CREATE TABLE a (at timestamptz);\nCREATE FUNCTION f() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN DELETE FROM a; UPDATE b SET c=1; RETURN NEW; END; $$;\nCREATE TRIGGER t BEFORE INSERT ON a FOR EACH ROW EXECUTE FUNCTION f();\nINSERT INTO schema_additive_migrations (version) VALUES (40);", true},
-		{"trigger on existing table", "CREATE TRIGGER t BEFORE INSERT ON secret_versions FOR EACH ROW EXECUTE FUNCTION f();\nINSERT INTO schema_additive_migrations (version) VALUES (40);", false},
-		{"update", "UPDATE secret_versions SET n=1;\nINSERT INTO schema_additive_migrations (version) VALUES (40);", false},
-		{"seed existing table", "INSERT INTO workspaces (id) VALUES (gen_random_uuid());\nINSERT INTO schema_additive_migrations (version) VALUES (40);", false},
-		{"seed new table", "CREATE TABLE a (n integer);\nINSERT INTO a (n) VALUES (1);\nINSERT INTO schema_additive_migrations (version) VALUES (40);", true},
+		{"new table", "CREATE TABLE a (id uuid PRIMARY KEY, w uuid REFERENCES workspaces(id) ON DELETE CASCADE);", true},
+		{"composite reference", "CREATE TABLE a (workspace_id uuid NOT NULL, server_id uuid NOT NULL, FOREIGN KEY (workspace_id, server_id) REFERENCES servers(workspace_id, id) ON DELETE CASCADE);", true},
+		{"restricting reference", "CREATE TABLE a (w uuid REFERENCES workspaces(id));", false},
+		{"set null on required column", "CREATE TABLE a (w uuid NOT NULL REFERENCES workspaces(id) ON DELETE SET NULL);", false},
+		{"set null on optional column", "CREATE TABLE a (w uuid REFERENCES workspaces(id) ON DELETE SET NULL);", true},
+		{"set null by constraint", "CREATE TABLE a (w uuid NOT NULL, FOREIGN KEY (w) REFERENCES workspaces(id) ON DELETE SET NULL);", false},
+		{"existing name", "CREATE TABLE IF NOT EXISTS servers (id uuid);\nALTER TABLE servers DROP COLUMN name;", false},
+		{"partition", "CREATE TABLE a PARTITION OF servers FOR VALUES IN (1);", false},
+		{"nullable column", "ALTER TABLE secret_versions ADD COLUMN plaintext_bytes integer;", true},
+		{"two columns", "ALTER TABLE secret_versions ADD COLUMN a integer, ADD COLUMN b integer;", false},
+		{"add then drop", "ALTER TABLE servers ADD COLUMN a int, DROP COLUMN name;", false},
+		{"add then drop default", "ALTER TABLE servers ADD COLUMN a int, ALTER COLUMN name DROP DEFAULT;", false},
+		{"required column", "ALTER TABLE secret_versions ADD COLUMN n integer NOT NULL;", false},
+		{"defaulted column", "ALTER TABLE secret_versions ADD COLUMN n integer NOT NULL DEFAULT 0;", true},
+		{"checked column", "ALTER TABLE servers ADD COLUMN kind text CHECK (coalesce(kind, '') <> '');", false},
+		{"restricting column", "ALTER TABLE servers ADD COLUMN w uuid REFERENCES workspaces(id);", false},
+		{"column on new table", "CREATE TABLE a (id uuid);\nALTER TABLE a ADD COLUMN w uuid REFERENCES workspaces(id);", false},
+		{"dropped column", "ALTER TABLE secret_versions DROP COLUMN n;", false},
+		{"unique index on existing table", "CREATE UNIQUE INDEX i ON secret_versions (id);", false},
+		{"index on existing table", "CREATE INDEX i ON secret_versions (workspace_id, created_at);", true},
+		{"replaced function", "CREATE OR REPLACE FUNCTION immutable_specification() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NEW; END $$;", false},
+		{"trigger on new table", "CREATE TABLE a (at timestamptz);\nCREATE FUNCTION f() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN DELETE FROM a; UPDATE b SET c=1; RETURN NEW; END; $$;\nCREATE TRIGGER t BEFORE INSERT ON a FOR EACH ROW EXECUTE FUNCTION f();", true},
+		{"trigger on existing table", "CREATE TRIGGER t BEFORE INSERT ON secret_versions FOR EACH ROW EXECUTE FUNCTION f();", false},
+		{"update", "UPDATE secret_versions SET n=1;", false},
+		{"seed existing table", "INSERT INTO workspaces (id) VALUES (gen_random_uuid());", false},
+		{"seed new table", "CREATE TABLE a (n integer);\nINSERT INTO a (n) VALUES (1);", true},
+		{"backfill new table", "CREATE TABLE a (id uuid);\nINSERT INTO a SELECT id FROM servers;", false},
+		{"backfill through values", "CREATE TABLE a (id uuid);\nINSERT INTO a (id) VALUES ((SELECT id FROM servers LIMIT 1));", false},
+		{"quoted comment marker", "CREATE TABLE a (s text DEFAULT '--'); DROP TABLE servers;\nCREATE INDEX i ON a (s);", false},
+		{"nested dollar tags", "CREATE FUNCTION f() RETURNS text LANGUAGE sql AS $a$ SELECT '$$' $a$; DROP TABLE servers;", false},
+		{"semicolon in a constant", "COMMENT ON TABLE servers IS 'a; DROP TABLE servers';", true},
 	} {
-		if why := checkClaim(40, test.up); (why == "") != test.ok {
+		if why := checkClaim(40, "-- +goose Up\n"+test.up+mark); (why == "") != test.ok {
+			t.Errorf("%s: %q", test.name, why)
+		}
+	}
+	for _, test := range []struct {
+		name, text string
+		ok         bool
+	}{
+		{"declared", "-- +goose Up\n-- astilba: not additive: drops a column\nALTER TABLE a DROP COLUMN b;\n-- +goose Down\n", true},
+		{"declared and marked", "-- +goose Up\n-- astilba: not additive: x\nINSERT INTO schema_additive_migrations (version) VALUES (40);\n", false},
+		{"unmarked", "-- +goose Up\nCREATE TABLE a (id uuid);\n-- +goose Down\nDROP TABLE a;\n", false},
+		{"other version", "-- +goose Up\nINSERT INTO schema_additive_migrations (version) VALUES (41);\n-- +goose Down\nDELETE FROM schema_additive_migrations WHERE version = 41;\n", false},
+		{"marked twice", "-- +goose Up\nINSERT INTO schema_additive_migrations (version) VALUES (40);\nINSERT INTO schema_additive_migrations (version) VALUES (40);\n-- +goose Down\nDELETE FROM schema_additive_migrations WHERE version = 40;\n", false},
+		{"marker kept on the way down", "-- +goose Up\nCREATE TABLE a (id uuid);\nINSERT INTO schema_additive_migrations (version) VALUES (40);\n-- +goose Down\nDROP TABLE a;\n", false},
+	} {
+		if why := checkClaim(40, test.text); (why == "") != test.ok {
 			t.Errorf("%s: %q", test.name, why)
 		}
 	}
