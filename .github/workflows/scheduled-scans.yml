@@ -53,8 +53,6 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
-      # Reads the lane budget's runs, to check it still runs.
-      actions: read
       contents: read
       issues: write
     steps:
@@ -75,9 +73,26 @@ jobs:
           DEPENDENCIES_REPORT: ${{ runner.temp }}/reports/dependency-report/dependency-report.json
           PINS_RESULT: ${{ needs.pins.result }}
           PINS_REPORT: ${{ runner.temp }}/reports/pin-report/pin-report.json
-      # The lane budget workflow checks this one the same way. Its job fails by design
-      # while a lane is over budget, so only its step that checks this workflow counts.
-      - if: always()
-        run: node scripts/schedule-watch.mjs lane-budget.yml "Lane budget stopped running" "Compare Go race lane times" "Check the scheduled scans"
+
+  # The lane budget workflow checks this one the same way, and that this job and the
+  # report job succeeded.
+  watch:
+    name: Check the lane budget
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      # Reads the lane budget's runs and jobs.
+      actions: read
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.18.1
+      - run: node scripts/schedule-watch.mjs lane-budget.yml "Lane budget stopped running" "Compare Go race lane times"
         env:
           GITHUB_TOKEN: ${{ github.token }}

@@ -223,8 +223,10 @@ lines. One commit's package time has differed by 28% between hosted runners, so 
 single run says little about a lane.
 
 `lane-budget.yml` runs `make check-lane-budget` daily and on demand. It reads the
-last five main runs of the current lanes and fails when a lane's package has a
-median above 600 seconds, listing the times in its job summary. While that lasts it
+last five main runs of the current lanes and reports a lane whose package has a
+median above 600 seconds, listing the times in its job summary. Run by hand, that fails
+the command; in the workflow the job fails only when it cannot check or report, since
+the issue is the notice. While a lane is over it
 keeps one issue open with the latest times, comments when another package goes over,
 and closes it when the lanes recover, as [Scheduled reports](#scheduled-reports)
 describes. It is not a required check, so runner variance cannot remove a pull request from the
@@ -439,23 +441,27 @@ requests. The lane budget guard keeps its issue the same way. `make check-ci` se
 failure offline and follows its issue through a repeat, a new problem and recovery.
 
 A workflow that cannot start, or whose report job fails, cannot say so itself, so the two
-daily workflows check on each other with `scripts/schedule-watch.mjs`. Each reads only the
-other's own scheduled and manual runs on `main`, so other runs, such as a fork's pull
-requests from a branch it calls `main`, cannot hide them. The lane budget workflow opens
-`Scheduled scans stopped reporting` when `scheduled-scans.yml`:
+daily workflows check on each other with `scripts/schedule-watch.mjs`. Each judges only
+the other's scheduled runs on `main` since its workflow file last changed there:
+scheduled runs always use `main`'s file, so no fork's runs and no manual run on another
+ref can stand in for one, and a run of an older file is not judged by the new one's jobs.
+The lane budget workflow opens `Scheduled scans stopped reporting` when
+`scheduled-scans.yml`:
 
 - is disabled;
-- has had no run for 36 hours, or none since it was added that long ago;
-- has a newest finished run that could not start;
-- or has a newest finished run whose `Report to issues` job did not succeed.
+- has had no judged run for 36 hours, counted from the file's last change when it has
+  none since;
+- has a newest judged run that could not start;
+- or has a newest judged run whose `Report to issues` or `Check the lane budget` job did
+  not succeed, a job that timed out included.
 
-The scheduled scans' report job opens `Lane budget stopped running` on the same checks for
-`lane-budget.yml`, judging that workflow's `Check the scheduled scans` step rather than its
-job, which fails by design while a lane is over budget. A run that the concurrency group
-cancelled counts for neither. Each issue closes once the other workflow runs and reports
-again. GitHub starts a daily schedule hours late under load, hence the 36 hours. If GitHub
-disables both schedules at once, such as after 60 days without repository activity,
-neither can tell.
+The scheduled scans' `Check the lane budget` job opens `Lane budget stopped running` on
+the same checks for `lane-budget.yml` and its `Compare Go race lane times` job. A run the
+concurrency group cancelled before those jobs ran is passed over. A fresh run that has not
+finished leaves the issue as it is, so it closes only once the other workflow has run and
+reported again. GitHub starts a daily schedule hours late under load, hence the 36 hours.
+If GitHub disables both schedules at once, such as after 60 days without repository
+activity, neither can tell.
 
 ## Source-size ratchet
 

@@ -162,8 +162,15 @@ async function run() {
       ].join("\n"),
     });
   }
-  if (problems.length)
-    throw new Error(problems.map(({ line }) => line).join("\n"));
+  // In a workflow the issue is the notice, so the job fails only when it could not
+  // check or report, which the scheduled scans' check on this workflow reports. Run by
+  // hand, a lane past its budget fails.
+  if (problems.length) {
+    const text = problems.map(({ line }) => line).join("\n");
+    if (!process.env.GITHUB_RUN_ID) throw new Error(text);
+    console.log(text);
+    return;
+  }
   console.log(
     undecided
       ? `No lane with ${minimumRuns} runs is past ${budgetSeconds}s, and some have fewer.`
