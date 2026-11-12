@@ -81,12 +81,11 @@ func run() error {
 	if e != nil {
 		return e
 	}
-	poolConfig, e := pgxpool.ParseConfig(c.DatabaseURL)
+	poolConfig, e := store.PoolConfig(c.DatabaseURL)
 	if e != nil {
 		return errors.New("cannot configure database")
 	}
 	poolConfig.MaxConns = c.DatabasePoolSize
-	store.ConfigurePool(poolConfig)
 	if os.Args[1] == "serve" {
 		store.ConfigureServingPool(poolConfig)
 	}

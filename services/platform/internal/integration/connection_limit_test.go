@@ -63,8 +63,8 @@ func TestServingRefusesAPoolPostgreSQLCannotAdmit(t *testing.T) {
 }
 
 // Management's connections run with JIT off, so a query whose estimate passes jit_above_cost
-// doesn't pay hundreds of milliseconds to compile a plan that runs in a few. The fixture's pool is
-// configured as management's is, and the test database has JIT on by default.
+// doesn't pay hundreds of milliseconds to compile a plan that runs in a few. The fixture's pool
+// comes from store.PoolConfig, as the server's does, and the test database has JIT on by default.
 func TestManagementConnectionsRunWithoutJIT(t *testing.T) {
 	f := setup(t)
 	var jit string

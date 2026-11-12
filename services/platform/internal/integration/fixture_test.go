@@ -222,11 +222,10 @@ func setupStore(t *testing.T, bootstrap, hosted bool) *fixture {
 		t.Fatal(e)
 	}
 	// Configured as management configures its own.
-	poolConfig, e := pgxpool.ParseConfig(databaseDSN(name))
+	poolConfig, e := store.PoolConfig(databaseDSN(name))
 	if e != nil {
 		t.Fatal(e)
 	}
-	store.ConfigurePool(poolConfig)
 	pool, e := pgxpool.NewWithConfig(ctx, poolConfig)
 	if e != nil {
 		t.Fatal(e)

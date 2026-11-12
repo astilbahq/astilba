@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -18,12 +19,21 @@ const connectionsOutsidePool = 1
 // once polls were failing.
 const poolWaitWarning = 50 * time.Millisecond
 
-// ConfigurePool sets what every management connection runs with. JIT compilation is off:
-// management runs short transactional queries, and once a query's estimate passes
-// jit_above_cost, PostgreSQL spends hundreds of milliseconds compiling a plan that runs in a few.
-// The startup packet carries it, so it holds for every connection the pool opens.
-func ConfigurePool(config *pgxpool.Config) {
-	config.ConnConfig.RuntimeParams["jit"] = "off"
+// PoolConfig is management's pool configuration for a database URL. Every connection runs with
+// JIT compilation off: management runs short transactional queries, and once a query's estimate
+// passes jit_above_cost, PostgreSQL spends hundreds of milliseconds compiling a plan that runs in a
+// few. It is set once a connection opens rather than as a startup parameter, which a session
+// pooler such as PgBouncer refuses unless told to pass it on.
+func PoolConfig(url string) (*pgxpool.Config, error) {
+	config, err := pgxpool.ParseConfig(url)
+	if err != nil {
+		return nil, err
+	}
+	config.AfterConnect = func(ctx context.Context, conn *pgx.Conn) error {
+		_, err := conn.Exec(ctx, "SET jit = off")
+		return err
+	}
+	return config, nil
 }
 
 // CheckConnectionLimit refuses a pool that does not fit PostgreSQL's limits, which would
