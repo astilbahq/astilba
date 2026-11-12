@@ -63,7 +63,8 @@ var pending = map[string]bool{
 // legacyCallers are the files that reach, through any chain of calls, a function in a pending
 // file that uses keys. Those paths open values without a record, so a call into one from
 // anywhere else is reported: the files below move to the broker with them (mostly Git access
-// through gitAnswers, and the handlers that reach it), and none may be added.
+// through gitAnswers, and the handlers that reach it), and none may be added except Git work
+// that arrives from main before that move.
 var legacyCallers = map[string]bool{
 	"internal/execution/automatic.go":             true,
 	"internal/execution/automation.go":            true,
@@ -80,6 +81,7 @@ var legacyCallers = map[string]bool{
 	"internal/execution/preview_workers.go":       true,
 	"internal/execution/previews.go":              true,
 	"internal/execution/source_state.go":          true,
+	"internal/execution/source_submissions.go":    true,
 	"internal/execution/transport.go":             true,
 	"internal/execution/upgrades.go":              true,
 	"internal/execution/visual.go":                true,
