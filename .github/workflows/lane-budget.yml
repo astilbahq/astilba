@@ -27,3 +27,8 @@ jobs:
       - run: make check-lane-budget
         env:
           GITHUB_TOKEN: ${{ github.token }}
+      # The scheduled scans cannot report their own report job failing or never starting.
+      - if: always()
+        run: node scripts/schedule-watch.mjs scheduled-scans.yml "Scheduled scans stopped reporting" "Report to issues"
+        env:
+          GITHUB_TOKEN: ${{ github.token }}

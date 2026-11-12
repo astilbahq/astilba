@@ -433,6 +433,16 @@ nothing: the next failing run opens another, because the same failure also stops
 requests. The lane budget guard keeps its issue the same way. `make check-ci` seeds a
 failure offline and follows its issue through a repeat, a new problem and recovery.
 
+A workflow that cannot start, or whose report job fails, cannot say so itself, so the two
+daily workflows check on each other with `scripts/schedule-watch.mjs`. The lane budget
+workflow opens `Scheduled scans stopped reporting` when `scheduled-scans.yml` has had no
+run on `main` for 36 hours, its newest finished run could not start, or that run's
+`Report to issues` job did not succeed. The scheduled scans' report job opens `Lane
+budget stopped running` on the first two for `lane-budget.yml`. Each closes once the
+other runs again. GitHub starts a daily schedule hours late under load, hence the 36
+hours. If GitHub disables both schedules at once, such as after 60 days without
+repository activity, neither can tell.
+
 ## Source-size ratchet
 
 `make check-source-size` runs the source-size enforcement fixtures and checks

@@ -35,7 +35,7 @@ verify-build:
 	cd experiments/durable-execution && sudo --preserve-env=GOCACHE,GOMODCACHE env PATH=/opt/astilba-plat4/go/bin:/usr/bin:/bin CGO_ENABLED=1 PLAT4_HOST_TEST=1 PLAT4_ARCH="$(PLAT4_ARCH)" PLAT5_HOST_TEST=1 /opt/astilba-plat4/go/bin/go test -race -count=1 -timeout=12m -v -run '^Test(BuildArtifacts|PostgresRestore)$$' .
 
 check-ci:
-	node --test scripts/ci-plan.test.mjs scripts/native-lanes.test.mjs scripts/app-lanes.test.mjs scripts/lane-budget.test.mjs scripts/vulnerability-scan.test.mjs scripts/pin-report.test.mjs scripts/report-issue.test.mjs scripts/scheduled-report.test.mjs scripts/fetch-attempts.test.mjs scripts/install-pnpm.test.mjs scripts/pin-alignment.test.mjs scripts/go-release-age.test.mjs scripts/npm-release-changes.test.mjs scripts/public-suffix-list.test.mjs
+	node --test scripts/ci-plan.test.mjs scripts/native-lanes.test.mjs scripts/app-lanes.test.mjs scripts/lane-budget.test.mjs scripts/vulnerability-scan.test.mjs scripts/pin-report.test.mjs scripts/report-issue.test.mjs scripts/scheduled-report.test.mjs scripts/schedule-watch.test.mjs scripts/fetch-attempts.test.mjs scripts/install-pnpm.test.mjs scripts/pin-alignment.test.mjs scripts/go-release-age.test.mjs scripts/npm-release-changes.test.mjs scripts/public-suffix-list.test.mjs
 	node scripts/native-lanes.mjs
 	node scripts/app-lanes.mjs
 	node scripts/pin-alignment.mjs

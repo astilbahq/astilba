@@ -53,6 +53,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
+      # Reads the lane budget's runs, to check it still runs.
+      actions: read
       contents: read
       issues: write
     steps:
@@ -73,3 +75,8 @@ jobs:
           DEPENDENCIES_REPORT: ${{ runner.temp }}/reports/dependency-report/dependency-report.json
           PINS_RESULT: ${{ needs.pins.result }}
           PINS_REPORT: ${{ runner.temp }}/reports/pin-report/pin-report.json
+      # The lane budget workflow checks this one the same way.
+      - if: always()
+        run: node scripts/schedule-watch.mjs lane-budget.yml "Lane budget stopped running"
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
