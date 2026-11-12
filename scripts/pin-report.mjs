@@ -26,7 +26,7 @@ import {
   findReleases,
   newestInLine,
 } from "./pin-sources.mjs";
-import { clip, renderSections } from "./report-issue.mjs";
+import { clip, maxAliases, renderSections } from "./report-issue.mjs";
 import { osvScanner } from "./vulnerability-scan.mjs";
 
 // Reports what the digest-pinned images and the pinned tools need: a known
@@ -98,6 +98,11 @@ const patience = (attempt, elapsed) => {
   outlasted = wait === undefined;
   return wait;
 };
+// Checks start only until this point, and every step ends by it, so whatever hangs the
+// report is written within the job's two hours.
+let deadline = Infinity;
+const remaining = () => Math.max(deadline - Date.now(), 1);
+const runMinutes = 90;
 
 const short = (digest) => digest.slice(0, 19);
 const where = (pin) =>
@@ -213,6 +218,8 @@ export function assemble({ images, tools }) {
           // Another id joining the advisory's group can become its first.
           aliases: finding.ids
             .filter((id) => id !== finding.id)
+            .toSorted()
+            .slice(0, maxAliases)
             .map((id) => vulnerable(finding, id)),
         },
       );
@@ -264,19 +271,22 @@ async function scanImage(scanner, pin, { platform, digest }, directory) {
   const ref = `${pin.registry}/${pin.repository}@${digest}`;
   const archive = join(directory, "image.tar");
   try {
-    await pullImages([ref], ["docker"], { delay: patience });
-    await runLogged("docker", ["save", "--output", archive, ref]);
+    await pullImages([ref], ["docker"], {
+      delay: patience,
+      limitMs: remaining(),
+    });
+    await runLogged("docker", ["save", "--output", archive, ref], {
+      timeoutMs: remaining(),
+    });
     // Exit status 1 means findings; anything else is a scan that did not complete.
     // The scan asks OSV's API, so it outlasts an outage as downloads do.
     const stdout = await withFetchAttempts(
       `Scanning ${ref}`,
-      () =>
+      (timeoutMs) =>
         run(
           scanner,
           ["scan", "image", "--archive", archive, "--format", "json"],
-          {
-            maxBuffer,
-          },
+          { maxBuffer, timeout: Number.isFinite(timeoutMs) ? timeoutMs : 0 },
         ).then(
           (result) => result.stdout,
           (error) => {
@@ -288,7 +298,7 @@ async function scanImage(scanner, pin, { platform, digest }, directory) {
             );
           },
         ),
-      { delay: patience },
+      { delay: patience, limitMs: remaining() },
     );
     if (!stdout) return { platform, findings: [], empty: true };
     return { platform, findings: imageFindings(JSON.parse(stdout)) };
@@ -431,7 +441,8 @@ if (
   console.log(
     `Checking ${pins.length} pinned images, ${goTools.length} Go tools and ${releases.length} release binaries.`,
   );
-  const client = registry(fetch, patience);
+  deadline = Date.now() + runMinutes * 60_000;
+  const client = registry(fetch, { delay: patience, remaining });
   const scanner = await osvScanner();
   const directory = mkdtempSync(join(tmpdir(), "astilba-pin-report-"));
   const images = [];
@@ -439,7 +450,20 @@ if (
     // One at a time, so the runner's disk holds one image.
     for (const pin of pins) {
       console.log(`Checking ${pin.image}:${pin.tag}@${short(pin.digest)}`);
-      images.push(await checkImage(client, scanner, pin, directory));
+      images.push(
+        Date.now() < deadline
+          ? await checkImage(client, scanner, pin, directory)
+          : {
+              ...pin,
+              scans: [],
+              errors: [
+                {
+                  step: "checking",
+                  message: `not started within the run's ${runMinutes} minutes`,
+                },
+              ],
+            },
+      );
     }
   } finally {
     rmSync(directory, { recursive: true, force: true });

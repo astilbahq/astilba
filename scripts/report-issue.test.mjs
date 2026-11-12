@@ -400,3 +400,33 @@ test("a problem already known by one of its aliases is not new", async () => {
     "updated",
   );
 });
+
+test("closing during a check that could not run accepts only what the issue listed", async () => {
+  const unchecked = { ...problem("unfinished"), check: true };
+  const github = fakeGitHub();
+  await run(github, [problem("a")]);
+  assert.equal(await run(github, [unchecked]), "commented");
+  closeByHand(github);
+  assert.equal(await run(github, [problem("a")]), "opened");
+});
+
+test("an accepted problem known now by a new id stays accepted when the old id goes", async () => {
+  const github = fakeGitHub();
+  await run(github, [problem("K1")]);
+  closeByHand(github);
+  assert.equal(
+    await run(github, [{ ...problem("K2"), aliases: ["K1"] }]),
+    "acknowledged",
+  );
+  assert.equal(await run(github, [problem("K2")]), "acknowledged");
+});
+
+test("past the key limit only aliases are dropped, never a problem's own key", async () => {
+  const github = fakeGitHub();
+  const many = Array.from({ length: 600 }, (_, i) => ({
+    ...problem(`p${i}`),
+    aliases: Array.from({ length: 10 }, (_, j) => `p${i}-${j}`),
+  }));
+  await run(github, many, { acknowledge: false });
+  assert.equal(await run(github, many, { acknowledge: false }), "updated");
+});

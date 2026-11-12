@@ -8,7 +8,10 @@ import { createHash } from "node:crypto";
 const api = "https://api.github.com";
 // GitHub refuses a body or comment over 65,536 characters.
 const textLimit = 60_000;
-const marker = /^<!-- report keys: ([0-9a-f ]*) -->$/m;
+// What the issue listed, and what earlier runs found that a check could not look at
+// this time. Only what it listed counts as accepted when a person closes it.
+const seenMarker = /^<!-- report keys: ([0-9a-f ]*) -->$/m;
+const unseenMarker = /^<!-- report unseen keys: ([0-9a-f ]*) -->$/m;
 
 export function github(token, fetchImpl = fetch) {
   return async (path, { method = "GET", body } = {}) => {
@@ -53,18 +56,31 @@ const digest = (key) =>
   createHash("sha256").update(key).digest("hex").slice(0, 8);
 // A problem may also be known by aliases, such as an advisory's other ids, so it stays
 // the same problem when an id is added.
-const digests = ({ key, aliases = [] }) => [key, ...aliases].map(digest);
+const digests = ({ key, aliases = [] }) =>
+  [key, ...aliases.slice(0, maxAliases)].map(digest);
 
-const keysIn = (body) =>
+const read = (pattern, body) =>
   new Set(
-    marker
+    pattern
       .exec(body ?? "")?.[1]
       .split(" ")
       .filter(Boolean) ?? [],
   );
-const markerFor = (keys) => `<!-- report keys: ${[...keys].join(" ")} -->`;
-// Each key takes 9 characters of the body, so the marker stays well inside its limit.
+const line = (name, keys) => `<!-- report ${name}: ${[...keys].join(" ")} -->`;
+// Each key takes 9 characters of the body, so the markers stay well inside its limit.
 const maxKeys = 5000;
+// Each problem's aliases are capped, and primary keys come first, so a cap can only
+// drop aliases.
+export const maxAliases = 10;
+const keysOf = (problems) =>
+  new Set(
+    [
+      ...problems.map(({ key }) => digest(key)),
+      ...problems.flatMap(({ aliases = [] }) =>
+        aliases.slice(0, maxAliases).map(digest),
+      ),
+    ].slice(0, maxKeys),
+  );
 const pageSize = 100;
 const maxPages = 20;
 
@@ -104,53 +120,66 @@ export async function syncIssue(
     ({ key }, index) =>
       problems.findIndex((other) => other.key === key) === index,
   );
-  const current = new Set(unique.flatMap(digests).slice(0, maxKeys));
+  const current = keysOf(unique);
   const known = (keys) => (problem) =>
     digests(problem).some((key) => keys.has(key));
   const complete = !unique.some(({ check }) => check);
-  const kept = (earlier) =>
-    complete ? current : new Set([...current, ...earlier].slice(0, maxKeys));
-  const write = (keys, text) => clip(`${markerFor(keys)}\n${text}`);
+  // A run that could not check carries earlier keys it did not see, so they are not
+  // new when it sees them again.
+  const unseen = (earlier) =>
+    complete
+      ? new Set()
+      : new Set(
+          [...earlier.difference(current)].slice(0, maxKeys - current.size),
+        );
+  const write = (seen, carried, text) =>
+    clip(
+      [
+        line("keys", seen),
+        ...(carried.size ? [line("unseen keys", carried)] : []),
+        text,
+      ].join("\n"),
+    );
   const announce = (heading, fresh) =>
     [
       `${heading} (${fresh.length}):`,
       "",
       ...fresh.map(({ line }) => line),
     ].join("\n");
+  const patch = (issue, fields) =>
+    request(`/repos/${repository}/issues/${issue.number}`, {
+      method: "PATCH",
+      body: fields,
+    });
   if (undecided && !unique.length) return "unchanged";
   const open = await newest(request, repository, title, "open");
   if (open && !unique.length) {
-    await request(`/repos/${repository}/issues/${open.number}`, {
-      method: "PATCH",
-      body: {
-        body: write([], body),
-        state: "closed",
-        state_reason: "completed",
-      },
+    await patch(open, {
+      body: write(new Set(), new Set(), body),
+      state: "closed",
+      state_reason: "completed",
     });
     return "closed";
   }
   const closed = acknowledge
     ? await newest(request, repository, title, "closed")
     : undefined;
-  const accepted = keysIn(closed?.body);
+  const accepted = read(seenMarker, closed?.body);
   // An issue opened for a check that has since run again, or for a problem now gone,
   // goes back to what a person accepted, rather than staying open over it.
   if (open && complete && unique.every(known(accepted))) {
-    await request(`/repos/${repository}/issues/${open.number}`, {
-      method: "PATCH",
-      body: {
-        body: write(current, body),
-        state: "closed",
-        state_reason: "completed",
-      },
+    await patch(open, {
+      body: write(current, new Set(), body),
+      state: "closed",
+      state_reason: "completed",
     });
     return "accepted";
   }
   if (open) {
-    const fresh = unique.filter(
-      (problem) => !known(keysIn(open.body))(problem),
+    const earlier = read(seenMarker, open.body).union(
+      read(unseenMarker, open.body),
     );
+    const fresh = unique.filter((problem) => !known(earlier)(problem));
     // An edited body notifies nobody, so what is new is said in a comment, first: if
     // the comment fails, the next run still finds these new.
     if (fresh.length)
@@ -158,22 +187,17 @@ export async function syncIssue(
         method: "POST",
         body: { body: clip(announce("New since the last report", fresh)) },
       });
-    await request(`/repos/${repository}/issues/${open.number}`, {
-      method: "PATCH",
-      body: { body: write(kept(keysIn(open.body)), body) },
-    });
+    await patch(open, { body: write(current, unseen(earlier), body) });
     return fresh.length ? "commented" : "updated";
   }
   const fresh = unique.filter(
     (problem) => problem.check || !known(accepted)(problem),
   );
   if (!fresh.length) {
-    // Only what is still there stays accepted.
-    const still = accepted.intersection(current);
-    if (still.size < accepted.size)
-      await request(`/repos/${repository}/issues/${closed.number}`, {
-        method: "PATCH",
-        body: { body: closed.body.replace(marker, markerFor(still)) },
+    // What is accepted follows what is still there, under the ids it has today.
+    if (!current.isSubsetOf(accepted) || !accepted.isSubsetOf(current))
+      await patch(closed, {
+        body: closed.body.replace(seenMarker, line("keys", current)),
       });
     return unique.length ? "acknowledged" : "unchanged";
   }
@@ -182,7 +206,7 @@ export async function syncIssue(
     : body;
   await request(`/repos/${repository}/issues`, {
     method: "POST",
-    body: { title, body: write(kept(accepted), text) },
+    body: { title, body: write(current, unseen(accepted), text) },
   });
   return "opened";
 }

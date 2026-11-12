@@ -26,13 +26,22 @@ const sha256 = (bytes) =>
 // Asks a registry's distribution API as an anonymous client, taking the bearer token
 // its challenge offers. A dropped connection, a rate limit or a server error repeats
 // as other downloads do.
-export function registry(fetchImpl = fetch, delay = outlastOutage) {
+// Each request, its body included, ends within a minute or what is left of the run.
+const requestMs = 60_000;
+
+export function registry(
+  fetchImpl = fetch,
+  { delay = outlastOutage, remaining = () => Infinity } = {},
+) {
   const tokens = new Map();
   const host = (name) => (name === "docker.io" ? "registry-1.docker.io" : name);
   const attempt = async (url, init) => {
     let response;
     try {
-      response = await fetchImpl(url, init);
+      response = await fetchImpl(url, {
+        ...init,
+        signal: AbortSignal.timeout(Math.min(requestMs, remaining())),
+      });
     } catch (error) {
       throw new FetchFailure(error.cause?.message || error.message);
     }
@@ -92,7 +101,7 @@ export function registry(fetchImpl = fetch, delay = outlastOutage) {
           return response;
         }
       },
-      { delay },
+      { delay, limitMs: remaining() },
     );
   }
   return {

@@ -12,6 +12,7 @@ import {
   newestInLine,
   parseName,
 } from "./pin-sources.mjs";
+import { readReport } from "./scheduled-report.mjs";
 import { osvScannerVersion } from "./vulnerability-scan.mjs";
 
 const digest = (fill) => fill.repeat(64);
@@ -661,6 +662,38 @@ test("takes the registry's anonymous token and checks every manifest against its
     docker.manifest(pin, sha256(index)),
     /unexpected registry challenge/,
   );
+});
+
+test("an advisory with many ids gives no more aliases than the report job reads", () => {
+  const ids = Array.from({ length: 14 }, (_, i) => `CVE-2026-${100 + i}`);
+  const big = finding({
+    id: "DSA-6000-1",
+    cve: ids[0],
+    ids: ["DSA-6000-1", ...ids],
+  });
+  const report = assemble({
+    images: [
+      checked({ scans: [{ platform: "linux/amd64", findings: [big] }] }),
+    ],
+    tools: [],
+  });
+  assert.equal(report.problems[0].aliases.length, 10);
+  assert.ok(readReport(JSON.stringify(report)));
+});
+
+test("every registry request carries a time limit", async () => {
+  const signals = [];
+  const client = registry(async (_url, init) => {
+    signals.push(init.signal);
+    return response(200, JSON.stringify({ tags: [] }));
+  });
+  await client.tags({
+    registry: "r.test",
+    repository: "a/b",
+    image: "r.test/a/b",
+  });
+  assert.ok(signals.every((signal) => signal instanceof AbortSignal));
+  assert.equal(signals.length, 1);
 });
 
 test("a registry that keeps naming the same next page of tags is cut off", async () => {

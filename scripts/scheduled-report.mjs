@@ -1,6 +1,12 @@
 import { existsSync, readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
-import { github, inert, renderSections, syncIssue } from "./report-issue.mjs";
+import {
+  github,
+  inert,
+  maxAliases,
+  renderSections,
+  syncIssue,
+} from "./report-issue.mjs";
 
 // The Scheduled scans workflow's report job, the only job there that may write issues.
 // It reads what the scan jobs wrote as data, since they ran third-party scanners and
@@ -8,7 +14,7 @@ import { github, inert, renderSections, syncIssue } from "./report-issue.mjs";
 
 // Bounds what a scan job can write, so its issue stays readable and the keys of its
 // problems and their aliases fit the body.
-const limits = { entries: 3000, key: 500, text: 4000, aliases: 10 };
+const limits = { entries: 3000, key: 500, text: 4000, aliases: maxAliases };
 
 export const reports = [
   {

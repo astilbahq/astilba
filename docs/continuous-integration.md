@@ -380,8 +380,9 @@ The report does not apply the release-age gate, so a security release is heard o
 once; the bump itself follows the `upgrade-dependencies` skill and the gate. Pins never
 change by themselves. Registry requests, pulls and scans repeat like
 [host downloads](#host-downloads) until one has failed for that long; the rest of the
-run then tries each a few times, so a broken registry or scanner cannot keep the job
-past its time limit before it writes the report. A registry manifest or blob whose bytes
+run then tries each a few times. A registry request ends within a minute, no check
+starts after 90 minutes, and no step runs past that point, so whatever fails or hangs
+the report is written within the job's two hours. A registry manifest or blob whose bytes
 do not match its digest is reported as a check that failed.
 
 Much of what the report finds waits on upstream, so closing its issue accepts what it
@@ -420,7 +421,8 @@ Each problem has a key that leaves out the day's details, kept in the body, so a
 already reported stays quiet. The comment goes before the body changes, so one that
 fails is sent again the next day. A job that failed without a report, timed out or was
 cancelled, or a check that could not run, is itself a problem; the earlier keys stay
-with it, so what that run could not see is not announced again when it is seen. A
+with it, so what that run could not see is not announced again when it is seen, and
+closing the issue then accepts only what it listed. A
 passing job closes the issue and clears its keys, and a skipped one leaves it as it is. Closing the dependency scan's issue by hand accepts
 nothing: the next failing run opens another, because the same failure also stops pull
 requests. The lane budget guard keeps its issue the same way. `make check-ci` seeds a
