@@ -148,9 +148,10 @@ func retirementPlan(ctx context.Context, tx pgx.Tx, ws, env uuid.UUID, e db.Lock
 		}
 		// Only an unfinished replacement leaves the runtime on another server, and only off a revoked
 		// one. A server renewed since then may still run that plan, beside whatever the attempt left on
-		// the unit's new server: that is two servers, which one command cannot retire.
+		// the unit's new server: that is two servers, which one command cannot retire. Finishing the
+		// replacement or revoking the former server again leaves one.
 		if !applied.Revoked {
-			return plan, false, domain.RetirementRefused(domain.RetirementCrossHost)
+			return plan, false, domain.RetirementRefused(domain.RetirementReplacement)
 		}
 		plan, withoutHost = identityPlan(env, e), true
 	case errors.Is(err, pgx.ErrNoRows):

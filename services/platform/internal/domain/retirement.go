@@ -13,6 +13,7 @@ const (
 	RetirementUpgrade         = "upgrade"
 	RetirementCutover         = "cutover"
 	RetirementCrossHost       = "cross_host"
+	RetirementReplacement     = "replacement"
 	RetirementAgentUpdate     = "agent_update"
 	RetirementServerTransfer  = "server_transfer"
 	RetirementState           = "state"
@@ -23,7 +24,8 @@ var retirementMessages = map[string]string{
 	RetirementServerBusy:      "Another operation is running on this environment's server. Try again when it finishes.",
 	RetirementUpgrade:         "A database upgrade holds this environment's data. Finish or return the upgrade and wait for its retention period to end.",
 	RetirementCutover:         "A backup restore cutover is waiting to be deployed. Deploy it or replace the draft first.",
-	RetirementCrossHost:       "This environment runs on more than one server. Consolidate it onto its primary server first.",
+	RetirementCrossHost:       "This environment runs on more than one server. Consolidate it onto its primary server and deploy it without a placement first.",
+	RetirementReplacement:     "This environment's replacement deployment did not finish, and the server it replaced is no longer revoked, so both may run it. Finish the replacement deployment or revoke the former server first.",
 	RetirementAgentUpdate:     "Update this server's agent before retiring environments on it.",
 	RetirementServerTransfer:  "This environment's server is waiting for a verified agent transfer. Complete the transfer first.",
 	RetirementState:           "This environment is not in a state that allows this. Reload it to see its current state.",

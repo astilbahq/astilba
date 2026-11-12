@@ -301,8 +301,10 @@ type RetirementHoldsRow struct {
 // the retirement command would otherwise meet as a bare conflict. cross_host is what management
 // expects the environment to run across servers now: a unit a cross-host deployment recorded, as
 // ServerControllerInventory lists it, or a private endpoint its applied placement still publishes.
-// A consolidation removes both, and a replaced primary is detached from its revoked server, so
-// neither leaves a lasting hold; the secondary unit rows themselves are never deleted.
+// Consolidating onto the primary is still a cross-host deployment, which keeps the primary's
+// runtime row; only a later deployment without a placement removes both. A replaced primary is
+// detached from its revoked server, so it leaves no lasting hold; the secondary unit rows
+// themselves are never deleted.
 func (q *Queries) RetirementHolds(ctx context.Context, arg RetirementHoldsParams) (RetirementHoldsRow, error) {
 	row := q.db.QueryRow(ctx, retirementHolds, arg.WorkspaceID, arg.EnvironmentID, arg.ServerID)
 	var i RetirementHoldsRow

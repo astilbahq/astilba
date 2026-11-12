@@ -63,6 +63,30 @@ func TestRetirementRefusesACrossHostPlacement(t *testing.T) {
 	}
 }
 
+// Consolidating a placement onto the primary still deploys it across servers, so retirement stays
+// refused until the environment is deployed without a placement, and then goes to the primary.
+func TestRetirementAfterConsolidatingAndRemovingPlacement(t *testing.T) {
+	g := newRevokedGroup(t, 2)
+	a, b := g.hosts[0], g.hosts[1]
+	g.retiringHosts(t)
+	e, _ := g.filesStack(t, a)
+	g.applied(t, &e, g.place(t, &e, a.id, b.id))
+	g.applied(t, &e, g.place(t, &e, a.id, a.id))
+	var refused api.Error
+	g.b.call("POST", e.path+"/retire", api.EnvironmentLifecycleRequest{ConfirmName: "Stack"}, 409, &refused)
+	if refused.Fields == nil || len(*refused.Fields) != 1 || (*refused.Fields)[0] != "retirement."+domain.RetirementCrossHost {
+		t.Fatalf("a consolidated placement was not refused as one across servers: %+v", refused)
+	}
+	g.removePlacement(t, &e, a)
+	payload, retired := g.retired(t, &e)
+	if payload.Plan.ServerID != a.id || payload.Plan.Distributed != nil || payload.Plan.Local != nil || payload.Plan.Specification.Placement != nil {
+		t.Fatalf("retirement was not sent for the primary's single-server plan: %+v", payload.Plan)
+	}
+	if retired.RetiredWithoutHost == nil || *retired.RetiredWithoutHost {
+		t.Fatal("a retirement its server finished was recorded as not contacting it")
+	}
+}
+
 // A replaced primary leaves its demoted unit behind, detached from its revoked server. That runs
 // nothing, so it does not hold retirement, which goes to the new primary's server.
 func TestRetirementAfterAPrimaryReplacement(t *testing.T) {
@@ -111,5 +135,29 @@ func TestRetirementAfterAFailedPrimaryReplacement(t *testing.T) {
 	var runtime int
 	if err := g.f.st.Pool.QueryRow(g.ctx, `SELECT count(*) FROM visual_runtime WHERE environment_id=$1`, uuid.MustParse(e.path[len(e.path)-36:])).Scan(&runtime); err != nil || runtime != 0 {
 		t.Fatalf("runtime rows after retirement: %d %v", runtime, err)
+	}
+}
+
+// A former primary renewed after a failed replacement may still run the environment beside what the
+// attempt left on its new server, so retirement is refused with its own reason until the
+// replacement finishes or that server is revoked again.
+func TestRetirementRefusesAFailedReplacementOffARenewedServer(t *testing.T) {
+	g := newRevokedGroup(t, 2)
+	gone, b := g.hosts[0], g.hosts[1]
+	e, volume := g.filesStack(t, gone)
+	g.revoke(t, gone)
+	g.retiringHosts(t)
+	g.mu.Lock()
+	g.failing["visual-deploy/"+b.id.String()] = true
+	g.mu.Unlock()
+	status := g.reviewed(t, &e, g.replace(&e, b.id, volume))
+	if state := g.finished(t, g.apply(t, &e, status).Id); state != "failed" {
+		t.Fatalf("the failing attempt ended %s", state)
+	}
+	g.b.call("POST", g.base+"/servers/"+gone.id.String()+"/enrollment", nil, 201, nil)
+	var refused api.Error
+	g.b.call("POST", e.path+"/retire", api.EnvironmentLifecycleRequest{ConfirmName: "Stack"}, 409, &refused)
+	if refused.Fields == nil || len(*refused.Fields) != 1 || (*refused.Fields)[0] != "retirement."+domain.RetirementReplacement {
+		t.Fatalf("a failed replacement off a renewed server was not refused as one: %+v", refused)
 	}
 }
