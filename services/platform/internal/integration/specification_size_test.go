@@ -1,18 +1,14 @@
 package integration
 
 import (
-	"errors"
 	"fmt"
 	"strings"
 	"testing"
 
-	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/composeproject"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
-	"github.com/astilbahq/astilba/services/platform/internal/store"
-	"github.com/google/uuid"
 )
 
 // storedSizes are a specification's canonical JSON, as ParseSpec measures it, and the size of its
@@ -58,8 +54,8 @@ func withDenseVariables(t *testing.T, f *fixture, spec domain.Specification, mar
 }
 
 // A specification within the limit as canonical JSON can be over it as jsonb text, which puts a space
-// after every ':' and ','. A save is refused as invalid, not answered with the table's check failing,
-// and the refusal leaves the transaction usable.
+// after the ':' and ',' between JSON members. A save is refused as invalid, not answered with the
+// table's check failing.
 func TestSaveRefusesASpecificationOverTheLimitAsStored(t *testing.T) {
 	f := setup(t)
 	b, _, env, path := automationEnvironment(t, f)
@@ -71,29 +67,9 @@ func TestSaveRefusesASpecificationOverTheLimitAsStored(t *testing.T) {
 	b.call("PUT", path+"/draft", map[string]any{"baseRevisionId": env.DraftRevisionId, "specification": spec}, 400, &refused)
 	invalidField(t, refused, "specification")
 
-	_, canonical, err := domain.ParseSpec(claimBytes(t, spec))
-	if err != nil {
-		t.Fatal(err)
-	}
-	tx, err := f.st.Pool.Begin(t.Context())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer tx.Rollback(t.Context())
-	var ws uuid.UUID
-	if err = tx.QueryRow(t.Context(), "SELECT workspace_id FROM environments WHERE id=$1", env.Id).Scan(&ws); err != nil {
-		t.Fatal(err)
-	}
-	var invalid *domain.Error
-	if _, err = store.InsertRevision(t.Context(), db.New(tx), db.InsertRevisionParams{WorkspaceID: ws, EnvironmentID: env.Id, ID: uuid.New(), AuthorID: uuid.New(), Specification: canonical, ContentHash: make([]byte, 32)}); !errors.As(err, &invalid) || invalid.Code != "invalid_input" {
-		t.Fatalf("the insert answered %v", err)
-	}
-	if _, err = tx.Exec(t.Context(), "SELECT 1"); err != nil {
-		t.Fatal("the refusal aborted the transaction:", err)
-	}
 	// The table's check stays the backstop, so it must measure the same limit.
 	var check string
-	if err = tx.QueryRow(t.Context(), "SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conrelid='specification_revisions'::regclass AND contype='c' AND pg_get_constraintdef(oid) LIKE '%octet_length%'").Scan(&check); err != nil {
+	if err := f.st.Pool.QueryRow(t.Context(), "SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conrelid='specification_revisions'::regclass AND contype='c' AND pg_get_constraintdef(oid) LIKE '%octet_length%'").Scan(&check); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(check, fmt.Sprintf("octet_length((specification)::text) <= %d", domain.SpecificationLimit)) {
@@ -102,8 +78,8 @@ func TestSaveRefusesASpecificationOverTheLimitAsStored(t *testing.T) {
 }
 
 // An import records why it failed in the transaction that refused its revision, so a revision over
-// the limit as stored fails the import with a note rather than the runner's report with the table's
-// check, which the runner would retry for ever.
+// the limit as stored fails the import with a note. The table's check failing would abort that
+// transaction and the runner's report with it, until the command's deadline cancelled it.
 func TestImportOverTheLimitAsStoredFails(t *testing.T) {
 	i := newImportedEnvironment(t, "gitea")
 	_, current := draftSpec(t, i.b, i.path)

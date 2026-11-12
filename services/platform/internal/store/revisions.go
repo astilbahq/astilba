@@ -9,8 +9,8 @@ import (
 
 // SpecificationFits is whether a specification is within domain.SpecificationLimit both as sent, its
 // canonical JSON, and as specification_revisions' size check measures it, PostgreSQL's jsonb text.
-// The jsonb text puts a space after every ':' and ',', so a specification of many small fields can
-// fit the first and not the second.
+// The jsonb text puts a space after the ':' and ',' between JSON members, so a specification of many
+// small fields can fit the first and not the second.
 func SpecificationFits(ctx context.Context, q *db.Queries, specification []byte) (bool, error) {
 	if len(specification) > domain.SpecificationLimit {
 		return false, nil
@@ -22,7 +22,8 @@ func SpecificationFits(ctx context.Context, q *db.Queries, specification []byte)
 	return int(size) <= domain.SpecificationLimit, nil
 }
 
-// InsertRevision stores a specification revision, and every path that writes one comes here. A
+// InsertRevision stores a specification revision. Every path that writes one comes here, except a
+// workspace import, which copies rows an export already stored within the check. A
 // specification over the size limit is refused as invalid before the insert rather than left to the
 // table's check: a failed check aborts the transaction, and some callers carry on in it after a
 // refused revision, such as an import that records why it failed. The check stays as the backstop.
