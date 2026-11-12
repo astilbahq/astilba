@@ -5,11 +5,14 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"maps"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/google/uuid"
+	bolt "go.etcd.io/bbolt"
 )
 
 const deadlineNote = "The admission deadline passed before execution."
@@ -157,5 +160,71 @@ func TestUnclassifiedPhaseIsRefused(t *testing.T) {
 	f.command.Deadline = f.command.Deadline.Add(2 * 3600e9)
 	if r := f.outcome(t); r.State != "failed" || r.Note != "Unsupported coordinated phase." {
 		t.Fatalf("an unclassified phase ended %s: %s", r.State, r.Note)
+	}
+}
+
+// journalBytes is every key and value the journal holds, by bucket path.
+func journalBytes(t *testing.T, j *Journal) map[string]string {
+	t.Helper()
+	out := map[string]string{}
+	var walk func(prefix string, b *bolt.Bucket)
+	walk = func(prefix string, b *bolt.Bucket) {
+		_ = b.ForEach(func(k, v []byte) error {
+			if v == nil {
+				walk(prefix+string(k)+"/", b.Bucket(k))
+				return nil
+			}
+			out[prefix+string(k)] = string(v)
+			return nil
+		})
+	}
+	if err := j.db.View(func(tx *bolt.Tx) error {
+		return tx.ForEach(func(name []byte, b *bolt.Bucket) error {
+			walk(string(name)+"/", b)
+			return nil
+		})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+// A late ending phase on a host that holds no reservation only says so. Apart from the command's
+// own record and the generation it raises, the journal is byte-identical, no reservation appears,
+// and the fixture's Docker daemon fails the test on any change to the runtime.
+func TestLateEndingPhaseOnAnUnreservedHostChangesNothing(t *testing.T) {
+	for _, tc := range []struct{ phase, note string }{
+		{"abort", "No candidate reservation was installed on this host."},
+		{"resume-source", "This host never installed a maintenance reservation; its source was retained."},
+		{"complete", "This host never installed a maintenance reservation; its source was retained."},
+	} {
+		t.Run(tc.phase, func(t *testing.T) {
+			f := expiredMaintenance(t, false)
+			if tc.phase == "abort" {
+				f = lateDeployment(t, "abort", false)
+			} else {
+				f.body.Phase = tc.phase
+				f.freezeBody()
+			}
+			before := journalBytes(t, f.journal)
+			r := f.outcome(t)
+			if r.State != "succeeded" || r.Note != tc.note {
+				t.Fatalf("late %s on an unreserved host ended %s: %s", tc.phase, r.State, r.Note)
+			}
+			after := journalBytes(t, f.journal)
+			delete(after, "operations/"+f.command.Id.String())
+			for key := range after {
+				if strings.HasPrefix(key, "generations/") && before[key] != after[key] {
+					delete(after, key)
+					delete(before, key)
+				}
+			}
+			if !maps.Equal(before, after) {
+				t.Fatal("acknowledging held work the host doesn't have changed its journal")
+			}
+			if held, err := f.journal.hasCrossHostBarrier(); err != nil || held {
+				t.Fatal("acknowledging nothing installed a reservation", err)
+			}
+		})
 	}
 }
