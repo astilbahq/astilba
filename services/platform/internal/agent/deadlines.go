@@ -31,7 +31,7 @@ const (
 	// so cancelling it would strand every host its parent reserved.
 	endsHeldWork
 	// endsHeldWorkOrNone is endsHeldWork that also acknowledges a host holding no reservation at
-	// all, without changing anything there. Refusing it would strand the other hosts.
+	// all, without changing any reservation or runtime there. Refusing it would strand the other hosts.
 	endsHeldWorkOrNone
 )
 
