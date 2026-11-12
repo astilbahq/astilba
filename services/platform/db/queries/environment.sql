@@ -63,3 +63,8 @@ SELECT host_review FROM visual_plans WHERE workspace_id=$1 AND environment_id=$2
 -- name: VisualRequestHostReview :one
 -- Whether the planner found host changes the applied deployment does not already have.
 SELECT host_review FROM visual_requests WHERE workspace_id=$1 AND id=$2;
+
+-- name: LockEnvironmentForUpdate :one
+-- Takes the environment's row lock that writing a revision or admitting a pipeline takes first, so
+-- a transaction that then locks a build target keeps their order and can't deadlock with them.
+SELECT id FROM environments WHERE workspace_id = @workspace_id AND id = @id FOR NO KEY UPDATE;

@@ -178,7 +178,7 @@ func existingBuild(ctx context.Context, tx pgx.Tx, ws, pid, env, app, key uuid.U
 
 func (s *Service) GitSource(ctx context.Context, p store.Principal, ws, pid, env uuid.UUID) (map[string]any, error) {
 	out := map[string]any{}
-	err := s.scope(ctx, p, ws, workspaceAccess{}, "", uuid.Nil, func(tx pgx.Tx) error {
+	err := s.scopeIn(ctx, p, ws, workspaceAccess{}, "", uuid.Nil, func(tx pgx.Tx, w store.Workspace) error {
 		v, err := loadVisualEnvironment(ctx, tx, ws, pid, env)
 		if err != nil {
 			return err
@@ -191,9 +191,16 @@ func (s *Service) GitSource(ctx context.Context, p store.Principal, ws, pid, env
 			return err
 		}
 		var cfg []byte
+		var actor uuid.UUID
 		var revision *uuid.UUID
 		var commit, pending, status string
-		if err := tx.QueryRow(ctx, "SELECT configuration,imported_revision_id,imported_commit,pending_commit,status FROM git_sources WHERE workspace_id=$1 AND environment_id=$2", ws, env).Scan(&cfg, &revision, &commit, &pending, &status); err != nil {
+		var role *string
+		var current, approved *int64
+		// The approver's role and version explain, in the terms of policyApproval, why imports don't
+		// run; policy_approver_holds is what stops them.
+		if err := tx.QueryRow(ctx, `SELECT g.configuration,g.policy_actor,g.imported_revision_id,g.imported_commit,g.pending_commit,g.status,g.policy_auth_version,m.role,a.auth_version
+ FROM git_sources g LEFT JOIN memberships m ON m.workspace_id=g.workspace_id AND m.account_id=g.policy_actor LEFT JOIN accounts a ON a.id=g.policy_actor
+ WHERE g.workspace_id=$1 AND g.environment_id=$2`, ws, env).Scan(&cfg, &actor, &revision, &commit, &pending, &status, &approved, &role, &current); err != nil {
 			return err
 		}
 		baseline, err := sourceBaseline(ctx, tx, ws, env, revision)
@@ -208,7 +215,8 @@ func (s *Service) GitSource(ctx context.Context, p store.Principal, ws, pid, env
 		if clean {
 			configuration = sourceSelection(configuration, v.Spec.Compose)
 		}
-		out = map[string]any{"clean": clean, "configuration": configuration, "importedRevisionId": revision, "importedCommit": commit, "pendingCommit": pending, "status": status, "submission": submission}
+		approval := policyApproval(role, current, approved, true, status == "approval_required", w.Role)
+		out = map[string]any{"clean": clean, "configuration": configuration, "importedRevisionId": revision, "importedCommit": commit, "pendingCommit": pending, "status": status, "approval": approval, "sourceHash": sourceHash(cfg, actor), "submission": submission}
 		return nil
 	})
 	return out, err
@@ -243,7 +251,7 @@ func (s *Service) BindSource(ctx context.Context, p store.Principal, ws, pid, en
 			return err
 		}
 		raw, _ := stablejson.Marshal(c)
-		_, err = tx.Exec(ctx, "INSERT INTO git_sources(workspace_id,environment_id,connection_id,configuration,policy_actor) VALUES($1,$2,$3,$4,$5)", ws, env, c.ConnectionID, raw, p.Account.ID)
+		_, err = tx.Exec(ctx, "INSERT INTO git_sources(workspace_id,environment_id,connection_id,configuration,policy_actor,policy_auth_version) VALUES($1,$2,$3,$4,$5,$6)", ws, env, c.ConnectionID, raw, p.Account.ID, p.Account.AuthVersion)
 		if err != nil {
 			return err
 		}
@@ -381,7 +389,7 @@ func (s *Service) admitBuild(ctx context.Context, tx pgx.Tx, git *gitAnswers, p 
 	}
 	if persist {
 		raw, _ := stablejson.Marshal(c)
-		_, err = tx.Exec(ctx, "INSERT INTO build_targets(workspace_id,environment_id,application_id,connection_id,configuration,input_hash,requested_commit,automatic_requested_commit,policy_actor) VALUES($1,$2,$3,$4,$5,$6,$7,$7,$8) ON CONFLICT(workspace_id,environment_id,application_id) DO UPDATE SET connection_id=EXCLUDED.connection_id,configuration=EXCLUDED.configuration,input_hash=EXCLUDED.input_hash,requested_commit=EXCLUDED.requested_commit,automatic_requested_commit=EXCLUDED.automatic_requested_commit,policy_actor=EXCLUDED.policy_actor,rejected_commit=NULL,rejection_reason=NULL,rejected_at=NULL", ws, env, app, c.ConnectionID, raw, hash, commit, p.Account.ID)
+		_, err = tx.Exec(ctx, "INSERT INTO build_targets(workspace_id,environment_id,application_id,connection_id,configuration,input_hash,requested_commit,automatic_requested_commit,policy_actor,policy_auth_version,policy_owner) VALUES($1,$2,$3,$4,$5,$6,$7,$7,$8,$9,policy_approver_holds($1,$8,$9,true)) ON CONFLICT(workspace_id,environment_id,application_id) DO UPDATE SET connection_id=EXCLUDED.connection_id,configuration=EXCLUDED.configuration,input_hash=EXCLUDED.input_hash,requested_commit=EXCLUDED.requested_commit,automatic_requested_commit=EXCLUDED.automatic_requested_commit,policy_actor=EXCLUDED.policy_actor,policy_auth_version=EXCLUDED.policy_auth_version,policy_owner=EXCLUDED.policy_owner,rejected_commit=NULL,rejection_reason=NULL,rejected_at=NULL", ws, env, app, c.ConnectionID, raw, hash, commit, p.Account.ID, p.Account.AuthVersion)
 	} else {
 		_, err = tx.Exec(ctx, "UPDATE build_targets SET input_hash=$4,requested_commit=$5,rejected_commit=NULL,rejection_reason=NULL,rejected_at=NULL WHERE workspace_id=$1 AND environment_id=$2 AND application_id=$3", ws, env, app, hash, commit)
 	}
@@ -464,19 +472,6 @@ func (s *Service) PipelineRuns(ctx context.Context, p store.Principal, ws, pid, 
 		return rows.Err()
 	})
 	return out, err
-}
-
-func (s *Service) SourcePolicy(ctx context.Context, p store.Principal, ws, pid, env uuid.UUID, enabled bool) error {
-	return s.scope(ctx, p, ws, workspaceAccess{Write: true, Owner: true, Recent: enabled}, "git.source.policy", env, func(tx pgx.Tx) error {
-		if _, err := loadVisualEnvironment(ctx, tx, ws, pid, env); err != nil {
-			return err
-		}
-		n, err := tx.Exec(ctx, "UPDATE git_sources SET configuration=jsonb_set(configuration,'{autoDeploy}',to_jsonb($3::boolean)),policy_actor=$4,status=CASE WHEN $3 AND status='approval_required' THEN 'ready' ELSE status END WHERE workspace_id=$1 AND environment_id=$2", ws, env, enabled, p.Account.ID)
-		if err == nil && n.RowsAffected() != 1 {
-			return domain.NotFound
-		}
-		return err
-	})
 }
 
 func pipelineLifetime(p pipeline.Command) time.Duration {
