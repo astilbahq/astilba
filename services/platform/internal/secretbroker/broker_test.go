@@ -19,6 +19,7 @@ import (
 type fakeQueries struct {
 	members  map[uuid.UUID]string // account -> role in the one workspace
 	servers  map[uuid.UUID]bool
+	existing map[uuid.UUID]bool
 	inserted []db.InsertSecretAccessParams
 	outcomes []db.InsertSecretAccessOutcomeParams
 	failNext error
@@ -33,6 +34,9 @@ func (f *fakeQueries) SecretAccessMember(_ context.Context, arg db.SecretAccessM
 }
 func (f *fakeQueries) SecretAccessServer(_ context.Context, arg db.SecretAccessServerParams) (bool, error) {
 	return f.servers[arg.ServerID], nil
+}
+func (f *fakeQueries) SecretAccessWorkspaceExists(_ context.Context, id uuid.UUID) (bool, error) {
+	return f.existing[id], nil
 }
 func (f *fakeQueries) InsertSecretAccess(_ context.Context, arg db.InsertSecretAccessParams) error {
 	if err := f.failNext; err != nil {
@@ -59,7 +63,7 @@ func setup(t *testing.T) (*Broker, *fakeQueries, uuid.UUID, uuid.UUID, uuid.UUID
 		t.Fatal(err)
 	}
 	owner, member, server := uuid.New(), uuid.New(), uuid.New()
-	q := &fakeQueries{members: map[uuid.UUID]string{owner: "owner", member: "member"}, servers: map[uuid.UUID]bool{server: true}}
+	q := &fakeQueries{members: map[uuid.UUID]string{owner: "owner", member: "member"}, servers: map[uuid.UUID]bool{server: true}, existing: map[uuid.UUID]bool{}}
 	return New(q, file, nil), q, owner, member, server
 }
 
@@ -135,6 +139,7 @@ func TestPurposeTable(t *testing.T) {
 		{"second factor in a workspace", Request{Workspace: ws, Purpose: Authenticate, Principal: Account(member), Items: []Item{{Kind: TOTP, ID: member}}}, false},
 		{"workspace value at installation scope", Request{Purpose: Inspect, Principal: Account(member), Items: []Item{secret}}, false},
 		{"new workspace", Request{Workspace: uuid.New(), Purpose: Seal, Principal: Account(uuid.New()), Items: []Item{secret}, NewWorkspace: true}, true},
+		{"new workspace for export", Request{Workspace: uuid.New(), Purpose: Export, Principal: Account(owner), Kinds: []Kind{SecretVersion}, NewWorkspace: true}, false},
 		{"operator rotates", Request{Purpose: Rotate, Principal: Operator("cli"), Items: []Item{{Kind: TOTP, ID: member}}}, false},
 		{"unknown purpose", Request{Workspace: ws, Purpose: "spy", Principal: Account(owner), Items: []Item{secret}}, false},
 		{"malformed principal", Request{Workspace: ws, Purpose: Seal, Principal: Principal{Kind: AccountPrincipal}, Items: []Item{secret}}, false},
@@ -237,15 +242,48 @@ func TestBudgets(t *testing.T) {
 	if _, err := b.Begin(ctx, Request{Workspace: ws, Purpose: Inspect, Principal: Account(owner), Items: []Item{item}}); err != nil {
 		t.Fatal(err)
 	}
+	// Forged webhook calls spend only their connection's budget, never the workspace's.
+	hooked := uuid.New()
 	connection := uuid.New()
-	hook := Request{Workspace: uuid.New(), Purpose: Operate, Principal: System("webhook"), Items: []Item{{Kind: Git, ID: connection}}, Connection: &connection}
-	for range webhookBurst {
-		if _, err := b.Begin(ctx, hook); err != nil {
-			t.Fatal(err)
-		}
+	hook := Request{Workspace: hooked, Purpose: Operate, Principal: System("webhook"), Items: []Item{{Kind: Git, ID: connection}}, Connection: &connection}
+	for range webhookBurst + 50 {
+		_, _ = b.Begin(ctx, hook)
 	}
 	if _, err := b.Begin(ctx, hook); !errors.Is(err, domain.RateLimited) {
 		t.Fatalf("webhook over budget: %v", err)
+	}
+	if _, err := b.Begin(ctx, Request{Workspace: hooked, Purpose: Operate, Principal: System("alert-delivery"), Items: []Item{{Kind: AlertWebhook, ID: hooked}}}); err != nil {
+		t.Fatalf("webhooks spent the workspace's budget: %v", err)
+	}
+	// Each account has its own budget for its second factor.
+	for range workspaceBurst + 1 {
+		_, _ = b.Begin(ctx, Request{Purpose: Authenticate, Principal: Account(owner), Items: []Item{{Kind: TOTP, ID: owner}}})
+	}
+	other := uuid.New()
+	if _, err := b.Begin(ctx, Request{Purpose: Authenticate, Principal: Account(other), Items: []Item{{Kind: TOTP, ID: other}}}); err != nil {
+		t.Fatalf("one account's checks held up another's: %v", err)
+	}
+}
+
+func TestNewWorkspaceMustBeNew(t *testing.T) {
+	b, q, _, _, _ := setup(t)
+	taken := uuid.New()
+	q.existing[taken] = true
+	_, err := b.Begin(context.Background(), Request{Workspace: taken, Purpose: Seal, Principal: Account(uuid.New()), Kinds: []Kind{SecretVersion}, NewWorkspace: true})
+	if !errors.Is(err, domain.Conflict) || len(q.inserted) != 0 {
+		t.Fatalf("an import named an existing workspace: %v, %d records", err, len(q.inserted))
+	}
+}
+
+func TestCancelledBeginEndsItsRecord(t *testing.T) {
+	b, q, owner, _, _ := setup(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := b.Begin(ctx, Request{Workspace: uuid.New(), Purpose: Inspect, Principal: Account(owner), Kinds: []Kind{SecretVersion}}); err == nil {
+		t.Fatal("a cancelled request was given keys")
+	}
+	if len(q.inserted) != 1 || len(q.outcomes) != 1 || q.outcomes[0].Outcome != "refused" {
+		t.Fatalf("records %d, outcomes %+v", len(q.inserted), q.outcomes)
 	}
 }
 
@@ -255,8 +293,11 @@ func TestTokensRecordOnceAndStayApart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(q.inserted) != 1 || q.inserted[0].Purpose != "token" || q.inserted[0].WorkspaceID != nil {
-		t.Fatalf("records: %+v", q.inserted)
+	if len(q.inserted) != 1 || q.inserted[0].Purpose != "token" || q.inserted[0].WorkspaceID != nil || len(q.outcomes) != 1 || q.outcomes[0].Outcome != "released" {
+		t.Fatalf("records: %+v %+v", q.inserted, q.outcomes)
+	}
+	if _, err = tokens.Open(TokenKind{}, nil); !errors.Is(err, ErrNotAllowed) {
+		t.Fatal("a token kind outside the package was accepted")
 	}
 	sealed, err := tokens.Seal(DeviceToken, []byte("t"))
 	if err != nil {

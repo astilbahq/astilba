@@ -346,14 +346,15 @@ func (s *Server) secret(w http.ResponseWriter, r *http.Request, ws, pid, env, id
 	}
 	versionID := uuid.New()
 	item := secretbroker.Item{Kind: secretbroker.SecretVersion, ID: versionID}
-	keys, e := s.Store.Broker.Begin(r.Context(), secretbroker.Request{Workspace: ws, Purpose: secretbroker.Seal, Principal: principal(r.Context()).Secrets(), Items: []secretbroker.Item{item}})
+	access := store.WorkspaceAccess{Write: true, Recent: true}
+	keys, e := s.Store.BeginKeys(r.Context(), *principal(r.Context()), access, false, secretbroker.Request{Workspace: ws, Purpose: secretbroker.Seal, Items: []secretbroker.Item{item}})
 	if e != nil {
 		s.fail(w, r, e)
 		return
 	}
 	sealed := false
 	defer func() { keys.Close(r.Context(), secretbroker.UsedIf(sealed)) }()
-	s.envScope(w, r, ws, pid, env, store.WorkspaceAccess{Write: true, Recent: true}, func(q *db.Queries, _ db.GetEnvironmentRow) (any, error) {
+	s.envScope(w, r, ws, pid, env, access, func(q *db.Queries, _ db.GetEnvironmentRow) (any, error) {
 		ctx := r.Context()
 		if newSecret {
 			if e := q.InsertSecret(ctx, db.InsertSecretParams{WorkspaceID: ws, EnvironmentID: env, ID: id, Name: name}); e != nil {

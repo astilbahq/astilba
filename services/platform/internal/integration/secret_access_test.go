@@ -105,8 +105,10 @@ func TestExportAndCopiesAreRecorded(t *testing.T) {
 		t.Fatalf("clone actions: %d plain, %d with secrets", plain, copied)
 	}
 	records = accessRecords(t, f, &ws)
-	if r := records[len(records)-1]; r.purpose != "copy" || len(r.outcomes) != 1 {
-		t.Fatalf("copy record: %+v", r)
+	plainRecord, copyRecord := records[len(records)-2], records[len(records)-1]
+	// Neither clone had a secret to copy or a database password to make.
+	if plainRecord.purpose != "seal" || copyRecord.purpose != "copy" || fmt.Sprint(plainRecord.outcomes, copyRecord.outcomes) != "[refused] [refused]" {
+		t.Fatalf("clone records: %+v %+v", plainRecord, copyRecord)
 	}
 }
 
@@ -182,5 +184,46 @@ func TestAccessTimesComeFromTheDatabase(t *testing.T) {
 	var recent bool
 	if err := f.st.Pool.QueryRow(ctx, "SELECT at > now()-interval '1 minute' FROM secret_access WHERE id=$1", id).Scan(&recent); err != nil || !recent {
 		t.Fatal("a writer chose the record's time", err)
+	}
+}
+
+// A caller the write would refuse spends no record and no budget: a viewer's refused secret
+// write leaves nothing behind.
+func TestRefusedCallersLeaveNoRecord(t *testing.T) {
+	f := setup(t)
+	owner, ws, path := secretEnvironment(t, f)
+	owner.call("POST", fmt.Sprintf("/api/v1/workspaces/%s/invitations", ws), map[string]string{"email": "access-viewer@example.test", "role": "viewer"}, 201, nil)
+	invite := tokenFromLinkMail(t, f, "/invitation")
+	viewer := f.browser(t)
+	var session api.Session
+	viewer.call("POST", "/api/v1/auth/invitations/accept", map[string]string{"token": invite, "name": "Viewer", "password": f.password}, 200, &session)
+	viewer.csrf = session.CsrfToken
+	viewer.call("POST", path+"/secrets", map[string]string{"name": "TOKEN", "value": "refused-canary"}, 403, nil)
+	if n := len(accessRecords(t, f, &ws)); n != 0 {
+		t.Fatalf("a refused write was recorded: %d", n)
+	}
+}
+
+// Enrolling and checking a second factor are recorded for the account, outside any workspace.
+func TestSecondFactorIsRecorded(t *testing.T) {
+	f := setup(t)
+	b := f.browser(t)
+	b.login("owner@example.test", f.password)
+	enableMFA(t, b)
+	var purposes []string
+	rows, err := f.st.Pool.Query(context.Background(), "SELECT purpose FROM secret_access WHERE workspace_id IS NULL AND account_id=$1 ORDER BY at,id", f.owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rows.Next() {
+		var purpose string
+		if err = rows.Scan(&purpose); err != nil {
+			t.Fatal(err)
+		}
+		purposes = append(purposes, purpose)
+	}
+	rows.Close()
+	if fmt.Sprint(purposes) != "[seal authenticate]" {
+		t.Fatalf("second factor records: %v", purposes)
 	}
 }

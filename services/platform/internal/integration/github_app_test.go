@@ -205,7 +205,7 @@ func TestGitHubOnboardingDelegationAndRecoveryBoundaries(t *testing.T) {
 		t.Fatal(e)
 	}
 	next.Keys["test"] = old.Keys["test"]
-	f.st.Keys = next
+	useKeys(t, f.st, next)
 	if e = f.st.Rewrap(ctx, "test"); e != nil {
 		t.Fatal(e)
 	}

@@ -6,7 +6,6 @@ import (
 	"sync"
 	"time"
 
-	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
 	"github.com/google/uuid"
 )
@@ -56,7 +55,7 @@ type Session struct {
 func (s *Session) Live() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.ring != nil && s.broker.now().Before(s.deadline)
+	return s.ring != nil && (s.deadline.IsZero() || s.broker.now().Before(s.deadline))
 }
 
 // ID is the record this session was given under.
@@ -76,7 +75,7 @@ func (s *Session) keys(item Item, kinds []Kind) (*cryptobox.Keyring, string, err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.ring == nil || !s.broker.now().Before(s.deadline) {
+	if s.ring == nil || !s.deadline.IsZero() && !s.broker.now().Before(s.deadline) {
 		return nil, "", ErrNeedKeys
 	}
 	return s.ring, identity, nil
@@ -110,12 +109,9 @@ func (s *Session) Close(ctx context.Context, outcome Outcome) {
 	if !open {
 		return
 	}
-	write, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
-	defer cancel()
-	err := s.broker.q.InsertSecretAccessOutcome(write, db.InsertSecretAccessOutcomeParams{AccessID: s.id, Outcome: string(outcome), ProviderRequestIds: []byte("[]")})
-	if err != nil {
+	if err := s.broker.outcome(ctx, s.id, outcome); err != nil {
 		// The sweep records it as abandoned instead.
-		s.broker.log.Error("secret access outcome not recorded", "access", s.id, "error", err)
+		s.broker.log.Error("secret access outcome not recorded", "access", s.id, "error", err.Error())
 		return
 	}
 	s.broker.log.Info("secret access closed", "access", s.id, "workspace", s.request.Workspace, "purpose", s.request.Purpose, "outcome", outcome)

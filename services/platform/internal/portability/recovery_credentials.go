@@ -30,6 +30,9 @@ func CheckRecoveryKeys(keys *secretbroker.Session, a Archive) error {
 			}
 			plain, err := keys.Open(item, cipher)
 			clear(plain)
+			if secretbroker.SessionFailure(err) {
+				return err
+			}
 			if err != nil {
 				return errors.New("a historical credential key is missing from the management recovery keyring")
 			}

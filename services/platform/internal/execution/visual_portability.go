@@ -29,13 +29,14 @@ func (s *Service) CloneVisual(ctx context.Context, p store.Principal, ws, pid, s
 	if in.CopySecrets {
 		purpose, action = secretbroker.Copy, "environment.clone_with_secrets"
 	}
-	keys, err := s.Store.Broker.Begin(ctx, secretbroker.Request{Workspace: ws, Purpose: purpose, Principal: p.Secrets(), Kinds: []secretbroker.Kind{secretbroker.SecretVersion}})
+	access := workspaceAccess{Write: true, Recent: in.CopySecrets}
+	keys, err := s.Store.BeginKeys(ctx, p, access.admission(), false, secretbroker.Request{Workspace: ws, Purpose: purpose, Kinds: []secretbroker.Kind{secretbroker.SecretVersion}})
 	if err != nil {
 		return out, err
 	}
 	used := false
 	defer func() { keys.Close(ctx, secretbroker.UsedIf(used)) }()
-	err = s.scope(ctx, p, ws, workspaceAccess{Write: true, Recent: in.CopySecrets}, action, source, func(tx pgx.Tx) error {
+	err = s.scope(ctx, p, ws, access, action, source, func(tx pgx.Tx) error {
 		v, err := loadVisualEnvironment(ctx, tx, ws, pid, source)
 		if err != nil {
 			return err

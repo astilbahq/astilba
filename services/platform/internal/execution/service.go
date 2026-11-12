@@ -102,6 +102,13 @@ type workspaceAccess struct {
 	Write, Owner, Recent, Credential, Recovery bool
 }
 
+// ownerSettings is the access an owner's change to the workspace's integrations needs.
+var ownerSettings = workspaceAccess{Write: true, Owner: true, Recent: true}
+
+func (a workspaceAccess) admission() store.WorkspaceAccess {
+	return store.WorkspaceAccess{Write: a.Write, Owner: a.Owner, Recent: a.Recent, Credential: a.Credential}
+}
+
 func (s *Service) scope(ctx context.Context, p store.Principal, ws uuid.UUID, access workspaceAccess, action string, id uuid.UUID, fn func(pgx.Tx) error) error {
 	fnScope := func(tx pgx.Tx, q *db.Queries, _ store.Workspace) error {
 		if err := fn(tx); err != nil {
@@ -112,7 +119,7 @@ func (s *Service) scope(ctx context.Context, p store.Principal, ws uuid.UUID, ac
 		}
 		return nil
 	}
-	admission := store.WorkspaceAccess{Write: access.Write, Owner: access.Owner, Recent: access.Recent, Credential: access.Credential}
+	admission := access.admission()
 	if access.Recovery {
 		return s.Store.InWorkspaceRecovery(ctx, p, ws, admission, fnScope)
 	}

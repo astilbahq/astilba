@@ -18,10 +18,11 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// sealing begins a session that stores the given new values for p, before the transaction
-// that writes them. done records whether they were stored.
+// sealing begins a session that stores the given new values for an owner's integration
+// settings, before the transaction that writes them and once p is admitted to it. done records
+// whether they were stored.
 func (s *Service) sealing(ctx context.Context, p store.Principal, ws uuid.UUID, items ...secretbroker.Item) (keys *secretbroker.Session, done func(stored bool), err error) {
-	keys, err = s.Store.Broker.Begin(ctx, secretbroker.Request{Workspace: ws, Purpose: secretbroker.Seal, Principal: p.Secrets(), Items: items})
+	keys, err = s.Store.BeginKeys(ctx, p, ownerSettings.admission(), false, secretbroker.Request{Workspace: ws, Purpose: secretbroker.Seal, Items: items})
 	if err != nil {
 		return nil, nil, err
 	}
@@ -174,7 +175,7 @@ func (s *Service) CreateRegistry(ctx context.Context, p store.Principal, ws uuid
 	}
 	sealed := false
 	defer func() { done(sealed) }()
-	err = s.scope(ctx, p, ws, workspaceAccess{Write: true, Owner: true, Recent: true}, "registry.create", r.ID, func(tx pgx.Tx) error {
+	err = s.scope(ctx, p, ws, ownerSettings, "registry.create", r.ID, func(tx pgx.Tx) error {
 		q := db.New(tx)
 		count, err := q.CountRegistries(ctx, ws)
 		if err != nil {
@@ -232,7 +233,7 @@ func (s *Service) CreateBuildSecret(ctx context.Context, p store.Principal, ws u
 	}
 	sealed := false
 	defer func() { done(sealed) }()
-	err = s.scope(ctx, p, ws, workspaceAccess{Write: true, Owner: true, Recent: true}, "build.secret.create", v.ID, func(tx pgx.Tx) error {
+	err = s.scope(ctx, p, ws, ownerSettings, "build.secret.create", v.ID, func(tx pgx.Tx) error {
 		q := db.New(tx)
 		count, err := q.CountBuildSecrets(ctx, ws)
 		if err != nil {

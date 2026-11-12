@@ -158,57 +158,9 @@ func (s *Store) inWorkspaceIsolation(ctx context.Context, p Principal, id uuid.U
 	}
 	q := db.New(tx)
 	err = func() error {
-		var w Workspace
-		var r db.WorkspaceRow
-		if isolation == pgx.RepeatableRead {
-			// Locking the membership detects revocation committed after this
-			// transaction took its snapshot while waiting for the workspace lock.
-			var snapshot db.WorkspaceForSnapshotRow
-			snapshot, err = q.WorkspaceForSnapshot(ctx, db.WorkspaceForSnapshotParams{ID: id, AccountID: p.Account.ID})
-			r = db.WorkspaceRow(snapshot)
-		} else {
-			r, err = q.Workspace(ctx, db.WorkspaceParams{ID: id, AccountID: p.Account.ID})
-		}
+		w, err := s.admission(ctx, tx, q, p, id, access, mode, isolation)
 		if err != nil {
 			return err
-		}
-		w = Workspace{r.ID, r.Name, r.Role, r.RequireMfa}
-		mfa := p.MFA
-		if p.Automation != nil {
-			if access.Owner || access.Recent || access.Credential {
-				return domain.Forbidden
-			}
-			var e error
-			mfa, e = s.automationAdmission(ctx, tx, p, id)
-			if e != nil {
-				return e
-			}
-		} else if access.Write || access.Lock {
-			if e := browserAdmission(ctx, tx, p, isolation); e != nil {
-				return e
-			}
-		}
-
-		if (access.Owner && w.Role != "owner") || (access.Write && !domain.CanWrite(w.Role)) {
-			return domain.Forbidden
-		}
-		if access.Write && (s.Hosted || w.RequireMFA) && !mfa {
-			return domain.MFARequired
-		}
-		if access.Write && s.Hosted {
-			if p.Account.EmailVerifiedAt == nil {
-				return EmailVerificationRequired
-			}
-			entitlement, e := Entitlement(ctx, tx, id)
-			if e != nil {
-				return e
-			}
-			if mode == "management" && !entitlement.Active(time.Now()) || mode == "recovery" && !entitlement.Recoverable(time.Now()) {
-				return SubscriptionRequired
-			}
-		}
-		if access.Recent && !p.Recent() || access.Credential && !p.CredentialRecent() {
-			return domain.RecentRequired
 		}
 		return fn(tx, q, w)
 	}()
@@ -216,6 +168,93 @@ func (s *Store) inWorkspaceIsolation(ctx context.Context, p Principal, id uuid.U
 		return Normalize(err)
 	}
 	return Normalize(tx.Commit(ctx))
+}
+
+// admission decides whether p may act on the workspace with access, in tx: every check a
+// workspace transaction makes before its work.
+func (s *Store) admission(ctx context.Context, tx pgx.Tx, q *db.Queries, p Principal, id uuid.UUID, access WorkspaceAccess, mode string, isolation pgx.TxIsoLevel) (Workspace, error) {
+	var err error
+	var w Workspace
+	var r db.WorkspaceRow
+	if isolation == pgx.RepeatableRead {
+		// Locking the membership detects revocation committed after this
+		// transaction took its snapshot while waiting for the workspace lock.
+		var snapshot db.WorkspaceForSnapshotRow
+		snapshot, err = q.WorkspaceForSnapshot(ctx, db.WorkspaceForSnapshotParams{ID: id, AccountID: p.Account.ID})
+		r = db.WorkspaceRow(snapshot)
+	} else {
+		r, err = q.Workspace(ctx, db.WorkspaceParams{ID: id, AccountID: p.Account.ID})
+	}
+	if err != nil {
+		return Workspace{}, err
+	}
+	w = Workspace{r.ID, r.Name, r.Role, r.RequireMfa}
+	mfa := p.MFA
+	if p.Automation != nil {
+		if access.Owner || access.Recent || access.Credential {
+			return Workspace{}, domain.Forbidden
+		}
+		var e error
+		mfa, e = s.automationAdmission(ctx, tx, p, id)
+		if e != nil {
+			return Workspace{}, e
+		}
+	} else if access.Write || access.Lock {
+		if e := browserAdmission(ctx, tx, p, isolation); e != nil {
+			return Workspace{}, e
+		}
+	}
+
+	if (access.Owner && w.Role != "owner") || (access.Write && !domain.CanWrite(w.Role)) {
+		return Workspace{}, domain.Forbidden
+	}
+	if access.Write && (s.Hosted || w.RequireMFA) && !mfa {
+		return Workspace{}, domain.MFARequired
+	}
+	if access.Write && s.Hosted {
+		if p.Account.EmailVerifiedAt == nil {
+			return Workspace{}, EmailVerificationRequired
+		}
+		entitlement, e := Entitlement(ctx, tx, id)
+		if e != nil {
+			return Workspace{}, e
+		}
+		if mode == "management" && !entitlement.Active(time.Now()) || mode == "recovery" && !entitlement.Recoverable(time.Now()) {
+			return Workspace{}, SubscriptionRequired
+		}
+	}
+	if access.Recent && !p.Recent() || access.Credential && !p.CredentialRecent() {
+		return Workspace{}, domain.RecentRequired
+	}
+	return w, nil
+}
+
+// Admit makes the same decision as a workspace transaction with access, without its lock, so
+// that work which must be decided before that transaction, such as asking the secret broker for
+// keys, is refused to anyone the transaction would refuse. The transaction decides again.
+func (s *Store) Admit(ctx context.Context, p Principal, id uuid.UUID, access WorkspaceAccess, recovery bool) error {
+	// Its row locks, if any, end with the rollback: it never commits.
+	tx, err := s.Pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	mode := "management"
+	if recovery {
+		mode = "recovery"
+	}
+	_, err = s.admission(ctx, tx, db.New(tx), p, id, access, mode, pgx.ReadCommitted)
+	return Normalize(err)
+}
+
+// BeginKeys asks the secret broker for keys for p's work in a workspace, once p is admitted
+// with the access that work's transaction will need.
+func (s *Store) BeginKeys(ctx context.Context, p Principal, access WorkspaceAccess, recovery bool, r secretbroker.Request) (*secretbroker.Session, error) {
+	if err := s.Admit(ctx, p, r.Workspace, access, recovery); err != nil {
+		return nil, err
+	}
+	r.Principal = p.Secrets()
+	return s.Broker.Begin(ctx, r)
 }
 
 // AdmitBrowserSession revalidates a session in a transaction holding the lock its request
@@ -299,6 +338,7 @@ func (s *Store) Bootstrap(ctx context.Context, email, name, passwordHash, worksp
 func SecretIdentity(workspace, id uuid.UUID) string {
 	return "secret:v1:" + workspace.String() + ":" + id.String()
 }
+
 // rewrapFailed names the row, because rotation stops until an operator deals with it and
 // the keyring's own error is deliberately the same for every cause.
 func rewrapFailed(table string, workspace, id uuid.UUID, err error) error {

@@ -5,6 +5,7 @@ package secretkeys
 
 import (
 	"go/ast"
+	"go/token"
 	"go/types"
 	"path"
 	"strconv"
@@ -36,8 +37,8 @@ var keyPackages = map[string]bool{
 	"internal/agent":                   true,
 }
 
-// pending are the files that still open values without the broker, as package/file. None may
-// be added; each goes when its path moves to the broker: Git access in multi-pass work, GitHub
+// pending are the files that still hold keys without the broker, as package/file. None may be
+// added; each goes when its path moves to the broker: Git access in multi-pass work, GitHub
 // grants, previews and recovery checkpoints with "need keys" passes, and the agent delivery
 // path with release records (PLAT-243, PLAT-196).
 var pending = map[string]bool{
@@ -50,6 +51,19 @@ var pending = map[string]bool{
 	"internal/execution/preview_environment.go":  true,
 	"internal/execution/recovery_checkpoints.go": true,
 }
+
+// legacyFile holds the transitional functions that open and seal integrations without the
+// broker. Only pending files and these callers, which move with them, may call them.
+const legacyFile = "internal/execution/legacy_keys.go"
+
+var legacyCallers = map[string]bool{
+	"internal/execution/backups.go":     true,
+	"internal/execution/git_answers.go": true,
+	"internal/execution/github_app.go":  true,
+}
+
+// harmless are the cryptobox names that hold no key.
+var harmless = map[string]bool{"ErrKey": true, "ErrTooLarge": true}
 
 // trimmed returns a package path from "internal/" or "cmd/" on.
 func trimmed(pkg string) string {
@@ -66,14 +80,17 @@ func run(pass *analysis.Pass) (any, error) {
 	if keyPackages[pkg] {
 		return nil, nil
 	}
+	report := func(pos token.Pos, what string) {
+		pass.Reportf(pos, "%s gives keys outside the secret broker; ask secretbroker for a session instead", what)
+	}
 	for _, file := range pass.Files {
-		name := path.Base(pass.Fset.Position(file.Pos()).Filename)
-		if pending[pkg+"/"+name] {
+		name := pkg + "/" + path.Base(pass.Fset.Position(file.Pos()).Filename)
+		if pending[name] {
 			continue
 		}
 		for _, spec := range file.Imports {
 			if value, _ := strconv.Unquote(spec.Path.Value); trimmed(value) == custodyPath {
-				pass.Reportf(spec.Pos(), "the custody package gives keys outside the secret broker; ask secretbroker for a session instead")
+				report(spec.Pos(), "the custody package")
 			}
 		}
 		ast.Inspect(file, func(n ast.Node) bool {
@@ -81,8 +98,14 @@ func run(pass *analysis.Pass) (any, error) {
 			if !ok {
 				return true
 			}
-			if why := holdsKeys(pass.TypesInfo.Uses[id]); why != "" {
-				pass.Reportf(id.Pos(), "%s gives keys outside the secret broker; ask secretbroker for a session instead", why)
+			object := pass.TypesInfo.Uses[id]
+			if why := holdsKeys(object); why != "" {
+				report(id.Pos(), why)
+			} else if keyring(pass.TypesInfo.TypeOf(id)) {
+				// A field or variable holding the keyring, such as a store's.
+				report(id.Pos(), id.Name+", a keyring,")
+			} else if fn, ok := object.(*types.Func); ok && !legacyCallers[name] && declaredIn(pass, fn) == legacyFile {
+				report(id.Pos(), fn.Name()+", which opens values without a record,")
 			}
 			return true
 		})
@@ -90,33 +113,38 @@ func run(pass *analysis.Pass) (any, error) {
 	return nil, nil
 }
 
-// holdsKeys names what an identifier refers to when it is a way to keys, or returns "".
-func holdsKeys(object types.Object) string {
-	if object == nil {
+// declaredIn is the package/file an object is declared in.
+func declaredIn(pass *analysis.Pass, object types.Object) string {
+	if object.Pkg() == nil {
 		return ""
 	}
-	if _, ok := object.(*types.PkgName); ok || object.Pkg() == nil {
+	return trimmed(object.Pkg().Path()) + "/" + path.Base(pass.Fset.Position(object.Pos()).Filename)
+}
+
+func keyring(t types.Type) bool {
+	if pointer, ok := t.(*types.Pointer); ok {
+		t = pointer.Elem()
+	}
+	named, ok := types.Unalias(t).(*types.Named)
+	return ok && named.Obj().Pkg() != nil && trimmed(named.Obj().Pkg().Path()) == cryptoboxPath && named.Obj().Name() == "Keyring"
+}
+
+// holdsKeys names what an identifier refers to when it is a way to keys, or returns "".
+func holdsKeys(object types.Object) string {
+	if object == nil || object.Pkg() == nil {
+		return ""
+	}
+	if _, ok := object.(*types.PkgName); ok {
 		return ""
 	}
 	switch trimmed(object.Pkg().Path()) {
 	case custodyPath:
 		return "custody." + object.Name()
 	case cryptoboxPath:
-	default:
-		return ""
-	}
-	if fn, ok := object.(*types.Func); ok {
-		if receiver := fn.Type().(*types.Signature).Recv(); receiver != nil {
-			return "Keyring." + fn.Name()
+		if harmless[object.Name()] {
+			return ""
 		}
-		switch fn.Name() {
-		case "New", "Load", "Parse":
-			return "cryptobox." + fn.Name()
-		}
-		return ""
-	}
-	if _, ok := object.(*types.TypeName); ok && object.Name() == "Keyring" {
-		return "cryptobox.Keyring"
+		return "cryptobox." + object.Name()
 	}
 	return ""
 }

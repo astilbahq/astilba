@@ -10,6 +10,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
 	"github.com/astilbahq/astilba/services/platform/internal/custody"
 	"github.com/astilbahq/astilba/services/platform/internal/secretbroker"
+	"github.com/google/uuid"
 )
 
 // Records is what a test broker recorded.
@@ -40,6 +41,9 @@ func (r *Records) SecretAccessMember(context.Context, db.SecretAccessMemberParam
 }
 func (r *Records) SecretAccessServer(context.Context, db.SecretAccessServerParams) (bool, error) {
 	return true, nil
+}
+func (r *Records) SecretAccessWorkspaceExists(context.Context, uuid.UUID) (bool, error) {
+	return false, nil
 }
 func (r *Records) InsertSecretAccess(_ context.Context, arg db.InsertSecretAccessParams) error {
 	r.mu.Lock()

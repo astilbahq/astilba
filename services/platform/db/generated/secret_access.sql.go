@@ -16,12 +16,15 @@ const abandonSecretAccess = `-- name: AbandonSecretAccess :execrows
 INSERT INTO secret_access_outcomes(access_id,outcome)
 SELECT a.id,'abandoned' FROM secret_access a
 WHERE a.at < now() - make_interval(secs => $1::double precision)
+    AND a.at > now() - interval '1 day'
     AND NOT EXISTS(SELECT 1 FROM secret_access_outcomes o WHERE o.access_id = a.id)
 ORDER BY a.at LIMIT 1000
 `
 
 // A session never outlives its cap, so a record older than that with no outcome is one whose
-// process stopped before closing it. Each run marks a bounded batch.
+// process stopped before closing it. Each run marks a bounded batch, and looks back only a day:
+// the sweep runs every minute, so anything older was either marked or missed while management
+// was down for a day, and scanning all history every minute would not finish.
 func (q *Queries) AbandonSecretAccess(ctx context.Context, olderThanSeconds float64) (int64, error) {
 	result, err := q.db.Exec(ctx, abandonSecretAccess, olderThanSeconds)
 	if err != nil {
@@ -118,6 +121,17 @@ type SecretAccessServerParams struct {
 
 func (q *Queries) SecretAccessServer(ctx context.Context, arg SecretAccessServerParams) (bool, error) {
 	row := q.db.QueryRow(ctx, secretAccessServer, arg.WorkspaceID, arg.ServerID)
+	var column_1 bool
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
+const secretAccessWorkspaceExists = `-- name: SecretAccessWorkspaceExists :one
+SELECT EXISTS(SELECT 1 FROM workspaces WHERE id = $1)::boolean
+`
+
+func (q *Queries) SecretAccessWorkspaceExists(ctx context.Context, id uuid.UUID) (bool, error) {
+	row := q.db.QueryRow(ctx, secretAccessWorkspaceExists, id)
 	var column_1 bool
 	err := row.Scan(&column_1)
 	return column_1, err

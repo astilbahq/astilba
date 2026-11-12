@@ -239,6 +239,9 @@ func loadExportCapsules(ctx context.Context, tx pgx.Tx, keys *secretbroker.Sessi
 // against its descriptor and frozen root, and stages it for the chain.
 func addRecoveryCheckpoint(ctx context.Context, tx pgx.Tx, keys *secretbroker.Session, ws uuid.UUID, out *recoverySource, bases *portability.RecoveryBases, d deployment.RecoveryDescriptor, raw, envelope []byte, primary uuid.UUID) error {
 	decoded, err := keys.Open(secretbroker.Checkpoint(d), envelope)
+	if secretbroker.SessionFailure(err) {
+		return err
+	}
 	if err != nil {
 		return errors.New("the original management recovery keyring is required")
 	}

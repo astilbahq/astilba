@@ -165,6 +165,11 @@ func extendRevokedChain(ctx context.Context, tx pgx.Tx, keys *secretbroker.Sessi
 			}
 			opened, err := keys.Open(secretbroker.Checkpoint(c.descriptor), c.envelope)
 			clear(opened)
+			// A capsule this keyring cannot open does not qualify; a session that ended is no
+			// verdict on the capsule, and must not shorten the chain.
+			if secretbroker.SessionFailure(err) {
+				return err
+			}
 			if err == nil {
 				next[c.descriptor.CheckpointID] = c
 			}

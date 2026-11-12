@@ -88,6 +88,9 @@ func transformCredential(keys *secretbroker.Session, table string, row Row, expo
 	} else {
 		value, e = keys.Seal(item, value)
 	}
+	if secretbroker.SessionFailure(e) {
+		return e
+	}
 	if e != nil {
 		return ErrArchive
 	}
@@ -114,7 +117,8 @@ func (s *Service) AdmitExport(ctx context.Context, p store.Principal, ws uuid.UU
 
 func (s *Service) Export(ctx context.Context, p store.Principal, ws uuid.UUID, passphrase string) (_ []byte, failure error) {
 	archive := Archive{Version: 6, Workspace: ws, CreatedAt: time.Now().UTC(), Tables: map[string][]Row{}}
-	keys, e := s.Store.Broker.Begin(ctx, secretbroker.Request{Workspace: ws, Purpose: secretbroker.Export, Principal: p.Secrets(), Kinds: secretbroker.CredentialKinds})
+	// The same access InWorkspaceSnapshot needs.
+	keys, e := s.Store.BeginKeys(ctx, p, store.WorkspaceAccess{Write: true, Owner: true, Credential: true}, true, secretbroker.Request{Workspace: ws, Purpose: secretbroker.Export, Kinds: secretbroker.CredentialKinds})
 	if e != nil {
 		return nil, e
 	}

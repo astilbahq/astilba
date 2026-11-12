@@ -18,7 +18,9 @@ type passKeys struct {
 	used    bool
 }
 
-func (s *Service) passKeys(r secretbroker.Request) *passKeys { return &passKeys{service: s, request: r} }
+func (s *Service) passKeys(r secretbroker.Request) *passKeys {
+	return &passKeys{service: s, request: r}
+}
 
 func (k *passKeys) get() (*secretbroker.Session, error) {
 	if k.err != nil {

@@ -31,8 +31,8 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/execution"
 	"github.com/astilbahq/astilba/services/platform/internal/httpapi"
 	"github.com/astilbahq/astilba/services/platform/internal/mailer"
-	"github.com/astilbahq/astilba/services/platform/internal/secretbroker"
 	"github.com/astilbahq/astilba/services/platform/internal/randtoken"
+	"github.com/astilbahq/astilba/services/platform/internal/secretbroker"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
@@ -193,16 +193,25 @@ func setup(t *testing.T) *fixture { return setupBootstrap(t, true) }
 func setupBootstrap(t *testing.T, bootstrap bool) *fixture {
 	return setupStore(t, bootstrap, false)
 }
+
 // testStore is a store whose broker holds keys, as the server's does.
 func testStore(t *testing.T, pool *pgxpool.Pool, keys *cryptobox.Keyring, hosted bool) *store.Store {
+	t.Helper()
+	st := store.New(pool, nil, hosted)
+	useKeys(t, st, keys)
+	return st
+}
+
+// useKeys gives a store a keyring, as configuring another keyring and restarting does: the
+// broker and the paths not yet moved to it both use the new one.
+func useKeys(t *testing.T, st *store.Store, keys *cryptobox.Keyring) {
 	t.Helper()
 	backend, e := custody.NewFile(keys)
 	if e != nil {
 		t.Fatal(e)
 	}
-	st := store.New(pool, secretbroker.New(db.New(pool), backend, nil), hosted)
+	st.Broker = secretbroker.New(db.New(st.Pool), backend, nil)
 	st.Keys = keys
-	return st
 }
 
 func setupStore(t *testing.T, bootstrap, hosted bool) *fixture {

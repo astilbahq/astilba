@@ -51,6 +51,9 @@ func (s *Service) recoverSavedCheckpoints(ctx context.Context, tx pgx.Tx, keys *
 				return errors.New("saved checkpoint suffix is incomplete or divergent")
 			}
 			decoded, err := keys.Open(secretbroker.Checkpoint(next), envelope)
+			if secretbroker.SessionFailure(err) {
+				return err
+			}
 			if err != nil {
 				return errors.New("saved checkpoint requires its original management keyring")
 			}

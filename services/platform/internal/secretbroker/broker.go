@@ -29,6 +29,13 @@ var (
 	ErrTooLarge = cryptobox.ErrTooLarge
 )
 
+// SessionFailure reports an error that came from the session itself, not from the value: the
+// session ended, or was never given the value. Callers pass it on rather than reporting a
+// missing key or a damaged value.
+func SessionFailure(err error) bool {
+	return errors.Is(err, ErrNeedKeys) || errors.Is(err, ErrNotAllowed)
+}
+
 // Request asks for keys for one piece of work.
 type Request struct {
 	// Workspace is uuid.Nil only for the installation's own values.
@@ -53,6 +60,7 @@ type Request struct {
 type Queries interface {
 	SecretAccessMember(ctx context.Context, arg db.SecretAccessMemberParams) (string, error)
 	SecretAccessServer(ctx context.Context, arg db.SecretAccessServerParams) (bool, error)
+	SecretAccessWorkspaceExists(ctx context.Context, id uuid.UUID) (bool, error)
 	InsertSecretAccess(ctx context.Context, arg db.InsertSecretAccessParams) error
 	InsertSecretAccessOutcome(ctx context.Context, arg db.InsertSecretAccessOutcomeParams) error
 	AbandonSecretAccess(ctx context.Context, olderThanSeconds float64) (int64, error)
@@ -82,12 +90,16 @@ func (b *Broker) Begin(ctx context.Context, r Request) (*Session, error) {
 	if err != nil {
 		return nil, err
 	}
-	key := string(r.Purpose) + ":" + r.Workspace.String()
-	if !b.budgets.take(key, workspaceRate, workspaceBurst) || r.Connection != nil && !b.budgets.take("webhook:"+r.Connection.String(), webhookRate, webhookBurst) {
+	if !b.budgets.take(budgetKey(r)) {
 		return nil, domain.RateLimited
 	}
 	id := uuid.New()
 	if err = b.record(ctx, id, r); err != nil {
+		return nil, err
+	}
+	if err = ctx.Err(); err != nil {
+		// The record is written, so it ends now rather than being swept as abandoned later.
+		b.outcome(ctx, id, Refused)
 		return nil, err
 	}
 	s := &Session{broker: b, id: id, request: r, rule: rule, deadline: b.now().Add(rule.limit), ring: b.backend.Keyring()}
@@ -104,7 +116,7 @@ func (b *Broker) admit(ctx context.Context, r Request) (rule, error) {
 	}
 	installation := r.Workspace == uuid.Nil
 	for _, item := range r.Items {
-		if item.installation() != installation || item.identity(r.Workspace) == "" || !rule.covers(item.Kind) {
+		if item.identity(r.Workspace) == "" || !rule.covers(item.Kind) {
 			return rule, domain.Forbidden
 		}
 		// A person opens only their own second factor.
@@ -117,8 +129,20 @@ func (b *Broker) admit(ctx context.Context, r Request) (rule, error) {
 			return rule, domain.Forbidden
 		}
 	}
-	if installation || r.NewWorkspace && r.Principal.Kind == AccountPrincipal && !rule.owner {
+	if installation {
 		return rule, nil
+	}
+	// A workspace the caller's transaction is about to create has no members yet, so it must
+	// not exist: otherwise anyone could put records in another tenant's history.
+	if r.NewWorkspace {
+		if r.Principal.Kind != AccountPrincipal || rule.owner {
+			return rule, domain.Forbidden
+		}
+		exists, err := b.q.SecretAccessWorkspaceExists(ctx, r.Workspace)
+		if err == nil && exists {
+			return rule, domain.Conflict
+		}
+		return rule, err
 	}
 	switch r.Principal.Kind {
 	case AccountPrincipal, AutomationPrincipal:
@@ -180,8 +204,8 @@ func (b *Broker) record(ctx context.Context, id uuid.UUID, r Request) error {
 		workspace = &r.Workspace
 	}
 	optional := func(s string) pgtype.Text { return pgtype.Text{String: s, Valid: s != ""} }
-	// A request cancelled now must not leave keys given out with no record, nor a record of
-	// keys never given out: the insert runs to its end either way, and Begin fails after it.
+	// A request cancelled now must not give out keys with no record: the insert runs to its end
+	// either way, and Begin refuses after it.
 	write, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 	defer cancel()
 	err = b.q.InsertSecretAccess(write, db.InsertSecretAccessParams{
@@ -191,10 +215,13 @@ func (b *Broker) record(ctx context.Context, id uuid.UUID, r Request) error {
 		Items: rawItems, ItemCount: int32(len(r.Items) + len(r.Kinds)), Generations: generations,
 		BackendID: b.backend.ID(), Reason: reason,
 	})
-	if err != nil {
-		return err
-	}
-	return ctx.Err()
+	return err
+}
+
+func (b *Broker) outcome(ctx context.Context, id uuid.UUID, outcome Outcome) error {
+	write, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
+	return b.q.InsertSecretAccessOutcome(write, db.InsertSecretAccessOutcomeParams{AccessID: id, Outcome: string(outcome), ProviderRequestIds: []byte("[]")})
 }
 
 // Sweep records as abandoned every access whose session must have ended without saying how.

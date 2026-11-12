@@ -15,8 +15,8 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/mailer"
 	"github.com/astilbahq/astilba/services/platform/internal/outbound"
-	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/astilbahq/astilba/services/platform/internal/secretbroker"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -81,10 +81,11 @@ func (s *Service) Settings(ctx context.Context, p store.Principal, ws uuid.UUID)
 func (s *Service) SaveSettings(ctx context.Context, p store.Principal, ws uuid.UUID, in api.SaveAlertSettings) (api.AlertSettings, error) {
 	out := api.AlertSettings{EmailEnabled: in.EmailEnabled, WebhookEnabled: in.WebhookEnabled}
 	hook := secretbroker.Item{Kind: secretbroker.AlertWebhook, ID: ws}
+	access := store.WorkspaceAccess{Write: true, Owner: true, Recent: true}
 	var keys *secretbroker.Session
 	if in.WebhookEnabled && in.WebhookUrl != nil {
 		var err error
-		if keys, err = s.Store.Broker.Begin(ctx, secretbroker.Request{Workspace: ws, Purpose: secretbroker.Seal, Principal: p.Secrets(), Items: []secretbroker.Item{hook}}); err != nil {
+		if keys, err = s.Store.BeginKeys(ctx, p, access, false, secretbroker.Request{Workspace: ws, Purpose: secretbroker.Seal, Items: []secretbroker.Item{hook}}); err != nil {
 			return out, err
 		}
 	}
@@ -94,7 +95,7 @@ func (s *Service) SaveSettings(ctx context.Context, p store.Principal, ws uuid.U
 			keys.Close(ctx, secretbroker.UsedIf(sealed))
 		}
 	}()
-	e := s.Store.InWorkspaceTx(ctx, p, ws, store.WorkspaceAccess{Write: true, Owner: true, Recent: true}, func(_ pgx.Tx, q *db.Queries, _ store.Workspace) error {
+	e := s.Store.InWorkspaceTx(ctx, p, ws, access, func(_ pgx.Tx, q *db.Queries, _ store.Workspace) error {
 		encrypted, err := q.AlertWebhookCipher(ctx, ws)
 		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return err

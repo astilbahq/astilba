@@ -52,7 +52,7 @@ func (s *Service) CreateBackupDestination(ctx context.Context, p store.Principal
 	}
 	sealed := false
 	defer func() { done(sealed) }()
-	err = s.scope(ctx, p, ws, workspaceAccess{Write: true, Owner: true, Recent: true}, "backup.destination.create", d.ID, func(tx pgx.Tx) error {
+	err = s.scope(ctx, p, ws, ownerSettings, "backup.destination.create", d.ID, func(tx pgx.Tx) error {
 		n, err := db.New(tx).CountBackupDestinations(ctx, ws)
 		if err != nil {
 			return err
@@ -100,7 +100,7 @@ func (s *Service) SaveBackupPolicy(ctx context.Context, p store.Principal, ws, p
 	}
 	sealed := false
 	defer func() { done(sealed) }()
-	err = s.scope(ctx, p, ws, workspaceAccess{Write: true, Owner: true, Recent: true}, "backup.policy.save", id, func(tx pgx.Tx) error {
+	err = s.scope(ctx, p, ws, ownerSettings, "backup.policy.save", id, func(tx pgx.Tx) error {
 		v, err := loadVisualEnvironment(ctx, tx, ws, pid, env)
 		if err != nil {
 			return err
