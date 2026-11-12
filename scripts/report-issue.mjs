@@ -124,14 +124,6 @@ export async function syncIssue(
   const known = (keys) => (problem) =>
     digests(problem).some((key) => keys.has(key));
   const complete = !unique.some(({ check }) => check);
-  // A run that could not check carries earlier keys it did not see, so they are not
-  // new when it sees them again.
-  const unseen = (earlier) =>
-    complete
-      ? new Set()
-      : new Set(
-          [...earlier.difference(current)].slice(0, maxKeys - current.size),
-        );
   const write = (seen, carried, text) =>
     clip(
       [
@@ -165,11 +157,27 @@ export async function syncIssue(
     ? await newest(request, repository, title, "closed")
     : undefined;
   const accepted = read(seenMarker, closed?.body);
+  // A run that could not check carries the earlier keys it did not see, so they are
+  // not new when it sees them again. Those a person accepted stay accepted; the rest
+  // are kept apart, so closing the issue does not accept what it did not list.
+  const carry = (earlier) => {
+    if (complete) return [current, new Set()];
+    const missed = earlier.difference(current);
+    const seen = new Set(
+      [...current, ...missed.intersection(accepted)].slice(0, maxKeys),
+    );
+    const unseen = [...missed.difference(accepted)];
+    return [seen, new Set(unseen.slice(0, maxKeys - seen.size))];
+  };
+  // A run's own keys never widen what a person accepted: an alias in a scan's report
+  // could otherwise make an advisory nobody saw accepted. So what stays accepted only
+  // narrows to what is still there.
+  const still = accepted.intersection(current);
   // An issue opened for a check that has since run again, or for a problem now gone,
   // goes back to what a person accepted, rather than staying open over it.
   if (open && complete && unique.every(known(accepted))) {
     await patch(open, {
-      body: write(current, new Set(), body),
+      body: write(still, new Set(), body),
       state: "closed",
       state_reason: "completed",
     });
@@ -187,17 +195,20 @@ export async function syncIssue(
         method: "POST",
         body: { body: clip(announce("New since the last report", fresh)) },
       });
-    await patch(open, { body: write(current, unseen(earlier), body) });
+    await patch(open, { body: write(...carry(earlier), body) });
     return fresh.length ? "commented" : "updated";
   }
   const fresh = unique.filter(
     (problem) => problem.check || !known(accepted)(problem),
   );
   if (!fresh.length) {
-    // What is accepted follows what is still there, under the ids it has today.
-    if (!current.isSubsetOf(accepted) || !accepted.isSubsetOf(current))
+    if (still.size < accepted.size || unseenMarker.test(closed?.body ?? ""))
       await patch(closed, {
-        body: closed.body.replace(seenMarker, line("keys", current)),
+        body: write(
+          still,
+          new Set(),
+          closed.body.replace(seenMarker, "").replace(unseenMarker, "").trim(),
+        ),
       });
     return unique.length ? "acknowledged" : "unchanged";
   }
@@ -206,7 +217,7 @@ export async function syncIssue(
     : body;
   await request(`/repos/${repository}/issues`, {
     method: "POST",
-    body: { title, body: write(current, unseen(accepted), text) },
+    body: { title, body: write(...carry(accepted), text) },
   });
   return "opened";
 }

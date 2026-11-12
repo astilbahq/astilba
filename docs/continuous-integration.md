@@ -380,9 +380,10 @@ The report does not apply the release-age gate, so a security release is heard o
 once; the bump itself follows the `upgrade-dependencies` skill and the gate. Pins never
 change by themselves. Registry requests, pulls and scans repeat like
 [host downloads](#host-downloads) until one has failed for that long; the rest of the
-run then tries each a few times. A registry request ends within a minute, no check
-starts after 90 minutes, and no step runs past that point, so whatever fails or hangs
-the report is written within the job's two hours. A registry manifest or blob whose bytes
+run then tries each a few times. A registry request ends within a minute, and no image
+check starts or runs past 90 minutes; the tool checks after them are bounded by their
+own retries. So the report is written within the job's two hours, unless OSV Scanner
+itself cannot be downloaded, which the issue reports as a run that did not finish. A registry manifest or blob whose bytes
 do not match its digest is reported as a check that failed.
 
 Much of what the report finds waits on upstream, so closing its issue accepts what it
@@ -392,7 +393,9 @@ accepted and then gone is new again if it returns. A check that could not run is
 accepted, so closing the issue while one cannot run opens a new issue on the next run;
 once nothing but accepted problems remain, that issue closes itself. An advisory keeps
 its place when another id joins it, such as a `GO-` id beside a `GHSA-` one, and a newer
-release stays accepted when its tag is pinned again at a rebuilt digest. Say why in a
+release stays accepted when its tag is pinned again at a rebuilt digest. What a person
+accepted only ever narrows, never widens through a report's own ids, so an advisory
+whose every accepted id leaves its group is announced once more. Say why in a
 comment before closing. Locally, the report needs Docker through `DOCKER_HOST`
 and the network: `GITHUB_TOKEN="$(gh auth token)" make report-pins`. It writes nothing
 to GitHub.

@@ -98,8 +98,9 @@ const patience = (attempt, elapsed) => {
   outlasted = wait === undefined;
   return wait;
 };
-// Checks start only until this point, and every step ends by it, so whatever hangs the
-// report is written within the job's two hours.
+// Image checks start only until this point and their steps end by it. The tool checks
+// after them are bounded by their download retries, so the report is written within
+// the job's two hours unless the scanner itself cannot be downloaded.
 let deadline = Infinity;
 const remaining = () => Math.max(deadline - Date.now(), 1);
 const runMinutes = 90;
@@ -304,7 +305,10 @@ async function scanImage(scanner, pin, { platform, digest }, directory) {
     return { platform, findings: imageFindings(JSON.parse(stdout)) };
   } finally {
     rmSync(archive, { force: true });
-    await runLogged("docker", ["image", "rm", "--force", ref]).catch(() => {});
+    // A fixed limit, as the run's own may already be spent.
+    await runLogged("docker", ["image", "rm", "--force", ref], {
+      timeoutMs: 60_000,
+    }).catch(() => {});
   }
 }
 

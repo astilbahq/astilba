@@ -410,15 +410,44 @@ test("closing during a check that could not run accepts only what the issue list
   assert.equal(await run(github, [problem("a")]), "opened");
 });
 
-test("an accepted problem known now by a new id stays accepted when the old id goes", async () => {
+test("a report's own ids never widen what a person accepted", async () => {
   const github = fakeGitHub();
   await run(github, [problem("K1")]);
   closeByHand(github);
+  // A new id joining an accepted advisory keeps it accepted…
   assert.equal(
     await run(github, [{ ...problem("K2"), aliases: ["K1"] }]),
     "acknowledged",
   );
-  assert.equal(await run(github, [problem("K2")]), "acknowledged");
+  // …but only under the id a person saw, so a report aliasing an unseen problem to an
+  // accepted one cannot get it accepted.
+  assert.equal(await run(github, [problem("K2")]), "opened");
+});
+
+test("closing an issue opened for a check that could not run keeps earlier acceptance", async () => {
+  const unchecked = { ...problem("unfinished"), check: true };
+  const github = fakeGitHub();
+  await run(github, [problem("a")]);
+  closeByHand(github);
+  assert.equal(await run(github, [unchecked]), "opened");
+  closeByHand(github);
+  assert.equal(await run(github, [problem("a")]), "acknowledged");
+});
+
+test("narrowing a closed issue's keys keeps its body within GitHub's limit", async () => {
+  const unchecked = { ...problem("unfinished"), check: true };
+  const github = fakeGitHub();
+  await run(github, [problem("a")]);
+  closeByHand(github);
+  assert.equal(await run(github, [problem("a"), problem("b")]), "opened");
+  assert.equal(await run(github, [unchecked]), "commented");
+  closeByHand(github);
+  const closed = github.issues.at(-1);
+  assert.match(closed.body, /report unseen keys/);
+  closed.body += "\n" + "x".repeat(70_000);
+  assert.equal(await run(github, [problem("a")]), "acknowledged");
+  assert.ok(closed.body.length <= 60_000);
+  assert.doesNotMatch(closed.body, /report unseen keys/);
 });
 
 test("past the key limit only aliases are dropped, never a problem's own key", async () => {
