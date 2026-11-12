@@ -86,11 +86,7 @@ func (e *Engine) executeRetirement(ctx context.Context, c api.ExecutionCommand, 
 	if err = e.checkpoint(c.Id, "retire-routes"); err != nil {
 		return err
 	}
-	withdrawn := p.Plan
-	withdrawn.Specification.Routes = nil
-	withdrawn.AcceptDrift = false
-	// Withdrawing never adopts ingress changed outside Astilba.
-	if err = e.publishReleaseRoutes(ctx, withdrawn); err != nil {
+	if err = e.publishReleaseRoutes(ctx, withdrawnRoutes(p.Plan)); err != nil {
 		return attention("This environment's routes could not be withdrawn, for example because ingress changed outside Astilba. Nothing else was removed.")
 	}
 	if e.cancelled(c.Id) {
@@ -196,6 +192,18 @@ func (j *Journal) retireUnit(c api.ExecutionCommand) error {
 		}
 		return tx.Bucket([]byte("releases")).Delete([]byte(c.ResourceId.String()))
 	})
+}
+
+// withdrawnRoutes is the plan without its routes, as retirement publishes it. Withdrawing never
+// adopts ingress changed outside Astilba, and never makes a host change: the plan's HostChanges
+// approved its deployment, not the host's current certificate email or managed egress, and adopting
+// either could recreate the proxy every other environment on the host is served through. Removing a
+// route set keeps the proxy's ports, so withdrawal needs no host change.
+func withdrawnRoutes(p deployment.Plan) deployment.Plan {
+	withdrawn := p
+	withdrawn.Specification.Routes = nil
+	withdrawn.AcceptDrift, withdrawn.HostChanges = false, false
+	return withdrawn
 }
 
 func retirement(c api.ExecutionCommand) bool {
