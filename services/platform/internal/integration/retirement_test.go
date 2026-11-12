@@ -274,3 +274,42 @@ func TestRetirementWithoutHostAndPreconditions(t *testing.T) {
 		t.Fatal("an unconfirmed removal cleared the applied revision")
 	}
 }
+
+// Retiring a preview template turns its policy off and cleans up its live previews through their own
+// cleanup, with the retiring owner's authority, without waiting for them: a template never deploys.
+func TestRetirePreviewTemplateCleansUpItsPreviews(t *testing.T) {
+	h := newHungPreview(t)
+	ctx := t.Context()
+	var policy api.PreviewPolicy
+	h.b.call("PUT", h.path+"/preview-policy", map[string]any{"enabled": true, "generation": 0, "configuration": h.policy}, 200, &policy)
+	preview := readyPreview(t, h)
+
+	var retired api.Environment
+	h.b.call("POST", h.path+"/retire", api.EnvironmentLifecycleRequest{ConfirmName: "PR template"}, 201, &retired)
+	if retired.State != api.EnvironmentStateRetired || retired.RetiredBy == nil || retired.RetirementOperationId != nil {
+		t.Fatalf("retired template: %+v", retired)
+	}
+	var enabled bool
+	var actor *uuid.UUID
+	if err := h.f.st.Pool.QueryRow(ctx, "SELECT p.enabled,r.cleanup_actor FROM preview_policies p JOIN preview_requests r ON r.policy_id=p.id WHERE p.workspace_id=$1 AND r.id=$2", h.ws, preview.Id).Scan(&enabled, &actor); err != nil {
+		t.Fatal(err)
+	}
+	if enabled || actor == nil || *actor != *retired.RetiredBy {
+		t.Fatalf("policy enabled %v, cleanup requested by %v rather than %v", enabled, actor, *retired.RetiredBy)
+	}
+
+	waitPreviewAt(t, h, h.path, "deleting")
+	cleanup := nextPreviewCommand(t, h)
+	var payload deployment.Payload
+	if err := json.Unmarshal(*cleanup.Visual, &payload); err != nil || payload.Action != "preview-cleanup" || cleanup.EnvironmentId != *preview.EnvironmentId {
+		t.Fatalf("expected the preview's own cleanup, got %s for %s", payload.Action, cleanup.EnvironmentId)
+	}
+	agentRequest(t, h.f.server.Client(), h.f.server.URL, "/agent/v1/report", h.token, api.AgentReport{Id: cleanup.Id, Generation: cleanup.Generation, PlanHash: cleanup.PlanHash, Sequence: 2, State: "succeeded", Steps: []api.ExecutionStep{}}, 204, nil)
+	waitPreviewAt(t, h, h.path, "deleted")
+	// The template's previews stay readable, and a new provider event starts nothing for it.
+	h.pullRequestHook(t)
+	waitPreviewChecks(t, h)
+	if after := previewAt(t, h, h.path); after.State != "deleted" {
+		t.Fatal("a retired template's preview came back", after.State, after.Note)
+	}
+}
