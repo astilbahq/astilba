@@ -115,7 +115,7 @@ func (s *Service) AdmitExport(ctx context.Context, p store.Principal, ws uuid.UU
 }
 
 func (s *Service) Export(ctx context.Context, p store.Principal, ws uuid.UUID, passphrase string) ([]byte, error) {
-	archive := Archive{Version: 6, Workspace: ws, CreatedAt: time.Now().UTC(), Tables: map[string][]Row{}}
+	archive := Archive{Version: archiveVersion, Workspace: ws, CreatedAt: time.Now().UTC(), Tables: map[string][]Row{}}
 	e := s.Store.InWorkspaceSnapshot(ctx, p, ws, func(tx pgx.Tx, q *db.Queries, w store.Workspace) error {
 		reserved, err := q.WorkspaceHasReservations(ctx, ws)
 		if err != nil {

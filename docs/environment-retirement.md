@@ -54,6 +54,10 @@ The next deployment goes to the same server and reuses the kept volumes. If anot
 
 ## Exports and recovery
 
-Workspace exports do not yet record an environment's retirement, so an imported retired environment returns as active, without its credentials. A management database restored from before a retirement also brings the environment back as active, although its server no longer runs it. Review its next deployment plan before applying it.
+Workspace exports (archive version 7) carry each environment's retirement and the operation that removed it from its server. An imported environment keeps its state: a retired one stays retired and read-only, the importing owner is recorded as having retired it, and it holds none of the hostnames or ports its retirement released, so nothing claims them until a restored environment's reviewed deployment does. An archive in which such an environment still claims one is refused. One imported while retiring stays retiring; its operation is cancelled as all imported work is, so retire it again once its server's agent has been transferred. Environments in an archive from version 6 or earlier are imported as active.
+
+Each kept data volume also records the PostgreSQL major version that initialised it, and a deployment that would start another major on it is refused, as `applications.postgres.upgrade`, even after a restore. Use a supported upgrade instead.
+
+Controller recovery takes a checkpoint's retirement when the restored management database has never seen its operation, as when the database is from before the retirement, and then completes it if the server confirmed the removal. A database that has seen it keeps its own state, such as a restore made after the checkpoint. A retirement that needed no operation, because nothing was deployed or its server was revoked, carries no such order, and the restored database's state stands.
 
 Copies of secret values outside the database, such as older management backups, keep them until they expire.

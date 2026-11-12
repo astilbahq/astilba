@@ -15,7 +15,7 @@ import (
 // sealed with the management keyring before leaving the management process.
 // This is an internal offline-recovery source, never a browser archive response.
 func CaptureRecovery(ctx context.Context, tx pgx.Tx, ws uuid.UUID) ([]byte, error) {
-	archive := Archive{Version: 6, Workspace: ws}
+	archive := Archive{Version: archiveVersion, Workspace: ws}
 	header, err := db.New(tx).WorkspaceRecoveryHeader(ctx, ws)
 	if err != nil {
 		return nil, err
@@ -35,7 +35,7 @@ func CaptureRecovery(ctx context.Context, tx pgx.Tx, ws uuid.UUID) ([]byte, erro
 // InspectRecovery reads trusted database state, including a union of individually
 // bounded recovery bases. External decoding and new-base admission stay bounded.
 func InspectRecovery(ctx context.Context, tx pgx.Tx, ws uuid.UUID) (Archive, string, error) {
-	archive := Archive{Version: 6, Workspace: ws}
+	archive := Archive{Version: archiveVersion, Workspace: ws}
 	header, err := db.New(tx).WorkspaceRecoveryHeader(ctx, ws)
 	if err != nil {
 		return archive, "", err
@@ -71,6 +71,7 @@ const retainedOperations = ` AND id IN (WITH RECURSIVE kept(id) AS (
 	UNION SELECT o.id FROM execution_operations o WHERE o.workspace_id=$1 AND o.created_at>=COALESCE((SELECT n.created_at FROM execution_operations n WHERE n.workspace_id=$1 ORDER BY n.created_at DESC OFFSET 99 LIMIT 1),'-infinity')
 	UNION SELECT c.id FROM execution_operations c JOIN execution_operations p ON p.id=c.parent_id WHERE c.workspace_id=$1 AND p.state NOT IN ('succeeded','failed','cancelled')
 	UNION SELECT runtime_operation_id FROM environments WHERE workspace_id=$1
+	UNION SELECT retirement_operation_id FROM environments WHERE workspace_id=$1
 	UNION SELECT id FROM cross_host_operations WHERE workspace_id=$1
 	UNION SELECT parent_id FROM cross_host_approvals WHERE workspace_id=$1
 	UNION SELECT parent_id FROM cross_host_reservations WHERE workspace_id=$1

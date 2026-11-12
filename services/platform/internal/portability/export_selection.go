@@ -12,8 +12,8 @@ import (
 // grow with the workspace's age. That is:
 //   - every environment except a retired preview, one no open preview request names, and each
 //     carried environment's state rows;
-//   - unfinished work and its children, each environment's runtime head and the newest 100
-//     operations;
+//   - unfinished work and its children, each environment's runtime head and retirement, and the
+//     newest 100 operations;
 //   - per environment, the 20 releases, 50 revisions and 100 pipeline runs the app lists;
 //   - per preview template, the 100 preview requests the app lists;
 //   - the newest 100 audit events and build artifacts;
@@ -96,6 +96,7 @@ ON CONFLICT DO NOTHING`
 const exportClosure = `INSERT INTO export_keep(kind,id) SELECT DISTINCT kind,id FROM (
 	SELECT 'op' AS kind,o.parent_id AS id FROM execution_operations o JOIN export_keep k ON k.kind='op' AND k.id=o.id WHERE o.workspace_id=$1
 	UNION ALL SELECT 'op',e.runtime_operation_id FROM environments e JOIN export_keep k ON k.kind='env' AND k.id=e.id WHERE e.workspace_id=$1
+	UNION ALL SELECT 'op',e.retirement_operation_id FROM environments e JOIN export_keep k ON k.kind='env' AND k.id=e.id WHERE e.workspace_id=$1
 	UNION ALL SELECT 'op',r.id FROM pipeline_runs r JOIN export_keep k ON k.kind='run' AND k.id=r.id WHERE r.workspace_id=$1
 	UNION ALL SELECT 'op',v.operation_id FROM visual_requests v JOIN export_keep k ON k.kind='request' AND k.id=v.id WHERE v.workspace_id=$1
 	UNION ALL SELECT 'op',r.build_id FROM preview_requests r JOIN export_keep k ON k.kind='preview' AND k.id=r.id WHERE r.workspace_id=$1

@@ -57,3 +57,15 @@ WHERE workspace_id = @workspace_id AND environment_id = @environment_id AND plan
 -- name: AdvanceEnvironmentExecutionGeneration :one
 UPDATE environments SET execution_generation=execution_generation+1
 WHERE workspace_id = @workspace_id AND id = @id RETURNING execution_generation;
+
+-- name: BackfillPostgresMajors :exec
+-- Records, for each in-use volume with none, the PostgreSQL major its environment's applied revision
+-- runs on it, as migration 00039 did for volumes that existed then. An archive from before version 7
+-- records none.
+UPDATE managed_volumes v SET postgres_major = substring(a->'source'->>'image' FROM '^postgres:([0-9]{1,3})[.@-]')
+FROM environments e
+JOIN specification_revisions r ON r.workspace_id = e.workspace_id AND r.environment_id = e.id AND r.id = e.applied_revision_id
+CROSS JOIN LATERAL jsonb_array_elements(r.specification->'applications') a
+WHERE v.workspace_id = @workspace_id AND e.workspace_id = @workspace_id AND v.environment_id = e.id
+ AND v.postgres_major IS NULL AND v.postgres_init_hash IS NOT NULL AND NOT v.deleted
+ AND jsonb_typeof(a->'postgres') = 'object' AND a->'mounts'->0->>'volumeId' = v.id::text;

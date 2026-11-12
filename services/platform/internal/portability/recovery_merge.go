@@ -22,7 +22,7 @@ func DecodeRecovery(raw []byte) (Archive, error) {
 		return Archive{}, ErrArchive
 	}
 	a, err := decodeArchiveMode(raw, true)
-	if err == nil && a.Version != 5 && a.Version != 6 {
+	if err == nil && a.Version < 5 {
 		return a, ErrArchive
 	}
 	return a, err
@@ -173,6 +173,18 @@ func MergeRecovery(ctx context.Context, tx pgx.Tx, a Archive, owner uuid.UUID) e
 					} else {
 						setValue(row, actor, owner)
 					}
+				}
+			}
+			// A recovered retirement may name an account this database never had.
+			if t.Name == "environments" && string(row["retired_by"]) != "null" {
+				var account uuid.UUID
+				if json.Unmarshal(row["retired_by"], &account) != nil {
+					return ErrArchive
+				}
+				if _, err := db.New(tx).AccountByID(ctx, account); errors.Is(err, pgx.ErrNoRows) {
+					setValue(row, "retired_by", owner)
+				} else if err != nil {
+					return err
 				}
 			}
 			link := ""

@@ -12,6 +12,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
+	"github.com/astilbahq/astilba/services/platform/internal/portability"
 	"github.com/google/uuid"
 )
 
@@ -439,5 +440,68 @@ func TestRetiredPostgresVolumeKeepsItsMajor(t *testing.T) {
 	}
 	if refused.Fields == nil || !slices.Contains(*refused.Fields, "applications.postgres.upgrade") {
 		t.Fatalf("switching the kept volume's PostgreSQL major was not refused as an upgrade: %+v", refused)
+	}
+}
+
+// A workspace export carries each environment's retirement, so an imported retired environment
+// stays retired and read-only: one its server confirmed, keeping its retirement operation, one
+// retired at once, and one whose revoked server was never contacted.
+func TestRetiredEnvironmentsSurviveExportAndImport(t *testing.T) {
+	x := newRetirementFixture(t)
+	ctx := t.Context()
+	confirmed, confirmedPath, confirmedDraft := x.environment("Staging", "confirmed.example.test")
+	x.deploy(confirmedPath, confirmedDraft)
+	retiring := x.lifecycle(x.owner, confirmedPath, "retire", "Staging", 201)
+	x.report(x.agent.next(), "succeeded", "Removed.")
+	var empty api.Environment
+	x.owner.call("POST", x.prefix, map[string]string{"name": "Draft only"}, 201, &empty)
+	x.lifecycle(x.owner, x.prefix+"/"+empty.Id.String(), "retire", "Draft only", 201)
+	unreached, unreachedPath, unreachedDraft := x.environment("Legacy", "unreached.example.test")
+	x.deploy(unreachedPath, unreachedDraft)
+	x.owner.call("POST", "/api/v1/workspaces/"+x.ws.String()+"/servers/"+x.server.String()+"/revoke", nil, 204, nil)
+	x.lifecycle(x.owner, unreachedPath, "retire", "Legacy", 201)
+
+	account, err := x.f.st.Queries.AccountByID(ctx, x.f.owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const passphrase = "retired environment transfer passphrase"
+	archive, err := (&portability.Service{Store: x.f.st}).Export(ctx, browserPrincipal(t, x.f.st, account, true), x.ws, passphrase)
+	if err != nil {
+		t.Fatal(err)
+	}
+	destination := setup(t)
+	importer, err := destination.st.Queries.AccountByID(ctx, destination.owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = (&portability.Service{Store: destination.st}).Import(ctx, browserPrincipal(t, destination.st, importer, true), passphrase, archive, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, want := range []struct {
+		id          uuid.UUID
+		withoutHost bool
+		operation   *uuid.UUID
+	}{{confirmed.Id, false, retiring.RetirementOperationId}, {empty.Id, false, nil}, {unreached.Id, true, nil}} {
+		var state string
+		var withoutHost bool
+		var operation, by *uuid.UUID
+		if err = destination.st.Pool.QueryRow(ctx, "SELECT state,retired_without_host,retirement_operation_id,retired_by FROM environments WHERE workspace_id=$1 AND id=$2", x.ws, want.id).Scan(&state, &withoutHost, &operation, &by); err != nil {
+			t.Fatal(err)
+		}
+		if state != "retired" || withoutHost != want.withoutHost || (operation == nil) != (want.operation == nil) || operation != nil && *operation != *want.operation || by == nil || *by != importer.ID {
+			t.Fatalf("imported %s: %s, without host %v, operation %v, by %v", want.id, state, withoutHost, operation, by)
+		}
+	}
+	// Nothing re-claims the hostname the confirmed retirement released.
+	if n := 0; destination.st.Pool.QueryRow(ctx, "SELECT count(*) FROM route_claims WHERE workspace_id=$1 AND environment_id=$2", x.ws, confirmed.Id).Scan(&n) != nil || n != 0 {
+		t.Fatal("the import re-claimed a released hostname")
+	}
+	owner := destination.browser(t)
+	owner.login("owner@example.test", destination.password)
+	var failure api.Error
+	if err = json.Unmarshal(owner.call("PUT", confirmedPath+"/draft", map[string]any{"baseRevisionId": confirmedDraft.Id, "specification": confirmedDraft.Specification}, 409, nil), &failure); err != nil || failure.Fields == nil || !slices.Contains(*failure.Fields, "environment.state") {
+		t.Fatalf("an imported retired environment accepted a change: %+v", failure)
 	}
 }
