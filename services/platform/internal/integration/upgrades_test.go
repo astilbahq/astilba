@@ -201,14 +201,7 @@ func TestUpgradeApprovalRecoveryAndTenantBoundary(t *testing.T) {
 	rawStatus, _ := stablejson.Marshal(status)
 	emptyObservation, _ := stablejson.Marshal(deployment.Observation{ObservedAt: time.Now(), Resources: []deployment.Resource{}, StateHash: strings.Repeat("d", 64)})
 	agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/report", token, api.AgentReport{Id: completed.Id, Generation: completed.Generation, PlanHash: completed.PlanHash, Sequence: 1, State: "succeeded", Steps: []api.ExecutionStep{}, Upgrade: (*jsontext.Value)(&rawStatus), Observation: (*jsontext.Value)(&emptyObservation)}, 400, nil)
-	// As for an upgrade planned before volumes recorded their PostgreSQL major.
-	if _, err := f.st.Pool.Exec(context.Background(), "UPDATE managed_volumes SET postgres_major=NULL WHERE id=$1", view.Plan.TargetVolumeID); err != nil {
-		t.Fatal(err)
-	}
 	report(completed, "succeeded", &deployment.Observation{ObservedAt: time.Now(), Applied: true, Resources: []deployment.Resource{{ID: pg, Kind: "service", State: "healthy", Image: domain.PostgresImage}}, StateHash: strings.Repeat("d", 64)}, &status)
-	if major := volumeMajor(t, f, view.Plan.TargetVolumeID); major == nil || *major != domain.PostgresMajor(domain.PostgresImage) {
-		t.Fatal("the completed upgrade did not record its target's PostgreSQL major", major)
-	}
 	b.call("GET", path+"/draft", nil, 200, &draft)
 	var final domain.Specification
 	if json.Unmarshal(draft.Specification, &final) != nil || draft.Id != view.Plan.TargetRevisionID || final.Applications[0].Mounts[0].VolumeID != view.Plan.TargetVolumeID {
@@ -502,7 +495,7 @@ func TestUpgradeEndedWithoutStatusSettlesPlan(t *testing.T) {
 	h.poll(t, h.action(t, actions, "reconcile", "attention"))
 }
 
-// Plans stranded before these were settled stop blocking their servers on upgrade.
+// volumeMajor reads the PostgreSQL major management recorded for a volume.
 func volumeMajor(t *testing.T, f *fixture, volume uuid.UUID) *string {
 	t.Helper()
 	var major *string
@@ -559,6 +552,7 @@ func TestUpgradeTargetMajorBackfill(t *testing.T) {
 	}
 }
 
+// Plans stranded before these were settled stop blocking their servers on upgrade.
 func TestStrandedUpgradeMigration(t *testing.T) {
 	f := setup(t)
 	h := newUpgradeHost(t, f)

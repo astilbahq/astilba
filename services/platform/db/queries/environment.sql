@@ -79,8 +79,3 @@ UPDATE managed_volumes v SET postgres_major = '18'
 FROM supported_upgrades u
 WHERE v.workspace_id = @workspace_id AND u.workspace_id = @workspace_id AND v.environment_id = u.environment_id
  AND v.id::text = u.plan->>'targetVolumeId' AND v.postgres_major IS NULL AND NOT v.deleted;
-
--- name: RecordUpgradeTargetMajor :exec
--- Records the major a completed upgrade's target runs on its volume, where planning it recorded none.
-UPDATE managed_volumes SET postgres_major = @postgres_major
-WHERE workspace_id = @workspace_id AND environment_id = @environment_id AND id = @id AND postgres_major IS NULL AND NOT deleted;

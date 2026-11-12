@@ -18,12 +18,15 @@ export function Previews({
   dirty,
   owner,
   cleanup,
+  retired,
 }: {
   path: EnvironmentPath;
   revision: Schema["Revision"];
   dirty: boolean;
   owner: boolean;
   cleanup: boolean;
+  /** The template is retiring or retired: its policy is off and it creates no new previews. */
+  retired: boolean;
 }) {
   const query = useQueryClient();
   const action = useAction();
@@ -79,8 +82,10 @@ export function Previews({
       <p>
         Previews use this template’s saved configuration and preview-only
         secrets. Every preview gets separate services, storage and a new
-        database password. Template edits take effect only after an owner saves
-        a new policy.
+        database password.{" "}
+        {retired
+          ? "This template is retired, so it creates no new previews; remove the ones that remain."
+          : "Template edits take effect only after an owner saves a new policy."}
       </p>
       <ErrorNotice error={policy.error || previews.error || action.error} />
       {action.isPending && <p role="status">Updating preview…</p>}
@@ -268,8 +273,9 @@ export function Previews({
         </ul>
       ) : (
         <p>
-          No previews yet. Astilba discovers open requests and listens for
-          signed provider events. Fork commits wait for owner approval.
+          {retired
+            ? "No previews remain."
+            : "No previews yet. Astilba discovers open requests and listens for signed provider events. Fork commits wait for owner approval."}
         </p>
       )}
     </section>

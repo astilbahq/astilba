@@ -406,15 +406,24 @@ export const RestoreAnnounced: Story = {
 };
 // A server's confirmation finishes the retirement, which only the page announces.
 let confirmed = false;
+// The refresh after the operation succeeds is held until the play function has checked the page
+// in between, so the success line can be seen outside the live region before the page announces.
+let releaseRefresh = () => {};
+let refreshHeld = Promise.resolve();
 export const RetirementCompletesOnce: Story = {
   beforeEach: () => {
     confirmed = false;
+    refreshHeld = new Promise((resolve) => {
+      releaseRefresh = resolve;
+    });
   },
   parameters: scenario(
     session,
-    http.get(environmentsPath, () =>
-      HttpResponse.json(listed(confirmed ? retired : retiring)),
-    ),
+    http.get(environmentsPath, async () => {
+      if (!confirmed) return HttpResponse.json(listed(retiring));
+      await refreshHeld;
+      return HttpResponse.json(listed(retired));
+    }),
     http.get(`${environmentRoot}/operations/:operationId`, () => {
       confirmed = true;
       return HttpResponse.json({
@@ -436,12 +445,17 @@ export const RetirementCompletesOnce: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    // The operation's success refreshes the environment without waiting for its poll.
-    await canvas.findByText("Environment retired.");
+    // While the environment is still retiring, its operation's success is shown but not announced.
+    await canvas.findByText("Removal from the server: finished");
     for (const region of canvas.getAllByRole("status"))
       await expect(region).not.toHaveTextContent(
         "Removal from the server: finished",
       );
+    // The success refreshes the environment well before its 5 second poll would.
+    releaseRefresh();
+    await canvas.findByText("Environment retired.", undefined, {
+      timeout: 2000,
+    });
   },
 };
 // A retired template's owners can still remove its previews, which its retirement asked to clean
@@ -481,6 +495,34 @@ export const RetiredTemplatePreviews: Story = {
         },
       ] satisfies Schema["PullRequestPreview"][]),
     ),
+    // Retirement paused the template's policy, which an owner of an active template could resume.
+    http.get(`${environmentRoot}/preview-policy`, () =>
+      HttpResponse.json({
+        id: "00000000-0000-4000-8000-000000000092",
+        enabled: false,
+        generation: 2,
+        configuration: {
+          baseRevisionId: "00000000-0000-4000-8000-000000000093",
+          applicationId: "00000000-0000-4000-8000-000000000094",
+          build: {
+            connectionId: "00000000-0000-4000-8000-000000000095",
+            branch: "main",
+            runnerId: "00000000-0000-4000-8000-000000000096",
+            context: ".",
+            architecture: "amd64",
+            arguments: {},
+            secrets: {},
+            autoBuild: true,
+            autoDeploy: true,
+          },
+          maxActive: 3,
+          maxConcurrentBuilds: 1,
+          limits: { cpus: 1, memoryMiB: 512, pids: 256 },
+          closeGraceHours: null,
+          generatedDomains: false,
+        },
+      } satisfies Schema["PreviewPolicy"]),
+    ),
     members,
     volumes,
     ...projectHandlers(),
@@ -494,13 +536,14 @@ export const RetiredTemplatePreviews: Story = {
     await expect(
       await previews.findByRole("button", { name: "Remove preview and data" }),
     ).toBeEnabled();
-    for (const name of [
-      "Refresh preview",
-      "Approve this fork commit",
-      "Pause automatic previews",
-    ])
+    await expect(
+      previews.getByText(
+        /This template is retired, so it creates no new previews/,
+      ),
+    ).toBeVisible();
+    for (const name of ["Refresh preview", "Resume saved preview policy"])
       await expect(previews.queryByRole("button", { name })).toBeNull();
-    await expect(previews.queryByText("Set up automatic previews")).toBeNull();
+    await expect(previews.queryByText("Preview policy settings")).toBeNull();
   },
 };
 export const RetiredViewer: Story = {

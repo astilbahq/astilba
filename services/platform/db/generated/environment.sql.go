@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const advanceDraft = `-- name: AdvanceDraft :one
@@ -719,29 +718,6 @@ func (q *Queries) PutLayout(ctx context.Context, arg PutLayoutParams) (Environme
 		&i.UpdatedAt,
 	)
 	return i, err
-}
-
-const recordUpgradeTargetMajor = `-- name: RecordUpgradeTargetMajor :exec
-UPDATE managed_volumes SET postgres_major = $1
-WHERE workspace_id = $2 AND environment_id = $3 AND id = $4 AND postgres_major IS NULL AND NOT deleted
-`
-
-type RecordUpgradeTargetMajorParams struct {
-	PostgresMajor pgtype.Text `json:"postgres_major"`
-	WorkspaceID   uuid.UUID   `json:"workspace_id"`
-	EnvironmentID uuid.UUID   `json:"environment_id"`
-	ID            uuid.UUID   `json:"id"`
-}
-
-// Records the major a completed upgrade's target runs on its volume, where planning it recorded none.
-func (q *Queries) RecordUpgradeTargetMajor(ctx context.Context, arg RecordUpgradeTargetMajorParams) error {
-	_, err := q.db.Exec(ctx, recordUpgradeTargetMajor,
-		arg.PostgresMajor,
-		arg.WorkspaceID,
-		arg.EnvironmentID,
-		arg.ID,
-	)
-	return err
 }
 
 const rewrapSecretVersion = `-- name: RewrapSecretVersion :exec

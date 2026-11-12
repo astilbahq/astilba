@@ -446,6 +446,7 @@ export function EnvironmentWorkspace({
                 dirty={dirty}
                 owner={owner}
                 cleanup={previewCleanup}
+                retired={environment.state !== "active"}
               />
             </>
           )}
