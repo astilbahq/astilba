@@ -108,9 +108,12 @@ type Position struct {
 
 var variableName = regexp.MustCompile(`^[A-Z_][A-Z0-9_]{0,79}$`)
 
+// SpecificationLimit is the most bytes a specification may take, as sent and as stored.
+const SpecificationLimit = 131072
+
 func ParseSpec(raw []byte) (Specification, []byte, error) {
 	var spec Specification
-	if len(raw) > 131072 {
+	if len(raw) > SpecificationLimit {
 		return spec, nil, Invalid("specification")
 	}
 	if json.Unmarshal(raw, &spec, json.RejectUnknownMembers(true)) != nil || spec.Version != 1 || spec.Applications == nil || spec.Variables == nil || len(spec.Applications) > 50 || len(spec.Variables) > 100 {
@@ -170,7 +173,7 @@ func ParseSpec(raw []byte) (Specification, []byte, error) {
 	}
 	// Stored revisions and their content hashes keep this encoding.
 	canonical, err := stablejson.Marshal(spec)
-	if len(canonical) > 131072 {
+	if len(canonical) > SpecificationLimit {
 		return spec, nil, Invalid("specification")
 	}
 	return spec, canonical, err

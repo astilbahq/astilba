@@ -318,7 +318,7 @@ func (s *Service) VisualPlan(ctx context.Context, p store.Principal, ws, pid, en
 		out.Review, out.State = &review, "ready"
 		// The plan carries the draft it deploys, plaintext variables and Compose files included, so only
 		// a principal that may read the environment gets it. Planning and applying need only the review.
-		if g := p.Automation; g == nil || g.Allows(domain.EnvironmentRead) {
+		if p.MayReadEnvironment() {
 			out.Plan = &plan
 		}
 		return nil

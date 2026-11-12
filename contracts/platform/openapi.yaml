@@ -6560,6 +6560,78 @@
         createdAt: {type: string, format: date-time}
         hash: {type: string, maxLength: 64}
         specification: {$ref: '#/components/schemas/Specification'}
+    "DraftSpecification":
+      "type": "object"
+      "description": "A specification as a draft save sends it. It is a Specification whose Compose bundle may leave out `namespace` and `origin`."
+      "additionalProperties": false
+      "properties":
+        placement: {$ref: '#/components/schemas/CrossHostPlacement'}
+        "version":
+          "type": "integer"
+          "enum":
+            - 1
+        "applications":
+          "type": "array"
+          "items":
+            "$ref": "#/components/schemas/ApplicationReference"
+          "maxItems": 50
+        "variables":
+          "type": "array"
+          "items":
+            "$ref": "#/components/schemas/Variable"
+          "maxItems": 100
+        "volumes":
+          "type": "array"
+          "items":
+            "$ref": "#/components/schemas/Volume"
+          "maxItems": 50
+        "bindings":
+          "type": "array"
+          "items":
+            "$ref": "#/components/schemas/Binding"
+          "maxItems": 100
+        "routes":
+          "type": "array"
+          "items":
+            "$ref": "#/components/schemas/Route"
+          "maxItems": 50
+        "compose":
+          "$ref": "#/components/schemas/DraftComposeBundle"
+        "networks":
+          "type": "array"
+          "items":
+            "$ref": "#/components/schemas/NetworkReference"
+          "maxItems": 20
+      "required":
+        - "version"
+        - "applications"
+        - "variables"
+      "x-go-type": "jsontext.Value"
+      "x-go-type-import": {"path": "encoding/json/jsontext"}
+    "DraftComposeBundle":
+      "type": "object"
+      "description": "A Compose bundle as a draft save sends it. The draft keeps its own `namespace` and Git `origin`, so a save may leave both out. A caller that may read the environment may send them unchanged; a credential without `environment:read` must leave them out."
+      "additionalProperties": false
+      "properties":
+        "namespace":
+          "type": "string"
+          "format": "uuid"
+        "entrypoints":
+          "type": "array"
+          "items":
+            "type": "string"
+            "maxLength": 240
+          "maxItems": 8
+        "files":
+          "type": "array"
+          "items":
+            "$ref": "#/components/schemas/ComposeFile"
+          "maxItems": 16
+        "origin":
+          "$ref": "#/components/schemas/ComposeOrigin"
+      "required":
+        - "entrypoints"
+        - "files"
     "DraftUpdate":
       "type": "object"
       "additionalProperties": false
@@ -6568,7 +6640,7 @@
           "type": "string"
           "format": "uuid"
         "specification":
-          "$ref": "#/components/schemas/Specification"
+          "$ref": "#/components/schemas/DraftSpecification"
       "required":
         - "baseRevisionId"
         - "specification"
@@ -7419,8 +7491,8 @@
           "maxItems": 16
         "origin":
           "$ref": "#/components/schemas/ComposeOrigin"
-      "description": "A saved draft always has `namespace` and keeps its Git `origin`. A save may leave both out and the draft's are kept. A caller that may read the environment may send them unchanged; a credential without `environment:read` must leave them out."
       "required":
+        - "namespace"
         - "entrypoints"
         - "files"
     "NetworkReference":

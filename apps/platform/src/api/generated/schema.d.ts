@@ -3188,10 +3188,31 @@ export interface components {
             hash?: string;
             specification?: components["schemas"]["Specification"];
         };
+        /** @description A specification as a draft save sends it. It is a Specification whose Compose bundle may leave out `namespace` and `origin`. */
+        DraftSpecification: {
+            placement?: components["schemas"]["CrossHostPlacement"];
+            /** @enum {integer} */
+            version: 1;
+            applications: components["schemas"]["ApplicationReference"][];
+            variables: components["schemas"]["Variable"][];
+            volumes?: components["schemas"]["Volume"][];
+            bindings?: components["schemas"]["Binding"][];
+            routes?: components["schemas"]["Route"][];
+            compose?: components["schemas"]["DraftComposeBundle"];
+            networks?: components["schemas"]["NetworkReference"][];
+        };
+        /** @description A Compose bundle as a draft save sends it. The draft keeps its own `namespace` and Git `origin`, so a save may leave both out. A caller that may read the environment may send them unchanged; a credential without `environment:read` must leave them out. */
+        DraftComposeBundle: {
+            /** Format: uuid */
+            namespace?: string;
+            entrypoints: string[];
+            files: components["schemas"]["ComposeFile"][];
+            origin?: components["schemas"]["ComposeOrigin"];
+        };
         DraftUpdate: {
             /** Format: uuid */
             baseRevisionId: string;
-            specification: components["schemas"]["Specification"];
+            specification: components["schemas"]["DraftSpecification"];
         };
         Position: {
             x: number;
@@ -3566,10 +3587,9 @@ export interface components {
             repository: string;
             commit: string;
         };
-        /** @description A saved draft always has `namespace` and keeps its Git `origin`. A save may leave both out and the draft's are kept. A caller that may read the environment may send them unchanged; a credential without `environment:read` must leave them out. */
         ComposeBundle: {
             /** Format: uuid */
-            namespace?: string;
+            namespace: string;
             entrypoints: string[];
             files: components["schemas"]["ComposeFile"][];
             origin?: components["schemas"]["ComposeOrigin"];

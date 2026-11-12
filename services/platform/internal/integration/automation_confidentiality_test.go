@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/json/v2"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -175,6 +176,33 @@ func TestWriteWithoutReadSavesConfirmNothing(t *testing.T) {
 	invalidField(t, namespaces["right"], "compose.namespace")
 	if after, _ := current(); after.Id != draft.Id {
 		t.Fatal("a guess replaced the draft")
+	}
+
+	// Nor does whether a save fits the size limit: a credential that may not read the environment
+	// leaves room for the longest origin, whatever the draft holds, where a reader needs room only for
+	// the draft's own.
+	padded := bundle(unit, nil, edited)
+	limit := domain.SpecificationLimit - 6000
+	for i := 0; ; i++ {
+		_, canonical, err := domain.ParseSpec(claimBytes(t, padded))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(canonical) >= limit-100 {
+			if len(canonical) > limit {
+				t.Fatalf("padded the draft to %d bytes", len(canonical))
+			}
+			break
+		}
+		value := strings.Repeat("x", min(4000, limit-len(canonical)-60))
+		padded.Variables = append(padded.Variables, domain.Variable{Name: fmt.Sprintf("PAD_%d", i), Value: &value})
+	}
+	padded.Compose.Namespace = uuid.Nil
+	invalidField(t, guessedError(t, f, writer, "PUT", path+"/draft", api.DraftUpdate{BaseRevisionId: draft.Id, Specification: claimBytes(t, padded)}, 400), "specification")
+	var fits api.SavedDraft
+	bearerCall(t, f, *issueAutomation(t, b, path, domain.EnvironmentRead, domain.ConfigurationWrite).Token, "PUT", path+"/draft", api.DraftUpdate{BaseRevisionId: draft.Id, Specification: claimBytes(t, padded)}, 200, &fits)
+	if draft, spec = current(); draft.Id != fits.Id || spec.Compose.Origin == nil || *spec.Compose.Origin != origin {
+		t.Fatal("a reader's save near the size limit lost the origin")
 	}
 
 	// A principal that may read the environment may also leave both out, or send them unchanged.
