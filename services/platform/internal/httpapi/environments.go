@@ -178,11 +178,26 @@ func (s *Server) UpdateDraft(w http.ResponseWriter, r *http.Request, ws, pid, id
 	var current *api.Revision
 	e = s.Store.InWorkspaceTx(r.Context(), *principal(r.Context()), ws, store.WorkspaceAccess{Write: true}, func(tx pgx.Tx, q *db.Queries, _ store.Workspace) error {
 		ctx := r.Context()
-		if e := s.Store.ValidateApplicationRoutes(ctx, tx, ws, id, spec, nil); e != nil {
-			return e
-		}
 		env, e := q.GetEnvironment(ctx, db.GetEnvironmentParams{WorkspaceID: ws, ProjectID: pid, ID: id})
 		if e != nil {
+			return e
+		}
+		// The base revision is checked before anything that compares the save with the environment or
+		// its draft. A credential that may write but not read would otherwise learn from which error it
+		// gets, without naming the current draft, whether its guesses about them are right.
+		if env.DraftRevisionID != b.BaseRevisionId {
+			p := principal(ctx)
+			if p.Automation == nil || p.Automation.Allows(domain.EnvironmentRead) {
+				v, e := q.GetRevision(ctx, db.GetRevisionParams{WorkspaceID: ws, EnvironmentID: id, ID: env.DraftRevisionID})
+				if e != nil {
+					return e
+				}
+				c := revision(v)
+				current = &c
+			}
+			return domain.Conflict
+		}
+		if e := s.Store.ValidateApplicationRoutes(ctx, tx, ws, id, spec, nil); e != nil {
 			return e
 		}
 		if (env.ConfigurationOwner == "compose") != (spec.Compose != nil) || spec.Compose != nil && spec.Compose.Namespace != env.UnitID {
@@ -202,18 +217,6 @@ func (s *Server) UpdateDraft(w http.ResponseWriter, r *http.Request, ws, pid, id
 			if !bytes.Equal(before, after) {
 				return domain.Invalid("compose.origin")
 			}
-		}
-		if env.DraftRevisionID != b.BaseRevisionId {
-			p := principal(ctx)
-			if p.Automation == nil || p.Automation.Allows(domain.EnvironmentRead) {
-				v, e := q.GetRevision(ctx, db.GetRevisionParams{WorkspaceID: ws, EnvironmentID: id, ID: env.DraftRevisionID})
-				if e != nil {
-					return e
-				}
-				c := revision(v)
-				current = &c
-			}
-			return domain.Conflict
 		}
 		var applied domain.Specification
 		if env.AppliedRevisionID != nil {

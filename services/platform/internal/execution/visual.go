@@ -87,6 +87,11 @@ func (s *Service) createVisualPlan(ctx context.Context, tx pgx.Tx, ws, pid, env 
 		if err != nil {
 			return err
 		}
+		// A stale base is refused before the request is compared with the environment, so a credential
+		// that may plan but not read learns nothing about its servers or volumes without the current draft.
+		if v.Revision != in.BaseRevisionId {
+			return domain.Conflict
+		}
 		previousPlan, err := appliedVisualPlan(ctx, tx, ws, env)
 		if err != nil {
 			return err
@@ -95,7 +100,7 @@ func (s *Service) createVisualPlan(ctx context.Context, tx pgx.Tx, ws, pid, env 
 		if err != nil {
 			return err
 		}
-		if v.Revision != in.BaseRevisionId || replacement == nil && v.Server != nil && *v.Server != in.ServerId {
+		if replacement == nil && v.Server != nil && *v.Server != in.ServerId {
 			return domain.Conflict
 		}
 		if err = domain.ValidateNewCompose(v.Spec); err != nil {
