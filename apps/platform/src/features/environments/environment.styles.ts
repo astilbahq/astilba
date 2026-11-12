@@ -249,10 +249,13 @@ export const retirementSubheading = css({
   lineHeight: "heading",
 });
 export const retainedVolumes = css({ display: "grid", gap: "1" });
+// The dialog's description: a muted lead-in sentence and the list of effects it introduces.
+export const dialogDescription = css({ display: "grid", gap: "3" });
 export const effects = css({
   display: "grid",
   gap: "2",
   paddingInlineStart: "5",
+  color: "fg",
   listStyleType: "disc",
   overflowWrap: "anywhere",
 });

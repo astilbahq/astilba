@@ -48,8 +48,16 @@ export function EnvironmentDetail(props: EnvProps) {
     change: LifecycleChange;
     open: boolean;
   }>({ change: "retire", open: false });
-  // The state a lifecycle change reached, announced until the environment moves on from it.
+  // The state a lifecycle change reached, announced until the environment moves on from it. A
+  // retirement its server finishes later is announced when the poll sees it land; an environment
+  // that opens already retired is not.
   const [changed, setChanged] = useState<Schema["Environment"]["state"]>();
+  const [seen, setSeen] = useState(props.environment.state);
+  if (seen !== props.environment.state) {
+    setSeen(props.environment.state);
+    if (seen === "retiring" && props.environment.state === "retired")
+      setChanged("retired");
+  }
   const title = useRef<HTMLHeadingElement>(null);
   const status = useRef<HTMLHeadingElement>(null);
   const trigger = useRef<HTMLButtonElement>(null);
@@ -108,14 +116,21 @@ export function EnvironmentDetail(props: EnvProps) {
       </header>
       {template && <p className={s.note}>{t(($) => $.templateDescription)}</p>}
       {managed && <p className={s.note}>{t(($) => $.previewDescription)}</p>}
-      {changed === props.environment.state && (
-        <p role="status" className={s.note}>
-          {changed === "retired"
-            ? t(($) => $.lifecycle.retired)
-            : changed === "retiring"
-              ? t(($) => $.lifecycle.retirementStarted)
-              : t(($) => $.lifecycle.restored)}
-        </p>
+      {/* Stays mounted from retiring through retired and on into a restore, so a message that
+          arrives as the state changes is announced. An active page without a message leaves it
+          out, keeping its own status messages the only ones there. */}
+      {(!active || changed === props.environment.state) && (
+        <div role="status">
+          {changed === props.environment.state && (
+            <p className={s.note}>
+              {changed === "retired"
+                ? t(($) => $.lifecycle.retired)
+                : changed === "retiring"
+                  ? t(($) => $.lifecycle.retirementStarted)
+                  : t(($) => $.lifecycle.restored)}
+            </p>
+          )}
+        </div>
       )}
       {!active && (
         <RetirementStatus

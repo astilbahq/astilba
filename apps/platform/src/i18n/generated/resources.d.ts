@@ -394,6 +394,7 @@ export default interface Resources {
       "confirmHint": "Type <name/> to confirm.",
       "confirmLabel": "Environment name",
       "forbidden": "Only workspace owners can retire or restore environments.",
+      "mfa": "Set up two-factor authentication in Account security before retiring or restoring an environment.",
       "nameMismatch": "The name does not match this environment’s current name. Check it and try again.",
       "operationState": {
         "cancelled": "cancelled",
@@ -404,6 +405,19 @@ export default interface Resources {
         "running": "in progress",
         "succeeded": "finished",
         "waiting_for_agent": "waiting for the server’s agent"
+      },
+      "recentAuth": "Confirm your identity, then try again.",
+      "refusal": {
+        "activeOperation": "Another operation is running for this environment. Wait for it to finish or cancel it, then try again.",
+        "agentUpdate": "Update this server’s agent before retiring environments on it.",
+        "crossHost": "This environment runs on more than one server. Consolidate it onto its primary server, then try again.",
+        "cutover": "A backup restore cutover is waiting to be deployed. Deploy it or replace the draft, then try again.",
+        "inactive": "This environment is retired or being retired. Restore it before changing it.",
+        "serverBusy": "Another operation is running on this environment’s server. Try again when it finishes.",
+        "serverTransfer": "This environment’s server is waiting for a verified agent transfer. Complete the transfer, then try again.",
+        "state": "This environment’s state has changed, so this can no longer be done. The page now shows its current state.",
+        "unknown": "This environment cannot be changed right now. Check its current state, then try again.",
+        "upgrade": "A database upgrade holds this environment’s data. Finish or return the upgrade and wait for its retention period to end, then try again."
       },
       "restore": "Restore environment",
       "restoreDialogDescription": "Restoring makes this environment active again as configuration only:",
@@ -451,7 +465,10 @@ export default interface Resources {
         "volumesLoading": "Loading kept volumes…",
         "volumesTitle": "Kept volumes",
         "withoutHost": "Its server had been revoked, so it was not contacted. This environment’s containers may still be running there."
-      }
+      },
+      "subscription": "An active workspace subscription is required. Open Workspace to finish setup.",
+      "unavailable": "This environment is no longer available. It may have been deleted, or you may no longer have access to it.",
+      "verifyEmail": "Verify your email address in Account security before retiring or restoring an environment."
     },
     "loadFailed": "Configuration could not be loaded",
     "loadRecovery": "Your environment is still available. Try loading its configuration again.",
