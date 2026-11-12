@@ -342,7 +342,7 @@ func TestInvitationPreservesExpiredRecentAuthentication(t *testing.T) {
 	b := f.browser(t)
 	b.login("owner@example.test", f.password)
 	token := seedInvitation(t, f, "owner@example.test")
-	future := time.Now().Add(6 * time.Minute)
+	future := time.Now().Add(16 * time.Minute)
 	f.auth.Now = func() time.Time { return future }
 	b.call("POST", "/api/v1/auth/invitations/validate", map[string]string{"token": token}, 204, nil)
 	var session api.Session

@@ -6,6 +6,7 @@ import (
 	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"io"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -80,10 +81,12 @@ func TestComposeSourceAdmissionAndExport(t *testing.T) {
 		message := jsontext.Value(raw)
 		agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/report", token, api.AgentReport{Id: command.Id, Generation: command.Generation, PlanHash: command.PlanHash, Sequence: 2, State: "succeeded", Steps: []api.ExecutionStep{}, Observation: &message}, 204, nil)
 	}
+	// unreported is a resolution from an agent that predates host change reporting.
+	unreported := false
 	create := func() deployment.Status {
 		t.Helper()
 		var status deployment.Status
-		b.call("POST", path+"/deployment-plans", api.VisualPlanRequest{BaseRevisionId: draft.Id, ServerId: enrolled.Server.Id, AllowHostChanges: true}, 201, &status)
+		b.call("POST", path+"/deployment-plans", api.VisualPlanRequest{BaseRevisionId: draft.Id, ServerId: enrolled.Server.Id}, 201, &status)
 		command := poll(status.OperationID)
 		if strings.Contains(string(*command.Visual), "source-secret-canary") {
 			t.Fatal("resolution received plaintext secret")
@@ -92,16 +95,15 @@ func TestComposeSourceAdmissionAndExport(t *testing.T) {
 		for _, app := range saved.Applications {
 			images[app.ID.String()] = *app.Source.Image
 		}
-		report(command, deployment.Observation{ObservedAt: time.Now(), Resources: []deployment.Resource{}, Images: images, StateHash: strings.Repeat("a", 64)})
+		report(command, deployment.Observation{ObservedAt: time.Now(), Resources: []deployment.Resource{}, Images: images, StateHash: strings.Repeat("a", 64), HostChangesReported: !unreported})
 		b.call("GET", path+"/deployment-plans/"+status.ID.String(), nil, 200, &status)
 		return status
 	}
-	b.call("POST", path+"/deployment-plans", api.VisualPlanRequest{BaseRevisionId: draft.Id, ServerId: enrolled.Server.Id}, 400, nil)
 	stale := create()
 	value := "new value"
 	spec.Variables = append(spec.Variables, domain.Variable{Name: "VALUE", Value: &value})
 	b.call("PUT", path+"/draft", map[string]any{"baseRevisionId": draft.Id, "specification": spec}, 200, &draft)
-	b.call("POST", path+"/deployment-plans/"+stale.ID.String()+"/apply", api.ApplyPlan{IdempotencyKey: uuid.New()}, 409, nil)
+	b.call("POST", path+"/deployment-plans/"+stale.ID.String()+"/apply", api.ApplyVisualPlan{IdempotencyKey: uuid.New(), ApproveHostChanges: approved()}, 409, nil)
 	_ = json.Unmarshal(draft.Specification, &saved)
 	if saved.Volumes[0].ID != oldVolume {
 		t.Fatal("ordinary source edit changed storage identity")
@@ -112,8 +114,8 @@ func TestComposeSourceAdmissionAndExport(t *testing.T) {
 	}
 	key := uuid.New()
 	var op, again api.Operation
-	b.call("POST", path+"/deployment-plans/"+ready.ID.String()+"/apply", api.ApplyPlan{IdempotencyKey: key}, 201, &op)
-	b.call("POST", path+"/deployment-plans/"+ready.ID.String()+"/apply", api.ApplyPlan{IdempotencyKey: key}, 201, &again)
+	b.call("POST", path+"/deployment-plans/"+ready.ID.String()+"/apply", api.ApplyVisualPlan{IdempotencyKey: key, ApproveHostChanges: approved()}, 201, &op)
+	b.call("POST", path+"/deployment-plans/"+ready.ID.String()+"/apply", api.ApplyVisualPlan{IdempotencyKey: key, ApproveHostChanges: approved()}, 201, &again)
 	if op.Id != again.Id {
 		t.Fatal("apply not idempotent")
 	}
@@ -161,6 +163,34 @@ func TestComposeSourceAdmissionAndExport(t *testing.T) {
 	_ = json.Unmarshal(cloned.Specification, &copied)
 	if copied.Compose.Namespace != clone.DeploymentUnit.Id || copied.Volumes[0].ID == oldVolume || *copied.Variables[0].SecretVersionID == secret.Id {
 		t.Fatal("clone retained production resource or secret identity")
+	}
+	// Permissions the applied deployment already has on this server stand: a redeploy that keeps
+	// them still lets the agent apply them, but needs no new approval. A new one does, and so
+	// does any change to a privileged service, such as a file it mounts.
+	value = "standing permissions"
+	spec.Variables[1].Value = &value
+	b.call("PUT", path+"/draft", map[string]any{"baseRevisionId": draft.Id, "specification": spec}, 200, &draft)
+	if standing := create(); !standing.Plan.HostChanges || standing.HostReview {
+		t.Fatalf("approved permissions were reviewed again: host changes %v, review %v", standing.Plan.HostChanges, standing.HostReview)
+	}
+	spec.Compose.Files[1].Content = "edited\n"
+	b.call("PUT", path+"/draft", map[string]any{"baseRevisionId": draft.Id, "specification": spec}, 200, &draft)
+	if edited := create(); !edited.HostReview {
+		t.Fatal("a privileged service's changed file was not reviewed")
+	}
+	spec.Compose.Files[1].Content = "from bundle\n"
+	b.call("PUT", path+"/draft", map[string]any{"baseRevisionId": draft.Id, "specification": spec}, 200, &draft)
+	// An agent that does not report host changes would apply what the plan allows unseen, so
+	// the same redeploy is reviewed when its resolution does not say it worked them out.
+	unreported = true
+	if older := create(); !older.HostReview || !slices.Contains(older.Plan.Effects, deployment.UnreportedHostChangesEffect) {
+		t.Fatal("an agent that does not report host changes was trusted with them")
+	}
+	unreported = false
+	spec.Compose.Files[0].Content = strings.Replace(spec.Compose.Files[0].Content, "    privileged: true\n", "    privileged: true\n    cap_add: [NET_ADMIN]\n", 1)
+	b.call("PUT", path+"/draft", map[string]any{"baseRevisionId": draft.Id, "specification": spec}, 200, &draft)
+	if added := create(); !added.HostReview {
+		t.Fatal("a new permission was not reviewed")
 	}
 	spec.Compose.Files[0].Content += "x-astilba:\n  routes:\n    - name: public\n      service: web\n      protocol: http\n      domain: original.example.test\n      port: 8080\n      tls: 'off'\n"
 	b.call("PUT", path+"/draft", map[string]any{"baseRevisionId": draft.Id, "specification": spec}, 200, &draft)

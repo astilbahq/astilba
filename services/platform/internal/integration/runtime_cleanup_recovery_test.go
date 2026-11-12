@@ -212,14 +212,14 @@ func preparePreviewRemovalRecovery(t *testing.T, f *fixture, b *browser, ws uuid
 		b.call("PUT", path+"/draft", map[string]any{"baseRevisionId": current, "specification": spec}, 200, &draft)
 		current = draft.Id
 		var status deployment.Status
-		b.call("POST", path+"/deployment-plans", api.VisualPlanRequest{BaseRevisionId: current, ServerId: inputs[0].ServerId, AllowHostChanges: true}, 201, &status)
+		b.call("POST", path+"/deployment-plans", api.VisualPlanRequest{BaseRevisionId: current, ServerId: inputs[0].ServerId}, 201, &status)
 		wait(t, func() bool {
 			b.call("GET", path+"/deployment-plans/"+status.ID.String(), nil, 200, &status)
 			return status.Plan != nil
 		})
 		held.Store(hold)
 		var op api.Operation
-		b.call("POST", path+"/deployment-plans/"+status.ID.String()+"/apply", api.ApplyPlan{IdempotencyKey: uuid.New()}, 201, &op)
+		b.call("POST", path+"/deployment-plans/"+status.ID.String()+"/apply", api.ApplyVisualPlan{IdempotencyKey: uuid.New(), ApproveHostChanges: approved()}, 201, &op)
 		if hold {
 			deadline := time.NewTimer(70 * time.Second)
 			defer deadline.Stop()

@@ -47,6 +47,10 @@ type Engine struct {
 	// networkRefusals is whether management reads a refusal's reason, which it advertises
 	// with Astilba-Agent-Network-Refusals v1. It is unknown until management first answers.
 	networkRefusals atomic.Int32
+	// hostChangeReviews is whether management reviews the host changes a plan resolution reports,
+	// which it advertises with Astilba-Agent-Host-Changes v1. It is unknown until management
+	// first answers, using the refusal states.
+	hostChangeReviews atomic.Int32
 	// managed stands in for the host's managed networking in tests, which only a prepared
 	// Linux host has. Nil is the host itself.
 	managed managedHost

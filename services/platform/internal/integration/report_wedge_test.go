@@ -304,12 +304,12 @@ func TestReportsAcceptHostOutputContainingNUL(t *testing.T) {
 		return api.ExecutionCommand{}
 	}
 	var plan deployment.Status
-	b.call("POST", path+"/deployment-plans", api.VisualPlanRequest{ServerId: enrolled.Server.Id, BaseRevisionId: draft.Id, AllowHostChanges: true}, 201, &plan)
+	b.call("POST", path+"/deployment-plans", api.VisualPlanRequest{ServerId: enrolled.Server.Id, BaseRevisionId: draft.Id}, 201, &plan)
 	c := poll(plan.OperationID)
 	resolved, _ := stablejson.Marshal(deployment.Observation{ObservedAt: time.Now(), Resources: []deployment.Resource{}, Images: map[string]string{app.String(): image}, StateHash: strings.Repeat("a", 64)})
 	agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/report", token, api.AgentReport{Id: c.Id, Generation: c.Generation, PlanHash: c.PlanHash, Sequence: 1, State: "succeeded", Steps: []api.ExecutionStep{}, Observation: (*jsontext.Value)(&resolved)}, 204, nil)
 	var op api.Operation
-	b.call("POST", path+"/deployment-plans/"+plan.ID.String()+"/apply", api.ApplyPlan{IdempotencyKey: uuid.New()}, 201, &op)
+	b.call("POST", path+"/deployment-plans/"+plan.ID.String()+"/apply", api.ApplyVisualPlan{IdempotencyKey: uuid.New(), ApproveHostChanges: approved()}, 201, &op)
 	c = poll(op.Id)
 	// The escaped backslash is literal text, not an escaped NUL.
 	observed, _ := stablejson.Marshal(deployment.Observation{ObservedAt: time.Now(), Resources: []deployment.Resource{{ID: app, Kind: "application", State: "failed", Logs: "boot\x00log \\u0000"}}, StateHash: strings.Repeat("b", 64)})

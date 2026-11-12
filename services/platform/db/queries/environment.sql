@@ -57,3 +57,9 @@ WHERE workspace_id = @workspace_id AND environment_id = @environment_id AND plan
 -- name: AdvanceEnvironmentExecutionGeneration :one
 UPDATE environments SET execution_generation=execution_generation+1
 WHERE workspace_id = @workspace_id AND id = @id RETURNING execution_generation;
+-- name: VisualPlanHostReview :one
+-- Whether applying the plan needs an owner's approval of its host changes.
+SELECT host_review FROM visual_plans WHERE workspace_id=$1 AND environment_id=$2 AND id=$3;
+-- name: VisualRequestHostReview :one
+-- Whether the planner found host changes the applied deployment does not already have.
+SELECT host_review FROM visual_requests WHERE workspace_id=$1 AND id=$2;

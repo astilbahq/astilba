@@ -27,7 +27,7 @@ func TestAutomaticChangesRequireReviewForStatefulChangesAndNewPermissions(t *tes
 	t.Run("omitted binding does not inherit explicit IPv4 approval", func(t *testing.T) {
 		ipv4 := parse(strings.ReplaceAll(original, "127.0.0.1", "0.0.0.0"))
 		defaults := parse(strings.ReplaceAll(original, "127.0.0.1:", ""))
-		if _, _, err := automaticChanges(ipv4, defaults); err == nil {
+		if _, err := automaticChanges(ipv4, defaults); err == nil {
 			t.Fatal("daemon default interfaces inherited explicit IPv4-only approval")
 		}
 	})
@@ -43,12 +43,9 @@ func TestAutomaticChangesRequireReviewForStatefulChangesAndNewPermissions(t *tes
 		{"new stateful service", strings.ReplaceAll(original, "  web:", "  other:\n    image: postgres:17\n    volumes: [data:/data]\n  web:"), false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			carry, _, err := automaticChanges(previous, parse(tc.content))
+			_, err := automaticChanges(previous, parse(tc.content))
 			if (err == nil) != tc.allowed {
 				t.Fatalf("allowed=%v error=%v", tc.allowed, err)
-			}
-			if tc.allowed && !carry {
-				t.Fatal("existing reviewed permissions were not carried forward")
 			}
 		})
 	}
@@ -68,12 +65,12 @@ func TestAutomaticStatefulEffectiveInputsAndResolvedImages(t *testing.T) {
 	compose := "services:\n  db:\n    image: postgres:latest\n    volumes: [data:/var/lib/postgresql/data, './postgresql.conf:/etc/postgresql.conf:ro']\n  web:\n    image: nginx:1\nvolumes:\n  data: {}\n"
 	previous := parse(compose, "setting=old\n")
 	next := parse(compose, "setting=new\n")
-	if _, _, err := automaticChanges(previous, next); err == nil {
+	if _, err := automaticChanges(previous, next); err == nil {
 		t.Fatal("stateful bundled config changed without review")
 	}
 	configCompose := strings.ReplaceAll(compose, ", './postgresql.conf:/etc/postgresql.conf:ro'", "")
 	configCompose = strings.Replace(configCompose, "  web:", "    configs: [db_config]\n  web:", 1) + "configs:\n  db_config:\n    file: postgresql.conf\n"
-	if _, _, err := automaticChanges(parse(configCompose, "old"), parse(configCompose, "new")); err == nil {
+	if _, err := automaticChanges(parse(configCompose, "old"), parse(configCompose, "new")); err == nil {
 		t.Fatal("top-level stateful config file changed without review")
 	}
 	db, web := previous.Applications[0], previous.Applications[1]
@@ -94,7 +91,7 @@ func TestAutomaticStatefulEffectiveInputsAndResolvedImages(t *testing.T) {
 	visual := domain.Specification{Applications: []domain.Application{app}, Variables: []domain.Variable{{Name: "PGDATA", Value: &old}}}
 	changed := visual
 	changed.Variables = []domain.Variable{{Name: "PGDATA", Value: &newValue}}
-	if _, _, err := automaticChanges(visual, changed); err == nil {
+	if _, err := automaticChanges(visual, changed); err == nil {
 		t.Fatal("effective global stateful environment changed without review")
 	}
 }
@@ -109,7 +106,7 @@ func TestAutomaticStatefulConsumerTracksSelectedOutputInput(t *testing.T) {
 	_ = json.Unmarshal(raw, &next)
 	changed := "second"
 	next.Applications[0].Variables[0].Value = &changed
-	if _, _, err := automaticChanges(old, next); err == nil {
+	if _, err := automaticChanges(old, next); err == nil {
 		t.Fatal("stateful consumer inherited changed output value without review")
 	}
 }

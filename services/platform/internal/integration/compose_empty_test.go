@@ -74,7 +74,7 @@ func TestComposeEnvironmentEmptiedAfterDeployment(t *testing.T) {
 	}
 
 	var status deployment.Status
-	b.call("POST", path+"/deployment-plans", api.VisualPlanRequest{BaseRevisionId: emptied.Id, ServerId: enrolled.Server.Id, AllowHostChanges: true}, 201, &status)
+	b.call("POST", path+"/deployment-plans", api.VisualPlanRequest{BaseRevisionId: emptied.Id, ServerId: enrolled.Server.Id}, 201, &status)
 	agent.observe(agent.next(), deployment.Observation{Resources: []deployment.Resource{{ID: web.ID, Kind: "service", State: "running", Image: *web.Source.Image}}, Images: map[string]string{}, StateHash: strings.Repeat("a", 64)})
 	b.call("GET", path+"/deployment-plans/"+status.ID.String(), nil, 200, &status)
 	if status.Plan == nil {
@@ -86,7 +86,7 @@ func TestComposeEnvironmentEmptiedAfterDeployment(t *testing.T) {
 			t.Fatalf("reviewed effects omit %q:\n%s", want, effects)
 		}
 	}
-	b.call("POST", path+"/deployment-plans/"+status.ID.String()+"/apply", api.ApplyPlan{IdempotencyKey: uuid.New()}, 201, nil)
+	b.call("POST", path+"/deployment-plans/"+status.ID.String()+"/apply", api.ApplyVisualPlan{IdempotencyKey: uuid.New(), ApproveHostChanges: approved()}, 201, nil)
 	if plan := agent.applied(agent.next(), images); len(plan.Specification.Applications) != 0 || len(plan.Specification.Routes) != 0 {
 		t.Fatal("the emptied deployment still runs services or routes")
 	}

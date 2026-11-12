@@ -178,7 +178,7 @@ func TestNativeCrossHostOlderBackupRecovery(t *testing.T) {
 	initial.Placement = nil
 	b.call("PUT", path+"/draft", map[string]any{"baseRevisionId": env.DraftRevisionId, "specification": initial}, 200, &draft)
 	var primary deployment.Status
-	b.call("POST", path+"/deployment-plans", api.VisualPlanRequest{BaseRevisionId: draft.Id, ServerId: enrollments[0].ServerId, AllowHostChanges: true}, 201, &primary)
+	b.call("POST", path+"/deployment-plans", api.VisualPlanRequest{BaseRevisionId: draft.Id, ServerId: enrollments[0].ServerId}, 201, &primary)
 	wait("primary plan", func() bool {
 		b.call("GET", path+"/deployment-plans/"+primary.ID.String(), nil, 200, &primary)
 		return primary.Plan != nil
@@ -197,7 +197,7 @@ func TestNativeCrossHostOlderBackupRecovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	var primaryOperation api.Operation
-	b.call("POST", path+"/deployment-plans/"+primary.ID.String()+"/apply", api.ApplyPlan{IdempotencyKey: uuid.New()}, 201, &primaryOperation)
+	b.call("POST", path+"/deployment-plans/"+primary.ID.String()+"/apply", api.ApplyVisualPlan{IdempotencyKey: uuid.New(), ApproveHostChanges: approved()}, 201, &primaryOperation)
 	wait("primary runtime", func() bool {
 		var state, note string
 		if err := source.st.Pool.QueryRow(ctx, `SELECT state,note FROM execution_operations WHERE id=$1`, primaryOperation.Id).Scan(&state, &note); err != nil {
@@ -212,13 +212,13 @@ func TestNativeCrossHostOlderBackupRecovery(t *testing.T) {
 	})
 	b.call("PUT", path+"/draft", map[string]any{"baseRevisionId": draft.Id, "specification": spec}, 200, &draft)
 	var plan deployment.Status
-	b.call("POST", path+"/deployment-plans", api.VisualPlanRequest{BaseRevisionId: draft.Id, ServerId: enrollments[0].ServerId, AllowHostChanges: true}, 201, &plan)
+	b.call("POST", path+"/deployment-plans", api.VisualPlanRequest{BaseRevisionId: draft.Id, ServerId: enrollments[0].ServerId}, 201, &plan)
 	wait("frozen plan", func() bool {
 		b.call("GET", path+"/deployment-plans/"+plan.ID.String(), nil, 200, &plan)
 		return plan.Plan != nil
 	})
 	var operation api.Operation
-	b.call("POST", path+"/deployment-plans/"+plan.ID.String()+"/apply", api.ApplyPlan{IdempotencyKey: uuid.New()}, 201, &operation)
+	b.call("POST", path+"/deployment-plans/"+plan.ID.String()+"/apply", api.ApplyVisualPlan{IdempotencyKey: uuid.New(), ApproveHostChanges: approved()}, 201, &operation)
 	wait("durable reserve continuation", func() bool {
 		evidence, err := journals[0].RecoveryEvidence()
 		if err != nil {
@@ -519,7 +519,7 @@ func TestNativeCrossHostOlderBackupRecovery(t *testing.T) {
 		var draftB api.Revision
 		fb.call("PUT", pathB+"/draft", map[string]any{"baseRevisionId": envB.DraftRevisionId, "specification": specB}, 200, &draftB)
 		var primaryB deployment.Status
-		fb.call("POST", pathB+"/deployment-plans", api.VisualPlanRequest{BaseRevisionId: draftB.Id, ServerId: enrollments[2].ServerId, AllowHostChanges: true}, 201, &primaryB)
+		fb.call("POST", pathB+"/deployment-plans", api.VisualPlanRequest{BaseRevisionId: draftB.Id, ServerId: enrollments[2].ServerId}, 201, &primaryB)
 		wait("fork primary plan", func() bool {
 			fb.call("GET", pathB+"/deployment-plans/"+primaryB.ID.String(), nil, 200, &primaryB)
 			if primaryB.State == "failed" || primaryB.State == "needs_attention" {
@@ -530,7 +530,7 @@ func TestNativeCrossHostOlderBackupRecovery(t *testing.T) {
 			return primaryB.Plan != nil
 		})
 		var initialB api.Operation
-		fb.call("POST", pathB+"/deployment-plans/"+primaryB.ID.String()+"/apply", api.ApplyPlan{IdempotencyKey: uuid.New()}, 201, &initialB)
+		fb.call("POST", pathB+"/deployment-plans/"+primaryB.ID.String()+"/apply", api.ApplyVisualPlan{IdempotencyKey: uuid.New(), ApproveHostChanges: approved()}, 201, &initialB)
 		wait("fork primary runtime", func() bool {
 			var observed deployment.Observation
 			fb.call("GET", pathB+"/runtime", nil, 200, &observed)
@@ -539,7 +539,7 @@ func TestNativeCrossHostOlderBackupRecovery(t *testing.T) {
 		specB.Placement = &domain.Placement{NetworkID: spec.Placement.NetworkID, IngressServerID: enrollments[2].ServerId, Applications: []domain.ApplicationPlacement{{ApplicationID: specB.Applications[0].ID, CPUMillis: 500, MemoryMiB: 128, Targets: []domain.PlacementTarget{{ServerID: enrollments[3].ServerId, Count: 1}}}}}
 		fb.call("PUT", pathB+"/draft", map[string]any{"baseRevisionId": draftB.Id, "specification": specB}, 200, &draftB)
 		var planB deployment.Status
-		fb.call("POST", pathB+"/deployment-plans", api.VisualPlanRequest{BaseRevisionId: draftB.Id, ServerId: enrollments[2].ServerId, AllowHostChanges: true}, 201, &planB)
+		fb.call("POST", pathB+"/deployment-plans", api.VisualPlanRequest{BaseRevisionId: draftB.Id, ServerId: enrollments[2].ServerId}, 201, &planB)
 		wait("fork frozen plan", func() bool {
 			fb.call("GET", pathB+"/deployment-plans/"+planB.ID.String(), nil, 200, &planB)
 			return planB.Plan != nil
@@ -556,7 +556,7 @@ func TestNativeCrossHostOlderBackupRecovery(t *testing.T) {
 		}
 		fb.call("POST", base+"/operations/"+restriction.Id.String()+"/cancel", nil, 204, nil)
 		var operationB api.Operation
-		fb.call("POST", pathB+"/deployment-plans/"+planB.ID.String()+"/apply", api.ApplyPlan{IdempotencyKey: uuid.New()}, 201, &operationB)
+		fb.call("POST", pathB+"/deployment-plans/"+planB.ID.String()+"/apply", api.ApplyVisualPlan{IdempotencyKey: uuid.New(), ApproveHostChanges: approved()}, 201, &operationB)
 		wait("fork base retention", func() bool {
 			evidence, err := forkJournals[2].RecoveryEvidence()
 			if err != nil {

@@ -67,7 +67,7 @@ func newUpgradeHost(t *testing.T, f *fixture) *upgradeHost {
 	h.report(t, h.poll(t, h.deploymentPlan.OperationID), "succeeded", &deployment.Observation{ObservedAt: time.Now(), Resources: []deployment.Resource{}, Images: map[string]string{pg.String(): image}, StateHash: strings.Repeat("a", 64)}, nil)
 	b.call("GET", path+"/deployment-plans/"+h.deploymentPlan.ID.String(), nil, 200, &h.deploymentPlan)
 	var op api.Operation
-	b.call("POST", path+"/deployment-plans/"+h.deploymentPlan.ID.String()+"/apply", api.ApplyPlan{IdempotencyKey: uuid.New()}, 201, &op)
+	b.call("POST", path+"/deployment-plans/"+h.deploymentPlan.ID.String()+"/apply", api.ApplyVisualPlan{IdempotencyKey: uuid.New(), ApproveHostChanges: approved()}, 201, &op)
 	h.report(t, h.poll(t, op.Id), "succeeded", &deployment.Observation{ObservedAt: time.Now(), Applied: true, Resources: []deployment.Resource{{ID: pg, Kind: "service", State: "healthy", Image: image}}, StateHash: strings.Repeat("b", 64)}, nil)
 	return h
 }
@@ -183,7 +183,7 @@ func TestUpgradeApprovalRecoveryAndTenantBoundary(t *testing.T) {
 	b.call("POST", actionPath, api.UpgradeActionRequest{Action: "cutover", RequestKey: uuid.New(), ExpectedPhase: "running"}, 409, nil)
 	status := upgrade.Status{Phase: "ready", Serving: "none", Step: "verified", KeepUntil: time.Now().Add(30 * 24 * time.Hour), Snapshot: strings.Repeat("c", 64)}
 	report(c, "succeeded", nil, &status)
-	b.call("POST", path+"/deployment-plans/"+deploymentPlan.ID.String()+"/apply", api.ApplyPlan{IdempotencyKey: uuid.New()}, 409, nil)
+	b.call("POST", path+"/deployment-plans/"+deploymentPlan.ID.String()+"/apply", api.ApplyVisualPlan{IdempotencyKey: uuid.New(), ApproveHostChanges: approved()}, 409, nil)
 	b.call("POST", actionPath, api.UpgradeActionRequest{Action: "cutover", RequestKey: uuid.New(), ExpectedPhase: "ready"}, 202, &op)
 	c = poll(op.Id)
 	status.Phase = "attention"

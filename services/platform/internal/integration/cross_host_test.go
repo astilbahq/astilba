@@ -439,14 +439,14 @@ func testCrossHostCoordinatedPlacement(t *testing.T, expiryPhase string) {
 	b.call("PUT", path+"/draft", map[string]any{"baseRevisionId": env.DraftRevisionId, "specification": initial}, 200, &draft)
 	var primary deployment.Status
 	refreshAuthentication()
-	b.call("POST", path+"/deployment-plans", api.VisualPlanRequest{BaseRevisionId: draft.Id, ServerId: servers[0].Server.Id, AllowHostChanges: true}, 201, &primary)
+	b.call("POST", path+"/deployment-plans", api.VisualPlanRequest{BaseRevisionId: draft.Id, ServerId: servers[0].Server.Id}, 201, &primary)
 	wait(func() bool {
 		b.call("GET", path+"/deployment-plans/"+primary.ID.String(), nil, 200, &primary)
 		return primary.Plan != nil
 	})
 	var firstOperation api.Operation
 	refreshAuthentication()
-	b.call("POST", path+"/deployment-plans/"+primary.ID.String()+"/apply", api.ApplyPlan{IdempotencyKey: uuid.New()}, 201, &firstOperation)
+	b.call("POST", path+"/deployment-plans/"+primary.ID.String()+"/apply", api.ApplyVisualPlan{IdempotencyKey: uuid.New(), ApproveHostChanges: approved()}, 201, &firstOperation)
 	wait(func() bool {
 		var current deployment.Observation
 		b.call("GET", path+"/runtime", nil, 200, &current)
@@ -457,7 +457,7 @@ func testCrossHostCoordinatedPlacement(t *testing.T, expiryPhase string) {
 	var status deployment.Status
 	waitNetworkReady()
 	refreshAuthentication()
-	b.call("POST", path+"/deployment-plans", api.VisualPlanRequest{BaseRevisionId: draft.Id, ServerId: servers[0].Server.Id, AllowHostChanges: true}, 201, &status)
+	b.call("POST", path+"/deployment-plans", api.VisualPlanRequest{BaseRevisionId: draft.Id, ServerId: servers[0].Server.Id}, 201, &status)
 	wait(func() bool {
 		b.call("GET", path+"/deployment-plans/"+status.ID.String(), nil, 200, &status)
 		return status.Plan != nil
@@ -476,7 +476,7 @@ func testCrossHostCoordinatedPlacement(t *testing.T, expiryPhase string) {
 	holdCheckpoint.Store(true)
 	var cancelledCheckpoint api.Operation
 	refreshAuthentication()
-	b.call("POST", apply, api.ApplyPlan{IdempotencyKey: uuid.New()}, 201, &cancelledCheckpoint)
+	b.call("POST", apply, api.ApplyVisualPlan{IdempotencyKey: uuid.New(), ApproveHostChanges: approved()}, 201, &cancelledCheckpoint)
 	wait(func() bool { _, ok := seen.Load("checkpoint-delivery/" + cancelledCheckpoint.Id.String()); return ok })
 	b.call("POST", base+"/operations/"+cancelledCheckpoint.Id.String()+"/cancel", nil, 204, nil)
 	holdCheckpoint.Store(false)
@@ -532,7 +532,7 @@ func testCrossHostCoordinatedPlacement(t *testing.T, expiryPhase string) {
 	}
 	waitNetworkReady()
 	refreshAuthentication()
-	b.call("POST", path+"/deployment-plans", api.VisualPlanRequest{BaseRevisionId: draft.Id, ServerId: servers[0].Server.Id, AllowHostChanges: true}, 201, &status)
+	b.call("POST", path+"/deployment-plans", api.VisualPlanRequest{BaseRevisionId: draft.Id, ServerId: servers[0].Server.Id}, 201, &status)
 	wait(func() bool {
 		b.call("GET", path+"/deployment-plans/"+status.ID.String(), nil, 200, &status)
 		return status.Plan != nil
@@ -542,9 +542,9 @@ func testCrossHostCoordinatedPlacement(t *testing.T, expiryPhase string) {
 	var operation, again api.Operation
 	holdCheckpoint.Store(true)
 	refreshAuthentication()
-	b.call("POST", apply, api.ApplyPlan{IdempotencyKey: key}, 201, &operation)
+	b.call("POST", apply, api.ApplyVisualPlan{IdempotencyKey: key, ApproveHostChanges: approved()}, 201, &operation)
 	refreshAuthentication()
-	b.call("POST", apply, api.ApplyPlan{IdempotencyKey: key}, 201, &again)
+	b.call("POST", apply, api.ApplyVisualPlan{IdempotencyKey: key, ApproveHostChanges: approved()}, 201, &again)
 	if again.Id != operation.Id {
 		t.Fatal("duplicate group admission")
 	}
@@ -609,13 +609,13 @@ func testCrossHostCoordinatedPlacement(t *testing.T, expiryPhase string) {
 	b.call("PUT", path+"/draft", map[string]any{"baseRevisionId": draft.Id, "specification": spec}, 200, &draft)
 	waitNetworkReady()
 	refreshAuthentication()
-	b.call("POST", path+"/deployment-plans", api.VisualPlanRequest{BaseRevisionId: draft.Id, ServerId: servers[0].Server.Id, AllowHostChanges: true}, 201, &status)
+	b.call("POST", path+"/deployment-plans", api.VisualPlanRequest{BaseRevisionId: draft.Id, ServerId: servers[0].Server.Id}, 201, &status)
 	wait(func() bool {
 		b.call("GET", path+"/deployment-plans/"+status.ID.String(), nil, 200, &status)
 		return status.Plan != nil
 	})
 	refreshAuthentication()
-	b.call("POST", path+"/deployment-plans/"+status.ID.String()+"/apply", api.ApplyPlan{IdempotencyKey: uuid.New()}, 201, &operation)
+	b.call("POST", path+"/deployment-plans/"+status.ID.String()+"/apply", api.ApplyVisualPlan{IdempotencyKey: uuid.New(), ApproveHostChanges: approved()}, 201, &operation)
 	wait(func() bool {
 		b.call("GET", path+"/runtime", nil, 200, &runtime)
 		return runtime.StateHash == status.Plan.Hash
@@ -978,14 +978,14 @@ func testCrossHostCoordinatedPlacement(t *testing.T, expiryPhase string) {
 		var plan deployment.Status
 		waitNetworkReady()
 		refreshAuthentication()
-		b.call("POST", databasePath+"/deployment-plans", api.VisualPlanRequest{BaseRevisionId: revision, ServerId: servers[0].Server.Id, AllowHostChanges: true}, 201, &plan)
+		b.call("POST", databasePath+"/deployment-plans", api.VisualPlanRequest{BaseRevisionId: revision, ServerId: servers[0].Server.Id}, 201, &plan)
 		wait(func() bool {
 			b.call("GET", databasePath+"/deployment-plans/"+plan.ID.String(), nil, 200, &plan)
 			return plan.Plan != nil
 		})
 		var op api.Operation
 		refreshAuthentication()
-		b.call("POST", databasePath+"/deployment-plans/"+plan.ID.String()+"/apply", api.ApplyPlan{IdempotencyKey: uuid.New()}, 201, &op)
+		b.call("POST", databasePath+"/deployment-plans/"+plan.ID.String()+"/apply", api.ApplyVisualPlan{IdempotencyKey: uuid.New(), ApproveHostChanges: approved()}, 201, &op)
 		wait(func() bool {
 			var state string
 			if err := f.st.Pool.QueryRow(ctx, `SELECT state FROM execution_operations WHERE id=$1`, op.Id).Scan(&state); err != nil {
@@ -1092,7 +1092,7 @@ func testCrossHostCoordinatedPlacement(t *testing.T, expiryPhase string) {
 	var nextPlan deployment.Status
 	waitNetworkReady()
 	refreshAuthentication()
-	b.call("POST", databasePath+"/deployment-plans", api.VisualPlanRequest{BaseRevisionId: nextDraft.Id, ServerId: servers[0].Server.Id, AllowHostChanges: true}, 201, &nextPlan)
+	b.call("POST", databasePath+"/deployment-plans", api.VisualPlanRequest{BaseRevisionId: nextDraft.Id, ServerId: servers[0].Server.Id}, 201, &nextPlan)
 	wait(func() bool {
 		b.call("GET", databasePath+"/deployment-plans/"+nextPlan.ID.String(), nil, 200, &nextPlan)
 		return nextPlan.Plan != nil
@@ -1100,7 +1100,7 @@ func testCrossHostCoordinatedPlacement(t *testing.T, expiryPhase string) {
 	holdCheckpoint.Store(true)
 	var interruptedOrdering api.Operation
 	refreshAuthentication()
-	b.call("POST", databasePath+"/deployment-plans/"+nextPlan.ID.String()+"/apply", api.ApplyPlan{IdempotencyKey: uuid.New()}, 201, &interruptedOrdering)
+	b.call("POST", databasePath+"/deployment-plans/"+nextPlan.ID.String()+"/apply", api.ApplyVisualPlan{IdempotencyKey: uuid.New(), ApproveHostChanges: approved()}, 201, &interruptedOrdering)
 	wait(func() bool { _, ok := checkpointDeliveries.Load(interruptedOrdering.Id.String()); return ok })
 	delivery, _ := checkpointDeliveries.Load(interruptedOrdering.Id.String())
 	if !t.Run("recover_earlier_created_newer_applied_draft", func(t *testing.T) {
@@ -1135,7 +1135,7 @@ func testCrossHostCoordinatedPlacement(t *testing.T, expiryPhase string) {
 	var replacement deployment.Status
 	waitNetworkReady()
 	refreshAuthentication()
-	b.call("POST", databasePath+"/deployment-plans", api.VisualPlanRequest{BaseRevisionId: failedDraft.Id, ServerId: servers[0].Server.Id, AllowHostChanges: true}, 201, &replacement)
+	b.call("POST", databasePath+"/deployment-plans", api.VisualPlanRequest{BaseRevisionId: failedDraft.Id, ServerId: servers[0].Server.Id}, 201, &replacement)
 	wait(func() bool {
 		b.call("GET", databasePath+"/deployment-plans/"+replacement.ID.String(), nil, 200, &replacement)
 		return replacement.Plan != nil
@@ -1143,7 +1143,7 @@ func testCrossHostCoordinatedPlacement(t *testing.T, expiryPhase string) {
 	failCandidate.Store(true)
 	var failedOperation api.Operation
 	refreshAuthentication()
-	b.call("POST", databasePath+"/deployment-plans/"+replacement.ID.String()+"/apply", api.ApplyPlan{IdempotencyKey: uuid.New()}, 201, &failedOperation)
+	b.call("POST", databasePath+"/deployment-plans/"+replacement.ID.String()+"/apply", api.ApplyVisualPlan{IdempotencyKey: uuid.New(), ApproveHostChanges: approved()}, 201, &failedOperation)
 	wait(func() bool {
 		var state string
 		if err := f.st.Pool.QueryRow(ctx, `SELECT state FROM execution_operations WHERE id=$1`, failedOperation.Id).Scan(&state); err != nil {
@@ -1184,7 +1184,7 @@ func testCrossHostCoordinatedPlacement(t *testing.T, expiryPhase string) {
 	var restoreReview deployment.Status
 	waitNetworkReady()
 	refreshAuthentication()
-	b.call("POST", databasePath+"/deployment-plans", api.VisualPlanRequest{BaseRevisionId: restoreDraft.Id, ServerId: servers[0].Server.Id, AllowHostChanges: true}, 201, &restoreReview)
+	b.call("POST", databasePath+"/deployment-plans", api.VisualPlanRequest{BaseRevisionId: restoreDraft.Id, ServerId: servers[0].Server.Id}, 201, &restoreReview)
 	wait(func() bool {
 		b.call("GET", databasePath+"/deployment-plans/"+restoreReview.ID.String(), nil, 200, &restoreReview)
 		return restoreReview.Plan != nil
@@ -1196,7 +1196,7 @@ func testCrossHostCoordinatedPlacement(t *testing.T, expiryPhase string) {
 	holdRemotePause.Store(true)
 	holdRemoteResume.Store(true)
 	refreshAuthentication()
-	b.call("POST", databasePath+"/deployment-plans/"+restoreReview.ID.String()+"/apply", api.ApplyPlan{IdempotencyKey: uuid.New()}, 201, &restoreOperation)
+	b.call("POST", databasePath+"/deployment-plans/"+restoreReview.ID.String()+"/apply", api.ApplyVisualPlan{IdempotencyKey: uuid.New(), ApproveHostChanges: approved()}, 201, &restoreOperation)
 	wait(func() bool {
 		var paused bool
 		if err := f.st.Pool.QueryRow(ctx, `SELECT h.phase='maintenance-pause' AND EXISTS(SELECT 1 FROM execution_operations c WHERE c.parent_id=h.id AND c.server_id=$2 AND c.command->'crosshost'->>'phase'='pause' AND c.state='succeeded') AND EXISTS(SELECT 1 FROM execution_operations c WHERE c.parent_id=h.id AND c.server_id=$3 AND c.command->'crosshost'->>'phase'='pause' AND c.state='dispatched') FROM cross_host_operations h WHERE h.id=$1`, restoreOperation.Id, servers[0].Server.Id, servers[1].Server.Id).Scan(&paused); err != nil {

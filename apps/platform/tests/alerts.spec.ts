@@ -42,7 +42,6 @@ test("operational inbox records and acknowledges a real failed deployment", asyn
   const plan = await fixture.post(`${fixture.path}/deployment-plans`, {
     baseRevisionId: fixture.draft.id,
     serverId,
-    allowHostChanges: false,
     acceptDrift: false,
   });
   await fixture.report(await fixture.poll(), {
@@ -55,6 +54,7 @@ test("operational inbox records and acknowledges a real failed deployment", asyn
   });
   await fixture.post(`${fixture.path}/deployment-plans/${plan.id}/apply`, {
     idempotencyKey: crypto.randomUUID(),
+    approveHostChanges: true,
   });
   const failed = await fixture.poll();
   await fixture.report(

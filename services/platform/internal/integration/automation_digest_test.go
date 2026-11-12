@@ -103,7 +103,7 @@ func (a *automaticCompose) id(name string) string {
 
 func (a *automaticCompose) nextCommit() string {
 	a.commit++
-	return strings.Repeat(string(rune('a'+a.commit-1)), 40)
+	return strings.Repeat(string("abcdef123456789"[a.commit-1]), 40)
 }
 
 // push imports a commit holding compose.yaml and returns its run.
@@ -130,7 +130,7 @@ func (a *automaticCompose) blockedAfterResolve(run uuid.UUID, images map[string]
 	if c.Kind != "visual" || json.Unmarshal(*c.Visual, &payload) != nil || payload.Action != "resolve" {
 		a.t.Fatal("automatic deployment did not start with image review", c.Kind, payload.Action)
 	}
-	a.agent.observe(c, deployment.Observation{Images: images, StateHash: strings.Repeat("d", 64)})
+	a.agent.observe(c, deployment.Observation{Images: images, StateHash: strings.Repeat("d", 64), HostChangesReported: true})
 	return waitBlocked(a.t, a.b, a.path, run)
 }
 
@@ -164,7 +164,7 @@ func TestAutomationStopsForChangedPrivilegedService(t *testing.T) {
 	} {
 		compose = strings.Replace(compose, change.old, change.replacement, 1)
 		note := waitBlocked(t, a.b, a.path, a.push(compose))
-		if !strings.Contains(note, "agent runs privileged or with added Linux capabilities") {
+		if !strings.Contains(note, "agent has host-level access") {
 			t.Fatalf("changed %s: note does not explain the privileged review: %q", change.name, note)
 		}
 		expectReviewNote(t, note)
@@ -175,9 +175,19 @@ func TestAutomationStopsForChangedPrivilegedService(t *testing.T) {
 		a.agent.reviewAndApply(a.b, a.path, a.server, draft.Id, reviewed)
 	}
 
+	// web shares the default network with agent, so it can drive it and is reviewed the same way.
+	peer := "busybox" + digest('3')
+	compose = strings.Replace(compose, pipelineTestImage, peer, 1)
+	if note := waitBlocked(t, a.b, a.path, a.push(compose)); !strings.Contains(note, "web has host-level access") {
+		t.Fatalf("a change to a privileged service's network peer deployed: %q", note)
+	}
+	draft, _ := draftSpec(t, a.b, a.path)
+	reviewed = with(reviewed, a.id("web"), peer)
+	a.agent.reviewAndApply(a.b, a.path, a.server, draft.Id, reviewed)
+
 	run := a.push("# same definition, moved tag\n" + compose)
 	note := a.blockedAfterResolve(run, with(reviewed, a.id("agent"), "monitor"+digest('2')))
-	if !strings.Contains(note, "agent runs privileged") || !strings.Contains(note, "different digest") {
+	if !strings.Contains(note, "agent has host-level access") || !strings.Contains(note, "different digest") {
 		t.Fatalf("note does not explain the privileged digest: %q", note)
 	}
 }

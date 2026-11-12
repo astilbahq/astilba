@@ -89,11 +89,11 @@ func TestOutputAuthorityCloneAndAgentCompatibility(t *testing.T) {
 	b.call("GET", path+"/deployment-plans/"+status.ID.String(), nil, 200, &status)
 	in.Capabilities.ServiceOutputs = &no
 	heartbeat()
-	b.call("POST", path+"/deployment-plans/"+status.ID.String()+"/apply", api.ApplyPlan{IdempotencyKey: uuid.New()}, 400, nil)
+	b.call("POST", path+"/deployment-plans/"+status.ID.String()+"/apply", api.ApplyVisualPlan{IdempotencyKey: uuid.New(), ApproveHostChanges: approved()}, 400, nil)
 	in.Capabilities.ServiceOutputs = &yes
 	heartbeat()
 	var operation api.Operation
-	b.call("POST", path+"/deployment-plans/"+status.ID.String()+"/apply", api.ApplyPlan{IdempotencyKey: uuid.New()}, 201, &operation)
+	b.call("POST", path+"/deployment-plans/"+status.ID.String()+"/apply", api.ApplyVisualPlan{IdempotencyKey: uuid.New(), ApproveHostChanges: approved()}, 201, &operation)
 	agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/poll", token, nil, 200, &polled)
 	var payload deployment.Payload
 	if polled.Command == nil || json.Unmarshal(*polled.Command.Visual, &payload) != nil || payload.Secrets[secret.Id.String()] != "output-secret-canary" {

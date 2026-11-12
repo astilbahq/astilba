@@ -192,9 +192,9 @@ func TestGitHubOnboardingDelegationAndRecoveryBoundaries(t *testing.T) {
 	}
 	b.call("GET", grantPath+"/installations", nil, 200, nil)
 
-	// The authorization remains valid across the real five-minute step-up path.
+	// The authorization remains valid across the real step-up path, once recent authentication lapses.
 	now := time.Now()
-	f.auth.Now = func() time.Time { return now.Add(6 * time.Minute) }
+	f.auth.Now = func() time.Time { return now.Add(16 * time.Minute) }
 	var session api.Session
 	b.call("POST", "/api/v1/auth/reauthenticate", map[string]string{"password": f.password}, 200, &session)
 	b.csrf = session.CsrfToken

@@ -208,7 +208,7 @@ func (s *Server) identity(next http.Handler) http.Handler {
 
 // sessionPrincipal is the principal of a loaded session on account a's current version.
 func (s *Server) sessionPrincipal(ctx context.Context, a db.Account) *store.Principal {
-	return &store.Principal{Account: a, MFA: s.Sessions.GetBool(ctx, "mfa"), RecentUntil: store.RecentUntil(s.Sessions.GetTime(ctx, "recent"), s.Auth.Now()), SessionHash: ctx.Value(sessionLoadKey{}).(*sessionLoad).token}
+	return &store.Principal{Account: a, MFA: s.Sessions.GetBool(ctx, "mfa"), RecentUntil: store.RecentUntil(s.Sessions.GetTime(ctx, "recent"), s.Auth.Now()), CredentialRecentUntil: store.CredentialRecentUntil(s.Sessions.GetTime(ctx, "recent"), s.Auth.Now()), SessionHash: ctx.Value(sessionLoadKey{}).(*sessionLoad).token}
 }
 
 func (s *Server) csrf(next http.Handler) http.Handler {
@@ -323,7 +323,7 @@ func (s *Server) session(ctx context.Context) (api.Session, error) {
 		}
 		s.Sessions.Put(ctx, "csrf", token)
 	}
-	out := api.Session{CsrfToken: token, Workspaces: []api.Workspace{}, MfaPending: s.Sessions.GetString(ctx, "pending") != "" && store.Recent(s.Sessions.GetTime(ctx, "pending-at"), s.Auth.Now())}
+	out := api.Session{CsrfToken: token, Workspaces: []api.Workspace{}, MfaPending: s.Sessions.GetString(ctx, "pending") != "" && store.PendingSignIn(s.Sessions.GetTime(ctx, "pending-at"), s.Auth.Now())}
 	id, err := uuid.Parse(s.Sessions.GetString(ctx, "account"))
 	if err != nil {
 		return out, nil
@@ -388,7 +388,7 @@ func (s *Server) VerifyMFA(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id, e := uuid.Parse(s.Sessions.GetString(r.Context(), "pending"))
-	if e != nil || !store.Recent(s.Sessions.GetTime(r.Context(), "pending-at"), s.Auth.Now()) {
+	if e != nil || !store.PendingSignIn(s.Sessions.GetTime(r.Context(), "pending-at"), s.Auth.Now()) {
 		s.fail(w, r, domain.Credentials)
 		return
 	}
@@ -409,18 +409,11 @@ func (s *Server) Logout(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(204)
 }
-func (s *Server) recent(r *http.Request) error {
-	if p := principal(r.Context()); p == nil {
-		return domain.Unauthenticated
-	} else if !p.Recent() {
-		return domain.RecentRequired
-	}
-	return nil
-}
+
 func (s *Server) ChangePassword(w http.ResponseWriter, r *http.Request) {
 	b, e := decode[api.NewPassword](r)
 	if e == nil {
-		e = s.recent(r)
+		e = s.credentialRecent(r)
 	}
 	if e != nil {
 		s.fail(w, r, e)
@@ -512,7 +505,7 @@ func (s *Server) AcceptInvitation(w http.ResponseWriter, r *http.Request) {
 	s.sendSession(w, r)
 }
 func (s *Server) EnrollMFA(w http.ResponseWriter, r *http.Request) {
-	if e := s.recent(r); e != nil {
+	if e := s.credentialRecent(r); e != nil {
 		s.fail(w, r, e)
 		return
 	}
@@ -526,7 +519,7 @@ func (s *Server) EnrollMFA(w http.ResponseWriter, r *http.Request) {
 func (s *Server) ConfirmMFA(w http.ResponseWriter, r *http.Request) {
 	b, e := decode[api.Code](r)
 	if e == nil {
-		e = s.recent(r)
+		e = s.credentialRecent(r)
 	}
 	if e != nil {
 		s.fail(w, r, e)
@@ -536,7 +529,7 @@ func (s *Server) ConfirmMFA(w http.ResponseWriter, r *http.Request) {
 	s.sendCodes(w, r, a, codes, e)
 }
 func (s *Server) RegenerateRecoveryCodes(w http.ResponseWriter, r *http.Request) {
-	if e := s.recent(r); e != nil {
+	if e := s.credentialRecent(r); e != nil {
 		s.fail(w, r, e)
 		return
 	}
@@ -559,7 +552,7 @@ func (s *Server) sendCodes(w http.ResponseWriter, r *http.Request, a db.Account,
 	s.respond(w, 200, api.RecoveryCodes{Codes: codes, Session: session, Generation: a.RecoveryCodesGeneration})
 }
 func (s *Server) DisableMFA(w http.ResponseWriter, r *http.Request) {
-	if e := s.recent(r); e != nil {
+	if e := s.credentialRecent(r); e != nil {
 		s.fail(w, r, e)
 		return
 	}

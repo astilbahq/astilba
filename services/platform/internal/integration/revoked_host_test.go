@@ -59,7 +59,7 @@ func TestEnvironmentConsolidatesOffARevokedSecondary(t *testing.T) {
 func (g *revokedGroup) removePlacement(t *testing.T, e *primaryEnvironment, primary *aheadHost) {
 	t.Helper()
 	g.b.call("PUT", e.path+"/draft", map[string]any{"baseRevisionId": e.draft.Id, "specification": e.spec}, 200, &e.draft)
-	g.applied(t, e, <-g.b.send("POST", e.path+"/deployment-plans", api.VisualPlanRequest{BaseRevisionId: e.draft.Id, ServerId: primary.id, AllowHostChanges: true}))
+	g.applied(t, e, <-g.b.send("POST", e.path+"/deployment-plans", api.VisualPlanRequest{BaseRevisionId: e.draft.Id, ServerId: primary.id}))
 }
 
 // A host that will never answer must not hold a deployment open, or the healthy hosts that are
@@ -162,7 +162,7 @@ func TestRevocationEndsStandaloneWorkForGood(t *testing.T) {
 	e.spec.Variables = append(e.spec.Variables, domain.Variable{Name: "CHANGED", Value: &image})
 	g.b.call("PUT", e.path+"/draft", map[string]any{"baseRevisionId": e.draft.Id, "specification": e.spec}, 200, &e.draft)
 	g.hold(gone, "visual-deploy")
-	status := g.reviewed(t, &e, <-g.b.send("POST", e.path+"/deployment-plans", api.VisualPlanRequest{BaseRevisionId: e.draft.Id, ServerId: gone.id, AllowHostChanges: true}))
+	status := g.reviewed(t, &e, <-g.b.send("POST", e.path+"/deployment-plans", api.VisualPlanRequest{BaseRevisionId: e.draft.Id, ServerId: gone.id}))
 	op := g.apply(t, &e, status)
 	g.waitFor(t, "the host to receive the deployment", func() bool { return g.received(gone, "visual-deploy") })
 	g.revoke(t, gone)
@@ -270,7 +270,7 @@ func TestRevocationStopsAReleaseCommandThatHasNotStarted(t *testing.T) {
 	g.reviewed(t, &e, g.place(t, &e, gone.id, b.id))
 	command := []string{"migrate"}
 	var status deployment.Status
-	g.b.call("POST", e.path+"/deployment-plans", api.VisualPlanRequest{BaseRevisionId: e.draft.Id, ServerId: gone.id, AllowHostChanges: true, ReleaseOptions: &api.ReleaseOptions{Command: command, CommandTimeoutSeconds: 60, DrainSeconds: 30}}, 201, &status)
+	g.b.call("POST", e.path+"/deployment-plans", api.VisualPlanRequest{BaseRevisionId: e.draft.Id, ServerId: gone.id, ReleaseOptions: &api.ReleaseOptions{Command: command, CommandTimeoutSeconds: 60, DrainSeconds: 30}}, 201, &status)
 	g.waitFor(t, "the plan to resolve", func() bool {
 		g.b.call("GET", e.path+"/deployment-plans/"+status.ID.String(), nil, 200, &status)
 		return status.Plan != nil
@@ -391,7 +391,7 @@ func TestPlanLeavingAServerBehindNeedsItStillRevoked(t *testing.T) {
 		t.Fatal(err)
 	}
 	g.networkReady(t)
-	g.b.call("POST", e.path+"/deployment-plans/"+status.ID.String()+"/apply", api.ApplyPlan{IdempotencyKey: uuid.New()}, 409, nil)
+	g.b.call("POST", e.path+"/deployment-plans/"+status.ID.String()+"/apply", api.ApplyVisualPlan{IdempotencyKey: uuid.New(), ApproveHostChanges: approved()}, 409, nil)
 }
 
 // A host revoked with nothing left to run still loses its runtime record when the plan finishes.

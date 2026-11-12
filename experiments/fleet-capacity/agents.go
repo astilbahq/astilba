@@ -531,7 +531,9 @@ func applicationSpec(ids []string, tag, name string) map[string]any {
 }
 
 // deploy runs one real review cycle: new draft, plan, agent resolution, apply.
-func (a *agent) deploy(ctx context.Context, b *browser, tag string, hostChanges bool) error {
+// deploy approves whatever host changes the plan needs reviewed, as the owner the harness
+// signs in as; a plan that needs none ignores the approval.
+func (a *agent) deploy(ctx context.Context, b *browser, tag string) error {
 	path := "/api/v1/workspaces/" + a.workspace + "/projects/" + a.project + "/environments/" + a.env
 	spec := applicationSpec(a.apps, tag, "s"+strings.ReplaceAll(a.id, "-", ""))
 	if a.spec != nil {
@@ -552,7 +554,7 @@ func (a *agent) deploy(ctx context.Context, b *browser, tag string, hostChanges 
 			UnitID string `json:"unitId"`
 		} `json:"plan"`
 	}
-	if err := b.call(ctx, "POST", path+"/deployment-plans", map[string]any{"serverId": a.id, "baseRevisionId": a.revision, "allowHostChanges": hostChanges, "acceptDrift": false}, &status, 201); err != nil {
+	if err := b.call(ctx, "POST", path+"/deployment-plans", map[string]any{"serverId": a.id, "baseRevisionId": a.revision, "acceptDrift": false}, &status, 201); err != nil {
 		return err
 	}
 	for range 480 {
@@ -573,7 +575,7 @@ func (a *agent) deploy(ctx context.Context, b *browser, tag string, hostChanges 
 	for len(a.delivered) > 0 {
 		<-a.delivered
 	}
-	if err := b.call(ctx, "POST", path+"/deployment-plans/"+status.ID+"/apply", map[string]string{"idempotencyKey": uuid4()}, nil, 201); err != nil {
+	if err := b.call(ctx, "POST", path+"/deployment-plans/"+status.ID+"/apply", map[string]any{"idempotencyKey": uuid4(), "approveHostChanges": true}, nil, 201); err != nil {
 		return err
 	}
 	select {
@@ -781,7 +783,7 @@ func firstDeployments(ctx context.Context, b *browser, cfg *agentConfig, agents 
 	for range setupWorkers * 2 {
 		wg.Go(func() {
 			for a := range jobs {
-				err := a.deploy(ctx, b, "1.0.0", true)
+				err := a.deploy(ctx, b, "1.0.0")
 				if err != nil {
 					select {
 					case errs <- err:
@@ -838,7 +840,7 @@ func deployLoop(ctx context.Context, b *browser, cfg *agentConfig, st *statistic
 		st.mu.Unlock()
 		wg.Go(func() {
 			defer a.busy.Store(false)
-			err := a.deploy(ctx, b, fmt.Sprintf("1.0.%d", counter.Add(1)), false)
+			err := a.deploy(ctx, b, fmt.Sprintf("1.0.%d", counter.Add(1)))
 			if err != nil && ctx.Err() == nil {
 				st.fail("deploy: %v", err)
 			}

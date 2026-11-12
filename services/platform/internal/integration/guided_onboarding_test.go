@@ -44,7 +44,7 @@ func TestRecoveryCodeConfirmationIsGenerationBoundAndDoesNotReauthenticate(t *te
 	}
 	owner.call("POST", path, map[string]string{"generation": uuid.NewString()}, 409, nil)
 	owner.call("POST", path, map[string]string{}, 400, nil)
-	future := time.Now().Add(6 * time.Minute)
+	future := time.Now().Add(16 * time.Minute)
 	f.auth.Now = func() time.Time { return future }
 	var saved api.Session
 	owner.call("POST", path, map[string]string{"generation": codes.Generation.String()}, 200, &saved)
