@@ -19,9 +19,13 @@ func TestManagedNetworkSweepYieldsBlockedAndCompletedWorkspaces(t *testing.T) {
 		hosted     bool
 		identified bool
 		inert      int
+		// ended is how long ago the hosted tenant's management ended.
+		ended string
 	}{
-		{name: "expired_tenant_unknown_peer", hosted: true, inert: 1},
-		{name: "expired_tenant_identified_peer", hosted: true, identified: true, inert: 1},
+		{name: "expired_tenant_unknown_peer", hosted: true, inert: 1, ended: "1 hour"},
+		{name: "expired_tenant_identified_peer", hosted: true, identified: true, inert: 1, ended: "1 hour"},
+		// Restricting peers only takes access away, so it still reaches them after recovery closes.
+		{name: "tenant_past_recovery", hosted: true, inert: 1, ended: "31 days"},
 		{name: "beyond_first_batch", inert: 1000},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -106,7 +110,7 @@ func TestManagedNetworkSweepYieldsBlockedAndCompletedWorkspaces(t *testing.T) {
 			}
 			f.st.Hosted = tc.hosted
 			if tc.hosted {
-				if _, err := f.st.Pool.Exec(ctx, `INSERT INTO hosted_subscriptions(workspace_id,status,management_until,server_limit) VALUES($1,'granted',now()-interval '1 hour',4)`, first); err != nil {
+				if _, err := f.st.Pool.Exec(ctx, `INSERT INTO hosted_subscriptions(workspace_id,status,management_until,server_limit) VALUES($1,'granted',now()-$2::interval,4)`, first, tc.ended); err != nil {
 					t.Fatal(err)
 				}
 				if err := f.st.GrantManagement(ctx, last, time.Now().Add(time.Hour), 2); err != nil {

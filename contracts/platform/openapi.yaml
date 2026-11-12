@@ -1565,7 +1565,7 @@
           "content":
             "application/json":
               "schema":
-                "$ref": "#/components/schemas/Revision"
+                "$ref": "#/components/schemas/SavedDraft"
         "default":
           "description": "Error"
           "content":
@@ -6675,6 +6675,89 @@
         - "authorId"
         - "createdAt"
         - "hash"
+    SavedDraft:
+      type: object
+      additionalProperties: false
+      description: The saved draft revision. `hash` and `specification` are present only for a caller that may read the environment, so a credential without `environment:read` learns nothing from a save beyond the new revision's identity.
+      required: [id, authorId, createdAt]
+      properties:
+        id: {type: string, format: uuid}
+        authorId: {type: string, format: uuid}
+        createdAt: {type: string, format: date-time}
+        hash: {type: string, maxLength: 64}
+        specification: {$ref: '#/components/schemas/Specification'}
+    "DraftSpecification":
+      "type": "object"
+      "description": "A specification as a draft save sends it. It is a Specification whose Compose bundle may leave out `namespace` and `origin`."
+      "additionalProperties": false
+      "properties":
+        placement: {$ref: '#/components/schemas/CrossHostPlacement'}
+        "version":
+          "type": "integer"
+          "enum":
+            - 1
+        "applications":
+          "type": "array"
+          "items":
+            "$ref": "#/components/schemas/ApplicationReference"
+          "maxItems": 50
+        "variables":
+          "type": "array"
+          "items":
+            "$ref": "#/components/schemas/Variable"
+          "maxItems": 100
+        "volumes":
+          "type": "array"
+          "items":
+            "$ref": "#/components/schemas/Volume"
+          "maxItems": 50
+        "bindings":
+          "type": "array"
+          "items":
+            "$ref": "#/components/schemas/Binding"
+          "maxItems": 100
+        "routes":
+          "type": "array"
+          "items":
+            "$ref": "#/components/schemas/Route"
+          "maxItems": 50
+        "compose":
+          "$ref": "#/components/schemas/DraftComposeBundle"
+        "networks":
+          "type": "array"
+          "items":
+            "$ref": "#/components/schemas/NetworkReference"
+          "maxItems": 20
+      "required":
+        - "version"
+        - "applications"
+        - "variables"
+      "x-go-type": "jsontext.Value"
+      "x-go-type-import": {"path": "encoding/json/jsontext"}
+    "DraftComposeBundle":
+      "type": "object"
+      "description": "A Compose bundle as a draft save sends it. The draft keeps its own `namespace` and Git `origin`, so a save may leave both out. A caller that may read the environment may send them unchanged; a credential without `environment:read` must leave them out."
+      "additionalProperties": false
+      "properties":
+        "namespace":
+          "type": "string"
+          "format": "uuid"
+        "entrypoints":
+          "type": "array"
+          "items":
+            "type": "string"
+            "maxLength": 240
+          "maxItems": 8
+        "files":
+          "type": "array"
+          "items":
+            "$ref": "#/components/schemas/ComposeFile"
+          "maxItems": 16
+        "origin":
+          "$ref": "#/components/schemas/ComposeOrigin"
+      "required":
+        - "entrypoints"
+        - "files"
     "DraftUpdate":
       "type": "object"
       "additionalProperties": false
@@ -6683,7 +6766,7 @@
           "type": "string"
           "format": "uuid"
         "specification":
-          "$ref": "#/components/schemas/Specification"
+          "$ref": "#/components/schemas/DraftSpecification"
       "required":
         - "baseRevisionId"
         - "specification"
@@ -7294,6 +7377,13 @@
             -
               "$ref": "#/components/schemas/VisualPlan"
           "nullable": true
+          "description": "The whole plan, configuration included, once it is ready. Null for a credential without `environment:read`."
+        "review":
+          "allOf":
+            -
+              "$ref": "#/components/schemas/VisualPlanReview"
+          "nullable": true
+          "description": "What reviewing and applying the plan needs, for every caller, once it is ready."
         "hostReview":
           "type": "boolean"
           "description": "Whether applying the plan needs an owner to approve host changes the environment's applied deployment does not already have."
@@ -7302,8 +7392,67 @@
         - "operationId"
         - "state"
         - "plan"
+        - "review"
       "x-go-type": "jsontext.Value"
       "x-go-type-import": {"path": "encoding/json/jsontext"}
+    VisualPlanReview:
+      type: object
+      additionalProperties: false
+      description: A plan without the configuration it deploys. It has no specification, plaintext variables or Compose files.
+      required: [id, serverId, revisionId, hash, expiresAt, hostChanges, acceptDrift, effects, permissions, images, release, units]
+      properties:
+        id: {type: string, format: uuid}
+        serverId: {type: string, format: uuid}
+        revisionId: {type: string, format: uuid}
+        hash: {type: string, maxLength: 64}
+        expiresAt: {type: string, format: date-time}
+        hostChanges: {type: boolean}
+        acceptDrift: {type: boolean}
+        effects:
+          type: array
+          maxItems: 100
+          items: {type: string, maxLength: 300}
+        permissions:
+          type: array
+          description: Host permissions the plan's Compose file asks for.
+          maxItems: 100
+          items: {type: string, maxLength: 300}
+        images:
+          type: object
+          description: The image digest each application deploys, by application ID.
+          maxProperties: 20
+          additionalProperties: {type: string, maxLength: 512}
+        release:
+          allOf:
+            - $ref: '#/components/schemas/VisualPlanReleaseReview'
+          nullable: true
+        units:
+          type: array
+          description: The servers a cross-host plan changes, with the images it pins on each.
+          maxItems: 4
+          items: {$ref: '#/components/schemas/VisualPlanUnitReview'}
+    VisualPlanUnitReview:
+      type: object
+      additionalProperties: false
+      required: [serverId, images, release]
+      properties:
+        serverId: {type: string, format: uuid}
+        images:
+          type: object
+          maxProperties: 20
+          additionalProperties: {type: string, maxLength: 512}
+        release:
+          allOf:
+            - $ref: '#/components/schemas/VisualPlanReleaseReview'
+          nullable: true
+    VisualPlanReleaseReview:
+      type: object
+      additionalProperties: false
+      description: The protected release a plan runs, and the command it runs first with the environment's secrets.
+      required: [applicationId, options]
+      properties:
+        applicationId: {type: string, format: uuid}
+        options: {$ref: '#/components/schemas/ReleaseOptions'}
     PrimaryReplacement:
       type: object
       additionalProperties: false

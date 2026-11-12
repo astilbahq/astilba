@@ -106,7 +106,7 @@ func (s *Service) SavePreviewPolicy(ctx context.Context, p store.Principal, ws, 
 	// saves re-reads the draft, generation, runner and connection the check was made for.
 	// Enabling approves every preview's host changes in advance, so it takes the window for
 	// approving host changes.
-	err := s.gitScope(ctx, p, ws, workspaceAccess{Write: true, Owner: true, Credential: in.Enabled}, "preview.policy", env, func(tx pgx.Tx, git *gitAnswers) error {
+	err := s.gitScope(ctx, p, ws, workspaceAccess{Write: true, Owner: true, Credential: in.Enabled, Revocation: true}, "preview.policy", env, func(tx pgx.Tx, git *gitAnswers) error {
 		v, err := loadVisualEnvironment(ctx, tx, ws, pid, env)
 		if err != nil {
 			return err
@@ -119,6 +119,14 @@ func (s *Service) SavePreviewPolicy(ctx context.Context, p store.Principal, ws, 
 			return err
 		}
 		exists := err == nil
+		// Pausing stays possible on a lapsed workspace, so an owner can always stop new previews.
+		// Every other save is management.
+		pause := !in.Enabled && exists && Hash(old.Config) == Hash(cfg)
+		if !pause {
+			if err = s.Store.ManagementAdmission(ctx, tx, ws); err != nil {
+				return err
+			}
+		}
 		if !exists && in.Generation != 0 {
 			return domain.Conflict
 		}
@@ -149,7 +157,7 @@ func (s *Service) SavePreviewPolicy(ctx context.Context, p store.Principal, ws, 
 		if active && in.Enabled && (old.Actor != p.Account.ID || old.AuthVersion != p.Account.AuthVersion) {
 			return domain.Invalid("preview.cleanupBeforeReapproval")
 		}
-		if !in.Enabled && exists && Hash(old.Config) == Hash(cfg) {
+		if pause {
 			_, err = tx.Exec(ctx, "UPDATE preview_policies SET enabled=false WHERE id=$1", old.ID)
 			if err != nil {
 				return err

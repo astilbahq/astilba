@@ -116,9 +116,9 @@ func (s *Service) EnvironmentOperation(ctx context.Context, p store.Principal, w
 		if err != nil {
 			return err
 		}
-		if g := p.Automation; g != nil && !g.Allows(domain.EnvironmentRead) {
-			allowed := out.Kind == "visual" && g.Allows(domain.DeploymentPlan, domain.DeploymentApply)
-			if out.Kind == "pipeline" && g.Allows(domain.BuildRun) {
+		if !p.MayReadEnvironment() {
+			allowed := out.Kind == "visual" && p.Automation.Allows(domain.DeploymentPlan, domain.DeploymentApply)
+			if out.Kind == "pipeline" && p.Automation.Allows(domain.BuildRun) {
 				if err = tx.QueryRow(ctx, "SELECT configuration->>'action'='build' FROM pipeline_runs WHERE workspace_id=$1 AND environment_id=$2 AND id=$3", ws, env, id).Scan(&allowed); err != nil {
 					return err
 				}
