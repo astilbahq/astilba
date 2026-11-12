@@ -302,7 +302,7 @@ func (s *Service) BackupCommand(ctx context.Context, p store.Principal, ws, pid,
 		out, err = s.insert(ctx, tx, ws, in.RequestKey, nil, c)
 		return err
 	})
-	return out, err
+	return operationFor(p, out), err
 }
 func (s *Service) hydrateBackup(ctx context.Context, c *api.ExecutionCommand) error {
 	if c.CancelRequested || time.Now().After(c.Deadline) {

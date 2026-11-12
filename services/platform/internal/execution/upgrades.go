@@ -267,7 +267,7 @@ func (s *Service) UpgradeAction(ctx context.Context, p store.Principal, ws, pid,
 		_, err = tx.Exec(ctx, "UPDATE supported_upgrades SET status=$2 WHERE id=$1", id, raw)
 		return err
 	})
-	return out, err
+	return operationFor(p, out), err
 }
 func (s *Service) hydrateUpgrade(ctx context.Context, c *api.ExecutionCommand) error {
 	var cmd upgrade.Command

@@ -8,10 +8,10 @@ import (
 	"time"
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
-	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
 	"github.com/astilbahq/astilba/services/platform/internal/diagnostic"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/mailer"
+	"github.com/astilbahq/astilba/services/platform/internal/randtoken"
 	"github.com/jackc/pgx/v5"
 	"github.com/riverqueue/river"
 )
@@ -115,7 +115,7 @@ func (w *ResetMailWorker) Work(ctx context.Context, job *river.Job[ResetMailArgs
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return w.unprepared(job, err)
 	}
-	token, err := cryptobox.Token()
+	token, err := randtoken.New()
 	if err != nil {
 		return w.unprepared(job, err)
 	}

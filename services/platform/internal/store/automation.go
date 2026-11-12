@@ -10,8 +10,8 @@ import (
 	"time"
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
-	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
+	"github.com/astilbahq/astilba/services/platform/internal/randtoken"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -38,7 +38,7 @@ func (s *Store) CreateAutomation(ctx context.Context, p Principal, ws, project, 
 	if err = domain.ValidateAutomation(capabilities, expires, now); err != nil {
 		return out, "", err
 	}
-	secret, err := cryptobox.Token()
+	secret, err := randtoken.New()
 	if err != nil {
 		return out, "", err
 	}

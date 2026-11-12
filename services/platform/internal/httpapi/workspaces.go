@@ -9,8 +9,8 @@ import (
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/auth"
-	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
+	"github.com/astilbahq/astilba/services/platform/internal/randtoken"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -206,7 +206,7 @@ func (s *Server) InviteMember(w http.ResponseWriter, r *http.Request, ws uuid.UU
 		s.fail(w, r, domain.Invalid("invitation"))
 		return
 	}
-	token, e := cryptobox.Token()
+	token, e := randtoken.New()
 	if e != nil {
 		s.fail(w, r, e)
 		return

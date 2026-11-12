@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { download } from "./fetch-attempts.mjs";
@@ -111,6 +111,24 @@ async function check() {
   console.log(`Public Suffix List matches publicsuffix/list at ${sha}`);
 }
 
+// A scheduled run reports a failed check beside the scan's findings, so neither hides
+// the other in its issue.
+export function addToReport(path, error) {
+  if (!path || !existsSync(path)) return;
+  const written = JSON.parse(readFileSync(path, "utf8"));
+  written.problems.push({
+    section: "Public Suffix List",
+    key: "public-suffix-list",
+    text: error.message,
+  });
+  writeFileSync(path, JSON.stringify(written));
+}
+
 if (import.meta.url === pathToFileURL(process.argv[1]).href) {
-  await (process.argv[2] === "--check" ? check() : pin());
+  await (process.argv[2] === "--check"
+    ? check().catch((error) => {
+        addToReport(process.env.VULNERABILITY_REPORT, error);
+        throw error;
+      })
+    : pin());
 }

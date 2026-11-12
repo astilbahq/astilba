@@ -7,9 +7,9 @@ import (
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
-	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
+	"github.com/astilbahq/astilba/services/platform/internal/randtoken"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
@@ -117,7 +117,7 @@ func (s *Service) CloneVisual(ctx context.Context, p store.Principal, ws, pid, s
 			if a.Postgres != nil {
 				id, ok := secrets[a.Postgres.PasswordSecretVersionID]
 				if !ok {
-					pass, err := cryptobox.Token()
+					pass, err := randtoken.New()
 					if err != nil {
 						return err
 					}

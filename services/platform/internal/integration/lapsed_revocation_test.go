@@ -12,9 +12,9 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/agent"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/auth"
-	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/hosting"
+	"github.com/astilbahq/astilba/services/platform/internal/randtoken"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
 )
@@ -92,7 +92,7 @@ func TestLapsedWorkspaceOwnerCanRevokeAccess(t *testing.T) {
 				t.Fatal(err)
 			}
 			invite := func(email string) (uuid.UUID, string) {
-				token, err := cryptobox.Token()
+				token, err := randtoken.New()
 				if err != nil {
 					t.Fatal(err)
 				}

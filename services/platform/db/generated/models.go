@@ -721,6 +721,11 @@ type RouteClaim struct {
 	EnvironmentID uuid.UUID `json:"environment_id"`
 }
 
+type SchemaAdditiveMigration struct {
+	Version    int64     `json:"version"`
+	RecordedAt time.Time `json:"recorded_at"`
+}
+
 type Secret struct {
 	WorkspaceID   uuid.UUID `json:"workspace_id"`
 	EnvironmentID uuid.UUID `json:"environment_id"`
