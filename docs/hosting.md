@@ -712,6 +712,14 @@ Each class of retention cleanup commits separately, so one that fails does not s
 others, and logs `retention cleanup failed` with the class. The preview sweep takes every workspace's oldest due work before any
 workspace's second, and its jobs run in the Git queue described above, sharing it by workspace.
 
+Secret access records note every time management was given the keys to a workspace's stored
+values: who it was for, why, which items by ID, and how it ended. Workspace owners see them on
+the workspace page and through `GET /api/v1/workspaces/{workspaceId}/secret-access`. They are
+not part of workspace exports. `ASTILBA_SECRET_ACCESS_RETENTION_DAYS` sets how long they are
+kept, from 30 to 3650 days with a default of 400; hosted installations keep 400. `astilba
+migrate` writes the value into the database, so a change takes effect at the next migrate, and
+serving never changes it. An hourly job removes expired records, up to 5,000 a run.
+
 `ASTILBA_LOG_RETENTION_DAYS` controls terminal operation diagnostics and build log
 retention, defaulting to 30 days. Cleanup processes at most 100 records from each
 category per minute, including historical cross-host receipt logs, and leaves

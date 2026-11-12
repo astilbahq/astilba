@@ -1326,6 +1326,37 @@
           "schema":
             "type": "string"
             "format": "uuid"
+  "/api/v1/workspaces/{workspaceId}/secret-access":
+    "get":
+      "operationId": "listSecretAccess"
+      "description": "Owners only. Every time management was given the keys to the workspace's stored values, newest first, a page at a time."
+      "parameters":
+        -
+          "name": "workspaceId"
+          "in": "path"
+          "required": true
+          "schema":
+            "type": "string"
+            "format": "uuid"
+        -
+          "name": "before"
+          "in": "query"
+          "schema":
+            "type": "string"
+            "format": "uuid"
+      "responses":
+        "200":
+          "description": "Success"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/SecretAccessPage"
+        "default":
+          "description": "Error"
+          "content":
+            "application/json":
+              "schema":
+                "$ref": "#/components/schemas/Error"
   "/api/v1/workspaces/{workspaceId}/projects":
     "get":
       "operationId": "listProjects"
@@ -9513,6 +9544,56 @@
           maxItems: 100
           items: {$ref: '#/components/schemas/Alert'}
         next: {type: string, format: uuid}
+    SecretAccessPage:
+      type: object
+      additionalProperties: false
+      required: [records]
+      properties:
+        records:
+          type: array
+          maxItems: 100
+          items: {$ref: '#/components/schemas/SecretAccessRecord'}
+        next: {type: string, format: uuid}
+    SecretAccessRecord:
+      type: object
+      additionalProperties: false
+      required: [id, at, purpose, principal, items, itemCount, reason, outcome]
+      properties:
+        id: {type: string, format: uuid}
+        at: {type: string, format: date-time}
+        purpose: {type: string, enum: [seal, deliver, operate, inspect, copy, export, recover, rotate, authenticate, token]}
+        principal: {$ref: '#/components/schemas/SecretAccessPrincipal'}
+        operationId: {type: string, format: uuid}
+        items:
+          type: array
+          maxItems: 256
+          items: {$ref: '#/components/schemas/SecretAccessItem'}
+        itemCount: {type: integer, minimum: 0}
+        reason: {type: string, maxLength: 64}
+        outcome: {type: string, enum: [released, used, refused, failed, abandoned, unknown]}
+    SecretAccessPrincipal:
+      type: object
+      additionalProperties: false
+      required: [kind]
+      properties:
+        kind: {type: string, enum: [account, automation, agent, system, installation]}
+        accountId: {type: string, format: uuid}
+        accountEmail: {type: string, maxLength: 254, description: "Present while the account is a member of the workspace."}
+        automationId: {type: string, format: uuid}
+        automationName: {type: string, maxLength: 80}
+        serverId: {type: string, format: uuid}
+        serverName: {type: string, maxLength: 80}
+        instance: {type: string, maxLength: 32, description: "A short fingerprint of the agent instance's key or credential."}
+        job: {type: string, maxLength: 64}
+    SecretAccessItem:
+      type: object
+      additionalProperties: false
+      required: [kind]
+      description: "One item the keys were given for, or, without an id, every item of its kind."
+      properties:
+        kind: {type: string, maxLength: 64}
+        id: {type: string, format: uuid}
+        name: {type: string, maxLength: 200}
     AlertSettings:
       type: object
       additionalProperties: false

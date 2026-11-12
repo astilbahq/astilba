@@ -521,6 +521,102 @@ export default interface Resources {
     "retry": "Try again",
     "title": "Projects"
   },
+  "secret-access": {
+    "allOfKind": {
+      "alertWebhook": "The alert webhook",
+      "backupDestination": "All backup destinations",
+      "backupPolicy": "All backup policies",
+      "buildSecret": "All build secrets",
+      "git": "All Git connections",
+      "githubAuthorization": "All GitHub authorizations",
+      "recoveryCheckpoint": "All recovery checkpoints",
+      "registry": "All registry credentials",
+      "secretVersion": "All secrets",
+      "totp": "All authenticators",
+      "totpPending": "All authenticators being set up"
+    },
+    "caption": "Secret access records, newest first",
+    "column": {
+      "items": "Items",
+      "outcome": "Outcome",
+      "principal": "For",
+      "purpose": "What was opened",
+      "reason": "Reason",
+      "when": "When"
+    },
+    "description": "Each time management opened this workspace’s stored secrets and credentials: why, for whom, and how it ended.",
+    "empty": "No secret access has been recorded in this workspace.",
+    "item": {
+      "allOther": "All items of kind {{kind}}",
+      "more": "and {{count}} more" | "and {{count}} more",
+      "named": "{{name}} ({{kind}})",
+      "none": "None listed",
+      "unnamed": "{{kind}} {{id}}"
+    },
+    "kind": {
+      "alertWebhook": "Alert webhook",
+      "backupDestination": "Backup destination",
+      "backupPolicy": "Backup policy",
+      "buildSecret": "Build secret",
+      "git": "Git connection",
+      "githubAuthorization": "GitHub authorization",
+      "recoveryCheckpoint": "Recovery checkpoint",
+      "registry": "Registry credential",
+      "secretVersion": "Secret",
+      "totp": "Authenticator",
+      "totpPending": "Authenticator being set up"
+    },
+    "loadFailed": "Secret access records could not be loaded.",
+    "loadMore": "Load more",
+    "loadMoreFailed": "More records could not be loaded.",
+    "loading": "Loading secret access records…",
+    "loadingMore": "Loading more…",
+    "outcome": {
+      "abandoned": "Abandoned",
+      "failed": "Failed",
+      "refused": "Refused",
+      "released": "Released",
+      "unknown": "Unknown",
+      "used": "Used"
+    },
+    "principal": {
+      "account": "Account {{id}}",
+      "automation": "Automation {{id}}",
+      "installation": "Installation maintenance",
+      "instance": "Instance {{instance}}",
+      "server": "Server {{id}}",
+      "system": "Management"
+    },
+    "purpose": {
+      "authenticate": "Checking a two-factor code",
+      "copy": "Copying secrets",
+      "deliver": "Delivering to a server",
+      "export": "Exporting the workspace",
+      "inspect": "Checking stored values",
+      "operate": "Using a credential",
+      "recover": "Recovering the workspace",
+      "rotate": "Rotating encryption keys",
+      "seal": "Storing new values",
+      "token": "Loading the token signing key"
+    },
+    "reason": {
+      "decision": "Deciding what to deliver",
+      "firstRelease": "First delivery to this server",
+      "installationKeyMaintenance": "Installation key maintenance",
+      "redelivery": "The server asked for the values again",
+      "rewrap": "Encryption key change",
+      "signIn": "Sign-in",
+      "standard": "No further detail",
+      "startUp": "Management starting up",
+      "unacknowledged": "An earlier delivery was not confirmed",
+      "write": "New or changed values"
+    },
+    "region": "Secret access records",
+    "retention": "Records are kept for 400 days by default and are not included in workspace exports.",
+    "retry": "Try again",
+    "shown": "Showing {{count}} record." | "Showing {{count}} records.",
+    "title": "Secret access"
+  },
   "troubleshooting": {
     "closeReason": {
       "closed": "Closed by the person who opened it",
