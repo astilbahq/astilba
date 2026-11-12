@@ -185,14 +185,15 @@ func TestLapsedWorkspaceOwnerCanRevokeAccess(t *testing.T) {
 			b.call("POST", prefix+"/troubleshooting-sessions/close", nil, 204, nil)
 
 			// Git automation.
-			b.call("POST", prefix+"/git-connections/"+connection.String()+"/disconnect", nil, 204, nil)
-			if rowExists(t, f, "SELECT 1 FROM github_app_connections WHERE connection_id=$1 AND active", connection) {
-				t.Fatal("the GitHub connection stayed active")
-			}
 			b.call("PUT", envPath+"/source/policy", map[string]bool{"autoDeploy": false}, 204, nil)
 			refusedForSubscription(t, "turning automatic deployment on", b.call("PUT", envPath+"/source/policy", map[string]bool{"autoDeploy": true}, 400, nil))
 			if rowExists(t, f, "SELECT 1 FROM git_sources WHERE environment_id=$1 AND ((configuration->>'autoDeploy')::boolean OR policy_actor<>$2)", env.Id, demoted.ID) {
 				t.Fatal("automatic deployment stayed on, or turning it off changed who approved the source")
+			}
+			// Disconnecting also pauses the source, so it comes after turning auto-deploy off.
+			b.call("POST", prefix+"/git-connections/"+connection.String()+"/disconnect", nil, 204, nil)
+			if rowExists(t, f, "SELECT 1 FROM github_app_connections WHERE connection_id=$1 AND active", connection) {
+				t.Fatal("the GitHub connection stayed active")
 			}
 
 			// Requiring two-factor authentication.
