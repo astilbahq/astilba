@@ -406,6 +406,7 @@ func (s *Server) VerifyMFA(w http.ResponseWriter, r *http.Request) {
 	}
 	s.sendSession(w, r)
 }
+
 // Logout ends the session the browser presented and every token that renewed it since its
 // sign-in. That includes one whose account a credential change has moved on: its row remains
 // until the change renews it, and ending the lineage makes that renewal refuse. Nothing else
