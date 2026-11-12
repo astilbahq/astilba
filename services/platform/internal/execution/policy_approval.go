@@ -54,7 +54,8 @@ func (s *Service) SourcePolicy(ctx context.Context, p store.Principal, ws, pid, 
 	if enabled {
 		action = "git.source.approve"
 	}
-	return s.scope(ctx, p, ws, workspaceAccess{Write: true, Owner: true, Recent: enabled}, action, env, func(tx pgx.Tx) error {
+	// Turning automatic deployment off approves nothing, so a lapsed workspace can still do it.
+	return s.scope(ctx, p, ws, workspaceAccess{Write: true, Owner: true, Recent: enabled, Revocation: !enabled}, action, env, func(tx pgx.Tx) error {
 		if _, err := loadVisualEnvironment(ctx, tx, ws, pid, env); err != nil {
 			return err
 		}

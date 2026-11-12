@@ -62,6 +62,13 @@ func (p Principal) Recent() bool { return time.Now().Before(p.RecentUntil) }
 // CredentialRecent is Recent for the changes that need the shorter window.
 func (p Principal) CredentialRecent() bool { return time.Now().Before(p.CredentialRecentUntil) }
 
+// MayReadEnvironment is whether the principal may read the environment it acts on: every browser
+// member, and an automation credential holding environment:read. Only such a principal is shown the
+// environment's configuration.
+func (p Principal) MayReadEnvironment() bool {
+	return p.Automation == nil || p.Automation.Allows(domain.EnvironmentRead)
+}
+
 type Workspace struct {
 	ID         uuid.UUID
 	Name, Role string
@@ -124,19 +131,19 @@ func (s *Store) InWorkspace(ctx context.Context, p Principal, id uuid.UUID, acce
 }
 
 func (s *Store) InWorkspaceTx(ctx context.Context, p Principal, id uuid.UUID, access WorkspaceAccess, fn func(pgx.Tx, *db.Queries, Workspace) error) error {
-	return s.inWorkspaceTx(ctx, p, id, access, "management", fn)
+	return s.inWorkspaceTx(ctx, p, id, access, admitManagement, fn)
 }
 
-func (s *Store) inWorkspaceTx(ctx context.Context, p Principal, id uuid.UUID, access WorkspaceAccess, mode string, fn func(pgx.Tx, *db.Queries, Workspace) error) error {
+func (s *Store) inWorkspaceTx(ctx context.Context, p Principal, id uuid.UUID, access WorkspaceAccess, mode admission, fn func(pgx.Tx, *db.Queries, Workspace) error) error {
 	return s.inWorkspaceIsolation(ctx, p, id, access, mode, pgx.ReadCommitted, fn)
 }
 
 // InWorkspaceSnapshot holds a consistent view across all exported tables while
 // serializing permission changes and interactive workspace mutations.
 func (s *Store) InWorkspaceSnapshot(ctx context.Context, p Principal, id uuid.UUID, fn func(pgx.Tx, *db.Queries, Workspace) error) error {
-	return s.inWorkspaceIsolation(ctx, p, id, WorkspaceAccess{Write: true, Owner: true, Credential: true}, "recovery", pgx.RepeatableRead, fn)
+	return s.inWorkspaceIsolation(ctx, p, id, WorkspaceAccess{Write: true, Owner: true, Credential: true}, admitRecovery, pgx.RepeatableRead, fn)
 }
-func (s *Store) inWorkspaceIsolation(ctx context.Context, p Principal, id uuid.UUID, access WorkspaceAccess, mode string, isolation pgx.TxIsoLevel, fn func(pgx.Tx, *db.Queries, Workspace) error) error {
+func (s *Store) inWorkspaceIsolation(ctx context.Context, p Principal, id uuid.UUID, access WorkspaceAccess, mode admission, isolation pgx.TxIsoLevel, fn func(pgx.Tx, *db.Queries, Workspace) error) error {
 	var tx pgx.Tx
 	var err error
 	if access.Write || access.Lock {
@@ -158,7 +165,7 @@ func (s *Store) inWorkspaceIsolation(ctx context.Context, p Principal, id uuid.U
 	}
 	q := db.New(tx)
 	err = func() error {
-		w, err := s.admission(ctx, tx, q, p, id, access, mode, isolation)
+		w, err := s.workspaceAdmission(ctx, tx, q, p, id, access, mode, isolation)
 		if err != nil {
 			return err
 		}
@@ -172,7 +179,7 @@ func (s *Store) inWorkspaceIsolation(ctx context.Context, p Principal, id uuid.U
 
 // admission decides whether p may act on the workspace with access, in tx: every check a
 // workspace transaction makes before its work.
-func (s *Store) admission(ctx context.Context, tx pgx.Tx, q *db.Queries, p Principal, id uuid.UUID, access WorkspaceAccess, mode string, isolation pgx.TxIsoLevel) (Workspace, error) {
+func (s *Store) workspaceAdmission(ctx context.Context, tx pgx.Tx, q *db.Queries, p Principal, id uuid.UUID, access WorkspaceAccess, mode admission, isolation pgx.TxIsoLevel) (Workspace, error) {
 	var err error
 	var w Workspace
 	var r db.WorkspaceRow
@@ -215,12 +222,8 @@ func (s *Store) admission(ctx context.Context, tx pgx.Tx, q *db.Queries, p Princ
 		if p.Account.EmailVerifiedAt == nil {
 			return Workspace{}, EmailVerificationRequired
 		}
-		entitlement, e := Entitlement(ctx, tx, id)
-		if e != nil {
+		if e := mode.admit(ctx, tx, id); e != nil {
 			return Workspace{}, e
-		}
-		if mode == "management" && !entitlement.Active(time.Now()) || mode == "recovery" && !entitlement.Recoverable(time.Now()) {
-			return Workspace{}, SubscriptionRequired
 		}
 	}
 	if access.Recent && !p.Recent() || access.Credential && !p.CredentialRecent() {
@@ -239,11 +242,11 @@ func (s *Store) Admit(ctx context.Context, p Principal, id uuid.UUID, access Wor
 		return err
 	}
 	defer tx.Rollback(ctx)
-	mode := "management"
+	mode := admitManagement
 	if recovery {
-		mode = "recovery"
+		mode = admitRecovery
 	}
-	_, err = s.admission(ctx, tx, db.New(tx), p, id, access, mode, pgx.ReadCommitted)
+	_, err = s.workspaceAdmission(ctx, tx, db.New(tx), p, id, access, mode, pgx.ReadCommitted)
 	return Normalize(err)
 }
 

@@ -19,6 +19,9 @@ SELECT * FROM specification_revisions WHERE workspace_id=$1 AND environment_id=$
 -- The revision only if it holds this specification. It compares the documents, not the stored
 -- content hash, which an import carries as the archive gave it.
 SELECT * FROM specification_revisions WHERE workspace_id = @workspace_id AND environment_id = @environment_id AND id = @id AND specification = @specification::jsonb;
+-- name: SpecificationTextSize :one
+-- The bytes a specification takes as specification_revisions' size check measures them.
+SELECT octet_length(sqlc.arg(specification)::jsonb::text)::int AS size;
 -- name: ListRevisions :many
 SELECT id,author_id,content_hash,created_at FROM specification_revisions WHERE workspace_id=$1 AND environment_id=$2 ORDER BY created_at DESC,id DESC LIMIT 50;
 -- name: InsertRevision :one

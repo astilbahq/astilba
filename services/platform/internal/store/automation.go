@@ -97,7 +97,7 @@ func (s *Store) ListAutomation(ctx context.Context, p Principal, ws, project, en
 }
 
 func (s *Store) RevokeAutomation(ctx context.Context, p Principal, ws, project, env, id uuid.UUID) error {
-	return s.InWorkspace(ctx, p, ws, WorkspaceAccess{Write: true, Owner: true, Recent: true}, func(q *db.Queries, _ Workspace) error {
+	return s.InWorkspaceRevocation(ctx, p, ws, WorkspaceAccess{Owner: true, Recent: true}, func(_ pgx.Tx, q *db.Queries, _ Workspace) error {
 		if _, err := q.GetEnvironment(ctx, db.GetEnvironmentParams{WorkspaceID: ws, ProjectID: project, ID: env}); err != nil {
 			return err
 		}
