@@ -20,7 +20,9 @@ SELECT pg_advisory_xact_lock(hashtextextended(CAST(sqlc.arg(lineage)::uuid AS te
 
 -- name: DeleteRenewedSession :execrows
 -- unscoped: the hashed browser session token is the credential.
-DELETE FROM sessions WHERE token = @token;
+-- A session that expired while its request ran is not renewed: its row may outlive the expiry
+-- until cleanup, and a logout no longer sees it.
+DELETE FROM sessions WHERE token = @token AND expiry > clock_timestamp();
 
 -- name: DeleteSessionLineage :exec
 -- unscoped: a lineage is one browser's chain of renewed session tokens.

@@ -57,10 +57,12 @@ func (q *Queries) BrowserSessionSnapshotAdmission(ctx context.Context, arg Brows
 }
 
 const deleteRenewedSession = `-- name: DeleteRenewedSession :execrows
-DELETE FROM sessions WHERE token = $1
+DELETE FROM sessions WHERE token = $1 AND expiry > clock_timestamp()
 `
 
 // unscoped: the hashed browser session token is the credential.
+// A session that expired while its request ran is not renewed: its row may outlive the expiry
+// until cleanup, and a logout no longer sees it.
 func (q *Queries) DeleteRenewedSession(ctx context.Context, token string) (int64, error) {
 	result, err := q.db.Exec(ctx, deleteRenewedSession, token)
 	if err != nil {
