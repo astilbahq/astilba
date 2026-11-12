@@ -463,7 +463,7 @@ func TestAutomationIsInstallationLocalAndRecoveryRevokesIt(t *testing.T) {
 		t.Fatal(err)
 	}
 	var archive portability.Archive
-	if json.Unmarshal(plain, &archive) != nil || archive.Version != 6 || archive.Tables["automation_credentials"] != nil || bytes.Contains(plain, []byte(*grant.Token)) {
+	if json.Unmarshal(plain, &archive) != nil || archive.Version != portability.ArchiveVersion || archive.Tables["automation_credentials"] != nil || bytes.Contains(plain, []byte(*grant.Token)) {
 		t.Fatal("archive exported automation authority or an unexpected format")
 	}
 	destination := setup(t)

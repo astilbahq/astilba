@@ -114,8 +114,8 @@ func (w *refreshWorker) work(ctx context.Context, git *gitAnswers, job *river.Jo
  EXISTS(SELECT 1 FROM pipeline_runs r JOIN execution_operations o ON o.workspace_id=r.workspace_id AND o.id=r.id WHERE r.workspace_id=g.workspace_id AND r.environment_id=g.environment_id
   AND r.configuration->>'action'='import' AND r.configuration->>'commit'<>$4 AND o.state NOT IN ('succeeded','failed','cancelled'))
  FROM git_sources g JOIN environments e ON e.workspace_id=g.workspace_id AND e.id=g.environment_id
- JOIN memberships m ON m.workspace_id=g.workspace_id AND m.account_id=g.policy_actor
- WHERE g.workspace_id=$1 AND g.connection_id=$2 AND g.status<>'approval_required' AND g.configuration->>'branch'=$3 AND m.role IN ('owner','operator')
+ WHERE g.workspace_id=$1 AND g.connection_id=$2 AND g.status<>'approval_required' AND g.configuration->>'branch'=$3
+  AND policy_approver_holds(g.workspace_id,g.policy_actor,g.policy_auth_version,true)
  ORDER BY g.pending_commit=$4,g.environment_id`, a.Workspace, a.Connection, a.Branch, head)
 	if err != nil {
 		return err
@@ -269,8 +269,8 @@ func (w *refreshWorker) work(ctx context.Context, git *gitAnswers, job *river.Jo
 	// Each target compares against current provider state, so delivery order cannot roll it backwards.
 	rows, err = tx.Query(ctx, `SELECT b.environment_id,b.application_id,b.configuration,e.project_id,e.draft_revision_id,b.automatic_requested_commit
  FROM build_targets b JOIN environments e ON e.workspace_id=b.workspace_id AND e.id=b.environment_id
- JOIN memberships m ON m.workspace_id=b.workspace_id AND m.account_id=b.policy_actor
- WHERE b.workspace_id=$1 AND b.connection_id=$2 AND b.configuration->>'branch'=$3 AND b.configuration->>'autoBuild'='true' AND m.role IN ('owner','operator')`, a.Workspace, a.Connection, a.Branch)
+ WHERE b.workspace_id=$1 AND b.connection_id=$2 AND b.configuration->>'branch'=$3 AND b.configuration->>'autoBuild'='true'
+  AND policy_approver_holds(b.workspace_id,b.policy_actor,b.policy_auth_version,COALESCE((b.configuration->>'autoDeploy')::boolean,false))`, a.Workspace, a.Connection, a.Branch)
 	if err != nil {
 		return err
 	}

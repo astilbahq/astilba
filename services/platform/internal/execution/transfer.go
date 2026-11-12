@@ -230,7 +230,7 @@ func (s *Service) PrepareTransfer(ctx context.Context, p store.Principal, ws, id
 		} else if held {
 			return domain.Conflict
 		}
-		generation, e := db.New(tx).PrepareServerTransfer(ctx, db.PrepareServerTransferParams{WorkspaceID: ws, ID: id, EnrollmentHash: hash(token), EnrollmentExpires: &out.ExpiresAt})
+		generation, e := db.New(tx).PrepareServerTransfer(ctx, db.PrepareServerTransferParams{WorkspaceID: ws, ID: id, EnrollmentHash: hash(token), EnrollmentExpires: &out.ExpiresAt, EnrollmentIssuerID: p.Account.ID, EnrollmentIssuerAuthVersion: p.Account.AuthVersion})
 		out.Generation = generation
 		return e
 	})

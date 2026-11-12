@@ -4,10 +4,13 @@ import (
 	"encoding/json/v2"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/exec"
 	"slices"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/composeproject"
@@ -231,6 +234,106 @@ func TestGiteaRunsTheGitPathAsFixturesDo(t *testing.T) {
 		}
 		g.call("GET", pulls, nil, 200, &merged)
 		compare(pulls, mergedAnswer(pull.Number, merged.MergeCommit))
+	})
+	// Management submits a saved draft through Gitea's API with the connection's write token,
+	// which never reaches a runner. The runner's clone token cannot push, and a clone token that
+	// could is refused before any runner holds it.
+	t.Run("submission without a runner write credential", func(t *testing.T) {
+		f := setup(t)
+		b := f.browser(t)
+		ws, prefix, _, path := composeEnvironment(t, f, b)
+		connect := func(clone string, status int, out any) []byte {
+			return b.call("POST", prefix+"/git-connections", map[string]any{"name": "Gitea", "provider": "gitea", "baseUrl": g.base, "repository": "owner/app", "api": map[string]string{"username": "owner", "password": g.write}, "clone": map[string]string{"username": "owner", "password": clone}}, status, out)
+		}
+		if refusal := string(connect(g.write, 400, nil)); !strings.Contains(refusal, "clone.canPush") {
+			t.Fatal("a clone token that can push was accepted", refusal)
+		}
+		var created struct {
+			Connection pipeline.Connection `json:"connection"`
+		}
+		connect(g.read, 201, &created)
+		for token, want := range map[string]bool{g.read: false, g.write: true} {
+			p, err := pipeline.NewProvider(created.Connection, pipeline.Credential{Username: "owner", Password: token}, pipeline.Policy{Development: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if can, err := p.CanPush(t.Context()); err != nil || can != want {
+				t.Fatalf("Gitea's answer about pushing was misread: %t want %t: %v", can, want, err)
+			}
+		}
+		// A push with the runner's token, as a build escape would try it, is refused by Gitea.
+		escape := "cd /tmp && rm -rf escape && git clone -q http://owner:" + g.read + "@localhost:3000/owner/app.git escape && cd escape && git -c user.email=e@example.test -c user.name=e commit -q --allow-empty -m escape && git push -q origin HEAD:refs/heads/runner-escape"
+		if out, err := exec.CommandContext(t.Context(), "docker", "--host", os.Getenv("PLAT_APP_DOCKER_HOST"), "exec", "--user", "git", g.name, "sh", "-c", escape).CombinedOutput(); err == nil {
+			t.Fatal("the runner's clone token pushed to the repository", string(out))
+		}
+		g.call("GET", "/repos/owner/app/branches/runner-escape", nil, 404, nil)
+
+		yes := true
+		enrolled, in, token := enrollment(t, f, b, ws, "build")
+		in.Capabilities.Build = &yes
+		in.Capabilities.BuildNetwork = &yes
+		agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/enroll", "", in, 200, nil)
+		runner := authorityAgent{t, f, token, in}
+		var head struct {
+			Commit struct {
+				ID string `json:"id"`
+			} `json:"commit"`
+		}
+		g.call("GET", "/repos/owner/app/branches/main", nil, 200, &head)
+		draft, _ := draftSpec(t, b, path)
+		b.call("PUT", path+"/source", map[string]any{"baseRevisionId": draft.Id, "configuration": pipeline.Source{ConnectionID: created.Connection.ID, Branch: "main", RunnerID: enrolled.Server.Id, Paths: importPaths, Entrypoints: []string{"compose.yaml"}}}, 202, nil)
+		c := runner.next()
+		imported := pipelineCommand(t, c)
+		if imported.Access == nil || imported.Access.Clone.Password != g.read || strings.Contains(string(*c.Pipeline), g.write) {
+			t.Fatal("the runner was not sent only the clone token")
+		}
+		runner.reportImport(c, head.Commit.ID, g.files(head.Commit.ID, importPaths))
+		draft, spec := draftSpec(t, b, path)
+		spec.Compose.Files[0].Content += "# submitted through management\n"
+		spec.Compose.Files = append(spec.Compose.Files, composeproject.File{Path: "config/extra.env", Content: "MODE=extra\n"})
+		b.call("PUT", path+"/draft", map[string]any{"baseRevisionId": draft.Id, "specification": spec}, 200, &draft)
+		var submitted api.SourceSubmission
+		b.call("POST", path+"/source/submit", map[string]any{"baseRevisionId": draft.Id, "requestKey": uuid.New()}, 202, &submitted)
+		var status struct {
+			Status     string                `json:"status"`
+			Submission *api.SourceSubmission `json:"submission"`
+		}
+		waitFor(t, "the submission", 45*time.Second, func() bool {
+			b.call("GET", path+"/source", nil, 200, &status)
+			return status.Submission != nil && status.Submission.State != "queued"
+		})
+		s := status.Submission
+		if s.Id != submitted.Id || s.State != "succeeded" || s.ReviewNumber == nil || s.Commit == nil || status.Status != "awaiting_merge" {
+			t.Fatalf("Gitea did not take the submission: %+v %s", s, status.Status)
+		}
+		if !strings.HasPrefix(*s.ReviewUrl, g.base+"/owner/app/pulls/") {
+			t.Fatal("the review link is not Gitea's", *s.ReviewUrl)
+		}
+		var pull struct {
+			State string `json:"state"`
+			Head  struct {
+				Ref string `json:"ref"`
+				SHA string `json:"sha"`
+			} `json:"head"`
+			Base struct {
+				Ref string `json:"ref"`
+			} `json:"base"`
+		}
+		g.call("GET", "/repos/owner/app/pulls/"+strconv.Itoa(*s.ReviewNumber), nil, 200, &pull)
+		if pull.State != "open" || pull.Base.Ref != "main" || !strings.HasPrefix(pull.Head.Ref, "astilba/") || pull.Head.SHA != *s.Commit {
+			t.Fatalf("the review is not of the submitted branch: %+v", pull)
+		}
+		for _, file := range g.files(*s.Commit, append(importPaths, "config/extra.env")) {
+			if want := spec.Compose.Files; !slices.ContainsFunc(want, func(f composeproject.File) bool { return f == file }) {
+				t.Fatalf("the submitted branch holds %s other than the draft", file.Path)
+			}
+		}
+		// Nothing about the submission reached the runner.
+		var idle api.AgentPoll
+		agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/poll", token, nil, 200, &idle)
+		if idle.Command != nil {
+			t.Fatal("a runner took part in the submission", idle.Command.Kind)
+		}
 	})
 }
 
