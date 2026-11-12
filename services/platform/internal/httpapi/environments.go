@@ -85,7 +85,7 @@ func (s *Server) ListEnvironments(w http.ResponseWriter, r *http.Request, ws, pi
 }
 func insertRevision(r *http.Request, q *db.Queries, ws, env, id uuid.UUID, canonical []byte) (db.SpecificationRevision, error) {
 	h := sha256.Sum256(canonical)
-	return q.InsertRevision(r.Context(), db.InsertRevisionParams{WorkspaceID: ws, EnvironmentID: env, ID: id, AuthorID: principal(r.Context()).Account.ID, Specification: canonical, ContentHash: h[:]})
+	return store.InsertRevision(r.Context(), q, db.InsertRevisionParams{WorkspaceID: ws, EnvironmentID: env, ID: id, AuthorID: principal(r.Context()).Account.ID, Specification: canonical, ContentHash: h[:]})
 }
 func (s *Server) CreateEnvironment(w http.ResponseWriter, r *http.Request, ws, pid uuid.UUID) {
 	b, e := decode[api.EnvironmentCreate](r)
@@ -348,12 +348,8 @@ func fitsAnyOrigin(ctx context.Context, q *db.Queries, spec domain.Specification
 		if e != nil {
 			return false, e
 		}
-		size, e := q.SpecificationTextSize(ctx, raw)
-		if e != nil {
+		if fits, e := store.SpecificationFits(ctx, q, raw); e != nil || !fits {
 			return false, e
-		}
-		if len(raw) > domain.SpecificationLimit || int(size) > domain.SpecificationLimit {
-			return false, nil
 		}
 	}
 	return true, nil
