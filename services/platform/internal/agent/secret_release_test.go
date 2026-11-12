@@ -13,6 +13,7 @@ import (
 
 	"github.com/astilbahq/astilba/services/platform/internal/agentidentity"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
+	"github.com/google/uuid"
 )
 
 // A command that brings its values is acknowledged once journaled. One that comes without them
@@ -187,5 +188,32 @@ func TestAcknowledgementsAreBatchedAndBounded(t *testing.T) {
 	}
 	if len(c.unacknowledged) != 0 || len(sizes) != 4 || sizes[2] != 64 || sizes[3] != 6 {
 		t.Fatalf("batches %v, left %d", sizes, len(c.unacknowledged))
+	}
+}
+
+// Management releases a command's values once, then sends the same command without them and
+// with a different release. For every kind, the journal takes both as the command it holds.
+func TestReleasedCommandsMatchTheirValueFreeDeliveries(t *testing.T) {
+	j, plan := testVisualJournal(t)
+	for i, kind := range releasedKinds {
+		id := uuid.New()
+		full := releasedCommand(t, plan, kind, id, int64(i+1), true)
+		held := releasedCommand(t, plan, kind, id, int64(i+1), false)
+		held.Deadline = full.Deadline
+		full.SecretRelease = &api.SecretRelease{Epoch: 0, Digest: strings.Repeat("a", 64), Values: true}
+		held.SecretRelease = &api.SecretRelease{Epoch: 0, Digest: strings.Repeat("a", 64), Values: false}
+		r, err := j.Accept(full)
+		if err != nil {
+			t.Fatal(kind, err)
+		}
+		if _, err = j.Accept(held); err != nil {
+			t.Fatal(kind, "a value-free delivery of a held command was refused:", err)
+		}
+		if err = j.Mutate(id, func(r *Record) { r.Report.State = "succeeded" }); err != nil {
+			t.Fatal(err)
+		}
+		if err = j.Acknowledge(id, r.Report.Sequence+1); err != nil {
+			t.Fatal(err)
+		}
 	}
 }

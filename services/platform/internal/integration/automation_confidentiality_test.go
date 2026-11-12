@@ -293,3 +293,79 @@ func TestAutomationToolsWorkWithoutReadAccess(t *testing.T) {
 	}
 	agent.applied(agent.next(), images)
 }
+
+// An operation's note quotes what failed, and Compose or build output can quote the configuration, so
+// a credential that may plan or apply but not read the environment gets a fixed note in its place and
+// no step details, on every route that answers with the operation. A reader keeps the diagnostics.
+func TestOperationNotesNeedEnvironmentRead(t *testing.T) {
+	f := setup(t)
+	b, scope, env, path := automationEnvironment(t, f)
+	const canary = "plaintext-note-canary"
+	app, image, value := uuid.New(), "busybox:stable", canary
+	spec := domain.Specification{Version: 1, Variables: []domain.Variable{}, Applications: []domain.Application{{ID: app, Name: "Web", Source: domain.ApplicationSource{Kind: "image", Image: &image}, Variables: []domain.Variable{{Name: "DATABASE_URL", Value: &value}}}}}
+	var draft api.Revision
+	b.call("PUT", path+"/draft", map[string]any{"baseRevisionId": env.DraftRevisionId, "specification": spec}, 200, &draft)
+	enrolled, in, agentToken := enrollment(t, f, b, scope.WorkspaceId, "deployment")
+	yes := true
+	in.Capabilities.Visual = &yes
+	agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/enroll", "", in, 200, nil)
+	agent := authorityAgent{t, f, agentToken, in}
+	images := map[string]string{app.String(): "busybox@sha256:" + strings.Repeat("a", 64)}
+	fail := func(c api.ExecutionCommand) {
+		t.Helper()
+		steps := []api.ExecutionStep{{Name: "resolve", State: "done", Detail: "DATABASE_URL=" + canary}}
+		agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/report", agentToken, api.AgentReport{Id: c.Id, Generation: c.Generation, PlanHash: c.PlanHash, Sequence: 2, State: "failed", Steps: steps, Note: "docker compose failed: invalid value " + canary}, 204, nil)
+	}
+	// withheld takes the operation by reference: it is decoded by the call that gives raw.
+	withheld := func(what string, raw []byte, decoded *api.Operation) {
+		t.Helper()
+		withoutConfiguration(t, what, raw, canary)
+		op := *decoded
+		if op.State != "failed" || op.Note != execution.WithheldNote || len(op.Steps) != 1 || op.Steps[0].Name != "resolve" || op.Steps[0].Detail != "" {
+			t.Fatalf("%s was %+v", what, op)
+		}
+	}
+	shown := func(what, token string, id uuid.UUID) {
+		t.Helper()
+		var op api.Operation
+		bearerCall(t, f, token, "GET", path+"/operations/"+id.String(), nil, 200, &op)
+		if !strings.Contains(op.Note, canary) || len(op.Steps) != 1 || !strings.Contains(op.Steps[0].Detail, canary) {
+			t.Fatalf("%s lost its diagnostics: %+v", what, op)
+		}
+	}
+
+	planner := *issueAutomation(t, b, path, domain.DeploymentPlan).Token
+	applier := *issueAutomation(t, b, path, domain.DeploymentApply).Token
+	reader := *issueAutomation(t, b, path, domain.EnvironmentRead).Token
+
+	// Preparing a plan fails, quoting the configuration.
+	var failed deployment.Status
+	bearerCall(t, f, planner, "POST", path+"/deployment-plans", api.VisualPlanRequest{ServerId: enrolled.Server.Id, BaseRevisionId: draft.Id}, 201, &failed)
+	fail(agent.next())
+	for name, token := range map[string]string{"plan-only": planner, "apply-only": applier} {
+		var op api.Operation
+		withheld("a "+name+" credential's failed plan", bearerCall(t, f, token, "GET", path+"/operations/"+failed.OperationID.String(), nil, 200, &op), &op)
+	}
+	shown("a reader's failed plan", reader, failed.OperationID)
+
+	// So does applying one, and replaying the apply answers with the same operation.
+	var ready deployment.Status
+	bearerCall(t, f, planner, "POST", path+"/deployment-plans", api.VisualPlanRequest{ServerId: enrolled.Server.Id, BaseRevisionId: draft.Id}, 201, &ready)
+	agent.observe(agent.next(), deployment.Observation{Images: images, StateHash: strings.Repeat("f", 64), HostChangesReported: true})
+	apply := api.ApplyVisualPlan{IdempotencyKey: uuid.New()}
+	var applied api.Operation
+	bearerCall(t, f, applier, "POST", path+"/deployment-plans/"+ready.ID.String()+"/apply", apply, 201, &applied)
+	fail(agent.next())
+	var op api.Operation
+	withheld("a replayed apply", bearerCall(t, f, applier, "POST", path+"/deployment-plans/"+ready.ID.String()+"/apply", apply, 201, &op), &op)
+	if op.Id != applied.Id {
+		t.Fatal("the replayed apply answered with another operation")
+	}
+	withheld("an apply-only credential's failed apply", bearerCall(t, f, applier, "GET", path+"/operations/"+applied.Id.String(), nil, 200, &op), &op)
+	shown("a reader's failed apply", reader, applied.Id)
+	var browsed api.Operation
+	b.call("GET", path+"/operations/"+applied.Id.String(), nil, 200, &browsed)
+	if !strings.Contains(browsed.Note, canary) {
+		t.Fatalf("a member lost the failed apply's note: %+v", browsed)
+	}
+}

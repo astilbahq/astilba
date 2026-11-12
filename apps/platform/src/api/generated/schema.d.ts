@@ -3045,7 +3045,9 @@ export interface components {
             /** @enum {string} */
             kind: "test" | "update" | "visual" | "pipeline" | "backup" | "schedule" | "upgrade" | "network" | "crosshost";
             cancelRequested: boolean;
+            /** @description Free text from management, the host or the build runner, such as why the operation failed. It can quote the environment's configuration, so an automation credential without environment:read gets a fixed note saying the details were withheld in its place. */
             note: string;
+            /** @description Each step's detail is withheld from an automation credential without environment:read, as the note is. */
             steps: components["schemas"]["ExecutionStep"][];
             /** Format: date-time */
             createdAt: string;

@@ -22,14 +22,17 @@ func (p *Plan) PrepareInstances(previous Plan) {
 	p.ReplicaInstances = map[string][]uuid.UUID{}
 	for _, app := range p.Specification.Applications {
 		id := app.ID.String()
-		if previous.ServerID == p.ServerID {
-			if instance := previous.Instances[id]; instance != uuid.Nil && app.Postgres == nil {
-				p.Instances[id] = instance
+		if previous.ServerID == p.ServerID && app.Postgres == nil {
+			instance := previous.Instances[id]
+			// A placement lists every instance, including an application's own ID for one that
+			// never left the primary.
+			if previous.Local != nil {
+				if ids := previous.InstanceIDs(app.ID); len(ids) > 0 {
+					instance = ids[0]
+				}
 			}
-		}
-		if previous.Local != nil && previous.ServerID == p.ServerID && app.Postgres == nil {
-			if ids := previous.InstanceIDs(app.ID); len(ids) > 0 {
-				p.Instances[id] = ids[0]
+			if instance != uuid.Nil {
+				p.keepInstance(app.ID, instance)
 			}
 		}
 		for i := 0; i < app.ReplicaCount()-1; i++ {
@@ -45,6 +48,17 @@ func (p *Plan) PrepareInstances(previous Plan) {
 			p.ReplicaInstances[id] = append(p.ReplicaInstances[id], instance)
 		}
 	}
+}
+
+// keepInstance makes instance the application's first instance. An application's own ID is its
+// default instance, which Instance returns for an application left out of Instances, so it is
+// written by leaving it out: validation refuses it there, and one identity keeps one encoding.
+func (p *Plan) keepInstance(app, instance uuid.UUID) {
+	if instance == app {
+		delete(p.Instances, app.String())
+		return
+	}
+	p.Instances[app.String()] = instance
 }
 
 func (p *Plan) ReplaceInstances(id uuid.UUID) {
