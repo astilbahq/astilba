@@ -118,6 +118,9 @@ func openJournal(dir string, point func(string) error) (*Journal, error) {
 		if err := j.dropSubmissionCredentials(tx); err != nil {
 			return err
 		}
+		if err := j.redactFinished(tx); err != nil {
+			return err
+		}
 		if !clean {
 			return j.seedForgotten(tx)
 		}
@@ -254,6 +257,7 @@ func (j *Journal) get(tx *bolt.Tx, bucket, key string, out any) error {
 	return json.Unmarshal(plain, out)
 }
 func (j *Journal) put(tx *bolt.Tx, bucket, key string, value any) error {
+	value = withoutReleasedValues(bucket, value)
 	raw, e := stablejson.Marshal(value)
 	if e != nil {
 		return e
