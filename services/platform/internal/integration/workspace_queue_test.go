@@ -46,11 +46,11 @@ func TestWorkspaceLockWaitersLeaveThePoolServing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = f.st.Queries.InsertInvitation(ctx, db.InsertInvitationParams{WorkspaceID: ws, ID: uuid.New(), Email: "removed@example.test", Role: "viewer", TokenHash: auth.Hash(invitation), ExpiresAt: time.Now().Add(time.Hour)}); err != nil {
-		t.Fatal(err)
-	}
 	account, err := f.st.Queries.AccountByID(ctx, f.owner)
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err = f.st.Queries.InsertInvitation(ctx, db.InsertInvitationParams{WorkspaceID: ws, ID: uuid.New(), Email: "removed@example.test", Role: "viewer", TokenHash: auth.Hash(invitation), ExpiresAt: time.Now().Add(time.Hour), IssuerID: account.ID, IssuerAuthVersion: account.AuthVersion}); err != nil {
 		t.Fatal(err)
 	}
 

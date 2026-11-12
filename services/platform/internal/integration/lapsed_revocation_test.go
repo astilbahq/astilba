@@ -87,13 +87,17 @@ func TestLapsedWorkspaceOwnerCanRevokeAccess(t *testing.T) {
 				return a
 			}
 			departed, demoted, viewer := member("departed@example.test", "owner"), member("demoted@example.test", "owner"), member("viewer@example.test", "viewer")
+			owner, err := f.st.Queries.AccountByID(ctx, f.owner)
+			if err != nil {
+				t.Fatal(err)
+			}
 			invite := func(email string) (uuid.UUID, string) {
 				token, err := cryptobox.Token()
 				if err != nil {
 					t.Fatal(err)
 				}
 				id := uuid.New()
-				if err = f.st.Queries.InsertInvitation(ctx, db.InsertInvitationParams{WorkspaceID: ws, ID: id, Email: email, Role: "operator", TokenHash: auth.Hash(token), ExpiresAt: time.Now().Add(time.Hour)}); err != nil {
+				if err = f.st.Queries.InsertInvitation(ctx, db.InsertInvitationParams{WorkspaceID: ws, ID: id, Email: email, Role: "operator", TokenHash: auth.Hash(token), ExpiresAt: time.Now().Add(time.Hour), IssuerID: owner.ID, IssuerAuthVersion: owner.AuthVersion}); err != nil {
 					t.Fatal(err)
 				}
 				return id, token
