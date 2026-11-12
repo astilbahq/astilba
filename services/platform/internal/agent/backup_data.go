@@ -437,20 +437,6 @@ func (e *Engine) restoreSnapshot(ctx context.Context, s *scheduleState, r *backu
 	r.Verified = true
 	return nil
 }
-
-// restoreTargetLabels are a fresh restore target's labels. A logical PostgreSQL restore initialises
-// the target with the archive's own image, so the target records that major, and a deployment that
-// would start another major on it is refused like on any other data volume.
-func restoreTargetLabels(p deployment.Plan, target uuid.UUID, m backup.Manifest) map[string]string {
-	labels := visualLabels(p, target)
-	if m.Method == "postgres-logical" {
-		if major := domain.PostgresMajor(m.Image); major != "" {
-			labels[labelPostgresMajor] = major
-		}
-	}
-	return labels
-}
-
 func quoteIdentifier(v string) string { return `"` + strings.ReplaceAll(v, `"`, `""`) + `"` }
 func (e *Engine) restorePostgres(ctx context.Context, p backup.Policy, r *backup.Run, dir string, m backup.Manifest, password string) error {
 	a, err := sourceApp(p)

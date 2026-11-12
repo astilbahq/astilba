@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 
+	"github.com/astilbahq/astilba/services/platform/internal/backup"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/google/uuid"
@@ -67,6 +68,19 @@ func volumeLabels(p deployment.Plan, volume uuid.UUID) map[string]string {
 	labels := visualLabels(p, volume)
 	if major := postgresMajors(p)[volume]; major != "" {
 		labels[labelPostgresMajor] = major
+	}
+	return labels
+}
+
+// restoreTargetLabels are a fresh restore target's labels. A logical PostgreSQL restore initialises
+// the target with the archive's own image, so the target records that major, and a deployment that
+// would start another major on it is refused like on any other data volume.
+func restoreTargetLabels(p deployment.Plan, target uuid.UUID, m backup.Manifest) map[string]string {
+	labels := visualLabels(p, target)
+	if m.Method == "postgres-logical" {
+		if major := domain.PostgresMajor(m.Image); major != "" {
+			labels[labelPostgresMajor] = major
+		}
 	}
 	return labels
 }
