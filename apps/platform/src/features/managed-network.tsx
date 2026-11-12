@@ -351,8 +351,8 @@ export function ManagedNetwork({
             until reachable members acknowledge removal.
           </Label>
           <p>
-            Saving requires owner access and a recent identity confirmation in
-            Account security.
+            Saving requires owner access, and you’ll be asked to confirm your
+            identity.
           </p>
           <div className={s.row}>
             <BusyButton busy={action.isPending}>

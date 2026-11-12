@@ -19,7 +19,7 @@ export function WorkspaceExport({ workspaceId }: { workspaceId: string }) {
         application data.
       </p>
       <p>
-        Confirm your identity in account security before exporting. Imported
+        You’ll be asked to confirm your identity before exporting. Imported
         servers stay blocked until you confirm the new controller locally on
         each host.
       </p>

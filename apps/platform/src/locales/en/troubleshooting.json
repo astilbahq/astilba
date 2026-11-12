@@ -14,7 +14,6 @@
     "widenHelp": "You’ll be asked to confirm your identity when you allow sessions or let operators open them.",
     "save": "Save setting",
     "saved": "Terminal session setting saved.",
-    "cancel": "Cancel",
     "conflict": "Someone else changed this setting. Your choices are kept here, but they have not been saved. Load the current setting and review it before saving again.",
     "loadCurrent": "Load current setting"
   },

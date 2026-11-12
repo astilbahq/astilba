@@ -455,7 +455,7 @@ func stayRecentlyAuthenticated(t *testing.T, f *fixture, b *browser, mfaSecret s
 			if err != nil {
 				t.Fatal(err)
 			}
-			credentials["code"] = code
+			credentials = map[string]string{"code": code}
 		}
 		b.call("POST", "/api/v1/auth/reauthenticate", credentials, 200, &session)
 		b.csrf = session.CsrfToken

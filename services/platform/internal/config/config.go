@@ -133,7 +133,7 @@ func (c Config) ValidateOrigin() error {
 }
 
 func (c Config) ValidateServer() error {
-	if e := c.ApplicationDNS.Validate(c.Origin); e != nil {
+	if e := c.ApplicationDNS.Validate(c.Origin, c.Hosted); e != nil {
 		return e
 	}
 	if e := c.ValidateOrigin(); e != nil {

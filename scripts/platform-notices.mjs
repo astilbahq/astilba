@@ -74,6 +74,11 @@ for (const [name, dir] of [...modules].sort(([a], [b]) => a.localeCompare(b))) {
 }
 // qrcode.react's npm package omits the licence for its bundled encoder.
 notice += `===== QR Code Generator (bundled by qrcode.react) =====\n${await readFile(join(app, "LICENSE.qrcodegen"), "utf8")}\n`;
+// The server embeds the Public Suffix List, whose own header gives its MPL 2.0 terms;
+// the unmodified file is part of the corresponding source.
+const suffixList = "services/platform/internal/publicsuffix/public_suffix_list.dat";
+const suffixTerms = (await readFile(join(root, suffixList), "utf8")).split("\n\n")[0];
+notice += `===== Public Suffix List (${suffixList}) =====\n${suffixTerms}\n\n`;
 const goroot = execFileSync("go", ["env", "GOROOT"], {
   encoding: "utf8",
 }).trim();

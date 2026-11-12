@@ -6031,8 +6031,11 @@
       "required":
         - "code"
     "Reauthenticate":
+      "description": "Exactly one credential: an authenticator or recovery code for an account with two-factor authentication, or the password for an account without it."
       "type": "object"
       "additionalProperties": false
+      "minProperties": 1
+      "maxProperties": 1
       "properties":
         "password":
           "type": "string"
@@ -6042,8 +6045,8 @@
         "code":
           "type": "string"
           "maxLength": 128
-      "required":
-        - "password"
+          "minLength": 1
+          "writeOnly": true
     "NewPassword":
       "type": "object"
       "additionalProperties": false

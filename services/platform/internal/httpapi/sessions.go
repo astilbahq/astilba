@@ -266,7 +266,7 @@ func (s *Server) Reauthenticate(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, e)
 		return
 	}
-	a, e := s.Auth.Reauthenticate(r.Context(), principal(r.Context()).Account.ID, value(b.Password), value(b.Code))
+	a, e := s.Auth.Reauthenticate(r.Context(), *principal(r.Context()), value(b.Password), value(b.Code))
 	if e == nil {
 		// Confirming credentials keeps open terminal sessions, unlike any other renewal. A
 		// recovery code changes the account's version, which ends them, so there is nothing

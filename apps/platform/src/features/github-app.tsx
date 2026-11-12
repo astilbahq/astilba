@@ -224,17 +224,8 @@ function GitHubSelection({ grant }: { grant: Schema["GitHubAuthorization"] }) {
       </p>
       <p>
         Authorization expires at{" "}
-        {new Date(grant.expiresAt).toLocaleTimeString()}. If identity
-        confirmation is needed,{" "}
-        <Link
-          to="/account"
-          search={{ workspace: grant.workspaceId }}
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          confirm in Account security
-        </Link>
-        , then retry here.
+        {new Date(grant.expiresAt).toLocaleTimeString()}. You’ll be asked to
+        confirm your identity before connecting.
       </p>
       <ErrorNotice
         error={

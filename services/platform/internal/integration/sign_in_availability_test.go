@@ -285,6 +285,11 @@ func TestExpiredDeviceTokenCountsForNothing(t *testing.T) {
 func TestReauthenticationFailsWhenThePasswordChangesDuringIt(t *testing.T) {
 	f := setup(t)
 	ctx := context.Background()
+	account, err := f.st.Queries.AccountByID(ctx, f.owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	principal := browserPrincipal(t, f.st, account, false)
 	held, err := f.st.Pool.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -295,7 +300,7 @@ func TestReauthenticationFailsWhenThePasswordChangesDuringIt(t *testing.T) {
 	}
 	result := make(chan error, 1)
 	go func() {
-		_, err := f.auth.Reauthenticate(ctx, f.owner, f.password, "")
+		_, err := f.auth.Reauthenticate(ctx, principal, f.password, "")
 		result <- err
 	}()
 	waiting := false
@@ -317,7 +322,8 @@ func TestReauthenticationFailsWhenThePasswordChangesDuringIt(t *testing.T) {
 	if err := held.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if err := <-result; !errors.Is(err, domain.Credentials) {
+	// The change ended the session, so it is refused as signed out.
+	if err := <-result; !errors.Is(err, domain.Unauthenticated) {
 		t.Fatal("the old password reauthenticated after it was replaced", err)
 	}
 }

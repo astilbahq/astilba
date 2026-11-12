@@ -39,7 +39,7 @@ func TestTroubleshootingEndsWhenARecoveryCodeIsUsed(t *testing.T) {
 	elsewhere.csrf = verified.CsrfToken
 	opened, _, _ = x.connected(t, elsewhere, 1)
 	var renewed api.Session
-	elsewhere.call("POST", "/api/v1/auth/reauthenticate", map[string]string{"password": x.f.password, "code": recovery.Codes[1]}, 200, &renewed)
+	elsewhere.call("POST", "/api/v1/auth/reauthenticate", map[string]string{"code": recovery.Codes[1]}, 200, &renewed)
 	x.waitClosed(t, opened.Session.Id, "account security changed")
 	if elsewhere.session().User == nil {
 		t.Fatal("confirming credentials with a code signed the browser out")

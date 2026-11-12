@@ -2,6 +2,10 @@ import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
 import { openEnvironmentSection } from "./environment-section";
 import { signInAsOwner } from "./fixtures/owner-sign-in";
+import {
+  confirmIdentityWithPassword,
+  lapseRecentConfirmationFor,
+} from "./fixtures/step-up";
 
 test("owner issues, saves and revokes an environment token without losing a draft", async ({
   page,
@@ -32,17 +36,19 @@ test("owner issues, saves and revokes an environment token without losing a draf
   await openEnvironmentSection(page, "Settings");
   const panel = page.getByRole("region", { name: "Environment automation" });
   await expect(
-    panel.getByRole("link", { name: "Open Account security in a new tab" }),
-  ).toHaveAttribute(
-    "href",
-    `/account?workspace=${new URL(page.url()).searchParams.get("workspace")}`,
-  );
+    panel.getByText(
+      "You’ll be asked to confirm your identity before creating or revoking a token.",
+    ),
+  ).toBeVisible();
   await panel.getByText("Create automation token", { exact: true }).click();
   await panel.getByLabel("Token name", { exact: true }).fill("CI deploy");
   await panel.getByLabel("Save configuration drafts", { exact: true }).check();
+  // A lapsed confirmation asks for identity in place, then creates the token as submitted.
+  await lapseRecentConfirmationFor(page, "POST", /\/automation-credentials$/);
   await panel
     .getByRole("button", { name: "Create token", exact: true })
     .click();
+  await confirmIdentityWithPassword(page);
   const field = panel.getByRole("textbox", {
     name: "Automation token",
     exact: true,

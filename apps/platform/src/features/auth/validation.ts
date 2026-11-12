@@ -7,6 +7,8 @@ import {
 import { namedValueValidation } from "../../components/named-value-validation";
 import type { AuthMessages } from "./messages";
 
+export type StepUpCredential = "authenticator" | "recovery" | "password";
+
 const codeErrorFields = { invalid_credentials: ["code"] } as const;
 
 function isRequestFailure(error: unknown) {
@@ -129,13 +131,40 @@ export function createAuthValidation(messages: AuthMessages) {
       ),
       errorFields: codeErrorFields,
     },
-    identity: (mfaEnabled: boolean, recovery: boolean) =>
-      form(
-        mfaEnabled
-          ? { password, code: recovery ? recoveryCode : code }
-          : { password },
-        messages.invalidIdentity,
-      ),
+    stepUp: (credential: StepUpCredential): FormValidation => {
+      const field = credential === "password" ? "password" : "code";
+      const wrong =
+        credential === "password"
+          ? messages.incorrectPassword
+          : credential === "recovery"
+            ? messages.invalidRecoveryCode
+            : messages.invalidCode;
+      const base = form(
+        {
+          [field]:
+            credential === "password"
+              ? password
+              : credential === "recovery"
+                ? recoveryCode
+                : code,
+        },
+        wrong,
+        wrong,
+      );
+      return {
+        ...base,
+        errorFields: { invalid_credentials: [field] },
+        // Everything shows in the dialog. While it is open, a toast outside it is hidden
+        // from assistive technology.
+        shouldToastError: () => false,
+        message(error, name) {
+          return error instanceof ApiError &&
+            error.detail.code === "rate_limited"
+            ? messages.stepUpRateLimited
+            : base.message(error, name);
+        },
+      };
+    },
     setup: form({}, messages.invalidCode),
     changePassword: form({ password: newPassword }),
     resetRequest: form({ email }),

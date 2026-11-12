@@ -3001,8 +3001,9 @@ export interface components {
         Code: {
             code: string;
         };
+        /** @description Exactly one credential: an authenticator or recovery code for an account with two-factor authentication, or the password for an account without it. */
         Reauthenticate: {
-            password: string;
+            password?: string;
             code?: string;
         };
         NewPassword: {

@@ -7,7 +7,7 @@ This repository contains the BYOS deployment platform and its technical-validati
 ## Commands
 
 - `make check-app`: Go formatting/vet/staticcheck, [the repository's own analyzers](docs/continuous-integration.md#repository-analyzers), short tests, generated-code freshness and dashboard type/lint checks.
-- `make check-vulnerabilities`: `govulncheck` for every Go module and OSV Scanner for `pnpm-lock.yaml`, against the allowlist in `.github/vulnerability-allowlist.json`; needs network access, so it is not part of `check-app`. See [the vulnerability scan](docs/continuous-integration.md#vulnerability-scan).
+- `make check-vulnerabilities`: `govulncheck` for every Go module and OSV Scanner for `pnpm-lock.yaml`, against the allowlist in `.github/vulnerability-allowlist.json`; needs network access, so it is not part of `check-app`. Set `GITHUB_TOKEN="$(gh auth token)"` for its Public Suffix List check. See [the vulnerability scan](docs/continuous-integration.md#vulnerability-scan).
 - Dependency upgrades follow the `upgrade-dependencies` skill in `.claude/skills`, which runs `scripts/go-release-age.mjs` and `scripts/npm-release-changes.mjs` against `origin/main`.
 - `make verify-app`: also requires `PLAT_APP_DOCKER_HOST` for owned disposable PostgreSQL and real Chromium/WebKit journeys. `make verify` includes it. `make verify-image` builds and smoke-tests the Node-free image.
 
@@ -23,6 +23,7 @@ This repository contains the BYOS deployment platform and its technical-validati
 - `make verify-agent-host`: production agent enrollment, systemd restart, signed update and visual deployment/recovery on the explicitly disposable Ubuntu host prepared for `verify-host`; required on both architectures for native-affecting PRs and every main, manual and nightly CI run; see [CI selection](docs/continuous-integration.md).
 - `make verify-troubleshooting-soak`: terminal sessions through every proxy at the real 15-minute idle limit and 60-minute maximum, on the same disposable host. Takes more than 75 minutes, so it runs on demand and is in no other target.
 - `make verify-agent-colima PLAT_AGENT_COLIMA_PROFILE=<disposable-profile>`: selected native agent tests as root in a named disposable Colima VM from macOS, in under a minute by default; does not replace CI. See [local native agent tests](docs/continuous-integration.md#local-native-agent-tests).
+- `make dev`: the local stack — management, the dashboard with hot reload and an enrolled agent in a disposable Colima VM (`PLAT_DEV_COLIMA_PROFILE`, default `astilba-dev`). `make dev-wipe` deletes it. See [local development](docs/local-development.md).
 - `pnpm agent:build`: builds the production agent for Linux amd64 and arm64. See `docs/agent.md` for signing and installation.
 
 ## Ground rules
