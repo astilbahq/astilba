@@ -64,7 +64,13 @@ func (s *Server) CreateWorkspace(w http.ResponseWriter, r *http.Request) {
 		if e := q.InsertMembership(r.Context(), db.InsertMembershipParams{WorkspaceID: id, AccountID: p.Account.ID, Role: "owner"}); e != nil {
 			return e
 		}
-		return store.Audit(r.Context(), q, p, id, "workspace.create", id)
+		if e := store.Audit(r.Context(), q, p, id, "workspace.create", id); e != nil {
+			return e
+		}
+		// The membership and audit rows wait for any holder of the account, such as a
+		// credential change or an import. A logout or credential change that committed
+		// meanwhile wins.
+		return store.AdmitBrowserSession(r.Context(), q, p)
 	})
 	if e != nil {
 		s.fail(w, r, e)

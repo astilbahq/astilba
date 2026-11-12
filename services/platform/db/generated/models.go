@@ -787,9 +787,10 @@ type ServerMetric struct {
 }
 
 type Session struct {
-	Token  string    `json:"token"`
-	Data   []byte    `json:"data"`
-	Expiry time.Time `json:"expiry"`
+	Token   string    `json:"token"`
+	Data    []byte    `json:"data"`
+	Expiry  time.Time `json:"expiry"`
+	Lineage uuid.UUID `json:"lineage"`
 }
 
 type SpecificationRevision struct {

@@ -306,7 +306,7 @@ func TestExportWaitingBehindWorkspaceLock(t *testing.T) {
 			}
 		}, domain.Conflict},
 		{"logout", func(t *testing.T, f *fixture, p store.Principal) {
-			if _, err := f.st.Queries.DeleteRenewedSession(ctx, p.SessionHash); err != nil {
+			if err := endSession(ctx, f, p.SessionHash); err != nil {
 				t.Fatal(err)
 			}
 		}, domain.Conflict},
@@ -380,7 +380,7 @@ func TestRevocationDoesNotWaitForARunningExport(t *testing.T) {
 	bounded, stop := context.WithTimeout(ctx, 3*time.Second)
 	defer stop()
 	passwordErr := changePassword(t, bounded, f)
-	_, logoutErr := f.st.Queries.DeleteRenewedSession(bounded, principal.SessionHash)
+	logoutErr := endSession(bounded, f, principal.SessionHash)
 	close(finish)
 	if err := errors.Join(passwordErr, logoutErr); err != nil {
 		t.Fatal("revocation waited for the export: ", err)
@@ -396,7 +396,7 @@ func TestRevocationDoesNotWaitForARunningExport(t *testing.T) {
 func TestEndedSessionLeavesNoTerminalRefusalRecord(t *testing.T) {
 	f, principal, ws := sessionFixture(t)
 	ctx := context.Background()
-	if _, err := f.st.Queries.DeleteRenewedSession(ctx, principal.SessionHash); err != nil {
+	if err := endSession(ctx, f, principal.SessionHash); err != nil {
 		t.Fatal(err)
 	}
 	_, err := f.execution.OpenTroubleshootingSession(ctx, principal, execution.BrowserBinding{}, ws, uuid.New(), uuid.New(), api.OpenTroubleshootingSession{})

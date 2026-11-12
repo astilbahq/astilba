@@ -4,13 +4,27 @@
 -- a deleted token. A session that expired while its request ran stays expired.
 UPDATE sessions SET data = @data,expiry = @expiry WHERE token = @token AND expiry > clock_timestamp();
 
+-- name: FindSession :one
+-- unscoped: the hashed browser session token is the credential.
+SELECT data,lineage FROM sessions WHERE token = @token AND current_timestamp < expiry;
+
 -- name: InsertSession :exec
 -- unscoped: the hashed browser session token is the credential.
-INSERT INTO sessions(token,data,expiry) VALUES(@token,@data,@expiry);
+INSERT INTO sessions(token,data,expiry,lineage) VALUES(@token,@data,@expiry,@lineage);
+
+-- name: LockSessionLineage :exec
+-- unscoped: a lineage is one browser's chain of renewed session tokens.
+-- Orders a renewal and a logout of the same lineage, so that the logout's delete sees a
+-- token the renewal committed. The seed keeps these keys apart from the fixed ones.
+SELECT pg_advisory_xact_lock(hashtextextended(CAST(sqlc.arg(lineage)::uuid AS text), 4281642304));
 
 -- name: DeleteRenewedSession :execrows
 -- unscoped: the hashed browser session token is the credential.
-DELETE FROM sessions WHERE token = @token;
+DELETE FROM sessions WHERE token = @token AND lineage = @lineage;
+
+-- name: DeleteSessionLineage :exec
+-- unscoped: a lineage is one browser's chain of renewed session tokens.
+DELETE FROM sessions WHERE lineage = @lineage;
 
 -- name: MoveTroubleshootingBrowserBinding :exec
 -- unscoped: the hashed browser session token identifies the sessions it opened.

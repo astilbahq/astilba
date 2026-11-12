@@ -36,8 +36,10 @@ export function scenario(session: Session, ...actions: AnyHandler[]) {
 }
 
 export function sessionHandlers(session = guest, hosted = false) {
+  // Signing out reads the session again to confirm that it ended.
+  let current = session;
   return [
-    http.get("/api/v1/session", () => HttpResponse.json(session)),
+    http.get("/api/v1/session", () => HttpResponse.json(current)),
     http.get("/api/v1/hosting", () =>
       HttpResponse.json({
         enabled: hosted,
@@ -45,10 +47,10 @@ export function sessionHandlers(session = guest, hosted = false) {
         support: "",
       }),
     ),
-    http.post(
-      "/api/v1/auth/logout",
-      () => new HttpResponse(null, { status: 204 }),
-    ),
+    http.post("/api/v1/auth/logout", () => {
+      current = guest;
+      return new HttpResponse(null, { status: 204 });
+    }),
   ];
 }
 

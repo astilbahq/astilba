@@ -57,31 +57,81 @@ func (q *Queries) BrowserSessionSnapshotAdmission(ctx context.Context, arg Brows
 }
 
 const deleteRenewedSession = `-- name: DeleteRenewedSession :execrows
-DELETE FROM sessions WHERE token = $1
+DELETE FROM sessions WHERE token = $1 AND lineage = $2
 `
 
+type DeleteRenewedSessionParams struct {
+	Token   string    `json:"token"`
+	Lineage uuid.UUID `json:"lineage"`
+}
+
 // unscoped: the hashed browser session token is the credential.
-func (q *Queries) DeleteRenewedSession(ctx context.Context, token string) (int64, error) {
-	result, err := q.db.Exec(ctx, deleteRenewedSession, token)
+func (q *Queries) DeleteRenewedSession(ctx context.Context, arg DeleteRenewedSessionParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteRenewedSession, arg.Token, arg.Lineage)
 	if err != nil {
 		return 0, err
 	}
 	return result.RowsAffected(), nil
 }
 
+const deleteSessionLineage = `-- name: DeleteSessionLineage :exec
+DELETE FROM sessions WHERE lineage = $1
+`
+
+// unscoped: a lineage is one browser's chain of renewed session tokens.
+func (q *Queries) DeleteSessionLineage(ctx context.Context, lineage uuid.UUID) error {
+	_, err := q.db.Exec(ctx, deleteSessionLineage, lineage)
+	return err
+}
+
+const findSession = `-- name: FindSession :one
+SELECT data,lineage FROM sessions WHERE token = $1 AND current_timestamp < expiry
+`
+
+type FindSessionRow struct {
+	Data    []byte    `json:"data"`
+	Lineage uuid.UUID `json:"lineage"`
+}
+
+// unscoped: the hashed browser session token is the credential.
+func (q *Queries) FindSession(ctx context.Context, token string) (FindSessionRow, error) {
+	row := q.db.QueryRow(ctx, findSession, token)
+	var i FindSessionRow
+	err := row.Scan(&i.Data, &i.Lineage)
+	return i, err
+}
+
 const insertSession = `-- name: InsertSession :exec
-INSERT INTO sessions(token,data,expiry) VALUES($1,$2,$3)
+INSERT INTO sessions(token,data,expiry,lineage) VALUES($1,$2,$3,$4)
 `
 
 type InsertSessionParams struct {
-	Token  string    `json:"token"`
-	Data   []byte    `json:"data"`
-	Expiry time.Time `json:"expiry"`
+	Token   string    `json:"token"`
+	Data    []byte    `json:"data"`
+	Expiry  time.Time `json:"expiry"`
+	Lineage uuid.UUID `json:"lineage"`
 }
 
 // unscoped: the hashed browser session token is the credential.
 func (q *Queries) InsertSession(ctx context.Context, arg InsertSessionParams) error {
-	_, err := q.db.Exec(ctx, insertSession, arg.Token, arg.Data, arg.Expiry)
+	_, err := q.db.Exec(ctx, insertSession,
+		arg.Token,
+		arg.Data,
+		arg.Expiry,
+		arg.Lineage,
+	)
+	return err
+}
+
+const lockSessionLineage = `-- name: LockSessionLineage :exec
+SELECT pg_advisory_xact_lock(hashtextextended(CAST($1::uuid AS text), 4281642304))
+`
+
+// unscoped: a lineage is one browser's chain of renewed session tokens.
+// Orders a renewal and a logout of the same lineage, so that the logout's delete sees a
+// token the renewal committed. The seed keeps these keys apart from the fixed ones.
+func (q *Queries) LockSessionLineage(ctx context.Context, lineage uuid.UUID) error {
+	_, err := q.db.Exec(ctx, lockSessionLineage, lineage)
 	return err
 }
 

@@ -14,6 +14,8 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
 
 var errSessionRevoked = errors.New("browser session was revoked")
@@ -36,6 +38,10 @@ type sessionLoad struct {
 	keepRow bool
 	// deviceToken is sent as the device cookie unless saving the session failed. See issueDevice.
 	deviceToken string
+	// lineage is the loaded session's chain of renewed tokens, which a logout ends.
+	lineage uuid.UUID
+	// logout makes deleting the loaded token end its whole lineage. See endLineage.
+	logout bool
 }
 
 type sessionStore struct {
@@ -45,15 +51,35 @@ type sessionStore struct {
 }
 
 func (s *sessionStore) DeleteCtx(ctx context.Context, token string) error {
-	if loaded, _ := ctx.Value(sessionLoadKey{}).(*sessionLoad); loaded != nil && (loaded.replaceLive || loaded.keepRow) && loaded.token == token {
-		return nil
+	loaded, _ := ctx.Value(sessionLoadKey{}).(*sessionLoad)
+	if loaded != nil && loaded.token == token {
+		if loaded.replaceLive || loaded.keepRow {
+			return nil
+		}
+		if loaded.logout {
+			return s.endLineage(ctx, loaded.lineage)
+		}
 	}
 	return s.PostgresStore.DeleteCtx(ctx, token)
 }
 
+// endLineage ends a logged-out session together with any token that has renewed it since
+// this request loaded it, such as a password change from another tab. The lock orders this
+// with a renewal of the lineage: one that committed first has its new token deleted here,
+// and one that comes after finds its old token gone and refuses. A token that a later sign-in
+// issued starts its own lineage, so it stays signed in.
+func (s *sessionStore) endLineage(ctx context.Context, lineage uuid.UUID) error {
+	return s.store.Transaction(ctx, func(q *db.Queries) error {
+		if err := q.LockSessionLineage(ctx, lineage); err != nil {
+			return err
+		}
+		return q.DeleteSessionLineage(ctx, lineage)
+	})
+}
+
 // renewLive replaces a token in one transaction, so a re-check of an open terminal
-// session finds exactly one of them.
-func (s *sessionStore) renewLive(ctx context.Context, previous, token string, data []byte, expiry time.Time, moveTerminals bool) error {
+// session finds exactly one of them. The new token continues the old one's lineage.
+func (s *sessionStore) renewLive(ctx context.Context, previous, token string, lineage uuid.UUID, data []byte, expiry time.Time, moveTerminals bool) error {
 	oldHash, err := base64.RawURLEncoding.DecodeString(previous)
 	if err != nil {
 		return err
@@ -63,13 +89,16 @@ func (s *sessionStore) renewLive(ctx context.Context, previous, token string, da
 		return err
 	}
 	return s.store.Transaction(ctx, func(q *db.Queries) error {
+		if err := q.LockSessionLineage(ctx, lineage); err != nil {
+			return err
+		}
 		// A logout or another renewal may have won: never recreate its authority.
-		if n, err := q.DeleteRenewedSession(ctx, previous); err != nil {
+		if n, err := q.DeleteRenewedSession(ctx, db.DeleteRenewedSessionParams{Token: previous, Lineage: lineage}); err != nil {
 			return err
 		} else if n == 0 {
 			return errSessionRevoked
 		}
-		if err := q.InsertSession(ctx, db.InsertSessionParams{Token: token, Data: data, Expiry: expiry}); err != nil {
+		if err := q.InsertSession(ctx, db.InsertSessionParams{Token: token, Data: data, Expiry: expiry, Lineage: lineage}); err != nil {
 			return err
 		}
 		if !moveTerminals {
@@ -84,11 +113,14 @@ func (s *sessionStore) FindCtx(ctx context.Context, token string) ([]byte, bool,
 	if loaded == nil {
 		return nil, false, errSessionContext
 	}
-	data, found, err := s.PostgresStore.FindCtx(ctx, token)
-	if err == nil && found {
-		loaded.token = token
+	row, err := s.queries.FindSession(ctx, token)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, false, nil
+	} else if err != nil {
+		return nil, false, err
 	}
-	return data, found, err
+	loaded.token, loaded.lineage = token, row.Lineage
+	return row.Data, true, nil
 }
 
 // SCS must use its context-aware store API to distinguish a loaded token from
@@ -112,13 +144,16 @@ func (s *sessionStore) CommitCtx(ctx context.Context, token string, data []byte,
 			return errSessionRevoked
 		}
 	} else if loaded.replaceLive {
-		if err := s.renewLive(ctx, loaded.token, token, data, expiry, loaded.moveTerminals); err != nil {
+		if err := s.renewLive(ctx, loaded.token, token, loaded.lineage, data, expiry, loaded.moveTerminals); err != nil {
 			return err
 		}
 	} else {
-		if err := s.queries.InsertSession(ctx, db.InsertSessionParams{Token: token, Data: data, Expiry: expiry}); err != nil {
+		// A new sign-in starts a lineage of its own, even in a browser that had a session.
+		lineage := uuid.New()
+		if err := s.queries.InsertSession(ctx, db.InsertSessionParams{Token: token, Data: data, Expiry: expiry, Lineage: lineage}); err != nil {
 			return err
 		}
+		loaded.lineage = lineage
 	}
 	loaded.token = token
 	return nil

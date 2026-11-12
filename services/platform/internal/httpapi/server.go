@@ -402,7 +402,10 @@ func (s *Server) VerifyMFA(w http.ResponseWriter, r *http.Request) {
 	}
 	s.sendSession(w, r)
 }
+// Logout ends the session the browser presented, and any token that renewed it while this
+// request ran. Nothing else is needed for a session that had already ended.
 func (s *Server) Logout(w http.ResponseWriter, r *http.Request) {
+	r.Context().Value(sessionLoadKey{}).(*sessionLoad).logout = true
 	if e := s.Sessions.Destroy(r.Context()); e != nil {
 		s.fail(w, r, e)
 		return

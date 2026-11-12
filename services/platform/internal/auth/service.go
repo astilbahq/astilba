@@ -246,6 +246,18 @@ func lockCurrent(ctx context.Context, q *db.Queries, p store.Principal) (db.Acco
 	return account, store.AdmitBrowserSession(ctx, q, p)
 }
 
+// lockCredential is lockCurrent for a change to the account's own credentials, which also
+// needs the session's authentication to be recent once the lock is held. The handler checked
+// it before the request hashed a password or waited behind an import or another change, and
+// the shorter window can lapse during either.
+func lockCredential(ctx context.Context, q *db.Queries, p store.Principal) (db.Account, error) {
+	account, err := lockCurrent(ctx, q, p)
+	if err == nil && !p.CredentialRecent() {
+		err = domain.RecentRequired
+	}
+	return account, err
+}
+
 func (s *Service) BeginMFA(ctx context.Context, p store.Principal) (string, string, error) {
 	var secret, uri string
 	err := s.Store.Transaction(ctx, func(q *db.Queries) error {
@@ -282,7 +294,7 @@ func (s *Service) ConfirmMFA(ctx context.Context, p store.Principal, code string
 	}
 	err := s.Store.Transaction(ctx, func(q *db.Queries) error {
 		var err error
-		account, err = lockCurrent(ctx, q, p)
+		account, err = lockCredential(ctx, q, p)
 		if err != nil {
 			return err
 		}
@@ -317,7 +329,7 @@ func (s *Service) DisableMFA(ctx context.Context, p store.Principal) (db.Account
 	id := p.Account.ID
 	var account db.Account
 	err := s.Store.Transaction(ctx, func(q *db.Queries) error {
-		current, err := lockCurrent(ctx, q, p)
+		current, err := lockCredential(ctx, q, p)
 		if err != nil {
 			return err
 		}
@@ -341,7 +353,7 @@ func (s *Service) RegenerateRecovery(ctx context.Context, p store.Principal) (db
 	var codes []string
 	err := s.Store.Transaction(ctx, func(q *db.Queries) error {
 		var err error
-		account, err = lockCurrent(ctx, q, p)
+		account, err = lockCredential(ctx, q, p)
 		if err != nil {
 			return err
 		}
@@ -379,7 +391,7 @@ func (s *Service) ChangePassword(ctx context.Context, p store.Principal, passwor
 		return account, err
 	}
 	err = s.Store.Transaction(ctx, func(q *db.Queries) error {
-		if _, err := lockCurrent(ctx, q, p); err != nil {
+		if _, err := lockCredential(ctx, q, p); err != nil {
 			return err
 		}
 		if err := q.UpdatePassword(ctx, db.UpdatePasswordParams{ID: id, PasswordHash: hash}); err != nil {

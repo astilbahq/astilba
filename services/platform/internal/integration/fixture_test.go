@@ -336,10 +336,16 @@ func browserPrincipal(t *testing.T, st *store.Store, account db.Account, mfa boo
 		t.Fatal(err)
 	}
 	now := time.Now()
-	if err = st.Queries.InsertSession(context.Background(), db.InsertSessionParams{Token: token, Data: []byte{}, Expiry: now.Add(time.Hour)}); err != nil {
+	if err = st.Queries.InsertSession(context.Background(), db.InsertSessionParams{Token: token, Data: []byte{}, Expiry: now.Add(time.Hour), Lineage: uuid.New()}); err != nil {
 		t.Fatal(err)
 	}
 	return store.Principal{Account: account, MFA: mfa, RecentUntil: now.Add(time.Hour), CredentialRecentUntil: now.Add(time.Hour), SessionHash: token}
+}
+
+// endSession deletes a browser session's row, as a logout does.
+func endSession(ctx context.Context, f *fixture, hash string) error {
+	_, err := f.st.Pool.Exec(ctx, "DELETE FROM sessions WHERE token=$1", hash)
+	return err
 }
 
 // sessionCookies leaves out the device cookie that goes with a completed sign-in.

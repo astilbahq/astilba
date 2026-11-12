@@ -143,6 +143,14 @@ func (s *Service) AcceptHosted(ctx context.Context, token, name, password, works
 	if e = store.Audit(ctx, q, store.Principal{Account: account}, ws, "workspace.hosted_signup", ws); e != nil {
 		return account, ws, e
 	}
+	if existing != nil {
+		// Marking the email verified waits for any holder of the account, such as a
+		// credential change or an import. A logout or credential change that committed
+		// meanwhile wins, and the invitation stays unused.
+		if e = store.AdmitBrowserSession(ctx, q, *existing); e != nil {
+			return account, ws, e
+		}
+	}
 	return account, ws, tx.Commit(ctx)
 }
 
