@@ -4,6 +4,7 @@ import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
 import { openEnvironmentSection } from "./environment-section";
 import { signInAsOwner } from "./fixtures/owner-sign-in";
+import { api } from "./fixtures/ports";
 import {
   confirmIdentityWithPassword,
   lapseRecentConfirmationFor,
@@ -63,7 +64,7 @@ test("preview policy retains failed inputs and approves only the displayed fork 
     const ws = session.workspaces[0].id;
     const headers = {
       "X-CSRF-Token": session.csrfToken,
-      Origin: "http://127.0.0.1:15181",
+      Origin: api,
     };
     const prefix = `/api/v1/workspaces/${ws}`;
     const host = await page.request.post(`${prefix}/servers`, {

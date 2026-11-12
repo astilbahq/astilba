@@ -3,8 +3,7 @@ import { readdir, readFile } from "node:fs/promises";
 import AxeBuilder from "@axe-core/playwright";
 import { expect, type Page, test } from "@playwright/test";
 import { invitationLinkFixture, resetLinkFixture } from "./auth-fixture";
-
-const dev = "http://127.0.0.1:15182";
+import { dev } from "./fixtures/ports";
 
 async function chooseLanguage(page: Page, name: string) {
   // Auth's second menu is Language; its accessible name also changes language.
