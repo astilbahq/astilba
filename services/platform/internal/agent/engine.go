@@ -51,6 +51,8 @@ type Engine struct {
 	// which it advertises with Astilba-Agent-Host-Changes v1. It is unknown until management
 	// first answers, using the refusal states.
 	hostChangeReviews atomic.Int32
+	// terminals ends shells in services a deployment makes elevated, see fenceTerminals.
+	terminals terminalFence
 	// managed stands in for the host's managed networking in tests, which only a prepared
 	// Linux host has. Nil is the host itself.
 	managed managedHost

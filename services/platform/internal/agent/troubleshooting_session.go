@@ -259,6 +259,22 @@ func (e *Engine) findShell(ctx context.Context, container string) (string, error
 func (e *Engine) runShell(ctx context.Context, conn *websocket.Conn, offer api.AgentTroubleshootingOffer, container string) error {
 	starting, cancel := context.WithTimeout(ctx, troubleshootingDockerWait)
 	defer cancel()
+	// A deployment that would leave the container able to reach a privileged service from now
+	// on ends the shell and stops the container. One that ran since eligibility was decided may
+	// have started a privileged peer, so eligibility is decided again once the shell is
+	// registered. Release runs last, once the shell has been cleaned up.
+	end, release, err := e.admitShell(offer.UnitId, offer.ApplicationId, container)
+	if err != nil {
+		return errors.Join(err, finishTroubleshooting(ctx, conn, append([]byte{terminal.Refused}, terminal.RefusedUnavailable...)))
+	}
+	defer release()
+	if again, err := e.TroubleshootingTarget(starting, offer.UnitId, offer.ApplicationId, offer.Instance); err != nil || again != container {
+		reason := terminal.RefusedIneligible
+		if err != nil && !errors.Is(err, ErrTroubleshootingIneligible) {
+			reason = terminal.RefusedUnavailable
+		}
+		return finishTroubleshooting(ctx, conn, append([]byte{terminal.Refused}, reason...))
+	}
 	// Until the shell is running, a failure is reported to the person, not just the host.
 	unavailable := func(cause error) error {
 		return errors.Join(cause, finishTroubleshooting(ctx, conn, append([]byte{terminal.Refused}, terminal.RefusedUnavailable...)))
@@ -299,7 +315,7 @@ func (e *Engine) runShell(ctx context.Context, conn *websocket.Conn, offer api.A
 		return unavailable(err)
 	}
 	slog.Info("terminal session started", "session", offer.SessionId, "actor", offer.ActorId, "container", container)
-	reason := e.pumpShell(ctx, conn, created.ID, attached)
+	reason := e.pumpShell(ctx, conn, created.ID, attached, end)
 	slog.Info("terminal session ended", "session", offer.SessionId, "actor", offer.ActorId, "container", container, "reason", reason)
 	return nil
 }
@@ -327,7 +343,9 @@ func (e *Engine) startedShell(ctx context.Context, exec string) (shellIdentity, 
 	return shellIdentity{}, errors.New("terminal shell did not start")
 }
 
-func (e *Engine) pumpShell(parent context.Context, conn *websocket.Conn, exec string, attached client.ExecAttachResult) string {
+// pumpShell relays a running shell until it, the stream or a limit ends it, or until end
+// closes because a deployment is making its service elevated.
+func (e *Engine) pumpShell(parent context.Context, conn *websocket.Conn, exec string, attached client.ExecAttachResult, end <-chan struct{}) string {
 	ctx, cancel := context.WithTimeout(parent, domain.TroubleshootingMaxDuration)
 	defer cancel()
 	var once sync.Once
@@ -431,6 +449,14 @@ func (e *Engine) pumpShell(parent context.Context, conn *websocket.Conn, exec st
 		for {
 			select {
 			case <-ctx.Done():
+				return
+			case <-end:
+				// The notice is brief: the deployment stops the container shortly after.
+				name("service became elevated")
+				notice, done := context.WithTimeout(ctx, 5*time.Second)
+				_ = finishTroubleshooting(notice, conn, append([]byte{terminal.Refused}, terminal.RefusedIneligible...))
+				done()
+				cancel()
 				return
 			case now := <-tick.C:
 				if time.Since(activity.Last()) >= e.troubleshootingIdle() {

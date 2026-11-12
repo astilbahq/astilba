@@ -61,6 +61,11 @@ func (e *Engine) compose(ctx context.Context, p deployment.Plan, body []byte, se
 	if !strings.HasPrefix(host, "unix:///") {
 		return errors.New("Compose requires the selected local Docker socket")
 	}
+	// A run can start a privileged service, so what sessions touched beside it stops first.
+	args, err := e.fenceTerminals(ctx, p, args)
+	if err != nil {
+		return err
+	}
 	directory := e.Journal.dir
 	if p.Specification.Compose != nil {
 		directory = e.sourceDirectory(p)

@@ -162,6 +162,7 @@ export const RefusalReasons: Story = {
         "host_not_ready",
         "host_opt_in",
         "limit",
+        "elevated",
         "reason_added_by_a_newer_server",
       ].map((reason) => (
         <SessionErrorNotice key={reason} error={refused(reason)} />
@@ -173,6 +174,11 @@ export const RefusalReasons: Story = {
     await expect(
       canvas.getByText(
         "This server’s owner has not enabled terminal sessions on the host.",
+      ),
+    ).toBeVisible();
+    await expect(
+      canvas.getByText(
+        "This service is privileged or shares a volume or network with a privileged service, so a terminal in it could control the server.",
       ),
     ).toBeVisible();
     await expect(canvas.getByText("Server copy")).toBeVisible();

@@ -130,6 +130,16 @@ func (s *Service) OpenTroubleshootingSession(ctx context.Context, p store.Princi
 		if err != nil {
 			return err
 		}
+		// A shell in a privileged service, or in a peer that shares a volume or network with
+		// one, could drive that service and so reach the host. No role or confirmation allows
+		// it: the agent refuses these containers too.
+		elevation, err := ElevationOf(spec)
+		if err != nil {
+			return err
+		}
+		if elevation.Services[in.ApplicationId] {
+			return domain.TroubleshootingRefused(domain.TroubleshootingElevated)
+		}
 		unit, err := q.TroubleshootingUnit(ctx, db.TroubleshootingUnitParams{WorkspaceID: ws, EnvironmentID: env, ServerID: server})
 		if errors.Is(err, pgx.ErrNoRows) {
 			return domain.TroubleshootingRefused(domain.TroubleshootingNotDeployed)
