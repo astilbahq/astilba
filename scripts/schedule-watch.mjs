@@ -11,6 +11,17 @@ export const windowMs = 36 * 3_600_000;
 // Runs the concurrency group cancelled before they started say nothing, so a few
 // finished runs are read to find one that does.
 const judgedRuns = 5;
+// Main's history is read back to the watched file's change, at most this many pages.
+const maxPages = 10;
+
+// The commits from a page of main's history, newest first, down to the change.
+export function untilChange(listed, change) {
+  const at = listed.findIndex(({ sha }) => sha === change);
+  return {
+    shas: (at < 0 ? listed : listed.slice(0, at + 1)).map(({ sha }) => sha),
+    reached: at >= 0,
+  };
+}
 
 // The workflow's scheduled runs of main's commits since its file last changed there,
 // newest first. Only scheduled runs count: they always run main's file, so no fork's
@@ -104,17 +115,17 @@ async function main() {
     `/repos/${repository}/commits?sha=main&path=${encodeURIComponent(workflow.path)}&per_page=1`,
   );
   const changed = commit?.commit.committer.date ?? workflow.created_at;
-  // Main's commits from the change on; history is linear, as main takes squash merges.
-  const commits =
-    commit &&
-    new Set([
-      commit.sha,
-      ...(
-        await get(
-          `/repos/${repository}/commits?sha=main&since=${encodeURIComponent(changed)}&per_page=100`,
-        )
-      ).map(({ sha }) => sha),
-    ]);
+  // Main's commits from the newest back to the change, by place in its history: the
+  // merge queue can date several commits within one second.
+  let commits;
+  for (let page = 1, done = !commit; !done && page <= maxPages; page++) {
+    const listed = await get(
+      `/repos/${repository}/commits?sha=main&per_page=100&page=${page}`,
+    );
+    const { shas, reached } = untilChange(listed, commit.sha);
+    commits = new Set([...(commits ?? []), ...shas]);
+    done = reached || listed.length < 100;
+  }
   const runs = ownRuns(
     (await get(`${base}/runs?event=schedule&per_page=30`)).workflow_runs,
     repository,

@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { outcome, ownRuns, stopped, windowMs } from "./schedule-watch.mjs";
+import {
+  outcome,
+  ownRuns,
+  stopped,
+  untilChange,
+  windowMs,
+} from "./schedule-watch.mjs";
 
 const now = Date.parse("2026-11-13T13:00:00Z");
 const hoursAgo = (hours) => new Date(now - hours * 3_600_000).toISOString();
@@ -185,4 +191,16 @@ test("a disabled workflow is a problem even with recent runs", () => {
     ),
     ["disabled"],
   );
+});
+
+test("the commits that count end at the change, whatever their dates", () => {
+  const page = ["d", "c", "change", "parent"].map((sha) => ({ sha }));
+  assert.deepEqual(untilChange(page, "change"), {
+    shas: ["d", "c", "change"],
+    reached: true,
+  });
+  assert.deepEqual(untilChange(page.slice(0, 2), "change"), {
+    shas: ["d", "c"],
+    reached: false,
+  });
 });
