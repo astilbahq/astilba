@@ -116,7 +116,9 @@ func (b *Broker) admit(ctx context.Context, r Request) (rule, error) {
 	}
 	installation := r.Workspace == uuid.Nil
 	for _, item := range r.Items {
-		if item.identity(r.Workspace) == "" || !rule.covers(item.Kind) {
+		// A row always has an ID by the time its value is sealed: a nil one is a caller that has
+		// not chosen it yet, and would seal the value for the wrong row.
+		if item.ID == uuid.Nil || item.identity(r.Workspace) == "" || !rule.covers(item.Kind) {
 			return rule, domain.Forbidden
 		}
 		// A person opens only their own second factor.

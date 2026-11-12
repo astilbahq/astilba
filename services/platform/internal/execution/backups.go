@@ -93,6 +93,11 @@ func (s *Service) BackupPolicies(ctx context.Context, p store.Principal, ws, pid
 }
 func (s *Service) SaveBackupPolicy(ctx context.Context, p store.Principal, ws, pid, env, id uuid.UUID, in api.BackupPolicyRequest) (backup.Policy, error) {
 	var out backup.Policy
+	// A new policy's ID is chosen before its keys are asked for, so its access is sealed for it.
+	creating := id == uuid.Nil
+	if creating {
+		id = uuid.New()
+	}
 	item := secretbroker.Item{Kind: secretbroker.BackupPolicy, ID: id}
 	keys, done, err := s.sealing(ctx, p, ws, item)
 	if err != nil {
@@ -145,8 +150,7 @@ func (s *Service) SaveBackupPolicy(ctx context.Context, p store.Principal, ws, p
 		if err = requireReplicas(ctx, tx, ws, *v.Server, plan); err != nil {
 			return err
 		}
-		if id == uuid.Nil {
-			id = uuid.New()
+		if creating {
 			if in.BaseGeneration != 0 {
 				return domain.Conflict
 			}

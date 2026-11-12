@@ -12,9 +12,11 @@ import (
 const (
 	workspaceRate  = 20
 	workspaceBurst = 100
-	// A webhook is unauthenticated until its signature is checked, which needs its secret.
-	webhookRate  = 1
-	webhookBurst = 30
+	// A webhook is unauthenticated until its signature is checked, which needs its secret, so a
+	// forged call cannot be told from a real one before the budget. The burst fits a provider's
+	// own bursts, such as a pull request series, and the rate bounds a flood's records.
+	webhookRate  = 5
+	webhookBurst = 200
 	// maxBuckets bounds the memory a flood of distinct keys can take. Past it the buckets start
 	// again full, which a flood can only reach by spreading itself thinner than any one bucket.
 	maxBuckets = 10000

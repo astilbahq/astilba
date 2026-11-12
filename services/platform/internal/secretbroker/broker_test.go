@@ -141,6 +141,7 @@ func TestPurposeTable(t *testing.T) {
 		{"new workspace", Request{Workspace: uuid.New(), Purpose: Seal, Principal: Account(uuid.New()), Items: []Item{secret}, NewWorkspace: true}, true},
 		{"new workspace for export", Request{Workspace: uuid.New(), Purpose: Export, Principal: Account(owner), Kinds: []Kind{SecretVersion}, NewWorkspace: true}, false},
 		{"operator rotates", Request{Purpose: Rotate, Principal: Operator("cli"), Items: []Item{{Kind: TOTP, ID: member}}}, false},
+		{"row not yet chosen", Request{Workspace: ws, Purpose: Seal, Principal: Account(owner), Items: []Item{{Kind: BackupPolicy}}}, false},
 		{"unknown purpose", Request{Workspace: ws, Purpose: "spy", Principal: Account(owner), Items: []Item{secret}}, false},
 		{"malformed principal", Request{Workspace: ws, Purpose: Seal, Principal: Principal{Kind: AccountPrincipal}, Items: []Item{secret}}, false},
 	} {
@@ -246,8 +247,9 @@ func TestBudgets(t *testing.T) {
 	hooked := uuid.New()
 	connection := uuid.New()
 	hook := Request{Workspace: hooked, Purpose: Operate, Principal: System("webhook"), Items: []Item{{Kind: Git, ID: connection}}, Connection: &connection}
-	// More than the workspace's whole burst, so a shared bucket would be empty.
-	for range workspaceBurst + 1 {
+	// More than the workspace's whole burst, so a shared bucket would be empty, and more than
+	// the connection's own.
+	for range max(workspaceBurst, webhookBurst) + 1 {
 		_, _ = b.Begin(ctx, hook)
 	}
 	if _, err := b.Begin(ctx, hook); !errors.Is(err, domain.RateLimited) {
