@@ -44,66 +44,91 @@ export function clip(text, limit = textLimit) {
 }
 
 const digest = (key) =>
-  createHash("sha256").update(key).digest("hex").slice(0, 16);
+  createHash("sha256").update(key).digest("hex").slice(0, 12);
+
+const keysIn = (body) =>
+  new Set(
+    marker
+      .exec(body ?? "")?.[1]
+      .split(" ")
+      .filter(Boolean) ?? [],
+  );
 
 // Takes each problem as a stable key and a line of markdown that names it. Keys are
 // kept in the issue body, so a later run comments only on problems that are new, and
 // the same problem on the next day changes the body without notifying anyone. A
 // report that could not tell passes `undecided` to leave an open issue alone. Only
 // this workflow's own issues count, as anyone can open one with the same title.
+//
+// With `acknowledge`, a person closing the issue accepts what it listed: a later run
+// opens a new issue only for a problem the closed one did not have. Closing it here
+// clears its keys, so a problem that returns after a recovery is new again.
 export async function syncIssue(
   request,
   repository,
-  { title, problems, body, undecided = false },
+  { title, problems, body, undecided = false, acknowledge = false },
 ) {
-  const issues = await (
-    await request(
-      `/repos/${repository}/issues?state=open&creator=github-actions%5Bbot%5D&per_page=100`,
-    )
-  ).json();
-  const open = issues
-    .filter((issue) => issue.title === title && !issue.pull_request)
-    .toSorted((a, b) => a.number - b.number)[0];
-  const keys = [...new Set(problems.map(({ key }) => digest(key)))];
-  const marked = clip(`<!-- report keys: ${keys.join(" ")} -->\n${body}`);
-  if (problems.length && !open) {
+  const list = async (state) =>
+    (
+      await (
+        await request(
+          `/repos/${repository}/issues?state=${state}&creator=github-actions%5Bbot%5D&sort=updated&direction=desc&per_page=100`,
+        )
+      ).json()
+    ).filter((issue) => issue.title === title && !issue.pull_request);
+  const open = (await list("open")).toSorted((a, b) => a.number - b.number)[0];
+  const unique = problems.filter(
+    ({ key }, index) =>
+      problems.findIndex((other) => other.key === key) === index,
+  );
+  const mark = (text) =>
+    clip(
+      `<!-- report keys: ${unique.map(({ key }) => digest(key)).join(" ")} -->\n${text}`,
+    );
+  const newSince = (known) =>
+    unique.filter(({ key }) => !known.has(digest(key)));
+  const announce = (heading, fresh) =>
+    [
+      `${heading} (${fresh.length}):`,
+      "",
+      ...fresh.map(({ line }) => line),
+    ].join("\n");
+  if (unique.length && !open) {
+    let text = body;
+    if (acknowledge) {
+      const [closed] = (await list("closed")).toSorted((a, b) =>
+        (b.closed_at ?? "").localeCompare(a.closed_at ?? ""),
+      );
+      const accepted = keysIn(closed?.body);
+      const fresh = newSince(accepted);
+      if (!fresh.length) return "acknowledged";
+      if (accepted.size)
+        text = `${announce(`New since #${closed.number} was closed`, fresh)}\n\n${body}`;
+    }
     await request(`/repos/${repository}/issues`, {
       method: "POST",
-      body: { title, body: marked },
+      body: { title, body: mark(text) },
     });
     return "opened";
   }
-  if (problems.length) {
-    const known = new Set(marker.exec(open.body ?? "")?.[1].split(" ") ?? []);
-    const fresh = problems.filter(
-      ({ key }, index) =>
-        !known.has(digest(key)) &&
-        problems.findIndex((other) => other.key === key) === index,
-    );
+  if (unique.length) {
+    const fresh = newSince(keysIn(open.body));
     await request(`/repos/${repository}/issues/${open.number}`, {
       method: "PATCH",
-      body: { body: marked },
+      body: { body: mark(body) },
     });
     // An edited body notifies nobody, so what is new is said in a comment.
     if (fresh.length)
       await request(`/repos/${repository}/issues/${open.number}/comments`, {
         method: "POST",
-        body: {
-          body: clip(
-            [
-              `New since the last report (${fresh.length}):`,
-              "",
-              ...fresh.map(({ line }) => line),
-            ].join("\n"),
-          ),
-        },
+        body: { body: clip(announce("New since the last report", fresh)) },
       });
     return fresh.length ? "commented" : "updated";
   }
   if (open && !undecided) {
     await request(`/repos/${repository}/issues/${open.number}`, {
       method: "PATCH",
-      body: { body: marked, state: "closed", state_reason: "completed" },
+      body: { body: mark(body), state: "closed", state_reason: "completed" },
     });
     return "closed";
   }

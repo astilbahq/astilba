@@ -10,7 +10,11 @@ const fakeGitHub = (issues) => {
       if (method !== "GET") sent.push({ method, path, ...body });
       // GitHub answers an unknown creator with an empty list, not an error.
       else assert.match(path, /[?&]creator=github-actions%5Bbot%5D(&|$)/);
-      return { json: async () => issues };
+      const state = /[?&]state=(\w+)/.exec(path)?.[1];
+      return {
+        json: async () =>
+          issues.filter((issue) => (issue.state ?? "open") === state),
+      };
     },
   };
 };
@@ -32,7 +36,7 @@ test("opens one issue for the first problem, keeping its keys", async () => {
   assert.deepEqual([method, path], ["POST", "/repos/o/r/issues"]);
   assert.match(
     body,
-    /^<!-- report keys: [0-9a-f]{16} [0-9a-f]{16} -->\ntoday$/,
+    /^<!-- report keys: [0-9a-f]{12} [0-9a-f]{12} -->\ntoday$/,
   );
   assert.equal(none.sent[0].title, title);
 });
@@ -163,4 +167,93 @@ test("a long body is cut at a line, under GitHub's limit", () => {
   assert.ok(cut.length <= 1000);
   assert.match(cut, /\nline \d+\n\n…cut to fit the issue/);
   assert.equal(clip("short", 1000), "short");
+});
+
+test("closing an acknowledged report's issue accepts what it listed", async () => {
+  const first = fakeGitHub([]);
+  await syncIssue(first.request, "o/r", {
+    title,
+    problems: [problem("a")],
+    body: "",
+    acknowledge: true,
+  });
+  const closed = {
+    number: 4,
+    title,
+    state: "closed",
+    closed_at: "2026-11-12T10:00:00Z",
+    body: first.sent[0].body,
+  };
+  const older = {
+    ...closed,
+    number: 2,
+    closed_at: "2026-11-01T10:00:00Z",
+    body: "",
+  };
+
+  const same = fakeGitHub([older, closed]);
+  assert.equal(
+    await syncIssue(same.request, "o/r", {
+      title,
+      problems: [problem("a")],
+      body: "",
+      acknowledge: true,
+    }),
+    "acknowledged",
+  );
+  assert.deepEqual(same.sent, []);
+
+  const more = fakeGitHub([older, closed]);
+  assert.equal(
+    await syncIssue(more.request, "o/r", {
+      title,
+      problems: [problem("a"), problem("b")],
+      body: "today",
+      acknowledge: true,
+    }),
+    "opened",
+  );
+  assert.match(
+    more.sent[0].body,
+    /\nNew since #4 was closed \(1\):\n\n- b\n\ntoday$/,
+  );
+
+  // Without acknowledgement, as for a failing gate, closing it accepts nothing.
+  const gate = fakeGitHub([closed]);
+  assert.equal(
+    await syncIssue(gate.request, "o/r", {
+      title,
+      problems: [problem("a")],
+      body: "",
+    }),
+    "opened",
+  );
+});
+
+test("a recovery clears the keys, so a problem that returns is new again", async () => {
+  const recovered = fakeGitHub([{ number: 7, title, body: "" }]);
+  await syncIssue(recovered.request, "o/r", {
+    title,
+    problems: [],
+    body: "",
+    acknowledge: true,
+  });
+  const returned = fakeGitHub([
+    {
+      number: 7,
+      title,
+      state: "closed",
+      closed_at: "2026-11-12T10:00:00Z",
+      body: recovered.sent[0].body,
+    },
+  ]);
+  assert.equal(
+    await syncIssue(returned.request, "o/r", {
+      title,
+      problems: [problem("a")],
+      body: "",
+      acknowledge: true,
+    }),
+    "opened",
+  );
 });

@@ -19,7 +19,13 @@ import {
 } from "./fetch-attempts.mjs";
 import { escapeModule } from "./go-release-age.mjs";
 import { platformManifests, platforms, registry } from "./image-registry.mjs";
-import { renderSections } from "./report-issue.mjs";
+import {
+  findGoTools,
+  findImages,
+  findReleases,
+  newestInLine,
+} from "./pin-sources.mjs";
+import { clip, renderSections } from "./report-issue.mjs";
 import { osvScanner } from "./vulnerability-scan.mjs";
 
 // Reports what the digest-pinned images and the pinned tools need: a known
@@ -30,217 +36,14 @@ import { osvScanner } from "./vulnerability-scan.mjs";
 const root = resolve(import.meta.dirname, "..");
 const run = promisify(execFile);
 const maxBuffer = 512 * 1024 * 1024;
-const maximumAllowlistDays = 90;
-const imageEntryFields = ["expires", "id", "image", "package", "reason"];
 
 export const sections = {
   problems: "Could not check",
   images: "Image updates",
   tools: "Tool updates",
-  vulnerabilities: "Vulnerabilities with a fix",
-  exceptions: "Exceptions to remove",
-  unfixed: "Vulnerabilities without a known fix",
-  allowed: "Allowlisted",
+  vulnerabilities: "Vulnerabilities to act on",
+  other: "Other vulnerabilities",
 };
-
-// name[:tag]@sha256:digest, where a first component with a dot, a colon or "localhost"
-// names the registry. Markdown is left out: it describes pins rather than using them.
-const reference =
-  /(?<![\w./:@-])((?:(?:[a-z0-9-]+(?:\.[a-z0-9-]+)+|localhost)(?::\d+)?\/)?[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*(?:\/[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*)*):([\w][\w.-]{0,127})@sha256:([0-9a-f]{64})(?![0-9a-f])/g;
-
-export function parseName(name) {
-  const [first, ...rest] = name.split("/");
-  const host =
-    rest.length && (/[.:]/.test(first) || first === "localhost")
-      ? first
-      : undefined;
-  let repository = host ? rest.join("/") : name;
-  const registry =
-    host === "index.docker.io" ? "docker.io" : (host ?? "docker.io");
-  if (registry === "docker.io" && !repository.includes("/"))
-    repository = `library/${repository}`;
-  const image =
-    registry === "docker.io"
-      ? repository.replace(/^library\//, "")
-      : `${registry}/${repository}`;
-  return { registry, repository, image };
-}
-
-// Code that ships in the server image or runs on hosts, as opposed to CI and tests.
-const shipped = (path) =>
-  path === "Dockerfile" ||
-  ((path.startsWith("services/platform/") ||
-    path.startsWith("apps/platform/src/")) &&
-    !/(_test\.go|\.test\.[jt]sx?|\.stories\.[jt]sx?)$/.test(path) &&
-    !path.includes("/testdata/"));
-
-// Every digest-pinned image reference in the given files, one entry per digest.
-export function findImages(files) {
-  const pins = new Map();
-  for (const { path, text } of files) {
-    if (path.endsWith(".md")) continue;
-    for (const [, name, tag, digest] of text.matchAll(reference)) {
-      const parsed = parseName(name);
-      const key = `${parsed.registry}/${parsed.repository}@${digest}`;
-      const pin = pins.get(key) ?? {
-        ...parsed,
-        tag,
-        digest: `sha256:${digest}`,
-        paths: new Set(),
-      };
-      pin.paths.add(path);
-      pins.set(key, pin);
-    }
-  }
-  return [...pins.values()]
-    .map(({ paths, ...pin }) => ({
-      ...pin,
-      paths: [...paths].sort(),
-      runtime: [...paths].some(shipped),
-    }))
-    .toSorted(
-      (a, b) =>
-        b.runtime - a.runtime ||
-        a.image.localeCompare(b.image) ||
-        a.digest.localeCompare(b.digest),
-    );
-}
-
-// The Go tools each module runs with `go tool`, with the module and version that
-// provide them, from the module's go.mod.
-export function findGoTools(modules) {
-  const tools = [];
-  for (const { dir, text } of modules) {
-    const plain = text.replace(/\/\/.*$/gm, "");
-    const block = (keyword) =>
-      [
-        ...[
-          ...plain.matchAll(new RegExp(`^${keyword}\\s*\\(([^)]*)\\)`, "gm")),
-        ].flatMap(([, body]) => body.split("\n")),
-        ...[
-          ...plain.matchAll(new RegExp(`^${keyword}\\s+([^(\\s].*)$`, "gm")),
-        ].map(([, line]) => line),
-      ]
-        .map((line) => line.trim().split(/\s+/))
-        .filter(([first]) => first);
-    const requires = block("require");
-    for (const [tool] of block("tool")) {
-      const [path, version] =
-        requires
-          .filter(([path]) => tool === path || tool.startsWith(`${path}/`))
-          .toSorted((a, b) => b[0].length - a[0].length)[0] ?? [];
-      if (!path)
-        throw new Error(`${dir}/go.mod: no requirement provides ${tool}`);
-      tools.push({ dir, tool, module: path, version });
-    }
-  }
-  return tools;
-}
-
-// Release binaries fetched from GitHub with the version written in the URL or in a
-// constant of the same file.
-const releaseDownload =
-  /https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/releases\/download\/(v?)(?:\$\{(\w+)\}|([0-9][\w.+-]*))\//g;
-
-export function findReleases(files) {
-  const releases = new Map();
-  for (const { path, text } of files) {
-    if (path.endsWith(".md")) continue;
-    for (const [, repository, prefix, constant, literal] of text.matchAll(
-      releaseDownload,
-    )) {
-      const version =
-        literal ??
-        new RegExp(
-          `\\b(?:const|let|var)\\s+${constant}\\s*=\\s*"([^"]+)"`,
-        ).exec(text)?.[1];
-      if (!version)
-        throw new Error(`${path}: cannot read the version of ${repository}`);
-      const key = `${repository}@${prefix}${version}`;
-      const release = releases.get(key) ?? {
-        repository,
-        version: `${prefix}${version}`,
-        paths: new Set(),
-      };
-      release.paths.add(path);
-      releases.set(key, release);
-    }
-  }
-  return [...releases.values()].map(({ paths, ...release }) => ({
-    ...release,
-    paths: [...paths].sort(),
-  }));
-}
-
-// A version's line is its shape with the numbers taken out, and its first number
-// unless that is a year. So 18.4-alpine3.23 can become 18.5-alpine3.24, but not 19.0
-// or 18.5-trixie; v2026.10.14 can become any later date.
-function versionParts(version) {
-  const parts = version.split(/(\d+)/);
-  return {
-    shape: parts.filter((_, index) => index % 2 === 0).join("#"),
-    numbers: parts.filter((_, index) => index % 2).map(Number),
-  };
-}
-
-function compareNumbers(a, b) {
-  for (let index = 0; index < a.length; index++)
-    if (a[index] !== b[index]) return a[index] - b[index];
-  return 0;
-}
-
-export function newestInLine(current, candidates) {
-  const mine = versionParts(current);
-  let best;
-  for (const candidate of candidates) {
-    const other = versionParts(candidate);
-    if (
-      other.shape !== mine.shape ||
-      other.numbers.length !== mine.numbers.length ||
-      (mine.numbers[0] < 1000 && other.numbers[0] !== mine.numbers[0]) ||
-      compareNumbers(other.numbers, mine.numbers) <= 0
-    )
-      continue;
-    if (!best || compareNumbers(other.numbers, best.numbers) > 0)
-      best = { version: candidate, numbers: other.numbers };
-  }
-  return best?.version;
-}
-
-const addDays = (date, days) =>
-  new Date(Date.parse(date) + days * 86400000).toISOString().slice(0, 10);
-
-// Image exceptions sit beside the dependency scan's in the same file. Each names one
-// advisory for one package in one image, for at most 90 days.
-export function parseImageAllowlist(document, today) {
-  const entries = document.images ?? [];
-  if (!Array.isArray(entries))
-    throw new Error("Allowlist images must be an array");
-  const seen = new Set();
-  return entries.map((entry) => {
-    const label = `Image allowlist entry ${entry.id ?? "without id"}`;
-    if (Object.keys(entry).toSorted().join() !== imageEntryFields.join())
-      throw new Error(
-        `${label} must have exactly: ${imageEntryFields.join(", ")}`,
-      );
-    for (const field of ["id", "image", "package", "reason"])
-      if (typeof entry[field] !== "string" || !entry[field].trim())
-        throw new Error(`${label} needs a ${field}`);
-    if (
-      !/^\d{4}-\d{2}-\d{2}$/.test(entry.expires) ||
-      addDays(entry.expires, 0) !== entry.expires
-    )
-      throw new Error(`${label} expires must be a YYYY-MM-DD date`);
-    if (entry.expires > addDays(today, maximumAllowlistDays))
-      throw new Error(
-        `${label} expires more than ${maximumAllowlistDays} days from now`,
-      );
-    const key = `${entry.id}|${entry.image}|${entry.package}`;
-    if (seen.has(key)) throw new Error(`${label} is duplicated`);
-    seen.add(key);
-    return entry;
-  });
-}
 
 // One finding per advisory group and package in OSV Scanner's report on an image.
 // The fixed version comes from the advisory's range for the package's own ecosystem,
@@ -284,17 +87,72 @@ export function imageFindings(report) {
 
 const short = (digest) => digest.slice(0, 19);
 const where = (pin) =>
-  `${pin.runtime ? "runtime" : "CI"}: ${pin.paths.join(", ")}`;
+  `${pin.runtime ? "runtime" : "CI"}: ${pin.paths.slice(0, 3).join(", ")}${pin.paths.length > 3 ? ` and ${pin.paths.length - 3} more` : ""}`;
+const score = ({ severity }) => Number(severity) || 0;
+// CVSS bands, with an advisory that has no score, as most Go ones, apart.
+const band = (finding) =>
+  !finding.severity
+    ? "unscored"
+    : score(finding) >= 9
+      ? "critical"
+      : score(finding) >= 7
+        ? "high"
+        : "lower";
 
-// Turns what was found into report entries. A problem has a key that stays the same
-// while it does, so the issue comments only on what is new; anything that was not
-// checked is itself a problem, so a gap cannot pass as a clean report.
-export function assemble({ images, tools, entries, today }) {
+function describe(finding) {
+  const label = [finding.cve, finding.cve === finding.id ? "" : finding.id]
+    .filter(Boolean)
+    .join(" ");
+  return [
+    `${label} in ${finding.package} ${finding.version}`,
+    finding.fixed ? `, fixed in ${finding.fixed}` : ", no fix listed",
+    finding.severity ? `, CVSS ${finding.severity}` : "",
+  ].join("");
+}
+
+function counted(findings) {
+  const bands = Object.groupBy(findings, band);
+  return ["critical", "high", "unscored", "lower"]
+    .filter((name) => bands[name])
+    .map((name) => `${bands[name].length} ${name}`)
+    .join(", ");
+}
+
+// One finding per advisory, package and version across an image's platforms, worst
+// first.
+function mergeScans(scans) {
+  const merged = new Map();
+  for (const { platform, findings } of scans)
+    for (const finding of findings) {
+      const key = `${finding.id}|${finding.package}|${finding.version}`;
+      const current = merged.get(key) ?? { ...finding, platforms: new Set() };
+      current.platforms.add(platform);
+      merged.set(key, current);
+    }
+  return [...merged.values()].toSorted(
+    (a, b) =>
+      score(b) - score(a) ||
+      Boolean(b.fixed) - Boolean(a.fixed) ||
+      a.id.localeCompare(b.id),
+  );
+}
+
+// Turns what was found into report entries. Each problem has a key that stays the same
+// while it does, so the issue says only what is new, and a line of its own for that
+// notice; the issue's body shows one summary line per image instead. Anything that was
+// not checked is itself a problem, so a gap cannot pass as a clean report.
+//
+// What to act on: an update, and a fixable vulnerability in a runtime image that is
+// critical, high or unscored. The rest is counted for information: a CI image runs
+// only fixtures, and an advisory without a fix leaves nothing to do but wait.
+export function assemble({ images, tools }) {
   const problems = [];
+  const summary = [];
   const info = [];
-  const problem = (section, key, text) => problems.push({ section, key, text });
-  const used = new Set();
-  const unscanned = new Set();
+  const problem = (section, key, text, summarized = false) => {
+    problems.push({ section, key, text });
+    if (!summarized) summary.push({ section, text });
+  };
   for (const pin of images) {
     const name = `${pin.image}:${pin.tag}`;
     for (const error of pin.errors)
@@ -303,8 +161,6 @@ export function assemble({ images, tools, entries, today }) {
         `error|${name}|${pin.digest}|${error.step}`,
         `${name}: ${error.step} failed: ${error.message}`,
       );
-    if (pin.errors.some(({ step }) => step.startsWith("scan")))
-      unscanned.add(pin.image);
     if (pin.moved)
       problem(
         sections.images,
@@ -317,63 +173,46 @@ export function assemble({ images, tools, entries, today }) {
         `newer|${pin.image}|${pin.tag}|${pin.newer}`,
         `${name} has a newer release in its line: ${pin.newer} (${where(pin)})`,
       );
-    const merged = new Map();
-    for (const { platform, findings } of pin.scans)
-      for (const finding of findings) {
-        const key = `${finding.id}|${finding.package}|${finding.version}`;
-        const current = merged.get(key) ?? { ...finding, platforms: [] };
-        current.platforms.push(platform);
-        merged.set(key, current);
-      }
-    const findings = [...merged.values()].toSorted(
-      (a, b) =>
-        (Number(b.severity) || 0) - (Number(a.severity) || 0) ||
-        a.id.localeCompare(b.id),
-    );
-    for (const finding of findings) {
-      const entry = entries.find(
-        (candidate) =>
-          candidate.image === pin.image &&
-          candidate.package === finding.package &&
-          finding.ids.includes(candidate.id),
-      );
-      const label = [finding.cve, finding.cve === finding.id ? "" : finding.id]
-        .filter(Boolean)
-        .join(" ");
-      const text = [
-        `[${pin.runtime ? "runtime" : "CI"}] ${name} (${finding.platforms.join(", ")}): ${label} in ${finding.package} ${finding.version}`,
-        finding.fixed ? `, fixed in ${finding.fixed}` : ", no fix listed",
-        finding.severity ? `, CVSS ${finding.severity}` : "",
-        finding.summary ? `: ${finding.summary}` : "",
-      ].join("");
-      if (entry) used.add(entry);
-      if (entry && entry.expires >= today)
-        info.push({
-          section: sections.allowed,
-          text: `${text} (allowlisted until ${entry.expires}: ${entry.reason})`,
-        });
-      else if (entry)
-        problem(
-          sections.exceptions,
-          `expired|${entry.id}|${entry.image}|${entry.package}`,
-          `${text} (allowlist entry expired ${entry.expires})`,
-        );
-      else if (finding.fixed)
-        problem(
-          sections.vulnerabilities,
-          `vulnerable|${pin.image}|${pin.digest}|${finding.id}|${finding.package}|${finding.version}`,
-          text,
-        );
-      else info.push({ section: sections.unfixed, text });
-    }
-  }
-  for (const entry of entries)
-    if (!used.has(entry) && !unscanned.has(entry.image))
+    const findings = mergeScans(pin.scans);
+    const fixable = findings.filter(({ fixed }) => fixed);
+    const act = pin.runtime
+      ? fixable.filter((finding) => band(finding) !== "lower")
+      : [];
+    const label = `[${pin.runtime ? "runtime" : "CI"}] ${name}`;
+    for (const finding of act)
       problem(
-        sections.exceptions,
-        `stale|${entry.id}|${entry.image}|${entry.package}`,
-        `Image allowlist entry ${entry.id} ${entry.package} in ${entry.image} matches no finding, remove it`,
+        sections.vulnerabilities,
+        `vulnerable|${pin.image}|${pin.digest}|${finding.id}|${finding.package}|${finding.version}`,
+        `${label} (${[...finding.platforms].join(", ")}): ${describe(finding)}${finding.summary ? `: ${finding.summary}` : ""}`,
+        true,
       );
+    const unfixed = findings.length - fixable.length;
+    const rest = [
+      fixable.length > act.length &&
+        `${fixable.length - act.length} more with a fix (${counted(fixable.filter((finding) => !act.includes(finding)))})`,
+      unfixed &&
+        `${unfixed} without a fix (${counted(findings.filter(({ fixed }) => !fixed))})`,
+    ].filter(Boolean);
+    const worst = `Worst: ${(act.length ? act : findings)
+      .slice(0, 3)
+      .map(describe)
+      .join("; ")}`;
+    if (act.length)
+      summary.push({
+        section: sections.vulnerabilities,
+        text: `${label}: ${act.length} to act on (${counted(act)})${rest.length ? `, and ${rest.join(", ")}` : ""}. ${worst}`,
+      });
+    else if (findings.length)
+      info.push({
+        section: sections.other,
+        text: `${label}: ${rest.join(", ")}. ${worst}`,
+      });
+    for (const { platform } of pin.scans.filter(({ empty }) => empty))
+      info.push({
+        section: sections.other,
+        text: `${label} (${platform}): OSV Scanner found no packages it can read, as in an image of one static binary`,
+      });
+  }
   for (const tool of tools) {
     if (tool.error)
       problem(
@@ -388,7 +227,7 @@ export function assemble({ images, tools, entries, today }) {
         `${tool.name} ${tool.version} has a newer release in its line: ${tool.newer}${tool.published ? `, published ${tool.published.slice(0, 10)}` : ""} (${tool.paths.join(", ")})`,
       );
   }
-  return { problems, info };
+  return { problems, summary, info };
 }
 
 async function scanImage(scanner, pin, { platform, digest }, directory) {
@@ -409,12 +248,15 @@ async function scanImage(scanner, pin, { platform, digest }, directory) {
         (result) => result.stdout,
         (error) => {
           if (error.code === 1) return error.stdout;
+          // An image of one static binary, such as busybox, has nothing to read.
+          if (/No package sources found/.test(error.stderr ?? "")) return "";
           throw new FetchFailure(
             error.stderr?.trim().split("\n").at(-1) || error.message,
           );
         },
       ),
     );
+    if (!stdout) return { platform, findings: [], empty: true };
     return { platform, findings: imageFindings(JSON.parse(stdout)) };
   } finally {
     rmSync(archive, { force: true });
@@ -544,13 +386,6 @@ if (
   process.argv[1] &&
   import.meta.url === pathToFileURL(process.argv[1]).href
 ) {
-  const today = new Date().toISOString().slice(0, 10);
-  const entries = parseImageAllowlist(
-    JSON.parse(
-      readFileSync(join(root, ".github/vulnerability-allowlist.json"), "utf8"),
-    ),
-    today,
-  );
   const files = trackedFiles();
   const pins = findImages(files);
   const goTools = findGoTools(
@@ -579,16 +414,32 @@ if (
     ...(await Promise.all(goTools.map(checkGoTool))),
     ...(await Promise.all(releases.map(checkRelease))),
   ];
-  const report = assemble({ images, tools, entries, today });
-  const text = renderSections(report);
+  const report = assemble({ images, tools });
+  // The run's summary lists every finding; the issue shows only the summary lines.
+  const text = renderSections({
+    problems: report.summary,
+    info: [
+      ...report.info,
+      ...images.flatMap((pin) =>
+        mergeScans(pin.scans).map((finding) => ({
+          section: "Every finding",
+          text: `[${pin.runtime ? "runtime" : "CI"}] ${pin.image}:${pin.tag}: ${describe(finding)}`,
+        })),
+      ),
+    ],
+  });
   console.log(
     text ||
       "Every pinned image and tool is current, with no known vulnerability.",
   );
+  // GitHub refuses a step summary over 1 MiB.
   if (process.env.GITHUB_STEP_SUMMARY)
     appendFileSync(
       process.env.GITHUB_STEP_SUMMARY,
-      `## Pinned images and tools\n\n${text || "Nothing to report."}\n`,
+      clip(
+        `## Pinned images and tools\n\n${text || "Nothing to report."}\n`,
+        900_000,
+      ),
     );
   if (process.env.PIN_REPORT)
     writeFileSync(process.env.PIN_REPORT, JSON.stringify(report));

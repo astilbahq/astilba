@@ -6,7 +6,8 @@ import { github, inert, renderSections, syncIssue } from "./report-issue.mjs";
 // It reads what the scan jobs wrote as data, since they ran third-party scanners and
 // images: their text reaches the public issue only as inert lines.
 
-const limits = { entries: 2000, key: 500, text: 4000 };
+// Each problem's key takes 13 characters of the issue body, so 3000 leave room for it.
+const limits = { entries: 3000, key: 500, text: 4000 };
 
 export const reports = [
   {
@@ -22,6 +23,8 @@ export const reports = [
     what: "pinned image and tool report",
     docs: "docs/continuous-integration.md#pinned-images-and-tools",
     healthy: "nothing pinned needs attention",
+    // Much of it waits on upstream, so closing the issue accepts what it lists.
+    acknowledge: true,
   },
 ];
 
@@ -39,15 +42,15 @@ const entry = (value, keyed) =>
 // A report a scan job wrote, or undefined when it is missing or not of this shape.
 export function readReport(text) {
   try {
-    const { problems, info = [] } = JSON.parse(text);
+    const { problems, summary = problems, info = [] } = JSON.parse(text);
     if (
-      Array.isArray(problems) &&
-      Array.isArray(info) &&
-      problems.length + info.length <= limits.entries &&
+      [problems, summary, info].every(Array.isArray) &&
+      problems.length <= limits.entries &&
+      summary.length + info.length <= limits.entries &&
       problems.every((value) => entry(value, true)) &&
-      info.every((value) => entry(value, false))
+      [...summary, ...info].every((value) => entry(value, false))
     )
-      return { problems, info };
+      return { problems, summary, info };
   } catch {}
   return undefined;
 }
@@ -56,35 +59,56 @@ export function readReport(text) {
 // it did not finish, which is just as much a reason to look. A skipped job decides
 // nothing.
 export function decide(result, report, what) {
-  if (result === "success") return { problems: [], info: [], undecided: false };
+  const nothing = { problems: [], summary: [], info: [] };
+  if (result === "success") return { ...nothing, undecided: false };
   if (result !== "failure" && result !== "cancelled")
-    return { problems: [], info: [], undecided: true };
+    return { ...nothing, undecided: true };
   if (report?.problems.length) return { ...report, undecided: false };
+  const unfinished = {
+    section: "Did not finish",
+    key: "unfinished",
+    text: `The ${what} ${result === "cancelled" ? "was cancelled or timed out" : "failed without a finding to report, for example on a download, a check or a crash"}. Its log has the reason.`,
+  };
   return {
-    problems: [
-      {
-        section: "Did not finish",
-        key: "unfinished",
-        text: `The ${what} ${result === "cancelled" ? "was cancelled or timed out" : "failed without a finding to report, for example on a download, a check or a crash"}. Its log has the reason.`,
-      },
-    ],
+    problems: [unfinished],
+    summary: [unfinished],
     info: report?.info ?? [],
     undecided: false,
   };
 }
 
-export function issueBody({ what, docs, healthy }, decision, runUrl, date) {
+export function issueBody(
+  { what, docs, healthy, acknowledge },
+  decision,
+  runUrl,
+  date,
+) {
   if (!decision.problems.length)
     return `The ${what} passed on ${date}: ${runUrl}`;
   return [
     `The ${what} on ${date} found problems.`,
     "",
-    renderSections(decision),
+    renderSections({ problems: decision.summary, info: decision.info }),
     "",
     `Run: ${runUrl}`,
     "",
-    `See \`${docs}\`. This closes itself once ${healthy}.`,
+    `See \`${docs}\`. This closes itself once ${healthy}.${acknowledge ? " Closing it accepts what it lists: a new problem opens a new issue." : ""}`,
   ].join("\n");
+}
+
+// Brings one report's issue up to date with its job's result and what it wrote.
+export function syncReport(request, repository, report, result, written, run) {
+  const decision = decide(result, written, report.what);
+  return syncIssue(request, repository, {
+    title: report.title,
+    undecided: decision.undecided,
+    acknowledge: report.acknowledge ?? false,
+    problems: decision.problems.map(({ key, text }) => ({
+      key,
+      line: `- ${inert(text, 600)}`,
+    })),
+    body: issueBody(report, decision, run.url, run.date),
+  });
 }
 
 async function main() {
@@ -93,30 +117,30 @@ async function main() {
   if (!token || !repository)
     throw new Error("GITHUB_TOKEN and GITHUB_REPOSITORY must be set");
   const request = github(token);
-  const runUrl = `${process.env.GITHUB_SERVER_URL}/${repository}/actions/runs/${process.env.GITHUB_RUN_ID}`;
-  const date = new Date().toISOString().slice(0, 10);
+  const run = {
+    url: `${process.env.GITHUB_SERVER_URL}/${repository}/actions/runs/${process.env.GITHUB_RUN_ID}`,
+    date: new Date().toISOString().slice(0, 10),
+  };
   let failed = false;
   for (const report of reports) {
     const prefix = report.name.toUpperCase();
     const result = process.env[`${prefix}_RESULT`];
     const path = process.env[`${prefix}_REPORT`];
-    const written =
-      path && existsSync(path)
-        ? readReport(readFileSync(path, "utf8"))
-        : undefined;
-    if (path && existsSync(path) && !written)
+    const present = Boolean(path) && existsSync(path);
+    const written = present
+      ? readReport(readFileSync(path, "utf8"))
+      : undefined;
+    if (present && !written)
       console.warn(`::warning::${path} is not a report; ignoring it`);
-    const decision = decide(result, written, report.what);
     try {
-      const outcome = await syncIssue(request, repository, {
-        title: report.title,
-        undecided: decision.undecided,
-        problems: decision.problems.map(({ key, text }) => ({
-          key,
-          line: `- ${inert(text, 600)}`,
-        })),
-        body: issueBody(report, decision, runUrl, date),
-      });
+      const outcome = await syncReport(
+        request,
+        repository,
+        report,
+        result,
+        written,
+        run,
+      );
       console.log(`${report.title}: ${result}, issue ${outcome}`);
     } catch (error) {
       console.error(`${report.title}: ${error.message}`);

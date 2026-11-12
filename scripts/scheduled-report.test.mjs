@@ -1,12 +1,22 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { inert, syncIssue } from "./report-issue.mjs";
-import { decide, issueBody, readReport, reports } from "./scheduled-report.mjs";
+import {
+  decide,
+  readReport,
+  reports,
+  syncReport,
+} from "./scheduled-report.mjs";
 import { reportProblems } from "./vulnerability-scan.mjs";
 
 test("a report that is not of the expected shape is not read", () => {
   const ok = { problems: [{ key: "k", text: "t", section: "Blocking" }] };
-  assert.deepEqual(readReport(JSON.stringify(ok)), { ...ok, info: [] });
+  assert.deepEqual(readReport(JSON.stringify(ok)), {
+    ...ok,
+    summary: ok.problems,
+    info: [],
+  });
+  const summarized = { ...ok, summary: [{ text: "one line" }], info: [] };
+  assert.deepEqual(readReport(JSON.stringify(summarized)), summarized);
   for (const bad of [
     "not json",
     "{}",
@@ -15,6 +25,7 @@ test("a report that is not of the expected shape is not read", () => {
     JSON.stringify({ problems: [{ key: "k", text: "t", section: 2 }] }),
     JSON.stringify({ problems: [{ key: "k".repeat(501), text: "t" }] }),
     JSON.stringify({ problems: [], info: [{ text: "t".repeat(4001) }] }),
+    JSON.stringify({ problems: [], summary: [{ key: "k" }] }),
   ])
     assert.equal(readReport(bad), undefined, bad);
 });
@@ -23,6 +34,7 @@ test("a passed job closes, a failed one reports, and a skipped one decides nothi
   const report = { problems: [{ key: "k", text: "t" }], info: [] };
   assert.deepEqual(decide("success", report, "scan"), {
     problems: [],
+    summary: [],
     info: [],
     undecided: false,
   });
@@ -64,24 +76,15 @@ const fakeGitHub = () => {
   };
 };
 
-// The report job's own steps for the dependency scan, against a fake GitHub.
-async function scheduledRun(github, result, written, date) {
-  const [dependencies] = reports;
-  const decision = decide(
+const scheduledRun = (github, result, written, date) =>
+  syncReport(
+    github.request,
+    "o/r",
+    reports[0],
     result,
     written && readReport(JSON.stringify(written)),
-    dependencies.what,
+    { url: "https://github.test/run", date },
   );
-  return syncIssue(github.request, "o/r", {
-    title: dependencies.title,
-    undecided: decision.undecided,
-    problems: decision.problems.map(({ key, text }) => ({
-      key,
-      line: `- ${inert(text, 600)}`,
-    })),
-    body: issueBody(dependencies, decision, "https://github.test/run", date),
-  });
-}
 
 test("a seeded scan failure opens one issue, a repeat updates it, recovery closes it", async () => {
   const blocked = {

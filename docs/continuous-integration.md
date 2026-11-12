@@ -225,8 +225,9 @@ single run says little about a lane.
 `lane-budget.yml` runs `make check-lane-budget` daily and on demand. It reads the
 last five main runs of the current lanes and fails when a lane's package has a
 median above 600 seconds, listing the times in its job summary. While that lasts it
-keeps one issue open with the latest times, and closes it when the lanes recover. It
-is not a required check, so runner variance cannot remove a pull request from the
+keeps one issue open with the latest times, comments when another package goes over,
+and closes it when the lanes recover, as [Scheduled reports](#scheduled-reports)
+describes. It is not a required check, so runner variance cannot remove a pull request from the
 queue. The integration package also adds a warning to any run past that budget, so
 the pull request that crosses it shows it in its own checks. When a lane is past its
 budget, first look for time every test shares, because the fixture is the only place
@@ -245,10 +246,10 @@ opened.
 OSV Scanner (a release binary pinned by SHA-256 in `scripts/vulnerability-scan.mjs`)
 against `pnpm-lock.yaml` and every Go module. The Application workflow calls
 `vulnerability-scan.yml` when the suite is selected, and that gate requires it, so
-it adds no required context. The same workflow runs daily on its own, so an advisory
+it adds no required context. `scheduled-scans.yml` also calls it daily, so an advisory
 published after the last code change fails a scheduled run without rerunning the
-application suites; GitHub notifies whoever last changed the schedule. The target is
-not part of `check-app` because it needs the Go and OSV vulnerability databases and
+application suites, and the failure reaches an issue as
+[Scheduled reports](#scheduled-reports) describes. The target is not part of `check-app` because it needs the Go and OSV vulnerability databases and
 a GitHub release download. `make check-ci` runs its offline policy tests. The download
 follows the rules in [Host downloads](#host-downloads): it repeats for at least four
 minutes, a stall repeats while a slow download finishes, a file failing its hash stops
@@ -300,8 +301,9 @@ function is not reachable are listed for information and do not fail.
 
 Not scanned:
 
-- Test-only Go code and Go tools such as `staticcheck`.
-- Container base images and the pinned runtime images.
+- Test-only Go code and Go tools such as `staticcheck`, whose newer releases the
+  [pin report](#pinned-images-and-tools) lists.
+- Container images, which the pin report scans instead.
 - Tools bundled inside another package. `vite` resolves to
   `@voidzero-dev/vite-plus-core`, which carries Vite, Rolldown and tsdown in its own
   `dist`, so an advisory against those names cannot match it. Check them when
@@ -329,6 +331,90 @@ in a reviewed pull request:
 still applies on its expiry date. The scan fails if an entry has expired, the
 finding reaches a surface the entry does not name, or the entry no longer matches a
 finding, so exceptions cannot outlive what was reviewed.
+
+## Pinned images and tools
+
+`make report-pins` runs `scripts/pin-report.mjs`, which reports what the pins
+Dependabot cannot read need: the images Go constants, workflows, tests and the
+Dockerfile pin by digest, the Go tools and the release binaries. `scheduled-scans.yml`
+runs it daily and on demand. It finds the pins from source on every run, so a pin added
+later needs no list:
+
+- every `name:tag@sha256:digest` reference in a tracked file other than Markdown. One in
+  the server's non-test code, the dashboard's source or the Dockerfile is labelled
+  `runtime`, any other `CI`;
+- every `tool` directive in a tracked `go.mod`, with the requirement that provides it;
+- every GitHub release download in a tracked file, with the version in its URL or in a
+  constant of the same file. A version it cannot read stops the report.
+
+For each image it reads the pinned manifest and checks its bytes against the digest. It
+pulls the `linux/amd64` and `linux/arm64` images, the platforms Astilba runs, by their
+own digests, saves each with `docker save` and scans the archive with the OSV Scanner
+binary [the vulnerability scan](#vulnerability-scan) pins. No container starts. It also
+asks whether the tag now points elsewhere, which means upstream rebuilt the image, and
+lists the registry's tags for a newer release in the same line. A line keeps the tag's
+shape and its first number: `18.4-alpine3.23` can become `18.5-alpine3.24`, but not
+`19.0-alpine3.24` or `18.5-trixie`. A first number of 1000 or more is a year, so a
+calendar version such as `mise-2026.10.14` can become any later date. Go tools are
+compared through the Go module proxy, and release binaries through GitHub's releases
+without drafts or pre-releases.
+
+These need attention, and keep the [issue](#scheduled-reports) open:
+
+- a pinned tag rebuilt upstream, or a newer release in its line, of an image or tool;
+- in a `runtime` image, a vulnerability whose advisory gives a fixed version for the
+  package's own distribution branch, such as `Alpine:v3.23`, and whose CVSS score is
+  7 or more or missing, as it is for most Go advisories;
+- anything that could not be checked, such as a pull, a scan or a registry request.
+
+The issue gives each image one line: how many vulnerabilities to act on, how many more
+have a fix or have none, and the worst three with the CVE, the package, the fixed
+version and the score. A comment names each new one. Everything else is counted for
+information. A `CI` image runs only fixtures, and an advisory without a fix leaves
+nothing to do but wait for upstream; the updates above still report both kinds of
+image. The run's summary lists every finding. An image of one static binary, such as
+`busybox`, has no packages OSV Scanner can read, and says so.
+
+The report does not apply the release-age gate, so a security release is heard of at
+once; the bump itself follows the `upgrade-dependencies` skill and the gate. Pins never
+change by themselves. Registry requests, pulls and scans repeat like
+[host downloads](#host-downloads), and a registry manifest or blob whose bytes do not
+match its digest is reported as a check that failed.
+
+Much of what the report finds waits on upstream, so closing its issue accepts what it
+lists. A later run opens a new issue only for something the closed one did not have:
+a new advisory, a new release, or the same advisory in a newly pinned digest. Say why
+in a comment before closing. Locally, the report needs Docker through `DOCKER_HOST`
+and the network: `GITHUB_TOKEN="$(gh auth token)" make report-pins`. It writes nothing
+to GitHub.
+
+## Scheduled reports
+
+A scheduled run's failure email goes to whichever account GitHub holds responsible for
+the schedule. Once the workflow last changed through the merge queue, that is
+`github-merge-queue[bot]`, so it reaches nobody. Scheduled checks report through an
+issue instead, which GitHub sends to everyone watching the repository's issues.
+
+`scheduled-scans.yml` runs daily and on demand. Its `dependencies` job calls
+`vulnerability-scan.yml`, and its `pins` job runs the pin report. Both have only
+`contents: read` and write what they found to an artifact. The `report` job runs on
+`main` after both, whatever their result, and is the only job with `issues: write`. It
+runs no scanner and pulls no image, and it reads the artifacts as data: every line
+reaches the issue as inline code, so a mention, link or markup in an advisory or a tag
+stays inert. Runs of the workflow queue rather than overlap, so two never edit one
+issue.
+
+`scripts/report-issue.mjs` keeps at most one open issue per report, opened by
+`github-actions[bot]`: `Scheduled vulnerability scan failed` and `Pinned images and
+tools need attention`. A failure opens it. Each later run replaces the body with what is
+wrong that day, which notifies nobody, and comments with only the problems that are new.
+Each problem has a key that leaves out the day's details, kept in the body, so a problem
+already reported stays quiet. A job that failed without a report, timed out or was
+cancelled is itself a problem. A passing job closes the issue and clears its keys, and
+a skipped one leaves it as it is. Closing the dependency scan's issue by hand accepts
+nothing: the next failing run opens another, because the same failure also stops pull
+requests. The lane budget guard keeps its issue the same way. `make check-ci` seeds a
+failure offline and follows its issue through a repeat, a new problem and recovery.
 
 ## Source-size ratchet
 

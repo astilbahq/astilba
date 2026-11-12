@@ -4,17 +4,14 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { platformManifests, registry } from "./image-registry.mjs";
+import { assemble, imageFindings, sections } from "./pin-report.mjs";
 import {
-  assemble,
   findGoTools,
   findImages,
   findReleases,
-  imageFindings,
   newestInLine,
-  parseImageAllowlist,
   parseName,
-  sections,
-} from "./pin-report.mjs";
+} from "./pin-sources.mjs";
 import { osvScannerVersion } from "./vulnerability-scan.mjs";
 
 const digest = (fill) => fill.repeat(64);
@@ -236,38 +233,6 @@ test("a newer release keeps the line: its shape and major, unless that is a year
   );
 });
 
-const imageEntry = (fields = {}) => ({
-  id: "CVE-2026-1",
-  image: "postgres",
-  package: "openssl",
-  reason: "Not reachable: the server never uses this API.",
-  expires: "2026-12-01",
-  ...fields,
-});
-
-test("image exceptions name an advisory, image and package, for at most 90 days", () => {
-  const today = "2026-11-12";
-  assert.deepEqual(parseImageAllowlist({ entries: [] }, today), []);
-  assert.equal(
-    parseImageAllowlist({ images: [imageEntry()] }, today).length,
-    1,
-  );
-  for (const [entry, message] of [
-    [imageEntry({ extra: 1 }), /must have exactly/],
-    [imageEntry({ reason: " " }), /needs a reason/],
-    [imageEntry({ expires: "2026-02-30" }), /YYYY-MM-DD/],
-    [imageEntry({ expires: "2027-03-01" }), /more than 90 days/],
-  ])
-    assert.throws(
-      () => parseImageAllowlist({ images: [entry] }, today),
-      message,
-    );
-  assert.throws(
-    () => parseImageAllowlist({ images: [imageEntry(), imageEntry()] }, today),
-    /duplicated/,
-  );
-});
-
 test("reads OSV Scanner's image report, taking the fix from the package's own branch", () => {
   const findings = imageFindings({
     results: [
@@ -373,12 +338,39 @@ const checked = (fields = {}) => ({
   ...fields,
 });
 
-test("a fixable vulnerability needs attention, with the image, CVE and fixed version", () => {
-  const { problems, info } = assemble({
-    images: [checked()],
+test("a serious fixable vulnerability in a runtime image is to act on, one line per image", () => {
+  const unscored = finding({
+    id: "GO-2026-3",
+    cve: "",
+    ids: ["GO-2026-3"],
+    package: "stdlib",
+    version: "1.25.1",
+    fixed: "1.25.2",
+    severity: "",
+  });
+  const lower = finding({
+    id: "ALPINE-CVE-2026-4",
+    cve: "CVE-2026-4",
+    severity: "5.3",
+  });
+  const unfixed = finding({
+    id: "ALPINE-CVE-2026-5",
+    cve: "CVE-2026-5",
+    fixed: "",
+  });
+  const { problems, summary, info } = assemble({
+    images: [
+      checked({
+        scans: [
+          {
+            platform: "linux/amd64",
+            findings: [finding(), finding(), unscored, lower, unfixed],
+          },
+          { platform: "linux/arm64", findings: [finding()] },
+        ],
+      }),
+    ],
     tools: [],
-    entries: [],
-    today: "2026-11-12",
   });
   assert.deepEqual(info, []);
   assert.deepEqual(problems, [
@@ -387,80 +379,50 @@ test("a fixable vulnerability needs attention, with the image, CVE and fixed ver
       key: `vulnerable|postgres|sha256:${digest("a")}|ALPINE-CVE-2026-1|openssl|3.5.4-r0`,
       text: "[runtime] postgres:18.4-alpine3.23 (linux/amd64, linux/arm64): CVE-2026-1 ALPINE-CVE-2026-1 in openssl 3.5.4-r0, fixed in 3.5.4-r1, CVSS 7.5",
     },
+    {
+      section: sections.vulnerabilities,
+      key: `vulnerable|postgres|sha256:${digest("a")}|GO-2026-3|stdlib|1.25.1`,
+      text: "[runtime] postgres:18.4-alpine3.23 (linux/amd64): GO-2026-3 in stdlib 1.25.1, fixed in 1.25.2",
+    },
+  ]);
+  assert.deepEqual(summary, [
+    {
+      section: sections.vulnerabilities,
+      text: "[runtime] postgres:18.4-alpine3.23: 2 to act on (1 high, 1 unscored), and 1 more with a fix (1 lower), 1 without a fix (1 high). Worst: CVE-2026-1 ALPINE-CVE-2026-1 in openssl 3.5.4-r0, fixed in 3.5.4-r1, CVSS 7.5; GO-2026-3 in stdlib 1.25.1, fixed in 1.25.2",
+    },
   ]);
 });
 
-test("one without a fix, or with a current exception, is reported for information", () => {
-  const { problems, info } = assemble({
+test("a CI image's vulnerabilities, and an image with nothing to read, are for information", () => {
+  const { problems, summary, info } = assemble({
     images: [
       checked({
+        runtime: false,
+        image: "gitea/gitea",
+        tag: "28.2.0",
         scans: [
-          {
-            platform: "linux/amd64",
-            findings: [
-              finding(),
-              finding({
-                id: "GO-2026-2",
-                cve: "",
-                ids: ["GO-2026-2"],
-                package: "stdlib",
-                fixed: "",
-              }),
-            ],
-          },
+          { platform: "linux/amd64", findings: [finding({ severity: "9.8" })] },
+          { platform: "linux/arm64", findings: [], empty: true },
         ],
       }),
     ],
     tools: [],
-    entries: [imageEntry()],
-    today: "2026-11-12",
   });
-  assert.deepEqual(problems, []);
-  assert.deepEqual(
-    info.map(({ section }) => section),
-    [sections.allowed, sections.unfixed],
-  );
-  assert.match(info[0].text, /allowlisted until 2026-12-01: Not reachable/);
-});
-
-test("an expired exception, or one matching nothing, needs attention", () => {
-  const expired = assemble({
-    images: [checked()],
-    tools: [],
-    entries: [imageEntry({ expires: "2026-11-11" })],
-    today: "2026-11-12",
-  });
-  assert.equal(expired.problems[0].section, sections.exceptions);
-  assert.match(expired.problems[0].text, /expired 2026-11-11/);
-
-  const stale = assemble({
-    images: [checked({ scans: [] })],
-    tools: [],
-    entries: [imageEntry()],
-    today: "2026-11-12",
-  });
-  assert.match(stale.problems[0].text, /matches no finding, remove it/);
-
-  // An image that could not be scanned cannot show an exception is unused.
-  const unscanned = assemble({
-    images: [
-      checked({
-        scans: [],
-        errors: [{ step: "scanning linux/amd64", message: "pull failed" }],
-      }),
-    ],
-    tools: [],
-    entries: [imageEntry()],
-    today: "2026-11-12",
-  });
-  assert.deepEqual(
-    unscanned.problems.map(({ section }) => section),
-    [sections.problems],
-  );
+  assert.deepEqual([problems, summary], [[], []]);
+  assert.deepEqual(info, [
+    {
+      section: sections.other,
+      text: "[CI] gitea/gitea:28.2.0: 1 more with a fix (1 critical). Worst: CVE-2026-1 ALPINE-CVE-2026-1 in openssl 3.5.4-r0, fixed in 3.5.4-r1, CVSS 9.8",
+    },
+    {
+      section: sections.other,
+      text: "[CI] gitea/gitea:28.2.0 (linux/arm64): OSV Scanner found no packages it can read, as in an image of one static binary",
+    },
+  ]);
 });
 
 test("an upstream rebuild, a newer tag or tool, and anything not checked need attention", () => {
-  const { problems } = assemble({
+  const { problems, summary } = assemble({
     images: [
       checked({
         scans: [],
@@ -485,8 +447,6 @@ test("an upstream rebuild, a newer tag or tool, and anything not checked need at
         error: "checking releases failed: HTTP 404",
       },
     ],
-    entries: [],
-    today: "2026-11-12",
   });
   assert.deepEqual(
     problems.map(({ section, key }) => [section, key]),
@@ -504,6 +464,11 @@ test("an upstream rebuild, a newer tag or tool, and anything not checked need at
   assert.match(
     problems[3].text,
     /o\/tool v1.2.3 has a newer release in its line: v1.2.4, published 2026-11-09 \(a.sh\)/,
+  );
+  // Each of these is its own line in the issue too.
+  assert.deepEqual(
+    summary.map(({ text }) => text),
+    problems.map(({ text }) => text),
   );
 });
 
