@@ -8,8 +8,8 @@ import {
   syncIssue,
 } from "./report-issue.mjs";
 
-// The Scheduled scans workflow's report job, the only job there that may write issues.
-// It reads what the scan jobs wrote as data, since they ran third-party scanners and
+// The Scheduled scans workflow's report job, which with its watch job are the only jobs
+// there that may write issues, and neither runs a scanner. It reads what the scan jobs wrote as data, since they ran third-party scanners and
 // images: their text reaches the public issue only as inert lines.
 
 // Bounds what a scan job can write, so its issue stays readable and the keys of its

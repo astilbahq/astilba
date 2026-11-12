@@ -12,18 +12,19 @@ export const windowMs = 36 * 3_600_000;
 // finished runs are read to find one that does.
 const judgedRuns = 5;
 
-// The workflow's scheduled runs on main since its file last changed there, newest
-// first. Only scheduled runs count: they always run main's file, so no fork's runs,
-// and no manual run on another ref, can stand in for one. A run from before the file
-// changed ran other jobs or steps, so it is not judged by these.
-export function ownRuns(runs, repository, changed) {
+// The workflow's scheduled runs of main's commits since its file last changed there,
+// newest first. Only scheduled runs count: they always run main's file, so no fork's
+// runs, and no manual run on another ref, can stand in for one. A run of an earlier
+// commit ran the older file, whose jobs may differ, so it is not judged by these. The
+// commit, not its date, decides: the merge queue dates a commit before main reaches it.
+export function ownRuns(runs, repository, commits) {
   return runs
     .filter(
       (run) =>
         run.event === "schedule" &&
         run.head_branch === "main" &&
         run.head_repository?.full_name === repository &&
-        Date.parse(run.created_at) >= Date.parse(changed),
+        (!commits || commits.has(run.head_sha)),
     )
     .toSorted((a, b) => b.created_at.localeCompare(a.created_at));
 }
@@ -74,8 +75,10 @@ export function stopped({ workflow, changed, runs, judged, now }) {
     runs.some(
       ({ status, created_at }) => status !== "completed" && fresh(created_at),
     )
-  )
-    return { problems, undecided: !problems.length };
+  ) {
+    const disabled = problems.filter(({ key }) => key === "disabled");
+    return { problems: disabled, undecided: !disabled.length };
+  }
   problems.push({
     key: "no run",
     line: judged
@@ -101,10 +104,21 @@ async function main() {
     `/repos/${repository}/commits?sha=main&path=${encodeURIComponent(workflow.path)}&per_page=1`,
   );
   const changed = commit?.commit.committer.date ?? workflow.created_at;
+  // Main's commits from the change on; history is linear, as main takes squash merges.
+  const commits =
+    commit &&
+    new Set([
+      commit.sha,
+      ...(
+        await get(
+          `/repos/${repository}/commits?sha=main&since=${encodeURIComponent(changed)}&per_page=100`,
+        )
+      ).map(({ sha }) => sha),
+    ]);
   const runs = ownRuns(
     (await get(`${base}/runs?event=schedule&per_page=30`)).workflow_runs,
     repository,
-    changed,
+    commits,
   );
   let judged;
   for (const run of runs

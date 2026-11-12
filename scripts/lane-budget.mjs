@@ -167,7 +167,8 @@ async function run() {
   // hand, a lane past its budget fails.
   if (problems.length) {
     const text = problems.map(({ line }) => line).join("\n");
-    if (!process.env.GITHUB_RUN_ID) throw new Error(text);
+    if (!process.env.GITHUB_RUN_ID || problems.some(({ check }) => check))
+      throw new Error(text);
     console.log(text);
     return;
   }

@@ -7,6 +7,7 @@ const hoursAgo = (hours) => new Date(now - hours * 3_600_000).toISOString();
 const repository = "o/r";
 const run = (hours, fields = {}) => ({
   id: hours,
+  head_sha: `sha${hours}`,
   event: "schedule",
   head_branch: "main",
   head_repository: { full_name: repository },
@@ -23,7 +24,7 @@ const names = ["Report to issues", "Check the lane budget"];
 const jobs = (...conclusions) =>
   names.map((name, index) => ({ name, conclusion: conclusions[index] }));
 
-test("only the repository's own scheduled runs on main since the file changed count", () => {
+test("only the repository's own scheduled runs of main's commits since the change count", () => {
   const runs = [
     run(1, { event: "workflow_dispatch" }),
     run(2, { event: "pull_request" }),
@@ -31,11 +32,20 @@ test("only the repository's own scheduled runs on main since the file changed co
     run(4, { head_branch: "feature" }),
     run(30),
     run(5),
-    run(50),
+    // Created after the change was dated, but run on the commit before it reached main.
+    run(6, { head_sha: "old" }),
   ];
+  const since = new Set(
+    runs.map(({ head_sha }) => head_sha).filter((sha) => sha !== "old"),
+  );
   assert.deepEqual(
-    ownRuns(runs, repository, hoursAgo(40)).map(({ id }) => id),
+    ownRuns(runs, repository, since).map(({ id }) => id),
     [5, 30],
+  );
+  // With no change commit on main to go by, every own scheduled run counts.
+  assert.deepEqual(
+    ownRuns(runs, repository, undefined).map(({ id }) => id),
+    [5, 6, 30],
   );
 });
 
@@ -131,7 +141,24 @@ test("no judged run for 36 hours, or none since the file changed that long ago, 
   );
 });
 
-test("a fresh run still going leaves the issue as it is", () => {
+test("a fresh run still going leaves the issue as it is, whatever the old verdict", () => {
+  const problem = { key: "job failed", line: "- failed" };
+  assert.deepEqual(
+    stopped({
+      workflow: active,
+      changed: hoursAgo(500),
+      runs: [
+        run(1, { status: "in_progress", conclusion: null }),
+        run(window + 5),
+      ],
+      judged: { run: run(window + 5), problem },
+      now,
+    }),
+    { problems: [], undecided: true },
+  );
+});
+
+test("a fresh run still going leaves an old pass as it is too", () => {
   const result = stopped({
     workflow: active,
     changed: hoursAgo(500),

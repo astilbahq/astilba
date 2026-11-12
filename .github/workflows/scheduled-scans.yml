@@ -43,8 +43,8 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-  # The only job that may write issues. It runs no scanner and pulls no image, and reads
-  # the scan jobs' reports as data. A scheduled run's own failure notice goes to whoever
+  # With the watch job, the only jobs that may write issues; neither runs a scanner or
+  # pulls an image. This one reads the scan jobs' reports as data. A scheduled run's own failure notice goes to whoever
   # GitHub holds responsible for the schedule, often a bot, so the issue is the notice.
   report:
     name: Report to issues

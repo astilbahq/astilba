@@ -419,8 +419,9 @@ issue instead, which GitHub sends to everyone watching the repository's issues.
 `scheduled-scans.yml` runs daily and on demand. Its `dependencies` job calls
 `vulnerability-scan.yml`, and its `pins` job runs the pin report. Both have only
 `contents: read` and write what they found to an artifact. The `report` job runs on
-`main` after both, whatever their result, and is the only job with `issues: write`. It
-runs no scanner and pulls no image, and it reads the artifacts as data: every line
+`main` after both, whatever their result. It and the `watch` job described below are the
+only jobs with `issues: write`, and neither runs a scanner or pulls an image. The report
+job reads the artifacts as data: every line
 reaches the issue as inline code, so a mention, link or markup in an advisory or a tag
 stays inert. Runs of the workflow queue rather than overlap, so two never edit one
 issue.

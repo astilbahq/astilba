@@ -1,3 +1,7 @@
+import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+
 // Finds the pins scripts/pin-report.mjs checks, from the repository's own files, so a
 // pin added later needs no list.
 
@@ -174,6 +178,13 @@ const trackFields = ["reason", "releases"];
 // .github/pinned-releases.json names the images and tools that follow a narrower
 // track than their line: a pattern every release on the track matches, and why.
 export function parseTracks(document) {
+  const unknown = Object.keys(document).filter(
+    (key) => !["images", "tools"].includes(key),
+  );
+  if (unknown.length)
+    throw new Error(
+      `pinned-releases.json has unknown keys: ${unknown.join(", ")}`,
+    );
   const tracks = {};
   for (const kind of ["images", "tools"]) {
     tracks[kind] = new Map();
@@ -183,8 +194,9 @@ export function parseTracks(document) {
         throw new Error(
           `${label} must have exactly: ${trackFields.join(", ")}`,
         );
-      if (typeof entry.reason !== "string" || !entry.reason.trim())
-        throw new Error(`${label} needs a reason`);
+      for (const field of trackFields)
+        if (typeof entry[field] !== "string" || !entry[field].trim())
+          throw new Error(`${label} needs a ${field}`);
       let pattern;
       try {
         pattern = new RegExp(entry.releases);
@@ -202,4 +214,25 @@ export function parseTracks(document) {
 export function offTrack(current, track) {
   if (track && !track.test(current))
     throw new Error(`${current} is not on its track ${track}`);
+}
+
+// Every tracked text file, which is what the pins are found in.
+export function trackedFiles(root) {
+  return execFileSync("git", ["ls-files", "-z"], {
+    cwd: root,
+    encoding: "utf8",
+  })
+    .split("\0")
+    .filter(Boolean)
+    .flatMap((path) => {
+      try {
+        const bytes = readFileSync(join(root, path));
+        return bytes.includes(0)
+          ? []
+          : [{ path, text: bytes.toString("utf8") }];
+      } catch {
+        // A path deleted from the working tree but still in the index.
+        return [];
+      }
+    });
 }

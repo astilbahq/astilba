@@ -1,4 +1,4 @@
-import { execFile, execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import {
   appendFileSync,
   mkdtempSync,
@@ -27,6 +27,7 @@ import {
   newestInLine,
   offTrack,
   parseTracks,
+  trackedFiles,
 } from "./pin-sources.mjs";
 import { clip, maxAliases, renderSections } from "./report-issue.mjs";
 import { osvScanner } from "./vulnerability-scan.mjs";
@@ -416,31 +417,11 @@ async function checkGoTool({ dir, tool, module, version }, track) {
   }
 }
 
-function trackedFiles() {
-  return execFileSync("git", ["ls-files", "-z"], {
-    cwd: root,
-    encoding: "utf8",
-  })
-    .split("\0")
-    .filter(Boolean)
-    .flatMap((path) => {
-      try {
-        const bytes = readFileSync(join(root, path));
-        return bytes.includes(0)
-          ? []
-          : [{ path, text: bytes.toString("utf8") }];
-      } catch {
-        // A path deleted from the working tree but still in the index.
-        return [];
-      }
-    });
-}
-
 if (
   process.argv[1] &&
   import.meta.url === pathToFileURL(process.argv[1]).href
 ) {
-  const files = trackedFiles();
+  const files = trackedFiles(root);
   const tracks = parseTracks(
     JSON.parse(
       readFileSync(join(root, ".github/pinned-releases.json"), "utf8"),

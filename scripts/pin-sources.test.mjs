@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, resolve } from "node:path";
 import { test } from "node:test";
 import {
   findGoTools,
@@ -10,7 +9,10 @@ import {
   newestInLine,
   offTrack,
   parseTracks,
+  trackedFiles,
 } from "./pin-sources.mjs";
+
+const root = resolve(import.meta.dirname, "..");
 
 const stable = /^\d+\.\d*[02468]\.\d+(-|$)/;
 const nginx = [
@@ -47,30 +49,27 @@ test("tracks name a pattern and a reason, and nothing else", () => {
   assert.ok(tracks.images.get("nginx").test("1.2"));
   assert.ok(tracks.tools.get("o/t"));
   assert.equal(parseTracks({}).images.size, 0);
+  assert.throws(
+    () => parseTracks({ image: { nginx: entry } }),
+    /unknown keys: image/,
+  );
   for (const [bad, message] of [
     [{ releases: "^1" }, /must have exactly/],
     [{ ...entry, extra: 1 }, /must have exactly/],
     [{ ...entry, reason: " " }, /needs a reason/],
     [{ ...entry, releases: "(" }, /not a pattern/],
+    [{ ...entry, releases: 1 }, /needs a releases/],
   ])
     assert.throws(() => parseTracks({ images: { x: bad } }), message);
 });
 
 test("every track in the repository names a pin and is followed by it", () => {
-  const tracked = execFileSync("git", ["ls-files", "-z"], { encoding: "utf8" })
-    .split("\0")
-    .filter((path) =>
-      /\.(go|mjs|sh|tmpl|ya?ml|tsx?)$|(^|\/)(Dockerfile|go\.mod)$/.test(path),
-    )
-    .flatMap((path) => {
-      try {
-        return [{ path, text: readFileSync(path, "utf8") }];
-      } catch {
-        return [];
-      }
-    });
+  // The same files the report reads.
+  const tracked = trackedFiles(root);
   const tracks = parseTracks(
-    JSON.parse(readFileSync(".github/pinned-releases.json", "utf8")),
+    JSON.parse(
+      readFileSync(resolve(root, ".github/pinned-releases.json"), "utf8"),
+    ),
   );
   const images = findImages(tracked);
   for (const [name, track] of tracks.images) {
