@@ -4,6 +4,7 @@ import { expect, test } from "@playwright/test";
 import type { Schema } from "../src/api/client";
 import { openEnvironmentSection } from "./environment-section";
 import { signInAsOwner } from "./fixtures/owner-sign-in";
+import { api, gitProvider } from "./fixtures/ports";
 
 test("repository setup, Git service, queued build and cancellation use the real API", async ({
   page,
@@ -18,7 +19,7 @@ test("repository setup, Git service, queued build and cancellation use the real 
     ws = session.workspaces[0].id;
   const headers = {
     "X-CSRF-Token": session.csrfToken,
-    Origin: "http://127.0.0.1:15181",
+    Origin: api,
   };
   const enrollment = await (
     await page.request.post(`/api/v1/workspaces/${ws}/servers`, {
@@ -32,38 +33,35 @@ test("repository setup, Git service, queued build and cancellation use the real 
   const agentHeaders = {
     Authorization: `Bearer ${enrollment.server.id}.${credential}`,
   };
-  const enrolled = await request.post(
-    "http://127.0.0.1:15181/agent/v1/enroll",
-    {
-      data: {
-        serverId: enrollment.server.id,
-        token: enrollment.token,
-        credential,
-        machineId: crypto.randomUUID(),
-        capabilities: {
-          protocol: 1,
-          version: "fixture",
-          os: "linux",
-          arch: "arm64",
-          docker: true,
-          build: true,
-          buildNetwork: true,
-          buildControls: true,
-          railpackVersion: "0.43.0",
-        },
-        preflight: {
-          ready: true,
-          osRelease: "ubuntu 24.04",
-          dockerVersion: "fixture",
-          freeBytes: 8589934592,
-          port80Busy: false,
-          port443Busy: false,
-          existingContainers: 0,
-          notes: [],
-        },
+  const enrolled = await request.post(`${api}/agent/v1/enroll`, {
+    data: {
+      serverId: enrollment.server.id,
+      token: enrollment.token,
+      credential,
+      machineId: crypto.randomUUID(),
+      capabilities: {
+        protocol: 1,
+        version: "fixture",
+        os: "linux",
+        arch: "arm64",
+        docker: true,
+        build: true,
+        buildNetwork: true,
+        buildControls: true,
+        railpackVersion: "0.43.0",
+      },
+      preflight: {
+        ready: true,
+        osRelease: "ubuntu 24.04",
+        dockerVersion: "fixture",
+        freeBytes: 8589934592,
+        port80Busy: false,
+        port443Busy: false,
+        existingContainers: 0,
+        notes: [],
       },
     },
-  );
+  });
   expect(enrolled.status()).toBe(200);
   expect(enrolled.headers()["astilba-agent-features"]).toBe("build-controls");
   expect(enrolled.headers()["astilba-agent-railpack"]).toBe("v1");
@@ -99,7 +97,7 @@ test("repository setup, Git service, queued build and cancellation use the real 
     .selectOption("gitea");
   await connect
     .getByLabel("Provider origin, such as https://github.com")
-    .fill("http://127.0.0.1:15185");
+    .fill(gitProvider);
   await connect
     .getByLabel("Repository path, such as team/application")
     .fill("team/app");
@@ -242,7 +240,7 @@ test("repository setup, Git service, queued build and cancellation use the real 
   ).toBeVisible();
   const railpack = (
     await (
-      await request.get("http://127.0.0.1:15181/agent/v1/poll", {
+      await request.get(`${api}/agent/v1/poll`, {
         headers: agentHeaders,
       })
     ).json()
@@ -259,21 +257,18 @@ test("repository setup, Git service, queued build and cancellation use the real 
     { headers },
   );
   expect(railpackCancelled.status()).toBe(204);
-  const railpackReport = await request.post(
-    "http://127.0.0.1:15181/agent/v1/report",
-    {
-      headers: agentHeaders,
-      data: {
-        id: railpack.id,
-        generation: railpack.generation,
-        planHash: railpack.planHash,
-        sequence: 2,
-        state: "cancelled",
-        note: "Fixture complete.",
-        steps: [],
-      },
+  const railpackReport = await request.post(`${api}/agent/v1/report`, {
+    headers: agentHeaders,
+    data: {
+      id: railpack.id,
+      generation: railpack.generation,
+      planHash: railpack.planHash,
+      sequence: 2,
+      state: "cancelled",
+      note: "Fixture complete.",
+      steps: [],
     },
-  );
+  });
   expect(railpackReport.status()).toBe(204);
   await expect(
     page.getByRole("article").getByText("Fixture complete.", { exact: true }),
@@ -334,7 +329,7 @@ test("repository setup, Git service, queued build and cancellation use the real 
       { exact: true },
     ),
   ).toBeVisible();
-  const poll = await request.get("http://127.0.0.1:15181/agent/v1/poll", {
+  const poll = await request.get(`${api}/agent/v1/poll`, {
     headers: agentHeaders,
   });
   expect(poll.status()).toBe(200);
@@ -366,7 +361,7 @@ test("repository setup, Git service, queued build and cancellation use the real 
   );
   await page.getByRole("button", { name: "Cancel build", exact: true }).click();
   expect((await cancelled).status()).toBe(204);
-  const report = await request.post("http://127.0.0.1:15181/agent/v1/report", {
+  const report = await request.post(`${api}/agent/v1/report`, {
     headers: agentHeaders,
     data: {
       id: command.id,
@@ -395,33 +390,30 @@ test("repository setup, Git service, queued build and cancellation use the real 
   await build.getByRole("button", { name: "Queue build", exact: true }).click();
   const completed = (
     await (
-      await request.get("http://127.0.0.1:15181/agent/v1/poll", {
+      await request.get(`${api}/agent/v1/poll`, {
         headers: agentHeaders,
       })
     ).json()
   ).command;
   const digest = `sha256:${"b".repeat(64)}`;
-  const succeeded = await request.post(
-    "http://127.0.0.1:15181/agent/v1/report",
-    {
-      headers: agentHeaders,
-      data: {
-        id: completed.id,
-        generation: completed.generation,
-        planHash: completed.planHash,
-        sequence: 2,
-        state: "succeeded",
-        note: "Build complete.",
-        steps: [],
-        pipeline: {
-          commit: completed.pipeline.commit,
-          image: `astilba-build-${completed.id}:built`,
-          digest,
-          architecture: completed.pipeline.build.architecture,
-        },
+  const succeeded = await request.post(`${api}/agent/v1/report`, {
+    headers: agentHeaders,
+    data: {
+      id: completed.id,
+      generation: completed.generation,
+      planHash: completed.planHash,
+      sequence: 2,
+      state: "succeeded",
+      note: "Build complete.",
+      steps: [],
+      pipeline: {
+        commit: completed.pipeline.commit,
+        image: `astilba-build-${completed.id}:built`,
+        digest,
+        architecture: completed.pipeline.build.architecture,
       },
     },
-  );
+  });
   expect(succeeded.status(), await succeeded.text()).toBe(204);
   await expect(page.getByText(digest, { exact: true })).toBeVisible();
   await page
@@ -492,14 +484,14 @@ test("repository setup, Git service, queued build and cancellation use the real 
   expect(configured.status()).toBe(202);
   const initial = (
     await (
-      await request.get("http://127.0.0.1:15181/agent/v1/poll", {
+      await request.get(`${api}/agent/v1/poll`, {
         headers: agentHeaders,
       })
     ).json()
   ).command;
   expect(
     (
-      await request.post("http://127.0.0.1:15181/agent/v1/report", {
+      await request.post(`${api}/agent/v1/report`, {
         headers: agentHeaders,
         data: {
           id: initial.id,
@@ -523,7 +515,7 @@ test("repository setup, Git service, queued build and cancellation use the real 
   ).toBe(201);
   expect(
     (
-      await request.post("http://127.0.0.1:15185/__fixture/head", {
+      await request.post(`${gitProvider}/__fixture/head`, {
         headers: { Authorization: "token browser-api-fixture" },
         data: { branch: rejectionBranch, commit: "b".repeat(40) },
       })
@@ -536,20 +528,17 @@ test("repository setup, Git service, queued build and cancellation use the real 
   });
   expect(
     (
-      await request.post(
-        `http://127.0.0.1:15181/hooks/git/${connection.connection.id}`,
-        {
-          headers: {
-            "Content-Type": "application/json",
-            "X-Gitea-Event": "push",
-            "X-Gitea-Delivery": crypto.randomUUID(),
-            "X-Gitea-Signature": createHmac("sha256", connection.webhookSecret)
-              .update(rejectedPush)
-              .digest("hex"),
-          },
-          data: rejectedPush,
+      await request.post(`${api}/hooks/git/${connection.connection.id}`, {
+        headers: {
+          "Content-Type": "application/json",
+          "X-Gitea-Event": "push",
+          "X-Gitea-Delivery": crypto.randomUUID(),
+          "X-Gitea-Signature": createHmac("sha256", connection.webhookSecret)
+            .update(rejectedPush)
+            .digest("hex"),
         },
-      )
+        data: rejectedPush,
+      })
     ).status(),
   ).toBe(202);
   await expect(
@@ -681,7 +670,7 @@ test("repository setup, Git service, queued build and cancellation use the real 
       .click();
     const response = await promotion;
     expect(response.url()).toBe(
-      `http://127.0.0.1:15181${destinationPath}/artifacts/${artifact.id}/promote`,
+      `${api}${destinationPath}/artifacts/${artifact.id}/promote`,
     );
     expect(response.request().postDataJSON()).toEqual({
       applicationId: target,

@@ -201,8 +201,10 @@ Each retains race detection, uncached execution and a fifteen-minute process
 timeout, and any failure fails the Application verification gate. Locally,
 `make verify-app-core` runs the build target and then the lanes concurrently.
 
-Each integration process owns a separate disposable PostgreSQL container, and
-each test creates its own database and temporary resources. The database copies one
+Each integration process owns a separate disposable PostgreSQL container, which it
+reaches through the Docker API rather than a published port (see
+[parallel runs](#parallel-runs-on-one-machine)), and each test creates its own
+database and temporary resources. The database copies one
 that the process migrates and checks once, and every fixture shares one password
 hash and one loaded API specification, because those cost about 1.6 seconds per
 fixture under the race detector. Preview recovery has a separate process budget from
@@ -238,6 +240,52 @@ takes three main runs to show, because earlier runs stay in the sample; adding a
 starts a new sample, and a lane with fewer than three runs neither fails the check nor
 closes the issue. Locally, `GITHUB_TOKEN` must allow reading Actions, and nothing is
 opened.
+
+## Parallel runs on one machine
+
+Several checkouts can run the application suites on one machine at the same time,
+each against its own disposable Docker daemon, such as one Colima profile per
+checkout:
+
+```bash
+colima start <profile> --activate=false
+```
+
+```bash
+PLAT_APP_DOCKER_HOST="unix://$HOME/.colima/<profile>/docker.sock" make verify-app
+```
+
+Two rules keep the runs apart, here and on CI runners alike.
+
+**No fixture publishes a container port.** A port published in a VM reaches the
+Mac through the VM's port forwarder at the same number, so two VMs can pick the same
+one and a test can reach the other VM's container. Instead, the harness listens on a
+loopback port the kernel gives it and carries each connection over the Docker API,
+the way `kubectl port-forward` goes through the API server. Each connection runs
+`internal/integration/relay` with `docker exec` in a container on the target's
+network; the harness builds it for the daemon's architecture and copies it in. Unlike
+BusyBox `nc`, it ends when the server closes, which a PostgreSQL cancel request waits
+for. The integration tests reach their PostgreSQL and Gitea this way
+(`internal/integration/docker_forward_test.go`), and the dashboard fixture and image
+smoke test their PostgreSQL and server (`scripts/docker-forward.mjs`).
+Each new connection costs one `docker exec`, tens of milliseconds; connection pools
+keep theirs. Nothing on the Mac then depends on the profile's port forwarder.
+
+**Browser suites reserve their ports.** Each dashboard and workshop run takes the
+first free block of ten loopback ports from 15180 to 15999, below the default
+ephemeral ranges, and holds the block's first port open while it runs. That listener
+is the lock, and it goes when the run does, however it ends. The run's fixture, Vite
+and tests read the block from `PLAT_BROWSER_PORT_BASE`, which Playwright's main
+process sets (`scripts/test-ports.mjs`); nothing assumes a fixed port. A lone run
+gets 15181 for management, as before. Setting the variable yourself skips the
+reservation, so do that only to repeat a run's ports.
+
+Runs in one checkout would build the dashboard into the same directories, so the
+fixture of a second dashboard run there stops at once and says so. Its lock is a Unix
+socket under `/tmp/astilba-<uid>` that the kernel releases with the run, so a killed
+run never blocks the next. Run Chromium and WebKit side by side from two checkouts, or
+one after the other as `make verify-app` does. Each run writes its results under
+`.artifacts/p1/playwright/<block>`. The canvas experiment keeps its fixed port 15171.
 
 ## Vulnerability scan
 

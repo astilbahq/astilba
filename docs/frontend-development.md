@@ -82,7 +82,7 @@ Select your actual local Docker Unix socket; the example above is the usual Linu
 
 Local email is printed as plaintext in the `pnpm dev` terminal, including the recipient, subject and full body. Request a password reset for `owner@example.test`, then open the link from that output. The launcher explicitly selects console delivery and supplies a local sender; it sends no SMTP mail. Console delivery requires non-hosted development with a loopback listener and HTTP browser origin. Other environments retain SMTP delivery, with no console fallback.
 
-`pnpm dev --port 55182` uses 55182 for the UI and 55181 for the API. Separate checkouts have separate databases; choose different ports and **separate browser profiles** when using them together. Browser cookies are shared across ports on `127.0.0.1`, so opening two previews in one profile replaces their sign-in sessions. Inherited `ASTILBA_*` configuration is cleared so the preview uses its own database and development settings. Stop it before `make verify`, whose browser fixture uses the default ports.
+`pnpm dev --port 55182` uses 55182 for the UI and 55181 for the API. Separate checkouts have separate databases; choose different ports and **separate browser profiles** when using them together. Browser cookies are shared across ports on `127.0.0.1`, so opening two previews in one profile replaces their sign-in sessions. Inherited `ASTILBA_*` configuration is cleared so the preview uses its own database and development settings. It can keep running during `make verify`, whose browser suites reserve ports of their own.
 
 Ctrl-C stops the API, frontend and owned database container while retaining demo data. `pnpm dev --reset` deletes **this checkout's** demo database and seeds the same initial account/workspace; `pnpm dev --wipe` deletes it and exits. Generated credentials and keys stay in ignored, private `.artifacts/dev`; both Vite development servers deny HTTP access to `.artifacts`. Keep the state directory with its container: do not copy it to another checkout or remove the keyring from a database you intend to retain.
 
@@ -141,7 +141,7 @@ The [cascade-layer rules](https://panda-css.com/docs/styling/cascade-layers) mat
 
 ## UI workshop
 
-Run `pnpm storybook` from the repository root to open the component and page catalogue at `http://127.0.0.1:54200`. It uses Vite+ and the existing Panda configuration; Go, Docker and a signed-in account are unnecessary. `pnpm storybook:build` creates a standalone static workshop in `.artifacts/storybook/static`. `pnpm storybook:test` builds it and runs Chromium/WebKit checks on port 15201. Both `make verify-app` and the independent workshop CI workflow include those checks.
+Run `pnpm storybook` from the repository root to open the component and page catalogue at `http://127.0.0.1:54200`. It uses Vite+ and the existing Panda configuration; Go, Docker and a signed-in account are unnecessary. `pnpm storybook:build` creates a standalone static workshop in `.artifacts/storybook/static`. `pnpm storybook:test` builds it and runs Chromium/WebKit checks on a port the run reserves. Both `make verify-app` and the independent workshop CI workflow include those checks.
 
 Stories live beside their components as `*.stories.tsx`. `src/components` covers the shared controls; `src/features/auth` covers sign-in, two-factor verification, password reset and invitations. Choose named scenarios in the sidebar to open validation errors, rejected requests, pending submissions, recovery mode and completed flows directly. Storybook's play functions reach these states through the actual forms and interactions. Canvas controls select light/dark/system, English, expanded or RTL pseudo, and viewport sizes. Existing page controls remain interactive. Workshop preferences belong to its separate origin.
 
@@ -260,12 +260,13 @@ Toast motion is clipped inside the measured stack, with 12px inner padding and 4
 
 `make verify-app` runs Chromium and WebKit in separate invocations, each with a fresh API/database fixture. This matches CI's browser isolation and prevents successful test sign-ins from accumulating across engines within the production IP-rate window. When running the browser script directly, select one project with `pnpm --filter @astilba/dashboard test:browser --project=chromium` or `--project=webkit`.
 
-Browser tests use isolated loopback ports below the default ephemeral ranges:
-15171 for Canvas, 15181–15189 for the real-API dashboard fixtures and 15201 for
-the static workshop. The dashboard test's Vite instance uses 15182/15189; ordinary
-`pnpm dev` retains 54182/54181 and `pnpm storybook` retains 54200. This keeps late
-fixture listeners from competing with outgoing database sockets and lets browser
-verification run beside the development previews.
+Browser tests use loopback ports below the default ephemeral ranges, so late
+fixture listeners never compete with outgoing sockets. Each dashboard and workshop
+run reserves its own block of ten from 15180, so suites in other checkouts can run at
+the same time; tests take their URLs from `tests/fixtures/ports.ts` rather than fixed
+ports. See [parallel runs](continuous-integration.md#parallel-runs-on-one-machine).
+Canvas keeps 15171, ordinary `pnpm dev` keeps 54182/54181 and `pnpm storybook` keeps
+54200, so browser verification also runs beside the development previews.
 
 ## Hosted signup and email verification
 

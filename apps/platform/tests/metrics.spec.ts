@@ -1,6 +1,7 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
 import { signInAsOwner } from "./fixtures/owner-sign-in";
+import { api } from "./fixtures/ports";
 
 test.afterEach(async ({ page }) => {
   await page.unrouteAll({ behavior: "wait" });
@@ -23,7 +24,7 @@ test("resource history exposes missing, measured and stale data", async ({
     {
       headers: {
         "X-CSRF-Token": session.csrfToken,
-        Origin: "http://127.0.0.1:15181",
+        Origin: api,
       },
       data: { name: `Metrics ${info.project.name}`, role: "deployment" },
     },
