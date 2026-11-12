@@ -583,7 +583,7 @@ func (s *Service) ObserveVisual(ctx context.Context, p store.Principal, ws, pid,
 		out, err = s.insertVisual(ctx, tx, ws, uuid.New(), deployment.Payload{Action: action, Plan: plan, VolumeID: volume})
 		return err
 	})
-	return out, err
+	return operationFor(p, out), err
 }
 
 func rawMessage(raw []byte) *jsontext.Value { v := jsontext.Value(raw); return &v }

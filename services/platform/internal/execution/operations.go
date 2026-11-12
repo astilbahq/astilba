@@ -108,7 +108,7 @@ func (s *Service) Apply(ctx context.Context, p store.Principal, ws, planID, key 
 		out, err = s.insert(ctx, tx, ws, key, &planID, c)
 		return err
 	})
-	return out, err
+	return operationFor(p, out), err
 }
 func (s *Service) insert(ctx context.Context, tx pgx.Tx, ws, key uuid.UUID, planID *uuid.UUID, c api.ExecutionCommand) (api.Operation, error) {
 	var out api.Operation
@@ -188,14 +188,15 @@ func (s *Service) Operations(ctx context.Context, p store.Principal, ws uuid.UUI
 		}
 		return rows.Err()
 	})
-	if err == nil {
-		for i := range out {
-			if err = s.operationAvailability(ctx, &out[i]); err != nil {
-				return out, err
-			}
+	if err != nil {
+		return nil, err
+	}
+	for i := range out {
+		if err = s.operationAvailability(ctx, &out[i]); err != nil {
+			return nil, err
 		}
 	}
-	return out, err
+	return operationsFor(p, out), nil
 }
 
 func (s *Service) operationAvailability(ctx context.Context, out *api.Operation) error {
@@ -252,7 +253,7 @@ func (s *Service) RequestUpdate(ctx context.Context, p store.Principal, ws, id u
 		out, err = s.insert(ctx, tx, ws, uuid.New(), nil, c)
 		return err
 	})
-	return out, err
+	return operationFor(p, out), err
 }
 
 type jobArgs struct {
