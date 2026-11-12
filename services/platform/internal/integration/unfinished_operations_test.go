@@ -58,17 +58,18 @@ func TestUnfinishedIndexHoldsExactlyTheStatesThatHaveNotEnded(t *testing.T) {
 
 // Every agent polls about once a second, and placement, upgrades, pipelines, networks and
 // revocation ask whether a host has unfinished work. Operation rows are permanent, so a query that
-// reads a host's operations by state must not read its history: the poll once did, and past
-// PostgreSQL's JIT threshold each poll spent hundreds of milliseconds compiling. This finds every
-// such query in the source, so a new one is held to the same plan: no sequential scan of
-// operations, and a cost that stays put as ended history triples.
+// reads a host's operations must not read its history: the poll once did, and past PostgreSQL's
+// JIT threshold each poll spent hundreds of milliseconds compiling. This takes every statement that
+// reads a host's operations from the code, as the inline SQL check counts them, and sqlc's, so a
+// new one is held to the same plan: no sequential scan of operations, and a cost that stays put
+// as ended history triples.
 func TestHostOperationQueriesDoNotReadHistory(t *testing.T) {
 	ctx := context.Background()
 	queries := hostOperationQueries(t)
 	if len(queries) < 10 {
-		t.Fatalf("found only %d queries reading a host's unfinished operations", len(queries))
+		t.Fatalf("found only %d statements reading a host's operations", len(queries))
 	}
-	t.Logf("%d queries read a host's unfinished operations", len(queries))
+	t.Logf("%d statements read a host's operations", len(queries))
 	f := setup(t)
 	// Each lists the states it reads, so each list is one of these exactly, and a state added to
 	// the table fails here until every query agrees. Excluding states would read history: the
@@ -94,9 +95,9 @@ func TestHostOperationQueriesDoNotReadHistory(t *testing.T) {
 			ended := !slices.ContainsFunc(states, func(state string) bool { return !execution.Terminal(api.ExecutionState(state)) })
 			switch {
 			case list[1] != "":
-				t.Errorf("%s excludes states; list the unfinished ones: %s", q.at, list[0])
+				t.Errorf("%s excludes states; list the unfinished ones: %s", q, list[0])
 			case !ended && !slices.Equal(states, unfinished) && !slices.Equal(states, started):
-				t.Errorf("%s reads %v, not the unfinished states %v or the started ones %v", q.at, states, unfinished, started)
+				t.Errorf("%s reads %v, not the unfinished states %v or the started ones %v", q, states, unfinished, started)
 			}
 		}
 	}
@@ -142,14 +143,14 @@ SELECT gen_random_uuid(),$1,$2,1,gen_random_uuid(),'{}',(ARRAY['network','visual
 		t.Helper()
 		results, err := conn.Conn().PgConn().Exec(ctx, `EXPLAIN (GENERIC_PLAN, FORMAT JSON) `+q.sql).ReadAll()
 		if err != nil || len(results) != 1 || len(results[0].Rows) != 1 {
-			t.Errorf("%s: explaining: %v", q.at, err)
+			t.Errorf("%s: explaining: %v", q, err)
 			return node{}, false
 		}
 		var plans []struct {
 			Plan node `json:"Plan"`
 		}
 		if err := json.Unmarshal(results[0].Rows[0][0], &plans); err != nil || len(plans) != 1 {
-			t.Errorf("%s: plan %s: %v", q.at, results[0].Rows[0][0], err)
+			t.Errorf("%s: plan %s: %v", q, results[0].Rows[0][0], err)
 			return node{}, false
 		}
 		return plans[0].Plan, true
@@ -161,49 +162,74 @@ SELECT gen_random_uuid(),$1,$2,1,gen_random_uuid(),'{}',(ARRAY['network','visual
 			before[q.at] = p.Cost
 		}
 	}
+	for _, r := range historyReaders {
+		if !slices.ContainsFunc(queries, func(q hostOperationQuery) bool { return q.name == r.name && strings.Contains(q.sql, r.fragment) }) {
+			t.Errorf("historyReaders names %s %q, which reads no host's operations now", r.name, r.fragment)
+		}
+	}
 	history(20000)
 	for _, q := range queries {
 		p, ok := plan(q)
 		if !ok {
 			continue
 		}
+		reason, excepted := historyReader(q)
+		read := scans(p) || p.Cost >= threshold || p.Cost > before[q.at]*1.05+1
 		switch {
+		case excepted && !read:
+			t.Errorf("%s no longer reads history; take it out of historyReaders", q)
+		case excepted:
+			t.Logf("%s reads history: %s", q, reason)
 		case scans(p):
-			t.Errorf("%s reads every operation: %s", q.at, q.sql)
+			t.Errorf("%s reads every operation:\n%s", q, q.sql)
 		case p.Cost >= threshold:
-			t.Errorf("%s costs %.0f, past the JIT threshold of %.0f", q.at, p.Cost, threshold)
+			t.Errorf("%s costs %.0f, past the JIT threshold of %.0f", q, p.Cost, threshold)
 		case p.Cost > before[q.at]*1.05+1:
-			t.Errorf("%s grows with history: %.0f, then %.0f with three times as much", q.at, before[q.at], p.Cost)
+			t.Errorf("%s grows with history: %.0f, then %.0f with three times as much", q, before[q.at], p.Cost)
 		}
 	}
 }
 
-type hostOperationQuery struct{ at, sql string }
+// historyReaders are the statements known to read a host's ended history, each named by its sqlc
+// name or file and function, with a fragment of its SQL, and why it does.
+var historyReaders = []struct{ name, fragment, reason string }{
+	{"NetworkManifestMissed", "", "it looks up ended commands; PLAT-317 bounds it"},
+	{"operations.go/(*worker).Work", "primary_child.parent_id", "it finds a parent's children, and operations have no parent index yet; PLAT-317 adds one"},
+	{"recovery.go/(*Store).PrepareRecovery", "DELETE FROM river_job", "offline recovery drops the queued jobs of every operation the host ever ran"},
+}
+
+// historyReader is why a statement reads history, if it is known to.
+func historyReader(q hostOperationQuery) (string, bool) {
+	for _, r := range historyReaders {
+		if q.name == r.name && strings.Contains(q.sql, r.fragment) {
+			return r.reason, true
+		}
+	}
+	return "", false
+}
+
+// hostOperationQuery is a statement, where it is, and its sqlc name if it has one.
+type hostOperationQuery struct{ at, name, sql string }
+
+func (q hostOperationQuery) String() string {
+	if q.name == q.at {
+		return q.at
+	}
+	return q.name + " (" + q.at + ")"
+}
 
 var (
 	stateLists  = regexp.MustCompile(`\bstate (NOT )?IN ?\(([^)]*)\)`)
 	quotedState = regexp.MustCompile(`'([a-z_]+)'`)
+	// A literal that begins a statement, as scripts/inline-sql.mjs counts them, after sqlc's name.
+	statement = regexp.MustCompile(`^\s*(?:-- name: (\w+)[^\n]*\n\s*)?(?:SELECT|INSERT|UPDATE|DELETE|WITH)\s`)
+	byHost    = regexp.MustCompile(`\bserver_id ?= ?\$\d`)
 )
 
-// hostOperationQueries is every SQL literal in the module's code, sqlc's included, that reads a
-// host's operations for unfinished ones: it excludes states, or names one that hasn't ended.
-// Lookups of ended operations alone read history by design, and PLAT-317 bounds them.
+// hostOperationQueries is every statement in the module's code, sqlc's generated ones included,
+// that reads operations by host.
 func hostOperationQueries(t *testing.T) []hostOperationQuery {
 	t.Helper()
-	host := regexp.MustCompile(`\bserver_id ?= ?\$\d`)
-	unfinished := func(sql string) bool {
-		for _, list := range stateLists.FindAllStringSubmatch(sql, -1) {
-			if list[1] != "" {
-				return true
-			}
-			for _, state := range quotedState.FindAllStringSubmatch(list[2], -1) {
-				if !execution.Terminal(api.ExecutionState(state[1])) {
-					return true
-				}
-			}
-		}
-		return false
-	}
 	found := []hostOperationQuery{}
 	for _, root := range []string{"..", "../../db/generated"} {
 		err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
@@ -224,17 +250,32 @@ func hostOperationQueries(t *testing.T) []hostOperationQuery {
 			if err != nil {
 				return err
 			}
-			ast.Inspect(file, func(n ast.Node) bool {
-				literal, ok := n.(*ast.BasicLit)
-				if !ok || literal.Kind != token.STRING {
+			for _, decl := range file.Decls {
+				// A statement outside sqlc is named by its file and function, which stay put as
+				// lines move.
+				owner := filepath.Base(path)
+				if fn, ok := decl.(*ast.FuncDecl); ok {
+					owner += "/" + funcName(fn)
+				}
+				ast.Inspect(decl, func(n ast.Node) bool {
+					literal, ok := n.(*ast.BasicLit)
+					if !ok || literal.Kind != token.STRING {
+						return true
+					}
+					sql, err := strconv.Unquote(literal.Value)
+					if err != nil || !strings.Contains(sql, "execution_operations") || !byHost.MatchString(sql) {
+						return true
+					}
+					if begins := statement.FindStringSubmatch(sql); begins != nil {
+						name := begins[1]
+						if name == "" {
+							name = owner
+						}
+						found = append(found, hostOperationQuery{files.Position(literal.Pos()).String(), name, sql})
+					}
 					return true
-				}
-				sql, err := strconv.Unquote(literal.Value)
-				if err == nil && strings.Contains(sql, "execution_operations") && host.MatchString(sql) && unfinished(sql) {
-					found = append(found, hostOperationQuery{files.Position(literal.Pos()).String(), sql})
-				}
-				return true
-			})
+				})
+			}
 			return nil
 		})
 		if err != nil {
@@ -242,4 +283,21 @@ func hostOperationQueries(t *testing.T) []hostOperationQuery {
 		}
 	}
 	return found
+}
+
+// funcName is a function's name, with its receiver's type for a method.
+func funcName(fn *ast.FuncDecl) string {
+	if fn.Recv == nil || len(fn.Recv.List) == 0 {
+		return fn.Name.Name
+	}
+	receiver := fn.Recv.List[0].Type
+	if star, ok := receiver.(*ast.StarExpr); ok {
+		if ident, ok := star.X.(*ast.Ident); ok {
+			return "(*" + ident.Name + ")." + fn.Name.Name
+		}
+	}
+	if ident, ok := receiver.(*ast.Ident); ok {
+		return ident.Name + "." + fn.Name.Name
+	}
+	return fn.Name.Name
 }
