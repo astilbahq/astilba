@@ -99,6 +99,9 @@ func Terminal(s api.ExecutionState) bool {
 
 type workspaceAccess struct {
 	Write, Owner, Recent, Credential, Recovery bool
+	// Revocation admits an action that only takes access away in any entitlement state; see
+	// store.InWorkspaceRevocation.
+	Revocation bool
 }
 
 func (s *Service) scope(ctx context.Context, p store.Principal, ws uuid.UUID, access workspaceAccess, action string, id uuid.UUID, fn func(pgx.Tx) error) error {
@@ -112,7 +115,12 @@ func (s *Service) scope(ctx context.Context, p store.Principal, ws uuid.UUID, ac
 		return nil
 	}
 	admission := store.WorkspaceAccess{Write: access.Write, Owner: access.Owner, Recent: access.Recent, Credential: access.Credential}
-	if access.Recovery {
+	switch {
+	case access.Recovery && access.Revocation:
+		return errors.New("workspace access is both recovery and revocation")
+	case access.Revocation:
+		return s.Store.InWorkspaceRevocation(ctx, p, ws, admission, fnScope)
+	case access.Recovery:
 		return s.Store.InWorkspaceRecovery(ctx, p, ws, admission, fnScope)
 	}
 	return s.Store.InWorkspaceTx(ctx, p, ws, admission, fnScope)
@@ -240,7 +248,8 @@ func (s *Service) Control(ctx context.Context, p store.Principal, ws, id uuid.UU
 	if revoke {
 		action = "server.revoke"
 	}
-	return s.scope(ctx, p, ws, workspaceAccess{Write: true, Owner: true, Recent: true, Recovery: revoke}, action, id, func(tx pgx.Tx) error {
+	// Both only take authority away from the server, so a lapsed workspace can still use them.
+	return s.scope(ctx, p, ws, workspaceAccess{Write: true, Owner: true, Recent: true, Revocation: true}, action, id, func(tx pgx.Tx) error {
 		if revoke {
 			if e := invalidateNetworkMember(ctx, tx, ws, id, memberRevokedNote); e != nil {
 				return e

@@ -65,8 +65,19 @@ func (s *Service) commandAdmission(ctx context.Context, tx pgx.Tx, ws uuid.UUID,
 	if err != nil {
 		return err
 	}
-	if e.Active(time.Now()) || recoveryCommand(c) && e.Recoverable(time.Now()) {
+	if e.Active(time.Now()) || revocationCommand(c) || recoveryCommand(c) && e.Recoverable(time.Now()) {
 		return nil
 	}
 	return store.SubscriptionRequired
+}
+
+// revocationCommand reports whether c only takes access away, so it runs however long ago the
+// workspace's entitlement ended. A network restriction is one: it is how peers drop a revoked or
+// removed server's key, and the agent refuses one that would widen what it holds.
+func revocationCommand(c api.ExecutionCommand) bool {
+	if c.Kind != "network" || c.Network == nil {
+		return false
+	}
+	var n hostnetwork.Command
+	return hostnetwork.Decode(*c.Network, &n) == nil && n.Action == "restrict" && n.Validate() == nil
 }

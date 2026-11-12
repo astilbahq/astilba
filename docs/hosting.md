@@ -514,6 +514,26 @@ receive a durable expiry notice; a failed delivery is retried. This first beta d
 not automatically delete workspaces. Any later deletion policy needs a separate
 announced retention period and a preceding owner notification.
 
+Taking access away never needs a subscription, however long ago it ended, so an owner
+can always shut out someone who should no longer be there. An owner can still:
+
+- remove a member or lower their role;
+- revoke an invitation or an automation credential;
+- revoke a server, remove it from private networks, or rotate its key. Peers still
+  receive the change that drops a removed server from the network;
+- turn [interactive troubleshooting](interactive-troubleshooting.md) off or limit it
+  to owners, and end open sessions;
+- pause a [preview policy](pull-request-previews.md), turn off automatic deployment
+  from Git, or disconnect a GitHub repository;
+- require two-factor authentication for the workspace.
+
+These still need everything else a change needs: the owner role, two-factor
+authentication, a verified email and, where the action asks for it, recent identity
+confirmation. Anything that grants access waits for renewal: inviting or promoting a
+member, accepting an invitation, enrolling a server, issuing a credential, and turning
+a policy on or widening it. An invitation refused this way can still be accepted after
+renewal, until it expires.
+
 ## Generated application names
 
 `ASTILBA_APPLICATION_DOMAIN` turns on

@@ -552,7 +552,13 @@ func (s *Service) PipelineRuns(ctx context.Context, p store.Principal, ws, pid, 
 }
 
 func (s *Service) SourcePolicy(ctx context.Context, p store.Principal, ws, pid, env uuid.UUID, enabled bool) error {
-	return s.scope(ctx, p, ws, workspaceAccess{Write: true, Owner: true, Recent: enabled}, "git.source.policy", env, func(tx pgx.Tx) error {
+	// Turning automatic deployment off stays possible on a lapsed workspace; turning it on is management.
+	return s.scope(ctx, p, ws, workspaceAccess{Write: true, Owner: true, Recent: enabled, Revocation: true}, "git.source.policy", env, func(tx pgx.Tx) error {
+		if enabled {
+			if err := s.Store.ManagementAdmission(ctx, tx, ws); err != nil {
+				return err
+			}
+		}
 		if _, err := loadVisualEnvironment(ctx, tx, ws, pid, env); err != nil {
 			return err
 		}
