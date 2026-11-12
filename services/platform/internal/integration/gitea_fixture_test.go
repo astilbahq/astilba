@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/composeproject"
-	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
+	"github.com/astilbahq/astilba/services/platform/internal/randtoken"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 	"github.com/moby/moby/client"
@@ -149,7 +149,7 @@ func startGitea(t *testing.T) *realGitea {
 // user creates an account and returns a token that can also create repositories and organizations.
 func (g *realGitea) user(name string, admin bool) string {
 	g.t.Helper()
-	password, _ := cryptobox.Token()
+	password, _ := randtoken.New()
 	args := []string{"exec", "--user", "git", g.name, "gitea", "admin", "user", "create", "--username", name, "--password", password, "--email", name + "@example.test", "--must-change-password=false"}
 	if admin {
 		args = append(args, "--admin")

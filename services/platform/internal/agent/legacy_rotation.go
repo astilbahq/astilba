@@ -5,7 +5,7 @@ import (
 	"errors"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
-	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
+	"github.com/astilbahq/astilba/services/platform/internal/randtoken"
 )
 
 // rotate replaces a legacy bearer at management's request. It runs under the token source's lock,
@@ -21,7 +21,7 @@ func (c *Client) rotate(ctx context.Context) error {
 		return nil
 	}
 	if cfg.Pending == "" {
-		pending, e := cryptobox.Token()
+		pending, e := randtoken.New()
 		if e != nil {
 			return e
 		}

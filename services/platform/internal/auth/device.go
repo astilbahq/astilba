@@ -9,8 +9,8 @@ import (
 	"time"
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
-	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
+	"github.com/astilbahq/astilba/services/platform/internal/randtoken"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -36,7 +36,7 @@ type deviceToken struct {
 // IssueDeviceToken ties a token to the account's current auth version, so a password change,
 // a recovery code or anything else that ends the account's sessions also ends these.
 func (s *Service) IssueDeviceToken(account db.Account) (string, error) {
-	nonce, err := cryptobox.Token()
+	nonce, err := randtoken.New()
 	if err != nil {
 		return "", err
 	}

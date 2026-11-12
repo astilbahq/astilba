@@ -30,6 +30,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/execution"
 	"github.com/astilbahq/astilba/services/platform/internal/httpapi"
 	"github.com/astilbahq/astilba/services/platform/internal/mailer"
+	"github.com/astilbahq/astilba/services/platform/internal/randtoken"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
@@ -108,7 +109,7 @@ func TestMain(m *testing.M) {
 		return exec.CommandContext(ctx, "docker", append([]string{"--host", host}, args...)...).CombinedOutput()
 	}
 	owner := uuid.NewString()
-	password, _ := cryptobox.Token()
+	password, _ := randtoken.New()
 	name := "astilba-p1-test-" + owner
 	// Nothing is published: the tests reach the database through the Docker API.
 	out, e := run("run", "--detach", "--name", name, "--label", "com.astilba.p1-test="+owner, "--env", "POSTGRES_PASSWORD="+password, postgresImage)
@@ -343,7 +344,7 @@ type browser struct {
 // drives a service without going through HTTP.
 func browserPrincipal(t *testing.T, st *store.Store, account db.Account, mfa bool) store.Principal {
 	t.Helper()
-	token, err := cryptobox.Token()
+	token, err := randtoken.New()
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -16,10 +16,10 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/agentidentity"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/auth"
-	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/githubapp"
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
+	"github.com/astilbahq/astilba/services/platform/internal/randtoken"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -193,7 +193,7 @@ func (s *Service) CreateServer(ctx context.Context, p store.Principal, ws uuid.U
 	if in.Role != "deployment" && in.Role != "build" && in.Role != "combined" {
 		return out, domain.Invalid("role")
 	}
-	out.Token, err = cryptobox.Token()
+	out.Token, err = randtoken.New()
 	if err != nil {
 		return out, err
 	}
@@ -222,7 +222,7 @@ func (s *Service) CreateServer(ctx context.Context, p store.Principal, ws uuid.U
 func (s *Service) RenewEnrollment(ctx context.Context, p store.Principal, ws, id uuid.UUID) (api.Enrollment, error) {
 	out := api.Enrollment{ExpiresAt: time.Now().Add(10 * time.Minute)}
 	var err error
-	out.Token, err = cryptobox.Token()
+	out.Token, err = randtoken.New()
 	if err != nil {
 		return out, err
 	}

@@ -8,9 +8,9 @@ import (
 	"strings"
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
-	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
+	"github.com/astilbahq/astilba/services/platform/internal/randtoken"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
@@ -125,7 +125,7 @@ func (s *Service) CreateConnection(ctx context.Context, p store.Principal, ws uu
 		if c.Private && !validCredential(access.Clone, true) {
 			return domain.Invalid("clone")
 		}
-		access.Webhook, err = cryptobox.Token()
+		access.Webhook, err = randtoken.New()
 		if err != nil {
 			return err
 		}

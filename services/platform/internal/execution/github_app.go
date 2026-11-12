@@ -7,10 +7,10 @@ import (
 	"time"
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
-	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/githubapp"
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
+	"github.com/astilbahq/astilba/services/platform/internal/randtoken"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
@@ -57,11 +57,11 @@ func (s *Service) StartGitHub(ctx context.Context, p store.Principal, ws uuid.UU
 	if s.GitHub == nil {
 		return nil, domain.Invalid("githubApp.notConfigured")
 	}
-	state, err := cryptobox.Token()
+	state, err := randtoken.New()
 	if err != nil {
 		return nil, err
 	}
-	verifier, err := cryptobox.Token()
+	verifier, err := randtoken.New()
 	if err != nil {
 		return nil, err
 	}
