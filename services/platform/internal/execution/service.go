@@ -80,6 +80,7 @@ func New(st *store.Store) (*Service, error) {
 	river.AddWorker(workers, &troubleshootingSweepWorker{service: s})
 	river.AddWorker(workers, &worker{service: s})
 	river.AddWorker(workers, &refreshWorker{service: s})
+	river.AddWorker(workers, &submissionWorker{service: s})
 	river.AddWorker(workers, &automaticWorker{service: s})
 	river.AddWorker(workers, &githubFanoutWorker{service: s})
 	river.AddWorker(workers, &githubReconcileWorker{service: s})

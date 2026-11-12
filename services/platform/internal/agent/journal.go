@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bytes"
+	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"errors"
 	"os"
@@ -114,6 +115,9 @@ func openJournal(dir string, point func(string) error) (*Journal, error) {
 				return e
 			}
 		}
+		if err := j.dropSubmissionCredentials(tx); err != nil {
+			return err
+		}
 		if !clean {
 			return j.seedForgotten(tx)
 		}
@@ -144,6 +148,66 @@ func openJournal(dir string, point func(string) error) (*Journal, error) {
 func (j *Journal) Close() error {
 	mark := j.db.Update(func(tx *bolt.Tx) error { return j.put(tx, "identity", "closed-at", int64(tx.ID())) })
 	return errors.Join(mark, j.db.Close())
+}
+
+// dropSubmissionCredentials removes the repository write credential an earlier agent kept with each
+// submission it was sent. Management now submits drafts itself, so a runner holds none at rest.
+// It runs once; Accept drops one arriving later.
+func (j *Journal) dropSubmissionCredentials(tx *bolt.Tx) error {
+	const done = "submission-credentials-dropped"
+	var dropped bool
+	if e := j.get(tx, "identity", done, &dropped); e == nil || !errors.Is(e, os.ErrNotExist) {
+		return e
+	}
+	keys := []string{}
+	if e := tx.Bucket([]byte("operations")).ForEach(func(k, _ []byte) error {
+		keys = append(keys, string(k))
+		return nil
+	}); e != nil {
+		return e
+	}
+	for _, k := range keys {
+		var r Record
+		// Sentinels and fences share the bucket and hold other values.
+		if j.get(tx, "operations", k, &r) != nil {
+			continue
+		}
+		dropped, changed, e := withoutSubmissionAccess(r.Command)
+		if e != nil {
+			return e
+		}
+		if changed {
+			r.Command = dropped
+			if e = j.put(tx, "operations", k, r); e != nil {
+				return e
+			}
+		}
+	}
+	return j.put(tx, "identity", done, true)
+}
+
+// withoutSubmissionAccess drops the access block from a runner submission. Agents refuse them, but
+// an older management, as after a rollback, still sends one hydrated with a write credential.
+func withoutSubmissionAccess(c api.ExecutionCommand) (api.ExecutionCommand, bool, error) {
+	if c.Kind != "pipeline" || c.Pipeline == nil {
+		return c, false, nil
+	}
+	var fields map[string]jsontext.Value
+	var action string
+	if json.Unmarshal(*c.Pipeline, &fields) != nil || json.Unmarshal(fields["action"], &action) != nil || action != "submit" {
+		return c, false, nil
+	}
+	if _, held := fields["access"]; !held {
+		return c, false, nil
+	}
+	delete(fields, "access")
+	raw, err := stablejson.Marshal(fields)
+	if err != nil {
+		return c, false, err
+	}
+	message := jsontext.Value(raw)
+	c.Pipeline = &message
+	return c, true, nil
 }
 
 // seedForgotten raises each forgotten ceiling to its counter, because any command up to it may have
@@ -375,7 +439,11 @@ func (j *Journal) forget(tx *bolt.Tx, key []byte, r Record) error {
 
 func (j *Journal) Accept(c api.ExecutionCommand) (Record, error) {
 	var out Record
-	err := j.db.Update(func(tx *bolt.Tx) error {
+	c, _, err := withoutSubmissionAccess(c)
+	if err != nil {
+		return out, err
+	}
+	err = j.db.Update(func(tx *bolt.Tx) error {
 		if e := j.checkController(tx, c); e != nil {
 			return e
 		}

@@ -650,13 +650,14 @@ another gets a 503 at once without being charged.
 The database keeps all history. An export carries the workspace's configuration and what the
 app lists:
 - unfinished work, each environment's current runtime and the newest 100 operations;
-- each environment's 20 releases, 50 revisions and 100 pipeline runs;
+- each environment's 20 releases, 50 revisions, 100 pipeline runs and 100 draft submissions;
 - each preview template's 100 preview requests;
 - the newest 100 audit events and build artifacts;
 - every version of each secret;
 - everything those name, including the build artifacts a configuration uses.
 
-So an export grows with the workspace's configuration, not its age. The exception is secret
+A submission still waiting is imported as failed, since its attempts stay behind; submit the draft
+again. So an export grows with the workspace's configuration, not its age. The exception is secret
 versions: every version is kept, so a secret that automation sets on every deploy grows the export
 each time. An imported workspace shows the same lists as its source, except that preview
 environments retired before the export aren't listed, and older entries can't be opened by ID.
@@ -677,7 +678,8 @@ recovered from a management backup doesn't get back the housekeeping, revisions 
 events recorded after the backup that the checkpoint left out.
 
 Work that Git webhooks start runs in a background queue of its own, with four workers
-per replica: source refreshes, pull-request previews and GitHub App events. A burst of
+per replica: source refreshes, draft submissions, pull-request previews and GitHub App
+events. A submission attempt has a minute. A burst of
 it never delays deployments, DNS or the sweeps. A signed push starts a refresh only for
 a branch that one of the workspace's sources or automatic build targets tracks, and
 pushes for a branch with a refresh pending join it, so a workspace has at most one
@@ -834,4 +836,4 @@ schedule generations must match the destination's records; disagreement stops
 enrollment. Take a fresh export or reconcile the source state when possible.
 An incomplete or stale backup is not permission to overwrite the host's journal.
 
-Workspace exports use archive version 6 for committed runtime outcomes alongside replica specifications, runtime inventories, schedules and lifecycle metadata. Versions 1–5 remain importable; their runtime provenance stays unknown. Older controllers reject version 6 rather than discard that identity. Imported preview policies and fork/cleanup grants are disabled; review resources and transfer agents before renewed owner approval. See [Pull-request previews](pull-request-previews.md), [application scaling](application-scaling.md) and [cross-host recovery](cross-host-placement.md).
+Workspace exports use archive version 7, which adds draft submissions to version 6's committed runtime outcomes, replica specifications, runtime inventories, schedules and lifecycle metadata. Versions 1–6 remain importable; versions before 6 leave runtime provenance unknown. Older controllers reject a newer version rather than discard what it carries. Imported preview policies and fork/cleanup grants are disabled; review resources and transfer agents before renewed owner approval. See [Pull-request previews](pull-request-previews.md), [application scaling](application-scaling.md) and [cross-host recovery](cross-host-placement.md).
