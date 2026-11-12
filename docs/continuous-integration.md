@@ -596,6 +596,7 @@ one-sentence explanation:
 | `txnetwork` | A function holding a transaction calls a Git provider or GitHub, directly or through a function in its package, so a tenant's slow server holds the transaction's locks and connection. Ask between passes with `providerCall`. | Holding a server's row across provider calls, after #157 |
 | `jsontag` | A struct field read from JSON, directly or through a package's own HTTP response helper, has no json tag naming its member. `encoding/json/v2` matches names exactly, so the field would stay zero with no error. | The JSON v2 shadow decoder, before #151 |
 | `operationview` | An exported function in `internal/execution` that takes a `store.Principal` returns an `api.Operation`, or a slice of them, other than through `operationFor` or `operationsFor` called with its own principal, or a function elsewhere takes a principal and returns one. An operation's note can quote the environment's configuration, which those withhold from a credential without `environment:read`. | PLAT-285 |
+| `revisioninsert` | Code outside `internal/store` calls `(*db.Queries).InsertRevision`. `store.InsertRevision` refuses a specification over the size limit, measured as the table's check measures it, before the check can fail and abort the transaction. | PLAT-286 |
 
 These catch the shapes the defects took, so a clean run does not rule a defect out.
 `dberror` looks only at `err != nil` conditions, alone or as `||` terms, on an error set in
