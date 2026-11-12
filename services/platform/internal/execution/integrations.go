@@ -97,6 +97,7 @@ func (s *Service) CreateConnection(ctx context.Context, p store.Principal, ws uu
 	keys := s.passKeys(secretbroker.Request{Workspace: ws, Purpose: secretbroker.Seal, Principal: p.Secrets(), Items: []secretbroker.Item{item}})
 	defer keys.close(ctx)
 	var repository *gitAnswer[repositoryIdentity]
+	var push *gitAnswer[bool]
 	create := func(tx pgx.Tx) error {
 		q := db.New(tx)
 		count, err := q.CountGitConnections(ctx, ws)
@@ -110,10 +111,30 @@ func (s *Service) CreateConnection(ctx context.Context, p store.Principal, ws uu
 			return &providerCall{fetch: func(ctx context.Context) {
 				id, private, err := provider.Repository(ctx)
 				repository = &gitAnswer[repositoryIdentity]{Value: repositoryIdentity{id, private}, Err: err}
+				// Runners receive the clone credential, so one that could push is refused here
+				// rather than at the first build.
+				push = &gitAnswer[bool]{}
+				if err == nil && access.Clone.Password != "" {
+					clone, err := pipeline.NewProvider(c, access.Clone, s.Policy)
+					if err == nil {
+						push.Value, push.Err = clone.CanPush(ctx)
+					} else {
+						push.Err = err
+					}
+				}
 			}}
 		}
 		if repository.Err != nil {
 			return domain.Invalid("repository")
+		}
+		if errors.Is(push.Err, pipeline.ErrCredentialRejected) {
+			return errCloneRejected
+		}
+		if push.Err != nil {
+			return &domain.Error{Code: "invalid_input", Message: "The Git server did not say whether the clone credential can push, so it was not saved. Try again.", Fields: []string{"clone"}}
+		}
+		if push.Value {
+			return errCloneCanPush
 		}
 		c.RepositoryID, c.Private = repository.Value.ID, repository.Value.Private
 		if c.Private && !validCredential(access.Clone, true) {

@@ -70,15 +70,45 @@ SELECT (r.configuration->>'commit')::text FROM pipeline_runs r JOIN execution_op
 WHERE r.workspace_id = @workspace_id AND r.environment_id = @environment_id AND r.configuration->>'action' = 'import' AND o.state = 'succeeded'
 ORDER BY r.created_at DESC LIMIT 2;
 
--- name: LockEnvironmentSubmissions :many
--- A runtime secret saved while a submission is unsettled is checked against it under the
--- operation's lock, which delivery's own check also holds while it reads the secrets.
-SELECT id FROM execution_operations
-WHERE workspace_id = @workspace_id AND environment_id = @environment_id AND kind = 'pipeline'
-  AND state NOT IN ('succeeded','failed','cancelled') AND command->'pipeline'->>'action' = 'submit'
-ORDER BY id FOR UPDATE;
+-- name: InsertSourceSubmission :one
+INSERT INTO source_submissions(id,workspace_id,environment_id,revision_id,request_key,actor_id,configuration)
+VALUES(@id,@workspace_id,@environment_id,@revision_id,@request_key,@actor_id,@configuration) RETURNING created_at;
 
--- name: EnvironmentSubmission :one
-SELECT o.command, o.cancel_requested, o.report_sequence, r.delivery_started
-FROM execution_operations o JOIN pipeline_runs r ON r.workspace_id = o.workspace_id AND r.id = o.id
-WHERE o.workspace_id = @workspace_id AND o.id = @id;
+-- name: SourceSubmissionByRequestKey :one
+SELECT id,environment_id,revision_id,state,note,result,created_at FROM source_submissions WHERE workspace_id = @workspace_id AND request_key = @request_key;
+
+-- name: LatestSourceSubmission :one
+-- The newest attempt for the environment, or for one revision of it when revision_id is set.
+SELECT id,environment_id,revision_id,configuration,state,note,result,created_at FROM source_submissions
+WHERE workspace_id = @workspace_id AND environment_id = @environment_id AND (sqlc.narg(revision_id)::uuid IS NULL OR revision_id = sqlc.narg(revision_id)::uuid)
+ORDER BY created_at DESC,id DESC LIMIT 1;
+
+-- name: LockSourceSubmission :one
+SELECT environment_id,revision_id,configuration,state,created_at FROM source_submissions WHERE workspace_id = @workspace_id AND id = @id FOR UPDATE;
+
+-- name: FinishSourceSubmission :exec
+UPDATE source_submissions SET state = @state, note = @note, result = sqlc.narg(result), finished_at = now()
+WHERE workspace_id = @workspace_id AND id = @id AND state = 'queued';
+
+-- name: NoteSourceSubmission :exec
+UPDATE source_submissions SET note = @note WHERE workspace_id = @workspace_id AND id = @id AND state = 'queued';
+
+-- name: AwaitSubmittedMerge :exec
+-- A source that needs renewed approval keeps needing it: a submission doesn't grant it.
+UPDATE git_sources SET status = 'awaiting_merge' WHERE workspace_id = @workspace_id AND environment_id = @environment_id AND status <> 'approval_required';
+
+-- name: SubmittedReviews :many
+-- The reviews that proposed exactly these files on top of commit from this connection's branch,
+-- newest first: management's own submissions and, before them, runners'. A number a result can't
+-- name as a review, such as one from an imported archive, is left out rather than failing the query.
+SELECT review FROM (
+    SELECT (CASE WHEN s.result->>'reviewNumber' ~ '^[1-9][0-9]{0,8}$' THEN (s.result->>'reviewNumber')::int END)::int AS review, s.created_at FROM source_submissions s
+    WHERE s.workspace_id = @workspace_id AND s.environment_id = @environment_id AND s.state = 'succeeded'
+      AND s.configuration->>'commit' = @commit::text AND s.configuration#>>'{connection,id}' = @connection_id::text AND s.configuration->>'branch' = @branch::text
+      AND (SELECT jsonb_object_agg(f->>'path',f->>'content') FROM jsonb_array_elements(s.configuration#>'{bundle,files}') f) = @files::jsonb
+    UNION ALL
+    SELECT (CASE WHEN r.result->>'reviewNumber' ~ '^[1-9][0-9]{0,8}$' THEN (r.result->>'reviewNumber')::int END)::int, r.created_at FROM git_submissions g JOIN pipeline_runs r ON r.id = g.operation_id JOIN execution_operations o ON o.id = r.id
+    WHERE g.workspace_id = @workspace_id AND g.environment_id = @environment_id AND o.state = 'succeeded'
+      AND r.configuration->>'commit' = @commit::text AND r.configuration#>>'{connection,id}' = @connection_id::text AND r.configuration->>'branch' = @branch::text
+      AND (SELECT jsonb_object_agg(f->>'path',f->>'content') FROM jsonb_array_elements(r.configuration#>'{bundle,files}') f) = @files::jsonb
+) reviews WHERE review > 0 ORDER BY created_at DESC;

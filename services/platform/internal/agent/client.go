@@ -351,6 +351,7 @@ func (c *Client) Run(ctx context.Context) error {
 		}
 	}
 	c.Engine.EndJournaledShells(ctx)
+	c.Engine.ForgetRemovedContainers(ctx)
 	defer c.terminalSessions.Wait()
 	wake := make(chan struct{}, 1)
 	wake <- struct{}{}

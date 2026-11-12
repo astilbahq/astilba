@@ -36,14 +36,17 @@ type automaticWorker struct {
 	service *Service
 }
 
-func (s *Service) enqueueAutomatic(ctx context.Context, tx pgx.Tx, run, ws, env, revision, actor uuid.UUID) error {
+// enqueueAutomatic records an automatic deployment on the approval of actor, given with its
+// authentication version approved, nil when the policy's approval was withdrawn. The worker deploys
+// only while that approval still holds.
+func (s *Service) enqueueAutomatic(ctx context.Context, tx pgx.Tx, run, ws, env, revision, actor uuid.UUID, approved *int64) error {
 	if err := s.Store.ManagementAdmission(ctx, tx, ws); err != nil {
 		if errors.Is(err, store.SubscriptionRequired) {
 			return nil
 		}
 		return err
 	}
-	if _, err := tx.Exec(ctx, "INSERT INTO pipeline_auto_deployments(id,workspace_id,environment_id,revision_id,actor_id) VALUES($1,$2,$3,$4,$5)", run, ws, env, revision, actor); err != nil {
+	if _, err := tx.Exec(ctx, "INSERT INTO pipeline_auto_deployments(id,workspace_id,environment_id,revision_id,actor_id,actor_auth_version) VALUES($1,$2,$3,$4,$5,$6)", run, ws, env, revision, actor, approved); err != nil {
 		return err
 	}
 	_, err := s.Queue.InsertTx(ctx, tx, automaticArgs{run}, &river.InsertOpts{MaxAttempts: 100})
@@ -87,12 +90,12 @@ func (w *automaticWorker) work(ctx context.Context, git *gitAnswers, job *river.
 		}
 		return err
 	}
-	var owner bool
-	if err = tx.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM memberships WHERE workspace_id=$1 AND account_id=$2 AND role='owner')", ws, actor).Scan(&owner); err != nil {
+	var approved bool
+	if approved, err = db.New(tx).AutomaticDeploymentApproved(ctx, db.AutomaticDeploymentApprovedParams{WorkspaceID: ws, ID: job.Args.ID}); err != nil {
 		return err
 	}
-	if !owner {
-		return stop("The policy owner no longer has owner access.")
+	if !approved {
+		return stop("The owner who approved automatic deployment no longer approves it: they left, are no longer an owner, or changed their password or two-factor settings. An owner can approve the policy again and deploy this build.")
 	}
 	if err = tx.QueryRow(ctx, "SELECT project_id FROM environments WHERE workspace_id=$1 AND id=$2", ws, env).Scan(&pid); err != nil {
 		return err

@@ -317,6 +317,71 @@ func (g *gitAnswers) access(ctx context.Context, tx pgx.Tx, id uuid.UUID, write 
 	})
 }
 
+// errCloneRejected refuses a stored clone credential the Git server did not accept, since what
+// it could do is then unknown.
+var errCloneRejected = &domain.Error{Code: "invalid_input", Message: "The Git server did not accept the connection's clone credential, so whether it can push is unknown. Check its username and token.", Fields: []string{"clone.rejected"}}
+
+// cloneRefusal reports whether err refuses the clone credential itself, which no retry changes.
+func cloneRefusal(err error) (*domain.Error, bool) {
+	for _, refusal := range []*domain.Error{errCloneCanPush, errCloneRejected} {
+		if errors.Is(err, refusal) {
+			return refusal, true
+		}
+	}
+	return nil, false
+}
+
+// errCloneCanPush refuses a stored clone credential that the Git server would let push.
+var errCloneCanPush = &domain.Error{Code: "invalid_input", Message: "The connection's clone credential can push to the repository. Runners build code that may be hostile, so give the connection a read-only clone credential, such as a deploy token with only read_repository or a token with only read access to repository contents.", Fields: []string{"clone.canPush"}}
+
+// cloneAccess asks for the only credential a runner receives. A GitHub App's is minted with read
+// access to the one repository's contents. A stored one is first put to the Git server, which
+// answers whether it may push without anything being pushed, and is refused if it may.
+func (g *gitAnswers) cloneAccess(ctx context.Context, tx pgx.Tx, id uuid.UUID) (gitAnswer[pipeline.Credential], error) {
+	access, err := g.access(ctx, tx, id, false)
+	if err != nil || access.Err != nil {
+		return gitAnswer[pipeline.Credential]{Err: access.Err, Setup: access.Setup, Connection: access.Connection}, err
+	}
+	known, err := g.current(ctx, tx, id)
+	if err != nil {
+		return gitAnswer[pipeline.Credential]{}, err
+	}
+	answer := gitAnswer[pipeline.Credential]{Value: access.Value.Clone, Connection: known.state.connection}
+	if known.state.binding != nil {
+		return answer, nil
+	}
+	// A runner fetches anonymously without a password, so nothing else of the credential is sent.
+	if access.Value.Clone.Password == "" {
+		answer.Value = pipeline.Credential{}
+		return answer, nil
+	}
+	push, err := askGit(ctx, tx, g, id, "clone/push", func(ctx context.Context, st gitState) gitAnswer[bool] {
+		stored, err := g.storedBetweenPasses(ctx, id, st)
+		if err != nil {
+			return gitAnswer[bool]{Err: err, Setup: true}
+		}
+		provider, err := pipeline.NewProvider(st.connection, stored.Clone, g.service.Policy)
+		if err != nil {
+			return gitAnswer[bool]{Err: err, Setup: true}
+		}
+		can, err := provider.CanPush(ctx)
+		return gitAnswer[bool]{Value: can, Err: err}
+	})
+	if err != nil {
+		return gitAnswer[pipeline.Credential]{}, err
+	}
+	if errors.Is(push.Err, pipeline.ErrCredentialRejected) {
+		return gitAnswer[pipeline.Credential]{Err: errCloneRejected, Setup: true, Connection: answer.Connection}, nil
+	}
+	if push.Err != nil {
+		return gitAnswer[pipeline.Credential]{Err: push.Err, Setup: push.Setup, Connection: answer.Connection}, nil
+	}
+	if push.Value {
+		return gitAnswer[pipeline.Credential]{Err: errCloneCanPush, Setup: true, Connection: answer.Connection}, nil
+	}
+	return answer, nil
+}
+
 type repositoryIdentity struct {
 	ID      int64
 	Private bool

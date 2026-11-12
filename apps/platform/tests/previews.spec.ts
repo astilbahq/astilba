@@ -15,6 +15,11 @@ test("preview policy retains failed inputs and approves only the displayed fork 
   const sha = "b".repeat(40);
   const provider = createServer((request, response) => {
     response.setHeader("Content-Type", "application/json");
+    // Gitea refuses the receive-pack advertisement to a credential that can only read.
+    if (request.url === "/team/app.git/info/refs?service=git-receive-pack") {
+      response.writeHead(403).end();
+      return;
+    }
     if (request.url?.includes("/branches/")) {
       // Gitea names a branch's commit id.
       response.end(JSON.stringify({ commit: { id: sha } }));

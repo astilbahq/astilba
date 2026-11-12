@@ -190,6 +190,9 @@ func (s *Service) SaveBackupPolicy(ctx context.Context, p store.Principal, ws, p
 		if out.Validate() != nil {
 			return domain.Invalid("policy")
 		}
+		if err = refuseElevatedJob(out); err != nil {
+			return err
+		}
 		if out.GeneralSchedule() && (capabilities.Schedules == nil || !*capabilities.Schedules) {
 			return domain.Invalid("server.capabilities.schedules")
 		}
@@ -247,6 +250,9 @@ func (s *Service) BackupCommand(ctx context.Context, p store.Principal, ws, pid,
 		}
 		v, err := loadBackupPolicy(ctx, tx, ws, env, id)
 		if err != nil {
+			return err
+		}
+		if err = refuseElevatedJob(v); err != nil {
 			return err
 		}
 		if err = s.deploymentServer(ctx, tx, ws, v.ServerID); err != nil {
@@ -570,6 +576,26 @@ func requireGeneralSchedule(ctx context.Context, q db.DBTX, ws, server uuid.UUID
 	var cap api.AgentCapabilities
 	if json.Unmarshal(raw, &cap) != nil || cap.Schedules == nil || !*cap.Schedules {
 		return domain.Invalid("server.capabilities.schedules")
+	}
+	return nil
+}
+
+// errElevatedJob refuses a scheduled job in a service that review treats as elevated.
+var errElevatedJob = &domain.Error{Code: "invalid_input", Message: "This service is privileged or shares a volume or network with a privileged service, so a job's command there could control the server. Scheduled jobs can't run in it.", Fields: []string{"resourceId"}}
+
+// refuseElevatedJob refuses a scheduled job whose source service is privileged or a peer of
+// one, see ElevationOf: its command could drive the privileged service and so reach the
+// host. The agent refuses it again before every run.
+func refuseElevatedJob(p backup.Policy) error {
+	if p.Method != "container-job" {
+		return nil
+	}
+	elevation, err := ElevationOf(p.Plan.Specification)
+	if err != nil {
+		return err
+	}
+	if elevation.Services[p.ResourceID] {
+		return errElevatedJob
 	}
 	return nil
 }

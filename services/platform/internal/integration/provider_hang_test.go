@@ -49,6 +49,9 @@ func newHeldGitea(t *testing.T) *heldGitea {
 	h.pullHead.Store(strings.Repeat("a", 40))
 	h.repository.Store(12)
 	h.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if answerReceivePack(w, r) {
+			return
+		}
 		// Read before waiting: a held request answers with what was true when it was asked.
 		repository, head, pullHead, pullState := h.repository.Load(), h.head.Load().(string), h.pullHead.Load().(string), "open"
 		if h.pullClosed.Load() {

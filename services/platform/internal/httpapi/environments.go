@@ -14,7 +14,6 @@ import (
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
-	"github.com/astilbahq/astilba/services/platform/internal/execution"
 	"github.com/astilbahq/astilba/services/platform/internal/secretbroker"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
@@ -375,9 +374,6 @@ func (s *Server) secret(w http.ResponseWriter, r *http.Request, ws, pid, env, id
 		sealed = true
 		v, e := q.InsertSecretVersion(ctx, db.InsertSecretVersionParams{WorkspaceID: ws, SecretID: id, ID: versionID, EncryptedValue: cipher, AuthorID: principal(ctx).Account.ID})
 		if e != nil {
-			return nil, e
-		}
-		if e = execution.StopExposedSubmissions(ctx, q, ws, env, value); e != nil {
 			return nil, e
 		}
 		return api.SecretVersion{Id: v.ID, SecretId: id, Name: name, CreatedAt: v.CreatedAt}, store.Audit(ctx, q, *principal(ctx), ws, "secret.version", versionID)

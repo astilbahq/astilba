@@ -331,7 +331,7 @@ func seedInvitation(t *testing.T, f *fixture, email string) string {
 	if e != nil {
 		t.Fatal(e)
 	}
-	if e = f.st.Queries.InsertInvitation(ctx, db.InsertInvitationParams{WorkspaceID: ws, ID: uuid.New(), Email: email, Role: "viewer", TokenHash: auth.Hash(token), ExpiresAt: time.Now().Add(time.Hour)}); e != nil {
+	if e = f.st.Queries.InsertInvitation(ctx, db.InsertInvitationParams{WorkspaceID: ws, ID: uuid.New(), Email: email, Role: "viewer", TokenHash: auth.Hash(token), ExpiresAt: time.Now().Add(time.Hour), IssuerID: account, IssuerAuthVersion: 1}); e != nil {
 		t.Fatal(e)
 	}
 	return token

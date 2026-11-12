@@ -5,8 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/json/v2"
 	"errors"
-	"net/url"
-	"slices"
 	"strings"
 	"time"
 
@@ -23,17 +21,6 @@ import (
 )
 
 const secretVersionPage = 64
-
-// stoppedSubmissionWarning stays on the operation through later agent reports, because
-// only the controller knows the runner may already have sent these files onward. Reports
-// recognise a stopped run by this exact text, including on a replica or rollback still
-// running an older release, so extend the note below rather than rewording this.
-func stoppedSubmissionWarning(id uuid.UUID) string {
-	return "Stopped: these files contain a known runtime secret value, or runtime secrets exceed the limit for checking them. A runner may already have pushed them to branch astilba/" + id.String() + " at the Git provider: check it and any review, and rotate any exposed secret."
-}
-func stoppedSubmissionNote(id uuid.UUID) string {
-	return stoppedSubmissionWarning(id) + " The value may be in a file's name rather than its contents."
-}
 
 // rejectRuntimeSecrets opens the environment's runtime secrets with keys, asked for only once
 // there is one to read.
@@ -71,57 +58,6 @@ func (s *Service) rejectRuntimeSecrets(ctx context.Context, tx pgx.Tx, keys valu
 			return nil
 		}
 	}
-}
-
-// StopExposedSubmissions stops each submission in env that a runner may hold and whose files
-// hold value, a runtime secret being saved in q's transaction. Delivery checks a submission's
-// files against the environment's secrets before its credentials leave, under the operation's
-// lock; this takes the same lock, so a secret saved during or after that check is found by one
-// of the two. A submission no runner holds is left to delivery.
-func StopExposedSubmissions(ctx context.Context, q *db.Queries, ws, env uuid.UUID, value string) error {
-	ids, err := q.LockEnvironmentSubmissions(ctx, db.LockEnvironmentSubmissionsParams{WorkspaceID: ws, EnvironmentID: &env})
-	if err != nil {
-		return err
-	}
-	for _, id := range ids {
-		row, err := q.EnvironmentSubmission(ctx, db.EnvironmentSubmissionParams{WorkspaceID: ws, ID: id})
-		if err != nil {
-			return err
-		}
-		undelivered := row.DeliveryStarted.Valid && !row.DeliveryStarted.Bool && row.ReportSequence == 0
-		if undelivered || row.CancelRequested {
-			continue
-		}
-		var c api.ExecutionCommand
-		var p pipeline.Command
-		if json.Unmarshal(row.Command, &c) != nil || c.Pipeline == nil || json.Unmarshal(*c.Pipeline, &p) != nil || p.Bundle == nil {
-			return errors.New("invalid pipeline payload")
-		}
-		texts := make([]string, 0, 2*len(p.Bundle.Files))
-		for _, file := range p.Bundle.Files {
-			texts = append(texts, file.Path, file.Content)
-		}
-		if !domain.NewSecretText(texts...).Exposes(value) {
-			continue
-		}
-		if err = q.StopPossiblyDeliveredPipeline(ctx, db.StopPossiblyDeliveredPipelineParams{WorkspaceID: ws, ID: id, Note: stoppedSubmissionNote(p.SubmissionID)}); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// sourceSecretRejection names a frozen submission's failed secret check, leaving
-// other errors, such as an undecryptable version, to fail the poll and be retried.
-func sourceSecretRejection(err error) (string, bool) {
-	var invalid *domain.Error
-	if !errors.As(err, &invalid) {
-		return "", false
-	}
-	if slices.Contains(invalid.Fields, "source.secretBudget") {
-		return "This attempt was rejected before reaching a runner: runtime secrets exceed the limit for checking its files.", true
-	}
-	return "This attempt was rejected before reaching a runner: the names or contents of its files include a known runtime secret value. If an earlier attempt of this draft ran, its astilba/ branch may already hold them.", true
 }
 
 // hydratePipeline holds the agent's row and the operation only while it decides. Provider
@@ -206,30 +142,22 @@ func (s *Service) decidePipelineDelivery(ctx context.Context, git *gitAnswers, a
 		}
 		return false, tx.Commit(ctx)
 	}
-	// A plain Invalid would fail every poll and hold the runner queue. This runs before
-	// provider calls and credential minting, so neither can delay or outlive a rejection. A
-	// runner that already holds the command was checked when its credentials left; a runtime
-	// secret saved since then stops it as it is saved (StopExposedSubmissions).
-	if p.Action == "submit" && git != nil {
-		if err = s.rejectRuntimeSecrets(ctx, tx, git.keys.inspect, ws, c.EnvironmentId, *p.Bundle); err != nil {
-			note, rejected := sourceSecretRejection(err)
-			if !rejected {
+	// Management submits drafts itself, so a runner never holds a credential that can write. A
+	// runner submission queued before that receives none: one never delivered fails here, and one
+	// a runner may hold is cancelled through it.
+	if p.Action == "submit" {
+		const note = "Stopped: drafts are now submitted by management, never by a runner. Submit the draft again."
+		if undelivered {
+			if err = queries.FinishUndeliveredPipeline(ctx, db.FinishUndeliveredPipelineParams{WorkspaceID: ws, ID: c.Id, State: "failed", Note: note}); err != nil {
 				return false, err
 			}
-			if undelivered {
-				if err = queries.FinishUndeliveredPipeline(ctx, db.FinishUndeliveredPipelineParams{WorkspaceID: ws, ID: c.Id, State: "failed", Note: note}); err != nil {
-					return false, err
-				}
-				return false, tx.Commit(ctx)
-			}
-			// A runner may hold this command, so it alone can settle it. Recording the
-			// stop also records a late success from that runner as cancelled.
-			if err = queries.StopPossiblyDeliveredPipeline(ctx, db.StopPossiblyDeliveredPipelineParams{WorkspaceID: ws, ID: c.Id, Note: stoppedSubmissionNote(p.SubmissionID)}); err != nil {
-				return false, err
-			}
-			c.CancelRequested = true
-			return true, tx.Commit(ctx)
+			return false, tx.Commit(ctx)
 		}
+		if err = queries.StopPossiblyDeliveredPipeline(ctx, db.StopPossiblyDeliveredPipelineParams{WorkspaceID: ws, ID: c.Id, Note: note}); err != nil {
+			return false, err
+		}
+		c.CancelRequested = true
+		return true, tx.Commit(ctx)
 	}
 	if settled, err := s.settleBuildNetwork(ctx, tx, ws, c, p, undelivered); settled || err != nil {
 		return settled && c.CancelRequested, err
@@ -275,6 +203,25 @@ func (s *Service) decidePipelineDelivery(ctx context.Context, git *gitAnswers, a
 		}
 	}
 	if err = s.populatePipeline(ctx, tx, git, ws, c.EnvironmentId, &p); err != nil {
+		// A clone credential that can push, or that the Git server won't vouch for, is never sent,
+		// and refusing it at every poll would hold the runner queue, so the run ends here. A runner
+		// that may hold an earlier delivery is told to stop.
+		if refusal, refused := cloneRefusal(err); refused {
+			if undelivered {
+				if err = queries.FinishUndeliveredPipeline(ctx, db.FinishUndeliveredPipelineParams{WorkspaceID: ws, ID: c.Id, State: "failed", Note: "Refused before runner delivery: " + refusal.Message}); err != nil {
+					return false, err
+				}
+				if err = s.enqueuePreviewForEnvironment(ctx, tx, ws, c.EnvironmentId); err != nil {
+					return false, err
+				}
+				return false, tx.Commit(ctx)
+			}
+			if err = queries.StopPossiblyDeliveredPipeline(ctx, db.StopPossiblyDeliveredPipelineParams{WorkspaceID: ws, ID: c.Id, Note: "Stopped: " + refusal.Message}); err != nil {
+				return false, err
+			}
+			c.CancelRequested = true
+			return true, tx.Commit(ctx)
+		}
 		var rejected *buildInputRejection
 		if errors.As(err, &rejected) && undelivered && p.Action == "build" && p.Preview == nil {
 			if err = queries.FinishUndeliveredPipeline(ctx, db.FinishUndeliveredPipelineParams{WorkspaceID: ws, ID: c.Id, State: "failed", Note: "Build rejected before runner delivery: " + rejected.note()}); err != nil {
@@ -306,19 +253,14 @@ func (s *Service) deliveryRefused(ctx context.Context, tx pgx.Tx, ws uuid.UUID, 
 	return !allowed, err
 }
 func (s *Service) populatePipeline(ctx context.Context, tx pgx.Tx, git *gitAnswers, ws, env uuid.UUID, p *pipeline.Command) error {
-	access, err := git.access(ctx, tx, p.Connection.ID, p.Action == "submit")
+	clone, err := git.cloneAccess(ctx, tx, p.Connection.ID)
 	if err != nil {
 		return err
 	}
-	if access.Err != nil {
-		return access.Err
+	if clone.Err != nil {
+		return clone.Err
 	}
-	p.Access = &pipeline.Access{}
-	if p.Action == "submit" {
-		p.Access.API = access.Value.API
-	} else {
-		p.Access.Clone = access.Value.Clone
-	}
+	p.Access = &pipeline.RunnerAccess{Clone: clone.Value}
 	if p.Build != nil {
 		p.BuildSecrets, err = s.buildInputs(ctx, tx, git.keys.inspect, ws, env, *p.Build)
 		if err != nil {
@@ -376,8 +318,7 @@ func (s *Service) pipelineReport(ctx context.Context, tx pgx.Tx, git *gitAnswers
 	}
 	var ws uuid.UUID
 	var cancelled bool
-	var note string
-	if err := tx.QueryRow(ctx, "SELECT workspace_id,cancel_requested,note FROM execution_operations WHERE id=$1", c.Id).Scan(&ws, &cancelled, &note); err != nil {
+	if err := tx.QueryRow(ctx, "SELECT workspace_id,cancel_requested FROM execution_operations WHERE id=$1", c.Id).Scan(&ws, &cancelled); err != nil {
 		return err
 	}
 	if r.State == "succeeded" && (cancelled || received.After(c.Deadline)) {
@@ -385,14 +326,12 @@ func (s *Service) pipelineReport(ctx context.Context, tx pgx.Tx, git *gitAnswers
 		r.Note = "Result arrived after cancellation or expiry."
 		r.Pipeline = nil
 	}
-	if strings.HasPrefix(note, stoppedSubmissionWarning(p.SubmissionID)) {
-		stopped := stoppedSubmissionNote(p.SubmissionID)
-		// A cleanup instruction still needs the operator; other agent wording adds nothing.
-		if r.State == "needs_attention" && r.Note != "" {
-			r.Note = stopped + " " + r.Note
-		} else {
-			r.Note = stopped
-		}
+	// A runner that held a submission from before management made them can still report it. Its
+	// result was never checked against the provider, so it counts for nothing.
+	if r.State == "succeeded" && p.Action == "submit" {
+		r.State = "cancelled"
+		r.Note = "Stopped: drafts are now submitted by management, never by a runner. Submit the draft again."
+		r.Pipeline = nil
 	}
 	reason, err := db.New(tx).PipelineRunReason(ctx, db.PipelineRunReasonParams{WorkspaceID: ws, ID: c.Id})
 	if err != nil {
@@ -445,7 +384,8 @@ func (s *Service) pipelineReport(ctx context.Context, tx pgx.Tx, git *gitAnswers
 			var raw []byte
 			var current uuid.UUID
 			var actor uuid.UUID
-			if err := tx.QueryRow(ctx, "SELECT e.draft_revision_id,r.specification,g.policy_actor FROM environments e JOIN specification_revisions r ON r.workspace_id=e.workspace_id AND r.id=e.draft_revision_id JOIN git_sources g ON g.workspace_id=e.workspace_id AND g.environment_id=e.id WHERE e.workspace_id=$1 AND e.id=$2 FOR UPDATE OF e", ws, c.EnvironmentId).Scan(&current, &raw, &actor); err != nil {
+			var approved *int64
+			if err := tx.QueryRow(ctx, "SELECT e.draft_revision_id,r.specification,g.policy_actor,g.policy_auth_version FROM environments e JOIN specification_revisions r ON r.workspace_id=e.workspace_id AND r.id=e.draft_revision_id JOIN git_sources g ON g.workspace_id=e.workspace_id AND g.environment_id=e.id WHERE e.workspace_id=$1 AND e.id=$2 FOR UPDATE OF e,g", ws, c.EnvironmentId).Scan(&current, &raw, &actor, &approved); err != nil {
 				return err
 			}
 			if current != p.RevisionID {
@@ -477,24 +417,11 @@ func (s *Service) pipelineReport(ctx context.Context, tx pgx.Tx, git *gitAnswers
 				return err
 			}
 			if p.Source.AutoDeploy {
-				if err = s.enqueueAutomatic(ctx, tx, c.Id, ws, c.EnvironmentId, id, actor); err != nil {
+				if err = s.enqueueAutomatic(ctx, tx, c.Id, ws, c.EnvironmentId, id, actor, approved); err != nil {
 					return err
 				}
 			}
 
-		case "submit":
-			u, err := url.Parse(result.ReviewURL)
-			expected, _ := url.Parse(p.Connection.BaseURL)
-			host := expected.Host
-			if p.Connection.Provider == "github" {
-				host = "github.com"
-			}
-			if err != nil || u.Host != host || u.User != nil || u.Scheme != expected.Scheme || result.ReviewNumber < 1 || !pipeline.ValidCommit(result.Commit) {
-				return domain.Invalid("review")
-			}
-			if _, err = tx.Exec(ctx, "UPDATE git_sources SET status='awaiting_merge' WHERE workspace_id=$1 AND environment_id=$2", ws, c.EnvironmentId); err != nil {
-				return err
-			}
 		case "build", "build-preview":
 			var hash, commit string
 			err := tx.QueryRow(ctx, "SELECT input_hash,requested_commit FROM build_targets WHERE workspace_id=$1 AND environment_id=$2 AND application_id=$3", ws, c.EnvironmentId, p.AppID).Scan(&hash, &commit)
@@ -541,7 +468,14 @@ func (s *Service) pipelineReport(ctx context.Context, tx pgx.Tx, git *gitAnswers
 			}
 			if p.Build.AutoDeploy && automatic {
 				var pid, actor uuid.UUID
-				if err = tx.QueryRow(ctx, "SELECT e.project_id,b.policy_actor FROM environments e JOIN build_targets b ON b.workspace_id=e.workspace_id AND b.environment_id=e.id WHERE e.workspace_id=$1 AND e.id=$2 AND b.application_id=$3", ws, c.EnvironmentId, p.AppID).Scan(&pid, &actor); err != nil {
+				var approved *int64
+				// The approval is held until this commits, so a membership change withdrawing it waits
+				// and then finds the automatic deployment this adds. The environment is locked first,
+				// as admitting a build does, so the two can't deadlock.
+				if _, err = db.New(tx).LockEnvironmentForUpdate(ctx, db.LockEnvironmentForUpdateParams{WorkspaceID: ws, ID: c.EnvironmentId}); err != nil {
+					return err
+				}
+				if err = tx.QueryRow(ctx, "SELECT e.project_id,b.policy_actor,b.policy_auth_version FROM environments e JOIN build_targets b ON b.workspace_id=e.workspace_id AND b.environment_id=e.id WHERE e.workspace_id=$1 AND e.id=$2 AND b.application_id=$3 FOR SHARE OF b", ws, c.EnvironmentId, p.AppID).Scan(&pid, &actor, &approved); err != nil {
 					return err
 				}
 				v, err := loadVisualEnvironment(ctx, tx, ws, pid, c.EnvironmentId)
@@ -563,7 +497,7 @@ func (s *Service) pipelineReport(ctx context.Context, tx pgx.Tx, git *gitAnswers
 					if err != nil {
 						return err
 					}
-					if err = s.enqueueAutomatic(ctx, tx, c.Id, ws, c.EnvironmentId, revision, actor); err != nil {
+					if err = s.enqueueAutomatic(ctx, tx, c.Id, ws, c.EnvironmentId, revision, actor, approved); err != nil {
 						return err
 					}
 				}
@@ -573,6 +507,8 @@ func (s *Service) pipelineReport(ctx context.Context, tx pgx.Tx, git *gitAnswers
 	}
 	// Selected source stays in immutable revisions, rather than duplicating source files in history.
 	result.Files = nil
+	// Only management opens reviews, so a runner naming one is not believed or shown.
+	result.ReviewURL, result.ReviewNumber = "", 0
 	raw, _ := stablejson.Marshal(result)
 	if len(raw) > 150000 {
 		return domain.Invalid("pipeline")
