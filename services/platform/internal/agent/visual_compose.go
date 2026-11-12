@@ -61,6 +61,10 @@ func (e *Engine) compose(ctx context.Context, p deployment.Plan, body []byte, se
 	if !strings.HasPrefix(host, "unix:///") {
 		return errors.New("Compose requires the selected local Docker socket")
 	}
+	// Any run can start a service, so shells in what this plan makes elevated end first.
+	if err := e.fenceTerminals(ctx, p); err != nil {
+		return err
+	}
 	directory := e.Journal.dir
 	if p.Specification.Compose != nil {
 		directory = e.sourceDirectory(p)

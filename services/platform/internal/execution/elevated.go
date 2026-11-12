@@ -159,3 +159,24 @@ func serviceNames(projects ...*composeproject.Project) []string {
 	slices.Sort(names)
 	return names
 }
+
+// ElevatedServiceIDs names, by resource ID, the services of a specification that review treats
+// as having host-level access, see elevatedServices. A visual specification has none. Terminal
+// sessions and scheduled jobs are refused in all of them, by management and again by the agent,
+// because a shell or command there can drive the privileged service and so reach the host.
+func ElevatedServiceIDs(spec domain.Specification) (map[uuid.UUID]bool, error) {
+	out := map[uuid.UUID]bool{}
+	if spec.Compose == nil {
+		return out, nil
+	}
+	project, err := deployment.SourceProject(deployment.Plan{Specification: spec}, nil)
+	if err != nil {
+		return nil, err
+	}
+	for name, elevated := range elevatedServices(project, spec) {
+		if elevated {
+			out[composeproject.ResourceID(spec.Compose.Namespace, "service", name)] = true
+		}
+	}
+	return out, nil
+}

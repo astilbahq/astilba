@@ -136,6 +136,19 @@ func (e *Engine) TroubleshootingTarget(ctx context.Context, unit, app uuid.UUID,
 	if !troubleshootingEligible(inspected.Container, state.Plan, app, e.Journal.dir) {
 		return "", ErrTroubleshootingIneligible
 	}
+	// A service that shares a volume or network with a privileged one is refused as well, as
+	// the journaled plan and any plan a deployment is running describe it, and as the daemon
+	// runs it.
+	if elevatedService(state.Plan, app) || e.incomingRefuses(unit, app) {
+		return "", ErrTroubleshootingIneligible
+	}
+	peer, err := e.hostPeer(ctx, inspected.Container)
+	if err != nil {
+		return "", err
+	}
+	if peer {
+		return "", ErrTroubleshootingIneligible
+	}
 	return inspected.Container.ID, nil
 }
 
@@ -144,7 +157,7 @@ func troubleshootingEligible(v container.InspectResponse, p deployment.Plan, app
 		return false
 	}
 	h := v.HostConfig
-	if h.Privileged || len(h.CapAdd) > 0 || len(h.Devices) > 0 || len(h.DeviceCgroupRules) > 0 || len(h.DeviceRequests) > 0 || len(h.Sysctls) > 0 || h.NetworkMode.IsHost() || h.PidMode.IsHost() || h.IpcMode.IsHost() {
+	if hostAuthority(h) || len(h.Sysctls) > 0 || h.NetworkMode.IsContainer() {
 		return false
 	}
 	switch h.Runtime {
