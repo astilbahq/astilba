@@ -26,8 +26,10 @@ func (p *Plan) PrepareInstances(previous Plan) {
 			instance := previous.Instances[id]
 			// A placement lists every instance, including an application's own ID for one that
 			// never left the primary.
-			if ids := previous.InstanceIDs(app.ID); previous.Local != nil && len(ids) > 0 {
-				instance = ids[0]
+			if previous.Local != nil {
+				if ids := previous.InstanceIDs(app.ID); len(ids) > 0 {
+					instance = ids[0]
+				}
 			}
 			if instance != uuid.Nil {
 				p.keepInstance(app.ID, instance)

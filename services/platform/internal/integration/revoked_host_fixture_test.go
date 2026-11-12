@@ -106,8 +106,8 @@ func (g *revokedGroup) hold(h *aheadHost, phase string) {
 	delete(g.seen, phase+"/"+h.id.String())
 }
 
-// arriveLate makes the host take a phase only after its admission deadline. It reports what an
-// agent does then: a phase that would start an effect is cancelled unrun, and any other runs.
+// arriveLate makes the host take a phase that starts something only after its admission deadline,
+// so it reports the phase cancelled unrun, as an agent does.
 func (g *revokedGroup) arriveLate(h *aheadHost, phase string, late bool) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -363,7 +363,7 @@ func (g *revokedGroup) respond(t *testing.T, h *aheadHost, c api.ExecutionComman
 		g.mu.Lock()
 		late := g.late[command.Phase+"/"+h.id.String()]
 		g.mu.Unlock()
-		if late && !agent.ContinuesAfterDeadline(c) {
+		if late {
 			report.State, report.Note = "cancelled", "The admission deadline passed before execution."
 			return report, true
 		}

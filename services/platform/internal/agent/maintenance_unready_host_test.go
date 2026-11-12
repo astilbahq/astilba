@@ -119,7 +119,11 @@ func (w *unreadyWriter) observeForManagement() {
 }
 
 func (w *unreadyWriter) command(phase string) api.ExecutionCommand {
-	body := deployment.CrossHostCommand{ParentID: w.parent, GroupHash: w.root, Phase: phase, Unit: deployment.DistributedUnit{Plan: w.plan}, Maintenance: &w.intent}
+	return w.freeze(deployment.CrossHostCommand{ParentID: w.parent, GroupHash: w.root, Phase: phase, Unit: deployment.DistributedUnit{Plan: w.plan}, Maintenance: &w.intent})
+}
+
+// freeze makes the command management would deliver for body, at the next generation.
+func (w *unreadyWriter) freeze(body deployment.CrossHostCommand) api.ExecutionCommand {
 	raw, _ := stablejson.Marshal(body)
 	message := jsontext.Value(raw)
 	w.generation++

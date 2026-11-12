@@ -1,0 +1,151 @@
+package agent
+
+import (
+	"errors"
+	"os"
+
+	"github.com/astilbahq/astilba/services/platform/internal/api"
+	"github.com/astilbahq/astilba/services/platform/internal/deployment"
+	"github.com/astilbahq/astilba/services/platform/internal/hostnetwork"
+	"github.com/google/uuid"
+)
+
+// deadlineRule is what a command's admission deadline means for it. The deadline decides whether
+// a host may start something, never whether work it already holds can end. Every command kind,
+// network action and coordinated phase the agent runs has a rule below, so adding one means
+// choosing one. Anything not listed keeps its deadline. See docs/cross-host-placement.md.
+type deadlineRule uint8
+
+const (
+	// startsWork does not start after its deadline. Its parent treats the cancellation as a known
+	// outcome: nothing started.
+	startsWork deadlineRule = iota
+	// ownDeadline commands apply their deadline themselves.
+	ownDeadline
+	// beforeAdmission phases are decided before the deadline applies.
+	beforeAdmission
+	// narrowsAccess only removes managed network access.
+	narrowsAccess
+	// extendsHeldRoot adds a later checkpoint to a recovery root this host already holds.
+	extendsHeldRoot
+	// endsHeldWork carries a reservation this host holds to its end. Nothing can issue it again,
+	// so cancelling it would strand every host its parent reserved.
+	endsHeldWork
+	// endsHeldWorkOrNone is endsHeldWork that also acknowledges a host holding no reservation at
+	// all, without changing anything there. Refusing it would strand the other hosts.
+	endsHeldWorkOrNone
+)
+
+// commandKinds is every command kind the agent runs.
+var commandKinds = map[api.ExecutionCommandKind]deadlineRule{
+	"test":      startsWork,
+	"update":    startsWork, // Execute reconciles an artifact a timely update already installed.
+	"visual":    startsWork,
+	"pipeline":  startsWork,
+	"backup":    startsWork,
+	"schedule":  startsWork,
+	"upgrade":   ownDeadline,
+	"network":   startsWork, // by action, below
+	"crosshost": startsWork, // by phase, below
+}
+
+var networkActions = map[string]deadlineRule{
+	"identify":  startsWork,
+	"configure": startsWork,
+	"restrict":  narrowsAccess,
+}
+
+var deploymentPhases = map[string]deadlineRule{
+	"checkpoint":        extendsHeldRoot,
+	"resolve":           startsWork,
+	"observe":           startsWork,
+	"reserve":           startsWork,
+	"prepare":           startsWork,
+	"hook":              startsWork,
+	"probe":             startsWork,
+	"publish":           startsWork, // Its probes would be as old as it is.
+	"retire":            endsHeldWork,
+	"complete":          endsHeldWork,
+	"abort":             endsHeldWorkOrNone,
+	"recovery-open":     beforeAdmission,
+	"checkpoint-closed": beforeAdmission,
+}
+
+var maintenancePhases = map[string]deadlineRule{
+	"checkpoint":    extendsHeldRoot,
+	"reserve":       startsWork,
+	"pause":         startsWork,
+	"effect":        startsWork,
+	"restore":       startsWork, // It replaces data.
+	"resume-source": endsHeldWorkOrNone,
+	"resume-target": endsHeldWork,
+	"complete":      endsHeldWorkOrNone,
+}
+
+// commandDeadline classifies a command from its kind and the action or phase its frozen body
+// names. An unknown or invalid one keeps its deadline.
+func commandDeadline(c api.ExecutionCommand) deadlineRule {
+	rule, ok := commandKinds[c.Kind]
+	if !ok {
+		return startsWork
+	}
+	switch c.Kind {
+	case "network":
+		var n hostnetwork.Command
+		if !networkRestriction(c) || c.Network == nil || hostnetwork.Decode(*c.Network, &n) != nil {
+			return startsWork
+		}
+		return networkActions[n.Action]
+	case "crosshost":
+		body, err := crossHostCommand(c)
+		if err != nil {
+			return startsWork
+		}
+		return crossHostPhases(body)[body.Phase]
+	}
+	return rule
+}
+
+// crossHostPhases is every phase the agent runs for this kind of coordinated operation.
+func crossHostPhases(body deployment.CrossHostCommand) map[string]deadlineRule {
+	if body.Maintenance != nil {
+		return maintenancePhases
+	}
+	return deploymentPhases
+}
+
+// runsLate says whether a command first taken after its admission deadline still runs. Its rule
+// must allow it, and the work it ends must be what this host's journal holds: the command's claim
+// is never enough. A command that runs late changes nothing beyond what its executor allows for
+// the held work, and starts nothing.
+func (e *Engine) runsLate(c api.ExecutionCommand) (bool, error) {
+	rule := commandDeadline(c)
+	switch rule {
+	case narrowsAccess:
+		return true, nil
+	case extendsHeldRoot:
+		d, err := commandCheckpoint(c)
+		if err != nil || d.Sequence == 0 {
+			return false, nil
+		}
+		head, err := e.Journal.recoveryHead(d.ParentID)
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		return err == nil && head.Descriptor.ParentID != uuid.Nil && deployment.SameRecoveryRoot(head.Descriptor, d), err
+	case endsHeldWork, endsHeldWorkOrNone:
+		body, err := crossHostCommand(c)
+		if err != nil {
+			return false, nil
+		}
+		held, err := e.Journal.crossHost()
+		if err != nil {
+			return false, err
+		}
+		if held.ParentID == uuid.Nil {
+			return rule == endsHeldWorkOrNone, nil
+		}
+		return held.ParentID == body.ParentID && held.GroupHash == body.GroupHash && held.Unit.Plan.Hash == body.Unit.Plan.Hash && deployment.Hash(held.Maintenance) == deployment.Hash(body.Maintenance), nil
+	}
+	return false, nil
+}

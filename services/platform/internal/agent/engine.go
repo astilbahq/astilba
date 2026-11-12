@@ -119,7 +119,7 @@ func (e *Engine) Execute(ctx context.Context, c api.ExecutionCommand) error {
 	if c.ServerId != cfg.ServerID || c.Id == uuid.Nil || c.Generation < 1 || len(c.PlanHash) != 64 || (cfg.Role == "build" && c.Kind != "update" && c.Kind != "pipeline") || (cfg.Role == "deployment" && c.Kind == "pipeline") {
 		return errors.New("command identity or role rejected")
 	}
-	if c.Kind != "test" && c.Kind != "update" && c.Kind != "visual" && c.Kind != "pipeline" && c.Kind != "backup" && c.Kind != "schedule" && c.Kind != "upgrade" && c.Kind != "network" && c.Kind != "crosshost" {
+	if _, known := commandKinds[c.Kind]; !known {
 		return errors.New("unsupported command")
 	}
 	preview := false
@@ -183,8 +183,14 @@ func (e *Engine) Execute(ctx context.Context, c api.ExecutionCommand) error {
 		return e.finish(c.Id, "failed", err.Error())
 	}
 	updateContinuation := c.Kind == "update" && e.Journal.startupUpdates[c.Id] && (r.AcceptedAt == nil || !r.AcceptedAt.After(c.Deadline)) && !e.cancelled(c.Id) && c.Release != nil && execution.Hash(c.Release) == c.PlanHash
-	if c.Kind != "upgrade" && !updateContinuation && !ContinuesAfterDeadline(c) && r.Checkpoint == "accepted" && time.Now().After(c.Deadline) {
-		return e.finish(c.Id, "cancelled", "The admission deadline passed before execution.")
+	if commandDeadline(c) != ownDeadline && !updateContinuation && r.Checkpoint == "accepted" && time.Now().After(c.Deadline) {
+		late, err := e.runsLate(c)
+		if err != nil {
+			return err
+		}
+		if !late {
+			return e.finish(c.Id, "cancelled", "The admission deadline passed before execution.")
+		}
 	}
 	upgrades, err := e.Journal.upgrades()
 	if err != nil {
@@ -272,45 +278,6 @@ func (e *Engine) Execute(ctx context.Context, c api.ExecutionCommand) error {
 		return e.start(ctx, c, r)
 	}
 	return e.inspectOrRemove(ctx, c)
-}
-
-// ContinuesAfterDeadline says whether a command runs however long after its admission deadline it
-// first arrives. The deadline decides whether a host may start something new, never whether a
-// coordinated reservation ends. Nothing can issue a parent's phase again, so a phase that only
-// carries a reservation to its end, or records what it already holds, runs late through the
-// executor's own checks of the frozen reservation; cancelling it would strand every host the
-// parent reserved. Lateness is not evidence for these checks either way. A phase that would start
-// an effect keeps its deadline, and its parent treats the cancellation as a known outcome: nothing
-// started. See docs/cross-host-placement.md.
-func ContinuesAfterDeadline(c api.ExecutionCommand) bool {
-	if networkRestriction(c) {
-		return true
-	}
-	if c.Kind != "crosshost" {
-		return false
-	}
-	body, err := crossHostCommand(c)
-	if err != nil {
-		return false
-	}
-	if body.Phase == "checkpoint" {
-		// A later checkpoint records metadata the host already holds part of.
-		d, err := commandCheckpoint(c)
-		return err == nil && d.Sequence > 0
-	}
-	if body.Maintenance != nil {
-		// Resumption and completion change no data. A restore or other data effect keeps its deadline.
-		return body.Phase == "resume-source" || body.Phase == "resume-target" || body.Phase == "complete"
-	}
-	switch body.Phase {
-	case "retire", "complete":
-		// Publication has happened, and these finish what it began.
-		return true
-	case "abort":
-		// It removes only the candidates this parent made, and refuses once publication may have happened.
-		return true
-	}
-	return false
 }
 
 func (e *Engine) inspect(ctx context.Context, c api.ExecutionCommand) (client.ContainerInspectResult, bool, error) {

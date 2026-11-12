@@ -28,28 +28,6 @@ func TestLatePublicationAbortsAndReleasesTheHosts(t *testing.T) {
 	g.applied(t, &e, g.place(t, &e, a.id, b.id))
 }
 
-// After publication, and in cleanup, a phase that arrives late still runs: it finishes what the
-// hosts already began, and nothing could issue it again.
-func TestLatePhasesAfterPublicationFinishTheDeployment(t *testing.T) {
-	g := newRevokedGroup(t, 2)
-	a, b := g.hosts[0], g.hosts[1]
-	e := g.primaryEnvironment(t, a)
-	for _, h := range g.hosts {
-		for _, phase := range []string{"retire", "complete", "abort"} {
-			g.arriveLate(h, phase, true)
-		}
-	}
-	g.applied(t, &e, g.place(t, &e, a.id, b.id))
-	if g.reservations(t) != 0 {
-		t.Fatal("a late completion kept the reservations")
-	}
-	g.arriveLate(a, "publish", true)
-	op := g.apply(t, &e, g.reviewed(t, &e, g.place(t, &e, a.id, b.id)))
-	if state := g.finished(t, op.Id); state != "failed" || g.reservations(t) != 0 {
-		t.Fatalf("a deployment whose cleanup arrived late ended %s with %d reservations", state, g.reservations(t))
-	}
-}
-
 // A file service that never left the primary keeps the identity it had before the placement. Once
 // the stack is consolidated, removing the placement keeps that identity, so the environment returns
 // to one host, and no cross-host runtime is left to refuse its retirement.

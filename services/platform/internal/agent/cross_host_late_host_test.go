@@ -2,27 +2,19 @@ package agent
 
 import (
 	"context"
-	"encoding/json/jsontext"
 	"testing"
 	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
-	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
-	"github.com/google/uuid"
 	"github.com/moby/moby/client"
 )
 
 // deploymentCommand freezes a deployment phase that redeploys the writer's plan unchanged, so the
 // running writer is both its candidate and its old pool, and no phase may remove it.
 func (w *unreadyWriter) deploymentCommand(phase string) api.ExecutionCommand {
-	body := deployment.CrossHostCommand{ParentID: w.parent, GroupHash: w.root, Phase: phase, Unit: deployment.DistributedUnit{Plan: w.plan, Previous: w.plan}}
-	raw, _ := stablejson.Marshal(body)
-	message := jsontext.Value(raw)
-	w.generation++
-	controller := int64(1)
-	return api.ExecutionCommand{Id: uuid.New(), ParentId: &w.parent, ServerId: w.plan.ServerID, EnvironmentId: w.plan.EnvironmentID, ResourceId: w.plan.UnitID, Kind: "crosshost", Action: "inspect", Generation: w.generation, ControllerGeneration: &controller, PlanHash: body.Digest(), Deadline: time.Now().Add(time.Hour), Crosshost: &message, RecoveryCheckpoint: &w.descriptor}
+	return w.freeze(deployment.CrossHostCommand{ParentID: w.parent, GroupHash: w.root, Phase: phase, Unit: deployment.DistributedUnit{Plan: w.plan, Previous: w.plan}})
 }
 
 // reserveDeployment installs the deployment's reservation as its reserve phase did, and moves it
