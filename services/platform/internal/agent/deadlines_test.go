@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json/jsontext"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -11,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 	bolt "go.etcd.io/bbolt"
 )
@@ -224,6 +226,39 @@ func TestLateEndingPhaseOnAnUnreservedHostChangesNothing(t *testing.T) {
 			}
 			if held, err := f.journal.hasCrossHostBarrier(); err != nil || held {
 				t.Fatal("acknowledging nothing installed a reservation", err)
+			}
+		})
+	}
+}
+
+// A late checkpoint runs only to extend a recovery root this host already holds. The base
+// checkpoint, or one naming another root, starts something, so it keeps its deadline.
+func TestLateCheckpointNeedsTheHeldRoot(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		sequence int64
+		root     string
+		runs     bool
+	}{
+		{"base", 0, "", false},
+		{"later-in-held-root", 1, "", true},
+		{"later-in-another-root", 1, strings.Repeat("e", 64), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := lateDeployment(t, "checkpoint", false)
+			d := f.descriptor
+			if tc.sequence > 0 {
+				d.Sequence, d.PreviousHash, d.CheckpointID = tc.sequence, d.Digest, uuid.New()
+			}
+			if tc.root != "" {
+				d.RootHash = tc.root
+			}
+			raw, _ := stablejson.Marshal(d)
+			metadata := jsontext.Value(raw)
+			f.command.RecoveryCheckpoint = &metadata
+			r := f.outcome(t)
+			if ran := r.Note != deadlineNote; ran != tc.runs {
+				t.Fatalf("late %s checkpoint ended %s: %s", tc.name, r.State, r.Note)
 			}
 		})
 	}
