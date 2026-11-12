@@ -437,6 +437,7 @@ func (e *Engine) restoreSnapshot(ctx context.Context, s *scheduleState, r *backu
 	r.Verified = true
 	return nil
 }
+
 // restoreTargetLabels are a fresh restore target's labels. A logical PostgreSQL restore initialises
 // the target with the archive's own image, so the target records that major, and a deployment that
 // would start another major on it is refused like on any other data volume.
