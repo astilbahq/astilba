@@ -216,7 +216,7 @@ const networkManifestLanding = `-- name: NetworkManifestLanding :one
 SELECT EXISTS(SELECT 1 FROM execution_operations WHERE workspace_id = $1 AND server_id = $2 AND kind='network'
     AND command->'network'->>'action'='configure'
     AND (command->'network'->'manifest'->>'generation')::bigint = $3::bigint
-    AND state NOT IN ('succeeded','failed','cancelled') AND created_at > now()-interval '30 seconds')
+    AND state IN ('queued','dispatched','running','needs_attention') AND created_at > now()-interval '30 seconds')
 `
 
 type NetworkManifestLandingParams struct {
