@@ -15,6 +15,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/backup"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
+	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/astilbahq/astilba/services/platform/internal/upgrade"
@@ -378,9 +379,9 @@ func TestEndedUpgradesKeepNoValues(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		kept := len(stored.Command.Secrets) > 0 && stored.Command.Installation.Access != (backup.Access{})
-		if kept != !slices.Contains([]string{"complete", "returned", "rejected"}, phase) {
-			t.Fatal(phase, "upgrade values kept:", kept)
+		kept := !slices.Contains([]string{"complete", "returned", "rejected"}, phase)
+		if (len(stored.Command.Secrets) > 0) != kept || (stored.Command.Installation.Access != backup.Access{}) != kept {
+			t.Fatal(phase, "upgrade values should be kept:", kept)
 		}
 		if backup.Hash(stored.Command.Plan) != backup.Hash(s.Command.Plan) || stored.Status != s.Status {
 			t.Fatal(phase, "removing values changed the upgrade's plan or status")
@@ -424,34 +425,43 @@ func TestRedactionKeepsUnknownMembersAndDropsUnreadablePayloads(t *testing.T) {
 
 }
 
-// An action runs with the values delivered with it. One delivered without them, as management sends
-// an action cancelled before this host took it, leaves an active upgrade's kept values as they are,
-// so an earlier agent restored onto the journal can still run the next action.
-func TestUpgradeKeepsValuesAcrossActionsDeliveredWithoutThem(t *testing.T) {
-	j, plan := testVisualJournal(t)
-	s := upgradeWithValues(t, plan, "ready")
-	kept := s.Command
-	if err := j.saveUpgrade(s); err != nil {
+// Management delivers an upgrade action cancelled before this host took it without values. Running
+// it leaves an active upgrade's kept values as they are, so an earlier agent restored onto the
+// journal can still run the next action.
+func TestCancelledUpgradeActionKeepsTheUpgradesValues(t *testing.T) {
+	j, base := testVisualJournal(t)
+	pg, volume, secret := uuid.New(), uuid.New(), uuid.New()
+	image := domain.Postgres17Image
+	spec := domain.Specification{Version: 1, Variables: []domain.Variable{}, Volumes: []domain.Volume{{ID: volume, Name: "Data"}}, Applications: []domain.Application{{ID: pg, Name: "Database", Kind: "postgres", Source: domain.ApplicationSource{Kind: "image", Image: &image}, Postgres: &domain.Postgres{Database: "app", Username: "app", PasswordSecretVersionID: secret}, Mounts: []domain.VolumeMount{{VolumeID: volume, Target: domain.PostgresMount(image)}}}}}
+	source := deployment.Plan{ID: uuid.New(), ServerID: base.ServerID, EnvironmentID: base.EnvironmentID, UnitID: uuid.New(), RevisionID: uuid.New(), Recipe: deployment.Recipe, Specification: spec, Images: map[string]string{pg.String(): image}, ExpiresAt: time.Now().Add(time.Hour)}
+	source.PrepareInstances(deployment.Plan{})
+	source = source.WithHash()
+	policy := backup.Policy{ID: uuid.New(), Name: "Upgrade recovery", WorkspaceID: uuid.New(), EnvironmentID: source.EnvironmentID, ServerID: source.ServerID, DestinationID: uuid.New(), ResourceID: pg, Generation: 1, Method: "postgres-logical", Schedule: backup.Schedule{Timezone: "UTC"}, Retain: 1, Plan: source}
+	plan := upgrade.Plan{ID: uuid.New(), Recipe: 1, PolicyID: policy.ID, ResourceID: pg, TargetVolumeID: uuid.New(), TargetPlanID: uuid.New(), TargetRevisionID: uuid.New(), RetainDays: 30, ExpiresAt: time.Now().Add(time.Hour), Source: source}
+	kept := upgrade.Command{Action: "prepare", Plan: plan, Installation: backup.Installation{Policy: policy, Access: backup.Access{Password: releaseCanary}}, Secrets: map[string]string{secret.String(): releaseCanary}}
+	if err := j.saveUpgrade(upgradeState{OperationID: uuid.New(), Command: kept, Status: upgrade.Status{Phase: "ready", Serving: "old"}}); err != nil {
 		t.Fatal(err)
 	}
-	stored, err := j.upgrade(kept.Plan.ID)
+	cutover := kept
+	cutover.Action, cutover.Secrets, cutover.Installation.Access = "cutover", nil, backup.Access{}
+	raw, err := stablejson.Marshal(cutover)
 	if err != nil {
 		t.Fatal(err)
 	}
-	cancelled := kept
-	cancelled.Action, cancelled.Secrets, cancelled.Installation.Access = "cutover", nil, backup.Access{}
-	stored.takeValues(cancelled)
-	if err = j.saveUpgrade(stored); err != nil {
+	body := jsontext.Value(raw)
+	c := api.ExecutionCommand{Id: uuid.New(), ServerId: source.ServerID, EnvironmentId: source.EnvironmentID, ResourceId: plan.ID, Kind: "upgrade", Action: "inspect", Generation: 1, PlanHash: cutover.Digest(), Upgrade: &body, CancelRequested: true, Deadline: time.Now().Add(time.Minute)}
+	r, err := j.Accept(c)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if stored, err = j.upgrade(kept.Plan.ID); err != nil || !maps.Equal(stored.Command.Secrets, kept.Secrets) || stored.Command.Installation.Access != kept.Installation.Access {
-		t.Fatal("an action delivered without values erased the values an active upgrade keeps", err)
+	if err = (&Engine{Journal: j}).executeUpgrade(t.Context(), c, r); err != nil {
+		t.Fatal(err)
 	}
-	delivered := kept
-	delivered.Secrets = map[string]string{uuid.NewString(): "delivered-value"}
-	delivered.Installation.Access = backup.Access{Password: "delivered-password"}
-	stored.takeValues(delivered)
-	if !maps.Equal(stored.Command.Secrets, delivered.Secrets) || stored.Command.Installation.Access != delivered.Installation.Access {
-		t.Fatal("an action did not run with the values delivered with it")
+	if r, err = j.Record(c.Id); err != nil || r.Report.State != "failed" || r.Report.Note != "Upgrade cancelled before host effects." {
+		t.Fatal("the cancelled action did not end as cancelled", r.Report.State, r.Report.Note, err)
+	}
+	stored, err := j.upgrade(plan.ID)
+	if err != nil || stored.Status.Phase != "ready" || !maps.Equal(stored.Command.Secrets, kept.Secrets) || stored.Command.Installation.Access != kept.Installation.Access {
+		t.Fatal("an action delivered without values erased the values an active upgrade keeps", stored.Status.Phase, err)
 	}
 }
