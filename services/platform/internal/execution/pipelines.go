@@ -553,7 +553,11 @@ func (s *Service) PipelineRuns(ctx context.Context, p store.Principal, ws, pid, 
 
 func (s *Service) SourcePolicy(ctx context.Context, p store.Principal, ws, pid, env uuid.UUID, enabled bool) error {
 	return s.scope(ctx, p, ws, workspaceAccess{Write: true, Owner: true, Recent: enabled}, "git.source.policy", env, func(tx pgx.Tx) error {
-		if _, err := loadVisualEnvironment(ctx, tx, ws, pid, env); err != nil {
+		v, err := loadVisualEnvironment(ctx, tx, ws, pid, env)
+		if err != nil {
+			return err
+		}
+		if err = requireActive(v.State); err != nil {
 			return err
 		}
 		n, err := tx.Exec(ctx, "UPDATE git_sources SET configuration=jsonb_set(configuration,'{autoDeploy}',to_jsonb($3::boolean)),policy_actor=$4,status=CASE WHEN $3 AND status='approval_required' THEN 'ready' ELSE status END WHERE workspace_id=$1 AND environment_id=$2", ws, env, enabled, p.Account.ID)

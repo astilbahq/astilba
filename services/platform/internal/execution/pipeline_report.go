@@ -289,6 +289,10 @@ func (s *Service) populatePipeline(ctx context.Context, tx pgx.Tx, git *gitAnswe
 	return nil
 }
 
+// writePipelineRevision is the one path by which management, rather than a draft edit, replaces an
+// environment's draft: promotions, rollbacks, imports and previews. A retiring or retired
+// environment's draft is read-only. The draft moves only while the environment's row says it is
+// active, so a caller without the workspace lock, such as a pipeline report, cannot race retirement.
 func (s *Service) writePipelineRevision(ctx context.Context, tx pgx.Tx, ws, env, base, actor uuid.UUID, spec domain.Specification) (uuid.UUID, error) {
 	raw, _ := stablejson.Marshal(spec)
 	parsed, canonical, err := domain.ParseSpec(raw)
@@ -303,11 +307,18 @@ func (s *Service) writePipelineRevision(ctx context.Context, tx pgx.Tx, ws, env,
 	if _, err = db.New(tx).InsertRevision(ctx, db.InsertRevisionParams{WorkspaceID: ws, EnvironmentID: env, ID: id, AuthorID: actor, Specification: canonical, ContentHash: h[:]}); err != nil {
 		return uuid.Nil, err
 	}
-	changed, err := tx.Exec(ctx, "UPDATE environments SET draft_revision_id=$4 WHERE workspace_id=$1 AND id=$2 AND draft_revision_id=$3", ws, env, base, id)
-	if err == nil && changed.RowsAffected() != 1 {
-		err = domain.Conflict
+	changed, err := tx.Exec(ctx, "UPDATE environments SET draft_revision_id=$4 WHERE workspace_id=$1 AND id=$2 AND draft_revision_id=$3 AND state='active'", ws, env, base, id)
+	if err != nil || changed.RowsAffected() == 1 {
+		return id, err
 	}
-	return id, err
+	state, err := db.New(tx).EnvironmentState(ctx, db.EnvironmentStateParams{WorkspaceID: ws, ID: env})
+	if err != nil {
+		return uuid.Nil, err
+	}
+	if err = requireActive(state); err != nil {
+		return uuid.Nil, err
+	}
+	return uuid.Nil, domain.Conflict
 }
 func (s *Service) pipelineReport(ctx context.Context, tx pgx.Tx, git *gitAnswers, received time.Time, c api.ExecutionCommand, r *api.AgentReport) error {
 	var p pipeline.Command

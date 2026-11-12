@@ -426,6 +426,9 @@ func (s *Service) PrepareBackupCutover(ctx context.Context, p store.Principal, w
 		if err != nil {
 			return err
 		}
+		if err = requireActive(v.State); err != nil {
+			return err
+		}
 		if v.Revision != in.BaseRevisionId {
 			return domain.Conflict
 		}

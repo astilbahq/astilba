@@ -66,6 +66,9 @@ func (s *Service) CreateUpgrade(ctx context.Context, p store.Principal, ws, pid,
 		if err != nil {
 			return err
 		}
+		if err = requireActive(v.State); err != nil {
+			return err
+		}
 		if v.Server == nil || v.Applied == nil || *v.Applied != in.BaseRevisionId || v.Revision != in.BaseRevisionId {
 			return domain.Conflict
 		}
