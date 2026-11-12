@@ -484,7 +484,7 @@ func (s *Service) RotateKey(ctx context.Context, a Identity, in api.AgentKeyRota
 // RemoveFromNetworks takes a server out of every private network, so its peers drop its key. It
 // is the owner's response to a copied state directory, which holds the server's network key.
 func (s *Service) RemoveFromNetworks(ctx context.Context, p store.Principal, ws, id uuid.UUID) error {
-	return s.scope(ctx, p, ws, workspaceAccess{Write: true, Owner: true, Recent: true, Recovery: true}, "server.network_removed", id, func(tx pgx.Tx) error {
+	return s.scope(ctx, p, ws, workspaceAccess{Write: true, Owner: true, Recent: true, Revocation: true}, "server.network_removed", id, func(tx pgx.Tx) error {
 		if _, err := db.New(tx).ServerCapabilities(ctx, db.ServerCapabilitiesParams{WorkspaceID: ws, ID: id}); err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return domain.NotFound

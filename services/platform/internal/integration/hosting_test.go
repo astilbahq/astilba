@@ -5,6 +5,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -224,8 +225,10 @@ func TestHostedBillingSerializesCheckoutAndFencesExpiredWork(t *testing.T) {
 	if _, e = f.execution.CreateServer(ctx, p, ws, api.CreateServer{Name: "Expired", Role: "deployment"}); e != store.SubscriptionRequired {
 		t.Fatalf("expiry not enforced: %v", e)
 	}
-	if e = f.execution.Control(ctx, p, ws, one.Server.Id, false); e != store.SubscriptionRequired {
-		t.Fatal("ordinary credential rotation gained recovery admission", e)
+	// Rotation and revocation only take authority away, so expiry doesn't stop either.
+	// TestLapsedWorkspaceOwnerCanRevokeAccess covers them on enrolled servers.
+	if e = f.execution.Control(ctx, p, ws, one.Server.Id, false); errors.Is(e, store.SubscriptionRequired) {
+		t.Fatal("expired owner could not rotate a server's credential", e)
 	}
 	if e = f.execution.Control(ctx, p, ws, one.Server.Id, true); e != nil {
 		t.Fatal("expired owner could not revoke the source connection for transfer", e)

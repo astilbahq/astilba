@@ -37,6 +37,7 @@ export function createAuthMessages(t: TFunction<"auth">) {
     invalidResetLink: t(($) => $.validation.invalidResetLink),
     invalidInvitation: t(($) => $.validation.invalidInvitation),
     invitationSignIn: t(($) => $.validation.invitationSignIn),
+    invitationSubscription: t(($) => $.validation.invitationSubscription),
     mfaRequired: t(($) => $.validation.mfaRequired),
     rateLimited: t(($) => $.validation.rateLimited),
     temporarilyBusy: t(($) => $.validation.temporarilyBusy),

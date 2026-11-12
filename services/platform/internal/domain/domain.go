@@ -62,6 +62,13 @@ func Password(value string) error {
 func CanWrite(role string) bool  { return role == "owner" || role == "operator" }
 func ValidRole(role string) bool { return CanWrite(role) || role == "viewer" }
 
+// Widens reports whether changing a member's role from one valid role to another grants any
+// authority. An empty to means removal.
+func Widens(from, to string) bool {
+	rank := map[string]int{"": 0, "viewer": 1, "operator": 2, "owner": 3}
+	return rank[to] > rank[from]
+}
+
 type ApplicationSource struct {
 	ArtifactID *uuid.UUID `json:"artifactId,omitempty"`
 	Kind       string     `json:"kind"`
