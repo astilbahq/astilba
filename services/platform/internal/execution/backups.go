@@ -557,17 +557,17 @@ func requireGeneralSchedule(ctx context.Context, q db.DBTX, ws, server uuid.UUID
 var errElevatedJob = &domain.Error{Code: "invalid_input", Message: "This service is privileged or shares a volume or network with a privileged service, so a job's command there could control the server. Scheduled jobs can't run in it.", Fields: []string{"resourceId"}}
 
 // refuseElevatedJob refuses a scheduled job whose source service is privileged or a peer of
-// one, see ElevatedServiceIDs: its command could drive the privileged service and so reach the
+// one, see ElevationOf: its command could drive the privileged service and so reach the
 // host. The agent refuses it again before every run.
 func refuseElevatedJob(p backup.Policy) error {
 	if p.Method != "container-job" {
 		return nil
 	}
-	elevated, err := ElevatedServiceIDs(p.Plan.Specification)
+	elevation, err := ElevationOf(p.Plan.Specification)
 	if err != nil {
 		return err
 	}
-	if elevated[p.ResourceID] {
+	if elevation.Services[p.ResourceID] {
 		return errElevatedJob
 	}
 	return nil

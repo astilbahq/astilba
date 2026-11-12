@@ -44,16 +44,16 @@ func beyondDefaults(capability string) bool {
 }
 
 // elevatedService reports whether a plan treats a service as elevated, see
-// execution.ElevatedServiceIDs. A plan that cannot be read is treated as elevating everything.
+// execution.ElevationOf. A plan that cannot be read is treated as elevating everything.
 func elevatedService(p deployment.Plan, app uuid.UUID) bool {
-	elevated, err := execution.ElevatedServiceIDs(p.Specification)
-	return err != nil || elevated[app]
+	elevation, err := execution.ElevationOf(p.Specification)
+	return err != nil || elevation.Services[app]
 }
 
 // hostPeer reports whether a container other than v that shares one of its networks or named
 // volumes has authority over the host, running or not: a stopped one can be started again.
 func (e *Engine) hostPeer(ctx context.Context, v container.InspectResponse) (bool, error) {
-	if v.HostConfig == nil || v.HostConfig.NetworkMode.IsContainer() {
+	if v.HostConfig.NetworkMode.IsContainer() {
 		return true, nil
 	}
 	filters := []client.Filters{}
@@ -95,48 +95,86 @@ func (e *Engine) hostPeer(ctx context.Context, v container.InspectResponse) (boo
 }
 
 // terminalNoticeWait is how long a deployment gives the shells it ends to tell their person
-// why. Their containers are removed afterwards whether or not they have finished.
+// why. Their containers are stopped afterwards whether or not they have finished.
 const terminalNoticeWait = 10 * time.Second
 
-// terminalFence keeps shells, and anything they started, out of services a deployment is about
-// to make elevated. Every Compose run passes it first, so a shell opened before a privileged
-// service was deployed beside it ends before that service can start. Ending a shell ends only
-// its Linux session, and a person can start a process outside it, so every container a session
-// has entered is also removed: Compose then creates it again from its image.
+// terminalFence keeps shells, and anything they started, away from a privileged service a
+// deployment is about to start. Every Compose run passes it first. Ending a shell ends only its
+// Linux session, and a person can start a process outside it, so the fence also stops every
+// container a session has entered that the incoming plan would leave able to reach a privileged
+// service, with its restart policy cleared so nothing starts it again. Compose then replaces it,
+// as it replaces every container of a new plan, keeping its anonymous volumes.
 type terminalFence struct {
 	mu sync.Mutex
 	// incoming is the last plan each unit's Compose project was run with. A deployment can
-	// fail part way, leaving its services running, so that plan's elevated services stay
-	// refused until another replaces it. A restarted agent has no shells, and its journaled
-	// plan and the daemon decide.
+	// fail part way, leaving its services running, so it stays in force until another
+	// replaces it. A restarted agent has no shells, and its journaled plan and the daemon
+	// decide.
 	incoming map[uuid.UUID]incomingPlan
 	shells   map[*fencedShell]bool
+	// noticeWait replaces terminalNoticeWait in tests.
+	noticeWait time.Duration
 }
 
 type incomingPlan struct {
-	hash     string
-	elevated map[uuid.UUID]bool
-	// unreadable refuses every service when the plan's elevated services cannot be found.
+	hash      string
+	elevation execution.Elevation
+	services  map[uuid.UUID]bool
+	// unreadable refuses every container when the plan's elevation cannot be found.
 	unreadable bool
 }
 
-func (p incomingPlan) refuses(app uuid.UUID) bool { return p.unreadable || p.elevated[app] }
+func readIncoming(p deployment.Plan) incomingPlan {
+	elevation, err := execution.ElevationOf(p.Specification)
+	services := map[uuid.UUID]bool{}
+	for _, app := range p.Specification.Applications {
+		services[app.ID] = true
+	}
+	return incomingPlan{hash: p.Hash, elevation: elevation, services: services, unreadable: err != nil}
+}
+
+// refuses reports whether a container of a service, joined to the given networks and named
+// volumes, could reach a privileged service of this plan: the service is elevated in it, or is
+// not in it and so is being retired, or the container is on a network or volume a privileged
+// service of this plan uses, whatever its own service now declares.
+func (p incomingPlan) refuses(app uuid.UUID, reach []string) bool {
+	if p.unreadable || len(p.elevation.Reach) > 0 && !p.services[app] || p.elevation.Services[app] {
+		return true
+	}
+	return slices.ContainsFunc(reach, func(name string) bool { return p.elevation.Reach[name] })
+}
+
+// containerReach names the networks and named volumes a container is joined to.
+func containerReach(v container.InspectResponse) []string {
+	reach := []string{}
+	if v.NetworkSettings != nil {
+		reach = slices.Collect(maps.Keys(v.NetworkSettings.Networks))
+	}
+	for _, m := range v.Mounts {
+		if m.Type == mount.TypeVolume {
+			reach = append(reach, m.Name)
+		}
+	}
+	return reach
+}
 
 // fencedShell is a running shell. end asks it to stop; ended closes once it has.
 type fencedShell struct {
-	unit, app uuid.UUID
+	unit      uuid.UUID
+	container string
 	end       chan struct{}
 	ended     chan struct{}
 	stopping  bool
 }
 
 // enteredContainer is a container a terminal session has entered, journaled until the
-// container is gone, so a restarted agent still removes it when its service becomes elevated.
+// container is gone, so a restarted agent still stops it before a privileged service starts
+// beside it.
 type enteredContainer struct {
 	Unit, App uuid.UUID
 }
 
-func (j *Journal) enteredContainers(unit uuid.UUID) (map[string]enteredContainer, error) {
+func (j *Journal) enteredContainers(unit *uuid.UUID) (map[string]enteredContainer, error) {
 	out := map[string]enteredContainer{}
 	err := j.db.View(func(tx *bolt.Tx) error {
 		return tx.Bucket([]byte("troubleshooting-entered")).ForEach(func(k, _ []byte) error {
@@ -144,7 +182,7 @@ func (j *Journal) enteredContainers(unit uuid.UUID) (map[string]enteredContainer
 			if err := j.get(tx, "troubleshooting-entered", string(k), &entered); err != nil {
 				return err
 			}
-			if entered.Unit == unit {
+			if unit == nil || entered.Unit == *unit {
 				out[string(k)] = entered
 			}
 			return nil
@@ -159,10 +197,29 @@ func (j *Journal) forgetEnteredContainer(id string) error {
 	})
 }
 
-// fenceTerminals records the plan a unit's Compose project is about to run with. It ends the
-// shells in services that plan makes elevated, then removes every container a session has
-// entered in those services, so nothing a person started there survives beside the privileged
-// service. It fails, and so stops the run, if a container cannot be removed.
+// ForgetRemovedContainers runs at startup and forgets entered containers that no longer
+// exist, such as those of a retired preview or cross-host unit that no Compose run fenced.
+func (e *Engine) ForgetRemovedContainers(ctx context.Context) {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	entered, err := e.Journal.enteredContainers(nil)
+	for id := range entered {
+		if err != nil {
+			break
+		}
+		if _, err = e.Docker.ContainerInspect(ctx, id, client.ContainerInspectOptions{}); errdefs.IsNotFound(err) {
+			err = e.Journal.forgetEnteredContainer(id)
+		}
+	}
+	if err != nil {
+		slog.Error("forgetting removed terminal session containers failed", "error", err)
+	}
+}
+
+// fenceTerminals records the plan a unit's Compose project is about to run with. Every
+// container a session has entered that this plan refuses has its shells ended and is stopped,
+// so nothing a person started there runs once a privileged service starts. It fails, and so
+// stops the run, if such a container cannot be stopped.
 func (e *Engine) fenceTerminals(ctx context.Context, p deployment.Plan) error {
 	f := &e.terminals
 	f.mu.Lock()
@@ -171,13 +228,39 @@ func (e *Engine) fenceTerminals(ctx context.Context, p deployment.Plan) error {
 	}
 	next, known := f.incoming[p.UnitID]
 	if !known || next.hash != p.Hash || p.Hash == "" {
-		elevated, err := execution.ElevatedServiceIDs(p.Specification)
-		next = incomingPlan{hash: p.Hash, elevated: elevated, unreadable: err != nil}
+		next = readIncoming(p)
 		f.incoming[p.UnitID] = next
 	}
+	// Admission journals a shell's container under this lock, so every shell admitted so far
+	// is in this list, and any admitted later decides with this plan.
+	entered, err := e.Journal.enteredContainers(&p.UnitID)
+	f.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	refused := []string{}
+	for _, id := range slices.Sorted(maps.Keys(entered)) {
+		v, err := e.Docker.ContainerInspect(ctx, id, client.ContainerInspectOptions{})
+		if errdefs.IsNotFound(err) {
+			if err = e.Journal.forgetEnteredContainer(id); err != nil {
+				return err
+			}
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if next.refuses(entered[id].App, containerReach(v.Container)) {
+			refused = append(refused, id)
+		}
+	}
+	if len(refused) == 0 {
+		return nil
+	}
 	ending := []*fencedShell{}
+	f.mu.Lock()
 	for shell := range f.shells {
-		if shell.unit == p.UnitID && next.refuses(shell.app) {
+		if shell.unit == p.UnitID && slices.Contains(refused, shell.container) {
 			if !shell.stopping {
 				shell.stopping = true
 				close(shell.end)
@@ -185,14 +268,12 @@ func (e *Engine) fenceTerminals(ctx context.Context, p deployment.Plan) error {
 			ending = append(ending, shell)
 		}
 	}
-	// Admission journals a shell's container under this lock, so every shell admitted so far
-	// is in this list.
-	entered, err := e.Journal.enteredContainers(p.UnitID)
+	wait := f.noticeWait
 	f.mu.Unlock()
-	if err != nil {
-		return err
+	if wait == 0 {
+		wait = terminalNoticeWait
 	}
-	notice, cancel := context.WithTimeout(ctx, terminalNoticeWait)
+	notice, cancel := context.WithTimeout(ctx, wait)
 	defer cancel()
 	for _, shell := range ending {
 		select {
@@ -200,44 +281,37 @@ func (e *Engine) fenceTerminals(ctx context.Context, p deployment.Plan) error {
 		case <-notice.Done():
 		}
 	}
-	for _, id := range slices.Sorted(maps.Keys(entered)) {
-		if err := e.removeEntered(ctx, p, id, entered[id], next.refuses(entered[id].App)); err != nil {
-			return err
+	for _, id := range refused {
+		_, err := e.Docker.ContainerUpdate(ctx, id, client.ContainerUpdateOptions{RestartPolicy: &container.RestartPolicy{Name: container.RestartPolicyDisabled}})
+		if err == nil {
+			_, err = e.Docker.ContainerStop(ctx, id, client.ContainerStopOptions{Timeout: ptr(0)})
 		}
+		if err != nil && !errdefs.IsNotFound(err) {
+			return errors.New("a container a terminal session entered could not be stopped before a privileged service starts beside it")
+		}
+		slog.Info("stopped a container a terminal session entered, because a privileged service can reach it", "container", id, "service", entered[id].App)
 	}
 	return nil
 }
 
-// removeEntered removes a container a session entered when its service is refused, and forgets
-// it once it is gone.
-func (e *Engine) removeEntered(ctx context.Context, p deployment.Plan, id string, entered enteredContainer, refused bool) error {
-	v, err := e.Docker.ContainerInspect(ctx, id, client.ContainerInspectOptions{})
-	if errdefs.IsNotFound(err) {
-		return e.Journal.forgetEnteredContainer(id)
-	}
-	if err != nil || !refused {
-		return err
-	}
-	if v.Container.Config == nil || !visualOwned(v.Container.Config.Labels, p) || v.Container.Config.Labels[labelResource] != entered.App.String() {
-		return errors.New("a container a terminal session entered has changed ownership, so it was not removed before its service became privileged or began sharing a volume or network with one")
-	}
-	if _, err = e.Docker.ContainerRemove(ctx, id, client.ContainerRemoveOptions{Force: true}); err != nil && !errdefs.IsNotFound(err) {
-		return errors.New("a container a terminal session entered could not be removed before its service became privileged or began sharing a volume or network with one")
-	}
-	slog.Info("removed a container a terminal session entered, because its service is becoming elevated", "container", id, "service", entered.App)
-	return e.Journal.forgetEnteredContainer(id)
+// incomingRefuses reports whether the plan a unit's Compose project last ran with refuses a
+// container of a service, see incomingPlan.refuses.
+func (e *Engine) incomingRefuses(unit, app uuid.UUID, v container.InspectResponse) bool {
+	f := &e.terminals
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	next, known := f.incoming[unit]
+	return known && next.refuses(app, containerReach(v))
 }
 
-// admitShell registers a shell about to start in a container, unless a deployment has since
-// made its service elevated, and journals the container as entered. The shell must stop when
-// end closes, and call release once it has.
+// admitShell registers a shell about to start in a container and journals the container as
+// entered. Its caller decides eligibility again afterwards, so a fence before admission is seen
+// by that check and one after it ends the shell. The shell must stop when end closes, and call
+// release once it has.
 func (e *Engine) admitShell(unit, app uuid.UUID, container string) (end <-chan struct{}, release func(), err error) {
 	f := &e.terminals
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if next, known := f.incoming[unit]; known && next.refuses(app) {
-		return nil, nil, ErrTroubleshootingIneligible
-	}
 	if err = e.Journal.db.Update(func(tx *bolt.Tx) error {
 		return e.Journal.put(tx, "troubleshooting-entered", container, enteredContainer{Unit: unit, App: app})
 	}); err != nil {
@@ -246,7 +320,7 @@ func (e *Engine) admitShell(unit, app uuid.UUID, container string) (end <-chan s
 	if f.shells == nil {
 		f.shells = map[*fencedShell]bool{}
 	}
-	shell := &fencedShell{unit: unit, app: app, end: make(chan struct{}), ended: make(chan struct{})}
+	shell := &fencedShell{unit: unit, container: container, end: make(chan struct{}), ended: make(chan struct{})}
 	f.shells[shell] = true
 	return shell.end, func() {
 		f.mu.Lock()
@@ -254,16 +328,6 @@ func (e *Engine) admitShell(unit, app uuid.UUID, container string) (end <-chan s
 		f.mu.Unlock()
 		close(shell.ended)
 	}, nil
-}
-
-// incomingRefuses reports whether the plan a unit's Compose project last ran with refuses
-// shells in a service.
-func (e *Engine) incomingRefuses(unit, app uuid.UUID) bool {
-	f := &e.terminals
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	next, known := f.incoming[unit]
-	return known && next.refuses(app)
 }
 
 // jobNetworks are the networks a scheduled job joins: exactly its source container's, each of

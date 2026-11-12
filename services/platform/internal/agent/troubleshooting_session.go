@@ -259,14 +259,11 @@ func (e *Engine) findShell(ctx context.Context, container string) (string, error
 func (e *Engine) runShell(ctx context.Context, conn *websocket.Conn, offer api.AgentTroubleshootingOffer, container string) error {
 	starting, cancel := context.WithTimeout(ctx, troubleshootingDockerWait)
 	defer cancel()
-	// A deployment that makes the service elevated from now on ends the shell and removes the
-	// container. One that ran since eligibility was decided may have started a privileged
-	// peer, so eligibility is decided again once the shell is registered. Release runs last,
-	// once the shell has been cleaned up.
+	// A deployment that would leave the container able to reach a privileged service from now
+	// on ends the shell and stops the container. One that ran since eligibility was decided may
+	// have started a privileged peer, so eligibility is decided again once the shell is
+	// registered. Release runs last, once the shell has been cleaned up.
 	end, release, err := e.admitShell(offer.UnitId, offer.ApplicationId, container)
-	if errors.Is(err, ErrTroubleshootingIneligible) {
-		return finishTroubleshooting(ctx, conn, append([]byte{terminal.Refused}, terminal.RefusedIneligible...))
-	}
 	if err != nil {
 		return errors.Join(err, finishTroubleshooting(ctx, conn, append([]byte{terminal.Refused}, terminal.RefusedUnavailable...)))
 	}
@@ -454,7 +451,7 @@ func (e *Engine) pumpShell(parent context.Context, conn *websocket.Conn, exec st
 			case <-ctx.Done():
 				return
 			case <-end:
-				// The notice is brief: the deployment removes the container shortly after.
+				// The notice is brief: the deployment stops the container shortly after.
 				name("service became elevated")
 				notice, done := context.WithTimeout(ctx, 5*time.Second)
 				_ = finishTroubleshooting(notice, conn, append([]byte{terminal.Refused}, terminal.RefusedIneligible...))

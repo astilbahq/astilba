@@ -24,6 +24,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/astilbahq/astilba/services/platform/internal/terminal"
 	"github.com/google/uuid"
+	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/client"
 )
 
@@ -34,6 +35,9 @@ type peerDaemon struct {
 	containers []map[string]any
 	created    []map[string]any
 	removed    []string
+	stopped    []string
+	restart    []string
+	fail       map[string]bool
 }
 
 type peerContainer struct {
@@ -127,7 +131,28 @@ func (d *peerDaemon) client(t *testing.T) *client.Client {
 			d.removed = append(d.removed, ref)
 			d.containers = slices.DeleteFunc(d.containers, func(c map[string]any) bool { return c["Id"] == ref })
 			w.WriteHeader(204)
-		case strings.HasSuffix(path, "/start") || strings.HasSuffix(path, "/stop"):
+		case strings.HasSuffix(path, "/update") || strings.HasSuffix(path, "/stop"):
+			ref, action, _ := strings.Cut(strings.TrimPrefix(path, "/containers/"), "/")
+			if d.fail[action] {
+				w.WriteHeader(500)
+				fmt.Fprint(w, `{"message":"refused"}`)
+				return
+			}
+			if action == "update" {
+				var body struct {
+					RestartPolicy struct {
+						Name string `json:"Name"`
+					} `json:"RestartPolicy"`
+				}
+				json.UnmarshalDecode(jsontext.NewDecoder(r.Body), &body)
+				d.restart = append(d.restart, ref+"="+body.RestartPolicy.Name)
+				w.WriteHeader(200)
+				fmt.Fprint(w, `{"Warnings":[]}`)
+				return
+			}
+			d.stopped = append(d.stopped, ref)
+			w.WriteHeader(204)
+		case strings.HasSuffix(path, "/start"):
 			w.WriteHeader(204)
 		case strings.HasSuffix(path, "/json"):
 			c := d.find(strings.TrimSuffix(strings.TrimPrefix(path, "/containers/"), "/json"))
@@ -263,90 +288,115 @@ func TestTroubleshootingRefusesRuntimePeersWithHostAuthority(t *testing.T) {
 	}
 }
 
-// fenceFixture journals peerCompose's plan as the incoming one and runs a container for each
-// service but dind, labelled for that plan.
+// fenceFixture journals peerCompose's plan and runs a container for each service but dind, on
+// the networks and volumes that plan gives it, labelled for it. It returns the plan without
+// dind's elevation too.
 func fenceFixture(t *testing.T) (*Engine, *peerDaemon, deployment.Plan, deployment.Plan, map[string]uuid.UUID) {
 	t.Helper()
 	j, plan := testVisualJournal(t)
 	elevated, ids := composePlan(t, j, plan)
+	unit := plan.UnitID
+	builder := deployment.NetworkName(composeproject.ResourceID(unit, "network", "builder"))
+	apps := deployment.NetworkName(composeproject.ResourceID(unit, "network", "apps"))
+	certs := deployment.VolumeName(composeproject.ResourceID(unit, "volume", "certs"))
 	d := &peerDaemon{}
-	for name, id := range ids {
-		if name != "dind" {
-			d.add(peerContainer{id: name, name: deployment.UnitName(id), labels: visualLabels(elevated, id)})
-		}
-	}
-	return &Engine{Journal: j, Docker: d.client(t)}, d, plan, elevated, ids
+	d.add(peerContainer{id: "client", name: deployment.UnitName(ids["client"]), labels: visualLabels(elevated, ids["client"]), networks: []string{apps}, volumes: []string{certs}})
+	d.add(peerContainer{id: "runner", name: deployment.UnitName(ids["runner"]), labels: visualLabels(elevated, ids["runner"]), networks: []string{builder}})
+	d.add(peerContainer{id: "web", name: deployment.UnitName(ids["web"]), labels: visualLabels(elevated, ids["web"]), networks: []string{apps}})
+	e := &Engine{Journal: j, Docker: d.client(t)}
+	e.terminals.noticeWait = 50 * time.Millisecond
+	return e, d, plan, elevated, ids
 }
 
-// A deployment that makes a service elevated ends the shells in it and removes every container
-// a session entered there, before its Compose run, so nothing a person started survives beside
-// the privileged service. New shells there are refused; other services carry on.
-func TestDeploymentEndsShellsAndRemovesContainersItMakesElevated(t *testing.T) {
+func admit(t *testing.T, e *Engine, unit, app uuid.UUID, container string) (<-chan struct{}, func()) {
+	t.Helper()
+	end, release, err := e.admitShell(unit, app, container)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return end, release
+}
+
+// A deployment that starts a privileged service ends the shells beside it and stops every
+// container a session entered there, with its restart policy cleared, before its Compose run,
+// even when a shell does not end in time. Other services carry on.
+func TestDeploymentStopsContainersSessionsEnteredBesideAPrivilegedService(t *testing.T) {
 	e, d, plan, elevated, ids := fenceFixture(t)
-	end, release, err := e.admitShell(plan.UnitID, ids["runner"], "runner")
-	if err != nil {
-		t.Fatal(err)
-	}
-	other, releaseOther, err := e.admitShell(plan.UnitID, ids["web"], "web")
-	if err != nil {
-		t.Fatal(err)
-	}
+	end, release := admit(t, e, plan.UnitID, ids["runner"], "runner")
+	defer release() // this shell never ends by itself
+	other, releaseOther := admit(t, e, plan.UnitID, ids["web"], "web")
 	defer releaseOther()
 	// A session that ended long ago in client may have left a process outside its shell.
-	_, releaseEarlier, err := e.admitShell(plan.UnitID, ids["client"], "client")
-	if err != nil {
+	_, releaseEarlier := admit(t, e, plan.UnitID, ids["client"], "client")
+	releaseEarlier()
+	if err := e.fenceTerminals(context.Background(), elevated); err != nil {
 		t.Fatal(err)
 	}
-	releaseEarlier()
-	fenced := make(chan error, 1)
-	go func() { fenced <- e.fenceTerminals(context.Background(), elevated) }()
 	select {
 	case <-end:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the shell in the new peer was not asked to end")
-	}
-	release()
-	if err = <-fenced; err != nil {
-		t.Fatal(err)
-	}
-	if slices.Sort(d.removed); !slices.Equal(d.removed, []string{"client", "runner"}) {
-		t.Fatalf("removed %v, want the entered containers of the new peers", d.removed)
+	default:
+		t.Fatal("the shell beside the privileged service was not asked to end")
 	}
 	select {
 	case <-other:
-		t.Fatal("a shell in a service that is not elevated was ended")
+		t.Fatal("a shell that cannot reach the privileged service was ended")
 	default:
 	}
-	entered, err := e.Journal.enteredContainers(plan.UnitID)
-	if err != nil || len(entered) != 1 || entered["web"].App != ids["web"] {
-		t.Fatalf("entered containers after the fence: %v %v", entered, err)
+	if slices.Sort(d.stopped); !slices.Equal(d.stopped, []string{"client", "runner"}) || len(d.removed) != 0 {
+		t.Fatalf("stopped %v and removed %v, want client and runner stopped", d.stopped, d.removed)
 	}
-	if _, _, err = e.admitShell(plan.UnitID, ids["client"], "client"); !errors.Is(err, ErrTroubleshootingIneligible) {
-		t.Fatalf("a shell opened in a peer while its plan was being deployed: %v", err)
+	if slices.Sort(d.restart); !slices.Equal(d.restart, []string{"client=no", "runner=no"}) {
+		t.Fatalf("restart policies %v", d.restart)
 	}
-	// A later plan without the privileged service lets shells open again.
-	if err = e.fenceTerminals(context.Background(), plan); err != nil {
-		t.Fatal(err)
+	if _, err := e.TroubleshootingTarget(context.Background(), plan.UnitID, ids["web"], 1); err != nil {
+		t.Fatalf("web refused: %v", err)
 	}
-	if _, release, err = e.admitShell(plan.UnitID, ids["runner"], "runner-2"); err != nil {
-		t.Fatal("a shell stayed refused after the service stopped being elevated", err)
+	// A later plan without the privileged service stops nothing.
+	d.stopped = nil
+	if err := e.fenceTerminals(context.Background(), plan); err != nil || len(d.stopped) != 0 {
+		t.Fatalf("a plan without a privileged service stopped %v: %v", d.stopped, err)
 	}
-	release()
 }
 
-// A deployment removes the container even when its shell has not finished ending, and fails
-// rather than start a privileged service beside one it cannot remove.
-func TestDeploymentFailsWhenAnEnteredContainerCannotBeRemoved(t *testing.T) {
+// A container whose service the plan retires, or moves off the network or volume a privileged
+// service now uses, still sits there until Compose reaches it, so it is stopped too.
+func TestDeploymentStopsRetiredAndMovedContainersBesideAPrivilegedService(t *testing.T) {
 	e, d, plan, elevated, ids := fenceFixture(t)
-	if _, _, err := e.admitShell(plan.UnitID, ids["runner"], "runner"); err != nil {
+	builder := deployment.NetworkName(composeproject.ResourceID(plan.UnitID, "network", "builder"))
+	retired := uuid.New()
+	d.add(peerContainer{id: "tools", name: "tools", labels: visualLabels(elevated, retired), networks: []string{deployment.NetworkName(plan.UnitID)}})
+	d.find("web")["NetworkSettings"] = map[string]any{"Networks": map[string]any{builder: map[string]any{}}}
+	admit(t, e, plan.UnitID, retired, "tools")
+	admit(t, e, plan.UnitID, ids["web"], "web")
+	if err := e.fenceTerminals(context.Background(), elevated); err != nil {
 		t.Fatal(err)
 	}
-	// The container now belongs to another service.
-	d.find("runner")["Config"].(map[string]any)["Labels"] = visualLabels(elevated, ids["web"])
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-	defer cancel()
-	if err := e.fenceTerminals(ctx, elevated); err == nil || len(d.removed) != 0 {
-		t.Fatalf("the deployment went ahead: %v, removed %v", err, d.removed)
+	if slices.Sort(d.stopped); !slices.Equal(d.stopped, []string{"tools", "web"}) {
+		t.Fatalf("stopped %v, want the retired and the moved containers", d.stopped)
+	}
+	if _, err := e.TroubleshootingTarget(context.Background(), plan.UnitID, ids["web"], 1); !errors.Is(err, ErrTroubleshootingIneligible) {
+		t.Fatalf("a moved container on the privileged service's network was eligible: %v", err)
+	}
+}
+
+// A deployment fails rather than start a privileged service beside a container it cannot stop,
+// and a container that is gone is forgotten.
+func TestDeploymentFailsWhenAnEnteredContainerCannotBeStopped(t *testing.T) {
+	e, d, plan, elevated, ids := fenceFixture(t)
+	admit(t, e, plan.UnitID, ids["runner"], "runner")
+	admit(t, e, plan.UnitID, ids["web"], "gone")
+	d.fail = map[string]bool{"stop": true}
+	if err := e.fenceTerminals(context.Background(), elevated); err == nil {
+		t.Fatal("the deployment went ahead beside a running container a session entered")
+	}
+	entered, err := e.Journal.enteredContainers(&plan.UnitID)
+	if err != nil || len(entered) != 1 || entered["runner"].App != ids["runner"] {
+		t.Fatalf("entered containers: %v %v", entered, err)
+	}
+	d.containers = slices.DeleteFunc(d.containers, func(c map[string]any) bool { return c["Id"] == "runner" })
+	e.ForgetRemovedContainers(context.Background())
+	if entered, err = e.Journal.enteredContainers(nil); err != nil || len(entered) != 0 {
+		t.Fatalf("removed containers were not forgotten: %v %v", entered, err)
 	}
 }
 
@@ -363,7 +413,7 @@ func TestComposeRunsTheTerminalFence(t *testing.T) {
 	if err = e.compose(context.Background(), elevated, []byte("{}"), nil, "up", "--detach"); err != nil {
 		t.Fatal(err)
 	}
-	if !e.incomingRefuses(plan.UnitID, ids["runner"]) {
+	if !e.incomingRefuses(plan.UnitID, ids["runner"], container.InspectResponse{}) {
 		t.Fatal("a Compose run did not record its plan with the fence")
 	}
 }

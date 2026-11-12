@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/astilbahq/astilba/services/platform/internal/composeproject"
+	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/google/uuid"
 )
@@ -50,20 +51,27 @@ networks:
   front: {}
 `
 
-func TestElevatedServiceIDsNamePrivilegedServicesAndTheirPeers(t *testing.T) {
+func TestElevationNamesPrivilegedServicesTheirPeersAndWhatTheyReach(t *testing.T) {
 	for name, test := range map[string]struct {
 		compose string
 		want    []string
+		reach   func(unit uuid.UUID) []string
 	}{
-		"volume and network peers": {peerCompose, []string{"client", "dind", "runner"}},
-		"default network":          {defaultCompose, []string{"tuner", "worker"}},
+		"volume and network peers": {peerCompose, []string{"client", "dind", "runner"}, func(unit uuid.UUID) []string {
+			return []string{deployment.NetworkName(composeproject.ResourceID(unit, "network", "builder")), deployment.VolumeName(composeproject.ResourceID(unit, "volume", "certs"))}
+		}},
+		"default network": {defaultCompose, []string{"tuner", "worker"}, func(unit uuid.UUID) []string { return []string{deployment.NetworkName(unit)} }},
 	} {
 		t.Run(name, func(t *testing.T) {
 			namespace := uuid.New()
 			spec := reviewSource{compose: test.compose}.spec(t, namespace)
-			elevated, err := ElevatedServiceIDs(spec)
+			elevation, err := ElevationOf(spec)
 			if err != nil {
 				t.Fatal(err)
+			}
+			elevated := elevation.Services
+			if got, want := slices.Sorted(maps.Keys(elevation.Reach)), test.reach(namespace); !slices.Equal(got, slices.Sorted(slices.Values(want))) {
+				t.Fatalf("reach %v, want %v", got, want)
 			}
 			names := map[uuid.UUID]string{}
 			for _, app := range spec.Applications {
@@ -84,8 +92,8 @@ func TestElevatedServiceIDsNamePrivilegedServicesAndTheirPeers(t *testing.T) {
 			}
 		})
 	}
-	visual, err := ElevatedServiceIDs(domain.Specification{Version: 1, Applications: []domain.Application{{ID: uuid.New(), Name: "web", Kind: "web"}}})
-	if err != nil || len(visual) != 0 {
-		t.Fatalf("a visual specification has elevated services: %v %v", slices.Collect(maps.Keys(visual)), err)
+	visual, err := ElevationOf(domain.Specification{Version: 1, Applications: []domain.Application{{ID: uuid.New(), Name: "web", Kind: "web"}}})
+	if err != nil || len(visual.Services) != 0 || len(visual.Reach) != 0 {
+		t.Fatalf("a visual specification is elevated: %+v %v", visual, err)
 	}
 }

@@ -44,14 +44,20 @@ reason, whatever the person's role. The agent decides again from its journaled p
 the containers the daemon runs: it refuses a target that shares a network or named volume
 with any container, running or stopped, that is privileged, has a capability beyond Docker's
 defaults or devices, or uses the host's network, process or IPC namespace. It decides again
-once the shell is registered, just before it starts. Before any Compose run for a unit, the
-agent ends the shells in services the incoming plan makes elevated, and removes every
-container a session has entered in those services, so that nothing a person started there,
-including a process outside the shell's session, survives beside the privileged service.
-Compose then creates those containers again from their images. The agent journals the
-containers sessions enter, so this holds after it restarts. Until a later plan replaces it,
-that plan's elevated services stay refused. A deployment fails rather than start while such
-a container cannot be removed.
+once the shell is registered, just before it starts, and it also refuses a container that the
+plan a deployment is running would leave able to reach a privileged service.
+
+Ending a shell ends only its Linux session, and a person can start a process outside it, so
+before any Compose run for a unit the agent fences off what sessions have touched. The agent
+journals every container a session enters, so this holds after it restarts. When the incoming
+plan has a privileged or added-capability service, the agent looks at each entered container
+whose service that plan makes elevated, or retires, or whose current networks or named volumes
+the privileged service uses. It ends the shells in those containers, then clears each one's
+restart policy and stops it. Compose replaces such a container when the deployment reaches its
+service, keeping its anonymous volumes and discarding its writable layer. A deployment that
+stops before then leaves it stopped, and one that cannot stop it fails before starting
+anything. Files a session wrote into a named volume stay there.
+
 **Decided** on 12 November 2026: these services are refused outright, not opened for owners
 after a recent identity confirmation, because the agent cannot check either and the host owner
 consented to container shells, not host shells.
