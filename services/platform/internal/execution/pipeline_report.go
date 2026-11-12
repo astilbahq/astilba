@@ -386,16 +386,16 @@ func (s *Service) pipelineReport(ctx context.Context, tx pgx.Tx, git *gitAnswers
 				break
 			}
 			var id uuid.UUID
-			reason, err := refusedChange(ctx, tx, func(tx pgx.Tx) (err error) {
+			why, err := refusedChange(ctx, tx, func(tx pgx.Tx) (err error) {
 				id, err = s.writePipelineRevision(ctx, tx, ws, c.EnvironmentId, current, actor, spec)
 				return err
 			})
 			if err != nil {
 				return err
 			}
-			if reason != "" {
+			if why != "" {
 				r.State = "failed"
-				r.Note = "Imported source was not saved: " + reason
+				r.Note = "Imported source was not saved: " + why
 				break
 			}
 			paths, _ := stablejson.Marshal(p.Source.Paths)
@@ -478,7 +478,7 @@ func (s *Service) pipelineReport(ctx context.Context, tx pgx.Tx, git *gitAnswers
 				}
 				if v.Revision == p.RevisionID && head.Value == p.Commit {
 					// The build stands, and its artifact can still be deployed by hand.
-					reason, err := refusedChange(ctx, tx, func(tx pgx.Tx) error {
+					why, err := refusedChange(ctx, tx, func(tx pgx.Tx) error {
 						if err := promoteSpecification(ctx, &v.Spec, p.AppID, artifact); err != nil {
 							return err
 						}
@@ -491,8 +491,8 @@ func (s *Service) pipelineReport(ctx context.Context, tx pgx.Tx, git *gitAnswers
 					if err != nil {
 						return err
 					}
-					if reason != "" {
-						r.Note = "Built, but not deployed automatically: " + reason
+					if why != "" {
+						r.Note = "Built, but not deployed automatically: " + why
 					}
 				}
 			}
