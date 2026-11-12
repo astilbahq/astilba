@@ -325,7 +325,7 @@ func (h *upgradeHost) startAgent(t *testing.T) (*agent.Journal, *reportStatuses)
 	if err = h.f.st.Pool.QueryRow(ctx, "SELECT controller_generation FROM servers WHERE id=$1", h.in.ServerId).Scan(&generation); err != nil {
 		t.Fatal(err)
 	}
-	if err = journal.SetConfig(agent.Config{Origin: h.f.server.URL, ControllerGeneration: generation, ServerID: h.in.ServerId, Credential: h.in.Credential, Enrolled: true, Role: "deployment"}); err != nil {
+	if err = journal.SetConfig(agent.Config{Origin: h.f.server.URL, ControllerGeneration: generation, ServerID: h.in.ServerId, Credential: *h.in.Credential, Enrolled: true, Role: "deployment"}); err != nil {
 		t.Fatal(err)
 	}
 	docker, err := client.New(client.WithHost(os.Getenv("PLAT_APP_DOCKER_HOST")))

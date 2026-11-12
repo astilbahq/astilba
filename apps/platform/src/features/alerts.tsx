@@ -20,6 +20,7 @@ const titles: Record<Schema["Alert"]["kind"], string> = {
   build_problem: "Build needs review",
   backup_problem: "Backup operation needs review",
   network_problem: "Private network updates are failing",
+  identity_conflict: "Another copy of a server's agent key is in use",
 };
 export function Alerts() {
   const workspace = useContext(WorkspaceContext);

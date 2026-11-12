@@ -29,7 +29,7 @@ func newHungPreview(t *testing.T) *hungPreview {
 	h.b.call("PUT", h.path+"/draft", map[string]any{"baseRevisionId": template.DraftRevisionId, "specification": h.spec}, 200, &h.draft)
 	h.server, h.token, h.enrolled = enrollPreviewHost(t, h, "Preview host")
 	var err error
-	if h.identity, err = h.f.execution.Authenticate(t.Context(), h.server, h.enrolled.Credential); err != nil {
+	if h.identity, err = h.f.execution.Authenticate(t.Context(), h.server, *h.enrolled.Credential); err != nil {
 		t.Fatal(err)
 	}
 	build := pipeline.BuildConfig{Builder: "dockerfile", ConnectionID: h.connection.ID, Branch: "main", RunnerID: h.server, Context: ".", Dockerfile: "Dockerfile", Architecture: "arm64", Arguments: map[string]string{}, Secrets: map[string]uuid.UUID{}, Budget: &pipeline.BuildBudget{CPUs: 1, MemoryMiB: 1024, SourceMiB: 128, StateMiB: 512, Minutes: 5}}
@@ -43,7 +43,7 @@ func enrollPreviewHost(t *testing.T, h *hungBuild, name string) (uuid.UUID, stri
 	h.b.call("POST", h.prefix+"/servers", map[string]any{"name": name, "role": "combined", "previewOnly": true}, 201, &enrollment)
 	credential, _ := cryptobox.Token()
 	yes := true
-	input := api.AgentEnrollment{ServerId: enrollment.Server.Id, Token: enrollment.Token, Credential: credential, MachineId: uuid.New(), Capabilities: api.AgentCapabilities{Protocol: 1, Version: "preview-fixture", Os: "linux", Arch: "arm64", Docker: true, Build: &yes, BuildNetwork: &yes, BuildControls: &yes, BuildCache: &yes, Visual: &yes, Previews: &yes, ServiceOutputs: &yes, SafeReleases: &yes, CredentialFreeVisualCancel: &yes}, Preflight: api.HostPreflight{Ready: true, OsRelease: "ubuntu 24.04", FreeBytes: 8 << 30, Notes: []string{}}}
+	input := api.AgentEnrollment{ServerId: enrollment.Server.Id, Token: enrollment.Token, Credential: &credential, MachineId: uuid.New(), Capabilities: api.AgentCapabilities{Protocol: 1, Version: "preview-fixture", Os: "linux", Arch: "arm64", Docker: true, Build: &yes, BuildNetwork: &yes, BuildControls: &yes, BuildCache: &yes, Visual: &yes, Previews: &yes, ServiceOutputs: &yes, SafeReleases: &yes, CredentialFreeVisualCancel: &yes}, Preflight: api.HostPreflight{Ready: true, OsRelease: "ubuntu 24.04", FreeBytes: 8 << 30, Notes: []string{}}}
 	agentRequest(t, h.f.server.Client(), h.f.server.URL, "/agent/v1/enroll", "", input, 200, nil)
 	return enrollment.Server.Id, enrollment.Server.Id.String() + "." + credential, input
 }

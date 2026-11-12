@@ -34,7 +34,7 @@ func TestMetricHistoryIsolationRetentionAndRateBound(t *testing.T) {
 	}
 	firstSample := history.Samples[0].ReceivedAt
 	var wg sync.WaitGroup
-	identity, e := f.execution.Authenticate(ctx, enrolled.Server.Id, in.Credential)
+	identity, e := f.execution.Authenticate(ctx, enrolled.Server.Id, *in.Credential)
 	if e != nil {
 		t.Fatal(e)
 	}

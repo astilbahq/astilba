@@ -28,6 +28,60 @@ type Account struct {
 	RecoveryCodesGeneration *uuid.UUID `json:"recovery_codes_generation"`
 }
 
+type AgentCounterValue struct {
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ServerID    uuid.UUID `json:"server_id"`
+	Epoch       int64     `json:"epoch"`
+	Value       int64     `json:"value"`
+	NonceSeq    int64     `json:"nonce_seq"`
+	NonceHash   []byte    `json:"nonce_hash"`
+	SeenAt      time.Time `json:"seen_at"`
+}
+
+type AgentIdentityEvent struct {
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ID          uuid.UUID `json:"id"`
+	ServerID    uuid.UUID `json:"server_id"`
+	Epoch       int64     `json:"epoch"`
+	Kind        string    `json:"kind"`
+	Signal      string    `json:"signal"`
+	KeyHash     []byte    `json:"key_hash"`
+	Source      string    `json:"source"`
+	CreatedAt   time.Time `json:"created_at"`
+}
+
+type AgentKey struct {
+	WorkspaceID      uuid.UUID   `json:"workspace_id"`
+	ServerID         uuid.UUID   `json:"server_id"`
+	KeyHash          []byte      `json:"key_hash"`
+	PublicKey        []byte      `json:"public_key"`
+	Epoch            int64       `json:"epoch"`
+	CreatedAt        time.Time   `json:"created_at"`
+	FirstUsedAt      *time.Time  `json:"first_used_at"`
+	SupersededAt     *time.Time  `json:"superseded_at"`
+	SuccessorSeenSeq pgtype.Int8 `json:"successor_seen_seq"`
+}
+
+type AgentLineage struct {
+	ID                     uuid.UUID  `json:"id"`
+	WorkspaceID            uuid.UUID  `json:"workspace_id"`
+	ServerID               uuid.UUID  `json:"server_id"`
+	KeyHash                []byte     `json:"key_hash"`
+	Epoch                  int64      `json:"epoch"`
+	RefreshHash            []byte     `json:"refresh_hash"`
+	TokenHash              []byte     `json:"token_hash"`
+	TokenExpiresAt         time.Time  `json:"token_expires_at"`
+	PreviousTokenHash      []byte     `json:"previous_token_hash"`
+	PreviousTokenExpiresAt *time.Time `json:"previous_token_expires_at"`
+	CreatedAt              time.Time  `json:"created_at"`
+	SupersededAt           *time.Time `json:"superseded_at"`
+}
+
+type AgentNoncesConsumed struct {
+	NonceHash []byte    `json:"nonce_hash"`
+	ExpiresAt time.Time `json:"expires_at"`
+}
+
 type AlertDelivery struct {
 	ID               uuid.UUID `json:"id"`
 	WorkspaceID      uuid.UUID `json:"workspace_id"`
@@ -410,6 +464,11 @@ type HostedSubscription struct {
 	NoticeCheckedAt time.Time   `json:"notice_checked_at"`
 }
 
+type InstallationSecret struct {
+	Name   string `json:"name"`
+	Secret []byte `json:"secret"`
+}
+
 type Invitation struct {
 	WorkspaceID uuid.UUID `json:"workspace_id"`
 	ID          uuid.UUID `json:"id"`
@@ -647,29 +706,39 @@ type SecretVersion struct {
 }
 
 type Server struct {
-	ID                   uuid.UUID  `json:"id"`
-	WorkspaceID          uuid.UUID  `json:"workspace_id"`
-	Name                 string     `json:"name"`
-	Role                 string     `json:"role"`
-	EnrollmentHash       []byte     `json:"enrollment_hash"`
-	EnrollmentExpires    *time.Time `json:"enrollment_expires"`
-	CredentialHash       []byte     `json:"credential_hash"`
-	PreviousHash         []byte     `json:"previous_hash"`
-	PreviousUntil        *time.Time `json:"previous_until"`
-	MachineID            *uuid.UUID `json:"machine_id"`
-	Revoked              bool       `json:"revoked"`
-	RotationRequested    bool       `json:"rotation_requested"`
-	Capabilities         []byte     `json:"capabilities"`
-	Preflight            []byte     `json:"preflight"`
-	LastSeen             *time.Time `json:"last_seen"`
-	PollID               *uuid.UUID `json:"poll_id"`
-	PollUntil            *time.Time `json:"poll_until"`
-	UpdateGeneration     int64      `json:"update_generation"`
-	IngressPorts         []byte     `json:"ingress_ports"`
-	ControllerGeneration int64      `json:"controller_generation"`
-	AwaitingTransfer     bool       `json:"awaiting_transfer"`
-	PreviewOnly          bool       `json:"preview_only"`
-	BuildEgress          []byte     `json:"build_egress"`
+	ID                    uuid.UUID   `json:"id"`
+	WorkspaceID           uuid.UUID   `json:"workspace_id"`
+	Name                  string      `json:"name"`
+	Role                  string      `json:"role"`
+	EnrollmentHash        []byte      `json:"enrollment_hash"`
+	EnrollmentExpires     *time.Time  `json:"enrollment_expires"`
+	CredentialHash        []byte      `json:"credential_hash"`
+	PreviousHash          []byte      `json:"previous_hash"`
+	PreviousUntil         *time.Time  `json:"previous_until"`
+	MachineID             *uuid.UUID  `json:"machine_id"`
+	Revoked               bool        `json:"revoked"`
+	RotationRequested     bool        `json:"rotation_requested"`
+	Capabilities          []byte      `json:"capabilities"`
+	Preflight             []byte      `json:"preflight"`
+	LastSeen              *time.Time  `json:"last_seen"`
+	PollID                *uuid.UUID  `json:"poll_id"`
+	PollUntil             *time.Time  `json:"poll_until"`
+	UpdateGeneration      int64       `json:"update_generation"`
+	IngressPorts          []byte      `json:"ingress_ports"`
+	ControllerGeneration  int64       `json:"controller_generation"`
+	AwaitingTransfer      bool        `json:"awaiting_transfer"`
+	PreviewOnly           bool        `json:"preview_only"`
+	BuildEgress           []byte      `json:"build_egress"`
+	EnrollmentEpoch       int64       `json:"enrollment_epoch"`
+	KeyRotatedAt          *time.Time  `json:"key_rotated_at"`
+	RotateKeyRequested    bool        `json:"rotate_key_requested"`
+	RetiredBearerHash     []byte      `json:"retired_bearer_hash"`
+	BoundAt               *time.Time  `json:"bound_at"`
+	ConsumedCodeHash      []byte      `json:"consumed_code_hash"`
+	IdentityConflictAt    *time.Time  `json:"identity_conflict_at"`
+	IdentityConflictEpoch pgtype.Int8 `json:"identity_conflict_epoch"`
+	IdentityConflict      []byte      `json:"identity_conflict"`
+	IdentityHistoryUntil  *time.Time  `json:"identity_history_until"`
 }
 
 type ServerDomain struct {
@@ -753,6 +822,7 @@ type TroubleshootingSession struct {
 	AgentCredentialHash  []byte      `json:"agent_credential_hash"`
 	AgentAttachedAt      *time.Time  `json:"agent_attached_at"`
 	BrowserAttachedAt    *time.Time  `json:"browser_attached_at"`
+	AgentLineage         *uuid.UUID  `json:"agent_lineage"`
 }
 
 type VisualPlan struct {

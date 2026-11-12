@@ -264,22 +264,9 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 		if len(de.Fields) > 0 {
 			out.Fields = &de.Fields
 		}
-		switch de.Code {
-		case "unauthenticated":
-			status = 401
-		case "forbidden", "mfa_required", "recent_auth_required", "invitation_signin_required":
-			status = 403
-		case "not_found":
-			status = 404
-		case "conflict", "troubleshooting_refused":
-			status = 409
-		case "rate_limited":
-			status = 429
-		case "temporarily_busy":
-			status = 503
+		status = failureStatus(de.Code)
+		if status == 503 {
 			w.Header().Set("Retry-After", "5")
-		default:
-			status = 400
 		}
 	} else {
 		s.Log.Error("request failed", "request_id", out.RequestId, "route", requestRoute(r), diagnostic.Failure(err))

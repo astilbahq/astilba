@@ -121,7 +121,8 @@ JOIN execution_operations o ON o.workspace_id=c.workspace_id AND o.id=c.parent_i
 JOIN servers s ON s.id=o.server_id AND s.workspace_id=o.workspace_id
 WHERE c.workspace_id = @workspace_id AND c.parent_id = @parent_id AND c.id = @id AND o.parent_id IS NULL AND o.server_id = @server_id
     AND NOT s.revoked AND NOT s.awaiting_transfer
-    AND (s.credential_hash = @credential_hash OR (s.previous_hash = @credential_hash AND s.previous_until>now()));
+    AND (s.credential_hash = @credential_hash OR (s.previous_hash = @credential_hash AND s.previous_until>now()))
+    AND (sqlc.narg(lineage)::uuid IS NULL OR EXISTS(SELECT 1 FROM agent_lineages l WHERE l.id = sqlc.narg(lineage)::uuid AND l.server_id = s.id AND l.superseded_at IS NULL AND l.epoch = s.enrollment_epoch));
 
 -- name: OperationCancelRequested :one
 SELECT cancel_requested FROM execution_operations WHERE workspace_id = @workspace_id AND id = @id;

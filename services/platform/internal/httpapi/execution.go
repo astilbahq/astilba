@@ -6,11 +6,13 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/pem"
+	"errors"
 	"github.com/go-chi/chi/v5"
 	"net/http"
 	"strings"
 
 	hostassets "github.com/astilbahq/astilba/services/platform/host"
+	"github.com/astilbahq/astilba/services/platform/internal/agentidentity"
 	"github.com/astilbahq/astilba/services/platform/internal/agentrelease"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
@@ -64,6 +66,8 @@ func (s *Server) protection(next http.Handler) http.Handler {
 		w.Header().Set("Astilba-Agent-Troubleshooting", "v2")
 		// v1 rotation requests name the machine that enrolled.
 		w.Header().Set("Astilba-Agent-Machine-Rotation", "v1")
+		// v1 agents authenticate with a key they hold: challenge, token, refresh, keys and bind.
+		w.Header().Set(agentidentity.KeysHeader, "v1")
 		limit := int64(16384)
 		if r.URL.Path == "/agent/v1/enroll" {
 			limit = 32768
@@ -75,7 +79,7 @@ func (s *Server) protection(next http.Handler) http.Handler {
 			limit = 524288
 		}
 		r.Body = http.MaxBytesReader(w, r.Body, limit)
-		if r.URL.Path != "/agent/v1/enroll" {
+		if !agentSelfAuthenticated(r.URL.Path) {
 			identity, e := s.agentRequestIdentity(r)
 			if e != nil {
 				s.fail(w, r, e)
@@ -86,16 +90,42 @@ func (s *Server) protection(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r)
 	})
 }
-func (s *Server) agentRequestIdentity(r *http.Request) (execution.Identity, error) {
+
+// agentSelfAuthenticated lists the agent paths that prove the caller themselves: by a one-time
+// code, a key's signature or a refresh secret, or for a bind by the bearer it retires.
+func agentSelfAuthenticated(path string) bool {
+	switch path {
+	case "/agent/v1/enroll", "/agent/v1/challenge", "/agent/v1/token", "/agent/v1/token/refresh", "/agent/v1/bind":
+		return true
+	}
+	return false
+}
+
+func agentCredential(r *http.Request) (uuid.UUID, string, error) {
 	parts := strings.Split(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "), ".")
 	if len(parts) != 2 {
-		return execution.Identity{}, domain.Unauthenticated
+		return uuid.Nil, "", domain.Unauthenticated
 	}
 	id, err := uuid.Parse(parts[0])
 	if err != nil {
-		return execution.Identity{}, domain.Unauthenticated
+		return uuid.Nil, "", domain.Unauthenticated
 	}
-	return s.Execution.Authenticate(r.Context(), id, parts[1])
+	return id, parts[1], nil
+}
+
+func (s *Server) agentRequestIdentity(r *http.Request) (execution.Identity, error) {
+	id, presented, err := agentCredential(r)
+	if err != nil {
+		return execution.Identity{}, err
+	}
+	identity, err := s.Execution.Authenticate(r.Context(), id, presented)
+	if errors.Is(err, domain.Unauthenticated) {
+		// A refused bearer may be the one a bind retired, which only a second holder presents.
+		if check := s.Execution.RetiredBearer(r.Context(), id, presented, s.clientSourceKey(r)); check != nil {
+			return identity, check
+		}
+	}
+	return identity, err
 }
 func (s *Server) ListServers(w http.ResponseWriter, r *http.Request, ws uuid.UUID) {
 	v, e := s.Execution.Servers(r.Context(), *principal(r.Context()), ws)
@@ -175,8 +205,61 @@ func (s *Server) EnrollAgent(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, e)
 		return
 	}
-	v, e := s.Execution.Enroll(r.Context(), b)
+	v, e := s.Execution.Enroll(r.Context(), b, s.clientSourceKey(r))
 	s.executionResponse(w, r, 200, v, e)
+}
+
+// AgentChallenge, AgentToken and RefreshAgentToken have no application rate limit: nothing a
+// stranger sends them is stored or can refuse a server, and the reverse proxy limits each address.
+func (s *Server) AgentChallenge(w http.ResponseWriter, r *http.Request) {
+	b, e := decode[api.AgentChallengeRequest](r)
+	if e != nil {
+		s.fail(w, r, e)
+		return
+	}
+	v, e := s.Execution.Challenge(r.Context(), b.ServerId)
+	s.executionResponse(w, r, 200, v, e)
+}
+func (s *Server) AgentToken(w http.ResponseWriter, r *http.Request) {
+	b, e := decode[api.AgentTokenRequest](r)
+	if e != nil {
+		s.fail(w, r, e)
+		return
+	}
+	v, e := s.Execution.ColdStart(r.Context(), b, s.clientSourceKey(r))
+	s.executionResponse(w, r, 200, v, e)
+}
+func (s *Server) RefreshAgentToken(w http.ResponseWriter, r *http.Request) {
+	b, e := decode[api.AgentRefreshRequest](r)
+	if e != nil {
+		s.fail(w, r, e)
+		return
+	}
+	v, e := s.Execution.Refresh(r.Context(), b, s.clientSourceKey(r))
+	s.executionResponse(w, r, 200, v, e)
+}
+func (s *Server) RotateAgentKey(w http.ResponseWriter, r *http.Request) {
+	b, e := decode[api.AgentKeyRotation](r)
+	if e == nil {
+		e = s.Execution.RotateKey(r.Context(), agentIdentity(r.Context()), b, s.clientSourceKey(r))
+	}
+	s.executionResponse(w, r, 204, nil, e)
+}
+func (s *Server) BindAgentKey(w http.ResponseWriter, r *http.Request) {
+	id, bearer, e := agentCredential(r)
+	if e != nil {
+		s.fail(w, r, e)
+		return
+	}
+	b, e := decode[api.AgentKeyBind](r)
+	if e == nil {
+		e = s.Execution.Bind(r.Context(), id, bearer, b, s.clientSourceKey(r))
+	}
+	s.executionResponse(w, r, 204, nil, e)
+}
+func (s *Server) RemoveServerFromNetworks(w http.ResponseWriter, r *http.Request, ws, id uuid.UUID) {
+	e := s.Execution.RemoveFromNetworks(r.Context(), *principal(r.Context()), ws, id)
+	s.executionResponse(w, r, 204, nil, e)
 }
 func (s *Server) AgentHeartbeat(w http.ResponseWriter, r *http.Request) {
 	b, e := decode[api.AgentHeartbeat](r)

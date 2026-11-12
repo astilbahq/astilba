@@ -294,6 +294,7 @@ func run() error {
 			}
 		}()
 		api.Execution.Troubleshooting = c.Troubleshooting
+		api.Execution.ForkFencing = c.AgentForkFencing
 		if e = api.Execution.CloseAbandonedTroubleshootingSessions(ctx); e != nil {
 			return e
 		}

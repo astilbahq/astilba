@@ -15,6 +15,10 @@ import (
 
 const localStateVersion = 1
 
+// keyedStateVersion marks a journal whose agent holds a key. Agents from before keys refuse it, so
+// a restored earlier binary stops before acting rather than presenting a bearer the bind retired.
+const keyedStateVersion = 2
+
 type localStateKeys struct {
 	Version int            `json:"agentStateVersion"`
 	Keyring jsontext.Value `json:"keyring"`
@@ -55,9 +59,10 @@ func (j *Journal) openLocalKeys(point func(string) error) error {
 		}
 		var envelope localStateKeys
 		if json.Unmarshal(raw, &envelope, json.RejectUnknownMembers(true)) == nil {
-			if envelope.Version != localStateVersion {
+			if envelope.Version != localStateVersion && envelope.Version != keyedStateVersion {
 				return errors.New("unsupported agent local state version; use a compatible agent")
 			}
+			j.formatVersion.Store(int64(envelope.Version))
 			j.keys, err = cryptobox.Parse(envelope.Keyring)
 			if err != nil {
 				return err
@@ -205,4 +210,31 @@ func syncLocalStateDirectory(dir string) error {
 	}
 	defer parent.Close()
 	return parent.Sync()
+}
+
+// markKeyed raises the journal's format version once its agent holds a key. Callers hold the
+// token source's lock, or run before anything else starts, so only one writes the keyring.
+func (j *Journal) markKeyed() error {
+	if j.formatVersion.Load() == keyedStateVersion {
+		return nil
+	}
+	raw, err := stablejson.Marshal(j.keys)
+	if err != nil {
+		return err
+	}
+	body, err := stablejson.Marshal(localStateKeys{Version: keyedStateVersion, Keyring: raw})
+	if err != nil {
+		return err
+	}
+	if err = writeLocalState(j.dir, filepath.Join(j.dir, "keyring.json"), body, nil); err != nil {
+		return err
+	}
+	j.formatVersion.Store(keyedStateVersion)
+	return nil
+}
+
+// HoldsKey reports whether this agent authenticates with a key, or once did: either way, an agent
+// from before keys can't run on this journal.
+func (j *Journal) HoldsKey(cfg Config) bool {
+	return cfg.Key != nil || cfg.BindKey != nil || cfg.PendingRotation != nil || j.formatVersion.Load() == keyedStateVersion
 }

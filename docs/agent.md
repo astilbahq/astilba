@@ -51,20 +51,65 @@ sudo astilba-agent enroll --management https://platform.example.com \
 sudo systemctl enable --now astilba-agent
 ```
 
-Enrollment and run use the same protected `/var/lib/astilba-agent` directory. It holds a bbolt journal and a separate encryption key, both required for recovery. Only one process may open the directory. Preserve it during upgrades; do not clone it to a different machine. A lost enrollment response can be retried with the same directory and code. A new code preserves the original machine binding and allows that host to reconnect after revocation. Enrolling again sends the credential already in the directory, so a copy of the directory holding the same credential, for example from a backup or a disk snapshot, works again too.
+Enrollment and run use the same protected `/var/lib/astilba-agent` directory. It holds a bbolt journal and a separate encryption key, both required for recovery. Only one process may open the directory. Preserve it during upgrades; do not clone it to a different machine. A lost enrollment response can be retried with the same directory and code: the agent sends whatever it first sent with that code. A new code preserves the original machine binding and allows that host to reconnect after revocation.
 
-### Rotating and revoking credentials
+### The agent's key
 
-**Rotate credential (routine)** on the Servers page replaces the agent's credential with one it generates. To finish a rotation, the caller must present the current credential and name the machine that enrolled. That stops someone who has only the credential, for example from a request log. It doesn't stop someone with a copy of the state directory, which holds both, or someone who also has the machine ID, which appears in recovery exports, workspace exports and management's database. So rotating is upkeep, not a response to a leak: such a holder can finish a requested rotation before this agent does, and this agent is then locked out.
+The agent authenticates with an ECDSA P-256 key it generates at enrollment. Management keeps only the public key. For each request the agent uses a 15-minute access token, which it gets by signing a one-time challenge and keeps only in memory. The key never leaves the host.
 
-The Servers page offers rotation only for an agent that names its machine; update older agents first. The check applies once every management replica runs a release that has it. An older agent that is part way through a rotation can't finish it against such a release, and shows as offline although it still receives commands. That happens when management is upgraded during the rotation, or when an older agent is restored during one. Update the agent from the Servers page.
+The agent renews its token with a signed refresh secret. Through an outage it keeps trying the same secret rather than starting a new session, which would end its terminal sessions. Management accepts a secret until an hour after its token expired: long enough for ordinary deploys and restarts, and short enough that a secret copied from the agent's memory and left unused stops working. After that, the agent starts a new session with a signed challenge.
 
-If you suspect the credential or the state directory leaked:
+How well the key is protected depends on the host, and the Servers page says which applies:
 
-1. Revoke the connection. The credential stops working at once. Read the dialog first: unfinished work ends, and the host keeps the secrets, registry access and TLS keys it was given, so rotate those at their source.
-2. Add a new server, and enroll a rebuilt host or a fresh state directory as that server. Then [move the work off the revoked server](cross-host-placement.md#moving-off-a-revoked-server). Don't renew the revoked server instead. With the same state directory, renewal sends the credential the directory holds, which brings back every copy holding it. With a new machine or a fresh directory, renewal is refused, because a renewed server accepts only the machine that enrolled.
+- **TPM:** the key is sealed with `systemd-creds` to the host's TPM, without binding it to firmware measurements, so firmware and Secure Boot updates don't lock the agent out. A copy of the disk can't use the key.
+- **Host key:** without a TPM, the key is sealed with systemd's host key, `/var/lib/systemd/credential.secret`, which lives outside the state directory. A copy of the state directory alone can't use the key. **A copy of the whole disk can**, because it includes the host key.
+- **Setup required:** the host has no systemd host key yet, and the agent service's sandbox can't create one. Run `sudo systemd-creds setup` once, then restart the agent service; it registers a key when it starts. `astilba-agent enroll` and `transfer` do this themselves.
+- **Sealing failed:** `systemd-creds` is missing or couldn't read back what it sealed. The Servers page shows the reason the agent reports.
 
-Deployment/build roles are fixed at server creation. Build-only agents cannot receive test deployment commands or runtime secrets. The current platform does not issue build commands. Create a new server record for a different role; disconnect the old identity explicitly.
+The agent registers a key only after it has sealed a value and read it back. Until then it keeps authenticating with its bearer credential. While its key store is unavailable, the agent opens it again every minute and keeps running local work, such as scheduled backups. An agent that already holds a key can't authenticate until its store opens, so the server shows as offline; `journalctl -u astilba-agent` shows why.
+
+A copy of the state directory still holds the journal, which its keyring decrypts, and the host's private network keys. Treat a copied state directory as a leak of the host's secrets and network keys even when it can't authenticate.
+
+The agent replaces its key every 30 days, or when an owner asks with **Rotate key now**, proving that it holds both the old and the new key. Rotation waits while a terminal session is open, because a new key ends it.
+
+### Identity conflicts
+
+Management looks for proof that a second copy of an agent is using the server's key:
+
+- session starts whose counters don't rise in the order management issued their challenges;
+- a key the agent replaced, used after its replacement;
+- the credential a key replaced, used again from two minutes after the key's first use until a day after the agent replaced it. Outside that window, it is only refused;
+- a consumed enrollment code presented with another key.
+
+Management then raises an **identity conflict** alert and shows it on the Servers page. A running agent never produces these, whatever its retries, restarts or lost answers. **Restoring the state directory from a backup or snapshot does**, because the restored agent repeats what the live one already sent: re-key the host after a restore. Anything ambiguous, such as a late or duplicated request, is refused without raising one. A key that a new enrollment code replaced is refused and recorded once, without an alert. Nothing that someone who knows only the server's ID can send raises a conflict or stops the server.
+
+Only a new enrollment code clears a conflict; an agent replacing its bearer with a key doesn't. Management keeps the keys a code replaced for 30 days after it replaced them, so a copy that presents one is recorded.
+
+**Remove from private networks** cuts the server's network key at once, without re-keying, for example while you investigate. Workloads on it lose their private connections to other servers until you add it back.
+
+By default a conflict only alerts, and both copies can keep authenticating until you act. Set `ASTILBA_AGENT_FORK_FENCING=true` on management to also clear the server's credential when a conflict is proven, which stops both copies until the host is re-keyed.
+
+If you see a conflict, or suspect the state directory leaked:
+
+1. Stop the agent service (`sudo systemctl stop astilba-agent`), since `enroll` can't open the state directory while the service has it.
+2. Create a **New enrollment code**, enroll this host again with its existing state directory, and start the service. The agent registers a new key, and every copy of the old one stops working. A new code also takes the server out of its private networks, since a copy of the state directory holds its network key; add it back to give it a new one.
+3. If the host itself may be compromised, revoke the connection instead and enroll a rebuilt host as a new server; then [move the work off the revoked server](cross-host-placement.md#moving-off-a-revoked-server). Renewal accepts only the machine that enrolled. After a whole-disk copy of a host without a TPM, the systemd host key leaked too: rebuild the host, or regenerate that key before re-keying.
+
+Revoking still ends unfinished work, and the host keeps the secrets, registry access and TLS keys it was given, so rotate those at their source.
+
+### Agents that still use a bearer credential
+
+Agents released before keys authenticate with a 256-bit bearer credential, which a copy of the state directory can use from anywhere. After an update, the agent registers a key at its next start and deletes the bearer; that bearer then stops working. Management can't safely rotate a bearer, so it refuses **Rotate key now** until the agent is updated and has registered a key. An older agent that was part way through rotating its bearer when management was upgraded can't finish, and shows as offline although it still receives commands; update it.
+
+Until a host is updated, the response to a suspected leak is to revoke it and enroll a rebuilt host or a fresh state directory as a new server: renewing it with the same state directory sends the leaked bearer again.
+
+### Rollback and downgrade
+
+Once an agent holds a key, it refuses to install a release that can't authenticate with one, and its journal is marked so that an earlier agent, restored by hand, refuses to start rather than presenting a retired credential. Don't replace the agent with an earlier release while an enrollment is waiting for its answer: it can't send what the newer agent sent with that code, so you'd need a new code. Running `enroll` again with a code already used fails and leaves the agent's key as it was.
+
+Upgrade every management replica before updating agents: a replica from before keys refuses the access tokens an updated agent presents.
+
+Downgrading management below this release clears the credential of every key-bound server, because earlier releases can only check bearers. Those servers then need a new enrollment code each.
 
 ## Observe and recover
 

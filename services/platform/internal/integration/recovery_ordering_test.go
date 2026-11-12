@@ -67,7 +67,7 @@ func verifyRecoveryOrdering(t *testing.T, source *fixture, ws uuid.UUID, before,
 			primary = enrollment
 		}
 	}
-	if err = journal.SetConfig(agent.Config{Origin: "https://source.example.test", ServerID: primary.ServerId, MachineID: primary.MachineId, Credential: primary.Credential, Role: "deployment", Enrolled: true}); err != nil {
+	if err = journal.SetConfig(agent.Config{Origin: "https://source.example.test", ServerID: primary.ServerId, MachineID: primary.MachineId, Credential: *primary.Credential, Role: "deployment", Enrolled: true}); err != nil {
 		t.Fatal(err)
 	}
 	docker, err := client.New(client.WithHost(os.Getenv("PLAT_APP_DOCKER_HOST")))

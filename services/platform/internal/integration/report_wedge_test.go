@@ -141,7 +141,7 @@ func runAgent(t *testing.T, ctx context.Context, f *fixture, build dispatchedBui
 	if err = f.st.Pool.QueryRow(ctx, "SELECT controller_generation FROM servers WHERE id=$1", build.server).Scan(&generation); err != nil {
 		t.Fatal(err)
 	}
-	if err = journal.SetConfig(agent.Config{Origin: f.server.URL, ControllerGeneration: generation, ServerID: build.server, Credential: build.in.Credential, Enrolled: true, Role: "build"}); err != nil {
+	if err = journal.SetConfig(agent.Config{Origin: f.server.URL, ControllerGeneration: generation, ServerID: build.server, Credential: *build.in.Credential, Enrolled: true, Role: "build"}); err != nil {
 		t.Fatal(err)
 	}
 	docker, err := client.New(client.WithHost(os.Getenv("PLAT_APP_DOCKER_HOST")))

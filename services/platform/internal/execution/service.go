@@ -13,6 +13,7 @@ import (
 	"time"
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
+	"github.com/astilbahq/astilba/services/platform/internal/agentidentity"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/auth"
 	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
@@ -44,6 +45,10 @@ type Service struct {
 	Troubleshooting bool
 	// ResetMail shares this River client, since each client must know every job kind it may rescue.
 	ResetMail *auth.ResetMailWorker
+	// ForkFencing clears a server's credential when management sees proof that a second holder has
+	// its key. Off, the proof only raises the owner's alert.
+	ForkFencing bool
+	nonce       nonceSecret
 }
 
 // River stops a job at 10 seconds. A pass ends itself first so that running out of time
@@ -143,7 +148,12 @@ func serverView(row db.ListServersRow) (api.Server, error) {
 func (s *Service) Servers(ctx context.Context, p store.Principal, ws uuid.UUID) ([]api.Server, error) {
 	out := []api.Server{}
 	err := s.scope(ctx, p, ws, workspaceAccess{}, "", uuid.Nil, func(tx pgx.Tx) error {
-		rows, err := db.New(tx).ListServers(ctx, ws)
+		q := db.New(tx)
+		rows, err := q.ListServers(ctx, ws)
+		if err != nil {
+			return err
+		}
+		identities, err := identityViews(ctx, q, ws)
 		if err != nil {
 			return err
 		}
@@ -152,6 +162,7 @@ func (s *Service) Servers(ctx context.Context, p store.Principal, ws uuid.UUID) 
 			if e != nil {
 				return e
 			}
+			v.Identity = identities[row.ID]
 			out = append(out, v)
 		}
 		return nil
@@ -212,7 +223,7 @@ func (s *Service) RenewEnrollment(ctx context.Context, p store.Principal, ws, id
 		} else if held {
 			return domain.Conflict
 		}
-		if e := invalidateNetworkMember(ctx, tx, ws, id); e != nil {
+		if e := invalidateNetworkMember(ctx, tx, ws, id, memberRenewedNote); e != nil {
 			return e
 		}
 		row, e := db.New(tx).RenewServerEnrollment(ctx, db.RenewServerEnrollmentParams{WorkspaceID: ws, ID: id, EnrollmentHash: hash(out.Token), EnrollmentExpires: &out.ExpiresAt})
@@ -231,7 +242,7 @@ func (s *Service) Control(ctx context.Context, p store.Principal, ws, id uuid.UU
 	}
 	return s.scope(ctx, p, ws, workspaceAccess{Write: true, Owner: true, Recent: true, Recovery: revoke}, action, id, func(tx pgx.Tx) error {
 		if revoke {
-			if e := invalidateNetworkMember(ctx, tx, ws, id); e != nil {
+			if e := invalidateNetworkMember(ctx, tx, ws, id, memberRevokedNote); e != nil {
 				return e
 			}
 			if e := store.LockServerDNS(ctx, tx, id); e != nil {
@@ -240,13 +251,15 @@ func (s *Service) Control(ctx context.Context, p store.Principal, ws, id uuid.UU
 		}
 		q := db.New(tx)
 		if !revoke {
-			supported, err := q.RequestServerRotation(ctx, db.RequestServerRotationParams{WorkspaceID: ws, ID: id})
+			// An owner's rotation replaces the agent's key. A server still on a bearer can't rotate it
+			// safely, so it is told to update its agent, which then registers a key.
+			bound, err := q.RequestKeyRotation(ctx, db.RequestKeyRotationParams{WorkspaceID: ws, ID: id})
 			if errors.Is(err, pgx.ErrNoRows) {
 				return domain.NotFound
 			} else if err != nil {
 				return err
-			} else if !supported {
-				return rotationUnsupported
+			} else if !bound {
+				return keyRotationNeedsUpdate
 			}
 			return nil
 		}
@@ -264,45 +277,79 @@ func (s *Service) Control(ctx context.Context, p store.Principal, ws, id uuid.UU
 // lockAgentCredential locks the agent's server row and reports whether its
 // credential is still valid and the server is not awaiting controller transfer.
 func lockAgentCredential(ctx context.Context, tx pgx.Tx, a Identity) (bool, error) {
-	return db.New(tx).LockAgentCredential(ctx, db.LockAgentCredentialParams{WorkspaceID: a.Workspace, ServerID: a.ID, CredentialHash: hash(a.Token)})
+	return db.New(tx).LockAgentCredential(ctx, db.LockAgentCredentialParams{WorkspaceID: a.Workspace, ServerID: a.ID, CredentialHash: a.Credential, Lineage: a.lineage()})
 }
 
-// Agent identity is bound by a server ID plus a random 256-bit credential, never a tenant selector.
+const (
+	identityBearer = "bearer"
+	identityToken  = "token"
+)
+
+// Agent identity is bound by a server ID plus a credential, never a tenant selector: a legacy
+// 256-bit bearer, or an access token issued to a session of the server's key.
 type Identity struct {
-	ID, Workspace              uuid.UUID
-	Role                       api.ServerRole
-	Previous                   bool
-	Token                      string
+	ID, Workspace uuid.UUID
+	Role          api.ServerRole
+	Previous      bool
+	// Token is what the agent presented, so a long request can check it again.
+	Token string
+	Kind  string
+	// Credential is the server's identity this request authenticated as: the bearer's hash, or the
+	// hash of the key the token was issued for.
+	Credential                 []byte
+	Lineage                    uuid.UUID
 	CredentialFreeVisualCancel bool
+}
+
+// lineage scopes credential checks to a token's session; a bearer has none.
+func (a Identity) lineage() *uuid.UUID {
+	if a.Kind != identityToken {
+		return nil
+	}
+	return &a.Lineage
 }
 
 func (s *Service) Authenticate(ctx context.Context, id uuid.UUID, token string) (Identity, error) {
 	var v Identity
 	v.ID = id
 	v.Token = token
+	if strings.HasPrefix(token, agentidentity.TokenPrefix) {
+		if len(token) != len(agentidentity.TokenPrefix)+43 {
+			return v, domain.Unauthenticated
+		}
+		row, err := s.Store.Queries.AuthenticateAgentToken(ctx, db.AuthenticateAgentTokenParams{ServerID: id, TokenHash: hash(token)})
+		if errors.Is(err, pgx.ErrNoRows) {
+			return v, keyNotCurrent
+		}
+		v.Kind, v.Workspace, v.Role, v.Credential, v.Lineage, v.CredentialFreeVisualCancel = identityToken, row.WorkspaceID, api.ServerRole(row.Role), row.KeyHash, row.Lineage, row.CredentialFreeVisualCancel
+		return v, err
+	}
 	if len(token) != 43 {
 		return v, domain.Unauthenticated
 	}
 	row, err := s.Store.Queries.AuthenticateAgent(ctx, db.AuthenticateAgentParams{ServerID: id, CredentialHash: hash(token)})
+	v.Kind, v.Credential = identityBearer, hash(token)
 	v.Workspace, v.Role, v.Previous, v.CredentialFreeVisualCancel = row.WorkspaceID, api.ServerRole(row.Role), row.Previous, row.CredentialFreeVisualCancel
 	if errors.Is(err, pgx.ErrNoRows) {
 		err = domain.Unauthenticated
 	}
 	return v, err
 }
-func (s *Service) Enroll(ctx context.Context, in api.AgentEnrollment) (api.AgentStatus, error) {
+func (s *Service) Enroll(ctx context.Context, in api.AgentEnrollment, source string) (api.AgentStatus, error) {
 	var out api.AgentStatus
-	if len(in.Credential) != 43 || in.MachineId == uuid.Nil {
+	keyed := in.PublicKey != nil || in.Proof != nil
+	legacy := in.Credential != nil
+	if in.MachineId == uuid.Nil || keyed == legacy || (legacy && len(*in.Credential) != 43) || (keyed && (in.PublicKey == nil || in.Proof == nil)) {
 		return out, domain.Invalid("credential")
 	}
-	return s.enroll(ctx, in)
+	return s.enroll(ctx, in, source)
 }
 
 func (s *Service) Heartbeat(ctx context.Context, a Identity, in api.AgentHeartbeat) (api.AgentStatus, error) {
 	var out api.AgentStatus
 	caps, _ := stablejson.Marshal(in.Capabilities)
 	pre, _ := stablejson.Marshal(in.Preflight)
-	row, err := s.Store.Queries.RecordAgentHeartbeat(ctx, db.RecordAgentHeartbeatParams{WorkspaceID: a.Workspace, ServerID: a.ID, CredentialHash: hash(a.Token), Capabilities: caps, Preflight: pre})
+	row, err := s.Store.Queries.RecordAgentHeartbeat(ctx, db.RecordAgentHeartbeatParams{WorkspaceID: a.Workspace, ServerID: a.ID, CredentialHash: a.Credential, Capabilities: caps, Preflight: pre, Lineage: a.lineage()})
 	out.Role, out.RotationRequested = api.ServerRole(row.Role), row.RotationRequested
 	if row.PreviewOnly {
 		out.PreviewOnly = &row.PreviewOnly
@@ -313,18 +360,19 @@ func (s *Service) Heartbeat(ctx context.Context, a Identity, in api.AgentHeartbe
 	return out, err
 }
 
-// rotationUnsupported refuses a rotation request for an agent that can't name its machine.
-var rotationUnsupported = &domain.Error{Code: "conflict", Message: "This server's agent can't rotate its credential safely. Update the agent on this server, then rotate."}
-
 // Rotate exchanges the agent's credential for a candidate it chose. The caller must also name the
 // machine that enrolled. That stops someone holding only a leaked credential, but the machine ID
 // isn't secret, so this is routine upkeep: after a suspected leak an owner revokes the server and
 // enrolls a new one.
 func (s *Service) Rotate(ctx context.Context, a Identity, in api.AgentRotation) error {
+	// A key-bound server rotates only through RotateKey, which needs both keys.
+	if a.Kind != identityBearer {
+		return domain.Forbidden
+	}
 	if len(in.Credential) != 43 {
 		return domain.Invalid("credential")
 	}
-	n, err := s.Store.Queries.RotateAgentCredential(ctx, db.RotateAgentCredentialParams{WorkspaceID: a.Workspace, ServerID: a.ID, CredentialHash: hash(a.Token), CandidateHash: hash(in.Credential), MachineID: &in.MachineId})
+	n, err := s.Store.Queries.RotateAgentCredential(ctx, db.RotateAgentCredentialParams{WorkspaceID: a.Workspace, ServerID: a.ID, CredentialHash: a.Credential, CandidateHash: hash(in.Credential), MachineID: &in.MachineId})
 	if err == nil && n != 1 {
 		return domain.Unauthenticated
 	}

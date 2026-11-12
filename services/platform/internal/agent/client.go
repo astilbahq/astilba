@@ -18,8 +18,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/astilbahq/astilba/services/platform/internal/agentidentity"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
-	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
 	"github.com/astilbahq/astilba/services/platform/internal/execution"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 )
@@ -44,11 +44,22 @@ type Client struct {
 	primaryIngress          atomic.Bool
 	troubleshooting         atomic.Bool
 	machineRotation         atomic.Bool
-	terminalOffers          sync.Map
-	terminalActive          atomic.Int64
-	terminalSessions        sync.WaitGroup
-	terminalMu              sync.Mutex
-	terminalContainers      map[string]bool
+	// Keys seals this agent's keys; KeyStoreErr says why there is none here. OpenKeys, when set,
+	// opens the store; Run opens it again in the background while it is unavailable. Read them
+	// through keyStore.
+	Keys               KeyStore
+	KeyStoreErr        error
+	OpenKeys           func(context.Context) (KeyStore, error)
+	keysMu             sync.Mutex
+	keysTried          bool
+	keysSupported      atomic.Bool
+	tokens             tokenSource
+	needsEnrollment    atomic.Bool
+	terminalOffers     sync.Map
+	terminalActive     atomic.Int64
+	terminalSessions   sync.WaitGroup
+	terminalMu         sync.Mutex
+	terminalContainers map[string]bool
 }
 
 func NewClient(j *Journal, e *Engine) *Client {
@@ -65,7 +76,34 @@ func ValidateOrigin(origin string) error {
 	}
 	return nil
 }
+
+// call sends a request. With authAgent it authenticates as this server, and a token management no
+// longer honours is replaced once.
 func (c *Client) call(ctx context.Context, method, path string, body, out any, token string) error {
+	if token != authAgent {
+		return c.send(ctx, method, path, body, out, token)
+	}
+	credential, err := c.authorization(ctx)
+	if err != nil {
+		return err
+	}
+	err = c.send(ctx, method, path, body, out, credential)
+	var refused rejection
+	if !strings.HasPrefix(credential, agentidentity.TokenPrefix) && errors.As(err, &refused) && refused.keys && refused.status == 401 {
+		// Management no longer honours this bearer: an outstanding code may be what replaced it.
+		c.needsEnrollment.Store(true)
+	}
+	if strings.HasPrefix(credential, agentidentity.TokenPrefix) && refusedAs(err, agentidentity.KeyNotCurrent) {
+		c.invalidate(credential)
+		if credential, err = c.authorization(ctx); err != nil {
+			return err
+		}
+		return c.send(ctx, method, path, body, out, credential)
+	}
+	return err
+}
+
+func (c *Client) send(ctx context.Context, method, path string, body, out any, token string) error {
 	cfg, e := c.Journal.Config()
 	if e != nil {
 		return e
@@ -129,6 +167,7 @@ func (c *Client) call(ctx context.Context, method, path string, body, out any, t
 		c.primaryIngress.Store(response.Header.Get("Astilba-Agent-Primary-Ingress") == "v1")
 		c.troubleshooting.Store(response.Header.Get("Astilba-Agent-Troubleshooting") == "v2")
 		c.machineRotation.Store(response.Header.Get("Astilba-Agent-Machine-Rotation") == "v1")
+		c.keysSupported.Store(response.Header.Get(agentidentity.KeysHeader) == "v1")
 		if c.Engine != nil {
 			read := refusalsUnread
 			if response.Header.Get("Astilba-Agent-Network-Refusals") == "v1" {
@@ -138,7 +177,7 @@ func (c *Client) call(ctx context.Context, method, path string, body, out any, t
 		}
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return errors.New("management rejected request; check enrollment, credentials and operation status")
+		return refusal(response)
 	}
 	limit := int64(16385)
 	if path == "/agent/v1/poll" {
@@ -152,6 +191,15 @@ func (c *Client) call(ctx context.Context, method, path string, body, out any, t
 		return errors.New("invalid management response")
 	}
 	return nil
+}
+
+// refusal reads why management refused a request.
+func refusal(response *http.Response) rejection {
+	var failure struct {
+		Code string `json:"code"`
+	}
+	_ = json.UnmarshalRead(io.LimitReader(response.Body, 4096), &failure)
+	return rejection{status: response.StatusCode, code: failure.Code, keys: response.Header.Get(agentidentity.KeysHeader) == "v1"}
 }
 
 func (c *Client) acceptPolledCommand(command api.ExecutionCommand) (Record, error) {
@@ -172,7 +220,7 @@ func (c *Client) advertisedCapabilities(v api.AgentCapabilities) api.AgentCapabi
 	if !c.crossHost.Load() {
 		v.CrossHost = nil
 	}
-	if !c.maintenanceContinuation.Load() || !c.crossHost.Load() || c.Journal == nil || c.Journal.formatVersion != localStateVersion {
+	if !c.maintenanceContinuation.Load() || !c.crossHost.Load() || c.Journal == nil || c.Journal.formatVersion.Load() < localStateVersion {
 		v.MaintenanceContinuation = nil
 	}
 	if !c.replicas.Load() {
@@ -208,68 +256,46 @@ func (c *Client) advertisedCapabilities(v api.AgentCapabilities) api.AgentCapabi
 	if !c.railpack.Load() {
 		v.RailpackVersion = nil
 	}
+	v.KeyProtection, v.KeyStoreProblem = nil, nil
+	if c.keysSupported.Load() {
+		v.KeyProtection, v.KeyStoreProblem = c.keyProtection()
+	}
 	if !c.machineRotation.Load() {
 		v.MachineBoundRotation = nil
 	}
 	return v
 }
-func (c *Client) Enroll(ctx context.Context, token string) error {
-	cfg, e := c.Journal.Config()
-	if e != nil {
-		return e
-	}
-	token = strings.TrimSpace(token)
-	if token == "" {
-		token = cfg.EnrollmentToken
-	}
-	if len(token) != 43 {
-		return errors.New("a valid enrollment token is required")
-	}
-	if cfg.Credential == "" {
-		cfg.Credential, e = cryptobox.Token()
-		if e != nil {
-			return e
-		}
-	}
-	cfg.EnrollmentToken = token
-	if e = c.Journal.SetConfig(cfg); e != nil {
-		return e
-	}
 
+// Enroll exchanges an enrollment code for this server's identity, or with no code retries the
+// outstanding ones.
+func (c *Client) Enroll(ctx context.Context, token string) error {
+	token = strings.TrimSpace(token)
+	var sent api.AgentCapabilities
+	var err error
+	if token == "" {
+		_, sent, _, err = c.retryEnrollments(ctx)
+	} else if len(token) != 43 {
+		return errors.New("a valid enrollment token is required")
+	} else {
+		_, sent, _, err = c.enrollCode(ctx, token)
+	}
+	if err != nil {
+		return err
+	}
+	// The enrollment went out before negotiation could finish. Report what the agent supports now
+	// rather than when the service first heartbeats.
 	h := c.Observe(ctx)
-	var status api.AgentStatus
-	enrollment := api.AgentEnrollment{ServerId: cfg.ServerID, MachineId: cfg.MachineID, Credential: cfg.Credential, Token: strings.TrimSpace(token), Capabilities: h.Capabilities, Preflight: h.Preflight}
-	if cfg.ControllerGeneration > 0 {
-		inventory, err := c.Journal.Inventory()
-		if err != nil {
-			return err
-		}
-		enrollment.ControllerGeneration = &cfg.ControllerGeneration
-		enrollment.Inventory = &inventory
-	}
-	sent := c.advertisedCapabilities(h.Capabilities)
-	if e = c.call(ctx, "POST", "/agent/v1/enroll", enrollment, &status, ""); e != nil {
-		return e
-	}
-	if enrollment.Inventory != nil {
-		if e = c.Journal.acknowledgePreviewProofs(enrollment.Inventory.PreviewCleanups); e != nil {
-			return e
-		}
-	}
-	cfg.PreviewOnly = status.PreviewOnly != nil && *status.PreviewOnly
-	cfg.Role = status.Role
-	cfg.Pending = ""
-	cfg.Enrolled = true
-	cfg.EnrollmentToken = ""
-	if e = c.Journal.SetConfig(cfg); e != nil {
-		return e
-	}
-	// The enrollment was this process's first request, so it went out before negotiation. Report
-	// what the agent supports now rather than when the service first heartbeats.
 	if !reflect.DeepEqual(sent, c.advertisedCapabilities(h.Capabilities)) {
-		_ = c.heartbeat(ctx, cfg.Credential, &api.AgentStatus{})
+		_ = c.heartbeat(ctx, authAgent, &api.AgentStatus{})
 	}
 	return nil
+}
+
+// Heartbeat reports this host once.
+func (c *Client) Heartbeat(ctx context.Context) (api.AgentStatus, error) {
+	var status api.AgentStatus
+	err := c.heartbeat(ctx, authAgent, &status)
+	return status, err
 }
 
 // heartbeat reports this host. A response that changes what this controller reads is followed at
@@ -285,55 +311,26 @@ func (c *Client) heartbeat(ctx context.Context, credential string, status *api.A
 	}
 	return c.call(ctx, "POST", "/agent/v1/heartbeat", h, status, credential)
 }
-func (c *Client) rotate(ctx context.Context) error {
-	cfg, e := c.Journal.Config()
-	if e != nil {
-		return e
-	}
-	if cfg.Pending == "" {
-		cfg.Pending, e = cryptobox.Token()
-		if e != nil {
-			return e
-		}
-		if e = c.Journal.SetConfig(cfg); e != nil {
-			return e
-		}
-	}
-	// A lost exchange response is recovered by trying the persisted candidate first.
-	var status api.AgentStatus
-	if e = c.call(ctx, "POST", "/agent/v1/heartbeat", c.Observe(ctx), &status, cfg.Pending); e != nil {
-		// That heartbeat's response said whether this controller takes the machine.
-		var rotation any = api.AgentRotation{Credential: cfg.Pending, MachineId: cfg.MachineID}
-		if !c.machineRotation.Load() {
-			rotation = legacyRotation{Credential: cfg.Pending}
-		}
-		if e = c.call(ctx, "POST", "/agent/v1/rotate", rotation, nil, cfg.Credential); e != nil {
-			return e
-		}
-	}
-	cfg.Credential = cfg.Pending
-	cfg.Pending = ""
-	return c.Journal.SetConfig(cfg)
-}
-
-// legacyRotation is the request earlier controllers accept: they reject a machine they don't read.
-type legacyRotation struct {
-	Credential string `json:"credential"`
-}
-
 func (c *Client) Run(ctx context.Context) error {
 	cfg, e := c.Journal.Config()
 	if e != nil {
 		return e
 	}
-	if !cfg.Enrolled && cfg.EnrollmentToken == "" {
+	if !cfg.Enrolled && cfg.EnrollmentToken == "" && len(cfg.Enrollments) == 0 {
 		return errors.New("enroll this agent before running")
+	}
+	// The journal is marked after the key is stored; a crash between the two is finished here.
+	if cfg.Key != nil {
+		if e = c.Journal.markKeyed(); e != nil {
+			return e
+		}
 	}
 	c.Engine.EndJournaledShells(ctx)
 	defer c.terminalSessions.Wait()
 	wake := make(chan struct{}, 1)
 	wake <- struct{}{}
 	var wg sync.WaitGroup
+	wg.Go(func() { c.keepKeyStoreOpen(ctx) })
 	if c.Metrics != nil {
 		wg.Go(func() {
 			c.loop(ctx, time.Minute, func() error {
@@ -347,7 +344,7 @@ func (c *Client) Run(ctx context.Context) error {
 				cancel()
 				sendCtx, stop := context.WithTimeout(ctx, 5*time.Second)
 				defer stop()
-				return c.call(sendCtx, "POST", "/agent/v1/metrics", report, nil, cfg.Credential)
+				return c.call(sendCtx, "POST", "/agent/v1/metrics", report, nil, authAgent)
 			})
 		})
 	}
@@ -399,7 +396,7 @@ func (c *Client) Run(ctx context.Context) error {
 				if sent[key] >= report.Sequence {
 					continue
 				}
-				if err = c.call(ctx, "POST", "/agent/v1/schedule-reports", report, nil, cfg.Credential); err != nil {
+				if err = c.call(ctx, "POST", "/agent/v1/schedule-reports", report, nil, authAgent); err != nil {
 					return err
 				}
 				sent[key] = report.Sequence
@@ -416,14 +413,17 @@ func (c *Client) Run(ctx context.Context) error {
 			if !cfg.Enrolled {
 				return nil
 			}
-			if cfg.Pending != "" {
+			// A legacy rotation in progress finishes before anything else; key-bound agents rotate
+			// their key through the token source instead.
+			legacy := cfg.Key == nil && cfg.BindKey == nil
+			if cfg.Pending != "" && legacy {
 				return c.rotate(ctx)
 			}
 			var status api.AgentStatus
-			if e = c.heartbeat(ctx, cfg.Credential, &status); e != nil {
+			if e = c.heartbeat(ctx, authAgent, &status); e != nil {
 				return e
 			}
-			if status.RotationRequested {
+			if status.RotationRequested && legacy {
 				return c.rotate(ctx)
 			}
 			return nil
@@ -444,7 +444,7 @@ func (c *Client) Run(ctx context.Context) error {
 			}
 			for _, r := range pending {
 				// One rejected report must not silence a restriction admitted beside it.
-				if e = c.call(ctx, "POST", "/agent/v1/report", r.Report, nil, cfg.Credential); e != nil {
+				if e = c.call(ctx, "POST", "/agent/v1/report", r.Report, nil, authAgent); e != nil {
 					continue
 				}
 				if execution.Terminal(r.Report.State) {
@@ -489,7 +489,9 @@ func (c *Client) Run(ctx context.Context) error {
 		if e != nil {
 			break
 		}
-		if !cfg.Enrolled {
+		// An outstanding code is retried while the host isn't enrolled, or once management has said it
+		// holds none of the agent's keys. A healthy host never retries a stale code.
+		if !cfg.Enrolled || (c.needsEnrollment.Load() && len(cfg.Enrollments) > 0) {
 			e = c.Enroll(ctx, "")
 			if e != nil {
 				if !wait(ctx, delay) {
@@ -504,7 +506,7 @@ func (c *Client) Run(ctx context.Context) error {
 			}
 		}
 		var poll api.AgentPoll
-		e = c.call(ctx, "GET", "/agent/v1/poll", nil, &poll, cfg.Credential)
+		e = c.call(ctx, "GET", "/agent/v1/poll", nil, &poll, authAgent)
 		if e == nil && poll.TroubleshootingOffers != nil {
 			c.offerTroubleshootingSessions(ctx, *poll.TroubleshootingOffers)
 		}

@@ -232,7 +232,7 @@ func (s *Service) stageRecoveryPhase(ctx context.Context, tx pgx.Tx, ws uuid.UUI
 // RecoveryCheckpoint returns opaque metadata only to the root's assigned
 // primary. Authentication and controller-transfer fencing remain mandatory.
 func (s *Service) RecoveryCheckpoint(ctx context.Context, a Identity, parent, checkpoint uuid.UUID) ([]byte, error) {
-	body, err := s.Store.Queries.AgentRecoveryCheckpointEnvelope(ctx, db.AgentRecoveryCheckpointEnvelopeParams{WorkspaceID: a.Workspace, ParentID: parent, ID: checkpoint, ServerID: a.ID, CredentialHash: hash(a.Token)})
+	body, err := s.Store.Queries.AgentRecoveryCheckpointEnvelope(ctx, db.AgentRecoveryCheckpointEnvelopeParams{WorkspaceID: a.Workspace, ParentID: parent, ID: checkpoint, ServerID: a.ID, CredentialHash: a.Credential, Lineage: a.lineage()})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, domain.NotFound
 	}

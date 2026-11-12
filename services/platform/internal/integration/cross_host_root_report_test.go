@@ -22,10 +22,10 @@ func TestAgentCannotReportCrossHostRoot(t *testing.T) {
 	_, in, _ := enrollment(t, f, b, ws, "deployment")
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
-	if _, err := f.execution.Enroll(ctx, in); err != nil {
+	if _, err := f.execution.Enroll(ctx, in, "test"); err != nil {
 		t.Fatal(err)
 	}
-	identity, err := f.execution.Authenticate(ctx, in.ServerId, in.Credential)
+	identity, err := f.execution.Authenticate(ctx, in.ServerId, *in.Credential)
 	if err != nil {
 		t.Fatal(err)
 	}

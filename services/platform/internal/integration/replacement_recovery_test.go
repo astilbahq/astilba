@@ -30,7 +30,7 @@ func seedReplacedEnvironment(t *testing.T, f *fixture, b *browser, ws, peer uuid
 	_, gone, _ := enrollment(t, f, b, ws, "deployment")
 	yes := true
 	gone.Capabilities.Visual = &yes
-	if _, err := f.execution.Enroll(t.Context(), gone); err != nil {
+	if _, err := f.execution.Enroll(t.Context(), gone, "test"); err != nil {
 		t.Fatal(err)
 	}
 	var project api.Project

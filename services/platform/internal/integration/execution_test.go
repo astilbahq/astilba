@@ -62,8 +62,14 @@ func enrollment(t *testing.T, f *fixture, b *browser, ws uuid.UUID, role string)
 	b.call("POST", "/api/v1/workspaces/"+ws.String()+"/servers", map[string]string{"name": "Test server", "role": role}, 201, &v)
 	credential, _ := cryptobox.Token()
 	machineBoundRotation := true
-	in := api.AgentEnrollment{ServerId: v.Server.Id, Token: v.Token, Credential: credential, MachineId: uuid.New(), Capabilities: api.AgentCapabilities{Protocol: 1, Version: "test", Os: "linux", Arch: "arm64", Docker: true, MachineBoundRotation: &machineBoundRotation}, Preflight: api.HostPreflight{Ready: true, OsRelease: "ubuntu 24.04", FreeBytes: 1 << 30, Notes: []string{}}}
+	in := api.AgentEnrollment{ServerId: v.Server.Id, Token: v.Token, Credential: &credential, MachineId: uuid.New(), Capabilities: api.AgentCapabilities{Protocol: 1, Version: "test", Os: "linux", Arch: "arm64", Docker: true, MachineBoundRotation: &machineBoundRotation}, Preflight: api.HostPreflight{Ready: true, OsRelease: "ubuntu 24.04", FreeBytes: 1 << 30, Notes: []string{}}}
 	return v, in, v.Server.Id.String() + "." + credential
+}
+
+// credentialToken makes a legacy bearer credential for an enrollment request.
+func credentialToken() (*string, error) {
+	token, err := cryptobox.Token()
+	return &token, err
 }
 func envForExecution(t *testing.T, f *fixture, b *browser, ws uuid.UUID) uuid.UUID {
 	var p api.Project
@@ -99,7 +105,7 @@ func TestServerIdentityLifecycle(t *testing.T) {
 	legacyStatus(status)
 	agentRequest(t, httpClient, tlsServer.URL, "/agent/v1/enroll", "", in, 200, nil)
 	changed := in
-	changed.Credential, _ = cryptobox.Token()
+	changed.Credential, _ = credentialToken()
 	agentRequest(t, httpClient, tlsServer.URL, "/agent/v1/enroll", "", changed, 401, nil)
 	changed = in
 	changed.ServerId = uuid.New()
@@ -108,7 +114,12 @@ func TestServerIdentityLifecycle(t *testing.T) {
 	agentRequest(t, httpClient, tlsServer.URL, "/api/v1/workspaces/"+ws.String()+"/servers", token, nil, 401, nil)
 	agentRequest(t, httpClient, tlsServer.URL, "/api/v1/workspaces/"+ws.String()+"/servers", token, map[string]string{"name": "forged", "role": "deployment"}, 401, nil)
 	route := "/api/v1/workspaces/" + ws.String() + "/servers/" + v.Server.Id.String()
-	b.call("POST", route+"/rotate", nil, 204, nil)
+	// An owner can no longer ask a bearer agent to rotate: it is told to update instead, and
+	// binds a key. A request made before management was upgraded can still be finished.
+	b.call("POST", route+"/rotate", nil, 409, nil)
+	if _, e := f.st.Pool.Exec(context.Background(), "UPDATE servers SET rotation_requested=true WHERE id=$1", v.Server.Id); e != nil {
+		t.Fatal(e)
+	}
 	next, _ := cryptobox.Token()
 	agentRequest(t, httpClient, tlsServer.URL, "/agent/v1/rotate", token, api.AgentRotation{Credential: next, MachineId: in.MachineId}, 204, nil)
 	var expiry time.Time
@@ -134,11 +145,12 @@ func TestServerIdentityLifecycle(t *testing.T) {
 	b.call("POST", route+"/enrollment", nil, 201, &expired)
 	_, _ = f.st.Pool.Exec(context.Background(), "UPDATE servers SET enrollment_expires=now()-interval '1 second' WHERE id=$1", v.Server.Id)
 	in.Token = expired.Token
-	in.Credential, _ = cryptobox.Token()
+	in.Credential, _ = credentialToken()
 	agentRequest(t, httpClient, tlsServer.URL, "/agent/v1/enroll", "", in, 401, nil)
 	var count int
 	_ = f.st.Pool.QueryRow(context.Background(), "SELECT count(*) FROM audit_events WHERE workspace_id=$1 AND action LIKE 'server.%' AND actor_id=$2", ws, f.owner).Scan(&count)
-	if count != 4 {
+	// Created, revoked and renewed; the refused rotation request recorded nothing.
+	if count != 3 {
 		t.Fatalf("identity audit events=%d", count)
 	}
 }
@@ -151,7 +163,7 @@ func TestRenewedEnrollmentRejectsAuthenticatedAgentWrites(t *testing.T) {
 	ws := b.login("owner@example.test", f.password).Workspaces[0].Id
 	v, in, _ := enrollment(t, f, b, ws, "deployment")
 	agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/enroll", "", in, 200, nil)
-	identity, e := f.execution.Authenticate(ctx, v.Server.Id, in.Credential)
+	identity, e := f.execution.Authenticate(ctx, v.Server.Id, *in.Credential)
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -750,7 +762,7 @@ func TestReenrollmentRecoversPendingRotation(t *testing.T) {
 	}
 	defer j.Close()
 	pending, _ := cryptobox.Token()
-	_ = j.SetConfig(agent.Config{Origin: tlsServer.URL, ServerID: in.ServerId, MachineID: in.MachineId, Credential: in.Credential, Pending: pending})
+	_ = j.SetConfig(agent.Config{Origin: tlsServer.URL, ServerID: in.ServerId, MachineID: in.MachineId, Credential: *in.Credential, Pending: pending})
 	c := agent.NewClient(j, &agent.Engine{Journal: j})
 	c.HTTP = tlsServer.Client()
 	c.HTTP.Timeout = 35 * time.Second

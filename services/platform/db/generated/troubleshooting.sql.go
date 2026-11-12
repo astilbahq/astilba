@@ -33,20 +33,22 @@ func (q *Queries) ActivateTroubleshootingSession(ctx context.Context, arg Activa
 }
 
 const admitTroubleshootingAgent = `-- name: AdmitTroubleshootingAgent :one
-UPDATE troubleshooting_sessions t SET agent_attached_at = now(),agent_credential_hash = $1
+UPDATE troubleshooting_sessions t SET agent_attached_at = now(),agent_credential_hash = $1,agent_lineage = $2::uuid
 FROM servers s
-WHERE t.workspace_id = $2 AND t.id = $3 AND t.server_id = $4 AND t.state = 'offered'
+WHERE t.workspace_id = $3 AND t.id = $4 AND t.server_id = $5 AND t.state = 'offered'
  AND t.agent_attached_at IS NULL AND t.ticket_expires_at > now()
  AND s.workspace_id = t.workspace_id AND s.id = t.server_id AND s.controller_generation = t.controller_generation
  AND s.credential_hash = $1
+ AND ($2::uuid IS NULL OR EXISTS(SELECT 1 FROM agent_lineages l WHERE l.id = $2::uuid AND l.server_id = s.id AND l.superseded_at IS NULL AND l.epoch = s.enrollment_epoch))
 RETURNING t.ticket_expires_at,t.deadline_at
 `
 
 type AdmitTroubleshootingAgentParams struct {
-	CredentialHash []byte    `json:"credential_hash"`
-	WorkspaceID    uuid.UUID `json:"workspace_id"`
-	ID             uuid.UUID `json:"id"`
-	ServerID       uuid.UUID `json:"server_id"`
+	CredentialHash []byte     `json:"credential_hash"`
+	Lineage        *uuid.UUID `json:"lineage"`
+	WorkspaceID    uuid.UUID  `json:"workspace_id"`
+	ID             uuid.UUID  `json:"id"`
+	ServerID       uuid.UUID  `json:"server_id"`
 }
 
 type AdmitTroubleshootingAgentRow struct {
@@ -57,6 +59,7 @@ type AdmitTroubleshootingAgentRow struct {
 func (q *Queries) AdmitTroubleshootingAgent(ctx context.Context, arg AdmitTroubleshootingAgentParams) (AdmitTroubleshootingAgentRow, error) {
 	row := q.db.QueryRow(ctx, admitTroubleshootingAgent,
 		arg.CredentialHash,
+		arg.Lineage,
 		arg.WorkspaceID,
 		arg.ID,
 		arg.ServerID,
@@ -685,7 +688,9 @@ SELECT t.workspace_id,
   WHEN NOT EXISTS(SELECT 1 FROM sessions b WHERE b.expiry > now()
    AND b.token = translate(rtrim(encode(t.browser_session_hash,'base64'),'='),'+/','-_')) THEN 'browser session ended'
   WHEN s.revoked OR s.awaiting_transfer OR s.credential_hash IS DISTINCT FROM t.agent_credential_hash
-   OR s.controller_generation <> t.controller_generation THEN 'server credential changed'
+   OR s.controller_generation <> t.controller_generation
+   OR (t.agent_lineage IS NOT NULL AND NOT EXISTS(SELECT 1 FROM agent_lineages l WHERE l.id = t.agent_lineage
+    AND l.superseded_at IS NULL AND l.epoch = s.enrollment_epoch)) THEN 'server credential changed'
   ELSE ''
  END::text AS end_reason,
  h.status AS subscription_status,h.management_until AS subscription_until

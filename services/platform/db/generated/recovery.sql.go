@@ -51,14 +51,16 @@ JOIN servers s ON s.id=o.server_id AND s.workspace_id=o.workspace_id
 WHERE c.workspace_id = $1 AND c.parent_id = $2 AND c.id = $3 AND o.parent_id IS NULL AND o.server_id = $4
     AND NOT s.revoked AND NOT s.awaiting_transfer
     AND (s.credential_hash = $5 OR (s.previous_hash = $5 AND s.previous_until>now()))
+    AND ($6::uuid IS NULL OR EXISTS(SELECT 1 FROM agent_lineages l WHERE l.id = $6::uuid AND l.server_id = s.id AND l.superseded_at IS NULL AND l.epoch = s.enrollment_epoch))
 `
 
 type AgentRecoveryCheckpointEnvelopeParams struct {
-	WorkspaceID    uuid.UUID `json:"workspace_id"`
-	ParentID       uuid.UUID `json:"parent_id"`
-	ID             uuid.UUID `json:"id"`
-	ServerID       uuid.UUID `json:"server_id"`
-	CredentialHash []byte    `json:"credential_hash"`
+	WorkspaceID    uuid.UUID  `json:"workspace_id"`
+	ParentID       uuid.UUID  `json:"parent_id"`
+	ID             uuid.UUID  `json:"id"`
+	ServerID       uuid.UUID  `json:"server_id"`
+	CredentialHash []byte     `json:"credential_hash"`
+	Lineage        *uuid.UUID `json:"lineage"`
 }
 
 // Returned only to the root's assigned primary, on a credential that is still valid.
@@ -69,6 +71,7 @@ func (q *Queries) AgentRecoveryCheckpointEnvelope(ctx context.Context, arg Agent
 		arg.ID,
 		arg.ServerID,
 		arg.CredentialHash,
+		arg.Lineage,
 	)
 	var envelope []byte
 	err := row.Scan(&envelope)

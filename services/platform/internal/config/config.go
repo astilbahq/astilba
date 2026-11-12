@@ -28,10 +28,13 @@ type Config struct {
 	DatabasePoolSize                                  int32
 	DatabaseURL, Keyring, KeyringJSON, Listen, Origin string
 	Development, Hosted, Troubleshooting              bool
-	ApplicationDNS                                    applicationdns.Config
-	SMTP                                              mailer.Config
-	Hosting                                           hosting.Config
-	TrustedProxies                                    []netip.Prefix
+	// AgentForkFencing clears a server's credential on proof that a second holder has its agent
+	// key. Off by default: the proof then only raises the owner's alert.
+	AgentForkFencing bool
+	ApplicationDNS   applicationdns.Config
+	SMTP             mailer.Config
+	Hosting          hosting.Config
+	TrustedProxies   []netip.Prefix
 }
 
 func Load() (Config, error) {
@@ -43,6 +46,13 @@ func Load() (Config, error) {
 		c.Troubleshooting = true
 	default:
 		return c, errors.New("ASTILBA_TROUBLESHOOTING must be single-instance when set")
+	}
+	switch os.Getenv("ASTILBA_AGENT_FORK_FENCING") {
+	case "", "false":
+	case "true":
+		c.AgentForkFencing = true
+	default:
+		return c, errors.New("ASTILBA_AGENT_FORK_FENCING must be true or false when set")
 	}
 	days := 30
 	if raw := os.Getenv("ASTILBA_LOG_RETENTION_DAYS"); raw != "" {

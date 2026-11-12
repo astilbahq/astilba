@@ -930,6 +930,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/workspaces/{workspaceId}/servers/{serverId}/network-removal": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Removes the server from every private network it belongs to, so its peers drop its key. */
+        post: operations["removeServerFromNetworks"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/workspaces/{workspaceId}/servers/{serverId}/update": {
         parameters: {
             query?: never;
@@ -1100,6 +1117,87 @@ export interface paths {
         get?: never;
         put?: never;
         post: operations["rotateAgentCredential"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/agent/v1/challenge": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["agentChallenge"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/agent/v1/token": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["agentToken"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/agent/v1/token/refresh": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["refreshAgentToken"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/agent/v1/keys": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["rotateAgentKey"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/agent/v1/bind": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Authenticated by the server's current legacy bearer, which the bind retires. */
+        post: operations["bindAgentKey"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2552,6 +2650,13 @@ export interface components {
             credentialFreeVisualCancel?: boolean;
             /** @description Agent names its enrolled machine when rotating its credential. Advertised only after Astilba-Agent-Machine-Rotation v1. */
             machineBoundRotation?: boolean;
+            /**
+             * @description How the agent protects its key. setup_required and seal_failed mean it holds none yet, so it keeps its bearer credential. Advertised only after Astilba-Agent-Keys v1.
+             * @enum {string}
+             */
+            keyProtection?: "tpm" | "host_key" | "unsealed" | "setup_required" | "seal_failed";
+            /** @description Why the agent's key store is unavailable, as the agent logs it. Advertised only after Astilba-Agent-Keys v1. */
+            keyStoreProblem?: string;
         };
         HostPreflight: {
             crossHostInventory?: components["schemas"]["CrossHostInventory"];
@@ -2582,6 +2687,30 @@ export interface components {
             capabilities: components["schemas"]["AgentCapabilities"] | null;
             preflight: components["schemas"]["HostPreflight"] | null;
             rotationRequested: boolean;
+            identity?: components["schemas"]["ServerIdentity"];
+        };
+        ServerIdentity: {
+            /** @description The agent registered a key in the current enrollment, rather than a bearer credential. It stays true while the server is revoked, re-coded or fenced. */
+            keyBound: boolean;
+            /** @description The key still authenticates: revocation, a new enrollment code or fencing hasn't cleared it. */
+            keyCurrent?: boolean;
+            /** @description An owner asked for a key rotation the agent hasn't made yet. It waits while a terminal session is open. */
+            rotateKeyRequested?: boolean;
+            /** Format: date-time */
+            keyCreatedAt?: string | null;
+            /** Format: date-time */
+            keyRotatedAt?: string | null;
+            /**
+             * Format: date-time
+             * @description When the agent process now authenticating started its session.
+             */
+            lineageStartedAt?: string | null;
+            /**
+             * Format: date-time
+             * @description When management saw proof that a second holder has this server's key, in the current enrollment.
+             */
+            conflictAt?: string | null;
+            conflictSignal?: string;
         };
         CreateServer: {
             /** @description Immutable reservation for preview workloads. */
@@ -2604,7 +2733,10 @@ export interface components {
             token: string;
             /** Format: uuid */
             machineId: string;
-            credential: string;
+            /** @description A legacy bearer credential. Agents send either this or publicKey with proof. */
+            credential?: string;
+            publicKey?: components["schemas"]["AgentPublicKey"];
+            proof?: components["schemas"]["AgentSignature"];
             capabilities: components["schemas"]["AgentCapabilities"];
             preflight: components["schemas"]["HostPreflight"];
         };
@@ -2617,6 +2749,56 @@ export interface components {
             previewOnly?: boolean;
             role: components["schemas"]["ServerRole"];
             rotationRequested: boolean;
+        };
+        /** @description Base64url (unpadded) SPKI DER of an ECDSA P-256 public key. */
+        AgentPublicKey: string;
+        /** @description Base64url (unpadded) ASN.1 ECDSA signature. */
+        AgentSignature: string;
+        AgentNonce: string;
+        AgentChallengeRequest: {
+            /** Format: uuid */
+            serverId: string;
+        };
+        AgentChallenge: {
+            nonce: components["schemas"]["AgentNonce"];
+            /** Format: date-time */
+            expiresAt: string;
+        };
+        AgentTokenRequest: {
+            /** Format: uuid */
+            serverId: string;
+            publicKey: components["schemas"]["AgentPublicKey"];
+            nonce: components["schemas"]["AgentNonce"];
+            /** Format: int64 */
+            startCounter: number;
+            signature: components["schemas"]["AgentSignature"];
+        };
+        AgentRefreshRequest: {
+            /** Format: uuid */
+            serverId: string;
+            refresh: string;
+            signature: components["schemas"]["AgentSignature"];
+        };
+        AgentToken: {
+            token: string;
+            refresh: string;
+            /** @description Seconds the token stays valid from when it was issued. A duration, so the agent's clock doesn't matter. */
+            expiresIn: number;
+            rotateKey: boolean;
+            role: components["schemas"]["ServerRole"];
+            previewOnly?: boolean;
+        };
+        AgentKeyRotation: {
+            publicKey: components["schemas"]["AgentPublicKey"];
+            nonce: components["schemas"]["AgentNonce"];
+            oldSignature: components["schemas"]["AgentSignature"];
+            newSignature: components["schemas"]["AgentSignature"];
+        };
+        AgentKeyBind: {
+            publicKey: components["schemas"]["AgentPublicKey"];
+            /** Format: uuid */
+            machineId: string;
+            proof: components["schemas"]["AgentSignature"];
         };
         AgentRotation: {
             credential: string;
@@ -4050,7 +4232,7 @@ export interface components {
             /** Format: uuid */
             id: string;
             /** @enum {string} */
-            kind: "server_offline" | "disk_docker" | "disk_agent" | "service_runtime" | "service_health" | "backup_schedule" | "deployment_problem" | "build_problem" | "backup_problem" | "network_problem";
+            kind: "server_offline" | "disk_docker" | "disk_agent" | "service_runtime" | "service_health" | "backup_schedule" | "deployment_problem" | "build_problem" | "backup_problem" | "network_problem" | "identity_conflict";
             /** Format: uuid */
             resourceId: string;
             /** Format: uuid */
@@ -6613,6 +6795,36 @@ export interface operations {
             };
         };
     };
+    removeServerFromNetworks: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                serverId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Success */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
     updateAgent: {
         parameters: {
             query?: never;
@@ -6953,6 +7165,167 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["AgentRotation"];
+            };
+        };
+        responses: {
+            /** @description Success */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    agentChallenge: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AgentChallengeRequest"];
+            };
+        };
+        responses: {
+            /** @description Success */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentChallenge"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    agentToken: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AgentTokenRequest"];
+            };
+        };
+        responses: {
+            /** @description Success */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentToken"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    refreshAgentToken: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AgentRefreshRequest"];
+            };
+        };
+        responses: {
+            /** @description Success */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentToken"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    rotateAgentKey: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AgentKeyRotation"];
+            };
+        };
+        responses: {
+            /** @description Success */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    bindAgentKey: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AgentKeyBind"];
             };
         };
         responses: {

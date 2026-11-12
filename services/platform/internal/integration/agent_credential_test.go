@@ -22,7 +22,12 @@ func TestRotationNeedsTheEnrolledMachine(t *testing.T) {
 	client := tlsServer.Client()
 	agentRequest(t, client, tlsServer.URL, "/agent/v1/enroll", "", in, 200, nil)
 	route := "/api/v1/workspaces/" + ws.String() + "/servers/" + v.Server.Id.String()
-	b.call("POST", route+"/rotate", nil, 204, nil)
+	// An owner can no longer ask a bearer agent to rotate: it is told to update instead, and
+	// binds a key. A request made before management was upgraded can still be finished.
+	b.call("POST", route+"/rotate", nil, 409, nil)
+	if _, e := f.st.Pool.Exec(context.Background(), "UPDATE servers SET rotation_requested=true WHERE id=$1", v.Server.Id); e != nil {
+		t.Fatal(e)
+	}
 
 	stolen, _ := cryptobox.Token()
 	agentRequest(t, client, tlsServer.URL, "/agent/v1/rotate", token, api.AgentRotation{Credential: stolen, MachineId: uuid.New()}, 401, nil)
@@ -83,7 +88,10 @@ func TestRotationWaitsForAnAgentThatNamesItsMachine(t *testing.T) {
 
 	in.Capabilities.MachineBoundRotation = supported
 	heartbeat()
-	b.call("POST", route+"/rotate", nil, 204, nil)
+	b.call("POST", route+"/rotate", nil, 409, nil)
+	if _, e := f.st.Pool.Exec(context.Background(), "UPDATE servers SET rotation_requested=true WHERE id=$1", v.Server.Id); e != nil {
+		t.Fatal(e)
+	}
 	heartbeat()
 	if !status.RotationRequested {
 		t.Fatal("an agent that names its machine wasn't told about the rotation it was asked for")

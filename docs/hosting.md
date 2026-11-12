@@ -39,6 +39,7 @@ an owner-only environment file outside source control:
 | `ASTILBA_LISTEN` | Listener, normally `0.0.0.0:8080` inside the container. |
 | `ASTILBA_DATABASE_POOL_SIZE` | Optional. Connections each process may hold, 4 to 1000. Defaults to 12. See [database connections](#database-connections). |
 | `ASTILBA_TROUBLESHOOTING` | Optional. `single-instance` declares that one instance serves this installation, which [interactive troubleshooting](interactive-troubleshooting.md) requires. Off by default. |
+| `ASTILBA_AGENT_FORK_FENCING` | Optional `true` or `false` (default). With `true`, proof that a second copy of an agent uses a server's key also clears that server's credential, stopping both copies until it is enrolled again. Either way it raises an identity conflict alert. See [the agent's key](agent.md#identity-conflicts). |
 | `ASTILBA_APPLICATION_DOMAIN` | Optional. Base domain for generated application names; empty turns them off. Hosted installations need it on the Public Suffix List. See [generated application names](#generated-application-names). |
 | `ASTILBA_TRUSTED_PROXIES` | Optional comma-separated proxy IP CIDRs, for example `192.0.2.10/32,2001:db8::10/128`. Empty by default; forwarding headers are then ignored. |
 | `ASTILBA_SMTP_ADDRESS`, `ASTILBA_SMTP_MODE`, `ASTILBA_SMTP_FROM` | SMTP delivery settings. Use `tls` or `starttls` outside local development. |

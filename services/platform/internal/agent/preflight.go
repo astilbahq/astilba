@@ -21,7 +21,7 @@ import (
 // Preflight advertises continuation only after this journal opened successfully.
 func (j *Journal) Preflight(ctx context.Context, docker *client.Client, version, dir string, cli ...string) api.AgentHeartbeat {
 	h := Preflight(ctx, docker, version, dir, cli...)
-	if j.formatVersion == localStateVersion && h.Capabilities.CrossHost != nil && *h.Capabilities.CrossHost {
+	if j.formatVersion.Load() >= localStateVersion && h.Capabilities.CrossHost != nil && *h.Capabilities.CrossHost {
 		yes := true
 		h.Capabilities.MaintenanceContinuation = &yes
 	}

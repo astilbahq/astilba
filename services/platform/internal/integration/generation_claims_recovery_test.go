@@ -109,7 +109,7 @@ func buildClaimRecovery(t *testing.T, networkGeneration int64, shape claimShape,
 	for range 2 {
 		_, in, _ := enrollment(t, f, b, ws, "deployment")
 		in.Capabilities.Visual, in.Capabilities.CrossHost = &yes, &yes
-		if _, err := f.execution.Enroll(ctx, in); err != nil {
+		if _, err := f.execution.Enroll(ctx, in, "test"); err != nil {
 			t.Fatal(err)
 		}
 		inputs = append(inputs, in)
@@ -416,8 +416,8 @@ func (r *claimRecovery) transfer(t *testing.T, host api.AgentEnrollment) string 
 	}
 	generation := int64(ticket.Generation)
 	input := host
-	input.Token, input.Credential, input.ControllerGeneration, input.Inventory = ticket.Token, credential, &generation, &inventory
-	if _, err = r.f.execution.Enroll(r.ctx, input); err != nil {
+	input.Token, input.Credential, input.ControllerGeneration, input.Inventory = ticket.Token, &credential, &generation, &inventory
+	if _, err = r.f.execution.Enroll(r.ctx, input, "test"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = r.f.execution.Authenticate(r.ctx, host.ServerId, credential); err != nil {
@@ -502,7 +502,7 @@ func TestRecoveryKeepsRestoredGenerationHistory(t *testing.T) {
 // account for must not contradict that when recovery reads the host's export.
 func TestUnaccountedReceiptDoesNotConflictWithItsHostsExport(t *testing.T) {
 	r := newClaimRecovery(t, 7)
-	identity, err := r.f.execution.Authenticate(r.ctx, r.a.ServerId, r.a.Credential)
+	identity, err := r.f.execution.Authenticate(r.ctx, r.a.ServerId, *r.a.Credential)
 	if err != nil {
 		t.Fatal(err)
 	}

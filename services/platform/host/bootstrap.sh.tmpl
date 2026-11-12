@@ -161,7 +161,7 @@ fetch "$management/agent-artifacts/$release" "$scratch/agent" "${fields[4]}"
 verify_hash "$scratch/agent" "$release" || die 'The agent digest does not match its signed release.'
 chmod 0700 "$scratch/agent"
 identity=$("$scratch/agent" describe)
-expected_identity=$(printf '{"Arch":"%s","Protocol":1,"Version":"%s"}' "$arch" "${fields[1]}")
+expected_identity=$(printf '{"Arch":"%s","KeyAuth":1,"Protocol":1,"Version":"%s"}' "$arch" "${fields[1]}")
 [[ "$identity" == "$expected_identity" ]] || die 'Compiled agent identity does not match the signed release.'
 # The verified CLI validates the contact address before host installation.
 timeout 15 "$scratch/agent" preflight --state "$scratch/preflight" --acme-email "$contact" >/dev/null

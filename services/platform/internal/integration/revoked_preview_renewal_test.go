@@ -5,7 +5,6 @@ import (
 	"testing"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
-	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/google/uuid"
 )
@@ -27,7 +26,7 @@ func TestRenewingARevokedPreviewHostNeedsACleanHost(t *testing.T) {
 		var renewed api.Enrollment
 		h.b.call("POST", h.prefix+"/servers/"+server.String()+"/enrollment", nil, 201, &renewed)
 		in.Token = renewed.Token
-		in.Credential, _ = cryptobox.Token()
+		in.Credential, _ = credentialToken()
 		return in
 	}
 
@@ -102,7 +101,7 @@ func TestRevokedPreviewHostCannotConfirmARemovalLater(t *testing.T) {
 	var ticket api.TransferTicket
 	h.b.call("POST", h.prefix+"/servers/"+h.server.String()+"/transfer", nil, 201, &ticket)
 	in := h.enrolled
-	in.Credential, _ = cryptobox.Token()
+	in.Credential, _ = credentialToken()
 	in.Token, in.ControllerGeneration = ticket.Token, &ticket.Generation
 	// A host that still lists the released preview isn't clean.
 	in.Inventory = &api.ControllerInventory{Units: units, Schedules: map[string]int64{}}
