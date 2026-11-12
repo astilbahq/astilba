@@ -2,7 +2,7 @@
 .claude/settings.local.json
 .claude/worktrees/
 .artifacts/
-**/.impeccable/review/
+**/.impeccable/
 .env
 .env.*
 !.env.example
