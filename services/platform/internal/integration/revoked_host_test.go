@@ -56,10 +56,10 @@ func TestEnvironmentConsolidatesOffARevokedSecondary(t *testing.T) {
 	g.removePlacement(t, &e, a)
 }
 
-func (g *revokedGroup) removePlacement(t *testing.T, e *primaryEnvironment, primary *aheadHost) {
+func (g *revokedGroup) removePlacement(t *testing.T, e *primaryEnvironment, primary *aheadHost) deployment.Status {
 	t.Helper()
 	g.b.call("PUT", e.path+"/draft", map[string]any{"baseRevisionId": e.draft.Id, "specification": e.spec}, 200, &e.draft)
-	g.applied(t, e, <-g.b.send("POST", e.path+"/deployment-plans", api.VisualPlanRequest{BaseRevisionId: e.draft.Id, ServerId: primary.id}))
+	return g.applied(t, e, <-g.b.send("POST", e.path+"/deployment-plans", api.VisualPlanRequest{BaseRevisionId: e.draft.Id, ServerId: primary.id}))
 }
 
 // A host that will never answer must not hold a deployment open, or the healthy hosts that are

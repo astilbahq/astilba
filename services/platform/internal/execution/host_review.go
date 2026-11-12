@@ -45,7 +45,7 @@ func (s *Service) ApplyVisualPlan(ctx context.Context, p store.Principal, ws, pi
 		out, err = s.applyVisualPlan(ctx, tx, ws, pid, env, id, key)
 		return err
 	})
-	return out, err
+	return operationFor(p, out), err
 }
 
 // standingHostPermissions are the Compose host permissions the environment's applied deployment

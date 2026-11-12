@@ -274,7 +274,7 @@ func (s *Service) UpgradeAction(ctx context.Context, p store.Principal, ws, pid,
 			return err
 		})
 	})
-	return out, err
+	return operationFor(p, out), err
 }
 
 // hydrateUpgrade fills an upgrade's backup access and secrets. With nil keys it makes the

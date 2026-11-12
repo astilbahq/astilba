@@ -1,4 +1,4 @@
-.PHONY: check verify verify-host verify-build verify-git verify-canvas check-app verify-app verify-app-core verify-app-build verify-app-go-remaining verify-app-go-operations verify-app-go-crosshost verify-app-go-preview verify-app-go-network verify-app-go-m-to-z verify-app-go-revoked-host verify-image verify-agent-host verify-agent-host-core verify-agent-host-recovery verify-agent-host-visual verify-agent-host-upgrade verify-troubleshooting-soak verify-agent-colima check-ci check-hooks check-source-size check-inline-sql check-vulnerabilities check-lane-budget dev dev-wipe
+.PHONY: check verify verify-host verify-build verify-git verify-canvas check-app verify-app verify-app-core verify-app-build verify-app-go-remaining verify-app-go-operations verify-app-go-crosshost verify-app-go-preview verify-app-go-network verify-app-go-m-to-z verify-app-go-revoked-host verify-image verify-agent-host verify-agent-host-core verify-agent-host-recovery verify-agent-host-visual verify-agent-host-upgrade verify-troubleshooting-soak verify-agent-colima check-ci check-hooks check-source-size check-inline-sql check-vulnerabilities report-pins check-lane-budget dev dev-wipe
 
 APP_COORDINATION_TESTS = ^TestCrossHostCoordinatedPlacement$$
 APP_PREVIEW_RECOVERY_TESTS = ^TestPreviewRemovalSurvivesCheckpointUnion$$
@@ -35,14 +35,17 @@ verify-build:
 	cd experiments/durable-execution && sudo --preserve-env=GOCACHE,GOMODCACHE env PATH=/opt/astilba-plat4/go/bin:/usr/bin:/bin CGO_ENABLED=1 PLAT4_HOST_TEST=1 PLAT4_ARCH="$(PLAT4_ARCH)" PLAT5_HOST_TEST=1 /opt/astilba-plat4/go/bin/go test -race -count=1 -timeout=12m -v -run '^Test(BuildArtifacts|PostgresRestore)$$' .
 
 check-ci:
-	node --test scripts/ci-plan.test.mjs scripts/native-lanes.test.mjs scripts/app-lanes.test.mjs scripts/lane-budget.test.mjs scripts/vulnerability-scan.test.mjs scripts/fetch-attempts.test.mjs scripts/install-pnpm.test.mjs scripts/pin-alignment.test.mjs scripts/go-release-age.test.mjs scripts/npm-release-changes.test.mjs scripts/public-suffix-list.test.mjs
+	node --test scripts/ci-plan.test.mjs scripts/native-lanes.test.mjs scripts/app-lanes.test.mjs scripts/lane-budget.test.mjs scripts/vulnerability-scan.test.mjs scripts/pin-report.test.mjs scripts/pin-sources.test.mjs scripts/report-issue.test.mjs scripts/scheduled-report.test.mjs scripts/schedule-watch.test.mjs scripts/fetch-attempts.test.mjs scripts/install-pnpm.test.mjs scripts/pin-alignment.test.mjs scripts/go-release-age.test.mjs scripts/npm-release-changes.test.mjs scripts/public-suffix-list.test.mjs
 	node scripts/native-lanes.mjs
 	node scripts/app-lanes.mjs
 	node scripts/pin-alignment.mjs
 
+# Both run, so a finding cannot hide a failing Public Suffix List check.
 check-vulnerabilities:
-	node scripts/vulnerability-scan.mjs
-	node scripts/public-suffix-list.mjs --check
+	status=0; node scripts/vulnerability-scan.mjs || status=1; node scripts/public-suffix-list.mjs --check || status=1; exit $$status
+
+report-pins:
+	node scripts/pin-report.mjs
 
 check-lane-budget:
 	node scripts/lane-budget.mjs
@@ -112,7 +115,7 @@ verify-agent-host:
 
 verify-agent-host-core:
 	cd services/platform && $(NATIVE_GO) ASTILBA_NATIVE_NETWORK=1 /opt/astilba-plat4/go/bin/go test -race -count=1 -timeout=5m -v -run '^TestNativeManagedLinks$$' ./internal/hostnetwork
-	cd services/platform && $(NATIVE_AGENT_GO) -timeout=30m -run '^TestNative((Compose|CrossHost)Deployment|CrossHostTakeover|Pipeline|BuildNetwork|ReleaseCommandTransport|RouteBackendConversion|LargeEnvironmentsLeaveRoomForOthers|FailedPublishKeepsOtherTraffic|UpgradedHostKeepsItsRoutes|FailedReconciliationReplacesAChangedProxy|InterruptedHostChangeRecreatesTheProxyOnce|FailedPublishRestoresTheProxyGateway|FailedReleaseKeepsAChangedProxyUntrusted|TakeoverMovesTheProxyOntoTheGateway|TakeoverLeavesAReadyProxyRunning|TakeoverWithoutRoutesStartsAPortlessProxy|FailedTakeoverKeepsThePreviousRoutes|InterruptedTakeoverIsPutBack|TakeoverOnAFullHostChangesNothing|CompletionWaitsForAWritersHealthCheck|BackupOfStoppedWriter|RefusedReservationOfStoppedWriterCompletes|BackupOfWriterFailingItsHealthCheck|BackupOfWriterFailingItsReadiness|ReservationRefusesChangedConfiguration|PauseRefusesAWriterStoppedSinceReserving|WriterAlreadyFailingThatCannotRestart|AcceptingAWriterThatCannotStart|AcceptingAWriterThatDoesNotComeBack|LateCompletionReleasesTheReservation|LateCompletionKeepsAnUnconfirmedReservation|LateRestoreLeavesTheSourceToResume|PreviewEnvironment|TroubleshootingTarget|TroubleshootingSession|TroubleshootingShellExit|TroubleshootingIdleLimit|TroubleshootingRefusals|TroubleshootingCrashCleanup|TroubleshootingEndsSurvivors|TroubleshootingStalledInput|TroubleshootingNoShell|TroubleshootingShellChoice)$$' ./internal/agent
+	cd services/platform && $(NATIVE_AGENT_GO) -timeout=30m -run '^TestNative((Compose|CrossHost)Deployment|CrossHostTakeover|Pipeline|BuildNetwork|ReleaseCommandTransport|RouteBackendConversion|LargeEnvironmentsLeaveRoomForOthers|FailedPublishKeepsOtherTraffic|UpgradedHostKeepsItsRoutes|FailedReconciliationReplacesAChangedProxy|InterruptedHostChangeRecreatesTheProxyOnce|FailedPublishRestoresTheProxyGateway|FailedReleaseKeepsAChangedProxyUntrusted|TakeoverMovesTheProxyOntoTheGateway|TakeoverLeavesAReadyProxyRunning|TakeoverWithoutRoutesStartsAPortlessProxy|FailedTakeoverKeepsThePreviousRoutes|InterruptedTakeoverIsPutBack|TakeoverOnAFullHostChangesNothing|CompletionWaitsForAWritersHealthCheck|BackupOfStoppedWriter|RefusedReservationOfStoppedWriterCompletes|BackupOfWriterFailingItsHealthCheck|BackupOfWriterFailingItsReadiness|ReservationRefusesChangedConfiguration|PauseRefusesAWriterStoppedSinceReserving|WriterAlreadyFailingThatCannotRestart|AcceptingAWriterThatCannotStart|AcceptingAWriterThatDoesNotComeBack|LateCompletionReleasesTheReservation|LateCompletionKeepsAnUnconfirmedReservation|LateRestoreLeavesTheSourceToResume|LateRetirementAndCompletionReleaseTheReservation|LatePublicationLeavesTheHostToAbort|PreviewEnvironment|TroubleshootingTarget|TroubleshootingSession|TroubleshootingShellExit|TroubleshootingIdleLimit|TroubleshootingRefusals|TroubleshootingCrashCleanup|TroubleshootingEndsSurvivors|TroubleshootingStalledInput|TroubleshootingNoShell|TroubleshootingShellChoice)$$' ./internal/agent
 	cd services/platform && $(NATIVE_AGENT_GO) -timeout=10m -run '^TestNativeTroubleshooting(Service|Proxies)$$' ./internal/integration
 
 verify-agent-host-recovery:

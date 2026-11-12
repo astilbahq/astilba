@@ -102,7 +102,7 @@ func (s *Service) RunConfiguredBuild(ctx context.Context, p store.Principal, ws,
 		out, err = s.admitBuild(ctx, tx, git, p, ws, pid, env, in.BaseRevisionId, app, in.IdempotencyKey, cfg.Canonical(), false)
 		return err
 	})
-	return out, err
+	return operationFor(p, out), err
 }
 
 func (s *Service) EnvironmentOperation(ctx context.Context, p store.Principal, ws, pid, env, id uuid.UUID) (api.Operation, error) {
@@ -132,5 +132,5 @@ func (s *Service) EnvironmentOperation(ctx context.Context, p store.Principal, w
 	if err == nil {
 		err = s.operationAvailability(ctx, &out)
 	}
-	return out, err
+	return operationFor(p, out), err
 }

@@ -12,6 +12,11 @@ permissions:
   # Opens an issue while a lane is past its budget and closes it afterwards.
   issues: write
 
+# Runs one at a time, so two runs never race on one issue.
+concurrency:
+  group: lane-budget
+  cancel-in-progress: false
+
 jobs:
   budget:
     name: Compare Go race lane times
@@ -25,5 +30,11 @@ jobs:
         with:
           node-version: 24.18.1
       - run: make check-lane-budget
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+      # The scheduled scans cannot report their own report job failing or never starting.
+      # They check this job the same way.
+      - if: always()
+        run: node scripts/schedule-watch.mjs scheduled-scans.yml "Scheduled scans stopped reporting" "Report to issues" "Check the lane budget"
         env:
           GITHUB_TOKEN: ${{ github.token }}
