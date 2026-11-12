@@ -44,13 +44,13 @@ Address approval and its queued reconciliation are transactional. Provider calls
 
 A record that points at an address nobody vouches for any more is a takeover risk: if the cloud provider gives that address to someone else, they can serve the server's generated names, and any custom domain CNAMEd to them, and get certificates for them. So Astilba removes its records when:
 
-- **The server is revoked.** Revocation also ends the address approval. After renewing the server, an owner approves its addresses again before anything is published.
+- **The server is revoked.** Revocation also ends the address approval. Renewing or transferring the server afterwards doesn't stop the removal. An owner approves its addresses again before anything is published.
 - **Hosted management becomes inactive.** The approval is kept, and the records are published again within a few minutes of management resuming. See [hosting](hosting.md#removing-generated-records).
 - **`ASTILBA_APPLICATION_DOMAIN` changes.** The previous domain's records are removed. Owners approve addresses under the new domain.
 
 A server fenced by management recovery keeps its records until an owner reviews it. It is still the workspace's server, and its records are only frozen.
 
-Before Astilba asks the provider to create anything, it records the name in the database. Removal lists that exact name and deletes only A/AAAA records carrying this installation's and server's ownership comment. Records anyone else created at the name, including another installation's, are left alone. Each deletion is written to an audit table before it is sent and confirmed once the provider lists the record as gone. A failed or interrupted removal keeps its database row, so a later attempt or the next sweep retries it, including after a restart.
+Before Astilba asks the provider to create anything, it records the name in the database. Removal lists that exact name and deletes only A/AAAA records carrying this installation's and server's ownership comment. Records anyone else created at the name, including another installation's, are left alone. Each deletion is written to an audit table before it is sent and confirmed once the provider lists the record as gone. A failed or interrupted removal keeps its database row, and is retried within about a minute until it succeeds, including after a restart.
 
 With manual DNS, Astilba creates nothing and so removes nothing: delete the server's A/AAAA records yourself when you revoke it.
 

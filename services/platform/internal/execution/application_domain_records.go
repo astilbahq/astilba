@@ -19,7 +19,6 @@ const (
 	withdrawRevoked     = "revoked"
 	withdrawInactive    = "management_inactive"
 	withdrawBaseChanged = "base_changed"
-	withdrawMissing     = "server_missing"
 	withdrawAddress     = "address_removed"
 )
 
@@ -39,7 +38,8 @@ func dnsMarker(installation, server uuid.UUID) string {
 func dnsName(base string, server uuid.UUID) string { return "*." + domain.ServerDomain(base, server) }
 
 // withdrawRevokedDomain runs in the revocation's transaction. It ends the address approval and
-// queues removal of every record the server may have, so revocation never depends on a later sweep.
+// marks every name the server may hold for removal, so neither a renewal nor a transfer that
+// lifts the revocation keeps the records. The job it queues starts removal straight away.
 func (s *Service) withdrawRevokedDomain(ctx context.Context, tx pgx.Tx, ws, server uuid.UUID) error {
 	if e := store.LockServerDNS(ctx, tx, server); e != nil {
 		return e
@@ -54,8 +54,8 @@ func (s *Service) withdrawRevokedDomain(ctx context.Context, tx pgx.Tx, ws, serv
 	if s.DNS == nil {
 		return nil
 	}
-	published, e := q.HasDNSPublications(ctx, server)
-	if e != nil || !published {
+	marked, e := q.RevokeDNSPublications(ctx, server)
+	if e != nil || marked == 0 {
 		return e
 	}
 	return s.enqueueDomain(ctx, tx, domainArgs{Server: server, Generation: generation})
@@ -64,15 +64,8 @@ func (s *Service) withdrawRevokedDomain(ctx context.Context, tx pgx.Tx, ws, serv
 // withdrawReason says why a publication must go, or "" while it may stay. A server that's
 // fenced for recovery keeps its records until an owner reviews them: it is still the
 // workspace's server, and its approval only blocks changes.
-func (s *Service) withdrawReason(ctx context.Context, conn *pgxpool.Conn, server uuid.UUID, p db.ListDNSPublicationsRow) (string, error) {
-	state, e := db.New(conn).DNSServerState(ctx, server)
-	if errors.Is(e, pgx.ErrNoRows) {
-		return withdrawMissing, nil
-	}
-	if e != nil {
-		return "", e
-	}
-	if state.Revoked {
+func (s *Service) withdrawReason(ctx context.Context, conn *pgxpool.Conn, p db.ListDNSPublicationsRow) (string, error) {
+	if p.Revoked {
 		return withdrawRevoked, nil
 	}
 	if p.Base != s.Store.ApplicationDomain {
@@ -108,7 +101,7 @@ func (s *Service) withdrawStalePublications(ctx context.Context, conn *pgxpool.C
 		if p.Zone != "" && p.Zone != s.DNS.Zone {
 			continue
 		}
-		reason, e := s.withdrawReason(ctx, conn, server, p)
+		reason, e := s.withdrawReason(ctx, conn, p)
 		if e != nil {
 			failures = append(failures, e)
 			continue

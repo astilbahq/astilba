@@ -31,6 +31,12 @@ type domainWorker struct {
 }
 
 func (w *domainWorker) Timeout(*river.Job[domainArgs]) time.Duration { return time.Minute }
+
+// NextRetry keeps retries within the sweep's one-minute cadence. River's default backoff
+// would leave a revoked server's records published for hours after a short provider outage.
+func (w *domainWorker) NextRetry(job *river.Job[domainArgs]) time.Time {
+	return time.Now().Add(min(time.Duration(1)<<min(job.Attempt, 6)*time.Second, time.Minute))
+}
 func (w *domainWorker) Work(ctx context.Context, job *river.Job[domainArgs]) error {
 	return w.service.reconcileDomain(ctx, job.Args)
 }
@@ -55,7 +61,7 @@ func (s *Service) domainConfiguration(ctx context.Context, tx pgx.Tx, ws, id uui
 		v.Note = "Generated names are disabled by the installation operator."
 		return v, nil
 	}
-	v.Wildcard = "*." + domain.ServerDomain(base, id)
+	v.Wildcard = dnsName(base, id)
 	var approved *int64
 	var storedBase string
 	e := tx.QueryRow(ctx, "SELECT base,ipv4,ipv6,generation,approved_controller,state,observed_at,note FROM server_domains WHERE workspace_id=$1 AND server_id=$2", ws, id).Scan(&storedBase, &v.Ipv4, &v.Ipv6, &v.Generation, &approved, &v.State, &v.ObservedAt, &v.Note)

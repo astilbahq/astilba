@@ -359,3 +359,36 @@ func TestDNSFollowsHostedManagementAndTheApplicationDomain(t *testing.T) {
 		t.Fatal("a foreign record was removed, or a new name was published without approval", z.snapshot())
 	}
 }
+
+func TestRenewingARevokedServerStillRemovesItsDNSRecords(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	f.st.ApplicationDomain = "apps.example.test"
+	z := newDNSZone(t, f)
+	s := publishedServer(t, f, z)
+	if e := f.execution.Stop(ctx); e != nil {
+		t.Fatal(e)
+	}
+	// The renewal lands before the withdrawal has run.
+	s.b.call("POST", s.path+"/revoke", nil, 204, nil)
+	s.b.call("POST", s.path+"/enrollment", nil, 201, nil)
+	if e := f.execution.Start(ctx); e != nil {
+		t.Fatal(e)
+	}
+	eventually(t, "the renewed server's old records are removed", func() bool { return z.marked(s.name(), s.marker) == 0 && s.publications(t) == 0 })
+	if e := f.execution.SweepDomains(ctx); e != nil {
+		t.Fatal(e)
+	}
+	// Only a new approval publishes again.
+	var profile api.ServerDomain
+	s.b.call("GET", s.path+"/domain", nil, 200, &profile)
+	if profile.State != "review_required" || z.marked(s.name(), s.marker) != 0 {
+		t.Fatal("records returned without a new approval", profile.State)
+	}
+	s.b.call("PUT", s.path+"/domain", api.ConfigureServerDomain{BaseGeneration: profile.Generation, Ipv4: "198.51.100.21"}, 200, nil)
+	s.waitState(t, "applied")
+	var revoked bool
+	if e := f.st.Pool.QueryRow(ctx, "SELECT revoked FROM dns_publications WHERE server_id=$1", s.id).Scan(&revoked); e != nil || revoked || z.marked(s.name(), s.marker) != 1 {
+		t.Fatal("a new approval did not publish afresh", revoked, e)
+	}
+}

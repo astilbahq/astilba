@@ -82,23 +82,6 @@ func (q *Queries) DNSInstallation(ctx context.Context) (uuid.UUID, error) {
 	return id, err
 }
 
-const dNSServerState = `-- name: DNSServerState :one
-SELECT workspace_id,revoked FROM servers WHERE id = $1
-`
-
-type DNSServerStateRow struct {
-	WorkspaceID uuid.UUID `json:"workspace_id"`
-	Revoked     bool      `json:"revoked"`
-}
-
-// unscoped: a DNS job names the server, which establishes the workspace.
-func (q *Queries) DNSServerState(ctx context.Context, serverID uuid.UUID) (DNSServerStateRow, error) {
-	row := q.db.QueryRow(ctx, dNSServerState, serverID)
-	var i DNSServerStateRow
-	err := row.Scan(&i.WorkspaceID, &i.Revoked)
-	return i, err
-}
-
 const deleteDNSPublication = `-- name: DeleteDNSPublication :exec
 DELETE FROM dns_publications WHERE server_id = $1 AND base = $2 AND zone = $3
 `
@@ -112,18 +95,6 @@ type DeleteDNSPublicationParams struct {
 func (q *Queries) DeleteDNSPublication(ctx context.Context, arg DeleteDNSPublicationParams) error {
 	_, err := q.db.Exec(ctx, deleteDNSPublication, arg.ServerID, arg.Base, arg.Zone)
 	return err
-}
-
-const hasDNSPublications = `-- name: HasDNSPublications :one
-SELECT EXISTS(SELECT 1 FROM dns_publications WHERE server_id = $1)
-`
-
-// unscoped: revocation already established the server's workspace.
-func (q *Queries) HasDNSPublications(ctx context.Context, serverID uuid.UUID) (bool, error) {
-	row := q.db.QueryRow(ctx, hasDNSPublications, serverID)
-	var exists bool
-	err := row.Scan(&exists)
-	return exists, err
 }
 
 const insertDNSRecordRemoval = `-- name: InsertDNSRecordRemoval :exec
@@ -159,13 +130,14 @@ func (q *Queries) InsertDNSRecordRemoval(ctx context.Context, arg InsertDNSRecor
 }
 
 const listDNSPublications = `-- name: ListDNSPublications :many
-SELECT workspace_id,base,zone FROM dns_publications WHERE server_id = $1 ORDER BY base,zone
+SELECT workspace_id,base,zone,revoked FROM dns_publications WHERE server_id = $1 ORDER BY base,zone
 `
 
 type ListDNSPublicationsRow struct {
 	WorkspaceID uuid.UUID `json:"workspace_id"`
 	Base        string    `json:"base"`
 	Zone        string    `json:"zone"`
+	Revoked     bool      `json:"revoked"`
 }
 
 // unscoped: a DNS job names the server; each row carries the workspace it was recorded for.
@@ -178,7 +150,12 @@ func (q *Queries) ListDNSPublications(ctx context.Context, serverID uuid.UUID) (
 	items := []ListDNSPublicationsRow{}
 	for rows.Next() {
 		var i ListDNSPublicationsRow
-		if err := rows.Scan(&i.WorkspaceID, &i.Base, &i.Zone); err != nil {
+		if err := rows.Scan(
+			&i.WorkspaceID,
+			&i.Base,
+			&i.Zone,
+			&i.Revoked,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -212,7 +189,7 @@ WITH legacy AS (
     DELETE FROM dns_publications WHERE server_id = $1 AND base = $3 AND zone = '' AND $4::text <> ''
 )
 INSERT INTO dns_publications(server_id,workspace_id,base,zone) VALUES($1,$2,$3,$4)
-ON CONFLICT DO NOTHING
+ON CONFLICT(server_id,base,zone) DO UPDATE SET revoked=false
 `
 
 type RecordDNSPublicationParams struct {
@@ -223,7 +200,8 @@ type RecordDNSPublicationParams struct {
 }
 
 // Written and committed before the provider is called, so a lost response still leaves a row.
-// A row from before zones were recorded names the same records, so it is replaced.
+// A row from before zones were recorded names the same records, so it is replaced. Publishing
+// needs an owner's approval given after any revocation, so it ends the revocation's withdrawal.
 func (q *Queries) RecordDNSPublication(ctx context.Context, arg RecordDNSPublicationParams) error {
 	_, err := q.db.Exec(ctx, recordDNSPublication,
 		arg.ServerID,
@@ -234,13 +212,25 @@ func (q *Queries) RecordDNSPublication(ctx context.Context, arg RecordDNSPublica
 	return err
 }
 
+const revokeDNSPublications = `-- name: RevokeDNSPublications :execrows
+UPDATE dns_publications SET revoked=true,checked_at=NULL WHERE server_id = $1
+`
+
+// unscoped: revocation already established the server's workspace.
+func (q *Queries) RevokeDNSPublications(ctx context.Context, serverID uuid.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, revokeDNSPublications, serverID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const staleDNSPublicationServers = `-- name: StaleDNSPublicationServers :many
 SELECT p.server_id,COALESCE(max(d.generation),0)::bigint AS generation,COALESCE(max(d.approved_controller),0)::bigint AS controller
 FROM dns_publications p
-LEFT JOIN servers s ON s.id=p.server_id
 LEFT JOIN server_domains d ON d.server_id=p.server_id
 WHERE p.zone IN ('',$1::text) AND (p.checked_at IS NULL OR p.checked_at<now()-interval '1 minute')
-    AND (s.id IS NULL OR s.revoked OR p.base <> $2::text
+    AND (p.revoked OR p.base <> $2::text
         OR ($3::boolean AND NOT EXISTS (SELECT 1 FROM hosted_subscriptions h WHERE h.workspace_id=p.workspace_id AND h.management_until>now())))
 GROUP BY p.server_id
 ORDER BY min(COALESCE(p.checked_at,'-infinity'::timestamptz)),p.server_id

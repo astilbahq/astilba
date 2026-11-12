@@ -9,13 +9,18 @@ CREATE TABLE dns_publications (
  base text NOT NULL,
  -- '' marks a row recorded before zones were: it is treated as the configured zone.
  zone text NOT NULL DEFAULT '',
+ -- Set by revocation. It stays set if the server is renewed or transferred, until the
+ -- records are gone or an owner approves addresses for the server again.
+ revoked boolean NOT NULL DEFAULT false,
  created_at timestamptz NOT NULL DEFAULT now(),
  checked_at timestamptz,
  PRIMARY KEY(server_id,base,zone)
 );
 CREATE INDEX dns_publications_sweep ON dns_publications(checked_at NULLS FIRST,server_id);
--- Any profile may have been reconciled before this table existed.
-INSERT INTO dns_publications(server_id,workspace_id,base) SELECT server_id,workspace_id,base FROM server_domains;
+-- Any profile automation has touched may have records. A manual one never has.
+INSERT INTO dns_publications(server_id,workspace_id,base,revoked)
+SELECT d.server_id,d.workspace_id,d.base,s.revoked FROM server_domains d JOIN servers s ON s.id=d.server_id
+WHERE d.state<>'manual' OR d.records<>'{}';
 -- The audit of every provider record Astilba deleted. A row is written before the
 -- deletion is sent, so a deletion whose response was lost is still recorded, and is
 -- confirmed once the provider shows the record gone.
@@ -28,7 +33,7 @@ CREATE TABLE dns_record_removals (
  record_id text NOT NULL,
  record_type text NOT NULL CHECK(record_type IN ('A','AAAA')),
  content text NOT NULL,
- reason text NOT NULL CHECK(reason IN ('revoked','management_inactive','base_changed','server_missing','address_removed')),
+ reason text NOT NULL CHECK(reason IN ('revoked','management_inactive','base_changed','address_removed')),
  requested_at timestamptz NOT NULL DEFAULT clock_timestamp(),
  confirmed_at timestamptz,
  UNIQUE(zone,record_id)

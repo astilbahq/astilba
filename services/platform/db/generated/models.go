@@ -289,6 +289,7 @@ type DnsPublication struct {
 	WorkspaceID uuid.UUID  `json:"workspace_id"`
 	Base        string     `json:"base"`
 	Zone        string     `json:"zone"`
+	Revoked     bool       `json:"revoked"`
 	CreatedAt   time.Time  `json:"created_at"`
 	CheckedAt   *time.Time `json:"checked_at"`
 }

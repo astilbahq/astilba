@@ -4,26 +4,23 @@
 -- name: DNSInstallation :one
 SELECT id FROM dns_installation;
 
--- name: DNSServerState :one
--- unscoped: a DNS job names the server, which establishes the workspace.
-SELECT workspace_id,revoked FROM servers WHERE id = @server_id;
-
 -- name: ListDNSPublications :many
 -- unscoped: a DNS job names the server; each row carries the workspace it was recorded for.
-SELECT workspace_id,base,zone FROM dns_publications WHERE server_id = @server_id ORDER BY base,zone;
+SELECT workspace_id,base,zone,revoked FROM dns_publications WHERE server_id = @server_id ORDER BY base,zone;
 
--- name: HasDNSPublications :one
+-- name: RevokeDNSPublications :execrows
 -- unscoped: revocation already established the server's workspace.
-SELECT EXISTS(SELECT 1 FROM dns_publications WHERE server_id = @server_id);
+UPDATE dns_publications SET revoked=true,checked_at=NULL WHERE server_id = @server_id;
 
 -- name: RecordDNSPublication :exec
 -- Written and committed before the provider is called, so a lost response still leaves a row.
--- A row from before zones were recorded names the same records, so it is replaced.
+-- A row from before zones were recorded names the same records, so it is replaced. Publishing
+-- needs an owner's approval given after any revocation, so it ends the revocation's withdrawal.
 WITH legacy AS (
     DELETE FROM dns_publications WHERE server_id = @server_id AND base = @base AND zone = '' AND @zone::text <> ''
 )
 INSERT INTO dns_publications(server_id,workspace_id,base,zone) VALUES(@server_id,@workspace_id,@base,@zone)
-ON CONFLICT DO NOTHING;
+ON CONFLICT(server_id,base,zone) DO UPDATE SET revoked=false;
 
 -- name: CheckDNSPublication :exec
 UPDATE dns_publications SET checked_at=clock_timestamp()
@@ -60,10 +57,9 @@ RETURNING generation;
 -- unscoped: the sweep serves every workspace. Rows in another zone are stranded and left out.
 SELECT p.server_id,COALESCE(max(d.generation),0)::bigint AS generation,COALESCE(max(d.approved_controller),0)::bigint AS controller
 FROM dns_publications p
-LEFT JOIN servers s ON s.id=p.server_id
 LEFT JOIN server_domains d ON d.server_id=p.server_id
 WHERE p.zone IN ('',@zone::text) AND (p.checked_at IS NULL OR p.checked_at<now()-interval '1 minute')
-    AND (s.id IS NULL OR s.revoked OR p.base <> @base::text
+    AND (p.revoked OR p.base <> @base::text
         OR (@hosted::boolean AND NOT EXISTS (SELECT 1 FROM hosted_subscriptions h WHERE h.workspace_id=p.workspace_id AND h.management_until>now())))
 GROUP BY p.server_id
 ORDER BY min(COALESCE(p.checked_at,'-infinity'::timestamptz)),p.server_id
