@@ -286,6 +286,30 @@ type DnsInstallation struct {
 	ID        uuid.UUID `json:"id"`
 }
 
+type DnsPublication struct {
+	ServerID    uuid.UUID  `json:"server_id"`
+	WorkspaceID uuid.UUID  `json:"workspace_id"`
+	Base        string     `json:"base"`
+	Zone        string     `json:"zone"`
+	Revoked     bool       `json:"revoked"`
+	CreatedAt   time.Time  `json:"created_at"`
+	CheckedAt   *time.Time `json:"checked_at"`
+}
+
+type DnsRecordRemoval struct {
+	ID          uuid.UUID  `json:"id"`
+	WorkspaceID uuid.UUID  `json:"workspace_id"`
+	ServerID    uuid.UUID  `json:"server_id"`
+	Name        string     `json:"name"`
+	Zone        string     `json:"zone"`
+	RecordID    string     `json:"record_id"`
+	RecordType  string     `json:"record_type"`
+	Content     string     `json:"content"`
+	Reason      string     `json:"reason"`
+	RequestedAt time.Time  `json:"requested_at"`
+	ConfirmedAt *time.Time `json:"confirmed_at"`
+}
+
 type EmailVerification struct {
 	AccountID uuid.UUID `json:"account_id"`
 	TokenHash []byte    `json:"token_hash"`
@@ -776,6 +800,21 @@ type Session struct {
 	Token  string    `json:"token"`
 	Data   []byte    `json:"data"`
 	Expiry time.Time `json:"expiry"`
+}
+
+type SourceSubmission struct {
+	ID            uuid.UUID  `json:"id"`
+	WorkspaceID   uuid.UUID  `json:"workspace_id"`
+	EnvironmentID uuid.UUID  `json:"environment_id"`
+	RevisionID    uuid.UUID  `json:"revision_id"`
+	RequestKey    uuid.UUID  `json:"request_key"`
+	ActorID       uuid.UUID  `json:"actor_id"`
+	Configuration []byte     `json:"configuration"`
+	State         string     `json:"state"`
+	Note          string     `json:"note"`
+	Result        []byte     `json:"result"`
+	CreatedAt     time.Time  `json:"created_at"`
+	FinishedAt    *time.Time `json:"finished_at"`
 }
 
 type SpecificationRevision struct {

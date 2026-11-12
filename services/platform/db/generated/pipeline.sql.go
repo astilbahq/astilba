@@ -162,6 +162,21 @@ func (q *Queries) AutomaticDeploymentWorkspace(ctx context.Context, id uuid.UUID
 	return workspace_id, err
 }
 
+const awaitSubmittedMerge = `-- name: AwaitSubmittedMerge :exec
+UPDATE git_sources SET status = 'awaiting_merge' WHERE workspace_id = $1 AND environment_id = $2 AND status <> 'approval_required'
+`
+
+type AwaitSubmittedMergeParams struct {
+	WorkspaceID   uuid.UUID `json:"workspace_id"`
+	EnvironmentID uuid.UUID `json:"environment_id"`
+}
+
+// A source that needs renewed approval keeps needing it: a submission doesn't grant it.
+func (q *Queries) AwaitSubmittedMerge(ctx context.Context, arg AwaitSubmittedMergeParams) error {
+	_, err := q.db.Exec(ctx, awaitSubmittedMerge, arg.WorkspaceID, arg.EnvironmentID)
+	return err
+}
+
 const clearGitSourcePendingCommit = `-- name: ClearGitSourcePendingCommit :exec
 UPDATE git_sources SET pending_commit = ''
 WHERE workspace_id = $1 AND environment_id = $2 AND status <> 'conflict' AND pending_commit <> ''
@@ -199,6 +214,30 @@ func (q *Queries) EnvironmentHoldsAutomaticWork(ctx context.Context, arg Environ
 	return busy, err
 }
 
+const finishSourceSubmission = `-- name: FinishSourceSubmission :exec
+UPDATE source_submissions SET state = $1, note = $2, result = $3, finished_at = now()
+WHERE workspace_id = $4 AND id = $5 AND state = 'queued'
+`
+
+type FinishSourceSubmissionParams struct {
+	State       string    `json:"state"`
+	Note        string    `json:"note"`
+	Result      []byte    `json:"result"`
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ID          uuid.UUID `json:"id"`
+}
+
+func (q *Queries) FinishSourceSubmission(ctx context.Context, arg FinishSourceSubmissionParams) error {
+	_, err := q.db.Exec(ctx, finishSourceSubmission,
+		arg.State,
+		arg.Note,
+		arg.Result,
+		arg.WorkspaceID,
+		arg.ID,
+	)
+	return err
+}
+
 const finishUndeliveredPipeline = `-- name: FinishUndeliveredPipeline :exec
 UPDATE execution_operations o SET state = $1, note = COALESCE((SELECT r.reason || ' ' FROM pipeline_runs r WHERE r.workspace_id = o.workspace_id AND r.id = o.id AND r.reason <> ''), '') || $2::text
 WHERE o.workspace_id = $3 AND o.id = $4
@@ -219,6 +258,36 @@ func (q *Queries) FinishUndeliveredPipeline(ctx context.Context, arg FinishUndel
 		arg.ID,
 	)
 	return err
+}
+
+const insertSourceSubmission = `-- name: InsertSourceSubmission :one
+INSERT INTO source_submissions(id,workspace_id,environment_id,revision_id,request_key,actor_id,configuration)
+VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING created_at
+`
+
+type InsertSourceSubmissionParams struct {
+	ID            uuid.UUID `json:"id"`
+	WorkspaceID   uuid.UUID `json:"workspace_id"`
+	EnvironmentID uuid.UUID `json:"environment_id"`
+	RevisionID    uuid.UUID `json:"revision_id"`
+	RequestKey    uuid.UUID `json:"request_key"`
+	ActorID       uuid.UUID `json:"actor_id"`
+	Configuration []byte    `json:"configuration"`
+}
+
+func (q *Queries) InsertSourceSubmission(ctx context.Context, arg InsertSourceSubmissionParams) (time.Time, error) {
+	row := q.db.QueryRow(ctx, insertSourceSubmission,
+		arg.ID,
+		arg.WorkspaceID,
+		arg.EnvironmentID,
+		arg.RevisionID,
+		arg.RequestKey,
+		arg.ActorID,
+		arg.Configuration,
+	)
+	var created_at time.Time
+	err := row.Scan(&created_at)
+	return created_at, err
 }
 
 const latestImportIsAtCommit = `-- name: LatestImportIsAtCommit :one
@@ -281,6 +350,76 @@ func (q *Queries) LatestImportedCommits(ctx context.Context, arg LatestImportedC
 	return items, nil
 }
 
+const latestSourceSubmission = `-- name: LatestSourceSubmission :one
+SELECT id,environment_id,revision_id,configuration,state,note,result,created_at FROM source_submissions
+WHERE workspace_id = $1 AND environment_id = $2 AND ($3::uuid IS NULL OR revision_id = $3::uuid)
+ORDER BY created_at DESC,id DESC LIMIT 1
+`
+
+type LatestSourceSubmissionParams struct {
+	WorkspaceID   uuid.UUID  `json:"workspace_id"`
+	EnvironmentID uuid.UUID  `json:"environment_id"`
+	RevisionID    *uuid.UUID `json:"revision_id"`
+}
+
+type LatestSourceSubmissionRow struct {
+	ID            uuid.UUID `json:"id"`
+	EnvironmentID uuid.UUID `json:"environment_id"`
+	RevisionID    uuid.UUID `json:"revision_id"`
+	Configuration []byte    `json:"configuration"`
+	State         string    `json:"state"`
+	Note          string    `json:"note"`
+	Result        []byte    `json:"result"`
+	CreatedAt     time.Time `json:"created_at"`
+}
+
+// The newest attempt for the environment, or for one revision of it when revision_id is set.
+func (q *Queries) LatestSourceSubmission(ctx context.Context, arg LatestSourceSubmissionParams) (LatestSourceSubmissionRow, error) {
+	row := q.db.QueryRow(ctx, latestSourceSubmission, arg.WorkspaceID, arg.EnvironmentID, arg.RevisionID)
+	var i LatestSourceSubmissionRow
+	err := row.Scan(
+		&i.ID,
+		&i.EnvironmentID,
+		&i.RevisionID,
+		&i.Configuration,
+		&i.State,
+		&i.Note,
+		&i.Result,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const lockSourceSubmission = `-- name: LockSourceSubmission :one
+SELECT environment_id,revision_id,configuration,state,created_at FROM source_submissions WHERE workspace_id = $1 AND id = $2 FOR UPDATE
+`
+
+type LockSourceSubmissionParams struct {
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ID          uuid.UUID `json:"id"`
+}
+
+type LockSourceSubmissionRow struct {
+	EnvironmentID uuid.UUID `json:"environment_id"`
+	RevisionID    uuid.UUID `json:"revision_id"`
+	Configuration []byte    `json:"configuration"`
+	State         string    `json:"state"`
+	CreatedAt     time.Time `json:"created_at"`
+}
+
+func (q *Queries) LockSourceSubmission(ctx context.Context, arg LockSourceSubmissionParams) (LockSourceSubmissionRow, error) {
+	row := q.db.QueryRow(ctx, lockSourceSubmission, arg.WorkspaceID, arg.ID)
+	var i LockSourceSubmissionRow
+	err := row.Scan(
+		&i.EnvironmentID,
+		&i.RevisionID,
+		&i.Configuration,
+		&i.State,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const markPipelineDeliveryStarted = `-- name: MarkPipelineDeliveryStarted :exec
 UPDATE pipeline_runs SET delivery_started=true WHERE workspace_id = $1 AND id = $2
 `
@@ -292,6 +431,21 @@ type MarkPipelineDeliveryStartedParams struct {
 
 func (q *Queries) MarkPipelineDeliveryStarted(ctx context.Context, arg MarkPipelineDeliveryStartedParams) error {
 	_, err := q.db.Exec(ctx, markPipelineDeliveryStarted, arg.WorkspaceID, arg.ID)
+	return err
+}
+
+const noteSourceSubmission = `-- name: NoteSourceSubmission :exec
+UPDATE source_submissions SET note = $1 WHERE workspace_id = $2 AND id = $3 AND state = 'queued'
+`
+
+type NoteSourceSubmissionParams struct {
+	Note        string    `json:"note"`
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ID          uuid.UUID `json:"id"`
+}
+
+func (q *Queries) NoteSourceSubmission(ctx context.Context, arg NoteSourceSubmissionParams) error {
+	_, err := q.db.Exec(ctx, noteSourceSubmission, arg.Note, arg.WorkspaceID, arg.ID)
 	return err
 }
 
@@ -404,6 +558,40 @@ func (q *Queries) SetPipelineRunReason(ctx context.Context, arg SetPipelineRunRe
 	return err
 }
 
+const sourceSubmissionByRequestKey = `-- name: SourceSubmissionByRequestKey :one
+SELECT id,environment_id,revision_id,state,note,result,created_at FROM source_submissions WHERE workspace_id = $1 AND request_key = $2
+`
+
+type SourceSubmissionByRequestKeyParams struct {
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	RequestKey  uuid.UUID `json:"request_key"`
+}
+
+type SourceSubmissionByRequestKeyRow struct {
+	ID            uuid.UUID `json:"id"`
+	EnvironmentID uuid.UUID `json:"environment_id"`
+	RevisionID    uuid.UUID `json:"revision_id"`
+	State         string    `json:"state"`
+	Note          string    `json:"note"`
+	Result        []byte    `json:"result"`
+	CreatedAt     time.Time `json:"created_at"`
+}
+
+func (q *Queries) SourceSubmissionByRequestKey(ctx context.Context, arg SourceSubmissionByRequestKeyParams) (SourceSubmissionByRequestKeyRow, error) {
+	row := q.db.QueryRow(ctx, sourceSubmissionByRequestKey, arg.WorkspaceID, arg.RequestKey)
+	var i SourceSubmissionByRequestKeyRow
+	err := row.Scan(
+		&i.ID,
+		&i.EnvironmentID,
+		&i.RevisionID,
+		&i.State,
+		&i.Note,
+		&i.Result,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const stopPossiblyDeliveredPipeline = `-- name: StopPossiblyDeliveredPipeline :exec
 UPDATE execution_operations SET cancel_requested = true, note = $1::text || CASE WHEN state = 'needs_attention' AND note <> '' THEN ' ' || note ELSE '' END WHERE workspace_id = $2 AND id = $3
 `
@@ -417,4 +605,57 @@ type StopPossiblyDeliveredPipelineParams struct {
 func (q *Queries) StopPossiblyDeliveredPipeline(ctx context.Context, arg StopPossiblyDeliveredPipelineParams) error {
 	_, err := q.db.Exec(ctx, stopPossiblyDeliveredPipeline, arg.Note, arg.WorkspaceID, arg.ID)
 	return err
+}
+
+const submittedReviews = `-- name: SubmittedReviews :many
+SELECT review FROM (
+    SELECT (CASE WHEN s.result->>'reviewNumber' ~ '^[1-9][0-9]{0,8}$' THEN (s.result->>'reviewNumber')::int END)::int AS review, s.created_at FROM source_submissions s
+    WHERE s.workspace_id = $1 AND s.environment_id = $2 AND s.state = 'succeeded'
+      AND s.configuration->>'commit' = $3::text AND s.configuration#>>'{connection,id}' = $4::text AND s.configuration->>'branch' = $5::text
+      AND (SELECT jsonb_object_agg(f->>'path',f->>'content') FROM jsonb_array_elements(s.configuration#>'{bundle,files}') f) = $6::jsonb
+    UNION ALL
+    SELECT (CASE WHEN r.result->>'reviewNumber' ~ '^[1-9][0-9]{0,8}$' THEN (r.result->>'reviewNumber')::int END)::int, r.created_at FROM git_submissions g JOIN pipeline_runs r ON r.id = g.operation_id JOIN execution_operations o ON o.id = r.id
+    WHERE g.workspace_id = $1 AND g.environment_id = $2 AND o.state = 'succeeded'
+      AND r.configuration->>'commit' = $3::text AND r.configuration#>>'{connection,id}' = $4::text AND r.configuration->>'branch' = $5::text
+      AND (SELECT jsonb_object_agg(f->>'path',f->>'content') FROM jsonb_array_elements(r.configuration#>'{bundle,files}') f) = $6::jsonb
+) reviews WHERE review > 0 ORDER BY created_at DESC
+`
+
+type SubmittedReviewsParams struct {
+	WorkspaceID   uuid.UUID `json:"workspace_id"`
+	EnvironmentID uuid.UUID `json:"environment_id"`
+	Commit        string    `json:"commit"`
+	ConnectionID  string    `json:"connection_id"`
+	Branch        string    `json:"branch"`
+	Files         []byte    `json:"files"`
+}
+
+// The reviews that proposed exactly these files on top of commit from this connection's branch,
+// newest first: management's own submissions and, before them, runners'. A number a result can't
+// name as a review, such as one from an imported archive, is left out rather than failing the query.
+func (q *Queries) SubmittedReviews(ctx context.Context, arg SubmittedReviewsParams) ([]int32, error) {
+	rows, err := q.db.Query(ctx, submittedReviews,
+		arg.WorkspaceID,
+		arg.EnvironmentID,
+		arg.Commit,
+		arg.ConnectionID,
+		arg.Branch,
+		arg.Files,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []int32{}
+	for rows.Next() {
+		var review int32
+		if err := rows.Scan(&review); err != nil {
+			return nil, err
+		}
+		items = append(items, review)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }

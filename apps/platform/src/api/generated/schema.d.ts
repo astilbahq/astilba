@@ -3734,6 +3734,8 @@ export interface components {
             approval: components["schemas"]["PolicyApproval"];
             /** @description Identifies the stored configuration and its approver, so an approval covers exactly what was shown. */
             sourceHash: string;
+            /** @description The newest attempt to submit a saved draft of this environment, if any. */
+            submission: components["schemas"]["SourceSubmission"] | null;
         };
         /**
          * @description Whether automatic work runs on a current approval. `current`: it does. `approvalRequired`: it is paused until it is approved again, after a restore, an import, a disconnected repository or its approver's role change. `approverRemoved`: its approver left the workspace. `approverRole`: its approver no longer has the role it needs. `approverCredentials`: its approver changed their password, two-factor settings or recovery codes since; only owners see this reason, others see `approvalRequired`. A paused Git source, or a target that deploys, needs an owner to approve it again; a target that only builds automatically, an owner or operator.
@@ -3757,6 +3759,21 @@ export interface components {
             /** Format: uuid */
             baseRevisionId: string;
             discardDraft?: boolean;
+        };
+        /** @description One attempt to propose a saved draft as a branch and review. Management writes it with the connection's API credential; runners never receive it. */
+        SourceSubmission: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            revisionId: string;
+            /** @enum {string} */
+            state: "queued" | "succeeded" | "failed";
+            note: string;
+            commit?: string;
+            reviewNumber?: number;
+            reviewUrl?: string;
+            /** Format: date-time */
+            createdAt: string;
         };
         SubmitGitSource: {
             /** Format: uuid */
@@ -8359,12 +8376,12 @@ export interface operations {
         };
         responses: {
             /** @description Success */
-            201: {
+            202: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Operation"];
+                    "application/json": components["schemas"]["SourceSubmission"];
                 };
             };
             /** @description Error */

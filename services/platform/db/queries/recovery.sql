@@ -25,6 +25,11 @@ WHERE workspace_id = @workspace_id AND server_id = @server_id AND state NOT IN (
 -- name: DisableWorkspaceGitAutoDeploy :exec
 UPDATE git_sources SET configuration=configuration || '{"autoDeploy":false}'::jsonb WHERE workspace_id = @workspace_id;
 
+-- name: FenceWorkspaceSubmissions :exec
+-- Recovery removes their jobs, so a submission still waiting would never be made.
+UPDATE source_submissions SET state = 'failed', note = 'Not submitted: stopped by offline controller recovery. Submit the draft again.', finished_at = now()
+WHERE workspace_id = @workspace_id AND state = 'queued';
+
 -- name: RequireWorkspaceGitApproval :exec
 UPDATE git_sources SET configuration=configuration || '{"autoDeploy":false}'::jsonb,status='approval_required',policy_auth_version=NULL WHERE workspace_id = @workspace_id;
 

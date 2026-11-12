@@ -1,8 +1,9 @@
+import { useQuery } from "@tanstack/react-query";
 import { ApiError, client, result, type Schema } from "../../api/client";
 import type { EnvironmentPath } from "../../api/environment";
 import { Button } from "../../components/button";
 import * as s from "../../styles";
-import type { useAction } from "../../ui";
+import { ErrorNotice, type useAction } from "../../ui";
 
 const root =
   "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}" as const;
@@ -112,6 +113,27 @@ function approveTarget(
       params: { path: { ...path, applicationId: target.applicationId } },
       body: { targetHash: target.targetHash },
     }),
+  );
+}
+
+// BuildTargetApprovals loads the environment's build targets and shows those waiting for
+// approval. Its query is the one refresh invalidates as ["build-targets", path].
+export function BuildTargetApprovals(
+  props: Omit<Parameters<typeof PausedBuildTargets>[0], "targets">,
+) {
+  const targets = useQuery({
+    queryKey: ["build-targets", props.path],
+    queryFn: () =>
+      result(
+        client.GET(`${root}/build-targets`, { params: { path: props.path } }),
+      ),
+    refetchInterval: 15000,
+  });
+  return (
+    <>
+      <ErrorNotice error={targets.error} />
+      {targets.data && <PausedBuildTargets {...props} targets={targets.data} />}
+    </>
   );
 }
 

@@ -79,7 +79,7 @@ func TestEncryptedWorkspaceExportPreservesIdentityWithoutInstallationKeys(t *tes
 	if e = json.Unmarshal(plain, &archive); e != nil {
 		t.Fatal(e)
 	}
-	if archive.Version != 6 || archive.Workspace != ws || archive.Name != "Test workspace" || len(archive.Tables["environments"]) != 1 {
+	if archive.Version != portability.ArchiveVersion || archive.Workspace != ws || archive.Name != "Test workspace" || len(archive.Tables["environments"]) != 1 {
 		t.Fatal("workspace identity not preserved")
 	}
 	var encoded string
@@ -90,7 +90,7 @@ func TestEncryptedWorkspaceExportPreservesIdentityWithoutInstallationKeys(t *tes
 	if e != nil || string(value) != "portable-secret-canary" {
 		t.Fatal("secret was not unwrapped into encrypted archive")
 	}
-	for _, forbidden := range []string{"accounts", "memberships", "sessions", "hosted_subscriptions", "river_job", "server_domains", "dns_installation"} {
+	for _, forbidden := range []string{"accounts", "memberships", "sessions", "hosted_subscriptions", "river_job", "server_domains", "dns_installation", "dns_publications", "dns_record_removals"} {
 		if _, ok := archive.Tables[forbidden]; ok {
 			t.Fatal("installation-private table exported", forbidden)
 		}

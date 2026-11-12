@@ -358,6 +358,17 @@ func (q *Queries) FenceWorkspaceBackupPolicies(ctx context.Context, workspaceID 
 	return err
 }
 
+const fenceWorkspaceSubmissions = `-- name: FenceWorkspaceSubmissions :exec
+UPDATE source_submissions SET state = 'failed', note = 'Not submitted: stopped by offline controller recovery. Submit the draft again.', finished_at = now()
+WHERE workspace_id = $1 AND state = 'queued'
+`
+
+// Recovery removes their jobs, so a submission still waiting would never be made.
+func (q *Queries) FenceWorkspaceSubmissions(ctx context.Context, workspaceID uuid.UUID) error {
+	_, err := q.db.Exec(ctx, fenceWorkspaceSubmissions, workspaceID)
+	return err
+}
+
 const holdRecoveredOperation = `-- name: HoldRecoveredOperation :exec
 UPDATE execution_operations SET state='needs_attention',note = $1 WHERE workspace_id = $2 AND id = $3
 `

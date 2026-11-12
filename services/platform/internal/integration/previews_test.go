@@ -45,6 +45,9 @@ func previewIsolationJourney(t *testing.T, transfer, recoverCleanup bool) {
 	open.Store(true)
 	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		if answerReceivePack(w, r) {
+			return
+		}
 		switch {
 		case strings.Contains(r.URL.Path, "/branches/"):
 			answerBranch(w, "gitea", head.Load().(string))
