@@ -39,7 +39,7 @@ func (s *Service) hydrateCrossHost(ctx context.Context, c *api.ExecutionCommand)
 				return err
 			}
 			var access pipeline.RegistryAccess
-			if err := s.openIntegration(ws, *a.RegistryID, "registry", registry.EncryptedAccess, &access); err != nil {
+			if err := s.legacyOpenIntegration(ws, *a.RegistryID, "registry", registry.EncryptedAccess, &access); err != nil {
 				return err
 			}
 			p.RegistryAccess[key] = access.Pull

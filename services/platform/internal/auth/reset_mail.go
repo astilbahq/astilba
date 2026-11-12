@@ -12,14 +12,14 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/mailer"
 	"github.com/astilbahq/astilba/services/platform/internal/randtoken"
+	"github.com/astilbahq/astilba/services/platform/internal/secretbroker"
 	"github.com/jackc/pgx/v5"
 	"github.com/riverqueue/river"
 )
 
 const (
 	// ResetMailQueue is separate so that anyone can name emails without delaying deployments.
-	ResetMailQueue    = "reset_mail"
-	resetMailIdentity = "reset-mail:v1"
+	ResetMailQueue = "reset_mail"
 	// Mail arriving after this is more confusing than useful, and whoever asked can ask again.
 	resetMailPatience = 15 * time.Minute
 	resetLinkLifetime = 30 * time.Minute
@@ -58,7 +58,7 @@ func (s *Service) RequestReset(ctx context.Context, email string, from Source) e
 	if err != nil {
 		return nil
 	}
-	sealed, err := s.Store.Keys.Seal([]byte(email), resetMailIdentity)
+	sealed, err := s.Tokens.Seal(secretbroker.ResetMail, []byte(email))
 	if err != nil {
 		return err
 	}
@@ -94,7 +94,7 @@ func (w *ResetMailWorker) Work(ctx context.Context, job *river.Job[ResetMailArgs
 		w.Log.Error("password reset mail abandoned", "job", job.ID, "attempts", job.Attempt-1)
 		return river.JobCancel(errors.New("password reset mail abandoned"))
 	}
-	email, err := s.Store.Keys.Open(job.Args.Email, resetMailIdentity)
+	email, err := s.Tokens.Open(secretbroker.ResetMail, job.Args.Email)
 	if err != nil {
 		w.Log.Error("password reset request could not be opened", "job", job.ID)
 		return river.JobCancel(errors.New("password reset request could not be opened"))

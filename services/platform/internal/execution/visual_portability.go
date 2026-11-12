@@ -10,6 +10,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/randtoken"
+	"github.com/astilbahq/astilba/services/platform/internal/secretbroker"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
@@ -22,7 +23,20 @@ func (s *Service) CloneVisual(ctx context.Context, p store.Principal, ws, pid, s
 	if err != nil {
 		return out, err
 	}
-	err = s.scope(ctx, p, ws, workspaceAccess{Write: true, Recent: in.CopySecrets}, "environment.clone", source, func(tx pgx.Tx) error {
+	// A clone stores new secret versions for generated database passwords, and with
+	// CopySecrets also opens the source's, which its audit action says.
+	purpose, action := secretbroker.Seal, "environment.clone"
+	if in.CopySecrets {
+		purpose, action = secretbroker.Copy, "environment.clone_with_secrets"
+	}
+	access := workspaceAccess{Write: true, Recent: in.CopySecrets}
+	keys, err := s.Store.BeginKeys(ctx, p, access.admission(), false, secretbroker.Request{Workspace: ws, Purpose: purpose, Kinds: []secretbroker.Kind{secretbroker.SecretVersion}})
+	if err != nil {
+		return out, err
+	}
+	used := false
+	defer func() { keys.Close(ctx, secretbroker.UsedIf(used)) }()
+	err = s.scope(ctx, p, ws, access, action, source, func(tx pgx.Tx) error {
 		v, err := loadVisualEnvironment(ctx, tx, ws, pid, source)
 		if err != nil {
 			return err
@@ -65,10 +79,11 @@ func (s *Service) CloneVisual(ctx context.Context, p store.Principal, ws, pid, s
 			if err := q.InsertSecret(ctx, db.InsertSecretParams{WorkspaceID: ws, EnvironmentID: env, ID: sid, Name: label}); err != nil {
 				return uuid.Nil, err
 			}
-			encrypted, err := s.Store.Keys.Seal([]byte(value), store.SecretIdentity(ws, id))
+			encrypted, err := keys.Seal(secretbroker.Item{Kind: secretbroker.SecretVersion, ID: id}, []byte(value))
 			if err != nil {
 				return uuid.Nil, err
 			}
+			used = true
 			_, err = q.InsertSecretVersion(ctx, db.InsertSecretVersionParams{WorkspaceID: ws, SecretID: sid, ID: id, EncryptedValue: encrypted, AuthorID: p.Account.ID})
 			return id, err
 		}
@@ -78,7 +93,7 @@ func (s *Service) CloneVisual(ctx context.Context, p store.Principal, ws, pid, s
 				if err != nil {
 					return err
 				}
-				plain, err := s.Store.Keys.Open(secret.EncryptedValue, store.SecretIdentity(ws, old))
+				plain, err := keys.Open(secretbroker.Item{Kind: secretbroker.SecretVersion, ID: old}, secret.EncryptedValue)
 				if err != nil {
 					return err
 				}

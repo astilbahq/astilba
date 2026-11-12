@@ -10,8 +10,8 @@
 -- plain build inside the migration's transaction stays atomic and re-runnable, as CONCURRENTLY
 -- would not.
 CREATE INDEX execution_unfinished_server ON execution_operations(server_id, created_at) WHERE state IN ('queued','dispatched','running','needs_attention');
-INSERT INTO schema_additive_migrations (version) VALUES (51);
+INSERT INTO schema_additive_migrations (version) VALUES (44);
 
 -- +goose Down
-DELETE FROM schema_additive_migrations WHERE version = 51;
+DELETE FROM schema_additive_migrations WHERE version = 44;
 DROP INDEX execution_unfinished_server;

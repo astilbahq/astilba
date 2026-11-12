@@ -16,6 +16,7 @@ import (
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
+	"github.com/astilbahq/astilba/services/platform/internal/secretbroker"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -446,7 +447,17 @@ func (s *Server) secret(w http.ResponseWriter, r *http.Request, ws, pid, env, id
 		s.fail(w, r, domain.Invalid("value"))
 		return
 	}
-	s.envScope(w, r, ws, pid, env, store.WorkspaceAccess{Write: true, Recent: true}, func(q *db.Queries, _ db.GetEnvironmentRow) (any, error) {
+	versionID := uuid.New()
+	item := secretbroker.Item{Kind: secretbroker.SecretVersion, ID: versionID}
+	access := store.WorkspaceAccess{Write: true, Recent: true}
+	keys, e := s.Store.BeginKeys(r.Context(), *principal(r.Context()), access, false, secretbroker.Request{Workspace: ws, Purpose: secretbroker.Seal, Items: []secretbroker.Item{item}})
+	if e != nil {
+		s.fail(w, r, e)
+		return
+	}
+	sealed := false
+	defer func() { keys.Close(r.Context(), secretbroker.UsedIf(sealed)) }()
+	s.envScope(w, r, ws, pid, env, access, func(q *db.Queries, _ db.GetEnvironmentRow) (any, error) {
 		ctx := r.Context()
 		if newSecret {
 			if e := q.InsertSecret(ctx, db.InsertSecretParams{WorkspaceID: ws, EnvironmentID: env, ID: id, Name: name}); e != nil {
@@ -459,11 +470,11 @@ func (s *Server) secret(w http.ResponseWriter, r *http.Request, ws, pid, env, id
 			}
 			name = v.Name
 		}
-		versionID := uuid.New()
-		cipher, e := s.Store.Keys.Seal([]byte(value), store.SecretIdentity(ws, versionID))
+		cipher, e := keys.Seal(item, []byte(value))
 		if e != nil {
 			return nil, e
 		}
+		sealed = true
 		v, e := q.InsertSecretVersion(ctx, db.InsertSecretVersionParams{WorkspaceID: ws, SecretID: id, ID: versionID, EncryptedValue: cipher, AuthorID: principal(ctx).Account.ID})
 		if e != nil {
 			return nil, e
