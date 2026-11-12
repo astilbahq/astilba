@@ -12,8 +12,9 @@ import (
 
 // deadlineRule is what a command's admission deadline means for it. The deadline decides whether
 // a host may start something, never whether work it already holds can end. Every command kind,
-// network action and coordinated phase the agent runs has a rule below, so adding one means
-// choosing one. Anything not listed keeps its deadline. See docs/cross-host-placement.md.
+// network action and coordinated phase that reaches the deadline has a rule below, so adding one
+// means choosing one. Anything not listed keeps its deadline. Recovery opening and closing are
+// decided before the deadline, in Execute. See docs/cross-host-placement.md.
 type deadlineRule uint8
 
 const (
@@ -22,8 +23,6 @@ const (
 	startsWork deadlineRule = iota
 	// ownDeadline commands apply their deadline themselves.
 	ownDeadline
-	// beforeAdmission phases are decided before the deadline applies.
-	beforeAdmission
 	// narrowsAccess only removes managed network access.
 	narrowsAccess
 	// extendsHeldRoot adds a later checkpoint to a recovery root this host already holds.
@@ -56,19 +55,17 @@ var networkActions = map[string]deadlineRule{
 }
 
 var deploymentPhases = map[string]deadlineRule{
-	"checkpoint":        extendsHeldRoot,
-	"resolve":           startsWork,
-	"observe":           startsWork,
-	"reserve":           startsWork,
-	"prepare":           startsWork,
-	"hook":              startsWork,
-	"probe":             startsWork,
-	"publish":           startsWork, // Its probes would be as old as it is.
-	"retire":            endsHeldWork,
-	"complete":          endsHeldWork,
-	"abort":             endsHeldWorkOrNone,
-	"recovery-open":     beforeAdmission,
-	"checkpoint-closed": beforeAdmission,
+	"checkpoint": extendsHeldRoot,
+	"resolve":    startsWork,
+	"observe":    startsWork,
+	"reserve":    startsWork,
+	"prepare":    startsWork,
+	"hook":       startsWork,
+	"probe":      startsWork,
+	"publish":    startsWork, // Its probes would be as old as it is.
+	"retire":     endsHeldWork,
+	"complete":   endsHeldWork,
+	"abort":      endsHeldWorkOrNone,
 }
 
 var maintenancePhases = map[string]deadlineRule{
@@ -92,7 +89,7 @@ func commandDeadline(c api.ExecutionCommand) deadlineRule {
 	switch c.Kind {
 	case "network":
 		var n hostnetwork.Command
-		if !networkRestriction(c) || c.Network == nil || hostnetwork.Decode(*c.Network, &n) != nil {
+		if c.Network == nil || hostnetwork.Decode(*c.Network, &n) != nil || n.Validate() != nil {
 			return startsWork
 		}
 		return networkActions[n.Action]
@@ -116,7 +113,8 @@ func crossHostPhases(body deployment.CrossHostCommand) map[string]deadlineRule {
 
 // runsLate says whether a command first taken after its admission deadline still runs. Its rule
 // must allow it, and the work it ends must be what this host's journal holds: the command's claim
-// is never enough. A command that runs late changes nothing beyond what its executor allows for
+// is never enough. While a reservation is held, Accept has already refused any coordinated command
+// that doesn't match it exactly (crossHostAdmission), so holding one here means holding this one. A command that runs late changes nothing beyond what its executor allows for
 // the held work, and starts nothing.
 func (e *Engine) runsLate(c api.ExecutionCommand) (bool, error) {
 	rule := commandDeadline(c)
@@ -134,18 +132,11 @@ func (e *Engine) runsLate(c api.ExecutionCommand) (bool, error) {
 		}
 		return err == nil && head.Descriptor.ParentID != uuid.Nil && deployment.SameRecoveryRoot(head.Descriptor, d), err
 	case endsHeldWork, endsHeldWorkOrNone:
-		body, err := crossHostCommand(c)
-		if err != nil {
-			return false, nil
-		}
 		held, err := e.Journal.crossHost()
 		if err != nil {
 			return false, err
 		}
-		if held.ParentID == uuid.Nil {
-			return rule == endsHeldWorkOrNone, nil
-		}
-		return held.ParentID == body.ParentID && held.GroupHash == body.GroupHash && held.Unit.Plan.Hash == body.Unit.Plan.Hash && deployment.Hash(held.Maintenance) == deployment.Hash(body.Maintenance), nil
+		return held.ParentID != uuid.Nil || rule == endsHeldWorkOrNone, nil
 	}
 	return false, nil
 }
