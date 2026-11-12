@@ -106,6 +106,12 @@ is smaller. `astilba serve` refuses to start if one process alone could never fi
 any of these, but it cannot see other processes or clients. PostgreSQL's `max_connections` is usually 100 and changing it requires a restart; a
 small managed instance may set it lower, so check yours.
 
+**JIT compilation is off.** Management opens every connection with `jit=off`. Its
+queries are short and transactional, and PostgreSQL's JIT, on by default where it is
+built in, spends hundreds of milliseconds compiling any query whose estimate passes
+`jit_above_cost`, against a few milliseconds of work. A connection pooler in front of
+PostgreSQL must pass the `jit` startup parameter through.
+
 **Do not make it larger than you need.** When the pool is too small, work queues in the
 service, which is bounded and visible. When the total passes a limit, new connections
 fail outright. Measured under idle polling, each connection had added about 4 to 6 MiB

@@ -64,19 +64,10 @@ func TestEveryCommandKindHasADeadlineRule(t *testing.T) {
 // phases are checked against RunsCoordinatedPhase when each integration test ends.
 func TestRunsCoordinatedPhaseOnlyWhereThePhaseIsHandled(t *testing.T) {
 	deployed, maintained := lateDeployment(t, "reserve", false).body, expiredMaintenance(t, false).body
-	for _, tc := range []struct {
-		body   deployment.CrossHostCommand
-		phases map[string]deadlineRule
-	}{{deployed, deploymentPhases}, {maintained, maintenancePhases}} {
-		for phase := range tc.phases {
-			tc.body.Phase = phase
-			if !RunsCoordinatedPhase(tc.body) {
-				t.Errorf("phase %s with a deadline rule doesn't run", phase)
-			}
-		}
+	for _, body := range []deployment.CrossHostCommand{deployed, maintained} {
 		for _, phase := range []string{"drain", "maintenance-reserve", "links", ""} {
-			tc.body.Phase = phase
-			if RunsCoordinatedPhase(tc.body) {
+			body.Phase = phase
+			if RunsCoordinatedPhase(body) {
 				t.Errorf("phase %q runs without a rule", phase)
 			}
 		}

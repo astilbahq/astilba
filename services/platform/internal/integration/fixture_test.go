@@ -221,7 +221,13 @@ func setupStore(t *testing.T, bootstrap, hosted bool) *fixture {
 	if _, e = admin.Exec(ctx, "CREATE DATABASE "+name+" TEMPLATE "+migratedDatabase); e != nil {
 		t.Fatal(e)
 	}
-	pool, e := pgxpool.New(ctx, databaseDSN(name))
+	// Configured as management configures its own.
+	poolConfig, e := pgxpool.ParseConfig(databaseDSN(name))
+	if e != nil {
+		t.Fatal(e)
+	}
+	store.ConfigurePool(poolConfig)
+	pool, e := pgxpool.NewWithConfig(ctx, poolConfig)
 	if e != nil {
 		t.Fatal(e)
 	}

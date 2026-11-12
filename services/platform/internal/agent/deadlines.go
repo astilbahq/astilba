@@ -119,9 +119,9 @@ const (
 	recoveryClosePhase = "checkpoint-closed"
 )
 
-// RunsCoordinatedPhase says whether the agent runs a coordinated command naming this phase.
-// Management issues no other: when an integration test ends, its fixture checks every phase
-// management issued against this, so a phase added there fails until it is classified here.
+// RunsCoordinatedPhase says whether the agent runs a coordinated command naming this phase. When
+// an integration test ends, its fixture checks every phase management issued against this, so a
+// phase management issues in any tested flow fails until it is classified here.
 func RunsCoordinatedPhase(body deployment.CrossHostCommand) bool {
 	if body.Phase == recoveryOpenPhase || body.Phase == recoveryClosePhase {
 		return true

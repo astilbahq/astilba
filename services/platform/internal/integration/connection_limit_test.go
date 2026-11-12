@@ -61,3 +61,17 @@ func TestServingRefusesAPoolPostgreSQLCannotAdmit(t *testing.T) {
 		t.Fatal("a superuser, whom the limit does not bind, was refused: ", err)
 	}
 }
+
+// Management's connections run with JIT off, so a query whose estimate passes jit_above_cost
+// doesn't pay hundreds of milliseconds to compile a plan that runs in a few. The fixture's pool is
+// configured as management's is, and the test database has JIT on by default.
+func TestManagementConnectionsRunWithoutJIT(t *testing.T) {
+	f := setup(t)
+	var jit string
+	if err := f.st.Pool.QueryRow(context.Background(), `SHOW jit`).Scan(&jit); err != nil {
+		t.Fatal(err)
+	}
+	if jit != "off" {
+		t.Fatalf("jit = %s", jit)
+	}
+}

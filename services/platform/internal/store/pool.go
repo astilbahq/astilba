@@ -18,6 +18,14 @@ const connectionsOutsidePool = 1
 // once polls were failing.
 const poolWaitWarning = 50 * time.Millisecond
 
+// ConfigurePool sets what every management connection runs with. JIT compilation is off:
+// management runs short transactional queries, and once a query's estimate passes
+// jit_above_cost, PostgreSQL spends hundreds of milliseconds compiling a plan that runs in a few.
+// The startup packet carries it, so it holds for every connection the pool opens.
+func ConfigurePool(config *pgxpool.Config) {
+	config.ConnConfig.RuntimeParams["jit"] = "off"
+}
+
 // CheckConnectionLimit refuses a pool that does not fit PostgreSQL's limits, which would
 // otherwise surface as "too many connections" only once the service is busy. It reads the
 // limits, not current use, so it says nothing about other instances and clients sharing them.
