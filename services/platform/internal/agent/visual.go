@@ -223,11 +223,6 @@ func (e *Engine) executeVisual(ctx context.Context, c api.ExecutionCommand, r Re
 	if err = deployment.PostgresVersionChange(unit.Plan.Specification, p.Plan.Specification); err != nil {
 		return e.finish(c.Id, "failed", err.Error())
 	}
-	if err = e.postgresVolumesMatch(ctx, p.Plan); errors.Is(err, errPostgresVersionChange) {
-		return e.finish(c.Id, "failed", err.Error())
-	} else if err != nil {
-		return err
-	}
 	if err = e.checkpoint(c.Id, "preflight"); err != nil {
 		return err
 	}
@@ -444,32 +439,6 @@ func (e *Engine) resolveVisualImages(ctx context.Context, p deployment.Payload, 
 	}
 	observed = resolutionObservation(observed)
 	return observed, nil
-}
-
-func (e *Engine) ensureStorage(ctx context.Context, p deployment.Plan) error {
-	if err := e.ensureUnitNetworks(ctx, p); err != nil {
-		return err
-	}
-	if p.Local != nil && !p.Local.Primary {
-		return nil
-	}
-	for _, vol := range p.Specification.Volumes {
-		v, err := e.Docker.VolumeInspect(ctx, deployment.VolumeName(vol.ID), client.VolumeInspectOptions{})
-		if errdefs.IsNotFound(err) {
-			_, err = e.Docker.VolumeCreate(ctx, client.VolumeCreateOptions{Name: deployment.VolumeName(vol.ID), Driver: "local", Labels: volumeLabels(p, vol.ID)})
-			if err != nil {
-				return errors.New("Cannot create a data volume.")
-			}
-			v, err = e.Docker.VolumeInspect(ctx, deployment.VolumeName(vol.ID), client.VolumeInspectOptions{})
-		}
-		if err != nil || !visualOwned(v.Volume.Labels, p) || v.Volume.Labels[labelResource] != vol.ID.String() || v.Volume.Driver != "local" || len(v.Volume.Options) > 0 {
-			return errors.New("Data volume ownership or driver does not match.")
-		}
-		if recorded, major := v.Volume.Labels[labelPostgresMajor], postgresMajors(p)[vol.ID]; recorded != "" && major != "" && recorded != major {
-			return errPostgresVersionChange
-		}
-	}
-	return nil
 }
 
 func serviceOrder(spec domain.Specification) []domain.Application {

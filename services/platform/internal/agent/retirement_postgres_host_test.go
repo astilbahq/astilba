@@ -47,13 +47,16 @@ func TestRetiredPostgresVolumeRefusesAnotherMajor(t *testing.T) {
 			docker.VolumeRemove(cleanup, name, client.VolumeRemoveOptions{})
 		}
 	})
-	engine := &Engine{Docker: docker}
-	if err = engine.postgresVolumesMatch(ctx, initialised); err != nil {
+	created, err := docker.VolumeInspect(ctx, name, client.VolumeInspectOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = postgresVolumeMatches(created.Volume.Labels, initialised, volume); err != nil {
 		t.Fatal("the same major was refused", err)
 	}
 	upgraded := initialised
 	upgraded.Specification = plan(domain.PostgresImage, volume).Specification
-	if err = engine.postgresVolumesMatch(ctx, upgraded); !errors.Is(err, errPostgresVersionChange) {
+	if err = postgresVolumeMatches(created.Volume.Labels, upgraded, volume); !errors.Is(err, errPostgresVersionChange) || storageState(err) != "failed" {
 		t.Fatal("another major was not refused", err)
 	}
 }

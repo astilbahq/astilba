@@ -6,7 +6,6 @@ import (
 
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
-	"github.com/containerd/errdefs"
 	"github.com/google/uuid"
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/client"
@@ -72,21 +71,12 @@ func volumeLabels(p deployment.Plan, volume uuid.UUID) map[string]string {
 	return labels
 }
 
-// postgresVolumesMatch refuses, before any effect, a plan that would start a PostgreSQL major on a
-// data volume another major initialised. Unlike the journal's applied plan, the volume's label
-// survives retirement and anything else that forgets what ran on it.
-func (e *Engine) postgresVolumesMatch(ctx context.Context, p deployment.Plan) error {
-	for volume, major := range postgresMajors(p) {
-		v, err := e.Docker.VolumeInspect(ctx, deployment.VolumeName(volume), client.VolumeInspectOptions{})
-		if errdefs.IsNotFound(err) {
-			continue
-		}
-		if err != nil {
-			return err
-		}
-		if recorded := v.Volume.Labels[labelPostgresMajor]; recorded != "" && recorded != major {
-			return errPostgresVersionChange
-		}
+// postgresVolumeMatches refuses to start a PostgreSQL major on a data volume another major
+// initialised. Unlike the journal's applied plan, the volume's label survives retirement and
+// anything else that forgets what ran on it.
+func postgresVolumeMatches(labels map[string]string, p deployment.Plan, volume uuid.UUID) error {
+	if recorded, major := labels[labelPostgresMajor], postgresMajors(p)[volume]; recorded != "" && major != "" && recorded != major {
+		return errPostgresVersionChange
 	}
 	return nil
 }

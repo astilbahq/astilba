@@ -196,7 +196,7 @@ func ingressNetwork(server uuid.UUID) networkRequest {
 // storageState is a refusal for a full host, which changed nothing, and otherwise asks for
 // inspection before conflicting work.
 func storageState(err error) api.ExecutionState {
-	if errors.Is(err, errNetworkPoolFull) {
+	if errors.Is(err, errNetworkPoolFull) || errors.Is(err, errPostgresVersionChange) {
 		return "failed"
 	}
 	return "needs_attention"
