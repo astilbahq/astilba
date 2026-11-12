@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
-	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/portability"
@@ -387,11 +386,13 @@ func TestRetiredTemplateRenewsABlockedPreviewCleanup(t *testing.T) {
 	var ticket api.TransferTicket
 	h.b.call("POST", h.prefix+"/servers/"+h.server.String()+"/transfer", nil, 201, &ticket)
 	in := h.enrolled
-	in.Credential, _ = cryptobox.Token()
+	if in.Credential, err = credentialToken(); err != nil {
+		t.Fatal(err)
+	}
 	in.Token, in.ControllerGeneration = ticket.Token, &ticket.Generation
 	in.Inventory = &api.ControllerInventory{Units: units, Schedules: map[string]int64{}}
 	agentRequest(t, h.f.server.Client(), h.f.server.URL, "/agent/v1/enroll", "", in, 200, nil)
-	h.token = h.server.String() + "." + in.Credential
+	h.token = h.server.String() + "." + *in.Credential
 	action("cleanup", 200)
 	waitPreviewAt(t, h, h.path, "deleting")
 	cleanup := nextPreviewCommand(t, h)
