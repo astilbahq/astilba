@@ -46,6 +46,9 @@ func (s *Service) settleRevokedWork(ctx context.Context, tx pgx.Tx, ws, server u
 	if err := releaseRevokedPreviews(ctx, tx, ws, server); err != nil {
 		return err
 	}
+	if err := s.withdrawRevokedDomain(ctx, tx, ws, server); err != nil {
+		return err
+	}
 	parked, err := q.ParkedMaintenanceOnPrimary(ctx, db.ParkedMaintenanceOnPrimaryParams{WorkspaceID: ws, ServerID: server})
 	if err != nil {
 		return err

@@ -284,6 +284,29 @@ type DnsInstallation struct {
 	ID        uuid.UUID `json:"id"`
 }
 
+type DnsPublication struct {
+	ServerID    uuid.UUID  `json:"server_id"`
+	WorkspaceID uuid.UUID  `json:"workspace_id"`
+	Base        string     `json:"base"`
+	Zone        string     `json:"zone"`
+	CreatedAt   time.Time  `json:"created_at"`
+	CheckedAt   *time.Time `json:"checked_at"`
+}
+
+type DnsRecordRemoval struct {
+	ID          uuid.UUID  `json:"id"`
+	WorkspaceID uuid.UUID  `json:"workspace_id"`
+	ServerID    uuid.UUID  `json:"server_id"`
+	Name        string     `json:"name"`
+	Zone        string     `json:"zone"`
+	RecordID    string     `json:"record_id"`
+	RecordType  string     `json:"record_type"`
+	Content     string     `json:"content"`
+	Reason      string     `json:"reason"`
+	RequestedAt time.Time  `json:"requested_at"`
+	ConfirmedAt *time.Time `json:"confirmed_at"`
+}
+
 type EmailVerification struct {
 	AccountID uuid.UUID `json:"account_id"`
 	TokenHash []byte    `json:"token_hash"`

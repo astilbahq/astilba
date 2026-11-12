@@ -224,6 +224,9 @@ func run() error {
 		api.GitHubConfig = githubapp.Load()
 		defer cleanup()
 		notices := &billing.Service{Store: st, Now: time.Now}
+		if e = api.Execution.WarnStrandedDomains(ctx); e != nil {
+			return e
+		}
 		go func() {
 			ticker := time.NewTicker(time.Minute)
 			defer ticker.Stop()
