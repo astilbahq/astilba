@@ -79,7 +79,7 @@ func TestEncryptedWorkspaceExportPreservesIdentityWithoutInstallationKeys(t *tes
 	if e = json.Unmarshal(plain, &archive); e != nil {
 		t.Fatal(e)
 	}
-	if archive.Version != 6 || archive.Workspace != ws || archive.Name != "Test workspace" || len(archive.Tables["environments"]) != 1 {
+	if archive.Version != 7 || archive.Workspace != ws || archive.Name != "Test workspace" || len(archive.Tables["environments"]) != 1 {
 		t.Fatal("workspace identity not preserved")
 	}
 	var encoded string
