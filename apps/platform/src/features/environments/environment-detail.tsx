@@ -77,6 +77,9 @@ export function EnvironmentDetail(props: EnvProps) {
   const active = props.environment.state === "active";
   const write = props.write && !managed && active;
   const owner = props.owner && active;
+  // Removing a preview stays an owner's action on a retired template, whose own retirement may
+  // have left a preview's cleanup blocked.
+  const previewCleanup = props.owner && template;
   return (
     <TabsRoot
       value={section}
@@ -116,22 +119,20 @@ export function EnvironmentDetail(props: EnvProps) {
       </header>
       {template && <p className={s.note}>{t(($) => $.templateDescription)}</p>}
       {managed && <p className={s.note}>{t(($) => $.previewDescription)}</p>}
-      {/* Stays mounted from retiring through retired and on into a restore, so a message that
-          arrives as the state changes is announced. An active page without a message leaves it
-          out, keeping its own status messages the only ones there. */}
-      {(!active || changed === props.environment.state) && (
-        <div role="status">
-          {changed === props.environment.state && (
-            <p className={s.note}>
-              {changed === "retired"
-                ? t(($) => $.lifecycle.retired)
-                : changed === "retiring"
-                  ? t(($) => $.lifecycle.retirementStarted)
-                  : t(($) => $.lifecycle.restored)}
-            </p>
-          )}
-        </div>
-      )}
+      {/* Always mounted and empty until a lifecycle change has something to say, so a message
+          is announced even when the change starts from an active page, or ends in one. A region
+          that appears already holding its message is often not read. */}
+      <div role="status">
+        {changed === props.environment.state && (
+          <p className={s.note}>
+            {changed === "retired"
+              ? t(($) => $.lifecycle.retired)
+              : changed === "retiring"
+                ? t(($) => $.lifecycle.retirementStarted)
+                : t(($) => $.lifecycle.restored)}
+          </p>
+        )}
+      </div>
       {!active && (
         <RetirementStatus
           environment={props.environment}
@@ -191,6 +192,7 @@ export function EnvironmentDetail(props: EnvProps) {
             {...props}
             write={write}
             owner={owner}
+            previewCleanup={previewCleanup}
             initial={draft.data}
             section={section}
             visited={visited}

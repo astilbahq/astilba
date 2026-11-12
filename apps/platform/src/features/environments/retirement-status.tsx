@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type RefObject, useId } from "react";
 import { Trans, useTranslation } from "react-i18next";
 import { client, result, type Schema } from "../../api/client";
@@ -31,31 +31,44 @@ export function RetirementStatus({
   onChange: (change: LifecycleChange, trigger: HTMLButtonElement) => void;
 }) {
   const { t } = useTranslation("environment");
+  const queries = useQueryClient();
   const heading = useId();
   const retiring = environment.state === "retiring";
   // The environment becomes retired when its server confirms the removal.
-  useQuery({
-    ...environmentsOptions(
-      path.workspaceId,
-      path.projectId,
-      path.environmentId,
-    ),
-    refetchInterval: retiring ? 5000 : false,
-  });
+  const environments = environmentsOptions(
+    path.workspaceId,
+    path.projectId,
+    path.environmentId,
+  );
+  useQuery({ ...environments, refetchInterval: retiring ? 5000 : false });
   const operationId = retiring ? environment.retirementOperationId : null;
   const operation = useQuery({
     queryKey: ["operation", path, operationId],
     enabled: !!operationId,
-    queryFn: ({ signal }) =>
-      result(
+    queryFn: async ({ signal }) => {
+      const next = await result(
         client.GET(`${root}/operations/{operationId}`, {
           params: { path: { ...path, operationId: operationId ?? "" } },
           signal,
         }),
-      ),
+      );
+      // The same report retired the environment, so the page catches up now rather than at
+      // its next poll.
+      if (next.state === "succeeded")
+        void queries.invalidateQueries({ queryKey: environments.queryKey });
+      return next;
+    },
     refetchInterval: ({ state: { data } }) =>
       data && finished(data.state) ? false : 5000,
   });
+  const succeeded = operation.data?.state === "succeeded";
+  const progress = operation.data && (
+    <p>
+      {t(($) => $.lifecycle.status.operation, {
+        state: t(($) => $.lifecycle.operationState[operation.data.state]),
+      })}
+    </p>
+  );
   const volumes = useQuery({
     queryKey: ["volumes", path],
     queryFn: ({ signal }) =>
@@ -93,30 +106,31 @@ export function RetirementStatus({
         )}
       </div>
       {operationId && (
-        <div className={e.intro} role="status">
-          {operation.data ? (
-            <>
-              <p>
-                {t(($) => $.lifecycle.status.operation, {
-                  state: t(
-                    ($) => $.lifecycle.operationState[operation.data.state],
-                  ),
-                })}
+        <div className={e.intro}>
+          {/* Progress is announced here, but not success: the environment becomes retired with
+              it, which the page announces once. */}
+          <div className={e.intro} role="status">
+            {operation.data ? (
+              !succeeded && (
+                <>
+                  {progress}
+                  {operation.data.note && (
+                    <p className={e.muted}>{operation.data.note}</p>
+                  )}
+                  {owner && retryable && (
+                    <p>{t(($) => $.lifecycle.status.retryHint)}</p>
+                  )}
+                </>
+              )
+            ) : (
+              <p className={e.muted}>
+                {operation.isError
+                  ? t(($) => $.lifecycle.status.operationFailed)
+                  : t(($) => $.lifecycle.status.operationLoading)}
               </p>
-              {operation.data.note && (
-                <p className={e.muted}>{operation.data.note}</p>
-              )}
-              {owner && retryable && (
-                <p>{t(($) => $.lifecycle.status.retryHint)}</p>
-              )}
-            </>
-          ) : (
-            <p className={e.muted}>
-              {operation.isError
-                ? t(($) => $.lifecycle.status.operationFailed)
-                : t(($) => $.lifecycle.status.operationLoading)}
-            </p>
-          )}
+            )}
+          </div>
+          {succeeded && progress}
         </div>
       )}
       <div className={e.intro}>

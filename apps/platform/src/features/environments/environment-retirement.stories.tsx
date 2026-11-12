@@ -314,6 +314,194 @@ export const RetiredWithoutHost: Story = {
     ...projectHandlers(),
   ),
 };
+// Retiring from an active page announces the outcome from a region that was already there, here
+// for an environment that was never deployed and so is retired at once.
+let retiredNow = false;
+export const RetireAnnounced: Story = {
+  beforeEach: () => {
+    retiredNow = false;
+  },
+  parameters: scenario(
+    session,
+    http.get(environmentsPath, () =>
+      HttpResponse.json(
+        listed(
+          retiredNow
+            ? { ...retired, retirementOperationId: undefined }
+            : environments[0],
+        ),
+      ),
+    ),
+    http.post(`${environmentRoot}/retire`, () => {
+      retiredNow = true;
+      return HttpResponse.json(
+        { ...retired, retirementOperationId: undefined },
+        { status: 201 },
+      );
+    }),
+    members,
+    volumes,
+    ...projectHandlers(),
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByRole("heading", { level: 1, name: "Development" });
+    const regions = canvas.getAllByRole("status");
+    const dialog = within(await openRetireDialog(canvasElement));
+    await userEvent.type(
+      dialog.getByLabelText("Environment name"),
+      "Development",
+    );
+    await userEvent.click(
+      dialog.getByRole("button", { name: "Retire environment" }),
+    );
+    const message = await canvas.findByText("Environment retired.");
+    await expect(regions).toContain(message.closest('[role="status"]'));
+  },
+};
+// Restoring announces the outcome from a region that stays as the page becomes active again.
+let restoredNow = false;
+export const RestoreAnnounced: Story = {
+  beforeEach: () => {
+    restoredNow = false;
+  },
+  parameters: scenario(
+    session,
+    http.get(environmentsPath, () =>
+      HttpResponse.json(listed(restoredNow ? environments[0] : retired)),
+    ),
+    http.post(`${environmentRoot}/restore`, () => {
+      restoredNow = true;
+      return HttpResponse.json(environments[0], { status: 201 });
+    }),
+    members,
+    volumes,
+    ...projectHandlers(),
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByRole("heading", { name: "This environment is retired" });
+    const regions = canvas.getAllByRole("status");
+    await userEvent.click(
+      canvas.getByRole("button", { name: "Restore environment" }),
+    );
+    const dialog = within(
+      await within(canvasElement.ownerDocument.body).findByRole("alertdialog", {
+        name: "Restore Development?",
+      }),
+    );
+    await userEvent.type(
+      dialog.getByLabelText("Environment name"),
+      "Development",
+    );
+    await userEvent.click(
+      dialog.getByRole("button", { name: "Restore environment" }),
+    );
+    const message = await canvas.findByText(
+      "Environment restored. Nothing has been deployed.",
+    );
+    await expect(regions).toContain(message.closest('[role="status"]'));
+  },
+};
+// A server's confirmation finishes the retirement, which only the page announces.
+let confirmed = false;
+export const RetirementCompletesOnce: Story = {
+  beforeEach: () => {
+    confirmed = false;
+  },
+  parameters: scenario(
+    session,
+    http.get(environmentsPath, () =>
+      HttpResponse.json(listed(confirmed ? retired : retiring)),
+    ),
+    http.get(`${environmentRoot}/operations/:operationId`, () => {
+      confirmed = true;
+      return HttpResponse.json({
+        id: operationId,
+        serverId: "00000000-0000-4000-8000-000000000080",
+        environmentId: environments[0].id,
+        generation: 1,
+        state: "succeeded",
+        kind: "update",
+        cancelRequested: false,
+        note: "",
+        steps: [],
+        createdAt: "2026-11-10T09:30:00Z",
+      } satisfies Schema["Operation"]);
+    }),
+    members,
+    volumes,
+    ...projectHandlers(),
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    // The operation's success refreshes the environment without waiting for its poll.
+    await canvas.findByText("Environment retired.");
+    for (const region of canvas.getAllByRole("status"))
+      await expect(region).not.toHaveTextContent(
+        "Removal from the server: finished",
+      );
+  },
+};
+// A retired template's owners can still remove its previews, which its retirement asked to clean
+// up and which may be blocked, but nothing else about them.
+const template = environments[2];
+const retiredTemplate: Schema["Environment"] = {
+  ...template,
+  state: "retired",
+  retiredAt: "2026-11-10T09:30:00Z",
+  retiredBy: ownerId,
+};
+export const RetiredTemplatePreviews: Story = {
+  args: {
+    initialPath: `/?workspace=${workspace.id}&project=${examples[0].id}&environment=${template.id}`,
+  },
+  parameters: scenario(
+    session,
+    http.get(environmentsPath, () =>
+      HttpResponse.json(
+        environments.map((item) =>
+          item.id === template.id ? retiredTemplate : item,
+        ),
+      ),
+    ),
+    http.get(`${environmentRoot}/previews`, () =>
+      HttpResponse.json([
+        {
+          id: "00000000-0000-4000-8000-000000000090",
+          number: 42,
+          head: "0123456789abcdef0123456789abcdef01234567",
+          headRepository: 7,
+          fork: false,
+          state: "blocked",
+          note: "Cleanup needs renewed owner approval or a verified agent transfer.",
+          generation: 1,
+          environmentId: "00000000-0000-4000-8000-000000000091",
+        },
+      ] satisfies Schema["PullRequestPreview"][]),
+    ),
+    members,
+    volumes,
+    ...projectHandlers(),
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("tab", { name: "Previews" }));
+    const previews = within(
+      await canvas.findByRole("region", { name: "Pull-request previews" }),
+    );
+    await expect(
+      await previews.findByRole("button", { name: "Remove preview and data" }),
+    ).toBeEnabled();
+    for (const name of [
+      "Refresh preview",
+      "Approve this fork commit",
+      "Pause automatic previews",
+    ])
+      await expect(previews.queryByRole("button", { name })).toBeNull();
+    await expect(previews.queryByText("Set up automatic previews")).toBeNull();
+  },
+};
 export const RetiredViewer: Story = {
   parameters: scenario(
     { ...session, workspaces: [{ ...workspace, role: "viewer" }] },

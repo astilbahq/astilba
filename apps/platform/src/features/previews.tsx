@@ -15,16 +15,20 @@ import type { EnvironmentPath } from "./visual-editor";
 
 const root =
   "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}" as const;
+// `owner` manages the policy and each preview; `cleanup` only removes previews. A retired template
+// gives its owners cleanup alone, which its retirement may have left blocked.
 export function Previews({
   path,
   revision,
   dirty,
   owner,
+  cleanup,
 }: {
   path: EnvironmentPath;
   revision: Schema["Revision"];
   dirty: boolean;
   owner: boolean;
+  cleanup: boolean;
 }) {
   const query = useQueryClient();
   const action = useAction();
@@ -214,9 +218,9 @@ export function Previews({
                   </Link>
                 )}
               </div>
-              {owner && (
+              {(owner || cleanup) && (
                 <div className={s.row}>
-                  {p.state === "approval_required" && (
+                  {owner && p.state === "approval_required" && (
                     <Button
                       type="button"
                       disabled={action.isPending}
@@ -232,32 +236,36 @@ export function Previews({
                       Approve this fork commit
                     </Button>
                   )}
-                  <Button
-                    type="button"
-                    disabled={action.isPending}
-                    onClick={() => run(p, "refresh")}
-                  >
-                    {p.state === "deleted"
-                      ? "Recreate preview"
-                      : "Refresh preview"}
-                  </Button>
-                  {p.state !== "deleted" && p.state !== "deleting" && (
+                  {owner && (
                     <Button
                       type="button"
-                      variant="danger"
                       disabled={action.isPending}
-                      onClick={() => {
-                        if (
-                          confirm(
-                            `Remove request #${p.number}’s preview now, including its owned volumes and database data? This cannot be undone.`,
-                          )
-                        )
-                          run(p, "cleanup");
-                      }}
+                      onClick={() => run(p, "refresh")}
                     >
-                      Remove preview and data
+                      {p.state === "deleted"
+                        ? "Recreate preview"
+                        : "Refresh preview"}
                     </Button>
                   )}
+                  {cleanup &&
+                    p.state !== "deleted" &&
+                    p.state !== "deleting" && (
+                      <Button
+                        type="button"
+                        variant="danger"
+                        disabled={action.isPending}
+                        onClick={() => {
+                          if (
+                            confirm(
+                              `Remove request #${p.number}’s preview now, including its owned volumes and database data? This cannot be undone.`,
+                            )
+                          )
+                            run(p, "cleanup");
+                        }}
+                      >
+                        Remove preview and data
+                      </Button>
+                    )}
                 </div>
               )}
             </li>

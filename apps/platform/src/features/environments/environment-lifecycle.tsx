@@ -27,6 +27,13 @@ const root =
 const hasCode = (error: unknown, code: string) =>
   error instanceof ApiError && error.detail.code === code;
 
+// Only the typed name is the owner's to correct. Any other invalid input, such as a deployment
+// plan the server cannot build, is a refusal.
+const nameMismatch = (error: unknown) =>
+  error instanceof ApiError &&
+  error.detail.code === "invalid_input" &&
+  !!error.detail.fields?.includes("confirmName");
+
 // The project's environment list and each environment's own copy of it.
 const environmentQueries = (path: EnvironmentPath) =>
   environmentsOptions(path.workspaceId, path.projectId).queryKey;
@@ -73,14 +80,14 @@ function useLifecycleErrorText() {
         return t(($) => $.lifecycle.refusal.cutover);
       case "retirement.cross_host":
         return t(($) => $.lifecycle.refusal.crossHost);
+      case "retirement.replacement":
+        return t(($) => $.lifecycle.refusal.replacement);
       case "retirement.agent_update":
         return t(($) => $.lifecycle.refusal.agentUpdate);
       case "retirement.server_transfer":
         return t(($) => $.lifecycle.refusal.serverTransfer);
       case "retirement.state":
         return t(($) => $.lifecycle.refusal.state);
-      case "environment.state":
-        return t(($) => $.lifecycle.refusal.inactive);
       default:
         return t(($) => $.lifecycle.refusal.unknown);
     }
@@ -89,7 +96,9 @@ function useLifecycleErrorText() {
     if (!(error instanceof ApiError)) return common(($) => $.unexpectedError);
     switch (error.detail.code) {
       case "invalid_input":
-        return t(($) => $.lifecycle.nameMismatch);
+        return nameMismatch(error)
+          ? t(($) => $.lifecycle.nameMismatch)
+          : t(($) => $.lifecycle.refusal.unknown);
       case "forbidden":
         return t(($) => $.lifecycle.forbidden);
       case "mfa_required":
@@ -166,7 +175,7 @@ export function LifecycleDialog({
   const hintId = useId();
   const errorId = useId();
   const retire = change === "retire";
-  const mismatch = hasCode(action.error, "invalid_input");
+  const mismatch = nameMismatch(action.error);
   const dismiss = () => {
     action.reset();
     setName("");
@@ -187,11 +196,11 @@ export function LifecycleDialog({
         onChanged(next);
         dismiss();
       } catch (error) {
-        if (hasCode(error, "invalid_input")) input.current?.focus();
+        if (nameMismatch(error)) input.current?.focus();
         // A refusal or a name mismatch can come from a change made elsewhere, such as another
         // owner's retirement or rename, so the page behind the dialog catches up with it. The
         // typed name stays for another try.
-        if (hasCode(error, "conflict") || hasCode(error, "invalid_input"))
+        if (hasCode(error, "conflict") || nameMismatch(error))
           void queries.invalidateQueries({
             queryKey: environmentQueries(path),
           });

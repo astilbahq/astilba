@@ -410,9 +410,9 @@ export default interface Resources {
       "refusal": {
         "activeOperation": "Another operation is running for this environment. Wait for it to finish or cancel it, then try again.",
         "agentUpdate": "Update this server’s agent before retiring environments on it.",
-        "crossHost": "This environment runs on more than one server. Consolidate it onto its primary server, then try again.",
+        "crossHost": "This environment runs on more than one server. Consolidate it onto its primary server and deploy it without a placement, then try again.",
         "cutover": "A backup restore cutover is waiting to be deployed. Deploy it or replace the draft, then try again.",
-        "inactive": "This environment is retired or being retired. Restore it before changing it.",
+        "replacement": "This environment’s replacement deployment did not finish, and the server it replaced is no longer revoked, so both may run it. Finish the replacement deployment or revoke the former server, then try again.",
         "serverBusy": "Another operation is running on this environment’s server. Try again when it finishes.",
         "serverTransfer": "This environment’s server is waiting for a verified agent transfer. Complete the transfer, then try again.",
         "state": "This environment’s state has changed, so this can no longer be done. The page now shows its current state.",
@@ -464,7 +464,7 @@ export default interface Resources {
         "volumesFailed": "Kept volumes could not be loaded.",
         "volumesLoading": "Loading kept volumes…",
         "volumesTitle": "Kept volumes",
-        "withoutHost": "Its server had been revoked, so it was not contacted. This environment’s containers may still be running there."
+        "withoutHost": "A server it ran on had been revoked, so that server was not contacted. This environment’s containers may still be running there."
       },
       "subscription": "An active workspace subscription is required. Open Workspace to finish setup.",
       "unavailable": "This environment is no longer available. It may have been deleted, or you may no longer have access to it.",
