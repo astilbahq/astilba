@@ -619,10 +619,12 @@ test("visual services stay staged until a reviewed plan is applied", async ({
   await expect(
     page.getByText("The saved revision changed. Prepare a new plan."),
   ).toBeVisible();
-  await openEnvironmentSection(page, "Deployments");
+  await expect(
+    page.getByRole("region", { name: "Reviewed deployment plan" }),
+  ).toHaveCount(0);
   await expect(
     page.getByRole("button", { name: "Apply reviewed plan" }),
-  ).toBeDisabled();
+  ).toHaveCount(0);
   expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
   await openEnvironmentSection(page, "Configuration");
   await page.getByLabel("Position x", { exact: true }).fill("99");
