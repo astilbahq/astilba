@@ -5,14 +5,39 @@
 // same number on the host, where another VM's port can answer instead; this port can
 // only ever reach the container named. The container must have `nc`, as the pinned
 // PostgreSQL and BusyBox images do.
+//
+// The listener runs on a worker thread, so a caller blocked in execFileSync, such as a
+// fixture running migrations through it, still has its connections carried.
 import { spawn } from "node:child_process";
+import { once } from "node:events";
 import { createServer } from "node:net";
+import { isMainThread, parentPort, Worker, workerData } from "node:worker_threads";
 
 export async function forward({ host, container, address, port }) {
-  const open = new Set();
+  const worker = new Worker(new URL(import.meta.url), {
+    workerData: { host, container, address, port },
+  });
+  const exited = once(worker, "exit");
+  const [message] = await Promise.race([
+    once(worker, "message"),
+    once(worker, "error").then(([error]) => {
+      throw error;
+    }),
+  ]);
+  return {
+    port: message.port,
+    // Closing ends the connections still open, as removing the container would.
+    close: async () => {
+      worker.postMessage("close");
+      await exited;
+    },
+  };
+}
+
+if (!isMainThread && workerData?.container) {
+  const { host, container, address, port } = workerData;
+  const open = new Map();
   const server = createServer((socket) => {
-    open.add(socket);
-    socket.once("close", () => open.delete(socket));
     const child = spawn(
       "docker",
       [
@@ -27,25 +52,27 @@ export async function forward({ host, container, address, port }) {
       ],
       { stdio: ["pipe", "pipe", "ignore"] },
     );
+    open.set(socket, child);
     // nc exits when its input ends, and its output ending closes the connection.
     socket.pipe(child.stdin);
     child.stdout.pipe(socket);
     child.stdin.on("error", () => {});
     socket.on("error", () => child.stdin.destroy());
-    socket.on("close", () => child.stdin.end());
+    socket.once("close", () => {
+      open.delete(socket);
+      child.stdin.end();
+    });
     child.on("error", () => socket.destroy());
   });
-  await new Promise((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", resolve);
+  server.listen(0, "127.0.0.1", () =>
+    parentPort.postMessage({ port: server.address().port }),
+  );
+  parentPort.on("message", () => {
+    server.close();
+    for (const [socket, child] of open) {
+      socket.destroy();
+      child.kill();
+    }
+    parentPort.close();
   });
-  return {
-    port: server.address().port,
-    // Closing ends the connections still open, as removing the container would.
-    close: () =>
-      new Promise((resolve) => {
-        server.close(() => resolve());
-        for (const socket of open) socket.destroy();
-      }),
-  };
 }

@@ -14,8 +14,8 @@ import (
 // `kubectl port-forward` goes through the API server. It listens on a loopback port the
 // kernel gives this process and carries each connection over the Docker API, running
 // `nc` in the container. A published port goes through the VM's port forwarder to the
-// same number on the host, where another VM's port can answer instead (PLAT-215,
-// PLAT-272). This port belongs to this process and only ever reaches the container named.
+// same number on the host, where another VM's port can answer instead. This port
+// belongs to this process and only ever reaches the container named.
 // scripts/docker-forward.mjs does the same for the browser fixture.
 type dockerForward struct {
 	listener net.Listener
