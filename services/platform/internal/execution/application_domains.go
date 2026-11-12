@@ -31,6 +31,12 @@ type domainWorker struct {
 }
 
 func (w *domainWorker) Timeout(*river.Job[domainArgs]) time.Duration { return time.Minute }
+
+// NextRetry keeps retries within the sweep's one-minute cadence. River's default backoff
+// would leave a revoked server's records published for hours after a short provider outage.
+func (w *domainWorker) NextRetry(job *river.Job[domainArgs]) time.Time {
+	return time.Now().Add(min(time.Duration(1)<<min(job.Attempt, 6)*time.Second, time.Minute))
+}
 func (w *domainWorker) Work(ctx context.Context, job *river.Job[domainArgs]) error {
 	return w.service.reconcileDomain(ctx, job.Args)
 }
@@ -55,7 +61,7 @@ func (s *Service) domainConfiguration(ctx context.Context, tx pgx.Tx, ws, id uui
 		v.Note = "Generated names are disabled by the installation operator."
 		return v, nil
 	}
-	v.Wildcard = "*." + domain.ServerDomain(base, id)
+	v.Wildcard = dnsName(base, id)
 	var approved *int64
 	var storedBase string
 	e := tx.QueryRow(ctx, "SELECT base,ipv4,ipv6,generation,approved_controller,state,observed_at,note FROM server_domains WHERE workspace_id=$1 AND server_id=$2", ws, id).Scan(&storedBase, &v.Ipv4, &v.Ipv6, &v.Generation, &approved, &v.State, &v.ObservedAt, &v.Note)
@@ -228,6 +234,9 @@ func (s *Service) SweepDomains(ctx context.Context) error {
 			return e
 		}
 	}
+	if e = s.enqueueStalePublications(ctx, tx); e != nil {
+		return e
+	}
 	return tx.Commit(ctx)
 }
 func (s *Service) reconcileDomain(ctx context.Context, a domainArgs) error {
@@ -253,40 +262,45 @@ func (s *Service) reconcileDomain(ctx context.Context, a domainArgs) error {
 			conn.Conn().Close(unlock)
 		}
 	}()
+	// Withdrawal converges on what the database says now, whichever job runs it.
+	withdrawn := s.withdrawStalePublications(ctx, conn, a.Server)
 	var ws, installation uuid.UUID
 	var base, ipv4, ipv6 string
 	e = conn.QueryRow(ctx, `SELECT d.workspace_id,d.base,d.ipv4,d.ipv6,i.id FROM server_domains d JOIN servers s ON s.id=d.server_id CROSS JOIN dns_installation i WHERE d.server_id=$1 AND d.generation=$2 AND d.approved_controller=$3 AND s.controller_generation=$3 AND NOT s.revoked AND NOT s.awaiting_transfer AND d.base=$4`, a.Server, a.Generation, a.Controller, s.Store.ApplicationDomain).Scan(&ws, &base, &ipv4, &ipv6, &installation)
 	if errors.Is(e, pgx.ErrNoRows) {
-		return nil
+		return withdrawn
 	}
 	if e != nil {
-		return e
+		return errors.Join(withdrawn, e)
 	}
 	// Hosted entitlement is checked without keeping a transaction open over DNS.
 	tx, e := conn.Begin(ctx)
 	if e != nil {
-		return e
+		return errors.Join(withdrawn, e)
 	}
 	e = s.Store.ManagementAdmission(ctx, tx, ws)
 	_ = tx.Rollback(ctx)
 	if errors.Is(e, store.SubscriptionRequired) {
-		return nil
+		return withdrawn
 	}
 	if e != nil {
-		return e
+		return errors.Join(withdrawn, e)
 	}
-	records, providerErr := s.DNS.Reconcile(ctx, "*."+domain.ServerDomain(base, a.Server), "astilba:"+installation.String()+":"+a.Server.String(), ipv4, ipv6)
+	if e = s.recordPublication(ctx, conn, ws, a.Server, base); e != nil {
+		return errors.Join(withdrawn, e)
+	}
+	name := dnsName(base, a.Server)
+	records, providerErr := s.DNS.Reconcile(ctx, name, dnsMarker(installation, a.Server), ipv4, ipv6, s.auditDeletion(ctx, conn, ws, a.Server, name, withdrawAddress))
 	state, note := "applied", "Provider records observed. DNS propagation, TLS and application reachability are separate checks."
 	if providerErr != nil {
 		state, note = "failed", providerErr.Error()
+	} else if e = s.confirmDeletions(ctx, conn, a.Server, name, records); e != nil {
+		return errors.Join(withdrawn, e)
 	}
 	raw, _ := stablejson.Marshal(records)
 	if records == nil {
 		raw = []byte(`{}`)
 	}
 	_, e = conn.Exec(ctx, `UPDATE server_domains SET state=$4,note=$5,observed_at=clock_timestamp(),records=$6 WHERE server_id=$1 AND generation=$2 AND approved_controller=$3`, a.Server, a.Generation, a.Controller, state, note, raw)
-	if e != nil {
-		return e
-	}
-	return providerErr
+	return errors.Join(withdrawn, providerErr, e)
 }
