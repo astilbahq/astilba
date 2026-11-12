@@ -33,7 +33,7 @@ func InsertRevision(ctx context.Context, q *db.Queries, arg db.InsertRevisionPar
 		return db.SpecificationRevision{}, err
 	}
 	if !fits {
-		return db.SpecificationRevision{}, domain.Invalid("specification")
+		return db.SpecificationRevision{}, domain.SpecificationTooLarge
 	}
 	return q.InsertRevision(ctx, arg)
 }
