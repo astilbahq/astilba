@@ -394,10 +394,10 @@ func (s *Server) VerifyMFA(w http.ResponseWriter, r *http.Request) {
 	}
 	a, e := s.Auth.VerifyCode(r.Context(), id, s.Sessions.GetInt64(r.Context(), "pending-version"), b.Code)
 	if e == nil {
-		// The signed-in token continues the pending sign-in's lineage and replaces its row, so
-		// a logout of the pending sign-in from another tab, such as choosing another account,
-		// ends it or makes it refuse.
-		r.Context().Value(sessionLoadKey{}).(*sessionLoad).replaceLive = true
+		// The signed-in token continues the pending sign-in's lineage, so a logout that read
+		// the pending sign-in, such as choosing another account in another tab, ends what it
+		// became. Signing in proves a credential, so it does not need the pending row itself.
+		r.Context().Value(sessionLoadKey{}).(*sessionLoad).continueLineage = true
 		e = s.establish(r.Context(), a, true)
 	}
 	if e != nil {

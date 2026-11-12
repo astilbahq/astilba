@@ -42,6 +42,8 @@ type sessionLoad struct {
 	lineage uuid.UUID
 	// staleCSRF is the CSRF token of a loaded session that dropStaleSession ended. See csrfToken.
 	staleCSRF string
+	// continueLineage gives a new sign-in's token the loaded session's lineage. See VerifyMFA.
+	continueLineage bool
 }
 
 type sessionStore struct {
@@ -142,8 +144,12 @@ func (s *sessionStore) CommitCtx(ctx context.Context, token string, data []byte,
 			return err
 		}
 	} else {
-		// A new sign-in starts a lineage of its own, even in a browser that had a session.
+		// A new sign-in starts a lineage of its own, even in a browser that had a session,
+		// unless it completes the sign-in that session began.
 		lineage := uuid.New()
+		if loaded.continueLineage && loaded.lineage != uuid.Nil {
+			lineage = loaded.lineage
+		}
 		if err := s.queries.InsertSession(ctx, db.InsertSessionParams{Token: token, Data: data, Expiry: expiry, Lineage: lineage}); err != nil {
 			return err
 		}

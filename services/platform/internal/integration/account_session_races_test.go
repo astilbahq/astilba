@@ -88,9 +88,9 @@ func TestLogoutBetweenCredentialChangeAndRenewal(t *testing.T) {
 	}
 }
 
-// Choosing another account at the second-factor step logs out the pending sign-in. A code
-// submitted from another tab at the same moment must not complete it afterwards.
-func TestLogoutBeforeSecondFactorCompletes(t *testing.T) {
+// Choosing another account at the second-factor step logs out the pending sign-in. If a code
+// from another tab completes it while that logout runs, the logout ends the completed session.
+func TestLogoutOfAPendingSignInEndsItsCompletion(t *testing.T) {
 	f := setup(t)
 	codes := enableMFA(t, f.browser(t).withLogin("owner@example.test", f.password))
 	gate, release := holdSessions(t, f)
@@ -99,18 +99,18 @@ func TestLogoutBeforeSecondFactorCompletes(t *testing.T) {
 		t.Fatal("expected the sign-in to wait for its second factor")
 	}
 	loaded := b.client.Jar.Cookies(mustURL(f.server.URL))
-	lineage := sessionLineage(t, f, loaded[0])
 
-	gate.armedCommit.Store(true)
-	finish := sendHeld(t, b, gate, loaded, "POST", "/api/v1/auth/mfa", map[string]string{"code": codes.Codes[0]})
-	b.call("POST", "/api/v1/auth/logout", nil, 204, nil)
+	gate.armed.Store(true)
+	finish := sendHeld(t, b, gate, loaded, "POST", "/api/v1/auth/logout", nil)
+	b.call("POST", "/api/v1/auth/mfa", map[string]string{"code": codes.Codes[0]}, 200, nil)
+	completed := b.client.Jar.Cookies(mustURL(f.server.URL))
 	release()
 
-	if result := finish(); result.status != 401 || len(sessionCookies(result.cookies)) != 0 {
-		t.Fatalf("the second factor after logout answered %d with cookies %v: %s", result.status, result.cookies, result.body)
+	if result := finish(); result.status != 204 {
+		t.Fatalf("logout answered %d: %s", result.status, result.body)
 	}
-	if remaining := lineageRows(t, f, lineage); remaining != 0 {
-		t.Fatal("the logout left sessions of its lineage: ", remaining)
+	if session := sessionFromCookies(t, b, completed); session.User != nil {
+		t.Fatal("the completed sign-in survived the logout of the pending one")
 	}
 }
 
