@@ -201,7 +201,7 @@ func TestAutomationPlanNeedsConfigurationForCommandAndDrift(t *testing.T) {
 	bearerCall(t, f, deployer, "POST", path+"/deployment-plans", budgets, 201, &plain)
 	agent.observe(agent.next(), deployment.Observation{Images: digest("b"), Resources: running("a", false), StateHash: strings.Repeat("e", 64)})
 	bearerCall(t, f, deployer, "GET", path+"/deployment-plans/"+plain.ID.String(), nil, 200, &plain)
-	if plain.Plan == nil || plain.Plan.Release == nil || len(plain.Plan.Release.Options.Command) != 0 || plain.Plan.Release.Options.DrainSeconds != 5 {
+	if plain.Review == nil || plain.Review.Release == nil || len(plain.Review.Release.Options.Command) != 0 || plain.Review.Release.Options.DrainSeconds != 5 {
 		t.Fatalf("a plain protected release was lost: %+v", plain)
 	}
 	bearerCall(t, f, deployer, "POST", path+"/deployment-plans/"+plain.ID.String()+"/apply", api.ApplyVisualPlan{IdempotencyKey: uuid.New(), ApproveHostChanges: approved()}, 201, nil)
@@ -224,12 +224,12 @@ func TestAutomationPlanNeedsConfigurationForCommandAndDrift(t *testing.T) {
 	bearerCall(t, f, configurer, "POST", path+"/deployment-plans", withCommand, 201, &reviewed)
 	agent.observe(agent.next(), deployment.Observation{Images: digest("c"), Resources: running("b", false), StateHash: strings.Repeat("d", 64)})
 	bearerCall(t, f, configurer, "GET", path+"/deployment-plans/"+reviewed.ID.String(), nil, 200, &reviewed)
-	if reviewed.Plan == nil || reviewed.Plan.Release == nil || !slices.Equal(reviewed.Plan.Release.Options.Command, command) {
+	if reviewed.Review == nil || reviewed.Review.Release == nil || !slices.Equal(reviewed.Review.Release.Options.Command, command) {
 		t.Fatalf("configuration authority lost the release command: %+v", reviewed)
 	}
 	driftVisible := func(status deployment.Status) {
 		t.Helper()
-		if status.Plan == nil || !status.Plan.AcceptDrift || !slices.ContainsFunc(status.Plan.Effects, func(effect string) bool { return strings.Contains(effect, "Accept reported drift") }) {
+		if status.Review == nil || !status.Review.AcceptDrift || !slices.ContainsFunc(status.Review.Effects, func(effect string) bool { return strings.Contains(effect, "Accept reported drift") }) {
 			t.Fatalf("drift acceptance is missing from plan review: %+v", status)
 		}
 	}

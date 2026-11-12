@@ -114,8 +114,8 @@ func (c *Client) Draft(ctx context.Context, v api.AutomationContext) (api.Revisi
 	return out, err
 }
 
-func (c *Client) UpdateDraft(ctx context.Context, v api.AutomationContext, in api.DraftUpdate) (api.Revision, error) {
-	var out api.Revision
+func (c *Client) UpdateDraft(ctx context.Context, v api.AutomationContext, in api.DraftUpdate) (api.SavedDraft, error) {
+	var out api.SavedDraft
 	err := c.request(ctx, "PUT", scope(v)+"/draft", in, &out)
 	return out, err
 }

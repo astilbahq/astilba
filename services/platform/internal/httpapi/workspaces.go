@@ -124,15 +124,20 @@ func (s *Server) member(w http.ResponseWriter, r *http.Request, ws, account uuid
 				return nil, &domain.Error{Code: "last_owner", Message: "Keep at least one workspace owner."}
 			}
 		}
+		to := ""
 		if role == nil {
 			e = q.DeleteMembership(ctx, db.DeleteMembershipParams{WorkspaceID: ws, AccountID: account})
 		} else {
-			e = q.UpdateMembership(ctx, db.UpdateMembershipParams{WorkspaceID: ws, AccountID: account, Role: string(*role)})
+			to = string(*role)
+			e = q.UpdateMembership(ctx, db.UpdateMembershipParams{WorkspaceID: ws, AccountID: account, Role: to})
 		}
 		if e != nil {
 			return nil, e
 		}
-		return nil, store.Audit(ctx, q, *principal(ctx), ws, "membership.change", account)
+		if e = store.Audit(ctx, q, *principal(ctx), ws, "membership.change", account); e != nil {
+			return nil, e
+		}
+		return nil, store.EndAuthority(ctx, q, *principal(ctx), ws, account, m.Role, to)
 	})
 }
 func (s *Server) UpdateMember(w http.ResponseWriter, r *http.Request, ws, id uuid.UUID) {
@@ -175,7 +180,7 @@ func (s *Server) InviteMember(w http.ResponseWriter, r *http.Request, ws uuid.UU
 	id := uuid.New()
 	expiry := s.Auth.Now().Add(24 * time.Hour)
 	e = s.Store.InWorkspace(r.Context(), *principal(r.Context()), ws, store.WorkspaceAccess{Write: true, Owner: true, Credential: true}, func(q *db.Queries, _ store.Workspace) error {
-		if e := q.InsertInvitation(r.Context(), db.InsertInvitationParams{WorkspaceID: ws, ID: id, Email: email, Role: string(b.Role), TokenHash: auth.Hash(token), ExpiresAt: expiry}); e != nil {
+		if e := q.InsertInvitation(r.Context(), db.InsertInvitationParams{WorkspaceID: ws, ID: id, Email: email, Role: string(b.Role), TokenHash: auth.Hash(token), ExpiresAt: expiry, IssuerID: principal(r.Context()).Account.ID, IssuerAuthVersion: principal(r.Context()).Account.AuthVersion}); e != nil {
 			return e
 		}
 		return store.Audit(r.Context(), q, *principal(r.Context()), ws, "invitation.create", id)

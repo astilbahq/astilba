@@ -684,7 +684,7 @@ func TestGitWebhookBurstMakesBoundedProgress(t *testing.T) {
 		image := pipelineTestImage
 		spec := domain.Specification{Version: 1, Applications: []domain.Application{{ID: app, Name: "worker", Kind: "worker", Source: domain.ApplicationSource{Kind: "image", Image: &image}}}, Variables: []domain.Variable{}}
 		b.call("PUT", prefix+"/projects/"+project.Id.String()+"/environments/"+env.Id.String()+"/draft", map[string]any{"baseRevisionId": env.DraftRevisionId, "specification": spec}, 200, nil)
-		if _, err := f.st.Pool.Exec(context.Background(), "INSERT INTO build_targets(workspace_id,environment_id,application_id,connection_id,configuration,input_hash,requested_commit,policy_actor) VALUES($1,$2,$3,$4,$5,$6,$7,$8)", ws, env.Id, app, connection.Connection.ID, raw, strings.Repeat("a", 64), strings.Repeat("a", 40), f.owner); err != nil {
+		if _, err := f.st.Pool.Exec(context.Background(), "INSERT INTO build_targets(workspace_id,environment_id,application_id,connection_id,configuration,input_hash,requested_commit,policy_actor,policy_auth_version) VALUES($1,$2,$3,$4,$5,$6,$7,$8,1)", ws, env.Id, app, connection.Connection.ID, raw, strings.Repeat("a", 64), strings.Repeat("a", 40), f.owner); err != nil {
 			t.Fatal(err)
 		}
 	}

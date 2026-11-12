@@ -65,6 +65,15 @@ export async function publishLayout(
   }
 }
 
+// A save returns the whole revision only to a caller that may read the environment, as a browser
+// member always may.
+export function savedRevision(saved: Schema["SavedDraft"]): Schema["Revision"] {
+  const { hash, specification } = saved;
+  if (hash === undefined || specification === undefined)
+    throw new Error("The saved draft came back without its configuration.");
+  return { ...saved, hash, specification };
+}
+
 // Only current-draft reads and successful writes belong here, never history.
 export async function publishDraft(
   queries: QueryClient,

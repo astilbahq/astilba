@@ -322,6 +322,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/build-targets/{applicationId}/approval": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Approve a build target's automatic builds and deployments as yours, which resumes a paused target. Needs recent authentication, and an owner when the target deploys. */
+        post: operations["approveBuildTarget"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/build-targets/{applicationId}/runs": {
         parameters: {
             query?: never;
@@ -1653,6 +1670,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/source/approval": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Approve a Git source's automatic imports and deployments as yours, keeping its configuration, which resumes a paused source. Needs an owner with recent authentication. */
+        post: operations["approveGitSource"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/source/policy": {
         parameters: {
             query?: never;
@@ -2581,6 +2615,7 @@ export interface components {
             /** Format: date-time */
             expiresAt: string;
         };
+        /** @description An automation credential lists only targets it can run, those an owner approves now. A person sees every target in the environment, with its automatic actions and their approval. */
         ConfiguredBuildTarget: {
             /** Format: uuid */
             applicationId: string;
@@ -2590,6 +2625,11 @@ export interface components {
             branch: string;
             builder: string;
             targetHash: string;
+            automaticBuild?: boolean;
+            automaticDeploy?: boolean;
+            approval?: components["schemas"]["PolicyApproval"];
+            /** @description Whether an automation credential can run it on demand, which needs a current owner's approval. */
+            runnable?: boolean;
         };
         RunConfiguredBuild: {
             /** Format: uuid */
@@ -3177,10 +3217,42 @@ export interface components {
             createdAt: string;
             hash: string;
         };
+        /** @description The saved draft revision. `hash` and `specification` are present only for a caller that may read the environment, so a credential without `environment:read` learns nothing from a save beyond the new revision's identity. */
+        SavedDraft: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            authorId: string;
+            /** Format: date-time */
+            createdAt: string;
+            hash?: string;
+            specification?: components["schemas"]["Specification"];
+        };
+        /** @description A specification as a draft save sends it. It is a Specification whose Compose bundle may leave out `namespace` and `origin`. */
+        DraftSpecification: {
+            placement?: components["schemas"]["CrossHostPlacement"];
+            /** @enum {integer} */
+            version: 1;
+            applications: components["schemas"]["ApplicationReference"][];
+            variables: components["schemas"]["Variable"][];
+            volumes?: components["schemas"]["Volume"][];
+            bindings?: components["schemas"]["Binding"][];
+            routes?: components["schemas"]["Route"][];
+            compose?: components["schemas"]["DraftComposeBundle"];
+            networks?: components["schemas"]["NetworkReference"][];
+        };
+        /** @description A Compose bundle as a draft save sends it. The draft keeps its own `namespace` and Git `origin`, so a save may leave both out. A caller that may read the environment may send them unchanged; a credential without `environment:read` must leave them out. */
+        DraftComposeBundle: {
+            /** Format: uuid */
+            namespace?: string;
+            entrypoints: string[];
+            files: components["schemas"]["ComposeFile"][];
+            origin?: components["schemas"]["ComposeOrigin"];
+        };
         DraftUpdate: {
             /** Format: uuid */
             baseRevisionId: string;
-            specification: components["schemas"]["Specification"];
+            specification: components["schemas"]["DraftSpecification"];
         };
         Position: {
             x: number;
@@ -3449,9 +3521,50 @@ export interface components {
             /** Format: uuid */
             operationId: string;
             state: string;
+            /** @description The whole plan, configuration included, once it is ready. Null for a credential without `environment:read`. */
             plan: components["schemas"]["VisualPlan"] | null;
+            /** @description What reviewing and applying the plan needs, for every caller, once it is ready. */
+            review: components["schemas"]["VisualPlanReview"] | null;
             /** @description Whether applying the plan needs an owner to approve host changes the environment's applied deployment does not already have. */
             hostReview?: boolean;
+        };
+        /** @description A plan without the configuration it deploys. It has no specification, plaintext variables or Compose files. */
+        VisualPlanReview: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            serverId: string;
+            /** Format: uuid */
+            revisionId: string;
+            hash: string;
+            /** Format: date-time */
+            expiresAt: string;
+            hostChanges: boolean;
+            acceptDrift: boolean;
+            effects: string[];
+            /** @description Host permissions the plan's Compose file asks for. */
+            permissions: string[];
+            /** @description The image digest each application deploys, by application ID. */
+            images: {
+                [key: string]: string;
+            };
+            release: components["schemas"]["VisualPlanReleaseReview"] | null;
+            /** @description The servers a cross-host plan changes, with the images it pins on each. */
+            units: components["schemas"]["VisualPlanUnitReview"][];
+        };
+        VisualPlanUnitReview: {
+            /** Format: uuid */
+            serverId: string;
+            images: {
+                [key: string]: string;
+            };
+            release: components["schemas"]["VisualPlanReleaseReview"] | null;
+        };
+        /** @description The protected release a plan runs, and the command it runs first with the environment's secrets. */
+        VisualPlanReleaseReview: {
+            /** Format: uuid */
+            applicationId: string;
+            options: components["schemas"]["ReleaseOptions"];
         };
         PrimaryReplacement: {
             /** Format: uuid */
@@ -3691,8 +3804,24 @@ export interface components {
             pendingCommit: string;
             status: string;
             clean: boolean;
+            approval: components["schemas"]["PolicyApproval"];
+            /** @description Identifies the stored configuration and its approver, so an approval covers exactly what was shown. */
+            sourceHash: string;
             /** @description The newest attempt to submit a saved draft of this environment, if any. */
             submission: components["schemas"]["SourceSubmission"] | null;
+        };
+        /**
+         * @description Whether automatic work runs on a current approval. `current`: it does. `approvalRequired`: it is paused until it is approved again, after a restore, an import, a disconnected repository or its approver's role change. `approverRemoved`: its approver left the workspace. `approverRole`: its approver no longer has the role it needs. `approverCredentials`: its approver changed their password, two-factor settings or recovery codes since; only owners see this reason, others see `approvalRequired`. A paused Git source, or a target that deploys, needs an owner to approve it again; a target that only builds automatically, an owner or operator.
+         * @enum {string}
+         */
+        PolicyApproval: "current" | "approvalRequired" | "approverRemoved" | "approverRole" | "approverCredentials";
+        ApproveGitSource: {
+            /** @description The hash returned with the source, so the approval covers exactly the configuration shown. */
+            sourceHash: string;
+        };
+        ApproveBuildTarget: {
+            /** @description The hash listed for the target, so the approval covers exactly the configuration shown. */
+            targetHash: string;
         };
         BindGitSource: {
             configuration: components["schemas"]["GitSourceConfiguration"];
@@ -5306,6 +5435,42 @@ export interface operations {
             };
         };
     };
+    approveBuildTarget: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                projectId: string;
+                environmentId: string;
+                applicationId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ApproveBuildTarget"];
+            };
+        };
+        responses: {
+            /** @description Approved */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
     runConfiguredBuild: {
         parameters: {
             query?: never;
@@ -6416,7 +6581,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Revision"];
+                    "application/json": components["schemas"]["SavedDraft"];
                 };
             };
             /** @description Error */
@@ -8498,6 +8663,41 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["BuildArtifact"][];
                 };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    approveGitSource: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                projectId: string;
+                environmentId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ApproveGitSource"];
+            };
+        };
+        responses: {
+            /** @description Approved */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Error */
             default: {
