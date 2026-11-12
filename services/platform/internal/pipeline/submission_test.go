@@ -47,6 +47,8 @@ type forge struct {
 	writes   []string
 	// down answers every request with this status while it is set.
 	down int
+	// version is what a Gitea says it runs.
+	version string
 }
 
 const (
@@ -55,7 +57,7 @@ const (
 )
 
 func newForge(kind string, files map[string]forgeFile) (*forge, string) {
-	f := &forge{kind: kind, commits: map[string]forgeCommit{}, dirs: map[string][2]string{}, built: map[string]map[string]forgeFile{}, branches: map[string]string{}, reviews: map[string]int{}}
+	f := &forge{kind: kind, version: "1.22.6", commits: map[string]forgeCommit{}, dirs: map[string][2]string{}, built: map[string]map[string]forgeFile{}, branches: map[string]string{}, reviews: map[string]int{}}
 	base := f.commit(forgeCommit{Message: "base", Files: files})
 	f.branches["main"] = base
 	return f, base
@@ -179,6 +181,10 @@ func (f *forge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	token := map[string]string{"github": "Bearer " + forgeWriter, "gitlab": forgeWriter, "gitea": "token " + forgeWriter}[f.kind]
 	if r.Header.Get("Authorization") != token && r.Header.Get("PRIVATE-TOKEN") != token {
 		w.WriteHeader(401)
+		return
+	}
+	if f.kind == "gitea" && r.URL.Path == "/api/v1/version" {
+		_ = stablejson.Encode(w, map[string]string{"version": f.version})
 		return
 	}
 	prefix := map[string]string{"github": "/repos/team/app", "gitlab": "/api/v4/projects/team/app", "gitea": "/api/v1/repos/team/app"}[f.kind]
@@ -482,6 +488,17 @@ func TestSubmitThroughEachProvider(t *testing.T) {
 			f.down = http.StatusBadGateway
 			if _, err = p.Submit(t.Context(), moved); err == nil || !SubmissionRetryable(err) {
 				t.Fatalf("a failing provider was not retried: %v", err)
+			}
+			if kind == "gitea" {
+				// Gitea before 1.20 starts a branch at the default branch whatever it is asked.
+				f.down, f.version = 0, "1.19.4"
+				old := s
+				old.ID = uuid.New()
+				f.branches["main"] = base
+				_, err = p.Submit(t.Context(), old)
+				if !errors.As(err, &refused) || !strings.Contains(err.Error(), "Gitea 1.20 or later") || f.branches["astilba/"+old.ID.String()] != "" {
+					t.Fatalf("an old Gitea was written to: %v", err)
+				}
 			}
 		})
 	}

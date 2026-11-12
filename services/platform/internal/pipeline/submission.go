@@ -6,7 +6,9 @@ import (
 	"errors"
 	"maps"
 	"net/http"
+	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -299,6 +301,9 @@ func (p *Provider) createGitLabSubmission(ctx context.Context, s Submission, cha
 // createGiteaSubmission starts the branch at the exact base commit, which Gitea refuses when the
 // branch exists, then changes its files. Each update and removal names the blob it replaces.
 func (p *Provider) createGiteaSubmission(ctx context.Context, s Submission, changes []fileChange, branchExists bool) (string, error) {
+	if err := p.giteaSupportsSubmissions(ctx); err != nil {
+		return "", err
+	}
 	if !branchExists {
 		if err := p.request(ctx, http.MethodPost, p.apiPath()+"/branches", map[string]string{"new_branch_name": s.branch(), "old_ref_name": s.Base}, nil); err != nil {
 			return "", err
@@ -336,6 +341,33 @@ func (p *Provider) createGiteaSubmission(ctx context.Context, s Submission, chan
 		return "", errors.New("provider omitted the new commit")
 	}
 	return out.Commit.SHA, nil
+}
+
+// giteaMinimumMinor is the first Gitea 1.x release, 1.20, that can start a branch at a commit
+// (old_ref_name) and change several files in one commit (ChangeFiles). An older one starts the
+// branch at the default branch instead, so it is refused before anything is written.
+const giteaMinimumMinor = 20
+
+var giteaVersion = regexp.MustCompile(`^v?(\d+)\.(\d+)[0-9A-Za-z.+-]{0,40}$`)
+
+func (p *Provider) giteaSupportsSubmissions(ctx context.Context) error {
+	var data struct {
+		Version string `json:"version"`
+	}
+	if err := p.request(ctx, http.MethodGet, "/api/v1/version", nil, &data); err != nil {
+		return err
+	}
+	// A build that names no release, such as a development one, is left to the commit checks.
+	parts := giteaVersion.FindStringSubmatch(data.Version)
+	if parts == nil {
+		return nil
+	}
+	major, _ := strconv.Atoi(parts[1])
+	minor, _ := strconv.Atoi(parts[2])
+	if major == 0 || major == 1 && minor < giteaMinimumMinor {
+		return &SubmissionRefused{"Submitting a draft needs Gitea 1.20 or later, and this server runs " + data.Version + ". Upgrade Gitea, then submit again."}
+	}
+	return nil
 }
 
 type commitInfo struct {
