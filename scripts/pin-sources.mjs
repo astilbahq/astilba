@@ -147,10 +147,14 @@ function compareNumbers(a, b) {
   return 0;
 }
 
-export function newestInLine(current, candidates) {
+//
+// A pin can follow a narrower track than its line, such as nginx's stable releases,
+// whose minor version is even; then only releases on that track count.
+export function newestInLine(current, candidates, track) {
   const mine = versionParts(current);
   let best;
   for (const candidate of candidates) {
+    if (track && !track.test(candidate)) continue;
     const other = versionParts(candidate);
     if (
       other.shape !== mine.shape ||
@@ -163,4 +167,39 @@ export function newestInLine(current, candidates) {
       best = { version: candidate, numbers: other.numbers };
   }
   return best?.version;
+}
+
+const trackFields = ["reason", "releases"];
+
+// .github/pinned-releases.json names the images and tools that follow a narrower
+// track than their line: a pattern every release on the track matches, and why.
+export function parseTracks(document) {
+  const tracks = {};
+  for (const kind of ["images", "tools"]) {
+    tracks[kind] = new Map();
+    for (const [name, entry] of Object.entries(document[kind] ?? {})) {
+      const label = `pinned-releases.json ${kind} ${name}`;
+      if (Object.keys(entry).toSorted().join() !== trackFields.join())
+        throw new Error(
+          `${label} must have exactly: ${trackFields.join(", ")}`,
+        );
+      if (typeof entry.reason !== "string" || !entry.reason.trim())
+        throw new Error(`${label} needs a reason`);
+      let pattern;
+      try {
+        pattern = new RegExp(entry.releases);
+      } catch (error) {
+        throw new Error(`${label} releases is not a pattern: ${error.message}`);
+      }
+      tracks[kind].set(name, pattern);
+    }
+  }
+  return tracks;
+}
+
+// A pin off its own track is a mistake in the pin or the track, so it is reported
+// rather than compared.
+export function offTrack(current, track) {
+  if (track && !track.test(current))
+    throw new Error(`${current} is not on its track ${track}`);
 }

@@ -25,6 +25,8 @@ import {
   findImages,
   findReleases,
   newestInLine,
+  offTrack,
+  parseTracks,
 } from "./pin-sources.mjs";
 import { clip, maxAliases, renderSections } from "./report-issue.mjs";
 import { osvScanner } from "./vulnerability-scan.mjs";
@@ -343,7 +345,8 @@ async function checkImage(client, scanner, pin, directory) {
       result.moved = current;
   });
   await step("listing tags", async () => {
-    result.newer = newestInLine(pin.tag, await client.tags(pin));
+    offTrack(pin.tag, pin.track);
+    result.newer = newestInLine(pin.tag, await client.tags(pin), pin.track);
   });
   for (const target of targets) {
     const scan = await step(`scanning ${target.platform}`, () =>
@@ -361,9 +364,10 @@ const githubHeaders = () => ({
   }),
 });
 
-async function checkRelease(release) {
+async function checkRelease(release, track) {
   const name = release.repository;
   try {
+    offTrack(release.version, track);
     const listed = JSON.parse(
       await download(
         `https://api.github.com/repos/${release.repository}/releases?per_page=100`,
@@ -373,6 +377,7 @@ async function checkRelease(release) {
     const newer = newestInLine(
       release.version,
       listed.map(({ tag_name }) => tag_name),
+      track,
     );
     const published = listed.find(
       ({ tag_name }) => tag_name === newer,
@@ -387,15 +392,16 @@ async function checkRelease(release) {
   }
 }
 
-async function checkGoTool({ dir, tool, module, version }) {
+async function checkGoTool({ dir, tool, module, version }, track) {
   const name = `${module} (go tool ${tool.split("/").at(-1)})`;
   const paths = [`${dir}/go.mod`];
   try {
+    offTrack(version, track);
     const proxy = `https://proxy.golang.org/${escapeModule(module)}/@v`;
     const versions = String(await download(`${proxy}/list`))
       .split("\n")
       .filter(Boolean);
-    const newer = newestInLine(version, versions);
+    const newer = newestInLine(version, versions, track);
     const published =
       newer &&
       JSON.parse(await download(`${proxy}/${escapeModule(newer)}.info`)).Time;
@@ -435,7 +441,15 @@ if (
   import.meta.url === pathToFileURL(process.argv[1]).href
 ) {
   const files = trackedFiles();
-  const pins = findImages(files);
+  const tracks = parseTracks(
+    JSON.parse(
+      readFileSync(join(root, ".github/pinned-releases.json"), "utf8"),
+    ),
+  );
+  const pins = findImages(files).map((pin) => ({
+    ...pin,
+    track: tracks.images.get(pin.image),
+  }));
   const goTools = findGoTools(
     files
       .filter(({ path }) => /(^|\/)go\.mod$/.test(path))
@@ -473,8 +487,14 @@ if (
     rmSync(directory, { recursive: true, force: true });
   }
   const tools = [
-    ...(await Promise.all(goTools.map(checkGoTool))),
-    ...(await Promise.all(releases.map(checkRelease))),
+    ...(await Promise.all(
+      goTools.map((tool) => checkGoTool(tool, tracks.tools.get(tool.module))),
+    )),
+    ...(await Promise.all(
+      releases.map((release) =>
+        checkRelease(release, tracks.tools.get(release.repository)),
+      ),
+    )),
   ];
   const report = assemble({ images, tools });
   // The run's summary lists every finding; the issue shows only the summary lines.

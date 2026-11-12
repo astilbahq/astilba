@@ -356,7 +356,12 @@ asks whether the tag now points elsewhere, which means upstream rebuilt the imag
 lists the registry's tags for a newer release in the same line. A line keeps the tag's
 shape and its first number: `18.4-alpine3.23` can become `18.5-alpine3.24`, but not
 `19.0-alpine3.24` or `18.5-trixie`. A first number of 1000 or more is a year, so a
-calendar version such as `mise-2026.10.14` can become any later date. Go tools are
+calendar version such as `mise-2026.10.14` can become any later date. A pin can follow a
+narrower track than its line: `.github/pinned-releases.json` names such an image or tool,
+with a pattern every release on its track matches and the reason, and only those releases
+count. nginx follows its stable releases, whose minor version is even, so a mainline
+release such as 1.31.8 is not an update to 1.30.6. A pin off its own track is reported as
+a check that failed, and `make check-ci` fails if a track names nothing pinned. Go tools are
 compared through the Go module proxy, and release binaries through GitHub's releases
 without drafts or pre-releases.
 
