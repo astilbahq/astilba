@@ -42,11 +42,16 @@ review uses for elevated services, including the default network that services n
 network, and route targets, run on. Management refuses these sessions with the `elevated`
 reason, whatever the person's role. The agent decides again from its journaled plan and from
 the containers the daemon runs: it refuses a target that shares a network or named volume
-with any container, running or stopped, that is privileged, has added capabilities or
-devices, or uses the host's network, process or IPC namespace. Before any Compose run for a
-unit, the agent ends the shells in services the incoming plan makes elevated and waits for
-their processes to end. Until a later plan replaces it, that plan's elevated services stay
-refused. A deployment fails rather than start while such a shell is still running.
+with any container, running or stopped, that is privileged, has a capability beyond Docker's
+defaults or devices, or uses the host's network, process or IPC namespace. It decides again
+once the shell is registered, just before it starts. Before any Compose run for a unit, the
+agent ends the shells in services the incoming plan makes elevated, and removes every
+container a session has entered in those services, so that nothing a person started there,
+including a process outside the shell's session, survives beside the privileged service.
+Compose then creates those containers again from their images. The agent journals the
+containers sessions enter, so this holds after it restarts. Until a later plan replaces it,
+that plan's elevated services stay refused. A deployment fails rather than start while such
+a container cannot be removed.
 **Decided** on 12 November 2026: these services are refused outright, not opened for owners
 after a recent identity confirmation, because the agent cannot check either and the host owner
 consented to container shells, not host shells.

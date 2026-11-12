@@ -157,7 +157,7 @@ func troubleshootingEligible(v container.InspectResponse, p deployment.Plan, app
 		return false
 	}
 	h := v.HostConfig
-	if hostAuthority(h) || len(h.Sysctls) > 0 || h.NetworkMode.IsContainer() {
+	if hostAuthority(h) || len(h.CapAdd) > 0 || len(h.Sysctls) > 0 || h.NetworkMode.IsContainer() {
 		return false
 	}
 	switch h.Runtime {

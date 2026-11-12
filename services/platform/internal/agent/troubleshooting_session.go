@@ -257,16 +257,27 @@ func (e *Engine) findShell(ctx context.Context, container string) (string, error
 // configured user, and ends everything in its session however the stream ends. The
 // agent enforces the idle limit and maximum itself, as durations from this moment.
 func (e *Engine) runShell(ctx context.Context, conn *websocket.Conn, offer api.AgentTroubleshootingOffer, container string) error {
-	// A deployment may have made the service elevated since eligibility was decided, and
-	// one that does so later ends the shell before it runs. Release runs last, once the
-	// shell's processes have ended.
-	end, release, admitted := e.admitShell(offer.UnitId, offer.ApplicationId)
-	if !admitted {
-		return finishTroubleshooting(ctx, conn, append([]byte{terminal.Refused}, terminal.RefusedIneligible...))
-	}
-	defer release()
 	starting, cancel := context.WithTimeout(ctx, troubleshootingDockerWait)
 	defer cancel()
+	// A deployment that makes the service elevated from now on ends the shell and removes the
+	// container. One that ran since eligibility was decided may have started a privileged
+	// peer, so eligibility is decided again once the shell is registered. Release runs last,
+	// once the shell has been cleaned up.
+	end, release, err := e.admitShell(offer.UnitId, offer.ApplicationId, container)
+	if errors.Is(err, ErrTroubleshootingIneligible) {
+		return finishTroubleshooting(ctx, conn, append([]byte{terminal.Refused}, terminal.RefusedIneligible...))
+	}
+	if err != nil {
+		return errors.Join(err, finishTroubleshooting(ctx, conn, append([]byte{terminal.Refused}, terminal.RefusedUnavailable...)))
+	}
+	defer release()
+	if again, err := e.TroubleshootingTarget(starting, offer.UnitId, offer.ApplicationId, offer.Instance); err != nil || again != container {
+		reason := terminal.RefusedIneligible
+		if err != nil && !errors.Is(err, ErrTroubleshootingIneligible) {
+			reason = terminal.RefusedUnavailable
+		}
+		return finishTroubleshooting(ctx, conn, append([]byte{terminal.Refused}, reason...))
+	}
 	// Until the shell is running, a failure is reported to the person, not just the host.
 	unavailable := func(cause error) error {
 		return errors.Join(cause, finishTroubleshooting(ctx, conn, append([]byte{terminal.Refused}, terminal.RefusedUnavailable...)))
@@ -443,8 +454,11 @@ func (e *Engine) pumpShell(parent context.Context, conn *websocket.Conn, exec st
 			case <-ctx.Done():
 				return
 			case <-end:
+				// The notice is brief: the deployment removes the container shortly after.
 				name("service became elevated")
-				_ = finishTroubleshooting(ctx, conn, append([]byte{terminal.Refused}, terminal.RefusedIneligible...))
+				notice, done := context.WithTimeout(ctx, 5*time.Second)
+				_ = finishTroubleshooting(notice, conn, append([]byte{terminal.Refused}, terminal.RefusedIneligible...))
+				done()
 				cancel()
 				return
 			case now := <-tick.C:
