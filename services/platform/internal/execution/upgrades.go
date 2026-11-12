@@ -477,7 +477,7 @@ func (s *Service) saveUpgradeTarget(ctx context.Context, tx pgx.Tx, cmd upgrade.
 		return err
 	}
 	hash := sha256.Sum256(canonical)
-	if _, err = db.New(tx).InsertRevision(ctx, db.InsertRevisionParams{WorkspaceID: ws, EnvironmentID: env, ID: target.RevisionID, AuthorID: author, Specification: canonical, ContentHash: hash[:]}); err != nil {
+	if _, err = store.InsertRevision(ctx, db.New(tx), db.InsertRevisionParams{WorkspaceID: ws, EnvironmentID: env, ID: target.RevisionID, AuthorID: author, Specification: canonical, ContentHash: hash[:]}); err != nil {
 		return err
 	}
 	raw, _ = stablejson.Marshal(target)
