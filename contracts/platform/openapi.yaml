@@ -700,6 +700,30 @@
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Error'}
+  /api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/build-targets/{applicationId}/approval:
+    post:
+      operationId: approveBuildTarget
+      description: >-
+        Approve a build target's automatic builds and deployments as yours, which resumes a paused target. Needs recent
+        authentication, and an owner when the target deploys.
+      parameters:
+        - {name: workspaceId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: projectId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: environmentId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: applicationId, in: path, required: true, schema: {type: string, format: uuid}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ApproveBuildTarget'}
+      responses:
+        '204':
+          description: Approved
+        default:
+          description: Error
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
   /api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/build-targets/{applicationId}/runs:
     post:
       operationId: runConfiguredBuild
@@ -3579,6 +3603,29 @@
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+  /api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/source/approval:
+    post:
+      operationId: approveGitSource
+      description: >-
+        Approve a Git source's automatic imports and deployments as yours, keeping its configuration, which resumes a
+        paused source. Needs an owner with recent authentication.
+      parameters:
+        - {name: workspaceId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: projectId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: environmentId, in: path, required: true, schema: {type: string, format: uuid}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ApproveGitSource'}
+      responses:
+        '204':
+          description: Approved
+        default:
+          description: Error
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
   /api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/source/policy:
     put:
       operationId: updateGitSourcePolicy
@@ -5143,6 +5190,9 @@
       type: object
       additionalProperties: false
       required: [applicationId, baseRevisionId, name, branch, builder, targetHash]
+      description: >-
+        An automation credential lists only targets it can run, those an owner approves now. A person sees every target
+        in the environment, with its automatic actions and their approval.
       properties:
         applicationId: {type: string, format: uuid}
         baseRevisionId: {type: string, format: uuid}
@@ -5150,6 +5200,10 @@
         branch: {type: string}
         builder: {type: string}
         targetHash: {type: string, pattern: '^[a-f0-9]{64}$'}
+        automaticBuild: {type: boolean}
+        automaticDeploy: {type: boolean}
+        approval: {$ref: '#/components/schemas/PolicyApproval'}
+        runnable: {type: boolean, description: "Whether an automation credential can run it on demand, which needs a current owner's approval."}
     RunConfiguredBuild:
       type: object
       additionalProperties: false
@@ -7791,6 +7845,12 @@
           maxLength: 80
         clean:
           type: boolean
+        approval:
+          $ref: '#/components/schemas/PolicyApproval'
+        sourceHash:
+          type: string
+          pattern: '^[a-f0-9]{64}$'
+          description: Identifies the stored configuration and its approver, so an approval covers exactly what was shown.
       required:
         - configuration
         - importedCommit
@@ -7798,6 +7858,30 @@
         - pendingCommit
         - status
         - clean
+        - approval
+        - sourceHash
+    PolicyApproval:
+      type: string
+      description: >-
+        Whether automatic work runs on a current approval. `current`: it does. `approvalRequired`: it is paused until it is
+        approved again, after a restore, an import, a disconnected repository or its approver's role change.
+        `approverRemoved`: its approver left the workspace. `approverRole`: its approver no longer has the role it needs.
+        `approverCredentials`: its approver changed their password, two-factor settings or recovery codes since; only
+        owners see this reason, others see `approvalRequired`. A paused Git source, or a target that deploys, needs an
+        owner to approve it again; a target that only builds automatically, an owner or operator.
+      enum: [current, approvalRequired, approverRemoved, approverRole, approverCredentials]
+    ApproveGitSource:
+      type: object
+      additionalProperties: false
+      required: [sourceHash]
+      properties:
+        sourceHash: {type: string, pattern: '^[a-f0-9]{64}$', description: "The hash returned with the source, so the approval covers exactly the configuration shown."}
+    ApproveBuildTarget:
+      type: object
+      additionalProperties: false
+      required: [targetHash]
+      properties:
+        targetHash: {type: string, pattern: '^[a-f0-9]{64}$', description: "The hash listed for the target, so the approval covers exactly the configuration shown."}
     BindGitSource:
       type: object
       additionalProperties: false

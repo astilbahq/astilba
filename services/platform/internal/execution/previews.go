@@ -390,7 +390,7 @@ func (s *Service) ActOnPreview(ctx context.Context, p store.Principal, ws, pid, 
 			if !r.Open || !r.Fork || r.Head != out.Head || r.HeadRepository != out.HeadRepository || r.BaseBranch != policy.Config.Build.Branch {
 				return domain.Conflict
 			}
-			_, err = tx.Exec(ctx, "UPDATE preview_requests SET approved_head=$2,approved_repository=$3,approved_generation=$4,next_check_at=now() WHERE id=$1", id, r.Head, r.HeadRepository, policy.Generation)
+			_, err = tx.Exec(ctx, "UPDATE preview_requests SET approved_head=$2,approved_repository=$3,approved_generation=$4,approved_by=$5,approved_auth_version=$6,next_check_at=now() WHERE id=$1", id, r.Head, r.HeadRepository, policy.Generation, p.Account.ID, p.Account.AuthVersion)
 			if err != nil {
 				return err
 			}

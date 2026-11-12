@@ -26,17 +26,17 @@ WHERE workspace_id = @workspace_id AND server_id = @server_id AND state NOT IN (
 UPDATE git_sources SET configuration=configuration || '{"autoDeploy":false}'::jsonb WHERE workspace_id = @workspace_id;
 
 -- name: RequireWorkspaceGitApproval :exec
-UPDATE git_sources SET configuration=configuration || '{"autoDeploy":false}'::jsonb,status='approval_required' WHERE workspace_id = @workspace_id;
+UPDATE git_sources SET configuration=configuration || '{"autoDeploy":false}'::jsonb,status='approval_required',policy_auth_version=NULL WHERE workspace_id = @workspace_id;
 
 -- name: DisableWorkspaceBuildAutomation :exec
-UPDATE build_targets SET configuration=configuration || '{"autoBuild":false,"autoDeploy":false}'::jsonb WHERE workspace_id = @workspace_id;
+UPDATE build_targets SET configuration=configuration || '{"autoBuild":false,"autoDeploy":false}'::jsonb,policy_auth_version=NULL,policy_owner=false WHERE workspace_id = @workspace_id;
 
 -- name: DisableServerPreviewPolicies :exec
 UPDATE preview_policies SET enabled=false WHERE workspace_id = @workspace_id AND server_id = @server_id;
 
 -- name: BlockServerPreviewRequests :exec
 UPDATE preview_requests SET state=CASE WHEN state='deleted' THEN state ELSE 'blocked' END,resume_after_cancel=false,
-    cleanup_actor=NULL,cleanup_auth_version=NULL,cleanup_controller=NULL,
+    cleanup_actor=NULL,cleanup_auth_version=NULL,cleanup_controller=NULL,approved_by=NULL,approved_auth_version=NULL,
     note=CASE WHEN state='deleted' THEN note ELSE 'Management recovery requires renewed preview approval.' END
 WHERE preview_requests.workspace_id = @workspace_id AND preview_requests.policy_id IN (
     SELECT p.id FROM preview_policies p WHERE p.workspace_id = @workspace_id AND p.server_id = @server_id);
@@ -46,7 +46,7 @@ UPDATE preview_policies SET enabled=false WHERE workspace_id = @workspace_id;
 
 -- name: BlockWorkspacePreviewRequests :exec
 UPDATE preview_requests SET state=CASE WHEN state='deleted' THEN state ELSE 'blocked' END,resume_after_cancel=false,cleanup_requested=false,
-    cleanup_actor=NULL,cleanup_auth_version=NULL,cleanup_controller=NULL,
+    cleanup_actor=NULL,cleanup_auth_version=NULL,cleanup_controller=NULL,approved_by=NULL,approved_auth_version=NULL,
     note=CASE WHEN state='deleted' THEN note ELSE 'Offline recovery requires renewed preview approval.' END
 WHERE workspace_id = @workspace_id;
 

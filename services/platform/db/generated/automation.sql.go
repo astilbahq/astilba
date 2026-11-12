@@ -12,6 +12,62 @@ import (
 	"github.com/google/uuid"
 )
 
+const approveBuildTargetPolicy = `-- name: ApproveBuildTargetPolicy :exec
+UPDATE build_targets SET policy_actor = $1,policy_auth_version = $2::bigint,
+    policy_owner=policy_approver_holds(workspace_id,$1,$2::bigint,true)
+WHERE workspace_id = $3 AND environment_id = $4 AND application_id = $5
+`
+
+type ApproveBuildTargetPolicyParams struct {
+	PolicyActor       uuid.UUID `json:"policy_actor"`
+	PolicyAuthVersion int64     `json:"policy_auth_version"`
+	WorkspaceID       uuid.UUID `json:"workspace_id"`
+	EnvironmentID     uuid.UUID `json:"environment_id"`
+	ApplicationID     uuid.UUID `json:"application_id"`
+}
+
+func (q *Queries) ApproveBuildTargetPolicy(ctx context.Context, arg ApproveBuildTargetPolicyParams) error {
+	_, err := q.db.Exec(ctx, approveBuildTargetPolicy,
+		arg.PolicyActor,
+		arg.PolicyAuthVersion,
+		arg.WorkspaceID,
+		arg.EnvironmentID,
+		arg.ApplicationID,
+	)
+	return err
+}
+
+const approveGitSource = `-- name: ApproveGitSource :execrows
+UPDATE git_sources SET configuration=jsonb_set(configuration,'{autoDeploy}',to_jsonb($1::boolean)),
+    policy_actor = $2,policy_auth_version = $3::bigint,
+    status=CASE WHEN status='approval_required' THEN 'ready' ELSE status END
+WHERE workspace_id = $4 AND environment_id = $5
+`
+
+type ApproveGitSourceParams struct {
+	AutoDeploy        bool      `json:"auto_deploy"`
+	PolicyActor       uuid.UUID `json:"policy_actor"`
+	PolicyAuthVersion int64     `json:"policy_auth_version"`
+	WorkspaceID       uuid.UUID `json:"workspace_id"`
+	EnvironmentID     uuid.UUID `json:"environment_id"`
+}
+
+// Turning a source's automatic deployment on, or approving it, makes it the caller's: it resumes a
+// source waiting for approval.
+func (q *Queries) ApproveGitSource(ctx context.Context, arg ApproveGitSourceParams) (int64, error) {
+	result, err := q.db.Exec(ctx, approveGitSource,
+		arg.AutoDeploy,
+		arg.PolicyActor,
+		arg.PolicyAuthVersion,
+		arg.WorkspaceID,
+		arg.EnvironmentID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const authenticateAutomationCredential = `-- name: AuthenticateAutomationCredential :one
 SELECT c.workspace_id,e.project_id,c.environment_id,c.creator_id,c.secret_hash,c.capabilities,c.expires_at
 FROM automation_credentials c JOIN environments e ON e.workspace_id=c.workspace_id AND e.id=c.environment_id
@@ -47,6 +103,24 @@ func (q *Queries) AuthenticateAutomationCredential(ctx context.Context, id uuid.
 	return i, err
 }
 
+const automaticDeploymentApproved = `-- name: AutomaticDeploymentApproved :one
+SELECT policy_approver_holds(workspace_id,actor_id,actor_auth_version,true)::boolean FROM pipeline_auto_deployments
+WHERE workspace_id = $1 AND id = $2
+`
+
+type AutomaticDeploymentApprovedParams struct {
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ID          uuid.UUID `json:"id"`
+}
+
+// Keep the approval check identical to the one every standing policy uses.
+func (q *Queries) AutomaticDeploymentApproved(ctx context.Context, arg AutomaticDeploymentApprovedParams) (bool, error) {
+	row := q.db.QueryRow(ctx, automaticDeploymentApproved, arg.WorkspaceID, arg.ID)
+	var column_1 bool
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const automationCredentialAdmission = `-- name: AutomationCredentialAdmission :one
 SELECT (c.mfa_approved AND a.totp_secret IS NOT NULL)::boolean AS mfa
 FROM automation_credentials c JOIN accounts a ON a.id=c.creator_id
@@ -76,6 +150,40 @@ func (q *Queries) AutomationCredentialAdmission(ctx context.Context, arg Automat
 	return mfa, err
 }
 
+const blockActorAutomaticDeployments = `-- name: BlockActorAutomaticDeployments :many
+UPDATE pipeline_auto_deployments SET state='blocked',actor_auth_version=NULL,
+    note='The owner who approved automatic deployment no longer approves it. An owner can approve the policy again and deploy this build.'
+WHERE workspace_id = $1 AND actor_id = $2 AND state='pending'
+RETURNING id
+`
+
+type BlockActorAutomaticDeploymentsParams struct {
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ActorID     uuid.UUID `json:"actor_id"`
+}
+
+// An automatic deployment not yet planned deploys on its approver's say-so, so it stops when they
+// stop being an owner. One already queued is admitted work and finishes.
+func (q *Queries) BlockActorAutomaticDeployments(ctx context.Context, arg BlockActorAutomaticDeploymentsParams) ([]uuid.UUID, error) {
+	rows, err := q.db.Query(ctx, blockActorAutomaticDeployments, arg.WorkspaceID, arg.ActorID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []uuid.UUID{}
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const countActiveAutomationCredentials = `-- name: CountActiveAutomationCredentials :one
 SELECT count(*) FROM automation_credentials
 WHERE workspace_id = $1 AND revoked_at IS NULL AND expires_at>now()
@@ -86,6 +194,57 @@ func (q *Queries) CountActiveAutomationCredentials(ctx context.Context, workspac
 	var count int64
 	err := row.Scan(&count)
 	return count, err
+}
+
+const disableActorPreviewPolicies = `-- name: DisableActorPreviewPolicies :many
+UPDATE preview_policies SET enabled=false
+WHERE workspace_id = $1 AND actor_id = $2 AND enabled
+RETURNING id
+`
+
+type DisableActorPreviewPoliciesParams struct {
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ActorID     uuid.UUID `json:"actor_id"`
+}
+
+// A preview policy runs on its owner's approval, so it turns off when they stop being one. A
+// current owner turns it on again, which approves it as theirs.
+func (q *Queries) DisableActorPreviewPolicies(ctx context.Context, arg DisableActorPreviewPoliciesParams) ([]uuid.UUID, error) {
+	rows, err := q.db.Query(ctx, disableActorPreviewPolicies, arg.WorkspaceID, arg.ActorID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []uuid.UUID{}
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const disableGitSourceAutoDeploy = `-- name: DisableGitSourceAutoDeploy :execrows
+UPDATE git_sources SET configuration=jsonb_set(configuration,'{autoDeploy}','false')
+WHERE workspace_id = $1 AND environment_id = $2
+`
+
+type DisableGitSourceAutoDeployParams struct {
+	WorkspaceID   uuid.UUID `json:"workspace_id"`
+	EnvironmentID uuid.UUID `json:"environment_id"`
+}
+
+func (q *Queries) DisableGitSourceAutoDeploy(ctx context.Context, arg DisableGitSourceAutoDeployParams) (int64, error) {
+	result, err := q.db.Exec(ctx, disableGitSourceAutoDeploy, arg.WorkspaceID, arg.EnvironmentID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const insertAutomationCredential = `-- name: InsertAutomationCredential :exec
@@ -173,6 +332,51 @@ func (q *Queries) ListAutomationCredentials(ctx context.Context, arg ListAutomat
 	return items, nil
 }
 
+const lockBuildTargetPolicy = `-- name: LockBuildTargetPolicy :one
+SELECT configuration,policy_actor FROM build_targets
+WHERE workspace_id = $1 AND environment_id = $2 AND application_id = $3 FOR UPDATE
+`
+
+type LockBuildTargetPolicyParams struct {
+	WorkspaceID   uuid.UUID `json:"workspace_id"`
+	EnvironmentID uuid.UUID `json:"environment_id"`
+	ApplicationID uuid.UUID `json:"application_id"`
+}
+
+type LockBuildTargetPolicyRow struct {
+	Configuration []byte    `json:"configuration"`
+	PolicyActor   uuid.UUID `json:"policy_actor"`
+}
+
+func (q *Queries) LockBuildTargetPolicy(ctx context.Context, arg LockBuildTargetPolicyParams) (LockBuildTargetPolicyRow, error) {
+	row := q.db.QueryRow(ctx, lockBuildTargetPolicy, arg.WorkspaceID, arg.EnvironmentID, arg.ApplicationID)
+	var i LockBuildTargetPolicyRow
+	err := row.Scan(&i.Configuration, &i.PolicyActor)
+	return i, err
+}
+
+const lockGitSourcePolicy = `-- name: LockGitSourcePolicy :one
+SELECT configuration,policy_actor FROM git_sources
+WHERE workspace_id = $1 AND environment_id = $2 FOR UPDATE
+`
+
+type LockGitSourcePolicyParams struct {
+	WorkspaceID   uuid.UUID `json:"workspace_id"`
+	EnvironmentID uuid.UUID `json:"environment_id"`
+}
+
+type LockGitSourcePolicyRow struct {
+	Configuration []byte    `json:"configuration"`
+	PolicyActor   uuid.UUID `json:"policy_actor"`
+}
+
+func (q *Queries) LockGitSourcePolicy(ctx context.Context, arg LockGitSourcePolicyParams) (LockGitSourcePolicyRow, error) {
+	row := q.db.QueryRow(ctx, lockGitSourcePolicy, arg.WorkspaceID, arg.EnvironmentID)
+	var i LockGitSourcePolicyRow
+	err := row.Scan(&i.Configuration, &i.PolicyActor)
+	return i, err
+}
+
 const revokeAutomationCredential = `-- name: RevokeAutomationCredential :execrows
 UPDATE automation_credentials SET revoked_at=COALESCE(revoked_at,now())
 WHERE workspace_id = $1 AND environment_id = $2 AND id = $3
@@ -190,4 +394,172 @@ func (q *Queries) RevokeAutomationCredential(ctx context.Context, arg RevokeAuto
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const revokeCreatorAutomationCredentials = `-- name: RevokeCreatorAutomationCredentials :many
+UPDATE automation_credentials SET revoked_at=now()
+WHERE workspace_id = $1 AND creator_id = $2 AND revoked_at IS NULL AND expires_at>now()
+RETURNING id
+`
+
+type RevokeCreatorAutomationCredentialsParams struct {
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	CreatorID   uuid.UUID `json:"creator_id"`
+}
+
+// A credential acts as its creator, so it ends with the creator's ownership, in the transaction
+// that ends it. Re-promotion does not bring it back.
+func (q *Queries) RevokeCreatorAutomationCredentials(ctx context.Context, arg RevokeCreatorAutomationCredentialsParams) ([]uuid.UUID, error) {
+	rows, err := q.db.Query(ctx, revokeCreatorAutomationCredentials, arg.WorkspaceID, arg.CreatorID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []uuid.UUID{}
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const withdrawBuildTargetApprovals = `-- name: WithdrawBuildTargetApprovals :many
+UPDATE build_targets SET policy_owner=false,
+    policy_auth_version=CASE WHEN $1::boolean OR COALESCE((configuration->>'autoDeploy')::boolean,false) THEN NULL ELSE policy_auth_version END
+WHERE workspace_id = $2 AND policy_actor = $3
+    AND (policy_owner OR (policy_auth_version IS NOT NULL AND ($1::boolean OR COALESCE((configuration->>'autoDeploy')::boolean,false))))
+RETURNING application_id
+`
+
+type WithdrawBuildTargetApprovalsParams struct {
+	LostWrite   bool      `json:"lost_write"`
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	PolicyActor uuid.UUID `json:"policy_actor"`
+}
+
+// A build target's automation runs on its approver's say-so. Deploying needs an owner and building
+// an owner or operator, so when an owner becomes an operator (lost_write unset) only targets that
+// deploy pause; the others keep building but lose the owner's approval that running them on demand
+// needs. Losing write access pauses every one.
+func (q *Queries) WithdrawBuildTargetApprovals(ctx context.Context, arg WithdrawBuildTargetApprovalsParams) ([]uuid.UUID, error) {
+	rows, err := q.db.Query(ctx, withdrawBuildTargetApprovals, arg.LostWrite, arg.WorkspaceID, arg.PolicyActor)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []uuid.UUID{}
+	for rows.Next() {
+		var application_id uuid.UUID
+		if err := rows.Scan(&application_id); err != nil {
+			return nil, err
+		}
+		items = append(items, application_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const withdrawForkApprovals = `-- name: WithdrawForkApprovals :many
+UPDATE preview_requests SET approved_head='',approved_repository=0,approved_generation=0,approved_by=NULL,approved_auth_version=NULL,next_check_at=now()
+WHERE workspace_id = $1 AND approved_by = $2
+RETURNING id
+`
+
+type WithdrawForkApprovalsParams struct {
+	WorkspaceID uuid.UUID  `json:"workspace_id"`
+	ApprovedBy  *uuid.UUID `json:"approved_by"`
+}
+
+// A fork commit's preview approval is its approving owner's, so it ends with their ownership.
+func (q *Queries) WithdrawForkApprovals(ctx context.Context, arg WithdrawForkApprovalsParams) ([]uuid.UUID, error) {
+	rows, err := q.db.Query(ctx, withdrawForkApprovals, arg.WorkspaceID, arg.ApprovedBy)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []uuid.UUID{}
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const withdrawGitSourceApprovals = `-- name: WithdrawGitSourceApprovals :many
+UPDATE git_sources SET policy_auth_version=NULL
+WHERE workspace_id = $1 AND policy_actor = $2 AND policy_auth_version IS NOT NULL
+RETURNING environment_id
+`
+
+type WithdrawGitSourceApprovalsParams struct {
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	PolicyActor uuid.UUID `json:"policy_actor"`
+}
+
+// A Git source imports on an owner's approval, so it pauses when its approver stops being one,
+// until a current owner approves it again.
+func (q *Queries) WithdrawGitSourceApprovals(ctx context.Context, arg WithdrawGitSourceApprovalsParams) ([]uuid.UUID, error) {
+	rows, err := q.db.Query(ctx, withdrawGitSourceApprovals, arg.WorkspaceID, arg.PolicyActor)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []uuid.UUID{}
+	for rows.Next() {
+		var environment_id uuid.UUID
+		if err := rows.Scan(&environment_id); err != nil {
+			return nil, err
+		}
+		items = append(items, environment_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const withdrawPreviewCleanupApprovals = `-- name: WithdrawPreviewCleanupApprovals :many
+UPDATE preview_requests SET cleanup_actor=NULL,cleanup_auth_version=NULL,cleanup_controller=NULL,next_check_at=now()
+WHERE workspace_id = $1 AND cleanup_actor = $2 AND cleanup_requested AND state<>'deleted'
+RETURNING id
+`
+
+type WithdrawPreviewCleanupApprovalsParams struct {
+	WorkspaceID  uuid.UUID  `json:"workspace_id"`
+	CleanupActor *uuid.UUID `json:"cleanup_actor"`
+}
+
+// A cleanup an owner asked for waits, once they stop being one, for a current owner to ask again.
+func (q *Queries) WithdrawPreviewCleanupApprovals(ctx context.Context, arg WithdrawPreviewCleanupApprovalsParams) ([]uuid.UUID, error) {
+	rows, err := q.db.Query(ctx, withdrawPreviewCleanupApprovals, arg.WorkspaceID, arg.CleanupActor)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []uuid.UUID{}
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }

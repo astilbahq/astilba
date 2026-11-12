@@ -53,7 +53,7 @@ func TestEncryptedWorkspaceExportPreservesIdentityWithoutInstallationKeys(t *tes
 	}
 	source := pipeline.Source{ConnectionID: connection.ID, Branch: "main", RunnerID: server.Server.Id, Entrypoints: []string{"compose.yaml"}, Paths: []string{}, AutoDeploy: true}
 	rawSource, _ := stablejson.Marshal(source)
-	if _, e = f.st.Pool.Exec(context.Background(), "INSERT INTO git_sources(workspace_id,environment_id,connection_id,configuration,policy_actor) VALUES($1,$2,$3,$4,$5)", ws, env.Id, connection.ID, rawSource, f.owner); e != nil {
+	if _, e = f.st.Pool.Exec(context.Background(), "INSERT INTO git_sources(workspace_id,environment_id,connection_id,configuration,policy_actor,policy_auth_version) VALUES($1,$2,$3,$4,$5,1)", ws, env.Id, connection.ID, rawSource, f.owner); e != nil {
 		t.Fatal(e)
 	}
 	passphrase := "unique archive passphrase for fixture"

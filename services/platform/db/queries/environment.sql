@@ -57,3 +57,8 @@ WHERE workspace_id = @workspace_id AND environment_id = @environment_id AND plan
 -- name: AdvanceEnvironmentExecutionGeneration :one
 UPDATE environments SET execution_generation=execution_generation+1
 WHERE workspace_id = @workspace_id AND id = @id RETURNING execution_generation;
+
+-- name: LockEnvironmentForUpdate :one
+-- Takes the environment's row lock that writing a revision or admitting a pipeline takes first, so
+-- a transaction that then locks a build target keeps their order and can't deadlock with them.
+SELECT id FROM environments WHERE workspace_id = @workspace_id AND id = @id FOR NO KEY UPDATE;

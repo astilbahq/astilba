@@ -322,6 +322,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/build-targets/{applicationId}/approval": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Approve a build target's automatic builds and deployments as yours, which resumes a paused target. Needs recent authentication, and an owner when the target deploys. */
+        post: operations["approveBuildTarget"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/build-targets/{applicationId}/runs": {
         parameters: {
             query?: never;
@@ -1653,6 +1670,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/source/approval": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Approve a Git source's automatic imports and deployments as yours, keeping its configuration, which resumes a paused source. Needs an owner with recent authentication. */
+        post: operations["approveGitSource"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/source/policy": {
         parameters: {
             query?: never;
@@ -2581,6 +2615,7 @@ export interface components {
             /** Format: date-time */
             expiresAt: string;
         };
+        /** @description An automation credential lists only targets it can run, those an owner approves now. A person sees every target in the environment, with its automatic actions and their approval. */
         ConfiguredBuildTarget: {
             /** Format: uuid */
             applicationId: string;
@@ -2590,6 +2625,11 @@ export interface components {
             branch: string;
             builder: string;
             targetHash: string;
+            automaticBuild?: boolean;
+            automaticDeploy?: boolean;
+            approval?: components["schemas"]["PolicyApproval"];
+            /** @description Whether an automation credential can run it on demand, which needs a current owner's approval. */
+            runnable?: boolean;
         };
         RunConfiguredBuild: {
             /** Format: uuid */
@@ -3670,6 +3710,22 @@ export interface components {
             pendingCommit: string;
             status: string;
             clean: boolean;
+            approval: components["schemas"]["PolicyApproval"];
+            /** @description Identifies the stored configuration and its approver, so an approval covers exactly what was shown. */
+            sourceHash: string;
+        };
+        /**
+         * @description Whether automatic work runs on a current approval. `current`: it does. `approvalRequired`: it is paused until it is approved again, after a restore, an import, a disconnected repository or its approver's role change. `approverRemoved`: its approver left the workspace. `approverRole`: its approver no longer has the role it needs. `approverCredentials`: its approver changed their password, two-factor settings or recovery codes since; only owners see this reason, others see `approvalRequired`. A paused Git source, or a target that deploys, needs an owner to approve it again; a target that only builds automatically, an owner or operator.
+         * @enum {string}
+         */
+        PolicyApproval: "current" | "approvalRequired" | "approverRemoved" | "approverRole" | "approverCredentials";
+        ApproveGitSource: {
+            /** @description The hash returned with the source, so the approval covers exactly the configuration shown. */
+            sourceHash: string;
+        };
+        ApproveBuildTarget: {
+            /** @description The hash listed for the target, so the approval covers exactly the configuration shown. */
+            targetHash: string;
         };
         BindGitSource: {
             configuration: components["schemas"]["GitSourceConfiguration"];
@@ -5256,6 +5312,42 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ConfiguredBuildTarget"][];
                 };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    approveBuildTarget: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                projectId: string;
+                environmentId: string;
+                applicationId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ApproveBuildTarget"];
+            };
+        };
+        responses: {
+            /** @description Approved */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Error */
             default: {
@@ -8460,6 +8552,41 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["BuildArtifact"][];
                 };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    approveGitSource: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                projectId: string;
+                environmentId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ApproveGitSource"];
+            };
+        };
+        responses: {
+            /** @description Approved */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Error */
             default: {

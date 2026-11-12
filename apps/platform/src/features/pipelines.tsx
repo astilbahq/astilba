@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { ApiError, client, result, type Schema } from "../api/client";
 import { publishDraft, type EnvironmentPath } from "../api/environment";
 import { gitConnectionsOptions } from "../api/integrations";
@@ -13,6 +13,10 @@ import * as s from "../styles";
 import { ErrorNotice, Field, Form, text, useAction } from "../ui";
 import { IntegrationSettings } from "./integrations";
 import { AutomaticDeploymentScope } from "./pipelines/automatic-deployment-scope";
+import {
+  PausedBuildTargets,
+  PausedSource,
+} from "./pipelines/automation-approval";
 import { BuildServiceForm } from "./pipelines/build-service-form";
 import { PipelineJobs } from "./pipelines/pipeline-jobs";
 
@@ -38,6 +42,7 @@ export function Pipelines({
     queries = useQueryClient();
   const workspace = { workspaceId: path.workspaceId };
   const [notice, setNotice] = useState("");
+  const status = useRef<HTMLParagraphElement>(null);
   const [connection, setConnection] = useState(""),
     [runner, setRunner] = useState("");
   const connections = useQuery(gitConnectionsOptions(path.workspaceId));
@@ -70,6 +75,12 @@ export function Pipelines({
       result(client.GET(`${root}/build-rejections`, { params: { path } })),
     refetchInterval: 3000,
   });
+  const targets = useQuery({
+    queryKey: ["build-targets", path],
+    queryFn: () =>
+      result(client.GET(`${root}/build-targets`, { params: { path } })),
+    refetchInterval: 15000,
+  });
   const artifacts = useQuery({
     queryKey: ["build-artifacts", path.workspaceId],
     queryFn: () =>
@@ -95,6 +106,14 @@ export function Pipelines({
     await queries.invalidateQueries({ queryKey: ["pipeline-runs", path] });
     await queries.invalidateQueries({ queryKey: ["build-rejections", path] });
     await queries.invalidateQueries({ queryKey: ["git-source", path] });
+    await queries.invalidateQueries({ queryKey: ["build-targets", path] });
+  };
+  // An approval removes the notice and the control that asked for it, so focus moves to the
+  // status line, which says what happened.
+  const approved = async (message: string) => {
+    setNotice(message);
+    await refresh();
+    status.current?.focus();
   };
   const promoteArtifact = async (
     artifact: Schema["BuildArtifact"],
@@ -190,13 +209,18 @@ export function Pipelines({
             connections.error ??
             servers.error ??
             runs.error ??
+            targets.error ??
             source.error ??
             registries.error ??
             artifacts.error ??
             secrets.error
           }
         />
-        {notice && <p role="status">{notice}</p>}
+        {notice && (
+          <p ref={status} role="status" tabIndex={-1}>
+            {notice}
+          </p>
+        )}
         {dirty && (
           <p className={s.notice}>
             Save your configuration before importing, submitting or building.
@@ -258,6 +282,14 @@ export function Pipelines({
                 {source.data.configuration.branch} ·{" "}
                 <code>{source.data.importedCommit.slice(0, 12)}</code>
               </p>
+              <PausedSource
+                path={path}
+                source={source.data}
+                owner={owner}
+                action={action}
+                approved={approved}
+                refresh={refresh}
+              />
               {owner && (
                 <Button
                   type="button"
@@ -414,6 +446,17 @@ export function Pipelines({
               </details>
             )
           ))}
+        {targets.data && (
+          <PausedBuildTargets
+            path={path}
+            targets={targets.data}
+            write={write}
+            owner={owner}
+            action={action}
+            approved={approved}
+            refresh={refresh}
+          />
+        )}
         {/* Keep controlled build drafts mounted when write access changes. */}
         <BuildServiceForm
           path={path}
