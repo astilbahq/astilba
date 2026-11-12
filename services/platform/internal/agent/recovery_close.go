@@ -19,7 +19,8 @@ func recoveryClose(c api.ExecutionCommand) bool {
 	return err == nil && body.Phase == "checkpoint-closed"
 }
 
-// Management emits this only when cancellation completed before reservation.
+// Management emits this only when a root ended before reservation: cancelled, failed at its
+// checkpoint, or stopped by a revoked participant.
 // A checkpoint alone never proves that an interrupted parent has finished.
 func (j *Journal) executeRecoveryClose(c api.ExecutionCommand) error {
 	body, err := crossHostCommand(c)
@@ -71,7 +72,7 @@ func (j *Journal) executeRecoveryClose(c api.ExecutionCommand) error {
 			return err
 		}
 		r.Report.State = "succeeded"
-		r.Report.Note = "Management confirmed cancellation before reservation; only recovery metadata was retired."
+		r.Report.Note = "Management confirmed the root ended before reservation; only recovery metadata was retired."
 		r.Report.Crosshost = crossHostReceipt(c, body, deployment.Observation{ObservedAt: time.Now().UTC(), Resources: []deployment.Resource{}})
 		r.Report.Sequence++
 		return j.put(tx, "operations", c.Id.String(), r)

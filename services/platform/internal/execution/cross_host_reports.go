@@ -34,7 +34,8 @@ func (s *Service) crossHostReport(ctx context.Context, tx pgx.Tx, ws uuid.UUID, 
 		if c.Id != deployment.RecoveryCloseID(command.ParentID, c.ResourceId) {
 			return domain.Invalid("recovery.receipt")
 		}
-		if _, err := tx.Exec(ctx, `UPDATE execution_operations SET cancel_requested=true WHERE id=$1`, command.ParentID); err != nil {
+		// A root that failed at its checkpoint is closed too, and wasn't cancelled.
+		if _, err := tx.Exec(ctx, `UPDATE execution_operations SET cancel_requested=true WHERE id=$1 AND state<>'failed'`, command.ParentID); err != nil {
 			return err
 		}
 	}

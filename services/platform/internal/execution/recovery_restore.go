@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json/v2"
 	"errors"
+	"time"
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
@@ -76,6 +77,19 @@ func (s *Service) restoreRecoveryRoots(ctx context.Context, tx pgx.Tx, ws uuid.U
 				return errors.New("invalid stored recovery descriptor")
 			}
 			phase := "base"
+			if sequence == 0 {
+				// The primary holds this base until it closes the root, whether or not this
+				// database captured it (recovery_bases).
+				var header struct {
+					CreatedAt time.Time `json:"createdAt"`
+				}
+				if json.Unmarshal(decoded, &header) != nil || header.CreatedAt.IsZero() {
+					return errors.New("invalid stored recovery base")
+				}
+				if err := q.RegisterRecoveredBase(ctx, db.RegisterRecoveredBaseParams{WorkspaceID: ws, ID: d.CheckpointID, ParentID: parent, EnvironmentID: root.Command.EnvironmentId, PrimaryServerID: root.Command.ServerId, CapturedAt: header.CreatedAt}); err != nil {
+					return err
+				}
+			}
 			if sequence > 0 {
 				var segment recoveryContinuation
 				if recoveryDecode(decoded, &segment) != nil {

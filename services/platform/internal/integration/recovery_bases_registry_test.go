@@ -76,6 +76,10 @@ func TestFailedCheckpointIsClosedOnItsPrimary(t *testing.T) {
 		base, found := registeredBase(t, g, op.Id)
 		return found && base.closed != nil
 	})
+	var cancelled bool
+	if err := g.f.st.Pool.QueryRow(g.ctx, `SELECT cancel_requested FROM execution_operations WHERE id=$1`, op.Id).Scan(&cancelled); err != nil || cancelled {
+		t.Fatal("the closure marked a failed deployment as cancelled", err)
+	}
 }
 
 // The times recovery chooses its window by are written once: a later write can't move when a
@@ -118,5 +122,23 @@ func TestRecoveryHistoryTimesAreWrittenOnce(t *testing.T) {
 	}
 	if _, err := g.f.st.Pool.Exec(g.ctx, `UPDATE execution_operations SET runtime_recorded_at=now() WHERE workspace_id=$1 AND runtime_outcome IS NULL`, g.ws); err == nil {
 		t.Fatal("an operation without a runtime outcome took a recording time")
+	}
+}
+
+// A root that recovery takes over keeps its base on its primary until the primary closes it, so
+// the base is registered even though this database never captured it.
+func TestRecoveryRegistersTheBaseItTakesOver(t *testing.T) {
+	r := newClaimRecovery(t, 7)
+	if _, err := r.f.st.Pool.Exec(r.ctx, `DELETE FROM recovery_bases WHERE workspace_id=$1`, r.ws); err != nil {
+		t.Fatal(err)
+	}
+	r.recoverAll(t, r.exports(t, claimExport{}))
+	var id, environment, primary uuid.UUID
+	var closed *time.Time
+	if err := r.f.st.Pool.QueryRow(r.ctx, `SELECT id,environment_id,primary_server_id,closed_at FROM recovery_bases WHERE workspace_id=$1 AND parent_id=$2`, r.ws, r.root.Id).Scan(&id, &environment, &primary, &closed); err != nil {
+		t.Fatal("recovery didn't register the base it took over: ", err)
+	}
+	if id != r.descriptor.BaseID || environment != r.env || primary != r.a.ServerId || closed != nil {
+		t.Fatalf("the taken-over base was registered as %s for %s on %s, closed %v", id, environment, primary, closed)
 	}
 }

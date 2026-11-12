@@ -110,6 +110,12 @@ VALUES(@id,@workspace_id,@parent_id,0,@descriptor,@envelope);
 INSERT INTO recovery_bases(workspace_id,id,parent_id,environment_id,primary_server_id,captured_at)
 VALUES(@workspace_id,@id,@parent_id,@environment_id,@primary_server_id,@captured_at);
 
+-- name: RegisterRecoveredBase :exec
+-- A root recovery takes over is being coordinated again, so its primary hasn't closed its base.
+INSERT INTO recovery_bases(workspace_id,id,parent_id,environment_id,primary_server_id,captured_at)
+VALUES(@workspace_id,@id,@parent_id,@environment_id,@primary_server_id,@captured_at)
+ON CONFLICT DO NOTHING;
+
 -- name: CloseRecoveryBase :exec
 -- The primary acknowledged a closing phase, after which its agent keeps the base only while it is
 -- among the two latest closed in its environment.

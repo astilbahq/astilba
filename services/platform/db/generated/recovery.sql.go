@@ -847,6 +847,34 @@ func (q *Queries) RecoveryServerWorkspace(ctx context.Context, serverID uuid.UUI
 	return workspace_id, err
 }
 
+const registerRecoveredBase = `-- name: RegisterRecoveredBase :exec
+INSERT INTO recovery_bases(workspace_id,id,parent_id,environment_id,primary_server_id,captured_at)
+VALUES($1,$2,$3,$4,$5,$6)
+ON CONFLICT DO NOTHING
+`
+
+type RegisterRecoveredBaseParams struct {
+	WorkspaceID     uuid.UUID `json:"workspace_id"`
+	ID              uuid.UUID `json:"id"`
+	ParentID        uuid.UUID `json:"parent_id"`
+	EnvironmentID   uuid.UUID `json:"environment_id"`
+	PrimaryServerID uuid.UUID `json:"primary_server_id"`
+	CapturedAt      time.Time `json:"captured_at"`
+}
+
+// A root recovery takes over is being coordinated again, so its primary hasn't closed its base.
+func (q *Queries) RegisterRecoveredBase(ctx context.Context, arg RegisterRecoveredBaseParams) error {
+	_, err := q.db.Exec(ctx, registerRecoveredBase,
+		arg.WorkspaceID,
+		arg.ID,
+		arg.ParentID,
+		arg.EnvironmentID,
+		arg.PrimaryServerID,
+		arg.CapturedAt,
+	)
+	return err
+}
+
 const registerRecoveryBase = `-- name: RegisterRecoveryBase :exec
 INSERT INTO recovery_bases(workspace_id,id,parent_id,environment_id,primary_server_id,captured_at)
 VALUES($1,$2,$3,$4,$5,$6)
