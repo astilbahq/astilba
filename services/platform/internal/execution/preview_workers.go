@@ -419,8 +419,12 @@ func (s *Service) reconcilePreview(ctx context.Context, tx pgx.Tx, git *gitAnswe
 		if allocation, err = tx.Begin(ctx); err != nil {
 			return err
 		}
-		if err = s.createPreviewEnvironment(ctx, tx, p, r); err != nil {
+		reason, err := refusedChange(ctx, tx, func(tx pgx.Tx) error { return s.createPreviewEnvironment(ctx, tx, p, r) })
+		if err != nil {
 			return err
+		}
+		if reason != "" {
+			return s.previewState(ctx, tx, id, "failed", "Preview environment was not created: "+reason, 5*time.Minute)
 		}
 	}
 	if r.Config == nil || r.PolicyGeneration != p.Generation {
@@ -508,19 +512,26 @@ func (s *Service) reconcilePreview(ctx context.Context, tx pgx.Tx, git *gitAnswe
 		if err != nil {
 			return err
 		}
-		if err = promoteSpecification(ctx, &v.Spec, *r.App, artifact); err != nil {
+		reason, err := refusedChange(ctx, tx, func(tx pgx.Tx) error {
+			if err := promoteSpecification(ctx, &v.Spec, *r.App, artifact); err != nil {
+				return err
+			}
+			rev, err := s.writePipelineRevision(ctx, tx, p.Workspace, *r.View.EnvironmentId, v.Revision, p.Actor, v.Spec)
+			if err != nil {
+				return err
+			}
+			status, err := s.createVisualPlan(ctx, tx, p.Workspace, p.Project, *r.View.EnvironmentId, api.VisualPlanRequest{BaseRevisionId: rev, ServerId: p.Server}, true)
+			if err != nil {
+				return err
+			}
+			_, err = tx.Exec(ctx, "UPDATE preview_requests SET plan_id=$2,operation_id=$3 WHERE id=$1", id, status.ID, status.OperationID)
 			return err
-		}
-		rev, err := s.writePipelineRevision(ctx, tx, p.Workspace, *r.View.EnvironmentId, v.Revision, p.Actor, v.Spec)
+		})
 		if err != nil {
 			return err
 		}
-		status, err := s.createVisualPlan(ctx, tx, p.Workspace, p.Project, *r.View.EnvironmentId, api.VisualPlanRequest{BaseRevisionId: rev, ServerId: p.Server}, true)
-		if err != nil {
-			return err
-		}
-		if _, err = tx.Exec(ctx, "UPDATE preview_requests SET plan_id=$2,operation_id=$3 WHERE id=$1", id, status.ID, status.OperationID); err != nil {
-			return err
+		if reason != "" {
+			return s.previewState(ctx, tx, id, "failed", "Preview was not deployed: "+reason, 5*time.Minute)
 		}
 		return s.previewState(ctx, tx, id, "deploying", "Resolving preview images and runtime state.", time.Minute)
 	}

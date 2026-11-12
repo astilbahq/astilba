@@ -321,7 +321,7 @@ func parseDraft(ctx context.Context, q *db.Queries, env db.GetEnvironmentRow, ra
 			return domain.Specification{}, nil, e
 		}
 		if !fits {
-			return domain.Specification{}, nil, domain.Invalid("specification")
+			return domain.Specification{}, nil, domain.SpecificationTooLarge
 		}
 	}
 	if old.Compose.Origin == nil {
@@ -330,7 +330,7 @@ func parseDraft(ctx context.Context, q *db.Queries, env db.GetEnvironmentRow, ra
 	// Nothing ParseSpec derives depends on the origin, so the draft's is added to what it parsed.
 	spec.Compose.Origin = old.Compose.Origin
 	if canonical, e = stablejson.Marshal(spec); e == nil && len(canonical) > domain.SpecificationLimit {
-		e = domain.Invalid("specification")
+		e = domain.SpecificationTooLarge
 	}
 	return spec, canonical, e
 }
