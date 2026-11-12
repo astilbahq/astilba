@@ -37,3 +37,8 @@ func (s *Service) newCaller(v []byte) ([]byte, error) {
 
 // Errors hold no key and are anyone's.
 func tooLarge(err error) bool { return errors.Is(err, cryptobox.ErrTooLarge) }
+
+// Any number of calls away is still a way to keys.
+func (s *Service) throughWrapper(v []byte) ([]byte, error) {
+	return s.wrapper(v) // want `wrapper, which opens values without a record, gives keys`
+}

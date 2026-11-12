@@ -15,10 +15,18 @@ import (
 )
 
 var Analyzer = &analysis.Analyzer{
-	Name: "secretkeys",
-	Doc:  "reports use of the keyring or a custody backend outside the secret broker",
-	Run:  run,
+	Name:      "secretkeys",
+	Doc:       "reports use of the keyring or a custody backend outside the secret broker",
+	Run:       run,
+	FactTypes: []analysis.Fact{new(transitional)},
 }
+
+// transitional marks a function in a pending file that reaches keys, so that a call to it from
+// another package is reported too.
+type transitional struct{}
+
+func (*transitional) AFact()         {}
+func (*transitional) String() string { return "transitional" }
 
 const (
 	cryptoboxPath = "internal/cryptobox"
@@ -52,19 +60,26 @@ var pending = map[string]bool{
 	"internal/execution/recovery_checkpoints.go": true,
 }
 
-// legacyCallers are the files that call functions in pending files which use keys. Those
-// functions open values without a record, so a call from anywhere else is reported: the files
-// below move to the broker with them, and none may be added.
+// legacyCallers are the files that reach, through any chain of calls, a function in a pending
+// file that uses keys. Those paths open values without a record, so a call into one from
+// anywhere else is reported: the files below move to the broker with them (mostly Git access
+// through gitAnswers), and none may be added.
 var legacyCallers = map[string]bool{
+	"internal/execution/automatic.go":             true,
+	"internal/execution/automation.go":            true,
 	"internal/execution/backups.go":               true,
 	"internal/execution/cross_host_operations.go": true,
 	"internal/execution/cross_host_plans.go":      true,
 	"internal/execution/git_answers.go":           true,
+	"internal/execution/git_refresh.go":           true,
 	"internal/execution/github_app.go":            true,
 	"internal/execution/maintenance.go":           true,
+	"internal/execution/operations.go":            true,
 	"internal/execution/pipelines.go":             true,
+	"internal/execution/preview_cleanup.go":       true,
 	"internal/execution/preview_workers.go":       true,
 	"internal/execution/previews.go":              true,
+	"internal/execution/source_state.go":          true,
 	"internal/execution/transport.go":             true,
 	"internal/execution/upgrades.go":              true,
 	"internal/execution/visual.go":                true,
@@ -91,6 +106,7 @@ func run(pass *analysis.Pass) (any, error) {
 	report := func(pos token.Pos, what string) {
 		pass.Reportf(pos, "%s gives keys outside the secret broker; ask secretbroker for a session instead", what)
 	}
+	legacy := map[types.Object]bool{}
 	uses := func(id *ast.Ident) string {
 		if why := holdsKeys(pass.TypesInfo.Uses[id]); why != "" {
 			return why
@@ -101,23 +117,53 @@ func run(pass *analysis.Pass) (any, error) {
 		}
 		return ""
 	}
-	// Functions in pending files that use keys open values without a record.
-	legacy := map[types.Object]bool{}
+	// Functions that reach keys open values without a record: those in pending files that use
+	// keys, and, until nothing changes, every function in a pending or listed caller file that
+	// calls one. Those in pending files are recorded as facts for other packages.
+	isLegacy := func(object types.Object) bool {
+		fn, ok := object.(*types.Func)
+		if !ok {
+			return false
+		}
+		fn = fn.Origin()
+		return legacy[fn] || fn.Pkg() != pass.Pkg && pass.ImportObjectFact(fn, new(transitional))
+	}
+	type function struct {
+		object types.Object
+		body   *ast.BlockStmt
+		file   string
+	}
+	var functions []function
 	for _, file := range pass.Files {
-		if !pending[pkg+"/"+path.Base(pass.Fset.Position(file.Pos()).Filename)] {
+		name := pkg + "/" + path.Base(pass.Fset.Position(file.Pos()).Filename)
+		if !pending[name] && !legacyCallers[name] {
 			continue
 		}
 		for _, decl := range file.Decls {
-			fn, ok := decl.(*ast.FuncDecl)
-			if !ok || fn.Body == nil {
+			if fn, ok := decl.(*ast.FuncDecl); ok && fn.Body != nil {
+				functions = append(functions, function{pass.TypesInfo.Defs[fn.Name], fn.Body, name})
+			}
+		}
+	}
+	for changed := true; changed; {
+		changed = false
+		for _, fn := range functions {
+			if legacy[fn.object] {
 				continue
 			}
-			ast.Inspect(fn.Body, func(n ast.Node) bool {
-				if id, ok := n.(*ast.Ident); ok && uses(id) != "" {
-					legacy[pass.TypesInfo.Defs[fn.Name]] = true
+			ast.Inspect(fn.body, func(n ast.Node) bool {
+				id, ok := n.(*ast.Ident)
+				if ok && !legacy[fn.object] && (pending[fn.file] && uses(id) != "" || isLegacy(pass.TypesInfo.Uses[id])) {
+					legacy[fn.object] = true
+					changed = true
 				}
 				return true
 			})
+		}
+	}
+	for _, fn := range functions {
+		if legacy[fn.object] && pending[fn.file] {
+			pass.ExportObjectFact(fn.object, new(transitional))
 		}
 	}
 	for _, file := range pass.Files {
@@ -137,7 +183,7 @@ func run(pass *analysis.Pass) (any, error) {
 			}
 			if why := uses(id); why != "" {
 				report(id.Pos(), why)
-			} else if object := pass.TypesInfo.Uses[id]; object != nil && legacy[object] && !legacyCallers[name] {
+			} else if object := pass.TypesInfo.Uses[id]; isLegacy(object) && !legacyCallers[name] {
 				report(id.Pos(), object.Name()+", which opens values without a record,")
 			}
 			return true
