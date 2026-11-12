@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/url"
 	"os"
 	"os/exec"
 	"path"
@@ -156,105 +155,6 @@ exec buildkitd --config /etc/buildkit/buildkitd.toml --addr unix:///run/buildkit
 	return nil
 }
 func int64Pointer(value int64) *int64 { return &value }
-func (e *Engine) submitPipeline(ctx context.Context, c api.ExecutionCommand, p pipeline.Command) (pipeline.Result, error) {
-	result := pipeline.Result{Commit: p.Commit}
-	head, err := e.remotePipelineHead(ctx, c, p, p.Branch)
-	if err != nil {
-		return result, err
-	}
-	if head != p.Commit {
-		return result, errors.New("source branch changed; reconcile this draft")
-	}
-	if _, err = e.pipelineGit(ctx, c, p, nil, "read-tree", p.Commit); err != nil {
-		return result, err
-	}
-	old := map[string]bool{}
-	for _, name := range p.Source.Paths {
-		old[name] = true
-	}
-	current := map[string]bool{}
-	for _, file := range p.Bundle.Files {
-		current[file.Path] = true
-		mode := "100644"
-		if old[file.Path] {
-			previous, m, err := e.sourceFile(ctx, c, p, file.Path)
-			if err != nil {
-				return result, err
-			}
-			mode = m
-			if previous.Content == file.Content {
-				continue
-			}
-		}
-		blob, err := e.pipelineGit(ctx, c, p, []byte(file.Content), "hash-object", "-w", "--stdin")
-		if err != nil {
-			return result, err
-		}
-		if _, err = e.pipelineGit(ctx, c, p, nil, "update-index", "--add", "--cacheinfo", mode, strings.TrimSpace(string(blob)), file.Path); err != nil {
-			return result, err
-		}
-	}
-	for name := range old {
-		if !current[name] {
-			if _, err = e.pipelineGit(ctx, c, p, nil, "update-index", "--force-remove", "--", name); err != nil {
-				return result, err
-			}
-		}
-	}
-	tree, err := e.pipelineGit(ctx, c, p, nil, "write-tree")
-	if err != nil {
-		return result, err
-	}
-	original, err := e.pipelineGit(ctx, c, p, nil, "rev-parse", p.Commit+"^{tree}")
-	if err != nil {
-		return result, err
-	}
-	if bytes.Equal(tree, original) {
-		return result, errors.New("source draft has no changes")
-	}
-	commit, err := e.pipelineGit(ctx, c, p, []byte("Update deployment configuration\n\nAstilba-Submission: "+p.SubmissionID.String()+"\n"), "commit-tree", strings.TrimSpace(string(tree)), "-p", p.Commit)
-	if err != nil {
-		return result, err
-	}
-	target := strings.TrimSpace(string(commit))
-	branch := "astilba/" + p.SubmissionID.String()
-	existing, err := e.remotePipelineHead(ctx, c, p, branch)
-	if err != nil {
-		return result, err
-	}
-	if existing != "" && existing != target {
-		return result, errors.New("submission branch already belongs to another change")
-	}
-	if existing == "" {
-		// The empty lease permits creation only, including against a racing fast-forward.
-		if _, err = e.pipelineGit(ctx, c, p, nil, "push", "--quiet", "--force-with-lease=refs/heads/"+branch+":", "origin", target+":refs/heads/"+branch); err != nil {
-			return result, errors.New("create-only submission branch failed")
-		}
-	}
-	head, err = e.remotePipelineHead(ctx, c, p, p.Branch)
-	if err != nil {
-		return result, err
-	}
-	if head != p.Commit {
-		return result, errors.New("source branch changed before review creation")
-	}
-	u, _ := url.Parse(p.Connection.BaseURL)
-	provider, err := pipeline.NewProvider(p.Connection, p.Access.API, pipeline.Policy{Origins: []string{u.Scheme + "://" + u.Host}, Development: u.Scheme == "http"})
-	if err != nil {
-		return result, err
-	}
-	review, err := provider.Review(ctx, p.Branch, branch)
-	if err != nil {
-		return result, errors.New("review request failed; retry resumes the same branch")
-	}
-	if review.Number < 1 {
-		return result, errors.New("provider omitted review identity")
-	}
-	result.Commit = target
-	result.ReviewURL = review.URL
-	result.ReviewNumber = review.Number
-	return result, nil
-}
 func (e *Engine) buildPipeline(ctx context.Context, c api.ExecutionCommand, p pipeline.Command) (pipeline.Result, error) {
 	result := pipeline.Result{Commit: p.Commit, Architecture: p.Build.Architecture, Cache: "BuildKit cache is isolated to this run and cleared at completion."}
 	if p.CompareCommit != "" && !e.watchedSourceChanged(ctx, c, p) {
@@ -428,7 +328,6 @@ func (e *Engine) pipelineLog(ctx context.Context, c api.ExecutionCommand, p pipe
 	}
 	if p.Access != nil {
 		values["clone"] = p.Access.Clone.Password
-		values["api"] = p.Access.API.Password
 	}
 	if p.RegistryAccess != nil {
 		values["push"] = p.RegistryAccess.Push.Password
@@ -514,10 +413,6 @@ func (e *Engine) executePipeline(ctx context.Context, c api.ExecutionCommand, r 
 	switch p.Action {
 	case "import":
 		result, err = e.importPipeline(ctx, c, p)
-	case "submit":
-		if err = e.checkpoint(c.Id, "submission"); err == nil {
-			result, err = e.submitPipeline(ctx, c, p)
-		}
 	case "build", "build-preview":
 		if err = e.checkpoint(c.Id, "build"); err == nil {
 			result, err = e.buildPipeline(ctx, c, p)

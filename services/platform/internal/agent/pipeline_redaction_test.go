@@ -28,10 +28,10 @@ func TestPipelineLogsRedactBuildSecretsWithCredentialNames(t *testing.T) {
 	secrets := map[string]string{"clone": "build-clone-canary", "api": "build-api-canary", "push": "build-push-canary", "pull": "build-pull-canary"}
 	command := pipeline.Command{
 		BuildSecrets:   secrets,
-		Access:         &pipeline.Access{Clone: pipeline.Credential{Password: "git-clone-canary"}, API: pipeline.Credential{Password: "git-api-canary"}},
+		Access:         &pipeline.RunnerAccess{Clone: pipeline.Credential{Password: "git-clone-canary"}},
 		RegistryAccess: &pipeline.RegistryAccess{Push: pipeline.Credential{Password: "registry-push-canary"}, Pull: pipeline.Credential{Password: "registry-pull-canary"}},
 	}
-	values := []string{"git-clone-canary", "git-api-canary", "registry-push-canary", "registry-pull-canary"}
+	values := []string{"git-clone-canary", "registry-push-canary", "registry-pull-canary"}
 	for _, value := range secrets {
 		values = append(values, value)
 	}

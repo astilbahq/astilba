@@ -792,6 +792,21 @@ type Session struct {
 	Expiry time.Time `json:"expiry"`
 }
 
+type SourceSubmission struct {
+	ID            uuid.UUID  `json:"id"`
+	WorkspaceID   uuid.UUID  `json:"workspace_id"`
+	EnvironmentID uuid.UUID  `json:"environment_id"`
+	RevisionID    uuid.UUID  `json:"revision_id"`
+	RequestKey    uuid.UUID  `json:"request_key"`
+	ActorID       uuid.UUID  `json:"actor_id"`
+	Configuration []byte     `json:"configuration"`
+	State         string     `json:"state"`
+	Note          string     `json:"note"`
+	Result        []byte     `json:"result"`
+	CreatedAt     time.Time  `json:"created_at"`
+	FinishedAt    *time.Time `json:"finished_at"`
+}
+
 type SpecificationRevision struct {
 	WorkspaceID   uuid.UUID `json:"workspace_id"`
 	EnvironmentID uuid.UUID `json:"environment_id"`
