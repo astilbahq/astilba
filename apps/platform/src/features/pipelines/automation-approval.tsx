@@ -27,18 +27,26 @@ type Action = ReturnType<typeof useAction>;
 // disappears with it.
 type Approved = (message: string) => Promise<void>;
 
-// An approval names the configuration it was shown. If that changed, the server refuses it, so
-// reload what is shown before the refusal is reported, and the next attempt names the current one.
+// An approval names the configuration and approver it was shown. If either changed, most often
+// because someone else approved it first, the server refuses it: reload what is shown and say so,
+// rather than report an error about saving.
 async function approve(
+  approved: Approved,
   refresh: () => Promise<void>,
   request: () => Promise<unknown>,
+  message: string,
 ) {
   try {
     await request();
   } catch (e) {
-    if (e instanceof ApiError && e.status === 409) await refresh();
-    throw e;
+    if (!(e instanceof ApiError) || e.status !== 409) throw e;
+    await refresh();
+    await approved(
+      "This changed since it was shown, for example because someone else approved it. It now shows as it is.",
+    );
+    return;
   }
+  await approved(message);
 }
 
 export function PausedSource({
@@ -71,15 +79,16 @@ export function PausedSource({
           disabled={action.isPending}
           onClick={() =>
             action.run(async () => {
-              await approve(refresh, () =>
-                result(
-                  client.POST(`${root}/source/approval`, {
-                    params: { path },
-                    body: { sourceHash: source.sourceHash },
-                  }),
-                ),
-              );
-              await approved(
+              await approve(
+                approved,
+                refresh,
+                () =>
+                  result(
+                    client.POST(`${root}/source/approval`, {
+                      params: { path },
+                      body: { sourceHash: source.sourceHash },
+                    }),
+                  ),
                 "Source approved as yours. Automatic imports resume from the next push.",
               );
             })
@@ -156,8 +165,10 @@ export function PausedBuildTargets({
                 disabled={action.isPending}
                 onClick={() =>
                   action.run(async () => {
-                    await approve(refresh, () => approveTarget(path, target));
-                    await approved(
+                    await approve(
+                      approved,
+                      refresh,
+                      () => approveTarget(path, target),
                       `${target.name} approved as yours. Automatic builds resume from the next push.`,
                     );
                   })
@@ -186,8 +197,10 @@ export function PausedBuildTargets({
             disabled={action.isPending}
             onClick={() =>
               action.run(async () => {
-                await approve(refresh, () => approveTarget(path, target));
-                await approved(
+                await approve(
+                  approved,
+                  refresh,
+                  () => approveTarget(path, target),
                   `${target.name} approved as yours. Automation credentials can run it.`,
                 );
               })
