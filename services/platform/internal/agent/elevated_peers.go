@@ -216,11 +216,14 @@ func (e *Engine) ForgetRemovedContainers(ctx context.Context) {
 	}
 }
 
-// fenceTerminals records the plan a unit's Compose project is about to run with. Every
-// container a session has entered that this plan refuses has its shells ended and is stopped,
-// so nothing a person started there runs once a privileged service starts. It fails, and so
-// stops the run, if such a container cannot be stopped.
-func (e *Engine) fenceTerminals(ctx context.Context, p deployment.Plan) error {
+// fenceTerminals records the plan a unit's Compose project is about to run with, and returns
+// the arguments to run it with. When the run can start a privileged or added-capability
+// service, every container a session has entered that this plan refuses has its shells ended
+// and is stopped first, so nothing a person started there runs beside that service. It fails,
+// and so stops the run, if such a container cannot be stopped. A run that starts a service a
+// session entered recreates its container, never starting the old one again, even when the
+// plan is the one that container was created with.
+func (e *Engine) fenceTerminals(ctx context.Context, p deployment.Plan, args []string) ([]string, error) {
 	f := &e.terminals
 	f.mu.Lock()
 	if f.incoming == nil {
@@ -236,26 +239,45 @@ func (e *Engine) fenceTerminals(ctx context.Context, p deployment.Plan) error {
 	entered, err := e.Journal.enteredContainers(&p.UnitID)
 	f.mu.Unlock()
 	if err != nil {
-		return err
+		return nil, err
+	}
+	targets := map[uuid.UUID]bool{}
+	for _, app := range p.Specification.Applications {
+		if slices.Contains(args, deployment.ServiceName(app.ID)) {
+			targets[app.ID] = true
+		}
+	}
+	up := slices.Index(args, "up")
+	if up >= 0 && !slices.Contains(args, "--force-recreate") && slices.ContainsFunc(slices.Collect(maps.Values(entered)), func(c enteredContainer) bool { return len(targets) == 0 || targets[c.App] }) {
+		args = slices.Insert(slices.Clone(args), up+1, "--force-recreate")
+	}
+	starts := up >= 0 && !slices.Contains(args, "--no-start") && (next.unreadable || len(targets) == 0 || slices.ContainsFunc(slices.Collect(maps.Keys(targets)), func(app uuid.UUID) bool { return next.elevation.Privileged[app] }))
+	if !starts {
+		return args, nil
 	}
 	refused := []string{}
 	for _, id := range slices.Sorted(maps.Keys(entered)) {
 		v, err := e.Docker.ContainerInspect(ctx, id, client.ContainerInspectOptions{})
 		if errdefs.IsNotFound(err) {
 			if err = e.Journal.forgetEnteredContainer(id); err != nil {
-				return err
+				return nil, err
 			}
 			continue
 		}
 		if err != nil {
-			return err
+			return nil, err
+		}
+		// Nothing runs in a dead container, or one the fence has already stopped.
+		state, host := v.Container.State, v.Container.HostConfig
+		if state != nil && (state.Dead || state.Status == container.StateRemoving || !state.Running && host != nil && host.RestartPolicy.Name == container.RestartPolicyDisabled) {
+			continue
 		}
 		if next.refuses(entered[id].App, containerReach(v.Container)) {
 			refused = append(refused, id)
 		}
 	}
 	if len(refused) == 0 {
-		return nil
+		return args, nil
 	}
 	ending := []*fencedShell{}
 	f.mu.Lock()
@@ -282,16 +304,20 @@ func (e *Engine) fenceTerminals(ctx context.Context, p deployment.Plan) error {
 		}
 	}
 	for _, id := range refused {
+		// The container stops as it is configured to, so its service can finish its writes.
 		_, err := e.Docker.ContainerUpdate(ctx, id, client.ContainerUpdateOptions{RestartPolicy: &container.RestartPolicy{Name: container.RestartPolicyDisabled}})
 		if err == nil {
-			_, err = e.Docker.ContainerStop(ctx, id, client.ContainerStopOptions{Timeout: ptr(0)})
+			_, err = e.Docker.ContainerStop(ctx, id, client.ContainerStopOptions{})
 		}
-		if err != nil && !errdefs.IsNotFound(err) {
-			return errors.New("a container a terminal session entered could not be stopped before a privileged service starts beside it")
+		if errdefs.IsNotFound(err) {
+			continue
+		}
+		if err != nil {
+			return nil, errors.New("a container a terminal session entered could not be stopped before a privileged service starts beside it")
 		}
 		slog.Info("stopped a container a terminal session entered, because a privileged service can reach it", "container", id, "service", entered[id].App)
 	}
-	return nil
+	return args, nil
 }
 
 // incomingRefuses reports whether the plan a unit's Compose project last ran with refuses a

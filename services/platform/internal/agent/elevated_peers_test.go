@@ -9,6 +9,8 @@ import (
 	"maps"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -329,7 +331,11 @@ func TestDeploymentStopsContainersSessionsEnteredBesideAPrivilegedService(t *tes
 	// A session that ended long ago in client may have left a process outside its shell.
 	_, releaseEarlier := admit(t, e, plan.UnitID, ids["client"], "client")
 	releaseEarlier()
-	if err := e.fenceTerminals(context.Background(), elevated); err != nil {
+	// A run of another service cannot start the privileged one, so it stops nothing.
+	if _, err := e.fenceTerminals(context.Background(), elevated, upService(ids["web"])); err != nil || len(d.stopped) != 0 {
+		t.Fatalf("a run of web stopped %v: %v", d.stopped, err)
+	}
+	if _, err := e.fenceTerminals(context.Background(), elevated, upService(ids["dind"])); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -353,7 +359,7 @@ func TestDeploymentStopsContainersSessionsEnteredBesideAPrivilegedService(t *tes
 	}
 	// A later plan without the privileged service stops nothing.
 	d.stopped = nil
-	if err := e.fenceTerminals(context.Background(), plan); err != nil || len(d.stopped) != 0 {
+	if _, err := e.fenceTerminals(context.Background(), plan, upService(ids["dind"])); err != nil || len(d.stopped) != 0 {
 		t.Fatalf("a plan without a privileged service stopped %v: %v", d.stopped, err)
 	}
 }
@@ -368,7 +374,7 @@ func TestDeploymentStopsRetiredAndMovedContainersBesideAPrivilegedService(t *tes
 	d.find("web")["NetworkSettings"] = map[string]any{"Networks": map[string]any{builder: map[string]any{}}}
 	admit(t, e, plan.UnitID, retired, "tools")
 	admit(t, e, plan.UnitID, ids["web"], "web")
-	if err := e.fenceTerminals(context.Background(), elevated); err != nil {
+	if _, err := e.fenceTerminals(context.Background(), elevated, upService(ids["dind"])); err != nil {
 		t.Fatal(err)
 	}
 	if slices.Sort(d.stopped); !slices.Equal(d.stopped, []string{"tools", "web"}) {
@@ -386,7 +392,7 @@ func TestDeploymentFailsWhenAnEnteredContainerCannotBeStopped(t *testing.T) {
 	admit(t, e, plan.UnitID, ids["runner"], "runner")
 	admit(t, e, plan.UnitID, ids["web"], "gone")
 	d.fail = map[string]bool{"stop": true}
-	if err := e.fenceTerminals(context.Background(), elevated); err == nil {
+	if _, err := e.fenceTerminals(context.Background(), elevated, upService(ids["dind"])); err == nil {
 		t.Fatal("the deployment went ahead beside a running container a session entered")
 	}
 	entered, err := e.Journal.enteredContainers(&plan.UnitID)
@@ -400,7 +406,33 @@ func TestDeploymentFailsWhenAnEnteredContainerCannotBeStopped(t *testing.T) {
 	}
 }
 
-// Every Compose run passes the fence.
+func upService(app uuid.UUID) []string {
+	return []string{"up", "--detach", "--no-deps", "--wait", deployment.ServiceName(app)}
+}
+
+// A run of a service a session entered recreates its container, even with the plan that
+// container was created with, and a container already stopped by the fence, or dead, is left
+// alone.
+func TestFenceRecreatesEnteredServicesAndSkipsStoppedContainers(t *testing.T) {
+	e, d, plan, elevated, ids := fenceFixture(t)
+	admit(t, e, plan.UnitID, ids["runner"], "runner")
+	admit(t, e, plan.UnitID, ids["client"], "client")
+	args, err := e.fenceTerminals(context.Background(), elevated, upService(ids["runner"]))
+	if err != nil || !slices.Equal(args, []string{"up", "--force-recreate", "--detach", "--no-deps", "--wait", deployment.ServiceName(ids["runner"])}) {
+		t.Fatalf("args %v: %v", args, err)
+	}
+	if args, err = e.fenceTerminals(context.Background(), elevated, upService(ids["web"])); err != nil || slices.Contains(args, "--force-recreate") {
+		t.Fatalf("a service no session entered was recreated: %v %v", args, err)
+	}
+	d.find("runner")["State"] = map[string]any{"Running": false, "Status": "exited"}
+	d.find("runner")["HostConfig"] = map[string]any{"RestartPolicy": map[string]any{"Name": "no"}}
+	d.find("client")["State"] = map[string]any{"Running": false, "Dead": true, "Status": "dead"}
+	if _, err = e.fenceTerminals(context.Background(), elevated, upService(ids["dind"])); err != nil || len(d.stopped) != 0 {
+		t.Fatalf("stopped %v again: %v", d.stopped, err)
+	}
+}
+
+// Every Compose run passes the fence, with the arguments it returns.
 func TestComposeRunsTheTerminalFence(t *testing.T) {
 	j, plan := testVisualJournal(t)
 	elevated, ids := composePlan(t, j, plan)
@@ -409,12 +441,24 @@ func TestComposeRunsTheTerminalFence(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { docker.Close() })
-	e := &Engine{Journal: j, Docker: docker, DockerCLI: "true"}
-	if err = e.compose(context.Background(), elevated, []byte("{}"), nil, "up", "--detach"); err != nil {
+	dir := t.TempDir()
+	cli := filepath.Join(dir, "docker")
+	if err = os.WriteFile(cli, []byte("#!/bin/sh\necho \"$@\" > \""+dir+"/args\"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	e := &Engine{Journal: j, Docker: docker, DockerCLI: cli}
+	if _, _, err = e.admitShell(plan.UnitID, ids["web"], "web"); err != nil {
+		t.Fatal(err)
+	}
+	// The daemon is unreachable, so this run must not need it: web cannot start dind.
+	if err = e.compose(context.Background(), elevated, []byte("{}"), nil, upService(ids["web"])...); err != nil {
 		t.Fatal(err)
 	}
 	if !e.incomingRefuses(plan.UnitID, ids["runner"], container.InspectResponse{}) {
 		t.Fatal("a Compose run did not record its plan with the fence")
+	}
+	if ran, err := os.ReadFile(filepath.Join(dir, "args")); err != nil || !strings.Contains(string(ran), " up --force-recreate ") {
+		t.Fatalf("Compose ran %q: %v", ran, err)
 	}
 }
 

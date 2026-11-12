@@ -48,15 +48,17 @@ once the shell is registered, just before it starts, and it also refuses a conta
 plan a deployment is running would leave able to reach a privileged service.
 
 Ending a shell ends only its Linux session, and a person can start a process outside it, so
-before any Compose run for a unit the agent fences off what sessions have touched. The agent
-journals every container a session enters, so this holds after it restarts. When the incoming
-plan has a privileged or added-capability service, the agent looks at each entered container
-whose service that plan makes elevated, or retires, or whose current networks or named volumes
-the privileged service uses. It ends the shells in those containers, then clears each one's
-restart policy and stops it. Compose replaces such a container when the deployment reaches its
-service, keeping its anonymous volumes and discarding its writable layer. A deployment that
-stops before then leaves it stopped, and one that cannot stop it fails before starting
-anything. Files a session wrote into a named volume stay there.
+the agent journals every container a session enters, and this holds after it restarts. A
+Compose run that starts such a container's service always recreates the container, keeping its
+anonymous volumes and discarding its writable layer, even when the plan is the one it was
+created with. Before a Compose run that can start a privileged or added-capability service,
+the agent looks at each entered container whose service that plan makes elevated, or retires,
+or whose current networks or named volumes the privileged service uses. It ends the shells in
+those containers, then clears each one's restart policy and stops it as the container is
+configured to stop. Compose recreates the container when the deployment reaches its service,
+and removes a retired one once the deployment succeeds. A deployment that stops before then
+leaves it stopped, and one that cannot stop it fails before starting the privileged service.
+Files a session wrote into a named volume stay there.
 
 **Decided** on 12 November 2026: these services are refused outright, not opened for owners
 after a recent identity confirmation, because the agent cannot check either and the host owner

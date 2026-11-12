@@ -168,12 +168,14 @@ func serviceNames(projects ...*composeproject.Project) []string {
 // the agent.
 type Elevation struct {
 	Services map[uuid.UUID]bool
-	Reach    map[string]bool
+	// Privileged are the privileged and cap_add services themselves.
+	Privileged map[uuid.UUID]bool
+	Reach      map[string]bool
 }
 
 // ElevationOf finds a specification's Elevation.
 func ElevationOf(spec domain.Specification) (Elevation, error) {
-	out := Elevation{Services: map[uuid.UUID]bool{}, Reach: map[string]bool{}}
+	out := Elevation{Services: map[uuid.UUID]bool{}, Privileged: map[uuid.UUID]bool{}, Reach: map[string]bool{}}
 	if spec.Compose == nil {
 		return out, nil
 	}
@@ -191,6 +193,7 @@ func ElevationOf(spec domain.Specification) (Elevation, error) {
 		if !elevatedService(service) {
 			continue
 		}
+		out.Privileged[composeproject.ResourceID(namespace, "service", name)] = true
 		for _, mount := range service.Volumes {
 			if mount.Type == "volume" {
 				out.Reach[deployment.VolumeName(composeproject.ResourceID(namespace, "volume", mount.Source))] = true
