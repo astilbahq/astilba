@@ -323,7 +323,7 @@ func (s *Service) BackupCommand(ctx context.Context, p store.Principal, ws, pid,
 		out, err = s.insert(ctx, tx, ws, in.RequestKey, nil, c)
 		return err
 	})
-	return out, err
+	return operationFor(p, out), err
 }
 
 // hydrateBackup fills a backup command's access, or with nil keys only makes its checks.
