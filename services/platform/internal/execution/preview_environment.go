@@ -98,7 +98,7 @@ func (s *Service) createPreviewEnvironment(ctx context.Context, tx pgx.Tx, copyK
 	if err != nil {
 		return err
 	}
-	if _, err = q.InsertRevision(ctx, db.InsertRevisionParams{WorkspaceID: p.Workspace, EnvironmentID: env, ID: rev, AuthorID: p.Actor, Specification: raw, ContentHash: hash(string(raw))}); err != nil {
+	if _, err = store.InsertRevision(ctx, q, db.InsertRevisionParams{WorkspaceID: p.Workspace, EnvironmentID: env, ID: rev, AuthorID: p.Actor, Specification: raw, ContentHash: hash(string(raw))}); err != nil {
 		return err
 	}
 	if err = q.InsertDeploymentUnit(ctx, db.InsertDeploymentUnitParams{WorkspaceID: p.Workspace, EnvironmentID: env, ID: unit}); err != nil {
