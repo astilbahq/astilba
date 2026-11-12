@@ -55,6 +55,12 @@ UPDATE server_domains SET approved_controller=NULL,generation=generation+1,state
 WHERE workspace_id = @workspace_id AND server_id = @server_id
 RETURNING generation;
 
+-- name: MarkRevokedServersDNSPublications :exec
+-- unscoped: the sweep serves every workspace. It catches a revocation that reached servers
+-- without passing through withdrawal, such as offline recovery merging a newer export.
+UPDATE dns_publications p SET revoked=true,checked_at=NULL
+FROM servers s WHERE s.id=p.server_id AND s.revoked AND NOT p.revoked;
+
 -- name: StaleDNSPublicationServers :many
 -- unscoped: the sweep serves every workspace. Rows in another zone are stranded and left out.
 SELECT p.server_id,COALESCE(max(d.generation),0)::bigint AS generation,COALESCE(max(d.approved_controller),0)::bigint AS controller

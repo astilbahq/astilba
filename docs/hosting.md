@@ -578,7 +578,8 @@ approval is kept, so the records come back within a few minutes of management
 resuming. See
 [server onboarding](server-onboarding.md#when-automatic-records-are-removed).
 
-Astilba removes records only in the zone it has credentials for. If you change
+A server revoked while automatic DNS is off has its records removed once automation
+is back in the same zone. Astilba removes records only in the zone it has credentials for. If you change
 `ASTILBA_DNS_CLOUDFLARE_ZONE`, or turn automatic DNS off, the old zone keeps every
 record Astilba made there, for live and revoked servers alike. Delete them yourself:
 their comment starts with `astilba:` followed by the installation's ID. At startup,

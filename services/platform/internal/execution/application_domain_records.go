@@ -51,11 +51,9 @@ func (s *Service) withdrawRevokedDomain(ctx context.Context, tx pgx.Tx, ws, serv
 	} else if e != nil {
 		return e
 	}
-	if s.DNS == nil {
-		return nil
-	}
+	// Marked even while automation is off, so the removal still happens once it's back.
 	marked, e := q.RevokeDNSPublications(ctx, server)
-	if e != nil || marked == 0 {
+	if e != nil || marked == 0 || s.DNS == nil {
 		return e
 	}
 	return s.enqueueDomain(ctx, tx, domainArgs{Server: server, Generation: generation})
@@ -170,7 +168,11 @@ func (s *Service) recordPublication(ctx context.Context, conn *pgxpool.Conn, ws,
 // enqueueStalePublications is the sweep's half of withdrawal: it finds every server holding a
 // name it may no longer hold, including after a restart, a lapse or a change of base.
 func (s *Service) enqueueStalePublications(ctx context.Context, tx pgx.Tx) error {
-	rows, e := db.New(tx).StaleDNSPublicationServers(ctx, db.StaleDNSPublicationServersParams{Zone: s.DNS.Zone, Base: s.Store.ApplicationDomain, Hosted: s.Store.Hosted})
+	q := db.New(tx)
+	if e := q.MarkRevokedServersDNSPublications(ctx); e != nil {
+		return e
+	}
+	rows, e := q.StaleDNSPublicationServers(ctx, db.StaleDNSPublicationServersParams{Zone: s.DNS.Zone, Base: s.Store.ApplicationDomain, Hosted: s.Store.Hosted})
 	if e != nil {
 		return e
 	}

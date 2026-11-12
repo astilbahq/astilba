@@ -168,6 +168,18 @@ func (q *Queries) ListDNSPublications(ctx context.Context, serverID uuid.UUID) (
 	return items, nil
 }
 
+const markRevokedServersDNSPublications = `-- name: MarkRevokedServersDNSPublications :exec
+UPDATE dns_publications p SET revoked=true,checked_at=NULL
+FROM servers s WHERE s.id=p.server_id AND s.revoked AND NOT p.revoked
+`
+
+// unscoped: the sweep serves every workspace. It catches a revocation that reached servers
+// without passing through withdrawal, such as offline recovery merging a newer export.
+func (q *Queries) MarkRevokedServersDNSPublications(ctx context.Context) error {
+	_, err := q.db.Exec(ctx, markRevokedServersDNSPublications)
+	return err
+}
+
 const noteWithdrawnServerDomain = `-- name: NoteWithdrawnServerDomain :exec
 UPDATE server_domains SET records='{}',observed_at=NULL,note = $1,
     state=CASE WHEN state IN ('manual','review_required') THEN state ELSE 'pending' END

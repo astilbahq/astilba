@@ -392,3 +392,45 @@ func TestRenewingARevokedServerStillRemovesItsDNSRecords(t *testing.T) {
 		t.Fatal("a new approval did not publish afresh", revoked, e)
 	}
 }
+
+func TestRevokingWhileDNSAutomationIsOffRemovesRecordsLater(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	f.st.ApplicationDomain = "apps.example.test"
+	z := newDNSZone(t, f)
+	s := publishedServer(t, f, z)
+	if e := f.execution.Stop(ctx); e != nil {
+		t.Fatal(e)
+	}
+	provider := f.execution.DNS
+	f.execution.DNS = nil
+	s.b.call("POST", s.path+"/revoke", nil, 204, nil)
+	s.b.call("POST", s.path+"/enrollment", nil, 201, nil)
+	f.execution.DNS = provider
+	if e := f.execution.Start(ctx); e != nil {
+		t.Fatal(e)
+	}
+	if e := f.execution.SweepDomains(ctx); e != nil {
+		t.Fatal(e)
+	}
+	eventually(t, "records revoked while automation was off are removed", func() bool { return z.marked(s.name(), s.marker) == 0 && s.publications(t) == 0 })
+}
+
+func TestTheSweepRemovesRecordsOfAServerRevokedOutsideRevocation(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	f.st.ApplicationDomain = "apps.example.test"
+	z := newDNSZone(t, f)
+	s := publishedServer(t, f, z)
+	// Offline recovery merges revocations from newer exports straight into servers.
+	if _, e := f.st.Pool.Exec(ctx, "UPDATE servers SET revoked=true WHERE id=$1", s.id); e != nil {
+		t.Fatal(e)
+	}
+	// Management sweeps every minute; here each wait step sweeps.
+	eventually(t, "the sweep removes the revoked server's records", func() bool {
+		if e := f.execution.SweepDomains(ctx); e != nil {
+			t.Fatal(e)
+		}
+		return z.marked(s.name(), s.marker) == 0 && s.publications(t) == 0
+	})
+}
