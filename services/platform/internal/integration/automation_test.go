@@ -268,12 +268,7 @@ func TestAutomationConfiguredBuildPreservesAutomaticDeployment(t *testing.T) {
 	}
 	report(poll(), "cancelled", pipeline.Result{})
 	// The fixture starts from an existing reviewed stateless deployment.
-	if _, err := f.st.Pool.Exec(ctx, "UPDATE environments SET applied_revision_id=$2 WHERE id=$1", env.Id, draft.Id); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.st.Pool.Exec(ctx, "UPDATE deployment_units SET server_id=$2 WHERE environment_id=$1", env.Id, enrolled.Server.Id); err != nil {
-		t.Fatal(err)
-	}
+	recordReviewedDeployment(t, f, scope.WorkspaceId, env.Id, draft.Id, enrolled.Server.Id, map[string]string{app.String(): pipelineTestImage})
 	grant := issueAutomation(t, b, path, domain.BuildRun)
 	var targets []api.ConfiguredBuildTarget
 	bearerCall(t, f, *grant.Token, "GET", path+"/build-targets", nil, 200, &targets)

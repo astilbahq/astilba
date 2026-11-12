@@ -541,12 +541,7 @@ func TestGitImportBuildIsolationAndArtifactAdmission(t *testing.T) {
 			t.Fatal("merge source was not authoritative")
 		}
 		// Model an already reviewed deployment; automatic follow-ups still use normal plan/resolve/apply admission.
-		if _, err := f.st.Pool.Exec(context.Background(), "UPDATE environments SET applied_revision_id=$3 WHERE workspace_id=$1 AND id=$2", ws, env.Id, current.Id); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := f.st.Pool.Exec(context.Background(), "UPDATE deployment_units SET server_id=$3 WHERE workspace_id=$1 AND environment_id=$2", ws, env.Id, enrolled.Server.Id); err != nil {
-			t.Fatal(err)
-		}
+		recordReviewedDeployment(t, f, ws, env.Id, current.Id, enrolled.Server.Id, map[string]string{app.String(): pipelineTestImage})
 		b.call("PUT", path+"/source/policy", map[string]bool{"autoDeploy": true}, 204, nil)
 		latest := strings.Repeat("e", 40)
 		tree.record(latest, edited.Compose.Files)

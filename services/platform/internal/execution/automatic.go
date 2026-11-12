@@ -4,19 +4,22 @@ import (
 	"context"
 	"encoding/json/v2"
 	"errors"
-	db "github.com/astilbahq/astilba/services/platform/db/generated"
-	"github.com/astilbahq/astilba/services/platform/internal/store"
+	"fmt"
+	"maps"
 	"reflect"
 	"slices"
 	"time"
 
+	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/composeproject"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
+	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/compose-spec/compose-go/v2/types"
+	"github.com/distribution/reference"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/riverqueue/river"
@@ -155,9 +158,9 @@ func (w *automaticWorker) work(ctx context.Context, git *gitAnswers, job *river.
 	if !own {
 		return stop("Not deployed: the draft also holds changes that were never deployed, such as saved variables, routes or services, or an image from an earlier run that did not deploy. This run's image or source is saved in the draft. Prepare and apply a deployment plan to review everything in the draft; automatic deployment then resumes with the next push.")
 	}
-	allowHost, err := automaticChanges(previous, v.Spec)
+	allowHost, elevated, err := automaticChanges(previous, v.Spec)
 	if err != nil {
-		return stop("Automatic deployment needs interactive review for stateful changes or new host permissions.")
+		return stop(automaticReviewNote(err, "Automatic deployment needs interactive review for stateful changes or new host permissions."))
 	}
 	if planID == nil {
 		// A savepoint keeps a failed admission from retaining partial claims or plans.
@@ -195,25 +198,28 @@ func (w *automaticWorker) work(ctx context.Context, git *gitAnswers, job *river.
 	if err != nil {
 		return err
 	}
-	stateful := false
-	for _, app := range previous.Applications {
-		stateful = stateful || len(app.Mounts) > 0
+	// Every service is compared with the images the last reviewed deployment ran, so a moved tag
+	// never goes out unreviewed alongside this run's change.
+	var appliedID uuid.UUID
+	if err = tx.QueryRow(ctx, "SELECT plan_id FROM visual_runtime WHERE workspace_id=$1 AND environment_id=$2 AND plan_id IS NOT NULL", ws, env).Scan(&appliedID); err != nil {
+		if err == pgx.ErrNoRows {
+			return stop("Not deployed: there is no recorded reviewed deployment to compare this run's images with. Prepare and apply a deployment plan; automatic deployment then resumes with the next push.")
+		}
+		return err
 	}
-	if stateful {
-		var appliedID uuid.UUID
-		if err = tx.QueryRow(ctx, "SELECT plan_id FROM visual_runtime WHERE workspace_id=$1 AND environment_id=$2 AND plan_id IS NOT NULL", ws, env).Scan(&appliedID); err != nil {
-			if err == pgx.ErrNoRows {
-				return stop("Stateful services need a recorded reviewed deployment before automatic updates.")
-			}
-			return err
-		}
-		applied, err := readPlan(ctx, tx, ws, env, appliedID)
-		if err != nil {
-			return err
-		}
-		if applied.RevisionID != *v.Applied || automaticStatefulImages(previous, applied.Images, candidate.Images) != nil {
-			return stop("A stateful image changed; review its deployment interactively.")
-		}
+	applied, err := readPlan(ctx, tx, ws, env, appliedID)
+	if err != nil {
+		return err
+	}
+	if applied.RevisionID != *v.Applied {
+		return stop("Not deployed: the running deployment does not match the last reviewed configuration. Prepare and apply a deployment plan; automatic deployment then resumes with the next push.")
+	}
+	target := uuid.Nil
+	if run.Action == "build" {
+		target = run.AppID
+	}
+	if err = automaticImages(previous, v.Spec, elevated, target, planImages(applied), planImages(candidate)); err != nil {
+		return stop(err.Error())
 	}
 	nested, err := tx.Begin(ctx)
 	if err != nil {
@@ -276,12 +282,46 @@ func automaticOwnChangeOnly(ctx context.Context, tx pgx.Tx, ws, env, id uuid.UUI
 	return deployment.Hash(parsed) == deployment.Hash(draft), nil
 }
 
+// automaticReview is a reason an automatic deployment stops for interactive review. Its note is
+// shown in job history.
+type automaticReview struct{ note string }
+
+func (e *automaticReview) Error() string { return e.note }
+
+func needsReview(format string, args ...any) error {
+	return &automaticReview{note: fmt.Sprintf(format, args...)}
+}
+
+func automaticReviewNote(err error, fallback string) string {
+	var review *automaticReview
+	if errors.As(err, &review) {
+		return review.note
+	}
+	return fallback
+}
+
+const resumeNote = "Prepare and apply a deployment plan to review it; automatic deployment then resumes with the next push."
+
+func statefulService(service types.ServiceConfig) bool {
+	for _, mount := range service.Volumes {
+		if mount.Type == "volume" {
+			return true
+		}
+	}
+	return false
+}
+
 // Automatic policy carries forward existing permissions, never grants new ones.
 // Stateful service changes require an interactive plan because image digests do not
-// establish storage compatibility or migration safety.
-func automaticChanges(previous, next domain.Specification) (bool, error) {
+// establish storage compatibility or migration safety. A privileged or cap_add service
+// must stay exactly as reviewed: its approval covered what it ran, so a pushed commit
+// that changes it would otherwise run new code with host-level access. Only published
+// ports carry forward for services whose definitions change. It returns whether reviewed host
+// permissions carry forward, and the privileged and cap_add services.
+func automaticChanges(previous, next domain.Specification) (bool, map[uuid.UUID]elevatedReview, error) {
+	elevated := map[uuid.UUID]elevatedReview{}
 	if (previous.Compose == nil) != (next.Compose == nil) {
-		return false, domain.Invalid("automatic.authorityChanged")
+		return false, nil, needsReview("Not deployed: the environment changed between Compose files and visual services. %s", resumeNote)
 	}
 	oldPermissions, nextPermissions := []string{}, []string{}
 	var oldProject, nextProject *composeproject.Project
@@ -289,40 +329,42 @@ func automaticChanges(previous, next domain.Specification) (bool, error) {
 		var err error
 		oldProject, err = deployment.SourceProject(deployment.Plan{Specification: previous}, nil)
 		if err != nil {
-			return false, err
+			return false, nil, err
 		}
 		nextProject, err = deployment.SourceProject(deployment.Plan{Specification: next}, nil)
 		if err != nil {
-			return false, err
+			return false, nil, err
 		}
 		oldPermissions, nextPermissions = oldProject.Permissions, nextProject.Permissions
 	}
 	for _, permission := range nextPermissions {
 		if !slices.Contains(oldPermissions, permission) {
-			return false, domain.Invalid("automatic.newHostPermissions")
+			return false, nil, needsReview("Not deployed: this change requests a host permission that was never approved (%s). %s", permission, resumeNote)
 		}
 	}
 	for _, port := range requiredPorts(next) {
 		if !slices.Contains(requiredPorts(previous), port) {
-			return false, domain.Invalid("automatic.newHostPermissions")
+			return false, nil, needsReview("Not deployed: this change needs proxy port %d, which was never approved. %s", port, resumeNote)
 		}
 	}
 	if previous.Compose != nil {
-		for name, service := range oldProject.Model.Services {
-			stateful := false
-			for _, mount := range service.Volumes {
-				stateful = stateful || mount.Type == "volume"
-			}
-			if stateful && !reflect.DeepEqual(statefulComposeInputs(oldProject, service, previous), statefulComposeInputs(nextProject, nextProject.Model.Services[name], next)) {
-				return false, domain.Invalid("automatic.statefulChangeNeedsReview")
+		elevated = compareElevatedServices(oldProject, nextProject, previous, next)
+		names := serviceNames(oldProject, nextProject)
+		for _, name := range names {
+			if review, ok := elevated[composeproject.ResourceID(next.Compose.Namespace, "service", name)]; ok && !review.Unchanged {
+				return false, nil, needsReview("Not deployed: %s runs privileged or with added Linux capabilities, and this change alters or removes it, such as its image, command, environment or files. Automatic deployment never changes a service with host-level access. %s", name, resumeNote)
 			}
 		}
-		for name, service := range nextProject.Model.Services {
-			for _, mount := range service.Volumes {
-				if mount.Type == "volume" && !reflect.DeepEqual(statefulComposeInputs(nextProject, service, next), statefulComposeInputs(oldProject, oldProject.Model.Services[name], previous)) {
-					return false, domain.Invalid("automatic.statefulChangeNeedsReview")
-				}
+		for _, name := range names {
+			old, oldOK := oldProject.Model.Services[name]
+			now, nowOK := nextProject.Model.Services[name]
+			if _, ok := elevated[composeproject.ResourceID(next.Compose.Namespace, "service", name)]; ok || !(oldOK && statefulService(old) || nowOK && statefulService(now)) {
+				continue
 			}
+			if oldOK && nowOK && reflect.DeepEqual(composeServiceInputs(oldProject, name, previous, false), composeServiceInputs(nextProject, name, next, false)) {
+				continue
+			}
+			return false, nil, needsReview("Not deployed: %s keeps data in a volume, and this change alters or removes it, such as its image, command, environment or files. %s", name, resumeNote)
 		}
 	} else {
 		for _, app := range previous.Applications {
@@ -331,7 +373,7 @@ func automaticChanges(previous, next domain.Specification) (bool, error) {
 			}
 			index := slices.IndexFunc(next.Applications, func(a domain.Application) bool { return a.ID == app.ID })
 			if index < 0 || (!reflect.DeepEqual(app, next.Applications[index]) || !reflect.DeepEqual(statefulVisualInputs(previous, app), statefulVisualInputs(next, next.Applications[index]))) {
-				return false, domain.Invalid("automatic.statefulChangeNeedsReview")
+				return false, nil, needsReview("Not deployed: %s keeps data in a volume, and this change alters or removes it, or the variables and outputs it reads. %s", app.Name, resumeNote)
 			}
 		}
 		for _, app := range next.Applications {
@@ -340,14 +382,19 @@ func automaticChanges(previous, next domain.Specification) (bool, error) {
 			}
 			index := slices.IndexFunc(previous.Applications, func(a domain.Application) bool { return a.ID == app.ID })
 			if index < 0 || (!reflect.DeepEqual(app, previous.Applications[index]) || !reflect.DeepEqual(statefulVisualInputs(next, app), statefulVisualInputs(previous, previous.Applications[index]))) {
-				return false, domain.Invalid("automatic.statefulChangeNeedsReview")
+				return false, nil, needsReview("Not deployed: %s keeps data in a volume, and this change adds or alters it, or the variables and outputs it reads. %s", app.Name, resumeNote)
 			}
 		}
 	}
-	return len(nextPermissions) > 0, nil
+	return len(nextPermissions) > 0, elevated, nil
 }
 
-func statefulComposeInputs(project *composeproject.Project, service types.ServiceConfig, spec domain.Specification) map[string]any {
+// composeServiceInputs is what decides what a Compose service runs: its merged and interpolated
+// definition and the bundled files, configs and secret versions it reads. For a service with
+// host-level access it also covers how it is reached: the networks and volumes it attaches to
+// and the routes to it.
+func composeServiceInputs(project *composeproject.Project, name string, spec domain.Specification, elevated bool) map[string]any {
+	service := project.Model.Services[name]
 	inputs := map[string]any{"service": service}
 	for _, mount := range service.Volumes {
 		if mount.Type == "bind" {
@@ -368,6 +415,29 @@ func statefulComposeInputs(project *composeproject.Project, service types.Servic
 			inputs["secret-value:"+ref.Source] = domain.VariableValues(spec.Variables, nil)[secret.Environment]
 		}
 	}
+	if !elevated {
+		return inputs
+	}
+	for _, mount := range service.Volumes {
+		if mount.Type == "volume" {
+			inputs["volume:"+mount.Source] = project.Model.Volumes[mount.Source]
+		}
+	}
+	networks := slices.Collect(maps.Keys(service.Networks))
+	if len(networks) == 0 {
+		networks = []string{"default"}
+	}
+	for _, network := range networks {
+		inputs["network:"+network] = project.Model.Networks[network]
+	}
+	id := composeproject.ResourceID(spec.Compose.Namespace, "service", name)
+	routes := []domain.Route{}
+	for _, route := range spec.Routes {
+		if route.TargetID == id {
+			routes = append(routes, route)
+		}
+	}
+	inputs["routes"] = routes
 	return inputs
 }
 func statefulVisualInputs(spec domain.Specification, app domain.Application) map[string]any {
@@ -396,11 +466,78 @@ func statefulVisualInputs(spec domain.Specification, app domain.Application) map
 	}
 	return map[string]any{"variables": values, "bindings": bindings}
 }
-func automaticStatefulImages(spec domain.Specification, applied, candidate map[string]string) error {
-	for _, app := range spec.Applications {
-		if len(app.Mounts) > 0 && (applied[app.ID.String()] == "" || applied[app.ID.String()] != candidate[app.ID.String()]) {
-			return domain.Invalid("automatic.statefulImageNeedsReview")
+
+// automaticImages requires every service this run did not change to resolve to the image the
+// last reviewed deployment ran, so a moved mutable tag never deploys unreviewed. A service the
+// run changed is its build target or, for an imported commit, one whose image reference the
+// commit edited. Stateful and privileged (elevated) services must keep their reviewed image
+// even then.
+func automaticImages(previous, next domain.Specification, elevated map[uuid.UUID]elevatedReview, target uuid.UUID, applied, candidate map[string]string) error {
+	for _, app := range next.Applications {
+		index := slices.IndexFunc(previous.Applications, func(a domain.Application) bool { return a.ID == app.ID })
+		if index < 0 {
+			// A new service is this run's change. New permissions and new stateful
+			// services were already refused.
+			continue
+		}
+		old := previous.Applications[index]
+		stateful := len(old.Mounts) > 0 || len(app.Mounts) > 0
+		_, privileged := elevated[app.ID]
+		if !stateful && !privileged && (app.ID == target || !sameImageReference(old.Source.Image, app.Source.Image)) {
+			continue
+		}
+		if resolvedImageStands(applied, candidate, app.ID) {
+			continue
+		}
+		id := app.ID.String()
+		switch {
+		case applied[id] == "" || candidate[id] == "":
+			return needsReview("Not deployed: %s has no single resolved image in both the last reviewed deployment and this plan to compare. %s", app.Name, resumeNote)
+		case privileged:
+			return needsReview("Not deployed: %s runs privileged or with added Linux capabilities, and its image now resolves to a different digest than the last reviewed deployment ran. %s", app.Name, resumeNote)
+		case stateful:
+			return needsReview("Not deployed: %s keeps data in a volume, and its image now resolves to a different digest than the last reviewed deployment ran. %s", app.Name, resumeNote)
+		default:
+			return needsReview("Not deployed: the image tag for %s now points at a different image than the last reviewed deployment ran, and this run did not change it. Prepare and apply a deployment plan to review the new image; automatic deployment then resumes with the next push. Pinning the image by digest keeps its tag from moving under later deployments.", app.Name)
 		}
 	}
 	return nil
+}
+
+// sameImageReference compares the references as written, after normalising the registry and
+// an implied latest tag, so a moved tag is told apart from an edited one.
+func sameImageReference(a, b *string) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	normal := func(value string) string {
+		named, err := reference.ParseNormalizedNamed(value)
+		if err != nil {
+			return value
+		}
+		return reference.TagNameOnly(named).String()
+	}
+	return normal(*a) == normal(*b)
+}
+
+// planImages collects a plan's resolved images, including those of each cross-host unit. A
+// service that resolves differently on two units has no single reviewed image.
+func planImages(p deployment.Plan) map[string]string {
+	out := map[string]string{}
+	add := func(images map[string]string) {
+		for id, image := range images {
+			if old, ok := out[id]; ok && old != image {
+				out[id] = ""
+				continue
+			}
+			out[id] = image
+		}
+	}
+	add(p.Images)
+	if p.Distributed != nil {
+		for _, unit := range p.Distributed.Units {
+			add(unit.Plan.Images)
+		}
+	}
+	return out
 }

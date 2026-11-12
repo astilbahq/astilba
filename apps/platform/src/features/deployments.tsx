@@ -14,6 +14,7 @@ import { Textarea } from "../components/textarea";
 import * as s from "../styles";
 import { ErrorNotice, Field, Form, text, useAction } from "../ui";
 import { DeploymentTarget } from "./deployment-target";
+import { HostApproval } from "./host-approval";
 import { ReviewedPlacements } from "./reviewed-placements";
 import type { EnvironmentPath } from "./visual-editor";
 
@@ -182,13 +183,7 @@ export function Deployments({
               setServerId={setServerId}
               owner={owner}
             />
-            {owner && (
-              <Label className={s.row}>
-                <Checkbox name="host" />
-                Approve the host permissions listed in the plan, including
-                proxy, ports, certificates and elevated container privileges
-              </Label>
-            )}
+            {owner && <HostApproval />}
             <Label className={s.row}>
               <Checkbox name="drift" />
               Reconcile reviewed manual changes to Astilba-managed resources
