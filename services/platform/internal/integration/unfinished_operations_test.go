@@ -86,15 +86,20 @@ func TestHostOperationQueriesDoNotReadHistory(t *testing.T) {
 	slices.Sort(unfinished)
 	slices.Sort(started)
 	for _, q := range queries {
+		if other := otherState.FindString(q.sql); other != "" {
+			t.Errorf("%s compares the state with %q; list the states it reads with IN", q, other)
+		}
 		for _, list := range stateLists.FindAllStringSubmatch(q.sql, -1) {
 			states := []string{}
-			for _, state := range quotedState.FindAllStringSubmatch(list[2], -1) {
+			for _, state := range quotedState.FindAllStringSubmatch(list[3], -1) {
 				states = append(states, state[1])
 			}
 			slices.Sort(states)
 			ended := !slices.ContainsFunc(states, func(state string) bool { return !execution.Terminal(api.ExecutionState(state)) })
 			switch {
-			case list[1] != "":
+			case len(states) == 0:
+				t.Errorf("%s lists no states it can be checked against: %s", q, list[0])
+			case list[1] != "" || list[2] != "":
 				t.Errorf("%s excludes states; list the unfinished ones: %s", q, list[0])
 			case !ended && !slices.Equal(states, unfinished) && !slices.Equal(states, started):
 				t.Errorf("%s reads %v, not the unfinished states %v or the started ones %v", q, states, unfinished, started)
@@ -219,8 +224,11 @@ func (q hostOperationQuery) String() string {
 }
 
 var (
-	stateLists  = regexp.MustCompile(`\bstate (NOT )?IN ?\(([^)]*)\)`)
+	// A state list, and whether it excludes: NOT before the column or before IN.
+	stateLists  = regexp.MustCompile(`(?i)(\bNOT\s*\(?\s*)?(?:\w+\.)?\bstate\s+(NOT\s+)?IN\s*\(([^)]*)\)`)
 	quotedState = regexp.MustCompile(`'([a-z_]+)'`)
+	// A state list written as an array, which these statements don't use.
+	otherState = regexp.MustCompile(`(?i)\bstate\s*(?:=\s*ANY|<>\s*ALL|!=\s*ALL)`)
 	// A literal that begins a statement, as scripts/inline-sql.mjs counts them, after sqlc's name.
 	statement = regexp.MustCompile(`^\s*(?:-- name: (\w+)[^\n]*\n\s*)?(?:SELECT|INSERT|UPDATE|DELETE|WITH)\s`)
 	byHost    = regexp.MustCompile(`\bserver_id ?= ?\$\d`)
