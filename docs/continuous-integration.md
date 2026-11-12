@@ -261,10 +261,13 @@ Two rules keep the runs apart, here and on CI runners alike.
 Mac through the VM's port forwarder at the same number, so two VMs can pick the same
 one and a test can reach the other VM's container. Instead, the harness listens on a
 loopback port the kernel gives it and carries each connection over the Docker API,
-running `nc` in a container on the target's network, the way `kubectl port-forward`
-goes through the API server. The integration tests reach their PostgreSQL and Gitea
-this way (`internal/integration/docker_forward_test.go`), and the dashboard fixture
-and image smoke test their PostgreSQL and server (`scripts/docker-forward.mjs`).
+the way `kubectl port-forward` goes through the API server. Each connection runs
+`internal/integration/relay` with `docker exec` in a container on the target's
+network; the harness builds it for the daemon's architecture and copies it in. Unlike
+BusyBox `nc`, it ends when the server closes, which a PostgreSQL cancel request waits
+for. The integration tests reach their PostgreSQL and Gitea this way
+(`internal/integration/docker_forward_test.go`), and the dashboard fixture and image
+smoke test their PostgreSQL and server (`scripts/docker-forward.mjs`).
 Each new connection costs one `docker exec`, tens of milliseconds; connection pools
 keep theirs. Nothing on the Mac then depends on the profile's port forwarder.
 
