@@ -5,8 +5,8 @@
 --   runtime_recorded_at is set by the transaction that records the operation's runtime outcome.
 --   An outcome that arrives with its row, from an import or a recovery, has none.
 --   ended_at is when the operation last went from unfinished to succeeded, failed or cancelled
---   here. Recovery can resume a cancelled root, which clears it until the root ends again. A row
---   that arrives already ended has none: no backup of this database holds it unfinished.
+--   here, or arrived ended, from an import or a recovery, which is no earlier than it really
+--   ended. Recovery can resume a cancelled root, which clears it until the root ends again.
 -- Once set, neither is moved by a later write. A row without one falls back to its creation time.
 -- Rows created in the last 97 days (the 90-day window and its margin) take the migration's time,
 -- which is no earlier than the true one, so a window chosen from them can only start earlier.
@@ -15,7 +15,7 @@ ALTER TABLE execution_operations ADD COLUMN runtime_recorded_at timestamptz, ADD
 CREATE FUNCTION execution_operation_times() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
  IF TG_OP = 'INSERT' THEN
-  NEW.ended_at := NULL;
+  NEW.ended_at := CASE WHEN NEW.state IN ('succeeded','failed','cancelled') THEN clock_timestamp() END;
  ELSE
   NEW.runtime_recorded_at := COALESCE(OLD.runtime_recorded_at, NEW.runtime_recorded_at);
   IF NEW.state NOT IN ('succeeded','failed','cancelled') THEN

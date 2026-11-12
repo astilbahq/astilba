@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
@@ -54,7 +55,7 @@ func loadRecoverySource(ctx context.Context, tx pgx.Tx, keys *cryptobox.Keyring,
 		return out, errors.New("provide every required host export")
 	}
 	// inline-sql: recovery session temporary table
-	if _, err := tx.Exec(ctx, `CREATE TEMP TABLE recovery_input_checkpoints(id uuid PRIMARY KEY,parent_id uuid NOT NULL,sequence bigint NOT NULL,descriptor jsonb NOT NULL,envelope bytea NOT NULL,decoded bytea NOT NULL,PRIMARY_SOURCE uuid NOT NULL,retained boolean NOT NULL DEFAULT true,UNIQUE(parent_id,sequence)) ON COMMIT DROP; CREATE TEMP TABLE recovery_input_proofs(server_id uuid NOT NULL,id uuid NOT NULL,parent_id uuid NOT NULL,header jsonb NOT NULL,report jsonb NOT NULL,checkpoint text NOT NULL,applied boolean NOT NULL DEFAULT false,PRIMARY KEY(server_id,id)) ON COMMIT DROP`); err != nil {
+	if _, err := tx.Exec(ctx, `CREATE TEMP TABLE recovery_input_checkpoints(id uuid PRIMARY KEY,parent_id uuid NOT NULL,sequence bigint NOT NULL,descriptor jsonb NOT NULL,envelope bytea NOT NULL,decoded bytea NOT NULL,PRIMARY_SOURCE uuid NOT NULL,retained boolean NOT NULL DEFAULT true,captured_at timestamptz,UNIQUE(parent_id,sequence)) ON COMMIT DROP; CREATE TEMP TABLE recovery_input_proofs(server_id uuid NOT NULL,id uuid NOT NULL,parent_id uuid NOT NULL,header jsonb NOT NULL,report jsonb NOT NULL,checkpoint text NOT NULL,applied boolean NOT NULL DEFAULT false,PRIMARY KEY(server_id,id)) ON COMMIT DROP`); err != nil {
 		return out, err
 	}
 	// A server revoked in the restored management may be gone or hostile, so its export counts only
@@ -238,6 +239,7 @@ func loadExportCapsules(ctx context.Context, tx pgx.Tx, keys *cryptobox.Keyring,
 // addRecoveryCheckpoint opens one sealed checkpoint of a root whose primary is primary, checks it
 // against its descriptor and frozen root, and stages it for the chain.
 func addRecoveryCheckpoint(ctx context.Context, tx pgx.Tx, keys *cryptobox.Keyring, ws uuid.UUID, out *recoverySource, bases *portability.RecoveryBases, d deployment.RecoveryDescriptor, raw, envelope []byte, primary uuid.UUID) error {
+	var captured *time.Time
 	decoded, err := keys.Open(envelope, recoveryIdentity(d))
 	if err != nil {
 		return errors.New("the original management recovery keyring is required")
@@ -287,6 +289,7 @@ func addRecoveryCheckpoint(ctx context.Context, tx pgx.Tx, keys *cryptobox.Keyri
 				return errors.New("recovery participant is absent from its descriptor")
 			}
 		}
+		captured = &a.CreatedAt
 		if err = out.Origins.add(a, d.ParentID); err != nil {
 			return err
 		}
@@ -301,7 +304,7 @@ func addRecoveryCheckpoint(ctx context.Context, tx pgx.Tx, keys *cryptobox.Keyri
 		}
 	}
 	// inline-sql: recovery session temporary table
-	_, err = tx.Exec(ctx, `INSERT INTO recovery_input_checkpoints(id,parent_id,sequence,descriptor,envelope,decoded,PRIMARY_SOURCE) VALUES($1,$2,$3,$4,$5,$6,$7)`, d.CheckpointID, d.ParentID, d.Sequence, raw, envelope, decoded, primary)
+	_, err = tx.Exec(ctx, `INSERT INTO recovery_input_checkpoints(id,parent_id,sequence,descriptor,envelope,decoded,PRIMARY_SOURCE,captured_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8)`, d.CheckpointID, d.ParentID, d.Sequence, raw, envelope, decoded, primary, captured)
 	clear(decoded)
 	if err != nil {
 		return err

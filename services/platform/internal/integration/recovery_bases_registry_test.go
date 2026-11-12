@@ -1,8 +1,12 @@
 package integration
 
 import (
+	"encoding/json/v2"
+	"fmt"
 	"testing"
 	"time"
+
+	"github.com/astilbahq/astilba/services/platform/internal/portability"
 
 	"github.com/google/uuid"
 )
@@ -123,6 +127,38 @@ func TestRecoveryHistoryTimesAreWrittenOnce(t *testing.T) {
 	if _, err := g.f.st.Pool.Exec(g.ctx, `UPDATE execution_operations SET runtime_recorded_at=now() WHERE workspace_id=$1 AND runtime_outcome IS NULL`, g.ws); err == nil {
 		t.Fatal("an operation without a runtime outcome took a recording time")
 	}
+	// A row that arrives already ended, from an import or a recovery, ends no earlier than it
+	// arrives, even when it was created long before.
+	arrived := uuid.New()
+	if _, err := g.f.st.Pool.Exec(g.ctx, `INSERT INTO execution_operations(id,workspace_id,server_id,environment_id,generation,request_key,command,kind,state,report_sequence,created_at)
+SELECT $2::uuid,workspace_id,server_id,environment_id,(SELECT max(generation)+1 FROM execution_operations WHERE environment_id=o.environment_id),gen_random_uuid(),jsonb_set(command,'{id}',to_jsonb($2::text)),kind,'succeeded',report_sequence,now()-interval '200 days' FROM execution_operations o WHERE id=$1`, op.Id, arrived); err != nil {
+		t.Fatal(err)
+	}
+	var arrivedEnd *time.Time
+	if err := g.f.st.Pool.QueryRow(g.ctx, `SELECT ended_at FROM execution_operations WHERE id=$1`, arrived).Scan(&arrivedEnd); err != nil || arrivedEnd == nil || arrivedEnd.Before(*ended) {
+		t.Fatal("a row that arrived ended took an earlier end", arrivedEnd, err)
+	}
+	// A row that ended before these times were recorded keeps none, so it falls back to its
+	// creation time, whatever later writes it.
+	tx, err := g.f.st.Pool.Begin(g.ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = tx.Exec(g.ctx, `SET LOCAL session_replication_role = replica`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = tx.Exec(g.ctx, `UPDATE execution_operations SET ended_at=NULL WHERE id=$1`, arrived); err != nil {
+		t.Fatal(err)
+	}
+	if err = tx.Commit(g.ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.f.st.Pool.Exec(g.ctx, `UPDATE execution_operations SET steps='[]',note='pruned' WHERE id=$1`, arrived); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.f.st.Pool.QueryRow(g.ctx, `SELECT ended_at FROM execution_operations WHERE id=$1`, arrived).Scan(&arrivedEnd); err != nil || arrivedEnd != nil {
+		t.Fatal("a later write gave an old operation an end", arrivedEnd, err)
+	}
 }
 
 // A root that recovery takes over keeps its base on its primary until the primary closes it, so
@@ -140,5 +176,23 @@ func TestRecoveryRegistersTheBaseItTakesOver(t *testing.T) {
 	}
 	if id != r.descriptor.BaseID || environment != r.env || primary != r.a.ServerId || closed != nil {
 		t.Fatalf("the taken-over base was registered as %s for %s on %s, closed %v", id, environment, primary, closed)
+	}
+	compressed, err := r.f.st.Keys.Open(r.envelope, fmt.Sprintf("cross-host-recovery:v1:%s:%s:%s:%d:%s", r.ws, r.root.Id, r.descriptor.CheckpointID, 0, r.root.PlanHash))
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := portability.DecompressRecovery(compressed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var base struct {
+		CreatedAt time.Time `json:"createdAt"`
+	}
+	var captured time.Time
+	if err = json.Unmarshal(raw, &base); err != nil {
+		t.Fatal(err)
+	}
+	if err = r.f.st.Pool.QueryRow(r.ctx, `SELECT captured_at FROM recovery_bases WHERE workspace_id=$1 AND id=$2`, r.ws, id).Scan(&captured); err != nil || !captured.Equal(base.CreatedAt) {
+		t.Fatalf("the taken-over base was registered as captured at %v, not %v (%v)", captured, base.CreatedAt, err)
 	}
 }

@@ -68,8 +68,9 @@ func (s *Service) restoreRecoveryRoots(ctx context.Context, tx pgx.Tx, ws uuid.U
 		for sequence := int64(0); sequence <= root.Descriptor.Sequence; sequence++ {
 			var descriptor, envelope, decoded []byte
 			var retained bool
+			var captured *time.Time
 			// inline-sql: recovery session temporary table.
-			if err := tx.QueryRow(ctx, `SELECT descriptor,envelope,decoded,retained FROM recovery_input_checkpoints WHERE parent_id=$1 AND sequence=$2`, parent, sequence).Scan(&descriptor, &envelope, &decoded, &retained); err != nil {
+			if err := tx.QueryRow(ctx, `SELECT descriptor,envelope,decoded,retained,captured_at FROM recovery_input_checkpoints WHERE parent_id=$1 AND sequence=$2`, parent, sequence).Scan(&descriptor, &envelope, &decoded, &retained, &captured); err != nil {
 				return err
 			}
 			var d deployment.RecoveryDescriptor
@@ -79,14 +80,11 @@ func (s *Service) restoreRecoveryRoots(ctx context.Context, tx pgx.Tx, ws uuid.U
 			phase := "base"
 			if sequence == 0 {
 				// The primary holds this base until it closes the root, whether or not this
-				// database captured it (recovery_bases).
-				var header struct {
-					CreatedAt time.Time `json:"createdAt"`
+				// database captured it (recovery_bases). The loader staged its capture time.
+				if captured == nil {
+					return errors.New("recovery base was staged without its capture time")
 				}
-				if json.Unmarshal(decoded, &header) != nil || header.CreatedAt.IsZero() {
-					return errors.New("invalid stored recovery base")
-				}
-				if err := q.RegisterRecoveredBase(ctx, db.RegisterRecoveredBaseParams{WorkspaceID: ws, ID: d.CheckpointID, ParentID: parent, EnvironmentID: root.Command.EnvironmentId, PrimaryServerID: root.Command.ServerId, CapturedAt: header.CreatedAt}); err != nil {
+				if err := q.RegisterRecoveredBase(ctx, db.RegisterRecoveredBaseParams{WorkspaceID: ws, ID: d.CheckpointID, ParentID: parent, EnvironmentID: root.Command.EnvironmentId, PrimaryServerID: root.Command.ServerId, CapturedAt: *captured}); err != nil {
 					return err
 				}
 			}
