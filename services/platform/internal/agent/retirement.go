@@ -183,9 +183,10 @@ func (j *Journal) retireSchedules(server, env uuid.UUID) error {
 }
 
 // retireUnit deletes the unit's applied plan and release records and the environment's finished
-// command records, which hold the secret values, registry access and backup credentials its
-// deployments, builds and upgrades were sent. Generation fencing still refuses any older command
-// for the unit.
+// command records in this journal, which hold the secret values, registry access and backup
+// credentials its deployments, builds and upgrades here were sent. Only the unit's own server is
+// sent the retirement, so a build that ran on a separate runner keeps its record there until that
+// journal's bound ages it out. Generation fencing still refuses any older command for the unit.
 func (j *Journal) retireUnit(c api.ExecutionCommand) error {
 	return j.db.Update(func(tx *bolt.Tx) error {
 		var u unitState
