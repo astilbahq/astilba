@@ -33,10 +33,18 @@ type Connection struct {
 	RepositoryID int64     `json:"repositoryId"`
 	Private      bool      `json:"private"`
 }
+
+// Access is a manual connection's stored credentials, which never leave management whole.
 type Access struct {
 	API     Credential `json:"api"`
 	Clone   Credential `json:"clone"`
 	Webhook string     `json:"webhook"`
+}
+
+// RunnerAccess is the only repository credential a runner receives: one that can fetch. A runner
+// builds untrusted code, so management makes every write to a repository itself.
+type RunnerAccess struct {
+	Clone Credential `json:"clone"`
 }
 type Registry struct {
 	ID         uuid.UUID `json:"id"`
@@ -98,7 +106,9 @@ type PreviewSource struct {
 }
 
 type Command struct {
-	Preview       *PreviewSource         `json:"preview,omitempty"`
+	Preview *PreviewSource `json:"preview,omitempty"`
+	// SubmissionID and Bundle belonged to runner submissions, which no longer exist. A command still
+	// carries them because an agent repeats its digest, and an older agent's Command has both.
 	SubmissionID  uuid.UUID              `json:"submissionId"`
 	Action        string                 `json:"action"`
 	Connection    Connection             `json:"connection"`
@@ -126,7 +136,7 @@ type Command struct {
 	BuildNetwork string    `json:"buildNetwork,omitempty"`
 	SubmittedAt  time.Time `json:"submittedAt"`
 	// Values exist only in the assigned agent's transport and encrypted journal.
-	Access         *Access           `json:"access,omitempty"`
+	Access         *RunnerAccess     `json:"access,omitempty"`
 	BuildSecrets   map[string]string `json:"buildSecrets,omitempty"`
 	RegistryAccess *RegistryAccess   `json:"registryAccess,omitempty"`
 }
@@ -288,10 +298,8 @@ func (c Command) Validate() error {
 		}
 		return c.Source.Validate()
 	case "submit":
-		if c.SubmissionID == uuid.Nil || c.Source == nil || c.Source.Validate() != nil || c.Bundle == nil {
-			return errors.New("missing source bundle")
-		}
-		return c.Bundle.Validate()
+		// Management submits drafts itself, so a runner never holds a credential that can write.
+		return errors.New("submissions run in management")
 	case "build", "build-preview":
 		if c.Build == nil || c.AppID == uuid.Nil || len(c.InputHash) != 64 {
 			return errors.New("missing build inputs")

@@ -78,7 +78,7 @@ func TestPipelineCompletionWaitsForOwnedCleanup(t *testing.T) {
 
 func TestPipelineJournalAcceptsCredentialFreeCancellationAndRejectsChangedInputs(t *testing.T) {
 	j, plan := testVisualJournal(t)
-	p := pipeline.Command{Action: "build", BuildNetwork: pipeline.BuildNetworkV1, Commit: strings.Repeat("a", 40), Branch: "main", RevisionID: uuid.New(), UnitID: plan.UnitID, AppID: uuid.New(), InputHash: strings.Repeat("b", 64), Access: &pipeline.Access{Clone: pipeline.Credential{Password: "clone-canary"}}, BuildSecrets: map[string]string{"token": "build-canary"}, RegistryAccess: &pipeline.RegistryAccess{Push: pipeline.Credential{Password: "push-canary"}}}
+	p := pipeline.Command{Action: "build", BuildNetwork: pipeline.BuildNetworkV1, Commit: strings.Repeat("a", 40), Branch: "main", RevisionID: uuid.New(), UnitID: plan.UnitID, AppID: uuid.New(), InputHash: strings.Repeat("b", 64), Access: &pipeline.RunnerAccess{Clone: pipeline.Credential{Password: "clone-canary"}}, BuildSecrets: map[string]string{"token": "build-canary"}, RegistryAccess: &pipeline.RegistryAccess{Push: pipeline.Credential{Password: "push-canary"}}}
 	raw, _ := stablejson.Marshal(p)
 	message := jsontext.Value(raw)
 	c := api.ExecutionCommand{Id: uuid.New(), ServerId: plan.ServerID, EnvironmentId: plan.EnvironmentID, ResourceId: plan.UnitID, Kind: "pipeline", Generation: 1, PlanHash: p.Digest(), Pipeline: &message}
@@ -115,7 +115,7 @@ func TestPipelineCombinedLogsRemainReportable(t *testing.T) {
 	p := pipeline.Command{
 		Action: "build", BuildNetwork: pipeline.BuildNetworkV1, Connection: connection, Commit: strings.Repeat("a", 40), Branch: "main",
 		RevisionID: uuid.New(), UnitID: plan.UnitID, AppID: uuid.New(), InputHash: strings.Repeat("b", 64),
-		Access: &pipeline.Access{}, Railpack: &inputs,
+		Access: &pipeline.RunnerAccess{}, Railpack: &inputs,
 		Build: &pipeline.BuildConfig{
 			Builder: "railpack", ConnectionID: connection.ID, RunnerID: plan.ServerID, Branch: "main",
 			Architecture: runtime.GOARCH, Context: ".", Railpack: &pipeline.RailpackOptions{},

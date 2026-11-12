@@ -129,7 +129,9 @@ also notifies the workspace's owners. It defaults to
   enforces eligibility, timeouts and limits itself. **Decided:** agent-side
   opt-in, default off.
 - **Subscription state:** hosted workspaces past subscription expiry cannot
-  open sessions, matching the existing expiry restriction on management changes.
+  open sessions or turn the setting on or widen it, matching the existing expiry
+  restriction on management changes. Turning it off or limiting it to owners still
+  works, as [taking access away](hosting.md) always does.
 
 ## Session lifecycle
 
