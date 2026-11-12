@@ -127,7 +127,7 @@ func TestRetireDeployedEnvironmentAndRestore(t *testing.T) {
 	operator.csrf = accepted.CsrfToken
 	x.lifecycle(operator, path, "retire", "Staging", 403)
 	bearerCall(t, x.f, token, "POST", path+"/retire", api.EnvironmentLifecycleRequest{ConfirmName: "Staging"}, 403, nil)
-	x.f.auth.Now = func() time.Time { return time.Now().Add(6 * time.Minute) }
+	x.f.auth.Now = func() time.Time { return time.Now().Add(16 * time.Minute) }
 	x.lifecycle(x.owner, path, "retire", "Staging", 403)
 	x.f.auth.Now = time.Now
 	x.lifecycle(x.owner, path, "retire", "staging", 400)
@@ -231,7 +231,7 @@ func TestRetirementWithoutHostAndPreconditions(t *testing.T) {
 	_, spec := draftSpec(t, x.owner, path)
 	images[spec.Applications[0].ID.String()] = "busybox@sha256:" + strings.Repeat("b", 64)
 	x.agent.observe(x.agent.next(), deployment.Observation{Images: images, StateHash: strings.Repeat("f", 64)})
-	x.owner.call("POST", path+"/deployment-plans/"+plan.ID.String()+"/apply", api.ApplyPlan{IdempotencyKey: uuid.New()}, 201, nil)
+	x.owner.call("POST", path+"/deployment-plans/"+plan.ID.String()+"/apply", api.ApplyVisualPlan{IdempotencyKey: uuid.New(), ApproveHostChanges: approved()}, 201, nil)
 	x.agent.applied(x.agent.next(), images)
 
 	// A host that could not finish leaves it retiring; asking again queues a new command.
@@ -325,9 +325,9 @@ func TestApplyRefusesARouteClaimedAfterReview(t *testing.T) {
 	}
 	firstPath, first, images := reviewed("First")
 	secondPath, second, _ := reviewed("Second")
-	x.owner.call("POST", firstPath+"/deployment-plans/"+first.String()+"/apply", api.ApplyPlan{IdempotencyKey: uuid.New()}, 201, nil)
+	x.owner.call("POST", firstPath+"/deployment-plans/"+first.String()+"/apply", api.ApplyVisualPlan{IdempotencyKey: uuid.New(), ApproveHostChanges: approved()}, 201, nil)
 	x.agent.applied(x.agent.next(), images)
-	x.refusal(x.owner, "POST", secondPath+"/deployment-plans/"+second.String()+"/apply", api.ApplyPlan{IdempotencyKey: uuid.New()}, "routes.claimed")
+	x.refusal(x.owner, "POST", secondPath+"/deployment-plans/"+second.String()+"/apply", api.ApplyVisualPlan{IdempotencyKey: uuid.New(), ApproveHostChanges: approved()}, "routes.claimed")
 }
 
 // A retired template's previews are all asked to clean up, even on a host waiting for a verified

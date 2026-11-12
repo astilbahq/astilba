@@ -6,7 +6,7 @@ Deleting the retained volumes of a retired environment (purge) arrives in a late
 
 ## Retire
 
-Open the environment's **Settings** and choose **Retire environment**. Only workspace owners can retire or restore an environment. Each asks you to type the environment's exact current name, and to confirm your identity if you have not done so in the last five minutes. Automation tokens cannot retire or restore. The API is `POST …/environments/{environmentId}/retire` and `…/restore`, with `{"confirmName": "<name>"}`. Both are recorded in the audit log as `environment.retire` and `environment.restore`.
+Open the environment's **Settings** and choose **Retire environment**. Only workspace owners can retire or restore an environment. Each asks you to type the environment's exact current name, and to confirm your identity if you have not done so recently. Automation tokens cannot retire or restore. The API is `POST …/environments/{environmentId}/retire` and `…/restore`, with `{"confirmName": "<name>"}`. Both are recorded in the audit log as `environment.retire` and `environment.restore`.
 
 Retiring immediately:
 
