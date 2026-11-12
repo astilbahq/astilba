@@ -1,9 +1,6 @@
 name: Scheduled scans
 
 on:
-  # TEMPORARY: exercises the scans on this branch before review; removed before merge.
-  push:
-    branches: [claude/stoic-chatterjee-a8838e]
   workflow_dispatch:
   # Finds an advisory or release published since the last code change.
   schedule:
