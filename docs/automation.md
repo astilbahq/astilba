@@ -6,15 +6,19 @@ Owners can issue expiring credentials for CI, the Go CLI and a stdio MCP client 
 | --- | --- |
 | `environment:read` | Saved configuration, revisions, runtime, releases and environment operation status |
 | `configuration:write` | Save drafts using an explicit base revision |
-| `deployment:plan` | Prepare and inspect normal deployment plans. A release command or drift acceptance also needs `configuration:write` |
-| `deployment:apply` | Inspect and apply an existing reviewed plan with an explicit idempotency key |
+| `deployment:plan` | Prepare normal deployment plans and inspect their review. A release command or drift acceptance also needs `configuration:write` |
+| `deployment:apply` | Inspect the review of an existing plan and apply it with an explicit idempotency key |
 | `build:run` | List and re-run owner-configured build targets; read their operation status |
 
 Select only the capabilities the caller needs. Build-only callers can discover their scope and targets without configuration-read permission. A credential cannot manage accounts, memberships, other credentials, secrets, integrations, host permissions, recovery or controller transfers. Normal owner/recent-identity requirements still gate privileged deployment changes. A credential can prepare any plan its capabilities allow, but cannot apply one whose host changes need review: those need an owner in the dashboard to approve them and confirm their identity. There is no arbitrary request or remote-shell tool.
 
 A plan request naming a release command or accepting drift returns 403 unless the credential also holds `configuration:write`. A release command runs with the environment's secrets and drift acceptance overrides a safety refusal, so a credential that can only plan and apply deploys what is saved. It can still set release timeouts with an empty command. A credential with `configuration:write`, `deployment:plan` and `deployment:apply` together can deploy any stateless configuration, so grant that combination only where a caller needs it.
 
-Draft saves and plan requests check the base revision before comparing the request with the draft or environment. A stale base returns 409. On a draft save, the current revision comes with it only for a browser or a credential holding `environment:read`. A credential without that capability therefore learns nothing about the draft or environment from these requests until it names the current revision. Listing build targets shows the current revision, so this doesn't hold for a credential that also holds `build:run`. A credential that can plan sees the whole draft in its plans.
+Draft saves and plan requests check the base revision before comparing the request with the draft or environment. A stale base returns 409. On a draft save, the current revision comes with it only for a browser or a credential holding `environment:read`. A credential without that capability therefore learns nothing about the draft or environment from these requests until it names the current revision. Listing build targets shows the current revision, so a credential that also holds `build:run` can name it. The two rules below keep what such a credential learns to what it needs to do its job.
+
+**Plans without `environment:read`.** A plan carries the draft it deploys, plaintext variables and Compose files included. A plan's status always has a `review` once the plan is ready: its ID, revision, server, hash, expiry, effects, the image digest each application deploys, the host permissions its Compose file asks for, any protected release and its command, and, for a cross-host plan, the images on each server. The whole `plan` is there only for a browser or a credential holding `environment:read`; for any other credential it is `null`. Review and apply need nothing else.
+
+**Saves without `environment:read`.** A Compose draft's `namespace` (its deployment unit) and Git `origin` belong to the environment, and a save keeps the draft's own. A browser or a credential holding `environment:read` may leave them out or send them unchanged; a different value returns 400. A credential without that capability must leave both out: sending either returns the same 400 whatever it holds. Its save returns only the new revision's ID, author and time, not its hash or specification, so a save confirms nothing about the namespace or origin. A save still shows whether the environment is Compose-owned, because the draft's shape must match its owner.
 
 ## Credential lifetime
 

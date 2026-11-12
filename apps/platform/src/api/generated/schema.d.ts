@@ -3177,6 +3177,17 @@ export interface components {
             createdAt: string;
             hash: string;
         };
+        /** @description The saved draft revision. `hash` and `specification` are present only for a caller that may read the environment, so a credential without `environment:read` learns nothing from a save beyond the new revision's identity. */
+        SavedDraft: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            authorId: string;
+            /** Format: date-time */
+            createdAt: string;
+            hash?: string;
+            specification?: components["schemas"]["Specification"];
+        };
         DraftUpdate: {
             /** Format: uuid */
             baseRevisionId: string;
@@ -3449,9 +3460,50 @@ export interface components {
             /** Format: uuid */
             operationId: string;
             state: string;
+            /** @description The whole plan, configuration included, once it is ready. Null for a credential without `environment:read`. */
             plan: components["schemas"]["VisualPlan"] | null;
+            /** @description What reviewing and applying the plan needs, for every caller, once it is ready. */
+            review: components["schemas"]["VisualPlanReview"] | null;
             /** @description Whether applying the plan needs an owner to approve host changes the environment's applied deployment does not already have. */
             hostReview?: boolean;
+        };
+        /** @description A plan without the configuration it deploys. It has no specification, plaintext variables or Compose files. */
+        VisualPlanReview: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            serverId: string;
+            /** Format: uuid */
+            revisionId: string;
+            hash: string;
+            /** Format: date-time */
+            expiresAt: string;
+            hostChanges: boolean;
+            acceptDrift: boolean;
+            effects: string[];
+            /** @description Host permissions the plan's Compose file asks for. */
+            permissions: string[];
+            /** @description The image digest each application deploys, by application ID. */
+            images: {
+                [key: string]: string;
+            };
+            release: components["schemas"]["VisualPlanReleaseReview"] | null;
+            /** @description The servers a cross-host plan changes, with the images it pins on each. */
+            units: components["schemas"]["VisualPlanUnitReview"][];
+        };
+        VisualPlanUnitReview: {
+            /** Format: uuid */
+            serverId: string;
+            images: {
+                [key: string]: string;
+            };
+            release: components["schemas"]["VisualPlanReleaseReview"] | null;
+        };
+        /** @description The protected release a plan runs, and the command it runs first with the environment's secrets. */
+        VisualPlanReleaseReview: {
+            /** Format: uuid */
+            applicationId: string;
+            options: components["schemas"]["ReleaseOptions"];
         };
         PrimaryReplacement: {
             /** Format: uuid */
@@ -3514,9 +3566,10 @@ export interface components {
             repository: string;
             commit: string;
         };
+        /** @description A saved draft always has `namespace` and keeps its Git `origin`. A save may leave both out and the draft's are kept. A caller that may read the environment may send them unchanged; a credential without `environment:read` must leave them out. */
         ComposeBundle: {
             /** Format: uuid */
-            namespace: string;
+            namespace?: string;
             entrypoints: string[];
             files: components["schemas"]["ComposeFile"][];
             origin?: components["schemas"]["ComposeOrigin"];
@@ -6399,7 +6452,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Revision"];
+                    "application/json": components["schemas"]["SavedDraft"];
                 };
             };
             /** @description Error */

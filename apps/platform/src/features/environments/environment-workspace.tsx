@@ -3,7 +3,11 @@ import { useBlocker } from "@tanstack/react-router";
 import { useEffect, useId, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ApiError, client, result, type Schema } from "../../api/client";
-import { publishDraft, readCurrentDraft } from "../../api/environment";
+import {
+  publishDraft,
+  readCurrentDraft,
+  savedRevision,
+} from "../../api/environment";
 import {
   AlertDialogActions,
   AlertDialogClose,
@@ -151,13 +155,15 @@ export function EnvironmentWorkspace({
         throw error;
       }
       try {
-        const revision = await result(
-          client.PUT(
-            "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/draft",
-            {
-              params: { path },
-              body: { baseRevisionId: base.id, specification },
-            },
+        const revision = savedRevision(
+          await result(
+            client.PUT(
+              "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/draft",
+              {
+                params: { path },
+                body: { baseRevisionId: base.id, specification },
+              },
+            ),
           ),
         );
         await publishDraft(queries, path, revision, base.id);
