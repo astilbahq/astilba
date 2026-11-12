@@ -104,9 +104,10 @@ func TestBuildDeliveryAdmissionLifecycle(t *testing.T) {
 			canary := "runtime-canary-" + strings.ReplaceAll(mode, " ", "-")
 			config.Arguments = map[string]string{"TOKEN": canary}
 			op := create(t, path, draft, config)
+			var delivered api.ExecutionCommand
 			if mode == "delivered without report" {
-				if c := poll(t); c.Id != op.Id {
-					t.Fatal("wrong initial delivery", c.Id)
+				if delivered = poll(t); delivered.Id != op.Id {
+					t.Fatal("wrong initial delivery", delivered.Id)
 				}
 			} else if mode == "legacy unknown" {
 				if _, err := f.st.Pool.Exec(ctx, "UPDATE pipeline_runs SET delivery_started=NULL WHERE id=$1", op.Id); err != nil {
@@ -124,6 +125,14 @@ func TestBuildDeliveryAdmissionLifecycle(t *testing.T) {
 				}
 				finish(t, c)
 			} else {
+				if mode == "delivered without report" {
+					// The runner holds this delivery's inputs, so only releasing them again checks
+					// them, and is refused.
+					if held := poll(t); held.Id != op.Id || held.SecretRelease == nil || held.SecretRelease.Values {
+						t.Fatal("a held release was made again", held.SecretRelease)
+					}
+					agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/releases", token, api.SecretReleaseNotice{Acknowledged: []api.SecretReleaseRef{}, Redeliver: []api.SecretRedelivery{{OperationId: op.Id, Epoch: delivered.SecretRelease.Epoch, Reason: api.JournalMissing}}}, 204, nil)
+				}
 				agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/poll", token, nil, 400, nil)
 			}
 			var state, note string

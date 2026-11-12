@@ -901,7 +901,7 @@ func (q *Queries) ResetRecoveredNetworkMembers(ctx context.Context, arg ResetRec
 }
 
 const resetRecoveryFrame = `-- name: ResetRecoveryFrame :exec
-UPDATE execution_operations SET command = $1,state = $2,report_sequence=0,steps='[]',note='',job_id=NULL
+UPDATE execution_operations SET command = $1,state = $2,report_sequence=0,steps='[]',note='',job_id=NULL,dispatch_epoch=dispatch_epoch+1
 WHERE workspace_id = $3 AND id = $4
 `
 
@@ -1209,7 +1209,7 @@ func (q *Queries) SetRecoveryCheckpointAcknowledged(ctx context.Context, arg Set
 }
 
 const setRecoveryFrameCommand = `-- name: SetRecoveryFrameCommand :exec
-UPDATE execution_operations SET command = $1,job_id=NULL WHERE workspace_id = $2 AND id = $3
+UPDATE execution_operations SET command = $1,job_id=NULL,dispatch_epoch=dispatch_epoch+1 WHERE workspace_id = $2 AND id = $3
 `
 
 type SetRecoveryFrameCommandParams struct {

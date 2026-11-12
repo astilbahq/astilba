@@ -73,6 +73,44 @@ func (s *Service) rejectRuntimeSecrets(ctx context.Context, tx pgx.Tx, keys valu
 	}
 }
 
+// StopExposedSubmissions stops each submission in env that a runner may hold and whose files
+// hold value, a runtime secret being saved in q's transaction. Delivery checks a submission's
+// files against the environment's secrets before its credentials leave, under the operation's
+// lock; this takes the same lock, so a secret saved during or after that check is found by one
+// of the two. A submission no runner holds is left to delivery.
+func StopExposedSubmissions(ctx context.Context, q *db.Queries, ws, env uuid.UUID, value string) error {
+	ids, err := q.LockEnvironmentSubmissions(ctx, db.LockEnvironmentSubmissionsParams{WorkspaceID: ws, EnvironmentID: &env})
+	if err != nil {
+		return err
+	}
+	for _, id := range ids {
+		row, err := q.EnvironmentSubmission(ctx, db.EnvironmentSubmissionParams{WorkspaceID: ws, ID: id})
+		if err != nil {
+			return err
+		}
+		undelivered := row.DeliveryStarted.Valid && !row.DeliveryStarted.Bool && row.ReportSequence == 0
+		if undelivered || row.CancelRequested {
+			continue
+		}
+		var c api.ExecutionCommand
+		var p pipeline.Command
+		if json.Unmarshal(row.Command, &c) != nil || c.Pipeline == nil || json.Unmarshal(*c.Pipeline, &p) != nil || p.Bundle == nil {
+			return errors.New("invalid pipeline payload")
+		}
+		texts := make([]string, 0, 2*len(p.Bundle.Files))
+		for _, file := range p.Bundle.Files {
+			texts = append(texts, file.Path, file.Content)
+		}
+		if !domain.NewSecretText(texts...).Exposes(value) {
+			continue
+		}
+		if err = q.StopPossiblyDeliveredPipeline(ctx, db.StopPossiblyDeliveredPipelineParams{WorkspaceID: ws, ID: id, Note: stoppedSubmissionNote(p.SubmissionID)}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // sourceSecretRejection names a frozen submission's failed secret check, leaving
 // other errors, such as an undecryptable version, to fail the poll and be retried.
 func sourceSecretRejection(err error) (string, bool) {
@@ -90,9 +128,15 @@ func sourceSecretRejection(err error) (string, bool) {
 // and GitHub calls run between passes, and the pass that delivers re-makes every decision
 // below: a revoked or rotated agent, a cancelled or expired operation, a new runtime secret
 // or a changed connection all stop the credential after the call as they would before it.
-func (s *Service) hydratePipeline(ctx context.Context, a Identity, c *api.ExecutionCommand) (bool, error) {
+//
+// With nil keys it makes only the decisions that need no values, for a command whose
+// credentials the agent already holds: nothing is opened and no provider is asked.
+func (s *Service) hydratePipeline(ctx context.Context, a Identity, keys valueKeys, c *api.ExecutionCommand) (bool, error) {
+	if keys == nil {
+		return s.decidePipelineDelivery(ctx, nil, a, c)
+	}
 	var deliver bool
-	err := s.withGit(ctx, a.Workspace, s.legacyRunKeys(a.Workspace), func(git *gitAnswers) error {
+	err := s.withGit(ctx, a.Workspace, runKeys{operate: keys, inspect: keys}, func(git *gitAnswers) error {
 		var err error
 		deliver, err = s.decidePipelineDelivery(ctx, git, a, c)
 		return err
@@ -163,8 +207,10 @@ func (s *Service) decidePipelineDelivery(ctx context.Context, git *gitAnswers, a
 		return false, tx.Commit(ctx)
 	}
 	// A plain Invalid would fail every poll and hold the runner queue. This runs before
-	// provider calls and credential minting, so neither can delay or outlive a rejection.
-	if p.Action == "submit" {
+	// provider calls and credential minting, so neither can delay or outlive a rejection. A
+	// runner that already holds the command was checked when its credentials left; a runtime
+	// secret saved since then stops it as it is saved (StopExposedSubmissions).
+	if p.Action == "submit" && git != nil {
 		if err = s.rejectRuntimeSecrets(ctx, tx, git.keys.inspect, ws, c.EnvironmentId, *p.Bundle); err != nil {
 			note, rejected := sourceSecretRejection(err)
 			if !rejected {
@@ -202,6 +248,11 @@ func (s *Service) decidePipelineDelivery(ctx context.Context, git *gitAnswers, a
 		if json.Unmarshal(raw, &capabilities) != nil || capabilities.BuildCache == nil || !*capabilities.BuildCache {
 			return false, errors.New("runner no longer supports the frozen project cache assignment")
 		}
+	}
+	if git == nil {
+		// The runner holds this command's credentials: what follows only decides whether new
+		// ones may leave.
+		return true, nil
 	}
 	current, app, err := git.connection(ctx, tx, p.Connection.ID)
 	if err != nil {

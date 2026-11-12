@@ -18,6 +18,8 @@ type passKeys struct {
 	session *secretbroker.Session
 	err     error
 	used    bool
+	// retire ends a session that ran out of time; by default it records whether it was used.
+	retire func(ctx context.Context, session *secretbroker.Session, used bool)
 }
 
 func (s *Service) passKeys(r secretbroker.Request) *passKeys {
@@ -46,7 +48,11 @@ func (k *passKeys) ensure(ctx context.Context) (*secretbroker.Session, error) {
 
 func (k *passKeys) begin(ctx context.Context) {
 	if k.session != nil {
-		k.session.Close(ctx, secretbroker.UsedIf(k.used))
+		if k.retire != nil {
+			k.retire(ctx, k.session, k.used)
+		} else {
+			k.session.Close(ctx, secretbroker.UsedIf(k.used))
+		}
 	}
 	k.session, k.err = k.service.Store.Broker.Begin(ctx, k.request)
 	k.used = false

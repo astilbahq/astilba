@@ -38,7 +38,7 @@ func previousUnits(p deployment.Plan) map[uuid.UUID]deployment.Plan {
 	}
 	return out
 }
-func (s *Service) createCrossHostPlan(ctx context.Context, tx pgx.Tx, ws, pid, env uuid.UUID, in api.VisualPlanRequest, v visualEnvironment, previous deployment.Plan, replacement *deployment.Replacement) (deployment.Status, error) {
+func (s *Service) createCrossHostPlan(ctx context.Context, tx pgx.Tx, keys valueKeys, ws, pid, env uuid.UUID, in api.VisualPlanRequest, v visualEnvironment, previous deployment.Plan, replacement *deployment.Replacement) (deployment.Status, error) {
 	out := deployment.Status{}
 	if v.Purpose == "preview" || v.Spec.Compose != nil || in.AcceptDrift || v.Spec.Placement == nil {
 		return out, domain.Invalid("placement")
@@ -56,7 +56,7 @@ func (s *Service) createCrossHostPlan(ctx context.Context, tx pgx.Tx, ws, pid, e
 	if err := s.Store.ValidateApplicationRoutes(ctx, tx, ws, env, v.Spec, &in.ServerId); err != nil {
 		return out, err
 	}
-	if err := s.validateVisualSecrets(ctx, tx, ws, env, v.Spec); err != nil {
+	if err := s.validateVisualSecrets(ctx, tx, keys, ws, env, v.Spec); err != nil {
 		return out, err
 	}
 	network, err := readNetwork(ctx, tx, ws)

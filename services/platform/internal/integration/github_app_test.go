@@ -199,7 +199,7 @@ func TestGitHubOnboardingDelegationAndRecoveryBoundaries(t *testing.T) {
 	b.call("POST", "/api/v1/auth/reauthenticate", map[string]string{"password": f.password}, 200, &session)
 	b.csrf = session.CsrfToken
 	b.call("GET", grantPath+"/installations", nil, 200, nil)
-	old := f.st.Keys
+	old := keysOf(f.st)
 	next, e := cryptobox.New("next")
 	if e != nil {
 		t.Fatal(e)
@@ -239,7 +239,7 @@ func TestGitHubOnboardingDelegationAndRecoveryBoundaries(t *testing.T) {
 	values["id"] = imported.String()
 	config, _ = stablejson.Marshal(values)
 	access, _ := stablejson.Marshal(pipeline.Access{})
-	cipher, e = f.st.Keys.Seal(access, pipeline.EncryptionIdentity(ws, imported, "git"))
+	cipher, e = keysOf(f.st).Seal(access, pipeline.EncryptionIdentity(ws, imported, "git"))
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -267,15 +267,16 @@ func TestGitHubOnboardingDelegationAndRecoveryBoundaries(t *testing.T) {
 	var op api.Operation
 	b.call("PUT", path+"/source", map[string]any{"baseRevisionId": env.DraftRevisionId, "configuration": source}, 202, &op)
 	before := metadata.Load()
-	for range 5 {
+	// The first poll releases the read credential; the runner holds it, so later polls carry none.
+	for attempt := range 5 {
 		var poll api.AgentPoll
 		agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/poll", token, nil, 200, &poll)
 		if poll.Command == nil || poll.Command.Id != op.Id {
 			t.Fatal("App import not delivered")
 		}
 		payload := string(*poll.Command.Pipeline)
-		if !strings.Contains(payload, "installation-read-canary") || strings.Contains(payload, "user-proof-canary") || strings.Contains(payload, "installation-write-canary") {
-			t.Fatal("runner received wrong GitHub credential scope")
+		if strings.Contains(payload, "installation-read-canary") != (attempt == 0) || strings.Contains(payload, "user-proof-canary") || strings.Contains(payload, "installation-write-canary") {
+			t.Fatal("runner received wrong GitHub credential scope", attempt)
 		}
 	}
 	if metadata.Load()-before > 1 || minted.Load() != 1 {

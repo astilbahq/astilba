@@ -69,3 +69,16 @@ SELECT COALESCE((SELECT reason FROM pipeline_runs WHERE workspace_id = @workspac
 SELECT (r.configuration->>'commit')::text FROM pipeline_runs r JOIN execution_operations o ON o.workspace_id = r.workspace_id AND o.id = r.id
 WHERE r.workspace_id = @workspace_id AND r.environment_id = @environment_id AND r.configuration->>'action' = 'import' AND o.state = 'succeeded'
 ORDER BY r.created_at DESC LIMIT 2;
+
+-- name: LockEnvironmentSubmissions :many
+-- A runtime secret saved while a submission is unsettled is checked against it under the
+-- operation's lock, which delivery's own check also holds while it reads the secrets.
+SELECT id FROM execution_operations
+WHERE workspace_id = @workspace_id AND environment_id = @environment_id AND kind = 'pipeline'
+  AND state NOT IN ('succeeded','failed','cancelled') AND command->'pipeline'->>'action' = 'submit'
+ORDER BY id FOR UPDATE;
+
+-- name: EnvironmentSubmission :one
+SELECT o.command, o.cancel_requested, o.report_sequence, r.delivery_started
+FROM execution_operations o JOIN pipeline_runs r ON r.workspace_id = o.workspace_id AND r.id = o.id
+WHERE o.workspace_id = @workspace_id AND o.id = @id;

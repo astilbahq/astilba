@@ -167,10 +167,10 @@ INSERT INTO execution_operations(id,workspace_id,server_id,environment_id,genera
 VALUES(@id,@workspace_id,@server_id,@environment_id,@generation,@request_key, @command, @kind,@state,@parent_id);
 
 -- name: SetRecoveryFrameCommand :exec
-UPDATE execution_operations SET command = @command,job_id=NULL WHERE workspace_id = @workspace_id AND id = @id;
+UPDATE execution_operations SET command = @command,job_id=NULL,dispatch_epoch=dispatch_epoch+1 WHERE workspace_id = @workspace_id AND id = @id;
 
 -- name: ResetRecoveryFrame :exec
-UPDATE execution_operations SET command = @command,state = @state,report_sequence=0,steps='[]',note='',job_id=NULL
+UPDATE execution_operations SET command = @command,state = @state,report_sequence=0,steps='[]',note='',job_id=NULL,dispatch_epoch=dispatch_epoch+1
 WHERE workspace_id = @workspace_id AND id = @id;
 
 -- name: OperationReportState :one

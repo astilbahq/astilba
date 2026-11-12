@@ -102,7 +102,6 @@ func run() error {
 		return e
 	}
 	st := store.New(pool, secretbroker.New(db.New(pool), backend, slog.Default()), c.Hosted)
-	st.Keys = keys
 	st.Hosting = c.Hosting
 	st.LogRetention = c.LogRetention
 	st.ApplicationDomain = c.ApplicationDNS.Base

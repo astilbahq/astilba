@@ -35,6 +35,8 @@ func Preflight(ctx context.Context, docker *client.Client, version, dir string, 
 	h.Capabilities.CredentialFreeVisualCancel = &credentialFreeCancel
 	machineBoundRotation := true
 	h.Capabilities.MachineBoundRotation = &machineBoundRotation
+	acknowledgesReleases := true
+	h.Capabilities.AcknowledgesReleases = &acknowledgesReleases
 	raw, _ := os.ReadFile("/etc/os-release")
 	var id, release string
 	for _, line := range strings.Split(string(raw), "\n") {

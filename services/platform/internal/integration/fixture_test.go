@@ -211,7 +211,22 @@ func useKeys(t *testing.T, st *store.Store, keys *cryptobox.Keyring) {
 		t.Fatal(e)
 	}
 	st.Broker = secretbroker.New(db.New(st.Pool), backend, nil)
-	st.Keys = keys
+	storeKeys.Store(st, keys)
+}
+
+// secretIdentity is the identity a secret version's value is sealed under, for tests that open
+// it with the keyring directly.
+func secretIdentity(workspace, id uuid.UUID) string {
+	return "secret:v1:" + workspace.String() + ":" + id.String()
+}
+
+// storeKeys holds each test store's keyring, which only tests read directly.
+var storeKeys sync.Map
+
+// keysOf is the keyring a test store's broker uses, for a test that checks what was stored.
+func keysOf(st *store.Store) *cryptobox.Keyring {
+	keys, _ := storeKeys.Load(st)
+	return keys.(*cryptobox.Keyring)
 }
 
 func setupStore(t *testing.T, bootstrap, hosted bool) *fixture {

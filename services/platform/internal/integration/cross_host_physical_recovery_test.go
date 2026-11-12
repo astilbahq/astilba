@@ -108,7 +108,7 @@ func testNativePhysicalRecovery(t *testing.T, upgradeRecovery bool) {
 			t.Fatal("physical host preflight", err, heartbeat.Preflight.Notes)
 		}
 		in.Capabilities, in.Preflight = heartbeat.Capabilities, heartbeat.Preflight
-		if _, err := source.execution.Enroll(ctx, in, "test"); err != nil {
+		if _, err := source.execution.Enroll(ctx, acknowledging(in), "test"); err != nil {
 			t.Fatal(err)
 		}
 		identity, err := source.execution.Authenticate(ctx, in.ServerId, *in.Credential)
@@ -252,7 +252,7 @@ chmod +x /tmp/www/cgi-bin/health
 			if err != nil || heartbeat.Preflight.CrossHostInventory == nil {
 				t.Fatal("refresh physical capacity", err)
 			}
-			if _, err := source.execution.Heartbeat(ctx, identities[i], heartbeat); err != nil {
+			if _, err := source.execution.Heartbeat(ctx, identities[i], acknowledgingHeartbeat(heartbeat)); err != nil {
 				t.Fatal(err)
 			}
 			members[i].UnboundedInventoryHash = heartbeat.Preflight.CrossHostInventory.UnboundedInventoryHash
@@ -457,7 +457,7 @@ chmod +x /tmp/www/cgi-bin/health
 		if err := dst.execution.Stop(ctx); err != nil {
 			t.Fatal(err)
 		}
-		useKeys(t, dst.st, source.st.Keys)
+		useKeys(t, dst.st, keysOf(source.st))
 		if _, err := dst.st.Pool.Exec(ctx, `INSERT INTO workspaces(id,name) VALUES($1,'Restored backup')`, ws); err != nil {
 			t.Fatal(err)
 		}
@@ -634,7 +634,7 @@ chmod +x /tmp/www/cgi-bin/health
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := current.Enroll(ctx, input, "test"); err != nil {
+		if _, err := current.Enroll(ctx, acknowledging(input), "test"); err != nil {
 			t.Fatal("enroll recovered host", i, err)
 		}
 		host.mu.Lock()
@@ -838,7 +838,7 @@ func runPhysicalRecoveryHost(t *testing.T, ctx context.Context, service *executi
 		if time.Since(last) > 15*time.Second {
 			heartbeat, err := host.Preflight(ctx)
 			if err == nil {
-				_, err = service.Heartbeat(ctx, identity, heartbeat)
+				_, err = service.Heartbeat(ctx, identity, acknowledgingHeartbeat(heartbeat))
 			}
 			if err != nil {
 				if ctx.Err() == nil {
@@ -849,7 +849,7 @@ func runPhysicalRecoveryHost(t *testing.T, ctx context.Context, service *executi
 			last = time.Now()
 		}
 		poll, cancel := context.WithTimeout(ctx, time.Second)
-		command, err := service.Poll(poll, identity)
+		command, err := pollReleased(service, poll, identity)
 		pollErr := poll.Err()
 		cancel()
 		if err != nil {

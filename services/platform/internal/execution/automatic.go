@@ -170,7 +170,7 @@ func (w *automaticWorker) work(ctx context.Context, git *gitAnswers, job *river.
 		if err != nil {
 			return err
 		}
-		status, err := w.service.createVisualPlan(ctx, nested, ws, pid, env, api.VisualPlanRequest{BaseRevisionId: revision, ServerId: *v.Server}, false)
+		status, err := w.service.createVisualPlan(ctx, nested, git.keys.inspect, ws, pid, env, api.VisualPlanRequest{BaseRevisionId: revision, ServerId: *v.Server}, false)
 		if err != nil {
 			_ = nested.Rollback(ctx)
 			if _, ok := err.(*domain.Error); ok {

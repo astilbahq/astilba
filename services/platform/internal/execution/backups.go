@@ -319,7 +319,10 @@ func (s *Service) BackupCommand(ctx context.Context, p store.Principal, ws, pid,
 	})
 	return out, err
 }
-func (s *Service) hydrateBackup(ctx context.Context, c *api.ExecutionCommand) error {
+
+// hydrateBackup fills a backup command's access. With nil keys it makes the delivery's checks
+// and opens nothing.
+func (s *Service) hydrateBackup(ctx context.Context, keys valueKeys, c *api.ExecutionCommand) error {
 	if c.CancelRequested || time.Now().After(c.Deadline) {
 		return nil
 	}
@@ -347,7 +350,10 @@ func (s *Service) hydrateBackup(ctx context.Context, c *api.ExecutionCommand) er
 	if json.Unmarshal(stored.Configuration, &policy) != nil || policy.Generation != b.Installation.Policy.Generation {
 		return domain.Conflict
 	}
-	if err = s.legacyOpenIntegration(b.Installation.Policy.WorkspaceID, c.ResourceId, "backup-policy", stored.EncryptedAccess, &b.Installation.Access); err != nil {
+	if keys == nil {
+		return nil
+	}
+	if err = openJSON(keys, secretbroker.Item{Kind: secretbroker.BackupPolicy, ID: c.ResourceId}, stored.EncryptedAccess, &b.Installation.Access); err != nil {
 		return err
 	}
 	if b.Installation.Policy.Method != "container-job" {
@@ -359,7 +365,7 @@ func (s *Service) hydrateBackup(ctx context.Context, c *api.ExecutionCommand) er
 			return err
 		}
 		var a backup.Access
-		if err = s.legacyOpenIntegration(b.Installation.Policy.WorkspaceID, b.Installation.Policy.DestinationID, "backup-destination", destination.EncryptedAccess, &a); err != nil {
+		if err = openJSON(keys, secretbroker.Item{Kind: secretbroker.BackupDestination, ID: b.Installation.Policy.DestinationID}, destination.EncryptedAccess, &a); err != nil {
 			return err
 		}
 		b.Installation.Access.AccessKey = a.AccessKey

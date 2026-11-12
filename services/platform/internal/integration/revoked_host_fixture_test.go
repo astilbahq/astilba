@@ -91,7 +91,7 @@ func (g *revokedGroup) reports(t *testing.T, h *aheadHost, change func(*api.Agen
 	change(&h.input.Capabilities, &h.input.Preflight)
 	heartbeat := api.AgentHeartbeat{Capabilities: h.input.Capabilities, Preflight: h.input.Preflight}
 	g.mu.Unlock()
-	if _, err := g.f.execution.Heartbeat(g.ctx, h.identity, heartbeat); err != nil {
+	if _, err := g.f.execution.Heartbeat(g.ctx, h.identity, acknowledgingHeartbeat(heartbeat)); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -125,7 +125,7 @@ func (g *revokedGroup) answer(ctx context.Context, t *testing.T, h *aheadHost) {
 			g.mu.Lock()
 			heartbeat := api.AgentHeartbeat{Capabilities: h.input.Capabilities, Preflight: h.input.Preflight}
 			g.mu.Unlock()
-			if _, err := g.f.execution.Heartbeat(ctx, h.identity, heartbeat); err != nil {
+			if _, err := g.f.execution.Heartbeat(ctx, h.identity, acknowledgingHeartbeat(heartbeat)); err != nil {
 				if !errors.Is(err, domain.Unauthenticated) && ctx.Err() == nil {
 					t.Error(err)
 				}
@@ -134,7 +134,7 @@ func (g *revokedGroup) answer(ctx context.Context, t *testing.T, h *aheadHost) {
 			beat = time.Now()
 		}
 		poll, done := context.WithTimeout(ctx, 200*time.Millisecond)
-		c, err := g.f.execution.Poll(poll, h.identity)
+		c, err := pollReleased(g.f.execution, poll, h.identity)
 		expired := poll.Err()
 		done()
 		if revokedHost(ctx, g.f, h.identity, err) {

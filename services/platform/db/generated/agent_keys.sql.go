@@ -49,7 +49,7 @@ func (q *Queries) AgentKey(ctx context.Context, arg AgentKeyParams) (AgentKeyRow
 
 const authenticateAgentToken = `-- name: AuthenticateAgentToken :one
 SELECT s.workspace_id,s.role,l.id AS lineage,l.key_hash,
-    COALESCE((s.capabilities->>'credentialFreeVisualCancel')::boolean,false)::boolean AS credential_free_visual_cancel
+    COALESCE((s.capabilities->>'acknowledgesReleases')::boolean,false)::boolean AS acknowledges_releases
 FROM agent_lineages l JOIN servers s ON s.id = l.server_id AND s.workspace_id = l.workspace_id
 WHERE l.server_id = $1 AND l.superseded_at IS NULL AND l.epoch = s.enrollment_epoch
     AND s.credential_hash = l.key_hash AND NOT s.revoked AND NOT s.awaiting_transfer
@@ -63,11 +63,11 @@ type AuthenticateAgentTokenParams struct {
 }
 
 type AuthenticateAgentTokenRow struct {
-	WorkspaceID                uuid.UUID `json:"workspace_id"`
-	Role                       string    `json:"role"`
-	Lineage                    uuid.UUID `json:"lineage"`
-	KeyHash                    []byte    `json:"key_hash"`
-	CredentialFreeVisualCancel bool      `json:"credential_free_visual_cancel"`
+	WorkspaceID          uuid.UUID `json:"workspace_id"`
+	Role                 string    `json:"role"`
+	Lineage              uuid.UUID `json:"lineage"`
+	KeyHash              []byte    `json:"key_hash"`
+	AcknowledgesReleases bool      `json:"acknowledges_releases"`
 }
 
 // unscoped: the presented token establishes the workspace. A token is live only while its lineage
@@ -80,7 +80,7 @@ func (q *Queries) AuthenticateAgentToken(ctx context.Context, arg AuthenticateAg
 		&i.Role,
 		&i.Lineage,
 		&i.KeyHash,
-		&i.CredentialFreeVisualCancel,
+		&i.AcknowledgesReleases,
 	)
 	return i, err
 }

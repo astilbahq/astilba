@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const allBuildSecrets = `-- name: AllBuildSecrets :many
@@ -199,6 +200,36 @@ func (q *Queries) EnvironmentHoldsAutomaticWork(ctx context.Context, arg Environ
 	return busy, err
 }
 
+const environmentSubmission = `-- name: EnvironmentSubmission :one
+SELECT o.command, o.cancel_requested, o.report_sequence, r.delivery_started
+FROM execution_operations o JOIN pipeline_runs r ON r.workspace_id = o.workspace_id AND r.id = o.id
+WHERE o.workspace_id = $1 AND o.id = $2
+`
+
+type EnvironmentSubmissionParams struct {
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ID          uuid.UUID `json:"id"`
+}
+
+type EnvironmentSubmissionRow struct {
+	Command         []byte      `json:"command"`
+	CancelRequested bool        `json:"cancel_requested"`
+	ReportSequence  int64       `json:"report_sequence"`
+	DeliveryStarted pgtype.Bool `json:"delivery_started"`
+}
+
+func (q *Queries) EnvironmentSubmission(ctx context.Context, arg EnvironmentSubmissionParams) (EnvironmentSubmissionRow, error) {
+	row := q.db.QueryRow(ctx, environmentSubmission, arg.WorkspaceID, arg.ID)
+	var i EnvironmentSubmissionRow
+	err := row.Scan(
+		&i.Command,
+		&i.CancelRequested,
+		&i.ReportSequence,
+		&i.DeliveryStarted,
+	)
+	return i, err
+}
+
 const finishUndeliveredPipeline = `-- name: FinishUndeliveredPipeline :exec
 UPDATE execution_operations o SET state = $1, note = COALESCE((SELECT r.reason || ' ' FROM pipeline_runs r WHERE r.workspace_id = o.workspace_id AND r.id = o.id AND r.reason <> ''), '') || $2::text
 WHERE o.workspace_id = $3 AND o.id = $4
@@ -274,6 +305,40 @@ func (q *Queries) LatestImportedCommits(ctx context.Context, arg LatestImportedC
 			return nil, err
 		}
 		items = append(items, column_1)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const lockEnvironmentSubmissions = `-- name: LockEnvironmentSubmissions :many
+SELECT id FROM execution_operations
+WHERE workspace_id = $1 AND environment_id = $2 AND kind = 'pipeline'
+  AND state NOT IN ('succeeded','failed','cancelled') AND command->'pipeline'->>'action' = 'submit'
+ORDER BY id FOR UPDATE
+`
+
+type LockEnvironmentSubmissionsParams struct {
+	WorkspaceID   uuid.UUID  `json:"workspace_id"`
+	EnvironmentID *uuid.UUID `json:"environment_id"`
+}
+
+// A runtime secret saved while a submission is unsettled is checked against it under the
+// operation's lock, which delivery's own check also holds while it reads the secrets.
+func (q *Queries) LockEnvironmentSubmissions(ctx context.Context, arg LockEnvironmentSubmissionsParams) ([]uuid.UUID, error) {
+	rows, err := q.db.Query(ctx, lockEnvironmentSubmissions, arg.WorkspaceID, arg.EnvironmentID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []uuid.UUID{}
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err

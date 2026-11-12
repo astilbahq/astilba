@@ -43,7 +43,7 @@ func TestEncryptedWorkspaceExportPreservesIdentityWithoutInstallationKeys(t *tes
 	connection := pipeline.Connection{ID: uuid.New(), Name: "Repository", Provider: "github", BaseURL: "https://github.com", Repository: "example/application", RepositoryID: 42, Private: true}
 	access := pipeline.Access{API: pipeline.Credential{Password: "git-token-canary"}, Webhook: "webhook-canary"}
 	rawAccess, _ := stablejson.Marshal(access)
-	cipher, e := f.st.Keys.Seal(rawAccess, pipeline.EncryptionIdentity(ws, connection.ID, "git"))
+	cipher, e := keysOf(f.st).Seal(rawAccess, pipeline.EncryptionIdentity(ws, connection.ID, "git"))
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -59,7 +59,7 @@ func TestEncryptedWorkspaceExportPreservesIdentityWithoutInstallationKeys(t *tes
 	passphrase := "unique archive passphrase for fixture"
 	var encrypted api.WorkspaceArchive
 	browser.call("POST", "/api/v1/workspaces/"+ws.String()+"/export", map[string]string{"passphrase": passphrase}, 200, &encrypted)
-	if bytes.Contains(encrypted.Archive, []byte("portable-secret-canary")) || bytes.Contains(encrypted.Archive, []byte(f.st.Keys.Active)) {
+	if bytes.Contains(encrypted.Archive, []byte("portable-secret-canary")) || bytes.Contains(encrypted.Archive, []byte(keysOf(f.st).Active)) {
 		t.Fatal("archive exposes contents")
 	}
 	if _, e := portability.Open(context.Background(), "incorrect archive passphrase", encrypted.Archive); e == nil {
@@ -109,11 +109,11 @@ func TestEncryptedWorkspaceExportPreservesIdentityWithoutInstallationKeys(t *tes
 	if e = destination.st.Pool.QueryRow(context.Background(), "SELECT encrypted_value,author_id FROM secret_versions WHERE id=$1", secret.Id).Scan(&importedCipher, &author); e != nil {
 		t.Fatal(e)
 	}
-	recovered, e := destination.st.Keys.Open(importedCipher, store.SecretIdentity(ws, secret.Id))
+	recovered, e := keysOf(destination.st).Open(importedCipher, secretIdentity(ws, secret.Id))
 	if e != nil || string(recovered) != "portable-secret-canary" || author != destination.owner {
 		t.Fatalf("secret or author was not transferred: %v", e)
 	}
-	if _, e = f.st.Keys.Open(importedCipher, store.SecretIdentity(ws, secret.Id)); e == nil {
+	if _, e = keysOf(f.st).Open(importedCipher, secretIdentity(ws, secret.Id)); e == nil {
 		t.Fatal("import retained source wrapping keys")
 	}
 	var status string
@@ -268,7 +268,7 @@ func TestManagementRecoveryFencesQueuedCommandsBeforeAgentReconnect(t *testing.T
 	if e != nil {
 		t.Fatal(e)
 	}
-	command, e := f.execution.Poll(context.Background(), identity)
+	command, e := pollReleased(f.execution, context.Background(), identity)
 	if e != nil || command == nil || command.Id != next.Id || command.ControllerGeneration == nil || *command.ControllerGeneration != 1 {
 		t.Fatalf("new controller command not fenced: %+v %v", command, e)
 	}

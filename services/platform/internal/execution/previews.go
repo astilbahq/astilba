@@ -209,7 +209,7 @@ func (s *Service) SavePreviewPolicy(ctx context.Context, p store.Principal, ws, 
 		if head.Err != nil {
 			return head.failure(domain.Invalid("preview.branch"))
 		}
-		if err = s.validateVisualSecrets(ctx, tx, ws, env, v.Spec); err != nil {
+		if err = s.validateVisualSecrets(ctx, tx, git.keys.inspect, ws, env, v.Spec); err != nil {
 			return err
 		}
 		if _, err = s.buildInputs(ctx, tx, git.keys.inspect, ws, env, cfg.Build); err != nil {

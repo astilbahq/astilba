@@ -11,6 +11,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
+	"github.com/astilbahq/astilba/services/platform/internal/secretbroker"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
@@ -76,17 +77,22 @@ func (s *Service) CreateVisualPlan(ctx context.Context, p store.Principal, ws, p
 	}
 	// Preparing a plan changes nothing: it records what applying it would do, including any
 	// host changes, for review. Approving those is part of applying it.
-	err := s.scope(ctx, p, ws, workspaceAccess{Write: true}, "deployment.plan", env, func(tx pgx.Tx) error {
-		var err error
-		out, err = s.createVisualPlan(ctx, tx, ws, pid, env, in, false)
-		return err
+	// Planning measures the secrets the plan names, as an inspection for the caller.
+	keys := s.passKeys(secretbroker.Request{Workspace: ws, Purpose: secretbroker.Inspect, Principal: p.Secrets(), Kinds: []secretbroker.Kind{secretbroker.SecretVersion}})
+	defer keys.close(ctx)
+	err := withProviderCalls(ctx, func() error {
+		return s.scope(ctx, p, ws, workspaceAccess{Write: true}, "deployment.plan", env, func(tx pgx.Tx) error {
+			var err error
+			out, err = s.createVisualPlan(ctx, tx, keys, ws, pid, env, in, false)
+			return err
+		})
 	})
 	return out, err
 }
 
 // createVisualPlan prepares a plan for review. hostApproved is a standing policy's approval of
 // any host change, as a preview policy gives, so the plan carries host changes without review.
-func (s *Service) createVisualPlan(ctx context.Context, tx pgx.Tx, ws, pid, env uuid.UUID, in api.VisualPlanRequest, hostApproved bool) (deployment.Status, error) {
+func (s *Service) createVisualPlan(ctx context.Context, tx pgx.Tx, keys valueKeys, ws, pid, env uuid.UUID, in api.VisualPlanRequest, hostApproved bool) (deployment.Status, error) {
 	var out deployment.Status
 	err := func() error {
 		v, err := loadVisualEnvironment(ctx, tx, ws, pid, env)
@@ -174,7 +180,7 @@ func (s *Service) createVisualPlan(ctx context.Context, tx pgx.Tx, ws, pid, env 
 				review = review || !slices.Contains(standing, permission)
 			}
 		}
-		if err := s.validateVisualSecrets(ctx, tx, ws, env, v.Spec); err != nil {
+		if err := s.validateVisualSecrets(ctx, tx, keys, ws, env, v.Spec); err != nil {
 			return err
 		}
 		previous := domain.Specification{}
@@ -219,7 +225,7 @@ func (s *Service) createVisualPlan(ctx context.Context, tx pgx.Tx, ws, pid, env 
 		}
 
 		if v.Spec.Placement != nil {
-			out, err = s.createCrossHostPlan(ctx, tx, ws, pid, env, in, v, previousPlan, replacement)
+			out, err = s.createCrossHostPlan(ctx, tx, keys, ws, pid, env, in, v, previousPlan, replacement)
 			return err
 		}
 		if replacement != nil {

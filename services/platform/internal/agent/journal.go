@@ -320,6 +320,9 @@ func sameCommand(a, b api.ExecutionCommand) bool {
 	}
 	a.CancelRequested = false
 	b.CancelRequested = false
+	// Whether a delivery brought its values says how it travelled, not what the command is: the
+	// journal keeps the values it was first given.
+	a.SecretRelease, b.SecretRelease = nil, nil
 	aj, _ := stablejson.Marshal(a)
 	bj, _ := stablejson.Marshal(b)
 	return bytes.Equal(aj, bj)

@@ -357,6 +357,7 @@ type ExecutionOperation struct {
 	ParentID        *uuid.UUID  `json:"parent_id"`
 	RuntimeOutcome  pgtype.Text `json:"runtime_outcome"`
 	RuntimePlanID   *uuid.UUID  `json:"runtime_plan_id"`
+	DispatchEpoch   int64       `json:"dispatch_epoch"`
 }
 
 type ExecutionPlan struct {
@@ -750,6 +751,19 @@ type SecretAccessOutcome struct {
 	At                 time.Time `json:"at"`
 	Outcome            string    `json:"outcome"`
 	ProviderRequestIds []byte    `json:"provider_request_ids"`
+}
+
+type SecretRelease struct {
+	OperationID    uuid.UUID  `json:"operation_id"`
+	DispatchEpoch  int64      `json:"dispatch_epoch"`
+	AgentInstance  string     `json:"agent_instance"`
+	WorkspaceID    uuid.UUID  `json:"workspace_id"`
+	ServerID       uuid.UUID  `json:"server_id"`
+	Digest         string     `json:"digest"`
+	Attempts       int32      `json:"attempts"`
+	LastAttemptAt  time.Time  `json:"last_attempt_at"`
+	AcknowledgedAt *time.Time `json:"acknowledged_at"`
+	Redelivery     bool       `json:"redelivery"`
 }
 
 type SecretVersion struct {
