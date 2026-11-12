@@ -49,10 +49,8 @@ var keyPackages = map[string]bool{
 // delivery path, which moves to the broker with release records (PLAT-196), and the plan-time
 // size check, which moves to stored lengths. None may be added.
 var pending = map[string]bool{
-	"internal/execution/build_inputs.go":         true,
 	"internal/execution/cross_host_hydration.go": true,
 	"internal/execution/legacy_keys.go":          true,
-	"internal/execution/pipeline_report.go":      true,
 	"internal/execution/visual_hydration.go":     true,
 	"internal/store/store.go":                    true,
 }
@@ -64,6 +62,7 @@ var legacyCallers = map[string]bool{
 	"internal/execution/automatic.go":        true,
 	"internal/execution/backups.go":          true,
 	"internal/execution/cross_host_plans.go": true,
+	"internal/execution/pipeline_report.go":  true,
 	"internal/execution/preview_workers.go":  true,
 	"internal/execution/previews.go":         true,
 	"internal/execution/transport.go":        true,
@@ -115,7 +114,8 @@ func run(pass *analysis.Pass) (any, error) {
 	// keys, and, until nothing changes, every function in a pending or listed caller file that
 	// calls one. Each is recorded as a fact, so a caller in another package is held to the same
 	// list.
-	isLegacy := func(object types.Object) bool {
+	var isLegacy func(object types.Object) bool
+	isLegacy = func(object types.Object) bool {
 		switch v := object.(type) {
 		case *types.Func:
 			object = v.Origin()
@@ -124,6 +124,19 @@ func run(pass *analysis.Pass) (any, error) {
 			if v.Parent() != v.Pkg().Scope() {
 				return false
 			}
+		case *types.TypeName:
+			// A type in a pending file with a transitional method reaches keys through any
+			// interface it is used as, which calls do not show: making one is reaching them.
+			named, ok := v.Type().(*types.Named)
+			if !ok || v.Pkg() != pass.Pkg || !pending[pkg+"/"+path.Base(pass.Fset.Position(v.Pos()).Filename)] {
+				return false
+			}
+			for method := range named.Methods() {
+				if isLegacy(method) {
+					return true
+				}
+			}
+			return false
 		default:
 			return false
 		}
