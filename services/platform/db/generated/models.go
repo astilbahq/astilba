@@ -497,6 +497,7 @@ type ManagedVolume struct {
 	ID               uuid.UUID   `json:"id"`
 	Deleted          bool        `json:"deleted"`
 	PostgresInitHash pgtype.Text `json:"postgres_init_hash"`
+	PostgresMajor    pgtype.Text `json:"postgres_major"`
 }
 
 type Membership struct {

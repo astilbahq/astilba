@@ -19,7 +19,21 @@ ALTER TABLE environments ADD CONSTRAINT environment_retirement_record CHECK(
  AND (purpose <> 'preview' OR state = 'active'));
 ALTER TABLE environments ADD CONSTRAINT retirement_operation_owner FOREIGN KEY(workspace_id,id,retirement_operation_id) REFERENCES execution_operations(workspace_id,environment_id,id) DEFERRABLE INITIALLY DEFERRED;
 
+-- A PostgreSQL data directory can only be opened by the major version that initialised it.
+-- Comparing a plan with the applied revision misses a volume kept across retirement, which clears
+-- the applied revision, so each managed volume records the major that first ran on it. A volume
+-- already in use takes the major its environment's applied revision runs on it; any other is
+-- recorded by its next deployment.
+ALTER TABLE managed_volumes ADD COLUMN postgres_major text CHECK(postgres_major ~ '^[0-9]{1,3}$');
+UPDATE managed_volumes v SET postgres_major = substring(a->'source'->>'image' FROM '^postgres:([0-9]{1,3})[.@-]')
+FROM environments e
+JOIN specification_revisions r ON r.workspace_id = e.workspace_id AND r.environment_id = e.id AND r.id = e.applied_revision_id
+CROSS JOIN LATERAL jsonb_array_elements(r.specification->'applications') a
+WHERE v.workspace_id = e.workspace_id AND v.environment_id = e.id AND v.postgres_init_hash IS NOT NULL AND NOT v.deleted
+ AND jsonb_typeof(a->'postgres') = 'object' AND a->'mounts'->0->>'volumeId' = v.id::text;
+
 -- +goose Down
+ALTER TABLE managed_volumes DROP COLUMN postgres_major;
 ALTER TABLE environments DROP CONSTRAINT retirement_operation_owner;
 ALTER TABLE environments DROP CONSTRAINT environment_retirement_record;
 ALTER TABLE environments DROP CONSTRAINT environment_state;

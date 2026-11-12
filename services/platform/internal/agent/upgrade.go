@@ -377,7 +377,7 @@ func (e *Engine) prepareUpgrade(ctx context.Context, c api.ExecutionCommand, s *
 	if freeBytes(e.Journal.dir) < m.Bytes+256<<20 || dockerFreeBytes(ctx, e.Docker) < m.Bytes*4+256<<20 {
 		return errors.New("insufficient restore capacity")
 	}
-	if _, err = e.Docker.VolumeCreate(ctx, client.VolumeCreateOptions{Name: deployment.VolumeName(p.TargetVolumeID), Driver: "local", Labels: visualLabels(p.Source, p.TargetVolumeID)}); err != nil {
+	if _, err = e.Docker.VolumeCreate(ctx, client.VolumeCreateOptions{Name: deployment.VolumeName(p.TargetVolumeID), Driver: "local", Labels: upgradeVolumeLabels(p)}); err != nil {
 		return err
 	}
 	if _, err = e.volumePath(ctx, policy, p.TargetVolumeID); err != nil {
@@ -582,4 +582,14 @@ func (w *upgradeSQLHeader) Write(b []byte) (int, error) {
 
 func upgradeOwned(labels map[string]string, p deployment.Plan) bool {
 	return labels[labelServer] == p.ServerID.String() && labels[labelEnvironment] == p.EnvironmentID.String() && labels["com.astilba.unit"] == p.UnitID.String()
+}
+
+// upgradeVolumeLabels identifies the target volume as the source unit's, and records the major the
+// upgrade initialises on it.
+func upgradeVolumeLabels(p upgrade.Plan) map[string]string {
+	labels := visualLabels(p.Source, p.TargetVolumeID)
+	if major := postgresMajors(p.Target())[p.TargetVolumeID]; major != "" {
+		labels[labelPostgresMajor] = major
+	}
+	return labels
 }

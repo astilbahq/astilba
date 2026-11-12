@@ -401,3 +401,43 @@ func TestRetiredTemplateRenewsABlockedPreviewCleanup(t *testing.T) {
 	agentRequest(t, h.f.server.Client(), h.f.server.URL, "/agent/v1/report", h.token, api.AgentReport{Id: cleanup.Id, Generation: cleanup.Generation, PlanHash: cleanup.PlanHash, Sequence: 2, State: "succeeded", Steps: []api.ExecutionStep{}}, 204, nil)
 	waitPreviewAt(t, h, h.path, "deleted")
 }
+
+// Retirement clears the applied revision and the host forgets the unit, but the kept volume still
+// holds the data directory its PostgreSQL major initialised. A restored environment cannot switch
+// that volume to another major without a supported upgrade.
+func TestRetiredPostgresVolumeKeepsItsMajor(t *testing.T) {
+	x := newRetirementFixture(t)
+	var env api.Environment
+	x.owner.call("POST", x.prefix, map[string]string{"name": "Database"}, 201, &env)
+	path := x.prefix + "/" + env.Id.String()
+	var secret api.SecretVersion
+	x.owner.call("POST", path+"/secrets", map[string]string{"name": "Database password", "value": "retired-database-password"}, 201, &secret)
+	pg, volume, image := uuid.New(), uuid.New(), domain.Postgres17Image
+	spec := domain.Specification{Version: 1, Variables: []domain.Variable{}, Volumes: []domain.Volume{{ID: volume, Name: "Data"}},
+		Applications: []domain.Application{{ID: pg, Name: "Database", Kind: "postgres", Source: domain.ApplicationSource{Kind: "image", Image: &image}, Postgres: &domain.Postgres{Database: "app", Username: "app", PasswordSecretVersionID: secret.Id}, Mounts: []domain.VolumeMount{{VolumeID: volume, Target: domain.PostgresMount(image)}}}}}
+	var draft api.Revision
+	x.owner.call("PUT", path+"/draft", map[string]any{"baseRevisionId": env.DraftRevisionId, "specification": spec}, 200, &draft)
+	_, digest, _ := strings.Cut(image, "@")
+	x.agent.reviewAndApply(x.owner, path, x.server, draft.Id, map[string]string{pg.String(): "postgres@" + digest})
+
+	x.lifecycle(x.owner, path, "retire", "Database", 201)
+	x.report(x.agent.next(), "succeeded", "Removed.")
+	x.lifecycle(x.owner, path, "restore", "Database", 201)
+	var restored api.Environment
+	x.owner.call("GET", path, nil, 200, &restored)
+	if restored.AppliedRevisionId != nil {
+		t.Fatal("retirement kept the applied revision, so this would not test the volume's own record")
+	}
+
+	newer := domain.PostgresImage
+	spec.Applications[0].Source.Image, spec.Applications[0].Mounts[0].Target = &newer, domain.PostgresMount(newer)
+	var upgraded api.Revision
+	x.owner.call("PUT", path+"/draft", map[string]any{"baseRevisionId": draft.Id, "specification": spec}, 200, &upgraded)
+	var refused api.Error
+	if err := json.Unmarshal(x.owner.call("POST", path+"/deployment-plans", api.VisualPlanRequest{ServerId: x.server, BaseRevisionId: upgraded.Id, AllowHostChanges: true}, 400, nil), &refused); err != nil {
+		t.Fatal(err)
+	}
+	if refused.Fields == nil || !slices.Contains(*refused.Fields, "applications.postgres.upgrade") {
+		t.Fatalf("switching the kept volume's PostgreSQL major was not refused as an upgrade: %+v", refused)
+	}
+}

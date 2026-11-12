@@ -182,13 +182,18 @@ func (s *Service) createVisualPlan(ctx context.Context, tx pgx.Tx, ws, pid, env 
 			if a.Postgres == nil {
 				continue
 			}
-			var reserved *string
-			err := tx.QueryRow(ctx, "SELECT postgres_init_hash FROM managed_volumes WHERE workspace_id=$1 AND environment_id=$2 AND id=$3", ws, env, a.Mounts[0].VolumeID).Scan(&reserved)
+			var reserved, major *string
+			err := tx.QueryRow(ctx, "SELECT postgres_init_hash,postgres_major FROM managed_volumes WHERE workspace_id=$1 AND environment_id=$2 AND id=$3", ws, env, a.Mounts[0].VolumeID).Scan(&reserved, &major)
 			if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 				return err
 			}
 			if reserved != nil && *reserved != deployment.Hash(a.Postgres) {
 				return domain.Invalid("applications.postgres.existingVolume")
+			}
+			// The volume's own record holds whatever the environment applied since, including across
+			// a retirement, which clears the applied revision the check above compares with.
+			if major != nil && *major != domain.PostgresMajor(*a.Source.Image) {
+				return domain.Invalid("applications.postgres.upgrade")
 			}
 		}
 		plan := deployment.Plan{ID: uuid.New(), ServerID: in.ServerId, EnvironmentID: env, UnitID: v.Unit, RevisionID: v.Revision, ExpectedAppliedID: v.Applied, Recipe: deployment.Recipe, Specification: v.Spec, Images: map[string]string{}, HostChanges: hostChanges, AcceptDrift: in.AcceptDrift, Effects: deployment.Effects(v.Spec, previous, hostChanges), ExpiresAt: time.Now().UTC().Add(15 * time.Minute)}.WithHash()
@@ -442,14 +447,17 @@ func (s *Service) applyVisualPlan(ctx context.Context, tx pgx.Tx, ws, pid, env, 
 		for _, vol := range plan.Specification.Volumes {
 			var owner uuid.UUID
 			var deleted bool
-			var initial, stored *string
+			var initial, stored, major, storedMajor *string
 			for _, app := range plan.Specification.Applications {
 				if app.Postgres != nil && app.Mounts[0].VolumeID == vol.ID {
 					value := deployment.Hash(app.Postgres)
 					initial = &value
+					if version := domain.PostgresMajor(*app.Source.Image); version != "" {
+						major = &version
+					}
 				}
 			}
-			err = tx.QueryRow(ctx, `INSERT INTO managed_volumes(workspace_id,environment_id,unit_id,id,postgres_init_hash) VALUES($1,$2,$3,$4,$5) ON CONFLICT(workspace_id,id) DO UPDATE SET id=EXCLUDED.id RETURNING environment_id,deleted,postgres_init_hash`, ws, env, plan.UnitID, vol.ID, initial).Scan(&owner, &deleted, &stored)
+			err = tx.QueryRow(ctx, `INSERT INTO managed_volumes(workspace_id,environment_id,unit_id,id,postgres_init_hash,postgres_major) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(workspace_id,id) DO UPDATE SET id=EXCLUDED.id RETURNING environment_id,deleted,postgres_init_hash,postgres_major`, ws, env, plan.UnitID, vol.ID, initial, major).Scan(&owner, &deleted, &stored, &storedMajor)
 			if err != nil {
 				return err
 			}
@@ -460,8 +468,11 @@ func (s *Service) applyVisualPlan(ctx context.Context, tx pgx.Tx, ws, pid, env, 
 				if stored != nil && *stored != *initial {
 					return domain.Invalid("applications.postgres.existingVolume")
 				}
-				if stored == nil {
-					if _, err = tx.Exec(ctx, "UPDATE managed_volumes SET postgres_init_hash=$3 WHERE workspace_id=$1 AND id=$2", ws, vol.ID, initial); err != nil {
+				if storedMajor != nil && (major == nil || *storedMajor != *major) {
+					return domain.Invalid("applications.postgres.upgrade")
+				}
+				if stored == nil || storedMajor == nil && major != nil {
+					if _, err = tx.Exec(ctx, "UPDATE managed_volumes SET postgres_init_hash=$3,postgres_major=$4 WHERE workspace_id=$1 AND id=$2", ws, vol.ID, initial, major); err != nil {
 						return err
 					}
 				}
