@@ -5,12 +5,10 @@ import (
 	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"errors"
-	"slices"
 	"time"
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
-	"github.com/astilbahq/astilba/services/platform/internal/composeproject"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
@@ -185,6 +183,13 @@ func (s *Service) GitSource(ctx context.Context, p store.Principal, ws, pid, env
 		if err != nil {
 			return err
 		}
+		// Each statement here sees the latest commit. A submission's outcome and the source's
+		// status commit together, so reading the submission first means the status read after it
+		// is never older: a succeeded submission always comes with the status it set.
+		submission, err := latestSubmission(ctx, tx, ws, env)
+		if err != nil {
+			return err
+		}
 		var cfg []byte
 		var revision *uuid.UUID
 		var commit, pending, status string
@@ -203,7 +208,7 @@ func (s *Service) GitSource(ctx context.Context, p store.Principal, ws, pid, env
 		if clean {
 			configuration = sourceSelection(configuration, v.Spec.Compose)
 		}
-		out = map[string]any{"clean": clean, "configuration": configuration, "importedRevisionId": revision, "importedCommit": commit, "pendingCommit": pending, "status": status}
+		out = map[string]any{"clean": clean, "configuration": configuration, "importedRevisionId": revision, "importedCommit": commit, "pendingCommit": pending, "status": status, "submission": submission}
 		return nil
 	})
 	return out, err
@@ -298,96 +303,6 @@ func (s *Service) RefreshSource(ctx context.Context, p store.Principal, ws, pid,
 			return err
 		}
 		out, err = s.insertPipeline(ctx, tx, git, ws, env, uuid.New(), server, pipeline.Command{Action: "import", Connection: connection, Commit: commit, Branch: c.Branch, RevisionID: base, UnitID: v.Unit, Source: &c, SubmittedAt: time.Now().UTC()})
-		return err
-	})
-	return out, err
-}
-func (s *Service) SubmitSource(ctx context.Context, p store.Principal, ws, pid, env, base, key uuid.UUID) (api.Operation, error) {
-	var out api.Operation
-	err := s.gitScope(ctx, p, ws, workspaceAccess{Write: true}, "git.source.submit", base, func(tx pgx.Tx, git *gitAnswers) error {
-		v, err := loadVisualEnvironment(ctx, tx, ws, pid, env)
-		if err != nil {
-			return err
-		}
-		if v.Revision != base || v.Spec.Compose == nil {
-			return domain.Conflict
-		}
-		if old, exists, err := pipelineExisting(ctx, tx, ws, env, key, "submit"); err != nil || exists {
-			out = old
-			return err
-		}
-		var source pipeline.Source
-		var raw []byte
-		var imported *uuid.UUID
-		var commit string
-		if err = tx.QueryRow(ctx, "SELECT configuration,imported_revision_id,imported_commit FROM git_sources WHERE workspace_id=$1 AND environment_id=$2 FOR UPDATE", ws, env).Scan(&raw, &imported, &commit); err != nil {
-			return err
-		}
-		if err = json.Unmarshal(raw, &source); err != nil {
-			return err
-		}
-		baseline, err := sourceBaseline(ctx, tx, ws, env, imported)
-		if err != nil {
-			return err
-		}
-		if imported == nil || sameSourceFiles(v.Spec.Compose, baseline) || v.Spec.Compose.Origin == nil || v.Spec.Compose.Origin.Commit != commit {
-			return domain.Invalid("source.draft")
-		}
-		var existing uuid.UUID
-		var prior pipeline.Command
-		err = tx.QueryRow(ctx, "SELECT operation_id FROM git_submissions WHERE workspace_id=$1 AND environment_id=$2 AND revision_id=$3", ws, env, base).Scan(&existing)
-		if err == nil {
-			out, err = scanOperation(tx.QueryRow(ctx, "SELECT "+opColumns+" FROM execution_operations WHERE workspace_id=$1 AND id=$2", ws, existing))
-			if err != nil {
-				return err
-			}
-			if out.State != "failed" && out.State != "cancelled" {
-				return nil
-			}
-			var frozen []byte
-			if err = tx.QueryRow(ctx, "SELECT configuration FROM pipeline_runs WHERE workspace_id=$1 AND id=$2", ws, existing).Scan(&frozen); err != nil {
-				return err
-			}
-			if err = json.Unmarshal(frozen, &prior); err != nil {
-				return err
-			}
-		}
-		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-			return err
-		}
-		head, err := git.head(ctx, tx, source.ConnectionID, source.Branch)
-		if err != nil {
-			return err
-		}
-		if head.Err != nil {
-			return head.failure(domain.Invalid("source.branch"))
-		}
-		if head.Value != commit {
-			return domain.Conflict
-		}
-		connection := head.Connection
-		// A baseline file's name is already in the repository, and a draft must stay able to
-		// rename it away, so only the names being submitted are checked.
-		files := slices.Clone(v.Spec.Compose.Files)
-		for _, file := range baseline.Files {
-			files = append(files, composeproject.File{Content: file.Content})
-		}
-		if err = s.rejectRuntimeSecrets(ctx, tx, ws, env, composeproject.Bundle{Files: files}); err != nil {
-			return err
-		}
-		server, err := selectRunner(ctx, tx, ws, source.RunnerID, source.FallbackRunnerID, "", false, false)
-		if err != nil {
-			return err
-		}
-		submittedAt := time.Now().UTC()
-		if !prior.SubmittedAt.IsZero() {
-			submittedAt = prior.SubmittedAt
-		}
-		out, err = s.insertPipeline(ctx, tx, git, ws, env, key, server, pipeline.Command{SubmissionID: uuid.NewSHA1(env, []byte("source/"+base.String())), Action: "submit", Connection: connection, Commit: commit, Branch: source.Branch, RevisionID: base, UnitID: v.Unit, Bundle: v.Spec.Compose, Source: &source, SubmittedAt: submittedAt})
-		if err != nil {
-			return err
-		}
-		_, err = tx.Exec(ctx, "INSERT INTO git_submissions(workspace_id,environment_id,revision_id,operation_id,request_key) VALUES($1,$2,$3,$4,$5) ON CONFLICT(workspace_id,environment_id,revision_id) DO UPDATE SET operation_id=EXCLUDED.operation_id,request_key=EXCLUDED.request_key", ws, env, base, out.Id, key)
 		return err
 	})
 	return out, err

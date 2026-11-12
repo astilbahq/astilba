@@ -3764,6 +3764,8 @@ export interface components {
             pendingCommit: string;
             status: string;
             clean: boolean;
+            /** @description The newest attempt to submit a saved draft of this environment, if any. */
+            submission: components["schemas"]["SourceSubmission"] | null;
         };
         BindGitSource: {
             configuration: components["schemas"]["GitSourceConfiguration"];
@@ -3774,6 +3776,21 @@ export interface components {
             /** Format: uuid */
             baseRevisionId: string;
             discardDraft?: boolean;
+        };
+        /** @description One attempt to propose a saved draft as a branch and review. Management writes it with the connection's API credential; runners never receive it. */
+        SourceSubmission: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            revisionId: string;
+            /** @enum {string} */
+            state: "queued" | "succeeded" | "failed";
+            note: string;
+            commit?: string;
+            reviewNumber?: number;
+            reviewUrl?: string;
+            /** Format: date-time */
+            createdAt: string;
         };
         SubmitGitSource: {
             /** Format: uuid */
@@ -8340,12 +8357,12 @@ export interface operations {
         };
         responses: {
             /** @description Success */
-            201: {
+            202: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Operation"];
+                    "application/json": components["schemas"]["SourceSubmission"];
                 };
             };
             /** @description Error */

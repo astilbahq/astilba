@@ -3365,12 +3365,12 @@
             type: string
             format: uuid
       responses:
-        '201':
+        '202':
           description: Success
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Operation'
+                $ref: '#/components/schemas/SourceSubmission'
         default:
           description: Error
           content:
@@ -7984,6 +7984,11 @@
           maxLength: 80
         clean:
           type: boolean
+        submission:
+          description: The newest attempt to submit a saved draft of this environment, if any.
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/SourceSubmission'
       required:
         - configuration
         - importedCommit
@@ -7991,6 +7996,7 @@
         - pendingCommit
         - status
         - clean
+        - submission
     BindGitSource:
       type: object
       additionalProperties: false
@@ -8014,6 +8020,41 @@
           type: boolean
       required:
         - baseRevisionId
+    SourceSubmission:
+      type: object
+      additionalProperties: false
+      description: One attempt to propose a saved draft as a branch and review. Management writes it with the connection's API credential; runners never receive it.
+      properties:
+        id:
+          type: string
+          format: uuid
+        revisionId:
+          type: string
+          format: uuid
+        state:
+          type: string
+          enum: [queued, succeeded, failed]
+        note:
+          type: string
+          maxLength: 1024
+        commit:
+          type: string
+          maxLength: 64
+        reviewNumber:
+          type: integer
+          minimum: 1
+        reviewUrl:
+          type: string
+          maxLength: 2048
+        createdAt:
+          type: string
+          format: date-time
+      required:
+        - id
+        - revisionId
+        - state
+        - note
+        - createdAt
     SubmitGitSource:
       type: object
       additionalProperties: false
