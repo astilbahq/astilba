@@ -47,10 +47,10 @@ $$;
 -- +goose StatementEnd
 CREATE TRIGGER secret_access_at BEFORE INSERT ON secret_access FOR EACH ROW EXECUTE FUNCTION secret_access_at();
 CREATE TRIGGER secret_access_outcomes_at BEFORE INSERT ON secret_access_outcomes FOR EACH ROW EXECUTE FUNCTION secret_access_at();
-INSERT INTO schema_additive_migrations (version) VALUES (47);
+INSERT INTO schema_additive_migrations (version) VALUES (43);
 
 -- +goose Down
-DELETE FROM schema_additive_migrations WHERE version = 47;
+DELETE FROM schema_additive_migrations WHERE version = 43;
 DROP TABLE secret_access_outcomes;
 DROP TABLE secret_access;
 DROP FUNCTION secret_access_at();
