@@ -109,9 +109,6 @@ func (s *Service) OpenTroubleshootingSession(ctx context.Context, p store.Princi
 		if err != nil {
 			return err
 		}
-		if err = requireActive(row.State); err != nil {
-			return err
-		}
 		policy, err := q.GetTroubleshootingPolicy(ctx, db.GetTroubleshootingPolicyParams{WorkspaceID: ws, EnvironmentID: env})
 		if errors.Is(err, pgx.ErrNoRows) || err == nil && !policy.Enabled {
 			return domain.TroubleshootingRefused(domain.TroubleshootingEnvironment)
