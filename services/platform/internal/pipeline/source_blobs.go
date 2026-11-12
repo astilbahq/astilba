@@ -130,6 +130,7 @@ func (p *Provider) fileBlob(ctx context.Context, commit, name string) (string, b
 
 type treeEntry struct {
 	Path string `json:"path"`
+	Mode string `json:"mode"`
 	Type string `json:"type"`
 	SHA  string `json:"sha"`
 }
@@ -148,26 +149,32 @@ type treeWalk struct {
 // then a tag, then a commit, and anyone who can push may name a ref after a commit, so that
 // answer can be about other files. A tree is asked for by its object name alone.
 func (p *Provider) treeBlob(ctx context.Context, commit, name string, walk *treeWalk) (string, bool, error) {
+	entry, found, err := p.treeFile(ctx, commit, name, walk)
+	return entry.SHA, found, err
+}
+
+// treeFile is the tree entry at a path in a commit, read through each directory's own tree.
+func (p *Provider) treeFile(ctx context.Context, commit, name string, walk *treeWalk) (treeEntry, bool, error) {
 	segments := strings.Split(name, "/")
 	id := commit
 	for i, segment := range segments {
 		entries, err := p.treeEntries(ctx, id, walk)
 		if err != nil {
-			return "", false, err
+			return treeEntry{}, false, err
 		}
 		entry, found := entries[segment]
 		if !found {
-			return "", false, nil
+			return treeEntry{}, false, nil
 		}
 		if i == len(segments)-1 {
-			return entry.SHA, true, nil
+			return entry, true, nil
 		}
 		if entry.Type != "tree" {
-			return "", false, nil
+			return treeEntry{}, false, nil
 		}
 		id = entry.SHA
 	}
-	return "", false, nil
+	return treeEntry{}, false, nil
 }
 
 func (p *Provider) treeEntries(ctx context.Context, id string, walk *treeWalk) (map[string]treeEntry, error) {

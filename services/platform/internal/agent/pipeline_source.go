@@ -6,7 +6,6 @@ import (
 	"errors"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/composeproject"
@@ -17,15 +16,11 @@ func gitEnvironment(p pipeline.Command) []string {
 	credential := pipeline.Credential{}
 	if p.Access != nil {
 		credential = p.Access.Clone
-		if p.Action == "submit" {
-			credential = p.Access.API
-		}
 	}
 	endpoint := pipeline.GitURL(p.Connection)
 	environment := []string{"HOME=/workspace", "LC_ALL=C", "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null", "GIT_TERMINAL_PROMPT=0", "GIT_ALLOW_PROTOCOL=https:http", "GIT_LITERAL_PATHSPECS=1", "GIT_INDEX_FILE=/workspace/index",
 		"GIT_CONFIG_COUNT=5", "GIT_CONFIG_KEY_0=http." + endpoint + ".extraHeader", "GIT_CONFIG_VALUE_0=Authorization: Basic " + base64.StdEncoding.EncodeToString([]byte(credential.Username+":"+credential.Password)),
-		"GIT_CONFIG_KEY_1=http.followRedirects", "GIT_CONFIG_VALUE_1=false", "GIT_CONFIG_KEY_2=core.hooksPath", "GIT_CONFIG_VALUE_2=/dev/null", "GIT_CONFIG_KEY_3=credential.helper", "GIT_CONFIG_VALUE_3=", "GIT_CONFIG_KEY_4=transfer.fsckObjects", "GIT_CONFIG_VALUE_4=true",
-		"GIT_AUTHOR_NAME=Astilba", "GIT_AUTHOR_EMAIL=astilba@users.noreply.github.com", "GIT_COMMITTER_NAME=Astilba", "GIT_COMMITTER_EMAIL=astilba@users.noreply.github.com", "GIT_AUTHOR_DATE=" + p.SubmittedAt.Format(time.RFC3339), "GIT_COMMITTER_DATE=" + p.SubmittedAt.Format(time.RFC3339)}
+		"GIT_CONFIG_KEY_1=http.followRedirects", "GIT_CONFIG_VALUE_1=false", "GIT_CONFIG_KEY_2=core.hooksPath", "GIT_CONFIG_VALUE_2=/dev/null", "GIT_CONFIG_KEY_3=credential.helper", "GIT_CONFIG_VALUE_3=", "GIT_CONFIG_KEY_4=transfer.fsckObjects", "GIT_CONFIG_VALUE_4=true"}
 	if credential.Password == "" {
 		for i, v := range environment {
 			if strings.HasPrefix(v, "GIT_CONFIG_VALUE_0=") {
@@ -102,18 +97,4 @@ func (e *Engine) importPipeline(ctx context.Context, c api.ExecutionCommand, p p
 	}
 	b := composeproject.Bundle{Namespace: p.UnitID, Entrypoints: p.Source.Entrypoints, Files: result.Files}
 	return result, b.Validate()
-}
-func (e *Engine) remotePipelineHead(ctx context.Context, c api.ExecutionCommand, p pipeline.Command, branch string) (string, error) {
-	out, err := e.pipelineGit(ctx, c, p, nil, "ls-remote", "origin", "refs/heads/"+branch)
-	if err != nil {
-		return "", err
-	}
-	fields := strings.Fields(string(out))
-	if len(fields) == 0 {
-		return "", nil
-	}
-	if len(fields) != 2 || fields[1] != "refs/heads/"+branch || !pipeline.ValidCommit(fields[0]) {
-		return "", errors.New("invalid remote branch")
-	}
-	return fields[0], nil
 }

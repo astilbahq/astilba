@@ -124,7 +124,8 @@ func startGitea(t *testing.T) *realGitea {
 		listener.Close()
 		g.base = "http://127.0.0.1:" + strconv.Itoa(port)
 		args := []string{"run", "--detach", "--name", name, "--label", label, "--network", name, "--publish", g.base[len("http://"):] + ":3000"}
-		for _, e := range env {
+		// Gitea links reviews from its root URL, which must be the address management uses.
+		for _, e := range append(env, "GITEA__server__ROOT_URL="+g.base+"/") {
 			args = append(args, "--env", e)
 		}
 		ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)

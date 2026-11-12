@@ -21,7 +21,7 @@ func fenceRecoveryWorkspace(ctx context.Context, tx pgx.Tx, ws uuid.UUID) error 
 		return err
 	}
 	// inline-sql: river_job is owned by River.
-	if _, err := tx.Exec(ctx, `DELETE FROM river_job WHERE (kind='platform_execution_v1' AND args->>'id' IN (SELECT id::text FROM execution_operations WHERE workspace_id=$1)) OR (kind='platform_git_refresh_v1' AND args->>'workspace'=($1::uuid)::text) OR (kind='platform_automatic_deployment_v1' AND args->>'ID' IN (SELECT id::text FROM pipeline_auto_deployments WHERE workspace_id=$1)) OR (kind='platform_dns_v1' AND args->>'server' IN (SELECT id::text FROM servers WHERE workspace_id=$1))`, ws); err != nil {
+	if _, err := tx.Exec(ctx, `DELETE FROM river_job WHERE (kind='platform_execution_v1' AND args->>'id' IN (SELECT id::text FROM execution_operations WHERE workspace_id=$1)) OR (kind='platform_git_refresh_v1' AND args->>'workspace'=($1::uuid)::text) OR (kind='platform_automatic_deployment_v1' AND args->>'ID' IN (SELECT id::text FROM pipeline_auto_deployments WHERE workspace_id=$1)) OR (kind='platform_dns_v1' AND args->>'server' IN (SELECT id::text FROM servers WHERE workspace_id=$1)) OR (kind='platform_source_submission_v1' AND args->>'workspace'=($1::uuid)::text)`, ws); err != nil {
 		return err
 	}
 	q := db.New(tx)
@@ -31,6 +31,7 @@ func fenceRecoveryWorkspace(ctx context.Context, tx pgx.Tx, ws uuid.UUID) error 
 	for _, fence := range []func(context.Context, uuid.UUID) error{
 		q.ClearWorkspaceOperationJobs,
 		q.RequireWorkspaceGitApproval,
+		q.FenceWorkspaceSubmissions,
 		q.DisableWorkspaceBuildAutomation,
 		q.DisableWorkspacePreviewPolicies,
 		q.BlockWorkspacePreviewRequests,

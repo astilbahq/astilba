@@ -7,6 +7,7 @@ import { serversOptions } from "../api/servers";
 import { Button } from "../components/button";
 import { Checkbox } from "../components/checkbox";
 import { Label } from "../components/label";
+import { Anchor } from "../components/link";
 import { Select } from "../components/select";
 import { Textarea } from "../components/textarea";
 import * as s from "../styles";
@@ -289,6 +290,12 @@ export function Pipelines({
                     : `Commit ${source.data.pendingCommit.slice(0, 12)} has not been imported. Refresh the source to try now.`}
                 </p>
               )}
+              {source.data.submission && (
+                <SubmissionStatus
+                  submission={source.data.submission}
+                  current={revision.id}
+                />
+              )}
               {write && (
                 <Form
                   action={action}
@@ -326,7 +333,7 @@ export function Pipelines({
                   disabled={dirty || action.isPending || source.data.clean}
                   onClick={() =>
                     action.run(async () => {
-                      await result(
+                      const submitted = await result(
                         client.POST(`${root}/source/submit`, {
                           params: { path },
                           body: {
@@ -336,7 +343,9 @@ export function Pipelines({
                         }),
                       );
                       setNotice(
-                        "Submission queued. Merge the resulting review in your Git provider before deploying.",
+                        submitted.state === "succeeded"
+                          ? "This draft was already submitted. Merge its review in your Git provider before deploying."
+                          : "Submission queued. Astilba opens a review in your Git provider; merge it there before deploying.",
                       );
                       await refresh();
                     })
@@ -519,5 +528,39 @@ export function Pipelines({
         }
       />
     </section>
+  );
+}
+
+// The newest submission of a saved draft. Management writes it, so its note is the only
+// account of what happened at the provider.
+function SubmissionStatus({
+  submission,
+  current,
+}: {
+  submission: Schema["SourceSubmission"];
+  current: string;
+}) {
+  const review = submission.reviewNumber;
+  return (
+    <p
+      role="status"
+      className={submission.state === "failed" ? s.notice : undefined}
+    >
+      {submission.revisionId !== current && "For an earlier saved draft: "}
+      {submission.state === "queued"
+        ? "Submitting the saved draft to the Git provider."
+        : submission.state === "succeeded"
+          ? "Submitted for review."
+          : "The last submission failed."}{" "}
+      {submission.note}
+      {submission.reviewUrl && review && (
+        <>
+          {" "}
+          <Anchor href={submission.reviewUrl} target="_blank" rel="noreferrer">
+            Open review #{review}
+          </Anchor>
+        </>
+      )}
+    </p>
   );
 }

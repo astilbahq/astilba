@@ -62,6 +62,7 @@ func TestPreSchedulingVersionTwoArchivesRemainReadable(t *testing.T) {
 		delete(row, "runtime_outcome")
 		delete(row, "runtime_plan_id")
 	}
+	delete(archive.Tables, "source_submissions")
 	raw, err = stablejson.Marshal(archive)
 	if err != nil {
 		t.Fatal(err)
@@ -69,7 +70,7 @@ func TestPreSchedulingVersionTwoArchivesRemainReadable(t *testing.T) {
 	if _, err = decodeArchive(raw); err != nil {
 		t.Fatal("pre-scheduling archive rejected", err)
 	}
-	archive.Version = 7
+	archive.Version = ArchiveVersion + 1
 	raw, _ = stablejson.Marshal(archive)
 	if _, err = decodeArchive(raw); err == nil {
 		t.Fatal("unknown future schedule semantics accepted")
@@ -86,6 +87,7 @@ func TestVersionFivePreservesUnknownAppliedProvenance(t *testing.T) {
 		t.Fatal(err)
 	}
 	a.Version = 5
+	delete(a.Tables, "source_submissions")
 	for _, row := range a.Tables["environments"] {
 		delete(row, "runtime_operation_id")
 	}
@@ -111,6 +113,16 @@ func TestVersionFivePreservesUnknownAppliedProvenance(t *testing.T) {
 	raw, _ = stablejson.Marshal(a)
 	if _, err = decodeArchive(raw); err != nil {
 		t.Fatal("version six rejected explicit unknown provenance", err)
+	}
+	a.Tables["source_submissions"] = []Row{}
+	raw, _ = stablejson.Marshal(a)
+	if _, err = decodeArchive(raw); err == nil {
+		t.Fatal("version six accepted management submissions")
+	}
+	a.Version = 7
+	raw, _ = stablejson.Marshal(a)
+	if _, err = decodeArchive(raw); err != nil {
+		t.Fatal("version seven rejected its submissions", err)
 	}
 }
 

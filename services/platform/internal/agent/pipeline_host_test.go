@@ -12,7 +12,6 @@ import (
 	"net/http"
 	"net/http/cgi"
 	"net/http/httptest"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -24,7 +23,6 @@ import (
 	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
-	"github.com/astilbahq/astilba/services/platform/internal/composeproject"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/execution"
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
@@ -105,52 +103,15 @@ func TestNativePipeline(t *testing.T) {
 	commit := git("-C", work, "rev-parse", "HEAD")
 	_ = os.Mkdir(filepath.Dir(repo), 0700)
 	git("clone", "--bare", work, repo)
-	git("--git-dir="+repo, "config", "http.receivepack", "true")
 	gitPath, err := exec.LookPath("git")
 	if err != nil {
 		t.Fatal(err)
 	}
 	backend := &cgi.Handler{Path: gitPath, Args: []string{"http-backend"}, Env: []string{"GIT_PROJECT_ROOT=" + root, "GIT_HTTP_EXPORT_ALL=1"}}
-	var reviews atomic.Int32
-	var reviewed atomic.Value
 	var publicMode atomic.Bool
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, "/api/") {
-			if r.Header.Get("Authorization") != "token writer-token" {
-				w.WriteHeader(401)
-				return
-			}
-			w.Header().Set("Content-Type", "application/json")
-			// As Gitea does: a branch's request is looked up by base and head, which answers
-			// 404 until one exists, and a second open request for the branch is refused.
-			branch, _ := reviewed.Load().(string)
-			if r.Method == "GET" {
-				if branch == "" || r.URL.EscapedPath() != "/api/v1/repos/team/app/pulls/main/"+url.PathEscape(branch) {
-					w.WriteHeader(404)
-					return
-				}
-				_ = stablejson.Encode(w, map[string]any{"number": 1, "state": "open", "html_url": "http://127.0.0.1/review/1", "head": map[string]any{"ref": branch, "repo": map[string]int{"id": 12}}, "base": map[string]any{"ref": "main", "repo": map[string]int{"id": 12}}})
-				return
-			}
-			if branch != "" {
-				w.WriteHeader(409)
-				return
-			}
-			var created struct {
-				Head string `json:"head"`
-			}
-			if json.UnmarshalRead(r.Body, &created) != nil {
-				w.WriteHeader(400)
-				return
-			}
-			reviewed.Store(created.Head)
-			reviews.Add(1)
-			// Simulate a provider accepting the review before losing its response.
-			w.WriteHeader(503)
-			return
-		}
 		user, password, ok := r.BasicAuth()
-		if !publicMode.Load() && (!ok || user != "fixture" || password != "reader-token" && password != "writer-token") {
+		if !publicMode.Load() && (!ok || user != "fixture" || password != "reader-token") {
 			w.Header().Set("WWW-Authenticate", `Basic realm="fixture"`)
 			w.WriteHeader(401)
 			return
@@ -164,7 +125,7 @@ func TestNativePipeline(t *testing.T) {
 	lan := startNativeLAN(t)
 	buildProvider := nativeFixtureServer(t, lan, handler)
 	source := pipeline.Source{ConnectionID: uuid.New(), Branch: "main", RunnerID: serverID, Paths: []string{"compose.yaml"}, Entrypoints: []string{"compose.yaml"}}
-	base := pipeline.Command{Action: "import", Connection: pipeline.Connection{ID: source.ConnectionID, Provider: "gitea", BaseURL: provider.URL, Repository: "team/app", RepositoryID: 12, Private: true}, Commit: commit, Branch: "main", RevisionID: uuid.New(), UnitID: uuid.New(), Source: &source, SubmittedAt: time.Now().UTC().Truncate(time.Second), Access: &pipeline.Access{Clone: pipeline.Credential{Username: "fixture", Password: "reader-token"}}}
+	base := pipeline.Command{Action: "import", Connection: pipeline.Connection{ID: source.ConnectionID, Provider: "gitea", BaseURL: provider.URL, Repository: "team/app", RepositoryID: 12, Private: true}, Commit: commit, Branch: "main", RevisionID: uuid.New(), UnitID: uuid.New(), Source: &source, SubmittedAt: time.Now().UTC().Truncate(time.Second), Access: &pipeline.RunnerAccess{Clone: pipeline.Credential{Username: "fixture", Password: "reader-token"}}}
 	var active api.ExecutionCommand
 	var registryCA []byte
 	cancelNext := false
@@ -284,26 +245,6 @@ func TestNativePipeline(t *testing.T) {
 	_ = json.Unmarshal(*imported.Report.Pipeline, &result)
 	if len(result.Files) != 1 || result.Files[0].Content != files["compose.yaml"] {
 		t.Fatal("import changed source")
-	}
-	submit := base
-	submit.Action = "submit"
-	submit.SubmissionID = uuid.New()
-	submit.Access = &pipeline.Access{API: pipeline.Credential{Username: "fixture", Password: "writer-token"}}
-	submit.Bundle = &composeproject.Bundle{Namespace: base.UnitID, Entrypoints: source.Entrypoints, Files: []composeproject.File{{Path: "compose.yaml", Content: strings.ReplaceAll(files["compose.yaml"], "  app:", "  renamed:")}}}
-	failedSubmission := run(submit)
-	if failedSubmission.Report.State != "failed" {
-		t.Fatal("lost provider response did not fail the attempt")
-	}
-	submitted := run(submit)
-	if submitted.Report.State != "succeeded" {
-		t.Fatal("submission", submitted.Report.Note)
-	}
-	_ = json.Unmarshal(*submitted.Report.Pipeline, &result)
-	if result.ReviewNumber != 1 || reviews.Load() != 1 {
-		t.Fatal("review missing")
-	}
-	if got := git("--git-dir="+repo, "show", result.Commit+":untouched.txt"); got != "retain this" {
-		t.Fatal("submission changed unselected file")
 	}
 	build := base
 	build.Action, build.BuildNetwork = "build", pipeline.BuildNetworkV1
