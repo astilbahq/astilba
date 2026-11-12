@@ -277,11 +277,12 @@ process sets (`scripts/test-ports.mjs`); nothing assumes a fixed port. A lone ru
 gets 15181 for management, as before. Setting the variable yourself skips the
 reservation, so do that only to repeat a run's ports.
 
-Runs in one checkout share its dashboard build and outputs, so a second dashboard
-suite there stops at once, naming the process that holds
-`.artifacts/p1/playwright.lock`. Run Chromium and WebKit side by side from two
-checkouts, or one after the other as `make verify-app` does. The canvas experiment
-keeps its fixed port 15171.
+Runs in one checkout would build the dashboard into the same directories, so the
+fixture of a second dashboard run there stops at once and says so. Its lock is a Unix
+socket under `/tmp/astilba-<uid>` that the kernel releases with the run, so a killed
+run never blocks the next. Run Chromium and WebKit side by side from two checkouts, or
+one after the other as `make verify-app` does. Each run writes its results under
+`.artifacts/p1/playwright/<block>`. The canvas experiment keeps its fixed port 15171.
 
 ## Vulnerability scan
 

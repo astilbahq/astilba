@@ -5,15 +5,10 @@
 //
 // Blocks sit below the default ephemeral ranges (32768 on Linux, 49152 on macOS), so an
 // outgoing connection never takes a port between the check here and a server's bind.
-import {
-  linkSync,
-  mkdirSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
-import { createServer } from "node:net";
-import { dirname } from "node:path";
+import { createHash } from "node:crypto";
+import { mkdirSync, rmSync, statSync } from "node:fs";
+import { connect, createServer } from "node:net";
+import { join, resolve } from "node:path";
 
 export const blockSize = 10;
 export const firstBlock = 15180;
@@ -76,47 +71,52 @@ export async function reservePortBlock({
 }
 
 // holdCheckout refuses a second run of a suite in one checkout, where both would build
-// into and clean the same directories. Separate checkouts each hold their own lock. The
-// file names the process holding it, and one whose process has exited is taken over.
-export function holdCheckout(path, suite) {
-  mkdirSync(dirname(path), { recursive: true });
-  // The lock appears with its holder already written, so a reader never sees it empty.
-  const claim = `${path}.${process.pid}`;
-  writeFileSync(claim, String(process.pid), { mode: 0o600 });
-  try {
-    for (let attempt = 0; ; attempt++) {
-      try {
-        linkSync(claim, path);
-        break;
-      } catch (error) {
-        if (error.code !== "EEXIST") throw error;
-      }
-      const holder = Number(readFileSync(path, "utf8"));
-      // A second refusal means another run took over the same stale lock first.
-      if (alive(holder) || attempt > 0)
-        throw new Error(
-          `${suite} is already running in this checkout (process ${holder}); wait for it, or run the other from a separate checkout`,
-        );
-      rmSync(path, { force: true });
+// into the same directories; separate checkouts each have their own. The lock is a Unix
+// socket this process listens on, so the kernel releases it with the process, however
+// it ends, and a socket file left by a killed run answers no one and is taken over.
+// It returns a function that releases the lock.
+export async function holdCheckout(checkout, suite) {
+  const key = createHash("sha256").update(resolve(checkout)).digest("hex");
+  // A socket path must stay under about 100 bytes, which TMPDIR need not, so the lock
+  // lives in a directory of this user's under /tmp, as tmux's do.
+  const directory = `/tmp/astilba-${process.getuid()}`;
+  mkdirSync(directory, { recursive: true, mode: 0o700 });
+  const owner = statSync(directory);
+  if (owner.uid !== process.getuid() || (owner.mode & 0o077) !== 0)
+    throw new Error(`${directory} must belong to this user alone`);
+  const path = join(directory, `suite-${key.slice(0, 16)}.sock`);
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const lock = createServer((connection) => connection.destroy());
+    const taken = await new Promise((resolve, reject) => {
+      lock.once("error", (error) =>
+        error.code === "EADDRINUSE" ? resolve(false) : reject(error),
+      );
+      lock.listen(path, () => resolve(true));
+    });
+    if (taken) {
+      lock.unref();
+      return () => close(lock);
     }
-  } finally {
-    rmSync(claim, { force: true });
+    if (await answers(path))
+      throw new Error(
+        `${suite} is already running in this checkout; wait for it, or run the other from a separate checkout`,
+      );
+    rmSync(path, { force: true });
   }
-  process.once("exit", () => {
-    try {
-      if (Number(readFileSync(path, "utf8")) === process.pid) rmSync(path);
-    } catch {}
-  });
+  throw new Error(
+    `${suite} is already starting in this checkout; wait for it, or run the other from a separate checkout`,
+  );
 }
 
-function alive(pid) {
-  if (!Number.isInteger(pid) || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return error.code === "EPERM";
-  }
+function answers(path) {
+  return new Promise((resolve) => {
+    const socket = connect(path);
+    socket.once("connect", () => {
+      socket.destroy();
+      resolve(true);
+    });
+    socket.once("error", () => resolve(false));
+  });
 }
 
 // The dashboard fixture's servers in a block. Its configuration, fixture and tests all

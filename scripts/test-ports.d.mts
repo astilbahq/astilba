@@ -15,4 +15,3 @@ export function dashboardPorts(base?: number): {
   hostedBackend: number;
 };
 export function portBlock(environment?: NodeJS.ProcessEnv): number;
-export function holdCheckout(path: string, suite: string): void;

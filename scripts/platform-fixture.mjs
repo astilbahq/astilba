@@ -6,7 +6,7 @@ import { mkdtemp, rm, writeFile, mkdir, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { forward } from "./docker-forward.mjs";
-import { dashboardPorts, portBlock } from "./test-ports.mjs";
+import { dashboardPorts, holdCheckout, portBlock } from "./test-ports.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const host = process.env.PLAT_APP_DOCKER_HOST;
@@ -28,6 +28,7 @@ let created = false;
 let stopping = false;
 let hostedProxy;
 let database;
+let releaseCheckout;
 let ownsHostedInfo = false;
 const hostedInfo = join(root, `.artifacts/p8/browser/${portBlock()}/hosted-fixture.json`);
 // External provider boundary; all product requests still use the real API and PostgreSQL.
@@ -129,10 +130,13 @@ async function cleanup() {
     if (label === owned) docker(["rm", "--force", "--volumes", name]);
   }
   await rm(directory, { recursive: true, force: true });
+  await releaseCheckout?.();
 }
 for (const sig of ["SIGINT", "SIGTERM"])
   process.on(sig, () => void cleanup().then(() => process.exit(0)));
 try {
+  // Runs in one checkout would build the dashboard into the same directories.
+  releaseCheckout = await holdCheckout(root, "The dashboard browser suite");
   // Claim the proxy ports before allocating external runtime resources.
   await new Promise((resolve,reject)=>{gitProvider.once("error",reject);gitProvider.listen(ports.gitProvider,"127.0.0.1",resolve)});
   await new Promise((resolve,reject)=>{githubProvider.once("error",reject);githubProvider.listen(ports.github,"127.0.0.1",resolve)});

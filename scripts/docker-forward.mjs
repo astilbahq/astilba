@@ -17,7 +17,8 @@ export async function forward({ host, container, address, port }) {
   const worker = new Worker(new URL(import.meta.url), {
     workerData: { host, container, address, port },
   });
-  const exited = once(worker, "exit");
+  // Not events.once, which would also reject, unhandled, if the worker failed.
+  const exited = new Promise((resolve) => worker.once("exit", resolve));
   const [message] = await Promise.race([
     once(worker, "message"),
     once(worker, "error").then(([error]) => {

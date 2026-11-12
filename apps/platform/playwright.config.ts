@@ -1,20 +1,13 @@
 import { defineConfig, devices } from "@playwright/test";
 import {
   dashboardPorts,
-  holdCheckout,
+  portBlock,
   reservePortBlock,
 } from "../../scripts/test-ports.mjs";
 
 // The main process reserves this run's ports; the fixture, Vite and the test workers
-// it starts inherit the variable and read the same block. Runs in one checkout would
-// share its builds and outputs, so only one runs there at a time.
-if (!process.env.PLAT_BROWSER_PORT_BASE) {
-  holdCheckout(
-    `${import.meta.dirname}/../../.artifacts/p1/playwright.lock`,
-    "The dashboard browser suite",
-  );
-  process.env.PLAT_BROWSER_PORT_BASE = String(await reservePortBlock());
-}
+// it starts inherit the variable and read the same block.
+process.env.PLAT_BROWSER_PORT_BASE ??= String(await reservePortBlock());
 const ports = dashboardPorts();
 
 export default defineConfig({
@@ -27,7 +20,8 @@ export default defineConfig({
     baseURL: `http://127.0.0.1:${ports.api}`,
     trace: "retain-on-failure",
   },
-  outputDir: "../../.artifacts/p1/playwright",
+  // Playwright empties its output directory as a run starts, so each block has its own.
+  outputDir: `../../.artifacts/p1/playwright/${portBlock()}`,
   reporter: "list",
   webServer: [
     {
