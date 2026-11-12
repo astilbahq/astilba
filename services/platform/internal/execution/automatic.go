@@ -54,7 +54,7 @@ func (w *automaticWorker) Work(ctx context.Context, job *river.Job[automaticArgs
 	if err != nil {
 		return err
 	}
-	return w.service.withGit(ctx, ws, w.service.gitKeys(secretbroker.System("automatic-deploy"), ws), func(git *gitAnswers) error { return w.work(ctx, git, job, ws) })
+	return w.service.withGit(ctx, ws, w.service.brokerKeys(secretbroker.System("automatic-deploy"), ws), func(git *gitAnswers) error { return w.work(ctx, git, job, ws) })
 }
 
 // work runs under the workspace turn. The branch check happens between passes, so the pass

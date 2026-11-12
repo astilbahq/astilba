@@ -57,29 +57,19 @@ var pending = map[string]bool{
 	"internal/store/store.go":                    true,
 }
 
-// legacyCallers are the files that may reach, through any chain of calls, a function in a
-// pending file that uses keys. The analysis does not follow which branch runs: most of these
-// reach it only through gitAnswers, whose legacy branch serves the delivery path alone. They
-// leave the list with that path, and none may be added.
+// legacyCallers are the files that reach, through any chain of calls, a function in a pending
+// file that uses keys: the agent delivery path and the plan-time size check, and the handlers
+// that start them. They leave the list with those paths, and none may be added.
 var legacyCallers = map[string]bool{
 	"internal/execution/automatic.go":        true,
-	"internal/execution/automation.go":       true,
 	"internal/execution/backups.go":          true,
 	"internal/execution/cross_host_plans.go": true,
-	"internal/execution/git_answers.go":      true,
-	"internal/execution/git_refresh.go":      true,
-	"internal/execution/operations.go":       true,
-	"internal/execution/pipelines.go":        true,
-	"internal/execution/preview_cleanup.go":  true,
 	"internal/execution/preview_workers.go":  true,
 	"internal/execution/previews.go":         true,
-	"internal/execution/source_state.go":     true,
 	"internal/execution/transport.go":        true,
 	"internal/execution/upgrades.go":         true,
 	"internal/execution/visual.go":           true,
-	"internal/httpapi/automation.go":         true,
 	"internal/httpapi/execution.go":          true,
-	"internal/httpapi/pipelines.go":          true,
 	"internal/httpapi/previews.go":           true,
 	"internal/httpapi/upgrades.go":           true,
 	"internal/httpapi/visual.go":             true,

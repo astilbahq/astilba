@@ -132,7 +132,7 @@ func (w *previewWorker) Work(ctx context.Context, job *river.Job[previewArgs]) e
 	// A preview environment copies its template's secrets, under keys of its own.
 	copyKeys := s.passKeys(secretbroker.Request{Workspace: ws, Purpose: secretbroker.Copy, Principal: secretbroker.System("preview"), Kinds: []secretbroker.Kind{secretbroker.SecretVersion}})
 	defer copyKeys.close(ctx)
-	return s.withGit(ctx, ws, s.gitKeys(secretbroker.System("preview"), ws), func(git *gitAnswers) error { return w.work(ctx, git, copyKeys, job, policyID, ws) })
+	return s.withGit(ctx, ws, s.brokerKeys(secretbroker.System("preview"), ws), func(git *gitAnswers) error { return w.work(ctx, git, copyKeys, job, policyID, ws) })
 }
 
 // work holds the workspace turn only between provider calls. The pass that acts re-reads the

@@ -115,40 +115,27 @@ func (s *Service) loadGitState(ctx context.Context, tx pgx.Tx, ws, id uuid.UUID)
 }
 
 // stored opens a connection's stored access in a pass. A pass without keys returns the call
-// that begins them between passes, and is made again. Without keys of its own, the run is on the
-// agent delivery path, which moves to the broker with release records.
+// that begins them between passes, and is made again.
 func (g *gitAnswers) stored(id uuid.UUID, st gitState) (pipeline.Access, error) {
 	var access pipeline.Access
-	if g.keys == nil {
-		return access, g.service.legacyOpenIntegration(g.ws, id, "git", st.encrypted, &access)
-	}
-	keys, err := g.keys.get()
+	plain, err := g.keys.operate.open(secretbroker.Item{Kind: secretbroker.Git, ID: id}, st.encrypted)
 	if err != nil {
 		return access, err
 	}
-	return access, g.openStored(keys, id, st, &access)
+	defer clear(plain)
+	return access, json.Unmarshal(plain, &access)
 }
 
 // storedBetweenPasses is stored for a provider call, which holds nothing, so it may begin the
 // keys itself.
 func (g *gitAnswers) storedBetweenPasses(ctx context.Context, id uuid.UUID, st gitState) (pipeline.Access, error) {
 	var access pipeline.Access
-	if g.keys == nil {
-		return access, g.service.legacyOpenIntegration(g.ws, id, "git", st.encrypted, &access)
-	}
-	keys, err := g.keys.ensure(ctx)
+	plain, err := g.keys.operate.openBetweenPasses(ctx, secretbroker.Item{Kind: secretbroker.Git, ID: id}, st.encrypted)
 	if err != nil {
 		return access, err
 	}
-	return access, g.openStored(keys, id, st, &access)
-}
-
-func (g *gitAnswers) openStored(keys *secretbroker.Session, id uuid.UUID, st gitState, access *pipeline.Access) error {
-	err := openIntegration(keys, secretbroker.Item{Kind: secretbroker.Git, ID: id}, st.encrypted, access)
-	if err == nil {
-		g.keys.use()
-	}
-	return err
+	defer clear(plain)
+	return access, json.Unmarshal(plain, &access)
 }
 
 // gitAccess opens a stored credential or, for a GitHub App, validates the grant and mints a
@@ -223,19 +210,13 @@ type gitAnswers struct {
 	service     *Service
 	ws          uuid.UUID
 	connections map[uuid.UUID]*connectionAnswers
-	// keys opens connections' stored access for whoever the run is for.
-	keys *passKeys
-}
-
-// gitKeys are the keys a run asking Git providers questions uses for its connections' stored
-// access, for principal.
-func (s *Service) gitKeys(principal secretbroker.Principal, ws uuid.UUID) *passKeys {
-	return s.passKeys(secretbroker.Request{Workspace: ws, Purpose: secretbroker.Operate, Principal: principal, Kinds: []secretbroker.Kind{secretbroker.Git}})
+	// keys open stored values for whoever the run is for.
+	keys runKeys
 }
 
 // withGit runs a transaction body that can ask Git providers questions through its
 // gitAnswers. Body must open its transaction itself, and must not commit before asking.
-func (s *Service) withGit(ctx context.Context, ws uuid.UUID, keys *passKeys, body func(*gitAnswers) error) error {
+func (s *Service) withGit(ctx context.Context, ws uuid.UUID, keys runKeys, body func(*gitAnswers) error) error {
 	git := &gitAnswers{service: s, ws: ws, connections: map[uuid.UUID]*connectionAnswers{}, keys: keys}
 	defer keys.close(ctx)
 	return withProviderCalls(ctx, func() error { return body(git) })
@@ -244,7 +225,7 @@ func (s *Service) withGit(ctx context.Context, ws uuid.UUID, keys *passKeys, bod
 // gitScope is scope for an operation that asks Git providers questions. Only the finishing
 // pass writes its audit record.
 func (s *Service) gitScope(ctx context.Context, p store.Principal, ws uuid.UUID, access workspaceAccess, action string, id uuid.UUID, fn func(pgx.Tx, *gitAnswers) error) error {
-	return s.withGit(ctx, ws, s.gitKeys(p.Secrets(), ws), func(git *gitAnswers) error {
+	return s.withGit(ctx, ws, s.brokerKeys(p.Secrets(), ws), func(git *gitAnswers) error {
 		return s.scope(ctx, p, ws, access, action, id, func(tx pgx.Tx) error { return fn(tx, git) })
 	})
 }
@@ -284,6 +265,12 @@ func askGit[T any](ctx context.Context, tx pgx.Tx, g *gitAnswers, id uuid.UUID, 
 		out = gitAnswer[T]{Err: known.state.unusable, Setup: true}
 	} else if stored, ok := known.values[question]; ok {
 		out = stored.(gitAnswer[T])
+		// The broker refused keys for the call: not the connection's failure, and not an answer.
+		var refused *keysUnavailable
+		if errors.As(out.Err, &refused) {
+			delete(known.values, question)
+			return gitAnswer[T]{}, refused.err
+		}
 	} else {
 		state := known.state
 		// Questions joined by and can repeat, such as sources selecting the same files.

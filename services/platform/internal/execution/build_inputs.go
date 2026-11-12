@@ -68,7 +68,7 @@ func (e *buildInputRejection) note() string {
 
 // buildInputs keeps secret values out of public arguments before persistence and
 // checks again at delivery, when the environment's runtime secrets may differ.
-func (s *Service) buildInputs(ctx context.Context, tx pgx.Tx, keys *passKeys, ws, env uuid.UUID, build pipeline.BuildConfig) (map[string]string, error) {
+func (s *Service) buildInputs(ctx context.Context, tx pgx.Tx, keys valueKeys, ws, env uuid.UUID, build pipeline.BuildConfig) (map[string]string, error) {
 	secrets := make(map[string]string, len(build.Secrets))
 	arguments := domain.NewSecretText(slices.Collect(maps.Values(build.Arguments))...)
 	total := 0
@@ -80,16 +80,7 @@ func (s *Service) buildInputs(ctx context.Context, tx pgx.Tx, keys *passKeys, ws
 		if err != nil {
 			return nil, err
 		}
-		var plain []byte
-		if keys == nil {
-			plain, err = s.Store.Keys.Open(cipher, pipeline.EncryptionIdentity(ws, id, "build-secret"))
-		} else {
-			var session *secretbroker.Session
-			if session, err = keys.get(); err == nil {
-				keys.use()
-				plain, err = session.Open(secretbroker.Item{Kind: secretbroker.BuildSecret, ID: id}, cipher)
-			}
-		}
+		plain, err := keys.open(secretbroker.Item{Kind: secretbroker.BuildSecret, ID: id}, cipher)
 		if err != nil {
 			return nil, err
 		}

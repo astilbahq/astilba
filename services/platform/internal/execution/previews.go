@@ -9,7 +9,6 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
-	"github.com/astilbahq/astilba/services/platform/internal/secretbroker"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
@@ -102,9 +101,7 @@ func (s *Service) SavePreviewPolicy(ctx context.Context, p store.Principal, ws, 
 		return out, err
 	}
 	var enabledWhenAsked *bool
-	// Build inputs are checked against the build secrets and the runtime secrets they name.
-	keys := s.passKeys(secretbroker.Request{Workspace: ws, Purpose: secretbroker.Inspect, Principal: p.Secrets(), Kinds: []secretbroker.Kind{secretbroker.BuildSecret, secretbroker.SecretVersion}})
-	defer keys.close(ctx)
+
 	// The runner's row and the workspace are free during the branch check. The pass that
 	// saves re-reads the draft, generation, runner and connection the check was made for.
 	// Enabling approves every preview's host changes in advance, so it takes the window for
@@ -215,7 +212,7 @@ func (s *Service) SavePreviewPolicy(ctx context.Context, p store.Principal, ws, 
 		if err = s.validateVisualSecrets(ctx, tx, ws, env, v.Spec); err != nil {
 			return err
 		}
-		if _, err = s.buildInputs(ctx, tx, keys, ws, env, cfg.Build); err != nil {
+		if _, err = s.buildInputs(ctx, tx, git.keys.inspect, ws, env, cfg.Build); err != nil {
 			return err
 		}
 		id, gen := uuid.New(), int64(1)

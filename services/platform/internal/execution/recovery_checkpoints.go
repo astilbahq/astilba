@@ -43,8 +43,11 @@ func sealCheckpoint(keys *passKeys, d deployment.RecoveryDescriptor, raw []byte)
 	if err != nil {
 		return nil, err
 	}
-	keys.use()
-	return session.Seal(secretbroker.Checkpoint(d), raw)
+	sealed, err := session.Seal(secretbroker.Checkpoint(d), raw)
+	if err == nil {
+		keys.use()
+	}
+	return sealed, err
 }
 
 // openCheckpoint reads an envelope back, to prove it opens, with the keys that sealed it.
@@ -57,6 +60,11 @@ func openCheckpoint(keys *passKeys, d deployment.RecoveryDescriptor, envelope []
 }
 
 func (s *Service) createRecoveryBase(ctx context.Context, tx pgx.Tx, keys *passKeys, ws uuid.UUID, root api.ExecutionCommand, p deployment.Plan, units []deployment.DistributedUnit) (deployment.RecoveryDescriptor, error) {
+	// Asked for before the capture, so a pass without keys rolls back after a few reads rather
+	// than after capturing and compressing the whole workspace.
+	if _, err := keys.get(); err != nil {
+		return deployment.RecoveryDescriptor{}, err
+	}
 	id := uuid.New()
 	d := deployment.RecoveryDescriptor{Version: 1, WorkspaceID: ws, ParentID: root.Id, RootHash: root.PlanHash, GroupID: p.ID, GroupHash: p.Hash, BaseID: id, CheckpointID: id, Participants: []uuid.UUID{}}
 	for _, unit := range units {

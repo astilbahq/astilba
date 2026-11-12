@@ -53,7 +53,6 @@ func (s *Service) createPreviewEnvironment(ctx context.Context, tx pgx.Tx, copyK
 		if keys, err = copyKeys.get(); err != nil {
 			return err
 		}
-		copyKeys.use()
 	}
 	for _, old := range references {
 		var value string
@@ -83,6 +82,7 @@ func (s *Service) createPreviewEnvironment(ctx context.Context, tx pgx.Tx, copyK
 		if _, err = q.InsertSecretVersion(ctx, db.InsertSecretVersionParams{WorkspaceID: p.Workspace, SecretID: sid, ID: id, EncryptedValue: cipher, AuthorID: p.Actor}); err != nil {
 			return err
 		}
+		copyKeys.use()
 		secrets[old] = id
 	}
 	spec, err := domain.RemapPreview(template, ids, secrets, func(app uuid.UUID) string {
