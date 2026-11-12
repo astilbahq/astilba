@@ -26,8 +26,8 @@ func run(pass *analysis.Pass) (any, error) {
 			if !ok || fn.Body == nil {
 				continue
 			}
-			view := viewFor(pass, fn.Type)
-			if view == "" || execution && fn.Recv == nil && fn.Name.Name == view {
+			view, principals := viewFor(pass, fn.Type)
+			if view == "" {
 				continue
 			}
 			if !execution {
@@ -40,8 +40,8 @@ func run(pass *analysis.Pass) (any, error) {
 				continue
 			}
 			inspectOwn(fn.Body, func(ret *ast.ReturnStmt) {
-				if len(ret.Results) == 0 || !empty(pass, ret.Results[0]) && !calls(pass, ret.Results[0], view) {
-					pass.Reportf(ret.Pos(), "return the operation through %s, which withholds what the principal may not read", view)
+				if len(ret.Results) == 0 || !empty(pass, ret.Results[0]) && !calls(pass, ret.Results[0], view, principals) {
+					pass.Reportf(ret.Pos(), "return the operation through %s with the function's own principal, which withholds what it may not read", view)
 				}
 			})
 		}
@@ -49,29 +49,32 @@ func run(pass *analysis.Pass) (any, error) {
 	return nil, nil
 }
 
-// viewFor names the function a principal-facing function must return its operations through, or
-// is empty when the function takes no principal or returns no operations first.
-func viewFor(pass *analysis.Pass, signature *ast.FuncType) string {
+// viewFor names the function a principal-facing function must return its operations through, with
+// its principal parameters, or is empty when the function takes no principal or returns no
+// operations first.
+func viewFor(pass *analysis.Pass, signature *ast.FuncType) (string, map[types.Object]bool) {
 	if signature.Results == nil || len(signature.Results.List) == 0 {
-		return ""
+		return "", nil
 	}
-	principal := false
+	principals := map[types.Object]bool{}
 	for _, field := range signature.Params.List {
 		if named(pass.TypesInfo.TypeOf(field.Type), "/internal/store", "Principal") {
-			principal = true
+			for _, name := range field.Names {
+				principals[pass.TypesInfo.Defs[name]] = true
+			}
 		}
 	}
-	if !principal {
-		return ""
+	if len(principals) == 0 {
+		return "", nil
 	}
 	first := pass.TypesInfo.TypeOf(signature.Results.List[0].Type)
 	if named(first, "/internal/api", "Operation") {
-		return "operationFor"
+		return "operationFor", principals
 	}
 	if slice, ok := first.(*types.Slice); ok && named(slice.Elem(), "/internal/api", "Operation") {
-		return "operationsFor"
+		return "operationsFor", principals
 	}
-	return ""
+	return "", nil
 }
 
 func named(t types.Type, pkg, name string) bool {
@@ -94,13 +97,23 @@ func empty(pass *analysis.Pass, expr ast.Expr) bool {
 	return pass.TypesInfo.Types[expr].IsNil()
 }
 
-func calls(pass *analysis.Pass, expr ast.Expr, view string) bool {
+// calls is whether expr calls view with one of the function's own principals, so the operation is
+// shown as the caller may see it and not as some other principal would.
+func calls(pass *analysis.Pass, expr ast.Expr, view string, principals map[types.Object]bool) bool {
 	call, ok := ast.Unparen(expr).(*ast.CallExpr)
-	if !ok {
+	if !ok || len(call.Args) == 0 {
 		return false
 	}
 	fn, ok := typeutil.Callee(pass.TypesInfo, call).(*types.Func)
-	return ok && fn.Name() == view && fn.Pkg() == pass.Pkg
+	if !ok || fn.Name() != view || fn.Pkg() != pass.Pkg {
+		return false
+	}
+	arg := ast.Unparen(call.Args[0])
+	if star, ok := arg.(*ast.StarExpr); ok {
+		arg = ast.Unparen(star.X)
+	}
+	id, ok := arg.(*ast.Ident)
+	return ok && principals[pass.TypesInfo.Uses[id]]
 }
 
 // inspectOwn visits the function's own return statements, not those of the literals inside it.

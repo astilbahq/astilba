@@ -13,8 +13,10 @@ const WithheldNote = "Details withheld: they can quote the environment's configu
 // build output can carry image names, ports, paths and plaintext variable values. So, as with a
 // plan, only a principal that may read the environment gets them. Any other gets WithheldNote in
 // place of a note and no step details; the state, kind and step names stay, since they are what
-// following an operation needs. Every exported function that gives a principal an operation returns it
-// through here or operationsFor, which the operationview analyzer checks.
+// following an operation needs. Every exported function that returns a principal an api.Operation,
+// or a list of them, returns it through here or operationsFor, which the operationview analyzer
+// checks. The analyzer can't see an operation nested in another response, such as PipelineRuns'
+// build history, which also holds build configuration and so is only for principals that may read.
 func operationFor(p store.Principal, op api.Operation) api.Operation {
 	if p.MayReadEnvironment() {
 		return op

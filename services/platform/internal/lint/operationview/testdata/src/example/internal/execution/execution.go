@@ -31,13 +31,22 @@ func Raw(p store.Principal) (api.Operation, error) {
 		return api.Operation{}, err
 	}
 	if out.Note == "" {
-		return api.Operation{Note: "made"}, nil // want `return the operation through operationFor`
+		return api.Operation{Note: "made"}, nil // want `return the operation through operationFor with the function's own principal`
 	}
-	return out, nil // want `return the operation through operationFor`
+	return out, nil // want `return the operation through operationFor with the function's own principal`
 }
 
 func Named(p *store.Principal) (out api.Operation, err error) {
-	return // want `return the operation through operationFor`
+	if p == nil {
+		return // want `return the operation through operationFor with the function's own principal`
+	}
+	return operationFor(*p, out), nil
+}
+
+// Another principal, such as a zero one, would show the operation as a member sees it.
+func Another(p store.Principal) (api.Operation, error) {
+	out, err := scan()
+	return operationFor(store.Principal{Reader: true}, out), err // want `return the operation through operationFor with the function's own principal`
 }
 
 func RawList(p store.Principal) ([]api.Operation, error) {
@@ -45,7 +54,7 @@ func RawList(p store.Principal) ([]api.Operation, error) {
 		return nil, errors.New("no")
 	}
 	ops, _ := RawList(p)
-	return ops, nil // want `return the operation through operationsFor`
+	return ops, nil // want `return the operation through operationsFor with the function's own principal`
 }
 
 // A literal's own returns are its own: only the function's returns reach the principal.
@@ -68,5 +77,5 @@ func admit(p store.Principal) (api.Operation, error) { return scan() }
 type Service struct{}
 
 func (s *Service) Method(p store.Principal) (api.Operation, error) {
-	return scan() // want `return the operation through operationFor`
+	return scan() // want `return the operation through operationFor with the function's own principal`
 }
