@@ -8,3 +8,6 @@ func (s *Service) wrapper(v []byte) ([]byte, error) { return s.legacy(v) } // wa
 
 // An exported one can be called from another package.
 func (s *Service) Exported(v []byte) ([]byte, error) { return s.wrapper(v) } // want Exported:"transitional"
+
+// A variable can hold a transitional function too.
+var Held = (*Service).legacy // want Held:"transitional"

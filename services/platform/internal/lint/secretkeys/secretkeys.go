@@ -63,7 +63,7 @@ var pending = map[string]bool{
 // legacyCallers are the files that reach, through any chain of calls, a function in a pending
 // file that uses keys. Those paths open values without a record, so a call into one from
 // anywhere else is reported: the files below move to the broker with them (mostly Git access
-// through gitAnswers), and none may be added.
+// through gitAnswers, and the handlers that reach it), and none may be added.
 var legacyCallers = map[string]bool{
 	"internal/execution/automatic.go":             true,
 	"internal/execution/automation.go":            true,
@@ -83,16 +83,27 @@ var legacyCallers = map[string]bool{
 	"internal/execution/transport.go":             true,
 	"internal/execution/upgrades.go":              true,
 	"internal/execution/visual.go":                true,
+	"internal/httpapi/automation.go":              true,
+	"internal/httpapi/execution.go":               true,
+	"internal/httpapi/github_app.go":              true,
+	"internal/httpapi/pipelines.go":               true,
+	"internal/httpapi/previews.go":                true,
+	"internal/httpapi/upgrades.go":                true,
+	"internal/httpapi/visual.go":                  true,
 }
 
 // harmless are the cryptobox names that hold no key.
 var harmless = map[string]bool{"ErrKey": true, "ErrTooLarge": true}
 
-// trimmed returns a package path from "internal/" or "cmd/" on.
+// modules are the module paths packages are named under; package paths below are relative to
+// them, so that a nested package such as cmd/x/internal/agent is not mistaken for internal/agent.
+var modules = []string{"github.com/astilbahq/astilba/services/platform/", "example.com/platform/"}
+
+// trimmed returns a package path relative to its module.
 func trimmed(pkg string) string {
-	for _, root := range []string{"internal/", "cmd/"} {
-		if i := strings.Index(pkg, root); i >= 0 {
-			return pkg[i:]
+	for _, module := range modules {
+		if rest, ok := strings.CutPrefix(pkg, module); ok {
+			return rest
 		}
 	}
 	return pkg
@@ -119,18 +130,26 @@ func run(pass *analysis.Pass) (any, error) {
 	}
 	// Functions that reach keys open values without a record: those in pending files that use
 	// keys, and, until nothing changes, every function in a pending or listed caller file that
-	// calls one. Those in pending files are recorded as facts for other packages.
+	// calls one. Each is recorded as a fact, so a caller in another package is held to the same
+	// list.
 	isLegacy := func(object types.Object) bool {
-		fn, ok := object.(*types.Func)
-		if !ok {
+		switch v := object.(type) {
+		case *types.Func:
+			object = v.Origin()
+		case *types.Var:
+			// A package-level variable can hold a transitional function.
+			if v.Parent() != v.Pkg().Scope() {
+				return false
+			}
+		default:
 			return false
 		}
-		fn = fn.Origin()
-		return legacy[fn] || fn.Pkg() != pass.Pkg && pass.ImportObjectFact(fn, new(transitional))
+		return legacy[object] || object.Pkg() != pass.Pkg && pass.ImportObjectFact(object, new(transitional))
 	}
+	// Each function, and each package-level variable's initialiser, in a pending or listed file.
 	type function struct {
 		object types.Object
-		body   *ast.BlockStmt
+		body   ast.Node
 		file   string
 	}
 	var functions []function
@@ -140,8 +159,23 @@ func run(pass *analysis.Pass) (any, error) {
 			continue
 		}
 		for _, decl := range file.Decls {
-			if fn, ok := decl.(*ast.FuncDecl); ok && fn.Body != nil {
-				functions = append(functions, function{pass.TypesInfo.Defs[fn.Name], fn.Body, name})
+			switch decl := decl.(type) {
+			case *ast.FuncDecl:
+				if decl.Body != nil {
+					functions = append(functions, function{pass.TypesInfo.Defs[decl.Name], decl.Body, name})
+				}
+			case *ast.GenDecl:
+				for _, spec := range decl.Specs {
+					value, ok := spec.(*ast.ValueSpec)
+					if !ok {
+						continue
+					}
+					for i, id := range value.Names {
+						if i < len(value.Values) {
+							functions = append(functions, function{pass.TypesInfo.Defs[id], value.Values[i], name})
+						}
+					}
+				}
 			}
 		}
 	}
@@ -162,7 +196,7 @@ func run(pass *analysis.Pass) (any, error) {
 		}
 	}
 	for _, fn := range functions {
-		if legacy[fn.object] && pending[fn.file] {
+		if legacy[fn.object] {
 			pass.ExportObjectFact(fn.object, new(transitional))
 		}
 	}
