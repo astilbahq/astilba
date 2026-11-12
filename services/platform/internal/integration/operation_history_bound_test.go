@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"encoding/json/v2"
 	"errors"
 	"path"
 	"slices"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
+	"github.com/astilbahq/astilba/services/platform/internal/execution"
 	"github.com/astilbahq/astilba/services/platform/internal/portability"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
@@ -78,6 +80,67 @@ func TestLongOperationHistoryKeepsCrossHostDeploymentAndExport(t *testing.T) {
 	}
 	if kept := claimCounter(t, destination, `SELECT count(*) FROM execution_operations WHERE workspace_id=$1`, g.ws); kept > 1000 {
 		t.Fatalf("the export carried %d operations", kept)
+	}
+}
+
+// An agent polls for its next command about once a second, and the poll used to read every
+// operation in the table. It grew with every workspace's history, and once the planner's estimate
+// passed PostgreSQL's JIT threshold, each poll spent hundreds of milliseconds compiling a query that
+// ran in two, so a host with a long history was late to every command. The poll reads only the
+// host's unfinished operations, through an index, however long the history.
+func TestPollReadsOnlyUnfinishedOperations(t *testing.T) {
+	ctx := context.Background()
+	f := setup(t)
+	b := f.browser(t)
+	ws := b.login("owner@example.test", f.password).Workspaces[0].Id
+	_, in, _ := enrollment(t, f, b, ws, "deployment")
+	if _, err := f.execution.Enroll(ctx, in, "test"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.st.Pool.Exec(ctx, `INSERT INTO execution_operations(id,workspace_id,server_id,generation,request_key,command,kind,state,report_sequence,created_at)
+SELECT gen_random_uuid(),$1,$2,1,gen_random_uuid(),'{}','network',(ARRAY['succeeded','failed','cancelled'])[1+i%3],1,now()-interval '1 day'-i*interval '1 second' FROM generate_series(1,10050) i`, ws, in.ServerId); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.st.Pool.Exec(ctx, `ANALYZE execution_operations`); err != nil {
+		t.Fatal(err)
+	}
+	var threshold float64
+	if err := f.st.Pool.QueryRow(ctx, `SELECT current_setting('jit_above_cost')::float8`).Scan(&threshold); err != nil {
+		t.Fatal(err)
+	}
+	// A prepared statement runs on the generic plan after a few executions, and the generic plan
+	// is the same for every host. Its parameters stay unbound, so it goes as plain text.
+	conn, err := f.st.Pool.Acquire(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Release()
+	results, err := conn.Conn().PgConn().Exec(ctx, `EXPLAIN (GENERIC_PLAN, FORMAT JSON) `+execution.PollQuery).ReadAll()
+	if err != nil || len(results) != 1 || len(results[0].Rows) != 1 {
+		t.Fatalf("explaining the poll: %v", err)
+	}
+	raw := results[0].Rows[0][0]
+	type node struct {
+		Type     string  `json:"Node Type"`
+		Relation string  `json:"Relation Name"`
+		Cost     float64 `json:"Total Cost"`
+		Plans    []node  `json:"Plans"`
+	}
+	var plans []struct {
+		Plan node `json:"Plan"`
+	}
+	if err := json.Unmarshal(raw, &plans); err != nil || len(plans) != 1 {
+		t.Fatalf("plan %s: %v", raw, err)
+	}
+	if cost := plans[0].Plan.Cost; cost >= threshold {
+		t.Errorf("the poll's estimated cost is %.0f, past the JIT threshold of %.0f", cost, threshold)
+	}
+	var scanned func(node) bool
+	scanned = func(n node) bool {
+		return n.Type == "Seq Scan" && n.Relation == "execution_operations" || slices.ContainsFunc(n.Plans, scanned)
+	}
+	if scanned(plans[0].Plan) {
+		t.Errorf("the poll reads every operation: %s", raw)
 	}
 }
 

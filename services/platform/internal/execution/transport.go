@@ -27,6 +27,11 @@ var ErrPollLeaseHeld = fmt.Errorf("poll lease held: %w", domain.Conflict)
 // pollLeaseWait bounds taking or releasing a poll's lease, once its request no longer can.
 const pollLeaseWait = 5 * time.Second
 
+// PollQuery reads a host's next command. Every agent runs it about once a second, so it reads only
+// the host's unfinished operations, through execution_unfinished_server, however long the
+// history. A test holds its plan to that.
+const PollQuery = `SELECT command,cancel_requested,state FROM execution_operations WHERE server_id=$1 AND NOT(kind='crosshost' AND parent_id IS NULL) AND state IN ('dispatched','running','needs_attention') AND NOT EXISTS(SELECT 1 FROM cross_host_recoveries r WHERE r.parent_id=execution_operations.parent_id AND NOT r.opened AND COALESCE(command->'crosshost'->>'phase','')<>'recovery-open') AND (parent_id IS NULL OR command->'recoveryCheckpoint' IS NULL OR command->'crosshost'->>'phase' IN ('checkpoint','checkpoint-closed') OR EXISTS(SELECT 1 FROM cross_host_checkpoints cp WHERE cp.parent_id=execution_operations.parent_id AND cp.id::text=command->'recoveryCheckpoint'->>'checkpointId' AND cp.acknowledged) OR EXISTS(SELECT 1 FROM execution_operations root JOIN servers primary_server ON primary_server.id=root.server_id WHERE root.id=execution_operations.parent_id AND primary_server.revoked)) ORDER BY COALESCE(command->'crosshost'->>'phase'='checkpoint',false) DESC, (kind='network' AND COALESCE(command->'network'->>'action','')='restrict') DESC,created_at LIMIT 1`
+
 // A database lease bounds overlapping polls across management replicas.
 func (s *Service) Poll(ctx context.Context, a Identity) (*api.ExecutionCommand, error) {
 	return s.poll(ctx, a, nil)
@@ -82,7 +87,7 @@ func (s *Service) poll(ctx context.Context, a Identity, out *api.AgentPoll) (*ap
 		var raw []byte
 		var cancel bool
 		var state string
-		err = s.Store.Pool.QueryRow(ctx, `SELECT command,cancel_requested,state FROM execution_operations WHERE server_id=$1 AND NOT(kind='crosshost' AND parent_id IS NULL) AND state IN ('dispatched','running','needs_attention') AND NOT EXISTS(SELECT 1 FROM cross_host_recoveries r WHERE r.parent_id=execution_operations.parent_id AND NOT r.opened AND COALESCE(command->'crosshost'->>'phase','')<>'recovery-open') AND (parent_id IS NULL OR command->'recoveryCheckpoint' IS NULL OR command->'crosshost'->>'phase' IN ('checkpoint','checkpoint-closed') OR EXISTS(SELECT 1 FROM cross_host_checkpoints cp WHERE cp.parent_id=execution_operations.parent_id AND cp.id::text=command->'recoveryCheckpoint'->>'checkpointId' AND cp.acknowledged) OR EXISTS(SELECT 1 FROM execution_operations root JOIN servers primary_server ON primary_server.id=root.server_id WHERE root.id=execution_operations.parent_id AND primary_server.revoked)) ORDER BY COALESCE(command->'crosshost'->>'phase'='checkpoint',false) DESC, (kind='network' AND COALESCE(command->'network'->>'action','')='restrict') DESC,created_at LIMIT 1`, a.ID).Scan(&raw, &cancel, &state)
+		err = s.Store.Pool.QueryRow(ctx, PollQuery, a.ID).Scan(&raw, &cancel, &state)
 		if err == nil {
 			var c api.ExecutionCommand
 			if err = json.Unmarshal(raw, &c); err != nil {

@@ -17,14 +17,16 @@ var (
 
 	// Statements are matched in upper case, as PostgreSQL reads keywords and names in any
 	// case. Each form is anchored at both ends, so anything it does not name is not additive.
-	marker        = regexp.MustCompile(`^INSERT INTO SCHEMA_ADDITIVE_MIGRATIONS ?\(VERSION\) VALUES ?\((\d+)\)$`)
-	createTable   = regexp.MustCompile(`^CREATE TABLE ([A-Z_][A-Z0-9_]*) ?\(`)
-	createIndex   = regexp.MustCompile(`^CREATE (UNIQUE )?INDEX [A-Z0-9_]+ ON ([A-Z_][A-Z0-9_]*) ?(.*)$`)
-	plainColumns  = regexp.MustCompile(`^\((?:[A-Z_][A-Z0-9_]*(?: ASC| DESC)?(?:, ?|\)$))+$`)
-	createFunc    = regexp.MustCompile(`^CREATE FUNCTION [A-Z_][A-Z0-9_]* ?\(`)
-	createTrigger = regexp.MustCompile(`^CREATE TRIGGER [A-Z0-9_]+ (?:BEFORE|AFTER) .*? ON ([A-Z_][A-Z0-9_]*) FOR EACH ROW EXECUTE FUNCTION [A-Z_][A-Z0-9_]* ?\(\)$`)
-	addColumn     = regexp.MustCompile(`^ALTER TABLE ([A-Z_][A-Z0-9_]*) ADD COLUMN [A-Z_][A-Z0-9_]* (.*)$`)
-	insertValues  = regexp.MustCompile(`^INSERT INTO ([A-Z_][A-Z0-9_]*) ?(?:\([A-Z0-9_, ]*\) ?)?VALUES ?\(`)
+	marker       = regexp.MustCompile(`^INSERT INTO SCHEMA_ADDITIVE_MIGRATIONS ?\(VERSION\) VALUES ?\((\d+)\)$`)
+	createTable  = regexp.MustCompile(`^CREATE TABLE ([A-Z_][A-Z0-9_]*) ?\(`)
+	createIndex  = regexp.MustCompile(`^CREATE (UNIQUE )?INDEX [A-Z0-9_]+ ON ([A-Z_][A-Z0-9_]*) ?(.*)$`)
+	plainColumns = regexp.MustCompile(`^\((?:[A-Z_][A-Z0-9_]*(?: ASC| DESC)?(?:, ?|\)$))+$`)
+	// A column compared with string constants, which no row an older release writes can fail.
+	constantPredicate = regexp.MustCompile(`^[A-Z_][A-Z0-9_]* (?:NOT )?IN ?\('[^']*'(?:, ?'[^']*')*\)$`)
+	createFunc        = regexp.MustCompile(`^CREATE FUNCTION [A-Z_][A-Z0-9_]* ?\(`)
+	createTrigger     = regexp.MustCompile(`^CREATE TRIGGER [A-Z0-9_]+ (?:BEFORE|AFTER) .*? ON ([A-Z_][A-Z0-9_]*) FOR EACH ROW EXECUTE FUNCTION [A-Z_][A-Z0-9_]* ?\(\)$`)
+	addColumn         = regexp.MustCompile(`^ALTER TABLE ([A-Z_][A-Z0-9_]*) ADD COLUMN [A-Z_][A-Z0-9_]* (.*)$`)
+	insertValues      = regexp.MustCompile(`^INSERT INTO ([A-Z_][A-Z0-9_]*) ?(?:\([A-Z0-9_, ]*\) ?)?VALUES ?\(`)
 )
 
 // Each migration from the one that created the marker table on either records itself as
@@ -143,9 +145,12 @@ func additive(s string, created map[string]bool) string {
 			return ""
 		case m[1] != "":
 			return "a unique index on an existing table can refuse an older release's writes"
-		case !plainColumns.MatchString(m[3]):
-			// An expression or predicate runs on every write an older release makes.
-			return "an index on an existing table may list only its columns"
+		}
+		// An expression or predicate runs on every write an older release makes, so it may only be
+		// one that cannot fail.
+		columns, predicate, partial := strings.Cut(m[3], " WHERE ")
+		if !plainColumns.MatchString(columns) || partial && !constantPredicate.MatchString(predicate) {
+			return "an index on an existing table may list only its columns, limited only by comparing a column with constants"
 		}
 		return ""
 	}
@@ -344,6 +349,13 @@ func TestAdditiveClaims(t *testing.T) {
 		{"index in house style", "CREATE INDEX i ON audit_events(workspace_id, created_at DESC);", true},
 		{"expression index on existing table", "CREATE INDEX i ON servers (((labels->>'port')::int));", false},
 		{"partial index on existing table", "CREATE INDEX i ON servers (name) WHERE f(name);", false},
+		{"index limited by constants", "CREATE INDEX i ON execution_operations(server_id, created_at) WHERE state NOT IN ('succeeded','failed','cancelled');", true},
+		{"index limited by one constant", "CREATE INDEX i ON execution_operations (server_id) WHERE kind IN ('network');", true},
+		{"constants and a function", "CREATE INDEX i ON execution_operations (server_id) WHERE state IN ('failed') AND f(kind);", false},
+		{"constant compared through an expression", "CREATE INDEX i ON servers (id) WHERE (labels->>'port') IN ('1');", false},
+		{"quote inside a constant", "CREATE INDEX i ON servers (id) WHERE name IN ('a'' OR f(name) OR ''');", false},
+		{"expression limited by constants", "CREATE INDEX i ON servers ((lower(name))) WHERE kind IN ('a');", false},
+		{"predicate without columns", "CREATE INDEX i ON servers WHERE kind IN ('a');", false},
 		{"expression index on new table", "CREATE TABLE a (s text);\nCREATE INDEX i ON a ((lower(s))) WHERE s <> '';", true},
 		{"inherited table", "CREATE TABLE a (id uuid) INHERITS (servers);", false},
 		{"table from a query", "CREATE TABLE a (id, w) AS SELECT id, workspace_id FROM servers WHERE (NOT revoked);", false},
