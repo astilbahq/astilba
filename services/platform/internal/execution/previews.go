@@ -379,6 +379,17 @@ func (s *Service) ActOnPreview(ctx context.Context, p store.Principal, ws, pid, 
 		if out.Head != in.Head || out.HeadRepository != in.HeadRepository {
 			return domain.Conflict
 		}
+		// A retiring or retired template only cleans up the previews it still has: retirement asked
+		// for each, and an owner renews a cleanup its authority or a host transfer left blocked.
+		state, err := db.New(tx).EnvironmentState(ctx, db.EnvironmentStateParams{WorkspaceID: ws, ID: env})
+		if err != nil {
+			return err
+		}
+		if in.Action != "cleanup" {
+			if err = requireActive(state); err != nil {
+				return err
+			}
+		}
 		switch string(in.Action) {
 		case "approve":
 			if err = s.previewAuthority(ctx, tx, policy); err != nil {
@@ -408,7 +419,10 @@ func (s *Service) ActOnPreview(ctx context.Context, p store.Principal, ws, pid, 
 			}
 		case "cleanup":
 			var controller int64
-			if err = tx.QueryRow(ctx, "SELECT controller_generation FROM servers WHERE workspace_id=$1 AND id=$2 AND NOT revoked AND NOT awaiting_transfer", ws, policy.Server).Scan(&controller); err != nil {
+			// A host waiting for a verified agent transfer already carries the controller generation the
+			// transfer completes with, so the request waits for it rather than being refused. The
+			// cleanup reconcile checks the authority before anything is sent.
+			if err = tx.QueryRow(ctx, "SELECT controller_generation FROM servers WHERE workspace_id=$1 AND id=$2 AND NOT revoked", ws, policy.Server).Scan(&controller); err != nil {
 				return err
 			}
 			_, err = tx.Exec(ctx, "UPDATE preview_requests SET cleanup_requested=true,cleanup_at=now(),next_check_at=now(),cleanup_actor=$2,cleanup_auth_version=$3,cleanup_controller=$4 WHERE id=$1", id, p.Account.ID, p.Account.AuthVersion, controller)

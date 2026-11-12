@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
+	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/google/uuid"
@@ -302,4 +303,101 @@ func TestRetirePreviewTemplateCleansUpItsPreviews(t *testing.T) {
 	if after := previewAt(t, h, h.path); after.State != "deleted" {
 		t.Fatal("a retired template's preview came back", after.State, after.Note)
 	}
+}
+
+// A plan is refused before review when another environment already serves one of its routes, but
+// two plans can both pass that check while neither is applied. Apply checks the claim again, so the
+// second to apply is refused with the same named conflict.
+func TestApplyRefusesARouteClaimedAfterReview(t *testing.T) {
+	x := newRetirementFixture(t)
+	reviewed := func(name string) (string, uuid.UUID, map[string]string) {
+		t.Helper()
+		_, path, draft := x.environment(name, "contested.example.test")
+		images := map[string]string{}
+		_, spec := draftSpec(t, x.owner, path)
+		for _, app := range spec.Applications {
+			images[app.ID.String()] = "busybox@sha256:" + strings.Repeat("c", 64)
+		}
+		var plan deployment.Status
+		x.owner.call("POST", path+"/deployment-plans", api.VisualPlanRequest{ServerId: x.server, BaseRevisionId: draft.Id, AllowHostChanges: true}, 201, &plan)
+		x.agent.observe(x.agent.next(), deployment.Observation{Images: images, StateHash: strings.Repeat("f", 64)})
+		return path, plan.ID, images
+	}
+	firstPath, first, images := reviewed("First")
+	secondPath, second, _ := reviewed("Second")
+	x.owner.call("POST", firstPath+"/deployment-plans/"+first.String()+"/apply", api.ApplyPlan{IdempotencyKey: uuid.New()}, 201, nil)
+	x.agent.applied(x.agent.next(), images)
+	x.refusal(x.owner, "POST", secondPath+"/deployment-plans/"+second.String()+"/apply", api.ApplyPlan{IdempotencyKey: uuid.New()}, "routes.claimed")
+}
+
+// A retired template's previews are all asked to clean up, even on a host waiting for a verified
+// agent transfer. Cleanup cannot run until the transfer completes, so the preview shows as blocked,
+// and the owner renews its cleanup on the retired template, which allows that and nothing else.
+func TestRetiredTemplateRenewsABlockedPreviewCleanup(t *testing.T) {
+	h := newHungPreview(t)
+	ctx := t.Context()
+	var policy api.PreviewPolicy
+	h.b.call("PUT", h.path+"/preview-policy", map[string]any{"enabled": true, "generation": 0, "configuration": h.policy}, 200, &policy)
+	preview := readyPreview(t, h)
+	units := map[string]string{}
+	rows, err := h.f.st.Pool.Query(ctx, "SELECT r.unit_id,p.plan FROM visual_runtime r JOIN visual_plans p ON p.id=r.plan_id WHERE r.workspace_id=$1 AND r.server_id=$2", h.ws, h.server)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rows.Next() {
+		var unit uuid.UUID
+		var raw []byte
+		var plan deployment.Plan
+		if err = rows.Scan(&unit, &raw); err != nil || json.Unmarshal(raw, &plan) != nil {
+			t.Fatal("runtime row", err)
+		}
+		units[unit.String()] = plan.PrimaryPlan().Hash
+	}
+	rows.Close()
+	if err = h.f.st.PrepareRecovery(ctx, h.server, 1); err != nil {
+		t.Fatal(err)
+	}
+
+	h.b.call("POST", h.path+"/retire", api.EnvironmentLifecycleRequest{ConfirmName: "PR template"}, 201, nil)
+	var requested bool
+	if err = h.f.st.Pool.QueryRow(ctx, "SELECT cleanup_requested FROM preview_requests WHERE workspace_id=$1 AND id=$2", h.ws, preview.Id).Scan(&requested); err != nil || !requested {
+		t.Fatal("retirement did not ask for the preview's cleanup", err)
+	}
+	// Recovery already blocked the preview; the cleanup reconcile then says how to continue.
+	for deadline := time.Now().Add(20 * time.Second); ; time.Sleep(30 * time.Millisecond) {
+		blocked := previewAt(t, h, h.path)
+		if blocked.State == "blocked" && strings.Contains(blocked.Note, "verified agent transfer") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the cleanup was not blocked waiting for the transfer", blocked.State, blocked.Note)
+		}
+	}
+	action := func(name string, status int) []byte {
+		t.Helper()
+		return h.b.call("POST", h.path+"/previews/"+preview.Id.String()+"/actions", map[string]any{"action": name, "head": preview.Head, "headRepository": preview.HeadRepository}, status, nil)
+	}
+	var refused api.Error
+	if err = json.Unmarshal(action("approve", 409), &refused); err != nil || refused.Fields == nil || !slices.Contains(*refused.Fields, "environment.state") {
+		t.Fatalf("a retired template approved a preview: %+v", refused)
+	}
+
+	// The transfer completes, and the owner renews the cleanup.
+	var ticket api.TransferTicket
+	h.b.call("POST", h.prefix+"/servers/"+h.server.String()+"/transfer", nil, 201, &ticket)
+	in := h.enrolled
+	in.Credential, _ = cryptobox.Token()
+	in.Token, in.ControllerGeneration = ticket.Token, &ticket.Generation
+	in.Inventory = &api.ControllerInventory{Units: units, Schedules: map[string]int64{}}
+	agentRequest(t, h.f.server.Client(), h.f.server.URL, "/agent/v1/enroll", "", in, 200, nil)
+	h.token = h.server.String() + "." + in.Credential
+	action("cleanup", 200)
+	waitPreviewAt(t, h, h.path, "deleting")
+	cleanup := nextPreviewCommand(t, h)
+	var payload deployment.Payload
+	if err = json.Unmarshal(*cleanup.Visual, &payload); err != nil || payload.Action != "preview-cleanup" || cleanup.EnvironmentId != *preview.EnvironmentId {
+		t.Fatalf("expected the preview's own cleanup, got %s for %s", payload.Action, cleanup.EnvironmentId)
+	}
+	agentRequest(t, h.f.server.Client(), h.f.server.URL, "/agent/v1/report", h.token, api.AgentReport{Id: cleanup.Id, Generation: cleanup.Generation, PlanHash: cleanup.PlanHash, Sequence: 2, State: "succeeded", Steps: []api.ExecutionStep{}}, 204, nil)
+	waitPreviewAt(t, h, h.path, "deleted")
 }

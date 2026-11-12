@@ -186,7 +186,7 @@ UPDATE preview_requests r SET cleanup_requested = true,cleanup_at = now(),next_c
  cleanup_actor = $1::uuid,cleanup_auth_version = $2::bigint,cleanup_controller = s.controller_generation
 FROM servers s
 WHERE r.workspace_id = $3 AND r.policy_id = $4 AND r.state <> 'deleted'
- AND s.workspace_id = $3 AND s.id = $5 AND NOT s.revoked AND NOT s.awaiting_transfer
+ AND s.workspace_id = $3 AND s.id = $5
 RETURNING r.id
 `
 
@@ -198,8 +198,11 @@ type RequestPolicyPreviewCleanupParams struct {
 	ServerID    uuid.UUID `json:"server_id"`
 }
 
-// The same request an owner makes for one preview, for every preview the policy still has. A
-// revoked or transferring host has no cleanup to ask for: revocation already released its previews.
+// The same request an owner makes for one preview, for every preview the policy still has, whatever
+// its host's state. The cleanup reconcile checks the authority when it runs: a preview whose host is
+// waiting for a verified agent transfer, or whose owner's authority changed, shows as blocked until
+// an owner renews its cleanup, which stays possible on a retired template. Revocation already
+// released any preview it allocated on a revoked host.
 func (q *Queries) RequestPolicyPreviewCleanup(ctx context.Context, arg RequestPolicyPreviewCleanupParams) ([]uuid.UUID, error) {
 	rows, err := q.db.Query(ctx, requestPolicyPreviewCleanup,
 		arg.ActorID,

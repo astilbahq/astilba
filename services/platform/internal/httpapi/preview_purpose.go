@@ -46,9 +46,9 @@ func (s *Server) authorizeEnvironmentPurpose(ctx context.Context, in *openapi3fi
 		return authorizationFailure{err}
 	}
 	op := strings.ToLower(in.Route.Operation.OperationID)
-	// A retiring or retired environment is read-only. Retirement already revoked its credentials,
-	// and revoking again is harmless.
-	if state != "active" && op != "retireenvironment" && op != "restoreenvironment" && op != "revokeautomationcredential" {
+	// A retiring or retired environment is read-only. A retired preview template still cleans up
+	// its previews; the service admits only that action, under the workspace lock.
+	if state != "active" && op != "retireenvironment" && op != "restoreenvironment" && (op != "actonpreview" || purpose != "preview_template") {
 		return authorizationFailure{domain.EnvironmentInactive}
 	}
 	if purpose == "standard" {
