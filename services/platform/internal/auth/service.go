@@ -500,7 +500,7 @@ func (s *Service) AcceptInvitation(ctx context.Context, token, name, password st
 	if err != nil {
 		return account, err
 	}
-	err = s.Store.WorkspaceWriteTx(ctx, peek.WorkspaceID, func(tx pgx.Tx) error {
+	err = s.Store.WorkspaceWriteTransaction(ctx, peek.WorkspaceID, func(tx pgx.Tx) error {
 		q := db.New(tx)
 		invite, err := q.LockInvitation(ctx, Hash(token))
 		if errors.Is(err, pgx.ErrNoRows) {

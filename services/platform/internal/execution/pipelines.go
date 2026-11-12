@@ -552,17 +552,13 @@ func (s *Service) PipelineRuns(ctx context.Context, p store.Principal, ws, pid, 
 }
 
 func (s *Service) SourcePolicy(ctx context.Context, p store.Principal, ws, pid, env uuid.UUID, enabled bool) error {
-	// Turning automatic deployment off stays possible on a lapsed workspace; turning it on is management.
-	return s.scope(ctx, p, ws, workspaceAccess{Write: true, Owner: true, Recent: enabled, Revocation: true}, "git.source.policy", env, func(tx pgx.Tx) error {
-		if enabled {
-			if err := s.Store.ManagementAdmission(ctx, tx, ws); err != nil {
-				return err
-			}
-		}
+	// Turning automatic deployment off stays possible on a lapsed workspace, and approves nothing:
+	// the source keeps the approver it had. Turning it on is management.
+	return s.scope(ctx, p, ws, workspaceAccess{Write: true, Owner: true, Recent: enabled, Revocation: !enabled}, "git.source.policy", env, func(tx pgx.Tx) error {
 		if _, err := loadVisualEnvironment(ctx, tx, ws, pid, env); err != nil {
 			return err
 		}
-		n, err := tx.Exec(ctx, "UPDATE git_sources SET configuration=jsonb_set(configuration,'{autoDeploy}',to_jsonb($3::boolean)),policy_actor=$4,status=CASE WHEN $3 AND status='approval_required' THEN 'ready' ELSE status END WHERE workspace_id=$1 AND environment_id=$2", ws, env, enabled, p.Account.ID)
+		n, err := tx.Exec(ctx, "UPDATE git_sources SET configuration=jsonb_set(configuration,'{autoDeploy}',to_jsonb($3::boolean)),policy_actor=CASE WHEN $3 THEN $4 ELSE policy_actor END,status=CASE WHEN $3 AND status='approval_required' THEN 'ready' ELSE status END WHERE workspace_id=$1 AND environment_id=$2", ws, env, enabled, p.Account.ID)
 		if err == nil && n.RowsAffected() != 1 {
 			return domain.NotFound
 		}

@@ -31,9 +31,8 @@ func recoveryCommand(c api.ExecutionCommand) bool {
 			return command.Phase == "abort" || command.Phase == "retire" || command.Phase == "complete" || command.Phase == "resume-source" || command.Phase == "resume-target"
 		}
 	}
-	if c.Kind == "network" && c.Network != nil {
-		var n hostnetwork.Command
-		return json.Unmarshal(*c.Network, &n) == nil && n.Action == "restrict" && n.Validate() == nil
+	if revocationCommand(c) {
+		return true
 	}
 	if c.Kind == "visual" && c.Visual != nil {
 		var p deployment.Payload

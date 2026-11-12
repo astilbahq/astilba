@@ -120,7 +120,8 @@ func (s *Service) SavePreviewPolicy(ctx context.Context, p store.Principal, ws, 
 		exists := err == nil
 		// Pausing stays possible on a lapsed workspace, so an owner can always stop new previews.
 		// Every other save is management.
-		if pause := !in.Enabled && exists && Hash(old.Config) == Hash(cfg); !pause {
+		pause := !in.Enabled && exists && Hash(old.Config) == Hash(cfg)
+		if !pause {
 			if err = s.Store.ManagementAdmission(ctx, tx, ws); err != nil {
 				return err
 			}
@@ -155,7 +156,7 @@ func (s *Service) SavePreviewPolicy(ctx context.Context, p store.Principal, ws, 
 		if active && in.Enabled && (old.Actor != p.Account.ID || old.AuthVersion != p.Account.AuthVersion) {
 			return domain.Invalid("preview.cleanupBeforeReapproval")
 		}
-		if !in.Enabled && exists && Hash(old.Config) == Hash(cfg) {
+		if pause {
 			_, err = tx.Exec(ctx, "UPDATE preview_policies SET enabled=false WHERE id=$1", old.ID)
 			if err != nil {
 				return err

@@ -117,7 +117,11 @@ func TestLapsedWorkspaceOwnerCanRevokeAccess(t *testing.T) {
 			if _, err := f.st.Pool.Exec(ctx, `INSERT INTO git_connections(id,workspace_id,configuration,encrypted_access) VALUES($1,$2,'{"authentication":"github_app"}','')`, connection, ws); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := f.st.Pool.Exec(ctx, `INSERT INTO git_sources(workspace_id,environment_id,connection_id,configuration,status,policy_actor) VALUES($1,$2,$3,'{"autoDeploy":true}','ready',$4)`, ws, env.Id, connection, f.owner); err != nil {
+			if _, err := f.st.Pool.Exec(ctx, `INSERT INTO github_app_connections(workspace_id,connection_id,app_id,installation_id,repository_id,github_user_id,actor_id) VALUES($1,$2,1,2,3,4,$3)`, ws, connection, f.owner); err != nil {
+				t.Fatal(err)
+			}
+			// Approved by another owner, so turning auto-deploy off can show it hands nobody the approval.
+			if _, err := f.st.Pool.Exec(ctx, `INSERT INTO git_sources(workspace_id,environment_id,connection_id,configuration,status,policy_actor) VALUES($1,$2,$3,'{"autoDeploy":true}','ready',$4)`, ws, env.Id, connection, demoted.ID); err != nil {
 				t.Fatal(err)
 			}
 
@@ -154,6 +158,9 @@ func TestLapsedWorkspaceOwnerCanRevokeAccess(t *testing.T) {
 
 			// Invitations: a revoked one can't be accepted.
 			b.call("DELETE", prefix+"/invitations/"+revokedInvitation.String(), nil, 204, nil)
+			if rowExists(t, f, "SELECT 1 FROM invitations WHERE id=$1", revokedInvitation) {
+				t.Fatal("the invitation was not revoked")
+			}
 			f.browser(t).call("POST", "/api/v1/auth/invitations/accept", map[string]string{"token": revokedToken, "name": "Revoked", "password": "a long enough password for the fixture"}, 400, nil)
 			if rowExists(t, f, "SELECT 1 FROM memberships m JOIN accounts a ON a.id=m.account_id WHERE a.email='revoked@example.test'") {
 				t.Fatal("a revoked invitation was accepted")
@@ -179,10 +186,13 @@ func TestLapsedWorkspaceOwnerCanRevokeAccess(t *testing.T) {
 
 			// Git automation.
 			b.call("POST", prefix+"/git-connections/"+connection.String()+"/disconnect", nil, 204, nil)
+			if rowExists(t, f, "SELECT 1 FROM github_app_connections WHERE connection_id=$1 AND active", connection) {
+				t.Fatal("the GitHub connection stayed active")
+			}
 			b.call("PUT", envPath+"/source/policy", map[string]bool{"autoDeploy": false}, 204, nil)
 			refusedForSubscription(t, "turning automatic deployment on", b.call("PUT", envPath+"/source/policy", map[string]bool{"autoDeploy": true}, 400, nil))
-			if rowExists(t, f, "SELECT 1 FROM git_sources WHERE environment_id=$1 AND (configuration->>'autoDeploy')::boolean", env.Id) {
-				t.Fatal("automatic deployment stayed on")
+			if rowExists(t, f, "SELECT 1 FROM git_sources WHERE environment_id=$1 AND ((configuration->>'autoDeploy')::boolean OR policy_actor<>$2)", env.Id, demoted.ID) {
+				t.Fatal("automatic deployment stayed on, or turning it off changed who approved the source")
 			}
 
 			// Requiring two-factor authentication.

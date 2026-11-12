@@ -116,12 +116,10 @@ func (s *Service) scope(ctx context.Context, p store.Principal, ws uuid.UUID, ac
 	}
 	admission := store.WorkspaceAccess{Write: access.Write, Owner: access.Owner, Recent: access.Recent, Credential: access.Credential}
 	switch {
-	case access.Recovery && access.Revocation:
-		return errors.New("workspace access is both recovery and revocation")
-	case access.Revocation:
-		return s.Store.InWorkspaceRevocation(ctx, p, ws, admission, fnScope)
 	case access.Recovery:
 		return s.Store.InWorkspaceRecovery(ctx, p, ws, admission, fnScope)
+	case access.Revocation:
+		return s.Store.InWorkspaceRevocation(ctx, p, ws, admission, fnScope)
 	}
 	return s.Store.InWorkspaceTx(ctx, p, ws, admission, fnScope)
 }

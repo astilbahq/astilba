@@ -522,16 +522,19 @@ can always shut out someone who should no longer be there. An owner can still:
 - revoke a server, remove it from private networks, or rotate its key. Peers still
   receive the change that drops a removed server from the network;
 - turn [interactive troubleshooting](interactive-troubleshooting.md) off or limit it
-  to owners, and end open sessions;
+  to owners;
 - pause a [preview policy](pull-request-previews.md), turn off automatic deployment
   from Git, or disconnect a GitHub repository;
 - require two-factor authentication for the workspace.
 
 These still need everything else a change needs: the owner role, two-factor
 authentication, a verified email and, where the action asks for it, recent identity
-confirmation. Anything that grants access waits for renewal: inviting or promoting a
-member, accepting an invitation, enrolling a server, issuing a credential, and turning
-a policy on or widening it. An invitation refused this way can still be accepted after
+confirmation. Ending an open terminal session needs only membership and the role, as
+it always has.
+
+Anything that grants access waits for renewal: inviting or promoting a member,
+accepting an invitation, enrolling a server, issuing a credential, and turning a
+policy on or widening it. An invitation refused this way can still be accepted after
 renewal, until it expires.
 
 ## Generated application names

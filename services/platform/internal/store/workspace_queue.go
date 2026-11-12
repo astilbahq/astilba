@@ -46,12 +46,7 @@ func (s *Store) beginWorkspaceWrite(ctx context.Context, id uuid.UUID, isolation
 
 // WorkspaceWriteTransaction runs fn in a transaction holding the workspace row lock,
 // under the terms of BeginWorkspaceWrite.
-func (s *Store) WorkspaceWriteTransaction(ctx context.Context, id uuid.UUID, fn func(*db.Queries) error) error {
-	return s.WorkspaceWriteTx(ctx, id, func(tx pgx.Tx) error { return fn(db.New(tx)) })
-}
-
-// WorkspaceWriteTx is WorkspaceWriteTransaction for a caller that needs the transaction itself.
-func (s *Store) WorkspaceWriteTx(ctx context.Context, id uuid.UUID, fn func(pgx.Tx) error) error {
+func (s *Store) WorkspaceWriteTransaction(ctx context.Context, id uuid.UUID, fn func(pgx.Tx) error) error {
 	tx, done, err := s.BeginWorkspaceWrite(ctx, id)
 	if err != nil {
 		return Normalize(err)

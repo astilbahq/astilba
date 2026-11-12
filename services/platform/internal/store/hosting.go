@@ -90,8 +90,9 @@ func (s *Store) InWorkspaceRecovery(ctx context.Context, p Principal, id uuid.UU
 // (role, session, MFA, verified email, recent authentication) but none on the entitlement, so an
 // owner can shut access off however long ago the subscription lapsed.
 //
-// fn must start no runtime work and grant nothing. An endpoint that may also widen access decides
-// under the lock whether this request only narrows, and calls ManagementAdmission when it doesn't.
+// fn must grant nothing. It may cancel or settle work, and anything it enqueues still meets
+// execution's command admission at dispatch. An endpoint that may also widen access decides under
+// the lock whether this request only narrows, and calls ManagementAdmission when it doesn't.
 func (s *Store) InWorkspaceRevocation(ctx context.Context, p Principal, id uuid.UUID, access WorkspaceAccess, fn func(pgx.Tx, *db.Queries, Workspace) error) error {
 	access.Write = true
 	return s.inWorkspaceTx(ctx, p, id, access, admitRevocation, fn)
