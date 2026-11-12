@@ -111,13 +111,8 @@ func startGitea(t *testing.T) *realGitea {
 	env := []string{"GITEA__security__INSTALL_LOCK=true", "GITEA__database__DB_TYPE=sqlite3", "GITEA__server__DISABLE_SSH=true", "GITEA__service__DISABLE_REGISTRATION=true", "GITEA__mailer__ENABLED=false",
 		// Gitea refuses to deliver to a private address unless one is allowed by name.
 		"GITEA__webhook__ALLOWED_HOST_LIST=private"}
-	args := []string{"run", "--detach", "--name", name, "--label", label, "--network", name}
-	for _, e := range env {
-		args = append(args, "--env", e)
-	}
-	dockerRun(t, append(args, giteaImage)...)
 	// Nothing is published: the test reaches Gitea through the Docker API, from the
-	// receiver beside it on its network.
+	// receiver beside it on its network. The address is known before Gitea starts.
 	docker, err := client.New(client.WithHost(os.Getenv("PLAT_APP_DOCKER_HOST")))
 	if err != nil {
 		t.Fatal(err)
@@ -129,6 +124,12 @@ func startGitea(t *testing.T) *realGitea {
 	}
 	t.Cleanup(forward.Close)
 	g.base = "http://" + forward.Addr()
+	args := []string{"run", "--detach", "--name", name, "--label", label, "--network", name}
+	// Gitea links reviews from its root URL, which must be the address management uses.
+	for _, e := range append(env, "GITEA__server__ROOT_URL="+g.base+"/") {
+		args = append(args, "--env", e)
+	}
+	dockerRun(t, append(args, giteaImage)...)
 	probe := &http.Client{Timeout: 2 * time.Second}
 	waitFor(t, "Gitea", 2*time.Minute, func() bool {
 		res, err := probe.Get(g.base + "/api/healthz")

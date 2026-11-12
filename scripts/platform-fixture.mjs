@@ -34,6 +34,13 @@ const hostedInfo = join(root, `.artifacts/p8/browser/${portBlock()}/hosted-fixtu
 const gitHeads = new Map();
 const gitProvider=createServer((request,response)=>{
  response.setHeader("Content-Type","application/json");
+ // Before a push, Git asks for the receive-pack advertisement, which Gitea grants only to a credential
+ // that can write. Astilba asks this of every clone credential before a runner may hold it.
+ if(request.url==="/team/app.git/info/refs?service=git-receive-pack"){
+  const basic=Buffer.from((request.headers.authorization??"").replace(/^Basic /,""),"base64").toString();
+  const token=basic.slice(basic.indexOf(":")+1);
+  response.writeHead(token==="browser-api-fixture"?200:token==="browser-clone-fixture"?403:401).end();return
+ }
  if(request.headers.authorization!=="token browser-api-fixture"){response.writeHead(401).end();return}
  if(request.method==="POST" && request.url==="/__fixture/head"){
   const chunks=[];request.on("data",chunk=>chunks.push(chunk));request.on("end",()=>{

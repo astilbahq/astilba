@@ -110,6 +110,19 @@ test("repository setup, Git service, queued build and cancellation use the real 
   await connect
     .getByLabel("Read-only clone username", { exact: true })
     .fill("reader");
+  // Runners receive the clone credential, so one the Git server would let push is refused.
+  await connect
+    .getByLabel("Read-only clone token", { exact: true })
+    .fill("browser-api-fixture");
+  await connect
+    .getByRole("button", { name: "Connect repository", exact: true })
+    .click();
+  await expect(
+    page.getByRole("alert").filter({ hasText: "clone credential can push" }),
+  ).toBeVisible();
+  await expect(page.getByLabel("Webhook secret", { exact: true })).toHaveCount(
+    0,
+  );
   await connect
     .getByLabel("Read-only clone token", { exact: true })
     .fill("browser-clone-fixture");
@@ -339,7 +352,8 @@ test("repository setup, Git service, queued build and cancellation use the real 
     await build.screenshot({ path: info.outputPath("build-controls.png") });
   expect(Date.parse(command.deadline) - Date.now()).toBeLessThanOrEqual(120000);
   expect(command.pipeline.access.clone.password).toBe("browser-clone-fixture");
-  expect(command.pipeline.access.api.password).toBe("");
+  // A runner receives only the clone credential, never the API one.
+  expect(Object.keys(command.pipeline.access)).toEqual(["clone"]);
   const cancelled = page.waitForResponse(
     (r) =>
       r.url().endsWith(`/operations/${command.id}/cancel`) &&
