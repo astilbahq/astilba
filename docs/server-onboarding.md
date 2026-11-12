@@ -38,7 +38,23 @@ Create an A record for the supplied IPv4 address and/or an AAAA record for IPv6 
 
 For automatic Cloudflare records, also configure `ASTILBA_DNS_CLOUDFLARE_ZONE` and `ASTILBA_DNS_CLOUDFLARE_TOKEN`. Use a token scoped to DNS edit/read for that application zone, supplied only in private operator configuration. Neither setting is required for manual DNS. The adapter uses DNS-only A/AAAA records with a 300-second TTL and an installation/server ownership comment. Do not edit that comment or add competing A/AAAA/CNAME/NS records at the generated wildcard. Foreign records are reported for inspection and never overwritten.
 
-Address approval and its queued reconciliation are transactional. Provider calls run outside database transactions under a per-server lock shared with configuration changes and recovery. Lost mutation responses are reconciled by exact name, type, record ID and ownership marker. A bounded sweep rechecks eligible profiles after fifteen minutes. Provider success is an observed snapshot, with a timestamp; it cannot guarantee future DNS state or propagation. An offline/revoked server does not cause automatic DNS deletion, so running apps are not stranded.
+Address approval and its queued reconciliation are transactional. Provider calls run outside database transactions under a per-server lock shared with configuration changes and recovery. Lost mutation responses are reconciled by exact name, type, record ID and ownership marker. A bounded sweep rechecks eligible profiles after fifteen minutes. Provider success is an observed snapshot, with a timestamp; it cannot guarantee future DNS state or propagation. An offline server keeps its records, so running apps are not stranded.
+
+### When automatic records are removed
+
+A record that points at an address nobody vouches for any more is a takeover risk: if the cloud provider gives that address to someone else, they can serve the server's generated names, and any custom domain CNAMEd to them, and get certificates for them. So Astilba removes its records when:
+
+- **The server is revoked.** Revocation also ends the address approval. Renewing or transferring the server afterwards doesn't stop the removal. An owner approves its addresses again before anything is published.
+- **Hosted management becomes inactive.** The approval is kept, and the records are published again within a few minutes of management resuming. See [hosting](hosting.md#removing-generated-records).
+- **`ASTILBA_APPLICATION_DOMAIN` changes.** The previous domain's records are removed. Owners approve addresses under the new domain.
+
+A server fenced by management recovery keeps its records until an owner reviews it. It is still the workspace's server, and its records are only frozen.
+
+Before Astilba asks the provider to create anything, it records the name in the database. Removal lists that exact name and deletes only A/AAAA records carrying this installation's and server's ownership comment. Records anyone else created at the name, including another installation's, are left alone. Each deletion is written to an audit table before it is sent and confirmed once the provider lists the record as gone. A failed or interrupted removal keeps its database row, and is retried within about a minute until it succeeds, including after a restart.
+
+With manual DNS, Astilba creates nothing and so removes nothing: delete the server's A/AAAA records yourself when you revoke it.
+
+After removal, generated names stop resolving. A revoked host keeps any certificates it already has until they expire, but it can't renew them, and nobody can get new ones for those names. Server IDs are never reused, so no later server is given the same names.
 
 Management recovery retains addresses but invalidates external DNS authority and pending jobs. Completing agent transfer does not restore that authority. An owner must review and approve the addresses again. Workspace transfer excludes installation-local DNS profiles, provider ownership and credentials while preserving explicit route strings. Review/reconfigure generated names at the destination; names are not silently rewritten in source files.
 
@@ -52,7 +68,7 @@ The Servers page can compare a hostname's DNS answers with approved server addre
 
 ## Acceptance checks
 
-`make verify` covers namespace validation, real PostgreSQL/API and queue/recovery behavior, and Chromium/WebKit journeys. Provider tests use the actual HTTP boundary with a disposable DNS fixture, including lost creates and foreign records; they are not a live Cloudflare DNS pass.
+`make verify` covers namespace validation, real PostgreSQL/API and queue/recovery behavior, and Chromium/WebKit journeys. Provider tests use the actual HTTP boundary with a disposable DNS fixture, including lost creates, lost and failed deletions, and foreign records; they are not a live Cloudflare DNS pass.
 
 The native host CI jobs additionally run `TestBootstrapOnDisposableHost` on amd64 and arm64 before the existing host suites. Its destructive preparation accepts only an explicitly owned fresh VM or a GitHub-hosted disposable runner whose runtime has no workloads, volumes or custom networks. It tests check-only behavior, invalid signed releases, fresh pinned installation, contact configuration, service startup remaining explicit and refusal to overwrite agent state. Never run that fixture on an existing deployment host.
 

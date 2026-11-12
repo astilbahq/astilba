@@ -277,6 +277,9 @@ func run() error {
 		if c.ApplicationDNS.Token != "" {
 			api.Execution.DNS = &applicationdns.Cloudflare{Zone: c.ApplicationDNS.Zone, Token: c.ApplicationDNS.Token}
 		}
+		if e = api.Execution.WarnStrandedDomains(ctx); e != nil {
+			return e
+		}
 		go func() {
 			ticker := time.NewTicker(time.Minute)
 			defer ticker.Stop()
