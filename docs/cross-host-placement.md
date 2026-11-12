@@ -127,8 +127,12 @@ The primary retains encrypted management checkpoints before each effect phase;
 every participant retains exact command headers and sequenced outcomes. Recovery
 reconstructs the frozen operation from those checkpoints and the original
 management keyring. It does not resolve tags, regenerate plans or infer an outcome
-from a missing container or report. Checkpoint sizes and retained histories are
-bounded; an incomplete or incompatible evidence set refuses recovery.
+from a missing container or report. Checkpoints are compressed with zstd. Checkpoints sealed
+before that were compressed with gzip, and recovery still reads them, alone or mixed with newer
+ones. A release can't read checkpoints sealed by a newer one, so run recovery with the release
+that sealed the newest checkpoint or a newer one, even when the management backup is older.
+Checkpoint sizes and retained histories are bounded; an incomplete or incompatible
+evidence set refuses recovery.
 
 Stop the old and destination management processes and all participating agents.
 Preserve their journals, host keys and current workload containers. Restore the

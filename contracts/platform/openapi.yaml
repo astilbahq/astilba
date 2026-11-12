@@ -6808,6 +6808,8 @@
             - "passthrough"
         "allowCidrs":
           "type": "array"
+          "nullable": true
+          "description": "Source ranges allowed to reach the route. Null and an empty list both mean no allowlist; revisions derived from a Compose file without one keep null, because stored revisions and plan digests depend on that encoding."
           "items":
             "type": "string"
             "maxLength": 64

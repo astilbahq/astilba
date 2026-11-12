@@ -130,3 +130,24 @@ func TestStorageSwitchIsNamedInReviewedEffects(t *testing.T) {
 		}
 	}
 }
+
+// A reviewer reads this as which traffic stops, and a renamed Compose route keeps its
+// endpoint under a new identity.
+func TestRemovedRoutesAreNamedByEndpoint(t *testing.T) {
+	route := func(domainName string) domain.Route {
+		return domain.Route{ID: uuid.New(), Protocol: "http", Domain: domainName, Port: 8080}
+	}
+	tcp := domain.Route{ID: uuid.New(), Protocol: "tcp", Domain: "db.example.test", Port: 5432, ListenPort: 15432}
+	kept, moved := route("app.example.test"), route("old.example.test")
+	renamed, edited := route(kept.Domain), moved
+	edited.Domain = "new.example.test"
+	effects := strings.Join(Effects(domain.Specification{Routes: []domain.Route{renamed, edited}}, domain.Specification{Routes: []domain.Route{kept, moved, tcp}}, false), "\n")
+	if strings.Contains(effects, "Remove route app.example.test") {
+		t.Fatalf("a renamed route that keeps its domain was reported removed:\n%s", effects)
+	}
+	for _, want := range []string{"Remove route old.example.test;", "Remove route TCP db.example.test:15432;"} {
+		if !strings.Contains(effects, want) {
+			t.Fatalf("missing %q:\n%s", want, effects)
+		}
+	}
+}

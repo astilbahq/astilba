@@ -85,6 +85,34 @@ test("Compose files remain authoritative through graph edits and independent lay
   await expect(
     page.getByText("Edit an image from the graph", { exact: true }),
   ).toBeVisible();
+  // A refused edit describes the source it ran against, so a later passing
+  // preview of changed source must not keep showing it.
+  await page
+    .getByLabel("New image reference", { exact: true })
+    .fill(`busybox:${"1".repeat(300)}`);
+  await page
+    .getByRole("button", { name: "Preview image edit", exact: true })
+    .click();
+  const refused = page
+    .getByRole("alert")
+    .filter({ hasText: "Fields: request" });
+  await expect(refused).toBeVisible();
+  const previewed = page.waitForResponse(
+    (response) =>
+      response.url().endsWith("/compose/preview") &&
+      response.request().method() === "POST" &&
+      response.ok(),
+  );
+  await editor.fill(`${source}# reviewed\n`);
+  await previewed;
+  await expect(
+    page.getByText("Source validated.", { exact: true }),
+  ).toBeVisible();
+  await expect(refused).toHaveCount(0);
+  await editor.fill(source);
+  await expect(
+    page.getByText("Source validated.", { exact: true }),
+  ).toBeVisible();
   await page
     .getByLabel("New image reference", { exact: true })
     .fill("busybox:latest");

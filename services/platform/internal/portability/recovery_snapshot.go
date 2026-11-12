@@ -21,7 +21,7 @@ func CaptureRecovery(ctx context.Context, tx pgx.Tx, ws uuid.UUID) ([]byte, erro
 		return nil, err
 	}
 	archive.Name, archive.RequireMFA, archive.CreatedAt = header.Name, header.RequireMfa, header.CapturedAt
-	archive, err = captureArchive(ctx, tx, archive, true)
+	archive, err = captureArchive(ctx, tx, archive, captureBase)
 	if err != nil {
 		return nil, err
 	}
@@ -41,7 +41,7 @@ func InspectRecovery(ctx context.Context, tx pgx.Tx, ws uuid.UUID) (Archive, str
 		return archive, "", err
 	}
 	archive.Name, archive.RequireMFA, archive.CreatedAt = header.Name, header.RequireMfa, header.CapturedAt
-	archive, err = captureArchive(ctx, tx, archive, false)
+	archive, err = captureArchive(ctx, tx, archive, captureAll)
 	if err != nil {
 		return archive, "", err
 	}
@@ -49,9 +49,9 @@ func InspectRecovery(ctx context.Context, tx pgx.Tx, ws uuid.UUID) (Archive, str
 	return archive, hash, err
 }
 
-// retainedOperations is the operation history a bounded snapshot carries. Operation rows are never
-// deleted, so a snapshot of all of them would eventually pass the archive's record limit and stop
-// every cross-host deployment and export. A snapshot keeps:
+// retainedOperations is the operation history a recovery base carries. Operation rows are never
+// deleted, so a base holding all of them would eventually pass the archive's record limit and stop
+// every cross-host deployment. A base keeps:
 //   - work that hasn't ended, and the children of a parent that hasn't;
 //   - every operation that applied or removed a runtime, because recovery checks a newer base
 //     against the exact operation an older base or backup applied;
@@ -62,9 +62,10 @@ func InspectRecovery(ctx context.Context, tx pgx.Tx, ws uuid.UUID) (Archive, str
 //   - the parents of all of these.
 //
 // What's left is ended housekeeping, such as network configure and identify, agent update and
-// single-host backup commands. Its rows stay in this database, but a workspace imported from an
-// export, or recovered from a backup older than them, doesn't get them back. RecoveryBases drops
-// an older base's unfinished copy of one that a later base leaves out.
+// single-host backup commands. Its rows stay in this database, but a workspace recovered from a
+// backup older than them doesn't get them back. RecoveryBases drops an older base's unfinished
+// copy of one that a later base leaves out. An export chooses its operations itself
+// (exportSelection).
 const retainedOperations = ` AND id IN (WITH RECURSIVE kept(id) AS (
 	SELECT o.id FROM execution_operations o WHERE o.workspace_id=$1 AND (o.state NOT IN ('succeeded','failed','cancelled') OR o.runtime_outcome IS NOT NULL OR o.parent_id IS NULL AND o.kind='network' AND o.command->'network'->>'action'='restrict')
 	UNION SELECT o.id FROM execution_operations o WHERE o.workspace_id=$1 AND o.created_at>=COALESCE((SELECT n.created_at FROM execution_operations n WHERE n.workspace_id=$1 ORDER BY n.created_at DESC OFFSET 99 LIMIT 1),'-infinity')
@@ -81,19 +82,59 @@ const retainedOperations = ` AND id IN (WITH RECURSIVE kept(id) AS (
 	UNION SELECT o.parent_id FROM execution_operations o JOIN kept k ON k.id=o.id WHERE o.workspace_id=$1
 ) SELECT id FROM kept)`
 
-// captureArchive reads every archived table. A bounded capture, which a recovery base and an export
-// take, carries only retainedOperations and refuses past the archive's limits. An unbounded one is
-// management's own view of its database, which recovery compares and merges against.
-func captureArchive(ctx context.Context, tx pgx.Tx, archive Archive, bounded bool) (Archive, error) {
+// captureMode says which rows a capture reads.
+type captureMode int
+
+const (
+	// captureAll is management's own view of its database, which recovery compares and merges
+	// against. It is never sealed or exported, so it has no limits.
+	captureAll captureMode = iota
+	// captureBase is a recovery base. It keeps retainedOperations, and of the immutable history
+	// recovery never reads, only what the app lists: the newest 100 audit events, and each
+	// environment's newest 50 revisions plus every revision a carried row names.
+	captureBase
+	// captureExport is a workspace export, which carries what the app lists (exportSelection).
+	captureExport
+)
+
+// baseFilters trims, in a recovery base, immutable tables that recovery never reads. Dropping a
+// row a later base omits can't bring back an older copy of it, because these rows never change.
+var baseFilters = map[string]string{
+	"execution_operations":    retainedOperations,
+	"audit_events":            ` AND id IN (SELECT id FROM audit_events WHERE workspace_id=$1 ORDER BY created_at DESC,id DESC LIMIT 100)`,
+	"specification_revisions": ` AND id IN (` + referencedRevisions + ` UNION SELECT id FROM (SELECT id,row_number() OVER (PARTITION BY environment_id ORDER BY created_at DESC,id DESC) n FROM specification_revisions WHERE workspace_id=$1) r WHERE n<=50)`,
+}
+
+// referencedRevisions is every revision a foreign key names, from tables a base carries whole.
+// inline-sql: a subquery of the compiled base filter for specification_revisions
+const referencedRevisions = `SELECT draft_revision_id FROM environments WHERE workspace_id=$1
+	UNION SELECT applied_revision_id FROM environments WHERE workspace_id=$1
+	UNION SELECT revision_id FROM execution_plans WHERE workspace_id=$1
+	UNION SELECT revision_id FROM visual_requests WHERE workspace_id=$1
+	UNION SELECT imported_revision_id FROM git_sources WHERE workspace_id=$1
+	UNION SELECT revision_id FROM pipeline_runs WHERE workspace_id=$1
+	UNION SELECT revision_id FROM git_submissions WHERE workspace_id=$1
+	UNION SELECT revision_id FROM pipeline_auto_deployments WHERE workspace_id=$1
+	UNION SELECT revision_id FROM preview_policies WHERE workspace_id=$1
+	UNION SELECT revision_id FROM backup_cutovers WHERE workspace_id=$1`
+
+// captureArchive reads every archived table. A recovery base or an export carries only what its
+// mode keeps and refuses past the archive's limits.
+func captureArchive(ctx context.Context, tx pgx.Tx, archive Archive, mode captureMode) (Archive, error) {
 	archive.Tables = map[string][]Row{}
+	filters := baseFilters
+	if mode == captureExport {
+		var err error
+		if filters, err = exportSelection(ctx, tx, archive.Workspace); err != nil {
+			return archive, err
+		}
+	}
+	bounded := mode != captureAll
 	size, count := 0, 0
 	for _, table := range tables {
 		filter := ""
 		if bounded {
-			if table.Name == "execution_operations" {
-				filter = retainedOperations
-			}
-			filter += " LIMIT 10001"
+			filter = filters[table.Name] + " LIMIT 10001"
 		}
 		// inline-sql: identifiers come from the compiled portability table list
 		rows, err := tx.Query(ctx, fmt.Sprintf("SELECT to_jsonb(t) FROM (SELECT %s FROM %s WHERE workspace_id=$1%s) t ORDER BY to_jsonb(t)::text", table.Columns, table.Name, filter), archive.Workspace)

@@ -2,7 +2,6 @@ package execution
 
 import (
 	"bytes"
-	"compress/gzip"
 	"context"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
@@ -53,15 +52,14 @@ func (s *Service) createRecoveryBase(ctx context.Context, tx pgx.Tx, ws uuid.UUI
 		return d, err
 	}
 	defer clear(raw)
-	var compressed bytes.Buffer
-	writer := gzip.NewWriter(&compressed)
-	if _, err := writer.Write(raw); err != nil {
-		return d, err
+	// A base that doesn't compress and read back exactly is refused like one too large to seal,
+	// so the root fails before any host effect rather than retrying forever.
+	compressed, err := portability.CompressRecovery(raw)
+	if err != nil {
+		return d, errors.Join(errRecoverySize, err)
 	}
-	if err := writer.Close(); err != nil {
-		return d, err
-	}
-	envelope, err := s.Store.Keys.Seal(compressed.Bytes(), recoveryIdentity(d))
+	defer clear(compressed)
+	envelope, err := s.Store.Keys.Seal(compressed, recoveryIdentity(d))
 	if errors.Is(err, cryptobox.ErrTooLarge) {
 		return d, errRecoverySize
 	}
@@ -78,7 +76,7 @@ func (s *Service) createRecoveryBase(ctx context.Context, tx pgx.Tx, ws uuid.UUI
 		return d, err
 	}
 	defer clear(verified)
-	if !bytes.Equal(verified, compressed.Bytes()) {
+	if !bytes.Equal(verified, compressed) {
 		return d, errors.New("recovery envelope round trip differs")
 	}
 	d.Digest, d.Bytes = deployment.RecoveryDigest(envelope), len(envelope)

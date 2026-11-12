@@ -128,7 +128,7 @@ export function Form({
   children: ReactNode | ((error: string | null) => ReactNode);
   onSubmit: (data: FormData, form: HTMLFormElement) => void;
   label?: string;
-  action: ReturnType<typeof useAction>;
+  action: Pick<ReturnType<typeof useAction>, "error" | "formId" | "setFormId">;
   validation?: FormValidation;
   errorMessage?: string;
 }) {
