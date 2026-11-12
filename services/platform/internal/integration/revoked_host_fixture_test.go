@@ -34,7 +34,8 @@ type revokedGroup struct {
 	// attention names phases a host reports as needing attention, until they're cancelled. It's set
 	// before the phase starts and read by the host alone afterwards.
 	attention map[string]bool
-	// failing names visual actions a host reports as failed. Set while the host isn't polling for one.
+	// failing names visual actions and cross-host phases ("crosshost-" and the phase) a host reports
+	// as failed. Set while the host isn't polling for one.
 	failing map[string]bool
 	// heldCheckpoint is a parent phase whose recovery metadata the primary won't acknowledge.
 	heldCheckpoint string
@@ -349,6 +350,13 @@ func (g *revokedGroup) respond(t *testing.T, h *aheadHost, c api.ExecutionComman
 		}
 		if !g.note(h, command.Phase) || command.Phase == "checkpoint" && g.checkpointHeld(t, command.ParentID) {
 			return report, false
+		}
+		g.mu.Lock()
+		failing := g.failing["crosshost-"+command.Phase+"/"+h.id.String()]
+		g.mu.Unlock()
+		if failing {
+			report.State = "failed"
+			return report, true
 		}
 		checkpoint := ""
 		if command.Phase == "checkpoint" {

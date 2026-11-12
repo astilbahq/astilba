@@ -8,6 +8,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
@@ -18,7 +19,7 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-func (s *Service) crossHostReport(ctx context.Context, tx pgx.Tx, c api.ExecutionCommand, r *api.AgentReport) error {
+func (s *Service) crossHostReport(ctx context.Context, tx pgx.Tx, ws uuid.UUID, c api.ExecutionCommand, r *api.AgentReport) error {
 	if c.Kind != "crosshost" || c.ParentId == nil {
 		if r.Crosshost != nil {
 			return domain.Invalid("crosshost")
@@ -108,6 +109,13 @@ func (s *Service) crossHostReport(ctx context.Context, tx pgx.Tx, c api.Executio
 			if _, replacing := command.Unit.Plan.Local.Requests[app.ID.String()]; !replacing && command.Unit.Previous.Images[app.ID.String()] != "" && image != command.Unit.Previous.Images[app.ID.String()] {
 				return domain.Invalid("crosshost.sharedImage")
 			}
+		}
+	}
+	// The agent counts its primary's copy of the base as closed after any of these (agent
+	// completeRecoveryHead), so recovery_bases does too.
+	if command.Phase == "complete" || command.Phase == "abort" || command.Phase == "checkpoint-closed" {
+		if err := db.New(tx).CloseRecoveryBase(ctx, db.CloseRecoveryBaseParams{WorkspaceID: ws, ParentID: command.ParentID, PrimaryServerID: c.ServerId}); err != nil {
+			return err
 		}
 	}
 	raw, _ := stablejson.Marshal(receipt)

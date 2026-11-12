@@ -9,7 +9,8 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// Call only after validating the host effect, in the transaction publishing it.
+// Call only after validating the host effect, in the transaction publishing it. The first call
+// records when the change was committed, which places it in recovery's applied-history window.
 func recordRuntimeOutcome(ctx context.Context, tx pgx.Tx, ws, env, operation uuid.UUID, outcome portability.RuntimeOutcome) error {
 	var prior *uuid.UUID
 	var priorGeneration *int64
@@ -32,7 +33,7 @@ func recordRuntimeOutcome(ctx context.Context, tx pgx.Tx, ws, env, operation uui
 	if outcome.Plan != uuid.Nil {
 		target = &outcome.Plan
 	}
-	if _, err := tx.Exec(ctx, `UPDATE execution_operations SET runtime_outcome=$4,runtime_plan_id=$5 WHERE workspace_id=$1 AND environment_id=$2 AND id=$3`, ws, env, operation, outcome.Kind, target); err != nil {
+	if _, err := tx.Exec(ctx, `UPDATE execution_operations SET runtime_outcome=$4,runtime_plan_id=$5,runtime_recorded_at=COALESCE(runtime_recorded_at,clock_timestamp()) WHERE workspace_id=$1 AND environment_id=$2 AND id=$3`, ws, env, operation, outcome.Kind, target); err != nil {
 		return err
 	}
 	_, err := tx.Exec(ctx, `UPDATE environments SET runtime_operation_id=$3 WHERE workspace_id=$1 AND id=$2`, ws, env, operation)

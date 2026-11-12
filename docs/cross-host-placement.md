@@ -251,7 +251,12 @@ Recovery orders runtime changes by the operation that actually committed them,
 not revision creation time or the execution counter used by reads and prepares.
 Each operation records an applied immutable plan or confirmed removal; the current
 runtime retains that operation even when cleanup removes its projection. Recovery
-checks each original authenticated base before combining histories. Equivalent
+checks each original authenticated base before combining histories. It identifies an
+operation by its command as stored, leaving out only what changes after it is created
+(cancellation, controller transfer and its attached checkpoint), so a checkpoint sealed by
+one release is compared the same way by a later one. A primary that fails a checkpoint
+phase is still sent the root's closure, because it may have kept the capsule, and a
+host keeps an unclosed capsule until its root is closed. Equivalent
 cleanup acknowledgements remain valid across report and controller transfer.
 Archive version 6 preserves these outcomes. Versions 1–5 remain importable with
 unknown provenance: their nonempty runtime cannot establish recovery ancestry or

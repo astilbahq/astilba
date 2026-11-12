@@ -47,7 +47,7 @@ func (s *Service) createRecoveryBase(ctx context.Context, tx pgx.Tx, ws uuid.UUI
 	for _, unit := range units {
 		d.Participants = append(d.Participants, unit.Plan.ServerID)
 	}
-	raw, err := portability.CaptureRecovery(ctx, tx, ws)
+	raw, captured, err := portability.CaptureRecoveryAt(ctx, tx, ws)
 	if err != nil {
 		return d, err
 	}
@@ -84,7 +84,12 @@ func (s *Service) createRecoveryBase(ctx context.Context, tx pgx.Tx, ws uuid.UUI
 		return d, err
 	}
 	descriptor, _ := stablejson.Marshal(d)
-	return d, db.New(tx).InsertRecoveryBaseCheckpoint(ctx, db.InsertRecoveryBaseCheckpointParams{ID: id, WorkspaceID: ws, ParentID: root.Id, Descriptor: descriptor, Envelope: envelope})
+	q := db.New(tx)
+	if err := q.InsertRecoveryBaseCheckpoint(ctx, db.InsertRecoveryBaseCheckpointParams{ID: id, WorkspaceID: ws, ParentID: root.Id, Descriptor: descriptor, Envelope: envelope}); err != nil {
+		return d, err
+	}
+	// The root's primary holds the base until it closes the root (recovery_bases).
+	return d, q.RegisterRecoveryBase(ctx, db.RegisterRecoveryBaseParams{WorkspaceID: ws, ID: id, ParentID: root.Id, EnvironmentID: root.EnvironmentId, PrimaryServerID: root.ServerId, CapturedAt: captured})
 }
 
 func reserveRecoveryGeneration(ctx context.Context, tx pgx.Tx, ws uuid.UUID, parent api.ExecutionCommand, phase string) (int64, error) {
