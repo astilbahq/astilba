@@ -37,6 +37,8 @@ function useRefusalText() {
         return t(($) => $.refusal.limit);
       case "ticket":
         return t(($) => $.refusal.ticket);
+      case "elevated":
+        return t(($) => $.refusal.elevated);
       case "opt_in":
         return t(($) => $.refusal.hostOptIn);
       case "ineligible":

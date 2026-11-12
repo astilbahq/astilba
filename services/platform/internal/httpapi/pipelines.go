@@ -150,3 +150,13 @@ func (s *Server) UpdateGitSourcePolicy(w http.ResponseWriter, r *http.Request, w
 	e = s.Execution.SourcePolicy(r.Context(), *principal(r.Context()), ws, pid, env, b.AutoDeploy)
 	s.executionResponse(w, r, 204, nil, e)
 }
+
+func (s *Server) ApproveGitSource(w http.ResponseWriter, r *http.Request, ws, pid, env uuid.UUID) {
+	b, e := decode[api.ApproveGitSource](r)
+	if e != nil {
+		s.fail(w, r, e)
+		return
+	}
+	e = s.Execution.ApproveSource(r.Context(), *principal(r.Context()), ws, pid, env, b.SourceHash)
+	s.executionResponse(w, r, 204, nil, e)
+}

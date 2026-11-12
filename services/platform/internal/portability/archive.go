@@ -116,7 +116,7 @@ func (s *Service) AdmitExport(ctx context.Context, p store.Principal, ws uuid.UU
 }
 
 func (s *Service) Export(ctx context.Context, p store.Principal, ws uuid.UUID, passphrase string) (_ []byte, failure error) {
-	archive := Archive{Version: 6, Workspace: ws, CreatedAt: time.Now().UTC(), Tables: map[string][]Row{}}
+	archive := Archive{Version: ArchiveVersion, Workspace: ws, CreatedAt: time.Now().UTC(), Tables: map[string][]Row{}}
 	// The same access InWorkspaceSnapshot needs.
 	keys, e := s.Store.BeginKeys(ctx, p, store.WorkspaceAccess{Write: true, Owner: true, Credential: true}, true, secretbroker.Request{Workspace: ws, Purpose: secretbroker.Export, Kinds: secretbroker.CredentialKinds})
 	if e != nil {

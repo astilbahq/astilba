@@ -22,7 +22,7 @@ func decodeArchive(raw []byte) (Archive, error) {
 
 func decodeArchiveMode(raw []byte, recovery bool) (Archive, error) {
 	var archive Archive
-	if json.Unmarshal(raw, &archive, json.RejectUnknownMembers(true)) != nil || archive.Version < 1 || archive.Version > 6 || archive.Workspace == uuid.Nil {
+	if json.Unmarshal(raw, &archive, json.RejectUnknownMembers(true)) != nil || archive.Version < 1 || archive.Version > ArchiveVersion || archive.Workspace == uuid.Nil {
 		return archive, ErrArchive
 	}
 	if archive.Version == 1 {
@@ -51,6 +51,13 @@ func decodeArchiveMode(raw []byte, recovery bool) (Archive, error) {
 				setValue(row, field, nil)
 			}
 		}
+	}
+	// Version 7 carries the submissions management makes. An older archive has only runners'.
+	if archive.Version < 7 {
+		if _, exists := archive.Tables["source_submissions"]; exists {
+			return archive, ErrArchive
+		}
+		archive.Tables["source_submissions"] = []Row{}
 	}
 	if len(archive.Tables) != len(tables) {
 		return archive, ErrArchive
@@ -261,6 +268,17 @@ func (s *Service) Import(ctx context.Context, p store.Principal, passphrase stri
 				}
 			}
 			switch table.Name {
+			case "source_submissions":
+				// Its job stays behind, so an attempt still queued would never be made.
+				var state string
+				if json.Unmarshal(row["state"], &state) != nil {
+					return out, ErrArchive
+				}
+				if state == "queued" {
+					setValue(row, "state", "failed")
+					setValue(row, "note", "Imported before this attempt was made. Submit the draft again.")
+					setValue(row, "finished_at", time.Now().UTC())
+				}
 			case "network_members":
 				setValue(row, "acknowledged_generation", 0)
 				setValue(row, "note", "Imported private links require renewed owner approval after host transfer.")

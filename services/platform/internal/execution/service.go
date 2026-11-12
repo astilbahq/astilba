@@ -81,6 +81,7 @@ func New(st *store.Store) (*Service, error) {
 	river.AddWorker(workers, &secretAccessSweepWorker{service: s})
 	river.AddWorker(workers, &worker{service: s})
 	river.AddWorker(workers, &refreshWorker{service: s})
+	river.AddWorker(workers, &submissionWorker{service: s})
 	river.AddWorker(workers, &automaticWorker{service: s})
 	river.AddWorker(workers, &githubFanoutWorker{service: s})
 	river.AddWorker(workers, &githubReconcileWorker{service: s})
@@ -110,8 +111,13 @@ func (a workspaceAccess) admission() store.WorkspaceAccess {
 }
 
 func (s *Service) scope(ctx context.Context, p store.Principal, ws uuid.UUID, access workspaceAccess, action string, id uuid.UUID, fn func(pgx.Tx) error) error {
-	fnScope := func(tx pgx.Tx, q *db.Queries, _ store.Workspace) error {
-		if err := fn(tx); err != nil {
+	return s.scopeIn(ctx, p, ws, access, action, id, func(tx pgx.Tx, _ store.Workspace) error { return fn(tx) })
+}
+
+// scopeIn is scope for work that needs the admitted workspace, such as the caller's role in it.
+func (s *Service) scopeIn(ctx context.Context, p store.Principal, ws uuid.UUID, access workspaceAccess, action string, id uuid.UUID, fn func(pgx.Tx, store.Workspace) error) error {
+	fnScope := func(tx pgx.Tx, q *db.Queries, w store.Workspace) error {
+		if err := fn(tx, w); err != nil {
 			return err
 		}
 		if action != "" {
@@ -206,7 +212,7 @@ func (s *Service) CreateServer(ctx context.Context, p store.Principal, ws uuid.U
 		if count >= 100 {
 			return domain.Conflict
 		}
-		row, e := q.InsertServer(ctx, db.InsertServerParams{ID: id, WorkspaceID: ws, Name: name, Role: string(in.Role), EnrollmentHash: hash(out.Token), EnrollmentExpires: &out.ExpiresAt, PreviewOnly: in.PreviewOnly != nil && *in.PreviewOnly})
+		row, e := q.InsertServer(ctx, db.InsertServerParams{ID: id, WorkspaceID: ws, Name: name, Role: string(in.Role), EnrollmentHash: hash(out.Token), EnrollmentExpires: &out.ExpiresAt, EnrollmentIssuerID: p.Account.ID, EnrollmentIssuerAuthVersion: p.Account.AuthVersion, PreviewOnly: in.PreviewOnly != nil && *in.PreviewOnly})
 		if e != nil {
 			return e
 		}
@@ -234,7 +240,7 @@ func (s *Service) RenewEnrollment(ctx context.Context, p store.Principal, ws, id
 		if e := invalidateNetworkMember(ctx, tx, ws, id, memberRenewedNote); e != nil {
 			return e
 		}
-		row, e := db.New(tx).RenewServerEnrollment(ctx, db.RenewServerEnrollmentParams{WorkspaceID: ws, ID: id, EnrollmentHash: hash(out.Token), EnrollmentExpires: &out.ExpiresAt})
+		row, e := db.New(tx).RenewServerEnrollment(ctx, db.RenewServerEnrollmentParams{WorkspaceID: ws, ID: id, EnrollmentHash: hash(out.Token), EnrollmentExpires: &out.ExpiresAt, EnrollmentIssuerID: p.Account.ID, EnrollmentIssuerAuthVersion: p.Account.AuthVersion})
 		if e != nil {
 			return e
 		}
