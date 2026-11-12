@@ -326,8 +326,7 @@ func (s *Service) BackupCommand(ctx context.Context, p store.Principal, ws, pid,
 	return out, err
 }
 
-// hydrateBackup fills a backup command's access. With nil keys it makes the delivery's checks
-// and opens nothing.
+// hydrateBackup fills a backup command's access, or with nil keys only makes its checks.
 func (s *Service) hydrateBackup(ctx context.Context, keys valueKeys, c *api.ExecutionCommand) error {
 	if c.CancelRequested || time.Now().After(c.Deadline) {
 		return nil
