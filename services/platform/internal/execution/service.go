@@ -78,6 +78,7 @@ func New(st *store.Store) (*Service, error) {
 	river.AddWorker(workers, &previewWorker{service: s})
 	river.AddWorker(workers, &previewSweepWorker{service: s})
 	river.AddWorker(workers, &troubleshootingSweepWorker{service: s})
+	river.AddWorker(workers, &secretAccessSweepWorker{service: s})
 	river.AddWorker(workers, &worker{service: s})
 	river.AddWorker(workers, &refreshWorker{service: s})
 	river.AddWorker(workers, &submissionWorker{service: s})
@@ -86,7 +87,7 @@ func New(st *store.Store) (*Service, error) {
 	river.AddWorker(workers, &githubReconcileWorker{service: s})
 	s.ResetMail = &auth.ResetMailWorker{}
 	river.AddWorker(workers, s.ResetMail)
-	q, err := river.NewClient(riverpgxv5.New(st.Pool), &river.Config{PeriodicJobs: []*river.PeriodicJob{river.NewPeriodicJob(river.PeriodicInterval(5*time.Second), func() (river.JobArgs, *river.InsertOpts) { return networkSweepArgs{}, nil }, &river.PeriodicJobOpts{RunOnStart: true}), river.NewPeriodicJob(river.PeriodicInterval(30*time.Second), func() (river.JobArgs, *river.InsertOpts) { return coordinatedScheduleArgs{}, nil }, &river.PeriodicJobOpts{RunOnStart: true}), river.NewPeriodicJob(river.PeriodicInterval(30*time.Second), func() (river.JobArgs, *river.InsertOpts) { return previewSweepArgs{}, nil }, &river.PeriodicJobOpts{RunOnStart: true}), river.NewPeriodicJob(river.PeriodicInterval(30*time.Second), func() (river.JobArgs, *river.InsertOpts) { return troubleshootingSweepArgs{}, nil }, &river.PeriodicJobOpts{RunOnStart: true})}, Workers: workers, Queues: map[string]river.QueueConfig{river.QueueDefault: {MaxWorkers: 4}, gitQueue: {MaxWorkers: gitQueueWorkers}, auth.ResetMailQueue: {MaxWorkers: 4}}, JobTimeout: 10 * time.Second})
+	q, err := river.NewClient(riverpgxv5.New(st.Pool), &river.Config{PeriodicJobs: []*river.PeriodicJob{river.NewPeriodicJob(river.PeriodicInterval(5*time.Second), func() (river.JobArgs, *river.InsertOpts) { return networkSweepArgs{}, nil }, &river.PeriodicJobOpts{RunOnStart: true}), river.NewPeriodicJob(river.PeriodicInterval(30*time.Second), func() (river.JobArgs, *river.InsertOpts) { return coordinatedScheduleArgs{}, nil }, &river.PeriodicJobOpts{RunOnStart: true}), river.NewPeriodicJob(river.PeriodicInterval(30*time.Second), func() (river.JobArgs, *river.InsertOpts) { return previewSweepArgs{}, nil }, &river.PeriodicJobOpts{RunOnStart: true}), river.NewPeriodicJob(river.PeriodicInterval(30*time.Second), func() (river.JobArgs, *river.InsertOpts) { return troubleshootingSweepArgs{}, nil }, &river.PeriodicJobOpts{RunOnStart: true}), river.NewPeriodicJob(river.PeriodicInterval(time.Minute), func() (river.JobArgs, *river.InsertOpts) { return secretAccessSweepArgs{}, nil }, &river.PeriodicJobOpts{RunOnStart: true})}, Workers: workers, Queues: map[string]river.QueueConfig{river.QueueDefault: {MaxWorkers: 4}, gitQueue: {MaxWorkers: gitQueueWorkers}, auth.ResetMailQueue: {MaxWorkers: 4}}, JobTimeout: 10 * time.Second})
 	s.Queue = q
 	return s, err
 }
@@ -105,6 +106,13 @@ type workspaceAccess struct {
 	Revocation bool
 }
 
+// ownerSettings is the access an owner's change to the workspace's integrations needs.
+var ownerSettings = workspaceAccess{Write: true, Owner: true, Recent: true}
+
+func (a workspaceAccess) admission() store.WorkspaceAccess {
+	return store.WorkspaceAccess{Write: a.Write, Owner: a.Owner, Recent: a.Recent, Credential: a.Credential}
+}
+
 func (s *Service) scope(ctx context.Context, p store.Principal, ws uuid.UUID, access workspaceAccess, action string, id uuid.UUID, fn func(pgx.Tx) error) error {
 	return s.scopeIn(ctx, p, ws, access, action, id, func(tx pgx.Tx, _ store.Workspace) error { return fn(tx) })
 }
@@ -120,7 +128,7 @@ func (s *Service) scopeIn(ctx context.Context, p store.Principal, ws uuid.UUID, 
 		}
 		return nil
 	}
-	admission := store.WorkspaceAccess{Write: access.Write, Owner: access.Owner, Recent: access.Recent, Credential: access.Credential}
+	admission := access.admission()
 	switch {
 	case access.Recovery:
 		return s.Store.InWorkspaceRecovery(ctx, p, ws, admission, fnScope)

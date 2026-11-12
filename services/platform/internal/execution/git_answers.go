@@ -115,7 +115,7 @@ func (s *Service) loadGitState(ctx context.Context, tx pgx.Tx, ws, id uuid.UUID)
 
 func (s *Service) openStoredAccess(ws, id uuid.UUID, st gitState) (pipeline.Access, error) {
 	var access pipeline.Access
-	err := s.openIntegration(ws, id, "git", st.encrypted, &access)
+	err := s.legacyOpenIntegration(ws, id, "git", st.encrypted, &access)
 	return access, err
 }
 

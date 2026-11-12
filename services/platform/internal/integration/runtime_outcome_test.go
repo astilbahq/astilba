@@ -72,7 +72,7 @@ func TestVisualRuntimeOutcomeRequiresAppliedReport(t *testing.T) {
 	// Fork the same accepted command before its report. Internal snapshots omit
 	// agent authentication, so copy that identity separately as fixture setup.
 	fork := setup(t)
-	fork.st.Keys = f.st.Keys
+	useKeys(t, fork.st, f.st.Keys)
 	if _, err := fork.st.Pool.Exec(ctx, `INSERT INTO workspaces(id,name) VALUES($1,'Outcome fork')`, ws); err != nil {
 		t.Fatal(err)
 	}

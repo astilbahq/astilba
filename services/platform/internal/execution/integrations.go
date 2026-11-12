@@ -11,27 +11,39 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
 	"github.com/astilbahq/astilba/services/platform/internal/randtoken"
+	"github.com/astilbahq/astilba/services/platform/internal/secretbroker"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
 
-func integrationIdentity(ws, id uuid.UUID, kind string) string {
-	return pipeline.EncryptionIdentity(ws, id, kind)
+// sealing begins a session that stores the given new values for an owner's integration
+// settings, before the transaction that writes them and once p is admitted to it. done records
+// whether they were stored.
+func (s *Service) sealing(ctx context.Context, p store.Principal, ws uuid.UUID, items ...secretbroker.Item) (keys *secretbroker.Session, done func(stored bool), err error) {
+	keys, err = s.Store.BeginKeys(ctx, p, ownerSettings.admission(), false, secretbroker.Request{Workspace: ws, Purpose: secretbroker.Seal, Items: items})
+	if err != nil {
+		return nil, nil, err
+	}
+	return keys, func(stored bool) { keys.Close(ctx, secretbroker.UsedIf(stored)) }, nil
 }
-func (s *Service) sealIntegration(ws, id uuid.UUID, kind string, value any) ([]byte, error) {
+
+func sealIntegration(keys *secretbroker.Session, item secretbroker.Item, value any) ([]byte, error) {
 	raw, err := stablejson.Marshal(value)
 	if err != nil {
 		return nil, err
 	}
-	return s.Store.Keys.Seal(raw, integrationIdentity(ws, id, kind))
+	defer clear(raw)
+	return keys.Seal(item, raw)
 }
-func (s *Service) openIntegration(ws, id uuid.UUID, kind string, raw []byte, value any) error {
-	plain, err := s.Store.Keys.Open(raw, integrationIdentity(ws, id, kind))
+
+func openIntegration(keys *secretbroker.Session, item secretbroker.Item, raw []byte, value any) error {
+	plain, err := keys.Open(item, raw)
 	if err != nil {
 		return err
 	}
+	defer clear(plain)
 	return json.Unmarshal(plain, value)
 }
 func validCredential(c pipeline.Credential, required bool) bool {
@@ -81,6 +93,9 @@ func (s *Service) CreateConnection(ctx context.Context, p store.Principal, ws uu
 	}
 	// Validate authority before contacting a configured integration. The answer is about
 	// this request's own URL and credential, so only the limit needs checking again.
+	item := secretbroker.Item{Kind: secretbroker.Git, ID: c.ID}
+	keys := s.passKeys(secretbroker.Request{Workspace: ws, Purpose: secretbroker.Seal, Principal: p.Secrets(), Items: []secretbroker.Item{item}})
+	defer keys.close(ctx)
 	var repository *gitAnswer[repositoryIdentity]
 	var push *gitAnswer[bool]
 	create := func(tx pgx.Tx) error {
@@ -129,10 +144,15 @@ func (s *Service) CreateConnection(ctx context.Context, p store.Principal, ws uu
 		if err != nil {
 			return err
 		}
-		encrypted, err := s.sealIntegration(ws, c.ID, "git", access)
+		session, err := keys.get()
 		if err != nil {
 			return err
 		}
+		encrypted, err := sealIntegration(session, item, access)
+		if err != nil {
+			return err
+		}
+		keys.use()
 		raw, _ := stablejson.Marshal(c)
 		return q.InsertGitConnection(ctx, db.InsertGitConnectionParams{ID: c.ID, WorkspaceID: ws, Configuration: raw, EncryptedAccess: encrypted})
 	}
@@ -169,7 +189,14 @@ func (s *Service) CreateRegistry(ctx context.Context, p store.Principal, ws uuid
 	if !pipeline.ValidRegistry(r.Repository) || !validCredential(access.Push, true) || !validCredential(access.Pull, true) {
 		return r, domain.Invalid("registry")
 	}
-	err = s.scope(ctx, p, ws, workspaceAccess{Write: true, Owner: true, Recent: true}, "registry.create", r.ID, func(tx pgx.Tx) error {
+	item := secretbroker.Item{Kind: secretbroker.Registry, ID: r.ID}
+	keys, done, err := s.sealing(ctx, p, ws, item)
+	if err != nil {
+		return r, err
+	}
+	sealed := false
+	defer func() { done(sealed) }()
+	err = s.scope(ctx, p, ws, ownerSettings, "registry.create", r.ID, func(tx pgx.Tx) error {
 		q := db.New(tx)
 		count, err := q.CountRegistries(ctx, ws)
 		if err != nil {
@@ -178,10 +205,11 @@ func (s *Service) CreateRegistry(ctx context.Context, p store.Principal, ws uuid
 		if count >= 100 {
 			return domain.Conflict
 		}
-		encrypted, err := s.sealIntegration(ws, r.ID, "registry", access)
+		encrypted, err := sealIntegration(keys, item, access)
 		if err != nil {
 			return err
 		}
+		sealed = true
 		raw, _ := stablejson.Marshal(r)
 		return q.InsertRegistry(ctx, db.InsertRegistryParams{ID: r.ID, WorkspaceID: ws, Configuration: raw, EncryptedAccess: encrypted})
 	})
@@ -219,7 +247,14 @@ func (s *Service) CreateBuildSecret(ctx context.Context, p store.Principal, ws u
 	if value == "" || len(value) > 4096 || strings.ContainsRune(value, 0) {
 		return v, domain.Invalid("value")
 	}
-	err = s.scope(ctx, p, ws, workspaceAccess{Write: true, Owner: true, Recent: true}, "build.secret.create", v.ID, func(tx pgx.Tx) error {
+	item := secretbroker.Item{Kind: secretbroker.BuildSecret, ID: v.ID}
+	keys, done, err := s.sealing(ctx, p, ws, item)
+	if err != nil {
+		return v, err
+	}
+	sealed := false
+	defer func() { done(sealed) }()
+	err = s.scope(ctx, p, ws, ownerSettings, "build.secret.create", v.ID, func(tx pgx.Tx) error {
 		q := db.New(tx)
 		count, err := q.CountBuildSecrets(ctx, ws)
 		if err != nil {
@@ -228,10 +263,11 @@ func (s *Service) CreateBuildSecret(ctx context.Context, p store.Principal, ws u
 		if count >= 100 {
 			return domain.Conflict
 		}
-		cipher, err := s.Store.Keys.Seal([]byte(value), integrationIdentity(ws, v.ID, "build-secret"))
+		cipher, err := keys.Seal(item, []byte(value))
 		if err != nil {
 			return err
 		}
+		sealed = true
 		v.CreatedAt, err = q.InsertBuildSecret(ctx, db.InsertBuildSecretParams{ID: v.ID, WorkspaceID: ws, Name: v.Name, EncryptedValue: cipher})
 		return err
 	})
@@ -248,7 +284,19 @@ func (s *Service) ReceivePush(ctx context.Context, id uuid.UUID, headers http.He
 	}
 	var c pipeline.Connection
 	var access pipeline.Access
-	if json.Unmarshal(row.Configuration, &c) != nil || s.openIntegration(ws, id, "git", row.EncryptedAccess, &access) != nil {
+	if json.Unmarshal(row.Configuration, &c) != nil {
+		return domain.Unauthenticated
+	}
+	// Unauthenticated until the signature is checked, which needs the connection's secret: each
+	// connection has a small budget of its own.
+	item := secretbroker.Item{Kind: secretbroker.Git, ID: id}
+	keys, err := s.Store.Broker.Begin(ctx, secretbroker.Request{Workspace: ws, Purpose: secretbroker.Operate, Principal: secretbroker.System("webhook"), Items: []secretbroker.Item{item}, Connection: &id})
+	if err != nil {
+		return err
+	}
+	err = openIntegration(keys, item, row.EncryptedAccess, &access)
+	keys.Close(ctx, secretbroker.Done(err))
+	if err != nil {
 		return domain.Unauthenticated
 	}
 	push, pushErr := pipeline.VerifyPush(c.Provider, access.Webhook, c.RepositoryID, headers, body)
