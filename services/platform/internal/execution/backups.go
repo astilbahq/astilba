@@ -18,6 +18,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 func (s *Service) BackupDestinations(ctx context.Context, p store.Principal, ws uuid.UUID) ([]backup.Destination, error) {
@@ -453,27 +454,48 @@ func (s *Service) PrepareBackupCutover(ctx context.Context, p store.Principal, w
 		if !run.Verified || run.TargetID == uuid.Nil || run.State != "succeeded" || run.Manifest == nil || v.Applied == nil || policy.Plan.RevisionID != *v.Applied {
 			return domain.Conflict
 		}
-		source := policy.ResourceID
-		if policy.Method == "postgres-logical" {
-			for _, a := range policy.Plan.Specification.Applications {
-				if a.ID == source && a.Postgres != nil {
-					source = a.Mounts[0].VolumeID
-				}
-			}
-		}
-		var boundary *deployment.RestoreCutover
+		var current deployment.Plan
 		if policy.Plan.Local != nil {
-			current, err := appliedVisualPlan(ctx, tx, ws, env)
-			if err != nil {
+			if current, err = appliedVisualPlan(ctx, tx, ws, env); err != nil {
 				return err
 			}
 			if current.Distributed == nil || current.PrimaryPlan().Hash != policy.Plan.Hash || deployment.Hash(v.Spec) != deployment.Hash(current.Specification) {
 				return domain.Conflict
 			}
-			source, err = backup.CutoverVolume(policy, run)
-			if err != nil {
+		}
+		// The restored target is initialised by the archive's own PostgreSQL image, so the source the
+		// policy froze and the draft that will run on the target must both run that image.
+		source, err := backup.CutoverVolume(policy, run)
+		if err != nil {
+			return domain.Invalid("restore.compatibility")
+		}
+		var major pgtype.Text
+		if policy.Method == "postgres-logical" {
+			opens := false
+			for _, a := range v.Spec.Applications {
+				if a.ID == policy.ResourceID {
+					opens = backup.OpensRestoredPostgres(a, *run.Manifest) && a.Mounts[0].VolumeID == source
+				}
+			}
+			if !opens {
 				return domain.Invalid("restore.compatibility")
 			}
+			major.String = domain.PostgresMajor(run.Manifest.Image)
+			major.Valid = major.String != ""
+		}
+		q := db.New(tx)
+		recorded, err := q.ClaimRestoreTarget(ctx, db.ClaimRestoreTargetParams{WorkspaceID: ws, EnvironmentID: env, UnitID: policy.Plan.UnitID, ID: run.TargetID, PostgresMajor: major})
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.Conflict
+		}
+		if err != nil {
+			return err
+		}
+		if recorded != major {
+			return domain.Invalid("restore.compatibility")
+		}
+		var boundary *deployment.RestoreCutover
+		if policy.Plan.Local != nil {
 			boundary = &deployment.RestoreCutover{SourcePlanID: current.ID, SourceHash: current.Hash, PolicyID: policy.ID, RunID: run.ID, ManifestHash: run.ManifestHash, OldVolumeID: source, TargetVolumeID: run.TargetID}
 		}
 		if v.Spec.Compose != nil {
@@ -518,7 +540,6 @@ func (s *Service) PrepareBackupCutover(ctx context.Context, p store.Principal, w
 			return err
 		}
 		h := sha256.Sum256(canonical)
-		q := db.New(tx)
 		out, err = q.InsertRevision(ctx, db.InsertRevisionParams{WorkspaceID: ws, EnvironmentID: env, ID: uuid.New(), AuthorID: p.Account.ID, Specification: canonical, ContentHash: h[:]})
 		if err != nil {
 			return err
