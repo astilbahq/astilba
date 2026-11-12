@@ -102,6 +102,34 @@ func (q *Queries) DuePreviewRequests(ctx context.Context) ([]DuePreviewRequestsR
 	return items, nil
 }
 
+const previewForkApproval = `-- name: PreviewForkApproval :one
+SELECT CASE WHEN held THEN approved_head ELSE '' END::text AS head,
+    CASE WHEN held THEN approved_repository ELSE 0 END::bigint AS repository,
+    CASE WHEN held THEN approved_generation ELSE 0 END::bigint AS generation
+FROM preview_requests, LATERAL (SELECT policy_approver_holds(workspace_id,approved_by,approved_auth_version,true) AS held) approval
+WHERE workspace_id = $1 AND id = $2
+`
+
+type PreviewForkApprovalParams struct {
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ID          uuid.UUID `json:"id"`
+}
+
+type PreviewForkApprovalRow struct {
+	Head       string `json:"head"`
+	Repository int64  `json:"repository"`
+	Generation int64  `json:"generation"`
+}
+
+// A fork commit's approval counts only while the owner who gave it is still one with the same
+// authentication version; otherwise it reads as no approval.
+func (q *Queries) PreviewForkApproval(ctx context.Context, arg PreviewForkApprovalParams) (PreviewForkApprovalRow, error) {
+	row := q.db.QueryRow(ctx, previewForkApproval, arg.WorkspaceID, arg.ID)
+	var i PreviewForkApprovalRow
+	err := row.Scan(&i.Head, &i.Repository, &i.Generation)
+	return i, err
+}
+
 const releaseRevokedHostPreviews = `-- name: ReleaseRevokedHostPreviews :many
 UPDATE preview_requests r SET state='deleted',note = $1,released_by_revocation=true,cleanup_at=NULL,updated_at=now(),next_check_at=now()+interval '1 day'
 FROM preview_policies p

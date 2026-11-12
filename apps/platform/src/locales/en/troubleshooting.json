@@ -95,6 +95,7 @@
     "ineligible": "This container is not eligible for terminal sessions.",
     "noShell": "This container has no usable /bin/sh, which a session needs.",
     "ticket": "The ticket was wrong, expired, already used or presented by someone else.",
+    "elevated": "This service is privileged or shares a volume or network with a privileged service, so a terminal in it could control the server.",
     "forbidden": "This person is not allowed to open terminal sessions here.",
     "invalidInput": "The request named a service or instance that could not be found.",
     "mfaRequired": "This person needs two-factor authentication to open terminal sessions.",

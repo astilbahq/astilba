@@ -201,3 +201,13 @@ func (s *Server) RunConfiguredBuild(w http.ResponseWriter, r *http.Request, ws, 
 	v, err := s.Execution.RunConfiguredBuild(r.Context(), *principal(r.Context()), ws, pid, env, app, b)
 	s.executionResponse(w, r, 202, v, err)
 }
+
+func (s *Server) ApproveBuildTarget(w http.ResponseWriter, r *http.Request, ws, pid, env, app uuid.UUID) {
+	b, err := decode[api.ApproveBuildTarget](r)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	err = s.Execution.ApproveBuildTarget(r.Context(), *principal(r.Context()), ws, pid, env, app, b.TargetHash)
+	s.executionResponse(w, r, 204, nil, err)
+}

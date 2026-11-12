@@ -82,17 +82,20 @@ func (q *Queries) InsertAudit(ctx context.Context, arg InsertAuditParams) error 
 }
 
 const insertInvitation = `-- name: InsertInvitation :exec
-INSERT INTO invitations(workspace_id,id,email,role,token_hash,expires_at) VALUES($1,$2,$3,$4,$5,$6)
-ON CONFLICT(workspace_id,email) DO UPDATE SET id=EXCLUDED.id,role=EXCLUDED.role,token_hash=EXCLUDED.token_hash,expires_at=EXCLUDED.expires_at
+INSERT INTO invitations(workspace_id,id,email,role,token_hash,expires_at,issuer_id,issuer_auth_version) VALUES($1,$2,$3,$4,$5,$6,$7,$8)
+ON CONFLICT(workspace_id,email) DO UPDATE SET id=EXCLUDED.id,role=EXCLUDED.role,token_hash=EXCLUDED.token_hash,expires_at=EXCLUDED.expires_at,
+    issuer_id=EXCLUDED.issuer_id,issuer_auth_version=EXCLUDED.issuer_auth_version
 `
 
 type InsertInvitationParams struct {
-	WorkspaceID uuid.UUID `json:"workspace_id"`
-	ID          uuid.UUID `json:"id"`
-	Email       string    `json:"email"`
-	Role        string    `json:"role"`
-	TokenHash   []byte    `json:"token_hash"`
-	ExpiresAt   time.Time `json:"expires_at"`
+	WorkspaceID       uuid.UUID `json:"workspace_id"`
+	ID                uuid.UUID `json:"id"`
+	Email             string    `json:"email"`
+	Role              string    `json:"role"`
+	TokenHash         []byte    `json:"token_hash"`
+	ExpiresAt         time.Time `json:"expires_at"`
+	IssuerID          uuid.UUID `json:"issuer_id"`
+	IssuerAuthVersion int64     `json:"issuer_auth_version"`
 }
 
 func (q *Queries) InsertInvitation(ctx context.Context, arg InsertInvitationParams) error {
@@ -103,6 +106,8 @@ func (q *Queries) InsertInvitation(ctx context.Context, arg InsertInvitationPara
 		arg.Role,
 		arg.TokenHash,
 		arg.ExpiresAt,
+		arg.IssuerID,
+		arg.IssuerAuthVersion,
 	)
 	return err
 }
@@ -169,7 +174,8 @@ func (q *Queries) ListAudit(ctx context.Context, workspaceID uuid.UUID) ([]Audit
 }
 
 const listInvitations = `-- name: ListInvitations :many
-SELECT id,email,role,expires_at FROM invitations WHERE workspace_id=$1 AND expires_at>now() ORDER BY email
+SELECT id,email,role,expires_at FROM invitations
+WHERE workspace_id=$1 AND expires_at>now() AND policy_approver_holds(workspace_id,issuer_id,issuer_auth_version,true) ORDER BY email
 `
 
 type ListInvitationsRow struct {
@@ -284,9 +290,13 @@ func (q *Queries) ListWorkspaces(ctx context.Context, accountID uuid.UUID) ([]Li
 }
 
 const lockInvitation = `-- name: LockInvitation :one
-SELECT workspace_id, id, email, role, token_hash, expires_at FROM invitations WHERE token_hash=$1 AND expires_at > now() FOR UPDATE
+SELECT workspace_id, id, email, role, token_hash, expires_at, issuer_id, issuer_auth_version FROM invitations
+WHERE token_hash=$1 AND expires_at > now() AND policy_approver_holds(workspace_id,issuer_id,issuer_auth_version,true) FOR UPDATE
 `
 
+// unscoped: the presented invitation token establishes the workspace.
+// An invitation counts only while its issuer is still an owner with the same authentication
+// version.
 func (q *Queries) LockInvitation(ctx context.Context, tokenHash []byte) (Invitation, error) {
 	row := q.db.QueryRow(ctx, lockInvitation, tokenHash)
 	var i Invitation
@@ -297,6 +307,8 @@ func (q *Queries) LockInvitation(ctx context.Context, tokenHash []byte) (Invitat
 		&i.Role,
 		&i.TokenHash,
 		&i.ExpiresAt,
+		&i.IssuerID,
+		&i.IssuerAuthVersion,
 	)
 	return i, err
 }
@@ -332,9 +344,11 @@ func (q *Queries) OwnerCount(ctx context.Context, workspaceID uuid.UUID) (int64,
 }
 
 const peekInvitation = `-- name: PeekInvitation :one
-SELECT workspace_id, id, email, role, token_hash, expires_at FROM invitations WHERE token_hash=$1 AND expires_at > now()
+SELECT workspace_id, id, email, role, token_hash, expires_at, issuer_id, issuer_auth_version FROM invitations
+WHERE token_hash=$1 AND expires_at > now() AND policy_approver_holds(workspace_id,issuer_id,issuer_auth_version,true)
 `
 
+// unscoped: the presented invitation token establishes the workspace.
 func (q *Queries) PeekInvitation(ctx context.Context, tokenHash []byte) (Invitation, error) {
 	row := q.db.QueryRow(ctx, peekInvitation, tokenHash)
 	var i Invitation
@@ -345,6 +359,8 @@ func (q *Queries) PeekInvitation(ctx context.Context, tokenHash []byte) (Invitat
 		&i.Role,
 		&i.TokenHash,
 		&i.ExpiresAt,
+		&i.IssuerID,
+		&i.IssuerAuthVersion,
 	)
 	return i, err
 }
@@ -391,6 +407,36 @@ type UpdateMembershipParams struct {
 func (q *Queries) UpdateMembership(ctx context.Context, arg UpdateMembershipParams) error {
 	_, err := q.db.Exec(ctx, updateMembership, arg.WorkspaceID, arg.AccountID, arg.Role)
 	return err
+}
+
+const withdrawIssuerInvitations = `-- name: WithdrawIssuerInvitations :many
+DELETE FROM invitations WHERE workspace_id = $1 AND issuer_id = $2 RETURNING id
+`
+
+type WithdrawIssuerInvitationsParams struct {
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	IssuerID    uuid.UUID `json:"issuer_id"`
+}
+
+// An owner's invitations end with their ownership, in the transaction that ends it.
+func (q *Queries) WithdrawIssuerInvitations(ctx context.Context, arg WithdrawIssuerInvitationsParams) ([]uuid.UUID, error) {
+	rows, err := q.db.Query(ctx, withdrawIssuerInvitations, arg.WorkspaceID, arg.IssuerID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []uuid.UUID{}
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const workspace = `-- name: Workspace :one

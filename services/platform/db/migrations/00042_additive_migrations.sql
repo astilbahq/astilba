@@ -10,7 +10,7 @@ CREATE TABLE schema_additive_migrations (
     version bigint PRIMARY KEY CHECK (version > 0),
     recorded_at timestamptz NOT NULL DEFAULT now()
 );
-INSERT INTO schema_additive_migrations (version) VALUES (43);
+INSERT INTO schema_additive_migrations (version) VALUES (42);
 
 -- +goose Down
 DROP TABLE schema_additive_migrations;
