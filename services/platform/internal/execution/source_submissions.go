@@ -293,17 +293,19 @@ func (s *Service) prepareSubmission(ctx context.Context, git *gitAnswers, job *r
 	if row.State != "queued" {
 		return nil, nil
 	}
-	fail := func(note string) (*submissionWork, error) {
+	// fail settles the attempt with a note for the owner. It returns only whether that was
+	// recorded: a refused attempt has no work, and nothing it says reaches the provider.
+	fail := func(note string) error {
 		if err := q.FinishSourceSubmission(ctx, db.FinishSourceSubmissionParams{WorkspaceID: ws, ID: id, State: "failed", Note: boundedNote("Not submitted: " + note)}); err != nil {
-			return nil, err
+			return err
 		}
 		if _, err := river.JobCompleteTx[*riverpgxv5.Driver](ctx, tx, job); err != nil {
-			return nil, err
+			return err
 		}
-		return nil, tx.Commit(ctx)
+		return tx.Commit(ctx)
 	}
 	if time.Since(row.CreatedAt) > submissionLifetime-submissionTimeout {
-		return fail("no attempt finished within an hour. Submit the draft again.")
+		return nil, fail("no attempt finished within an hour. Submit the draft again.")
 	}
 	var c submissionConfiguration
 	if err = json.Unmarshal(row.Configuration, &c); err != nil {
@@ -311,7 +313,7 @@ func (s *Service) prepareSubmission(ctx context.Context, git *gitAnswers, job *r
 	}
 	if err = s.Store.ManagementAdmission(ctx, tx, ws); err != nil {
 		if errors.Is(err, store.SubscriptionRequired) {
-			return fail("this workspace needs an active subscription.")
+			return nil, fail("this workspace needs an active subscription.")
 		}
 		return nil, err
 	}
@@ -322,9 +324,9 @@ func (s *Service) prepareSubmission(ctx context.Context, git *gitAnswers, job *r
 			return nil, err
 		}
 		if slices.Contains(invalid.Fields, "source.secretBudget") {
-			return fail("runtime secrets exceed the limit for checking these files. Nothing was written to the repository.")
+			return nil, fail("runtime secrets exceed the limit for checking these files. Nothing was written to the repository.")
 		}
-		return fail("the names or contents of these files include a known runtime secret value. Nothing was written to the repository.")
+		return nil, fail("the names or contents of these files include a known runtime secret value. Nothing was written to the repository.")
 	}
 	current, _, err := git.connection(ctx, tx, c.Connection.ID)
 	if err != nil {
@@ -332,7 +334,7 @@ func (s *Service) prepareSubmission(ctx context.Context, git *gitAnswers, job *r
 	}
 	current.Name = c.Connection.Name
 	if current != c.Connection {
-		return fail("the Git connection changed after the draft was submitted. Submit it again.")
+		return nil, fail("the Git connection changed after the draft was submitted. Submit it again.")
 	}
 	access, err := git.access(ctx, tx, c.Connection.ID, true)
 	if err != nil {
@@ -341,7 +343,7 @@ func (s *Service) prepareSubmission(ctx context.Context, git *gitAnswers, job *r
 	if access.Err != nil {
 		note, terminal := submissionFailure(access.Err)
 		if terminal || job.Attempt >= submissionAttempts {
-			return fail(note)
+			return nil, fail(note)
 		}
 		if err = q.NoteSourceSubmission(ctx, db.NoteSourceSubmissionParams{WorkspaceID: ws, ID: id, Note: boundedNote(retryNote(job.Attempt, note))}); err != nil {
 			return nil, err
@@ -352,11 +354,11 @@ func (s *Service) prepareSubmission(ctx context.Context, git *gitAnswers, job *r
 		return nil, access.Err
 	}
 	if access.Value.API.Password == "" {
-		return fail("the connection has no API credential, which submitting needs to create the branch and review.")
+		return nil, fail("the connection has no API credential, which submitting needs to create the branch and review.")
 	}
 	provider, err := pipeline.NewProvider(current, access.Value.API, s.Policy)
 	if err != nil {
-		return fail("the connection's provider is not allowed by this installation's policy.")
+		return nil, fail("the connection's provider is not allowed by this installation's policy.")
 	}
 	work := &submissionWork{provider: provider, submission: pipeline.Submission{ID: c.SubmissionID, Base: c.Commit, Branch: c.Branch, Files: c.Bundle.Files, Previous: c.Paths, At: c.SubmittedAt}}
 	return work, tx.Commit(ctx)

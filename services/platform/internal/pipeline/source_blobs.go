@@ -17,8 +17,10 @@ import (
 )
 
 // GitBlobID is the object name Git gives a file holding content, in the object format of
-// commit: a SHA-256 repository names its commits with 64 characters. Matching one means
-// finding a second preimage, which a chosen-prefix collision attack on SHA-1 does not give.
+// commit: a SHA-256 repository names its commits with 64 characters. It is content addressing,
+// fixed by Git itself, not protection for a secret: the content is a repository file, which the
+// provider names with the same ID. Matching one means finding a second preimage, which a
+// chosen-prefix collision attack on SHA-1 does not give.
 func GitBlobID(commit, content string) string {
 	object := []byte("blob " + strconv.Itoa(len(content)) + "\x00" + content)
 	if len(commit) == 64 {

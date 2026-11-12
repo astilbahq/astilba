@@ -112,6 +112,19 @@ test("repository setup, Git service, queued build and cancellation use the real 
   await connect
     .getByLabel("Read-only clone username", { exact: true })
     .fill("reader");
+  // Runners receive the clone credential, so one the Git server would let push is refused.
+  await connect
+    .getByLabel("Read-only clone token", { exact: true })
+    .fill("browser-api-fixture");
+  await connect
+    .getByRole("button", { name: "Connect repository", exact: true })
+    .click();
+  await expect(
+    page.getByRole("alert").filter({ hasText: "clone credential can push" }),
+  ).toBeVisible();
+  await expect(page.getByLabel("Webhook secret", { exact: true })).toHaveCount(
+    0,
+  );
   await connect
     .getByLabel("Read-only clone token", { exact: true })
     .fill("browser-clone-fixture");
