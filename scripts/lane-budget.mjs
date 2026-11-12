@@ -1,5 +1,6 @@
 import { appendFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
+import { github, syncIssue } from "./report-issue.mjs";
 
 // Each lane's `go test -timeout` allows 900 seconds. One commit's package time has
 // differed by 28% between hosted runners, so a lane is moved well before a slow
@@ -8,7 +9,6 @@ import { pathToFileURL } from "node:url";
 export const budgetSeconds = 600;
 const sampledRuns = 5;
 const minimumRuns = 3;
-const api = "https://api.github.com";
 const issueTitle = "Go race lanes are past their time budget";
 
 // A name is limited to import path characters because it reaches a public issue, and
@@ -35,18 +35,24 @@ function median(values) {
 // Takes each job a lane ran, with what its log held. A median of at least three runs
 // ignores one slow runner, and fewer leaves a lane undecided. A successful job without
 // a time means this parser no longer reads the logs, so it must not read as a pass.
+// Each problem's key names what is wrong without today's numbers, so the issue says
+// only what is new.
 export function laneBudget(jobs, budget = budgetSeconds) {
   const problems = [];
+  const problem = (key, line) => problems.push({ key, line });
   const samples = new Map();
   for (const { run, lane, conclusion, times } of jobs) {
     if (conclusion === "success" && !times.length)
-      problems.push(`run ${run}: ${lane} succeeded with no package times`);
+      problem(
+        `untimed\t${lane}`,
+        `run ${run}: ${lane} succeeded with no package times`,
+      );
     for (const { name, seconds } of times) {
       const key = `${lane}\t${name}`;
       samples.set(key, [...(samples.get(key) ?? []), seconds]);
     }
   }
-  if (!samples.size) problems.push("found no lane times to compare");
+  if (!samples.size) problem("no times", "found no lane times to compare");
   const rows = [...samples]
     .map(([key, seconds]) => {
       const [lane, name] = key.split("\t");
@@ -60,27 +66,12 @@ export function laneBudget(jobs, budget = budgetSeconds) {
     .toSorted((a, b) => b.seconds - a.seconds);
   for (const { lane, name, seconds, samples: count } of rows)
     if (count >= minimumRuns && seconds > budget)
-      problems.push(
+      problem(
+        `over\t${lane}\t${name}`,
         `${lane}: \`${name}\` has a median of ${seconds}s over ${count} runs, past the ${budget}s budget. Rebalance the lanes, as docs/continuous-integration.md describes.`,
       );
   const undecided = rows.some(({ samples: count }) => count < minimumRuns);
   return { problems, undecided, rows };
-}
-
-function github(token) {
-  return async (path, { method = "GET", body } = {}) => {
-    const response = await fetch(`${api}${path}`, {
-      method,
-      headers: {
-        accept: "application/vnd.github+json",
-        authorization: `Bearer ${token}`,
-      },
-      body: body && JSON.stringify(body),
-    });
-    if (!response.ok)
-      throw new Error(`${method} ${path} returned ${response.status}`);
-    return response;
-  };
 }
 
 // Main pushes run every lane once, and a newer run cannot cancel them. A run that
@@ -128,39 +119,6 @@ export async function recentJobs(request, repository) {
   return jobs;
 }
 
-// A person hears of a failure through this issue, because a scheduled run's own
-// failure notice goes to whichever account GitHub holds responsible for the schedule.
-// It stays open, once, for as long as the budget is exceeded, and says what is over
-// today. Only this workflow's own issues count, as anyone can open one with this title.
-export async function syncIssue(
-  request,
-  repository,
-  { problems, undecided },
-  body,
-) {
-  const issues = await (
-    await request(
-      `/repos/${repository}/issues?state=open&creator=github-actions%5Bbot%5D&per_page=100`,
-    )
-  ).json();
-  const open = issues.find(({ title }) => title === issueTitle);
-  if (problems.length && !open)
-    await request(`/repos/${repository}/issues`, {
-      method: "POST",
-      body: { title: issueTitle, body },
-    });
-  else if (problems.length)
-    await request(`/repos/${repository}/issues/${open.number}`, {
-      method: "PATCH",
-      body: { body },
-    });
-  else if (open && !undecided)
-    await request(`/repos/${repository}/issues/${open.number}`, {
-      method: "PATCH",
-      body: { state: "closed", state_reason: "completed" },
-    });
-}
-
 async function run() {
   const token = process.env.GITHUB_TOKEN;
   if (!token) throw new Error("GITHUB_TOKEN must allow reading Actions");
@@ -183,12 +141,14 @@ async function run() {
   // Only the workflow reports, so a local run changes nothing.
   if (process.env.GITHUB_RUN_ID) {
     appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${table}\n`);
-    await syncIssue(
-      request,
-      repository,
-      { problems, undecided },
-      [
-        ...problems,
+    await syncIssue(request, repository, {
+      title: issueTitle,
+      problems,
+      undecided,
+      body: [
+        ...(problems.length
+          ? problems.map(({ line }) => line)
+          : ["Every lane is within budget again."]),
         "",
         table,
         "",
@@ -196,9 +156,10 @@ async function run() {
         "",
         "See the lane budget in `docs/continuous-integration.md`. This closes itself once the lanes are back within budget.",
       ].join("\n"),
-    );
+    });
   }
-  if (problems.length) throw new Error(problems.join("\n"));
+  if (problems.length)
+    throw new Error(problems.map(({ line }) => line).join("\n"));
   console.log(
     undecided
       ? `No lane with ${minimumRuns} runs is past ${budgetSeconds}s, and some have fewer.`

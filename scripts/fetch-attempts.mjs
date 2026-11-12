@@ -21,7 +21,7 @@ const outlastOutage = (_attempt, elapsed) =>
 // A command that ran and failed, or a download that did not arrive. Only these repeat:
 // anything else, such as a command that could not start or a bug in the step, would
 // fail the same way again.
-class FetchFailure extends Error {}
+export class FetchFailure extends Error {}
 
 // Runs a step that fetches over the network until it succeeds or `delay` gives up.
 // With a time limit, the attempts share it and each receives what remains. A step

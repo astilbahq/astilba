@@ -1,0 +1,78 @@
+name: Scheduled scans
+
+on:
+  # TEMPORARY: exercises the scans on this branch before review; removed before merge.
+  push:
+    branches: [claude/stoic-chatterjee-a8838e]
+  workflow_dispatch:
+  # Finds an advisory or release published since the last code change.
+  schedule:
+    - cron: "41 4 * * *"
+
+permissions:
+  contents: read
+
+# Runs one at a time, so two reports never race on one issue.
+concurrency:
+  group: scheduled-scans
+  cancel-in-progress: false
+
+jobs:
+  dependencies:
+    uses: ./.github/workflows/vulnerability-scan.yml
+
+  pins:
+    name: Scan pinned images and tools
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.18.1
+      - run: make report-pins
+        env:
+          # Release listings come from GitHub's API, and runners share the
+          # unauthenticated rate limit.
+          GITHUB_TOKEN: ${{ github.token }}
+          PIN_REPORT: ${{ runner.temp }}/pin-report.json
+      - if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: pin-report
+          path: ${{ runner.temp }}/pin-report.json
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # The only job that may write issues. It runs no scanner and pulls no image, and reads
+  # the scan jobs' reports as data. A scheduled run's own failure notice goes to whoever
+  # GitHub holds responsible for the schedule, often a bot, so the issue is the notice.
+  report:
+    name: Report to issues
+    needs: [dependencies, pins]
+    if: always() && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.18.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        continue-on-error: true
+        with:
+          path: ${{ runner.temp }}/reports
+      - run: node scripts/scheduled-report.mjs
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          DEPENDENCIES_RESULT: ${{ needs.dependencies.result }}
+          DEPENDENCIES_REPORT: ${{ runner.temp }}/reports/dependency-report/dependency-report.json
+          PINS_RESULT: ${{ needs.pins.result }}
+          PINS_REPORT: ${{ runner.temp }}/reports/pin-report/pin-report.json
