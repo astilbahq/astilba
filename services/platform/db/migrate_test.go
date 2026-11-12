@@ -3,37 +3,40 @@ package dbmigrate
 import (
 	"io/fs"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
 )
 
-// firstMarked is the first migration that could record itself as additive.
-const firstMarked = 43
-
 var (
 	migrationName = regexp.MustCompile(`^(\d+)_[a-z0-9_]+\.sql$`)
-	marker        = regexp.MustCompile(`^INSERT INTO schema_additive_migrations \(version\) VALUES \((\d+)\)$`)
 	notAdditive   = regexp.MustCompile(`(?m)^-- astilba: not additive: \S`)
 	space         = regexp.MustCompile(`\s+`)
+	tagPattern    = regexp.MustCompile(`^\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$`)
 
-	// Each form is anchored at both ends, so anything it does not name is not additive.
-	createTable   = regexp.MustCompile(`^CREATE TABLE ([a-z_][a-z0-9_]*) \((.*)\)$`)
-	createIndex   = regexp.MustCompile(`^CREATE (UNIQUE )?INDEX [a-z0-9_]+ ON ([a-z_][a-z0-9_]*) [^;]*$`)
-	createFunc    = regexp.MustCompile(`^CREATE FUNCTION [a-z_][a-z0-9_]*\(`)
-	createTrigger = regexp.MustCompile(`^CREATE TRIGGER [a-z0-9_]+ (?:BEFORE|AFTER) .*? ON ([a-z_][a-z0-9_]*) FOR EACH ROW EXECUTE FUNCTION [a-z_][a-z0-9_]*\(\)$`)
-	addColumn     = regexp.MustCompile(`^ALTER TABLE ([a-z_][a-z0-9_]*) ADD COLUMN [a-z_][a-z0-9_]* (.*)$`)
-	insertValues  = regexp.MustCompile(`^INSERT INTO ([a-z_][a-z0-9_]*) (?:\([a-z0-9_, ]*\) )?VALUES `)
+	// Statements are matched in upper case, as PostgreSQL reads keywords and names in any
+	// case. Each form is anchored at both ends, so anything it does not name is not additive.
+	marker        = regexp.MustCompile(`^INSERT INTO SCHEMA_ADDITIVE_MIGRATIONS ?\(VERSION\) VALUES ?\((\d+)\)$`)
+	createTable   = regexp.MustCompile(`^CREATE TABLE ([A-Z_][A-Z0-9_]*) ?\(`)
+	createIndex   = regexp.MustCompile(`^CREATE (UNIQUE )?INDEX [A-Z0-9_]+ ON ([A-Z_][A-Z0-9_]*) ?(.*)$`)
+	plainColumns  = regexp.MustCompile(`^\((?:[A-Z_][A-Z0-9_]*(?: ASC| DESC)?(?:, ?|\)$))+$`)
+	createFunc    = regexp.MustCompile(`^CREATE FUNCTION [A-Z_][A-Z0-9_]* ?\(`)
+	createTrigger = regexp.MustCompile(`^CREATE TRIGGER [A-Z0-9_]+ (?:BEFORE|AFTER) .*? ON ([A-Z_][A-Z0-9_]*) FOR EACH ROW EXECUTE FUNCTION [A-Z_][A-Z0-9_]* ?\(\)$`)
+	addColumn     = regexp.MustCompile(`^ALTER TABLE ([A-Z_][A-Z0-9_]*) ADD COLUMN [A-Z_][A-Z0-9_]* (.*)$`)
+	insertValues  = regexp.MustCompile(`^INSERT INTO ([A-Z_][A-Z0-9_]*) ?(?:\([A-Z0-9_, ]*\) ?)?VALUES ?\(`)
 )
 
-// Each migration from firstMarked on either records itself as additive, and then holds only
-// statements an older release runs unchanged beside, or says why it does not.
+// Each migration from the one that created the marker table on either records itself as
+// additive, and then holds only statements an older release runs unchanged beside, or says why
+// it does not. This catches honest mistakes in the repository's own style; it is not a parser.
 func TestMigrationsClaimOnlyWhatTheyDo(t *testing.T) {
 	entries, err := fs.ReadDir(migrations, "migrations")
 	if err != nil {
 		t.Fatal(err)
 	}
 	var newest int64
+	firstMarked := int64(-1)
 	for _, entry := range entries {
 		match := migrationName.FindStringSubmatch(entry.Name())
 		if match == nil {
@@ -41,16 +44,28 @@ func TestMigrationsClaimOnlyWhatTheyDo(t *testing.T) {
 		}
 		version, _ := strconv.ParseInt(match[1], 10, 64)
 		newest = max(newest, version)
-		if version < firstMarked {
-			continue
-		}
 		raw, err := fs.ReadFile(migrations, "migrations/"+entry.Name())
 		if err != nil {
 			t.Fatal(err)
 		}
+		_, rest, _ := strings.Cut(string(raw), "-- +goose Up")
+		up, _, _ := strings.Cut(rest, "-- +goose Down")
+		for _, s := range splitStatements(up) {
+			if m := createTable.FindStringSubmatch(s); m != nil && m[1] == "SCHEMA_ADDITIVE_MIGRATIONS" {
+				firstMarked = version
+			}
+		}
+		// Entries are in version order, so every migration from the marker table's own is held to
+		// its claim, whatever number that one ends up with.
+		if firstMarked < 0 {
+			continue
+		}
 		if why := checkClaim(version, string(raw)); why != "" {
 			t.Errorf("%s: %s", entry.Name(), why)
 		}
+	}
+	if firstMarked < 0 {
+		t.Fatal("no migration creates schema_additive_migrations")
 	}
 	if newest != Version {
 		t.Fatalf("Version is %d, but the newest migration is %d", Version, newest)
@@ -96,9 +111,9 @@ func checkClaim(version int64, text string) string {
 	}
 	// Goose's Down deletes only its own version row, so going down and up again would find the
 	// marker still there. The migration that creates the table drops it instead.
-	unmark := "DELETE FROM schema_additive_migrations WHERE version = " + strconv.FormatInt(version, 10)
-	if !created["schema_additive_migrations"] && !contains(splitStatements(down), unmark) {
-		return "its Down section must say `" + unmark + ";`"
+	unmark := "DELETE FROM SCHEMA_ADDITIVE_MIGRATIONS WHERE VERSION = " + strconv.FormatInt(version, 10)
+	if !created["SCHEMA_ADDITIVE_MIGRATIONS"] && !slices.Contains(splitStatements(down), unmark) {
+		return "its Down section must delete its marker: `DELETE FROM schema_additive_migrations WHERE version = " + strconv.FormatInt(version, 10) + ";`"
 	}
 	return ""
 }
@@ -110,16 +125,27 @@ func additive(s string, created map[string]bool) string {
 		return ""
 	}
 	if m := createTable.FindStringSubmatch(s); m != nil {
-		for _, element := range topLevel(m[2]) {
-			if why := reference(element); why != "" {
+		// The column list must end the statement: INHERITS or AS would tie the table to existing rows.
+		body, ok := enclosed(s[len(m[0])-1:])
+		if !ok {
+			return "a new table is its column list and nothing more"
+		}
+		for _, element := range topLevel(body) {
+			if why := reference(element, true); why != "" {
 				return why
 			}
 		}
 		return ""
 	}
 	if m := createIndex.FindStringSubmatch(s); m != nil {
-		if m[1] != "" && !created[m[2]] {
+		switch {
+		case created[m[2]]:
+			return ""
+		case m[1] != "":
 			return "a unique index on an existing table can refuse an older release's writes"
+		case !plainColumns.MatchString(m[3]):
+			// An expression or predicate runs on every write an older release makes.
+			return "an index on an existing table may list only its columns"
 		}
 		return ""
 	}
@@ -137,10 +163,11 @@ func additive(s string, created map[string]bool) string {
 		case len(topLevel(definition)) != 1:
 			return "add one column per statement, and nothing else"
 		case strings.Contains(definition, "NOT NULL") && !strings.Contains(definition, "DEFAULT "),
-			strings.Contains(definition, "CHECK"), strings.Contains(definition, "UNIQUE"), strings.Contains(definition, "PRIMARY KEY"):
+			strings.Contains(definition, "CHECK"), strings.Contains(definition, "UNIQUE"),
+			strings.Contains(definition, "PRIMARY KEY"), strings.Contains(definition, "GENERATED"):
 			return "a column added to an existing table must accept every row an older release inserts"
 		}
-		return reference(definition)
+		return reference(definition, false)
 	}
 	if m := insertValues.FindStringSubmatch(s); m != nil {
 		switch {
@@ -156,19 +183,39 @@ func additive(s string, created map[string]bool) string {
 	return "not recognised as additive"
 }
 
-// reference returns why a column or constraint's foreign key could refuse an older release's
-// delete of the row it refers to, or "".
-func reference(element string) string {
+// reference returns why a column or constraint's foreign key could refuse or widen an older
+// release's delete of the row it refers to, or "". A new table's rows may go with that row; an
+// existing table's rows are the older release's, so its new column may only be emptied.
+func reference(element string, newTable bool) string {
 	switch {
 	case !strings.Contains(element, "REFERENCES "):
 		return ""
-	case strings.Contains(element, " ON DELETE CASCADE"):
+	case newTable && strings.Contains(element, " ON DELETE CASCADE"):
 		return ""
 	case strings.Contains(element, " ON DELETE SET NULL") && !strings.Contains(element, "NOT NULL") && !strings.Contains(element, "PRIMARY KEY") && !strings.HasPrefix(element, "FOREIGN KEY") && !strings.HasPrefix(element, "CONSTRAINT "):
 		// Only a column's own reference shows that the column may be null.
 		return ""
+	case newTable:
+		return "a new table's reference must say ON DELETE CASCADE, or ON DELETE SET NULL on a column that may be null"
 	}
-	return "a reference must say ON DELETE CASCADE, or ON DELETE SET NULL on a column that may be null"
+	return "a column added to an existing table may refer to another row only with ON DELETE SET NULL"
+}
+
+// enclosed returns what the parentheses opening s enclose, if they close at its end.
+func enclosed(s string) (string, bool) {
+	depth := 0
+	for i, r := range s {
+		switch r {
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 {
+				return s[1:i], i == len(s)-1
+			}
+		}
+	}
+	return "", false
 }
 
 // topLevel splits a list on the commas outside parentheses.
@@ -192,13 +239,13 @@ func topLevel(list string) []string {
 }
 
 // splitStatements splits SQL on semicolons outside quotes, dropping comments, replacing string
-// constants with 'x' and dollar-quoted bodies with $$x$$, and normalising white space.
+// constants with 'X' and dollar-quoted bodies with $$X$$, and normalising white space and case.
 func splitStatements(sql string) []string {
 	var out []string
 	var b strings.Builder
 	flush := func() {
 		if s := strings.TrimSpace(space.ReplaceAllString(b.String(), " ")); s != "" {
-			out = append(out, s)
+			out = append(out, strings.ToUpper(s))
 		}
 		b.Reset()
 	}
@@ -218,17 +265,24 @@ func splitStatements(sql string) []string {
 			i = skipTo(i+2, "*/")
 			b.WriteByte(' ')
 		case sql[i] == '\'':
-			// A doubled quote inside a constant ends one scan and starts the next, harmlessly.
-			i = skipTo(i+1, "'")
-			b.WriteString("'x'")
+			escapes := i > 0 && (sql[i-1] == 'E' || sql[i-1] == 'e') && (i < 2 || !identifier(sql[i-2]))
+			// A doubled quote ends one constant and starts the next, which is harmless. In an
+			// E'' constant a backslash also escapes the character after it.
+			for i++; i < len(sql) && sql[i] != '\''; i++ {
+				if escapes && sql[i] == '\\' {
+					i++
+				}
+			}
+			i++
+			b.WriteString("'X'")
 		case sql[i] == '"':
 			j := skipTo(i+1, `"`)
 			b.WriteString(sql[i:j])
 			i = j
-		case sql[i] == '$':
-			if tag := dollarTag(sql[i:]); tag != "" {
+		case sql[i] == '$' && (i == 0 || !identifier(sql[i-1])):
+			if tag := tagPattern.FindString(sql[i:]); tag != "" {
 				i = skipTo(i+len(tag), tag)
-				b.WriteString("$$x$$")
+				b.WriteString("$$X$$")
 				continue
 			}
 			b.WriteByte(sql[i])
@@ -245,17 +299,8 @@ func splitStatements(sql string) []string {
 	return out
 }
 
-var tagPattern = regexp.MustCompile(`^\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$`)
-
-func dollarTag(s string) string { return tagPattern.FindString(s) }
-
-func contains(list []string, s string) bool {
-	for _, item := range list {
-		if item == s {
-			return true
-		}
-	}
-	return false
+func identifier(c byte) bool {
+	return c == '_' || c == '$' || '0' <= c && c <= '9' || 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z'
 }
 
 func TestAdditiveClaims(t *testing.T) {
@@ -295,6 +340,21 @@ func TestAdditiveClaims(t *testing.T) {
 		{"quoted comment marker", "CREATE TABLE a (s text DEFAULT '--'); DROP TABLE servers;\nCREATE INDEX i ON a (s);", false},
 		{"nested dollar tags", "CREATE FUNCTION f() RETURNS text LANGUAGE sql AS $a$ SELECT '$$' $a$; DROP TABLE servers;", false},
 		{"semicolon in a constant", "COMMENT ON TABLE servers IS 'a; DROP TABLE servers';", true},
+		{"escaped quotes hide a statement", "CREATE TABLE a (s text);\nCOMMENT ON TABLE a IS E'it\\'s';\nALTER TABLE servers DROP COLUMN name;\nCOMMENT ON COLUMN a.s IS E'don\\'t';", false},
+		{"index in house style", "CREATE INDEX i ON audit_events(workspace_id, created_at DESC);", true},
+		{"expression index on existing table", "CREATE INDEX i ON servers (((labels->>'port')::int));", false},
+		{"partial index on existing table", "CREATE INDEX i ON servers (name) WHERE f(name);", false},
+		{"expression index on new table", "CREATE TABLE a (s text);\nCREATE INDEX i ON a ((lower(s))) WHERE s <> '';", true},
+		{"inherited table", "CREATE TABLE a (id uuid) INHERITS (servers);", false},
+		{"table from a query", "CREATE TABLE a (id, w) AS SELECT id, workspace_id FROM servers WHERE (NOT revoked);", false},
+		{"lower-case reference", "CREATE TABLE a (w uuid NOT NULL references workspaces(id));", false},
+		{"lower-case constraint on added column", "ALTER TABLE servers ADD COLUMN n integer not null;", false},
+		{"lower-case backfill", "CREATE TABLE a (id uuid);\nINSERT INTO a (id) VALUES ((select id from servers limit 1));", false},
+		{"lower-case statement", "create table a (id uuid primary key);", true},
+		{"seed in house style", "CREATE TABLE a (n integer);\nINSERT INTO a(n) VALUES(1);", true},
+		{"cascading column on existing table", "ALTER TABLE deployment_units ADD COLUMN preview_id uuid REFERENCES previews(id) ON DELETE CASCADE;", false},
+		{"emptied column on existing table", "ALTER TABLE deployment_units ADD COLUMN preview_id uuid REFERENCES previews(id) ON DELETE SET NULL;", true},
+		{"generated column on existing table", "ALTER TABLE servers ADD COLUMN p text GENERATED ALWAYS AS ((labels->>'p')::int::text) STORED;", false},
 	} {
 		if why := checkClaim(40, "-- +goose Up\n"+test.up+mark); (why == "") != test.ok {
 			t.Errorf("%s: %q", test.name, why)
