@@ -386,6 +386,20 @@ func previewIsolationJourney(t *testing.T, transfer, recoverCleanup bool) {
 		if err = destination.st.Pool.QueryRow(ctx, "SELECT p.enabled,s.preview_only FROM preview_policies p JOIN servers s ON s.id=p.server_id WHERE p.id=$1", policy.Id).Scan(&enabled, &reserved); err != nil || enabled || !reserved {
 			t.Fatal("import replayed a grant or lost host reservation", err)
 		}
+		// A preview template is an environment the export lists like any other, with all its state.
+		for _, table := range []string{"specification_revisions", "secrets", "secret_versions", "deployment_units"} {
+			query := "SELECT count(*) FROM " + table + " WHERE workspace_id=$1 AND environment_id=(SELECT environment_id FROM preview_policies WHERE id=$2)"
+			if table == "secret_versions" {
+				query = "SELECT count(*) FROM secret_versions v JOIN secrets s ON s.id=v.secret_id WHERE v.workspace_id=$1 AND s.environment_id=(SELECT environment_id FROM preview_policies WHERE id=$2)"
+			}
+			var source, imported int
+			if err = f.st.Pool.QueryRow(ctx, query, ws, policy.Id).Scan(&source); err != nil {
+				t.Fatal(err)
+			}
+			if err = destination.st.Pool.QueryRow(ctx, query, ws, policy.Id).Scan(&imported); err != nil || source == 0 && table != "secret_versions" || imported != source {
+				t.Fatal("import lost the preview template's", table, source, imported, err)
+			}
+		}
 	}
 
 	open.Store(false)

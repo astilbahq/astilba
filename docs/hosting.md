@@ -604,16 +604,34 @@ the wait runs out. Neither wait shortens the time it has to send its body or to
 finish once its turn comes. An account has one export or import in progress on a replica at a time, and
 another gets a 503 at once without being charged.
 
-The database keeps every operation, but an export and a cross-host recovery checkpoint
-carry only the operation history recovery and the app need. That is unfinished work,
-every operation that applied or removed a runtime, every standalone private network
-removal, every operation another archived record names, and the newest 100. Older
-finished housekeeping, such as other private network, agent update and single-host
-backup commands, stays out, so a long history doesn't stop exports or cross-host
-deployments. A workspace imported from an export, or recovered from a management
-backup older than that housekeeping, doesn't get it back. Deployment history,
-configuration revisions and audit events are all carried, so a very active workspace
-can still reach the record limit.
+The database keeps all history. An export carries the workspace's configuration and what the
+app lists:
+- unfinished work, each environment's current runtime and the newest 100 operations;
+- each environment's 20 releases, 50 revisions and 100 pipeline runs;
+- each preview template's 100 preview requests;
+- the newest 100 audit events and build artifacts;
+- every version of each secret;
+- everything those name, including the build artifacts a configuration uses.
+
+So an export grows with the workspace's configuration, not its age. The exception is secret
+versions: every version is kept, so a secret that automation sets on every deploy grows the export
+each time. An imported workspace shows the same lists as its source, except that preview
+environments retired before the export aren't listed, and older entries can't be opened by ID.
+Audit history beyond the newest 100 stays in the source installation's database.
+
+A cross-host recovery checkpoint carries the operation history recovery needs:
+- unfinished work;
+- every operation that applied or removed a runtime;
+- every standalone private network removal;
+- every operation another archived record names;
+- the newest 100 operations.
+
+It keeps the newest 100 audit events, and the revisions the app lists or a record names.
+Checkpoints are compressed with zstd, which holds about two and a half times the history gzip
+did. Deployment history is still carried, so a busy workspace can still reach the checkpoint
+limits, and its cross-host deployments then fail before any host changes. A workspace
+recovered from a management backup doesn't get back the housekeeping, revisions or audit
+events recorded after the backup that the checkpoint left out.
 
 Work that Git webhooks start runs in a background queue of its own, with four workers
 per replica: source refreshes, pull-request previews and GitHub App events. A burst of
@@ -699,7 +717,10 @@ encrypt and upload the database nightly to storage the server cannot erase, with
 alert when it fails, and the full restore procedure.
 
 Restore with the matching application version, or a newer one after `astilba migrate`,
-into a clean database and private keyring mount. Keep the restored management process stopped while fencing every
+into a clean database and private keyring mount. Cross-host recovery reads the checkpoints the
+hosts hold, so run it with the release that sealed the newest of them or a newer one, even when
+the backup is older. Restore the backup, migrate to that release, then recover. An older release
+refuses those checkpoints. Keep the restored management process stopped while fencing every
 restored server:
 
 ```sh

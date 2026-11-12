@@ -1,13 +1,17 @@
 package integration
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"errors"
+	"path"
 	"slices"
 	"strings"
 	"testing"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
+	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/portability"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
@@ -117,6 +121,60 @@ func TestRecoveryReadsABaseCapturedBeforeHistoryWasBounded(t *testing.T) {
 	if got := claimCounter(t, r.f, `SELECT count(*) FROM execution_operations WHERE id=ANY($1)`, seeded); got != int64(len(seeded)) {
 		t.Fatalf("recovery restored %d of the %d operations the base carries", got, len(seeded))
 	}
+}
+
+// A recovery base used to be gzipped, and gzip can't find a plan the base repeats further back than
+// 32 KiB, so cross-host history filled the 1 MiB envelope long before the archive's record limit,
+// after a few weeks in a busy distributed workspace, and its cross-host deployments stopped. Bases
+// are now zstd-compressed with a window covering the whole base, which holds about 2.5 times the
+// history in the same envelope.
+func TestCrossHostHistoryGzipCouldNotSealStillDeploys(t *testing.T) {
+	g := newRevokedGroup(t, 2)
+	a, b := g.hosts[0], g.hosts[1]
+	e := g.primaryEnvironment(t, a)
+	g.applied(t, &e, g.place(t, &e, a.id, b.id))
+	env := uuid.MustParse(path.Base(e.path))
+	var plan uuid.UUID
+	if err := g.f.st.Pool.QueryRow(g.ctx, `SELECT o.runtime_plan_id FROM environments e JOIN execution_operations o ON o.id=e.runtime_operation_id WHERE e.id=$1`, env).Scan(&plan); err != nil {
+		t.Fatal(err)
+	}
+	// Each copy of the applied plan gets IDs and hashes of its own, as each real deployment does.
+	seed := func(count int) {
+		t.Helper()
+		if _, err := g.f.st.Pool.Exec(g.ctx, `INSERT INTO execution_operations(id,workspace_id,server_id,environment_id,generation,request_key,command,kind,state,report_sequence,runtime_outcome,runtime_plan_id,created_at)
+SELECT gen_random_uuid(),p.workspace_id,$2,p.environment_id,(SELECT max(generation) FROM execution_operations WHERE environment_id=p.environment_id)+i,gen_random_uuid(),
+	regexp_replace(regexp_replace(p.plan::text,'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}',gen_random_uuid()::text,'g'),'[0-9a-f]{64}',md5(random()::text)||md5(random()::text),'g')::jsonb,
+	'visual','succeeded',1,'applied',p.id,now()-interval '1 day'+i*interval '1 millisecond'
+FROM visual_plans p, generate_series(1,$3::int) i WHERE p.id=$1`, plan, a.id, count); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := g.f.st.Pool.Exec(g.ctx, `UPDATE environments SET execution_generation=(SELECT max(generation) FROM execution_operations WHERE environment_id=$1) WHERE id=$1`, env); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// gzipSealed reports whether the workspace's base, gzipped as before, would still seal.
+	gzipSealed := func() bool {
+		t.Helper()
+		tx, err := g.f.st.Pool.Begin(g.ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tx.Rollback(g.ctx)
+		raw, err := portability.CaptureRecovery(g.ctx, tx, g.ws)
+		if err != nil {
+			t.Fatal("the base no longer fits the archive's own limits", err)
+		}
+		var compressed bytes.Buffer
+		writer := gzip.NewWriter(&compressed)
+		writer.Write(raw)
+		writer.Close()
+		envelope, err := g.f.st.Keys.Seal(compressed.Bytes(), "gzip-envelope-probe")
+		return err == nil && len(envelope) <= deployment.RecoveryEnvelopeLimit
+	}
+	for gzipSealed() {
+		seed(200)
+	}
+	g.applied(t, &e, g.place(t, &e, a.id, b.id))
 }
 
 // Recovery checks a newer base against the exact runtime an older one applied, so a base still
