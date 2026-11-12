@@ -158,3 +158,30 @@ test("signing in as another account still stops a renewal in flight", async ({
     page.getByRole("main").getByText(other, { exact: true }),
   ).toBeVisible();
 });
+
+test("sign-out still signs out after another tab renewed the session", async ({
+  page,
+}) => {
+  await signIn(page, await createAccount());
+  // Confirming identity elsewhere replaces the cookie and its CSRF token, so this page's
+  // first logout is refused.
+  const session = await (
+    await page.request.get(`${origin}/api/v1/session`)
+  ).json();
+  const renewal = await page.request.post(
+    `${origin}/api/v1/auth/reauthenticate`,
+    {
+      data: { password: "correct horse battery staple" },
+      headers: { "X-CSRF-Token": session.csrfToken, Origin: origin },
+    },
+  );
+  expect(renewal.status()).toBe(200);
+
+  await page.getByRole("button", { name: /^Account menu for/ }).click();
+  await page.getByRole("menuitem", { name: "Sign out", exact: true }).click();
+  await expect(page).toHaveURL(`${origin}/login`);
+  const after = await (
+    await page.request.get(`${origin}/api/v1/session`)
+  ).json();
+  expect(after.user).toBeFalsy();
+});
