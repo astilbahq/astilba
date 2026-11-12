@@ -3,6 +3,8 @@ package integration
 import (
 	"context"
 	"fmt"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
@@ -104,11 +106,17 @@ func TestExportAndCopiesAreRecorded(t *testing.T) {
 	if plain != 1 || copied != 1 {
 		t.Fatalf("clone actions: %d plain, %d with secrets", plain, copied)
 	}
-	records = accessRecords(t, f, &ws)
-	plainRecord, copyRecord := records[len(records)-2], records[len(records)-1]
-	// Neither clone had a secret to copy or a database password to make.
-	if plainRecord.purpose != "seal" || copyRecord.purpose != "copy" || fmt.Sprint(plainRecord.outcomes, copyRecord.outcomes) != "[refused] [refused]" {
-		t.Fatalf("clone records: %+v %+v", plainRecord, copyRecord)
+	// Each clone asked for every secret version rather than one it named. Neither had a secret to
+	// copy or a database password to make.
+	var cloneRecords []string
+	for _, r := range accessRecords(t, f, &ws) {
+		if strings.Contains(r.items, `"kind": "secret-version"`) && !strings.Contains(r.items, `"id"`) && r.purpose != "export" {
+			cloneRecords = append(cloneRecords, fmt.Sprint(r.purpose, r.outcomes))
+		}
+	}
+	slices.Sort(cloneRecords)
+	if fmt.Sprint(cloneRecords) != "[copy[refused] seal[refused]]" {
+		t.Fatalf("clone records: %v", cloneRecords)
 	}
 }
 
