@@ -93,6 +93,8 @@ test("logs it cannot read fail rather than pass", () => {
     /run 1: a succeeded with no package times/,
   );
   assert.match(laneBudget([]).problems[0].line, /found no lane times/);
+  // Unread logs are a check that did not run, so the issue keeps its earlier problems.
+  assert.ok(laneBudget([]).problems.every(({ check }) => check));
 });
 
 test("a failed job with no times is a build failure, not an unreadable log", () => {

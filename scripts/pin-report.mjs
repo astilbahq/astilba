@@ -88,6 +88,17 @@ export function imageFindings(report) {
     );
 }
 
+// Steps that fetch outlast an outage, as downloads do, until one has failed for that
+// long. The rest of the run then tries each step a few times, so a broken registry or
+// scanner cannot keep the job past its time limit before it writes the report.
+let outlasted = false;
+const patience = (attempt, elapsed) => {
+  if (outlasted) return [20_000, 40_000][attempt];
+  const wait = outlastOutage(attempt, elapsed);
+  outlasted = wait === undefined;
+  return wait;
+};
+
 const short = (digest) => digest.slice(0, 19);
 const where = (pin) =>
   `${pin.runtime ? "runtime" : "CI"}: ${pin.paths.slice(0, 3).join(", ")}${pin.paths.length > 3 ? ` and ${pin.paths.length - 3} more` : ""}`;
@@ -152,10 +163,16 @@ export function assemble({ images, tools }) {
   const problems = [];
   const summary = [];
   const info = [];
-  const problem = (section, key, text, summarized = false) => {
+  const problem = (section, key, text, { summarized, aliases } = {}) => {
     // A check that did not run leaves what it would have found unknown.
     const check = section === sections.problems;
-    problems.push({ section, key, text, ...(check && { check }) });
+    problems.push({
+      section,
+      key,
+      text,
+      ...(check && { check }),
+      ...(aliases && { aliases }),
+    });
     if (!summarized) summary.push({ section, text });
   };
   for (const pin of images) {
@@ -175,7 +192,7 @@ export function assemble({ images, tools }) {
     if (pin.newer)
       problem(
         sections.images,
-        `image-newer|${pin.image}|${pin.digest}|${pin.newer}`,
+        `image-newer|${pin.image}|${pin.tag}|${pin.newer}`,
         `${name} has a newer release in its line: ${pin.newer} (${where(pin)})`,
       );
     const findings = mergeScans(pin.scans);
@@ -184,12 +201,20 @@ export function assemble({ images, tools }) {
       ? fixable.filter((finding) => band(finding) !== "lower")
       : [];
     const label = `[${pin.runtime ? "runtime" : "CI"}] ${name}`;
+    const vulnerable = (finding, id) =>
+      `image-vulnerable|${pin.image}|${pin.digest}|${id}|${finding.package}|${finding.version}`;
     for (const finding of act)
       problem(
         sections.vulnerabilities,
-        `image-vulnerable|${pin.image}|${pin.digest}|${finding.id}|${finding.package}|${finding.version}`,
+        vulnerable(finding, finding.id),
         `${label} (${[...finding.platforms].join(", ")}): ${describe(finding)}${finding.summary ? `: ${finding.summary}` : ""}`,
-        true,
+        {
+          summarized: true,
+          // Another id joining the advisory's group can become its first.
+          aliases: finding.ids
+            .filter((id) => id !== finding.id)
+            .map((id) => vulnerable(finding, id)),
+        },
       );
     const unfixed = findings.length - fixable.length;
     const rest = [
@@ -239,7 +264,7 @@ async function scanImage(scanner, pin, { platform, digest }, directory) {
   const ref = `${pin.registry}/${pin.repository}@${digest}`;
   const archive = join(directory, "image.tar");
   try {
-    await pullImages([ref]);
+    await pullImages([ref], ["docker"], { delay: patience });
     await runLogged("docker", ["save", "--output", archive, ref]);
     // Exit status 1 means findings; anything else is a scan that did not complete.
     // The scan asks OSV's API, so it outlasts an outage as downloads do.
@@ -263,7 +288,7 @@ async function scanImage(scanner, pin, { platform, digest }, directory) {
             );
           },
         ),
-      { delay: outlastOutage },
+      { delay: patience },
     );
     if (!stdout) return { platform, findings: [], empty: true };
     return { platform, findings: imageFindings(JSON.parse(stdout)) };
@@ -406,7 +431,7 @@ if (
   console.log(
     `Checking ${pins.length} pinned images, ${goTools.length} Go tools and ${releases.length} release binaries.`,
   );
-  const client = registry();
+  const client = registry(fetch, patience);
   const scanner = await osvScanner();
   const directory = mkdtempSync(join(tmpdir(), "astilba-pin-report-"));
   const images = [];

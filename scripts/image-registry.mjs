@@ -26,7 +26,7 @@ const sha256 = (bytes) =>
 // Asks a registry's distribution API as an anonymous client, taking the bearer token
 // its challenge offers. A dropped connection, a rate limit or a server error repeats
 // as other downloads do.
-export function registry(fetchImpl = fetch) {
+export function registry(fetchImpl = fetch, delay = outlastOutage) {
   const tokens = new Map();
   const host = (name) => (name === "docker.io" ? "registry-1.docker.io" : name);
   const attempt = async (url, init) => {
@@ -92,7 +92,7 @@ export function registry(fetchImpl = fetch) {
           return response;
         }
       },
-      { delay: outlastOutage },
+      { delay },
     );
   }
   return {

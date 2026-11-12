@@ -36,23 +36,27 @@ function median(values) {
 // ignores one slow runner, and fewer leaves a lane undecided. A successful job without
 // a time means this parser no longer reads the logs, so it must not read as a pass.
 // Each problem's key names what is wrong without today's numbers, so the issue says
-// only what is new.
+// only what is new. Logs that could not be read are a check that did not run, which
+// keeps the issue's earlier problems.
 export function laneBudget(jobs, budget = budgetSeconds) {
   const problems = [];
-  const problem = (key, line) => problems.push({ key, line });
+  const problem = (key, line, check) =>
+    problems.push({ key, line, ...(check && { check }) });
   const samples = new Map();
   for (const { run, lane, conclusion, times } of jobs) {
     if (conclusion === "success" && !times.length)
       problem(
         `untimed\t${lane}`,
         `run ${run}: ${lane} succeeded with no package times`,
+        true,
       );
     for (const { name, seconds } of times) {
       const key = `${lane}\t${name}`;
       samples.set(key, [...(samples.get(key) ?? []), seconds]);
     }
   }
-  if (!samples.size) problem("no times", "found no lane times to compare");
+  if (!samples.size)
+    problem("no times", "found no lane times to compare", true);
   const rows = [...samples]
     .map(([key, seconds]) => {
       const [lane, name] = key.split("\t");

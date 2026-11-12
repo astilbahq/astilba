@@ -6,8 +6,9 @@ import { github, inert, renderSections, syncIssue } from "./report-issue.mjs";
 // It reads what the scan jobs wrote as data, since they ran third-party scanners and
 // images: their text reaches the public issue only as inert lines.
 
-// Each problem's key takes 13 characters of the issue body, so 3000 leave room for it.
-const limits = { entries: 3000, key: 500, text: 4000 };
+// Bounds what a scan job can write, so its issue stays readable and the keys of its
+// problems and their aliases fit the body.
+const limits = { entries: 3000, key: 500, text: 4000, aliases: 10 };
 
 export const reports = [
   {
@@ -33,6 +34,12 @@ const entry = (value, keyed) =>
   typeof value === "object" &&
   (value.section === undefined || typeof value.section === "string") &&
   (value.check === undefined || typeof value.check === "boolean") &&
+  (value.aliases === undefined ||
+    (Array.isArray(value.aliases) &&
+      value.aliases.length <= limits.aliases &&
+      value.aliases.every(
+        (alias) => typeof alias === "string" && alias.length <= limits.key,
+      ))) &&
   typeof value.text === "string" &&
   value.text.length <= limits.text &&
   (!keyed ||
@@ -105,8 +112,9 @@ export function syncReport(request, repository, report, result, written, run) {
     title: report.title,
     undecided: decision.undecided,
     acknowledge: report.acknowledge ?? false,
-    problems: decision.problems.map(({ key, text, check }) => ({
+    problems: decision.problems.map(({ key, aliases, text, check }) => ({
       key,
+      aliases,
       check,
       line: `- ${inert(text, 600)}`,
     })),

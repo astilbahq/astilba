@@ -55,10 +55,7 @@ test("opens one issue for the first problem, keeping its keys", async () => {
   assert.equal(none.sent.length, 1);
   const [{ method, path, body }] = none.sent;
   assert.deepEqual([method, path], ["POST", "/repos/o/r/issues"]);
-  assert.match(
-    body,
-    /^<!-- report keys: [0-9a-f]{12} [0-9a-f]{12} -->\ntoday$/,
-  );
+  assert.match(body, /^<!-- report keys: [0-9a-f]{8} [0-9a-f]{8} -->\ntoday$/);
   assert.equal(none.sent[0].title, title);
 });
 
@@ -188,6 +185,7 @@ test("a long body is cut at a line, under GitHub's limit", () => {
   assert.ok(cut.length <= 1000);
   assert.match(cut, /\nline \d+\n\n…cut to fit the issue/);
   assert.equal(clip("short", 1000), "short");
+  assert.ok(clip("x".repeat(5000), 1000).length <= 1000);
 });
 
 test("closing an acknowledged report's issue accepts what it listed", async () => {
@@ -336,7 +334,13 @@ test("a run that could not check keeps the keys, so nothing is announced twice",
   await run(accepted, [problem("a"), problem("b")]);
   closeByHand(accepted);
   assert.equal(await run(accepted, [unchecked]), "opened");
-  assert.equal(await run(accepted, [problem("a"), problem("b")]), "updated");
+  // The check ran again and found only what was accepted, so the issue closes.
+  assert.equal(await run(accepted, [problem("a"), problem("b")]), "accepted");
+  assert.equal(accepted.issues.at(-1).state, "closed");
+  assert.equal(
+    await run(accepted, [problem("a"), problem("b")]),
+    "acknowledged",
+  );
   assert.equal(
     accepted.sent.filter(({ path }) => path.endsWith("/comments")).length,
     0,
@@ -372,4 +376,27 @@ test("finds the accepted issue behind a page of newer ones", async () => {
       body: "",
     });
   assert.equal(await run(github, [problem("a")]), "acknowledged");
+});
+
+test("keys kept through failed checks stay within the body's limit", async () => {
+  const unchecked = { ...problem("unfinished"), check: true };
+  const github = fakeGitHub();
+  for (let day = 0; day < 3; day++) {
+    const churn = Array.from({ length: 2999 }, (_, i) =>
+      problem(`${day}-${i}`),
+    );
+    await run(github, [unchecked, ...churn], { acknowledge: false });
+    assert.ok(github.issues[0].body.length < 60_000);
+  }
+});
+
+test("a problem already known by one of its aliases is not new", async () => {
+  const github = fakeGitHub();
+  await run(github, [problem("GHSA-a")], { acknowledge: false });
+  assert.equal(
+    await run(github, [{ ...problem("GO-1"), aliases: ["GHSA-a"] }], {
+      acknowledge: false,
+    }),
+    "updated",
+  );
 });

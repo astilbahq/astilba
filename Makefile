@@ -40,9 +40,9 @@ check-ci:
 	node scripts/app-lanes.mjs
 	node scripts/pin-alignment.mjs
 
+# Both run, so a finding cannot hide a failing Public Suffix List check.
 check-vulnerabilities:
-	node scripts/vulnerability-scan.mjs
-	node scripts/public-suffix-list.mjs --check
+	status=0; node scripts/vulnerability-scan.mjs || status=1; node scripts/public-suffix-list.mjs --check || status=1; exit $$status
 
 report-pins:
 	node scripts/pin-report.mjs

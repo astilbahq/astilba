@@ -43,11 +43,17 @@ export function clip(
   note = "\n\n…cut to fit the issue. The run's summary has the rest.",
 ) {
   if (text.length <= limit) return text;
-  return text.slice(0, text.lastIndexOf("\n", limit - note.length)) + note;
+  const line = text.lastIndexOf("\n", limit - note.length);
+  return text.slice(0, line > 0 ? line : limit - note.length) + note;
 }
 
+// Eight hex digits keep thousands of keys in one body; a new key matches a known one by
+// chance about once in a million reports.
 const digest = (key) =>
-  createHash("sha256").update(key).digest("hex").slice(0, 12);
+  createHash("sha256").update(key).digest("hex").slice(0, 8);
+// A problem may also be known by aliases, such as an advisory's other ids, so it stays
+// the same problem when an id is added.
+const digests = ({ key, aliases = [] }) => [key, ...aliases].map(digest);
 
 const keysIn = (body) =>
   new Set(
@@ -57,6 +63,8 @@ const keysIn = (body) =>
       .filter(Boolean) ?? [],
   );
 const markerFor = (keys) => `<!-- report keys: ${[...keys].join(" ")} -->`;
+// Each key takes 9 characters of the body, so the marker stays well inside its limit.
+const maxKeys = 5000;
 const pageSize = 100;
 const maxPages = 20;
 
@@ -96,9 +104,12 @@ export async function syncIssue(
     ({ key }, index) =>
       problems.findIndex((other) => other.key === key) === index,
   );
-  const current = new Set(unique.map(({ key }) => digest(key)));
+  const current = new Set(unique.flatMap(digests).slice(0, maxKeys));
+  const known = (keys) => (problem) =>
+    digests(problem).some((key) => keys.has(key));
   const complete = !unique.some(({ check }) => check);
-  const kept = (known) => (complete ? current : current.union(known));
+  const kept = (earlier) =>
+    complete ? current : new Set([...current, ...earlier].slice(0, maxKeys));
   const write = (keys, text) => clip(`${markerFor(keys)}\n${text}`);
   const announce = (heading, fresh) =>
     [
@@ -119,9 +130,27 @@ export async function syncIssue(
     });
     return "closed";
   }
+  const closed = acknowledge
+    ? await newest(request, repository, title, "closed")
+    : undefined;
+  const accepted = keysIn(closed?.body);
+  // An issue opened for a check that has since run again, or for a problem now gone,
+  // goes back to what a person accepted, rather than staying open over it.
+  if (open && complete && unique.every(known(accepted))) {
+    await request(`/repos/${repository}/issues/${open.number}`, {
+      method: "PATCH",
+      body: {
+        body: write(current, body),
+        state: "closed",
+        state_reason: "completed",
+      },
+    });
+    return "accepted";
+  }
   if (open) {
-    const known = keysIn(open.body);
-    const fresh = unique.filter(({ key }) => !known.has(digest(key)));
+    const fresh = unique.filter(
+      (problem) => !known(keysIn(open.body))(problem),
+    );
     // An edited body notifies nobody, so what is new is said in a comment, first: if
     // the comment fails, the next run still finds these new.
     if (fresh.length)
@@ -131,16 +160,12 @@ export async function syncIssue(
       });
     await request(`/repos/${repository}/issues/${open.number}`, {
       method: "PATCH",
-      body: { body: write(kept(known), body) },
+      body: { body: write(kept(keysIn(open.body)), body) },
     });
     return fresh.length ? "commented" : "updated";
   }
-  const closed = acknowledge
-    ? await newest(request, repository, title, "closed")
-    : undefined;
-  const accepted = keysIn(closed?.body);
   const fresh = unique.filter(
-    ({ key, check }) => check || !accepted.has(digest(key)),
+    (problem) => problem.check || !known(accepted)(problem),
   );
   if (!fresh.length) {
     // Only what is still there stays accepted.

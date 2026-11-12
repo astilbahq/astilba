@@ -519,7 +519,7 @@ test("an upstream rebuild, a newer tag or tool, and anything not checked need at
   );
 });
 
-test("an image and a tool of one name, or two pins of one tag, are separate problems", () => {
+test("an image and a tool of one name are separate, and a tag's newer release is one", () => {
   const pin = (fill, runtime) =>
     checked({
       image: "nginx",
@@ -547,8 +547,46 @@ test("an image and a tool of one name, or two pins of one tag, are separate prob
       },
     ],
   });
-  assert.equal(problems.length, 6);
-  assert.equal(new Set(problems.map(({ key }) => key)).size, 6);
+  const keyed = (start) =>
+    problems.filter(({ key }) => key.startsWith(start)).map(({ key }) => key);
+  // Each pin's rebuild is its own, but both pins wait on one release of their tag.
+  assert.equal(new Set(keyed("image-moved")).size, 2);
+  assert.equal(new Set(keyed("image-newer|nginx")).size, 1);
+  assert.notEqual(keyed("image-newer|moby")[0], keyed("tool-newer")[0]);
+});
+
+test("a newer release stays the same problem when its tag is pinned again", () => {
+  const newer = (fields) =>
+    assemble({
+      images: [checked({ scans: [], newer: "18.5-alpine3.23", ...fields })],
+      tools: [],
+    }).problems.find(({ section }) => section === sections.images).key;
+  assert.equal(newer({}), newer({ digest: `sha256:${digest("e")}` }));
+});
+
+test("an advisory is known by every id of its group, so a new first id is not news", () => {
+  const ghsa = finding({
+    id: "GHSA-aaaa-bbbb-cccc",
+    cve: "",
+    ids: ["GHSA-aaaa-bbbb-cccc"],
+    severity: "",
+  });
+  const grown = finding({
+    id: "GO-2026-9",
+    cve: "",
+    ids: ["GO-2026-9", "GHSA-aaaa-bbbb-cccc"],
+    severity: "",
+  });
+  const identities = (found) => {
+    const [{ key, aliases = [] }] = assemble({
+      images: [
+        checked({ scans: [{ platform: "linux/amd64", findings: [found] }] }),
+      ],
+      tools: [],
+    }).problems;
+    return [key, ...aliases];
+  };
+  assert.ok(identities(grown).includes(identities(ghsa)[0]));
 });
 
 const response = (status, body = "", headers = {}) =>

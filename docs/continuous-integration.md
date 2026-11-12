@@ -255,7 +255,8 @@ follows the rules in [Host downloads](#host-downloads): it repeats for at least 
 minutes, a stall repeats while a slow download finishes, a file failing its hash stops
 the scan, and a 404 also takes four minutes to report.
 
-The target also runs `node scripts/public-suffix-list.mjs --check`. It fails unless the
+The target also runs `node scripts/public-suffix-list.mjs --check`, even after the scan fails, so a
+finding cannot hide it, and a scheduled run reports its failure beside the scan's findings. It fails unless the
 [pinned Public Suffix List](hosting.md#the-pinned-list)'s commit was on upstream's main
 branch 24 hours ago and the committed copy matches that commit byte for byte, so
 neither a hand edit nor a commit from a fork can pass as upstream's list. The step gets
@@ -378,15 +379,20 @@ image. The run's summary lists every finding. An image of one static binary, suc
 The report does not apply the release-age gate, so a security release is heard of at
 once; the bump itself follows the `upgrade-dependencies` skill and the gate. Pins never
 change by themselves. Registry requests, pulls and scans repeat like
-[host downloads](#host-downloads), and a registry manifest or blob whose bytes do not
-match its digest is reported as a check that failed.
+[host downloads](#host-downloads) until one has failed for that long; the rest of the
+run then tries each a few times, so a broken registry or scanner cannot keep the job
+past its time limit before it writes the report. A registry manifest or blob whose bytes
+do not match its digest is reported as a check that failed.
 
 Much of what the report finds waits on upstream, so closing its issue accepts what it
 lists. A later run opens a new issue only for something the closed one did not have:
 a new advisory, a new release, or the same advisory in a newly pinned digest. A problem
-accepted and then gone is new again if it returns, and a check that could not run is
-never accepted, so a broken report opens a new issue each day until it is fixed. Say
-why in a comment before closing. Locally, the report needs Docker through `DOCKER_HOST`
+accepted and then gone is new again if it returns. A check that could not run is never
+accepted, so closing the issue while one cannot run opens a new issue on the next run;
+once nothing but accepted problems remain, that issue closes itself. An advisory keeps
+its place when another id joins it, such as a `GO-` id beside a `GHSA-` one, and a newer
+release stays accepted when its tag is pinned again at a rebuilt digest. Say why in a
+comment before closing. Locally, the report needs Docker through `DOCKER_HOST`
 and the network: `GITHUB_TOKEN="$(gh auth token)" make report-pins`. It writes nothing
 to GitHub.
 
