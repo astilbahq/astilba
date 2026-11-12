@@ -26,14 +26,25 @@ UPDATE memberships SET role=$3 WHERE workspace_id=$1 AND account_id=$2;
 -- name: DeleteMembership :exec
 DELETE FROM memberships WHERE workspace_id=$1 AND account_id=$2;
 -- name: InsertInvitation :exec
-INSERT INTO invitations(workspace_id,id,email,role,token_hash,expires_at) VALUES($1,$2,$3,$4,$5,$6)
-ON CONFLICT(workspace_id,email) DO UPDATE SET id=EXCLUDED.id,role=EXCLUDED.role,token_hash=EXCLUDED.token_hash,expires_at=EXCLUDED.expires_at;
+INSERT INTO invitations(workspace_id,id,email,role,token_hash,expires_at,issuer_id,issuer_auth_version) VALUES($1,$2,$3,$4,$5,$6,$7,$8)
+ON CONFLICT(workspace_id,email) DO UPDATE SET id=EXCLUDED.id,role=EXCLUDED.role,token_hash=EXCLUDED.token_hash,expires_at=EXCLUDED.expires_at,
+    issuer_id=EXCLUDED.issuer_id,issuer_auth_version=EXCLUDED.issuer_auth_version;
 -- name: LockInvitation :one
-SELECT * FROM invitations WHERE token_hash=$1 AND expires_at > now() FOR UPDATE;
+-- unscoped: the presented invitation token establishes the workspace.
+-- An invitation counts only while its issuer is still an owner with the same authentication
+-- version.
+SELECT * FROM invitations
+WHERE token_hash=$1 AND expires_at > now() AND policy_approver_holds(workspace_id,issuer_id,issuer_auth_version,true) FOR UPDATE;
 -- name: PeekInvitation :one
-SELECT * FROM invitations WHERE token_hash=$1 AND expires_at > now();
+-- unscoped: the presented invitation token establishes the workspace.
+SELECT * FROM invitations
+WHERE token_hash=$1 AND expires_at > now() AND policy_approver_holds(workspace_id,issuer_id,issuer_auth_version,true);
 -- name: ListInvitations :many
-SELECT id,email,role,expires_at FROM invitations WHERE workspace_id=$1 AND expires_at>now() ORDER BY email;
+SELECT id,email,role,expires_at FROM invitations
+WHERE workspace_id=$1 AND expires_at>now() AND policy_approver_holds(workspace_id,issuer_id,issuer_auth_version,true) ORDER BY email;
+-- name: WithdrawIssuerInvitations :many
+-- An owner's invitations end with their ownership, in the transaction that ends it.
+DELETE FROM invitations WHERE workspace_id = @workspace_id AND issuer_id = @issuer_id RETURNING id;
 -- name: DeleteInvitation :exec
 DELETE FROM invitations WHERE workspace_id=$1 AND id=$2;
 -- name: InsertAudit :exec

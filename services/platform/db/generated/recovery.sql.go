@@ -131,7 +131,7 @@ func (q *Queries) AttachRecoveryCheckpoint(ctx context.Context, arg AttachRecove
 
 const blockServerPreviewRequests = `-- name: BlockServerPreviewRequests :exec
 UPDATE preview_requests SET state=CASE WHEN state='deleted' THEN state ELSE 'blocked' END,resume_after_cancel=false,
-    cleanup_actor=NULL,cleanup_auth_version=NULL,cleanup_controller=NULL,
+    cleanup_actor=NULL,cleanup_auth_version=NULL,cleanup_controller=NULL,approved_by=NULL,approved_auth_version=NULL,
     note=CASE WHEN state='deleted' THEN note ELSE 'Management recovery requires renewed preview approval.' END
 WHERE preview_requests.workspace_id = $1 AND preview_requests.policy_id IN (
     SELECT p.id FROM preview_policies p WHERE p.workspace_id = $1 AND p.server_id = $2)
@@ -163,7 +163,7 @@ func (q *Queries) BlockWorkspaceAutoDeployments(ctx context.Context, arg BlockWo
 
 const blockWorkspacePreviewRequests = `-- name: BlockWorkspacePreviewRequests :exec
 UPDATE preview_requests SET state=CASE WHEN state='deleted' THEN state ELSE 'blocked' END,resume_after_cancel=false,cleanup_requested=false,
-    cleanup_actor=NULL,cleanup_auth_version=NULL,cleanup_controller=NULL,
+    cleanup_actor=NULL,cleanup_auth_version=NULL,cleanup_controller=NULL,approved_by=NULL,approved_auth_version=NULL,
     note=CASE WHEN state='deleted' THEN note ELSE 'Offline recovery requires renewed preview approval.' END
 WHERE workspace_id = $1
 `
@@ -303,7 +303,7 @@ func (q *Queries) DisableServerPreviewPolicies(ctx context.Context, arg DisableS
 }
 
 const disableWorkspaceBuildAutomation = `-- name: DisableWorkspaceBuildAutomation :exec
-UPDATE build_targets SET configuration=configuration || '{"autoBuild":false,"autoDeploy":false}'::jsonb WHERE workspace_id = $1
+UPDATE build_targets SET configuration=configuration || '{"autoBuild":false,"autoDeploy":false}'::jsonb,policy_auth_version=NULL,policy_owner=false WHERE workspace_id = $1
 `
 
 func (q *Queries) DisableWorkspaceBuildAutomation(ctx context.Context, workspaceID uuid.UUID) error {
@@ -860,7 +860,7 @@ func (q *Queries) RemovedRuntimeCommand(ctx context.Context, arg RemovedRuntimeC
 }
 
 const requireWorkspaceGitApproval = `-- name: RequireWorkspaceGitApproval :exec
-UPDATE git_sources SET configuration=configuration || '{"autoDeploy":false}'::jsonb,status='approval_required' WHERE workspace_id = $1
+UPDATE git_sources SET configuration=configuration || '{"autoDeploy":false}'::jsonb,status='approval_required',policy_auth_version=NULL WHERE workspace_id = $1
 `
 
 func (q *Queries) RequireWorkspaceGitApproval(ctx context.Context, workspaceID uuid.UUID) error {
