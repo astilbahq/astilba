@@ -1,11 +1,11 @@
 import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import { resolve } from "node:path";
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
 import jsQR from "jsqr";
 import { openEnvironmentSection } from "./environment-section";
+import { fixtureInfo, hosted as hostedOrigin } from "./fixtures/ports";
 import { totp } from "./fixtures/totp";
 
 test("hosted signup, MFA, billing admission and encrypted workspace import", async ({
@@ -80,7 +80,7 @@ test("hosted signup, MFA, billing admission and encrypted workspace import", asy
   const context = await browser.newContext({ ignoreHTTPSErrors: true });
   try {
     const hosted = await context.newPage();
-    const origin = "https://127.0.0.1:15186";
+    const origin = hostedOrigin;
     await hosted.goto(`${origin}/signup?token=invalid-beta-invitation`);
     await expect(
       hosted.getByRole("heading", { name: "Invalid beta invitation" }),
@@ -204,15 +204,7 @@ test("hosted signup, MFA, billing admission and encrypted workspace import", asy
     ).toBeVisible();
     // Issue the next invitation after signup claims the first one. The MFA
     // rejection must roll this invitation back so the later import can use it.
-    const fixture = JSON.parse(
-      await readFile(
-        resolve(
-          import.meta.dirname,
-          "../../../.artifacts/p8/browser/hosted-fixture.json",
-        ),
-        "utf8",
-      ),
-    );
+    const fixture = JSON.parse(await readFile(fixtureInfo, "utf8"));
     const ownership = execFileSync(
       "docker",
       [

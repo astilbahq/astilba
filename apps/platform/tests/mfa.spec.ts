@@ -7,6 +7,7 @@ import {
   test,
 } from "@playwright/test";
 import { authFixtureSQL } from "./auth-fixture";
+import { dev } from "./fixtures/ports";
 import { totp } from "./fixtures/totp";
 
 async function post(request: APIRequestContext, path: string, data?: object) {
@@ -297,7 +298,7 @@ test("two-factor sign-in separates authenticator and recovery modes and preserve
   await expect(page).toHaveURL(`${baseURL}/account`);
   await signOut(page);
   await expect(page).toHaveURL(`${baseURL}/login`);
-  await page.goto("http://127.0.0.1:15182/login");
+  await page.goto(`${dev}/login`);
   await signIn();
   await code.fill("12");
   await page.getByRole("button", { name: "Language", exact: true }).click();

@@ -37,6 +37,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/moby/moby/client"
 	"github.com/pquerna/otp/totp"
 )
 
@@ -112,24 +113,35 @@ func TestMain(m *testing.M) {
 	owner := uuid.NewString()
 	password, _ := randtoken.New()
 	name := "astilba-p1-test-" + owner
-	out, e := run("run", "--detach", "--name", name, "--label", "com.astilba.p1-test="+owner, "--publish", "127.0.0.1::5432", "--env", "POSTGRES_PASSWORD="+password, postgresImage)
+	// Nothing is published: the tests reach the database through the Docker API.
+	out, e := run("run", "--detach", "--name", name, "--label", "com.astilba.p1-test="+owner, "--env", "POSTGRES_PASSWORD="+password, postgresImage)
 	if e != nil {
 		fmt.Fprintln(os.Stderr, "cannot start disposable test database", string(out))
 		os.Exit(1)
 	}
+	var forward *dockerForward
 	cleanup := func() {
+		if forward != nil {
+			forward.Close()
+		}
 		label, e := run("inspect", "--format", `{{ index .Config.Labels "com.astilba.p1-test" }}`, name)
 		if e == nil && strings.TrimSpace(string(label)) == owner {
 			_, _ = run("rm", "--force", "--volumes", name)
 		}
 	}
-	port, e := run("port", name, "5432/tcp")
+	docker, e := client.New(client.WithHost(host))
 	if e != nil {
 		cleanup()
-		fmt.Fprintln(os.Stderr, "cannot read the test database's port:", e, string(port))
+		fmt.Fprintln(os.Stderr, "cannot reach the test database's daemon:", e)
 		os.Exit(1)
 	}
-	databaseURL = "postgres://postgres:" + password + "@" + strings.TrimSpace(string(port)) + "/postgres?sslmode=disable"
+	forward, e = startDockerForward(docker, name, "127.0.0.1", "5432")
+	if e != nil {
+		cleanup()
+		fmt.Fprintln(os.Stderr, "cannot forward to the test database:", e)
+		os.Exit(1)
+	}
+	databaseURL = "postgres://postgres:" + password + "@" + forward.Addr() + "/postgres?sslmode=disable"
 	pool, e := pgxpool.New(context.Background(), databaseURL)
 	if e != nil {
 		cleanup()
@@ -150,9 +162,9 @@ func TestMain(m *testing.M) {
 	pool.Close()
 	if ping != nil {
 		// Printed first and in turn: a stalled daemon can hold each of these for minutes.
-		fmt.Fprintf(os.Stderr, "test PostgreSQL did not become ready after %s at %s: %v\n", time.Since(started).Round(time.Millisecond), strings.TrimSpace(string(port)), ping)
+		fmt.Fprintf(os.Stderr, "test PostgreSQL did not become ready after %s through the Docker API: %v\n", time.Since(started).Round(time.Millisecond), ping)
 		for _, args := range [][]string{
-			{"inspect", "--format", "{{.State.Status}} {{json .NetworkSettings.Ports}}", name},
+			{"inspect", "--format", "{{.State.Status}}", name},
 			{"exec", name, "pg_isready", "--host", "127.0.0.1"},
 			{"logs", "--tail", "20", name},
 		} {
