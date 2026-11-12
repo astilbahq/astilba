@@ -43,7 +43,7 @@ only when every changed path is known not to affect it:
 | Application Go race lanes | documentation or dashboard paths above |
 | Application and workshop browsers | documentation |
 | Durable execution, Git providers, canvas | outside that experiment, its workflow and the Makefile (durable execution and Git providers also follow the image pull action, canvas the root JavaScript manifests and lockfile, the pnpm install action and script, and all three `scripts/fetch-attempts.mjs`) |
-| Vulnerability scan | not a Go file, `go.mod`, `go.sum`, `package.json`, root JavaScript manifest or lockfile, the pnpm install action or script, `scripts/fetch-attempts.mjs`, the Makefile, the allowlist, the scanner script or its workflows |
+| Vulnerability scan | not a Go file, `go.mod`, `go.sum`, `package.json`, root JavaScript manifest or lockfile, the pnpm install action or script, the Makefile, the allowlist, the pinned Public Suffix List, the scan's workflows, or a script `make check-vulnerabilities` runs or any module it imports, at the base or in the tested commit. The planner follows those imports itself, so a new one needs no change here |
 
 `AGENTS.md`, `REVIEW.md`, runtime, contracts, migrations, package/lock files, CI,
 scripts, toolchain and unknown paths select the native suite. A change to the

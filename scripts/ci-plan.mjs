@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { appendFileSync } from "node:fs";
+import { posix } from "node:path";
 import { pathToFileURL } from "node:url";
 
 const instructions = (path) => /(^|\/)(AGENTS|REVIEW)\.md$/.test(path);
@@ -36,7 +37,64 @@ const imagePulls = (path) =>
   path.startsWith(".github/actions/pull-images/") ||
   path === "scripts/fetch-attempts.mjs";
 
-const vulnerabilityInputs = (path) =>
+// The scripts a Makefile target's recipe runs with node.
+export function recipeScripts(makefile, target) {
+  const lines = makefile.split("\n");
+  const start = lines.findIndex((line) => line.startsWith(`${target}:`));
+  if (start < 0) throw new Error(`The Makefile has no ${target} target`);
+  const scripts = [];
+  for (const line of lines.slice(start + 1)) {
+    if (!line.startsWith("\t")) break;
+    for (const [, script] of line.matchAll(
+      /\bnode\s+(scripts\/[\w./-]+\.mjs)\b/g,
+    ))
+      scripts.push(script);
+  }
+  if (scripts.length === 0) throw new Error(`${target} runs no scripts`);
+  return scripts;
+}
+
+// Every module the entry scripts load from the repository, themselves included, following
+// relative static, side-effect, re-export and dynamic imports. A specifier that only looks like
+// an import, in a comment for instance, adds a path, which can only select the scan more often.
+export function localModules(entries, read) {
+  const found = new Set();
+  const pending = [...entries];
+  while (pending.length > 0) {
+    const path = posix.normalize(pending.pop());
+    if (found.has(path)) continue;
+    found.add(path);
+    for (const [, specifier] of read(path).matchAll(
+      /(?:\bfrom|\bimport)\s*\(?\s*["'](\.{1,2}\/[^"']+)["']/g,
+    ))
+      pending.push(posix.join(posix.dirname(path), specifier));
+  }
+  return found;
+}
+
+// `make check-vulnerabilities` is the scan, so it depends on every script that recipe runs and
+// every module those load, at the base and in the tested commit. A pull request that stops a
+// module being loaded changes the module that loaded it, which is still loaded. The modules are
+// read from git, so a new import is followed without anyone listing it here. Without them at
+// either end, null.
+function scanScripts(revs, read) {
+  try {
+    return new Set(
+      revs.flatMap((rev) => [
+        ...localModules(
+          recipeScripts(read(rev, "Makefile"), "check-vulnerabilities"),
+          (path) => read(rev, path),
+        ),
+      ]),
+    );
+  } catch {
+    return null;
+  }
+}
+
+const vulnerabilityInputs = (path, scripts) =>
+  scripts === null ||
+  scripts.has(path) ||
   path.endsWith(".go") ||
   /(^|\/)(go\.mod|go\.sum|package\.json)$/.test(path) ||
   javascript(path) ||
@@ -44,10 +102,8 @@ const vulnerabilityInputs = (path) =>
   path === ".github/vulnerability-allowlist.json" ||
   path === ".github/workflows/vulnerability-scan.yml" ||
   path === ".github/workflows/application.yml" ||
-  path.startsWith("scripts/vulnerability-scan") ||
   // The scan also confirms the pinned Public Suffix List matches upstream.
-  path.startsWith("services/platform/internal/publicsuffix/") ||
-  path.startsWith("scripts/public-suffix-list");
+  path.startsWith("services/platform/internal/publicsuffix/");
 
 // A pull request or merge group skips a suite only when every changed path is
 // known not to affect it; anything unrecognised selects the suite.
@@ -99,10 +155,18 @@ export function ciPlan(event, cwd = process.cwd(), mergeGroupBase) {
     .split("\0")
     .filter(Boolean);
   if (paths.length === 0 || paths.some(planner)) return all;
+  const scripts = scanScripts([base, "HEAD"], (rev, path) =>
+    execFileSync("git", ["show", `${rev}:${path}`], {
+      cwd,
+      encoding: "utf8",
+      env,
+      stdio: ["ignore", "pipe", "ignore"],
+    }),
+  );
   return Object.fromEntries(
     Object.entries(affects).map(([suite, affected]) => [
       suite,
-      paths.some(affected),
+      paths.some((path) => affected(path, scripts)),
     ]),
   );
 }

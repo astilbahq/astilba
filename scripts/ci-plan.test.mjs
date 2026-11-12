@@ -13,10 +13,19 @@ import { devNull, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { ciPlan } from "./ci-plan.mjs";
+import { ciPlan, localModules, recipeScripts } from "./ci-plan.mjs";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const workflows = join(root, ".github/workflows");
+const source = (path) => readFileSync(join(root, path), "utf8");
+// The scan's recipe and the modules it loads, which the planner follows.
+const scanFiles = [
+  "Makefile",
+  ...localModules(
+    recipeScripts(source("Makefile"), "check-vulnerabilities"),
+    source,
+  ),
+];
 
 const gitEnvironment = {
   ...Object.fromEntries(
@@ -49,6 +58,7 @@ function repository(t) {
   };
   write("README.md");
   write("services/platform/native.go");
+  for (const path of scanFiles) write(path, source(path));
   commit();
   git("switch", "-c", "feature");
   const merge = () => {
@@ -166,6 +176,20 @@ test("each suite runs only for paths that can affect it", async (t) => {
       ["native", "go", "browser", "vulnerabilities"],
     ],
     [
+      ["scripts/vulnerability-scan.mjs"],
+      ["native", "go", "browser", "vulnerabilities"],
+    ],
+    [
+      ["scripts/public-suffix-list.mjs"],
+      ["native", "go", "browser", "vulnerabilities"],
+    ],
+    // Only imported by the Public Suffix List check, which sets its release-age gate.
+    [
+      ["scripts/go-release-age.mjs"],
+      ["native", "go", "browser", "vulnerabilities"],
+    ],
+    [["scripts/public-suffix-list.test.mjs"], ["native", "go", "browser"]],
+    [
       ["Makefile"],
       [
         "native",
@@ -226,6 +250,84 @@ test("each suite runs only for paths that can affect it", async (t) => {
         selected,
       );
     });
+});
+
+test("the scan's inputs are the scripts its recipe runs and everything they import", () => {
+  const makefile = [
+    "check-vulnerabilities:",
+    "\tstatus=0; node scripts/scan.mjs || status=1; node  scripts/list.mjs --check || status=1; exit $$status",
+    "",
+    "other:",
+    "\tnode scripts/other.mjs",
+  ].join("\n");
+  assert.deepEqual(recipeScripts(makefile, "check-vulnerabilities"), [
+    "scripts/scan.mjs",
+    "scripts/list.mjs",
+  ]);
+  assert.throws(() => recipeScripts(makefile, "missing"), /no missing target/);
+  assert.throws(() => recipeScripts("empty:\n\techo\n", "empty"), /no scripts/);
+
+  const modules = {
+    "scripts/scan.mjs":
+      'import { a } from "./a.mjs";\nimport "node:fs";\nimport { b } from "pkg";\nconst c = await import("./lazy/c.mjs");',
+    "scripts/list.mjs": 'export { d } from "./d.mjs";\nimport "../shared/e.mjs";',
+    "scripts/a.mjs": 'import { scan } from "./scan.mjs";',
+    "scripts/lazy/c.mjs": "import {\n  f,\n} from '../f.mjs';",
+    "scripts/d.mjs": "",
+    "shared/e.mjs": "",
+    "scripts/f.mjs": "",
+  };
+  assert.deepEqual(
+    [
+      ...localModules(["scripts/scan.mjs", "scripts/list.mjs"], (path) => {
+        assert.ok(path in modules, path);
+        return modules[path];
+      }),
+    ].sort(),
+    Object.keys(modules).sort(),
+  );
+});
+
+test("a module the scan loads selects it whichever end loads it", async (t) => {
+  await t.test("loaded only at the base", (t) => {
+    const repo = repository(t);
+    repo.write(
+      "scripts/public-suffix-list.mjs",
+      source("scripts/public-suffix-list.mjs").replace(
+        'import { minimumAgeMs } from "./go-release-age.mjs";\n',
+        "",
+      ),
+    );
+    repo.write("scripts/go-release-age.mjs", "changed\n");
+    repo.merge();
+    assert.equal(ciPlan("pull_request", repo.cwd).vulnerabilities, true);
+  });
+  await t.test("loaded only in the tested commit", (t) => {
+    const repo = repository(t);
+    repo.git("switch", "main");
+    repo.write("scripts/helper.mjs");
+    repo.commit();
+    repo.git("switch", "feature");
+    repo.git("merge", "--ff-only", "main");
+    repo.write(
+      "scripts/vulnerability-scan.mjs",
+      'import "./helper.mjs";\n' + source("scripts/vulnerability-scan.mjs"),
+    );
+    repo.merge();
+    const plan = ciPlan("pull_request", repo.cwd);
+    assert.equal(plan.vulnerabilities, true);
+  });
+  await t.test("a base without the scan's recipe selects it", (t) => {
+    const repo = repository(t);
+    repo.git("switch", "main");
+    repo.write("Makefile", "check:\n\ttrue\n");
+    repo.commit();
+    repo.git("switch", "feature");
+    repo.git("merge", "--ff-only", "main");
+    repo.write("docs/agent.md");
+    repo.merge();
+    assert.equal(ciPlan("pull_request", repo.cwd).vulnerabilities, true);
+  });
 });
 
 test("a native deletion or rename into a frontend directory still runs native checks", async (t) => {
