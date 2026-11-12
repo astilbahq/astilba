@@ -133,9 +133,13 @@ func (s *Service) releaseValues(ctx context.Context, a Identity, key db.SecretRe
 		return sendCommand, nil
 	}
 	digest := keys.digest(c.Id, key.DispatchEpoch)
+	// A poll that has ended claims nothing: its response could not leave.
+	if err := ctx.Err(); err != nil {
+		return waitForRelease, err
+	}
 	// A poll that ends while the claim commits would not know whether it did, and a release
-	// committed but not returned waits out its lease. So the claim finishes, briefly, whatever
-	// becomes of the poll, and the poll then returns what it claimed.
+	// committed but not returned waits out its lease. So a claim once started finishes, briefly,
+	// whatever becomes of the poll, and the poll then returns what it claimed.
 	claimCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), claimTimeout)
 	defer cancel()
 	claimed, err := s.claimRelease(claimCtx, a, key, digest)
