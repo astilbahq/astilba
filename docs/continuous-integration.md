@@ -736,11 +736,20 @@ it uses a mirror instead of Canonical, and fails when none answers.
   file. This is acceptable for a disposable runner, not for a customer's host.
 - **Retries.** The step sets `Acquire::Retries "5"`, up from apt's default of 3.
 
-This is CI only. The production bootstrap is unchanged and uses whatever sources its
-host has, which in CI are the ones this step chose. A fresh customer install still
-depends on that host's own mirrors during an outage like this one. Whether the product should offer a fallback is a separate
-decision. The bootstrap limits its own `apt-get update` to 5 minutes for any source
-that hangs.
+This step is CI only. The production bootstrap leaves a host's sources alone and falls back
+to the same independent mirrors, then Canonical's archive, only when it can't download its
+Ubuntu packages from them; see [server onboarding](server-onboarding.md). Its fallback relies on
+apt's own `Valid-Until-Max` for freshness rather than this step's check.
+
+`TestBootstrapOnDisposableHost` covers each path the bootstrap's Ubuntu packages can take:
+
+| Lanes | What the fresh installation does |
+| --- | --- |
+| `core`, `visual` | Removes nftables, blocks the runner's Ubuntu archives and Canonical's in `/etc/hosts`, and must install nftables from a fallback archive. |
+| `recovery` | Removes nftables and must install it from the runner's own sources. |
+| `upgrade` | Leaves the runner as it is, which needs no Ubuntu package. |
+
+A runner already has every other Ubuntu package the bootstrap installs. If this step already moved the runner to a mirror because Canonical's archive is down, the blocked lanes install from the runner's sources instead, with a warning annotation, because blocking that mirror too would leave too few to fall back to. The `recovery` lane warns in the same way if it had to fall back.
 
 ## Image downloads
 
