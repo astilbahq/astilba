@@ -33,6 +33,16 @@ SELECT
  (EXISTS(SELECT 1 FROM cross_host_runtime r WHERE r.workspace_id = @workspace_id AND r.environment_id = @environment_id)
   OR EXISTS(SELECT 1 FROM network_endpoints n WHERE n.workspace_id = @workspace_id AND n.environment_id = @environment_id AND NOT n.retired))::boolean AS cross_host;
 
+-- name: UndeletedTemplatePreviews :many
+-- A preview template's previews each hold copies of its secret values until their cleanup or their
+-- host's revocation deletes them, which also marks them deleted. Every change to a preview holds
+-- the workspace write lock, as a purge does, so none appears or comes back while a purge checks.
+SELECT r.number,r.state,r.note
+FROM preview_requests r
+JOIN preview_policies p ON p.workspace_id = r.workspace_id AND p.id = r.policy_id
+WHERE r.workspace_id = @workspace_id AND p.environment_id = @environment_id AND r.state <> 'deleted'
+ORDER BY r.number;
+
 -- name: RetirementServer :one
 SELECT revoked,awaiting_transfer,capabilities FROM servers WHERE workspace_id = @workspace_id AND id = @id;
 

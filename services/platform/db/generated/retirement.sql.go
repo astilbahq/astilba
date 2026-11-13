@@ -626,3 +626,45 @@ func (q *Queries) SetEnvironmentRetirement(ctx context.Context, arg SetEnvironme
 	)
 	return err
 }
+
+const undeletedTemplatePreviews = `-- name: UndeletedTemplatePreviews :many
+SELECT r.number,r.state,r.note
+FROM preview_requests r
+JOIN preview_policies p ON p.workspace_id = r.workspace_id AND p.id = r.policy_id
+WHERE r.workspace_id = $1 AND p.environment_id = $2 AND r.state <> 'deleted'
+ORDER BY r.number
+`
+
+type UndeletedTemplatePreviewsParams struct {
+	WorkspaceID   uuid.UUID `json:"workspace_id"`
+	EnvironmentID uuid.UUID `json:"environment_id"`
+}
+
+type UndeletedTemplatePreviewsRow struct {
+	Number int32  `json:"number"`
+	State  string `json:"state"`
+	Note   string `json:"note"`
+}
+
+// A preview template's previews each hold copies of its secret values until their cleanup or their
+// host's revocation deletes them, which also marks them deleted. Every change to a preview holds
+// the workspace write lock, as a purge does, so none appears or comes back while a purge checks.
+func (q *Queries) UndeletedTemplatePreviews(ctx context.Context, arg UndeletedTemplatePreviewsParams) ([]UndeletedTemplatePreviewsRow, error) {
+	rows, err := q.db.Query(ctx, undeletedTemplatePreviews, arg.WorkspaceID, arg.EnvironmentID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []UndeletedTemplatePreviewsRow{}
+	for rows.Next() {
+		var i UndeletedTemplatePreviewsRow
+		if err := rows.Scan(&i.Number, &i.State, &i.Note); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}

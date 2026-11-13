@@ -1,10 +1,15 @@
 package integration
 
 import (
+	"bytes"
 	"context"
 	"encoding/json/v2"
+	"fmt"
+	"io"
 	"maps"
+	"net/http"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -12,6 +17,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/portability"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 )
 
@@ -321,5 +327,188 @@ func TestPurgedEnvironmentSurvivesExportAndImport(t *testing.T) {
 	var erased int
 	if err = destination.st.Pool.QueryRow(ctx, "SELECT count(*) FROM secret_versions WHERE workspace_id=$1 AND id=$2 AND encrypted_value IS NULL AND erased_at IS NOT NULL", x.ws, secret.Id).Scan(&erased); err != nil || erased != 1 {
 		t.Fatalf("imported erased versions: %d %v", erased, err)
+	}
+}
+
+// previewSecretTemplate turns on h's preview policy for a template revision whose service reads a
+// secret, so each preview holds its own copy of the secret's value.
+func previewSecretTemplate(t *testing.T, h *hungPreview) api.SecretVersion {
+	t.Helper()
+	var secret api.SecretVersion
+	h.b.call("POST", h.path+"/secrets", map[string]string{"name": "Token", "value": "dummy-template-canary"}, 201, &secret)
+	spec := h.spec
+	spec.Applications = slices.Clone(spec.Applications)
+	spec.Applications[0].Variables = []domain.Variable{{Name: "TOKEN", SecretVersionID: &secret.Id}}
+	h.b.call("PUT", h.path+"/draft", map[string]any{"baseRevisionId": h.draft.Id, "specification": spec}, 200, &h.draft)
+	policy := maps.Clone(h.policy)
+	policy["baseRevisionId"] = h.draft.Id
+	h.b.call("PUT", h.path+"/preview-policy", map[string]any{"enabled": true, "generation": 0, "configuration": policy}, 200, nil)
+	return secret
+}
+
+// environmentSecretValues counts the secret versions of env that still hold a value.
+func environmentSecretValues(t *testing.T, h *hungPreview, env uuid.UUID) int {
+	t.Helper()
+	var n int
+	if err := h.f.st.Pool.QueryRow(t.Context(), "SELECT count(*) FROM secret_versions v JOIN secrets s ON s.workspace_id=v.workspace_id AND s.id=v.secret_id WHERE s.workspace_id=$1 AND s.environment_id=$2 AND v.encrypted_value IS NOT NULL", h.ws, env).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+func previewsRefusal(t *testing.T, raw []byte) api.Error {
+	t.Helper()
+	var refused api.Error
+	if err := json.Unmarshal(raw, &refused); err != nil || refused.Fields == nil || !slices.Contains(*refused.Fields, "retirement.previews") {
+		t.Fatalf("expected the previews refusal: %s %v", raw, err)
+	}
+	return refused
+}
+
+// retiredTemplateWithoutPreviews retires h's template once its ready preview's cleanup has deleted
+// it, and returns that preview.
+func retiredTemplateWithoutPreviews(t *testing.T, h *hungPreview) api.PullRequestPreview {
+	t.Helper()
+	h.b.call("PUT", h.path+"/preview-policy", map[string]any{"enabled": true, "generation": 0, "configuration": h.policy}, 200, nil)
+	preview := readyPreview(t, h)
+	h.b.call("POST", h.path+"/retire", api.EnvironmentLifecycleRequest{ConfirmName: "PR template"}, 201, nil)
+	waitPreviewAt(t, h, h.path, "deleting")
+	cleanup := nextPreviewCommand(t, h)
+	agentRequest(t, h.f.server.Client(), h.f.server.URL, "/agent/v1/report", h.token, api.AgentReport{Id: cleanup.Id, Generation: cleanup.Generation, PlanHash: cleanup.PlanHash, Sequence: 2, State: "succeeded", Steps: []api.ExecutionStep{}}, 204, nil)
+	waitPreviewAt(t, h, h.path, "deleted")
+	waitPreviewChecks(t, h)
+	return preview
+}
+
+// A preview template's previews hold their own copies of its secret values until their cleanup
+// deletes them, so purging the template is refused, naming each preview and what it waits for, until
+// every one is deleted. A purge that succeeds leaves no copy.
+func TestPurgeWaitsForATemplatesPreviews(t *testing.T) {
+	h := newHungPreview(t)
+	var environment api.Environment
+	h.b.call("GET", h.path, nil, 200, &environment)
+	template := environment.Id
+	secret := previewSecretTemplate(t, h)
+	preview := readyPreview(t, h)
+	if environmentSecretValues(t, h, *preview.EnvironmentId) != 1 {
+		t.Fatal("the preview holds no copy of the template's secret")
+	}
+	h.b.call("POST", h.path+"/retire", api.EnvironmentLifecycleRequest{ConfirmName: "PR template"}, 201, nil)
+	deleting := waitPreviewAt(t, h, h.path, "deleting")
+	cleanup := nextPreviewCommand(t, h)
+
+	purge := func(status int) []byte {
+		t.Helper()
+		return h.b.call("POST", h.path+"/purge", api.EnvironmentPurgeRequest{ConfirmName: "PR template", VolumeIds: []uuid.UUID{}}, status, nil)
+	}
+	refused := previewsRefusal(t, purge(409))
+	if want := fmt.Sprintf("#%d is deleting (%s)", deleting.Number, strings.TrimSuffix(deleting.Note, ".")); !strings.Contains(refused.Message, want) {
+		t.Fatalf("the refusal does not name the preview and why it waits, %q: %s", want, refused.Message)
+	}
+	if environmentSecretValues(t, h, template) != 1 {
+		t.Fatal("a refused purge erased the template's secret")
+	}
+
+	agentRequest(t, h.f.server.Client(), h.f.server.URL, "/agent/v1/report", h.token, api.AgentReport{Id: cleanup.Id, Generation: cleanup.Generation, PlanHash: cleanup.PlanHash, Sequence: 2, State: "succeeded", Steps: []api.ExecutionStep{}}, 204, nil)
+	waitPreviewAt(t, h, h.path, "deleted")
+	var purged api.Environment
+	if err := json.Unmarshal(purge(201), &purged); err != nil || purged.State != api.EnvironmentStatePurged {
+		t.Fatalf("purged template: %+v %v", purged, err)
+	}
+	if environmentSecretValues(t, h, template) != 0 || environmentSecretValues(t, h, *preview.EnvironmentId) != 0 {
+		t.Fatal("a purged template's secret value remains in it or its preview")
+	}
+	var erased bool
+	if err := h.f.st.Pool.QueryRow(t.Context(), "SELECT erased_at IS NOT NULL FROM secret_versions WHERE workspace_id=$1 AND id=$2", h.ws, secret.Id).Scan(&erased); err != nil || !erased {
+		t.Fatal("the template's secret version was not erased", err)
+	}
+	// A new provider event brings no preview back.
+	h.pullRequestHook(t)
+	waitPreviewChecks(t, h)
+	if after := previewAt(t, h, h.path); after.State != "deleted" {
+		t.Fatal("a purged template's preview came back", after.State, after.Note)
+	}
+}
+
+// A purge checks the template's previews under the workspace write lock that every change to a
+// preview holds. One that waits for that lock sees what the holder committed, so a preview that
+// appears or comes back while it waits refuses it.
+func TestTemplatePurgeSeesAPreviewChangedWhileItWaits(t *testing.T) {
+	h := newHungPreview(t)
+	ctx := t.Context()
+	preview := retiredTemplateWithoutPreviews(t, h)
+
+	// This transaction stands in for any change to a preview: it holds the workspace write lock and
+	// brings the preview back.
+	tx, err := h.f.st.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	var holder int32
+	if err = tx.QueryRow(ctx, "SELECT pg_backend_pid() FROM workspaces WHERE id=$1 FOR NO KEY UPDATE", h.ws).Scan(&holder); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = tx.Exec(ctx, "UPDATE preview_requests SET state='blocked',note='Brought back while the purge waited.' WHERE workspace_id=$1 AND id=$2", h.ws, preview.Id); err != nil {
+		t.Fatal(err)
+	}
+	waiting := func() int {
+		t.Helper()
+		var n int
+		if err := h.f.st.Pool.QueryRow(ctx, "SELECT count(*) FROM pg_stat_activity WHERE $1::int = ANY(pg_blocking_pids(pid))", holder).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	before := waiting()
+	type answer struct {
+		status int
+		body   []byte
+		err    error
+	}
+	answered := make(chan answer, 1)
+	go func() {
+		raw, _ := stablejson.Marshal(api.EnvironmentPurgeRequest{ConfirmName: "PR template", VolumeIds: []uuid.UUID{}})
+		request, err := http.NewRequestWithContext(ctx, "POST", h.f.server.URL+h.path+"/purge", bytes.NewReader(raw))
+		if err != nil {
+			answered <- answer{err: err}
+			return
+		}
+		request.Header.Set("Origin", h.f.server.URL)
+		request.Header.Set("X-CSRF-Token", h.b.csrf)
+		request.Header.Set("Content-Type", "application/json")
+		response, err := h.b.client.Do(request)
+		if err != nil {
+			answered <- answer{err: err}
+			return
+		}
+		defer response.Body.Close()
+		body, err := io.ReadAll(response.Body)
+		answered <- answer{response.StatusCode, body, err}
+	}()
+	for deadline := time.Now().Add(10 * time.Second); waiting() <= before; time.Sleep(10 * time.Millisecond) {
+		select {
+		case a := <-answered:
+			t.Fatalf("the purge answered without waiting for the workspace lock: %d %s %v", a.status, a.body, a.err)
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the purge never waited for the workspace lock")
+		}
+	}
+	if err = tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	a := <-answered
+	if a.err != nil || a.status != 409 {
+		t.Fatalf("purge after the preview came back: %d %s %v", a.status, a.body, a.err)
+	}
+	if refused := previewsRefusal(t, a.body); !strings.Contains(refused.Message, fmt.Sprintf("#%d is blocked (Brought back while the purge waited)", preview.Number)) {
+		t.Fatalf("the refusal does not name the preview that came back: %s", refused.Message)
+	}
+	var template api.Environment
+	h.b.call("GET", h.path, nil, 200, &template)
+	if template.State != api.EnvironmentStateRetired {
+		t.Fatalf("a refused purge changed the template: %s", template.State)
 	}
 }

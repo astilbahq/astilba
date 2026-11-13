@@ -6,7 +6,11 @@ import {
 import { type FormEvent, useId, useRef, useState } from "react";
 import { Trans, useTranslation } from "react-i18next";
 import { ApiError, client, result, type Schema } from "../../api/client";
-import { type EnvironmentPath, volumesOptions } from "../../api/environment";
+import {
+  type EnvironmentPath,
+  previewsOptions,
+  volumesOptions,
+} from "../../api/environment";
 import { environmentsOptions } from "../../api/environments";
 import {
   AlertDialogActions,
@@ -27,6 +31,23 @@ export type LifecycleChange = "retire" | "restore" | "purge";
 
 const root =
   "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}";
+
+const previewStates = [
+  "approval_required",
+  "queued",
+  "building",
+  "deploying",
+  "ready",
+  "failed",
+  "closing",
+  "deleting",
+  "deleted",
+  "blocked",
+] as const;
+const isPreviewState = (
+  state: string,
+): state is (typeof previewStates)[number] =>
+  (previewStates as readonly string[]).includes(state);
 
 const hasCode = (error: unknown, code: string) =>
   error instanceof ApiError && error.detail.code === code;
@@ -96,6 +117,8 @@ function useLifecycleErrorText() {
         return t(($) => $.lifecycle.refusal.volumes);
       case "retirement.purge_agent_update":
         return t(($) => $.lifecycle.refusal.purgeAgentUpdate);
+      case "retirement.previews":
+        return t(($) => $.lifecycle.refusal.previews);
       default:
         return t(($) => $.lifecycle.refusal.unknown);
     }
@@ -179,6 +202,7 @@ export function LifecycleDialog({
   const input = useRef<HTMLInputElement>(null);
   const title = useRef<HTMLHeadingElement>(null);
   const volumeItem = useRef<HTMLLIElement>(null);
+  const previewItem = useRef<HTMLLIElement>(null);
   const formId = useId();
   const inputId = useId();
   const hintId = useId();
@@ -188,7 +212,17 @@ export function LifecycleDialog({
   // the banner behind the dialog shows too, and the request sends that list and no other.
   const volumes = useQuery({ ...volumesOptions(path), enabled: purge });
   const kept = volumes.data?.filter((volume) => !volume.deleted);
-  const ready = name === environment.name && (!purge || !!kept);
+  // A preview template's previews hold copies of its secrets until each is deleted, and the server
+  // refuses its purge until then. The list refreshes while the dialog is open.
+  const template = purge && environment.purpose === "preview_template";
+  const previews = useQuery({ ...previewsOptions(path), enabled: template });
+  const pending = previews.data?.filter(
+    (preview) => preview.state !== "deleted",
+  );
+  const ready =
+    name === environment.name &&
+    (!purge || !!kept) &&
+    (!template || pending?.length === 0);
   const mismatch = nameMismatch(action.error);
   const dismiss = () => {
     action.reset();
@@ -233,11 +267,17 @@ export function LifecycleDialog({
           void queries.invalidateQueries({
             queryKey: environmentQueries(path),
           });
-        // The kept volumes may have changed as well, and the owner confirms the current list.
-        if (purge && hasCode(error, "conflict"))
+        // The kept volumes may have changed as well, and the owner confirms the current list. A
+        // template's previews show again what each one waits for.
+        if (purge && hasCode(error, "conflict")) {
           void queries.invalidateQueries({
             queryKey: volumesOptions(path).queryKey,
           });
+          if (template)
+            void queries.invalidateQueries({
+              queryKey: previewsOptions(path).queryKey,
+            });
+        }
         throw error;
       }
     });
@@ -314,7 +354,7 @@ export function LifecycleDialog({
                     kept.length ? (
                       <>
                         {t(($) => $.lifecycle.purgeEffects.volumes)}
-                        <ul className={e.purgeVolumes}>
+                        <ul className={e.purgeItems}>
                           {kept.map((volume) => (
                             <li key={volume.id} className={e.code}>
                               <bdi>{volume.name}</bdi>
@@ -335,6 +375,56 @@ export function LifecycleDialog({
                 {!!kept?.length && (
                   <li>{t(($) => $.lifecycle.purgeEffects.revoked)}</li>
                 )}
+                {template && (
+                  <li
+                    ref={previewItem}
+                    tabIndex={-1}
+                    className={e.recoveryTarget}
+                  >
+                    {pending ? (
+                      pending.length ? (
+                        <>
+                          {t(($) => $.lifecycle.purgeEffects.previews)}
+                          <ul className={e.purgeItems}>
+                            {pending.map((preview) => {
+                              const known = preview.state;
+                              // A state this dashboard does not know yet reads as the server
+                              // names it.
+                              const state = isPreviewState(known)
+                                ? t(($) => $.lifecycle.previewStates[known])
+                                : known.replaceAll("_", " ");
+                              return (
+                                <li key={preview.id}>
+                                  {preview.note
+                                    ? t(
+                                        ($) =>
+                                          $.lifecycle.purgeEffects
+                                            .previewWithNote,
+                                        {
+                                          number: preview.number,
+                                          state,
+                                          note: preview.note,
+                                        },
+                                      )
+                                    : t(
+                                        ($) => $.lifecycle.purgeEffects.preview,
+                                        { number: preview.number, state },
+                                      )}
+                                </li>
+                              );
+                            })}
+                          </ul>
+                        </>
+                      ) : (
+                        t(($) => $.lifecycle.purgeEffects.noPreviews)
+                      )
+                    ) : previews.isError ? (
+                      t(($) => $.lifecycle.status.previewsFailed)
+                    ) : (
+                      t(($) => $.lifecycle.status.previewsLoading)
+                    )}
+                  </li>
+                )}
                 <li>{t(($) => $.lifecycle.purgeEffects.secrets)}</li>
                 <li>{t(($) => $.lifecycle.purgeEffects.kept)}</li>
                 <li>{t(($) => $.lifecycle.purgeEffects.backups)}</li>
@@ -344,14 +434,17 @@ export function LifecycleDialog({
         </AlertDialogDescription>
         {/* Failed reads are not retried on their own, and the purge cannot be confirmed without
             the list. */}
-        {purge && !kept && volumes.isError && (
+        {((purge && !kept && volumes.isError) ||
+          (template && !pending && previews.isError)) && (
           <div>
             <Button
               size="sm"
-              disabled={volumes.isFetching}
+              disabled={volumes.isFetching || previews.isFetching}
               onClick={() => {
-                volumeItem.current?.focus();
-                void volumes.refetch();
+                const volumesFailed = !kept && volumes.isError;
+                (volumesFailed ? volumeItem : previewItem).current?.focus();
+                if (volumesFailed) void volumes.refetch();
+                if (!pending && previews.isError) void previews.refetch();
               }}
             >
               {t(($) => $.retry)}

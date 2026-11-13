@@ -140,6 +140,10 @@
       "volumes": "Its server is asked to delete these data volumes:",
       "noVolumes": "It keeps no data volumes, so nothing is deleted from its server.",
       "revoked": "If its server has been revoked, it is not contacted, and these volumes stay on it.",
+      "previews": "Its previews hold copies of its secrets, so each must be deleted first. Wait for its cleanup, or choose Remove preview and data on it under Previews:",
+      "preview": "Request #{{number}}: {{state}}",
+      "previewWithNote": "Request #{{number}}: {{state}}. {{note}}",
+      "noPreviews": "Its previews are all deleted.",
       "secrets": "The values of its secrets are erased, for every version.",
       "kept": "Its configuration, revisions and history are kept, read-only.",
       "backups": "Backups at the workspace’s backup destination are kept."
@@ -169,7 +173,20 @@
       "state": "This environment’s state has changed, so this can no longer be done. The page now shows its current state.",
       "volumes": "The volumes this environment keeps have changed. Check the updated list, then confirm again.",
       "purgeAgentUpdate": "Update this server’s agent before deleting retained data on it.",
+      "previews": "Some of this template’s previews are not deleted yet. Each is listed above with what it is waiting for.",
       "unknown": "This environment cannot be changed right now. Check its current state, then try again."
+    },
+    "previewStates": {
+      "approval_required": "waiting for approval",
+      "queued": "queued",
+      "building": "building",
+      "deploying": "deploying",
+      "ready": "running",
+      "failed": "failed",
+      "closing": "closing",
+      "deleting": "deleting",
+      "deleted": "deleted",
+      "blocked": "blocked"
     },
     "retired": "Environment retired.",
     "retirementStarted": "Retirement started. The environment is read-only while its server removes it.",
@@ -211,6 +228,8 @@
       "remainingVolumesTitle": "Volumes that may remain on the server",
       "volumesLoading": "Loading kept volumes…",
       "volumesFailed": "Kept volumes could not be loaded.",
+      "previewsLoading": "Loading this template’s previews…",
+      "previewsFailed": "This template’s previews could not be loaded.",
       "volumesEmpty": "This environment has no kept volumes.",
       "ownersOnly": "Only workspace owners can restore it or delete its retained data."
     },

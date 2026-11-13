@@ -1,6 +1,9 @@
 package domain
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+)
 
 // EnvironmentInactive refuses a change to an environment that is not active: retiring, retired or
 // purged. Reads, history and configuration export stay available; restoring a retired environment
@@ -25,6 +28,7 @@ const (
 	RetirementState           = "state"
 	RetirementVolumes         = "volumes"
 	RetirementPurgeAgent      = "purge_agent_update"
+	RetirementPreviews        = "previews"
 )
 
 var retirementMessages = map[string]string{
@@ -44,6 +48,35 @@ var retirementMessages = map[string]string{
 // RetirementRefused names why an environment cannot be retired, restored or purged now.
 func RetirementRefused(reason string) error {
 	return &Error{Code: "conflict", Message: retirementMessages[reason], Fields: []string{"retirement." + reason}}
+}
+
+// PendingPreview is a template's preview that is not deleted yet: its request number, its state and
+// the note that says what it is waiting for.
+type PendingPreview struct {
+	Number      int32
+	State, Note string
+}
+
+// PreviewsRemain refuses to purge a preview template while any of its previews may still hold copies
+// of its secret values. It names each one, up to ten, and what it is waiting for.
+func PreviewsRemain(previews []PendingPreview) error {
+	var b strings.Builder
+	b.WriteString("This template's previews still hold copies of its secrets. Wait for each to be deleted, or choose Remove preview and data on it under Previews, then try again. Not deleted yet:")
+	for i, p := range previews {
+		if i == 10 {
+			fmt.Fprintf(&b, "; and %d more", len(previews)-i)
+			break
+		}
+		if i > 0 {
+			b.WriteString(";")
+		}
+		fmt.Fprintf(&b, " #%d is %s", p.Number, p.State)
+		if note := strings.TrimSuffix(strings.TrimSpace(p.Note), "."); note != "" {
+			fmt.Fprintf(&b, " (%s)", note)
+		}
+	}
+	b.WriteString(".")
+	return &Error{Code: "conflict", Message: b.String(), Fields: []string{"retirement." + RetirementPreviews}}
 }
 
 // RouteClaimed refuses a plan whose host route or port another environment on the server serves,

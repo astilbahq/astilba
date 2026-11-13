@@ -36,6 +36,16 @@ export const volumesOptions = (path: EnvironmentPath) =>
       result(client.GET(`${root}/volumes`, { params: { path }, signal })),
   });
 
+// A preview template's pull-request previews, deleted ones included. The Previews section and the
+// purge confirmation, which waits for every one to be deleted, share this list.
+export const previewsOptions = (path: EnvironmentPath) =>
+  queryOptions({
+    queryKey: ["previews", path],
+    queryFn: ({ signal }) =>
+      result(client.GET(`${root}/previews`, { params: { path }, signal })),
+    refetchInterval: 5000,
+  });
+
 export const layoutOptions = (path: EnvironmentPath) =>
   queryOptions({
     queryKey: ["layout", path],

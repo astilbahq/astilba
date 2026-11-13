@@ -260,7 +260,8 @@ export const effects = css({
   overflowWrap: "anywhere",
 });
 // The volumes a purge deletes, listed under the effect that names them.
-export const purgeVolumes = css({
+// What a purge waits for or deletes, listed under one of its effects.
+export const purgeItems = css({
   display: "grid",
   gap: "1",
   marginBlockStart: "2",

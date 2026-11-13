@@ -1,5 +1,6 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ApiError, client, result, type Schema } from "../api/client";
+import { previewsOptions } from "../api/environment";
 import { Button } from "../components/button";
 import { Link } from "../components/link";
 import * as s from "../styles";
@@ -44,13 +45,9 @@ export function Previews({
       }
     },
   });
-  const previews = useQuery({
-    queryKey: ["previews", path],
-    queryFn: () => result(client.GET(`${root}/previews`, { params: { path } })),
-    refetchInterval: 5000,
-  });
+  const previews = useQuery(previewsOptions(path));
   const refresh = async () => {
-    await query.invalidateQueries({ queryKey: ["previews", path] });
+    await query.invalidateQueries({ queryKey: previewsOptions(path).queryKey });
     await query.invalidateQueries({ queryKey: ["preview-policy", path] });
     await query.invalidateQueries({
       queryKey: ["environments", path.workspaceId, path.projectId],
