@@ -17,12 +17,12 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 )
 
-func signedRelease(t *testing.T, version, describe string) (api.AgentRelease, ed25519.PublicKey, []byte) {
+func signedRelease(t *testing.T, version string, keyAuth bool) (api.AgentRelease, ed25519.PublicKey, []byte) {
 	t.Helper()
-	body := []byte("#!/bin/sh\nprintf '%s\\n' '" + describe + "'\n")
+	body := fixtureAgent(version, keyAuth)
 	pub, key, _ := ed25519.GenerateKey(rand.Reader)
 	sum := sha256.Sum256(body)
-	r := api.AgentRelease{Version: version, Protocol: 1, Arch: api.AgentReleaseArch(runtime.GOARCH), Size: int64(len(body)), Sha256: hex.EncodeToString(sum[:])}
+	r := api.AgentRelease{Version: version, MinimumVersion: fixtureFloor, Commit: fixtureCommit, Protocol: 1, Arch: api.AgentReleaseArch(runtime.GOARCH), Size: int64(len(body)), Sha256: hex.EncodeToString(sum[:])}
 	r.Signature = base64.StdEncoding.EncodeToString(ed25519.Sign(key, agentrelease.Message(r)))
 	return r, pub, body
 }
@@ -33,15 +33,16 @@ func TestAgentHoldingAKeyInstallsOnlyAReleaseThatAuthenticatesWithKeys(t *testin
 	if err := os.WriteFile(path, current, 0755); err != nil {
 		t.Fatal(err)
 	}
-	r, pub, body := signedRelease(t, "fixture.2", `{"Version":"fixture.2","Protocol":1,"Arch":"`+runtime.GOARCH+`"}`)
-	if Install(context.Background(), r, pub, bytes.NewReader(body), path, true) == nil {
+	keyed := Running{Keyed: true, MinimumVersion: fixtureFloor}
+	r, pub, body := signedRelease(t, "0.1.0-fixture.2", false)
+	if Install(context.Background(), r, pub, bytes.NewReader(body), path, keyed) == nil {
 		t.Fatal("an agent holding a key installed a release that would present its retired bearer")
 	}
 	if got, _ := os.ReadFile(path); !bytes.Equal(got, current) {
 		t.Fatal("the refused release replaced the agent")
 	}
-	r, pub, body = signedRelease(t, "fixture.3", `{"Version":"fixture.3","Protocol":1,"Arch":"`+runtime.GOARCH+`","KeyAuth":1}`)
-	if err := Install(context.Background(), r, pub, bytes.NewReader(body), path, true); err != nil {
+	r, pub, body = signedRelease(t, "0.1.0-fixture.3", true)
+	if err := Install(context.Background(), r, pub, bytes.NewReader(body), path, keyed); err != nil {
 		t.Fatal(err)
 	}
 }
