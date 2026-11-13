@@ -60,8 +60,10 @@ export function ServiceCatalog({
         <>
           <Label>
             Catalog entry
+            {/* Held while staging runs, so its outcome shows under the entry it was for. */}
             <Select
               value={recipe.id}
+              disabled={action.isPending}
               onChange={(e) => {
                 setSelected(e.target.value);
                 setNotice("");
