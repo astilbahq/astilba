@@ -20,11 +20,6 @@ func (c *Client) rotate(ctx context.Context) error {
 	if cfg.Key != nil || cfg.BindKey != nil {
 		return nil
 	}
-	// The exchange below starts with a heartbeat, which can't be sent until negotiation; its
-	// failure must not be read as management not holding the candidate.
-	if e = c.negotiate(ctx); e != nil {
-		return e
-	}
 	if cfg.Pending == "" {
 		pending, e := randtoken.New()
 		if e != nil {
@@ -42,7 +37,8 @@ func (c *Client) rotate(ctx context.Context) error {
 			return e
 		}
 	}
-	// A lost exchange response is recovered by trying the persisted candidate first.
+	// A lost exchange response is recovered by trying the persisted candidate first. Run rotates
+	// only once negotiated, so this heartbeat is never refused for want of it.
 	var status api.AgentStatus
 	if e = c.call(ctx, "POST", "/agent/v1/heartbeat", c.Observe(ctx), &status, cfg.Pending); e != nil {
 		// That heartbeat's response said whether this controller takes the machine.

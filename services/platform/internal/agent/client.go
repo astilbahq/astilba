@@ -270,6 +270,9 @@ func (c *Client) negotiate(ctx context.Context) error {
 	if refused := (rejection{}); errors.As(err, &refused) && refused.status == http.StatusNotFound {
 		return errPredatesNegotiation
 	}
+	if err != nil {
+		return fmt.Errorf("%w: %w", errNotNegotiated, err)
+	}
 	return errNotNegotiated
 }
 
@@ -390,8 +393,9 @@ func (c *Client) Enroll(ctx context.Context, token string) error {
 	if err != nil {
 		return err
 	}
-	// The enrollment went out before negotiation could finish. Report what the agent supports now
-	// rather than when the service first heartbeats.
+	// An enrollment sent to a controller that answered no challenge, or one whose answer changed
+	// what it reads, may have left support out. Report it now rather than when the service first
+	// heartbeats.
 	h := c.Observe(ctx)
 	if !reflect.DeepEqual(sent, c.advertisedCapabilities(h.Capabilities)) {
 		_ = c.heartbeat(ctx, authAgent, &api.AgentStatus{})

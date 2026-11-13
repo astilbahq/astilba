@@ -23,23 +23,23 @@ func (c *Client) enrollCode(ctx context.Context, code string) (api.AgentStatus, 
 	if err != nil {
 		return status, sent, false, err
 	}
-	// Learn what this controller reads, keys included, before choosing what to send: an enrollment
-	// replaces the capabilities management holds. Only a controller older than negotiation, which
-	// has no challenge to answer, is sent one without hearing first.
-	if err = c.negotiate(ctx); err != nil && !errors.Is(err, errPredatesNegotiation) {
-		return status, sent, false, err
-	}
 	codeHash := agentidentity.HashHex(code)
 	if cfg.Enrolled && cfg.EnrolledCode == codeHash {
 		// Sending it with a new key would look, to management, like a second holder of the code.
 		return status, sent, false, errors.New("this agent is already enrolled with this code; to enroll it again, create a new enrollment code")
 	}
 	entry, ok := cfg.Enrollments[codeHash]
+	if !ok && len(cfg.Enrollments) >= 4 {
+		return status, sent, false, errors.New("four enrollment codes are already outstanding; use one of them, or remove the state directory and enroll this host as a new server")
+	}
+	// Learn what this controller reads, keys included, before choosing what to send: an enrollment
+	// replaces the capabilities management holds. Only a controller older than negotiation, which
+	// has no challenge to answer, is sent one without hearing first.
+	if err = c.negotiate(ctx); err != nil && !errors.Is(err, errPredatesNegotiation) {
+		return status, sent, false, err
+	}
 	if !ok {
 		keys := c.keyStore()
-		if len(cfg.Enrollments) >= 4 {
-			return status, sent, false, errors.New("four enrollment codes are already outstanding; use one of them, or remove the state directory and enroll this host as a new server")
-		}
 		entry = Enrollment{FirstSent: time.Now()}
 		switch {
 		case !cfg.Enrolled && cfg.Credential != "" && cfg.EnrollmentToken == code:

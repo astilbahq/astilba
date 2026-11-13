@@ -590,3 +590,52 @@ func TestEnrollmentWaitsForNegotiation(t *testing.T) {
 		})
 	}
 }
+
+// A controller replaced between heartbeats may read more than the one the agent last heard, and
+// the heartbeat that learns it is followed at once by one that reports it.
+func TestHeartbeatResendsWhenTheControllerChanges(t *testing.T) {
+	j, _ := testVisualJournal(t)
+	var upgraded atomic.Bool
+	var heartbeats []bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if upgraded.Load() {
+			w.Header().Set("Astilba-Agent-Features", "build-controls")
+			w.Header().Set("Astilba-Agent-Build-Network", "v1")
+		} else {
+			w.Header().Set("Astilba-Agent-Features", "none")
+		}
+		if r.URL.Path != "/agent/v1/heartbeat" {
+			w.WriteHeader(404)
+			return
+		}
+		var body api.AgentHeartbeat
+		if json.UnmarshalDecode(jsontext.NewDecoder(r.Body), &body) != nil {
+			w.WriteHeader(400)
+			return
+		}
+		heartbeats = append(heartbeats, body.Capabilities.BuildNetwork != nil)
+		_, _ = w.Write([]byte(`{"role":"combined","rotationRequested":false}`))
+	}))
+	defer server.Close()
+	cfg, _ := j.Config()
+	cfg.Origin = server.URL
+	if err := j.SetConfig(cfg); err != nil {
+		t.Fatal(err)
+	}
+	c := NewClient(j, &Engine{Journal: j})
+	c.HTTP = server.Client()
+	yes := true
+	c.Observe = func(context.Context) api.AgentHeartbeat {
+		return api.AgentHeartbeat{Capabilities: api.AgentCapabilities{Build: &yes, BuildNetwork: &yes}, Preflight: api.HostPreflight{Notes: []string{}}}
+	}
+	if err := c.heartbeat(context.Background(), "fixture", &api.AgentStatus{}); err != nil {
+		t.Fatal(err)
+	}
+	upgraded.Store(true)
+	if err := c.heartbeat(context.Background(), "fixture", &api.AgentStatus{}); err != nil {
+		t.Fatal(err)
+	}
+	if len(heartbeats) != 3 || heartbeats[0] || heartbeats[1] || !heartbeats[2] {
+		t.Fatal("heartbeats advertised build isolation as", heartbeats)
+	}
+}
