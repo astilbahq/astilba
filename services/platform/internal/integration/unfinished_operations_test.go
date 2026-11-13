@@ -117,7 +117,7 @@ func TestOperationQueriesDoNotReadHistory(t *testing.T) {
 	}
 	for _, q := range queries {
 		if other := otherState.FindString(q.sql); other != "" {
-			t.Errorf("%s compares the state with %q; list the states it reads with IN", q, other)
+			t.Errorf("%s compares the state with %q: list the operation states it reads with state IN (...), as PostgreSQL estimates arrays as if most rows matched", q, other)
 		}
 		for _, list := range operationStateLists(q.sql, stateful) {
 			states := []string{}
@@ -130,9 +130,9 @@ func TestOperationQueriesDoNotReadHistory(t *testing.T) {
 			case len(states) == 0:
 				t.Errorf("%s lists no states it can be checked against: %s", q, list[0])
 			case list[1] != "" || list[2] != "":
-				t.Errorf("%s excludes states; list the unfinished ones: %s", q, list[0])
+				t.Errorf("%s excludes operation states with NOT IN, which PostgreSQL estimates as if most rows matched, so it reads history: write state IN ('%s') instead of %s", q, strings.Join(unfinished, "','"), list[0])
 			case !ended && !slices.Equal(states, unfinished) && !slices.Equal(states, started) && !slices.ContainsFunc(indexed, func(list []string) bool { return slices.Equal(states, list) }):
-				t.Errorf("%s reads %v, not the unfinished states %v, the started ones %v or a list an index holds", q, states, unfinished, started)
+				t.Errorf("%s reads states %v: list exactly the unfinished states %v, the started ones %v or a list a partial index holds, so an index serves it", q, states, unfinished, started)
 			}
 		}
 	}
@@ -163,9 +163,8 @@ SELECT gen_random_uuid(),$1,$2,$3,root.id,$4+row_number() OVER (),gen_random_uui
 FROM execution_operations root, generate_series(1,3) child WHERE root.workspace_id=$1 AND root.kind='crosshost' AND root.parent_id IS NULL AND root.generation>$5`, ws, in.ServerId, env, generation+roots, generation); err != nil {
 			t.Fatal(err)
 		}
-		// Deployments carry plans, as real ones do. The requests and plans behind them would need a
-		// deployment of their own, and no statement here reads past the reference, so the seed
-		// leaves them out.
+		// Deployments carry plans, as real ones do. The requests behind them would need a deployment
+		// of their own, so the seed writes the plans without them.
 		seed, err := f.st.Pool.Begin(ctx)
 		if err != nil {
 			t.Fatal(err)
@@ -182,6 +181,9 @@ SELECT gen_random_uuid(),$1,$2,CASE WHEN kind<>'network' THEN $3::uuid END,$4+i,
 FROM generate_series(1,$5::int) i, LATERAL (SELECT (ARRAY['network','visual','backup','pipeline'])[1+i%4] AS kind) k`, ws, in.ServerId, env, generation+4*roots, count-4*roots); err != nil {
 			t.Fatal(err)
 		}
+		if _, err := seed.Exec(ctx, `INSERT INTO visual_plans(id,workspace_id,environment_id,plan) SELECT visual_plan_id,workspace_id,environment_id,'{}' FROM execution_operations WHERE workspace_id=$1 AND visual_plan_id IS NOT NULL AND generation>$2`, ws, generation); err != nil {
+			t.Fatal(err)
+		}
 		if err := seed.Commit(ctx); err != nil {
 			t.Fatal(err)
 		}
@@ -193,12 +195,17 @@ FROM generate_series(1,$5::int) i, LATERAL (SELECT (ARRAY['network','visual','ba
 	type node struct {
 		Type     string  `json:"Node Type"`
 		Relation string  `json:"Relation Name"`
+		Index    string  `json:"Index Name"`
 		Cost     float64 `json:"Total Cost"`
 		Plans    []node  `json:"Plans"`
 	}
 	var scans func(node) bool
 	scans = func(n node) bool {
 		return n.Type == "Seq Scan" && n.Relation == "execution_operations" || slices.ContainsFunc(n.Plans, scans)
+	}
+	var uses func(node, string) bool
+	uses = func(n node, index string) bool {
+		return n.Index == index || slices.ContainsFunc(n.Plans, func(c node) bool { return uses(c, index) })
 	}
 	// Statements in recovery and export read the temporary tables their transaction creates, so
 	// they are explained in one that has them too.
@@ -255,11 +262,9 @@ SELECT 'platform_execution_v1',jsonb_build_object('id',id),'completed',1,25,now(
 			before[q.at] = p.Cost
 		}
 	}
-	for list, readers := range map[string][]historyReaderEntry{"historyReaders": historyReaders, "limitedReaders": limitedReaders} {
-		for _, r := range readers {
-			if !slices.ContainsFunc(queries, func(q operationQuery) bool { return q.name == r.name && strings.Contains(q.sql, r.fragment) }) {
-				t.Errorf("%s names %s %q, which reads no operations now", list, r.name, r.fragment)
-			}
+	for _, r := range append(slices.Clone(historyReaders), limitedReaders...) {
+		if !slices.ContainsFunc(queries, func(q operationQuery) bool { return q.name == r.name && strings.Contains(q.sql, r.fragment) }) {
+			t.Errorf("%s %q is listed as reading history, but no statement reading operations matches it now", r.name, r.fragment)
 		}
 	}
 	history(20000)
@@ -268,55 +273,60 @@ SELECT 'platform_execution_v1',jsonb_build_object('id',id),'completed',1,25,now(
 		if !ok {
 			continue
 		}
-		reason, excepted := historyReader(q, historyReaders)
-		limit, limited := historyReader(q, limitedReaders)
-		grows := p.Cost > before[q.at]*1.05+1
+		excepted, isExcepted := historyReader(q, historyReaders)
+		bound, limited := historyReader(q, limitedReaders)
+		// Index descents deepen as history grows, so a plan of index probes rises a few percent;
+		// one that reads history roughly triples.
+		grows := p.Cost > before[q.at]*1.1+1
 		switch {
-		case excepted && !scans(p) && p.Cost < threshold && !grows:
+		case isExcepted && !scans(p) && p.Cost < threshold && !grows:
 			t.Errorf("%s no longer reads history; take it out of historyReaders", q)
-		case excepted:
-			t.Logf("%s reads history: %s", q, reason)
+		case isExcepted:
+			t.Logf("%s reads history: %s", q, excepted.reason)
 		case scans(p):
-			t.Errorf("%s reads every operation:\n%s", q, q.sql)
+			t.Errorf("%s reads every operation with a sequential scan: narrow it with an index or bound it with a LIMIT, or list it in historyReaders with a task if it must read history", q)
 		case p.Cost >= threshold:
-			t.Errorf("%s costs %.0f, past the JIT threshold of %.0f", q, p.Cost, threshold)
+			t.Errorf("%s costs %.0f, past the JIT threshold of %.0f: narrow it with an index so every call doesn't compile", q, p.Cost, threshold)
+		case limited && !uses(p, bound.index):
+			t.Errorf("%s no longer reads through %s, which bounds it at its LIMIT: give it that index back, or another that keeps it bounded", q, bound.index)
 		case limited && !grows:
 			t.Errorf("%s no longer grows; take it out of limitedReaders", q)
 		case limited:
-			t.Logf("%s grows from %.0f to %.0f until %s", q, before[q.at], p.Cost, limit)
+			t.Logf("%s grows from %.0f to %.0f until %s", q, before[q.at], p.Cost, bound.reason)
 		case grows:
-			t.Errorf("%s grows with history: %.0f, then %.0f with three times as much", q, before[q.at], p.Cost)
+			t.Errorf("%s grows with ended history (cost %.0f, then %.0f with three times as much): narrow it with an index or bound it with a LIMIT, or list it in historyReaders with a task if it must read history", q, before[q.at], p.Cost)
 		}
 	}
 }
 
 // historyReaderEntry is a statement named by its sqlc name or file and function, with a fragment
-// of its SQL, and why it is listed.
-type historyReaderEntry struct{ name, fragment, reason string }
+// of its SQL, why it is listed, and for one a LIMIT bounds, the index it reads in that order.
+type historyReaderEntry struct{ name, fragment, reason, index string }
 
 // historyReaders are the statements known to read a workspace's ended history, and why they may.
 var historyReaders = []historyReaderEntry{
-	{"import.go/(*Service).Import", "alert_observed=true", "it marks what it imported, which the archive limit bounds, in the workspace it creates"},
-	{"ClearWorkspaceOperationJobs", "", "offline recovery forgets every operation's River job; PLAT-323 bounds it"},
-	{"StampOperationControllerGenerations", "", "offline recovery stamps every operation with its host's controller generation; PLAT-323 bounds it"},
-	{"RaiseServerUpdateGenerations", "", "offline recovery raises each host's generation past every command it ran; PLAT-323 bounds it"},
+	{"import.go/(*Service).Import", "alert_observed=true", "it marks what it imported, which the archive limit bounds, in the workspace it creates", ""},
+	{"ClearWorkspaceOperationJobs", "", "offline recovery forgets every operation's River job; PLAT-323 bounds it", ""},
+	{"StampOperationControllerGenerations", "", "offline recovery stamps every operation with its host's controller generation; PLAT-323 bounds it", ""},
+	{"RaiseServerUpdateGenerations", "", "offline recovery raises each host's generation past every command it ran; PLAT-323 bounds it", ""},
 }
 
 // limitedReaders are statements whose estimate rises with history only until a LIMIT caps it,
 // because the planner can't tell how many rows match a command's JSON and guesses few. They are
-// still held to an index and the JIT threshold.
+// still held to the JIT threshold, and to the index that returns rows in the LIMIT's order.
 var limitedReaders = []historyReaderEntry{
-	{"export_selection.go", "ORDER BY o.created_at DESC,o.id DESC LIMIT 20", "it reaches each environment's 20 newest deployments"},
+	{"export_selection.go", "ORDER BY o.created_at DESC,o.id DESC LIMIT 20", "it reaches each environment's 20 newest deployments", "execution_releases"},
+	{"releases.go/(*Service).ReleaseHistory", "LIMIT 20", "it reaches the environment's 20 newest deployments", "execution_releases"},
 }
 
-// historyReader is why a statement is in a list, if it is.
-func historyReader(q operationQuery, readers []historyReaderEntry) (string, bool) {
+// historyReader is the entry listing a statement, if one does.
+func historyReader(q operationQuery, readers []historyReaderEntry) (historyReaderEntry, bool) {
 	for _, r := range readers {
 		if q.name == r.name && strings.Contains(q.sql, r.fragment) {
-			return r.reason, true
+			return r, true
 		}
 	}
-	return "", false
+	return historyReaderEntry{}, false
 }
 
 // operationQuery is a statement, where it is, and its sqlc name if it has one.
