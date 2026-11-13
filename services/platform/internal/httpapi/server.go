@@ -394,6 +394,10 @@ func (s *Server) VerifyMFA(w http.ResponseWriter, r *http.Request) {
 	}
 	a, e := s.Auth.VerifyCode(r.Context(), id, s.Sessions.GetInt64(r.Context(), "pending-version"), b.Code)
 	if e == nil {
+		// The signed-in token continues the pending sign-in's lineage, so a logout that read
+		// the pending sign-in, such as choosing another account in another tab, ends what it
+		// became. Signing in proves a credential, so it does not need the pending row itself.
+		r.Context().Value(sessionLoadKey{}).(*sessionLoad).continueLineage = true
 		e = s.establish(r.Context(), a, true)
 	}
 	if e != nil {
@@ -402,7 +406,21 @@ func (s *Server) VerifyMFA(w http.ResponseWriter, r *http.Request) {
 	}
 	s.sendSession(w, r)
 }
+
+// Logout ends the session the browser presented and every token that renewed it since its
+// sign-in. That includes one whose account a credential change has moved on: its row remains
+// until the change renews it, and ending the lineage makes that renewal refuse. Nothing else
+// is needed for a session that had already ended.
 func (s *Server) Logout(w http.ResponseWriter, r *http.Request) {
+	loaded := r.Context().Value(sessionLoadKey{}).(*sessionLoad)
+	if loaded.lineage != uuid.Nil {
+		if e := endLineage(r.Context(), s.Store, loaded.lineage); e != nil {
+			s.fail(w, r, e)
+			return
+		}
+	}
+	// The lineage is gone, so a stale session's cookie is replaced too.
+	loaded.keepCookie = false
 	if e := s.Sessions.Destroy(r.Context()); e != nil {
 		s.fail(w, r, e)
 		return
