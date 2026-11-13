@@ -300,7 +300,13 @@ func (e *Engine) executeCrossHost(ctx context.Context, c api.ExecutionCommand, r
 		for i := range o.Resources {
 			o.Resources[i].Drift = false
 		}
-		return e.finishCrossHost(c, command, o, "The selected local pool is recorded and retirement is confirmed.", true)
+		note := "The selected local pool is recorded and retirement is confirmed."
+		// The group is complete either way; a database waiting on its rebuild says so, and the
+		// unit's next deployment retries it.
+		if err = e.reindexPostgres(ctx, p); err != nil {
+			note += " " + errPostgresReindex.Error() + "."
+		}
+		return e.finishCrossHost(c, command, o, note, true)
 	case "abort":
 		if state.Publication || state.Phase == "publishing" || state.Phase == "published" || state.Phase == "retired" {
 			return finish("needs_attention", "Publication may have happened. Reconcile ingress before any candidate cleanup.")

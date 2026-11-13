@@ -188,7 +188,7 @@ func (s *Service) createVisualPlan(ctx context.Context, tx pgx.Tx, ws, pid, env 
 			}
 		}
 		if err = deployment.PostgresVersionChange(previous, v.Spec); err != nil {
-			return domain.Invalid("applications.postgres.upgrade")
+			return &domain.Error{Code: "invalid_input", Message: err.Error() + ".", Fields: []string{"applications.postgres.upgrade"}}
 		}
 		for _, a := range v.Spec.Applications {
 			if a.Postgres == nil {
