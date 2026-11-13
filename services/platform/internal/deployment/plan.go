@@ -301,6 +301,11 @@ func composeAt(p Plan, secrets map[string]string, export bool, root string, sele
 		}
 		labels := map[string]string{"com.astilba.server": p.ServerID.String(), "com.astilba.environment": p.EnvironmentID.String(), "com.astilba.unit": p.UnitID.String(), "com.astilba.resource": a.ID.String(), "com.astilba.kind": "visual-v1", "com.astilba.plan": p.Hash}
 		service := map[string]any{"image": p.Images[a.ID.String()], "container_name": p.ContainerName(a.ID), "restart": "unless-stopped", "environment": env, "labels": labels, "networks": map[string]any{"unit": map[string]any{"aliases": []string{p.HostName(a.ID)}}}, "logging": map[string]any{"driver": "json-file", "options": map[string]string{"max-size": "10m", "max-file": "3"}}}
+		// Only the agent puts images into Docker, within its bounds (see the agent's
+		// image_pull.go), so Compose never pulls one.
+		if !export {
+			service["pull_policy"] = "never"
+		}
 		if p.Local != nil {
 			if limits, ok := p.Local.Requests[a.ID.String()]; ok {
 				service["cpus"] = float64(limits.CPUMillis) / 1000

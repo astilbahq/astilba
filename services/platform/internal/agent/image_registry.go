@@ -18,8 +18,10 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
 	"github.com/distribution/reference"
 	registrytypes "github.com/moby/moby/api/types/registry"
+	"github.com/moby/moby/api/types/system"
 	"github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
+	"golang.org/x/net/http/httpproxy"
 	"oras.land/oras-go/v2/registry"
 	"oras.land/oras-go/v2/registry/remote"
 	"oras.land/oras-go/v2/registry/remote/auth"
@@ -61,10 +63,24 @@ var dockerCertsDirectory = "/etc/docker/certs.d"
 // registryImages are the places Docker would read the repository named from, in the order the
 // agent tries them: Docker Hub's mirrors from the daemon's configuration, then the registry
 // itself, over HTTPS and, for a registry the daemon treats as insecure, over HTTP after it.
-// Only the registry itself receives the credential.
-func registryImages(ctx context.Context, config *registrytypes.ServiceConfig, named reference.Named, credential *pipeline.Credential) ([]registryImage, error) {
+// Only the registry itself receives the credential. The agent reaches each through the
+// daemon's proxy.
+func registryImages(ctx context.Context, info system.Info, named reference.Named, credential *pipeline.Credential) ([]registryImage, error) {
+	proxy, err := dockerProxy(info)
+	if err != nil {
+		return nil, err
+	}
+	config := info.RegistryConfig
 	domain, path := reference.Domain(named), reference.Path(named)
 	var images []registryImage
+	add := func(host, repository string, insecure, plainHTTP bool, credential *pipeline.Credential) error {
+		image, err := newRegistryImage(host, repository, insecure, plainHTTP, credential, proxy)
+		if err != nil {
+			return &imageLoadRefused{why: "its repository name is not valid"}
+		}
+		images = append(images, image)
+		return nil
+	}
 	if domain == "docker.io" && config != nil {
 		for _, mirror := range config.Mirrors {
 			u, err := url.Parse(mirror)
@@ -75,11 +91,9 @@ func registryImages(ctx context.Context, config *registrytypes.ServiceConfig, na
 			if prefix := strings.Trim(u.Path, "/"); prefix != "" {
 				repository = prefix + "/" + path
 			}
-			image, err := newRegistryImage(u.Host, repository, u.Scheme == "http", u.Scheme == "http", nil)
-			if err != nil {
+			if err = add(u.Host, repository, u.Scheme == "http", u.Scheme == "http", nil); err != nil {
 				return nil, err
 			}
-			images = append(images, image)
 		}
 	}
 	host := domain
@@ -87,18 +101,36 @@ func registryImages(ctx context.Context, config *registrytypes.ServiceConfig, na
 		host = "registry-1.docker.io"
 	}
 	secure := registrySecure(ctx, config, domain)
-	image, err := newRegistryImage(host, path, !secure, false, credential)
-	if err != nil {
+	if err = add(host, path, !secure, false, credential); err != nil {
 		return nil, err
 	}
-	images = append(images, image)
 	if !secure {
-		if image, err = newRegistryImage(host, path, true, true, credential); err != nil {
+		if err = add(host, path, true, true, credential); err != nil {
 			return nil, err
 		}
-		images = append(images, image)
 	}
 	return images, nil
+}
+
+// dockerProxy is the proxy Docker reaches registries through: the daemon's, as its info gives
+// it, or the agent's own environment's when the daemon has none. Docker's info hides a proxy's
+// password, so a daemon proxy with one is used only through the agent's environment.
+func dockerProxy(info system.Info) (func(*http.Request) (*url.URL, error), error) {
+	daemon := httpproxy.Config{HTTPProxy: info.HTTPProxy, HTTPSProxy: info.HTTPSProxy, NoProxy: info.NoProxy}
+	if daemon.HTTPProxy == "" && daemon.HTTPSProxy == "" {
+		return http.ProxyFromEnvironment, nil
+	}
+	for _, proxy := range []string{daemon.HTTPProxy, daemon.HTTPSProxy} {
+		if u, err := url.Parse(proxy); proxy != "" && (err != nil || u.User != nil) {
+			environment := httpproxy.FromEnvironment()
+			if environment.HTTPProxy == "" && environment.HTTPSProxy == "" {
+				return nil, &imageLoadRefused{why: "Docker reaches registries through a proxy with a password, which Docker does not show the agent", fix: "The server's owner sets the same proxy in the agent's environment, with HTTPS_PROXY and NO_PROXY, then you {retry}."}
+			}
+			return http.ProxyFromEnvironment, nil
+		}
+	}
+	proxy := daemon.ProxyFunc()
+	return func(r *http.Request) (*url.URL, error) { return proxy(r.URL) }, nil
 }
 
 // registrySecure reports whether Docker requires a verified TLS connection to the registry,
@@ -138,7 +170,7 @@ func registrySecure(ctx context.Context, config *registrytypes.ServiceConfig, na
 // the system's authorities and those in its directory under /etc/docker/certs.d, with any
 // client certificate there. An insecure registry's certificate is not verified, as Docker does
 // not verify it, and plainHTTP reads it without TLS.
-func newRegistryImage(host, repository string, insecure, plainHTTP bool, credential *pipeline.Credential) (registryImage, error) {
+func newRegistryImage(host, repository string, insecure, plainHTTP bool, credential *pipeline.Credential, proxy func(*http.Request) (*url.URL, error)) (registryImage, error) {
 	roots, err := x509.SystemCertPool()
 	if err != nil {
 		roots = x509.NewCertPool()
@@ -161,7 +193,7 @@ func newRegistryImage(host, repository string, insecure, plainHTTP bool, credent
 		}
 	}
 	transport := &http.Transport{
-		Proxy:                 http.ProxyFromEnvironment,
+		Proxy:                 proxy,
 		DialContext:           (&net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
 		TLSClientConfig:       tlsConfig,
 		TLSHandshakeTimeout:   30 * time.Second,

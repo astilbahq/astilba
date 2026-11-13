@@ -6,13 +6,9 @@ import (
 	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
-	"runtime"
 	"sync"
-	"sync/atomic"
-	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/execution"
@@ -21,6 +17,7 @@ import (
 	"github.com/distribution/reference"
 	"github.com/moby/moby/client"
 	"github.com/opencontainers/go-digest"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"oras.land/oras-go/v2/registry/remote/errcode"
 )
 
@@ -78,9 +75,11 @@ func (c *layerCosts) put(d digest.Digest, cost imageCost) {
 	c.costs[d] = cost
 }
 
-// pullMeasuredImage pulls image, which names its content by digest, once the agent has counted
-// what pulling it writes to Docker's storage within the host's limits. credential is the
-// registry's, if it needs one.
+// pullMeasuredImage puts image, which names its content by digest, into Docker once the agent
+// has counted what that writes to Docker's storage within the host's limits. With Docker's
+// containerd image store the agent reads the image and loads it; with the classic store it
+// measures the image, then Docker pulls it while the agent watches Docker's storage.
+// credential is the registry's, if it needs one; the agent keeps it only for this pull.
 func (e *Engine) pullMeasuredImage(ctx context.Context, image string, credential *pipeline.Credential) error {
 	refuse := func(err error) error {
 		var refused *imageLoadRefused
@@ -97,6 +96,10 @@ func (e *Engine) pullMeasuredImage(ctx context.Context, image string, credential
 	if !ok || pinned.Digest().Algorithm() != digest.SHA256 || pinned.Digest().Validate() != nil {
 		return refuse(&imageLoadRefused{why: "it is not named by its sha256 digest"})
 	}
+	canonical, err := reference.WithDigest(reference.TrimNamed(named), pinned.Digest())
+	if err != nil {
+		return refuse(&imageLoadRefused{why: "its reference is not valid"})
+	}
 	limit, err := e.imageLoadLimit(ctx)
 	if err != nil {
 		return refuse(err)
@@ -105,26 +108,39 @@ func (e *Engine) pullMeasuredImage(ctx context.Context, image string, credential
 	if err != nil {
 		return refuse(&imageLoadRefused{why: "the agent cannot read Docker's registry settings"})
 	}
-	sources, err := registryImages(ctx, info.Info.RegistryConfig, named, credential)
-	if err != nil {
-		return refuse(&imageLoadRefused{why: err.Error()})
+	if info.Info.OSType != "linux" {
+		return refuse(&imageLoadRefused{why: "Docker on this server runs " + truncated(info.Info.OSType, 32) + " images"})
 	}
-	// Docker pulls the image for its own platform, which is the agent's.
-	platforms := []string{runtime.GOARCH, dockerArchitecture(info.Info.Architecture)}
-	var fetched error
-	var measured imageCost
-	for _, source := range sources {
-		measure := imageMeasure{source: source, limit: limit, platforms: platforms, cache: e.layerCosts()}
-		fetched, measured = measure.image(ctx, pinned.Digest()), measure.total
+	sources, err := registryImages(ctx, info.Info, named, credential)
+	if err != nil {
+		return refuse(err)
+	}
+	// Docker pulls the image for its own platform.
+	platform := ocispec.Platform{OS: "linux", Architecture: dockerArchitecture(info.Info.Architecture)}
+	var plan *registryPlan
+	var source registryImage
+	for _, source = range sources {
+		plan, err = planRegistryImage(ctx, source, pinned.Digest(), platform, limit)
 		var unread *imageArchiveUnread
-		if !errors.As(fetched, &unread) {
+		if !errors.As(err, &unread) {
 			break
 		}
 	}
-	if err = fetched; err != nil {
+	if err != nil {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
+		var unread *imageArchiveUnread
+		if errors.As(err, &unread) {
+			err = registryUnreachable(unread.err)
+		}
+		return refuse(err)
+	}
+	if containerdImageStore(info.Info.DriverStatus) {
+		return refuse(e.loadRegistryImage(ctx, canonical, source, plan, limit))
+	}
+	measured, err := e.measureRegistryImage(ctx, source, plan, limit)
+	if err != nil {
 		var unread *imageArchiveUnread
 		if errors.As(err, &unread) {
 			err = registryUnreachable(unread.err)
@@ -135,52 +151,56 @@ func (e *Engine) pullMeasuredImage(ctx context.Context, image string, credential
 	if credential != nil {
 		auth = encodedRegistryAuth(*credential)
 	}
-	return refuse(e.pullWatched(ctx, image, auth, measured))
+	if err = e.pullWatched(ctx, image, auth, measured); err != nil {
+		return refuse(err)
+	}
+	// The classic store names an image by its config's digest. One that differs is an image the
+	// agent did not measure.
+	pulled, err := e.Docker.ImageInspect(ctx, image)
+	if err != nil || pulled.ID != plan.config.desc.Digest.String() {
+		_, _ = e.Docker.ImageRemove(ctx, image, client.ImageRemoveOptions{})
+		return refuse(&imageLoadRefused{why: "Docker pulled a different image for this server than the agent measured"})
+	}
+	return nil
 }
 
-// pullSlack is how much more than the agent measured a pull may take of Docker's storage, for
-// other writers on the server, before the agent stops it.
-const pullSlack = 1 << 30
-
-// pullWatched pulls image while watching Docker's storage. Docker writes each blob as its
-// registry sends it and checks the blob's size only once it ends, so a registry that sends
-// Docker more than the image it names could fill the storage. The agent stops the pull once
-// the storage has lost more than it measured, and slack for other writers.
-func (e *Engine) pullWatched(ctx context.Context, image, auth string, measured imageCost) error {
-	roots, ok := imageStorageRoots(ctx, e.Docker)
-	before, _, known := storageFree(roots)
-	if !ok || !known {
-		return &imageLoadRefused{why: "the agent cannot observe this server's Docker storage"}
-	}
-	floor := before - measured.Bytes - pullSlack
-	pullCtx, stop := context.WithCancel(ctx)
-	defer stop()
-	var exceeded atomic.Bool
-	watched := make(chan struct{})
-	go func() {
-		defer close(watched)
-		ticker := time.NewTicker(100 * time.Millisecond)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-pullCtx.Done():
-				return
-			case <-ticker.C:
-			}
-			if free, _, ok := storageFree(roots); ok && free < floor {
-				exceeded.Store(true)
-				stop()
-				return
-			}
+// containerdImageStore reports whether Docker keeps images in containerd, as its info's driver
+// status says.
+func containerdImageStore(status [][2]string) bool {
+	for _, pair := range status {
+		if pair[0] == "driver-type" && pair[1] == "io.containerd.snapshotter.v1" {
+			return true
 		}
-	}()
-	err := e.pullImageAuth(pullCtx, image, auth)
-	stop()
-	<-watched
-	if exceeded.Load() {
-		return &imageLoadRefused{why: fmt.Sprintf("Docker's pull took more than the %d MiB the agent measured, and %d MiB more, of this server's Docker storage, so the agent stopped it. Its registry sent more than the image it names, or something else on the server wrote to Docker's storage at the same time", measured.Bytes>>20, pullSlack>>20), fix: "Check the image's registry and {retry}. The server's owner can remove a stopped pull's partial download from containerd's ingest directory."}
 	}
-	return err
+	return false
+}
+
+// measureRegistryImage reads each distinct layer of plan from source, unless the agent measured it
+// before, and returns what pulling the image writes.
+func (e *Engine) measureRegistryImage(ctx context.Context, source registryImage, plan *registryPlan, limit imageLoadLimit) (imageCost, error) {
+	cache := e.layerCosts()
+	running := plan.stored
+	unpacked := map[string]imageCost{}
+	for _, layer := range plan.layers {
+		if _, done := unpacked[layer.Digest.String()]; done {
+			continue
+		}
+		cost, ok := cache.get(layer.Digest)
+		if !ok {
+			var err error
+			if cost, err = measureRegistryLayer(ctx, source, layer, nil, limit.less(running)); err != nil {
+				return imageCost{}, err
+			}
+			cache.put(layer.Digest, cost)
+		}
+		unpacked[layer.Digest.String()] = cost
+		running.add(cost)
+		running.add(imageCost{Bytes: storageLayerBytes, Entries: storageLayerEntries})
+		if err := limit.check(running); err != nil {
+			return imageCost{}, limit.refusal(err)
+		}
+	}
+	return registryImageCost(plan, unpacked, limit)
 }
 
 func (e *Engine) layerCosts() *layerCosts {
@@ -193,6 +213,8 @@ func registryUnreachable(err error) error {
 	var response *errcode.ErrorResponse
 	why := "the agent could not read it from its registry to measure what pulling it writes"
 	switch {
+	case errors.Is(err, errLongerThanMeasured):
+		why = "its registry sent more for a blob than the image's manifest says the blob holds"
 	case errors.As(err, &response) && (response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden):
 		why = "its registry refused to let the agent read it, so the agent cannot measure what pulling it writes"
 	case errors.As(err, &response) && response.StatusCode == http.StatusNotFound:

@@ -59,6 +59,9 @@ func Preflight(ctx context.Context, docker *client.Client, version, dir string, 
 			h.Preflight.DockerVersion = v.Version
 			runtimeReady = troubleshootingRuntime(v.Components)
 		}
+		if info, e := docker.Info(ctx, client.InfoOptions{}); e == nil && !containerdImageStore(info.Info.DriverStatus) {
+			h.Preflight.Notes = append(h.Preflight.Notes, classicImageStoreNote)
+		}
 		list, e := docker.ContainerList(ctx, client.ContainerListOptions{All: true, Limit: 1001})
 		if e == nil {
 			h.Preflight.ExistingContainers = len(list.Items)

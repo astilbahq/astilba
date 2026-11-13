@@ -7,7 +7,6 @@ import (
 	"encoding/hex"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
-	"errors"
 	"io"
 	"strconv"
 
@@ -15,130 +14,175 @@ import (
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
-// Media types Docker pulls and the agent reads. Others, such as foreign, non-distributable or
-// encrypted layers, are refused rather than measured.
+// Media types Docker pulls and the agent reads. Others are refused rather than measured.
 var (
 	pullIndexTypes    = map[string]bool{ocispec.MediaTypeImageIndex: true, "application/vnd.docker.distribution.manifest.list.v2+json": true}
 	pullManifestTypes = map[string]bool{ocispec.MediaTypeImageManifest: true, "application/vnd.docker.distribution.manifest.v2+json": true}
+	pullConfigTypes   = map[string]bool{ocispec.MediaTypeImageConfig: true, "application/vnd.docker.container.image.v1+json": true}
 	pullLayerTypes    = map[string]bool{ocispec.MediaTypeImageLayer: true, ocispec.MediaTypeImageLayerGzip: true, ocispec.MediaTypeImageLayerZstd: true, "application/vnd.docker.image.rootfs.diff.tar.gzip": true}
+	// Layers Docker would download from the URLs their descriptors name rather than from the
+	// image's registry.
+	pullForeignTypes = map[string]bool{ocispec.MediaTypeImageLayerNonDistributable: true, ocispec.MediaTypeImageLayerNonDistributableGzip: true, ocispec.MediaTypeImageLayerNonDistributableZstd: true, "application/vnd.docker.image.rootfs.foreign.diff.tar.gzip": true, "application/vnd.docker.image.rootfs.foreign.diff.tar": true}
 )
 
-// An image Docker pulls has one manifest for this server, and maybe an index and attestations
-// above it; this many documents is never one.
-const pullManifests = 64
+// registryDocument is a manifest or index, verified against its digest.
+type registryDocument struct {
+	desc ocispec.Descriptor
+	data []byte
+}
 
-// imageMeasure counts what pulling one image writes.
-type imageMeasure struct {
-	source    registryImage
-	limit     imageLoadLimit
-	platforms []string
-	cache     *layerCosts
-
-	// stored is every blob Docker stores: manifests, configs and compressed layers.
+// registryPlan is what Docker stores to pull one image onto this server: the image's index, if
+// it has one, the manifest for this server's platform, its config and its layers.
+type registryPlan struct {
+	documents []registryDocument
+	config    registryDocument
+	// layers are the manifest's layers in order, a layer listed twice included.
+	layers []ocispec.Descriptor
+	// stored is each distinct blob as Docker stores it.
 	stored imageCost
-	// blobs are those already counted, and metadata the bytes of documents read.
-	blobs     map[digest.Digest]bool
-	documents int
-	metadata  int
-	// chains are the layer digests of each image manifest Docker unpacks, and layers their
-	// descriptors, which the image names consistently.
-	chains [][]string
-	layers map[digest.Digest]ocispec.Descriptor
-	// unpacked is what each layer writes once unpacked.
-	unpacked map[string]imageCost
-	// total is what pulling the image writes, once measured.
-	total imageCost
 }
 
-// image counts what pulling the image with this digest writes, and returns an error with the
-// reason if that is more than the limit, or the image is one the agent cannot measure.
-func (m *imageMeasure) image(ctx context.Context, root digest.Digest) error {
-	m.blobs = map[digest.Digest]bool{}
-	m.layers = map[digest.Digest]ocispec.Descriptor{}
-	m.unpacked = map[string]imageCost{}
-	if err := m.document(ctx, ocispec.Descriptor{Digest: root, Size: -1}, 0, true); err != nil {
-		return err
-	}
-	if len(m.chains) == 0 {
-		return unmeasurableImage("it has no image for this server's platform")
-	}
-	// Each layer is unpacked at least once, so a layer that alone takes the image past its
-	// limit is refused before the next is read.
-	running := m.stored
-	for _, chain := range m.chains {
-		for _, name := range chain {
-			if _, done := m.unpacked[name]; done {
-				continue
-			}
-			cost, err := m.layer(ctx, m.layers[digest.Digest(name)], m.limit.less(running))
-			if err != nil {
-				return err
-			}
-			m.unpacked[name] = cost
-			running.add(cost)
-			running.add(imageCost{Bytes: storageLayerBytes, Entries: storageLayerEntries})
-			if err = m.limit.check(running); err != nil {
-				return m.limit.refusal(err)
-			}
+// planRegistryImage reads the image with digest root from source and chooses its manifest for
+// platform as Docker does. It refuses images the agent cannot measure, and images whose blobs
+// alone are more than limit.
+func planRegistryImage(ctx context.Context, source registryImage, root digest.Digest, platform ocispec.Platform, limit imageLoadLimit) (*registryPlan, error) {
+	plan := &registryPlan{}
+	seen := map[digest.Digest]bool{}
+	store := func(desc ocispec.Descriptor) error {
+		if desc.Digest.Algorithm() != digest.SHA256 || desc.Digest.Validate() != nil || desc.Size < 0 {
+			return unmeasurableImage("it names content by something other than a sha256 digest and size")
 		}
-	}
-	unpacked, err := chainsCost(m.chains, func(name string) (imageCost, bool) {
-		cost, ok := m.unpacked[name]
-		return cost, ok
-	}, m.limit.less(m.stored))
-	if err == nil {
-		m.total = m.stored
-		m.total.add(unpacked)
-		err = m.limit.check(m.total)
-	}
-	if errors.Is(err, errImageOverBytes) || errors.Is(err, errImageOverEntries) {
-		return m.limit.refusal(err)
-	}
-	return err
-}
-
-// store counts one blob Docker stores, once however many documents name it.
-func (m *imageMeasure) store(desc ocispec.Descriptor) error {
-	if desc.Digest.Algorithm() != digest.SHA256 || desc.Digest.Validate() != nil || desc.Size < 0 {
-		return unmeasurableImage("it names content by something other than a sha256 digest and size")
-	}
-	if len(desc.URLs) > 0 {
-		return unmeasurableImage("it names content Docker would download from elsewhere")
-	}
-	if m.blobs[desc.Digest] {
+		if len(desc.URLs) > 0 {
+			return &imageLoadRefused{why: "it names content Docker would download from other URLs than its registry"}
+		}
+		if seen[desc.Digest] {
+			return nil
+		}
+		seen[desc.Digest] = true
+		plan.stored.add(entryCost(&tar.Header{Name: "blobs/sha256/" + desc.Digest.Encoded(), Typeflag: tar.TypeReg, Size: desc.Size}))
+		if err := limit.check(plan.stored); err != nil {
+			return limit.refusal(err)
+		}
 		return nil
 	}
-	m.blobs[desc.Digest] = true
-	m.stored.add(entryCost(&tar.Header{Name: "blobs/sha256/" + desc.Digest.Encoded(), Typeflag: tar.TypeReg, Size: desc.Size}))
-	if err := m.limit.check(m.stored); err != nil {
-		return m.limit.refusal(err)
+	document, kind, err := fetchDocument(ctx, source, ocispec.Descriptor{Digest: root, Size: -1})
+	if err != nil {
+		return nil, err
 	}
-	return nil
+	if err = store(document.desc); err != nil {
+		return nil, err
+	}
+	plan.documents = append(plan.documents, document)
+	if kind == "index" {
+		manifests, err := foldedMember(document.data, "manifests")
+		if err != nil {
+			return nil, err
+		}
+		children, err := descriptors(manifests)
+		if err != nil {
+			return nil, err
+		}
+		chosen, err := choosePlatform(children, platform)
+		if err != nil {
+			return nil, err
+		}
+		if document, kind, err = fetchDocument(ctx, source, chosen); err != nil {
+			return nil, err
+		}
+		if kind != "manifest" {
+			return nil, unmeasurableImage("its image index names another index for this server's platform")
+		}
+		if err = store(document.desc); err != nil {
+			return nil, err
+		}
+		plan.documents = append(plan.documents, document)
+	}
+	config, err := foldedMember(document.data, "config")
+	if err != nil {
+		return nil, err
+	}
+	layers, err := foldedMember(document.data, "layers")
+	if err != nil {
+		return nil, err
+	}
+	configDescriptor, err := descriptor(config)
+	if err != nil {
+		return nil, err
+	}
+	if !pullConfigTypes[configDescriptor.MediaType] {
+		return nil, &imageLoadRefused{why: "its config has the media type " + strconv.Quote(truncated(configDescriptor.MediaType, 100)) + ", which is not an image's"}
+	}
+	if configDescriptor.Size > imageMetadataBytes {
+		return nil, unmeasurableImage("its config is larger than an image needs")
+	}
+	if err = store(configDescriptor); err != nil {
+		return nil, err
+	}
+	if plan.layers, err = descriptors(layers); err != nil {
+		return nil, err
+	}
+	if len(plan.layers) > imageChainDepth {
+		return nil, unmeasurableImage("it has more layers than Docker can stack")
+	}
+	sizes := map[digest.Digest]int64{}
+	for _, layer := range plan.layers {
+		switch {
+		case pullForeignTypes[layer.MediaType]:
+			return nil, &imageLoadRefused{why: "it has a foreign, non-distributable layer of type " + strconv.Quote(layer.MediaType) + ", which Docker would download from elsewhere than its registry"}
+		case !pullLayerTypes[layer.MediaType]:
+			return nil, &imageLoadRefused{why: "it has a layer of the media type " + strconv.Quote(truncated(layer.MediaType, 100)) + ", which the agent does not pull"}
+		}
+		if size, ok := sizes[layer.Digest]; ok && size != layer.Size {
+			return nil, unmeasurableImage("it gives one layer two sizes")
+		}
+		sizes[layer.Digest] = layer.Size
+		if err = store(layer); err != nil {
+			return nil, err
+		}
+	}
+	// The config says which platform the image is for, and an image for another would not run.
+	data, err := fetchBlob(ctx, source, configDescriptor)
+	if err != nil {
+		return nil, err
+	}
+	plan.config = registryDocument{configDescriptor, data}
+	var configPlatform ocispec.Platform
+	for name, out := range map[string]*string{"os": &configPlatform.OS, "architecture": &configPlatform.Architecture, "variant": &configPlatform.Variant} {
+		value, err := foldedMember(data, name)
+		if err != nil {
+			return nil, err
+		}
+		if value != nil && json.Unmarshal(value, out) != nil {
+			return nil, unmeasurableImage("its config is not valid")
+		}
+	}
+	if !platformMatches(configPlatform, platform) {
+		return nil, unmeasurableImage("its image for this server's platform is built for " + strconv.Quote(truncated(configPlatform.OS+"/"+configPlatform.Architecture, 64)))
+	}
+	return plan, nil
 }
 
-// document reads the index or manifest desc names and counts the blobs Docker stores for it:
-// for an index, those of each manifest for this server's platform and their attestations; for
-// a manifest, its config and layers, which it records to measure. An attestation is stored but
-// never unpacked.
-func (m *imageMeasure) document(ctx context.Context, desc ocispec.Descriptor, depth int, unpack bool) error {
-	if depth > imageIndexDepth {
-		return unmeasurableImage("its image index is nested too deeply")
+// chains is the image's one chain of layers, by digest.
+func (p *registryPlan) chains() [][]string {
+	chain := make([]string, len(p.layers))
+	for i, layer := range p.layers {
+		chain[i] = layer.Digest.String()
 	}
-	if m.documents++; m.documents > pullManifests {
-		return unmeasurableImage("it has more manifests than an image needs")
-	}
-	data, mediaType, err := m.source.manifest(ctx, desc.Digest, imageMetadataBytes)
+	return [][]string{chain}
+}
+
+// fetchDocument reads the manifest or index desc names, of at most imageMetadataBytes, and
+// says which it is by the media type its registry and its descriptor give, which must agree.
+func fetchDocument(ctx context.Context, source registryImage, desc ocispec.Descriptor) (registryDocument, string, error) {
+	data, mediaType, err := source.manifest(ctx, desc.Digest, imageMetadataBytes)
 	if err != nil {
-		return &imageArchiveUnread{err}
+		return registryDocument{}, "", &imageArchiveUnread{err}
 	}
 	if len(data) > imageMetadataBytes || desc.Size >= 0 && int64(len(data)) != desc.Size {
-		return unmeasurableImage("a manifest in it differs from its descriptor")
+		return registryDocument{}, "", unmeasurableImage("a manifest in it differs from its descriptor")
 	}
 	if sum := sha256.Sum256(data); hex.EncodeToString(sum[:]) != desc.Digest.Encoded() {
-		return unmeasurableImage("a manifest in it differs from its digest")
-	}
-	if m.metadata += len(data); m.metadata > imageMetadataTotal {
-		return unmeasurableImage("it has more metadata than an image needs")
+		return registryDocument{}, "", unmeasurableImage("a manifest in it differs from its digest")
 	}
 	desc.Size = int64(len(data))
 	// Docker's legacy store reads a manifest by the type its registry gives, and containerd by
@@ -146,90 +190,88 @@ func (m *imageMeasure) document(ctx context.Context, desc ocispec.Descriptor, de
 	if desc.MediaType == "" {
 		desc.MediaType = mediaType
 	} else if mediaType != "" && mediaType != desc.MediaType {
-		return unmeasurableImage("its registry gives a manifest a media type other than its index does")
+		return registryDocument{}, "", unmeasurableImage("its registry gives a manifest a media type other than its index does")
 	}
-	if err = m.store(desc); err != nil {
-		return err
-	}
-	// Docker reads a document by its media type, and the agent requires the document to agree.
 	var declared string
 	if value, err := foldedMember(data, "mediaType"); err != nil {
-		return err
+		return registryDocument{}, "", err
 	} else if value != nil && (json.Unmarshal(value, &declared) != nil || declared != "" && declared != desc.MediaType) {
-		return unmeasurableImage("a manifest in it declares a media type its registry does not")
+		return registryDocument{}, "", unmeasurableImage("a manifest in it declares a media type its registry does not")
 	}
 	manifests, err := foldedMember(data, "manifests")
 	if err != nil {
-		return err
+		return registryDocument{}, "", err
 	}
 	config, err := foldedMember(data, "config")
 	if err != nil {
-		return err
+		return registryDocument{}, "", err
 	}
 	layers, err := foldedMember(data, "layers")
 	if err != nil {
-		return err
+		return registryDocument{}, "", err
 	}
+	document := registryDocument{desc, data}
 	switch {
 	case pullIndexTypes[desc.MediaType] && config == nil && layers == nil:
-		children, err := descriptors(manifests)
-		if err != nil {
-			return err
-		}
-		selected := map[digest.Digest]bool{}
-		for _, child := range children {
-			if m.forPlatform(child) {
-				selected[child.Digest] = true
-			}
-		}
-		for _, child := range children {
-			attestation := child.Annotations["vnd.docker.reference.type"] == "attestation-manifest" && selected[digest.Digest(child.Annotations["vnd.docker.reference.digest"])]
-			if !selected[child.Digest] && !attestation {
-				continue
-			}
-			if !pullIndexTypes[child.MediaType] && !pullManifestTypes[child.MediaType] {
-				return &imageLoadRefused{why: "its image index names a document of type " + strconv.Quote(truncated(child.MediaType, 100)) + ", which Docker does not pull"}
-			}
-			if err = m.document(ctx, child, depth+1, unpack && !attestation); err != nil {
-				return err
-			}
-		}
-		return nil
+		return document, "index", nil
 	case pullManifestTypes[desc.MediaType] && manifests == nil && config != nil:
-		configDescriptor, err := descriptor(config)
-		if err != nil {
-			return err
-		}
-		if err = m.store(configDescriptor); err != nil {
-			return err
-		}
-		layerDescriptors, err := descriptors(layers)
-		if err != nil {
-			return err
-		}
-		if len(layerDescriptors) > imageChainDepth {
-			return unmeasurableImage("it has an image with more layers than Docker can stack")
-		}
-		chain := make([]string, 0, len(layerDescriptors))
-		for _, layer := range layerDescriptors {
-			if unpack && !pullLayerTypes[layer.MediaType] {
-				return &imageLoadRefused{why: "it has a layer of type " + strconv.Quote(truncated(layer.MediaType, 100)) + ", which the agent does not pull"}
-			}
-			if err = m.store(layer); err != nil {
-				return err
-			}
-			if previous, ok := m.layers[layer.Digest]; ok && previous.Size != layer.Size {
-				return unmeasurableImage("it gives one layer two sizes")
-			}
-			m.layers[layer.Digest] = layer
-			chain = append(chain, layer.Digest.String())
-		}
-		if unpack {
-			m.chains = append(m.chains, chain)
-		}
-		return nil
+		return document, "manifest", nil
+	case !pullIndexTypes[desc.MediaType] && !pullManifestTypes[desc.MediaType]:
+		return registryDocument{}, "", &imageLoadRefused{why: "it has a manifest of the media type " + strconv.Quote(truncated(desc.MediaType, 100)) + ", which Docker does not pull"}
 	}
-	return unmeasurableImage("it has a manifest of a kind Docker does not pull, or one that is not valid")
+	return registryDocument{}, "", unmeasurableImage("it has a manifest that is not valid for its media type")
+}
+
+// fetchBlob reads a small blob whole, at most its descriptor's size, and checks its digest.
+func fetchBlob(ctx context.Context, source registryImage, desc ocispec.Descriptor) ([]byte, error) {
+	rc, err := source.blob(ctx, desc)
+	if err != nil {
+		return nil, &imageArchiveUnread{err}
+	}
+	defer rc.Close()
+	data, err := io.ReadAll(&measuredReader{r: rc, remaining: desc.Size})
+	if err != nil {
+		return nil, &imageArchiveUnread{err}
+	}
+	if sum := sha256.Sum256(data); hex.EncodeToString(sum[:]) != desc.Digest.Encoded() {
+		return nil, unmeasurableImage("a blob in it differs from its digest")
+	}
+	return data, nil
+}
+
+// choosePlatform chooses an index's manifest for platform as containerd does: the first, in the
+// index's order, for its OS and architecture in a variant it runs. An index that leaves a
+// manifest's platform out is refused, as which one Docker chooses then depends on its config.
+func choosePlatform(children []ocispec.Descriptor, platform ocispec.Platform) (ocispec.Descriptor, error) {
+	for _, child := range children {
+		if child.Platform == nil && child.Annotations["vnd.docker.reference.type"] == "" {
+			return ocispec.Descriptor{}, unmeasurableImage("its image index has a manifest without a platform")
+		}
+	}
+	for _, child := range children {
+		if child.Platform != nil && platformMatches(*child.Platform, platform) {
+			if !pullManifestTypes[child.MediaType] && !pullIndexTypes[child.MediaType] {
+				return ocispec.Descriptor{}, &imageLoadRefused{why: "its image index names a document of the media type " + strconv.Quote(truncated(child.MediaType, 100)) + " for this server, which Docker does not pull"}
+			}
+			return child, nil
+		}
+	}
+	return ocispec.Descriptor{}, unmeasurableImage("it has no image for this server's platform, " + platform.OS + "/" + platform.Architecture)
+}
+
+// platformMatches reports whether containerd runs an image for p on a server of platform host:
+// the same OS and architecture, with a variant that is the architecture's only one.
+func platformMatches(p, host ocispec.Platform) bool {
+	if p.OS != host.OS || p.Architecture != host.Architecture {
+		return false
+	}
+	switch p.Architecture {
+	case "amd64":
+		return p.Variant == "" || p.Variant == "v1"
+	case "arm64":
+		return p.Variant == "" || p.Variant == "v8" || p.Variant == "8"
+	}
+	return p.Variant == host.Variant
 }
 
 // foldedMember is the value of an object's member named name, ignoring case as Docker's JSON
@@ -273,6 +315,9 @@ func descriptors(raw jsontext.Value) ([]ocispec.Descriptor, error) {
 func descriptor(raw jsontext.Value) (ocispec.Descriptor, error) {
 	var d ocispec.Descriptor
 	invalid := unmeasurableImage("its image metadata is not valid")
+	if raw == nil {
+		return d, invalid
+	}
 	fields := map[string]any{"mediaType": &d.MediaType, "digest": &d.Digest, "size": &d.Size, "urls": &d.URLs, "annotations": &d.Annotations}
 	for name, out := range fields {
 		value, err := foldedMember(raw, name)
@@ -288,7 +333,7 @@ func descriptor(raw jsontext.Value) (ocispec.Descriptor, error) {
 		return d, err
 	}
 	d.Platform = &ocispec.Platform{}
-	for name, out := range map[string]*string{"os": &d.Platform.OS, "architecture": &d.Platform.Architecture} {
+	for name, out := range map[string]*string{"os": &d.Platform.OS, "architecture": &d.Platform.Architecture, "variant": &d.Platform.Variant} {
 		value, err := foldedMember(platform, name)
 		if err != nil {
 			return d, err
@@ -298,52 +343,4 @@ func descriptor(raw jsontext.Value) (ocispec.Descriptor, error) {
 		}
 	}
 	return d, nil
-}
-
-// forPlatform reports whether Docker pulls an index's entry on this server: one for its
-// platform, in any variant, or one that names no platform.
-func (m *imageMeasure) forPlatform(desc ocispec.Descriptor) bool {
-	if desc.Platform == nil {
-		return true
-	}
-	if desc.Platform.OS != "linux" {
-		return false
-	}
-	for _, arch := range m.platforms {
-		if desc.Platform.Architecture == arch {
-			return true
-		}
-	}
-	return false
-}
-
-// layer is what unpacking the layer desc names writes. It reads the layer from the registry
-// and measures it as a local build's layer is measured, unless it measured it before.
-func (m *imageMeasure) layer(ctx context.Context, desc ocispec.Descriptor, limit imageLoadLimit) (imageCost, error) {
-	if cost, ok := m.cache.get(desc.Digest); ok {
-		return cost, nil
-	}
-	rc, err := m.source.blob(ctx, desc)
-	if err != nil {
-		return imageCost{}, &imageArchiveUnread{err}
-	}
-	defer rc.Close()
-	// The layer reaches no one: the gate only records whether reading it failed.
-	gate := &imageArchiveGate{src: &measuredReader{r: rc, remaining: desc.Size}, out: io.Discard}
-	digester := sha256.New()
-	member, err := inspectImageMember(io.TeeReader(releasing{gate, gate}, digester), gate, desc.Size, limit)
-	if metadata := new(layerMetadataRefused); errors.As(err, &metadata) {
-		return imageCost{}, metadata.note(desc.Digest.String())
-	}
-	if errors.Is(err, errImageOverBytes) || errors.Is(err, errImageOverEntries) {
-		return imageCost{}, limit.refusal(err)
-	}
-	if err != nil {
-		return imageCost{}, err
-	}
-	if hex.EncodeToString(digester.Sum(nil)) != desc.Digest.Encoded() {
-		return imageCost{}, unmeasurableImage("a layer in it differs from its digest")
-	}
-	m.cache.put(desc.Digest, member.cost)
-	return member.cost, nil
 }
