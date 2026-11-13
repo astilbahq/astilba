@@ -27,6 +27,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -209,23 +210,27 @@ func TestBootstrapOnDisposableHost(t *testing.T) {
 		}
 	case "host":
 		// A fresh VM's unattended-upgrades often holds dpkg's lock for its first minutes. The
-		// bootstrap must wait for it rather than fail. The lock is held until the bootstrap is
-		// seen waiting, then for a few seconds more; the install's own wait bounds the hold.
+		// bootstrap must wait for it rather than fail. Ubuntu's apt waits without a word, so the
+		// lock is held until the bootstrap announces an install and for 15 seconds after: an
+		// install that didn't wait would fail in that time.
 		unlock := holdDpkgLock(t)
 		var seen bytes.Buffer
-		var waiting sync.Once
+		var installing sync.Once
+		var released atomic.Bool
 		watch := func(chunk []byte) {
 			seen.Write(chunk)
-			if bytes.Contains(seen.Bytes(), []byte("Waiting for cache lock")) {
-				waiting.Do(func() { time.AfterFunc(5*time.Second, unlock) })
+			if bytes.Contains(seen.Bytes(), []byte("waits up to 5 minutes for it to finish")) {
+				installing.Do(func() {
+					time.AfterFunc(15*time.Second, func() { released.Store(true); unlock() })
+				})
 			}
 		}
 		out, e := runBootstrap(t, []string{"CURL_CA_BUNDLE=" + ca}, watch, append([]string{script}, args(release)...)...)
 		if e != nil {
 			t.Fatalf("fresh production bootstrap while dpkg's lock was held: %s %v", out, e)
 		}
-		if !bytes.Contains(out, []byte("Waiting for cache lock")) {
-			t.Fatalf("the bootstrap did not wait for dpkg's lock: %s", out)
+		if !released.Load() {
+			t.Fatalf("the bootstrap finished without installing while dpkg's lock was held: %s", out)
 		}
 		if !bytes.Contains(out, []byte("Refreshing this host's package sources.")) {
 			t.Fatalf("the bootstrap did not refresh this host's sources: %s", out)

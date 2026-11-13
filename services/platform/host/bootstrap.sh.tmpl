@@ -178,6 +178,10 @@ apt_limit=300
 # waits this many seconds for it.
 apt_lock_wait=300
 apt_options=()
+# apt waits for dpkg's lock without a word, so the bootstrap says so before it installs.
+apt_lock_notice() {
+  printf 'If another package operation, such as a new VM'"'"'s unattended-upgrades, is running, this waits up to %s minutes for it to finish.\n' "$((apt_lock_wait / 60))"
+}
 apt_get() {
   local status=0
   timeout --foreground --kill-after=30 "$apt_limit" env DEBIAN_FRONTEND=noninteractive apt-get "${apt_options[@]}" "$@" || status=$?
@@ -383,6 +387,7 @@ if ! "$docker_ready"; then
   command -v docker >/dev/null && die 'A Docker installation appeared during preparation; inspect it before retrying.'
   step='install the approved container runtime'
   printf '%s\n' 'Installing verified Docker packages and their Ubuntu dependencies; Docker may start and create networks and firewall rules.'
+  apt_lock_notice
   # Installs exactly what apt_download fetched, from the same package lists, so it needs no new
   # downloads; Docker depends on nftables, so the pinned version comes with it when needed. There
   # is no time limit: stopping dpkg part way would leave packages half configured.
@@ -393,6 +398,7 @@ fi
 if ! command -v nft >/dev/null; then
   step='install nftables for build isolation'
   printf '%s\n' 'Installing Ubuntu'"'"'s nftables 1.0.9, which the agent uses to keep builds away from this host and private networks.'
+  apt_lock_notice
   DEBIAN_FRONTEND=noninteractive apt-get "${apt_options[@]}" -o "DPkg::Lock::Timeout=$apt_lock_wait" install --yes --no-remove --no-install-recommends "$nftables"
 fi
 inspect_agent_targets
