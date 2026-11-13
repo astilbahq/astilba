@@ -46,6 +46,8 @@ func refusal(err error) string {
 	var invalid *domain.Error
 	var diagnostic *composeproject.Diagnostic
 	switch {
+	case errors.Is(err, domain.EnvironmentInactive):
+		return "the environment is retired or being retired. Restore it before changing it."
 	case errors.Is(err, domain.SpecificationTooLarge):
 		return "the configuration would be over the " + strconv.Itoa(domain.SpecificationLimit/1024) + " KiB limit."
 	case errors.As(err, &diagnostic):

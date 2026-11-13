@@ -61,7 +61,7 @@ func (s *Service) applyRecoveryProof(ctx context.Context, tx pgx.Tx, ws uuid.UUI
 	if err = s.upgradeRecoveryProof(ctx, tx, c, &report); err != nil {
 		return err
 	}
-	if err = s.crossHostReport(ctx, tx, c, &report); err != nil {
+	if err = s.crossHostReport(ctx, tx, ws, c, &report); err != nil {
 		return err
 	}
 	reportCommand := c

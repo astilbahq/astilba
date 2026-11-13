@@ -3,6 +3,7 @@ package domain
 import (
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 )
 
@@ -225,6 +226,16 @@ func PostgresMount(image string) string {
 		return r.Mount
 	}
 	return "/var/lib/postgresql"
+}
+
+// PostgresMajor is the PostgreSQL major version a pinned release runs, such as "18", or "" for an
+// image Astilba never pinned. A data directory one major initialised cannot be opened by another,
+// so a managed volume keeps the major that first ran on it.
+func PostgresMajor(image string) string {
+	if r, ok := PostgresReleaseOf(image); ok {
+		return strconv.Itoa(r.Major())
+	}
+	return ""
 }
 
 func knownPostgres(image string) bool {

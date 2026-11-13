@@ -190,8 +190,9 @@ try {
   const releaseKey = join(directory, "release-public.pem");
   await writeFile(releaseKey, keys.publicKey.export({ type: "spki", format: "pem" }), { mode: 0o600 });
   const artifact = Buffer.from("Astilba browser download fixture\n");
-  const release = { version: "fixture.download", protocol: 1, arch: "arm64", size: artifact.length, sha256: createHash("sha256").update(artifact).digest("hex") };
-  const message = `astilba-agent-v1\n${release.version}\n${release.protocol}\n${release.arch}\n${release.size}\n${release.sha256}\n`;
+  const release = { version: "0.1.0-fixture.download", protocol: 1, arch: "arm64", size: artifact.length, sha256: createHash("sha256").update(artifact).digest("hex"), commit: "0123456789abcdef0123456789abcdef01234567", minimumVersion: "0.0.0" };
+  // agentrelease.Message: the v2 format, one LF-terminated field per line.
+  const message = `astilba-agent-release-signature-v2\n${release.version}\n${release.protocol}\n${release.arch}\n${release.size}\n${release.sha256}\n${release.commit}\n${release.minimumVersion}\n`;
   release.signature = sign(null, Buffer.from(message), keys.privateKey).toString("base64");
   await writeFile(join(releases, release.sha256), artifact, { mode: 0o600 });
   await writeFile(join(releases, "fixture.json"), JSON.stringify(release), { mode: 0o600 });

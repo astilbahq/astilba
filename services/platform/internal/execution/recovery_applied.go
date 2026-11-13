@@ -78,13 +78,6 @@ func appliedFrom(a portability.Archive, env uuid.UUID) (appliedTuple, error) {
 	return out, nil
 }
 
-func recoveryCommandIdentity(c api.ExecutionCommand) string {
-	c.ControllerGeneration, c.RecoveryCheckpoint = nil, nil
-	c.CancelRequested = false
-	c.Deadline = c.Deadline.UTC()
-	return Hash(c)
-}
-
 func buildAppliedOrigin(a portability.Archive, parent uuid.UUID) (*appliedOrigin, error) {
 	out := &appliedOrigin{Parent: parent, At: a.CreatedAt, Operations: map[uuid.UUID]appliedEvidence{}, Environments: map[uuid.UUID]appliedTuple{}}
 	operations := map[uuid.UUID]portability.Row{}
@@ -126,7 +119,11 @@ func buildAppliedOrigin(a portability.Archive, parent uuid.UUID) (*appliedOrigin
 		default:
 			return nil, portability.ErrArchive
 		}
-		e := appliedEvidence{Identity: recoveryCommandIdentity(c), Generation: operationGeneration, Controller: generation(c.ControllerGeneration), Sequence: sequence, State: state}
+		identity, err := portability.CommandIdentity(row["command"], portability.CommandIdentityVersion)
+		if err != nil {
+			return nil, portability.ErrArchive
+		}
+		e := appliedEvidence{Identity: identity, Generation: operationGeneration, Controller: generation(c.ControllerGeneration), Sequence: sequence, State: state}
 		if sequence < 0 || e.Controller < 0 {
 			return nil, portability.ErrArchive
 		}
@@ -209,7 +206,9 @@ func committedApplied(c api.ExecutionCommand, e appliedEvidence) (appliedTuple, 
 			return appliedTuple{}, "", ""
 		}
 		if e.Runtime.Kind == "removed" {
-			if body.Action != "preview-cleanup" || body.Plan.Preview == nil || body.Plan.Validate(false) != nil || !Terminal(e.State) {
+			cleanup := body.Action == "preview-cleanup" && body.Plan.Preview != nil
+			retirement := body.Action == retireAction && body.Plan.Preview == nil
+			if !cleanup && !retirement || body.Plan.Validate(false) != nil || !Terminal(e.State) {
 				return appliedTuple{}, "", ""
 			}
 			tuple := appliedTuple{Operation: c.Id}

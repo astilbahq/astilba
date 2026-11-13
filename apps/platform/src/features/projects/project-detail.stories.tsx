@@ -201,3 +201,23 @@ export const CancelCreation: Story = {
     await expect(canvas.queryByLabelText("Environment name", {})).toBeNull();
   },
 };
+export const RetiredEnvironments: Story = {
+  parameters: scenario(
+    session,
+    http.get(environmentsPath, () =>
+      HttpResponse.json([
+        environments[0],
+        { ...environments[1], state: "retired" },
+        { ...environments[2], state: "retiring" },
+      ]),
+    ),
+    ...projectHandlers(),
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByText("Retired environments (2)"));
+    await expect(
+      await canvas.findByRole("link", { name: /^Production .*Retired/ }),
+    ).toBeVisible();
+  },
+};

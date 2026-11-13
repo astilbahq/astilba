@@ -23,11 +23,27 @@ func restoredDatabaseOpens(spec domain.Specification, p backup.Policy, run backu
 	for _, a := range spec.Applications {
 		if a.ID == p.ResourceID {
 			if err := backup.OpensRestoredPostgres(a, run); err != nil {
-				return &domain.Error{Code: "invalid_input", Message: "This restore cannot replace the database: " + err.Error() + ".", Fields: []string{"restore.compatibility"}}
+				return restoreIncompatible(err)
 			}
+			return nil
 		}
 	}
-	return nil
+	return domain.Invalid("restore.compatibility")
+}
+
+// restoreIncompatible names why a restored target cannot replace the database.
+func restoreIncompatible(err error) error {
+	return &domain.Error{Code: "invalid_input", Message: "This restore cannot replace the database: " + err.Error() + ".", Fields: []string{"restore.compatibility"}}
+}
+
+// mountsVolume reports whether the specification's managed database keeps its data on the volume.
+func mountsVolume(spec domain.Specification, resource, volume uuid.UUID) bool {
+	for _, a := range spec.Applications {
+		if a.ID == resource {
+			return len(a.Mounts) == 1 && a.Mounts[0].VolumeID == volume
+		}
+	}
+	return false
 }
 
 // checkRestoreRequest refuses a restore of an unknown snapshot, and, before anything runs, one

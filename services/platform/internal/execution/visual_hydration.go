@@ -20,7 +20,8 @@ import (
 func (s *Service) hydrateVisual(ctx context.Context, c *api.ExecutionCommand) error {
 	if c.Visual != nil {
 		var p deployment.Payload
-		if json.Unmarshal(*c.Visual, &p) == nil && p.Action == "preview-cleanup" {
+		// Removal needs no secret or registry access.
+		if json.Unmarshal(*c.Visual, &p) == nil && (p.Action == "preview-cleanup" || p.Action == retireAction) {
 			return nil
 		}
 	}

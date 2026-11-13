@@ -234,16 +234,26 @@ func TestAppliedMaintenanceRequiresActualTargetOutcome(t *testing.T) {
 	}
 }
 
+// Preview cleanup and environment retirement both remove a unit's runtime, and recovery has to
+// keep either confirmed removal in order instead of refusing the checkpoint that holds it.
 func TestRemovedRuntimeHasCausalOrder(t *testing.T) {
+	for _, action := range []string{"preview-cleanup", retireAction} {
+		t.Run(action, func(t *testing.T) { removedRuntimeHasCausalOrder(t, action) })
+	}
+}
+
+func removedRuntimeHasCausalOrder(t *testing.T, action string) {
 	base, p := appliedTestArchive(t)
 	old, err := buildAppliedOrigin(base, uuid.Nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	p.Recipe = deployment.PreviewRecipe
-	p.Preview = &domain.PreviewIdentity{RequestID: uuid.New(), Generation: 1, Limits: domain.PreviewLimits{CPUs: 1, MemoryMiB: 128, Pids: 64}}
-	p = p.WithHash()
-	body := deployment.Payload{Action: "preview-cleanup", Plan: p}
+	if action == "preview-cleanup" {
+		p.Recipe = deployment.PreviewRecipe
+		p.Preview = &domain.PreviewIdentity{RequestID: uuid.New(), Generation: 1, Limits: domain.PreviewLimits{CPUs: 1, MemoryMiB: 128, Pids: 64}}
+		p = p.WithHash()
+	}
+	body := deployment.Payload{Action: action, Plan: p}
 	c := api.ExecutionCommand{Id: uuid.New(), EnvironmentId: p.EnvironmentID, ServerId: p.ServerID, ResourceId: p.UnitID, Kind: "visual", Generation: 2, PlanHash: body.Digest(), Visual: rawMessage(mustJSON(body))}
 	base.Tables["execution_operations"] = append(base.Tables["execution_operations"], appliedTestRow(map[string]any{"id": c.Id, "workspace_id": base.Workspace, "environment_id": p.EnvironmentID, "server_id": p.ServerID, "kind": "visual", "parent_id": nil, "generation": 2, "report_sequence": 1, "state": "succeeded", "command": c, "runtime_outcome": "removed", "runtime_plan_id": nil, "cancel_requested": false}))
 	recoverySet(base.Tables["environments"][0], "applied_revision_id", nil)

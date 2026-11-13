@@ -24,10 +24,13 @@ SELECT id FROM git_connections WHERE workspace_id = @workspace_id AND id = @id F
 
 -- name: GitBranchTracked :one
 -- Whether a push for this branch has work to start: a source importing it, or a target building it automatically.
-SELECT (EXISTS(SELECT 1 FROM git_sources g WHERE g.workspace_id = sqlc.arg(workspace_id) AND g.connection_id = sqlc.arg(connection_id)
-        AND g.configuration->>'branch' = sqlc.arg(branch)::text)
-    OR EXISTS(SELECT 1 FROM build_targets t WHERE t.workspace_id = sqlc.arg(workspace_id) AND t.connection_id = sqlc.arg(connection_id)
-        AND t.configuration->>'branch' = sqlc.arg(branch)::text AND t.configuration->>'autoBuild' = 'true'))::boolean;
+-- A retired environment's source and targets stay configured but start nothing.
+SELECT (EXISTS(SELECT 1 FROM git_sources g JOIN environments e ON e.workspace_id = g.workspace_id AND e.id = g.environment_id
+        WHERE g.workspace_id = sqlc.arg(workspace_id) AND g.connection_id = sqlc.arg(connection_id)
+        AND g.configuration->>'branch' = sqlc.arg(branch)::text AND e.state = 'active')
+    OR EXISTS(SELECT 1 FROM build_targets t JOIN environments e ON e.workspace_id = t.workspace_id AND e.id = t.environment_id
+        WHERE t.workspace_id = sqlc.arg(workspace_id) AND t.connection_id = sqlc.arg(connection_id)
+        AND t.configuration->>'branch' = sqlc.arg(branch)::text AND t.configuration->>'autoBuild' = 'true' AND e.state = 'active'))::boolean;
 
 -- name: PruneGitBranchPushes :exec
 -- unscoped: retention covers every workspace, and an answer lives far less than a day.

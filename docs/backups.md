@@ -80,6 +80,8 @@ Choose an uploaded snapshot and request a fresh restore. The agent checks source
 
 Choose **Prepare cutover draft**, inspect the storage change, prepare a deployment plan and explicitly apply it. Writes made to the old source after the backup are not included in the restored data. The old volume stays retained. For Compose, the draft renames an explicit volume and its mounts while preserving other source bytes; ambiguous source constructs require an explicit file edit instead of an automatic rewrite. Review the resulting source before deployment.
 
+A PostgreSQL cutover is refused as `restore.compatibility` unless the draft's database service runs a release that opens the data the restoring release wrote: the same major and Alpine line, no older, mounted where that release keeps its data. Use a supported upgrade to change major. Preparing the cutover records the target volume, with the restoring release's PostgreSQL major, among the environment's volumes, so it is listed there and can be deleted like any unused volume if the cutover is abandoned.
+
 Multiple independent resource backups do not represent an application-wide transaction. No generic major-version database migration or in-place restore is included.
 
 ## Recovery without the management database

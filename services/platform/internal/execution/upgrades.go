@@ -66,6 +66,9 @@ func (s *Service) CreateUpgrade(ctx context.Context, p store.Principal, ws, pid,
 		if err != nil {
 			return err
 		}
+		if err = requireActive(v.State); err != nil {
+			return err
+		}
 		if v.Server == nil || v.Applied == nil || *v.Applied != in.BaseRevisionId || v.Revision != in.BaseRevisionId {
 			return domain.Conflict
 		}
@@ -159,12 +162,16 @@ func (s *Service) CreateUpgrade(ctx context.Context, p store.Principal, ws, pid,
 		}
 		target := out.Plan.Target()
 		var initial string
+		var major *string
 		for _, a := range target.Specification.Applications {
 			if a.ID == out.Plan.ResourceID {
 				initial = deployment.Hash(a.Postgres)
+				if version := domain.PostgresMajor(*a.Source.Image); version != "" {
+					major = &version
+				}
 			}
 		}
-		if _, err = tx.Exec(ctx, "INSERT INTO managed_volumes(workspace_id,environment_id,unit_id,id,postgres_init_hash) VALUES($1,$2,$3,$4,$5)", ws, env, source.UnitID, out.Plan.TargetVolumeID, initial); err != nil {
+		if _, err = tx.Exec(ctx, "INSERT INTO managed_volumes(workspace_id,environment_id,unit_id,id,postgres_init_hash,postgres_major) VALUES($1,$2,$3,$4,$5,$6)", ws, env, source.UnitID, out.Plan.TargetVolumeID, initial, major); err != nil {
 			return err
 		}
 		return nil

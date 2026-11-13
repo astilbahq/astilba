@@ -133,7 +133,7 @@ func (e *Engine) executeVisual(ctx context.Context, c api.ExecutionCommand, r Re
 	if c.Visual == nil || json.Unmarshal(*c.Visual, &p) != nil || p.Digest() != c.PlanHash || p.Plan.ServerID != c.ServerId || p.Plan.EnvironmentID != c.EnvironmentId || p.Plan.UnitID != c.ResourceId {
 		return e.finish(c.Id, "failed", "Visual command identity does not match its reviewed plan.")
 	}
-	if err := p.Plan.Validate(p.Action != "resolve" && p.Action != "preview-cleanup"); err != nil {
+	if err := p.Plan.Validate(p.Action != "resolve" && p.Action != "preview-cleanup" && p.Action != "retire"); err != nil {
 		return e.finish(c.Id, "failed", "The deployment plan is invalid.")
 	}
 	if e.Docker == nil {
@@ -144,6 +144,12 @@ func (e *Engine) executeVisual(ctx context.Context, c api.ExecutionCommand, r Re
 			return e.finish(c.Id, "cancelled", "Preview cleanup cancelled before execution.")
 		}
 		return e.executePreviewCleanup(ctx, c, p, r)
+	}
+	if p.Action == "retire" {
+		if e.cancelled(c.Id) {
+			return e.finish(c.Id, "cancelled", "Retirement cancelled before execution. Nothing was removed.")
+		}
+		return e.executeRetirement(ctx, c, p, r)
 	}
 	if p.Action == "deploy" && p.Plan.Release != nil {
 		return e.executeRelease(ctx, c, p, r)
@@ -441,64 +447,6 @@ func (e *Engine) resolveVisualImages(ctx context.Context, p deployment.Payload, 
 	}
 	observed = resolutionObservation(observed)
 	return observed, nil
-}
-
-func visualLabels(p deployment.Plan, resource uuid.UUID) map[string]string {
-	return map[string]string{labelServer: p.ServerID.String(), labelEnvironment: p.EnvironmentID.String(), "com.astilba.unit": p.UnitID.String(), labelResource: resource.String(), labelKind: "visual-v1"}
-}
-func visualOwned(labels map[string]string, p deployment.Plan) bool {
-	return labels[labelServer] == p.ServerID.String() && labels[labelEnvironment] == p.EnvironmentID.String() && labels["com.astilba.unit"] == p.UnitID.String() && labels[labelKind] == "visual-v1"
-}
-func (e *Engine) ownedContainers(ctx context.Context, p deployment.Plan) ([]container.Summary, error) {
-	v, err := e.Docker.ContainerList(ctx, client.ContainerListOptions{All: true, Filters: make(client.Filters).Add("label", labelServer+"="+p.ServerID.String(), "com.astilba.unit="+p.UnitID.String(), labelKind+"=visual-v1")})
-	return v.Items, err
-}
-func (e *Engine) activeContainers(ctx context.Context, p deployment.Plan) ([]container.Summary, error) {
-	list, err := e.ownedContainers(ctx, p)
-	if err != nil {
-		return nil, err
-	}
-	out := []container.Summary{}
-	names := map[string]string{}
-	for _, app := range p.Specification.Applications {
-		for _, instance := range p.InstanceIDs(app.ID) {
-			names["/"+deployment.UnitName(instance)] = app.ID.String()
-		}
-	}
-	for _, item := range list {
-		for _, name := range item.Names {
-			if resource, ok := names[name]; ok && resource == item.Labels[labelResource] {
-				out = append(out, item)
-				break
-			}
-		}
-	}
-	return out, nil
-}
-func (e *Engine) ensureStorage(ctx context.Context, p deployment.Plan) error {
-	if err := e.ensureUnitNetworks(ctx, p); err != nil {
-		return err
-	}
-	if p.Local != nil && !p.Local.Primary {
-		return nil
-	}
-	for _, vol := range p.Specification.Volumes {
-		v, err := e.Docker.VolumeInspect(ctx, deployment.VolumeName(vol.ID), client.VolumeInspectOptions{})
-		if errdefs.IsNotFound(err) {
-			_, err = e.Docker.VolumeCreate(ctx, client.VolumeCreateOptions{Name: deployment.VolumeName(vol.ID), Driver: "local", Labels: visualLabels(p, vol.ID)})
-			if err != nil {
-				return errors.New("Cannot create a data volume.")
-			}
-			if err = e.Journal.recordNewPostgresStorage(p, vol.ID); err != nil {
-				return err
-			}
-			v, err = e.Docker.VolumeInspect(ctx, deployment.VolumeName(vol.ID), client.VolumeInspectOptions{})
-		}
-		if err != nil || !visualOwned(v.Volume.Labels, p) || v.Volume.Labels[labelResource] != vol.ID.String() || v.Volume.Driver != "local" || len(v.Volume.Options) > 0 {
-			return errors.New("Data volume ownership or driver does not match.")
-		}
-	}
-	return nil
 }
 
 func (e *Engine) observeUnit(ctx context.Context, p deployment.Plan, secrets map[string]string) (deployment.Observation, map[string]string, error) {

@@ -125,6 +125,7 @@ func Preflight(ctx context.Context, docker *client.Client, version, dir string, 
 	h.Capabilities.SafeReleases = &visual
 	h.Capabilities.Replicas = &visual
 	h.Capabilities.Previews = &visual
+	h.Capabilities.Retirement = &visual
 	h.Capabilities.ServiceOutputs = &visual
 	if visual {
 		releases := []string{}

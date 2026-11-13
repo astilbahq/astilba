@@ -34,7 +34,8 @@ type revokedGroup struct {
 	// attention names phases a host reports as needing attention, until they're cancelled. It's set
 	// before the phase starts and read by the host alone afterwards.
 	attention map[string]bool
-	// failing names visual actions a host reports as failed. Set while the host isn't polling for one.
+	// failing names visual actions and cross-host phases ("crosshost-" and the phase) a host reports
+	// as failed. Set while the host isn't polling for one.
 	failing map[string]bool
 	// late names phases a host takes only after their admission deadline, guarded by mu.
 	late map[string]bool
@@ -361,8 +362,13 @@ func (g *revokedGroup) respond(t *testing.T, h *aheadHost, c api.ExecutionComman
 			return report, false
 		}
 		g.mu.Lock()
+		failing := g.failing["crosshost-"+command.Phase+"/"+h.id.String()]
 		late := g.late[command.Phase+"/"+h.id.String()]
 		g.mu.Unlock()
+		if failing {
+			report.State = "failed"
+			return report, true
+		}
 		if late {
 			report.State, report.Note = "cancelled", "The admission deadline passed before execution."
 			return report, true

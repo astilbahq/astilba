@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json/v2"
 	"fmt"
+	"time"
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
@@ -15,21 +16,27 @@ import (
 // sealed with the management keyring before leaving the management process.
 // This is an internal offline-recovery source, never a browser archive response.
 func CaptureRecovery(ctx context.Context, tx pgx.Tx, ws uuid.UUID) ([]byte, error) {
+	raw, _, err := CaptureRecoveryAt(ctx, tx, ws)
+	return raw, err
+}
+
+// CaptureRecoveryAt is CaptureRecovery, and also returns the base's capture time.
+func CaptureRecoveryAt(ctx context.Context, tx pgx.Tx, ws uuid.UUID) ([]byte, time.Time, error) {
 	archive := Archive{Version: ArchiveVersion, Workspace: ws}
 	header, err := db.New(tx).WorkspaceRecoveryHeader(ctx, ws)
 	if err != nil {
-		return nil, err
+		return nil, time.Time{}, err
 	}
 	archive.Name, archive.RequireMFA, archive.CreatedAt = header.Name, header.RequireMfa, header.CapturedAt
 	archive, err = captureArchive(ctx, tx, archive, captureBase)
 	if err != nil {
-		return nil, err
+		return nil, time.Time{}, err
 	}
 	raw, err := stablejson.Marshal(archive)
 	if err != nil || len(raw) > MaxArchiveBytes {
-		return nil, ErrArchive
+		return nil, time.Time{}, ErrArchive
 	}
-	return raw, nil
+	return raw, archive.CreatedAt, nil
 }
 
 // InspectRecovery reads trusted database state, including a union of individually
@@ -71,6 +78,7 @@ const retainedOperations = ` AND id IN (WITH RECURSIVE kept(id) AS (
 	UNION SELECT o.id FROM execution_operations o WHERE o.workspace_id=$1 AND o.created_at>=COALESCE((SELECT n.created_at FROM execution_operations n WHERE n.workspace_id=$1 ORDER BY n.created_at DESC OFFSET 99 LIMIT 1),'-infinity')
 	UNION SELECT c.id FROM execution_operations c JOIN execution_operations p ON p.id=c.parent_id WHERE c.workspace_id=$1 AND p.state NOT IN ('succeeded','failed','cancelled')
 	UNION SELECT runtime_operation_id FROM environments WHERE workspace_id=$1
+	UNION SELECT retirement_operation_id FROM environments WHERE workspace_id=$1
 	UNION SELECT id FROM cross_host_operations WHERE workspace_id=$1
 	UNION SELECT parent_id FROM cross_host_approvals WHERE workspace_id=$1
 	UNION SELECT parent_id FROM cross_host_reservations WHERE workspace_id=$1
