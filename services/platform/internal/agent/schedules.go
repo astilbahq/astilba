@@ -30,10 +30,10 @@ type scheduleState struct {
 	BeforeEffects uuid.UUID `json:",omitzero"`
 }
 
-// failUnstartedRun settles an interrupted backup or restore command's run when it changed nothing
-// outside the journal: never recorded, or recorded but stopped before its first effect. It
-// reports whether it did.
-func (e *Engine) failUnstartedRun(b backup.Command) (bool, error) {
+// interruptedRunFailed reports whether an interrupted backup or restore command's run is known to
+// have failed: never recorded, recorded as failed, or stopped before its first effect, which it
+// now records as failed.
+func (e *Engine) interruptedRunFailed(b backup.Command) (bool, error) {
 	if (b.Action != "backup" && b.Action != "restore") || b.RunID == uuid.Nil {
 		return false, nil
 	}
@@ -47,6 +47,9 @@ func (e *Engine) failUnstartedRun(b backup.Command) (bool, error) {
 	for _, run := range s.Runs {
 		if run.ID != b.RunID {
 			continue
+		}
+		if run.State == "failed" {
+			return true, nil
 		}
 		if run.State != "running" || s.BeforeEffects != b.RunID {
 			return false, nil
@@ -74,8 +77,11 @@ func settleUnstarted(s *scheduleState, now time.Time) bool {
 }
 
 // beginEffects records that run r may now change things outside the journal. Until it returns
-// nil, nothing of the run has happened.
-func (e *Engine) beginEffects(s *scheduleState, r *backup.Run) error {
+// nil, nothing of the run has happened; a cancelled run begins nothing.
+func (e *Engine) beginEffects(ctx context.Context, s *scheduleState, r *backup.Run) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if s.BeforeEffects != r.ID {
 		return nil
 	}
@@ -84,6 +90,7 @@ func (e *Engine) beginEffects(s *scheduleState, r *backup.Run) error {
 		s.BeforeEffects = r.ID
 		return err
 	}
+	e.point("backup-effects-begun")
 	return nil
 }
 
@@ -192,16 +199,19 @@ func (e *Engine) executeBackup(ctx context.Context, c api.ExecutionCommand, r Re
 	if c.Backup == nil || json.Unmarshal(*c.Backup, &b) != nil || b.Digest() != c.PlanHash || b.Installation.Policy.ID != c.ResourceId || b.Installation.Policy.ServerID != c.ServerId || b.Installation.Policy.EnvironmentID != c.EnvironmentId || b.Installation.Policy.Validate() != nil || (c.Kind == "schedule") != b.Installation.Policy.GeneralSchedule() {
 		return e.finish(c.Id, "failed", "Backup command identity or policy is invalid.")
 	}
-	if e.cancelled(c.Id) || r.Checkpoint == "accepted" && time.Now().After(c.Deadline) {
-		return e.finish(c.Id, "cancelled", "Cancelled before backup host effects.")
-	}
+	// An interrupted command is settled by what its run did, whether or not it was cancelled since.
 	if r.Checkpoint != "accepted" {
-		if unstarted, err := e.failUnstartedRun(b); err != nil {
+		if failed, err := e.interruptedRunFailed(b); err != nil {
 			return err
-		} else if unstarted {
-			return e.finish(c.Id, "failed", "The agent stopped before this run changed anything. It will not be repeated automatically.")
+		} else if failed && e.cancelled(c.Id) {
+			return e.finish(c.Id, "cancelled", "Cancelled before backup host effects.")
+		} else if failed {
+			return e.finish(c.Id, "failed", "The interrupted run failed or changed nothing; run history records which. It will not be repeated automatically.")
 		}
 		return e.finish(c.Id, "needs_attention", "An interrupted backup command needs local inspection. Scheduled run history records its outcome; it will not be repeated automatically.")
+	}
+	if e.cancelled(c.Id) || time.Now().After(c.Deadline) {
+		return e.finish(c.Id, "cancelled", "Cancelled before backup host effects.")
 	}
 	parent := ctx
 	ctx, stop := e.commandContext(ctx, c)
@@ -262,6 +272,8 @@ func (e *Engine) executeBackup(ctx context.Context, c api.ExecutionCommand, r Re
 			err = errors.New("schedule has no supported next occurrence")
 			break
 		}
+		// The new state carries no mark, so a run stopped before its first effect is failed first.
+		settleUnstarted(&old, time.Now().UTC())
 		next := scheduleState{Installation: b.Installation, Runs: old.Runs, Sequence: old.Sequence}
 		if len(old.Writers) > 0 || hasUncertainRun(old) {
 			err = errors.New("resolve interrupted run before replacing schedule")
@@ -481,6 +493,10 @@ func (e *Engine) runScheduled(ctx context.Context, s *scheduleState, at time.Tim
 		err = e.backupSnapshot(runCtx, s, &r)
 	}
 	if ctx.Err() != nil {
+		// A run cancelled before its first effect changed nothing; any other is left to inspect.
+		if settleUnstarted(s, time.Now().UTC()) {
+			return errors.Join(ctx.Err(), e.Journal.saveSchedule(*s))
+		}
 		return ctx.Err()
 	}
 	end := time.Now().UTC()
