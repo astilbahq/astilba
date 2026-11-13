@@ -17,7 +17,8 @@ import (
 // fakeAptGet records each call as the sources it used ("host", or a fallback archive's URI),
 // whether its package lists started from the host's, and its arguments. An update fails, as apt-get's does, when those sources are listed in
 // FAILING or PARTIAL. A download fails after a FAILING update, since apt then has no lists to
-// resolve from, and always when DOWNLOAD_FAILS is set.
+// resolve from, and always when DOWNLOAD_FAILS is set. Unless NOTHING_NEEDED is set, a package
+// needs downloading.
 const fakeAptGet = `#!/usr/bin/env bash
 source=host
 for argument in "$@"; do
@@ -34,6 +35,9 @@ for argument in "$@"; do
 done
 printf '%s %s %s\n' "$source" "$seeded" "$*" >> "$LOG"
 case " $* " in
+  *" --print-uris "*)
+    printf "'file:/tmp/docker.deb' docker.deb 1 \n"
+    [[ -n $NOTHING_NEEDED ]] || printf "'http://archive.test/nftables.deb' nftables.deb 1 \n" ;;
   *" update "*)
     for failing in $FAILING; do [[ $failing == "$source" ]] && { touch "$SAVED/unrefreshed-${source//[^A-Za-z0-9]/_}"; exit 100; }; done
     for failing in $PARTIAL; do [[ $failing == "$source" ]] && exit 100; done ;;
@@ -49,7 +53,7 @@ func TestBootstrapTriesPinnedArchivesOnlyWhenHostSourcesFail(t *testing.T) {
 	script := string(Bootstrap())
 	die := regexp.MustCompile(`(?m)^die\(\) .*$`).FindString(script)
 	apt := regexp.MustCompile(`(?ms)^ubuntu_keyring=.*?^apt_download\(\) \{.*?^\}$`).FindString(script)
-	install := regexp.MustCompile(`(?m)^ +(DEBIAN_FRONTEND=noninteractive apt-get "\$\{apt_options\[@\]\}" install .*"\$\{packages\[@\]\}")$`).FindStringSubmatch(script)
+	install := regexp.MustCompile(`(?m)^ +(DEBIAN_FRONTEND=noninteractive apt-get "\$\{apt_options\[@\]\}" install .*"\$\{apt_packages\[@\]\}")$`).FindStringSubmatch(script)
 	archives := regexp.MustCompile(`(?m)^ +fallback_archives=\(([^)]*)\) ;;$`).FindAllStringSubmatch(script, -1)
 	if die == "" || apt == "" || install == nil || len(archives) != 2 {
 		t.Fatal("the bootstrap no longer defines die, its apt functions, the runtime install and a fallback list per architecture")
@@ -60,11 +64,14 @@ func TestBootstrapTriesPinnedArchivesOnlyWhenHostSourcesFail(t *testing.T) {
 		failing       []string // Sources whose update fails, leaving nothing to download from.
 		partial       []string // Sources whose update fails for an unrelated index.
 		downloadFails bool
+		nothingNeeded bool
 		used          string // The fallback archive the install uses, or empty for the host's sources.
 		ok            bool
 		output        string
 	}{
 		{name: "host sources work", ok: true},
+		// A host that has every dependency needs no index, so an outage doesn't hold it up.
+		{name: "nothing to download", nothingNeeded: true, failing: []string{"host"}, ok: true},
 		// A dead third-party source must not send a host that can still get its packages elsewhere.
 		{name: "an unrelated host source fails", partial: []string{"host"}, ok: true, output: "Some of this host's package indexes failed to refresh"},
 		{name: "host sources fail", failing: []string{"host"}, used: amd64[0], ok: true},
@@ -115,16 +122,18 @@ func TestBootstrapTriesPinnedArchivesOnlyWhenHostSourcesFail(t *testing.T) {
 				"ubuntu_keyring=" + keyring,
 				"host_lists=" + lists,
 				`trap 'rm -rf ${apt_root:+"$apt_root"}' EXIT`,
-				`packages=(/tmp/docker.deb)`,
-				`apt_download "${packages[@]}" nftables=1.0.9-1ubuntu0.1`,
+				`apt_packages=(/tmp/docker.deb nftables=1.0.9-1ubuntu0.1)`,
+				`apt_download "${apt_packages[@]}"`,
 				install[1],
 			}, "\n")
-			downloadFails := ""
-			if test.downloadFails {
-				downloadFails = "1"
+			flag := func(set bool) string {
+				if set {
+					return "1"
+				}
+				return ""
 			}
 			cmd := exec.Command("bash", "-c", harness)
-			cmd.Env = append(os.Environ(), "PATH="+bin+":"+os.Getenv("PATH"), "LOG="+log, "SAVED="+saved, "FAILING="+strings.Join(test.failing, " "), "PARTIAL="+strings.Join(test.partial, " "), "DOWNLOAD_FAILS="+downloadFails)
+			cmd.Env = append(os.Environ(), "PATH="+bin+":"+os.Getenv("PATH"), "LOG="+log, "SAVED="+saved, "FAILING="+strings.Join(test.failing, " "), "PARTIAL="+strings.Join(test.partial, " "), "DOWNLOAD_FAILS="+flag(test.downloadFails), "NOTHING_NEEDED="+flag(test.nothingNeeded))
 			out, err := cmd.CombinedOutput()
 			if exit := (*exec.ExitError)(nil); errors.As(err, &exit) && exit.ExitCode() == 77 {
 				t.Skip("needs bash 4.4 or later, as production has")
@@ -158,7 +167,9 @@ func TestBootstrapTriesPinnedArchivesOnlyWhenHostSourcesFail(t *testing.T) {
 			}
 			// The host's sources come first, then the pinned archives in order, each only after the one before failed.
 			want := []string{"host"}
-			if len(test.failing) > 0 {
+			if test.nothingNeeded {
+				want = nil
+			} else if len(test.failing) > 0 {
 				for _, archive := range amd64 {
 					want = append(want, archive)
 					if archive == test.used {
@@ -173,7 +184,7 @@ func TestBootstrapTriesPinnedArchivesOnlyWhenHostSourcesFail(t *testing.T) {
 				return
 			}
 			last := calls[len(calls)-1]
-			if source, _, _ := strings.Cut(last, " "); source != cmp.Or(test.used, "host") || !strings.HasSuffix(last, " install --yes --no-remove --no-install-recommends /tmp/docker.deb") {
+			if source, _, _ := strings.Cut(last, " "); source != cmp.Or(test.used, "host") || !strings.HasSuffix(last, " install --yes --no-remove --no-install-recommends /tmp/docker.deb nftables=1.0.9-1ubuntu0.1") {
 				t.Fatalf("installed with %q, want the sources the download used (%q)", last, test.used)
 			}
 			if test.used == "" {

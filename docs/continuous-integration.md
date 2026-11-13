@@ -736,8 +736,8 @@ it uses a mirror instead of Canonical, and fails when none answers.
 - **Retries.** The step sets `Acquire::Retries "5"`, up from apt's default of 3.
 
 This step is CI only. The production bootstrap leaves a host's sources alone and falls back
-to the same independent mirrors, then Canonical's archive, only for packages it can't
-download from them; see [server onboarding](server-onboarding.md). Its fallback relies on
+to the same independent mirrors, then Canonical's archive, only when it can't download its
+Ubuntu packages from them; see [server onboarding](server-onboarding.md). Its fallback relies on
 apt's own `Valid-Until-Max` for freshness rather than this step's check. On the `core` and
 `visual` lanes, `TestBootstrapOnDisposableHost` blocks the archives in the runner's sources,
 and Canonical's, in `/etc/hosts` for its fresh installation, which must then succeed from a

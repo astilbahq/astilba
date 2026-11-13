@@ -319,21 +319,43 @@ func aptSources(t *testing.T) map[string]string {
 
 // blockUbuntuArchives makes the Ubuntu archives in this host's apt sources, and Canonical's own,
 // refuse connections, as when the distribution's mirror names stopped resolving on 11 November
-// 2026. It returns the names it blocked, and a function that restores /etc/hosts, which also
-// runs when the test ends.
+// 2026. An Ubuntu archive is a source apt reads a main component from, which leaves out sources
+// such as Docker's that the bootstrap downloads from. It returns the names it blocked, and a
+// function that restores /etc/hosts, which also runs when the test ends.
 func blockUbuntuArchives(t *testing.T) ([]string, func()) {
 	t.Helper()
-	archive := regexp.MustCompile(`(?m)\bhttps?://([A-Za-z0-9.-]+)(:[0-9]+)?/[^\s\]]*\bubuntu(-ports)?/?(\s|$)`)
-	var fromSources []string
-	for _, data := range aptSources(t) {
-		for _, match := range archive.FindAllStringSubmatch(data, -1) {
-			fromSources = append(fromSources, strings.ToLower(match[1]))
+	out, err := exec.Command("apt-get", "indextargets", "--no-release-info", "--format", "$(REPO_URI)", "Identifier: Packages", "Component: main").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, repository := range strings.Fields(string(out)) {
+		uris := []string{repository}
+		// A mirror list names its mirrors in a file.
+		if file, ok := strings.CutPrefix(repository, "mirror+file:"); ok {
+			list, err := os.ReadFile(strings.TrimSuffix(file, "/"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			uris = nil
+			for _, line := range strings.Split(string(list), "\n") {
+				if fields := strings.Fields(line); len(fields) > 0 && !strings.HasPrefix(fields[0], "#") {
+					uris = append(uris, fields[0])
+				}
+			}
+		}
+		for _, uri := range uris {
+			u, err := url.Parse(uri)
+			if err != nil || u.Hostname() == "" {
+				t.Fatalf("an Ubuntu archive this test can't block: %q", uri)
+			}
+			names = append(names, strings.ToLower(u.Hostname()))
 		}
 	}
-	if len(fromSources) == 0 {
+	if len(names) == 0 {
 		t.Fatal("found no Ubuntu archive in this host's apt sources to block")
 	}
-	names := append(fromSources, "archive.ubuntu.com", "security.ubuntu.com", "ports.ubuntu.com")
+	names = append(names, "archive.ubuntu.com", "security.ubuntu.com", "ports.ubuntu.com")
 	slices.Sort(names)
 	names = slices.Compact(names)
 	original, err := os.ReadFile("/etc/hosts")

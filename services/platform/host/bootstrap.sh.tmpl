@@ -210,11 +210,22 @@ SOURCES
 # apt-get update succeeds even when every index fails.
 apt_refresh() { apt_get -o APT::Update::Error-Mode=any update; }
 apt_fetch() { apt_get install --download-only --yes --no-remove --no-install-recommends "$@"; }
+# Succeeds unless everything the packages need is already installed or on this host.
+apt_needed() {
+  local uri uris
+  # Lists that don't yet have a package make this fail, which only means a refresh is needed.
+  uris=$(apt_get install --print-uris --yes -qq --no-remove --no-install-recommends "$@" 2>/dev/null) || return 0
+  while read -r uri _; do
+    [[ -z "$uri" || "$uri" == "'file:"* ]] || return 0
+  done <<< "$uris"
+  return 1
+}
 apt_download() {
   local archive refreshed=true
   apt_root=$(mktemp -d /tmp/astilba-bootstrap-apt.XXXXXXXX)
   chmod 0755 "$apt_root"
   apt_use
+  apt_needed "$@" || return 0
   printf '%s\n' 'Refreshing this host'"'"'s package sources.'
   apt_refresh || refreshed=false
   if apt_fetch "$@"; then
@@ -286,9 +297,10 @@ if ! "$docker_ready"; then
   command -v docker >/dev/null && die 'A Docker installation appeared during preparation; inspect it before retrying.'
   step='install the approved container runtime'
   printf '%s\n' 'Installing verified Docker packages and their Ubuntu dependencies; Docker may start and create networks and firewall rules.'
-  # Uses the package lists apt_download refreshed, so it needs no new downloads. There is no time
-  # limit: stopping dpkg part way would leave packages half configured.
-  DEBIAN_FRONTEND=noninteractive apt-get "${apt_options[@]}" install --yes --no-remove --no-install-recommends "${packages[@]}"
+  # Installs exactly what apt_download fetched, from the same package lists, so it needs no new
+  # downloads; Docker depends on nftables, so the pinned version comes with it when needed. There
+  # is no time limit: stopping dpkg part way would leave packages half configured.
+  DEBIAN_FRONTEND=noninteractive apt-get "${apt_options[@]}" install --yes --no-remove --no-install-recommends "${apt_packages[@]}"
   [[ $(docker --host unix:///var/run/docker.sock version --format '{{.Server.Version}}') == 29.9.2 ]]
   [[ $(docker compose version --short) == 5.6.1 || $(docker compose version --short) == v5.6.1 ]]
 fi
