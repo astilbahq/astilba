@@ -62,7 +62,7 @@ var dockerCertsDirectory = "/etc/docker/certs.d"
 // agent tries them: Docker Hub's mirrors from the daemon's configuration, then the registry
 // itself, over HTTPS and, for a registry the daemon treats as insecure, over HTTP after it.
 // Only the registry itself receives the credential.
-func registryImages(config *registrytypes.ServiceConfig, named reference.Named, credential *pipeline.Credential) ([]registryImage, error) {
+func registryImages(ctx context.Context, config *registrytypes.ServiceConfig, named reference.Named, credential *pipeline.Credential) ([]registryImage, error) {
 	domain, path := reference.Domain(named), reference.Path(named)
 	var images []registryImage
 	if domain == "docker.io" && config != nil {
@@ -86,7 +86,7 @@ func registryImages(config *registrytypes.ServiceConfig, named reference.Named, 
 	if host == "docker.io" {
 		host = "registry-1.docker.io"
 	}
-	secure := registrySecure(config, domain)
+	secure := registrySecure(ctx, config, domain)
 	image, err := newRegistryImage(host, path, !secure, false, credential)
 	if err != nil {
 		return nil, err
@@ -104,7 +104,7 @@ func registryImages(config *registrytypes.ServiceConfig, named reference.Named, 
 // registrySecure reports whether Docker requires a verified TLS connection to the registry,
 // as Docker decides it: by the registry's own entry in the daemon's configuration, or else by
 // whether any of its addresses is in an insecure range, 127.0.0.0/8 by default.
-func registrySecure(config *registrytypes.ServiceConfig, name string) bool {
+func registrySecure(ctx context.Context, config *registrytypes.ServiceConfig, name string) bool {
 	insecure := []netip.Prefix{netip.MustParsePrefix("127.0.0.0/8")}
 	if config != nil {
 		if index := config.IndexConfigs[name]; index != nil {
@@ -119,11 +119,9 @@ func registrySecure(config *registrytypes.ServiceConfig, name string) bool {
 	var addresses []netip.Addr
 	if address, err := netip.ParseAddr(host); err == nil {
 		addresses = []netip.Addr{address}
-	} else if resolved, err := net.LookupIP(host); err == nil {
-		for _, ip := range resolved {
-			if address, ok := netip.AddrFromSlice(ip); ok {
-				addresses = append(addresses, address.Unmap())
-			}
+	} else if resolved, err := net.DefaultResolver.LookupNetIP(ctx, "ip", host); err == nil {
+		for _, address := range resolved {
+			addresses = append(addresses, address.Unmap())
 		}
 	}
 	for _, address := range addresses {

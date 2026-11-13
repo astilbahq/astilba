@@ -105,7 +105,7 @@ func (e *Engine) pullMeasuredImage(ctx context.Context, image string, credential
 	if err != nil {
 		return refuse(&imageLoadRefused{why: "the agent cannot read Docker's registry settings"})
 	}
-	sources, err := registryImages(info.Info.RegistryConfig, named, credential)
+	sources, err := registryImages(ctx, info.Info.RegistryConfig, named, credential)
 	if err != nil {
 		return refuse(&imageLoadRefused{why: err.Error()})
 	}

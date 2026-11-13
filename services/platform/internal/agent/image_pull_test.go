@@ -390,11 +390,11 @@ func TestRegistrySecureAsDockerDecides(t *testing.T) {
 		IndexConfigs:          map[string]*registrytypes.IndexInfo{"docker.io": {Name: "docker.io", Secure: true}, "plain.example:5000": {Name: "plain.example:5000", Secure: false}},
 	}
 	for name, secure := range map[string]bool{"docker.io": true, "plain.example:5000": false, "10.1.2.3:5000": false, "192.0.2.1": true, "[::1]:5000": true} {
-		if registrySecure(config, name) != secure {
+		if registrySecure(context.Background(), config, name) != secure {
 			t.Error(name)
 		}
 	}
-	if registrySecure(nil, "127.0.0.1:5000") || !registrySecure(nil, "192.0.2.1:5000") {
+	if registrySecure(context.Background(), nil, "127.0.0.1:5000") || !registrySecure(context.Background(), nil, "192.0.2.1:5000") {
 		t.Error("Docker's default insecure range")
 	}
 }
