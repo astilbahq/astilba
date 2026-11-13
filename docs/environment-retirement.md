@@ -41,7 +41,7 @@ Retirement does not cancel work or take shortcuts. It is refused, with the reaso
 
 ### Offline and revoked servers
 
-If the server is offline, the environment shows as **Retiring** and the operation waits for the server. Retirement has no deadline: a server that comes back after a week still removes the environment. Nothing else can run for the environment meanwhile.
+If the server is offline, the environment shows as **Retiring** and the operation waits for the server. A server that comes back after a week still removes the environment, as long as its agent journal still holds the environment: what it deployed, published or tried to deploy. A server whose journal holds none of it never ran the environment; its retirement is cancelled, and you retire again. Nothing else can run for the environment meanwhile.
 
 If the server cannot finish, for example because ingress was changed outside Astilba or a container's ownership labels do not match, the operation reports what it kept and the environment stays **Retiring**. Inspect the host as described in [the agent guide](agent.md#observe-and-recover). A `needs_attention` operation is retried on the host. Once the operation has failed or been cancelled, retire the environment again to send a new command.
 

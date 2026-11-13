@@ -34,9 +34,11 @@ const (
 	// endsHeldWorkOrNone is endsHeldWork that also acknowledges a host holding no reservation at
 	// all, without changing any reservation or runtime there. Refusing it would strand the other hosts.
 	endsHeldWorkOrNone
-	// retiresHeldUnit removes an environment's unit that this host's journal still holds, and keeps
-	// its volumes. A server that was offline when its environment was retired runs it on its
-	// return; one that holds no such unit has nothing for it to end, and its owner retries.
+	// retiresHeldUnit removes what an environment's unit left on this host, and keeps its volumes.
+	// A server that was offline when its environment was retired runs it on its return, when its
+	// journal holds the unit: its applied plan, a release, its route set, or a deployment it ran,
+	// even one that failed. A host whose journal holds none of these never ran the unit, so the
+	// retirement has nothing to end there; its owner retires again.
 	retiresHeldUnit
 )
 
@@ -178,11 +180,7 @@ func (e *Engine) runsLate(c api.ExecutionCommand) (bool, error) {
 		}
 		return held.ParentID != uuid.Nil || rule == endsHeldWorkOrNone, nil
 	case retiresHeldUnit:
-		u, err := e.Journal.unit(c.ResourceId)
-		if err != nil {
-			return false, err
-		}
-		return u.Plan.Hash != "" && u.Plan.UnitID == c.ResourceId && u.Plan.EnvironmentID == c.EnvironmentId && u.Plan.ServerID == c.ServerId, nil
+		return e.Journal.holdsUnit(c)
 	}
 	return false, nil
 }

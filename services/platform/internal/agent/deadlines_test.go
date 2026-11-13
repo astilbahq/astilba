@@ -295,43 +295,71 @@ func TestLateCheckpointNeedsTheHeldRoot(t *testing.T) {
 	}
 }
 
-// A late retirement ends a unit this host's journal still holds for its environment, and nothing
-// else: on a host holding no such unit it is cancelled unrun, as is any other late visual action
-// and a retirement whose body no longer matches its plan hash.
+// A late retirement ends a unit this host's journal holds for its environment, and nothing else: an
+// applied plan, or the record of a deployment it ran, even a first one that failed, which leaves no
+// applied plan. On a host whose journal holds neither it is cancelled unrun, as is any other late
+// visual action and a retirement whose body no longer matches its plan hash.
 func TestLateRetirementNeedsTheHostToHoldItsUnit(t *testing.T) {
-	j, plan := testVisualJournal(t)
-	e := &Engine{Journal: j}
-	retire := visualCommand(plan, "retire", 2)
-	late := func(c api.ExecutionCommand) bool {
+	late := func(t *testing.T, j *Journal, c api.ExecutionCommand) bool {
 		t.Helper()
-		runs, err := e.runsLate(c)
+		runs, err := (&Engine{Journal: j}).runsLate(c)
 		if err != nil {
 			t.Fatal(err)
 		}
 		return runs
 	}
-	if late(retire) {
-		t.Fatal("a late retirement ran on a host holding no unit for it")
-	}
-	if err := j.saveUnit(unitState{Plan: plan, Expected: map[string]string{}}); err != nil {
-		t.Fatal(err)
-	}
-	if !late(retire) {
-		t.Fatal("a late retirement of a held unit was cancelled")
-	}
-	other := plan
-	other.EnvironmentID = uuid.New()
-	if late(visualCommand(other.WithHash(), "retire", 2)) {
-		t.Fatal("a late retirement ran for another environment's unit")
-	}
-	tampered := retire
-	tampered.PlanHash = strings.Repeat("0", 64)
-	if late(tampered) {
-		t.Fatal("a late retirement ran without matching its plan hash")
-	}
-	for action := range visualActions {
-		if action != "retire" && late(visualCommand(plan, action, 2)) {
-			t.Fatalf("a late %s ran", action)
+	ran := func(t *testing.T, j *Journal, c api.ExecutionCommand) {
+		t.Helper()
+		if err := j.db.Update(func(tx *bolt.Tx) error {
+			return j.put(tx, "operations", c.Id.String(), Record{Command: c, Report: api.AgentReport{Id: c.Id, State: "needs_attention", Sequence: 2}, Acknowledged: true})
+		}); err != nil {
+			t.Fatal(err)
 		}
 	}
+	t.Run("nothing held", func(t *testing.T) {
+		j, plan := testVisualJournal(t)
+		if late(t, j, visualCommand(plan, "retire", 2)) {
+			t.Fatal("a late retirement ran on a host that never ran the unit")
+		}
+	})
+	t.Run("failed first deployment", func(t *testing.T) {
+		j, plan := testVisualJournal(t)
+		ran(t, j, visualCommand(plan, "deploy", 1))
+		if !late(t, j, visualCommand(plan, "retire", 2)) {
+			t.Fatal("a late retirement was cancelled where a failed deployment left the unit")
+		}
+	})
+	t.Run("applied plan", func(t *testing.T) {
+		j, plan := testVisualJournal(t)
+		if err := j.saveUnit(unitState{Plan: plan, Expected: map[string]string{}}); err != nil {
+			t.Fatal(err)
+		}
+		retire := visualCommand(plan, "retire", 2)
+		if !late(t, j, retire) {
+			t.Fatal("a late retirement of a held unit was cancelled")
+		}
+		tampered := retire
+		tampered.PlanHash = strings.Repeat("0", 64)
+		if late(t, j, tampered) {
+			t.Fatal("a late retirement ran without matching its plan hash")
+		}
+		for action := range visualActions {
+			if action != "retire" && late(t, j, visualCommand(plan, action, 2)) {
+				t.Fatalf("a late %s ran", action)
+			}
+		}
+	})
+	t.Run("another environment's unit", func(t *testing.T) {
+		j, plan := testVisualJournal(t)
+		other := plan
+		other.EnvironmentID = uuid.New()
+		other = other.WithHash()
+		ran(t, j, visualCommand(other, "deploy", 1))
+		if err := j.saveUnit(unitState{Plan: other, Expected: map[string]string{}}); err != nil {
+			t.Fatal(err)
+		}
+		if late(t, j, visualCommand(plan, "retire", 2)) {
+			t.Fatal("a late retirement ran for another environment's unit")
+		}
+	})
 }

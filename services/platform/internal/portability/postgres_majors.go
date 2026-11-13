@@ -8,7 +8,7 @@ import (
 )
 
 // backfillPostgresMajors records the PostgreSQL major of each data volume an archive from before
-// version 7 brought without one, after an import or a recovery merge has set each environment's
+// version 8 brought without one, after an import or a recovery merge has set each environment's
 // applied revision: the applied revision decides a volume it mounts, and a supported upgrade's
 // target takes the major every such upgrade targeted.
 func backfillPostgresMajors(ctx context.Context, q *db.Queries, ws uuid.UUID) error {

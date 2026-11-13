@@ -261,6 +261,6 @@ func MergeRecovery(ctx context.Context, tx pgx.Tx, a Archive, owner uuid.UUID) e
 			}
 		}
 	}
-	// A checkpoint from before archive version 7 brings volumes without the major they record.
+	// A checkpoint from before archive version 8 brings volumes without the major they record.
 	return backfillPostgresMajors(ctx, db.New(tx), a.Workspace)
 }

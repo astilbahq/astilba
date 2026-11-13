@@ -123,7 +123,7 @@ WHERE v.workspace_id = $1 AND e.workspace_id = $1 AND v.environment_id = e.id
 `
 
 // Records, for each in-use volume with none, the PostgreSQL major its environment's applied revision
-// runs on it, as migration 00046 did for volumes that existed then. An archive from before version 7
+// runs on it, as migration 00046 did for volumes that existed then. An archive from before version 8
 // records none. Run BackfillUpgradeTargetMajors after it.
 func (q *Queries) BackfillPostgresMajors(ctx context.Context, workspaceID uuid.UUID) error {
 	_, err := q.db.Exec(ctx, backfillPostgresMajors, workspaceID)
@@ -138,7 +138,7 @@ WHERE v.workspace_id = $1 AND u.workspace_id = $1 AND v.environment_id = u.envir
 `
 
 // Records PostgreSQL 18 on each supported upgrade's target volume with none, as migration 00046 did.
-// Planning an upgrade records its target's major from archive version 7; every upgrade planned
+// Planning an upgrade records its target's major from archive version 8; every upgrade planned
 // before then targeted PostgreSQL 18. It runs after BackfillPostgresMajors, so an applied revision
 // decides a volume that both name.
 func (q *Queries) BackfillUpgradeTargetMajors(ctx context.Context, workspaceID uuid.UUID) error {

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json/v2"
 	"errors"
 	"os"
 
@@ -173,6 +174,54 @@ func (j *Journal) retireSchedules(server, env uuid.UUID) error {
 		}
 		return nil
 	})
+}
+
+// holdsUnit reports whether this journal holds a retirement's unit for its environment on this
+// server: an applied plan, a release, a published route set, or a deployment command it ran, which
+// a first deployment that failed after starting services or routes leaves without an applied plan.
+func (j *Journal) holdsUnit(c api.ExecutionCommand) (bool, error) {
+	held := false
+	err := j.db.View(func(tx *bolt.Tx) error {
+		var u unitState
+		if err := j.get(tx, "units", c.ResourceId.String(), &u); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		var r releaseState
+		if err := j.get(tx, "releases", c.ResourceId.String(), &r); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		for _, p := range []deployment.Plan{u.Plan, r.Plan} {
+			if p.Hash != "" && p.EnvironmentID == c.EnvironmentId && p.ServerID == c.ServerId {
+				held = true
+				return nil
+			}
+		}
+		routing, err := j.routingIn(tx)
+		if err != nil {
+			return err
+		}
+		if set, ok := routing.Current.Sets[c.ResourceId.String()]; ok && set.EnvironmentID == c.EnvironmentId {
+			held = true
+			return nil
+		}
+		return tx.Bucket([]byte("operations")).ForEach(func(k, _ []byte) error {
+			if held || string(k) == c.Id.String() {
+				return nil
+			}
+			var record Record
+			if err := j.get(tx, "operations", string(k), &record); err != nil {
+				return err
+			}
+			o := record.Command
+			if o.Kind != "visual" || o.Visual == nil || o.ResourceId != c.ResourceId || o.EnvironmentId != c.EnvironmentId || o.ServerId != c.ServerId {
+				return nil
+			}
+			var p deployment.Payload
+			held = json.Unmarshal(*o.Visual, &p) == nil && p.Action == "deploy"
+			return nil
+		})
+	})
+	return held, err
 }
 
 // retireUnit deletes the unit's applied plan and release records. Its finished command records stay
