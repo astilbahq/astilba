@@ -7,7 +7,6 @@ import (
 	"encoding/hex"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
-	"errors"
 	"github.com/astilbahq/astilba/services/platform/internal/composeproject"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"net/http"
@@ -208,49 +207,9 @@ func (s *Server) UpdateDraft(w http.ResponseWriter, r *http.Request, ws, pid, id
 		if e != nil {
 			return e
 		}
-		if e := s.Store.ValidateApplicationRoutes(ctx, tx, ws, id, spec, nil); e != nil {
-			return e
-		}
-		var applied domain.Specification
-		if env.AppliedRevisionID != nil {
-			v, e := q.GetRevision(ctx, db.GetRevisionParams{WorkspaceID: ws, EnvironmentID: id, ID: *env.AppliedRevisionID})
-			if e != nil {
-				return e
-			}
-			if e = json.Unmarshal(v.Specification, &applied); e != nil {
-				return e
-			}
-		}
-		if e = domain.ValidateNewDraft(spec, applied); e != nil {
-			return e
-		}
-		for _, secretID := range domain.SecretReferences(spec) {
-			if _, e := q.GetSecretVersion(ctx, db.GetSecretVersionParams{WorkspaceID: ws, EnvironmentID: id, ID: secretID}); e != nil {
-				return store.IfMissing(e, domain.Invalid("specification.secretVersionId"))
-			}
-		}
-		// Saving the draft unchanged adds no revision. The kept revision shows who saved it and when,
-		// so only a principal that may read the environment gets it, as on a conflict.
-		if reader {
-			same, e := q.GetRevisionHolding(ctx, db.GetRevisionHoldingParams{WorkspaceID: ws, EnvironmentID: id, ID: env.DraftRevisionID, Specification: canonical})
-			if e == nil {
-				out = revision(same)
-				return nil
-			}
-			if !errors.Is(e, pgx.ErrNoRows) {
-				return e
-			}
-		}
-		newID := uuid.New()
-		rev, e := insertRevision(r, q, ws, id, newID, canonical)
-		if e != nil {
-			return e
-		}
-		if _, e := q.AdvanceDraft(ctx, db.AdvanceDraftParams{WorkspaceID: ws, ID: id, DraftRevisionID: b.BaseRevisionId, DraftRevisionID_2: newID}); e != nil {
-			return e
-		}
+		rev, e := s.Store.SaveDraft(ctx, tx, q, *principal(ctx), env, spec, canonical)
 		out = revision(rev)
-		return store.Audit(ctx, q, *principal(ctx), ws, "draft.save", newID)
+		return e
 	})
 	if current != nil {
 		s.respond(w, 409, api.Error{Code: "conflict", Message: domain.Conflict.Message, RequestId: r.Context().Value(requestIDKey).(string), CurrentRevision: current})

@@ -17,22 +17,75 @@ test("catalog and named connections stage a private revision with secret referen
   );
   await openEnvironmentSection(page, "Configuration");
   await page.getByText("Add from service catalog", { exact: true }).click();
-  const recipe = page.getByLabel("Service recipe");
+  const recipe = page.getByLabel("Catalog entry");
   await expect(recipe).toBeVisible();
   await recipe.selectOption("nginx");
   await expect(
     page.getByText("Backup · not applicable", { exact: true }),
   ).toBeVisible();
-  await page
-    .getByRole("button", { name: "Stage Nginx recipe", exact: true })
-    .click();
+  const secretsBefore = await (
+    await page.request.get(`${f.path}/secrets`)
+  ).json();
+  // Staging saves a revision on the server, one entry at a time.
+  await page.getByRole("button", { name: "Stage Nginx", exact: true }).click();
+  await expect(
+    page.getByText(/Nginx is in a new saved revision/),
+  ).toBeVisible();
+  // A refused staging says why: the name is taken now.
+  await page.getByRole("button", { name: "Stage Nginx", exact: true }).click();
+  await expect(
+    page
+      .getByRole("alert")
+      .filter({ hasText: "already has a service named Nginx" }),
+  ).toBeVisible();
   await recipe.selectOption("valkey-cache");
   await expect(
     page.getByText(/Data is intentionally not persisted/),
   ).toBeVisible();
   await page
-    .getByRole("button", { name: "Stage Valkey cache recipe", exact: true })
+    .getByRole("button", { name: "Stage Valkey cache", exact: true })
     .click();
+  await expect(
+    page.getByText(/Valkey cache is in a new saved revision/),
+  ).toBeVisible();
+  // The Kaneo app template brings its database, generated secrets and a route
+  // that admits only the owner's network until they open it.
+  await recipe.selectOption("kaneo");
+  const kaneo = page.getByRole("form", { name: "Stage Kaneo", exact: true });
+  const allowed = kaneo.getByLabel("Allowed client networks");
+  await expect(allowed).toHaveValue(/^[0-9a-f.:]+\/(32|64)$/);
+  const network = await allowed.inputValue();
+  await kaneo.getByLabel("Name", { exact: true }).fill("Tracker");
+  await kaneo
+    .getByLabel("Domain", { exact: true })
+    .fill("tracker.example.test");
+  await expect(kaneo.getByLabel(/^Tracker database · password/)).toHaveValue(
+    "",
+  );
+  await kaneo.getByRole("button", { name: "Stage Kaneo", exact: true }).click();
+  await expect(
+    page.getByText(/Tracker is in a new saved revision/),
+  ).toBeVisible();
+  const staged = await (await page.request.get(`${f.path}/draft`)).json();
+  expect(staged.specification.routes).toEqual([
+    expect.objectContaining({
+      domain: "tracker.example.test",
+      allowCidrs: [network],
+      tls: "managed",
+    }),
+  ]);
+  const secretsAfter = await (
+    await page.request.get(`${f.path}/secrets`)
+  ).json();
+  expect(
+    secretsAfter
+      .map((v: { name: string }) => v.name)
+      .filter(
+        (name: string) =>
+          !secretsBefore.some((b: { name: string }) => b.name === name),
+      )
+      .toSorted(),
+  ).toEqual(["Tracker database · password", "Tracker · AUTH_SECRET"]);
   await openEnvironmentSection(page, "Configuration");
   await page.getByRole("button", { name: "Service list", exact: true }).click();
   await page.getByRole("button", { name: "Nginx", exact: true }).click();
@@ -108,9 +161,9 @@ test("catalog and named connections stage a private revision with secret referen
     page.getByText("Revision saved.", { exact: true }),
   ).toBeVisible();
   const saved = await (await page.request.get(`${f.path}/draft`)).json();
-  expect(saved.specification.applications).toHaveLength(3);
-  expect(saved.specification.bindings).toHaveLength(5);
-  expect(saved.specification.routes ?? []).toHaveLength(0);
+  expect(saved.specification.applications).toHaveLength(5);
+  expect(saved.specification.bindings).toHaveLength(6);
+  expect(saved.specification.routes).toHaveLength(1);
   const nginx = saved.specification.applications.find(
     (a: { name: string }) => a.name === "Nginx",
   );

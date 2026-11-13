@@ -78,18 +78,18 @@ export function Deployments({
       `/api/v1/workspaces/${workspaceId}/projects/${projectId}/environments/${environmentId}/events`,
     );
     events.addEventListener("changed", () => {
-      // Includes the saved revision, which decides whether a prepared plan is still shown.
+      const environment = { workspaceId, projectId, environmentId };
+      // Saved and applied revisions decide which plan shows and which backups are recommended.
       void queries.invalidateQueries({
-        queryKey: draftOptions({ workspaceId, projectId, environmentId })
-          .queryKey,
+        queryKey: draftOptions(environment).queryKey,
         exact: true,
       });
-      void queries.invalidateQueries({
-        queryKey: ["runtime", { workspaceId, projectId, environmentId }],
-      });
-      void queries.invalidateQueries({
-        queryKey: ["operations", workspaceId],
-      });
+      for (const queryKey of [
+        ["runtime", environment],
+        ["operations", workspaceId],
+        ["catalog-stagings", environment],
+      ])
+        void queries.invalidateQueries({ queryKey });
     });
     return () => events.close();
   }, [workspaceId, projectId, environmentId, queries]);

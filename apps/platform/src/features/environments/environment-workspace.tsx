@@ -130,6 +130,16 @@ export function EnvironmentWorkspace({
     setRawChanged(false);
     setMessage(envT(($) => $.configurationEditor.loaded));
   };
+  // Loads a revision the server saved, unless the editor holds unsaved changes, which it keeps
+  // and shows beside the new revision as a conflict.
+  const loadSaved = (revision: Schema["Revision"]) => {
+    if (draftRef.current !== savedText) {
+      setConflict(revision);
+      return false;
+    }
+    replace(revision);
+    return true;
+  };
   const reload = () => {
     const sequence = ++reloadSequence.current;
     const submitted = draftRef.current;
@@ -360,6 +370,8 @@ export function EnvironmentWorkspace({
                     write={write}
                     dirty={dirty}
                     onLayoutDirty={setLayoutDirty}
+                    revisionId={base.id}
+                    load={loadSaved}
                   />
                 )}
               </div>
@@ -510,28 +522,14 @@ export function EnvironmentWorkspace({
                 revision={base}
                 owner={owner}
                 dirty={dirty}
-                load={(revision) => {
-                  if (draftRef.current !== savedText) {
-                    setConflict(revision);
-                    return false;
-                  }
-                  replace(revision);
-                  return true;
-                }}
+                load={loadSaved}
               />
               <Backups
                 path={path}
                 revision={base}
                 owner={owner}
                 dirty={dirty}
-                load={(revision) => {
-                  if (draftRef.current !== savedText) {
-                    setConflict(revision);
-                    return false;
-                  }
-                  replace(revision);
-                  return true;
-                }}
+                load={loadSaved}
               />
             </>
           )}

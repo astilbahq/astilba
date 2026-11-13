@@ -405,6 +405,41 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/workspaces/{workspaceId}/client-address": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description The network the caller's request came from, as management sees it through its trusted proxies, for prefilling a route's client allowlist. Another server may see the same client differently. */
+        get: operations["getClientAddress"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/catalog-stagings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Catalog entries staged into the environment, newest first, with the backup policies each recommends for the services it created that the applied deployment runs. */
+        get: operations["listCatalogStagings"];
+        put?: never;
+        /** @description Adds a catalog entry to the draft under fresh identities and saves the draft, generating the entry's secrets into the environment's secret store. Their values are never returned. The draft must still be `baseRevisionId`. */
+        post: operations["stageCatalogEntry"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/session": {
         parameters: {
             query?: never;
@@ -3394,15 +3429,23 @@ export interface components {
             level: "tested" | "manual" | "not_applicable";
             detail: string;
         };
+        /** @description A curated catalog entry. A `service` recipe has one service; an `app` template has several, connected to each other. Its specification uses placeholder identities, which staging replaces. */
         CatalogRecipe: {
             id: string;
+            /** @enum {string} */
+            kind: "service" | "app";
+            /** @description The upstream release an app template pins. */
+            version?: string;
             name: string;
             description: string;
             /** Format: uri */
             documentation: string;
             prerequisites: string[];
-            needsPassword: boolean;
             specification: components["schemas"]["Specification"];
+            /** @description Placeholder secret versions the specification references. Staging generates each into the secret store unless the request names an existing version. */
+            secrets: components["schemas"]["CatalogSecret"][];
+            route?: components["schemas"]["CatalogRoutePreset"];
+            backups: components["schemas"]["CatalogBackupPreset"][];
             support: {
                 deployment: components["schemas"]["ServiceSupport"];
                 binding: components["schemas"]["ServiceSupport"];
@@ -3410,6 +3453,76 @@ export interface components {
                 restore: components["schemas"]["ServiceSupport"];
                 upgrade: components["schemas"]["ServiceSupport"];
             };
+        };
+        CatalogSecret: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            serviceId: string;
+            name: string;
+            /** @enum {string} */
+            format: "token" | "hex";
+        };
+        /** @description The public HTTP route staging adds. Each origin variable on the service receives the route's origin, such as `https://tracker.example.com`. */
+        CatalogRoutePreset: {
+            /** Format: uuid */
+            serviceId: string;
+            port: number;
+            originVariables: string[];
+        };
+        /** @description A backup policy an entry recommends for one of its services, daily at a local time in the zone the owner chooses. */
+        CatalogBackupPreset: {
+            /**
+             * Format: uuid
+             * @description In a catalog entry
+             */
+            serviceId: string;
+            /** @enum {string} */
+            method: "postgres-logical" | "quiesced-files";
+            hour: number;
+            minute: number;
+            retain: number;
+        };
+        CatalogStageRequest: {
+            recipeId: string;
+            /** Format: uuid */
+            baseRevisionId: string;
+            /** @description Replaces the entry's name in the names of the services and volumes it creates. */
+            name: string;
+            /** @description Existing secret versions in this environment to use instead of generating the entry's secrets, by the entry's placeholder secret ID. */
+            existingSecrets?: {
+                /** Format: uuid */
+                secretId: string;
+                /** Format: uuid */
+                secretVersionId: string;
+            }[];
+            route?: components["schemas"]["CatalogStageRoute"];
+        };
+        /** @description Required exactly when the entry has a route preset. Give a domain you control, or a server whose generated application domain the route takes. The client allowlist is required, so that only the owner can reach a new application, such as to create its first account; open it with a later route change. */
+        CatalogStageRoute: {
+            domain?: string;
+            /** Format: uuid */
+            generatedServerId?: string;
+            /** @enum {string} */
+            tls: "managed" | "off";
+            allowCidrs: string[];
+        };
+        CatalogStaging: {
+            /** Format: uuid */
+            id: string;
+            recipeId: string;
+            /** @description Empty when the catalog no longer has the entry. */
+            recipeName: string;
+            recipeVersion: string;
+            /** Format: uuid */
+            revisionId: string;
+            /** Format: date-time */
+            createdAt: string;
+            backups: components["schemas"]["CatalogBackupPreset"][];
+        };
+        ClientAddress: {
+            /** @description The caller's network as a CIDR prefix: its IPv4 address, or its IPv6 /64. Absent when management could not tell. */
+            prefix?: string;
         };
         Binding: {
             /** @description Named source output; omission preserves the legacy PostgreSQL URL and readiness dependency. */
@@ -5672,6 +5785,107 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["CatalogRecipe"][];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    getClientAddress: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Success */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ClientAddress"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    listCatalogStagings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                projectId: string;
+                environmentId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Success */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CatalogStaging"][];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    stageCatalogEntry: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                projectId: string;
+                environmentId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CatalogStageRequest"];
+            };
+        };
+        responses: {
+            /** @description Success */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SavedDraft"];
                 };
             };
             /** @description Error */

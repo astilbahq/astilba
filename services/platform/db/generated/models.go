@@ -196,6 +196,18 @@ type BuildTarget struct {
 	PolicyOwner              bool        `json:"policy_owner"`
 }
 
+type CatalogStaging struct {
+	WorkspaceID   uuid.UUID `json:"workspace_id"`
+	EnvironmentID uuid.UUID `json:"environment_id"`
+	ID            uuid.UUID `json:"id"`
+	RecipeID      string    `json:"recipe_id"`
+	RecipeVersion string    `json:"recipe_version"`
+	RevisionID    uuid.UUID `json:"revision_id"`
+	Services      []byte    `json:"services"`
+	AuthorID      uuid.UUID `json:"author_id"`
+	CreatedAt     time.Time `json:"created_at"`
+}
+
 type CrossHostApproval struct {
 	WorkspaceID   uuid.UUID `json:"workspace_id"`
 	RequestKey    uuid.UUID `json:"request_key"`

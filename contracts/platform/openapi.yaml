@@ -817,6 +817,71 @@
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Error'}
+  /api/v1/workspaces/{workspaceId}/client-address:
+    get:
+      operationId: getClientAddress
+      description: The network the caller's request came from, as management sees it through its trusted proxies, for prefilling a route's client allowlist. Another server may see the same client differently.
+      parameters:
+        - name: workspaceId
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ClientAddress'}
+        default:
+          description: Error
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+  /api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/catalog-stagings:
+    get:
+      operationId: listCatalogStagings
+      description: Catalog entries staged into the environment, newest first, with the backup policies each recommends for the services it created that the applied deployment runs.
+      parameters:
+        - {name: workspaceId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: projectId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: environmentId, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: array
+                maxItems: 100
+                items: {$ref: '#/components/schemas/CatalogStaging'}
+        default:
+          description: Error
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+    post:
+      operationId: stageCatalogEntry
+      description: Adds a catalog entry to the draft under fresh identities and saves the draft, generating the entry's secrets into the environment's secret store. Their values are never returned. The draft must still be `baseRevisionId`.
+      parameters:
+        - {name: workspaceId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: projectId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: environmentId, in: path, required: true, schema: {type: string, format: uuid}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CatalogStageRequest'}
+      responses:
+        '201':
+          description: Success
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SavedDraft'}
+        default:
+          description: Error
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
   "/api/v1/session":
     "get":
       "operationId": "session"
@@ -6956,15 +7021,25 @@
     CatalogRecipe:
       type: object
       additionalProperties: false
-      required: [id, name, description, documentation, prerequisites, needsPassword, specification, support]
+      description: A curated catalog entry. A `service` recipe has one service; an `app` template has several, connected to each other. Its specification uses placeholder identities, which staging replaces.
+      required: [id, kind, name, description, documentation, prerequisites, specification, secrets, backups, support]
       properties:
         id: {type: string}
+        kind: {type: string, enum: [service, app]}
+        version: {type: string, description: The upstream release an app template pins.}
         name: {type: string}
         description: {type: string}
         documentation: {type: string, format: uri}
         prerequisites: {type: array, items: {type: string}}
-        needsPassword: {type: boolean}
         specification: {$ref: '#/components/schemas/Specification'}
+        secrets:
+          type: array
+          description: Placeholder secret versions the specification references. Staging generates each into the secret store unless the request names an existing version.
+          items: {$ref: '#/components/schemas/CatalogSecret'}
+        route: {$ref: '#/components/schemas/CatalogRoutePreset'}
+        backups:
+          type: array
+          items: {$ref: '#/components/schemas/CatalogBackupPreset'}
         support:
           type: object
           additionalProperties: false
@@ -6975,6 +7050,88 @@
             backup: {$ref: '#/components/schemas/ServiceSupport'}
             restore: {$ref: '#/components/schemas/ServiceSupport'}
             upgrade: {$ref: '#/components/schemas/ServiceSupport'}
+    CatalogSecret:
+      type: object
+      additionalProperties: false
+      required: [id, serviceId, name, format]
+      properties:
+        id: {type: string, format: uuid}
+        serviceId: {type: string, format: uuid}
+        name: {type: string}
+        format: {type: string, enum: [token, hex]}
+    CatalogRoutePreset:
+      type: object
+      additionalProperties: false
+      description: The public HTTP route staging adds. Each origin variable on the service receives the route's origin, such as `https://tracker.example.com`.
+      required: [serviceId, port, originVariables]
+      properties:
+        serviceId: {type: string, format: uuid}
+        port: {type: integer, minimum: 1, maximum: 65535}
+        originVariables: {type: array, items: {type: string}}
+    CatalogBackupPreset:
+      type: object
+      additionalProperties: false
+      description: A backup policy an entry recommends for one of its services, daily at a local time in the zone the owner chooses.
+      required: [serviceId, method, hour, minute, retain]
+      properties:
+        serviceId: {type: string, format: uuid, description: In a catalog entry, the placeholder service; in a staging, the service staging created.}
+        method: {type: string, enum: [postgres-logical, quiesced-files]}
+        hour: {type: integer, minimum: 0, maximum: 23}
+        minute: {type: integer, minimum: 0, maximum: 59}
+        retain: {type: integer, minimum: 1, maximum: 100}
+    CatalogStageRequest:
+      type: object
+      additionalProperties: false
+      required: [recipeId, baseRevisionId, name]
+      properties:
+        recipeId: {type: string, maxLength: 64}
+        baseRevisionId: {type: string, format: uuid}
+        name: {type: string, maxLength: 80, description: Replaces the entry's name in the names of the services and volumes it creates.}
+        existingSecrets:
+          type: array
+          maxItems: 20
+          description: Existing secret versions in this environment to use instead of generating the entry's secrets, by the entry's placeholder secret ID.
+          items:
+            type: object
+            additionalProperties: false
+            required: [secretId, secretVersionId]
+            properties:
+              secretId: {type: string, format: uuid}
+              secretVersionId: {type: string, format: uuid}
+        route: {$ref: '#/components/schemas/CatalogStageRoute'}
+    CatalogStageRoute:
+      type: object
+      additionalProperties: false
+      description: Required exactly when the entry has a route preset. Give a domain you control, or a server whose generated application domain the route takes. The client allowlist is required, so that only the owner can reach a new application, such as to create its first account; open it with a later route change.
+      required: [tls, allowCidrs]
+      properties:
+        domain: {type: string, maxLength: 253}
+        generatedServerId: {type: string, format: uuid}
+        tls: {type: string, enum: [managed, "off"]}
+        allowCidrs:
+          type: array
+          minItems: 1
+          maxItems: 32
+          items: {type: string, maxLength: 64}
+    CatalogStaging:
+      type: object
+      additionalProperties: false
+      required: [id, recipeId, recipeName, recipeVersion, revisionId, createdAt, backups]
+      properties:
+        id: {type: string, format: uuid}
+        recipeId: {type: string}
+        recipeName: {type: string, description: Empty when the catalog no longer has the entry.}
+        recipeVersion: {type: string}
+        revisionId: {type: string, format: uuid}
+        createdAt: {type: string, format: date-time}
+        backups:
+          type: array
+          items: {$ref: '#/components/schemas/CatalogBackupPreset'}
+    ClientAddress:
+      type: object
+      additionalProperties: false
+      properties:
+        prefix: {type: string, description: 'The caller''s network as a CIDR prefix: its IPv4 address, or its IPv6 /64. Absent when management could not tell.'}
     "Binding":
       "type": "object"
       "additionalProperties": false
