@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/portability"
 	"github.com/google/uuid"
@@ -75,25 +76,6 @@ func TestWindowedBaseHoldsAnOlderBackupsRuntime(t *testing.T) {
 		t.Fatal("a backup inside the window was not recognised as the base's ancestor", order, err)
 	}
 
-	t.Run("failed_root_with_no_sequence", func(t *testing.T) {
-		// A cross-host root records its runtime while it runs and reports no sequence. A backup
-		// whose head it is still matches the entry for it.
-		windowed := windowTestHistory(t, full, plans, 1)
-		windowed.Recovery.Applied[0].State, windowed.Recovery.Applied[0].Sequence = "failed", 0
-		failed := maps.Clone(backup.Tables)
-		failed["execution_operations"] = []portability.Row{maps.Clone(backup.Tables["execution_operations"][0])}
-		recoverySet(failed["execution_operations"][0], "state", "failed")
-		recoverySet(failed["execution_operations"][0], "report_sequence", 0)
-		older := backup
-		older.Tables = failed
-		evidence, err := buildAppliedOrigin(windowed, uuid.New())
-		if err != nil {
-			t.Fatal(err)
-		}
-		if e := evidence.Operations[windowed.Recovery.Applied[0].Operation]; e.Applied.empty() {
-			t.Fatal("an ended change without a sequence lost its applied runtime")
-		}
-	})
 	t.Run("below_the_floor", func(t *testing.T) {
 		beyond, err := buildAppliedOrigin(windowTestHistory(t, full, plans, 2), uuid.New())
 		if err != nil {
@@ -299,4 +281,32 @@ func TestRecoveryUsesTheNewestBaseAndSetsTheRestAside(t *testing.T) {
 			t.Fatal("a diverged base was set aside")
 		}
 	})
+}
+
+// A cross-host root records its runtime while it runs, reports no sequence and can still end
+// failed. Its ledger entry gives the same applied evidence as its row, so a backup whose head it
+// is still matches a base that carries it only as an entry.
+func TestLedgerEntryAgreesWithAFailedRootsRow(t *testing.T) {
+	source := appliedTestGroup(t)
+	restore := deployment.RestoreCutover{SourcePlanID: source.ID, SourceHash: source.Hash, PolicyID: uuid.New(), RunID: uuid.New(), ManifestHash: strings.Repeat("a", 64), OldVolumeID: source.Specification.Volumes[0].ID, TargetVolumeID: uuid.New()}
+	target, err := deployment.RestoredGroup(source, restore, uuid.New(), uuid.New(), time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := coordinationCommand{Action: "maintenance", Plan: source, Maintenance: &coordinatedMaintenance{Restore: &target}}
+	root := api.ExecutionCommand{Id: uuid.New(), EnvironmentId: source.EnvironmentID, ServerId: source.ServerID, ResourceId: source.UnitID, Kind: "crosshost", Generation: 10, PlanHash: Hash(body), Crosshost: rawMessage(mustJSON(body))}
+	row := appliedEvidence{State: "failed", Runtime: portability.RuntimeOutcome{Kind: "applied", Plan: target.ID}}
+	row.Applied, row.Outcome, row.PlanHash = committedApplied(root, row)
+	if row.Applied.empty() {
+		t.Fatal("the failed root's row has no applied runtime")
+	}
+	entry := portability.AppliedEntry{Environment: source.EnvironmentID, Operation: root.Id, Generation: 10, Identity: "v2:" + strings.Repeat("c", 64), Outcome: "applied", RuntimePlan: &target.ID, Revision: &target.RevisionID, PlanHash: target.Hash, State: "failed", RecordedAt: time.Now()}
+	origin := &appliedOrigin{Operations: map[uuid.UUID]appliedEvidence{}, Starts: map[uuid.UUID]portability.RecoveryEnvironment{}}
+	if err := addAppliedHistory(origin, &portability.RecoveryHistory{Applied: []portability.AppliedEntry{entry}}, map[uuid.UUID]map[int64]uuid.UUID{}); err != nil {
+		t.Fatal(err)
+	}
+	got := origin.Operations[root.Id]
+	if got.Applied != row.Applied || got.Outcome != row.Outcome || got.PlanHash != row.PlanHash {
+		t.Fatal("the ledger entry and the row disagree on a failed root's runtime", got.Applied, row.Applied)
+	}
 }
