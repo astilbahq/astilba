@@ -8,6 +8,8 @@ Choose the server role and architecture, then download `/onboarding/bootstrap.sh
 
 Apply requires an explicit release digest and independently trusted signing-key fingerprint. The installation operator must distribute that fingerprint through a trusted channel, such as their independently obtained release documentation. The key and fingerprint served by the same management endpoint are useful for comparison, but cannot establish their own authenticity. An operator can compute the SPKI DER fingerprint from their trusted key:
 
+An operator can also give `--minimum-version VERSION`, from the same trusted channel as the fingerprint. The bootstrap then refuses, before installing anything, a correctly signed release whose own minimum version is below it. Such a release would let the agent go back to versions the operator wants never to run again. An agent already enforces its own minimum version on every update; this sets one for the first install, which a compromised management could otherwise point at an old release. The dashboard adds the option to the command when you give a version.
+
 ```sh
 openssl pkey -pubin -in release-public.pem -outform DER | openssl dgst -sha256
 ```

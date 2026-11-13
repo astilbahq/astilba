@@ -10,6 +10,7 @@ install_backups=false
 management=
 release=
 fingerprint=
+minimum=
 contact=
 role=deployment
 usage() {
@@ -17,27 +18,74 @@ usage() {
 Usage: sudo bash bootstrap.sh [--check]
        sudo bash bootstrap.sh --apply --management HTTPS_ORIGIN --release SHA256 \
          --key-fingerprint SHA256 --role deployment|build|combined \
-         [--certificate-contact EMAIL] [--install-runtime] [--install-backups]
+         [--minimum-version VERSION] [--certificate-contact EMAIL] \
+         [--install-runtime] [--install-backups]
 
 Check mode only inspects this machine. Apply installs the verified agent and
 prepares its service, without enrolling or starting it. --install-runtime permits
 installing Docker 29.9.2 and Compose 5.6.1 when no Docker installation exists.
 It can start Docker and create its networks and firewall rules. Existing Docker is never replaced.
 Public ingress, certificates and ports still require a reviewed deployment plan.
+--minimum-version refuses a release that would let the agent go back below VERSION.
+Take it from the same trusted channel as the key fingerprint.
 HELP
 }
 die() { printf '%s\n' "$*" >&2; exit 1; }
+# A semantic version without build metadata, as agentrelease checks.
+semver='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(\.(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?$'
+# Compares two numeric identifiers, printing -1, 0 or 1. They have no leading zeros, so a longer
+# one is larger, whatever its size.
+number_compare() {
+  local LC_ALL=C
+  if ((${#1} != ${#2})); then ((${#1} < ${#2})) && echo -1 || echo 1
+  elif [[ "$1" == "$2" ]]; then echo 0
+  elif [[ "$1" < "$2" ]]; then echo -1
+  else echo 1; fi
+}
+# Compares two semantic versions without build metadata, as agentrelease.CompareVersions does, and
+# prints -1, 0 or 1. Both must already match $semver.
+version_compare() {
+  local LC_ALL=C a=$1 b=$2 i x y
+  local -a left right
+  IFS=. read -r -a left <<< "${a%%-*}"
+  IFS=. read -r -a right <<< "${b%%-*}"
+  for i in 0 1 2; do
+    x=$(number_compare "${left[i]}" "${right[i]}")
+    [[ "$x" == 0 ]] || { echo "$x"; return; }
+  done
+  # A pre-release comes before its release.
+  [[ "$a" == *-* ]] && x=${a#*-} || x=
+  [[ "$b" == *-* ]] && y=${b#*-} || y=
+  if [[ -z "$x" || -z "$y" ]]; then
+    if [[ -z "$x" && -z "$y" ]]; then echo 0; elif [[ -z "$x" ]]; then echo 1; else echo -1; fi
+    return
+  fi
+  IFS=. read -r -a left <<< "$x"
+  IFS=. read -r -a right <<< "$y"
+  for ((i = 0; i < ${#left[@]} && i < ${#right[@]}; i++)); do
+    if [[ "${left[i]}" =~ ^[0-9]+$ && "${right[i]}" =~ ^[0-9]+$ ]]; then
+      x=$(number_compare "${left[i]}" "${right[i]}")
+    elif [[ "${left[i]}" =~ ^[0-9]+$ ]]; then x=-1
+    elif [[ "${right[i]}" =~ ^[0-9]+$ ]]; then x=1
+    elif [[ "${left[i]}" == "${right[i]}" ]]; then x=0
+    elif [[ "${left[i]}" < "${right[i]}" ]]; then x=-1
+    else x=1; fi
+    [[ "$x" == 0 ]] || { echo "$x"; return; }
+  done
+  number_compare "${#left[@]}" "${#right[@]}"
+}
 while (($#)); do
   case "$1" in
     --check) apply=false; shift ;;
     --apply) apply=true; shift ;;
     --install-runtime) install_runtime=true; shift ;;
     --install-backups) install_backups=true; shift ;;
-    --management|--release|--key-fingerprint|--certificate-contact|--role)
+    --management|--release|--key-fingerprint|--minimum-version|--certificate-contact|--role)
       (($# >= 2)) || die "Missing value for $1"
       case "$1" in
         --management) management=$2 ;; --release) release=$2 ;;
-        --key-fingerprint) fingerprint=$2 ;; --certificate-contact) contact=$2 ;;
+        --key-fingerprint) fingerprint=$2 ;; --minimum-version) minimum=$2 ;;
+        --certificate-contact) contact=$2 ;;
         --role) role=$2 ;;
       esac
       shift 2 ;;
@@ -106,6 +154,7 @@ fi
 origin_pattern='^https://([A-Za-z0-9][A-Za-z0-9.-]*|\[[0-9A-Fa-f:]+\])(:[0-9]{1,5})?$'
 [[ "$management" =~ $origin_pattern ]] || die 'Management must be an exact HTTPS origin without user information, path or query.'
 [[ "$release" =~ ^[a-f0-9]{64}$ && "$fingerprint" =~ ^[a-f0-9]{64}$ ]] || die 'Release and independently trusted key fingerprint must be lowercase SHA-256 values.'
+[[ -z "$minimum" || ( ${#minimum} -le 80 && "$minimum" =~ $semver ) ]] || die 'The minimum version must be a semantic version, such as 0.3.0.'
 if [[ "$role" != build || -n "$contact" ]]; then
   [[ "$contact" =~ ^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+$ ]] || die 'Provide a certificate-contact email using its plain address.'
 fi
@@ -271,13 +320,14 @@ fetch "$management/agent-artifacts/$release/message" "$scratch/message" 1024
 fetch "$management/agent-artifacts/$release/signature" "$scratch/signature" 64
 mapfile -t fields < "$scratch/message"
 # Fields: format, version, protocol, architecture, size, SHA-256, source commit, minimum version.
-# Versions are semantic versions without build metadata; agentrelease checks the same.
-semver='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(\.(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?$'
 [[ ${#fields[@]} == 8 && ${fields[0]} == astilba-agent-release-signature-v2 && ${#fields[1]} -le 80 && ${fields[1]} =~ $semver && ${fields[2]} == 1 && ${fields[3]} == "$arch" && ${fields[4]} =~ ^[1-9][0-9]{0,8}$ && ${fields[5]} == "$release" && ${fields[6]} =~ ^[a-f0-9]{40}$ && ${#fields[7]} -le 80 && ${fields[7]} =~ $semver ]] || die 'The release message is incompatible with this host.'
 [[ ${fields[4]} -le 104857600 && $(wc -c < "$scratch/signature") == 64 ]] || die 'Invalid signed release bounds.'
 printf '%s\n' "${fields[@]}" > "$scratch/canonical-message"
 cmp --silent "$scratch/message" "$scratch/canonical-message" || die 'The signed message is not canonical.'
 openssl pkeyutl -verify -pubin -inkey "$scratch/public.pem" -rawin -in "$scratch/message" -sigfile "$scratch/signature"
+# An agent never updates below the minimum version it was signed with, so a release with a lower
+# one would let this host go back to a release the operator wants never to run again.
+[[ -z "$minimum" || $(version_compare "${fields[7]}" "$minimum") != -1 ]] || die "Release ${fields[1]} lets an agent go back to ${fields[7]}, below $minimum, the minimum version you gave. Nothing has been installed."
 fetch "$management/agent-artifacts/$release" "$scratch/agent" "${fields[4]}"
 [[ $(wc -c < "$scratch/agent") == "${fields[4]}" ]] || die 'The agent size does not match its signed release.'
 verify_hash "$scratch/agent" "$release" || die 'The agent digest does not match its signed release.'

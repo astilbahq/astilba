@@ -42,6 +42,19 @@ test("guided host preparation and domain staging preserve owner review and confl
   await expect(
     setup.locator("code").filter({ hasText: "--apply" }),
   ).not.toContainText("--certificate-contact");
+  // An operator's minimum version reaches the command only when it is a version.
+  const minimum = setup.getByLabel(
+    "Independently trusted minimum agent version (optional)",
+  );
+  await minimum.fill("fixture.2");
+  await expect(setup.getByRole("alert")).toContainText("semantic version");
+  await expect(
+    setup.locator("code").filter({ hasText: "--apply" }),
+  ).toHaveCount(0);
+  await minimum.fill("0.3.0");
+  await expect(
+    setup.locator("code").filter({ hasText: "--apply" }),
+  ).toContainText("--minimum-version 0.3.0");
   await setup.getByLabel("Server role").selectOption("deployment");
   await setup.getByLabel("Certificate contact email").fill("ops@example.test");
   await expect(

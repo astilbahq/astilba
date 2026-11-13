@@ -127,7 +127,7 @@ func TestBootstrapOnDisposableHost(t *testing.T) {
 		t.Fatal(e)
 	}
 	args := func(v api.AgentRelease) []string {
-		return []string{"--apply", "--management", server.URL, "--release", v.Sha256, "--key-fingerprint", agentrelease.Fingerprint(public), "--role", "combined", "--certificate-contact", "ops+fixture@example.test", "--install-runtime", "--install-backups"}
+		return []string{"--apply", "--management", server.URL, "--release", v.Sha256, "--key-fingerprint", agentrelease.Fingerprint(public), "--minimum-version", minimum, "--role", "combined", "--certificate-contact", "ops+fixture@example.test", "--install-runtime", "--install-backups"}
 	}
 	bad := release
 	bad.Signature = base64.StdEncoding.EncodeToString(make([]byte, 64))
@@ -162,6 +162,21 @@ func TestBootstrapOnDisposableHost(t *testing.T) {
 		}
 		if _, e = os.Lstat("/var/lib/docker"); !os.IsNotExist(e) {
 			t.Fatal("untrusted release installed runtime")
+		}
+	}
+	// The operator's minimum version, from the same trusted channel as the fingerprint, refuses a
+	// correctly signed release that would let the agent go back below it, before installing anything.
+	mu.Lock()
+	current = release
+	mu.Unlock()
+	floored := args(release)
+	floored[slices.Index(floored, "--minimum-version")+1] = "0.2.0"
+	if out, e := run([]string{"CURL_CA_BUNDLE=" + ca}, floored...); e == nil || !bytes.Contains(out, []byte("below 0.2.0, the minimum version you gave")) {
+		t.Fatalf("a release below the operator's minimum version was not refused: %s %v", out, e)
+	}
+	for _, p := range []string{"/usr/local/bin/astilba-agent", "/var/lib/docker"} {
+		if _, e = os.Lstat(p); !os.IsNotExist(e) {
+			t.Fatalf("a release below the operator's minimum version installed %s", p)
 		}
 	}
 	mu.Lock()

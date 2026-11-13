@@ -12,6 +12,10 @@ import { BusyButton, ErrorNotice, Field, Form, text, useAction } from "../ui";
 const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 const guide = "https://github.com/astilbahq/astilba/blob/main/docs/agent.md";
 
+// agentrelease.ValidVersion: a semantic version without build metadata.
+const semanticVersion =
+  /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(\.(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?$/;
+
 export function ServerOnboarding({
   workspaceId,
   releases,
@@ -27,6 +31,7 @@ export function ServerOnboarding({
   const [arch, setArch] = useState("amd64");
   const [releaseSHA, setRelease] = useState("");
   const [fingerprint, setFingerprint] = useState("");
+  const [minimumVersion, setMinimumVersion] = useState("");
   const [contact, setContact] = useState("");
   const [runtime, setRuntime] = useState(false);
   const [backups, setBackups] = useState(false);
@@ -47,9 +52,10 @@ export function ServerOnboarding({
   const ready =
     !!release &&
     /^[a-f0-9]{64}$/.test(fingerprint) &&
+    (minimumVersion === "" || semanticVersion.test(minimumVersion)) &&
     (role === "build" || /^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+$/.test(contact));
   const command = ready
-    ? `sudo bash astilba-bootstrap.sh --apply --management ${quote(location.origin)} --release ${release.sha256} --key-fingerprint ${fingerprint} --role ${role}${role !== "build" && contact ? ` --certificate-contact ${quote(contact)}` : ""}${runtime ? " --install-runtime" : ""}${backups ? " --install-backups" : ""}`
+    ? `sudo bash astilba-bootstrap.sh --apply --management ${quote(location.origin)} --release ${release.sha256} --key-fingerprint ${fingerprint}${minimumVersion ? ` --minimum-version ${minimumVersion}` : ""} --role ${role}${role !== "build" && contact ? ` --certificate-contact ${quote(contact)}` : ""}${runtime ? " --install-runtime" : ""}${backups ? " --install-backups" : ""}`
     : "Choose a release, provide its trusted key fingerprint and complete the certificate contact before preparing the installation command.";
   return (
     <section className={s.panel} aria-label="Server onboarding">
@@ -183,6 +189,25 @@ export function ServerOnboarding({
                 operator before continuing.
               </p>
             )}
+          <Label>
+            Independently trusted minimum agent version (optional)
+            <Input
+              autoComplete="off"
+              value={minimumVersion}
+              onChange={(e) => {
+                setMinimumVersion(e.target.value.trim());
+                setPrepared(false);
+              }}
+              spellCheck={false}
+            />
+            <small>
+              From the same channel as the fingerprint. The bootstrap refuses a
+              release that would let the agent go back below it.
+            </small>
+          </Label>
+          {minimumVersion && !semanticVersion.test(minimumVersion) && (
+            <p role="alert">Enter a semantic version, such as 0.3.0.</p>
+          )}
           {role !== "build" && (
             <Label>
               Certificate contact email
