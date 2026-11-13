@@ -252,8 +252,8 @@ FROM generate_series(1,$5::int) i, LATERAL (SELECT (ARRAY['network','visual','ba
 SELECT 'platform_execution_v1',jsonb_build_object('id',id),'completed',1,25,now(),now(),'default',1 FROM execution_operations WHERE workspace_id=$1 ORDER BY created_at DESC LIMIT 2000`, ws); err != nil {
 		t.Fatal(err)
 	}
-	// Every other table keeps the statistics it has now, so only operations change between the
-	// two plans.
+	// Every other table keeps the statistics it has now, so only the history the seed adds changes
+	// between the two plans.
 	if _, err := f.st.Pool.Exec(ctx, `ANALYZE`); err != nil {
 		t.Fatal(err)
 	}
