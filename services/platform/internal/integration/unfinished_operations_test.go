@@ -36,23 +36,26 @@ func operationStates(t *testing.T, f *fixture) []string {
 	return states
 }
 
-// execution_unfinished_server holds a host's unfinished operations, so its predicate admits exactly
-// the states the table allows that don't end an operation. A state added to the table, or a change
-// to which states end one, fails here until the index agrees.
+// execution_unfinished_server and execution_unfinished_workspace hold unfinished operations, by host
+// and by workspace, so each predicate admits exactly the states the table allows that don't end an
+// operation. A state added to the table, or a change to which states end one, fails here until both
+// indexes agree.
 func TestUnfinishedIndexHoldsExactlyTheStatesThatHaveNotEnded(t *testing.T) {
 	ctx := context.Background()
 	f := setup(t)
-	var predicate string
-	if err := f.st.Pool.QueryRow(ctx, `SELECT pg_get_expr(indpred,indrelid) FROM pg_index WHERE indexrelid='execution_unfinished_server'::regclass`).Scan(&predicate); err != nil {
-		t.Fatal(err)
-	}
-	for _, state := range operationStates(t, f) {
-		var indexed bool
-		if err := f.st.Pool.QueryRow(ctx, `SELECT `+predicate+` FROM (SELECT $1::text AS state) operation`, state).Scan(&indexed); err != nil {
+	for _, index := range []string{"execution_unfinished_server", "execution_unfinished_workspace"} {
+		var predicate string
+		if err := f.st.Pool.QueryRow(ctx, `SELECT pg_get_expr(indpred,indrelid) FROM pg_index WHERE indexrelid=$1::regclass`, index).Scan(&predicate); err != nil {
 			t.Fatal(err)
 		}
-		if ended := execution.Terminal(api.ExecutionState(state)); indexed == ended {
-			t.Errorf("state %s ends an operation: %v; the index holds it: %v", state, ended, indexed)
+		for _, state := range operationStates(t, f) {
+			var indexed bool
+			if err := f.st.Pool.QueryRow(ctx, `SELECT `+predicate+` FROM (SELECT $1::text AS state) operation`, state).Scan(&indexed); err != nil {
+				t.Fatal(err)
+			}
+			if ended := execution.Terminal(api.ExecutionState(state)); indexed == ended {
+				t.Errorf("%s: state %s ends an operation: %v; the index holds it: %v", index, state, ended, indexed)
+			}
 		}
 	}
 }
@@ -150,17 +153,18 @@ func TestOperationQueriesDoNotReadHistory(t *testing.T) {
 	}
 	// History as a long-lived environment on one host leaves it: deployments, coordinated roots
 	// with their children, network configure commands at each generation, backups and builds, in
-	// every ended state. Generations count up as the host's and environment's do.
+	// every ended state, each seen by the alert sweep. Generations count up as the host's and
+	// environment's do.
 	generation := 0
 	history := func(count int) {
 		t.Helper()
 		roots := count / 8
-		if _, err := f.st.Pool.Exec(ctx, `INSERT INTO execution_operations(id,workspace_id,server_id,environment_id,generation,request_key,command,kind,state,report_sequence,created_at)
-SELECT gen_random_uuid(),$1,$2,$3,$4+i,gen_random_uuid(),'{}','crosshost',(ARRAY['succeeded','failed','cancelled'])[1+i%3],1,now()-interval '1 day'-i*interval '1 second' FROM generate_series(1,$5::int) i`, ws, in.ServerId, env, generation, roots); err != nil {
+		if _, err := f.st.Pool.Exec(ctx, `INSERT INTO execution_operations(id,workspace_id,server_id,environment_id,generation,request_key,command,kind,state,report_sequence,alert_observed,created_at)
+SELECT gen_random_uuid(),$1,$2,$3,$4+i,gen_random_uuid(),'{}','crosshost',(ARRAY['succeeded','failed','cancelled'])[1+i%3],1,true,now()-interval '1 day'-i*interval '1 second' FROM generate_series(1,$5::int) i`, ws, in.ServerId, env, generation, roots); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := f.st.Pool.Exec(ctx, `INSERT INTO execution_operations(id,workspace_id,server_id,environment_id,parent_id,generation,request_key,command,kind,state,report_sequence,created_at)
-SELECT gen_random_uuid(),$1,$2,$3,root.id,$4+row_number() OVER (),gen_random_uuid(),'{"crosshost":{"phase":"prepare"}}','crosshost',root.state,1,root.created_at
+		if _, err := f.st.Pool.Exec(ctx, `INSERT INTO execution_operations(id,workspace_id,server_id,environment_id,parent_id,generation,request_key,command,kind,state,report_sequence,alert_observed,created_at)
+SELECT gen_random_uuid(),$1,$2,$3,root.id,$4+row_number() OVER (),gen_random_uuid(),'{"crosshost":{"phase":"prepare"}}','crosshost',root.state,1,true,root.created_at
 FROM execution_operations root, generate_series(1,3) child WHERE root.workspace_id=$1 AND root.kind='crosshost' AND root.parent_id IS NULL AND root.generation>$5`, ws, in.ServerId, env, generation+roots, generation); err != nil {
 			t.Fatal(err)
 		}
@@ -174,11 +178,11 @@ FROM execution_operations root, generate_series(1,3) child WHERE root.workspace_
 		if _, err := seed.Exec(ctx, `SET LOCAL session_replication_role = replica`); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := seed.Exec(ctx, `INSERT INTO execution_operations(id,workspace_id,server_id,environment_id,generation,request_key,command,kind,state,report_sequence,visual_plan_id,created_at)
+		if _, err := seed.Exec(ctx, `INSERT INTO execution_operations(id,workspace_id,server_id,environment_id,generation,request_key,command,kind,state,report_sequence,alert_observed,visual_plan_id,created_at)
 SELECT gen_random_uuid(),$1,$2,CASE WHEN kind<>'network' THEN $3::uuid END,$4+i,gen_random_uuid(),
     CASE kind WHEN 'network' THEN jsonb_build_object('network',jsonb_build_object('action','configure','membershipId',gen_random_uuid(),'manifest',jsonb_build_object('generation',$4+i)))
         WHEN 'visual' THEN '{"visual":{"action":"deploy"}}' ELSE '{}' END,
-    kind,(ARRAY['succeeded','failed','cancelled'])[1+i%3],1,CASE WHEN kind='visual' THEN gen_random_uuid() END,now()-interval '1 day'-i*interval '1 second'
+    kind,(ARRAY['succeeded','failed','cancelled'])[1+i%3],1,true,CASE WHEN kind='visual' THEN gen_random_uuid() END,now()-interval '1 day'-i*interval '1 second'
 FROM generate_series(1,$5::int) i, LATERAL (SELECT (ARRAY['network','visual','backup','pipeline'])[1+i%4] AS kind) k`, ws, in.ServerId, env, generation+4*roots, count-4*roots); err != nil {
 			t.Fatal(err)
 		}
@@ -197,12 +201,29 @@ FROM generate_series(1,$5::int) i, LATERAL (SELECT (ARRAY['network','visual','ba
 		Type     string  `json:"Node Type"`
 		Relation string  `json:"Relation Name"`
 		Index    string  `json:"Index Name"`
+		Cond     string  `json:"Index Cond"`
 		Cost     float64 `json:"Total Cost"`
 		Plans    []node  `json:"Plans"`
 	}
 	var scans func(node) bool
 	scans = func(n node) bool {
 		return n.Type == "Seq Scan" && n.Relation == "execution_operations" || slices.ContainsFunc(n.Plans, scans)
+	}
+	// The unfinished indexes hold every tenant's unfinished work, so a plan that reads one without
+	// its leading key, its host or its workspace, reads other tenants' work.
+	var crossTenant func(node) string
+	crossTenant = func(n node) string {
+		for index, key := range map[string]string{"execution_unfinished_server": "server_id", "execution_unfinished_workspace": "workspace_id"} {
+			if n.Index == index && !strings.Contains(n.Cond, key) {
+				return index
+			}
+		}
+		for _, c := range n.Plans {
+			if index := crossTenant(c); index != "" {
+				return index
+			}
+		}
+		return ""
 	}
 	var uses func(node, string) bool
 	uses = func(n node, index string) bool {
@@ -244,7 +265,9 @@ FROM generate_series(1,$5::int) i, LATERAL (SELECT (ARRAY['network','visual','ba
 		}
 		return plans[0].Plan, true
 	}
-	history(10000)
+	// History stays small enough that no index gains a level between the sizes measured: a plan of
+	// index probes would otherwise rise in a step that looks like growth.
+	history(3333)
 	// River's queue holds the jobs it finished in the last day, as a running installation's does.
 	// Recovery's statements read it, and the few jobs the fixture's workers add as the test runs
 	// then hardly move their plans.
@@ -252,18 +275,52 @@ FROM generate_series(1,$5::int) i, LATERAL (SELECT (ARRAY['network','visual','ba
 SELECT 'platform_execution_v1',jsonb_build_object('id',id),'completed',1,25,now(),now(),'default',1 FROM execution_operations WHERE workspace_id=$1 ORDER BY created_at DESC LIMIT 2000`, ws); err != nil {
 		t.Fatal(err)
 	}
-	// Every other table keeps the statistics it has now, so only the history the seed adds changes
-	// between the two plans.
+	// Other workspaces' stuck work: tenants each with an unfinished coordinated root and its
+	// unfinished children on a host and environment of their own, as much as a tenant has. A check
+	// scoped to a workspace, environment, host or root reads only its own, so more tenants don't move
+	// its plan; one that reads every tenant's unfinished work grows with how many there are. The rows
+	// stand for tenants that never connect, so the seed doesn't need the servers and environments
+	// behind them.
+	tenants := func(count int) {
+		t.Helper()
+		seed, err := f.st.Pool.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer seed.Rollback(ctx)
+		if _, err := seed.Exec(ctx, `SET LOCAL session_replication_role = replica`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := seed.Exec(ctx, `WITH tenants AS (SELECT gen_random_uuid() AS ws,gen_random_uuid() AS server,gen_random_uuid() AS env,gen_random_uuid() AS root FROM generate_series(1,$1::int)),
+roots AS (INSERT INTO execution_operations(id,workspace_id,server_id,environment_id,generation,request_key,command,kind,state,report_sequence)
+	SELECT root,ws,server,env,1,gen_random_uuid(),'{}','crosshost','running',1 FROM tenants RETURNING id)
+INSERT INTO execution_operations(id,workspace_id,server_id,environment_id,parent_id,generation,request_key,command,kind,state,report_sequence)
+SELECT gen_random_uuid(),ws,server,env,root,1+i,gen_random_uuid(),'{"crosshost":{"phase":"prepare"}}','crosshost',(ARRAY['queued','dispatched','running'])[1+i%3],1 FROM tenants, generate_series(1,3) i`, count); err != nil {
+			t.Fatal(err)
+		}
+		if err := seed.Commit(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tenants(1000)
+	// Every other table keeps the statistics it has now, so only the operations the seed adds
+	// change between plans.
 	if _, err := f.st.Pool.Exec(ctx, `ANALYZE`); err != nil {
 		t.Fatal(err)
 	}
-	// Each statement is planned at three sizes of history, each three times the last.
+	// Each statement is planned with a thousand tenants and three thousand, and then alone with
+	// ended history, three times as much, and nine times.
 	costs := map[string][]float64{}
+	crossed, tenanted := []string{}, true
 	measure := func() {
 		t.Helper()
 		for _, q := range queries {
 			if p, ok := plan(q); ok {
 				costs[q.at] = append(costs[q.at], p.Cost)
+				if index := crossTenant(p); tenanted && index != "" && !slices.Contains(crossed, q.at) {
+					crossed = append(crossed, q.at)
+					t.Errorf("%s reads all of %s, every tenant's unfinished work: narrow it by host or workspace so one tenant's stuck work can't slow another's", q, index)
+				}
 			}
 		}
 	}
@@ -273,9 +330,33 @@ SELECT 'platform_execution_v1',jsonb_build_object('id',id),'completed',1,25,now(
 			t.Errorf("%s %q is listed as reading history, but no statement reading operations matches it now", r.name, r.fragment)
 		}
 	}
-	history(20000)
+	tenants(2000)
+	if _, err := f.st.Pool.Exec(ctx, `ANALYZE execution_operations`); err != nil {
+		t.Fatal(err)
+	}
 	measure()
-	history(60000)
+	for _, q := range queries {
+		if c := costs[q.at]; len(c) == 2 && c[1] > c[0]*1.1+10 {
+			if _, excepted := historyReader(q, historyReaders); !excepted {
+				t.Errorf("%s reads other workspaces' unfinished work (cost %.0f with a thousand tenants' stuck work, %.0f with three thousand): narrow it by workspace, environment, host or root so one tenant's stuck work can't slow another's", q, c[0], c[1])
+			}
+		}
+		delete(costs, q.at)
+	}
+	// Generic plans take a workspace, host or environment to be an average one, so with many small
+	// tenants the one with the long history would look small too. The tenants go before history is
+	// measured.
+	if _, err := f.st.Pool.Exec(ctx, `DELETE FROM execution_operations WHERE workspace_id NOT IN (SELECT id FROM workspaces)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.st.Pool.Exec(ctx, `VACUUM ANALYZE execution_operations`); err != nil {
+		t.Fatal(err)
+	}
+	tenanted = false
+	measure()
+	history(6667)
+	measure()
+	history(20000)
 	for _, q := range queries {
 		p, ok := plan(q)
 		if !ok || len(costs[q.at]) != 2 {

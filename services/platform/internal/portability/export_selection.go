@@ -74,18 +74,19 @@ const exportSeeds = `INSERT INTO export_keep(kind,id) SELECT DISTINCT kind,id FR
 // image. The configurations are each listed revision, each environment's draft and applied
 // revision, and the plans of carried operations and current runtimes. Only those, once: a build
 // records the draft it built, which uses the previous build's artifact, so following every carried
-// revision would walk back through every build.
+// revision would walk back through every build. The plans are looked up one by one: export_keep
+// has no statistics, so as a subquery the planner would read every plan the workspace has.
 // inline-sql: seeds the export's transaction-local working set
 const exportPinnedArtifacts = `WITH configurations(doc) AS (
 	SELECT s.specification FROM specification_revisions s WHERE s.workspace_id=$1 AND s.id IN (
 		SELECT id FROM export_keep WHERE kind='revision'
 		UNION SELECT e.draft_revision_id FROM environments e JOIN export_keep k ON k.kind='env' AND k.id=e.id
 		UNION SELECT e.applied_revision_id FROM environments e JOIN export_keep k ON k.kind='env' AND k.id=e.id)
-	UNION ALL SELECT p.plan FROM visual_plans p WHERE p.workspace_id=$1 AND p.id IN (
+	UNION ALL SELECT p.plan FROM visual_plans p WHERE p.workspace_id=$1 AND p.id=ANY(ARRAY(
 		SELECT o.visual_plan_id FROM execution_operations o JOIN export_keep k ON k.kind='op' AND k.id=o.id
 		UNION SELECT o.runtime_plan_id FROM execution_operations o JOIN export_keep k ON k.kind='op' AND k.id=o.id
 		UNION SELECT t.plan_id FROM visual_runtime t JOIN export_keep k ON k.kind='env' AND k.id=t.environment_id
-		UNION SELECT t.plan_id FROM cross_host_runtime t JOIN export_keep k ON k.kind='env' AND k.id=t.environment_id))
+		UNION SELECT t.plan_id FROM cross_host_runtime t JOIN export_keep k ON k.kind='env' AND k.id=t.environment_id)))
 INSERT INTO export_keep(kind,id)
 	SELECT 'artifact',a.id FROM build_artifacts a WHERE a.workspace_id=$1 AND a.id::text IN (SELECT jsonb_path_query(doc,'lax $.**.artifactId')#>>'{}' FROM configurations)
 	UNION SELECT 'artifact',x.id FROM (SELECT DISTINCT ON (a.identity->>'image') a.id FROM build_artifacts a
