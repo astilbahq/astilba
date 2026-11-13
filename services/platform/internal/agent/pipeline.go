@@ -309,8 +309,8 @@ func (e *Engine) buildPipeline(ctx context.Context, c api.ExecutionCommand, p pi
 			return result, err
 		}
 		n, err := strconv.ParseUint(strings.TrimSpace(string(size)), 10, 64)
-		if err != nil || n > 512<<20 || dockerFreeBytes(ctx, e.Docker) < (4<<30)+4*int64(n) {
-			return result, errors.New("local image exceeds reserved host storage")
+		if err != nil || n > localImageArchiveBytes {
+			return result, fmt.Errorf("The built image was not loaded: its archive is larger than %d MiB. Make the image smaller, for example with a multi-stage build. Existing workloads are unchanged.", localImageArchiveBytes>>20)
 		}
 		if err = e.loadPipelineImage(ctx, c, int64(n)); err != nil {
 			return result, err
@@ -384,7 +384,20 @@ func pipelineLogTail(logs string) string {
 	}
 	return logs[start:]
 }
+
+// loadPipelineImage loads the archive the build container wrote, measuring it on the way. See
+// image_archive.go.
 func (e *Engine) loadPipelineImage(ctx context.Context, c api.ExecutionCommand, size int64) error {
+	select {
+	case localImageLoads <- struct{}{}:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	defer func() { <-localImageLoads }()
+	limit, err := e.imageLoadLimit(ctx)
+	if err != nil {
+		return err
+	}
 	cli := e.DockerCLI
 	if cli == "" {
 		cli = "docker"
@@ -401,16 +414,58 @@ func (e *Engine) loadPipelineImage(ctx context.Context, c api.ExecutionCommand, 
 	if err = cmd.Start(); err != nil {
 		return err
 	}
-	response, err := e.Docker.ImageLoad(ctx, &measuredReader{r: stream, remaining: size})
+	// Docker reads the archive only through the gate. A refusal fails the stream it reads, so
+	// Docker never receives a complete archive to import.
+	reader, writer := io.Pipe()
+	inspected := make(chan error, 1)
+	go func() {
+		err := inspectImageArchive(&imageArchiveGate{src: &measuredReader{r: stream, remaining: size}, out: writer}, limit)
+		if errors.Is(err, errImageOverLimit) {
+			err = limit.refusal()
+		}
+		_ = writer.CloseWithError(err)
+		inspected <- err
+	}()
+	response, err := e.Docker.ImageLoad(ctx, reader)
 	if err == nil {
 		_, err = io.Copy(io.Discard, response)
 		_ = response.Close()
 	}
+	// Docker has stopped reading, so the inspection's next write fails rather than waits.
+	_ = reader.CloseWithError(errors.New("Docker stopped reading the image archive"))
 	if err != nil {
 		_ = cmd.Process.Kill()
 	}
+	checked := <-inspected
+	if checked != nil {
+		_ = cmd.Process.Kill()
+	}
 	wait := cmd.Wait()
-	return errors.Join(err, wait)
+	var refused *imageLoadRefused
+	if errors.As(checked, &refused) {
+		return refused
+	}
+	return errors.Join(err, checked, wait)
+}
+
+// imageLoadLimit is what a load may write now: the agent's fixed limit, or less where Docker's
+// storage would otherwise drop below its reserve.
+func (e *Engine) imageLoadLimit(ctx context.Context) (imageLoadLimit, error) {
+	bytes, inodes, ok := imageStorage(ctx, e.Docker)
+	if !ok {
+		return imageLoadLimit{}, errors.New("The built image was not loaded: the agent cannot observe this server's Docker storage. Existing workloads are unchanged.")
+	}
+	limit := imageLoadLimit{Bytes: localImageLoadBytes, Entries: localImageLoadEntries}
+	if room := bytes - dockerReserveBytes; room < limit.Bytes {
+		limit.Bytes, limit.Storage = room, true
+	}
+	if room := inodes - dockerReserveInodes; inodes >= 0 && room < limit.Entries {
+		limit.Entries, limit.Storage = room, true
+	}
+	if limit.Bytes <= 0 || limit.Entries <= 0 {
+		return limit, limit.refusal()
+	}
+	return limit, nil
 }
 
 // measuredReader reads exactly remaining bytes, and fails if r has more.
