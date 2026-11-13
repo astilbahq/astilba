@@ -4183,6 +4183,8 @@ export interface components {
             manifest: components["schemas"]["BackupManifest"] | null;
             /** Format: uuid */
             targetId: string;
+            /** @description The pinned PostgreSQL image whose server filled the restore target. Absent on runs recorded before restores named it, which were filled by the archive's own image. */
+            restoreImage?: string;
         };
         BackupStatus: {
             enabled: boolean;

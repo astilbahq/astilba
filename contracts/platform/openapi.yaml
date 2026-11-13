@@ -8973,6 +8973,10 @@
         targetId:
           type: string
           format: uuid
+        restoreImage:
+          type: string
+          maxLength: 512
+          description: The pinned PostgreSQL image whose server filled the restore target. Absent on runs recorded before restores named it, which were filled by the archive's own image.
       required:
         - id
         - policyId

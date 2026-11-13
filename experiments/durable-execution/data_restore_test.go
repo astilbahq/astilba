@@ -106,7 +106,7 @@ func pgLayout(ctx context.Context, h *runtimeHarness, p runtimeProject) (backupM
 		return backupManifest{}, errors.New("unsupported PostgreSQL data directory")
 	}
 	tool, e := pgCommand(ctx, h, p, nil, "pg_dump", "--version")
-	if e != nil || !strings.Contains(string(tool), "18.4") {
+	if e != nil || !strings.Contains(string(tool), "18.7") {
 		return backupManifest{}, errors.New("unsupported dump tool version")
 	}
 	id, e := hostCommand(ctx, h.config, nil, "inspect", "--format", "{{.Id}}", p.db)
