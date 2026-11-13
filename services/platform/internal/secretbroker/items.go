@@ -134,8 +134,10 @@ var rules = map[Purpose]rule{
 	Seal:    {principals: people, seal: append(slices.Clone(workspaceKinds), installationKinds...), open: []Kind{RecoveryCheckpoint}, limit: defaultLimit},
 	Deliver: {principals: []PrincipalKind{AgentPrincipal}, open: []Kind{SecretVersion, BuildSecret, Git, GitHubAuthorization, Registry, BackupDestination, BackupPolicy, RecoveryCheckpoint}, limit: defaultLimit},
 	// Operating with a GitHub grant or connection can refresh and store it again.
-	Operate:      {principals: people, open: []Kind{Git, GitHubAuthorization, Registry, AlertWebhook}, seal: []Kind{Git, GitHubAuthorization}, limit: defaultLimit},
-	Inspect:      {principals: people, open: []Kind{SecretVersion, BuildSecret}, limit: defaultLimit},
+	Operate: {principals: people, open: []Kind{Git, GitHubAuthorization, Registry, AlertWebhook}, seal: []Kind{Git, GitHubAuthorization}, limit: defaultLimit},
+	// Planning work checks build inputs, and measures a registry credential, before it stores
+	// a command an agent will receive.
+	Inspect:      {principals: people, open: []Kind{SecretVersion, BuildSecret, Registry}, limit: defaultLimit},
 	Copy:         {principals: people, open: []Kind{SecretVersion}, seal: []Kind{SecretVersion}, limit: defaultLimit},
 	Export:       {principals: []PrincipalKind{AccountPrincipal}, owner: true, open: workspaceKinds, limit: batchLimit},
 	Recover:      {principals: []PrincipalKind{AccountPrincipal, SystemPrincipal, OperatorPrincipal}, owner: true, open: workspaceKinds, seal: workspaceKinds, limit: batchLimit},

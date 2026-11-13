@@ -176,7 +176,7 @@ func (s *Service) poll(ctx context.Context, a Identity, out *api.AgentPoll) (*ap
 
 func (s *Service) commandAllowed(ctx context.Context, ws uuid.UUID, c api.ExecutionCommand, verify bool) (bool, error) {
 	var allowed bool
-	err := s.withGit(ctx, ws, func(git *gitAnswers) error {
+	err := s.withGit(ctx, ws, s.legacyRunKeys(ws), func(git *gitAnswers) error {
 		tx, err := s.Store.Pool.Begin(ctx)
 		if err != nil {
 			return err
@@ -212,7 +212,7 @@ func (s *Service) Report(ctx context.Context, a Identity, r api.AgentReport) err
 	}
 	// A provider call between passes must not count against the agent's report.
 	received := time.Now()
-	return s.withGit(ctx, a.Workspace, func(git *gitAnswers) error { return s.applyReport(ctx, git, received, a, r) })
+	return s.withGit(ctx, a.Workspace, s.legacyRunKeys(a.Workspace), func(git *gitAnswers) error { return s.applyReport(ctx, git, received, a, r) })
 }
 
 // applyReport takes its report by value because a pass rewrites it, and a pass that asks a

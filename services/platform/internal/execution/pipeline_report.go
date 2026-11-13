@@ -13,6 +13,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/composeproject"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
+	"github.com/astilbahq/astilba/services/platform/internal/secretbroker"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
@@ -21,7 +22,9 @@ import (
 
 const secretVersionPage = 64
 
-func (s *Service) rejectRuntimeSecrets(ctx context.Context, tx pgx.Tx, ws, env uuid.UUID, bundle composeproject.Bundle) error {
+// rejectRuntimeSecrets opens the environment's runtime secrets with keys, asked for only once
+// there is one to read.
+func (s *Service) rejectRuntimeSecrets(ctx context.Context, tx pgx.Tx, keys valueKeys, ws, env uuid.UUID, bundle composeproject.Bundle) error {
 	q := db.New(tx)
 	// A submission pushes both: the path names a tree entry, the content fills its blob.
 	texts := make([]string, 0, 2*len(bundle.Files))
@@ -38,7 +41,7 @@ func (s *Service) rejectRuntimeSecrets(ctx context.Context, tx pgx.Tx, ws, env u
 			return err
 		}
 		for _, row := range rows {
-			value, err := s.Store.Keys.Open(row.EncryptedValue, store.SecretIdentity(ws, row.ID))
+			value, err := keys.open(secretbroker.Item{Kind: secretbroker.SecretVersion, ID: row.ID}, row.EncryptedValue)
 			if err != nil {
 				return err
 			}
@@ -63,7 +66,7 @@ func (s *Service) rejectRuntimeSecrets(ctx context.Context, tx pgx.Tx, ws, env u
 // or a changed connection all stop the credential after the call as they would before it.
 func (s *Service) hydratePipeline(ctx context.Context, a Identity, c *api.ExecutionCommand) (bool, error) {
 	var deliver bool
-	err := s.withGit(ctx, a.Workspace, func(git *gitAnswers) error {
+	err := s.withGit(ctx, a.Workspace, s.legacyRunKeys(a.Workspace), func(git *gitAnswers) error {
 		var err error
 		deliver, err = s.decidePipelineDelivery(ctx, git, a, c)
 		return err
@@ -248,7 +251,7 @@ func (s *Service) populatePipeline(ctx context.Context, tx pgx.Tx, git *gitAnswe
 	}
 	p.Access = &pipeline.RunnerAccess{Clone: clone.Value}
 	if p.Build != nil {
-		p.BuildSecrets, err = s.buildInputs(ctx, tx, ws, env, *p.Build)
+		p.BuildSecrets, err = s.buildInputs(ctx, tx, git.keys.inspect, ws, env, *p.Build)
 		if err != nil {
 			return err
 		}
@@ -258,7 +261,13 @@ func (s *Service) populatePipeline(ctx context.Context, tx pgx.Tx, git *gitAnswe
 				return err
 			}
 			var access pipeline.RegistryAccess
-			if err = s.legacyOpenIntegration(ws, p.Registry.ID, "registry", cipher, &access); err != nil {
+			plain, err := git.keys.inspect.open(secretbroker.Item{Kind: secretbroker.Registry, ID: p.Registry.ID}, cipher)
+			if err != nil {
+				return err
+			}
+			err = json.Unmarshal(plain, &access)
+			clear(plain)
+			if err != nil {
 				return err
 			}
 			p.RegistryAccess = &pipeline.RegistryAccess{Push: access.Push}
