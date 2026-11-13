@@ -24,7 +24,10 @@ const (
 )
 
 type Config struct {
-	LogRetention                                      time.Duration
+	LogRetention time.Duration
+	// SecretAccessRetentionDays is how long secret access records are kept. `astilba migrate`
+	// writes it; serving only reads it.
+	SecretAccessRetentionDays                         int32
 	DatabasePoolSize                                  int32
 	DatabaseURL, Keyring, KeyringJSON, Listen, Origin string
 	Development, Hosted, Troubleshooting              bool
@@ -63,6 +66,14 @@ func Load() (Config, error) {
 		days = n
 	}
 	c.LogRetention = time.Duration(days) * 24 * time.Hour
+	c.SecretAccessRetentionDays = 400
+	if raw := os.Getenv("ASTILBA_SECRET_ACCESS_RETENTION_DAYS"); raw != "" {
+		n, e := strconv.Atoi(raw)
+		if e != nil || n < 30 || n > 3650 || c.Hosted && n != 400 {
+			return c, errors.New("ASTILBA_SECRET_ACCESS_RETENTION_DAYS must be between 30 and 3650, and 400 when hosted")
+		}
+		c.SecretAccessRetentionDays = int32(n)
+	}
 	c.DatabasePoolSize = defaultDatabasePoolSize
 	if raw := os.Getenv("ASTILBA_DATABASE_POOL_SIZE"); raw != "" {
 		n, e := strconv.Atoi(raw)

@@ -757,6 +757,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/workspaces/{workspaceId}/secret-access": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Owners only. Every time management was given the keys to the workspace's stored values, newest first, a page at a time. */
+        get: operations["listSecretAccess"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/workspaces/{workspaceId}/projects": {
         parameters: {
             query?: never;
@@ -4551,6 +4568,51 @@ export interface components {
             /** Format: uuid */
             next?: string;
         };
+        SecretAccessPage: {
+            records: components["schemas"]["SecretAccessRecord"][];
+            /** Format: uuid */
+            next?: string;
+        };
+        SecretAccessRecord: {
+            /** Format: uuid */
+            id: string;
+            /** Format: date-time */
+            at: string;
+            /** @enum {string} */
+            purpose: "seal" | "deliver" | "operate" | "inspect" | "copy" | "export" | "recover" | "rotate" | "authenticate" | "token";
+            principal: components["schemas"]["SecretAccessPrincipal"];
+            /** Format: uuid */
+            operationId?: string;
+            items: components["schemas"]["SecretAccessItem"][];
+            itemCount: number;
+            reason: string;
+            /** @enum {string} */
+            outcome: "released" | "used" | "refused" | "failed" | "abandoned" | "unknown";
+        };
+        SecretAccessPrincipal: {
+            /** @enum {string} */
+            kind: "account" | "automation" | "agent" | "system" | "installation";
+            /** Format: uuid */
+            accountId?: string;
+            /** @description Present while the account is a member of the workspace. */
+            accountEmail?: string;
+            /** Format: uuid */
+            automationId?: string;
+            automationName?: string;
+            /** Format: uuid */
+            serverId?: string;
+            serverName?: string;
+            /** @description A short fingerprint of the agent instance's key or credential. */
+            instance?: string;
+            job?: string;
+        };
+        /** @description One item the keys were given for, or, without an id, every item of its kind. */
+        SecretAccessItem: {
+            kind: string;
+            /** Format: uuid */
+            id?: string;
+            name?: string;
+        };
         AlertSettings: {
             emailEnabled: boolean;
             webhookEnabled: boolean;
@@ -6504,6 +6566,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AuditEvent"][];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    listSecretAccess: {
+        parameters: {
+            query?: {
+                before?: string;
+            };
+            header?: never;
+            path: {
+                workspaceId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Success */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SecretAccessPage"];
                 };
             };
             /** @description Error */

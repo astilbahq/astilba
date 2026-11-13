@@ -779,6 +779,11 @@ type SecretAccessOutcome struct {
 	ProviderRequestIds []byte    `json:"provider_request_ids"`
 }
 
+type SecretAccessSetting struct {
+	Singleton     bool  `json:"singleton"`
+	RetentionDays int32 `json:"retention_days"`
+}
+
 type SecretRelease struct {
 	OperationID    uuid.UUID  `json:"operation_id"`
 	DispatchEpoch  int64      `json:"dispatch_epoch"`

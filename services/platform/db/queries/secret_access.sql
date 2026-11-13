@@ -65,3 +65,38 @@ WHERE workspace_id = @workspace_id AND operation_id = @operation_id AND dispatch
 -- stopped submission's warning, and only once.
 UPDATE execution_operations SET note = CASE WHEN note = '' THEN @note::text ELSE note || ' ' || @note::text END
 WHERE workspace_id = @workspace_id AND id = @id AND strpos(note, @note::text) = 0;
+
+-- name: ListSecretAccess :many
+-- A workspace's records, newest first, a page at a time, with who they were for and how each
+-- ended: the first outcome written, or unknown while a session is open or its end went
+-- unrecorded. An account is named only while it is a member: one that left keeps its ID.
+SELECT a.id,a.at,a.purpose,a.principal_kind,a.account_id,acc.email AS account_email,a.automation_id,cred.name AS automation_name,
+    a.server_id,srv.name AS server_name,a.agent_instance,a.job,a.operation_id,a.items,a.item_count,a.reason,
+    COALESCE(o.outcome,'unknown')::text AS outcome
+FROM secret_access a
+LEFT JOIN memberships m ON m.workspace_id = a.workspace_id AND m.account_id = a.account_id
+LEFT JOIN accounts acc ON acc.id = m.account_id
+LEFT JOIN automation_credentials cred ON cred.workspace_id = a.workspace_id AND cred.id = a.automation_id
+LEFT JOIN servers srv ON srv.workspace_id = a.workspace_id AND srv.id = a.server_id
+LEFT JOIN LATERAL (SELECT outcome FROM secret_access_outcomes WHERE access_id = a.id ORDER BY at LIMIT 1) o ON true
+WHERE a.workspace_id = @workspace_id
+    AND (sqlc.narg(before)::uuid IS NULL OR (a.at,a.id) < (SELECT b.at,b.id FROM secret_access b WHERE b.workspace_id = @workspace_id AND b.id = sqlc.narg(before)::uuid))
+ORDER BY a.at DESC,a.id DESC LIMIT @page_size;
+
+-- name: SecretAccessItemNames :many
+-- Names for the items a page of records names, where they still exist.
+SELECT 'secret-version'::text AS kind,v.id,s.name FROM secret_versions v JOIN secrets s ON s.workspace_id = v.workspace_id AND s.id = v.secret_id
+    WHERE v.workspace_id = @workspace_id AND v.id = ANY(@ids::uuid[])
+UNION ALL SELECT 'build-secret',id,name FROM build_secret_versions WHERE workspace_id = @workspace_id AND id = ANY(@ids::uuid[])
+UNION ALL SELECT 'git',id,COALESCE(configuration->>'name','') FROM git_connections WHERE workspace_id = @workspace_id AND id = ANY(@ids::uuid[])
+UNION ALL SELECT 'registry',id,COALESCE(configuration->>'name','') FROM registries WHERE workspace_id = @workspace_id AND id = ANY(@ids::uuid[])
+UNION ALL SELECT 'backup-destination',id,COALESCE(configuration->>'name','') FROM backup_destinations WHERE workspace_id = @workspace_id AND id = ANY(@ids::uuid[])
+UNION ALL SELECT 'backup-policy',id,COALESCE(configuration->>'name','') FROM backup_policies WHERE workspace_id = @workspace_id AND id = ANY(@ids::uuid[]);
+
+-- name: ExpireSecretAccess :one
+-- unscoped: retention applies to every workspace's records alike.
+SELECT expire_secret_access(@batch::integer)::integer AS expired;
+
+-- name: SetSecretAccessRetention :exec
+-- unscoped: one installation-wide setting, written only by `astilba migrate`.
+UPDATE secret_access_settings SET retention_days = @days::integer;

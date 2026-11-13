@@ -9,6 +9,7 @@ export default defineConfig({
       "src/features/shell/**/*.{ts,tsx}",
       "src/features/projects/**/*.{ts,tsx}",
       "src/features/troubleshooting/**/*.{ts,tsx}",
+      "src/features/secret-access/**/*.{ts,tsx}",
       "src/features/environments/{environment-detail,environment-overview,environment-lifecycle,retirement-status}.tsx",
       "src/components/{password-input,theme-menu,locale-menu}.tsx",
       "src/{router,hosting,ui}.tsx",
