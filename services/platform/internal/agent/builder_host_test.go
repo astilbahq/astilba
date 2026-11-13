@@ -115,9 +115,6 @@ func TestNativeBuilderConfinement(t *testing.T) {
 		t.Fatal(err)
 	}
 	c := api.ExecutionCommand{Id: uuid.New(), ServerId: serverID, EnvironmentId: uuid.New(), ResourceId: p.UnitID, Generation: 1, Kind: "pipeline", Action: "inspect", PlanHash: p.Digest(), Deadline: time.Now().Add(5 * time.Minute)}
-	if err = engine.pipelineContainer(ctx, c, p); err != nil {
-		t.Fatal(err)
-	}
 	defer func() {
 		cleanup, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
@@ -125,6 +122,11 @@ func TestNativeBuilderConfinement(t *testing.T) {
 			t.Error(err)
 		}
 	}()
+	// The builder is up when this returns; when it isn't, its logs say why.
+	if err = engine.pipelineContainer(ctx, c, p); err != nil {
+		logs, _ := exec.Command(dockerCLI, "--host", docker.DaemonHost(), "logs", pipelineName(c)).CombinedOutput()
+		t.Fatalf("%v\n%s", err, logs)
+	}
 
 	inspected, err := docker.ContainerInspect(ctx, pipelineName(c), client.ContainerInspectOptions{})
 	if err != nil {
@@ -133,17 +135,6 @@ func TestNativeBuilderConfinement(t *testing.T) {
 	v := inspected.Container
 	if h := v.HostConfig; h.Privileged || !h.ReadonlyRootfs || len(h.Devices) > 0 || !slices.Equal(h.CapDrop, []string{"ALL"}) || !slices.Equal(slices.Sorted(slices.Values(h.CapAdd)), []string{"CAP_SETGID", "CAP_SETUID"}) || v.Config.User != fmt.Sprintf("%d:%d", builderUID, builderUID) || v.AppArmorProfile != builderProfile {
 		t.Fatalf("build container privileged %v, read-only %v, devices %v, capabilities -%v +%v, user %q, AppArmor %q", h.Privileged, h.ReadonlyRootfs, h.Devices, h.CapDrop, h.CapAdd, v.Config.User, v.AppArmorProfile)
-	}
-	var workers error
-	for range 40 {
-		if _, workers = engine.pipelineCLI(ctx, pipelineName(c), nil, nil, 4096, "buildctl", "debug", "workers"); workers == nil {
-			break
-		}
-		time.Sleep(250 * time.Millisecond)
-	}
-	if workers != nil {
-		logs, _ := exec.Command(dockerCLI, "--host", docker.DaemonHost(), "logs", pipelineName(c)).CombinedOutput()
-		t.Fatalf("rootless BuildKit did not start: %v\n%s", workers, logs)
 	}
 	run := func(input string, args ...string) string {
 		t.Helper()
