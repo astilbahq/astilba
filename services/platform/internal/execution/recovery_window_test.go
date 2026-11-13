@@ -3,6 +3,7 @@ package execution
 import (
 	"errors"
 	"maps"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -254,7 +255,14 @@ func TestRecoveryUsesTheNewestBaseAndSetsTheRestAside(t *testing.T) {
 	}
 
 	t.Run("a resumed root keeps its base", func(t *testing.T) {
-		out := recoverySource{Bases: []loadedBase{listed, unlisted, n}, Hosts: map[uuid.UUID]deployment.RecoveryEvidence{uuid.New(): {ActiveParent: listed.Parent}}}
+		// The root is unfinished, so the newest base carries it.
+		resuming := newest
+		resuming.Tables = maps.Clone(newest.Tables)
+		resuming.Tables["execution_operations"] = append(slices.Clone(newest.Tables["execution_operations"]), appliedTestRow(map[string]any{"id": listed.Parent, "workspace_id": newest.Workspace, "environment_id": plans[0].EnvironmentID, "server_id": plans[0].ServerID, "kind": "crosshost", "parent_id": nil, "generation": 9, "state": "running", "report_sequence": 0, "command": api.ExecutionCommand{Id: listed.Parent, ServerId: plans[0].ServerID, EnvironmentId: plans[0].EnvironmentID, Generation: 9, Kind: "crosshost"}, "visual_plan_id": nil, "runtime_outcome": nil, "runtime_plan_id": nil}))
+		resumingN := n
+		resumingN.Parent = uuid.New()
+		archives[resumingN.Parent] = resuming
+		out := recoverySource{Bases: []loadedBase{listed, unlisted, resumingN}, Hosts: map[uuid.UUID]deployment.RecoveryEvidence{uuid.New(): {ActiveParent: listed.Parent}}}
 		if err := chooseRecoveryBases(&out, decode); err != nil {
 			t.Fatal(err)
 		}
@@ -311,8 +319,8 @@ func TestLedgerEntryAgreesWithAFailedRootsRow(t *testing.T) {
 	}
 }
 
-// Hosts that report running a root the newest base neither carries nor lists are refused by name,
-// whether another management started it or the newest base records that it ended.
+// Hosts that report running a root the newest base doesn't carry are refused by name, whether
+// another management started it or the newest base records that it ended.
 func TestRecoveryRefusesHostsRunningARootTheNewestBaseDoesNotKnow(t *testing.T) {
 	_, full, plans := windowTestChain(t, 2)
 	newest := windowTestHistory(t, full, plans, 1)
@@ -324,10 +332,14 @@ func TestRecoveryRefusesHostsRunningARootTheNewestBaseDoesNotKnow(t *testing.T) 
 	running := func(parent uuid.UUID) map[uuid.UUID]deployment.RecoveryEvidence {
 		return map[uuid.UUID]deployment.RecoveryEvidence{server: {ServerID: server, ActiveParent: parent}}
 	}
-	for _, parent := range []uuid.UUID{uuid.Nil, carried, listed} {
+	for _, parent := range []uuid.UUID{uuid.Nil, carried} {
 		if err := refuseUnknownActiveRoots(newest, n, running(parent)); err != nil {
-			t.Fatal("a root the newest base knows was refused", err)
+			t.Fatal("a root the newest base carries was refused", err)
 		}
+	}
+	// A listed base's root that the newest base no longer carries has ended.
+	if err := refuseUnknownActiveRoots(newest, n, running(listed)); err == nil || !strings.Contains(err.Error(), "records as ended") || !strings.Contains(err.Error(), "revoke those servers") {
+		t.Fatal("a stale report of a listed root that ended wasn't refused by name", err)
 	}
 	err := refuseUnknownActiveRoots(newest, n, running(unknown))
 	if err == nil || !strings.Contains(err.Error(), "edge-1 ("+server.String()+")") || !strings.Contains(err.Error(), unknown.String()) || !strings.Contains(err.Error(), "doesn't descend from") || !strings.Contains(err.Error(), "revoke those servers") {

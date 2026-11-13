@@ -153,26 +153,26 @@ func chooseRecoveryBases(out *recoverySource, decode func(uuid.UUID) (portabilit
 }
 
 // refuseUnknownActiveRoots refuses hosts that report running a cross-host root the newest base
-// neither carries nor lists. A root of N's own management is unfinished, and so carried, or its
-// base is listed while a host may still hold it. So such a root was started by a management N's
-// doesn't descend from, as when a management restored from a backup ran other work on other hosts,
-// or N records that it ended and the host's report is stale. A base captured when the root started
-// always shows it unfinished, and only the host's unsigned report says it still is, so recovery
-// takes neither over. The hosts are named, so the operator can revoke them, leave their exports
+// doesn't carry. N carries every unfinished root of its own management, so such a root was started
+// by a management N's doesn't descend from, as when a management restored from a backup ran other
+// work on other hosts, or it ended, as N records by listing its base or by its applied or settled
+// history, and the hosts' report is stale. A base captured when the root started always shows it
+// unfinished, and only the hosts' unsigned reports say it still is, so recovery takes neither over.
+// Every such root is named with its servers, so the operator can revoke them, leave their exports
 // out, and enrol them again afterwards.
 func refuseUnknownActiveRoots(a portability.Archive, newest loadedBase, hosts map[uuid.UUID]deployment.RecoveryEvidence) error {
-	known := map[uuid.UUID]bool{}
-	for _, parent := range newest.Supersedes {
-		known[parent] = true
-	}
+	carried := map[uuid.UUID]bool{}
 	for _, row := range a.Tables["execution_operations"] {
 		id, err := recoveryValue[uuid.UUID](row, "id")
 		if err != nil {
 			return err
 		}
-		known[id] = true
+		carried[id] = true
 	}
 	ended := map[uuid.UUID]bool{}
+	for _, parent := range newest.Supersedes {
+		ended[parent] = true
+	}
 	if a.Recovery != nil {
 		for _, e := range a.Recovery.Applied {
 			ended[e.Operation] = true
@@ -191,7 +191,7 @@ func refuseUnknownActiveRoots(a portability.Archive, newest loadedBase, hosts ma
 	}
 	unknown := map[uuid.UUID][]string{}
 	for _, host := range hosts {
-		if host.ActiveParent == uuid.Nil || known[host.ActiveParent] {
+		if host.ActiveParent == uuid.Nil || carried[host.ActiveParent] {
 			continue
 		}
 		name := names[host.ServerID]
@@ -203,14 +203,17 @@ func refuseUnknownActiveRoots(a portability.Archive, newest loadedBase, hosts ma
 	if len(unknown) == 0 {
 		return nil
 	}
-	root := slices.MinFunc(slices.Collect(maps.Keys(unknown)), func(x, y uuid.UUID) int { return bytes.Compare(x[:], y[:]) })
-	servers := unknown[root]
-	slices.Sort(servers)
-	reason := "which the newest recovery checkpoint neither carries nor lists, so a management this one doesn't descend from started it"
-	if ended[root] {
-		reason = "which the newest recovery checkpoint records as ended, so their report is stale"
+	reports := []string{}
+	for _, root := range slices.SortedFunc(maps.Keys(unknown), bytesCompareUUID) {
+		servers := unknown[root]
+		slices.Sort(servers)
+		reason := "which the newest recovery checkpoint doesn't carry, so a management this one doesn't descend from started it"
+		if ended[root] {
+			reason = "which the newest recovery checkpoint records as ended, so their report is stale"
+		}
+		reports = append(reports, fmt.Sprintf("servers %s report running cross-host deployment %s, %s", strings.Join(servers, ", "), root, reason))
 	}
-	return fmt.Errorf("servers %s report running cross-host deployment %s, %s. Recovery can't take that work over: revoke those servers in this management and leave their exports out, then after recovery enrol them again and redeploy what they ran", strings.Join(servers, ", "), root, reason)
+	return fmt.Errorf("%s; recovery can't take that work over: revoke those servers in this management and leave their exports out, then after recovery enrol them again and redeploy what they ran", strings.Join(reports, "; "))
 }
 
 // newestRecoveryBase is N: the base captured last among those no other loaded base lists as
