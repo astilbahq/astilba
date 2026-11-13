@@ -91,6 +91,17 @@ func chooseRecoveryBases(out *recoverySource, decode func(uuid.UUID) (portabilit
 	}
 	out.Origins.Newest = origin
 	out.Archive, out.History = a, a.Recovery
+	// What a server N shows revoked reports counts for nothing from here on, as
+	// ignoreRevokedExports also applies to its proofs later.
+	revoked, err := recoveryRevokedServers(a)
+	if err != nil {
+		return err
+	}
+	for server, host := range out.Hosts {
+		if revoked[server] {
+			out.Hosts[server] = revokedEvidence(host)
+		}
+	}
 	if err = refuseUnknownActiveRoots(a, newest, out.Hosts); err != nil {
 		return err
 	}
@@ -181,11 +192,6 @@ func refuseUnknownActiveRoots(a portability.Archive, newest loadedBase, hosts ma
 			ended[e.Operation] = true
 		}
 	}
-	// A server N shows revoked counts for nothing it reports; recovery ignores its claims later.
-	revoked, err := recoveryRevokedServers(a)
-	if err != nil {
-		return err
-	}
 	names := map[uuid.UUID]string{}
 	for _, row := range a.Tables["servers"] {
 		id, err := recoveryValue[uuid.UUID](row, "id")
@@ -196,7 +202,7 @@ func refuseUnknownActiveRoots(a portability.Archive, newest loadedBase, hosts ma
 	}
 	unknown := map[uuid.UUID][]string{}
 	for _, host := range hosts {
-		if host.ActiveParent == uuid.Nil || carried[host.ActiveParent] || revoked[host.ServerID] {
+		if host.ActiveParent == uuid.Nil || carried[host.ActiveParent] {
 			continue
 		}
 		name := names[host.ServerID]

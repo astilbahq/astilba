@@ -347,8 +347,9 @@ func TestRecoveryRefusesHostsRunningARootTheNewestBaseDoesNotKnow(t *testing.T) 
 	}
 	// A server the newest base shows revoked counts for nothing it reports.
 	recoverySet(newest.Tables["servers"][0], "revoked", true)
-	if err := refuseUnknownActiveRoots(newest, n, running(unknown)); err != nil {
-		t.Fatal("a server the newest base shows revoked was refused", err)
+	out := recoverySource{Bases: []loadedBase{n}, Hosts: running(unknown)}
+	if err := chooseRecoveryBases(&out, func(uuid.UUID) (portability.Archive, error) { return newest, nil }); err != nil || out.Hosts[server].ActiveParent != uuid.Nil {
+		t.Fatal("a server the newest base shows revoked was refused or kept its claim", err)
 	}
 	recoverySet(newest.Tables["servers"][0], "revoked", false)
 	newest.Recovery.Settled = append(newest.Recovery.Settled, portability.SettledOperation{Operation: unknown, State: "succeeded", Sequence: 1, EndedAt: newest.CreatedAt})
