@@ -181,7 +181,7 @@ func TestTroubleshootingTrailNamesManagementsEnding(t *testing.T) {
 					}()
 				}
 				ended := make(chan string, 1)
-				go func() { ended <- e.pumpShell(context.Background(), agent, "exec", attached) }()
+				go func() { ended <- e.pumpShell(context.Background(), agent, "exec", attached, nil) }()
 				// The session is under way: input reaches the shell, and any output arrives.
 				if err := management.Write(context.Background(), websocket.MessageBinary, append([]byte{terminal.Input}, "x"...)); err != nil {
 					t.Fatal(err)
@@ -240,5 +240,35 @@ func TestTroubleshootingEndBeforeStartIsJournaled(t *testing.T) {
 	}
 	if lines := trailFor(trail.String(), offer.SessionId); len(lines) != 1 || !strings.Contains(lines[0], `msg="terminal session ended before its shell started"`) || !strings.Contains(lines[0], `reason="ended by management: browser stream lost"`) {
 		t.Fatalf("trail: %q", lines)
+	}
+}
+
+// A deployment that makes the service elevated ends a running shell, and the person is told
+// the container is no longer eligible.
+func TestTroubleshootingShellEndsWhenItsServiceBecomesElevated(t *testing.T) {
+	e := &Engine{Docker: execDaemon(t, map[string]string{"exec": `{"ID":"exec","Running":true,"Pid":0}`})}
+	agent, management := managementStream(t)
+	attached, _ := shellStream(t)
+	end := make(chan struct{})
+	ended := make(chan string, 1)
+	go func() { ended <- e.pumpShell(context.Background(), agent, "exec", attached, end) }()
+	close(end)
+	read, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_, frame, err := management.Read(read)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := append([]byte{terminal.Refused}, terminal.RefusedIneligible...); string(frame) != string(want) {
+		t.Fatalf("last frame %q, want %q", frame, want)
+	}
+	go management.Read(read) // answers the closing handshake
+	select {
+	case got := <-ended:
+		if got != "service became elevated" {
+			t.Fatalf("session ended with %q", got)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("session did not end")
 	}
 }

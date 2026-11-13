@@ -1,0 +1,495 @@
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import { clip, inert, syncIssue } from "./report-issue.mjs";
+
+// Keeps the issues it is given, applies what syncIssue sends, and lists them newest
+// first a page at a time, as GitHub does.
+const fakeGitHub = (issues = [], { fail = () => false } = {}) => {
+  const sent = [];
+  return {
+    sent,
+    issues,
+    request: async (path, { method = "GET", body } = {}) => {
+      if (fail(method, path)) throw new Error(`${method} ${path} returned 502`);
+      if (method !== "GET") sent.push({ method, path, ...body });
+      // GitHub answers an unknown creator with an empty list, not an error.
+      else assert.match(path, /[?&]creator=github-actions%5Bbot%5D(&|$)/);
+      if (method === "POST" && path.endsWith("/issues"))
+        issues.push({
+          number: Math.max(0, ...issues.map(({ number }) => number)) + 1,
+          state: "open",
+          ...body,
+        });
+      const number = Number(/\/issues\/(\d+)$/.exec(path)?.[1]);
+      if (method === "PATCH")
+        Object.assign(
+          issues.find((issue) => issue.number === number),
+          body,
+        );
+      const query = new URLSearchParams(path.split("?")[1]);
+      const size = Number(query.get("per_page") ?? 30);
+      const page = Number(query.get("page") ?? 1);
+      return {
+        json: async () =>
+          issues
+            .filter((issue) => (issue.state ?? "open") === query.get("state"))
+            .toSorted((a, b) => b.number - a.number)
+            .slice((page - 1) * size, page * size),
+      };
+    },
+  };
+};
+const title = "Scheduled check failed";
+const problem = (key) => ({ key, line: `- ${key}` });
+
+test("opens one issue for the first problem, keeping its keys", async () => {
+  const none = fakeGitHub([{ number: 3, title: "Another issue" }]);
+  assert.equal(
+    await syncIssue(none.request, "o/r", {
+      title,
+      problems: [problem("a"), problem("b")],
+      body: "today",
+    }),
+    "opened",
+  );
+  assert.equal(none.sent.length, 1);
+  const [{ method, path, body }] = none.sent;
+  assert.deepEqual([method, path], ["POST", "/repos/o/r/issues"]);
+  assert.match(body, /^<!-- report keys: [0-9a-f]{8} [0-9a-f]{8} -->\ntoday$/);
+  assert.equal(none.sent[0].title, title);
+});
+
+test("the same problems on a later day update the issue without a comment", async () => {
+  const first = fakeGitHub([]);
+  await syncIssue(first.request, "o/r", {
+    title,
+    problems: [problem("a")],
+    body: "Monday",
+  });
+  const open = [{ number: 7, title, body: first.sent[0].body }];
+  const again = fakeGitHub(open);
+  assert.equal(
+    await syncIssue(again.request, "o/r", {
+      title,
+      problems: [problem("a")],
+      body: "Tuesday",
+    }),
+    "updated",
+  );
+  assert.deepEqual(again.sent, [
+    {
+      method: "PATCH",
+      path: "/repos/o/r/issues/7",
+      body: first.sent[0].body.replace("Monday", "Tuesday"),
+    },
+  ]);
+});
+
+test("a new problem is announced in one comment, naming only what is new", async () => {
+  const first = fakeGitHub([]);
+  await syncIssue(first.request, "o/r", {
+    title,
+    problems: [problem("a")],
+    body: "",
+  });
+  const open = [{ number: 7, title, body: first.sent[0].body }];
+  const more = fakeGitHub(open);
+  assert.equal(
+    await syncIssue(more.request, "o/r", {
+      title,
+      problems: [problem("a"), problem("b"), problem("b")],
+      body: "",
+    }),
+    "commented",
+  );
+  assert.equal(more.sent.length, 2);
+  assert.deepEqual(more.sent[0], {
+    method: "POST",
+    path: "/repos/o/r/issues/7/comments",
+    body: "New since the last report (1):\n\n- b",
+  });
+});
+
+test("an issue without keys, from before they were kept, hears every problem once", async () => {
+  const legacy = fakeGitHub([{ number: 7, title, body: "over budget" }]);
+  assert.equal(
+    await syncIssue(legacy.request, "o/r", {
+      title,
+      problems: [problem("a")],
+      body: "",
+    }),
+    "commented",
+  );
+});
+
+test("closes the issue once nothing is wrong, unless the report could not tell", async () => {
+  const open = [{ number: 7, title, body: "" }];
+  const unsure = fakeGitHub(open);
+  assert.equal(
+    await syncIssue(unsure.request, "o/r", {
+      title,
+      problems: [],
+      body: "",
+      undecided: true,
+    }),
+    "unchanged",
+  );
+  assert.deepEqual(unsure.sent, []);
+
+  const recovered = fakeGitHub(open);
+  assert.equal(
+    await syncIssue(recovered.request, "o/r", {
+      title,
+      problems: [],
+      body: "passed",
+    }),
+    "closed",
+  );
+  assert.deepEqual(recovered.sent, [
+    {
+      method: "PATCH",
+      path: "/repos/o/r/issues/7",
+      body: "<!-- report keys:  -->\npassed",
+      state: "closed",
+      state_reason: "completed",
+    },
+  ]);
+
+  const nothing = fakeGitHub([]);
+  await syncIssue(nothing.request, "o/r", { title, problems: [], body: "" });
+  assert.deepEqual(nothing.sent, []);
+});
+
+test("ignores pull requests and other titles, and keeps the newest of two", async () => {
+  const github = fakeGitHub([
+    { number: 9, title, body: "", pull_request: {} },
+    { number: 8, title, body: "" },
+    { number: 5, title, body: "" },
+  ]);
+  await syncIssue(github.request, "o/r", { title, problems: [], body: "" });
+  assert.equal(github.sent[0].path, "/repos/o/r/issues/8");
+});
+
+test("scanner text cannot mention, link or break out of its code span", () => {
+  assert.equal(
+    inert("see @owner and [x](https://e.test)\n#1 `rm`"),
+    "`see @owner and [x](https://e.test) #1 'rm'`",
+  );
+  assert.equal(inert("  "), "");
+  assert.equal(inert("abcdef", 4), "`abc…`");
+});
+
+test("a long body is cut at a line, under GitHub's limit", () => {
+  const long = Array.from({ length: 5000 }, (_, i) => `line ${i}`).join("\n");
+  const cut = clip(long, 1000);
+  assert.ok(cut.length <= 1000);
+  assert.match(cut, /\nline \d+\n\n…cut to fit the issue/);
+  assert.equal(clip("short", 1000), "short");
+  assert.ok(clip("x".repeat(5000), 1000).length <= 1000);
+});
+
+test("closing an acknowledged report's issue accepts what it listed", async () => {
+  const first = fakeGitHub([]);
+  await syncIssue(first.request, "o/r", {
+    title,
+    problems: [problem("a")],
+    body: "",
+    acknowledge: true,
+  });
+  const closed = {
+    number: 4,
+    title,
+    state: "closed",
+    closed_at: "2026-11-12T10:00:00Z",
+    body: first.sent[0].body,
+  };
+  const older = {
+    ...closed,
+    number: 2,
+    closed_at: "2026-11-01T10:00:00Z",
+    body: "",
+  };
+
+  const same = fakeGitHub([older, closed]);
+  assert.equal(
+    await syncIssue(same.request, "o/r", {
+      title,
+      problems: [problem("a")],
+      body: "",
+      acknowledge: true,
+    }),
+    "acknowledged",
+  );
+  assert.deepEqual(same.sent, []);
+
+  const more = fakeGitHub([older, closed]);
+  assert.equal(
+    await syncIssue(more.request, "o/r", {
+      title,
+      problems: [problem("a"), problem("b")],
+      body: "today",
+      acknowledge: true,
+    }),
+    "opened",
+  );
+  assert.match(
+    more.sent[0].body,
+    /\nNew since #4 was closed \(1\):\n\n- b\n\ntoday$/,
+  );
+
+  // Without acknowledgement, as for a failing gate, closing it accepts nothing.
+  const gate = fakeGitHub([closed]);
+  assert.equal(
+    await syncIssue(gate.request, "o/r", {
+      title,
+      problems: [problem("a")],
+      body: "",
+    }),
+    "opened",
+  );
+});
+
+test("a recovery clears the keys, so a problem that returns is new again", async () => {
+  const recovered = fakeGitHub([{ number: 7, title, body: "" }]);
+  await syncIssue(recovered.request, "o/r", {
+    title,
+    problems: [],
+    body: "",
+    acknowledge: true,
+  });
+  const returned = fakeGitHub([
+    {
+      number: 7,
+      title,
+      state: "closed",
+      closed_at: "2026-11-12T10:00:00Z",
+      body: recovered.sent[0].body,
+    },
+  ]);
+  assert.equal(
+    await syncIssue(returned.request, "o/r", {
+      title,
+      problems: [problem("a")],
+      body: "",
+      acknowledge: true,
+    }),
+    "opened",
+  );
+});
+
+const closeByHand = (github) => {
+  for (const issue of github.issues) issue.state = "closed";
+};
+const run = (github, problems, fields = {}) =>
+  syncIssue(github.request, "o/r", {
+    title,
+    problems,
+    body: "",
+    acknowledge: true,
+    ...fields,
+  });
+
+test("an accepted problem that goes away is new again when it returns", async () => {
+  const partly = fakeGitHub();
+  await run(partly, [problem("a"), problem("b")]);
+  closeByHand(partly);
+  assert.equal(await run(partly, [problem("a")]), "acknowledged");
+  assert.equal(await run(partly, [problem("a"), problem("b")]), "opened");
+  assert.match(
+    partly.issues.at(-1).body,
+    /\nNew since #1 was closed \(1\):\n\n- b\n/,
+  );
+
+  const recovered = fakeGitHub();
+  await run(recovered, [problem("a")]);
+  closeByHand(recovered);
+  assert.equal(await run(recovered, []), "unchanged");
+  assert.equal(await run(recovered, [problem("a")]), "opened");
+});
+
+test("closing the issue never accepts a check that did not run", async () => {
+  const unchecked = { ...problem("unfinished"), check: true };
+  const github = fakeGitHub();
+  await run(github, [unchecked]);
+  closeByHand(github);
+  assert.equal(await run(github, [unchecked]), "opened");
+  closeByHand(github);
+  assert.equal(await run(github, [unchecked]), "opened");
+});
+
+test("a run that could not check keeps the keys, so nothing is announced twice", async () => {
+  const unchecked = { ...problem("unfinished"), check: true };
+  const gate = fakeGitHub();
+  await run(gate, [problem("a"), problem("b")], { acknowledge: false });
+  assert.equal(
+    await run(gate, [unchecked], { acknowledge: false }),
+    "commented",
+  );
+  assert.equal(
+    await run(gate, [problem("a"), problem("b")], { acknowledge: false }),
+    "updated",
+  );
+
+  const accepted = fakeGitHub();
+  await run(accepted, [problem("a"), problem("b")]);
+  closeByHand(accepted);
+  assert.equal(await run(accepted, [unchecked]), "opened");
+  // The check ran again and found only what was accepted, so the issue closes.
+  assert.equal(await run(accepted, [problem("a"), problem("b")]), "accepted");
+  assert.equal(accepted.issues.at(-1).state, "closed");
+  assert.equal(
+    await run(accepted, [problem("a"), problem("b")]),
+    "acknowledged",
+  );
+  assert.equal(
+    accepted.sent.filter(({ path }) => path.endsWith("/comments")).length,
+    0,
+  );
+});
+
+test("a comment that fails leaves its problem new for the next run", async () => {
+  const issues = [];
+  await run(fakeGitHub(issues), [problem("a")], { acknowledge: false });
+  const failing = fakeGitHub(issues, {
+    fail: (method, path) => method === "POST" && path.endsWith("/comments"),
+  });
+  await assert.rejects(
+    run(failing, [problem("a"), problem("b")], { acknowledge: false }),
+  );
+  assert.equal(
+    await run(fakeGitHub(issues), [problem("a"), problem("b")], {
+      acknowledge: false,
+    }),
+    "commented",
+  );
+});
+
+test("finds the accepted issue behind a page of newer ones", async () => {
+  const github = fakeGitHub();
+  await run(github, [problem("a")]);
+  closeByHand(github);
+  for (let number = 2; number < 160; number++)
+    github.issues.push({
+      number,
+      title: "Another report",
+      state: "closed",
+      body: "",
+    });
+  assert.equal(await run(github, [problem("a")]), "acknowledged");
+});
+
+test("keys kept through failed checks stay within the body's limit", async () => {
+  const unchecked = { ...problem("unfinished"), check: true };
+  const github = fakeGitHub();
+  for (let day = 0; day < 3; day++) {
+    const churn = Array.from({ length: 2999 }, (_, i) =>
+      problem(`${day}-${i}`),
+    );
+    await run(github, [unchecked, ...churn], { acknowledge: false });
+    assert.ok(github.issues[0].body.length < 60_000);
+  }
+});
+
+test("a problem already known by one of its aliases is not new", async () => {
+  const github = fakeGitHub();
+  await run(github, [problem("GHSA-a")], { acknowledge: false });
+  assert.equal(
+    await run(github, [{ ...problem("GO-1"), aliases: ["GHSA-a"] }], {
+      acknowledge: false,
+    }),
+    "updated",
+  );
+});
+
+test("closing during a check that could not run accepts only what the issue listed", async () => {
+  const unchecked = { ...problem("unfinished"), check: true };
+  const github = fakeGitHub();
+  await run(github, [problem("a")]);
+  assert.equal(await run(github, [unchecked]), "commented");
+  closeByHand(github);
+  assert.equal(await run(github, [problem("a")]), "opened");
+});
+
+test("a report's own ids never widen what a person accepted", async () => {
+  const github = fakeGitHub();
+  await run(github, [problem("K1")]);
+  closeByHand(github);
+  // A new id joining an accepted advisory keeps it accepted…
+  assert.equal(
+    await run(github, [{ ...problem("K2"), aliases: ["K1"] }]),
+    "acknowledged",
+  );
+  // …but only under the id a person saw, so a report aliasing an unseen problem to an
+  // accepted one cannot get it accepted.
+  assert.equal(await run(github, [problem("K2")]), "opened");
+});
+
+test("closing an issue opened for a check that could not run keeps earlier acceptance", async () => {
+  const unchecked = { ...problem("unfinished"), check: true };
+  const github = fakeGitHub();
+  await run(github, [problem("a")]);
+  closeByHand(github);
+  assert.equal(await run(github, [unchecked]), "opened");
+  closeByHand(github);
+  assert.equal(await run(github, [problem("a")]), "acknowledged");
+});
+
+test("narrowing a closed issue's keys keeps its body within GitHub's limit", async () => {
+  const unchecked = { ...problem("unfinished"), check: true };
+  const github = fakeGitHub();
+  await run(github, [problem("a")]);
+  closeByHand(github);
+  assert.equal(await run(github, [problem("a"), problem("b")]), "opened");
+  assert.equal(await run(github, [unchecked]), "commented");
+  closeByHand(github);
+  const closed = github.issues.at(-1);
+  assert.match(closed.body, /report unseen keys/);
+  closed.body += "\n" + "x".repeat(70_000);
+  assert.equal(await run(github, [problem("a")]), "acknowledged");
+  assert.ok(closed.body.length <= 60_000);
+  assert.doesNotMatch(closed.body, /report unseen keys/);
+});
+
+test("past the key limit only aliases are dropped, never a problem's own key", async () => {
+  const github = fakeGitHub();
+  const many = Array.from({ length: 600 }, (_, i) => ({
+    ...problem(`p${i}`),
+    aliases: Array.from({ length: 10 }, (_, j) => `p${i}-${j}`),
+  }));
+  await run(github, many, { acknowledge: false });
+  assert.equal(await run(github, many, { acknowledge: false }), "updated");
+});
+
+test("an alias a report adds is never remembered or accepted in its own right", async () => {
+  const github = fakeGitHub();
+  await run(github, [problem("P")]);
+  // A report gives a listed problem an alias of something nobody was shown.
+  assert.equal(
+    await run(github, [{ ...problem("P"), aliases: ["A"] }]),
+    "updated",
+  );
+  closeByHand(github);
+  assert.equal(await run(github, [problem("P"), problem("A")]), "opened");
+  assert.match(
+    github.issues.at(-1).body,
+    /New since #1 was closed \(1\):\n\n- A/,
+  );
+});
+
+test("an alias a report adds does not quiet the problem when it really appears", async () => {
+  const unchecked = { ...problem("unfinished"), check: true };
+  const github = fakeGitHub();
+  await run(github, [problem("P")], { acknowledge: false });
+  await run(github, [{ ...problem("P"), aliases: ["A"] }, unchecked], {
+    acknowledge: false,
+  });
+  await run(github, [unchecked], { acknowledge: false });
+  assert.equal(
+    await run(github, [problem("P"), problem("A")], { acknowledge: false }),
+    "commented",
+  );
+  assert.match(
+    github.sent.filter(({ path }) => path.endsWith("/comments")).at(-1).body,
+    /\(1\):\n\n- A$/,
+  );
+});

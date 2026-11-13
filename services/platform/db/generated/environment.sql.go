@@ -643,6 +643,24 @@ func (q *Queries) ListSecrets(ctx context.Context, arg ListSecretsParams) ([]Lis
 	return items, nil
 }
 
+const lockEnvironmentForUpdate = `-- name: LockEnvironmentForUpdate :one
+SELECT id FROM environments WHERE workspace_id = $1 AND id = $2 FOR NO KEY UPDATE
+`
+
+type LockEnvironmentForUpdateParams struct {
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ID          uuid.UUID `json:"id"`
+}
+
+// Takes the environment's row lock that writing a revision or admitting a pipeline takes first, so
+// a transaction that then locks a build target keeps their order and can't deadlock with them.
+func (q *Queries) LockEnvironmentForUpdate(ctx context.Context, arg LockEnvironmentForUpdateParams) (uuid.UUID, error) {
+	row := q.db.QueryRow(ctx, lockEnvironmentForUpdate, arg.WorkspaceID, arg.ID)
+	var id uuid.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
 const putLayout = `-- name: PutLayout :one
 INSERT INTO environment_layouts(workspace_id,environment_id,positions) VALUES($1,$2,$3)
 ON CONFLICT(workspace_id,environment_id) DO UPDATE SET positions=EXCLUDED.positions,updated_at=now() RETURNING workspace_id, environment_id, positions, updated_at
@@ -694,6 +712,18 @@ type RewrapTOTPParams struct {
 func (q *Queries) RewrapTOTP(ctx context.Context, arg RewrapTOTPParams) error {
 	_, err := q.db.Exec(ctx, rewrapTOTP, arg.ID, arg.TotpSecret, arg.TotpPending)
 	return err
+}
+
+const specificationTextSize = `-- name: SpecificationTextSize :one
+SELECT octet_length($1::jsonb::text)::int AS size
+`
+
+// The bytes a specification takes as specification_revisions' size check measures them.
+func (q *Queries) SpecificationTextSize(ctx context.Context, specification []byte) (int32, error) {
+	row := q.db.QueryRow(ctx, specificationTextSize, specification)
+	var size int32
+	err := row.Scan(&size)
+	return size, err
 }
 
 const visualPlanHostReview = `-- name: VisualPlanHostReview :one

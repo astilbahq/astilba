@@ -44,10 +44,11 @@ const vulnerabilityInputs = (path) =>
   path === ".github/vulnerability-allowlist.json" ||
   path === ".github/workflows/vulnerability-scan.yml" ||
   path === ".github/workflows/application.yml" ||
-  path.startsWith("scripts/vulnerability-scan") ||
+  // `make check-vulnerabilities` runs scripts that import, read and run others, so every script
+  // but a test is an input: none can join the scan without selecting it.
+  (path.startsWith("scripts/") && !path.endsWith(".test.mjs")) ||
   // The scan also confirms the pinned Public Suffix List matches upstream.
-  path.startsWith("services/platform/internal/publicsuffix/") ||
-  path.startsWith("scripts/public-suffix-list");
+  path.startsWith("services/platform/internal/publicsuffix/");
 
 // A pull request or merge group skips a suite only when every changed path is
 // known not to affect it; anything unrecognised selects the suite.

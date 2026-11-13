@@ -84,7 +84,10 @@ type Status struct {
 	ID          uuid.UUID `json:"id"`
 	OperationID uuid.UUID `json:"operationId"`
 	State       string    `json:"state"`
-	Plan        *Plan     `json:"plan"`
+	// Plan is the whole plan, configuration included, for a principal that may read the environment.
+	Plan *Plan `json:"plan"`
+	// Review is what reviewing and applying the plan needs, for every principal, once it is ready.
+	Review *Review `json:"review"`
 	// HostReview is whether applying the plan needs an owner to approve its host changes.
 	HostReview bool `json:"hostReview"`
 }

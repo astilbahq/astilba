@@ -329,7 +329,7 @@ func (s *Service) reconcileNetwork(ctx context.Context, ws uuid.UUID) error {
 		var controller int64
 		var reserved bool
 		var busy, restriction bool
-		err = tx.QueryRow(ctx, `SELECT NOT revoked AND NOT awaiting_transfer AND NOT preview_only AND role<>'build' AND last_seen>now()-interval '45 seconds',COALESCE((capabilities->>'crossHost')::boolean,false),controller_generation,EXISTS(SELECT 1 FROM cross_host_reservations WHERE server_id=$1),EXISTS(SELECT 1 FROM execution_operations WHERE server_id=$1 AND NOT(kind='crosshost' AND parent_id IS NULL) AND state NOT IN ('succeeded','failed','cancelled')),EXISTS(SELECT 1 FROM execution_operations WHERE server_id=$1 AND kind='network' AND command->'network'->>'action'='restrict' AND state NOT IN ('succeeded','failed','cancelled')) FROM servers WHERE id=$1 FOR UPDATE`, m.ServerID).Scan(&ready, &prepared, &controller, &reserved, &busy, &restriction)
+		err = tx.QueryRow(ctx, `SELECT NOT revoked AND NOT awaiting_transfer AND NOT preview_only AND role<>'build' AND last_seen>now()-interval '45 seconds',COALESCE((capabilities->>'crossHost')::boolean,false),controller_generation,EXISTS(SELECT 1 FROM cross_host_reservations WHERE server_id=$1),EXISTS(SELECT 1 FROM execution_operations WHERE server_id=$1 AND NOT(kind='crosshost' AND parent_id IS NULL) AND state IN ('queued','dispatched','running','needs_attention')),EXISTS(SELECT 1 FROM execution_operations WHERE server_id=$1 AND kind='network' AND command->'network'->>'action'='restrict' AND state IN ('queued','dispatched','running','needs_attention')) FROM servers WHERE id=$1 FOR UPDATE`, m.ServerID).Scan(&ready, &prepared, &controller, &reserved, &busy, &restriction)
 		if err != nil {
 			return err
 		}

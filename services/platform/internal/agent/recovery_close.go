@@ -16,7 +16,7 @@ func recoveryClose(c api.ExecutionCommand) bool {
 		return false
 	}
 	body, err := crossHostCommand(c)
-	return err == nil && body.Phase == "checkpoint-closed"
+	return err == nil && body.Phase == recoveryClosePhase
 }
 
 // Management emits this only when a root ended before reservation: cancelled, failed at its

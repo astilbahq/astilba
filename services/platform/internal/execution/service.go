@@ -16,10 +16,10 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/agentidentity"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/auth"
-	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/githubapp"
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
+	"github.com/astilbahq/astilba/services/platform/internal/randtoken"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -78,14 +78,16 @@ func New(st *store.Store) (*Service, error) {
 	river.AddWorker(workers, &previewWorker{service: s})
 	river.AddWorker(workers, &previewSweepWorker{service: s})
 	river.AddWorker(workers, &troubleshootingSweepWorker{service: s})
+	river.AddWorker(workers, &secretAccessSweepWorker{service: s})
 	river.AddWorker(workers, &worker{service: s})
 	river.AddWorker(workers, &refreshWorker{service: s})
+	river.AddWorker(workers, &submissionWorker{service: s})
 	river.AddWorker(workers, &automaticWorker{service: s})
 	river.AddWorker(workers, &githubFanoutWorker{service: s})
 	river.AddWorker(workers, &githubReconcileWorker{service: s})
 	s.ResetMail = &auth.ResetMailWorker{}
 	river.AddWorker(workers, s.ResetMail)
-	q, err := river.NewClient(riverpgxv5.New(st.Pool), &river.Config{PeriodicJobs: []*river.PeriodicJob{river.NewPeriodicJob(river.PeriodicInterval(5*time.Second), func() (river.JobArgs, *river.InsertOpts) { return networkSweepArgs{}, nil }, &river.PeriodicJobOpts{RunOnStart: true}), river.NewPeriodicJob(river.PeriodicInterval(30*time.Second), func() (river.JobArgs, *river.InsertOpts) { return coordinatedScheduleArgs{}, nil }, &river.PeriodicJobOpts{RunOnStart: true}), river.NewPeriodicJob(river.PeriodicInterval(30*time.Second), func() (river.JobArgs, *river.InsertOpts) { return previewSweepArgs{}, nil }, &river.PeriodicJobOpts{RunOnStart: true}), river.NewPeriodicJob(river.PeriodicInterval(30*time.Second), func() (river.JobArgs, *river.InsertOpts) { return troubleshootingSweepArgs{}, nil }, &river.PeriodicJobOpts{RunOnStart: true})}, Workers: workers, Queues: map[string]river.QueueConfig{river.QueueDefault: {MaxWorkers: 4}, gitQueue: {MaxWorkers: gitQueueWorkers}, auth.ResetMailQueue: {MaxWorkers: 4}}, JobTimeout: 10 * time.Second})
+	q, err := river.NewClient(riverpgxv5.New(st.Pool), &river.Config{PeriodicJobs: []*river.PeriodicJob{river.NewPeriodicJob(river.PeriodicInterval(5*time.Second), func() (river.JobArgs, *river.InsertOpts) { return networkSweepArgs{}, nil }, &river.PeriodicJobOpts{RunOnStart: true}), river.NewPeriodicJob(river.PeriodicInterval(30*time.Second), func() (river.JobArgs, *river.InsertOpts) { return coordinatedScheduleArgs{}, nil }, &river.PeriodicJobOpts{RunOnStart: true}), river.NewPeriodicJob(river.PeriodicInterval(30*time.Second), func() (river.JobArgs, *river.InsertOpts) { return previewSweepArgs{}, nil }, &river.PeriodicJobOpts{RunOnStart: true}), river.NewPeriodicJob(river.PeriodicInterval(30*time.Second), func() (river.JobArgs, *river.InsertOpts) { return troubleshootingSweepArgs{}, nil }, &river.PeriodicJobOpts{RunOnStart: true}), river.NewPeriodicJob(river.PeriodicInterval(time.Minute), func() (river.JobArgs, *river.InsertOpts) { return secretAccessSweepArgs{}, nil }, &river.PeriodicJobOpts{RunOnStart: true})}, Workers: workers, Queues: map[string]river.QueueConfig{river.QueueDefault: {MaxWorkers: 4}, gitQueue: {MaxWorkers: gitQueueWorkers}, auth.ResetMailQueue: {MaxWorkers: 4}}, JobTimeout: 10 * time.Second})
 	s.Queue = q
 	return s, err
 }
@@ -99,11 +101,26 @@ func Terminal(s api.ExecutionState) bool {
 
 type workspaceAccess struct {
 	Write, Owner, Recent, Credential, Recovery bool
+	// Revocation admits an action that only takes access away in any entitlement state; see
+	// store.InWorkspaceRevocation.
+	Revocation bool
+}
+
+// ownerSettings is the access an owner's change to the workspace's integrations needs.
+var ownerSettings = workspaceAccess{Write: true, Owner: true, Recent: true}
+
+func (a workspaceAccess) admission() store.WorkspaceAccess {
+	return store.WorkspaceAccess{Write: a.Write, Owner: a.Owner, Recent: a.Recent, Credential: a.Credential}
 }
 
 func (s *Service) scope(ctx context.Context, p store.Principal, ws uuid.UUID, access workspaceAccess, action string, id uuid.UUID, fn func(pgx.Tx) error) error {
-	fnScope := func(tx pgx.Tx, q *db.Queries, _ store.Workspace) error {
-		if err := fn(tx); err != nil {
+	return s.scopeIn(ctx, p, ws, access, action, id, func(tx pgx.Tx, _ store.Workspace) error { return fn(tx) })
+}
+
+// scopeIn is scope for work that needs the admitted workspace, such as the caller's role in it.
+func (s *Service) scopeIn(ctx context.Context, p store.Principal, ws uuid.UUID, access workspaceAccess, action string, id uuid.UUID, fn func(pgx.Tx, store.Workspace) error) error {
+	fnScope := func(tx pgx.Tx, q *db.Queries, w store.Workspace) error {
+		if err := fn(tx, w); err != nil {
 			return err
 		}
 		if action != "" {
@@ -111,9 +128,12 @@ func (s *Service) scope(ctx context.Context, p store.Principal, ws uuid.UUID, ac
 		}
 		return nil
 	}
-	admission := store.WorkspaceAccess{Write: access.Write, Owner: access.Owner, Recent: access.Recent, Credential: access.Credential}
-	if access.Recovery {
+	admission := access.admission()
+	switch {
+	case access.Recovery:
 		return s.Store.InWorkspaceRecovery(ctx, p, ws, admission, fnScope)
+	case access.Revocation:
+		return s.Store.InWorkspaceRevocation(ctx, p, ws, admission, fnScope)
 	}
 	return s.Store.InWorkspaceTx(ctx, p, ws, admission, fnScope)
 }
@@ -181,7 +201,7 @@ func (s *Service) CreateServer(ctx context.Context, p store.Principal, ws uuid.U
 	if in.Role != "deployment" && in.Role != "build" && in.Role != "combined" {
 		return out, domain.Invalid("role")
 	}
-	out.Token, err = cryptobox.Token()
+	out.Token, err = randtoken.New()
 	if err != nil {
 		return out, err
 	}
@@ -198,7 +218,7 @@ func (s *Service) CreateServer(ctx context.Context, p store.Principal, ws uuid.U
 		if count >= 100 {
 			return domain.Conflict
 		}
-		row, e := q.InsertServer(ctx, db.InsertServerParams{ID: id, WorkspaceID: ws, Name: name, Role: string(in.Role), EnrollmentHash: hash(out.Token), EnrollmentExpires: &out.ExpiresAt, PreviewOnly: in.PreviewOnly != nil && *in.PreviewOnly})
+		row, e := q.InsertServer(ctx, db.InsertServerParams{ID: id, WorkspaceID: ws, Name: name, Role: string(in.Role), EnrollmentHash: hash(out.Token), EnrollmentExpires: &out.ExpiresAt, EnrollmentIssuerID: p.Account.ID, EnrollmentIssuerAuthVersion: p.Account.AuthVersion, PreviewOnly: in.PreviewOnly != nil && *in.PreviewOnly})
 		if e != nil {
 			return e
 		}
@@ -210,7 +230,7 @@ func (s *Service) CreateServer(ctx context.Context, p store.Principal, ws uuid.U
 func (s *Service) RenewEnrollment(ctx context.Context, p store.Principal, ws, id uuid.UUID) (api.Enrollment, error) {
 	out := api.Enrollment{ExpiresAt: time.Now().Add(10 * time.Minute)}
 	var err error
-	out.Token, err = cryptobox.Token()
+	out.Token, err = randtoken.New()
 	if err != nil {
 		return out, err
 	}
@@ -226,7 +246,7 @@ func (s *Service) RenewEnrollment(ctx context.Context, p store.Principal, ws, id
 		if e := invalidateNetworkMember(ctx, tx, ws, id, memberRenewedNote); e != nil {
 			return e
 		}
-		row, e := db.New(tx).RenewServerEnrollment(ctx, db.RenewServerEnrollmentParams{WorkspaceID: ws, ID: id, EnrollmentHash: hash(out.Token), EnrollmentExpires: &out.ExpiresAt})
+		row, e := db.New(tx).RenewServerEnrollment(ctx, db.RenewServerEnrollmentParams{WorkspaceID: ws, ID: id, EnrollmentHash: hash(out.Token), EnrollmentExpires: &out.ExpiresAt, EnrollmentIssuerID: p.Account.ID, EnrollmentIssuerAuthVersion: p.Account.AuthVersion})
 		if e != nil {
 			return e
 		}
@@ -240,7 +260,8 @@ func (s *Service) Control(ctx context.Context, p store.Principal, ws, id uuid.UU
 	if revoke {
 		action = "server.revoke"
 	}
-	return s.scope(ctx, p, ws, workspaceAccess{Write: true, Owner: true, Recent: true, Recovery: revoke}, action, id, func(tx pgx.Tx) error {
+	// Both only take authority away from the server, so a lapsed workspace can still use them.
+	return s.scope(ctx, p, ws, workspaceAccess{Write: true, Owner: true, Recent: true, Revocation: true}, action, id, func(tx pgx.Tx) error {
 		if revoke {
 			if e := invalidateNetworkMember(ctx, tx, ws, id, memberRevokedNote); e != nil {
 				return e

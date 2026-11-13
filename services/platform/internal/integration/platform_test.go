@@ -19,8 +19,8 @@ import (
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/auth"
-	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
+	"github.com/astilbahq/astilba/services/platform/internal/randtoken"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
 	"github.com/pquerna/otp/totp"
@@ -328,11 +328,11 @@ func seedInvitation(t *testing.T, f *fixture, email string) string {
 	if e := f.st.Queries.InsertMembership(ctx, db.InsertMembershipParams{WorkspaceID: ws, AccountID: account, Role: "owner"}); e != nil {
 		t.Fatal(e)
 	}
-	token, e := cryptobox.Token()
+	token, e := randtoken.New()
 	if e != nil {
 		t.Fatal(e)
 	}
-	if e = f.st.Queries.InsertInvitation(ctx, db.InsertInvitationParams{WorkspaceID: ws, ID: uuid.New(), Email: email, Role: "viewer", TokenHash: auth.Hash(token), ExpiresAt: time.Now().Add(time.Hour)}); e != nil {
+	if e = f.st.Queries.InsertInvitation(ctx, db.InsertInvitationParams{WorkspaceID: ws, ID: uuid.New(), Email: email, Role: "viewer", TokenHash: auth.Hash(token), ExpiresAt: time.Now().Add(time.Hour), IssuerID: account, IssuerAuthVersion: 1}); e != nil {
 		t.Fatal(e)
 	}
 	return token

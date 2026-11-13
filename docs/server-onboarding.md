@@ -20,7 +20,7 @@ A deployment or combined server also needs `--certificate-contact ADDRESS`. The 
 
 The bootstrap refuses existing agent state, incompatible/stopped runtimes and ambiguous partial installations. It does not upgrade or remove an existing runtime, edit SSH settings or replace ingress. A failure preserves installed state and identifies its stage; inspect that state using the manual guide before deciding how to recover. Do not delete the journal to retry.
 
-Once preparation succeeds, create the ten-minute enrollment code. Paste it through the agent's stdin prompt, keeping it out of shell history. Explicitly enable the service afterward. An expired or lost code can be renewed without reinstalling the agent. The dashboard hides codes on dismissal, workspace change or expiry.
+Once preparation succeeds, create the ten-minute enrollment code. Paste it through the agent's stdin prompt, keeping it out of shell history. Explicitly enable the service afterward. An expired or lost code can be renewed without reinstalling the agent. A code counts only while the owner who created it is still an owner with the same credentials: removing or demoting them, or a password, two-factor or recovery-code change, voids it, and another owner renews it. A hosted workspace whose subscription has lapsed refuses codes until it is renewed; revoking a server still works. The dashboard hides codes on dismissal, workspace change or expiry.
 
 Connection status, role capabilities, certificate contact and workload health are separate observations. Older agents may not report certificate-contact configuration. Resolve missing deployment, build or backup capabilities before using those features.
 

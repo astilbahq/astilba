@@ -37,6 +37,8 @@ type revokedGroup struct {
 	// failing names visual actions and cross-host phases ("crosshost-" and the phase) a host reports
 	// as failed. Set while the host isn't polling for one.
 	failing map[string]bool
+	// late names phases a host takes only after their admission deadline, guarded by mu.
+	late map[string]bool
 	// heldCheckpoint is a parent phase whose recovery metadata the primary won't acknowledge.
 	heldCheckpoint string
 	// journals holds the real agent journal of a host that takes its commands through one, and
@@ -49,7 +51,7 @@ type revokedGroup struct {
 
 func newRevokedGroup(t *testing.T, count int) *revokedGroup {
 	t.Helper()
-	g := &revokedGroup{aheadNetwork: newAheadNetwork(t, count), held: map[string]bool{}, seen: map[string]bool{}, attention: map[string]bool{}, failing: map[string]bool{}, journals: map[uuid.UUID]*agent.Journal{}, journalDirs: map[uuid.UUID]string{}, refused: map[uuid.UUID]int{}}
+	g := &revokedGroup{aheadNetwork: newAheadNetwork(t, count), held: map[string]bool{}, seen: map[string]bool{}, attention: map[string]bool{}, failing: map[string]bool{}, late: map[string]bool{}, journals: map[uuid.UUID]*agent.Journal{}, journalDirs: map[uuid.UUID]string{}, refused: map[uuid.UUID]int{}}
 	g.save(t, g.hosts...)
 	g.converge(t)
 	yes := true
@@ -103,6 +105,14 @@ func (g *revokedGroup) hold(h *aheadHost, phase string) {
 	defer g.mu.Unlock()
 	g.held[phase+"/"+h.id.String()] = true
 	delete(g.seen, phase+"/"+h.id.String())
+}
+
+// arriveLate makes the host take a phase that starts something only after its admission deadline,
+// so it reports the phase cancelled unrun, as an agent does.
+func (g *revokedGroup) arriveLate(h *aheadHost, phase string, late bool) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.late[phase+"/"+h.id.String()] = late
 }
 
 func (g *revokedGroup) release(h *aheadHost, phase string) {
@@ -353,9 +363,14 @@ func (g *revokedGroup) respond(t *testing.T, h *aheadHost, c api.ExecutionComman
 		}
 		g.mu.Lock()
 		failing := g.failing["crosshost-"+command.Phase+"/"+h.id.String()]
+		late := g.late[command.Phase+"/"+h.id.String()]
 		g.mu.Unlock()
 		if failing {
 			report.State = "failed"
+			return report, true
+		}
+		if late {
+			report.State, report.Note = "cancelled", "The admission deadline passed before execution."
 			return report, true
 		}
 		checkpoint := ""

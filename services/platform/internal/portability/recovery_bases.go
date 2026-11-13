@@ -45,7 +45,7 @@ func recoveryTerminal(state api.ExecutionState) bool {
 }
 
 func (b *RecoveryBases) Add(a Archive) error {
-	if a.Version != 5 && a.Version != 6 || a.CreatedAt.IsZero() || b.rows != nil && b.archive.Workspace != a.Workspace {
+	if a.Version < 5 || a.Version > ArchiveVersion || a.CreatedAt.IsZero() || b.rows != nil && b.archive.Workspace != a.Workspace {
 		return ErrArchive
 	}
 	if b.rows == nil {

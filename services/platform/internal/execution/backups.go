@@ -14,6 +14,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/composeproject"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
+	"github.com/astilbahq/astilba/services/platform/internal/secretbroker"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
@@ -44,7 +45,14 @@ func (s *Service) CreateBackupDestination(ctx context.Context, p store.Principal
 	if backup.ValidateDestination(d, a) != nil {
 		return d, domain.Invalid("destination")
 	}
-	err := s.scope(ctx, p, ws, workspaceAccess{Write: true, Owner: true, Recent: true}, "backup.destination.create", d.ID, func(tx pgx.Tx) error {
+	item := secretbroker.Item{Kind: secretbroker.BackupDestination, ID: d.ID}
+	keys, done, err := s.sealing(ctx, p, ws, item)
+	if err != nil {
+		return d, err
+	}
+	sealed := false
+	defer func() { done(sealed) }()
+	err = s.scope(ctx, p, ws, ownerSettings, "backup.destination.create", d.ID, func(tx pgx.Tx) error {
 		n, err := db.New(tx).CountBackupDestinations(ctx, ws)
 		if err != nil {
 			return err
@@ -52,10 +60,11 @@ func (s *Service) CreateBackupDestination(ctx context.Context, p store.Principal
 		if n >= 100 {
 			return domain.Conflict
 		}
-		secret, err := s.sealIntegration(ws, d.ID, "backup-destination", a)
+		secret, err := sealIntegration(keys, item, a)
 		if err != nil {
 			return err
 		}
+		sealed = true
 		raw, _ := stablejson.Marshal(d)
 		return db.New(tx).InsertBackupDestination(ctx, db.InsertBackupDestinationParams{ID: d.ID, WorkspaceID: ws, Configuration: raw, EncryptedAccess: secret})
 	})
@@ -84,7 +93,19 @@ func (s *Service) BackupPolicies(ctx context.Context, p store.Principal, ws, pid
 }
 func (s *Service) SaveBackupPolicy(ctx context.Context, p store.Principal, ws, pid, env, id uuid.UUID, in api.BackupPolicyRequest) (backup.Policy, error) {
 	var out backup.Policy
-	err := s.scope(ctx, p, ws, workspaceAccess{Write: true, Owner: true, Recent: true}, "backup.policy.save", id, func(tx pgx.Tx) error {
+	// A new policy's ID is chosen before its keys are asked for, so its access is sealed for it.
+	creating := id == uuid.Nil
+	if creating {
+		id = uuid.New()
+	}
+	item := secretbroker.Item{Kind: secretbroker.BackupPolicy, ID: id}
+	keys, done, err := s.sealing(ctx, p, ws, item)
+	if err != nil {
+		return out, err
+	}
+	sealed := false
+	defer func() { done(sealed) }()
+	err = s.scope(ctx, p, ws, ownerSettings, "backup.policy.save", id, func(tx pgx.Tx) error {
 		v, err := loadVisualEnvironment(ctx, tx, ws, pid, env)
 		if err != nil {
 			return err
@@ -129,8 +150,7 @@ func (s *Service) SaveBackupPolicy(ctx context.Context, p store.Principal, ws, p
 		if err = requireReplicas(ctx, tx, ws, *v.Server, plan); err != nil {
 			return err
 		}
-		if id == uuid.Nil {
-			id = uuid.New()
+		if creating {
 			if in.BaseGeneration != 0 {
 				return domain.Conflict
 			}
@@ -170,6 +190,9 @@ func (s *Service) SaveBackupPolicy(ctx context.Context, p store.Principal, ws, p
 		if out.Validate() != nil {
 			return domain.Invalid("policy")
 		}
+		if err = refuseElevatedJob(out); err != nil {
+			return err
+		}
 		if out.GeneralSchedule() && (capabilities.Schedules == nil || !*capabilities.Schedules) {
 			return domain.Invalid("server.capabilities.schedules")
 		}
@@ -196,10 +219,11 @@ func (s *Service) SaveBackupPolicy(ctx context.Context, p store.Principal, ws, p
 		if in.Password != nil {
 			a.Password = *in.Password
 		}
-		cipher, err := s.sealIntegration(ws, id, "backup-policy", a)
+		cipher, err := sealIntegration(keys, item, a)
 		if err != nil {
 			return err
 		}
+		sealed = true
 		raw, _ := stablejson.Marshal(out)
 		_, err = db.New(tx).UpsertBackupPolicy(ctx, db.UpsertBackupPolicyParams{ID: id, WorkspaceID: ws, EnvironmentID: env, ServerID: out.ServerID, Configuration: raw, EncryptedAccess: cipher})
 		return err
@@ -226,6 +250,9 @@ func (s *Service) BackupCommand(ctx context.Context, p store.Principal, ws, pid,
 		}
 		v, err := loadBackupPolicy(ctx, tx, ws, env, id)
 		if err != nil {
+			return err
+		}
+		if err = refuseElevatedJob(v); err != nil {
 			return err
 		}
 		if err = s.deploymentServer(ctx, tx, ws, v.ServerID); err != nil {
@@ -296,7 +323,7 @@ func (s *Service) BackupCommand(ctx context.Context, p store.Principal, ws, pid,
 		out, err = s.insert(ctx, tx, ws, in.RequestKey, nil, c)
 		return err
 	})
-	return out, err
+	return operationFor(p, out), err
 }
 func (s *Service) hydrateBackup(ctx context.Context, c *api.ExecutionCommand) error {
 	if c.CancelRequested || time.Now().After(c.Deadline) {
@@ -326,7 +353,7 @@ func (s *Service) hydrateBackup(ctx context.Context, c *api.ExecutionCommand) er
 	if json.Unmarshal(stored.Configuration, &policy) != nil || policy.Generation != b.Installation.Policy.Generation {
 		return domain.Conflict
 	}
-	if err = s.openIntegration(b.Installation.Policy.WorkspaceID, c.ResourceId, "backup-policy", stored.EncryptedAccess, &b.Installation.Access); err != nil {
+	if err = s.legacyOpenIntegration(b.Installation.Policy.WorkspaceID, c.ResourceId, "backup-policy", stored.EncryptedAccess, &b.Installation.Access); err != nil {
 		return err
 	}
 	if b.Installation.Policy.Method != "container-job" {
@@ -338,7 +365,7 @@ func (s *Service) hydrateBackup(ctx context.Context, c *api.ExecutionCommand) er
 			return err
 		}
 		var a backup.Access
-		if err = s.openIntegration(b.Installation.Policy.WorkspaceID, b.Installation.Policy.DestinationID, "backup-destination", destination.EncryptedAccess, &a); err != nil {
+		if err = s.legacyOpenIntegration(b.Installation.Policy.WorkspaceID, b.Installation.Policy.DestinationID, "backup-destination", destination.EncryptedAccess, &a); err != nil {
 			return err
 		}
 		b.Installation.Access.AccessKey = a.AccessKey
@@ -513,7 +540,7 @@ func (s *Service) PrepareBackupCutover(ctx context.Context, p store.Principal, w
 		}
 		h := sha256.Sum256(canonical)
 		q := db.New(tx)
-		out, err = q.InsertRevision(ctx, db.InsertRevisionParams{WorkspaceID: ws, EnvironmentID: env, ID: uuid.New(), AuthorID: p.Account.ID, Specification: canonical, ContentHash: h[:]})
+		out, err = store.InsertRevision(ctx, q, db.InsertRevisionParams{WorkspaceID: ws, EnvironmentID: env, ID: uuid.New(), AuthorID: p.Account.ID, Specification: canonical, ContentHash: h[:]})
 		if err != nil {
 			return err
 		}
@@ -543,6 +570,26 @@ func requireGeneralSchedule(ctx context.Context, q db.DBTX, ws, server uuid.UUID
 	var cap api.AgentCapabilities
 	if json.Unmarshal(raw, &cap) != nil || cap.Schedules == nil || !*cap.Schedules {
 		return domain.Invalid("server.capabilities.schedules")
+	}
+	return nil
+}
+
+// errElevatedJob refuses a scheduled job in a service that review treats as elevated.
+var errElevatedJob = &domain.Error{Code: "invalid_input", Message: "This service is privileged or shares a volume or network with a privileged service, so a job's command there could control the server. Scheduled jobs can't run in it.", Fields: []string{"resourceId"}}
+
+// refuseElevatedJob refuses a scheduled job whose source service is privileged or a peer of
+// one, see ElevationOf: its command could drive the privileged service and so reach the
+// host. The agent refuses it again before every run.
+func refuseElevatedJob(p backup.Policy) error {
+	if p.Method != "container-job" {
+		return nil
+	}
+	elevation, err := ElevationOf(p.Plan.Specification)
+	if err != nil {
+		return err
+	}
+	if elevation.Services[p.ResourceID] {
+		return errElevatedJob
 	}
 	return nil
 }

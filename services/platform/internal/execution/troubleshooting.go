@@ -46,7 +46,7 @@ func (s *Service) TroubleshootingPolicy(ctx context.Context, p store.Principal, 
 // widen access. Narrowing it ends the sessions the new setting no longer allows.
 func (s *Service) SaveTroubleshootingPolicy(ctx context.Context, p store.Principal, ws, pid, env uuid.UUID, in api.SaveTroubleshootingPolicy) (api.TroubleshootingPolicy, error) {
 	out := api.TroubleshootingPolicy{Available: s.Troubleshooting}
-	err := s.Store.InWorkspace(ctx, p, ws, store.WorkspaceAccess{Write: true, Owner: true}, func(q *db.Queries, _ store.Workspace) error {
+	err := s.Store.InWorkspaceRevocation(ctx, p, ws, store.WorkspaceAccess{Owner: true}, func(tx pgx.Tx, q *db.Queries, _ store.Workspace) error {
 		exists, err := q.TroubleshootingEnvironmentExists(ctx, db.TroubleshootingEnvironmentExistsParams{WorkspaceID: ws, ProjectID: pid, EnvironmentID: env})
 		if err != nil {
 			return err
@@ -64,6 +64,12 @@ func (s *Service) SaveTroubleshootingPolicy(ctx context.Context, p store.Princip
 		widened := in.Enabled && (!old.Enabled || old.OwnersOnly && !in.OwnersOnly)
 		if widened && !p.Recent() {
 			return domain.RecentRequired
+		}
+		// Narrowing stays possible on a lapsed workspace, so an owner can always end terminal access.
+		if widened {
+			if err = s.Store.ManagementAdmission(ctx, tx, ws); err != nil {
+				return err
+			}
 		}
 		next := old.Generation + 1
 		if err = q.SaveTroubleshootingPolicy(ctx, db.SaveTroubleshootingPolicyParams{WorkspaceID: ws, EnvironmentID: env, Enabled: in.Enabled, OwnersOnly: in.OwnersOnly, Generation: next, UpdatedBy: p.Account.ID}); err != nil {
@@ -119,6 +125,16 @@ func (s *Service) OpenTroubleshootingSession(ctx context.Context, p store.Princi
 		server, err := troubleshootingServer(spec, *row.PrimaryServerID, in)
 		if err != nil {
 			return err
+		}
+		// A shell in a privileged service, or in a peer that shares a volume or network with
+		// one, could drive that service and so reach the host. No role or confirmation allows
+		// it: the agent refuses these containers too.
+		elevation, err := ElevationOf(spec)
+		if err != nil {
+			return err
+		}
+		if elevation.Services[in.ApplicationId] {
+			return domain.TroubleshootingRefused(domain.TroubleshootingElevated)
 		}
 		unit, err := q.TroubleshootingUnit(ctx, db.TroubleshootingUnitParams{WorkspaceID: ws, EnvironmentID: env, ServerID: server})
 		if errors.Is(err, pgx.ErrNoRows) {

@@ -5,6 +5,7 @@ import (
 	"encoding/json/v2"
 	"maps"
 
+	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/composeproject"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
@@ -56,30 +57,13 @@ func mergedSourceSelection(ctx context.Context, tx pgx.Tx, git *gitAnswers, ws, 
 		return c, false, nil
 	}
 	files, _ := stablejson.Marshal(sourceFiles(bundle))
-	rows, err := tx.Query(ctx, `SELECT r.result FROM git_submissions g JOIN pipeline_runs r ON r.id=g.operation_id JOIN execution_operations o ON o.id=r.id
- WHERE g.workspace_id=$1 AND g.environment_id=$2 AND o.state='succeeded'
- AND r.configuration->>'commit'=$3 AND r.configuration#>>'{connection,id}'=$4 AND r.configuration->>'branch'=$5
- AND (SELECT jsonb_object_agg(f->>'path',f->>'content') FROM jsonb_array_elements(r.configuration#>'{bundle,files}') f)=$6::jsonb
- ORDER BY r.created_at DESC`, ws, env, bundle.Origin.Commit, c.ConnectionID.String(), c.Branch, files)
-	if err != nil {
+	numbers, err := db.New(tx).SubmittedReviews(ctx, db.SubmittedReviewsParams{WorkspaceID: ws, EnvironmentID: env, Commit: bundle.Origin.Commit, ConnectionID: c.ConnectionID.String(), Branch: c.Branch, Files: files})
+	if err != nil || len(numbers) == 0 {
 		return c, false, err
 	}
-	reviews := []int{}
-	for rows.Next() {
-		var result []byte
-		if err = rows.Scan(&result); err != nil {
-			rows.Close()
-			return c, false, err
-		}
-		var r pipeline.Result
-		if json.Unmarshal(result, &r) == nil && r.ReviewNumber > 0 {
-			reviews = append(reviews, r.ReviewNumber)
-		}
-	}
-	err = rows.Err()
-	rows.Close()
-	if err != nil || len(reviews) == 0 {
-		return c, false, err
+	reviews := make([]int, 0, len(numbers))
+	for _, n := range numbers {
+		reviews = append(reviews, int(n))
 	}
 	merged, err := git.mergedAt(ctx, tx, c.ConnectionID, reviews, head)
 	if err != nil {

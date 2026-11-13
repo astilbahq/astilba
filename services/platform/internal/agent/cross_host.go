@@ -25,6 +25,9 @@ func (e *Engine) executeCrossHost(ctx context.Context, c api.ExecutionCommand, r
 	if err != nil || command.Unit.Plan.Local == nil || command.Unit.Plan.Validate(command.Phase != "resolve") != nil {
 		return finish("failed", "The assigned cross-host plan is invalid.")
 	}
+	if _, known := crossHostPhases(command)[command.Phase]; !known {
+		return finish("failed", "Unsupported coordinated phase.")
+	}
 	p := command.Unit.Plan
 	if command.Maintenance != nil && !validMaintenance(command.Maintenance, p) {
 		return finish("failed", "The coordinated maintenance source or target is invalid.")

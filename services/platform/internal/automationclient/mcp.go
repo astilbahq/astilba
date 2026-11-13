@@ -53,7 +53,7 @@ func (c *Client) MCP(v api.AutomationContext, version string) *mcp.Server {
 	}})
 	tool(server, "context", "Read this credential's exact environment scope and capabilities.", true, true, func(ctx context.Context, _ struct{}) (any, error) { return c.Context(ctx) })
 	tool(server, "draft_get", "Read the saved environment draft; secret values are excluded.", true, true, func(ctx context.Context, _ struct{}) (any, error) { return c.Draft(ctx, v) })
-	tool(server, "draft_update", "Save a complete draft against an explicit base revision. This does not deploy it.", false, false, func(ctx context.Context, in UpdateInput) (any, error) {
+	tool(server, "draft_update", "Save a complete draft against an explicit base revision. This does not deploy it. Leave out a Compose bundle's namespace and origin: the draft keeps its own. Without environment:read, the result is only the new revision's identity.", false, false, func(ctx context.Context, in UpdateInput) (any, error) {
 		base, err := ID(in.BaseRevisionID)
 		if err != nil {
 			return nil, err
@@ -75,7 +75,7 @@ func (c *Client) MCP(v api.AutomationContext, version string) *mcp.Server {
 		}
 		return c.PreparePlan(ctx, v, api.VisualPlanRequest{BaseRevisionId: base, ServerId: server})
 	})
-	tool(server, "plan_get", "Inspect a prepared deployment plan and its changes.", true, true, func(ctx context.Context, in IDInput) (any, error) {
+	tool(server, "plan_get", "Inspect a prepared deployment plan and its changes. Its review has the plan hash, effects, image digests and host permissions; the whole plan, with its configuration, needs environment:read.", true, true, func(ctx context.Context, in IDInput) (any, error) {
 		id, err := ID(in.ID)
 		if err != nil {
 			return nil, err

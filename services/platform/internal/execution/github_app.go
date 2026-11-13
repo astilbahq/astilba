@@ -7,10 +7,10 @@ import (
 	"time"
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
-	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/githubapp"
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
+	"github.com/astilbahq/astilba/services/platform/internal/randtoken"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
@@ -57,11 +57,11 @@ func (s *Service) StartGitHub(ctx context.Context, p store.Principal, ws uuid.UU
 	if s.GitHub == nil {
 		return nil, domain.Invalid("githubApp.notConfigured")
 	}
-	state, err := cryptobox.Token()
+	state, err := randtoken.New()
 	if err != nil {
 		return nil, err
 	}
-	verifier, err := cryptobox.Token()
+	verifier, err := randtoken.New()
 	if err != nil {
 		return nil, err
 	}
@@ -78,7 +78,7 @@ func (s *Service) StartGitHub(ctx context.Context, p store.Principal, ws uuid.UU
 		if count.Total >= 100 || count.Active >= 5 {
 			return domain.Conflict
 		}
-		secret, e := s.sealIntegration(ws, id, "github-authorization", githubAuthorizationSecret{Verifier: verifier})
+		secret, e := s.legacySealIntegration(ws, id, "github-authorization", githubAuthorizationSecret{Verifier: verifier})
 		if e != nil {
 			return e
 		}
@@ -105,7 +105,7 @@ func (s *Service) gitHubGrant(ctx context.Context, tx pgx.Tx, p store.Principal,
 	var secret githubAuthorizationSecret
 	if err == nil {
 		v.User.ID, v.User.Login, v.ExpiresAt = row.GithubUserID, row.GithubLogin, row.ExpiresAt
-		err = s.openIntegration(ws, id, "github-authorization", row.EncryptedAccess, &secret)
+		err = s.legacyOpenIntegration(ws, id, "github-authorization", row.EncryptedAccess, &secret)
 	}
 	return v, secret, err
 }
@@ -154,7 +154,7 @@ func (s *Service) CompleteGitHub(ctx context.Context, p store.Principal, session
 			return domain.Conflict
 		}
 		var secret githubAuthorizationSecret
-		if e = s.openIntegration(ws, id, "github-authorization", row.EncryptedAccess, &secret); e != nil {
+		if e = s.legacyOpenIntegration(ws, id, "github-authorization", row.EncryptedAccess, &secret); e != nil {
 			return e
 		}
 		verifier = secret.Verifier
@@ -195,7 +195,7 @@ func (s *Service) CompleteGitHub(ctx context.Context, p store.Principal, session
 	return out, err
 }
 func (s *Service) recordGitHubExchange(ctx context.Context, tx pgx.Tx, ws, id uuid.UUID, status string, secret githubAuthorizationSecret, user githubapp.User) (GitHubAuthorization, error) {
-	cipher, e := s.sealIntegration(ws, id, "github-authorization", secret)
+	cipher, e := s.legacySealIntegration(ws, id, "github-authorization", secret)
 	if e != nil {
 		return GitHubAuthorization{}, e
 	}
@@ -326,7 +326,7 @@ func (s *Service) ConnectGitHub(ctx context.Context, p store.Principal, ws, gran
 				return domain.Conflict
 			}
 		}
-		empty, e := s.sealIntegration(ws, id, "git", pipeline.Access{})
+		empty, e := s.legacySealIntegration(ws, id, "git", pipeline.Access{})
 		if e != nil {
 			return e
 		}
@@ -352,7 +352,7 @@ func (s *Service) ConnectGitHub(ctx context.Context, p store.Principal, ws, gran
 		if e != nil {
 			return e
 		}
-		erased, e := s.sealIntegration(ws, grant, "github-authorization", githubAuthorizationSecret{})
+		erased, e := s.legacySealIntegration(ws, grant, "github-authorization", githubAuthorizationSecret{})
 		if e != nil {
 			return e
 		}
@@ -372,7 +372,8 @@ func (s *Service) ConnectGitHub(ctx context.Context, p store.Principal, ws, gran
 	return out, e
 }
 func (s *Service) DisconnectGitHub(ctx context.Context, p store.Principal, ws, id uuid.UUID) error {
-	return s.scope(ctx, p, ws, workspaceAccess{Write: true, Owner: true, Recent: true}, "git.github.disconnect", id, func(tx pgx.Tx) error {
+	// Disconnecting only takes access away, so a lapsed workspace can still do it.
+	return s.scope(ctx, p, ws, workspaceAccess{Write: true, Owner: true, Recent: true, Revocation: true}, "git.github.disconnect", id, func(tx pgx.Tx) error {
 		q := db.New(tx)
 		connection, e := q.GetGitConnection(ctx, db.GetGitConnectionParams{WorkspaceID: ws, ID: id})
 		if e != nil {

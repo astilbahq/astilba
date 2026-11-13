@@ -79,7 +79,7 @@ func (s *Service) buildInputs(ctx context.Context, tx pgx.Tx, ws, env uuid.UUID,
 		if err != nil {
 			return nil, err
 		}
-		plain, err := s.Store.Keys.Open(cipher, integrationIdentity(ws, id, "build-secret"))
+		plain, err := s.Store.Keys.Open(cipher, pipeline.EncryptionIdentity(ws, id, "build-secret"))
 		if err != nil {
 			return nil, err
 		}

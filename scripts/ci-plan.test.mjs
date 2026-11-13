@@ -165,6 +165,13 @@ test("each suite runs only for paths that can affect it", async (t) => {
       [".github/vulnerability-allowlist.json"],
       ["native", "go", "browser", "vulnerabilities"],
     ],
+    // Only imported by the Public Suffix List check, which sets its release-age gate.
+    [
+      ["scripts/go-release-age.mjs"],
+      ["native", "go", "browser", "vulnerabilities"],
+    ],
+    [["scripts/scan-targets.json"], ["native", "go", "browser", "vulnerabilities"]],
+    [["scripts/public-suffix-list.test.mjs"], ["native", "go", "browser"]],
     [
       ["Makefile"],
       [

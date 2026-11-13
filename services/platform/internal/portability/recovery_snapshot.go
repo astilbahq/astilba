@@ -22,7 +22,7 @@ func CaptureRecovery(ctx context.Context, tx pgx.Tx, ws uuid.UUID) ([]byte, erro
 
 // CaptureRecoveryAt is CaptureRecovery, and also returns the base's capture time.
 func CaptureRecoveryAt(ctx context.Context, tx pgx.Tx, ws uuid.UUID) ([]byte, time.Time, error) {
-	archive := Archive{Version: 6, Workspace: ws}
+	archive := Archive{Version: ArchiveVersion, Workspace: ws}
 	header, err := db.New(tx).WorkspaceRecoveryHeader(ctx, ws)
 	if err != nil {
 		return nil, time.Time{}, err
@@ -42,7 +42,7 @@ func CaptureRecoveryAt(ctx context.Context, tx pgx.Tx, ws uuid.UUID) ([]byte, ti
 // InspectRecovery reads trusted database state, including a union of individually
 // bounded recovery bases. External decoding and new-base admission stay bounded.
 func InspectRecovery(ctx context.Context, tx pgx.Tx, ws uuid.UUID) (Archive, string, error) {
-	archive := Archive{Version: 6, Workspace: ws}
+	archive := Archive{Version: ArchiveVersion, Workspace: ws}
 	header, err := db.New(tx).WorkspaceRecoveryHeader(ctx, ws)
 	if err != nil {
 		return archive, "", err
@@ -121,6 +121,7 @@ const referencedRevisions = `SELECT draft_revision_id FROM environments WHERE wo
 	UNION SELECT imported_revision_id FROM git_sources WHERE workspace_id=$1
 	UNION SELECT revision_id FROM pipeline_runs WHERE workspace_id=$1
 	UNION SELECT revision_id FROM git_submissions WHERE workspace_id=$1
+	UNION SELECT revision_id FROM source_submissions WHERE workspace_id=$1
 	UNION SELECT revision_id FROM pipeline_auto_deployments WHERE workspace_id=$1
 	UNION SELECT revision_id FROM preview_policies WHERE workspace_id=$1
 	UNION SELECT revision_id FROM backup_cutovers WHERE workspace_id=$1`

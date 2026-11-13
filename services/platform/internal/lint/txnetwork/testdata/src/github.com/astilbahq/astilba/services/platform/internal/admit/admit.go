@@ -4,6 +4,8 @@ import (
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/githubapp"
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
+	"github.com/astilbahq/astilba/services/platform/internal/secretbroker"
+	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -351,4 +353,29 @@ func (b *box[T]) mint[U any]() (string, error) { return b.service.github.Mint() 
 func (s *service) throughAGenericMethod(tx pgx.Tx) {
 	b := &box[int]{s}
 	_, _ = b.mint[string]() // want `contacts a Git provider`
+}
+
+type keyed struct{ broker *secretbroker.Broker }
+
+// Keys are begun before the transaction and only used inside it.
+func (k *keyed) keysFirst(run func(func(pgx.Tx) error) error) error {
+	keys, err := k.broker.Begin()
+	if err != nil {
+		return err
+	}
+	return run(func(tx pgx.Tx) error {
+		_, err := keys.Open(nil)
+		return err
+	})
+}
+
+func (k *keyed) keysUnderTransaction(tx pgx.Tx) error {
+	_, err := k.broker.Begin() // want `the secret broker`
+	return err
+}
+
+// The store admits a caller in a transaction of its own before asking for keys.
+func keysThroughStore(st *store.Store, tx pgx.Tx) error {
+	_ = st.Audit()
+	return st.BeginKeys() // want `the secret broker`
 }
