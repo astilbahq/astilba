@@ -9,6 +9,9 @@ const buildRejectionMessages = {
     "Public build arguments contain a known secret value.",
   runtime_secret_budget:
     "Runtime secrets exceed the build-input validation limit.",
+  runner_unavailable:
+    "Its runner, or its fallback, was removed or revoked, or can no longer build it.",
+  registry_unavailable: "Its registry was removed.",
 } satisfies Record<Schema["BuildRejectionReason"], string>;
 export function AutomaticBuildRejections({
   rejections,

@@ -3388,6 +3388,12 @@
                 $ref: '#/components/schemas/Error'
     put:
       operationId: bindGitSource
+      description: >-
+        Bind the environment to a Git source, or bind it again: a new connection, branch, runner, selected files or
+        entrypoints. Either imports the branch's current commit, replacing the Compose files in the saved draft, and
+        makes the automatic imports and deployments yours. Binding again also forgets the earlier import, so deployments
+        wait for this one, and is refused while an import of the environment runs. Needs an owner with recent
+        authentication. A selected file the branch doesn't hold is refused by name.
       parameters:
         - name: workspaceId
           in: path
@@ -3426,6 +3432,23 @@
           application/json:
             schema:
               $ref: '#/components/schemas/BindGitSource'
+    delete:
+      operationId: unbindGitSource
+      description: >-
+        Stop importing the environment from Git. The saved draft keeps its Compose files, and an import still running
+        saves nothing. Needs an owner with recent authentication.
+      parameters:
+        - {name: workspaceId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: projectId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: environmentId, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '204':
+          description: Unbound
+        default:
+          description: Error
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
   /api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/source/refresh:
     post:
       operationId: refreshGitSource
@@ -8234,6 +8257,13 @@
           nullable: true
           allOf:
             - $ref: '#/components/schemas/SourceSubmission'
+        failure:
+          description: >-
+            Why automatic imports could not import the branch's latest commit, if they could not. They don't try that
+            commit again; the next push, a refresh or binding the source again does.
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/GitSourceFailure'
       required:
         - configuration
         - importedCommit
@@ -8244,6 +8274,15 @@
         - approval
         - sourceHash
         - submission
+        - failure
+    GitSourceFailure:
+      type: object
+      additionalProperties: false
+      required: [commit, reason, failedAt]
+      properties:
+        commit: {type: string, minLength: 1, maxLength: 64}
+        reason: {type: string, maxLength: 1000}
+        failedAt: {type: string, format: date-time}
     PolicyApproval:
       type: string
       description: >-
@@ -8571,7 +8610,10 @@
       x-go-type-import: {path: encoding/json/jsontext}
     BuildRejectionReason:
       type: string
-      enum: [missing_build_secret, build_secret_budget, arguments_contain_secret, runtime_secret_budget]
+      description: >-
+        Why an automatic build of a commit was not started. `runner_unavailable`: the target's runner, or its fallback,
+        was removed or revoked or can no longer build it. `registry_unavailable`: the target's registry was removed.
+      enum: [missing_build_secret, build_secret_budget, arguments_contain_secret, runtime_secret_budget, runner_unavailable, registry_unavailable]
     BuildRejection:
       type: object
       additionalProperties: false

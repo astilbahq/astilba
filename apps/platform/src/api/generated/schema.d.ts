@@ -1618,9 +1618,11 @@ export interface paths {
             cookie?: never;
         };
         get: operations["getGitSource"];
+        /** @description Bind the environment to a Git source, or bind it again: a new connection, branch, runner, selected files or entrypoints. Either imports the branch's current commit, replacing the Compose files in the saved draft, and makes the automatic imports and deployments yours. Binding again also forgets the earlier import, so deployments wait for this one, and is refused while an import of the environment runs. Needs an owner with recent authentication. A selected file the branch doesn't hold is refused by name. */
         put: operations["bindGitSource"];
         post?: never;
-        delete?: never;
+        /** @description Stop importing the environment from Git. The saved draft keeps its Compose files, and an import still running saves nothing. Needs an owner with recent authentication. */
+        delete: operations["unbindGitSource"];
         options?: never;
         head?: never;
         patch?: never;
@@ -3943,6 +3945,14 @@ export interface components {
             sourceHash: string;
             /** @description The newest attempt to submit a saved draft of this environment, if any. */
             submission: components["schemas"]["SourceSubmission"] | null;
+            /** @description Why automatic imports could not import the branch's latest commit, if they could not. They don't try that commit again; the next push, a refresh or binding the source again does. */
+            failure: components["schemas"]["GitSourceFailure"] | null;
+        };
+        GitSourceFailure: {
+            commit: string;
+            reason: string;
+            /** Format: date-time */
+            failedAt: string;
         };
         /**
          * @description Whether automatic work runs on a current approval. `current`: it does. `approvalRequired`: it is paused until it is approved again, after a restore, an import, a disconnected repository or its approver's role change. `approverRemoved`: its approver left the workspace. `approverRole`: its approver no longer has the role it needs. `approverCredentials`: its approver changed their password, two-factor settings or recovery codes since; only owners see this reason, others see `approvalRequired`. A paused Git source, or a target that deploys, needs an owner to approve it again; a target that only builds automatically, an owner or operator.
@@ -4080,8 +4090,11 @@ export interface components {
             cache?: string;
             railpack?: components["schemas"]["RailpackBuildSummary"];
         };
-        /** @enum {string} */
-        BuildRejectionReason: "missing_build_secret" | "build_secret_budget" | "arguments_contain_secret" | "runtime_secret_budget";
+        /**
+         * @description Why an automatic build of a commit was not started. `runner_unavailable`: the target's runner, or its fallback, was removed or revoked or can no longer build it. `registry_unavailable`: the target's registry was removed.
+         * @enum {string}
+         */
+        BuildRejectionReason: "missing_build_secret" | "build_secret_budget" | "arguments_contain_secret" | "runtime_secret_budget" | "runner_unavailable" | "registry_unavailable";
         BuildRejection: {
             /** Format: uuid */
             applicationId: string;
@@ -8699,6 +8712,37 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["Operation"];
                 };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    unbindGitSource: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                projectId: string;
+                environmentId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Unbound */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Error */
             default: {

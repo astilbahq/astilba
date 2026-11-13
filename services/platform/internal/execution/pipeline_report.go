@@ -396,7 +396,14 @@ func (s *Service) pipelineReport(ctx context.Context, tx pgx.Tx, git *gitAnswers
 			var current uuid.UUID
 			var actor uuid.UUID
 			var approved *int64
-			if err := tx.QueryRow(ctx, "SELECT e.draft_revision_id,r.specification,g.policy_actor,g.policy_auth_version FROM environments e JOIN specification_revisions r ON r.workspace_id=e.workspace_id AND r.id=e.draft_revision_id JOIN git_sources g ON g.workspace_id=e.workspace_id AND g.environment_id=e.id WHERE e.workspace_id=$1 AND e.id=$2 FOR UPDATE OF e,g", ws, c.EnvironmentId).Scan(&current, &raw, &actor, &approved); err != nil {
+			err := tx.QueryRow(ctx, "SELECT e.draft_revision_id,r.specification,g.policy_actor,g.policy_auth_version FROM environments e JOIN specification_revisions r ON r.workspace_id=e.workspace_id AND r.id=e.draft_revision_id JOIN git_sources g ON g.workspace_id=e.workspace_id AND g.environment_id=e.id WHERE e.workspace_id=$1 AND e.id=$2 FOR UPDATE OF e,g", ws, c.EnvironmentId).Scan(&current, &raw, &actor, &approved)
+			// An owner can unbind the source while it imports.
+			if errors.Is(err, pgx.ErrNoRows) {
+				r.State = "failed"
+				r.Note = "The Git source was unbound while this import ran. Nothing was saved."
+				break
+			}
+			if err != nil {
 				return err
 			}
 			if current != p.RevisionID {

@@ -94,8 +94,11 @@ WHERE workspace_id = @workspace_id AND id = @id AND state = 'queued';
 UPDATE source_submissions SET note = @note WHERE workspace_id = @workspace_id AND id = @id AND state = 'queued';
 
 -- name: AwaitSubmittedMerge :exec
--- A source that needs renewed approval keeps needing it: a submission doesn't grant it.
-UPDATE git_sources SET status = 'awaiting_merge' WHERE workspace_id = @workspace_id AND environment_id = @environment_id AND status <> 'approval_required';
+-- A source that needs renewed approval keeps needing it: a submission doesn't grant it. A source bound
+-- again since the submission was made no longer imports the commit it proposed edits to.
+UPDATE git_sources g SET status = 'awaiting_merge' FROM source_submissions s
+WHERE g.workspace_id = @workspace_id AND g.environment_id = @environment_id AND g.status <> 'approval_required'
+    AND s.workspace_id = g.workspace_id AND s.id = @submission_id AND g.imported_commit = s.configuration->>'commit';
 
 -- name: SubmittedReviews :many
 -- The reviews that proposed exactly these files on top of commit from this connection's branch,
@@ -112,3 +115,37 @@ SELECT review FROM (
       AND r.configuration->>'commit' = @commit::text AND r.configuration#>>'{connection,id}' = @connection_id::text AND r.configuration->>'branch' = @branch::text
       AND (SELECT jsonb_object_agg(f->>'path',f->>'content') FROM jsonb_array_elements(r.configuration#>'{bundle,files}') f) = @files::jsonb
 ) reviews WHERE review > 0 ORDER BY created_at DESC;
+
+-- name: RecordGitSourceFailure :exec
+-- The commit stops waiting to import: it failed. A conflict keeps its commit until an owner's refresh
+-- settles the draft.
+UPDATE git_sources SET failed_commit = @commit::text, failure_reason = @reason::text, failed_at = clock_timestamp(),
+    pending_commit = CASE WHEN status = 'conflict' THEN pending_commit ELSE '' END
+WHERE workspace_id = @workspace_id AND environment_id = @environment_id;
+
+-- name: ClearGitSourceFailure :exec
+-- An import admitted for a source ends its failure.
+UPDATE git_sources SET failed_commit = '', failure_reason = '', failed_at = NULL
+WHERE workspace_id = @workspace_id AND environment_id = @environment_id AND failed_commit <> '';
+
+-- name: BindGitSource :exec
+-- Binding a source again replaces all it was, as a first binding sets it: its approver, and the import
+-- it compares drafts with, which the next import sets. An environment runs one operation at a time,
+-- so no import for what the source was bound to before is still running.
+INSERT INTO git_sources (workspace_id, environment_id, connection_id, configuration, policy_actor, policy_auth_version)
+VALUES (@workspace_id, @environment_id, @connection_id, @configuration, @policy_actor, @policy_auth_version::bigint)
+ON CONFLICT (workspace_id, environment_id) DO UPDATE SET connection_id = EXCLUDED.connection_id, configuration = EXCLUDED.configuration,
+    policy_actor = EXCLUDED.policy_actor, policy_auth_version = EXCLUDED.policy_auth_version,
+    imported_revision_id = NULL, imported_commit = '', pending_commit = '', status = 'pending',
+    failed_commit = '', failure_reason = '', failed_at = NULL;
+
+-- name: UnbindGitSource :execrows
+DELETE FROM git_sources WHERE workspace_id = @workspace_id AND environment_id = @environment_id;
+
+-- name: MarkGitSourceConflict :exec
+UPDATE git_sources SET pending_commit = @commit::text, status = 'conflict'
+WHERE workspace_id = @workspace_id AND environment_id = @environment_id;
+
+-- name: RejectBuildTarget :exec
+UPDATE build_targets SET rejected_commit = @commit::text, rejection_reason = @reason::text, rejected_at = clock_timestamp()
+WHERE workspace_id = @workspace_id AND environment_id = @environment_id AND application_id = @application_id;

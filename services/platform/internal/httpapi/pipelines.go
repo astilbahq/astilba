@@ -74,6 +74,10 @@ func (s *Server) BindGitSource(w http.ResponseWriter, r *http.Request, ws, pid, 
 	v, e := s.Execution.BindSource(r.Context(), *principal(r.Context()), ws, pid, env, b.BaseRevisionId, cfg)
 	s.executionResponse(w, r, 202, v, e)
 }
+func (s *Server) UnbindGitSource(w http.ResponseWriter, r *http.Request, ws, pid, env uuid.UUID) {
+	e := s.Execution.UnbindSource(r.Context(), *principal(r.Context()), ws, pid, env)
+	s.executionResponse(w, r, 204, nil, e)
+}
 func (s *Server) RefreshGitSource(w http.ResponseWriter, r *http.Request, ws, pid, env uuid.UUID) {
 	b, e := decode[api.RefreshGitSource](r)
 	if e != nil {

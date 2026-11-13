@@ -163,17 +163,70 @@ func (q *Queries) AutomaticDeploymentWorkspace(ctx context.Context, id uuid.UUID
 }
 
 const awaitSubmittedMerge = `-- name: AwaitSubmittedMerge :exec
-UPDATE git_sources SET status = 'awaiting_merge' WHERE workspace_id = $1 AND environment_id = $2 AND status <> 'approval_required'
+UPDATE git_sources g SET status = 'awaiting_merge' FROM source_submissions s
+WHERE g.workspace_id = $1 AND g.environment_id = $2 AND g.status <> 'approval_required'
+    AND s.workspace_id = g.workspace_id AND s.id = $3 AND g.imported_commit = s.configuration->>'commit'
 `
 
 type AwaitSubmittedMergeParams struct {
 	WorkspaceID   uuid.UUID `json:"workspace_id"`
 	EnvironmentID uuid.UUID `json:"environment_id"`
+	SubmissionID  uuid.UUID `json:"submission_id"`
 }
 
-// A source that needs renewed approval keeps needing it: a submission doesn't grant it.
+// A source that needs renewed approval keeps needing it: a submission doesn't grant it. A source bound
+// again since the submission was made no longer imports the commit it proposed edits to.
 func (q *Queries) AwaitSubmittedMerge(ctx context.Context, arg AwaitSubmittedMergeParams) error {
-	_, err := q.db.Exec(ctx, awaitSubmittedMerge, arg.WorkspaceID, arg.EnvironmentID)
+	_, err := q.db.Exec(ctx, awaitSubmittedMerge, arg.WorkspaceID, arg.EnvironmentID, arg.SubmissionID)
+	return err
+}
+
+const bindGitSource = `-- name: BindGitSource :exec
+INSERT INTO git_sources (workspace_id, environment_id, connection_id, configuration, policy_actor, policy_auth_version)
+VALUES ($1, $2, $3, $4, $5, $6::bigint)
+ON CONFLICT (workspace_id, environment_id) DO UPDATE SET connection_id = EXCLUDED.connection_id, configuration = EXCLUDED.configuration,
+    policy_actor = EXCLUDED.policy_actor, policy_auth_version = EXCLUDED.policy_auth_version,
+    imported_revision_id = NULL, imported_commit = '', pending_commit = '', status = 'pending',
+    failed_commit = '', failure_reason = '', failed_at = NULL
+`
+
+type BindGitSourceParams struct {
+	WorkspaceID       uuid.UUID `json:"workspace_id"`
+	EnvironmentID     uuid.UUID `json:"environment_id"`
+	ConnectionID      uuid.UUID `json:"connection_id"`
+	Configuration     []byte    `json:"configuration"`
+	PolicyActor       uuid.UUID `json:"policy_actor"`
+	PolicyAuthVersion int64     `json:"policy_auth_version"`
+}
+
+// Binding a source again replaces all it was, as a first binding sets it: its approver, and the import
+// it compares drafts with, which the next import sets. An environment runs one operation at a time,
+// so no import for what the source was bound to before is still running.
+func (q *Queries) BindGitSource(ctx context.Context, arg BindGitSourceParams) error {
+	_, err := q.db.Exec(ctx, bindGitSource,
+		arg.WorkspaceID,
+		arg.EnvironmentID,
+		arg.ConnectionID,
+		arg.Configuration,
+		arg.PolicyActor,
+		arg.PolicyAuthVersion,
+	)
+	return err
+}
+
+const clearGitSourceFailure = `-- name: ClearGitSourceFailure :exec
+UPDATE git_sources SET failed_commit = '', failure_reason = '', failed_at = NULL
+WHERE workspace_id = $1 AND environment_id = $2 AND failed_commit <> ''
+`
+
+type ClearGitSourceFailureParams struct {
+	WorkspaceID   uuid.UUID `json:"workspace_id"`
+	EnvironmentID uuid.UUID `json:"environment_id"`
+}
+
+// An import admitted for a source ends its failure.
+func (q *Queries) ClearGitSourceFailure(ctx context.Context, arg ClearGitSourceFailureParams) error {
+	_, err := q.db.Exec(ctx, clearGitSourceFailure, arg.WorkspaceID, arg.EnvironmentID)
 	return err
 }
 
@@ -420,6 +473,22 @@ func (q *Queries) LockSourceSubmission(ctx context.Context, arg LockSourceSubmis
 	return i, err
 }
 
+const markGitSourceConflict = `-- name: MarkGitSourceConflict :exec
+UPDATE git_sources SET pending_commit = $1::text, status = 'conflict'
+WHERE workspace_id = $2 AND environment_id = $3
+`
+
+type MarkGitSourceConflictParams struct {
+	Commit        string    `json:"commit"`
+	WorkspaceID   uuid.UUID `json:"workspace_id"`
+	EnvironmentID uuid.UUID `json:"environment_id"`
+}
+
+func (q *Queries) MarkGitSourceConflict(ctx context.Context, arg MarkGitSourceConflictParams) error {
+	_, err := q.db.Exec(ctx, markGitSourceConflict, arg.Commit, arg.WorkspaceID, arg.EnvironmentID)
+	return err
+}
+
 const markPipelineDeliveryStarted = `-- name: MarkPipelineDeliveryStarted :exec
 UPDATE pipeline_runs SET delivery_started=true WHERE workspace_id = $1 AND id = $2
 `
@@ -463,6 +532,55 @@ func (q *Queries) PipelineRunReason(ctx context.Context, arg PipelineRunReasonPa
 	var column_1 string
 	err := row.Scan(&column_1)
 	return column_1, err
+}
+
+const recordGitSourceFailure = `-- name: RecordGitSourceFailure :exec
+UPDATE git_sources SET failed_commit = $1::text, failure_reason = $2::text, failed_at = clock_timestamp(),
+    pending_commit = CASE WHEN status = 'conflict' THEN pending_commit ELSE '' END
+WHERE workspace_id = $3 AND environment_id = $4
+`
+
+type RecordGitSourceFailureParams struct {
+	Commit        string    `json:"commit"`
+	Reason        string    `json:"reason"`
+	WorkspaceID   uuid.UUID `json:"workspace_id"`
+	EnvironmentID uuid.UUID `json:"environment_id"`
+}
+
+// The commit stops waiting to import: it failed. A conflict keeps its commit until an owner's refresh
+// settles the draft.
+func (q *Queries) RecordGitSourceFailure(ctx context.Context, arg RecordGitSourceFailureParams) error {
+	_, err := q.db.Exec(ctx, recordGitSourceFailure,
+		arg.Commit,
+		arg.Reason,
+		arg.WorkspaceID,
+		arg.EnvironmentID,
+	)
+	return err
+}
+
+const rejectBuildTarget = `-- name: RejectBuildTarget :exec
+UPDATE build_targets SET rejected_commit = $1::text, rejection_reason = $2::text, rejected_at = clock_timestamp()
+WHERE workspace_id = $3 AND environment_id = $4 AND application_id = $5
+`
+
+type RejectBuildTargetParams struct {
+	Commit        string    `json:"commit"`
+	Reason        string    `json:"reason"`
+	WorkspaceID   uuid.UUID `json:"workspace_id"`
+	EnvironmentID uuid.UUID `json:"environment_id"`
+	ApplicationID uuid.UUID `json:"application_id"`
+}
+
+func (q *Queries) RejectBuildTarget(ctx context.Context, arg RejectBuildTargetParams) error {
+	_, err := q.db.Exec(ctx, rejectBuildTarget,
+		arg.Commit,
+		arg.Reason,
+		arg.WorkspaceID,
+		arg.EnvironmentID,
+		arg.ApplicationID,
+	)
+	return err
 }
 
 const rewrapBuildSecret = `-- name: RewrapBuildSecret :exec
@@ -658,4 +776,21 @@ func (q *Queries) SubmittedReviews(ctx context.Context, arg SubmittedReviewsPara
 		return nil, err
 	}
 	return items, nil
+}
+
+const unbindGitSource = `-- name: UnbindGitSource :execrows
+DELETE FROM git_sources WHERE workspace_id = $1 AND environment_id = $2
+`
+
+type UnbindGitSourceParams struct {
+	WorkspaceID   uuid.UUID `json:"workspace_id"`
+	EnvironmentID uuid.UUID `json:"environment_id"`
+}
+
+func (q *Queries) UnbindGitSource(ctx context.Context, arg UnbindGitSourceParams) (int64, error) {
+	result, err := q.db.Exec(ctx, unbindGitSource, arg.WorkspaceID, arg.EnvironmentID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }

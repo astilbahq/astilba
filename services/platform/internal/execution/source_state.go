@@ -70,7 +70,7 @@ func mergedSourceSelection(ctx context.Context, tx pgx.Tx, git *gitAnswers, ws, 
 		return c, false, err
 	}
 	if merged.Err != nil {
-		return c, false, merged.Err
+		return c, false, &reviewUnanswered{merged.Err}
 	}
 	if merged.Value {
 		return sourceSelection(c, bundle), true, nil

@@ -20,6 +20,7 @@ import {
 } from "./pipelines/automation-approval";
 import { BuildServiceForm } from "./pipelines/build-service-form";
 import { PipelineJobs } from "./pipelines/pipeline-jobs";
+import { ChangeSource, SourceFailure } from "./pipelines/source-binding";
 
 const root =
   "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}" as const;
@@ -308,6 +309,7 @@ export function Pipelines({
                 </Button>
               )}
               {owner && <AutomaticDeploymentScope />}
+              <SourceFailure failure={source.data.failure} />
               {source.data.pendingCommit && (
                 <p className={s.notice}>
                   {source.data.status === "conflict"
@@ -378,6 +380,15 @@ export function Pipelines({
                 >
                   Submit saved draft for review
                 </Button>
+              )}
+              {owner && (
+                <ChangeSource
+                  path={path}
+                  revisionId={revision.id}
+                  source={source.data}
+                  dirty={dirty}
+                  changed={approved}
+                />
               )}
             </div>
           ) : (

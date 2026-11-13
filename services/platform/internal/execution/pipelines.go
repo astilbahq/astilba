@@ -76,6 +76,10 @@ func (s *Service) insertPipeline(ctx context.Context, tx pgx.Tx, git *gitAnswers
 		if blobs.Err != nil {
 			return out, blobs.failure(sourceFilesUnavailable)
 		}
+		// A runner would fail the import without saying which file it missed.
+		if missing := absentSourceFiles(p.Source.Paths, blobs.Value); len(missing) > 0 {
+			return out, missingSourceFiles(p.Commit, missing)
+		}
 		p.SourceBlobs = blobs.Value
 	}
 	if p.Build != nil {
@@ -144,6 +148,12 @@ func (s *Service) insertPipeline(ctx context.Context, tx pgx.Tx, git *gitAnswers
 	if err != nil {
 		return out, err
 	}
+	// An import admitted for a source ends its failure.
+	if p.Action == "import" {
+		if err = db.New(tx).ClearGitSourceFailure(ctx, db.ClearGitSourceFailureParams{WorkspaceID: ws, EnvironmentID: env}); err != nil {
+			return out, err
+		}
+	}
 	_, err = tx.Exec(ctx, "INSERT INTO pipeline_runs(id,workspace_id,environment_id,application_id,revision_id,configuration,delivery_started) VALUES($1,$2,$3,$4,$5,$6,false)", id, ws, env, p.AppID, p.RevisionID, raw)
 	return out, err
 }
@@ -198,14 +208,15 @@ func (s *Service) GitSource(ctx context.Context, p store.Principal, ws, pid, env
 		var cfg []byte
 		var actor uuid.UUID
 		var revision *uuid.UUID
-		var commit, pending, status string
+		var commit, pending, status, failedCommit, failureReason string
+		var failedAt *time.Time
 		var role *string
 		var current, approved *int64
 		// The approver's role and version explain, in the terms of policyApproval, why imports don't
 		// run; policy_approver_holds is what stops them.
-		if err := tx.QueryRow(ctx, `SELECT g.configuration,g.policy_actor,g.imported_revision_id,g.imported_commit,g.pending_commit,g.status,g.policy_auth_version,m.role,a.auth_version
+		if err := tx.QueryRow(ctx, `SELECT g.configuration,g.policy_actor,g.imported_revision_id,g.imported_commit,g.pending_commit,g.status,g.policy_auth_version,m.role,a.auth_version,g.failed_commit,g.failure_reason,g.failed_at
  FROM git_sources g LEFT JOIN memberships m ON m.workspace_id=g.workspace_id AND m.account_id=g.policy_actor LEFT JOIN accounts a ON a.id=g.policy_actor
- WHERE g.workspace_id=$1 AND g.environment_id=$2`, ws, env).Scan(&cfg, &actor, &revision, &commit, &pending, &status, &approved, &role, &current); err != nil {
+ WHERE g.workspace_id=$1 AND g.environment_id=$2`, ws, env).Scan(&cfg, &actor, &revision, &commit, &pending, &status, &approved, &role, &current, &failedCommit, &failureReason, &failedAt); err != nil {
 			return err
 		}
 		baseline, err := sourceBaseline(ctx, tx, ws, env, revision)
@@ -221,11 +232,22 @@ func (s *Service) GitSource(ctx context.Context, p store.Principal, ws, pid, env
 			configuration = sourceSelection(configuration, v.Spec.Compose)
 		}
 		approval := policyApproval(role, current, approved, true, status == "approval_required", w.Role)
-		out = map[string]any{"clean": clean, "configuration": configuration, "importedRevisionId": revision, "importedCommit": commit, "pendingCommit": pending, "status": status, "approval": approval, "sourceHash": sourceHash(cfg, actor), "submission": submission}
+		var failure *api.GitSourceFailure
+		if failedCommit != "" && failedAt != nil {
+			failure = &api.GitSourceFailure{Commit: failedCommit, Reason: failureReason, FailedAt: *failedAt}
+		}
+		out = map[string]any{"clean": clean, "configuration": configuration, "importedRevisionId": revision, "importedCommit": commit, "pendingCommit": pending, "status": status, "approval": approval, "sourceHash": sourceHash(cfg, actor), "submission": submission, "failure": failure}
 		return nil
 	})
 	return out, err
 }
+
+// BindSource binds an environment to a Git source, or binds it again with another connection,
+// branch, runner or selection, as an owner must when a selected file is renamed or removed
+// upstream. Either way it imports the branch's head and makes the source's automatic imports and
+// deployments the caller's. Binding again forgets the earlier import, so the draft is compared
+// with, and deployments wait for, this one. An environment runs one operation at a time, so
+// binding again waits for an import that is running.
 func (s *Service) BindSource(ctx context.Context, p store.Principal, ws, pid, env, base uuid.UUID, c pipeline.Source) (api.Operation, error) {
 	var out api.Operation
 	if err := c.Validate(); err != nil {
@@ -234,6 +256,10 @@ func (s *Service) BindSource(ctx context.Context, p store.Principal, ws, pid, en
 	err := s.gitScope(ctx, p, ws, workspaceAccess{Write: true, Owner: true, Recent: true}, "git.source.bind", env, func(tx pgx.Tx, git *gitAnswers) error {
 		v, err := loadVisualEnvironment(ctx, tx, ws, pid, env)
 		if err != nil {
+			return err
+		}
+		// A retired environment's sources stay as they were.
+		if err = requireActive(v.State); err != nil {
 			return err
 		}
 		if v.Revision != base || v.Spec.Compose == nil {
@@ -256,8 +282,7 @@ func (s *Service) BindSource(ctx context.Context, p store.Principal, ws, pid, en
 			return err
 		}
 		raw, _ := stablejson.Marshal(c)
-		_, err = tx.Exec(ctx, "INSERT INTO git_sources(workspace_id,environment_id,connection_id,configuration,policy_actor,policy_auth_version) VALUES($1,$2,$3,$4,$5,$6)", ws, env, c.ConnectionID, raw, p.Account.ID, p.Account.AuthVersion)
-		if err != nil {
+		if err = db.New(tx).BindGitSource(ctx, db.BindGitSourceParams{WorkspaceID: ws, EnvironmentID: env, ConnectionID: c.ConnectionID, Configuration: raw, PolicyActor: p.Account.ID, PolicyAuthVersion: p.Account.AuthVersion}); err != nil {
 			return err
 		}
 		command := pipeline.Command{Action: "import", Connection: connection, Commit: commit, Branch: c.Branch, RevisionID: base, UnitID: v.Unit, Source: &c, SubmittedAt: time.Now().UTC()}
@@ -304,6 +329,10 @@ func (s *Service) RefreshSource(ctx context.Context, p store.Principal, ws, pid,
 		if !clean && !discard {
 			var merged bool
 			c, merged, err = mergedSourceSelection(ctx, tx, git, ws, env, v.Spec.Compose, commit, c)
+			var unanswered *reviewUnanswered
+			if errors.As(err, &unanswered) && unanswered.gone() {
+				return &domain.Error{Code: "conflict", Message: reviewGoneReason}
+			}
 			if err != nil {
 				return err
 			}
@@ -319,6 +348,26 @@ func (s *Service) RefreshSource(ctx context.Context, p store.Principal, ws, pid,
 		return err
 	})
 	return operationFor(p, out), err
+}
+
+// UnbindSource stops importing an environment from Git. The draft keeps the Compose files it has,
+// and an import still running saves nothing when it reports.
+func (s *Service) UnbindSource(ctx context.Context, p store.Principal, ws, pid, env uuid.UUID) error {
+	return s.scope(ctx, p, ws, workspaceAccess{Write: true, Owner: true, Recent: true}, "git.source.unbind", env, func(tx pgx.Tx) error {
+		v, err := loadVisualEnvironment(ctx, tx, ws, pid, env)
+		if err != nil {
+			return err
+		}
+		// A retired environment's sources stay as they were.
+		if err = requireActive(v.State); err != nil {
+			return err
+		}
+		n, err := db.New(tx).UnbindGitSource(ctx, db.UnbindGitSourceParams{WorkspaceID: ws, EnvironmentID: env})
+		if err == nil && n != 1 {
+			return domain.NotFound
+		}
+		return err
+	})
 }
 func (s *Service) CreateBuild(ctx context.Context, p store.Principal, ws, pid, env, base, app, key uuid.UUID, c pipeline.BuildConfig) (api.Operation, error) {
 	var out api.Operation
