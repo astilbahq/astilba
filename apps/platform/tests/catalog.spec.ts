@@ -59,9 +59,9 @@ test("catalog and named connections stage a private revision with secret referen
   await kaneo
     .getByLabel("Domain", { exact: true })
     .fill("tracker.example.test");
-  await expect(
-    kaneo.getByLabel("Tracker database · password", { exact: true }),
-  ).toHaveValue("");
+  await expect(kaneo.getByLabel(/^Tracker database · password/)).toHaveValue(
+    "",
+  );
   await kaneo.getByRole("button", { name: "Stage Kaneo", exact: true }).click();
   await expect(
     page.getByText(/Tracker is in a new saved revision/),
