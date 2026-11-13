@@ -28,7 +28,8 @@ It can start Docker and create its networks and firewall rules. Existing Docker 
 Public ingress, certificates and ports still require a reviewed deployment plan.
 --use-host-package-sources takes Ubuntu packages only from this host's own package
 sources, as they are, for a mirror that lags on purpose: it skips the check that
-their indexes are current and the fallback archives. apt still checks signatures.
+their indexes are current and the fallback archives. apt checks signatures as this
+host's own apt configuration requires.
 HELP
 }
 die() { printf '%s\n' "$*" >&2; exit 1; }
@@ -225,7 +226,8 @@ apt_fetch() { apt_get -o Debug::NoLocking=1 install --download-only --yes --no-r
 # indexes were published in the last week, so a stale or replaying source can't hold back fixes;
 # and no release pocket predates this release. Given "archive", every index must be Ubuntu's,
 # since a fallback archive serves nothing else. Otherwise every index from a repository that serves
-# any Ubuntu index counts, whatever it claims to be, and other repositories don't.
+# any Ubuntu index counts, whatever it claims to be, and other repositories don't. Fails with 2
+# when the indexes are only stale.
 apt_current() {
   local repository release suite codename list key origin file published now targets
   local -A ubuntu=() dates=() newest=()
@@ -268,7 +270,7 @@ apt_current() {
     if ((now - newest[$release] > ubuntu_index_max_age_days * 86400)); then
       printf 'The newest %s index was published %s, more than %s days before this host'"'"'s clock, %s.\n' "$release" \
         "$(date --utc --date "@${newest[$release]}" '+%F %R UTC')" "$ubuntu_index_max_age_days" "$(date --utc '+%F %R UTC')" >&2
-      return 1
+      return 2
     fi
   done
 }
@@ -283,7 +285,7 @@ apt_needed() {
   return 1
 }
 apt_download() {
-  local archive reason refreshed=true
+  local archive reason current=0 refreshed=true
   apt_root=$(mktemp -d /tmp/astilba-bootstrap-apt.XXXXXXXX)
   chmod 0755 "$apt_root"
   apt_use
@@ -293,17 +295,21 @@ apt_download() {
   if "$host_sources_only"; then
     printf '%s\n' 'Warning: Ubuntu packages come only from this host'"'"'s own package sources, as they are; --use-host-package-sources skips the check that their indexes are current, and the fallback archives.'
     apt_fetch "$@" || die 'apt could not resolve or download the Ubuntu packages from this host'"'"'s own sources; the errors above give the cause. No packages were changed, so run this script again once it is resolved.'
+    "$refreshed" || printf '%s\n' 'Some of this host'"'"'s package indexes failed to refresh; apt used its last copy of those, where it had one.'
     return 0
   fi
-  if apt_current; then
+  apt_current || current=$?
+  if ((current == 0)); then
     if apt_fetch "$@"; then
       "$refreshed" || printf '%s\n' 'Some of this host'"'"'s package indexes failed to refresh; apt used its last copy of those, where it had one.'
       return 0
     fi
     "$refreshed" && die 'apt could not resolve or download the Ubuntu packages; the errors above give the cause. No packages were changed, so run this script again once it is resolved.'
     reason='This host'"'"'s package sources failed.'
-  elif "$refreshed"; then
+  elif "$refreshed" && ((current == 2)); then
     reason='This host'"'"'s Ubuntu package indexes are not current. If its sources lag on purpose, run this script again with --use-host-package-sources.'
+  elif "$refreshed"; then
+    reason='This host'"'"'s Ubuntu package indexes failed the checks above.'
   else
     reason='This host'"'"'s package sources failed.'
   fi

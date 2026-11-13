@@ -210,10 +210,8 @@ func TestBootstrapOnDisposableHost(t *testing.T) {
 	case "host":
 		// A fresh VM's unattended-upgrades often holds dpkg's lock for its first minutes. The
 		// bootstrap must wait for it rather than fail. The lock is held until the bootstrap is
-		// seen waiting, then for a few seconds more, and for at most four minutes.
+		// seen waiting, then for a few seconds more; the install's own wait bounds the hold.
 		unlock := holdDpkgLock(t)
-		stop := time.AfterFunc(4*time.Minute, unlock)
-		defer stop.Stop()
 		var seen bytes.Buffer
 		var waiting sync.Once
 		watch := func(chunk []byte) {

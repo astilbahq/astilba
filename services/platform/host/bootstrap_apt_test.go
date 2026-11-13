@@ -105,6 +105,7 @@ func TestBootstrapTriesPinnedArchivesOnlyWhenHostSourcesFail(t *testing.T) {
 		dead          []string // Sources whose indexes are current but which no longer answer.
 		extras        []string // What else the host's sources hold; see fakeAptGet.
 		hostOnly      bool     // The operator gave --use-host-package-sources.
+		absent        string   // Output that must not appear.
 		downloadFails bool
 		nothingNeeded bool
 		used          string // The fallback archive the install uses, or empty for the host's sources.
@@ -131,9 +132,11 @@ func TestBootstrapTriesPinnedArchivesOnlyWhenHostSourcesFail(t *testing.T) {
 		// apt takes the newest versions, so a stale second mirror can't hold fixes back.
 		{name: "a second Ubuntu mirror on the host is stale", extras: []string{"stale-mirror"}, ok: true},
 		// Another release under a noble suite's name is refused, not skipped.
-		{name: "the host's backports serves another release", extras: []string{"backports-resolute"}, used: amd64[0], ok: true, output: "served noble-backports as suite resolute-backports, codename resolute"},
+		{name: "the host's backports serves another release", extras: []string{"backports-resolute"}, used: amd64[0], ok: true, output: "served noble-backports as suite resolute-backports, codename resolute", absent: "--use-host-package-sources"},
 		// An operator whose mirror lags on purpose takes its packages as they are, never a fallback's.
 		{name: "--use-host-package-sources on a lagging mirror", hostOnly: true, stale: []string{"host"}, ok: true, output: "Warning: Ubuntu packages come only from this host's own package sources, as they are"},
+		// Only stale indexes point to the option; other failures don't.
+		{name: "the host's security index is stale, so the option is named", stale: []string{"host"}, used: amd64[0], ok: true, output: "run this script again with --use-host-package-sources"},
 		{name: "--use-host-package-sources when the host's sources fail", hostOnly: true, failing: []string{"host"}, output: "apt could not resolve or download the Ubuntu packages from this host's own sources"},
 		{name: "everything fails", failing: append([]string{"host"}, amd64...), output: "Neither this host's package sources nor any fallback Ubuntu archive"},
 		// A download that fails although every index refreshed, such as a package apt can't
@@ -199,6 +202,9 @@ func TestBootstrapTriesPinnedArchivesOnlyWhenHostSourcesFail(t *testing.T) {
 			out, err := cmd.CombinedOutput()
 			if exit := (*exec.ExitError)(nil); errors.As(err, &exit) && exit.ExitCode() == 77 {
 				t.Skip("needs bash 4.4 or later and GNU date, as production has")
+			}
+			if test.absent != "" && bytes.Contains(out, []byte(test.absent)) {
+				t.Fatalf("output names %q:\n%s", test.absent, out)
 			}
 			if (err == nil) != test.ok || !bytes.Contains(out, []byte(test.output)) {
 				t.Fatalf("apt_download ok=%v, want %v and %q:\n%s", err == nil, test.ok, test.output, out)

@@ -740,7 +740,8 @@ it uses a mirror instead of Canonical, and fails when none answers.
 This step is CI only. The production bootstrap leaves a host's sources alone and falls back
 to the same independent mirrors, then Canonical's archive, only when it can't download its
 Ubuntu packages from them or their Ubuntu indexes aren't current; see [server onboarding](server-onboarding.md). It checks the age of
-the Ubuntu indexes it uses itself, for the host's sources and fallbacks alike.
+the Ubuntu indexes it uses itself, for the host's sources and fallbacks alike, unless the
+operator gives `--use-host-package-sources`.
 
 `TestBootstrapOnDisposableHost` covers each path the bootstrap's Ubuntu packages can take:
 
