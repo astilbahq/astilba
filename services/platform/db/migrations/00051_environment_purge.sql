@@ -20,11 +20,11 @@ ALTER TABLE environments ADD CONSTRAINT environment_purge_record CHECK(
 ALTER TABLE environments ADD CONSTRAINT purge_operation_owner FOREIGN KEY(workspace_id,id,purge_operation_id) REFERENCES execution_operations(workspace_id,environment_id,id) DEFERRABLE INITIALLY DEFERRED;
 
 -- Specifications refer to secret versions forever, so retiring a secret or purging its
--- environment keeps each version's row and erases only its value. A retired secret's name can be
--- used again.
+-- environment keeps each version's row and erases only its value, with the lengths stored from it.
+-- A retired secret's name can be used again.
 ALTER TABLE secret_versions ALTER COLUMN encrypted_value DROP NOT NULL;
 ALTER TABLE secret_versions ADD COLUMN erased_at timestamptz;
-ALTER TABLE secret_versions ADD CONSTRAINT secret_version_value CHECK((encrypted_value IS NULL) = (erased_at IS NOT NULL));
+ALTER TABLE secret_versions ADD CONSTRAINT secret_version_value CHECK((encrypted_value IS NULL) = (erased_at IS NOT NULL) AND (erased_at IS NULL OR (plaintext_bytes IS NULL AND json_bytes IS NULL)));
 ALTER TABLE secrets ADD COLUMN retired_at timestamptz;
 ALTER TABLE secrets DROP CONSTRAINT secrets_workspace_id_environment_id_name_key;
 CREATE UNIQUE INDEX secrets_current_name ON secrets(workspace_id,environment_id,name) WHERE retired_at IS NULL;

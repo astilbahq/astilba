@@ -61,7 +61,7 @@ A retired environment's banner offers owners **Delete retained data**. It lists 
 
 Purging cannot be undone:
 
-- every secret value of the environment is erased at once, in management's database. Each secret version's record stays, without its value, because the environment's revisions name it;
+- every secret value of the environment is erased at once, in management's database. Each secret version's record stays, without its value or the lengths stored from it, because the environment's revisions name it;
 - its server deletes the kept volumes, after checking every volume's ownership labels and that no upgrade's retention period protects it. If any check fails, nothing is deleted and the operation needs attention. A volume that a container still uses is kept, and the operation needs attention until you retry it on the host, as described in [the agent guide](agent.md#observe-and-recover);
 - the environment becomes **Purged** when the server confirms. It cannot be restored, retired again or changed. Its revisions, configuration export and audit history stay readable.
 

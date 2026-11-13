@@ -147,7 +147,7 @@ func (q *Queries) EnvironmentState(ctx context.Context, arg EnvironmentStatePara
 }
 
 const eraseEnvironmentSecretValues = `-- name: EraseEnvironmentSecretValues :exec
-UPDATE secret_versions v SET encrypted_value = NULL,erased_at = now()
+UPDATE secret_versions v SET encrypted_value = NULL,plaintext_bytes = NULL,json_bytes = NULL,erased_at = now()
 FROM secrets s
 WHERE s.workspace_id = $1 AND s.environment_id = $2
  AND v.workspace_id = s.workspace_id AND v.secret_id = s.id AND v.erased_at IS NULL
@@ -165,7 +165,7 @@ func (q *Queries) EraseEnvironmentSecretValues(ctx context.Context, arg EraseEnv
 }
 
 const eraseRecoveredSecretVersion = `-- name: EraseRecoveredSecretVersion :exec
-UPDATE secret_versions SET encrypted_value = NULL,erased_at = $1::timestamptz
+UPDATE secret_versions SET encrypted_value = NULL,plaintext_bytes = NULL,json_bytes = NULL,erased_at = $1::timestamptz
 WHERE workspace_id = $2 AND id = $3 AND erased_at IS NULL
 `
 
@@ -182,7 +182,7 @@ func (q *Queries) EraseRecoveredSecretVersion(ctx context.Context, arg EraseReco
 }
 
 const eraseSecretValues = `-- name: EraseSecretValues :exec
-UPDATE secret_versions SET encrypted_value = NULL,erased_at = now()
+UPDATE secret_versions SET encrypted_value = NULL,plaintext_bytes = NULL,json_bytes = NULL,erased_at = now()
 WHERE workspace_id = $1 AND secret_id = $2 AND erased_at IS NULL
 `
 

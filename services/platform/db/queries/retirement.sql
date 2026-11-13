@@ -126,7 +126,7 @@ WHERE workspace_id = @workspace_id AND environment_id = @environment_id AND id =
 
 -- name: EraseEnvironmentSecretValues :exec
 -- Purging keeps each version's row, which specifications name, and deletes its value.
-UPDATE secret_versions v SET encrypted_value = NULL,erased_at = now()
+UPDATE secret_versions v SET encrypted_value = NULL,plaintext_bytes = NULL,json_bytes = NULL,erased_at = now()
 FROM secrets s
 WHERE s.workspace_id = @workspace_id AND s.environment_id = @environment_id
  AND v.workspace_id = s.workspace_id AND v.secret_id = s.id AND v.erased_at IS NULL;
@@ -174,9 +174,9 @@ UPDATE secrets SET retired_at = now() WHERE workspace_id = @workspace_id AND id 
 
 -- name: EraseRecoveredSecretVersion :exec
 -- Recovery takes a checkpoint's erasure of a version; an erasure is never undone.
-UPDATE secret_versions SET encrypted_value = NULL,erased_at = sqlc.arg(erased_at)::timestamptz
+UPDATE secret_versions SET encrypted_value = NULL,plaintext_bytes = NULL,json_bytes = NULL,erased_at = sqlc.arg(erased_at)::timestamptz
 WHERE workspace_id = @workspace_id AND id = @id AND erased_at IS NULL;
 
 -- name: EraseSecretValues :exec
-UPDATE secret_versions SET encrypted_value = NULL,erased_at = now()
+UPDATE secret_versions SET encrypted_value = NULL,plaintext_bytes = NULL,json_bytes = NULL,erased_at = now()
 WHERE workspace_id = @workspace_id AND secret_id = @secret_id AND erased_at IS NULL;
