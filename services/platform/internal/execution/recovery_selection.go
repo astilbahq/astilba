@@ -181,6 +181,33 @@ func chooseRecoveryBases(out *recoverySource, decode func(uuid.UUID) (portabilit
 	if len(forked) == 0 {
 		return nil
 	}
+	// A forked root's own base, captured when it started, always shows it unfinished, and only a
+	// host's unsigned report says it still is. Any other supplied base that records it ended, such
+	// as a later base of the same forked management, outweighs that report.
+	for _, b := range out.Bases {
+		var other portability.Archive
+		if b.ID == newest.ID {
+			other = a
+		} else if other, err = decode(b.Parent); err != nil {
+			return err
+		}
+		ended, err := recoveryEndedOperations(other)
+		if err != nil {
+			return err
+		}
+		for _, f := range forked {
+			if f.base.ID != b.ID && ended[f.base.Parent] {
+				return fmt.Errorf("a host reports root %s still running, but checkpoint %s of root %s records that it ended", f.base.Parent, b.ID, b.Parent)
+			}
+		}
+	}
+	// Bases of one forked management can each carry an environment; the newest copy is taken.
+	slices.SortFunc(forked, func(x, y forkedBase) int {
+		if c := y.base.CapturedAt.Compare(x.base.CapturedAt); c != 0 {
+			return c
+		}
+		return bytes.Compare(y.base.ID[:], x.base.ID[:])
+	})
 	keys := map[string]map[string]bool{}
 	environments := map[uuid.UUID]bool{}
 	merged := a
@@ -232,6 +259,36 @@ func chooseRecoveryBases(out *recoverySource, decode func(uuid.UUID) (portabilit
 	}
 	out.Archive = merged
 	return nil
+}
+
+// recoveryEndedOperations are the operations a base records as ended: a terminal row, a terminal
+// applied change, or a settled operation.
+func recoveryEndedOperations(a portability.Archive) (map[uuid.UUID]bool, error) {
+	out := map[uuid.UUID]bool{}
+	for _, row := range a.Tables["execution_operations"] {
+		state, err := recoveryValue[api.ExecutionState](row, "state")
+		if err != nil {
+			return nil, err
+		}
+		if Terminal(state) {
+			id, err := recoveryValue[uuid.UUID](row, "id")
+			if err != nil {
+				return nil, err
+			}
+			out[id] = true
+		}
+	}
+	if a.Recovery != nil {
+		for _, e := range a.Recovery.Applied {
+			if Terminal(api.ExecutionState(e.State)) {
+				out[e.Operation] = true
+			}
+		}
+		for _, e := range a.Recovery.Settled {
+			out[e.Operation] = true
+		}
+	}
+	return out, nil
 }
 
 // newestRecoveryBase is N: the base captured last among those no other loaded base lists as

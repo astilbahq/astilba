@@ -332,6 +332,42 @@ func TestRecoveryUsesTheNewestBaseAndSetsTheRestAside(t *testing.T) {
 		if err := chooseRecoveryBases(&out, decode); err == nil || !strings.Contains(err.Error(), old.ID.String()) {
 			t.Fatal("an unrecorded root's base from before the window was merged", err)
 		}
+		// A later base of the forked management that records the root ended outweighs a host's
+		// report that it still runs.
+		next := other
+		next.ID = uuid.New()
+		next = next.WithHash()
+		laterArchive := appliedTestDeploy(forkedArchive, next, 2)
+		laterArchive.CreatedAt = forkedArchive.CreatedAt.Add(time.Second)
+		for _, row := range laterArchive.Tables["visual_runtime"] {
+			recoverySet(row, "workspace_id", laterArchive.Workspace)
+		}
+		root2, _ := recoveryValue[uuid.UUID](laterArchive.Tables["execution_operations"][2], "id")
+		later := loadedBase{ID: uuid.New(), Parent: root2, CapturedAt: laterArchive.CreatedAt}
+		archives[root2] = laterArchive
+		out = recoverySource{Bases: []loadedBase{forked, later, n}, Hosts: map[uuid.UUID]deployment.RecoveryEvidence{uuid.New(): {ActiveParent: root}}}
+		if err := chooseRecoveryBases(&out, decode); err == nil || !strings.Contains(err.Error(), later.ID.String()) {
+			t.Fatal("a forked root another base records as ended was merged", err)
+		}
+		// While both forked roots still run, the environment comes from the newer base whatever
+		// order the bases arrive in.
+		running := laterArchive.Tables["execution_operations"][1]
+		recoverySet(running, "state", "running")
+		recoverySet(running, "runtime_outcome", nil)
+		recoverySet(running, "runtime_plan_id", nil)
+		for _, bases := range [][]loadedBase{{forked, later, n}, {later, forked, n}} {
+			out = recoverySource{Bases: bases, Hosts: map[uuid.UUID]deployment.RecoveryEvidence{uuid.New(): {ActiveParent: root}, uuid.New(): {ActiveParent: root2}}}
+			if err := chooseRecoveryBases(&out, decode); err != nil {
+				t.Fatal(err)
+			}
+			for _, row := range out.Archive.Tables["environments"] {
+				if id, _ := recoveryValue[uuid.UUID](row, "id"); id == other.EnvironmentID {
+					if head, _ := recoveryValue[uuid.UUID](row, "runtime_operation_id"); head != root2 {
+						t.Fatal("an older forked base's copy of its environment was taken")
+					}
+				}
+			}
+		}
 		// A base the newest one lists is its own lineage's and is never merged.
 		out = recoverySource{Bases: []loadedBase{listed, n}, Hosts: map[uuid.UUID]deployment.RecoveryEvidence{uuid.New(): {ActiveParent: listed.Parent}}}
 		if err := chooseRecoveryBases(&out, decode); err != nil {
